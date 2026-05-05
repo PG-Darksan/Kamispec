@@ -85,6 +85,7 @@
       letter-spacing: 0.04em;
       position: relative;
       padding: 4px 0;
+      white-space: nowrap;
     }
     .nav-link:hover { color: var(--vermillion); }
     .nav-link.active { color: var(--vermillion); }
@@ -984,9 +985,50 @@
     }
     @media (max-width: 980px) {
       .container, .footer-inner { padding: 0 24px; }
-      nav { padding: 16px 24px; }
-      .nav-links { gap: 16px; font-size: 12.5px; }
-      .nav-link:not(.nav-cta) { display: none; }
+      nav { padding: 14px 16px; }
+      .nav-links { gap: 4px; font-size: 11.5px; letter-spacing: 0.02em; }
+
+      /* モバイルではナビリンクをアイコン+短いラベルでコンパクトに表示 */
+      .nav-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 6px 7px;
+      }
+      .nav-link::before {
+        content: '';
+        width: 14px;
+        height: 14px;
+        flex-shrink: 0;
+        background-color: currentColor;
+        -webkit-mask-position: center;
+                mask-position: center;
+        -webkit-mask-repeat: no-repeat;
+                mask-repeat: no-repeat;
+        -webkit-mask-size: contain;
+                mask-size: contain;
+      }
+      /* data-page 属性ごとに SVG アイコンを差し込む (currentColor で着色) */
+      .nav-link[data-page="home"]::before {
+        -webkit-mask-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23000' d='M12 3 3 11v10h6v-6h6v6h6V11z'/%3E%3C/svg%3E");
+                mask-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23000' d='M12 3 3 11v10h6v-6h6v6h6V11z'/%3E%3C/svg%3E");
+      }
+      .nav-link[data-page="features"]::before {
+        -webkit-mask-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23000' d='M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4z'/%3E%3C/svg%3E");
+                mask-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23000' d='M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4z'/%3E%3C/svg%3E");
+      }
+      .nav-link[data-page="pricing"]::before {
+        -webkit-mask-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23000' d='M3 3v9l9 9 9-9-9-9H3zm4.5 5.5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3z'/%3E%3C/svg%3E");
+                mask-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23000' d='M3 3v9l9 9 9-9-9-9H3zm4.5 5.5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3z'/%3E%3C/svg%3E");
+      }
+      .nav-link[data-page="contact"]::before {
+        -webkit-mask-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23000' d='M2 5v14h20V5H2zm10 8L4 7h16l-8 6z'/%3E%3C/svg%3E");
+                mask-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23000' d='M2 5v14h20V5H2zm10 8L4 7h16l-8 6z'/%3E%3C/svg%3E");
+      }
+
+      /* CTA ボタンはモバイルで余白を詰める */
+      .nav-cta { padding: 7px 12px; }
+      .nav-cta::before { background-color: var(--paper); }
 
       .hero { padding: 120px 0 60px; }
       .hero-block,
@@ -1729,4 +1771,22 @@
       .feature-matrix { font-size: 12px; }
       .feature-matrix thead th,
       .feature-matrix tbody td { padding: 10px 8px; }
+    }
+    /* ===== 超小型端末: ナビをアイコンのみに ===== */
+    @media (max-width: 520px) {
+      nav { padding: 12px 12px; }
+      .nav-links { gap: 2px; }
+      .nav-link:not(.nav-cta) {
+        font-size: 0;
+        gap: 0;
+        padding: 8px 6px;
+      }
+      .nav-link:not(.nav-cta)::before {
+        width: 18px;
+        height: 18px;
+      }
+      /* CTA はラベル残す (タップ目標として重要) */
+      .nav-cta { font-size: 11px; padding: 7px 11px; }
+      /* 言語切替も詰める */
+      .lang-switcher .lang-toggle { padding: 6px 10px; font-size: 11px; }
     }
