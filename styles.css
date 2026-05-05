@@ -346,6 +346,44 @@
       width: 100%; height: 100%;
     }
 
+    /* ===== ヒーローアプリアイコン: 出現時に浮かび上がるアニメ =====
+       ページロード時に下からふわっとせり上がる演出 (rise + fade + unblur)
+       完了後に微小な上下のフロート (浮遊感) を継続。
+       transform は entrance、 translate は float に分離して衝突回避。
+       prefers-reduced-motion: reduce のユーザーには適用しない。 */
+    @keyframes hero-icon-emerge {
+      0% {
+        opacity: 0;
+        transform: translateY(60px) scale(0.92);
+        filter: blur(10px);
+      }
+      60% {
+        filter: blur(0);
+      }
+      100% {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+        filter: blur(0);
+      }
+    }
+    @keyframes hero-icon-float {
+      0%, 100% { translate: 0 0; }
+      50%      { translate: 0 -6px; }
+    }
+    .hero-block.hero-main .hero-icon,
+    .hero-block.hero-main .hero-icon-fallback {
+      animation:
+        hero-icon-emerge 1.2s cubic-bezier(0.16, 1, 0.3, 1) 0.15s both,
+        hero-icon-float 5s ease-in-out 1.5s infinite;
+      will-change: transform, opacity, filter;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .hero-block.hero-main .hero-icon,
+      .hero-block.hero-main .hero-icon-fallback {
+        animation: none;
+      }
+    }
+
     .hero-video {
       width: 100%;
       border-radius: 16px;
@@ -1043,7 +1081,10 @@
       .hero-block.reverse .hero-left { order: 1; }
       .hero-block.reverse .hero-right { order: 2; }
       .hero-icon { max-width: 280px; margin: 0 auto; }
-      .hero-block.hero-main .hero-icon { max-width: 240px; }
+      .hero-block.hero-main .hero-icon { max-width: 240px; margin: 0 auto; }
+      /* picture ラッパーも中央寄せ (img は display:block だが picture は inline) */
+      .hero-block.hero-main .hero-right { text-align: center; }
+      .hero-block.hero-main .hero-right picture { display: block; }
 
       .feature-grid { grid-template-columns: 1fr; }
       .form-panel, .result-panel { padding: 32px 24px; }
