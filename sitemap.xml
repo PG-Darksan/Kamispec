@@ -4,68 +4,71 @@
 
   <!-- ホーム (5言語) -->
   <url>
-    <loc>https://mokumoku.example/</loc>
-    <xhtml:link rel="alternate" hreflang="ja" href="https://mokumoku.example/"/>
-    <xhtml:link rel="alternate" hreflang="en" href="https://mokumoku.example/en/"/>
-    <xhtml:link rel="alternate" hreflang="zh" href="https://mokumoku.example/zh/"/>
-    <xhtml:link rel="alternate" hreflang="ko" href="https://mokumoku.example/ko/"/>
-    <xhtml:link rel="alternate" hreflang="es" href="https://mokumoku.example/es/"/>
-    <xhtml:link rel="alternate" hreflang="x-default" href="https://mokumoku.example/"/>
+    <loc>https://kamispe.example/</loc>
+    <xhtml:link rel="alternate" hreflang="ja" href="https://kamispe.example/"/>
+    <xhtml:link rel="alternate" hreflang="en" href="https://kamispe.example/en/"/>
+    <xhtml:link rel="alternate" hreflang="zh" href="https://kamispe.example/zh/"/>
+    <xhtml:link rel="alternate" hreflang="ko" href="https://kamispe.example/ko/"/>
+    <xhtml:link rel="alternate" hreflang="es" href="https://kamispe.example/es/"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://kamispe.example/"/>
     <priority>1.0</priority>
     <changefreq>weekly</changefreq>
   </url>
-  <url><loc>https://mokumoku.example/en/</loc><priority>0.9</priority></url>
-  <url><loc>https://mokumoku.example/zh/</loc><priority>0.9</priority></url>
-  <url><loc>https://mokumoku.example/ko/</loc><priority>0.9</priority></url>
-  <url><loc>https://mokumoku.example/es/</loc><priority>0.9</priority></url>
+  <url><loc>https://kamispe.example/en/</loc><priority>0.9</priority></url>
+  <url><loc>https://kamispe.example/zh/</loc><priority>0.9</priority></url>
+  <url><loc>https://kamispe.example/ko/</loc><priority>0.9</priority></url>
+  <url><loc>https://kamispe.example/es/</loc><priority>0.9</priority></url>
 
   <!-- Features -->
   <url>
-    <loc>https://mokumoku.example/features.html</loc>
-    <xhtml:link rel="alternate" hreflang="ja" href="https://mokumoku.example/features.html"/>
-    <xhtml:link rel="alternate" hreflang="en" href="https://mokumoku.example/en/features.html"/>
-    <xhtml:link rel="alternate" hreflang="zh" href="https://mokumoku.example/zh/features.html"/>
-    <xhtml:link rel="alternate" hreflang="ko" href="https://mokumoku.example/ko/features.html"/>
-    <xhtml:link rel="alternate" hreflang="es" href="https://mokumoku.example/es/features.html"/>
+    <loc>https://kamispe.example/features.html</loc>
+    <xhtml:link rel="alternate" hreflang="ja" href="https://kamispe.example/features.html"/>
+    <xhtml:link rel="alternate" hreflang="en" href="https://kamispe.example/en/features.html"/>
+    <xhtml:link rel="alternate" hreflang="zh" href="https://kamispe.example/zh/features.html"/>
+    <xhtml:link rel="alternate" hreflang="ko" href="https://kamispe.example/ko/features.html"/>
+    <xhtml:link rel="alternate" hreflang="es" href="https://kamispe.example/es/features.html"/>
     <priority>0.8</priority>
     <changefreq>weekly</changefreq>
   </url>
-  <url><loc>https://mokumoku.example/en/features.html</loc><priority>0.7</priority></url>
-  <url><loc>https://mokumoku.example/zh/features.html</loc><priority>0.7</priority></url>
-  <url><loc>https://mokumoku.example/ko/features.html</loc><priority>0.7</priority></url>
-  <url><loc>https://mokumoku.example/es/features.html</loc><priority>0.7</priority></url>
+  <url><loc>https://kamispe.example/en/features.html</loc><priority>0.7</priority></url>
+  <url><loc>https://kamispe.example/zh/features.html</loc><priority>0.7</priority></url>
+  <url><loc>https://kamispe.example/ko/features.html</loc><priority>0.7</priority></url>
+  <url><loc>https://kamispe.example/es/features.html</loc><priority>0.7</priority></url>
 
   <!-- Pricing -->
   <url>
-    <loc>https://mokumoku.example/pricing.html</loc>
-    <xhtml:link rel="alternate" hreflang="ja" href="https://mokumoku.example/pricing.html"/>
-    <xhtml:link rel="alternate" hreflang="en" href="https://mokumoku.example/en/pricing.html"/>
-    <xhtml:link rel="alternate" hreflang="zh" href="https://mokumoku.example/zh/pricing.html"/>
-    <xhtml:link rel="alternate" hreflang="ko" href="https://mokumoku.example/ko/pricing.html"/>
-    <xhtml:link rel="alternate" hreflang="es" href="https://mokumoku.example/es/pricing.html"/>
+    <loc>https://kamispe.example/pricing.html</loc>
+    <xhtml:link rel="alternate" hreflang="ja" href="https://kamispe.example/pricing.html"/>
+    <xhtml:link rel="alternate" hreflang="en" href="https://kamispe.example/en/pricing.html"/>
+    <xhtml:link rel="alternate" hreflang="zh" href="https://kamispe.example/zh/pricing.html"/>
+    <xhtml:link rel="alternate" hreflang="ko" href="https://kamispe.example/ko/pricing.html"/>
+    <xhtml:link rel="alternate" hreflang="es" href="https://kamispe.example/es/pricing.html"/>
     <priority>0.8</priority>
     <changefreq>weekly</changefreq>
   </url>
-  <url><loc>https://mokumoku.example/en/pricing.html</loc><priority>0.7</priority></url>
-  <url><loc>https://mokumoku.example/zh/pricing.html</loc><priority>0.7</priority></url>
-  <url><loc>https://mokumoku.example/ko/pricing.html</loc><priority>0.7</priority></url>
-  <url><loc>https://mokumoku.example/es/pricing.html</loc><priority>0.7</priority></url>
+  <url><loc>https://kamispe.example/en/pricing.html</loc><priority>0.7</priority></url>
+  <url><loc>https://kamispe.example/zh/pricing.html</loc><priority>0.7</priority></url>
+  <url><loc>https://kamispe.example/ko/pricing.html</loc><priority>0.7</priority></url>
+  <url><loc>https://kamispe.example/es/pricing.html</loc><priority>0.7</priority></url>
 
   <!-- Contact -->
   <url>
-    <loc>https://mokumoku.example/contact.html</loc>
-    <xhtml:link rel="alternate" hreflang="ja" href="https://mokumoku.example/contact.html"/>
-    <xhtml:link rel="alternate" hreflang="en" href="https://mokumoku.example/en/contact.html"/>
-    <xhtml:link rel="alternate" hreflang="zh" href="https://mokumoku.example/zh/contact.html"/>
-    <xhtml:link rel="alternate" hreflang="ko" href="https://mokumoku.example/ko/contact.html"/>
-    <xhtml:link rel="alternate" hreflang="es" href="https://mokumoku.example/es/contact.html"/>
+    <loc>https://kamispe.example/contact.html</loc>
+    <xhtml:link rel="alternate" hreflang="ja" href="https://kamispe.example/contact.html"/>
+    <xhtml:link rel="alternate" hreflang="en" href="https://kamispe.example/en/contact.html"/>
+    <xhtml:link rel="alternate" hreflang="zh" href="https://kamispe.example/zh/contact.html"/>
+    <xhtml:link rel="alternate" hreflang="ko" href="https://kamispe.example/ko/contact.html"/>
+    <xhtml:link rel="alternate" hreflang="es" href="https://kamispe.example/es/contact.html"/>
     <priority>0.7</priority>
     <changefreq>monthly</changefreq>
   </url>
 
   <!-- 機能サブページ -->
-  <url><loc>https://mokumoku.example/ai.html</loc><priority>0.7</priority></url>
-  <url><loc>https://mokumoku.example/video.html</loc><priority>0.7</priority></url>
-  <url><loc>https://mokumoku.example/platform.html</loc><priority>0.7</priority></url>
+  <url><loc>https://kamispe.example/ai.html</loc><priority>0.7</priority></url>
+  <url><loc>https://kamispe.example/video.html</loc><priority>0.7</priority></url>
+  <url><loc>https://kamispe.example/platform.html</loc><priority>0.7</priority></url>
+
+  <!-- 特定商取引法に基づく表記 (日本語のみ) -->
+  <url><loc>https://kamispe.example/tokutei.html</loc><priority>0.6</priority><changefreq>yearly</changefreq></url>
 
 </urlset>

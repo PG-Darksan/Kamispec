@@ -34,7 +34,107 @@
       content: "";
       position: fixed; inset: 0;
       pointer-events: none; z-index: 1;
-      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.1 0 0 0 0 0.09 0 0 0 0 0.08 0 0 0 0.04 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+      background-image: 
+    radial-gradient(1.7px 1.7px at 63.9% 2.5%, rgba(255,250,230,0.95), transparent 100%),
+    radial-gradient(2.0px 2.0px at 14.0% 10.2%, rgba(255,255,255,0.95), transparent 100%),
+    radial-gradient(1.5px 1.5px at 8.7% 42.2%, rgba(255,250,230,0.95), transparent 100%),
+    radial-gradient(1.9px 1.9px at 23.3% 60.2%, rgba(255,255,255,0.95), transparent 100%),
+    radial-gradient(1.7px 1.7px at 65.0% 54.5%, rgba(255,255,255,0.95), transparent 100%),
+    radial-gradient(2.0px 2.0px at 27.8% 86.9%, rgba(255,250,230,0.95), transparent 100%),
+    radial-gradient(1.6px 1.6px at 69.8% 34.0%, rgba(255,235,180,0.92), transparent 100%),
+    radial-gradient(1.8px 1.8px at 10.2% 38.0%, rgba(255,235,180,0.92), transparent 100%),
+    radial-gradient(2.0px 2.0px at 60.4% 80.7%, rgba(255,255,255,0.95), transparent 100%),
+    radial-gradient(1.6px 1.6px at 12.5% 92.2%, rgba(255,235,180,0.92), transparent 100%),
+    radial-gradient(2.1px 2.1px at 82.9% 61.9%, rgba(255,255,255,0.95), transparent 100%),
+    radial-gradient(2.0px 2.0px at 19.2% 7.0%, rgba(255,235,180,0.92), transparent 100%),
+    radial-gradient(2.1px 2.1px at 98.5% 85.5%, rgba(255,235,180,0.92), transparent 100%),
+    radial-gradient(1.8px 1.8px at 27.8% 63.6%, rgba(255,235,180,0.92), transparent 100%),
+    radial-gradient(2.0px 2.0px at 35.5% 67.0%, rgba(255,255,255,0.95), transparent 100%),
+    radial-gradient(1.0px 1.0px at 64.8% 60.9%, rgba(255,245,210,0.85), transparent 100%),
+    radial-gradient(1.0px 1.0px at 24.5% 46.2%, rgba(255,245,210,0.85), transparent 100%),
+    radial-gradient(1.1px 1.1px at 68.8% 22.0%, rgba(255,250,230,0.8), transparent 100%),
+    radial-gradient(1.1px 1.1px at 22.9% 3.2%, rgba(255,235,180,0.8), transparent 100%),
+    radial-gradient(1.2px 1.2px at 6.6% 91.3%, rgba(255,245,210,0.85), transparent 100%),
+    radial-gradient(1.1px 1.1px at 31.5% 65.5%, rgba(255,245,210,0.85), transparent 100%),
+    radial-gradient(1.0px 1.0px at 45.9% 26.5%, rgba(255,245,210,0.85), transparent 100%),
+    radial-gradient(1.1px 1.1px at 53.9% 74.7%, rgba(255,245,210,0.85), transparent 100%),
+    radial-gradient(1.4px 1.4px at 39.9% 21.9%, rgba(255,245,210,0.85), transparent 100%),
+    radial-gradient(1.3px 1.3px at 49.4% 75.6%, rgba(255,250,230,0.8), transparent 100%),
+    radial-gradient(1.1px 1.1px at 62.7% 79.2%, rgba(255,250,230,0.8), transparent 100%),
+    radial-gradient(1.1px 1.1px at 38.5% 59.6%, rgba(255,235,180,0.8), transparent 100%),
+    radial-gradient(0.9px 0.9px at 97.1% 86.1%, rgba(255,245,210,0.85), transparent 100%),
+    radial-gradient(1.3px 1.3px at 11.5% 88.5%, rgba(255,245,210,0.85), transparent 100%),
+    radial-gradient(1.0px 1.0px at 34.0% 29.4%, rgba(255,250,230,0.8), transparent 100%),
+    radial-gradient(1.0px 1.0px at 95.4% 87.6%, rgba(255,245,210,0.85), transparent 100%),
+    radial-gradient(1.0px 1.0px at 76.2% 50.8%, rgba(255,245,210,0.85), transparent 100%),
+    radial-gradient(1.2px 1.2px at 29.8% 63.9%, rgba(255,250,230,0.8), transparent 100%),
+    radial-gradient(1.4px 1.4px at 37.4% 16.2%, rgba(255,245,210,0.85), transparent 100%),
+    radial-gradient(1.1px 1.1px at 91.8% 59.9%, rgba(255,250,230,0.8), transparent 100%),
+    radial-gradient(1.3px 1.3px at 92.9% 87.9%, rgba(255,235,180,0.8), transparent 100%),
+    radial-gradient(1.2px 1.2px at 23.9% 24.1%, rgba(255,250,230,0.8), transparent 100%),
+    radial-gradient(0.9px 0.9px at 8.6% 48.6%, rgba(255,245,210,0.85), transparent 100%),
+    radial-gradient(1.1px 1.1px at 76.6% 12.8%, rgba(255,245,210,0.85), transparent 100%),
+    radial-gradient(1.2px 1.2px at 16.5% 52.8%, rgba(255,250,230,0.8), transparent 100%),
+    radial-gradient(1.2px 1.2px at 92.9% 75.5%, rgba(255,245,210,0.85), transparent 100%),
+    radial-gradient(1.2px 1.2px at 31.2% 99.5%, rgba(255,235,180,0.8), transparent 100%),
+    radial-gradient(1.0px 1.0px at 90.0% 45.1%, rgba(255,250,230,0.8), transparent 100%),
+    radial-gradient(1.0px 1.0px at 33.8% 58.8%, rgba(255,250,230,0.8), transparent 100%),
+    radial-gradient(0.9px 0.9px at 0.7% 70.8%, rgba(255,250,230,0.8), transparent 100%),
+    radial-gradient(0.9px 0.9px at 90.5% 86.0%, rgba(255,250,230,0.8), transparent 100%),
+    radial-gradient(1.2px 1.2px at 27.8% 48.5%, rgba(255,245,210,0.85), transparent 100%),
+    radial-gradient(1.1px 1.1px at 93.6% 57.1%, rgba(255,235,180,0.8), transparent 100%),
+    radial-gradient(0.9px 0.9px at 80.7% 19.0%, rgba(255,235,180,0.8), transparent 100%),
+    radial-gradient(1.3px 1.3px at 35.4% 41.1%, rgba(255,250,230,0.8), transparent 100%),
+    radial-gradient(0.9px 0.9px at 67.3% 98.4%, rgba(255,235,180,0.8), transparent 100%),
+    radial-gradient(1.0px 1.0px at 72.8% 80.1%, rgba(255,250,230,0.8), transparent 100%),
+    radial-gradient(1.1px 1.1px at 19.0% 44.9%, rgba(255,235,180,0.8), transparent 100%),
+    radial-gradient(0.9px 0.9px at 46.3% 87.4%, rgba(255,245,210,0.85), transparent 100%),
+    radial-gradient(1.2px 1.2px at 9.8% 65.2%, rgba(255,250,230,0.8), transparent 100%),
+    radial-gradient(0.8px 0.8px at 96.9% 92.6%, rgba(255,250,230,0.65), transparent 100%),
+    radial-gradient(0.8px 0.8px at 40.6% 48.1%, rgba(255,250,230,0.65), transparent 100%),
+    radial-gradient(0.6px 0.6px at 16.5% 0.2%, rgba(255,235,180,0.6), transparent 100%),
+    radial-gradient(0.7px 0.7px at 28.5% 69.7%, rgba(255,250,230,0.55), transparent 100%),
+    radial-gradient(0.6px 0.6px at 66.2% 48.7%, rgba(255,250,230,0.65), transparent 100%),
+    radial-gradient(0.7px 0.7px at 96.9% 57.9%, rgba(255,250,230,0.55), transparent 100%),
+    radial-gradient(0.6px 0.6px at 31.4% 5.0%, rgba(255,250,230,0.55), transparent 100%),
+    radial-gradient(0.5px 0.5px at 15.7% 96.1%, rgba(255,250,230,0.65), transparent 100%),
+    radial-gradient(0.8px 0.8px at 6.9% 6.8%, rgba(255,235,180,0.6), transparent 100%),
+    radial-gradient(0.6px 0.6px at 12.0% 89.0%, rgba(255,250,230,0.55), transparent 100%),
+    radial-gradient(0.7px 0.7px at 4.0% 8.2%, rgba(255,250,230,0.55), transparent 100%),
+    radial-gradient(0.6px 0.6px at 52.3% 93.5%, rgba(255,250,230,0.55), transparent 100%),
+    radial-gradient(0.5px 0.5px at 31.4% 26.6%, rgba(255,250,230,0.55), transparent 100%),
+    radial-gradient(0.7px 0.7px at 30.0% 31.6%, rgba(255,250,230,0.65), transparent 100%),
+    radial-gradient(0.7px 0.7px at 0.9% 62.1%, rgba(255,250,230,0.65), transparent 100%),
+    radial-gradient(0.6px 0.6px at 7.3% 21.3%, rgba(255,235,180,0.6), transparent 100%),
+    radial-gradient(0.6px 0.6px at 88.1% 87.9%, rgba(255,250,230,0.65), transparent 100%),
+    radial-gradient(0.6px 0.6px at 43.8% 54.3%, rgba(255,250,230,0.55), transparent 100%),
+    radial-gradient(0.7px 0.7px at 52.9% 66.8%, rgba(255,250,230,0.55), transparent 100%),
+    radial-gradient(0.6px 0.6px at 10.4% 87.8%, rgba(255,250,230,0.65), transparent 100%),
+    radial-gradient(0.6px 0.6px at 74.2% 15.5%, rgba(255,250,230,0.65), transparent 100%),
+    radial-gradient(0.7px 0.7px at 71.8% 20.4%, rgba(255,235,180,0.6), transparent 100%),
+    radial-gradient(0.8px 0.8px at 50.5% 25.1%, rgba(255,250,230,0.65), transparent 100%),
+    radial-gradient(0.6px 0.6px at 9.2% 42.4%, rgba(255,250,230,0.65), transparent 100%),
+    radial-gradient(0.8px 0.8px at 33.4% 13.1%, rgba(255,250,230,0.65), transparent 100%),
+    radial-gradient(0.6px 0.6px at 74.1% 55.2%, rgba(255,250,230,0.65), transparent 100%),
+    radial-gradient(0.7px 0.7px at 11.2% 94.5%, rgba(255,250,230,0.65), transparent 100%),
+    radial-gradient(0.7px 0.7px at 54.6% 83.5%, rgba(255,250,230,0.65), transparent 100%),
+    radial-gradient(0.6px 0.6px at 43.0% 4.2%, rgba(255,250,230,0.65), transparent 100%),
+    radial-gradient(0.6px 0.6px at 89.9% 21.0%, rgba(255,250,230,0.65), transparent 100%),
+    radial-gradient(0.8px 0.8px at 35.4% 56.0%, rgba(255,250,230,0.55), transparent 100%),
+    radial-gradient(0.6px 0.6px at 74.9% 92.6%, rgba(255,250,230,0.65), transparent 100%),
+    radial-gradient(0.8px 0.8px at 97.6% 81.1%, rgba(255,250,230,0.65), transparent 100%),
+    radial-gradient(0.7px 0.7px at 17.9% 92.4%, rgba(255,235,180,0.6), transparent 100%),
+    radial-gradient(0.7px 0.7px at 80.2% 86.4%, rgba(255,235,180,0.6), transparent 100%),
+    radial-gradient(0.6px 0.6px at 15.9% 70.1%, rgba(255,250,230,0.65), transparent 100%),
+    radial-gradient(0.7px 0.7px at 85.9% 22.2%, rgba(255,235,180,0.6), transparent 100%),
+    radial-gradient(0.8px 0.8px at 35.0% 82.1%, rgba(255,250,230,0.65), transparent 100%),
+    radial-gradient(0.6px 0.6px at 2.4% 19.3%, rgba(255,250,230,0.65), transparent 100%),
+    radial-gradient(0.7px 0.7px at 96.7% 27.9%, rgba(255,235,180,0.6), transparent 100%),
+    radial-gradient(0.6px 0.6px at 68.0% 84.4%, rgba(255,250,230,0.65), transparent 100%),
+    radial-gradient(0.6px 0.6px at 11.5% 97.0%, rgba(255,235,180,0.6), transparent 100%),
+    radial-gradient(0.6px 0.6px at 3.8% 59.7%, rgba(255,235,180,0.6), transparent 100%),
+    radial-gradient(0.5px 0.5px at 43.6% 98.4%, rgba(255,250,230,0.55), transparent 100%),
+    radial-gradient(0.6px 0.6px at 19.0% 4.4%, rgba(255,250,230,0.55), transparent 100%) !important;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.1 0 0 0 0 0.09 0 0 0 0 0.08 0 0 0 0.04 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
       opacity: 0.55; mix-blend-mode: multiply;
     }
 
@@ -372,22 +472,18 @@
     }
     .hero-block.hero-main .hero-icon,
     .hero-block.hero-main .hero-icon-fallback {
-      animation:
-        hero-icon-emerge 1.2s cubic-bezier(0.16, 1, 0.3, 1) 0.15s both,
-        hero-icon-float 5s ease-in-out 1.5s infinite;
-      will-change: transform, opacity, filter;
-      transition:
-        transform 0.45s cubic-bezier(0.16, 1, 0.3, 1),
-        box-shadow 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+      /* 常時アニメ (登場・浮遊) は廃止。ホバー時に枠が光る演出のみ。 */
+      animation: none;
+      transition: box-shadow 0.4s ease, border-color 0.4s ease;
     }
-    /* ── ホバー時にふわっと持ち上がる ──
-       transform で持ち上げ、 box-shadow を強めて高さを表現。
-       継続フロートは translate プロパティを使っているので、
-       transform で上書きしても衝突せず併存して動く。 */
+    /* ── ホバー時だけ枠が金色に光る ── */
     .hero-block.hero-main .hero-icon:hover,
     .hero-block.hero-main .hero-icon-fallback:hover {
-      transform: translateY(-14px) scale(1.05);
-      box-shadow: 0 40px 80px -16px rgba(26, 24, 21, 0.32);
+      box-shadow:
+        0 0 0 2px rgba(232, 199, 126, 0.75),
+        0 0 26px rgba(232, 199, 126, 0.55),
+        0 0 60px rgba(232, 199, 126, 0.28),
+        0 12px 40px rgba(0, 0, 0, 0.3);
     }
     @media (prefers-reduced-motion: reduce) {
       .hero-block.hero-main .hero-icon,
@@ -1852,3 +1948,1405 @@
       /* 言語切替も詰める */
       .lang-switcher .lang-toggle { padding: 6px 10px; font-size: 11px; }
     }
+
+/* ────────────────────────────────────────────
+   特定商取引法に基づく表記 (tokutei.html)
+   ──────────────────────────────────────────── */
+.tokutei-section { padding: 24px 0 80px; }
+.tokutei-intro {
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  padding: 24px 28px;
+  margin-bottom: 40px;
+  color: var(--ink-soft);
+  font-size: 14px;
+  line-height: 1.85;
+}
+.tokutei-intro b { color: var(--ink); }
+.tokutei-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.tokutei-table tr { border-bottom: 1px solid var(--rule); }
+.tokutei-table tr:last-child { border-bottom: none; }
+.tokutei-table th,
+.tokutei-table td {
+  text-align: left;
+  vertical-align: top;
+  padding: 18px 24px;
+  font-size: 14px;
+  line-height: 1.8;
+  color: var(--ink-soft);
+}
+.tokutei-table th {
+  width: 28%;
+  background: var(--bg-warm);
+  color: var(--ink);
+  font-weight: 600;
+  border-right: 1px solid var(--rule);
+  font-family: 'Shippori Mincho B1', serif;
+}
+.tokutei-table td b { color: var(--ink); }
+.tokutei-table td .note {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--ink-muted);
+  line-height: 1.7;
+}
+.tokutei-table td a {
+  color: var(--vermillion);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+@media (max-width: 720px) {
+  .tokutei-table,
+  .tokutei-table tbody,
+  .tokutei-table tr,
+  .tokutei-table th,
+  .tokutei-table td { display: block; width: 100%; }
+  .tokutei-table th {
+    border-right: none;
+    border-bottom: 1px solid var(--rule);
+    padding: 14px 20px;
+    font-size: 13px;
+  }
+  .tokutei-table td { padding: 14px 20px 20px; }
+}
+
+/* ════════════════════════════════════════════════════════════
+   COSMIC HERO  —  夜空・宇宙テーマのヒーローセクション
+   ════════════════════════════════════════════════════════════ */
+
+/* ── 夜空ベース背景 ── */
+.hero {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  z-index: 2;
+  padding: 180px 0 140px;
+  margin-top: -80px;
+  margin-bottom: 80px;
+  background:
+    radial-gradient(ellipse at 70% 50%,
+      rgba(184, 150, 104, 0.18) 0%,
+      rgba(74, 47, 90, 0.35) 25%,
+      rgba(20, 22, 48, 0.85) 55%,
+      #0a0c1f 100%),
+    linear-gradient(180deg, #0a0c1f 0%, #14162a 50%, #1a1530 100%);
+  color: #F5EBD8;
+}
+
+/* ── 星空レイヤー (細かい星を多数配置) ── */
+.hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    radial-gradient(1.2px 1.2px at 5% 10%, rgba(255,250,230,0.95), transparent 100%),
+    radial-gradient(1px 1px at 12% 28%, rgba(255,250,230,0.85), transparent 100%),
+    radial-gradient(1.5px 1.5px at 18% 65%, rgba(255,235,180,0.9), transparent 100%),
+    radial-gradient(0.8px 0.8px at 23% 42%, rgba(255,250,230,0.75), transparent 100%),
+    radial-gradient(1.2px 1.2px at 28% 88%, rgba(255,250,230,0.9), transparent 100%),
+    radial-gradient(1px 1px at 33% 18%, rgba(255,235,180,0.8), transparent 100%),
+    radial-gradient(1.5px 1.5px at 38% 52%, rgba(255,250,230,0.95), transparent 100%),
+    radial-gradient(0.9px 0.9px at 42% 78%, rgba(255,250,230,0.7), transparent 100%),
+    radial-gradient(1.2px 1.2px at 8% 75%, rgba(255,235,180,0.85), transparent 100%),
+    radial-gradient(1px 1px at 15% 50%, rgba(255,250,230,0.8), transparent 100%),
+    radial-gradient(1.4px 1.4px at 48% 12%, rgba(255,250,230,0.95), transparent 100%),
+    radial-gradient(0.8px 0.8px at 55% 35%, rgba(255,235,180,0.7), transparent 100%),
+    radial-gradient(1px 1px at 62% 68%, rgba(255,250,230,0.85), transparent 100%),
+    radial-gradient(1.3px 1.3px at 68% 22%, rgba(255,250,230,0.9), transparent 100%),
+    radial-gradient(0.9px 0.9px at 75% 80%, rgba(255,235,180,0.75), transparent 100%),
+    radial-gradient(1.2px 1.2px at 82% 38%, rgba(255,250,230,0.85), transparent 100%),
+    radial-gradient(1.5px 1.5px at 88% 65%, rgba(255,250,230,0.95), transparent 100%),
+    radial-gradient(1px 1px at 93% 20%, rgba(255,235,180,0.8), transparent 100%),
+    radial-gradient(1.3px 1.3px at 97% 85%, rgba(255,250,230,0.9), transparent 100%),
+    radial-gradient(0.8px 0.8px at 3% 32%, rgba(255,250,230,0.7), transparent 100%),
+    radial-gradient(1.1px 1.1px at 7% 92%, rgba(255,235,180,0.85), transparent 100%),
+    radial-gradient(1.4px 1.4px at 45% 95%, rgba(255,250,230,0.9), transparent 100%),
+    radial-gradient(0.7px 0.7px at 52% 5%, rgba(255,250,230,0.7), transparent 100%),
+    radial-gradient(1px 1px at 78% 50%, rgba(255,235,180,0.8), transparent 100%);
+  animation: starfield-drift 90s linear infinite;
+}
+
+/* ── 銀河の雲 + 中央右の金色ネビュラ ── */
+.hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(ellipse 60% 50% at 75% 45%,
+      rgba(232, 199, 126, 0.22) 0%,
+      rgba(184, 150, 104, 0.10) 30%,
+      transparent 65%),
+    radial-gradient(ellipse 45% 35% at 25% 75%,
+      rgba(120, 90, 180, 0.18) 0%,
+      rgba(80, 50, 140, 0.08) 40%,
+      transparent 70%),
+    radial-gradient(ellipse 35% 25% at 15% 25%,
+      rgba(160, 130, 200, 0.12) 0%,
+      transparent 60%);
+  filter: blur(3px);
+  animation: nebula-shift 22s ease-in-out infinite;
+}
+
+@keyframes starfield-drift {
+  from { transform: translateY(0) translateX(0); }
+  to   { transform: translateY(-12px) translateX(8px); }
+}
+@keyframes nebula-shift {
+  0%, 100% { opacity: 0.95; transform: scale(1); }
+  50%      { opacity: 1;    transform: scale(1.05); }
+}
+
+/* ── ヒーロー内のコンテンツは前面 ── */
+.hero > .container { position: relative; z-index: 2; }
+
+/* ── タイトル: 白〜金グラデーション ── */
+.hero .hero-title-main {
+  background: linear-gradient(180deg,
+    #FFF8E7 0%,
+    #F5EBD8 40%,
+    #E8C77E 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  text-shadow: 0 0 40px rgba(232, 199, 126, 0.15);
+}
+.hero .hero-accent-strong {
+  background: linear-gradient(180deg,
+    #FFE8B0 0%,
+    #E8C77E 50%,
+    #B89668 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  font-weight: 700;
+}
+.hero .hero-accent-strong::after {
+  background: rgba(232, 199, 126, 0.18);
+  height: 0.14em;
+  box-shadow: 0 0 16px rgba(232, 199, 126, 0.4);
+}
+
+.hero .hero-title-sub {
+  color: rgba(245, 235, 216, 0.75);
+}
+
+.hero .hero-eyebrow {
+  color: #E8C77E;
+}
+.hero .hero-eyebrow::before {
+  background: #E8C77E;
+}
+.hero .hero-eyebrow::after {
+  content: "✦";
+  margin-left: 14px;
+  color: #E8C77E;
+  font-size: 13px;
+  opacity: 0.85;
+  text-shadow: 0 0 8px rgba(232, 199, 126, 0.6);
+}
+
+.hero .hero-desc {
+  color: rgba(245, 235, 216, 0.72);
+}
+
+/* ── ダウンロードボタン: 夜空に映えるスタイル ── */
+.hero .btn-dl {
+  background: rgba(8, 10, 20, 0.85);
+  color: #F5EBD8;
+  border: 1px solid rgba(232, 199, 126, 0.35);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow:
+    0 4px 20px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  transition: all 0.3s ease;
+}
+.hero .btn-dl:hover {
+  background: rgba(20, 22, 48, 0.95);
+  border-color: rgba(232, 199, 126, 0.7);
+  box-shadow:
+    0 6px 28px rgba(232, 199, 126, 0.25),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  transform: translateY(-2px);
+}
+.hero .btn-dl .dl-sub { color: rgba(245, 235, 216, 0.5); }
+
+/* ── アイコン (右側のフェニックス) のグロウ ── */
+.hero-block.hero-main .hero-right {
+  position: relative;
+  isolation: isolate;
+}
+/* ── アイコンの常時オーラ・回転リングは廃止 (ホバー時の枠光のみ) ── */
+.hero-block.hero-main .hero-right::before,
+.hero-block.hero-main .hero-right::after { content: none; }
+
+/* ── 右下の装飾的な✦ ── */
+.hero .container::after {
+  content: "✦";
+  position: absolute;
+  bottom: -10px;
+  right: 40px;
+  font-size: 24px;
+  color: #E8C77E;
+  opacity: 0.75;
+  text-shadow: 0 0 16px rgba(232, 199, 126, 0.7);
+  animation: sparkle 3s ease-in-out infinite;
+  pointer-events: none;
+  z-index: 3;
+}
+@keyframes sparkle {
+  0%, 100% { opacity: 0.5; transform: scale(0.9); }
+  50%      { opacity: 1;   transform: scale(1.1); }
+}
+
+/* ════════════════════════════════════════════════════════════
+   NAVIGATION  —  ヒーロー上では透明＋白文字、スクロール後は通常
+   ════════════════════════════════════════════════════════════ */
+body[data-page="home"] nav {
+  background: rgba(10, 12, 31, 0.4);
+  backdrop-filter: blur(8px) saturate(120%);
+  -webkit-backdrop-filter: blur(8px) saturate(120%);
+  border-bottom-color: transparent;
+  transition: background 0.4s ease, border-color 0.3s ease;
+}
+body[data-page="home"] nav .brand,
+body[data-page="home"] nav .nav-link {
+  color: #F5EBD8;
+}
+body[data-page="home"] nav .nav-link:hover { color: #E8C77E; }
+body[data-page="home"] nav .nav-link.active { color: #E8C77E; }
+body[data-page="home"] nav .nav-link.active::after { background: #E8C77E; }
+body[data-page="home"] nav .nav-cta {
+  background: #F5EBD8;
+  color: #0a0c1f;
+}
+body[data-page="home"] nav .nav-cta:hover {
+  background: #FFFFFF;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px rgba(232, 199, 126, 0.3);
+}
+body[data-page="home"] nav .lang-toggle {
+  color: #F5EBD8;
+  border-color: rgba(245, 235, 216, 0.3);
+}
+body[data-page="home"] nav .lang-toggle:hover {
+  border-color: #E8C77E;
+}
+
+/* スクロール後は通常モードに戻す */
+body[data-page="home"] nav.scrolled {
+  background: rgba(242, 237, 228, 0.88);
+  border-bottom-color: var(--rule);
+}
+body[data-page="home"] nav.scrolled .brand,
+body[data-page="home"] nav.scrolled .nav-link {
+  color: var(--ink-soft);
+}
+body[data-page="home"] nav.scrolled .brand { color: var(--ink); }
+body[data-page="home"] nav.scrolled .nav-link:hover,
+body[data-page="home"] nav.scrolled .nav-link.active {
+  color: var(--vermillion);
+}
+body[data-page="home"] nav.scrolled .nav-link.active::after {
+  background: var(--vermillion);
+}
+body[data-page="home"] nav.scrolled .nav-cta {
+  background: var(--ink);
+  color: var(--paper);
+}
+body[data-page="home"] nav.scrolled .lang-toggle {
+  color: var(--ink-soft);
+  border-color: var(--rule);
+}
+
+/* ════════════════════════════════════════════════════════════
+   SUB-PAGE HERO  —  各サブページにも軽い宇宙テイスト
+   ════════════════════════════════════════════════════════════ */
+.page-hero {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+.page-hero::before {
+  content: "";
+  position: absolute;
+  top: -20%; left: 50%;
+  transform: translateX(-50%);
+  width: 60%; height: 200%;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(ellipse at center,
+      rgba(184, 150, 104, 0.2) 0%,
+      rgba(200, 75, 49, 0.06) 30%,
+      transparent 60%);
+  filter: blur(1px);
+}
+.page-hero::after {
+  content: "✦";
+  position: absolute;
+  top: 50%; right: 8%;
+  transform: translateY(-50%);
+  font-size: 18px;
+  color: var(--gold);
+  opacity: 0.55;
+  pointer-events: none;
+}
+.page-hero > .container { position: relative; z-index: 2; }
+
+/* ── eyebrow 装飾 (✦アクセント) ── */
+.fd-eyebrow { position: relative; }
+.fd-eyebrow::after {
+  content: " ✦";
+  color: var(--gold);
+  opacity: 0.6;
+  margin-left: 6px;
+  font-size: 0.85em;
+}
+
+/* ════════════════════════════════════════════════════════════
+   MOTION / RESPONSIVE
+   ════════════════════════════════════════════════════════════ */
+@media (prefers-reduced-motion: reduce) {
+  .hero::before,
+  .hero::after,
+  .hero-block.hero-main .hero-right::before,
+  .hero-block.hero-main .hero-right::after,
+  .hero .container::after { animation: none; }
+}
+
+@media (max-width: 720px) {
+  .hero { padding: 140px 0 100px; }
+  .hero-block.hero-main .hero-right::after { width: 100%; height: 100%; }
+  .hero .container::after { right: 20px; bottom: -20px; font-size: 18px; }
+}
+
+/* ════════════════════════════════════════════════════════════
+   GLOBAL COSMIC THEME  —  全ページを宇宙背景に統一
+   ════════════════════════════════════════════════════════════ */
+
+/* ── body: 全画面の夜空背景 (固定) ── */
+body {
+  background:
+    radial-gradient(ellipse at 75% 30%, rgba(184,150,104,0.12) 0%, rgba(74,47,90,0.25) 30%, transparent 65%),
+    radial-gradient(ellipse at 15% 70%, rgba(120,90,180,0.18) 0%, rgba(80,50,140,0.08) 40%, transparent 70%),
+    linear-gradient(180deg, #0a0c1f 0%, #14162a 35%, #1a1530 70%, #0f1228 100%) !important;
+  background-attachment: fixed !important;
+  color: #E8DFCB !important;
+  min-height: 100vh;
+}
+
+/* ── 既存のノイズオーバーレイを「星空」に置き換え ── */
+body::before {
+  background-image:
+    radial-gradient(1.5px 1.5px at 3% 8%, rgba(255,250,230,0.95), transparent 100%),
+    radial-gradient(1px 1px at 7% 22%, rgba(255,235,180,0.85), transparent 100%),
+    radial-gradient(2px 2px at 12% 45%, rgba(255,250,230,0.9), transparent 100%),
+    radial-gradient(0.8px 0.8px at 18% 12%, rgba(255,250,230,0.7), transparent 100%),
+    radial-gradient(1.3px 1.3px at 22% 68%, rgba(255,235,180,0.85), transparent 100%),
+    radial-gradient(1px 1px at 28% 88%, rgba(255,250,230,0.8), transparent 100%),
+    radial-gradient(1.8px 1.8px at 33% 28%, rgba(255,235,180,0.95), transparent 100%),
+    radial-gradient(0.9px 0.9px at 38% 55%, rgba(255,250,230,0.75), transparent 100%),
+    radial-gradient(1.2px 1.2px at 42% 92%, rgba(255,235,180,0.8), transparent 100%),
+    radial-gradient(1.5px 1.5px at 48% 18%, rgba(255,250,230,0.95), transparent 100%),
+    radial-gradient(0.7px 0.7px at 52% 75%, rgba(255,235,180,0.7), transparent 100%),
+    radial-gradient(1.4px 1.4px at 58% 42%, rgba(255,250,230,0.9), transparent 100%),
+    radial-gradient(1px 1px at 62% 8%, rgba(255,235,180,0.8), transparent 100%),
+    radial-gradient(1.6px 1.6px at 68% 65%, rgba(255,250,230,0.95), transparent 100%),
+    radial-gradient(0.8px 0.8px at 72% 32%, rgba(255,235,180,0.75), transparent 100%),
+    radial-gradient(1.3px 1.3px at 78% 85%, rgba(255,250,230,0.85), transparent 100%),
+    radial-gradient(1px 1px at 82% 22%, rgba(255,235,180,0.8), transparent 100%),
+    radial-gradient(1.5px 1.5px at 87% 58%, rgba(255,250,230,0.9), transparent 100%),
+    radial-gradient(0.9px 0.9px at 92% 38%, rgba(255,235,180,0.75), transparent 100%),
+    radial-gradient(1.2px 1.2px at 96% 78%, rgba(255,250,230,0.85), transparent 100%),
+    radial-gradient(1.7px 1.7px at 5% 95%, rgba(255,235,180,0.95), transparent 100%),
+    radial-gradient(0.8px 0.8px at 45% 48%, rgba(255,250,230,0.7), transparent 100%),
+    radial-gradient(1.1px 1.1px at 88% 8%, rgba(255,235,180,0.8), transparent 100%),
+    radial-gradient(1.3px 1.3px at 25% 5%, rgba(255,250,230,0.85), transparent 100%) !important;
+  opacity: 1 !important;
+  mix-blend-mode: normal !important;
+  z-index: 1 !important;
+  animation: starfield-twinkle 8s ease-in-out infinite;
+}
+
+@keyframes starfield-twinkle {
+  0%, 100% { opacity: 0.9; }
+  50%      { opacity: 1; }
+}
+
+/* ── 既存セクションを透明 or 半透明暗色に ── */
+.features-section,
+.pricing,
+.faq-section,
+.feature-detail-section,
+.tokutei-section,
+.form-section,
+.page-main,
+.pages-nav,
+.shortcut-section,
+.cta-section,
+.pricing-detail,
+.media-section,
+.use-cases,
+.intro-section,
+section {
+  background: transparent !important;
+  position: relative;
+  z-index: 2;
+}
+
+/* ── ページヒーローもダークに ── */
+.page-hero {
+  background: transparent !important;
+}
+.page-hero-title { color: #FAF6EE !important; }
+.page-hero-sub { color: rgba(232,199,126,0.85) !important; }
+
+/* ── 一般的なテキストを明るく ── */
+h1, h2, h3, h4, h5, h6,
+.section-title, .block-title, .fd-title, .panel-title, .result-title { color: #FAF6EE !important; }
+p, li, td, label { color: rgba(232,223,203,0.88) !important; }
+.section-label, .fd-eyebrow, .hl-num, .info-icon { color: #E8C77E !important; }
+.section-header p, .fd-desc { color: rgba(232,223,203,0.78) !important; }
+small, .price-annual-note, .note, .field-group small,
+.shortcut-note, .hero-desc small, .footer-copy { color: rgba(232,223,203,0.65) !important; }
+
+/* ── home の Free / Max プランカードは明るい紙背景。
+      宇宙テーマの明るい文字色だとタイトル・機能リストが背景に溶けて読めなくなる為、
+      濃いインク色に戻す (Pro は黒背景なので対象外) ── */
+.price-card.free .price-name,
+.price-card.max .price-name { color: var(--ink) !important; }
+.price-card.free .price-features li,
+.price-card.max .price-features li { color: var(--ink-soft) !important; }
+.price-card.free .price-sub,
+.price-card.max .price-sub { color: var(--ink-muted) !important; }
+.price-card.free .price-amount .num,
+.price-card.max .price-amount .num,
+.price-card.free .price-amount .currency,
+.price-card.max .price-amount .currency,
+.price-card.free .price-amount .period,
+.price-card.max .price-amount .period { color: var(--ink) !important; }
+.price-card.free .price-cta,
+.price-card.max .price-cta { color: var(--ink) !important; }
+.price-card.free .price-cta:hover,
+.price-card.max .price-cta:hover { color: var(--paper) !important; }
+
+/* ── プラン比較表 (feature-matrix) は明るい紙背景。 行ラベルと値が宇宙テーマの
+      明るい文字色で同化して読めない為、 濃いインク色に戻す ── */
+.feature-matrix tbody td { color: var(--ink-soft) !important; }
+.feature-matrix tbody td:first-child { color: var(--ink) !important; }
+.matrix-meta { color: var(--ink-soft) !important; }
+.matrix-no { color: var(--ink-muted) !important; }
+
+/* ── ショートカット注記 (shortcut-note) も明るいベージュ背景。 本文が薄クリームで
+      同化する為、 濃い文字に戻す ── */
+.shortcut-note { color: var(--ink-soft) !important; }
+.shortcut-note b { color: var(--ink) !important; }
+.shortcut-note a { color: var(--vermillion) !important; }
+
+/* ── 特商法ページ (tokutei) の強調 <b> が黒 (var(--ink)) のまま宇宙ダーク背景に
+      乗って読めない為、 明るい色に戻す ── */
+.tokutei-intro b { color: #FAF6EE !important; }
+.tokutei-table td b { color: #FAF6EE !important; }
+
+/* ── ショートカット注記の本文は <p> で囲まれており、 宇宙テーマの p ルールで
+      薄クリームになる為、 <p> を直接濃い色に戻す ── */
+.shortcut-note p { color: var(--ink-soft) !important; }
+
+/* ── 「対応 AI モデル」「対応言語」等のラベルが暗背景に沈む為、 明るい金に ── */
+.stat-list-label { color: #E8C77E !important; }
+
+/* ── 訪問者カウンター (明るい pill) の文字が薄くて読めない為、 濃いインク色に
+      (詳細度を上げて宇宙テーマの金色指定に勝たせる) ── */
+.footer-copy .visitor-counter { color: var(--ink-muted) !important; }
+.footer-copy .visitor-counter .vc-num { color: var(--ink) !important; }
+
+/* リンクのデフォルト色 */
+a:not(.brand):not(.btn-primary):not(.btn-ghost):not(.btn-dl):not(.nav-cta):not(.nav-link):not(.pages-nav-card) {
+  color: #E8C77E;
+}
+
+/* ── 各種カード/ボックスをガラス風ダークに ── */
+.feature-card,
+.pricing-card,
+.faq-item,
+.tokutei-table,
+.tokutei-intro,
+.highlight-card,
+.media-card,
+.use-case-card,
+.shortcut-table,
+.pricing-info-banner,
+.form-panel,
+.result-panel,
+.fd-media,
+.pages-nav-card {
+  background: rgba(20, 22, 48, 0.55) !important;
+  border: 1px solid rgba(232, 199, 126, 0.18) !important;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: #E8DFCB !important;
+  box-shadow:
+    0 4px 30px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(232, 199, 126, 0.08) !important;
+}
+
+/* テーブルのセル背景は透明、ヘッダのみアクセント */
+.tokutei-table tr,
+.tokutei-table th,
+.tokutei-table td,
+.shortcut-table tr,
+.shortcut-table th,
+.shortcut-table td {
+  background: transparent !important;
+  border-color: rgba(232, 199, 126, 0.15) !important;
+}
+.tokutei-table th,
+.shortcut-table thead th {
+  background: rgba(232, 199, 126, 0.08) !important;
+  color: #FAF6EE !important;
+  border-right-color: rgba(232, 199, 126, 0.15) !important;
+}
+.shortcut-table tbody tr:hover {
+  background: rgba(232, 199, 126, 0.05) !important;
+}
+
+/* ── 朱色のRECOMMENDEDバッジは維持、それ以外のフィーチャー部分を調整 ── */
+.pricing-card.recommended {
+  background: linear-gradient(180deg, rgba(40, 25, 60, 0.85) 0%, rgba(20, 15, 40, 0.9) 100%) !important;
+  border-color: rgba(200, 75, 49, 0.4) !important;
+  box-shadow:
+    0 8px 50px rgba(200, 75, 49, 0.25),
+    0 0 60px rgba(232, 199, 126, 0.15),
+    inset 0 1px 0 rgba(232, 199, 126, 0.15) !important;
+}
+.pricing-card .price-amount,
+.pricing-card .num { color: #FAF6EE !important; }
+.pricing-card .currency,
+.pricing-card .period { color: #E8C77E !important; }
+.pricing-card .plan-name { color: #FAF6EE !important; }
+.pricing-card .plan-tag,
+.pricing-card .price-annual-note { color: rgba(232,199,126,0.85) !important; }
+.pricing-card ul li,
+.pricing-card .feature-list li { color: rgba(232,223,203,0.85) !important; }
+.pricing-card ul li::before,
+.pricing-card .feature-list li::before { color: #E8C77E !important; }
+
+/* ── 料金トグルボタン (月額/年額) ── */
+.billing-toggle, .billing-toggle-wrap {
+  background: rgba(20, 22, 48, 0.6) !important;
+  border-color: rgba(232,199,126,0.25) !important;
+}
+.billing-option {
+  color: rgba(232,223,203,0.7) !important;
+}
+.billing-option.active {
+  background: #FAF6EE !important;
+  color: #0a0c1f !important;
+}
+
+/* ── ボタン類 ── */
+.btn-primary {
+  background: linear-gradient(135deg, #E8C77E 0%, #B89668 100%) !important;
+  color: #0a0c1f !important;
+  border: none !important;
+  box-shadow: 0 4px 20px rgba(232, 199, 126, 0.3) !important;
+}
+.btn-primary:hover {
+  background: linear-gradient(135deg, #FFE8B0 0%, #C8A678 100%) !important;
+  box-shadow: 0 6px 28px rgba(232, 199, 126, 0.5) !important;
+  transform: translateY(-2px);
+}
+.btn-ghost {
+  background: transparent !important;
+  border: 1px solid rgba(232, 199, 126, 0.5) !important;
+  color: #E8C77E !important;
+}
+.btn-ghost:hover {
+  border-color: #E8C77E !important;
+  background: rgba(232, 199, 126, 0.08) !important;
+}
+
+/* ── フォーム要素 ── */
+input[type="text"],
+input[type="email"],
+input[type="tel"],
+input[type="number"],
+select,
+textarea {
+  background: rgba(10, 12, 31, 0.6) !important;
+  border: 1px solid rgba(232, 199, 126, 0.25) !important;
+  color: #FAF6EE !important;
+}
+input:focus, select:focus, textarea:focus {
+  border-color: #E8C77E !important;
+  outline: none !important;
+  box-shadow: 0 0 0 3px rgba(232, 199, 126, 0.15) !important;
+}
+input::placeholder, textarea::placeholder {
+  color: rgba(232,223,203,0.4) !important;
+}
+.error-msg { color: #F08868 !important; }
+input.is-error, select.is-error, textarea.is-error {
+  border-color: #F08868 !important;
+}
+
+/* ── pages-nav-card (前へ/次へ ボタン) ── */
+.pages-nav-card {
+  color: #E8DFCB !important;
+}
+.pages-nav-card:hover {
+  border-color: #E8C77E !important;
+  background: rgba(232, 199, 126, 0.08) !important;
+  transform: translateY(-3px);
+}
+.pn-label { color: #E8C77E !important; }
+.pn-title { color: #FAF6EE !important; }
+
+/* ── フッター ── */
+footer {
+  background: rgba(8, 10, 25, 0.85) !important;
+  border-top: 1px solid rgba(232, 199, 126, 0.18) !important;
+  color: rgba(232,223,203,0.7) !important;
+  backdrop-filter: blur(10px);
+  position: relative;
+  z-index: 2;
+}
+.footer-brand { color: #FAF6EE !important; }
+.footer-nav a {
+  color: rgba(232,223,203,0.75) !important;
+}
+.footer-nav a:hover { color: #E8C77E !important; }
+.footer-copy { color: rgba(232,223,203,0.5) !important; }
+.visitor-counter { color: rgba(232,199,126,0.7) !important; }
+
+/* ── ナビバー: 全ページで宇宙テーマに統一 ── */
+nav {
+  background: rgba(10, 12, 31, 0.55) !important;
+  backdrop-filter: blur(14px) saturate(140%) !important;
+  -webkit-backdrop-filter: blur(14px) saturate(140%) !important;
+  border-bottom-color: transparent !important;
+}
+nav .brand,
+nav .nav-link { color: #F5EBD8 !important; }
+nav .nav-link:hover,
+nav .nav-link.active { color: #E8C77E !important; }
+nav .nav-link.active::after { background: #E8C77E !important; }
+nav .nav-cta {
+  background: #F5EBD8 !important;
+  color: #0a0c1f !important;
+}
+nav .nav-cta:hover {
+  background: #FFFFFF !important;
+  box-shadow: 0 4px 16px rgba(232, 199, 126, 0.4) !important;
+  transform: translateY(-1px);
+}
+nav .lang-toggle {
+  color: #F5EBD8 !important;
+  border-color: rgba(245, 235, 216, 0.3) !important;
+  background: transparent !important;
+}
+nav .lang-toggle:hover { border-color: #E8C77E !important; }
+nav .lang-menu {
+  background: rgba(20, 22, 48, 0.95) !important;
+  border: 1px solid rgba(232, 199, 126, 0.25) !important;
+  backdrop-filter: blur(14px);
+}
+nav .lang-menu a {
+  color: rgba(232,223,203,0.85) !important;
+}
+nav .lang-menu a:hover,
+nav .lang-menu a.current { color: #E8C77E !important; background: rgba(232,199,126,0.08) !important; }
+nav .lang-code { color: rgba(232,199,126,0.6) !important; }
+nav.scrolled { border-bottom-color: rgba(232,199,126,0.15) !important; }
+
+/* ── ブランドマーク画像のスタイル ── */
+.brand-mark {
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 0 12px rgba(232, 199, 126, 0.4);
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+.brand-mark img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.brand:hover .brand-mark {
+  transform: rotate(-5deg) scale(1.05);
+  box-shadow: 0 0 20px rgba(232, 199, 126, 0.7);
+}
+.footer-brand .brand-mark {
+  box-shadow: 0 0 8px rgba(232, 199, 126, 0.3);
+}
+
+
+/* ════════════════════════════════════════════════════════════
+   COSMIC DECORATIONS Ver.2  —  リアル惑星・銀河・流れ星
+   ════════════════════════════════════════════════════════════ */
+.cosmic-deco {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  overflow: hidden;
+}
+
+/* ── 全ページ共通の固定宇宙背景レイヤー (home 以外に app.js が挿入) ──
+   惑星・星雲・星座・流れ星を画面に固定で敷く。 中の装飾は cosmic-deco と
+   同じクラス (.planet / .nebula / .constellation / .shooting-star) を流用するため
+   配置・アニメ・モバイル調整・reduced-motion 対応はすべて既存定義がそのまま効く。 */
+.cosmic-bg {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  overflow: hidden;
+}
+
+/* ── 銀河 ── */
+.galaxy {
+  position: absolute;
+  filter: drop-shadow(0 0 40px rgba(184, 150, 200, 0.25));
+}
+.galaxy-1 {
+  width: 720px; height: 720px;
+  top: -180px; right: -200px;
+  opacity: 0.95;
+  animation: galaxy-rotate 120s linear infinite;
+  filter: drop-shadow(0 0 60px rgba(220, 180, 200, 0.3));
+}
+
+@keyframes galaxy-rotate {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* ── 3つのAIを象徴する回転オービット (AIセクション付近・右側) ── */
+.ai-orbit {
+  position: absolute;
+  pointer-events: none;
+  filter: drop-shadow(0 0 28px rgba(232, 199, 126, 0.3));
+}
+.ai-orbit-1 {
+  width: 380px; height: 380px;
+  top: 58%; right: -80px;
+  opacity: 0.9;
+  animation: orbit-spin 64s linear infinite;
+}
+@keyframes orbit-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* ── 星雲 ── */
+.nebula {
+  position: absolute;
+  pointer-events: none;
+}
+.nebula-1 {
+  width: 600px; height: 600px;
+  bottom: -200px; left: -180px;
+  opacity: 0.75;
+  animation: nebula-drift 24s ease-in-out infinite;
+}
+
+@keyframes nebula-drift {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50%      { transform: translate(20px, -10px) scale(1.05); }
+}
+
+/* ── 惑星 (リアル版) ── */
+.planet {
+  position: absolute;
+  pointer-events: none;
+}
+.planet-saturn {
+  width: 220px; height: 220px;
+  bottom: 8%; left: 2%;
+  filter: drop-shadow(0 0 35px rgba(232, 199, 126, 0.4));
+  animation: planet-float-1 14s ease-in-out infinite;
+}
+.planet-mars {
+  width: 70px; height: 70px;
+  bottom: 22%; right: 3%;
+  filter: drop-shadow(0 0 20px rgba(216, 117, 69, 0.4));
+  animation: planet-float-1 10s ease-in-out infinite reverse;
+}
+
+@keyframes planet-float-1 {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  50%      { transform: translateY(-16px) rotate(1.5deg); }
+}
+@keyframes planet-float-2 {
+  0%, 100% { transform: translateY(0) translateX(0); }
+  50%      { transform: translateY(-12px) translateX(10px); }
+}
+@keyframes planet-float-3 {
+  0%, 100% { transform: translateY(0) translateX(0) rotate(0deg); }
+  50%      { transform: translateY(14px) translateX(-8px) rotate(-2deg); }
+}
+
+/* ── 星座 ── */
+.constellation {
+  position: absolute;
+  opacity: 0.65;
+}
+.constellation-1 {
+  width: 260px; height: 150px;
+  top: 6%; right: 4%;
+  animation: constellation-pulse 5s ease-in-out infinite;
+}
+.constellation-2 {
+  width: 200px; height: 120px;
+  bottom: 18%; right: 28%;
+  animation: constellation-pulse 6s ease-in-out infinite 1.5s;
+}
+@keyframes constellation-pulse {
+  0%, 100% { opacity: 0.45; }
+  50%      { opacity: 0.85; }
+}
+
+/* ── 流れ星 ── */
+.shooting-star {
+  position: absolute;
+  width: 3px; height: 3px;
+  background: #FFFFFF;
+  border-radius: 50%;
+  box-shadow: 0 0 8px 2px rgba(255, 255, 255, 0.9);
+}
+.shooting-star::after {
+  content: "";
+  position: absolute;
+  top: 0; left: 0;
+  width: 140px; height: 1.5px;
+  background: linear-gradient(90deg,
+    rgba(255, 255, 255, 1) 0%,
+    rgba(255, 232, 176, 0.85) 35%,
+    rgba(232, 199, 126, 0.4) 70%,
+    transparent 100%);
+  transform-origin: left center;
+  transform: rotate(225deg);
+  filter: drop-shadow(0 0 4px rgba(255, 232, 176, 0.6));
+}
+.shooting-star-1 {
+  top: 12%; right: 18%;
+  animation: shoot-1 8s ease-out infinite;
+}
+.shooting-star-2 {
+  top: 38%; right: 6%;
+  animation: shoot-2 11s ease-out infinite 3s;
+}
+.shooting-star-3 {
+  top: 60%; right: 32%;
+  animation: shoot-3 13s ease-out infinite 6s;
+}
+@keyframes shoot-1 {
+  0%   { transform: translate(0, 0); opacity: 0; }
+  4%   { opacity: 1; }
+  18%  { transform: translate(-260px, 260px); opacity: 0; }
+  100% { transform: translate(-260px, 260px); opacity: 0; }
+}
+@keyframes shoot-2 {
+  0%   { transform: translate(0, 0); opacity: 0; }
+  4%   { opacity: 1; }
+  16%  { transform: translate(-320px, 320px); opacity: 0; }
+  100% { transform: translate(-320px, 320px); opacity: 0; }
+}
+@keyframes shoot-3 {
+  0%   { transform: translate(0, 0); opacity: 0; }
+  4%   { opacity: 1; }
+  20%  { transform: translate(-240px, 240px); opacity: 0; }
+  100% { transform: translate(-240px, 240px); opacity: 0; }
+}
+
+/* ════════════════════════════════════════════════════════════
+   GOLDEN GLOW  —  ボタン・画像周りのさりげない金色の光
+   ════════════════════════════════════════════════════════════ */
+
+/* メインアイコン (hero-icon): 通常時はグロウ無し、ホバー時に枠が光る */
+.hero-icon {
+  position: relative;
+  border-radius: 24px;
+  box-shadow: 0 12px 50px rgba(0, 0, 0, 0.45);
+  transition: box-shadow 0.5s ease, border-color 0.5s ease;
+}
+.hero-icon:hover {
+  box-shadow:
+    0 0 0 2px rgba(232, 199, 126, 0.75),
+    0 0 26px rgba(232, 199, 126, 0.55),
+    0 0 60px rgba(232, 199, 126, 0.28),
+    0 12px 40px rgba(0, 0, 0, 0.3);
+}
+
+/* ダウンロードボタンに金色グロウ */
+.hero .btn-dl {
+  box-shadow:
+    0 4px 24px rgba(0, 0, 0, 0.5),
+    0 0 30px rgba(232, 199, 126, 0.08),
+    inset 0 1px 0 rgba(255, 232, 176, 0.08) !important;
+}
+.hero .btn-dl:hover {
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.55),
+    0 0 40px rgba(232, 199, 126, 0.35),
+    0 0 60px rgba(232, 199, 126, 0.15),
+    inset 0 1px 0 rgba(255, 232, 176, 0.15) !important;
+}
+
+/* btn-primary (主要ボタン) にもさりげなく金色のオーラ */
+.btn-primary {
+  box-shadow:
+    0 4px 20px rgba(232, 199, 126, 0.3),
+    0 0 30px rgba(232, 199, 126, 0.1) !important;
+}
+.btn-primary:hover {
+  box-shadow:
+    0 6px 28px rgba(232, 199, 126, 0.5),
+    0 0 50px rgba(232, 199, 126, 0.25) !important;
+}
+
+/* feature/pricing カードに微妙な金色エッジグロウ */
+.feature-card,
+.pricing-card,
+.faq-item,
+.highlight-card,
+.media-card,
+.pages-nav-card {
+  transition: box-shadow 0.4s ease, transform 0.4s ease, border-color 0.4s ease;
+}
+.feature-card:hover,
+.pricing-card:hover,
+.highlight-card:hover,
+.media-card:hover,
+.pages-nav-card:hover {
+  border-color: rgba(232, 199, 126, 0.45) !important;
+  box-shadow:
+    0 8px 40px rgba(0, 0, 0, 0.4),
+    0 0 30px rgba(232, 199, 126, 0.15),
+    inset 0 1px 0 rgba(232, 199, 126, 0.15) !important;
+  transform: translateY(-3px);
+}
+
+/* feature-detail-block の画像周りにも金色グロウ */
+.fd-media {
+  position: relative;
+  overflow: hidden;
+  box-shadow:
+    0 8px 40px rgba(0, 0, 0, 0.5),
+    0 0 50px rgba(232, 199, 126, 0.1),
+    inset 0 1px 0 rgba(232, 199, 126, 0.12) !important;
+}
+.fd-media::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(135deg,
+    rgba(232, 199, 126, 0.45) 0%,
+    rgba(232, 199, 126, 0.1) 40%,
+    rgba(232, 199, 126, 0.05) 60%,
+    rgba(232, 199, 126, 0.35) 100%);
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  pointer-events: none;
+}
+
+/* ナビバーのCTAボタンに微妙な金色 */
+nav .nav-cta {
+  box-shadow:
+    0 4px 16px rgba(0, 0, 0, 0.3),
+    0 0 20px rgba(232, 199, 126, 0.15) !important;
+}
+nav .nav-cta:hover {
+  box-shadow:
+    0 6px 24px rgba(0, 0, 0, 0.35),
+    0 0 32px rgba(232, 199, 126, 0.4) !important;
+}
+
+/* ナビバーのブランドマーク (画像) のグロウ強化 */
+nav .brand-mark {
+  box-shadow:
+    0 0 16px rgba(232, 199, 126, 0.45),
+    0 0 28px rgba(232, 199, 126, 0.2) !important;
+}
+
+/* tokutei-table にも微妙な金色枠 */
+.tokutei-table {
+  box-shadow:
+    0 8px 40px rgba(0, 0, 0, 0.4),
+    0 0 40px rgba(232, 199, 126, 0.08),
+    inset 0 1px 0 rgba(232, 199, 126, 0.1) !important;
+}
+
+/* ── レスポンシブ調整 ── */
+@media (max-width: 720px) {
+  .planet-saturn { width: 140px; height: 140px; bottom: 5%; left: -20px; }
+  .planet-mars { width: 50px; height: 50px; bottom: 18%; right: 4%; }
+  .galaxy-1 {
+  width: 720px; height: 720px;
+  top: -180px; right: -200px;
+  opacity: 0.95;
+  animation: galaxy-rotate 120s linear infinite;
+  filter: drop-shadow(0 0 60px rgba(220, 180, 200, 0.3));
+}
+  .nebula-1 { width: 400px; height: 400px; }
+  .constellation-1 { width: 180px; height: 110px; top: 4%; right: 2%; }
+  .constellation-2 { display: none; }
+  .ai-orbit-1 { width: 250px; height: 250px; top: 60%; right: -90px; opacity: 0.8; }
+  .shooting-star::after { width: 80px; }
+  .hero-icon {
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .planet, .constellation, .shooting-star,
+  .galaxy, .nebula, .ai-orbit, body::before { animation: none !important; }
+}
+
+
+/* ════════════════════════════════════════════════════════════
+   ADDITIONAL FIXES  —  細かい星空 + 料金カード + eyebrow拡大
+   ════════════════════════════════════════════════════════════ */
+
+/* ── 銀河風の極細星空 (body::after で別レイヤー、200個) ── */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  background-image:
+    radial-gradient(0.44px 0.44px at 28.0% 50.2%, rgba(255,250,230,0.51), transparent 100%),
+    radial-gradient(0.43px 0.43px at 58.7% 48.7%, rgba(255,250,230,0.42), transparent 100%),
+    radial-gradient(0.49px 0.49px at 11.0% 25.5%, rgba(255,250,230,0.36), transparent 100%),
+    radial-gradient(0.44px 0.44px at 35.2% 42.2%, rgba(255,250,230,0.5), transparent 100%),
+    radial-gradient(0.44px 0.44px at 85.5% 93.7%, rgba(255,250,230,0.42), transparent 100%),
+    radial-gradient(0.42px 0.42px at 87.5% 85.6%, rgba(255,250,230,0.63), transparent 100%),
+    radial-gradient(0.36px 0.36px at 88.4% 95.1%, rgba(255,250,230,0.43), transparent 100%),
+    radial-gradient(0.37px 0.37px at 80.3% 27.1%, rgba(255,250,230,0.37), transparent 100%),
+    radial-gradient(0.34px 0.34px at 76.2% 23.7%, rgba(255,250,230,0.56), transparent 100%),
+    radial-gradient(0.32px 0.32px at 8.4% 78.4%, rgba(255,250,230,0.69), transparent 100%),
+    radial-gradient(0.42px 0.42px at 13.2% 14.3%, rgba(255,250,230,0.62), transparent 100%),
+    radial-gradient(0.36px 0.36px at 48.7% 70.9%, rgba(255,250,230,0.65), transparent 100%),
+    radial-gradient(0.5px 0.5px at 20.3% 41.0%, rgba(255,250,230,0.49), transparent 100%),
+    radial-gradient(0.32px 0.32px at 5.9% 71.9%, rgba(255,250,230,0.49), transparent 100%),
+    radial-gradient(0.33px 0.33px at 34.3% 48.9%, rgba(255,250,230,0.67), transparent 100%),
+    radial-gradient(0.38px 0.38px at 81.3% 54.8%, rgba(255,250,230,0.49), transparent 100%),
+    radial-gradient(0.42px 0.42px at 25.9% 40.8%, rgba(255,250,230,0.61), transparent 100%),
+    radial-gradient(0.52px 0.52px at 9.5% 93.3%, rgba(255,250,230,0.54), transparent 100%),
+    radial-gradient(0.35px 0.35px at 54.8% 9.0%, rgba(255,250,230,0.37), transparent 100%),
+    radial-gradient(0.35px 0.35px at 10.9% 72.3%, rgba(255,250,230,0.59), transparent 100%),
+    radial-gradient(0.47px 0.47px at 77.8% 41.5%, rgba(255,250,230,0.56), transparent 100%),
+    radial-gradient(0.46px 0.46px at 61.9% 59.1%, rgba(255,250,230,0.4), transparent 100%),
+    radial-gradient(0.33px 0.33px at 99.5% 20.6%, rgba(255,250,230,0.43), transparent 100%),
+    radial-gradient(0.55px 0.55px at 81.8% 97.8%, rgba(255,250,230,0.4), transparent 100%),
+    radial-gradient(0.33px 0.33px at 38.4% 75.3%, rgba(255,250,230,0.49), transparent 100%),
+    radial-gradient(0.37px 0.37px at 56.6% 27.3%, rgba(255,250,230,0.52), transparent 100%),
+    radial-gradient(0.42px 0.42px at 13.4% 89.4%, rgba(255,250,230,0.41), transparent 100%),
+    radial-gradient(0.46px 0.46px at 49.6% 36.4%, rgba(255,250,230,0.37), transparent 100%),
+    radial-gradient(0.45px 0.45px at 36.7% 7.0%, rgba(255,250,230,0.52), transparent 100%),
+    radial-gradient(0.43px 0.43px at 79.3% 63.2%, rgba(255,250,230,0.57), transparent 100%),
+    radial-gradient(0.4px 0.4px at 31.9% 52.7%, rgba(255,250,230,0.51), transparent 100%),
+    radial-gradient(0.35px 0.35px at 41.3% 0.1%, rgba(255,250,230,0.55), transparent 100%),
+    radial-gradient(0.5px 0.5px at 12.1% 37.1%, rgba(255,250,230,0.52), transparent 100%),
+    radial-gradient(0.3px 0.3px at 77.4% 32.8%, rgba(255,250,230,0.51), transparent 100%),
+    radial-gradient(0.39px 0.39px at 75.8% 48.3%, rgba(255,250,230,0.65), transparent 100%),
+    radial-gradient(0.48px 0.48px at 36.7% 93.3%, rgba(255,250,230,0.42), transparent 100%),
+    radial-gradient(0.45px 0.45px at 63.7% 64.9%, rgba(255,250,230,0.59), transparent 100%),
+    radial-gradient(0.45px 0.45px at 39.4% 74.5%, rgba(255,250,230,0.62), transparent 100%),
+    radial-gradient(0.43px 0.43px at 76.1% 60.4%, rgba(255,250,230,0.43), transparent 100%),
+    radial-gradient(0.42px 0.42px at 9.4% 48.9%, rgba(255,250,230,0.48), transparent 100%),
+    radial-gradient(0.52px 0.52px at 49.7% 86.1%, rgba(255,250,230,0.66), transparent 100%),
+    radial-gradient(0.51px 0.51px at 13.4% 21.2%, rgba(255,250,230,0.64), transparent 100%),
+    radial-gradient(0.31px 0.31px at 20.8% 77.9%, rgba(255,250,230,0.49), transparent 100%),
+    radial-gradient(0.51px 0.51px at 62.9% 39.6%, rgba(255,250,230,0.43), transparent 100%),
+    radial-gradient(0.37px 0.37px at 15.2% 43.7%, rgba(255,250,230,0.61), transparent 100%),
+    radial-gradient(0.34px 0.34px at 68.7% 11.2%, rgba(255,250,230,0.37), transparent 100%),
+    radial-gradient(0.34px 0.34px at 95.8% 24.3%, rgba(255,250,230,0.45), transparent 100%),
+    radial-gradient(0.48px 0.48px at 43.3% 15.9%, rgba(255,250,230,0.53), transparent 100%),
+    radial-gradient(0.44px 0.44px at 34.3% 96.4%, rgba(255,250,230,0.6), transparent 100%),
+    radial-gradient(0.53px 0.53px at 32.4% 41.1%, rgba(255,250,230,0.41), transparent 100%),
+    radial-gradient(0.3px 0.3px at 96.2% 28.6%, rgba(255,250,230,0.49), transparent 100%),
+    radial-gradient(0.42px 0.42px at 83.6% 60.5%, rgba(255,250,230,0.36), transparent 100%),
+    radial-gradient(0.51px 0.51px at 53.1% 99.9%, rgba(255,250,230,0.64), transparent 100%),
+    radial-gradient(0.38px 0.38px at 5.4% 17.1%, rgba(255,250,230,0.62), transparent 100%),
+    radial-gradient(0.32px 0.32px at 56.9% 30.9%, rgba(255,250,230,0.46), transparent 100%),
+    radial-gradient(0.53px 0.53px at 64.8% 61.3%, rgba(255,250,230,0.56), transparent 100%),
+    radial-gradient(0.38px 0.38px at 70.0% 0.1%, rgba(255,250,230,0.39), transparent 100%),
+    radial-gradient(0.43px 0.43px at 28.8% 77.6%, rgba(255,250,230,0.61), transparent 100%),
+    radial-gradient(0.4px 0.4px at 89.4% 38.6%, rgba(255,250,230,0.36), transparent 100%),
+    radial-gradient(0.54px 0.54px at 57.3% 63.7%, rgba(255,250,230,0.46), transparent 100%),
+    radial-gradient(0.31px 0.31px at 25.4% 99.8%, rgba(255,250,230,0.44), transparent 100%),
+    radial-gradient(0.36px 0.36px at 62.7% 96.0%, rgba(255,250,230,0.5), transparent 100%),
+    radial-gradient(0.31px 0.31px at 77.7% 14.1%, rgba(255,250,230,0.44), transparent 100%),
+    radial-gradient(0.52px 0.52px at 74.8% 50.5%, rgba(255,250,230,0.44), transparent 100%),
+    radial-gradient(0.55px 0.55px at 75.0% 60.5%, rgba(255,250,230,0.61), transparent 100%),
+    radial-gradient(0.41px 0.41px at 61.0% 23.3%, rgba(255,250,230,0.38), transparent 100%),
+    radial-gradient(0.54px 0.54px at 10.5% 63.6%, rgba(255,250,230,0.54), transparent 100%),
+    radial-gradient(0.5px 0.5px at 28.4% 73.5%, rgba(255,250,230,0.69), transparent 100%),
+    radial-gradient(0.4px 0.4px at 92.4% 11.3%, rgba(255,250,230,0.43), transparent 100%),
+    radial-gradient(0.35px 0.35px at 94.7% 2.0%, rgba(255,250,230,0.53), transparent 100%),
+    radial-gradient(0.33px 0.33px at 33.1% 88.8%, rgba(255,250,230,0.53), transparent 100%),
+    radial-gradient(0.4px 0.4px at 89.3% 38.1%, rgba(255,250,230,0.63), transparent 100%),
+    radial-gradient(0.48px 0.48px at 91.0% 51.0%, rgba(255,250,230,0.56), transparent 100%),
+    radial-gradient(0.35px 0.35px at 34.4% 35.7%, rgba(255,250,230,0.6), transparent 100%),
+    radial-gradient(0.45px 0.45px at 88.8% 77.7%, rgba(255,250,230,0.46), transparent 100%),
+    radial-gradient(0.46px 0.46px at 97.3% 2.2%, rgba(255,250,230,0.41), transparent 100%),
+    radial-gradient(0.52px 0.52px at 51.7% 82.2%, rgba(255,250,230,0.55), transparent 100%),
+    radial-gradient(0.43px 0.43px at 96.4% 46.2%, rgba(255,250,230,0.37), transparent 100%),
+    radial-gradient(0.5px 0.5px at 13.7% 47.8%, rgba(255,250,230,0.63), transparent 100%),
+    radial-gradient(0.32px 0.32px at 39.3% 94.1%, rgba(255,250,230,0.53), transparent 100%),
+    radial-gradient(0.39px 0.39px at 26.7% 16.7%, rgba(255,250,230,0.61), transparent 100%),
+    radial-gradient(0.47px 0.47px at 14.3% 64.1%, rgba(255,250,230,0.52), transparent 100%),
+    radial-gradient(0.39px 0.39px at 59.5% 28.7%, rgba(255,250,230,0.39), transparent 100%),
+    radial-gradient(0.49px 0.49px at 54.7% 33.2%, rgba(255,250,230,0.6), transparent 100%),
+    radial-gradient(0.47px 0.47px at 63.7% 14.7%, rgba(255,250,230,0.54), transparent 100%),
+    radial-gradient(0.46px 0.46px at 53.3% 40.5%, rgba(255,250,230,0.39), transparent 100%),
+    radial-gradient(0.48px 0.48px at 90.3% 19.0%, rgba(255,250,230,0.38), transparent 100%),
+    radial-gradient(0.45px 0.45px at 53.2% 62.9%, rgba(255,250,230,0.58), transparent 100%),
+    radial-gradient(0.53px 0.53px at 31.9% 51.3%, rgba(255,250,230,0.5), transparent 100%),
+    radial-gradient(0.38px 0.38px at 79.0% 8.8%, rgba(255,250,230,0.37), transparent 100%),
+    radial-gradient(0.43px 0.43px at 10.2% 85.3%, rgba(255,250,230,0.52), transparent 100%),
+    radial-gradient(0.47px 0.47px at 67.6% 56.0%, rgba(255,250,230,0.64), transparent 100%),
+    radial-gradient(0.35px 0.35px at 64.9% 71.6%, rgba(255,250,230,0.6), transparent 100%),
+    radial-gradient(0.51px 0.51px at 41.0% 92.9%, rgba(255,250,230,0.44), transparent 100%),
+    radial-gradient(0.37px 0.37px at 33.7% 14.1%, rgba(255,250,230,0.38), transparent 100%),
+    radial-gradient(0.48px 0.48px at 68.7% 80.5%, rgba(255,250,230,0.52), transparent 100%),
+    radial-gradient(0.37px 0.37px at 84.4% 38.2%, rgba(255,250,230,0.35), transparent 100%),
+    radial-gradient(0.54px 0.54px at 85.1% 81.9%, rgba(255,250,230,0.55), transparent 100%),
+    radial-gradient(0.47px 0.47px at 2.2% 94.6%, rgba(255,250,230,0.67), transparent 100%),
+    radial-gradient(0.33px 0.33px at 2.5% 97.4%, rgba(255,250,230,0.44), transparent 100%),
+    radial-gradient(0.37px 0.37px at 9.9% 1.8%, rgba(255,250,230,0.52), transparent 100%),
+    radial-gradient(0.35px 0.35px at 45.6% 88.9%, rgba(255,250,230,0.53), transparent 100%),
+    radial-gradient(0.33px 0.33px at 24.6% 78.2%, rgba(255,250,230,0.61), transparent 100%),
+    radial-gradient(0.53px 0.53px at 89.6% 54.7%, rgba(255,250,230,0.6), transparent 100%),
+    radial-gradient(0.53px 0.53px at 77.6% 99.9%, rgba(255,250,230,0.45), transparent 100%),
+    radial-gradient(0.42px 0.42px at 78.5% 12.0%, rgba(255,250,230,0.53), transparent 100%),
+    radial-gradient(0.55px 0.55px at 32.8% 69.2%, rgba(255,250,230,0.4), transparent 100%),
+    radial-gradient(0.31px 0.31px at 19.5% 20.2%, rgba(255,250,230,0.68), transparent 100%),
+    radial-gradient(0.34px 0.34px at 77.9% 17.6%, rgba(255,250,230,0.5), transparent 100%),
+    radial-gradient(0.41px 0.41px at 84.8% 41.1%, rgba(255,250,230,0.64), transparent 100%),
+    radial-gradient(0.47px 0.47px at 7.8% 16.1%, rgba(255,250,230,0.59), transparent 100%),
+    radial-gradient(0.35px 0.35px at 43.1% 23.5%, rgba(255,250,230,0.65), transparent 100%),
+    radial-gradient(0.4px 0.4px at 82.1% 86.1%, rgba(255,250,230,0.47), transparent 100%),
+    radial-gradient(0.37px 0.37px at 0.8% 5.2%, rgba(255,250,230,0.62), transparent 100%),
+    radial-gradient(0.35px 0.35px at 28.3% 68.0%, rgba(255,250,230,0.63), transparent 100%),
+    radial-gradient(0.44px 0.44px at 17.3% 54.8%, rgba(255,250,230,0.39), transparent 100%),
+    radial-gradient(0.41px 0.41px at 83.0% 2.2%, rgba(255,250,230,0.49), transparent 100%),
+    radial-gradient(0.44px 0.44px at 36.8% 92.3%, rgba(255,250,230,0.46), transparent 100%),
+    radial-gradient(0.55px 0.55px at 50.2% 85.7%, rgba(255,250,230,0.48), transparent 100%),
+    radial-gradient(0.33px 0.33px at 95.7% 53.0%, rgba(255,250,230,0.7), transparent 100%),
+    radial-gradient(0.38px 0.38px at 1.2% 34.0%, rgba(255,250,230,0.41), transparent 100%),
+    radial-gradient(0.39px 0.39px at 17.7% 21.7%, rgba(255,250,230,0.42), transparent 100%),
+    radial-gradient(0.53px 0.53px at 23.6% 36.8%, rgba(255,250,230,0.4), transparent 100%),
+    radial-gradient(0.51px 0.51px at 22.9% 29.1%, rgba(255,250,230,0.59), transparent 100%),
+    radial-gradient(0.47px 0.47px at 43.3% 10.4%, rgba(255,250,230,0.37), transparent 100%),
+    radial-gradient(0.38px 0.38px at 39.0% 54.2%, rgba(255,250,230,0.35), transparent 100%),
+    radial-gradient(0.41px 0.41px at 6.1% 36.7%, rgba(255,250,230,0.37), transparent 100%),
+    radial-gradient(0.52px 0.52px at 11.5% 24.7%, rgba(255,250,230,0.58), transparent 100%),
+    radial-gradient(0.33px 0.33px at 15.4% 90.2%, rgba(255,250,230,0.64), transparent 100%),
+    radial-gradient(0.49px 0.49px at 43.9% 64.5%, rgba(255,250,230,0.57), transparent 100%),
+    radial-gradient(0.46px 0.46px at 77.5% 82.5%, rgba(255,250,230,0.66), transparent 100%),
+    radial-gradient(0.39px 0.39px at 87.2% 96.1%, rgba(255,250,230,0.66), transparent 100%),
+    radial-gradient(0.47px 0.47px at 3.7% 55.2%, rgba(255,250,230,0.47), transparent 100%),
+    radial-gradient(0.33px 0.33px at 40.4% 30.0%, rgba(255,250,230,0.37), transparent 100%),
+    radial-gradient(0.39px 0.39px at 52.3% 37.8%, rgba(255,250,230,0.54), transparent 100%),
+    radial-gradient(0.43px 0.43px at 51.2% 19.2%, rgba(255,250,230,0.6), transparent 100%),
+    radial-gradient(0.49px 0.49px at 20.5% 4.2%, rgba(255,250,230,0.44), transparent 100%),
+    radial-gradient(0.5px 0.5px at 55.5% 85.4%, rgba(255,250,230,0.7), transparent 100%),
+    radial-gradient(0.41px 0.41px at 35.3% 49.9%, rgba(255,250,230,0.49), transparent 100%),
+    radial-gradient(0.4px 0.4px at 79.4% 90.8%, rgba(255,250,230,0.45), transparent 100%),
+    radial-gradient(0.46px 0.46px at 54.1% 47.5%, rgba(255,250,230,0.66), transparent 100%),
+    radial-gradient(0.46px 0.46px at 58.2% 23.1%, rgba(255,250,230,0.52), transparent 100%),
+    radial-gradient(0.48px 0.48px at 30.5% 94.2%, rgba(255,250,230,0.58), transparent 100%),
+    radial-gradient(0.38px 0.38px at 55.5% 25.6%, rgba(255,250,230,0.59), transparent 100%),
+    radial-gradient(0.53px 0.53px at 12.5% 32.6%, rgba(255,250,230,0.58), transparent 100%),
+    radial-gradient(0.42px 0.42px at 12.5% 2.3%, rgba(255,250,230,0.37), transparent 100%),
+    radial-gradient(0.35px 0.35px at 93.7% 75.8%, rgba(255,250,230,0.49), transparent 100%),
+    radial-gradient(0.5px 0.5px at 32.8% 13.1%, rgba(255,250,230,0.47), transparent 100%),
+    radial-gradient(0.34px 0.34px at 20.7% 72.3%, rgba(255,250,230,0.53), transparent 100%),
+    radial-gradient(0.54px 0.54px at 79.9% 16.8%, rgba(255,250,230,0.63), transparent 100%),
+    radial-gradient(0.34px 0.34px at 87.1% 21.4%, rgba(255,250,230,0.51), transparent 100%),
+    radial-gradient(0.54px 0.54px at 36.4% 86.4%, rgba(255,250,230,0.4), transparent 100%),
+    radial-gradient(0.41px 0.41px at 63.2% 15.9%, rgba(255,250,230,0.37), transparent 100%),
+    radial-gradient(0.38px 0.38px at 81.6% 66.7%, rgba(255,250,230,0.64), transparent 100%),
+    radial-gradient(0.52px 0.52px at 54.1% 70.8%, rgba(255,250,230,0.36), transparent 100%),
+    radial-gradient(0.51px 0.51px at 24.6% 56.3%, rgba(255,250,230,0.69), transparent 100%),
+    radial-gradient(0.55px 0.55px at 35.8% 0.5%, rgba(255,250,230,0.39), transparent 100%),
+    radial-gradient(0.41px 0.41px at 71.9% 52.5%, rgba(255,250,230,0.43), transparent 100%),
+    radial-gradient(0.45px 0.45px at 24.3% 81.7%, rgba(255,250,230,0.67), transparent 100%),
+    radial-gradient(0.43px 0.43px at 9.5% 35.4%, rgba(255,250,230,0.5), transparent 100%),
+    radial-gradient(0.51px 0.51px at 90.8% 15.0%, rgba(255,250,230,0.47), transparent 100%),
+    radial-gradient(0.35px 0.35px at 22.8% 60.2%, rgba(255,250,230,0.38), transparent 100%),
+    radial-gradient(0.39px 0.39px at 79.6% 88.2%, rgba(255,250,230,0.46), transparent 100%),
+    radial-gradient(0.43px 0.43px at 85.0% 73.9%, rgba(255,250,230,0.46), transparent 100%),
+    radial-gradient(0.43px 0.43px at 68.4% 32.8%, rgba(255,250,230,0.45), transparent 100%),
+    radial-gradient(0.31px 0.31px at 26.1% 98.9%, rgba(255,250,230,0.41), transparent 100%),
+    radial-gradient(0.38px 0.38px at 68.2% 39.2%, rgba(255,250,230,0.53), transparent 100%),
+    radial-gradient(0.32px 0.32px at 9.2% 25.5%, rgba(255,250,230,0.5), transparent 100%),
+    radial-gradient(0.5px 0.5px at 80.1% 62.2%, rgba(255,250,230,0.48), transparent 100%),
+    radial-gradient(0.36px 0.36px at 3.8% 59.1%, rgba(255,250,230,0.53), transparent 100%),
+    radial-gradient(0.5px 0.5px at 3.2% 30.3%, rgba(255,250,230,0.38), transparent 100%),
+    radial-gradient(0.53px 0.53px at 86.1% 16.6%, rgba(255,250,230,0.46), transparent 100%),
+    radial-gradient(0.55px 0.55px at 52.9% 6.0%, rgba(255,250,230,0.64), transparent 100%),
+    radial-gradient(0.5px 0.5px at 17.8% 52.4%, rgba(255,250,230,0.62), transparent 100%),
+    radial-gradient(0.48px 0.48px at 9.5% 88.9%, rgba(255,250,230,0.63), transparent 100%),
+    radial-gradient(0.32px 0.32px at 38.7% 56.6%, rgba(255,250,230,0.54), transparent 100%),
+    radial-gradient(0.31px 0.31px at 57.2% 74.5%, rgba(255,250,230,0.5), transparent 100%),
+    radial-gradient(0.38px 0.38px at 51.3% 36.6%, rgba(255,250,230,0.46), transparent 100%),
+    radial-gradient(0.4px 0.4px at 63.4% 76.5%, rgba(255,250,230,0.53), transparent 100%),
+    radial-gradient(0.48px 0.48px at 95.2% 45.6%, rgba(255,250,230,0.58), transparent 100%),
+    radial-gradient(0.32px 0.32px at 74.2% 43.4%, rgba(255,250,230,0.54), transparent 100%),
+    radial-gradient(0.41px 0.41px at 30.4% 86.8%, rgba(255,250,230,0.53), transparent 100%),
+    radial-gradient(0.5px 0.5px at 24.8% 10.6%, rgba(255,250,230,0.68), transparent 100%),
+    radial-gradient(0.39px 0.39px at 87.2% 9.0%, rgba(255,250,230,0.64), transparent 100%),
+    radial-gradient(0.39px 0.39px at 15.6% 56.3%, rgba(255,250,230,0.6), transparent 100%),
+    radial-gradient(0.43px 0.43px at 13.1% 79.5%, rgba(255,250,230,0.42), transparent 100%),
+    radial-gradient(0.53px 0.53px at 20.6% 69.8%, rgba(255,250,230,0.65), transparent 100%),
+    radial-gradient(0.46px 0.46px at 14.7% 65.6%, rgba(255,250,230,0.67), transparent 100%),
+    radial-gradient(0.4px 0.4px at 96.3% 7.9%, rgba(255,250,230,0.69), transparent 100%),
+    radial-gradient(0.35px 0.35px at 5.8% 75.2%, rgba(255,250,230,0.56), transparent 100%),
+    radial-gradient(0.48px 0.48px at 42.4% 19.2%, rgba(255,250,230,0.36), transparent 100%),
+    radial-gradient(0.47px 0.47px at 87.2% 18.0%, rgba(255,250,230,0.64), transparent 100%),
+    radial-gradient(0.37px 0.37px at 42.9% 84.1%, rgba(255,250,230,0.48), transparent 100%),
+    radial-gradient(0.34px 0.34px at 13.5% 10.7%, rgba(255,250,230,0.58), transparent 100%),
+    radial-gradient(0.37px 0.37px at 18.7% 51.0%, rgba(255,250,230,0.49), transparent 100%),
+    radial-gradient(0.4px 0.4px at 46.7% 82.0%, rgba(255,250,230,0.41), transparent 100%),
+    radial-gradient(0.41px 0.41px at 19.2% 98.5%, rgba(255,250,230,0.4), transparent 100%),
+    radial-gradient(0.3px 0.3px at 6.3% 69.9%, rgba(255,250,230,0.6), transparent 100%),
+    radial-gradient(0.35px 0.35px at 58.6% 59.6%, rgba(255,250,230,0.47), transparent 100%),
+    radial-gradient(0.54px 0.54px at 61.9% 82.9%, rgba(255,250,230,0.43), transparent 100%);
+  animation: tinystars-twinkle 6s ease-in-out infinite;
+}
+@keyframes tinystars-twinkle {
+  0%, 100% { opacity: 0.85; }
+  50%      { opacity: 1; }
+}
+
+/* ── 料金プランカードを確実にダーク化 ── */
+.pricing-card,
+.pricing-card.recommended {
+  background: linear-gradient(180deg, rgba(28, 22, 50, 0.7) 0%, rgba(15, 12, 35, 0.85) 100%) !important;
+  border: 1px solid rgba(232, 199, 126, 0.22) !important;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  color: #F5EBD8 !important;
+  box-shadow:
+    0 8px 50px rgba(0, 0, 0, 0.45),
+    0 0 30px rgba(232, 199, 126, 0.06),
+    inset 0 1px 0 rgba(232, 199, 126, 0.1) !important;
+}
+.pricing-card.recommended {
+  background: linear-gradient(180deg, rgba(40, 25, 55, 0.85) 0%, rgba(20, 15, 40, 0.92) 100%) !important;
+  border-color: rgba(200, 75, 49, 0.5) !important;
+  box-shadow:
+    0 10px 60px rgba(200, 75, 49, 0.3),
+    0 0 70px rgba(232, 199, 126, 0.18),
+    inset 0 1px 0 rgba(232, 199, 126, 0.2) !important;
+}
+
+/* カード内の全テキストを明るく */
+.pricing-card *,
+.pricing-card.recommended * {
+  color: inherit;
+}
+.pricing-card .plan-name,
+.pricing-card .price-amount,
+.pricing-card .num,
+.pricing-card h3,
+.pricing-card h4 { color: #FAF6EE !important; }
+.pricing-card .plan-tag,
+.pricing-card .currency,
+.pricing-card .period,
+.pricing-card .price-annual-note { color: #E8C77E !important; }
+.pricing-card ul li,
+.pricing-card .feature-list li,
+.pricing-card p { color: rgba(245, 235, 216, 0.92) !important; }
+.pricing-card ul li::before,
+.pricing-card .feature-list li::before,
+.pricing-card .check { color: #E8C77E !important; }
+.pricing-card .plan-cta,
+.pricing-card .btn-ghost {
+  border-color: rgba(232, 199, 126, 0.55) !important;
+  color: #E8C77E !important;
+  background: transparent !important;
+}
+.pricing-card .plan-cta:hover,
+.pricing-card .btn-ghost:hover {
+  background: rgba(232, 199, 126, 0.12) !important;
+  border-color: #E8C77E !important;
+}
+.pricing-card.recommended .plan-cta,
+.pricing-card.recommended .btn-primary {
+  background: linear-gradient(135deg, #C84B31 0%, #A03A22 100%) !important;
+  color: #FAF6EE !important;
+  border: none !important;
+  box-shadow: 0 4px 20px rgba(200, 75, 49, 0.4) !important;
+}
+.pricing-card.recommended .plan-cta:hover,
+.pricing-card.recommended .btn-primary:hover {
+  background: linear-gradient(135deg, #E05A40 0%, #B84A32 100%) !important;
+  box-shadow: 0 8px 32px rgba(200, 75, 49, 0.6) !important;
+}
+
+/* RECOMMENDED バッジ */
+.recommended-badge,
+.pricing-card .recommended-badge {
+  background: linear-gradient(135deg, #C84B31 0%, #A03A22 100%) !important;
+  color: #FAF6EE !important;
+  box-shadow: 0 4px 16px rgba(200, 75, 49, 0.5) !important;
+}
+
+/* 機能行の区切り線 */
+.pricing-card hr,
+.pricing-card .feature-list li,
+.pricing-card ul li {
+  border-color: rgba(232, 199, 126, 0.15) !important;
+}
+
+/* ── 英語見出し (eyebrow) を大きく ── */
+.fd-eyebrow {
+  font-size: 13px !important;
+  letter-spacing: 0.18em !important;
+  font-weight: 600 !important;
+  margin-bottom: 16px !important;
+}
+.hero-eyebrow {
+  font-size: 13px !important;
+  letter-spacing: 0.2em !important;
+  font-weight: 600 !important;
+}
+.section-label {
+  font-size: 13px !important;
+  letter-spacing: 0.2em !important;
+  font-weight: 600 !important;
+}
+.hl-num {
+  font-size: 13px !important;
+  letter-spacing: 0.16em !important;
+  font-weight: 600 !important;
+  margin-bottom: 10px !important;
+}
+.pn-label {
+  font-size: 12px !important;
+  letter-spacing: 0.18em !important;
+  font-weight: 600 !important;
+}

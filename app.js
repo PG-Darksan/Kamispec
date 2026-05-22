@@ -1,4 +1,4 @@
-/* MokuMoku 共通スクリプト
+/* Kamispe 共通スクリプト
    - ナビゲーションのアクティブ状態
    - スクロール検知でナビにボーダー
    - 出現アニメーション (.reveal)
@@ -57,6 +57,161 @@
       }
     }
   }
+
+
+  /* ── 全ページ共通の宇宙背景 (home 以外に固定レイヤーを挿入) ──
+     トップの hero 装飾と同じ惑星・星雲・星座・流れ星を、 各ページの最背面に
+     position:fixed で敷く。 home (data-page="home") は hero 内に専用装飾が
+     あるため挿入しない。 点描の星空は body::before/::after で全ページ共通。 */
+  (function injectCosmicBg() {
+    if (document.body.dataset.page === 'home') return;
+    if (document.querySelector('.cosmic-bg')) return;
+    var layer = document.createElement('div');
+    layer.className = 'cosmic-bg';
+    layer.setAttribute('aria-hidden', 'true');
+    layer.innerHTML = `<!-- 土星 (リアル版 - 多層・大気・縞模様・カッシーニの空隙) -->
+        <svg class="planet planet-saturn" viewBox="0 0 240 240" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <radialGradient id="satSphere" cx="32%" cy="28%" r="85%">
+              <stop offset="0%" stop-color="#FFF0C8"/>
+              <stop offset="15%" stop-color="#F5D88E"/>
+              <stop offset="35%" stop-color="#D9A857"/>
+              <stop offset="60%" stop-color="#9C7234"/>
+              <stop offset="85%" stop-color="#4A3018"/>
+              <stop offset="100%" stop-color="#0F0A05"/>
+            </radialGradient>
+            <radialGradient id="satShadow" cx="80%" cy="65%" r="60%">
+              <stop offset="40%" stop-color="rgba(0,0,0,0)"/>
+              <stop offset="100%" stop-color="rgba(0,0,0,0.65)"/>
+            </radialGradient>
+            <radialGradient id="satAtmos" cx="50%" cy="50%" r="50%">
+              <stop offset="78%" stop-color="rgba(255,232,176,0)"/>
+              <stop offset="88%" stop-color="rgba(255,232,176,0.18)"/>
+              <stop offset="100%" stop-color="rgba(255,232,176,0)"/>
+            </radialGradient>
+            <linearGradient id="ringFront" x1="0%" y1="50%" x2="100%" y2="50%">
+              <stop offset="0%" stop-color="rgba(150,100,50,0)"/>
+              <stop offset="8%" stop-color="rgba(180,130,70,0.6)"/>
+              <stop offset="20%" stop-color="rgba(232,199,126,0.95)"/>
+              <stop offset="35%" stop-color="rgba(255,235,180,1)"/>
+              <stop offset="44%" stop-color="rgba(160,110,60,0.45)"/>
+              <stop offset="48%" stop-color="rgba(80,55,30,0.3)"/>
+              <stop offset="52%" stop-color="rgba(80,55,30,0.3)"/>
+              <stop offset="56%" stop-color="rgba(160,110,60,0.45)"/>
+              <stop offset="65%" stop-color="rgba(255,235,180,1)"/>
+              <stop offset="80%" stop-color="rgba(232,199,126,0.95)"/>
+              <stop offset="92%" stop-color="rgba(180,130,70,0.6)"/>
+              <stop offset="100%" stop-color="rgba(150,100,50,0)"/>
+            </linearGradient>
+            <linearGradient id="ringBack" x1="0%" y1="50%" x2="100%" y2="50%">
+              <stop offset="0%" stop-color="rgba(150,100,50,0)"/>
+              <stop offset="15%" stop-color="rgba(180,130,70,0.35)"/>
+              <stop offset="35%" stop-color="rgba(232,199,126,0.5)"/>
+              <stop offset="50%" stop-color="rgba(255,235,180,0.55)"/>
+              <stop offset="65%" stop-color="rgba(232,199,126,0.5)"/>
+              <stop offset="85%" stop-color="rgba(180,130,70,0.35)"/>
+              <stop offset="100%" stop-color="rgba(150,100,50,0)"/>
+            </linearGradient>
+            <clipPath id="satClip"><circle cx="120" cy="120" r="50"/></clipPath>
+            <filter id="satGlow"><feGaussianBlur stdDeviation="6"/></filter>
+          </defs>
+          <!-- 大気のハロー -->
+          <circle cx="120" cy="120" r="60" fill="url(#satAtmos)" filter="url(#satGlow)"/>
+          <!-- 後ろ側の環 (惑星の上半分) -->
+          <g transform="rotate(-22 120 120)">
+            <path d="M 18 120 Q 120 100 222 120" stroke="url(#ringBack)" stroke-width="4" fill="none"/>
+            <path d="M 26 120 Q 120 104 214 120" stroke="rgba(232,199,126,0.4)" stroke-width="1.5" fill="none"/>
+          </g>
+          <!-- 惑星本体 -->
+          <circle cx="120" cy="120" r="50" fill="url(#satSphere)"/>
+          <!-- 縞模様 (clip-pathで球面内に) -->
+          <g clip-path="url(#satClip)" opacity="0.7">
+            <path d="M 70 102 Q 120 96 170 104" stroke="rgba(255,235,180,0.45)" stroke-width="2.5" fill="none"/>
+            <path d="M 70 112 Q 120 108 170 114" stroke="rgba(160,110,60,0.5)" stroke-width="2" fill="none"/>
+            <path d="M 70 120 Q 120 116 170 122" stroke="rgba(255,235,180,0.35)" stroke-width="3" fill="none"/>
+            <path d="M 70 130 Q 120 126 170 132" stroke="rgba(120,80,40,0.55)" stroke-width="2" fill="none"/>
+            <path d="M 70 138 Q 120 134 170 140" stroke="rgba(255,235,180,0.3)" stroke-width="1.8" fill="none"/>
+            <ellipse cx="100" cy="125" rx="8" ry="3" fill="rgba(120,80,40,0.4)"/>
+          </g>
+          <!-- ハイライト -->
+          <ellipse cx="100" cy="100" rx="15" ry="9" fill="rgba(255,250,230,0.35)" filter="url(#satGlow)"/>
+          <!-- 影 -->
+          <circle cx="120" cy="120" r="50" fill="url(#satShadow)"/>
+          <!-- 前面の環 (惑星の下半分) -->
+          <g transform="rotate(-22 120 120)">
+            <path d="M 18 120 Q 120 140 222 120" stroke="url(#ringFront)" stroke-width="8" fill="none"/>
+            <path d="M 26 120 Q 120 137 214 120" stroke="rgba(255,250,230,0.4)" stroke-width="1.5" fill="none"/>
+            <path d="M 36 120 Q 120 134 204 120" stroke="rgba(80,55,30,0.4)" stroke-width="0.8" fill="none"/>
+          </g>
+        </svg>
+<!-- 火星 (右側) -->
+<svg class="planet planet-mars" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="marsSphere" cx="35%" cy="30%" r="78%">
+      <stop offset="0%" stop-color="#E89B6C"/><stop offset="40%" stop-color="#C8633A"/>
+      <stop offset="80%" stop-color="#7E3A1E"/><stop offset="100%" stop-color="#2A1208"/>
+    </radialGradient>
+    <radialGradient id="marsShadow" cx="75%" cy="68%" r="62%">
+      <stop offset="45%" stop-color="rgba(0,0,0,0)"/><stop offset="100%" stop-color="rgba(0,0,0,0.5)"/>
+    </radialGradient>
+  </defs>
+  <circle cx="50" cy="50" r="40" fill="url(#marsSphere)"/>
+  <ellipse cx="40" cy="42" rx="10" ry="5" fill="rgba(120,50,25,0.4)"/>
+  <ellipse cx="60" cy="60" rx="8" ry="4" fill="rgba(120,50,25,0.35)"/>
+  <circle cx="37" cy="34" r="6" fill="rgba(255,220,180,0.25)"/>
+  <circle cx="50" cy="50" r="40" fill="url(#marsShadow)"/>
+</svg>
+<!-- 星雲 (ガス雲、左下) -->
+        <svg class="nebula nebula-1" viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <radialGradient id="nebulaPurple" cx="40%" cy="50%" r="50%">
+              <stop offset="0%" stop-color="rgba(160,100,200,0.55)"/>
+              <stop offset="40%" stop-color="rgba(120,70,180,0.3)"/>
+              <stop offset="100%" stop-color="rgba(40,20,80,0)"/>
+            </radialGradient>
+            <radialGradient id="nebulaGold" cx="60%" cy="55%" r="40%">
+              <stop offset="0%" stop-color="rgba(232,199,126,0.4)"/>
+              <stop offset="60%" stop-color="rgba(184,150,104,0.15)"/>
+              <stop offset="100%" stop-color="rgba(120,80,40,0)"/>
+            </radialGradient>
+            <filter id="nebulaBlur"><feGaussianBlur stdDeviation="10"/></filter>
+          </defs>
+          <ellipse cx="160" cy="200" rx="180" ry="140" fill="url(#nebulaPurple)" filter="url(#nebulaBlur)"/>
+          <ellipse cx="240" cy="220" rx="150" ry="100" fill="url(#nebulaGold)" filter="url(#nebulaBlur)"/>
+          <ellipse cx="200" cy="180" rx="100" ry="60" fill="rgba(180,130,200,0.2)" filter="url(#nebulaBlur)" transform="rotate(25 200 180)"/>
+        </svg>
+<!-- 星座 (オリオン風 右上) -->
+        <svg class="constellation constellation-1" viewBox="0 0 200 120" xmlns="http://www.w3.org/2000/svg">
+          <line x1="20" y1="40" x2="60" y2="20" stroke="rgba(232,199,126,0.4)" stroke-width="0.7"/>
+          <line x1="60" y1="20" x2="110" y2="50" stroke="rgba(232,199,126,0.4)" stroke-width="0.7"/>
+          <line x1="110" y1="50" x2="150" y2="35" stroke="rgba(232,199,126,0.4)" stroke-width="0.7"/>
+          <line x1="110" y1="50" x2="140" y2="95" stroke="rgba(232,199,126,0.4)" stroke-width="0.7"/>
+          <line x1="150" y1="35" x2="185" y2="60" stroke="rgba(232,199,126,0.4)" stroke-width="0.7"/>
+          <circle cx="20" cy="40" r="2.5" fill="#FFE8B0"/>
+          <circle cx="60" cy="20" r="3" fill="#FFFFFF"/>
+          <circle cx="110" cy="50" r="3.2" fill="#FFE8B0"/>
+          <circle cx="150" cy="35" r="2.7" fill="#FFFFFF"/>
+          <circle cx="185" cy="60" r="2.2" fill="#FFE8B0"/>
+          <circle cx="140" cy="95" r="2.5" fill="#FFFFFF"/>
+        </svg>
+<!-- 星座 (北斗七星風 中下) -->
+        <svg class="constellation constellation-2" viewBox="0 0 160 100" xmlns="http://www.w3.org/2000/svg">
+          <line x1="15" y1="30" x2="55" y2="55" stroke="rgba(232,199,126,0.35)" stroke-width="0.7"/>
+          <line x1="55" y1="55" x2="90" y2="40" stroke="rgba(232,199,126,0.35)" stroke-width="0.7"/>
+          <line x1="90" y1="40" x2="130" y2="70" stroke="rgba(232,199,126,0.35)" stroke-width="0.7"/>
+          <line x1="55" y1="55" x2="80" y2="85" stroke="rgba(232,199,126,0.35)" stroke-width="0.7"/>
+          <circle cx="15" cy="30" r="2.2" fill="#FFE8B0"/>
+          <circle cx="55" cy="55" r="3" fill="#FFFFFF"/>
+          <circle cx="90" cy="40" r="2.5" fill="#FFE8B0"/>
+          <circle cx="130" cy="70" r="2.7" fill="#FFFFFF"/>
+          <circle cx="80" cy="85" r="2.2" fill="#FFE8B0"/>
+        </svg>
+<!-- 流れ星 -->
+<div class="shooting-star shooting-star-1"></div>
+<div class="shooting-star shooting-star-2"></div>
+<div class="shooting-star shooting-star-3"></div>`;
+    document.body.insertBefore(layer, document.body.firstChild);
+  })();
 
   /* ── 言語切替UIの開閉 ── */
   const langSwitcher = document.querySelector('.lang-switcher');

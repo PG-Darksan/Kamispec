@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://mokumoku.example/sitemap.xml
+Sitemap: https://kamispe.example/sitemap.xml
