@@ -1,4 +1,4 @@
-/* Kamispe 共通スクリプト
+/* Kamispec 共通スクリプト
    - ナビゲーションのアクティブ状態
    - スクロール検知でナビにボーダー
    - 出現アニメーション (.reveal)
@@ -459,4 +459,33 @@
       });
     }
   }
+})();
+
+/* ── 訪問者数カウント (CounterAPI v1 / 登録不要・キー不要) ──
+   GitHub Pages のような静的ホスティングでもサーバー不要でカウントできる。
+   namespace + カウンター名だけで動作する (アカウント登録不要)。
+   1 セッションにつき 1 回だけ +1 し、 それ以降は現在値の取得のみ行う。 */
+(function () {
+  var el = document.getElementById('visitor-count');
+  if (!el) return;
+  var NS = 'kamispec';       // 名前空間 (サイト識別子)
+  var KEY = 'site-visits';   // カウンター名
+  var base = 'https://api.counterapi.dev/v1/' + NS + '/' + KEY;
+  var counted = false;
+  try { counted = !!sessionStorage.getItem('kamispec_visit_counted'); } catch (e) {}
+  var url = counted ? (base + '/') : (base + '/up');
+  fetch(url)
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (d) {
+      if (!counted) {
+        try { sessionStorage.setItem('kamispec_visit_counted', '1'); } catch (e) {}
+      }
+      if (!d) return;
+      var n = (typeof d.value === 'number') ? d.value
+            : (typeof d.count === 'number') ? d.count
+            : (d.data && (typeof d.data.up_count === 'number' ? d.data.up_count
+                        : (typeof d.data.value === 'number' ? d.data.value : null)));
+      if (typeof n === 'number') el.textContent = n.toLocaleString();
+    })
+    .catch(function () { /* 取得失敗時は — のまま */ });
 })();

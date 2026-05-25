@@ -3350,3 +3350,58 @@ body::after {
   letter-spacing: 0.18em !important;
   font-weight: 600 !important;
 }
+
+/* ════════════════════════════════════════════════════════════
+   モバイル微調整 (2026-05 追加)
+   - 右上お問い合わせ CTA の無地化
+   - フッターの文字/ロゴ被り防止
+   ════════════════════════════════════════════════════════════ */
+
+/* ── モバイルでは右上のお問い合わせ CTA を、 他のアイコンボタン
+   (nav-link) と同じ「特別な背景なし」に統一する。
+   元は var(--paper)/#F5EBD8 のピル背景で、 アイコンだけのモバイル
+   ナビの中で白く浮いて見にくかった。 PC/タブレット幅では従来の
+   ピル型 CTA のまま。 nav-link がアイコン化する 980px 以下に適用。 ── */
+@media (max-width: 980px) {
+  nav .nav-cta,
+  body[data-page="home"] nav .nav-cta,
+  body[data-page="home"] nav.scrolled .nav-cta {
+    background: transparent !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+    color: #F5EBD8 !important;        /* nav-link と同じ文字/アイコン色 */
+    padding: 8px 6px !important;
+  }
+  /* アイコンの塗り色を nav-link と同じ currentColor に (元は白 paper) */
+  nav .nav-cta::before {
+    background-color: currentColor !important;
+  }
+  nav .nav-cta:hover {
+    background: transparent !important;
+    box-shadow: none !important;
+    color: #E8C77E !important;        /* nav-link:hover と同じ金色 */
+  }
+}
+
+/* ── モバイルでフッターのナビリンク/コピーライトが、 ブランドの
+   アイコン・ロゴ文字と重なる問題を解消。 確実に縦積みにし、
+   ナビリンクは折り返し可能にして十分な余白を確保する。 ── */
+@media (max-width: 720px) {
+  .footer-inner {
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 20px !important;
+  }
+  .footer-brand {
+    width: 100%;
+  }
+  .footer-nav {
+    flex-wrap: wrap;
+    gap: 12px 18px;
+    width: 100%;
+  }
+  .footer-copy {
+    width: 100%;
+    margin-top: 4px;
+  }
+}
