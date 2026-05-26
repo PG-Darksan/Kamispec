@@ -134,7 +134,8 @@
     radial-gradient(0.6px 0.6px at 11.5% 97.0%, rgba(255,235,180,0.6), transparent 100%),
     radial-gradient(0.6px 0.6px at 3.8% 59.7%, rgba(255,235,180,0.6), transparent 100%),
     radial-gradient(0.5px 0.5px at 43.6% 98.4%, rgba(255,250,230,0.55), transparent 100%),
-    radial-gradient(0.6px 0.6px at 19.0% 4.4%, rgba(255,250,230,0.55), transparent 100%) !important;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.1 0 0 0 0 0.09 0 0 0 0 0.08 0 0 0 0.04 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+    radial-gradient(0.6px 0.6px at 19.0% 4.4%, rgba(255,250,230,0.55), transparent 100%),
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.1 0 0 0 0 0.09 0 0 0 0 0.08 0 0 0 0.04 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
       opacity: 0.55; mix-blend-mode: multiply;
     }
 
@@ -408,6 +409,13 @@
       line-height: 1.95;
       color: var(--ink-soft);
       max-width: 480px;
+    }
+    .hero-sysreq {
+      margin-top: 16px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12.5px;
+      letter-spacing: 0.02em;
+      color: rgba(245, 235, 216, 0.55);
     }
 
     .hero-cta {
@@ -1060,6 +1068,9 @@
     }
     .footer-nav {
       display: flex; gap: 28px;
+      flex: 1;
+      justify-content: center;
+      flex-wrap: wrap;
       font-size: 13.5px;
     }
     .footer-nav a {
@@ -1575,7 +1586,7 @@
     }
     .shortcut-table thead th {
       padding: 14px 16px;
-      text-align: left;
+      text-align: center;
       font-family: 'JetBrains Mono', monospace;
       font-size: 11px;
       font-weight: 500;
@@ -3017,8 +3028,12 @@ nav .brand-mark {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .planet, .constellation, .shooting-star,
-  .galaxy, .nebula, .ai-orbit, body::before { animation: none !important; }
+  /* 流れ星 (.shooting-star) と AIオービット (.ai-orbit) は装飾の主役なので、
+     reduce-motion 環境でもあえて動かす (ユーザー方針)。
+     planet / constellation / galaxy / nebula / body::before の重めの演出は
+     従来どおり停止して、 モーション酔いへの配慮は残す。 */
+  .planet, .constellation,
+  .galaxy, .nebula, body::before { animation: none !important; }
 }
 
 
