@@ -2974,6 +2974,7 @@ nav.scrolled { border-bottom-color: rgba(232,199,126,0.15) !important; }
     rgba(232, 199, 126, 0.05) 60%,
     rgba(232, 199, 126, 0.35) 100%);
   -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+          mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
   -webkit-mask-composite: xor;
           mask-composite: exclude;
   pointer-events: none;
