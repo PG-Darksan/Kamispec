@@ -1,0 +1,282 @@
+name: mindmap_app
+description: Kamispec - Mind Map App with notes and YouTube embedding
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # ── 多言語化 (Material / Cupertino / Widgets) ──
+  # SfPdfViewer の標準テキスト選択メニューの一部 (Copy 等) を日本語化する。
+  # 注: syncfusion 独自メニュー項目 (Highlight / Underline / Strikethrough / Squiggly)
+  # の翻訳は syncfusion_localizations が必要だが、 28.x 系で intl 等の依存関係が
+  # 噛み合わずビルド競合が起きたため一旦外している。 必要になったら syncfusion 側の
+  # バージョン整合を取って再導入する想定。
+  flutter_localizations:
+    sdk: flutter
+
+  provider: ^6.1.1
+  shared_preferences: ^2.2.2
+
+  # WebView (mobile). 6.0.0 ピン止め (6.1.x は Windows 実装を巻き込むため)
+  flutter_inappwebview: 6.0.0
+
+  # WebView (Windows)
+  webview_windows: ^0.2.2
+
+  uuid: ^4.3.3
+  json_annotation: ^4.8.1
+  cupertino_icons: ^1.0.6
+  flutter_colorpicker: ^1.0.3
+  # マップメモ等のリッチテキスト編集 (= ユーザー要望: Markdown 廃止 → リッチテキスト)。
+  flutter_quill: ^11.0.0
+  # 数式 (LaTeX) 描画 — フラッシュカードやテキストエディタで $...$ を綺麗に表示
+  #   (= ユーザー要望: ベクトル \vec{a} 等の数式を視覚的に分かる形で)。 純 Dart
+  #   (KaTeX フォント同梱、 ネイティブ無し) なので Android/Windows 双方で動く。
+  flutter_math_fork: ^0.7.0
+  url_launcher: ^6.2.0
+
+  # File picker (画像/PDF/音声ファイル選択)
+  file_picker: ^8.0.0
+
+  path_provider: ^2.1.0
+  open_filex: ^4.4.0
+
+  # 無音カメラ (= ユーザー要望)。 公式 camera プラグインは BSD-3-Clause で
+  #   商用利用可。 takePicture() は独自キャプチャ経路のためシステムの
+  #   シャッター音を鳴らさない (= 実質無音)。 Android/Windows(camera_windows)対応。
+  camera: ^0.11.0
+
+  # Video thumbnail (Android/iOS)
+  video_thumbnail: ^0.5.3
+
+  # Firebase REST API
+  http: ^1.2.0
+  desktop_drop: ^0.7.0
+
+  # Ctrl+V でクリップボード画像/テキスト取得
+  # 0.9.x へバンプ: device_info_plus ^11 を要求する flutter_localizations と
+  # 整合させるため (旧 0.8.22 系は device_info_plus ^10 を引き連れていた)。
+  # 0.8.x → 0.9.x で API は概ね互換だが、 念のため動作確認推奨。
+  super_clipboard: ^0.9.1
+
+  # Windows ウィンドウ制御
+  window_manager: ^0.4.3
+
+  # ── 発表者モードの「聴衆ウィンドウ」 (= ユーザー要望: 画面共有でメモを
+  #    見せない) ──
+  # デスクトップで別ウィンドウ (スライドのみのクリーン表示) を開き、 Meet 等で
+  # その窓だけを共有する。 手元の発表者ウィンドウには引き続きメモを表示。
+  # Windows/macOS/Linux のみ (Android では未使用)。
+  desktop_multi_window: ^0.2.0
+
+  # ── デスクトップ (Windows 等) の OS 通知 ──
+  # flutter_local_notifications 17.x は Windows 非対応のため、 Windows では
+  # 従来アプリ内オーバーレイで「後で通知」 を出していたが、 ユーザー要望
+  # 「windows 版の通知方法を OS 通知に変更」 への対応として local_notifier
+  # を追加。 内部は WinToast を使い、 setup(shortcutPolicy) でスタートメニュー
+  # ショートカット (= AUMID 紐付け) を自動作成するため、 MSIX 化していない
+  # 素の Flutter Windows ビルドでもトーストが表示できる。
+  # 依存は flutter + uuid(<5.0.0) のみで、 既存の uuid ^4.3.3 と競合しない。
+  # Android は従来どおり flutter_local_notifications を使い、 ここでは未使用。
+  local_notifier: ^0.1.6
+
+  # アラーム音再生 (タイマー / ポモドーロ終了通知)
+  audioplayers: ^6.0.0
+
+  # ── ネイティブ PDF ビューア ──
+  # 組み込み PDF (WebView の <embed>) では現在ページ番号やスクロール位置を
+  # Flutter から取得できず、 PDFメモのページ紐付けや位置追従が破綻する。
+  # syncfusion_flutter_pdfviewer は Flutter ネイティブで PDF を描画
+  # (Windows / macOS / Linux / iOS / Android / Web 対応) し、
+  # onPageChanged / jumpToPage が確実に機能する。
+  # 個人利用 (年商 1M USD 未満) は Community License で無料利用可。
+  # 最初 pdfx を試したが Windows で PDF が真っ白のまま描画されない既知問題が
+  # あったため syncfusion に切り替え。
+  syncfusion_flutter_pdfviewer: ^28.1.37
+  # PDF 本文のテキスト抽出 (= ユーザー要望: PDF の内容を AI チャットに渡す)。
+  # pdfviewer と同じ syncfusion 系。 バージョンを合わせる。
+  syncfusion_flutter_pdf: ^28.1.37
+
+  # ── ローカル動画再生 (mp4/webm/mov) ──
+  # ダウンロードした動画ファイルは WebView の `<video controls>` で表示すると
+  # native UI の速度セレクタが 2x までで止まり、`controlslist="noplaybackrate"`
+  # でも環境によっては効かないことがある。Flutter ネイティブの video_player
+  # (Android: ExoPlayer / iOS: AVPlayer) を使うことで、playbackRate を直接
+  # 16x 程度まで指定できる。
+  video_player: ^2.9.1
+
+  # ── デスクトップ (Windows/Linux/macOS) の動画再生バックエンド ──
+  # video_player は Windows/Linux に公式バックエンドが無く、 ビデオエディター
+  # のプレビューが真っ黒のまま再生されない。 fvp は libmdk を使って
+  # video_player の Platform 実装をデスクトップに供給する「ドロップイン」 で、
+  # main.dart で registerWith() を一度呼ぶだけで既存の VideoPlayer コード
+  # (プレビュー・再生・setPlaybackSpeed) がそのまま Windows でも動く。
+  # ※ ネイティブ依存が増えるのでバージョン変更後は一度 flutter clean が必要。
+  #   Android/iOS は公式バックエンドのままにするため platforms を限定する。
+  #   (0.x は破壊的変更が入りうるが registerWith API は安定。 解決できる
+  #    最新の 0.x を使う。)
+  fvp: ">=0.25.0 <1.0.0"
+
+  # YouTube 動画ダウンロード (manifest 取得 + muxed ストリーム保存)
+  youtube_explode_dart: ^2.4.2
+
+  # ── 画面ロック防止 (バックグラウンド継続用) ──
+  # 動画再生中・タイマー実行中に画面が自動でオフになると、Android では
+  # Activity が onStop に入って Dart isolate のタイマー/動画再生が停止
+  # することがある。wakelock_plus は画面とCPUを ON に保つことで、画面
+  # を消さずに継続再生・カウントダウンを維持する。バッテリー消費は
+  # 増えるが、ユーザーが意図的にトリガーしたとき (動画再生中・タイマー
+  # 実行中) のみ ON にして、終わったら OFF に戻す。
+  wakelock_plus: ^1.2.5
+
+  # ── バッテリー最適化除外申請 ──
+  # 「バックグラウンド再生を有効にする」設定から、Android のバッテリー
+  # 最適化除外画面 (REQUEST_IGNORE_BATTERY_OPTIMIZATIONS) を直接開く。
+  # 除外すると Doze モードの影響を受けにくくなり、画面オフでも
+  # WebView の音声再生 / タイマーカウントダウンが確実に継続する。
+  permission_handler: ^11.3.1
+
+  # ── Android Intent 直接呼び出し ──
+  # メーカー独自の自動起動許可画面 (Xiaomi/MIUI、Samsung/One UI、
+  # Huawei/EMUI、Oppo/ColorOS 等) は OS 標準の設定画面とは別に存在し、
+  # `permission_handler.openAppSettings()` だけでは到達できない。
+  # android_intent_plus で各メーカー固有の Intent を投げて直接ジャンプする。
+  android_intent_plus: ^5.1.0
+
+  # ── 位置情報 (GPS) / ジオフェンス画面ロック ──
+  # 「確定した地点から半径 N km に入った / 出た」 で集中ロックを起動する
+  # ジオフェンス機能で使用 (= ユーザー要望)。 端末の現在地を取得し、
+  # Geolocator.distanceBetween で基準点との距離 (m) を測る。
+  # 権限: Android は ACCESS_FINE/COARSE_LOCATION を AndroidManifest.xml に追加。
+  #   Windows は OS の位置情報サービスが有効である必要がある (geolocator_windows)。
+  # 位置が取れない環境 (権限拒否 / 位置 OFF) では機能が静かに無効化される
+  #   だけで、 アプリ本体は通常どおり動作する。
+  geolocator: ^13.0.0
+  # device_info_plus は v11 系へ。 syncfusion_flutter_pdfviewer >=28.1.37 が
+  # flutter_localizations の intl 0.20.2 と組み合わせて使われる場合、
+  # device_info_plus ^11.0.0 が要求されるため。
+  device_info_plus: ^11.0.0
+
+  # ── Audio Service (本格的なバックグラウンド再生 / Foreground Service) ──
+  # Android の Foreground Service + MediaSession を組み合わせて、画面オフ
+  # でも確実に動画 (WebView 内 <video>) の音声再生を継続させる。
+  # 当アプリは Flutter 側で音声再生してない (= WebView 内ブラウザ再生) ため、
+  # ダミーの無音 AudioHandler を実装して Service 起動だけを目的とする。
+  # ロック画面に再生コントロールが表示される副次効果もある。
+  audio_service: ^0.18.16
+  # audio_service が依存する just_audio (無音再生用)
+  just_audio: ^0.9.40
+
+  # ── アプリ内エディタ / ビューア用 ──
+  # csv:     CSV / TSV のパース・書き出し (内蔵スプレッドシートエディタで使用)
+  # excel:   .xlsx の読み書き (内蔵スプレッドシートエディタで使用)
+  # archive: .pptx (= zip+xml) の解凍 (内蔵プレゼンビューアで使用)
+  csv: ^6.0.0
+  excel: ^4.0.6
+  archive: ^3.6.1
+
+  # ── PDF 生成 (.docx / .pptx → PDF 変換) ──
+  # 内蔵ビューアの「ダウンロード」 メニューから「PDF として保存」 機能で使う。
+  # 日本語表示には別途 assets/fonts/NotoSansJP-Regular.ttf の配置が必要。
+  pdf: ^3.11.1
+
+  # ── PDF をラスタライズ (1 ページ目をサムネイル画像化) ──
+  # ユーザー要望「PDF をマップにドロップしたら 1 枚目の表紙がサムネイルに」。
+  # Printing.raster() が pdfium で各ページを画像化する (Windows / Android 対応)。
+  # API が安定しているので pdfrx よりビルドが安定する。
+  printing: ^5.11.0
+
+  # ── 画像エンコード (= ユーザー要望: お絵かきページを JPG で書き出し) ──
+  # ui.Image は PNG しか出せないため、 JPG 変換に image パッケージを使う。
+  # printing が既に依存しているので解決済み (バージョンは lock に合わせる)。
+  image: ^4.3.0
+
+  # ── OS 通知 (ノード右クリック → 後で通知) ──
+  # 指定時間後にスマホ / Windows のシステム通知としてノード内容を表示する。
+  # 17.x 系は Windows サポートが安定 + Android の zonedSchedule API が
+  # 充実している。 timezone は zonedSchedule で発火時刻を TZDateTime と
+  # して指定するために必要 (依存先で自動で入るが念のため明示)。
+  flutter_local_notifications: ^17.2.4
+  timezone: ^0.9.4
+
+  # ── 音声入力 (Speech-to-Text) ──
+  # マイクで話した内容をノードにする音声入力機能で使用。 認識言語はアプリ
+  # 表示言語 (provider.speechLocaleId) に追従し、 区切り語で複数ノードに
+  # 分割する。 Android / iOS / macOS / Web で音声認識が動作する。
+  # Windows はビルドは通る (beta) が音声認識自体は未対応で、 その場合
+  # initialize() が false を返す → アプリ側で「利用不可」 表示にフォール
+  # バックするため、 Windows ビルドが壊れることはない。
+  # 別途権限が必要:
+  #   Android: AndroidManifest.xml に RECORD_AUDIO + RecognitionService の queries
+  #   iOS:     Info.plist に NSMicrophoneUsageDescription /
+  #            NSSpeechRecognitionUsageDescription
+  speech_to_text: ^7.0.0
+  # ── 音声読み上げ (TTS) ── AI 面接・ロープレ練習で AI の発話を音声化する
+  #   (= ユーザー要望: 音声会話形式)。 Android/Windows のネイティブ TTS を使う。
+  #   失敗してもテキスト+音声入力で会話は成立するよう、 呼び出しは try/catch。
+  flutter_tts: ^4.2.0
+
+  # ── アプリ内課金 / サブスクリプション (RevenueCat) ──
+  # Pro / Max プランの継続課金。Android / iOS / macOS はこの SDK 経由で
+  # Google Play Billing / StoreKit を扱う。Windows は SDK 非対応のため、
+  # billing_service.dart 側で Platform 分岐し、Web Purchase Link (Stripe)
+  # + REST API (entitlement 確認) で対応する。
+  # Windows 課金フローで使う url_launcher / http は上で既に導入済み。
+  # 開発中は Test Store キー (test_xxx) で動作確認し、本番リリース時に
+  # goog_xxx (Play) / rcb_xxx (Web Billing) へ差し替える。
+  purchases_flutter: ^9.9.0
+  # 動画書き出し用 ffmpeg (Android/iOS/macOS)。
+  # ── 非GPL (LGPL) 版に変更 (= ユーザー要望: GPL 回避) ──
+  # 旧: ffmpeg_kit_flutter_new (= full-GPL。 x264/x265/vid.stab/xvid が GPL で、
+  #     配布時にソース公開義務が絡む)。 → `_full` (非GPL/LGPL) に変更。
+  #     drawtext(freetype) や各種フィルタ・デコーダを保持しつつ GPL ライブラリを
+  #     除く。 H.264 ソフトエンコーダ(x264)は無くなるので、 モバイル書き出しは
+  #     Android のハードウェアエンコーダ h264_mediacodec を使う (mind_map_screen の
+  #     _buildFfmpegArgs 参照)。
+  # 4.x は Windows サポートを宣言するが同梱 Windows プラグインの include が壊れて
+  #   いて `flutter build windows` が失敗するため、 3.x 系に固定する。★4.x 不可★
+  ffmpeg_kit_flutter_new_full: ^2.1.0
+
+  # ── Linux デスクトップ用 WebView (CEF) ──
+  # Windows は webview_windows、 モバイルは flutter_inappwebview のまま。
+  # Linux だけは公式 WebView が無いため、 CEF ベースの flutter_linux_webview
+  # を使う。 これは **Linux 専用プラグイン**で、 webview_flutter_platform_interface
+  # (純 Dart の抽象IF) しか連れて来ない → Windows / Android / iOS のビルドには
+  # ネイティブ影響なし (= ユーザー要望「Windows 無傷」)。
+  # 制約: JS→Dart の JavaScript チャンネルは未実装 (Dart→JS の実行/値取得は可)。
+  #   そのため Linux では「ページ→Dart のメッセージ取得」系機能は縮退する。
+  #   ビルド時に linux/CMakeLists.txt へ CEF リンク設定が必要 (別途追記)。
+  #   ※ CEF バイナリを初回ビルド時にダウンロードするため Linux ホストが必須。
+  flutter_linux_webview: 0.1.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+  build_runner: ^2.4.8
+  json_serializable: ^6.7.1
+
+flutter:
+  uses-material-design: true
+
+  # ── 日本語 PDF 出力を有効にする場合（任意）──
+  # コード側 (_loadJapaneseFont) が rootBundle で
+  # 'assets/fonts/NotoSansJP-Regular.ttf' を読み込んで PDF の日本語を描画する。
+  # フォント未配置でもクラッシュはせず、PDF 内の日本語が □ (豆腐) になるだけ。
+  #
+  # 日本語 PDF を正しく出したいときは:
+  #   1. assets/fonts/NotoSansJP-Regular.ttf を配置
+  #      (入手元: https://fonts.google.com/noto/specimen/Noto+Sans+JP  OFL / 商用可)
+  #   2. 下の assets: 2 行のコメントを外す
+  # ※ ファイルを置かずに宣言だけ有効化すると `flutter build` がアセット欠落で
+  #   失敗する。必ずファイルを配置してから有効化すること。
+  #
+  # ライセンス方針: MS フォント (Calibri / Cambria / Aptos / Arial 等) は同梱せず、
+  # 日本語フォントは商用利用・再配布が自由な Noto Sans JP (OFL) を使う。
+  # assets:
+  #   - assets/fonts/NotoSansJP-Regular.ttf

@@ -1,0 +1,141 @@
+rules_version = '2';
+
+// ════════════════════════════════════════════════════════════════════════
+//  Kamispec / MokuMoku  Firestore セキュリティルール (雛形)
+// ════════════════════════════════════════════════════════════════════════
+//
+// 目的: 課金プラン (users/{uid}.plan 等) を「サーバー(Cloud Function = Admin
+//   SDK)だけが書ける」 ようにし、 アプリ(クライアント)からは変更できなくする。
+//   Admin SDK の書き込みはルールを完全にバイパスするので、 Cloud Function は
+//   このルールに関係なく plan を更新できる。
+//
+// ⚠️ 重要な前提:
+//   - このアプリは匿名認証 (request.auth.uid = 匿名localId)。
+//   - これを deploy すると、 ここに列挙していないコレクションへの
+//     クライアントアクセスは「すべて拒否」されます (Firestore は
+//     デフォルト拒否)。 既存機能を壊さないよう、 既知のコレクションを
+//     下に列挙しています。 もし弾かれる箇所があれば、 該当 match を追加し、
+//     必ず先にテスト環境 (エミュレータ/別プロジェクト) で確認してください。
+//   - 本番では各 match の "if request.auth != null" を、 所有者チェックや
+//     グループメンバーチェックへ段階的に厳格化してください
+//     (CLAUDE.md の「クライアント側セキュリティのみ」 警告を参照)。
+//
+// プラン移行メモ:
+//   plan をロックすると、 アプリ側で plan を users ドキュメントへ書いていた
+//   経路 (RevenueCat 反映ミラー・クーポン・ライセンス・dev) はその書き込みが
+//   拒否されます。 ただし現在の課金判定 (currentPlan) はローカル(prefs)基準
+//   なので、 端末の有料機能ロック自体は影響を受けません。 グループ表示用の
+//   users.plan は今後 Cloud Function が正本として更新します。
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── 課金で保護するフィールド ──
+    function billingFields() {
+      return [
+        'plan',
+        'subscriptionStatus',
+        'planExpiresAt',
+        'stripeCustomerId',
+        'stripeSubscriptionId',
+        'planSource',
+        'planUpdatedAt'
+      ];
+    }
+
+    // 受信データに課金フィールドが「一切含まれていない」か
+    function noBillingFieldsIncoming() {
+      return !request.resource.data.keys().hasAny(billingFields());
+    }
+
+    // 既存値と課金フィールドが「変化していない」か (作成時は resource==null
+    //   なので呼ばない。 update 専用)
+    function billingUnchanged() {
+      return request.resource.data.get('plan', null)
+                == resource.data.get('plan', null)
+        && request.resource.data.get('subscriptionStatus', null)
+                == resource.data.get('subscriptionStatus', null)
+        && request.resource.data.get('planExpiresAt', null)
+                == resource.data.get('planExpiresAt', null)
+        && request.resource.data.get('stripeCustomerId', null)
+                == resource.data.get('stripeCustomerId', null)
+        && request.resource.data.get('stripeSubscriptionId', null)
+                == resource.data.get('stripeSubscriptionId', null)
+        && request.resource.data.get('planSource', null)
+                == resource.data.get('planSource', null);
+    }
+
+    // ── users/{uid}: 本人のみ。 課金フィールドはクライアント書き込み不可 ──
+    match /users/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+
+      // 新規作成: 本人。 ただし課金フィールドは付けられない
+      //   (= 自分を pro/max にして作る、 を防ぐ)。
+      allow create: if request.auth != null
+                    && request.auth.uid == uid
+                    && noBillingFieldsIncoming();
+
+      // 更新: 本人。 課金フィールドは「現状と同じ値」 でなければ拒否
+      //   (= displayName 等は変更可、 plan 等は変えられない)。
+      allow update: if request.auth != null
+                    && request.auth.uid == uid
+                    && billingUnchanged();
+
+      allow delete: if false;
+    }
+
+    // ── グループ (ページ/メンバー/カレンダー) ──
+    //   暫定: 認証済みなら read/write 可。
+    //   TODO(本番): メンバーシップ (groups/{gid}/members/{uid} 存在) で絞る。
+    match /groups/{gid} {
+      allow read, write: if request.auth != null;
+      match /{sub=**} {
+        allow read, write: if request.auth != null;
+      }
+    }
+
+    // ── メッセージ ── 暫定: 認証済みなら可 (アプリ側で送受信フィルタ)。
+    //   TODO(本番): fromUid==自分 / 宛先が自分 or 自分のグループ で絞る。
+    match /messages/{msgId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // ── 問い合わせ ── 認証済みなら作成/閲覧可。
+    //   TODO(本番): 返信(update)は管理者 (custom claim) のみに制限。
+    match /inquiries/{msgId} {
+      allow read, create, update: if request.auth != null;
+      allow delete: if false;
+    }
+
+    // ── 管理設定 ── 読み取りのみ (globalGeminiApiKey 等)。
+    //   ⚠️ globalGeminiApiKey をここに置くと認証ユーザーに読まれます。
+    //      本番では AI 呼び出しをサーバー経由にし、 鍵はクライアントへ出さない。
+    //   書き込みは Console / Admin のみ (= false)。
+    match /admin/{docId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
+    // ── クーポン ── 読み取りで検証。 付与/消費はサーバーへ移すのが理想。
+    //   TODO(本番): currentUses 加算も Cloud Function 化し write:false に。
+    match /coupons/{code} {
+      allow read: if request.auth != null;
+      allow update: if request.auth != null; // 暫定 (使用回数加算用)
+      allow create, delete: if false;
+    }
+
+    // ── ライセンス ── 読み取りで検証。 消費 (consumedByUid) は暫定で許可。
+    //   ⚠️ ライセンスでの plan 付与は本来サーバーで行うべき。 plan 自体は
+    //      上の users ルールでロック済みなので、 クライアントが consume しても
+    //      勝手に有料化はできない (正本の plan はサーバーが決める)。
+    match /licenses/{code} {
+      allow read: if request.auth != null;
+      allow update: if request.auth != null; // 暫定 (consume 用)
+      allow create, delete: if false;
+    }
+
+    // ── 上記以外は既定で拒否 ──
+    //   (ここに無いコレクションにアクセスして弾かれたら、 その match を
+    //    追加してください。 デプロイ前にエミュレータで動作確認推奨。)
+  }
+}

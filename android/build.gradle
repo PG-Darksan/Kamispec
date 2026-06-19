@@ -1,0 +1,64 @@
+// ─────────────────────────────────────────────────────────────────────
+// プロジェクトレベル build.gradle
+// 場所: android/build.gradle  (app サブフォルダではなく android/ 直下)
+// ─────────────────────────────────────────────────────────────────────
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.buildDir = '../build'
+subprojects {
+    project.buildDir = "${rootProject.buildDir}/${project.name}"
+}
+subprojects {
+    project.evaluationDependsOn(':app')
+}
+
+tasks.register("clean", Delete) {
+    delete rootProject.buildDir
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 古い Flutter プラグイン (flutter_inappwebview 5.8.0 など) は
+// AndroidManifest.xml に package="..." で指定していて、
+// build.gradle の namespace 設定を持たない。
+// AGP 8.x は namespace 必須になったため
+//   "Namespace not specified" エラーでビルドが止まる。
+//
+// このブロックは、namespace が未設定のプラグインに対して
+// AndroidManifest.xml の package 属性から namespace を注入する。
+//
+// 実装ポイント:
+//   - plugins.withId("com.android.library") を使って、Android ライブラリ
+//     プラグインが適用された瞬間にフックを仕掛ける (afterEvaluate は
+//     タイミング問題で動かない場合があるため)
+//   - XML パースは正規表現で行う (groovy.util.XmlParser や groovy.xml.XmlParser
+//     のインポートは Gradle/Groovy バージョンによって失敗するため)
+// ═══════════════════════════════════════════════════════════════════════
+subprojects { subProject ->
+    subProject.plugins.withId("com.android.library") {
+        def androidExt = subProject.extensions.findByName("android")
+        if (androidExt == null) return
+        if (androidExt.namespace != null) return
+
+        def manifestFile = subProject.file("src/main/AndroidManifest.xml")
+        if (!manifestFile.exists()) return
+
+        try {
+            def text = manifestFile.text
+            // <manifest ... package="xxx" ...> を正規表現で抽出
+            def matcher = text =~ /<manifest[^>]*\bpackage\s*=\s*"([^"]+)"/
+            if (matcher.find()) {
+                def pkg = matcher.group(1)
+                androidExt.namespace = pkg
+                println "[namespace-fix] Injected '${pkg}' into ${subProject.name}"
+            }
+        } catch (Exception e) {
+            println "[namespace-fix] Failed for ${subProject.name}: ${e.message}"
+        }
+    }
+}

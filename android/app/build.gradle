@@ -1,0 +1,164 @@
+plugins {
+    id "com.android.application"
+    // START: FlutterFire Configuration
+    id 'com.google.gms.google-services'
+    // END: FlutterFire Configuration
+    id "kotlin-android"
+    id "dev.flutter.flutter-gradle-plugin"
+}
+
+// ── リリース署名設定の読み込み ──
+// android/key.properties (= Git 管理外にすること) からキーストア情報を読む。
+// ファイルが無い場合 (= 手元やCIで未設定) はデバッグ署名にフォールバックする
+// ので、 ビルド自体は壊れない。 配布用 (Play / 直接配布) は必ず作成すること。
+//
+// android/key.properties の例:
+//   storePassword=********
+//   keyPassword=********
+//   keyAlias=upload
+//   storeFile=upload-keystore.jks      # android/app からの相対 or 絶対パス
+//
+// キーストア生成例:
+//   keytool -genkey -v -keystore upload-keystore.jks -keyalg RSA \
+//     -keysize 2048 -validity 10000 -alias upload
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file('key.properties')
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+}
+
+android {
+    // namespace = アプリ内部のコードパッケージ (R/BuildConfig 生成先)。
+    //   MainActivity.kt がこのパッケージに置かれているため、 ここを変える
+    //   場合は MainActivity の package 宣言とフォルダ移動も必要。 公開だけが
+    //   目的なら namespace は据え置きで applicationId だけ変えれば十分。
+    namespace "com.example.mindmap_app"
+    compileSdk flutter.compileSdkVersion
+    ndkVersion flutter.ndkVersion
+
+    compileOptions {
+        // ── core library desugaring を有効化 ──
+        // flutter_local_notifications 17.x が内部で使う java.time.* 等の
+        // Java 8+ API を、 Android 26 未満でも使えるようにする。
+        // 下の dependencies { coreLibraryDesugaring '...' } と必ずセット。
+        coreLibraryDesugaringEnabled true
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+
+    kotlinOptions {
+        jvmTarget = "11"
+    }
+
+    lint {
+        disable 'Deprecation'
+        abortOnError false
+        checkReleaseBuilds false
+    }
+
+    defaultConfig {
+        // ⚠ 公開ブロッカー: com.example.* は Google Play にアップロード不可
+        //   (予約プレフィックス)。 自分の逆ドメインに変更すること。
+        //   変更後は Firebase コンソールにこの applicationId の Android アプリを
+        //   追加して google-services.json を差し替える必要がある
+        //   (google-services プラグインを使っているため。 もし Firebase を
+        //   REST + dart-define のみで使っていて native SDK 初期化が不要なら、
+        //   先頭の 'com.google.gms.google-services' プラグイン行を外す手もある)。
+        applicationId "com.kamispec.app"
+
+        // ── SDK バージョンを明示 ──
+        // POST_NOTIFICATIONS を使うため targetSdk は 33 以上が必須。
+        // Play の最新要件に合わせて 34 を指定 (2025 の 35 要件に上げる際は
+        //   compileSdk >= 35 を満たすこと)。 minSdk は super_clipboard 等の
+        //   下限に合わせて 23 (Android 6.0)。
+        minSdkVersion flutter.minSdkVersion
+        targetSdk 34
+
+        // ── バージョンは pubspec.yaml の version: を単一ソースに ──
+        // 旧実装は versionCode 1 / versionName "1.0.0" をここに直書きして
+        //   pubspec と二重管理だった (上げ忘れの温床)。 Flutter 提供の値を
+        //   使い、 pubspec の version: (例 1.0.0+1) だけ更新すれば反映される。
+        versionCode flutter.versionCode
+        versionName flutter.versionName
+    }
+
+    signingConfigs {
+        release {
+            if (keystorePropertiesFile.exists()) {
+                keyAlias keystoreProperties['keyAlias']
+                keyPassword keystoreProperties['keyPassword']
+                storeFile keystoreProperties['storeFile'] ? file(keystoreProperties['storeFile']) : null
+                storePassword keystoreProperties['storePassword']
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            // key.properties があれば本番署名、 無ければデバッグ署名へフォール
+            //   バック (= 手元では従来どおりビルド可能、 配布時のみ本番署名)。
+            signingConfig keystorePropertiesFile.exists() ? signingConfigs.release : signingConfigs.debug
+
+            // ── R8 による縮小・難読化 + 未使用リソース除去 ──
+            // proguard-rules.pro に flutter_local_notifications(GSON)/
+            //   audio_service 等の keep ルールを記載済み。
+            // ⚠ release ビルドは必ず実機で動作確認すること。 難読化やリソース
+            //   除去で reflection 系・通知アイコンが壊れる場合があるため、
+            //   問題が出たら proguard-rules.pro に keep を追記する。
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    // ── ネイティブライブラリの重複対策 (= ビルドエラー解消) ──
+    // fvp と ffmpeg_kit_flutter_new が両方 libc++_shared.so を同梱しているため、
+    // mergeReleaseNativeLibs で
+    //   "2 files found with path 'lib/<abi>/libc++_shared.so'"
+    // (DuplicateRelativeFileException) になってビルドが失敗する。
+    // どちらも NDK の C++ 共有ランタイム (ABI 互換) なので、 最初の 1 つだけ
+    // 採用する (pickFirst) ことで衝突を解消する。 各 ABI 分を列挙。
+    packaging {
+        jniLibs {
+            pickFirsts += [
+                'lib/x86/libc++_shared.so',
+                'lib/x86_64/libc++_shared.so',
+                'lib/armeabi-v7a/libc++_shared.so',
+                'lib/arm64-v8a/libc++_shared.so'
+            ]
+            // ── fvp を Android から完全に除外 (= 起動ハング修正 + サイズ削減) ──
+            // 起動しなくなった原因: fvp の Android プラグイン (FvpPlugin) は
+            //   static 初期化で System.loadLibrary("fvp") を呼び、 起動時(engine
+            //   attach)に libfvp → libmdk → 10MB級 libffmpeg を読み込んで mdk を
+            //   初期化する。 これがアプリ起動を「読み込み中」 のまま止めていた。
+            // fvp はデスクトップ専用 (registerWith でデスクトップ限定済み) で
+            //   Android では一切使わないので、 libfvp.so を除外すれば
+            //   loadLibrary("fvp") が即失敗 (try/catch で握りつぶし) し、 重い
+            //   ネイティブ初期化が走らなくなって起動が直る。 ついでに mdk の
+            //   巨大ライブラリ (~29MB) も削れる。
+            //   ※ libfvp の native メソッドは Dart 側が Android では呼ばないので
+            //     除外しても安全 (= 何もロードされないだけ)。
+            //   ※ libffmpeg.so は fvp(mdk) 専用 (ffmpeg_kit は libav*.so を使う)。
+            //   ※ libass.so は ffmpeg_kit が参照する可能性があるため残す。
+            excludes += [
+                '**/libfvp.so',
+                '**/libmdk.so',
+                '**/libffmpeg.so'
+            ]
+        }
+    }
+}
+
+flutter {
+    source "../.."
+}
+
+// ── core library desugaring 用ライブラリ ──
+// AGP 8.x 系では 2.1.x 以降を推奨。 古い AGP では 1.2.x が必要だが、
+// flutter_local_notifications 17.x との組み合わせなら 2.1.4 で問題ない。
+dependencies {
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.4'
+    // ホーム画面ショートカット (ShortcutManagerCompat / IconCompat) 用。
+    // Flutter embedding 経由で transitive に入るが、 明示しておくと確実。
+    implementation 'androidx.core:core-ktx:1.13.1'
+}

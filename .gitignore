@@ -1,0 +1,17 @@
+build/
+.dart_tool/
+.android/
+.ios/
+# 環境変数ファイル（API キーが入っているので絶対にコミットしない）
+env.json
+env.*.json
+.env
+.env.*
+
+# 別リポジトリ/ローカル成果物 (ロールバック用チェックポイントには含めない)
+Kamispec/
+*.log
+build_apk.log
+.idea/
+.vscode/
+*.iml

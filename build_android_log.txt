@@ -1,0 +1,41 @@
+Running Gradle task 'assembleRelease'...                        
+[namespace-fix] Injected 'com.ryanheise.audio_session' into audio_session
+[namespace-fix] Injected 'xyz.luan.audioplayers' into audioplayers_android
+[namespace-fix] Injected 'io.flutter.plugins.camerax' into camera_android_camerax
+[namespace-fix] Injected 'dev.fluttercommunity.plus.device_info' into device_info_plus
+[namespace-fix] Injected 'com.antonkarpenko.ffmpegkit' into ffmpeg_kit_flutter_new_full
+[namespace-fix] Injected 'com.mr.flutter.plugin.filepicker' into file_picker
+[namespace-fix] Injected 'com.pichillilorenzo.flutter_inappwebview_android' into flutter_inappwebview_android
+[namespace-fix] Injected 'com.jrai.flutter_keyboard_visibility_temp_fork' into flutter_keyboard_visibility_temp_fork
+[namespace-fix] Injected 'com.dexterous.flutterlocalnotifications' into flutter_local_notifications
+[namespace-fix] Injected 'io.flutter.plugins.flutter_plugin_android_lifecycle' into flutter_plugin_android_lifecycle
+[namespace-fix] Injected 'com.mediadevkit.fvp' into fvp
+flutterSdkVersion: 3.41.2, 34102
+[namespace-fix] Injected 'com.baseflow.geolocator' into geolocator_android
+[namespace-fix] Injected 'dev.irondash.engine_context' into irondash_engine_context
+[namespace-fix] Injected 'com.github.dart_lang.jni' into jni
+[namespace-fix] Injected 'com.github.dart_lang.jni_flutter' into jni_flutter
+[namespace-fix] Injected 'com.ryanheise.just_audio' into just_audio
+[namespace-fix] Injected 'com.crazecoder.openfile' into open_filex
+[namespace-fix] Injected 'dev.fluttercommunity.plus.packageinfo' into package_info_plus
+[namespace-fix] Injected 'com.baseflow.permissionhandler' into permission_handler_android
+[namespace-fix] Injected 'net.nfet.flutter.printing' into printing
+[namespace-fix] Injected 'com.revenuecat.purchases_flutter' into purchases_flutter
+[namespace-fix] Injected 'dev.flutterquill.quill_native_bridge' into quill_native_bridge_android
+[namespace-fix] Injected 'io.flutter.plugins.sharedpreferences' into shared_preferences_android
+[namespace-fix] Injected 'com.superlist.super_native_extensions' into super_native_extensions
+[namespace-fix] Injected 'io.flutter.plugins.urllauncher' into url_launcher_android
+[namespace-fix] Injected 'io.flutter.plugins.videoplayer' into video_player_android
+[namespace-fix] Injected 'xyz.justsoft.video_thumbnail' into video_thumbnail
+[namespace-fix] Injected 'dev.fluttercommunity.plus.wakelock' into wakelock_plus
+Font asset "MaterialIcons-Regular.otf" was tree-shaken, reducing it from 1645184 to 79144 bytes (95.2% reduction). Tree-shaking can be disabled by providing the --no-tree-shake-icons flag when building your app.
+INFO: Precompiled binaries are disabled
+INFO: Building irondash_engine_context_native for armv7-linux-androideabi
+INFO: Building irondash_engine_context_native for aarch64-linux-android
+INFO: Building irondash_engine_context_native for x86_64-linux-android
+INFO: Precompiled binaries are disabled
+INFO: Building super_native_extensions for armv7-linux-androideabi
+INFO: Building super_native_extensions for aarch64-linux-android
+INFO: Building super_native_extensions for x86_64-linux-android
+Running Gradle task 'assembleRelease'...                          193.5s
+√ Built build\app\outputs\flutter-apk\app-release.apk (219.7MB)

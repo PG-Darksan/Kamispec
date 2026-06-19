@@ -1,0 +1,4 @@
+Building Windows application...                                 
+FVP_DEPS_LATEST=
+Building Windows application...                                   154.2s
+√ Built build\windows\x64\runner\Release\mindmap_app.exe

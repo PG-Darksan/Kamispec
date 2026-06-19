@@ -1,0 +1,20 @@
+# ─────────────────────────────────────────────────────────────────────────
+# リリース署名用キーストア設定の雛形。
+# 使い方:
+#   1) このファイルを android/key.properties にコピー (リネーム)
+#   2) 下の値を自分のキーストアに合わせて埋める
+#   3) android/key.properties は .gitignore に追加してコミットしないこと
+#      (パスワード・鍵情報が含まれるため)
+#
+# キーストア生成例 (android/app/ 配下で実行する想定):
+#   keytool -genkey -v -keystore upload-keystore.jks -keyalg RSA \
+#     -keysize 2048 -validity 10000 -alias upload
+#
+# build.gradle は key.properties が存在すれば本番署名、 無ければ自動的に
+# デバッグ署名にフォールバックする。
+# ─────────────────────────────────────────────────────────────────────────
+storePassword=ここにキーストアのパスワード
+keyPassword=ここに鍵のパスワード
+keyAlias=upload
+# storeFile は android/app からの相対パス、 または絶対パス
+storeFile=upload-keystore.jks
