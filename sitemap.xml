@@ -1,74 +1,40 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
-        xmlns:xhtml="http://www.w3.org/1999/xhtml">
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 
-  <!-- ホーム (5言語) -->
+  <!-- ホーム -->
   <url>
-    <loc>https://kamispe.example/</loc>
-    <xhtml:link rel="alternate" hreflang="ja" href="https://kamispe.example/"/>
-    <xhtml:link rel="alternate" hreflang="en" href="https://kamispe.example/en/"/>
-    <xhtml:link rel="alternate" hreflang="zh" href="https://kamispe.example/zh/"/>
-    <xhtml:link rel="alternate" hreflang="ko" href="https://kamispe.example/ko/"/>
-    <xhtml:link rel="alternate" hreflang="es" href="https://kamispe.example/es/"/>
-    <xhtml:link rel="alternate" hreflang="x-default" href="https://kamispe.example/"/>
+    <loc>https://kamispec.com/</loc>
     <priority>1.0</priority>
     <changefreq>weekly</changefreq>
   </url>
-  <url><loc>https://kamispe.example/en/</loc><priority>0.9</priority></url>
-  <url><loc>https://kamispe.example/zh/</loc><priority>0.9</priority></url>
-  <url><loc>https://kamispe.example/ko/</loc><priority>0.9</priority></url>
-  <url><loc>https://kamispe.example/es/</loc><priority>0.9</priority></url>
 
-  <!-- Features -->
+  <!-- 機能紹介 -->
   <url>
-    <loc>https://kamispe.example/features.html</loc>
-    <xhtml:link rel="alternate" hreflang="ja" href="https://kamispe.example/features.html"/>
-    <xhtml:link rel="alternate" hreflang="en" href="https://kamispe.example/en/features.html"/>
-    <xhtml:link rel="alternate" hreflang="zh" href="https://kamispe.example/zh/features.html"/>
-    <xhtml:link rel="alternate" hreflang="ko" href="https://kamispe.example/ko/features.html"/>
-    <xhtml:link rel="alternate" hreflang="es" href="https://kamispe.example/es/features.html"/>
+    <loc>https://kamispec.com/features.html</loc>
     <priority>0.8</priority>
     <changefreq>weekly</changefreq>
   </url>
-  <url><loc>https://kamispe.example/en/features.html</loc><priority>0.7</priority></url>
-  <url><loc>https://kamispe.example/zh/features.html</loc><priority>0.7</priority></url>
-  <url><loc>https://kamispe.example/ko/features.html</loc><priority>0.7</priority></url>
-  <url><loc>https://kamispe.example/es/features.html</loc><priority>0.7</priority></url>
 
-  <!-- Pricing -->
+  <!-- 料金プラン -->
   <url>
-    <loc>https://kamispe.example/pricing.html</loc>
-    <xhtml:link rel="alternate" hreflang="ja" href="https://kamispe.example/pricing.html"/>
-    <xhtml:link rel="alternate" hreflang="en" href="https://kamispe.example/en/pricing.html"/>
-    <xhtml:link rel="alternate" hreflang="zh" href="https://kamispe.example/zh/pricing.html"/>
-    <xhtml:link rel="alternate" hreflang="ko" href="https://kamispe.example/ko/pricing.html"/>
-    <xhtml:link rel="alternate" hreflang="es" href="https://kamispe.example/es/pricing.html"/>
+    <loc>https://kamispec.com/pricing.html</loc>
     <priority>0.8</priority>
     <changefreq>weekly</changefreq>
   </url>
-  <url><loc>https://kamispe.example/en/pricing.html</loc><priority>0.7</priority></url>
-  <url><loc>https://kamispe.example/zh/pricing.html</loc><priority>0.7</priority></url>
-  <url><loc>https://kamispe.example/ko/pricing.html</loc><priority>0.7</priority></url>
-  <url><loc>https://kamispe.example/es/pricing.html</loc><priority>0.7</priority></url>
 
-  <!-- Contact -->
+  <!-- お問い合わせ -->
   <url>
-    <loc>https://kamispe.example/contact.html</loc>
-    <xhtml:link rel="alternate" hreflang="ja" href="https://kamispe.example/contact.html"/>
-    <xhtml:link rel="alternate" hreflang="en" href="https://kamispe.example/en/contact.html"/>
-    <xhtml:link rel="alternate" hreflang="zh" href="https://kamispe.example/zh/contact.html"/>
-    <xhtml:link rel="alternate" hreflang="ko" href="https://kamispe.example/ko/contact.html"/>
-    <xhtml:link rel="alternate" hreflang="es" href="https://kamispe.example/es/contact.html"/>
+    <loc>https://kamispec.com/contact.html</loc>
     <priority>0.7</priority>
     <changefreq>monthly</changefreq>
   </url>
 
   <!-- 機能サブページ -->
-  <url><loc>https://kamispe.example/ai.html</loc><priority>0.7</priority></url>
-  <url><loc>https://kamispe.example/video.html</loc><priority>0.7</priority></url>
-  <url><loc>https://kamispe.example/platform.html</loc><priority>0.7</priority></url>
+  <url><loc>https://kamispec.com/ai.html</loc><priority>0.7</priority></url>
+  <url><loc>https://kamispec.com/video.html</loc><priority>0.7</priority></url>
+  <url><loc>https://kamispec.com/platform.html</loc><priority>0.7</priority></url>
 
-  <!-- 特定商取引法に基づく表記 (日本語のみ) -->
-  <url><loc>https://kamispe.example/tokutei.html</loc><priority>0.6</priority><changefreq>yearly</changefreq></url>
+  <!-- 特定商取引法に基づく表記 -->
+  <url><loc>https://kamispec.com/tokutei.html</loc><priority>0.6</priority><changefreq>yearly</changefreq></url>
 
 </urlset>
