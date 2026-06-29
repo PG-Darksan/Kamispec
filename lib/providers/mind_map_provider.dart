@@ -26,6 +26,7 @@ class CalendarEvent {
   final String? endTime; // "HH:mm" or null
   final int? colorArgb;
   final String? googleId;
+  final bool lockDuringEvent;
 
   /// グループ共有時のイベント所有者UID。
   /// null = 自分のイベント（移行期/ローカル）。
@@ -43,6 +44,7 @@ class CalendarEvent {
     this.endTime,
     this.colorArgb,
     this.googleId,
+    this.lockDuringEvent = false,
     this.ownerUid,
     this.ownerName,
   });
@@ -62,6 +64,7 @@ class CalendarEvent {
         'endTime': endTime,
         'colorArgb': colorArgb,
         'googleId': googleId,
+        'lockDuringEvent': lockDuringEvent,
         'ownerUid': ownerUid,
         'ownerName': ownerName,
       };
@@ -73,6 +76,7 @@ class CalendarEvent {
         endTime: j['endTime'] as String?,
         colorArgb: j['colorArgb'] as int?,
         googleId: j['googleId'] as String?,
+        lockDuringEvent: j['lockDuringEvent'] as bool? ?? false,
         ownerUid: j['ownerUid'] as String?,
         ownerName: j['ownerName'] as String?,
       );
@@ -677,6 +681,41 @@ class _AttachmentToUpload {
   });
 }
 
+enum CloudDownloadItemStatus { pending, downloading, completed, failed, skipped }
+
+class CloudDownloadItem {
+  final String id;
+  final String pageId;
+  final String nodeId;
+  final String label;
+  final String fileName;
+  final String kind;
+  double progress;
+  CloudDownloadItemStatus status;
+  bool skip;
+  String? error;
+
+  CloudDownloadItem({
+    required this.id,
+    required this.pageId,
+    required this.nodeId,
+    required this.label,
+    required this.fileName,
+    required this.kind,
+    this.progress = 0,
+    this.status = CloudDownloadItemStatus.pending,
+    this.skip = false,
+    this.error,
+  });
+
+  bool get canSkip =>
+      status == CloudDownloadItemStatus.pending ||
+      status == CloudDownloadItemStatus.skipped;
+  bool get canRetry =>
+      status == CloudDownloadItemStatus.failed &&
+      (kind == 'attachment' || kind == 'video');
+}
+
 /// AI 要約・解説に使った「資料の文脈」をページ単位で保持するためのクラス。
 /// 要約完了後、ユーザーが「この資料についてもう少し質問したい」と思った
 /// ときに参照する。ファイル要約 (summarize) のページにのみ作成される
@@ -1269,6 +1308,9 @@ class FlashcardFolder {
 }
 
 class MindMapProvider extends ChangeNotifier {
+  static bool isMergeablePageType(String pageType) =>
+      pageType != 'videoEditor' && pageType != 'document';
+
   final List<MindMapPage> _pages = [];
 
   /// フォルダー一覧（フラット）。ページは `folderId` で所属フォルダーを参照。
@@ -1341,13 +1383,13 @@ class MindMapProvider extends ChangeNotifier {
 
   Future<void> setCalendarViewingUid(String value) async {
     _calendarViewingUid = value;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString('calendarViewingUid', value);
     notifyListeners();
   }
 
   Future<void> _loadCalendarViewingUid() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     _calendarViewingUid =
         prefs.getString('calendarViewingUid') ?? kCalendarViewSelf;
   }
@@ -1412,7 +1454,7 @@ class MindMapProvider extends ChangeNotifier {
       {String label = ''}) async {
     _calendarTzOffsetMinutes = offsetMinutes;
     _calendarTzLabel = label;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     if (offsetMinutes == null) {
       await prefs.remove('calendarTzOffset');
       await prefs.remove('calendarTzLabel');
@@ -1857,7 +1899,7 @@ class MindMapProvider extends ChangeNotifier {
   Future<void> setCalendarSyncDestination(String dest) async {
     _calendarSyncDestination = dest;
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setString(_calendarSyncDestKey, dest);
     } catch (_) {}
     notifyListeners();
@@ -1871,7 +1913,7 @@ class MindMapProvider extends ChangeNotifier {
   Future<void> setCalendarPullSource(String src) async {
     _calendarPullSource = src;
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setString(_calendarPullSrcKey, src);
     } catch (_) {}
     notifyListeners();
@@ -1882,7 +1924,7 @@ class MindMapProvider extends ChangeNotifier {
     _calendarSyncDestination = '';
     _calendarPullSource = '';
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.remove(_calendarSyncDestKey);
       await prefs.remove(_calendarPullSrcKey);
     } catch (_) {}
@@ -1932,6 +1974,7 @@ class MindMapProvider extends ChangeNotifier {
             endTime: e.endTime,
             colorArgb: e.colorArgb,
             googleId: e.googleId,
+            lockDuringEvent: e.lockDuringEvent,
             ownerUid: myUid,
             ownerName: _displayName,
           );
@@ -1989,6 +2032,7 @@ class MindMapProvider extends ChangeNotifier {
                       endTime: ev.endTime,
                       colorArgb: ev.colorArgb,
                       googleId: gid,
+                      lockDuringEvent: ev.lockDuringEvent,
                       ownerUid: myUid,
                       ownerName: _displayName,
                     );
@@ -2104,7 +2148,7 @@ class MindMapProvider extends ChangeNotifier {
                 _calendarViewingUid != myUid)) {
           _calendarViewingUid = kCalendarViewSelf;
           // ignore: discarded_futures
-          SharedPreferences.getInstance().then(
+          _prefsWithRetry().then(
               (p) => p.setString('calendarViewingUid', kCalendarViewSelf));
         }
       } else {
@@ -2118,7 +2162,7 @@ class MindMapProvider extends ChangeNotifier {
           if (m == null || !m.allowSharing || !m.isProOrAbove) {
             _calendarViewingUid = kCalendarViewSelf;
             // ignore: discarded_futures
-            SharedPreferences.getInstance().then(
+            _prefsWithRetry().then(
                 (p) => p.setString('calendarViewingUid', kCalendarViewSelf));
           }
         }
@@ -2205,6 +2249,7 @@ class MindMapProvider extends ChangeNotifier {
                       endTime: ev.endTime,
                       colorArgb: ev.colorArgb,
                       googleId: ev.googleId,
+                      lockDuringEvent: ev.lockDuringEvent,
                       ownerUid: ownerId,
                       ownerName: ev.ownerName ?? ownerName,
                     );
@@ -2263,6 +2308,7 @@ class MindMapProvider extends ChangeNotifier {
                             endTime: ev.endTime,
                             colorArgb: ev.colorArgb,
                             googleId: ev.googleId,
+                            lockDuringEvent: ev.lockDuringEvent,
                             ownerUid: myUid,
                             ownerName: _displayName,
                           ));
@@ -2304,7 +2350,8 @@ class MindMapProvider extends ChangeNotifier {
       {String? memo,
       String? startTime,
       String? endTime,
-      int? colorArgb}) async {
+      int? colorArgb,
+      bool lockDuringEvent = false}) async {
     _pushCalendarUndo();
     final list = _calendarEvents.putIfAbsent(dateKey, () => []);
     final newEvent = CalendarEvent(
@@ -2314,6 +2361,7 @@ class MindMapProvider extends ChangeNotifier {
       startTime: startTime,
       endTime: endTime,
       colorArgb: colorArgb,
+      lockDuringEvent: lockDuringEvent,
       // 所有者を自分として刻印（グループ共有時のフィルタ用）
       ownerUid: _uid,
       ownerName: _displayName,
@@ -2339,6 +2387,7 @@ class MindMapProvider extends ChangeNotifier {
             endTime: newEvent.endTime,
             colorArgb: newEvent.colorArgb,
             googleId: gid,
+            lockDuringEvent: newEvent.lockDuringEvent,
             ownerUid: _uid,
             ownerName: _displayName,
           );
@@ -2384,7 +2433,8 @@ class MindMapProvider extends ChangeNotifier {
       {String? memo,
       String? startTime,
       String? endTime,
-      int? colorArgb}) async {
+      int? colorArgb,
+      bool? lockDuringEvent}) async {
     final list = _calendarEvents[dateKey];
     if (list == null) return;
     final idx = list.indexWhere((e) => e.id == eventId);
@@ -2403,6 +2453,7 @@ class MindMapProvider extends ChangeNotifier {
       endTime: endTime,
       colorArgb: colorArgb,
       googleId: old.googleId,
+      lockDuringEvent: lockDuringEvent ?? old.lockDuringEvent,
       ownerUid: old.ownerUid ?? _uid,
       ownerName: old.ownerName ?? _displayName,
     );
@@ -2430,6 +2481,7 @@ class MindMapProvider extends ChangeNotifier {
               endTime: endTime,
               colorArgb: colorArgb,
               googleId: gid,
+              lockDuringEvent: updated.lockDuringEvent,
               ownerUid: updated.ownerUid,
               ownerName: updated.ownerName,
             );
@@ -2460,7 +2512,8 @@ class MindMapProvider extends ChangeNotifier {
         memo: src.memo,
         startTime: newStartTime ?? src.startTime,
         endTime: newEndTime ?? src.endTime,
-        colorArgb: src.colorArgb);
+        colorArgb: src.colorArgb,
+        lockDuringEvent: src.lockDuringEvent);
   }
 
   /// イベントを別の日に移動（日付キーを変える）
@@ -2485,7 +2538,8 @@ class MindMapProvider extends ChangeNotifier {
           memo: src.memo,
           startTime: finalStart,
           endTime: finalEnd,
-          colorArgb: src.colorArgb);
+          colorArgb: src.colorArgb,
+          lockDuringEvent: src.lockDuringEvent);
       return;
     }
 
@@ -2496,7 +2550,8 @@ class MindMapProvider extends ChangeNotifier {
         memo: src.memo,
         startTime: finalStart,
         endTime: finalEnd,
-        colorArgb: src.colorArgb);
+        colorArgb: src.colorArgb,
+        lockDuringEvent: src.lockDuringEvent);
   }
 
   void _sortDayEvents(List<CalendarEvent> list) {
@@ -2512,7 +2567,7 @@ class MindMapProvider extends ChangeNotifier {
 
   Future<void> _saveCalendarEvents() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       final jsonMap = <String, dynamic>{};
       _calendarEvents.forEach((k, v) {
         jsonMap[k] = v.map((e) => e.toJson()).toList();
@@ -2523,7 +2578,7 @@ class MindMapProvider extends ChangeNotifier {
 
   Future<void> loadCalendarEvents() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       // 同期先選択の復元
       _calendarSyncDestination = prefs.getString(_calendarSyncDestKey) ?? '';
       _calendarPullSource = prefs.getString(_calendarPullSrcKey) ?? '';
@@ -2585,7 +2640,7 @@ class MindMapProvider extends ChangeNotifier {
   /// 起動時に呼ばれても既に削除済なら何も起こらない。
   Future<void> loadGoogleCalendarSettings() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       // 既知の旧キーを掃除する (将来同名キーを別用途で使う事故を避けるため)
       const legacyKeys = <String>[
         'gcal_ics_url',
@@ -2718,6 +2773,8 @@ class MindMapProvider extends ChangeNotifier {
   // 自動生成URL
   static String get _firestoreBaseUrl =>
       'https://firestore.googleapis.com/v1/projects/$_firestoreProjectId/databases/(default)/documents';
+  static String get _functionsBaseUrl =>
+      'https://asia-northeast1-$_firestoreProjectId.cloudfunctions.net';
   static const String _authUrl =
       'https://identitytoolkit.googleapis.com/v1/accounts:signUp';
 
@@ -2766,13 +2823,13 @@ class MindMapProvider extends ChangeNotifier {
     } else {
       _pageGroupBindings[pageId] = groupId;
     }
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString('pageGroupBindings', jsonEncode(_pageGroupBindings));
     notifyListeners();
   }
 
   Future<void> _loadJoinedGroups() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     final list = prefs.getStringList('joinedGroupIds');
     if (list != null) {
       _joinedGroupIds
@@ -2798,7 +2855,7 @@ class MindMapProvider extends ChangeNotifier {
   }
 
   Future<void> _saveJoinedGroups() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setStringList('joinedGroupIds', _joinedGroupIds);
   }
 
@@ -2813,7 +2870,7 @@ class MindMapProvider extends ChangeNotifier {
   bool get displayNameSkipped => _displayNameSkipped;
 
   Future<void> loadDisplayName() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     _displayName = prefs.getString('displayName');
     _displayNameSkipped = prefs.getBool('displayNameSkipped') ?? false;
     _userAvatar = prefs.getString('userAvatar');
@@ -2830,7 +2887,7 @@ class MindMapProvider extends ChangeNotifier {
 
   Future<void> setUserAvatar(String? emoji) async {
     _userAvatar = emoji;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     if (emoji == null || emoji.isEmpty) {
       await prefs.remove('userAvatar');
     } else {
@@ -2849,7 +2906,7 @@ class MindMapProvider extends ChangeNotifier {
 
   Future<void> setUserAvatarImage(String? path) async {
     _userAvatarImagePath = (path == null || path.isEmpty) ? null : path;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     if (_userAvatarImagePath == null) {
       await prefs.remove('userAvatarImage');
     } else {
@@ -2863,7 +2920,7 @@ class MindMapProvider extends ChangeNotifier {
   Future<void> markDisplayNameSkipped() async {
     if (_displayNameSkipped) return;
     _displayNameSkipped = true;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setBool('displayNameSkipped', true);
     notifyListeners();
   }
@@ -2883,14 +2940,14 @@ class MindMapProvider extends ChangeNotifier {
       Set.unmodifiable(_calendarSharingAllowedUids);
 
   Future<void> _loadCalendarGroupSharing() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     _calendarGroupSharingEnabled =
         prefs.getBool('calendarGroupSharingEnabled') ?? false;
   }
 
   Future<void> setCalendarGroupSharingEnabled(bool enabled) async {
     _calendarGroupSharingEnabled = enabled;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setBool('calendarGroupSharingEnabled', enabled);
     notifyListeners();
     // 所属グループ全てに allowCalendarSharing を反映
@@ -2925,7 +2982,7 @@ class MindMapProvider extends ChangeNotifier {
   /// ユーザー名を保存し、Firestore /users/{uid} にも反映
   Future<void> setDisplayName(String name) async {
     _displayName = name.trim();
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString('displayName', _displayName!);
     // 一度名前を設定したら「スキップ済み」状態は不要 (= 名前ありとして扱われる)。
     // 念のためクリアしておく。
@@ -3205,19 +3262,22 @@ class MindMapProvider extends ChangeNotifier {
     } else {
       _autoSyncPageIds.remove(pageId);
     }
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setStringList('autoSyncPageIds', _autoSyncPageIds.toList());
     notifyListeners();
   }
 
   Future<void> _loadAutoSyncPageIds() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     final ids = prefs.getStringList('autoSyncPageIds');
     if (ids != null) _autoSyncPageIds.addAll(ids);
   }
 
   /// 自動同期をトリガー（デバウンス付き）
   void _triggerAutoSync() {
+    // クラウド同期は Max プラン以上限定 (= ユーザー要望)。 非 Max では自動同期も
+    //   走らせない (= 既に同期グループを持っていても以後はアップロードしない)。
+    if (!isMaxUnlocked) return;
     if (!_firebaseEnabled || _syncGroupId == null) return;
     if (_isUploading || _firestoreSyncing) return;
     _autoSyncDebounce?.cancel();
@@ -3257,7 +3317,7 @@ class MindMapProvider extends ChangeNotifier {
           lastUploadError =
               '🔒 ${_pages.firstWhere((p) => p.id == pageId, orElse: () => MindMapPage(id: '', name: '')).name}: ${e.message}';
           _autoSyncPageIds.remove(pageId);
-          final prefs = await SharedPreferences.getInstance();
+          final prefs = await _prefsWithRetry();
           await prefs.setStringList(
               'autoSyncPageIds', _autoSyncPageIds.toList());
         }
@@ -3289,10 +3349,45 @@ class MindMapProvider extends ChangeNotifier {
   bool _lastSyncAttachmentFailed = false;
   bool get lastSyncAttachmentFailed => _lastSyncAttachmentFailed;
 
+  final Map<String, CloudDownloadItem> _cloudDownloadItems = {};
+  List<CloudDownloadItem> get cloudDownloadItems =>
+      List<CloudDownloadItem>.unmodifiable(_cloudDownloadItems.values);
+
+  int get cloudDownloadFailedCount => _cloudDownloadItems.values
+      .where((item) => item.status == CloudDownloadItemStatus.failed)
+      .length;
+
+  void setCloudDownloadItemSkipped(String itemId, bool skip) {
+    final item = _cloudDownloadItems[itemId];
+    if (item == null || !item.canSkip) return;
+    item.skip = skip;
+    item.status = skip
+        ? CloudDownloadItemStatus.skipped
+        : CloudDownloadItemStatus.pending;
+    item.progress = skip ? 1.0 : 0.0;
+    notifyListeners();
+  }
+
   /// 直近の同期で容量/月間上限に達したときの説明メッセージ (= ユーザー要望:
   /// 上限に来ていたらそう表示する)。 null = 上限には達していない。
   String? _lastSyncLimitMessage;
   String? get lastSyncLimitMessage => _lastSyncLimitMessage;
+  DateTime? _lastCloudDownloadProgressNotifyAt;
+
+  void _notifyCloudDownloadProgress({bool force = false}) {
+    if (force) {
+      _lastCloudDownloadProgressNotifyAt = DateTime.now();
+      notifyListeners();
+      return;
+    }
+    final now = DateTime.now();
+    final last = _lastCloudDownloadProgressNotifyAt;
+    if (last != null && now.difference(last).inMilliseconds < 120) {
+      return;
+    }
+    _lastCloudDownloadProgressNotifyAt = now;
+    notifyListeners();
+  }
 
   /// 指定ノードのアップロード進捗を取得（null=アップロードなし）
   double? getUploadProgress(String nodeId) =>
@@ -3422,7 +3517,7 @@ class MindMapProvider extends ChangeNotifier {
   bool get allowDuplicateVideoNodes => _allowDuplicateVideoNodes;
   Future<void> setAllowDuplicateVideoNodes(bool v) async {
     _allowDuplicateVideoNodes = v;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setBool('allowDuplicateVideoNodes', v);
     notifyListeners();
   }
@@ -3432,7 +3527,7 @@ class MindMapProvider extends ChangeNotifier {
   bool get snapEnabled => _snapEnabled;
   Future<void> setSnapEnabled(bool v) async {
     _snapEnabled = v;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setBool('snapEnabled', v);
     notifyListeners();
   }
@@ -3449,7 +3544,7 @@ class MindMapProvider extends ChangeNotifier {
   bool get memoCollapsedGlobal => _memoCollapsedGlobal;
   Future<void> setMemoCollapsedGlobal(bool v) async {
     _memoCollapsedGlobal = v;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setBool('memoCollapsedGlobal', v);
     notifyListeners();
   }
@@ -3461,7 +3556,7 @@ class MindMapProvider extends ChangeNotifier {
   Future<void> setChannelMode(String mode) async {
     if (mode != 'videos' && mode != 'shorts' && mode != 'both') return;
     _channelMode = mode;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString('channelMode', mode);
     notifyListeners();
   }
@@ -3485,7 +3580,7 @@ class MindMapProvider extends ChangeNotifier {
   bool get bookshelfAutoPlayNext => _bookshelfAutoPlayNext;
   Future<void> setBookshelfAutoPlayNext(bool v) async {
     _bookshelfAutoPlayNext = v;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setBool('bookshelfAutoPlayNext', v);
     notifyListeners();
   }
@@ -3497,7 +3592,7 @@ class MindMapProvider extends ChangeNotifier {
   bool get bookshelfReverseOrder => _bookshelfReverseOrder;
   Future<void> setBookshelfReverseOrder(bool v) async {
     _bookshelfReverseOrder = v;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setBool('bookshelfReverseOrder', v);
     notifyListeners();
   }
@@ -3510,7 +3605,7 @@ class MindMapProvider extends ChangeNotifier {
   bool get hasCustomHeaderColor => _headerColorValue != null;
   Future<void> setHeaderColor(int? argb) async {
     _headerColorValue = argb;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     if (argb == null) {
       await prefs.remove('headerColor');
     } else {
@@ -3520,7 +3615,7 @@ class MindMapProvider extends ChangeNotifier {
   }
 
   Future<void> _loadHeaderAndBookshelfSettings() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     _bookshelfAutoPlayNext = prefs.getBool('bookshelfAutoPlayNext') ?? true;
     _bookshelfReverseOrder = prefs.getBool('bookshelfReverseOrder') ?? false;
     _headerColorValue = prefs.getInt('headerColor');
@@ -3529,7 +3624,7 @@ class MindMapProvider extends ChangeNotifier {
 
   Future<void> setAutoDeleteWatched(bool v) async {
     _autoDeleteWatched = v;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setBool('autoDeleteWatched', v);
     notifyListeners();
   }
@@ -3543,14 +3638,14 @@ class MindMapProvider extends ChangeNotifier {
   bool get autofillSequenceEnabled => _autofillSequenceEnabled;
   Future<void> setAutofillSequenceEnabled(bool v) async {
     _autofillSequenceEnabled = v;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setBool('autofillSequenceEnabled', v);
     notifyListeners();
   }
 
   Future<void> setUnwatchedLimit(int v) async {
     _unwatchedLimit = v.clamp(1, 50);
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setInt('unwatchedLimit', _unwatchedLimit);
     notifyListeners();
   }
@@ -3563,7 +3658,7 @@ class MindMapProvider extends ChangeNotifier {
   double get videoMaxRate => _videoMaxRate;
   Future<void> setVideoMaxRate(double v) async {
     _videoMaxRate = v.clamp(1.5, 16.0);
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setDouble('videoMaxRate', _videoMaxRate);
     notifyListeners();
   }
@@ -3571,12 +3666,13 @@ class MindMapProvider extends ChangeNotifier {
   /// オフライン (ローカル mp4) 動画プレイヤーで左右キーを押したときに
   /// シークする秒数。 HTML5 `<video controls>` の組み込みシーク (~5 秒) が
   /// 「飛びすぎる/まちまち」 というユーザー要望を受け、 アプリ側で固定値を
-  /// 注入する。 初期値は 10 秒、 設定で 1〜60 秒に変更可能。
-  int _videoSeekSeconds = 10;
+  /// 注入する。 初期値は 5 秒、 設定で 1〜60 秒に変更可能 (= ユーザー要望:
+  /// オフライン動画の左右キーが変な秒数飛ぶので 5 秒固定に)。
+  int _videoSeekSeconds = 5;
   int get videoSeekSeconds => _videoSeekSeconds;
   Future<void> setVideoSeekSeconds(int v) async {
     _videoSeekSeconds = v.clamp(1, 60);
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setInt('videoSeekSeconds', _videoSeekSeconds);
     notifyListeners();
   }
@@ -3591,7 +3687,7 @@ class MindMapProvider extends ChangeNotifier {
     // 1.0 〜 videoMaxRate の範囲に丸める。極端な値が永続化されると
     // 次回起動時に再生バーが意図しない位置になるのを防ぐ。
     _lastVideoPlaybackRate = v.clamp(1.0, _videoMaxRate);
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setDouble('lastVideoPlaybackRate', _lastVideoPlaybackRate);
     // notifyListeners はあえて呼ばない (再生中の動画スライダーが
     // 連続で動くたびに全画面再描画されるのを避けるため)。倍率の永続化は
@@ -3605,7 +3701,7 @@ class MindMapProvider extends ChangeNotifier {
   int get quickAddChildrenCount => _quickAddChildrenCount;
   Future<void> setQuickAddChildrenCount(int n) async {
     _quickAddChildrenCount = n.clamp(1, 30);
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setInt('quickAddChildrenCount', _quickAddChildrenCount);
     notifyListeners();
   }
@@ -3619,7 +3715,7 @@ class MindMapProvider extends ChangeNotifier {
   bool get backgroundPlaybackEnabled => _backgroundPlaybackEnabled;
   Future<void> setBackgroundPlaybackEnabled(bool v) async {
     _backgroundPlaybackEnabled = v;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setBool('backgroundPlaybackEnabled', v);
     notifyListeners();
   }
@@ -3632,7 +3728,7 @@ class MindMapProvider extends ChangeNotifier {
   double get pipScale => _pipScale;
   Future<void> setPipScale(double v) async {
     _pipScale = v.clamp(0.5, 2.0);
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setDouble('pipScale', _pipScale);
     notifyListeners();
   }
@@ -3666,7 +3762,7 @@ class MindMapProvider extends ChangeNotifier {
       _channelQueues[parentId];
 
   Future<void> _saveChannelQueues() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     final map = <String, dynamic>{};
     for (final e in _channelQueues.entries) {
       map[e.key] = {
@@ -3678,7 +3774,7 @@ class MindMapProvider extends ChangeNotifier {
   }
 
   Future<void> _loadChannelQueues() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     final str = prefs.getString('channelQueues');
     if (str == null) return;
     try {
@@ -3880,21 +3976,21 @@ class MindMapProvider extends ChangeNotifier {
 
   Future<void> setMinViewCount(int v) async {
     _minViewCount = v.clamp(0, 999999999);
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setInt('minViewCount', _minViewCount);
     notifyListeners();
   }
 
   Future<void> setIncludeKeywords(String v) async {
     _includeKeywords = v;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString('chFilterInclude', v);
     notifyListeners();
   }
 
   Future<void> setExcludeKeywords(String v) async {
     _excludeKeywords = v;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString('chFilterExclude', v);
     notifyListeners();
   }
@@ -4014,14 +4110,14 @@ class MindMapProvider extends ChangeNotifier {
   String get imageGenModel => _imageGenModel;
   Future<void> setImageGenModel(String id) async {
     _imageGenModel = id;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString('imageGenModel', id);
     notifyListeners();
   }
 
   Future<void> setGeminiApiKey(String key) async {
     _geminiApiKey = key.trim();
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString('gemini_api_key', _geminiApiKey!);
     notifyListeners();
     // キーが入った直後にモデル一覧を更新 (前回キャッシュより新しいキーで
@@ -4041,7 +4137,7 @@ class MindMapProvider extends ChangeNotifier {
 
   Future<void> setOpenaiApiKey(String key) async {
     _openaiApiKey = key.trim();
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString('openai_api_key', _openaiApiKey!);
     notifyListeners();
     if (_openaiApiKey!.isNotEmpty) {
@@ -4051,7 +4147,7 @@ class MindMapProvider extends ChangeNotifier {
 
   Future<void> setAnthropicApiKey(String key) async {
     _anthropicApiKey = key.trim();
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString('anthropic_api_key', _anthropicApiKey!);
     notifyListeners();
     if (_anthropicApiKey!.isNotEmpty) {
@@ -4068,7 +4164,7 @@ class MindMapProvider extends ChangeNotifier {
   bool get hasGrokKey => (_grokApiKey ?? '').isNotEmpty;
   Future<void> setGrokApiKey(String key) async {
     _grokApiKey = key.trim();
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString('grok_api_key', _grokApiKey!);
     notifyListeners();
   }
@@ -4077,7 +4173,7 @@ class MindMapProvider extends ChangeNotifier {
   String get grokModel => _grokModel;
   Future<void> setGrokModel(String model) async {
     _grokModel = model.trim().isEmpty ? 'grok-3' : model.trim();
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString('grok_model', _grokModel);
     notifyListeners();
   }
@@ -4087,7 +4183,7 @@ class MindMapProvider extends ChangeNotifier {
   bool get hasDeepseekKey => (_deepseekApiKey ?? '').isNotEmpty;
   Future<void> setDeepseekApiKey(String key) async {
     _deepseekApiKey = key.trim();
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString('deepseek_api_key', _deepseekApiKey!);
     notifyListeners();
   }
@@ -4096,7 +4192,7 @@ class MindMapProvider extends ChangeNotifier {
   String get deepseekModel => _deepseekModel;
   Future<void> setDeepseekModel(String model) async {
     _deepseekModel = model.trim().isEmpty ? 'deepseek-chat' : model.trim();
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString('deepseek_model', _deepseekModel);
     notifyListeners();
   }
@@ -4110,7 +4206,7 @@ class MindMapProvider extends ChangeNotifier {
       return;
     }
     _aiProvider = provider;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString('aiProvider', provider);
     notifyListeners();
   }
@@ -4141,11 +4237,11 @@ class MindMapProvider extends ChangeNotifier {
       'label': 'DeepSeek',
       'url': 'https://chat.deepseek.com/?q={q}'
     },
-    {
-      'id': 'google',
-      'label': 'Google',
-      'url': 'https://www.google.com/search?q={q}'
-    },
+    // ── Google は「AI を選ぶ」 リストから除外 (= ユーザー要望:
+    //   「google 検索が立ち上がるボタンは要らない、 AI じゃない」) ──
+    // Google 検索は専用の googleSearch ボタンから使う。 以前ここに google
+    // エントリがあったが、 AI チャット判定・分割パネル等では元々 id=='google'
+    // を弾いていた (各所の `!= 'google'` ガードは無害な保険として残置)。
   ];
   String _browserAiTarget = 'chatgpt';
   String get browserAiTarget => _browserAiTarget;
@@ -4158,7 +4254,7 @@ class MindMapProvider extends ChangeNotifier {
     if (browserAiTargets.every((e) => e['id'] != id)) return;
     _browserAiTarget = id;
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setString('browser_ai_target', id);
     } catch (_) {}
     notifyListeners();
@@ -4171,7 +4267,7 @@ class MindMapProvider extends ChangeNotifier {
   Future<void> setBrowserAiPrefix(String v) async {
     _browserAiPrefix = v;
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setString('browser_ai_prefix', v);
     } catch (_) {}
     notifyListeners();
@@ -4656,7 +4752,7 @@ class MindMapProvider extends ChangeNotifier {
     _appLanguage = code;
     // 言語が変わったら祝日キャッシュをクリア (新しい国の祝日を再計算)
     _holidayCache.clear();
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString('appLanguage', code);
     // ── 既定名のページを新言語に追従させる ──
     // 「マップ N」「Map N」「地图 N」など、ページ名がいずれかの言語の
@@ -4702,7 +4798,7 @@ class MindMapProvider extends ChangeNotifier {
     _holidayCache.clear();
     notifyListeners(); // 即時に UI を再ローカライズ
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setString('appLanguage', code);
     } catch (_) {}
   }
@@ -4738,7 +4834,7 @@ class MindMapProvider extends ChangeNotifier {
   Future<void> resetOnboarding() async {
     _isFirstLaunch = true;
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.remove('langPickerShown');
     } catch (_) {}
     notifyListeners();
@@ -4752,7 +4848,7 @@ class MindMapProvider extends ChangeNotifier {
   String get voiceDelimiter => _voiceDelimiter;
   Future<void> setVoiceDelimiter(String word) async {
     _voiceDelimiter = word.trim();
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString('voiceDelimiter', _voiceDelimiter);
     notifyListeners();
   }
@@ -4763,7 +4859,7 @@ class MindMapProvider extends ChangeNotifier {
   int get voicePauseSeconds => _voicePauseSeconds;
   Future<void> setVoicePauseSeconds(int sec) async {
     _voicePauseSeconds = sec.clamp(1, 10);
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setInt('voicePauseSeconds', _voicePauseSeconds);
     notifyListeners();
   }
@@ -4868,7 +4964,7 @@ class MindMapProvider extends ChangeNotifier {
       {required bool userSet}) async {
     _clockOffsetMinutes = minutes.clamp(-720, 840);
     if (userSet) _clockOffsetUserSet = true;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setInt('clockOffsetMinutes', _clockOffsetMinutes);
     if (userSet) await prefs.setBool('clockOffsetUserSet', true);
     notifyListeners();
@@ -5272,6 +5368,11514 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Sprache, Zeitzone, Benutzername',
       'pt': 'Idioma, fuso horário, nome de usuário',
       'ru': 'Язык, часовой пояс, имя пользователя',
+    },
+    'drawer.maps': {
+      'ja': 'マップ一覧',
+      'en': 'Maps',
+      'zh': '地图列表',
+      'ko': '맵 목록',
+      'es': 'Mapas',
+      'fr': 'Cartes',
+      'de': 'Karten',
+      'pt': 'Mapas',
+      'ru': 'Карты',
+    },
+    'drawer.timeline': {
+      'ja': 'タイムライン',
+      'en': 'Timeline',
+      'zh': '时间轴',
+      'ko': '타임라인',
+      'es': 'Cronología',
+      'fr': 'Chronologie',
+      'de': 'Zeitleiste',
+      'pt': 'Linha do tempo',
+      'ru': 'Хронология',
+    },
+    'btn.add': {
+      'ja': '追加',
+      'en': 'Add',
+      'zh': '添加',
+      'ko': '추가',
+      'es': 'Añadir',
+      'fr': 'Ajouter',
+      'de': 'Hinzufügen',
+      'pt': 'Adicionar',
+      'ru': 'Добавить',
+    },
+    'tl.addEvent': {
+      'ja': '予定を追加',
+      'en': 'Add event',
+      'zh': '添加日程',
+      'ko': '일정 추가',
+      'es': 'Añadir evento',
+      'fr': 'Ajouter un événement',
+      'de': 'Termin hinzufügen',
+      'pt': 'Adicionar evento',
+      'ru': 'Добавить событие',
+    },
+    'tl.editEvent': {
+      'ja': '予定を編集',
+      'en': 'Edit event',
+      'zh': '编辑日程',
+      'ko': '일정 편집',
+      'es': 'Editar evento',
+      'fr': 'Modifier l’événement',
+      'de': 'Termin bearbeiten',
+      'pt': 'Editar evento',
+      'ru': 'Изменить событие',
+    },
+    'tl.eventTitle': {
+      'ja': '予定のタイトル',
+      'en': 'Event title',
+      'zh': '日程标题',
+      'ko': '일정 제목',
+      'es': 'Título del evento',
+      'fr': 'Titre de l’événement',
+      'de': 'Termintitel',
+      'pt': 'Título do evento',
+      'ru': 'Название события',
+    },
+    'tl.startHHmm': {
+      'ja': '開始 (HH:mm)',
+      'en': 'Start (HH:mm)',
+      'zh': '开始 (HH:mm)',
+      'ko': '시작 (HH:mm)',
+      'es': 'Inicio (HH:mm)',
+      'fr': 'Début (HH:mm)',
+      'de': 'Beginn (HH:mm)',
+      'pt': 'Início (HH:mm)',
+      'ru': 'Начало (HH:mm)',
+    },
+    'tl.endHHmm': {
+      'ja': '終了 (HH:mm)',
+      'en': 'End (HH:mm)',
+      'zh': '结束 (HH:mm)',
+      'ko': '종료 (HH:mm)',
+      'es': 'Fin (HH:mm)',
+      'fr': 'Fin (HH:mm)',
+      'de': 'Ende (HH:mm)',
+      'pt': 'Fim (HH:mm)',
+      'ru': 'Конец (HH:mm)',
+    },
+    'tl.deleteEvent': {
+      'ja': '予定を削除',
+      'en': 'Delete event',
+      'zh': '删除日程',
+      'ko': '일정 삭제',
+      'es': 'Eliminar evento',
+      'fr': 'Supprimer l’événement',
+      'de': 'Termin löschen',
+      'pt': 'Excluir evento',
+      'ru': 'Удалить событие',
+    },
+    'tl.deleteEventConfirm': {
+      'ja': '「{title}」を削除しますか？',
+      'en': 'Delete "{title}"?',
+      'zh': '要删除「{title}」吗？',
+      'ko': '「{title}」을(를) 삭제하시겠습니까?',
+      'es': '¿Eliminar "{title}"?',
+      'fr': 'Supprimer « {title} » ?',
+      'de': '„{title}“ löschen?',
+      'pt': 'Excluir "{title}"?',
+      'ru': 'Удалить «{title}»?',
+    },
+    'tl.untitledEvent': {
+      'ja': '(無題の予定)',
+      'en': '(Untitled event)',
+      'zh': '(无标题日程)',
+      'ko': '(제목 없는 일정)',
+      'es': '(Evento sin título)',
+      'fr': '(Événement sans titre)',
+      'de': '(Unbenannter Termin)',
+      'pt': '(Evento sem título)',
+      'ru': '(Событие без названия)',
+    },
+    'drawer.mergedMapDefault': {
+      'ja': '統合マップ',
+      'en': 'Merged map',
+      'zh': '合并地图',
+      'ko': '통합 맵',
+      'es': 'Mapa combinado',
+      'fr': 'Carte fusionnée',
+      'de': 'Zusammengeführte Karte',
+      'pt': 'Mapa combinado',
+      'ru': 'Объединённая карта',
+    },
+    'drawer.mergePages': {
+      'ja': 'ページを統合',
+      'en': 'Merge pages',
+      'zh': '合并页面',
+      'ko': '페이지 통합',
+      'es': 'Combinar páginas',
+      'fr': 'Fusionner les pages',
+      'de': 'Seiten zusammenführen',
+      'pt': 'Mesclar páginas',
+      'ru': 'Объединить страницы',
+    },
+    'drawer.mergeDesc': {
+      'ja':
+          '選択した {count} ページの中身 (ノード・画像・接続・図形) を\n1 つの新しいページにまとめます。元のページは統合後に削除されます。\n※ ビデオ・ノートページは統合対象外です。',
+      'en':
+          'Combines the contents (nodes, images, connections, shapes) of the {count} selected pages into one new page. The source pages are removed after merging. Video and note pages are skipped.',
+      'zh': '将所选 {count} 个页面的内容（节点、图片、连接、图形）合并到一个新页面。原页面将保留。',
+      'ko':
+          '선택한 {count}개 페이지의 내용(노드·이미지·연결·도형)을 하나의 새 페이지로 합칩니다. 원래 페이지는 그대로 남습니다.',
+      'es':
+          'Combina el contenido (nodos, imágenes, conexiones, formas) de las {count} páginas seleccionadas en una nueva página. Las páginas originales se conservan.',
+      'fr':
+          'Regroupe le contenu (nœuds, images, connexions, formes) des {count} pages sélectionnées dans une nouvelle page. Les pages d’origine sont conservées.',
+      'de':
+          'Fasst den Inhalt (Knoten, Bilder, Verbindungen, Formen) der {count} ausgewählten Seiten zu einer neuen Seite zusammen. Die ursprünglichen Seiten bleiben erhalten.',
+      'pt':
+          'Combina o conteúdo (nós, imagens, conexões, formas) das {count} páginas selecionadas em uma nova página. As páginas originais são mantidas.',
+      'ru':
+          'Объединяет содержимое (узлы, изображения, связи, фигуры) выбранных страниц ({count}) в одну новую страницу. Исходные страницы сохраняются.',
+    },
+    'drawer.mergedPageName': {
+      'ja': '統合ページ名',
+      'en': 'Merged page name',
+      'zh': '合并页面名称',
+      'ko': '통합 페이지 이름',
+      'es': 'Nombre de la página combinada',
+      'fr': 'Nom de la page fusionnée',
+      'de': 'Name der zusammengeführten Seite',
+      'pt': 'Nome da página mesclada',
+      'ru': 'Имя объединённой страницы',
+    },
+    'drawer.merge': {
+      'ja': '統合',
+      'en': 'Merge',
+      'zh': '合并',
+      'ko': '통합',
+      'es': 'Combinar',
+      'fr': 'Fusionner',
+      'de': 'Zusammenführen',
+      'pt': 'Mesclar',
+      'ru': 'Объединить',
+    },
+    'drawer.mergeFailed': {
+      'ja': '統合できませんでした (2 ページ以上選択してください)',
+      'en': 'Couldn’t merge (select 2 or more pages)',
+      'zh': '无法合并（请选择 2 个以上页面）',
+      'ko': '통합할 수 없습니다 (2개 이상의 페이지를 선택하세요)',
+      'es': 'No se pudo combinar (selecciona 2 o más páginas)',
+      'fr': 'Fusion impossible (sélectionnez au moins 2 pages)',
+      'de': 'Zusammenführen fehlgeschlagen (mindestens 2 Seiten auswählen)',
+      'pt': 'Não foi possível mesclar (selecione 2 ou mais páginas)',
+      'ru': 'Не удалось объединить (выберите 2 или более страниц)',
+    },
+    'page.markdownEdit': {
+      'ja': 'マークダウンで編集',
+      'en': 'Edit as Markdown',
+      'zh': '用 Markdown 编辑',
+      'ko': '마크다운으로 편집',
+      'es': 'Editar en Markdown',
+      'fr': 'Modifier en Markdown',
+      'de': 'Als Markdown bearbeiten',
+      'pt': 'Editar em Markdown',
+      'ru': 'Редактировать как Markdown',
+    },
+    'page.markdownExport': {
+      'ja': 'Markdown で書き出し',
+      'en': 'Export as Markdown',
+      'zh': '导出为 Markdown',
+      'ko': '마크다운으로 내보내기',
+      'es': 'Exportar como Markdown',
+      'fr': 'Exporter en Markdown',
+      'de': 'Als Markdown exportieren',
+      'pt': 'Exportar como Markdown',
+      'ru': 'Экспорт как Markdown',
+    },
+    'page.moveAllToMap': {
+      'ja': '別マップへ全移動して削除',
+      'en': 'Move all to another map & delete',
+      'zh': '全部移到其他地图并删除',
+      'ko': '다른 맵으로 전체 이동 후 삭제',
+      'es': 'Mover todo a otro mapa y eliminar',
+      'fr': 'Tout déplacer vers une autre carte et supprimer',
+      'de': 'Alles in andere Karte verschieben und löschen',
+      'pt': 'Mover tudo para outro mapa e excluir',
+      'ru': 'Переместить всё на другую карту и удалить',
+    },
+    'btn.apply': {
+      'ja': '適用',
+      'en': 'Apply',
+      'zh': '应用',
+      'ko': '적용',
+      'es': 'Aplicar',
+      'fr': 'Appliquer',
+      'de': 'Anwenden',
+      'pt': 'Aplicar',
+      'ru': 'Применить',
+    },
+    'shelf.gridTitle': {
+      'ja': '縦横の数を設定',
+      'en': 'Set grid size',
+      'zh': '设置行列数',
+      'ko': '행·열 수 설정',
+      'es': 'Configurar tamaño de cuadrícula',
+      'fr': 'Définir la taille de la grille',
+      'de': 'Rastergröße festlegen',
+      'pt': 'Definir tamanho da grade',
+      'ru': 'Задать размер сетки',
+    },
+    'shelf.gridDesc': {
+      'ja':
+          '+ボックスが勝手に増えないように、 1 行の数 (横) と段数 (縦) を\n固定できます。 空欄なら既定の 5×5。 横を超える要素は次の行へ折り返します。',
+      'en':
+          'Fix the number of columns (per row) and rows so + boxes don’t keep growing. Leave blank for the default 5×5. Items beyond the width wrap to the next row.',
+      'zh': '可固定每行数量（横）和行数（纵），避免 + 框不断增加。留空则默认 5×5。超出宽度的元素会换到下一行。',
+      'ko':
+          '+ 상자가 계속 늘어나지 않도록 한 행의 수(가로)와 단 수(세로)를 고정할 수 있습니다. 비워두면 기본 5×5. 가로를 넘는 항목은 다음 행으로 넘어갑니다.',
+      'es':
+          'Puedes fijar el número de columnas (por fila) y de filas para que las cajas + no sigan aumentando. Déjalo en blanco para el valor predeterminado 5×5. Los elementos que superen el ancho pasan a la fila siguiente.',
+      'fr':
+          'Vous pouvez fixer le nombre de colonnes (par ligne) et de lignes pour que les boîtes + ne se multiplient pas. Laissez vide pour la valeur par défaut 5×5. Les éléments dépassant la largeur passent à la ligne suivante.',
+      'de':
+          'Sie können die Anzahl der Spalten (pro Zeile) und Zeilen festlegen, damit die +-Boxen nicht ständig wachsen. Leer lassen für Standard 5×5. Elemente über die Breite hinaus brechen in die nächste Zeile um.',
+      'pt':
+          'Você pode fixar o número de colunas (por linha) e de linhas para que as caixas + não aumentem sozinhas. Deixe em branco para o padrão 5×5. Os itens que excederem a largura passam para a próxima linha.',
+      'ru':
+          'Можно зафиксировать число столбцов (в строке) и строк, чтобы +-боксы не множились. Оставьте пустым для значения по умолчанию 5×5. Элементы за пределами ширины переносятся на следующую строку.',
+    },
+    'shelf.gridCols': {
+      'ja': '横 (1行の数)',
+      'en': 'Columns (per row)',
+      'zh': '横向（每行数量）',
+      'ko': '가로(한 행 수)',
+      'es': 'Columnas (por fila)',
+      'fr': 'Colonnes (par ligne)',
+      'de': 'Spalten (pro Zeile)',
+      'pt': 'Colunas (por linha)',
+      'ru': 'Столбцы (в строке)',
+    },
+    'shelf.gridRows': {
+      'ja': '縦 (段数)',
+      'en': 'Rows',
+      'zh': '纵向（行数）',
+      'ko': '세로(단 수)',
+      'es': 'Filas',
+      'fr': 'Lignes',
+      'de': 'Zeilen',
+      'pt': 'Linhas',
+      'ru': 'Строки',
+    },
+    'shelf.memoPlaced': {
+      'ja': '🗒️ メモをギャラリーにブロックとして配置しました',
+      'en': '🗒️ Placed the memo as a block in the gallery',
+      'zh': '🗒️ 已将便签作为方块放入图库',
+      'ko': '🗒️ 메모를 갤러리에 블록으로 배치했습니다',
+      'es': '🗒️ Se colocó la nota como bloque en la galería',
+      'fr': '🗒️ Note placée comme bloc dans la galerie',
+      'de': '🗒️ Notiz als Block in der Galerie platziert',
+      'pt': '🗒️ Nota colocada como bloco na galeria',
+      'ru': '🗒️ Заметка размещена блоком в галерее',
+    },
+    'shelf.galleryOps': {
+      'ja': 'ギャラリー操作',
+      'en': 'Gallery actions',
+      'zh': '图库操作',
+      'ko': '갤러리 작업',
+      'es': 'Acciones de la galería',
+      'fr': 'Actions de la galerie',
+      'de': 'Galerie-Aktionen',
+      'pt': 'Ações da galeria',
+      'ru': 'Действия галереи',
+    },
+    'shelf.autoPlayNext': {
+      'ja': '見終わったら次の動画へ',
+      'en': 'Auto-play next when finished',
+      'zh': '看完后播放下一个视频',
+      'ko': '다 보면 다음 영상으로',
+      'es': 'Reproducir el siguiente al terminar',
+      'fr': 'Lire la vidéo suivante à la fin',
+      'de': 'Nach Ende nächstes Video',
+      'pt': 'Reproduzir o próximo ao terminar',
+      'ru': 'Следующее видео по окончании',
+    },
+    'shelf.deleteWatched': {
+      'ja': '見終わった動画を削除',
+      'en': 'Delete watched videos',
+      'zh': '删除看完的视频',
+      'ko': '다 본 영상 삭제',
+      'es': 'Eliminar vídeos vistos',
+      'fr': 'Supprimer les vidéos regardées',
+      'de': 'Angesehene Videos löschen',
+      'pt': 'Excluir vídeos assistidos',
+      'ru': 'Удалять просмотренные видео',
+    },
+    'shelf.rtlProgress': {
+      'ja': '右から左へ進める（OFFで左→右）',
+      'en': 'Progress right to left (off = left to right)',
+      'zh': '从右向左推进（关闭则左→右）',
+      'ko': '오른쪽에서 왼쪽으로 진행(끄면 왼쪽→오른쪽)',
+      'es': 'Avanzar de derecha a izquierda (desactivado = izquierda→derecha)',
+      'fr': 'Avancer de droite à gauche (désactivé = gauche→droite)',
+      'de': 'Von rechts nach links (aus = links→rechts)',
+      'pt': 'Avançar da direita para a esquerda (desligado = esquerda→direita)',
+      'ru': 'Справа налево (выкл = слева направо)',
+    },
+    'ai.genSettings': {
+      'ja': 'AI生成設定',
+      'en': 'AI generation settings',
+      'zh': 'AI 生成设置',
+      'ko': 'AI 생성 설정',
+      'es': 'Configuración de generación con IA',
+      'fr': 'Paramètres de génération IA',
+      'de': 'KI-Generierungseinstellungen',
+      'pt': 'Configurações de geração por IA',
+      'ru': 'Настройки генерации ИИ',
+    },
+    'ai.model': {
+      'ja': 'モデル',
+      'en': 'Model',
+      'zh': '模型',
+      'ko': '모델',
+      'es': 'Modelo',
+      'fr': 'Modèle',
+      'de': 'Modell',
+      'pt': 'Modelo',
+      'ru': 'Модель',
+    },
+    'ai.input': {
+      'ja': '入力',
+      'en': 'in',
+      'zh': '输入',
+      'ko': '입력',
+      'es': 'entrada',
+      'fr': 'entrée',
+      'de': 'Eingabe',
+      'pt': 'entrada',
+      'ru': 'вход',
+    },
+    'ai.output': {
+      'ja': '出力',
+      'en': 'out',
+      'zh': '输出',
+      'ko': '출력',
+      'es': 'salida',
+      'fr': 'sortie',
+      'de': 'Ausgabe',
+      'pt': 'saída',
+      'ru': 'выход',
+    },
+    'ai.fastCheap': {
+      'ja': '速い・安い',
+      'en': 'Fast & cheap',
+      'zh': '快速·便宜',
+      'ko': '빠르고 저렴',
+      'es': 'Rápido y barato',
+      'fr': 'Rapide et économique',
+      'de': 'Schnell & günstig',
+      'pt': 'Rápido e barato',
+      'ru': 'Быстро и дёшево',
+    },
+    'ai.highAccuracy': {
+      'ja': '高精度',
+      'en': 'High accuracy',
+      'zh': '高精度',
+      'ko': '고정밀',
+      'es': 'Alta precisión',
+      'fr': 'Haute précision',
+      'de': 'Hohe Genauigkeit',
+      'pt': 'Alta precisão',
+      'ru': 'Высокая точность',
+    },
+    'ai.depth': {
+      'ja': '生成の深さ',
+      'en': 'Generation depth',
+      'zh': '生成深度',
+      'ko': '생성 깊이',
+      'es': 'Profundidad de generación',
+      'fr': 'Profondeur de génération',
+      'de': 'Generierungstiefe',
+      'pt': 'Profundidade de geração',
+      'ru': 'Глубина генерации',
+    },
+    'ai.childrenOnly': {
+      'ja': '子ノードのみ',
+      'en': 'Child nodes only',
+      'zh': '仅子节点',
+      'ko': '자식 노드만',
+      'es': 'Solo nodos hijos',
+      'fr': 'Nœuds enfants seulement',
+      'de': 'Nur untergeordnete Knoten',
+      'pt': 'Apenas nós filhos',
+      'ru': 'Только дочерние узлы',
+    },
+    'ai.childrenGrandchildren': {
+      'ja': '子＋孫ノード',
+      'en': 'Children + grandchildren',
+      'zh': '子节点+孙节点',
+      'ko': '자식+손자 노드',
+      'es': 'Hijos + nietos',
+      'fr': 'Enfants + petits-enfants',
+      'de': 'Kinder + Enkel',
+      'pt': 'Filhos + netos',
+      'ru': 'Дочерние + внучатые',
+    },
+    'ai.childCount': {
+      'ja': '子ノードの数 (1〜50)',
+      'en': 'Number of child nodes (1–50)',
+      'zh': '子节点数量 (1–50)',
+      'ko': '자식 노드 수 (1–50)',
+      'es': 'Número de nodos hijos (1–50)',
+      'fr': 'Nombre de nœuds enfants (1–50)',
+      'de': 'Anzahl untergeordneter Knoten (1–50)',
+      'pt': 'Número de nós filhos (1–50)',
+      'ru': 'Число дочерних узлов (1–50)',
+    },
+    'ai.grandchildCount': {
+      'ja': '孫ノードの数（子ノード1つあたり、1〜50）',
+      'en': 'Grandchild nodes (per child, 1–50)',
+      'zh': '孙节点数量（每个子节点，1–50）',
+      'ko': '손자 노드 수(자식당, 1–50)',
+      'es': 'Nodos nietos (por hijo, 1–50)',
+      'fr': 'Nœuds petits-enfants (par enfant, 1–50)',
+      'de': 'Enkelknoten (pro Kind, 1–50)',
+      'pt': 'Nós netos (por filho, 1–50)',
+      'ru': 'Внучатые узлы (на дочерний, 1–50)',
+    },
+    'ai.min': {
+      'ja': '最小',
+      'en': 'Min',
+      'zh': '最小',
+      'ko': '최소',
+      'es': 'Mín',
+      'fr': 'Min',
+      'de': 'Min',
+      'pt': 'Mín',
+      'ru': 'Мин',
+    },
+    'ai.max': {
+      'ja': '最大',
+      'en': 'Max',
+      'zh': '最大',
+      'ko': '최대',
+      'es': 'Máx',
+      'fr': 'Max',
+      'de': 'Max',
+      'pt': 'Máx',
+      'ru': 'Макс',
+    },
+    'node.editTitle': {
+      'ja': '編集',
+      'en': 'Edit',
+      'zh': '编辑节点',
+      'ko': '노드 편집',
+      'es': 'Editar nodo',
+      'fr': 'Modifier le nœud',
+      'de': 'Knoten bearbeiten',
+      'pt': 'Editar nó',
+      'ru': 'Изменить узел',
+    },
+    'btn.create': {
+      'ja': '作成',
+      'en': 'Create',
+      'zh': '创建',
+      'ko': '만들기',
+      'es': 'Crear',
+      'fr': 'Créer',
+      'de': 'Erstellen',
+      'pt': 'Criar',
+      'ru': 'Создать',
+    },
+    'file.defaultName': {
+      'ja': '新規ファイル',
+      'en': 'New file',
+      'zh': '新文件',
+      'ko': '새 파일',
+      'es': 'Archivo nuevo',
+      'fr': 'Nouveau fichier',
+      'de': 'Neue Datei',
+      'pt': 'Novo arquivo',
+      'ru': 'Новый файл',
+    },
+    'file.create': {
+      'ja': 'ファイルを作成',
+      'en': 'Create file',
+      'zh': '创建文件',
+      'ko': '파일 만들기',
+      'es': 'Crear archivo',
+      'fr': 'Créer un fichier',
+      'de': 'Datei erstellen',
+      'pt': 'Criar arquivo',
+      'ru': 'Создать файл',
+    },
+    'file.format': {
+      'ja': 'ファイル形式',
+      'en': 'File format',
+      'zh': '文件格式',
+      'ko': '파일 형식',
+      'es': 'Formato de archivo',
+      'fr': 'Format de fichier',
+      'de': 'Dateiformat',
+      'pt': 'Formato do arquivo',
+      'ru': 'Формат файла',
+    },
+    'file.txtType': {
+      'ja': 'テキスト',
+      'en': 'Text',
+      'zh': '文本',
+      'ko': '텍스트',
+      'es': 'Texto',
+      'fr': 'Texte',
+      'de': 'Text',
+      'pt': 'Texto',
+      'ru': 'Текст',
+    },
+    'file.wordDoc': {
+      'ja': 'Word ドキュメント',
+      'en': 'Word document',
+      'zh': 'Word 文档',
+      'ko': 'Word 문서',
+      'es': 'Documento de Word',
+      'fr': 'Document Word',
+      'de': 'Word-Dokument',
+      'pt': 'Documento do Word',
+      'ru': 'Документ Word',
+    },
+    'file.name': {
+      'ja': 'ファイル名',
+      'en': 'File name',
+      'zh': '文件名',
+      'ko': '파일 이름',
+      'es': 'Nombre de archivo',
+      'fr': 'Nom du fichier',
+      'de': 'Dateiname',
+      'pt': 'Nome do arquivo',
+      'ru': 'Имя файла',
+    },
+    'file.nameHint': {
+      'ja': '例: メモ_2026',
+      'en': 'e.g. note_2026',
+      'zh': '例：note_2026',
+      'ko': '예: note_2026',
+      'es': 'ej.: nota_2026',
+      'fr': 'ex. : note_2026',
+      'de': 'z. B. notiz_2026',
+      'pt': 'ex.: nota_2026',
+      'ru': 'напр.: заметка_2026',
+    },
+    'file.addChildFailed': {
+      'ja': '子ノードの追加に失敗しました',
+      'en': 'Failed to add child node',
+      'zh': '添加子节点失败',
+      'ko': '자식 노드 추가 실패',
+      'es': 'Error al añadir nodo hijo',
+      'fr': 'Échec de l’ajout du nœud enfant',
+      'de': 'Hinzufügen des untergeordneten Knotens fehlgeschlagen',
+      'pt': 'Falha ao adicionar nó filho',
+      'ru': 'Не удалось добавить дочерний узел',
+    },
+    'file.created': {
+      'ja': '作成しました: {name}',
+      'en': 'Created: {name}',
+      'zh': '已创建：{name}',
+      'ko': '생성됨: {name}',
+      'es': 'Creado: {name}',
+      'fr': 'Créé : {name}',
+      'de': 'Erstellt: {name}',
+      'pt': 'Criado: {name}',
+      'ru': 'Создано: {name}',
+    },
+    'file.createFailed': {
+      'ja': 'ファイル作成に失敗: {err}',
+      'en': 'Failed to create file: {err}',
+      'zh': '文件创建失败：{err}',
+      'ko': '파일 생성 실패: {err}',
+      'es': 'Error al crear el archivo: {err}',
+      'fr': 'Échec de la création du fichier : {err}',
+      'de': 'Datei-Erstellung fehlgeschlagen: {err}',
+      'pt': 'Falha ao criar o arquivo: {err}',
+      'ru': 'Не удалось создать файл: {err}',
+    },
+    'alarm.title': {
+      'ja': 'アラーム',
+      'en': 'Alarm',
+      'zh': '闹钟',
+      'ko': '알람',
+      'es': 'Alarma',
+      'fr': 'Alarme',
+      'de': 'Wecker',
+      'pt': 'Alarme',
+      'ru': 'Будильник',
+    },
+    'alarm.empty': {
+      'ja': 'アラームがありません。 「追加」 で作成できます。',
+      'en': 'No alarms. Tap “Add” to create one.',
+      'zh': '没有闹钟。点击“添加”即可创建。',
+      'ko': '알람이 없습니다. “추가”로 만들 수 있습니다.',
+      'es': 'No hay alarmas. Toca “Añadir” para crear una.',
+      'fr': 'Aucune alarme. Touchez « Ajouter » pour en créer une.',
+      'de': 'Keine Wecker. Mit „Hinzufügen“ erstellen.',
+      'pt': 'Nenhum alarme. Toque em “Adicionar” para criar.',
+      'ru': 'Нет будильников. Нажмите «Добавить», чтобы создать.',
+    },
+    'alarm.atTitle': {
+      'ja': '{time} のアラーム',
+      'en': 'Alarm at {time}',
+      'zh': '{time} 的闹钟',
+      'ko': '{time} 알람',
+      'es': 'Alarma a las {time}',
+      'fr': 'Alarme à {time}',
+      'de': 'Wecker um {time}',
+      'pt': 'Alarme às {time}',
+      'ru': 'Будильник на {time}',
+    },
+    'alarm.labelOptional': {
+      'ja': 'ラベル (任意)',
+      'en': 'Label (optional)',
+      'zh': '标签（可选）',
+      'ko': '라벨(선택)',
+      'es': 'Etiqueta (opcional)',
+      'fr': 'Libellé (facultatif)',
+      'de': 'Beschriftung (optional)',
+      'pt': 'Rótulo (opcional)',
+      'ru': 'Метка (необязательно)',
+    },
+    'alarm.repeatDaily': {
+      'ja': '毎日くり返す',
+      'en': 'Repeat daily',
+      'zh': '每天重复',
+      'ko': '매일 반복',
+      'es': 'Repetir a diario',
+      'fr': 'Répéter chaque jour',
+      'de': 'Täglich wiederholen',
+      'pt': 'Repetir diariamente',
+      'ru': 'Повторять ежедневно',
+    },
+    'notif.title': {
+      'ja': 'マインドマップ 通知',
+      'en': 'MindMap notification',
+      'zh': '思维导图 通知',
+      'ko': '마인드맵 알림',
+      'es': 'Notificación de MindMap',
+      'fr': 'Notification MindMap',
+      'de': 'MindMap-Benachrichtigung',
+      'pt': 'Notificação do MindMap',
+      'ru': 'Уведомление MindMap',
+    },
+    'notif.toNode': {
+      'ja': 'ノードへ',
+      'en': 'To node',
+      'zh': '前往节点',
+      'ko': '노드로',
+      'es': 'Ir al nodo',
+      'fr': 'Aller au nœud',
+      'de': 'Zum Knoten',
+      'pt': 'Ir ao nó',
+      'ru': 'К узлу',
+    },
+    'common.name': {
+      'ja': '名前',
+      'en': 'Name',
+      'zh': '名称',
+      'ko': '이름',
+      'es': 'Nombre',
+      'fr': 'Nom',
+      'de': 'Name',
+      'pt': 'Nome',
+      'ru': 'Имя',
+    },
+    'common.icon': {
+      'ja': 'アイコン',
+      'en': 'Icon',
+      'zh': '图标',
+      'ko': '아이콘',
+      'es': 'Icono',
+      'fr': 'Icône',
+      'de': 'Symbol',
+      'pt': 'Ícone',
+      'ru': 'Значок',
+    },
+    'fav.addTitle': {
+      'ja': 'お気に入りボタンとして追加',
+      'en': 'Add as favorite button',
+      'zh': '添加为收藏按钮',
+      'ko': '즐겨찾기 버튼으로 추가',
+      'es': 'Añadir como botón favorito',
+      'fr': 'Ajouter comme bouton favori',
+      'de': 'Als Favoriten-Schaltfläche hinzufügen',
+      'pt': 'Adicionar como botão favorito',
+      'ru': 'Добавить как кнопку избранного',
+    },
+    'fav.editTitle': {
+      'ja': 'お気に入りボタンを編集',
+      'en': 'Edit favorite button',
+      'zh': '编辑收藏按钮',
+      'ko': '즐겨찾기 버튼 편집',
+      'es': 'Editar botón favorito',
+      'fr': 'Modifier le bouton favori',
+      'de': 'Favoriten-Schaltfläche bearbeiten',
+      'pt': 'Editar botão favorito',
+      'ru': 'Изменить кнопку избранного',
+    },
+    'fav.labelHint': {
+      'ja': 'ボタンの表示名',
+      'en': 'Button display name',
+      'zh': '按钮显示名称',
+      'ko': '버튼 표시 이름',
+      'es': 'Nombre del botón',
+      'fr': 'Nom affiché du bouton',
+      'de': 'Anzeigename der Schaltfläche',
+      'pt': 'Nome de exibição do botão',
+      'ru': 'Отображаемое имя кнопки',
+    },
+    'fav.enterName': {
+      'ja': '名前を入力してください',
+      'en': 'Please enter a name',
+      'zh': '请输入名称',
+      'ko': '이름을 입력하세요',
+      'es': 'Introduce un nombre',
+      'fr': 'Veuillez saisir un nom',
+      'de': 'Bitte einen Namen eingeben',
+      'pt': 'Digite um nome',
+      'ru': 'Введите имя',
+    },
+    'fav.enterUrl': {
+      'ja': 'URL を入力してください',
+      'en': 'Please enter a URL',
+      'zh': '请输入 URL',
+      'ko': 'URL을 입력하세요',
+      'es': 'Introduce una URL',
+      'fr': 'Veuillez saisir une URL',
+      'de': 'Bitte eine URL eingeben',
+      'pt': 'Digite uma URL',
+      'ru': 'Введите URL',
+    },
+    'fav.removeFromLayout': {
+      'ja': 'このボタンを配置から外す',
+      'en': 'Remove this button from the layout',
+      'zh': '从布局中移除此按钮',
+      'ko': '이 버튼을 배치에서 제거',
+      'es': 'Quitar este botón del diseño',
+      'fr': 'Retirer ce bouton de la disposition',
+      'de': 'Diese Schaltfläche aus dem Layout entfernen',
+      'pt': 'Remover este botão do layout',
+      'ru': 'Убрать эту кнопку из раскладки',
+    },
+    'icon.select': {
+      'ja': 'アイコンを選択',
+      'en': 'Select icon',
+      'zh': '选择图标',
+      'ko': '아이콘 선택',
+      'es': 'Seleccionar icono',
+      'fr': 'Choisir une icône',
+      'de': 'Symbol auswählen',
+      'pt': 'Selecionar ícone',
+      'ru': 'Выбрать значок',
+    },
+    'icon.change': {
+      'ja': 'アイコンを変更',
+      'en': 'Change icon',
+      'zh': '更改图标',
+      'ko': '아이콘 변경',
+      'es': 'Cambiar icono',
+      'fr': 'Modifier l’icône',
+      'de': 'Symbol ändern',
+      'pt': 'Alterar ícone',
+      'ru': 'Изменить значок',
+    },
+    'icon.changeSub': {
+      'ja': '64 種類のプリセットから選択 (デフォルトに戻すことも可能)',
+      'en': 'Choose from 64 presets (can reset to default)',
+      'zh': '从 64 种预设中选择（也可恢复默认）',
+      'ko': '64가지 프리셋에서 선택 (기본값으로 되돌리기 가능)',
+      'es': 'Elige entre 64 preajustes (también puedes restablecer)',
+      'fr': 'Choisir parmi 64 préréglages (réinitialisation possible)',
+      'de': 'Aus 64 Vorlagen wählen (zurücksetzbar)',
+      'pt': 'Escolha entre 64 predefinições (pode redefinir)',
+      'ru': 'Выбор из 64 пресетов (можно сбросить)',
+    },
+    'color.change': {
+      'ja': '色を変更',
+      'en': 'Change color',
+      'zh': '更改颜色',
+      'ko': '색상 변경',
+      'es': 'Cambiar color',
+      'fr': 'Modifier la couleur',
+      'de': 'Farbe ändern',
+      'pt': 'Alterar cor',
+      'ru': 'Изменить цвет',
+    },
+    'color.changeSub': {
+      'ja': 'パレットから色を選択',
+      'en': 'Choose a color from the palette',
+      'zh': '从调色板选择颜色',
+      'ko': '팔레트에서 색상 선택',
+      'es': 'Elige un color de la paleta',
+      'fr': 'Choisir une couleur dans la palette',
+      'de': 'Farbe aus der Palette wählen',
+      'pt': 'Escolha uma cor da paleta',
+      'ru': 'Выберите цвет из палитры',
+    },
+    'fav.notFound': {
+      'ja': 'お気に入りボタンが見つかりません',
+      'en': 'Favorite button not found',
+      'zh': '未找到收藏按钮',
+      'ko': '즐겨찾기 버튼을 찾을 수 없습니다',
+      'es': 'No se encontró el botón favorito',
+      'fr': 'Bouton favori introuvable',
+      'de': 'Favoriten-Schaltfläche nicht gefunden',
+      'pt': 'Botão favorito não encontrado',
+      'ru': 'Кнопка избранного не найдена',
+    },
+    'fav.sectionTitle': {
+      'ja': 'お気に入りボタン',
+      'en': 'Favorite button',
+      'zh': '收藏按钮',
+      'ko': '즐겨찾기 버튼',
+      'es': 'Botón favorito',
+      'fr': 'Bouton favori',
+      'de': 'Favoriten-Schaltfläche',
+      'pt': 'Botão favorito',
+      'ru': 'Кнопка избранного',
+    },
+    'fav.editFull': {
+      'ja': '編集 (名前 / アイコン / 色 / URL)',
+      'en': 'Edit (name / icon / color / URL)',
+      'zh': '编辑（名称/图标/颜色/URL）',
+      'ko': '편집 (이름/아이콘/색상/URL)',
+      'es': 'Editar (nombre / icono / color / URL)',
+      'fr': 'Modifier (nom / icône / couleur / URL)',
+      'de': 'Bearbeiten (Name / Symbol / Farbe / URL)',
+      'pt': 'Editar (nome / ícone / cor / URL)',
+      'ru': 'Изменить (имя / значок / цвет / URL)',
+    },
+    'fav.deleteButton': {
+      'ja': 'ボタンを削除',
+      'en': 'Delete button',
+      'zh': '删除按钮',
+      'ko': '버튼 삭제',
+      'es': 'Eliminar botón',
+      'fr': 'Supprimer le bouton',
+      'de': 'Schaltfläche löschen',
+      'pt': 'Excluir botão',
+      'ru': 'Удалить кнопку',
+    },
+    'fav.deleteButtonSub': {
+      'ja': '(完全削除: 配置からも消えます)',
+      'en': '(Permanent: also removed from the layout)',
+      'zh': '（彻底删除：也会从布局中移除）',
+      'ko': '(완전 삭제: 배치에서도 사라집니다)',
+      'es': '(Eliminación total: también se quita del diseño)',
+      'fr': '(Suppression définitive : retiré aussi de la disposition)',
+      'de': '(Endgültig: auch aus dem Layout entfernt)',
+      'pt': '(Exclusão total: também removido do layout)',
+      'ru': '(Полное удаление: убирается и из раскладки)',
+    },
+    'fav.deleted': {
+      'ja': '「{label}」 を削除しました',
+      'en': 'Deleted “{label}”',
+      'zh': '已删除「{label}」',
+      'ko': '「{label}」을(를) 삭제했습니다',
+      'es': 'Se eliminó “{label}”',
+      'fr': '« {label} » supprimé',
+      'de': '„{label}“ gelöscht',
+      'pt': '“{label}” excluído',
+      'ru': '«{label}» удалено',
+    },
+    'fav.pageSectionTitle': {
+      'ja': 'お気に入りページ',
+      'en': 'Favorite page',
+      'zh': '收藏页面',
+      'ko': '즐겨찾기 페이지',
+      'es': 'Página favorita',
+      'fr': 'Page favorite',
+      'de': 'Favoriten-Seite',
+      'pt': 'Página favorita',
+      'ru': 'Избранная страница',
+    },
+    'fav.pageDeletedIndex': {
+      'ja': 'お気に入り {n} を削除しました',
+      'en': 'Removed favorite {n}',
+      'zh': '已删除收藏 {n}',
+      'ko': '즐겨찾기 {n} 삭제됨',
+      'es': 'Favorito {n} eliminado',
+      'fr': 'Favori {n} supprimé',
+      'de': 'Favorit {n} entfernt',
+      'pt': 'Favorito {n} removido',
+      'ru': 'Избранное {n} удалено',
+    },
+    'fav.unregistered': {
+      'ja': '(未登録)',
+      'en': '(Not registered)',
+      'zh': '(未注册)',
+      'ko': '(미등록)',
+      'es': '(Sin registrar)',
+      'fr': '(Non enregistré)',
+      'de': '(Nicht registriert)',
+      'pt': '(Não registrado)',
+      'ru': '(Не задано)',
+    },
+    'fav.pageEmptyHint': {
+      'ja': 'まだ登録されていません。\nGoogle 検索で気になるページを開き、 ★ ボタンで追加してください。',
+      'en':
+          'Nothing registered yet.\nOpen a page in Google Search and add it with the ★ button.',
+      'zh': '尚未注册。\n在 Google 搜索中打开感兴趣的页面，用 ★ 按钮添加。',
+      'ko': '아직 등록되지 않았습니다.\nGoogle 검색에서 원하는 페이지를 열고 ★ 버튼으로 추가하세요.',
+      'es':
+          'Aún no hay nada registrado.\nAbre una página en la Búsqueda de Google y añádela con el botón ★.',
+      'fr':
+          'Rien d’enregistré pour l’instant.\nOuvrez une page dans la recherche Google et ajoutez-la avec le bouton ★.',
+      'de':
+          'Noch nichts registriert.\nÖffnen Sie eine Seite in der Google-Suche und fügen Sie sie mit der ★-Schaltfläche hinzu.',
+      'pt':
+          'Nada registrado ainda.\nAbra uma página na Busca do Google e adicione com o botão ★.',
+      'ru':
+          'Пока ничего не задано.\nОткройте страницу в поиске Google и добавьте её кнопкой ★.',
+    },
+    'fav.removeFromLayoutSub': {
+      'ja': '(ヘッダー / 下部バーから取り除きます)',
+      'en': '(Removes it from the header / bottom bar)',
+      'zh': '(从顶栏/底栏移除)',
+      'ko': '(헤더/하단 바에서 제거)',
+      'es': '(Se quita del encabezado / barra inferior)',
+      'fr': '(Retiré de l’en-tête / barre inférieure)',
+      'de': '(Wird aus Kopfzeile / unterer Leiste entfernt)',
+      'pt': '(Remove do cabeçalho / barra inferior)',
+      'ru': '(Убирается из шапки / нижней панели)',
+    },
+    'fav.pageDeleteSub': {
+      'ja': '(他の登録ページが上位にスライドします)',
+      'en': '(Other registered pages slide up)',
+      'zh': '(其他已注册页面会上移)',
+      'ko': '(다른 등록 페이지가 위로 이동합니다)',
+      'es': '(Las otras páginas registradas suben)',
+      'fr': '(Les autres pages enregistrées remontent)',
+      'de': '(Andere registrierte Seiten rücken auf)',
+      'pt': '(As outras páginas registradas sobem)',
+      'ru': '(Другие заданные страницы сдвигаются вверх)',
+    },
+    'fav.pageDeletedHeaderFooter': {
+      'ja': '(ヘッダー / フッターからも除去)',
+      'en': '(also removed from header / footer)',
+      'zh': '（也从顶栏/底栏移除）',
+      'ko': '(헤더/푸터에서도 제거)',
+      'es': '(también quitado del encabezado / pie)',
+      'fr': '(retiré aussi de l’en-tête / pied de page)',
+      'de': '(auch aus Kopf-/Fußzeile entfernt)',
+      'pt': '(também removido do cabeçalho / rodapé)',
+      'ru': '(также убрано из шапки / подвала)',
+    },
+    'fav.pageDeletedBottomNote': {
+      'ja': '\n※ 下部バーのスロットには残っているので、 ボタン配置画面から個別に外してください',
+      'en':
+          '\n* It remains in a bottom-bar slot; remove it individually from the button layout screen.',
+      'zh': '\n※ 仍保留在底栏插槽中，请在按钮布局界面单独移除。',
+      'ko': '\n※ 하단 바 슬롯에는 남아 있으므로 버튼 배치 화면에서 개별적으로 제거하세요.',
+      'es':
+          '\n* Permanece en una ranura de la barra inferior; quítalo por separado en la pantalla de disposición de botones.',
+      'fr':
+          '\n* Il reste dans un emplacement de la barre inférieure ; retirez-le séparément depuis l’écran de disposition des boutons.',
+      'de':
+          '\n* Bleibt in einem Slot der unteren Leiste; entfernen Sie ihn separat im Bildschirm zur Schaltflächenanordnung.',
+      'pt':
+          '\n* Permanece em um slot da barra inferior; remova-o separadamente na tela de layout de botões.',
+      'ru':
+          '\n* Остаётся в слоте нижней панели; уберите его отдельно на экране раскладки кнопок.',
+    },
+    'fav.nameHint': {
+      'ja': 'お気に入り名',
+      'en': 'Favorite name',
+      'zh': '收藏名称',
+      'ko': '즐겨찾기 이름',
+      'es': 'Nombre del favorito',
+      'fr': 'Nom du favori',
+      'de': 'Favoritenname',
+      'pt': 'Nome do favorito',
+      'ru': 'Имя избранного',
+    },
+    'quiz.range': {
+      'ja': '出題範囲',
+      'en': 'Question range',
+      'zh': '出题范围',
+      'ko': '출제 범위',
+      'es': 'Alcance de preguntas',
+      'fr': 'Plage de questions',
+      'de': 'Fragenbereich',
+      'pt': 'Intervalo de questões',
+      'ru': 'Диапазон вопросов',
+    },
+    'quiz.wholePdf': {
+      'ja': 'PDF 全体から',
+      'en': 'From the whole PDF',
+      'zh': '从整个 PDF',
+      'ko': '전체 PDF에서',
+      'es': 'De todo el PDF',
+      'fr': 'De tout le PDF',
+      'de': 'Aus dem gesamten PDF',
+      'pt': 'De todo o PDF',
+      'ru': 'Из всего PDF',
+    },
+    'quiz.pageRange': {
+      'ja': 'ページ範囲指定',
+      'en': 'Specify page range',
+      'zh': '指定页面范围',
+      'ko': '페이지 범위 지정',
+      'es': 'Especificar rango de páginas',
+      'fr': 'Spécifier la plage de pages',
+      'de': 'Seitenbereich angeben',
+      'pt': 'Especificar intervalo de páginas',
+      'ru': 'Указать диапазон страниц',
+    },
+    'quiz.startPage': {
+      'ja': '開始ページ',
+      'en': 'Start page',
+      'zh': '起始页',
+      'ko': '시작 페이지',
+      'es': 'Página inicial',
+      'fr': 'Page de début',
+      'de': 'Startseite',
+      'pt': 'Página inicial',
+      'ru': 'Начальная страница',
+    },
+    'quiz.endPage': {
+      'ja': '終了ページ',
+      'en': 'End page',
+      'zh': '结束页',
+      'ko': '종료 페이지',
+      'es': 'Página final',
+      'fr': 'Page de fin',
+      'de': 'Endseite',
+      'pt': 'Página final',
+      'ru': 'Конечная страница',
+    },
+    'quiz.eg5': {
+      'ja': '例: 5',
+      'en': 'e.g. 5',
+      'zh': '例: 5',
+      'ko': '예: 5',
+      'es': 'ej.: 5',
+      'fr': 'ex. : 5',
+      'de': 'z. B. 5',
+      'pt': 'ex.: 5',
+      'ru': 'напр.: 5',
+    },
+    'quiz.eg12': {
+      'ja': '例: 12',
+      'en': 'e.g. 12',
+      'zh': '例: 12',
+      'ko': '예: 12',
+      'es': 'ej.: 12',
+      'fr': 'ex. : 12',
+      'de': 'z. B. 12',
+      'pt': 'ex.: 12',
+      'ru': 'напр.: 12',
+    },
+    'quiz.type': {
+      'ja': '問題タイプ',
+      'en': 'Question type',
+      'zh': '题型',
+      'ko': '문제 유형',
+      'es': 'Tipo de pregunta',
+      'fr': 'Type de question',
+      'de': 'Fragetyp',
+      'pt': 'Tipo de questão',
+      'ru': 'Тип вопроса',
+    },
+    'quiz.qa': {
+      'ja': '一問一答',
+      'en': 'Q&A',
+      'zh': '一问一答',
+      'ko': '일문일답',
+      'es': 'Preguntas y respuestas',
+      'fr': 'Questions-réponses',
+      'de': 'Frage-Antwort',
+      'pt': 'Perguntas e respostas',
+      'ru': 'Вопрос-ответ',
+    },
+    'quiz.truefalse': {
+      'ja': '○×二択',
+      'en': 'True/False',
+      'zh': '对错二选',
+      'ko': 'O/X 선택',
+      'es': 'Verdadero/Falso',
+      'fr': 'Vrai/Faux',
+      'de': 'Wahr/Falsch',
+      'pt': 'Verdadeiro/Falso',
+      'ru': 'Верно/Неверно',
+    },
+    'quiz.fillblank': {
+      'ja': '穴埋め',
+      'en': 'Fill in the blank',
+      'zh': '填空',
+      'ko': '빈칸 채우기',
+      'es': 'Rellenar el hueco',
+      'fr': 'Texte à trous',
+      'de': 'Lückentext',
+      'pt': 'Preencher lacunas',
+      'ru': 'Заполнить пропуск',
+    },
+    'quiz.mixed': {
+      'ja': '混合',
+      'en': 'Mixed',
+      'zh': '混合',
+      'ko': '혼합',
+      'es': 'Mixto',
+      'fr': 'Mixte',
+      'de': 'Gemischt',
+      'pt': 'Misto',
+      'ru': 'Смешанный',
+    },
+    'quiz.noRepeat': {
+      'ja': '同じ問題を二度と出さない',
+      'en': 'Never repeat the same question',
+      'zh': '不再出现相同问题',
+      'ko': '같은 문제를 다시 내지 않기',
+      'es': 'No repetir la misma pregunta',
+      'fr': 'Ne jamais répéter la même question',
+      'de': 'Dieselbe Frage nie wiederholen',
+      'pt': 'Nunca repetir a mesma pergunta',
+      'ru': 'Не повторять один и тот же вопрос',
+    },
+    'quiz.noRepeatOn': {
+      'ja': '過去に生成した質問を AI に除外させる',
+      'en': 'Make the AI exclude previously generated questions',
+      'zh': '让 AI 排除过去生成的问题',
+      'ko': 'AI가 과거에 생성한 질문을 제외하도록 함',
+      'es': 'Hacer que la IA excluya las preguntas ya generadas',
+      'fr': 'Faire en sorte que l’IA exclue les questions déjà générées',
+      'de': 'Die KI zuvor erzeugte Fragen ausschließen lassen',
+      'pt': 'Fazer a IA excluir perguntas já geradas',
+      'ru': 'Заставить ИИ исключать ранее созданные вопросы',
+    },
+    'quiz.noRepeatOff': {
+      'ja': 'OFF にすると過去の問題と重複する可能性あり',
+      'en': 'If off, questions may duplicate past ones',
+      'zh': '关闭后可能与过去的问题重复',
+      'ko': '끄면 과거 문제와 중복될 수 있음',
+      'es': 'Si está desactivado, pueden repetirse preguntas anteriores',
+      'fr': 'Si désactivé, des questions peuvent se répéter',
+      'de': 'Wenn aus, können sich Fragen wiederholen',
+      'pt': 'Se desligado, pode haver perguntas repetidas',
+      'ru': 'Если выключено, вопросы могут повторяться',
+    },
+    'quiz.historyCount': {
+      'ja': 'これまでの履歴: {count} 件',
+      'en': 'History so far: {count}',
+      'zh': '历史记录：{count} 条',
+      'ko': '지금까지의 기록: {count}건',
+      'es': 'Historial: {count}',
+      'fr': 'Historique : {count}',
+      'de': 'Verlauf: {count}',
+      'pt': 'Histórico: {count}',
+      'ru': 'История: {count}',
+    },
+    'quiz.clearHistory': {
+      'ja': '履歴を消去',
+      'en': 'Clear history',
+      'zh': '清除历史',
+      'ko': '기록 삭제',
+      'es': 'Borrar historial',
+      'fr': 'Effacer l’historique',
+      'de': 'Verlauf löschen',
+      'pt': 'Limpar histórico',
+      'ru': 'Очистить историю',
+    },
+    'quiz.generate': {
+      'ja': '生成',
+      'en': 'Generate',
+      'zh': '生成',
+      'ko': '생성',
+      'es': 'Generar',
+      'fr': 'Générer',
+      'de': 'Generieren',
+      'pt': 'Gerar',
+      'ru': 'Сгенерировать',
+    },
+    'btn.setUp': {
+      'ja': '設定する',
+      'en': 'Set up',
+      'zh': '设置',
+      'ko': '설정하기',
+      'es': 'Configurar',
+      'fr': 'Configurer',
+      'de': 'Einrichten',
+      'pt': 'Configurar',
+      'ru': 'Настроить',
+    },
+    'quiz.noApiKey': {
+      'ja': 'API キー未設定',
+      'en': 'API key not set',
+      'zh': '未设置 API 密钥',
+      'ko': 'API 키 미설정',
+      'es': 'Clave de API no configurada',
+      'fr': 'Clé API non configurée',
+      'de': 'API-Schlüssel nicht festgelegt',
+      'pt': 'Chave de API não configurada',
+      'ru': 'API-ключ не задан',
+    },
+    'quiz.noApiKeyBody': {
+      'ja': 'クイズ生成には Gemini API キーが必要です。\nAI 設定から API キーを登録してください。',
+      'en':
+          'Quiz generation requires a Gemini API key.\nRegister an API key in AI settings.',
+      'zh': '生成测验需要 Gemini API 密钥。\n请在 AI 设置中注册 API 密钥。',
+      'ko': '퀴즈 생성에는 Gemini API 키가 필요합니다.\nAI 설정에서 API 키를 등록하세요.',
+      'es':
+          'La generación de cuestionarios requiere una clave de API de Gemini.\nRegistra una clave de API en los ajustes de IA.',
+      'fr':
+          'La génération de quiz nécessite une clé API Gemini.\nEnregistrez une clé API dans les paramètres IA.',
+      'de':
+          'Die Quiz-Generierung erfordert einen Gemini-API-Schlüssel.\nRegistrieren Sie einen API-Schlüssel in den KI-Einstellungen.',
+      'pt':
+          'A geração de quiz requer uma chave de API do Gemini.\nRegistre uma chave de API nas configurações de IA.',
+      'ru':
+          'Для генерации теста нужен API-ключ Gemini.\nЗарегистрируйте ключ в настройках ИИ.',
+    },
+    'quiz.nQuestions': {
+      'ja': '{n}問',
+      'en': '{n} Q',
+      'zh': '{n} 题',
+      'ko': '{n}문제',
+      'es': '{n} preg.',
+      'fr': '{n} q.',
+      'de': '{n} Fr.',
+      'pt': '{n} perg.',
+      'ru': '{n} вопр.',
+    },
+    'quiz.customCount': {
+      'ja': 'カスタム問題数',
+      'en': 'Custom number of questions',
+      'zh': '自定义题目数量',
+      'ko': '사용자 지정 문제 수',
+      'es': 'Número personalizado de preguntas',
+      'fr': 'Nombre de questions personnalisé',
+      'de': 'Eigene Fragenanzahl',
+      'pt': 'Número personalizado de questões',
+      'ru': 'Своё число вопросов',
+    },
+    'quiz.genFailed': {
+      'ja': 'クイズを生成できませんでした (PDF の内容を読み取れなかった可能性)',
+      'en': 'Couldn’t generate the quiz (the PDF content may be unreadable)',
+      'zh': '无法生成测验（可能无法读取 PDF 内容）',
+      'ko': '퀴즈를 생성할 수 없습니다 (PDF 내용을 읽지 못했을 수 있음)',
+      'es':
+          'No se pudo generar el cuestionario (puede que el contenido del PDF no se haya podido leer)',
+      'fr':
+          'Impossible de générer le quiz (le contenu du PDF est peut-être illisible)',
+      'de': 'Quiz konnte nicht erstellt werden (PDF-Inhalt evtl. nicht lesbar)',
+      'pt':
+          'Não foi possível gerar o quiz (o conteúdo do PDF pode estar ilegível)',
+      'ru': 'Не удалось создать тест (возможно, содержимое PDF не читается)',
+    },
+    'quiz.genError': {
+      'ja': 'クイズ生成に失敗しました: {err}',
+      'en': 'Quiz generation failed: {err}',
+      'zh': '测验生成失败：{err}',
+      'ko': '퀴즈 생성 실패: {err}',
+      'es': 'Error al generar el cuestionario: {err}',
+      'fr': 'Échec de la génération du quiz : {err}',
+      'de': 'Quiz-Generierung fehlgeschlagen: {err}',
+      'pt': 'Falha na geração do quiz: {err}',
+      'ru': 'Не удалось создать тест: {err}',
+    },
+    'quiz.dontKnow': {
+      'ja': '分からない',
+      'en': 'I don’t know',
+      'zh': '不知道',
+      'ko': '모르겠음',
+      'es': 'No lo sé',
+      'fr': 'Je ne sais pas',
+      'de': 'Weiß nicht',
+      'pt': 'Não sei',
+      'ru': 'Не знаю',
+    },
+    'quiz.flashcardsCreated': {
+      'ja': 'フラッシュカードを作成しました',
+      'en': 'Flashcards created',
+      'zh': '已创建抽认卡',
+      'ko': '플래시카드를 만들었습니다',
+      'es': 'Tarjetas creadas',
+      'fr': 'Cartes mémo créées',
+      'de': 'Lernkarten erstellt',
+      'pt': 'Cartões criados',
+      'ru': 'Карточки созданы',
+    },
+    'quiz.flashcardsSavedBody': {
+      'ja':
+          '「{folder}」 フォルダーに {count} 枚のカードを追加しました。\nフラッシュカード画面でフォルダー整理・削除・学習ができます。',
+      'en':
+          'Added {count} cards to the “{folder}” folder.\nYou can organize, delete, and study folders in the Flashcards screen.',
+      'zh': '已向「{folder}」文件夹添加 {count} 张卡片。\n可在抽认卡界面整理、删除和学习文件夹。',
+      'ko':
+          '「{folder}」 폴더에 카드 {count}장을 추가했습니다.\n플래시카드 화면에서 폴더 정리·삭제·학습이 가능합니다.',
+      'es':
+          'Se añadieron {count} tarjetas a la carpeta “{folder}”.\nPuedes organizar, eliminar y estudiar carpetas en la pantalla de Tarjetas.',
+      'fr':
+          '{count} cartes ajoutées au dossier « {folder} ».\nVous pouvez organiser, supprimer et étudier les dossiers dans l’écran des cartes mémo.',
+      'de':
+          '{count} Karten zum Ordner „{folder}“ hinzugefügt.\nIm Lernkarten-Bildschirm können Sie Ordner verwalten, löschen und lernen.',
+      'pt':
+          '{count} cartões adicionados à pasta “{folder}”.\nVocê pode organizar, excluir e estudar pastas na tela de Cartões.',
+      'ru':
+          'В папку «{folder}» добавлено {count} карточек.\nНа экране карточек можно упорядочивать, удалять и учить папки.',
+    },
+    'quiz.openFlashcards': {
+      'ja': 'フラッシュカードを開く',
+      'en': 'Open flashcards',
+      'zh': '打开抽认卡',
+      'ko': '플래시카드 열기',
+      'es': 'Abrir tarjetas',
+      'fr': 'Ouvrir les cartes mémo',
+      'de': 'Lernkarten öffnen',
+      'pt': 'Abrir cartões',
+      'ru': 'Открыть карточки',
+    },
+    'quiz.titleCount': {
+      'ja': 'クイズ ({n} 問)',
+      'en': 'Quiz ({n} questions)',
+      'zh': '测验（{n} 题）',
+      'ko': '퀴즈 ({n}문제)',
+      'es': 'Cuestionario ({n} preguntas)',
+      'fr': 'Quiz ({n} questions)',
+      'de': 'Quiz ({n} Fragen)',
+      'pt': 'Quiz ({n} questões)',
+      'ru': 'Тест ({n} вопросов)',
+    },
+    'quiz.addToMapCount': {
+      'ja': 'マップに追加: {sel} / {total} 問選択中',
+      'en': 'Add to map: {sel} / {total} selected',
+      'zh': '添加到地图：已选 {sel} / {total} 题',
+      'ko': '맵에 추가: {sel} / {total}문제 선택 중',
+      'es': 'Añadir al mapa: {sel} / {total} seleccionadas',
+      'fr': 'Ajouter à la carte : {sel} / {total} sélectionnées',
+      'de': 'Zur Karte hinzufügen: {sel} / {total} ausgewählt',
+      'pt': 'Adicionar ao mapa: {sel} / {total} selecionadas',
+      'ru': 'Добавить на карту: выбрано {sel} / {total}',
+    },
+    'quiz.answerHint': {
+      'ja': 'あなたの答えを入力',
+      'en': 'Enter your answer',
+      'zh': '输入你的答案',
+      'ko': '답을 입력하세요',
+      'es': 'Escribe tu respuesta',
+      'fr': 'Saisissez votre réponse',
+      'de': 'Antwort eingeben',
+      'pt': 'Digite sua resposta',
+      'ru': 'Введите ответ',
+    },
+    'quiz.checkAnswer': {
+      'ja': '答え合わせ',
+      'en': 'Check answer',
+      'zh': '核对答案',
+      'ko': '정답 확인',
+      'es': 'Comprobar respuesta',
+      'fr': 'Vérifier la réponse',
+      'de': 'Antwort prüfen',
+      'pt': 'Conferir resposta',
+      'ru': 'Проверить ответ',
+    },
+    'quiz.addedToMap': {
+      'ja': 'クイズ {n} 問をマップに追加しました',
+      'en': 'Added {n} quiz questions to the map',
+      'zh': '已将 {n} 道测验题添加到地图',
+      'ko': '퀴즈 {n}문제를 맵에 추가했습니다',
+      'es': 'Se añadieron {n} preguntas al mapa',
+      'fr': '{n} questions de quiz ajoutées à la carte',
+      'de': '{n} Quizfragen zur Karte hinzugefügt',
+      'pt': '{n} questões de quiz adicionadas ao mapa',
+      'ru': 'На карту добавлено {n} вопросов теста',
+    },
+    'quiz.folderSelectFailed': {
+      'ja': 'フォルダ選択に失敗: {err}',
+      'en': 'Folder selection failed: {err}',
+      'zh': '文件夹选择失败：{err}',
+      'ko': '폴더 선택 실패: {err}',
+      'es': 'Error al seleccionar la carpeta: {err}',
+      'fr': 'Échec de la sélection du dossier : {err}',
+      'de': 'Ordnerauswahl fehlgeschlagen: {err}',
+      'pt': 'Falha ao selecionar a pasta: {err}',
+      'ru': 'Не удалось выбрать папку: {err}',
+    },
+    'quiz.folderNotFound': {
+      'ja': 'フォルダが見つかりません',
+      'en': 'Folder not found',
+      'zh': '未找到文件夹',
+      'ko': '폴더를 찾을 수 없습니다',
+      'es': 'Carpeta no encontrada',
+      'fr': 'Dossier introuvable',
+      'de': 'Ordner nicht gefunden',
+      'pt': 'Pasta não encontrada',
+      'ru': 'Папка не найдена',
+    },
+    'quiz.scanningFolder': {
+      'ja': 'フォルダを走査中...',
+      'en': 'Scanning folder...',
+      'zh': '正在扫描文件夹...',
+      'ko': '폴더 검색 중...',
+      'es': 'Escaneando la carpeta...',
+      'fr': 'Analyse du dossier...',
+      'de': 'Ordner wird durchsucht...',
+      'pt': 'Verificando a pasta...',
+      'ru': 'Сканирование папки...',
+    },
+    'ctx.memoList': {
+      'ja': 'メモ一覧',
+      'en': 'Memo list',
+      'zh': '备注列表',
+      'ko': '메모 목록',
+      'es': 'Lista de notas',
+      'fr': 'Liste des mémos',
+      'de': 'Notizliste',
+      'pt': 'Lista de notas',
+      'ru': 'Список заметок',
+    },
+    'ctx.bulkDownloadMedia': {
+      'ja': '画像と動画を一括ダウンロード',
+      'en': 'Bulk download images & videos',
+      'zh': '批量下载图片和视频',
+      'ko': '이미지·동영상 일괄 다운로드',
+      'es': 'Descargar imágenes y vídeos en lote',
+      'fr': 'Télécharger images et vidéos en lot',
+      'de': 'Bilder & Videos im Stapel herunterladen',
+      'pt': 'Baixar imagens e vídeos em lote',
+      'ru': 'Массовая загрузка изображений и видео',
+    },
+    'ctx.bulkDownloadYoutube': {
+      'ja': 'YouTube動画を一括DL',
+      'en': 'Bulk download YouTube videos',
+      'zh': '批量下载 YouTube 视频',
+      'ko': 'YouTube 동영상 일괄 다운로드',
+      'es': 'Descargar vídeos de YouTube en lote',
+      'fr': 'Télécharger des vidéos YouTube en lot',
+      'de': 'YouTube-Videos im Stapel herunterladen',
+      'pt': 'Baixar vídeos do YouTube em lote',
+      'ru': 'Массовая загрузка видео YouTube',
+    },
+    'ctx.lockMoveDir': {
+      'ja': '移動方向を固定',
+      'en': 'Lock movement direction',
+      'zh': '固定移动方向',
+      'ko': '이동 방향 고정',
+      'es': 'Fijar dirección de movimiento',
+      'fr': 'Verrouiller le sens de déplacement',
+      'de': 'Bewegungsrichtung sperren',
+      'pt': 'Fixar direção de movimento',
+      'ru': 'Зафиксировать направление движения',
+    },
+    'ctx.basePosition': {
+      'ja': '基準位置',
+      'en': 'Reference position',
+      'zh': '基准位置',
+      'ko': '기준 위치',
+      'es': 'Posición de referencia',
+      'fr': 'Position de référence',
+      'de': 'Bezugsposition',
+      'pt': 'Posição de referência',
+      'ru': 'Опорная позиция',
+    },
+    'memo.itemName': {
+      'ja': 'メモ項目の名前',
+      'en': 'Memo item name',
+      'zh': '备注项目名称',
+      'ko': '메모 항목 이름',
+      'es': 'Nombre del elemento de nota',
+      'fr': 'Nom de l’élément de mémo',
+      'de': 'Name des Notizelements',
+      'pt': 'Nome do item de nota',
+      'ru': 'Имя элемента заметки',
+    },
+    'memo.titleGlobal': {
+      'ja': 'メモ: 全体',
+      'en': 'Memo: Global',
+      'zh': '备注：全局',
+      'ko': '메모: 전체',
+      'es': 'Nota: Global',
+      'fr': 'Mémo : Global',
+      'de': 'Notiz: Global',
+      'pt': 'Nota: Global',
+      'ru': 'Заметка: общая',
+    },
+    'memo.titlePage': {
+      'ja': 'メモ: {title}',
+      'en': 'Memo: {title}',
+      'zh': '备注：{title}',
+      'ko': '메모: {title}',
+      'es': 'Nota: {title}',
+      'fr': 'Mémo : {title}',
+      'de': 'Notiz: {title}',
+      'pt': 'Nota: {title}',
+      'ru': 'Заметка: {title}',
+    },
+    'memo.scopeHere': {
+      'ja': 'ここ限定',
+      'en': 'This page only',
+      'zh': '仅此页',
+      'ko': '이 페이지만',
+      'es': 'Solo esta página',
+      'fr': 'Cette page seulement',
+      'de': 'Nur diese Seite',
+      'pt': 'Apenas esta página',
+      'ru': 'Только эта страница',
+    },
+    'memo.scopeGlobal': {
+      'ja': '全体',
+      'en': 'Global',
+      'zh': '全局',
+      'ko': '전체',
+      'es': 'Global',
+      'fr': 'Global',
+      'de': 'Global',
+      'pt': 'Global',
+      'ru': 'Общая',
+    },
+    'memo.addItem': {
+      'ja': '項目を追加',
+      'en': 'Add item',
+      'zh': '添加项目',
+      'ko': '항목 추가',
+      'es': 'Añadir elemento',
+      'fr': 'Ajouter un élément',
+      'de': 'Element hinzufügen',
+      'pt': 'Adicionar item',
+      'ru': 'Добавить элемент',
+    },
+    'memo.placeAsBlock': {
+      'ja': 'ブロックとして配置',
+      'en': 'Place as block',
+      'zh': '作为方块放置',
+      'ko': '블록으로 배치',
+      'es': 'Colocar como bloque',
+      'fr': 'Placer comme bloc',
+      'de': 'Als Block platzieren',
+      'pt': 'Colocar como bloco',
+      'ru': 'Разместить блоком',
+    },
+    'flash.title': {
+      'ja': 'フラッシュカード',
+      'en': 'Flashcards',
+      'zh': '抽认卡',
+      'ko': '플래시카드',
+      'es': 'Tarjetas',
+      'fr': 'Cartes mémo',
+      'de': 'Lernkarten',
+      'pt': 'Cartões',
+      'ru': 'Карточки',
+    },
+    'flash.study': {
+      'ja': '学習',
+      'en': 'Study',
+      'zh': '学习',
+      'ko': '학습',
+      'es': 'Estudiar',
+      'fr': 'Étudier',
+      'de': 'Lernen',
+      'pt': 'Estudar',
+      'ru': 'Учить',
+    },
+    'flash.aiChat': {
+      'ja': 'AIと会話',
+      'en': 'Chat with AI',
+      'zh': '与 AI 对话',
+      'ko': 'AI와 대화',
+      'es': 'Chatear con IA',
+      'fr': 'Discuter avec l’IA',
+      'de': 'Mit KI chatten',
+      'pt': 'Conversar com IA',
+      'ru': 'Чат с ИИ',
+    },
+    'flash.addCard': {
+      'ja': 'カードを追加',
+      'en': 'Add card',
+      'zh': '添加卡片',
+      'ko': '카드 추가',
+      'es': 'Añadir tarjeta',
+      'fr': 'Ajouter une carte',
+      'de': 'Karte hinzufügen',
+      'pt': 'Adicionar cartão',
+      'ru': 'Добавить карточку',
+    },
+    'flash.genFromDoc': {
+      'ja': '資料から生成',
+      'en': 'Generate from document',
+      'zh': '从资料生成',
+      'ko': '자료에서 생성',
+      'es': 'Generar desde documento',
+      'fr': 'Générer depuis un document',
+      'de': 'Aus Dokument generieren',
+      'pt': 'Gerar a partir de documento',
+      'ru': 'Создать из документа',
+    },
+    'flash.genFromKeyword': {
+      'ja': 'キーワードから生成',
+      'en': 'Generate from keyword',
+      'zh': '从关键词生成',
+      'ko': '키워드에서 생성',
+      'es': 'Generar desde palabra clave',
+      'fr': 'Générer depuis un mot-clé',
+      'de': 'Aus Stichwort generieren',
+      'pt': 'Gerar a partir de palavra-chave',
+      'ru': 'Создать из ключевого слова',
+    },
+    'flash.genSettings': {
+      'ja': '生成設定',
+      'en': 'Generation settings',
+      'zh': '生成设置',
+      'ko': '생성 설정',
+      'es': 'Configuración de generación',
+      'fr': 'Paramètres de génération',
+      'de': 'Generierungseinstellungen',
+      'pt': 'Configurações de geração',
+      'ru': 'Настройки генерации',
+    },
+    'flash.aiGenBack': {
+      'ja': '裏面をAI生成',
+      'en': 'AI-generate the back',
+      'zh': 'AI 生成背面',
+      'ko': '뒷면 AI 생성',
+      'es': 'Generar el reverso con IA',
+      'fr': 'Générer le verso par IA',
+      'de': 'Rückseite per KI generieren',
+      'pt': 'Gerar o verso com IA',
+      'ru': 'Сгенерировать оборот ИИ',
+    },
+    'flash.noCards': {
+      'ja': 'メモがありません',
+      'en': 'No cards',
+      'zh': '没有卡片',
+      'ko': '카드가 없습니다',
+      'es': 'No hay tarjetas',
+      'fr': 'Aucune carte',
+      'de': 'Keine Karten',
+      'pt': 'Nenhum cartão',
+      'ru': 'Нет карточек',
+    },
+    'common.none': {
+      'ja': '(なし)',
+      'en': '(none)',
+      'zh': '(无)',
+      'ko': '(없음)',
+      'es': '(ninguno)',
+      'fr': '(aucun)',
+      'de': '(keine)',
+      'pt': '(nenhum)',
+      'ru': '(нет)',
+    },
+    'flash.noClipboardImage': {
+      'ja': 'クリップボードに画像がありません',
+      'en': 'No image in clipboard',
+      'zh': '剪贴板中没有图片',
+      'ko': '클립보드에 이미지가 없습니다',
+      'es': 'No hay imagen en el portapapeles',
+      'fr': 'Aucune image dans le presse-papiers',
+      'de': 'Kein Bild in der Zwischenablage',
+      'pt': 'Nenhuma imagem na área de transferência',
+      'ru': 'В буфере обмена нет изображения',
+    },
+    'flash.noFolder': {
+      'ja': 'フォルダーなし',
+      'en': 'No folder',
+      'zh': '无文件夹',
+      'ko': '폴더 없음',
+      'es': 'Sin carpeta',
+      'fr': 'Aucun dossier',
+      'de': 'Kein Ordner',
+      'pt': 'Sem pasta',
+      'ru': 'Без папки',
+    },
+    'connpass.apiKeyTitle': {
+      'ja': 'Connpass APIキー (任意)',
+      'en': 'Connpass API key (optional)',
+      'zh': 'Connpass API 密钥（可选）',
+      'ko': 'Connpass API 키 (선택)',
+      'es': 'Clave de API de Connpass (opcional)',
+      'fr': 'Clé API Connpass (facultatif)',
+      'de': 'Connpass-API-Schlüssel (optional)',
+      'pt': 'Chave de API do Connpass (opcional)',
+      'ru': 'API-ключ Connpass (необязательно)',
+    },
+    'connpass.openKeyPage': {
+      'ja': 'API キーの取得ページを開く',
+      'en': 'Open the API key page',
+      'zh': '打开 API 密钥获取页面',
+      'ko': 'API 키 발급 페이지 열기',
+      'es': 'Abrir la página de la clave de API',
+      'fr': 'Ouvrir la page de la clé API',
+      'de': 'API-Schlüssel-Seite öffnen',
+      'pt': 'Abrir a página da chave de API',
+      'ru': 'Открыть страницу API-ключа',
+    },
+    'connpass.apiKeySettings': {
+      'ja': 'APIキー設定',
+      'en': 'API key settings',
+      'zh': 'API 密钥设置',
+      'ko': 'API 키 설정',
+      'es': 'Ajustes de la clave de API',
+      'fr': 'Paramètres de la clé API',
+      'de': 'API-Schlüssel-Einstellungen',
+      'pt': 'Configurações da chave de API',
+      'ru': 'Настройки API-ключа',
+    },
+    'common.currentLocation': {
+      'ja': '現在地',
+      'en': 'Current location',
+      'zh': '当前位置',
+      'ko': '현재 위치',
+      'es': 'Ubicación actual',
+      'fr': 'Position actuelle',
+      'de': 'Aktueller Standort',
+      'pt': 'Localização atual',
+      'ru': 'Текущее местоположение',
+    },
+    'connpass.pickMap': {
+      'ja': '地図で選ぶ',
+      'en': 'Pick on the map',
+      'zh': '在地图上选择',
+      'ko': '지도에서 선택',
+      'es': 'Elegir en el mapa',
+      'fr': 'Choisir sur la carte',
+      'de': 'Auf der Karte wählen',
+      'pt': 'Escolher no mapa',
+      'ru': 'Выбрать на карте',
+    },
+    'connpass.radius': {
+      'ja': '半径',
+      'en': 'Radius',
+      'zh': '半径',
+      'ko': '반경',
+      'es': 'Radio',
+      'fr': 'Rayon',
+      'de': 'Radius',
+      'pt': 'Raio',
+      'ru': 'Радиус',
+    },
+    'connpass.keywordHint': {
+      'ja': 'キーワード / ジャンル（例: Flutter、デザイン、ボードゲーム）',
+      'en': 'Keyword / genre (e.g. Flutter, design, board games)',
+      'zh': '关键词 / 类别（例如：Flutter、设计、桌游）',
+      'ko': '키워드 / 장르(예: Flutter, 디자인, 보드게임)',
+      'es': 'Palabra clave / género (p. ej. Flutter, diseño, juegos de mesa)',
+      'fr': 'Mot-clé / genre (ex. : Flutter, design, jeux de société)',
+      'de': 'Stichwort / Genre (z. B. Flutter, Design, Brettspiele)',
+      'pt': 'Palavra-chave / gênero (ex.: Flutter, design, jogos de tabuleiro)',
+      'ru': 'Ключевое слово / жанр (напр.: Flutter, дизайн, настолки)',
+    },
+    'connpass.scale': {
+      'ja': '規模',
+      'en': 'Scale',
+      'zh': '规模',
+      'ko': '규모',
+      'es': 'Escala',
+      'fr': 'Échelle',
+      'de': 'Größe',
+      'pt': 'Escala',
+      'ru': 'Масштаб',
+    },
+    'connpass.enterApiKey': {
+      'ja': 'API キーを入力',
+      'en': 'Enter the API key',
+      'zh': '输入 API 密钥',
+      'ko': 'API 키 입력',
+      'es': 'Introduce la clave de API',
+      'fr': 'Saisissez la clé API',
+      'de': 'API-Schlüssel eingeben',
+      'pt': 'Digite a chave de API',
+      'ru': 'Введите API-ключ',
+    },
+    'connpass.getKey': {
+      'ja': 'キーを取得',
+      'en': 'Get a key',
+      'zh': '获取密钥',
+      'ko': '키 발급',
+      'es': 'Obtener una clave',
+      'fr': 'Obtenir une clé',
+      'de': 'Schlüssel holen',
+      'pt': 'Obter uma chave',
+      'ru': 'Получить ключ',
+    },
+    'connpass.feeNote': {
+      'ja': '参加費は申込ページでご確認ください',
+      'en': 'Please check the fee on the registration page',
+      'zh': '请在报名页面确认参加费',
+      'ko': '참가비는 신청 페이지에서 확인하세요',
+      'es': 'Consulta la tarifa en la página de inscripción',
+      'fr': 'Veuillez vérifier les frais sur la page d’inscription',
+      'de': 'Bitte die Gebühr auf der Anmeldeseite prüfen',
+      'pt': 'Verifique a taxa na página de inscrição',
+      'ru': 'Уточните стоимость на странице регистрации',
+    },
+    'connpass.applyPage': {
+      'ja': '申込ページ',
+      'en': 'Registration page',
+      'zh': '报名页面',
+      'ko': '신청 페이지',
+      'es': 'Página de inscripción',
+      'fr': 'Page d’inscription',
+      'de': 'Anmeldeseite',
+      'pt': 'Página de inscrição',
+      'ru': 'Страница регистрации',
+    },
+    'flash.noMemos': {
+      'ja': 'メモがありません',
+      'en': 'No memos',
+      'zh': '没有备注',
+      'ko': '메모가 없습니다',
+      'es': 'No hay notas',
+      'fr': 'Aucune note',
+      'de': 'Keine Notizen',
+      'pt': 'Nenhuma nota',
+      'ru': 'Нет заметок',
+    },
+    'flash.moveFolder': {
+      'ja': 'フォルダー移動',
+      'en': 'Move to folder',
+      'zh': '移动到文件夹',
+      'ko': '폴더 이동',
+      'es': 'Mover a carpeta',
+      'fr': 'Déplacer vers un dossier',
+      'de': 'In Ordner verschieben',
+      'pt': 'Mover para pasta',
+      'ru': 'Переместить в папку',
+    },
+    'flash.addFolder': {
+      'ja': 'フォルダーを追加',
+      'en': 'Add a folder',
+      'zh': '添加文件夹',
+      'ko': '폴더 추가',
+      'es': 'Añadir una carpeta',
+      'fr': 'Ajouter un dossier',
+      'de': 'Ordner hinzufügen',
+      'pt': 'Adicionar uma pasta',
+      'ru': 'Добавить папку',
+    },
+    'flash.deleteFolderCards': {
+      'ja': '削除 (カードは未分類へ)',
+      'en': 'Delete (cards go to Uncategorized)',
+      'zh': '删除（卡片移至未分类）',
+      'ko': '삭제 (카드는 미분류로)',
+      'es': 'Eliminar (las tarjetas van a Sin clasificar)',
+      'fr': 'Supprimer (les cartes passent en Non classé)',
+      'de': 'Löschen (Karten gehen zu „Ohne Kategorie“)',
+      'pt': 'Excluir (os cartões vão para Sem categoria)',
+      'ru': 'Удалить (карточки → «Без категории»)',
+    },
+    'flash.moveToFolder': {
+      'ja': 'フォルダーへ移動',
+      'en': 'Move to a folder',
+      'zh': '移动到文件夹',
+      'ko': '폴더로 이동',
+      'es': 'Mover a una carpeta',
+      'fr': 'Déplacer vers un dossier',
+      'de': 'In einen Ordner verschieben',
+      'pt': 'Mover para uma pasta',
+      'ru': 'Переместить в папку',
+    },
+    'flash.aiGenFailed': {
+      'ja': 'AI 生成に失敗しました (API キー / 通信を確認してください)',
+      'en': 'AI generation failed (check the API key / connection)',
+      'zh': 'AI 生成失败（请检查 API 密钥 / 网络）',
+      'ko': 'AI 생성에 실패했습니다 (API 키 / 통신을 확인하세요)',
+      'es':
+          'Error en la generación con IA (revisa la clave de API / la conexión)',
+      'fr': 'Échec de la génération IA (vérifiez la clé API / la connexion)',
+      'de': 'KI-Generierung fehlgeschlagen (API-Schlüssel / Verbindung prüfen)',
+      'pt': 'Falha na geração por IA (verifique a chave de API / a conexão)',
+      'ru': 'Ошибка генерации ИИ (проверьте API-ключ / соединение)',
+    },
+    'flash.frontQ': {
+      'ja': '表 (問題)',
+      'en': 'Front (question)',
+      'zh': '正面（问题）',
+      'ko': '앞면 (문제)',
+      'es': 'Anverso (pregunta)',
+      'fr': 'Recto (question)',
+      'de': 'Vorderseite (Frage)',
+      'pt': 'Frente (pergunta)',
+      'ru': 'Лицевая (вопрос)',
+    },
+    'flash.termHint': {
+      'ja': '用語や質問',
+      'en': 'Term or question',
+      'zh': '术语或问题',
+      'ko': '용어나 질문',
+      'es': 'Término o pregunta',
+      'fr': 'Terme ou question',
+      'de': 'Begriff oder Frage',
+      'pt': 'Termo ou pergunta',
+      'ru': 'Термин или вопрос',
+    },
+    'flash.backA': {
+      'ja': '裏 (答え)',
+      'en': 'Back (answer)',
+      'zh': '背面（答案）',
+      'ko': '뒷면 (정답)',
+      'es': 'Reverso (respuesta)',
+      'fr': 'Verso (réponse)',
+      'de': 'Rückseite (Antwort)',
+      'pt': 'Verso (resposta)',
+      'ru': 'Обратная (ответ)',
+    },
+    'flash.genAnswer': {
+      'ja': 'AIで答えを生成',
+      'en': 'Generate the answer with AI',
+      'zh': '用 AI 生成答案',
+      'ko': 'AI로 답 생성',
+      'es': 'Generar la respuesta con IA',
+      'fr': 'Générer la réponse avec l’IA',
+      'de': 'Antwort mit KI generieren',
+      'pt': 'Gerar a resposta com IA',
+      'ru': 'Сгенерировать ответ с ИИ',
+    },
+    'flash.answerHint': {
+      'ja': '答え・解説',
+      'en': 'Answer / explanation',
+      'zh': '答案 / 解释',
+      'ko': '정답·해설',
+      'es': 'Respuesta / explicación',
+      'fr': 'Réponse / explication',
+      'de': 'Antwort / Erläuterung',
+      'pt': 'Resposta / explicação',
+      'ru': 'Ответ / пояснение',
+    },
+    'flash.grade': {
+      'ja': '採点',
+      'en': 'Grade',
+      'zh': '评分',
+      'ko': '채점',
+      'es': 'Calificar',
+      'fr': 'Noter',
+      'de': 'Bewerten',
+      'pt': 'Avaliar',
+      'ru': 'Оценить',
+    },
+    'flash.showAnswer': {
+      'ja': '答えを見る',
+      'en': 'Show the answer',
+      'zh': '查看答案',
+      'ko': '답 보기',
+      'es': 'Ver la respuesta',
+      'fr': 'Voir la réponse',
+      'de': 'Antwort anzeigen',
+      'pt': 'Ver a resposta',
+      'ru': 'Показать ответ',
+    },
+    'flash.answerInput': {
+      'ja': '回答を入力',
+      'en': 'Enter your answer',
+      'zh': '输入回答',
+      'ko': '답안 입력',
+      'es': 'Introduce tu respuesta',
+      'fr': 'Saisissez votre réponse',
+      'de': 'Antwort eingeben',
+      'pt': 'Digite sua resposta',
+      'ru': 'Введите ответ',
+    },
+    'flash.newFolder': {
+      'ja': '新しいフォルダー',
+      'en': 'New folder',
+      'zh': '新建文件夹',
+      'ko': '새 폴더',
+      'es': 'Nueva carpeta',
+      'fr': 'Nouveau dossier',
+      'de': 'Neuer Ordner',
+      'pt': 'Nova pasta',
+      'ru': 'Новая папка',
+    },
+    'flash.folderNameHint': {
+      'ja': 'フォルダー名',
+      'en': 'Folder name',
+      'zh': '文件夹名称',
+      'ko': '폴더 이름',
+      'es': 'Nombre de la carpeta',
+      'fr': 'Nom du dossier',
+      'de': 'Ordnername',
+      'pt': 'Nome da pasta',
+      'ru': 'Имя папки',
+    },
+    'flash.addImage': {
+      'ja': '画像を追加',
+      'en': 'Add image',
+      'zh': '添加图片',
+      'ko': '이미지 추가',
+      'es': 'Añadir imagen',
+      'fr': 'Ajouter une image',
+      'de': 'Bild hinzufügen',
+      'pt': 'Adicionar imagem',
+      'ru': 'Добавить изображение',
+    },
+    'flash.paste': {
+      'ja': '貼り付け',
+      'en': 'Paste',
+      'zh': '粘贴',
+      'ko': '붙여넣기',
+      'es': 'Pegar',
+      'fr': 'Coller',
+      'de': 'Einfügen',
+      'pt': 'Colar',
+      'ru': 'Вставить',
+    },
+    'flash.imageSide': {
+      'ja': '画像を表示する面:',
+      'en': 'Side to show image:',
+      'zh': '显示图片的面：',
+      'ko': '이미지를 표시할 면:',
+      'es': 'Lado donde mostrar la imagen:',
+      'fr': 'Face où afficher l’image :',
+      'de': 'Seite für das Bild:',
+      'pt': 'Lado para mostrar a imagem:',
+      'ru': 'Сторона для изображения:',
+    },
+    'flash.apiKeyNotSet': {
+      'ja': 'AI の API キーが未設定です（右上⋮ → AI設定）',
+      'en': 'The AI API key is not set (top-right ⋮ → AI settings)',
+      'zh': '未设置 AI 的 API 密钥（右上角 ⋮ → AI 设置）',
+      'ko': 'AI API 키가 미설정입니다 (오른쪽 위 ⋮ → AI 설정)',
+      'es':
+          'La clave de API de IA no está configurada (arriba a la derecha ⋮ → Ajustes de IA)',
+      'fr':
+          'La clé API de l’IA n’est pas configurée (en haut à droite ⋮ → Paramètres IA)',
+      'de':
+          'Der KI-API-Schlüssel ist nicht festgelegt (oben rechts ⋮ → KI-Einstellungen)',
+      'pt':
+          'A chave de API da IA não está configurada (canto superior direito ⋮ → Configurações de IA)',
+      'ru': 'API-ключ ИИ не задан (вверху справа ⋮ → Настройки ИИ)',
+    },
+    'flash.apiKeyNotSetRightClick': {
+      'ja': 'AI の API キーが未設定です。ボタンを右クリック（長押し）して設定してください',
+      'en':
+          'The AI API key is not set. Right-click (long-press) the button to set it.',
+      'zh': '未设置 AI 的 API 密钥。请右键（长按）该按钮进行设置。',
+      'ko': 'AI API 키가 미설정입니다. 버튼을 우클릭(길게 누르기)하여 설정하세요.',
+      'es':
+          'La clave de API de IA no está configurada. Haz clic derecho (mantén pulsado) el botón para configurarla.',
+      'fr':
+          'La clé API de l’IA n’est pas configurée. Faites un clic droit (appui long) sur le bouton pour la définir.',
+      'de':
+          'Der KI-API-Schlüssel ist nicht festgelegt. Klicken Sie mit der rechten Maustaste (lange drücken) auf die Schaltfläche, um ihn festzulegen.',
+      'pt':
+          'A chave de API da IA não está configurada. Clique com o botão direito (pressione e segure) no botão para configurá-la.',
+      'ru':
+          'API-ключ ИИ не задан. Щёлкните правой кнопкой (долгое нажатие) по кнопке, чтобы задать его.',
+    },
+    'flash.apiKeyNotSetDocGen': {
+      'ja': 'AI の API キーが未設定です。「資料から生成」を右クリック（長押し）して設定してください',
+      'en':
+          'The AI API key is not set. Right-click (long-press) “Generate from document” to set it.',
+      'zh': '未设置 AI 的 API 密钥。请右键（长按）“从资料生成”进行设置。',
+      'ko': 'AI API 키가 미설정입니다. “자료에서 생성”을 우클릭(길게 누르기)하여 설정하세요.',
+      'es':
+          'La clave de API de IA no está configurada. Haz clic derecho (mantén pulsado) en “Generar desde documento” para configurarla.',
+      'fr':
+          'La clé API de l’IA n’est pas configurée. Faites un clic droit (appui long) sur « Générer depuis un document » pour la définir.',
+      'de':
+          'Der KI-API-Schlüssel ist nicht festgelegt. Klicken Sie mit der rechten Maustaste (lange drücken) auf „Aus Dokument generieren“, um ihn festzulegen.',
+      'pt':
+          'A chave de API da IA não está configurada. Clique com o botão direito (pressione e segure) em “Gerar a partir de documento” para configurá-la.',
+      'ru':
+          'API-ключ ИИ не задан. Щёлкните правой кнопкой (долгое нажатие) по «Создать из документа», чтобы задать его.',
+    },
+    'flash.backsGenerated': {
+      'ja': '裏面を {done} 件生成しました',
+      'en': 'Generated {done} card backs',
+      'zh': '已生成 {done} 个背面',
+      'ko': '뒷면 {done}개를 생성했습니다',
+      'es': 'Se generaron {done} reversos',
+      'fr': '{done} versos générés',
+      'de': '{done} Rückseiten generiert',
+      'pt': '{done} versos gerados',
+      'ru': 'Создано оборотов: {done}',
+    },
+    'flash.failSuffix': {
+      'ja': '（{fail} 件失敗）',
+      'en': ' ({fail} failed)',
+      'zh': '（{fail} 个失败）',
+      'ko': ' ({fail}개 실패)',
+      'es': ' ({fail} fallaron)',
+      'fr': ' ({fail} échecs)',
+      'de': ' ({fail} fehlgeschlagen)',
+      'pt': ' ({fail} falharam)',
+      'ru': ' (ошибок: {fail})',
+    },
+    'flash.cardsGenerated': {
+      'ja': '{n} 枚のカードを生成しました',
+      'en': 'Generated {n} cards',
+      'zh': '已生成 {n} 张卡片',
+      'ko': '카드 {n}장을 생성했습니다',
+      'es': 'Se generaron {n} tarjetas',
+      'fr': '{n} cartes générées',
+      'de': '{n} Karten generiert',
+      'pt': '{n} cartões gerados',
+      'ru': 'Создано карточек: {n}',
+    },
+    'flash.genFromKeywordTitle': {
+      'ja': 'キーワード/文章から生成',
+      'en': 'Generate from keyword/text',
+      'zh': '从关键词/文本生成',
+      'ko': '키워드/문장에서 생성',
+      'es': 'Generar desde palabra clave/texto',
+      'fr': 'Générer depuis un mot-clé/texte',
+      'de': 'Aus Stichwort/Text generieren',
+      'pt': 'Gerar a partir de palavra-chave/texto',
+      'ru': 'Создать из ключевого слова/текста',
+    },
+    'flash.genCountNote': {
+      'ja': '枚数・問題形式は ⚙ 生成設定に従います',
+      'en': 'Count & question format follow the ⚙ generation settings',
+      'zh': '数量和题型遵循 ⚙ 生成设置',
+      'ko': '매수·문제 형식은 ⚙ 생성 설정을 따릅니다',
+      'es': 'La cantidad y el formato siguen los ajustes de generación ⚙',
+      'fr': 'Le nombre et le format suivent les paramètres de génération ⚙',
+      'de': 'Anzahl & Format folgen den ⚙ Generierungseinstellungen',
+      'pt': 'A quantidade e o formato seguem as configurações de geração ⚙',
+      'ru': 'Количество и формат — по настройкам генерации ⚙',
+    },
+    'flash.frontHint': {
+      'ja': '表 (問題)',
+      'en': 'Front (question)',
+      'zh': '正面（问题）',
+      'ko': '앞면(문제)',
+      'es': 'Anverso (pregunta)',
+      'fr': 'Recto (question)',
+      'de': 'Vorderseite (Frage)',
+      'pt': 'Frente (pergunta)',
+      'ru': 'Лицо (вопрос)',
+    },
+    'flash.backHint': {
+      'ja': '裏 (答え)',
+      'en': 'Back (answer)',
+      'zh': '背面（答案）',
+      'ko': '뒷면(답)',
+      'es': 'Reverso (respuesta)',
+      'fr': 'Verso (réponse)',
+      'de': 'Rückseite (Antwort)',
+      'pt': 'Verso (resposta)',
+      'ru': 'Оборот (ответ)',
+    },
+    'flash.countHint': {
+      'ja': '枚数 (1〜60)',
+      'en': 'Count (1–60)',
+      'zh': '数量 (1–60)',
+      'ko': '매수 (1–60)',
+      'es': 'Cantidad (1–60)',
+      'fr': 'Nombre (1–60)',
+      'de': 'Anzahl (1–60)',
+      'pt': 'Quantidade (1–60)',
+      'ru': 'Количество (1–60)',
+    },
+    'flash.problemFormat': {
+      'ja': '問題形式 (複数選択可・混合出題)',
+      'en': 'Question format (multi-select; mixed)',
+      'zh': '题型（可多选·混合出题）',
+      'ko': '문제 형식 (복수 선택 가능·혼합 출제)',
+      'es': 'Formato de pregunta (selección múltiple; mixto)',
+      'fr': 'Format de question (sélection multiple ; mixte)',
+      'de': 'Fragenformat (Mehrfachauswahl; gemischt)',
+      'pt': 'Formato da pergunta (seleção múltipla; misto)',
+      'ru': 'Формат вопросов (множественный выбор; смешанно)',
+    },
+    'flash.relatedToggle': {
+      'ja': '資料外の関連問題も出題',
+      'en': 'Also ask related questions beyond the material',
+      'zh': '也出资料以外的相关问题',
+      'ko': '자료 외 관련 문제도 출제',
+      'es': 'Incluir también preguntas relacionadas fuera del material',
+      'fr': 'Poser aussi des questions connexes hors du document',
+      'de': 'Auch verwandte Fragen außerhalb des Materials stellen',
+      'pt': 'Também incluir perguntas relacionadas fora do material',
+      'ru': 'Задавать и связанные вопросы вне материала',
+    },
+    'flash.relatedSub': {
+      'ja': '資料に載っていない発展知識も一部含める',
+      'en': 'Include some advanced knowledge not in the material',
+      'zh': '包含部分资料中没有的拓展知识',
+      'ko': '자료에 없는 심화 지식도 일부 포함',
+      'es': 'Incluir algo de conocimiento avanzado que no está en el material',
+      'fr': 'Inclure des connaissances avancées absentes du document',
+      'de':
+          'Etwas weiterführendes Wissen einbeziehen, das nicht im Material steht',
+      'pt': 'Incluir algum conhecimento avançado que não está no material',
+      'ru': 'Включать часть продвинутых знаний вне материала',
+    },
+    'flash.noDupToggle': {
+      'ja': '既存カードと重複しない',
+      'en': 'Don’t duplicate existing cards',
+      'zh': '不与现有卡片重复',
+      'ko': '기존 카드와 중복하지 않음',
+      'es': 'No duplicar las tarjetas existentes',
+      'fr': 'Ne pas dupliquer les cartes existantes',
+      'de': 'Vorhandene Karten nicht duplizieren',
+      'pt': 'Não duplicar os cartões existentes',
+      'ru': 'Не дублировать существующие карточки',
+    },
+    'flash.noDupSub': {
+      'ja': '現在のデッキにある内容と被るカードは生成しない',
+      'en': 'Don’t generate cards overlapping the current deck',
+      'zh': '不生成与当前牌组内容重复的卡片',
+      'ko': '현재 덱에 있는 내용과 겹치는 카드는 생성하지 않음',
+      'es': 'No generar tarjetas que coincidan con el mazo actual',
+      'fr': 'Ne pas générer de cartes qui chevauchent le paquet actuel',
+      'de':
+          'Keine Karten erzeugen, die sich mit dem aktuellen Stapel überschneiden',
+      'pt': 'Não gerar cartões que coincidam com o baralho atual',
+      'ru': 'Не создавать карточки, совпадающие с текущей колодой',
+    },
+    'flash.pdfPageRange': {
+      'ja': 'PDF: 読むページ範囲 (空=全体)',
+      'en': 'PDF: page range to read (empty = all)',
+      'zh': 'PDF：读取的页面范围（空=全部）',
+      'ko': 'PDF: 읽을 페이지 범위 (비움=전체)',
+      'es': 'PDF: rango de páginas a leer (vacío = todo)',
+      'fr': 'PDF : plage de pages à lire (vide = tout)',
+      'de': 'PDF: zu lesender Seitenbereich (leer = alle)',
+      'pt': 'PDF: intervalo de páginas a ler (vazio = tudo)',
+      'ru': 'PDF: диапазон страниц (пусто = все)',
+    },
+    'flash.textLineRange': {
+      'ja': 'テキスト(txt/md): 読む行範囲',
+      'en': 'Text (txt/md): line range to read',
+      'zh': '文本(txt/md)：读取的行范围',
+      'ko': '텍스트(txt/md): 읽을 행 범위',
+      'es': 'Texto (txt/md): rango de líneas a leer',
+      'fr': 'Texte (txt/md) : plage de lignes à lire',
+      'de': 'Text (txt/md): zu lesender Zeilenbereich',
+      'pt': 'Texto (txt/md): intervalo de linhas a ler',
+      'ru': 'Текст (txt/md): диапазон строк',
+    },
+    'flash.startLine': {
+      'ja': '開始行',
+      'en': 'Start line',
+      'zh': '起始行',
+      'ko': '시작 행',
+      'es': 'Línea inicial',
+      'fr': 'Ligne de début',
+      'de': 'Startzeile',
+      'pt': 'Linha inicial',
+      'ru': 'Начальная строка',
+    },
+    'flash.lineCount': {
+      'ja': '行数 (空=全行)',
+      'en': 'Line count (empty = all)',
+      'zh': '行数（空=全部）',
+      'ko': '행 수 (비움=전체)',
+      'es': 'Número de líneas (vacío = todas)',
+      'fr': 'Nombre de lignes (vide = toutes)',
+      'de': 'Zeilenanzahl (leer = alle)',
+      'pt': 'Número de linhas (vazio = todas)',
+      'ru': 'Число строк (пусто = все)',
+    },
+    'fmt.term': {
+      'ja': '語句→意味',
+      'en': 'Term → meaning',
+      'zh': '词语→含义',
+      'ko': '용어→의미',
+      'es': 'Término → significado',
+      'fr': 'Terme → sens',
+      'de': 'Begriff → Bedeutung',
+      'pt': 'Termo → significado',
+      'ru': 'Термин → значение',
+    },
+    'fmt.choice': {
+      'ja': '4択',
+      'en': '4 choices',
+      'zh': '四选一',
+      'ko': '4지선다',
+      'es': '4 opciones',
+      'fr': '4 choix',
+      'de': '4 Optionen',
+      'pt': '4 opções',
+      'ru': '4 варианта',
+    },
+    'fmt.calc': {
+      'ja': '計算問題',
+      'en': 'Calculation',
+      'zh': '计算题',
+      'ko': '계산 문제',
+      'es': 'Cálculo',
+      'fr': 'Calcul',
+      'de': 'Rechenaufgabe',
+      'pt': 'Cálculo',
+      'ru': 'Вычисление',
+    },
+    'fmt.diagram': {
+      'ja': '図表',
+      'en': 'Diagrams',
+      'zh': '图表',
+      'ko': '도표',
+      'es': 'Diagramas',
+      'fr': 'Schémas',
+      'de': 'Diagramme',
+      'pt': 'Diagramas',
+      'ru': 'Схемы',
+    },
+    'fmt.coding': {
+      'ja': 'コーディング',
+      'en': 'Coding',
+      'zh': '编程',
+      'ko': '코딩',
+      'es': 'Programación',
+      'fr': 'Codage',
+      'de': 'Programmierung',
+      'pt': 'Programação',
+      'ru': 'Программирование',
+    },
+    'flash.shuffle': {
+      'ja': 'シャッフル',
+      'en': 'Shuffle',
+      'zh': '随机排序',
+      'ko': '셔플',
+      'es': 'Mezclar',
+      'fr': 'Mélanger',
+      'de': 'Mischen',
+      'pt': 'Embaralhar',
+      'ru': 'Перемешать',
+    },
+    'flash.flip': {
+      'ja': 'めくる',
+      'en': 'Flip',
+      'zh': '翻面',
+      'ko': '뒤집기',
+      'es': 'Voltear',
+      'fr': 'Retourner',
+      'de': 'Umdrehen',
+      'pt': 'Virar',
+      'ru': 'Перевернуть',
+    },
+    'flash.enterAnswer': {
+      'ja': '答えを入力',
+      'en': 'Enter answer',
+      'zh': '输入答案',
+      'ko': '답 입력',
+      'es': 'Escribe la respuesta',
+      'fr': 'Saisir la réponse',
+      'de': 'Antwort eingeben',
+      'pt': 'Digite a resposta',
+      'ru': 'Введите ответ',
+    },
+    'mapbg.title': {
+      'ja': 'マップの背景画像',
+      'en': 'Map background image',
+      'zh': '地图背景图片',
+      'ko': '맵 배경 이미지',
+      'es': 'Imagen de fondo del mapa',
+      'fr': 'Image de fond de la carte',
+      'de': 'Karten-Hintergrundbild',
+      'pt': 'Imagem de fundo do mapa',
+      'ru': 'Фоновое изображение карты',
+    },
+    'bg.cantLoad': {
+      'ja': '画像を読み込めません',
+      'en': 'Can’t load image',
+      'zh': '无法加载图片',
+      'ko': '이미지를 불러올 수 없습니다',
+      'es': 'No se puede cargar la imagen',
+      'fr': 'Impossible de charger l’image',
+      'de': 'Bild kann nicht geladen werden',
+      'pt': 'Não é possível carregar a imagem',
+      'ru': 'Не удаётся загрузить изображение',
+    },
+    'bg.none': {
+      'ja': '背景画像なし (グリッドのみ)',
+      'en': 'No background image (grid only)',
+      'zh': '无背景图片（仅网格）',
+      'ko': '배경 이미지 없음 (그리드만)',
+      'es': 'Sin imagen de fondo (solo cuadrícula)',
+      'fr': 'Aucune image de fond (grille seule)',
+      'de': 'Kein Hintergrundbild (nur Raster)',
+      'pt': 'Sem imagem de fundo (apenas grade)',
+      'ru': 'Без фона (только сетка)',
+    },
+    'bg.copyFailed': {
+      'ja': '画像のコピーに失敗: {err}',
+      'en': 'Failed to copy image: {err}',
+      'zh': '复制图片失败：{err}',
+      'ko': '이미지 복사 실패: {err}',
+      'es': 'Error al copiar la imagen: {err}',
+      'fr': 'Échec de la copie de l’image : {err}',
+      'de': 'Bild konnte nicht kopiert werden: {err}',
+      'pt': 'Falha ao copiar a imagem: {err}',
+      'ru': 'Не удалось скопировать изображение: {err}',
+    },
+    'bg.clear': {
+      'ja': '解除',
+      'en': 'Clear',
+      'zh': '清除',
+      'ko': '해제',
+      'es': 'Quitar',
+      'fr': 'Retirer',
+      'de': 'Entfernen',
+      'pt': 'Remover',
+      'ru': 'Убрать',
+    },
+    'bg.opacity': {
+      'ja': '不透明度: {n}%',
+      'en': 'Opacity: {n}%',
+      'zh': '不透明度：{n}%',
+      'ko': '불투명도: {n}%',
+      'es': 'Opacidad: {n}%',
+      'fr': 'Opacité : {n}%',
+      'de': 'Deckkraft: {n}%',
+      'pt': 'Opacidade: {n}%',
+      'ru': 'Непрозрачность: {n}%',
+    },
+    'bg.displayMode': {
+      'ja': '表示モード',
+      'en': 'Display mode',
+      'zh': '显示模式',
+      'ko': '표시 모드',
+      'es': 'Modo de visualización',
+      'fr': 'Mode d’affichage',
+      'de': 'Anzeigemodus',
+      'pt': 'Modo de exibição',
+      'ru': 'Режим отображения',
+    },
+    'bg.fitCover': {
+      'ja': '全体を覆う',
+      'en': 'Cover',
+      'zh': '覆盖整体',
+      'ko': '전체 덮기',
+      'es': 'Cubrir',
+      'fr': 'Couvrir',
+      'de': 'Abdecken',
+      'pt': 'Cobrir',
+      'ru': 'Покрыть',
+    },
+    'bg.fitContain': {
+      'ja': '全体が収まる',
+      'en': 'Contain',
+      'zh': '完整显示',
+      'ko': '전체 맞춤',
+      'es': 'Ajustar',
+      'fr': 'Contenir',
+      'de': 'Einpassen',
+      'pt': 'Conter',
+      'ru': 'Вместить',
+    },
+    'bg.fitTile': {
+      'ja': 'タイル状に並べる',
+      'en': 'Tile',
+      'zh': '平铺',
+      'ko': '타일로 배열',
+      'es': 'Mosaico',
+      'fr': 'Mosaïque',
+      'de': 'Kacheln',
+      'pt': 'Lado a lado',
+      'ru': 'Замостить',
+    },
+    'ctx.alignChildren': {
+      'ja': '子要素を整列',
+      'en': 'Align children',
+      'zh': '对齐子要素',
+      'ko': '자식 요소 정렬',
+      'es': 'Alinear elementos hijos',
+      'fr': 'Aligner les éléments enfants',
+      'de': 'Untergeordnete ausrichten',
+      'pt': 'Alinhar elementos filhos',
+      'ru': 'Выровнять дочерние',
+    },
+    'notif.body': {
+      'ja': '指定した時間が経過したら、 このノードの内容を\n通知として表示します。',
+      'en':
+          'After the specified time elapses, this node’s content is shown as a notification.',
+      'zh': '经过指定时间后，将以通知形式显示该节点的内容。',
+      'ko': '지정한 시간이 지나면 이 노드의 내용을 알림으로 표시합니다.',
+      'es':
+          'Cuando transcurra el tiempo indicado, el contenido de este nodo se mostrará como notificación.',
+      'fr':
+          'Une fois le temps indiqué écoulé, le contenu de ce nœud s’affiche comme notification.',
+      'de':
+          'Nach Ablauf der angegebenen Zeit wird der Inhalt dieses Knotens als Benachrichtigung angezeigt.',
+      'pt':
+          'Após o tempo especificado, o conteúdo deste nó é exibido como notificação.',
+      'ru':
+          'По истечении указанного времени содержимое этого узла показывается как уведомление.',
+    },
+    'notif.later': {
+      'ja': '後で通知',
+      'en': 'Notify later',
+      'zh': '稍后通知',
+      'ko': '나중에 알림',
+      'es': 'Notificar más tarde',
+      'fr': 'Notifier plus tard',
+      'de': 'Später benachrichtigen',
+      'pt': 'Notificar mais tarde',
+      'ru': 'Напомнить позже',
+    },
+    'notif.custom': {
+      'ja': 'カスタム指定',
+      'en': 'Custom',
+      'zh': '自定义',
+      'ko': '사용자 지정',
+      'es': 'Personalizado',
+      'fr': 'Personnalisé',
+      'de': 'Benutzerdefiniert',
+      'pt': 'Personalizado',
+      'ru': 'Свой вариант',
+    },
+    'notif.hours': {
+      'ja': '時間',
+      'en': 'Hours',
+      'zh': '小时',
+      'ko': '시간',
+      'es': 'Horas',
+      'fr': 'Heures',
+      'de': 'Stunden',
+      'pt': 'Horas',
+      'ru': 'Часы',
+    },
+    'notif.minutes': {
+      'ja': '分',
+      'en': 'Minutes',
+      'zh': '分钟',
+      'ko': '분',
+      'es': 'Minutos',
+      'fr': 'Minutes',
+      'de': 'Minuten',
+      'pt': 'Minutos',
+      'ru': 'Минуты',
+    },
+    'notif.pickDateTime': {
+      'ja': '日時を指定',
+      'en': 'Pick date & time',
+      'zh': '指定日期时间',
+      'ko': '날짜·시간 지정',
+      'es': 'Elegir fecha y hora',
+      'fr': 'Choisir date et heure',
+      'de': 'Datum & Uhrzeit wählen',
+      'pt': 'Escolher data e hora',
+      'ru': 'Выбрать дату и время',
+    },
+    'notif.schedule': {
+      'ja': '通知を予約',
+      'en': 'Schedule notification',
+      'zh': '预约通知',
+      'ko': '알림 예약',
+      'es': 'Programar notificación',
+      'fr': 'Planifier la notification',
+      'de': 'Benachrichtigung planen',
+      'pt': 'Agendar notificação',
+      'ru': 'Запланировать уведомление',
+    },
+    'node.untitled': {
+      'ja': '(無題のノード)',
+      'en': '(Untitled node)',
+      'zh': '(无标题节点)',
+      'ko': '(제목 없는 노드)',
+      'es': '(Nodo sin título)',
+      'fr': '(Nœud sans titre)',
+      'de': '(Unbenannter Knoten)',
+      'pt': '(Nó sem título)',
+      'ru': '(Узел без названия)',
+    },
+    'notif.in5min': {
+      'ja': '5分後',
+      'en': 'In 5 min',
+      'zh': '5 分钟后',
+      'ko': '5분 후',
+      'es': 'En 5 min',
+      'fr': 'Dans 5 min',
+      'de': 'In 5 Min',
+      'pt': 'Em 5 min',
+      'ru': 'Через 5 мин',
+    },
+    'notif.in10min': {
+      'ja': '10分後',
+      'en': 'In 10 min',
+      'zh': '10 分钟后',
+      'ko': '10분 후',
+      'es': 'En 10 min',
+      'fr': 'Dans 10 min',
+      'de': 'In 10 Min',
+      'pt': 'Em 10 min',
+      'ru': 'Через 10 мин',
+    },
+    'notif.in30min': {
+      'ja': '30分後',
+      'en': 'In 30 min',
+      'zh': '30 分钟后',
+      'ko': '30분 후',
+      'es': 'En 30 min',
+      'fr': 'Dans 30 min',
+      'de': 'In 30 Min',
+      'pt': 'Em 30 min',
+      'ru': 'Через 30 мин',
+    },
+    'notif.in1hour': {
+      'ja': '1時間後',
+      'en': 'In 1 hour',
+      'zh': '1 小时后',
+      'ko': '1시간 후',
+      'es': 'En 1 h',
+      'fr': 'Dans 1 h',
+      'de': 'In 1 Std',
+      'pt': 'Em 1 h',
+      'ru': 'Через 1 ч',
+    },
+    'notif.in3hours': {
+      'ja': '3時間後',
+      'en': 'In 3 hours',
+      'zh': '3 小时后',
+      'ko': '3시간 후',
+      'es': 'En 3 h',
+      'fr': 'Dans 3 h',
+      'de': 'In 3 Std',
+      'pt': 'Em 3 h',
+      'ru': 'Через 3 ч',
+    },
+    'notif.tomorrow': {
+      'ja': '明日',
+      'en': 'Tomorrow',
+      'zh': '明天',
+      'ko': '내일',
+      'es': 'Mañana',
+      'fr': 'Demain',
+      'de': 'Morgen',
+      'pt': 'Amanhã',
+      'ru': 'Завтра',
+    },
+    'notif.enterHours': {
+      'ja': '時間を直接入力',
+      'en': 'Enter hours',
+      'zh': '直接输入小时',
+      'ko': '시간 직접 입력',
+      'es': 'Introducir horas',
+      'fr': 'Saisir les heures',
+      'de': 'Stunden eingeben',
+      'pt': 'Inserir horas',
+      'ru': 'Ввести часы',
+    },
+    'notif.enterMinutes': {
+      'ja': '分を直接入力',
+      'en': 'Enter minutes',
+      'zh': '直接输入分钟',
+      'ko': '분 직접 입력',
+      'es': 'Introducir minutos',
+      'fr': 'Saisir les minutes',
+      'de': 'Minuten eingeben',
+      'pt': 'Inserir minutos',
+      'ru': 'Ввести минуты',
+    },
+    'notif.pastDateTime': {
+      'ja': '過去の日時は指定できません: ',
+      'en': 'Cannot set a past date/time: ',
+      'zh': '无法指定过去的日期时间：',
+      'ko': '과거 날짜·시간은 지정할 수 없습니다: ',
+      'es': 'No se puede establecer una fecha/hora pasada: ',
+      'fr': 'Impossible de définir une date/heure passée : ',
+      'de': 'Vergangene Datum/Uhrzeit nicht möglich: ',
+      'pt': 'Não é possível definir data/hora passada: ',
+      'ru': 'Нельзя задать прошедшие дату/время: ',
+    },
+    'common.rangeMinMax': {
+      'ja': '範囲: {min} 〜 {max}',
+      'en': 'Range: {min}–{max}',
+      'zh': '范围：{min}–{max}',
+      'ko': '범위: {min}–{max}',
+      'es': 'Rango: {min}–{max}',
+      'fr': 'Plage : {min}–{max}',
+      'de': 'Bereich: {min}–{max}',
+      'pt': 'Intervalo: {min}–{max}',
+      'ru': 'Диапазон: {min}–{max}',
+    },
+    'btn.clear': {
+      'ja': 'クリア',
+      'en': 'Clear',
+      'zh': '清除',
+      'ko': '지우기',
+      'es': 'Borrar',
+      'fr': 'Effacer',
+      'de': 'Löschen',
+      'pt': 'Limpar',
+      'ru': 'Очистить',
+    },
+    'btn.send': {
+      'ja': '送信',
+      'en': 'Send',
+      'zh': '发送',
+      'ko': '전송',
+      'es': 'Enviar',
+      'fr': 'Envoyer',
+      'de': 'Senden',
+      'pt': 'Enviar',
+      'ru': 'Отправить',
+    },
+    'ai.selectAi': {
+      'ja': 'AI を選ぶ',
+      'en': 'Choose AI',
+      'zh': '选择 AI',
+      'ko': 'AI 선택',
+      'es': 'Elegir IA',
+      'fr': 'Choisir l’IA',
+      'de': 'KI wählen',
+      'pt': 'Escolher IA',
+      'ru': 'Выбрать ИИ',
+    },
+    'ai.opensInSplit': {
+      'ja': '選んだ AI が分割パネルで開きます',
+      'en': 'The chosen AI opens in the split panel',
+      'zh': '所选 AI 将在分割面板中打开',
+      'ko': '선택한 AI가 분할 패널에서 열립니다',
+      'es': 'La IA elegida se abre en el panel dividido',
+      'fr': 'L’IA choisie s’ouvre dans le panneau divisé',
+      'de': 'Die gewählte KI öffnet sich im geteilten Bereich',
+      'pt': 'A IA escolhida abre no painel dividido',
+      'ru': 'Выбранный ИИ откроется в разделённой панели',
+    },
+    'ai.setPrefix': {
+      'ja': '前提条件を設定',
+      'en': 'Set preconditions',
+      'zh': '设置前提条件',
+      'ko': '전제 조건 설정',
+      'es': 'Establecer condiciones previas',
+      'fr': 'Définir les conditions préalables',
+      'de': 'Vorbedingungen festlegen',
+      'pt': 'Definir pré-condições',
+      'ru': 'Задать предусловия',
+    },
+    'ai.prefixTitle': {
+      'ja': 'AI に渡す前提条件',
+      'en': 'Preconditions to pass to the AI',
+      'zh': '传递给 AI 的前提条件',
+      'ko': 'AI에 전달할 전제 조건',
+      'es': 'Condiciones previas para la IA',
+      'fr': 'Conditions préalables à transmettre à l’IA',
+      'de': 'Vorbedingungen für die KI',
+      'pt': 'Pré-condições a passar para a IA',
+      'ru': 'Предусловия для ИИ',
+    },
+    'ai.prefixDesc': {
+      'ja': 'ここに書いた内容が、 ブラウザ AI に渡す文章の先頭に自動で付きます。\n例:「日本語で答えて」「以下の用語を解説して」',
+      'en':
+          'What you write here is automatically prepended to the text sent to the browser AI.\ne.g. “Answer in Japanese”, “Explain the following terms”',
+      'zh': '这里写的内容会自动添加到发送给浏览器 AI 的文本开头。\n例：“用日语回答”“解释以下术语”',
+      'ko':
+          '여기에 적은 내용이 브라우저 AI에 보내는 문장 맨 앞에 자동으로 붙습니다.\n예: “일본어로 답해”, “다음 용어를 설명해”',
+      'es':
+          'Lo que escribas aquí se añade automáticamente al principio del texto enviado a la IA del navegador.\nej.: «Responde en japonés», «Explica los siguientes términos»',
+      'fr':
+          'Ce que vous écrivez ici est ajouté automatiquement au début du texte envoyé à l’IA du navigateur.\nex. : « Réponds en japonais », « Explique les termes suivants »',
+      'de':
+          'Was Sie hier schreiben, wird automatisch an den Anfang des an die Browser-KI gesendeten Texts gesetzt.\nz. B. „Antworte auf Japanisch“, „Erkläre die folgenden Begriffe“',
+      'pt':
+          'O que você escrever aqui é adicionado automaticamente ao início do texto enviado à IA do navegador.\nex.: “Responda em japonês”, “Explique os seguintes termos”',
+      'ru':
+          'То, что вы напишете здесь, автоматически добавляется в начало текста для браузерного ИИ.\nнапр.: «Ответь по-японски», «Объясни следующие термины»',
+    },
+    'ai.prefixPlaceholder': {
+      'ja': '例: 日本語で答えて / 以下の用語を解説して',
+      'en': 'e.g. Answer in Japanese / Explain the following terms',
+      'zh': '例：用日语回答 / 解释以下术语',
+      'ko': '예: 일본어로 답해 / 다음 용어를 설명해',
+      'es': 'ej.: Responde en japonés / Explica los siguientes términos',
+      'fr': 'ex. : Réponds en japonais / Explique les termes suivants',
+      'de': 'z. B. Antworte auf Japanisch / Erkläre die folgenden Begriffe',
+      'pt': 'ex.: Responda em japonês / Explique os seguintes termos',
+      'ru': 'напр.: Ответь по-японски / Объясни следующие термины',
+    },
+    'ai.prefixHint': {
+      'ja': '例: 日本語で、 専門用語をかみ砕いて解説して',
+      'en': 'e.g. Explain in plain language, simplifying technical terms',
+      'zh': '例：用通俗易懂的语言解释，简化专业术语',
+      'ko': '예: 쉬운 말로, 전문 용어를 풀어서 설명해 줘',
+      'es':
+          'ej.: Explícalo en lenguaje sencillo, simplificando los términos técnicos',
+      'fr': 'ex. : Explique simplement, en vulgarisant les termes techniques',
+      'de': 'z. B. In einfacher Sprache erklären, Fachbegriffe vereinfachen',
+      'pt':
+          'ex.: Explique em linguagem simples, simplificando os termos técnicos',
+      'ru': 'напр.: Объясни простым языком, упрощая термины',
+    },
+    'ai.nodeEmpty': {
+      'ja': 'ノードの内容が空のため AI に渡せません',
+      'en': 'The node is empty, so it can’t be sent to the AI',
+      'zh': '节点内容为空，无法传递给 AI',
+      'ko': '노드 내용이 비어 있어 AI에 전달할 수 없습니다',
+      'es': 'El nodo está vacío, no se puede enviar a la IA',
+      'fr': 'Le nœud est vide, impossible de l’envoyer à l’IA',
+      'de': 'Der Knoten ist leer und kann nicht an die KI gesendet werden',
+      'pt': 'O nó está vazio, não pode ser enviado à IA',
+      'ru': 'Узел пуст, его нельзя отправить ИИ',
+    },
+    'ai.answer': {
+      'ja': 'AI の回答',
+      'en': 'AI answer',
+      'zh': 'AI 回答',
+      'ko': 'AI 답변',
+      'es': 'Respuesta de la IA',
+      'fr': 'Réponse de l’IA',
+      'de': 'KI-Antwort',
+      'pt': 'Resposta da IA',
+      'ru': 'Ответ ИИ',
+    },
+    'ai.appendToMemo': {
+      'ja': 'メモに追記',
+      'en': 'Append to memo',
+      'zh': '追加到备注',
+      'ko': '메모에 추가',
+      'es': 'Añadir a la nota',
+      'fr': 'Ajouter au mémo',
+      'de': 'An Notiz anhängen',
+      'pt': 'Anexar à nota',
+      'ru': 'Добавить в заметку',
+    },
+    'ai.appendedToMemo': {
+      'ja': 'AI の回答をメモに追記しました',
+      'en': 'Appended the AI answer to the memo',
+      'zh': '已将 AI 回答追加到备注',
+      'ko': 'AI 답변을 메모에 추가했습니다',
+      'es': 'Se añadió la respuesta de la IA a la nota',
+      'fr': 'Réponse de l’IA ajoutée au mémo',
+      'de': 'KI-Antwort an die Notiz angehängt',
+      'pt': 'Resposta da IA anexada à nota',
+      'ru': 'Ответ ИИ добавлен в заметку',
+    },
+    'ai.addToMap': {
+      'ja': 'マップに追加',
+      'en': 'Add to map',
+      'zh': '添加到地图',
+      'ko': '맵에 추가',
+      'es': 'Añadir al mapa',
+      'fr': 'Ajouter à la carte',
+      'de': 'Zur Karte hinzufügen',
+      'pt': 'Adicionar ao mapa',
+      'ru': 'Добавить на карту',
+    },
+    'ai.addedToMap': {
+      'ja': 'AI の回答をマップに追加しました',
+      'en': 'Added the AI answer to the map',
+      'zh': '已将 AI 回答添加到地图',
+      'ko': 'AI 답변을 맵에 추가했습니다',
+      'es': 'Se añadió la respuesta de la IA al mapa',
+      'fr': 'Réponse de l’IA ajoutée à la carte',
+      'de': 'KI-Antwort zur Karte hinzugefügt',
+      'pt': 'Resposta da IA adicionada ao mapa',
+      'ru': 'Ответ ИИ добавлен на карту',
+    },
+    'ai.questionMode': {
+      'ja': '質問モード（ブラウザの AI にタイトルを渡す）',
+      'en': 'Question mode (pass the title to the browser AI)',
+      'zh': '提问模式（将标题传给浏览器 AI）',
+      'ko': '질문 모드(브라우저 AI에 제목 전달)',
+      'es': 'Modo pregunta (pasar el título a la IA del navegador)',
+      'fr': 'Mode question (transmettre le titre à l’IA du navigateur)',
+      'de': 'Fragemodus (Titel an die Browser-KI übergeben)',
+      'pt': 'Modo pergunta (passar o título para a IA do navegador)',
+      'ru': 'Режим вопроса (передать заголовок браузерному ИИ)',
+    },
+    'ai.genChildrenApi': {
+      'ja': '子要素を生成（API キー使用）',
+      'en': 'Generate children (uses API key)',
+      'zh': '生成子要素（使用 API 密钥）',
+      'ko': '자식 요소 생성(API 키 사용)',
+      'es': 'Generar elementos hijos (usa la clave API)',
+      'fr': 'Générer les enfants (utilise la clé API)',
+      'de': 'Untergeordnete generieren (nutzt API-Schlüssel)',
+      'pt': 'Gerar filhos (usa a chave de API)',
+      'ru': 'Создать дочерние (через API-ключ)',
+    },
+    'ai.askGetAnswer': {
+      'ja': 'AI に質問して回答を取得（マップに追加）',
+      'en': 'Ask the AI and get an answer (add to map)',
+      'zh': '向 AI 提问并获取回答（添加到地图）',
+      'ko': 'AI에 질문하고 답변 받기(맵에 추가)',
+      'es': 'Pregunta a la IA y obtén una respuesta (añadir al mapa)',
+      'fr': 'Interroger l’IA et obtenir une réponse (ajouter à la carte)',
+      'de': 'KI fragen und Antwort erhalten (zur Karte hinzufügen)',
+      'pt': 'Pergunte à IA e obtenha uma resposta (adicionar ao mapa)',
+      'ru': 'Спросить ИИ и получить ответ (добавить на карту)',
+    },
+    'ai.aiDashTitle': {
+      'ja': 'AI — {title}',
+      'en': 'AI — {title}',
+      'zh': 'AI — {title}',
+      'ko': 'AI — {title}',
+      'es': 'IA — {title}',
+      'fr': 'IA — {title}',
+      'de': 'KI — {title}',
+      'pt': 'IA — {title}',
+      'ru': 'ИИ — {title}',
+    },
+    'ai.customQuestion': {
+      'ja': 'カスタム質問',
+      'en': 'Custom question',
+      'zh': '自定义问题',
+      'ko': '사용자 지정 질문',
+      'es': 'Pregunta personalizada',
+      'fr': 'Question personnalisée',
+      'de': 'Eigene Frage',
+      'pt': 'Pergunta personalizada',
+      'ru': 'Свой вопрос',
+    },
+    'ai.enterQuestion': {
+      'ja': '質問を入力...',
+      'en': 'Enter a question...',
+      'zh': '输入问题...',
+      'ko': '질문 입력...',
+      'es': 'Escribe una pregunta...',
+      'fr': 'Saisissez une question...',
+      'de': 'Frage eingeben...',
+      'pt': 'Digite uma pergunta...',
+      'ru': 'Введите вопрос...',
+    },
+    'ai.genDone': {
+      'ja': '{model} 生成完了',
+      'en': '{model} generation complete',
+      'zh': '{model} 生成完成',
+      'ko': '{model} 생성 완료',
+      'es': 'Generación de {model} completada',
+      'fr': 'Génération {model} terminée',
+      'de': '{model}-Generierung abgeschlossen',
+      'pt': 'Geração de {model} concluída',
+      'ru': 'Генерация {model} завершена',
+    },
+    'ai.error': {
+      'ja': 'AIエラー: {err}',
+      'en': 'AI error: {err}',
+      'zh': 'AI 错误：{err}',
+      'ko': 'AI 오류: {err}',
+      'es': 'Error de IA: {err}',
+      'fr': 'Erreur IA : {err}',
+      'de': 'KI-Fehler: {err}',
+      'pt': 'Erro de IA: {err}',
+      'ru': 'Ошибка ИИ: {err}',
+    },
+    'cloud.uploadMonth': {
+      'ja': 'クラウド アップロード (今月)',
+      'en': 'Cloud upload (this month)',
+      'zh': '云上传（本月）',
+      'ko': '클라우드 업로드 (이번 달)',
+      'es': 'Subida a la nube (este mes)',
+      'fr': 'Envoi cloud (ce mois-ci)',
+      'de': 'Cloud-Upload (diesen Monat)',
+      'pt': 'Upload na nuvem (este mês)',
+      'ru': 'Загрузка в облако (за месяц)',
+    },
+    'cloud.downloadMonth': {
+      'ja': 'クラウド ダウンロード (今月)',
+      'en': 'Cloud download (this month)',
+      'zh': '云下载（本月）',
+      'ko': '클라우드 다운로드 (이번 달)',
+      'es': 'Descarga de la nube (este mes)',
+      'fr': 'Téléchargement cloud (ce mois-ci)',
+      'de': 'Cloud-Download (diesen Monat)',
+      'pt': 'Download da nuvem (este mês)',
+      'ru': 'Скачивание из облака (за месяц)',
+    },
+    'cloud.storage': {
+      'ja': 'クラウド保存容量',
+      'en': 'Cloud storage',
+      'zh': '云存储容量',
+      'ko': '클라우드 저장 용량',
+      'es': 'Almacenamiento en la nube',
+      'fr': 'Stockage cloud',
+      'de': 'Cloud-Speicher',
+      'pt': 'Armazenamento na nuvem',
+      'ru': 'Облачное хранилище',
+    },
+    'hdr.color': {
+      'ja': '基調色の変更',
+      'en': 'Base color',
+      'zh': '页眉颜色',
+      'ko': '헤더 색상',
+      'es': 'Color del encabezado',
+      'fr': 'Couleur de l’en-tête',
+      'de': 'Kopfzeilenfarbe',
+      'pt': 'Cor do cabeçalho',
+      'ru': 'Цвет шапки',
+    },
+    'hdr.addReorder': {
+      'ja': 'ヘッダーに要素を追加・並び替え',
+      'en': 'Add & reorder header items',
+      'zh': '添加并重新排列页眉项目',
+      'ko': '헤더 항목 추가·정렬',
+      'es': 'Añadir y reordenar elementos del encabezado',
+      'fr': 'Ajouter et réorganiser les éléments d’en-tête',
+      'de': 'Kopfzeilenelemente hinzufügen & neu anordnen',
+      'pt': 'Adicionar e reordenar itens do cabeçalho',
+      'ru': 'Добавить и упорядочить элементы шапки',
+    },
+    'hdr.addReorderSub': {
+      'ja': 'カスタムボタンを追加 / 入れ替え',
+      'en': 'Add / swap custom buttons',
+      'zh': '添加/替换自定义按钮',
+      'ko': '사용자 버튼 추가 / 교체',
+      'es': 'Añadir / cambiar botones personalizados',
+      'fr': 'Ajouter / remplacer des boutons personnalisés',
+      'de': 'Benutzer-Schaltflächen hinzufügen / tauschen',
+      'pt': 'Adicionar / trocar botões personalizados',
+      'ru': 'Добавить / заменить свои кнопки',
+    },
+    'page.editMapName': {
+      'ja': 'マップ名を編集',
+      'en': 'Edit map name',
+      'zh': '编辑地图名称',
+      'ko': '맵 이름 편집',
+      'es': 'Editar el nombre del mapa',
+      'fr': 'Modifier le nom de la carte',
+      'de': 'Kartennamen bearbeiten',
+      'pt': 'Editar o nome do mapa',
+      'ru': 'Изменить имя карты',
+    },
+    'btnSlot.replace': {
+      'ja': '他のボタンに差し替える',
+      'en': 'Replace with another button',
+      'zh': '替换为其他按钮',
+      'ko': '다른 버튼으로 교체',
+      'es': 'Reemplazar por otro botón',
+      'fr': 'Remplacer par un autre bouton',
+      'de': 'Durch andere Schaltfläche ersetzen',
+      'pt': 'Substituir por outro botão',
+      'ru': 'Заменить другой кнопкой',
+    },
+    'btnSlot.delete': {
+      'ja': 'このボタンを削除',
+      'en': 'Delete this button',
+      'zh': '删除此按钮',
+      'ko': '이 버튼 삭제',
+      'es': 'Eliminar este botón',
+      'fr': 'Supprimer ce bouton',
+      'de': 'Diese Schaltfläche löschen',
+      'pt': 'Excluir este botão',
+      'ru': 'Удалить эту кнопку',
+    },
+    'btnSlot.choose': {
+      'ja': 'スロット {n} に配置するボタンを選択',
+      'en': 'Choose a button for slot {n}',
+      'zh': '选择放入插槽 {n} 的按钮',
+      'ko': '슬롯 {n}에 배치할 버튼 선택',
+      'es': 'Elige un botón para la ranura {n}',
+      'fr': 'Choisir un bouton pour l’emplacement {n}',
+      'de': 'Schaltfläche für Slot {n} wählen',
+      'pt': 'Escolha um botão para o slot {n}',
+      'ru': 'Выберите кнопку для слота {n}',
+    },
+    'common.nMinutes': {
+      'ja': '{n} 分',
+      'en': '{n} min',
+      'zh': '{n} 分钟',
+      'ko': '{n}분',
+      'es': '{n} min',
+      'fr': '{n} min',
+      'de': '{n} Min',
+      'pt': '{n} min',
+      'ru': '{n} мин',
+    },
+    'geo.permNeeded': {
+      'ja': '位置情報の権限が必要です',
+      'en': 'Location permission is required',
+      'zh': '需要位置权限',
+      'ko': '위치 권한이 필요합니다',
+      'es': 'Se requiere permiso de ubicación',
+      'fr': 'L’autorisation de localisation est requise',
+      'de': 'Standortberechtigung erforderlich',
+      'pt': 'É necessária a permissão de localização',
+      'ru': 'Требуется разрешение на геолокацию',
+    },
+    'geo.serviceDisabled': {
+      'ja': '位置情報サービスを有効にしてください',
+      'en': 'Please enable location services',
+      'zh': '请启用位置服务',
+      'ko': '위치 서비스를 켜 주세요',
+      'es': 'Activa los servicios de ubicación',
+      'fr': 'Veuillez activer les services de localisation',
+      'de': 'Bitte Ortungsdienste aktivieren',
+      'pt': 'Ative os serviços de localização',
+      'ru': 'Включите службы геолокации',
+    },
+    'geo.setCurrentAsBase': {
+      'ja': '現在地を基準地点に設定しました',
+      'en': 'Set the current location as the reference point',
+      'zh': '已将当前位置设为基准点',
+      'ko': '현재 위치를 기준점으로 설정했습니다',
+      'es': 'Se estableció la ubicación actual como punto de referencia',
+      'fr': 'Position actuelle définie comme point de référence',
+      'de': 'Aktueller Standort als Bezugspunkt festgelegt',
+      'pt': 'Localização atual definida como ponto de referência',
+      'ru': 'Текущее местоположение задано как опорная точка',
+    },
+    'geo.locFailed': {
+      'ja': '現在地の取得に失敗しました: {err}',
+      'en': 'Failed to get the current location: {err}',
+      'zh': '获取当前位置失败：{err}',
+      'ko': '현재 위치를 가져오지 못했습니다: {err}',
+      'es': 'Error al obtener la ubicación actual: {err}',
+      'fr': 'Échec de l’obtention de la position actuelle : {err}',
+      'de': 'Aktueller Standort konnte nicht ermittelt werden: {err}',
+      'pt': 'Falha ao obter a localização atual: {err}',
+      'ru': 'Не удалось получить текущее местоположение: {err}',
+    },
+    'geo.geofenceLock': {
+      'ja': '現在地ロック (ジオフェンス)',
+      'en': 'Location lock (geofence)',
+      'zh': '当前位置锁定（地理围栏）',
+      'ko': '현재 위치 잠금(지오펜스)',
+      'es': 'Bloqueo por ubicación (geovalla)',
+      'fr': 'Verrouillage par position (géorepérage)',
+      'de': 'Standortsperre (Geofence)',
+      'pt': 'Bloqueio por localização (geofence)',
+      'ru': 'Блокировка по местоположению (геозона)',
+    },
+    'geo.useCurrent': {
+      'ja': '現在地を基準に',
+      'en': 'Use current location',
+      'zh': '以当前位置为基准',
+      'ko': '현재 위치 기준',
+      'es': 'Usar la ubicación actual',
+      'fr': 'Utiliser la position actuelle',
+      'de': 'Aktuellen Standort verwenden',
+      'pt': 'Usar a localização atual',
+      'ru': 'По текущему местоположению',
+    },
+    'geo.pickOnMap': {
+      'ja': '地図から選択',
+      'en': 'Pick on map',
+      'zh': '在地图上选择',
+      'ko': '지도에서 선택',
+      'es': 'Elegir en el mapa',
+      'fr': 'Choisir sur la carte',
+      'de': 'Auf Karte wählen',
+      'pt': 'Escolher no mapa',
+      'ru': 'Выбрать на карте',
+    },
+    'geo.trigger': {
+      'ja': 'ロックの契機',
+      'en': 'Lock trigger',
+      'zh': '锁定触发条件',
+      'ko': '잠금 트리거',
+      'es': 'Activador del bloqueo',
+      'fr': 'Déclencheur du verrouillage',
+      'de': 'Sperr-Auslöser',
+      'pt': 'Gatilho do bloqueio',
+      'ru': 'Условие блокировки',
+    },
+    'geo.onEnter': {
+      'ja': '半径内に入ったら',
+      'en': 'When entering the radius',
+      'zh': '进入半径范围时',
+      'ko': '반경 안에 들어오면',
+      'es': 'Al entrar en el radio',
+      'fr': 'En entrant dans le rayon',
+      'de': 'Beim Betreten des Radius',
+      'pt': 'Ao entrar no raio',
+      'ru': 'При входе в радиус',
+    },
+    'geo.onExit': {
+      'ja': '半径外に出たら',
+      'en': 'When leaving the radius',
+      'zh': '离开半径范围时',
+      'ko': '반경 밖으로 나가면',
+      'es': 'Al salir del radio',
+      'fr': 'En sortant du rayon',
+      'de': 'Beim Verlassen des Radius',
+      'pt': 'Ao sair do raio',
+      'ru': 'При выходе из радиуса',
+    },
+    'geo.radiusKm': {
+      'ja': '半径 (km)',
+      'en': 'Radius (km)',
+      'zh': '半径 (km)',
+      'ko': '반경 (km)',
+      'es': 'Radio (km)',
+      'fr': 'Rayon (km)',
+      'de': 'Radius (km)',
+      'pt': 'Raio (km)',
+      'ru': 'Радиус (км)',
+    },
+    'geo.currentRadius': {
+      'ja': '現在の半径: {km} km',
+      'en': 'Current radius: {km} km',
+      'zh': '当前半径：{km} km',
+      'ko': '현재 반경: {km} km',
+      'es': 'Radio actual: {km} km',
+      'fr': 'Rayon actuel : {km} km',
+      'de': 'Aktueller Radius: {km} km',
+      'pt': 'Raio atual: {km} km',
+      'ru': 'Текущий радиус: {km} км',
+    },
+    'geo.lockTimeLabel': {
+      'ja': 'ロック時間: ',
+      'en': 'Lock duration: ',
+      'zh': '锁定时长：',
+      'ko': '잠금 시간: ',
+      'es': 'Duración del bloqueo: ',
+      'fr': 'Durée du verrouillage : ',
+      'de': 'Sperrdauer: ',
+      'pt': 'Duração do bloqueio: ',
+      'ru': 'Время блокировки: ',
+    },
+    'focus.everyday': {
+      'ja': '毎日',
+      'en': 'Every day',
+      'zh': '每天',
+      'ko': '매일',
+      'es': 'Todos los días',
+      'fr': 'Tous les jours',
+      'de': 'Täglich',
+      'pt': 'Todos os dias',
+      'ru': 'Каждый день',
+    },
+    'focus.addSchedule': {
+      'ja': 'スケジュールを追加',
+      'en': 'Add schedule',
+      'zh': '添加日程',
+      'ko': '일정 추가',
+      'es': 'Añadir programación',
+      'fr': 'Ajouter un horaire',
+      'de': 'Zeitplan hinzufügen',
+      'pt': 'Adicionar agendamento',
+      'ru': 'Добавить расписание',
+    },
+    'focus.weekdayHint': {
+      'ja': '曜日をタップで選択 (未選択=毎日)。 開始>終了は深夜跨ぎ。',
+      'en':
+          'Tap weekdays to select (none = every day). Start > end spans midnight.',
+      'zh': '点击星期选择（不选=每天）。开始>结束表示跨夜。',
+      'ko': '요일을 탭하여 선택(미선택=매일). 시작>종료는 자정을 넘김.',
+      'es':
+          'Toca los días para seleccionar (ninguno = todos los días). Inicio > fin cruza la medianoche.',
+      'fr':
+          'Touchez les jours pour sélectionner (aucun = tous les jours). Début > fin franchit minuit.',
+      'de':
+          'Wochentage zum Auswählen tippen (keine = täglich). Start > Ende überschreitet Mitternacht.',
+      'pt':
+          'Toque nos dias para selecionar (nenhum = todos os dias). Início > fim cruza a meia-noite.',
+      'ru':
+          'Нажмите дни для выбора (нет = каждый день). Начало > конец — через полночь.',
+    },
+    'common.nHours': {
+      'ja': '{n} 時間',
+      'en': '{n} h',
+      'zh': '{n} 小时',
+      'ko': '{n}시간',
+      'es': '{n} h',
+      'fr': '{n} h',
+      'de': '{n} Std',
+      'pt': '{n} h',
+      'ru': '{n} ч',
+    },
+    'focus.unlimited': {
+      'ja': '無制限 (手動で解除)',
+      'en': 'Unlimited (unlock manually)',
+      'zh': '无限制（手动解除）',
+      'ko': '무제한 (수동 해제)',
+      'es': 'Ilimitado (desbloquear manualmente)',
+      'fr': 'Illimité (déverrouiller manuellement)',
+      'de': 'Unbegrenzt (manuell entsperren)',
+      'pt': 'Ilimitado (desbloquear manualmente)',
+      'ru': 'Без ограничения (снять вручную)',
+    },
+    'focus.appLockTime': {
+      'ja': 'アプリ固定の時間',
+      'en': 'App-lock duration',
+      'zh': '应用固定时长',
+      'ko': '앱 고정 시간',
+      'es': 'Duración del bloqueo de la app',
+      'fr': 'Durée de verrouillage de l’app',
+      'de': 'App-Sperrdauer',
+      'pt': 'Duração do bloqueio do app',
+      'ru': 'Время блокировки приложения',
+    },
+    'focus.timeFormatError': {
+      'ja': '時刻の形式が正しくありません (0-23 時 / 0-59 分)',
+      'en': 'Invalid time format (0–23 h / 0–59 min)',
+      'zh': '时间格式不正确（0-23 时 / 0-59 分）',
+      'ko': '시간 형식이 올바르지 않습니다 (0-23시 / 0-59분)',
+      'es': 'Formato de hora no válido (0-23 h / 0-59 min)',
+      'fr': 'Format d’heure invalide (0-23 h / 0-59 min)',
+      'de': 'Ungültiges Zeitformat (0–23 Std / 0–59 Min)',
+      'pt': 'Formato de hora inválido (0-23 h / 0-59 min)',
+      'ru': 'Неверный формат времени (0–23 ч / 0–59 мин)',
+    },
+    'focus.tooSoon': {
+      'ja': '現在時刻に近すぎます。 1 分以上先の時刻を指定してください',
+      'en':
+          'Too close to the current time. Choose a time at least 1 minute ahead.',
+      'zh': '与当前时间太接近。请指定至少 1 分钟之后的时间。',
+      'ko': '현재 시각과 너무 가깝습니다. 1분 이상 뒤의 시각을 지정하세요.',
+      'es':
+          'Demasiado cerca de la hora actual. Elige una hora con al menos 1 minuto de margen.',
+      'fr':
+          'Trop proche de l’heure actuelle. Choisissez une heure au moins 1 minute plus tard.',
+      'de':
+          'Zu nah an der aktuellen Zeit. Wählen Sie eine Zeit mindestens 1 Minute später.',
+      'pt':
+          'Muito perto da hora atual. Escolha um horário com pelo menos 1 minuto de antecedência.',
+      'ru':
+          'Слишком близко к текущему времени. Выберите время минимум через 1 минуту.',
+    },
+    'btn.settings': {
+      'ja': '設定',
+      'en': 'Settings',
+      'zh': '设置',
+      'ko': '설정',
+      'es': 'Ajustes',
+      'fr': 'Paramètres',
+      'de': 'Einstellungen',
+      'pt': 'Configurações',
+      'ru': 'Настройки',
+    },
+    'btn.undo': {
+      'ja': '元に戻す',
+      'en': 'Undo',
+      'zh': '撤销',
+      'ko': '실행 취소',
+      'es': 'Deshacer',
+      'fr': 'Annuler',
+      'de': 'Rückgängig',
+      'pt': 'Desfazer',
+      'ru': 'Отменить',
+    },
+    'btn.open': {
+      'ja': '開く',
+      'en': 'Open',
+      'zh': '打开',
+      'ko': '열기',
+      'es': 'Abrir',
+      'fr': 'Ouvrir',
+      'de': 'Öffnen',
+      'pt': 'Abrir',
+      'ru': 'Открыть',
+    },
+    'btn.logout': {
+      'ja': 'ログアウト',
+      'en': 'Log out',
+      'zh': '退出登录',
+      'ko': '로그아웃',
+      'es': 'Cerrar sesión',
+      'fr': 'Se déconnecter',
+      'de': 'Abmelden',
+      'pt': 'Sair',
+      'ru': 'Выйти',
+    },
+    'btn.erase': {
+      'ja': '消去',
+      'en': 'Erase',
+      'zh': '清除',
+      'ko': '지우기',
+      'es': 'Borrar',
+      'fr': 'Effacer',
+      'de': 'Löschen',
+      'pt': 'Apagar',
+      'ru': 'Стереть',
+    },
+    'common.menu': {
+      'ja': 'メニュー',
+      'en': 'Menu',
+      'zh': '菜单',
+      'ko': '메뉴',
+      'es': 'Menú',
+      'fr': 'Menu',
+      'de': 'Menü',
+      'pt': 'Menu',
+      'ru': 'Меню',
+    },
+    'pdf.noPdf': {
+      'ja': 'PDF がありません',
+      'en': 'No PDF',
+      'zh': '没有 PDF',
+      'ko': 'PDF가 없습니다',
+      'es': 'No hay PDF',
+      'fr': 'Aucun PDF',
+      'de': 'Kein PDF',
+      'pt': 'Nenhum PDF',
+      'ru': 'Нет PDF',
+    },
+    'pdf.reading': {
+      'ja': 'PDF の内容を読み取り中…',
+      'en': 'Reading the PDF content…',
+      'zh': '正在读取 PDF 内容…',
+      'ko': 'PDF 내용을 읽는 중…',
+      'es': 'Leyendo el contenido del PDF…',
+      'fr': 'Lecture du contenu du PDF…',
+      'de': 'PDF-Inhalt wird gelesen…',
+      'pt': 'Lendo o conteúdo do PDF…',
+      'ru': 'Чтение содержимого PDF…',
+    },
+    'pdf.noTextExtract': {
+      'ja': 'このPDFからテキストを抽出できませんでした（画像PDF等）',
+      'en': 'Could not extract text from this PDF (e.g. an image PDF)',
+      'zh': '无法从此 PDF 提取文本（例如图片 PDF）',
+      'ko': '이 PDF에서 텍스트를 추출할 수 없습니다(이미지 PDF 등)',
+      'es': 'No se pudo extraer texto de este PDF (p. ej. un PDF de imagen)',
+      'fr': 'Impossible d’extraire le texte de ce PDF (ex. PDF image)',
+      'de':
+          'Aus diesem PDF konnte kein Text extrahiert werden (z. B. Bild-PDF)',
+      'pt': 'Não foi possível extrair texto deste PDF (ex.: PDF de imagem)',
+      'ru': 'Не удалось извлечь текст из этого PDF (например, PDF-изображение)',
+    },
+    'pdf.copied': {
+      'ja': 'PDFの内容をコピーしました。AIチャットに貼り付けてください (Ctrl+V)',
+      'en': 'Copied the PDF content. Paste it into the AI chat (Ctrl+V)',
+      'zh': '已复制 PDF 内容。请粘贴到 AI 聊天中 (Ctrl+V)',
+      'ko': 'PDF 내용을 복사했습니다. AI 채팅에 붙여넣으세요 (Ctrl+V)',
+      'es': 'Se copió el contenido del PDF. Pégalo en el chat de IA (Ctrl+V)',
+      'fr': 'Contenu du PDF copié. Collez-le dans le chat IA (Ctrl+V)',
+      'de': 'PDF-Inhalt kopiert. Fügen Sie ihn in den KI-Chat ein (Strg+V)',
+      'pt': 'Conteúdo do PDF copiado. Cole no chat de IA (Ctrl+V)',
+      'ru': 'Содержимое PDF скопировано. Вставьте его в ИИ-чат (Ctrl+V)',
+    },
+    'pdf.resetHiddenPages': {
+      'ja': 'ページ非表示をリセット ({n} 件)',
+      'en': 'Reset hidden pages ({n})',
+      'zh': '重置隐藏页面（{n}）',
+      'ko': '페이지 숨김 초기화 ({n}건)',
+      'es': 'Restablecer páginas ocultas ({n})',
+      'fr': 'Réinitialiser les pages masquées ({n})',
+      'de': 'Ausgeblendete Seiten zurücksetzen ({n})',
+      'pt': 'Redefinir páginas ocultas ({n})',
+      'ru': 'Сбросить скрытые страницы ({n})',
+    },
+    'pdf.arrowPanBack': {
+      'ja': '左右キー: ページ移動に戻す',
+      'en': 'Left/right keys: back to page navigation',
+      'zh': '左右键：恢复为翻页',
+      'ko': '좌우 키: 페이지 이동으로 되돌리기',
+      'es': 'Teclas izq./der.: volver a la navegación de páginas',
+      'fr': 'Touches gauche/droite : retour à la navigation de pages',
+      'de': 'Links/Rechts-Tasten: zurück zur Seitennavigation',
+      'pt': 'Teclas esq./dir.: voltar à navegação de páginas',
+      'ru': 'Клавиши ←/→: вернуть переход по страницам',
+    },
+    'pdf.arrowPanSwitch': {
+      'ja': '左右キー: 表示領域の移動に切替',
+      'en': 'Left/right keys: switch to panning the view',
+      'zh': '左右键：切换为移动显示区域',
+      'ko': '좌우 키: 표시 영역 이동으로 전환',
+      'es': 'Teclas izq./der.: cambiar a desplazar la vista',
+      'fr': 'Touches gauche/droite : passer au déplacement de la vue',
+      'de': 'Links/Rechts-Tasten: zum Verschieben der Ansicht wechseln',
+      'pt': 'Teclas esq./dir.: alternar para mover a visualização',
+      'ru': 'Клавиши ←/→: переключить на перемещение вида',
+    },
+    'pdf.shufflePages': {
+      'ja': 'ページ順をシャッフル',
+      'en': 'Shuffle page order',
+      'zh': '打乱页面顺序',
+      'ko': '페이지 순서 섞기',
+      'es': 'Mezclar el orden de las páginas',
+      'fr': 'Mélanger l’ordre des pages',
+      'de': 'Seitenreihenfolge mischen',
+      'pt': 'Embaralhar a ordem das páginas',
+      'ru': 'Перемешать порядок страниц',
+    },
+    'pdf.restoreOrder': {
+      'ja': '順番を元に戻す',
+      'en': 'Restore the order',
+      'zh': '恢复顺序',
+      'ko': '순서 되돌리기',
+      'es': 'Restaurar el orden',
+      'fr': 'Rétablir l’ordre',
+      'de': 'Reihenfolge wiederherstellen',
+      'pt': 'Restaurar a ordem',
+      'ru': 'Восстановить порядок',
+    },
+    'pdf.aiSelect': {
+      'ja': 'AI を選択してください',
+      'en': 'Please choose an AI',
+      'zh': '请选择一个 AI',
+      'ko': 'AI를 선택해 주세요',
+      'es': 'Elige una IA',
+      'fr': 'Veuillez choisir une IA',
+      'de': 'Bitte eine KI auswählen',
+      'pt': 'Escolha uma IA',
+      'ru': 'Выберите ИИ',
+    },
+    'pdf.aiSelectTip': {
+      'ja': 'AI を選択',
+      'en': 'Choose an AI',
+      'zh': '选择 AI',
+      'ko': 'AI 선택',
+      'es': 'Elegir IA',
+      'fr': 'Choisir une IA',
+      'de': 'KI auswählen',
+      'pt': 'Escolher IA',
+      'ru': 'Выбрать ИИ',
+    },
+    'pdf.aiReload': {
+      'ja': 'AI チャットを再読み込み',
+      'en': 'Reload the AI chat',
+      'zh': '重新加载 AI 聊天',
+      'ko': 'AI 채팅 새로고침',
+      'es': 'Recargar el chat de IA',
+      'fr': 'Recharger le chat IA',
+      'de': 'KI-Chat neu laden',
+      'pt': 'Recarregar o chat de IA',
+      'ru': 'Перезагрузить ИИ-чат',
+    },
+    'pdf.aiHistory': {
+      'ja': 'AI 質問履歴（質問は自動保存／回答もここから保存）',
+      'en':
+          'AI question history (questions auto-saved; answers can be saved here too)',
+      'zh': 'AI 提问历史（问题自动保存／回答也可在此保存）',
+      'ko': 'AI 질문 기록(질문은 자동 저장／답변도 여기서 저장)',
+      'es':
+          'Historial de preguntas de IA (las preguntas se guardan solas; las respuestas también aquí)',
+      'fr':
+          'Historique des questions IA (questions enregistrées automatiquement ; réponses enregistrables ici aussi)',
+      'de':
+          'KI-Frageverlauf (Fragen automatisch gespeichert; Antworten auch hier speicherbar)',
+      'pt':
+          'Histórico de perguntas da IA (perguntas salvas automaticamente; respostas também aqui)',
+      'ru':
+          'История вопросов ИИ (вопросы сохраняются автоматически; ответы тоже можно сохранить здесь)',
+    },
+    'pdf.aiSwap': {
+      'ja': 'メモ欄と左右を入れ替え',
+      'en': 'Swap sides with the memo panel',
+      'zh': '与备注栏左右互换',
+      'ko': '메모 칸과 좌우 바꾸기',
+      'es': 'Intercambiar lados con el panel de notas',
+      'fr': 'Échanger les côtés avec le panneau de notes',
+      'de': 'Seiten mit dem Notizfeld tauschen',
+      'pt': 'Trocar de lado com o painel de notas',
+      'ru': 'Поменять местами с панелью заметок',
+    },
+    'pdf.aiClose': {
+      'ja': 'AI 欄を閉じる',
+      'en': 'Close the AI panel',
+      'zh': '关闭 AI 栏',
+      'ko': 'AI 칸 닫기',
+      'es': 'Cerrar el panel de IA',
+      'fr': 'Fermer le panneau IA',
+      'de': 'KI-Bereich schließen',
+      'pt': 'Fechar o painel de IA',
+      'ru': 'Закрыть панель ИИ',
+    },
+    'pdf.aiSelectAnswer': {
+      'ja': 'AI 画面で回答のテキストを選択してから保存してください',
+      'en': 'Select the answer text in the AI view before saving',
+      'zh': '请先在 AI 界面选中回答文本再保存',
+      'ko': 'AI 화면에서 답변 텍스트를 선택한 후 저장하세요',
+      'es': 'Selecciona el texto de la respuesta en la IA antes de guardar',
+      'fr':
+          'Sélectionnez le texte de la réponse dans la vue IA avant d’enregistrer',
+      'de':
+          'Wählen Sie den Antworttext in der KI-Ansicht aus, bevor Sie speichern',
+      'pt': 'Selecione o texto da resposta na IA antes de salvar',
+      'ru': 'Выделите текст ответа в окне ИИ перед сохранением',
+    },
+    'pdf.answerSaved': {
+      'ja': '回答を履歴に保存しました',
+      'en': 'Saved the answer to history',
+      'zh': '已将回答保存到历史记录',
+      'ko': '답변을 기록에 저장했습니다',
+      'es': 'Se guardó la respuesta en el historial',
+      'fr': 'Réponse enregistrée dans l’historique',
+      'de': 'Antwort im Verlauf gespeichert',
+      'pt': 'Resposta salva no histórico',
+      'ru': 'Ответ сохранён в историю',
+    },
+    'pdf.aiHistoryTitle': {
+      'ja': 'AI 質問履歴',
+      'en': 'AI question history',
+      'zh': 'AI 提问历史',
+      'ko': 'AI 질문 기록',
+      'es': 'Historial de preguntas de IA',
+      'fr': 'Historique des questions IA',
+      'de': 'KI-Frageverlauf',
+      'pt': 'Histórico de perguntas da IA',
+      'ru': 'История вопросов ИИ',
+    },
+    'pdf.saveSelectedAnswer': {
+      'ja': '選択中の回答を保存',
+      'en': 'Save the selected answer',
+      'zh': '保存所选回答',
+      'ko': '선택한 답변 저장',
+      'es': 'Guardar la respuesta seleccionada',
+      'fr': 'Enregistrer la réponse sélectionnée',
+      'de': 'Ausgewählte Antwort speichern',
+      'pt': 'Salvar a resposta selecionada',
+      'ru': 'Сохранить выбранный ответ',
+    },
+    'pdf.noHistory': {
+      'ja': 'まだ履歴がありません',
+      'en': 'No history yet',
+      'zh': '还没有历史记录',
+      'ko': '아직 기록이 없습니다',
+      'es': 'Aún no hay historial',
+      'fr': 'Aucun historique pour l’instant',
+      'de': 'Noch kein Verlauf',
+      'pt': 'Ainda não há histórico',
+      'ru': 'Пока нет истории',
+    },
+    'pdf.keySettingsTitle': {
+      'ja': 'PDF キー操作の設定',
+      'en': 'PDF key controls settings',
+      'zh': 'PDF 按键操作设置',
+      'ko': 'PDF 키 조작 설정',
+      'es': 'Ajustes de teclas del PDF',
+      'fr': 'Réglages des touches du PDF',
+      'de': 'PDF-Tastensteuerung-Einstellungen',
+      'pt': 'Configurações de teclas do PDF',
+      'ru': 'Настройки клавиш PDF',
+    },
+    'pdf.keyUpDown': {
+      'ja': '↑/↓: 1 ページ進むのに必要な押下回数',
+      'en': '↑/↓: presses needed to advance one page',
+      'zh': '↑/↓：翻一页所需的按键次数',
+      'ko': '↑/↓: 한 페이지 넘기는 데 필요한 누름 횟수',
+      'es': '↑/↓: pulsaciones para avanzar una página',
+      'fr': '↑/↓ : appuis nécessaires pour avancer d’une page',
+      'de': '↑/↓: Tastendrücke, um eine Seite weiterzugehen',
+      'pt': '↑/↓: toques necessários para avançar uma página',
+      'ru': '↑/↓: нажатий для перехода на страницу',
+    },
+    'pdf.keyLeftRight': {
+      'ja': '←/→: 1 押下あたりのページジャンプ数',
+      'en': '←/→: pages jumped per press',
+      'zh': '←/→：每次按键跳转的页数',
+      'ko': '←/→: 한 번 누를 때 이동하는 페이지 수',
+      'es': '←/→: páginas saltadas por pulsación',
+      'fr': '←/→ : pages sautées par appui',
+      'de': '←/→: Seiten pro Tastendruck',
+      'pt': '←/→: páginas puladas por toque',
+      'ru': '←/→: страниц за одно нажатие',
+    },
+    'pdf.noBounds': {
+      'ja': 'お使いの PDF ビューアでは選択範囲の bounds を取得できませんでした',
+      'en': 'Your PDF viewer couldn’t get the bounds of the selection',
+      'zh': '您的 PDF 查看器无法获取选区的边界',
+      'ko': '사용 중인 PDF 뷰어에서 선택 영역의 bounds를 가져올 수 없습니다',
+      'es': 'Tu visor de PDF no pudo obtener los límites de la selección',
+      'fr': 'Votre lecteur PDF n’a pas pu obtenir les limites de la sélection',
+      'de': 'Ihr PDF-Viewer konnte die Grenzen der Auswahl nicht ermitteln',
+      'pt': 'Seu visualizador de PDF não conseguiu obter os limites da seleção',
+      'ru': 'Ваш просмотрщик PDF не смог получить границы выделения',
+    },
+    'pdf.highlightFailed': {
+      'ja': 'ハイライト追加に失敗: {err}',
+      'en': 'Failed to add highlight: {err}',
+      'zh': '添加高亮失败：{err}',
+      'ko': '하이라이트 추가 실패: {err}',
+      'es': 'Error al añadir el resaltado: {err}',
+      'fr': 'Échec de l’ajout du surlignage : {err}',
+      'de': 'Markierung konnte nicht hinzugefügt werden: {err}',
+      'pt': 'Falha ao adicionar destaque: {err}',
+      'ru': 'Не удалось добавить выделение: {err}',
+    },
+    'pdf.deleteAllMarkers': {
+      'ja': '全マーカーを削除',
+      'en': 'Delete all markers',
+      'zh': '删除所有标记',
+      'ko': '모든 마커 삭제',
+      'es': 'Eliminar todos los marcadores',
+      'fr': 'Supprimer tous les marqueurs',
+      'de': 'Alle Markierungen löschen',
+      'pt': 'Excluir todos os marcadores',
+      'ru': 'Удалить все маркеры',
+    },
+    'pdf.deleteAllMarkersBody': {
+      'ja': 'この PDF に引かれた全てのマーカーを削除します。 よろしいですか？',
+      'en': 'This deletes all markers drawn on this PDF. Are you sure?',
+      'zh': '将删除此 PDF 上的所有标记。确定吗？',
+      'ko': '이 PDF에 그어진 모든 마커를 삭제합니다. 계속할까요?',
+      'es': 'Esto elimina todos los marcadores de este PDF. ¿Seguro?',
+      'fr': 'Cela supprime tous les marqueurs de ce PDF. Êtes-vous sûr ?',
+      'de': 'Dadurch werden alle Markierungen in diesem PDF gelöscht. Sicher?',
+      'pt': 'Isto exclui todos os marcadores deste PDF. Tem certeza?',
+      'ru': 'Будут удалены все маркеры в этом PDF. Вы уверены?',
+    },
+    'pdf.saveMarkersBody': {
+      'ja':
+          '今回のセッションで {n} 件のマーカーを追加しました。\n保存して閉じる: マーカーを次回も復元します\n破棄して閉じる: 今回追加したマーカーは保存しません\nキャンセル: PDF を開いたまま作業を続けます',
+      'en':
+          'You added {n} markers in this session.\nSave and close: markers will be restored next time\nDiscard and close: the markers added this time won’t be saved\nCancel: keep the PDF open and continue working',
+      'zh':
+          '本次会话中添加了 {n} 个标记。\n保存并关闭：下次会恢复这些标记\n放弃并关闭：本次添加的标记将不保存\n取消：保持 PDF 打开并继续操作',
+      'ko':
+          '이번 세션에서 마커 {n}개를 추가했습니다.\n저장하고 닫기: 다음에도 마커를 복원합니다\n버리고 닫기: 이번에 추가한 마커는 저장하지 않습니다\n취소: PDF를 연 채로 작업을 계속합니다',
+      'es':
+          'Añadiste {n} marcadores en esta sesión.\nGuardar y cerrar: los marcadores se restaurarán la próxima vez\nDescartar y cerrar: los marcadores añadidos ahora no se guardarán\nCancelar: mantén el PDF abierto y sigue trabajando',
+      'fr':
+          'Vous avez ajouté {n} marqueurs dans cette session.\nEnregistrer et fermer : les marqueurs seront restaurés la prochaine fois\nAbandonner et fermer : les marqueurs ajoutés cette fois ne seront pas enregistrés\nAnnuler : garder le PDF ouvert et continuer',
+      'de':
+          'Sie haben in dieser Sitzung {n} Markierungen hinzugefügt.\nSpeichern und schließen: Markierungen werden beim nächsten Mal wiederhergestellt\nVerwerfen und schließen: die diesmal hinzugefügten Markierungen werden nicht gespeichert\nAbbrechen: PDF geöffnet lassen und weiterarbeiten',
+      'pt':
+          'Você adicionou {n} marcadores nesta sessão.\nSalvar e fechar: os marcadores serão restaurados na próxima vez\nDescartar e fechar: os marcadores adicionados agora não serão salvos\nCancelar: manter o PDF aberto e continuar',
+      'ru':
+          'В этой сессии вы добавили маркеров: {n}.\nСохранить и закрыть: маркеры восстановятся в следующий раз\nОтменить и закрыть: добавленные сейчас маркеры не сохранятся\nОтмена: оставить PDF открытым и продолжить',
+    },
+    'pdf.saveMarkersTitle': {
+      'ja': 'マーカーを保存しますか？',
+      'en': 'Save the markers?',
+      'zh': '要保存标记吗？',
+      'ko': '마커를 저장할까요?',
+      'es': '¿Guardar los marcadores?',
+      'fr': 'Enregistrer les marqueurs ?',
+      'de': 'Markierungen speichern?',
+      'pt': 'Salvar os marcadores?',
+      'ru': 'Сохранить маркеры?',
+    },
+    'pdf.discardClose': {
+      'ja': '破棄して閉じる',
+      'en': 'Discard and close',
+      'zh': '放弃并关闭',
+      'ko': '버리고 닫기',
+      'es': 'Descartar y cerrar',
+      'fr': 'Abandonner et fermer',
+      'de': 'Verwerfen und schließen',
+      'pt': 'Descartar e fechar',
+      'ru': 'Отменить и закрыть',
+    },
+    'pdf.saveClose': {
+      'ja': '保存して閉じる',
+      'en': 'Save and close',
+      'zh': '保存并关闭',
+      'ko': '저장하고 닫기',
+      'es': 'Guardar y cerrar',
+      'fr': 'Enregistrer et fermer',
+      'de': 'Speichern und schließen',
+      'pt': 'Salvar e fechar',
+      'ru': 'Сохранить и закрыть',
+    },
+    'pdf.settingsOther': {
+      'ja': '設定・その他',
+      'en': 'Settings & more',
+      'zh': '设置及其他',
+      'ko': '설정·기타',
+      'es': 'Ajustes y más',
+      'fr': 'Paramètres et plus',
+      'de': 'Einstellungen & mehr',
+      'pt': 'Configurações e mais',
+      'ru': 'Настройки и прочее',
+    },
+    'pdf.noPdfOnPage': {
+      'ja': 'このページに PDF がありません',
+      'en': 'No PDF on this page',
+      'zh': '此页面没有 PDF',
+      'ko': '이 페이지에는 PDF가 없습니다',
+      'es': 'No hay PDF en esta página',
+      'fr': 'Aucun PDF sur cette page',
+      'de': 'Kein PDF auf dieser Seite',
+      'pt': 'Nenhum PDF nesta página',
+      'ru': 'На этой странице нет PDF',
+    },
+    'pdf.selectPdf': {
+      'ja': 'PDF を選択',
+      'en': 'Select a PDF',
+      'zh': '选择 PDF',
+      'ko': 'PDF 선택',
+      'es': 'Selecciona un PDF',
+      'fr': 'Sélectionner un PDF',
+      'de': 'PDF auswählen',
+      'pt': 'Selecione um PDF',
+      'ru': 'Выбрать PDF',
+    },
+    'pdf.showing': {
+      'ja': '表示中',
+      'en': 'Showing',
+      'zh': '显示中',
+      'ko': '표시 중',
+      'es': 'Mostrando',
+      'fr': 'Affiché',
+      'de': 'Wird angezeigt',
+      'pt': 'Exibindo',
+      'ru': 'Показывается',
+    },
+    'pmemo.count': {
+      'ja': 'メモ {n}',
+      'en': 'Memos {n}',
+      'zh': '备注 {n}',
+      'ko': '메모 {n}',
+      'es': 'Notas {n}',
+      'fr': 'Notes {n}',
+      'de': 'Notizen {n}',
+      'pt': 'Notas {n}',
+      'ru': 'Заметки {n}',
+    },
+    'search.prevHit': {
+      'ja': '前のヒット',
+      'en': 'Previous hit',
+      'zh': '上一个匹配',
+      'ko': '이전 결과',
+      'es': 'Resultado anterior',
+      'fr': 'Résultat précédent',
+      'de': 'Vorheriger Treffer',
+      'pt': 'Resultado anterior',
+      'ru': 'Предыдущее совпадение',
+    },
+    'search.nextHit': {
+      'ja': '次のヒット',
+      'en': 'Next hit',
+      'zh': '下一个匹配',
+      'ko': '다음 결과',
+      'es': 'Resultado siguiente',
+      'fr': 'Résultat suivant',
+      'de': 'Nächster Treffer',
+      'pt': 'Próximo resultado',
+      'ru': 'Следующее совпадение',
+    },
+    'search.googleSearch': {
+      'ja': 'Google で検索',
+      'en': 'Search on Google',
+      'zh': '在 Google 上搜索',
+      'ko': 'Google에서 검색',
+      'es': 'Buscar en Google',
+      'fr': 'Rechercher sur Google',
+      'de': 'Bei Google suchen',
+      'pt': 'Pesquisar no Google',
+      'ru': 'Искать в Google',
+    },
+    'search.closeSearch': {
+      'ja': '検索を閉じる',
+      'en': 'Close search',
+      'zh': '关闭搜索',
+      'ko': '검색 닫기',
+      'es': 'Cerrar la búsqueda',
+      'fr': 'Fermer la recherche',
+      'de': 'Suche schließen',
+      'pt': 'Fechar a busca',
+      'ru': 'Закрыть поиск',
+    },
+    'pmemo.list': {
+      'ja': 'メモ一覧',
+      'en': 'Memo list',
+      'zh': '备注列表',
+      'ko': '메모 목록',
+      'es': 'Lista de notas',
+      'fr': 'Liste des notes',
+      'de': 'Notizliste',
+      'pt': 'Lista de notas',
+      'ru': 'Список заметок',
+    },
+    'pmemo.inputHint': {
+      'ja': 'メモを入力...',
+      'en': 'Enter a memo...',
+      'zh': '输入备注...',
+      'ko': '메모 입력...',
+      'es': 'Escribe una nota...',
+      'fr': 'Saisissez une note...',
+      'de': 'Notiz eingeben...',
+      'pt': 'Digite uma nota...',
+      'ru': 'Введите заметку...',
+    },
+    'pmemo.createSubfolder': {
+      'ja': 'サブフォルダを作成',
+      'en': 'Create a subfolder',
+      'zh': '创建子文件夹',
+      'ko': '하위 폴더 만들기',
+      'es': 'Crear una subcarpeta',
+      'fr': 'Créer un sous-dossier',
+      'de': 'Unterordner erstellen',
+      'pt': 'Criar uma subpasta',
+      'ru': 'Создать подпапку',
+    },
+    'pmemo.goUp': {
+      'ja': '上の階層に移動',
+      'en': 'Go up a level',
+      'zh': '返回上一级',
+      'ko': '상위 폴더로 이동',
+      'es': 'Subir un nivel',
+      'fr': 'Remonter d’un niveau',
+      'de': 'Eine Ebene nach oben',
+      'pt': 'Subir um nível',
+      'ru': 'На уровень выше',
+    },
+    'pmemo.addMemoHere': {
+      'ja': 'このフォルダにメモを追加',
+      'en': 'Add a memo to this folder',
+      'zh': '向此文件夹添加备注',
+      'ko': '이 폴더에 메모 추가',
+      'es': 'Añadir una nota a esta carpeta',
+      'fr': 'Ajouter une note à ce dossier',
+      'de': 'Notiz zu diesem Ordner hinzufügen',
+      'pt': 'Adicionar uma nota a esta pasta',
+      'ru': 'Добавить заметку в эту папку',
+    },
+    'pmemo.folderToMap': {
+      'ja': 'このフォルダをマップに出す',
+      'en': 'Put this folder on the map',
+      'zh': '将此文件夹放到地图上',
+      'ko': '이 폴더를 맵에 표시',
+      'es': 'Poner esta carpeta en el mapa',
+      'fr': 'Mettre ce dossier sur la carte',
+      'de': 'Diesen Ordner auf die Karte setzen',
+      'pt': 'Colocar esta pasta no mapa',
+      'ru': 'Вынести эту папку на карту',
+    },
+    'btn.change': {
+      'ja': '変更',
+      'en': 'Change',
+      'zh': '更改',
+      'ko': '변경',
+      'es': 'Cambiar',
+      'fr': 'Modifier',
+      'de': 'Ändern',
+      'pt': 'Alterar',
+      'ru': 'Изменить',
+    },
+    'folder.newNameHint': {
+      'ja': '新しい名前',
+      'en': 'New name',
+      'zh': '新名称',
+      'ko': '새 이름',
+      'es': 'Nuevo nombre',
+      'fr': 'Nouveau nom',
+      'de': 'Neuer Name',
+      'pt': 'Novo nome',
+      'ru': 'Новое имя',
+    },
+    'pmemo.renameFolderTitle': {
+      'ja': 'フォルダー名を変更',
+      'en': 'Rename folder',
+      'zh': '重命名文件夹',
+      'ko': '폴더 이름 변경',
+      'es': 'Cambiar nombre de la carpeta',
+      'fr': 'Renommer le dossier',
+      'de': 'Ordner umbenennen',
+      'pt': 'Renomear a pasta',
+      'ru': 'Переименовать папку',
+    },
+    'pmemo.folderDeleted': {
+      'ja': '🗑️ フォルダ「{folder}」 を削除しました',
+      'en': '🗑️ Deleted folder “{folder}”',
+      'zh': '🗑️ 已删除文件夹「{folder}」',
+      'ko': '🗑️ 폴더 「{folder}」을(를) 삭제했습니다',
+      'es': '🗑️ Se eliminó la carpeta “{folder}”',
+      'fr': '🗑️ Dossier « {folder} » supprimé',
+      'de': '🗑️ Ordner „{folder}“ gelöscht',
+      'pt': '🗑️ Pasta “{folder}” excluída',
+      'ru': '🗑️ Папка «{folder}» удалена',
+    },
+    'pmemo.deleteFolderBody': {
+      'ja': '中のメモは「未分類」 に戻ります (メモ自体は削除されません)。\n\nEnter で削除、 Esc でキャンセル。',
+      'en':
+          'The memos inside return to “Uncategorized” (the memos themselves aren’t deleted).\n\nEnter to delete, Esc to cancel.',
+      'zh': '其中的备注会移回“未分类”（备注本身不会删除）。\n\n按 Enter 删除，按 Esc 取消。',
+      'ko': '안의 메모는 “미분류”로 되돌아갑니다(메모 자체는 삭제되지 않습니다).\n\nEnter로 삭제, Esc로 취소.',
+      'es':
+          'Las notas dentro vuelven a “Sin clasificar” (las notas no se eliminan).\n\nEnter para eliminar, Esc para cancelar.',
+      'fr':
+          'Les notes à l’intérieur reviennent à « Non classé » (les notes elles-mêmes ne sont pas supprimées).\n\nEntrée pour supprimer, Échap pour annuler.',
+      'de':
+          'Die Notizen darin kehren zu „Ohne Kategorie“ zurück (die Notizen selbst werden nicht gelöscht).\n\nEnter zum Löschen, Esc zum Abbrechen.',
+      'pt':
+          'As notas dentro voltam para “Sem categoria” (as notas em si não são excluídas).\n\nEnter para excluir, Esc para cancelar.',
+      'ru':
+          'Заметки внутри вернутся в «Без категории» (сами заметки не удаляются).\n\nEnter — удалить, Esc — отмена.',
+    },
+    'pmemo.deleteFolderConfirm': {
+      'ja': 'フォルダ「{folder}」を削除しますか?',
+      'en': 'Delete folder “{folder}”?',
+      'zh': '要删除文件夹「{folder}」吗？',
+      'ko': '폴더 「{folder}」을(를) 삭제할까요?',
+      'es': '¿Eliminar la carpeta “{folder}”?',
+      'fr': 'Supprimer le dossier « {folder} » ?',
+      'de': 'Ordner „{folder}“ löschen?',
+      'pt': 'Excluir a pasta “{folder}”?',
+      'ru': 'Удалить папку «{folder}»?',
+    },
+    'pmemo.createFolderOrMove': {
+      'ja': 'フォルダを作成 / メモを移動',
+      'en': 'Create folder / move memos',
+      'zh': '创建文件夹 / 移动备注',
+      'ko': '폴더 만들기 / 메모 이동',
+      'es': 'Crear carpeta / mover notas',
+      'fr': 'Créer un dossier / déplacer les notes',
+      'de': 'Ordner erstellen / Notizen verschieben',
+      'pt': 'Criar pasta / mover notas',
+      'ru': 'Создать папку / переместить заметки',
+    },
+    'pmemo.placeHere': {
+      'ja': 'ここに置く (位置を選択)',
+      'en': 'Place here (choose position)',
+      'zh': '放在这里（选择位置）',
+      'ko': '여기에 두기 (위치 선택)',
+      'es': 'Colocar aquí (elegir posición)',
+      'fr': 'Placer ici (choisir la position)',
+      'de': 'Hier platzieren (Position wählen)',
+      'pt': 'Colocar aqui (escolher posição)',
+      'ru': 'Поместить сюда (выбрать позицию)',
+    },
+    'pmemo.swapAi': {
+      'ja': 'AI 欄と左右を入れ替え',
+      'en': 'Swap sides with the AI panel',
+      'zh': '与 AI 栏左右互换',
+      'ko': 'AI 칸과 좌우 바꾸기',
+      'es': 'Intercambiar lados con el panel de IA',
+      'fr': 'Échanger les côtés avec le panneau IA',
+      'de': 'Seiten mit dem KI-Bereich tauschen',
+      'pt': 'Trocar de lado com o painel de IA',
+      'ru': 'Поменять местами с панелью ИИ',
+    },
+    'pmemo.newMemo': {
+      'ja': '新規メモを作成',
+      'en': 'Create a new memo',
+      'zh': '新建备注',
+      'ko': '새 메모 만들기',
+      'es': 'Crear una nota nueva',
+      'fr': 'Créer une nouvelle note',
+      'de': 'Neue Notiz erstellen',
+      'pt': 'Criar uma nova nota',
+      'ru': 'Создать новую заметку',
+    },
+    'pmemo.newFolderTitle': {
+      'ja': '新しいフォルダー',
+      'en': 'New folder',
+      'zh': '新建文件夹',
+      'ko': '새 폴더',
+      'es': 'Carpeta nueva',
+      'fr': 'Nouveau dossier',
+      'de': 'Neuer Ordner',
+      'pt': 'Nova pasta',
+      'ru': 'Новая папка',
+    },
+    'pmemo.subfolderTitle': {
+      'ja': '「{parent}」 にサブフォルダー',
+      'en': 'Subfolder in “{parent}”',
+      'zh': '在「{parent}」中创建子文件夹',
+      'ko': '「{parent}」에 하위 폴더',
+      'es': 'Subcarpeta en “{parent}”',
+      'fr': 'Sous-dossier dans « {parent} »',
+      'de': 'Unterordner in „{parent}“',
+      'pt': 'Subpasta em “{parent}”',
+      'ru': 'Подпапка в «{parent}»',
+    },
+    'pmemo.createFolder': {
+      'ja': 'フォルダーを作成',
+      'en': 'Create a folder',
+      'zh': '创建文件夹',
+      'ko': '폴더 만들기',
+      'es': 'Crear una carpeta',
+      'fr': 'Créer un dossier',
+      'de': 'Ordner erstellen',
+      'pt': 'Criar uma pasta',
+      'ru': 'Создать папку',
+    },
+    'pmemo.folderCreated': {
+      'ja': '「{name}」 を作成しました',
+      'en': 'Created “{name}”',
+      'zh': '已创建「{name}」',
+      'ko': '「{name}」을(를) 만들었습니다',
+      'es': 'Se creó “{name}”',
+      'fr': '« {name} » créé',
+      'de': '„{name}“ erstellt',
+      'pt': '“{name}” criado',
+      'ru': '«{name}» создано',
+    },
+    'pmemo.manageFolders': {
+      'ja': 'フォルダの管理',
+      'en': 'Manage folders',
+      'zh': '管理文件夹',
+      'ko': '폴더 관리',
+      'es': 'Gestionar carpetas',
+      'fr': 'Gérer les dossiers',
+      'de': 'Ordner verwalten',
+      'pt': 'Gerenciar pastas',
+      'ru': 'Управление папками',
+    },
+    'pmemo.createNewFolder': {
+      'ja': '新規フォルダを作成',
+      'en': 'Create a new folder',
+      'zh': '新建文件夹',
+      'ko': '새 폴더 만들기',
+      'es': 'Crear una carpeta nueva',
+      'fr': 'Créer un nouveau dossier',
+      'de': 'Neuen Ordner erstellen',
+      'pt': 'Criar uma nova pasta',
+      'ru': 'Создать новую папку',
+    },
+    'pmemo.folderExampleHint': {
+      'ja': '例: 重要、 後で見る、 質問',
+      'en': 'e.g. Important, Read later, Questions',
+      'zh': '例如：重要、稍后看、问题',
+      'ko': '예: 중요, 나중에 보기, 질문',
+      'es': 'p. ej. Importante, Ver después, Preguntas',
+      'fr': 'ex. : Important, À lire plus tard, Questions',
+      'de': 'z. B. Wichtig, Später lesen, Fragen',
+      'pt': 'ex.: Importante, Ver depois, Perguntas',
+      'ru': 'напр.: Важное, Прочитать позже, Вопросы',
+    },
+    'pmemo.existingFolders': {
+      'ja': '既存のフォルダ ({n} 個 + 未分類 {m} 件)',
+      'en': 'Existing folders ({n} + {m} uncategorized)',
+      'zh': '现有文件夹（{n} 个 + 未分类 {m} 个）',
+      'ko': '기존 폴더 ({n}개 + 미분류 {m}건)',
+      'es': 'Carpetas existentes ({n} + {m} sin clasificar)',
+      'fr': 'Dossiers existants ({n} + {m} non classés)',
+      'de': 'Vorhandene Ordner ({n} + {m} ohne Kategorie)',
+      'pt': 'Pastas existentes ({n} + {m} sem categoria)',
+      'ru': 'Существующие папки ({n} + {m} без категории)',
+    },
+    'pmemo.noFolders': {
+      'ja': 'フォルダがまだありません。\n上の入力欄から新しいフォルダを作成できます。',
+      'en': 'No folders yet.\nYou can create one from the field above.',
+      'zh': '还没有文件夹。\n可从上方的输入框创建新文件夹。',
+      'ko': '아직 폴더가 없습니다.\n위 입력란에서 새 폴더를 만들 수 있습니다.',
+      'es': 'Aún no hay carpetas.\nPuedes crear una desde el campo de arriba.',
+      'fr':
+          'Aucun dossier pour l’instant.\nVous pouvez en créer un depuis le champ ci-dessus.',
+      'de': 'Noch keine Ordner.\nSie können oben im Feld einen erstellen.',
+      'pt': 'Ainda não há pastas.\nVocê pode criar uma no campo acima.',
+      'ru': 'Папок пока нет.\nВы можете создать её в поле выше.',
+    },
+    'pmemo.dissolveFolder': {
+      'ja': 'フォルダ内のメモを未分類に戻す (= フォルダ削除)',
+      'en': 'Return memos to uncategorized (= delete folder)',
+      'zh': '将文件夹内的备注移回未分类（即删除文件夹）',
+      'ko': '폴더 내 메모를 미분류로 되돌리기 (= 폴더 삭제)',
+      'es': 'Devolver las notas a sin clasificar (= eliminar carpeta)',
+      'fr': 'Remettre les notes en non classées (= supprimer le dossier)',
+      'de': 'Notizen in „ohne Kategorie“ zurücksetzen (= Ordner löschen)',
+      'pt': 'Devolver as notas para sem categoria (= excluir pasta)',
+      'ru': 'Вернуть заметки в «без категории» (= удалить папку)',
+    },
+    'pmemo.selectMemosFor': {
+      'ja': '「{folder}」 に入れるメモを選ぶ',
+      'en': 'Choose memos to put in “{folder}”',
+      'zh': '选择要放入「{folder}」的备注',
+      'ko': '「{folder}」에 넣을 메모 선택',
+      'es': 'Elige notas para poner en “{folder}”',
+      'fr': 'Choisir les notes à mettre dans « {folder} »',
+      'de': 'Notizen für „{folder}“ auswählen',
+      'pt': 'Escolha notas para colocar em “{folder}”',
+      'ru': 'Выберите заметки для «{folder}»',
+    },
+    'pmemo.uncategorized': {
+      'ja': '未分類',
+      'en': 'Uncategorized',
+      'zh': '未分类',
+      'ko': '미분류',
+      'es': 'Sin clasificar',
+      'fr': 'Non classé',
+      'de': 'Ohne Kategorie',
+      'pt': 'Sem categoria',
+      'ru': 'Без категории',
+    },
+    'pmemo.selectedToMap': {
+      'ja': '選択メモをマップにノードとして出す',
+      'en': 'Put selected memos on the map as nodes',
+      'zh': '将所选备注作为节点放到地图上',
+      'ko': '선택한 메모를 맵에 노드로 표시',
+      'es': 'Poner las notas seleccionadas en el mapa como nodos',
+      'fr': 'Mettre les notes sélectionnées sur la carte comme nœuds',
+      'de': 'Ausgewählte Notizen als Knoten auf die Karte setzen',
+      'pt': 'Colocar as notas selecionadas no mapa como nós',
+      'ru': 'Вынести выбранные заметки на карту как узлы',
+    },
+    'pmemo.selectedToFolder': {
+      'ja': '選択メモをフォルダにまとめて格納',
+      'en': 'Store selected memos in a folder',
+      'zh': '将所选备注一并存入文件夹',
+      'ko': '선택한 메모를 폴더에 일괄 보관',
+      'es': 'Guardar las notas seleccionadas en una carpeta',
+      'fr': 'Ranger les notes sélectionnées dans un dossier',
+      'de': 'Ausgewählte Notizen in einem Ordner ablegen',
+      'pt': 'Armazenar as notas selecionadas em uma pasta',
+      'ru': 'Сложить выбранные заметки в папку',
+    },
+    'pmemo.storeNToFolder': {
+      'ja': '{n} 件をフォルダに格納',
+      'en': 'Store {n} in a folder',
+      'zh': '将 {n} 个存入文件夹',
+      'ko': '{n}건을 폴더에 보관',
+      'es': 'Guardar {n} en una carpeta',
+      'fr': 'Ranger {n} dans un dossier',
+      'de': '{n} in einem Ordner ablegen',
+      'pt': 'Armazenar {n} em uma pasta',
+      'ru': 'Сложить {n} в папку',
+    },
+    'pmemo.newFolderNameHint': {
+      'ja': '新しいフォルダ名',
+      'en': 'New folder name',
+      'zh': '新文件夹名称',
+      'ko': '새 폴더 이름',
+      'es': 'Nombre de la nueva carpeta',
+      'fr': 'Nom du nouveau dossier',
+      'de': 'Name des neuen Ordners',
+      'pt': 'Nome da nova pasta',
+      'ru': 'Имя новой папки',
+    },
+    'pmemo.createAndStore': {
+      'ja': '作成して格納',
+      'en': 'Create and store',
+      'zh': '创建并存入',
+      'ko': '만들어 보관',
+      'es': 'Crear y guardar',
+      'fr': 'Créer et ranger',
+      'de': 'Erstellen und ablegen',
+      'pt': 'Criar e armazenar',
+      'ru': 'Создать и сложить',
+    },
+    'pmemo.storeToExisting': {
+      'ja': '既存のフォルダに格納',
+      'en': 'Store in an existing folder',
+      'zh': '存入现有文件夹',
+      'ko': '기존 폴더에 보관',
+      'es': 'Guardar en una carpeta existente',
+      'fr': 'Ranger dans un dossier existant',
+      'de': 'In vorhandenem Ordner ablegen',
+      'pt': 'Armazenar em uma pasta existente',
+      'ru': 'Сложить в существующую папку',
+    },
+    'pmemo.backToUncategorized': {
+      'ja': '未分類に戻す',
+      'en': 'Return to uncategorized',
+      'zh': '移回未分类',
+      'ko': '미분류로 되돌리기',
+      'es': 'Devolver a sin clasificar',
+      'fr': 'Remettre en non classé',
+      'de': 'In „ohne Kategorie“ zurück',
+      'pt': 'Voltar para sem categoria',
+      'ru': 'Вернуть в «без категории»',
+    },
+    'quiz.hideAnswer': {
+      'ja': '解答を隠す',
+      'en': 'Hide answer',
+      'zh': '隐藏答案',
+      'ko': '정답 숨기기',
+      'es': 'Ocultar respuesta',
+      'fr': 'Masquer la réponse',
+      'de': 'Antwort ausblenden',
+      'pt': 'Ocultar resposta',
+      'ru': 'Скрыть ответ',
+    },
+    'common.color': {
+      'ja': 'カラー',
+      'en': 'Color',
+      'zh': '颜色',
+      'ko': '색상',
+      'es': 'Color',
+      'fr': 'Couleur',
+      'de': 'Farbe',
+      'pt': 'Cor',
+      'ru': 'Цвет',
+    },
+    'pmemo.saveWithPosition': {
+      'ja': 'p.{n} に位置を指定して保存',
+      'en': 'Save with a position on p.{n}',
+      'zh': '在第 {n} 页指定位置保存',
+      'ko': 'p.{n}에 위치를 지정해 저장',
+      'es': 'Guardar con una posición en la pág. {n}',
+      'fr': 'Enregistrer avec une position à la p.{n}',
+      'de': 'Mit Position auf S.{n} speichern',
+      'pt': 'Salvar com uma posição na p.{n}',
+      'ru': 'Сохранить с позицией на стр.{n}',
+    },
+    'pmemo.memoContent': {
+      'ja': 'メモ内容',
+      'en': 'Memo content',
+      'zh': '备注内容',
+      'ko': '메모 내용',
+      'es': 'Contenido de la nota',
+      'fr': 'Contenu de la note',
+      'de': 'Notizinhalt',
+      'pt': 'Conteúdo da nota',
+      'ru': 'Содержимое заметки',
+    },
+    'attach.notFound': {
+      'ja': '(添付ファイル / リンクが見つからないため開けません)',
+      'en': '(Can’t open — the attachment / link wasn’t found)',
+      'zh': '（找不到附件 / 链接，无法打开）',
+      'ko': '(첨부 파일 / 링크를 찾을 수 없어 열 수 없습니다)',
+      'es': '(No se puede abrir: no se encontró el adjunto / enlace)',
+      'fr': '(Impossible d’ouvrir : pièce jointe / lien introuvable)',
+      'de': '(Kann nicht geöffnet werden – Anhang / Link nicht gefunden)',
+      'pt': '(Não é possível abrir: anexo / link não encontrado)',
+      'ru': '(Не удаётся открыть — вложение / ссылка не найдены)',
+    },
+    'webview.initializing2': {
+      'ja': 'WebView2 を初期化中…',
+      'en': 'Initializing WebView2…',
+      'zh': '正在初始化 WebView2…',
+      'ko': 'WebView2 초기화 중…',
+      'es': 'Inicializando WebView2…',
+      'fr': 'Initialisation de WebView2…',
+      'de': 'WebView2 wird initialisiert…',
+      'pt': 'Inicializando o WebView2…',
+      'ru': 'Инициализация WebView2…',
+    },
+    'doc.renameFile': {
+      'ja': 'ファイル名を変更',
+      'en': 'Rename file',
+      'zh': '重命名文件',
+      'ko': '파일 이름 변경',
+      'es': 'Cambiar nombre del archivo',
+      'fr': 'Renommer le fichier',
+      'de': 'Datei umbenennen',
+      'pt': 'Renomear arquivo',
+      'ru': 'Переименовать файл',
+    },
+    'doc.fileNameHint': {
+      'ja': 'ファイル名 (例: 売上集計.xlsx)',
+      'en': 'File name (e.g. sales.xlsx)',
+      'zh': '文件名（例如：销售汇总.xlsx）',
+      'ko': '파일 이름 (예: 매출집계.xlsx)',
+      'es': 'Nombre del archivo (p. ej. ventas.xlsx)',
+      'fr': 'Nom du fichier (ex. : ventes.xlsx)',
+      'de': 'Dateiname (z. B. Umsatz.xlsx)',
+      'pt': 'Nome do arquivo (ex.: vendas.xlsx)',
+      'ru': 'Имя файла (напр. продажи.xlsx)',
+    },
+    'doc.saved': {
+      'ja': '保存しました: {name}',
+      'en': 'Saved: {name}',
+      'zh': '已保存：{name}',
+      'ko': '저장했습니다: {name}',
+      'es': 'Guardado: {name}',
+      'fr': 'Enregistré : {name}',
+      'de': 'Gespeichert: {name}',
+      'pt': 'Salvo: {name}',
+      'ru': 'Сохранено: {name}',
+    },
+    'doc.saveFailed': {
+      'ja': '保存に失敗: {err}',
+      'en': 'Save failed: {err}',
+      'zh': '保存失败：{err}',
+      'ko': '저장 실패: {err}',
+      'es': 'Error al guardar: {err}',
+      'fr': 'Échec de l’enregistrement : {err}',
+      'de': 'Speichern fehlgeschlagen: {err}',
+      'pt': 'Falha ao salvar: {err}',
+      'ru': 'Ошибка сохранения: {err}',
+    },
+    'docx.fontSize': {
+      'ja': 'フォントサイズ',
+      'en': 'Font size',
+      'zh': '字体大小',
+      'ko': '글꼴 크기',
+      'es': 'Tamaño de fuente',
+      'fr': 'Taille de police',
+      'de': 'Schriftgröße',
+      'pt': 'Tamanho da fonte',
+      'ru': 'Размер шрифта',
+    },
+    'docx.numericInput': {
+      'ja': '数値で指定 (6〜96 pt)',
+      'en': 'Specify a number (6–96 pt)',
+      'zh': '输入数值（6–96 pt）',
+      'ko': '숫자로 지정 (6–96 pt)',
+      'es': 'Especifica un número (6–96 pt)',
+      'fr': 'Indiquez un nombre (6–96 pt)',
+      'de': 'Zahl angeben (6–96 pt)',
+      'pt': 'Especifique um número (6–96 pt)',
+      'ru': 'Укажите число (6–96 pt)',
+    },
+    'docx.range6to96': {
+      'ja': '6〜96 pt の範囲で入力してください',
+      'en': 'Please enter a value between 6 and 96 pt',
+      'zh': '请输入 6–96 pt 范围内的值',
+      'ko': '6–96 pt 범위로 입력하세요',
+      'es': 'Introduce un valor entre 6 y 96 pt',
+      'fr': 'Saisissez une valeur entre 6 et 96 pt',
+      'de': 'Bitte einen Wert zwischen 6 und 96 pt eingeben',
+      'pt': 'Digite um valor entre 6 e 96 pt',
+      'ru': 'Введите значение от 6 до 96 pt',
+    },
+    'docx.quickSelect': {
+      'ja': 'クイック選択',
+      'en': 'Quick select',
+      'zh': '快速选择',
+      'ko': '빠른 선택',
+      'es': 'Selección rápida',
+      'fr': 'Sélection rapide',
+      'de': 'Schnellauswahl',
+      'pt': 'Seleção rápida',
+      'ru': 'Быстрый выбор',
+    },
+    'docx.insertFormula': {
+      'ja': '数式を挿入 (LaTeX)',
+      'en': 'Insert formula (LaTeX)',
+      'zh': '插入公式 (LaTeX)',
+      'ko': '수식 삽입 (LaTeX)',
+      'es': 'Insertar fórmula (LaTeX)',
+      'fr': 'Insérer une formule (LaTeX)',
+      'de': 'Formel einfügen (LaTeX)',
+      'pt': 'Inserir fórmula (LaTeX)',
+      'ru': 'Вставить формулу (LaTeX)',
+    },
+    'docx.rowsColon': {
+      'ja': '行数:',
+      'en': 'Rows:',
+      'zh': '行数：',
+      'ko': '행 수:',
+      'es': 'Filas:',
+      'fr': 'Lignes :',
+      'de': 'Zeilen:',
+      'pt': 'Linhas:',
+      'ru': 'Строк:',
+    },
+    'docx.colsColon': {
+      'ja': '列数:',
+      'en': 'Columns:',
+      'zh': '列数：',
+      'ko': '열 수:',
+      'es': 'Columnas:',
+      'fr': 'Colonnes :',
+      'de': 'Spalten:',
+      'pt': 'Colunas:',
+      'ru': 'Столбцов:',
+    },
+    'docx.saveAsDocx': {
+      'ja': '.docx として別名で保存',
+      'en': 'Save as .docx (new name)',
+      'zh': '另存为 .docx',
+      'ko': '.docx로 다른 이름으로 저장',
+      'es': 'Guardar como .docx (otro nombre)',
+      'fr': 'Enregistrer sous .docx',
+      'de': 'Als .docx speichern (neuer Name)',
+      'pt': 'Salvar como .docx (outro nome)',
+      'ru': 'Сохранить как .docx (другое имя)',
+    },
+    'docx.bold': {
+      'ja': '太字 (段落全体)',
+      'en': 'Bold (whole paragraph)',
+      'zh': '粗体（整段）',
+      'ko': '굵게 (단락 전체)',
+      'es': 'Negrita (todo el párrafo)',
+      'fr': 'Gras (paragraphe entier)',
+      'de': 'Fett (ganzer Absatz)',
+      'pt': 'Negrito (parágrafo inteiro)',
+      'ru': 'Полужирный (весь абзац)',
+    },
+    'docx.italic': {
+      'ja': '斜体 (段落全体)',
+      'en': 'Italic (whole paragraph)',
+      'zh': '斜体（整段）',
+      'ko': '기울임 (단락 전체)',
+      'es': 'Cursiva (todo el párrafo)',
+      'fr': 'Italique (paragraphe entier)',
+      'de': 'Kursiv (ganzer Absatz)',
+      'pt': 'Itálico (parágrafo inteiro)',
+      'ru': 'Курсив (весь абзац)',
+    },
+    'docx.underline': {
+      'ja': '下線 (段落全体)',
+      'en': 'Underline (whole paragraph)',
+      'zh': '下划线（整段）',
+      'ko': '밑줄 (단락 전체)',
+      'es': 'Subrayado (todo el párrafo)',
+      'fr': 'Souligné (paragraphe entier)',
+      'de': 'Unterstrichen (ganzer Absatz)',
+      'pt': 'Sublinhado (parágrafo inteiro)',
+      'ru': 'Подчёркнутый (весь абзац)',
+    },
+    'docx.alignLeft': {
+      'ja': '左揃え',
+      'en': 'Align left',
+      'zh': '左对齐',
+      'ko': '왼쪽 정렬',
+      'es': 'Alinear a la izquierda',
+      'fr': 'Aligner à gauche',
+      'de': 'Linksbündig',
+      'pt': 'Alinhar à esquerda',
+      'ru': 'По левому краю',
+    },
+    'docx.alignCenter': {
+      'ja': '中央揃え',
+      'en': 'Align center',
+      'zh': '居中对齐',
+      'ko': '가운데 정렬',
+      'es': 'Centrar',
+      'fr': 'Centrer',
+      'de': 'Zentriert',
+      'pt': 'Centralizar',
+      'ru': 'По центру',
+    },
+    'docx.alignRight': {
+      'ja': '右揃え',
+      'en': 'Align right',
+      'zh': '右对齐',
+      'ko': '오른쪽 정렬',
+      'es': 'Alinear a la derecha',
+      'fr': 'Aligner à droite',
+      'de': 'Rechtsbündig',
+      'pt': 'Alinhar à direita',
+      'ru': 'По правому краю',
+    },
+    'docx.alignJustify': {
+      'ja': '両端揃え',
+      'en': 'Justify',
+      'zh': '两端对齐',
+      'ko': '양쪽 정렬',
+      'es': 'Justificar',
+      'fr': 'Justifier',
+      'de': 'Blocksatz',
+      'pt': 'Justificar',
+      'ru': 'По ширине',
+    },
+    'docx.fontSmaller': {
+      'ja': 'フォントサイズを小さく',
+      'en': 'Decrease font size',
+      'zh': '减小字体',
+      'ko': '글꼴 작게',
+      'es': 'Reducir el tamaño de fuente',
+      'fr': 'Réduire la taille de police',
+      'de': 'Schrift verkleinern',
+      'pt': 'Diminuir a fonte',
+      'ru': 'Уменьшить шрифт',
+    },
+    'docx.fontLarger': {
+      'ja': 'フォントサイズを大きく',
+      'en': 'Increase font size',
+      'zh': '增大字体',
+      'ko': '글꼴 크게',
+      'es': 'Aumentar el tamaño de fuente',
+      'fr': 'Augmenter la taille de police',
+      'de': 'Schrift vergrößern',
+      'pt': 'Aumentar a fonte',
+      'ru': 'Увеличить шрифт',
+    },
+    'docx.insertImage': {
+      'ja': '画像を挿入',
+      'en': 'Insert image',
+      'zh': '插入图片',
+      'ko': '이미지 삽입',
+      'es': 'Insertar imagen',
+      'fr': 'Insérer une image',
+      'de': 'Bild einfügen',
+      'pt': 'Inserir imagem',
+      'ru': 'Вставить изображение',
+    },
+    'docx.insertFormulaTip': {
+      'ja': '数式 (LaTeX) を挿入',
+      'en': 'Insert a formula (LaTeX)',
+      'zh': '插入公式 (LaTeX)',
+      'ko': '수식 (LaTeX) 삽입',
+      'es': 'Insertar una fórmula (LaTeX)',
+      'fr': 'Insérer une formule (LaTeX)',
+      'de': 'Formel (LaTeX) einfügen',
+      'pt': 'Inserir uma fórmula (LaTeX)',
+      'ru': 'Вставить формулу (LaTeX)',
+    },
+    'docx.insertParaBelow': {
+      'ja': '新しい段落を下に挿入',
+      'en': 'Insert a new paragraph below',
+      'zh': '在下方插入新段落',
+      'ko': '아래에 새 단락 삽입',
+      'es': 'Insertar un párrafo nuevo debajo',
+      'fr': 'Insérer un nouveau paragraphe en dessous',
+      'de': 'Neuen Absatz unten einfügen',
+      'pt': 'Inserir um novo parágrafo abaixo',
+      'ru': 'Вставить новый абзац ниже',
+    },
+    'docx.moveUp': {
+      'ja': '上に移動',
+      'en': 'Move up',
+      'zh': '上移',
+      'ko': '위로 이동',
+      'es': 'Mover arriba',
+      'fr': 'Déplacer vers le haut',
+      'de': 'Nach oben',
+      'pt': 'Mover para cima',
+      'ru': 'Вверх',
+    },
+    'docx.moveDown': {
+      'ja': '下に移動',
+      'en': 'Move down',
+      'zh': '下移',
+      'ko': '아래로 이동',
+      'es': 'Mover abajo',
+      'fr': 'Déplacer vers le bas',
+      'de': 'Nach unten',
+      'pt': 'Mover para baixo',
+      'ru': 'Вниз',
+    },
+    'docx.addParagraph': {
+      'ja': '段落を追加',
+      'en': 'Add a paragraph',
+      'zh': '添加段落',
+      'ko': '단락 추가',
+      'es': 'Añadir un párrafo',
+      'fr': 'Ajouter un paragraphe',
+      'de': 'Absatz hinzufügen',
+      'pt': 'Adicionar um parágrafo',
+      'ru': 'Добавить абзац',
+    },
+    'docx.pageBreak': {
+      'ja': '--- ページ区切り ---',
+      'en': '--- Page break ---',
+      'zh': '--- 分页符 ---',
+      'ko': '--- 페이지 나누기 ---',
+      'es': '--- Salto de página ---',
+      'fr': '--- Saut de page ---',
+      'de': '--- Seitenumbruch ---',
+      'pt': '--- Quebra de página ---',
+      'ru': '--- Разрыв страницы ---',
+    },
+    'docx.noImage': {
+      'ja': '(画像なし: {name})',
+      'en': '(no image: {name})',
+      'zh': '（无图片：{name}）',
+      'ko': '(이미지 없음: {name})',
+      'es': '(sin imagen: {name})',
+      'fr': '(sans image : {name})',
+      'de': '(kein Bild: {name})',
+      'pt': '(sem imagem: {name})',
+      'ru': '(без изображения: {name})',
+    },
+    'docx.editFormula': {
+      'ja': '数式を編集',
+      'en': 'Edit formula',
+      'zh': '编辑公式',
+      'ko': '수식 편집',
+      'es': 'Editar fórmula',
+      'fr': 'Modifier la formule',
+      'de': 'Formel bearbeiten',
+      'pt': 'Editar fórmula',
+      'ru': 'Изменить формулу',
+    },
+    'docx.update': {
+      'ja': '更新',
+      'en': 'Update',
+      'zh': '更新',
+      'ko': '업데이트',
+      'es': 'Actualizar',
+      'fr': 'Mettre à jour',
+      'de': 'Aktualisieren',
+      'pt': 'Atualizar',
+      'ru': 'Обновить',
+    },
+    'btn.copy': {
+      'ja': 'コピー',
+      'en': 'Copy',
+      'zh': '复制',
+      'ko': '복사',
+      'es': 'Copiar',
+      'fr': 'Copier',
+      'de': 'Kopieren',
+      'pt': 'Copiar',
+      'ru': 'Копировать',
+    },
+    'imgAnno.addText': {
+      'ja': '文字を追加',
+      'en': 'Add text',
+      'zh': '添加文字',
+      'ko': '문자 추가',
+      'es': 'Añadir texto',
+      'fr': 'Ajouter du texte',
+      'de': 'Text hinzufügen',
+      'pt': 'Adicionar texto',
+      'ru': 'Добавить текст',
+    },
+    'imgAnno.undo': {
+      'ja': '取り消し',
+      'en': 'Undo',
+      'zh': '撤销',
+      'ko': '실행 취소',
+      'es': 'Deshacer',
+      'fr': 'Annuler',
+      'de': 'Rückgängig',
+      'pt': 'Desfazer',
+      'ru': 'Отменить',
+    },
+    'imgAnno.rotate90': {
+      'ja': '90°回転',
+      'en': 'Rotate 90°',
+      'zh': '旋转 90°',
+      'ko': '90° 회전',
+      'es': 'Girar 90°',
+      'fr': 'Pivoter de 90°',
+      'de': 'Um 90° drehen',
+      'pt': 'Girar 90°',
+      'ru': 'Повернуть на 90°',
+    },
+    'imgAnno.downloadDevice': {
+      'ja': '端末にダウンロード',
+      'en': 'Download to device',
+      'zh': '下载到设备',
+      'ko': '기기에 다운로드',
+      'es': 'Descargar al dispositivo',
+      'fr': 'Télécharger sur l’appareil',
+      'de': 'Auf Gerät herunterladen',
+      'pt': 'Baixar para o dispositivo',
+      'ru': 'Скачать на устройство',
+    },
+    'imgAnno.crop': {
+      'ja': 'トリミング',
+      'en': 'Crop',
+      'zh': '裁剪',
+      'ko': '자르기',
+      'es': 'Recortar',
+      'fr': 'Rogner',
+      'de': 'Zuschneiden',
+      'pt': 'Cortar',
+      'ru': 'Обрезать',
+    },
+    'imgAnno.annotate': {
+      'ja': '注釈',
+      'en': 'Annotate',
+      'zh': '批注',
+      'ko': '주석',
+      'es': 'Anotar',
+      'fr': 'Annoter',
+      'de': 'Anmerken',
+      'pt': 'Anotar',
+      'ru': 'Аннотация',
+    },
+    'img.loadFailed': {
+      'ja': '画像の読み込みに失敗しました\n{err}',
+      'en': 'Failed to load the image\n{err}',
+      'zh': '加载图片失败\n{err}',
+      'ko': '이미지 불러오기에 실패했습니다\n{err}',
+      'es': 'Error al cargar la imagen\n{err}',
+      'fr': 'Échec du chargement de l’image\n{err}',
+      'de': 'Bild konnte nicht geladen werden\n{err}',
+      'pt': 'Falha ao carregar a imagem\n{err}',
+      'ru': 'Не удалось загрузить изображение\n{err}',
+    },
+    'ai.geminiKeyUnset': {
+      'ja': 'Gemini API キーが設定されていません',
+      'en': 'The Gemini API key isn’t set',
+      'zh': '未设置 Gemini API 密钥',
+      'ko': 'Gemini API 키가 설정되지 않았습니다',
+      'es': 'La clave de API de Gemini no está configurada',
+      'fr': 'La clé API Gemini n’est pas définie',
+      'de': 'Der Gemini-API-Schlüssel ist nicht festgelegt',
+      'pt': 'A chave de API do Gemini não está definida',
+      'ru': 'API-ключ Gemini не задан',
+    },
+    'aiAssist.title': {
+      'ja': 'AI 補助 ({type})',
+      'en': 'AI assist ({type})',
+      'zh': 'AI 辅助（{type}）',
+      'ko': 'AI 보조 ({type})',
+      'es': 'Asistencia de IA ({type})',
+      'fr': 'Assistance IA ({type})',
+      'de': 'KI-Hilfe ({type})',
+      'pt': 'Assistência de IA ({type})',
+      'ru': 'Помощь ИИ ({type})',
+    },
+    'aiAssist.instruction': {
+      'ja': 'AI への指示',
+      'en': 'Instruction for the AI',
+      'zh': '给 AI 的指令',
+      'ko': 'AI에 대한 지시',
+      'es': 'Instrucción para la IA',
+      'fr': 'Instruction pour l’IA',
+      'de': 'Anweisung an die KI',
+      'pt': 'Instrução para a IA',
+      'ru': 'Инструкция для ИИ',
+    },
+    'aiAssist.instructionHint': {
+      'ja': '例: 内容を要約して / 誤字脱字を直して / 表に整理して',
+      'en': 'e.g. Summarize it / Fix typos / Organize into a table',
+      'zh': '例如：总结内容 / 修正错别字 / 整理成表格',
+      'ko': '예: 내용 요약 / 오탈자 수정 / 표로 정리',
+      'es': 'p. ej. Resúmelo / Corrige erratas / Organiza en una tabla',
+      'fr': 'ex. : Résume-le / Corrige les fautes / Organise en tableau',
+      'de': 'z. B. Zusammenfassen / Tippfehler korrigieren / In Tabelle ordnen',
+      'pt': 'ex.: Resuma / Corrija erros / Organize em tabela',
+      'ru': 'напр.: Сократи / Исправь опечатки / Оформи таблицей',
+    },
+    'aiAssist.response': {
+      'ja': 'AI の応答',
+      'en': 'AI response',
+      'zh': 'AI 的回复',
+      'ko': 'AI 응답',
+      'es': 'Respuesta de la IA',
+      'fr': 'Réponse de l’IA',
+      'de': 'KI-Antwort',
+      'pt': 'Resposta da IA',
+      'ru': 'Ответ ИИ',
+    },
+    'aiAssist.copied': {
+      'ja': 'AI 応答をクリップボードにコピーしました',
+      'en': 'Copied the AI response to the clipboard',
+      'zh': '已将 AI 回复复制到剪贴板',
+      'ko': 'AI 응답을 클립보드에 복사했습니다',
+      'es': 'Se copió la respuesta de la IA al portapapeles',
+      'fr': 'Réponse de l’IA copiée dans le presse-papiers',
+      'de': 'KI-Antwort in die Zwischenablage kopiert',
+      'pt': 'Resposta da IA copiada para a área de transferência',
+      'ru': 'Ответ ИИ скопирован в буфер обмена',
+    },
+    'aiAssist.applyResult': {
+      'ja': '結果を反映',
+      'en': 'Apply the result',
+      'zh': '应用结果',
+      'ko': '결과 반영',
+      'es': 'Aplicar el resultado',
+      'fr': 'Appliquer le résultat',
+      'de': 'Ergebnis übernehmen',
+      'pt': 'Aplicar o resultado',
+      'ru': 'Применить результат',
+    },
+    'aiAssist.send': {
+      'ja': 'AI に送る',
+      'en': 'Send to the AI',
+      'zh': '发送给 AI',
+      'ko': 'AI에 보내기',
+      'es': 'Enviar a la IA',
+      'fr': 'Envoyer à l’IA',
+      'de': 'An die KI senden',
+      'pt': 'Enviar à IA',
+      'ru': 'Отправить ИИ',
+    },
+    'presenter.audienceWindowFailed': {
+      'ja': '聴衆ウィンドウを開けませんでした: {err}',
+      'en': 'Couldn’t open the audience window: {err}',
+      'zh': '无法打开观众窗口：{err}',
+      'ko': '청중 창을 열 수 없습니다: {err}',
+      'es': 'No se pudo abrir la ventana de audiencia: {err}',
+      'fr': 'Impossible d’ouvrir la fenêtre du public : {err}',
+      'de': 'Das Publikumsfenster konnte nicht geöffnet werden: {err}',
+      'pt': 'Não foi possível abrir a janela do público: {err}',
+      'ru': 'Не удалось открыть окно аудитории: {err}',
+    },
+    'presenter.noSlides': {
+      'ja': 'スライドがありません',
+      'en': 'No slides',
+      'zh': '没有幻灯片',
+      'ko': '슬라이드가 없습니다',
+      'es': 'No hay diapositivas',
+      'fr': 'Aucune diapositive',
+      'de': 'Keine Folien',
+      'pt': 'Nenhum slide',
+      'ru': 'Нет слайдов',
+    },
+    'presenter.pointerPaint': {
+      'ja': 'ポインター / ペイント（資料上で右クリックでも切替）',
+      'en': 'Pointer / paint (right-click on the slide also toggles)',
+      'zh': '指针 / 画笔（在资料上右键也可切换）',
+      'ko': '포인터 / 페인트(자료 위에서 우클릭으로도 전환)',
+      'es':
+          'Puntero / pintura (clic derecho en la diapositiva también alterna)',
+      'fr': 'Pointeur / dessin (clic droit sur la diapositive bascule aussi)',
+      'de': 'Zeiger / Malen (Rechtsklick auf die Folie wechselt auch)',
+      'pt': 'Ponteiro / pintura (clique direito no slide também alterna)',
+      'ru': 'Указка / рисование (ПКМ по слайду тоже переключает)',
+    },
+    'presenter.exit': {
+      'ja': '終了 (Esc)',
+      'en': 'Exit (Esc)',
+      'zh': '退出 (Esc)',
+      'ko': '종료 (Esc)',
+      'es': 'Salir (Esc)',
+      'fr': 'Quitter (Échap)',
+      'de': 'Beenden (Esc)',
+      'pt': 'Sair (Esc)',
+      'ru': 'Выход (Esc)',
+    },
+    'presenter.prevSlide': {
+      'ja': '前のスライド (←)',
+      'en': 'Previous slide (←)',
+      'zh': '上一张幻灯片 (←)',
+      'ko': '이전 슬라이드 (←)',
+      'es': 'Diapositiva anterior (←)',
+      'fr': 'Diapositive précédente (←)',
+      'de': 'Vorherige Folie (←)',
+      'pt': 'Slide anterior (←)',
+      'ru': 'Предыдущий слайд (←)',
+    },
+    'presenter.nextSlideKey': {
+      'ja': '次のスライド (→ / Space)',
+      'en': 'Next slide (→ / Space)',
+      'zh': '下一张幻灯片 (→ / 空格)',
+      'ko': '다음 슬라이드 (→ / Space)',
+      'es': 'Diapositiva siguiente (→ / Espacio)',
+      'fr': 'Diapositive suivante (→ / Espace)',
+      'de': 'Nächste Folie (→ / Leertaste)',
+      'pt': 'Próximo slide (→ / Espaço)',
+      'ru': 'Следующий слайд (→ / Пробел)',
+    },
+    'presenter.lastSlide': {
+      'ja': '(最後のスライド)',
+      'en': '(last slide)',
+      'zh': '（最后一张幻灯片）',
+      'ko': '(마지막 슬라이드)',
+      'es': '(última diapositiva)',
+      'fr': '(dernière diapositive)',
+      'de': '(letzte Folie)',
+      'pt': '(último slide)',
+      'ru': '(последний слайд)',
+    },
+    'img.resetEdit': {
+      'ja': '編集内容をリセット',
+      'en': 'Reset the edits',
+      'zh': '重置编辑内容',
+      'ko': '편집 내용 초기화',
+      'es': 'Restablecer las ediciones',
+      'fr': 'Réinitialiser les modifications',
+      'de': 'Bearbeitungen zurücksetzen',
+      'pt': 'Redefinir as edições',
+      'ru': 'Сбросить правки',
+    },
+    'img.reset': {
+      'ja': 'リセット',
+      'en': 'Reset',
+      'zh': '重置',
+      'ko': '초기화',
+      'es': 'Restablecer',
+      'fr': 'Réinitialiser',
+      'de': 'Zurücksetzen',
+      'pt': 'Redefinir',
+      'ru': 'Сбросить',
+    },
+    'img.overlayText': {
+      'ja': '画像に重ねる文字',
+      'en': 'Text to overlay on the image',
+      'zh': '叠加在图片上的文字',
+      'ko': '이미지에 겹칠 문자',
+      'es': 'Texto para superponer en la imagen',
+      'fr': 'Texte à superposer sur l’image',
+      'de': 'Text zum Überlagern des Bildes',
+      'pt': 'Texto a sobrepor na imagem',
+      'ru': 'Текст поверх изображения',
+    },
+    'img.usesPenColor': {
+      'ja': '色は上のペン色が使われます',
+      'en': 'The pen color above is used',
+      'zh': '使用上方的画笔颜色',
+      'ko': '위의 펜 색이 사용됩니다',
+      'es': 'Se usa el color del lápiz de arriba',
+      'fr': 'La couleur du stylo ci-dessus est utilisée',
+      'de': 'Es wird die obige Stiftfarbe verwendet',
+      'pt': 'Usa-se a cor da caneta acima',
+      'ru': 'Используется цвет пера выше',
+    },
+    'doc.loadError': {
+      'ja': '読み込みエラー: {err}',
+      'en': 'Load error: {err}',
+      'zh': '加载错误：{err}',
+      'ko': '불러오기 오류: {err}',
+      'es': 'Error de carga: {err}',
+      'fr': 'Erreur de chargement : {err}',
+      'de': 'Ladefehler: {err}',
+      'pt': 'Erro ao carregar: {err}',
+      'ru': 'Ошибка загрузки: {err}',
+    },
+    'text.addNewLine': {
+      'ja': '+ 新しい行を追加',
+      'en': '+ Add a new line',
+      'zh': '+ 添加新行',
+      'ko': '+ 새 줄 추가',
+      'es': '+ Añadir una línea nueva',
+      'fr': '+ Ajouter une ligne',
+      'de': '+ Neue Zeile hinzufügen',
+      'pt': '+ Adicionar uma nova linha',
+      'ru': '+ Добавить новую строку',
+    },
+    'font.notPlaced': {
+      'ja': '日本語フォントが未配置',
+      'en': 'Japanese font not installed',
+      'zh': '未放置日文字体',
+      'ko': '일본어 글꼴 미배치',
+      'es': 'Fuente japonesa no instalada',
+      'fr': 'Police japonaise non installée',
+      'de': 'Japanische Schrift nicht vorhanden',
+      'pt': 'Fonte japonesa não instalada',
+      'ru': 'Японский шрифт не установлен',
+    },
+    'font.tofuBody': {
+      'ja': 'PDF 出力に必要な日本語フォントがアプリ内に見つかりません。\nこのまま続行すると、 日本語が全部 □ で出力されます。',
+      'en':
+          'The Japanese font required for PDF export wasn’t found in the app.\nIf you continue, all Japanese will be output as □.',
+      'zh': '应用内未找到 PDF 输出所需的日文字体。\n若继续，日文将全部输出为 □。',
+      'ko': 'PDF 출력에 필요한 일본어 글꼴을 앱에서 찾을 수 없습니다.\n이대로 계속하면 일본어가 모두 □로 출력됩니다.',
+      'es':
+          'No se encontró en la app la fuente japonesa necesaria para exportar a PDF.\nSi continúas, todo el japonés se mostrará como □.',
+      'fr':
+          'La police japonaise requise pour l’export PDF est introuvable dans l’app.\nSi vous continuez, tout le japonais sera affiché en □.',
+      'de':
+          'Die für den PDF-Export benötigte japanische Schrift wurde in der App nicht gefunden.\nWenn Sie fortfahren, wird alles Japanische als □ ausgegeben.',
+      'pt':
+          'A fonte japonesa necessária para exportar PDF não foi encontrada no app.\nSe continuar, todo o japonês será exibido como □.',
+      'ru':
+          'Японский шрифт, нужный для экспорта в PDF, не найден в приложении.\nЕсли продолжить, весь японский текст выведется как □.',
+    },
+    'font.placementSteps': {
+      'ja': '📋 正しい配置手順',
+      'en': '📋 Correct setup steps',
+      'zh': '📋 正确的放置步骤',
+      'ko': '📋 올바른 배치 절차',
+      'es': '📋 Pasos de instalación correctos',
+      'fr': '📋 Étapes d’installation correctes',
+      'de': '📋 Richtige Einrichtungsschritte',
+      'pt': '📋 Passos de instalação corretos',
+      'ru': '📋 Правильные шаги установки',
+    },
+    'font.continueAnyway': {
+      'ja': '文字化け承知で続行',
+      'en': 'Continue (accepting garbled text)',
+      'zh': '知晓乱码风险并继续',
+      'ko': '글자 깨짐을 감수하고 계속',
+      'es': 'Continuar (aceptando texto ilegible)',
+      'fr': 'Continuer (en acceptant le texte illisible)',
+      'de': 'Trotzdem fortfahren (mit Zeichensalat)',
+      'pt': 'Continuar (aceitando texto corrompido)',
+      'ru': 'Продолжить (с риском «кракозябр»)',
+    },
+    'cal.addEventOn': {
+      'ja': '{m}/{d} の予定を追加',
+      'en': 'Add an event on {m}/{d}',
+      'zh': '在 {m}/{d} 添加日程',
+      'ko': '{m}/{d} 일정 추가',
+      'es': 'Añadir un evento el {m}/{d}',
+      'fr': 'Ajouter un événement le {m}/{d}',
+      'de': 'Termin am {m}.{d}. hinzufügen',
+      'pt': 'Adicionar um evento em {m}/{d}',
+      'ru': 'Добавить событие на {m}/{d}',
+    },
+    'cal.eventContent': {
+      'ja': '予定の内容',
+      'en': 'Event details',
+      'zh': '日程内容',
+      'ko': '일정 내용',
+      'es': 'Detalles del evento',
+      'fr': 'Détails de l’événement',
+      'de': 'Termininhalt',
+      'pt': 'Detalhes do evento',
+      'ru': 'Содержание события',
+    },
+    'cal.startOptional': {
+      'ja': '開始 (HH:mm 任意)',
+      'en': 'Start (HH:mm, optional)',
+      'zh': '开始（HH:mm，可选）',
+      'ko': '시작 (HH:mm 선택)',
+      'es': 'Inicio (HH:mm, opcional)',
+      'fr': 'Début (HH:mm, facultatif)',
+      'de': 'Start (HH:mm, optional)',
+      'pt': 'Início (HH:mm, opcional)',
+      'ru': 'Начало (ЧЧ:мм, необязательно)',
+    },
+    'cal.endOptional': {
+      'ja': '終了 (HH:mm 任意)',
+      'en': 'End (HH:mm, optional)',
+      'zh': '结束（HH:mm，可选）',
+      'ko': '종료 (HH:mm 선택)',
+      'es': 'Fin (HH:mm, opcional)',
+      'fr': 'Fin (HH:mm, facultatif)',
+      'de': 'Ende (HH:mm, optional)',
+      'pt': 'Fim (HH:mm, opcional)',
+      'ru': 'Конец (ЧЧ:мм, необязательно)',
+    },
+    'cal.noEvents': {
+      'ja': '予定はありません',
+      'en': 'No events',
+      'zh': '没有日程',
+      'ko': '일정이 없습니다',
+      'es': 'No hay eventos',
+      'fr': 'Aucun événement',
+      'de': 'Keine Termine',
+      'pt': 'Nenhum evento',
+      'ru': 'Нет событий',
+    },
+    'cal.addEvent': {
+      'ja': '予定を追加',
+      'en': 'Add event',
+      'zh': '添加日程',
+      'ko': '일정 추가',
+      'es': 'Añadir evento',
+      'fr': 'Ajouter un événement',
+      'de': 'Termin hinzufügen',
+      'pt': 'Adicionar evento',
+      'ru': 'Добавить событие',
+    },
+    'cal.toDayView': {
+      'ja': '日表示へ',
+      'en': 'To day view',
+      'zh': '切换到日视图',
+      'ko': '일 보기로',
+      'es': 'A la vista diaria',
+      'fr': 'Vue jour',
+      'de': 'Zur Tagesansicht',
+      'pt': 'Para a visão diária',
+      'ru': 'К дневному виду',
+    },
+    'cal.daysMinus': {
+      'ja': '日数 -',
+      'en': 'Days -',
+      'zh': '天数 -',
+      'ko': '일수 -',
+      'es': 'Días -',
+      'fr': 'Jours -',
+      'de': 'Tage -',
+      'pt': 'Dias -',
+      'ru': 'Дни -',
+    },
+    'cal.daysPlus': {
+      'ja': '日数 +',
+      'en': 'Days +',
+      'zh': '天数 +',
+      'ko': '일수 +',
+      'es': 'Días +',
+      'fr': 'Jours +',
+      'de': 'Tage +',
+      'pt': 'Dias +',
+      'ru': 'Дни +',
+    },
+    'cal.nDays': {
+      'ja': '{n}日',
+      'en': '{n} days',
+      'zh': '{n} 天',
+      'ko': '{n}일',
+      'es': '{n} días',
+      'fr': '{n} jours',
+      'de': '{n} Tage',
+      'pt': '{n} dias',
+      'ru': '{n} дн.',
+    },
+    'cal.nHour': {
+      'ja': '{h}時',
+      'en': '{h}:00',
+      'zh': '{h} 时',
+      'ko': '{h}시',
+      'es': '{h}:00',
+      'fr': '{h} h',
+      'de': '{h} Uhr',
+      'pt': '{h}h',
+      'ru': '{h} ч',
+    },
+    'ai.studioTitle': {
+      'ja': 'AI 生成スタジオ',
+      'en': 'AI generation studio',
+      'zh': 'AI 生成工作室',
+      'ko': 'AI 생성 스튜디오',
+      'es': 'Estudio de generación con IA',
+      'fr': 'Studio de génération IA',
+      'de': 'KI-Generierungsstudio',
+      'pt': 'Estúdio de geração com IA',
+      'ru': 'Студия ИИ-генерации',
+    },
+    'ai.selectImageModel': {
+      'ja': '画像生成モデルを選ぶ',
+      'en': 'Choose the image model',
+      'zh': '选择图像生成模型',
+      'ko': '이미지 생성 모델 선택',
+      'es': 'Elegir el modelo de imagen',
+      'fr': 'Choisir le modèle d’image',
+      'de': 'Bildmodell auswählen',
+      'pt': 'Escolher o modelo de imagem',
+      'ru': 'Выбрать модель изображений',
+    },
+    'ai.count': {
+      'ja': '枚数',
+      'en': 'Count',
+      'zh': '数量',
+      'ko': '장수',
+      'es': 'Cantidad',
+      'fr': 'Nombre',
+      'de': 'Anzahl',
+      'pt': 'Quantidade',
+      'ru': 'Количество',
+    },
+    'ai.nImages': {
+      'ja': '{n} 枚',
+      'en': '{n} images',
+      'zh': '{n} 张',
+      'ko': '{n}장',
+      'es': '{n} imágenes',
+      'fr': '{n} images',
+      'de': '{n} Bilder',
+      'pt': '{n} imagens',
+      'ru': '{n} изобр.',
+    },
+    'ai.regenerate': {
+      'ja': '再生成',
+      'en': 'Regenerate',
+      'zh': '重新生成',
+      'ko': '다시 생성',
+      'es': 'Regenerar',
+      'fr': 'Régénérer',
+      'de': 'Neu generieren',
+      'pt': 'Regenerar',
+      'ru': 'Сгенерировать заново',
+    },
+    'ai.imagePerSlide': {
+      'ja': '各スライドに AI 画像を入れる',
+      'en': 'Add an AI image to each slide',
+      'zh': '为每张幻灯片添加 AI 图片',
+      'ko': '각 슬라이드에 AI 이미지 넣기',
+      'es': 'Añadir una imagen de IA a cada diapositiva',
+      'fr': 'Ajouter une image IA à chaque diapositive',
+      'de': 'Jeder Folie ein KI-Bild hinzufügen',
+      'pt': 'Adicionar uma imagem de IA a cada slide',
+      'ru': 'Добавить ИИ-изображение на каждый слайд',
+    },
+    'ai.imageTimeNote': {
+      'ja': '生成に時間がかかります（あとで個別に再生成も可）',
+      'en': 'Generation takes time (you can regenerate individually later)',
+      'zh': '生成需要时间（之后也可单独重新生成）',
+      'ko': '생성에 시간이 걸립니다(나중에 개별 재생성도 가능)',
+      'es':
+          'La generación lleva tiempo (puedes regenerar individualmente después)',
+      'fr':
+          'La génération prend du temps (régénération individuelle possible ensuite)',
+      'de': 'Die Generierung dauert (später einzeln neu generierbar)',
+      'pt': 'A geração leva tempo (você pode regenerar individualmente depois)',
+      'ru': 'Генерация занимает время (позже можно пересоздать по отдельности)',
+    },
+    'ai.design': {
+      'ja': 'デザイン',
+      'en': 'Design',
+      'zh': '设计',
+      'ko': '디자인',
+      'es': 'Diseño',
+      'fr': 'Conception',
+      'de': 'Design',
+      'pt': 'Design',
+      'ru': 'Дизайн',
+    },
+    'ai.template': {
+      'ja': 'テンプレート: {name}',
+      'en': 'Template: {name}',
+      'zh': '模板：{name}',
+      'ko': '템플릿: {name}',
+      'es': 'Plantilla: {name}',
+      'fr': 'Modèle : {name}',
+      'de': 'Vorlage: {name}',
+      'pt': 'Modelo: {name}',
+      'ru': 'Шаблон: {name}',
+    },
+    'ai.nSlidesEditable': {
+      'ja': '{n} 枚のスライド（編集可）',
+      'en': '{n} slides (editable)',
+      'zh': '{n} 张幻灯片（可编辑）',
+      'ko': '슬라이드 {n}장(편집 가능)',
+      'es': '{n} diapositivas (editables)',
+      'fr': '{n} diapositives (modifiables)',
+      'de': '{n} Folien (bearbeitbar)',
+      'pt': '{n} slides (editáveis)',
+      'ru': 'Слайдов: {n} (редактируемые)',
+    },
+    'ai.savePptx': {
+      'ja': 'pptx を保存',
+      'en': 'Save pptx',
+      'zh': '保存 pptx',
+      'ko': 'pptx 저장',
+      'es': 'Guardar pptx',
+      'fr': 'Enregistrer le pptx',
+      'de': 'pptx speichern',
+      'pt': 'Salvar pptx',
+      'ru': 'Сохранить pptx',
+    },
+    'ai.addPoint': {
+      'ja': '要点を追加',
+      'en': 'Add a point',
+      'zh': '添加要点',
+      'ko': '요점 추가',
+      'es': 'Añadir un punto',
+      'fr': 'Ajouter un point',
+      'de': 'Punkt hinzufügen',
+      'pt': 'Adicionar um ponto',
+      'ru': 'Добавить пункт',
+    },
+    'ai.generateImage': {
+      'ja': '画像生成',
+      'en': 'Generate image',
+      'zh': '生成图片',
+      'ko': '이미지 생성',
+      'es': 'Generar imagen',
+      'fr': 'Générer une image',
+      'de': 'Bild generieren',
+      'pt': 'Gerar imagem',
+      'ru': 'Сгенерировать изображение',
+    },
+    'doc.unsavedChanges': {
+      'ja': '未保存の変更があります',
+      'en': 'You have unsaved changes',
+      'zh': '有未保存的更改',
+      'ko': '저장하지 않은 변경 사항이 있습니다',
+      'es': 'Tienes cambios sin guardar',
+      'fr': 'Vous avez des modifications non enregistrées',
+      'de': 'Es gibt nicht gespeicherte Änderungen',
+      'pt': 'Há alterações não salvas',
+      'ru': 'Есть несохранённые изменения',
+    },
+    'doc.closeWithoutSaving': {
+      'ja': '保存せずに閉じますか？',
+      'en': 'Close without saving?',
+      'zh': '不保存就关闭吗？',
+      'ko': '저장하지 않고 닫을까요?',
+      'es': '¿Cerrar sin guardar?',
+      'fr': 'Fermer sans enregistrer ?',
+      'de': 'Ohne Speichern schließen?',
+      'pt': 'Fechar sem salvar?',
+      'ru': 'Закрыть без сохранения?',
+    },
+    'doc.discard': {
+      'ja': '破棄',
+      'en': 'Discard',
+      'zh': '放弃',
+      'ko': '버리기',
+      'es': 'Descartar',
+      'fr': 'Abandonner',
+      'de': 'Verwerfen',
+      'pt': 'Descartar',
+      'ru': 'Отменить',
+    },
+    'ss.aiEditDesc': {
+      'ja':
+          '現在のシート ({sheet}) を AI に渡して書き換えます。\n例: 「B列の数値を全部2倍にして」「ヘッダ行を日本語にして」\n「日付列を昇順でソートして」「合計行を末尾に追加して」',
+      'en':
+          'Passes the current sheet ({sheet}) to the AI to rewrite it.\nE.g. “Double all numbers in column B”, “Translate the header row”,\n“Sort the date column ascending”, “Add a totals row at the end”',
+      'zh':
+          '将当前工作表（{sheet}）交给 AI 进行改写。\n例如：“将 B 列的数字全部翻倍”“把表头行翻译”\n“按升序排列日期列”“在末尾添加合计行”',
+      'ko':
+          '현재 시트({sheet})를 AI에 넘겨 다시 씁니다.\n예: “B열 숫자를 모두 2배로”, “헤더 행을 번역”\n“날짜 열을 오름차순 정렬”, “끝에 합계 행 추가”',
+      'es':
+          'Pasa la hoja actual ({sheet}) a la IA para reescribirla.\nP. ej. «Duplica todos los números de la columna B», «Traduce la fila de encabezado»,\n«Ordena la columna de fechas ascendente», «Añade una fila de totales al final»',
+      'fr':
+          'Transmet la feuille actuelle ({sheet}) à l’IA pour la réécrire.\nEx. : « Double tous les nombres de la colonne B », « Traduis la ligne d’en-tête »,\n« Trie la colonne de dates croissant », « Ajoute une ligne de totaux à la fin »',
+      'de':
+          'Übergibt das aktuelle Blatt ({sheet}) zur Neufassung an die KI.\nZ. B. „Verdopple alle Zahlen in Spalte B“, „Übersetze die Kopfzeile“,\n„Sortiere die Datumsspalte aufsteigend“, „Füge am Ende eine Summenzeile hinzu“',
+      'pt':
+          'Passa a planilha atual ({sheet}) à IA para reescrevê-la.\nEx.: “Dobre todos os números da coluna B”, “Traduza a linha de cabeçalho”,\n“Ordene a coluna de datas em ordem crescente”, “Adicione uma linha de totais no fim”',
+      'ru':
+          'Передаёт текущий лист ({sheet}) ИИ для переписывания.\nНапр.: «Удвой все числа в столбце B», «Переведи строку заголовка»,\n«Отсортируй столбец дат по возрастанию», «Добавь строку итогов в конце»',
+    },
+    'doc.aiRewrite': {
+      'ja': 'AI で書き換える',
+      'en': 'Rewrite with AI',
+      'zh': '用 AI 重写',
+      'ko': 'AI로 다시 쓰기',
+      'es': 'Reescribir con IA',
+      'fr': 'Réécrire avec l’IA',
+      'de': 'Mit KI umschreiben',
+      'pt': 'Reescrever com IA',
+      'ru': 'Переписать с ИИ',
+    },
+    'doc.instructionHint': {
+      'ja': '指示を入力',
+      'en': 'Enter an instruction',
+      'zh': '输入指令',
+      'ko': '지시 입력',
+      'es': 'Introduce una instrucción',
+      'fr': 'Saisissez une instruction',
+      'de': 'Anweisung eingeben',
+      'pt': 'Digite uma instrução',
+      'ru': 'Введите инструкцию',
+    },
+    'doc.aiExecute': {
+      'ja': 'AI に実行させる',
+      'en': 'Let the AI do it',
+      'zh': '让 AI 执行',
+      'ko': 'AI에게 실행시키기',
+      'es': 'Que lo haga la IA',
+      'fr': 'Laisser l’IA faire',
+      'de': 'Von der KI ausführen lassen',
+      'pt': 'Deixar a IA fazer',
+      'ru': 'Поручить ИИ',
+    },
+    'doc.aiEditFailed': {
+      'ja': 'AI 編集に失敗: {err}',
+      'en': 'AI edit failed: {err}',
+      'zh': 'AI 编辑失败：{err}',
+      'ko': 'AI 편집 실패: {err}',
+      'es': 'Error de edición con IA: {err}',
+      'fr': 'Échec de l’édition par IA : {err}',
+      'de': 'KI-Bearbeitung fehlgeschlagen: {err}',
+      'pt': 'Falha na edição por IA: {err}',
+      'ru': 'Ошибка редактирования ИИ: {err}',
+    },
+    'doc.cannotOpenFile': {
+      'ja': 'ファイルを開けませんでした',
+      'en': 'Couldn’t open the file',
+      'zh': '无法打开文件',
+      'ko': '파일을 열 수 없습니다',
+      'es': 'No se pudo abrir el archivo',
+      'fr': 'Impossible d’ouvrir le fichier',
+      'de': 'Datei konnte nicht geöffnet werden',
+      'pt': 'Não foi possível abrir o arquivo',
+      'ru': 'Не удалось открыть файл',
+    },
+    'doc.unsaved': {
+      'ja': '未保存',
+      'en': 'Unsaved',
+      'zh': '未保存',
+      'ko': '미저장',
+      'es': 'Sin guardar',
+      'fr': 'Non enregistré',
+      'de': 'Nicht gespeichert',
+      'pt': 'Não salvo',
+      'ru': 'Не сохранено',
+    },
+    'ss.insertColLeft': {
+      'ja': '左に列を挿入',
+      'en': 'Insert column left',
+      'zh': '在左侧插入列',
+      'ko': '왼쪽에 열 삽입',
+      'es': 'Insertar columna a la izquierda',
+      'fr': 'Insérer une colonne à gauche',
+      'de': 'Spalte links einfügen',
+      'pt': 'Inserir coluna à esquerda',
+      'ru': 'Вставить столбец слева',
+    },
+    'ss.insertColRight': {
+      'ja': '右に列を挿入',
+      'en': 'Insert column right',
+      'zh': '在右侧插入列',
+      'ko': '오른쪽에 열 삽입',
+      'es': 'Insertar columna a la derecha',
+      'fr': 'Insérer une colonne à droite',
+      'de': 'Spalte rechts einfügen',
+      'pt': 'Inserir coluna à direita',
+      'ru': 'Вставить столбец справа',
+    },
+    'ss.clearColumn': {
+      'ja': 'この列の内容をクリア',
+      'en': 'Clear this column',
+      'zh': '清除此列内容',
+      'ko': '이 열의 내용 지우기',
+      'es': 'Borrar el contenido de esta columna',
+      'fr': 'Effacer le contenu de cette colonne',
+      'de': 'Inhalt dieser Spalte löschen',
+      'pt': 'Limpar o conteúdo desta coluna',
+      'ru': 'Очистить этот столбец',
+    },
+    'ss.deleteColumn': {
+      'ja': 'この列を削除',
+      'en': 'Delete this column',
+      'zh': '删除此列',
+      'ko': '이 열 삭제',
+      'es': 'Eliminar esta columna',
+      'fr': 'Supprimer cette colonne',
+      'de': 'Diese Spalte löschen',
+      'pt': 'Excluir esta coluna',
+      'ru': 'Удалить этот столбец',
+    },
+    'ss.insertRowAbove': {
+      'ja': '上に行を挿入',
+      'en': 'Insert row above',
+      'zh': '在上方插入行',
+      'ko': '위에 행 삽입',
+      'es': 'Insertar fila arriba',
+      'fr': 'Insérer une ligne au-dessus',
+      'de': 'Zeile oberhalb einfügen',
+      'pt': 'Inserir linha acima',
+      'ru': 'Вставить строку выше',
+    },
+    'ss.insertRowBelow': {
+      'ja': '下に行を挿入',
+      'en': 'Insert row below',
+      'zh': '在下方插入行',
+      'ko': '아래에 행 삽입',
+      'es': 'Insertar fila abajo',
+      'fr': 'Insérer une ligne en dessous',
+      'de': 'Zeile unterhalb einfügen',
+      'pt': 'Inserir linha abaixo',
+      'ru': 'Вставить строку ниже',
+    },
+    'ss.clearRow': {
+      'ja': 'この行の内容をクリア',
+      'en': 'Clear this row',
+      'zh': '清除此行内容',
+      'ko': '이 행의 내용 지우기',
+      'es': 'Borrar el contenido de esta fila',
+      'fr': 'Effacer le contenu de cette ligne',
+      'de': 'Inhalt dieser Zeile löschen',
+      'pt': 'Limpar o conteúdo desta linha',
+      'ru': 'Очистить эту строку',
+    },
+    'ss.deleteRow': {
+      'ja': 'この行を削除',
+      'en': 'Delete this row',
+      'zh': '删除此行',
+      'ko': '이 행 삭제',
+      'es': 'Eliminar esta fila',
+      'fr': 'Supprimer cette ligne',
+      'de': 'Diese Zeile löschen',
+      'pt': 'Excluir esta linha',
+      'ru': 'Удалить эту строку',
+    },
+    'pptx.prevSlide': {
+      'ja': '前のスライド',
+      'en': 'Previous slide',
+      'zh': '上一张幻灯片',
+      'ko': '이전 슬라이드',
+      'es': 'Diapositiva anterior',
+      'fr': 'Diapositive précédente',
+      'de': 'Vorherige Folie',
+      'pt': 'Slide anterior',
+      'ru': 'Предыдущий слайд',
+    },
+    'pptx.nextSlide': {
+      'ja': '次のスライド',
+      'en': 'Next slide',
+      'zh': '下一张幻灯片',
+      'ko': '다음 슬라이드',
+      'es': 'Diapositiva siguiente',
+      'fr': 'Diapositive suivante',
+      'de': 'Nächste Folie',
+      'pt': 'Próximo slide',
+      'ru': 'Следующий слайд',
+    },
+    'pptx.saveAsPptx': {
+      'ja': '.pptx として別名で保存',
+      'en': 'Save as .pptx (new name)',
+      'zh': '另存为 .pptx',
+      'ko': '.pptx로 다른 이름으로 저장',
+      'es': 'Guardar como .pptx (otro nombre)',
+      'fr': 'Enregistrer sous .pptx',
+      'de': 'Als .pptx speichern (neuer Name)',
+      'pt': 'Salvar como .pptx (outro nome)',
+      'ru': 'Сохранить как .pptx (другое имя)',
+    },
+    'pptx.saveAsPdf': {
+      'ja': 'PDF として保存',
+      'en': 'Save as PDF',
+      'zh': '另存为 PDF',
+      'ko': 'PDF로 저장',
+      'es': 'Guardar como PDF',
+      'fr': 'Enregistrer en PDF',
+      'de': 'Als PDF speichern',
+      'pt': 'Salvar como PDF',
+      'ru': 'Сохранить как PDF',
+    },
+    'pptx.saveCurrentPng': {
+      'ja': '現在のスライドを PNG として保存',
+      'en': 'Save current slide as PNG',
+      'zh': '将当前幻灯片另存为 PNG',
+      'ko': '현재 슬라이드를 PNG로 저장',
+      'es': 'Guardar la diapositiva actual como PNG',
+      'fr': 'Enregistrer la diapositive actuelle en PNG',
+      'de': 'Aktuelle Folie als PNG speichern',
+      'pt': 'Salvar o slide atual como PNG',
+      'ru': 'Сохранить текущий слайд как PNG',
+    },
+    'pptx.saveAllPng': {
+      'ja': '全スライドを PNG として保存',
+      'en': 'Save all slides as PNG',
+      'zh': '将所有幻灯片另存为 PNG',
+      'ko': '모든 슬라이드를 PNG로 저장',
+      'es': 'Guardar todas las diapositivas como PNG',
+      'fr': 'Enregistrer toutes les diapositives en PNG',
+      'de': 'Alle Folien als PNG speichern',
+      'pt': 'Salvar todos os slides como PNG',
+      'ru': 'Сохранить все слайды как PNG',
+    },
+    'pptx.notSavedYet': {
+      'ja': 'まだファイルが保存されていません',
+      'en': 'The file hasn’t been saved yet',
+      'zh': '文件尚未保存',
+      'ko': '아직 파일이 저장되지 않았습니다',
+      'es': 'El archivo aún no se ha guardado',
+      'fr': 'Le fichier n’a pas encore été enregistré',
+      'de': 'Die Datei wurde noch nicht gespeichert',
+      'pt': 'O arquivo ainda não foi salvo',
+      'ru': 'Файл ещё не сохранён',
+    },
+    'pptx.cannotOpenExternal': {
+      'ja': '外部アプリで開けません: {err}',
+      'en': 'Can’t open in an external app: {err}',
+      'zh': '无法用外部应用打开：{err}',
+      'ko': '외부 앱으로 열 수 없습니다: {err}',
+      'es': 'No se puede abrir en una app externa: {err}',
+      'fr': 'Impossible d’ouvrir dans une app externe : {err}',
+      'de': 'Kann nicht in externer App geöffnet werden: {err}',
+      'pt': 'Não é possível abrir em um app externo: {err}',
+      'ru': 'Не удаётся открыть во внешнем приложении: {err}',
+    },
+    'pptx.externalLaunchFailed': {
+      'ja': '外部アプリ起動失敗: {err}',
+      'en': 'Failed to launch external app: {err}',
+      'zh': '启动外部应用失败：{err}',
+      'ko': '외부 앱 실행 실패: {err}',
+      'es': 'Error al iniciar la app externa: {err}',
+      'fr': 'Échec du lancement de l’app externe : {err}',
+      'de': 'Start der externen App fehlgeschlagen: {err}',
+      'pt': 'Falha ao iniciar o app externo: {err}',
+      'ru': 'Не удалось запустить внешнее приложение: {err}',
+    },
+    'pptx.openExternal': {
+      'ja': '外部アプリで開く',
+      'en': 'Open in an external app',
+      'zh': '用外部应用打开',
+      'ko': '외부 앱으로 열기',
+      'es': 'Abrir en una app externa',
+      'fr': 'Ouvrir dans une app externe',
+      'de': 'In externer App öffnen',
+      'pt': 'Abrir em um app externo',
+      'ru': 'Открыть во внешнем приложении',
+    },
+    'pptx.pageNumber': {
+      'ja': 'ページ番号',
+      'en': 'Page number',
+      'zh': '页码',
+      'ko': '페이지 번호',
+      'es': 'Número de página',
+      'fr': 'Numéro de page',
+      'de': 'Seitenzahl',
+      'pt': 'Número da página',
+      'ru': 'Номер страницы',
+    },
+    'pptx.editSelectedText': {
+      'ja': '選択中のテキストを編集',
+      'en': 'Edit the selected text',
+      'zh': '编辑所选文本',
+      'ko': '선택한 텍스트 편집',
+      'es': 'Editar el texto seleccionado',
+      'fr': 'Modifier le texte sélectionné',
+      'de': 'Ausgewählten Text bearbeiten',
+      'pt': 'Editar o texto selecionado',
+      'ru': 'Изменить выделенный текст',
+    },
+    'pptx.deleteSelectedText': {
+      'ja': '選択中のテキストを削除',
+      'en': 'Delete the selected text',
+      'zh': '删除所选文本',
+      'ko': '선택한 텍스트 삭제',
+      'es': 'Eliminar el texto seleccionado',
+      'fr': 'Supprimer le texte sélectionné',
+      'de': 'Ausgewählten Text löschen',
+      'pt': 'Excluir o texto selecionado',
+      'ru': 'Удалить выделенный текст',
+    },
+    'pptx.enterText': {
+      'ja': 'テキストを入力',
+      'en': 'Enter text',
+      'zh': '输入文本',
+      'ko': '텍스트 입력',
+      'es': 'Introduce texto',
+      'fr': 'Saisissez du texte',
+      'de': 'Text eingeben',
+      'pt': 'Digite o texto',
+      'ru': 'Введите текст',
+    },
+    'pptx.selectTextColor': {
+      'ja': '文字色を選択',
+      'en': 'Choose text color',
+      'zh': '选择文字颜色',
+      'ko': '글자 색 선택',
+      'es': 'Elegir el color del texto',
+      'fr': 'Choisir la couleur du texte',
+      'de': 'Textfarbe wählen',
+      'pt': 'Escolher a cor do texto',
+      'ru': 'Выбрать цвет текста',
+    },
+    'pptx.autoBlack': {
+      'ja': '自動 (黒に戻す)',
+      'en': 'Auto (back to black)',
+      'zh': '自动（恢复黑色）',
+      'ko': '자동 (검정으로)',
+      'es': 'Automático (volver a negro)',
+      'fr': 'Auto (revenir au noir)',
+      'de': 'Auto (zurück zu Schwarz)',
+      'pt': 'Automático (voltar ao preto)',
+      'ru': 'Авто (вернуть чёрный)',
+    },
+    'pptx.selectFont': {
+      'ja': 'フォントを選択',
+      'en': 'Choose font',
+      'zh': '选择字体',
+      'ko': '글꼴 선택',
+      'es': 'Elegir fuente',
+      'fr': 'Choisir la police',
+      'de': 'Schriftart wählen',
+      'pt': 'Escolher fonte',
+      'ru': 'Выбрать шрифт',
+    },
+    'pptx.selectSize': {
+      'ja': 'サイズを選択 (pt)',
+      'en': 'Choose size (pt)',
+      'zh': '选择大小 (pt)',
+      'ko': '크기 선택 (pt)',
+      'es': 'Elegir tamaño (pt)',
+      'fr': 'Choisir la taille (pt)',
+      'de': 'Größe wählen (pt)',
+      'pt': 'Escolher tamanho (pt)',
+      'ru': 'Выбрать размер (pt)',
+    },
+    'pptx.presenterMode': {
+      'ja': '発表者モード',
+      'en': 'Presenter mode',
+      'zh': '演讲者模式',
+      'ko': '발표자 모드',
+      'es': 'Modo de presentador',
+      'fr': 'Mode présentateur',
+      'de': 'Referentenmodus',
+      'pt': 'Modo apresentador',
+      'ru': 'Режим докладчика',
+    },
+    'pptx.presenterNoteHint': {
+      'ja': 'スライドに関するメモを書く (発表時はここを見ながら話せる)',
+      'en': 'Write notes about the slide (you can read them while presenting)',
+      'zh': '写关于幻灯片的备注（演讲时可一边看一边讲）',
+      'ko': '슬라이드에 대한 메모 작성(발표 시 여기를 보며 말할 수 있음)',
+      'es': 'Escribe notas sobre la diapositiva (puedes leerlas al presentar)',
+      'fr':
+          'Écrivez des notes sur la diapositive (consultables pendant la présentation)',
+      'de': 'Notizen zur Folie schreiben (beim Präsentieren ablesbar)',
+      'pt': 'Escreva notas sobre o slide (visíveis durante a apresentação)',
+      'ru': 'Запишите заметки к слайду (их видно во время доклада)',
+    },
+    'tts.noText': {
+      'ja': '読み上げる文章がありません',
+      'en': 'There’s no text to read aloud',
+      'zh': '没有可朗读的文本',
+      'ko': '읽어줄 문장이 없습니다',
+      'es': 'No hay texto para leer en voz alta',
+      'fr': 'Aucun texte à lire à voix haute',
+      'de': 'Kein Text zum Vorlesen vorhanden',
+      'pt': 'Não há texto para ler em voz alta',
+      'ru': 'Нет текста для озвучивания',
+    },
+    'doc.discardChangesClose': {
+      'ja': '変更を破棄して閉じますか?',
+      'en': 'Discard changes and close?',
+      'zh': '放弃更改并关闭吗？',
+      'ko': '변경 사항을 버리고 닫을까요?',
+      'es': '¿Descartar los cambios y cerrar?',
+      'fr': 'Abandonner les modifications et fermer ?',
+      'de': 'Änderungen verwerfen und schließen?',
+      'pt': 'Descartar as alterações e fechar?',
+      'ru': 'Отменить изменения и закрыть?',
+    },
+    'doc.fileName': {
+      'ja': 'ファイル名',
+      'en': 'File name',
+      'zh': '文件名',
+      'ko': '파일 이름',
+      'es': 'Nombre del archivo',
+      'fr': 'Nom du fichier',
+      'de': 'Dateiname',
+      'pt': 'Nome do arquivo',
+      'ru': 'Имя файла',
+    },
+    'doc.aiEditDescText': {
+      'ja': '{file} ({lang}) の内容を AI に渡して書き換えます。\n例: 「日本語コメントを追加して」「型ヒントを付けて」',
+      'en':
+          'Passes {file} ({lang}) to the AI to rewrite it.\nE.g. “Add comments”, “Add type hints”',
+      'zh': '将 {file}（{lang}）的内容交给 AI 进行改写。\n例如：“添加注释”“加上类型提示”',
+      'ko': '{file}({lang})의 내용을 AI에 넘겨 다시 씁니다.\n예: “주석 추가”, “타입 힌트 추가”',
+      'es':
+          'Pasa {file} ({lang}) a la IA para reescribirlo.\nP. ej. «Añade comentarios», «Añade sugerencias de tipo»',
+      'fr':
+          'Transmet {file} ({lang}) à l’IA pour le réécrire.\nEx. : « Ajoute des commentaires », « Ajoute des indications de type »',
+      'de':
+          'Übergibt {file} ({lang}) zur Neufassung an die KI.\nZ. B. „Kommentare hinzufügen“, „Typ-Hinweise hinzufügen“',
+      'pt':
+          'Passa {file} ({lang}) à IA para reescrevê-lo.\nEx.: “Adicione comentários”, “Adicione dicas de tipo”',
+      'ru':
+          'Передаёт {file} ({lang}) ИИ для переписывания.\nНапр.: «Добавь комментарии», «Добавь подсказки типов»',
+    },
+    'doc.aiEditApplied': {
+      'ja': 'AI 編集を適用しました',
+      'en': 'Applied the AI edit',
+      'zh': '已应用 AI 编辑',
+      'ko': 'AI 편집을 적용했습니다',
+      'es': 'Se aplicó la edición de IA',
+      'fr': 'Modification par IA appliquée',
+      'de': 'KI-Bearbeitung angewendet',
+      'pt': 'Edição por IA aplicada',
+      'ru': 'Правка ИИ применена',
+    },
+    'pptx.editText': {
+      'ja': 'テキストを編集',
+      'en': 'Edit text',
+      'zh': '编辑文本',
+      'ko': '텍스트 편집',
+      'es': 'Editar texto',
+      'fr': 'Modifier le texte',
+      'de': 'Text bearbeiten',
+      'pt': 'Editar texto',
+      'ru': 'Изменить текст',
+    },
+    'pptx.deleteText': {
+      'ja': 'このテキストを削除',
+      'en': 'Delete this text',
+      'zh': '删除此文本',
+      'ko': '이 텍스트 삭제',
+      'es': 'Eliminar este texto',
+      'fr': 'Supprimer ce texte',
+      'de': 'Diesen Text löschen',
+      'pt': 'Excluir este texto',
+      'ru': 'Удалить этот текст',
+    },
+    'pptx.slideTextHint': {
+      'ja': 'スライドに表示するテキスト',
+      'en': 'Text to show on the slide',
+      'zh': '要在幻灯片上显示的文本',
+      'ko': '슬라이드에 표시할 텍스트',
+      'es': 'Texto que se mostrará en la diapositiva',
+      'fr': 'Texte à afficher sur la diapositive',
+      'de': 'Auf der Folie anzuzeigender Text',
+      'pt': 'Texto a exibir no slide',
+      'ru': 'Текст для показа на слайде',
+    },
+    'pptx.applySelectionOnly': {
+      'ja': '選択範囲のみ適用',
+      'en': 'Apply to selection only',
+      'zh': '仅应用于所选范围',
+      'ko': '선택 범위에만 적용',
+      'es': 'Aplicar solo a la selección',
+      'fr': 'Appliquer à la sélection seulement',
+      'de': 'Nur auf Auswahl anwenden',
+      'pt': 'Aplicar somente à seleção',
+      'ru': 'Применить только к выделению',
+    },
+    'anim.none': {
+      'ja': 'なし (= 削除)',
+      'en': 'None (= remove)',
+      'zh': '无（= 删除）',
+      'ko': '없음 (= 삭제)',
+      'es': 'Ninguna (= quitar)',
+      'fr': 'Aucune (= supprimer)',
+      'de': 'Keine (= entfernen)',
+      'pt': 'Nenhuma (= remover)',
+      'ru': 'Нет (= удалить)',
+    },
+    'anim.fadeIn': {
+      'ja': 'フェードイン',
+      'en': 'Fade in',
+      'zh': '淡入',
+      'ko': '페이드 인',
+      'es': 'Aparecer',
+      'fr': 'Fondu entrant',
+      'de': 'Einblenden',
+      'pt': 'Aparecer',
+      'ru': 'Проявление',
+    },
+    'anim.flyLeft': {
+      'ja': '左から飛ぶ',
+      'en': 'Fly in from left',
+      'zh': '从左飞入',
+      'ko': '왼쪽에서 날아오기',
+      'es': 'Entrar desde la izquierda',
+      'fr': 'Entrer par la gauche',
+      'de': 'Von links einfliegen',
+      'pt': 'Entrar pela esquerda',
+      'ru': 'Влёт слева',
+    },
+    'anim.flyRight': {
+      'ja': '右から飛ぶ',
+      'en': 'Fly in from right',
+      'zh': '从右飞入',
+      'ko': '오른쪽에서 날아오기',
+      'es': 'Entrar desde la derecha',
+      'fr': 'Entrer par la droite',
+      'de': 'Von rechts einfliegen',
+      'pt': 'Entrar pela direita',
+      'ru': 'Влёт справа',
+    },
+    'anim.flyTop': {
+      'ja': '上から飛ぶ',
+      'en': 'Fly in from top',
+      'zh': '从上飞入',
+      'ko': '위에서 날아오기',
+      'es': 'Entrar desde arriba',
+      'fr': 'Entrer par le haut',
+      'de': 'Von oben einfliegen',
+      'pt': 'Entrar de cima',
+      'ru': 'Влёт сверху',
+    },
+    'anim.flyBottom': {
+      'ja': '下から飛ぶ',
+      'en': 'Fly in from bottom',
+      'zh': '从下飞入',
+      'ko': '아래에서 날아오기',
+      'es': 'Entrar desde abajo',
+      'fr': 'Entrer par le bas',
+      'de': 'Von unten einfliegen',
+      'pt': 'Entrar de baixo',
+      'ru': 'Влёт снизу',
+    },
+    'anim.zoomIn': {
+      'ja': 'ズームイン',
+      'en': 'Zoom in',
+      'zh': '放大进入',
+      'ko': '확대',
+      'es': 'Acercar',
+      'fr': 'Zoom avant',
+      'de': 'Hineinzoomen',
+      'pt': 'Ampliar',
+      'ru': 'Наезд',
+    },
+    'anim.spin': {
+      'ja': 'スピン',
+      'en': 'Spin',
+      'zh': '旋转',
+      'ko': '회전',
+      'es': 'Giro',
+      'fr': 'Rotation',
+      'de': 'Drehung',
+      'pt': 'Girar',
+      'ru': 'Вращение',
+    },
+    'pptx.selectAnimation': {
+      'ja': 'アニメーション選択',
+      'en': 'Choose animation',
+      'zh': '选择动画',
+      'ko': '애니메이션 선택',
+      'es': 'Elegir animación',
+      'fr': 'Choisir l’animation',
+      'de': 'Animation auswählen',
+      'pt': 'Escolher animação',
+      'ru': 'Выбрать анимацию',
+    },
+    'pptx.insertTable': {
+      'ja': '表を挿入',
+      'en': 'Insert table',
+      'zh': '插入表格',
+      'ko': '표 삽입',
+      'es': 'Insertar tabla',
+      'fr': 'Insérer un tableau',
+      'de': 'Tabelle einfügen',
+      'pt': 'Inserir tabela',
+      'ru': 'Вставить таблицу',
+    },
+    'pptx.rows': {
+      'ja': '行数',
+      'en': 'Rows',
+      'zh': '行数',
+      'ko': '행 수',
+      'es': 'Filas',
+      'fr': 'Lignes',
+      'de': 'Zeilen',
+      'pt': 'Linhas',
+      'ru': 'Строк',
+    },
+    'pptx.cols': {
+      'ja': '列数',
+      'en': 'Columns',
+      'zh': '列数',
+      'ko': '열 수',
+      'es': 'Columnas',
+      'fr': 'Colonnes',
+      'de': 'Spalten',
+      'pt': 'Colunas',
+      'ru': 'Столбцов',
+    },
+    'pptx.insert': {
+      'ja': '挿入',
+      'en': 'Insert',
+      'zh': '插入',
+      'ko': '삽입',
+      'es': 'Insertar',
+      'fr': 'Insérer',
+      'de': 'Einfügen',
+      'pt': 'Inserir',
+      'ru': 'Вставить',
+    },
+    'font.default': {
+      'ja': 'デフォルト (テーマ既定)',
+      'en': 'Default (theme default)',
+      'zh': '默认（主题默认）',
+      'ko': '기본 (테마 기본)',
+      'es': 'Predeterminada (del tema)',
+      'fr': 'Par défaut (du thème)',
+      'de': 'Standard (Theme-Standard)',
+      'pt': 'Padrão (do tema)',
+      'ru': 'По умолчанию (тема)',
+    },
+    'ss.formulaOff': {
+      'ja': '数式OFF',
+      'en': 'Formulas OFF',
+      'zh': '公式关闭',
+      'ko': '수식 OFF',
+      'es': 'Fórmulas OFF',
+      'fr': 'Formules OFF',
+      'de': 'Formeln AUS',
+      'pt': 'Fórmulas OFF',
+      'ru': 'Формулы ВЫКЛ',
+    },
+    'ss.tapToOn': {
+      'ja': 'タップでON',
+      'en': 'Tap to turn ON',
+      'zh': '点击开启',
+      'ko': '탭하여 ON',
+      'es': 'Toca para activar',
+      'fr': 'Touchez pour activer',
+      'de': 'Zum Einschalten tippen',
+      'pt': 'Toque para ativar',
+      'ru': 'Нажмите, чтобы включить',
+    },
+    'quiz.yourAnswer': {
+      'ja': '自分の解答',
+      'en': 'Your answer',
+      'zh': '你的解答',
+      'ko': '내 답안',
+      'es': 'Tu respuesta',
+      'fr': 'Votre réponse',
+      'de': 'Ihre Antwort',
+      'pt': 'Sua resposta',
+      'ru': 'Ваш ответ',
+    },
+    'pmemo.rename': {
+      'ja': '名前を変更',
+      'en': 'Rename',
+      'zh': '重命名',
+      'ko': '이름 변경',
+      'es': 'Cambiar nombre',
+      'fr': 'Renommer',
+      'de': 'Umbenennen',
+      'pt': 'Renomear',
+      'ru': 'Переименовать',
+    },
+    'pdf.jumpToPage': {
+      'ja': 'ページにジャンプ',
+      'en': 'Jump to page',
+      'zh': '跳转到页面',
+      'ko': '페이지로 이동',
+      'es': 'Saltar a la página',
+      'fr': 'Aller à la page',
+      'de': 'Zur Seite springen',
+      'pt': 'Ir para a página',
+      'ru': 'Перейти к странице',
+    },
+    'pdf.pageRangeHint': {
+      'ja': '1 〜 {max}',
+      'en': '1–{max}',
+      'zh': '1–{max}',
+      'ko': '1–{max}',
+      'es': '1–{max}',
+      'fr': '1–{max}',
+      'de': '1–{max}',
+      'pt': '1–{max}',
+      'ru': '1–{max}',
+    },
+    'pdf.jump': {
+      'ja': 'ジャンプ',
+      'en': 'Jump',
+      'zh': '跳转',
+      'ko': '이동',
+      'es': 'Saltar',
+      'fr': 'Aller',
+      'de': 'Springen',
+      'pt': 'Ir',
+      'ru': 'Перейти',
+    },
+    'pdf.noReadablePdf': {
+      'ja': '読み上げできるPDFがありません',
+      'en': 'No PDF available to read aloud',
+      'zh': '没有可朗读的 PDF',
+      'ko': '읽어줄 수 있는 PDF가 없습니다',
+      'es': 'No hay PDF para leer en voz alta',
+      'fr': 'Aucun PDF à lire à voix haute',
+      'de': 'Kein PDF zum Vorlesen vorhanden',
+      'pt': 'Nenhum PDF para ler em voz alta',
+      'ru': 'Нет PDF для озвучивания',
+    },
+    'pdf.loadingText': {
+      'ja': 'PDFの文章を読み込み中…',
+      'en': 'Loading the PDF text…',
+      'zh': '正在加载 PDF 文本…',
+      'ko': 'PDF 텍스트를 불러오는 중…',
+      'es': 'Cargando el texto del PDF…',
+      'fr': 'Chargement du texte du PDF…',
+      'de': 'PDF-Text wird geladen…',
+      'pt': 'Carregando o texto do PDF…',
+      'ru': 'Загрузка текста PDF…',
+    },
+    'readaloud.startTitle': {
+      'ja': '読み上げ開始ページ',
+      'en': 'Read-aloud start page',
+      'zh': '朗读起始页',
+      'ko': '읽기 시작 페이지',
+      'es': 'Página de inicio de lectura',
+      'fr': 'Page de départ de la lecture',
+      'de': 'Vorlese-Startseite',
+      'pt': 'Página inicial da leitura',
+      'ru': 'Начальная страница озвучивания',
+    },
+    'readaloud.fromPage': {
+      'ja': 'このページから:',
+      'en': 'From page:',
+      'zh': '从此页开始：',
+      'ko': '이 페이지부터:',
+      'es': 'Desde la página:',
+      'fr': 'À partir de la page :',
+      'de': 'Ab Seite:',
+      'pt': 'A partir da página:',
+      'ru': 'Со страницы:',
+    },
+    'readaloud.start': {
+      'ja': '読み上げ開始',
+      'en': 'Start reading',
+      'zh': '开始朗读',
+      'ko': '읽기 시작',
+      'es': 'Empezar a leer',
+      'fr': 'Commencer la lecture',
+      'de': 'Vorlesen starten',
+      'pt': 'Começar a ler',
+      'ru': 'Начать чтение',
+    },
+    'pdf.ttsUnavailable': {
+      'ja': 'この端末では音声読み上げを利用できません',
+      'en': 'Text-to-speech isn’t available on this device',
+      'zh': '此设备无法使用语音朗读',
+      'ko': '이 기기에서는 음성 읽기를 사용할 수 없습니다',
+      'es': 'La lectura en voz alta no está disponible en este dispositivo',
+      'fr': 'La synthèse vocale n’est pas disponible sur cet appareil',
+      'de': 'Sprachausgabe ist auf diesem Gerät nicht verfügbar',
+      'pt': 'A leitura em voz alta não está disponível neste dispositivo',
+      'ru': 'Озвучивание недоступно на этом устройстве',
+    },
+    'ai.prereq': {
+      'ja': '前提条件',
+      'en': 'Prerequisites',
+      'zh': '前提条件',
+      'ko': '전제 조건',
+      'es': 'Requisitos previos',
+      'fr': 'Conditions préalables',
+      'de': 'Voraussetzungen',
+      'pt': 'Pré-requisitos',
+      'ru': 'Предпосылки',
+    },
+    'ai.prefixDescApi': {
+      'ja': 'ここに書いた内容が、 AI に渡す文章の先頭に自動で付きます。\n例:「日本語で答えて」「専門用語をかみ砕いて解説して」',
+      'en':
+          'What you write here is automatically prepended to the text passed to the AI.\nE.g. “Answer in English”, “Explain technical terms in simple words”',
+      'zh': '此处填写的内容会自动添加到传给 AI 的文本开头。\n例如：“用中文回答”“把专业术语讲得通俗易懂”',
+      'ko':
+          '여기에 적은 내용이 AI에 전달하는 문장의 맨 앞에 자동으로 붙습니다.\n예:「한국어로 답해」「전문 용어를 쉽게 설명해」',
+      'es':
+          'Lo que escribas aquí se antepone automáticamente al texto que se pasa a la IA.\nP. ej. «Responde en español», «Explica los términos técnicos de forma sencilla»',
+      'fr':
+          'Ce que vous écrivez ici est automatiquement ajouté au début du texte transmis à l’IA.\nEx. : « Réponds en français », « Explique les termes techniques simplement »',
+      'de':
+          'Was Sie hier schreiben, wird automatisch dem an die KI übergebenen Text vorangestellt.\nZ. B. „Antworte auf Deutsch“, „Erkläre Fachbegriffe einfach“',
+      'pt':
+          'O que você escrever aqui é automaticamente colocado no início do texto enviado à IA.\nEx.: “Responda em português”, “Explique os termos técnicos de forma simples”',
+      'ru':
+          'То, что вы здесь напишете, автоматически добавится в начало текста, передаваемого ИИ.\nНапр.: «Отвечай по-русски», «Объясняй термины простыми словами»',
+    },
+    'ai.prereqTitle': {
+      'ja': 'AI に渡す前提条件',
+      'en': 'Prerequisites to pass to the AI',
+      'zh': '传递给 AI 的前提条件',
+      'ko': 'AI에 전달할 전제 조건',
+      'es': 'Requisitos previos para pasar a la IA',
+      'fr': 'Conditions préalables à transmettre à l’IA',
+      'de': 'An die KI zu übergebende Voraussetzungen',
+      'pt': 'Pré-requisitos para passar à IA',
+      'ru': 'Предпосылки для передачи ИИ',
+    },
+    'ai.memoEmpty': {
+      'ja': 'このメモは本文も画像も無いため AI に送れません',
+      'en': 'This memo has no text or image, so it can’t be sent to the AI',
+      'zh': '此备注没有正文也没有图片，无法发送给 AI',
+      'ko': '이 메모는 본문도 이미지도 없어 AI에 보낼 수 없습니다',
+      'es':
+          'Esta nota no tiene texto ni imagen, así que no se puede enviar a la IA',
+      'fr':
+          'Cette note n’a ni texte ni image, elle ne peut pas être envoyée à l’IA',
+      'de':
+          'Diese Notiz hat weder Text noch Bild und kann nicht an die KI gesendet werden',
+      'pt':
+          'Esta nota não tem texto nem imagem, então não pode ser enviada à IA',
+      'ru':
+          'В этой заметке нет ни текста, ни изображения, её нельзя отправить ИИ',
+    },
+    'pdf.hidePage': {
+      'ja': 'この PDF ページを非表示 (現在 {n} P)',
+      'en': 'Hide this PDF page ({n} now)',
+      'zh': '隐藏此 PDF 页面（当前 {n} 页）',
+      'ko': '이 PDF 페이지 숨기기 (현재 {n}P)',
+      'es': 'Ocultar esta página del PDF ({n} ahora)',
+      'fr': 'Masquer cette page PDF ({n} actuellement)',
+      'de': 'Diese PDF-Seite ausblenden (aktuell {n})',
+      'pt': 'Ocultar esta página do PDF ({n} agora)',
+      'ru': 'Скрыть эту страницу PDF (сейчас {n})',
+    },
+    'pdf.resetHidden': {
+      'ja': 'PDF 非表示をリセット ({n} P)',
+      'en': 'Reset hidden PDF pages ({n})',
+      'zh': '重置隐藏的 PDF 页面（{n}）',
+      'ko': 'PDF 숨김 초기화 ({n}P)',
+      'es': 'Restablecer páginas de PDF ocultas ({n})',
+      'fr': 'Réinitialiser les pages PDF masquées ({n})',
+      'de': 'Ausgeblendete PDF-Seiten zurücksetzen ({n})',
+      'pt': 'Redefinir páginas de PDF ocultas ({n})',
+      'ru': 'Сбросить скрытые страницы PDF ({n})',
+    },
+    'pdf.pageHidden': {
+      'ja': '{n} ページ目を非表示にしました\n次にこのページに来るとスキップされます',
+      'en': 'Hid page {n}\nIt will be skipped next time you visit this page.',
+      'zh': '已隐藏第 {n} 页\n下次来到此页时将被跳过',
+      'ko': '{n}페이지를 숨겼습니다\n다음에 이 페이지에 오면 건너뜁니다',
+      'es':
+          'Se ocultó la página {n}\nSe omitirá la próxima vez que vengas a esta página',
+      'fr':
+          'Page {n} masquée\nElle sera ignorée la prochaine fois que vous viendrez',
+      'de':
+          'Seite {n} ausgeblendet\nSie wird beim nächsten Besuch übersprungen',
+      'pt': 'Página {n} ocultada\nSerá ignorada na próxima vez que você vier',
+      'ru': 'Страница {n} скрыта\nВ следующий раз она будет пропущена',
+    },
+    'pdf.hiddenReset': {
+      'ja': 'この PDF の非表示をリセットしました',
+      'en': 'Reset the hidden pages of this PDF',
+      'zh': '已重置此 PDF 的隐藏页面',
+      'ko': '이 PDF의 숨김을 초기화했습니다',
+      'es': 'Se restablecieron las páginas ocultas de este PDF',
+      'fr': 'Pages masquées de ce PDF réinitialisées',
+      'de': 'Ausgeblendete Seiten dieses PDFs zurückgesetzt',
+      'pt': 'Páginas ocultas deste PDF redefinidas',
+      'ru': 'Скрытые страницы этого PDF сброшены',
+    },
+    'drawer.mapHidden': {
+      'ja': 'このマップを Drawer から非表示にしました',
+      'en': 'Hid this map from the drawer',
+      'zh': '已从抽屉中隐藏此地图',
+      'ko': '이 맵을 드로어에서 숨겼습니다',
+      'es': 'Se ocultó este mapa del panel lateral',
+      'fr': 'Carte masquée du panneau latéral',
+      'de': 'Diese Karte aus der Seitenleiste ausgeblendet',
+      'pt': 'Este mapa foi ocultado da gaveta',
+      'ru': 'Эта карта скрыта из боковой панели',
+    },
+    'sleep.title': {
+      'ja': '睡眠時間',
+      'en': 'Sleep hours',
+      'zh': '睡眠时间',
+      'ko': '수면 시간',
+      'es': 'Horas de sueño',
+      'fr': 'Heures de sommeil',
+      'de': 'Schlafzeit',
+      'pt': 'Horas de sono',
+      'ru': 'Время сна',
+    },
+    'sleep.desc': {
+      'ja': '設定した時間帯はタイムライン上でコンパクトに折りたたんで表示されます。',
+      'en': 'The set time range is shown compactly collapsed on the timeline.',
+      'zh': '设定的时间段会在时间线上以紧凑折叠的方式显示。',
+      'ko': '설정한 시간대는 타임라인에서 압축되어 접힌 형태로 표시됩니다.',
+      'es':
+          'El rango horario establecido se muestra plegado de forma compacta en la línea de tiempo.',
+      'fr':
+          'La plage horaire définie est affichée repliée de façon compacte sur la chronologie.',
+      'de':
+          'Der eingestellte Zeitbereich wird auf der Zeitleiste kompakt eingeklappt angezeigt.',
+      'pt':
+          'O intervalo de horário definido é exibido compactamente recolhido na linha do tempo.',
+      'ru':
+          'Заданный диапазон времени отображается компактно свёрнутым на временной шкале.',
+    },
+    'sleep.disable': {
+      'ja': '解除',
+      'en': 'Disable',
+      'zh': '解除',
+      'ko': '해제',
+      'es': 'Desactivar',
+      'fr': 'Désactiver',
+      'de': 'Aufheben',
+      'pt': 'Desativar',
+      'ru': 'Отключить',
+    },
+    'split.openedExternal': {
+      'ja': 'Google ログイン等のため外部ブラウザで開きました',
+      'en': 'Opened in an external browser (e.g. for Google login)',
+      'zh': '已在外部浏览器中打开（例如用于 Google 登录）',
+      'ko': 'Google 로그인 등을 위해 외부 브라우저에서 열었습니다',
+      'es':
+          'Se abrió en un navegador externo (p. ej. para iniciar sesión en Google)',
+      'fr': 'Ouvert dans un navigateur externe (ex. pour la connexion Google)',
+      'de':
+          'In einem externen Browser geöffnet (z. B. für die Google-Anmeldung)',
+      'pt': 'Aberto em um navegador externo (ex.: para login do Google)',
+      'ru': 'Открыто во внешнем браузере (напр., для входа в Google)',
+    },
+    'split.noPanelToSwap': {
+      'ja': '入れ替えるパネルがありません',
+      'en': 'No panel to swap',
+      'zh': '没有可交换的面板',
+      'ko': '교체할 패널이 없습니다',
+      'es': 'No hay panel para intercambiar',
+      'fr': 'Aucun panneau à échanger',
+      'de': 'Kein Panel zum Tauschen',
+      'pt': 'Nenhum painel para trocar',
+      'ru': 'Нет панели для замены',
+    },
+    'icon.current': {
+      'ja': '現在のアイコン',
+      'en': 'Current icon',
+      'zh': '当前图标',
+      'ko': '현재 아이콘',
+      'es': 'Icono actual',
+      'fr': 'Icône actuelle',
+      'de': 'Aktuelles Symbol',
+      'pt': 'Ícone atual',
+      'ru': 'Текущий значок',
+    },
+    'icon.pickImage': {
+      'ja': '画像を選ぶ',
+      'en': 'Choose an image',
+      'zh': '选择图片',
+      'ko': '이미지 선택',
+      'es': 'Elegir una imagen',
+      'fr': 'Choisir une image',
+      'de': 'Bild auswählen',
+      'pt': 'Escolher uma imagem',
+      'ru': 'Выбрать изображение',
+    },
+    'icon.fromTemplate': {
+      'ja': 'テンプレートから選ぶ',
+      'en': 'Choose from templates',
+      'zh': '从模板中选择',
+      'ko': '템플릿에서 선택',
+      'es': 'Elegir de las plantillas',
+      'fr': 'Choisir parmi les modèles',
+      'de': 'Aus Vorlagen wählen',
+      'pt': 'Escolher de modelos',
+      'ru': 'Выбрать из шаблонов',
+    },
+    'icon.setFailed': {
+      'ja': '画像の設定に失敗しました',
+      'en': 'Failed to set the image',
+      'zh': '设置图片失败',
+      'ko': '이미지 설정에 실패했습니다',
+      'es': 'Error al establecer la imagen',
+      'fr': 'Échec de la définition de l’image',
+      'de': 'Bild konnte nicht festgelegt werden',
+      'pt': 'Falha ao definir a imagem',
+      'ru': 'Не удалось установить изображение',
+    },
+    'icon.tapToChange': {
+      'ja': 'タップでアイコンを変更',
+      'en': 'Tap to change the icon',
+      'zh': '点击更改图标',
+      'ko': '탭하여 아이콘 변경',
+      'es': 'Toca para cambiar el icono',
+      'fr': 'Touchez pour changer l’icône',
+      'de': 'Zum Ändern des Symbols tippen',
+      'pt': 'Toque para mudar o ícone',
+      'ru': 'Нажмите, чтобы сменить значок',
+    },
+    'zoom.specify': {
+      'ja': '拡大率を指定',
+      'en': 'Specify the zoom',
+      'zh': '指定缩放比例',
+      'ko': '확대율 지정',
+      'es': 'Especificar el zoom',
+      'fr': 'Indiquer le zoom',
+      'de': 'Zoom angeben',
+      'pt': 'Especificar o zoom',
+      'ru': 'Указать масштаб',
+    },
+    'zoom.hint100': {
+      'ja': '例: 100',
+      'en': 'e.g. 100',
+      'zh': '例如 100',
+      'ko': '예: 100',
+      'es': 'p. ej. 100',
+      'fr': 'ex. 100',
+      'de': 'z. B. 100',
+      'pt': 'ex.: 100',
+      'ru': 'напр. 100',
+    },
+    'container.storeConfirm': {
+      'ja': '「{title}」 に格納しますか?',
+      'en': 'Store it in “{title}”?',
+      'zh': '要存入「{title}」吗？',
+      'ko': '「{title}」에 격납할까요?',
+      'es': '¿Guardarlo en “{title}”?',
+      'fr': 'Le ranger dans « {title} » ?',
+      'de': 'In „{title}“ ablegen?',
+      'pt': 'Armazenar em “{title}”?',
+      'ru': 'Поместить в «{title}»?',
+    },
+    'container.connectChild': {
+      'ja': '子として接続',
+      'en': 'Connect as a child',
+      'zh': '作为子节点连接',
+      'ko': '자식으로 연결',
+      'es': 'Conectar como hijo',
+      'fr': 'Connecter comme enfant',
+      'de': 'Als Kind verbinden',
+      'pt': 'Conectar como filho',
+      'ru': 'Подключить как дочерний',
+    },
+    'container.store': {
+      'ja': '格納する (Enter)',
+      'en': 'Store (Enter)',
+      'zh': '存入 (Enter)',
+      'ko': '격납 (Enter)',
+      'es': 'Guardar (Enter)',
+      'fr': 'Ranger (Entrée)',
+      'de': 'Ablegen (Enter)',
+      'pt': 'Armazenar (Enter)',
+      'ru': 'Поместить (Enter)',
+    },
+    'search.openGoogle': {
+      'ja': 'Google を開く',
+      'en': 'Open Google',
+      'zh': '打开 Google',
+      'ko': 'Google 열기',
+      'es': 'Abrir Google',
+      'fr': 'Ouvrir Google',
+      'de': 'Google öffnen',
+      'pt': 'Abrir o Google',
+      'ru': 'Открыть Google',
+    },
+    'coupon.genFailed': {
+      'ja': 'クーポン生成失敗: {err}',
+      'en': 'Coupon generation failed: {err}',
+      'zh': '优惠券生成失败：{err}',
+      'ko': '쿠폰 생성 실패: {err}',
+      'es': 'Error al generar el cupón: {err}',
+      'fr': 'Échec de la génération du coupon : {err}',
+      'de': 'Gutschein-Erstellung fehlgeschlagen: {err}',
+      'pt': 'Falha ao gerar o cupom: {err}',
+      'ru': 'Не удалось создать купон: {err}',
+    },
+    'coupon.planType': {
+      'ja': 'プラン種別',
+      'en': 'Plan type',
+      'zh': '方案类型',
+      'ko': '플랜 종류',
+      'es': 'Tipo de plan',
+      'fr': 'Type de forfait',
+      'de': 'Tarifart',
+      'pt': 'Tipo de plano',
+      'ru': 'Тип тарифа',
+    },
+    'submap.noOther': {
+      'ja': '他に埋め込めるマップがありません',
+      'en': 'No other map to embed',
+      'zh': '没有其他可嵌入的地图',
+      'ko': '삽입할 수 있는 다른 맵이 없습니다',
+      'es': 'No hay otro mapa para insertar',
+      'fr': 'Aucune autre carte à intégrer',
+      'de': 'Keine weitere Karte zum Einbetten',
+      'pt': 'Nenhum outro mapa para inserir',
+      'ru': 'Нет других карт для встраивания',
+    },
+    'submap.selectToEmbed': {
+      'ja': '埋め込むマップを選択',
+      'en': 'Choose a map to embed',
+      'zh': '选择要嵌入的地图',
+      'ko': '삽입할 맵 선택',
+      'es': 'Elige un mapa para insertar',
+      'fr': 'Choisir une carte à intégrer',
+      'de': 'Karte zum Einbetten wählen',
+      'pt': 'Escolha um mapa para inserir',
+      'ru': 'Выберите карту для встраивания',
+    },
+    'submap.unembed': {
+      'ja': '埋め込みを解除',
+      'en': 'Remove embed',
+      'zh': '取消嵌入',
+      'ko': '삽입 해제',
+      'es': 'Quitar la inserción',
+      'fr': 'Supprimer l’intégration',
+      'de': 'Einbettung entfernen',
+      'pt': 'Remover incorporação',
+      'ru': 'Убрать встраивание',
+    },
+    'submap.unembedded': {
+      'ja': '埋め込みを解除しました',
+      'en': 'Removed the embed',
+      'zh': '已取消嵌入',
+      'ko': '삽입을 해제했습니다',
+      'es': 'Se quitó la inserción',
+      'fr': 'Intégration supprimée',
+      'de': 'Einbettung entfernt',
+      'pt': 'Incorporação removida',
+      'ru': 'Встраивание убрано',
+    },
+    'submap.embedded': {
+      'ja': 'サブマップを埋め込みました',
+      'en': 'Embedded the submap',
+      'zh': '已嵌入子地图',
+      'ko': '서브맵을 삽입했습니다',
+      'es': 'Se insertó el submapa',
+      'fr': 'Sous-carte intégrée',
+      'de': 'Submap eingebettet',
+      'pt': 'Submapa incorporado',
+      'ru': 'Подкарта встроена',
+    },
+    'bulk.applyAll': {
+      'ja': '一括適用',
+      'en': 'Apply to all',
+      'zh': '批量应用',
+      'ko': '일괄 적용',
+      'es': 'Aplicar a todo',
+      'fr': 'Tout appliquer',
+      'de': 'Auf alle anwenden',
+      'pt': 'Aplicar a tudo',
+      'ru': 'Применить ко всем',
+    },
+    'node.seqApplied': {
+      'ja': '{n} 個のノードに連番タイトルを適用しました',
+      'en': 'Applied sequential titles to {n} nodes',
+      'zh': '已为 {n} 个节点应用连续编号标题',
+      'ko': '{n}개 노드에 연번 제목을 적용했습니다',
+      'es': 'Se aplicaron títulos secuenciales a {n} nodos',
+      'fr': 'Titres séquentiels appliqués à {n} nœuds',
+      'de': 'Fortlaufende Titel auf {n} Knoten angewendet',
+      'pt': 'Títulos sequenciais aplicados a {n} nós',
+      'ru': 'Последовательные заголовки применены к {n} узлам',
+    },
+    'node.deleteTitle': {
+      'ja': 'ノードを削除',
+      'en': 'Delete node',
+      'zh': '删除节点',
+      'ko': '노드 삭제',
+      'es': 'Eliminar nodo',
+      'fr': 'Supprimer le nœud',
+      'de': 'Knoten löschen',
+      'pt': 'Excluir nó',
+      'ru': 'Удалить узел',
+    },
+    'node.deleteConfirm': {
+      'ja': 'このノードを削除しますか？',
+      'en': 'Delete this node?',
+      'zh': '要删除此节点吗？',
+      'ko': '이 노드를 삭제할까요?',
+      'es': '¿Eliminar este nodo?',
+      'fr': 'Supprimer ce nœud ?',
+      'de': 'Diesen Knoten löschen?',
+      'pt': 'Excluir este nó?',
+      'ru': 'Удалить этот узел?',
+    },
+    'center.baseNode': {
+      'ja': '中央表示の基準ノード',
+      'en': 'Base node for centering',
+      'zh': '居中显示的基准节点',
+      'ko': '가운데 표시 기준 노드',
+      'es': 'Nodo base para centrar',
+      'fr': 'Nœud de base pour le centrage',
+      'de': 'Basisknoten zum Zentrieren',
+      'pt': 'Nó base para centralizar',
+      'ru': 'Опорный узел для центрирования',
+    },
+    'center.default': {
+      'ja': 'デフォルト（最初のノード）',
+      'en': 'Default (first node)',
+      'zh': '默认（第一个节点）',
+      'ko': '기본(첫 번째 노드)',
+      'es': 'Predeterminado (primer nodo)',
+      'fr': 'Par défaut (premier nœud)',
+      'de': 'Standard (erster Knoten)',
+      'pt': 'Padrão (primeiro nó)',
+      'ru': 'По умолчанию (первый узел)',
+    },
+    'yt.searchKeyword': {
+      'ja': '検索キーワード',
+      'en': 'Search keyword',
+      'zh': '搜索关键词',
+      'ko': '검색 키워드',
+      'es': 'Palabra clave de búsqueda',
+      'fr': 'Mot-clé de recherche',
+      'de': 'Suchbegriff',
+      'pt': 'Palavra-chave de busca',
+      'ru': 'Ключевое слово',
+    },
+    'yt.countLabel': {
+      'ja': '件数 ',
+      'en': 'Count ',
+      'zh': '数量 ',
+      'ko': '건수 ',
+      'es': 'Cantidad ',
+      'fr': 'Nombre ',
+      'de': 'Anzahl ',
+      'pt': 'Quantidade ',
+      'ru': 'Количество ',
+    },
+    'yt.length': {
+      'ja': '長さ ',
+      'en': 'Length ',
+      'zh': '时长 ',
+      'ko': '길이 ',
+      'es': 'Duración ',
+      'fr': 'Durée ',
+      'de': 'Länge ',
+      'pt': 'Duração ',
+      'ru': 'Длина ',
+    },
+    'common.minutesSuffix': {
+      'ja': ' 分',
+      'en': ' min',
+      'zh': ' 分钟',
+      'ko': ' 분',
+      'es': ' min',
+      'fr': ' min',
+      'de': ' Min',
+      'pt': ' min',
+      'ru': ' мин',
+    },
+    'yt.generated': {
+      'ja': '生成済み: {n}件',
+      'en': 'Generated: {n}',
+      'zh': '已生成：{n}',
+      'ko': '생성됨: {n}건',
+      'es': 'Generados: {n}',
+      'fr': 'Générés : {n}',
+      'de': 'Generiert: {n}',
+      'pt': 'Gerados: {n}',
+      'ru': 'Создано: {n}',
+    },
+    'yt.clearHistory': {
+      'ja': '履歴クリア',
+      'en': 'Clear history',
+      'zh': '清除历史',
+      'ko': '기록 지우기',
+      'es': 'Borrar historial',
+      'fr': 'Effacer l’historique',
+      'de': 'Verlauf löschen',
+      'pt': 'Limpar histórico',
+      'ru': 'Очистить историю',
+    },
+    'yt.generate': {
+      'ja': '生成',
+      'en': 'Generate',
+      'zh': '生成',
+      'ko': '생성',
+      'es': 'Generar',
+      'fr': 'Générer',
+      'de': 'Generieren',
+      'pt': 'Gerar',
+      'ru': 'Создать',
+    },
+    'yt.remaining': {
+      'ja': '残り {n} 件の動画があります',
+      'en': '{n} more videos remaining',
+      'zh': '还剩 {n} 个视频',
+      'ko': '남은 동영상 {n}개',
+      'es': 'Quedan {n} vídeos más',
+      'fr': '{n} vidéos restantes',
+      'de': 'Noch {n} Videos übrig',
+      'pt': 'Restam {n} vídeos',
+      'ru': 'Осталось видео: {n}',
+    },
+    'yt.outputMore': {
+      'ja': '続きを出力',
+      'en': 'Output more',
+      'zh': '继续输出',
+      'ko': '계속 출력',
+      'es': 'Generar más',
+      'fr': 'Continuer',
+      'de': 'Mehr ausgeben',
+      'pt': 'Gerar mais',
+      'ru': 'Вывести ещё',
+    },
+    'node.enterHint': {
+      'ja': 'Enterで確定 / Shift+Enterで改行',
+      'en': 'Enter to confirm / Shift+Enter for a new line',
+      'zh': 'Enter 确定 / Shift+Enter 换行',
+      'ko': 'Enter로 확정 / Shift+Enter로 줄바꿈',
+      'es': 'Enter para confirmar / Shift+Enter para salto de línea',
+      'fr': 'Entrée pour valider / Maj+Entrée pour un saut de ligne',
+      'de': 'Enter zum Bestätigen / Umschalt+Enter für neue Zeile',
+      'pt': 'Enter para confirmar / Shift+Enter para nova linha',
+      'ru': 'Enter — подтвердить / Shift+Enter — новая строка',
+    },
+    'grid.expandConfirm': {
+      'ja': 'グリッドを拡張しますか？',
+      'en': 'Expand the grid?',
+      'zh': '要扩展网格吗？',
+      'ko': '그리드를 확장할까요?',
+      'es': '¿Ampliar la cuadrícula?',
+      'fr': 'Agrandir la grille ?',
+      'de': 'Raster erweitern?',
+      'pt': 'Expandir a grade?',
+      'ru': 'Расширить сетку?',
+    },
+    'grid.expandAdd': {
+      'ja': '拡張して追加',
+      'en': 'Expand and add',
+      'zh': '扩展并添加',
+      'ko': '확장하여 추가',
+      'es': 'Ampliar y añadir',
+      'fr': 'Agrandir et ajouter',
+      'de': 'Erweitern und hinzufügen',
+      'pt': 'Expandir e adicionar',
+      'ru': 'Расширить и добавить',
+    },
+    'node.linkVideoNotFound': {
+      'ja': 'リンク先の動画ノードが見つかりません',
+      'en': 'The linked video node wasn’t found',
+      'zh': '找不到链接的视频节点',
+      'ko': '연결된 동영상 노드를 찾을 수 없습니다',
+      'es': 'No se encontró el nodo de vídeo enlazado',
+      'fr': 'Le nœud vidéo lié est introuvable',
+      'de': 'Der verknüpfte Video-Knoten wurde nicht gefunden',
+      'pt': 'O nó de vídeo vinculado não foi encontrado',
+      'ru': 'Связанный видеоузел не найден',
+    },
+    'cal.backToToday': {
+      'ja': '今日へ戻る',
+      'en': 'Back to today',
+      'zh': '回到今天',
+      'ko': '오늘로 돌아가기',
+      'es': 'Volver a hoy',
+      'fr': 'Revenir à aujourd’hui',
+      'de': 'Zurück zu heute',
+      'pt': 'Voltar para hoje',
+      'ru': 'К сегодня',
+    },
+    'merge.tooltip': {
+      'ja': '選択したページを1つに統合',
+      'en': 'Merge the selected pages into one',
+      'zh': '将所选页面合并为一个',
+      'ko': '선택한 페이지를 하나로 통합',
+      'es': 'Combinar las páginas seleccionadas en una',
+      'fr': 'Fusionner les pages sélectionnées en une seule',
+      'de': 'Ausgewählte Seiten zu einer zusammenführen',
+      'pt': 'Mesclar as páginas selecionadas em uma',
+      'ru': 'Объединить выбранные страницы в одну',
+    },
+    'common.tapToExpand': {
+      'ja': '{title} (タップで展開)',
+      'en': '{title} (tap to expand)',
+      'zh': '{title}（点击展开）',
+      'ko': '{title} (탭하여 펼치기)',
+      'es': '{title} (toca para expandir)',
+      'fr': '{title} (touchez pour développer)',
+      'de': '{title} (zum Aufklappen tippen)',
+      'pt': '{title} (toque para expandir)',
+      'ru': '{title} (нажмите, чтобы развернуть)',
+    },
+    // 全画面表示トグル (= ユーザー要望: AI チャット欄を全画面表示にできるボタン)。
+    'common.fullscreen': {
+      'ja': '全画面表示',
+      'en': 'Fullscreen',
+      'zh': '全屏显示',
+      'ko': '전체 화면',
+      'es': 'Pantalla completa',
+      'fr': 'Plein écran',
+      'de': 'Vollbild',
+      'pt': 'Tela cheia',
+      'ru': 'Полный экран',
+    },
+    'common.exitFullscreen': {
+      'ja': '全画面を解除',
+      'en': 'Exit fullscreen',
+      'zh': '退出全屏',
+      'ko': '전체 화면 종료',
+      'es': 'Salir de pantalla completa',
+      'fr': 'Quitter le plein écran',
+      'de': 'Vollbild beenden',
+      'pt': 'Sair da tela cheia',
+      'ru': 'Выйти из полноэкранного режима',
+    },
+    'winTab.folderTip': {
+      'ja': 'フォルダー（保存したタブを開く）',
+      'en': 'Folders (open saved tabs)',
+      'zh': '文件夹（打开已保存的标签）',
+      'ko': '폴더(저장한 탭 열기)',
+      'es': 'Carpetas (abrir pestañas guardadas)',
+      'fr': 'Dossiers (ouvrir les onglets enregistrés)',
+      'de': 'Ordner (gespeicherte Tabs öffnen)',
+      'pt': 'Pastas (abrir abas salvas)',
+      'ru': 'Папки (открыть сохранённые вкладки)',
+    },
+    'winTab.newTabTip': {
+      'ja': '新しいタブ（YouTube / Google / X 等）',
+      'en': 'New tab (YouTube / Google / X, etc.)',
+      'zh': '新标签（YouTube / Google / X 等）',
+      'ko': '새 탭(YouTube / Google / X 등)',
+      'es': 'Nueva pestaña (YouTube / Google / X, etc.)',
+      'fr': 'Nouvel onglet (YouTube / Google / X, etc.)',
+      'de': 'Neuer Tab (YouTube / Google / X usw.)',
+      'pt': 'Nova aba (YouTube / Google / X, etc.)',
+      'ru': 'Новая вкладка (YouTube / Google / X и др.)',
+    },
+    'split.openSplitTip': {
+      'ja': '画面分割で開く（長押しで上/下を選択）',
+      'en': 'Open in split view (long-press to choose top/bottom)',
+      'zh': '以分屏打开（长按选择上/下）',
+      'ko': '화면 분할로 열기(길게 눌러 상/하 선택)',
+      'es': 'Abrir en vista dividida (mantén pulsado para elegir arriba/abajo)',
+      'fr': 'Ouvrir en écran partagé (appui long pour choisir haut/bas)',
+      'de': 'In geteilter Ansicht öffnen (lange drücken für oben/unten)',
+      'pt':
+          'Abrir em tela dividida (pressione e segure para escolher topo/base)',
+      'ru': 'Открыть в разделённом виде (долгое нажатие — верх/низ)',
+    },
+    'nav.backAlt': {
+      'ja': '戻る (Alt+←)',
+      'en': 'Back (Alt+←)',
+      'zh': '后退 (Alt+←)',
+      'ko': '뒤로 (Alt+←)',
+      'es': 'Atrás (Alt+←)',
+      'fr': 'Retour (Alt+←)',
+      'de': 'Zurück (Alt+←)',
+      'pt': 'Voltar (Alt+←)',
+      'ru': 'Назад (Alt+←)',
+    },
+    'nav.forwardAlt': {
+      'ja': '進む (Alt+→)',
+      'en': 'Forward (Alt+→)',
+      'zh': '前进 (Alt+→)',
+      'ko': '앞으로 (Alt+→)',
+      'es': 'Adelante (Alt+→)',
+      'fr': 'Suivant (Alt+→)',
+      'de': 'Vorwärts (Alt+→)',
+      'pt': 'Avançar (Alt+→)',
+      'ru': 'Вперёд (Alt+→)',
+    },
+    'gs.dockSidebar': {
+      'ja': 'サイドバーにドック',
+      'en': 'Dock to the sidebar',
+      'zh': '停靠到侧边栏',
+      'ko': '사이드바에 도킹',
+      'es': 'Acoplar a la barra lateral',
+      'fr': 'Ancrer à la barre latérale',
+      'de': 'An Seitenleiste andocken',
+      'pt': 'Encaixar na barra lateral',
+      'ru': 'Закрепить на боковой панели',
+    },
+    'gs.toFloating': {
+      'ja': 'フローティングに戻す',
+      'en': 'Back to floating',
+      'zh': '恢复为浮动',
+      'ko': '플로팅으로 되돌리기',
+      'es': 'Volver a flotante',
+      'fr': 'Revenir en flottant',
+      'de': 'Zurück zu schwebend',
+      'pt': 'Voltar para flutuante',
+      'ru': 'Вернуть в плавающий режим',
+    },
+    'memo.sendToAiChat': {
+      'ja': 'AI チャット欄に送る',
+      'en': 'Send to the AI chat',
+      'zh': '发送到 AI 聊天栏',
+      'ko': 'AI 채팅 칸에 보내기',
+      'es': 'Enviar al chat de IA',
+      'fr': 'Envoyer au chat IA',
+      'de': 'An den KI-Chat senden',
+      'pt': 'Enviar ao chat de IA',
+      'ru': 'Отправить в ИИ-чат',
+    },
+    'memo.delete': {
+      'ja': 'メモを削除',
+      'en': 'Delete memo',
+      'zh': '删除备注',
+      'ko': '메모 삭제',
+      'es': 'Eliminar nota',
+      'fr': 'Supprimer la note',
+      'de': 'Notiz löschen',
+      'pt': 'Excluir nota',
+      'ru': 'Удалить заметку',
+    },
+    'color.textColor': {
+      'ja': '文字色 (Text Color)',
+      'en': 'Text color',
+      'zh': '文字颜色',
+      'ko': '글자 색',
+      'es': 'Color del texto',
+      'fr': 'Couleur du texte',
+      'de': 'Textfarbe',
+      'pt': 'Cor do texto',
+      'ru': 'Цвет текста',
+    },
+    'app.info': {
+      'ja': 'アプリ情報',
+      'en': 'App info',
+      'zh': '应用信息',
+      'ko': '앱 정보',
+      'es': 'Información de la app',
+      'fr': 'Infos de l’app',
+      'de': 'App-Info',
+      'pt': 'Informações do app',
+      'ru': 'О приложении',
+    },
+    'btn.convert': {
+      'ja': '変換',
+      'en': 'Convert',
+      'zh': '转换',
+      'ko': '변환',
+      'es': 'Convertir',
+      'fr': 'Convertir',
+      'de': 'Konvertieren',
+      'pt': 'Converter',
+      'ru': 'Преобразовать',
+    },
+    'common.tapToCancel': {
+      'ja': 'タップで中止',
+      'en': 'Tap to cancel',
+      'zh': '点击中止',
+      'ko': '탭하여 중지',
+      'es': 'Toca para cancelar',
+      'fr': 'Touchez pour annuler',
+      'de': 'Zum Abbrechen tippen',
+      'pt': 'Toque para cancelar',
+      'ru': 'Нажмите для отмены',
+    },
+    'common.cannotOpenUrl': {
+      'ja': 'URLを開けません: {url}',
+      'en': 'Can’t open the URL: {url}',
+      'zh': '无法打开 URL：{url}',
+      'ko': 'URL을 열 수 없습니다: {url}',
+      'es': 'No se puede abrir la URL: {url}',
+      'fr': 'Impossible d’ouvrir l’URL : {url}',
+      'de': 'URL kann nicht geöffnet werden: {url}',
+      'pt': 'Não é possível abrir a URL: {url}',
+      'ru': 'Не удаётся открыть URL: {url}',
+    },
+    'pdf.fileNotFound': {
+      'ja': 'PDF ファイルが見つかりませんでした',
+      'en': 'The PDF file wasn’t found',
+      'zh': '未找到 PDF 文件',
+      'ko': 'PDF 파일을 찾을 수 없습니다',
+      'es': 'No se encontró el archivo PDF',
+      'fr': 'Le fichier PDF est introuvable',
+      'de': 'Die PDF-Datei wurde nicht gefunden',
+      'pt': 'O arquivo PDF não foi encontrado',
+      'ru': 'PDF-файл не найден',
+    },
+    'pdf.fileEmpty': {
+      'ja': 'PDF ファイルが空です',
+      'en': 'The PDF file is empty',
+      'zh': 'PDF 文件为空',
+      'ko': 'PDF 파일이 비어 있습니다',
+      'es': 'El archivo PDF está vacío',
+      'fr': 'Le fichier PDF est vide',
+      'de': 'Die PDF-Datei ist leer',
+      'pt': 'O arquivo PDF está vazio',
+      'ru': 'PDF-файл пуст',
+    },
+    'pdf.largeTitle': {
+      'ja': '大きな PDF です',
+      'en': 'Large PDF',
+      'zh': '这是较大的 PDF',
+      'ko': '큰 PDF입니다',
+      'es': 'PDF grande',
+      'fr': 'PDF volumineux',
+      'de': 'Großes PDF',
+      'pt': 'PDF grande',
+      'ru': 'Большой PDF',
+    },
+    'pdf.openAnyway': {
+      'ja': 'このまま開く',
+      'en': 'Open anyway',
+      'zh': '仍然打开',
+      'ko': '그대로 열기',
+      'es': 'Abrir de todos modos',
+      'fr': 'Ouvrir quand même',
+      'de': 'Trotzdem öffnen',
+      'pt': 'Abrir mesmo assim',
+      'ru': 'Всё равно открыть',
+    },
+    'img.cannotDisplay': {
+      'ja': '画像を表示できません',
+      'en': 'Can’t display the image',
+      'zh': '无法显示图片',
+      'ko': '이미지를 표시할 수 없습니다',
+      'es': 'No se puede mostrar la imagen',
+      'fr': 'Impossible d’afficher l’image',
+      'de': 'Bild kann nicht angezeigt werden',
+      'pt': 'Não é possível exibir a imagem',
+      'ru': 'Не удаётся показать изображение',
+    },
+    'yt.autoGenerate': {
+      'ja': 'YouTube動画を自動生成',
+      'en': 'Auto-generate a YouTube video',
+      'zh': '自动生成 YouTube 视频',
+      'ko': 'YouTube 동영상 자동 생성',
+      'es': 'Generar automáticamente un vídeo de YouTube',
+      'fr': 'Générer automatiquement une vidéo YouTube',
+      'de': 'YouTube-Video automatisch generieren',
+      'pt': 'Gerar automaticamente um vídeo do YouTube',
+      'ru': 'Автоматически создать видео YouTube',
+    },
+    'split.openUrl': {
+      'ja': 'URL を開く',
+      'en': 'Open URL',
+      'zh': '打开 URL',
+      'ko': 'URL 열기',
+      'es': 'Abrir URL',
+      'fr': 'Ouvrir l’URL',
+      'de': 'URL öffnen',
+      'pt': 'Abrir URL',
+      'ru': 'Открыть URL',
+    },
+    'split.enterUrl': {
+      'ja': 'URL を入力',
+      'en': 'Enter URL',
+      'zh': '输入 URL',
+      'ko': 'URL 입력',
+      'es': 'Introducir URL',
+      'fr': 'Saisir l’URL',
+      'de': 'URL eingeben',
+      'pt': 'Inserir URL',
+      'ru': 'Введите URL',
+    },
+    'split.relogin': {
+      'ja': 'ログアウト / 別アカウントでログイン',
+      'en': 'Log out / sign in with another account',
+      'zh': '退出登录 / 用其他账户登录',
+      'ko': '로그아웃 / 다른 계정으로 로그인',
+      'es': 'Cerrar sesión / iniciar con otra cuenta',
+      'fr': 'Se déconnecter / se connecter avec un autre compte',
+      'de': 'Abmelden / mit anderem Konto anmelden',
+      'pt': 'Sair / entrar com outra conta',
+      'ru': 'Выйти / войти под другим аккаунтом',
+    },
+    'split.backToFull': {
+      'ja': '全画面表示に戻る',
+      'en': 'Back to full screen',
+      'zh': '返回全屏',
+      'ko': '전체 화면으로 돌아가기',
+      'es': 'Volver a pantalla completa',
+      'fr': 'Revenir en plein écran',
+      'de': 'Zurück zum Vollbild',
+      'pt': 'Voltar para tela cheia',
+      'ru': 'Вернуться в полноэкранный режим',
+    },
+    'split.closeLeft': {
+      'ja': '左パネルを閉じる',
+      'en': 'Close left panel',
+      'zh': '关闭左侧面板',
+      'ko': '왼쪽 패널 닫기',
+      'es': 'Cerrar el panel izquierdo',
+      'fr': 'Fermer le panneau gauche',
+      'de': 'Linkes Panel schließen',
+      'pt': 'Fechar o painel esquerdo',
+      'ru': 'Закрыть левую панель',
+    },
+    'split.noPdf': {
+      'ja': 'PDF が選択されていません',
+      'en': 'No PDF selected',
+      'zh': '未选择 PDF',
+      'ko': '선택된 PDF가 없습니다',
+      'es': 'Ningún PDF seleccionado',
+      'fr': 'Aucun PDF sélectionné',
+      'de': 'Kein PDF ausgewählt',
+      'pt': 'Nenhum PDF selecionado',
+      'ru': 'PDF не выбран',
+    },
+    'split.cookieCleared': {
+      'ja': 'ログイン情報 (Cookie) をクリアしました。 ログインし直すと別のアカウントを選べます。',
+      'en':
+          'Cleared login data (cookies). Log in again to choose a different account.',
+      'zh': '已清除登录信息（Cookie）。重新登录即可选择其他账户。',
+      'ko': '로그인 정보(쿠키)를 지웠습니다. 다시 로그인하면 다른 계정을 선택할 수 있습니다.',
+      'es':
+          'Se borraron los datos de inicio de sesión (cookies). Inicia sesión de nuevo para elegir otra cuenta.',
+      'fr':
+          'Données de connexion (cookies) effacées. Reconnectez-vous pour choisir un autre compte.',
+      'de':
+          'Anmeldedaten (Cookies) gelöscht. Melden Sie sich erneut an, um ein anderes Konto zu wählen.',
+      'pt':
+          'Dados de login (cookies) apagados. Faça login novamente para escolher outra conta.',
+      'ru':
+          'Данные входа (cookie) очищены. Войдите снова, чтобы выбрать другой аккаунт.',
+    },
+    'split.logoutBody': {
+      'ja':
+          'すべてのサイトのログイン情報 (Cookie) をクリアします。\nログインし直すと別の Google アカウントを選べます。 よろしいですか?',
+      'en':
+          'This clears login data (cookies) for all sites.\nLog in again to choose a different Google account. Continue?',
+      'zh': '将清除所有网站的登录信息（Cookie）。\n重新登录即可选择其他 Google 账户。确定吗？',
+      'ko':
+          '모든 사이트의 로그인 정보(쿠키)를 지웁니다.\n다시 로그인하면 다른 Google 계정을 선택할 수 있습니다. 계속할까요?',
+      'es':
+          'Esto borra los datos de inicio de sesión (cookies) de todos los sitios.\nInicia sesión de nuevo para elegir otra cuenta de Google. ¿Continuar?',
+      'fr':
+          'Cela efface les données de connexion (cookies) de tous les sites.\nReconnectez-vous pour choisir un autre compte Google. Continuer ?',
+      'de':
+          'Dadurch werden die Anmeldedaten (Cookies) aller Websites gelöscht.\nMelden Sie sich erneut an, um ein anderes Google-Konto zu wählen. Fortfahren?',
+      'pt':
+          'Isto apaga os dados de login (cookies) de todos os sites.\nFaça login novamente para escolher outra conta do Google. Continuar?',
+      'ru':
+          'Это очистит данные входа (cookie) для всех сайтов.\nВойдите снова, чтобы выбрать другой аккаунт Google. Продолжить?',
+    },
+    'split.clearLoginBody': {
+      'ja':
+          'アプリ内ブラウザ (Google 検索 / YouTube 等) のログイン情報\n(Cookie・キャッシュ) をすべて消去します。\nログアウト後に残るアカウント情報を消したいときに使います。\nよろしいですか?',
+      'en':
+          'This erases all login data (cookies & cache) of the in-app browser (Google Search / YouTube, etc.).\nUse it to remove account info that remains after logging out.\nContinue?',
+      'zh':
+          '将清除应用内浏览器（Google 搜索 / YouTube 等）的所有登录信息（Cookie、缓存）。\n用于删除退出登录后仍残留的账户信息。\n确定吗？',
+      'ko':
+          '앱 내 브라우저(Google 검색 / YouTube 등)의 로그인 정보\n(쿠키·캐시)를 모두 지웁니다.\n로그아웃 후 남는 계정 정보를 지우고 싶을 때 사용합니다.\n계속할까요?',
+      'es':
+          'Esto borra todos los datos de inicio de sesión (cookies y caché) del navegador interno (Búsqueda de Google / YouTube, etc.).\nÚsalo para eliminar la información de cuenta que queda tras cerrar sesión.\n¿Continuar?',
+      'fr':
+          'Cela efface toutes les données de connexion (cookies et cache) du navigateur intégré (recherche Google / YouTube, etc.).\nÀ utiliser pour supprimer les infos de compte qui restent après déconnexion.\nContinuer ?',
+      'de':
+          'Dadurch werden alle Anmeldedaten (Cookies & Cache) des integrierten Browsers (Google-Suche / YouTube usw.) gelöscht.\nNützlich, um nach dem Abmelden verbleibende Kontodaten zu entfernen.\nFortfahren?',
+      'pt':
+          'Isto apaga todos os dados de login (cookies e cache) do navegador interno (Busca do Google / YouTube, etc.).\nUse para remover dados de conta que permanecem após sair.\nContinuar?',
+      'ru':
+          'Это сотрёт все данные входа (cookie и кэш) встроенного браузера (поиск Google / YouTube и т. д.).\nИспользуйте, чтобы удалить данные аккаунта, остающиеся после выхода.\nПродолжить?',
+    },
+    'split.logoutTitle': {
+      'ja': 'ログアウト / アカウント切替',
+      'en': 'Log out / switch account',
+      'zh': '退出登录 / 切换账户',
+      'ko': '로그아웃 / 계정 전환',
+      'es': 'Cerrar sesión / cambiar de cuenta',
+      'fr': 'Se déconnecter / changer de compte',
+      'de': 'Abmelden / Konto wechseln',
+      'pt': 'Sair / trocar de conta',
+      'ru': 'Выйти / сменить аккаунт',
+    },
+    'split.clearLoginTitle': {
+      'ja': 'ログイン情報を消去',
+      'en': 'Erase login data',
+      'zh': '清除登录信息',
+      'ko': '로그인 정보 지우기',
+      'es': 'Borrar datos de inicio de sesión',
+      'fr': 'Effacer les données de connexion',
+      'de': 'Anmeldedaten löschen',
+      'pt': 'Apagar dados de login',
+      'ru': 'Стереть данные входа',
+    },
+    'split.openAiLeft': {
+      'ja': 'AI を左に開く',
+      'en': 'Open AI on the left',
+      'zh': '在左侧打开 AI',
+      'ko': 'AI를 왼쪽에 열기',
+      'es': 'Abrir IA a la izquierda',
+      'fr': 'Ouvrir l’IA à gauche',
+      'de': 'KI links öffnen',
+      'pt': 'Abrir IA à esquerda',
+      'ru': 'Открыть ИИ слева',
+    },
+    'split.leftPanelLabel': {
+      'ja': '左パネル',
+      'en': 'left panel',
+      'zh': '左侧面板',
+      'ko': '왼쪽 패널',
+      'es': 'panel izquierdo',
+      'fr': 'panneau gauche',
+      'de': 'linkes Panel',
+      'pt': 'painel esquerdo',
+      'ru': 'левая панель',
+    },
+    'split.rightPanelLabel': {
+      'ja': '右パネル',
+      'en': 'right panel',
+      'zh': '右侧面板',
+      'ko': '오른쪽 패널',
+      'es': 'panel derecho',
+      'fr': 'panneau droit',
+      'de': 'rechtes Panel',
+      'pt': 'painel direito',
+      'ru': 'правая панель',
+    },
+    'video.maxRate': {
+      'ja': '再生速度の最大倍率を設定',
+      'en': 'Set the maximum playback speed',
+      'zh': '设置最大播放速度',
+      'ko': '최대 재생 속도 설정',
+      'es': 'Establecer la velocidad máxima de reproducción',
+      'fr': 'Définir la vitesse de lecture maximale',
+      'de': 'Maximale Wiedergabegeschwindigkeit festlegen',
+      'pt': 'Definir a velocidade máxima de reprodução',
+      'ru': 'Задать максимальную скорость воспроизведения',
+    },
+    'sync.inProgress': {
+      'ja': '同期中です…完了までお待ちください',
+      'en': 'Syncing… please wait until it finishes',
+      'zh': '正在同步……请等待完成',
+      'ko': '동기화 중입니다… 완료될 때까지 기다려 주세요',
+      'es': 'Sincronizando… espera a que termine',
+      'fr': 'Synchronisation… veuillez patienter',
+      'de': 'Synchronisierung… bitte warten, bis sie abgeschlossen ist',
+      'pt': 'Sincronizando… aguarde a conclusão',
+      'ru': 'Синхронизация… подождите завершения',
+    },
+    'ai.sentFiles': {
+      'ja': '生成 AI に {n} 個のファイルを送りました ({panel})',
+      'en': 'Sent {n} files to the AI ({panel})',
+      'zh': '已向生成式 AI 发送 {n} 个文件（{panel}）',
+      'ko': '생성 AI에 파일 {n}개를 보냈습니다 ({panel})',
+      'es': 'Se enviaron {n} archivos a la IA ({panel})',
+      'fr': '{n} fichiers envoyés à l’IA ({panel})',
+      'de': '{n} Dateien an die KI gesendet ({panel})',
+      'pt': '{n} arquivos enviados à IA ({panel})',
+      'ru': 'Отправлено файлов в ИИ: {n} ({panel})',
+    },
+    'split.forward': {
+      'ja': '進む',
+      'en': 'Forward',
+      'zh': '前进',
+      'ko': '앞으로',
+      'es': 'Adelante',
+      'fr': 'Suivant',
+      'de': 'Vorwärts',
+      'pt': 'Avançar',
+      'ru': 'Вперёд',
+    },
+    'clip.pasteError': {
+      'ja': '貼り付けエラー: {err}',
+      'en': 'Paste error: {err}',
+      'zh': '粘贴错误：{err}',
+      'ko': '붙여넣기 오류: {err}',
+      'es': 'Error al pegar: {err}',
+      'fr': 'Erreur de collage : {err}',
+      'de': 'Einfügefehler: {err}',
+      'pt': 'Erro ao colar: {err}',
+      'ru': 'Ошибка вставки: {err}',
+    },
+    'common.browserOpenFailed': {
+      'ja': 'ブラウザを開けませんでした: {err}',
+      'en': 'Couldn’t open the browser: {err}',
+      'zh': '无法打开浏览器：{err}',
+      'ko': '브라우저를 열 수 없습니다: {err}',
+      'es': 'No se pudo abrir el navegador: {err}',
+      'fr': 'Impossible d’ouvrir le navigateur : {err}',
+      'de': 'Browser konnte nicht geöffnet werden: {err}',
+      'pt': 'Não foi possível abrir o navegador: {err}',
+      'ru': 'Не удалось открыть браузер: {err}',
+    },
+    'fcreg.noTextNode': {
+      'ja': '文字のあるノードが選択されていません',
+      'en': 'No node with text is selected',
+      'zh': '未选择含文字的节点',
+      'ko': '글자가 있는 노드가 선택되지 않았습니다',
+      'es': 'No hay ningún nodo con texto seleccionado',
+      'fr': 'Aucun nœud avec du texte n’est sélectionné',
+      'de': 'Kein Knoten mit Text ausgewählt',
+      'pt': 'Nenhum nó com texto selecionado',
+      'ru': 'Не выбран узел с текстом',
+    },
+    'fcreg.title': {
+      'ja': '暗記カードを登録',
+      'en': 'Add a flashcard',
+      'zh': '登记记忆卡',
+      'ko': '암기 카드 등록',
+      'es': 'Añadir una tarjeta',
+      'fr': 'Ajouter une carte mémo',
+      'de': 'Lernkarte hinzufügen',
+      'pt': 'Adicionar um cartão',
+      'ru': 'Добавить карточку',
+    },
+    'fcreg.front': {
+      'ja': '表面 (問題)',
+      'en': 'Front (question)',
+      'zh': '正面（问题）',
+      'ko': '앞면 (문제)',
+      'es': 'Anverso (pregunta)',
+      'fr': 'Recto (question)',
+      'de': 'Vorderseite (Frage)',
+      'pt': 'Frente (pergunta)',
+      'ru': 'Лицевая сторона (вопрос)',
+    },
+    'fcreg.back': {
+      'ja': '裏面 (答え・任意)',
+      'en': 'Back (answer, optional)',
+      'zh': '背面（答案，可选）',
+      'ko': '뒷면 (정답·선택)',
+      'es': 'Reverso (respuesta, opcional)',
+      'fr': 'Verso (réponse, facultatif)',
+      'de': 'Rückseite (Antwort, optional)',
+      'pt': 'Verso (resposta, opcional)',
+      'ru': 'Обратная сторона (ответ, необязательно)',
+    },
+    'fcreg.registered': {
+      'ja': '{n} 枚登録しました',
+      'en': 'Added {n} cards',
+      'zh': '已登记 {n} 张',
+      'ko': '{n}장 등록했습니다',
+      'es': 'Se añadieron {n} tarjetas',
+      'fr': '{n} cartes ajoutées',
+      'de': '{n} Karten hinzugefügt',
+      'pt': '{n} cartões adicionados',
+      'ru': 'Добавлено карточек: {n}',
+    },
+    'fcreg.studyNow': {
+      'ja': 'そのまま学習',
+      'en': 'Study now',
+      'zh': '直接学习',
+      'ko': '바로 학습',
+      'es': 'Estudiar ahora',
+      'fr': 'Étudier maintenant',
+      'de': 'Jetzt lernen',
+      'pt': 'Estudar agora',
+      'ru': 'Учить сейчас',
+    },
+    'fcreg.registerNext': {
+      'ja': '登録して次へ',
+      'en': 'Add and continue',
+      'zh': '登记并继续',
+      'ko': '등록하고 다음',
+      'es': 'Añadir y continuar',
+      'fr': 'Ajouter et continuer',
+      'de': 'Hinzufügen und weiter',
+      'pt': 'Adicionar e continuar',
+      'ru': 'Добавить и далее',
+    },
+    'search.hint': {
+      'ja': 'タイトル・メモを検索',
+      'en': 'Search titles and memos',
+      'zh': '搜索标题和备注',
+      'ko': '제목·메모 검색',
+      'es': 'Buscar títulos y notas',
+      'fr': 'Rechercher titres et notes',
+      'de': 'Titel und Notizen durchsuchen',
+      'pt': 'Pesquisar títulos e notas',
+      'ru': 'Поиск по заголовкам и заметкам',
+    },
+    'search.prev': {
+      'ja': '前へ',
+      'en': 'Previous',
+      'zh': '上一个',
+      'ko': '이전',
+      'es': 'Anterior',
+      'fr': 'Précédent',
+      'de': 'Zurück',
+      'pt': 'Anterior',
+      'ru': 'Назад',
+    },
+    'search.next': {
+      'ja': '次へ',
+      'en': 'Next',
+      'zh': '下一个',
+      'ko': '다음',
+      'es': 'Siguiente',
+      'fr': 'Suivant',
+      'de': 'Weiter',
+      'pt': 'Próximo',
+      'ru': 'Далее',
+    },
+    'common.deleteConfirmTitle': {
+      'ja': '削除確認',
+      'en': 'Confirm deletion',
+      'zh': '确认删除',
+      'ko': '삭제 확인',
+      'es': 'Confirmar eliminación',
+      'fr': 'Confirmer la suppression',
+      'de': 'Löschen bestätigen',
+      'pt': 'Confirmar exclusão',
+      'ru': 'Подтвердите удаление',
+    },
+    'dev.authNeeded': {
+      'ja': '認証が必要です',
+      'en': 'Authentication required',
+      'zh': '需要认证',
+      'ko': '인증이 필요합니다',
+      'es': 'Se requiere autenticación',
+      'fr': 'Authentification requise',
+      'de': 'Authentifizierung erforderlich',
+      'pt': 'Autenticação necessária',
+      'ru': 'Требуется аутентификация',
+    },
+    'dev.authDesc': {
+      'ja': '開発者モードにはパスワードが必要です',
+      'en': 'Developer mode requires a password',
+      'zh': '开发者模式需要密码',
+      'ko': '개발자 모드에는 비밀번호가 필요합니다',
+      'es': 'El modo de desarrollador requiere una contraseña',
+      'fr': 'Le mode développeur nécessite un mot de passe',
+      'de': 'Der Entwicklermodus erfordert ein Passwort',
+      'pt': 'O modo de desenvolvedor requer uma senha',
+      'ru': 'Для режима разработчика нужен пароль',
+    },
+    'dev.password': {
+      'ja': 'パスワード',
+      'en': 'Password',
+      'zh': '密码',
+      'ko': '비밀번호',
+      'es': 'Contraseña',
+      'fr': 'Mot de passe',
+      'de': 'Passwort',
+      'pt': 'Senha',
+      'ru': 'Пароль',
+    },
+    'dev.wrongPassword': {
+      'ja': 'パスワードが違います',
+      'en': 'Incorrect password',
+      'zh': '密码错误',
+      'ko': '비밀번호가 틀립니다',
+      'es': 'Contraseña incorrecta',
+      'fr': 'Mot de passe incorrect',
+      'de': 'Falsches Passwort',
+      'pt': 'Senha incorreta',
+      'ru': 'Неверный пароль',
+    },
+    'dev.errConnection': {
+      'ja': 'サーバーに接続できませんでした。通信環境とFirebaseの設定/デプロイをご確認ください',
+      'en': 'Could not reach the server. Check your connection and Firebase setup/deployment',
+      'zh': '无法连接到服务器。请检查网络和 Firebase 设置/部署',
+      'ko': '서버에 연결할 수 없습니다. 네트워크와 Firebase 설정/배포를 확인하세요',
+      'es': 'No se pudo conectar al servidor. Revisa tu conexión y la configuración/despliegue de Firebase',
+      'fr': 'Connexion au serveur impossible. Vérifiez votre réseau et la configuration/déploiement Firebase',
+      'de': 'Server nicht erreichbar. Prüfe deine Verbindung und die Firebase-Einrichtung/-Bereitstellung',
+      'pt': 'Não foi possível conectar ao servidor. Verifique sua conexão e a configuração/implantação do Firebase',
+      'ru': 'Не удалось подключиться к серверу. Проверьте соединение и настройку/развёртывание Firebase',
+    },
+    'dev.errLocked': {
+      'ja': '試行回数が多すぎます。しばらく待ってから再度お試しください',
+      'en': 'Too many attempts. Please wait a while and try again',
+      'zh': '尝试次数过多。请稍后再试',
+      'ko': '시도 횟수가 너무 많습니다. 잠시 후 다시 시도하세요',
+      'es': 'Demasiados intentos. Espera un momento e inténtalo de nuevo',
+      'fr': 'Trop de tentatives. Patientez un instant et réessayez',
+      'de': 'Zu viele Versuche. Bitte warte einen Moment und versuche es erneut',
+      'pt': 'Muitas tentativas. Aguarde um momento e tente novamente',
+      'ru': 'Слишком много попыток. Подождите немного и повторите',
+    },
+    'dev.authenticate': {
+      'ja': '認証',
+      'en': 'Authenticate',
+      'zh': '认证',
+      'ko': '인증',
+      'es': 'Autenticar',
+      'fr': 'Authentifier',
+      'de': 'Authentifizieren',
+      'pt': 'Autenticar',
+      'ru': 'Войти',
+    },
+    'dev.title': {
+      'ja': '開発者モード',
+      'en': 'Developer mode',
+      'zh': '开发者模式',
+      'ko': '개발자 모드',
+      'es': 'Modo de desarrollador',
+      'fr': 'Mode développeur',
+      'de': 'Entwicklermodus',
+      'pt': 'Modo de desenvolvedor',
+      'ru': 'Режим разработчика',
+    },
+    'dev.closeKeep': {
+      'ja': 'ダイアログを閉じる (開発者モードは維持)',
+      'en': 'Close the dialog (keep developer mode)',
+      'zh': '关闭对话框（保持开发者模式）',
+      'ko': '대화상자 닫기 (개발자 모드 유지)',
+      'es': 'Cerrar el diálogo (mantener el modo de desarrollador)',
+      'fr': 'Fermer la boîte de dialogue (conserver le mode développeur)',
+      'de': 'Dialog schließen (Entwicklermodus beibehalten)',
+      'pt': 'Fechar o diálogo (manter o modo de desenvolvedor)',
+      'ru': 'Закрыть диалог (режим разработчика останется)',
+    },
+    'dev.emailSaved': {
+      'ja': 'メールアドレスを保存しました',
+      'en': 'Saved the email address',
+      'zh': '已保存邮箱地址',
+      'ko': '이메일 주소를 저장했습니다',
+      'es': 'Se guardó la dirección de correo',
+      'fr': 'Adresse e-mail enregistrée',
+      'de': 'E-Mail-Adresse gespeichert',
+      'pt': 'Endereço de e-mail salvo',
+      'ru': 'Адрес эл. почты сохранён',
+    },
+    'dev.openInbox': {
+      'ja': '受信箱を開く（問い合わせ一覧）',
+      'en': 'Open inbox (inquiry list)',
+      'zh': '打开收件箱（咨询列表）',
+      'ko': '받은 편지함 열기(문의 목록)',
+      'es': 'Abrir bandeja de entrada (lista de consultas)',
+      'fr': 'Ouvrir la boîte de réception (liste des demandes)',
+      'de': 'Posteingang öffnen (Anfrageliste)',
+      'pt': 'Abrir caixa de entrada (lista de consultas)',
+      'ru': 'Открыть входящие (список запросов)',
+    },
+    'dev.logout': {
+      'ja': '開発者モードを解除（ログアウト）',
+      'en': 'Disable developer mode (log out)',
+      'zh': '退出开发者模式（登出）',
+      'ko': '개발자 모드 해제(로그아웃)',
+      'es': 'Desactivar el modo de desarrollador (cerrar sesión)',
+      'fr': 'Désactiver le mode développeur (déconnexion)',
+      'de': 'Entwicklermodus deaktivieren (abmelden)',
+      'pt': 'Desativar o modo de desenvolvedor (sair)',
+      'ru': 'Отключить режим разработчика (выйти)',
+    },
+    'dev.logoutTitle': {
+      'ja': '開発者モードを解除',
+      'en': 'Disable developer mode',
+      'zh': '退出开发者模式',
+      'ko': '개발자 모드 해제',
+      'es': 'Desactivar el modo de desarrollador',
+      'fr': 'Désactiver le mode développeur',
+      'de': 'Entwicklermodus deaktivieren',
+      'pt': 'Desativar o modo de desenvolvedor',
+      'ru': 'Отключить режим разработчика',
+    },
+    'dev.logoutBody': {
+      'ja':
+          '開発者モードを解除すると、本来のプラン (Free / Pro / クーポン) に戻ります。再度有効化するにはパスワードが必要です。\n\n解除しますか？',
+      'en':
+          'Disabling developer mode reverts to your actual plan (Free / Pro / coupon). A password is needed to re-enable it.\n\nDisable?',
+      'zh': '退出开发者模式后将恢复到原本的方案（Free / Pro / 优惠券）。重新启用需要密码。\n\n要退出吗？',
+      'ko':
+          '개발자 모드를 해제하면 원래 플랜(Free / Pro / 쿠폰)으로 돌아갑니다. 다시 활성화하려면 비밀번호가 필요합니다.\n\n해제할까요?',
+      'es':
+          'Al desactivar el modo de desarrollador se vuelve a tu plan real (Free / Pro / cupón). Se necesita una contraseña para reactivarlo.\n\n¿Desactivar?',
+      'fr':
+          'Désactiver le mode développeur rétablit votre forfait réel (Free / Pro / coupon). Un mot de passe est requis pour le réactiver.\n\nDésactiver ?',
+      'de':
+          'Beim Deaktivieren des Entwicklermodus wird zu Ihrem tatsächlichen Tarif (Free / Pro / Gutschein) zurückgekehrt. Zum erneuten Aktivieren ist ein Passwort nötig.\n\nDeaktivieren?',
+      'pt':
+          'Desativar o modo de desenvolvedor retorna ao seu plano real (Free / Pro / cupom). É necessária uma senha para reativá-lo.\n\nDesativar?',
+      'ru':
+          'Отключение режима разработчика вернёт ваш реальный тариф (Free / Pro / купон). Для повторного включения нужен пароль.\n\nОтключить?',
+    },
+    'dev.disableBtn': {
+      'ja': '解除する',
+      'en': 'Disable',
+      'zh': '退出',
+      'ko': '해제',
+      'es': 'Desactivar',
+      'fr': 'Désactiver',
+      'de': 'Deaktivieren',
+      'pt': 'Desativar',
+      'ru': 'Отключить',
+    },
+    'admin.dataTitle': {
+      'ja': '全データ管理',
+      'en': 'All-data management',
+      'zh': '全部数据管理',
+      'ko': '전체 데이터 관리',
+      'es': 'Gestión de todos los datos',
+      'fr': 'Gestion de toutes les données',
+      'de': 'Verwaltung aller Daten',
+      'pt': 'Gerenciamento de todos os dados',
+      'ru': 'Управление всеми данными',
+    },
+    'admin.noGroups': {
+      'ja': 'グループが見つかりません',
+      'en': 'No groups found',
+      'zh': '未找到群组',
+      'ko': '그룹을 찾을 수 없습니다',
+      'es': 'No se encontraron grupos',
+      'fr': 'Aucun groupe trouvé',
+      'de': 'Keine Gruppen gefunden',
+      'pt': 'Nenhum grupo encontrado',
+      'ru': 'Группы не найдены',
+    },
+    'admin.groupCount': {
+      'ja': 'グループ数: {n}',
+      'en': 'Groups: {n}',
+      'zh': '群组数：{n}',
+      'ko': '그룹 수: {n}',
+      'es': 'Grupos: {n}',
+      'fr': 'Groupes : {n}',
+      'de': 'Gruppen: {n}',
+      'pt': 'Grupos: {n}',
+      'ru': 'Групп: {n}',
+    },
+    'admin.lastUpdated': {
+      'ja': '最終更新: {dt}',
+      'en': 'Last updated: {dt}',
+      'zh': '最后更新：{dt}',
+      'ko': '마지막 업데이트: {dt}',
+      'es': 'Última actualización: {dt}',
+      'fr': 'Dernière mise à jour : {dt}',
+      'de': 'Zuletzt aktualisiert: {dt}',
+      'pt': 'Última atualização: {dt}',
+      'ru': 'Последнее обновление: {dt}',
+    },
+    'admin.showPages': {
+      'ja': 'ページを表示',
+      'en': 'Show pages',
+      'zh': '显示页面',
+      'ko': '페이지 표시',
+      'es': 'Mostrar páginas',
+      'fr': 'Afficher les pages',
+      'de': 'Seiten anzeigen',
+      'pt': 'Mostrar páginas',
+      'ru': 'Показать страницы',
+    },
+    'admin.groupLabel': {
+      'ja': 'グループ: {gid}',
+      'en': 'Group: {gid}',
+      'zh': '群组：{gid}',
+      'ko': '그룹: {gid}',
+      'es': 'Grupo: {gid}',
+      'fr': 'Groupe : {gid}',
+      'de': 'Gruppe: {gid}',
+      'pt': 'Grupo: {gid}',
+      'ru': 'Группа: {gid}',
+    },
+    'admin.noPages': {
+      'ja': 'ページがありません',
+      'en': 'No pages',
+      'zh': '没有页面',
+      'ko': '페이지가 없습니다',
+      'es': 'No hay páginas',
+      'fr': 'Aucune page',
+      'de': 'Keine Seiten',
+      'pt': 'Nenhuma página',
+      'ru': 'Нет страниц',
+    },
+    'admin.nodeCount': {
+      'ja': 'ノード数: {n}',
+      'en': 'Nodes: {n}',
+      'zh': '节点数：{n}',
+      'ko': '노드 수: {n}',
+      'es': 'Nodos: {n}',
+      'fr': 'Nœuds : {n}',
+      'de': 'Knoten: {n}',
+      'pt': 'Nós: {n}',
+      'ru': 'Узлов: {n}',
+    },
+    'common.unknown': {
+      'ja': '不明',
+      'en': 'Unknown',
+      'zh': '未知',
+      'ko': '알 수 없음',
+      'es': 'Desconocido',
+      'fr': 'Inconnu',
+      'de': 'Unbekannt',
+      'pt': 'Desconhecido',
+      'ru': 'Неизвестно',
+    },
+    'common.noName': {
+      'ja': '(名前なし)',
+      'en': '(no name)',
+      'zh': '（无名称）',
+      'ko': '(이름 없음)',
+      'es': '(sin nombre)',
+      'fr': '(sans nom)',
+      'de': '(ohne Namen)',
+      'pt': '(sem nome)',
+      'ru': '(без имени)',
+    },
+    'admin.deletePageConfirm': {
+      'ja': '「{name}」を削除しますか？\nこの操作は取り消せません。',
+      'en': 'Delete “{name}”?\nThis action cannot be undone.',
+      'zh': '要删除「{name}」吗？\n此操作无法撤销。',
+      'ko': '「{name}」을(를) 삭제할까요?\n이 작업은 되돌릴 수 없습니다.',
+      'es': '¿Eliminar “{name}”?\nEsta acción no se puede deshacer.',
+      'fr': 'Supprimer « {name} » ?\nCette action est irréversible.',
+      'de':
+          '„{name}“ löschen?\nDiese Aktion kann nicht rückgängig gemacht werden.',
+      'pt': 'Excluir “{name}”?\nEsta ação não pode ser desfeita.',
+      'ru': 'Удалить «{name}»?\nЭто действие нельзя отменить.',
+    },
+    'admin.deleted': {
+      'ja': '削除しました',
+      'en': 'Deleted',
+      'zh': '已删除',
+      'ko': '삭제했습니다',
+      'es': 'Eliminado',
+      'fr': 'Supprimé',
+      'de': 'Gelöscht',
+      'pt': 'Excluído',
+      'ru': 'Удалено',
+    },
+    'admin.deleteFailed': {
+      'ja': '削除に失敗しました',
+      'en': 'Deletion failed',
+      'zh': '删除失败',
+      'ko': '삭제에 실패했습니다',
+      'es': 'Error al eliminar',
+      'fr': 'Échec de la suppression',
+      'de': 'Löschen fehlgeschlagen',
+      'pt': 'Falha ao excluir',
+      'ru': 'Не удалось удалить',
+    },
+    'search.replaceHint': {
+      'ja': '置換後のテキスト',
+      'en': 'Replacement text',
+      'zh': '替换后的文本',
+      'ko': '바꿀 텍스트',
+      'es': 'Texto de reemplazo',
+      'fr': 'Texte de remplacement',
+      'de': 'Ersatztext',
+      'pt': 'Texto de substituição',
+      'ru': 'Текст замены',
+    },
+    'search.replaceAll': {
+      'ja': '全て置換',
+      'en': 'Replace all',
+      'zh': '全部替换',
+      'ko': '모두 바꾸기',
+      'es': 'Reemplazar todo',
+      'fr': 'Tout remplacer',
+      'de': 'Alle ersetzen',
+      'pt': 'Substituir tudo',
+      'ru': 'Заменить все',
+    },
+    'sync.joinGroupFirst': {
+      'ja': '同期グループに参加してください',
+      'en': 'Please join a sync group',
+      'zh': '请加入同步群组',
+      'ko': '동기화 그룹에 참여해 주세요',
+      'es': 'Únete a un grupo de sincronización',
+      'fr': 'Veuillez rejoindre un groupe de synchronisation',
+      'de': 'Bitte einer Sync-Gruppe beitreten',
+      'pt': 'Entre em um grupo de sincronização',
+      'ru': 'Присоединитесь к группе синхронизации',
+    },
+    'sync.pageUpdated': {
+      'ja': '「{name}」をクラウドから更新しました',
+      'en': 'Updated “{name}” from the cloud',
+      'zh': '已从云端更新「{name}」',
+      'ko': '「{name}」을(를) 클라우드에서 업데이트했습니다',
+      'es': 'Se actualizó “{name}” desde la nube',
+      'fr': '« {name} » mis à jour depuis le cloud',
+      'de': '„{name}“ aus der Cloud aktualisiert',
+      'pt': '“{name}” atualizado da nuvem',
+      'ru': '«{name}» обновлено из облака',
+    },
+    'sync.upToDate': {
+      'ja': '最新の状態です',
+      'en': 'Already up to date',
+      'zh': '已是最新状态',
+      'ko': '최신 상태입니다',
+      'es': 'Ya está actualizado',
+      'fr': 'Déjà à jour',
+      'de': 'Bereits aktuell',
+      'pt': 'Já está atualizado',
+      'ru': 'Уже актуально',
+    },
+    'sync.notUploaded': {
+      'ja': 'クラウドにアップロードされていないマップです',
+      'en': 'This map hasn’t been uploaded to the cloud',
+      'zh': '此地图尚未上传到云端',
+      'ko': '클라우드에 업로드되지 않은 맵입니다',
+      'es': 'Este mapa no se ha subido a la nube',
+      'fr': 'Cette carte n’a pas été envoyée au cloud',
+      'de': 'Diese Karte wurde nicht in die Cloud hochgeladen',
+      'pt': 'Este mapa não foi enviado à nuvem',
+      'ru': 'Эта карта не загружена в облако',
+    },
+    'sync.error': {
+      'ja': '同期エラー: {err}',
+      'en': 'Sync error: {err}',
+      'zh': '同步错误：{err}',
+      'ko': '동기화 오류: {err}',
+      'es': 'Error de sincronización: {err}',
+      'fr': 'Erreur de synchronisation : {err}',
+      'de': 'Sync-Fehler: {err}',
+      'pt': 'Erro de sincronização: {err}',
+      'ru': 'Ошибка синхронизации: {err}',
+    },
+    'sync.noChanges': {
+      'ja': '変更はありません（アップロード済み）',
+      'en': 'No changes (already uploaded)',
+      'zh': '没有更改（已上传）',
+      'ko': '변경 사항 없음(이미 업로드됨)',
+      'es': 'Sin cambios (ya subido)',
+      'fr': 'Aucun changement (déjà envoyé)',
+      'de': 'Keine Änderungen (bereits hochgeladen)',
+      'pt': 'Sem alterações (já enviado)',
+      'ru': 'Нет изменений (уже загружено)',
+    },
+    'sync.checkingDiff': {
+      'ja': '差分を確認中…',
+      'en': 'Checking for differences…',
+      'zh': '正在检查差异…',
+      'ko': '차이를 확인하는 중…',
+      'es': 'Comprobando diferencias…',
+      'fr': 'Vérification des différences…',
+      'de': 'Unterschiede werden geprüft…',
+      'pt': 'Verificando diferenças…',
+      'ru': 'Проверка различий…',
+    },
+    'sync.pageUploaded': {
+      'ja': '「{name}」をアップロードしました',
+      'en': 'Uploaded “{name}”',
+      'zh': '已上传「{name}」',
+      'ko': '「{name}」을(를) 업로드했습니다',
+      'es': 'Se subió “{name}”',
+      'fr': '« {name} » envoyé',
+      'de': '„{name}“ hochgeladen',
+      'pt': '“{name}” enviado',
+      'ru': '«{name}» загружено',
+    },
+    'sync.noCloudPages': {
+      'ja': 'クラウドにページがありません',
+      'en': 'No pages in the cloud',
+      'zh': '云端没有页面',
+      'ko': '클라우드에 페이지가 없습니다',
+      'es': 'No hay páginas en la nube',
+      'fr': 'Aucune page dans le cloud',
+      'de': 'Keine Seiten in der Cloud',
+      'pt': 'Nenhuma página na nuvem',
+      'ru': 'В облаке нет страниц',
+    },
+    'sync.connectionError': {
+      'ja': 'クラウド接続エラー: {err}',
+      'en': 'Cloud connection error: {err}',
+      'zh': '云端连接错误：{err}',
+      'ko': '클라우드 연결 오류: {err}',
+      'es': 'Error de conexión a la nube: {err}',
+      'fr': 'Erreur de connexion au cloud : {err}',
+      'de': 'Cloud-Verbindungsfehler: {err}',
+      'pt': 'Erro de conexão com a nuvem: {err}',
+      'ru': 'Ошибка подключения к облаку: {err}',
+    },
+    'sync.noOtherPages': {
+      'ja': '他に送れるページがありません',
+      'en': 'No other pages to send',
+      'zh': '没有其他可发送的页面',
+      'ko': '보낼 수 있는 다른 페이지가 없습니다',
+      'es': 'No hay otras páginas para enviar',
+      'fr': 'Aucune autre page à envoyer',
+      'de': 'Keine weiteren Seiten zum Senden',
+      'pt': 'Nenhuma outra página para enviar',
+      'ru': 'Нет других страниц для отправки',
+    },
+    'map.deleteTitle': {
+      'ja': 'マップを削除',
+      'en': 'Delete map',
+      'zh': '删除地图',
+      'ko': '맵 삭제',
+      'es': 'Eliminar mapa',
+      'fr': 'Supprimer la carte',
+      'de': 'Karte löschen',
+      'pt': 'Excluir mapa',
+      'ru': 'Удалить карту',
+    },
+    'map.deleteConfirm': {
+      'ja': '「{name}」を削除しますか？\nこの操作は元に戻せません。',
+      'en': 'Delete “{name}”?\nThis action cannot be undone.',
+      'zh': '要删除「{name}」吗？\n此操作无法撤销。',
+      'ko': '「{name}」을(를) 삭제할까요?\n이 작업은 되돌릴 수 없습니다.',
+      'es': '¿Eliminar “{name}”?\nEsta acción no se puede deshacer.',
+      'fr': 'Supprimer « {name} » ?\nCette action est irréversible.',
+      'de':
+          '„{name}“ löschen?\nDiese Aktion kann nicht rückgängig gemacht werden.',
+      'pt': 'Excluir “{name}”?\nEsta ação não pode ser desfeita.',
+      'ru': 'Удалить «{name}»?\nЭто действие нельзя отменить.',
+    },
+    'map.cannotDeleteLast': {
+      'ja': '最後のマップは削除できません',
+      'en': 'You can’t delete the last map',
+      'zh': '无法删除最后一个地图',
+      'ko': '마지막 맵은 삭제할 수 없습니다',
+      'es': 'No puedes eliminar el último mapa',
+      'fr': 'Impossible de supprimer la dernière carte',
+      'de': 'Die letzte Karte kann nicht gelöscht werden',
+      'pt': 'Não é possível excluir o último mapa',
+      'ru': 'Нельзя удалить последнюю карту',
+    },
+    'offline.title': {
+      'ja': 'オフライン動画の扱い',
+      'en': 'Offline video handling',
+      'zh': '离线视频处理',
+      'ko': '오프라인 동영상 처리',
+      'es': 'Gestión de vídeos sin conexión',
+      'fr': 'Gestion des vidéos hors ligne',
+      'de': 'Umgang mit Offline-Videos',
+      'pt': 'Tratamento de vídeos offline',
+      'ru': 'Обработка офлайн-видео',
+    },
+    'offline.body': {
+      'ja':
+          'このページには端末にダウンロード済みの動画があります。\nクラウドにアップロードする内容を選んでください。\n\n・「動画データも」: 動画ファイルごとアップロード (容量大)\n・「URL のみ」: 動画情報のみ。動画ファイルは上げない',
+      'en':
+          'This page has videos downloaded to the device.\nChoose what to upload to the cloud.\n\n• “Include video data”: upload the video files too (large)\n• “URL only”: video info only; don’t upload the files',
+      'zh':
+          '此页面包含已下载到设备的视频。\n请选择要上传到云端的内容。\n\n・“包括视频数据”：连同视频文件一起上传（占用大）\n・“仅 URL”：仅视频信息，不上传文件',
+      'ko':
+          '이 페이지에는 기기에 다운로드된 동영상이 있습니다.\n클라우드에 업로드할 내용을 선택하세요.\n\n・“동영상 데이터도”: 동영상 파일까지 업로드(용량 큼)\n・“URL만”: 동영상 정보만, 파일은 업로드 안 함',
+      'es':
+          'Esta página tiene vídeos descargados en el dispositivo.\nElige qué subir a la nube.\n\n• “Incluir datos del vídeo”: sube también los archivos (grande)\n• “Solo URL”: solo la info del vídeo; no sube los archivos',
+      'fr':
+          'Cette page contient des vidéos téléchargées sur l’appareil.\nChoisissez ce qu’il faut envoyer au cloud.\n\n• « Inclure les données vidéo » : envoie aussi les fichiers (volumineux)\n• « URL uniquement » : infos vidéo seulement ; pas les fichiers',
+      'de':
+          'Diese Seite enthält auf dem Gerät heruntergeladene Videos.\nWählen Sie, was in die Cloud hochgeladen werden soll.\n\n• „Auch Videodaten“: auch die Videodateien hochladen (groß)\n• „Nur URL“: nur Videoinfos; Dateien nicht hochladen',
+      'pt':
+          'Esta página tem vídeos baixados no dispositivo.\nEscolha o que enviar à nuvem.\n\n• “Incluir dados do vídeo”: envia também os arquivos (grande)\n• “Apenas URL”: só as informações do vídeo; não envia os arquivos',
+      'ru':
+          'На этой странице есть видео, загруженные на устройство.\nВыберите, что загрузить в облако.\n\n• «Также данные видео»: загрузить и файлы (большой объём)\n• «Только URL»: только сведения о видео; файлы не загружать',
+    },
+    'offline.urlOnly': {
+      'ja': 'URL のみ',
+      'en': 'URL only',
+      'zh': '仅 URL',
+      'ko': 'URL만',
+      'es': 'Solo URL',
+      'fr': 'URL uniquement',
+      'de': 'Nur URL',
+      'pt': 'Apenas URL',
+      'ru': 'Только URL',
+    },
+    'offline.withVideo': {
+      'ja': '動画データも',
+      'en': 'Include video data',
+      'zh': '包括视频数据',
+      'ko': '동영상 데이터도',
+      'es': 'Incluir datos del vídeo',
+      'fr': 'Inclure les données vidéo',
+      'de': 'Auch Videodaten',
+      'pt': 'Incluir dados do vídeo',
+      'ru': 'Также данные видео',
+    },
+    'cal.uploading': {
+      'ja': 'カレンダーをアップロード中...',
+      'en': 'Uploading the calendar...',
+      'zh': '正在上传日历...',
+      'ko': '캘린더를 업로드하는 중...',
+      'es': 'Subiendo el calendario...',
+      'fr': 'Envoi du calendrier...',
+      'de': 'Kalender wird hochgeladen...',
+      'pt': 'Enviando o calendário...',
+      'ru': 'Загрузка календаря...',
+    },
+    'cal.savedCount': {
+      'ja': '✅ {n} 件を Firebase に保存',
+      'en': '✅ Saved {n} to Firebase',
+      'zh': '✅ 已将 {n} 项保存到 Firebase',
+      'ko': '✅ {n}건을 Firebase에 저장',
+      'es': '✅ Se guardaron {n} en Firebase',
+      'fr': '✅ {n} enregistrés dans Firebase',
+      'de': '✅ {n} in Firebase gespeichert',
+      'pt': '✅ {n} salvos no Firebase',
+      'ru': '✅ Сохранено в Firebase: {n}',
+    },
+    'cal.uploadFailed': {
+      'ja': '❌ アップロード失敗: {err}',
+      'en': '❌ Upload failed: {err}',
+      'zh': '❌ 上传失败：{err}',
+      'ko': '❌ 업로드 실패: {err}',
+      'es': '❌ Error al subir: {err}',
+      'fr': '❌ Échec de l’envoi : {err}',
+      'de': '❌ Hochladen fehlgeschlagen: {err}',
+      'pt': '❌ Falha no upload: {err}',
+      'ru': '❌ Ошибка загрузки: {err}',
+    },
+    'cal.errorMark': {
+      'ja': '❌ エラー: {err}',
+      'en': '❌ Error: {err}',
+      'zh': '❌ 错误：{err}',
+      'ko': '❌ 오류: {err}',
+      'es': '❌ Error: {err}',
+      'fr': '❌ Erreur : {err}',
+      'de': '❌ Fehler: {err}',
+      'pt': '❌ Erro: {err}',
+      'ru': '❌ Ошибка: {err}',
+    },
+    'cal.enableUpload': {
+      'ja': '有効化してアップロード',
+      'en': 'Enable and upload',
+      'zh': '启用并上传',
+      'ko': '활성화하고 업로드',
+      'es': 'Activar y subir',
+      'fr': 'Activer et envoyer',
+      'de': 'Aktivieren und hochladen',
+      'pt': 'Ativar e enviar',
+      'ru': 'Включить и загрузить',
+    },
+    'cal.fetchedCount': {
+      'ja': '✅ {n} 件を Firebase から取得',
+      'en': '✅ Fetched {n} from Firebase',
+      'zh': '✅ 已从 Firebase 获取 {n} 项',
+      'ko': '✅ Firebase에서 {n}건 가져옴',
+      'es': '✅ Se obtuvieron {n} de Firebase',
+      'fr': '✅ {n} récupérés depuis Firebase',
+      'de': '✅ {n} aus Firebase abgerufen',
+      'pt': '✅ {n} obtidos do Firebase',
+      'ru': '✅ Получено из Firebase: {n}',
+    },
+    'cal.fetchFailed': {
+      'ja': '❌ 取得失敗: {err}',
+      'en': '❌ Fetch failed: {err}',
+      'zh': '❌ 获取失败：{err}',
+      'ko': '❌ 가져오기 실패: {err}',
+      'es': '❌ Error al obtener: {err}',
+      'fr': '❌ Échec de la récupération : {err}',
+      'de': '❌ Abruf fehlgeschlagen: {err}',
+      'pt': '❌ Falha ao obter: {err}',
+      'ru': '❌ Ошибка получения: {err}',
+    },
+    'cal.sharingDisabledBody': {
+      'ja':
+          'カレンダー共有がOFFのため、クラウドにアップロードできません。\n\n有効化すると、このデバイスのカレンダーがグループ内の「共有ON」ユーザーに公開されます。（設定からいつでも OFF に戻せます）',
+      'en':
+          'Calendar sharing is OFF, so it can’t be uploaded to the cloud.\n\nEnabling it makes this device’s calendar visible to “sharing ON” users in the group. (You can turn it OFF anytime in settings.)',
+      'zh': '日历共享已关闭，无法上传到云端。\n\n启用后，本设备的日历将对群组内“共享开启”的用户公开。（可随时在设置中关闭）',
+      'ko':
+          '캘린더 공유가 꺼져 있어 클라우드에 업로드할 수 없습니다.\n\n활성화하면 이 기기의 캘린더가 그룹 내 “공유 ON” 사용자에게 공개됩니다. (설정에서 언제든 끌 수 있습니다)',
+      'es':
+          'El uso compartido del calendario está DESACTIVADO, así que no se puede subir a la nube.\n\nAl activarlo, el calendario de este dispositivo será visible para los usuarios con “compartir activado” del grupo. (Puedes desactivarlo cuando quieras en ajustes.)',
+      'fr':
+          'Le partage du calendrier est désactivé, impossible d’envoyer au cloud.\n\nEn l’activant, le calendrier de cet appareil devient visible pour les utilisateurs « partage activé » du groupe. (Vous pouvez le désactiver à tout moment dans les paramètres.)',
+      'de':
+          'Die Kalenderfreigabe ist AUS, daher kann nicht in die Cloud hochgeladen werden.\n\nBeim Aktivieren wird der Kalender dieses Geräts für Benutzer mit „Freigabe EIN“ in der Gruppe sichtbar. (In den Einstellungen jederzeit wieder ausschaltbar.)',
+      'pt':
+          'O compartilhamento de calendário está DESLIGADO, então não é possível enviar à nuvem.\n\nAo ativar, o calendário deste dispositivo fica visível para usuários com “compartilhar ligado” no grupo. (Você pode desligar a qualquer momento nas configurações.)',
+      'ru':
+          'Доступ к календарю ВЫКЛ, поэтому загрузка в облако невозможна.\n\nПри включении календарь этого устройства станет виден пользователям группы с «доступом ВКЛ». (Можно отключить в настройках в любой момент.)',
+    },
+    'cal.fetching': {
+      'ja': 'カレンダーを取得中...',
+      'en': 'Fetching the calendar...',
+      'zh': '正在获取日历...',
+      'ko': '캘린더를 가져오는 중...',
+      'es': 'Obteniendo el calendario...',
+      'fr': 'Récupération du calendrier...',
+      'de': 'Kalender wird abgerufen...',
+      'pt': 'Obtendo o calendário...',
+      'ru': 'Получение календаря...',
+    },
+    'urlPaste.pasted': {
+      'ja': 'URL が貼り付けられました',
+      'en': 'A URL was pasted',
+      'zh': '已粘贴 URL',
+      'ko': 'URL이 붙여넣어졌습니다',
+      'es': 'Se pegó una URL',
+      'fr': 'Une URL a été collée',
+      'de': 'Eine URL wurde eingefügt',
+      'pt': 'Uma URL foi colada',
+      'ru': 'URL вставлен',
+    },
+    'urlPaste.howToHandle': {
+      'ja': 'この URL をどう扱いますか?',
+      'en': 'How do you want to handle this URL?',
+      'zh': '要如何处理此 URL？',
+      'ko': '이 URL을 어떻게 처리할까요?',
+      'es': '¿Cómo quieres tratar esta URL?',
+      'fr': 'Comment voulez-vous traiter cette URL ?',
+      'de': 'Wie möchten Sie diese URL behandeln?',
+      'pt': 'Como deseja tratar esta URL?',
+      'ru': 'Что сделать с этим URL?',
+    },
+    'urlPaste.embedVideo': {
+      'ja': '埋め込み動画',
+      'en': 'Embedded video',
+      'zh': '嵌入视频',
+      'ko': '삽입 동영상',
+      'es': 'Vídeo incrustado',
+      'fr': 'Vidéo intégrée',
+      'de': 'Eingebettetes Video',
+      'pt': 'Vídeo incorporado',
+      'ru': 'Встроенное видео',
+    },
+    'urlPaste.hyperlink': {
+      'ja': 'ハイパーリンク',
+      'en': 'Hyperlink',
+      'zh': '超链接',
+      'ko': '하이퍼링크',
+      'es': 'Hipervínculo',
+      'fr': 'Hyperlien',
+      'de': 'Hyperlink',
+      'pt': 'Hiperlink',
+      'ru': 'Гиперссылка',
+    },
+    'paint.clearAll': {
+      'ja': '全消去',
+      'en': 'Clear all',
+      'zh': '全部清除',
+      'ko': '전체 지우기',
+      'es': 'Borrar todo',
+      'fr': 'Tout effacer',
+      'de': 'Alles löschen',
+      'pt': 'Limpar tudo',
+      'ru': 'Очистить всё',
+    },
+    'paint.clearConfirm': {
+      'ja': 'このシートの内容をすべて消去しますか？',
+      'en': 'Erase all content of this sheet?',
+      'zh': '要清除此画板的所有内容吗？',
+      'ko': '이 시트의 내용을 모두 지울까요?',
+      'es': '¿Borrar todo el contenido de esta hoja?',
+      'fr': 'Effacer tout le contenu de cette feuille ?',
+      'de': 'Den gesamten Inhalt dieses Blatts löschen?',
+      'pt': 'Apagar todo o conteúdo desta folha?',
+      'ru': 'Стереть всё содержимое этого листа?',
+    },
+    'paint.deleteSheet': {
+      'ja': 'シートを削除',
+      'en': 'Delete sheet',
+      'zh': '删除画板',
+      'ko': '시트 삭제',
+      'es': 'Eliminar hoja',
+      'fr': 'Supprimer la feuille',
+      'de': 'Blatt löschen',
+      'pt': 'Excluir folha',
+      'ru': 'Удалить лист',
+    },
+    'paint.deleteSheetConfirm': {
+      'ja': '「{name}」 を削除しますか？',
+      'en': 'Delete “{name}”?',
+      'zh': '要删除「{name}」吗？',
+      'ko': '「{name}」을(를) 삭제할까요?',
+      'es': '¿Eliminar “{name}”?',
+      'fr': 'Supprimer « {name} » ?',
+      'de': '„{name}“ löschen?',
+      'pt': 'Excluir “{name}”?',
+      'ru': 'Удалить «{name}»?',
+    },
+    'paint.sheetName': {
+      'ja': 'シート名',
+      'en': 'Sheet name',
+      'zh': '画板名称',
+      'ko': '시트 이름',
+      'es': 'Nombre de la hoja',
+      'fr': 'Nom de la feuille',
+      'de': 'Blattname',
+      'pt': 'Nome da folha',
+      'ru': 'Имя листа',
+    },
+    'paint.customSize': {
+      'ja': 'カスタムサイズ',
+      'en': 'Custom size',
+      'zh': '自定义尺寸',
+      'ko': '사용자 지정 크기',
+      'es': 'Tamaño personalizado',
+      'fr': 'Taille personnalisée',
+      'de': 'Benutzerdefinierte Größe',
+      'pt': 'Tamanho personalizado',
+      'ru': 'Свой размер',
+    },
+    'paint.customSizeDesc': {
+      'ja': '用紙の大きさを px 単位で指定します (100〜10000)。',
+      'en': 'Specify the paper size in px (100–10000).',
+      'zh': '以像素为单位指定纸张大小（100–10000）。',
+      'ko': '용지 크기를 px 단위로 지정합니다 (100–10000).',
+      'es': 'Especifica el tamaño del papel en px (100–10000).',
+      'fr': 'Indiquez la taille du papier en px (100–10000).',
+      'de': 'Papiergröße in px angeben (100–10000).',
+      'pt': 'Especifique o tamanho do papel em px (100–10000).',
+      'ru': 'Укажите размер листа в пикселях (100–10000).',
+    },
+    'paint.width': {
+      'ja': '幅',
+      'en': 'Width',
+      'zh': '宽度',
+      'ko': '너비',
+      'es': 'Ancho',
+      'fr': 'Largeur',
+      'de': 'Breite',
+      'pt': 'Largura',
+      'ru': 'Ширина',
+    },
+    'paint.height': {
+      'ja': '高さ',
+      'en': 'Height',
+      'zh': '高度',
+      'ko': '높이',
+      'es': 'Alto',
+      'fr': 'Hauteur',
+      'de': 'Höhe',
+      'pt': 'Altura',
+      'ru': 'Высота',
+    },
+    'paint.addSheet': {
+      'ja': 'シートを追加',
+      'en': 'Add sheet',
+      'zh': '添加画板',
+      'ko': '시트 추가',
+      'es': 'Añadir hoja',
+      'fr': 'Ajouter une feuille',
+      'de': 'Blatt hinzufügen',
+      'pt': 'Adicionar folha',
+      'ru': 'Добавить лист',
+    },
+    'paint.redo': {
+      'ja': '進める',
+      'en': 'Redo',
+      'zh': '重做',
+      'ko': '다시 실행',
+      'es': 'Rehacer',
+      'fr': 'Rétablir',
+      'de': 'Wiederholen',
+      'pt': 'Refazer',
+      'ru': 'Повторить',
+    },
+    'paint.paperSize': {
+      'ja': '用紙サイズ',
+      'en': 'Paper size',
+      'zh': '纸张大小',
+      'ko': '용지 크기',
+      'es': 'Tamaño del papel',
+      'fr': 'Format du papier',
+      'de': 'Papiergröße',
+      'pt': 'Tamanho do papel',
+      'ru': 'Размер листа',
+    },
+    'paint.export': {
+      'ja': '書き出し',
+      'en': 'Export',
+      'zh': '导出',
+      'ko': '내보내기',
+      'es': 'Exportar',
+      'fr': 'Exporter',
+      'de': 'Exportieren',
+      'pt': 'Exportar',
+      'ru': 'Экспорт',
+    },
+    'paint.exportPngSheet': {
+      'ja': 'PNG で書き出し (このシート)',
+      'en': 'Export as PNG (this sheet)',
+      'zh': '导出为 PNG（此画板）',
+      'ko': 'PNG로 내보내기 (이 시트)',
+      'es': 'Exportar como PNG (esta hoja)',
+      'fr': 'Exporter en PNG (cette feuille)',
+      'de': 'Als PNG exportieren (dieses Blatt)',
+      'pt': 'Exportar como PNG (esta folha)',
+      'ru': 'Экспорт в PNG (этот лист)',
+    },
+    'paint.exportJpgSheet': {
+      'ja': 'JPG で書き出し (このシート)',
+      'en': 'Export as JPG (this sheet)',
+      'zh': '导出为 JPG（此画板）',
+      'ko': 'JPG로 내보내기 (이 시트)',
+      'es': 'Exportar como JPG (esta hoja)',
+      'fr': 'Exporter en JPG (cette feuille)',
+      'de': 'Als JPG exportieren (dieses Blatt)',
+      'pt': 'Exportar como JPG (esta folha)',
+      'ru': 'Экспорт в JPG (этот лист)',
+    },
+    'paint.exportPngAll': {
+      'ja': '全ページを PNG で書き出し',
+      'en': 'Export all pages as PNG',
+      'zh': '将所有页面导出为 PNG',
+      'ko': '모든 페이지를 PNG로 내보내기',
+      'es': 'Exportar todas las páginas como PNG',
+      'fr': 'Exporter toutes les pages en PNG',
+      'de': 'Alle Seiten als PNG exportieren',
+      'pt': 'Exportar todas as páginas como PNG',
+      'ru': 'Экспорт всех страниц в PNG',
+    },
+    'paint.exportJpgAll': {
+      'ja': '全ページを JPG で書き出し',
+      'en': 'Export all pages as JPG',
+      'zh': '将所有页面导出为 JPG',
+      'ko': '모든 페이지를 JPG로 내보내기',
+      'es': 'Exportar todas las páginas como JPG',
+      'fr': 'Exporter toutes les pages en JPG',
+      'de': 'Alle Seiten als JPG exportieren',
+      'pt': 'Exportar todas as páginas como JPG',
+      'ru': 'Экспорт всех страниц в JPG',
+    },
+    'paint.exportPdfAll': {
+      'ja': 'PDF で書き出し (全シート)',
+      'en': 'Export as PDF (all sheets)',
+      'zh': '导出为 PDF（全部画板）',
+      'ko': 'PDF로 내보내기 (모든 시트)',
+      'es': 'Exportar como PDF (todas las hojas)',
+      'fr': 'Exporter en PDF (toutes les feuilles)',
+      'de': 'Als PDF exportieren (alle Blätter)',
+      'pt': 'Exportar como PDF (todas as folhas)',
+      'ru': 'Экспорт в PDF (все листы)',
+    },
+    'paint.size': {
+      'ja': 'サイズ',
+      'en': 'Size',
+      'zh': '大小',
+      'ko': '크기',
+      'es': 'Tamaño',
+      'fr': 'Taille',
+      'de': 'Größe',
+      'pt': 'Tamanho',
+      'ru': 'Размер',
+    },
+    'paint.textHint': {
+      'ja': '文字',
+      'en': 'Text',
+      'zh': '文字',
+      'ko': '문자',
+      'es': 'Texto',
+      'fr': 'Texte',
+      'de': 'Text',
+      'pt': 'Texto',
+      'ru': 'Текст',
+    },
+    'paint.confirm': {
+      'ja': '確定',
+      'en': 'Confirm',
+      'zh': '确定',
+      'ko': '확정',
+      'es': 'Confirmar',
+      'fr': 'Valider',
+      'de': 'Bestätigen',
+      'pt': 'Confirmar',
+      'ru': 'Подтвердить',
+    },
+    'paint.fill': {
+      'ja': '塗り',
+      'en': 'Fill',
+      'zh': '填充',
+      'ko': '채우기',
+      'es': 'Relleno',
+      'fr': 'Remplissage',
+      'de': 'Füllung',
+      'pt': 'Preenchimento',
+      'ru': 'Заливка',
+    },
+    'btn.edit': {
+      'ja': '編集',
+      'en': 'Edit',
+      'zh': '编辑',
+      'ko': '편집',
+      'es': 'Editar',
+      'fr': 'Modifier',
+      'de': 'Bearbeiten',
+      'pt': 'Editar',
+      'ru': 'Изменить',
+    },
+    've.zoom': {
+      'ja': '拡大率',
+      'en': 'Zoom',
+      'zh': '缩放比例',
+      'ko': '확대율',
+      'es': 'Zoom',
+      'fr': 'Zoom',
+      'de': 'Zoom',
+      'pt': 'Zoom',
+      'ru': 'Масштаб',
+    },
+    've.playbackRate': {
+      'ja': '再生速度',
+      'en': 'Playback speed',
+      'zh': '播放速度',
+      'ko': '재생 속도',
+      'es': 'Velocidad de reproducción',
+      'fr': 'Vitesse de lecture',
+      'de': 'Wiedergabegeschwindigkeit',
+      'pt': 'Velocidade de reprodução',
+      'ru': 'Скорость воспроизведения',
+    },
+    // 動画書き出しの形式選択 (= ユーザー要望: MP4 / MOV 等を選べるように)。
+    've.exportFormat': {
+      'ja': '書き出し形式を選択',
+      'en': 'Choose export format',
+      'zh': '选择导出格式',
+      'ko': '내보내기 형식 선택',
+      'es': 'Elegir formato de exportación',
+      'fr': 'Choisir le format d’export',
+      'de': 'Exportformat wählen',
+      'pt': 'Escolher formato de exportação',
+      'ru': 'Выберите формат экспорта',
+    },
+    've.exportMp4Desc': {
+      'ja': '汎用的で互換性が高い形式',
+      'en': 'Widely compatible, general-purpose',
+      'zh': '通用且兼容性高',
+      'ko': '범용적이고 호환성이 높은 형식',
+      'es': 'Compatible y de uso general',
+      'fr': 'Compatible et polyvalent',
+      'de': 'Weit kompatibel, universell',
+      'pt': 'Amplamente compatível e versátil',
+      'ru': 'Универсальный и совместимый',
+    },
+    've.exportMovDesc': {
+      'ja': 'QuickTime / 動画編集ソフト向け',
+      'en': 'For QuickTime / video editors',
+      'zh': '适用于 QuickTime / 视频编辑软件',
+      'ko': 'QuickTime / 영상 편집 소프트웨어용',
+      'es': 'Para QuickTime / editores de vídeo',
+      'fr': 'Pour QuickTime / éditeurs vidéo',
+      'de': 'Für QuickTime / Videoeditoren',
+      'pt': 'Para QuickTime / editores de vídeo',
+      'ru': 'Для QuickTime / видеоредакторов',
+    },
+    've.detailEdit': {
+      'ja': '詳細編集',
+      'en': 'Detailed edit',
+      'zh': '详细编辑',
+      'ko': '상세 편집',
+      'es': 'Edición detallada',
+      'fr': 'Édition détaillée',
+      'de': 'Detailbearbeitung',
+      'pt': 'Edição detalhada',
+      'ru': 'Подробное редактирование',
+    },
+    've.rateX': {
+      'ja': '{r}倍速',
+      'en': '{r}×',
+      'zh': '{r} 倍速',
+      'ko': '{r}배속',
+      'es': '{r}×',
+      'fr': '{r}×',
+      'de': '{r}×',
+      'pt': '{r}×',
+      'ru': '{r}×',
+    },
+    've.addText': {
+      'ja': 'テキストを追加',
+      'en': 'Add text',
+      'zh': '添加文本',
+      'ko': '텍스트 추가',
+      'es': 'Añadir texto',
+      'fr': 'Ajouter du texte',
+      'de': 'Text hinzufügen',
+      'pt': 'Adicionar texto',
+      'ru': 'Добавить текст',
+    },
+    've.addImage': {
+      'ja': '画像を追加',
+      'en': 'Add image',
+      'zh': '添加图片',
+      'ko': '이미지 추가',
+      'es': 'Añadir imagen',
+      'fr': 'Ajouter une image',
+      'de': 'Bild hinzufügen',
+      'pt': 'Adicionar imagem',
+      'ru': 'Добавить изображение',
+    },
+    've.addVideo': {
+      'ja': '動画を追加',
+      'en': 'Add video',
+      'zh': '添加视频',
+      'ko': '동영상 추가',
+      'es': 'Añadir vídeo',
+      'fr': 'Ajouter une vidéo',
+      'de': 'Video hinzufügen',
+      'pt': 'Adicionar vídeo',
+      'ru': 'Добавить видео',
+    },
+    've.splitUp': {
+      'ja': '上に分割',
+      'en': 'Split up',
+      'zh': '向上分割',
+      'ko': '위로 분할',
+      'es': 'Dividir arriba',
+      'fr': 'Diviser vers le haut',
+      'de': 'Nach oben teilen',
+      'pt': 'Dividir para cima',
+      'ru': 'Разделить вверх',
+    },
+    've.splitDown': {
+      'ja': '下に分割',
+      'en': 'Split down',
+      'zh': '向下分割',
+      'ko': '아래로 분할',
+      'es': 'Dividir abajo',
+      'fr': 'Diviser vers le bas',
+      'de': 'Nach unten teilen',
+      'pt': 'Dividir para baixo',
+      'ru': 'Разделить вниз',
+    },
+    've.timeHint2': {
+      'ja': '例 03:24 / 1:23:45',
+      'en': 'e.g. 03:24 / 1:23:45',
+      'zh': '例如 03:24 / 1:23:45',
+      'ko': '예: 03:24 / 1:23:45',
+      'es': 'p. ej. 03:24 / 1:23:45',
+      'fr': 'ex. 03:24 / 1:23:45',
+      'de': 'z. B. 03:24 / 1:23:45',
+      'pt': 'ex.: 03:24 / 1:23:45',
+      'ru': 'напр. 03:24 / 1:23:45',
+    },
+    'fsv.saveHistory': {
+      'ja': '履歴に保存',
+      'en': 'Save to history',
+      'zh': '保存到历史记录',
+      'ko': '기록에 저장',
+      'es': 'Guardar en el historial',
+      'fr': 'Enregistrer dans l’historique',
+      'de': 'Im Verlauf speichern',
+      'pt': 'Salvar no histórico',
+      'ru': 'Сохранить в историю',
+    },
+    'fsv.retry': {
+      'ja': '再試行',
+      'en': 'Retry',
+      'zh': '重试',
+      'ko': '다시 시도',
+      'es': 'Reintentar',
+      'fr': 'Réessayer',
+      'de': 'Erneut versuchen',
+      'pt': 'Tentar novamente',
+      'ru': 'Повторить',
+    },
+    'fsv.playInWebview': {
+      'ja': 'WebView で再生',
+      'en': 'Play in WebView',
+      'zh': '在 WebView 中播放',
+      'ko': 'WebView에서 재생',
+      'es': 'Reproducir en WebView',
+      'fr': 'Lire dans WebView',
+      'de': 'In WebView abspielen',
+      'pt': 'Reproduzir no WebView',
+      'ru': 'Воспроизвести в WebView',
+    },
+    'fsv.openInApp': {
+      'ja': '端末標準アプリで開く',
+      'en': 'Open in the default app',
+      'zh': '用设备默认应用打开',
+      'ko': '기기 기본 앱으로 열기',
+      'es': 'Abrir en la app predeterminada',
+      'fr': 'Ouvrir dans l’app par défaut',
+      'de': 'In Standard-App öffnen',
+      'pt': 'Abrir no app padrão',
+      'ru': 'Открыть в приложении по умолчанию',
+    },
+    'fsv.backHistory': {
+      'ja': '戻る (ブラウザ履歴)',
+      'en': 'Back (browser history)',
+      'zh': '后退（浏览器历史）',
+      'ko': '뒤로 (브라우저 기록)',
+      'es': 'Atrás (historial del navegador)',
+      'fr': 'Retour (historique du navigateur)',
+      'de': 'Zurück (Browserverlauf)',
+      'pt': 'Voltar (histórico do navegador)',
+      'ru': 'Назад (история браузера)',
+    },
+    'fsv.forwardHistory': {
+      'ja': '進む (ブラウザ履歴)',
+      'en': 'Forward (browser history)',
+      'zh': '前进（浏览器历史）',
+      'ko': '앞으로 (브라우저 기록)',
+      'es': 'Adelante (historial del navegador)',
+      'fr': 'Suivant (historique du navigateur)',
+      'de': 'Vorwärts (Browserverlauf)',
+      'pt': 'Avançar (histórico do navegador)',
+      'ru': 'Вперёд (история браузера)',
+    },
+    'fsv.pip': {
+      'ja': 'ピクチャインピクチャ',
+      'en': 'Picture-in-picture',
+      'zh': '画中画',
+      'ko': '픽처 인 픽처',
+      'es': 'Imagen sobre imagen',
+      'fr': 'Image dans l’image',
+      'de': 'Bild-in-Bild',
+      'pt': 'Picture-in-picture',
+      'ru': 'Картинка в картинке',
+    },
+    'fsv.download': {
+      'ja': 'ダウンロード',
+      'en': 'Download',
+      'zh': '下载',
+      'ko': '다운로드',
+      'es': 'Descargar',
+      'fr': 'Télécharger',
+      'de': 'Herunterladen',
+      'pt': 'Baixar',
+      'ru': 'Скачать',
+    },
+    'fsv.hideUi': {
+      'ja': '全 UI を隠す (動画だけ表示)',
+      'en': 'Hide all UI (show only the video)',
+      'zh': '隐藏所有界面（仅显示视频）',
+      'ko': '모든 UI 숨기기 (동영상만 표시)',
+      'es': 'Ocultar toda la interfaz (mostrar solo el vídeo)',
+      'fr': 'Masquer toute l’interface (afficher seulement la vidéo)',
+      'de': 'Gesamte UI ausblenden (nur Video anzeigen)',
+      'pt': 'Ocultar toda a interface (mostrar só o vídeo)',
+      'ru': 'Скрыть весь интерфейс (только видео)',
+    },
+    'fsv.reloadVideo': {
+      'ja': '動画を再読み込み',
+      'en': 'Reload the video',
+      'zh': '重新加载视频',
+      'ko': '동영상 새로고침',
+      'es': 'Recargar el vídeo',
+      'fr': 'Recharger la vidéo',
+      'de': 'Video neu laden',
+      'pt': 'Recarregar o vídeo',
+      'ru': 'Перезагрузить видео',
+    },
+    'fsv.ytSearch': {
+      'ja': 'YouTube 検索',
+      'en': 'YouTube search',
+      'zh': 'YouTube 搜索',
+      'ko': 'YouTube 검색',
+      'es': 'Búsqueda en YouTube',
+      'fr': 'Recherche YouTube',
+      'de': 'YouTube-Suche',
+      'pt': 'Busca no YouTube',
+      'ru': 'Поиск на YouTube',
+    },
+    'search.searching': {
+      'ja': '「{kw}」を検索中... ({n}件)',
+      'en': 'Searching “{kw}”... ({n})',
+      'zh': '正在搜索「{kw}」...（{n} 条）',
+      'ko': '「{kw}」 검색 중... ({n}건)',
+      'es': 'Buscando “{kw}”... ({n})',
+      'fr': 'Recherche de « {kw} »... ({n})',
+      'de': '„{kw}“ wird gesucht... ({n})',
+      'pt': 'Buscando “{kw}”... ({n})',
+      'ru': 'Поиск «{kw}»... ({n})',
+    },
+    'video.title': {
+      'ja': 'ビデオエディター',
+      'en': 'Video editor',
+      'zh': '视频编辑器',
+      'ko': '비디오 편집기',
+      'es': 'Editor de vídeo',
+      'fr': 'Éditeur vidéo',
+      'de': 'Video-Editor',
+      'pt': 'Editor de vídeo',
+      'ru': 'Видеоредактор',
+    },
+    'video.exporting': {
+      'ja': '書き出し中',
+      'en': 'Exporting',
+      'zh': '正在导出',
+      'ko': '내보내는 중',
+      'es': 'Exportando',
+      'fr': 'Exportation',
+      'de': 'Wird exportiert',
+      'pt': 'Exportando',
+      'ru': 'Экспорт',
+    },
+    'video.ffmpegNotFound': {
+      'ja': 'ffmpeg が見つかりません',
+      'en': 'ffmpeg not found',
+      'zh': '未找到 ffmpeg',
+      'ko': 'ffmpeg을 찾을 수 없습니다',
+      'es': 'No se encontró ffmpeg',
+      'fr': 'ffmpeg introuvable',
+      'de': 'ffmpeg nicht gefunden',
+      'pt': 'ffmpeg não encontrado',
+      'ru': 'ffmpeg не найден',
+    },
+    'video.ffmpegNotFoundBody': {
+      'ja':
+          '動画の書き出しには ffmpeg が必要です。\n\n「自動インストール」 を押すと、 アプリ専用フォルダーに ffmpeg を\nダウンロードして設定します (約 80MB / Windows 専用)。\n手動で入れる場合は ffmpeg を PATH に通すか\nC:\\ffmpeg\\bin\\ffmpeg.exe に配置してください。',
+      'en':
+          'ffmpeg is required to export videos.\n\nPressing “Auto-install” downloads and sets up ffmpeg in the app’s folder (about 80MB / Windows only).\nTo install it manually, add ffmpeg to PATH or place it at C:\\ffmpeg\\bin\\ffmpeg.exe.',
+      'zh':
+          '导出视频需要 ffmpeg。\n\n点击“自动安装”会在应用专用文件夹中下载并配置 ffmpeg（约 80MB / 仅限 Windows）。\n手动安装时，请将 ffmpeg 加入 PATH，或放置到 C:\\ffmpeg\\bin\\ffmpeg.exe。',
+      'ko':
+          '동영상 내보내기에는 ffmpeg이 필요합니다.\n\n“자동 설치”를 누르면 앱 전용 폴더에 ffmpeg을 다운로드하여 설정합니다(약 80MB / Windows 전용).\n수동 설치 시 ffmpeg을 PATH에 추가하거나 C:\\ffmpeg\\bin\\ffmpeg.exe에 배치하세요.',
+      'es':
+          'ffmpeg es necesario para exportar vídeos.\n\nAl pulsar “Instalación automática” se descarga y configura ffmpeg en la carpeta de la app (unos 80MB / solo Windows).\nPara instalarlo manualmente, añade ffmpeg al PATH o colócalo en C:\\ffmpeg\\bin\\ffmpeg.exe.',
+      'fr':
+          'ffmpeg est requis pour exporter des vidéos.\n\nAppuyer sur « Installation automatique » télécharge et configure ffmpeg dans le dossier de l’app (environ 80 Mo / Windows uniquement).\nPour l’installer manuellement, ajoutez ffmpeg au PATH ou placez-le dans C:\\ffmpeg\\bin\\ffmpeg.exe.',
+      'de':
+          'ffmpeg wird zum Exportieren von Videos benötigt.\n\nMit „Automatisch installieren“ wird ffmpeg in den App-Ordner heruntergeladen und eingerichtet (ca. 80 MB / nur Windows).\nZur manuellen Installation ffmpeg in den PATH aufnehmen oder unter C:\\ffmpeg\\bin\\ffmpeg.exe ablegen.',
+      'pt':
+          'O ffmpeg é necessário para exportar vídeos.\n\nAo pressionar “Instalação automática”, o ffmpeg é baixado e configurado na pasta do app (cerca de 80MB / apenas Windows).\nPara instalar manualmente, adicione o ffmpeg ao PATH ou coloque-o em C:\\ffmpeg\\bin\\ffmpeg.exe.',
+      'ru':
+          'Для экспорта видео нужен ffmpeg.\n\nПри нажатии «Автоустановка» ffmpeg загружается и настраивается в папке приложения (около 80 МБ / только Windows).\nДля ручной установки добавьте ffmpeg в PATH или поместите его в C:\\ffmpeg\\bin\\ffmpeg.exe.',
+    },
+    'video.autoInstall': {
+      'ja': '自動インストール',
+      'en': 'Auto-install',
+      'zh': '自动安装',
+      'ko': '자동 설치',
+      'es': 'Instalación automática',
+      'fr': 'Installation automatique',
+      'de': 'Automatisch installieren',
+      'pt': 'Instalação automática',
+      'ru': 'Автоустановка',
+    },
+    'video.howToGet': {
+      'ja': '入手方法',
+      'en': 'How to get it',
+      'zh': '获取方法',
+      'ko': '입수 방법',
+      'es': 'Cómo obtenerlo',
+      'fr': 'Comment l’obtenir',
+      'de': 'Bezugsweg',
+      'pt': 'Como obter',
+      'ru': 'Как получить',
+    },
+    'video.installingFfmpeg': {
+      'ja': 'ffmpeg を導入しています',
+      'en': 'Installing ffmpeg',
+      'zh': '正在安装 ffmpeg',
+      'ko': 'ffmpeg을 설치하는 중',
+      'es': 'Instalando ffmpeg',
+      'fr': 'Installation de ffmpeg',
+      'de': 'ffmpeg wird installiert',
+      'pt': 'Instalando ffmpeg',
+      'ru': 'Установка ffmpeg',
+    },
+    'video.ffmpegInstalled': {
+      'ja': 'ffmpeg を導入しました。 もう一度「書き出し」 を押してください',
+      'en': 'ffmpeg installed. Press “Export” again.',
+      'zh': '已安装 ffmpeg。请再次点击“导出”。',
+      'ko': 'ffmpeg을 설치했습니다. 다시 “내보내기”를 누르세요.',
+      'es': 'ffmpeg instalado. Pulsa “Exportar” de nuevo.',
+      'fr': 'ffmpeg installé. Appuyez à nouveau sur « Exporter ».',
+      'de': 'ffmpeg installiert. Drücken Sie erneut „Exportieren“.',
+      'pt': 'ffmpeg instalado. Pressione “Exportar” novamente.',
+      'ru': 'ffmpeg установлен. Нажмите «Экспорт» ещё раз.',
+    },
+    'video.exportDone': {
+      'ja': '書き出し完了',
+      'en': 'Export complete',
+      'zh': '导出完成',
+      'ko': '내보내기 완료',
+      'es': 'Exportación completada',
+      'fr': 'Exportation terminée',
+      'de': 'Export abgeschlossen',
+      'pt': 'Exportação concluída',
+      'ru': 'Экспорт завершён',
+    },
+    'video.exportFailed': {
+      'ja': '書き出しに失敗しました',
+      'en': 'Export failed',
+      'zh': '导出失败',
+      'ko': '내보내기에 실패했습니다',
+      'es': 'Error al exportar',
+      'fr': 'Échec de l’exportation',
+      'de': 'Export fehlgeschlagen',
+      'pt': 'Falha na exportação',
+      'ru': 'Не удалось экспортировать',
+    },
+    'video.subtitleHint': {
+      'ja': '字幕・テロップ文字',
+      'en': 'Subtitle / caption text',
+      'zh': '字幕 / 字幕条文字',
+      'ko': '자막·텔롭 문자',
+      'es': 'Texto de subtítulo / rótulo',
+      'fr': 'Texte de sous-titre / incrustation',
+      'de': 'Untertitel-/Einblendungstext',
+      'pt': 'Texto de legenda / letreiro',
+      'ru': 'Текст субтитра / титра',
+    },
+    'video.font': {
+      'ja': 'フォント',
+      'en': 'Font',
+      'zh': '字体',
+      'ko': '글꼴',
+      'es': 'Fuente',
+      'fr': 'Police',
+      'de': 'Schriftart',
+      'pt': 'Fonte',
+      'ru': 'Шрифт',
+    },
+    'video.fontSize': {
+      'ja': '大きさ',
+      'en': 'Size',
+      'zh': '大小',
+      'ko': '크기',
+      'es': 'Tamaño',
+      'fr': 'Taille',
+      'de': 'Größe',
+      'pt': 'Tamanho',
+      'ru': 'Размер',
+    },
+    'video.anim': {
+      'ja': 'アニメ',
+      'en': 'Animation',
+      'zh': '动画',
+      'ko': '애니메이션',
+      'es': 'Animación',
+      'fr': 'Animation',
+      'de': 'Animation',
+      'pt': 'Animação',
+      'ru': 'Анимация',
+    },
+    'webview.initializing': {
+      'ja': 'WebView2を初期化中...',
+      'en': 'Initializing WebView2...',
+      'zh': '正在初始化 WebView2...',
+      'ko': 'WebView2 초기화 중...',
+      'es': 'Inicializando WebView2...',
+      'fr': 'Initialisation de WebView2...',
+      'de': 'WebView2 wird initialisiert...',
+      'pt': 'Inicializando o WebView2...',
+      'ru': 'Инициализация WebView2...',
+    },
+    'docNav.prevPage': {
+      'ja': '前のページ',
+      'en': 'Previous page',
+      'zh': '上一页',
+      'ko': '이전 페이지',
+      'es': 'Página anterior',
+      'fr': 'Page précédente',
+      'de': 'Vorherige Seite',
+      'pt': 'Página anterior',
+      'ru': 'Предыдущая страница',
+    },
+    'docNav.nextPage': {
+      'ja': '次のページ',
+      'en': 'Next page',
+      'zh': '下一页',
+      'ko': '다음 페이지',
+      'es': 'Página siguiente',
+      'fr': 'Page suivante',
+      'de': 'Nächste Seite',
+      'pt': 'Próxima página',
+      'ru': 'Следующая страница',
+    },
+    'docNav.totalPages': {
+      'ja': '全 {n} ページ',
+      'en': '{n} pages total',
+      'zh': '共 {n} 页',
+      'ko': '전체 {n}페이지',
+      'es': '{n} páginas en total',
+      'fr': '{n} pages au total',
+      'de': '{n} Seiten gesamt',
+      'pt': '{n} páginas no total',
+      'ru': 'Всего страниц: {n}',
+    },
+    'docNav.deletePageN': {
+      'ja': '{n} ページ目を削除',
+      'en': 'Delete page {n}',
+      'zh': '删除第 {n} 页',
+      'ko': '{n}페이지 삭제',
+      'es': 'Eliminar la página {n}',
+      'fr': 'Supprimer la page {n}',
+      'de': 'Seite {n} löschen',
+      'pt': 'Excluir a página {n}',
+      'ru': 'Удалить страницу {n}',
+    },
+    'docNav.addPage': {
+      'ja': 'ページを追加',
+      'en': 'Add page',
+      'zh': '添加页面',
+      'ko': '페이지 추가',
+      'es': 'Añadir página',
+      'fr': 'Ajouter une page',
+      'de': 'Seite hinzufügen',
+      'pt': 'Adicionar página',
+      'ru': 'Добавить страницу',
+    },
+    'docPage.deleteConfirm': {
+      'ja': '{n} ページ目を削除しますか？ この操作は取り消せません。',
+      'en': 'Delete page {n}? This action cannot be undone.',
+      'zh': '要删除第 {n} 页吗？此操作无法撤销。',
+      'ko': '{n}페이지를 삭제할까요? 이 작업은 되돌릴 수 없습니다.',
+      'es': '¿Eliminar la página {n}? Esta acción no se puede deshacer.',
+      'fr': 'Supprimer la page {n} ? Cette action est irréversible.',
+      'de':
+          'Seite {n} löschen? Diese Aktion kann nicht rückgängig gemacht werden.',
+      'pt': 'Excluir a página {n}? Esta ação não pode ser desfeita.',
+      'ru': 'Удалить страницу {n}? Это действие нельзя отменить.',
+    },
+    'chat.aiQuiz': {
+      'ja': 'AIと会話（クイズ）',
+      'en': 'Chat with AI (quiz)',
+      'zh': '与 AI 对话（测验）',
+      'ko': 'AI와 대화(퀴즈)',
+      'es': 'Conversar con la IA (cuestionario)',
+      'fr': 'Discuter avec l’IA (quiz)',
+      'de': 'Mit der KI chatten (Quiz)',
+      'pt': 'Conversar com a IA (quiz)',
+      'ru': 'Чат с ИИ (викторина)',
+    },
+    'chat.inputHint': {
+      'ja': '答えや質問を入力',
+      'en': 'Enter an answer or question',
+      'zh': '输入答案或问题',
+      'ko': '답이나 질문 입력',
+      'es': 'Introduce una respuesta o pregunta',
+      'fr': 'Saisissez une réponse ou une question',
+      'de': 'Antwort oder Frage eingeben',
+      'pt': 'Digite uma resposta ou pergunta',
+      'ru': 'Введите ответ или вопрос',
+    },
+    'talk.applicationType': {
+      'ja': '応募区分',
+      'en': 'Application type',
+      'zh': '应聘类别',
+      'ko': '지원 구분',
+      'es': 'Tipo de solicitud',
+      'fr': 'Type de candidature',
+      'de': 'Bewerbungsart',
+      'pt': 'Tipo de candidatura',
+      'ru': 'Тип заявки',
+    },
+    'talk.yourCareer': {
+      'ja': '自分の経歴 (任意)',
+      'en': 'Your career (optional)',
+      'zh': '你的经历（可选）',
+      'ko': '자신의 경력 (선택)',
+      'es': 'Tu trayectoria (opcional)',
+      'fr': 'Votre parcours (facultatif)',
+      'de': 'Ihr Werdegang (optional)',
+      'pt': 'Sua trajetória (opcional)',
+      'ru': 'Ваша карьера (необязательно)',
+    },
+    'talk.manageCareer': {
+      'ja': '経歴・資格を管理',
+      'en': 'Manage career & qualifications',
+      'zh': '管理经历与资格',
+      'ko': '경력·자격 관리',
+      'es': 'Gestionar trayectoria y cualificaciones',
+      'fr': 'Gérer parcours et qualifications',
+      'de': 'Werdegang & Qualifikationen verwalten',
+      'pt': 'Gerenciar trajetória e qualificações',
+      'ru': 'Управление карьерой и квалификациями',
+    },
+    'talk.qualifications': {
+      'ja': '保有資格 (任意・複数選択可)',
+      'en': 'Qualifications (optional, multiple allowed)',
+      'zh': '持有资格（可选，可多选）',
+      'ko': '보유 자격 (선택·복수 선택 가능)',
+      'es': 'Cualificaciones (opcional, varias permitidas)',
+      'fr': 'Qualifications (facultatif, plusieurs possibles)',
+      'de': 'Qualifikationen (optional, Mehrfachauswahl)',
+      'pt': 'Qualificações (opcional, várias permitidas)',
+      'ru': 'Квалификации (необязательно, можно несколько)',
+    },
+    'talk.registerHint': {
+      'ja': '「経歴・資格を管理」 から登録できます',
+      'en': 'You can register them from “Manage career & qualifications”',
+      'zh': '可从“管理经历与资格”进行登记',
+      'ko': '“경력·자격 관리”에서 등록할 수 있습니다',
+      'es':
+          'Puedes registrarlas desde “Gestionar trayectoria y cualificaciones”',
+      'fr':
+          'Vous pouvez les enregistrer depuis « Gérer parcours et qualifications »',
+      'de':
+          'Sie können sie unter „Werdegang & Qualifikationen verwalten“ registrieren',
+      'pt': 'Você pode registrá-las em “Gerenciar trajetória e qualificações”',
+      'ru':
+          'Их можно добавить в разделе «Управление карьерой и квалификациями»',
+    },
+    'talk.clientProfile': {
+      'ja': '商談相手はどんな人？ (任意)',
+      'en': 'What is the client like? (optional)',
+      'zh': '洽谈对象是怎样的人？（可选）',
+      'ko': '상담 상대는 어떤 사람? (선택)',
+      'es': '¿Cómo es el cliente? (opcional)',
+      'fr': 'Comment est l’interlocuteur ? (facultatif)',
+      'de': 'Wie ist der Gesprächspartner? (optional)',
+      'pt': 'Como é o cliente? (opcional)',
+      'ru': 'Каков собеседник? (необязательно)',
+    },
+    'talk.approach': {
+      'ja': 'アプローチ方法',
+      'en': 'Approach',
+      'zh': '接触方式',
+      'ko': '접근 방법',
+      'es': 'Método de enfoque',
+      'fr': 'Méthode d’approche',
+      'de': 'Vorgehensweise',
+      'pt': 'Abordagem',
+      'ru': 'Способ подхода',
+    },
+    'talk.backToConv': {
+      'ja': '会話に戻る',
+      'en': 'Back to conversation',
+      'zh': '返回对话',
+      'ko': '대화로 돌아가기',
+      'es': 'Volver a la conversación',
+      'fr': 'Revenir à la conversation',
+      'de': 'Zurück zum Gespräch',
+      'pt': 'Voltar à conversa',
+      'ru': 'Вернуться к разговору',
+    },
+    'talk.end': {
+      'ja': '終了',
+      'en': 'End',
+      'zh': '结束',
+      'ko': '종료',
+      'es': 'Finalizar',
+      'fr': 'Terminer',
+      'de': 'Beenden',
+      'pt': 'Encerrar',
+      'ru': 'Завершить',
+    },
+    'talk.newgrad': {
+      'ja': '新卒',
+      'en': 'New graduate',
+      'zh': '应届',
+      'ko': '신졸',
+      'es': 'Recién graduado',
+      'fr': 'Jeune diplômé',
+      'de': 'Berufseinsteiger',
+      'pt': 'Recém-formado',
+      'ru': 'Выпускник',
+    },
+    'talk.midcareer': {
+      'ja': '中途',
+      'en': 'Mid-career',
+      'zh': '社招',
+      'ko': '경력',
+      'es': 'Con experiencia',
+      'fr': 'Expérimenté',
+      'de': 'Berufserfahren',
+      'pt': 'Com experiência',
+      'ru': 'С опытом',
+    },
+    'talk.inperson': {
+      'ja': '対面',
+      'en': 'In person',
+      'zh': '面对面',
+      'ko': '대면',
+      'es': 'Presencial',
+      'fr': 'En personne',
+      'de': 'Persönlich',
+      'pt': 'Presencial',
+      'ru': 'Лично',
+    },
+    'talk.phone': {
+      'ja': '電話',
+      'en': 'Phone',
+      'zh': '电话',
+      'ko': '전화',
+      'es': 'Teléfono',
+      'fr': 'Téléphone',
+      'de': 'Telefon',
+      'pt': 'Telefone',
+      'ru': 'Телефон',
+    },
+    'talk.online': {
+      'ja': 'オンライン',
+      'en': 'Online',
+      'zh': '在线',
+      'ko': '온라인',
+      'es': 'En línea',
+      'fr': 'En ligne',
+      'de': 'Online',
+      'pt': 'Online',
+      'ru': 'Онлайн',
+    },
+    'talk.careerHint': {
+      'ja': '例: 〇〇大学卒、 △△でのインターン経験、 ◇◇のスキル など',
+      'en':
+          'e.g. graduated from ○○ University, internship at △△, ◇◇ skills, etc.',
+      'zh': '例如：○○大学毕业、在△△的实习经验、◇◇技能 等',
+      'ko': '예: ○○대학 졸업, △△ 인턴 경험, ◇◇ 스킬 등',
+      'es':
+          'p. ej. graduado en la Universidad ○○, prácticas en △△, habilidades en ◇◇, etc.',
+      'fr':
+          'ex. : diplômé de l’université ○○, stage chez △△, compétences en ◇◇, etc.',
+      'de':
+          'z. B. Abschluss an der ○○-Universität, Praktikum bei △△, ◇◇-Kenntnisse usw.',
+      'pt':
+          'ex.: formado pela Universidade ○○, estágio na △△, habilidades em ◇◇, etc.',
+      'ru': 'напр.: окончил университет ○○, стажировка в △△, навыки ◇◇ и т. д.',
+    },
+    'talk.counterpartHint': {
+      'ja': '例: 中小企業の総務部長、 50代、 コスト重視で慎重派',
+      'en':
+          'e.g. GA manager at an SME, in their 50s, cost-conscious and cautious',
+      'zh': '例如：中小企业总务部长、50多岁、注重成本且谨慎',
+      'ko': '예: 중소기업 총무부장, 50대, 비용 중시·신중한 성향',
+      'es':
+          'p. ej. jefe de administración de una pyme, 50 años, prudente y centrado en costes',
+      'fr':
+          'ex. : responsable administratif d’une PME, la cinquantaine, prudent et soucieux des coûts',
+      'de':
+          'z. B. Verwaltungsleiter eines KMU, Mitte 50, kostenbewusst und vorsichtig',
+      'pt':
+          'ex.: gerente administrativo de uma PME, na faixa dos 50, cauteloso e focado em custos',
+      'ru':
+          'напр.: начальник АХО в малом бизнесе, около 50, осторожный, ориентирован на расходы',
+    },
+    'talk.startInterview': {
+      'ja': '面接を始める',
+      'en': 'Start the interview',
+      'zh': '开始面试',
+      'ko': '면접 시작',
+      'es': 'Iniciar la entrevista',
+      'fr': 'Commencer l’entretien',
+      'de': 'Interview starten',
+      'pt': 'Iniciar a entrevista',
+      'ru': 'Начать собеседование',
+    },
+    'talk.startSales': {
+      'ja': '商談を始める',
+      'en': 'Start the sales talk',
+      'zh': '开始商务洽谈',
+      'ko': '상담 시작',
+      'es': 'Iniciar la negociación',
+      'fr': 'Commencer la négociation',
+      'de': 'Verkaufsgespräch starten',
+      'pt': 'Iniciar a negociação',
+      'ru': 'Начать переговоры',
+    },
+    'talk.interviewFeedback': {
+      'ja': '面接フィードバック',
+      'en': 'Interview feedback',
+      'zh': '面试反馈',
+      'ko': '면접 피드백',
+      'es': 'Comentarios de la entrevista',
+      'fr': 'Retour sur l’entretien',
+      'de': 'Interview-Feedback',
+      'pt': 'Feedback da entrevista',
+      'ru': 'Отзыв о собеседовании',
+    },
+    'talk.salesFeedback': {
+      'ja': '商談フィードバック',
+      'en': 'Sales feedback',
+      'zh': '洽谈反馈',
+      'ko': '상담 피드백',
+      'es': 'Comentarios de la negociación',
+      'fr': 'Retour sur la négociation',
+      'de': 'Verkaufs-Feedback',
+      'pt': 'Feedback da negociação',
+      'ru': 'Отзыв о переговорах',
+    },
+    'talk.endEvalInterview': {
+      'ja': '終了して合否・評価',
+      'en': 'End and get result & evaluation',
+      'zh': '结束并查看合格与否及评价',
+      'ko': '종료하고 합격 여부·평가',
+      'es': 'Finalizar y ver resultado y evaluación',
+      'fr': 'Terminer et obtenir le résultat et l’évaluation',
+      'de': 'Beenden und Ergebnis & Bewertung',
+      'pt': 'Encerrar e ver resultado e avaliação',
+      'ru': 'Завершить и получить результат и оценку',
+    },
+    'talk.endEval': {
+      'ja': '終了して評価',
+      'en': 'End and evaluate',
+      'zh': '结束并评价',
+      'ko': '종료하고 평가',
+      'es': 'Finalizar y evaluar',
+      'fr': 'Terminer et évaluer',
+      'de': 'Beenden und bewerten',
+      'pt': 'Encerrar e avaliar',
+      'ru': 'Завершить и оценить',
+    },
+    'talk.replyHint': {
+      'ja': '返答を入力 / マイクで話す',
+      'en': 'Type a reply / speak with the mic',
+      'zh': '输入回答 / 用麦克风说话',
+      'ko': '답변 입력 / 마이크로 말하기',
+      'es': 'Escribe una respuesta / habla con el micrófono',
+      'fr': 'Saisissez une réponse / parlez au micro',
+      'de': 'Antwort eingeben / mit dem Mikrofon sprechen',
+      'pt': 'Digite uma resposta / fale com o microfone',
+      'ru': 'Введите ответ / говорите в микрофон',
+    },
+    'talk.voiceInput': {
+      'ja': '音声入力',
+      'en': 'Voice input',
+      'zh': '语音输入',
+      'ko': '음성 입력',
+      'es': 'Entrada de voz',
+      'fr': 'Saisie vocale',
+      'de': 'Spracheingabe',
+      'pt': 'Entrada de voz',
+      'ru': 'Голосовой ввод',
+    },
+    'records.empty': {
+      'ja': 'まだ登録がありません',
+      'en': 'Nothing registered yet',
+      'zh': '尚未登记',
+      'ko': '아직 등록이 없습니다',
+      'es': 'Aún no hay registros',
+      'fr': 'Rien d’enregistré pour l’instant',
+      'de': 'Noch nichts registriert',
+      'pt': 'Ainda não há registros',
+      'ru': 'Пока ничего не добавлено',
+    },
+    'records.career': {
+      'ja': '経歴',
+      'en': 'Career',
+      'zh': '经历',
+      'ko': '경력',
+      'es': 'Trayectoria',
+      'fr': 'Parcours',
+      'de': 'Werdegang',
+      'pt': 'Trajetória',
+      'ru': 'Карьера',
+    },
+    'records.quals': {
+      'ja': '保有資格',
+      'en': 'Qualifications',
+      'zh': '持有资格',
+      'ko': '보유 자격',
+      'es': 'Cualificaciones',
+      'fr': 'Qualifications',
+      'de': 'Qualifikationen',
+      'pt': 'Qualificações',
+      'ru': 'Квалификации',
+    },
+    'records.title': {
+      'ja': '経歴・保有資格の管理',
+      'en': 'Manage career & qualifications',
+      'zh': '管理经历与资格',
+      'ko': '경력·보유 자격 관리',
+      'es': 'Gestionar trayectoria y cualificaciones',
+      'fr': 'Gérer parcours et qualifications',
+      'de': 'Werdegang & Qualifikationen verwalten',
+      'pt': 'Gerenciar trajetória e qualificações',
+      'ru': 'Управление карьерой и квалификациями',
+    },
+    'gantt.title': {
+      'ja': 'ガントチャート',
+      'en': 'Gantt chart',
+      'zh': '甘特图',
+      'ko': '간트 차트',
+      'es': 'Diagrama de Gantt',
+      'fr': 'Diagramme de Gantt',
+      'de': 'Gantt-Diagramm',
+      'pt': 'Gráfico de Gantt',
+      'ru': 'Диаграмма Ганта',
+    },
+    'gantt.day': {
+      'ja': '日',
+      'en': 'Day',
+      'zh': '日',
+      'ko': '일',
+      'es': 'Día',
+      'fr': 'Jour',
+      'de': 'Tag',
+      'pt': 'Dia',
+      'ru': 'День',
+    },
+    'gantt.hour': {
+      'ja': '時間',
+      'en': 'Hour',
+      'zh': '小时',
+      'ko': '시간',
+      'es': 'Hora',
+      'fr': 'Heure',
+      'de': 'Stunde',
+      'pt': 'Hora',
+      'ru': 'Час',
+    },
+    'gantt.notifySettings': {
+      'ja': '予定の通知設定',
+      'en': 'Schedule notification settings',
+      'zh': '日程通知设置',
+      'ko': '일정 알림 설정',
+      'es': 'Ajustes de notificación del calendario',
+      'fr': 'Paramètres de notification du planning',
+      'de': 'Benachrichtigungseinstellungen für Termine',
+      'pt': 'Configurações de notificação de agenda',
+      'ru': 'Настройки уведомлений о расписании',
+    },
+    'gantt.notifyToggle': {
+      'ja': '予定を通知する',
+      'en': 'Notify about schedules',
+      'zh': '通知日程',
+      'ko': '일정을 알림',
+      'es': 'Notificar sobre el calendario',
+      'fr': 'Notifier les plannings',
+      'de': 'Über Termine benachrichtigen',
+      'pt': 'Notificar sobre agendas',
+      'ru': 'Уведомлять о расписании',
+    },
+    'gantt.notifyDesc': {
+      'ja': '各タスクの開始日に通知します',
+      'en': 'Notifies on each task’s start date',
+      'zh': '在每个任务的开始日通知',
+      'ko': '각 작업의 시작일에 알립니다',
+      'es': 'Notifica en la fecha de inicio de cada tarea',
+      'fr': 'Notifie à la date de début de chaque tâche',
+      'de': 'Benachrichtigt am Startdatum jeder Aufgabe',
+      'pt': 'Notifica na data de início de cada tarefa',
+      'ru': 'Уведомляет в дату начала каждой задачи',
+    },
+    'gantt.notifyTime': {
+      'ja': '通知時刻',
+      'en': 'Notification time',
+      'zh': '通知时间',
+      'ko': '알림 시각',
+      'es': 'Hora de notificación',
+      'fr': 'Heure de notification',
+      'de': 'Benachrichtigungszeit',
+      'pt': 'Horário da notificação',
+      'ru': 'Время уведомления',
+    },
+    'gantt.chartName': {
+      'ja': 'チャート名',
+      'en': 'Chart name',
+      'zh': '图表名称',
+      'ko': '차트 이름',
+      'es': 'Nombre del diagrama',
+      'fr': 'Nom du diagramme',
+      'de': 'Diagrammname',
+      'pt': 'Nome do gráfico',
+      'ru': 'Название диаграммы',
+    },
+    'gantt.chartDeleteTitle': {
+      'ja': 'チャートを削除',
+      'en': 'Delete chart',
+      'zh': '删除图表',
+      'ko': '차트 삭제',
+      'es': 'Eliminar diagrama',
+      'fr': 'Supprimer le diagramme',
+      'de': 'Diagramm löschen',
+      'pt': 'Excluir gráfico',
+      'ru': 'Удалить диаграмму',
+    },
+    'gantt.chartDeleteConfirm': {
+      'ja': '「{name}」 を削除しますか?',
+      'en': 'Delete “{name}”?',
+      'zh': '要删除「{name}」吗？',
+      'ko': '「{name}」을(를) 삭제할까요?',
+      'es': '¿Eliminar “{name}”?',
+      'fr': 'Supprimer « {name} » ?',
+      'de': '„{name}“ löschen?',
+      'pt': 'Excluir “{name}”?',
+      'ru': 'Удалить «{name}»?',
+    },
+    'gantt.timeRange': {
+      'ja': '表示する時間帯',
+      'en': 'Time range to show',
+      'zh': '要显示的时间段',
+      'ko': '표시할 시간대',
+      'es': 'Franja horaria a mostrar',
+      'fr': 'Plage horaire à afficher',
+      'de': 'Anzuzeigender Zeitbereich',
+      'pt': 'Faixa de horário a exibir',
+      'ru': 'Отображаемый диапазон времени',
+    },
+    'gantt.showAll': {
+      'ja': '全表示',
+      'en': 'Show all',
+      'zh': '全部显示',
+      'ko': '모두 표시',
+      'es': 'Mostrar todo',
+      'fr': 'Tout afficher',
+      'de': 'Alle anzeigen',
+      'pt': 'Mostrar tudo',
+      'ru': 'Показать все',
+    },
+    'gantt.addChart': {
+      'ja': 'チャートを追加',
+      'en': 'Add chart',
+      'zh': '添加图表',
+      'ko': '차트 추가',
+      'es': 'Añadir diagrama',
+      'fr': 'Ajouter un diagramme',
+      'de': 'Diagramm hinzufügen',
+      'pt': 'Adicionar gráfico',
+      'ru': 'Добавить диаграмму',
+    },
+    'gantt.taskName': {
+      'ja': 'タスク名',
+      'en': 'Task name',
+      'zh': '任务名称',
+      'ko': '작업 이름',
+      'es': 'Nombre de la tarea',
+      'fr': 'Nom de la tâche',
+      'de': 'Aufgabenname',
+      'pt': 'Nome da tarefa',
+      'ru': 'Название задачи',
+    },
+    'gantt.startAt': {
+      'ja': '開始 {t}',
+      'en': 'Start {t}',
+      'zh': '开始 {t}',
+      'ko': '시작 {t}',
+      'es': 'Inicio {t}',
+      'fr': 'Début {t}',
+      'de': 'Start {t}',
+      'pt': 'Início {t}',
+      'ru': 'Начало {t}',
+    },
+    'gantt.endAt': {
+      'ja': '終了 {t}',
+      'en': 'End {t}',
+      'zh': '结束 {t}',
+      'ko': '종료 {t}',
+      'es': 'Fin {t}',
+      'fr': 'Fin {t}',
+      'de': 'Ende {t}',
+      'pt': 'Fim {t}',
+      'ru': 'Конец {t}',
+    },
+    'gantt.addToTimeline': {
+      'ja': 'タイムライン（カレンダー）に追加',
+      'en': 'Add to timeline (calendar)',
+      'zh': '添加到时间线（日历）',
+      'ko': '타임라인(캘린더)에 추가',
+      'es': 'Añadir a la línea de tiempo (calendario)',
+      'fr': 'Ajouter à la chronologie (calendrier)',
+      'de': 'Zur Zeitleiste (Kalender) hinzufügen',
+      'pt': 'Adicionar à linha do tempo (calendário)',
+      'ru': 'Добавить на временную шкалу (календарь)',
+    },
+    'gantt.dragHint': {
+      'ja': 'バーをドラッグで移動 / 端をドラッグで期間を変更',
+      'en': 'Drag the bar to move / drag the ends to change the period',
+      'zh': '拖动条形移动 / 拖动两端改变时长',
+      'ko': '막대를 드래그해 이동 / 끝을 드래그해 기간 변경',
+      'es':
+          'Arrastra la barra para mover / arrastra los extremos para cambiar el período',
+      'fr':
+          'Faites glisser la barre pour déplacer / les extrémités pour changer la durée',
+      'de':
+          'Balken ziehen zum Verschieben / Enden ziehen zum Ändern des Zeitraums',
+      'pt':
+          'Arraste a barra para mover / arraste as pontas para mudar o período',
+      'ru':
+          'Перетащите полоску, чтобы переместить / края — чтобы изменить период',
+    },
+    'gantt.noTasks': {
+      'ja': 'タスクがありません。\nここをタップ、または「タスクを追加」で作成',
+      'en': 'No tasks.\nTap here or use “Add task” to create one',
+      'zh': '没有任务。\n点击此处，或用“添加任务”创建',
+      'ko': '작업이 없습니다.\n여기를 탭하거나 “작업 추가”로 만드세요',
+      'es': 'No hay tareas.\nToca aquí o usa “Añadir tarea” para crear una',
+      'fr':
+          'Aucune tâche.\nTouchez ici ou utilisez « Ajouter une tâche » pour en créer une',
+      'de': 'Keine Aufgaben.\nHier tippen oder „Aufgabe hinzufügen“ verwenden',
+      'pt': 'Nenhuma tarefa.\nToque aqui ou use “Adicionar tarefa” para criar',
+      'ru': 'Нет задач.\nНажмите здесь или используйте «Добавить задачу»',
+    },
+    'gantt.addRow': {
+      'ja': '行を追加',
+      'en': 'Add row',
+      'zh': '添加行',
+      'ko': '행 추가',
+      'es': 'Añadir fila',
+      'fr': 'Ajouter une ligne',
+      'de': 'Zeile hinzufügen',
+      'pt': 'Adicionar linha',
+      'ru': 'Добавить строку',
+    },
+    'pip.fullscreen': {
+      'ja': '全画面に戻す',
+      'en': 'Back to full screen',
+      'zh': '返回全屏',
+      'ko': '전체 화면으로 복귀',
+      'es': 'Volver a pantalla completa',
+      'fr': 'Revenir en plein écran',
+      'de': 'Zurück zum Vollbild',
+      'pt': 'Voltar para tela cheia',
+      'ru': 'Вернуться в полный экран',
+    },
+    'voice.nextHint': {
+      'ja': '次 / next / ...',
+      'en': 'next / 次 / ...',
+      'zh': 'next / 下一个 / ...',
+      'ko': 'next / 다음 / ...',
+      'es': 'next / siguiente / ...',
+      'fr': 'next / suivant / ...',
+      'de': 'next / weiter / ...',
+      'pt': 'next / próximo / ...',
+      'ru': 'next / далее / ...',
+    },
+    'timer.finished': {
+      'ja': '⏰ タイマー終了！',
+      'en': '⏰ Timer finished!',
+      'zh': '⏰ 计时器结束！',
+      'ko': '⏰ 타이머 종료!',
+      'es': '⏰ ¡Temporizador terminado!',
+      'fr': '⏰ Minuteur terminé !',
+      'de': '⏰ Timer beendet!',
+      'pt': '⏰ Temporizador concluído!',
+      'ru': '⏰ Таймер завершён!',
+    },
+    'sw.lap': {
+      'ja': 'ラップ (最大5件)',
+      'en': 'Laps (up to 5)',
+      'zh': '计次（最多 5 个）',
+      'ko': '랩 (최대 5개)',
+      'es': 'Vueltas (máx. 5)',
+      'fr': 'Tours (5 max)',
+      'de': 'Runden (max. 5)',
+      'pt': 'Voltas (até 5)',
+      'ru': 'Круги (до 5)',
+    },
+    'sw.history': {
+      'ja': '過去の計測 (最大5件)',
+      'en': 'Past measurements (up to 5)',
+      'zh': '历史计时（最多 5 个）',
+      'ko': '과거 측정 (최대 5개)',
+      'es': 'Mediciones anteriores (máx. 5)',
+      'fr': 'Mesures précédentes (5 max)',
+      'de': 'Frühere Messungen (max. 5)',
+      'pt': 'Medições anteriores (até 5)',
+      'ru': 'Прошлые измерения (до 5)',
+    },
+    'alarm.customSound': {
+      'ja': 'カスタム音…',
+      'en': 'Custom sound…',
+      'zh': '自定义声音…',
+      'ko': '사용자 지정 소리…',
+      'es': 'Sonido personalizado…',
+      'fr': 'Son personnalisé…',
+      'de': 'Eigener Ton…',
+      'pt': 'Som personalizado…',
+      'ru': 'Свой звук…',
+    },
+    'alarm.volume': {
+      'ja': '音量',
+      'en': 'Volume',
+      'zh': '音量',
+      'ko': '음량',
+      'es': 'Volumen',
+      'fr': 'Volume',
+      'de': 'Lautstärke',
+      'pt': 'Volume',
+      'ru': 'Громкость',
+    },
+    'alarm.playFailed': {
+      'ja': '再生失敗: {err}',
+      'en': 'Playback failed: {err}',
+      'zh': '播放失败：{err}',
+      'ko': '재생 실패: {err}',
+      'es': 'Error de reproducción: {err}',
+      'fr': 'Échec de la lecture : {err}',
+      'de': 'Wiedergabe fehlgeschlagen: {err}',
+      'pt': 'Falha na reprodução: {err}',
+      'ru': 'Ошибка воспроизведения: {err}',
+    },
+    'alarm.preview': {
+      'ja': '試聴',
+      'en': 'Preview',
+      'zh': '试听',
+      'ko': '미리 듣기',
+      'es': 'Escuchar',
+      'fr': 'Écouter',
+      'de': 'Anhören',
+      'pt': 'Ouvir',
+      'ru': 'Прослушать',
+    },
+    'alarm.stop': {
+      'ja': '停止',
+      'en': 'Stop',
+      'zh': '停止',
+      'ko': '정지',
+      'es': 'Detener',
+      'fr': 'Arrêter',
+      'de': 'Stopp',
+      'pt': 'Parar',
+      'ru': 'Стоп',
+    },
+    'alarm.cannotPlay': {
+      'ja': 'このファイルは再生できません ({err})',
+      'en': 'This file can’t be played ({err})',
+      'zh': '无法播放此文件（{err}）',
+      'ko': '이 파일은 재생할 수 없습니다 ({err})',
+      'es': 'No se puede reproducir este archivo ({err})',
+      'fr': 'Ce fichier ne peut pas être lu ({err})',
+      'de': 'Diese Datei kann nicht abgespielt werden ({err})',
+      'pt': 'Este arquivo não pode ser reproduzido ({err})',
+      'ru': 'Этот файл нельзя воспроизвести ({err})',
+    },
+    'alarm.selectFile': {
+      'ja': '音声ファイルを選択… (mp3/mp4/wav/m4a/ogg)',
+      'en': 'Select an audio file… (mp3/mp4/wav/m4a/ogg)',
+      'zh': '选择音频文件…（mp3/mp4/wav/m4a/ogg）',
+      'ko': '오디오 파일 선택… (mp3/mp4/wav/m4a/ogg)',
+      'es': 'Selecciona un archivo de audio… (mp3/mp4/wav/m4a/ogg)',
+      'fr': 'Sélectionnez un fichier audio… (mp3/mp4/wav/m4a/ogg)',
+      'de': 'Audiodatei auswählen… (mp3/mp4/wav/m4a/ogg)',
+      'pt': 'Selecione um arquivo de áudio… (mp3/mp4/wav/m4a/ogg)',
+      'ru': 'Выберите аудиофайл… (mp3/mp4/wav/m4a/ogg)',
+    },
+    'alarm.resetDefault': {
+      'ja': '既定アラームに戻す',
+      'en': 'Reset to the default alarm',
+      'zh': '恢复为默认闹钟',
+      'ko': '기본 알람으로 되돌리기',
+      'es': 'Restablecer la alarma predeterminada',
+      'fr': 'Rétablir l’alarme par défaut',
+      'de': 'Auf Standardalarm zurücksetzen',
+      'pt': 'Restaurar o alarme padrão',
+      'ru': 'Вернуть будильник по умолчанию',
+    },
+    'cam.captureFailed': {
+      'ja': '撮影に失敗しました: {err}',
+      'en': 'Failed to capture: {err}',
+      'zh': '拍摄失败：{err}',
+      'ko': '촬영에 실패했습니다: {err}',
+      'es': 'Error al capturar: {err}',
+      'fr': 'Échec de la capture : {err}',
+      'de': 'Aufnahme fehlgeschlagen: {err}',
+      'pt': 'Falha ao capturar: {err}',
+      'ru': 'Не удалось сделать снимок: {err}',
+    },
+    'cal.deletedN': {
+      'ja': '{n} 件削除しました',
+      'en': 'Deleted {n}',
+      'zh': '已删除 {n} 条',
+      'ko': '{n}건 삭제했습니다',
+      'es': 'Se eliminaron {n}',
+      'fr': '{n} supprimés',
+      'de': '{n} gelöscht',
+      'pt': '{n} excluídos',
+      'ru': 'Удалено: {n}',
+    },
+    'cal.movedN': {
+      'ja': '{n} 件移動しました',
+      'en': 'Moved {n}',
+      'zh': '已移动 {n} 条',
+      'ko': '{n}건 이동했습니다',
+      'es': 'Se movieron {n}',
+      'fr': '{n} déplacés',
+      'de': '{n} verschoben',
+      'pt': '{n} movidos',
+      'ru': 'Перемещено: {n}',
+    },
+    'cal.selectedN': {
+      'ja': '{n} 件選択',
+      'en': '{n} selected',
+      'zh': '已选择 {n} 条',
+      'ko': '{n}건 선택',
+      'es': '{n} seleccionados',
+      'fr': '{n} sélectionnés',
+      'de': '{n} ausgewählt',
+      'pt': '{n} selecionados',
+      'ru': 'Выбрано: {n}',
+    },
+    'cal.prevDay': {
+      'ja': '前日へ移動 (Shift+←)',
+      'en': 'Go to previous day (Shift+←)',
+      'zh': '前往前一天 (Shift+←)',
+      'ko': '전날로 이동 (Shift+←)',
+      'es': 'Ir al día anterior (Shift+←)',
+      'fr': 'Aller au jour précédent (Maj+←)',
+      'de': 'Zum vorherigen Tag (Umschalt+←)',
+      'pt': 'Ir para o dia anterior (Shift+←)',
+      'ru': 'К предыдущему дню (Shift+←)',
+    },
+    'cal.nextDay': {
+      'ja': '翌日へ移動 (Shift+→)',
+      'en': 'Go to next day (Shift+→)',
+      'zh': '前往后一天 (Shift+→)',
+      'ko': '다음 날로 이동 (Shift+→)',
+      'es': 'Ir al día siguiente (Shift+→)',
+      'fr': 'Aller au jour suivant (Maj+→)',
+      'de': 'Zum nächsten Tag (Umschalt+→)',
+      'pt': 'Ir para o próximo dia (Shift+→)',
+      'ru': 'К следующему дню (Shift+→)',
+    },
+    'cal.bulkDelete': {
+      'ja': '選択を一括削除 (Delete)',
+      'en': 'Delete selection (Delete)',
+      'zh': '批量删除所选 (Delete)',
+      'ko': '선택 일괄 삭제 (Delete)',
+      'es': 'Eliminar la selección (Supr)',
+      'fr': 'Supprimer la sélection (Suppr)',
+      'de': 'Auswahl löschen (Entf)',
+      'pt': 'Excluir seleção (Delete)',
+      'ru': 'Удалить выбранное (Delete)',
+    },
+    'cal.deselect': {
+      'ja': '選択解除 (Esc)',
+      'en': 'Clear selection (Esc)',
+      'zh': '取消选择 (Esc)',
+      'ko': '선택 해제 (Esc)',
+      'es': 'Anular selección (Esc)',
+      'fr': 'Désélectionner (Échap)',
+      'de': 'Auswahl aufheben (Esc)',
+      'pt': 'Desfazer seleção (Esc)',
+      'ru': 'Снять выбор (Esc)',
+    },
+    'cal.zoomOut': {
+      'ja': '縮小 (Ctrl+-)',
+      'en': 'Zoom out (Ctrl+-)',
+      'zh': '缩小 (Ctrl+-)',
+      'ko': '축소 (Ctrl+-)',
+      'es': 'Alejar (Ctrl+-)',
+      'fr': 'Dézoomer (Ctrl+-)',
+      'de': 'Verkleinern (Strg+-)',
+      'pt': 'Reduzir (Ctrl+-)',
+      'ru': 'Уменьшить (Ctrl+-)',
+    },
+    'cal.routine.nth': {
+      'ja': '第{n}',
+      'en': '#{n}',
+      'zh': '第{n}',
+      'ko': '제{n}',
+      'es': 'N.º {n}',
+      'fr': 'n° {n}',
+      'de': 'Nr. {n}',
+      'pt': 'N.º {n}',
+      'ru': '№{n}',
+    },
+    'cal.zoomIn': {
+      'ja': '拡大 (Ctrl++)',
+      'en': 'Zoom in (Ctrl++)',
+      'zh': '放大 (Ctrl++)',
+      'ko': '확대 (Ctrl++)',
+      'es': 'Acercar (Ctrl++)',
+      'fr': 'Zoomer (Ctrl++)',
+      'de': 'Vergrößern (Strg++)',
+      'pt': 'Ampliar (Ctrl++)',
+      'ru': 'Увеличить (Ctrl++)',
+    },
+    'btn.refresh': {
+      'ja': '更新',
+      'en': 'Refresh',
+      'zh': '刷新',
+      'ko': '새로고침',
+      'es': 'Actualizar',
+      'fr': 'Actualiser',
+      'de': 'Aktualisieren',
+      'pt': 'Atualizar',
+      'ru': 'Обновить',
+    },
+    'common.itemsN': {
+      'ja': '{n}件',
+      'en': '{n}',
+      'zh': '{n} 条',
+      'ko': '{n}건',
+      'es': '{n}',
+      'fr': '{n}',
+      'de': '{n}',
+      'pt': '{n}',
+      'ru': '{n}',
+    },
+    'ai.setGeminiKey': {
+      'ja': 'Gemini APIキーを設定してください',
+      'en': 'Please set the Gemini API key',
+      'zh': '请设置 Gemini API 密钥',
+      'ko': 'Gemini API 키를 설정해 주세요',
+      'es': 'Configura la clave de API de Gemini',
+      'fr': 'Veuillez définir la clé API Gemini',
+      'de': 'Bitte den Gemini-API-Schlüssel festlegen',
+      'pt': 'Defina a chave de API do Gemini',
+      'ru': 'Укажите API-ключ Gemini',
+    },
+    'ai.setGeminiKeyHint': {
+      'ja': 'Gemini APIキーを設定してください（上の警告から設定画面に飛べます）',
+      'en':
+          'Please set the Gemini API key (the warning above links to settings)',
+      'zh': '请设置 Gemini API 密钥（可从上方的警告进入设置界面）',
+      'ko': 'Gemini API 키를 설정해 주세요(위 경고에서 설정 화면으로 이동할 수 있습니다)',
+      'es':
+          'Configura la clave de API de Gemini (la advertencia de arriba lleva a los ajustes)',
+      'fr':
+          'Veuillez définir la clé API Gemini (l’avertissement ci-dessus mène aux paramètres)',
+      'de':
+          'Bitte den Gemini-API-Schlüssel festlegen (die Warnung oben führt zu den Einstellungen)',
+      'pt':
+          'Defina a chave de API do Gemini (o aviso acima leva às configurações)',
+      'ru': 'Укажите API-ключ Gemini (предупреждение выше ведёт к настройкам)',
+    },
+    'ai.geminiKeyNeeded': {
+      'ja': '※ AIを使うにはGemini APIキーの設定が必要です',
+      'en': '* Using AI requires setting a Gemini API key',
+      'zh': '※ 使用 AI 需要设置 Gemini API 密钥',
+      'ko': '※ AI를 사용하려면 Gemini API 키 설정이 필요합니다',
+      'es':
+          '* Para usar la IA se necesita configurar una clave de API de Gemini',
+      'fr': '* L’utilisation de l’IA nécessite une clé API Gemini',
+      'de': '* Für die KI muss ein Gemini-API-Schlüssel festgelegt werden',
+      'pt': '* Usar a IA requer configurar uma chave de API do Gemini',
+      'ru': '* Для работы ИИ нужно указать API-ключ Gemini',
+    },
+    'ai.setApiKeyBtn': {
+      'ja': 'APIキーを設定する',
+      'en': 'Set the API key',
+      'zh': '设置 API 密钥',
+      'ko': 'API 키 설정',
+      'es': 'Configurar la clave de API',
+      'fr': 'Définir la clé API',
+      'de': 'API-Schlüssel festlegen',
+      'pt': 'Definir a chave de API',
+      'ru': 'Указать API-ключ',
+    },
+    'md.hint': {
+      'ja': '- 中心テーマ\n  - 子要素\n    - 孫要素',
+      'en': '- Central theme\n  - Child\n    - Grandchild',
+      'zh': '- 中心主题\n  - 子元素\n    - 孙元素',
+      'ko': '- 중심 주제\n  - 자식 요소\n    - 손자 요소',
+      'es': '- Tema central\n  - Hijo\n    - Nieto',
+      'fr': '- Thème central\n  - Enfant\n    - Petit-enfant',
+      'de': '- Zentrales Thema\n  - Kind\n    - Enkel',
+      'pt': '- Tema central\n  - Filho\n    - Neto',
+      'ru': '- Центральная тема\n  - Дочерний\n    - Внучатый',
+    },
+    'md.previewPlaceholder': {
+      'ja': '内容を入力するとここに模式図が表示されます',
+      'en': 'Enter content to see a diagram here',
+      'zh': '输入内容后此处会显示示意图',
+      'ko': '내용을 입력하면 여기에 도식이 표시됩니다',
+      'es': 'Escribe contenido para ver un diagrama aquí',
+      'fr': 'Saisissez du contenu pour voir un schéma ici',
+      'de': 'Inhalt eingeben, um hier ein Diagramm zu sehen',
+      'pt': 'Digite o conteúdo para ver um diagrama aqui',
+      'ru': 'Введите содержимое, чтобы увидеть схему здесь',
+    },
+    'md.helpText': {
+      'ja': 'インデント(空白2 or タブ)で階層を表します。 左=Markdown / 右=模式図プレビュー。',
+      'en':
+          'Indentation (2 spaces or a tab) shows the hierarchy. Left = Markdown / Right = diagram preview.',
+      'zh': '用缩进（2 个空格或制表符）表示层级。左=Markdown / 右=示意图预览。',
+      'ko': '들여쓰기(공백 2칸 또는 탭)로 계층을 나타냅니다. 왼쪽=Markdown / 오른쪽=도식 미리보기.',
+      'es':
+          'La sangría (2 espacios o un tabulador) indica la jerarquía. Izquierda = Markdown / Derecha = vista del diagrama.',
+      'fr':
+          'L’indentation (2 espaces ou une tabulation) indique la hiérarchie. Gauche = Markdown / Droite = aperçu du schéma.',
+      'de':
+          'Die Einrückung (2 Leerzeichen oder ein Tab) zeigt die Hierarchie. Links = Markdown / Rechts = Diagrammvorschau.',
+      'pt':
+          'A indentação (2 espaços ou uma tabulação) mostra a hierarquia. Esquerda = Markdown / Direita = pré-visualização do diagrama.',
+      'ru':
+          'Отступ (2 пробела или табуляция) задаёт иерархию. Слева = Markdown / справа = предпросмотр схемы.',
+    },
+    'md.editMarkdown': {
+      'ja': 'マークダウンで編集',
+      'en': 'Edit as Markdown',
+      'zh': '以 Markdown 编辑',
+      'ko': '마크다운으로 편집',
+      'es': 'Editar como Markdown',
+      'fr': 'Modifier en Markdown',
+      'de': 'Als Markdown bearbeiten',
+      'pt': 'Editar como Markdown',
+      'ru': 'Редактировать как Markdown',
+    },
+    'md.nodeCount': {
+      'ja': '{n} ノード',
+      'en': '{n} nodes',
+      'zh': '{n} 个节点',
+      'ko': '{n} 노드',
+      'es': '{n} nodos',
+      'fr': '{n} nœuds',
+      'de': '{n} Knoten',
+      'pt': '{n} nós',
+      'ru': '{n} узлов',
+    },
+    'md.applyToMap': {
+      'ja': 'マップに反映',
+      'en': 'Apply to map',
+      'zh': '应用到地图',
+      'ko': '맵에 반영',
+      'es': 'Aplicar al mapa',
+      'fr': 'Appliquer à la carte',
+      'de': 'Auf Karte anwenden',
+      'pt': 'Aplicar ao mapa',
+      'ru': 'Применить к карте',
+    },
+    'inq.sent': {
+      'ja': '送信しました！',
+      'en': 'Sent!',
+      'zh': '已发送！',
+      'ko': '보냈습니다!',
+      'es': '¡Enviado!',
+      'fr': 'Envoyé !',
+      'de': 'Gesendet!',
+      'pt': 'Enviado!',
+      'ru': 'Отправлено!',
+    },
+    'inq.checkHistory': {
+      'ja': '返信は「送信履歴」タブで確認できます',
+      'en': 'You can check replies in the “Sent history” tab',
+      'zh': '可在“发送历史”标签查看回复',
+      'ko': '답장은 “보낸 기록” 탭에서 확인할 수 있습니다',
+      'es': 'Puedes ver las respuestas en la pestaña “Historial de envíos”',
+      'fr':
+          'Vous pouvez voir les réponses dans l’onglet « Historique des envois »',
+      'de': 'Antworten finden Sie im Tab „Sendeverlauf“',
+      'pt': 'Você pode ver as respostas na aba “Histórico de envios”',
+      'ru': 'Ответы можно посмотреть на вкладке «История отправок»',
+    },
+    'inq.noHistory': {
+      'ja': '送信履歴はありません',
+      'en': 'No sent history',
+      'zh': '没有发送历史',
+      'ko': '보낸 기록이 없습니다',
+      'es': 'No hay historial de envíos',
+      'fr': 'Aucun historique d’envoi',
+      'de': 'Kein Sendeverlauf',
+      'pt': 'Nenhum histórico de envios',
+      'ru': 'Нет истории отправок',
+    },
+    'inq.sentAt': {
+      'ja': '送信: {dt}',
+      'en': 'Sent: {dt}',
+      'zh': '发送：{dt}',
+      'ko': '발신: {dt}',
+      'es': 'Enviado: {dt}',
+      'fr': 'Envoyé : {dt}',
+      'de': 'Gesendet: {dt}',
+      'pt': 'Enviado: {dt}',
+      'ru': 'Отправлено: {dt}',
+    },
+    'inq.devReply': {
+      'ja': '開発者からの返信 ({dt})',
+      'en': 'Reply from the developer ({dt})',
+      'zh': '开发者的回复（{dt}）',
+      'ko': '개발자의 답장 ({dt})',
+      'es': 'Respuesta del desarrollador ({dt})',
+      'fr': 'Réponse du développeur ({dt})',
+      'de': 'Antwort des Entwicklers ({dt})',
+      'pt': 'Resposta do desenvolvedor ({dt})',
+      'ru': 'Ответ разработчика ({dt})',
+    },
+    'inq.reply': {
+      'ja': '返信する',
+      'en': 'Reply',
+      'zh': '回复',
+      'ko': '답장하기',
+      'es': 'Responder',
+      'fr': 'Répondre',
+      'de': 'Antworten',
+      'pt': 'Responder',
+      'ru': 'Ответить',
+    },
+    'inq.noInquiries': {
+      'ja': '問い合わせはまだありません',
+      'en': 'No inquiries yet',
+      'zh': '还没有咨询',
+      'ko': '아직 문의가 없습니다',
+      'es': 'Aún no hay consultas',
+      'fr': 'Aucune demande pour l’instant',
+      'de': 'Noch keine Anfragen',
+      'pt': 'Ainda não há consultas',
+      'ru': 'Пока нет запросов',
+    },
+    'inq.noInquiriesShort': {
+      'ja': '問い合わせはありません',
+      'en': 'No inquiries',
+      'zh': '没有咨询',
+      'ko': '문의가 없습니다',
+      'es': 'No hay consultas',
+      'fr': 'Aucune demande',
+      'de': 'Keine Anfragen',
+      'pt': 'Nenhuma consulta',
+      'ru': 'Нет запросов',
+    },
+    'inq.yourReply': {
+      'ja': 'あなたの返信',
+      'en': 'Your reply',
+      'zh': '你的回复',
+      'ko': '나의 답장',
+      'es': 'Tu respuesta',
+      'fr': 'Votre réponse',
+      'de': 'Ihre Antwort',
+      'pt': 'Sua resposta',
+      'ru': 'Ваш ответ',
+    },
+    'inq.replyHint': {
+      'ja': '返信メッセージを入力',
+      'en': 'Enter a reply message',
+      'zh': '输入回复消息',
+      'ko': '답장 메시지 입력',
+      'es': 'Escribe un mensaje de respuesta',
+      'fr': 'Saisissez un message de réponse',
+      'de': 'Antwortnachricht eingeben',
+      'pt': 'Digite uma mensagem de resposta',
+      'ru': 'Введите ответное сообщение',
+    },
+    'inq.replyHint2': {
+      'ja': '返信を入力...',
+      'en': 'Enter a reply...',
+      'zh': '输入回复...',
+      'ko': '답장 입력...',
+      'es': 'Escribe una respuesta...',
+      'fr': 'Saisissez une réponse...',
+      'de': 'Antwort eingeben...',
+      'pt': 'Digite uma resposta...',
+      'ru': 'Введите ответ...',
+    },
+    'inq.sendReply': {
+      'ja': '返信を送る',
+      'en': 'Send reply',
+      'zh': '发送回复',
+      'ko': '답장 보내기',
+      'es': 'Enviar respuesta',
+      'fr': 'Envoyer la réponse',
+      'de': 'Antwort senden',
+      'pt': 'Enviar resposta',
+      'ru': 'Отправить ответ',
+    },
+    'inq.replySent': {
+      'ja': '返信を送りました',
+      'en': 'Reply sent',
+      'zh': '已发送回复',
+      'ko': '답장을 보냈습니다',
+      'es': 'Respuesta enviada',
+      'fr': 'Réponse envoyée',
+      'de': 'Antwort gesendet',
+      'pt': 'Resposta enviada',
+      'ru': 'Ответ отправлен',
+    },
+    'inq.replyFailed': {
+      'ja': '返信に失敗しました',
+      'en': 'Failed to send the reply',
+      'zh': '回复发送失败',
+      'ko': '답장 전송에 실패했습니다',
+      'es': 'Error al enviar la respuesta',
+      'fr': 'Échec de l’envoi de la réponse',
+      'de': 'Antwort konnte nicht gesendet werden',
+      'pt': 'Falha ao enviar a resposta',
+      'ru': 'Не удалось отправить ответ',
+    },
+    'bulk.genTermExplain': {
+      'ja': '用語説明を生成',
+      'en': 'Generate term explanations',
+      'zh': '生成术语说明',
+      'ko': '용어 설명 생성',
+      'es': 'Generar explicaciones de términos',
+      'fr': 'Générer des explications de termes',
+      'de': 'Begriffserklärungen generieren',
+      'pt': 'Gerar explicações de termos',
+      'ru': 'Сгенерировать пояснения терминов',
+    },
+    'bulk.genChildren': {
+      'ja': '子ノードを生成',
+      'en': 'Generate child nodes',
+      'zh': '生成子节点',
+      'ko': '자식 노드 생성',
+      'es': 'Generar nodos hijos',
+      'fr': 'Générer des nœuds enfants',
+      'de': 'Kindknoten generieren',
+      'pt': 'Gerar nós filhos',
+      'ru': 'Сгенерировать дочерние узлы',
+    },
+    'bulk.registerFront': {
+      'ja': '表面にまとめて登録',
+      'en': 'Register all to the front side',
+      'zh': '统一登记到正面',
+      'ko': '앞면에 일괄 등록',
+      'es': 'Registrar todo en el anverso',
+      'fr': 'Tout enregistrer au recto',
+      'de': 'Alle auf der Vorderseite registrieren',
+      'pt': 'Registrar tudo na frente',
+      'ru': 'Добавить всё на лицевую сторону',
+    },
+    'bulk.aiApplyTitle': {
+      'ja': 'AI一括適用 — {n} 個のノード',
+      'en': 'Bulk AI apply — {n} nodes',
+      'zh': 'AI 批量应用 — {n} 个节点',
+      'ko': 'AI 일괄 적용 — 노드 {n}개',
+      'es': 'Aplicación masiva de IA — {n} nodos',
+      'fr': 'Application IA en masse — {n} nœuds',
+      'de': 'KI-Massenanwendung — {n} Knoten',
+      'pt': 'Aplicação em massa de IA — {n} nós',
+      'ru': 'Массовое применение ИИ — узлов: {n}',
+    },
+    'bulk.backToMenu': {
+      'ja': 'メニューに戻る',
+      'en': 'Back to menu',
+      'zh': '返回菜单',
+      'ko': '메뉴로 돌아가기',
+      'es': 'Volver al menú',
+      'fr': 'Retour au menu',
+      'de': 'Zurück zum Menü',
+      'pt': 'Voltar ao menu',
+      'ru': 'Назад в меню',
+    },
+    'bulk.askNodes': {
+      'ja': '{n} 個のノードに質問を投げる',
+      'en': 'Ask a question to {n} nodes',
+      'zh': '向 {n} 个节点提问',
+      'ko': '노드 {n}개에 질문하기',
+      'es': 'Hacer una pregunta a {n} nodos',
+      'fr': 'Poser une question à {n} nœuds',
+      'de': 'Eine Frage an {n} Knoten stellen',
+      'pt': 'Fazer uma pergunta a {n} nós',
+      'ru': 'Задать вопрос {n} узлам',
+    },
+    'bulk.enterQuestion': {
+      'ja': '質問を入力してください',
+      'en': 'Please enter a question',
+      'zh': '请输入问题',
+      'ko': '질문을 입력하세요',
+      'es': 'Introduce una pregunta',
+      'fr': 'Veuillez saisir une question',
+      'de': 'Bitte eine Frage eingeben',
+      'pt': 'Digite uma pergunta',
+      'ru': 'Введите вопрос',
+    },
+    'multi.toCards': {
+      'ja': 'カード化',
+      'en': 'To cards',
+      'zh': '制成卡片',
+      'ko': '카드화',
+      'es': 'A tarjetas',
+      'fr': 'En cartes',
+      'de': 'In Karten',
+      'pt': 'Em cartões',
+      'ru': 'В карточки',
+    },
+    'multi.browser': {
+      'ja': 'ブラウザ',
+      'en': 'Browser',
+      'zh': '浏览器',
+      'ko': '브라우저',
+      'es': 'Navegador',
+      'fr': 'Navigateur',
+      'de': 'Browser',
+      'pt': 'Navegador',
+      'ru': 'Браузер',
+    },
+    'multi.commonParent': {
+      'ja': '共通親を作成',
+      'en': 'Create a common parent',
+      'zh': '创建共同父节点',
+      'ko': '공통 부모 만들기',
+      'es': 'Crear un padre común',
+      'fr': 'Créer un parent commun',
+      'de': 'Gemeinsamen Elternknoten erstellen',
+      'pt': 'Criar um pai comum',
+      'ru': 'Создать общий родитель',
+    },
+    'btn.back': {
+      'ja': '戻る',
+      'en': 'Back',
+      'zh': '返回',
+      'ko': '뒤로',
+      'es': 'Atrás',
+      'fr': 'Retour',
+      'de': 'Zurück',
+      'pt': 'Voltar',
+      'ru': 'Назад',
+    },
+    'common.nSeconds': {
+      'ja': '{n} 秒',
+      'en': '{n} s',
+      'zh': '{n} 秒',
+      'ko': '{n}초',
+      'es': '{n} s',
+      'fr': '{n} s',
+      'de': '{n} s',
+      'pt': '{n} s',
+      'ru': '{n} с',
+    },
+    'seek.title': {
+      'ja': '左右キーのシーク秒数',
+      'en': 'Seek seconds for left/right keys',
+      'zh': '左右键的快进秒数',
+      'ko': '좌우 키 탐색 초',
+      'es': 'Segundos de avance con las teclas izquierda/derecha',
+      'fr': 'Secondes de recherche pour les touches gauche/droite',
+      'de': 'Suchsekunden für Links-/Rechts-Tasten',
+      'pt': 'Segundos de busca para as teclas esquerda/direita',
+      'ru': 'Секунды перемотки для клавиш ←/→',
+    },
+    'seek.desc': {
+      'ja': 'オフライン動画で ← / → キーを押したときに飛ぶ秒数です。',
+      'en':
+          'The number of seconds to jump when pressing ← / → on offline videos.',
+      'zh': '在离线视频中按 ← / → 键时跳转的秒数。',
+      'ko': '오프라인 동영상에서 ← / → 키를 누를 때 이동하는 초입니다.',
+      'es': 'Segundos que se saltan al pulsar ← / → en vídeos sin conexión.',
+      'fr':
+          'Nombre de secondes à sauter en appuyant sur ← / → sur les vidéos hors ligne.',
+      'de':
+          'Sekunden, die beim Drücken von ← / → bei Offline-Videos gesprungen werden.',
+      'pt': 'Segundos a pular ao pressionar ← / → em vídeos offline.',
+      'ru': 'Сколько секунд перематывать при нажатии ← / → на офлайн-видео.',
+    },
+    'store.saveDestFailed': {
+      'ja': '保存先の用意に失敗: {err}',
+      'en': 'Failed to prepare the save location: {err}',
+      'zh': '准备保存位置失败：{err}',
+      'ko': '저장 위치 준비 실패: {err}',
+      'es': 'Error al preparar la ubicación de guardado: {err}',
+      'fr': 'Échec de la préparation de l’emplacement de sauvegarde : {err}',
+      'de': 'Speicherort konnte nicht vorbereitet werden: {err}',
+      'pt': 'Falha ao preparar o local de salvamento: {err}',
+      'ru': 'Не удалось подготовить место сохранения: {err}',
+    },
+    'ai.apiKeyNotSet': {
+      'ja': 'AI の API キーが未設定です（設定 → AI から登録してください）',
+      'en': 'The AI API key isn’t set (register it in Settings → AI)',
+      'zh': '未设置 AI 的 API 密钥（请在 设置 → AI 中登记）',
+      'ko': 'AI API 키가 설정되지 않았습니다(설정 → AI에서 등록하세요)',
+      'es':
+          'La clave de API de la IA no está configurada (regístrala en Ajustes → IA)',
+      'fr':
+          'La clé API de l’IA n’est pas définie (enregistrez-la dans Paramètres → IA)',
+      'de':
+          'Der KI-API-Schlüssel ist nicht festgelegt (in Einstellungen → KI registrieren)',
+      'pt':
+          'A chave de API da IA não está definida (registre em Configurações → IA)',
+      'ru': 'API-ключ ИИ не задан (укажите его в Настройки → ИИ)',
+    },
+    'ai.switchModel': {
+      'ja': 'AI モデルを切替',
+      'en': 'Switch AI model',
+      'zh': '切换 AI 模型',
+      'ko': 'AI 모델 전환',
+      'es': 'Cambiar el modelo de IA',
+      'fr': 'Changer de modèle d’IA',
+      'de': 'KI-Modell wechseln',
+      'pt': 'Trocar o modelo de IA',
+      'ru': 'Сменить модель ИИ',
+    },
+    'vmemo.sendToAi': {
+      'ja': 'メモを AI に送る',
+      'en': 'Send the memo to the AI',
+      'zh': '将备注发送给 AI',
+      'ko': '메모를 AI에 보내기',
+      'es': 'Enviar la nota a la IA',
+      'fr': 'Envoyer la note à l’IA',
+      'de': 'Notiz an die KI senden',
+      'pt': 'Enviar a nota à IA',
+      'ru': 'Отправить заметку в ИИ',
+    },
+    'vmemo.hint': {
+      'ja': 'ここに気づいたことをメモ…  時計アイコンでタイムスタンプを追加できます',
+      'en': 'Note what you notice here… use the clock icon to add a timestamp',
+      'zh': '在此记录你注意到的内容…  可用时钟图标添加时间戳',
+      'ko': '여기에 알아챈 것을 메모…  시계 아이콘으로 타임스탬프를 추가할 수 있습니다',
+      'es':
+          'Anota aquí lo que notes…  usa el icono de reloj para añadir una marca de tiempo',
+      'fr':
+          'Notez ici ce que vous remarquez…  l’icône horloge permet d’ajouter un horodatage',
+      'de':
+          'Notieren Sie hier, was Ihnen auffällt…  mit dem Uhr-Symbol einen Zeitstempel hinzufügen',
+      'pt':
+          'Anote aqui o que notar…  use o ícone de relógio para adicionar um carimbo de hora',
+      'ru':
+          'Запишите здесь свои наблюдения…  значок часов добавляет метку времени',
+    },
+    'vmemo.timestampHint': {
+      'ja': '例 03:24',
+      'en': 'e.g. 03:24',
+      'zh': '例如 03:24',
+      'ko': '예: 03:24',
+      'es': 'p. ej. 03:24',
+      'fr': 'ex. 03:24',
+      'de': 'z. B. 03:24',
+      'pt': 'ex.: 03:24',
+      'ru': 'напр. 03:24',
+    },
+    'vmemo.addToMap': {
+      'ja': 'マップに追加',
+      'en': 'Add to map',
+      'zh': '添加到地图',
+      'ko': '맵에 추가',
+      'es': 'Añadir al mapa',
+      'fr': 'Ajouter à la carte',
+      'de': 'Zur Karte hinzufügen',
+      'pt': 'Adicionar ao mapa',
+      'ru': 'Добавить на карту',
+    },
+    'embed.title': {
+      'ja': '動画を埋め込む',
+      'en': 'Embed video',
+      'zh': '嵌入视频',
+      'ko': '동영상 삽입',
+      'es': 'Incrustar vídeo',
+      'fr': 'Intégrer la vidéo',
+      'de': 'Video einbetten',
+      'pt': 'Incorporar vídeo',
+      'ru': 'Встроить видео',
+    },
+    'embed.embedded': {
+      'ja': '埋め込みました',
+      'en': 'Embedded',
+      'zh': '已嵌入',
+      'ko': '삽입했습니다',
+      'es': 'Incrustado',
+      'fr': 'Intégré',
+      'de': 'Eingebettet',
+      'pt': 'Incorporado',
+      'ru': 'Встроено',
+    },
+    'embed.body': {
+      'ja': 'この動画だけを埋め込みますか？\nそれとも、リスト内のこの動画から後ろ {n} 件をまとめて埋め込みますか？',
+      'en':
+          'Embed only this video?\nOr embed this video and the {n} that follow it in the list together?',
+      'zh': '只嵌入此视频吗？\n还是从列表中此视频起，连同后面的 {n} 个一起嵌入？',
+      'ko': '이 동영상만 삽입할까요?\n아니면 목록에서 이 동영상부터 뒤의 {n}개를 함께 삽입할까요?',
+      'es':
+          '¿Incrustar solo este vídeo?\n¿O incrustar este vídeo y los {n} siguientes de la lista juntos?',
+      'fr':
+          'Intégrer uniquement cette vidéo ?\nOu intégrer cette vidéo et les {n} suivantes de la liste ensemble ?',
+      'de':
+          'Nur dieses Video einbetten?\nOder dieses Video und die {n} folgenden in der Liste zusammen einbetten?',
+      'pt':
+          'Incorporar apenas este vídeo?\nOu incorporar este vídeo e os {n} seguintes da lista juntos?',
+      'ru':
+          'Встроить только это видео?\nИли встроить это видео и следующие {n} из списка вместе?',
+    },
+    'embed.thisOnly': {
+      'ja': 'この動画だけ',
+      'en': 'This video only',
+      'zh': '仅此视频',
+      'ko': '이 동영상만',
+      'es': 'Solo este vídeo',
+      'fr': 'Cette vidéo uniquement',
+      'de': 'Nur dieses Video',
+      'pt': 'Apenas este vídeo',
+      'ru': 'Только это видео',
+    },
+    'embed.allAfter': {
+      'ja': '後ろも全部 ({n}件)',
+      'en': 'All after this ({n})',
+      'zh': '后面全部（{n} 个）',
+      'ko': '뒤도 전부 ({n}개)',
+      'es': 'Todo lo siguiente ({n})',
+      'fr': 'Tout ce qui suit ({n})',
+      'de': 'Alle danach ({n})',
+      'pt': 'Todos depois ({n})',
+      'ru': 'Все последующие ({n})',
+    },
+    'winTab.favRemove': {
+      'ja': 'お気に入り解除',
+      'en': 'Remove from favorites',
+      'zh': '取消收藏',
+      'ko': '즐겨찾기 해제',
+      'es': 'Quitar de favoritos',
+      'fr': 'Retirer des favoris',
+      'de': 'Aus Favoriten entfernen',
+      'pt': 'Remover dos favoritos',
+      'ru': 'Убрать из избранного',
+    },
+    'winTab.favAddKeep': {
+      'ja': 'お気に入りに登録（保持）',
+      'en': 'Add to favorites (keep)',
+      'zh': '加入收藏（保留）',
+      'ko': '즐겨찾기에 등록(유지)',
+      'es': 'Añadir a favoritos (mantener)',
+      'fr': 'Ajouter aux favoris (conserver)',
+      'de': 'Zu Favoriten hinzufügen (behalten)',
+      'pt': 'Adicionar aos favoritos (manter)',
+      'ru': 'Добавить в избранное (сохранить)',
+    },
+    'folder.saveTitle': {
+      'ja': 'フォルダーに保存',
+      'en': 'Save to folder',
+      'zh': '保存到文件夹',
+      'ko': '폴더에 저장',
+      'es': 'Guardar en la carpeta',
+      'fr': 'Enregistrer dans le dossier',
+      'de': 'In Ordner speichern',
+      'pt': 'Salvar na pasta',
+      'ru': 'Сохранить в папку',
+    },
+    'folder.savedTo': {
+      'ja': '「{name}」に保存しました',
+      'en': 'Saved to “{name}”',
+      'zh': '已保存到「{name}」',
+      'ko': '「{name}」에 저장했습니다',
+      'es': 'Guardado en “{name}”',
+      'fr': 'Enregistré dans « {name} »',
+      'de': 'In „{name}“ gespeichert',
+      'pt': 'Salvo em “{name}”',
+      'ru': 'Сохранено в «{name}»',
+    },
+    'folder.noneSaved': {
+      'ja': '保存済みフォルダーはありません',
+      'en': 'No saved folders',
+      'zh': '没有已保存的文件夹',
+      'ko': '저장된 폴더가 없습니다',
+      'es': 'No hay carpetas guardadas',
+      'fr': 'Aucun dossier enregistré',
+      'de': 'Keine gespeicherten Ordner',
+      'pt': 'Nenhuma pasta salva',
+      'ru': 'Нет сохранённых папок',
+    },
+    'folder.openX': {
+      'ja': '{name} を開く',
+      'en': 'Open {name}',
+      'zh': '打开 {name}',
+      'ko': '{name} 열기',
+      'es': 'Abrir {name}',
+      'fr': 'Ouvrir {name}',
+      'de': '{name} öffnen',
+      'pt': 'Abrir {name}',
+      'ru': 'Открыть {name}',
+    },
+    'folder.openXNewTab': {
+      'ja': '{name} を新しいタブで開く',
+      'en': 'Open {name} in a new tab',
+      'zh': '在新标签页中打开 {name}',
+      'ko': '{name}을(를) 새 탭에서 열기',
+      'es': 'Abrir {name} en una pestaña nueva',
+      'fr': 'Ouvrir {name} dans un nouvel onglet',
+      'de': '{name} in neuem Tab öffnen',
+      'pt': 'Abrir {name} em uma nova aba',
+      'ru': 'Открыть {name} в новой вкладке',
+    },
+    'folder.existing': {
+      'ja': '既存のフォルダー',
+      'en': 'Existing folders',
+      'zh': '现有文件夹',
+      'ko': '기존 폴더',
+      'es': 'Carpetas existentes',
+      'fr': 'Dossiers existants',
+      'de': 'Vorhandene Ordner',
+      'pt': 'Pastas existentes',
+      'ru': 'Существующие папки',
+    },
+    'folder.orNew': {
+      'ja': 'または新規フォルダー',
+      'en': 'Or a new folder',
+      'zh': '或新建文件夹',
+      'ko': '또는 새 폴더',
+      'es': 'O una carpeta nueva',
+      'fr': 'Ou un nouveau dossier',
+      'de': 'Oder ein neuer Ordner',
+      'pt': 'Ou uma nova pasta',
+      'ru': 'Или новая папка',
+    },
+    'folder.nameLabel': {
+      'ja': 'フォルダー名',
+      'en': 'Folder name',
+      'zh': '文件夹名称',
+      'ko': '폴더 이름',
+      'es': 'Nombre de la carpeta',
+      'fr': 'Nom du dossier',
+      'de': 'Ordnername',
+      'pt': 'Nome da pasta',
+      'ru': 'Имя папки',
+    },
+    'folder.title': {
+      'ja': 'フォルダー',
+      'en': 'Folder',
+      'zh': '文件夹',
+      'ko': '폴더',
+      'es': 'Carpeta',
+      'fr': 'Dossier',
+      'de': 'Ordner',
+      'pt': 'Pasta',
+      'ru': 'Папка',
+    },
+    'folder.empty': {
+      'ja': '（空）',
+      'en': '(empty)',
+      'zh': '（空）',
+      'ko': '(비어 있음)',
+      'es': '(vacío)',
+      'fr': '(vide)',
+      'de': '(leer)',
+      'pt': '(vazio)',
+      'ru': '(пусто)',
+    },
+    'folder.countItems': {
+      'ja': '{n} 件',
+      'en': '{n} items',
+      'zh': '{n} 项',
+      'ko': '{n}개',
+      'es': '{n} elementos',
+      'fr': '{n} éléments',
+      'de': '{n} Einträge',
+      'pt': '{n} itens',
+      'ru': '{n} шт.',
+    },
+    'player.reload': {
+      'ja': '再読み込み',
+      'en': 'Reload',
+      'zh': '重新加载',
+      'ko': '새로고침',
+      'es': 'Recargar',
+      'fr': 'Recharger',
+      'de': 'Neu laden',
+      'pt': 'Recarregar',
+      'ru': 'Перезагрузить',
+    },
+    'player.download': {
+      'ja': 'ダウンロード (オフライン再生用)',
+      'en': 'Download (for offline playback)',
+      'zh': '下载（用于离线播放）',
+      'ko': '다운로드 (오프라인 재생용)',
+      'es': 'Descargar (para reproducción sin conexión)',
+      'fr': 'Télécharger (lecture hors ligne)',
+      'de': 'Herunterladen (für Offline-Wiedergabe)',
+      'pt': 'Baixar (para reprodução offline)',
+      'ru': 'Скачать (для офлайн-воспроизведения)',
+    },
+    'player.pip': {
+      'ja': 'ピクチャインピクチャで再生',
+      'en': 'Play in picture-in-picture',
+      'zh': '以画中画播放',
+      'ko': '픽처 인 픽처로 재생',
+      'es': 'Reproducir en imagen sobre imagen',
+      'fr': 'Lire en incrustation d’image',
+      'de': 'Im Bild-in-Bild abspielen',
+      'pt': 'Reproduzir em picture-in-picture',
+      'ru': 'Воспроизвести «картинка в картинке»',
+    },
+    'player.takeMemo': {
+      'ja': 'メモを取る',
+      'en': 'Take a memo',
+      'zh': '记笔记',
+      'ko': '메모하기',
+      'es': 'Tomar una nota',
+      'fr': 'Prendre une note',
+      'de': 'Notiz machen',
+      'pt': 'Fazer uma nota',
+      'ru': 'Сделать заметку',
+    },
+    'player.aiChat': {
+      'ja': 'AI チャット',
+      'en': 'AI chat',
+      'zh': 'AI 聊天',
+      'ko': 'AI 채팅',
+      'es': 'Chat de IA',
+      'fr': 'Chat IA',
+      'de': 'KI-Chat',
+      'pt': 'Chat de IA',
+      'ru': 'ИИ-чат',
+    },
+    'connection.labelHint': {
+      'ja': 'ラベル (例: 含む, 親子)',
+      'en': 'Label (e.g. includes, parent-child)',
+      'zh': '标签（例如：包含、父子）',
+      'ko': '라벨 (예: 포함, 부모자식)',
+      'es': 'Etiqueta (p. ej. incluye, padre-hijo)',
+      'fr': 'Libellé (ex. : inclut, parent-enfant)',
+      'de': 'Beschriftung (z. B. enthält, Eltern-Kind)',
+      'pt': 'Rótulo (ex.: inclui, pai-filho)',
+      'ru': 'Метка (напр.: включает, родитель-потомок)',
+    },
+    'connection.deleteLabel': {
+      'ja': 'ラベルを削除',
+      'en': 'Delete label',
+      'zh': '删除标签',
+      'ko': '라벨 삭제',
+      'es': 'Eliminar etiqueta',
+      'fr': 'Supprimer le libellé',
+      'de': 'Beschriftung löschen',
+      'pt': 'Excluir rótulo',
+      'ru': 'Удалить метку',
+    },
+    'video.autoReverted': {
+      'ja': 'ダウンロード中の動画から自動遷移したので元の動画に戻しました',
+      'en':
+          'Auto-switched away from the downloading video, so reverted to the original',
+      'zh': '由于从正在下载的视频自动跳转，已还原为原视频',
+      'ko': '다운로드 중인 동영상에서 자동 전환되어 원래 동영상으로 되돌렸습니다',
+      'es':
+          'Se cambió automáticamente desde el vídeo en descarga, así que se volvió al original',
+      'fr':
+          'Basculement automatique depuis la vidéo en téléchargement ; retour à la vidéo d’origine',
+      'de':
+          'Automatisch vom herunterladenden Video weggewechselt, daher zum Original zurückgekehrt',
+      'pt':
+          'Mudou automaticamente do vídeo em download, então voltou ao original',
+      'ru':
+          'Произошёл автопереход с загружаемого видео, поэтому возвращено исходное',
+    },
+    'voice.newline': {
+      'ja': '改行',
+      'en': 'Newline',
+      'zh': '换行',
+      'ko': '줄바꿈',
+      'es': 'Salto de línea',
+      'fr': 'Saut de ligne',
+      'de': 'Zeilenumbruch',
+      'pt': 'Quebra de linha',
+      'ru': 'Перенос строки',
+    },
+    'voice.comma': {
+      'ja': 'カンマ ,',
+      'en': 'Comma ,',
+      'zh': '逗号 ,',
+      'ko': '쉼표 ,',
+      'es': 'Coma ,',
+      'fr': 'Virgule ,',
+      'de': 'Komma ,',
+      'pt': 'Vírgula ,',
+      'ru': 'Запятая ,',
+    },
+    'voice.space': {
+      'ja': 'スペース',
+      'en': 'Space',
+      'zh': '空格',
+      'ko': '공백',
+      'es': 'Espacio',
+      'fr': 'Espace',
+      'de': 'Leerzeichen',
+      'pt': 'Espaço',
+      'ru': 'Пробел',
+    },
+    'voice.slash': {
+      'ja': 'スラッシュ /',
+      'en': 'Slash /',
+      'zh': '斜杠 /',
+      'ko': '슬래시 /',
+      'es': 'Barra /',
+      'fr': 'Barre oblique /',
+      'de': 'Schrägstrich /',
+      'pt': 'Barra /',
+      'ru': 'Слеш /',
+    },
+    'voice.delimiterTitle': {
+      'ja': '分割の区切り文字を設定',
+      'en': 'Set the split delimiter',
+      'zh': '设置分割分隔符',
+      'ko': '분할 구분 문자 설정',
+      'es': 'Establecer el delimitador de división',
+      'fr': 'Définir le séparateur de division',
+      'de': 'Trennzeichen für Aufteilung festlegen',
+      'pt': 'Definir o delimitador de divisão',
+      'ru': 'Задать разделитель разбиения',
+    },
+    'voice.delimiterBody': {
+      'ja': '「分割ON」 で保存すると、 ここで選んだ区切り文字でテキストを分けて複数ノードを作成します。',
+      'en':
+          'When you save with “Split ON”, the text is divided by the delimiter chosen here to create multiple nodes.',
+      'zh': '以“分割开启”保存时，将按这里选择的分隔符拆分文本以创建多个节点。',
+      'ko': '“분할 ON”으로 저장하면 여기서 선택한 구분 문자로 텍스트를 나눠 여러 노드를 만듭니다.',
+      'es':
+          'Al guardar con “División activada”, el texto se divide por el delimitador elegido aquí para crear varios nodos.',
+      'fr':
+          'En enregistrant avec « Division activée », le texte est divisé selon le séparateur choisi ici pour créer plusieurs nœuds.',
+      'de':
+          'Beim Speichern mit „Aufteilen EIN“ wird der Text anhand des hier gewählten Trennzeichens in mehrere Knoten aufgeteilt.',
+      'pt':
+          'Ao salvar com “Divisão ATIVADA”, o texto é dividido pelo delimitador escolhido aqui para criar vários nós.',
+      'ru':
+          'При сохранении с «Разбиение ВКЛ» текст делится по выбранному здесь разделителю, создавая несколько узлов.',
+    },
+    'voice.otherHint': {
+      'ja': 'その他の区切り文字を入力',
+      'en': 'Enter another delimiter',
+      'zh': '输入其他分隔符',
+      'ko': '다른 구분 문자 입력',
+      'es': 'Introduce otro delimitador',
+      'fr': 'Saisissez un autre séparateur',
+      'de': 'Anderes Trennzeichen eingeben',
+      'pt': 'Digite outro delimitador',
+      'ru': 'Введите другой разделитель',
+    },
+    'urlPaste.asIs': {
+      'ja': 'そのまま貼り付け',
+      'en': 'Paste as is',
+      'zh': '原样粘贴',
+      'ko': '그대로 붙여넣기',
+      'es': 'Pegar tal cual',
+      'fr': 'Coller tel quel',
+      'de': 'Unverändert einfügen',
+      'pt': 'Colar como está',
+      'ru': 'Вставить как есть',
+    },
+    'search.replace': {
+      'ja': '置換',
+      'en': 'Replace',
+      'zh': '替换',
+      'ko': '바꾸기',
+      'es': 'Reemplazar',
+      'fr': 'Remplacer',
+      'de': 'Ersetzen',
+      'pt': 'Substituir',
+      'ru': 'Заменить',
+    },
+    'node.copied': {
+      'ja': 'ノードをコピーしました',
+      'en': 'Copied the node',
+      'zh': '已复制节点',
+      'ko': '노드를 복사했습니다',
+      'es': 'Nodo copiado',
+      'fr': 'Nœud copié',
+      'de': 'Knoten kopiert',
+      'pt': 'Nó copiado',
+      'ru': 'Узел скопирован',
+    },
+    'node.registerFlashcard': {
+      'ja': 'フラッシュカードに登録',
+      'en': 'Add to flashcards',
+      'zh': '添加到抽认卡',
+      'ko': '플래시카드에 등록',
+      'es': 'Añadir a las tarjetas',
+      'fr': 'Ajouter aux cartes mémo',
+      'de': 'Zu Lernkarten hinzufügen',
+      'pt': 'Adicionar aos cartões',
+      'ru': 'Добавить в карточки',
+    },
+    'common.current': {
+      'ja': '現在',
+      'en': 'Current',
+      'zh': '当前',
+      'ko': '현재',
+      'es': 'Actual',
+      'fr': 'Actuel',
+      'de': 'Aktuell',
+      'pt': 'Atual',
+      'ru': 'Текущий',
+    },
+    'common.titleLabel': {
+      'ja': 'タイトル',
+      'en': 'Title',
+      'zh': '标题',
+      'ko': '제목',
+      'es': 'Título',
+      'fr': 'Titre',
+      'de': 'Titel',
+      'pt': 'Título',
+      'ru': 'Заголовок',
+    },
+    'common.memoLabel': {
+      'ja': 'メモ',
+      'en': 'Memo',
+      'zh': '备注',
+      'ko': '메모',
+      'es': 'Nota',
+      'fr': 'Note',
+      'de': 'Notiz',
+      'pt': 'Nota',
+      'ru': 'Заметка',
+    },
+    'common.copied': {
+      'ja': 'コピーしました: {v}',
+      'en': 'Copied: {v}',
+      'zh': '已复制：{v}',
+      'ko': '복사했습니다: {v}',
+      'es': 'Copiado: {v}',
+      'fr': 'Copié : {v}',
+      'de': 'Kopiert: {v}',
+      'pt': 'Copiado: {v}',
+      'ru': 'Скопировано: {v}',
+    },
+    'common.errorPrefix': {
+      'ja': 'エラー: {err}',
+      'en': 'Error: {err}',
+      'zh': '错误：{err}',
+      'ko': '오류: {err}',
+      'es': 'Error: {err}',
+      'fr': 'Erreur : {err}',
+      'de': 'Fehler: {err}',
+      'pt': 'Erro: {err}',
+      'ru': 'Ошибка: {err}',
+    },
+    'btn.deleteDo': {
+      'ja': '削除する',
+      'en': 'Delete',
+      'zh': '删除',
+      'ko': '삭제하기',
+      'es': 'Eliminar',
+      'fr': 'Supprimer',
+      'de': 'Löschen',
+      'pt': 'Excluir',
+      'ru': 'Удалить',
+    },
+    'move.noTarget': {
+      'ja': '移動先のマップがありません',
+      'en': 'No destination map',
+      'zh': '没有可移动到的地图',
+      'ko': '이동할 맵이 없습니다',
+      'es': 'No hay mapa de destino',
+      'fr': 'Aucune carte de destination',
+      'de': 'Keine Zielkarte',
+      'pt': 'Nenhum mapa de destino',
+      'ru': 'Нет карты назначения',
+    },
+    'move.selectTarget': {
+      'ja': '「{name}」 の全要素を移動する先を選択',
+      'en': 'Choose where to move all elements of “{name}”',
+      'zh': '选择「{name}」全部元素的移动目标',
+      'ko': '「{name}」의 모든 요소를 옮길 대상을 선택',
+      'es': 'Elige a dónde mover todos los elementos de “{name}”',
+      'fr': 'Choisissez où déplacer tous les éléments de « {name} »',
+      'de': 'Wählen Sie, wohin alle Elemente von „{name}“ verschoben werden',
+      'pt': 'Escolha para onde mover todos os elementos de “{name}”',
+      'ru': 'Выберите, куда переместить все элементы «{name}»',
+    },
+    'move.done': {
+      'ja': '{moved} 個の要素を「{tgt}」 へ移動し、 元のマップを削除しました',
+      'en': 'Moved {moved} elements to “{tgt}” and deleted the original map',
+      'zh': '已将 {moved} 个元素移动到「{tgt}」并删除了原地图',
+      'ko': '{moved}개 요소를 「{tgt}」(으)로 옮기고 원래 맵을 삭제했습니다',
+      'es':
+          'Se movieron {moved} elementos a “{tgt}” y se eliminó el mapa original',
+      'fr':
+          '{moved} éléments déplacés vers « {tgt} » et carte d’origine supprimée',
+      'de':
+          '{moved} Elemente nach „{tgt}“ verschoben und die ursprüngliche Karte gelöscht',
+      'pt':
+          '{moved} elementos movidos para “{tgt}” e o mapa original foi excluído',
+      'ru': '{moved} элементов перемещено в «{tgt}», исходная карта удалена',
+    },
+    'upload.nameTitle': {
+      'ja': 'マップ名を入力（アップロード用）',
+      'en': 'Enter a map name (for upload)',
+      'zh': '输入地图名称（用于上传）',
+      'ko': '맵 이름 입력(업로드용)',
+      'es': 'Introduce un nombre de mapa (para subir)',
+      'fr': 'Saisissez un nom de carte (pour l’envoi)',
+      'de': 'Kartennamen eingeben (zum Hochladen)',
+      'pt': 'Digite um nome de mapa (para upload)',
+      'ru': 'Введите имя карты (для загрузки)',
+    },
+    'upload.action': {
+      'ja': 'アップロード',
+      'en': 'Upload',
+      'zh': '上传',
+      'ko': '업로드',
+      'es': 'Subir',
+      'fr': 'Envoyer',
+      'de': 'Hochladen',
+      'pt': 'Enviar',
+      'ru': 'Загрузить',
+    },
+    'upload.selectMaps': {
+      'ja': 'アップロードするマップ',
+      'en': 'Maps to upload',
+      'zh': '要上传的地图',
+      'ko': '업로드할 맵',
+      'es': 'Mapas para subir',
+      'fr': 'Cartes à envoyer',
+      'de': 'Hochzuladende Karten',
+      'pt': 'Mapas para enviar',
+      'ru': 'Карты для загрузки',
+    },
+    'upload.limitChangeFailed': {
+      'ja': '制限の変更に失敗: {err}',
+      'en': 'Failed to change the limit: {err}',
+      'zh': '更改限制失败：{err}',
+      'ko': '제한 변경 실패: {err}',
+      'es': 'Error al cambiar el límite: {err}',
+      'fr': 'Échec de la modification de la limite : {err}',
+      'de': 'Ändern des Limits fehlgeschlagen: {err}',
+      'pt': 'Falha ao alterar o limite: {err}',
+      'ru': 'Не удалось изменить лимит: {err}',
+    },
+    'upload.complete': {
+      'ja': 'アップロード完了',
+      'en': 'Upload complete',
+      'zh': '上传完成',
+      'ko': '업로드 완료',
+      'es': 'Subida completada',
+      'fr': 'Envoi terminé',
+      'de': 'Hochladen abgeschlossen',
+      'pt': 'Upload concluído',
+      'ru': 'Загрузка завершена',
+    },
+    'upload.error': {
+      'ja': 'アップロードエラー: {err}',
+      'en': 'Upload error: {err}',
+      'zh': '上传错误：{err}',
+      'ko': '업로드 오류: {err}',
+      'es': 'Error de subida: {err}',
+      'fr': 'Erreur d’envoi : {err}',
+      'de': 'Hochlade-Fehler: {err}',
+      'pt': 'Erro de upload: {err}',
+      'ru': 'Ошибка загрузки: {err}',
+    },
+    'upload.countAction': {
+      'ja': '{n}件 アップロード',
+      'en': 'Upload {n}',
+      'zh': '上传 {n} 个',
+      'ko': '{n}개 업로드',
+      'es': 'Subir {n}',
+      'fr': 'Envoyer {n}',
+      'de': '{n} hochladen',
+      'pt': 'Enviar {n}',
+      'ru': 'Загрузить: {n}',
+    },
+    'download.selectMaps': {
+      'ja': 'ダウンロードするマップ',
+      'en': 'Maps to download',
+      'zh': '要下载的地图',
+      'ko': '다운로드할 맵',
+      'es': 'Mapas para descargar',
+      'fr': 'Cartes à télécharger',
+      'de': 'Herunterzuladende Karten',
+      'pt': 'Mapas para baixar',
+      'ru': 'Карты для скачивания',
+    },
+    'download.fetching': {
+      'ja': 'クラウドのデータを取得中...',
+      'en': 'Fetching cloud data...',
+      'zh': '正在获取云端数据...',
+      'ko': '클라우드 데이터를 가져오는 중...',
+      'es': 'Obteniendo datos de la nube...',
+      'fr': 'Récupération des données du cloud...',
+      'de': 'Cloud-Daten werden abgerufen...',
+      'pt': 'Obtendo dados da nuvem...',
+      'ru': 'Получение данных из облака...',
+    },
+    'download.empty': {
+      'ja': 'クラウドにマップがありません',
+      'en': 'No maps in the cloud',
+      'zh': '云端没有地图',
+      'ko': '클라우드에 맵이 없습니다',
+      'es': 'No hay mapas en la nube',
+      'fr': 'Aucune carte dans le cloud',
+      'de': 'Keine Karten in der Cloud',
+      'pt': 'Nenhum mapa na nuvem',
+      'ru': 'В облаке нет карт',
+    },
+    'download.uploadFirst': {
+      'ja': '先にアップロードしてください',
+      'en': 'Please upload first',
+      'zh': '请先上传',
+      'ko': '먼저 업로드해 주세요',
+      'es': 'Sube algo primero',
+      'fr': 'Veuillez d’abord envoyer',
+      'de': 'Bitte zuerst hochladen',
+      'pt': 'Faça upload primeiro',
+      'ru': 'Сначала загрузите',
+    },
+    'download.deleteTitle': {
+      'ja': 'クラウドから削除',
+      'en': 'Delete from the cloud',
+      'zh': '从云端删除',
+      'ko': '클라우드에서 삭제',
+      'es': 'Eliminar de la nube',
+      'fr': 'Supprimer du cloud',
+      'de': 'Aus der Cloud löschen',
+      'pt': 'Excluir da nuvem',
+      'ru': 'Удалить из облака',
+    },
+    'download.deleteConfirmLocal': {
+      'ja': '選択した {n} 件のマップをクラウドから削除します。\nローカルには影響しません。\nこの操作は取り消せません。',
+      'en':
+          'Delete the {n} selected maps from the cloud.\nLocal data is unaffected.\nThis action cannot be undone.',
+      'zh': '将从云端删除选中的 {n} 个地图。\n不影响本地数据。\n此操作无法撤销。',
+      'ko': '선택한 {n}개의 맵을 클라우드에서 삭제합니다.\n로컬에는 영향을 주지 않습니다.\n이 작업은 되돌릴 수 없습니다.',
+      'es':
+          'Se eliminarán de la nube los {n} mapas seleccionados.\nNo afecta a los datos locales.\nEsta acción no se puede deshacer.',
+      'fr':
+          'Supprimer du cloud les {n} cartes sélectionnées.\nLes données locales ne sont pas affectées.\nCette action est irréversible.',
+      'de':
+          'Die {n} ausgewählten Karten werden aus der Cloud gelöscht.\nLokale Daten sind nicht betroffen.\nDiese Aktion kann nicht rückgängig gemacht werden.',
+      'pt':
+          'Excluir da nuvem os {n} mapas selecionados.\nOs dados locais não são afetados.\nEsta ação não pode ser desfeita.',
+      'ru':
+          'Удалить из облака выбранные карты ({n}).\nЛокальные данные не затрагиваются.\nЭто действие нельзя отменить.',
+    },
+    'download.deletedCount': {
+      'ja': '{n}件をクラウドから削除しました',
+      'en': 'Deleted {n} from the cloud',
+      'zh': '已从云端删除 {n} 个',
+      'ko': '클라우드에서 {n}건을 삭제했습니다',
+      'es': 'Se eliminaron {n} de la nube',
+      'fr': '{n} supprimés du cloud',
+      'de': '{n} aus der Cloud gelöscht',
+      'pt': '{n} excluídos da nuvem',
+      'ru': 'Удалено из облака: {n}',
+    },
+    'download.downloadedCount': {
+      'ja': '{n}ページをダウンロードしました',
+      'en': 'Downloaded {n} pages',
+      'zh': '已下载 {n} 个页面',
+      'ko': '{n}페이지를 다운로드했습니다',
+      'es': 'Se descargaron {n} páginas',
+      'fr': '{n} pages téléchargées',
+      'de': '{n} Seiten heruntergeladen',
+      'pt': '{n} páginas baixadas',
+      'ru': 'Скачано страниц: {n}',
+    },
+    'download.deleteConfirm': {
+      'ja': '選択した {n} 件のマップをクラウドから削除します。\nこの操作は取り消せません。',
+      'en':
+          'Delete the {n} selected maps from the cloud.\nThis action cannot be undone.',
+      'zh': '将从云端删除选中的 {n} 个地图。\n此操作无法撤销。',
+      'ko': '선택한 {n}개의 맵을 클라우드에서 삭제합니다.\n이 작업은 되돌릴 수 없습니다.',
+      'es':
+          'Se eliminarán de la nube los {n} mapas seleccionados.\nEsta acción no se puede deshacer.',
+      'fr':
+          'Supprimer du cloud les {n} cartes sélectionnées.\nCette action est irréversible.',
+      'de':
+          'Die {n} ausgewählten Karten werden aus der Cloud gelöscht.\nDiese Aktion kann nicht rückgängig gemacht werden.',
+      'pt':
+          'Excluir da nuvem os {n} mapas selecionados.\nEsta ação não pode ser desfeita.',
+      'ru':
+          'Удалить из облака выбранные карты ({n}).\nЭто действие нельзя отменить.',
+    },
+    'download.deleted': {
+      'ja': 'クラウドから削除しました',
+      'en': 'Deleted from the cloud',
+      'zh': '已从云端删除',
+      'ko': '클라우드에서 삭제했습니다',
+      'es': 'Se eliminó de la nube',
+      'fr': 'Supprimé du cloud',
+      'de': 'Aus der Cloud gelöscht',
+      'pt': 'Excluído da nuvem',
+      'ru': 'Удалено из облака',
+    },
+    'download.deleteError': {
+      'ja': '削除エラー: {err}',
+      'en': 'Delete error: {err}',
+      'zh': '删除错误：{err}',
+      'ko': '삭제 오류: {err}',
+      'es': 'Error al eliminar: {err}',
+      'fr': 'Erreur de suppression : {err}',
+      'de': 'Löschfehler: {err}',
+      'pt': 'Erro ao excluir: {err}',
+      'ru': 'Ошибка удаления: {err}',
+    },
+    'download.countDelete': {
+      'ja': '{n}件 削除',
+      'en': 'Delete {n}',
+      'zh': '删除 {n} 个',
+      'ko': '{n}개 삭제',
+      'es': 'Eliminar {n}',
+      'fr': 'Supprimer {n}',
+      'de': '{n} löschen',
+      'pt': 'Excluir {n}',
+      'ru': 'Удалить: {n}',
+    },
+    'download.started': {
+      'ja': 'ダウンロードを開始しました (バックグラウンドで実行中)',
+      'en': 'Download started (running in the background)',
+      'zh': '已开始下载（正在后台运行）',
+      'ko': '다운로드를 시작했습니다 (백그라운드에서 실행 중)',
+      'es': 'Descarga iniciada (en segundo plano)',
+      'fr': 'Téléchargement démarré (en arrière-plan)',
+      'de': 'Download gestartet (läuft im Hintergrund)',
+      'pt': 'Download iniciado (em segundo plano)',
+      'ru': 'Скачивание начато (выполняется в фоне)',
+    },
+    'download.error': {
+      'ja': 'ダウンロードエラー: {err}',
+      'en': 'Download error: {err}',
+      'zh': '下载错误：{err}',
+      'ko': '다운로드 오류: {err}',
+      'es': 'Error de descarga: {err}',
+      'fr': 'Erreur de téléchargement : {err}',
+      'de': 'Download-Fehler: {err}',
+      'pt': 'Erro de download: {err}',
+      'ru': 'Ошибка скачивания: {err}',
+    },
+    'download.countAction': {
+      'ja': '{n}件 ダウンロード',
+      'en': 'Download {n}',
+      'zh': '下载 {n} 个',
+      'ko': '{n}개 다운로드',
+      'es': 'Descargar {n}',
+      'fr': 'Télécharger {n}',
+      'de': '{n} herunterladen',
+      'pt': 'Baixar {n}',
+      'ru': 'Скачать: {n}',
+    },
+    'download.complete': {
+      'ja': 'ダウンロード完了',
+      'en': 'Download complete',
+      'zh': '下载完成',
+      'ko': '다운로드 완료',
+      'es': 'Descarga completada',
+      'fr': 'Téléchargement terminé',
+      'de': 'Download abgeschlossen',
+      'pt': 'Download concluído',
+      'ru': 'Скачивание завершено',
+    },
+    'font.appliesToAll': {
+      'ja': '※ 個別設定のないノードすべてに適用されます',
+      'en': '* Applies to all nodes without individual settings',
+      'zh': '※ 适用于所有未单独设置的节点',
+      'ko': '※ 개별 설정이 없는 모든 노드에 적용됩니다',
+      'es': '* Se aplica a todos los nodos sin ajustes individuales',
+      'fr': '* S’applique à tous les nœuds sans réglage individuel',
+      'de': '* Gilt für alle Knoten ohne individuelle Einstellungen',
+      'pt': '* Aplica-se a todos os nós sem configurações individuais',
+      'ru': '* Применяется ко всем узлам без индивидуальных настроек',
+    },
+    'font.globalTitle': {
+      'ja': '全体の文字サイズ設定',
+      'en': 'Global font size settings',
+      'zh': '全局字体大小设置',
+      'ko': '전체 글자 크기 설정',
+      'es': 'Ajustes del tamaño de fuente global',
+      'fr': 'Réglages de la taille de police globale',
+      'de': 'Globale Schriftgrößen-Einstellungen',
+      'pt': 'Configurações de tamanho de fonte global',
+      'ru': 'Настройки общего размера шрифта',
+    },
+    'group.switched': {
+      'ja': 'グループ「{gid}」に切り替えました',
+      'en': 'Switched to group “{gid}”',
+      'zh': '已切换到群组「{gid}」',
+      'ko': '그룹 「{gid}」(으)로 전환했습니다',
+      'es': 'Se cambió al grupo “{gid}”',
+      'fr': 'Basculé vers le groupe « {gid} »',
+      'de': 'Zur Gruppe „{gid}“ gewechselt',
+      'pt': 'Mudou para o grupo “{gid}”',
+      'ru': 'Переключено на группу «{gid}»',
+    },
+    'group.active': {
+      'ja': 'アクティブ',
+      'en': 'Active',
+      'zh': '活动中',
+      'ko': '활성',
+      'es': 'Activo',
+      'fr': 'Actif',
+      'de': 'Aktiv',
+      'pt': 'Ativo',
+      'ru': 'Активно',
+    },
+    'group.copyCode': {
+      'ja': 'コードをコピー',
+      'en': 'Copy code',
+      'zh': '复制代码',
+      'ko': '코드 복사',
+      'es': 'Copiar código',
+      'fr': 'Copier le code',
+      'de': 'Code kopieren',
+      'pt': 'Copiar código',
+      'ru': 'Скопировать код',
+    },
+    'group.leave': {
+      'ja': 'このグループから離脱',
+      'en': 'Leave this group',
+      'zh': '退出此群组',
+      'ko': '이 그룹에서 나가기',
+      'es': 'Salir de este grupo',
+      'fr': 'Quitter ce groupe',
+      'de': 'Diese Gruppe verlassen',
+      'pt': 'Sair deste grupo',
+      'ru': 'Покинуть эту группу',
+    },
+    'group.leaveTitle': {
+      'ja': 'グループから離脱',
+      'en': 'Leave the group',
+      'zh': '退出群组',
+      'ko': '그룹에서 나가기',
+      'es': 'Salir del grupo',
+      'fr': 'Quitter le groupe',
+      'de': 'Gruppe verlassen',
+      'pt': 'Sair do grupo',
+      'ru': 'Покинуть группу',
+    },
+    'group.leaveConfirm': {
+      'ja': 'グループ「{gid}」から離脱しますか？',
+      'en': 'Leave group “{gid}”?',
+      'zh': '要退出群组「{gid}」吗？',
+      'ko': '그룹 「{gid}」에서 나가시겠습니까?',
+      'es': '¿Salir del grupo “{gid}”?',
+      'fr': 'Quitter le groupe « {gid} » ?',
+      'de': 'Gruppe „{gid}“ verlassen?',
+      'pt': 'Sair do grupo “{gid}”?',
+      'ru': 'Покинуть группу «{gid}»?',
+    },
+    'group.leaveBtn': {
+      'ja': '離脱',
+      'en': 'Leave',
+      'zh': '退出',
+      'ko': '나가기',
+      'es': 'Salir',
+      'fr': 'Quitter',
+      'de': 'Verlassen',
+      'pt': 'Sair',
+      'ru': 'Выйти',
+    },
+    'group.left': {
+      'ja': 'グループ「{gid}」から離脱しました',
+      'en': 'Left group “{gid}”',
+      'zh': '已退出群组「{gid}」',
+      'ko': '그룹 「{gid}」에서 나갔습니다',
+      'es': 'Saliste del grupo “{gid}”',
+      'fr': 'Vous avez quitté le groupe « {gid} »',
+      'de': 'Gruppe „{gid}“ verlassen',
+      'pt': 'Você saiu do grupo “{gid}”',
+      'ru': 'Вы покинули группу «{gid}»',
+    },
+    'page.hidden': {
+      'ja': '「{name}」 を非表示にしました',
+      'en': 'Hid “{name}”',
+      'zh': '已隐藏「{name}」',
+      'ko': '「{name}」을(를) 숨겼습니다',
+      'es': 'Se ocultó “{name}”',
+      'fr': '« {name} » masqué',
+      'de': '„{name}“ ausgeblendet',
+      'pt': '“{name}” ocultado',
+      'ru': '«{name}» скрыто',
+    },
+    'page.allShown': {
+      'ja': '非表示にしていたページを全て表示しました',
+      'en': 'Showed all hidden pages',
+      'zh': '已显示所有隐藏的页面',
+      'ko': '숨겨진 페이지를 모두 표시했습니다',
+      'es': 'Se muestran todas las páginas ocultas',
+      'fr': 'Toutes les pages masquées sont affichées',
+      'de': 'Alle ausgeblendeten Seiten angezeigt',
+      'pt': 'Todas as páginas ocultas foram mostradas',
+      'ru': 'Показаны все скрытые страницы',
+    },
+    'page.shuffled': {
+      'ja': 'マップの順番をシャッフルしました\n「順番を元に戻す」 で復元できます',
+      'en': 'Shuffled the page order\nUse “Restore order” to undo',
+      'zh': '已打乱地图顺序\n可用“恢复顺序”还原',
+      'ko': '맵 순서를 섞었습니다\n“순서 되돌리기”로 복원할 수 있습니다',
+      'es':
+          'Se mezcló el orden de los mapas\nUsa “Restaurar orden” para deshacer',
+      'fr':
+          'Ordre des cartes mélangé\nUtilisez « Rétablir l’ordre » pour annuler',
+      'de':
+          'Kartenreihenfolge gemischt\nMit „Reihenfolge wiederherstellen“ rückgängig machen',
+      'pt': 'Ordem dos mapas embaralhada\nUse “Restaurar ordem” para desfazer',
+      'ru':
+          'Порядок карт перемешан\nИспользуйте «Восстановить порядок», чтобы отменить',
+    },
+    'page.orderRestored': {
+      'ja': '元の順番に戻しました',
+      'en': 'Restored the original order',
+      'zh': '已恢复原始顺序',
+      'ko': '원래 순서로 되돌렸습니다',
+      'es': 'Se restauró el orden original',
+      'fr': 'Ordre d’origine rétabli',
+      'de': 'Ursprüngliche Reihenfolge wiederhergestellt',
+      'pt': 'Ordem original restaurada',
+      'ru': 'Исходный порядок восстановлен',
+    },
+    'submap.dropToEmbed': {
+      'ja': 'ドロップしてサブマップとして埋め込み',
+      'en': 'Drop to embed as a submap',
+      'zh': '拖放以作为子地图嵌入',
+      'ko': '드롭하여 서브맵으로 삽입',
+      'es': 'Suelta para insertar como submapa',
+      'fr': 'Déposer pour intégrer comme sous-carte',
+      'de': 'Ablegen, um als Submap einzubetten',
+      'pt': 'Solte para inserir como submapa',
+      'ru': 'Отпустите, чтобы встроить как подкарту',
+    },
+    'deepl.translating': {
+      'ja': '翻訳中...',
+      'en': 'Translating...',
+      'zh': '翻译中...',
+      'ko': '번역 중...',
+      'es': 'Traduciendo...',
+      'fr': 'Traduction...',
+      'de': 'Übersetzen...',
+      'pt': 'Traduzindo...',
+      'ru': 'Перевод...',
+    },
+    'deepl.emptyResult': {
+      'ja': '翻訳結果が空でした',
+      'en': 'The translation result was empty',
+      'zh': '翻译结果为空',
+      'ko': '번역 결과가 비어 있습니다',
+      'es': 'El resultado de la traducción estaba vacío',
+      'fr': 'Le résultat de la traduction était vide',
+      'de': 'Das Übersetzungsergebnis war leer',
+      'pt': 'O resultado da tradução estava vazio',
+      'ru': 'Результат перевода пуст',
+    },
+    'deepl.failed': {
+      'ja': '翻訳失敗: {err}',
+      'en': 'Translation failed: {err}',
+      'zh': '翻译失败：{err}',
+      'ko': '번역 실패: {err}',
+      'es': 'Error de traducción: {err}',
+      'fr': 'Échec de la traduction : {err}',
+      'de': 'Übersetzung fehlgeschlagen: {err}',
+      'pt': 'Falha na tradução: {err}',
+      'ru': 'Ошибка перевода: {err}',
+    },
+    'summary.summarizing': {
+      'ja': '要約中...',
+      'en': 'Summarizing...',
+      'zh': '正在总结...',
+      'ko': '요약 중...',
+      'es': 'Resumiendo...',
+      'fr': 'Résumé en cours...',
+      'de': 'Zusammenfassen...',
+      'pt': 'Resumindo...',
+      'ru': 'Подведение итогов...',
+    },
+    'summary.emptyResult': {
+      'ja': '要約結果が空でした',
+      'en': 'The summary result was empty',
+      'zh': '总结结果为空',
+      'ko': '요약 결과가 비어 있습니다',
+      'es': 'El resultado del resumen estaba vacío',
+      'fr': 'Le résumé était vide',
+      'de': 'Das Zusammenfassungsergebnis war leer',
+      'pt': 'O resultado do resumo estava vazio',
+      'ru': 'Результат сводки пуст',
+    },
+    'summary.failed': {
+      'ja': '要約失敗: {err}',
+      'en': 'Summary failed: {err}',
+      'zh': '总结失败：{err}',
+      'ko': '요약 실패: {err}',
+      'es': 'Error al resumir: {err}',
+      'fr': 'Échec du résumé : {err}',
+      'de': 'Zusammenfassung fehlgeschlagen: {err}',
+      'pt': 'Falha no resumo: {err}',
+      'ru': 'Ошибка сводки: {err}',
+    },
+    'common.range1to30': {
+      'ja': '1 〜 30',
+      'en': '1–30',
+      'zh': '1–30',
+      'ko': '1–30',
+      'es': '1–30',
+      'fr': '1–30',
+      'de': '1–30',
+      'pt': '1–30',
+      'ru': '1–30',
+    },
+    'common.range0toMax': {
+      'ja': '0〜{max}',
+      'en': '0–{max}',
+      'zh': '0–{max}',
+      'ko': '0–{max}',
+      'es': '0–{max}',
+      'fr': '0–{max}',
+      'de': '0–{max}',
+      'pt': '0–{max}',
+      'ru': '0–{max}',
+    },
+    'webview.over20mb': {
+      'ja': '{name} は 20MB を超えるため WebView 経由で送信できません',
+      'en': '{name} exceeds 20MB and can’t be sent via WebView',
+      'zh': '{name} 超过 20MB，无法通过 WebView 发送',
+      'ko': '{name}은(는) 20MB를 초과하여 WebView로 보낼 수 없습니다',
+      'es': '{name} supera los 20 MB y no se puede enviar por WebView',
+      'fr': '{name} dépasse 20 Mo et ne peut pas être envoyé via WebView',
+      'de':
+          '{name} überschreitet 20 MB und kann nicht über WebView gesendet werden',
+      'pt': '{name} excede 20 MB e não pode ser enviado via WebView',
+      'ru': '{name} превышает 20 МБ и не может быть отправлен через WebView',
+    },
+    'photo.added': {
+      'ja': '📷 写真をマップに追加しました',
+      'en': '📷 Added the photo to the map',
+      'zh': '📷 已将照片添加到地图',
+      'ko': '📷 사진을 맵에 추가했습니다',
+      'es': '📷 Se añadió la foto al mapa',
+      'fr': '📷 Photo ajoutée à la carte',
+      'de': '📷 Foto zur Karte hinzugefügt',
+      'pt': '📷 Foto adicionada ao mapa',
+      'ru': '📷 Фото добавлено на карту',
+    },
+    'photo.failed': {
+      'ja': '写真の追加に失敗しました: {err}',
+      'en': 'Failed to add the photo: {err}',
+      'zh': '添加照片失败：{err}',
+      'ko': '사진 추가 실패: {err}',
+      'es': 'Error al añadir la foto: {err}',
+      'fr': 'Échec de l’ajout de la photo : {err}',
+      'de': 'Foto konnte nicht hinzugefügt werden: {err}',
+      'pt': 'Falha ao adicionar a foto: {err}',
+      'ru': 'Не удалось добавить фото: {err}',
+    },
+    'clip.noReadSupport': {
+      'ja': 'この端末ではクリップボードの読み取りに対応していません',
+      'en': 'This device doesn’t support reading the clipboard',
+      'zh': '此设备不支持读取剪贴板',
+      'ko': '이 기기에서는 클립보드 읽기를 지원하지 않습니다',
+      'es': 'Este dispositivo no admite la lectura del portapapeles',
+      'fr': 'Cet appareil ne prend pas en charge la lecture du presse-papiers',
+      'de': 'Dieses Gerät unterstützt das Lesen der Zwischenablage nicht',
+      'pt': 'Este dispositivo não suporta a leitura da área de transferência',
+      'ru': 'Это устройство не поддерживает чтение буфера обмена',
+    },
+    'clip.urlPasted': {
+      'ja': '📋 URLを貼り付けました',
+      'en': '📋 Pasted the URL',
+      'zh': '📋 已粘贴 URL',
+      'ko': '📋 URL을 붙여넣었습니다',
+      'es': '📋 URL pegada',
+      'fr': '📋 URL collée',
+      'de': '📋 URL eingefügt',
+      'pt': '📋 URL colada',
+      'ru': '📋 URL вставлен',
+    },
+    'clip.textToTitle': {
+      'ja': '📋 クリップボードのテキストをタイトルに貼り付けました',
+      'en': '📋 Pasted the clipboard text into the title',
+      'zh': '📋 已将剪贴板文本粘贴到标题',
+      'ko': '📋 클립보드 텍스트를 제목에 붙여넣었습니다',
+      'es': '📋 Texto del portapapeles pegado en el título',
+      'fr': '📋 Texte du presse-papiers collé dans le titre',
+      'de': '📋 Zwischenablage-Text in den Titel eingefügt',
+      'pt': '📋 Texto da área de transferência colado no título',
+      'ru': '📋 Текст из буфера вставлен в заголовок',
+    },
+    'clip.detected': {
+      'ja': '\n(検出: {fmts})',
+      'en': '\n(detected: {fmts})',
+      'zh': '\n(检测到：{fmts})',
+      'ko': '\n(감지: {fmts})',
+      'es': '\n(detectado: {fmts})',
+      'fr': '\n(détecté : {fmts})',
+      'de': '\n(erkannt: {fmts})',
+      'pt': '\n(detectado: {fmts})',
+      'ru': '\n(обнаружено: {fmts})',
+    },
+    'clip.noContent': {
+      'ja': 'クリップボードに画像/テキストがありません{detail}',
+      'en': 'No image/text in the clipboard{detail}',
+      'zh': '剪贴板中没有图片/文本{detail}',
+      'ko': '클립보드에 이미지/텍스트가 없습니다{detail}',
+      'es': 'No hay imagen/texto en el portapapeles{detail}',
+      'fr': 'Aucune image/texte dans le presse-papiers{detail}',
+      'de': 'Kein Bild/Text in der Zwischenablage{detail}',
+      'pt': 'Nenhuma imagem/texto na área de transferência{detail}',
+      'ru': 'В буфере обмена нет изображения/текста{detail}',
+    },
+    'clip.imagePasted': {
+      'ja': '📋 クリップボードの画像を貼り付けました',
+      'en': '📋 Pasted the clipboard image',
+      'zh': '📋 已粘贴剪贴板图片',
+      'ko': '📋 클립보드 이미지를 붙여넣었습니다',
+      'es': '📋 Imagen del portapapeles pegada',
+      'fr': '📋 Image du presse-papiers collée',
+      'de': '📋 Bild aus der Zwischenablage eingefügt',
+      'pt': '📋 Imagem da área de transferência colada',
+      'ru': '📋 Изображение из буфера вставлено',
+    },
+    'clip.imagePasteFailed': {
+      'ja': '画像の貼り付けに失敗しました: {err}',
+      'en': 'Failed to paste the image: {err}',
+      'zh': '粘贴图片失败：{err}',
+      'ko': '이미지 붙여넣기 실패: {err}',
+      'es': 'Error al pegar la imagen: {err}',
+      'fr': 'Échec du collage de l’image : {err}',
+      'de': 'Bild konnte nicht eingefügt werden: {err}',
+      'pt': 'Falha ao colar a imagem: {err}',
+      'ru': 'Не удалось вставить изображение: {err}',
+    },
+    'drop.here': {
+      'ja': 'ここにファイルをドロップ',
+      'en': 'Drop files here',
+      'zh': '将文件拖放到此处',
+      'ko': '여기에 파일을 드롭',
+      'es': 'Suelta los archivos aquí',
+      'fr': 'Déposez les fichiers ici',
+      'de': 'Dateien hier ablegen',
+      'pt': 'Solte os arquivos aqui',
+      'ru': 'Перетащите файлы сюда',
+    },
+    'headless.stopped': {
+      'ja': '🛑 ヘッドレス再生を停止しました',
+      'en': '🛑 Stopped headless playback',
+      'zh': '🛑 已停止无头播放',
+      'ko': '🛑 헤드리스 재생을 중지했습니다',
+      'es': '🛑 Reproducción en segundo plano detenida',
+      'fr': '🛑 Lecture sans interface arrêtée',
+      'de': '🛑 Headless-Wiedergabe gestoppt',
+      'pt': '🛑 Reprodução headless interrompida',
+      'ru': '🛑 Фоновое воспроизведение остановлено',
+    },
+    'headless.stop': {
+      'ja': 'ヘッドレス停止',
+      'en': 'Stop headless',
+      'zh': '停止无头播放',
+      'ko': '헤드리스 중지',
+      'es': 'Detener en segundo plano',
+      'fr': 'Arrêter sans interface',
+      'de': 'Headless stoppen',
+      'pt': 'Parar headless',
+      'ru': 'Остановить фоновое',
+    },
+    'ai.geminiKeyNotSet': {
+      'ja': 'Gemini APIキーが未設定です。設定から登録してください。',
+      'en': 'The Gemini API key is not set. Register it in settings.',
+      'zh': '未设置 Gemini API 密钥。请在设置中注册。',
+      'ko': 'Gemini API 키가 미설정입니다. 설정에서 등록하세요.',
+      'es':
+          'La clave de API de Gemini no está configurada. Regístrala en los ajustes.',
+      'fr':
+          'La clé API Gemini n’est pas configurée. Enregistrez-la dans les paramètres.',
+      'de':
+          'Der Gemini-API-Schlüssel ist nicht festgelegt. In den Einstellungen registrieren.',
+      'pt':
+          'A chave de API do Gemini não está configurada. Registre-a nas configurações.',
+      'ru': 'API-ключ Gemini не задан. Зарегистрируйте его в настройках.',
+    },
+    'ai.getFreeKey': {
+      'ja': 'Google AI Studio で無料キーを取得',
+      'en': 'Get a free key from Google AI Studio',
+      'zh': '在 Google AI Studio 获取免费密钥',
+      'ko': 'Google AI Studio에서 무료 키 받기',
+      'es': 'Obtén una clave gratis en Google AI Studio',
+      'fr': 'Obtenir une clé gratuite sur Google AI Studio',
+      'de': 'Kostenlosen Schlüssel von Google AI Studio holen',
+      'pt': 'Obtenha uma chave gratuita no Google AI Studio',
+      'ru': 'Получить бесплатный ключ в Google AI Studio',
+    },
+    'ai.grokApiKey': {
+      'ja': 'Grok APIキー',
+      'en': 'Grok API key',
+      'zh': 'Grok API 密钥',
+      'ko': 'Grok API 키',
+      'es': 'Clave de API de Grok',
+      'fr': 'Clé API Grok',
+      'de': 'Grok-API-Schlüssel',
+      'pt': 'Chave de API do Grok',
+      'ru': 'API-ключ Grok',
+    },
+    'ai.deepseekApiKey': {
+      'ja': 'DeepSeek APIキー',
+      'en': 'DeepSeek API key',
+      'zh': 'DeepSeek API 密钥',
+      'ko': 'DeepSeek API 키',
+      'es': 'Clave de API de DeepSeek',
+      'fr': 'Clé API DeepSeek',
+      'de': 'DeepSeek-API-Schlüssel',
+      'pt': 'Chave de API do DeepSeek',
+      'ru': 'API-ключ DeepSeek',
+    },
+    'yt.errorCopied': {
+      'ja': 'YouTube: {err}\n(URL をクリップボードにコピーしました)',
+      'en': 'YouTube: {err}\n(Copied the URL to the clipboard)',
+      'zh': 'YouTube: {err}\n(已将 URL 复制到剪贴板)',
+      'ko': 'YouTube: {err}\n(URL을 클립보드에 복사했습니다)',
+      'es': 'YouTube: {err}\n(Se copió la URL al portapapeles)',
+      'fr': 'YouTube : {err}\n(URL copiée dans le presse-papiers)',
+      'de': 'YouTube: {err}\n(URL in die Zwischenablage kopiert)',
+      'pt': 'YouTube: {err}\n(URL copiada para a área de transferência)',
+      'ru': 'YouTube: {err}\n(URL скопирован в буфер обмена)',
+    },
+    'flash.keywordHint': {
+      'ja': 'キーワードや文章',
+      'en': 'Keyword or text',
+      'zh': '关键词或文本',
+      'ko': '키워드나 문장',
+      'es': 'Palabra clave o texto',
+      'fr': 'Mot-clé ou texte',
+      'de': 'Stichwort oder Text',
+      'pt': 'Palavra-chave ou texto',
+      'ru': 'Ключевое слово или текст',
+    },
+    'flash.genCountTitle': {
+      'ja': '生成する枚数',
+      'en': 'Number to generate',
+      'zh': '生成数量',
+      'ko': '생성할 매수',
+      'es': 'Número a generar',
+      'fr': 'Nombre à générer',
+      'de': 'Anzahl zu generieren',
+      'pt': 'Quantidade a gerar',
+      'ru': 'Сколько создать',
+    },
+    'flash.front': {
+      'ja': '表',
+      'en': 'Front',
+      'zh': '正面',
+      'ko': '앞면',
+      'es': 'Anverso',
+      'fr': 'Recto',
+      'de': 'Vorderseite',
+      'pt': 'Frente',
+      'ru': 'Лицо',
+    },
+    'flash.genTooltip': {
+      'ja': 'タップで即生成 / 右クリック・長押しでモデル・APIキー設定',
+      'en':
+          'Tap to generate / right-click or long-press for model & API key settings',
+      'zh': '点击立即生成 / 右键或长按设置模型和 API 密钥',
+      'ko': '탭하면 즉시 생성 / 우클릭·길게 눌러 모델·API 키 설정',
+      'es':
+          'Toca para generar / clic derecho o mantén pulsado para ajustes de modelo y clave API',
+      'fr':
+          'Touchez pour générer / clic droit ou appui long pour le modèle et la clé API',
+      'de':
+          'Tippen zum Generieren / Rechtsklick oder lange drücken für Modell- & API-Schlüssel-Einstellungen',
+      'pt':
+          'Toque para gerar / clique direito ou pressione e segure para configurar modelo e chave de API',
+      'ru':
+          'Нажмите для генерации / правый клик или долгое нажатие — настройки модели и API-ключа',
+    },
+    'flash.back': {
+      'ja': '裏',
+      'en': 'Back',
+      'zh': '背面',
+      'ko': '뒷면',
+      'es': 'Reverso',
+      'fr': 'Verso',
+      'de': 'Rückseite',
+      'pt': 'Verso',
+      'ru': 'Оборот',
+    },
+    'fav.removeSlotSub': {
+      'ja': '(登録ページ自体は残ります)',
+      'en': '(The registered page itself remains)',
+      'zh': '(已注册的页面本身保留)',
+      'ko': '(등록된 페이지 자체는 남습니다)',
+      'es': '(La página registrada en sí se conserva)',
+      'fr': '(La page enregistrée elle-même est conservée)',
+      'de': '(Die registrierte Seite selbst bleibt erhalten)',
+      'pt': '(A página registrada em si permanece)',
+      'ru': '(Сама заданная страница остаётся)',
     },
     'menu.language': {
       'ja': '言語設定',
@@ -6771,6 +18375,17 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Copiar',
       'ru': 'Копировать',
     },
+    'cmd.cut': {
+      'ja': '切り取り',
+      'en': 'Cut',
+      'zh': '剪切',
+      'ko': '잘라내기',
+      'es': 'Cortar',
+      'fr': 'Couper',
+      'de': 'Ausschneiden',
+      'pt': 'Recortar',
+      'ru': 'Вырезать',
+    },
     'cmd.paste': {
       'ja': 'ペースト',
       'en': 'Paste',
@@ -6817,8 +18432,8 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Расставить как на полке',
     },
     'multi.bookshelf': {
-      'ja': 'ギャラリー整列',
-      'en': 'Bookshelf',
+      'ja': '並べる',
+      'en': 'Arrange',
       'zh': '书架',
       'ko': '책장',
       'es': 'Estantería',
@@ -8447,17 +20062,6 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Personalizado (horas)',
       'ru': 'Свое (часы)',
     },
-    'cal.addEvent': {
-      'ja': '予定を追加',
-      'en': 'Add event',
-      'zh': '添加日程',
-      'ko': '일정 추가',
-      'es': 'Añadir evento',
-      'fr': 'Ajouter événement',
-      'de': 'Termin hinzufügen',
-      'pt': 'Adicionar evento',
-      'ru': 'Добавить событие',
-    },
     'cal.eventTitle': {
       'ja': '予定',
       'en': 'Event',
@@ -8468,17 +20072,6 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Termin',
       'pt': 'Evento',
       'ru': 'Событие',
-    },
-    'cal.noEvents': {
-      'ja': '予定はありません',
-      'en': 'No events',
-      'zh': '没有日程',
-      'ko': '일정 없음',
-      'es': 'Sin eventos',
-      'fr': 'Aucun événement',
-      'de': 'Keine Termine',
-      'pt': 'Sem eventos',
-      'ru': 'Событий нет',
     },
     // ── 予定編集ダイアログ (言語統一) ──
     'cal.color': {
@@ -13191,6 +24784,49 @@ class MindMapProvider extends ChangeNotifier {
       'en':
           'Split view is free up to 2 times. From the 3rd use onward, a Pro (or higher) plan is required.',
     },
+    'paywall.proRequiredFocusLock': {
+      'ja': '集中ロックは初回のみ無料でお試しいただけます。2 回目以降は Pro 以上のプランへの加入が必要です。',
+      'en':
+          'Focus lock is free for the first time only. From the 2nd use onward, a Pro (or higher) plan is required.',
+    },
+    'paywall.proRequiredAppLock': {
+      'ja': '画面ロックは初回のみ無料でお試しいただけます。2 回目以降は Pro 以上のプランへの加入が必要です。',
+      'en':
+          'Screen lock is free for the first time only. From the 2nd use onward, a Pro (or higher) plan is required.',
+    },
+    'paywall.maxRequiredCloudSync': {
+      'ja': 'クラウド同期は Max プラン以上でご利用いただけます。',
+      'en': 'Cloud sync is available on the Max plan or above.',
+    },
+    // ── 有料プランで解禁される機能の一覧 (= ユーザー要望: Pro と Max で纏めて) ──
+    'plan.proHeader': {
+      'ja': 'Pro で解禁',
+      'en': 'Unlocked with Pro',
+    },
+    'plan.maxHeader': {
+      'ja': 'Max で解禁（Pro の全機能を含む）',
+      'en': 'Unlocked with Max (includes all Pro features)',
+    },
+    'plan.proPages': {
+      'ja': 'ページの無制限作成',
+      'en': 'Create unlimited pages',
+    },
+    'plan.proSplit': {
+      'ja': '画面分割の無制限利用',
+      'en': 'Unlimited split view',
+    },
+    'plan.proLocks': {
+      'ja': '集中ロック・画面ロックの無制限利用',
+      'en': 'Unlimited focus lock & screen lock',
+    },
+    'plan.maxCloud': {
+      'ja': 'クラウド同期・グループ共有',
+      'en': 'Cloud sync & group sharing',
+    },
+    'plan.maxPdfAi': {
+      'ja': 'PDF・ファイルから AI マインドマップ生成',
+      'en': 'Generate AI mind maps from PDF/files',
+    },
     'paywall.upgradeMax': {
       'ja': 'Max プランにアップグレード',
       'en': 'Upgrade to Max',
@@ -15849,8 +27485,8 @@ class MindMapProvider extends ChangeNotifier {
     },
     // ── インラインタイトル編集ダイアログ ──
     'inlineEdit.header': {
-      'ja': 'ノードを編集',
-      'en': 'Edit node',
+      'ja': '編集',
+      'en': 'Edit',
       'zh': '编辑节点',
       'ko': '노드 편집',
       'es': 'Editar nodo',
@@ -16494,6 +28130,17 @@ class MindMapProvider extends ChangeNotifier {
       'pt': '{n} nós copiados',
       'ru': 'Скопировано узлов: {n}',
     },
+    'multi.cutNodes': {
+      'ja': '{n} 個のノードを切り取りました (貼り付けで移動)',
+      'en': 'Cut {n} nodes (paste to move)',
+      'zh': '已剪切 {n} 个节点（粘贴以移动）',
+      'ko': '{n}개 노드를 잘라냈습니다 (붙여넣기로 이동)',
+      'es': 'Se cortaron {n} nodos (pega para mover)',
+      'fr': '{n} nœuds coupés (coller pour déplacer)',
+      'de': '{n} Knoten ausgeschnitten (zum Verschieben einfügen)',
+      'pt': '{n} nós recortados (cole para mover)',
+      'ru': 'Вырезано узлов: {n} (вставьте, чтобы переместить)',
+    },
     // 選択ノードの「複製」ボタン (コピー + 同位置ペーストを統合)
     'multi.duplicate': {
       'ja': 'その場で複製',
@@ -16953,6 +28600,28 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Enviar para outra página',
       'ru': 'Отправить на другую страницу',
     },
+    'ctx.shareVideoUrl': {
+      'ja': '動画URLを共有 (コピー)',
+      'en': 'Share video URL (copy)',
+      'zh': '分享视频网址（复制）',
+      'ko': '동영상 URL 공유 (복사)',
+      'es': 'Compartir URL del vídeo (copiar)',
+      'fr': 'Partager l’URL de la vidéo (copier)',
+      'de': 'Video-URL teilen (kopieren)',
+      'pt': 'Compartilhar URL do vídeo (copiar)',
+      'ru': 'Поделиться URL видео (копировать)',
+    },
+    'ctx.videoUrlCopied': {
+      'ja': 'コピーしました',
+      'en': 'Copied',
+      'zh': '已复制',
+      'ko': '복사했습니다',
+      'es': 'Copiado',
+      'fr': 'Copié',
+      'de': 'Kopiert',
+      'pt': 'Copiado',
+      'ru': 'Скопировано',
+    },
     // 単一ノードを別ページへ移動した後の通知。
     'ctx.sentToPage': {
       'ja': '「{name}」 に送りました',
@@ -17217,8 +28886,8 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Создать папку для группировки страниц',
     },
     'drawer.importJson': {
-      'ja': 'JSON を読み込む',
-      'en': 'Import JSON',
+      'ja': 'マップファイルを読み取る',
+      'en': 'Import map file',
       'zh': '导入 JSON',
       'ko': 'JSON 가져오기',
       'es': 'Importar JSON',
@@ -20781,7 +32450,7 @@ class MindMapProvider extends ChangeNotifier {
   }
 
   Future<void> _loadAiSettings() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     aiDepth = prefs.getInt('aiDepth') ?? 1;
     aiChildMin = prefs.getInt('aiChildMin') ?? 5;
     aiChildMax = prefs.getInt('aiChildMax') ?? 8;
@@ -20794,7 +32463,7 @@ class MindMapProvider extends ChangeNotifier {
   }
 
   Future<void> saveAiSettings() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setInt('aiDepth', aiDepth);
     await prefs.setInt('aiChildMin', aiChildMin);
     await prefs.setInt('aiChildMax', aiChildMax);
@@ -20806,7 +32475,7 @@ class MindMapProvider extends ChangeNotifier {
 
   /// 累計使用量を永続化
   Future<void> _saveUsageTotals() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setInt('totalInputTokens', totalInputTokens);
     await prefs.setInt('totalOutputTokens', totalOutputTokens);
     await prefs.setDouble('totalCostUsd', totalCostUsd);
@@ -20827,10 +32496,38 @@ class MindMapProvider extends ChangeNotifier {
   /// 読めるように、 短く各行 try/catch で読み、 初期化 Completer もここで完了
   /// させる (= ピッカー判定を確実に走らせる)。 _loadGeminiApiKey でも同じものを
   /// 読むが冪等。
+  /// SharedPreferences を取得する (= release 起動レース対策)。
+  /// ★ ユーザー報告: Android の **release** ビルドだけ、 初回起動時に
+  ///   言語/タイムゾーン/ユーザー名の設定が一切出ない / 言語が英語固定 /
+  ///   下部ボタンが空。 原因は AOT の高速起動で、 起動直後 (~1秒) はまだ
+  ///   shared_preferences プラグインのプラットフォームチャンネルが準備でき
+  ///   ておらず、 コンストラクタから即発火する各 _load* の getInstance() が
+  ///   `channel-error (Unable to establish connection on channel ...
+  ///   SharedPreferencesApi.getAll)` で失敗していたこと。 その結果
+  ///   _isFirstLaunch が確定せず (false のまま) オンボーディングが出ず、
+  ///   設定も既定値のままになる。 debug は起動が遅くチャンネルが先に準備
+  ///   できるため再現しない。
+  /// 対策: getInstance() が失敗したら 200ms 待って再試行する (最大 ~3秒)。
+  ///   getInstance() はエラー時に内部 completer を破棄するので、 再呼び出し
+  ///   で確実に再試行される。 起動後の通常呼び出しはキャッシュ済みで即成功
+  ///   するため、 この再試行は無害 (待ちは発生しない)。
+  Future<SharedPreferences> _prefsWithRetry({int tries = 15}) async {
+    for (int i = 0; i < tries; i++) {
+      try {
+        return await SharedPreferences.getInstance();
+      } catch (_) {
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      }
+    }
+    // 最後にもう一度 (なお失敗するなら例外を伝播 = 各呼び出し側の try/catch
+    //   が従来どおりハンドルする)。
+    return await SharedPreferences.getInstance();
+  }
+
   Future<void> _loadEssentialUiState() async {
     final SharedPreferences prefs;
     try {
-      prefs = await SharedPreferences.getInstance();
+      prefs = await _prefsWithRetry();
     } catch (_) {
       if (!_initialLoadCompleter.isCompleted) {
         _initialLoadCompleter.complete();
@@ -20878,7 +32575,7 @@ class MindMapProvider extends ChangeNotifier {
   }
 
   Future<void> _loadGeminiApiKey() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     // ★ 最重要 UI フラグは何よりも先に確定させる (= ユーザー報告: モバイルで
     //   初回の言語ピッカーが出ない / 言語が英語のまま変えられない / 下部ボタンが
     //   設定できない)。 この後の読み込みで万一どこかで例外が出ても、 言語と
@@ -21260,7 +32957,7 @@ class MindMapProvider extends ChangeNotifier {
   bool get isFirstLaunch => _isFirstLaunch;
   Future<void> completeFirstLaunch() async {
     _isFirstLaunch = false;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     // 専用フラグで初回起動完了を記録（次回以降はダイアログ非表示）
     await prefs.setBool('langPickerShown', true);
     // 言語も念のため保存（appLanguage が未設定ならデフォルトで書き込む）
@@ -21270,9 +32967,18 @@ class MindMapProvider extends ChangeNotifier {
 
   /// ユーザーがヘッダーに追加したコマンドID（順序付き）
   /// 値は _commandDefs の 'id' に対応。ここに含まれるコマンドは AppBar のアクションとして表示される
+  /// 配置候補から廃止したボタン ID (= ユーザー要望)。 永続値に残っていても
+  /// 各バーの取得時に除外して表示しない (= 移行コード不要で「無くす」)。
+  ///   - 'weather': 天気のカスタムボタンは廃止。 代わりにメニュー上部の時刻表示
+  ///     (時計+天気) をタップして天気を設定/取得する。
+  ///   - 'ocrSearch': APIキー必須のAI OCR実装だったため廃止。
+  static const Set<String> _removedButtonIds = {'weather', 'ocrSearch'};
+  List<String> _filterRemovedButtons(List<String> ids) =>
+      List.unmodifiable(ids.where((id) => !_removedButtonIds.contains(id)));
+
   final List<String> _customHeaderButtons = [];
   List<String> get customHeaderButtons =>
-      List.unmodifiable(_customHeaderButtons);
+      _filterRemovedButtons(_customHeaderButtons);
 
   /// ギャラリー (および bookshelf 等 normal 以外のページ) 専用のヘッダーボタン
   ///   一覧 (= ユーザー要望: ギャラリー等のヘッダーボタンも自由に配置できるように。
@@ -21280,7 +32986,7 @@ class MindMapProvider extends ChangeNotifier {
   ///   独立して保存・編集する。 prefs キー 'galleryHeaderButtons'。
   final List<String> _galleryHeaderButtons = [];
   List<String> get galleryHeaderButtons =>
-      List.unmodifiable(_galleryHeaderButtons);
+      _filterRemovedButtons(_galleryHeaderButtons);
 
   /// ギャラリーヘッダーの初期デフォルト (= これまでハードコードで並んでいた
   ///   ボタンと同じ構成: マップメモ・範囲選択・ブラウザAI・フラッシュカード)。
@@ -21293,10 +32999,8 @@ class MindMapProvider extends ChangeNotifier {
   ];
 
   /// モバイル版ヘッダーに追加できるカスタム項目の最大数。
-  /// デスクトップは AppBar が横に広いので全部出せるが、モバイルは
-  /// AppBar のスペースが狭いので 3 つまでに絞る。
-  /// (それ以上は右 3 点メニューや設定シートから使う)
-  static const int mobileHeaderCustomSlots = 3;
+  /// 中央ヘッダー領域を横スクロール化したため、実質無制限として扱う。
+  static const int mobileHeaderCustomSlots = 1 << 20;
 
   // ─── モバイル下部バーのカスタム項目（5 スロット）──────────────────────────
   // レイアウト:
@@ -21309,7 +33013,7 @@ class MindMapProvider extends ChangeNotifier {
   static const int mobileBottomCustomSlots = 5;
   final List<String> _customBottomButtons = [];
   List<String> get customBottomButtons =>
-      List.unmodifiable(_customBottomButtons);
+      _filterRemovedButtons(_customBottomButtons);
 
   /// 下部バー 2 行目の lockScale (拡大率ロック) ボタンの位置 (0..5)。
   /// 0 が左端 (デフォルト)。並び替えで他のスロットと交換できる。
@@ -21350,7 +33054,7 @@ class MindMapProvider extends ChangeNotifier {
     if (targetCustomIdx == null || oldLockCustomIdxInNewLayout == null) {
       // ロジック上ここには来ないはず (target != oldLock を確認済み)
       _lockScaleBottomSlot = targetVisibleSlot;
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setInt('lockScaleBottomSlot', _lockScaleBottomSlot);
       notifyListeners();
       return;
@@ -21371,7 +33075,7 @@ class MindMapProvider extends ChangeNotifier {
       // 永続化 (customs 側も変更したので両方保存)
       await _saveCustomBottomButtons();
     }
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setInt('lockScaleBottomSlot', _lockScaleBottomSlot);
     notifyListeners();
   }
@@ -21465,7 +33169,7 @@ class MindMapProvider extends ChangeNotifier {
 
   /// 現在のモードに応じた 1 行目スロットリストを返す。
   /// 既存コードからの参照はこの getter を経由するため、 透明に切り替わる。
-  List<String> get customBottomTopButtons => List.unmodifiable(
+  List<String> get customBottomTopButtons => _filterRemovedButtons(
       _splitMode ? _customBottomTopButtonsSplit : _customBottomTopButtons);
 
   /// 内部用: 現在のモードのリスト本体を返す (= mutate 用)。
@@ -21479,7 +33183,7 @@ class MindMapProvider extends ChangeNotifier {
   Future<void> setDarkMode(bool dark) async {
     _isDarkMode = dark;
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setBool('isDarkMode', dark);
     } catch (_) {}
     notifyListeners();
@@ -21495,7 +33199,7 @@ class MindMapProvider extends ChangeNotifier {
     final v = value.clamp(1, 100);
     _pdfArrowStepDivisor = v;
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setInt('pdfArrowStepDivisor', v);
     } catch (_) {}
     notifyListeners();
@@ -21508,7 +33212,7 @@ class MindMapProvider extends ChangeNotifier {
   Future<void> setPdfScrollHorizontal(bool v) async {
     _pdfScrollHorizontal = v;
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setBool('pdfScrollHorizontal', v);
     } catch (_) {}
     notifyListeners();
@@ -21523,7 +33227,7 @@ class MindMapProvider extends ChangeNotifier {
     final v = value.clamp(0, 1440);
     _eventNotifyLeadMinutes = v;
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setInt('eventNotifyLeadMinutes', v);
     } catch (_) {}
     notifyListeners();
@@ -21538,7 +33242,7 @@ class MindMapProvider extends ChangeNotifier {
     _nodeSearchUseYoutube = value;
     notifyListeners();
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setBool('nodeSearchUseYoutube', value);
     } catch (_) {}
   }
@@ -21552,7 +33256,7 @@ class MindMapProvider extends ChangeNotifier {
     _nodeLinkUseAttach = value;
     notifyListeners();
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setBool('nodeLinkUseAttach', value);
     } catch (_) {}
   }
@@ -21567,7 +33271,7 @@ class MindMapProvider extends ChangeNotifier {
     _nodeCalendarUseFlashcard = value;
     notifyListeners();
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setBool('nodeCalendarUseFlashcard', value);
     } catch (_) {}
   }
@@ -21599,7 +33303,7 @@ class MindMapProvider extends ChangeNotifier {
   Future<void> setGeofenceLockEnabled(bool v) async {
     _geofenceLockEnabled = v;
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setBool('geofenceLockEnabled', v);
     } catch (_) {}
     notifyListeners();
@@ -21609,7 +33313,7 @@ class MindMapProvider extends ChangeNotifier {
     _geofenceLat = lat;
     _geofenceLon = lon;
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setDouble('geofenceLat', lat);
       await prefs.setDouble('geofenceLon', lon);
     } catch (_) {}
@@ -21620,7 +33324,7 @@ class MindMapProvider extends ChangeNotifier {
     _geofenceLat = null;
     _geofenceLon = null;
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.remove('geofenceLat');
       await prefs.remove('geofenceLon');
     } catch (_) {}
@@ -21630,7 +33334,7 @@ class MindMapProvider extends ChangeNotifier {
   Future<void> setGeofenceRadiusKm(double v) async {
     _geofenceRadiusKm = v.clamp(0.05, 500.0);
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setDouble('geofenceRadiusKm', _geofenceRadiusKm);
     } catch (_) {}
     notifyListeners();
@@ -21640,7 +33344,7 @@ class MindMapProvider extends ChangeNotifier {
     if (v != 'enter' && v != 'exit') return;
     _geofenceMode = v;
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setString('geofenceMode', v);
     } catch (_) {}
     notifyListeners();
@@ -21649,7 +33353,7 @@ class MindMapProvider extends ChangeNotifier {
   Future<void> setGeofenceLockMinutes(int v) async {
     _geofenceLockMinutes = v.clamp(1, 24 * 60);
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setInt('geofenceLockMinutes', _geofenceLockMinutes);
     } catch (_) {}
     notifyListeners();
@@ -21664,7 +33368,7 @@ class MindMapProvider extends ChangeNotifier {
   Future<void> setPdfAiPanelDefault(String value) async {
     _pdfAiPanelDefault = value;
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setString('pdfAiPanelDefault', value);
     } catch (_) {}
     notifyListeners();
@@ -21679,7 +33383,7 @@ class MindMapProvider extends ChangeNotifier {
   Future<void> setPdfFitPageDefault(bool value) async {
     _pdfFitPageDefault = value;
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setBool('pdfFitPageDefault', value);
     } catch (_) {}
     notifyListeners();
@@ -21697,7 +33401,7 @@ class MindMapProvider extends ChangeNotifier {
     _decoTextAnchorX = x.clamp(0.0, 1.0);
     _decoTextAnchorY = y.clamp(0.0, 1.0);
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setDouble('decoTextAnchorX', _decoTextAnchorX);
       await prefs.setDouble('decoTextAnchorY', _decoTextAnchorY);
     } catch (_) {}
@@ -21714,7 +33418,7 @@ class MindMapProvider extends ChangeNotifier {
     final v = value.clamp(1, 50);
     _pdfPageJumpCount = v;
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setInt('pdfPageJumpCount', v);
     } catch (_) {}
     notifyListeners();
@@ -21756,7 +33460,7 @@ class MindMapProvider extends ChangeNotifier {
   /// SharedPreferences に保存 (全ノードのハイライトを 1 つの JSON として)。
   Future<void> _savePdfHighlights() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       final encoded = jsonEncode(
         _pdfHighlights.map(
           (k, v) => MapEntry(k, v.map((h) => h.toJson()).toList()),
@@ -21775,7 +33479,7 @@ class MindMapProvider extends ChangeNotifier {
   /// SharedPreferences に保存。
   Future<void> _savePdfMemoPinnedFolders() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       final encoded = jsonEncode(
         _pdfMemoPinnedFolders.map((k, v) => MapEntry(k, v.toList())),
       );
@@ -21786,7 +33490,7 @@ class MindMapProvider extends ChangeNotifier {
   /// SharedPreferences から読み込み (アプリ起動時)。
   Future<void> _loadPdfMemoPinnedFolders() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       final str = prefs.getString('pdfMemoPinnedFolders_v1');
       if (str == null || str.isEmpty) return;
       final decoded = jsonDecode(str) as Map<String, dynamic>;
@@ -21805,7 +33509,7 @@ class MindMapProvider extends ChangeNotifier {
 
   Future<void> _savePdfMemoFolderTopIndex() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       final encoded = jsonEncode(_pdfMemoFolderTopIndex);
       await prefs.setString('pdfMemoFolderTopIndex_v1', encoded);
     } catch (_) {}
@@ -21813,7 +33517,7 @@ class MindMapProvider extends ChangeNotifier {
 
   Future<void> _loadPdfMemoFolderTopIndex() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       final str = prefs.getString('pdfMemoFolderTopIndex_v1');
       if (str == null || str.isEmpty) return;
       final decoded = jsonDecode(str) as Map<String, dynamic>;
@@ -21985,7 +33689,7 @@ class MindMapProvider extends ChangeNotifier {
   Future<void> setOpenLinksInApp(bool v) async {
     _openLinksInApp = v;
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setBool('openLinksInApp', v);
     } catch (_) {}
     notifyListeners();
@@ -22011,7 +33715,7 @@ class MindMapProvider extends ChangeNotifier {
   Future<void> setPasteImageScalePercent(int v) async {
     _pasteImageScalePercent = v.clamp(0, 100);
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setInt('pasteImageScalePercent', _pasteImageScalePercent);
     } catch (_) {}
     notifyListeners();
@@ -22025,7 +33729,7 @@ class MindMapProvider extends ChangeNotifier {
   Future<void> setPromptForTitleOnNodeCreate(bool v) async {
     _promptForTitleOnNodeCreate = v;
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setBool('promptForTitleOnNodeCreate', v);
     } catch (_) {}
     notifyListeners();
@@ -22041,7 +33745,7 @@ class MindMapProvider extends ChangeNotifier {
   Future<void> setNodeSplitDelimiter(String v) async {
     _nodeSplitDelimiter = v.isEmpty ? '\n' : v;
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setString('nodeSplitDelimiter', _nodeSplitDelimiter);
     } catch (_) {}
     notifyListeners();
@@ -22054,7 +33758,7 @@ class MindMapProvider extends ChangeNotifier {
   Future<void> setFocusLockHideSeconds(bool v) async {
     _focusLockHideSeconds = v;
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setBool('focusLockHideSeconds', v);
     } catch (_) {}
     notifyListeners();
@@ -22068,7 +33772,7 @@ class MindMapProvider extends ChangeNotifier {
   Future<void> setHideEmbedRelated(bool v) async {
     _hideEmbedRelated = v;
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setBool('hideEmbedRelated', v);
     } catch (_) {}
     notifyListeners();
@@ -22081,7 +33785,7 @@ class MindMapProvider extends ChangeNotifier {
   Future<void> setFocusLockHideUnlockButton(bool v) async {
     _focusLockHideUnlockBtn = v;
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setBool('focusLockHideUnlockBtn', v);
     } catch (_) {}
     notifyListeners();
@@ -22093,7 +33797,7 @@ class MindMapProvider extends ChangeNotifier {
   Future<void> setFocusLockScheduleEnabled(bool v) async {
     _focusLockScheduleEnabled = v;
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setBool('focusLockScheduleEnabled', v);
     } catch (_) {}
     notifyListeners();
@@ -22108,7 +33812,7 @@ class MindMapProvider extends ChangeNotifier {
     _focusLockScheduleStartMin = startMin % 1440;
     _focusLockScheduleEndMin = endMin % 1440;
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setInt(
           'focusLockScheduleStartMin', _focusLockScheduleStartMin);
       await prefs.setInt('focusLockScheduleEndMin', _focusLockScheduleEndMin);
@@ -22125,7 +33829,7 @@ class MindMapProvider extends ChangeNotifier {
 
   Future<void> _persistFocusLockSchedules() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       final raw =
           jsonEncode(_focusLockSchedules.map((s) => s.toJson()).toList());
       await prefs.setString('focusLockSchedules', raw);
@@ -23010,7 +34714,7 @@ class MindMapProvider extends ChangeNotifier {
   }
 
   Future<void> _saveCustomHeaderButtons() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString(
         'customHeaderButtons', jsonEncode(_customHeaderButtons));
   }
@@ -23050,7 +34754,7 @@ class MindMapProvider extends ChangeNotifier {
   // ── ギャラリー (normal 以外) ヘッダーボタンの保存/編集 (上記の通常ヘッダー版と
   //    同じ実装。 prefs キーだけ 'galleryHeaderButtons') ──
   Future<void> _saveGalleryHeaderButtons() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString(
         'galleryHeaderButtons', jsonEncode(_galleryHeaderButtons));
   }
@@ -23080,7 +34784,7 @@ class MindMapProvider extends ChangeNotifier {
 
   // ─── モバイル下部バーのカスタム項目の永続化 ────────────────────────────────
   Future<void> _saveCustomBottomButtons() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString(
         'customBottomButtons', jsonEncode(_customBottomButtons));
   }
@@ -23116,7 +34820,7 @@ class MindMapProvider extends ChangeNotifier {
 
   // ─── モバイル下部バー 1 行目 (link/file/rangeSelect/addNode/undo/redo) の管理 ──
   Future<void> _saveCustomBottomTopButtons() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     if (_splitMode) {
       // 分割モードの設定変更 → split 用キーに保存
       await prefs.setString('customBottomTopButtonsSplit',
@@ -23189,14 +34893,14 @@ class MindMapProvider extends ChangeNotifier {
   bool get bottomThirdRowEnabled => _bottomThirdRowEnabled;
 
   Future<void> _saveCustomBottomThirdButtons() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString(
         'customBottomThirdButtons', jsonEncode(_customBottomThirdButtons));
   }
 
   Future<void> setBottomThirdRowEnabled(bool v) async {
     _bottomThirdRowEnabled = v;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setBool('bottomThirdRowEnabled', v);
     notifyListeners();
   }
@@ -23269,7 +34973,7 @@ class MindMapProvider extends ChangeNotifier {
       ..clear()
       ..addAll(defaultBottomBottomButtons);
     _lockScaleBottomSlot = 0;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString(
         'customBottomButtons', jsonEncode(_customBottomButtons));
     await prefs.setInt('lockScaleBottomSlot', 0);
@@ -23340,12 +35044,12 @@ class MindMapProvider extends ChangeNotifier {
   }
 
   Future<void> _saveHeaderIconColors() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString('headerIconColors', jsonEncode(_headerIconColors));
   }
 
   Future<void> _saveHeaderIconColorsOff() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString(
         'headerIconColorsOff', jsonEncode(_headerIconColorsOff));
   }
@@ -23437,14 +35141,14 @@ class MindMapProvider extends ChangeNotifier {
 
   Future<void> setOpenaiModel(String id) async {
     _openaiModel = id;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString('openaiModel', id);
     notifyListeners();
   }
 
   Future<void> setAnthropicModel(String id) async {
     _anthropicModel = id;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString('anthropicModel', id);
     notifyListeners();
   }
@@ -23464,7 +35168,7 @@ class MindMapProvider extends ChangeNotifier {
   /// 24 時間以上前なら裏で API を叩いて更新する。
   Future<void> initializeAvailableModels() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       // ── キャッシュ復元 ──
       final flashJson = prefs.getString('cached_flash_models');
       if (flashJson != null && flashJson.isNotEmpty) {
@@ -23590,7 +35294,7 @@ class MindMapProvider extends ChangeNotifier {
       _dynamicProModels = proSet;
       _lastGeminiModelsFetch = DateTime.now();
       // 永続化
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setString('cached_flash_models', jsonEncode(flashSet));
       await prefs.setString('cached_pro_models', jsonEncode(proSet));
       await prefs.setInt('models_fetch_gemini_ts',
@@ -23642,7 +35346,7 @@ class MindMapProvider extends ChangeNotifier {
 
       _dynamicOpenaiModels = models;
       _lastOpenaiModelsFetch = DateTime.now();
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setString('cached_openai_models', jsonEncode(models));
       await prefs.setInt('models_fetch_openai_ts',
           _lastOpenaiModelsFetch!.millisecondsSinceEpoch);
@@ -23687,7 +35391,7 @@ class MindMapProvider extends ChangeNotifier {
 
       _dynamicClaudeModels = models;
       _lastClaudeModelsFetch = DateTime.now();
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setString('cached_claude_models', jsonEncode(models));
       await prefs.setInt('models_fetch_claude_ts',
           _lastClaudeModelsFetch!.millisecondsSinceEpoch);
@@ -23826,7 +35530,7 @@ class MindMapProvider extends ChangeNotifier {
     if (_purchasedPlan == plan && _proSubscribed == nextPro) return;
     _purchasedPlan = plan;
     _proSubscribed = nextPro;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setBool('pro_subscribed', nextPro);
     await prefs.setString('purchased_plan', plan.name);
     if (!nextPro) {
@@ -23977,7 +35681,7 @@ class MindMapProvider extends ChangeNotifier {
   }
 
   Future<void> _persistMonthlyUsage() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString('billingMonthYm', _billingMonthYm);
     await prefs.setInt('monthlyUploadBytes', _monthlyUploadBytes);
     await prefs.setInt('monthlyDownloadBytes', _monthlyDownloadBytes);
@@ -24060,7 +35764,7 @@ class MindMapProvider extends ChangeNotifier {
   /// (`currentPlanLabel()` の戻り値ベースで Firestore に同期される設計)。
   Future<void> setDevImpersonatePlan(SubscriptionPlan plan) async {
     _devImpersonatePlan = plan;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString('dev_impersonate_plan', plan.name);
     notifyListeners();
     // ── Firestore 側にも反映 (他ユーザーからの見え方を即時に切り替える) ──
@@ -24130,15 +35834,53 @@ class MindMapProvider extends ChangeNotifier {
   }
 
   Future<void> _persistSplitViewUse() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setInt('splitViewUseCount', _splitViewUseCount);
   }
+
+  /// ─── 集中ロック / 画面ロックの無料利用 ─────────────────────────────────
+  /// = ユーザー要望: 「集中ロックや画面ロックは初回だけ誰でも実行できて、
+  ///   2 回目以降は Pro プラン以上限定」。 それぞれ初回 1 回のみ無料。
+  static const int kFreeLockLimit = 1;
+  int _focusLockUseCount = 0;
+  int _appLockUseCount = 0;
+  int get focusLockUseCount => _focusLockUseCount;
+  int get appLockUseCount => _appLockUseCount;
+
+  /// 集中ロックを今すぐ実行して良いか。 Pro 以上は常に true、 無料は初回のみ。
+  bool get canUseFocusLock =>
+      isProUnlocked || _focusLockUseCount < kFreeLockLimit;
+
+  /// 画面ロックを今すぐ実行して良いか。 Pro 以上は常に true、 無料は初回のみ。
+  bool get canUseAppLock => isProUnlocked || _appLockUseCount < kFreeLockLimit;
+
+  void recordFocusLockUse() {
+    _focusLockUseCount++;
+    // ignore: discarded_futures
+    _persistLockUse();
+  }
+
+  void recordAppLockUse() {
+    _appLockUseCount++;
+    // ignore: discarded_futures
+    _persistLockUse();
+  }
+
+  Future<void> _persistLockUse() async {
+    final prefs = await _prefsWithRetry();
+    await prefs.setInt('focusLockUseCount', _focusLockUseCount);
+    await prefs.setInt('appLockUseCount', _appLockUseCount);
+  }
+
+  /// Max プラン以上が解放されているか (= ユーザー要望: Cloud 同期は Max 限定)。
+  /// Max を演じる開発者モード / Max クーポンでも true。
+  bool get isMaxUnlocked => currentPlan == SubscriptionPlan.max;
 
   /// Pro / クーポン状態をローカルから復元。
   /// クーポンは期限切れなら自動クリア。
   /// 加えて開発者モード用の演じプラン (Free/Pro/Max) も復元する。
   Future<void> _loadProState() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     _proSubscribed = prefs.getBool('pro_subscribed') ?? false;
     // 実課金プラン (pro/max) を復元。旧バージョン互換: 無ければ bool から導出。
     final purchasedPlanStr = prefs.getString('purchased_plan');
@@ -24151,6 +35893,8 @@ class MindMapProvider extends ChangeNotifier {
       _purchasedPlan = SubscriptionPlan.pro;
     }
     _splitViewUseCount = prefs.getInt('splitViewUseCount') ?? 0;
+    _focusLockUseCount = prefs.getInt('focusLockUseCount') ?? 0;
+    _appLockUseCount = prefs.getInt('appLockUseCount') ?? 0;
     final endedMs = prefs.getInt('subscription_ended_at_ms');
     if (endedMs != null) {
       _subscriptionEndedAt = DateTime.fromMillisecondsSinceEpoch(endedMs);
@@ -24197,7 +35941,7 @@ class MindMapProvider extends ChangeNotifier {
     _couponDiscountPercent = 0;
     _couponExpiry = null;
     _couponPlan = SubscriptionPlan.pro;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.remove('applied_coupon_code');
     await prefs.remove('coupon_discount_percent');
     await prefs.remove('coupon_expiry_ms');
@@ -24249,8 +35993,14 @@ class MindMapProvider extends ChangeNotifier {
   Future<String?> applyCoupon(String code) async {
     final trimmed = code.trim().toUpperCase();
     if (trimmed.isEmpty) return t('coupon.errEmpty');
-    // Firebase が無効でも開発者モードのテストクーポンは効くようにしておく
-    // 必要があるので、まず Firestore を試して無理ならローカル検証。
+    // クーポンは Firestore 検証が前提。 未接続なら一度だけ初期化を試みる
+    //   (= ユーザー要望: 接続できないときに「無効」ではなく「接続できなかった」と
+    //   分かるように。 ここで繋がればそのまま検証へ進む)。
+    if (!_firebaseEnabled || _idToken == null) {
+      try {
+        await _initFirebase();
+      } catch (_) {}
+    }
     if (_firebaseEnabled && _idToken != null) {
       try {
         final url = '$_firestoreBaseUrl/coupons/$trimmed';
@@ -24325,7 +36075,7 @@ class MindMapProvider extends ChangeNotifier {
         final planStr = _firestoreStr(fields['plan']);
         _couponPlan =
             (planStr == 'max') ? SubscriptionPlan.max : SubscriptionPlan.pro;
-        final prefs = await SharedPreferences.getInstance();
+        final prefs = await _prefsWithRetry();
         await prefs.setString('applied_coupon_code', trimmed);
         await prefs.setInt('coupon_discount_percent', discount);
         await prefs.setString('coupon_plan', _couponPlan.name);
@@ -24377,7 +36127,10 @@ class MindMapProvider extends ChangeNotifier {
         return t('coupon.errNetwork');
       }
     }
-    return t('coupon.errNotFound');
+    // ここに来るのは Firestore に接続できなかった時だけ (上の try 内は必ず
+    //   return する)。 = ユーザー要望: 「無効」ではなく「接続できなかった」と
+    //   伝える (サーバー未接続 / env.json 未指定 / オフライン等)。
+    return t('coupon.errNetwork');
   }
 
   // ─── 開発者モード: クーポン管理 ──────────────────────────────────────
@@ -24521,6 +36274,7 @@ class MindMapProvider extends ChangeNotifier {
               0,
           'expiresAt': _firestoreStr(fields['expiresAt']) ?? '',
           'note': _firestoreStr(fields['note']) ?? '',
+          'plan': _firestoreStr(fields['plan']) == 'max' ? 'max' : 'pro',
         });
       }
       // 新しい順にソート (expires が空 = 無期限を一番下に)
@@ -24772,7 +36526,7 @@ class MindMapProvider extends ChangeNotifier {
       final planStr = _firestoreStr(fields['plan']) ?? 'pro';
       final isMaxPlan = planStr == 'max';
 
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       _proSubscribed = pro;
       await prefs.setBool('pro_subscribed', pro);
       if (couponCode != null && couponCode.isNotEmpty) {
@@ -24894,8 +36648,78 @@ class MindMapProvider extends ChangeNotifier {
   }
 
   // ─── 開発者モード: ユーザー一覧 (プラン別) ─────────────────────────────
+  String _firestoreAnyString(dynamic val) {
+    final s = _firestoreStr(val);
+    if (s != null) return s;
+    if (val is Map) {
+      final timestamp = val['timestampValue'];
+      if (timestamp != null) return timestamp.toString();
+      final integer = val['integerValue'];
+      if (integer != null) return integer.toString();
+      final doubleValue = val['doubleValue'];
+      if (doubleValue != null) return doubleValue.toString();
+      final boolValue = val['booleanValue'];
+      if (boolValue != null) return boolValue.toString();
+    }
+    return '';
+  }
+
+  Map<String, dynamic> _userLicenseMapFromDoc(Map<String, dynamic> doc) {
+    final fields = doc['fields'] as Map<String, dynamic>? ?? {};
+    final docName = (doc['name'] as String?) ?? '';
+    final uid =
+        docName.contains('/users/') ? docName.split('/users/').last : '';
+    final plan = _firestoreAnyString(fields['plan']);
+    return {
+      'uid': uid,
+      'displayName': _firestoreAnyString(fields['displayName']),
+      'plan': plan.isEmpty ? 'free' : plan,
+      'lastSeen': _firestoreAnyString(fields['lastSeen']),
+      'couponCode': _firestoreAnyString(fields['couponCode']),
+      'subscriptionStatus': _firestoreAnyString(fields['subscriptionStatus']),
+      'planExpiresAt': _firestoreAnyString(fields['planExpiresAt']),
+      'planSource': _firestoreAnyString(fields['planSource']),
+      'planUpdatedAt': _firestoreAnyString(fields['planUpdatedAt']),
+      'stripeCustomerId': _firestoreAnyString(fields['stripeCustomerId']),
+      'stripeSubscriptionId':
+          _firestoreAnyString(fields['stripeSubscriptionId']),
+      'rcStore': _firestoreAnyString(fields['rcStore']),
+      'rcAppUserId': _firestoreAnyString(fields['rcAppUserId']),
+    };
+  }
+
+  /// /users/{uid} を取得し、ライセンス関連フィールドを返す。
+  /// 見つからない場合は null。
+  Future<Map<String, dynamic>?> fetchUserLicenseByUid(String uid) async {
+    final trimmed = uid.trim();
+    if (!_developerMode ||
+        !_firebaseEnabled ||
+        _idToken == null ||
+        trimmed.isEmpty) {
+      return null;
+    }
+    try {
+      await _ensureFreshToken();
+      final res = await http.get(
+        Uri.parse('$_firestoreBaseUrl/users/$trimmed'),
+        headers: {'Authorization': 'Bearer $_idToken'},
+      );
+      if (res.statusCode == 404) return null;
+      if (res.statusCode != 200) {
+        debugPrint(
+            'fetchUserLicenseByUid failed: ${res.statusCode} ${res.body}');
+        return null;
+      }
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      return _userLicenseMapFromDoc(data);
+    } catch (e) {
+      debugPrint('fetchUserLicenseByUid error: $e');
+      return null;
+    }
+  }
+
   /// /users コレクションを最大 1000 件まで取得し、
-  /// {uid, displayName, plan, lastSeen, couponCode} のリストを返す。
+  /// uid / displayName / plan / lastSeen / couponCode 等のリストを返す。
   Future<List<Map<String, dynamic>>> listAllUsers() async {
     if (!_developerMode || !_firebaseEnabled || _idToken == null) return [];
     try {
@@ -24916,17 +36740,7 @@ class MindMapProvider extends ChangeNotifier {
         final docs = data['documents'] as List<dynamic>? ?? [];
         for (final d in docs) {
           final m = d as Map<String, dynamic>;
-          final fields = m['fields'] as Map<String, dynamic>? ?? {};
-          final docName = (m['name'] as String?) ?? '';
-          final uid =
-              docName.contains('/users/') ? docName.split('/users/').last : '';
-          result.add({
-            'uid': uid,
-            'displayName': _firestoreStr(fields['displayName']) ?? '',
-            'plan': _firestoreStr(fields['plan']) ?? 'free',
-            'lastSeen': _firestoreStr(fields['lastSeen']) ?? '',
-            'couponCode': _firestoreStr(fields['couponCode']) ?? '',
-          });
+          result.add(_userLicenseMapFromDoc(m));
         }
         pageToken = data['nextPageToken'] as String?;
         if (pageToken == null || pageToken.isEmpty) break;
@@ -24949,15 +36763,16 @@ class MindMapProvider extends ChangeNotifier {
 
   /// 開発者モードを有効化（永続化）。
   ///
-  /// 永続化の挙動: SharedPreferences の `developer_mode=true` フラグを
-  /// セットするので、アプリを閉じて再起動してもこの状態は維持される。
-  /// 解除するには明示的に `deactivateDeveloperMode()` を呼ぶ必要がある
-  /// (= UI 側の「開発者モードを解除」ボタン)。ダイアログを単に閉じても
-  /// 解除されない。
-  Future<bool> activateDeveloperMode(String password) async {
-    if (password == 'Darksan114514') {
+  /// パスワードはアプリ内に持たず、Cloud Functions 側の Secret Manager で
+  /// 照合する。成功時だけローカル状態を有効化する。
+  /// 戻り値: null = 成功。 それ以外 = 表示用エラーメッセージ (t() 済み)。
+  /// = ユーザー要望: 失敗時に「パスワード違い」か「サーバーに接続できない」かを
+  ///   区別して表示する (サーバー照合方式は維持)。
+  Future<String?> activateDeveloperMode(String password) async {
+    final err = await _verifyDeveloperPasswordOnServer(password);
+    if (err == null) {
       _developerMode = true;
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setBool('developer_mode', true);
       await _loadDeveloperSettings();
       notifyListeners();
@@ -24965,35 +36780,159 @@ class MindMapProvider extends ChangeNotifier {
       // 即同期する。これで他のユーザーから見たときに、開発者が演じている
       // プラン通りに振る舞う (= カレンダー共有等の動作確認が現実的になる)。
       _syncPlanToUserDoc();
-      return true;
+      return null;
     }
-    return false;
+    return err;
   }
 
   void deactivateDeveloperMode() {
     _developerMode = false;
-    SharedPreferences.getInstance()
-        .then((p) => p.setBool('developer_mode', false));
+    _prefsWithRetry().then((p) => p.setBool('developer_mode', false));
     notifyListeners();
+    // サーバー側の custom claim も解除する。失敗してもローカル解除は優先する。
+    // ignore: discarded_futures
+    _revokeDeveloperModeOnServer();
     // 開発者モード解除後、本来のプラン (pro/coupon/free) に戻す
     _syncPlanToUserDoc();
   }
 
   Future<void> _loadDeveloperModeState() async {
-    final prefs = await SharedPreferences.getInstance();
-    _developerMode = prefs.getBool('developer_mode') ?? false;
-    if (_developerMode) await _loadDeveloperSettings();
+    final prefs = await _prefsWithRetry();
+    final locallyEnabled = prefs.getBool('developer_mode') ?? false;
+    if (!locallyEnabled) {
+      _developerMode = false;
+      return;
+    }
+
+    // 旧バージョンのローカルフラグや端末改ざんを信用しない。
+    // Functions の custom claim が有効な場合だけ復元する。
+    _developerMode = await _fetchDeveloperModeStatusFromServer();
+    if (_developerMode) {
+      await _loadDeveloperSettings();
+    } else {
+      await prefs.setBool('developer_mode', false);
+    }
+    notifyListeners();
+  }
+
+  /// 開発者パスワードをサーバーで照合する。
+  /// 戻り値: null = 成功。 それ以外 = 表示用エラーメッセージ (t() 済み)。
+  Future<String?> _verifyDeveloperPasswordOnServer(String password) async {
+    final trimmed = password.trim();
+    if (trimmed.isEmpty) return t('dev.wrongPassword');
+    // Firebase 未接続 / 設定不足はパスワード以前の問題なので接続エラーとして扱う。
+    if (!await _ensureDeveloperAuthReady()) return t('dev.errConnection');
+
+    try {
+      final res = await http
+          .post(
+            Uri.parse('$_functionsBaseUrl/verifyDeveloperPassword'),
+            headers: {
+              'Authorization': 'Bearer $_idToken',
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode({'password': trimmed}),
+          )
+          .timeout(const Duration(seconds: 30));
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        if (data['ok'] == true && data['developer'] == true) {
+          // custom claim が入った新しい ID token を取り直しておく。
+          await _ensureFreshToken(force: true);
+          return null;
+        }
+        return t('dev.wrongPassword');
+      }
+      // サーバーが返したエラーコードで「パスワード違い」と「接続/認証エラー」を
+      //   切り分ける (= ユーザー要望)。 invalid-password=誤り、
+      //   too-many-attempts=ロック、 それ以外 (unauthenticated/internal 等) は接続側。
+      String? errCode;
+      try {
+        errCode = (jsonDecode(res.body) as Map<String, dynamic>)['error']
+            ?.toString();
+      } catch (_) {}
+      debugPrint(
+          'verifyDeveloperPassword failed: ${res.statusCode} $errCode ${res.body}');
+      if (res.statusCode == 401 && errCode == 'invalid-password') {
+        return t('dev.wrongPassword');
+      }
+      if (res.statusCode == 429 || errCode == 'too-many-attempts') {
+        return t('dev.errLocked');
+      }
+      return t('dev.errConnection');
+    } catch (e) {
+      debugPrint('verifyDeveloperPassword error: $e');
+      return t('dev.errConnection');
+    }
+  }
+
+  Future<bool> _fetchDeveloperModeStatusFromServer() async {
+    if (!await _ensureDeveloperAuthReady()) return false;
+    try {
+      // custom claim 反映済みの状態を見るため、起動時は保険で更新してから確認。
+      await _ensureFreshToken(force: true);
+      final res = await http
+          .post(
+            Uri.parse('$_functionsBaseUrl/developerModeStatus'),
+            headers: {
+              'Authorization': 'Bearer $_idToken',
+              'Content-Type': 'application/json',
+            },
+            body: '{}',
+          )
+          .timeout(const Duration(seconds: 20));
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        return data['ok'] == true && data['developer'] == true;
+      }
+      debugPrint('developerModeStatus failed: ${res.statusCode} ${res.body}');
+    } catch (e) {
+      debugPrint('developerModeStatus error: $e');
+    }
+    return false;
+  }
+
+  Future<void> _revokeDeveloperModeOnServer() async {
+    if (!await _ensureDeveloperAuthReady()) return;
+    try {
+      await http
+          .post(
+            Uri.parse('$_functionsBaseUrl/revokeDeveloperMode'),
+            headers: {
+              'Authorization': 'Bearer $_idToken',
+              'Content-Type': 'application/json',
+            },
+            body: '{}',
+          )
+          .timeout(const Duration(seconds: 20));
+      await _ensureFreshToken(force: true);
+    } catch (e) {
+      debugPrint('revokeDeveloperMode error: $e');
+    }
+  }
+
+  Future<bool> _ensureDeveloperAuthReady() async {
+    if (_firestoreProjectId.isEmpty || _authApiKey.isEmpty) {
+      debugPrint('Developer auth skipped: Firebase settings are missing');
+      return false;
+    }
+    if (!_firebaseEnabled || _idToken == null) {
+      await _initFirebase();
+    }
+    if (!_firebaseEnabled || _idToken == null) return false;
+    await _ensureFreshToken();
+    return _idToken != null;
   }
 
   Future<void> _loadDeveloperSettings() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     _globalGeminiApiKey = prefs.getString('global_gemini_api_key') ?? '';
     _inquiryEmail = prefs.getString('inquiry_email') ?? '';
   }
 
   Future<void> setGlobalGeminiApiKey(String key) async {
     _globalGeminiApiKey = key.trim();
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString('global_gemini_api_key', _globalGeminiApiKey!);
     // Firestoreにも保存（グローバル設定）
     if (_firebaseEnabled && _idToken != null) {
@@ -25020,7 +36959,7 @@ class MindMapProvider extends ChangeNotifier {
 
   Future<void> setInquiryEmail(String email) async {
     _inquiryEmail = email.trim();
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString('inquiry_email', _inquiryEmail);
     // Firestoreにも保存
     if (_firebaseEnabled && _idToken != null) {
@@ -25047,7 +36986,7 @@ class MindMapProvider extends ChangeNotifier {
 
   /// 問い合わせ先メールを全ユーザー向けにFirestoreから取得
   Future<void> loadInquiryEmailFromCloud() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     // まずローカルキャッシュをロード
     _inquiryEmail = prefs.getString('inquiry_email') ?? '';
     if (!_firebaseEnabled || _idToken == null) return;
@@ -25078,8 +37017,14 @@ class MindMapProvider extends ChangeNotifier {
     }
   }
 
+  bool get _developerAllGroupDataViewEnabled => false;
+
   /// 開発者モード：全グループの一覧を取得
   Future<List<Map<String, dynamic>>> fetchAllGroups() async {
+    if (!_developerAllGroupDataViewEnabled) {
+      debugPrint('fetchAllGroups disabled: all-group data view removed');
+      return [];
+    }
     if (!_developerMode || !_firebaseEnabled || _idToken == null) return [];
     try {
       final url = '$_firestoreBaseUrl/groups';
@@ -25113,6 +37058,10 @@ class MindMapProvider extends ChangeNotifier {
 
   /// 開発者モード：指定グループの全ページを取得
   Future<List<Map<String, dynamic>>> fetchGroupPages(String groupId) async {
+    if (!_developerAllGroupDataViewEnabled) {
+      debugPrint('fetchGroupPages disabled: all-group data view removed');
+      return [];
+    }
     if (!_developerMode || !_firebaseEnabled || _idToken == null) return [];
     try {
       final url = '$_firestoreBaseUrl/groups/$groupId/pages';
@@ -25177,7 +37126,7 @@ class MindMapProvider extends ChangeNotifier {
   /// 過去 24 時間以内に送信した問い合わせ数を返す。
   /// 古いタイムスタンプは自動的にクリーンアップする。
   Future<int> _purgeAndCountInquirySendLog() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     final raw = prefs.getString('inquiry_send_log') ?? '[]';
     List<dynamic> arr;
     try {
@@ -25228,7 +37177,7 @@ class MindMapProvider extends ChangeNotifier {
       }
     }
 
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     // UIDはローカル保存されたものを使う（匿名認証の有無に依存しない）
     String uid = _uid ?? prefs.getString('firebase_uid') ?? '';
     if (uid.isEmpty) {
@@ -25317,7 +37266,7 @@ class MindMapProvider extends ChangeNotifier {
 
   /// 自分が送った問い合わせ一覧を取得（ローカルキャッシュ＋Firestoreマージ）
   Future<List<Map<String, dynamic>>> fetchMyInquiries() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     final existing = prefs.getString('my_inquiries') ?? '[]';
     final localList =
         (jsonDecode(existing) as List<dynamic>).cast<Map<String, dynamic>>();
@@ -25613,7 +37562,7 @@ class MindMapProvider extends ChangeNotifier {
 
   Future<bool> deleteMyInquiry(String msgId) async {
     // ローカルから削除
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     final existing = prefs.getString('my_inquiries') ?? '[]';
     final list =
         (jsonDecode(existing) as List<dynamic>).cast<Map<String, dynamic>>();
@@ -27276,6 +39225,22 @@ $cleanQ
     notifyListeners();
   }
 
+  /// 画像から文字を OCR 抽出する (= ユーザー要望: 画像の OCR 検索)。
+  /// ビジョン対応 AI (Gemini / Claude) に画像を渡し、 認識テキストのみを返す。
+  /// 翻訳・要約はさせず原文のまま返す。 AI キー未設定や通信失敗時は例外を投げる。
+  Future<String> ocrImageToText(String filePath, String ext) async {
+    final name = filePath.split(RegExp(r'[\\/]')).last;
+    final text = await _askAiWithBinaryDoc(
+      filePath: filePath,
+      fileName: name,
+      ext: ext,
+      prompt: 'この画像に写っている文字をすべて、 見たままの順序でそのまま書き出してください。'
+          ' 翻訳・要約・説明・前置き・記号装飾は一切付けず、 認識した文字だけを出力してください。'
+          ' 文字が無ければ何も出力しないでください。',
+    );
+    return text.trim();
+  }
+
   /// AI に PDF/docx/pptx を直接添付して問い合わせる。
   /// Gemini: inline_data で base64 を渡す
   /// Claude: document タイプで base64 を渡す
@@ -28502,6 +40467,13 @@ $cleanQ
     }
   }
 
+  /// 画面側から「ノードの添付 (画像/PDF/docx/pptx) を見た上で」 AI に質問する
+  /// 公開ラッパ (= ユーザー要望: 画像/ファイルノードの AI ボタンで、 文字が
+  /// 空でも中の画像/ファイルを API の AI に渡して回答を得る)。 添付が無い/未対応
+  /// なら通常のテキスト問い合わせ [askAi] にフォールバックする。
+  Future<String> askAiAboutNodeMedia(MindMapNode node, String prompt) =>
+      _askAiAboutNode(node, prompt);
+
   /// AI: ノードに説明文を追加（同一ノードのメモとして展開）
   Future<void> aiExplainNode(String nodeId) async {
     final node = currentPage.nodes[nodeId];
@@ -29050,7 +41022,7 @@ $cleanQ
       }
       _syncPlanToUserDoc();
       // 保存済みグループIDがあれば復元（自動同期はしない）
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       final savedGroup = prefs.getString('syncGroupId');
       if (savedGroup != null && savedGroup.isNotEmpty) {
         // グループは registerMember より先に復元しておく
@@ -29080,7 +41052,7 @@ $cleanQ
 
   Future<void> _signInAnonymously() async {
     // 保存済みリフレッシュトークンがあればそれを使う
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     final savedRefresh = prefs.getString('firebase_refresh_token');
     if (savedRefresh != null && savedRefresh.isNotEmpty) {
       final ok = await _refreshIdToken(savedRefresh);
@@ -29134,7 +41106,7 @@ $cleanQ
         _idTokenExpiry = DateTime.now().add(Duration(seconds: expiresIn));
         final newRefresh = data['refresh_token'] as String?;
         if (newRefresh != null) {
-          final prefs = await SharedPreferences.getInstance();
+          final prefs = await _prefsWithRetry();
           await prefs.setString('firebase_refresh_token', newRefresh);
         }
         return _idToken != null;
@@ -29157,7 +41129,7 @@ $cleanQ
             .isBefore(_idTokenExpiry!.subtract(const Duration(minutes: 5)))) {
       return;
     }
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     final savedRefresh = prefs.getString('firebase_refresh_token');
     if (savedRefresh != null && savedRefresh.isNotEmpty) {
       await _refreshIdToken(savedRefresh);
@@ -29209,7 +41181,7 @@ $cleanQ
     if (!_joinedGroupIds.contains(code)) {
       _joinedGroupIds.add(code);
     }
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString('syncGroupId', code);
     await _saveJoinedGroups();
     await _registerMember(code);
@@ -29220,7 +41192,7 @@ $cleanQ
   Future<void> setActiveGroup(String? groupCode) async {
     if (groupCode != null && !_joinedGroupIds.contains(groupCode)) return;
     _syncGroupId = groupCode;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     if (groupCode == null) {
       await prefs.remove('syncGroupId');
     } else {
@@ -29238,7 +41210,7 @@ $cleanQ
     if (_syncGroupId == code) {
       _syncGroupId = _joinedGroupIds.isNotEmpty ? _joinedGroupIds.first : null;
     }
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     if (_syncGroupId == null) {
       await prefs.remove('syncGroupId');
     } else {
@@ -29261,7 +41233,7 @@ $cleanQ
       await leaveSpecificGroup(leavingGroupId);
     } else {
       _syncGroupId = null;
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.remove('syncGroupId');
       notifyListeners();
     }
@@ -29793,7 +41765,7 @@ $cleanQ
       }
       if (res.statusCode == 200) {
         // アップロード成功: 日時を記録
-        final prefs = await SharedPreferences.getInstance();
+        final prefs = await _prefsWithRetry();
         await prefs.setString(
             'page_uploaded_$pageId', DateTime.now().toUtc().toIso8601String());
         // ── 差分アップロード用にページ内容のハッシュも記録 (= ユーザー要望:
@@ -30437,105 +42409,248 @@ $cleanQ
     }
   }
 
+  String _cloudPageItemId(String pageId) => 'page:$pageId';
+  String _cloudAttachmentItemId(String pageId, String nodeId) =>
+      'attachment:$pageId:$nodeId';
+  String _cloudVideoItemId(String pageId, String nodeId) =>
+      'video:$pageId:$nodeId';
+
+  String _storageAttachmentFileNameFromUrl(String url, {String? fallback}) {
+    try {
+      String raw;
+      final objectMarker = url.indexOf('/o/');
+      if (objectMarker >= 0) {
+        raw = url.substring(objectMarker + 3).split('?').first;
+      } else {
+        raw = url.split('?').first.split('/').last;
+      }
+      var decoded = Uri.decodeComponent(raw).replaceAll('\\', '/');
+      const attachmentMarker = '/attachments/';
+      final markerIndex = decoded.lastIndexOf(attachmentMarker);
+      if (markerIndex >= 0) {
+        decoded = decoded.substring(markerIndex + attachmentMarker.length);
+      }
+      if (decoded.contains('/')) decoded = decoded.split('/').last;
+      if (decoded.trim().isNotEmpty) return decoded.trim();
+    } catch (_) {}
+    final fb = (fallback ?? '').trim();
+    if (fb.isNotEmpty) return fb.split('/').last.split('\\').last;
+    return 'attachment_${DateTime.now().millisecondsSinceEpoch}';
+  }
+
+  String _downloadNodeTitle(MindMapNode node) {
+    final title = node.title.trim();
+    if (title.isNotEmpty) return title;
+    final name = (node.attachmentName ?? '').trim();
+    if (name.isNotEmpty) return name;
+    return '無題の要素';
+  }
+
+  void _prepareCloudDownloadItems(List<MindMapPage> pages) {
+    _cloudDownloadItems.clear();
+    for (final page in pages) {
+      _cloudDownloadItems[_cloudPageItemId(page.id)] = CloudDownloadItem(
+        id: _cloudPageItemId(page.id),
+        pageId: page.id,
+        nodeId: '',
+        label: '${page.name} / マップ本体',
+        fileName: '',
+        kind: 'page',
+      );
+      for (final node in page.nodes.values) {
+        final attachmentUrl = (node.attachmentStorageUrl ?? '').trim();
+        final attachmentPath = (node.attachmentPath ?? '').trim();
+        final attachmentName = (node.attachmentName ?? '').trim();
+        if (attachmentUrl.isNotEmpty ||
+            (attachmentPath.isNotEmpty &&
+                attachmentName.isNotEmpty &&
+                !attachmentPath.startsWith('data:'))) {
+          final fileName = attachmentUrl.isNotEmpty
+              ? _storageAttachmentFileNameFromUrl(attachmentUrl,
+                  fallback: attachmentName)
+              : _storageAttachmentFileNameFromUrl(attachmentPath,
+                  fallback: attachmentName);
+          _cloudDownloadItems[_cloudAttachmentItemId(page.id, node.id)] =
+              CloudDownloadItem(
+            id: _cloudAttachmentItemId(page.id, node.id),
+            pageId: page.id,
+            nodeId: node.id,
+            label: '${page.name} / ${_downloadNodeTitle(node)}',
+            fileName: fileName,
+            kind: 'attachment',
+          );
+        }
+
+        final videoUrl = (node.videoStorageUrl ?? '').trim();
+        final youtubeUrl = (node.youtubeUrl ?? '').trim();
+        if (videoUrl.isNotEmpty ||
+            (youtubeUrl.isNotEmpty &&
+                !youtubeUrl.startsWith('http://') &&
+                !youtubeUrl.startsWith('https://'))) {
+          final fileName = videoUrl.isNotEmpty
+              ? _storageAttachmentFileNameFromUrl(videoUrl)
+              : _storageAttachmentFileNameFromUrl(youtubeUrl);
+          _cloudDownloadItems[_cloudVideoItemId(page.id, node.id)] =
+              CloudDownloadItem(
+            id: _cloudVideoItemId(page.id, node.id),
+            pageId: page.id,
+            nodeId: node.id,
+            label: '${page.name} / ${_downloadNodeTitle(node)}',
+            fileName: fileName,
+            kind: 'video',
+          );
+        }
+      }
+    }
+  }
+
+  double _cloudDownloadOverallProgress() {
+    if (_cloudDownloadItems.isEmpty) return _syncProgress;
+    double total = 0;
+    for (final item in _cloudDownloadItems.values) {
+      total += item.progress.clamp(0.0, 1.0).toDouble();
+    }
+    return (total / _cloudDownloadItems.length).clamp(0.0, 1.0).toDouble();
+  }
+
+  void _markCloudDownloadItem(String id, CloudDownloadItemStatus status,
+      {double? progress, String? error}) {
+    final item = _cloudDownloadItems[id];
+    if (item == null) return;
+    item.status = status;
+    if (progress != null) {
+      item.progress = progress.clamp(0.0, 1.0).toDouble();
+    }
+    item.error = error;
+    _syncProgress = _cloudDownloadOverallProgress();
+  }
+
+  MindMapPage _upsertDownloadedPage(MindMapPage page) {
+    final idx = _pages.indexWhere((p) => p.id == page.id);
+    if (idx < 0) {
+      _pages.add(page);
+      return page;
+    }
+    _pages[idx] = page;
+    return _pages[idx];
+  }
+
+  Future<bool> _downloadNodeAttachmentItem(
+    MindMapPage page,
+    MindMapNode node,
+    CloudDownloadItem item, {
+    bool force = false,
+  }) async {
+    if (!force && item.skip) {
+      _markCloudDownloadItem(item.id, CloudDownloadItemStatus.skipped,
+          progress: 1.0);
+      notifyListeners();
+      return true;
+    }
+
+    if (!force) {
+      final localPath =
+          item.kind == 'video' ? (node.youtubeUrl ?? '') : (node.attachmentPath ?? '');
+      if (localPath.isNotEmpty &&
+          !localPath.startsWith('http://') &&
+          !localPath.startsWith('https://') &&
+          !localPath.startsWith('data:') &&
+          File(localPath).existsSync()) {
+        _markCloudDownloadItem(item.id, CloudDownloadItemStatus.completed,
+            progress: 1.0);
+        notifyListeners();
+        return true;
+      }
+    }
+
+    _uploading[node.id] = true;
+    _uploadProgress[node.id] = 0.0;
+    _markCloudDownloadItem(item.id, CloudDownloadItemStatus.downloading,
+        progress: 0.0);
+    notifyListeners();
+
+    final downloaded = await _downloadAttachmentWithProgress(
+      item.fileName,
+      node.id,
+      detailItemId: item.id,
+    );
+
+    _uploading.remove(node.id);
+    _uploadProgress.remove(node.id);
+
+    if (downloaded != null) {
+      if (item.kind == 'video') {
+        node.youtubeUrl = downloaded;
+      } else {
+        node.attachmentPath = downloaded;
+      }
+      _markCloudDownloadItem(item.id, CloudDownloadItemStatus.completed,
+          progress: 1.0);
+      notifyListeners();
+      return true;
+    }
+
+    _lastSyncAttachmentFailed = true;
+    _markCloudDownloadItem(
+      item.id,
+      CloudDownloadItemStatus.failed,
+      error: '${item.fileName} をダウンロードできませんでした',
+    );
+    notifyListeners();
+    return false;
+  }
+
+  Future<void> retryCloudDownloadItem(String itemId) async {
+    final item = _cloudDownloadItems[itemId];
+    if (item == null || !item.canRetry || _isUploading || _isDownloading) {
+      return;
+    }
+    final pageIndex = _pages.indexWhere((p) => p.id == item.pageId);
+    if (pageIndex < 0) return;
+    final page = _pages[pageIndex];
+    final node = page.nodes[item.nodeId];
+    if (node == null) return;
+
+    _isDownloading = true;
+    _downloadStartedAt = DateTime.now();
+    _syncCancelRequested = false;
+    _syncStatusText = '${item.label} を再ダウンロード中...';
+    _syncProgress = item.progress;
+    item.skip = false;
+    notifyListeners();
+    try {
+      await _downloadNodeAttachmentItem(page, node, item, force: true);
+      await _saveToStorageLocal();
+    } finally {
+      _isDownloading = false;
+      _syncProgress = 0.0;
+      _syncStatusText = '';
+      notifyListeners();
+    }
+  }
+
   /// リモートからフェッチしたページの添付ファイルをローカルにダウンロード
   Future<void> _downloadPageAttachments(MindMapPage page) async {
     if (!_firebaseEnabled || _syncGroupId == null) return;
+    final hasPreparedItems = _cloudDownloadItems.containsKey(
+            _cloudPageItemId(page.id)) ||
+        page.nodes.values.any((node) =>
+            _cloudDownloadItems.containsKey(
+                _cloudAttachmentItemId(page.id, node.id)) ||
+            _cloudDownloadItems.containsKey(_cloudVideoItemId(page.id, node.id)));
+    if (!hasPreparedItems) {
+      _prepareCloudDownloadItems([page]);
+    }
     for (final node in page.nodes.values) {
-      // 画像/PDF添付: Storage URLがあればそれを使ってダウンロード
-      if ((node.attachmentStorageUrl ?? '').isNotEmpty) {
-        final name = node.attachmentName ??
-            Uri.decodeComponent(
-                node.attachmentStorageUrl!.split('/').last.split('?').first);
-        // ローカルにファイルがなければダウンロード
-        bool needDownload = true;
-        if ((node.attachmentPath ?? '').isNotEmpty) {
-          final localFile = File(node.attachmentPath!);
-          if (localFile.existsSync()) needDownload = false;
-        }
-        if (needDownload) {
-          // PDF・画像も進捗付きでダウンロード (整合性検証込み)。
-          // ファイル名だけ降りてきて中身が開けない不具合への対策で、
-          // 100% 表示後にしか attachmentPath を更新しない。
-          _uploading[node.id] = true;
-          _uploadProgress[node.id] = 0.0;
-          notifyListeners();
-          final downloaded =
-              await _downloadAttachmentWithProgress(name, node.id);
-          _uploading.remove(node.id);
-          _uploadProgress.remove(node.id);
-          if (downloaded != null) {
-            node.attachmentPath = downloaded;
-          } else {
-            // PDF/画像の中身が取得できなかった → 失敗フラグを立て、
-            //   画面側で「完了」 ではなくエラーを出す (= 再DLを促す)。
-            _lastSyncAttachmentFailed = true;
-          }
-          notifyListeners();
-        }
-      } else if ((node.attachmentPath ?? '').isNotEmpty &&
-          (node.attachmentName ?? '').isNotEmpty) {
-        // レガシー: Storage URLなしだが名前がある場合
-        final localFile = File(node.attachmentPath!);
-        if (!localFile.existsSync()) {
-          _uploading[node.id] = true;
-          _uploadProgress[node.id] = 0.0;
-          notifyListeners();
-          final downloaded = await _downloadAttachmentWithProgress(
-              node.attachmentName!, node.id);
-          _uploading.remove(node.id);
-          _uploadProgress.remove(node.id);
-          if (downloaded != null) {
-            node.attachmentPath = downloaded;
-          } else {
-            _lastSyncAttachmentFailed = true;
-          }
-          notifyListeners();
-        }
+      final attachmentItem =
+          _cloudDownloadItems[_cloudAttachmentItemId(page.id, node.id)];
+      if (attachmentItem != null) {
+        await _downloadNodeAttachmentItem(page, node, attachmentItem);
       }
 
-      // 動画: Storage URLがあればそれを使ってダウンロード
-      if ((node.videoStorageUrl ?? '').isNotEmpty) {
-        final name = Uri.decodeComponent(node.videoStorageUrl!
-            .split('/attachments%2F')
-            .last
-            .split('?')
-            .first);
-        bool needDownload = true;
-        if ((node.youtubeUrl ?? '').isNotEmpty &&
-            !node.youtubeUrl!.startsWith('http')) {
-          final localFile = File(node.youtubeUrl!);
-          if (localFile.existsSync()) needDownload = false;
-        }
-        if (needDownload) {
-          _uploading[node.id] = true;
-          _uploadProgress[node.id] = 0.0;
-          notifyListeners();
-
-          final downloaded = await _downloadAttachmentWithProgress(
-            name,
-            node.id,
-          );
-
-          _uploading.remove(node.id);
-          _uploadProgress.remove(node.id);
-
-          if (downloaded != null) {
-            node.youtubeUrl = downloaded;
-          }
-          notifyListeners();
-        }
-      } else if ((node.youtubeUrl ?? '').isNotEmpty &&
-          !node.youtubeUrl!.startsWith('http') &&
-          !node.youtubeUrl!.startsWith('https')) {
-        // レガシー: ローカルパスだがファイルがない場合
-        final localFile = File(node.youtubeUrl!);
-        if (!localFile.existsSync()) {
-          final name = node.youtubeUrl!.split('/').last.split('\\').last;
-          final downloaded = await downloadAttachmentFromStorage(name);
-          if (downloaded != null) {
-            node.youtubeUrl = downloaded;
-          }
-        }
+      final videoItem = _cloudDownloadItems[_cloudVideoItemId(page.id, node.id)];
+      if (videoItem != null) {
+        await _downloadNodeAttachmentItem(page, node, videoItem);
       }
     }
   }
@@ -30546,8 +42661,8 @@ $cleanQ
   /// 場合は破損とみなして部分書き込みを破棄する (downloadAttachmentFromStorage
   /// と同じ方針)。 これにより「進捗 100% 表示後にファイルが開けない」現象を
   /// 防ぐ。
-  Future<String?> _downloadAttachmentWithProgress(
-      String fileName, String nodeId) async {
+  Future<String?> _downloadAttachmentWithProgress(String fileName, String nodeId,
+      {String? detailItemId}) async {
     if (!_firebaseEnabled || _syncGroupId == null || _idToken == null)
       return null;
     try {
@@ -30561,6 +42676,14 @@ $cleanQ
 
       if (streamedRes.statusCode == 200) {
         final contentLength = streamedRes.contentLength ?? 0;
+        if (contentLength > 0 && !canUseDownloadBytes(contentLength)) {
+          final limitGb =
+              (monthlyDownloadLimit / 1024 / 1024 / 1024).toStringAsFixed(1);
+          _lastSyncLimitMessage = '今月のダウンロード上限 ($limitGb GB) に達しました。来月まで待つか、'
+              '上位プラン (開発者モードなら無制限) をご検討ください。';
+          await streamedRes.stream.drain<void>();
+          return null;
+        }
         final appDir = await getApplicationDocumentsDirectory();
         final attachDir = Directory('${appDir.path}/attachments');
         if (!await attachDir.exists()) {
@@ -30581,9 +42704,19 @@ $cleanQ
             // 残りはサーバー応答クローズ + flush + rename の確定後に
             // 100% へ進める (Upload 側と同じ思想)。
             if (contentLength > 0) {
-              _uploadProgress[nodeId] =
-                  (received / contentLength * 0.95).clamp(0.0, 0.95);
-              notifyListeners();
+              final progress = (received / contentLength * 0.95)
+                  .clamp(0.0, 0.95)
+                  .toDouble();
+              _uploadProgress[nodeId] = progress;
+              if (detailItemId != null) {
+                final item = _cloudDownloadItems[detailItemId];
+                if (item != null) {
+                  item.status = CloudDownloadItemStatus.downloading;
+                  item.progress = progress;
+                  _syncProgress = _cloudDownloadOverallProgress();
+                }
+              }
+              _notifyCloudDownloadProgress();
             }
           }
         } catch (e) {
@@ -30636,8 +42769,16 @@ $cleanQ
         }
         await tempFile.rename(localPath);
 
+        recordDownloadBytes(writtenLen);
         _uploadProgress[nodeId] = 1.0;
-        notifyListeners();
+        if (detailItemId != null) {
+          final item = _cloudDownloadItems[detailItemId];
+          if (item != null) {
+            item.progress = 1.0;
+            _syncProgress = _cloudDownloadOverallProgress();
+          }
+        }
+        _notifyCloudDownloadProgress(force: true);
 
         debugPrint(
             'Storage download OK: $fileName → $localPath ($writtenLen bytes)');
@@ -30779,7 +42920,7 @@ $cleanQ
     try {
       final pageId = currentPage.id;
       final h = jsonEncode(currentPage.toJson()).hashCode.toString();
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       final stored = prefs.getString('page_uploaded_hash_$pageId');
       if (stored == null) return true; // 未記録 → アップロードが必要
       return stored != h; // 変わっていれば必要
@@ -30811,47 +42952,69 @@ $cleanQ
       final cloudUpdateTime = DateTime.tryParse(cloudUpdateTimeStr);
       if (cloudUpdateTime == null) return 'up_to_date';
       // ローカルの最終アップロード日時
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       final localUploadedStr = prefs.getString('page_uploaded_$pageId');
       final localUploadedAt =
           localUploadedStr != null ? DateTime.tryParse(localUploadedStr) : null;
       // クラウドの方が新しい場合のみダウンロード
       if (localUploadedAt == null || cloudUpdateTime.isAfter(localUploadedAt)) {
-        // undo履歴に積む（Ctrl+Zで戻れるように）
-        _undoStacks.putIfAbsent(pageId, () => []);
-        _redoStacks.putIfAbsent(pageId, () => []);
-        final groups = _namedGroups[pageId] ?? {};
-        _undoStacks[pageId]!.add(_PageSnapshot.from(currentPage, groups));
-        if (_undoStacks[pageId]!.length > _maxHistory) {
-          _undoStacks[pageId]!.removeAt(0);
-        }
-        _redoStacks[pageId]!.clear();
-        // ページデータを適用
         final fields = data['fields'] as Map<String, dynamic>? ?? {};
         final jsonStr = _firestoreStr(fields['json']);
         if (jsonStr == null) return 'up_to_date';
         final cloudPage =
             MindMapPage.fromJson(jsonDecode(jsonStr) as Map<String, dynamic>);
-        final idx = _pages.indexWhere((p) => p.id == pageId);
-        if (idx >= 0) {
-          _pages[idx].name = cloudPage.name;
-          _pages[idx].nodes
-            ..clear()
-            ..addAll(cloudPage.nodes);
-          _pages[idx].connections
-            ..clear()
-            ..addAll(cloudPage.connections);
+        if (_isUploading || _isDownloading) {
+          if (!_syncFlagsAreStale()) return 'sync_in_progress';
+          _isUploading = false;
+          _isDownloading = false;
         }
-        final ngJson = _firestoreStr(fields['namedGroupsJson']);
-        if (ngJson != null && ngJson.isNotEmpty) {
-          _applyNamedGroupsJson(pageId, ngJson);
-        }
-        await _saveToStorageLocal();
-        await _saveNamedGroups();
-        // アップロード日時をクラウドのupdateTimeに合わせる
-        await prefs.setString('page_uploaded_$pageId', cloudUpdateTimeStr);
+        _isDownloading = true;
+        _downloadStartedAt = DateTime.now();
+        _syncCancelRequested = false;
+        _syncProgress = 0.0;
+        _syncStatusText = '${cloudPage.name} をダウンロード中...';
+        _lastSyncAttachmentFailed = false;
+        _lastSyncLimitMessage = null;
+        _prepareCloudDownloadItems([cloudPage]);
         notifyListeners();
-        return 'downloaded';
+        try {
+          // undo履歴に積む（Ctrl+Zで戻れるように）
+          _undoStacks.putIfAbsent(pageId, () => []);
+          _redoStacks.putIfAbsent(pageId, () => []);
+          final groups = _namedGroups[pageId] ?? {};
+          _undoStacks[pageId]!.add(_PageSnapshot.from(currentPage, groups));
+          if (_undoStacks[pageId]!.length > _maxHistory) {
+            _undoStacks[pageId]!.removeAt(0);
+          }
+          _redoStacks[pageId]!.clear();
+
+          _markCloudDownloadItem(_cloudPageItemId(pageId),
+              CloudDownloadItemStatus.downloading,
+              progress: 0.0);
+          final localPage = _upsertDownloadedPage(cloudPage);
+          _markCloudDownloadItem(
+              _cloudPageItemId(pageId), CloudDownloadItemStatus.completed,
+              progress: 1.0);
+
+          final ngJson = _firestoreStr(fields['namedGroupsJson']);
+          if (ngJson != null && ngJson.isNotEmpty) {
+            _applyNamedGroupsJson(pageId, ngJson);
+          }
+          notifyListeners();
+
+          await _downloadPageAttachments(localPage);
+          await _saveToStorageLocal();
+          await _saveNamedGroups();
+          // アップロード日時をクラウドのupdateTimeに合わせる
+          await prefs.setString('page_uploaded_$pageId', cloudUpdateTimeStr);
+          notifyListeners();
+          return 'downloaded';
+        } finally {
+          _isDownloading = false;
+          _syncProgress = 0.0;
+          _syncStatusText = '';
+          notifyListeners();
+        }
       }
       return 'up_to_date';
     } catch (e) {
@@ -30990,33 +43153,34 @@ $cleanQ
       }
       final selected =
           cloudPages.where((p) => selectedIds.contains(p.id)).toList();
+      _prepareCloudDownloadItems(selected);
+      notifyListeners();
       for (int i = 0; i < selected.length; i++) {
         if (_syncCancelRequested) break; // Esc でキャンセル
         final page = selected[i];
         _syncStatusText =
             '${page.name} をダウンロード中... (${i + 1}/${selected.length})';
-        _syncProgress = i / selected.length;
-        notifyListeners();
-        // 添付ファイルをダウンロード
-        await _downloadPageAttachments(page);
-        // ローカルに反映
-        final idx = _pages.indexWhere((p) => p.id == page.id);
-        if (idx < 0) {
-          _pages.add(page);
-        } else {
-          _pages[idx].name = page.name;
-          _pages[idx].nodes
-            ..clear()
-            ..addAll(page.nodes);
-          _pages[idx].connections
-            ..clear()
-            ..addAll(page.connections);
+        final pageItemId = _cloudPageItemId(page.id);
+        final pageItem = _cloudDownloadItems[pageItemId];
+        if (pageItem?.skip == true) {
+          _markCloudDownloadItem(
+              pageItemId, CloudDownloadItemStatus.skipped,
+              progress: 1.0);
+          notifyListeners();
+          continue;
         }
-        // 付箋（namedGroups）をキャッシュから復元
+        _markCloudDownloadItem(pageItemId, CloudDownloadItemStatus.downloading,
+            progress: 0.0);
+        final localPage = _upsertDownloadedPage(page);
         final cachedNg = _cloudPageGroupsCache[page.id];
         if (cachedNg != null && cachedNg.isNotEmpty) {
           _applyNamedGroupsJson(page.id, cachedNg);
         }
+        _markCloudDownloadItem(pageItemId, CloudDownloadItemStatus.completed,
+            progress: 1.0);
+        notifyListeners();
+        // 添付ファイルをローカルに反映済みのページへ順番に埋めていく。
+        await _downloadPageAttachments(localPage);
       }
       _syncProgress = 1.0;
       _syncStatusText = '';
@@ -31154,7 +43318,7 @@ $cleanQ
         await _loadFoldersFromStorage();
       } catch (_) {}
 
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
 
       // v3 → 失敗(0枚)なら v2 から移行。 いずれも 1 枚ずつ復元する。
       bool loaded = _tryLoadPagesFrom(prefs.getString(_storageKey));
@@ -31221,7 +43385,7 @@ $cleanQ
 
   /// フォルダー一覧を SharedPreferences から読み込み
   Future<void> _loadFoldersFromStorage() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     final raw = prefs.getString(_foldersStorageKey);
     if (raw == null) return;
     try {
@@ -31235,7 +43399,7 @@ $cleanQ
 
   /// フォルダー一覧の保存
   Future<void> _saveFoldersToStorage() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString(_foldersStorageKey,
         jsonEncode(_folders.map((f) => f.toJson()).toList()));
   }
@@ -31251,7 +43415,7 @@ $cleanQ
   }
 
   Future<void> _loadFontSettings() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     defaultTitleFontSize = prefs.getDouble('defaultTitleFontSize') ?? 15.0;
     defaultMemoFontSize = prefs.getDouble('defaultMemoFontSize') ?? 12.0;
     _snapEnabled = prefs.getBool('snapEnabled') ?? true;
@@ -31266,7 +43430,7 @@ $cleanQ
   }
 
   Future<void> _loadChannelFilterSettings() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     _autoDeleteWatched = prefs.getBool('autoDeleteWatched') ?? false;
     // 連番オートフィル: デフォルト ON (= 親切寄り)
     _autofillSequenceEnabled = prefs.getBool('autofillSequenceEnabled') ?? true;
@@ -31276,8 +43440,8 @@ $cleanQ
     _excludeKeywords = prefs.getString('chFilterExclude') ?? '';
     // 動画再生倍率の上限 (1.5〜16.0)
     _videoMaxRate = (prefs.getDouble('videoMaxRate') ?? 4.0).clamp(1.5, 16.0);
-    // オフライン動画の左右キーのシーク秒数 (1〜60、 既定 10)
-    _videoSeekSeconds = (prefs.getInt('videoSeekSeconds') ?? 10).clamp(1, 60);
+    // オフライン動画の左右キーのシーク秒数 (1〜60、 既定 5)
+    _videoSeekSeconds = (prefs.getInt('videoSeekSeconds') ?? 5).clamp(1, 60);
     // 直近の動画再生倍率 (起動を跨いで引き継ぐ)。
     // 1.0 〜 videoMaxRate の範囲にクランプ (videoMaxRate を後から下げた
     // ケースで前回値がそれを超えていたら丸める)。
@@ -31305,7 +43469,7 @@ $cleanQ
         _currentPageIndex < _pages.length) {
       _pages[_currentPageIndex].lastModifiedAt = DateTime.now();
     }
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString(
         _storageKey, jsonEncode(_pages.map((p) => p.toJson()).toList()));
     await prefs.setDouble('defaultTitleFontSize', defaultTitleFontSize);
@@ -31325,7 +43489,7 @@ $cleanQ
 
   /// Firestoreからの受信時に使用（ループ防止のためFirestore書き込みをしない）
   Future<void> _saveToStorageLocal() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString(
         _storageKey, jsonEncode(_pages.map((p) => p.toJson()).toList()));
   }
@@ -31468,6 +43632,11 @@ $cleanQ
     if (index < 0 || index >= _pages.length) return;
     _currentPageIndex = index;
     _selectedNodeId = null;
+    // ギャラリーページに切り替えたら整列して格子キャッシュを最新化する。
+    //   = ユーザー報告「時々 +ボックスと要素がかみ合わなくなる」 の対策:
+    //   読み込み直後/ページ切替直後でも、 要素配置と同じ格子で +ボックスを描くため。
+    //   sizeTextNode は内容ベースで決まり stretch 後の高さに依存しないので冪等。
+    _autoArrangeIfBookshelf();
     // 最後に開いたページ ID を永続化 (起動時の復元用)
     _persistLastOpenedPageId(_pages[index].id);
     notifyListeners();
@@ -31477,7 +43646,7 @@ $cleanQ
   /// 次回起動時にこの ID で switchPage して、 前回の作業を続けられるようにする。
   Future<void> _persistLastOpenedPageId(String pageId) async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setString('last_opened_page_id', pageId);
     } catch (_) {}
   }
@@ -31499,7 +43668,7 @@ $cleanQ
           return;
         }
       }
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       final saved = prefs.getString('last_opened_page_id');
       if (saved == null || saved.isEmpty) return;
       final idx = _pages.indexWhere((p) => p.id == saved);
@@ -31535,10 +43704,29 @@ $cleanQ
     _currentPageIndex = _currentPageIndex.clamp(0, _pages.length - 1);
     _selectedNodeId = null;
     // AI 追加質問の文脈もページ削除と同時に消す (孤立データを残さない)
-    _aiPageContexts.remove(deletedId);
+    _clearDeletedPageRuntimeState(deletedId);
     _deletePageFromFirestore(deletedId);
+    _saveNamedGroups();
     _saveToStorage();
     notifyListeners();
+  }
+
+  void _clearDeletedPageRuntimeState(String pageId) {
+    _aiPageContexts.remove(pageId);
+    _undoStacks.remove(pageId);
+    _redoStacks.remove(pageId);
+    _pageLastEditedAt.remove(pageId);
+    _namedGroups.remove(pageId);
+    _groupColors.remove(pageId);
+    _groupFontSizes.remove(pageId);
+    _groupFontFamilies.remove(pageId);
+    _groupLayoutRows.remove(pageId);
+    _groupLayoutModes.remove(pageId);
+    _groupPadding.remove(pageId);
+    final hiddenChanged = _hiddenPageIds.remove(pageId);
+    final favoriteChanged = _favoritePageIds.remove(pageId);
+    if (hiddenChanged) unawaited(_persistHiddenPages());
+    if (favoriteChanged) unawaited(_persistFavoritePages());
   }
 
   /// ページ並び替え（Drawerからのドラッグ＆ドロップ）
@@ -31558,7 +43746,7 @@ $cleanQ
       return;
     }
     _shortcutFolderId = folderId;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     if (folderId == null) {
       await prefs.remove(_kShortcutFolderId);
     } else {
@@ -31823,8 +44011,7 @@ $cleanQ
     // 削除したフォルダーが Ctrl+1〜9 の基準なら null にリセット
     if (_shortcutFolderId == folderId) {
       _shortcutFolderId = null;
-      SharedPreferences.getInstance()
-          .then((prefs) => prefs.remove(_kShortcutFolderId));
+      _prefsWithRetry().then((prefs) => prefs.remove(_kShortcutFolderId));
     }
     _saveFoldersToStorage();
     _saveToStorage();
@@ -31870,8 +44057,7 @@ $cleanQ
     // ショートカット基準フォルダーが削除されていたら null に戻す
     if (_shortcutFolderId != null && folderIds.contains(_shortcutFolderId)) {
       _shortcutFolderId = null;
-      SharedPreferences.getInstance()
-          .then((prefs) => prefs.remove(_kShortcutFolderId));
+      _prefsWithRetry().then((prefs) => prefs.remove(_kShortcutFolderId));
     }
     _saveFoldersToStorage();
     _saveToStorage();
@@ -32354,18 +44540,16 @@ $cleanQ
       // ユーザー要望「もう少し短く」 を受けて 220 → 100 に追加調整。
       // (旧 220 でもまだ長く感じるとの指摘)。
       const colGap = 100.0;
-      // = ユーザー要望: メモを縦一列に積み続けると下に伸び続けて全体レイアウト
-      //   が崩れる。 横に並べ、 1 行 (kCols 個) が埋まったら次の行へ折り返す
-      //   グリッド配置にする。 既存子ノード数を index として行/列を算出。
-      const int kCols = 4; // 1 行あたりのメモ数
+      // = ユーザー要望: 「動画メモをマップに出す時は右側・右方向に出るように」。
+      //   以前は 1 行 (4 個) で折り返して下へ段組みしていたが、 折り返さず
+      //   親動画ノードの右へ一直線に並べ続ける (= 右方向に伸びる単一行)。
+      //   既存子ノード数をそのまま列 index として使い、 行は常に親と同じ高さ。
       const double colStep = 270.0; // 横ピッチ (メモ幅240 + 余白)
-      const double rowStep = 140.0; // 縦ピッチ (メモ高さ + 余白)
-      final int col = existingChildren % kCols;
-      final int row = existingChildren ~/ kCols;
+      final int col = existingChildren;
       position = Offset(
         // 親の右端 + colGap が 1 列目の左端。 そこから col 個ぶん右へずらす。
         parent.position.dx + parent.width + colGap + col * colStep,
-        parent.position.dy + row * rowStep,
+        parent.position.dy,
       );
       // 0 〜 20000 の範囲にクランプ (キャンバス境界を超えないように)
       position = Offset(
@@ -32505,13 +44689,31 @@ $cleanQ
     // ── ギャラリー: メモは動画の「隣のブロック」 に 1 つずつ配置する
     //    (= ユーザー要望)。 動画ノードのセルの右隣を 1 ブロック確保し
     //    (既に要素があればその要素を右へずらして間に挿入)、 そこへ置く。
-    if (currentPage.pageType == 'bookshelf' && parentId != null) {
-      final pc = shelfCellOf(parentId);
+    //    ただし親の行が満杯 (= 5 列を超える) になる場合は、 右に押し出して
+    //    レイアウトを崩さず、 親の直下に新しい行を挿入してそこへ入れる
+    //    (= ユーザー要望「5 列超える場合は間に新しい行を追加してそこにメモを入れて」)。
+    if (currentPage.pageType == 'bookshelf') {
+      final pc = parentId != null ? shelfCellOf(parentId) : null;
       if (pc != null) {
-        _reserveShelfCells(pc[1], pc[0] + 1, 1);
-        _shelfCells[node.id] = [pc[0] + 1, pc[1]];
+        final cols = _shelfGridCols(currentPage);
+        // 親の行の占有数 (= その行が満杯かどうか)。
+        int rowCount = 0;
+        _shelfCells.forEach((id, c) {
+          if (c[1] == pc[1]) rowCount++;
+        });
+        if (pc[0] + 1 < cols && rowCount < cols) {
+          // 右隣に空きがある → 右へ 1 つずらして間に挿入。
+          _reserveShelfCells(pc[1], pc[0] + 1, 1);
+          _shelfCells[node.id] = [pc[0] + 1, pc[1]];
+        } else {
+          // 5 列を超える → 親の直下に新しい行を挿入して、 その先頭に置く。
+          _insertShelfRow(pc[1] + 1);
+          _shelfCells[node.id] = [0, pc[1] + 1];
+        }
         _saveShelfCells();
       }
+      // 親が無い / セル未確定でも、 整列で row-major の空きセルへ収めて
+      //   レイアウトが崩れないようにする (_ensureShelfCells が割り当てる)。
       _arrangeAsBookshelfBody(currentPage);
     }
 
@@ -34226,7 +46428,12 @@ $cleanQ
 
   // 格子の範囲外 (フロンティアの更に外側) は既定サイズで外挿する。
   double _gridX(
-      ({List<double> colX, List<double> rowY, List<double> colW, List<double> rowH}) g,
+      ({
+        List<double> colX,
+        List<double> rowY,
+        List<double> colW,
+        List<double> rowH
+      }) g,
       int col) {
     final n = g.colW.length;
     if (col >= 0 && col <= n) return g.colX[col];
@@ -34235,7 +46442,12 @@ $cleanQ
   }
 
   double _gridY(
-      ({List<double> colX, List<double> rowY, List<double> colW, List<double> rowH}) g,
+      ({
+        List<double> colX,
+        List<double> rowY,
+        List<double> colW,
+        List<double> rowH
+      }) g,
       int row) {
     final n = g.rowH.length;
     final defRowH = kShelfTileW * 1.1;
@@ -34245,30 +46457,56 @@ $cleanQ
   }
 
   double _gridW(
-      ({List<double> colX, List<double> rowY, List<double> colW, List<double> rowH}) g,
-      int col) =>
+          ({
+            List<double> colX,
+            List<double> rowY,
+            List<double> colW,
+            List<double> rowH
+          }) g,
+          int col) =>
       (col >= 0 && col < g.colW.length) ? g.colW[col] : kShelfTileW;
 
   double _gridH(
-      ({List<double> colX, List<double> rowY, List<double> colW, List<double> rowH}) g,
-      int row) =>
+          ({
+            List<double> colX,
+            List<double> rowY,
+            List<double> colW,
+            List<double> rowH
+          }) g,
+          int row) =>
       (row >= 0 && row < g.rowH.length) ? g.rowH[row] : kShelfTileW * 1.1;
 
   Offset _shelfCellPos2(
-          ({List<double> colX, List<double> rowY, List<double> colW, List<double> rowH}) g,
+          ({
+            List<double> colX,
+            List<double> rowY,
+            List<double> colW,
+            List<double> rowH
+          }) g,
           int col,
           int row) =>
       Offset(_gridX(g, col), _gridY(g, row));
 
   Rect _shelfCellRect2(
-      ({List<double> colX, List<double> rowY, List<double> colW, List<double> rowH}) g,
-      int col,
-      int row) =>
-      Rect.fromLTWH(_gridX(g, col), _gridY(g, row), _gridW(g, col), _gridH(g, row));
+          ({
+            List<double> colX,
+            List<double> rowY,
+            List<double> colW,
+            List<double> rowH
+          }) g,
+          int col,
+          int row) =>
+      Rect.fromLTWH(
+          _gridX(g, col), _gridY(g, row), _gridW(g, col), _gridH(g, row));
 
   /// ドロップ X 座標に最も近い列番号 (= セル中心との距離で判定)。
   int _nearestShelfCol(
-      ({List<double> colX, List<double> rowY, List<double> colW, List<double> rowH}) g,
+      ({
+        List<double> colX,
+        List<double> rowY,
+        List<double> colW,
+        List<double> rowH
+      }) g,
       double x) {
     int best = 0;
     double bestD = double.infinity;
@@ -34285,7 +46523,12 @@ $cleanQ
   }
 
   int _nearestShelfRow(
-      ({List<double> colX, List<double> rowY, List<double> colW, List<double> rowH}) g,
+      ({
+        List<double> colX,
+        List<double> rowY,
+        List<double> colW,
+        List<double> rowH
+      }) g,
       double y) {
     int best = 0;
     double bestD = double.infinity;
@@ -34324,6 +46567,15 @@ $cleanQ
       if (c[1] == row && c[0] >= fromCol) {
         c[0] = c[0] + count;
       }
+    });
+  }
+
+  /// [row] 以降の行を 1 段ずつ下へずらして、 [row] に空の新しい行を作る。
+  /// = ユーザー要望: 「5 列を超える場合は間に新しい行を追加してそこにメモを入れて」。
+  /// 動画メモを親動画の右隣に入れられない (行が満杯=列数超過) ときに使う。
+  void _insertShelfRow(int row) {
+    _shelfCells.forEach((id, c) {
+      if (c[1] >= row) c[1] = c[1] + 1;
     });
   }
 
@@ -34501,7 +46753,8 @@ $cleanQ
 
   /// row-major で最初の空きセルを探す (cols 列で折り返し、 占有セルはスキップ)。
   /// [occ] に既存の占有セル ("col,row") を渡すと差分計算を省ける。
-  List<int> _nextFreeShelfCell(Set<String> occ, {int fromCol = 0, int fromRow = 0}) {
+  List<int> _nextFreeShelfCell(Set<String> occ,
+      {int fromCol = 0, int fromRow = 0}) {
     final cols = _shelfGridCols();
     int col = fromCol < 0 ? 0 : (fromCol >= cols ? 0 : fromCol);
     int row = fromRow < 0 ? 0 : fromRow;
@@ -34518,6 +46771,15 @@ $cleanQ
   /// セルが未割り当てのノードを row-major で詰める (= ユーザー要望: 横に
   /// 入りきらない場合は次の行の 1 列目から右へ、 既にある所はスキップ)。
   void _ensureShelfCells(MindMapPage page) {
+    // ── 表紙 (格納コンテナ) に隠れているメンバーはセルを占有しない ──
+    // (= ユーザー要望: 動画を格納したブロックを移動させると、 隠れている動画が
+    //   見えないセルを占有してしまい「周りに要素がないのに +ボックスにならない」
+    //   バグが出ていた。 隠れメンバーには絶対にセルを割り当てず、 念のため過去に
+    //   付いてしまった stale なセルも掃除する)。
+    _shelfCells.removeWhere((id, _) {
+      final n = page.nodes[id];
+      return n != null && n.hiddenInContainer != null;
+    });
     final occ = <String>{};
     for (final id in page.nodes.keys) {
       final c = _shelfCells[id];
@@ -34526,6 +46788,8 @@ $cleanQ
     bool changed = false;
     for (final id in page.nodes.keys) {
       if (_shelfCells.containsKey(id)) continue;
+      final n = page.nodes[id];
+      if (n != null && n.hiddenInContainer != null) continue; // 隠れメンバーは除外
       final cell = _nextFreeShelfCell(occ);
       _shelfCells[id] = [cell[0], cell[1]];
       occ.add('${cell[0]},${cell[1]}');
@@ -34542,6 +46806,10 @@ $cleanQ
     if (page.pageType != 'bookshelf') return const [];
     final occ = <String>{};
     for (final id in page.nodes.keys) {
+      // 表紙に隠れているメンバーはセルを占有しない (= ユーザー要望: 要素が
+      //   ない空セルは必ず +ボックスとして表示する)。
+      final n = page.nodes[id];
+      if (n != null && n.hiddenInContainer != null) continue;
       final c = _shelfCells[id];
       if (c != null) occ.add('${c[0]},${c[1]}');
     }
@@ -34556,36 +46824,333 @@ $cleanQ
     return out;
   }
 
-  /// ギャラリーの +ボックス矩形群 (描画 + ドロップ判定用)。
+  /// `_arrangeAsBookshelfBody` が要素配置に使った格子をページ単位でキャッシュする。
+  /// = ユーザー報告「時々ギャラリーの要素がずれて +ボックスと要素がかみ合わなく
+  ///   なる」 の修正。 原因: テキストノードを「セル一杯に埋める」 ために height を
+  ///   伸ばす処理 (stretch) の後、 +ボックス側がライブのノード高さで格子を組み直すと、
+  ///   visualHeight が height に対して非線形 (タイトル溢れ分が max 加算) なため
+  ///   行高が要素配置時の格子と食い違っていた。 配置に使った格子をそのまま +ボックスでも
+  ///   使うことで完全に一致させる。
+  final Map<
+      String,
+      ({
+        List<double> colX,
+        List<double> rowY,
+        List<double> colW,
+        List<double> rowH
+      })> _shelfGridCache = {};
+
+  /// 要素配置時にキャッシュした格子を返す (無ければライブから構築してキャッシュ)。
+  ({List<double> colX, List<double> rowY, List<double> colW, List<double> rowH})
+      _shelfGridFor(MindMapPage page) {
+    final cached = _shelfGridCache[page.id];
+    if (cached != null) return cached;
+    final g = _buildShelfGrid(page);
+    _shelfGridCache[page.id] = g;
+    return g;
+  }
+
+  /// ギャラリーの +ボックス矩形群 (描画用)。
+  ///
+  /// = ユーザー要望: 「横長の画像を貼り付けると +ボックスが縦に小さく
+  ///   (= 横長・平たく) なってしまう」。 列幅は最も広い要素 (横長画像) に
+  ///   合わせて広がるため、 その列の +ボックスもセル全幅 (横長) × 行高
+  ///   (低い) で描かれ、 周りの +ボックスと大きさが揃わず見栄えが悪かった。
+  /// 対策: +ボックスは常に標準タイルサイズ (kShelfTileW × defRowH) で、
+  ///   セル領域の中央に配置する。 これで隣に横長/縦長要素があっても
+  ///   +ボックスはすべて同じ大きさ・見栄えに保たれる。
+  /// ※ ドロップ/タップ判定 (bookshelfFrontierCellAt) はセル全域を使うので、
+  ///   見た目を縮めても当たり判定は広いまま (= タップしやすさは維持)。
   List<Rect> bookshelfFrontierRects() {
     final page = currentPage;
     if (page.pageType != 'bookshelf') return const [];
-    final grid = _buildShelfGrid(page);
-    return bookshelfFrontierCells()
-        .map((c) => _shelfCellRect2(grid, c[0], c[1]))
-        .toList();
+    final grid = _shelfGridFor(page);
+    const double boxW = kShelfTileW;
+    final double boxH = kShelfTileW * 1.1; // defRowH (= 標準の空セル高)
+    return bookshelfFrontierCells().map((c) {
+      final r = _shelfCellRect2(grid, c[0], c[1]);
+      final w = r.width > boxW ? boxW : r.width;
+      final h = r.height > boxH ? boxH : r.height;
+      final left = r.left + (r.width - w) / 2;
+      final top = r.top + (r.height - h) / 2;
+      return Rect.fromLTWH(left, top, w, h);
+    }).toList();
   }
 
   /// 指定キャンバス座標が +ボックス上ならそのセル、 そうでなければ null。
   List<int>? bookshelfFrontierCellAt(Offset canvasPos) {
     final page = currentPage;
     if (page.pageType != 'bookshelf') return null;
-    final grid = _buildShelfGrid(page);
+    final grid = _shelfGridFor(page);
     for (final c in bookshelfFrontierCells()) {
       if (_shelfCellRect2(grid, c[0], c[1]).contains(canvasPos)) return c;
     }
     return null;
   }
 
+  // ─── ギャラリーの行/列の掴み移動 (= ユーザー要望: 行単位/列単位でドラッグ
+  //     して並べ替え。 マップ一覧の並べ替えと同様の操作感) ───────────────────
+  // 掴みの帯の太さ。 = ユーザー要望: 「もう少し小さく目立たなく」 して欲しい。
+  static const double kShelfHandleThick = 11.0;
+  static const double kShelfHandleGapFromCell = 4.0;
+  static const double kShelfHandleOuterMargin = 2.0;
+
+  /// ギャラリーの列数 (グリッド + はみ出し要素を含む実数)。
+  int bookshelfColCount() {
+    final page = currentPage;
+    if (page.pageType != 'bookshelf') return 0;
+    return _shelfGridFor(page).colW.length;
+  }
+
+  /// ギャラリーの行数。
+  int bookshelfRowCount() {
+    final page = currentPage;
+    if (page.pageType != 'bookshelf') return 0;
+    return _shelfGridFor(page).rowH.length;
+  }
+
+  /// 各行の掴みハンドル矩形 (= 行の左端の細い帯)。 index = 行番号。
+  List<Rect> bookshelfRowHandleRects() {
+    final page = currentPage;
+    if (page.pageType != 'bookshelf') return const [];
+    final g = _shelfGridFor(page);
+    final left = (g.colX[0] - kShelfHandleThick - kShelfHandleGapFromCell)
+        .clamp(kShelfHandleOuterMargin, double.infinity)
+        .toDouble();
+    return [
+      for (int r = 0; r < g.rowH.length; r++)
+        Rect.fromLTWH(left, g.rowY[r], kShelfHandleThick, g.rowH[r])
+    ];
+  }
+
+  /// 各列の掴みハンドル矩形 (= 列の上端の細い帯)。 index = 列番号。
+  List<Rect> bookshelfColHandleRects() {
+    final page = currentPage;
+    if (page.pageType != 'bookshelf') return const [];
+    final g = _shelfGridFor(page);
+    final top = (g.rowY[0] - kShelfHandleThick - kShelfHandleGapFromCell)
+        .clamp(kShelfHandleOuterMargin, double.infinity)
+        .toDouble();
+    return [
+      for (int c = 0; c < g.colW.length; c++)
+        Rect.fromLTWH(g.colX[c], top, g.colW[c], kShelfHandleThick)
+    ];
+  }
+
+  /// 行 [r] の全幅の矩形 (= ドロップ先ハイライト用)。 範囲外は null。
+  Rect? bookshelfRowFullRect(int r) {
+    final page = currentPage;
+    if (page.pageType != 'bookshelf') return null;
+    final g = _shelfGridFor(page);
+    if (r < 0 || r >= g.rowH.length) return null;
+    return Rect.fromLTRB(
+        g.colX.first, g.rowY[r], g.colX.last, g.rowY[r] + g.rowH[r]);
+  }
+
+  /// 列 [c] の全高の矩形 (= ドロップ先ハイライト用)。 範囲外は null。
+  Rect? bookshelfColFullRect(int c) {
+    final page = currentPage;
+    if (page.pageType != 'bookshelf') return null;
+    final g = _shelfGridFor(page);
+    if (c < 0 || c >= g.colW.length) return null;
+    return Rect.fromLTRB(
+        g.colX[c], g.rowY.first, g.colX[c] + g.colW[c], g.rowY.last);
+  }
+
+  /// 行/列 1 つ分のキャンバス上のステップ (= ドラッグ量 → 行/列移動数の換算用)。
+  ({double stepX, double stepY}) bookshelfCellStep() {
+    final rowH = _shelfRowH(currentPage);
+    return (stepX: kShelfTileW + kShelfGap, stepY: rowH + kShelfGap);
+  }
+
+  /// ドラッグ量 [deltaY] (キャンバス画素) から、 行 [fromRow] の移動先の行番号を
+  /// 実際の可変行高グリッドに基づいて求める。
+  /// = ユーザー要望: 「要素が入っている行をドラッグして移動しようとすると時々
+  ///   移動できない」 の修正。 旧実装は全行一律の「最大行高」 でドラッグ量を
+  ///   行数に換算していたため、 背の低い行が混ざると 1 行ぶんドラッグしても
+  ///   閾値 (0.5 行) に届かず round() が 0 になって動かないことがあった。
+  ///   実グリッド (rowY/rowH) を使い、 掴んだ行の中心 + ドラッグ量が入る行を返す。
+  int bookshelfTargetRow(int fromRow, double deltaY) {
+    final page = currentPage;
+    if (page.pageType != 'bookshelf') return fromRow;
+    final g = _shelfGridFor(page);
+    final rows = g.rowH.length;
+    if (rows <= 1) return 0;
+    final from = fromRow.clamp(0, rows - 1);
+    final targetY = g.rowY[from] + g.rowH[from] / 2 + deltaY;
+    for (int r = 0; r < rows; r++) {
+      if (targetY < g.rowY[r] + g.rowH[r]) return r;
+    }
+    return rows - 1;
+  }
+
+  /// ドラッグ量 [deltaX] から列 [fromCol] の移動先の列番号を可変列幅グリッドで
+  /// 求める (列も幅が要素サイズで変わるため、 行と同じ理由で実グリッドを使う)。
+  int bookshelfTargetCol(int fromCol, double deltaX) {
+    final page = currentPage;
+    if (page.pageType != 'bookshelf') return fromCol;
+    final g = _shelfGridFor(page);
+    final cols = g.colW.length;
+    if (cols <= 1) return 0;
+    final from = fromCol.clamp(0, cols - 1);
+    final targetX = g.colX[from] + g.colW[from] / 2 + deltaX;
+    for (int c = 0; c < cols; c++) {
+      if (targetX < g.colX[c] + g.colW[c]) return c;
+    }
+    return cols - 1;
+  }
+
+  /// ギャラリーの行 [from] を [to] の位置へ移動する (= ユーザー要望: 行単位移動)。
+  /// 行番号の順列を [from]→[to] で並べ替え、 全セルの行を写像し直す。
+  void moveShelfRow(int from, int to) {
+    final page = currentPage;
+    if (page.pageType != 'bookshelf') return;
+    final n = bookshelfRowCount();
+    if (n <= 1) return;
+    final f = from.clamp(0, n - 1);
+    final t = to.clamp(0, n - 1);
+    if (f == t) return;
+    final order = List<int>.generate(n, (i) => i);
+    order.insert(t, order.removeAt(f));
+    final remap = <int, int>{
+      for (int i = 0; i < order.length; i++) order[i]: i
+    };
+    _shelfCells.forEach((id, c) {
+      final nr = remap[c[1]];
+      if (nr != null) c[1] = nr;
+    });
+    _shelfGridCache.remove(page.id);
+    _saveShelfCells();
+    _arrangeAsBookshelfBody(page);
+    _saveToStorage();
+    notifyListeners();
+  }
+
+  /// ギャラリーの列 [from] を [to] の位置へ移動する (= ユーザー要望: 列単位移動)。
+  void moveShelfColumn(int from, int to) {
+    final page = currentPage;
+    if (page.pageType != 'bookshelf') return;
+    final n = bookshelfColCount();
+    if (n <= 1) return;
+    final f = from.clamp(0, n - 1);
+    final t = to.clamp(0, n - 1);
+    if (f == t) return;
+    final order = List<int>.generate(n, (i) => i);
+    order.insert(t, order.removeAt(f));
+    final remap = <int, int>{
+      for (int i = 0; i < order.length; i++) order[i]: i
+    };
+    _shelfCells.forEach((id, c) {
+      final nc = remap[c[0]];
+      if (nc != null) c[0] = nc;
+    });
+    _shelfGridCache.remove(page.id);
+    _saveShelfCells();
+    _arrangeAsBookshelfBody(page);
+    _saveToStorage();
+    notifyListeners();
+  }
+
+  /// 複数選択した行 [rows] をまとめて [delta] 段ずらす (= ユーザー要望: Ctrl/Shift
+  /// で複数の行/列を選んでまとめて移動)。 選択行を 1 つのブロックとして、 元の
+  /// 最小行 + delta の位置へ挿入し直す。
+  void moveShelfRowsByDelta(Set<int> rows, int delta) {
+    _moveShelfLinesByDelta(rows, delta, isRow: true);
+  }
+
+  /// 複数選択した列をまとめて [delta] 列ずらす。
+  void moveShelfColsByDelta(Set<int> cols, int delta) {
+    _moveShelfLinesByDelta(cols, delta, isRow: false);
+  }
+
+  void deleteShelfRows(Set<int> rows) {
+    _deleteShelfLines(rows, isRow: true);
+  }
+
+  void deleteShelfColumns(Set<int> cols) {
+    _deleteShelfLines(cols, isRow: false);
+  }
+
+  void _deleteShelfLines(Set<int> lines, {required bool isRow}) {
+    final page = currentPage;
+    if (page.pageType != 'bookshelf' || lines.isEmpty) return;
+    final n = isRow ? bookshelfRowCount() : bookshelfColCount();
+    final sel = lines.where((i) => i >= 0 && i < n).toSet();
+    if (sel.isEmpty) return;
+    final ids = <String>{};
+    for (final entry in _shelfCells.entries) {
+      final node = page.nodes[entry.key];
+      if (node == null || node.hiddenInContainer != null) continue;
+      final line = isRow ? entry.value[1] : entry.value[0];
+      if (sel.contains(line)) ids.add(entry.key);
+    }
+    if (ids.isEmpty) return;
+    _pushUndo();
+    final all = _expandDeletionForContainers(ids);
+    for (final id in all) {
+      page.nodes.remove(id);
+      page.connections.removeWhere((c) => c.fromId == id || c.toId == id);
+      _shelfCells.remove(id);
+    }
+    if (all.contains(_selectedNodeId)) _selectedNodeId = null;
+    _pruneContainersAfterDelete();
+    compactShelfCells();
+    _arrangeAsBookshelfBody(page);
+    _saveToStorage();
+    notifyListeners();
+  }
+
+  void _moveShelfLinesByDelta(Set<int> lines, int delta,
+      {required bool isRow}) {
+    final page = currentPage;
+    if (page.pageType != 'bookshelf' || delta == 0) return;
+    final n = isRow ? bookshelfRowCount() : bookshelfColCount();
+    final sel = lines.where((i) => i >= 0 && i < n).toSet();
+    if (sel.isEmpty || sel.length >= n) return;
+    final order = List<int>.generate(n, (i) => i);
+    final block = order.where(sel.contains).toList(); // 選択 (元の順序を保持)
+    final rest = order.where((i) => !sel.contains(i)).toList();
+    final minSel = sel.reduce((a, b) => a < b ? a : b);
+    final targetStart = (minSel + delta).clamp(0, n - block.length);
+    final newOrder = <int>[];
+    int restIdx = 0;
+    for (int pos = 0; pos < n; pos++) {
+      if (pos >= targetStart && pos < targetStart + block.length) {
+        newOrder.add(block[pos - targetStart]);
+      } else if (restIdx < rest.length) {
+        newOrder.add(rest[restIdx++]);
+      }
+    }
+    final remap = <int, int>{
+      for (int i = 0; i < newOrder.length; i++) newOrder[i]: i
+    };
+    _shelfCells.forEach((id, c) {
+      final old = isRow ? c[1] : c[0];
+      final nv = remap[old];
+      if (nv != null) {
+        if (isRow) {
+          c[1] = nv;
+        } else {
+          c[0] = nv;
+        }
+      }
+    });
+    _shelfGridCache.remove(page.id);
+    _saveShelfCells();
+    _arrangeAsBookshelfBody(page);
+    _saveToStorage();
+    notifyListeners();
+  }
+
   Future<void> _saveShelfCells() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     final m = <String, dynamic>{};
     _shelfCells.forEach((k, v) => m[k] = [v[0], v[1]]);
     await prefs.setString('shelfCells_v1', jsonEncode(m));
   }
 
   Future<void> _loadShelfCells() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     final s = prefs.getString('shelfCells_v1');
     if (s == null || s.isEmpty) return;
     try {
@@ -34745,6 +47310,10 @@ $cleanQ
       page.connections.removeWhere((c) => c.fromId == id || c.toId == id);
       _shelfCells.remove(id);
     }
+    // 消した動画が表紙 (格納コンテナ) のメンバーなら、 表紙の件数バッジを更新し
+    //   メンバーが 0 になった表紙は削除する (= ユーザー要望: 中の要素が消えたら
+    //   バッジが変わり、 全部消えたら表紙も消える)。
+    _pruneContainersAfterDelete();
     // 削除で空いたセルを行優先で詰めて穴を消す (= ユーザー要望: 見終わって削除
     //   されたら行単位で要素を詰める)。 repack 内で _saveShelfCells/notify する。
     repackShelfCellsRowMajor(page);
@@ -34885,31 +47454,22 @@ $cleanQ
       final hasVideo = (n.youtubeUrl ?? '').isNotEmpty &&
           n.contentType == NodeContentType.youtube;
       final hasThumb = (n.attachmentThumbPath ?? '').isNotEmpty;
-      return hasVideo || hasThumb || isImagePath(n.attachmentPath);
+      final hasAttachment = (n.attachmentPath ?? '').isNotEmpty;
+      return hasVideo ||
+          hasThumb ||
+          hasAttachment ||
+          isImagePath(n.attachmentPath);
     }
 
-    double? naturalAr(MindMapNode n) {
-      final yt = n.youtubeUrl ?? '';
-      if (yt.isNotEmpty && n.contentType == NodeContentType.youtube) {
-        final isShort = yt.contains('/shorts/') || yt.contains('_shorts_');
-        return isShort ? 9 / 16 : 16 / 9;
-      }
-      if (isImagePath(n.attachmentPath) ||
-          (n.attachmentThumbPath ?? '').isNotEmpty) {
-        final ar = n.attachmentAspectRatio;
-        return (ar != null && ar > 0) ? ar : kShelfFallbackAr;
-      }
-      return null;
-    }
-
-    // 表紙系の自然比の中央値を統一アスペクト比にする (= 全タイル同寸)。
-    final ars = list.map(naturalAr).whereType<double>().toList()..sort();
-    double? ar;
-    if (ars.isNotEmpty) {
-      final mid = ars.length ~/ 2;
-      final med = ars.length.isOdd ? ars[mid] : (ars[mid - 1] + ars[mid]) / 2;
-      ar = med.clamp(0.4, 2.0);
-    }
+    // ── 表紙系 (画像 / 動画サムネ) は +ボックスと同寸に統一する ──
+    // = ユーザー要望:「縦長や横長の画像を埋め込んでもギャラリーでは +ボックスの
+    //   大きさとなって埋まるように」。 描画は BoxFit.cover なので、 比率を +ボックス
+    //   の標準セル (幅 bw × 高さ bw*1.1) に固定すれば、 どんな向きの画像も切り抜かれて
+    //   +ボックス同寸に充填される。 旧実装は貼った画像群の自然比の中央値をタイル比に
+    //   していたため、 縦長画像 1 枚でタイルが極端に縦長になっていた。
+    // 比率 = 幅 / 高さ = bw / (bw*1.1) = 1/1.1。
+    final bool hasCover = list.any(isCover);
+    final double? ar = hasCover ? (1.0 / 1.1) : null;
 
     final double tileH = (ar != null) ? bw / ar : bw * 9 / 16;
 
@@ -34922,7 +47482,16 @@ $cleanQ
     // visualHeight は width 依存・height 加算式 (= height + テキスト付加分) なので、
     //   最小 height で測った値から「テキスト付加分」 を求め、 targetH ぴったり /
     //   超過時のみ伸長、 を逆算する。
-    MindMapNode sizeTextNode(MindMapNode n, double targetH) {
+    MindMapNode sizeTextNode(MindMapNode n, double targetH,
+        {bool clamp = false}) {
+      // ── ギャラリーページ: 高さを固定 (clampHeight) ──
+      // = ユーザー要望: ギャラリーのテキスト要素は本文を後から変更しても大きさが
+      //   変わらないように。 clampHeight=true なら visualHeight は height をそのまま
+      //   返すので、 height=targetH でタイル高が確定し、 テキスト量に依存しなくなる。
+      //   (グリッドの行高もこの固定 visualHeight で組まれるので、 行ごと膨らまない)。
+      if (clamp) {
+        return n.copyWith(width: bw, height: targetH, clampHeight: true);
+      }
       const double minBase = 28.0;
       double extraAt(double ww) {
         final ch = n.copyWith(width: ww, height: minBase).visualHeight;
@@ -34930,15 +47499,14 @@ $cleanQ
         return e > 0 ? e : 0.0;
       }
 
-      double w = bw;
-      double extra = extraAt(w);
-      final double maxW = bw * 2.0;
-      final double tallThreshold = targetH * 3.0;
-      while (extra > tallThreshold && w < maxW) {
-        w += bw * 0.5;
-        if (w > maxW) w = maxW;
-        extra = extraAt(w);
-      }
+      // ── 幅は常に +ボックス幅 (bw) に固定する (= ユーザー要望: +ブロックから
+      //    できるだけ外に出さない。 テキスト入力時に縦にスペースがあるのに横へ
+      //    広がらないようにする) ──。 長文は横に広げず縦に折り返して伸ばす
+      //    (= 行高はその分セルが伸びて収まる)。 旧実装は extra が大きいと最大
+      //    2×bw まで横へ広げており、 これが「+ブロックから外に出る/横に広がる」
+      //    原因だった。
+      const double w = bw;
+      final double extra = extraAt(w);
       // height + extra = max(targetH, minBase + extra) になるよう height を決める。
       final double effH =
           (targetH - extra) > minBase ? (targetH - extra) : minBase;
@@ -34953,13 +47521,21 @@ $cleanQ
     for (final n in list) {
       final MindMapNode u;
       if (isCover(n)) {
-        // 表紙系 (動画/画像/PDF サムネ): タイトルバーは小さい高さ (42) に統一し、
-        //   表紙画像は統一比率で同寸に。 ギャラリー全体配置では +ボックス幅を
-        //   下限に元の幅を維持する (大きくした表紙はその幅のまま)。
-        final double effW = wholeShelf ? (n.width < bw ? bw : n.width) : bw;
-        u = n.copyWith(width: effW, height: 42.0, attachmentAspectRatio: ar);
+        // 表紙系 (動画/画像/PDF サムネ): タイトルバーは小さい高さ (52) に統一し、
+        //   表紙画像は統一比率で同寸に。 幅は常に +ボックス幅 (bw) に固定する
+        //   (= ユーザー要望: 縦軸/横軸の手動設定を廃止し、 要素の大きさを自動で
+        //   +ブロックに収める。 旧実装は大きくした表紙の幅をそのまま維持して
+        //   いたため列が +ブロックより広がってはみ出していた)。
+        const double effW = bw;
+        u = n.copyWith(
+            width: effW,
+            height: 52.0,
+            attachmentAspectRatio: ar,
+            clampHeight: false);
       } else {
-        u = sizeTextNode(n, tileH);
+        // ギャラリーページ (wholeShelf) のテキストはセル高に固定 (= clampHeight)。
+        //   通常マップの「並べる」 (= 部分整列) は従来どおり内容で高さを調整する。
+        u = sizeTextNode(n, tileH, clamp: wholeShelf);
       }
       updated.add(u);
       if (u.visualHeight > rowH) rowH = u.visualHeight;
@@ -34975,6 +47551,9 @@ $cleanQ
         page.nodes[u.id] = u;
       }
       final grid = _buildShelfGrid(page);
+      // この格子 (stretch 前) を +ボックスでも使えるようキャッシュする (= 要素と
+      //   +ボックスのズレ防止)。 stretch 後にライブ高さで組み直すとズレるため。
+      _shelfGridCache[page.id] = grid;
       // ── 非表紙 (テキスト/メモ) をセル (= +ボックス) の高さいっぱいに広げる ──
       //   (= ユーザー要望: 文量が少なくても見栄えのため +ボックスいっぱいに埋める)。
       //   行高 rowH は暫定サイズで確定済みなので、 それを目標に height だけ底上げ
@@ -35153,6 +47732,30 @@ $cleanQ
     _saveShelfCells();
     _saveToStorage();
     notifyListeners();
+  }
+
+  /// ギャラリーに「空の」テキストノートを作成し、 その id を返す。
+  /// (= ユーザー要望: ギャラリーのテキスト入力と、 後から開くノード編集の画面が
+  ///  異なって気になるので、 最初から統合リッチテキスト編集ダイアログを出すため。
+  ///  呼び出し側で空ノードを作ってから `_showNodeRichEditDialog` を開き、 何も
+  ///  入力されなければ呼び出し側が削除する)。 [addTextNoteToBookshelf] は空文字を
+  ///  弾くので、 こちらは空のまま作れる専用版。
+  String addEmptyTextNoteToBookshelf({List<int>? cell}) {
+    _pushUndo();
+    final node = MindMapNode(
+      id: _uuid.v4(),
+      title: '',
+      position: Offset.zero,
+      contentType: NodeContentType.memo,
+      color: _childColor(),
+    );
+    currentPage.nodes[node.id] = node;
+    if (cell != null) _shelfCells[node.id] = [cell[0], cell[1]];
+    _arrangeAsBookshelfBody(currentPage);
+    _saveShelfCells();
+    _saveToStorage();
+    notifyListeners();
+    return node.id;
   }
 
   /// 名前付きグループを追加・更新
@@ -35688,7 +48291,7 @@ $cleanQ
   }
 
   Future<void> _saveNamedGroups() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     final map = <String, dynamic>{};
     for (final e in _namedGroups.entries) {
       final groups = <String, dynamic>{};
@@ -35737,7 +48340,7 @@ $cleanQ
   }
 
   Future<void> _loadNamedGroups() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     final str = prefs.getString('namedGroups');
     if (str == null) return;
     try {
@@ -35852,27 +48455,27 @@ $cleanQ
   Future<void> setColorMode(String mode) async {
     if (mode != 'cycle' && mode != 'fixed') return;
     _colorMode = mode;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString('colorMode', mode);
     notifyListeners();
   }
 
   Future<void> setFixedColorIndex(int index) async {
     _fixedColorIndex = index.clamp(0, nodePalette.length - 1);
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setInt('fixedColorIndex', _fixedColorIndex);
     notifyListeners();
   }
 
   Future<void> _loadColorSettings() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     _colorMode = prefs.getString('colorMode') ?? 'cycle';
     _fixedColorIndex = prefs.getInt('fixedColorIndex') ?? 0;
     _cycleCounter = prefs.getInt('colorCycleCounter') ?? 0;
   }
 
   Future<void> _saveCycleCounter() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setInt('colorCycleCounter', _cycleCounter);
   }
 
@@ -35891,6 +48494,13 @@ $cleanQ
     final node = currentPage.nodes[id];
     if (node == null) return;
     _pushUndo();
+    if (currentPage.pageType == 'bookshelf') {
+      currentPage.nodes[id] = node.copyWith(title: title);
+      _arrangeAsBookshelfBody(currentPage);
+      _saveToStorage();
+      notifyListeners();
+      return;
+    }
     // テキストが収まるように width / height を自動で伸ばす (収縮はしない)
     final sizes = _computeAutoSizeForText(
       title: title,
@@ -36242,7 +48852,7 @@ $cleanQ
     if (_lastPdfPages[path] == page) return;
     _lastPdfPages[path] = page;
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setString('lastPdfPages_v1', jsonEncode(_lastPdfPages));
     } catch (e) {
       debugPrint('setLastPdfPage 永続化失敗: $e');
@@ -36278,7 +48888,7 @@ $cleanQ
 
   Future<void> _persistHiddenPdfPages() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       final encoded = <String, List<int>>{};
       _hiddenPdfPages.forEach((k, v) => encoded[k] = v.toList());
       await prefs.setString('hidden_pdf_pages', jsonEncode(encoded));
@@ -36287,7 +48897,7 @@ $cleanQ
 
   Future<void> _loadHiddenPdfPages() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       final str = prefs.getString('hidden_pdf_pages');
       if (str == null || str.isEmpty) return;
       final decoded = jsonDecode(str) as Map<String, dynamic>;
@@ -36345,14 +48955,14 @@ $cleanQ
 
   Future<void> _persistWebPageMemos() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setString('web_page_memos', jsonEncode(_webPageMemos));
     } catch (_) {}
   }
 
   Future<void> _loadWebPageMemos() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       final str = prefs.getString('web_page_memos');
       if (str == null || str.isEmpty) return;
       final decoded = jsonDecode(str) as Map<String, dynamic>;
@@ -36467,14 +49077,14 @@ $cleanQ
 
   Future<void> _persistHiddenPages() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setStringList('hidden_page_ids', _hiddenPageIds.toList());
     } catch (_) {}
   }
 
   Future<void> _loadHiddenPages() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       final list = prefs.getStringList('hidden_page_ids');
       if (list != null) {
         _hiddenPageIds
@@ -36502,14 +49112,14 @@ $cleanQ
 
   Future<void> _persistFavoritePages() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setStringList('favorite_page_ids', _favoritePageIds.toList());
     } catch (_) {}
   }
 
   Future<void> _loadFavoritePages() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       final list = prefs.getStringList('favorite_page_ids');
       if (list != null) {
         _favoritePageIds
@@ -36550,7 +49160,7 @@ $cleanQ
 
   Future<void> _persistQiitaBlocked() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setStringList(
           'qiita_blocked_authors', _qiitaBlockedAuthors.toList());
     } catch (_) {}
@@ -36558,7 +49168,7 @@ $cleanQ
 
   Future<void> _loadQiitaBlocked() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       final list = prefs.getStringList('qiita_blocked_authors');
       if (list != null) {
         _qiitaBlockedAuthors
@@ -36604,6 +49214,17 @@ $cleanQ
     final node = currentPage.nodes[id];
     if (node == null) return;
     _pushUndo();
+    if (currentPage.pageType == 'bookshelf') {
+      currentPage.nodes[id] = node.copyWith(
+        memoText: memo,
+        contentType:
+            memo.isNotEmpty ? NodeContentType.memo : NodeContentType.none,
+      );
+      _arrangeAsBookshelfBody(currentPage);
+      _saveToStorage();
+      notifyListeners();
+      return;
+    }
     // メモ更新時もテキストが収まるように width / height を自動で伸ばす
     final sizes = _computeAutoSizeForText(
       title: node.title,
@@ -36634,6 +49255,20 @@ $cleanQ
     final node = currentPage.nodes[id];
     if (node == null) return;
     _pushUndo();
+    final bool hasRich = richText.trim().isNotEmpty &&
+        MindMapNode.richDeltaToPlainText(richText).trim().isNotEmpty;
+    if (currentPage.pageType == 'bookshelf') {
+      currentPage.nodes[id] = node.copyWith(
+        richText: hasRich ? richText : null,
+        title: title,
+        memoText: memo,
+        contentType: memo.isNotEmpty ? NodeContentType.memo : node.contentType,
+      );
+      _arrangeAsBookshelfBody(currentPage);
+      _saveToStorage();
+      notifyListeners();
+      return;
+    }
     final sizes = _computeAutoSizeForText(
       title: title,
       memo: memo,
@@ -36642,8 +49277,6 @@ $cleanQ
       titleFontSize: node.titleFontSize ?? defaultTitleFontSize,
       memoFontSize: node.memoFontSize ?? defaultMemoFontSize,
     );
-    final bool hasRich = richText.trim().isNotEmpty &&
-        MindMapNode.richDeltaToPlainText(richText).trim().isNotEmpty;
     currentPage.nodes[id] = node.copyWith(
       richText: hasRich ? richText : null,
       title: title,
@@ -37205,7 +49838,7 @@ $cleanQ
   /// 同じパターンで initState から非同期に呼ばれる想定。
   Future<void> _loadQuizSettings() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       _quizAvoidDuplicates = prefs.getBool('quizAvoidDuplicates') ?? true;
       final past = prefs.getStringList('pastQuizQuestions');
       if (past != null) {
@@ -37222,7 +49855,7 @@ $cleanQ
     _quizAvoidDuplicates = v;
     notifyListeners();
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setBool('quizAvoidDuplicates', v);
     } catch (_) {}
   }
@@ -37232,7 +49865,7 @@ $cleanQ
     _pastQuizQuestions.clear();
     notifyListeners();
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.remove('pastQuizQuestions');
     } catch (_) {}
   }
@@ -37306,7 +49939,7 @@ $cleanQ
   }
 
   Future<void> _saveFlashcards() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString('flashcards_v1',
         jsonEncode(_flashcards.map((c) => c.toJson()).toList()));
     await prefs.setString('flashcardFolders_v1',
@@ -37314,7 +49947,7 @@ $cleanQ
   }
 
   Future<void> _loadFlashcards() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     try {
       final cs = prefs.getString('flashcards_v1');
       if (cs != null && cs.isNotEmpty) {
@@ -37379,7 +50012,7 @@ $cleanQ
       _pastQuizQuestions.removeRange(0, _pastQuizQuestions.length - maxKeep);
     }
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _prefsWithRetry();
       await prefs.setStringList('pastQuizQuestions', _pastQuizQuestions);
     } catch (_) {}
   }
@@ -38065,13 +50698,54 @@ $example
   bool _looksLikeProgramming(String topic) {
     final s = topic.toLowerCase();
     const kw = [
-      'プログラ', 'コーディング', 'コード', 'アルゴリズム', '関数', 'クラス', '変数',
-      '配列', 'ループ', '再帰', 'データ構造', 'オブジェクト指向', '競技プログラ', 'atcoder',
-      'leetcode', 'paiza', '実装',
-      'python', 'java', 'javascript', 'typescript', 'kotlin', 'swift', 'dart',
-      'flutter', 'react', 'node', 'c++', 'c#', 'golang', ' go ', 'rust', 'ruby',
-      'php', 'sql', 'html', 'css', 'shell', 'bash', 'api', 'oop', 'recursion',
-      'algorithm', 'function', 'programming', 'leet', 'コンパイル', '計算量',
+      'プログラ',
+      'コーディング',
+      'コード',
+      'アルゴリズム',
+      '関数',
+      'クラス',
+      '変数',
+      '配列',
+      'ループ',
+      '再帰',
+      'データ構造',
+      'オブジェクト指向',
+      '競技プログラ',
+      'atcoder',
+      'leetcode',
+      'paiza',
+      '実装',
+      'python',
+      'java',
+      'javascript',
+      'typescript',
+      'kotlin',
+      'swift',
+      'dart',
+      'flutter',
+      'react',
+      'node',
+      'c++',
+      'c#',
+      'golang',
+      ' go ',
+      'rust',
+      'ruby',
+      'php',
+      'sql',
+      'html',
+      'css',
+      'shell',
+      'bash',
+      'api',
+      'oop',
+      'recursion',
+      'algorithm',
+      'function',
+      'programming',
+      'leet',
+      'コンパイル',
+      '計算量',
     ];
     return kw.any((k) => s.contains(k));
   }
@@ -38597,12 +51271,12 @@ $example
   }
 
   Future<void> _saveGeneratedIds() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setStringList('generatedVideoIds', _generatedVideoIds.toList());
   }
 
   Future<void> _loadGeneratedIds() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     final ids = prefs.getStringList('generatedVideoIds');
     if (ids != null) _generatedVideoIds.addAll(ids);
   }
@@ -38630,7 +51304,7 @@ $example
   String? get lastWatchedVideoId => _lastWatchedVideoId;
 
   Future<void> _saveVideoPositions() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     final map = _videoPositions.map((k, v) => MapEntry(k, v.toString()));
     await prefs.setString('videoPositions', jsonEncode(map));
     if (_lastWatchedVideoId != null) {
@@ -38639,7 +51313,7 @@ $example
   }
 
   Future<void> _loadVideoPositions() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     final str = prefs.getString('videoPositions');
     if (str != null) {
       try {
@@ -38673,7 +51347,7 @@ $example
   }
 
   Future<void> _saveLastYoutubeBrowseUrl() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     if (_lastYoutubeBrowseUrl != null) {
       await prefs.setString('lastYoutubeBrowseUrl', _lastYoutubeBrowseUrl!);
     }
@@ -38682,8 +51356,7 @@ $example
   /// 保存された URL をクリアする (検索ワード入力に戻したい場合に使う)。
   void clearLastYoutubeBrowseUrl() {
     _lastYoutubeBrowseUrl = null;
-    SharedPreferences.getInstance()
-        .then((p) => p.remove('lastYoutubeBrowseUrl'));
+    _prefsWithRetry().then((p) => p.remove('lastYoutubeBrowseUrl'));
   }
 
   // 折りたたみ時の親ノード位置を記録
@@ -38793,14 +51466,86 @@ $example
     return hidden;
   }
 
+  /// 削除する id 集合 [ids] にコンテナ (= ギャラリーの表紙 / 格納ノード) が
+  /// 含まれていれば、 その中のメンバー (containedNodeIds) も削除対象に含めて
+  /// 返す (= ユーザー要望: 表紙を消したら中の動画も一緒に消す。 旧実装は表紙
+  /// だけ消えて中身が hiddenInContainer の「表示できない迷子ノード」 として
+  /// ギャラリーに残り続けていた)。
+  Set<String> _expandDeletionForContainers(Set<String> ids) {
+    final nodeMap = currentPage.nodes;
+    final result = <String>{...ids};
+    for (final id in ids) {
+      final n = nodeMap[id];
+      if (n != null && n.isContainer && n.containedNodeIds != null) {
+        result.addAll(n.containedNodeIds!);
+      }
+    }
+    return result;
+  }
+
+  /// コンテナのタイトルに埋め込まれた件数表示を [count] へ更新する。
+  /// ギャラリー表紙 「📺 … (N)」 / 格納ノード 「📦 N」 の 2 形式に対応。
+  String _updateContainerCountInTitle(String title, int count) {
+    // ギャラリー表紙 「📺 … (N)」: 末尾の (数字) を置換。
+    final paren = RegExp(r'\(\d+\)\s*$');
+    if (paren.hasMatch(title)) {
+      return title.replaceFirst(paren, '($count)');
+    }
+    // Ctrl+G 格納 「📦 N」: 先頭の📦 + 数字を置換。
+    final box = RegExp(r'^(📦\s*)\d+\s*$');
+    final m = box.firstMatch(title);
+    if (m != null) return '${m.group(1)}$count';
+    return title;
+  }
+
+  /// 削除後、 残っているコンテナの containedNodeIds を実在ノードだけに整理し、
+  /// 右上バッジ (= containedNodeIds.length) とタイトルの件数を実数へ更新する
+  /// (= ユーザー要望: 中の動画を消したら表紙の件数も変わるように)。 メンバーが
+  /// 0 になったコンテナは空表紙として削除する。
+  void _pruneContainersAfterDelete() {
+    final nodeMap = currentPage.nodes;
+    final toRemove = <String>[];
+    for (final entry in nodeMap.entries.toList()) {
+      final n = entry.value;
+      if (!n.isContainer || n.containedNodeIds == null) continue;
+      final live =
+          n.containedNodeIds!.where((id) => nodeMap.containsKey(id)).toList();
+      if (live.length == n.containedNodeIds!.length) continue; // 変化なし
+      if (live.isEmpty) {
+        toRemove.add(entry.key);
+        continue;
+      }
+      nodeMap[entry.key] = n.copyWith(
+        containedNodeIds: live,
+        title: _updateContainerCountInTitle(n.title, live.length),
+      );
+    }
+    for (final id in toRemove) {
+      nodeMap.remove(id);
+      currentPage.connections
+          .removeWhere((c) => c.fromId == id || c.toId == id);
+      _shelfCells.remove(id);
+    }
+  }
+
   void deleteNode(String id) {
     final nodeMap = currentPage.nodes;
     if (!nodeMap.containsKey(id)) return;
     _pushUndo();
-    nodeMap.remove(id);
-    // このノードに関連するすべての接続を削除
-    currentPage.connections.removeWhere((c) => c.fromId == id || c.toId == id);
-    if (_selectedNodeId == id) _selectedNodeId = null;
+    // 表紙 (コンテナ) を消すなら中のメンバーも一緒に消す (= ユーザー要望)。
+    final ids = _expandDeletionForContainers({id});
+    for (final rid in ids) {
+      nodeMap.remove(rid);
+      // 関連するすべての接続を削除
+      currentPage.connections
+          .removeWhere((c) => c.fromId == rid || c.toId == rid);
+      _shelfCells.remove(rid);
+    }
+    if (_selectedNodeId != null && ids.contains(_selectedNodeId)) {
+      _selectedNodeId = null;
+    }
+    // メンバーだけ消した場合は親コンテナの件数表示を更新 / 空表紙を除去。
+    _pruneContainersAfterDelete();
     // = ユーザー要望: ギャラリーは削除後に左詰めして gap を除去。
     // ★ compactShelfCells は論理セル (_shelfCells) を詰めるだけで、 タイルは
     //   node.position で描画されるため見た目が動かなかった (= ユーザー報告:
@@ -38828,12 +51573,17 @@ $example
   void deleteNodes(Set<String> ids) {
     final nodeMap = currentPage.nodes;
     _pushUndo();
-    for (final id in ids) {
+    // 表紙 (コンテナ) を含む選択なら中のメンバーも一緒に消す (= ユーザー要望)。
+    final all = _expandDeletionForContainers(ids);
+    for (final id in all) {
       nodeMap.remove(id);
       currentPage.connections
           .removeWhere((c) => c.fromId == id || c.toId == id);
+      _shelfCells.remove(id);
     }
-    if (ids.contains(_selectedNodeId)) _selectedNodeId = null;
+    if (all.contains(_selectedNodeId)) _selectedNodeId = null;
+    // メンバーだけ消した場合は親コンテナの件数表示を更新 / 空表紙を除去。
+    _pruneContainersAfterDelete();
     // = ユーザー要望: ギャラリーは削除後に左詰めして gap を除去。
     // ★ compactShelfCells は論理セル (_shelfCells) を詰めるだけで、 タイルは
     //   node.position で描画されるため見た目が動かなかった (= ユーザー報告:
@@ -39060,6 +51810,51 @@ $example
   ///   戻せる)。 対象ページ側は既存のコピー機能と同様にページ別 undo の
   ///   対象外 (アーキ上クロスページ undo 非対応)。
   /// 同一ページ・空集合・範囲外 index は何もしない。
+  /// 切り取り→貼り付け (Ctrl+X / Ctrl+V) の「別ページへ移動」 用。
+  /// [sourcePageIndex] のノード群 [ids] を現在ページへ全フィールド保持で移す。
+  /// `moveNodesToPage` のソース/ターゲットを入れ替えた版 (= 移動先=現在ページ)。
+  /// 接続は両端が移動対象のものだけ持ち運ぶ。 格納ノードは子も一緒に移動。
+  void moveNodesFromPageToCurrent(int sourcePageIndex, Set<String> ids) {
+    if (ids.isEmpty) return;
+    if (sourcePageIndex < 0 || sourcePageIndex >= _pages.length) return;
+    if (sourcePageIndex == currentPageIndex) return;
+    final source = _pages[sourcePageIndex];
+    final target = currentPage;
+    _pushUndo();
+    final toMove = <String>{...ids};
+    for (final id in ids) {
+      final n = source.nodes[id];
+      if (n != null && n.isContainer && n.containedNodeIds != null) {
+        toMove.addAll(n.containedNodeIds!);
+      }
+    }
+    final moved = <String>{};
+    for (final id in toMove) {
+      final node = source.nodes.remove(id);
+      if (node == null) continue;
+      target.nodes[id] = node;
+      moved.add(id);
+    }
+    if (moved.isEmpty) {
+      notifyListeners();
+      return;
+    }
+    final carried = <NodeConnection>[];
+    source.connections.removeWhere((c) {
+      final f = moved.contains(c.fromId);
+      final t = moved.contains(c.toId);
+      if (f && t) {
+        carried.add(c);
+        return true;
+      }
+      return f || t; // 片端のみ → 破棄
+    });
+    target.connections.addAll(carried);
+    _autoArrangeIfBookshelf();
+    _saveToStorage();
+    notifyListeners();
+  }
+
   void moveNodesToPage(Set<String> ids, int targetPageIndex) {
     if (ids.isEmpty) return;
     if (targetPageIndex < 0 || targetPageIndex >= _pages.length) return;
@@ -39194,13 +51989,17 @@ $example
   /// 複数ページの中身 (ノード/接続/装飾/名前付きグループ) を 1 つの新規ページに
   /// 統合する (= ユーザー要望: 複数のマインドマップやギャラリーを中の要素まで
   /// まとめて 1 つに統合)。 各ページのノードは新 ID を振り直し、 重ならないよう
-  /// 縦に並べて配置する。 元のページは残す。 戻り値は統合ページの index (失敗 -1)。
+  /// 縦に並べて配置する。 ビデオ/ノートページは対象外。 元ページは統合後に
+  /// 削除する。 戻り値は統合ページの index (失敗 -1)。
   int mergePages(List<String> pageIds, {String? name}) {
     final srcs = <MindMapPage>[];
+    final seen = <String>{};
     for (final pid in pageIds) {
       for (final p in _pages) {
         if (p.id == pid) {
-          srcs.add(p);
+          if (seen.add(p.id) && isMergeablePageType(p.pageType)) {
+            srcs.add(p);
+          }
           break;
         }
       }
@@ -39315,13 +52114,27 @@ $example
       cursorY += (hasNodes ? (maxY - minY) : 0) + gap;
     }
 
+    if (merged.pageType == 'bookshelf') {
+      _arrangeAsBookshelfBody(merged);
+    }
+
+    final sourceIds = srcs.map((p) => p.id).toSet();
     _pages.add(merged);
-    _currentPageIndex = _pages.length - 1;
+    _pages.removeWhere((p) => sourceIds.contains(p.id));
+    for (final pid in sourceIds) {
+      _clearDeletedPageRuntimeState(pid);
+      _deletePageFromFirestore(pid);
+    }
+    final mergedIndex = _pages.indexWhere((p) => p.id == merged.id);
+    _currentPageIndex = mergedIndex >= 0
+        ? mergedIndex
+        : (_pages.isEmpty ? 0 : _pages.length - 1);
     _selectedNodeId = null;
     _saveNamedGroups();
     _saveToStorage();
+    _persistLastOpenedPageId(merged.id);
     notifyListeners();
-    return _pages.length - 1;
+    return _currentPageIndex;
   }
 
   /// マークダウン (= インデント階層) から現在ページのノード/接続を作り直す
@@ -39675,7 +52488,7 @@ $example
   String get googleSearchMemoDraft => _googleSearchMemoDraft;
   Future<void> setGoogleSearchMemoDraft(String v) async {
     _googleSearchMemoDraft = v;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     await prefs.setString('googleSearchMemoDraft', v);
     // notifyListeners() は意図的に呼ばない (再描画ループ防止 + パフォーマンス)
   }
@@ -39743,7 +52556,7 @@ $example
   }
 
   Future<void> _saveGoogleSearchMemos() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     final raw = jsonEncode(_googleSearchMemos.map((m) => m.toJson()).toList());
     await prefs.setString('googleSearchMemos', raw);
   }
@@ -39754,7 +52567,7 @@ $example
   /// 永続化された Google検索メモ関連の状態を SharedPreferences から復元。
   /// MindMapProvider の初期化フローのどこかで 1 度だけ呼ぶ前提。
   Future<void> loadGoogleSearchMemoState() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefsWithRetry();
     _googleSearchMemoDraft = prefs.getString('googleSearchMemoDraft') ?? '';
     final memosRaw = prefs.getString('googleSearchMemos');
     if (memosRaw != null && memosRaw.isNotEmpty) {

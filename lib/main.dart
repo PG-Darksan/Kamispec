@@ -17,6 +17,9 @@ import 'package:fvp/fvp.dart' as fvp;
 import 'providers/mind_map_provider.dart';
 import 'screens/mind_map_screen.dart';
 import 'services/home_shortcut_service.dart';
+// Linux 専用 WebView (CEF) の初期化。 中身は flutter_linux_webview を import
+//   するが Linux 専用プラグインなので Windows/Android のネイティブには影響しない。
+import 'services/linux_webview.dart' as linux_wv;
 
 /// アプリ全体で使うローカル通知プラグインのインスタンス。
 /// `mind_map_screen.dart` から参照できるよう、 トップレベル変数として公開。
@@ -56,6 +59,12 @@ void main(List<String> args) async {
       'platforms': ['windows', 'linux', 'macos'],
     });
   } catch (_) {/* 登録失敗時は従来通り (モバイルは公式実装で動く) */}
+  // ── Linux のみ: CEF WebView を初期化 ──
+  // Windows は webview_windows、 モバイルは flutter_inappwebview のままなので
+  //   ここは触らない。 Linux だけ flutter_linux_webview を初期化する。
+  if (!kIsWeb && Platform.isLinux) {
+    linux_wv.initLinuxWebView();
+  }
   // ホーム画面/デスクトップのショートカット (--page=<id>) から起動された場合の
   //   ページ ID を記録 (Windows)。 Android は MethodChannel 経由で別途取得する。
   HomeShortcutService.windowsLaunchPageId =
@@ -161,6 +170,7 @@ class MyApp extends StatelessWidget {
               (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
             windowManager.setTitle(provider.t('app.title'));
           }
+          final baseColor = provider.headerColor;
           return MaterialApp(
             title: provider.t('app.title'),
             debugShowCheckedModeBanner: false,
@@ -180,8 +190,12 @@ class MyApp extends StatelessWidget {
             themeMode: provider.isDarkMode ? ThemeMode.dark : ThemeMode.light,
             theme: ThemeData(
               colorScheme: ColorScheme.fromSeed(
-                seedColor: const Color(0xFF6C63FF),
+                seedColor: baseColor,
                 brightness: Brightness.light,
+              ),
+              appBarTheme: AppBarTheme(
+                backgroundColor: baseColor,
+                foregroundColor: Colors.white,
               ),
               scaffoldBackgroundColor: const Color(0xFFD8D8D4),
               useMaterial3: true,
@@ -199,8 +213,12 @@ class MyApp extends StatelessWidget {
             ),
             darkTheme: ThemeData(
               colorScheme: ColorScheme.fromSeed(
-                seedColor: const Color(0xFF6C63FF),
+                seedColor: baseColor,
                 brightness: Brightness.dark,
+              ),
+              appBarTheme: AppBarTheme(
+                backgroundColor: baseColor,
+                foregroundColor: Colors.white,
               ),
               useMaterial3: true,
               fontFamily: 'sans-serif',
