@@ -27,6 +27,7 @@ class CalendarEvent {
   final int? colorArgb;
   final String? googleId;
   final bool lockDuringEvent;
+  final bool appLockDuringEvent;
 
   /// グループ共有時のイベント所有者UID。
   /// null = 自分のイベント（移行期/ローカル）。
@@ -45,6 +46,7 @@ class CalendarEvent {
     this.colorArgb,
     this.googleId,
     this.lockDuringEvent = false,
+    this.appLockDuringEvent = false,
     this.ownerUid,
     this.ownerName,
   });
@@ -65,6 +67,7 @@ class CalendarEvent {
         'colorArgb': colorArgb,
         'googleId': googleId,
         'lockDuringEvent': lockDuringEvent,
+        'appLockDuringEvent': appLockDuringEvent,
         'ownerUid': ownerUid,
         'ownerName': ownerName,
       };
@@ -77,6 +80,7 @@ class CalendarEvent {
         colorArgb: j['colorArgb'] as int?,
         googleId: j['googleId'] as String?,
         lockDuringEvent: j['lockDuringEvent'] as bool? ?? false,
+        appLockDuringEvent: j['appLockDuringEvent'] as bool? ?? false,
         ownerUid: j['ownerUid'] as String?,
         ownerName: j['ownerName'] as String?,
       );
@@ -1975,6 +1979,7 @@ class MindMapProvider extends ChangeNotifier {
             colorArgb: e.colorArgb,
             googleId: e.googleId,
             lockDuringEvent: e.lockDuringEvent,
+            appLockDuringEvent: e.appLockDuringEvent,
             ownerUid: myUid,
             ownerName: _displayName,
           );
@@ -2033,6 +2038,7 @@ class MindMapProvider extends ChangeNotifier {
                       colorArgb: ev.colorArgb,
                       googleId: gid,
                       lockDuringEvent: ev.lockDuringEvent,
+                      appLockDuringEvent: ev.appLockDuringEvent,
                       ownerUid: myUid,
                       ownerName: _displayName,
                     );
@@ -2250,6 +2256,7 @@ class MindMapProvider extends ChangeNotifier {
                       colorArgb: ev.colorArgb,
                       googleId: ev.googleId,
                       lockDuringEvent: ev.lockDuringEvent,
+                      appLockDuringEvent: ev.appLockDuringEvent,
                       ownerUid: ownerId,
                       ownerName: ev.ownerName ?? ownerName,
                     );
@@ -2309,6 +2316,7 @@ class MindMapProvider extends ChangeNotifier {
                             colorArgb: ev.colorArgb,
                             googleId: ev.googleId,
                             lockDuringEvent: ev.lockDuringEvent,
+                            appLockDuringEvent: ev.appLockDuringEvent,
                             ownerUid: myUid,
                             ownerName: _displayName,
                           ));
@@ -2351,7 +2359,8 @@ class MindMapProvider extends ChangeNotifier {
       String? startTime,
       String? endTime,
       int? colorArgb,
-      bool lockDuringEvent = false}) async {
+      bool lockDuringEvent = false,
+      bool appLockDuringEvent = false}) async {
     _pushCalendarUndo();
     final list = _calendarEvents.putIfAbsent(dateKey, () => []);
     final newEvent = CalendarEvent(
@@ -2362,6 +2371,7 @@ class MindMapProvider extends ChangeNotifier {
       endTime: endTime,
       colorArgb: colorArgb,
       lockDuringEvent: lockDuringEvent,
+      appLockDuringEvent: appLockDuringEvent,
       // 所有者を自分として刻印（グループ共有時のフィルタ用）
       ownerUid: _uid,
       ownerName: _displayName,
@@ -2388,6 +2398,7 @@ class MindMapProvider extends ChangeNotifier {
             colorArgb: newEvent.colorArgb,
             googleId: gid,
             lockDuringEvent: newEvent.lockDuringEvent,
+            appLockDuringEvent: newEvent.appLockDuringEvent,
             ownerUid: _uid,
             ownerName: _displayName,
           );
@@ -2434,7 +2445,8 @@ class MindMapProvider extends ChangeNotifier {
       String? startTime,
       String? endTime,
       int? colorArgb,
-      bool? lockDuringEvent}) async {
+      bool? lockDuringEvent,
+      bool? appLockDuringEvent}) async {
     final list = _calendarEvents[dateKey];
     if (list == null) return;
     final idx = list.indexWhere((e) => e.id == eventId);
@@ -2454,6 +2466,7 @@ class MindMapProvider extends ChangeNotifier {
       colorArgb: colorArgb,
       googleId: old.googleId,
       lockDuringEvent: lockDuringEvent ?? old.lockDuringEvent,
+      appLockDuringEvent: appLockDuringEvent ?? old.appLockDuringEvent,
       ownerUid: old.ownerUid ?? _uid,
       ownerName: old.ownerName ?? _displayName,
     );
@@ -2482,6 +2495,7 @@ class MindMapProvider extends ChangeNotifier {
               colorArgb: colorArgb,
               googleId: gid,
               lockDuringEvent: updated.lockDuringEvent,
+              appLockDuringEvent: updated.appLockDuringEvent,
               ownerUid: updated.ownerUid,
               ownerName: updated.ownerName,
             );
@@ -2513,7 +2527,8 @@ class MindMapProvider extends ChangeNotifier {
         startTime: newStartTime ?? src.startTime,
         endTime: newEndTime ?? src.endTime,
         colorArgb: src.colorArgb,
-        lockDuringEvent: src.lockDuringEvent);
+        lockDuringEvent: src.lockDuringEvent,
+        appLockDuringEvent: src.appLockDuringEvent);
   }
 
   /// イベントを別の日に移動（日付キーを変える）
@@ -2539,7 +2554,8 @@ class MindMapProvider extends ChangeNotifier {
           startTime: finalStart,
           endTime: finalEnd,
           colorArgb: src.colorArgb,
-          lockDuringEvent: src.lockDuringEvent);
+          lockDuringEvent: src.lockDuringEvent,
+          appLockDuringEvent: src.appLockDuringEvent);
       return;
     }
 
@@ -2551,7 +2567,8 @@ class MindMapProvider extends ChangeNotifier {
         startTime: finalStart,
         endTime: finalEnd,
         colorArgb: src.colorArgb,
-        lockDuringEvent: src.lockDuringEvent);
+        lockDuringEvent: src.lockDuringEvent,
+        appLockDuringEvent: src.appLockDuringEvent);
   }
 
   void _sortDayEvents(List<CalendarEvent> list) {
@@ -32741,6 +32758,9 @@ class MindMapProvider extends ChangeNotifier {
     }
     // 集中ロック設定
     _focusLockHideSeconds = prefs.getBool('focusLockHideSeconds') ?? false;
+    _focusLockAllowMemoAi = prefs.getBool('focusLockAllowMemoAi') ?? true;
+    _focusLockAllowMemoGoogle =
+        prefs.getBool('focusLockAllowMemoGoogle') ?? true;
     _hideEmbedRelated = prefs.getBool('hideEmbedRelated') ?? true;
     _focusLockHideUnlockBtn = prefs.getBool('focusLockHideUnlockBtn') ?? false;
     _focusLockScheduleEnabled =
@@ -33760,6 +33780,30 @@ class MindMapProvider extends ChangeNotifier {
     try {
       final prefs = await _prefsWithRetry();
       await prefs.setBool('focusLockHideSeconds', v);
+    } catch (_) {}
+    notifyListeners();
+  }
+
+  /// 集中ロック中メモからブラウザ版 AI へ送る操作を許可するか。
+  bool _focusLockAllowMemoAi = true;
+  bool get focusLockAllowMemoAi => _focusLockAllowMemoAi;
+  Future<void> setFocusLockAllowMemoAi(bool v) async {
+    _focusLockAllowMemoAi = v;
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.setBool('focusLockAllowMemoAi', v);
+    } catch (_) {}
+    notifyListeners();
+  }
+
+  /// 集中ロック中メモから Google 検索する操作を許可するか。
+  bool _focusLockAllowMemoGoogle = true;
+  bool get focusLockAllowMemoGoogle => _focusLockAllowMemoGoogle;
+  Future<void> setFocusLockAllowMemoGoogle(bool v) async {
+    _focusLockAllowMemoGoogle = v;
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.setBool('focusLockAllowMemoGoogle', v);
     } catch (_) {}
     notifyListeners();
   }
