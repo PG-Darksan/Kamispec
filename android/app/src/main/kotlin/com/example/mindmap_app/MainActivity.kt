@@ -45,20 +45,27 @@
 package com.example.mindmap_app // ★★★ 既存の MainActivity.kt と同じ package に変更 ★★★
 
 import android.app.ActivityManager
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import androidx.core.content.pm.ShortcutInfoCompat
 import androidx.core.content.pm.ShortcutManagerCompat
 import androidx.core.graphics.drawable.IconCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.MethodChannel
+import java.io.File
 
 class MainActivity : FlutterActivity() {
 
     companion object {
         private const val LOCK_CHANNEL = "app/lock"
+        private const val CLIPBOARD_CHANNEL = "app/clipboard"
+        private const val DEVICE_CHANNEL = "app/device"
         // ホーム画面ショートカット用 (= マップごとにアプリ風アイコンを作る)
         private const val SHORTCUT_CHANNEL = "app/shortcuts"
         private const val EXTRA_PAGE_ID = "mindmap_page_id"
@@ -72,7 +79,36 @@ class MainActivity : FlutterActivity() {
     private var shortcutChannel: MethodChannel? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
-        super.configureFlutterEngine(flutterEngine)
+        // ── 起動必須プラグインを先に登録 (= release で初回設定が出ない問題の対策) ──
+        // ★ ユーザー報告: release ビルドだけ初回の言語/TZ/ユーザー名設定が出ない。
+        //   真因は、 ffmpeg_kit のネイティブ初期化が (特に x86_64 端末/エミュレータの
+        //   release で) `UnsatisfiedLinkError: Bad JNI version returned from
+        //   JNI_OnLoad` という **java.lang.Error** を投げること。
+        //   GeneratedPluginRegistrant は各プラグイン登録を `catch (Exception)` でしか
+        //   保護しておらず、 Error はそのまま素通りして registerWith 全体を中断させる。
+        //   ffmpeg_kit はアルファベット順で shared_preferences より前に登録されるため、
+        //   super.configureFlutterEngine に丸投げすると shared_preferences 等の以降の
+        //   プラグインが未登録のままになり、 SharedPreferences が channel-error で
+        //   読めず _isFirstLaunch が確定せず初回オンボーディングが出ない。
+        // 対策: 起動に必須のプラグイン (設定/ファイルパス) を、 後続プラグインの
+        //   致命的エラーに先んじて Throwable 安全に登録しておく。 こうすれば
+        //   ffmpeg_kit が落ちても SharedPreferences は確実に使える。 既に登録済みの
+        //   クラスは Flutter 側が二重登録を無視するため、 super 実行後も冪等。
+        // (path_provider はこの repo の依存に無いので登録しない。
+        //  shared_preferences が確実に登録されれば初回オンボーディングは出る。)
+        safeAddPlugin(flutterEngine, "io.flutter.plugins.sharedpreferences.SharedPreferencesPlugin")
+
+        // 残りのプラグインは従来どおり自動登録。 本来は下の proguard keep
+        //   (com.antonkarpenko) で ffmpeg_kit のロードが直り中断しなくなるが、
+        //   万一 ffmpeg_kit が別要因で落ちても上の事前登録で SharedPreferences
+        //   だけは生存する (二重の保険)。
+        try {
+            super.configureFlutterEngine(flutterEngine)
+        } catch (t: Throwable) {
+            android.util.Log.e(
+                "MainActivity",
+                "GeneratedPluginRegistrant が中断 (重要プラグインは登録済みのため続行)", t)
+        }
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, LOCK_CHANNEL)
             .setMethodCallHandler { call, result ->
@@ -92,6 +128,28 @@ class MainActivity : FlutterActivity() {
                         lockRequested = false
                         stopScreenPinning()
                         result.success(true)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CLIPBOARD_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "readClipboardImage" -> result.success(readClipboardImage())
+                    else -> result.notImplemented()
+                }
+            }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, DEVICE_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "getAndroidId" -> {
+                        val id = Settings.Secure.getString(
+                            contentResolver,
+                            Settings.Secure.ANDROID_ID
+                        ) ?: ""
+                        result.success(id)
                     }
                     else -> result.notImplemented()
                 }
@@ -129,6 +187,20 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    /// プラグインをリフレクションで安全に (Throwable まで握って) 事前登録する。
+    /// クラスが見つからない / インスタンス化やアタッチで例外・エラーが出ても
+    /// アプリ起動は止めない。 GeneratedPluginRegistrant が後続プラグインの
+    /// java.lang.Error で中断しても、 ここで登録した必須プラグインは生き残る。
+    private fun safeAddPlugin(flutterEngine: FlutterEngine, className: String) {
+        try {
+            val cls = Class.forName(className)
+            val plugin = cls.getDeclaredConstructor().newInstance() as FlutterPlugin
+            flutterEngine.plugins.add(plugin)
+        } catch (t: Throwable) {
+            android.util.Log.e("MainActivity", "事前登録に失敗: $className", t)
+        }
+    }
+
     /// ホーム画面にマップを開くピン留めショートカットを作成する。
     private fun pinMapShortcut(pageId: String, label: String): Boolean {
         return try {
@@ -154,6 +226,64 @@ class MainActivity : FlutterActivity() {
             true
         } catch (e: Exception) {
             false
+        }
+    }
+
+    /// Android のスクリーンショット直後など、Flutter 側の super_clipboard が
+    /// content:// 画像を取りこぼすケース用のフォールバック。
+    private fun readClipboardImage(): Map<String, Any>? {
+        return try {
+            val manager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val clip = manager.primaryClip ?: return null
+            for (i in 0 until clip.itemCount) {
+                val item = clip.getItemAt(i)
+                val uri = item.uri ?: item.intent?.data ?: uriFromClipboardText(item.text?.toString())
+                if (uri == null) continue
+                val guessed = guessImageMime(uri)
+                val type = contentResolver.getType(uri) ?: guessed
+                if (type != null && !type.startsWith("image/")) continue
+                if (type == null && guessed == null && uri.scheme != "content") continue
+                val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    ?: continue
+                if (bytes.isNotEmpty()) {
+                    return mapOf(
+                        "bytes" to bytes,
+                        "mime" to (type ?: guessed ?: "image/png")
+                    )
+                }
+            }
+            null
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun uriFromClipboardText(text: String?): Uri? {
+        val raw = text?.trim().orEmpty()
+        if (raw.isEmpty()) return null
+        if (raw.startsWith("content://") || raw.startsWith("file://")) {
+            return Uri.parse(raw)
+        }
+        return if (raw.startsWith("/") && guessImageMime(raw) != null) {
+            Uri.fromFile(File(raw))
+        } else {
+            null
+        }
+    }
+
+    private fun guessImageMime(uri: Uri): String? {
+        return guessImageMime(uri.lastPathSegment ?: uri.toString())
+    }
+
+    private fun guessImageMime(name: String): String? {
+        val lower = name.lowercase()
+        return when {
+            lower.endsWith(".jpg") || lower.endsWith(".jpeg") -> "image/jpeg"
+            lower.endsWith(".webp") -> "image/webp"
+            lower.endsWith(".gif") -> "image/gif"
+            lower.endsWith(".bmp") -> "image/bmp"
+            lower.endsWith(".png") -> "image/png"
+            else -> null
         }
     }
 

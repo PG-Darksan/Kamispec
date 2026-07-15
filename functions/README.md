@@ -8,6 +8,8 @@ Cloud Functions です。クライアント（アプリ）からは `firestore.r
 - `stripeWebhook` … Stripe Webhook を受け取り、署名検証 → `users/{uid}.plan` を更新（Windows/Web）
 - `createCheckoutSession` … アプリから呼ぶ。Checkout URL を返す（uid を埋め込む）
 - `revenuecatWebhook` … RevenueCat Webhook を受け取り、認証 → `users/{uid}.plan` を更新（Android/iOS）
+- `verifyDeveloperPassword` … 開発者モードのパスワードを Secret Manager 側で照合
+- `developerModeStatus` / `revokeDeveloperMode` … 開発者 custom claim の確認 / 解除
 
 ## 前提
 - Firebase **Blaze プラン**（従量・要カード）。低トラフィックなら無料枠内でほぼ $0。
@@ -25,6 +27,7 @@ firebase use mindmap-b6115
 # 3) シークレットを登録（Secret Manager に保存。コードには出ません）
 firebase functions:secrets:set STRIPE_SECRET_KEY        # sk_test_... / sk_live_...
 firebase functions:secrets:set STRIPE_WEBHOOK_SECRET    # 手順5で取得する whsec_...
+firebase functions:secrets:set DEVELOPER_MODE_PASSWORD  # 開発者モード用パスワード
 
 # 4) Price→plan の対応を index.js の PRICE_TO_PLAN に記入（自分の price_xxx）
 
@@ -42,6 +45,22 @@ firebase deploy --only functions
 # 7) ルールもデプロイ（plan ロック）
 firebase deploy --only firestore:rules
 ```
+
+## 開発者モード（逆コンパイル対策）
+アプリ内に開発者パスワードを埋め込まず、Functions + Secret Manager で照合します。
+
+```bash
+# 初回のみ。入力した値が開発者モードのパスワードになります。
+firebase functions:secrets:set DEVELOPER_MODE_PASSWORD
+
+# 関連関数だけデプロイする場合
+firebase deploy --only functions:verifyDeveloperPassword,functions:developerModeStatus,functions:revokeDeveloperMode
+```
+
+- 認証成功時、Firebase Auth の対象 uid に custom claim `{ developer: true }` を付与します。
+- 解除時は `revokeDeveloperMode` が custom claim を削除します。
+- 失敗が 5 回続くと、その uid は 15 分間ロックされます。
+- アプリ起動時もローカル `developer_mode=true` だけでは復元せず、`developerModeStatus` でサーバー確認します。
 
 ## RevenueCat（Android/iOS）の設定
 ```bash

@@ -1,7 +1,7 @@
 name: mindmap_app
 description: Kamispec - Mind Map App with notes and YouTube embedding
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.0.0+2
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -50,6 +50,7 @@ dependencies:
   #   商用利用可。 takePicture() は独自キャプチャ経路のためシステムの
   #   シャッター音を鳴らさない (= 実質無音)。 Android/Windows(camera_windows)対応。
   camera: ^0.11.0
+  camera_windows: ^0.2.6+4
 
   # Video thumbnail (Android/iOS)
   video_thumbnail: ^0.5.3
@@ -122,9 +123,6 @@ dependencies:
   #    最新の 0.x を使う。)
   fvp: ">=0.25.0 <1.0.0"
 
-  # YouTube 動画ダウンロード (manifest 取得 + muxed ストリーム保存)
-  youtube_explode_dart: ^2.4.2
-
   # ── 画面ロック防止 (バックグラウンド継続用) ──
   # 動画再生中・タイマー実行中に画面が自動でオフになると、Android では
   # Activity が onStop に入って Dart isolate のタイマー/動画再生が停止
@@ -148,15 +146,6 @@ dependencies:
   # android_intent_plus で各メーカー固有の Intent を投げて直接ジャンプする。
   android_intent_plus: ^5.1.0
 
-  # ── 位置情報 (GPS) / ジオフェンス画面ロック ──
-  # 「確定した地点から半径 N km に入った / 出た」 で集中ロックを起動する
-  # ジオフェンス機能で使用 (= ユーザー要望)。 端末の現在地を取得し、
-  # Geolocator.distanceBetween で基準点との距離 (m) を測る。
-  # 権限: Android は ACCESS_FINE/COARSE_LOCATION を AndroidManifest.xml に追加。
-  #   Windows は OS の位置情報サービスが有効である必要がある (geolocator_windows)。
-  # 位置が取れない環境 (権限拒否 / 位置 OFF) では機能が静かに無効化される
-  #   だけで、 アプリ本体は通常どおり動作する。
-  geolocator: ^13.0.0
   # device_info_plus は v11 系へ。 syncfusion_flutter_pdfviewer >=28.1.37 が
   # flutter_localizations の intl 0.20.2 と組み合わせて使われる場合、
   # device_info_plus ^11.0.0 が要求されるため。
@@ -196,6 +185,12 @@ dependencies:
   # printing が既に依存しているので解決済み (バージョンは lock に合わせる)。
   image: ^4.3.0
 
+  # ── QR コードリーダー (= ユーザー要望: QR コードリーダー機能とボタン) ──
+  # zxing2 は純 Dart 実装 (ネイティブプラグイン不要) なので Windows / Android
+  # どちらでもビルドが壊れない。 撮影 or 選択した画像を image パッケージで
+  # デコードし、 zxing2 で QR を読み取る。
+  zxing2: ^0.2.4
+
   # ── OS 通知 (ノード右クリック → 後で通知) ──
   # 指定時間後にスマホ / Windows のシステム通知としてノード内容を表示する。
   # 17.x 系は Windows サポートが安定 + Android の zonedSchedule API が
@@ -216,6 +211,16 @@ dependencies:
   #   iOS:     Info.plist に NSMicrophoneUsageDescription /
   #            NSSpeechRecognitionUsageDescription
   speech_to_text: ^7.0.0
+  # ── IC カード残高取得 (= ユーザー要望: ICカード残高取得ボタン) ──
+  # 交通系 FeliCa (Suica/PASMO/ICOCA 等) の残高を NFC で読み取る。
+  # nfc_manager は android/ios のみを宣言する federated プラグインなので、
+  #   Windows ビルドではプラグイン登録がスキップされるだけで壊れない
+  #   (= ユーザー要望「Windows 無傷」)。 iOS は有料の Apple Entitlement
+  #   申請が前提のため当面 Android 専用扱い (lib/services/ic_card_reader.dart
+  #   が Platform.isAndroid で全ネイティブ呼び出しをガードする)。
+  # 4.x は API が大きく変わるため 3.x 系に固定 (最小 API のみ使用)。★4.x 不可★
+  # 別途 AndroidManifest.xml に NFC 権限 + uses-feature(required=false) が必要。
+  nfc_manager: ^3.3.0
   # ── 音声読み上げ (TTS) ── AI 面接・ロープレ練習で AI の発話を音声化する
   #   (= ユーザー要望: 音声会話形式)。 Android/Windows のネイティブ TTS を使う。
   #   失敗してもテキスト+音声入力で会話は成立するよう、 呼び出しは try/catch。
@@ -278,5 +283,11 @@ flutter:
   #
   # ライセンス方針: MS フォント (Calibri / Cambria / Aptos / Arial 等) は同梱せず、
   # 日本語フォントは商用利用・再配布が自由な Noto Sans JP (OFL) を使う。
-  # assets:
-  #   - assets/fonts/NotoSansJP-Regular.ttf
+  # ── 配置済み (2026-06): Noto Sans JP の可変フォントを wght=400 で静的化した
+  #    Regular (約 5.5MB) を assets/fonts/ に配置。 PDF 出力 (pptx/docx/マップ等)
+  #    で日本語が □ にならず正しく描画される。 ──
+  assets:
+    - assets/fonts/NotoSansJP-Regular.ttf
+    # 交通系IC 駅コード→駅名 変換テーブル (= ユーザー要望: 駅コードを駅名表示)。
+    #   ファイルが空でも可 (未登録は駅コード表示にフォールバック)。
+    - assets/transit/station_codes.csv

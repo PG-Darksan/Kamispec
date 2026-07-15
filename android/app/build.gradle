@@ -120,6 +120,23 @@ android {
     // 採用する (pickFirst) ことで衝突を解消する。 各 ABI 分を列挙。
     packaging {
         jniLibs {
+            // ── ネイティブライブラリを APK 展開 (= release で起動不能/初回設定が
+            //    出ない問題の修正) ──
+            // ★ ユーザー報告: release ビルドだけ初回の言語/TZ/ユーザー名設定が
+            //   出ない・各機能が動かない。 真因は AGP 8 の既定 (useLegacyPackaging
+            //   = false / extractNativeLibs="false") で .so を APK 内に圧縮格納
+            //   したまま読むと、 ffmpeg_kit の libffmpegkit_abidetect.so が
+            //   `JNI_OnLoad: Bad JNI version 0` (UnsatisfiedLinkError) で
+            //   ロードに失敗し、 FFmpegKit プラグインの登録が
+            //   java.lang.Error を投げること。 GeneratedPluginRegistrant の
+            //   各プラグインは `catch (Exception)` でしか保護されておらず Error は
+            //   素通りするため、 そこで registerWith 全体が中断し、 以降の
+            //   shared_preferences 等すべてのプラグインが未登録 (channel-error)
+            //   になっていた → SharedPreferences が読めず _isFirstLaunch 未確定
+            //   → オンボーディング非表示。 debug は extractNativeLibs=true が
+            //   既定なので .so が展開ロードされ再現しない。
+            // 対策: release でも .so を展開ロードさせて従来 (debug) 同様にする。
+            useLegacyPackaging = true
             pickFirsts += [
                 'lib/x86/libc++_shared.so',
                 'lib/x86_64/libc++_shared.so',

@@ -13,6 +13,8 @@
  * シークレット (Secret Manager に保存。 コードにもアプリにも置かない):
  *   STRIPE_SECRET_KEY      … Stripe の sk_live_... / sk_test_...
  *   STRIPE_WEBHOOK_SECRET  … Stripe ダッシュボードの Webhook 署名シークレット whsec_...
+ *   REVENUECAT_WEBHOOK_AUTH … RevenueCat Webhook の Authorization 共有秘密
+ *   DEVELOPER_MODE_PASSWORD … 開発者モード認証用パスワード
  *
  * セットアップ手順は同フォルダ末尾のコメント、 または README 参照。
  */
@@ -24,6 +26,10 @@ const logger = require("firebase-functions/logger");
 const admin = require("firebase-admin");
 const Stripe = require("stripe");
 const crypto = require("crypto");
+const {
+  resolveRevenueCatPlan,
+  resolveStripePlan,
+} = require("./billing_logic");
 
 admin.initializeApp();
 
@@ -38,19 +44,23 @@ const STRIPE_WEBHOOK_SECRET = defineSecret("STRIPE_WEBHOOK_SECRET");
 //   Authorization header value に設定した文字列と同じものをここに登録する。
 const REVENUECAT_WEBHOOK_AUTH = defineSecret("REVENUECAT_WEBHOOK_AUTH");
 
+// 開発者モードのパスワード。 APK / EXE 逆コンパイル対策としてアプリには置かず、
+// Secret Manager にのみ保存する。
+const DEVELOPER_MODE_PASSWORD = defineSecret("DEVELOPER_MODE_PASSWORD");
+
 // ── RevenueCat の Entitlement / Product → プラン名 の対応 ──
 //   どちらか分かる方で判定 (entitlement を優先)。 自分の設定に合わせて編集。
 //   ★ entitlement ID は RevenueCat の Entitlements 画面、 product ID は
 //     ストアの購入ID (例: kamispec_pro_monthly)。
 const RC_ENTITLEMENT_TO_PLAN = {
-  // "pro": "pro",
-  // "max": "max",
+  "pro": "pro",
+  "max": "max",
 };
 const RC_PRODUCT_TO_PLAN = {
-  // "kamispec_pro_monthly": "pro",
-  // "kamispec_pro_yearly":  "pro",
-  // "kamispec_max_monthly": "max",
-  // "kamispec_max_yearly":  "max",
+  "pro_monthly": "pro",
+  "pro_yearly": "pro",
+  "max_monthly": "max",
+  "max_yearly": "max",
 };
 
 // ── Stripe の Price ID → プラン名 の対応表 ──
@@ -101,7 +111,7 @@ exports.stripeWebhook = onRequest(
               logger.warn("checkout.session.completed: uid 不明", session.id);
               break;
             }
-            let plan = "pro";
+            let plan = null;
             let status = "active";
             let expiresAt = null;
             let customerId = session.customer || null;
@@ -112,6 +122,11 @@ exports.stripeWebhook = onRequest(
               status = sub.status;
               expiresAt = periodEndMs(sub);
               customerId = sub.customer || customerId;
+            }
+            if (!plan) {
+              logger.warn("checkout.session.completed: 未登録 price を拒否",
+                  {sessionId: session.id, subscriptionId: subId});
+              break;
             }
             await setUserPlan(uid, {plan, status, expiresAt, customerId,
               subId});
@@ -129,8 +144,14 @@ exports.stripeWebhook = onRequest(
             }
             const active = ["active", "trialing", "past_due"]
                 .includes(sub.status);
+            const resolvedPlan = active ? planFromSubscription(sub) : null;
+            if (active && !resolvedPlan) {
+              logger.warn("subscription.updated: 未登録 price のため更新を保留",
+                  {subscriptionId: sub.id});
+              break;
+            }
             await setUserPlan(uid, {
-              plan: active ? planFromSubscription(sub) : "free",
+              plan: active ? resolvedPlan : "free",
               status: sub.status,
               expiresAt: periodEndMs(sub),
               customerId: sub.customer,
@@ -185,6 +206,10 @@ exports.createCheckoutSession = onCall(
       if (!priceId) {
         throw new HttpsError("invalid-argument", "priceId が必要です");
       }
+      if (!Object.prototype.hasOwnProperty.call(PRICE_TO_PLAN, priceId)) {
+        logger.warn("未許可の Stripe priceId を拒否", {uid, priceId});
+        throw new HttpsError("invalid-argument", "許可されていない priceId です");
+      }
       const stripe = new Stripe(STRIPE_SECRET_KEY.value());
 
       // 既存の Stripe 顧客があれば再利用 (重複顧客を防ぐ)。
@@ -223,7 +248,7 @@ exports.createCheckoutSession = onCall(
 //     appUserID を Firebase uid にする。 そうしないと匿名IDになり uid を
 //     特定できない (その場合はここで弾いてログだけ残す)。
 exports.revenuecatWebhook = onRequest(
-    {secrets: [REVENUECAT_WEBHOOK_AUTH]},
+    {secrets: [REVENUECAT_WEBHOOK_AUTH], invoker: "public"},
     async (req, res) => {
       // ── 認証 (Authorization ヘッダの共有秘密) ──
       const expected = REVENUECAT_WEBHOOK_AUTH.value();
@@ -255,6 +280,12 @@ exports.revenuecatWebhook = onRequest(
         //   移動先を有効化し、 移動元を free にする。
         if (event.type === "TRANSFER") {
           const plan = planFromRcEvent(event);
+          if (!plan) {
+            logger.warn("RevenueCat TRANSFER: 未登録商品なので更新を保留",
+                event.product_id || event.new_product_id || "(unknown)");
+            res.status(200).json({received: true, skipped: "unknown-product"});
+            return;
+          }
           for (const to of (event.transferred_to || [])) {
             if (isRealUid(to)) {
               await setUserPlanRC(to, {plan, status: "active", expiresAt,
@@ -322,6 +353,16 @@ exports.revenuecatWebhook = onRequest(
             return;
         }
 
+        if (!plan) {
+          logger.warn("RevenueCat: 未登録商品なので entitlement 更新を保留", {
+            type: event.type,
+            productId: event.new_product_id || event.product_id || null,
+            entitlementIds: event.entitlement_ids || null,
+          });
+          res.status(200).json({received: true, skipped: "unknown-product"});
+          return;
+        }
+
         await setUserPlanRC(uid, {plan, status, expiresAt, store,
           appUserId: event.app_user_id || uid});
         res.status(200).json({received: true});
@@ -332,13 +373,86 @@ exports.revenuecatWebhook = onRequest(
     });
 
 // ════════════════════════════════════════════════════════════════════════
+//  4) 開発者モード認証 (アプリにはパスワードを埋め込まない)
+// ════════════════════════════════════════════════════════════════════════
+//   アプリは Firebase 匿名認証の ID token と入力パスワードを送る。
+//   Functions 側で Secret Manager のパスワードと照合し、成功した uid には
+//   custom claim {developer: true} を付与する。
+exports.verifyDeveloperPassword = onRequest(
+    {secrets: [DEVELOPER_MODE_PASSWORD], invoker: "public"},
+    async (req, res) => {
+      if (req.method !== "POST") {
+        res.status(405).json({ok: false, error: "method-not-allowed"});
+        return;
+      }
+      try {
+        const decoded = await verifyFirebaseRequest(req);
+        // 試行枠の確認と加算を同一 transaction にし、並列リクエストで
+        // 5 回制限をすり抜けられないようにする。成功時だけ後で消去する。
+        await reserveDeveloperAuthAttempt(decoded.uid);
+
+        const password = req.body && req.body.password;
+        const expected = DEVELOPER_MODE_PASSWORD.value();
+        if (!expected || !password || !safeEqual(password, expected)) {
+          res.status(401).json({ok: false, error: "invalid-password"});
+          return;
+        }
+
+        await clearDeveloperAuthFailures(decoded.uid);
+        await setDeveloperClaim(decoded.uid, true);
+        await admin.firestore().collection("users").doc(decoded.uid).set({
+          developerAuthorized: true,
+          developerAuthorizedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, {merge: true});
+        res.status(200).json({ok: true, developer: true});
+      } catch (err) {
+        sendDeveloperAuthError(res, err);
+      }
+    });
+
+exports.developerModeStatus = onRequest(
+    {invoker: "public"},
+    async (req, res) => {
+      if (req.method !== "POST" && req.method !== "GET") {
+        res.status(405).json({ok: false, error: "method-not-allowed"});
+        return;
+      }
+      try {
+        const decoded = await verifyFirebaseRequest(req);
+        res.status(200).json({
+          ok: true,
+          developer: decoded.developer === true,
+        });
+      } catch (err) {
+        sendDeveloperAuthError(res, err);
+      }
+    });
+
+exports.revokeDeveloperMode = onRequest(
+    {invoker: "public"},
+    async (req, res) => {
+      if (req.method !== "POST") {
+        res.status(405).json({ok: false, error: "method-not-allowed"});
+        return;
+      }
+      try {
+        const decoded = await verifyFirebaseRequest(req);
+        await setDeveloperClaim(decoded.uid, false);
+        await admin.firestore().collection("users").doc(decoded.uid).set({
+          developerAuthorized: false,
+          developerRevokedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, {merge: true});
+        res.status(200).json({ok: true, developer: false});
+      } catch (err) {
+        sendDeveloperAuthError(res, err);
+      }
+    });
+// ════════════════════════════════════════════════════════════════════════
 //  ヘルパー
 // ════════════════════════════════════════════════════════════════════════
 
 function planFromSubscription(sub) {
-  const item = sub.items && sub.items.data && sub.items.data[0];
-  const priceId = item && item.price && item.price.id;
-  return PRICE_TO_PLAN[priceId] || "pro";
+  return resolveStripePlan(sub, PRICE_TO_PLAN);
 }
 
 function periodEndMs(sub) {
@@ -400,14 +514,8 @@ function uidFromRcEvent(event) {
 
 // entitlement / product からプラン名を決定 (entitlement 優先)。
 function planFromRcEvent(event) {
-  const ents = event.entitlement_ids ||
-    (event.entitlement_id ? [event.entitlement_id] : []);
-  for (const e of ents) {
-    if (RC_ENTITLEMENT_TO_PLAN[e]) return RC_ENTITLEMENT_TO_PLAN[e];
-  }
-  const pid = event.new_product_id || event.product_id;
-  if (pid && RC_PRODUCT_TO_PLAN[pid]) return RC_PRODUCT_TO_PLAN[pid];
-  return "pro"; // 不明時は pro 扱い (要 マップ整備)
+  return resolveRevenueCatPlan(
+      event, RC_ENTITLEMENT_TO_PLAN, RC_PRODUCT_TO_PLAN);
 }
 
 // RevenueCat 由来の plan を書き込む。 Stripe 用フィールドは触らない (merge)。
@@ -423,6 +531,85 @@ async function setUserPlanRC(uid, {plan, status, expiresAt, store, appUserId}) {
   }, {merge: true});
   logger.info(`plan 更新(revenuecat): uid=${uid} plan=${plan} ` +
     `status=${status} store=${store}`);
+}
+
+async function verifyFirebaseRequest(req) {
+  const header = req.headers.authorization || req.headers.Authorization || "";
+  const match = String(header).match(/^Bearer\s+(.+)$/i);
+  if (!match) {
+    const err = new Error("missing authorization");
+    err.status = 401;
+    err.code = "unauthenticated";
+    throw err;
+  }
+  try {
+    return await admin.auth().verifyIdToken(match[1]);
+  } catch (e) {
+    const err = new Error("invalid token");
+    err.status = 401;
+    err.code = "unauthenticated";
+    throw err;
+  }
+}
+
+function developerAuthAttemptRef(uid) {
+  return admin.firestore().collection("developerAuthAttempts").doc(uid);
+}
+
+async function reserveDeveloperAuthAttempt(uid) {
+  const ref = developerAuthAttemptRef(uid);
+  await admin.firestore().runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const now = Date.now();
+    const lockedUntil = snap.exists ? (snap.get("lockedUntilMs") || 0) : 0;
+    if (typeof lockedUntil === "number" && lockedUntil > now) {
+      const err = new Error("too many attempts");
+      err.status = 429;
+      err.code = "too-many-attempts";
+      throw err;
+    }
+    const lockExpired = typeof lockedUntil === "number" &&
+      lockedUntil > 0 && lockedUntil <= now;
+    const current = lockExpired ? 0 :
+      (snap.exists ? (snap.get("failedCount") || 0) : 0);
+    const failedCount = current + 1;
+    const lockedUntilMs = failedCount >= 5 ? now + 15 * 60 * 1000 : null;
+    tx.set(ref, {
+      failedCount,
+      lockedUntilMs,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+  });
+}
+
+async function clearDeveloperAuthFailures(uid) {
+  try {
+    await developerAuthAttemptRef(uid).delete();
+  } catch (_) {
+    // 失敗しても認証成功自体は成立させる。
+  }
+}
+
+async function setDeveloperClaim(uid, enabled) {
+  const user = await admin.auth().getUser(uid);
+  const claims = Object.assign({}, user.customClaims || {});
+  if (enabled) {
+    claims.developer = true;
+  } else {
+    delete claims.developer;
+  }
+  await admin.auth().setCustomUserClaims(uid, claims);
+}
+
+function sendDeveloperAuthError(res, err) {
+  const status = err.status || 500;
+  const code = err.code || (status >= 500 ? "internal" : "bad-request");
+  if (status >= 500) {
+    logger.error("developer auth error", err);
+  } else {
+    logger.warn("developer auth rejected", code);
+  }
+  res.status(status).json({ok: false, error: code});
 }
 
 // タイミング安全な文字列比較 (長さ差でも例外を出さない)。

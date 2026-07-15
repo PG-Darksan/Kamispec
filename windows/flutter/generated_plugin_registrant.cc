@@ -7,13 +7,13 @@
 #include "generated_plugin_registrant.h"
 
 #include <audioplayers_windows/audioplayers_windows_plugin.h>
+#include <camera_windows/camera_windows.h>
 #include <desktop_drop/desktop_drop_plugin.h>
 #include <desktop_multi_window/desktop_multi_window_plugin.h>
 #include <ffmpeg_kit_flutter_new_full/f_fmpeg_kit_flutter_plugin.h>
 #include <file_selector_windows/file_selector_windows.h>
 #include <flutter_tts/flutter_tts_plugin.h>
 #include <fvp/fvp_plugin_c_api.h>
-#include <geolocator_windows/geolocator_windows.h>
 #include <irondash_engine_context/irondash_engine_context_plugin_c_api.h>
 #include <local_notifier/local_notifier_plugin.h>
 #include <permission_handler_windows/permission_handler_windows_plugin.h>
@@ -29,6 +29,8 @@
 void RegisterPlugins(flutter::PluginRegistry* registry) {
   AudioplayersWindowsPluginRegisterWithRegistrar(
       registry->GetRegistrarForPlugin("AudioplayersWindowsPlugin"));
+  CameraWindowsRegisterWithRegistrar(
+      registry->GetRegistrarForPlugin("CameraWindows"));
   DesktopDropPluginRegisterWithRegistrar(
       registry->GetRegistrarForPlugin("DesktopDropPlugin"));
   DesktopMultiWindowPluginRegisterWithRegistrar(
@@ -41,8 +43,6 @@ void RegisterPlugins(flutter::PluginRegistry* registry) {
       registry->GetRegistrarForPlugin("FlutterTtsPlugin"));
   FvpPluginCApiRegisterWithRegistrar(
       registry->GetRegistrarForPlugin("FvpPluginCApi"));
-  GeolocatorWindowsRegisterWithRegistrar(
-      registry->GetRegistrarForPlugin("GeolocatorWindows"));
   IrondashEngineContextPluginCApiRegisterWithRegistrar(
       registry->GetRegistrarForPlugin("IrondashEngineContextPluginCApi"));
   LocalNotifierPluginRegisterWithRegistrar(

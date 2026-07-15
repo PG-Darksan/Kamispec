@@ -12,11 +12,19 @@ class ConnectionPainter extends CustomPainter {
   /// 溶けて見えなくなるため、ノード背景と同様に濃いアンバーへ補正する。
   final bool isDarkMode;
 
+  /// 古い接続データや未設定接続に使うフォールバック線種。
+  /// 個々の接続は [NodeConnection.lineStyle] を優先する。
+  ///   'curve'    = 従来のベジェ曲線 (既定)
+  ///   'straight' = 直線
+  ///   'elbow'    = 直角に折れ曲がる線 (フローチャート風)
+  final String lineStyle;
+
   ConnectionPainter({
     required this.nodes,
     required this.connections,
     Set<NodeConnection>? selectedConnections,
     this.isDarkMode = true,
+    this.lineStyle = 'curve',
   }) : selectedConnections = selectedConnections ?? {};
 
   /// 接続線の表示色を計算。黄色系の色は視認性が低いためユーザー要望により
@@ -43,12 +51,38 @@ class ConnectionPainter extends CustomPainter {
       final to = nodes[conn.toId];
       if (from == null || to == null) continue;
 
-      final p1 = from.anchorPoint(conn.fromAnchor);
-      final p2 = to.anchorPoint(conn.toAnchor);
-      final dist0 = (p1 - p2).distance;
-      final strength = (dist0 * 0.4).clamp(30.0, 150.0);
-      final cp1 = p1 + _controlOffset(conn.fromAnchor, strength);
-      final cp2 = p2 + _controlOffset(conn.toAnchor, strength);
+      final p1 = _connectionAnchor(
+          from, conn.fromAnchor, conn.fromTableSide, conn.fromTableIndex);
+      final p2 = _connectionAnchor(
+          to, conn.toAnchor, conn.toTableSide, conn.toTableIndex);
+      final style = conn.lineStyle ?? lineStyle;
+
+      // ── 直角折れ線は各セグメントへの距離で判定 ──
+      if (style == 'elbow') {
+        final pts = elbowPointsFor(conn, from, to);
+        double d = double.infinity;
+        for (int i = 0; i < pts.length - 1; i++) {
+          final sd = _distToSegment(point, pts[i], pts[i + 1]);
+          if (sd < d) d = sd;
+        }
+        if (d < best) {
+          best = d;
+          result = conn;
+        }
+        continue;
+      }
+
+      final Offset cp1, cp2;
+      if (style == 'straight') {
+        // 制御点を線分上に置くとベジェは直線に退化する (描画と同一形状)。
+        cp1 = Offset.lerp(p1, p2, 1 / 3)!;
+        cp2 = Offset.lerp(p1, p2, 2 / 3)!;
+      } else {
+        final dist0 = (p1 - p2).distance;
+        final strength = (dist0 * 0.4).clamp(30.0, 150.0);
+        cp1 = p1 + _controlOffset(conn.fromAnchor, strength);
+        cp2 = p2 + _controlOffset(conn.toAnchor, strength);
+      }
 
       final dist = _distToCubic(point, p1, cp1, cp2, p2);
       if (dist < best) {
@@ -57,6 +91,102 @@ class ConnectionPainter extends CustomPainter {
       }
     }
     return result;
+  }
+
+  static List<Offset> elbowPointsFor(
+      NodeConnection conn, MindMapNode from, MindMapNode to) {
+    final p1 = _connectionAnchor(
+        from, conn.fromAnchor, conn.fromTableSide, conn.fromTableIndex);
+    final p2 =
+        _connectionAnchor(to, conn.toAnchor, conn.toTableSide, conn.toTableIndex);
+    if (conn.elbowBendPoints.isNotEmpty) {
+      return [p1, ...conn.elbowBendPoints, p2];
+    }
+    return _generatedElbowPoints(
+      p1,
+      p2,
+      conn.fromAnchor,
+      ratio: conn.elbowSplitRatio,
+      count: conn.elbowPointCount,
+    );
+  }
+
+  static Offset _connectionAnchor(
+    MindMapNode node,
+    AnchorDirection fallback,
+    String? tableSide,
+    int? tableIndex,
+  ) {
+    final table = node.tableData;
+    if (table == null || tableSide == null || tableIndex == null) {
+      return node.anchorPoint(fallback);
+    }
+    final rowCount = table.rowCount <= 0 ? 1 : table.rowCount;
+    final colCount = table.colCount <= 0 ? 1 : table.colCount;
+    final gridLeft = node.position.dx + 14.0;
+    final gridRight = node.position.dx + node.width - 14.0;
+    final gridTop = node.position.dy + node.estimateTableTitleBarHeight();
+    final gridHeight = table.totalHeight;
+    final gridBottom = gridTop + gridHeight;
+    final gridWidth = (gridRight - gridLeft).clamp(1.0, double.infinity);
+    switch (tableSide) {
+      case 'left':
+        final i = tableIndex.clamp(0, rowCount - 1);
+        return Offset(gridLeft, gridTop + gridHeight * (i + 0.5) / rowCount);
+      case 'right':
+        final i = tableIndex.clamp(0, rowCount - 1);
+        return Offset(gridRight, gridTop + gridHeight * (i + 0.5) / rowCount);
+      case 'top':
+        final i = tableIndex.clamp(0, colCount - 1);
+        return Offset(gridLeft + gridWidth * (i + 0.5) / colCount, gridTop);
+      case 'bottom':
+        final i = tableIndex.clamp(0, colCount - 1);
+        return Offset(gridLeft + gridWidth * (i + 0.5) / colCount, gridBottom);
+    }
+    return node.anchorPoint(fallback);
+  }
+
+  /// 直角折れ線の経由点 (p1 → 中間節点 → p2)。
+  /// 始点アンカーの向きで「先に水平 / 先に垂直」 を決める。
+  static List<Offset> _generatedElbowPoints(
+    Offset p1,
+    Offset p2,
+    AnchorDirection fromDir, {
+    double ratio = 0.5,
+    int count = 2,
+  }) {
+    bool horizontalFirst;
+    switch (fromDir) {
+      case AnchorDirection.east:
+      case AnchorDirection.west:
+        horizontalFirst = true;
+        break;
+      case AnchorDirection.north:
+      case AnchorDirection.south:
+        horizontalFirst = false;
+        break;
+      default:
+        horizontalFirst = (p2.dx - p1.dx).abs() >= (p2.dy - p1.dy).abs();
+    }
+    final bends = <Offset>[];
+    final n = count.clamp(1, 8).toInt();
+    final r = ratio.clamp(0.1, 0.9).toDouble();
+    var cur = p1;
+    var horizontal = horizontalFirst;
+    for (int i = 0; i < n; i++) {
+      final isLast = i == n - 1;
+      final firstT = i == 0 ? r : (i + 1) / (n + 1);
+      if (horizontal) {
+        final x = isLast ? p2.dx : p1.dx + (p2.dx - p1.dx) * firstT;
+        cur = Offset(x, cur.dy);
+      } else {
+        final y = isLast ? p2.dy : p1.dy + (p2.dy - p1.dy) * firstT;
+        cur = Offset(cur.dx, y);
+      }
+      bends.add(cur);
+      horizontal = !horizontal;
+    }
+    return [p1, ...bends, p2];
   }
 
   /// アンカー方向に応じたコントロールポイントのオフセット
@@ -118,13 +248,47 @@ class ConnectionPainter extends CustomPainter {
 
       final isSelected = selectedConnections.contains(conn);
 
-      final p1 = from.anchorPoint(conn.fromAnchor);
-      final p2 = to.anchorPoint(conn.toAnchor);
+      final p1 = _connectionAnchor(
+          from, conn.fromAnchor, conn.fromTableSide, conn.fromTableIndex);
+      final p2 = _connectionAnchor(
+          to, conn.toAnchor, conn.toTableSide, conn.toTableIndex);
+      final style = conn.lineStyle ?? lineStyle;
 
-      final dist = (p1 - p2).distance;
-      final strength = (dist * 0.4).clamp(30.0, 150.0);
-      final cp1 = p1 + _controlOffset(conn.fromAnchor, strength);
-      final cp2 = p2 + _controlOffset(conn.toAnchor, strength);
+      // ── 線スタイルごとの形状 (= ユーザー要望: 直線 / 直角折れ限定設定) ──
+      // elbow は折れ線 (poly)、 straight は制御点を線分上に置いた退化ベジェ、
+      // curve は従来のアンカー方向ベジェ。 cp1/cp2 は矢印の向き・ラベル位置の
+      // 計算にも使うため、 elbow では末端セグメントの反対側の点を割り当てる。
+      List<Offset>? poly;
+      final Offset cp1, cp2;
+      if (style == 'elbow') {
+        poly = elbowPointsFor(conn, from, to);
+        cp1 = poly.length > 2 ? poly[1] : Offset.lerp(p1, p2, 1 / 3)!;
+        cp2 = poly.length > 2
+            ? poly[poly.length - 2]
+            : Offset.lerp(p1, p2, 2 / 3)!;
+      } else if (style == 'straight') {
+        cp1 = Offset.lerp(p1, p2, 1 / 3)!;
+        cp2 = Offset.lerp(p1, p2, 2 / 3)!;
+      } else {
+        final dist = (p1 - p2).distance;
+        final strength = (dist * 0.4).clamp(30.0, 150.0);
+        cp1 = p1 + _controlOffset(conn.fromAnchor, strength);
+        cp2 = p2 + _controlOffset(conn.toAnchor, strength);
+      }
+
+      // 折れ線/ベジェ共通の線パス生成 (始端/終端は矢印ぶん短縮できる)。
+      Path buildLine(Offset start, Offset end) {
+        final path = Path()..moveTo(start.dx, start.dy);
+        if (poly != null) {
+          for (int i = 1; i < poly.length - 1; i++) {
+            path.lineTo(poly[i].dx, poly[i].dy);
+          }
+          path.lineTo(end.dx, end.dy);
+        } else {
+          path.cubicTo(cp1.dx, cp1.dy, cp2.dx, cp2.dy, end.dx, end.dy);
+        }
+        return path;
+      }
 
       final paint = Paint()
         ..color = isSelected
@@ -141,10 +305,7 @@ class ConnectionPainter extends CustomPainter {
           ..style = PaintingStyle.stroke
           ..strokeCap = StrokeCap.round
           ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4);
-        final glowPath = Path()
-          ..moveTo(p1.dx, p1.dy)
-          ..cubicTo(cp1.dx, cp1.dy, cp2.dx, cp2.dy, p2.dx, p2.dy);
-        canvas.drawPath(glowPath, glowPaint);
+        canvas.drawPath(buildLine(p1, p2), glowPaint);
       }
 
       // ── 線の終端を矢印の根元まで短縮して描画 ──
@@ -170,17 +331,11 @@ class ConnectionPainter extends CustomPainter {
               conn.strokeWidth, conn.arrowHeadScale);
         }
         // 線は矢印の根元まで
-        final linePath = Path()
-          ..moveTo(lineStart.dx, lineStart.dy)
-          ..cubicTo(cp1.dx, cp1.dy, cp2.dx, cp2.dy, base.dx, base.dy);
-        canvas.drawPath(linePath, paint);
+        canvas.drawPath(buildLine(lineStart, base), paint);
         _drawFilledArrow(canvas, cp2, tip, paint.color, conn.strokeWidth,
             conn.arrowHeadScale);
       } else {
-        final linePath = Path()
-          ..moveTo(p1.dx, p1.dy)
-          ..cubicTo(cp1.dx, cp1.dy, cp2.dx, cp2.dy, p2.dx, p2.dy);
-        canvas.drawPath(linePath, paint);
+        canvas.drawPath(buildLine(p1, p2), paint);
       }
 
       // ── 始点に丸印を描画 ──
@@ -200,6 +355,22 @@ class ConnectionPainter extends CustomPainter {
           ..style = PaintingStyle.stroke
           ..strokeWidth = 1.0;
         canvas.drawCircle(p1, dotRadius, dotBorder);
+      }
+
+      // ── 直角リンクの中間節点ハンドル ──
+      // 選択中だけ表示し、画面側のヒットテストでこの点をドラッグできる。
+      if (isSelected && style == 'elbow' && poly != null && poly.length > 2) {
+        final handleFill = Paint()
+          ..color = const Color(0xFF80CBC4)
+          ..style = PaintingStyle.fill;
+        final handleBorder = Paint()
+          ..color = Colors.white.withValues(alpha: 0.95)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.5;
+        for (int i = 1; i < poly.length - 1; i++) {
+          canvas.drawCircle(poly[i], 6.0, handleFill);
+          canvas.drawCircle(poly[i], 6.0, handleBorder);
+        }
       }
 
       // ── ラベルを線の中央に描画 ──
@@ -313,5 +484,6 @@ class ConnectionPainter extends CustomPainter {
       oldDelegate.nodes != nodes ||
       oldDelegate.connections != connections ||
       oldDelegate.selectedConnections != selectedConnections ||
-      oldDelegate.isDarkMode != isDarkMode;
+      oldDelegate.isDarkMode != isDarkMode ||
+      oldDelegate.lineStyle != lineStyle;
 }

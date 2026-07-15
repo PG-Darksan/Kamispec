@@ -1,30 +1,25 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
-import 'package:flutter/material.dart';
+import 'package:flutter/painting.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:mindmap_app/main.dart';
+import 'package:mindmap_app/models/mind_map_node.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  test('YouTube node data survives a JSON round trip', () {
+    final original = MindMapNode(
+      id: 'video-node',
+      title: 'Video note',
+      position: const Offset(12.5, 34.5),
+      contentType: NodeContentType.youtube,
+      youtubeUrl: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+      memoText: 'Remember this scene',
+    );
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+    final restored = MindMapNode.fromJson(original.toJson());
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
-
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    expect(restored.id, original.id);
+    expect(restored.position, original.position);
+    expect(restored.contentType, NodeContentType.youtube);
+    expect(restored.youtubeUrl, original.youtubeUrl);
+    expect(restored.memoText, original.memoText);
   });
 }

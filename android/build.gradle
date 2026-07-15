@@ -18,6 +18,17 @@ subprojects {
     project.evaluationDependsOn(':app')
 }
 
+subprojects { subProject ->
+    subProject.plugins.withId("com.android.library") {
+        if (subProject.name == "camera_android_camerax") {
+            subProject.dependencies.add(
+                "implementation",
+                "androidx.concurrent:concurrent-futures:1.2.0"
+            )
+        }
+    }
+}
+
 tasks.register("clean", Delete) {
     delete rootProject.buildDir
 }

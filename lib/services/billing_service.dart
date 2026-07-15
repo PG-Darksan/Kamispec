@@ -94,6 +94,9 @@ class BillingService {
   bool _configured = false;
   bool get isConfigured => _configured;
 
+  void Function(CustomerInfo)? _customerInfoListener;
+  bool _disposed = false;
+
   /// RevenueCat SDK がネイティブ対応するプラットフォームか。
   /// Android / iOS / macOS のみ true。Windows / Linux / Web は false。
   static bool get isNativeBilling {
@@ -101,10 +104,12 @@ class BillingService {
     return Platform.isAndroid || Platform.isIOS || Platform.isMacOS;
   }
 
-  /// Windows デスクトップか (Web Purchase Link 方式の対象)。
+  /// RevenueCat SDK 非対応のデスクトップか (Web Purchase Link / Stripe 方式の
+  /// 対象)。 Windows に加え Linux も該当 (どちらも purchases_flutter 非対応)。
+  /// ※ 名前は歴史的経緯で isWindowsDesktop のままだが Linux も含む。
   static bool get isWindowsDesktop {
     if (kIsWeb) return false;
-    return Platform.isWindows;
+    return Platform.isWindows || Platform.isLinux;
   }
 
   // ─── 初期化 ─────────────────────────────────────────────────────────────
@@ -112,24 +117,23 @@ class BillingService {
   /// RevenueCat を初期化。モバイルでのみ `Purchases.configure` を呼ぶ。
   /// Windows 等では何もしない (REST で確認するため SDK 不要)。
   Future<void> configure({required String appUserId}) async {
+    if (_disposed || _configured) return;
     if (!isNativeBilling) {
       // Windows / Linux / Web: SDK は使わない。
       return;
     }
     if (apiKeyMobile.isEmpty) {
-      debugPrint(
-          'BillingService: REVENUECAT_API_KEY_ANDROID 未設定 → 課金機能オフ');
+      debugPrint('BillingService: REVENUECAT_API_KEY_ANDROID 未設定 → 課金機能オフ');
       return;
     }
-    // ★ release ビルドで Test Store キー (test_) を使うと、RevenueCat SDK は
-    //   意図的にアラートを出してアプリをクラッシュさせる仕様。開発用キーが
-    //   release ビルドに混入した場合は configure をスキップして起動を守る
-    //   (課金は無効になる。本番リリースでは goog_ キーに差し替えること)。
-    //   課金テストは debug ビルド (flutter run) で行うこと。
+    // RevenueCat の Test Store キー (test_) は release ビルドでは使えない。
+    // SDK が Wrong API Key ダイアログを出して終了するため、ここで初期化を止める。
+    // Test Store 検証は debug APK、本番ストア公開は goog_ キーで行うこと。
     if (kReleaseMode && apiKeyMobile.startsWith('test_')) {
       debugPrint(
-          'BillingService: release ビルドに Test Store キー(test_)が混入。'
-          '課金を無効化します。本番は goog_ キーに差し替えてください。');
+          'BillingService: release build is using RevenueCat Test Store key. '
+          'Skip SDK configure to avoid RevenueCat Wrong API Key shutdown. '
+          'Use a debug build for Test Store, or goog_ key for production.');
       return;
     }
     try {
@@ -140,9 +144,11 @@ class BillingService {
       _configured = true;
 
       // 状態変化リスナー: 更新・解約・期限切れ等を検知して provider に通知。
-      Purchases.addCustomerInfoUpdateListener((CustomerInfo info) {
+      _customerInfoListener = (CustomerInfo info) {
+        if (_disposed) return;
         onPlanChanged?.call(_planFromCustomerInfo(info));
-      });
+      };
+      Purchases.addCustomerInfoUpdateListener(_customerInfoListener!);
 
       // 起動時に現在の状態を 1 回反映 (前回購入の復元含む)。
       final info = await Purchases.getCustomerInfo();
@@ -188,8 +194,8 @@ class BillingService {
       return current.availablePackages.map((p) {
         final id = p.identifier; // 'pro_monthly' 等 (ダッシュボードの Custom id)
         final isMax = id.toLowerCase().startsWith('max');
-        final isYearly =
-            id.toLowerCase().contains('year') || id.toLowerCase().contains('annual');
+        final isYearly = id.toLowerCase().contains('year') ||
+            id.toLowerCase().contains('annual');
         return BillingPackage(
           id: id,
           planName: isMax ? BillingPlanName.max : BillingPlanName.pro,
@@ -212,7 +218,18 @@ class BillingService {
   Future<String> purchasePackage(BillingPackage pkg) async {
     if (!isNativeBilling) return BillingPlanName.free;
     try {
-      await Purchases.purchasePackage(pkg.raw);
+      final oldProductIdentifier = await _googleOldProductIdentifierFor(pkg);
+      if (oldProductIdentifier == null) {
+        await Purchases.purchasePackage(pkg.raw);
+      } else {
+        await Purchases.purchasePackage(
+          pkg.raw,
+          googleProductChangeInfo: GoogleProductChangeInfo(
+            oldProductIdentifier,
+            prorationMode: GoogleProrationMode.immediateWithTimeProration,
+          ),
+        );
+      }
       final info = await Purchases.getCustomerInfo();
       final plan = _planFromCustomerInfo(info);
       onPlanChanged?.call(plan);
@@ -224,6 +241,32 @@ class BillingService {
       }
       debugPrint('BillingService.purchasePackage 失敗: $e');
       rethrow;
+    }
+  }
+
+  /// Android / Google Play のサブスク切替用に、現在有効な旧 product id を返す。
+  /// これを渡さないと Pro 月額 → Max 月額などが「別サブスク購入」扱いになり、
+  /// 切替ダイアログに進めないことがある。
+  Future<String?> _googleOldProductIdentifierFor(BillingPackage pkg) async {
+    if (!Platform.isAndroid || !_configured) return null;
+
+    try {
+      final info = await Purchases.getCustomerInfo();
+      final active = info.entitlements.active;
+      final targetProductIdentifier = pkg.raw.storeProduct.identifier;
+
+      final current = pkg.planName == BillingPlanName.max
+          ? (active[BillingPlanName.max] ?? active[BillingPlanName.pro])
+          : active[pkg.planName];
+      final oldProductIdentifier = current?.productIdentifier;
+      if (oldProductIdentifier == null ||
+          oldProductIdentifier == targetProductIdentifier) {
+        return null;
+      }
+      return oldProductIdentifier;
+    } catch (e) {
+      debugPrint('BillingService: Google product change info skipped: $e');
+      return null;
     }
   }
 
@@ -258,8 +301,8 @@ class BillingService {
       return false;
     }
     final sep = base.contains('?') ? '&' : '?';
-    final uri = Uri.parse(
-        '$base${sep}app_user_id=${Uri.encodeComponent(appUserId)}');
+    final uri =
+        Uri.parse('$base${sep}app_user_id=${Uri.encodeComponent(appUserId)}');
     if (await canLaunchUrl(uri)) {
       return launchUrl(uri, mode: LaunchMode.externalApplication);
     }
@@ -324,6 +367,19 @@ class BillingService {
       }
     }
     return last;
+  }
+
+  /// RevenueCat のグローバルリスナーからこのサービスを切り離す。
+  /// Provider の破棄後に古いコールバックが状態を書き換えることを防ぐ。
+  void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    final listener = _customerInfoListener;
+    _customerInfoListener = null;
+    onPlanChanged = null;
+    if (listener != null && isNativeBilling) {
+      Purchases.removeCustomerInfoUpdateListener(listener);
+    }
   }
 
   /// デバッグ用: 課金まわりの状態を文字列で返す。

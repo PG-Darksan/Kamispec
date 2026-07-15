@@ -37,17 +37,18 @@
     <uses-feature android:name="android.hardware.camera" android:required="false"/>
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false"/>
 
-    <!-- ── 位置情報 (geolocator): ジオフェンス画面ロック用 ── -->
-    <!-- 「確定した地点から半径 N km の出入り」 を判定するために現在地を取得する。
-         FINE は GPS による高精度、 COARSE はネットワーク測位のフォールバック。
-         権限が無い / 拒否された場合は機能が静かに無効化されるだけ。 -->
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+    <!-- ── IC カード残高取得 (nfc_manager): 交通系 FeliCa 読み取り用 ── -->
+    <!-- NFC で Suica/PASMO 等の残高を読む。 NFC 非搭載端末でもインストール
+         できるよう uses-feature は required="false" にする (= 非対応端末では
+         アプリ側で「FeliCa に対応していません」 と表示してフォールバック)。 -->
+    <uses-permission android:name="android.permission.NFC"/>
+    <uses-feature android:name="android.hardware.nfc" android:required="false"/>
 
     <application
         android:label="Kamispec"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"
             android:exported="true"

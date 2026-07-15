@@ -249,6 +249,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.3.5+4"
+  camera_windows:
+    dependency: "direct main"
+    description:
+      name: camera_windows
+      sha256: "35d85c9eb707f6f43d08b82e9aba7b5f0347428f6334fd5d68ae9bd1bc9262af"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.2.6+4"
   characters:
     dependency: transitive
     description:
@@ -717,14 +725,6 @@ packages:
     description: flutter
     source: sdk
     version: "0.0.0"
-  freezed_annotation:
-    dependency: transitive
-    description:
-      name: freezed_annotation
-      sha256: "7294967ff0a6d98638e7acb774aac3af2550777accd8149c90af5b014e6d44d8"
-      url: "https://pub.dev"
-    source: hosted
-    version: "3.1.0"
   fvp:
     dependency: "direct main"
     description:
@@ -733,54 +733,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.37.2"
-  geolocator:
-    dependency: "direct main"
-    description:
-      name: geolocator
-      sha256: f62bcd90459e63210bbf9c35deb6a51c521f992a78de19a1fe5c11704f9530e2
-      url: "https://pub.dev"
-    source: hosted
-    version: "13.0.4"
-  geolocator_android:
-    dependency: transitive
-    description:
-      name: geolocator_android
-      sha256: fcb1760a50d7500deca37c9a666785c047139b5f9ee15aa5469fae7dbbe3170d
-      url: "https://pub.dev"
-    source: hosted
-    version: "4.6.2"
-  geolocator_apple:
-    dependency: transitive
-    description:
-      name: geolocator_apple
-      sha256: dbdd8789d5aaf14cf69f74d4925ad1336b4433a6efdf2fce91e8955dc921bf22
-      url: "https://pub.dev"
-    source: hosted
-    version: "2.3.13"
-  geolocator_platform_interface:
-    dependency: transitive
-    description:
-      name: geolocator_platform_interface
-      sha256: "30cb64f0b9adcc0fb36f628b4ebf4f731a2961a0ebd849f4b56200205056fe67"
-      url: "https://pub.dev"
-    source: hosted
-    version: "4.2.6"
-  geolocator_web:
-    dependency: transitive
-    description:
-      name: geolocator_web
-      sha256: b1ae9bdfd90f861fde8fd4f209c37b953d65e92823cb73c7dee1fa021b06f172
-      url: "https://pub.dev"
-    source: hosted
-    version: "4.1.3"
-  geolocator_windows:
-    dependency: transitive
-    description:
-      name: geolocator_windows
-      sha256: "175435404d20278ffd220de83c2ca293b73db95eafbdc8131fe8609be1421eb6"
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.2.5"
   glob:
     dependency: transitive
     description:
@@ -1045,6 +997,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.0.0"
+  nfc_manager:
+    dependency: "direct main"
+    description:
+      name: nfc_manager
+      sha256: "071faa6e43317f9feeef316067456ae6e61a40f7748ed6e93470a812e103c326"
+      url: "https://pub.dev"
+    source: hosted
+    version: "3.5.1"
   objective_c:
     dependency: transitive
     description:
@@ -1493,14 +1453,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "3.0.0"
-  simple_sparse_list:
-    dependency: transitive
-    description:
-      name: simple_sparse_list
-      sha256: aa648fd240fa39b49dcd11c19c266990006006de6699a412de485695910fbc1f
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.1.4"
   sky_engine:
     dependency: transitive
     description: flutter
@@ -1754,14 +1706,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.4.0"
-  unicode:
-    dependency: transitive
-    description:
-      name: unicode
-      sha256: "48f8b6c50ed70ba61647f4987d56ec505923041956bbdb651db2838ce7b47b58"
-      url: "https://pub.dev"
-    source: hosted
-    version: "1.1.7"
   universal_platform:
     dependency: transitive
     description:
@@ -2042,14 +1986,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "3.1.3"
-  youtube_explode_dart:
+  zxing2:
     dependency: "direct main"
     description:
-      name: youtube_explode_dart
-      sha256: "947ba05e0c4f050743e480e7bca3575ff6427d86cc898c1a69f5e1d188cdc9e0"
+      name: zxing2
+      sha256: "2677c49a3b9ca9457cb1d294fd4bd5041cac6aab8cdb07b216ba4e98945c684f"
       url: "https://pub.dev"
     source: hosted
-    version: "2.5.3"
+    version: "0.2.4"
 sdks:
   dart: ">=3.11.0 <4.0.0"
   flutter: ">=3.41.0"

@@ -4,13 +4,13 @@
 
 list(APPEND FLUTTER_PLUGIN_LIST
   audioplayers_windows
+  camera_windows
   desktop_drop
   desktop_multi_window
   ffmpeg_kit_flutter_new_full
   file_selector_windows
   flutter_tts
   fvp
-  geolocator_windows
   irondash_engine_context
   local_notifier
   permission_handler_windows

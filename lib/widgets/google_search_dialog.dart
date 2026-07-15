@@ -54,6 +54,88 @@ import 'package:pdf/widgets.dart' as pw;
 
 import '../providers/mind_map_provider.dart';
 
+enum _GSearchSplitIconFill { left, right, top, bottom }
+
+Widget _gSearchSplitIcon(
+  _GSearchSplitIconFill fill, {
+  required Color color,
+  double size = 22,
+}) {
+  return SizedBox(
+    width: size,
+    height: size,
+    child: CustomPaint(
+      painter: _GSearchSplitIconPainter(fill, color),
+    ),
+  );
+}
+
+class _GSearchSplitIconPainter extends CustomPainter {
+  const _GSearchSplitIconPainter(this.fill, this.color);
+
+  final _GSearchSplitIconFill fill;
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final strokeWidth = (size.shortestSide * 0.09).clamp(1.4, 2.2).toDouble();
+    final stroke = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = strokeWidth
+      ..strokeCap = StrokeCap.round
+      ..color = color;
+    final fillPaint = Paint()
+      ..style = PaintingStyle.fill
+      ..color = color.withValues(alpha: 0.5);
+    final rect = Offset.zero & size;
+    final rrect = RRect.fromRectAndRadius(
+      rect.deflate(strokeWidth),
+      Radius.circular(size.shortestSide * 0.18),
+    );
+
+    canvas.save();
+    canvas.clipRRect(rrect);
+    final Rect active;
+    switch (fill) {
+      case _GSearchSplitIconFill.left:
+        active = Rect.fromLTWH(0, 0, size.width / 2, size.height);
+        break;
+      case _GSearchSplitIconFill.right:
+        active = Rect.fromLTWH(size.width / 2, 0, size.width / 2, size.height);
+        break;
+      case _GSearchSplitIconFill.top:
+        active = Rect.fromLTWH(0, 0, size.width, size.height / 2);
+        break;
+      case _GSearchSplitIconFill.bottom:
+        active = Rect.fromLTWH(0, size.height / 2, size.width, size.height / 2);
+        break;
+    }
+    canvas.drawRect(active, fillPaint);
+    canvas.restore();
+
+    canvas.drawRRect(rrect, stroke);
+    final inset = strokeWidth / 2;
+    if (fill == _GSearchSplitIconFill.left ||
+        fill == _GSearchSplitIconFill.right) {
+      canvas.drawLine(
+        Offset(size.width / 2, inset),
+        Offset(size.width / 2, size.height - inset),
+        stroke,
+      );
+    } else {
+      canvas.drawLine(
+        Offset(inset, size.height / 2),
+        Offset(size.width - inset, size.height / 2),
+        stroke,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _GSearchSplitIconPainter oldDelegate) =>
+      oldDelegate.fill != fill || oldDelegate.color != color;
+}
+
 /// 旧 API 互換のエントリポイント。 `_openGoogleSearchDialog` から呼ばれる。
 class GoogleSearchDialog {
   static Future<void> show(
@@ -65,6 +147,7 @@ class GoogleSearchDialog {
     /// 初期表示する URL。 指定した場合は initialQuery より優先され、
     /// その URL を WebView でロードする。 Qiita 等を直接開く用途で使用。
     String? initialUrl,
+    String initialAiPrompt = '',
     // ignore: avoid_unused_constructor_parameters
     void Function(String url)? onOpenWeb,
     required void Function(String title, String memo, String? linkUrl)
@@ -127,6 +210,7 @@ class GoogleSearchDialog {
                   initialMemo: initialMemo,
                   customTitle: customTitle,
                   initialUrl: initialUrl,
+                  initialAiPrompt: initialAiPrompt,
                   onAddNode: onAddNode,
                   onMoveToSplitPanel: onMoveToSplitPanel,
                   onCreateBookmarkButton: onCreateBookmarkButton,
@@ -146,6 +230,7 @@ class GoogleSearchDialog {
                         initialMemo: currentMemo,
                         customTitle: customTitle,
                         initialUrl: currentUrl,
+                        initialAiPrompt: initialAiPrompt,
                         onAddNode: onAddNode,
                         onMoveToSplitPanel: onMoveToSplitPanel,
                         onCreateBookmarkButton: onCreateBookmarkButton,
@@ -186,6 +271,7 @@ class GoogleSearchDialog {
                   initialMemo: initialMemo,
                   customTitle: customTitle,
                   initialUrl: initialUrl,
+                  initialAiPrompt: initialAiPrompt,
                   onAddNode: onAddNode,
                   onMoveToSplitPanel: onMoveToSplitPanel,
                   onCreateBookmarkButton: onCreateBookmarkButton,
@@ -220,6 +306,7 @@ class GoogleSearchDialog {
           initialMemo: initialMemo,
           customTitle: customTitle,
           initialUrl: initialUrl,
+          initialAiPrompt: initialAiPrompt,
           onAddNode: onAddNode,
           onMoveToSplitPanel: onMoveToSplitPanel,
           onCreateBookmarkButton: onCreateBookmarkButton,
@@ -235,6 +322,25 @@ class GoogleSearchDialog {
   /// ユーザー要望: 「ノードをタップしての google 検索は複数同時に検索ボックスを
   ///   起動できるように」。 以前は 1 つだけだったがリストで複数管理する。
   static final List<OverlayEntry> _floatingEntries = <OverlayEntry>[];
+  static final Map<String, OverlayEntry> _floatingSingletonEntries =
+      <String, OverlayEntry>{};
+  static final Map<String, GlobalKey<_GoogleSearchPageState>>
+      _floatingSingletonPageKeys =
+      <String, GlobalKey<_GoogleSearchPageState>>{};
+
+  /// 指定 singleton の浮遊ウィンドウを root overlay の最前面へ戻す。
+  /// 集中ロック画面は復帰時に自分の OverlayEntry を再挿入するため、
+  /// ロック中メモから開いた AI / Google が背面へ潜ることがある。
+  static void bringFloatingSingletonToFront(
+      BuildContext context, String singletonKey) {
+    final entry = _floatingSingletonEntries[singletonKey];
+    if (entry == null || !entry.mounted) return;
+    try {
+      final overlay = Overlay.of(context, rootOverlay: true);
+      entry.remove();
+      overlay.insert(entry);
+    } catch (_) {}
+  }
 
   /// ── フローティング (非モーダル + ドラッグ可能) 検索ウィンドウ ──
   ///
@@ -251,13 +357,60 @@ class GoogleSearchDialog {
     String initialMemo = '',
     String? customTitle,
     String? initialUrl,
+    String initialAiPrompt = '',
     required void Function(String title, String memo, String? linkUrl)
         onAddNode,
     void Function(String currentUrl, {bool isLeftPanel})? onMoveToSplitPanel,
     Future<bool> Function(String url, String title)? onCreateBookmarkButton,
     Offset? anchorPos,
+    String? singletonKey,
+    // 初期ウィンドウサイズの上書き (null = 既定)。 ロック中メモの AI /
+    // Google 検索ポップアップは既定より縦を抑えたい (= ユーザー要望) ので
+    // 呼び出し側から指定できるようにする。 リサイズは従来どおり可能。
+    double? initialWidth,
+    double? initialHeight,
+    bool hideChromeWhenExpanded = false,
   }) {
     final overlay = Overlay.of(context, rootOverlay: true);
+    if (singletonKey != null) {
+      final existingEntry = _floatingSingletonEntries[singletonKey];
+      final existingState =
+          _floatingSingletonPageKeys[singletonKey]?.currentState;
+      if (existingEntry != null && existingState != null) {
+        // ── 既存ウィンドウを再利用 (= ユーザー要望: ロック中の「AIに渡す」を
+        //    連打しても複数ウィンドウを積まず、 既存の入力欄へ渡す) ──
+        // 集中ロック画面はアプリ復帰時に自分の OverlayEntry を最前面へ
+        // 再 insert するため、 既存ウィンドウがその裏に隠れている場合がある。
+        // remove → insert し直して最前面へ出す (OverlayEntry は内部
+        // GlobalKey を持つので、 同一フレーム内の再挿入なら位置・サイズ・
+        // WebView の State はそのまま維持される)。
+        try {
+          if (existingEntry.mounted) {
+            existingEntry.remove();
+            overlay.insert(existingEntry);
+          }
+        } catch (_) {}
+        existingState.updateFloatingRequest(
+          query: initialQuery,
+          memo: initialMemo,
+          url: initialUrl,
+          aiPrompt: initialAiPrompt,
+        );
+        return;
+      }
+      if (existingEntry != null) {
+        try {
+          existingEntry.remove();
+        } catch (_) {}
+        _floatingEntries.remove(existingEntry);
+        _floatingSingletonEntries.remove(singletonKey);
+        _floatingSingletonPageKeys.remove(singletonKey);
+      }
+    }
+    final pageKey = singletonKey == null
+        ? null
+        : GlobalKey<_GoogleSearchPageState>(
+            debugLabel: 'floating_search_$singletonKey');
     // 既に開いている数に応じて少しずつズラして配置 (= 重ならないように)。
     final int stackIndex = _floatingEntries.length;
     final Offset cascade = Offset(
@@ -270,6 +423,11 @@ class GoogleSearchDialog {
         entry.remove();
         _floatingEntries.remove(entry);
       }
+      if (singletonKey != null &&
+          _floatingSingletonEntries[singletonKey] == entry) {
+        _floatingSingletonEntries.remove(singletonKey);
+        _floatingSingletonPageKeys.remove(singletonKey);
+      }
     }
 
     entry = OverlayEntry(
@@ -278,8 +436,13 @@ class GoogleSearchDialog {
         initialMemo: initialMemo,
         customTitle: customTitle,
         initialUrl: initialUrl,
+        initialAiPrompt: initialAiPrompt,
         initialOffset: cascade,
         anchorPos: anchorPos,
+        initialWidth: initialWidth,
+        initialHeight: initialHeight,
+        hideChromeWhenExpanded: hideChromeWhenExpanded,
+        pageKey: pageKey,
         onAddNode: onAddNode,
         onMoveToSplitPanel: onMoveToSplitPanel,
         onCreateBookmarkButton: onCreateBookmarkButton,
@@ -294,6 +457,7 @@ class GoogleSearchDialog {
               initialMemo: memo,
               customTitle: customTitle,
               initialUrl: url,
+              initialAiPrompt: initialAiPrompt,
               onAddNode: onAddNode,
               onMoveToSplitPanel: onMoveToSplitPanel,
               onCreateBookmarkButton: onCreateBookmarkButton,
@@ -304,6 +468,10 @@ class GoogleSearchDialog {
       ),
     );
     _floatingEntries.add(entry);
+    if (singletonKey != null) {
+      _floatingSingletonEntries[singletonKey] = entry;
+      if (pageKey != null) _floatingSingletonPageKeys[singletonKey] = pageKey;
+    }
     overlay.insert(entry);
   }
 }
@@ -316,6 +484,7 @@ class _FloatingSearchWindow extends StatefulWidget {
   final String initialMemo;
   final String? customTitle;
   final String? initialUrl;
+  final String initialAiPrompt;
   final void Function(String title, String memo, String? linkUrl) onAddNode;
   final void Function(String currentUrl, {bool isLeftPanel})?
       onMoveToSplitPanel;
@@ -331,11 +500,18 @@ class _FloatingSearchWindow extends StatefulWidget {
   /// 指定があれば、 この画面座標 (= ノード付近) にウィンドウを出す
   /// (= ユーザー要望: ノードからの Google 検索はノード付近に出す)。
   final Offset? anchorPos;
+
+  /// 初期サイズの上書き (null = 既定サイズ)。
+  final double? initialWidth;
+  final double? initialHeight;
+  final bool hideChromeWhenExpanded;
+  final GlobalKey<_GoogleSearchPageState>? pageKey;
   const _FloatingSearchWindow({
     required this.initialQuery,
     required this.initialMemo,
     required this.customTitle,
     required this.initialUrl,
+    required this.initialAiPrompt,
     required this.onAddNode,
     required this.onMoveToSplitPanel,
     required this.onCreateBookmarkButton,
@@ -343,6 +519,10 @@ class _FloatingSearchWindow extends StatefulWidget {
     required this.onExpandToCompact,
     this.initialOffset = Offset.zero,
     this.anchorPos,
+    this.initialWidth,
+    this.initialHeight,
+    this.hideChromeWhenExpanded = false,
+    this.pageKey,
   });
 
   @override
@@ -351,9 +531,12 @@ class _FloatingSearchWindow extends StatefulWidget {
 
 class _FloatingSearchWindowState extends State<_FloatingSearchWindow> {
   Offset _pos = const Offset(-1, -1); // 未配置マーカー
-  // 既定サイズ。 横幅はユーザー要望でもう少し広げた (300 → 430)。
-  static const double _baseW = 430;
-  static const double _baseH = 470;
+  bool _expandedToCompact = false;
+  Offset? _expandedCloseButtonPos;
+  bool _draggingExpandedCloseButton = false;
+  // 既定サイズ。ノード内容から検索した時に少し余裕を持たせる。
+  static const double _baseW = 480;
+  static const double _baseH = 540;
   // ── ユーザー要望: 境界をドラッグして縦横の大きさを自由に変えられるように ──
   // null = 既定サイズ。 リサイズすると実寸 (px) を保持する。
   double? _userW;
@@ -485,10 +668,16 @@ class _FloatingSearchWindowState extends State<_FloatingSearchWindow> {
     final screen = MediaQuery.of(context).size;
     final maxW = math.max(_minW, screen.width - 8);
     final maxH = math.max(_minH, screen.height - 8);
-    final double w = (_userW ?? math.min(_baseW, screen.width - 16))
+    final double w = (_userW ??
+            (_expandedToCompact
+                ? screen.width
+                : math.min(widget.initialWidth ?? _baseW, screen.width - 16)))
         .clamp(_minW, maxW)
         .toDouble();
-    final double h = (_userH ?? math.min(_baseH, screen.height - 16))
+    final double h = (_userH ??
+            (_expandedToCompact
+                ? screen.height
+                : math.min(widget.initialHeight ?? _baseH, screen.height - 16)))
         .clamp(_minH, maxH)
         .toDouble();
     final maxLeft = math.max(0.0, screen.width - w);
@@ -509,8 +698,24 @@ class _FloatingSearchWindowState extends State<_FloatingSearchWindow> {
         );
       }
     }
-    final left = _pos.dx.clamp(0.0, maxLeft);
-    final top = _pos.dy.clamp(0.0, maxTop);
+    final left = _expandedToCompact ? 0.0 : _pos.dx.clamp(0.0, maxLeft);
+    final top = _expandedToCompact ? 0.0 : _pos.dy.clamp(0.0, maxTop);
+    final radius = _expandedToCompact ? 0.0 : 14.0;
+    final hideExpandedChrome =
+        widget.hideChromeWhenExpanded && _expandedToCompact;
+    const expandedCloseSize = 48.0;
+    final expandedCloseDefault = Offset(
+      (screen.width - expandedCloseSize) / 2,
+      MediaQuery.of(context).padding.top + 8,
+    );
+    final expandedClosePos = _expandedCloseButtonPos ?? expandedCloseDefault;
+    final expandedCloseLeft = expandedClosePos.dx
+        .clamp(8.0, math.max(8.0, screen.width - expandedCloseSize - 8.0));
+    final expandedCloseTop = expandedClosePos.dy.clamp(
+      MediaQuery.of(context).padding.top + 4,
+      math.max(MediaQuery.of(context).padding.top + 4,
+          screen.height - expandedCloseSize - 8.0),
+    );
 
     return Positioned(
       left: left,
@@ -522,7 +727,7 @@ class _FloatingSearchWindowState extends State<_FloatingSearchWindow> {
           height: h,
           decoration: BoxDecoration(
             color: const Color(0xFF121212),
-            borderRadius: BorderRadius.circular(14),
+            borderRadius: BorderRadius.circular(radius),
             border: Border.all(
                 color: const Color(0xFF4FC3F7).withValues(alpha: 0.45),
                 width: 1),
@@ -536,68 +741,80 @@ class _FloatingSearchWindowState extends State<_FloatingSearchWindow> {
             // tight 制約にして、 リサイズハンドルだけを上に重ねる)。
             Column(
               children: [
-                // ── ドラッグ可能なヘッダー ──
-                GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onPanUpdate: (d) {
-                    setState(() {
-                      final np = _pos + d.delta;
-                      _pos = Offset(
-                        np.dx.clamp(0.0, maxLeft),
-                        np.dy.clamp(0.0, maxTop),
-                      );
-                    });
-                  },
-                  child: Container(
-                    height: 40,
-                    padding: const EdgeInsets.only(left: 12, right: 4),
-                    decoration: const BoxDecoration(
-                      color: Color(0xFF1A1A1A),
-                      borderRadius:
-                          BorderRadius.vertical(top: Radius.circular(13)),
-                    ),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.drag_indicator_rounded,
-                            color: Colors.white38, size: 18),
-                        const SizedBox(width: 6),
-                        Expanded(
-                          child: Text(provider.t('gsearch.dragTitle'),
-                              style: const TextStyle(
-                                  color: Colors.white70,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w600),
-                              overflow: TextOverflow.ellipsis),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.close_rounded,
-                              color: Colors.white54, size: 18),
-                          tooltip: provider.t('btn.close'),
-                          padding: EdgeInsets.zero,
-                          constraints:
-                              const BoxConstraints(minWidth: 32, minHeight: 32),
-                          onPressed: widget.onClose,
-                        ),
-                      ],
+                if (!hideExpandedChrome)
+                  // ── ドラッグ可能なヘッダー ──
+                  GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onPanUpdate: (d) {
+                      if (_expandedToCompact) return;
+                      setState(() {
+                        final np = _pos + d.delta;
+                        _pos = Offset(
+                          np.dx.clamp(0.0, maxLeft),
+                          np.dy.clamp(0.0, maxTop),
+                        );
+                      });
+                    },
+                    child: Container(
+                      height: 40,
+                      padding: const EdgeInsets.only(left: 12, right: 4),
+                      decoration: const BoxDecoration(
+                        color: Color(0xFF1A1A1A),
+                        borderRadius:
+                            BorderRadius.vertical(top: Radius.circular(13)),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.drag_indicator_rounded,
+                              color: Colors.white38, size: 18),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(provider.t('gsearch.dragTitle'),
+                                style: const TextStyle(
+                                    color: Colors.white70,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600),
+                                overflow: TextOverflow.ellipsis),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.close_rounded,
+                                color: Colors.white54, size: 18),
+                            tooltip: provider.t('btn.close'),
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                                minWidth: 32, minHeight: 32),
+                            onPressed: widget.onClose,
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-                ),
                 // ── 検索本体 ──
                 Expanded(
                   child: ClipRRect(
                     borderRadius: const BorderRadius.vertical(
                         bottom: Radius.circular(13)),
                     child: _GoogleSearchPage(
+                      key: widget.pageKey,
                       initialQuery: widget.initialQuery,
                       initialMemo: widget.initialMemo,
                       customTitle: widget.customTitle,
                       initialUrl: widget.initialUrl,
+                      initialAiPrompt: widget.initialAiPrompt,
                       onAddNode: widget.onAddNode,
                       onMoveToSplitPanel: widget.onMoveToSplitPanel,
                       onCreateBookmarkButton: widget.onCreateBookmarkButton,
                       compactMode: true,
-                      minimalMode: true,
-                      onExpandToCompact: widget.onExpandToCompact,
+                      minimalMode: !_expandedToCompact,
+                      hideAppBar: hideExpandedChrome,
+                      onExpandToCompact: (_, __, ___) {
+                        setState(() {
+                          _expandedToCompact = true;
+                          _userW = screen.width;
+                          _userH = screen.height;
+                          _pos = Offset.zero;
+                        });
+                      },
                       // フローティングは Overlay 上なので Navigator.pop ではなく
                       // onClose で閉じる。
                       onRequestClose: widget.onClose,
@@ -609,8 +826,54 @@ class _FloatingSearchWindowState extends State<_FloatingSearchWindow> {
                 ),
               ],
             ),
+            if (hideExpandedChrome)
+              Positioned(
+                left: expandedCloseLeft.toDouble(),
+                top: expandedCloseTop.toDouble(),
+                child: MouseRegion(
+                  cursor: _draggingExpandedCloseButton
+                      ? SystemMouseCursors.grabbing
+                      : SystemMouseCursors.click,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: widget.onClose,
+                    onLongPressStart: (details) {
+                      setState(() {
+                        _draggingExpandedCloseButton = true;
+                        _expandedCloseButtonPos = Offset(
+                          details.globalPosition.dx - expandedCloseSize / 2,
+                          details.globalPosition.dy - expandedCloseSize / 2,
+                        );
+                      });
+                    },
+                    onLongPressMoveUpdate: (details) {
+                      setState(() {
+                        _expandedCloseButtonPos = Offset(
+                          details.globalPosition.dx - expandedCloseSize / 2,
+                          details.globalPosition.dy - expandedCloseSize / 2,
+                        );
+                      });
+                    },
+                    onLongPressEnd: (_) =>
+                        setState(() => _draggingExpandedCloseButton = false),
+                    child: Material(
+                      color: Colors.black.withValues(
+                          alpha: _draggingExpandedCloseButton ? 0.68 : 0.48),
+                      shape: const CircleBorder(),
+                      child: SizedBox(
+                        width: expandedCloseSize,
+                        height: expandedCloseSize,
+                        child: Center(
+                          child: Icon(Icons.close_rounded,
+                              color: Colors.white, size: 24),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             // ── リサイズハンドル (境界ドラッグで縦横を変更) ──
-            ..._buildResizeHandles(screen, w, h),
+            if (!_expandedToCompact) ..._buildResizeHandles(screen, w, h),
           ]),
         ),
       ),
@@ -625,6 +888,7 @@ class _GoogleSearchPage extends StatefulWidget {
 
   /// 起動時に直接ロードする URL (= 検索クエリの代わり)。
   final String? initialUrl;
+  final String initialAiPrompt;
   final void Function(String title, String memo, String? linkUrl) onAddNode;
 
   /// 「画面分割で開く」 ボタン押下時、 現在の URL を引数として呼ばれる。
@@ -661,22 +925,28 @@ class _GoogleSearchPage extends StatefulWidget {
       onExpandToCompact;
 
   /// 閉じる要求時のコールバック。
-  /// フローティング (非モーダル Overlay) 表示のときに指定する。 指定時は
+  /// フローティング (非モーダル Overlay) 表示の時に指定する。 指定時は
   /// 各種「閉じる」 操作で Navigator.pop の代わりにこのコールバックを呼ぶ
   /// (= Overlay には pop すべき route が無く、 誤って下の画面を pop して
-  /// しまうのを防ぐため)。 null のときは従来通り Navigator.pop で閉じる。
+  /// しまうのを防ぐため)。 null の時は従来通り Navigator.pop で閉じる。
   final VoidCallback? onRequestClose;
 
   /// フローティング表示時の実ウィンドウ幅。 ツールバーのボタンを幅に応じて
   /// レスポンシブに切り替える (= 小窓でボタンが重なるのを防ぐ) のに使う。
-  /// null のときは画面幅 (MediaQuery) を使う。
+  /// null の時は画面幅 (MediaQuery) を使う。
   final double? windowWidth;
 
+  /// ロック画面から開いたフローティングを全画面化した時など、上部の検索バー・
+  /// タブバー・追加タブ操作を出したくない場合に true。
+  final bool hideAppBar;
+
   const _GoogleSearchPage({
+    super.key,
     required this.initialQuery,
     required this.initialMemo,
     required this.customTitle,
     this.initialUrl,
+    this.initialAiPrompt = '',
     required this.onAddNode,
     this.onMoveToSplitPanel,
     this.onCreateBookmarkButton,
@@ -685,6 +955,7 @@ class _GoogleSearchPage extends StatefulWidget {
     this.onExpandToCompact,
     this.onRequestClose,
     this.windowWidth,
+    this.hideAppBar = false,
   });
 
   @override
@@ -723,6 +994,8 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   late List<_GsTab> _gsTabs;
   int _gsActiveTab = 0;
   static const int _kGsMaxTabs = 15;
+  bool _gsTabBarExpanded = false;
+  bool _gsMobileToolsExpanded = false;
 
   /// アクティブタブの WebView が「戻れる」 履歴を持つか。
   ///
@@ -750,7 +1023,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   /// 開く検索ボックスのメモ欄は閉じたり開いたりできるように)。
   /// 既定は閉じ (= ユーザー要望: リンクや検索ボタンから Google 検索を開いた
   /// ときは、メモ欄を閉じて表示領域を広く使いたい)。既存メモの編集
-  /// (initialMemo あり) で開いたときだけ initState で展開する。
+  /// (initialMemo あり) で開いた時だけ initState で展開する。
   /// ヘッダーの ▼/▶ トグルで切替。
   bool _memoExpanded = false;
 
@@ -814,6 +1087,10 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   //   が同等の開閉を担うため、 こちらは横分割専用。
   bool _memoSideExpanded = false;
 
+  /// モバイルの分割ボタンの方向 (= ユーザー要望: 長押しで上/下を切り替えて
+  /// アイコンも追従)。 false = 上分割 / true = 下分割。
+  bool _gsSplitDown = false;
+
   // ── WebView コントローラ (タブごとに保持) ──
   // 検索用 WebView はタブごとに別インスタンスを持ち、 切替で再読み込みしない。
   // 以下は「アクティブタブ」 のコントローラ/状態を返すゲッターで、 既存の
@@ -834,6 +1111,10 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   /// 開いている AI の URL (= ChatGPT 等)。 空なら未選択。
   String _aiPanelUrl = '';
 
+  bool get _aiPanelIsDeepL => _aiPanelUrl.toLowerCase().contains('deepl.com');
+
+  String get _aiPanelHeaderLabel => _aiPanelIsDeepL ? 'DeepL' : 'AI';
+
   /// 直近に開いた AI の id (= メモを送るときの既定)。
   String _aiDefaultId = 'chatgpt';
 
@@ -842,6 +1123,12 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
 
   /// メモを AI 入力欄に渡すときの送信通し番号 (= 二重挿入防止トークン)。
   int _aiInjectSeq = 0;
+
+  /// 注入が 1 回成功した送信の token (= 以降のリトライを打ち切る)。
+  /// 旧実装は「古い送信の残リトライ」 と「新しい送信のリトライ」 が
+  /// ページ側 token を互いに上書きし合い、 過去の文章が何度も再注入されて
+  /// 入力欄が使い物にならなくなるバグがあった (= ユーザー報告)。
+  int _aiInjectDoneToken = -1;
 
   /// メモ欄と AI 欄の左右位置を入れ替えているか (横分割時のみ意味を持つ)。
   bool _panelsSwapped = false;
@@ -964,7 +1251,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       }
     } else {
       // モバイル: 既にパネルが生成済みならコントローラへ loadUrl。
-      // 未生成 (初回) のときは InAppWebView の initialUrlRequest で開く。
+      // 未生成 (初回) の時は InAppWebView の initialUrlRequest で開く。
       try {
         _aiIawCtrl?.loadUrl(urlRequest: iaw.URLRequest(url: iaw.WebUri(url)));
       } catch (_) {}
@@ -1000,6 +1287,26 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       return;
     }
     Clipboard.setData(ClipboardData(text: text));
+    // ── メインタブ自体が AI サイトなら、 そこへ直接注入する ──
+    // ロック中メモの「AIに渡す」は initialUrl で AI サイトをメインタブに
+    // 開く。 従来は AI パネル (別 WebView) にだけ注入していたため、 画面に
+    // 見えている入力欄には何も入らなかった (= ユーザー報告「用語が渡せて
+    // いない」)。 ページ読み込みに時間がかかるためリトライ間隔は長めに取る。
+    if (_mainTabIsAiSite) {
+      final token = ++_aiInjectSeq;
+      for (final ms in const [500, 1600, 3200, 6000, 9000]) {
+        Future.delayed(Duration(milliseconds: ms), () {
+          // ── 古い送信の残リトライは走らせない ──
+          // 新しい送信 / 再オープンが始まったら (token が進む)、 または
+          // 1 回注入に成功したら、 以降のリトライは無効。 これをしないと
+          // 過去の文章が繰り返し再注入されて入力欄が操作不能になる
+          // (= ユーザー報告)。
+          if (token != _aiInjectSeq || _aiInjectDoneToken >= token) return;
+          _injectTextToAi(text, token, mainWebView: true);
+        });
+      }
+      return;
+    }
     final wasOpen = _aiPanelOpen;
     if (!wasOpen) {
       _openAiPanel(_aiDefaultId);
@@ -1012,11 +1319,16 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     //   毎回「追記」 していたため同じ文章が 2〜3 回入ってしまっていた。 送信ごとに
     //   一意な token を渡し、 1 回成功したら以降はスキップさせる (= ユーザー要望)。
     final token = ++_aiInjectSeq;
-    Future.delayed(initialDelay, () => _injectTextToAi(text, token));
-    Future.delayed(initialDelay + const Duration(milliseconds: 1200),
-        () => _injectTextToAi(text, token));
-    Future.delayed(initialDelay + const Duration(milliseconds: 2800),
-        () => _injectTextToAi(text, token));
+    void guardedInject() {
+      if (token != _aiInjectSeq || _aiInjectDoneToken >= token) return;
+      _injectTextToAi(text, token);
+    }
+
+    Future.delayed(initialDelay, guardedInject);
+    Future.delayed(
+        initialDelay + const Duration(milliseconds: 1200), guardedInject);
+    Future.delayed(
+        initialDelay + const Duration(milliseconds: 2800), guardedInject);
     // 「AI 入力欄に追加しました」 の通知は出さない (= ユーザー要望: 鬱陶しい)。
   }
 
@@ -1130,7 +1442,22 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
 
   /// AI サイトの入力欄に [text] を末尾へ改行付きで追加挿入する。
   /// contenteditable と textarea を総当たりで探し、 一番大きい可視要素に挿入。
-  void _injectTextToAi(String text, int token) {
+  /// メインタブに開いた URL が生成 AI サイトかどうか。
+  /// (ロック中メモの「AIに渡す」 など、 AI サイト本体をメインタブに開く
+  ///  フローでは AI パネルではなくメインタブへ注入する。)
+  bool get _mainTabIsAiSite {
+    final host = Uri.tryParse(_currentUrl)?.host.toLowerCase() ?? '';
+    if (host.isEmpty) return false;
+    return host.contains('chatgpt.com') ||
+        host.contains('chat.openai.com') ||
+        host.contains('gemini.google.com') ||
+        host.contains('claude.ai') ||
+        host.contains('deepseek.com') ||
+        host.contains('grok.com');
+  }
+
+  Future<void> _injectTextToAi(String text, int token,
+      {bool mainWebView = false}) async {
     if (!mounted) return;
     final escaped = jsonEncode(text);
     final js = '''
@@ -1220,10 +1547,22 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
 })();
 ''';
     try {
+      dynamic result;
       if (_isDesktop) {
-        _aiWinCtrl.executeScript(js);
+        if (mainWebView) {
+          result = await _winCtrl?.executeScript(js);
+        } else {
+          result = await _aiWinCtrl.executeScript(js);
+        }
       } else {
-        _aiIawCtrl?.evaluateJavascript(source: js);
+        result = await (mainWebView ? _iawCtrl : _aiIawCtrl)
+            ?.evaluateJavascript(source: js);
+      }
+      // 注入に成功 (or ページ側で既に注入済み) したら、 この送信の残りの
+      // リトライを打ち切る (= 過去の文章が再注入され続けるバグの修正)。
+      final s = result?.toString() ?? '';
+      if (s.contains('ok-') || s.contains('dup')) {
+        if (token > _aiInjectDoneToken) _aiInjectDoneToken = token;
       }
     } catch (_) {}
   }
@@ -1278,12 +1617,20 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       _memoCtrl.text = provider.googleSearchMemoDraft;
       _useDraft = true;
     }
-    // メモ欄は既定で閉じる。既存メモの編集 (initialMemo あり) で開いたときだけ
+    // メモ欄は既定で閉じる。既存メモの編集 (initialMemo あり) で開いた時だけ
     // 最初から展開しておく (= ユーザー要望: 検索を開いた時はメモ欄を閉じる)。
     _memoExpanded = widget.initialMemo.isNotEmpty;
 
     if (_useDraft) {
       _memoCtrl.addListener(_scheduleDraftSave);
+    }
+
+    final initialAiPrompt = widget.initialAiPrompt.trim();
+    if (initialAiPrompt.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _sendTextToAi(initialAiPrompt);
+      });
     }
 
     // ── 初期 URL の決定 ──
@@ -1945,29 +2292,27 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
           constraints: const BoxConstraints(),
           onPressed: _navBack,
         ),
-        // 進む / 再読み込みは横幅に余裕がある時のみ検索バーに置く。
-        //   モバイル等の狭い画面では上のボタンが被るため、 「⋮」 メニューへ
-        //   移動する (= ユーザー要望: モバイルのボタンが被らないように)。
-        if (_isHorizontalLayout) ...[
-          IconButton(
-            icon: const Icon(Icons.arrow_forward_rounded,
-                color: Colors.white, size: 20),
-            tooltip: '進む',
-            visualDensity: VisualDensity.compact,
-            padding: const EdgeInsets.all(4),
-            constraints: const BoxConstraints(),
-            onPressed: _navForward,
-          ),
-          IconButton(
-            icon: const Icon(Icons.refresh_rounded,
-                color: Colors.white, size: 20),
-            tooltip: '再読み込み',
-            visualDensity: VisualDensity.compact,
-            padding: const EdgeInsets.all(4),
-            constraints: const BoxConstraints(),
-            onPressed: _navReload,
-          ),
-        ],
+        // 進む / 再読み込みは常に検索バーに置く (= ユーザー要望: 戻る/進む/更新
+        //   は格納メニューに入れず、 いつでも押せるように)。 アイコンは小さめ +
+        //   詰めた余白で、 狭いモバイルでも重ならず収まるようにする。
+        IconButton(
+          icon: const Icon(Icons.arrow_forward_rounded,
+              color: Colors.white, size: 20),
+          tooltip: '進む',
+          visualDensity: VisualDensity.compact,
+          padding: const EdgeInsets.all(4),
+          constraints: const BoxConstraints(),
+          onPressed: _navForward,
+        ),
+        IconButton(
+          icon: const Icon(Icons.refresh_rounded,
+              color: Colors.white, size: 20),
+          tooltip: '再読み込み',
+          visualDensity: VisualDensity.compact,
+          padding: const EdgeInsets.all(4),
+          constraints: const BoxConstraints(),
+          onPressed: _navReload,
+        ),
         Expanded(
           child: TextField(
             controller: _searchCtrl,
@@ -2859,6 +3204,62 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       _iawCtrl?.loadUrl(urlRequest: iaw.URLRequest(url: iaw.WebUri(url)));
     }
     setState(() => _currentUrl = url);
+  }
+
+  void updateFloatingRequest({
+    String? query,
+    String? memo,
+    String? url,
+    String? aiPrompt,
+  }) {
+    final nextMemo = (memo ?? '').trim();
+    final nextQuery = (query ?? '').trim();
+    final nextUrl = (url ?? '').trim();
+    if (nextMemo.isNotEmpty) {
+      _memoCtrl.text = nextMemo;
+      _memoCtrl.selection =
+          TextSelection.collapsed(offset: _memoCtrl.text.length);
+    }
+    if (nextQuery.isNotEmpty) {
+      _searchCtrl.text = nextQuery;
+      _searchCtrl.selection =
+          TextSelection.collapsed(offset: _searchCtrl.text.length);
+    }
+    if (nextUrl.isNotEmpty) {
+      // ── 既に同じ URL (= 同じ AI サイト) を開いているならリロードしない ──
+      // (= ユーザー報告: 再度開くと過去の文章が謎に入力される / 入力が
+      //    効かない)。 リロードするとページ側の注入済みマーカーが消えて
+      //    古いリトライと新しいリトライが二重注入し合っていた。 会話も
+      //    リロードで失われるため、 同一サイトなら現状のページを維持して
+      //    プロンプトだけ追記する。
+      final sameUrl = nextUrl == _currentUrl;
+      if (!sameUrl) {
+        if (_gsTabs.isNotEmpty) {
+          _gsTabs[_gsActiveTab].url = nextUrl;
+          _gsTabs[_gsActiveTab].title = 'AI';
+        }
+        _openUrl(nextUrl);
+      }
+      final prompt = (aiPrompt ?? '').trim();
+      if (prompt.isNotEmpty) {
+        Future.delayed(
+            const Duration(milliseconds: 300), () => _sendTextToAi(prompt));
+      }
+      return;
+    }
+    if (nextQuery.isNotEmpty) {
+      final searchUrl = _buildSearchUrl(nextQuery);
+      if (_gsTabs.isNotEmpty) {
+        _gsTabs[_gsActiveTab].url = searchUrl;
+        _gsTabs[_gsActiveTab].title = 'Google';
+      }
+      _openUrl(searchUrl);
+    }
+    final prompt = (aiPrompt ?? '').trim();
+    if (prompt.isNotEmpty) {
+      Future.delayed(
+          const Duration(milliseconds: 300), () => _sendTextToAi(prompt));
+    }
   }
 
   // ───────── 複数タブ (= ユーザー要望) ─────────
@@ -4138,9 +4539,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
               const Icon(Icons.smart_toy_rounded,
                   color: Color(0xFF4FC3F7), size: 18),
               const SizedBox(width: 6),
-              const Expanded(
-                child: Text('AI',
-                    style: TextStyle(
+              Expanded(
+                child: Text(_aiPanelHeaderLabel,
+                    style: const TextStyle(
                         color: Colors.white,
                         fontSize: 13,
                         fontWeight: FontWeight.w700)),
@@ -4449,6 +4850,260 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     );
   }
 
+  Widget _mobileHeaderActionShell({
+    required Widget icon,
+    required String label,
+    required Color color,
+  }) {
+    return Container(
+      width: 70,
+      height: 34,
+      padding: const EdgeInsets.symmetric(horizontal: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.34)),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          icon,
+          const SizedBox(width: 4),
+          Flexible(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _mobileHeaderAction({
+    required IconData icon,
+    required String label,
+    required Color color,
+    required VoidCallback onTap,
+    String? tooltip,
+  }) {
+    return Tooltip(
+      message: tooltip ?? label,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: _mobileHeaderActionShell(
+          icon: Icon(icon, color: color, size: 17),
+          label: label,
+          color: color,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMobileHeaderTools(MindMapProvider provider) {
+    final splitColor =
+        _gsSplitDown ? const Color(0xFF4FC3F7) : const Color(0xFFFF6B6B);
+    final actions = <Widget>[
+      _mobileHeaderAction(
+        icon: _gsTabBarExpanded
+            ? Icons.view_week_rounded
+            : Icons.view_week_outlined,
+        label: 'タブ',
+        color: const Color(0xFF4FC3F7),
+        tooltip: _gsTabBarExpanded ? 'タブを隠す' : 'タブを表示',
+        onTap: () => setState(() => _gsTabBarExpanded = !_gsTabBarExpanded),
+      ),
+      if (widget.onMoveToSplitPanel != null)
+        Tooltip(
+          message: _gsSplitDown ? '下分割で開く\n長押しで上分割へ切替' : '上分割で開く\n長押しで下分割へ切替',
+          child: InkWell(
+            onTap: () {
+              widget.onMoveToSplitPanel!(_currentUrl,
+                  isLeftPanel: !_gsSplitDown);
+              _closeSelf();
+            },
+            onLongPress: () {
+              setState(() => _gsSplitDown = !_gsSplitDown);
+              ScaffoldMessenger.of(context)
+                ..clearSnackBars()
+                ..showSnackBar(SnackBar(
+                  content: Text(_gsSplitDown ? '下分割' : '上分割'),
+                  duration: const Duration(milliseconds: 900),
+                  backgroundColor: const Color(0xFF2A2A3E),
+                ));
+            },
+            borderRadius: BorderRadius.circular(8),
+            child: _mobileHeaderActionShell(
+              icon: _gSearchSplitIcon(
+                _gsSplitDown
+                    ? _GSearchSplitIconFill.bottom
+                    : _GSearchSplitIconFill.top,
+                color: splitColor,
+                size: 17,
+              ),
+              label: _gsSplitDown ? '下分割' : '上分割',
+              color: splitColor,
+            ),
+          ),
+        ),
+      _mobileHeaderAction(
+        icon: _aiPanelOpen ? Icons.smart_toy_rounded : Icons.smart_toy_outlined,
+        label: 'AI',
+        color: const Color(0xFF4FC3F7),
+        tooltip: _aiPanelOpen ? 'AI 欄を閉じる' : 'AI 欄を開く',
+        onTap: () {
+          if (_aiPanelOpen) {
+            setState(() => _aiPanelOpen = false);
+          } else {
+            _openAiPanel(_aiDefaultId);
+          }
+        },
+      ),
+      _mobileHeaderAction(
+        icon: Icons.ios_share_rounded,
+        label: '共有',
+        color: const Color(0xFF4FC3F7),
+        onTap: _shareSearchPageWithAi,
+      ),
+      PopupMenuButton<double>(
+        tooltip: '動画の再生速度',
+        color: const Color(0xFF1E1E32),
+        padding: EdgeInsets.zero,
+        onSelected: (r) {
+          setState(() => _searchVideoRate = r);
+          _applySearchVideoRate(r);
+        },
+        itemBuilder: (_) => [
+          for (final r in const [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0])
+            PopupMenuItem<double>(
+              value: r,
+              height: 38,
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(
+                  r == _searchVideoRate
+                      ? Icons.check_rounded
+                      : Icons.speed_rounded,
+                  size: 16,
+                  color: const Color(0xFF4FC3F7),
+                ),
+                const SizedBox(width: 8),
+                Text('${r}x',
+                    style: const TextStyle(color: Colors.white, fontSize: 13)),
+              ]),
+            ),
+        ],
+        child: _mobileHeaderActionShell(
+          icon: Icon(
+            _searchVideoRate == 1.0
+                ? Icons.speed_rounded
+                : Icons.slow_motion_video_rounded,
+            color: const Color(0xFF4FC3F7),
+            size: 17,
+          ),
+          label: '速度',
+          color: const Color(0xFF4FC3F7),
+        ),
+      ),
+      // 戻る/進む/更新 は検索バーに常設したのでここには置かない (= ユーザー要望)。
+      _mobileHeaderAction(
+        icon: Icons.sticky_note_2_rounded,
+        label: 'メモ',
+        color: const Color(0xFFFFB347),
+        onTap: () => setState(() => _memoPanelExpanded = !_memoPanelExpanded),
+      ),
+      _mobileHeaderAction(
+        icon: Icons.add_link_rounded,
+        label: '埋込',
+        color: const Color(0xFF43B97F),
+        onTap: _addPageInfoAsNode,
+      ),
+      _mobileHeaderAction(
+        icon: Icons.bookmark_add_rounded,
+        label: '保存',
+        color: const Color(0xFFFFB347),
+        onTap: _addCurrentPageToBookmarks,
+      ),
+      // ── スクショ (= ユーザー要望: PDF ボタンは分かりにくいのでスクショに変更) ──
+      if (!_isDesktop)
+        _mobileHeaderAction(
+          icon: Icons.photo_camera_rounded,
+          label: 'スクショ',
+          color: const Color(0xFFBA68C8),
+          tooltip: '今の画面をスクショしてマップに追加',
+          onTap: _captureViewportAndAdd,
+        ),
+    ];
+
+    return Container(
+      height: _gsTabBarExpanded ? 92 : 52,
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: const Color(0xFF171720),
+        border: Border(
+          top: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+        ),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // ── 格納ボタンは横一列 (= ユーザー要望)。 入り切らない時は横スクロール。──
+          SizedBox(
+            height: 48,
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.fromLTRB(8, 7, 8, 7),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (int i = 0; i < actions.length; i++) ...[
+                    if (i > 0) const SizedBox(width: 6),
+                    actions[i],
+                  ],
+                ],
+              ),
+            ),
+          ),
+          if (_gsTabBarExpanded)
+            SizedBox(
+              height: 34,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: _buildGsTabBar(),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// 現在表示中のページを 1 枚スクショしてマップに追加する
+  /// (= ユーザー要望: PDF ボタンは分かりにくいのでスクショに変更)。
+  /// Windows では WebView2 にスクショ API が無いため、 ページ情報を
+  /// テキストノードとして追加する (= 他のスクショ機能と同じ fallback)。
+  Future<void> _captureViewportAndAdd() async {
+    if (_iawCtrl == null) {
+      await _addPageInfoAsNode();
+      return;
+    }
+    _showCaptureSnack('スクショを撮っています...', const Color(0xFF4FC3F7));
+    try {
+      final png = await _iawCtrl!.takeScreenshot();
+      if (png == null) {
+        _showCaptureSnack('スクショの取得に失敗しました', const Color(0xFFE57373));
+        return;
+      }
+      await _saveScreenshotAsNode(png);
+    } catch (e) {
+      _showCaptureSnack('スクショ生成に失敗しました: $e', const Color(0xFFE57373));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<MindMapProvider>();
@@ -4461,7 +5116,8 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     // フローティング時は windowWidth、 それ以外は画面幅で判定。 狭いときは
     //   左右分割を 1 ボタンに集約し、 入り切る幅になったら 2 ボタンに分ける。
     final toolbarW = widget.windowWidth ?? mq.size.width;
-    final showTwoSplit = toolbarW >= 440;
+    final showTwoSplit = _isDesktop && toolbarW >= 440;
+    final isMobileHeader = !useHorizontal && !widget.minimalMode;
 
     // ── キーボードショートカットの方式 ──
     // Del / Backspace / Ctrl+A / Ctrl+Z は **HardwareKeyboard.addHandler**
@@ -4522,278 +5178,386 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
           autofocus: true,
           child: Scaffold(
             backgroundColor: const Color(0xFF121212),
-            appBar: AppBar(
-              backgroundColor: const Color(0xFF1A1A1A),
-              elevation: 0,
-              automaticallyImplyLeading: false,
-              title: _buildSearchBar(provider),
-              titleSpacing: 12,
-              toolbarHeight: 56,
-              // 上部のタブバー（= ユーザー要望: Google 検索も複数タブ + フォルダー）
-              // 小さいウィンドウ (minimalMode) ではスペースが限られるため、 タブバー
-              //   ヘッダー自体を表示しない (= ユーザー要望)。 タブ操作は全画面表示に
-              //   切り替えるか、 Ctrl+W / Ctrl+Shift+T のショートカットで行える。
-              bottom: widget.minimalMode
-                  ? null
-                  : PreferredSize(
-                      preferredSize: const Size.fromHeight(34),
-                      child: _buildGsTabBar(),
-                    ),
-              actions: [
-                // ── メモ欄の表示/非表示トグル (横分割時のみ) ──
-                // 縦分割 (モバイル) では _buildCollapsibleMemoPanel のヘッダーが
-                //   開閉を担うため、 ここでは横分割時のみ出す。
-                if (useHorizontal && !widget.minimalMode)
-                  IconButton(
-                    icon: Icon(
-                      _memoSideExpanded
-                          ? Icons.sticky_note_2_rounded
-                          : Icons.sticky_note_2_outlined,
-                      color: const Color(0xFFFFB347),
-                      size: 22,
-                    ),
-                    tooltip: (_memoSideExpanded
-                            ? provider.t('gsearch.hideMemo')
-                            : provider.t('gsearch.showMemo')) +
-                        ' (F3)',
-                    visualDensity: VisualDensity.compact,
-                    padding: const EdgeInsets.all(6),
-                    constraints: const BoxConstraints(),
-                    onPressed: () =>
-                        setState(() => _memoSideExpanded = !_memoSideExpanded),
-                  ),
-                // ── モバイル: 進む/再読み込み/メモ/保存 を「⋮」 メニューに集約 ──
-                // ユーザー要望: モバイルで上部ボタンが被るので、 二次的な操作は
-                //   オーバーフローメニューにまとめてボタン数を減らす。
-                if (!useHorizontal && !widget.minimalMode)
-                  PopupMenuButton<String>(
-                    tooltip: 'その他',
-                    icon: const Icon(Icons.more_vert_rounded,
-                        color: Colors.white, size: 22),
-                    color: const Color(0xFF1E1E32),
-                    padding: const EdgeInsets.all(6),
-                    onSelected: (v) {
-                      switch (v) {
-                        case 'forward':
-                          _navForward();
-                          break;
-                        case 'reload':
-                          _navReload();
-                          break;
-                        case 'memo':
-                          setState(
-                              () => _memoPanelExpanded = !_memoPanelExpanded);
-                          break;
-                        case 'embed':
-                          _addPageInfoAsNode();
-                          break;
-                        case 'bookmark':
-                          _addCurrentPageToBookmarks();
-                          break;
-                        case 'autoCapture':
-                          _autoSwipeCaptureToPdf();
-                          break;
-                      }
-                    },
-                    itemBuilder: (_) => [
-                      _gsOverflowItem(
-                          'forward', Icons.arrow_forward_rounded, '進む'),
-                      _gsOverflowItem('reload', Icons.refresh_rounded, '再読み込み'),
-                      _gsOverflowItem('memo', Icons.sticky_note_2_rounded,
-                          _memoPanelExpanded ? 'メモ欄を閉じる' : 'メモ欄を開く'),
-                      _gsOverflowItem(
-                          'embed', Icons.add_link_rounded, 'リンクとして埋め込み'),
-                      _gsOverflowItem(
-                          'bookmark', Icons.bookmark_add_rounded, 'お気に入りに追加'),
-                      // ── 自動スクショ → PDF (= ユーザー要望: 範囲/秒間隔を指定して
-                      //    スワイプしながらスクショを撮り 1 つの PDF にまとめる)。
-                      //    WebView のスクショ API はモバイル (InAppWebView) のみ。 ──
-                      if (!_isDesktop)
-                        _gsOverflowItem('autoCapture', Icons.burst_mode_rounded,
-                            '自動スクショ → PDF'),
-                    ],
-                  ),
-                // ── AI 欄の開閉トグル (= ユーザー要望: 5 種の AI をサイドで
-                //    開けるように) ──
-                // 閉じていれば既定 AI で開き、 開いていれば閉じる。
-                if (!widget.minimalMode)
-                  GestureDetector(
-                    // 右クリック (PC) / 長押し (モバイル) で使う AI を切り替える。
-                    onSecondaryTapDown: _isDesktop
-                        ? (d) => _showAiServicePicker(d.globalPosition)
-                        : null,
-                    onLongPressStart: _isDesktop
+            appBar: widget.hideAppBar
+                ? null
+                : AppBar(
+                    backgroundColor: const Color(0xFF1A1A1A),
+                    elevation: 0,
+                    automaticallyImplyLeading: false,
+                    title: _buildSearchBar(provider),
+                    titleSpacing: 12,
+                    toolbarHeight: 56,
+                    // 上部のタブバー（= ユーザー要望: Google 検索も複数タブ + フォルダー）
+                    // 小さいウィンドウ (minimalMode) ではスペースが限られるため、 タブバー
+                    //   ヘッダー自体を表示しない (= ユーザー要望)。 タブ操作は全画面表示に
+                    //   切り替えるか、 Ctrl+W / Ctrl+Shift+T のショートカットで行える。
+                    bottom: widget.minimalMode
                         ? null
-                        : (d) => _showAiServicePicker(d.globalPosition),
-                    child: IconButton(
-                      icon: Icon(
-                        _aiPanelOpen
-                            ? Icons.smart_toy_rounded
-                            : Icons.smart_toy_outlined,
-                        color: const Color(0xFF4FC3F7),
-                        size: 22,
-                      ),
-                      tooltip: (_aiPanelOpen ? 'AI 欄を閉じる' : 'AI 欄を開く') +
-                          ' (F4)\n' +
-                          (_isDesktop ? '右クリックで AI 切替' : '長押しで AI 切替'),
-                      visualDensity: VisualDensity.compact,
-                      padding: const EdgeInsets.all(6),
-                      constraints: const BoxConstraints(),
-                      onPressed: () {
-                        if (_aiPanelOpen) {
-                          setState(() => _aiPanelOpen = false);
-                        } else {
-                          _openAiPanel(_aiDefaultId);
-                        }
-                      },
-                    ),
-                  ),
-                // ── このページの内容を AI に共有 (= ユーザー要望: Chrome の Gemini
-                //    タブ共有のように、 表示中の検索結果を AI に渡して質問できる) ──
-                if (!widget.minimalMode)
-                  IconButton(
-                    icon: const Icon(Icons.ios_share_rounded,
-                        color: Color(0xFF4FC3F7), size: 20),
-                    tooltip: '表示中のページの内容を AI に共有して質問',
-                    visualDensity: VisualDensity.compact,
-                    padding: const EdgeInsets.all(6),
-                    constraints: const BoxConstraints(),
-                    onPressed: _shareSearchPageWithAi,
-                  ),
-                // ── 動画の再生速度 (= ユーザー要望: Google 検索で出てきた埋め込み
-                //    動画の再生速度を変えられるように) ──
-                if (!widget.minimalMode)
-                  PopupMenuButton<double>(
-                    tooltip: '動画の再生速度',
-                    icon: Icon(
-                      _searchVideoRate == 1.0
-                          ? Icons.speed_rounded
-                          : Icons.slow_motion_video_rounded,
-                      color: const Color(0xFF4FC3F7),
-                      size: 22,
-                    ),
-                    color: const Color(0xFF1E1E32),
-                    padding: const EdgeInsets.all(6),
-                    onSelected: (r) {
-                      setState(() => _searchVideoRate = r);
-                      _applySearchVideoRate(r);
-                    },
-                    itemBuilder: (_) => [
-                      // 0.5 倍速刻みで 1.0〜4.0 倍まで (= ユーザー要望: 1 倍未満は出さない)。
-                      for (final r in const [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0])
-                        PopupMenuItem<double>(
-                          value: r,
-                          height: 38,
-                          child: Row(mainAxisSize: MainAxisSize.min, children: [
-                            Icon(
-                              r == _searchVideoRate
-                                  ? Icons.check_rounded
-                                  : Icons.speed_rounded,
-                              size: 16,
-                              color: const Color(0xFF4FC3F7),
-                            ),
-                            const SizedBox(width: 8),
-                            Text('${r}x',
-                                style: const TextStyle(
-                                    color: Colors.white, fontSize: 13)),
-                          ]),
+                        : isMobileHeader && _gsMobileToolsExpanded
+                            ? PreferredSize(
+                                preferredSize: Size.fromHeight(
+                                    _gsTabBarExpanded ? 92 : 52),
+                                child: _buildMobileHeaderTools(provider),
+                              )
+                            : isMobileHeader || !_gsTabBarExpanded
+                                ? null
+                                : PreferredSize(
+                                    preferredSize: const Size.fromHeight(34),
+                                    child: _buildGsTabBar(),
+                                  ),
+                    actions: [
+                      if (isMobileHeader)
+                        IconButton(
+                          icon: Icon(
+                            _gsMobileToolsExpanded
+                                ? Icons.keyboard_arrow_up_rounded
+                                : Icons.apps_rounded,
+                            color: Colors.white70,
+                            size: 22,
+                          ),
+                          tooltip: _gsMobileToolsExpanded ? '操作を隠す' : '操作を表示',
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.all(6),
+                          constraints: const BoxConstraints(),
+                          onPressed: () => setState(() =>
+                              _gsMobileToolsExpanded = !_gsMobileToolsExpanded),
                         ),
+                      if (!widget.minimalMode && useHorizontal)
+                        IconButton(
+                          icon: Icon(
+                            _gsTabBarExpanded
+                                ? Icons.view_week_rounded
+                                : Icons.view_week_outlined,
+                            color: _gsTabBarExpanded
+                                ? const Color(0xFF4FC3F7)
+                                : Colors.white70,
+                            size: 22,
+                          ),
+                          tooltip: _gsTabBarExpanded ? 'タブを隠す' : 'タブを表示',
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.all(6),
+                          constraints: const BoxConstraints(),
+                          onPressed: () => setState(
+                              () => _gsTabBarExpanded = !_gsTabBarExpanded),
+                        ),
+                      // ── メモ欄の表示/非表示トグル (横分割時のみ) ──
+                      // 縦分割 (モバイル) では _buildCollapsibleMemoPanel のヘッダーが
+                      //   開閉を担うため、 ここでは横分割時のみ出す。
+                      if (useHorizontal && !widget.minimalMode)
+                        IconButton(
+                          icon: Icon(
+                            _memoSideExpanded
+                                ? Icons.sticky_note_2_rounded
+                                : Icons.sticky_note_2_outlined,
+                            color: const Color(0xFFFFB347),
+                            size: 22,
+                          ),
+                          tooltip: (_memoSideExpanded
+                                  ? provider.t('gsearch.hideMemo')
+                                  : provider.t('gsearch.showMemo')) +
+                              ' (F3)',
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.all(6),
+                          constraints: const BoxConstraints(),
+                          onPressed: () => setState(
+                              () => _memoSideExpanded = !_memoSideExpanded),
+                        ),
+                      // ── モバイル: 分割ボタンは検索バー右端の操作群内で、
+                      //    「その他」メニューの直前に置く。縦分割なので上/下を
+                      //    塗ったアイコンで示す。 長押しで上分割⇔下分割を切り替え、
+                      //    アイコンも追従する (= ユーザー要望)。 タップは現在の方向。
+                      if (!useHorizontal &&
+                          !widget.minimalMode &&
+                          !isMobileHeader &&
+                          widget.onMoveToSplitPanel != null)
+                        GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () {
+                            widget.onMoveToSplitPanel!(_currentUrl,
+                                isLeftPanel: !_gsSplitDown);
+                            _closeSelf();
+                          },
+                          onLongPress: () {
+                            setState(() => _gsSplitDown = !_gsSplitDown);
+                            ScaffoldMessenger.of(context)
+                              ..clearSnackBars()
+                              ..showSnackBar(SnackBar(
+                                content: Text(_gsSplitDown ? '下分割' : '上分割'),
+                                duration: const Duration(milliseconds: 900),
+                                backgroundColor: const Color(0xFF2A2A3E),
+                              ));
+                          },
+                          child: Tooltip(
+                            message: _gsSplitDown ? '下分割で開く' : '上分割で開く',
+                            child: Padding(
+                              padding: const EdgeInsets.all(6),
+                              child: _gSearchSplitIcon(
+                                _gsSplitDown
+                                    ? _GSearchSplitIconFill.bottom
+                                    : _GSearchSplitIconFill.top,
+                                color: const Color(0xFF43B97F),
+                                size: 22,
+                              ),
+                            ),
+                          ),
+                        ),
+                      // ── AI 欄の開閉トグル (= ユーザー要望: 5 種の AI をサイドで
+                      //    開けるように) ──
+                      // 閉じていれば既定 AI で開き、 開いていれば閉じる。
+                      if (!widget.minimalMode && !isMobileHeader)
+                        GestureDetector(
+                          // 右クリック (PC) / 長押し (モバイル) で使う AI を切り替える。
+                          onSecondaryTapDown: _isDesktop
+                              ? (d) => _showAiServicePicker(d.globalPosition)
+                              : null,
+                          onLongPressStart: _isDesktop
+                              ? null
+                              : (d) => _showAiServicePicker(d.globalPosition),
+                          child: IconButton(
+                            icon: Icon(
+                              _aiPanelOpen
+                                  ? Icons.smart_toy_rounded
+                                  : Icons.smart_toy_outlined,
+                              color: const Color(0xFF4FC3F7),
+                              size: 22,
+                            ),
+                            tooltip: (_aiPanelOpen ? 'AI 欄を閉じる' : 'AI 欄を開く') +
+                                ' (F4)\n' +
+                                (_isDesktop ? '右クリックで AI 切替' : '長押しで AI 切替'),
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.all(6),
+                            constraints: const BoxConstraints(),
+                            onPressed: () {
+                              if (_aiPanelOpen) {
+                                setState(() => _aiPanelOpen = false);
+                              } else {
+                                _openAiPanel(_aiDefaultId);
+                              }
+                            },
+                          ),
+                        ),
+                      // ── このページの内容を AI に共有 (= ユーザー要望: Chrome の Gemini
+                      //    タブ共有のように、 表示中の検索結果を AI に渡して質問できる) ──
+                      if (!widget.minimalMode && !isMobileHeader)
+                        IconButton(
+                          icon: const Icon(Icons.ios_share_rounded,
+                              color: Color(0xFF4FC3F7), size: 20),
+                          tooltip: '表示中のページの内容を AI に共有して質問',
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.all(6),
+                          constraints: const BoxConstraints(),
+                          onPressed: _shareSearchPageWithAi,
+                        ),
+                      // ── 動画の再生速度 (= ユーザー要望: Google 検索で出てきた埋め込み
+                      //    動画の再生速度を変えられるように) ──
+                      if (!widget.minimalMode && !isMobileHeader)
+                        PopupMenuButton<double>(
+                          tooltip: '動画の再生速度',
+                          icon: Icon(
+                            _searchVideoRate == 1.0
+                                ? Icons.speed_rounded
+                                : Icons.slow_motion_video_rounded,
+                            color: const Color(0xFF4FC3F7),
+                            size: 22,
+                          ),
+                          color: const Color(0xFF1E1E32),
+                          padding: const EdgeInsets.all(6),
+                          onSelected: (r) {
+                            setState(() => _searchVideoRate = r);
+                            _applySearchVideoRate(r);
+                          },
+                          itemBuilder: (_) => [
+                            // 0.5 倍速刻みで 1.0〜4.0 倍まで (= ユーザー要望: 1 倍未満は出さない)。
+                            for (final r in const [
+                              1.0,
+                              1.5,
+                              2.0,
+                              2.5,
+                              3.0,
+                              3.5,
+                              4.0
+                            ])
+                              PopupMenuItem<double>(
+                                value: r,
+                                height: 38,
+                                child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        r == _searchVideoRate
+                                            ? Icons.check_rounded
+                                            : Icons.speed_rounded,
+                                        size: 16,
+                                        color: const Color(0xFF4FC3F7),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Text('${r}x',
+                                          style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 13)),
+                                    ]),
+                              ),
+                          ],
+                        ),
+                      // ── DeepL を側パネルで開く (= ユーザー要望: PC のみ搭載。
+                      //    モバイルはスペースが無いので非表示) ──
+                      if (!widget.minimalMode && useHorizontal)
+                        IconButton(
+                          icon: const Icon(Icons.translate_rounded,
+                              color: Color(0xFF0F73B8), size: 22),
+                          tooltip: 'DeepL を開く',
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.all(6),
+                          constraints: const BoxConstraints(),
+                          onPressed: _openDeepLPanel,
+                        ),
+                      // ── 画面分割で開く ──
+                      // ユーザー要望: モバイルは 1 ボタンに統合して「上分割」 のみにする
+                      //   (= 分割した先のパネルで上下を入れ替えられるため)。 PC は左右
+                      //   分割を別々のボタンで残す。
+                      if (widget.onMoveToSplitPanel != null &&
+                          useHorizontal) ...[
+                        if (showTwoSplit) ...[
+                          IconButton(
+                            icon: _gSearchSplitIcon(
+                              _GSearchSplitIconFill.left,
+                              color: const Color(0xFF43B97F),
+                              size: 22,
+                            ),
+                            tooltip: provider.t('gsearch.splitLeft'),
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.all(6),
+                            constraints: const BoxConstraints(),
+                            onPressed: () {
+                              widget.onMoveToSplitPanel!(_currentUrl,
+                                  isLeftPanel: true);
+                              _closeSelf();
+                            },
+                          ),
+                          IconButton(
+                            icon: _gSearchSplitIcon(
+                              _GSearchSplitIconFill.right,
+                              color: const Color(0xFF6C63FF),
+                              size: 22,
+                            ),
+                            tooltip: provider.t('gsearch.splitRight'),
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.all(6),
+                            constraints: const BoxConstraints(),
+                            onPressed: () {
+                              widget.onMoveToSplitPanel!(_currentUrl);
+                              _closeSelf();
+                            },
+                          ),
+                        ] else
+                          // 狭いとき: 1 ボタンに集約。 分割先パネルで左右/上下を入れ替え可。
+                          IconButton(
+                            icon: _gSearchSplitIcon(
+                              _isDesktop
+                                  ? _GSearchSplitIconFill.left
+                                  : _GSearchSplitIconFill.top,
+                              color: const Color(0xFF43B97F),
+                              size: 22,
+                            ),
+                            tooltip: _isDesktop
+                                ? provider.t('gsearch.splitLeft')
+                                : '分割して開く',
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.all(6),
+                            constraints: const BoxConstraints(),
+                            onPressed: () {
+                              widget.onMoveToSplitPanel!(_currentUrl,
+                                  isLeftPanel: true);
+                              _closeSelf();
+                            },
+                          ),
+                      ],
+                      // ── モバイル: 進む/再読み込み/メモ/保存 を「⋮」 メニューに集約 ──
+                      // 三点メニューは操作列の末尾に置き、どのサイト起点でも右端へ揃える。
+                      if (!useHorizontal &&
+                          !widget.minimalMode &&
+                          !isMobileHeader)
+                        PopupMenuButton<String>(
+                          tooltip: 'その他',
+                          icon: const Icon(Icons.more_vert_rounded,
+                              color: Colors.white, size: 22),
+                          color: const Color(0xFF1E1E32),
+                          padding: const EdgeInsets.all(6),
+                          onSelected: (v) {
+                            switch (v) {
+                              case 'forward':
+                                _navForward();
+                                break;
+                              case 'reload':
+                                _navReload();
+                                break;
+                              case 'memo':
+                                setState(() =>
+                                    _memoPanelExpanded = !_memoPanelExpanded);
+                                break;
+                              case 'embed':
+                                _addPageInfoAsNode();
+                                break;
+                              case 'bookmark':
+                                _addCurrentPageToBookmarks();
+                                break;
+                              case 'autoCapture':
+                                _autoSwipeCaptureToPdf();
+                                break;
+                            }
+                          },
+                          itemBuilder: (_) => [
+                            _gsOverflowItem(
+                                'forward', Icons.arrow_forward_rounded, '進む'),
+                            _gsOverflowItem(
+                                'reload', Icons.refresh_rounded, '再読み込み'),
+                            _gsOverflowItem('memo', Icons.sticky_note_2_rounded,
+                                _memoPanelExpanded ? 'メモ欄を閉じる' : 'メモ欄を開く'),
+                            _gsOverflowItem(
+                                'embed', Icons.add_link_rounded, 'リンクとして埋め込み'),
+                            _gsOverflowItem('bookmark',
+                                Icons.bookmark_add_rounded, 'お気に入りに追加'),
+                            if (!_isDesktop)
+                              _gsOverflowItem('autoCapture',
+                                  Icons.burst_mode_rounded, '自動スクショ → PDF'),
+                          ],
+                        ),
+                      // ── 「全画面表示」 ボタン (minimalMode 時のみ) ──
+                      // ユーザー要望「全画面表示を押したら今の様なメモ欄アリの画面が
+                      //   出てくるようにして」 への対応。 minimalMode を抜けて
+                      //   compactMode (= メモ欄付きの大きい画面) で開き直す。
+                      //   現在の URL / 検索クエリ / メモを引き継いで遷移。
+                      if (widget.minimalMode &&
+                          widget.onExpandToCompact != null)
+                        IconButton(
+                          icon: const Icon(Icons.fullscreen_rounded,
+                              color: Colors.white, size: 22),
+                          tooltip: provider.t('gsearch.fullscreen'),
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.all(6),
+                          constraints: const BoxConstraints(),
+                          onPressed: () {
+                            widget.onExpandToCompact!(
+                              _currentUrl,
+                              _searchCtrl.text,
+                              _memoCtrl.text,
+                            );
+                          },
+                        ),
+                      // ── 閉じるボタン (右上) ──
+                      // ユーザー要望により、 左上ではなく右上に配置 (= マウスカーソルで
+                      // 右上の X ボタンが反射的にクリックできる位置)。
+                      IconButton(
+                        icon: const Icon(Icons.close_rounded,
+                            color: Colors.white, size: 22),
+                        tooltip: provider.t('btn.close'),
+                        visualDensity: VisualDensity.compact,
+                        padding: const EdgeInsets.all(6),
+                        constraints: const BoxConstraints(),
+                        onPressed: () => _closeSelf(),
+                      ),
                     ],
                   ),
-                // ── DeepL を側パネルで開く (= ユーザー要望: PC のみ搭載。
-                //    モバイルはスペースが無いので非表示) ──
-                if (!widget.minimalMode && useHorizontal)
-                  IconButton(
-                    icon: const Icon(Icons.translate_rounded,
-                        color: Color(0xFF0F73B8), size: 22),
-                    tooltip: 'DeepL を開く',
-                    visualDensity: VisualDensity.compact,
-                    padding: const EdgeInsets.all(6),
-                    constraints: const BoxConstraints(),
-                    onPressed: _openDeepLPanel,
-                  ),
-                // ── 画面分割で開く ──
-                // ユーザー要望: モバイルは 1 ボタンに統合して「上分割」 のみにする
-                //   (= 分割した先のパネルで上下を入れ替えられるため)。 PC は左右
-                //   分割を別々のボタンで残す。
-                if (widget.onMoveToSplitPanel != null) ...[
-                  if (showTwoSplit) ...[
-                    IconButton(
-                      icon: const Icon(Icons.splitscreen_rounded,
-                          color: Color(0xFF43B97F), size: 22),
-                      tooltip: provider.t('gsearch.splitLeft'),
-                      visualDensity: VisualDensity.compact,
-                      padding: const EdgeInsets.all(6),
-                      constraints: const BoxConstraints(),
-                      onPressed: () {
-                        widget.onMoveToSplitPanel!(_currentUrl,
-                            isLeftPanel: true);
-                        _closeSelf();
-                      },
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.splitscreen_rounded,
-                          color: Color(0xFF6C63FF), size: 22),
-                      tooltip: provider.t('gsearch.splitRight'),
-                      visualDensity: VisualDensity.compact,
-                      padding: const EdgeInsets.all(6),
-                      constraints: const BoxConstraints(),
-                      onPressed: () {
-                        widget.onMoveToSplitPanel!(_currentUrl);
-                        _closeSelf();
-                      },
-                    ),
-                  ] else
-                    // 狭いとき: 1 ボタンに集約。 分割先パネルで左右/上下を入れ替え可。
-                    IconButton(
-                      icon: const Icon(Icons.splitscreen_rounded,
-                          color: Color(0xFF43B97F), size: 22),
-                      tooltip: '分割して開く',
-                      visualDensity: VisualDensity.compact,
-                      padding: const EdgeInsets.all(6),
-                      constraints: const BoxConstraints(),
-                      onPressed: () {
-                        widget.onMoveToSplitPanel!(_currentUrl,
-                            isLeftPanel: true);
-                        _closeSelf();
-                      },
-                    ),
-                ],
-                // ── 「全画面表示」 ボタン (minimalMode 時のみ) ──
-                // ユーザー要望「全画面表示を押したら今の様なメモ欄アリの画面が
-                //   出てくるようにして」 への対応。 minimalMode を抜けて
-                //   compactMode (= メモ欄付きの大きい画面) で開き直す。
-                //   現在の URL / 検索クエリ / メモを引き継いで遷移。
-                if (widget.minimalMode && widget.onExpandToCompact != null)
-                  IconButton(
-                    icon: const Icon(Icons.fullscreen_rounded,
-                        color: Colors.white, size: 22),
-                    tooltip: provider.t('gsearch.fullscreen'),
-                    visualDensity: VisualDensity.compact,
-                    padding: const EdgeInsets.all(6),
-                    constraints: const BoxConstraints(),
-                    onPressed: () {
-                      widget.onExpandToCompact!(
-                        _currentUrl,
-                        _searchCtrl.text,
-                        _memoCtrl.text,
-                      );
-                    },
-                  ),
-                // ── 閉じるボタン (右上) ──
-                // ユーザー要望により、 左上ではなく右上に配置 (= マウスカーソルで
-                // 右上の X ボタンが反射的にクリックできる位置)。
-                IconButton(
-                  icon: const Icon(Icons.close_rounded,
-                      color: Colors.white, size: 22),
-                  tooltip: provider.t('btn.close'),
-                  visualDensity: VisualDensity.compact,
-                  padding: const EdgeInsets.all(6),
-                  constraints: const BoxConstraints(),
-                  onPressed: () => _closeSelf(),
-                ),
-              ],
-            ),
             body: useHorizontal
                 ? Row(
                     children: [
@@ -5155,7 +5919,7 @@ const String _kGsCtrlClickInterceptorJs = r'''
     var tgt = (a.getAttribute('target') || a.target || '');
     var blank = (tgt === '_blank');
     // Ctrl/中クリック、 または target=_blank (= 普通のブラウザで新しいタブが
-    //   開かれるリンク・広告等) のときだけ新しいタブで開く。
+    //   開かれるリンク・広告等) の時だけ新しいタブで開く。
     if (!ctrlish && !mid && !blank) return;
     var href = a.href;
     if (!href || href.indexOf('javascript:') === 0) return;

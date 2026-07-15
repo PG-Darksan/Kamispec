@@ -6,7 +6,8 @@ import 'package:flutter/services.dart';
 import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 // flutter_quill (リッチテキスト) のUIローカライズ delegate を MaterialApp に追加する。
-import 'package:flutter_quill/flutter_quill.dart' show FlutterQuillLocalizations;
+import 'package:flutter_quill/flutter_quill.dart'
+    show FlutterQuillLocalizations;
 import 'package:provider/provider.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
@@ -94,8 +95,7 @@ void main(List<String> args) async {
   _initNotificationsAndPermissions();
 
   // デスクトップ版のみ window_manager を初期化
-  if (!kIsWeb &&
-      (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+  if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
     await windowManager.ensureInitialized();
     await windowManager.waitUntilReadyToShow(
       const WindowOptions(
@@ -146,8 +146,8 @@ Future<void> _initNotificationsAndPermissions() async {
   // Android 13+ の通知 permission をリクエスト (起動時に 1 回だけ)。
   if (!kIsWeb && Platform.isAndroid) {
     try {
-      final androidImpl = flutterLocalNotificationsPlugin
-          .resolvePlatformSpecificImplementation<
+      final androidImpl =
+          flutterLocalNotificationsPlugin.resolvePlatformSpecificImplementation<
               AndroidFlutterLocalNotificationsPlugin>();
       await androidImpl?.requestNotificationsPermission();
       await androidImpl?.requestExactAlarmsPermission();
@@ -200,6 +200,15 @@ class MyApp extends StatelessWidget {
               scaffoldBackgroundColor: const Color(0xFFD8D8D4),
               useMaterial3: true,
               fontFamily: 'sans-serif',
+              snackBarTheme: const SnackBarThemeData(
+                backgroundColor: Color(0xFF2A2A3E),
+                contentTextStyle: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w600,
+                ),
+                actionTextColor: Color(0xFFFFD54F),
+                disabledActionTextColor: Colors.white38,
+              ),
               // ── スクロールバー (スライドバー) を常時表示 + 白系で見やすく ──
               // ダイアログ / シートは暗色背景なので、 白系のサムにすると
               // 「スライドバーが見えない」 問題が解消する。 ユーザー要望対応。
@@ -222,6 +231,15 @@ class MyApp extends StatelessWidget {
               ),
               useMaterial3: true,
               fontFamily: 'sans-serif',
+              snackBarTheme: const SnackBarThemeData(
+                backgroundColor: Color(0xFF2A2A3E),
+                contentTextStyle: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w600,
+                ),
+                actionTextColor: Color(0xFFFFD54F),
+                disabledActionTextColor: Colors.white38,
+              ),
               // ── スクロールバー (スライドバー) を常時表示 + 白系で見やすく ──
               scrollbarTheme: ScrollbarThemeData(
                 thumbVisibility: const WidgetStatePropertyAll(true),

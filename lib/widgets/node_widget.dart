@@ -33,6 +33,11 @@ class NodeWidget extends StatefulWidget {
   final MindMapNode node;
   final bool isSelected;
 
+  /// 切り取り状態 (= Ctrl+X で「切り取り」 した直後、 貼り付け待ちのノード)。
+  /// Windows の切り取りと同じく、 該当ノードを薄く表示して「移動待ち」 である
+  /// ことを示す。 貼り付け (Ctrl+V) で元ノードは削除され通常表示に戻る。
+  final bool isCut;
+
   /// 検索ヒット（黄枠）
   final bool isSearchHit;
 
@@ -53,10 +58,10 @@ class NodeWidget extends StatefulWidget {
   /// 長押しドラッグ終了
   final VoidCallback? onLongPressEnd;
 
-  /// YouTubeサムネイルがタップされたときのコールバック
+  /// YouTubeサムネイルがタップされた時のコールバック
   final VoidCallback? onThumbnailTap;
 
-  /// 添付ファイルがタップされたときのコールバック
+  /// 添付ファイルがタップされた時のコールバック
   final VoidCallback? onAttachmentTap;
 
   /// サブマップ埋め込みピル (ノード内の白いリンクバー) がタップされた
@@ -65,7 +70,7 @@ class NodeWidget extends StatefulWidget {
   final VoidCallback? onLinkedMapTap;
 
   /// メモノードに表示されている `[mm:ss]` 形式のタイムスタンプが
-  /// タップされたときに、 解析済みの秒数 (double) を渡して呼ばれる。
+  /// タップされた時に、 解析済みの秒数 (double) を渡して呼ばれる。
   /// 動画メモ機能で生成されたメモノードでは、 親動画ノードに繋がった
   /// 動画をこの秒数からシークして再生開始する用途。
   /// 親側で「親動画ノード探索 → 動画オープン」 の流れを実装する。
@@ -74,7 +79,7 @@ class NodeWidget extends StatefulWidget {
   /// PC版右クリック時のコールバック（グローバル座標）
   final void Function(Offset globalPosition)? onRightClick;
 
-  /// 表ノードのセル編集が終了したとき、 画面ルートの KeyboardListener に
+  /// 表ノードのセル編集が終了した時、 画面ルートの KeyboardListener に
   /// 確実にキーボードフォーカスを戻すためのコールバック。
   /// MindMapScreen 側で `_keyboardFocusNode.requestFocus()` を呼ぶ関数を
   /// 渡す。 これがないと、 セル編集 → Esc 抜けの直後に Backspace / Del
@@ -82,8 +87,9 @@ class NodeWidget extends StatefulWidget {
   /// KeyboardListener に戻りきらないため)。
   final VoidCallback? onRequestScreenFocus;
 
-  /// スナップ先として光っているアンカー方向 (null = 光らない)
-  final AnchorDirection? highlightAnchor;
+  /// スナップ元/先として光っているアンカー方向。
+  /// 接続候補の「元」と「先」を同時に見せるため複数保持する。
+  final Set<AnchorDirection> highlightAnchors;
 
   /// ドラッグ中に表示するスナップラベル
   final SnapTarget? currentSnap;
@@ -125,6 +131,7 @@ class NodeWidget extends StatefulWidget {
     required super.key,
     required this.node,
     required this.isSelected,
+    this.isCut = false,
     this.isShelf = false,
     this.isSwapTarget = false,
     this.isSearchHit = false,
@@ -142,7 +149,7 @@ class NodeWidget extends StatefulWidget {
     this.onMemoTimestampTap,
     this.onRightClick,
     this.onRequestScreenFocus,
-    this.highlightAnchor,
+    this.highlightAnchors = const <AnchorDirection>{},
     this.currentSnap,
     this.defaultTitleFontSize = 15.0,
     this.defaultMemoFontSize = 12.0,
@@ -158,6 +165,7 @@ class NodeWidget extends StatefulWidget {
       RegExp(r'youtu\.be/([a-zA-Z0-9_-]{11})'),
       RegExp(r'youtube\.com/watch\?.*v=([a-zA-Z0-9_-]{11})'),
       RegExp(r'youtube\.com/embed/([a-zA-Z0-9_-]{11})'),
+      RegExp(r'youtube-nocookie\.com/embed/([a-zA-Z0-9_-]{11})'),
       RegExp(r'youtube\.com/shorts/([a-zA-Z0-9_-]{11})'),
     ]) {
       final m = p.firstMatch(url);
@@ -251,6 +259,169 @@ class NodeWidget extends StatefulWidget {
 class _NodeWidgetState extends State<NodeWidget> {
   Offset get _displayPos => widget.positionOverride ?? widget.node.position;
   bool get _dragging => widget.forceDragging;
+
+  /// Office / テキスト添付の「表紙カード」 (= ユーザー要望: docx/xlsx/txt 等を
+  /// 埋め込んだら表紙が見えるように)。 タイプ色の背景 + アイコン + 拡張子
+  /// バッジ + ファイル名で本の表紙風に描画する。
+  Widget _buildDocCoverCard({
+    required String ext,
+    required String name,
+    required double width,
+    required double height,
+    required bool squareBottom,
+  }) {
+    Color color;
+    IconData icon;
+    switch (ext) {
+      case 'docx':
+      case 'doc':
+        color = const Color(0xFF2B579A); // Word ブルー
+        icon = Icons.description_rounded;
+        break;
+      case 'xlsx':
+      case 'xls':
+      case 'csv':
+        color = const Color(0xFF217346); // Excel グリーン
+        icon = Icons.table_chart_rounded;
+        break;
+      case 'pptx':
+      case 'ppt':
+        color = const Color(0xFFD24726); // PowerPoint オレンジ
+        icon = Icons.slideshow_rounded;
+        break;
+      default: // txt / md
+        color = const Color(0xFF455A64);
+        icon = Icons.notes_rounded;
+    }
+    final compact = height < 110;
+    return Container(
+      width: width,
+      height: height,
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [color, Color.lerp(color, Colors.black, 0.35)!],
+        ),
+        borderRadius: BorderRadius.vertical(
+          bottom: squareBottom ? Radius.zero : const Radius.circular(18),
+        ),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(icon,
+              size: compact ? 24 : 34,
+              color: Colors.white.withValues(alpha: 0.95)),
+          SizedBox(height: compact ? 3 : 6),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 1.5),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.18),
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.55)),
+            ),
+            child: Text(
+              ext.toUpperCase(),
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 9,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 0.8,
+              ),
+            ),
+          ),
+          SizedBox(height: compact ? 3 : 6),
+          Flexible(
+            child: Text(
+              name,
+              maxLines: compact ? 2 : 3,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.92),
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                height: 1.25,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// ギャラリーのリンク専用ノードを「ブックマークカード」 として本体いっぱいに
+  /// 描画する (= ユーザー要望: ギャラリーにリンクを貼ると空の実体部分が大き
+  /// 過ぎるので、 カードで埋めて見栄えを良くする)。
+  Widget _buildLinkCoverCard({
+    required String url,
+    required String title,
+    required double width,
+    required double height,
+  }) {
+    final host = Uri.tryParse(url)?.host ?? url;
+    final compact = height < 110;
+    const color = Color(0xFF5C6BC0); // インディゴ系 (リンク = 情報)
+    return Container(
+      width: width,
+      height: height,
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [color, Color(0xFF37474F)],
+        ),
+        borderRadius: BorderRadius.circular(18),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.link_rounded,
+              size: compact ? 24 : 34,
+              color: Colors.white.withValues(alpha: 0.95)),
+          SizedBox(height: compact ? 3 : 6),
+          if (title.trim().isNotEmpty) ...[
+            Flexible(
+              child: Text(
+                title.trim(),
+                maxLines: compact ? 2 : 3,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  height: 1.25,
+                ),
+              ),
+            ),
+            SizedBox(height: compact ? 2 : 4),
+          ],
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.16),
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.5)),
+            ),
+            child: Text(
+              host,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   // デスクトップ判定
   static bool get _isDesktop =>
@@ -395,7 +566,26 @@ class _NodeWidgetState extends State<NodeWidget> {
         ? (node.attachmentPath ?? '')
         : (hasThumb ? (node.attachmentThumbPath ?? '') : '');
 
-    final double nw = node.width;
+    // ── ギャラリー (本棚) のテキストタイルは幅を +ボックス幅 (kShelfTileW) に
+    //    固定する (= ユーザー要望: ギャラリー要素を後からテキスト編集しても、
+    //    文字数が限界を超えるまで大きさ (横幅) が変わらないように)。 表紙系
+    //    (動画/画像/添付サムネ) は従来どおり自前の幅を使う。 provider 側の
+    //    整列でも幅は固定されるが、 整列前の旧データ等でも描画で必ず一定幅に
+    //    なるよう描画側でも保証する。 ──
+    final bool _isShelfTextTile = widget.isShelf &&
+        node.tableData == null &&
+        (node.youtubeUrl ?? '').isEmpty &&
+        (node.attachmentPath ?? '').isEmpty &&
+        (node.attachmentThumbPath ?? '').isEmpty;
+    final double nw =
+        _isShelfTextTile ? MindMapProvider.kShelfTileW : node.width;
+    // ── リサイズハンドルの幅上限 ──
+    // 画像ノード (= attachmentAspectRatio あり) は、 ギャラリーで +ボックスに
+    //   収めて貼った後でも大きく拡大できるよう幅の上限を広げる
+    //   (= ユーザー要望: 埋めた後から拡大率を変えられるように)。 通常ノードは
+    //   従来どおり 300px まで。
+    final double _maxHandleW =
+        node.attachmentAspectRatio != null ? 900.0 : 300.0;
     // YouTubeサムネイル高さ / 幅:
     // - 通常動画 (16:9): thumbH = nw * 9/16, 幅 = nw
     // - ショート動画 (9:16, 縦長):
@@ -408,7 +598,6 @@ class _NodeWidgetState extends State<NodeWidget> {
     //     ただし極端に縦長になりすぎないよう 1:1 〜 9:16 の範囲で
     //     クランプする (= 通常動画の 16:9 と区別しつつ画面占有を抑制)。
     final double thumbH;
-    final double shortsW = nw;
     final double? shelfAr = node.attachmentAspectRatio;
     final bool isVideoThumb = videoId != null || isMp4;
     if (!isVideoThumb) {
@@ -426,12 +615,42 @@ class _NodeWidgetState extends State<NodeWidget> {
     // ハイパーリンクバーを表示するか
     // 動画が貼られているケースでは本体タップ = 動画再生にしたいので非表示。
     final bool hasLinkBar = linkUrl != null && videoId == null && !isMp4;
-    final double linkBarH = hasLinkBar ? 28.0 : 0;
+    // ── ギャラリーのリンクだけのノードは「リンクカード」 で本体を埋める ──
+    // (= ユーザー報告: ギャラリーにリンクを貼ると空の実体部分が大き過ぎる)。
+    // カードにリンク情報を含めるので、 別途の細いリンクバーは出さない。
+    // clampHeight 前提 (= ギャラリー整列で高さ固定済み) にすることで、
+    // model の visualHeight (clampHeight 時は height をそのまま返す) と
+    // 描画高さ (linkBarH=0 なので bodyH=height) が一致しレイアウトがずれない。
+    final bool isShelfLinkCard =
+        widget.isShelf && node.clampHeight && hasLinkBar && !hasAttachment;
+    final double linkBarH = (hasLinkBar && !isShelfLinkCard) ? 28.0 : 0;
     // サブマップ埋め込みピル: ノード内部に配置する「白背景 + 🌳 + マップ名」
     // のリンクバー。 リンク URL バーと同じ感覚で、 マップへの遷移ボタンと
     // して機能する。 ノード本体のタップとは独立 (ピルだけがリンク部分)。
-    final bool hasLinkedMap = (node.linkedPageId ?? '').isNotEmpty;
+    final linkedPageId = node.linkedPageId;
+    String? linkedMapName;
+    if ((linkedPageId ?? '').isNotEmpty) {
+      try {
+        final provider = context.read<MindMapProvider>();
+        final matched = provider.pages.where((p) => p.id == linkedPageId);
+        if (matched.isNotEmpty) {
+          linkedMapName = matched.first.name;
+        }
+      } catch (_) {}
+    }
+    final bool hasLinkedMap = linkedMapName != null;
     final double linkedMapBarH = hasLinkedMap ? 28.0 : 0;
+    // ── Office / テキスト添付は「表紙カード」 として描画する ──
+    // (= ユーザー要望: docx や xlsx, txt 等をマップに埋め込んだら表紙が
+    //    見えるように)。 サムネイル画像が生成される PDF/pptx (hasThumb) は
+    //    従来どおり画像表紙、 それ以外の文書系はタイプ色 + アイコン +
+    //    ファイル名のカードを表紙にする。
+    final bool isDocCoverAttach = hasAttachment &&
+        !isImageAttach &&
+        !hasThumb &&
+        const {
+          'docx', 'doc', 'xlsx', 'xls', 'csv', 'txt', 'md', 'pptx', 'ppt', //
+        }.contains(attachExt);
     final double attachH = hasAttachment
         ? ((isImageAttach || hasThumb)
             // 添付画像 / サムネイルにアスペクト比 (= width / height) が指定
@@ -441,21 +660,16 @@ class _NodeWidgetState extends State<NodeWidget> {
                     node.attachmentAspectRatio! > 0
                 ? (nw / node.attachmentAspectRatio!)
                 : nw * 0.6)
-            : 36.0)
+            : isDocCoverAttach
+                // 表紙カード: ギャラリー整列の統一比があればそれに従い、
+                // 無ければ幅 × 0.72 の横長カード。
+                // mind_map_node.dart の visualHeight と必ず一致させること。
+                ? (node.attachmentAspectRatio != null &&
+                        node.attachmentAspectRatio! > 0
+                    ? (nw / node.attachmentAspectRatio!)
+                    : nw * 0.72)
+                : 36.0)
         : 0;
-
-    // サブマップ埋め込み先のページ名 (ピル表示用)。 リンク切れなら null。
-    String? linkedMapName;
-    if (hasLinkedMap) {
-      try {
-        final provider = context.read<MindMapProvider>();
-        final pages = provider.pages;
-        final matched = pages.where((p) => p.id == node.linkedPageId);
-        if (matched.isNotEmpty) {
-          linkedMapName = matched.first.name;
-        }
-      } catch (_) {}
-    }
 
     // フォントサイズ: ノード個別設定があればそれを優先、なければグローバルデフォルト
     // ノードの大きさに関わらず文字サイズは固定
@@ -484,8 +698,12 @@ class _NodeWidgetState extends State<NodeWidget> {
     //   改行(\n)ごとにセグメント分割し、 日本語/英語で 1 行の文字数を変える。
     //   旧実装は「全長 ÷ 16文字」 で改行を無視していたため、 描画(自然折返し)が
     //   visualHeight より高くなり、 レイアウト計算とズレて重なっていた。
+    // clampHeight (= ギャラリーのテキストタイル) の時は本文ぶんの高さを
+    //   加算しない。 totalH が node.height に固定され、 下のメモ Text は
+    //   maxLines + ellipsis で height 内に省略表示する (= ユーザー要望:
+    //   テキストを後から変えてもタイルの大きさが変わらない)。
     double memoExtraH = 0;
-    if (hasMemo) {
+    if (hasMemo && !node.clampHeight) {
       final hasJpMemo = RegExp(r'[　-鿿豈-﫿]').hasMatch(node.memoText!);
       final avgMemoCharW = hasJpMemo ? memoFontSize * 1.0 : memoFontSize * 0.58;
       final memoCharsPerLine =
@@ -524,7 +742,7 @@ class _NodeWidgetState extends State<NodeWidget> {
       totalH = bodyH + thumbH + linkBarH + linkedMapBarH + attachH;
     }
     final bool active = widget.isSelected || _dragging;
-    final bool hasHighlight = widget.highlightAnchor != null;
+    final bool hasHighlight = widget.highlightAnchors.isNotEmpty;
     final bool isSearchCurrent = widget.isCurrentSearchResult;
     final bool isSearchHit = widget.isSearchHit && !isSearchCurrent;
     // ギャラリー入れ替えターゲット (= ユーザー要望)。 ドラッグ操作中の
@@ -532,307 +750,466 @@ class _NodeWidgetState extends State<NodeWidget> {
     final bool isSwapTarget = widget.isSwapTarget;
     const Color kSwapColor = Color(0xFFFF6D00); // 鮮やかなオレンジ
 
+    // ── フローチャート形状 (= ユーザー要望: 基本記法にブロックの形状を
+    //    変えられるように) ──
+    // rounded(既定)/rect は角丸半径の違いで、 diamond/parallelogram は
+    // ShapeDecoration (_FlowShapeBorder) で多角形として描画する。
+    final rawNodeShape = node.shape ?? 'rounded';
+    final String nodeShape =
+        rawNodeShape == 'stadium' ? 'rounded' : rawNodeShape;
+    final bool polyShape =
+        nodeShape == 'diamond' || nodeShape == 'parallelogram';
+    final double bodyRadius = node.tableData != null
+        ? 8.0
+        : nodeShape == 'rect'
+            ? 4.0
+            : 18.0;
+    // 枠線・影は BoxDecoration / ShapeDecoration で共用する。
+    final Color borderColor = isSwapTarget
+        ? kSwapColor
+        : isSearchCurrent
+            ? const Color(0xFF00E5FF)
+            : isSearchHit
+                ? const Color(0xFF18FFFF)
+                : hasHighlight
+                    ? Colors.white
+                    : widget.forceDragging
+                        ? Colors.orangeAccent
+                        : active
+                            ? Colors.white
+                            : Colors.transparent;
+    final double borderWidth = isSwapTarget
+        ? 3.5
+        : isSearchCurrent
+            ? 3.0
+            : isSearchHit
+                ? 2.0
+                : 2.5;
+    final List<BoxShadow> nodeShadows = [
+      BoxShadow(
+        color: isSwapTarget
+            ? kSwapColor.withValues(alpha: 0.8)
+            : isSearchCurrent
+                // 旧: Colors.yellow / Colors.amber を使っていたが、
+                // 黄色系は視認性が低い (特にライトモード) ためユーザー
+                // 要望で全廃。代わりにシアン系の高彩度色を使用。
+                ? const Color(0xFF00E5FF).withValues(alpha: 0.85)
+                : isSearchHit
+                    ? const Color(0xFF18FFFF).withValues(alpha: 0.55)
+                    : hasHighlight
+                        ? Colors.white.withValues(alpha: 0.6)
+                        : effectiveColor.withValues(
+                            alpha: _dragging ? 0.75 : 0.4),
+        blurRadius: isSwapTarget
+            ? 28
+            : isSearchCurrent
+                ? 32
+                : isSearchHit
+                    ? 20
+                    : hasHighlight
+                        ? 28
+                        : (_dragging ? 22 : (active ? 18 : 8)),
+        spreadRadius: isSwapTarget
+            ? 8
+            : isSearchCurrent
+                ? 10
+                : isSearchHit
+                    ? 5
+                    : hasHighlight
+                        ? 8
+                        : (_dragging ? 5 : (active ? 4 : 1)),
+        offset: _dragging ? const Offset(0, 10) : const Offset(0, 4),
+      ),
+    ];
+
     return Positioned(
       left: _displayPos.dx,
       top: _displayPos.dy,
-      child: Stack(
-        clipBehavior: Clip.none,
-        children: [
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 80),
-            width: nw,
-            constraints: BoxConstraints(minHeight: totalH),
-            decoration: BoxDecoration(
-              color: effectiveColor,
-              borderRadius:
-                  BorderRadius.circular(node.tableData != null ? 8 : 18),
-              boxShadow: [
-                BoxShadow(
-                  color: isSwapTarget
-                      ? kSwapColor.withValues(alpha: 0.8)
-                      : isSearchCurrent
-                          // 旧: Colors.yellow / Colors.amber を使っていたが、
-                          // 黄色系は視認性が低い (特にライトモード) ためユーザー
-                          // 要望で全廃。代わりにシアン系の高彩度色を使用。
-                          ? const Color(0xFF00E5FF).withValues(alpha: 0.85)
-                          : isSearchHit
-                              ? const Color(0xFF18FFFF).withValues(alpha: 0.55)
-                              : hasHighlight
-                                  ? Colors.white.withValues(alpha: 0.6)
-                                  : effectiveColor.withValues(
-                                      alpha: _dragging ? 0.75 : 0.4),
-                  blurRadius: isSwapTarget
-                      ? 28
-                      : isSearchCurrent
-                          ? 32
-                          : isSearchHit
-                              ? 20
-                              : hasHighlight
-                                  ? 28
-                                  : (_dragging ? 22 : (active ? 18 : 8)),
-                  spreadRadius: isSwapTarget
-                      ? 8
-                      : isSearchCurrent
-                          ? 10
-                          : isSearchHit
-                              ? 5
-                              : hasHighlight
-                                  ? 8
-                                  : (_dragging ? 5 : (active ? 4 : 1)),
-                  offset: _dragging ? const Offset(0, 10) : const Offset(0, 4),
-                ),
-              ],
-              border: isSwapTarget
-                  ? Border.all(color: kSwapColor, width: 3.5)
-                  : isSearchCurrent
-                      ? Border.all(
-                          // 検索中ノードの枠もシアンに統一 (黄色廃止)
-                          color: const Color(0xFF00E5FF),
-                          width: 3.0)
-                      : isSearchHit
-                      ? Border.all(color: const Color(0xFF18FFFF), width: 2.0)
-                      : hasHighlight
-                          ? Border.all(color: Colors.white, width: 2.5)
-                          : widget.forceDragging
-                              ? Border.all(
-                                  color: Colors.orangeAccent, width: 2.5)
-                              : active
-                                  ? Border.all(color: Colors.white, width: 2.5)
-                                  : Border.all(
-                                      color: Colors.transparent, width: 2.5),
-            ),
-            child: ClipRRect(
-              borderRadius:
-                  BorderRadius.circular(node.tableData != null ? 8 : 18),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // ─── テキスト部分 ──────────────────────────────────
-                  GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: _handleTap,
-                    onSecondaryTapUp: _isDesktop
-                        ? (details) =>
-                            widget.onRightClick?.call(details.globalPosition)
-                        : null,
-                    onLongPressStart: (details) {
-                      HapticFeedback.mediumImpact();
-                      widget.onLongPressStart?.call(details.globalPosition);
-                    },
-                    onLongPressMoveUpdate: (details) {
-                      widget.onLongPressMoveUpdate
-                          ?.call(details.globalPosition);
-                    },
-                    onLongPressEnd: (_) {
-                      widget.onLongPressEnd?.call();
-                    },
-                    onLongPressCancel: () {
-                      widget.onLongPressEnd?.call();
-                    },
-                    // ── デスクトップ: マウスドラッグで即座に移動 ──
-                    // ── モバイル: 複数選択モード時は通常パンで即移動 (enablePanDrag) ──
-                    onPanStart: (_isDesktop || widget.enablePanDrag)
-                        ? (details) {
-                            _panDragActive = true;
-                            widget.onLongPressStart
-                                ?.call(details.globalPosition);
-                          }
-                        : null,
-                    onPanUpdate: (_isDesktop || widget.enablePanDrag)
-                        ? (details) {
-                            if (_panDragActive) {
-                              widget.onLongPressMoveUpdate
+      // 切り取り中 (Ctrl+X) のノードは Windows と同じく薄く表示する。
+      child: Opacity(
+        opacity: widget.isCut ? 0.45 : 1.0,
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 80),
+              width: nw,
+              constraints: node.clampHeight
+                  ? BoxConstraints.tightFor(height: totalH)
+                  : BoxConstraints(minHeight: totalH),
+              decoration: polyShape
+                  // ひし形 / 平行四辺形は ShapeDecoration で影も形状に沿わせる
+                  ? ShapeDecoration(
+                      color: effectiveColor,
+                      shape: _FlowShapeBorder(
+                        nodeShape,
+                        side:
+                            BorderSide(color: borderColor, width: borderWidth),
+                      ),
+                      shadows: nodeShadows,
+                    )
+                  : BoxDecoration(
+                      color: effectiveColor,
+                      borderRadius: BorderRadius.circular(bodyRadius),
+                      boxShadow: nodeShadows,
+                      border:
+                          Border.all(color: borderColor, width: borderWidth),
+                    ),
+              child: ClipRRect(
+                borderRadius:
+                    BorderRadius.circular(polyShape ? 0.0 : bodyRadius),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // ─── テキスト部分 ──────────────────────────────────
+                    GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: _handleTap,
+                      onSecondaryTapUp: _isDesktop
+                          ? (details) =>
+                              widget.onRightClick?.call(details.globalPosition)
+                          : null,
+                      onLongPressStart: (details) {
+                        HapticFeedback.mediumImpact();
+                        widget.onLongPressStart?.call(details.globalPosition);
+                      },
+                      onLongPressMoveUpdate: (details) {
+                        widget.onLongPressMoveUpdate
+                            ?.call(details.globalPosition);
+                      },
+                      onLongPressEnd: (_) {
+                        widget.onLongPressEnd?.call();
+                      },
+                      onLongPressCancel: () {
+                        widget.onLongPressEnd?.call();
+                      },
+                      // ── デスクトップ: マウスドラッグで即座に移動 ──
+                      // ── モバイル: 複数選択モード時は通常パンで即移動 (enablePanDrag) ──
+                      onPanStart: (_isDesktop || widget.enablePanDrag)
+                          ? (details) {
+                              _panDragActive = true;
+                              widget.onLongPressStart
                                   ?.call(details.globalPosition);
                             }
-                          }
-                        : null,
-                    onPanEnd: (_isDesktop || widget.enablePanDrag)
-                        ? (_) {
-                            if (_panDragActive) {
-                              _panDragActive = false;
-                              widget.onLongPressEnd?.call();
+                          : null,
+                      onPanUpdate: (_isDesktop || widget.enablePanDrag)
+                          ? (details) {
+                              if (_panDragActive) {
+                                widget.onLongPressMoveUpdate
+                                    ?.call(details.globalPosition);
+                              }
                             }
-                          }
-                        : null,
-                    onPanCancel: (_isDesktop || widget.enablePanDrag)
-                        ? () {
-                            if (_panDragActive) {
-                              _panDragActive = false;
-                              widget.onLongPressEnd?.call();
+                          : null,
+                      onPanEnd: (_isDesktop || widget.enablePanDrag)
+                          ? (_) {
+                              if (_panDragActive) {
+                                _panDragActive = false;
+                                widget.onLongPressEnd?.call();
+                              }
                             }
-                          }
-                        : null,
-                    child: node.tableData != null
-                        // ── 表ノード: ドラッグハンドル帯 + 表を一括 wrap ──
-                        // ・上端 14px: ノード色の細い帯 + 中央に ≡ アイコン
-                        //   → ドラッグ用ヒットエリア
-                        // ・タイトル有: 上にタイトルテキストも表示 (= 膨らむ)
-                        // ・左右下 14px の Padding に表本体
-                        //
-                        // 両方を「親の GestureDetector」 の child Column 内に
-                        // 入れることで、 padding 領域 (= セル外の余白) でも
-                        // 親の onTap (= ノード選択) / onSecondaryTapUp (=
-                        // ノードの右クリックメニュー) / onLongPressStart (=
-                        // ドラッグ) が反応する。
-                        ? Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Container(
-                                width: nw,
-                                padding: node.title.isEmpty
-                                    ? EdgeInsets.zero
-                                    : const EdgeInsets.only(
-                                        top: 4, left: 14, right: 14, bottom: 4),
-                                alignment: Alignment.topCenter,
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    SizedBox(
-                                      height: 14,
-                                      child: Icon(
-                                        Icons.drag_handle_rounded,
-                                        size: 10,
-                                        color: titleTextColor.withValues(
-                                            alpha: 0.45),
-                                      ),
-                                    ),
-                                    if (node.title.isNotEmpty) ...[
-                                      const SizedBox(height: 2),
-                                      Text(
-                                        node.title,
-                                        textAlign: TextAlign.center,
-                                        maxLines: 3,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: TextStyle(
-                                          color: titleTextColor,
-                                          fontSize: node.titleFontSize ??
-                                              widget.defaultTitleFontSize,
-                                          fontWeight: FontWeight.w700,
-                                          height: 1.2,
-                                        ),
-                                      ),
-                                    ],
-                                  ],
-                                ),
-                              ),
-                              Padding(
-                                padding: const EdgeInsets.only(
-                                    left: 14, right: 14, bottom: 14),
-                                child: _NodeTableInlineWidget(
-                                  table: node.tableData!,
-                                  nodeId: node.id,
-                                  maxWidth: (nw - 28)
-                                      .clamp(20, double.infinity)
-                                      .toDouble(),
-                                  textColor: titleTextColor,
-                                  fontSize: memoFontSize,
-                                  isLightBg: _isLightBg,
-                                  provider: context.read<MindMapProvider>(),
-                                  onNodeSelectTap: _handleTap,
-                                  onRequestScreenFocus:
-                                      widget.onRequestScreenFocus,
-                                  onChanged: (newTable) {
-                                    context
-                                        .read<MindMapProvider>()
-                                        .updateNodeTable(node.id, newTable);
-                                  },
-                                ),
-                              ),
-                            ],
-                          )
-                        : Container(
-                            width: nw,
-                            constraints: BoxConstraints(minHeight: node.height),
-                            alignment: Alignment.center,
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 10, vertical: 8),
-                            child: Stack(
-                              alignment: Alignment.center,
+                          : null,
+                      onPanCancel: (_isDesktop || widget.enablePanDrag)
+                          ? () {
+                              if (_panDragActive) {
+                                _panDragActive = false;
+                                widget.onLongPressEnd?.call();
+                              }
+                            }
+                          : null,
+                      child: node.tableData != null
+                          // ── 表ノード: ドラッグハンドル帯 + 表を一括 wrap ──
+                          // ・上端 14px: ノード色の細い帯 + 中央に ≡ アイコン
+                          //   → ドラッグ用ヒットエリア
+                          // ・タイトル有: 上にタイトルテキストも表示 (= 膨らむ)
+                          // ・左右下 14px の Padding に表本体
+                          //
+                          // 両方を「親の GestureDetector」 の child Column 内に
+                          // 入れることで、 padding 領域 (= セル外の余白) でも
+                          // 親の onTap (= ノード選択) / onSecondaryTapUp (=
+                          // ノードの右クリックメニュー) / onLongPressStart (=
+                          // ドラッグ) が反応する。
+                          ? Column(
+                              mainAxisSize: MainAxisSize.min,
                               children: [
-                                SizedBox(
-                                  width: nw - 20,
+                                Container(
+                                  width: nw,
+                                  padding: node.title.isEmpty
+                                      ? EdgeInsets.zero
+                                      : const EdgeInsets.only(
+                                          top: 4,
+                                          left: 14,
+                                          right: 14,
+                                          bottom: 4),
+                                  alignment: Alignment.topCenter,
                                   child: Column(
                                     mainAxisSize: MainAxisSize.min,
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.center,
                                     children: [
-                                      // ── リッチテキスト統合表示 (= ユーザー要望:
-                                      //   タイトルとメモを分けず 1 ブロックで表示) ──
-                                      // richText があれば Text.rich で統合描画。
-                                      //   無ければ従来どおりタイトル Text + メモ。
-                                      if (node.richText != null &&
-                                          node.richText!.isNotEmpty)
-                                        Text.rich(
-                                          MindMapNode.buildRichSpan(
-                                            node.richText!,
-                                            TextStyle(
-                                              color: titleTextColor,
-                                              fontSize: memoFontSize,
-                                              height: 1.3,
-                                            ),
-                                          ),
-                                          textAlign: TextAlign.center,
-                                        )
-                                      else
+                                      SizedBox(
+                                        height: 14,
+                                        child: Icon(
+                                          Icons.drag_handle_rounded,
+                                          size: 10,
+                                          color: titleTextColor.withValues(
+                                              alpha: 0.45),
+                                        ),
+                                      ),
+                                      if (node.title.isNotEmpty) ...[
+                                        const SizedBox(height: 2),
                                         Text(
                                           node.title,
+                                          textAlign: TextAlign.center,
+                                          maxLines: 3,
+                                          overflow: TextOverflow.ellipsis,
                                           style: TextStyle(
                                             color: titleTextColor,
-                                            fontSize: titleFontSize,
+                                            fontSize: node.titleFontSize ??
+                                                widget.defaultTitleFontSize,
                                             fontWeight: FontWeight.w700,
+                                            height: 1.2,
                                           ),
-                                          textAlign: TextAlign.center,
-                                          maxLines: node.titleMaxLines,
-                                          overflow: TextOverflow.ellipsis,
                                         ),
-                                      if (hasMemo &&
-                                          (node.richText == null ||
-                                              node.richText!.isEmpty))
-                                        Padding(
-                                          padding:
-                                              const EdgeInsets.only(top: 4),
-                                          child: () {
-                                            // ── タイムスタンプ判定 ──
-                                            // memoText が `[mm:ss]` または
-                                            // `[h:mm:ss]` の形式 (= 動画メモから
-                                            // 自動生成されたもの) なら、 タップで
-                                            // 動画のその時刻に飛べるハイパーリンク
-                                            // 風表示にする。 そうでなければ通常の
-                                            // メモテキスト表示。
-                                            final mt = node.memoText!.trim();
-                                            final tsSec =
-                                                NodeWidget.parseTimestamp(mt);
-                                            final canJump = tsSec != null &&
-                                                widget.onMemoTimestampTap !=
-                                                    null;
-                                            if (!canJump) {
-                                              return Text(
-                                                node.memoText!,
-                                                style: TextStyle(
-                                                  color: memoTextColor,
-                                                  fontSize: memoFontSize,
-                                                  height: 1.3,
+                                      ],
+                                    ],
+                                  ),
+                                ),
+                                Padding(
+                                  padding: const EdgeInsets.only(
+                                      left: 14, right: 14, bottom: 14),
+                                  child: _NodeTableInlineWidget(
+                                    table: node.tableData!,
+                                    nodeId: node.id,
+                                    maxWidth: (nw - 28)
+                                        .clamp(20, double.infinity)
+                                        .toDouble(),
+                                    textColor: titleTextColor,
+                                    fontSize: memoFontSize,
+                                    isLightBg: _isLightBg,
+                                    provider: context.read<MindMapProvider>(),
+                                    onNodeSelectTap: _handleTap,
+                                    onRequestScreenFocus:
+                                        widget.onRequestScreenFocus,
+                                    onChanged: (newTable) {
+                                      context
+                                          .read<MindMapProvider>()
+                                          .updateNodeTable(node.id, newTable);
+                                    },
+                                  ),
+                                ),
+                              ],
+                            )
+                          : isShelfLinkCard
+                              // ── ギャラリーのリンク専用ノード: ブックマークカードで
+                              //    本体を埋める (= ユーザー要望: 空の実体が大きすぎる) ──
+                              ? _buildLinkCoverCard(
+                                  url: linkUrl!,
+                                  title: node.title,
+                                  width: nw,
+                                  height: node.height,
+                                )
+                              : Container(
+                                  width: nw,
+                                  constraints: node.clampHeight
+                                      ? BoxConstraints.tightFor(
+                                          height: node.height)
+                                      : BoxConstraints(minHeight: node.height),
+                                  alignment: Alignment.center,
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 10, vertical: 8),
+                                  child: Stack(
+                                    alignment: Alignment.center,
+                                    children: [
+                                      SizedBox(
+                                        width: nw - 20,
+                                        child: Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.center,
+                                          children: [
+                                            // ── リッチテキスト統合表示 (= ユーザー要望:
+                                            //   タイトルとメモを分けず 1 ブロックで表示) ──
+                                            // richText があれば Text.rich で統合描画。
+                                            //   無ければ従来どおりタイトル Text + メモ。
+                                            if (node.richText != null &&
+                                                node.richText!.isNotEmpty)
+                                              Text.rich(
+                                                MindMapNode.buildRichSpan(
+                                                  node.richText!,
+                                                  TextStyle(
+                                                    color: titleTextColor,
+                                                    // ── ノード個別の文字サイズ設定を
+                                                    //   反映 (= ユーザー要望: ギャラリー
+                                                    //   要素の文字サイズが効かない時が
+                                                    //   ある問題の修正)。 メモ →
+                                                    //   タイトルの順で個別設定を拾う。
+                                                    fontSize: (node
+                                                                .memoFontSize ??
+                                                            node
+                                                                .titleFontSize ??
+                                                            widget
+                                                                .defaultMemoFontSize)
+                                                        .clamp(6.0, 28.0),
+                                                    height: 1.3,
+                                                    // ── 既定で太字 (= ユーザー要望:
+                                                    //   文字が細すぎるのでデフォルト太字)。
+                                                    //   bold 属性が無い span はこの太字を
+                                                    //   継承し、 個別の bold トグルも従来通り
+                                                    //   効く (w700 同士で見た目同等)。
+                                                    fontWeight: FontWeight.w700,
+                                                  ),
+                                                  // 明示サイズ付き span も設定に比例
+                                                  // させる (デフォルト時は 1.0 = 従来)。
+                                                  sizeScale: (node.memoFontSize ??
+                                                              node
+                                                                  .titleFontSize ??
+                                                              widget
+                                                                  .defaultMemoFontSize)
+                                                          .clamp(6.0, 28.0) /
+                                                      widget.defaultMemoFontSize
+                                                          .clamp(6.0, 28.0),
                                                 ),
                                                 textAlign: TextAlign.center,
-                                              );
-                                            }
-                                            // ハイパーリンク版: 下線 + ライト系
-                                            // ブルーで「クリッカブル」 と分かる
-                                            // 見た目にする。 タップ領域は十分広く
-                                            // 取るため Padding 込みで GestureDetector
-                                            // で包む (ノード本体の onTap とは
-                                            // 独立して動く)。
-                                            return GestureDetector(
-                                              behavior: HitTestBehavior.opaque,
-                                              onTap: () {
-                                                widget
-                                                    .onMemoTimestampTap!(tsSec);
-                                              },
-                                              child: Padding(
-                                                padding:
-                                                    const EdgeInsets.symmetric(
-                                                        horizontal: 6,
-                                                        vertical: 2),
+                                              )
+                                            else
+                                              Text(
+                                                node.title,
+                                                style: TextStyle(
+                                                  color: titleTextColor,
+                                                  fontSize: titleFontSize,
+                                                  fontWeight: FontWeight.w700,
+                                                ),
+                                                textAlign: TextAlign.center,
+                                                maxLines: node.clampHeight
+                                                    ? ((node.height -
+                                                                (hasMemo
+                                                                    ? 28.0
+                                                                    : 16.0)) /
+                                                            (titleFontSize *
+                                                                1.2))
+                                                        .floor()
+                                                        .clamp(1, 99)
+                                                    : node.titleMaxLines,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            if (hasMemo &&
+                                                (node.richText == null ||
+                                                    node.richText!.isEmpty))
+                                              Padding(
+                                                padding: const EdgeInsets.only(
+                                                    top: 4),
+                                                child: () {
+                                                  // ── タイムスタンプ判定 ──
+                                                  // memoText が `[mm:ss]` または
+                                                  // `[h:mm:ss]` の形式 (= 動画メモから
+                                                  // 自動生成されたもの) なら、 タップで
+                                                  // 動画のその時刻に飛べるハイパーリンク
+                                                  // 風表示にする。 そうでなければ通常の
+                                                  // メモテキスト表示。
+                                                  final mt =
+                                                      node.memoText!.trim();
+                                                  final tsSec =
+                                                      NodeWidget.parseTimestamp(
+                                                          mt);
+                                                  final canJump = tsSec !=
+                                                          null &&
+                                                      widget.onMemoTimestampTap !=
+                                                          null;
+                                                  if (!canJump) {
+                                                    return Text(
+                                                      node.memoText!,
+                                                      style: TextStyle(
+                                                        color: memoTextColor,
+                                                        fontSize: memoFontSize,
+                                                        height: 1.3,
+                                                        // 既定で太字 (= ユーザー要望:
+                                                        //   文字が細すぎる)。
+                                                        fontWeight:
+                                                            FontWeight.w700,
+                                                      ),
+                                                      textAlign:
+                                                          TextAlign.center,
+                                                      // ギャラリーの固定高タイルは
+                                                      //   height 内に省略表示する。
+                                                      maxLines: node.clampHeight
+                                                          ? ((node.height -
+                                                                      22) /
+                                                                  (memoFontSize *
+                                                                      1.3))
+                                                              .floor()
+                                                              .clamp(1, 99)
+                                                          : null,
+                                                      overflow: node.clampHeight
+                                                          ? TextOverflow
+                                                              .ellipsis
+                                                          : TextOverflow.clip,
+                                                    );
+                                                  }
+                                                  // ハイパーリンク版: 下線 + ライト系
+                                                  // ブルーで「クリッカブル」 と分かる
+                                                  // 見た目にする。 タップ領域は十分広く
+                                                  // 取るため Padding 込みで GestureDetector
+                                                  // で包む (ノード本体の onTap とは
+                                                  // 独立して動く)。
+                                                  return GestureDetector(
+                                                    behavior:
+                                                        HitTestBehavior.opaque,
+                                                    onTap: () {
+                                                      widget.onMemoTimestampTap!(
+                                                          tsSec);
+                                                    },
+                                                    child: Padding(
+                                                      padding: const EdgeInsets
+                                                          .symmetric(
+                                                          horizontal: 6,
+                                                          vertical: 2),
+                                                      child: Row(
+                                                        mainAxisSize:
+                                                            MainAxisSize.min,
+                                                        mainAxisAlignment:
+                                                            MainAxisAlignment
+                                                                .center,
+                                                        children: [
+                                                          Icon(
+                                                            Icons
+                                                                .play_circle_fill_rounded,
+                                                            size: memoFontSize +
+                                                                2,
+                                                            color: const Color(
+                                                                0xFF4FC3F7),
+                                                          ),
+                                                          const SizedBox(
+                                                              width: 4),
+                                                          Text(
+                                                            node.memoText!,
+                                                            style: TextStyle(
+                                                              color: const Color(
+                                                                  0xFF4FC3F7),
+                                                              fontSize:
+                                                                  memoFontSize,
+                                                              height: 1.3,
+                                                              fontWeight:
+                                                                  FontWeight
+                                                                      .w600,
+                                                              decoration:
+                                                                  TextDecoration
+                                                                      .underline,
+                                                              decorationColor:
+                                                                  const Color(
+                                                                      0xFF4FC3F7),
+                                                            ),
+                                                            textAlign: TextAlign
+                                                                .center,
+                                                          ),
+                                                        ],
+                                                      ),
+                                                    ),
+                                                  );
+                                                }(),
+                                              ),
+                                            // メモが折りたたまれている時の小さなインジケータ
+                                            if (memoIndicatorOnly)
+                                              Padding(
+                                                padding: const EdgeInsets.only(
+                                                    top: 3),
                                                 child: Row(
                                                   mainAxisSize:
                                                       MainAxisSize.min,
@@ -840,634 +1217,649 @@ class _NodeWidgetState extends State<NodeWidget> {
                                                       MainAxisAlignment.center,
                                                   children: [
                                                     Icon(
-                                                      Icons
-                                                          .play_circle_fill_rounded,
-                                                      size: memoFontSize + 2,
-                                                      color: const Color(
-                                                          0xFF4FC3F7),
+                                                      Icons.notes_rounded,
+                                                      size: 11,
+                                                      color: Colors.white
+                                                          .withValues(
+                                                              alpha: 0.45),
                                                     ),
-                                                    const SizedBox(width: 4),
+                                                    const SizedBox(width: 3),
                                                     Text(
-                                                      node.memoText!,
+                                                      '…',
                                                       style: TextStyle(
-                                                        color: const Color(
-                                                            0xFF4FC3F7),
-                                                        fontSize: memoFontSize,
-                                                        height: 1.3,
+                                                        color: Colors.white
+                                                            .withValues(
+                                                                alpha: 0.45),
+                                                        fontSize: 12,
                                                         fontWeight:
-                                                            FontWeight.w600,
-                                                        decoration:
-                                                            TextDecoration
-                                                                .underline,
-                                                        decorationColor:
-                                                            const Color(
-                                                                0xFF4FC3F7),
+                                                            FontWeight.w700,
+                                                        height: 1.0,
                                                       ),
-                                                      textAlign:
-                                                          TextAlign.center,
                                                     ),
                                                   ],
                                                 ),
                                               ),
-                                            );
-                                          }(),
+                                          ],
                                         ),
-                                      // メモが折りたたまれている時の小さなインジケータ
-                                      if (memoIndicatorOnly)
-                                        Padding(
-                                          padding:
-                                              const EdgeInsets.only(top: 3),
-                                          child: Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            mainAxisAlignment:
-                                                MainAxisAlignment.center,
-                                            children: [
-                                              Icon(
-                                                Icons.notes_rounded,
-                                                size: 11,
-                                                color: Colors.white
-                                                    .withValues(alpha: 0.45),
-                                              ),
-                                              const SizedBox(width: 3),
-                                              Text(
-                                                '…',
-                                                style: TextStyle(
-                                                  color: Colors.white
-                                                      .withValues(alpha: 0.45),
-                                                  fontSize: 12,
-                                                  fontWeight: FontWeight.w700,
-                                                  height: 1.0,
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
+                                      ),
+                                      if (hasAnyLink)
+                                        // 右上のインジケーターアイコンは表示しない
+                                        const SizedBox.shrink(),
                                     ],
                                   ),
                                 ),
-                                if (hasAnyLink)
-                                  // 右上のインジケーターアイコンは表示しない
-                                  const SizedBox.shrink(),
-                              ],
-                            ),
-                          ),
-                  ),
+                    ),
 
-                  // ─── YouTubeサムネイル / mp4サムネイル ──────────────────
-                  if (videoId != null || isMp4)
-                    GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onTap: () => widget.onThumbnailTap?.call(),
-                      child: Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          // ショートは中央寄せ。通常動画は nw 幅いっぱい
-                          SizedBox(
-                            width: nw,
-                            height: thumbH,
-                            child: Center(
-                              child: SizedBox(
-                                width: isShort ? shortsW : nw,
-                                height: thumbH,
-                                child: videoId != null
-                                    ? Image.network(
-                                        NodeWidget.thumbnailUrl(videoId),
-                                        fit: BoxFit.cover,
-                                        alignment: Alignment.topCenter,
-                                        errorBuilder: (_, __, ___) => Container(
-                                          color: Colors.black87,
-                                          child: const Icon(
-                                              Icons.play_circle_outline,
-                                              color: Colors.white38,
-                                              size: 32),
+                    // ─── YouTubeサムネイル / mp4サムネイル ──────────────────
+                    if (videoId != null || isMp4)
+                      GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => widget.onThumbnailTap?.call(),
+                        child: Stack(
+                          alignment: Alignment.center,
+                          children: [
+                            // 通常動画は 16:9、Shorts は 9:16 の枠を確保し、
+                            // サムネイル自体は切り抜かず全体を表示する。
+                            SizedBox(
+                              width: nw,
+                              height: thumbH,
+                              child: ClipRect(
+                                child: ColoredBox(
+                                  color: Colors.black,
+                                  child: Center(
+                                    child: SizedBox(
+                                      width: nw,
+                                      height: thumbH,
+                                      child: videoId != null
+                                          ? Image.network(
+                                              NodeWidget.thumbnailUrl(videoId),
+                                              fit: BoxFit.contain,
+                                              alignment: Alignment.center,
+                                              errorBuilder: (_, __, ___) =>
+                                                  Container(
+                                                color: Colors.black87,
+                                                child: const Icon(
+                                                    Icons.play_circle_outline,
+                                                    color: Colors.white38,
+                                                    size: 32),
+                                              ),
+                                            )
+                                          : (node.videoThumbnailPath ?? '')
+                                                  .isNotEmpty
+                                              ? Image.file(
+                                                  File(
+                                                      node.videoThumbnailPath!),
+                                                  fit: BoxFit.contain,
+                                                  alignment: Alignment.center,
+                                                  errorBuilder: (_, __, ___) =>
+                                                      _Mp4Placeholder(
+                                                    url: node.youtubeUrl!,
+                                                    thumbH: thumbH,
+                                                    nw: nw,
+                                                  ),
+                                                )
+                                              : _Mp4Placeholder(
+                                                  url: node.youtubeUrl!,
+                                                  thumbH: thumbH,
+                                                  nw: nw,
+                                                ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            // 再生ボタンオーバーレイ
+                            Container(
+                              width: 40,
+                              height: 40,
+                              decoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: 0.55),
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(Icons.play_arrow_rounded,
+                                  color: Colors.white, size: 26),
+                            ),
+                            // ── オフライン (= ダウンロード済み) バッジ ──
+                            // サムネの右下に小さく表示。緑の `download_done`
+                            // アイコンで「端末に保存済み = ネット無しでも再生
+                            // できる」ことを一目で分かるようにする。
+                            // YouTube オンライン動画 (videoId != null) には
+                            // 表示しない。
+                            if (isOffline)
+                              Positioned(
+                                right: 4,
+                                bottom: 4,
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 5, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF43B97F)
+                                        .withValues(alpha: 0.95),
+                                    borderRadius: BorderRadius.circular(8),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color:
+                                            Colors.black.withValues(alpha: 0.4),
+                                        blurRadius: 3,
+                                        offset: const Offset(0, 1),
+                                      ),
+                                    ],
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(Icons.download_done_rounded,
+                                          color: Colors.white, size: 11),
+                                      const SizedBox(width: 2),
+                                      Text(
+                                        // Provider が context にあれば翻訳した
+                                        // ラベルを使う。無ければ日本語フォール
+                                        // バック。
+                                        Provider.of<MindMapProvider?>(context,
+                                                    listen: false)
+                                                ?.t('video.offline') ??
+                                            'オフライン',
+                                        style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 9,
+                                            fontWeight: FontWeight.w700,
+                                            height: 1.1),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+
+                    // ─── ハイパーリンクバーは attach の後ろ (= 一番下) に配置 ──
+                    // ノードに画像が添付されているとき、 リンクピルが画像の上に
+                    // 来てしまうと「画像が何のリンクのプレビューか」 が直感的に
+                    // 分からなくなる。 「画像 → リンクピル」 の順 (= chip が画像の
+                    // 下に来る) の方が、 「この画像はこの URL 由来」 という関係が
+                    // 自然に読み取れる。 該当ブロックは attach の後に置く。
+
+                    // ─── サブマップ埋め込みリンクバー ──────────────────
+                    // ノード内部に「白背景 + 🌳 アイコン + マップ名」 のピル
+                    // を表示。 タップで該当マップへ遷移する。 リンク URL バー
+                    // と同じデザイン言語で「これはリンク」 と一目で分かる。
+                    // ノード本体のタップとは独立しているため、 通常通り編集
+                    // できる (= リンクの貼り付けと同じ設計思想)。
+                    if (hasLinkedMap)
+                      GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => widget.onLinkedMapTap?.call(),
+                        child: Container(
+                          width: nw,
+                          height: linkedMapBarH,
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF5F5F5),
+                            borderRadius: BorderRadius.vertical(
+                              // linkedMapBar の後ろに attach か linkBar が
+                              // 来るときは下隅を四角に。 どちらも来ないときだけ
+                              // 自分が末端なので下隅を丸める。
+                              bottom: (hasAttachment || hasLinkBar)
+                                  ? Radius.zero
+                                  : const Radius.circular(18),
+                            ),
+                          ),
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          // 上のハイパーリンクバーと同様、 中央揃えに統一
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const Icon(Icons.account_tree_rounded,
+                                  size: 12, color: Color(0xFF6C63FF)),
+                              const SizedBox(width: 4),
+                              Flexible(
+                                child: Text(
+                                  linkedMapName ?? '???',
+                                  style: const TextStyle(
+                                    color: Color(0xFF6C63FF),
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w600,
+                                    decoration: TextDecoration.underline,
+                                    decorationColor: Color(0xFF6C63FF),
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  textAlign: TextAlign.center,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+
+                    // ─── 添付ファイル表示 ──────────────────────────────
+                    if (hasAttachment)
+                      GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => widget.onAttachmentTap?.call(),
+                        child: isDocCoverAttach
+                            ? _buildDocCoverCard(
+                                ext: attachExt,
+                                name: node.attachmentName ??
+                                    attachExt.toUpperCase(),
+                                width: nw,
+                                height: attachH,
+                                squareBottom: hasLinkBar,
+                              )
+                            : (isImageAttach || hasThumb)
+                                ? SizedBox(
+                                    width: nw,
+                                    height: attachH,
+                                    child: ClipRRect(
+                                      // 後ろに linkBar が来るときは下隅を四角に。
+                                      borderRadius: BorderRadius.vertical(
+                                        bottom: hasLinkBar
+                                            ? Radius.zero
+                                            : const Radius.circular(18),
+                                      ),
+                                      // 画像はそのパス、 PDF/pptx はサムネイル画像
+                                      //   (attachImgPath)。 http はネットワーク画像、
+                                      //   ローカルは File 経由。 サムネイルは表紙が
+                                      //   見えるよう上端基準で cover する。
+                                      child: ColoredBox(
+                                        color: Colors.white,
+                                        child: attachImgPath
+                                                    .startsWith('http://') ||
+                                                attachImgPath
+                                                    .startsWith('https://')
+                                            ? Image.network(
+                                                attachImgPath,
+                                                fit: BoxFit.cover,
+                                                alignment: Alignment.topCenter,
+                                                errorBuilder: (_, __, ___) =>
+                                                    Container(
+                                                  color: Colors.black54,
+                                                  child: const Icon(
+                                                      Icons
+                                                          .broken_image_outlined,
+                                                      color: Colors.white38),
+                                                ),
+                                              )
+                                            : Image.file(
+                                                File(attachImgPath),
+                                                fit: BoxFit.cover,
+                                                alignment: Alignment.topCenter,
+                                                errorBuilder: (_, __, ___) =>
+                                                    Container(
+                                                  color: Colors.black54,
+                                                  child: const Icon(
+                                                      Icons
+                                                          .broken_image_outlined,
+                                                      color: Colors.white38),
+                                                ),
+                                              ),
+                                      ),
+                                    ),
+                                  )
+                                : Container(
+                                    width: nw,
+                                    height: attachH,
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFE8EAF6),
+                                      borderRadius: BorderRadius.vertical(
+                                        // 後ろに linkBar が来るときは下隅を四角に。
+                                        bottom: hasLinkBar
+                                            ? Radius.zero
+                                            : const Radius.circular(18),
+                                      ),
+                                    ),
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 8),
+                                    // ── 中央揃え ──
+                                    // ユーザー要望「埋め込まれるリンクは中央揃えに
+                                    // なるようにして」 に合わせて、 添付ファイル名を
+                                    // ピル中央に表示する。 アイコン + ファイル名 +
+                                    // 「外部リンク」 アイコンの 3 つを mainAxisAlignment
+                                    // .center で中央に寄せ、 ファイル名 (Flexible) は
+                                    // 必要に応じて ellipsis で省略される。
+                                    child: Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      children: [
+                                        Icon(
+                                          attachExt == 'pdf'
+                                              ? Icons.picture_as_pdf_rounded
+                                              : Icons.insert_drive_file_rounded,
+                                          size: 16,
+                                          color: attachExt == 'pdf'
+                                              ? const Color(0xFFFF7043)
+                                              : const Color(0xFF00ACC1),
                                         ),
-                                      )
-                                    : (node.videoThumbnailPath ?? '').isNotEmpty
-                                        ? Image.file(
-                                            File(node.videoThumbnailPath!),
-                                            fit: BoxFit.cover,
-                                            alignment: Alignment.topCenter,
-                                            errorBuilder: (_, __, ___) =>
-                                                _Mp4Placeholder(
-                                              url: node.youtubeUrl!,
-                                              thumbH: thumbH,
-                                              nw: nw,
+                                        const SizedBox(width: 4),
+                                        Flexible(
+                                          child: Text(
+                                            node.attachmentName ??
+                                                (attachExt == 'pdf'
+                                                    ? 'PDF'
+                                                    : (attachExt.isEmpty
+                                                        ? 'ファイル'
+                                                        : attachExt
+                                                            .toUpperCase())),
+                                            style: const TextStyle(
+                                              color: Color(0xFF37474F),
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.w600,
                                             ),
-                                          )
-                                        : _Mp4Placeholder(
-                                            url: node.youtubeUrl!,
-                                            thumbH: thumbH,
-                                            nw: nw,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            textAlign: TextAlign.center,
                                           ),
-                              ),
-                            ),
-                          ),
-                          // 再生ボタンオーバーレイ
-                          Container(
-                            width: 40,
-                            height: 40,
-                            decoration: BoxDecoration(
-                              color: Colors.black.withValues(alpha: 0.55),
-                              shape: BoxShape.circle,
-                            ),
-                            child: const Icon(Icons.play_arrow_rounded,
-                                color: Colors.white, size: 26),
-                          ),
-                          // ── オフライン (= ダウンロード済み) バッジ ──
-                          // サムネの右下に小さく表示。緑の `download_done`
-                          // アイコンで「端末に保存済み = ネット無しでも再生
-                          // できる」ことを一目で分かるようにする。
-                          // YouTube オンライン動画 (videoId != null) には
-                          // 表示しない。
-                          if (isOffline)
-                            Positioned(
-                              right: 4,
-                              bottom: 4,
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 5, vertical: 2),
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFF43B97F)
-                                      .withValues(alpha: 0.95),
-                                  borderRadius: BorderRadius.circular(8),
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color:
-                                          Colors.black.withValues(alpha: 0.4),
-                                      blurRadius: 3,
-                                      offset: const Offset(0, 1),
+                                        ),
+                                        const SizedBox(width: 4),
+                                        const Icon(Icons.open_in_new_rounded,
+                                            size: 10, color: Color(0xFF00ACC1)),
+                                      ],
                                     ),
-                                  ],
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    const Icon(Icons.download_done_rounded,
-                                        color: Colors.white, size: 11),
-                                    const SizedBox(width: 2),
-                                    Text(
-                                      // Provider が context にあれば翻訳した
-                                      // ラベルを使う。無ければ日本語フォール
-                                      // バック。
-                                      Provider.of<MindMapProvider?>(context,
-                                                  listen: false)
-                                              ?.t('video.offline') ??
-                                          'オフライン',
-                                      style: const TextStyle(
-                                          color: Colors.white,
-                                          fontSize: 9,
-                                          fontWeight: FontWeight.w700,
-                                          height: 1.1),
-                                    ),
-                                  ],
+                                  ),
+                      ),
+
+                    // ─── ハイパーリンクバー (画像/添付ファイルの下) ──────────
+                    // ノード本体の最下段に配置。 画像が attach されている場合は
+                    // 「画像 → リンクピル」 の順で並び、 ピルが画像の下に来る。
+                    // ギャラリーのリンクカードはカード内にホストを表示するので、
+                    //   別途のリンクバーは出さない (= isShelfLinkCard)。
+                    if (hasLinkBar && !isShelfLinkCard)
+                      GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => widget.onThumbnailTap?.call(),
+                        child: Container(
+                          width: nw,
+                          height: linkBarH,
+                          decoration: const BoxDecoration(
+                            color: Color(0xFFF5F5F5),
+                            borderRadius: BorderRadius.vertical(
+                                bottom: Radius.circular(18)),
+                          ),
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          // ── 中央揃え ──
+                          // 旧実装は Expanded で Text をバー全幅に広げて
+                          // 左寄せだったが、 ユーザーから「埋め込まれる
+                          // リンクは中央揃えになるようにして」 と要望が
+                          // あったため、 アイコン + テキストをグループとして
+                          // 中央配置する。 テキストが長い場合は Flexible で
+                          // 最大幅に達して ellipsis に切り替わる。
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const Icon(Icons.open_in_new_rounded,
+                                  size: 12, color: Color(0xFF7C4DFF)),
+                              const SizedBox(width: 4),
+                              Flexible(
+                                child: Text(
+                                  Uri.tryParse(linkUrl)?.host ?? linkUrl,
+                                  style: const TextStyle(
+                                    color: Color(0xFF7C4DFF),
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w600,
+                                    decoration: TextDecoration.underline,
+                                    decorationColor: Color(0xFF7C4DFF),
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  textAlign: TextAlign.center,
                                 ),
                               ),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+
+            // ─── アンカードット ─────────────────────────────────────
+            if (hasHighlight)
+              for (final anchor in widget.highlightAnchors)
+                _buildAnchorDot(anchor, nw, totalH),
+
+            // ─── 折りたたみバッジ ──────────────────────────────────
+            if (node.collapsed)
+              Positioned(
+                right: -6,
+                bottom: -6,
+                child: IgnorePointer(
+                  child: Container(
+                    width: 20,
+                    height: 20,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF7E57C2),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white, width: 1.5),
+                    ),
+                    child: const Icon(Icons.more_horiz,
+                        size: 12, color: Colors.white),
+                  ),
+                ),
+              ),
+            if (!node.collapsed &&
+                (node.collapsedChildIds?.isNotEmpty ?? false))
+              Positioned(
+                right: -6,
+                bottom: -6,
+                child: IgnorePointer(
+                  child: Container(
+                    width: 20,
+                    height: 20,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF7E57C2),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white, width: 1.5),
+                    ),
+                    child: const Icon(Icons.call_split_rounded,
+                        size: 12, color: Colors.white),
+                  ),
+                ),
+              ),
+
+            // ─── スナップラベル ─────────────────────────────────────
+            if (_dragging && widget.currentSnap != null)
+              Positioned(
+                top: -30,
+                left: 0,
+                right: 0,
+                child: IgnorePointer(
+                  child: Center(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF43B97F),
+                        borderRadius: BorderRadius.circular(10),
+                        boxShadow: [
+                          BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.4),
+                              blurRadius: 8)
+                        ],
+                      ),
+                      child: const Text('接続',
+                          style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700)),
+                    ),
+                  ),
+                ),
+              ),
+
+            // ─── アップロード/ダウンロード進捗オーバーレイ ─────────────
+            if (widget.uploadProgress != null)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(18),
+                    child: Container(
+                      color: Colors.black.withValues(alpha: 0.55),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          SizedBox(
+                            width: nw * 0.6,
+                            child: LinearProgressIndicator(
+                              value: widget.uploadProgress!,
+                              backgroundColor: Colors.white24,
+                              valueColor: const AlwaysStoppedAnimation<Color>(
+                                  Color(0xFF4FC3F7)),
+                              minHeight: 6,
+                              borderRadius: BorderRadius.circular(3),
                             ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            '${(widget.uploadProgress! * 100).toInt()}%',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
                         ],
                       ),
                     ),
-
-                  // ─── ハイパーリンクバーは attach の後ろ (= 一番下) に配置 ──
-                  // ノードに画像が添付されているとき、 リンクピルが画像の上に
-                  // 来てしまうと「画像が何のリンクのプレビューか」 が直感的に
-                  // 分からなくなる。 「画像 → リンクピル」 の順 (= chip が画像の
-                  // 下に来る) の方が、 「この画像はこの URL 由来」 という関係が
-                  // 自然に読み取れる。 該当ブロックは attach の後に置く。
-
-                  // ─── サブマップ埋め込みリンクバー ──────────────────
-                  // ノード内部に「白背景 + 🌳 アイコン + マップ名」 のピル
-                  // を表示。 タップで該当マップへ遷移する。 リンク URL バー
-                  // と同じデザイン言語で「これはリンク」 と一目で分かる。
-                  // ノード本体のタップとは独立しているため、 通常通り編集
-                  // できる (= リンクの貼り付けと同じ設計思想)。
-                  if (hasLinkedMap)
-                    GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onTap: () => widget.onLinkedMapTap?.call(),
-                      child: Container(
-                        width: nw,
-                        height: linkedMapBarH,
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFF5F5F5),
-                          borderRadius: BorderRadius.vertical(
-                            // linkedMapBar の後ろに attach か linkBar が
-                            // 来るときは下隅を四角に。 どちらも来ないときだけ
-                            // 自分が末端なので下隅を丸める。
-                            bottom: (hasAttachment || hasLinkBar)
-                                ? Radius.zero
-                                : const Radius.circular(18),
-                          ),
-                        ),
-                        padding: const EdgeInsets.symmetric(horizontal: 8),
-                        // 上のハイパーリンクバーと同様、 中央揃えに統一
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            const Icon(Icons.account_tree_rounded,
-                                size: 12, color: Color(0xFF6C63FF)),
-                            const SizedBox(width: 4),
-                            Flexible(
-                              child: Text(
-                                linkedMapName ?? '???',
-                                style: const TextStyle(
-                                  color: Color(0xFF6C63FF),
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w600,
-                                  decoration: TextDecoration.underline,
-                                  decorationColor: Color(0xFF6C63FF),
-                                ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                textAlign: TextAlign.center,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-
-                  // ─── 添付ファイル表示 ──────────────────────────────
-                  if (hasAttachment)
-                    GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onTap: () => widget.onAttachmentTap?.call(),
-                      child: (isImageAttach || hasThumb)
-                          ? SizedBox(
-                              width: nw,
-                              height: attachH,
-                              child: ClipRRect(
-                                // 後ろに linkBar が来るときは下隅を四角に。
-                                borderRadius: BorderRadius.vertical(
-                                  bottom: hasLinkBar
-                                      ? Radius.zero
-                                      : const Radius.circular(18),
-                                ),
-                                // 画像はそのパス、 PDF/pptx はサムネイル画像
-                                //   (attachImgPath)。 http はネットワーク画像、
-                                //   ローカルは File 経由。 サムネイルは表紙が
-                                //   見えるよう上端基準で cover する。
-                                child: attachImgPath.startsWith('http://') ||
-                                        attachImgPath.startsWith('https://')
-                                    ? Image.network(
-                                        attachImgPath,
-                                        fit: BoxFit.cover,
-                                        alignment: Alignment.topCenter,
-                                        errorBuilder: (_, __, ___) => Container(
-                                          color: Colors.black54,
-                                          child: const Icon(
-                                              Icons.broken_image_outlined,
-                                              color: Colors.white38),
-                                        ),
-                                      )
-                                    : Image.file(
-                                        File(attachImgPath),
-                                        fit: BoxFit.cover,
-                                        alignment: Alignment.topCenter,
-                                        errorBuilder: (_, __, ___) => Container(
-                                          color: Colors.black54,
-                                          child: const Icon(
-                                              Icons.broken_image_outlined,
-                                              color: Colors.white38),
-                                        ),
-                                      ),
-                              ),
-                            )
-                          : Container(
-                              width: nw,
-                              height: attachH,
-                              decoration: BoxDecoration(
-                                color: const Color(0xFFE8EAF6),
-                                borderRadius: BorderRadius.vertical(
-                                  // 後ろに linkBar が来るときは下隅を四角に。
-                                  bottom: hasLinkBar
-                                      ? Radius.zero
-                                      : const Radius.circular(18),
-                                ),
-                              ),
-                              padding:
-                                  const EdgeInsets.symmetric(horizontal: 8),
-                              // ── 中央揃え ──
-                              // ユーザー要望「埋め込まれるリンクは中央揃えに
-                              // なるようにして」 に合わせて、 添付ファイル名を
-                              // ピル中央に表示する。 アイコン + ファイル名 +
-                              // 「外部リンク」 アイコンの 3 つを mainAxisAlignment
-                              // .center で中央に寄せ、 ファイル名 (Flexible) は
-                              // 必要に応じて ellipsis で省略される。
-                              child: Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(
-                                    attachExt == 'pdf'
-                                        ? Icons.picture_as_pdf_rounded
-                                        : Icons.insert_drive_file_rounded,
-                                    size: 16,
-                                    color: attachExt == 'pdf'
-                                        ? const Color(0xFFE53935)
-                                        : const Color(0xFF607D8B),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  Flexible(
-                                    child: Text(
-                                      node.attachmentName ??
-                                          (attachExt == 'pdf'
-                                              ? 'PDF'
-                                              : (attachExt.isEmpty
-                                                  ? 'ファイル'
-                                                  : attachExt.toUpperCase())),
-                                      style: const TextStyle(
-                                        color: Color(0xFF37474F),
-                                        fontSize: 10,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      textAlign: TextAlign.center,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  const Icon(Icons.open_in_new_rounded,
-                                      size: 10, color: Color(0xFF78909C)),
-                                ],
-                              ),
-                            ),
-                    ),
-
-                  // ─── ハイパーリンクバー (画像/添付ファイルの下) ──────────
-                  // ノード本体の最下段に配置。 画像が attach されている場合は
-                  // 「画像 → リンクピル」 の順で並び、 ピルが画像の下に来る。
-                  if (hasLinkBar)
-                    GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onTap: () => widget.onThumbnailTap?.call(),
-                      child: Container(
-                        width: nw,
-                        height: linkBarH,
-                        decoration: const BoxDecoration(
-                          color: Color(0xFFF5F5F5),
-                          borderRadius: BorderRadius.vertical(
-                              bottom: Radius.circular(18)),
-                        ),
-                        padding: const EdgeInsets.symmetric(horizontal: 8),
-                        // ── 中央揃え ──
-                        // 旧実装は Expanded で Text をバー全幅に広げて
-                        // 左寄せだったが、 ユーザーから「埋め込まれる
-                        // リンクは中央揃えになるようにして」 と要望が
-                        // あったため、 アイコン + テキストをグループとして
-                        // 中央配置する。 テキストが長い場合は Flexible で
-                        // 最大幅に達して ellipsis に切り替わる。
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            const Icon(Icons.open_in_new_rounded,
-                                size: 12, color: Color(0xFF1976D2)),
-                            const SizedBox(width: 4),
-                            Flexible(
-                              child: Text(
-                                Uri.tryParse(linkUrl)?.host ?? linkUrl,
-                                style: const TextStyle(
-                                  color: Color(0xFF1976D2),
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w600,
-                                  decoration: TextDecoration.underline,
-                                  decorationColor: Color(0xFF1976D2),
-                                ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                textAlign: TextAlign.center,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ),
-
-          // ─── アンカードット ─────────────────────────────────────
-          if (hasHighlight)
-            _buildAnchorDot(widget.highlightAnchor!, nw, totalH),
-
-          // ─── 折りたたみバッジ ──────────────────────────────────
-          if (node.collapsed)
-            Positioned(
-              right: -6,
-              bottom: -6,
-              child: IgnorePointer(
-                child: Container(
-                  width: 20,
-                  height: 20,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF7E57C2),
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.white, width: 1.5),
                   ),
-                  child: const Icon(Icons.more_horiz,
-                      size: 12, color: Colors.white),
                 ),
               ),
-            ),
 
-          // ─── スナップラベル ─────────────────────────────────────
-          if (_dragging && widget.currentSnap != null)
-            Positioned(
-              top: -30,
-              left: 0,
-              right: 0,
-              child: IgnorePointer(
-                child: Center(
+            // ─── リサイズハンドル（選択時のみ表示） ─────────────
+            if (widget.showResizeHandles && widget.onSizeChanged != null) ...[
+              // ── 辺ハンドル（4辺） ──
+              // 右
+              _buildEdgeHandle(
+                right: -10,
+                top: totalH * 0.25,
+                width: 18,
+                height: totalH * 0.5,
+                cursor: SystemMouseCursors.resizeLeftRight,
+                onDrag: (dx, dy) => _emitResize(
+                    (_resizeStartW + dx).clamp(80.0, _maxHandleW),
+                    _resizeStartH,
+                    0,
+                    0),
+              ),
+              // 左
+              _buildEdgeHandle(
+                left: -10,
+                top: totalH * 0.25,
+                width: 18,
+                height: totalH * 0.5,
+                cursor: SystemMouseCursors.resizeLeftRight,
+                onDrag: (dx, dy) {
+                  final newW = (_resizeStartW - dx).clamp(80.0, _maxHandleW);
+                  final posDx = _resizeStartW - newW;
+                  _emitResize(newW, _resizeStartH, posDx, 0);
+                },
+              ),
+              // 下
+              _buildEdgeHandle(
+                bottom: -10,
+                left: nw * 0.25,
+                width: nw * 0.5,
+                height: 18,
+                cursor: SystemMouseCursors.resizeUpDown,
+                onDrag: (dx, dy) => _emitResize(_resizeStartW,
+                    (_resizeStartH + dy).clamp(36.0, 200.0), 0, 0),
+              ),
+              // 上
+              _buildEdgeHandle(
+                top: -10,
+                left: nw * 0.25,
+                width: nw * 0.5,
+                height: 18,
+                cursor: SystemMouseCursors.resizeUpDown,
+                onDrag: (dx, dy) {
+                  final newH = (_resizeStartH - dy).clamp(36.0, 200.0);
+                  final posDy = _resizeStartH - newH;
+                  _emitResize(_resizeStartW, newH, 0, posDy);
+                },
+              ),
+              // ── コーナーハンドル（4隅） ──
+              // 右下
+              _buildCornerHandle(
+                right: -12,
+                bottom: -12,
+                cursor: SystemMouseCursors.resizeDownRight,
+                onDrag: (dx, dy) => _emitResize(
+                    (_resizeStartW + dx).clamp(80.0, _maxHandleW),
+                    (_resizeStartH + dy).clamp(36.0, 200.0),
+                    0,
+                    0),
+              ),
+              // 左下
+              _buildCornerHandle(
+                left: -12,
+                bottom: -12,
+                cursor: SystemMouseCursors.resizeDownLeft,
+                onDrag: (dx, dy) {
+                  final newW = (_resizeStartW - dx).clamp(80.0, _maxHandleW);
+                  _emitResize(newW, (_resizeStartH + dy).clamp(36.0, 200.0),
+                      _resizeStartW - newW, 0);
+                },
+              ),
+              // 右上
+              _buildCornerHandle(
+                right: -12,
+                top: -12,
+                cursor: SystemMouseCursors.resizeUpRight,
+                onDrag: (dx, dy) {
+                  final newH = (_resizeStartH - dy).clamp(36.0, 200.0);
+                  _emitResize((_resizeStartW + dx).clamp(80.0, _maxHandleW),
+                      newH, 0, _resizeStartH - newH);
+                },
+              ),
+              // 左上
+              _buildCornerHandle(
+                left: -12,
+                top: -12,
+                cursor: SystemMouseCursors.resizeUpLeft,
+                onDrag: (dx, dy) {
+                  final newW = (_resizeStartW - dx).clamp(80.0, _maxHandleW);
+                  final newH = (_resizeStartH - dy).clamp(36.0, 200.0);
+                  _emitResize(
+                      newW, newH, _resizeStartW - newW, _resizeStartH - newH);
+                },
+              ),
+            ],
+            // ── 格納ノード（isContainer = true）の右上バッジ ──
+            // 📦 アイコン + 含まれているノード数で、一目で格納ノードと分かるように
+            if (node.isContainer)
+              Positioned(
+                right: -6,
+                top: -8,
+                child: IgnorePointer(
                   child: Container(
                     padding:
-                        const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF43B97F),
+                      color: const Color(0xFFFFA726),
                       borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.white, width: 1.5),
                       boxShadow: [
                         BoxShadow(
-                            color: Colors.black.withValues(alpha: 0.4),
-                            blurRadius: 8)
+                          color: const Color(0xFFFFA726).withValues(alpha: 0.6),
+                          blurRadius: 6,
+                        ),
                       ],
                     ),
-                    child: const Text('接続',
-                        style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w700)),
-                  ),
-                ),
-              ),
-            ),
-
-          // ─── アップロード/ダウンロード進捗オーバーレイ ─────────────
-          if (widget.uploadProgress != null)
-            Positioned.fill(
-              child: IgnorePointer(
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(18),
-                  child: Container(
-                    color: Colors.black.withValues(alpha: 0.55),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        SizedBox(
-                          width: nw * 0.6,
-                          child: LinearProgressIndicator(
-                            value: widget.uploadProgress!,
-                            backgroundColor: Colors.white24,
-                            valueColor: const AlwaysStoppedAnimation<Color>(
-                                Color(0xFF4FC3F7)),
-                            minHeight: 6,
-                            borderRadius: BorderRadius.circular(3),
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          '${(widget.uploadProgress! * 100).toInt()}%',
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      const Text('📦',
+                          style: TextStyle(fontSize: 11, height: 1.0)),
+                      const SizedBox(width: 2),
+                      Text('${node.containedNodeIds?.length ?? 0}',
                           style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ],
-                    ),
+                              color: Colors.white,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700)),
+                    ]),
                   ),
                 ),
               ),
-            ),
-
-          // ─── リサイズハンドル（選択時のみ表示） ─────────────
-          if (widget.showResizeHandles && widget.onSizeChanged != null) ...[
-            // ── 辺ハンドル（4辺） ──
-            // 右
-            _buildEdgeHandle(
-              right: -4,
-              top: totalH * 0.25,
-              width: 8,
-              height: totalH * 0.5,
-              cursor: SystemMouseCursors.resizeLeftRight,
-              onDrag: (dx, dy) => _emitResize(
-                  (_resizeStartW + dx).clamp(80.0, 300.0), _resizeStartH, 0, 0),
-            ),
-            // 左
-            _buildEdgeHandle(
-              left: -4,
-              top: totalH * 0.25,
-              width: 8,
-              height: totalH * 0.5,
-              cursor: SystemMouseCursors.resizeLeftRight,
-              onDrag: (dx, dy) {
-                final newW = (_resizeStartW - dx).clamp(80.0, 300.0);
-                final posDx = _resizeStartW - newW;
-                _emitResize(newW, _resizeStartH, posDx, 0);
-              },
-            ),
-            // 下
-            _buildEdgeHandle(
-              bottom: -4,
-              left: nw * 0.25,
-              width: nw * 0.5,
-              height: 8,
-              cursor: SystemMouseCursors.resizeUpDown,
-              onDrag: (dx, dy) => _emitResize(
-                  _resizeStartW, (_resizeStartH + dy).clamp(36.0, 200.0), 0, 0),
-            ),
-            // 上
-            _buildEdgeHandle(
-              top: -4,
-              left: nw * 0.25,
-              width: nw * 0.5,
-              height: 8,
-              cursor: SystemMouseCursors.resizeUpDown,
-              onDrag: (dx, dy) {
-                final newH = (_resizeStartH - dy).clamp(36.0, 200.0);
-                final posDy = _resizeStartH - newH;
-                _emitResize(_resizeStartW, newH, 0, posDy);
-              },
-            ),
-            // ── コーナーハンドル（4隅） ──
-            // 右下
-            _buildCornerHandle(
-              right: -5,
-              bottom: -5,
-              cursor: SystemMouseCursors.resizeDownRight,
-              onDrag: (dx, dy) => _emitResize(
-                  (_resizeStartW + dx).clamp(80.0, 300.0),
-                  (_resizeStartH + dy).clamp(36.0, 200.0),
-                  0,
-                  0),
-            ),
-            // 左下
-            _buildCornerHandle(
-              left: -5,
-              bottom: -5,
-              cursor: SystemMouseCursors.resizeDownLeft,
-              onDrag: (dx, dy) {
-                final newW = (_resizeStartW - dx).clamp(80.0, 300.0);
-                _emitResize(newW, (_resizeStartH + dy).clamp(36.0, 200.0),
-                    _resizeStartW - newW, 0);
-              },
-            ),
-            // 右上
-            _buildCornerHandle(
-              right: -5,
-              top: -5,
-              cursor: SystemMouseCursors.resizeUpRight,
-              onDrag: (dx, dy) {
-                final newH = (_resizeStartH - dy).clamp(36.0, 200.0);
-                _emitResize((_resizeStartW + dx).clamp(80.0, 300.0), newH, 0,
-                    _resizeStartH - newH);
-              },
-            ),
-            // 左上
-            _buildCornerHandle(
-              left: -5,
-              top: -5,
-              cursor: SystemMouseCursors.resizeUpLeft,
-              onDrag: (dx, dy) {
-                final newW = (_resizeStartW - dx).clamp(80.0, 300.0);
-                final newH = (_resizeStartH - dy).clamp(36.0, 200.0);
-                _emitResize(
-                    newW, newH, _resizeStartW - newW, _resizeStartH - newH);
-              },
-            ),
           ],
-          // ── 格納ノード（isContainer = true）の右上バッジ ──
-          // 📦 アイコン + 含まれているノード数で、一目で格納ノードと分かるように
-          if (node.isContainer)
-            Positioned(
-              right: -6,
-              top: -8,
-              child: IgnorePointer(
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFFFA726),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: Colors.white, width: 1.5),
-                    boxShadow: [
-                      BoxShadow(
-                        color: const Color(0xFFFFA726).withValues(alpha: 0.6),
-                        blurRadius: 6,
-                      ),
-                    ],
-                  ),
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    const Text('📦',
-                        style: TextStyle(fontSize: 11, height: 1.0)),
-                    const SizedBox(width: 2),
-                    Text('${node.containedNodeIds?.length ?? 0}',
-                        style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 10,
-                            fontWeight: FontWeight.w700)),
-                  ]),
-                ),
-              ),
-            ),
-        ],
+        ),
       ),
     );
   }
@@ -1572,8 +1964,9 @@ class _NodeWidgetState extends State<NodeWidget> {
             width: width,
             height: height,
             decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.45),
-              borderRadius: BorderRadius.circular(3),
+              color: Colors.white.withValues(alpha: 0.58),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: const Color(0xFF6C63FF), width: 1.2),
             ),
           ),
         ),
@@ -1614,12 +2007,12 @@ class _NodeWidgetState extends State<NodeWidget> {
         child: MouseRegion(
           cursor: cursor,
           child: Container(
-            width: 12,
-            height: 12,
+            width: 22,
+            height: 22,
             decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.7),
-              borderRadius: BorderRadius.circular(3),
-              border: Border.all(color: const Color(0xFF6C63FF), width: 1.5),
+              color: Colors.white.withValues(alpha: 0.82),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: const Color(0xFF6C63FF), width: 1.8),
             ),
           ),
         ),
@@ -1641,6 +2034,62 @@ class _PlayBtn extends StatelessWidget {
           const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 22),
     );
   }
+}
+
+/// フローチャート形状 (ひし形 / 平行四辺形) 用の ShapeBorder
+/// (= ユーザー要望: フローチャートの基本記法にブロックの形状を変えられる
+///    ように)。 ShapeDecoration に渡すことで塗り・影・枠線が形状に沿う。
+class _FlowShapeBorder extends ShapeBorder {
+  /// 'diamond' (ひし形 = 判断) | 'parallelogram' (平行四辺形 = 入出力)
+  final String kind;
+  final BorderSide side;
+  const _FlowShapeBorder(this.kind, {this.side = BorderSide.none});
+
+  @override
+  EdgeInsetsGeometry get dimensions => EdgeInsets.all(side.width);
+
+  Path _path(Rect rect) {
+    if (kind == 'diamond') {
+      return Path()
+        ..moveTo(rect.center.dx, rect.top)
+        ..lineTo(rect.right, rect.center.dy)
+        ..lineTo(rect.center.dx, rect.bottom)
+        ..lineTo(rect.left, rect.center.dy)
+        ..close();
+    }
+    // parallelogram: 上辺を右へずらした平行四辺形
+    final double skew = (rect.width * 0.18).clamp(10.0, 40.0).toDouble();
+    return Path()
+      ..moveTo(rect.left + skew, rect.top)
+      ..lineTo(rect.right, rect.top)
+      ..lineTo(rect.right - skew, rect.bottom)
+      ..lineTo(rect.left, rect.bottom)
+      ..close();
+  }
+
+  @override
+  Path getInnerPath(Rect rect, {TextDirection? textDirection}) =>
+      _path(rect.deflate(side.width));
+
+  @override
+  Path getOuterPath(Rect rect, {TextDirection? textDirection}) => _path(rect);
+
+  @override
+  void paint(Canvas canvas, Rect rect, {TextDirection? textDirection}) {
+    if (side.style == BorderStyle.none || side.width <= 0) return;
+    if (side.color.a == 0.0) return; // 透明枠 (非選択時) は描かない
+    canvas.drawPath(
+      _path(rect.deflate(side.width / 2)),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = side.width
+        ..color = side.color
+        ..strokeJoin = StrokeJoin.round,
+    );
+  }
+
+  @override
+  ShapeBorder scale(double t) => _FlowShapeBorder(kind, side: side.scale(t));
 }
 
 /// mp4動画のプレースホルダー表示（サムネイルが無い場合に使用）
@@ -1712,7 +2161,7 @@ class _NodeTableInlineWidget extends StatefulWidget {
   /// true = 明るい背景 → 黒寄り罫線、 false = 暗い背景 → 白寄り罫線。
   final bool isLightBg;
 
-  /// セルがタップされたとき、 編集開始と同時に「ノード選択」 も発火する
+  /// セルがタップされた時、 編集開始と同時に「ノード選択」 も発火する
   /// ためのコールバック。 親 NodeWidget から `_handleTap` を渡す。
   ///
   /// これがないと、 セルクリック → 編集モード → Esc で抜ける、 という
@@ -1765,7 +2214,7 @@ class _NodeTableInlineWidgetState extends State<_NodeTableInlineWidget> {
   void _startEdit(int row, int col) {
     _commitEditing();
     final focus = FocusNode();
-    // フォーカスを失ったら自動コミット (= TextField 外をタップしたとき)。
+    // フォーカスを失ったら自動コミット (= TextField 外をタップした時)。
     // 別セルへ移動する場合は _startEdit が先に _commitEditing するので
     // 二重コミットにはならない。
     focus.addListener(() {
@@ -2213,7 +2662,7 @@ class _NodeTableInlineWidgetState extends State<_NodeTableInlineWidget> {
 
     // 表本体の幅 = ノード幅。 maxWidth より大きい列数を持つ表が出る場面は
     // 現状ないが、 安全のため SingleChildScrollView は残す (将来 minCellWidth
-    // 制限を導入したときに横スクロールできる)。
+    // 制限を導入した時に横スクロールできる)。
     return SizedBox(
       width: widget.maxWidth,
       child: SingleChildScrollView(
@@ -2252,7 +2701,7 @@ class _NodeTableInlineWidgetState extends State<_NodeTableInlineWidget> {
 
     Widget content;
     if (isEditing) {
-      content = Focus(
+      final editor = Focus(
         onKeyEvent: (node, event) {
           if (event is! KeyDownEvent) return KeyEventResult.ignored;
           final key = event.logicalKey;
@@ -2272,7 +2721,7 @@ class _NodeTableInlineWidgetState extends State<_NodeTableInlineWidget> {
             return KeyEventResult.handled;
           }
           // ── Backspace / Delete を画面ルートに伝播させない ──
-          // セルが空文字のとき TextField/EditableText は Backspace を
+          // セルが空文字の時 TextField/EditableText は Backspace を
           // 「何もすることがない」 と判断して `ignored` を返す。 そのまま
           // バブルアップすると画面ルートのキーハンドラに到達し、 「選択
           // ノード削除」 コマンドが発火 → 表ノードが丸ごと消える、 という
@@ -2304,6 +2753,37 @@ class _NodeTableInlineWidgetState extends State<_NodeTableInlineWidget> {
           onSubmitted: (_) => _endEdit(commit: true),
           onEditingComplete: () => _endEdit(commit: true),
         ),
+      );
+      content = Stack(
+        clipBehavior: Clip.none,
+        children: [
+          editor,
+          Positioned(
+            top: -30,
+            right: 4,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTapDown: (_) => _endEdit(commit: true),
+              child: Material(
+                color: const Color(0xFF43B97F),
+                elevation: 6,
+                borderRadius: BorderRadius.circular(14),
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(Icons.check_rounded, color: Colors.white, size: 14),
+                    SizedBox(width: 3),
+                    Text('確定',
+                        style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700)),
+                  ]),
+                ),
+              ),
+            ),
+          ),
+        ],
       );
     } else {
       content = Padding(

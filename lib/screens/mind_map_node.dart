@@ -28,30 +28,39 @@ enum NodeContentType { none, memo, youtube, link, attachment, table }
 class PdfMemo {
   final String id;
   String text;
+
   /// 1-indexed のページ番号。 URL メモでは null。
   int? pageNumber;
+
   /// URL メモの URL (PDF メモでは null)。
   /// 例: SPA で history が変わる場合があるため、 メモ追加時点でビューア内に
   /// ロードされていた URL をスナップショットして格納する。
   String? url;
+
   /// URL メモのスクロール位置 (Y方向ピクセル, 文書頂上からの距離)。
   /// メモ追加時のスクロール位置をスナップショットして、 メモジャンプ時に
   /// `window.scrollTo(0, scrollY)` で復元する。 PDF メモ / フリーメモでは null。
   double? scrollY;
+
   /// ビューア表示領域上の x 比率 (0.0=左端, 1.0=右端)。 null = ページ全体に
   /// 紐づく汎用メモ。
   double? xRatio;
+
   /// ビューア表示領域上の y 比率 (0.0=上端, 1.0=下端)。 null = 同上。
   double? yRatio;
+
   /// メモのアクセントカラー (マーカー色)。
   int colorValue;
+
   /// 作成 / 最終更新時刻 (UTC エポック ms)。
   int updatedAtMs;
+
   /// メモが属するフォルダ名 (null または '' = 未分類)。
   /// 既存メモに対しては null。 ユーザーがメモ一覧 UI からフォルダを
   /// 作成・移動させるときに設定される。 同じ folder 名のメモは
   /// メモ一覧でグループ化される。
   String? folder;
+
   /// ピン止めフラグ。 true のメモはメモ一覧の (フォルダ内の) 先頭に表示される。
   bool pinned;
 
@@ -158,21 +167,25 @@ class TableData {
 
   /// 列のデフォルト幅 (px)。 個別指定は [colWidths] で。
   double defaultColWidth;
+
   /// 行のデフォルト高さ (px)。 個別指定は [rowHeights] で。
   double defaultRowHeight;
 
   /// 列ごとのカスタム幅 (長さは colCount と同じ)。 null/負値はデフォルトを使う。
   List<double?> colWidths;
+
   /// 行ごとのカスタム高さ (長さは rowCount と同じ)。 null/負値はデフォルトを使う。
   List<double?> rowHeights;
 
   /// 先頭行をヘッダー (太字 + 強調背景) にするか。
   bool headerRow;
+
   /// 先頭列をヘッダー (太字 + 強調背景) にするか。
   bool headerCol;
 
   /// 罫線色 (ARGB int)。
   int borderColorValue;
+
   /// 罫線の太さ (px)。
   double borderWidth;
 
@@ -187,8 +200,7 @@ class TableData {
     this.borderColorValue = 0xFF888888,
     this.borderWidth = 1.5,
   })  : colWidths = colWidths ??
-            List<double?>.filled(
-                cells.isEmpty ? 0 : cells[0].length, null,
+            List<double?>.filled(cells.isEmpty ? 0 : cells[0].length, null,
                 growable: true),
         rowHeights = rowHeights ??
             List<double?>.filled(cells.length, null, growable: true);
@@ -268,8 +280,7 @@ class TableData {
     }
     double total = 0;
     for (int r = 0; r < rowCount; r++) {
-      total += estimateRowHeight(r,
-          cellWidth: cellWidth, fontSize: fontSize);
+      total += estimateRowHeight(r, cellWidth: cellWidth, fontSize: fontSize);
     }
     total += (rowCount + 1) * borderWidth;
     _cachedTotalHeight = total;
@@ -281,15 +292,16 @@ class TableData {
 
   /// 空の表を新規作成する (全セル空文字)。
   /// rows / cols は 1 以上に正規化。
-  factory TableData.empty(int rows, int cols, {
+  factory TableData.empty(
+    int rows,
+    int cols, {
     double colWidth = 100.0,
     double rowHeight = 36.0,
   }) {
     final r = rows < 1 ? 1 : rows;
     final c = cols < 1 ? 1 : cols;
     return TableData(
-      cells: List.generate(r,
-          (_) => List<String>.filled(c, '', growable: true),
+      cells: List.generate(r, (_) => List<String>.filled(c, '', growable: true),
           growable: true),
       defaultColWidth: colWidth,
       defaultRowHeight: rowHeight,
@@ -434,20 +446,15 @@ class TableData {
 
     final rawColW = json['colWidths'] as List<dynamic>?;
     final colWidths = rawColW != null
-        ? rawColW
-            .map((e) => (e as num?)?.toDouble())
-            .toList(growable: true)
+        ? rawColW.map((e) => (e as num?)?.toDouble()).toList(growable: true)
         : List<double?>.filled(maxCols, null, growable: true);
-    while (colWidths.length <
-        (cells.isEmpty ? 0 : cells[0].length)) {
+    while (colWidths.length < (cells.isEmpty ? 0 : cells[0].length)) {
       colWidths.add(null);
     }
 
     final rawRowH = json['rowHeights'] as List<dynamic>?;
     final rowHeights = rawRowH != null
-        ? rawRowH
-            .map((e) => (e as num?)?.toDouble())
-            .toList(growable: true)
+        ? rawRowH.map((e) => (e as num?)?.toDouble()).toList(growable: true)
         : List<double?>.filled(cells.length, null, growable: true);
     while (rowHeights.length < cells.length) {
       rowHeights.add(null);
@@ -455,10 +462,8 @@ class TableData {
 
     return TableData(
       cells: cells,
-      defaultColWidth:
-          (json['defaultColWidth'] as num?)?.toDouble() ?? 100.0,
-      defaultRowHeight:
-          (json['defaultRowHeight'] as num?)?.toDouble() ?? 36.0,
+      defaultColWidth: (json['defaultColWidth'] as num?)?.toDouble() ?? 100.0,
+      defaultRowHeight: (json['defaultRowHeight'] as num?)?.toDouble() ?? 36.0,
       colWidths: colWidths,
       rowHeights: rowHeights,
       headerRow: json['headerRow'] as bool? ?? false,
@@ -470,18 +475,23 @@ class TableData {
   }
 }
 
-
 /// アンカーモード: 接続可能な方向の数
 enum NodeAnchorMode {
-  twoWay,   // 左右のみ (east, west)
-  fourWay,  // 上下左右 (north, south, east, west)
+  twoWay, // 左右のみ (east, west)
+  fourWay, // 上下左右 (north, south, east, west)
   eightWay, // 8方向 (上下左右＋斜め)
 }
 
 /// ノードの接続方向
 enum AnchorDirection {
-  north, south, east, west,
-  northEast, northWest, southEast, southWest,
+  north,
+  south,
+  east,
+  west,
+  northEast,
+  northWest,
+  southEast,
+  southWest,
 }
 
 /// アンカーモードで使用可能な方向のリスト
@@ -491,8 +501,10 @@ List<AnchorDirection> anchorsForMode(NodeAnchorMode mode) {
       return [AnchorDirection.east, AnchorDirection.west];
     case NodeAnchorMode.fourWay:
       return [
-        AnchorDirection.north, AnchorDirection.south,
-        AnchorDirection.east, AnchorDirection.west,
+        AnchorDirection.north,
+        AnchorDirection.south,
+        AnchorDirection.east,
+        AnchorDirection.west,
       ];
     case NodeAnchorMode.eightWay:
       return AnchorDirection.values;
@@ -505,15 +517,20 @@ class NodeConnection {
   final AnchorDirection fromAnchor;
   final String toId;
   final AnchorDirection toAnchor;
+
   /// 接続線の太さ（デフォルト2.0）
   final double strokeWidth;
+
   /// 矢印を表示するか（デフォルト true）
   final bool showArrow;
+
   /// 矢印先端のサイズ倍率（デフォルト0.5＝表示100%）
   final double arrowHeadScale;
+
   /// 両方向矢印にするか (デフォルト false = 単方向)。
   /// true にすると from 側にも矢印を描画する。
   final bool bidirectional;
+
   /// 接続線の中央に表示するラベル文字列。 null or 空文字なら非表示。
   final String? label;
 
@@ -580,9 +597,7 @@ class NodeConnection {
 
   @override
   bool operator ==(Object other) =>
-      other is NodeConnection &&
-      fromId == other.fromId &&
-      toId == other.toId;
+      other is NodeConnection && fromId == other.fromId && toId == other.toId;
 
   @override
   int get hashCode => Object.hash(fromId, toId);
@@ -601,27 +616,37 @@ class MindMapNode {
   double height;
   bool collapsed;
   NodeAnchorMode anchorMode;
+
   /// 添付ファイルパス（jpg, png, pdf）
   String? attachmentPath;
+
   /// 添付ファイル名
   String? attachmentName;
+
   /// ノード個別タイトルフォントサイズ（null = グローバルデフォルトを使用）
   double? titleFontSize;
+
   /// ノード個別メモフォントサイズ（null = グローバルデフォルトを使用）
   double? memoFontSize;
+
   /// 動画ファイルのFirebase Storage URL（同期用）
   String? videoStorageUrl;
+
   /// 添付ファイルのFirebase Storage URL（同期用）
   String? attachmentStorageUrl;
+
   /// mp4動画のサムネイル画像パス
   String? videoThumbnailPath;
+
   /// このノードが「格納ノード」かどうか
   /// true の場合、[containedNodeIds] に格納された子ノードIDを保持する
   bool isContainer;
+
   /// 格納ノード内に保持されているノードIDのリスト
   /// このリストに含まれるIDを持つノードは画面上に表示されず、
   /// 接続線もすべて非表示になる（格納ノードが代表として残る）
   List<String>? containedNodeIds;
+
   /// このノードがどの格納ノードに格納されているか（無ければ null）
   /// [hiddenInContainer] != null のノードは画面上にレンダリングされない
   String? hiddenInContainer;
@@ -776,13 +801,14 @@ class MindMapNode {
     final textWidth = width - 25.0;
     final maxLines = titleMaxLines;
     if (title.isNotEmpty && textWidth > 0) {
-      final hasJapanese = RegExp(r'[\u3000-\u9FFF\uF900-\uFAFF]').hasMatch(title);
-      final avgCharWidth = hasJapanese
-          ? effectiveTitleFont * 0.95
-          : effectiveTitleFont * 0.55;
+      final hasJapanese =
+          RegExp(r'[\u3000-\u9FFF\uF900-\uFAFF]').hasMatch(title);
+      final avgCharWidth =
+          hasJapanese ? effectiveTitleFont * 0.95 : effectiveTitleFont * 0.55;
       final charsPerLine = (textWidth / avgCharWidth).floor().clamp(1, 100);
       // タイトル必要行数: テキスト長 / 1行の文字数。 最大は height で許容できる行数まで。
-      final titleLines = (title.length / charsPerLine).ceil().clamp(1, maxLines);
+      final titleLines =
+          (title.length / charsPerLine).ceil().clamp(1, maxLines);
       if (titleLines > 1) {
         final titleTotalH = titleLines * (effectiveTitleFont * 1.2) + 16;
         if (titleTotalH > height) {
@@ -794,11 +820,11 @@ class MindMapNode {
     if ((memoText ?? '').isNotEmpty) {
       final effectiveMemoFont = (memoFontSize ?? 12.0).clamp(6.0, 22.0);
       final memoTextWidth = width - 25.0;
-      final hasJpMemo = RegExp(r'[\u3000-\u9FFF\uF900-\uFAFF]').hasMatch(memoText!);
+      final hasJpMemo =
+          RegExp(r'[\u3000-\u9FFF\uF900-\uFAFF]').hasMatch(memoText!);
       // 日本語は全角想定だが文字幅差のばらつきを考慮してやや大きめに見積もる
-      final avgMemoCharW = hasJpMemo
-          ? effectiveMemoFont * 1.0
-          : effectiveMemoFont * 0.58;
+      final avgMemoCharW =
+          hasJpMemo ? effectiveMemoFont * 1.0 : effectiveMemoFont * 0.58;
       final memoCharsPerLine =
           (memoTextWidth / avgMemoCharW).floor().clamp(1, 200);
       // 明示的な改行（\n）ごとにセグメント分割して行数を合算
@@ -809,9 +835,7 @@ class MindMapNode {
       for (final seg in segments) {
         // 空行は1行としてカウント、改行だけのケースも保証
         final segLen = seg.isEmpty ? 0 : seg.length;
-        final lines = segLen == 0
-            ? 1
-            : (segLen / memoCharsPerLine).ceil();
+        final lines = segLen == 0 ? 1 : (segLen / memoCharsPerLine).ceil();
         memoLines += lines < 1 ? 1 : lines;
       }
       memoLines = memoLines.clamp(1, 200);
@@ -830,10 +854,10 @@ class MindMapNode {
     final isHttpUrl =
         ytUrl.startsWith('http://') || ytUrl.startsWith('https://');
     final isLocalYoutubePath = ytUrl.isNotEmpty && !hasYtId && !isHttpUrl;
-    final hasMp4 = ytUrl.isNotEmpty && !hasYtId &&
+    final hasMp4 = ytUrl.isNotEmpty &&
+        !hasYtId &&
         (_isMp4Url(ytUrl) ||
-            (isLocalYoutubePath &&
-                contentType == NodeContentType.youtube));
+            (isLocalYoutubePath && contentType == NodeContentType.youtube));
     // ショート動画は縦長 (9:16)。横幅 = ノード幅、高さ = 幅の 16/9 倍
     // にしてノード本来の `height` (デフォルト 40px) に依存しないようにする。
     // 旧実装ではノード高さに合わせていたため、ダウンロード直後にユーザーが
@@ -881,7 +905,7 @@ class MindMapNode {
           // ar = width / height なので height = width / ar
           h += width / ar;
         } else {
-          h += width * 0.6;  // 未取得時のフォールバック
+          h += width * 0.6; // 未取得時のフォールバック
         }
       } else {
         h += 36.0; // PDFアイコンバー
@@ -900,7 +924,7 @@ class MindMapNode {
     final hi = path.indexOf('#');
     if (hi >= 0) path = path.substring(0, hi);
     // ── 動画拡張子 ──
-    // YouTube ダウンロード経由 (youtube_explode_dart) の muxed コンテナは
+    // 過去の動画保存機能やローカル取り込みでは
     // mp4 / webm / 3gp 等が混ざり得る。Shorts 等で video-only fallback に
     // 落ちると `.webm` で保存されるケースが多い。
     // node_widget.dart の `NodeWidget.isMp4Url` と判定範囲を必ず揃えること
@@ -955,7 +979,8 @@ class MindMapNode {
   }
 
   /// ノード中心（visualHeightを使用）
-  Offset get center => Offset(position.dx + width / 2, position.dy + visualHeight / 2);
+  Offset get center =>
+      Offset(position.dx + width / 2, position.dy + visualHeight / 2);
 
   MindMapNode copyWith({
     String? title,
@@ -1020,9 +1045,8 @@ class MindMapNode {
       linkedPageId: linkedPageId == _sentinel
           ? this.linkedPageId
           : linkedPageId as String?,
-      pdfMemos: pdfMemos == _sentinel
-          ? this.pdfMemos
-          : pdfMemos as List<PdfMemo>?,
+      pdfMemos:
+          pdfMemos == _sentinel ? this.pdfMemos : pdfMemos as List<PdfMemo>?,
       pdfMemoFolders: pdfMemoFolders == _sentinel
           ? this.pdfMemoFolders
           : pdfMemoFolders as List<String>?,
@@ -1032,9 +1056,8 @@ class MindMapNode {
       attachmentAspectRatio: attachmentAspectRatio == _sentinel
           ? this.attachmentAspectRatio
           : attachmentAspectRatio as double?,
-      tableData: tableData == _sentinel
-          ? this.tableData
-          : tableData as TableData?,
+      tableData:
+          tableData == _sentinel ? this.tableData : tableData as TableData?,
     );
   }
 
@@ -1079,8 +1102,7 @@ class MindMapNode {
         'attachmentAspectRatio': attachmentAspectRatio,
       // 表 (テーブル) データ。 通常ノードは tableData=null なのでキーを
       // 出さず、 既存マップとの後方互換を保つ。
-      if (tableData != null)
-        'tableData': tableData!.toJson(),
+      if (tableData != null) 'tableData': tableData!.toJson(),
     };
   }
 
@@ -1104,8 +1126,7 @@ class MindMapNode {
       width: (json['width'] as num?)?.toDouble() ?? 140.0,
       height: (json['height'] as num?)?.toDouble() ?? 42.0,
       collapsed: json['collapsed'] as bool? ?? false,
-      anchorMode: NodeAnchorMode.values[
-          (json['anchorMode'] as int?) ?? 0],
+      anchorMode: NodeAnchorMode.values[(json['anchorMode'] as int?) ?? 0],
       attachmentPath: json['attachmentPath'] as String?,
       attachmentName: json['attachmentName'] as String?,
       titleFontSize: (json['titleFontSize'] as num?)?.toDouble(),
