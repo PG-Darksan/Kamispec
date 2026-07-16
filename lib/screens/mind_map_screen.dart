@@ -73384,8 +73384,12 @@ class _PaintText {
   double size;
   bool bold;
   bool italic;
+  final List<_PaintStroke> erasers;
   _PaintText(this.pos, this.text, this.color, this.size,
-      {this.bold = false, this.italic = false});
+      {this.bold = false,
+      this.italic = false,
+      List<_PaintStroke>? erasers})
+      : erasers = erasers ?? [];
 
   Map<String, dynamic> toJson() => {
         'x': pos.dx,
@@ -73395,6 +73399,8 @@ class _PaintText {
         's': size,
         if (bold) 'b': true,
         if (italic) 'i': true,
+        if (erasers.isNotEmpty)
+          'er': erasers.map((stroke) => stroke.toJson()).toList(),
       };
 
   factory _PaintText.fromJson(Map m) => _PaintText(
@@ -73405,11 +73411,29 @@ class _PaintText {
         (m['s'] as num?)?.toDouble() ?? 22.0,
         bold: m['b'] == true,
         italic: m['i'] == true,
+        erasers: ((m['er'] as List?) ?? const [])
+            .whereType<Map>()
+            .map((stroke) => _PaintStroke.fromJson(stroke))
+            .toList(),
       );
 }
 
 /// お絵かきページの現在ツール (= ユーザー要望: ペン/消しゴム/テキスト/図形/画像)。
 enum _PaintTool { pen, eraser, text, shape, image, select }
+
+/// 選択済み図形のリサイズ位置。線と矢印は start/end、それ以外は8方向。
+enum _PaintShapeResizeHandle {
+  topLeft,
+  top,
+  topRight,
+  right,
+  bottomRight,
+  bottom,
+  bottomLeft,
+  left,
+  start,
+  end,
+}
 
 /// 図形要素 (= ユーザー要望: 図形挿入)。 kind: 0=四角,1=楕円,2=線,3=矢印。
 class _PaintShape {
@@ -73418,7 +73442,10 @@ class _PaintShape {
   int color;
   double width;
   bool fill;
-  _PaintShape(this.kind, this.a, this.b, this.color, this.width, this.fill);
+  final List<_PaintStroke> erasers;
+  _PaintShape(this.kind, this.a, this.b, this.color, this.width, this.fill,
+      {List<_PaintStroke>? erasers})
+      : erasers = erasers ?? [];
 
   Map<String, dynamic> toJson() => {
         'k': kind,
@@ -73429,6 +73456,8 @@ class _PaintShape {
         'c': color,
         'w': width,
         'f': fill,
+        if (erasers.isNotEmpty)
+          'er': erasers.map((stroke) => stroke.toJson()).toList(),
       };
 
   factory _PaintShape.fromJson(Map m) => _PaintShape(
@@ -73440,7 +73469,32 @@ class _PaintShape {
         (m['c'] as num?)?.toInt() ?? 0xFF000000,
         (m['w'] as num?)?.toDouble() ?? 3.0,
         m['f'] == true,
+        erasers: ((m['er'] as List?) ?? const [])
+            .whereType<Map>()
+            .map((stroke) => _PaintStroke.fromJson(stroke))
+            .toList(),
       );
+}
+
+Map<_PaintShapeResizeHandle, Offset> _paintShapeResizeHandleCenters(
+    _PaintShape shape) {
+  if (shape.kind == 2 || shape.kind == 3) {
+    return {
+      _PaintShapeResizeHandle.start: shape.a,
+      _PaintShapeResizeHandle.end: shape.b,
+    };
+  }
+  final rect = Rect.fromPoints(shape.a, shape.b);
+  return {
+    _PaintShapeResizeHandle.topLeft: rect.topLeft,
+    _PaintShapeResizeHandle.top: Offset(rect.center.dx, rect.top),
+    _PaintShapeResizeHandle.topRight: rect.topRight,
+    _PaintShapeResizeHandle.right: Offset(rect.right, rect.center.dy),
+    _PaintShapeResizeHandle.bottomRight: rect.bottomRight,
+    _PaintShapeResizeHandle.bottom: Offset(rect.center.dx, rect.bottom),
+    _PaintShapeResizeHandle.bottomLeft: rect.bottomLeft,
+    _PaintShapeResizeHandle.left: Offset(rect.left, rect.center.dy),
+  };
 }
 
 /// 画像要素 (= ユーザー要望: 画像貼り付け)。 ローカルパス + 配置矩形。
@@ -74866,6 +74920,22 @@ class _PaintPageViewState extends State<_PaintPageView> {
     //   何も選択していない時は ignored にして背後 (マップ側) の処理へ流す。
     final bool ctrl = HardwareKeyboard.instance.isControlPressed ||
         HardwareKeyboard.instance.isMetaPressed;
+    // ── Ctrl/Cmd+Z / Ctrl/Cmd+Y: フリーノート内の元に戻す / 進める ──
+    // ここで必ず消費して、背後のマップ本体の undo/redo が誤って
+    // 発火しないようにする。インラインテキスト編集中は上の早期 return で
+    // TextField 側の文字履歴を優先する。
+    if (ctrl && k == LogicalKeyboardKey.keyZ) {
+      if (HardwareKeyboard.instance.isShiftPressed) {
+        _redoAction();
+      } else {
+        _undo();
+      }
+      return KeyEventResult.handled;
+    }
+    if (ctrl && k == LogicalKeyboardKey.keyY) {
+      _redoAction();
+      return KeyEventResult.handled;
+    }
     if (ctrl && k == LogicalKeyboardKey.keyC) {
       if (_copyPaintSelection()) return KeyEventResult.handled;
       return KeyEventResult.ignored;
@@ -74937,12 +75007,14 @@ class _PaintPageViewState extends State<_PaintPageView> {
           final c = _cloneShape(it);
           c.a += d;
           c.b += d;
+          _shiftPaintErasers(c.erasers, d);
           _sheet.shapes.add(c);
           _sheet.undo.add('shape');
           _selShapeSet.add(_sheet.shapes.length - 1);
         } else if (it is _PaintText) {
           final c = _cloneText(it);
           c.pos += d;
+          _shiftPaintErasers(c.erasers, d);
           _sheet.texts.add(c);
           _sheet.undo.add('text');
           _selTextSet.add(_sheet.texts.length - 1);
@@ -74955,8 +75027,10 @@ class _PaintPageViewState extends State<_PaintPageView> {
         } else if (it is _PaintShape) {
           it.a += d;
           it.b += d;
+          _shiftPaintErasers(it.erasers, d);
         } else if (it is _PaintText) {
           it.pos += d;
+          _shiftPaintErasers(it.erasers, d);
         }
       }
       _dirty = true;
@@ -75001,6 +75075,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
   Offset? _eraserLastPoint;
   _PaintEraseSnapshot? _eraserBeforeSnapshot;
   bool _eraserChanged = false;
+  final Set<_PaintText> _eraserTouchedTexts = <_PaintText>{};
+  final Set<_PaintShape> _eraserTouchedShapes = <_PaintShape>{};
   // ── インラインテキスト編集 (= ユーザー要望: Word の様に挿入位置で直接入力) ──
   Offset? _textEditPos; // 編集中テキストの左上 (キャンバス座標)。 null で非編集。
   int _textEditIndex = -1; // 既存テキストを編集中なら index、 新規は -1。
@@ -75024,6 +75100,11 @@ class _PaintPageViewState extends State<_PaintPageView> {
   bool _selMoving = false;
   Offset _selRangeStart = Offset.zero;
   Offset _selLastP = Offset.zero;
+  _PaintShapeResizeHandle? _shapeResizeHandle;
+  int _shapeResizeIndex = -1;
+  _PaintShape? _shapeResizeOrig;
+  _PaintEraseSnapshot? _shapeResizeBeforeSnapshot;
+  bool _shapeResizeChanged = false;
 
   bool _isAnySelSet() =>
       _selImgSet.isNotEmpty ||
@@ -75079,10 +75160,14 @@ class _PaintPageViewState extends State<_PaintPageView> {
       if (i < _sheet.shapes.length) {
         _sheet.shapes[i].a += d;
         _sheet.shapes[i].b += d;
+        _shiftPaintErasers(_sheet.shapes[i].erasers, d);
       }
     }
     for (final i in _selTextSet) {
-      if (i < _sheet.texts.length) _sheet.texts[i].pos += d;
+      if (i < _sheet.texts.length) {
+        _sheet.texts[i].pos += d;
+        _shiftPaintErasers(_sheet.texts[i].erasers, d);
+      }
     }
   }
 
@@ -75106,7 +75191,144 @@ class _PaintPageViewState extends State<_PaintPageView> {
     }
   }
 
-  void _onSelectPanStart(Offset p) {
+  ({int index, _PaintShapeResizeHandle handle})? _shapeResizeHit(
+      Offset p, double fit) {
+    if (_selShapeSet.length != 1) return null;
+    final index = _selShapeSet.first;
+    if (index < 0 || index >= _sheet.shapes.length) return null;
+    // Keep the hit target roughly the same size on screen even when a large
+    // sheet is fitted at a very small scale.
+    final radius = 13.0 / math.max(fit, 0.01);
+    _PaintShapeResizeHandle? best;
+    var bestDistance = double.infinity;
+    for (final entry
+        in _paintShapeResizeHandleCenters(_sheet.shapes[index]).entries) {
+      final distance = (p - entry.value).distance;
+      if (distance <= radius && distance < bestDistance) {
+        best = entry.key;
+        bestDistance = distance;
+      }
+    }
+    return best == null ? null : (index: index, handle: best);
+  }
+
+  Rect _resizedPaintShapeRect(Rect original, _PaintShapeResizeHandle handle,
+      Offset pointer) {
+    const minSize = 12.0;
+    var left = original.left;
+    var top = original.top;
+    var right = original.right;
+    var bottom = original.bottom;
+    switch (handle) {
+      case _PaintShapeResizeHandle.topLeft:
+        left = math.min(pointer.dx, right - minSize);
+        top = math.min(pointer.dy, bottom - minSize);
+        break;
+      case _PaintShapeResizeHandle.top:
+        top = math.min(pointer.dy, bottom - minSize);
+        break;
+      case _PaintShapeResizeHandle.topRight:
+        right = math.max(pointer.dx, left + minSize);
+        top = math.min(pointer.dy, bottom - minSize);
+        break;
+      case _PaintShapeResizeHandle.right:
+        right = math.max(pointer.dx, left + minSize);
+        break;
+      case _PaintShapeResizeHandle.bottomRight:
+        right = math.max(pointer.dx, left + minSize);
+        bottom = math.max(pointer.dy, top + minSize);
+        break;
+      case _PaintShapeResizeHandle.bottom:
+        bottom = math.max(pointer.dy, top + minSize);
+        break;
+      case _PaintShapeResizeHandle.bottomLeft:
+        left = math.min(pointer.dx, right - minSize);
+        bottom = math.max(pointer.dy, top + minSize);
+        break;
+      case _PaintShapeResizeHandle.left:
+        left = math.min(pointer.dx, right - minSize);
+        break;
+      case _PaintShapeResizeHandle.start:
+      case _PaintShapeResizeHandle.end:
+        break;
+    }
+    return Rect.fromLTRB(left, top, right, bottom);
+  }
+
+  void _updateShapeResize(Offset p) {
+    final handle = _shapeResizeHandle;
+    final original = _shapeResizeOrig;
+    final index = _shapeResizeIndex;
+    if (handle == null ||
+        original == null ||
+        index < 0 ||
+        index >= _sheet.shapes.length) {
+      return;
+    }
+    setState(() {
+      final target = _sheet.shapes[index];
+      if (original.kind == 2 || original.kind == 3) {
+        final nextA = handle == _PaintShapeResizeHandle.start ? p : original.a;
+        final nextB = handle == _PaintShapeResizeHandle.end ? p : original.b;
+        target.a = nextA;
+        target.b = nextB;
+        target.erasers
+          ..clear()
+          ..addAll(_transformLineErasers(
+              original.erasers, original.a, original.b, nextA, nextB));
+      } else {
+        final oldRect = Rect.fromPoints(original.a, original.b);
+        final nextRect = _resizedPaintShapeRect(oldRect, handle, p);
+        target.a = nextRect.topLeft;
+        target.b = nextRect.bottomRight;
+        target.erasers
+          ..clear()
+          ..addAll(
+              _transformPaintErasers(original.erasers, oldRect, nextRect));
+      }
+      _shapeResizeChanged = target.a != original.a || target.b != original.b;
+      _dirty = _dirty || _shapeResizeChanged;
+    });
+  }
+
+  void _finishShapeResize() {
+    final before = _shapeResizeBeforeSnapshot;
+    final changed = _shapeResizeChanged;
+    setState(() {
+      if (changed && before != null) {
+        _sheet.eraseUndo.add((
+          list: 'edit',
+          index: 0,
+          item: _PaintEraseEdit(
+            before: before,
+            after: _makeEraseSnapshot(),
+          ),
+        ));
+        _sheet.undo.add('erase');
+        _redo.clear();
+        _dirty = true;
+      }
+      _shapeResizeHandle = null;
+      _shapeResizeIndex = -1;
+      _shapeResizeOrig = null;
+      _shapeResizeBeforeSnapshot = null;
+      _shapeResizeChanged = false;
+    });
+    if (changed) _persist();
+  }
+
+  void _onSelectPanStart(Offset p, double fit) {
+    final resizeHit = _shapeResizeHit(p, fit);
+    if (resizeHit != null) {
+      _shapeResizeHandle = resizeHit.handle;
+      _shapeResizeIndex = resizeHit.index;
+      _shapeResizeOrig = _cloneShape(_sheet.shapes[resizeHit.index]);
+      _shapeResizeBeforeSnapshot = _makeEraseSnapshot();
+      _shapeResizeChanged = false;
+      _selMoving = false;
+      _selRanging = false;
+      return;
+    }
     final hit = _selectHitTopmost(p);
     if (hit != null) {
       if (!_isSel(hit))
@@ -75129,7 +75351,9 @@ class _PaintPageViewState extends State<_PaintPageView> {
   }
 
   void _onSelectPanUpdate(Offset p) {
-    if (_selRanging) {
+    if (_shapeResizeHandle != null) {
+      _updateShapeResize(p);
+    } else if (_selRanging) {
       setState(() {
         _rangeRect = Rect.fromPoints(_selRangeStart, p);
         _selectInRect(_rangeRect!);
@@ -75145,7 +75369,9 @@ class _PaintPageViewState extends State<_PaintPageView> {
   }
 
   void _onSelectPanEnd() {
-    if (_selRanging) {
+    if (_shapeResizeHandle != null) {
+      _finishShapeResize();
+    } else if (_selRanging) {
       setState(() {
         _selRanging = false;
         _rangeRect = null;
@@ -75236,7 +75462,9 @@ class _PaintPageViewState extends State<_PaintPageView> {
                   onPanUpdate: (d) {
                     if (idx >= _sheet.texts.length) return;
                     setState(() {
-                      _sheet.texts[idx].pos += d.delta / fit;
+                      final delta = d.delta / fit;
+                      _sheet.texts[idx].pos += delta;
+                      _shiftPaintErasers(_sheet.texts[idx].erasers, delta);
                       _dirty = true;
                     });
                   },
@@ -75497,7 +75725,15 @@ class _PaintPageViewState extends State<_PaintPageView> {
       setState(() {
         _eraserCursor = p;
         _eraserLastPoint = p;
+        _eraserTouchedTexts.clear();
+        _eraserTouchedShapes.clear();
         _eraserBeforeSnapshot = _makeEraseSnapshot();
+        _curStroke = _PaintStroke(
+          Colors.transparent.toARGB32(),
+          _eraserWidth,
+          [p],
+          erase: true,
+        );
         _eraserChanged = _eraseAlong(p, p);
       });
     } else if (_tool == _PaintTool.pen) {
@@ -75522,6 +75758,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
         final from = _eraserLastPoint ?? p;
         _eraserCursor = p;
         _eraserLastPoint = p;
+        _curStroke?.points.add(p);
         _eraserChanged = _eraseAlong(from, p) || _eraserChanged;
       });
     } else if (_curStroke != null) {
@@ -75538,6 +75775,15 @@ class _PaintPageViewState extends State<_PaintPageView> {
       final before = _eraserBeforeSnapshot;
       setState(() {
         if (_eraserChanged && before != null) {
+          final mask = _curStroke;
+          if (mask != null) {
+            for (final text in _eraserTouchedTexts) {
+              text.erasers.add(_cloneStroke(mask));
+            }
+            for (final shape in _eraserTouchedShapes) {
+              shape.erasers.add(_cloneStroke(mask));
+            }
+          }
           _sheet.eraseUndo.add((
             list: 'edit',
             index: 0,
@@ -75553,6 +75799,9 @@ class _PaintPageViewState extends State<_PaintPageView> {
         _eraserBeforeSnapshot = null;
         _eraserLastPoint = null;
         _eraserChanged = false;
+        _eraserTouchedTexts.clear();
+        _eraserTouchedShapes.clear();
+        _curStroke = null;
       });
       if (_dirty) _persist();
     } else if (_curStroke != null) {
@@ -75700,16 +75949,132 @@ class _PaintPageViewState extends State<_PaintPageView> {
     return (p - proj).distance;
   }
 
+  bool _pointInEllipse(Offset p, Rect rect) {
+    if (rect.width <= 0.001 || rect.height <= 0.001) return false;
+    final dx = (p.dx - rect.center.dx) / (rect.width / 2);
+    final dy = (p.dy - rect.center.dy) / (rect.height / 2);
+    return dx * dx + dy * dy <= 1.0;
+  }
+
+  bool _arrowHeadHit(_PaintShape shape, Offset p, double radius) {
+    final direction = shape.b - shape.a;
+    final length = direction.distance;
+    if (length < 1) return (p - shape.b).distance <= radius;
+    final ux = direction.dx / length;
+    final uy = direction.dy / length;
+    final px = -uy;
+    final py = ux;
+    final head = (shape.width * 2.8).clamp(18.0, 90.0).toDouble();
+    final halfBase = head * 0.62;
+    final base = Offset(shape.b.dx - ux * head, shape.b.dy - uy * head);
+    final left = Offset(base.dx + px * halfBase, base.dy + py * halfBase);
+    final right = Offset(base.dx - px * halfBase, base.dy - py * halfBase);
+    final headPath = Path()
+      ..moveTo(shape.b.dx, shape.b.dy)
+      ..lineTo(left.dx, left.dy)
+      ..lineTo(right.dx, right.dy)
+      ..close();
+    return headPath.contains(p) ||
+        _distToSegment(p, shape.b, left) <= radius ||
+        _distToSegment(p, left, right) <= radius ||
+        _distToSegment(p, right, shape.b) <= radius;
+  }
+
   _PaintStroke _cloneStroke(_PaintStroke s) =>
       _PaintStroke(s.color, s.width, List<Offset>.from(s.points),
           erase: s.erase);
 
   _PaintText _cloneText(_PaintText t) =>
       _PaintText(t.pos, t.text, t.color, t.size,
-          bold: t.bold, italic: t.italic);
+          bold: t.bold,
+          italic: t.italic,
+          erasers: t.erasers.map(_cloneStroke).toList());
 
   _PaintShape _cloneShape(_PaintShape s) =>
-      _PaintShape(s.kind, s.a, s.b, s.color, s.width, s.fill);
+      _PaintShape(s.kind, s.a, s.b, s.color, s.width, s.fill,
+          erasers: s.erasers.map(_cloneStroke).toList());
+
+  void _shiftPaintErasers(List<_PaintStroke> erasers, Offset delta) {
+    if (delta == Offset.zero) return;
+    for (final stroke in erasers) {
+      for (int i = 0; i < stroke.points.length; i++) {
+        stroke.points[i] += delta;
+      }
+    }
+  }
+
+  List<_PaintStroke> _transformPaintErasers(
+      List<_PaintStroke> erasers, Rect from, Rect to) {
+    const epsilon = 0.001;
+    final hasWidth = from.width.abs() > epsilon;
+    final hasHeight = from.height.abs() > epsilon;
+    final sx = hasWidth ? to.width / from.width : 1.0;
+    final sy = hasHeight ? to.height / from.height : 1.0;
+    final strokeScale = hasWidth && hasHeight
+        ? math.sqrt((sx.abs() * sy.abs()).clamp(0.01, 10000.0))
+        : hasWidth
+            ? sx.abs()
+            : hasHeight
+                ? sy.abs()
+                : 1.0;
+    Offset mapPoint(Offset p) => Offset(
+          hasWidth
+              ? to.left + (p.dx - from.left) * sx
+              : p.dx + (to.center.dx - from.center.dx),
+          hasHeight
+              ? to.top + (p.dy - from.top) * sy
+              : p.dy + (to.center.dy - from.center.dy),
+        );
+    return erasers
+        .map((stroke) => _PaintStroke(
+              stroke.color,
+              (stroke.width * strokeScale)
+                  .clamp(1.0, 100000.0)
+                  .toDouble(),
+              stroke.points.map(mapPoint).toList(),
+              erase: true,
+            ))
+        .toList();
+  }
+
+  List<_PaintStroke> _transformLineErasers(List<_PaintStroke> erasers,
+      Offset oldA, Offset oldB, Offset newA, Offset newB) {
+    const epsilon = 0.001;
+    final oldVector = oldB - oldA;
+    final newVector = newB - newA;
+    final oldLength = oldVector.distance;
+    final newLength = newVector.distance;
+    if (oldLength <= epsilon || newLength <= epsilon) {
+      return _transformPaintErasers(
+        erasers,
+        Rect.fromPoints(oldA, oldB),
+        Rect.fromPoints(newA, newB),
+      );
+    }
+    final oldUnit = oldVector / oldLength;
+    final newUnit = newVector / newLength;
+    final oldNormal = Offset(-oldUnit.dy, oldUnit.dx);
+    final newNormal = Offset(-newUnit.dy, newUnit.dx);
+    final scale = newLength / oldLength;
+    Offset mapPoint(Offset p) {
+      final relative = p - oldA;
+      final along = relative.dx * oldUnit.dx + relative.dy * oldUnit.dy;
+      final across =
+          relative.dx * oldNormal.dx + relative.dy * oldNormal.dy;
+      return newA + newUnit * (along * scale) + newNormal * (across * scale);
+    }
+
+    return erasers
+        .map((stroke) => _PaintStroke(
+              stroke.color,
+              (stroke.width * scale)
+                  .clamp(1.0, 100000.0)
+                  .toDouble(),
+              stroke.points.map(mapPoint).toList(),
+              erase: true,
+            ))
+        .toList();
+  }
 
   _PaintEraseSnapshot _makeEraseSnapshot() => _PaintEraseSnapshot(
         strokes: _sheet.strokes.map(_cloneStroke).toList(),
@@ -75741,7 +76106,10 @@ class _PaintPageViewState extends State<_PaintPageView> {
 
   bool _appendStrokeAfterErase(
       _PaintStroke stroke, Offset from, Offset to, List<_PaintStroke> out) {
-    if (stroke.erase) return true;
+    if (stroke.erase) {
+      out.add(stroke);
+      return false;
+    }
     if (stroke.points.isEmpty) return false;
     final radius = _eraserWidth / 2 + stroke.width / 2;
     if (stroke.points.length == 1) {
@@ -75803,42 +76171,59 @@ class _PaintPageViewState extends State<_PaintPageView> {
     return true;
   }
 
-  /// 消しゴムが [p] を通過した時、触れたテキスト/図形を削除する。
+  /// 消しゴムが [p] を通過した時、部分消去マスクの対象になる
+  /// テキスト/図形を記録する。要素自体はリストから削除しない。
   bool _eraseObjectsAtPoint(Offset p) {
     final double r = _eraserWidth / 2;
-    bool removed = false;
-    // テキスト: 消しゴム円がテキスト矩形に重なれば削除。
+    bool touched = false;
+    // テキスト: 消しゴム円がテキスト矩形に重なれば、このジェスチャーの
+    // マスク対象にする。実際に消えるのは文字の描画ピクセルだけ。
     for (int i = _sheet.texts.length - 1; i >= 0; i--) {
       final t = _sheet.texts[i];
       final s = _measureText(t);
       final rect = Rect.fromLTWH(t.pos.dx, t.pos.dy,
           s.width < 24 ? 24 : s.width, s.height < 18 ? 18 : s.height);
       if (rect.inflate(r).contains(p)) {
-        _sheet.texts.removeAt(i);
-        removed = true;
+        _eraserTouchedTexts.add(t);
+        touched = true;
       }
     }
-    // 図形: 線/矢印 (kind 2/3) は線分との距離、 四角/楕円は枠 (塗りなら内部) で判定。
+    // 図形: 描画形状そのものと消しゴム円の重なりで対象を記録する。
     for (int i = _sheet.shapes.length - 1; i >= 0; i--) {
       final sh = _sheet.shapes[i];
       final tol = r + sh.width;
       bool hit;
-      if (sh.kind == 2 || sh.kind == 3) {
+      if (sh.kind == 2) {
         hit = _distToSegment(p, sh.a, sh.b) <= tol;
+      } else if (sh.kind == 3) {
+        hit = _distToSegment(p, sh.a, sh.b) <= tol ||
+            _arrowHeadHit(sh, p, r);
       } else {
         final rect = Rect.fromPoints(sh.a, sh.b);
-        if (sh.fill) {
+        if (sh.kind == 1) {
+          final outer = rect.inflate(sh.fill ? r : tol);
+          if (!_pointInEllipse(p, outer)) {
+            hit = false;
+          } else if (sh.fill) {
+            hit = true;
+          } else {
+            final inner = rect.deflate(tol);
+            hit = inner.width <= 0 ||
+                inner.height <= 0 ||
+                !_pointInEllipse(p, inner);
+          }
+        } else if (sh.fill) {
           hit = rect.inflate(r).contains(p);
         } else {
           hit = rect.inflate(tol).contains(p) && !rect.deflate(tol).contains(p);
         }
       }
       if (hit) {
-        _sheet.shapes.removeAt(i);
-        removed = true;
+        _eraserTouchedShapes.add(sh);
+        touched = true;
       }
     }
-    return removed;
+    return touched;
   }
 
   bool _eraseAlong(Offset from, Offset to) {
@@ -75905,9 +76290,13 @@ class _PaintPageViewState extends State<_PaintPageView> {
           _sheet.texts.removeAt(_textEditIndex);
         } else {
           final old = _sheet.texts[_textEditIndex];
+          final shiftedErasers = old.erasers.map(_cloneStroke).toList();
+          _shiftPaintErasers(shiftedErasers, pos - old.pos);
           _sheet.texts[_textEditIndex] = _PaintText(
               pos, txt, old.color, _textSize,
-              bold: _textBold, italic: _textItalic);
+              bold: _textBold,
+              italic: _textItalic,
+              erasers: shiftedErasers);
           nextSelText = _textEditIndex;
         }
       } else if (txt.trim().isNotEmpty) {
@@ -75966,7 +76355,10 @@ class _PaintPageViewState extends State<_PaintPageView> {
     if (_selText < 0 || _selText >= _sheet.texts.length) return;
     if (_textDragOrig == null) return;
     setState(() {
-      _sheet.texts[_selText].pos = _textDragOrig! + (p - _textDragStart);
+      final text = _sheet.texts[_selText];
+      final next = _textDragOrig! + (p - _textDragStart);
+      _shiftPaintErasers(text.erasers, next - text.pos);
+      text.pos = next;
       _dirty = true;
     });
   }
@@ -76904,7 +77296,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
                                   } else if (isImage) {
                                     _onImagePanStart(p, fit);
                                   } else if (isSelect) {
-                                    _onSelectPanStart(p);
+                                    _onSelectPanStart(p, fit);
                                   } else {
                                     _onPanStart(p);
                                   }
@@ -76959,6 +77351,12 @@ class _PaintPageViewState extends State<_PaintPageView> {
                                     eraserCursor:
                                         isEraser ? _eraserCursor : null,
                                     eraserWidth: _eraserWidth,
+                                    liveEraserTexts: isEraser
+                                        ? _eraserTouchedTexts
+                                        : const <_PaintText>{},
+                                    liveEraserShapes: isEraser
+                                        ? _eraserTouchedShapes
+                                        : const <_PaintShape>{},
                                     selImgSet: isSelect ? _selImgSet : const {},
                                     selShapeSet:
                                         isSelect ? _selShapeSet : const {},
@@ -77706,6 +78104,8 @@ class _PaintCanvasPainter extends CustomPainter {
   final int editingText; // インライン編集中の既存テキスト index (描画を抑止)。
   final Offset? eraserCursor; // 消しゴムカーソル位置 (キャンバス座標)。
   final double eraserWidth;
+  final Set<_PaintText> liveEraserTexts;
+  final Set<_PaintShape> liveEraserShapes;
   // ── 選択ツールの複数選択 + ラバーバンド矩形 ──
   final Set<int> selImgSet;
   final Set<int> selShapeSet;
@@ -77718,6 +78118,8 @@ class _PaintCanvasPainter extends CustomPainter {
       this.selText = -1,
       this.eraserCursor,
       this.eraserWidth = 16,
+      this.liveEraserTexts = const {},
+      this.liveEraserShapes = const {},
       this.selImgSet = const {},
       this.selShapeSet = const {},
       this.selTextSet = const {},
@@ -77832,13 +78234,27 @@ class _PaintCanvasPainter extends CustomPainter {
     if (currentStroke != null && !currentStroke!.erase) {
       _drawStroke(canvas, currentStroke!);
     }
-    // ── 図形/テキストを別レイヤーに描き、 消しゴムストロークで部分的にくり抜く
-    //    (= ユーザー要望: 図形/テキストも「触れた部分だけ」 消える)。 BlendMode.clear
-    //    でくり抜くと下 (画像/ペン線/背景) が見える = 部分消去。 ペン線レイヤー
-    //    (base) の前後関係には影響しないので「消した後に描いた線」 は消えない。 ──
-    canvas.saveLayer(null, Paint());
+    // ── 図形/テキストを要素ごとのレイヤーに描き、各要素が持つ消去マスクだけで
+    //    部分的にくり抜く。後から作った要素には過去の消し跡が適用されない。 ──
+    final liveEraser = currentStroke?.erase == true ? currentStroke : null;
     for (final s in sheet.shapes) {
-      _drawShape(canvas, s);
+      final shapeLiveEraser =
+          liveEraser != null && liveEraserShapes.contains(s)
+              ? liveEraser
+              : null;
+      if (s.erasers.isEmpty && shapeLiveEraser == null) {
+        _drawShape(canvas, s);
+      } else {
+        canvas.saveLayer(null, Paint());
+        _drawShape(canvas, s);
+        for (final eraser in s.erasers) {
+          _drawStroke(canvas, eraser, blend: BlendMode.clear);
+        }
+        if (shapeLiveEraser != null) {
+          _drawStroke(canvas, shapeLiveEraser, blend: BlendMode.clear);
+        }
+        canvas.restore();
+      }
     }
     if (currentShape != null) _drawShape(canvas, currentShape!);
     for (int ti = 0; ti < sheet.texts.length; ti++) {
@@ -77858,7 +78274,22 @@ class _PaintCanvasPainter extends CustomPainter {
         ),
         textDirection: TextDirection.ltr,
       )..layout();
-      tp.paint(canvas, t.pos);
+      final textLiveEraser = liveEraser != null && liveEraserTexts.contains(t)
+          ? liveEraser
+          : null;
+      if (t.erasers.isEmpty && textLiveEraser == null) {
+        tp.paint(canvas, t.pos);
+      } else {
+        canvas.saveLayer(null, Paint());
+        tp.paint(canvas, t.pos);
+        for (final eraser in t.erasers) {
+          _drawStroke(canvas, eraser, blend: BlendMode.clear);
+        }
+        if (textLiveEraser != null) {
+          _drawStroke(canvas, textLiveEraser, blend: BlendMode.clear);
+        }
+        canvas.restore();
+      }
       // 選択中テキストの枠 (= ユーザー要望: 移動できるよう選択を可視化)。
       if (ti == selText) {
         final pad = 2 / scale;
@@ -77871,14 +78302,6 @@ class _PaintCanvasPainter extends CustomPainter {
               ..strokeWidth = 1.5 / scale);
       }
     }
-    // ── 消しゴムストロークで図形/テキストレイヤーを部分的にくり抜く (部分消去) ──
-    for (final s in sheet.strokes) {
-      if (s.erase) _drawStroke(canvas, s, blend: BlendMode.clear);
-    }
-    if (currentStroke != null && currentStroke!.erase) {
-      _drawStroke(canvas, currentStroke!, blend: BlendMode.clear);
-    }
-    canvas.restore(); // 図形/テキストレイヤーを base へ合成
     // ── 選択中画像の枠 + 右下リサイズハンドル ──
     if (selImage >= 0 && selImage < sheet.images.length) {
       final r = sheet.images[selImage].rect;
@@ -77926,6 +78349,23 @@ class _PaintCanvasPainter extends CustomPainter {
       if (i < sheet.shapes.length) {
         final s = sheet.shapes[i];
         canvas.drawRect(Rect.fromPoints(s.a, s.b).inflate(4 / scale), selPaint);
+      }
+    }
+    if (selShapeSet.length == 1) {
+      final index = selShapeSet.first;
+      if (index >= 0 && index < sheet.shapes.length) {
+        final half = 7 / scale;
+        for (final center
+            in _paintShapeResizeHandleCenters(sheet.shapes[index]).values) {
+          final handleRect = Rect.fromCenter(
+              center: center, width: half * 2, height: half * 2);
+          canvas.drawRect(handleRect, Paint()..color = Colors.white);
+          canvas.drawRect(
+              handleRect.deflate(1.5 / scale),
+              Paint()
+                ..color = const Color(0xFFEC407A)
+                ..style = PaintingStyle.fill);
+        }
       }
     }
     for (final i in selTextSet) {
@@ -88357,6 +88797,9 @@ Future<String> _drawerPageMetricText(
   switch (type) {
     case 'bookshelf':
       return '${page.nodes.length} ${provider.t('drawer.itemSuffix')}';
+    case 'paint':
+      final items = await _paintElementCountForPage(id);
+      return '$items ${provider.t('drawer.itemSuffix')}';
     case 'document':
       final chars = await _documentCharCountForPage(id);
       return '$chars ${provider.t('drawer.charSuffix')}';
@@ -88373,6 +88816,8 @@ String _drawerPageMetricFallback(dynamic page, MindMapProvider provider) {
   switch (type) {
     case 'bookshelf':
       return '${page.nodes.length} ${provider.t('drawer.itemSuffix')}';
+    case 'paint':
+      return '0 ${provider.t('drawer.itemSuffix')}';
     case 'document':
       return '0 ${provider.t('drawer.charSuffix')}';
     case 'videoEditor':
@@ -88401,6 +88846,56 @@ Future<bool> _pageHasPlacedContent(dynamic page) async {
     default:
       return true;
   }
+}
+
+/// 保存済みフリーノートの要素数。
+///
+/// 現行形式 `{sheets:[{s,t,sh,im}],sel}` と、旧形式のストローク配列、
+/// `{s,t}` のいずれも読めるようにする。消しゴムマスク (`e:true`)
+/// は表示中の対象を削る編集情報であり、独立した要素には数えない。
+Future<int> _paintElementCountForPage(String pageId) async {
+  if (pageId.isEmpty) return 0;
+
+  int listCount(dynamic value, {bool skipEraseMasks = false}) {
+    if (value is! List) return 0;
+    var count = 0;
+    for (final item in value) {
+      if (item is! Map) continue;
+      if (skipEraseMasks && item['e'] == true) continue;
+      count++;
+    }
+    return count;
+  }
+
+  int sheetCount(dynamic value) {
+    if (value is! Map) return 0;
+    return listCount(value['s'], skipEraseMasks: true) +
+        listCount(value['t']) +
+        listCount(value['sh']) +
+        listCount(value['im']);
+  }
+
+  try {
+    final sp = await SharedPreferences.getInstance();
+    final raw = sp.getString('paint_$pageId');
+    if (raw == null || raw.isEmpty) return 0;
+    final decoded = jsonDecode(raw);
+    if (decoded is List) {
+      return listCount(decoded, skipEraseMasks: true);
+    }
+    if (decoded is Map) {
+      final sheets = decoded['sheets'];
+      if (sheets is List) {
+        var total = 0;
+        for (final sheet in sheets) {
+          total += sheetCount(sheet);
+        }
+        return total;
+      }
+      return sheetCount(decoded);
+    }
+  } catch (_) {}
+  return 0;
 }
 
 Future<int> _documentCharCountForPage(String pageId) async {
