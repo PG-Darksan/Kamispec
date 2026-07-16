@@ -235,22 +235,34 @@ class MainActivity : FlutterActivity() {
         return try {
             val manager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             val clip = manager.primaryClip ?: return null
+            val describedImageMime = if (clip.itemCount == 1) {
+                (0 until clip.description.mimeTypeCount)
+                    .map { clip.description.getMimeType(it) }
+                    .firstOrNull { it.startsWith("image/", ignoreCase = true) }
+            } else {
+                null
+            }
             for (i in 0 until clip.itemCount) {
                 val item = clip.getItemAt(i)
                 val uri = item.uri ?: item.intent?.data ?: uriFromClipboardText(item.text?.toString())
                 if (uri == null) continue
                 val guessed = guessImageMime(uri)
-                val type = contentResolver.getType(uri) ?: guessed
-                if (type != null && !type.startsWith("image/")) continue
-                if (type == null && guessed == null && uri.scheme != "content") continue
-                val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                    ?: continue
-                if (bytes.isNotEmpty()) {
-                    return mapOf(
-                        "bytes" to bytes,
-                        "mime" to (type ?: guessed ?: "image/png")
-                    )
+                val declaredImageMime = try {
+                    contentResolver.getType(uri)
+                } catch (_: Exception) {
+                    null
                 }
+                    ?.takeIf { it.startsWith("image/", ignoreCase = true) }
+                val bytes = try {
+                    contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                } catch (_: Exception) {
+                    null
+                } ?: continue
+                if (bytes.isEmpty()) continue
+                val sniffed = sniffImageMime(bytes)
+                val imageMime = declaredImageMime ?: guessed ?: sniffed ?: describedImageMime
+                if (imageMime == null) continue
+                return mapOf("bytes" to bytes, "mime" to imageMime)
             }
             null
         } catch (e: Exception) {
@@ -282,8 +294,53 @@ class MainActivity : FlutterActivity() {
             lower.endsWith(".webp") -> "image/webp"
             lower.endsWith(".gif") -> "image/gif"
             lower.endsWith(".bmp") -> "image/bmp"
+            lower.endsWith(".tif") || lower.endsWith(".tiff") -> "image/tiff"
+            lower.endsWith(".heic") -> "image/heic"
+            lower.endsWith(".heif") -> "image/heif"
+            lower.endsWith(".avif") -> "image/avif"
             lower.endsWith(".png") -> "image/png"
             else -> null
+        }
+    }
+
+    /// MIME が application/octet-stream でも、画像のマジックバイトから判定する。
+    private fun sniffImageMime(bytes: ByteArray): String? {
+        if (matchesBytes(bytes, 0, intArrayOf(0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A))) {
+            return "image/png"
+        }
+        if (matchesBytes(bytes, 0, intArrayOf(0xFF, 0xD8, 0xFF))) return "image/jpeg"
+        if (matchesAscii(bytes, 0, "GIF87a") || matchesAscii(bytes, 0, "GIF89a")) {
+            return "image/gif"
+        }
+        if (matchesAscii(bytes, 0, "RIFF") && matchesAscii(bytes, 8, "WEBP")) {
+            return "image/webp"
+        }
+        if (matchesAscii(bytes, 0, "BM")) return "image/bmp"
+        if (matchesBytes(bytes, 0, intArrayOf(0x49, 0x49, 0x2A, 0x00)) ||
+            matchesBytes(bytes, 0, intArrayOf(0x4D, 0x4D, 0x00, 0x2A))) {
+            return "image/tiff"
+        }
+        if (matchesAscii(bytes, 4, "ftyp")) {
+            val brands = listOf("heic", "heix", "hevc", "hevx", "mif1", "msf1")
+            if (brands.any { matchesAscii(bytes, 8, it) }) return "image/heic"
+            if (matchesAscii(bytes, 8, "avif") || matchesAscii(bytes, 8, "avis")) {
+                return "image/avif"
+            }
+        }
+        return null
+    }
+
+    private fun matchesBytes(bytes: ByteArray, offset: Int, expected: IntArray): Boolean {
+        if (offset < 0 || bytes.size < offset + expected.size) return false
+        return expected.indices.all { index ->
+            (bytes[offset + index].toInt() and 0xFF) == expected[index]
+        }
+    }
+
+    private fun matchesAscii(bytes: ByteArray, offset: Int, expected: String): Boolean {
+        if (offset < 0 || bytes.size < offset + expected.length) return false
+        return expected.indices.all { index ->
+            (bytes[offset + index].toInt() and 0xFF) == expected[index].code
         }
     }
 

@@ -194,6 +194,19 @@ double computeCanvasSize(Map<String, MindMapNode> nodes) {
 /// アンカーへのスナップ判定距離
 const double _kAnchorSnapDist = 28.0;
 
+/// URL から「リスト全体の埋め込みを提案できる」再生リスト ID を返す。
+/// Mix (RD…) / ウォッチリスト (WL) / 高評価 (LL) は /playlist ページが無く
+/// 一覧を取得できないため null (= 単一動画として扱う)。
+/// 埋め込みの選択ダイアログ (マップ側 / Windows ブラウズ側) で共用する。
+String? _embeddablePlaylistIdOf(String url) {
+  final m = RegExp(r'[?&]list=([a-zA-Z0-9_-]+)').firstMatch(url);
+  final id = m?.group(1);
+  if (id == null || id.startsWith('RD') || id == 'WL' || id == 'LL') {
+    return null;
+  }
+  return id;
+}
+
 /// QR コード画像のバイト列から文字列をデコードする (= ユーザー要望: QR リーダー)。
 /// 純 Dart 実装 (image + zxing2) なので Windows / Android 双方で動く。 画像デコード
 /// と二値化は重いので、 呼び出し側は compute() で別 isolate 実行する。 QR が
@@ -13961,6 +13974,25 @@ class _MindMapScreenState extends State<MindMapScreen>
                       () async {
                     if (!mounted) return;
                     await _pickFilesForShelf(provider, ctrl, cell: cell);
+                  });
+                },
+              ),
+              const Divider(color: Colors.white12, height: 1),
+              item(
+                icon: Icons.content_paste_rounded,
+                color: const Color(0xFFFFB347),
+                label: provider.t('clip.pasteImageAction'),
+                onTap: () {
+                  Navigator.pop(dctx);
+                  Future<void>.delayed(const Duration(milliseconds: 220),
+                      () async {
+                    if (!mounted) return;
+                    final size = View.of(context).physicalSize /
+                        View.of(context).devicePixelRatio;
+                    final canvasCenter = _globalToCanvas(
+                        Offset(size.width / 2, size.height / 2), ctrl);
+                    await _pasteClipboardImageAt(canvasCenter,
+                        shelfCell: cell, imageOnly: true);
                   });
                 },
               ),
@@ -32450,6 +32482,60 @@ class _MindMapScreenState extends State<MindMapScreen>
     // まず動画URLか判定
     final videoId = NodeWidget.extractVideoId(url);
     if (videoId != null) {
+      // ── 再生リスト視聴中の動画 (watch?v=…&list=…) ──
+      // 「この動画だけ埋め込むか、 リスト内の動画をすべて埋め込むか」 を
+      // 選択できるようにする (= ユーザー要望)。 Mix (RD…) やウォッチリスト
+      // (WL/LL) は /playlist ページから一覧を取得できないため対象外。
+      final embedListId = _embeddablePlaylistIdOf(url);
+      if (embedListId != null) {
+        final choice = await showDialog<String>(
+          context: context,
+          builder: (dctx) => AlertDialog(
+            backgroundColor: const Color(0xFF1E1E32),
+            title: Text(provider.t('embed.title'),
+                style: const TextStyle(color: Colors.white, fontSize: 15)),
+            content: Text(provider.t('embed.bodyList'),
+                style: const TextStyle(color: Colors.white70, fontSize: 13)),
+            actionsOverflowButtonSpacing: 6,
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dctx, null),
+                child: Text(provider.t('btn.cancel'),
+                    style: const TextStyle(color: Colors.white54)),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(dctx, 'one'),
+                child: Text(provider.t('embed.thisOnly'),
+                    style: const TextStyle(color: Color(0xFF90CAF9))),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF43B97F),
+                    foregroundColor: Colors.white),
+                onPressed: () => Navigator.pop(dctx, 'list'),
+                child: Text(provider.t('embed.wholeList')),
+              ),
+            ],
+          ),
+        );
+        if (!mounted || choice == null) return;
+        if (choice == 'list') {
+          // リスト全体 → 親ノード + 子動画ノード群として一括取り込み。
+          final parent = provider.addNodeAtCenterReturning(pos);
+          _loadPlaylistVideos(embedListId, parent, provider,
+              originalUrl:
+                  'https://www.youtube.com/playlist?list=$embedListId');
+          return;
+        }
+        // 'one' → 下の単一動画埋め込みへフォールスルー。
+        // list= を落とした単一動画 URL に正規化する (残したままだと
+        // ノードからの再生時にリスト全体が自動再生されてしまう)。
+        // 再生位置 (t=/start=) は維持する。
+        final keepT =
+            RegExp(r'[?&](?:t|start)=([0-9hms]+)').firstMatch(url)?.group(1);
+        url = 'https://www.youtube.com/watch?v=$videoId'
+            '${keepT != null ? '&t=$keepT' : ''}';
+      }
       // 動画 → 単一ノードを作成
       final newNode = provider.addNodeAtCenterReturning(pos);
       provider.updateNodeYoutube(newNode.id, url);
@@ -39589,6 +39675,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                         ),
                       ),
                     ),
+                    Padding(
+                      padding: const EdgeInsets.only(right: 4),
+                      child:
+                          _buildMobileClipboardPasteButton(provider, ctrl),
+                    ),
                     GestureDetector(
                       onTap: () => setState(() => _bottomBarOpen = false),
                       child: Container(
@@ -39612,29 +39703,71 @@ class _MindMapScreenState extends State<MindMapScreen>
                   alignment: Alignment.centerRight,
                   child: Padding(
                     padding: const EdgeInsets.only(right: 16),
-                    child: GestureDetector(
-                      onTap: () => setState(() => _bottomBarOpen = true),
-                      child: Container(
-                        width: 40,
-                        height: 40,
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF1A1A2E).withValues(alpha: 0.9),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                              color: Colors.white.withValues(alpha: 0.1)),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withValues(alpha: 0.3),
-                              blurRadius: 8,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _buildMobileClipboardPasteButton(provider, ctrl),
+                        const SizedBox(width: 6),
+                        GestureDetector(
+                          onTap: () => setState(() => _bottomBarOpen = true),
+                          child: Container(
+                            width: 40,
+                            height: 40,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF1A1A2E)
+                                  .withValues(alpha: 0.9),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                  color: Colors.white.withValues(alpha: 0.1)),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withValues(alpha: 0.3),
+                                  blurRadius: 8,
+                                ),
+                              ],
                             ),
-                          ],
+                            child: const Icon(Icons.keyboard_arrow_up_rounded,
+                                color: Colors.white54, size: 22),
+                          ),
                         ),
-                        child: const Icon(Icons.keyboard_arrow_up_rounded,
-                            color: Colors.white54, size: 22),
-                      ),
+                      ],
                     ),
                   ),
                 ),
+        ),
+      ),
+    );
+  }
+
+  /// カスタム設定に左右されず、通常マップで常に使えるモバイル貼り付け操作。
+  Widget _buildMobileClipboardPasteButton(
+      MindMapProvider provider, TransformationController ctrl) {
+    return Semantics(
+      button: true,
+      label: provider.t('clip.pasteImageAction'),
+      child: Material(
+        color: const Color(0xFF1A1A2E).withValues(alpha: 0.94),
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () {
+            final size = View.of(context).physicalSize /
+                View.of(context).devicePixelRatio;
+            final canvasCenter = _globalToCanvas(
+                Offset(size.width / 2, size.height / 2), ctrl);
+            _pasteClipboardImageAt(canvasCenter, imageOnly: true);
+          },
+          child: Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                  color: const Color(0xFFFFB347).withValues(alpha: 0.5)),
+            ),
+            child: const Icon(Icons.content_paste_rounded,
+                color: Color(0xFFFFB347), size: 20),
+          ),
         ),
       ),
     );
@@ -44730,10 +44863,15 @@ class _MindMapScreenState extends State<MindMapScreen>
           // モバイル (Android 等): クリップボードの画像をその位置に貼り付け
           //   (ユーザー要望「Android版でマップを長押ししたらクリップボードに
           //   保存した画像を出せる機能」)。
+          // モバイルの範囲選択モード中は、 アプリ内クリップボード/切り取りが
+          //   空なら反応しない (= 範囲選択操作中の長押しで OS クリップボード
+          //   から意図しないノードが作られるのを防ぐ。 従来ガードの維持)。
           onLongPressStart: (!isMoveMode &&
-                  (!isRangeMode ||
-                      (!_isDesktop &&
-                          (_clipboard.isNotEmpty || _cutNodeIds.isNotEmpty))))
+                  (_isDesktop
+                      ? !isRangeMode
+                      : (!isRangeMode ||
+                          _clipboard.isNotEmpty ||
+                          _cutNodeIds.isNotEmpty)))
               ? (details) {
                   final canvasPos =
                       _globalToCanvas(details.globalPosition, ctrl);
@@ -49521,17 +49659,32 @@ class _MindMapScreenState extends State<MindMapScreen>
     return lines.join('\n');
   }
 
-  Future<void> _pasteClipboardImageAt(Offset canvasPos) async {
+  Future<void> _pasteClipboardImageAt(
+    Offset canvasPos, {
+    List<int>? shelfCell,
+    bool imageOnly = false,
+  }) async {
     final provider = context.read<MindMapProvider>();
+    var addingClipboardImage = false;
     try {
-      final clipboard = SystemClipboard.instance;
-      if (clipboard == null) {
+      // Android は URI 形式の画像を super_clipboard が取りこぼす端末があるため、
+      // 登録が安定しているアプリ固有 MethodChannel を先に試す。
+      if (!kIsWeb && Platform.isAndroid) {
         final nativeImage = await _readAndroidClipboardImage();
         if (nativeImage != null) {
+          addingClipboardImage = true;
           await _addClipboardImageNodeAt(
-              provider, canvasPos, nativeImage.bytes, nativeImage.ext);
+            provider,
+            canvasPos,
+            nativeImage.bytes,
+            nativeImage.ext,
+            shelfCell: shelfCell,
+          );
           return;
         }
+      }
+      final clipboard = SystemClipboard.instance;
+      if (clipboard == null) {
         if (mounted) {
           _appSnack(context,
               SnackBar(content: Text(provider.t('clip.noReadSupport'))));
@@ -49570,7 +49723,12 @@ class _MindMapScreenState extends State<MindMapScreen>
           return l.contains('image') ||
               l.endsWith('.png') ||
               l.endsWith('.jpeg') ||
-              l.endsWith('.jpg');
+              l.endsWith('.jpg') ||
+              l.endsWith('.gif') ||
+              l.endsWith('.webp') ||
+              l.endsWith('.bmp') ||
+              l.endsWith('.tif') ||
+              l.endsWith('.tiff');
         });
         if (hasImage) {
           for (final (fmt, e) in candidates) {
@@ -49594,57 +49752,57 @@ class _MindMapScreenState extends State<MindMapScreen>
         //   テキストも長押しで貼り付けられるように」) ──
         // 既存の Ctrl+V 経路 (_handlePaste) と同じく、URL ならリンク/動画
         //   ノード、それ以外はメモノードを作成する。
-        try {
-          if (reader.canProvide(Formats.plainText)) {
-            final text = await reader.readValue(Formats.plainText);
-            final trimmed = text?.trim() ?? '';
-            if (trimmed.isNotEmpty) {
-              final isUrl = !trimmed.contains('\n') &&
-                  (trimmed.startsWith('http://') ||
-                      trimmed.startsWith('https://'));
-              if (isUrl) {
-                final newNode = provider
-                    .addNodeAtCenterReturning(canvasPos - const Offset(80, 21));
-                final isYoutube = trimmed.contains('youtu.be/') ||
-                    trimmed.contains('youtube.com/');
-                if (isYoutube) {
-                  provider.updateNodeYoutube(newNode.id, trimmed);
+        if (!imageOnly) {
+          try {
+            if (reader.canProvide(Formats.plainText)) {
+              final text = await reader.readValue(Formats.plainText);
+              final trimmed = text?.trim() ?? '';
+              if (trimmed.isNotEmpty) {
+                final isUrl = !trimmed.contains('\n') &&
+                    (trimmed.startsWith('http://') ||
+                        trimmed.startsWith('https://'));
+                if (isUrl) {
+                  final newNode = provider.addNodeAtCenterReturning(
+                      canvasPos - const Offset(80, 21));
+                  final isYoutube = trimmed.contains('youtu.be/') ||
+                      trimmed.contains('youtube.com/');
+                  if (isYoutube) {
+                    provider.updateNodeYoutube(newNode.id, trimmed);
+                  } else {
+                    provider.updateNodeLink(newNode.id, trimmed);
+                  }
+                  provider.updateNodeTitle(newNode.id, '');
+                  provider.selectNode(newNode.id);
+                  if (mounted) {
+                    _appSnack(context,
+                        SnackBar(content: Text(provider.t('clip.urlPasted'))));
+                  }
                 } else {
-                  provider.updateNodeLink(newNode.id, trimmed);
+                  // 改行を含むテキストは 1 行目をタイトル、残りをメモ欄へ。
+                  final lines = text!.split('\n');
+                  final titleLine = lines.first.trim();
+                  final rest =
+                      lines.length > 1 ? lines.skip(1).join('\n').trim() : '';
+                  final newNode = provider.addNodeAtCenterReturning(
+                      canvasPos - const Offset(80, 21));
+                  provider.updateNodeTitle(newNode.id, titleLine);
+                  if (rest.isNotEmpty) {
+                    provider.updateNodeMemo(newNode.id, rest);
+                  }
+                  provider.selectNode(newNode.id);
+                  if (mounted) {
+                    _appSnack(
+                        context,
+                        SnackBar(
+                            content: Text(provider.t('clip.textToTitle'))));
+                  }
                 }
-                provider.updateNodeTitle(newNode.id, '');
-                provider.selectNode(newNode.id);
-                if (mounted) {
-                  _appSnack(context,
-                      SnackBar(content: Text(provider.t('clip.urlPasted'))));
-                }
-              } else {
-                // ── テキスト貼り付け: タイトルに入力 (= ユーザー要望
-                //   「クリップボードから貼り付けるのがテキストである場合は
-                //   タイトルに入力されるように」) ──
-                // 改行を含むテキストは 1 行目をタイトル、 残りはメモ欄へ。
-                // 1 行ならタイトルのみ。
-                final lines = text!.split('\n');
-                final titleLine = lines.first.trim();
-                final rest =
-                    lines.length > 1 ? lines.skip(1).join('\n').trim() : '';
-                final newNode = provider
-                    .addNodeAtCenterReturning(canvasPos - const Offset(80, 21));
-                provider.updateNodeTitle(newNode.id, titleLine);
-                if (rest.isNotEmpty) {
-                  provider.updateNodeMemo(newNode.id, rest);
-                }
-                provider.selectNode(newNode.id);
-                if (mounted) {
-                  _appSnack(context,
-                      SnackBar(content: Text(provider.t('clip.textToTitle'))));
-                }
+                return;
               }
-              return;
             }
+          } catch (_) {
+            // テキスト読み取り失敗時は下のメッセージにフォールバック
           }
-        } catch (_) {
-          // テキスト読み取り失敗時は下のメッセージにフォールバック
         }
         if (mounted) {
           // 何が入っているか分かるよう、 実際の形式も表示 (診断用)。
@@ -49663,27 +49821,36 @@ class _MindMapScreenState extends State<MindMapScreen>
         }
         return;
       }
-      // attachments/ に保存
-      final appDir = await getApplicationDocumentsDirectory();
-      final attachDir = Directory('${appDir.path}/attachments');
-      if (!await attachDir.exists()) {
-        await attachDir.create(recursive: true);
-      }
-      final name = 'clipboard_${DateTime.now().millisecondsSinceEpoch}.$ext';
-      final destPath = '${attachDir.path}/$name';
-      await File(destPath).writeAsBytes(bytes, flush: true);
-      if (!mounted) return;
-      // 長押しした位置を中心に画像ノードを作成 (180x120 を既定サイズに)
-      final newNode =
-          provider.addNodeAtCenterReturning(canvasPos - const Offset(90, 60));
-      provider.updateNodeAttachment(newNode.id, destPath, name);
-      provider.updateNodeSize(newNode.id, 180, 120);
-      provider.selectNode(newNode.id);
-      if (mounted) {
-        _appSnack(
-            context, SnackBar(content: Text(provider.t('clip.imagePasted'))));
-      }
+      addingClipboardImage = true;
+      await _addClipboardImageNodeAt(
+        provider,
+        canvasPos,
+        bytes,
+        ext,
+        shelfCell: shelfCell,
+      );
     } catch (e) {
+      // SystemClipboard.instance が存在しても clipboard.read() 自体が
+      // MissingPluginException 等を投げる場合がある。画像追加開始前の失敗なら
+      // Android MethodChannel を必ずもう一度試す。
+      if (!addingClipboardImage && !kIsWeb && Platform.isAndroid) {
+        final nativeImage = await _readAndroidClipboardImage();
+        if (nativeImage != null) {
+          try {
+            await _addClipboardImageNodeAt(
+              provider,
+              canvasPos,
+              nativeImage.bytes,
+              nativeImage.ext,
+              shelfCell: shelfCell,
+            );
+            return;
+          } catch (nativeError) {
+            debugPrint(
+                'Android clipboard image fallback add failed: $nativeError');
+          }
+        }
+      }
       debugPrint('クリップボード画像の貼り付けに失敗: $e');
       if (mounted) {
         _appSnack(
@@ -49696,9 +49863,90 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
   }
 
-  Future<void> _addClipboardImageNodeAt(MindMapProvider provider,
-      Offset canvasPos, Uint8List bytes, String ext) async {
-    final safeExt = ext.trim().isEmpty ? 'png' : ext.trim().toLowerCase();
+  Future<bool> _addClipboardImageNodeAt(
+    MindMapProvider provider,
+    Offset canvasPos,
+    Uint8List bytes,
+    String ext, {
+    List<int>? shelfCell,
+  }) async {
+    final isGallery = provider.currentPage.pageType == 'bookshelf';
+    if (isGallery && !await _confirmGalleryExpand(context, provider, 1)) {
+      return false;
+    }
+
+    // 画像比率は倍率 OFF 時も記録する。通常マップは設定倍率を、ギャラリーは
+    // タイル幅を使い、どのモバイル入口から貼っても Ctrl+V と同じ見た目にする。
+    var safeExt = ext.trim().isEmpty ? 'png' : ext.trim().toLowerCase();
+    var storedBytes = bytes;
+    const directlyRenderableExts = <String>{
+      'jpg',
+      'jpeg',
+      'png',
+      'gif',
+      'webp',
+      'bmp',
+    };
+    double? pasteWidth;
+    double? pasteAspect;
+
+    void rememberImageSize(int width, int height) {
+      if (height > 0) {
+        pasteAspect = width.toDouble() / height.toDouble();
+      }
+      if (isGallery) {
+        pasteWidth = MindMapProvider.kShelfTileW;
+      } else {
+        final scalePct = provider.pasteImageScalePercent;
+        if (scalePct > 0) {
+          pasteWidth = (width * (scalePct / 100.0)).clamp(80.0, 1500.0);
+        }
+      }
+    }
+
+    ui.Image? decodedUiImage;
+    try {
+      final completer = Completer<ui.Image>();
+      ui.decodeImageFromList(bytes, (image) => completer.complete(image));
+      decodedUiImage =
+          await completer.future.timeout(const Duration(seconds: 3));
+      rememberImageSize(decodedUiImage.width, decodedUiImage.height);
+
+      // HEIC / AVIF / TIFF 等は端末がデコードできても NodeWidget が直接表示
+      // できない場合がある。デコードできた画像は PNG に正規化して保存する。
+      if (!directlyRenderableExts.contains(safeExt)) {
+        final png =
+            await decodedUiImage.toByteData(format: ui.ImageByteFormat.png);
+        if (png != null && png.lengthInBytes > 0) {
+          storedBytes = png.buffer
+              .asUint8List(png.offsetInBytes, png.lengthInBytes);
+          safeExt = 'png';
+        }
+      }
+    } catch (_) {
+      // 下の image package フォールバックへ進む。
+    } finally {
+      decodedUiImage?.dispose();
+    }
+
+    // Flutter のネイティブデコーダが扱えない TIFF 等も、image package が
+    // 読める場合は同じく PNG へ変換する。
+    if (!directlyRenderableExts.contains(safeExt)) {
+      try {
+        final decoded = img.decodeImage(bytes);
+        if (decoded != null) {
+          rememberImageSize(decoded.width, decoded.height);
+          storedBytes = Uint8List.fromList(img.encodePng(decoded));
+          safeExt = 'png';
+        }
+      } catch (_) {
+        // 元形式のまま保存し、少なくとも添付ファイルとして失わない。
+      }
+    }
+    if (pasteWidth == null && isGallery) {
+      pasteWidth = MindMapProvider.kShelfTileW;
+    }
+
     final appDir = await getApplicationDocumentsDirectory();
     final attachDir = Directory('${appDir.path}/attachments');
     if (!await attachDir.exists()) {
@@ -49706,17 +49954,41 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
     final name = 'clipboard_${DateTime.now().millisecondsSinceEpoch}.$safeExt';
     final destPath = '${attachDir.path}/$name';
-    await File(destPath).writeAsBytes(bytes, flush: true);
-    if (!mounted) return;
-    final newNode =
-        provider.addNodeAtCenterReturning(canvasPos - const Offset(90, 60));
+    await File(destPath).writeAsBytes(storedBytes, flush: true);
+    if (!mounted) return false;
+    // クロージャ (rememberImageSize) で代入される変数は null 昇格できない
+    //   ため、 ローカルへ写してから使う。
+    final double? finalWidth = pasteWidth;
+    final double? finalAspect = pasteAspect;
+    final nodeWidth = finalWidth ?? 160.0;
+    final newNode = provider
+        .addNodeAtCenterReturning(canvasPos - Offset(nodeWidth / 2, 21));
     provider.updateNodeAttachment(newNode.id, destPath, name);
-    provider.updateNodeSize(newNode.id, 180, 120);
+    if (finalWidth != null) {
+      final keepHeight = provider.nodes[newNode.id]?.height ?? 42.0;
+      provider.updateNodeSizeUnclamped(newNode.id, finalWidth, keepHeight);
+    }
+    if (finalAspect != null) {
+      provider.updateNodeAttachmentAspectRatio(newNode.id, finalAspect);
+    }
+    if (isGallery) {
+      if (shelfCell != null && shelfCell.length >= 2) {
+        provider.setShelfCell(newNode.id, shelfCell[0], shelfCell[1]);
+      }
+      provider.reflowBookshelf();
+    }
     provider.selectNode(newNode.id);
     if (mounted) {
+      // 旧 Ctrl+V 経路と同じ体裁 (短め 1 秒 + ダーク背景) を維持する。
       _appSnack(
-          context, SnackBar(content: Text(provider.t('clip.imagePasted'))));
+          context,
+          SnackBar(
+            content: Text(provider.t('clip.imagePasted')),
+            duration: const Duration(seconds: 1),
+            backgroundColor: const Color(0xFF2A2A3E),
+          ));
     }
+    return true;
   }
 
   Future<({Uint8List bytes, String ext})?> _readAndroidClipboardImage() async {
@@ -49746,6 +50018,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (mime.contains('webp')) return 'webp';
     if (mime.contains('gif')) return 'gif';
     if (mime.contains('bmp')) return 'bmp';
+    if (mime.contains('tiff') || mime.contains('tif')) return 'tiff';
+    if (mime.contains('heic')) return 'heic';
+    if (mime.contains('heif')) return 'heif';
+    if (mime.contains('avif')) return 'avif';
     return 'png';
   }
 
@@ -55318,31 +55594,51 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
 
     // OSクリップボード: 画像 → 添付ノード、テキスト → メモノード
-    final clipboard = SystemClipboard.instance;
-    if (clipboard == null) {
-      final ctrl = _ctrlFor(provider.currentPage.id);
-      final s =
-          View.of(context).physicalSize / View.of(context).devicePixelRatio;
-      final pastePos =
-          _globalToCanvas(Offset(s.width / 2, s.height / 2), ctrl) -
-              const Offset(80, 21);
+    final ctrl = _ctrlFor(provider.currentPage.id);
+    final s = View.of(context).physicalSize / View.of(context).devicePixelRatio;
+    final pasteCenter =
+        _globalToCanvas(Offset(s.width / 2, s.height / 2), ctrl);
+    final pastePos = pasteCenter - const Offset(80, 21);
+
+    // Android では super_clipboard の登録状態に依存せず画像を貼れるよう、
+    // アプリ固有 MethodChannel を先に確認する。
+    if (!kIsWeb && Platform.isAndroid) {
       final nativeImage = await _readAndroidClipboardImage();
       if (nativeImage != null) {
-        await _addClipboardImageNodeAt(
+        try {
+          await _addClipboardImageNodeAt(
             provider,
-            pastePos + const Offset(90, 60),
+            pasteCenter,
             nativeImage.bytes,
-            nativeImage.ext);
+            nativeImage.ext,
+          );
+        } catch (e) {
+          debugPrint('Android clipboard image add failed: $e');
+          if (mounted) {
+            _appSnack(
+              context,
+              SnackBar(
+                content: Text(provider
+                    .t('clip.imagePasteFailed')
+                    .replaceFirst('{err}', '$e')),
+              ),
+            );
+          }
+        }
+        return;
+      }
+    }
+
+    final clipboard = SystemClipboard.instance;
+    if (clipboard == null) {
+      if (mounted) {
+        _appSnack(
+            context, SnackBar(content: Text(provider.t('clip.noReadSupport'))));
       }
       return;
     }
 
-    // 貼り付け位置: 画面中央付近
-    final ctrl = _ctrlFor(provider.currentPage.id);
-    final s = View.of(context).physicalSize / View.of(context).devicePixelRatio;
-    final pastePos = _globalToCanvas(Offset(s.width / 2, s.height / 2), ctrl) -
-        const Offset(80, 21);
-
+    var addingClipboardImage = false;
     try {
       final reader = await clipboard.read();
 
@@ -55355,6 +55651,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         (Formats.gif, 'gif'),
         (Formats.webp, 'webp'),
         (Formats.bmp, 'bmp'),
+        (Formats.tiff, 'tiff'),
       ];
       Future<Uint8List?> readBytes(FileFormat fmt) async {
         final completer = Completer<Uint8List?>();
@@ -55408,7 +55705,9 @@ class _MindMapScreenState extends State<MindMapScreen>
               l.endsWith('.jpg') ||
               l.endsWith('.gif') ||
               l.endsWith('.webp') ||
-              l.endsWith('.bmp');
+              l.endsWith('.bmp') ||
+              l.endsWith('.tif') ||
+              l.endsWith('.tiff');
         });
         if (hasImageHint) {
           for (final (fmt, ext) in imageCandidates) {
@@ -55433,90 +55732,14 @@ class _MindMapScreenState extends State<MindMapScreen>
       }
 
       if (imgBytes != null && imgBytes.isNotEmpty) {
-        final bytes = imgBytes;
-        final ext = imgExt;
-        {
-          final dir = await getApplicationDocumentsDirectory();
-          final attachDir = Directory('${dir.path}/attachments');
-          if (!await attachDir.exists()) {
-            await attachDir.create(recursive: true);
-          }
-          final ts = DateTime.now().millisecondsSinceEpoch;
-          final filePath = '${attachDir.path}/paste_$ts.$ext';
-          await File(filePath).writeAsBytes(bytes);
-
-          // ── スケール % 貼り付け (設定 pasteImageScalePercent) ──
-          // 0 の時は画像サイズ無視で通常ノード (= 旧 OFF と同じ)。
-          // 1〜100 の時は画像本来サイズに対して % を掛けたサイズで配置。
-          // 上限 1500 px (= キャンバス埋め事故防止)。
-          //
-          // タイトル部分は画像サイズに連動させない: ノード `height`
-          // (= タイトル領域の高さ) は通常通り変更せず、 `width` と
-          // `attachmentAspectRatio` だけセットする。 描画側 (node_widget) で
-          // attachH = nw / aspectRatio として高さを決め、 タイトル部分は
-          // 標準のまま (= 「タイトル部分は一定」)。
-          double? pasteW;
-          double? pasteAspect;
-          final scalePct = provider.pasteImageScalePercent;
-          // ── ギャラリー (= bookshelf) では画像を +ボックス幅に収めて貼り付ける
-          //    (= ユーザー要望: ギャラリーの画像貼り付けは +ボックスに収まる
-          //    大きさに。 貼った後はリサイズハンドルで拡大率を変えられる)。 ──
-          final bool isGallery = provider.currentPage.pageType == 'bookshelf';
-          if (scalePct > 0 || isGallery) {
-            try {
-              final completer2 = Completer<ui.Image>();
-              ui.decodeImageFromList(bytes, (img) => completer2.complete(img));
-              final img =
-                  await completer2.future.timeout(const Duration(seconds: 3));
-              final double aspect =
-                  img.height > 0 ? img.width.toDouble() / img.height : 1.0;
-              double w;
-              double h;
-              if (isGallery) {
-                // +ボックス幅にフィット (アスペクト比は維持)。
-                w = MindMapProvider.kShelfTileW;
-                h = aspect > 0 ? w / aspect : w;
-              } else {
-                w = img.width.toDouble() * (scalePct / 100.0);
-                h = img.height.toDouble() * (scalePct / 100.0);
-                const maxW = 1500.0;
-                if (w > maxW) {
-                  final s = maxW / w;
-                  w = maxW;
-                  h = h * s;
-                }
-              }
-              pasteW = w;
-              pasteAspect = h > 0 ? (w / h) : null;
-              img.dispose();
-            } catch (_) {
-              pasteW = null;
-              pasteAspect = null;
-            }
-          }
-
-          provider.addNodeAtCenter(pastePos);
-          final newId = provider.selectedNodeId;
-          if (newId != null) {
-            provider.updateNodeAttachment(newId, filePath, 'クリップボード画像.$ext');
-            if (pasteW != null && pasteAspect != null) {
-              final currentNode = provider.nodes[newId];
-              final keepHeight = currentNode?.height ?? 40.0;
-              provider.updateNodeSizeUnclamped(newId, pasteW, keepHeight);
-              provider.updateNodeAttachmentAspectRatio(newId, pasteAspect);
-            }
-          }
-          if (mounted) {
-            _appSnack(
-                context,
-                SnackBar(
-                  content: Text(provider.t('clip.imagePasted')),
-                  duration: const Duration(seconds: 1),
-                  backgroundColor: const Color(0xFF2A2A3E),
-                ));
-          }
-          return;
-        }
+        addingClipboardImage = true;
+        await _addClipboardImageNodeAt(
+          provider,
+          pasteCenter,
+          imgBytes,
+          imgExt,
+        );
+        return;
       }
 
       // 2) テキスト
@@ -55586,6 +55809,24 @@ class _MindMapScreenState extends State<MindMapScreen>
         }
       }
     } catch (e) {
+      // clipboard.read() が例外になった場合も Android native 経路を失わない。
+      if (!addingClipboardImage && !kIsWeb && Platform.isAndroid) {
+        final nativeImage = await _readAndroidClipboardImage();
+        if (nativeImage != null) {
+          try {
+            await _addClipboardImageNodeAt(
+              provider,
+              pasteCenter,
+              nativeImage.bytes,
+              nativeImage.ext,
+            );
+            return;
+          } catch (nativeError) {
+            debugPrint(
+                'Android clipboard image fallback add failed: $nativeError');
+          }
+        }
+      }
       if (mounted) {
         _appSnack(
             context,
@@ -68011,6 +68252,17 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
     final cb = widget.onEmbedUrl;
     if (cb == null) return;
     final url = _currentUrl;
+    // ── ここで選択を完結させるため、 cb へ渡す URL からは list= を取り除く ──
+    // 残したまま渡すと _embedYoutubeUrlAsNode 側の「この動画だけ / リスト
+    // 全体」 ダイアログが重ねて表示されてしまう (= 二重確認の防止)。
+    // 再生位置 (t=/start=) は維持する。
+    String stripList(String u) {
+      final id = NodeWidget.extractVideoId(u);
+      if (id == null) return u;
+      final t = RegExp(r'[?&](?:t|start)=([0-9hms]+)').firstMatch(u)?.group(1);
+      return 'https://www.youtube.com/watch?v=$id${t != null ? '&t=$t' : ''}';
+    }
+
     final after = await _winFetchPlaylistAfterCurrent();
     if (!mounted) return;
     if (after.isEmpty) {
@@ -68021,11 +68273,20 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
       //   ここで即「埋め込みました」 を出すと、 まだ選択画面の段階なのに完了
       //   メッセージが表示されてしまう。 単一動画の時だけ即トーストを出し、
       //   チャンネル / プレイリストは embed 側 (取り込み完了の SnackBar) に任せる。
-      if (NodeWidget.extractVideoId(url) != null) {
+      //   list= 付き (= embed 側で選択ダイアログが出る) の時も出さない。
+      //   ただし Mix (RD…) / WL / LL はダイアログが出ず単一埋め込みに
+      //   なるため、 従来どおりトーストを出す。
+      final embedSideAsks = _embeddablePlaylistIdOf(url) != null;
+      if (NodeWidget.extractVideoId(url) != null && !embedSideAsks) {
         _showWinEmbedToast(provider.t('embed.embedded'));
       }
       return;
     }
+    // ── 「リスト全体」 も選べるようにする (= ユーザー要望: リスト内の動画を
+    //   埋め込むのか、 見ている動画だけかを選択)。 途中の動画から視聴している
+    //   場合、「後ろも全部」 では先頭側が入らないため。 Mix (RD…) 等は
+    //   /playlist ページが無く取得できないので出さない。
+    final String? wholeListId = _embeddablePlaylistIdOf(url);
     final choice = await showDialog<String>(
       context: context,
       builder: (dctx) => AlertDialog(
@@ -68047,6 +68308,12 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
             child: Text(provider.t('embed.thisOnly'),
                 style: const TextStyle(color: Color(0xFF90CAF9))),
           ),
+          if (wholeListId != null)
+            TextButton(
+              onPressed: () => Navigator.pop(dctx, 'list'),
+              child: Text(provider.t('embed.wholeList'),
+                  style: const TextStyle(color: Color(0xFF80CBC4))),
+            ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF43B97F),
@@ -68060,15 +68327,22 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
       ),
     );
     if (!mounted || choice == null) return;
+    if (choice == 'list' && wholeListId != null) {
+      // 親ノード + 子動画ノード群としてリスト全体を一括取り込み。
+      cb('https://www.youtube.com/playlist?list=$wholeListId');
+      return;
+    }
     if (choice == 'one') {
-      cb(url);
-      _showWinEmbedToast('埋め込みました');
+      cb(stripList(url));
+      _showWinEmbedToast(provider.t('embed.embedded'));
     } else if (choice == 'all') {
-      cb(url);
+      cb(stripList(url));
       for (final u in after) {
-        cb(u);
+        cb(stripList(u));
       }
-      _showWinEmbedToast('${after.length + 1}件を埋め込みました');
+      _showWinEmbedToast(provider
+          .t('embed.embeddedN')
+          .replaceFirst('{n}', '${after.length + 1}'));
     }
   }
 
@@ -74587,7 +74861,114 @@ class _PaintPageViewState extends State<_PaintPageView> {
       // 背後のキャンバス (前ページで選択していたノード) の誤削除を防ぐため消費。
       return KeyEventResult.handled;
     }
+    // ── Ctrl+C / Ctrl+V: 選択オブジェクトのコピー & 複製 (= ユーザー要望) ──
+    //   選択ツールの複数選択のほか、 画像/テキストツールの単体選択にも対応。
+    //   何も選択していない時は ignored にして背後 (マップ側) の処理へ流す。
+    final bool ctrl = HardwareKeyboard.instance.isControlPressed ||
+        HardwareKeyboard.instance.isMetaPressed;
+    if (ctrl && k == LogicalKeyboardKey.keyC) {
+      if (_copyPaintSelection()) return KeyEventResult.handled;
+      return KeyEventResult.ignored;
+    }
+    if (ctrl && k == LogicalKeyboardKey.keyV) {
+      if (_paintClipboard.isNotEmpty) {
+        _pastePaintClipboard();
+      }
+      // 空でも消費する: 背後 (マップ側) の _handlePaste に流れると、 ペイント
+      //   ページの裏に見えないノードが作られてしまうため。
+      return KeyEventResult.handled;
+    }
     return KeyEventResult.ignored;
+  }
+
+  // ── ペイント内クリップボード (= ユーザー要望: Ctrl+C / Ctrl+V で図形・
+  //   テキスト・画像を複製)。 OS クリップボードとは独立したセッション内保持。
+  //   要素は clone を保持し、 貼り付ける度に +18px ずつずらして重なりを防ぐ。
+  final List<Object> _paintClipboard = [];
+  static const Offset _kPaintPasteShift = Offset(18, 18);
+
+  _PaintImageItem _cloneImage(_PaintImageItem it) =>
+      _PaintImageItem(it.path, it.rect);
+
+  /// 現在の選択内容をペイント内クリップボードへコピーする。
+  /// コピーできた時 true (= キーイベントを消費する)。
+  bool _copyPaintSelection() {
+    final items = <Object>[];
+    if (_tool == _PaintTool.select && _isAnySelSet()) {
+      for (final i in _selImgSet) {
+        if (i < _sheet.images.length) items.add(_cloneImage(_sheet.images[i]));
+      }
+      for (final i in _selShapeSet) {
+        if (i < _sheet.shapes.length) items.add(_cloneShape(_sheet.shapes[i]));
+      }
+      for (final i in _selTextSet) {
+        if (i < _sheet.texts.length) items.add(_cloneText(_sheet.texts[i]));
+      }
+    } else if (_selImage >= 0 && _selImage < _sheet.images.length) {
+      items.add(_cloneImage(_sheet.images[_selImage]));
+    } else if (_selText >= 0 && _selText < _sheet.texts.length) {
+      items.add(_cloneText(_sheet.texts[_selText]));
+    }
+    if (items.isEmpty) return false;
+    _paintClipboard
+      ..clear()
+      ..addAll(items);
+    return true;
+  }
+
+  /// クリップボードの内容を +18px ずらして貼り付け、 貼り付けた要素を
+  /// 選択ツールで選択状態にする (= 連続 Ctrl+V でカスケード配置)。
+  void _pastePaintClipboard() {
+    if (_paintClipboard.isEmpty) return;
+    const d = _kPaintPasteShift;
+    setState(() {
+      _redo.clear();
+      _tool = _PaintTool.select;
+      _clearSelSets();
+      _selImage = -1;
+      _selText = -1;
+      _rangeRect = null;
+      for (final it in _paintClipboard) {
+        if (it is _PaintImageItem) {
+          _sheet.images.add(_PaintImageItem(it.path, it.rect.shift(d)));
+          _sheet.undo.add('image');
+          _selImgSet.add(_sheet.images.length - 1);
+        } else if (it is _PaintShape) {
+          final c = _cloneShape(it);
+          c.a += d;
+          c.b += d;
+          _sheet.shapes.add(c);
+          _sheet.undo.add('shape');
+          _selShapeSet.add(_sheet.shapes.length - 1);
+        } else if (it is _PaintText) {
+          final c = _cloneText(it);
+          c.pos += d;
+          _sheet.texts.add(c);
+          _sheet.undo.add('text');
+          _selTextSet.add(_sheet.texts.length - 1);
+        }
+      }
+      // 次の貼り付けが今回の位置からさらにずれるよう、 保持内容も進める。
+      for (final it in _paintClipboard) {
+        if (it is _PaintImageItem) {
+          it.rect = it.rect.shift(d);
+        } else if (it is _PaintShape) {
+          it.a += d;
+          it.b += d;
+        } else if (it is _PaintText) {
+          it.pos += d;
+        }
+      }
+      _dirty = true;
+    });
+    _persist();
+  }
+
+  /// 選択中オブジェクトをその場で複製する (= モバイル用の複製ボタン。
+  /// Ctrl+C → Ctrl+V と同じ結果になる)。
+  void _duplicatePaintSelection() {
+    if (!_copyPaintSelection()) return;
+    _pastePaintClipboard();
   }
 
   void _deleteSelImage() {
@@ -74831,31 +75212,22 @@ class _PaintPageViewState extends State<_PaintPageView> {
       _startTextEdit(t.pos, existingIndex: idx);
     }
 
+    // ── 掴みバーを Positioned の境界「内」に含める ──
+    // 以前は枠のすぐ上 (top:-6) にはみ出して置いていたため、 親境界の外側は
+    // ヒットテストされず掴みがほぼ反応しなかった (= インライン編集の掴みと
+    // 同じ問題)。 枠の高さに掴みバー分を足して境界内に収める。
     return [
       Positioned(
         left: left,
-        top: top,
+        top: top - grabH,
         width: w,
-        height: h,
-        child: Stack(
-          clipBehavior: Clip.none,
+        height: h + grabH,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            Positioned.fill(
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: beginEdit,
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    border:
-                        Border.all(color: const Color(0xFFEC407A), width: 1.5),
-                  ),
-                ),
-              ),
-            ),
-            Positioned(
-              left: (w - grabW) / 2,
-              top: -6,
-              width: grabW,
+            SizedBox(
+              width: math.min(grabW, w),
               height: grabH,
               child: MouseRegion(
                 cursor: SystemMouseCursors.move,
@@ -74884,6 +75256,21 @@ class _PaintPageViewState extends State<_PaintPageView> {
                               offset: Offset(0, 1)),
                         ],
                       ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Expanded(
+              child: SizedBox(
+                width: w,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: beginEdit,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      border: Border.all(
+                          color: const Color(0xFFEC407A), width: 1.5),
                     ),
                   ),
                 ),
@@ -76789,7 +77176,139 @@ class _PaintPageViewState extends State<_PaintPageView> {
     if (_tool == _PaintTool.shape && _optionsOpen) return _buildShapeOptions();
     // テキストツール中は常に書式バーを出す (= インライン入力用)。
     if (_tool == _PaintTool.text) return _buildTextOptions();
+    // 選択ツール中は選択内容の操作バーを常に出す (= ユーザー要望: 挿入済みの
+    //   図形を選択して形状を変更 / 複製できるように)。
+    if (_tool == _PaintTool.select) return _buildSelectOptions();
     return const SizedBox.shrink();
+  }
+
+  /// 選択した図形の kind をまとめて変更する (= ユーザー要望: 挿入後に形状変更)。
+  void _applyShapeKindToSelection(int kind) {
+    if (_selShapeSet.isEmpty) return;
+    setState(() {
+      for (final i in _selShapeSet) {
+        if (i < _sheet.shapes.length) _sheet.shapes[i].kind = kind;
+      }
+      _dirty = true;
+    });
+    _persist();
+  }
+
+  void _applyShapeFillToSelection(bool fill) {
+    if (_selShapeSet.isEmpty) return;
+    setState(() {
+      for (final i in _selShapeSet) {
+        if (i < _sheet.shapes.length) _sheet.shapes[i].fill = fill;
+      }
+      _dirty = true;
+    });
+    _persist();
+  }
+
+  // ── 選択ツールのオプションバー ──
+  //   図形を選択中: 形状 (四角/楕円/線/矢印) と塗りつぶしを変更できる。
+  //   何か選択中: 複製 / 削除ボタン (モバイルでは Ctrl+C/V が無いため)。
+  Widget _buildSelectOptions() {
+    if (!_isAnySelSet()) {
+      return Center(
+        child: Text(
+          widget.provider.t('paint.selHint'),
+          style: const TextStyle(color: Colors.white38, fontSize: 12),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+      );
+    }
+    // 選択中の図形が全て同じ kind ならそれを強調表示する。
+    int? commonKind;
+    bool allFilled = _selShapeSet.isNotEmpty;
+    for (final i in _selShapeSet) {
+      if (i >= _sheet.shapes.length) continue;
+      final sh = _sheet.shapes[i];
+      if (commonKind == null) {
+        commonKind = sh.kind;
+      } else if (commonKind != sh.kind) {
+        commonKind = -1; // 混在
+      }
+      if (!sh.fill) allFilled = false;
+    }
+
+    Widget kindBtn(int k, IconData ic, String tip) {
+      final sel = commonKind == k;
+      return Tooltip(
+        message: tip,
+        child: GestureDetector(
+          onTap: () => _applyShapeKindToSelection(k),
+          child: Container(
+            margin: const EdgeInsets.symmetric(horizontal: 2),
+            padding: const EdgeInsets.all(5),
+            decoration: BoxDecoration(
+              color: sel
+                  ? const Color(0xFFEC407A).withValues(alpha: 0.22)
+                  : Colors.transparent,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(
+                  color: sel ? const Color(0xFFEC407A) : Colors.white12),
+            ),
+            child: Icon(ic,
+                size: 18,
+                color: sel ? const Color(0xFFEC407A) : Colors.white70),
+          ),
+        ),
+      );
+    }
+
+    Widget div() => Container(
+        width: 1,
+        height: 22,
+        margin: const EdgeInsets.symmetric(horizontal: 8),
+        color: Colors.white24);
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(10, 0, 10, 6),
+      child: Center(
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            if (_selShapeSet.isNotEmpty) ...[
+              kindBtn(0, Icons.crop_square_rounded,
+                  widget.provider.t('shape.rect')),
+              kindBtn(1, Icons.circle_outlined,
+                  widget.provider.t('shape.ellipse')),
+              kindBtn(2, Icons.horizontal_rule_rounded,
+                  widget.provider.t('shape.line')),
+              kindBtn(3, Icons.north_east_rounded,
+                  widget.provider.t('shape.arrow')),
+              const SizedBox(width: 6),
+              GestureDetector(
+                onTap: () => _applyShapeFillToSelection(!allFilled),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(
+                      allFilled
+                          ? Icons.check_box
+                          : Icons.check_box_outline_blank,
+                      size: 18,
+                      color: Colors.white70),
+                  const SizedBox(width: 4),
+                  Text(widget.provider.t('paint.fill'),
+                      style:
+                          const TextStyle(color: Colors.white70, fontSize: 12)),
+                ]),
+              ),
+              div(),
+            ],
+            _toolBtn(
+                icon: Icons.copy_all_rounded,
+                tooltip: widget.provider.t('paint.duplicate'),
+                onTap: _duplicatePaintSelection),
+            _toolBtn(
+                icon: Icons.delete_outline_rounded,
+                tooltip: widget.provider.t('btn.delete'),
+                onTap: _deleteSelectedMulti),
+          ]),
+        ),
+      ),
+    );
   }
 
   Widget _buildPenOptions() {
@@ -76946,47 +77465,58 @@ class _PaintPageViewState extends State<_PaintPageView> {
       ),
     );
 
+    // ── 掴みバーは Positioned の境界「内」に置く ──
+    // 以前は Stack(clipBehavior:none) で top:-6 にはみ出して置いていたが、
+    // Flutter は親境界の外側をヒットテストしないため、 バーの上半分が
+    // 反応せず「(特に空の) テキストボックスを掴めない」 状態だった
+    // (= ユーザー要望: 空のテキストボックスでも掴んで移動できるように)。
+    // バー全体を境界内に含めて、 空でも確実に掴めるようにする。
     return Positioned(
       left: left,
-      top: top,
-      child: Stack(
-        clipBehavior: Clip.none,
+      top: top - grabH,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          editor,
-          Positioned(
-            left: (editorW - grabW) / 2,
-            top: -6,
-            width: grabW,
+          SizedBox(
+            width: editorW,
             height: grabH,
-            child: MouseRegion(
-              cursor: SystemMouseCursors.move,
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onPanUpdate: (d) {
-                  setState(() {
-                    _textEditPos = (_textEditPos ?? pos) + d.delta / fit;
-                    _dirty = true;
-                  });
-                },
-                child: Center(
-                  child: Container(
-                    width: math.min(30.0, grabW - 6),
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFEC407A),
-                      borderRadius: BorderRadius.circular(999),
-                      boxShadow: const [
-                        BoxShadow(
-                            color: Colors.black38,
-                            blurRadius: 3,
-                            offset: Offset(0, 1)),
-                      ],
+            child: Center(
+              child: SizedBox(
+                width: grabW,
+                height: grabH,
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.move,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onPanUpdate: (d) {
+                      setState(() {
+                        _textEditPos = (_textEditPos ?? pos) + d.delta / fit;
+                        _dirty = true;
+                      });
+                    },
+                    child: Center(
+                      child: Container(
+                        width: math.min(30.0, grabW - 6),
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFEC407A),
+                          borderRadius: BorderRadius.circular(999),
+                          boxShadow: const [
+                            BoxShadow(
+                                color: Colors.black38,
+                                blurRadius: 3,
+                                offset: Offset(0, 1)),
+                          ],
+                        ),
+                      ),
                     ),
                   ),
                 ),
               ),
             ),
           ),
+          editor,
         ],
       ),
     );
@@ -77042,10 +77572,11 @@ class _PaintPageViewState extends State<_PaintPageView> {
       child: SingleChildScrollView(
         scrollDirection: Axis.horizontal,
         child: Row(mainAxisSize: MainAxisSize.min, children: [
-          kindBtn(0, Icons.crop_square_rounded, '四角'),
-          kindBtn(1, Icons.circle_outlined, '楕円'),
-          kindBtn(2, Icons.horizontal_rule_rounded, '線'),
-          kindBtn(3, Icons.north_east_rounded, '矢印'),
+          kindBtn(0, Icons.crop_square_rounded, widget.provider.t('shape.rect')),
+          kindBtn(1, Icons.circle_outlined, widget.provider.t('shape.ellipse')),
+          kindBtn(
+              2, Icons.horizontal_rule_rounded, widget.provider.t('shape.line')),
+          kindBtn(3, Icons.north_east_rounded, widget.provider.t('shape.arrow')),
           const SizedBox(width: 6),
           GestureDetector(
             onTap: () => setState(() => _shapeFill = !_shapeFill),
@@ -84099,10 +84630,10 @@ v.addEventListener('play', function() {
     );
   }
 
-  /// 視聴中の YouTube 動画をブラウザ AI の会話コンテキストとして渡す。
-  /// URL だけでなくタイトル・現在位置・ページの説明も添えるため、AI 側で
-  /// 「どの動画について質問しているか」を特定しやすい。説明の取得に失敗しても
-  /// URL とタイトルだけで開けるよう、WebView の JS 取得はベストエフォート。
+  /// 表示中の YouTube 動画またはブラウズページを、ブラウザ AI の会話
+  /// コンテキストとして渡す。動画では URL にタイトル・現在位置・説明も添え、
+  /// ホーム / 検索では現在のページ URL とページ情報を渡す。WebView からの
+  /// 説明取得に失敗しても URL とタイトルだけで開けるよう、JS 取得はベストエフォート。
   Future<void> _shareCurrentVideoWithBrowserAi() async {
     if (!mounted || _sharingVideoWithBrowserAi) return;
     // YouTube は SPA 遷移するため、非同期取得の途中で別動画へ移動し得る。
@@ -84111,7 +84642,10 @@ v.addEventListener('play', function() {
     final titleSnapshot = _currentTitle.trim();
     final urlSnapshot = _currentUrl.isNotEmpty ? _currentUrl : widget.url;
     final provider = context.read<MindMapProvider>();
-    bool isStillSameVideo() => mounted && _currentVideoId == videoIdSnapshot;
+    bool isStillSameTarget() =>
+        mounted &&
+        _currentVideoId == videoIdSnapshot &&
+        (videoIdSnapshot != null || _currentUrl == urlSnapshot);
 
     setState(() => _sharingVideoWithBrowserAi = true);
     try {
@@ -84148,7 +84682,7 @@ v.addEventListener('play', function() {
       } catch (_) {
         // URL とタイトルだけでも共有できるため、説明取得失敗は無視する。
       }
-      if (!isStillSameVideo()) return;
+      if (!isStillSameTarget()) return;
       description = descriptionResult is String
           ? descriptionResult
           : (descriptionResult?.toString() ?? '');
@@ -84158,13 +84692,14 @@ v.addEventListener('play', function() {
       }
 
       final position = await _getCurrentVideoTimeSec();
-      if (!isStillSameVideo()) return;
+      if (!isStillSameTarget()) return;
 
+      final isVideoShare = videoIdSnapshot != null;
       final title = titleSnapshot.isNotEmpty
           ? titleSnapshot
-          : (videoIdSnapshot == null
-              ? provider.t('fsv.videoAiUntitled')
-              : '${provider.t('fsv.videoAiUntitled')} ($videoIdSnapshot)');
+          : (isVideoShare
+              ? '${provider.t('fsv.videoAiUntitled')} ($videoIdSnapshot)'
+              : shareUrl);
       final metadata = <String, Object>{
         'title': title,
         'url': shareUrl,
@@ -84173,7 +84708,7 @@ v.addEventListener('play', function() {
       };
 
       final prompt = provider
-          .t('fsv.videoAiPrompt')
+          .t(isVideoShare ? 'fsv.videoAiPrompt' : 'fsv.pageAiPrompt')
           .replaceAll('{metadata}', jsonEncode(metadata));
       _openMemoTextInAi(
         prompt.trim(),
@@ -84234,6 +84769,273 @@ v.addEventListener('play', function() {
           ),
         );
       },
+    );
+  }
+
+  /// YouTube 右端の AI / 動画共有ボタンを長押しした時に開く設定。
+  /// ブラウザ AI の選択と前提条件を同じシートで編集し、既存の Provider 設定へ
+  /// 保存する。通常タップの処理とは分離しているため、長押し後に AI を勝手に
+  /// 開いたり動画共有を開始したりしない。
+  Future<void> _showMobileVideoAiSettings() async {
+    if (!mounted) return;
+    final provider = context.read<MindMapProvider>();
+    var selectedTarget = provider.browserAiTarget;
+    final prefixController =
+        TextEditingController(text: provider.browserAiPrefix);
+    try {
+      final shouldSave = await showModalBottomSheet<bool>(
+        context: context,
+        isScrollControlled: true,
+        useSafeArea: true,
+        backgroundColor: Colors.transparent,
+        barrierColor: Colors.black54,
+        builder: (sheetContext) {
+          return StatefulBuilder(
+            builder: (sheetContext, setSheetState) {
+              final keyboardInset =
+                  MediaQuery.of(sheetContext).viewInsets.bottom;
+              return AnimatedPadding(
+                duration: const Duration(milliseconds: 180),
+                curve: Curves.easeOut,
+                padding: EdgeInsets.only(bottom: keyboardInset),
+                child: Container(
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF1E1E32),
+                    borderRadius:
+                        BorderRadius.vertical(top: Radius.circular(18)),
+                  ),
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(18, 14, 18, 18),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(children: [
+                          const Icon(Icons.auto_awesome_rounded,
+                              color: Color(0xFFBA68C8), size: 20),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              provider.t('ai.selectAi'),
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints.tightFor(
+                                width: 34, height: 34),
+                            icon: const Icon(Icons.close_rounded,
+                                color: Colors.white54, size: 20),
+                            onPressed: () =>
+                                Navigator.of(sheetContext).pop(false),
+                          ),
+                        ]),
+                        const SizedBox(height: 14),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            for (final target
+                                in MindMapProvider.browserAiTargets)
+                              Builder(builder: (_) {
+                                final id = target['id'] ?? '';
+                                final selected = id == selectedTarget;
+                                return InkWell(
+                                  borderRadius: BorderRadius.circular(20),
+                                  onTap: id.isEmpty
+                                      ? null
+                                      : () => setSheetState(
+                                          () => selectedTarget = id),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 13, vertical: 9),
+                                    decoration: BoxDecoration(
+                                      color: selected
+                                          ? const Color(0xFFBA68C8)
+                                              .withValues(alpha: 0.28)
+                                          : Colors.white10,
+                                      borderRadius: BorderRadius.circular(20),
+                                      border: Border.all(
+                                        color: selected
+                                            ? const Color(0xFFBA68C8)
+                                            : Colors.white24,
+                                      ),
+                                    ),
+                                    child: Text(
+                                      target['label'] ?? id,
+                                      style: TextStyle(
+                                        color: selected
+                                            ? Colors.white
+                                            : Colors.white70,
+                                        fontSize: 13,
+                                        fontWeight: selected
+                                            ? FontWeight.w700
+                                            : FontWeight.w500,
+                                      ),
+                                    ),
+                                  ),
+                                );
+                              }),
+                          ],
+                        ),
+                        const SizedBox(height: 18),
+                        Text(
+                          provider.t('ai.prefixTitle'),
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        TextField(
+                          controller: prefixController,
+                          minLines: 2,
+                          maxLines: 5,
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 13),
+                          decoration: InputDecoration(
+                            hintText: provider.t('ai.prefixPlaceholder'),
+                            hintStyle: const TextStyle(
+                                color: Colors.white30, fontSize: 12),
+                            filled: true,
+                            fillColor: Colors.black.withValues(alpha: 0.22),
+                            contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 10),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(10),
+                              borderSide: BorderSide.none,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                        Row(children: [
+                          TextButton(
+                            onPressed: prefixController.clear,
+                            child: Text(
+                              provider.t('btn.clear'),
+                              style:
+                                  const TextStyle(color: Color(0xFFFF8A80)),
+                            ),
+                          ),
+                          const Spacer(),
+                          TextButton(
+                            onPressed: () =>
+                                Navigator.of(sheetContext).pop(false),
+                            child: Text(
+                              provider.t('btn.cancel'),
+                              style:
+                                  const TextStyle(color: Colors.white54),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFFBA68C8),
+                              foregroundColor: Colors.white,
+                            ),
+                            onPressed: () =>
+                                Navigator.of(sheetContext).pop(true),
+                            child: Text(provider.t('btn.save')),
+                          ),
+                        ]),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            },
+          );
+        },
+      );
+      if (shouldSave != true || !mounted) return;
+      await provider.setBrowserAiTarget(selectedTarget);
+      await provider.setBrowserAiPrefix(prefixController.text.trim());
+    } finally {
+      prefixController.dispose();
+    }
+  }
+
+  /// YouTube WebView の右端に重ねる共通サイズの丸ボタン。
+  /// ヘルプ文や Tooltip は付けず、アイコンだけで構成する。
+  Widget _buildMobileYoutubeRailButton({
+    required Widget icon,
+    required Color color,
+    required VoidCallback? onTap,
+    VoidCallback? onLongPress,
+  }) {
+    return Material(
+      color: Colors.black.withValues(alpha: 0.74),
+      shape: CircleBorder(
+        side: BorderSide(color: color.withValues(alpha: 0.72)),
+      ),
+      elevation: 3,
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: onTap,
+        onLongPress: onLongPress,
+        child: SizedBox(
+          width: 40,
+          height: 40,
+          child: Center(child: icon),
+        ),
+      ),
+    );
+  }
+
+  /// YouTube ホーム・検索・動画のどこにいても同じ位置を維持する右端レール。
+  /// mp4 でも既存の UI 隠し / AI チャットを失わないよう、先頭 2 ボタンは共用する。
+  Widget _buildMobileYoutubeActionRail() {
+    final showYoutubeShare = _isYoutube;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _buildMobileYoutubeRailButton(
+          color: const Color(0xFF6C63FF),
+          icon: Icon(
+            _hideAllControls
+                ? Icons.visibility_rounded
+                : Icons.visibility_off_rounded,
+            color: const Color(0xFF8C84FF),
+            size: 21,
+          ),
+          onTap: _toggleFullscreenControls,
+        ),
+        const SizedBox(height: 8),
+        _buildMobileYoutubeRailButton(
+          color: const Color(0xFFBA68C8),
+          icon: const Icon(Icons.auto_awesome_rounded,
+              color: Color(0xFFCE83D8), size: 21),
+          onTap: () => _openMemoTextInAi(''),
+          onLongPress: _showMobileVideoAiSettings,
+        ),
+        const SizedBox(height: 8),
+        if (showYoutubeShare)
+          _buildMobileYoutubeRailButton(
+            color: const Color(0xFF66BB6A),
+            icon: _sharingVideoWithBrowserAi
+                ? const SizedBox(
+                    width: 17,
+                    height: 17,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Color(0xFF66BB6A),
+                    ),
+                  )
+                : const Icon(Icons.screen_share_rounded,
+                    color: Color(0xFF66BB6A), size: 21),
+            onTap: _sharingVideoWithBrowserAi
+                ? null
+                : _shareCurrentVideoWithBrowserAi,
+            onLongPress: _showMobileVideoAiSettings,
+          )
+        else
+          const SizedBox(width: 40, height: 40),
+      ],
     );
   }
 
@@ -84871,7 +85673,9 @@ v.addEventListener('play', function() {
 
   @override
   Widget build(BuildContext context) {
-    final isVideo = _isYoutube || _isMp4;
+    // YouTube ホーム / 検索 / チャンネルはブラウズ画面であり動画ではない。
+    // videoId を取得できた watch/shorts ページだけ、速度等の動画専用行を出す。
+    final isVideo = (_isYoutube && _currentVideoId != null) || _isMp4;
     final useManualSplitTooltip =
         defaultTargetPlatform == TargetPlatform.android ||
             defaultTargetPlatform == TargetPlatform.iOS ||
@@ -84907,37 +85711,18 @@ v.addEventListener('play', function() {
         backgroundColor: Colors.black,
         body: SafeArea(
           bottom: false,
-          child: Column(children: [
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(
+                child: Column(children: [
             // ── 上部バー (2 段構成) ──
             // 1段目: [戻る] [タイトル] [マップに追加 / プレイリスト ナビ]
             // 2段目: [WebView 戻る] [WebView 進む]  速度x [─ slider ─] [再読込]
             // タイトルが長い時に再生速度バー達と争って省略されてしまう問題への対処。
             // 動画ページ以外 (検索/チャンネル/一般 URL) では 2 段目は描画しない。
-            // ── ユーザー要望: 全 UI をしまっておけるボタン ──
-            // _hideAllControls が true の間はツールバー Container 全体を
-            //   非表示にし、 代わりに右上に小さな「コントロールを表示」 ピル
-            //   だけを出す。 タップで全 UI を復元。
-            if (_hideAllControls)
-              Align(
-                alignment: Alignment.topRight,
-                child: Padding(
-                  padding: const EdgeInsets.only(top: 4, right: 6),
-                  child: Material(
-                    color: Colors.black.withValues(alpha: 0.7),
-                    borderRadius: BorderRadius.circular(20),
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(20),
-                      onTap: _restoreFullscreenControls,
-                      child: const Padding(
-                        padding: EdgeInsets.all(8),
-                        child: Icon(Icons.fullscreen_exit_rounded,
-                            color: Color(0xFF6C63FF), size: 20),
-                      ),
-                    ),
-                  ),
-                ),
-              )
-            else
+            // UI を隠した後の復元操作も WebView 右端の固定レールが担当する。
+            if (!_hideAllControls)
               Container(
                 color: Colors.black,
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -85127,20 +85912,6 @@ v.addEventListener('play', function() {
                           size: 22,
                         ),
                         onPressed: _toggleVideoMemoPanel,
-                      ),
-                    // ── 全ヘッダー UI の表示/非表示 ──
-                    // 以前 AI ボタンがあった位置に置き、視聴中に迷わず全段を
-                    // まとめて格納できるようにする。AI は下段の共有ボタン右へ移動。
-                    if ((_isYoutube && _currentVideoId != null) || _isMp4)
-                      IconButton(
-                        tooltip:
-                            context.read<MindMapProvider>().t('fsv.hideUi'),
-                        padding: EdgeInsets.zero,
-                        constraints:
-                            const BoxConstraints(minWidth: 32, minHeight: 32),
-                        icon: const Icon(Icons.fullscreen_rounded,
-                            color: Color(0xFF6C63FF), size: 22),
-                        onPressed: _toggleFullscreenControls,
                       ),
                     // ── バックグラウンド再生 強制停止ボタン ──
                     // ユーザー要望: 「動画を止めて画面を閉じてもバックグラウンド
@@ -85364,48 +86135,6 @@ v.addEventListener('play', function() {
                                 ),
                               );
                             },
-                          ),
-                        // ── ブラウザ AI ──
-                        // URL 共有の右隣へ移動。通常の AI ボタンは空の会話を開く。
-                        if ((_isYoutube && _currentVideoId != null) || _isMp4)
-                          IconButton(
-                            tooltip: context
-                                .read<MindMapProvider>()
-                                .t('player.aiChat'),
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints(
-                                minWidth: 32, minHeight: 32),
-                            icon: const Icon(Icons.auto_awesome_rounded,
-                                color: Color(0xFFBA68C8), size: 22),
-                            onPressed: () => _openMemoTextInAi(''),
-                          ),
-                        // 視聴中の動画情報を共有した状態でブラウザ AI を開く。
-                        if (_isYoutube && _currentVideoId != null)
-                          IconButton(
-                            tooltip: _sharingVideoWithBrowserAi
-                                ? context
-                                    .read<MindMapProvider>()
-                                    .t('fsv.sharingVideoWithAi')
-                                : context
-                                    .read<MindMapProvider>()
-                                    .t('fsv.shareVideoWithAi'),
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints(
-                                minWidth: 32, minHeight: 32),
-                            icon: _sharingVideoWithBrowserAi
-                                ? const SizedBox(
-                                    width: 16,
-                                    height: 16,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: Color(0xFF66BB6A),
-                                    ),
-                                  )
-                                : const Icon(Icons.screen_share_rounded,
-                                    color: Color(0xFF66BB6A), size: 22),
-                            onPressed: _sharingVideoWithBrowserAi
-                                ? null
-                                : _shareCurrentVideoWithBrowserAi,
                           ),
                       ]),
                     ),
@@ -85968,6 +86697,18 @@ v.addEventListener('play', function() {
               ]),
             ),
           ]),
+              ),
+              // ヘッダーの段数や表示状態が変わっても位置を動かさない固定レール。
+              if (_isYoutube || _isMp4)
+                Container(
+                  width: 56,
+                  color: Colors.black,
+                  alignment: Alignment.topCenter,
+                  padding: const EdgeInsets.only(top: 8),
+                  child: _buildMobileYoutubeActionRail(),
+                ),
+            ],
+          ),
         ),
       ),
     );
