@@ -959,6 +959,10 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 同一ネットワーク内で現在ページを一時共有するローカル HTTP サーバー。
   HttpServer? _lanShareServer;
 
+  /// LAN 共有ダイアログで最後に入力した相手側 URL。
+  static const String _lastLanShareImportUrlKey =
+      'last_lan_share_import_url_v1';
+
   /// アプリ外脱出ロック (Android のみ。タイマー無しのトグル式)。
   /// カスタムボタン 'appLock' で ON/OFF する。ON の間は OS の画面固定
   ///   (startLockTask) で他アプリ/ホームへ抜けられないようにし、復帰時に
@@ -26316,6 +26320,12 @@ class _MindMapScreenState extends State<MindMapScreen>
       'icon': Icons.add_circle_rounded,
       'color': Color(0xFF6C63FF),
     },
+    {
+      'id': 'pasteClipboardImage',
+      'labelKey': 'clip.pasteImageAction',
+      'icon': Icons.content_paste_rounded,
+      'color': Color(0xFFFFB347),
+    },
     // ── Google 検索ダイアログ (Ctrl+Shift+F) ──
     // 内蔵 WebView で Google を開き、 検索結果を見ながらマップにノードを
     // 追加できる。 PC でもモバイルでも使えるよう、 ヘッダー追加候補にする。
@@ -26368,6 +26378,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         'addPage',
         'link',
         'file',
+        'pasteClipboardImage',
         'rangeSelect',
         'insertMapShape',
         'cutMode',
@@ -28476,6 +28487,14 @@ class _MindMapScreenState extends State<MindMapScreen>
         _removeOverlay();
         _pickAndAttachFile(
             context, provider, _ctrlFor(provider.currentPage.id));
+        break;
+      case 'pasteClipboardImage':
+        _removeOverlay();
+        final size =
+            View.of(context).physicalSize / View.of(context).devicePixelRatio;
+        final center = _globalToCanvas(Offset(size.width / 2, size.height / 2),
+            _ctrlFor(provider.currentPage.id));
+        _pasteClipboardImageAt(center, imageOnly: true);
         break;
       case 'rangeSelect':
         _removeOverlay();
@@ -39675,11 +39694,6 @@ class _MindMapScreenState extends State<MindMapScreen>
                         ),
                       ),
                     ),
-                    Padding(
-                      padding: const EdgeInsets.only(right: 4),
-                      child:
-                          _buildMobileClipboardPasteButton(provider, ctrl),
-                    ),
                     GestureDetector(
                       onTap: () => setState(() => _bottomBarOpen = false),
                       child: Container(
@@ -39706,8 +39720,6 @@ class _MindMapScreenState extends State<MindMapScreen>
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        _buildMobileClipboardPasteButton(provider, ctrl),
-                        const SizedBox(width: 6),
                         GestureDetector(
                           onTap: () => setState(() => _bottomBarOpen = true),
                           child: Container(
@@ -39734,40 +39746,6 @@ class _MindMapScreenState extends State<MindMapScreen>
                     ),
                   ),
                 ),
-        ),
-      ),
-    );
-  }
-
-  /// カスタム設定に左右されず、通常マップで常に使えるモバイル貼り付け操作。
-  Widget _buildMobileClipboardPasteButton(
-      MindMapProvider provider, TransformationController ctrl) {
-    return Semantics(
-      button: true,
-      label: provider.t('clip.pasteImageAction'),
-      child: Material(
-        color: const Color(0xFF1A1A2E).withValues(alpha: 0.94),
-        borderRadius: BorderRadius.circular(12),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(12),
-          onTap: () {
-            final size = View.of(context).physicalSize /
-                View.of(context).devicePixelRatio;
-            final canvasCenter = _globalToCanvas(
-                Offset(size.width / 2, size.height / 2), ctrl);
-            _pasteClipboardImageAt(canvasCenter, imageOnly: true);
-          },
-          child: Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                  color: const Color(0xFFFFB347).withValues(alpha: 0.5)),
-            ),
-            child: const Icon(Icons.content_paste_rounded,
-                color: Color(0xFFFFB347), size: 20),
-          ),
         ),
       ),
     );
@@ -50991,85 +50969,323 @@ class _MindMapScreenState extends State<MindMapScreen>
         } catch (_) {}
       });
 
-      await Clipboard.setData(ClipboardData(text: url));
-      if (!mounted) return;
-      _appSnack(
-        context,
-        SnackBar(
-          backgroundColor: const Color(0xFF43B97F),
-          content: Text('ページ共有URLをコピーしました: $url',
-              style: const TextStyle(color: Colors.white)),
-          duration: const Duration(seconds: 4),
-        ),
+      String clipboardBeforeShare = '';
+      try {
+        clipboardBeforeShare =
+            (await Clipboard.getData(Clipboard.kTextPlain))?.text?.trim() ?? '';
+      } catch (_) {}
+
+      SharedPreferences? sharePrefs;
+      String lastImportUrl = '';
+      try {
+        sharePrefs = await SharedPreferences.getInstance();
+        lastImportUrl =
+            sharePrefs.getString(_lastLanShareImportUrlKey)?.trim() ?? '';
+      } catch (_) {}
+
+      bool isHttpUrl(String value) {
+        final parsed = Uri.tryParse(value.trim());
+        return parsed != null &&
+            parsed.host.isNotEmpty &&
+            (parsed.scheme == 'http' || parsed.scheme == 'https');
+      }
+
+      final importUrlController = TextEditingController(
+        text: lastImportUrl.isNotEmpty
+            ? lastImportUrl
+            : (isHttpUrl(clipboardBeforeShare) ? clipboardBeforeShare : ''),
       );
-      await showDialog<void>(
-        context: context,
-        builder: (dctx) => AlertDialog(
-          backgroundColor: const Color(0xFF1E1E32),
-          title: const Text('同じネットワーク内でページを共有',
-              style: TextStyle(color: Colors.white, fontSize: 16)),
-          content: SizedBox(
-            width: 420,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('同じ Wi-Fi / LAN にいる端末で下のURLを開くと、現在ページのプレビューを表示できます。',
-                    style: TextStyle(color: Colors.white60, fontSize: 12)),
-                const SizedBox(height: 12),
-                SelectableText(url,
-                    style: const TextStyle(
-                        color: Color(0xFF4FC3F7),
-                        fontSize: 13,
-                        fontWeight: FontWeight.w700)),
-                const SizedBox(height: 12),
-                const Text('ページデータを保存する場合は、プレビュー内の「ページデータを保存」か下のJSON URLを使えます。',
-                    style: TextStyle(color: Colors.white60, fontSize: 12)),
-                const SizedBox(height: 6),
-                SelectableText(jsonUrl,
-                    style: const TextStyle(
-                        color: Color(0xFF43B97F),
-                        fontSize: 13,
-                        fontWeight: FontWeight.w700)),
-                const SizedBox(height: 8),
-                const Text('共有はアプリを閉じるか、停止するまで有効です。',
-                    style: TextStyle(color: Colors.white38, fontSize: 11)),
+      bool importingSharedPage = false;
+      String? importError;
+
+      Future<void> importSharedPage(
+          BuildContext dctx, StateSetter setDialogState) async {
+        if (importingSharedPage) return;
+        final input = importUrlController.text.trim();
+        final uri = Uri.tryParse(input);
+        if (uri == null ||
+            uri.host.isEmpty ||
+            (uri.scheme != 'http' && uri.scheme != 'https')) {
+          setDialogState(() {
+            importError = 'http:// または https:// で始まる共有URLを入力してください。';
+          });
+          return;
+        }
+
+        // 共有ダイアログで最初に表示される URL はプレビュー用のルート URL。
+        // 相手がそれをそのまま貼り付けても、アプリ間読み込みでは JSON の
+        // エンドポイントへ自動で解決する。明示的な /page.json や他の JSON URL
+        // が入力された場合は、その URL を変更せずに利用する。
+        final fetchUri = uri.path.isEmpty || uri.path == '/'
+            ? uri.replace(path: '/page.json', fragment: '')
+            : uri;
+
+        setDialogState(() {
+          importingSharedPage = true;
+          importError = null;
+        });
+
+        try {
+          try {
+            final prefs = sharePrefs ?? await SharedPreferences.getInstance();
+            await prefs.setString(_lastLanShareImportUrlKey, input);
+            sharePrefs = prefs;
+          } catch (_) {}
+
+          const maxResponseBytes = 10 * 1024 * 1024;
+          final client = http.Client();
+          late final String responseText;
+          try {
+            final request = http.Request('GET', fetchUri)
+              ..followRedirects = true
+              ..maxRedirects = 3;
+            final response = await client
+                .send(request)
+                .timeout(const Duration(seconds: 10));
+            if (response.statusCode < 200 || response.statusCode >= 300) {
+              throw HttpException(
+                  'HTTP ${response.statusCode}', uri: response.request?.url);
+            }
+            final announcedLength = response.contentLength;
+            if (announcedLength != null &&
+                announcedLength > maxResponseBytes) {
+              throw const FormatException('共有データが10MBを超えています。');
+            }
+
+            final bytes = BytesBuilder(copy: false);
+            int receivedBytes = 0;
+            await response.stream.forEach((chunk) {
+              receivedBytes += chunk.length;
+              if (receivedBytes > maxResponseBytes) {
+                throw const FormatException('共有データが10MBを超えています。');
+              }
+              bytes.add(chunk);
+            }).timeout(const Duration(seconds: 20));
+            responseText = utf8.decode(bytes.takeBytes(), allowMalformed: true);
+          } finally {
+            client.close();
+          }
+
+          if (!dctx.mounted) return;
+          final result = provider.importFromJsonString(responseText);
+          if (result['success'] != true) {
+            throw FormatException(
+                (result['message'] ?? '共有ページを読み込めませんでした').toString());
+          }
+
+          final firstPageId = result['firstPageId'] as String?;
+          if (firstPageId == null || firstPageId.isEmpty) {
+            throw const FormatException('共有データに読み込めるページがありません。');
+          }
+          final index =
+              provider.pages.indexWhere((page) => page.id == firstPageId);
+          if (index < 0) {
+            throw const FormatException('読み込んだページを開けませんでした。');
+          }
+          provider.switchPage(index);
+
+          if (dctx.mounted) Navigator.pop(dctx);
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) _centerOnRoot();
+          });
+          if (!mounted) return;
+          _appSnack(
+            context,
+            const SnackBar(
+              backgroundColor: Color(0xFF43B97F),
+              content: Text('共有ページを読み込みました。',
+                  style: TextStyle(color: Colors.white)),
+            ),
+          );
+        } catch (e) {
+          if (!dctx.mounted) return;
+          setDialogState(() {
+            importingSharedPage = false;
+            importError = '読み込みに失敗しました: $e';
+          });
+        }
+      }
+
+      try {
+        await Clipboard.setData(ClipboardData(text: url));
+        if (!mounted) return;
+        _appSnack(
+          context,
+          SnackBar(
+            backgroundColor: const Color(0xFF43B97F),
+            content: Text('ページ共有URLをコピーしました: $url',
+                style: const TextStyle(color: Colors.white)),
+            duration: const Duration(seconds: 4),
+          ),
+        );
+        await showDialog<void>(
+          context: context,
+          builder: (dctx) => StatefulBuilder(
+            builder: (dctx, setDialogState) => AlertDialog(
+              backgroundColor: const Color(0xFF1E1E32),
+              title: const Text('同じネットワーク内でページを共有',
+                  style: TextStyle(color: Colors.white, fontSize: 16)),
+              content: SizedBox(
+                width: 420,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                          '同じ Wi-Fi / LAN にいる端末で下のURLを開くと、現在ページのプレビューを表示できます。',
+                          style:
+                              TextStyle(color: Colors.white60, fontSize: 12)),
+                      const SizedBox(height: 12),
+                      SelectableText(url,
+                          style: const TextStyle(
+                              color: Color(0xFF4FC3F7),
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700)),
+                      const SizedBox(height: 12),
+                      const Text(
+                          'ページデータを保存する場合は、プレビュー内の「ページデータを保存」か下のJSON URLを使えます。',
+                          style:
+                              TextStyle(color: Colors.white60, fontSize: 12)),
+                      const SizedBox(height: 6),
+                      SelectableText(jsonUrl,
+                          style: const TextStyle(
+                              color: Color(0xFF43B97F),
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700)),
+                      const SizedBox(height: 8),
+                      const Text('共有はアプリを閉じるか、停止するまで有効です。',
+                          style:
+                              TextStyle(color: Colors.white38, fontSize: 11)),
+                      const SizedBox(height: 16),
+                      const Divider(color: Colors.white12, height: 1),
+                      const SizedBox(height: 14),
+                      TextField(
+                        controller: importUrlController,
+                        enabled: !importingSharedPage,
+                        keyboardType: TextInputType.url,
+                        autocorrect: false,
+                        style:
+                            const TextStyle(color: Colors.white, fontSize: 13),
+                        decoration: InputDecoration(
+                          labelText: '相手の共有URL',
+                          labelStyle: const TextStyle(color: Colors.white60),
+                          hintText: 'http://192.168.x.x:xxxx/',
+                          hintStyle: const TextStyle(color: Colors.white24),
+                          filled: true,
+                          fillColor: const Color(0xFF151526),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          suffixIcon: IconButton(
+                            icon: const Icon(Icons.content_paste_rounded,
+                                color: Color(0xFF4FC3F7)),
+                            onPressed: importingSharedPage
+                                ? null
+                                : () async {
+                                    try {
+                                      var pasted = (await Clipboard.getData(
+                                                  Clipboard.kTextPlain))
+                                              ?.text
+                                              ?.trim() ??
+                                          '';
+                                      if ((pasted == url || pasted == jsonUrl) &&
+                                          isHttpUrl(clipboardBeforeShare)) {
+                                        pasted = clipboardBeforeShare;
+                                      }
+                                      if (!dctx.mounted || pasted.isEmpty) return;
+                                      importUrlController
+                                        ..text = pasted
+                                        ..selection = TextSelection.collapsed(
+                                            offset: pasted.length);
+                                      setDialogState(() => importError = null);
+                                    } catch (_) {}
+                                  },
+                          ),
+                        ),
+                        onSubmitted: importingSharedPage
+                            ? null
+                            : (_) =>
+                                importSharedPage(dctx, setDialogState),
+                        onChanged: (_) {
+                          if (importError != null) {
+                            setDialogState(() => importError = null);
+                          }
+                        },
+                      ),
+                      if (importError != null) ...[
+                        const SizedBox(height: 8),
+                        Text(importError!,
+                            style: const TextStyle(
+                                color: Color(0xFFFF8A80), fontSize: 11)),
+                      ],
+                      const SizedBox(height: 10),
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF26A69A),
+                            foregroundColor: Colors.white,
+                          ),
+                          onPressed: importingSharedPage
+                              ? null
+                              : () => importSharedPage(dctx, setDialogState),
+                          icon: importingSharedPage
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2, color: Colors.white),
+                                )
+                              : const Icon(Icons.download_rounded, size: 18),
+                          label: Text(importingSharedPage
+                              ? '読み込み中…'
+                              : 'このURLからページを読み込む'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton.icon(
+                  icon: const Icon(Icons.stop_circle_outlined,
+                      color: Color(0xFFFF8A80), size: 18),
+                  label: const Text('停止',
+                      style: TextStyle(color: Color(0xFFFF8A80))),
+                  onPressed: () async {
+                    await _lanShareServer?.close(force: true);
+                    _lanShareServer = null;
+                    if (dctx.mounted) Navigator.pop(dctx);
+                  },
+                ),
+                TextButton.icon(
+                  icon: const Icon(Icons.copy_rounded,
+                      color: Color(0xFF4FC3F7), size: 18),
+                  label: const Text('URLをコピー',
+                      style: TextStyle(color: Color(0xFF4FC3F7))),
+                  onPressed: () => Clipboard.setData(ClipboardData(text: url)),
+                ),
+                TextButton.icon(
+                  icon: const Icon(Icons.data_object_rounded,
+                      color: Color(0xFF43B97F), size: 18),
+                  label: const Text('JSONをコピー',
+                      style: TextStyle(color: Color(0xFF43B97F))),
+                  onPressed: () =>
+                      Clipboard.setData(ClipboardData(text: jsonUrl)),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(dctx),
+                  child: const Text('閉じる',
+                      style: TextStyle(color: Colors.white54)),
+                ),
               ],
             ),
           ),
-          actions: [
-            TextButton.icon(
-              icon: const Icon(Icons.stop_circle_outlined,
-                  color: Color(0xFFFF8A80), size: 18),
-              label:
-                  const Text('停止', style: TextStyle(color: Color(0xFFFF8A80))),
-              onPressed: () async {
-                await _lanShareServer?.close(force: true);
-                _lanShareServer = null;
-                if (dctx.mounted) Navigator.pop(dctx);
-              },
-            ),
-            TextButton.icon(
-              icon: const Icon(Icons.copy_rounded,
-                  color: Color(0xFF4FC3F7), size: 18),
-              label: const Text('URLをコピー',
-                  style: TextStyle(color: Color(0xFF4FC3F7))),
-              onPressed: () => Clipboard.setData(ClipboardData(text: url)),
-            ),
-            TextButton.icon(
-              icon: const Icon(Icons.data_object_rounded,
-                  color: Color(0xFF43B97F), size: 18),
-              label: const Text('JSONをコピー',
-                  style: TextStyle(color: Color(0xFF43B97F))),
-              onPressed: () => Clipboard.setData(ClipboardData(text: jsonUrl)),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(dctx),
-              child: const Text('閉じる', style: TextStyle(color: Colors.white54)),
-            ),
-          ],
-        ),
-      );
+        );
+      } finally {
+        importUrlController.dispose();
+      }
     } catch (e) {
       if (!mounted) return;
       _appSnack(
@@ -64140,7 +64356,9 @@ class _HeaderCustomButtonsBarState extends State<_HeaderCustomButtonsBar> {
               ? Align(alignment: Alignment.center, child: row)
               : Scrollbar(
                   controller: _scrollCtrl,
-                  thumbVisibility: true,
+                  // ヘッダー移動中だけ浮かび、操作を止めるとフェードアウトする。
+                  // アプリ全体の Theme は常時表示なので false を局所指定する。
+                  thumbVisibility: false,
                   child: SingleChildScrollView(
                     key: const PageStorageKey<String>(
                         'header_custom_buttons_bar'),
@@ -73476,6 +73694,23 @@ class _PaintShape {
       );
 }
 
+Rect? _paintStrokeBounds(_PaintStroke stroke, {double extra = 0}) {
+  if (stroke.points.isEmpty) return null;
+  var minX = stroke.points.first.dx;
+  var minY = stroke.points.first.dy;
+  var maxX = minX;
+  var maxY = minY;
+  for (int i = 1; i < stroke.points.length; i++) {
+    final point = stroke.points[i];
+    minX = math.min(minX, point.dx);
+    minY = math.min(minY, point.dy);
+    maxX = math.max(maxX, point.dx);
+    maxY = math.max(maxY, point.dy);
+  }
+  return Rect.fromLTRB(minX, minY, maxX, maxY)
+      .inflate(stroke.width / 2 + extra);
+}
+
 Map<_PaintShapeResizeHandle, Offset> _paintShapeResizeHandleCenters(
     _PaintShape shape) {
   if (shape.kind == 2 || shape.kind == 3) {
@@ -73526,10 +73761,12 @@ class _PaintEraseSnapshot {
   final List<_PaintStroke> strokes;
   final List<_PaintText> texts;
   final List<_PaintShape> shapes;
+  final List<_PaintImageItem> images;
   _PaintEraseSnapshot({
     required this.strokes,
     required this.texts,
     required this.shapes,
+    required this.images,
   });
 }
 
@@ -74965,6 +75202,12 @@ class _PaintPageViewState extends State<_PaintPageView> {
   bool _copyPaintSelection() {
     final items = <Object>[];
     if (_tool == _PaintTool.select && _isAnySelSet()) {
+      for (final i in _selStrokeSet) {
+        if (i < _sheet.strokes.length) {
+          final stroke = _sheet.strokes[i];
+          if (!stroke.erase) items.add(_cloneStroke(stroke));
+        }
+      }
       for (final i in _selImgSet) {
         if (i < _sheet.images.length) items.add(_cloneImage(_sheet.images[i]));
       }
@@ -74991,17 +75234,21 @@ class _PaintPageViewState extends State<_PaintPageView> {
   void _pastePaintClipboard() {
     if (_paintClipboard.isEmpty) return;
     const d = _kPaintPasteShift;
+    final before = _makeEraseSnapshot();
     setState(() {
-      _redo.clear();
       _tool = _PaintTool.select;
       _clearSelSets();
       _selImage = -1;
       _selText = -1;
       _rangeRect = null;
       for (final it in _paintClipboard) {
-        if (it is _PaintImageItem) {
+        if (it is _PaintStroke) {
+          final c = _cloneStroke(it);
+          _shiftPaintStroke(c, d);
+          _sheet.strokes.add(c);
+          _selStrokeSet.add(_sheet.strokes.length - 1);
+        } else if (it is _PaintImageItem) {
           _sheet.images.add(_PaintImageItem(it.path, it.rect.shift(d)));
-          _sheet.undo.add('image');
           _selImgSet.add(_sheet.images.length - 1);
         } else if (it is _PaintShape) {
           final c = _cloneShape(it);
@@ -75009,20 +75256,20 @@ class _PaintPageViewState extends State<_PaintPageView> {
           c.b += d;
           _shiftPaintErasers(c.erasers, d);
           _sheet.shapes.add(c);
-          _sheet.undo.add('shape');
           _selShapeSet.add(_sheet.shapes.length - 1);
         } else if (it is _PaintText) {
           final c = _cloneText(it);
           c.pos += d;
           _shiftPaintErasers(c.erasers, d);
           _sheet.texts.add(c);
-          _sheet.undo.add('text');
           _selTextSet.add(_sheet.texts.length - 1);
         }
       }
       // 次の貼り付けが今回の位置からさらにずれるよう、 保持内容も進める。
       for (final it in _paintClipboard) {
-        if (it is _PaintImageItem) {
+        if (it is _PaintStroke) {
+          _shiftPaintStroke(it, d);
+        } else if (it is _PaintImageItem) {
           it.rect = it.rect.shift(d);
         } else if (it is _PaintShape) {
           it.a += d;
@@ -75033,7 +75280,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
           _shiftPaintErasers(it.erasers, d);
         }
       }
-      _dirty = true;
+      _pushPaintSnapshotEdit(before);
     });
     _persist();
   }
@@ -75092,6 +75339,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
   Offset? _textDragOrig;
   Offset _textDragStart = Offset.zero;
   // ── 選択ツール (= ユーザー要望: 図形/画像を掴んで移動・範囲選択で一括削除) ──
+  final Set<int> _selStrokeSet = {};
   final Set<int> _selImgSet = {};
   final Set<int> _selShapeSet = {};
   final Set<int> _selTextSet = {};
@@ -75105,18 +75353,112 @@ class _PaintPageViewState extends State<_PaintPageView> {
   _PaintShape? _shapeResizeOrig;
   _PaintEraseSnapshot? _shapeResizeBeforeSnapshot;
   bool _shapeResizeChanged = false;
+  _PaintEraseSnapshot? _selectionMoveBeforeSnapshot;
+  bool _selectionMoveChanged = false;
 
   bool _isAnySelSet() =>
+      _selStrokeSet.isNotEmpty ||
       _selImgSet.isNotEmpty ||
       _selShapeSet.isNotEmpty ||
       _selTextSet.isNotEmpty;
   void _clearSelSets() {
+    _selStrokeSet.clear();
     _selImgSet.clear();
     _selShapeSet.clear();
     _selTextSet.clear();
   }
 
-  (String, int)? _selectHitTopmost(Offset p) {
+  /// シート内の要素 index を参照する選択・ドラッグ状態をまとめて解除する。
+  /// シート切替後に同じ index の別要素が選択済みとして扱われることを防ぐ。
+  void _resetPaintSelectionState() {
+    _clearSelSets();
+    _selImage = -1;
+    _selText = -1;
+    _rangeRect = null;
+    _selRanging = false;
+    _selMoving = false;
+    _selectionMoveBeforeSnapshot = null;
+    _selectionMoveChanged = false;
+    _shapeResizeHandle = null;
+    _shapeResizeIndex = -1;
+    _shapeResizeOrig = null;
+    _shapeResizeBeforeSnapshot = null;
+    _shapeResizeChanged = false;
+    _imgDragOrig = null;
+    _imgResizing = false;
+    _textDragOrig = null;
+  }
+
+  bool _paintStrokeHit(_PaintStroke stroke, Offset p, double fit) {
+    if (stroke.erase || stroke.points.isEmpty) return false;
+    final screenTolerance = 8.0 / math.max(fit, 0.01);
+    final tolerance = stroke.width / 2 + screenTolerance;
+    final bounds = _paintStrokeBounds(stroke, extra: screenTolerance);
+    if (bounds == null || !bounds.contains(p)) return false;
+    if (stroke.points.length == 1) {
+      return (p - stroke.points.first).distance <= tolerance;
+    }
+    for (int i = 1; i < stroke.points.length; i++) {
+      if (_distToSegment(p, stroke.points[i - 1], stroke.points[i]) <=
+          tolerance) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool _paintShapeHit(_PaintShape shape, Offset p, double fit) {
+    final tolerance = shape.width / 2 + 8.0 / math.max(fit, 0.01);
+    final rect = Rect.fromPoints(shape.a, shape.b);
+    switch (shape.kind) {
+      case 1:
+        final rx = rect.width / 2;
+        final ry = rect.height / 2;
+        if (rx <= 0 || ry <= 0) return (p - rect.center).distance <= tolerance;
+        bool inEllipse(double xRadius, double yRadius) {
+          if (xRadius <= 0 || yRadius <= 0) return false;
+          final dx = (p.dx - rect.center.dx) / xRadius;
+          final dy = (p.dy - rect.center.dy) / yRadius;
+          return dx * dx + dy * dy <= 1;
+        }
+
+        final inOuter = inEllipse(rx + tolerance, ry + tolerance);
+        if (!inOuter || shape.fill) return inOuter;
+        return !inEllipse(rx - tolerance, ry - tolerance);
+      case 2:
+        return _distToSegment(p, shape.a, shape.b) <= tolerance;
+      case 3:
+        if (_distToSegment(p, shape.a, shape.b) <= tolerance) return true;
+        final direction = shape.b - shape.a;
+        final length = direction.distance;
+        if (length < 1) return (p - shape.b).distance <= tolerance;
+        final unit = direction / length;
+        final normal = Offset(-unit.dy, unit.dx);
+        final head = (shape.width * 2.8).clamp(18.0, 90.0);
+        final base = shape.b - unit * head;
+        final halfBase = head * 0.62;
+        final left = base + normal * halfBase;
+        final right = base - normal * halfBase;
+        final arrowHead = Path()
+          ..moveTo(shape.b.dx, shape.b.dy)
+          ..lineTo(left.dx, left.dy)
+          ..lineTo(right.dx, right.dy)
+          ..close();
+        return arrowHead.contains(p) ||
+            _distToSegment(p, shape.b, left) <= tolerance ||
+            _distToSegment(p, left, right) <= tolerance ||
+            _distToSegment(p, right, shape.b) <= tolerance;
+      default:
+        final outer = rect.inflate(tolerance);
+        if (!outer.contains(p) || shape.fill) return outer.contains(p);
+        if (rect.width <= tolerance * 2 || rect.height <= tolerance * 2) {
+          return true;
+        }
+        return !rect.deflate(tolerance).contains(p);
+    }
+  }
+
+  (String, int)? _selectHitTopmost(Offset p, double fit) {
     for (int i = _sheet.texts.length - 1; i >= 0; i--) {
       final t = _sheet.texts[i];
       final s = _measureText(t);
@@ -75126,8 +75468,10 @@ class _PaintPageViewState extends State<_PaintPageView> {
     }
     for (int i = _sheet.shapes.length - 1; i >= 0; i--) {
       final sh = _sheet.shapes[i];
-      final r = Rect.fromPoints(sh.a, sh.b).inflate(sh.width.clamp(6.0, 40.0));
-      if (r.contains(p)) return ('shape', i);
+      if (_paintShapeHit(sh, p, fit)) return ('shape', i);
+    }
+    for (int i = _sheet.strokes.length - 1; i >= 0; i--) {
+      if (_paintStrokeHit(_sheet.strokes[i], p, fit)) return ('stroke', i);
     }
     for (int i = _sheet.images.length - 1; i >= 0; i--) {
       if (_sheet.images[i].rect.contains(p)) return ('image', i);
@@ -75135,13 +75479,23 @@ class _PaintPageViewState extends State<_PaintPageView> {
     return null;
   }
 
-  bool _isSel((String, int) h) => h.$1 == 'image'
-      ? _selImgSet.contains(h.$2)
-      : h.$1 == 'shape'
-          ? _selShapeSet.contains(h.$2)
-          : _selTextSet.contains(h.$2);
+  bool _isSel((String, int) h) {
+    switch (h.$1) {
+      case 'stroke':
+        return _selStrokeSet.contains(h.$2);
+      case 'image':
+        return _selImgSet.contains(h.$2);
+      case 'shape':
+        return _selShapeSet.contains(h.$2);
+      default:
+        return _selTextSet.contains(h.$2);
+    }
+  }
+
   void _addSel((String, int) h) {
-    if (h.$1 == 'image') {
+    if (h.$1 == 'stroke') {
+      _selStrokeSet.add(h.$2);
+    } else if (h.$1 == 'image') {
       _selImgSet.add(h.$2);
     } else if (h.$1 == 'shape') {
       _selShapeSet.add(h.$2);
@@ -75151,6 +75505,11 @@ class _PaintPageViewState extends State<_PaintPageView> {
   }
 
   void _moveSelectedBy(Offset d) {
+    for (final i in _selStrokeSet) {
+      if (i < _sheet.strokes.length) {
+        _shiftPaintStroke(_sheet.strokes[i], d);
+      }
+    }
     for (final i in _selImgSet) {
       if (i < _sheet.images.length) {
         _sheet.images[i].rect = _sheet.images[i].rect.shift(d);
@@ -75173,6 +75532,12 @@ class _PaintPageViewState extends State<_PaintPageView> {
 
   void _selectInRect(Rect r) {
     _clearSelSets();
+    for (int i = 0; i < _sheet.strokes.length; i++) {
+      final stroke = _sheet.strokes[i];
+      if (stroke.erase) continue;
+      final bounds = _paintStrokeBounds(stroke);
+      if (bounds != null && r.overlaps(bounds)) _selStrokeSet.add(i);
+    }
     for (int i = 0; i < _sheet.images.length; i++) {
       if (r.overlaps(_sheet.images[i].rect)) _selImgSet.add(i);
     }
@@ -75296,17 +75661,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
     final changed = _shapeResizeChanged;
     setState(() {
       if (changed && before != null) {
-        _sheet.eraseUndo.add((
-          list: 'edit',
-          index: 0,
-          item: _PaintEraseEdit(
-            before: before,
-            after: _makeEraseSnapshot(),
-          ),
-        ));
-        _sheet.undo.add('erase');
-        _redo.clear();
-        _dirty = true;
+        _pushPaintSnapshotEdit(before);
       }
       _shapeResizeHandle = null;
       _shapeResizeIndex = -1;
@@ -75325,11 +75680,13 @@ class _PaintPageViewState extends State<_PaintPageView> {
       _shapeResizeOrig = _cloneShape(_sheet.shapes[resizeHit.index]);
       _shapeResizeBeforeSnapshot = _makeEraseSnapshot();
       _shapeResizeChanged = false;
+      _selectionMoveBeforeSnapshot = null;
+      _selectionMoveChanged = false;
       _selMoving = false;
       _selRanging = false;
       return;
     }
-    final hit = _selectHitTopmost(p);
+    final hit = _selectHitTopmost(p, fit);
     if (hit != null) {
       if (!_isSel(hit))
         setState(() {
@@ -75339,6 +75696,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
       _selMoving = true;
       _selRanging = false;
       _selLastP = p;
+      _selectionMoveBeforeSnapshot = _makeEraseSnapshot();
+      _selectionMoveChanged = false;
     } else {
       setState(() {
         _clearSelSets();
@@ -75346,6 +75705,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
         _selRangeStart = p;
         _rangeRect = Rect.fromPoints(p, p);
       });
+      _selectionMoveBeforeSnapshot = null;
+      _selectionMoveChanged = false;
       _selMoving = false;
     }
   }
@@ -75363,6 +75724,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
       _selLastP = p;
       setState(() {
         _moveSelectedBy(d);
+        if (d != Offset.zero) _selectionMoveChanged = true;
         _dirty = true;
       });
     }
@@ -75377,13 +75739,20 @@ class _PaintPageViewState extends State<_PaintPageView> {
         _rangeRect = null;
       });
     } else if (_selMoving) {
-      _selMoving = false;
-      _persist();
+      final before = _selectionMoveBeforeSnapshot;
+      final changed = _selectionMoveChanged;
+      setState(() {
+        _selMoving = false;
+        if (changed && before != null) _pushPaintSnapshotEdit(before);
+        _selectionMoveBeforeSnapshot = null;
+        _selectionMoveChanged = false;
+      });
+      if (changed) _persist();
     }
   }
 
-  void _onSelectTap(Offset p) {
-    final hit = _selectHitTopmost(p);
+  void _onSelectTap(Offset p, double fit) {
+    final hit = _selectHitTopmost(p, fit);
     // ── 選択済みテキストを再タップしたら編集を開始 (= ユーザー要望: 選択モード
     //    でオブジェクトを指定しても編集できない → できるように) ──
     if (hit != null &&
@@ -75517,34 +75886,35 @@ class _PaintPageViewState extends State<_PaintPageView> {
   }
 
   void _deleteSelectedMulti() {
+    if (!_isAnySelSet()) return;
+    final before = _makeEraseSnapshot();
     setState(() {
+      final strokes = _selStrokeSet.toList()..sort((a, b) => b - a);
+      for (final i in strokes) {
+        if (i < _sheet.strokes.length) _sheet.strokes.removeAt(i);
+      }
       final imgs = _selImgSet.toList()..sort((a, b) => b - a);
       for (final i in imgs) {
         if (i < _sheet.images.length) {
           _sheet.images.removeAt(i);
-          final u = _sheet.undo.lastIndexOf('image');
-          if (u >= 0) _sheet.undo.removeAt(u);
         }
       }
       final shapes = _selShapeSet.toList()..sort((a, b) => b - a);
       for (final i in shapes) {
         if (i < _sheet.shapes.length) {
           _sheet.shapes.removeAt(i);
-          final u = _sheet.undo.lastIndexOf('shape');
-          if (u >= 0) _sheet.undo.removeAt(u);
         }
       }
       final texts = _selTextSet.toList()..sort((a, b) => b - a);
       for (final i in texts) {
         if (i < _sheet.texts.length) {
           _sheet.texts.removeAt(i);
-          final u = _sheet.undo.lastIndexOf('text');
-          if (u >= 0) _sheet.undo.removeAt(u);
         }
       }
       _clearSelSets();
-      _redo.clear();
-      _dirty = true;
+      _selImage = -1;
+      _selText = -1;
+      _pushPaintSnapshotEdit(before);
     });
     _persist();
   }
@@ -75784,17 +76154,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
               shape.erasers.add(_cloneStroke(mask));
             }
           }
-          _sheet.eraseUndo.add((
-            list: 'edit',
-            index: 0,
-            item: _PaintEraseEdit(
-              before: before,
-              after: _makeEraseSnapshot(),
-            ),
-          ));
-          _sheet.undo.add('erase');
-          _redo.clear();
-          _dirty = true;
+          _pushPaintSnapshotEdit(before);
         }
         _eraserBeforeSnapshot = null;
         _eraserLastPoint = null;
@@ -75994,6 +76354,13 @@ class _PaintPageViewState extends State<_PaintPageView> {
       _PaintShape(s.kind, s.a, s.b, s.color, s.width, s.fill,
           erasers: s.erasers.map(_cloneStroke).toList());
 
+  void _shiftPaintStroke(_PaintStroke stroke, Offset delta) {
+    if (delta == Offset.zero) return;
+    for (int i = 0; i < stroke.points.length; i++) {
+      stroke.points[i] += delta;
+    }
+  }
+
   void _shiftPaintErasers(List<_PaintStroke> erasers, Offset delta) {
     if (delta == Offset.zero) return;
     for (final stroke in erasers) {
@@ -76080,7 +76447,31 @@ class _PaintPageViewState extends State<_PaintPageView> {
         strokes: _sheet.strokes.map(_cloneStroke).toList(),
         texts: _sheet.texts.map(_cloneText).toList(),
         shapes: _sheet.shapes.map(_cloneShape).toList(),
+        images: _sheet.images.map(_cloneImage).toList(),
       );
+
+  void _pushPaintSnapshotEdit(_PaintEraseSnapshot before) {
+    _sheet.eraseUndo.add((
+      list: 'edit',
+      index: 0,
+      item: _PaintEraseEdit(before: before, after: _makeEraseSnapshot()),
+    ));
+    _sheet.undo.add('erase');
+    _redo.clear();
+    _dirty = true;
+    // 前後スナップショットは手書き点をすべて含むため、無制限に保持すると
+    // 大きなノートの移動・消去を繰り返した際にメモリを圧迫する。
+    const maxHistory = 100;
+    while (_sheet.undo.length > maxHistory) {
+      final removedKind = _sheet.undo.removeAt(0);
+      if (removedKind == 'erase' && _sheet.eraseUndo.isNotEmpty) {
+        _sheet.eraseUndo.removeAt(0);
+      }
+    }
+    if (_redo.length > maxHistory) {
+      _redo.removeRange(0, _redo.length - maxHistory);
+    }
+  }
 
   void _restoreEraseSnapshot(_PaintEraseSnapshot snapshot) {
     _sheet.strokes
@@ -76092,6 +76483,9 @@ class _PaintPageViewState extends State<_PaintPageView> {
     _sheet.shapes
       ..clear()
       ..addAll(snapshot.shapes.map(_cloneShape));
+    _sheet.images
+      ..clear()
+      ..addAll(snapshot.images.map(_cloneImage));
   }
 
   bool _strokeSegmentNearEraser(
@@ -76440,7 +76834,10 @@ class _PaintPageViewState extends State<_PaintPageView> {
           }
           _redo.add((kind: 'erase', item: e));
         }
+        _clearSelSets();
         _selImage = -1;
+        _selText = -1;
+        _rangeRect = null;
         _dirty = true;
         return;
       }
@@ -76459,7 +76856,10 @@ class _PaintPageViewState extends State<_PaintPageView> {
           if (_sheet.strokes.isNotEmpty) item = _sheet.strokes.removeLast();
       }
       if (item != null) _redo.add((kind: kind, item: item));
+      _clearSelSets();
       _selImage = -1;
+      _selText = -1;
+      _rangeRect = null;
       _dirty = true;
     });
     _persist();
@@ -76483,6 +76883,10 @@ class _PaintPageViewState extends State<_PaintPageView> {
         }
         _sheet.eraseUndo.add(rec);
         _sheet.undo.add('erase');
+        _clearSelSets();
+        _selImage = -1;
+        _selText = -1;
+        _rangeRect = null;
         _dirty = true;
         return;
       }
@@ -76500,6 +76904,10 @@ class _PaintPageViewState extends State<_PaintPageView> {
           _sheet.strokes.add(e.item as _PaintStroke);
       }
       _sheet.undo.add(e.kind);
+      _clearSelSets();
+      _selImage = -1;
+      _selText = -1;
+      _rangeRect = null;
       _dirty = true;
     });
     _persist();
@@ -76545,7 +76953,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
       sh.undo.clear();
       sh.eraseUndo.clear();
       _redo.clear();
-      _selImage = -1;
+      _resetPaintSelectionState();
       _curStroke = null;
       _curShape = null;
       _dirty = true;
@@ -76558,6 +76966,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
       _sheets.add(
           _PaintSheet(name: 'シート${_sheets.length + 1}', sizeId: _sheet.sizeId));
       _sel = _sheets.length - 1;
+      _resetPaintSelectionState();
       _dirty = true;
     });
     _persist();
@@ -76568,7 +76977,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
     setState(() {
       _sel = i;
       _redo.clear();
-      _selImage = -1;
+      _resetPaintSelectionState();
       _curStroke = null;
       _curShape = null;
     });
@@ -76607,6 +77016,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
     setState(() {
       _sheets.removeAt(_sel);
       if (_sel >= _sheets.length) _sel = _sheets.length - 1;
+      _resetPaintSelectionState();
       _dirty = true;
     });
     _persist();
@@ -77332,7 +77742,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
                                         } else if (isImage) {
                                           _onImageTap(p);
                                         } else {
-                                          _onSelectTap(p);
+                                          _onSelectTap(p, fit);
                                         }
                                       }
                                     : null,
@@ -77357,6 +77767,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
                                     liveEraserShapes: isEraser
                                         ? _eraserTouchedShapes
                                         : const <_PaintShape>{},
+                                    selStrokeSet:
+                                        isSelect ? _selStrokeSet : const {},
                                     selImgSet: isSelect ? _selImgSet : const {},
                                     selShapeSet:
                                         isSelect ? _selShapeSet : const {},
@@ -78107,6 +78519,7 @@ class _PaintCanvasPainter extends CustomPainter {
   final Set<_PaintText> liveEraserTexts;
   final Set<_PaintShape> liveEraserShapes;
   // ── 選択ツールの複数選択 + ラバーバンド矩形 ──
+  final Set<int> selStrokeSet;
   final Set<int> selImgSet;
   final Set<int> selShapeSet;
   final Set<int> selTextSet;
@@ -78120,6 +78533,7 @@ class _PaintCanvasPainter extends CustomPainter {
       this.eraserWidth = 16,
       this.liveEraserTexts = const {},
       this.liveEraserShapes = const {},
+      this.selStrokeSet = const {},
       this.selImgSet = const {},
       this.selShapeSet = const {},
       this.selTextSet = const {},
@@ -78340,6 +78754,13 @@ class _PaintCanvasPainter extends CustomPainter {
       ..color = const Color(0xFFEC407A)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.5 / scale;
+    for (final i in selStrokeSet) {
+      if (i < 0 || i >= sheet.strokes.length) continue;
+      final stroke = sheet.strokes[i];
+      if (stroke.erase) continue;
+      final bounds = _paintStrokeBounds(stroke, extra: 4 / scale);
+      if (bounds != null) canvas.drawRect(bounds, selPaint);
+    }
     for (final i in selImgSet) {
       if (i < sheet.images.length) {
         canvas.drawRect(sheet.images[i].rect.inflate(2 / scale), selPaint);
@@ -82241,14 +82662,25 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
   ///   ピルだけを表示する。
   bool _hideAllControls = false;
 
+  /// 操作 UI の配置。ヘッダー / サイドと、サイド時の左右位置を端末に保存する。
+  bool _youtubeControlsInSideMenu = false;
+  bool _youtubeSideMenuOnLeft = false;
+  bool _youtubeUiLayoutTouched = false;
+  static const _youtubeUiLayoutPrefKey = 'youtube_video_ui_layout_v1';
+  static const _youtubeUiSidePrefKey = 'youtube_video_ui_side_v1';
+
   /// 視聴中の動画情報をブラウザ AI へ渡す処理中。WebView から説明・再生位置を
   /// 取得している間の二重タップを防ぎ、下段ボタンに進捗を表示する。
   bool _sharingVideoWithBrowserAi = false;
 
   void _hideFullscreenControls() {
+    FocusManager.instance.primaryFocus?.unfocus();
+    _stopVideoMemoPreviewTimer();
     setState(() {
       _hideAllControls = true;
+      _videoMemoPanelOpen = false;
     });
+    _syncHiddenYoutubeVideoAlignment();
   }
 
   void _restoreFullscreenControls() {
@@ -82259,14 +82691,7 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
         _ytSearchPanelOpen = true;
       }
     });
-  }
-
-  void _toggleFullscreenControls() {
-    if (_hideAllControls) {
-      _restoreFullscreenControls();
-    } else {
-      _hideFullscreenControls();
-    }
+    _syncHiddenYoutubeVideoAlignment();
   }
 
   /// YouTube 検索ボックス用の controller。
@@ -82811,7 +83236,7 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
     ytm-single-column-watch-next-results-renderer {
       display: flex !important;
       flex-direction: column !important;
-      justify-content: center !important;
+      justify-content: var(--mm-video-y-align, center) !important;
       align-items: stretch !important;
       min-height: 100vh !important;
       background: #000 !important;
@@ -82825,7 +83250,7 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
       display: flex !important;
       flex-direction: column !important;
       align-items: center !important;
-      justify-content: center !important;
+      justify-content: var(--mm-video-y-align, center) !important;
       width: 100vw !important;
       max-width: 100vw !important;
       min-height: 100vh !important;
@@ -82870,6 +83295,7 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
     _playlistIndex = widget.startIndex.clamp(0, _playlist.length - 1);
     _analyzeUrlSync(_playlist[_playlistIndex]);
     _initialLoadTarget = _computeLoadTargetUrl(_playlist[_playlistIndex]);
+    _loadYoutubeUiLayout();
     // ── 動画メモ履歴を復元 ──
     // 過去にこの動画で「履歴に保存」 したメモを呼び戻す。 セッションを
     // 越えて保持されるので、 後日同じ動画を開けば履歴一覧に再表示される。
@@ -83824,6 +84250,27 @@ v.addEventListener('play', function() {
         (document.head||document.documentElement).appendChild(s);
       })();
     ''');
+    await _syncHiddenYoutubeVideoAlignment();
+  }
+
+  /// アプリ側 UI を隠している間だけ、YouTube プレイヤーを画面上部へ寄せる。
+  /// 横方向は既存の stretch / center を維持するため、通常動画も Shorts も
+  /// 上部中央に収まり、UI を戻すと従来の垂直中央へ復帰する。
+  Future<void> _syncHiddenYoutubeVideoAlignment() async {
+    if (!_isYoutube) return;
+    final alignment = _hideAllControls ? 'flex-start' : 'center';
+    final scrollToTop = _hideAllControls ? 'window.scrollTo(0, 0);' : '';
+    try {
+      await _c?.evaluateJavascript(source: '''
+        (function() {
+          try {
+            document.documentElement.style.setProperty(
+              '--mm-video-y-align', '$alignment');
+            $scrollToTop
+          } catch (e) {}
+        })();
+      ''');
+    } catch (_) {}
   }
 
   /// フォーカスモード CSS を撤去する。
@@ -83851,6 +84298,7 @@ v.addEventListener('play', function() {
           try {
             var s=document.getElementById("__MM_FS_STYLE__");
             if(s) s.parentNode && s.parentNode.removeChild(s);
+            document.documentElement.style.removeProperty('--mm-video-y-align');
           } catch(e) {}
         })();
       ''');
@@ -85400,6 +85848,272 @@ v.addEventListener('play', function() {
     }
   }
 
+  Future<void> _loadYoutubeUiLayout() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final inSide = prefs.getString(_youtubeUiLayoutPrefKey) == 'side';
+      final onLeft = prefs.getString(_youtubeUiSidePrefKey) == 'left';
+      if (!mounted || _youtubeUiLayoutTouched) return;
+      setState(() {
+        _youtubeControlsInSideMenu = inSide;
+        _youtubeSideMenuOnLeft = onLeft;
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _saveYoutubeUiLayout() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_youtubeUiLayoutPrefKey,
+          _youtubeControlsInSideMenu ? 'side' : 'header');
+      await prefs.setString(_youtubeUiSidePrefKey,
+          _youtubeSideMenuOnLeft ? 'left' : 'right');
+    } catch (_) {}
+  }
+
+  void _setYoutubeUiLayout({bool? sideMenu, bool? sideOnLeft}) {
+    if (!mounted) return;
+    setState(() {
+      _youtubeUiLayoutTouched = true;
+      if (sideMenu != null) _youtubeControlsInSideMenu = sideMenu;
+      if (sideOnLeft != null) _youtubeSideMenuOnLeft = sideOnLeft;
+    });
+    _saveYoutubeUiLayout();
+  }
+
+  void _showYoutubeUiSettings() {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF1E1E32),
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (sheetContext, setSheetState) {
+          void update({bool? sideMenu, bool? sideOnLeft}) {
+            _setYoutubeUiLayout(
+                sideMenu: sideMenu, sideOnLeft: sideOnLeft);
+            setSheetState(() {});
+          }
+
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Row(children: [
+                    Icon(Icons.tune_rounded,
+                        color: Color(0xFF8C84FF), size: 21),
+                    SizedBox(width: 10),
+                    Text('YouTube UI の配置',
+                        style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700)),
+                  ]),
+                  const SizedBox(height: 10),
+                  RadioListTile<bool>(
+                    value: false,
+                    groupValue: _youtubeControlsInSideMenu,
+                    activeColor: const Color(0xFF8C84FF),
+                    title: const Text('ヘッダーに表示',
+                        style: TextStyle(color: Colors.white)),
+                    secondary: const Icon(Icons.view_agenda_rounded,
+                        color: Colors.white70),
+                    onChanged: (value) {
+                      if (value != null) update(sideMenu: value);
+                    },
+                  ),
+                  RadioListTile<bool>(
+                    value: true,
+                    groupValue: _youtubeControlsInSideMenu,
+                    activeColor: const Color(0xFF8C84FF),
+                    title: const Text('サイドメニューに表示',
+                        style: TextStyle(color: Colors.white)),
+                    secondary: const Icon(Icons.view_sidebar_rounded,
+                        color: Colors.white70),
+                    onChanged: (value) {
+                      if (value != null) update(sideMenu: value);
+                    },
+                  ),
+                  if (_youtubeControlsInSideMenu) ...[
+                    const Divider(color: Colors.white12),
+                    const Padding(
+                      padding: EdgeInsets.fromLTRB(16, 4, 16, 4),
+                      child: Text('サイドメニューの位置',
+                          style:
+                              TextStyle(color: Colors.white54, fontSize: 12)),
+                    ),
+                    Row(children: [
+                      Expanded(
+                        child: ChoiceChip(
+                          selected: _youtubeSideMenuOnLeft,
+                          showCheckmark: false,
+                          avatar: const Icon(Icons.align_horizontal_left_rounded,
+                              size: 18),
+                          label: const Text('左'),
+                          onSelected: (_) => update(sideOnLeft: true),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: ChoiceChip(
+                          selected: !_youtubeSideMenuOnLeft,
+                          showCheckmark: false,
+                          avatar: const Icon(
+                              Icons.align_horizontal_right_rounded,
+                              size: 18),
+                          label: const Text('右'),
+                          onSelected: (_) => update(sideOnLeft: false),
+                        ),
+                      ),
+                    ]),
+                  ],
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  void _showYoutubeSideSearchDialog() {
+    showDialog<void>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: const Text('YouTube 検索',
+            style: TextStyle(color: Colors.white, fontSize: 16)),
+        content: TextField(
+          controller: _ytSearchController,
+          autofocus: true,
+          textInputAction: TextInputAction.search,
+          style: const TextStyle(color: Colors.white),
+          decoration: const InputDecoration(
+            hintText: '動画・チャンネルを検索',
+            hintStyle: TextStyle(color: Colors.white38),
+            prefixIcon:
+                Icon(Icons.search_rounded, color: Color(0xFF8C84FF)),
+          ),
+          onSubmitted: (query) {
+            Navigator.pop(dctx);
+            _runYoutubeSearch(query);
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx),
+            child: const Text('閉じる',
+                style: TextStyle(color: Colors.white54)),
+          ),
+          FilledButton.icon(
+            onPressed: () {
+              final query = _ytSearchController.text;
+              Navigator.pop(dctx);
+              _runYoutubeSearch(query);
+            },
+            icon: const Icon(Icons.search_rounded, size: 18),
+            label: const Text('検索'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showYoutubePlaybackRateSheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF1E1E32),
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (sheetContext, setSheetState) {
+          final maxRate = context.read<MindMapProvider>().videoMaxRate;
+          final rate = _playbackRate.clamp(1.0, maxRate).toDouble();
+          final divisions = ((maxRate - 1.0) * 4).round().clamp(4, 60);
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(children: [
+                    const Icon(Icons.speed_rounded,
+                        color: Color(0xFF4FC3F7)),
+                    const SizedBox(width: 10),
+                    const Text('再生速度',
+                        style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700)),
+                    const Spacer(),
+                    Text('${rate.toStringAsFixed(2)}x',
+                        style: const TextStyle(
+                            color: Color(0xFF4FC3F7),
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700)),
+                  ]),
+                  Slider(
+                    value: rate,
+                    min: 1.0,
+                    max: maxRate,
+                    divisions: divisions,
+                    activeColor: const Color(0xFF4FC3F7),
+                    onChanged: (value) {
+                      _changeRate(value);
+                      setSheetState(() {});
+                    },
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  void _copyCurrentVideoUrl() {
+    final provider = context.read<MindMapProvider>();
+    final shareUrl = (_currentUrl.isNotEmpty ? _currentUrl : widget.url)
+        .replaceFirst(
+            'https://m.youtube.com/', 'https://www.youtube.com/')
+        .replaceFirst('http://m.youtube.com/', 'https://www.youtube.com/');
+    Clipboard.setData(ClipboardData(text: shareUrl));
+    _appSnack(
+      context,
+      SnackBar(
+        content: Text(provider.t('ctx.videoUrlCopied')),
+        duration: const Duration(seconds: 2),
+        backgroundColor: const Color(0xFF2A2A3E),
+      ),
+    );
+  }
+
+  void _embedCurrentYoutubePage() {
+    final callback = widget.onEmbedUrl;
+    if (callback == null) return;
+    var url = _currentUrl;
+    if (!_isEmbeddableYoutubeUrl(url) && _currentVideoId != null) {
+      url = 'https://m.youtube.com/watch?v=$_currentVideoId';
+    }
+    if (url.isNotEmpty) callback(url);
+  }
+
+  Future<void> _stopVideoBackgroundPlayback() async {
+    final provider = context.read<MindMapProvider>();
+    provider.setBackgroundPlaybackEnabled(false);
+    await _BgPlaybackController.forceStop();
+    if (!mounted) return;
+    _appSnack(
+      context,
+      SnackBar(
+        content: Text(provider.t('bg.stopped')),
+        backgroundColor: Colors.redAccent,
+        duration: const Duration(seconds: 2),
+      ),
+    );
+    setState(() {});
+  }
+
   /// YouTube WebView の右端に重ねる共通サイズの丸ボタン。
   /// ヘルプ文や Tooltip は付けず、アイコンだけで構成する。
   Widget _buildMobileYoutubeRailButton({
@@ -85427,35 +86141,25 @@ v.addEventListener('play', function() {
     );
   }
 
-  /// YouTube ホーム・検索・動画のどこにいても同じ位置を維持する右端レール。
-  /// mp4 でも既存の UI 隠し / AI チャットを失わないよう、先頭 2 ボタンは共用する。
-  Widget _buildMobileYoutubeActionRail() {
+  /// YouTube ホーム・検索・動画のどこでも同じ4操作をまとめて表示する。
+  /// ヘッダーモードでは横並び、サイドメニューモードでは縦並びにする。
+  Widget _buildMobileYoutubeActionRail({Axis axis = Axis.vertical}) {
     final showYoutubeShare = _isYoutube;
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _buildMobileYoutubeRailButton(
-          color: const Color(0xFF6C63FF),
-          icon: Icon(
-            _hideAllControls
-                ? Icons.visibility_rounded
-                : Icons.visibility_off_rounded,
-            color: const Color(0xFF8C84FF),
-            size: 21,
-          ),
-          onTap: _toggleFullscreenControls,
-        ),
-        const SizedBox(height: 8),
-        _buildMobileYoutubeRailButton(
-          color: const Color(0xFFBA68C8),
-          icon: const Icon(Icons.auto_awesome_rounded,
-              color: Color(0xFFCE83D8), size: 21),
-          onTap: () => _openMemoTextInAi(''),
-          onLongPress: _showMobileVideoAiSettings,
-        ),
-        const SizedBox(height: 8),
-        if (showYoutubeShare)
-          _buildMobileYoutubeRailButton(
+    final visibilityButton = _buildMobileYoutubeRailButton(
+      color: const Color(0xFF6C63FF),
+      icon: const Icon(Icons.visibility_off_rounded,
+          color: Color(0xFF8C84FF), size: 21),
+      onTap: _hideFullscreenControls,
+    );
+    final aiButton = _buildMobileYoutubeRailButton(
+      color: const Color(0xFFBA68C8),
+      icon: const Icon(Icons.auto_awesome_rounded,
+          color: Color(0xFFCE83D8), size: 21),
+      onTap: () => _openMemoTextInAi(''),
+      onLongPress: _showMobileVideoAiSettings,
+    );
+    final shareButton = showYoutubeShare
+        ? _buildMobileYoutubeRailButton(
             color: const Color(0xFF66BB6A),
             icon: _sharingVideoWithBrowserAi
                 ? const SizedBox(
@@ -85473,9 +86177,273 @@ v.addEventListener('play', function() {
                 : _shareCurrentVideoWithBrowserAi,
             onLongPress: _showMobileVideoAiSettings,
           )
-        else
-          const SizedBox(width: 40, height: 40),
+        : const SizedBox(width: 40, height: 40);
+    final settingsButton = _buildMobileYoutubeRailButton(
+      color: const Color(0xFFFFB347),
+      icon: const Icon(Icons.tune_rounded,
+          color: Color(0xFFFFB347), size: 21),
+      onTap: _showYoutubeUiSettings,
+    );
+    final buttons = axis == Axis.horizontal
+        // 横並びでは非表示ボタンを右端に固定し、非表示後も同じ場所を
+        // 透明な復帰領域として使えるようにする。
+        ? <Widget>[aiButton, shareButton, settingsButton, visibilityButton]
+        : <Widget>[visibilityButton, aiButton, shareButton, settingsButton];
+    return Flex(
+      direction: axis,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (var i = 0; i < buttons.length; i++) ...[
+          if (i > 0)
+            SizedBox(
+                width: axis == Axis.horizontal ? 8 : 0,
+                height: axis == Axis.vertical ? 8 : 0),
+          buttons[i],
+        ],
       ],
+    );
+  }
+
+  Widget _buildMobileYoutubeSideMenu() {
+    final isVideo = (_isYoutube && _currentVideoId != null) || _isMp4;
+    final sideTitle = _currentTitle.isNotEmpty
+        ? _currentTitle
+        : _isMp4
+            ? _playlist[_playlistIndex].split('/').last.split('\\').last
+            : (Uri.tryParse(_currentUrl.isNotEmpty ? _currentUrl : widget.url)
+                    ?.host ??
+                widget.url);
+    final canEmbed = widget.onEmbedUrl != null &&
+        (_isEmbeddableYoutubeUrl(_currentUrl) || _currentVideoId != null);
+    final canShareUrl = _isYoutube ||
+        _currentUrl.startsWith('http://') ||
+        _currentUrl.startsWith('https://');
+    final controls = <Widget>[
+      _buildMobileYoutubeRailButton(
+        color: const Color(0xFFFF6B6B),
+        icon: const Icon(Icons.close_rounded,
+            color: Color(0xFFFF8A80), size: 21),
+        onTap: () => Navigator.pop(context),
+      ),
+      _buildMobileYoutubeRailButton(
+        color: Colors.white54,
+        icon: Icon(Icons.arrow_back_ios_new_rounded,
+            color: _canGoBack ? Colors.white70 : Colors.white24, size: 18),
+        onTap: _canGoBack
+            ? () async {
+                try {
+                  await _c?.goBack();
+                } catch (_) {}
+              }
+            : null,
+      ),
+      _buildMobileYoutubeRailButton(
+        color: Colors.white54,
+        icon: Icon(Icons.arrow_forward_ios_rounded,
+            color: _canGoForward ? Colors.white70 : Colors.white24,
+            size: 18),
+        onTap: _canGoForward
+            ? () async {
+                try {
+                  await _c?.goForward();
+                } catch (_) {}
+              }
+            : null,
+      ),
+      if (_isYoutube && !_isMp4)
+        _buildMobileYoutubeRailButton(
+          color: const Color(0xFF6C63FF),
+          icon: const Icon(Icons.search_rounded,
+              color: Color(0xFF8C84FF), size: 21),
+          onTap: _showYoutubeSideSearchDialog,
+        ),
+      if (canEmbed)
+        _buildMobileYoutubeRailButton(
+          color: const Color(0xFF43B97F),
+          icon: const Icon(Icons.add_to_photos_rounded,
+              color: Color(0xFF43B97F), size: 21),
+          onTap: _embedCurrentYoutubePage,
+        ),
+      if (isVideo)
+        _buildMobileYoutubeRailButton(
+          color: const Color(0xFF4FC3F7),
+          icon: const Icon(Icons.picture_in_picture_alt_rounded,
+              color: Color(0xFF4FC3F7), size: 21),
+          onTap: _enterPiP,
+        ),
+      if (widget.onMoveToSplitPanel != null)
+        _buildMobileYoutubeRailButton(
+          color: _videoSplitDown
+              ? const Color(0xFF2196F3)
+              : const Color(0xFFFF6B6B),
+          icon: _splitPanelIcon(
+              _videoSplitDown
+                  ? _SplitIconFill.bottom
+                  : _SplitIconFill.top,
+              color: _videoSplitDown
+                  ? const Color(0xFF2196F3)
+                  : const Color(0xFFFF6B6B),
+              size: 21),
+          onTap: () => _moveVideoToSplit(isLeftPanel: !_videoSplitDown),
+          onLongPress: () =>
+              setState(() => _videoSplitDown = !_videoSplitDown),
+        ),
+      if (isVideo)
+        _buildMobileYoutubeRailButton(
+          color: const Color(0xFFFFB347),
+          icon: Icon(
+            _videoMemoPanelOpen
+                ? Icons.sticky_note_2_rounded
+                : Icons.sticky_note_2_outlined,
+            color: const Color(0xFFFFB347),
+            size: 21,
+          ),
+          onTap: _toggleVideoMemoPanel,
+        ),
+      if (isVideo)
+        _buildMobileYoutubeRailButton(
+          color: const Color(0xFF4FC3F7),
+          icon: Text('${_playbackRate.toStringAsFixed(1)}x',
+              style: const TextStyle(
+                  color: Color(0xFF4FC3F7),
+                  fontSize: 10,
+                  fontWeight: FontWeight.w800)),
+          onTap: _showYoutubePlaybackRateSheet,
+          onLongPress: () => _showMaxRateDialog(context),
+        ),
+      if (_isMp4)
+        _buildMobileYoutubeRailButton(
+          color: Colors.white54,
+          icon: const Icon(Icons.fast_forward_rounded,
+              color: Colors.white70, size: 21),
+          onTap: () => _showSeekStepDialog(context),
+        ),
+      if (isVideo)
+        _buildMobileYoutubeRailButton(
+          color: Colors.white54,
+          icon: const Icon(Icons.refresh_rounded,
+              color: Colors.white70, size: 21),
+          onTap: _reloadCurrentVideo,
+        ),
+      if (canShareUrl)
+        _buildMobileYoutubeRailButton(
+          color: const Color(0xFF4FC3F7),
+          icon: const Icon(Icons.share_rounded,
+              color: Color(0xFF4FC3F7), size: 21),
+          onTap: _copyCurrentVideoUrl,
+        ),
+      if (_playlist.length > 1)
+        Container(
+          width: 40,
+          alignment: Alignment.center,
+          child: Text('${_playlistIndex + 1}/${_playlist.length}',
+              style: const TextStyle(
+                  color: Colors.white54,
+                  fontSize: 9,
+                  fontWeight: FontWeight.w700)),
+        ),
+      if (_playlist.length > 1)
+        _buildMobileYoutubeRailButton(
+          color: Colors.white54,
+          icon: const Icon(Icons.skip_previous_rounded,
+              color: Colors.white70, size: 21),
+          onTap: _playlistIndex > 0
+              ? () {
+                  _playlistIndex--;
+                  _navigateTo(_playlist[_playlistIndex]);
+                }
+              : null,
+        ),
+      if (_playlist.length > 1)
+        _buildMobileYoutubeRailButton(
+          color: Colors.white54,
+          icon: const Icon(Icons.skip_next_rounded,
+              color: Colors.white70, size: 21),
+          onTap: _playlistIndex < _playlist.length - 1
+              ? () {
+                  _playlistIndex++;
+                  _navigateTo(_playlist[_playlistIndex]);
+                }
+              : null,
+        ),
+      if (_isMp4 &&
+          (_currentUrl.startsWith('http://') ||
+              _currentUrl.startsWith('https://')))
+        _buildMobileYoutubeRailButton(
+          color: const Color(0xFFFFB347),
+          icon: const Icon(Icons.download_rounded,
+              color: Color(0xFFFFB347), size: 21),
+          onTap: _downloadCurrentVideo,
+        ),
+      if (!kIsWeb &&
+          Platform.isAndroid &&
+          _BgPlaybackController.isRunning)
+        _buildMobileYoutubeRailButton(
+          color: Colors.redAccent,
+          icon: const Icon(Icons.stop_circle_rounded,
+              color: Colors.redAccent, size: 21),
+          onTap: _stopVideoBackgroundPlayback,
+        ),
+    ];
+    return Container(
+      width: 56,
+      color: Colors.black,
+      alignment: Alignment.topCenter,
+      padding: const EdgeInsets.only(top: 8),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _buildMobileYoutubeActionRail(),
+            if (sideTitle.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: Text(
+                  sideTitle,
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      color: Colors.white54,
+                      fontSize: 8,
+                      height: 1.15),
+                ),
+              ),
+            ],
+            if (controls.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Container(width: 30, height: 1, color: Colors.white12),
+              for (final control in controls) ...[
+                const SizedBox(height: 8),
+                control,
+              ],
+            ],
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHiddenYoutubeControlsRestoreTarget() {
+    final onLeft =
+        _youtubeControlsInSideMenu && _youtubeSideMenuOnLeft;
+    return Positioned(
+      top: 0,
+      left: onLeft ? 0 : null,
+      right: onLeft ? null : 0,
+      width: 56,
+      height: 56,
+      child: Semantics(
+        button: true,
+        label: 'YouTube UIを再表示',
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: _restoreFullscreenControls,
+          child: const SizedBox.expand(),
+        ),
+      ),
     );
   }
 
@@ -86120,6 +87088,9 @@ v.addEventListener('play', function() {
         defaultTargetPlatform == TargetPlatform.android ||
             defaultTargetPlatform == TargetPlatform.iOS ||
             defaultTargetPlatform == TargetPlatform.fuchsia;
+    final hasYoutubeActionUi = _isYoutube || _isMp4;
+    final useYoutubeSideMenu =
+        hasYoutubeActionUi && _youtubeControlsInSideMenu;
     // ── 戻るボタン傍受: バックグラウンド再生 ON で動画再生中なら PiP に自動切替 ──
     // ユーザー要望: 「バックグラウンド再生状態から動画に戻ってきて画面を閉じる
     // とバックグラウンドが止まってしまう」 → 戻るボタンで素直に pop すると、
@@ -86151,9 +87122,15 @@ v.addEventListener('play', function() {
         backgroundColor: Colors.black,
         body: SafeArea(
           bottom: false,
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
+          child: Stack(
             children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+              if (!_hideAllControls &&
+                  useYoutubeSideMenu &&
+                  _youtubeSideMenuOnLeft)
+                _buildMobileYoutubeSideMenu(),
               Expanded(
                 child: Column(children: [
             // ── 上部バー (2 段構成) ──
@@ -86162,11 +87139,17 @@ v.addEventListener('play', function() {
             // タイトルが長い時に再生速度バー達と争って省略されてしまう問題への対処。
             // 動画ページ以外 (検索/チャンネル/一般 URL) では 2 段目は描画しない。
             // UI を隠した後の復元操作も WebView 右端の固定レールが担当する。
-            if (!_hideAllControls)
+            if (!_hideAllControls && !useYoutubeSideMenu)
               Container(
                 color: Colors.black,
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 child: Column(children: [
+                  if (hasYoutubeActionUi && !useYoutubeSideMenu)
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: _buildMobileYoutubeActionRail(
+                          axis: Axis.horizontal),
+                    ),
                   // 1段目
                   Row(children: [
                     IconButton(
@@ -87138,15 +88121,14 @@ v.addEventListener('play', function() {
             ),
           ]),
               ),
-              // ヘッダーの段数や表示状態が変わっても位置を動かさない固定レール。
-              if (_isYoutube || _isMp4)
-                Container(
-                  width: 56,
-                  color: Colors.black,
-                  alignment: Alignment.topCenter,
-                  padding: const EdgeInsets.only(top: 8),
-                  child: _buildMobileYoutubeActionRail(),
-                ),
+              if (!_hideAllControls &&
+                  useYoutubeSideMenu &&
+                  !_youtubeSideMenuOnLeft)
+                _buildMobileYoutubeSideMenu(),
+                ],
+              ),
+              if (_hideAllControls)
+                _buildHiddenYoutubeControlsRestoreTarget(),
             ],
           ),
         ),

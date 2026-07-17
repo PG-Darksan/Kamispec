@@ -47052,16 +47052,14 @@ $cleanQ
     var page = MindMapPage.fromJson(pageJson);
     // ID 衝突チェック: 同じ ID のページが既にあれば新しい ID を振る
     if (_pages.any((p) => p.id == page.id)) {
-      // ノード/接続はそのまま、ID だけ振り直す
-      final newId = _uuid.v4();
-      page = MindMapPage(
-        id: newId,
-        name: page.name,
-        nodes: page.nodes,
-        connections: page.connections,
-        lastModifiedAt: page.lastModifiedAt,
-        folderId: folderId,
-      );
+      // toJson/fromJson 経由で全フィールドを保ったままページ ID だけを
+      // 振り直す。個別コンストラクタで作り直すと装飾・背景・ページ種別・
+      // ギャラリー行列設定などが失われ、共有元と異なるページになっていた。
+      final copyJson = Map<String, dynamic>.from(page.toJson())
+        ..['id'] = _uuid.v4()
+        ..['folderId'] = folderId;
+      if (folderId == null) copyJson.remove('folderId');
+      page = MindMapPage.fromJson(copyJson);
     } else {
       page.folderId = folderId;
     }
