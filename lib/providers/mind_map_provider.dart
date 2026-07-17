@@ -38069,7 +38069,8 @@ class MindMapProvider extends ChangeNotifier {
   }
 
   Future<String?> applyCoupon(String code,
-      {bool retriedAfterConflict = false}) async {
+      {bool retriedAfterConflict = false,
+      bool retriedAfterAuthFailure = false}) async {
     final trimmed = code.trim().toUpperCase();
     if (trimmed.isEmpty) return t('coupon.errEmpty');
     // クーポンは Firestore 検証が前提。 未接続なら一度だけ初期化を試みる
@@ -38082,11 +38083,24 @@ class MindMapProvider extends ChangeNotifier {
     }
     if (_firebaseEnabled && _idToken != null) {
       try {
+        // 起動時に取得した匿名認証トークンは約1時間で失効する。クーポン処理だけ
+        // 更新を行っていなかったため、長時間起動後は有効なコードでも Firestore
+        // の 401/403 が「ネットワークエラー」として返っていた。
+        await _ensureFreshToken();
         final url = '$_firestoreBaseUrl/coupons/$trimmed';
         final res = await http.get(
           Uri.parse(url),
           headers: {'Authorization': 'Bearer $_idToken'},
         );
+        if ((res.statusCode == 401 || res.statusCode == 403) &&
+            !retriedAfterAuthFailure) {
+          await _ensureFreshToken(force: true);
+          return applyCoupon(
+            trimmed,
+            retriedAfterConflict: retriedAfterConflict,
+            retriedAfterAuthFailure: true,
+          );
+        }
         if (res.statusCode == 404) {
           return t('coupon.errNotFound');
         }
@@ -38261,12 +38275,26 @@ class MindMapProvider extends ChangeNotifier {
             }),
           );
           if (commitRes.statusCode < 200 || commitRes.statusCode >= 300) {
+            if ((commitRes.statusCode == 401 ||
+                    commitRes.statusCode == 403) &&
+                !retriedAfterAuthFailure) {
+              await _ensureFreshToken(force: true);
+              return applyCoupon(
+                trimmed,
+                retriedAfterConflict: retriedAfterConflict,
+                retriedAfterAuthFailure: true,
+              );
+            }
             final conflict = commitRes.statusCode == 409 ||
                 commitRes.statusCode == 412 ||
                 commitRes.body.contains('ABORTED') ||
                 commitRes.body.contains('FAILED_PRECONDITION');
             if (conflict && !retriedAfterConflict) {
-              return applyCoupon(trimmed, retriedAfterConflict: true);
+              return applyCoupon(
+                trimmed,
+                retriedAfterConflict: true,
+                retriedAfterAuthFailure: retriedAfterAuthFailure,
+              );
             }
             debugPrint('coupon atomic redemption failed: '
                 '${commitRes.statusCode} ${commitRes.body}');
@@ -49835,8 +49863,9 @@ $cleanQ
   ///   移動できない」 の修正。 旧実装は全行一律の「最大行高」 でドラッグ量を
   ///   行数に換算していたため、 背の低い行が混ざると 1 行ぶんドラッグしても
   ///   閾値 (0.5 行) に届かず round() が 0 になって動かないことがあった。
-  ///   実グリッド (rowY/rowH) を使い、 掴んだ行の端が移動先の端を越えた時点で
-  ///   候補行を返す。
+  ///   実グリッド (rowY/rowH) を使い、 掴んだ行の中心をポインター移動量だけ
+  ///   動かした位置に最も近い行を返す。端同士の交差で判定すると、隙間ぶんの
+  ///   小さな移動だけで次の行へ飛び、ドラッグ感度が過剰になるため。
   int bookshelfTargetRow(int fromRow, double deltaY) {
     final page = currentPage;
     if (page.pageType != 'bookshelf') return fromRow;
@@ -49844,21 +49873,40 @@ $cleanQ
     final rows = g.rowH.length;
     if (rows <= 1) return 0;
     final from = fromRow.clamp(0, rows - 1);
-    if (deltaY > 0) {
-      final edgeY = g.rowY[from] + g.rowH[from] + deltaY;
-      for (int r = rows - 1; r >= 0; r--) {
-        if (edgeY >= g.rowY[r]) return r;
+    final movedCenter = g.rowY[from] + g.rowH[from] / 2 + deltaY;
+    int target = from;
+    double nearest = double.infinity;
+    for (int r = 0; r < rows; r++) {
+      final center = g.rowY[r] + g.rowH[r] / 2;
+      final distance = (movedCenter - center).abs();
+      if (distance < nearest) {
+        nearest = distance;
+        target = r;
       }
-      return from;
     }
-    if (deltaY < 0) {
-      final edgeY = g.rowY[from] + deltaY;
-      for (int r = 0; r < rows; r++) {
-        if (edgeY <= g.rowY[r] + g.rowH[r]) return r;
-      }
-      return from;
-    }
-    return from;
+    return target;
+  }
+
+  /// キャンバス Y 座標 [y] に最も近い行番号を返す (= 行ハンドルのドラッグ先)。
+  /// 累積ドラッグ量ではなくポインタの実位置で判定するので、 タッチ/マウス/
+  /// ズーム倍率に関わらず「カーソルの真下の行」 が常に移動先になる。
+  int bookshelfRowAtY(double y) {
+    final page = currentPage;
+    if (page.pageType != 'bookshelf') return 0;
+    final g = _shelfGridFor(page);
+    final rows = g.rowH.length;
+    if (rows <= 1) return 0;
+    return _nearestShelfRow(g, y).clamp(0, rows - 1).toInt();
+  }
+
+  /// キャンバス X 座標 [x] に最も近い列番号 (= 列ハンドルのドラッグ先)。
+  int bookshelfColAtX(double x) {
+    final page = currentPage;
+    if (page.pageType != 'bookshelf') return 0;
+    final g = _shelfGridFor(page);
+    final cols = g.colW.length;
+    if (cols <= 1) return 0;
+    return _nearestShelfCol(g, x).clamp(0, cols - 1).toInt();
   }
 
   /// ドラッグ量 [deltaX] から列 [fromCol] の移動先の列番号を可変列幅グリッドで
@@ -49870,21 +49918,18 @@ $cleanQ
     final cols = g.colW.length;
     if (cols <= 1) return 0;
     final from = fromCol.clamp(0, cols - 1);
-    if (deltaX > 0) {
-      final edgeX = g.colX[from] + g.colW[from] + deltaX;
-      for (int c = cols - 1; c >= 0; c--) {
-        if (edgeX >= g.colX[c]) return c;
+    final movedCenter = g.colX[from] + g.colW[from] / 2 + deltaX;
+    int target = from;
+    double nearest = double.infinity;
+    for (int c = 0; c < cols; c++) {
+      final center = g.colX[c] + g.colW[c] / 2;
+      final distance = (movedCenter - center).abs();
+      if (distance < nearest) {
+        nearest = distance;
+        target = c;
       }
-      return from;
     }
-    if (deltaX < 0) {
-      final edgeX = g.colX[from] + deltaX;
-      for (int c = 0; c < cols; c++) {
-        if (edgeX <= g.colX[c] + g.colW[c]) return c;
-      }
-      return from;
-    }
-    return from;
+    return target;
   }
 
   /// ギャラリーの行 [from] を [to] の位置へ移動する (= ユーザー要望: 行単位移動)。
@@ -50228,10 +50273,19 @@ $cleanQ
   String? shelfSwapTargetAt(String draggedId, Offset droppedPos) {
     final page = currentPage;
     if (page.pageType != 'bookshelf') return null;
-    if (!page.nodes.containsKey(draggedId)) return null;
-    final grid = _buildShelfGrid(page);
-    int col = _nearestShelfCol(grid, droppedPos.dx);
-    int row = _nearestShelfRow(grid, droppedPos.dy);
+    final dragged = page.nodes[draggedId];
+    if (dragged == null) return null;
+    // 表示に使ったキャッシュ格子で判定する (= ライブ再構築だと stretch 後の
+    // 高さで行が下へずれ、 見た目のセルと判定セルが食い違う)。
+    final grid = _shelfGridFor(page);
+    // droppedPos は要素の左上。左上をセル中心と比較すると、どこを掴んだかで
+    // 後方セルへの到達判定がずれるため、見た目どおり要素中心で判定する。
+    final droppedCenter = Offset(
+      droppedPos.dx + dragged.width / 2,
+      droppedPos.dy + dragged.visualHeight / 2,
+    );
+    int col = _nearestShelfCol(grid, droppedCenter.dx);
+    int row = _nearestShelfRow(grid, droppedCenter.dy);
     if (col < 0) col = 0;
     if (row < 0) row = 0;
     for (final entry in _shelfCells.entries) {
@@ -50246,7 +50300,7 @@ $cleanQ
   List<int>? _nearestFrontierCell(Offset pos) {
     final page = currentPage;
     if (page.pageType != 'bookshelf') return null;
-    final grid = _buildShelfGrid(page);
+    final grid = _shelfGridFor(page);
     final cells = bookshelfFrontierCells();
     List<int>? best;
     double bestD = double.infinity;
@@ -50264,11 +50318,21 @@ $cleanQ
   void snapNodeToShelfCell(String nodeId, Offset droppedPos) {
     final page = currentPage;
     if (page.pageType != 'bookshelf') return;
-    if (!page.nodes.containsKey(nodeId)) return;
+    final dragged = page.nodes[nodeId];
+    if (dragged == null) return;
     // 可変サイズ格子 (#4/#5) に合わせ、 セル中心との距離で最寄り列/行を求める。
-    final grid = _buildShelfGrid(page);
-    int col = _nearestShelfCol(grid, droppedPos.dx);
-    int row = _nearestShelfRow(grid, droppedPos.dy);
+    // ドラッグ中の見た目 (= 配置に使ったキャッシュ格子) と同じ格子で判定する。
+    // ライブ再構築だと stretch 後の高さぶん行が下へずれ、 (0,0) の要素を
+    // (2,2) 以降へ落としても 1 つ手前のセルと判定される等のズレが出ていた。
+    final grid = _shelfGridFor(page);
+    // 要素左上ではなく要素中心を使う。これにより (0,0) の先頭要素も、
+    // 掴んだ位置に左右されず (1,1) 以降のセルへ直接移動できる。
+    final droppedCenter = Offset(
+      droppedPos.dx + dragged.width / 2,
+      droppedPos.dy + dragged.visualHeight / 2,
+    );
+    int col = _nearestShelfCol(grid, droppedCenter.dx);
+    int row = _nearestShelfRow(grid, droppedCenter.dy);
     if (col < 0) col = 0;
     if (row < 0) row = 0;
     // 移動先セルを占有している他ノードを探す。
@@ -50303,7 +50367,7 @@ $cleanQ
       // ── 空きへのドロップは必ず「+ブロック」 (フロンティアセル) に吸着させる ──
       //   (= ユーザー要望: +ブロック以外の所に要素が配置されるとバグるため、
       //   グリッド外の勝手なセルではなく、 ドロップ点に最も近い +ボックスへ置く)。
-      final target = _nearestFrontierCell(droppedPos);
+      final target = _nearestFrontierCell(droppedCenter);
       _shelfCells[nodeId] = target ?? (myCell ?? [col, row]);
     }
     _saveShelfCells();

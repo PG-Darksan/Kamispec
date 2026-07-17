@@ -5589,15 +5589,14 @@ class _MindMapScreenState extends State<MindMapScreen>
       setState(() {
         _rangeEnd = _globalToCanvas(pos, ctrl);
       });
-    } else if (_shelfRowDragFrom != null) {
-      // ギャラリーの行ハンドルのドラッグ中にビューが縦スクロールした分を
-      //   accum に反映し、 ドロップ先ハイライト (= 移動先の行) がカーソルに
-      //   追従し続けるようにする (= ユーザー要望)。
-      final scale = ctrl.value.getMaxScaleOnAxis();
-      setState(() => _shelfHandleAccum += -dy / scale);
-    } else if (_shelfColDragFrom != null) {
-      final scale = ctrl.value.getMaxScaleOnAxis();
-      setState(() => _shelfHandleAccum += -dx / scale);
+    } else if (_shelfRowDragFrom != null || _shelfColDragFrom != null) {
+      // ギャラリーの行/列ハンドルのドラッグ中にビューがスクロールしたら、
+      //   静止しているカーソルのキャンバス座標を取り直す (= ドロップ先
+      //   ハイライトがカーソルに追従し続ける)。 実位置ベースなので旧実装の
+      //   ような累積補正 (二重計上の温床) は不要。
+      setState(() {
+        _shelfHandlePointerCanvas = _globalToCanvas(pos, ctrl);
+      });
     }
   }
 
@@ -12240,16 +12239,9 @@ class _MindMapScreenState extends State<MindMapScreen>
             final latestProvider = context.read<MindMapProvider>();
             final latestNode = latestProvider.nodes[nodeId];
             if (latestNode != null) {
-              final canInlineShelfText =
-                  latestProvider.currentPage.pageType == 'bookshelf' &&
-                      latestProvider.shelfCellOf(nodeId) != null &&
-                      latestNode.contentType == NodeContentType.memo;
-              _removeOverlay();
-              if (canInlineShelfText) {
-                _beginShelfInlineTextEdit(latestProvider, nodeId);
-              } else {
-                _startInlineTitleEdit(context, latestNode);
-              }
+              // F2 と編集ボタンは同じ入口を使う。ギャラリー要素は種類に
+              // かかわらずギャラリー用エディターへ振り分ける。
+              _startInlineTitleEdit(context, latestNode);
             }
             return KeyEventResult.handled;
           }
@@ -12300,8 +12292,6 @@ class _MindMapScreenState extends State<MindMapScreen>
             }
             final isShelfNode = provider.currentPage.pageType == 'bookshelf' &&
                 provider.shelfCellOf(nodeId) != null;
-            final canInlineShelfText =
-                isShelfNode && n.contentType == NodeContentType.memo;
             // ── 位置は ノードの現在位置 (curTop / curBottom) に追従 ──
             // 画面内にある間はノードと一緒に動き、 ノードと一緒に画面外へ出た
             //   時点で上の判定により閉じる。
@@ -12310,12 +12300,8 @@ class _MindMapScreenState extends State<MindMapScreen>
               screenBottomPos: curBottom,
               onClose: _removeOverlay,
               onEdit: () {
-                _removeOverlay();
-                if (canInlineShelfText) {
-                  _beginShelfInlineTextEdit(provider, nodeId);
-                } else {
-                  _beginNodeInlineTextEdit(provider, nodeId);
-                }
+                // F2 / ダブルクリックと同じ編集開始処理へ集約する。
+                _startInlineTitleEdit(context, n);
               },
               onMemo: () {
                 _removeOverlay();
@@ -13305,7 +13291,11 @@ class _MindMapScreenState extends State<MindMapScreen>
   // ── ギャラリーの行/列 掴み移動 (= ユーザー要望: 行単位/列単位でドラッグ並べ替え) ──
   int? _shelfRowDragFrom; // ドラッグ中の行番号 (null=非ドラッグ)。
   int? _shelfColDragFrom; // ドラッグ中の列番号。
-  double _shelfHandleAccum = 0; // ドラッグの累積量 (キャンバス座標)。
+  // ドラッグ中のポインタ位置 (キャンバス座標)。 旧実装は移動量の累積
+  //   (_shelfHandleAccum) だったが、 エッジスクロール補正と二重計上されて
+  //   マウス/タッチで感度が食い違った。 実位置ベースなら「カーソル直下の
+  //   行/列が移動先」 で常に 1:1 (= ユーザー要望: 感度をマウスとそろえる)。
+  Offset? _shelfHandlePointerCanvas;
   bool _shelfHandleHovering = false;
   // ── 行/列の複数選択 (= ユーザー要望: Ctrl/Shift で複数選択してまとめて移動) ──
   final Set<int> _shelfSelRows = {};
@@ -13395,10 +13385,6 @@ class _MindMapScreenState extends State<MindMapScreen>
       MindMapProvider provider, TransformationController ctrl) {
     final rowRects = provider.bookshelfRowHandleRects();
     final colRects = provider.bookshelfColHandleRects();
-    double scaleOf() {
-      final s = ctrl.value.getMaxScaleOnAxis();
-      return s == 0 ? 1.0 : s;
-    }
 
     // = ユーザー要望: 行/列の掴みがセル内に入り込まないよう、視覚部分と
     //   当たり判定をどちらもグリッド外側に置く。負の座標も丸めず、端の行列で
@@ -13426,16 +13412,20 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (_shelfRowDragFrom != null &&
         rowRects.length > 1 &&
         _shelfSelRows.length <= 1) {
-      final target =
-          provider.bookshelfTargetRow(_shelfRowDragFrom!, _shelfHandleAccum);
+      final p = _shelfHandlePointerCanvas;
+      final target = p == null
+          ? _shelfRowDragFrom!
+          : provider.bookshelfRowAtY(p.dy);
       final hr = provider.bookshelfRowFullRect(target);
       if (hr != null) widgets.add(_shelfDropHighlight(hr));
     }
     if (_shelfColDragFrom != null &&
         colRects.length > 1 &&
         _shelfSelCols.length <= 1) {
-      final target =
-          provider.bookshelfTargetCol(_shelfColDragFrom!, _shelfHandleAccum);
+      final p = _shelfHandlePointerCanvas;
+      final target = p == null
+          ? _shelfColDragFrom!
+          : provider.bookshelfColAtX(p.dx);
       final hr = provider.bookshelfColFullRect(target);
       if (hr != null) widgets.add(_shelfDropHighlight(hr));
     }
@@ -13463,7 +13453,8 @@ class _MindMapScreenState extends State<MindMapScreen>
               // Ctrl/Shift クリックで複数選択 (= ユーザー要望)。
               dragStartBehavior: DragStartBehavior.down,
               onPanDown: (d) {
-                _shelfHandleAccum = 0;
+                _shelfHandlePointerCanvas =
+                    _globalToCanvas(d.globalPosition, ctrl);
                 _lastDragGlobalPos = d.globalPosition;
                 _edgeScrollCtrl = ctrl;
                 _setShelfHandleHovering(true);
@@ -13473,7 +13464,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                 _shelfHandleTap(r, isRow: true);
               },
               onPanStart: (d) {
-                _shelfHandleAccum = 0;
+                _shelfHandlePointerCanvas =
+                    _globalToCanvas(d.globalPosition, ctrl);
                 _setShelfHandleHovering(true);
                 setState(() => _shelfRowDragFrom = r);
                 // カーソルが見えているマップ領域の端に達したら自動スクロール
@@ -13484,7 +13476,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                 _startEdgeScrollTimer();
               },
               onPanUpdate: (d) {
-                _shelfHandleAccum += d.delta.dy / scaleOf();
+                // ポインタの実位置 (キャンバス座標) を追跡する。 移動先は
+                // 常に「カーソル直下の行」 (= 感度 1:1、 どこまでも届く)。
+                _shelfHandlePointerCanvas =
+                    _globalToCanvas(d.globalPosition, ctrl);
                 _lastDragGlobalPos = d.globalPosition;
                 setState(() {});
               },
@@ -13496,12 +13491,13 @@ class _MindMapScreenState extends State<MindMapScreen>
               onPanEnd: (_) {
                 _stopEdgeScroll();
                 final from = _shelfRowDragFrom;
+                final p = _shelfHandlePointerCanvas;
                 setState(() => _shelfRowDragFrom = null);
                 if (mobileHandles) _setShelfHandleHovering(false);
                 if (from == null) return;
-                // 実グリッドベースで移動先の行を求める (= 可変行高でも確実に動く)。
+                // ポインタ実位置の真下の行を移動先にする。
                 final target =
-                    provider.bookshelfTargetRow(from, _shelfHandleAccum);
+                    p == null ? from : provider.bookshelfRowAtY(p.dy);
                 final dRow = target - from;
                 if (dRow == 0) return;
                 // 複数選択した行を含むなら、 選択行をまとめて移動 (= ユーザー要望)。
@@ -13553,7 +13549,8 @@ class _MindMapScreenState extends State<MindMapScreen>
               behavior: HitTestBehavior.opaque,
               dragStartBehavior: DragStartBehavior.down,
               onPanDown: (d) {
-                _shelfHandleAccum = 0;
+                _shelfHandlePointerCanvas =
+                    _globalToCanvas(d.globalPosition, ctrl);
                 _lastDragGlobalPos = d.globalPosition;
                 _edgeScrollCtrl = ctrl;
                 _setShelfHandleHovering(true);
@@ -13563,7 +13560,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                 _shelfHandleTap(c, isRow: false);
               },
               onPanStart: (d) {
-                _shelfHandleAccum = 0;
+                _shelfHandlePointerCanvas =
+                    _globalToCanvas(d.globalPosition, ctrl);
                 _setShelfHandleHovering(true);
                 setState(() => _shelfColDragFrom = c);
                 _lastDragGlobalPos = d.globalPosition;
@@ -13571,7 +13569,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                 _startEdgeScrollTimer();
               },
               onPanUpdate: (d) {
-                _shelfHandleAccum += d.delta.dx / scaleOf();
+                // 行ハンドルと同様、 ポインタの実位置で 1:1 に追従させる。
+                _shelfHandlePointerCanvas =
+                    _globalToCanvas(d.globalPosition, ctrl);
                 _lastDragGlobalPos = d.globalPosition;
                 setState(() {});
               },
@@ -13583,12 +13583,13 @@ class _MindMapScreenState extends State<MindMapScreen>
               onPanEnd: (_) {
                 _stopEdgeScroll();
                 final from = _shelfColDragFrom;
+                final p = _shelfHandlePointerCanvas;
                 setState(() => _shelfColDragFrom = null);
                 if (mobileHandles) _setShelfHandleHovering(false);
                 if (from == null) return;
-                // 実グリッドベースで移動先の列を求める (= 可変列幅でも確実に動く)。
+                // ポインタ実位置の真下の列を移動先にする。
                 final target =
-                    provider.bookshelfTargetCol(from, _shelfHandleAccum);
+                    p == null ? from : provider.bookshelfColAtX(p.dx);
                 final dCol = target - from;
                 if (dCol == 0) return;
                 if (_shelfSelCols.length > 1 && _shelfSelCols.contains(from)) {
@@ -22089,6 +22090,15 @@ class _MindMapScreenState extends State<MindMapScreen>
       {bool allowDelimiterExpansion = false}) {
     _removeOverlay();
     final provider = ctx.read<MindMapProvider>();
+    // ギャラリーでは通常ノード用のインラインエディターを描画しないため、
+    // memo だけでなく画像・PDF・動画・リンク等も専用エディターで編集する。
+    // ここを F2 / 編集ボタン / ダブルクリック共通の振り分け地点にする。
+    final isShelfElement = provider.currentPage.pageType == 'bookshelf' &&
+        provider.shelfCellOf(node.id) != null;
+    if (isShelfElement) {
+      _beginShelfInlineTextEdit(provider, node.id);
+      return;
+    }
     _beginNodeInlineTextEdit(provider, node.id,
         allowDelimiterExpansion: allowDelimiterExpansion);
   }
@@ -25244,22 +25254,16 @@ class _MindMapScreenState extends State<MindMapScreen>
   }
 
   void _showHeaderCustomizeSheet(BuildContext ctx, MindMapProvider provider) {
-    // ギャラリー (normal 以外) のページから開いた場合はギャラリー専用リストを
-    //   編集する (= ユーザー要望: ギャラリー等のヘッダーも自由に配置。 通常ページ
-    //   の customHeaderButtons とは独立)。 以下のアクセサで対象を切り替える。
-    final bool hcbGallery = provider.currentPage.pageType != 'normal';
-    List<String> hcbList() => hcbGallery
-        ? provider.galleryHeaderButtons
-        : provider.customHeaderButtons;
-    Future<void> hcbAdd(String id) => hcbGallery
-        ? provider.addGalleryHeaderButton(id)
-        : provider.addHeaderButton(id);
-    Future<void> hcbRemove(String id) => hcbGallery
-        ? provider.removeGalleryHeaderButton(id)
-        : provider.removeHeaderButton(id);
-    Future<void> hcbReorder(int o, int n) => hcbGallery
-        ? provider.reorderGalleryHeaderButtons(o, n)
-        : provider.reorderHeaderButtons(o, n);
+    // ── 全ページ種別で同じヘッダーボタン構成を使う ──
+    // 旧仕様はギャラリー等 (normal 以外) を専用リスト (galleryHeaderButtons)
+    //   で独立管理していたが、「マインドマップとフリーノートやギャラリーで
+    //   ヘッダーのボタンを揃えて欲しい」 (= ユーザー要望 2026-07) に従い、
+    //   どのページから開いても共通の customHeaderButtons を編集する。
+    List<String> hcbList() => provider.customHeaderButtons;
+    Future<void> hcbAdd(String id) => provider.addHeaderButton(id);
+    Future<void> hcbRemove(String id) => provider.removeHeaderButton(id);
+    Future<void> hcbReorder(int o, int n) =>
+        provider.reorderHeaderButtons(o, n);
     // ダイアログ寿命に合わせて 1 つの ScrollController を作る。
     // 「ヘッダーに表示中」 リストの RawScrollbar とその子 SingleChildScrollView
     // で共有することで、 サムが常時表示される。
@@ -26613,54 +26617,55 @@ class _MindMapScreenState extends State<MindMapScreen>
         : const Color(MindMapProvider.headerIconDefaultOffArgb);
     final color = isOn ? onColor : offColor;
 
+    Widget buildScaleLockCore() => Tooltip(
+          message: _buildButtonTooltip(commandId, label),
+          triggerMode: TooltipTriggerMode.manual,
+          child: InkWell(
+            onTap: () => _executeHeaderCommand(commandId, provider),
+            borderRadius: BorderRadius.circular(24),
+            child: SizedBox(
+              width: _kHeaderCustomButtonExtent,
+              height: _kHeaderCustomButtonExtent,
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      _lockScale
+                          ? Icons.lock_rounded
+                          : Icons.lock_open_rounded,
+                      color: color,
+                      size: 17,
+                    ),
+                    const SizedBox(height: 1),
+                    Text(
+                      '$_scalePercent%',
+                      style: TextStyle(
+                        color: color,
+                        fontSize: 9,
+                        height: 1,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+
     // 拡大率固定ボタン: 現在の拡大率を%表示しつつ、タップでロック切替
     // (「右上の眼鏡ボタン」は廃止し、こちらに拡大率表示を集約。
     //  拡大率の変更はピンチ/ホイール/Ctrl+− で行う)
     Widget core;
     if (commandId == 'lockScale') {
-      core = Tooltip(
-        message: _buildButtonTooltip(commandId, label),
-        triggerMode: TooltipTriggerMode.manual,
-        child: InkWell(
-          onTap: () => _executeHeaderCommand(commandId, provider),
-          borderRadius: BorderRadius.circular(6),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              Icon(_lockScale ? Icons.lock_rounded : Icons.lock_open_rounded,
-                  color: color, size: 18),
-              const SizedBox(width: 4),
-              Text('$_scalePercent%',
-                  style: TextStyle(
-                      color: color, fontSize: 12, fontWeight: FontWeight.w600)),
-            ]),
-          ),
-        ),
-      );
+      core = buildScaleLockCore();
     } else if (commandId == 'zoom') {
       // 旧「眼鏡ボタン」= 拡大率入力ダイアログ を廃止し、
       // lockScale と同じく「タップでロック/解除」のボタンに統一。
       // 既存ユーザーが customHeaderButtons に 'zoom' を保存していても
       // 違和感なくそのまま使える (lockScale と同じ挙動)。
-      core = Tooltip(
-        message: _buildButtonTooltip(commandId, label),
-        triggerMode: TooltipTriggerMode.manual,
-        child: InkWell(
-          onTap: () => _executeHeaderCommand(commandId, provider),
-          borderRadius: BorderRadius.circular(6),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              Icon(_lockScale ? Icons.lock_rounded : Icons.lock_open_rounded,
-                  color: color, size: 18),
-              const SizedBox(width: 4),
-              Text('$_scalePercent%',
-                  style: TextStyle(
-                      color: color, fontSize: 12, fontWeight: FontWeight.w600)),
-            ]),
-          ),
-        ),
-      );
+      core = buildScaleLockCore();
     } else if (commandId == 'themeMode') {
       // テーマモードボタン
       //  - ライトモード: 塗りつぶしの太陽 (オレンジ/アンバー系の色) ← 華やかに
@@ -37537,16 +37542,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             if (selId != null) {
               final node = provider.nodes[selId];
               if (node != null) {
-                final canInlineShelfText =
-                    provider.currentPage.pageType == 'bookshelf' &&
-                        provider.shelfCellOf(selId) != null &&
-                        node.contentType == NodeContentType.memo;
-                _removeOverlay();
-                if (canInlineShelfText) {
-                  _beginShelfInlineTextEdit(provider, selId);
-                } else {
-                  _startInlineTitleEdit(context, node);
-                }
+                _startInlineTitleEdit(context, node);
               }
             }
           } else if (commandId == 'quickFlashcard') {
@@ -39754,25 +39750,22 @@ class _MindMapScreenState extends State<MindMapScreen>
   Widget _buildHeaderMiddleCustomButtons(MindMapProvider provider,
       {double? maxWidth}) {
     if (!_isDesktop) return const SizedBox.shrink();
-    final isNormal = provider.currentPage.pageType == 'normal';
-    final ids =
-        isNormal ? provider.customHeaderButtons : provider.galleryHeaderButtons;
+    // ── 全ページ種別で共通の customHeaderButtons を表示する ──
+    // (= ユーザー要望 2026-07: マインドマップとフリーノート/ギャラリーで
+    //  ヘッダーのボタン構成を揃える。 旧: normal 以外は galleryHeaderButtons)。
+    final ids = provider.customHeaderButtons;
     if (ids.isEmpty) return const SizedBox.shrink();
     return _HeaderCustomButtonsBar(
       provider: provider,
       buildButton: _buildCustomHeaderButton,
-      buttonIds: isNormal ? null : ids,
+      buttonIds: null,
       reorderMode: _reorderHeaderMode,
       maxWidth: maxWidth,
       onReorder: _reorderHeaderMode
           ? (oldIndex, newIndex) {
               final int adjustedNew =
                   newIndex > oldIndex ? newIndex + 1 : newIndex;
-              if (isNormal) {
-                provider.reorderHeaderButtons(oldIndex, adjustedNew);
-              } else {
-                provider.reorderGalleryHeaderButtons(oldIndex, adjustedNew);
-              }
+              provider.reorderHeaderButtons(oldIndex, adjustedNew);
             }
           : null,
     );
@@ -39783,7 +39776,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       icon: const Icon(Icons.tune_rounded, color: Colors.white70, size: 20),
       tooltip: 'ヘッダー設定',
       padding: EdgeInsets.zero,
-      constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+      constraints: const BoxConstraints.tightFor(
+        width: _kHeaderCustomButtonExtent,
+        height: _kHeaderCustomButtonExtent,
+      ),
       onPressed: () => _showHeaderCustomizeSheet(context, provider),
     );
   }
@@ -39886,9 +39882,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       elevation: 0,
       bottom: showMobileHeaderTray && _mobileHeaderCustomOpen
           ? PreferredSize(
-              preferredSize: const Size.fromHeight(48),
+              preferredSize:
+                  const Size.fromHeight(_kHeaderCustomBarHeight),
               child: Container(
-                height: 48,
+                height: _kHeaderCustomBarHeight,
                 width: double.infinity,
                 decoration: BoxDecoration(
                   color: Color.alphaBlend(
@@ -39904,7 +39901,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                 child: _HeaderCustomButtonsBar(
                   provider: provider,
                   buildButton: _buildCustomHeaderButton,
-                  buttonIds: mobileHeaderButtons,
+                  buttonIds: provider.currentPage.pageType == 'normal'
+                      ? null
+                      : mobileHeaderButtons,
                   reorderMode: _reorderHeaderMode,
                   fullWidth: true,
                   trailing: _buildHeaderCustomizeIcon(provider),
@@ -39933,11 +39932,49 @@ class _MindMapScreenState extends State<MindMapScreen>
       //   前面の opaque な GestureDetector / IconButton が消費するのでここには
       //   届かない (= 役割が綺麗に分かれる)。 左クリックでもカスタマイズを開ける
       //   ようにして、 副ボタンの無いモバイルでも操作できるようにする。
-      flexibleSpace: GestureDetector(
-        behavior: HitTestBehavior.translucent,
-        onTap: () => _showHeaderCustomizeSheet(context, provider),
-        onSecondaryTap: () => _showHeaderCustomizeSheet(context, provider),
-        child: const SizedBox.expand(),
+      flexibleSpace: Stack(
+        fit: StackFit.expand,
+        children: [
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onTap: () => _showHeaderCustomizeSheet(context, provider),
+              onSecondaryTap: () =>
+                  _showHeaderCustomizeSheet(context, provider),
+              child: const SizedBox.expand(),
+            ),
+          ),
+          // AppBar.title の幅は右側アクション数で変わるため、そこを基準に
+          // 中央配置するとギャラリー固有ボタンの有無で列全体が左右へ動く。
+          // flexibleSpace の画面幅を基準にし、全ページで同じ中心・高さを使う。
+          if (_isDesktop &&
+              _moveModeNodeId == null &&
+              !isRangeMode &&
+              !_editingMapName)
+            Align(
+              alignment: Alignment.bottomCenter,
+              child: SizedBox(
+                // AppBar の標準 toolbarHeight (56) の中央に48pxバーを置く。
+                // bottomへ48pxを直置きすると他のAppBarアイコンより4px下がる。
+                height: kToolbarHeight,
+                child: LayoutBuilder(builder: (barContext, constraints) {
+                  final width = constraints.maxWidth;
+                  final maxBarWidth = width < 96.0
+                      ? width
+                      : math.max(
+                          96.0,
+                          width - _kDesktopHeaderSideReserve * 2,
+                        );
+                  return Center(
+                    child: _buildHeaderMiddleCustomButtons(
+                      provider,
+                      maxWidth: maxBarWidth,
+                    ),
+                  );
+                }),
+              ),
+            ),
+        ],
       ),
       automaticallyImplyLeading: _moveModeNodeId == null && !isRangeMode,
       leading: _moveModeNodeId != null
@@ -40040,18 +40077,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                     : LayoutBuilder(
                         builder: (titleCtx, constraints) => SizedBox(
                           width: constraints.maxWidth,
-                          height: 48,
+                          height: _kHeaderCustomBarHeight,
                           child: Stack(
                             alignment: Alignment.center,
                             children: [
-                              Align(
-                                alignment: Alignment.center,
-                                child: _buildHeaderMiddleCustomButtons(
-                                  provider,
-                                  maxWidth: math.max(
-                                      0.0, constraints.maxWidth - 328.0),
-                                ),
-                              ),
                               Align(
                                 alignment: Alignment.centerLeft,
                                 child: ConstrainedBox(
@@ -64147,6 +64176,11 @@ class _ActionOverlayState extends State<_ActionOverlay>
   }
 }
 
+/// カスタムヘッダーの共通寸法。
+const double _kHeaderCustomBarHeight = 48.0;
+const double _kHeaderCustomButtonExtent = 48.0;
+const double _kDesktopHeaderSideReserve = 336.0;
+
 /// AppBar 上でカスタムヘッダーボタンを横並び表示するウィジェット
 ///
 /// 並び替え/削除は Ctrl+H → ヘッダーカスタマイズ画面で行う仕様。
@@ -64200,6 +64234,18 @@ class _HeaderCustomButtonsBarState extends State<_HeaderCustomButtonsBar> {
     _autoScrollTimer?.cancel();
     _scrollCtrl.dispose();
     super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(covariant _HeaderCustomButtonsBar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 通常マップとギャラリー系では保存元のボタン列が別。ページ切替時に前の
+    // 横スクロール位置を持ち越すと、同じ中央基準でも列だけ横へずれて見える。
+    if ((oldWidget.buttonIds == null) != (widget.buttonIds == null)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _scrollCtrl.hasClients) _scrollCtrl.jumpTo(0);
+      });
+    }
   }
 
   /// Draggable のドラッグ位置 (global) から、 スクロール領域の左右端に
@@ -64301,7 +64347,8 @@ class _HeaderCustomButtonsBarState extends State<_HeaderCustomButtonsBar> {
     // と振動アニメのための若干の余白が加わるため、1 アイコンあたりの幅を
     // 48 → 58 に上げる。これをしないとアイコン側が膨らんだぶん右側メニュー
     // ボタンが画面外に押し出されてしまう。
-    final double perBtnW = reorderMode ? 58.0 : 48.0;
+    final double perBtnW =
+        reorderMode ? 58.0 : _kHeaderCustomButtonExtent;
     final double rawButtonsW =
         buttons.length * perBtnW + (trailing == null ? 0.0 : perBtnW);
     final double endPadW = rawButtonsW > maxAvailable ? 56.0 : 0.0;
@@ -64309,8 +64356,15 @@ class _HeaderCustomButtonsBarState extends State<_HeaderCustomButtonsBar> {
     final double w =
         fullWidth ? maxAvailable : desiredW.clamp(0.0, maxAvailable).toDouble();
 
+    Widget buttonSlot(Widget child) => SizedBox(
+          width: _kHeaderCustomButtonExtent,
+          height: _kHeaderCustomButtonExtent,
+          child: Center(child: child),
+        );
+
     final row = Row(
       mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.center,
       children: [
         for (int i = 0; i < buttons.length; i++)
           Builder(builder: (_) {
@@ -64318,13 +64372,13 @@ class _HeaderCustomButtonsBarState extends State<_HeaderCustomButtonsBar> {
             final btn = widget.buildButton(id, provider);
             if (btn == null) return const SizedBox.shrink();
             // 並び替えモードでなければ従来の描画
-            if (!reorderMode) return btn;
+            if (!reorderMode) return buttonSlot(btn);
             // 並び替えモード: 振動アニメと点線枠で視覚フィードバック、
             // Draggable + DragTarget でドラッグ交換を実現。
             return _ReorderableHeaderIcon(
               index: i,
               id: id,
-              child: btn,
+              child: buttonSlot(btn),
               // ドラッグ位置を親へ通知して端でオートスクロールさせる
               // (= ユーザー要望: ドラッグに合わせて画面が追跡)。
               onDragUpdateGlobal: _handleChildDragUpdate,
@@ -64340,14 +64394,14 @@ class _HeaderCustomButtonsBarState extends State<_HeaderCustomButtonsBar> {
               },
             );
           }),
-        if (trailing != null) trailing!,
+        if (trailing != null) buttonSlot(trailing!),
         if (endPadW > 0) SizedBox(width: endPadW),
       ],
     );
 
     return SizedBox(
       key: _scrollAreaKey,
-      height: 48,
+      height: _kHeaderCustomBarHeight,
       width: w,
       child: ClipRect(
         child: Listener(
@@ -64360,8 +64414,11 @@ class _HeaderCustomButtonsBarState extends State<_HeaderCustomButtonsBar> {
                   // アプリ全体の Theme は常時表示なので false を局所指定する。
                   thumbVisibility: false,
                   child: SingleChildScrollView(
-                    key: const PageStorageKey<String>(
-                        'header_custom_buttons_bar'),
+                    key: PageStorageKey<String>(
+                      buttonIds == null
+                          ? 'header_custom_buttons_bar_normal'
+                          : 'header_custom_buttons_bar_gallery',
+                    ),
                     controller: _scrollCtrl,
                     scrollDirection: Axis.horizontal,
                     physics: const ClampingScrollPhysics(),
@@ -75201,7 +75258,9 @@ class _PaintPageViewState extends State<_PaintPageView> {
   /// コピーできた時 true (= キーイベントを消費する)。
   bool _copyPaintSelection() {
     final items = <Object>[];
-    if (_tool == _PaintTool.select && _isAnySelSet()) {
+    // 選択セットは選択ツールの複数選択だけでなく、テキストツール中に掴んだ
+    // 図形にも使うため、現在ツールに依存せず優先してコピーする。
+    if (_isAnySelSet()) {
       for (final i in _selStrokeSet) {
         if (i < _sheet.strokes.length) {
           final stroke = _sheet.strokes[i];
@@ -75338,6 +75397,9 @@ class _PaintPageViewState extends State<_PaintPageView> {
   int _selText = -1;
   Offset? _textDragOrig;
   Offset _textDragStart = Offset.zero;
+  // テキストツールのまま図形をドラッグしているか。
+  // タップは従来どおり文字入力に使い、ドラッグが成立した時だけ図形を掴む。
+  bool _textToolShapeMoving = false;
   // ── 選択ツール (= ユーザー要望: 図形/画像を掴んで移動・範囲選択で一括削除) ──
   final Set<int> _selStrokeSet = {};
   final Set<int> _selImgSet = {};
@@ -75387,6 +75449,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
     _imgDragOrig = null;
     _imgResizing = false;
     _textDragOrig = null;
+    _textToolShapeMoving = false;
   }
 
   bool _paintStrokeHit(_PaintStroke stroke, Offset p, double fit) {
@@ -76082,6 +76145,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
       // 画像ツール以外では画像の選択を解除 (選択枠を消す)。
       if (t != _PaintTool.image) _selImage = -1;
       if (t != _PaintTool.text) _selText = -1;
+      if (t != _PaintTool.text) _textToolShapeMoving = false;
       if (t != _PaintTool.eraser) _eraserCursor = null;
       if (t != _PaintTool.select) {
         _clearSelSets();
@@ -76645,9 +76709,15 @@ class _PaintPageViewState extends State<_PaintPageView> {
     }
     final idx = _textAt(p);
     if (idx >= 0) {
-      setState(() => _selText = idx);
+      setState(() {
+        _clearSelSets();
+        _selText = idx;
+      });
     } else {
-      setState(() => _selText = -1);
+      setState(() {
+        _clearSelSets();
+        _selText = -1;
+      });
       _startTextEdit(p);
     }
   }
@@ -76671,6 +76741,16 @@ class _PaintPageViewState extends State<_PaintPageView> {
     _textEditCtrl.selection =
         TextSelection.collapsed(offset: _textEditCtrl.text.length);
     _textEditFocus.requestFocus();
+  }
+
+  /// インライン入力を閉じた直後は、破棄予定の TextField が primary focus を
+  /// 保持するフレームがある。次フレームでキャンバスへ戻し、確定直後に選択中の
+  /// テキストボックスへ Ctrl/Cmd+C・V が確実に届くようにする。
+  void _restorePaintFocusAfterTextEdit() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _textEditPos != null) return;
+      _paintFocus.requestFocus();
+    });
   }
 
   void _commitTextEdit({bool selectAfterCommit = true}) {
@@ -76709,6 +76789,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
       _dirty = true;
     });
     _persist();
+    _restorePaintFocusAfterTextEdit();
   }
 
   void _deleteTextEdit() {
@@ -76729,23 +76810,68 @@ class _PaintPageViewState extends State<_PaintPageView> {
       _selText = -1;
     });
     if (hadExisting) _persist();
+    _restorePaintFocusAfterTextEdit();
   }
 
   // ドラッグ: 既存テキストをつかんで自由に移動 (= ユーザー要望)。
-  void _onTextPanStart(Offset p) {
-    if (_textEditPos != null) return; // 編集中は移動しない
+  // テキストに当たらなかった場合は図形を調べ、テキストツールのままでも
+  // 既存図形を掴んで移動できるようにする。空き場所のタップは引き続き
+  // _onTextTap が新規テキスト入力として扱う。
+  void _onTextPanStart(Offset p, double fit) {
+    if (_textEditPos != null) {
+      // 入力欄の外でドラッグを始めた場合は、入力中の文字を失わず確定してから
+      // 背後の既存要素を操作する。TextField 自身のドラッグはここへ届かない。
+      _commitTextEdit(selectAfterCommit: false);
+    }
+    _textToolShapeMoving = false;
     final idx = _textAt(p);
     if (idx >= 0) {
-      setState(() => _selText = idx);
+      setState(() {
+        _clearSelSets();
+        _selText = idx;
+      });
       _textDragOrig = _sheet.texts[idx].pos;
       _textDragStart = p;
-    } else {
-      setState(() => _selText = -1);
-      _textDragOrig = null;
+      return;
     }
+
+    // 上に重なった図形を優先する。塗りなし図形は線の近くだけがヒットするため、
+    // 図形の内側へ文字を置く従来の操作も妨げない。
+    int shapeIndex = -1;
+    for (int i = _sheet.shapes.length - 1; i >= 0; i--) {
+      if (_paintShapeHit(_sheet.shapes[i], p, fit)) {
+        shapeIndex = i;
+        break;
+      }
+    }
+    if (shapeIndex >= 0) {
+      setState(() {
+        _selText = -1;
+        _clearSelSets();
+        _selShapeSet.add(shapeIndex);
+      });
+      _textDragOrig = null;
+      _textToolShapeMoving = true;
+      _selMoving = true;
+      _selRanging = false;
+      _selLastP = p;
+      _selectionMoveBeforeSnapshot = _makeEraseSnapshot();
+      _selectionMoveChanged = false;
+      return;
+    }
+
+    setState(() {
+      _selText = -1;
+      _clearSelSets();
+    });
+    _textDragOrig = null;
   }
 
   void _onTextPanUpdate(Offset p) {
+    if (_textToolShapeMoving) {
+      _onSelectPanUpdate(p);
+      return;
+    }
     if (_selText < 0 || _selText >= _sheet.texts.length) return;
     if (_textDragOrig == null) return;
     setState(() {
@@ -76758,6 +76884,11 @@ class _PaintPageViewState extends State<_PaintPageView> {
   }
 
   void _onTextPanEnd() {
+    if (_textToolShapeMoving) {
+      _onSelectPanEnd();
+      _textToolShapeMoving = false;
+      return;
+    }
     if (_textDragOrig != null) {
       _textDragOrig = null;
       _persist();
@@ -77699,10 +77830,13 @@ class _PaintPageViewState extends State<_PaintPageView> {
                             child: Stack(children: [
                               GestureDetector(
                                 behavior: HitTestBehavior.opaque,
+                                // 細い線・塗りなし図形でも、ドラッグ認識後の位置では
+                                // なく実際に押し始めた位置でヒットテストする。
+                                dragStartBehavior: DragStartBehavior.down,
                                 onPanStart: (d) {
                                   final p = d.localPosition / fit;
                                   if (isText) {
-                                    _onTextPanStart(p);
+                                    _onTextPanStart(p, fit);
                                   } else if (isImage) {
                                     _onImagePanStart(p, fit);
                                   } else if (isSelect) {
@@ -77770,8 +77904,10 @@ class _PaintPageViewState extends State<_PaintPageView> {
                                     selStrokeSet:
                                         isSelect ? _selStrokeSet : const {},
                                     selImgSet: isSelect ? _selImgSet : const {},
-                                    selShapeSet:
-                                        isSelect ? _selShapeSet : const {},
+                                    // テキストツール中に図形を掴んだ時も選択枠を表示。
+                                    selShapeSet: (isSelect || isText)
+                                        ? _selShapeSet
+                                        : const {},
                                     selTextSet:
                                         isSelect && _selTextSet.length != 1
                                             ? _selTextSet
@@ -77810,70 +77946,84 @@ class _PaintPageViewState extends State<_PaintPageView> {
   }
 
   Widget _buildSheetTabs() {
+    final centerOnDesktop = !kIsWeb &&
+        (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
     return SizedBox(
       height: 38,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 6),
-        child: Row(children: [
-          Expanded(
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(children: [
-                for (int i = 0; i < _sheets.length; i++)
-                  Padding(
-                    padding: const EdgeInsets.only(right: 4, top: 5, bottom: 5),
-                    child: GestureDetector(
-                      onTap: () => _selectSheet(i),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 4),
-                        alignment: Alignment.center,
-                        decoration: BoxDecoration(
-                          color: i == _sel
-                              ? const Color(0xFFEC407A).withValues(alpha: 0.25)
-                              : Colors.white10,
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
+        child: Align(
+          alignment: Alignment.center,
+          child: ConstrainedBox(
+            // PC の横長画面でページ操作が右端へ離れすぎないよう、タブと
+            // 追加・名前変更・削除を中央付近の操作領域にまとめる。
+            constraints: BoxConstraints(
+                maxWidth: centerOnDesktop ? 720 : double.infinity),
+            child: Row(children: [
+              Expanded(
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(children: [
+                    for (int i = 0; i < _sheets.length; i++)
+                      Padding(
+                        padding:
+                            const EdgeInsets.only(right: 4, top: 5, bottom: 5),
+                        child: GestureDetector(
+                          onTap: () => _selectSheet(i),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 4),
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
                               color: i == _sel
                                   ? const Color(0xFFEC407A)
-                                  : Colors.white24),
+                                      .withValues(alpha: 0.25)
+                                  : Colors.white10,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                  color: i == _sel
+                                      ? const Color(0xFFEC407A)
+                                      : Colors.white24),
+                            ),
+                            child: Text(_sheets[i].name,
+                                style: TextStyle(
+                                    color: i == _sel
+                                        ? Colors.white
+                                        : Colors.white70,
+                                    fontSize: 12,
+                                    fontWeight: i == _sel
+                                        ? FontWeight.w700
+                                        : FontWeight.w500)),
+                          ),
                         ),
-                        child: Text(_sheets[i].name,
-                            style: TextStyle(
-                                color:
-                                    i == _sel ? Colors.white : Colors.white70,
-                                fontSize: 12,
-                                fontWeight: i == _sel
-                                    ? FontWeight.w700
-                                    : FontWeight.w500)),
                       ),
-                    ),
-                  ),
-              ]),
-            ),
+                  ]),
+                ),
+              ),
+              IconButton(
+                tooltip: widget.provider.t('paint.addSheet'),
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.add_box_outlined,
+                    size: 20, color: Color(0xFFEC407A)),
+                onPressed: _addSheet,
+              ),
+              IconButton(
+                tooltip: widget.provider.t('paint.sheetName'),
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.edit_outlined,
+                    size: 18, color: Colors.white54),
+                onPressed: _renameSheet,
+              ),
+              IconButton(
+                tooltip: widget.provider.t('paint.deleteSheet'),
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.delete_forever_rounded,
+                    size: 18, color: Color(0xFFE57373)),
+                onPressed: _deleteSheet,
+              ),
+            ]),
           ),
-          IconButton(
-            tooltip: widget.provider.t('paint.addSheet'),
-            visualDensity: VisualDensity.compact,
-            icon: const Icon(Icons.add_box_outlined,
-                size: 20, color: Color(0xFFEC407A)),
-            onPressed: _addSheet,
-          ),
-          IconButton(
-            tooltip: widget.provider.t('paint.sheetName'),
-            visualDensity: VisualDensity.compact,
-            icon: const Icon(Icons.edit_outlined,
-                size: 18, color: Colors.white54),
-            onPressed: _renameSheet,
-          ),
-          IconButton(
-            tooltip: widget.provider.t('paint.deleteSheet'),
-            visualDensity: VisualDensity.compact,
-            icon: const Icon(Icons.delete_forever_rounded,
-                size: 18, color: Color(0xFFE57373)),
-            onPressed: _deleteSheet,
-          ),
-        ]),
+        ),
       ),
     );
   }
@@ -82666,8 +82816,61 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
   bool _youtubeControlsInSideMenu = false;
   bool _youtubeSideMenuOnLeft = false;
   bool _youtubeUiLayoutTouched = false;
+  bool _youtubeSideActionOrderTouched = false;
   static const _youtubeUiLayoutPrefKey = 'youtube_video_ui_layout_v1';
   static const _youtubeUiSidePrefKey = 'youtube_video_ui_side_v1';
+  static const _youtubeSideActionOrderPrefKey =
+      'youtube_video_side_action_order_v1';
+
+  // サイド操作は表示条件や左右位置とは独立した安定 ID で管理する。
+  // 新しい操作を追加した場合は既存の端末設定の末尾へ自動で補完される。
+  static const _ytSideHideUi = 'hide_ui';
+  static const _ytSideAiChat = 'ai_chat';
+  static const _ytSideShareWithAi = 'share_with_ai';
+  static const _ytSideUiSettings = 'ui_settings';
+  static const _ytSideClose = 'close';
+  static const _ytSideHistoryBack = 'history_back';
+  static const _ytSideHistoryForward = 'history_forward';
+  static const _ytSideSearch = 'search';
+  static const _ytSideEmbed = 'embed';
+  static const _ytSidePip = 'pip';
+  static const _ytSideSplit = 'split';
+  static const _ytSideMemo = 'memo';
+  static const _ytSidePlaybackRate = 'playback_rate';
+  static const _ytSideSeekStep = 'seek_step';
+  static const _ytSideReload = 'reload';
+  static const _ytSideCopyUrl = 'copy_url';
+  static const _ytSidePlaylistPosition = 'playlist_position';
+  static const _ytSidePlaylistPrevious = 'playlist_previous';
+  static const _ytSidePlaylistNext = 'playlist_next';
+  static const _ytSideDownload = 'download';
+  static const _ytSideStopBackground = 'stop_background';
+
+  static const List<String> _defaultYoutubeSideActionOrder = [
+    _ytSideHideUi,
+    _ytSideAiChat,
+    _ytSideShareWithAi,
+    _ytSideUiSettings,
+    _ytSideClose,
+    _ytSideHistoryBack,
+    _ytSideHistoryForward,
+    _ytSideSearch,
+    _ytSideEmbed,
+    _ytSidePip,
+    _ytSideSplit,
+    _ytSideMemo,
+    _ytSidePlaybackRate,
+    _ytSideSeekStep,
+    _ytSideReload,
+    _ytSideCopyUrl,
+    _ytSidePlaylistPosition,
+    _ytSidePlaylistPrevious,
+    _ytSidePlaylistNext,
+    _ytSideDownload,
+    _ytSideStopBackground,
+  ];
+  List<String> _youtubeSideActionOrder =
+      List<String>.of(_defaultYoutubeSideActionOrder);
 
   /// 視聴中の動画情報をブラウザ AI へ渡す処理中。WebView から説明・再生位置を
   /// 取得している間の二重タップを防ぎ、下段ボタンに進捗を表示する。
@@ -85853,12 +86056,35 @@ v.addEventListener('play', function() {
       final prefs = await SharedPreferences.getInstance();
       final inSide = prefs.getString(_youtubeUiLayoutPrefKey) == 'side';
       final onLeft = prefs.getString(_youtubeUiSidePrefKey) == 'left';
-      if (!mounted || _youtubeUiLayoutTouched) return;
+      final storedOrder =
+          prefs.getStringList(_youtubeSideActionOrderPrefKey) ?? const [];
+      if (!mounted) return;
       setState(() {
-        _youtubeControlsInSideMenu = inSide;
-        _youtubeSideMenuOnLeft = onLeft;
+        if (!_youtubeUiLayoutTouched) {
+          _youtubeControlsInSideMenu = inSide;
+          _youtubeSideMenuOnLeft = onLeft;
+        }
+        if (!_youtubeSideActionOrderTouched) {
+          _youtubeSideActionOrder =
+              _normalizeYoutubeSideActionOrder(storedOrder);
+        }
       });
     } catch (_) {}
+  }
+
+  List<String> _normalizeYoutubeSideActionOrder(Iterable<String> stored) {
+    final known = _defaultYoutubeSideActionOrder.toSet();
+    final seen = <String>{};
+    final normalized = <String>[];
+    // 未知 ID と重複 ID は無視する。条件によって現在表示されない既知 ID は
+    // 削除せず保持するため、動画・ホーム・mp4 の切替後も順序が崩れない。
+    for (final id in stored) {
+      if (known.contains(id) && seen.add(id)) normalized.add(id);
+    }
+    for (final id in _defaultYoutubeSideActionOrder) {
+      if (seen.add(id)) normalized.add(id);
+    }
+    return normalized;
   }
 
   Future<void> _saveYoutubeUiLayout() async {
@@ -85869,6 +86095,180 @@ v.addEventListener('play', function() {
       await prefs.setString(_youtubeUiSidePrefKey,
           _youtubeSideMenuOnLeft ? 'left' : 'right');
     } catch (_) {}
+  }
+
+  Future<void> _saveYoutubeSideActionOrder() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(
+          _youtubeSideActionOrderPrefKey, _youtubeSideActionOrder);
+    } catch (_) {}
+  }
+
+  void _moveYoutubeSideAction(String id, int offset) {
+    final from = _youtubeSideActionOrder.indexOf(id);
+    if (from < 0) return;
+    final to = from + offset;
+    if (to < 0 || to >= _youtubeSideActionOrder.length) return;
+    setState(() {
+      _youtubeSideActionOrderTouched = true;
+      final moved = _youtubeSideActionOrder.removeAt(from);
+      _youtubeSideActionOrder.insert(to, moved);
+    });
+    _saveYoutubeSideActionOrder();
+  }
+
+  void _resetYoutubeSideActionOrder() {
+    setState(() {
+      _youtubeSideActionOrderTouched = true;
+      _youtubeSideActionOrder =
+          List<String>.of(_defaultYoutubeSideActionOrder);
+    });
+    _saveYoutubeSideActionOrder();
+  }
+
+  String _youtubeSideActionLabel(String id) {
+    switch (id) {
+      case _ytSideHideUi:
+        return 'UIを隠す';
+      case _ytSideAiChat:
+        return 'AIチャット';
+      case _ytSideShareWithAi:
+        return '動画をAIと共有';
+      case _ytSideUiSettings:
+        return 'UI配置設定';
+      case _ytSideClose:
+        return '動画画面を閉じる';
+      case _ytSideHistoryBack:
+        return '前のページ';
+      case _ytSideHistoryForward:
+        return '次のページ';
+      case _ytSideSearch:
+        return 'YouTube検索';
+      case _ytSideEmbed:
+        return 'マップに追加';
+      case _ytSidePip:
+        return 'ピクチャーインピクチャ';
+      case _ytSideSplit:
+        return '画面分割';
+      case _ytSideMemo:
+        return '動画メモ';
+      case _ytSidePlaybackRate:
+        return '再生速度';
+      case _ytSideSeekStep:
+        return '早送り秒数';
+      case _ytSideReload:
+        return '再読み込み';
+      case _ytSideCopyUrl:
+        return 'URLをコピー';
+      case _ytSidePlaylistPosition:
+        return 'プレイリスト位置';
+      case _ytSidePlaylistPrevious:
+        return '前の動画';
+      case _ytSidePlaylistNext:
+        return '次の動画';
+      case _ytSideDownload:
+        return '動画を保存';
+      case _ytSideStopBackground:
+        return 'バックグラウンド再生を停止';
+    }
+    return id;
+  }
+
+  IconData _youtubeSideActionIcon(String id) {
+    switch (id) {
+      case _ytSideHideUi:
+        return Icons.visibility_off_rounded;
+      case _ytSideAiChat:
+        return Icons.auto_awesome_rounded;
+      case _ytSideShareWithAi:
+        return Icons.screen_share_rounded;
+      case _ytSideUiSettings:
+        return Icons.tune_rounded;
+      case _ytSideClose:
+        return Icons.close_rounded;
+      case _ytSideHistoryBack:
+        return Icons.arrow_back_ios_new_rounded;
+      case _ytSideHistoryForward:
+        return Icons.arrow_forward_ios_rounded;
+      case _ytSideSearch:
+        return Icons.search_rounded;
+      case _ytSideEmbed:
+        return Icons.add_to_photos_rounded;
+      case _ytSidePip:
+        return Icons.picture_in_picture_alt_rounded;
+      case _ytSideSplit:
+        return Icons.splitscreen_rounded;
+      case _ytSideMemo:
+        return Icons.sticky_note_2_outlined;
+      case _ytSidePlaybackRate:
+        return Icons.speed_rounded;
+      case _ytSideSeekStep:
+        return Icons.fast_forward_rounded;
+      case _ytSideReload:
+        return Icons.refresh_rounded;
+      case _ytSideCopyUrl:
+        return Icons.share_rounded;
+      case _ytSidePlaylistPosition:
+        return Icons.format_list_numbered_rounded;
+      case _ytSidePlaylistPrevious:
+        return Icons.skip_previous_rounded;
+      case _ytSidePlaylistNext:
+        return Icons.skip_next_rounded;
+      case _ytSideDownload:
+        return Icons.download_rounded;
+      case _ytSideStopBackground:
+        return Icons.stop_circle_rounded;
+    }
+    return Icons.extension_rounded;
+  }
+
+  bool _isYoutubeSideActionCurrentlyVisible(String id) {
+    final isVideo = (_isYoutube && _currentVideoId != null) || _isMp4;
+    final canEmbed = widget.onEmbedUrl != null &&
+        (_isEmbeddableYoutubeUrl(_currentUrl) || _currentVideoId != null);
+    final canShareUrl = _isYoutube ||
+        _currentUrl.startsWith('http://') ||
+        _currentUrl.startsWith('https://');
+    switch (id) {
+      case _ytSideHideUi:
+      case _ytSideAiChat:
+      case _ytSideUiSettings:
+      case _ytSideClose:
+      case _ytSideHistoryBack:
+      case _ytSideHistoryForward:
+        return true;
+      case _ytSideShareWithAi:
+        return _isYoutube;
+      case _ytSideSearch:
+        return _isYoutube && !_isMp4;
+      case _ytSideEmbed:
+        return canEmbed;
+      case _ytSidePip:
+      case _ytSideMemo:
+      case _ytSidePlaybackRate:
+      case _ytSideReload:
+        return isVideo;
+      case _ytSideSplit:
+        return widget.onMoveToSplitPanel != null;
+      case _ytSideSeekStep:
+        return _isMp4;
+      case _ytSideCopyUrl:
+        return canShareUrl;
+      case _ytSidePlaylistPosition:
+      case _ytSidePlaylistPrevious:
+      case _ytSidePlaylistNext:
+        return _playlist.length > 1;
+      case _ytSideDownload:
+        return _isMp4 &&
+            (_currentUrl.startsWith('http://') ||
+                _currentUrl.startsWith('https://'));
+      case _ytSideStopBackground:
+        return !kIsWeb &&
+            Platform.isAndroid &&
+            _BgPlaybackController.isRunning;
+    }
+    return false;
   }
 
   void _setYoutubeUiLayout({bool? sideMenu, bool? sideOnLeft}) {
@@ -85884,6 +86284,7 @@ v.addEventListener('play', function() {
   void _showYoutubeUiSettings() {
     showModalBottomSheet<void>(
       context: context,
+      isScrollControlled: true,
       backgroundColor: const Color(0xFF1E1E32),
       builder: (sheetContext) => StatefulBuilder(
         builder: (sheetContext, setSheetState) {
@@ -85893,82 +86294,198 @@ v.addEventListener('play', function() {
             setSheetState(() {});
           }
 
+          void moveAction(String id, int offset) {
+            _moveYoutubeSideAction(id, offset);
+            setSheetState(() {});
+          }
+
           return SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Row(children: [
-                    Icon(Icons.tune_rounded,
+            child: SizedBox(
+              height: MediaQuery.sizeOf(sheetContext).height * 0.88,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                  Row(children: [
+                    const Icon(Icons.tune_rounded,
                         color: Color(0xFF8C84FF), size: 21),
-                    SizedBox(width: 10),
-                    Text('YouTube UI の配置',
-                        style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 16,
-                            fontWeight: FontWeight.w700)),
+                    const SizedBox(width: 10),
+                    const Expanded(
+                      child: Text('YouTube UI の配置',
+                          style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700)),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.pop(sheetContext),
+                      icon: const Icon(Icons.close_rounded,
+                          color: Colors.white54),
+                    ),
                   ]),
                   const SizedBox(height: 10),
-                  RadioListTile<bool>(
-                    value: false,
-                    groupValue: _youtubeControlsInSideMenu,
-                    activeColor: const Color(0xFF8C84FF),
-                    title: const Text('ヘッダーに表示',
-                        style: TextStyle(color: Colors.white)),
-                    secondary: const Icon(Icons.view_agenda_rounded,
-                        color: Colors.white70),
-                    onChanged: (value) {
-                      if (value != null) update(sideMenu: value);
-                    },
-                  ),
-                  RadioListTile<bool>(
-                    value: true,
-                    groupValue: _youtubeControlsInSideMenu,
-                    activeColor: const Color(0xFF8C84FF),
-                    title: const Text('サイドメニューに表示',
-                        style: TextStyle(color: Colors.white)),
-                    secondary: const Icon(Icons.view_sidebar_rounded,
-                        color: Colors.white70),
-                    onChanged: (value) {
-                      if (value != null) update(sideMenu: value);
-                    },
-                  ),
-                  if (_youtubeControlsInSideMenu) ...[
-                    const Divider(color: Colors.white12),
-                    const Padding(
-                      padding: EdgeInsets.fromLTRB(16, 4, 16, 4),
-                      child: Text('サイドメニューの位置',
-                          style:
-                              TextStyle(color: Colors.white54, fontSize: 12)),
+                  Expanded(
+                    child: ListView(
+                      children: [
+                        RadioListTile<bool>(
+                          value: false,
+                          groupValue: _youtubeControlsInSideMenu,
+                          activeColor: const Color(0xFF8C84FF),
+                          title: const Text('ヘッダーに表示',
+                              style: TextStyle(color: Colors.white)),
+                          secondary: const Icon(Icons.view_agenda_rounded,
+                              color: Colors.white70),
+                          onChanged: (value) {
+                            if (value != null) update(sideMenu: value);
+                          },
+                        ),
+                        RadioListTile<bool>(
+                          value: true,
+                          groupValue: _youtubeControlsInSideMenu,
+                          activeColor: const Color(0xFF8C84FF),
+                          title: const Text('サイドメニューに表示',
+                              style: TextStyle(color: Colors.white)),
+                          secondary: const Icon(Icons.view_sidebar_rounded,
+                              color: Colors.white70),
+                          onChanged: (value) {
+                            if (value != null) update(sideMenu: value);
+                          },
+                        ),
+                        if (_youtubeControlsInSideMenu) ...[
+                          const Divider(color: Colors.white12),
+                          const Padding(
+                            padding: EdgeInsets.fromLTRB(16, 4, 16, 8),
+                            child: Text('サイドメニューの位置',
+                                style: TextStyle(
+                                    color: Colors.white54, fontSize: 12)),
+                          ),
+                          Row(children: [
+                            Expanded(
+                              child: ChoiceChip(
+                                selected: _youtubeSideMenuOnLeft,
+                                showCheckmark: false,
+                                avatar: const Icon(
+                                    Icons.align_horizontal_left_rounded,
+                                    size: 18),
+                                label: const Text('左'),
+                                onSelected: (_) => update(sideOnLeft: true),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: ChoiceChip(
+                                selected: !_youtubeSideMenuOnLeft,
+                                showCheckmark: false,
+                                avatar: const Icon(
+                                    Icons.align_horizontal_right_rounded,
+                                    size: 18),
+                                label: const Text('右'),
+                                onSelected: (_) => update(sideOnLeft: false),
+                              ),
+                            ),
+                          ]),
+                        ],
+                        // ── ボタンの並び順 ──
+                        // ヘッダー表示でも編集できるよう常に表示する
+                        //   (= ユーザー要望 2026-07: 配置設定から UI ボタンを
+                        //   入れ替えられるように)。 サイドメニューは全ボタン、
+                        //   ヘッダーの右上ボタン列も (存在する 4 種の範囲で)
+                        //   この順序に従う。
+                        ...[
+                          const Divider(color: Colors.white12, height: 28),
+                          Row(children: [
+                            const Expanded(
+                              child: Text('UIボタンの並び順',
+                                  style: TextStyle(
+                                      color: Colors.white70,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w700)),
+                            ),
+                            TextButton.icon(
+                              onPressed: () {
+                                _resetYoutubeSideActionOrder();
+                                setSheetState(() {});
+                              },
+                              icon: const Icon(Icons.restart_alt_rounded,
+                                  size: 17),
+                              label: const Text('初期順'),
+                            ),
+                          ]),
+                          const SizedBox(height: 4),
+                          for (var index = 0;
+                              index < _youtubeSideActionOrder.length;
+                              index++)
+                            Builder(builder: (_) {
+                              final id = _youtubeSideActionOrder[index];
+                              final currentlyVisible =
+                                  _isYoutubeSideActionCurrentlyVisible(id);
+                              final color = currentlyVisible
+                                  ? Colors.white70
+                                  : Colors.white30;
+                              return Container(
+                                key: ValueKey('youtube-side-order-$id'),
+                                margin: const EdgeInsets.only(bottom: 6),
+                                padding:
+                                    const EdgeInsets.fromLTRB(10, 5, 4, 5),
+                                decoration: BoxDecoration(
+                                  color:
+                                      Colors.white.withValues(alpha: 0.035),
+                                  borderRadius: BorderRadius.circular(9),
+                                  border: Border.all(color: Colors.white10),
+                                ),
+                                child: Row(children: [
+                                  Icon(_youtubeSideActionIcon(id),
+                                      color: color, size: 20),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(_youtubeSideActionLabel(id),
+                                            style: TextStyle(
+                                                color: color, fontSize: 12)),
+                                        if (!currentlyVisible)
+                                          const Text('現在の画面では非表示',
+                                              style: TextStyle(
+                                                  color: Colors.white24,
+                                                  fontSize: 9)),
+                                      ],
+                                    ),
+                                  ),
+                                  IconButton(
+                                    onPressed: index > 0
+                                        ? () => moveAction(id, -1)
+                                        : null,
+                                    constraints: const BoxConstraints(
+                                        minWidth: 34, minHeight: 34),
+                                    padding: EdgeInsets.zero,
+                                    icon: const Icon(
+                                        Icons.keyboard_arrow_up_rounded,
+                                        size: 22),
+                                  ),
+                                  IconButton(
+                                    onPressed: index <
+                                            _youtubeSideActionOrder.length - 1
+                                        ? () => moveAction(id, 1)
+                                        : null,
+                                    constraints: const BoxConstraints(
+                                        minWidth: 34, minHeight: 34),
+                                    padding: EdgeInsets.zero,
+                                    icon: const Icon(
+                                        Icons.keyboard_arrow_down_rounded,
+                                        size: 22),
+                                  ),
+                                ]),
+                              );
+                            }),
+                        ],
+                      ],
                     ),
-                    Row(children: [
-                      Expanded(
-                        child: ChoiceChip(
-                          selected: _youtubeSideMenuOnLeft,
-                          showCheckmark: false,
-                          avatar: const Icon(Icons.align_horizontal_left_rounded,
-                              size: 18),
-                          label: const Text('左'),
-                          onSelected: (_) => update(sideOnLeft: true),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: ChoiceChip(
-                          selected: !_youtubeSideMenuOnLeft,
-                          showCheckmark: false,
-                          avatar: const Icon(
-                              Icons.align_horizontal_right_rounded,
-                              size: 18),
-                          label: const Text('右'),
-                          onSelected: (_) => update(sideOnLeft: false),
-                        ),
-                      ),
-                    ]),
+                  ),
                   ],
-                ],
+                ),
               ),
             ),
           );
@@ -86141,8 +86658,8 @@ v.addEventListener('play', function() {
     );
   }
 
-  /// YouTube ホーム・検索・動画のどこでも同じ4操作をまとめて表示する。
-  /// ヘッダーモードでは横並び、サイドメニューモードでは縦並びにする。
+  /// YouTube ホーム・検索・動画のヘッダーに共通4操作を表示する。
+  /// ヘッダーの既存順は固定し、サイドの並べ替え設定からは独立させる。
   Widget _buildMobileYoutubeActionRail({Axis axis = Axis.vertical}) {
     final showYoutubeShare = _isYoutube;
     final visibilityButton = _buildMobileYoutubeRailButton(
@@ -86184,11 +86701,39 @@ v.addEventListener('play', function() {
           color: Color(0xFFFFB347), size: 21),
       onTap: _showYoutubeUiSettings,
     );
+    // ── 配置設定の並び順をヘッダーのボタン列にも適用する ──
+    // (= ユーザー要望 2026-07: UI ボタンを配置設定から入れ替えられるように)。
+    // ヘッダー列に存在する 4 種を _youtubeSideActionOrder の順で並べる。
+    Widget buttonFor(String id) {
+      switch (id) {
+        case _ytSideHideUi:
+          return visibilityButton;
+        case _ytSideAiChat:
+          return aiButton;
+        case _ytSideShareWithAi:
+          return shareButton;
+        default:
+          return settingsButton;
+      }
+    }
+
+    final railIds = <String>[
+      for (final id in _youtubeSideActionOrder)
+        if (id == _ytSideHideUi ||
+            id == _ytSideAiChat ||
+            id == _ytSideShareWithAi ||
+            id == _ytSideUiSettings)
+          id,
+    ];
     final buttons = axis == Axis.horizontal
         // 横並びでは非表示ボタンを右端に固定し、非表示後も同じ場所を
         // 透明な復帰領域として使えるようにする。
-        ? <Widget>[aiButton, shareButton, settingsButton, visibilityButton]
-        : <Widget>[visibilityButton, aiButton, shareButton, settingsButton];
+        ? <Widget>[
+            for (final id in railIds)
+              if (id != _ytSideHideUi) buttonFor(id),
+            visibilityButton,
+          ]
+        : <Widget>[for (final id in railIds) buttonFor(id)];
     return Flex(
       direction: axis,
       mainAxisSize: MainAxisSize.min,
@@ -86204,75 +86749,105 @@ v.addEventListener('play', function() {
     );
   }
 
-  Widget _buildMobileYoutubeSideMenu() {
-    final isVideo = (_isYoutube && _currentVideoId != null) || _isMp4;
-    final sideTitle = _currentTitle.isNotEmpty
-        ? _currentTitle
-        : _isMp4
-            ? _playlist[_playlistIndex].split('/').last.split('\\').last
-            : (Uri.tryParse(_currentUrl.isNotEmpty ? _currentUrl : widget.url)
-                    ?.host ??
-                widget.url);
-    final canEmbed = widget.onEmbedUrl != null &&
-        (_isEmbeddableYoutubeUrl(_currentUrl) || _currentVideoId != null);
-    final canShareUrl = _isYoutube ||
-        _currentUrl.startsWith('http://') ||
-        _currentUrl.startsWith('https://');
-    final controls = <Widget>[
-      _buildMobileYoutubeRailButton(
-        color: const Color(0xFFFF6B6B),
-        icon: const Icon(Icons.close_rounded,
-            color: Color(0xFFFF8A80), size: 21),
-        onTap: () => Navigator.pop(context),
-      ),
-      _buildMobileYoutubeRailButton(
-        color: Colors.white54,
-        icon: Icon(Icons.arrow_back_ios_new_rounded,
-            color: _canGoBack ? Colors.white70 : Colors.white24, size: 18),
-        onTap: _canGoBack
-            ? () async {
-                try {
-                  await _c?.goBack();
-                } catch (_) {}
-              }
-            : null,
-      ),
-      _buildMobileYoutubeRailButton(
-        color: Colors.white54,
-        icon: Icon(Icons.arrow_forward_ios_rounded,
-            color: _canGoForward ? Colors.white70 : Colors.white24,
-            size: 18),
-        onTap: _canGoForward
-            ? () async {
-                try {
-                  await _c?.goForward();
-                } catch (_) {}
-              }
-            : null,
-      ),
-      if (_isYoutube && !_isMp4)
-        _buildMobileYoutubeRailButton(
+  Widget? _buildMobileYoutubeSideAction(String id) {
+    if (!_isYoutubeSideActionCurrentlyVisible(id)) return null;
+    switch (id) {
+      case _ytSideHideUi:
+        return _buildMobileYoutubeRailButton(
+          color: const Color(0xFF6C63FF),
+          icon: const Icon(Icons.visibility_off_rounded,
+              color: Color(0xFF8C84FF), size: 21),
+          onTap: _hideFullscreenControls,
+        );
+      case _ytSideAiChat:
+        return _buildMobileYoutubeRailButton(
+          color: const Color(0xFFBA68C8),
+          icon: const Icon(Icons.auto_awesome_rounded,
+              color: Color(0xFFCE83D8), size: 21),
+          onTap: () => _openMemoTextInAi(''),
+          onLongPress: _showMobileVideoAiSettings,
+        );
+      case _ytSideShareWithAi:
+        return _buildMobileYoutubeRailButton(
+          color: const Color(0xFF66BB6A),
+          icon: _sharingVideoWithBrowserAi
+              ? const SizedBox(
+                  width: 17,
+                  height: 17,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Color(0xFF66BB6A)),
+                )
+              : const Icon(Icons.screen_share_rounded,
+                  color: Color(0xFF66BB6A), size: 21),
+          onTap: _sharingVideoWithBrowserAi
+              ? null
+              : _shareCurrentVideoWithBrowserAi,
+          onLongPress: _showMobileVideoAiSettings,
+        );
+      case _ytSideUiSettings:
+        return _buildMobileYoutubeRailButton(
+          color: const Color(0xFFFFB347),
+          icon: const Icon(Icons.tune_rounded,
+              color: Color(0xFFFFB347), size: 21),
+          onTap: _showYoutubeUiSettings,
+        );
+      case _ytSideClose:
+        return _buildMobileYoutubeRailButton(
+          color: const Color(0xFFFF6B6B),
+          icon: const Icon(Icons.close_rounded,
+              color: Color(0xFFFF8A80), size: 21),
+          onTap: () => Navigator.pop(context),
+        );
+      case _ytSideHistoryBack:
+        return _buildMobileYoutubeRailButton(
+          color: Colors.white54,
+          icon: Icon(Icons.arrow_back_ios_new_rounded,
+              color: _canGoBack ? Colors.white70 : Colors.white24, size: 18),
+          onTap: _canGoBack
+              ? () async {
+                  try {
+                    await _c?.goBack();
+                  } catch (_) {}
+                }
+              : null,
+        );
+      case _ytSideHistoryForward:
+        return _buildMobileYoutubeRailButton(
+          color: Colors.white54,
+          icon: Icon(Icons.arrow_forward_ios_rounded,
+              color: _canGoForward ? Colors.white70 : Colors.white24,
+              size: 18),
+          onTap: _canGoForward
+              ? () async {
+                  try {
+                    await _c?.goForward();
+                  } catch (_) {}
+                }
+              : null,
+        );
+      case _ytSideSearch:
+        return _buildMobileYoutubeRailButton(
           color: const Color(0xFF6C63FF),
           icon: const Icon(Icons.search_rounded,
               color: Color(0xFF8C84FF), size: 21),
           onTap: _showYoutubeSideSearchDialog,
-        ),
-      if (canEmbed)
-        _buildMobileYoutubeRailButton(
+        );
+      case _ytSideEmbed:
+        return _buildMobileYoutubeRailButton(
           color: const Color(0xFF43B97F),
           icon: const Icon(Icons.add_to_photos_rounded,
               color: Color(0xFF43B97F), size: 21),
           onTap: _embedCurrentYoutubePage,
-        ),
-      if (isVideo)
-        _buildMobileYoutubeRailButton(
+        );
+      case _ytSidePip:
+        return _buildMobileYoutubeRailButton(
           color: const Color(0xFF4FC3F7),
           icon: const Icon(Icons.picture_in_picture_alt_rounded,
               color: Color(0xFF4FC3F7), size: 21),
           onTap: _enterPiP,
-        ),
-      if (widget.onMoveToSplitPanel != null)
-        _buildMobileYoutubeRailButton(
+        );
+      case _ytSideSplit:
+        return _buildMobileYoutubeRailButton(
           color: _videoSplitDown
               ? const Color(0xFF2196F3)
               : const Color(0xFFFF6B6B),
@@ -86285,11 +86860,10 @@ v.addEventListener('play', function() {
                   : const Color(0xFFFF6B6B),
               size: 21),
           onTap: () => _moveVideoToSplit(isLeftPanel: !_videoSplitDown),
-          onLongPress: () =>
-              setState(() => _videoSplitDown = !_videoSplitDown),
-        ),
-      if (isVideo)
-        _buildMobileYoutubeRailButton(
+          onLongPress: () => setState(() => _videoSplitDown = !_videoSplitDown),
+        );
+      case _ytSideMemo:
+        return _buildMobileYoutubeRailButton(
           color: const Color(0xFFFFB347),
           icon: Icon(
             _videoMemoPanelOpen
@@ -86299,9 +86873,9 @@ v.addEventListener('play', function() {
             size: 21,
           ),
           onTap: _toggleVideoMemoPanel,
-        ),
-      if (isVideo)
-        _buildMobileYoutubeRailButton(
+        );
+      case _ytSidePlaybackRate:
+        return _buildMobileYoutubeRailButton(
           color: const Color(0xFF4FC3F7),
           icon: Text('${_playbackRate.toStringAsFixed(1)}x',
               style: const TextStyle(
@@ -86310,40 +86884,42 @@ v.addEventListener('play', function() {
                   fontWeight: FontWeight.w800)),
           onTap: _showYoutubePlaybackRateSheet,
           onLongPress: () => _showMaxRateDialog(context),
-        ),
-      if (_isMp4)
-        _buildMobileYoutubeRailButton(
+        );
+      case _ytSideSeekStep:
+        return _buildMobileYoutubeRailButton(
           color: Colors.white54,
           icon: const Icon(Icons.fast_forward_rounded,
               color: Colors.white70, size: 21),
           onTap: () => _showSeekStepDialog(context),
-        ),
-      if (isVideo)
-        _buildMobileYoutubeRailButton(
+        );
+      case _ytSideReload:
+        return _buildMobileYoutubeRailButton(
           color: Colors.white54,
           icon: const Icon(Icons.refresh_rounded,
               color: Colors.white70, size: 21),
           onTap: _reloadCurrentVideo,
-        ),
-      if (canShareUrl)
-        _buildMobileYoutubeRailButton(
+        );
+      case _ytSideCopyUrl:
+        return _buildMobileYoutubeRailButton(
           color: const Color(0xFF4FC3F7),
           icon: const Icon(Icons.share_rounded,
               color: Color(0xFF4FC3F7), size: 21),
           onTap: _copyCurrentVideoUrl,
-        ),
-      if (_playlist.length > 1)
-        Container(
+        );
+      case _ytSidePlaylistPosition:
+        return SizedBox(
           width: 40,
-          alignment: Alignment.center,
-          child: Text('${_playlistIndex + 1}/${_playlist.length}',
-              style: const TextStyle(
-                  color: Colors.white54,
-                  fontSize: 9,
-                  fontWeight: FontWeight.w700)),
-        ),
-      if (_playlist.length > 1)
-        _buildMobileYoutubeRailButton(
+          height: 24,
+          child: Center(
+            child: Text('${_playlistIndex + 1}/${_playlist.length}',
+                style: const TextStyle(
+                    color: Colors.white54,
+                    fontSize: 9,
+                    fontWeight: FontWeight.w700)),
+          ),
+        );
+      case _ytSidePlaylistPrevious:
+        return _buildMobileYoutubeRailButton(
           color: Colors.white54,
           icon: const Icon(Icons.skip_previous_rounded,
               color: Colors.white70, size: 21),
@@ -86353,9 +86929,9 @@ v.addEventListener('play', function() {
                   _navigateTo(_playlist[_playlistIndex]);
                 }
               : null,
-        ),
-      if (_playlist.length > 1)
-        _buildMobileYoutubeRailButton(
+        );
+      case _ytSidePlaylistNext:
+        return _buildMobileYoutubeRailButton(
           color: Colors.white54,
           icon: const Icon(Icons.skip_next_rounded,
               color: Colors.white70, size: 21),
@@ -86365,26 +86941,36 @@ v.addEventListener('play', function() {
                   _navigateTo(_playlist[_playlistIndex]);
                 }
               : null,
-        ),
-      if (_isMp4 &&
-          (_currentUrl.startsWith('http://') ||
-              _currentUrl.startsWith('https://')))
-        _buildMobileYoutubeRailButton(
+        );
+      case _ytSideDownload:
+        return _buildMobileYoutubeRailButton(
           color: const Color(0xFFFFB347),
           icon: const Icon(Icons.download_rounded,
               color: Color(0xFFFFB347), size: 21),
           onTap: _downloadCurrentVideo,
-        ),
-      if (!kIsWeb &&
-          Platform.isAndroid &&
-          _BgPlaybackController.isRunning)
-        _buildMobileYoutubeRailButton(
+        );
+      case _ytSideStopBackground:
+        return _buildMobileYoutubeRailButton(
           color: Colors.redAccent,
           icon: const Icon(Icons.stop_circle_rounded,
               color: Colors.redAccent, size: 21),
           onTap: _stopVideoBackgroundPlayback,
-        ),
-    ];
+        );
+    }
+    // 新しいバージョンの設定値など未知 ID が来ても描画を止めない。
+    return null;
+  }
+
+  Widget _buildMobileYoutubeSideMenu() {
+    final controls = <Widget>[];
+    for (final id in _youtubeSideActionOrder) {
+      final control = _buildMobileYoutubeSideAction(id);
+      if (control == null) continue;
+      controls.add(KeyedSubtree(
+        key: ValueKey('youtube-side-action-$id'),
+        child: control,
+      ));
+    }
     return Container(
       width: 56,
       color: Colors.black,
@@ -86394,30 +86980,9 @@ v.addEventListener('play', function() {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            _buildMobileYoutubeActionRail(),
-            if (sideTitle.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 4),
-                child: Text(
-                  sideTitle,
-                  maxLines: 3,
-                  overflow: TextOverflow.ellipsis,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                      color: Colors.white54,
-                      fontSize: 8,
-                      height: 1.15),
-                ),
-              ),
-            ],
-            if (controls.isNotEmpty) ...[
-              const SizedBox(height: 10),
-              Container(width: 30, height: 1, color: Colors.white12),
-              for (final control in controls) ...[
-                const SizedBox(height: 8),
-                control,
-              ],
+            for (var i = 0; i < controls.length; i++) ...[
+              if (i > 0) const SizedBox(height: 8),
+              controls[i],
             ],
             const SizedBox(height: 8),
           ],
@@ -86427,14 +86992,17 @@ v.addEventListener('play', function() {
   }
 
   Widget _buildHiddenYoutubeControlsRestoreTarget() {
-    final onLeft =
-        _youtubeControlsInSideMenu && _youtubeSideMenuOnLeft;
+    final inSideMenu = _youtubeControlsInSideMenu;
+    final onLeft = inSideMenu && _youtubeSideMenuOnLeft;
+    // サイドでは「UIを隠す」も並べ替え可能なため、非表示直前の位置がどこでも
+    // 同じサイド領域を押せば復元できるよう、透明な復帰領域を縦全体に保つ。
     return Positioned(
       top: 0,
+      bottom: inSideMenu ? 0 : null,
       left: onLeft ? 0 : null,
       right: onLeft ? null : 0,
       width: 56,
-      height: 56,
+      height: inSideMenu ? null : 56,
       child: Semantics(
         button: true,
         label: 'YouTube UIを再表示',
@@ -87198,25 +87766,11 @@ v.addEventListener('play', function() {
                             }
                           : null,
                     ),
-                    Expanded(
-                      child: Text(
-                        _currentTitle.isNotEmpty
-                            ? _currentTitle
-                            : _isMp4
-                                ? _playlist[_playlistIndex]
-                                    .split('/')
-                                    .last
-                                    .split('\\')
-                                    .last
-                                : (Uri.tryParse(widget.url)?.host ??
-                                    widget.url),
-                        style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
+                    // ── 動画タイトルの表示は削除 (= ユーザー要望 2026-07:
+                    //   「UI配置設定ボタンの下に動画タイトル等を表示しないで、
+                    //   邪魔」)。 タイトルはタブや共有時のメタ情報としては
+                    //   引き続き保持する (_currentTitle) が、 バーには出さない。
+                    const Spacer(),
                     // ── マップに埋め込むボタン (YouTube 動画 / チャンネルのみ) ──
                     // 表示条件: `_isEmbeddableYoutubeUrl(_currentUrl)` でカバー
                     // できない瞬間 (SPA 遷移直後など) でも、`_currentVideoId` が
