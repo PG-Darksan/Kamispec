@@ -37003,7 +37003,7 @@ class MindMapProvider extends ChangeNotifier {
         _pasteImageScalePercent = 50; // デフォルト 50%
       }
     }
-    // ノード生成時にタイトル入力を求めるか (デフォルト: false)
+    // ノード生成直後にノード内で直接タイトル入力を始めるか (デフォルト: true)
     _promptForTitleOnNodeCreate =
         prefs.getBool('promptForTitleOnNodeCreate') ?? true;
     _suppressPageDeleteUndoPrompt =
@@ -37334,6 +37334,33 @@ class MindMapProvider extends ChangeNotifier {
             'galleryHeaderButtons', jsonEncode(_galleryHeaderButtons));
       }
     }
+    // ── 既定ヘッダー v4 ──
+    // ノード生成を左端にし、主要ユーティリティと Google サービスを初期状態
+    // から使えるようにする。既存ユーザーにも一度だけ不足分を補い、それ以降
+    // の削除・並び替えはこの移行フラグによって尊重する。
+    if (prefs.getBool('mig_header_default_buttons_v4') != true) {
+      void applyV4Defaults(List<String> buttons) {
+        buttons.removeWhere((id) => id == 'addNode');
+        buttons.insert(0, 'addNode');
+        for (final id in const <String>[
+          'shortcuts',
+          'qrReader',
+          'refMenu',
+          'openGoogleDrive',
+          'openGoogleEarth',
+          'openGoogleMaps',
+        ]) {
+          if (!buttons.contains(id)) buttons.add(id);
+        }
+      }
+
+      applyV4Defaults(_customHeaderButtons);
+      applyV4Defaults(_galleryHeaderButtons);
+      prefs.setBool('mig_header_default_buttons_v4', true);
+      prefs.setString('customHeaderButtons', jsonEncode(_customHeaderButtons));
+      prefs.setString(
+          'galleryHeaderButtons', jsonEncode(_galleryHeaderButtons));
+    }
     // モバイル下部バーのカスタム項目（見た目は拡大率込みで6スロット）
     final customBottomJson = prefs.getString('customBottomButtons');
     if (customBottomJson != null && customBottomJson.isNotEmpty) {
@@ -37581,12 +37608,18 @@ class MindMapProvider extends ChangeNotifier {
 
   /// 通常ページのヘッダー初期デフォルト。
   static const List<String> defaultHeaderButtons = [
+    'addNode',
     'mapMemo',
     'openYoutube',
     'rangeSelect',
     'openAi',
     'googleSearch',
-    'addNode',
+    'shortcuts',
+    'qrReader',
+    'refMenu',
+    'openGoogleDrive',
+    'openGoogleEarth',
+    'openGoogleMaps',
   ];
 
   /// ギャラリー (および bookshelf 等 normal 以外のページ) 専用のヘッダーボタン
@@ -38282,9 +38315,9 @@ class MindMapProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// ノード新規作成時に「タイトル入力ダイアログ」 を出すかどうか。
-  /// false (デフォルト): 空タイトルで即生成。
-  /// true: 作成時にダイアログでタイトル入力を求める。
+  /// ノード新規作成直後にノード内のタイトル編集を始めるかどうか。
+  /// false: 空タイトルで即生成。
+  /// true (デフォルト): 作成したノード内で直接タイトル入力を開始する。
   // 既定 ON (= ユーザー要望: ノードを生成時に入力を求めるに変更して)。
   bool _promptForTitleOnNodeCreate = true;
   bool get promptForTitleOnNodeCreate => _promptForTitleOnNodeCreate;
@@ -39562,7 +39595,7 @@ class MindMapProvider extends ChangeNotifier {
     }
   }
 
-  /// 並び替えモードのドラッグで、ボタンを別の辺へ移す。
+  /// ヘッダーボタンを同じバー内で並べ替えるか、別の辺へ移す。
   /// [beforeCommandId] があればそのボタンの直前、無ければ移動先の末尾へ入れる。
   Future<void> moveDesktopHeaderButtonToPlacement(
     String commandId,
@@ -39574,7 +39607,14 @@ class MindMapProvider extends ChangeNotifier {
       return;
     }
     final oldPlacement = desktopHeaderButtonPlacementFor(commandId);
-    if (oldPlacement == placement && beforeCommandId == null) return;
+    if (oldPlacement == placement && beforeCommandId == null) {
+      final idsAtPlacement = _customHeaderButtons
+          .where((id) => desktopHeaderButtonPlacementFor(id) == placement)
+          .toList(growable: false);
+      if (idsAtPlacement.isNotEmpty && idsAtPlacement.last == commandId) {
+        return;
+      }
+    }
 
     final beforeIsValid = beforeCommandId != null &&
         beforeCommandId != commandId &&
@@ -53689,24 +53729,17 @@ $cleanQ
         //   +ブロックに収める。 旧実装は大きくした表紙の幅をそのまま維持して
         //   いたため列が +ブロックより広がってはみ出していた)。
         const double effW = bw;
-        // ── 動画サムネは統一比の枠にしない (= ユーザー報告: 横長 YouTube
-        //    サムネの上下に黒い余白が出る) ──
-        // 画像/PDF 表紙は BoxFit.cover で切り抜き充填されるので統一比で
-        // 揃うが、 動画サムネは「切り抜かず全体を表示」 (BoxFit.contain) の
-        // ため、 1/1.1 の枠だと 16:9 サムネの上下が黒帯になる。 動画は
-        // 統一比を焼き込まず、 描画側の実比率 (16:9 / Shorts 9:16) で枠を
-        // 詰める。 過去の整列で統一比 (≈0.909) が保存済みのノードはクリア
-        // し、 ローカル動画の実測比 (setVideoThumbnailPath 由来) は残す。
+        // ── ギャラリー内の動画はすべて通常動画と同じ 16:9 に統一 ──
+        // Shorts の URL / ローカル動画は通常ページでは 9:16 で描画するが、
+        // ギャラリーでもその自然比を使うと 1 件だけ行が極端に高くなり、周囲の
+        // タイル配置まで崩れる。attachmentAspectRatio を 16:9 に固定し、通常
+        // 動画と Shorts を同じ外形にする。画像/PDF 表紙は従来の統一比を使う。
         final bool videoCover = (n.youtubeUrl ?? '').isNotEmpty &&
             n.contentType == NodeContentType.youtube;
-        final double? existingAr = n.attachmentAspectRatio;
-        final bool stampedUniform =
-            existingAr != null && (existingAr - (1.0 / 1.1)).abs() < 0.01;
         u = n.copyWith(
             width: effW,
             height: 52.0,
-            attachmentAspectRatio:
-                videoCover ? (stampedUniform ? null : existingAr) : ar,
+            attachmentAspectRatio: videoCover ? (16.0 / 9.0) : ar,
             clampHeight: false);
       } else {
         // ギャラリーページ (wholeShelf) のテキストはセル高に固定 (= clampHeight)。
@@ -54090,6 +54123,10 @@ $cleanQ
       currentPage.nodes[coverId] =
           n.copyWith(title: '$prefix$t (${valid.length})');
     }
+    // createContainerFromNodes は表紙をメンバーの重心に仮配置する。セルを設定
+    // しただけではその仮位置と古いグリッドキャッシュが残り、表紙が指定セルに
+    // 見えないことがあるため、最終状態をここで必ず再整列する。
+    _arrangeAsBookshelfBody(currentPage);
     // 注: ここで compactShelfCells() は呼ばない (= ユーザー要望: 要素を
     //   格納したら空いたセルはその場で +ボックスに戻る。 詰め直すと
     //   「格納した要素分の +ブロックが無くなる」 ように見えていた)。

@@ -3218,6 +3218,17 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// `_draggingMapPage == true` の間、 各 PointerMoveEvent でポインタ位置を
   /// 更新し、 PointerUpEvent で drop 処理を実行する。
   void _globalPointerForMapDrop(PointerEvent event) {
+    // Draggable が再構築で先に破棄されても、ポインタ終了の次フレームには
+    // 空バーの配置候補を必ず解除する。即時解除すると accept 前に消え得る。
+    if ((event is PointerUpEvent || event is PointerCancelEvent) &&
+        _activeDesktopHeaderDrag != null) {
+      final finishingDrag = _activeDesktopHeaderDrag;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && identical(_activeDesktopHeaderDrag, finishingDrag)) {
+          _endDesktopHeaderDrag();
+        }
+      });
+    }
     if (!_draggingMapPage) return;
     if (event is PointerMoveEvent || event is PointerHoverEvent) {
       _draggingPointerPos = event.position;
@@ -4613,6 +4624,12 @@ class _MindMapScreenState extends State<MindMapScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
+    // ウィンドウが非アクティブになった時点でドラッグは成立しないため、
+    // 配置候補だけが残らないよう確実に終了扱いにする。
+    if (state != AppLifecycleState.resumed &&
+        _activeDesktopHeaderDrag != null) {
+      _endDesktopHeaderDrag();
+    }
     // ── アプリ外脱出ロック (トグル式) の離脱対策 ──
     // ロック中にホーム / 他アプリへ飛ぼうとしても、前面に戻った
     //   (resumed) ら OS の画面固定 (lock task) と没入モードを再要求して
@@ -15172,8 +15189,23 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (ids.isNotEmpty) {
       final linkOffset = linkK;
       () async {
+        final before = provider.currentPage.nodes.keys.toSet();
         final added = provider.addVideosToBookshelf(ids, titles,
             cell: cell == null ? null : [cell[0] + linkOffset, cell[1]]);
+        // 空白区切りで複数動画 URL を取り込んだ場合も、プレイリスト/
+        // チャンネル取り込みと同じく 1 つの表紙ブロックへまとめる。
+        final newIds = provider.currentPage.nodes.keys
+            .where((id) => !before.contains(id))
+            .toList(growable: false);
+        if (newIds.length > 1) {
+          provider.createBookshelfCover(
+            newIds,
+            '',
+            cell: cell == null
+                ? null
+                : [cell[0] + linkOffset, cell[1]],
+          );
+        }
         if (mounted) {
           _appSnack(
             context,
@@ -17916,7 +17948,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           onTap: () {
             _removeOverlay();
             final canvasPos = _globalToCanvas(globalPos, ctrl);
-            _createNodeWithOptionalTitlePrompt(
+            _createNodeWithOptionalInlineTitleEdit(
                 provider, canvasPos - const Offset(80, 21));
           },
         ),
@@ -22732,7 +22764,8 @@ class _MindMapScreenState extends State<MindMapScreen>
   // ─── インラインタイトル編集 ───────────────────────────────────────────
 
   void _startInlineTitleEdit(BuildContext ctx, MindMapNode node,
-      {bool allowDelimiterExpansion = false}) {
+      {bool deleteWhenEmpty = false,
+      bool allowDelimiterExpansion = false}) {
     _removeOverlay();
     final provider = ctx.read<MindMapProvider>();
     // ギャラリーでは通常ノード用のインラインエディターを描画しないため、
@@ -22741,10 +22774,12 @@ class _MindMapScreenState extends State<MindMapScreen>
     final isShelfElement = provider.currentPage.pageType == 'bookshelf' &&
         provider.shelfCellOf(node.id) != null;
     if (isShelfElement) {
-      _beginShelfInlineTextEdit(provider, node.id);
+      _beginShelfInlineTextEdit(provider, node.id,
+          deleteWhenEmpty: deleteWhenEmpty);
       return;
     }
     _beginNodeInlineTextEdit(provider, node.id,
+        deleteWhenEmpty: deleteWhenEmpty,
         allowDelimiterExpansion: allowDelimiterExpansion);
   }
 
@@ -24863,7 +24898,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                                         },
                                       ),
 
-                                      // ── トグル: ノード生成時にタイトル入力ダイアログ ──
+                                      // ── トグル: ノード生成直後にノード内で直接入力 ──
                                       _settingsToggleTile(
                                         icon:
                                             provider.promptForTitleOnNodeCreate
@@ -27368,11 +27403,6 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// - 非トグル系は常に ON 色で表示
   /// - OFF 状態のデフォルト色は全アイコン共通で灰色
   Widget? _buildCustomHeaderButton(String commandId, MindMapProvider provider) {
-    // モバイルではショートカット一覧ボタンを隠す
-    // (物理キーボードが無いので実質的に無意味。デスクトップ側では従来通り表示)
-    // 既存データ (customHeaderButtons にすでに 'shortcuts' が入っている場合) も
-    // モバイル端末でのみ描画しないことで、クロス同期でも問題が出ない。
-    if (!_isDesktop && commandId == 'shortcuts') return null;
     // 画面ロック / 集中ロックはモバイル専用 (= ユーザー要望: Windows からは
     //   外す)。 デスクトップでは描画しない (= 配置されていても無視)。
     if (_isDesktop && (commandId == 'appLock' || commandId == 'focusLock')) {
@@ -29434,73 +29464,24 @@ class _MindMapScreenState extends State<MindMapScreen>
             View.of(context).physicalSize / View.of(context).devicePixelRatio;
         final center = _globalToCanvas(Offset(s.width / 2, s.height / 2),
             _ctrlFor(provider.currentPage.id));
-        _createNodeWithOptionalTitlePrompt(
+        _createNodeWithOptionalInlineTitleEdit(
             provider, center - const Offset(80, 21));
         break;
     }
   }
 
-  /// ノードを指定位置に作成し、生成直後のノードをそのまま編集する。
-  /// Ctrl+Shift+N / ヘッダーの新規ノード追加で別の簡易入力欄を挟まず、
-  /// 要素本体の編集経路へ入る。
-  Future<void> _createNodeWithOptionalTitlePrompt(
-      MindMapProvider provider, Offset position) async {
-    // OFF のときは従来どおり空ノードを即時生成する。ON のときは、
-    // ページ種別に依存するインライン編集へ委ねず、生成前に共通ダイアログで
-    // 入力を求める。これによりギャラリーで Ctrl+Shift+N を使った場合も
-    // 通常マップと同じ動作になる。
-    if (!provider.promptForTitleOnNodeCreate) {
-      provider.addNodeAtCenterReturning(position);
-      return;
-    }
-
-    final controller = TextEditingController();
-    final title = await showDialog<String>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E32),
-        title: Text(
-          provider.t('settings.promptForTitleOnNodeCreate'),
-          style: const TextStyle(color: Colors.white, fontSize: 18),
-        ),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          maxLines: 1,
-          textInputAction: TextInputAction.done,
-          style: const TextStyle(color: Colors.white),
-          decoration: InputDecoration(
-            hintText: provider.t('node.untitled'),
-            hintStyle: const TextStyle(color: Colors.white38),
-            enabledBorder: const UnderlineInputBorder(
-              borderSide: BorderSide(color: Colors.white24),
-            ),
-            focusedBorder: const UnderlineInputBorder(
-              borderSide: BorderSide(color: Color(0xFF6C63FF), width: 2),
-            ),
-          ),
-          onSubmitted: (value) => Navigator.pop(dialogContext, value),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: Text(provider.t('btn.cancel')),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, controller.text),
-            child: Text(provider.t('btn.add')),
-          ),
-        ],
-      ),
-    );
-    controller.dispose();
-    if (!mounted || title == null) return;
-
+  /// 指定位置に空ノードを作成し、設定が ON ならそのノード内で直接編集する。
+  /// 通常マップとギャラリーの振り分けは既存のインライン編集経路へ委ねる。
+  void _createNodeWithOptionalInlineTitleEdit(
+      MindMapProvider provider, Offset position) {
     final newNode = provider.addNodeAtCenterReturning(position);
-    provider.updateNodeTitle(newNode.id, title.trim());
-    if (provider.currentPage.pageType == 'bookshelf') {
-      provider.reflowBookshelf();
-    }
+    if (!provider.promptForTitleOnNodeCreate) return;
+    _startInlineTitleEdit(
+      context,
+      newNode,
+      deleteWhenEmpty: true,
+      allowDelimiterExpansion: true,
+    );
   }
 
   /// YouTubeを検索バーが見える状態で開く（5倍速再生が最初から効いた状態）
@@ -33652,6 +33633,22 @@ class _MindMapScreenState extends State<MindMapScreen>
   Future<void> _embedYoutubeUrlAsNode(
       String url, MindMapProvider provider) async {
     if (!mounted) return;
+    // Windows の「この動画以降をすべて」 は改行区切りの 1 バッチで渡す。
+    // ギャラリー側は同じ形式をまとめて表紙化し、通常マップ側はここで順番に
+    // 展開する。個別 callback の同時実行による重複配置・表紙欠落を防ぐ。
+    final batchUrls = url
+        .split(RegExp(r'\s+'))
+        .map((value) => value.trim())
+        .where((value) => value.isNotEmpty)
+        .toList(growable: false);
+    if (batchUrls.length > 1) {
+      for (final batchUrl in batchUrls) {
+        if (!mounted) return;
+        await _embedYoutubeUrlAsNode(batchUrl, provider);
+      }
+      return;
+    }
+    if (batchUrls.length == 1) url = batchUrls.single;
     // 新規ノードの配置位置：現在の画面中央のキャンバス座標
     final pageId = provider.currentPage.id;
     final ctrl = _ctrlFor(pageId);
@@ -38352,7 +38349,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             }
             // ヘッダー並び替えモード中なら最優先で解除
             if (_reorderHeaderMode) {
-              setState(() => _reorderHeaderMode = false);
+              _exitHeaderReorderMode();
               return;
             }
             // カレンダーモード中なら最優先でマップに戻る
@@ -38476,15 +38473,14 @@ class _MindMapScreenState extends State<MindMapScreen>
             _handlePaste(provider);
           } else if (commandId == 'newNode') {
             // Ctrl+Shift+N: 新規ノードを画面中央に作成。
-            // 設定 `promptForTitleOnNodeCreate` が ON ならインラインタイトル
-            // 編集ダイアログを開いてタイトル入力を促す (ユーザー要望)。
-            // OFF (デフォルト) なら空タイトルで即生成 — 連打で同位置量産、
+            // 設定 `promptForTitleOnNodeCreate` が ON なら、生成したノード内で
+            // 直接タイトル入力を開始する。OFF なら空タイトルで即生成 —
             // テンプレ/AI 投入後にタイトル付けする運用にそのまま使える。
             final s = View.of(context).physicalSize /
                 View.of(context).devicePixelRatio;
             final center =
                 _globalToCanvas(Offset(s.width / 2, s.height / 2), ctrl);
-            _createNodeWithOptionalTitlePrompt(
+            _createNodeWithOptionalInlineTitleEdit(
                 provider, center - const Offset(80, 21));
           } else if (commandId == 'group') {
             // グループ化/グループ解除トグル
@@ -40297,7 +40293,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                     Positioned.fill(
                       child: GestureDetector(
                         behavior: HitTestBehavior.translucent,
-                        onTap: () => setState(() => _reorderHeaderMode = false),
+                        onTap: _exitHeaderReorderMode,
                       ),
                     ),
                 ],
@@ -40938,8 +40934,45 @@ class _MindMapScreenState extends State<MindMapScreen>
     setState(() => _activeDesktopHeaderDrag = null);
   }
 
-  bool _canAcceptDesktopHeaderDrag(
-      _DesktopHeaderDragData data, String targetPlacement) {
+  void _exitHeaderReorderMode() {
+    if (!mounted ||
+        (!_reorderHeaderMode && _activeDesktopHeaderDrag == null)) {
+      return;
+    }
+    setState(() {
+      _reorderHeaderMode = false;
+      _activeDesktopHeaderDrag = null;
+    });
+  }
+
+  bool _isDesktopHeaderDropAtScreenEdge(
+      Offset globalPosition, String targetPlacement) {
+    final size = MediaQuery.sizeOf(context);
+    if (size.width <= 0 || size.height <= 0) return false;
+    const sideEdge = 84.0;
+    const verticalEdge = 88.0;
+    return switch (targetPlacement) {
+      'left' => globalPosition.dx <= sideEdge,
+      'right' => globalPosition.dx >= size.width - sideEdge,
+      'top' => globalPosition.dy <= verticalEdge,
+      'bottom' => globalPosition.dy >= size.height - verticalEdge,
+      _ => false,
+    };
+  }
+
+  bool _canAcceptDesktopHeaderDrag(_DesktopHeaderDragData data,
+      String targetPlacement, Offset globalPosition) {
+    final sourcePlacement = switch (data) {
+      _DesktopHeaderBarDragData() => data.sourcePlacement,
+      _DesktopHeaderButtonDragData() => data.sourcePlacement,
+      _ => '',
+    };
+    // 別バーへ移す場合はポインタが実際にその画面端へ到達した時だけ受理する。
+    // 浮動バーや広い祖先 DragTarget を横切っただけで別辺へ飛ぶ誤操作を防ぐ。
+    if (sourcePlacement != targetPlacement &&
+        !_isDesktopHeaderDropAtScreenEdge(globalPosition, targetPlacement)) {
+      return false;
+    }
     if (data is _DesktopHeaderBarDragData) {
       return data.sourcePlacement != targetPlacement;
     }
@@ -41036,8 +41069,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     bool placeholder = false,
   }) {
     return DragTarget<_DesktopHeaderDragData>(
-      onWillAcceptWithDetails: (details) =>
-          _canAcceptDesktopHeaderDrag(details.data, placement),
+      onWillAcceptWithDetails: (details) => _canAcceptDesktopHeaderDrag(
+          details.data, placement, details.offset),
       onAcceptWithDetails: (details) {
         // 移動元が先にツリーから消えて onDragEnd が欠ける経路でも、
         // 空の配置候補が残らないよう受け入れ側で必ず解除する。
@@ -41115,6 +41148,8 @@ class _MindMapScreenState extends State<MindMapScreen>
         }
         _endDesktopHeaderDrag();
       },
+      onDragCompleted: _endDesktopHeaderDrag,
+      onDraggableCanceled: (_, __) => _endDesktopHeaderDrag(),
       feedback: Material(
         color: Colors.transparent,
         child: Container(
@@ -41169,6 +41204,13 @@ class _MindMapScreenState extends State<MindMapScreen>
           data: data,
           onDragStarted: () => _beginDesktopHeaderDrag(data),
           onDragEnded: _endDesktopHeaderDrag,
+          onButtonDropped: (dropped) {
+            unawaited(provider.moveDesktopHeaderButtonToPlacement(
+              dropped.commandId,
+              placement,
+              beforeCommandId: id,
+            ));
+          },
           child: slot,
         );
       }
@@ -47290,7 +47332,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                             // モバイル版で接続線タップ等と競合する懸念があるが、
                             // 並び替えモード中は誤操作防止の方が優先度が高い。
                             if (_reorderHeaderMode && !_isDesktop) {
-                              setState(() => _reorderHeaderMode = false);
+                              _exitHeaderReorderMode();
                               return;
                             }
                             // 基準位置設定モード
@@ -47343,9 +47385,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                           },
                           // デスクトップ: ダブルクリック解除 (誤解除防止)
                           onDoubleTap: _reorderHeaderMode && _isDesktop
-                              ? () {
-                                  setState(() => _reorderHeaderMode = false);
-                                }
+                              ? _exitHeaderReorderMode
                               : null,
                           onSecondaryTapUp: _isDesktop
                               ? (details) => _showCanvasContextMenu(
@@ -66444,14 +66484,15 @@ class _DesktopHeaderBarDragData extends _DesktopHeaderDragData {
   const _DesktopHeaderBarDragData(this.sourcePlacement);
 }
 
-/// 通常表示中のPCカスタムボタンを、クリック可能なままドラッグ移植できる
-/// ラッパー。並び替えモード用のWidgetと違い、子をAbsorbPointerで無効化しない。
+/// 通常表示中のPCカスタムボタンを、クリック可能なまま同一バー内で並べ替えたり
+/// 別バーへ移したりできるラッパー。子をAbsorbPointerで無効化しない。
 class _DesktopDraggableHeaderIcon extends StatelessWidget {
   final _DesktopHeaderButtonDragData data;
   final Widget child;
   final VoidCallback onDragStarted;
   final VoidCallback onDragEnded;
   final ValueChanged<Offset>? onDragUpdate;
+  final ValueChanged<_DesktopHeaderButtonDragData>? onButtonDropped;
 
   const _DesktopDraggableHeaderIcon({
     required this.data,
@@ -66459,16 +66500,19 @@ class _DesktopDraggableHeaderIcon extends StatelessWidget {
     required this.onDragStarted,
     required this.onDragEnded,
     this.onDragUpdate,
+    this.onButtonDropped,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Draggable<_DesktopHeaderDragData>(
+    final draggable = Draggable<_DesktopHeaderDragData>(
       data: data,
       dragAnchorStrategy: pointerDragAnchorStrategy,
       onDragStarted: onDragStarted,
       onDragUpdate: (details) => onDragUpdate?.call(details.globalPosition),
       onDragEnd: (_) => onDragEnded(),
+      onDragCompleted: onDragEnded,
+      onDraggableCanceled: (_, __) => onDragEnded(),
       feedback: Material(
         color: Colors.transparent,
         child: IgnorePointer(
@@ -66477,6 +66521,30 @@ class _DesktopDraggableHeaderIcon extends StatelessWidget {
       ),
       childWhenDragging: Opacity(opacity: 0.22, child: child),
       child: child,
+    );
+    if (onButtonDropped == null) return draggable;
+    return DragTarget<_DesktopHeaderDragData>(
+      onWillAcceptWithDetails: (details) =>
+          details.data is _DesktopHeaderButtonDragData &&
+          (details.data as _DesktopHeaderButtonDragData).commandId !=
+              data.commandId,
+      onAcceptWithDetails: (details) {
+        final dropped = details.data;
+        if (dropped is! _DesktopHeaderButtonDragData) return;
+        onDragEnded();
+        onButtonDropped!(dropped);
+      },
+      builder: (context, candidates, rejected) => AnimatedContainer(
+        duration: const Duration(milliseconds: 100),
+        decoration: candidates.isEmpty
+            ? null
+            : BoxDecoration(
+                color: const Color(0xFF6C63FF).withValues(alpha: 0.18),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFF8D86FF)),
+              ),
+        child: draggable,
+      ),
     );
   }
 }
@@ -66704,6 +66772,13 @@ class _HeaderCustomButtonsBarState extends State<_HeaderCustomButtonsBar> {
                   _stopAutoScroll();
                   widget.onDesktopButtonDragEnded?.call();
                 },
+                onButtonDropped: (dropped) {
+                  unawaited(provider.moveDesktopHeaderButtonToPlacement(
+                    dropped.commandId,
+                    desktopPlacement!,
+                    beforeCommandId: id,
+                  ));
+                },
                 child: slot,
               );
             }
@@ -66864,8 +66939,14 @@ class _ReorderableHeaderIconState extends State<_ReorderableHeaderIcon>
       return data is int && data != widget.index;
     }
 
+    void finishDrag() {
+      widget.onDragEndGlobal?.call();
+      if (desktopData != null) widget.onDesktopDragEnded?.call();
+    }
+
     void accept(Object data) {
       if (desktopData != null && data is _DesktopHeaderButtonDragData) {
+        finishDrag();
         widget.onDesktopDropped?.call(data);
       } else if (desktopData == null && data is int) {
         widget.onDropped(data);
@@ -66887,10 +66968,9 @@ class _ReorderableHeaderIconState extends State<_ReorderableHeaderIcon>
           },
           onDragUpdate: (d) =>
               widget.onDragUpdateGlobal?.call(d.globalPosition),
-          onDragEnd: (_) {
-            widget.onDragEndGlobal?.call();
-            if (desktopData != null) widget.onDesktopDragEnded?.call();
-          },
+          onDragEnd: (_) => finishDrag(),
+          onDragCompleted: finishDrag,
+          onDraggableCanceled: (_, __) => finishDrag(),
           feedback: Material(
             color: Colors.transparent,
             child: Opacity(opacity: 0.85, child: absorbedChild),
@@ -67939,14 +68019,14 @@ class _WindowsWebViewSheetState extends State<_WindowsWebViewSheet> {
   bool _videoMemoTsManualOverride = false;
   final FocusNode _videoMemoTsFocus = FocusNode();
 
-  /// メモ入力欄の FocusNode。 編集中に Enter (Shift 無し) を押すと
-  /// 「マップに追加」 で確定する (= ユーザー要望)。 Shift+Enter は改行のまま。
+  /// メモ入力欄の FocusNode。 編集中に Enter (Shift 無し) を押すと、
+  /// マップへは出さず独立したメモ項目として追加する。Shift+Enter は改行のまま。
   late final FocusNode _videoMemoFocus = FocusNode(onKeyEvent: (node, event) {
     if (event is KeyDownEvent &&
         !HardwareKeyboard.instance.isShiftPressed &&
         (event.logicalKey == LogicalKeyboardKey.enter ||
             event.logicalKey == LogicalKeyboardKey.numpadEnter)) {
-      _winSubmitVideoMemoToMap();
+      _winSaveVideoMemoLocally();
       return KeyEventResult.handled;
     }
     // ── Ctrl+V: クリップボードに画像があればマップに画像メモとして貼り付け
@@ -68121,24 +68201,73 @@ class _WindowsWebViewSheetState extends State<_WindowsWebViewSheet> {
     return lower.contains('youtube.com') || lower.contains('youtu.be');
   }
 
-  /// メモ履歴の読み込み。 ユーザー要望「履歴に保存は要らない」 により、
-  /// 過去のメモは読み込まない (= 起動/動画切替のたびに空から始める)。
+  /// 保存済みの動画メモ項目を復元する。
   Future<void> _winLoadVideoMemoHistory() async {
-    // 何もしない (履歴の永続化を廃止)。
+    final loaded = await _VideoMemoHistoryStore.loadForUrl(_winHistoryKeyUrl());
+    if (!mounted) return;
+    setState(() {
+      _videoMemos
+        ..clear()
+        ..addAll(loaded.take(100));
+    });
   }
 
-  /// 現在再生中の動画 URL を履歴のキーとして返す。
+  /// このPC動画画面のメモ帳を識別する安定したキーを返す。
+  ///
+  /// WebView の現在 URL はタブ切替や YouTube の SPA 遷移で変わるため、保存先の
+  /// キーには画面を開いた時の URL を使う。各メモが実際に紐づく動画は
+  /// `_VideoMemoEntry.sourceUrl` に個別保存する。
   String _winHistoryKeyUrl() {
-    if (_playlist.isNotEmpty && _playlistIndex < _playlist.length) {
-      return _playlist[_playlistIndex];
-    }
-    return widget.url;
+    final initial = widget.url.trim();
+    return initial.isNotEmpty ? initial : 'youtube_video_memos';
   }
 
-  /// メモの永続化。 ユーザー要望「履歴に保存は要らない」 により何もしない
-  /// (= セッション中は `_videoMemos` に残るが、 SharedPreferences には保存しない)。
+  /// 現在の動画メモ項目を SharedPreferences に保存する。
   Future<void> _winPersistVideoMemos() async {
-    // 何もしない (履歴の永続化を廃止)。
+    await _VideoMemoHistoryStore.saveForUrl(
+      _winHistoryKeyUrl(),
+      _videoMemos.take(100).toList(growable: false),
+    );
+  }
+
+  /// メモ作成時点の動画 URL を正規化してスナップショットする。
+  /// YouTube は余分な playlist / 時刻クエリを除いた watch URL、ローカル動画は
+  /// playlist に入っている元パスを保存する。
+  String _winCurrentMemoSourceUrl() {
+    final current = _currentUrl.trim();
+    final currentVideoId = _extractVideoIdFromWin(current);
+    if (currentVideoId != null) {
+      return 'https://www.youtube.com/watch?v=$currentVideoId';
+    }
+
+    if (_playlist.isNotEmpty && _playlistIndex < _playlist.length) {
+      final playlistSource = _playlist[_playlistIndex].trim();
+      if (playlistSource.isNotEmpty) {
+        final playlistVideoId = _extractVideoIdFromWin(playlistSource);
+        if (playlistVideoId != null) {
+          return 'https://www.youtube.com/watch?v=$playlistVideoId';
+        }
+        // ローカル動画では WebView 側の URL が data: ラッパになることがあるため、
+        // 元ファイルのパスを優先する。
+        if (_isMp4UrlWin(playlistSource) || current.startsWith('data:')) {
+          return playlistSource;
+        }
+      }
+    }
+
+    if (current.isNotEmpty) return current;
+    return widget.url.trim();
+  }
+
+  /// メモ作成時点の動画タイトルをスナップショットする。
+  String? _winCurrentMemoSourceTitle() {
+    final title = _currentTitle.trim();
+    if (title.isNotEmpty) return title;
+    if (_winActiveTab >= 0 && _winActiveTab < _winTabs.length) {
+      final tabTitle = _winTabs[_winActiveTab].title.trim();
+      if (tabTitle.isNotEmpty) return tabTitle;
+    }
+    return null;
   }
 
   /// PC版WebViewで再生できるURLに変換する
@@ -69542,6 +69671,30 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
     );
   }
 
+  /// 1件の動画メモ本文だけを Google 検索へ渡す。
+  void _openVideoMemoInGoogleSearch(_VideoMemoEntry entry) {
+    final text = entry.text.trim();
+    if (text.isEmpty) {
+      _showInlineBanner('検索できるメモがありません', color: const Color(0xFFE57373));
+      return;
+    }
+    final size = MediaQuery.of(context).size;
+    final sourceTitle = (entry.sourceTitle ?? '').trim();
+    GoogleSearchDialog.showFloating(
+      context,
+      initialQuery: text,
+      initialMemo: text,
+      customTitle:
+          sourceTitle.isEmpty ? '動画メモを検索' : '$sourceTitle のメモを検索',
+      anchorPos: const Offset(16, 16),
+      // 同じ検索画面を再利用しつつ、別項目を押した時は入力内容を更新する。
+      singletonKey: 'win_video_memo_google',
+      initialWidth: math.min(520.0, math.max(360.0, size.width * 0.42)),
+      initialHeight: math.min(500.0, math.max(320.0, size.height * 0.58)),
+      onAddNode: (_, __, ___) {},
+    );
+  }
+
   /// [text] を AI チャット欄へ送る共通処理 (= 動画メモ / 履歴 で共用)。 前提条件を
   /// 先頭に付け、 AI パネルを開いてロード完了タイミングで数回挿入する。
   void _sendTextToVideoAi(String text) {
@@ -70151,15 +70304,7 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
       await File(destPath).writeAsBytes(bytes, flush: true);
       if (!mounted) return;
       final provider = context.read<MindMapProvider>();
-      String videoUrl;
-      final vid = _extractVideoIdFromWin(_currentUrl);
-      if (vid != null) {
-        videoUrl = 'https://www.youtube.com/watch?v=$vid';
-      } else if (_playlist.isNotEmpty && _playlistIndex < _playlist.length) {
-        videoUrl = _playlist[_playlistIndex];
-      } else {
-        videoUrl = widget.url;
-      }
+      final videoUrl = _winCurrentMemoSourceUrl();
       final node = provider.addVideoMemoNode(
         memoText: '',
         videoUrl: videoUrl,
@@ -70216,15 +70361,12 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
     setState(() => _videoMemoSubmitting = true);
     try {
       final provider = context.read<MindMapProvider>();
-      String videoUrl;
-      final vid = _extractVideoIdFromWin(_currentUrl);
-      if (vid != null) {
-        videoUrl = 'https://www.youtube.com/watch?v=$vid';
-      } else if (_playlist.isNotEmpty && _playlistIndex < _playlist.length) {
-        videoUrl = _playlist[_playlistIndex];
-      } else {
-        videoUrl = widget.url;
-      }
+      // 一覧へ追加した後に別動画や別タブへ移動していても、作成時点の動画へ
+      // 正しく接続する。旧JSONには sourceUrl が無いため現在動画へフォールバック。
+      final snapshottedSource = (existingEntry?.sourceUrl ?? '').trim();
+      final videoUrl = snapshottedSource.isNotEmpty
+          ? snapshottedSource
+          : _winCurrentMemoSourceUrl();
 
       // ── タイムスタンプ決定ロジック (Windows 版) ──
       // モバイル版と同じく「フィールドの値が全て」 方針。
@@ -70255,25 +70397,26 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
         if (existingEntry != null) {
           existingEntry.addedToMap = true;
         } else {
-          // マップに追加したメモは履歴の「下」 に自動で積む (= ユーザー要望:
-          //   履歴追加ボタンは設けず、 マップ追加で自動的に下へ追加)。
-          _videoMemos.add(
+          // 互換用の直接追加経路でも、一覧項目と同じ情報を保持する。
+          _videoMemos.insert(
+            0,
             _VideoMemoEntry(
               id: DateTime.now().microsecondsSinceEpoch.toString(),
               text: text,
               timestampSec: ts,
               addedToMap: true,
+              sourceUrl: videoUrl.isEmpty ? null : videoUrl,
+              sourceTitle: _winCurrentMemoSourceTitle(),
             ),
           );
-          // 履歴は最新 5 件まで。 超えたら古いものから消す。
-          while (_videoMemos.length > 5) {
-            _videoMemos.removeAt(0);
+          while (_videoMemos.length > 100) {
+            _videoMemos.removeLast();
           }
           _videoMemoController.clear();
         }
       });
       // 永続化 (履歴一覧をセッション越しに保持)
-      _winPersistVideoMemos();
+      await _winPersistVideoMemos();
 
       // 「マップにメモを追加」 をメモ欄の上のバナーで通知 (= ユーザー要望)。
       _showInlineBanner(
@@ -70289,10 +70432,14 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
     }
   }
 
-  /// 履歴に保存だけ (= マップへ未送信)。
-  Future<void> _winSaveVideoMemoLocally() async {
+  /// 入力中の文章を独立した平文メモ項目として追加する。
+  /// この時点ではマップへ送らず、一覧の各項目からマップ / AI / Google検索を選ぶ。
+  void _winSaveVideoMemoLocally() {
     final text = _videoMemoController.text.trim();
-    if (text.isEmpty) return;
+    if (text.isEmpty) {
+      _showInlineBanner('メモが空です', color: const Color(0xFFE57373));
+      return;
+    }
     // タイムスタンプフィールドから値を取得 (空なら時刻なし)
     double? ts;
     final tsText = _videoMemoTsCtrl.text.trim();
@@ -70300,6 +70447,8 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
       ts = _winParseUserTimestamp(tsText);
     }
     if (!mounted) return;
+    final sourceUrl = _winCurrentMemoSourceUrl();
+    final sourceTitle = _winCurrentMemoSourceTitle();
     setState(() {
       _videoMemos.insert(
         0,
@@ -70308,12 +70457,16 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
           text: text,
           timestampSec: ts,
           addedToMap: false,
+          sourceUrl: sourceUrl.isEmpty ? null : sourceUrl,
+          sourceTitle: sourceTitle,
         ),
       );
+      while (_videoMemos.length > 100) {
+        _videoMemos.removeLast();
+      }
       _videoMemoController.clear();
     });
-    // 永続化
-    _winPersistVideoMemos();
+    unawaited(_winPersistVideoMemos());
   }
 
   /// 履歴から削除。
@@ -70322,7 +70475,7 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
       _videoMemos.removeWhere((e) => e.id == entry.id);
     });
     // 永続化 (削除を反映)
-    _winPersistVideoMemos();
+    unawaited(_winPersistVideoMemos());
   }
 
   /// メモパネルウィジェット (Windows 版)。
@@ -70588,14 +70741,10 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
                     ),
                   ),
                 ),
-                // ── 履歴保存ボタンは廃止 (= ユーザー要望: 履歴は不要) ──
-                // ── マップに追加 (白系で統一) ──
-                // ユーザー要望: 「気が散らない色」 = 白系 +
-                // やや強調のため枠線を厚く / 文字 bold。
+                // 入力内容を独立した平文メモ項目として一覧へ追加する。
+                // マップ / AI / Google検索は追加後の各項目から選択できる。
                 ElevatedButton.icon(
-                  onPressed: _videoMemoSubmitting
-                      ? null
-                      : () => _winSubmitVideoMemoToMap(),
+                  onPressed: _winSaveVideoMemoLocally,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.white.withValues(alpha: 0.12),
                     foregroundColor: Colors.white,
@@ -70606,24 +70755,15 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
                     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     elevation: 0,
                   ),
-                  icon: _videoMemoSubmitting
-                      ? const SizedBox(
-                          width: 14,
-                          height: 14,
-                          child: CircularProgressIndicator(
-                              strokeWidth: 2, color: Colors.white))
-                      : const Icon(Icons.add_to_photos_rounded, size: 14),
-                  label: Text(
-                      context.read<MindMapProvider>().t('vmemo.addToMap'),
-                      style:
-                          TextStyle(fontSize: 11, fontWeight: FontWeight.w700)),
+                  icon: const Icon(Icons.add_rounded, size: 16),
+                  label: const Text(
+                    'メモを追加',
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+                  ),
                 ),
               ],
             ),
-            // ── このセッションでマップに追加したメモ履歴 (最新 5 件) ──
-            // = ユーザー要望: 「マップに追加した内容が 5 個ぐらいまで履歴で下に
-            //   追加される。 履歴に追加のボタンは付けず、 マップに追加したら自動的に
-            //   下に追加」。 _winSubmitVideoMemoToMap が追加時に下へ積む (最大5件)。
+            // ── 動画メモ項目 (新しい順、最大100件) ──
             if (_videoMemos.isNotEmpty) ...[
               const SizedBox(height: 10),
               const Divider(height: 1, color: Color(0x33FFFFFF)),
@@ -70632,7 +70772,7 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
                 const Icon(Icons.history_rounded,
                     color: Colors.white54, size: 14),
                 const SizedBox(width: 4),
-                Text('このセッションのメモ (${_videoMemos.length})',
+                Text('動画メモ (${_videoMemos.length})',
                     style:
                         const TextStyle(color: Colors.white54, fontSize: 11)),
                 const SizedBox(width: 8),
@@ -70691,7 +70831,7 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
                 ),
               ]),
               const SizedBox(height: 4),
-              // 古い順 → 新しい順 (新しいメモほど下) で表示。
+              // 新しい順に表示。
               ..._videoMemos.map(_buildWinVideoMemoHistoryItem),
             ],
           ],
@@ -70724,14 +70864,14 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
   Widget _buildWinVideoMemoHistoryItem(_VideoMemoEntry entry) {
     final ts = entry.timestampSec;
     final canJump = ts != null;
+    final sourceTitle = (entry.sourceTitle ?? '').trim();
     return Material(
       color: Colors.transparent,
       child: InkWell(
         borderRadius: BorderRadius.circular(6),
         onTap: canJump ? () => _winSeekVideoTo(ts) : null,
         child: Container(
-          // = ユーザー要望: 履歴は最大 5 件しか保持しない割に縦に長すぎたので
-          //   余白・行数・フォントを詰めて 1 件あたりの高さを小さくする。
+          // 一覧性を保つため、1件あたりの余白と行数をコンパクトにする。
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
           margin: const EdgeInsets.only(bottom: 3),
           decoration: BoxDecoration(
@@ -70771,24 +70911,30 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
                 const SizedBox(width: 6),
               ],
               Expanded(
-                child: Text(
-                  entry.text,
-                  style: const TextStyle(color: Colors.white, fontSize: 11),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (sourceTitle.isNotEmpty)
+                      Text(
+                        sourceTitle,
+                        style: const TextStyle(
+                            color: Colors.white38, fontSize: 9),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    Text(
+                      entry.text,
+                      style:
+                          const TextStyle(color: Colors.white, fontSize: 11),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
                 ),
               ),
               const SizedBox(width: 4),
-              // ── 個別 AI 送信 (= ユーザー要望: セッションメモ項目は個別で AI に
-              //    送れるボタンを搭載) ──
-              IconButton(
-                tooltip: 'このメモをAIに送る',
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
-                icon: const Icon(Icons.auto_awesome_rounded,
-                    color: Color(0xFFBA68C8), size: 15),
-                onPressed: () => _sendTextToVideoAi(entry.text),
-              ),
+              // マップ追加 / AI / Google検索 / 削除は各メモごとに実行する。
               if (entry.addedToMap)
                 const Padding(
                   padding: EdgeInsets.symmetric(horizontal: 4),
@@ -70807,6 +70953,22 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
                       ? null
                       : () => _winSubmitVideoMemoToMap(existingEntry: entry),
                 ),
+              IconButton(
+                tooltip: 'このメモをAIに送る',
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+                icon: const Icon(Icons.auto_awesome_rounded,
+                    color: Color(0xFFBA68C8), size: 15),
+                onPressed: () => _sendTextToVideoAi(entry.text),
+              ),
+              IconButton(
+                tooltip: 'このメモでGoogle検索',
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+                icon: const Icon(Icons.search_rounded,
+                    color: Color(0xFF4FC3F7), size: 15),
+                onPressed: () => _openVideoMemoInGoogleSearch(entry),
+              ),
               IconButton(
                 tooltip: context.read<MindMapProvider>().t('btn.delete'),
                 padding: EdgeInsets.zero,
@@ -71014,10 +71176,15 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
       cb(stripList(url));
       _showWinEmbedToast(provider.t('embed.embedded'));
     } else if (choice == 'all') {
-      cb(stripList(url));
-      for (final u in after) {
-        cb(stripList(u));
-      }
+      // callback は既存の String 型を保ったまま、改行区切りで 1 バッチとして
+      // 渡す。ギャラリーでは `_runBookshelfImport` が元から空白区切り入力を
+      // 解釈できるため全動画を 1 回で追加・表紙化でき、通常マップでは
+      // `_embedYoutubeUrlAsNode` が順次展開する。
+      final batch = <String>[
+        stripList(url),
+        for (final u in after) stripList(u),
+      ];
+      cb(batch.join('\n'));
       _showWinEmbedToast(provider
           .t('embed.embeddedN')
           .replaceFirst('{n}', '${after.length + 1}'));
@@ -72206,10 +72373,9 @@ class _DownloadedVideosStore {
 //     コールバックで MindMapScreen 側のキャンバスにノードを自動配置)
 
 /// 動画視聴中に取ったメモを 1 件分表す軽量レコード。
-/// ステート (`_FullscreenVideoPageState._videoMemos`) に蓄えられ、
+/// PC / モバイル双方の `_videoMemos` に蓄えられ、
 /// マップ追加済みフラグ (`addedToMap`) でリスト UI の「追加済み」 表示を
-/// 切り替える。 メモ自体はセッション中だけ生存し、 フルスクリーン
-/// ページを閉じると破棄される (= マップ追加が永続化の唯一の手段)。
+/// 切り替える。JSON 化して SharedPreferences にも保存できる。
 class _VideoMemoEntry {
   /// メモ本文
   String text;
@@ -72219,6 +72385,13 @@ class _VideoMemoEntry {
 
   /// マップに追加済みなら true。 重複追加防止 + UI バッジ用。
   bool addedToMap;
+
+  /// このメモを作成した時点の動画 URL。YouTube URL は watch URL に正規化済み。
+  /// 旧形式の保存データでは null のため、利用時は現在動画へフォールバックする。
+  final String? sourceUrl;
+
+  /// このメモを作成した時点の動画タイトル。項目の補助表示用。
+  final String? sourceTitle;
 
   /// 一意 ID (リスト内の identity 比較用)
   final String id;
@@ -72230,6 +72403,8 @@ class _VideoMemoEntry {
     required this.text,
     this.timestampSec,
     this.addedToMap = false,
+    this.sourceUrl,
+    this.sourceTitle,
     required this.id,
     int? savedAt,
   }) : savedAt = savedAt ?? DateTime.now().millisecondsSinceEpoch;
@@ -72240,6 +72415,8 @@ class _VideoMemoEntry {
         'text': text,
         'timestampSec': timestampSec,
         'addedToMap': addedToMap,
+        'sourceUrl': sourceUrl,
+        'sourceTitle': sourceTitle,
         'savedAt': savedAt,
       };
 
@@ -72254,6 +72431,8 @@ class _VideoMemoEntry {
             ? (j['timestampSec'] as num).toDouble()
             : null,
         addedToMap: j['addedToMap'] == true,
+        sourceUrl: j['sourceUrl']?.toString(),
+        sourceTitle: j['sourceTitle']?.toString(),
         savedAt: j['savedAt'] is int ? j['savedAt'] as int : null,
       );
     } catch (_) {
@@ -72264,7 +72443,7 @@ class _VideoMemoEntry {
 
 /// 動画メモ履歴の永続化ストア。
 ///
-/// 「履歴に保存」 ボタンで保存したメモをセッションを超えて保持するためのもの。
+/// 一覧へ追加したメモをセッションを超えて保持するためのもの。
 /// 動画 (videoId またはローカルパス) ごとに分けて SharedPreferences に保存し、
 /// 同じ動画を後日再度開いた時に過去のメモを履歴一覧に復元できる。
 ///
