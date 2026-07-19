@@ -87,6 +87,12 @@ class NodeWidget extends StatefulWidget {
   /// KeyboardListener に戻りきらないため)。
   final VoidCallback? onRequestScreenFocus;
 
+  /// ノード内部の TextField（現在は表セル）が編集を開始/終了した通知。
+  /// モバイル側でソフトキーボードに隠れない位置へキャンバスを移動し、
+  /// 編集終了後に通常の下部ツールバー表示へ戻すために使う。
+  final VoidCallback? onInlineEditingStarted;
+  final VoidCallback? onInlineEditingEnded;
+
   /// スナップ元/先として光っているアンカー方向。
   /// 接続候補の「元」と「先」を同時に見せるため複数保持する。
   final Set<AnchorDirection> highlightAnchors;
@@ -149,6 +155,8 @@ class NodeWidget extends StatefulWidget {
     this.onMemoTimestampTap,
     this.onRightClick,
     this.onRequestScreenFocus,
+    this.onInlineEditingStarted,
+    this.onInlineEditingEnded,
     this.highlightAnchors = const <AnchorDirection>{},
     this.currentSnap,
     this.defaultTitleFontSize = 15.0,
@@ -988,6 +996,10 @@ class _NodeWidgetState extends State<NodeWidget> {
                                     onNodeSelectTap: _handleTap,
                                     onRequestScreenFocus:
                                         widget.onRequestScreenFocus,
+                                    onInlineEditingStarted:
+                                        widget.onInlineEditingStarted,
+                                    onInlineEditingEnded:
+                                        widget.onInlineEditingEnded,
                                     onChanged: (newTable) {
                                       context
                                           .read<MindMapProvider>()
@@ -1049,12 +1061,9 @@ class _NodeWidgetState extends State<NodeWidget> {
                                                                 .defaultMemoFontSize)
                                                         .clamp(6.0, 28.0),
                                                     height: 1.3,
-                                                    // ── 既定で太字 (= ユーザー要望:
-                                                    //   文字が細すぎるのでデフォルト太字)。
-                                                    //   bold 属性が無い span はこの太字を
-                                                    //   継承し、 個別の bold トグルも従来通り
-                                                    //   効く (w700 同士で見た目同等)。
-                                                    fontWeight: FontWeight.w700,
+                                                    // 既定は読みやすい太めを維持しつつ、
+                                                    // 明示 bold (w800) との差が見える重さ。
+                                                    fontWeight: FontWeight.w600,
                                                   ),
                                                   // 明示サイズ付き span も設定に比例
                                                   // させる (デフォルト時は 1.0 = 従来)。
@@ -1114,11 +1123,25 @@ class _NodeWidgetState extends State<NodeWidget> {
                                                       widget.onMemoTimestampTap !=
                                                           null;
                                                   if (!canJump) {
+                                                    // ── ギャラリーのタイルは
+                                                    //   1 行目 (タイトル) と
+                                                    //   2 行目以降 (メモ) の
+                                                    //   太さ・大きさ・色を揃える
+                                                    //   (= ユーザー要望: 全て
+                                                    //   1 行目の太さになるように)。
+                                                    final double effMemoSize =
+                                                        widget.isShelf
+                                                            ? titleFontSize
+                                                            : memoFontSize;
+                                                    final Color effMemoColor =
+                                                        widget.isShelf
+                                                            ? titleTextColor
+                                                            : memoTextColor;
                                                     return Text(
                                                       node.memoText!,
                                                       style: TextStyle(
-                                                        color: memoTextColor,
-                                                        fontSize: memoFontSize,
+                                                        color: effMemoColor,
+                                                        fontSize: effMemoSize,
                                                         height: 1.3,
                                                         // 既定で太字 (= ユーザー要望:
                                                         //   文字が細すぎる)。
@@ -1132,7 +1155,7 @@ class _NodeWidgetState extends State<NodeWidget> {
                                                       maxLines: node.clampHeight
                                                           ? ((node.height -
                                                                       22) /
-                                                                  (memoFontSize *
+                                                                  (effMemoSize *
                                                                       1.3))
                                                               .floor()
                                                               .clamp(1, 99)
@@ -2180,6 +2203,8 @@ class _NodeTableInlineWidget extends StatefulWidget {
   /// 明示的に画面ルートの FocusNode に primary を戻すことで、 セル編集を
   /// 抜けた直後でも Backspace / Del などのショートカットが効くようになる。
   final VoidCallback? onRequestScreenFocus;
+  final VoidCallback? onInlineEditingStarted;
+  final VoidCallback? onInlineEditingEnded;
 
   const _NodeTableInlineWidget({
     required this.table,
@@ -2192,6 +2217,8 @@ class _NodeTableInlineWidget extends StatefulWidget {
     this.isLightBg = false,
     this.onNodeSelectTap,
     this.onRequestScreenFocus,
+    this.onInlineEditingStarted,
+    this.onInlineEditingEnded,
   });
 
   @override
@@ -2206,13 +2233,20 @@ class _NodeTableInlineWidgetState extends State<_NodeTableInlineWidget> {
 
   @override
   void dispose() {
+    final wasEditing = _editing != null;
     _ctrl?.dispose();
     _focus?.dispose();
+    if (wasEditing) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        widget.onInlineEditingEnded?.call();
+      });
+    }
     super.dispose();
   }
 
   void _startEdit(int row, int col) {
     _commitEditing();
+    widget.onInlineEditingStarted?.call();
     final focus = FocusNode();
     // フォーカスを失ったら自動コミット (= TextField 外をタップした時)。
     // 別セルへ移動する場合は _startEdit が先に _commitEditing するので
@@ -2290,6 +2324,7 @@ class _NodeTableInlineWidgetState extends State<_NodeTableInlineWidget> {
     // assertion が走る恐れがある。
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
+        widget.onInlineEditingEnded?.call();
         widget.onRequestScreenFocus?.call();
       }
     });

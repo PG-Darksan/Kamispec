@@ -2087,9 +2087,13 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(
         snapshot.length == 1
-            ? provider.t('googleSearch.deletedOneHint')
+            ? provider.t(_isDesktop
+                ? 'googleSearch.deletedOneHint'
+                : 'googleSearch.deletedOneHintMobile')
             : provider
-                .t('googleSearch.deletedManyHint')
+                .t(_isDesktop
+                    ? 'googleSearch.deletedManyHint'
+                    : 'googleSearch.deletedManyHintMobile')
                 .replaceAll('{n}', '${snapshot.length}'),
       ),
       backgroundColor: const Color(0xFF455A64),
@@ -2305,8 +2309,8 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
           onPressed: _navForward,
         ),
         IconButton(
-          icon: const Icon(Icons.refresh_rounded,
-              color: Colors.white, size: 20),
+          icon:
+              const Icon(Icons.refresh_rounded, color: Colors.white, size: 20),
           tooltip: '再読み込み',
           visualDensity: VisualDensity.compact,
           padding: const EdgeInsets.all(4),

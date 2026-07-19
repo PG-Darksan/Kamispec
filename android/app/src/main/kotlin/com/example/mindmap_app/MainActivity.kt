@@ -235,16 +235,24 @@ class MainActivity : FlutterActivity() {
         return try {
             val manager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             val clip = manager.primaryClip ?: return null
-            val describedImageMime = if (clip.itemCount == 1) {
-                (0 until clip.description.mimeTypeCount)
-                    .map { clip.description.getMimeType(it) }
-                    .firstOrNull { it.startsWith("image/", ignoreCase = true) }
-            } else {
-                null
-            }
+            val describedImageMime = (0 until clip.description.mimeTypeCount)
+                .map { clip.description.getMimeType(it) }
+                .firstOrNull { it.startsWith("image/", ignoreCase = true) }
             for (i in 0 until clip.itemCount) {
                 val item = clip.getItemAt(i)
-                val uri = item.uri ?: item.intent?.data ?: uriFromClipboardText(item.text?.toString())
+                // 共有シートや一部の画像アプリは ClipData.Item.uri ではなく
+                // Intent.EXTRA_STREAM に content:// URI を格納する。モバイルで
+                // 貼り付け不能になっていたこの形式も読み取る。
+                val streamUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    item.intent?.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    item.intent?.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+                }
+                val uri = item.uri
+                    ?: item.intent?.data
+                    ?: streamUri
+                    ?: uriFromClipboardText(item.text?.toString())
                 if (uri == null) continue
                 val guessed = guessImageMime(uri)
                 val declaredImageMime = try {

@@ -207,6 +207,27 @@ String? _embeddablePlaylistIdOf(String url) {
   return id;
 }
 
+/// URL の再生リストが Mix (RD…) / ウォッチリスト (WL) / 高評価 (LL) の
+/// 「/playlist ページが無く一覧を取得できない」 リストならその ID を返す。
+/// この場合は「視聴中の動画のみ埋め込むか」 を確認するダイアログを出す
+/// (= ユーザー要望: ミックスリストは取得できない旨を案内する)。
+String? _unfetchableListIdOf(String url) {
+  final m = RegExp(r'[?&]list=([a-zA-Z0-9_-]+)').firstMatch(url);
+  final id = m?.group(1);
+  if (id == null) return null;
+  if (id.startsWith('RD') || id == 'WL' || id == 'LL') return id;
+  return null;
+}
+
+/// watch URL から list= を除いた「単一動画 URL」 を作る。 再生位置
+/// (t=/start=) は維持する。 動画 ID が取れなければ元の URL を返す。
+String _stripListParamKeepTime(String url) {
+  final id = NodeWidget.extractVideoId(url);
+  if (id == null) return url;
+  final t = RegExp(r'[?&](?:t|start)=([0-9hms]+)').firstMatch(url)?.group(1);
+  return 'https://www.youtube.com/watch?v=$id${t != null ? '&t=$t' : ''}';
+}
+
 /// QR コード画像のバイト列から文字列をデコードする (= ユーザー要望: QR リーダー)。
 /// 純 Dart 実装 (image + zxing2) なので Windows / Android 双方で動く。 画像デコード
 /// と二値化は重いので、 呼び出し側は compute() で別 isolate 実行する。 QR が
@@ -230,6 +251,30 @@ String? decodeQrFromImageBytes(Uint8List bytes) {
     return null;
   }
 }
+
+const String _mapBackgroundTemplatePrefix = 'builtin-map-background:';
+
+const List<({String id, String labelKey})> _mapBackgroundTemplates = [
+  (id: 'aurora', labelKey: 'bg.template.aurora'),
+  (id: 'blueprint', labelKey: 'bg.template.blueprint'),
+  (id: 'paper', labelKey: 'bg.template.paper'),
+  (id: 'midnight', labelKey: 'bg.template.midnight'),
+  (id: 'sage', labelKey: 'bg.template.sage'),
+  (id: 'sunset', labelKey: 'bg.template.sunset'),
+];
+
+String? _mapBackgroundTemplateId(String? path) {
+  if (path == null || !path.startsWith(_mapBackgroundTemplatePrefix)) {
+    return null;
+  }
+  final id = path.substring(_mapBackgroundTemplatePrefix.length);
+  return _mapBackgroundTemplates.any((template) => template.id == id)
+      ? id
+      : null;
+}
+
+String _mapBackgroundTemplatePath(String id) =>
+    '$_mapBackgroundTemplatePrefix$id';
 
 class MindMapScreen extends StatefulWidget {
   const MindMapScreen({super.key});
@@ -320,10 +365,9 @@ String _splitBtnTooltip(BuildContext context, bool left,
     {bool showKey = true}) {
   final desktop =
       !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
-  if (!desktop) return left ? '上分割' : '下分割';
-  final base = context
-      .read<MindMapProvider>()
-      .t(left ? 'tooltip.splitLeft' : 'tooltip.splitRight');
+  final provider = context.read<MindMapProvider>();
+  if (!desktop) return provider.t(left ? 've.splitUp' : 've.splitDown');
+  final base = provider.t(left ? 'tooltip.splitLeft' : 'tooltip.splitRight');
   if (!showKey) return base;
   return left ? '$base (Ctrl+^)' : '$base (Ctrl+\\)';
 }
@@ -347,6 +391,7 @@ Widget _whiteQuillSimpleToolbar(QuillController controller, {Key? key}) {
   //   白文字/白アイコンにする。
   return Builder(builder: (ctx) {
     final base = Theme.of(ctx);
+    final provider = ctx.read<MindMapProvider>();
     return Theme(
       // ★ 背景も暗く固定 ★ QuillSimpleToolbar の背景は既定で Theme.canvasColor
       //   を使う (= simple_toolbar.dart)。 アプリがライトテーマだと canvasColor が
@@ -394,7 +439,7 @@ Widget _whiteQuillSimpleToolbar(QuillController controller, {Key? key}) {
           child: QuillSimpleToolbar(
             key: key,
             controller: controller,
-            config: const QuillSimpleToolbarConfig(
+            config: QuillSimpleToolbarConfig(
               // ── ツールバー背景を暗色に固定 (= ユーザー報告: 白背景に白アイコン/
               //    白文字で全く読めない) ──。 未指定だと Theme.canvasColor (ライト
               //    テーマで白) が使われるため、 ここで明示する。
@@ -428,7 +473,7 @@ Widget _whiteQuillSimpleToolbar(QuillController controller, {Key? key}) {
                 //    クリア (既定サイズに戻す)。 ──
                 fontSize: QuillToolbarFontSizeButtonOptions(
                   items: <String, String>{
-                    '標準': '0',
+                    provider.t('richText.defaultSize'): '0',
                     '10': '10',
                     '12': '12',
                     '14': '14',
@@ -869,6 +914,13 @@ class _MindMapScreenState extends State<MindMapScreen>
   final TextEditingController _inlineNodeEditCtrl = TextEditingController();
   final FocusNode _inlineNodeEditFocus =
       FocusNode(debugLabel: 'nodeInlineText');
+
+  /// 表ノードなど、[NodeWidget] 内部で直接編集しているノード。
+  /// 通常/ギャラリーのインライン編集 ID と合わせて、モバイルのキーボード表示時に
+  /// 編集対象を自動で見える位置へ移動するために使う。
+  String? _nestedInlineEditNodeId;
+  Timer? _inlineEditorRevealTimer;
+  bool _applyingInlineEditorRevealTransform = false;
 
   // ─── 装飾図形 (= 直線/矢印/長方形/楕円) の挿入・選択 State ─────────────
   //
@@ -1374,6 +1426,17 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 振動しながら「動かせるよ」感を出す (視覚 feedback + 位置交換が可能)。
   /// Esc キー or 画面タップで解除。
   bool _reorderHeaderMode = false;
+
+  // PC下部カスタムボタンドックをドラッグ/リサイズしている間だけ使う
+  // ライブ値。操作終了時に provider へ保存するため、ドラッグ中の
+  // SharedPreferences 書き込みとアプリ全体の再描画を避けられる。
+  double? _desktopBottomDockLiveWidth;
+  Offset? _desktopBottomDockLiveCenter;
+
+  // PC カスタムボタンのドラッグ中データ。バー移動ハンドル、または
+  // 並び替えモード中の個別ボタンを掴んでいる間だけ保持し、ボタンが一つも
+  // 無い画面端にもドロップ先を表示するために使う。
+  _DesktopHeaderDragData? _activeDesktopHeaderDrag;
 
   // ファイルドロップ中
   bool _isDroppingFile = false;
@@ -2778,15 +2841,16 @@ class _MindMapScreenState extends State<MindMapScreen>
       if (raw == null || raw.isEmpty) return;
       final decoded = jsonDecode(raw);
       if (decoded is! Map) return;
+      final sanitized = _sanitizeCustomKeyBindings(decoded);
       if (!mounted) return;
       setState(() {
-        _customKeyBindings.clear();
-        decoded.forEach((k, v) {
-          if (k is String && v is String && v.isNotEmpty) {
-            _customKeyBindings[k] = v;
-          }
-        });
+        _customKeyBindings
+          ..clear()
+          ..addAll(sanitized);
       });
+      // 旧版で保存できていた固定キーとの衝突や重複を、そのまま次回へ
+      // 持ち越さない。値が同じ場合の上書きは SharedPreferences の no-op。
+      await prefs.setString('custom_key_bindings', jsonEncode(sanitized));
     } catch (_) {}
   }
 
@@ -2797,6 +2861,67 @@ class _MindMapScreenState extends State<MindMapScreen>
       await prefs.setString(
           'custom_key_bindings', jsonEncode(_customKeyBindings));
     } catch (_) {}
+  }
+
+  /// 保存済みのカスタム割り当てを、現在のコマンド定義に合わせて安全化する。
+  ///
+  /// - 存在しない / 固定コマンドの ID は無視
+  /// - 固定・予約キーとの衝突は無視
+  /// - 同じ実効キーが複数コマンドに割り当てられた場合、デフォルト所有者を
+  ///   優先し、それ以外はデフォルトへ戻す
+  Map<String, String> _sanitizeCustomKeyBindings(Map<dynamic, dynamic> raw) {
+    final definitionsById = <String, Map<String, dynamic>>{
+      for (final cmd in _commandDefs) (cmd['id']! as String): cmd,
+    };
+    final sanitized = <String, String>{};
+
+    raw.forEach((key, value) {
+      if (key is! String || value is! String) return;
+      final cmd = definitionsById[key];
+      if (cmd == null || _fixedCommands.contains(key)) return;
+      final trimmed = value.trim();
+      final normalized = _normalizeShortcutCombo(trimmed);
+      if (normalized.isEmpty ||
+          _nonAssignableShortcutCombos.contains(normalized)) {
+        return;
+      }
+      final defaultKey = cmd['defaultKey']! as String;
+      if (normalized == _normalizeShortcutCombo(defaultKey)) return;
+      sanitized[key] = trimmed;
+    });
+
+    // 衝突を 1 件解消すると、そのコマンドがデフォルトへ戻った結果として
+    // 別の衝突が現れる場合があるため、安定するまで繰り返す。
+    var changed = true;
+    while (changed) {
+      changed = false;
+      final ownersByKey = <String, List<String>>{};
+      for (final cmd in _commandDefs) {
+        final id = cmd['id']! as String;
+        if (_fixedCommands.contains(id)) continue;
+        final effective = _normalizeShortcutCombo(
+            sanitized[id] ?? (cmd['defaultKey']! as String));
+        if (effective.isEmpty) continue;
+        ownersByKey.putIfAbsent(effective, () => <String>[]).add(id);
+      }
+      for (final entry in ownersByKey.entries) {
+        final owners = entry.value;
+        if (owners.length < 2) continue;
+        String keep = owners.first;
+        for (final id in owners) {
+          final cmd = definitionsById[id]!;
+          if (_normalizeShortcutCombo(cmd['defaultKey']! as String) ==
+              entry.key) {
+            keep = id;
+            break;
+          }
+        }
+        for (final id in owners) {
+          if (id != keep && sanitized.remove(id) != null) changed = true;
+        }
+      }
+    }
+    return sanitized;
   }
 
   /// 現在有効なパネル幅 (画面幅の 25〜85% にクランプ)。
@@ -4465,6 +4590,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     _inlineNodeEditFocus.removeListener(_handleNodeInlineFocusChanged);
     _inlineNodeEditFocus.dispose();
     _inlineNodeEditCtrl.dispose();
+    _inlineEditorRevealTimer?.cancel();
     _searchCtrl.dispose();
     _replaceCtrl.dispose();
     _searchFocusNode.dispose();
@@ -4641,6 +4767,10 @@ class _MindMapScreenState extends State<MindMapScreen>
   }
 
   void _onTransformChanged(TransformationController ctrl) {
+    if (_applyingInlineEditorRevealTransform) {
+      _lastMatrix = ctrl.value.clone();
+      return;
+    }
     if (_lastMatrix == null) {
       _lastMatrix = ctrl.value.clone();
       return;
@@ -6674,7 +6804,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
             child: Text(provider.t('btn.cancel'),
-                style: const TextStyle(color: Colors.white54)),
+                style: const TextStyle(color: Colors.white70)),
           ),
         ],
       ),
@@ -6967,6 +7097,10 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///   (ctrl+shift+c)とか後ろに括弧書きでショートカットキーを表示して
   ///   欲しい」 への対応用ヘルパー。
   String? _getCommandShortcut(String commandId) {
+    // キーボードショートカットの案内は Windows/macOS/Linux 専用。
+    // この共通入口で止めることで、新規ページ作成メニューやカスタムボタンの
+    // ツールチップへ Ctrl/Shift 等がモバイルでも混入するのを防ぐ。
+    if (!_isDesktop) return null;
     // 一部のヘッダーボタン commandId は _commandDefs での id 名と
     // 異なる (= 同じ動作だが別 ID)。 対応表を持つ。
     const buttonToShortcutId = <String, String>{
@@ -13396,15 +13530,30 @@ class _MindMapScreenState extends State<MindMapScreen>
     final double badgeW = mobileHandles ? 42.0 : 30.0;
     final double badgeH = mobileHandles ? 30.0 : 20.0;
     final widgets = <Widget>[];
+    // ドラッグ開始時は先頭にハイライトが増える。各 Positioned を安定した key で
+    // 識別し、操作中の GestureDetector がハイライトへ再利用・破棄されないようにする。
+    final keyPrefix = 'shelf:${provider.currentPage.id}';
 
     // ── 選択中の行/列をハイライト (= ユーザー要望: Ctrl/Shift で複数選択) ──
     for (final r in _shelfSelRows) {
       final hr = provider.bookshelfRowFullRect(r);
-      if (hr != null) widgets.add(_shelfDropHighlight(hr, selected: true));
+      if (hr != null) {
+        widgets.add(_shelfDropHighlight(
+          hr,
+          key: ValueKey('$keyPrefix:selected-row:$r'),
+          selected: true,
+        ));
+      }
     }
     for (final c in _shelfSelCols) {
       final hr = provider.bookshelfColFullRect(c);
-      if (hr != null) widgets.add(_shelfDropHighlight(hr, selected: true));
+      if (hr != null) {
+        widgets.add(_shelfDropHighlight(
+          hr,
+          key: ValueKey('$keyPrefix:selected-col:$c'),
+          selected: true,
+        ));
+      }
     }
 
     // ── ドロップ先 (移動先) のハイライト。 単独ドラッグ時のみ (複数選択時は選択枠
@@ -13413,21 +13562,29 @@ class _MindMapScreenState extends State<MindMapScreen>
         rowRects.length > 1 &&
         _shelfSelRows.length <= 1) {
       final p = _shelfHandlePointerCanvas;
-      final target = p == null
-          ? _shelfRowDragFrom!
-          : provider.bookshelfRowAtY(p.dy);
+      final target =
+          p == null ? _shelfRowDragFrom! : provider.bookshelfRowAtY(p.dy);
       final hr = provider.bookshelfRowFullRect(target);
-      if (hr != null) widgets.add(_shelfDropHighlight(hr));
+      if (hr != null) {
+        widgets.add(_shelfDropHighlight(
+          hr,
+          key: ValueKey('$keyPrefix:drop-row'),
+        ));
+      }
     }
     if (_shelfColDragFrom != null &&
         colRects.length > 1 &&
         _shelfSelCols.length <= 1) {
       final p = _shelfHandlePointerCanvas;
-      final target = p == null
-          ? _shelfColDragFrom!
-          : provider.bookshelfColAtX(p.dx);
+      final target =
+          p == null ? _shelfColDragFrom! : provider.bookshelfColAtX(p.dx);
       final hr = provider.bookshelfColFullRect(target);
-      if (hr != null) widgets.add(_shelfDropHighlight(hr));
+      if (hr != null) {
+        widgets.add(_shelfDropHighlight(
+          hr,
+          key: ValueKey('$keyPrefix:drop-col'),
+        ));
+      }
     }
 
     // 行ハンドル (左端の縦帯・縦ドラッグ)。 行が複数あるときだけ表示。
@@ -13439,6 +13596,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         final hitLeft = visualLeft;
         final hitRight = rect.right + outsidePad;
         widgets.add(Positioned(
+          key: ValueKey('$keyPrefix:row-handle:$r'),
           // 当たり判定: セル側には入れず、外側だけに広げる。
           left: hitLeft,
           top: rect.top - longPad * 0.5,
@@ -13536,6 +13694,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         final hitTop = visualTop;
         final hitBottom = rect.bottom + outsidePad;
         widgets.add(Positioned(
+          key: ValueKey('$keyPrefix:col-handle:$c'),
           // 当たり判定: セル側には入れず、外側だけに広げる。
           left: rect.left - longPad * 0.5,
           top: hitTop,
@@ -13621,6 +13780,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     for (int r = 0; r < rowRects.length; r++) {
       final visualW = math.max(rowRects[r].width, minVisualThick);
       widgets.add(Positioned(
+        key: ValueKey('$keyPrefix:row-badge:$r'),
         left: rowRects[r].right - visualW * 0.5 - badgeW * 0.5,
         top: rowRects[r].center.dy - badgeH * 0.5,
         width: badgeW,
@@ -13631,6 +13791,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     for (int c = 0; c < colRects.length; c++) {
       final visualH = math.max(colRects[c].height, minVisualThick);
       widgets.add(Positioned(
+        key: ValueKey('$keyPrefix:col-badge:$c'),
         left: colRects[c].center.dx - badgeW * 0.5,
         top: colRects[c].bottom - visualH * 0.5 - badgeH * 0.5,
         width: badgeW,
@@ -13703,9 +13864,11 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// 行/列の移動先 (ドロップ先) / 選択中を示すハイライト矩形 (= ユーザー要望)。
   /// [selected] = true は複数選択中の行/列 (水色)、 false はドロップ先 (紫)。
-  Widget _shelfDropHighlight(Rect r, {bool selected = false}) {
+  Widget _shelfDropHighlight(Rect r,
+      {required Key key, bool selected = false}) {
     final color = selected ? const Color(0xFF26C6DA) : const Color(0xFF6C63FF);
     return Positioned(
+      key: key,
       left: r.left,
       top: r.top,
       width: r.width,
@@ -14080,7 +14243,8 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// (= ユーザー要望: ギャラリーのテキスト入力と、 後から開く「編集」 画面が
   ///  異なって気になるので、 最初から統合リッチテキスト編集ダイアログを出す)。
   /// 空ノードを作ってからノード編集と同じ `_showNodeRichEditDialog` を開き、
-  /// 何も入力されずに閉じられたら作った空ノードを削除する。
+  /// Enter で確定した場合は空のままでも要素として残し、明示的にキャンセル
+  /// した場合だけ作成途中の空ノードを削除する。
   Future<void> _addTextToShelf(MindMapProvider provider,
       {List<int>? cell}) async {
     if (!await _confirmGalleryExpand(context, provider, 1)) return;
@@ -14090,6 +14254,149 @@ class _MindMapScreenState extends State<MindMapScreen>
       return;
     }
     _beginShelfInlineTextEdit(provider, id, deleteWhenEmpty: true);
+  }
+
+  @override
+  void didChangeMetrics() {
+    super.didChangeMetrics();
+    // ソフトキーボードの開閉・高さ変化はレイアウト完了後でないと正しい
+    // 可視領域を測れない。編集中だけ post-frame で再度自動パンする。
+    if (!_isDesktop && _isCanvasTextEditing) {
+      _scheduleInlineEditorReveal();
+    }
+  }
+
+  String? get _activeCanvasEditNodeId =>
+      _inlineNodeEditNodeId ??
+      _inlineShelfEditNodeId ??
+      _nestedInlineEditNodeId;
+
+  bool get _isCanvasTextEditing => _activeCanvasEditNodeId != null;
+
+  /// モバイルのソフトキーボード表示後も、編集中のノードがキーボードや
+  /// 下部ボタン群の裏へ隠れないようにキャンバスを自動でパンする。
+  ///
+  /// InteractiveViewer は Scrollable ではないため、TextField 標準の
+  /// bring-into-view だけではキャンバス座標の移動に変換されない。Scaffold
+  /// 本体の実表示矩形とノードのグローバル矩形を比較して、不足分だけ
+  /// TransformationController の translation を補正する。
+  void _scheduleInlineEditorReveal([String? expectedNodeId]) {
+    if (_isDesktop || !mounted) return;
+
+    void revealAfterLayout() {
+      if (!mounted) return;
+      final activeId = _activeCanvasEditNodeId;
+      if (activeId == null ||
+          (expectedNodeId != null && activeId != expectedNodeId)) {
+        return;
+      }
+      _revealActiveInlineEditor();
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) => revealAfterLayout());
+    // IME の開閉アニメーションが落ち着いた後にも再計算する。didChangeMetrics
+    // から繰り返し呼ばれた場合は最後の一回だけ残す。
+    _inlineEditorRevealTimer?.cancel();
+    _inlineEditorRevealTimer = Timer(const Duration(milliseconds: 180), () {
+      WidgetsBinding.instance.addPostFrameCallback((_) => revealAfterLayout());
+    });
+  }
+
+  void _revealActiveInlineEditor() {
+    if (_isDesktop || !mounted) return;
+    final nodeId = _activeCanvasEditNodeId;
+    if (nodeId == null) return;
+    final provider = context.read<MindMapProvider>();
+    final node = provider.nodes[nodeId];
+    if (node == null) return;
+
+    final bodyBox =
+        _bodyStackKey.currentContext?.findRenderObject() as RenderBox?;
+    final canvasBox =
+        _canvasKey.currentContext?.findRenderObject() as RenderBox?;
+    if (bodyBox == null ||
+        canvasBox == null ||
+        !bodyBox.attached ||
+        !canvasBox.attached ||
+        !bodyBox.hasSize ||
+        !canvasBox.hasSize) {
+      return;
+    }
+
+    final bodyTopLeft = bodyBox.localToGlobal(Offset.zero);
+    var visible = Rect.fromLTWH(
+      bodyTopLeft.dx,
+      bodyTopLeft.dy,
+      bodyBox.size.width,
+      bodyBox.size.height,
+    ).intersect(_visibleMapRectForAutoScroll(context));
+
+    // resizeToAvoidBottomInset が端末/WebView構成によって効かない場合にも備え、
+    // IME 上端を可視領域の下限として明示的に採用する。
+    final mq = MediaQuery.of(context);
+    final keyboardTop = mq.size.height - mq.viewInsets.bottom;
+    visible = Rect.fromLTRB(
+      visible.left,
+      visible.top,
+      visible.right,
+      math.min(visible.bottom, keyboardTop),
+    );
+    if (visible.isEmpty || visible.width < 40 || visible.height < 40) return;
+
+    const editorInset = 8.0;
+    final editorTopLeft = canvasBox.localToGlobal(
+      node.position + const Offset(editorInset, editorInset),
+    );
+    final editorBottomRight = canvasBox.localToGlobal(Offset(
+      node.position.dx + math.max(editorInset, node.width - editorInset),
+      node.position.dy + math.max(editorInset, node.visualHeight - editorInset),
+    ));
+    final editorRect = Rect.fromPoints(editorTopLeft, editorBottomRight);
+
+    const margin = 16.0;
+    final safe = Rect.fromLTRB(
+      visible.left + margin,
+      visible.top + margin,
+      visible.right - margin,
+      visible.bottom - margin,
+    );
+    if (safe.isEmpty) return;
+
+    double dx = 0;
+    double dy = 0;
+    if (editorRect.width > safe.width) {
+      dx = safe.center.dx - editorRect.center.dx;
+    } else if (editorRect.left < safe.left) {
+      dx = safe.left - editorRect.left;
+    } else if (editorRect.right > safe.right) {
+      dx = safe.right - editorRect.right;
+    }
+    if (editorRect.height > safe.height) {
+      dy = safe.center.dy - editorRect.center.dy;
+    } else if (editorRect.top < safe.top) {
+      dy = safe.top - editorRect.top;
+    } else if (editorRect.bottom > safe.bottom) {
+      dy = safe.bottom - editorRect.bottom;
+    }
+    if (dx.abs() < 0.5 && dy.abs() < 0.5) return;
+
+    final ctrl = _ctrlFor(provider.currentPage.id);
+    final target = Matrix4.copy(ctrl.value);
+    final translation = target.getTranslation();
+    target.setTranslationRaw(
+      translation.x + dx,
+      translation.y + dy,
+      translation.z,
+    );
+    // 軸固定とギャラリーのパン制限はユーザー操作用。入力欄を見せるための
+    // プログラム移動だけは巻き戻さない。
+    _lastMatrix = target.clone();
+    _applyingInlineEditorRevealTransform = true;
+    try {
+      ctrl.value = target;
+    } finally {
+      _applyingInlineEditorRevealTransform = false;
+    }
   }
 
   void _beginNodeInlineTextEdit(MindMapProvider provider, String nodeId,
@@ -14107,6 +14414,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     provider.selectNode(nodeId);
     setState(() {
       _actionNodeId = null;
+      _nestedInlineEditNodeId = null;
       _inlineNodeEditNodeId = nodeId;
       _inlineNodeDeleteWhenEmpty = deleteWhenEmpty;
       _inlineNodeAllowDelimiterExpansion = allowDelimiterExpansion;
@@ -14114,6 +14422,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || _inlineNodeEditNodeId != nodeId) return;
       _inlineNodeEditFocus.requestFocus();
+      _scheduleInlineEditorReveal(nodeId);
     });
   }
 
@@ -14143,9 +14452,11 @@ class _MindMapScreenState extends State<MindMapScreen>
       return;
     }
     if (trimmed.isEmpty) {
-      if (deleteEmpty) {
-        provider.deleteNode(nodeId);
-      } else {
+      // deleteWhenEmpty は「作成を Escape でキャンセルした時」のみ使う。
+      // Enter / フォーカス移動は明示的な確定なので、空ノードを残す。
+      // 新規下書きは既に空内容で保存済みなので、同じ更新を重ねてUndo履歴を
+      // 1つ余分に作らない。既存ノードを空にした時だけ内容をクリアする。
+      if (!deleteEmpty) {
         provider.updateNodeRichText(
           nodeId,
           richText: '',
@@ -14262,12 +14573,14 @@ class _MindMapScreenState extends State<MindMapScreen>
     provider.selectNode(nodeId);
     setState(() {
       _actionNodeId = nodeId;
+      _nestedInlineEditNodeId = null;
       _inlineShelfEditNodeId = nodeId;
       _inlineShelfDeleteWhenEmpty = deleteWhenEmpty;
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || _inlineShelfEditNodeId != nodeId) return;
       _inlineShelfEditFocus.requestFocus();
+      _scheduleInlineEditorReveal(nodeId);
     });
   }
 
@@ -14583,16 +14896,244 @@ class _MindMapScreenState extends State<MindMapScreen>
     return false;
   }
 
+  /// ギャラリーの表紙 (複数動画をまとめた格納コンテナ) タップ時のメニュー。
+  /// いきなり展開/格納せず「編集 / 展開・格納 / 削除」 を選ばせる
+  /// (= ユーザー要望: 表紙を押すといきなりは開かず項目が出るように)。
+  void _showBookshelfCoverMenu(MindMapNode node) {
+    final provider = context.read<MindMapProvider>();
+    final nodeMap = provider.currentPage.nodes;
+    final memberIds = (node.containedNodeIds ?? const <String>[])
+        .where((id) => nodeMap.containsKey(id))
+        .toList();
+    // メンバーが 1 つでも表示されていれば「展開中」。
+    final expanded =
+        memberIds.any((id) => nodeMap[id]?.hiddenInContainer == null);
+
+    Widget item({
+      required IconData icon,
+      required Color color,
+      required String label,
+      required VoidCallback onTap,
+    }) {
+      return ListTile(
+        dense: true,
+        leading: Icon(icon, color: color, size: 22),
+        title: Text(label,
+            style: const TextStyle(color: Colors.white, fontSize: 14)),
+        onTap: onTap,
+      );
+    }
+
+    showDialog<void>(
+      context: context,
+      builder: (dctx) => Dialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 320),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
+                child: Row(children: [
+                  const Icon(Icons.video_library_rounded,
+                      color: Color(0xFFFFB347), size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      node.title.isEmpty ? '📺' : node.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                ]),
+              ),
+              const Divider(color: Colors.white12, height: 1),
+              item(
+                icon: Icons.edit_rounded,
+                color: const Color(0xFF4FC3F7),
+                label: provider.t('cover.edit'),
+                onTap: () {
+                  Navigator.pop(dctx);
+                  _startInlineTitleEdit(context, node);
+                },
+              ),
+              item(
+                icon: expanded
+                    ? Icons.unfold_less_rounded
+                    : Icons.unfold_more_rounded,
+                color: const Color(0xFF43B97F),
+                label: provider
+                    .t(expanded ? 'cover.collapse' : 'cover.expand')
+                    .replaceFirst('{n}', '${memberIds.length}'),
+                onTap: () {
+                  Navigator.pop(dctx);
+                  provider.toggleBookshelfCover(node.id);
+                },
+              ),
+              item(
+                icon: Icons.delete_outline_rounded,
+                color: const Color(0xFFEF5350),
+                label: provider.t('cover.delete'),
+                onTap: () async {
+                  Navigator.pop(dctx);
+                  final ok = await showDialog<bool>(
+                    context: context,
+                    builder: (cctx) => AlertDialog(
+                      backgroundColor: const Color(0xFF1E1E32),
+                      title: Text(provider.t('cover.delete'),
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 15)),
+                      content: Text(
+                        provider
+                            .t('cover.deleteConfirm')
+                            .replaceFirst('{n}', '${memberIds.length}'),
+                        style: const TextStyle(
+                            color: Colors.white70, fontSize: 13),
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(cctx, false),
+                          child: Text(provider.t('btn.cancel'),
+                              style: const TextStyle(color: Colors.white54)),
+                        ),
+                        ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFFEF5350),
+                              foregroundColor: Colors.white),
+                          onPressed: () => Navigator.pop(cctx, true),
+                          child: Text(provider.t('cover.delete')),
+                        ),
+                      ],
+                    ),
+                  );
+                  if (ok == true && mounted) {
+                    // deleteNodes はコンテナのメンバーも一緒に削除する。
+                    provider.deleteNodes({node.id});
+                  }
+                },
+              ),
+              const SizedBox(height: 6),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Mix (RD…) / WL / LL 視聴中の埋め込み確認。
+  /// 「ミックスリストは一覧を取得できないため、 視聴中の動画のみ埋め込むか」
+  /// を尋ねる (= ユーザー要望)。 true = 視聴中の動画のみ埋め込む。
+  Future<bool?> _confirmMixListSingleEmbed(MindMapProvider provider) {
+    return showDialog<bool>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Text(provider.t('embed.title'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        content: Text(provider.t('embed.mixBody'),
+            style: const TextStyle(color: Colors.white70, fontSize: 13)),
+        actionsOverflowButtonSpacing: 6,
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, null),
+            child: Text(provider.t('btn.cancel'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF43B97F),
+                foregroundColor: Colors.white),
+            onPressed: () => Navigator.pop(dctx, true),
+            child: Text(provider.t('embed.thisOnly')),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 再生リスト視聴中の埋め込みで「この動画だけ / リスト全体」 を選ばせる。
+  /// 戻り値: 'one' / 'list' / null (キャンセル)。
+  Future<String?> _askEmbedThisOrWholeList(MindMapProvider provider) {
+    return showDialog<String>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Text(provider.t('embed.title'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        content: Text(provider.t('embed.bodyList'),
+            style: const TextStyle(color: Colors.white70, fontSize: 13)),
+        actionsOverflowButtonSpacing: 6,
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, null),
+            child: Text(provider.t('btn.cancel'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, 'one'),
+            child: Text(provider.t('embed.thisOnly'),
+                style: const TextStyle(color: Color(0xFF90CAF9))),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF43B97F),
+                foregroundColor: Colors.white),
+            onPressed: () => Navigator.pop(dctx, 'list'),
+            child: Text(provider.t('embed.wholeList')),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _runBookshelfImport(
       BuildContext context, MindMapProvider provider, String raw,
       {List<int>? cell}) async {
-    final tokens =
-        raw.split(RegExp(r'\s+')).where((s) => s.isNotEmpty).toList();
+    var tokens = raw.split(RegExp(r'\s+')).where((s) => s.isNotEmpty).toList();
     if (tokens.isEmpty) return;
     // プレイリスト / チャンネル URL が含まれていれば、 最初の 1 件を取得。
     for (final url in tokens) {
       final playlistId = _extractPlaylistId(url);
       if (playlistId != null) {
+        final videoId = NodeWidget.extractVideoId(url);
+        // ── Mix (RD…) / ウォッチリスト (WL) / 高評価 (LL) ──
+        // /playlist ページが無く一覧を取得できない → 「視聴中の動画のみ
+        // 埋め込むか」 を確認する (= ユーザー要望: ミックスリストは取得
+        // できない旨が分かるように)。
+        if (_unfetchableListIdOf(url) != null) {
+          if (videoId == null) {
+            _appSnack(
+                context,
+                SnackBar(
+                  content: Text(provider.t('embed.mixNoVideo')),
+                  backgroundColor: Colors.redAccent,
+                  duration: const Duration(seconds: 3),
+                ));
+            return;
+          }
+          final ok = await _confirmMixListSingleEmbed(provider);
+          if (ok != true || !mounted) return;
+          // 視聴中の動画のみを単一動画として取り込む (下の動画リンク処理へ)。
+          tokens = [_stripListParamKeepTime(url)];
+          break;
+        }
+        // ── 通常の再生リスト視聴中 (watch?v=…&list=…) ──
+        // 「視聴中の動画のみ / リスト全体」 の選択を出す (= ユーザー要望:
+        // プレイリスト視聴中に埋め込みボタンを押したら選択画面が出るように)。
+        if (videoId != null) {
+          final choice = await _askEmbedThisOrWholeList(provider);
+          if (choice == null || !mounted) return;
+          if (choice == 'one') {
+            tokens = [_stripListParamKeepTime(url)];
+            break;
+          }
+        }
         _loadBookshelfVideos(provider, playlistId: playlistId, cell: cell);
         return;
       }
@@ -14645,7 +15186,13 @@ class _MindMapScreenState extends State<MindMapScreen>
             ),
           );
         }
+        // 動画タイトルを oEmbed で補完 (= ユーザー要望: 埋め込んだ動画は
+        // 動画タイトルが入るように)。
+        _backfillMissingTitlesViaOEmbed(provider);
       }();
+    } else if (linkK > 0) {
+      // リンクだけ追加した場合も、 YouTube リンクならタイトルを補完する。
+      _backfillMissingTitlesViaOEmbed(provider);
     }
   }
 
@@ -17434,7 +17981,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       if (_rangeSelectedIds.isNotEmpty) ...[
         _CtxMenuItem(
           icon: Icons.content_copy_rounded,
-          label: provider.t('ctx.copyShortcut'),
+          label: provider.t(_isDesktop ? 'ctx.copyShortcut' : 'ctx.copy'),
           color: const Color(0xFF4FC3F7),
           onTap: () {
             _removeOverlay();
@@ -17493,7 +18040,9 @@ class _MindMapScreenState extends State<MindMapScreen>
         ),
         _CtxMenuItem(
           icon: Icons.delete_rounded,
-          label: provider.t('ctx.deleteSelectedShortcut'),
+          label: provider.t(_isDesktop
+              ? 'ctx.deleteSelectedShortcut'
+              : 'tooltip.deleteSelectedMobile'),
           color: Colors.redAccent,
           onTap: () {
             _removeOverlay();
@@ -17539,8 +18088,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       _CtxMenuItem(
         icon: Icons.wallpaper_rounded,
         label: (provider.currentPage.backgroundImagePath ?? '').isEmpty
-            ? 'マップ背景設定…'
-            : 'マップ背景変更…',
+            ? provider.t('bg.configure')
+            : provider.t('bg.change'),
         color: const Color(0xFF6C63FF),
         onTap: () {
           _removeOverlay();
@@ -17710,9 +18259,12 @@ class _MindMapScreenState extends State<MindMapScreen>
       BuildContext ctx, MindMapProvider provider) async {
     final pageId = provider.currentPage.id;
     final pageTitle = provider.currentPage.name;
+    String defaultItemName(int number) =>
+        provider.t('memo.defaultItemName').replaceFirst('{n}', '$number');
     bool global = await _MapMemoStore.loadScope(pageId);
     // ── 複数メモ項目 (= ユーザー要望: 項目を複数登録して切り替え) ──
-    var data = await _MapMemoStore.loadItems(pageId, global);
+    var data = await _MapMemoStore.loadItems(pageId, global,
+        defaultItemName: defaultItemName(1));
     List<_MapMemoItem> items = data.items;
     int selected = data.selected;
     if (!mounted) return;
@@ -17754,7 +18306,7 @@ class _MindMapScreenState extends State<MindMapScreen>
 
         void addItem() {
           syncCurrentToItem();
-          items.add(_MapMemoItem('メモ${items.length + 1}', ''));
+          items.add(_MapMemoItem(defaultItemName(items.length + 1), ''));
           selected = items.length - 1;
           quill = _mapMemoQuillFromStored('');
           controllers.add(quill);
@@ -17764,7 +18316,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         void deleteItem() {
           if (items.length <= 1) {
             // 最後の 1 件は消さず空にする。
-            items[selected] = _MapMemoItem('メモ1', '');
+            items[selected] = _MapMemoItem(defaultItemName(1), '');
           } else {
             items.removeAt(selected);
             if (selected >= items.length) selected = items.length - 1;
@@ -17868,7 +18420,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                     syncCurrentToItem();
                     await _MapMemoStore.saveItems(
                         pageId, global, items, selected);
-                    final d = await _MapMemoStore.loadItems(pageId, g);
+                    final d = await _MapMemoStore.loadItems(pageId, g,
+                        defaultItemName: defaultItemName(1));
                     items = d.items;
                     selected = d.selected;
                     quill = _mapMemoQuillFromStored(items[selected].body);
@@ -17988,7 +18541,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                         controller: quill,
                         config: QuillEditorConfig(
                           customStyles: _whiteQuillStyles(dctx),
-                          placeholder: global ? '全マップから参照できるメモ…' : 'このマップのメモ…',
+                          placeholder: provider.t(global
+                              ? 'memo.placeholderGlobal'
+                              : 'memo.placeholderPage'),
                           padding: EdgeInsets.zero,
                           // ── Enter で保存して閉じる / Shift+Enter で改行
                           //    (= ユーザー要望) ──
@@ -18026,10 +18581,12 @@ class _MindMapScreenState extends State<MindMapScreen>
                 onPressed: () async {
                   final text = quill.document.toPlainText().trim();
                   if (text.isEmpty) return;
+                  final richText =
+                      jsonEncode(quill.document.toDelta().toJson());
                   if (!await _confirmGalleryExpand(context, provider, 1)) {
                     return;
                   }
-                  provider.addTextNoteToBookshelf(text);
+                  provider.addTextNoteToBookshelf(text, richText: richText);
                   Navigator.pop(dctx);
                   _appSnack(
                       context,
@@ -20091,9 +20648,35 @@ class _MindMapScreenState extends State<MindMapScreen>
       builder: (dctx) {
         return StatefulBuilder(builder: (sctx, setD) {
           final page = provider.currentPage;
-          final hasBg = (page.backgroundImagePath ?? '').isNotEmpty;
+          final backgroundPath = page.backgroundImagePath ?? '';
+          final hasBg = backgroundPath.isNotEmpty;
+          final templateId = _mapBackgroundTemplateId(backgroundPath);
           final opacity = page.backgroundOpacityPercent.clamp(0, 100);
           final fit = page.backgroundFit;
+          Widget preview;
+          if (templateId != null) {
+            preview = _MapBackgroundTemplateView(templateId: templateId);
+          } else if (hasBg && File(backgroundPath).existsSync()) {
+            preview = Image.file(
+              File(backgroundPath),
+              fit: fit == 'contain'
+                  ? BoxFit.contain
+                  : fit == 'tile'
+                      ? BoxFit.none
+                      : BoxFit.cover,
+              repeat: fit == 'tile' ? ImageRepeat.repeat : ImageRepeat.noRepeat,
+              errorBuilder: (_, __, ___) => Center(
+                child: Text(provider.t('bg.cantLoad'),
+                    style: const TextStyle(color: Colors.white54)),
+              ),
+            );
+          } else {
+            preview = Center(
+              child: Text(
+                  hasBg ? provider.t('bg.cantLoad') : provider.t('bg.none'),
+                  style: const TextStyle(color: Colors.white38)),
+            );
+          }
           return AlertDialog(
             backgroundColor: const Color(0xFF2A2A3A),
             title: Row(
@@ -20105,208 +20688,270 @@ class _MindMapScreenState extends State<MindMapScreen>
               ],
             ),
             content: SizedBox(
-              width: 360,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // ── プレビュー ──
-                  Container(
-                    width: double.infinity,
-                    height: 140,
-                    decoration: BoxDecoration(
-                      color: Colors.black,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.white12),
+              width: 440,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // ── プレビュー ──
+                    Container(
+                      width: double.infinity,
+                      height: 140,
+                      decoration: BoxDecoration(
+                        color: Colors.black,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.white12),
+                      ),
+                      clipBehavior: Clip.antiAlias,
+                      child: hasBg
+                          ? Opacity(opacity: opacity / 100.0, child: preview)
+                          : preview,
                     ),
-                    clipBehavior: Clip.antiAlias,
-                    child: hasBg && File(page.backgroundImagePath!).existsSync()
-                        ? Opacity(
-                            opacity: opacity / 100.0,
-                            child: Image.file(
-                              File(page.backgroundImagePath!),
-                              fit: fit == 'contain'
-                                  ? BoxFit.contain
-                                  : fit == 'tile'
-                                      ? BoxFit.none
-                                      : BoxFit.cover,
-                              repeat: fit == 'tile'
-                                  ? ImageRepeat.repeat
-                                  : ImageRepeat.noRepeat,
-                              errorBuilder: (_, __, ___) => Center(
-                                child: Text(provider.t('bg.cantLoad'),
-                                    style:
-                                        const TextStyle(color: Colors.white54)),
+                    const SizedBox(height: 14),
+                    Text(provider.t('bg.templates'),
+                        style: const TextStyle(
+                            color: Colors.white70, fontSize: 13)),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      height: 104,
+                      child: ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        itemCount: _mapBackgroundTemplates.length,
+                        separatorBuilder: (_, __) => const SizedBox(width: 8),
+                        itemBuilder: (_, index) {
+                          final template = _mapBackgroundTemplates[index];
+                          final selected = template.id == templateId;
+                          return SizedBox(
+                            width: 128,
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(10),
+                              onTap: () async {
+                                if (selected) return;
+                                await provider.setPageBackgroundImage(page.id,
+                                    _mapBackgroundTemplatePath(template.id));
+                                if (page.backgroundFit != 'cover') {
+                                  await provider.setPageBackgroundFit(
+                                      page.id, 'cover');
+                                }
+                                setD(() {});
+                              },
+                              child: Container(
+                                clipBehavior: Clip.antiAlias,
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(10),
+                                  border: Border.all(
+                                    color: selected
+                                        ? const Color(0xFF8C7CFF)
+                                        : Colors.white24,
+                                    width: selected ? 2 : 1,
+                                  ),
+                                ),
+                                child: Stack(
+                                  fit: StackFit.expand,
+                                  children: [
+                                    _MapBackgroundTemplateView(
+                                        templateId: template.id),
+                                    Align(
+                                      alignment: Alignment.bottomCenter,
+                                      child: Container(
+                                        width: double.infinity,
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 7, vertical: 5),
+                                        color: Colors.black54,
+                                        child: Text(
+                                          provider.t(template.labelKey),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 11),
+                                        ),
+                                      ),
+                                    ),
+                                    if (selected)
+                                      const Positioned(
+                                        top: 5,
+                                        right: 5,
+                                        child: Icon(Icons.check_circle_rounded,
+                                            color: Colors.white, size: 18),
+                                      ),
+                                  ],
+                                ),
                               ),
                             ),
-                          )
-                        : Center(
-                            child: Text(provider.t('bg.none'),
-                                style: const TextStyle(color: Colors.white38)),
-                          ),
-                  ),
-                  const SizedBox(height: 14),
-                  // ── 画像の選択 / 解除 ──
-                  Row(
-                    children: [
-                      Expanded(
-                        child: ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF6C63FF),
-                            foregroundColor: Colors.white,
-                          ),
-                          icon: const Icon(Icons.image_rounded, size: 18),
-                          label: Text(hasBg ? '別の画像を選ぶ' : '画像を選ぶ'),
-                          onPressed: () async {
-                            final result = await FilePicker.platform.pickFiles(
-                              type: FileType.image,
-                              allowMultiple: false,
-                            );
-                            if (result == null || result.files.isEmpty) return;
-                            final src = result.files.first.path;
-                            if (src == null) return;
-                            // attachments/ にコピーして安定的なローカル
-                            //   パスにする (= ファイルピッカーの元パスは
-                            //   消える可能性がある)。
-                            final appDir =
-                                await getApplicationDocumentsDirectory();
-                            final attachDir =
-                                Directory('${appDir.path}/attachments');
-                            if (!await attachDir.exists()) {
-                              await attachDir.create(recursive: true);
-                            }
-                            final ext = src.split('.').last.toLowerCase();
-                            final name =
-                                'mapbg_${DateTime.now().millisecondsSinceEpoch}.$ext';
-                            final destPath = '${attachDir.path}/$name';
-                            try {
-                              await File(src).copy(destPath);
-                            } catch (e) {
-                              if (mounted) {
-                                _appSnack(
-                                    context,
-                                    SnackBar(
-                                      content: Text(provider
-                                          .t('bg.copyFailed')
-                                          .replaceFirst('{err}', '$e')),
-                                      backgroundColor: Colors.redAccent,
-                                    ));
-                              }
-                              return;
-                            }
-                            await provider.setPageBackgroundImage(
-                                page.id, destPath);
-                            setD(() {});
-                          },
-                        ),
+                          );
+                        },
                       ),
-                      if (hasBg) ...[
-                        const SizedBox(width: 8),
-                        OutlinedButton.icon(
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: Colors.white,
-                            side: const BorderSide(color: Colors.white24),
+                    ),
+                    const SizedBox(height: 14),
+                    // ── 画像の選択 / 解除 ──
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF6C63FF),
+                              foregroundColor: Colors.white,
+                            ),
+                            icon: const Icon(Icons.image_rounded, size: 18),
+                            label: Text(provider.t(
+                                hasBg ? 'bg.changeImage' : 'bg.chooseImage')),
+                            onPressed: () async {
+                              final result =
+                                  await FilePicker.platform.pickFiles(
+                                type: FileType.image,
+                                allowMultiple: false,
+                              );
+                              if (result == null || result.files.isEmpty)
+                                return;
+                              final src = result.files.first.path;
+                              if (src == null) return;
+                              // attachments/ にコピーして安定的なローカル
+                              //   パスにする (= ファイルピッカーの元パスは
+                              //   消える可能性がある)。
+                              final appDir =
+                                  await getApplicationDocumentsDirectory();
+                              final attachDir =
+                                  Directory('${appDir.path}/attachments');
+                              if (!await attachDir.exists()) {
+                                await attachDir.create(recursive: true);
+                              }
+                              final ext = src.split('.').last.toLowerCase();
+                              final name =
+                                  'mapbg_${DateTime.now().millisecondsSinceEpoch}.$ext';
+                              final destPath = '${attachDir.path}/$name';
+                              try {
+                                await File(src).copy(destPath);
+                              } catch (e) {
+                                if (mounted) {
+                                  _appSnack(
+                                      context,
+                                      SnackBar(
+                                        content: Text(provider
+                                            .t('bg.copyFailed')
+                                            .replaceFirst('{err}', '$e')),
+                                        backgroundColor: Colors.redAccent,
+                                      ));
+                                }
+                                return;
+                              }
+                              await provider.setPageBackgroundImage(
+                                  page.id, destPath);
+                              setD(() {});
+                            },
                           ),
-                          icon: const Icon(Icons.delete_outline_rounded,
-                              size: 18),
-                          label: Text(provider.t('bg.clear')),
-                          onPressed: () async {
-                            await provider.setPageBackgroundImage(
-                                page.id, null);
-                            setD(() {});
-                          },
                         ),
+                        if (hasBg) ...[
+                          const SizedBox(width: 8),
+                          OutlinedButton.icon(
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: Colors.white,
+                              side: const BorderSide(color: Colors.white24),
+                            ),
+                            icon: const Icon(Icons.delete_outline_rounded,
+                                size: 18),
+                            label: Text(provider.t('bg.clear')),
+                            onPressed: () async {
+                              await provider.setPageBackgroundImage(
+                                  page.id, null);
+                              setD(() {});
+                            },
+                          ),
+                        ],
                       ],
+                    ),
+                    const SizedBox(height: 16),
+                    // ── 不透明度スライダー ──
+                    Row(
+                      children: [
+                        const Icon(Icons.opacity_rounded,
+                            color: Colors.white54, size: 18),
+                        const SizedBox(width: 6),
+                        Text(
+                            provider
+                                .t('bg.opacity')
+                                .replaceFirst('{n}', '$opacity'),
+                            style: const TextStyle(color: Colors.white)),
+                      ],
+                    ),
+                    Slider(
+                      value: opacity.toDouble(),
+                      min: 0,
+                      max: 100,
+                      divisions: 100,
+                      activeColor: const Color(0xFF6C63FF),
+                      label: '$opacity%',
+                      onChanged: !hasBg
+                          ? null
+                          : (v) async {
+                              await provider.setPageBackgroundOpacity(
+                                  page.id, v.round());
+                              setD(() {});
+                            },
+                    ),
+                    if (templateId == null) ...[
+                      const SizedBox(height: 4),
+                      // ── 表示モード ──
+                      Text(provider.t('bg.displayMode'),
+                          style: const TextStyle(
+                              color: Colors.white70, fontSize: 13)),
+                      const SizedBox(height: 6),
+                      Wrap(
+                        spacing: 8,
+                        children: [
+                          for (final mode in [
+                            ('cover', provider.t('bg.fitCover')),
+                            ('contain', provider.t('bg.fitContain')),
+                            ('tile', provider.t('bg.fitTile')),
+                          ])
+                            ChoiceChip(
+                              label: Text(mode.$2,
+                                  style: const TextStyle(fontSize: 12)),
+                              selected: fit == mode.$1,
+                              onSelected: !hasBg
+                                  ? null
+                                  : (sel) async {
+                                      if (!sel) return;
+                                      await provider.setPageBackgroundFit(
+                                          page.id, mode.$1);
+                                      setD(() {});
+                                    },
+                              // ── 暗背景でも白飛びしないよう、 マテリアル
+                              //   デフォルトの surface tint / elevation を打ち消す
+                              //   (= ユーザー要望「表示モードの所が白飛びしていて
+                              //   見にくい」 への対応) ──
+                              backgroundColor: const Color(0xFF1A1A2E),
+                              selectedColor: const Color(0xFF6C63FF),
+                              disabledColor: const Color(0xFF1A1A2E),
+                              surfaceTintColor: Colors.transparent,
+                              checkmarkColor: Colors.white,
+                              showCheckmark: false,
+                              elevation: 0,
+                              pressElevation: 0,
+                              side: BorderSide(
+                                color: fit == mode.$1
+                                    ? const Color(0xFF6C63FF)
+                                    : Colors.white24,
+                                width: 1,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                              labelStyle: TextStyle(
+                                color: !hasBg
+                                    ? Colors.white38
+                                    : fit == mode.$1
+                                        ? Colors.white
+                                        : Colors.white70,
+                                fontSize: 12,
+                              ),
+                            ),
+                        ],
+                      ),
                     ],
-                  ),
-                  const SizedBox(height: 16),
-                  // ── 不透明度スライダー ──
-                  Row(
-                    children: [
-                      const Icon(Icons.opacity_rounded,
-                          color: Colors.white54, size: 18),
-                      const SizedBox(width: 6),
-                      Text(
-                          provider
-                              .t('bg.opacity')
-                              .replaceFirst('{n}', '$opacity'),
-                          style: const TextStyle(color: Colors.white)),
-                    ],
-                  ),
-                  Slider(
-                    value: opacity.toDouble(),
-                    min: 0,
-                    max: 100,
-                    divisions: 100,
-                    activeColor: const Color(0xFF6C63FF),
-                    label: '$opacity%',
-                    onChanged: !hasBg
-                        ? null
-                        : (v) async {
-                            await provider.setPageBackgroundOpacity(
-                                page.id, v.round());
-                            setD(() {});
-                          },
-                  ),
-                  const SizedBox(height: 4),
-                  // ── 表示モード ──
-                  Text(provider.t('bg.displayMode'),
-                      style:
-                          const TextStyle(color: Colors.white70, fontSize: 13)),
-                  const SizedBox(height: 6),
-                  Wrap(
-                    spacing: 8,
-                    children: [
-                      for (final mode in [
-                        ('cover', provider.t('bg.fitCover')),
-                        ('contain', provider.t('bg.fitContain')),
-                        ('tile', provider.t('bg.fitTile')),
-                      ])
-                        ChoiceChip(
-                          label: Text(mode.$2,
-                              style: const TextStyle(fontSize: 12)),
-                          selected: fit == mode.$1,
-                          onSelected: !hasBg
-                              ? null
-                              : (sel) async {
-                                  if (!sel) return;
-                                  await provider.setPageBackgroundFit(
-                                      page.id, mode.$1);
-                                  setD(() {});
-                                },
-                          // ── 暗背景でも白飛びしないよう、 マテリアル
-                          //   デフォルトの surface tint / elevation を打ち消す
-                          //   (= ユーザー要望「表示モードの所が白飛びしていて
-                          //   見にくい」 への対応) ──
-                          backgroundColor: const Color(0xFF1A1A2E),
-                          selectedColor: const Color(0xFF6C63FF),
-                          disabledColor: const Color(0xFF1A1A2E),
-                          surfaceTintColor: Colors.transparent,
-                          checkmarkColor: Colors.white,
-                          showCheckmark: false,
-                          elevation: 0,
-                          pressElevation: 0,
-                          side: BorderSide(
-                            color: fit == mode.$1
-                                ? const Color(0xFF6C63FF)
-                                : Colors.white24,
-                            width: 1,
-                          ),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(16),
-                          ),
-                          labelStyle: TextStyle(
-                            color: !hasBg
-                                ? Colors.white38
-                                : fit == mode.$1
-                                    ? Colors.white
-                                    : Colors.white70,
-                            fontSize: 12,
-                          ),
-                        ),
-                    ],
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
             actions: [
@@ -22183,7 +22828,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             onPressed: () => save(dctx),
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFF4FC3F7),
-              foregroundColor: Colors.white,
+              foregroundColor: const Color(0xFF101426),
             ),
             child: Text(provider.t('btn.save')),
           ),
@@ -22546,7 +23191,9 @@ class _MindMapScreenState extends State<MindMapScreen>
               context,
               SnackBar(
                 content: Text(copied
-                    ? '画像をクリップボードにコピーしました。AI の入力欄で貼り付け (Ctrl+V / 長押し→貼り付け) してください。'
+                    ? (_isDesktop
+                        ? '画像をクリップボードにコピーしました。AI の入力欄で貼り付け (Ctrl+V) してください。'
+                        : '画像をクリップボードにコピーしました。AI の入力欄を長押しして貼り付けてください。')
                     : '画像をコピーできませんでした。API キーを設定すると画像を直接 AI に渡せます。'),
                 backgroundColor:
                     copied ? const Color(0xFF43B97F) : const Color(0xFFE57373),
@@ -23643,7 +24290,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                 children: [
                   Text('$modelLabel ${provider.t('ai.thinking')}',
                       style: const TextStyle(fontSize: 13)),
-                  Text(provider.t('ai.bgHint'),
+                  Text(provider.t(_isDesktop ? 'ai.bgHint' : 'ai.bgHintMobile'),
                       style:
                           const TextStyle(fontSize: 10, color: Colors.white54)),
                 ],
@@ -24089,6 +24736,21 @@ class _MindMapScreenState extends State<MindMapScreen>
                                           setS(() {});
                                         },
                                       ),
+
+                                      if (_isDesktop)
+                                        _settingsTile(
+                                          icon: Icons.call_merge_rounded,
+                                          color: const Color(0xFF8D86FF),
+                                          title: provider
+                                              .t('header.barCollisionBehavior'),
+                                          subtitle: provider.t(
+                                              'header.barCollisionMode.${provider.desktopHeaderBarCollisionMode}'),
+                                          onTap: () async {
+                                            await _showDesktopHeaderBarCollisionModePicker(
+                                                ctx, provider);
+                                            setS(() {});
+                                          },
+                                        ),
 
                                       // ── トグル: 視聴済み自動削除 ──
                                       _settingsToggleTile(
@@ -25253,6 +25915,58 @@ class _MindMapScreenState extends State<MindMapScreen>
     );
   }
 
+  Future<void> _showDesktopHeaderBarCollisionModePicker(
+      BuildContext ctx, MindMapProvider provider) async {
+    final current = provider.desktopHeaderBarCollisionMode;
+    final selected = await showDialog<String>(
+      context: ctx,
+      barrierColor: Colors.black54,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text(
+          provider.t('header.barCollisionBehavior'),
+          style: const TextStyle(color: Colors.white, fontSize: 16),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final mode in const ['ask', 'merge', 'swap'])
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(
+                  mode == current
+                      ? Icons.radio_button_checked_rounded
+                      : Icons.radio_button_off_rounded,
+                  color: mode == current
+                      ? const Color(0xFF8D86FF)
+                      : Colors.white38,
+                ),
+                title: Text(
+                  provider.t('header.barCollisionMode.$mode'),
+                  style: const TextStyle(color: Colors.white, fontSize: 13),
+                ),
+                subtitle: Text(
+                  provider.t('header.barCollisionMode.${mode}Hint'),
+                  style: const TextStyle(color: Colors.white54, fontSize: 11),
+                ),
+                onTap: () => Navigator.pop(dialogContext, mode),
+              ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: Text(provider.t('focusLock.cancel')),
+          ),
+        ],
+      ),
+    );
+    if (selected != null) {
+      await provider.setDesktopHeaderBarCollisionMode(selected);
+    }
+  }
+
   void _showHeaderCustomizeSheet(BuildContext ctx, MindMapProvider provider) {
     // ── 全ページ種別で同じヘッダーボタン構成を使う ──
     // 旧仕様はギャラリー等 (normal 以外) を専用リスト (galleryHeaderButtons)
@@ -25426,6 +26140,118 @@ class _MindMapScreenState extends State<MindMapScreen>
                       ),
                       const SizedBox(height: 16),
 
+                      if (_isDesktop) ...[
+                        Text(provider.t('header.visibleBars'),
+                            style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600)),
+                        const SizedBox(height: 3),
+                        Text(provider.t('header.visibleBarsHint'),
+                            style: const TextStyle(
+                                color: Colors.white38, fontSize: 10.5)),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            for (final placement in [
+                              (
+                                'top',
+                                Icons.vertical_align_top_rounded,
+                                'header.placementTop'
+                              ),
+                              (
+                                'bottom',
+                                Icons.vertical_align_bottom_rounded,
+                                'header.placementBottom'
+                              ),
+                              (
+                                'left',
+                                Icons.align_horizontal_left_rounded,
+                                'header.placementLeft'
+                              ),
+                              (
+                                'right',
+                                Icons.align_horizontal_right_rounded,
+                                'header.placementRight'
+                              ),
+                            ])
+                              Builder(builder: (_) {
+                                final selected = provider
+                                    .desktopHeaderDockEnabledAt(placement.$1);
+                                final canDisable = !selected ||
+                                    provider.desktopHeaderEnabledDockPlacements
+                                            .length >
+                                        1;
+                                // ChoiceChip は明色テーマの surface 色を合成して
+                                // 白背景＋白文字になることがあるため、状態色を完全に
+                                // 管理する独自セグメントへ置換する。
+                                return Material(
+                                  color: Colors.transparent,
+                                  child: InkWell(
+                                    borderRadius: BorderRadius.circular(9),
+                                    onTap: () async {
+                                      if (!canDisable) return;
+                                      await provider.setDesktopHeaderDockEnabled(
+                                          placement.$1, !selected);
+                                      setS(() {});
+                                    },
+                                    child: AnimatedContainer(
+                                      duration:
+                                          const Duration(milliseconds: 140),
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 12, vertical: 9),
+                                      decoration: BoxDecoration(
+                                        color: selected
+                                            ? Color.alphaBlend(
+                                                accentColor.withValues(
+                                                    alpha: 0.22),
+                                                const Color(0xFF2A2A42),
+                                              )
+                                            : const Color(0xFF29293B),
+                                        borderRadius: BorderRadius.circular(9),
+                                        border: Border.all(
+                                          color: selected
+                                              ? accentColor
+                                              : Colors.white24,
+                                          width: selected ? 1.5 : 1,
+                                        ),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(
+                                            placement.$2,
+                                            size: 16,
+                                            color: selected
+                                                ? accentColor
+                                                : Colors.white70,
+                                          ),
+                                          const SizedBox(width: 6),
+                                          Text(
+                                            provider.t(placement.$3),
+                                            style: TextStyle(
+                                              color: selected
+                                                  ? Colors.white
+                                                  : Colors.white70,
+                                              fontSize: 11,
+                                              fontWeight: selected
+                                                  ? FontWeight.w700
+                                                  : FontWeight.w500,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                );
+                              }),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+                      ],
+
                       // ヘッダーに追加済み
                       Text(provider.t('header.addedButtons'),
                           style: const TextStyle(
@@ -25442,8 +26268,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                       // 実値はダイアログの上限 maxH 比で決定。
                       ConstrainedBox(
                         constraints: BoxConstraints(
-                          maxHeight:
-                              availableCmds.isEmpty ? maxH * 0.78 : maxH * 0.32,
+                          maxHeight: availableCmds.isEmpty
+                              ? maxH * (_isDesktop ? 0.58 : 0.78)
+                              : maxH * (_isDesktop ? 0.26 : 0.32),
                         ),
                         child: Container(
                           padding: const EdgeInsets.all(8),
@@ -25492,6 +26319,20 @@ class _MindMapScreenState extends State<MindMapScreen>
                                               index: i,
                                               total: hcbList().length,
                                               provider: provider,
+                                              placement: _isDesktop
+                                                  ? provider
+                                                      .desktopHeaderButtonPlacementFor(
+                                                          hcbList()[i])
+                                                  : null,
+                                              onPlacementChanged: _isDesktop
+                                                  ? (placement) async {
+                                                      await provider
+                                                          .setDesktopHeaderButtonPlacementFor(
+                                                              hcbList()[i],
+                                                              placement);
+                                                      setS(() {});
+                                                    }
+                                                  : null,
                                               onRemove: () async {
                                                 await hcbRemove(hcbList()[i]);
                                                 setS(() {});
@@ -25699,6 +26540,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     required VoidCallback onRemove,
     required VoidCallback onMoveUp,
     required VoidCallback onMoveDown,
+    String? placement,
+    ValueChanged<String>? onPlacementChanged,
   }) {
     final cmd = _headerCustomizableCommands.firstWhere((c) => c['id'] == id,
         orElse: () => <String, dynamic>{});
@@ -25755,6 +26598,46 @@ class _MindMapScreenState extends State<MindMapScreen>
                   fontWeight: FontWeight.w600)),
         ),
         const SizedBox(width: 8),
+        if (placement != null && onPlacementChanged != null)
+          PopupMenuButton<String>(
+            initialValue: placement,
+            tooltip: provider.t('header.buttonPlacement'),
+            color: const Color(0xFF242438),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 28),
+            icon: Icon(
+              switch (placement) {
+                'bottom' => Icons.vertical_align_bottom_rounded,
+                'left' => Icons.align_horizontal_left_rounded,
+                'right' => Icons.align_horizontal_right_rounded,
+                _ => Icons.vertical_align_top_rounded,
+              },
+              size: 17,
+              color: const Color(0xFFFFB347),
+            ),
+            onSelected: onPlacementChanged,
+            itemBuilder: (_) => [
+              for (final item in const [
+                ('top', Icons.vertical_align_top_rounded,
+                    'header.placementTop'),
+                ('bottom', Icons.vertical_align_bottom_rounded,
+                    'header.placementBottom'),
+                ('left', Icons.align_horizontal_left_rounded,
+                    'header.placementLeft'),
+                ('right', Icons.align_horizontal_right_rounded,
+                    'header.placementRight'),
+              ])
+                PopupMenuItem<String>(
+                  value: item.$1,
+                  child: Row(children: [
+                    Icon(item.$2, size: 17, color: Colors.white70),
+                    const SizedBox(width: 8),
+                    Text(provider.t(item.$3),
+                        style: const TextStyle(color: Colors.white)),
+                  ]),
+                ),
+            ],
+          ),
         IconButton(
           icon: const Icon(Icons.delete_outline_rounded, size: 16),
           color: Colors.redAccent,
@@ -25966,19 +26849,19 @@ class _MindMapScreenState extends State<MindMapScreen>
     // ── AI 面接練習 / 営業ロープレ練習 (= ユーザー要望: 音声会話で練習) ──
     {
       'id': 'interviewPractice',
-      'labelKey': 'AI面接練習',
+      'labelKey': 'hdr.interviewPractice',
       'icon': Icons.record_voice_over_rounded,
       'color': Color(0xFF4FC3F7),
     },
     {
       'id': 'rolePlayPractice',
-      'labelKey': '営業ロープレ',
+      'labelKey': 'hdr.rolePlayPractice',
       'icon': Icons.storefront_rounded,
       'color': Color(0xFF66BB6A),
     },
     {
       'id': 'pickupPractice',
-      'labelKey': 'ナンパ練習',
+      'labelKey': 'hdr.pickupPractice',
       'icon': Icons.woman_rounded,
       'color': Color(0xFFFF5C8A),
     },
@@ -26231,7 +27114,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     {
       // アラーム (= ユーザー要望: アラーム機能)。
       'id': 'alarm',
-      'labelKey': 'アラーム',
+      'labelKey': 'hdr.alarm',
       'icon': Icons.alarm_rounded,
       'color': Color(0xFFFFB347),
     },
@@ -26246,7 +27129,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       // QR コードリーダー (= ユーザー要望: QR コードリーダー機能とボタン)。
       //   撮影/選択した画像から QR を読み取り、 開く/コピー/検索できる。
       'id': 'qrReader',
-      'labelKey': 'QRコードリーダー',
+      'labelKey': 'hdr.qrReader',
       'icon': Icons.qr_code_scanner_rounded,
       'color': Color(0xFF26A69A),
     },
@@ -26255,7 +27138,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       //   残高を NFC で読み取る。 Android 専用 — FeliCa 非対応端末では
       //   「対応していません」 と表示する。
       'id': 'icCardBalance',
-      'labelKey': 'ICカード残高',
+      'labelKey': 'hdr.icCardBalance',
       'icon': Icons.contactless_rounded,
       'color': Color(0xFF42A5F5),
     },
@@ -26286,7 +27169,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       // マップ毎のメモ (= ユーザー要望: ヘッダーのメモボタンでマップ毎に
       //   メモを保存しておけるように)。 押下で現在のマップのメモを編集。
       'id': 'mapMemo',
-      'labelKey': 'マップメモ',
+      'labelKey': 'hdr.mapMemo',
       'icon': Icons.sticky_note_2_rounded,
       'color': Color(0xFFFFB347),
     },
@@ -26375,7 +27258,7 @@ class _MindMapScreenState extends State<MindMapScreen>
   static final List<Map<String, dynamic>> _headerButtonCategories = [
     {
       'id': 'node',
-      'labelKey': 'ノード操作',
+      'labelKey': 'headerCat.node',
       'icon': Icons.account_tree_rounded,
       'commandIds': <String>[
         'addNode',
@@ -26390,7 +27273,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     },
     {
       'id': 'ai',
-      'labelKey': 'AI チャット',
+      'labelKey': 'headerCat.ai',
       'icon': Icons.auto_awesome_rounded,
       'commandIds': <String>[
         // openAi = 統合ボタン (1 つで全 AI、 右クリック/長押しで切替)。
@@ -26401,7 +27284,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     },
     {
       'id': 'web',
-      'labelKey': 'Web・検索',
+      'labelKey': 'headerCat.web',
       'icon': Icons.language_rounded,
       'commandIds': <String>[
         'googleSearch',
@@ -26421,7 +27304,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     },
     {
       'id': 'tools',
-      'labelKey': 'ユーティリティ',
+      'labelKey': 'headerCat.tools',
       'icon': Icons.build_rounded,
       'commandIds': <String>[
         'calculator', 'stopwatch', 'pomodoro', 'weather', 'alarm',
@@ -26435,7 +27318,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     },
     {
       'id': 'view',
-      'labelKey': '表示・操作',
+      'labelKey': 'headerCat.view',
       'icon': Icons.visibility_rounded,
       'commandIds': <String>[
         'zoomIn5',
@@ -26450,13 +27333,13 @@ class _MindMapScreenState extends State<MindMapScreen>
     },
     {
       'id': 'history',
-      'labelKey': '履歴・同期',
+      'labelKey': 'headerCat.history',
       'icon': Icons.history_rounded,
       'commandIds': <String>['undo', 'redo', 'sync'],
     },
     {
       'id': 'other',
-      'labelKey': 'その他',
+      'labelKey': 'headerCat.other',
       'icon': Icons.more_horiz_rounded,
       'commandIds': <String>['shortcuts'],
     },
@@ -26631,9 +27514,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Icon(
-                      _lockScale
-                          ? Icons.lock_rounded
-                          : Icons.lock_open_rounded,
+                      _lockScale ? Icons.lock_rounded : Icons.lock_open_rounded,
                       color: color,
                       size: 17,
                     ),
@@ -26800,9 +27681,13 @@ class _MindMapScreenState extends State<MindMapScreen>
       //    長押しでも開けるようにする (タッチ操作の Windows でも変更できる)。 ──
       wrapped = GestureDetector(
         behavior: HitTestBehavior.translucent,
-        onLongPress: commandId == 'openAi'
-            ? () => _showBrowserAiSwitchMenu()
-            : () => _showUnifiedMobileButtonMenu(context, commandId),
+        // アプリ内固定中の appLock ボタンは「長押しで解除」 を最優先にする
+        // (= ユーザー要望: 解除ボタンは長押ししないと解除されないように)。
+        onLongPress: (commandId == 'appLock' && _appExitLocked)
+            ? () => _appExitLockLongPressUnlock()
+            : commandId == 'openAi'
+                ? () => _showBrowserAiSwitchMenu()
+                : () => _showUnifiedMobileButtonMenu(context, commandId),
         child: wrapped,
       );
     }
@@ -27001,16 +27886,22 @@ class _MindMapScreenState extends State<MindMapScreen>
       // ── 長押し / 右クリックメニュー ──
       // モバイルは全ボタン共通の中央 4 項目メニュー (差し替え/色変更/初期配置/
       //   並び替え) に統一。 デスクトップは従来の種別別メニューを維持。
-      onLongPress: !_isDesktop
-          ? () => _showUnifiedMobileButtonMenu(context, commandId,
-              isFooter: true,
-              isBottomCustomRow: true,
-              slotIndex: provider.customBottomButtons.indexOf(commandId))
-          : commandId.startsWith('customPage')
-              ? () => _showCustomPageContextMenu(context, provider, commandId)
-              : commandId.startsWith('bookmark:')
-                  ? () => _showBookmarkButtonContextMenu(context, commandId)
-                  : () => _showCustomItemContextMenu(context, commandId),
+      // アプリ内固定中の appLock ボタンだけは「長押しで解除」 を優先する
+      //   (= ユーザー要望: 解除は長押し必須)。
+      onLongPress: (commandId == 'appLock' && _appExitLocked)
+          ? () => _appExitLockLongPressUnlock()
+          : !_isDesktop
+              ? () => _showUnifiedMobileButtonMenu(context, commandId,
+                  isFooter: true,
+                  isBottomCustomRow: true,
+                  slotIndex: provider.customBottomButtons.indexOf(commandId))
+              : commandId.startsWith('customPage')
+                  ? () =>
+                      _showCustomPageContextMenu(context, provider, commandId)
+                  : commandId.startsWith('bookmark:')
+                      ? () =>
+                          _showBookmarkButtonContextMenu(context, commandId)
+                      : () => _showCustomItemContextMenu(context, commandId),
       onSecondaryTap: commandId.startsWith('customPage')
           ? () => _showCustomPageContextMenu(context, provider, commandId)
           : commandId.startsWith('bookmark:')
@@ -27068,13 +27959,17 @@ class _MindMapScreenState extends State<MindMapScreen>
       label: provider.t(labelKey),
       color: color,
       onTap: () => _executeHeaderCommand(commandId, provider),
-      onLongPress: !_isDesktop
-          ? () => _showUnifiedMobileButtonMenu(context, commandId,
-              isFooter: true,
-              isBottomCustomRow: true,
-              slotIndex: slotIndex,
-              bottomCustomRow: fourthRow ? 4 : 3)
-          : null,
+      // アプリ内固定中の appLock ボタンは「長押しで解除」 を優先
+      // (= ユーザー要望: 解除は長押し必須)。
+      onLongPress: (commandId == 'appLock' && _appExitLocked)
+          ? () => _appExitLockLongPressUnlock()
+          : !_isDesktop
+              ? () => _showUnifiedMobileButtonMenu(context, commandId,
+                  isFooter: true,
+                  isBottomCustomRow: true,
+                  slotIndex: slotIndex,
+                  bottomCustomRow: fourthRow ? 4 : 3)
+              : null,
     );
   }
 
@@ -27216,10 +28111,14 @@ class _MindMapScreenState extends State<MindMapScreen>
       label: displayLabel,
       color: baseColor,
       onTap: () => _executeHeaderCommand(commandId, provider),
-      onLongPress: !_isDesktop
-          ? () => _showBottomTopButtonLongPressMenu(
-              context, provider, commandId, slotIndex)
-          : null,
+      // アプリ内固定中の appLock ボタンは「長押しで解除」 を優先
+      // (= ユーザー要望: 解除は長押し必須)。
+      onLongPress: (commandId == 'appLock' && _appExitLocked)
+          ? () => _appExitLockLongPressUnlock()
+          : !_isDesktop
+              ? () => _showBottomTopButtonLongPressMenu(
+                  context, provider, commandId, slotIndex)
+              : null,
     );
   }
 
@@ -28524,16 +29423,63 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// ノードを指定位置に作成し、生成直後のノードをそのまま編集する。
   /// Ctrl+Shift+N / ヘッダーの新規ノード追加で別の簡易入力欄を挟まず、
   /// 要素本体の編集経路へ入る。
-  void _createNodeWithOptionalTitlePrompt(
-      MindMapProvider provider, Offset position) {
+  Future<void> _createNodeWithOptionalTitlePrompt(
+      MindMapProvider provider, Offset position) async {
+    // OFF のときは従来どおり空ノードを即時生成する。ON のときは、
+    // ページ種別に依存するインライン編集へ委ねず、生成前に共通ダイアログで
+    // 入力を求める。これによりギャラリーで Ctrl+Shift+N を使った場合も
+    // 通常マップと同じ動作になる。
+    if (!provider.promptForTitleOnNodeCreate) {
+      provider.addNodeAtCenterReturning(position);
+      return;
+    }
+
+    final controller = TextEditingController();
+    final title = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Text(
+          provider.t('settings.promptForTitleOnNodeCreate'),
+          style: const TextStyle(color: Colors.white, fontSize: 18),
+        ),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLines: 1,
+          textInputAction: TextInputAction.done,
+          style: const TextStyle(color: Colors.white),
+          decoration: InputDecoration(
+            hintText: provider.t('node.untitled'),
+            hintStyle: const TextStyle(color: Colors.white38),
+            enabledBorder: const UnderlineInputBorder(
+              borderSide: BorderSide(color: Colors.white24),
+            ),
+            focusedBorder: const UnderlineInputBorder(
+              borderSide: BorderSide(color: Color(0xFF6C63FF), width: 2),
+            ),
+          ),
+          onSubmitted: (value) => Navigator.pop(dialogContext, value),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: Text(provider.t('btn.cancel')),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, controller.text),
+            child: Text(provider.t('btn.add')),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (!mounted || title == null) return;
+
     final newNode = provider.addNodeAtCenterReturning(position);
-    if (mounted) {
-      _beginNodeInlineTextEdit(
-        provider,
-        newNode.id,
-        deleteWhenEmpty: true,
-        allowDelimiterExpansion: true,
-      );
+    provider.updateNodeTitle(newNode.id, title.trim());
+    if (provider.currentPage.pageType == 'bookshelf') {
+      provider.reflowBookshelf();
     }
   }
 
@@ -30421,8 +31367,10 @@ class _MindMapScreenState extends State<MindMapScreen>
   void _showFocusLockDialog(BuildContext ctx, MindMapProvider provider) {
     if (_focusLockOverlay != null) return; // 既にロック中
     // プリセット分数 (ユーザー要望: 5 / 15 / 30 / 60 分)。
-    const presets = <int>[5, 15, 30, 60];
-    int selectedMin = 15; // デフォルトは 15 分
+    const presets = <int>[5, 15, 60];
+    // プリセットは「選択」ではなく加算ボタンとして扱う。0分から始めることで
+    // +5 → +5 → +15 のように、押した回数どおりの合計時間になる。
+    int selectedMin = 0;
     // 数値入力用 (ユーザー要望: カスタムを押さなくても直接分数を指定できる)。
     final minCtrl = TextEditingController(text: '$selectedMin');
 
@@ -30470,11 +31418,12 @@ class _MindMapScreenState extends State<MindMapScreen>
           }
 
           Widget presetChip(int m) => chip(
-                label: '$m${provider.t('focusLock.minutesSuffix')}',
-                selected: selectedMin == m,
+                label: '+$m${provider.t('focusLock.minutesSuffix')}',
+                selected: false,
                 onTap: () => setS(() {
-                  selectedMin = m;
-                  minCtrl.text = '$m';
+                  selectedMin =
+                      (selectedMin + m).clamp(0, 600).toInt();
+                  minCtrl.text = '$selectedMin';
                   minCtrl.selection =
                       TextSelection.collapsed(offset: minCtrl.text.length);
                 }),
@@ -30530,6 +31479,16 @@ class _MindMapScreenState extends State<MindMapScreen>
                         runSpacing: 8,
                         children: [
                           for (final m in presets) presetChip(m),
+                          chip(
+                            label: provider.t('focusLock.reset'),
+                            selected: selectedMin == 0,
+                            onTap: () => setS(() {
+                              selectedMin = 0;
+                              minCtrl.text = '0';
+                              minCtrl.selection = const TextSelection.collapsed(
+                                  offset: 1);
+                            }),
+                          ),
                         ],
                       ),
                       const SizedBox(height: 12),
@@ -30547,9 +31506,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     Colors.white.withValues(alpha: 0.15),
                               ),
                               child: Slider(
-                                min: 1,
-                                max: 300,
-                                value: selectedMin.clamp(1, 300).toDouble(),
+                                min: 0,
+                                max: 600,
+                                value: selectedMin.clamp(0, 600).toDouble(),
                                 onChanged: (v) => setS(() {
                                   selectedMin = v.round();
                                   minCtrl.text = '$selectedMin';
@@ -30584,7 +31543,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                               onChanged: (t) {
                                 final v = int.tryParse(t);
                                 if (v != null) {
-                                  setS(() => selectedMin = v.clamp(1, 600));
+                                  setS(() => selectedMin =
+                                      v.clamp(0, 600).toInt());
                                 }
                               },
                             ),
@@ -30746,11 +31706,14 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 fit: BoxFit.scaleDown,
                                 child:
                                     Text(provider.t('focusLock.startMinutes'))),
-                            onPressed: () {
-                              final mins = selectedMin.clamp(1, 600);
-                              Navigator.pop(dctx);
-                              _startFocusLock(Duration(minutes: mins));
-                            },
+                            onPressed: selectedMin <= 0
+                                ? null
+                                : () {
+                                    final mins =
+                                        selectedMin.clamp(1, 600).toInt();
+                                    Navigator.pop(dctx);
+                                    _startFocusLock(Duration(minutes: mins));
+                                  },
                           ),
                           const SizedBox(height: 8),
                           // 指定時刻までロック (= ユーザー要望: 現在時刻から
@@ -31242,10 +32205,11 @@ class _MindMapScreenState extends State<MindMapScreen>
       return;
     }
     if (_appExitLocked) {
-      // ── 解除 ──
-      final wasEventLock = _appExitLockByEvent;
-      await _stopAppExitLockInternal(showToast: true);
-      if (wasEventLock) _appExitLockEventDismissed = true;
+      // ── 解除はタップでは行わない (= ユーザー要望: 解除ボタンは長押し
+      //   しないと解除されないように)。 タップ時は案内トーストだけ出す。
+      //   実際の解除は長押し (_appExitLockLongPressUnlock) で行う。
+      _showLockToast(
+          context.read<MindMapProvider>().t('applock.longPressUnlock'));
     } else {
       // ── 画面ロックは初回のみ無料、 2 回目以降は Pro 以上 (= ユーザー要望) ──
       final provider = context.read<MindMapProvider>();
@@ -31267,6 +32231,20 @@ class _MindMapScreenState extends State<MindMapScreen>
       // choice.duration == null は「無制限」を意味する。
       await _startAppExitLockInternal(choice.duration);
     }
+  }
+
+  /// アプリ外脱出ロックを長押しで解除する (= ユーザー要望: 解除は長押し必須)。
+  /// ロック中の appLock ボタン長押しから呼ばれる。
+  Future<void> _appExitLockLongPressUnlock() async {
+    if (!_appExitLocked) return;
+    final provider = context.read<MindMapProvider>();
+    if (provider.appLockDisableButtonUnlock) {
+      _showLockToast(provider.t('appLock.manualUnlockDisabled'));
+      return;
+    }
+    final wasEventLock = _appExitLockByEvent;
+    await _stopAppExitLockInternal(showToast: true);
+    if (wasEventLock) _appExitLockEventDismissed = true;
   }
 
   /// アプリ外脱出ロック開始 (内部用)。`duration` が null なら無制限。
@@ -31298,7 +32276,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       });
       _showLockToast('🔒 アプリ固定中 (${_formatAppLockDuration(duration)}で自動解除)');
     } else {
-      _showLockToast('🔒 アプリ固定中 (無制限。もう一度押すと解除)');
+      _showLockToast('🔒 アプリ固定中 (無制限。ボタン長押しで解除)');
     }
   }
 
@@ -31342,15 +32320,12 @@ class _MindMapScreenState extends State<MindMapScreen>
     final provider = context.read<MindMapProvider>();
     String mins(int n) =>
         provider.t('common.nMinutes').replaceFirst('{n}', '$n');
-    String hrs(int n) => provider.t('common.nHours').replaceFirst('{n}', '$n');
-    final options = <_AppLockChoice>[
-      _AppLockChoice(mins(5), const Duration(minutes: 5)),
-      _AppLockChoice(mins(15), const Duration(minutes: 15)),
-      _AppLockChoice(mins(30), const Duration(minutes: 30)),
-      _AppLockChoice(hrs(1), const Duration(hours: 1)),
-      _AppLockChoice(hrs(2), const Duration(hours: 2)),
-      _AppLockChoice(provider.t('focus.unlimited'), null),
-    ];
+    // ── 加算式の分数指定 (= ユーザー要望: 集中ロックと同様、プリセットを
+    //   押す度にロック分数が加算されるように) ──
+    // +5 → +5 → +30 のように、押した回数どおりの合計時間になる。
+    const presets = <int>[5, 15, 60];
+    int selectedMin = 0;
+    final minCtrl = TextEditingController(text: '0');
     return showDialog<_AppLockChoice?>(
       context: context,
       builder: (ctx) => StatefulBuilder(
@@ -31410,6 +32385,36 @@ class _MindMapScreenState extends State<MindMapScreen>
             );
           }
 
+          // 集中ロックと同じ「加算チップ」。押す度に selectedMin へ加算する。
+          Widget addChip(String label, VoidCallback onTap,
+              {bool selected = false}) {
+            return InkWell(
+              onTap: onTap,
+              borderRadius: BorderRadius.circular(10),
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  color: selected
+                      ? const Color(0xFFEF5350)
+                      : const Color(0xFF2A2A3E),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: selected ? const Color(0xFFEF5350) : Colors.white24,
+                  ),
+                ),
+                child: Text(
+                  label,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+            );
+          }
+
           return AlertDialog(
             backgroundColor: const Color(0xFF2A2A3A),
             title: Row(
@@ -31427,22 +32432,115 @@ class _MindMapScreenState extends State<MindMapScreen>
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    for (final opt in options)
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 3),
-                        child: SizedBox(
-                          width: double.infinity,
-                          child: OutlinedButton(
-                            style: OutlinedButton.styleFrom(
-                              foregroundColor: Colors.white,
-                              side: const BorderSide(color: Colors.white24),
-                              padding: const EdgeInsets.symmetric(vertical: 10),
-                            ),
-                            onPressed: () => Navigator.pop(ctx, opt),
-                            child: Text(opt.label),
-                          ),
+                    // ── プリセット (= 押す度に加算。集中ロックと同じ操作感) ──
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        for (final m in presets)
+                          addChip('+${mins(m)}', () => setS(() {
+                                selectedMin =
+                                    (selectedMin + m).clamp(0, 600).toInt();
+                                minCtrl.text = '$selectedMin';
+                                minCtrl.selection = TextSelection.collapsed(
+                                    offset: minCtrl.text.length);
+                              })),
+                        addChip(provider.t('focusLock.reset'), () => setS(() {
+                              selectedMin = 0;
+                              minCtrl.text = '0';
+                              minCtrl.selection =
+                                  const TextSelection.collapsed(offset: 1);
+                            }), selected: selectedMin == 0),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Row(children: [
+                      const Icon(Icons.lock_person_rounded,
+                          color: Colors.white60, size: 18),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          provider.t('appLock.disableManualUnlock'),
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 13),
                         ),
                       ),
+                      Switch(
+                        value: provider.appLockDisableButtonUnlock,
+                        activeColor: const Color(0xFFEF5350),
+                        onChanged: (v) async {
+                          await provider.setAppLockDisableButtonUnlock(v);
+                          setS(() {});
+                        },
+                      ),
+                    ]),
+                    const SizedBox(height: 12),
+                    // ── 合計分数 (直接入力も可) + 開始ボタン ──
+                    Row(children: [
+                      SizedBox(
+                        width: 74,
+                        child: TextField(
+                          controller: minCtrl,
+                          keyboardType: TextInputType.number,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 18,
+                              fontWeight: FontWeight.w700),
+                          decoration: const InputDecoration(
+                            isDense: true,
+                            filled: true,
+                            fillColor: Color(0xFF12121C),
+                            border: OutlineInputBorder(),
+                            contentPadding: EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 8),
+                          ),
+                          onChanged: (v) => setS(() {
+                            selectedMin = (int.tryParse(v.trim()) ?? 0)
+                                .clamp(0, 600)
+                                .toInt();
+                          }),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(provider.t('focusLock.minutesSuffix'),
+                          style: const TextStyle(
+                              color: Colors.white70, fontSize: 13)),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFFEF5350),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 10),
+                          ),
+                          onPressed: selectedMin <= 0
+                              ? null
+                              : () => Navigator.pop(
+                                  ctx,
+                                  _AppLockChoice(mins(selectedMin),
+                                      Duration(minutes: selectedMin))),
+                          child: Text(provider.t('focusLock.start')),
+                        ),
+                      ),
+                    ]),
+                    const SizedBox(height: 8),
+                    // ── 無制限 (従来どおり) ──
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.white,
+                          side: const BorderSide(color: Colors.white24),
+                          padding: const EdgeInsets.symmetric(vertical: 10),
+                        ),
+                        onPressed: () => Navigator.pop(
+                            ctx,
+                            _AppLockChoice(
+                                provider.t('focus.unlimited'), null)),
+                        child: Text(provider.t('focus.unlimited')),
+                      ),
+                    ),
                     const SizedBox(height: 6),
                     const Divider(color: Colors.white12, height: 1),
                     const SizedBox(height: 8),
@@ -32509,39 +33607,11 @@ class _MindMapScreenState extends State<MindMapScreen>
       // ── 再生リスト視聴中の動画 (watch?v=…&list=…) ──
       // 「この動画だけ埋め込むか、 リスト内の動画をすべて埋め込むか」 を
       // 選択できるようにする (= ユーザー要望)。 Mix (RD…) やウォッチリスト
-      // (WL/LL) は /playlist ページから一覧を取得できないため対象外。
+      // (WL/LL) は /playlist ページから一覧を取得できないため、 代わりに
+      // 「視聴中の動画のみ埋め込むか」 の確認を出す (= ユーザー要望)。
       final embedListId = _embeddablePlaylistIdOf(url);
       if (embedListId != null) {
-        final choice = await showDialog<String>(
-          context: context,
-          builder: (dctx) => AlertDialog(
-            backgroundColor: const Color(0xFF1E1E32),
-            title: Text(provider.t('embed.title'),
-                style: const TextStyle(color: Colors.white, fontSize: 15)),
-            content: Text(provider.t('embed.bodyList'),
-                style: const TextStyle(color: Colors.white70, fontSize: 13)),
-            actionsOverflowButtonSpacing: 6,
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(dctx, null),
-                child: Text(provider.t('btn.cancel'),
-                    style: const TextStyle(color: Colors.white54)),
-              ),
-              TextButton(
-                onPressed: () => Navigator.pop(dctx, 'one'),
-                child: Text(provider.t('embed.thisOnly'),
-                    style: const TextStyle(color: Color(0xFF90CAF9))),
-              ),
-              ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF43B97F),
-                    foregroundColor: Colors.white),
-                onPressed: () => Navigator.pop(dctx, 'list'),
-                child: Text(provider.t('embed.wholeList')),
-              ),
-            ],
-          ),
-        );
+        final choice = await _askEmbedThisOrWholeList(provider);
         if (!mounted || choice == null) return;
         if (choice == 'list') {
           // リスト全体 → 親ノード + 子動画ノード群として一括取り込み。
@@ -32555,10 +33625,13 @@ class _MindMapScreenState extends State<MindMapScreen>
         // list= を落とした単一動画 URL に正規化する (残したままだと
         // ノードからの再生時にリスト全体が自動再生されてしまう)。
         // 再生位置 (t=/start=) は維持する。
-        final keepT =
-            RegExp(r'[?&](?:t|start)=([0-9hms]+)').firstMatch(url)?.group(1);
-        url = 'https://www.youtube.com/watch?v=$videoId'
-            '${keepT != null ? '&t=$keepT' : ''}';
+        url = _stripListParamKeepTime(url);
+      } else if (_unfetchableListIdOf(url) != null) {
+        // ── Mix (RD…) / WL / LL 視聴中 ──
+        // 一覧を取得できないため、 視聴中の動画のみ埋め込むかを確認する。
+        final ok = await _confirmMixListSingleEmbed(provider);
+        if (ok != true || !mounted) return;
+        url = _stripListParamKeepTime(url);
       }
       // 動画 → 単一ノードを作成
       final newNode = provider.addNodeAtCenterReturning(pos);
@@ -36951,7 +38024,8 @@ class _MindMapScreenState extends State<MindMapScreen>
           if (isCtrl &&
               !isShift &&
               !isAlt &&
-              event.logicalKey == LogicalKeyboardKey.keyV) {
+              event.logicalKey == LogicalKeyboardKey.keyV &&
+              _shortcutCommandMatches('paste', 'Ctrl+V')) {
             _handlePaste(provider);
             return;
           }
@@ -37084,7 +38158,8 @@ class _MindMapScreenState extends State<MindMapScreen>
           if (isCtrl &&
               !isShift &&
               !isAlt &&
-              event.logicalKey == LogicalKeyboardKey.keyE) {
+              event.logicalKey == LogicalKeyboardKey.keyE &&
+              _shortcutCommandMatches('insertMapShape', 'Ctrl+E')) {
             _showMapShapePicker();
             return;
           }
@@ -37138,13 +38213,16 @@ class _MindMapScreenState extends State<MindMapScreen>
             final isShift6 = isShift &&
                 (event.logicalKey == LogicalKeyboardKey.digit6 ||
                     event.logicalKey == LogicalKeyboardKey.numpad6);
-            if (logicalCaret || physicalCaret || charCaret || isShift6) {
+            if ((logicalCaret || physicalCaret || charCaret || isShift6) &&
+                _shortcutCommandMatches('toggleSplitLeftScreen', 'Ctrl+^')) {
               _toggleSplitLeftPanel();
               return;
             }
             // バックスラッシュもダブルチェック (= commandId 経由が
             // 動かないケースの保険)
-            if (event.logicalKey == LogicalKeyboardKey.backslash && !isShift) {
+            if (event.logicalKey == LogicalKeyboardKey.backslash &&
+                !isShift &&
+                _shortcutCommandMatches('toggleSplitScreen', 'Ctrl+\\')) {
               _toggleSplitPanel();
               return;
             }
@@ -37545,6 +38623,17 @@ class _MindMapScreenState extends State<MindMapScreen>
                 _startInlineTitleEdit(context, node);
               }
             }
+          } else if (commandId == 'editMemo') {
+            final selId = _actionNodeId ?? provider.selectedNodeId;
+            if (selId != null) {
+              final node = provider.nodes[selId];
+              if (node != null) {
+                _removeOverlay();
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (mounted) _editMemo(context, node);
+                });
+              }
+            }
           } else if (commandId == 'quickFlashcard') {
             // 素早く文字を入力してフラッシュカード登録 (= ユーザー要望)。
             //   ノードを選択中 (= 押しながら) なら、 そのタイトルを表面に入れた
@@ -37619,7 +38708,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             setState(() => _calendarMode = !_calendarMode);
             _refreshFloatingOverlays();
           } else if (commandId == 'newEvent') {
-            // Ctrl+Shift+N: 今日のイベント新規作成（カレンダーモード中のみ）
+            // Ctrl+Alt+N: 今日のイベント新規作成（カレンダーモード中のみ）
             if (_calendarMode) {
               final today = DateTime.now();
               final key = _dateKey(today);
@@ -37641,7 +38730,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                   ));
             }
           } else if (commandId == 'toggleTheme') {
-            // Ctrl+Shift+T: ダーク/ライトモードの切替
+            // Ctrl+Shift+L: ダーク/ライトモードの切替
             provider.setDarkMode(!provider.isDarkMode);
           } else if (commandId == 'openYoutube') {
             // Ctrl+U: YouTube ブラウザを「ホーム画面」 で開く。
@@ -37850,6 +38939,9 @@ class _MindMapScreenState extends State<MindMapScreen>
             _showLockToast(_cutMode
                 ? provider.t('toast.cutModeOn')
                 : provider.t('toast.cutModeOff'));
+          } else if (commandId != null &&
+              _headerExecutedShortcutCommandIds.contains(commandId)) {
+            _executeHeaderCommand(commandId, provider);
           } else {
             // ── コマンドに対応しない固定ショートカット ──────────────────────
             if (isCtrl && _getDigitIndex(event.logicalKey) != null) {
@@ -38801,6 +39893,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                               // ギャラリーページでは下部バー (フッター) も出さない (= ユーザー要望)。
                               if (_moveModeNodeId == null &&
                                   !_isDesktop &&
+                                  !_isCanvasTextEditing &&
+                                  MediaQuery.viewInsetsOf(context).bottom < 1 &&
                                   provider.currentPage.pageType !=
                                       'bookshelf' &&
                                   provider.currentPage.pageType != 'paint' &&
@@ -39144,6 +40238,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                 ],
               ),
             ),
+            _buildDesktopHeaderButtonsDock(provider),
             // ── 上分割パネルをヘッダーの上に被せる ──
             // ユーザー要望: 上分割はヘッダーに被さるオーバーレイにする
             //   (+ Flex に入れていた時の上分割フリーズも回避)。
@@ -39747,34 +40842,800 @@ class _MindMapScreenState extends State<MindMapScreen>
     );
   }
 
+  List<String> _visibleDesktopHeaderButtonsAt(
+      MindMapProvider provider, String placement) {
+    return provider
+        .desktopHeaderButtonsForPlacement(placement)
+        .where((id) =>
+            !_isRetiredCustomCommand(id) &&
+            !_hideCommandForCurrentLocale(id, provider))
+        .toList();
+  }
+
+  void _reorderDesktopHeaderButtonsAt(MindMapProvider provider,
+      String placement, int oldIndex, int targetIndex) {
+    final ids = _visibleDesktopHeaderButtonsAt(provider, placement);
+    if (oldIndex < 0 ||
+        targetIndex < 0 ||
+        oldIndex >= ids.length ||
+        targetIndex >= ids.length ||
+        oldIndex == targetIndex) return;
+    provider.reorderHeaderButtonsById(ids[oldIndex], ids[targetIndex]);
+  }
+
+  void _beginDesktopHeaderDrag(_DesktopHeaderDragData data) {
+    if (!mounted) return;
+    setState(() => _activeDesktopHeaderDrag = data);
+  }
+
+  void _endDesktopHeaderDrag() {
+    if (!mounted || _activeDesktopHeaderDrag == null) return;
+    setState(() => _activeDesktopHeaderDrag = null);
+  }
+
+  bool _canAcceptDesktopHeaderDrag(
+      _DesktopHeaderDragData data, String targetPlacement) {
+    if (data is _DesktopHeaderBarDragData) {
+      return data.sourcePlacement != targetPlacement;
+    }
+    if (data is _DesktopHeaderButtonDragData) {
+      // 同じバーの余白へ落とす操作も受理する。provider 側で末尾移動または
+      // no-op に正規化されるため、別バー移動と同じ atomic API を使える。
+      return data.commandId.isNotEmpty;
+    }
+    return false;
+  }
+
+  Future<String?> _askDesktopHeaderBarCollisionMode(
+      MindMapProvider provider) async {
+    if (!mounted) return null;
+    return showDialog<String>(
+      context: context,
+      barrierColor: Colors.black54,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text(
+          provider.t('header.barCollisionPromptTitle'),
+          style: const TextStyle(color: Colors.white, fontSize: 16),
+        ),
+        content: Text(
+          provider.t('header.barCollisionPromptBody'),
+          style: const TextStyle(color: Colors.white70, fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: Text(provider.t('focusLock.cancel')),
+          ),
+          OutlinedButton.icon(
+            onPressed: () => Navigator.pop(dialogContext, 'merge'),
+            icon: const Icon(Icons.call_merge_rounded, size: 17),
+            label: Text(provider.t('header.barCollisionMode.merge')),
+          ),
+          ElevatedButton.icon(
+            onPressed: () => Navigator.pop(dialogContext, 'swap'),
+            icon: const Icon(Icons.swap_horiz_rounded, size: 17),
+            label: Text(provider.t('header.barCollisionMode.swap')),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _acceptDesktopHeaderBarDrag(
+    MindMapProvider provider,
+    _DesktopHeaderBarDragData data,
+    String targetPlacement,
+  ) async {
+    // 空バーは常設しないため、衝突確認の対象も実際に要素があるバーだけにする。
+    final targetHasBar =
+        provider.desktopHeaderButtonsForPlacement(targetPlacement).isNotEmpty;
+    var mode = targetHasBar
+        ? provider.desktopHeaderBarCollisionMode
+        : 'merge';
+    if (mode == 'ask') {
+      mode = await _askDesktopHeaderBarCollisionMode(provider) ?? '';
+    }
+    if (mode == 'merge') {
+      await provider.mergeDesktopHeaderButtonBars(
+          data.sourcePlacement, targetPlacement);
+    } else if (mode == 'swap') {
+      await provider.swapDesktopHeaderButtonBars(
+          data.sourcePlacement, targetPlacement);
+    } else {
+      return;
+    }
+    if (targetPlacement == 'bottom') {
+      await provider.setDesktopBottomDockPosition(floating: false);
+    }
+  }
+
+  void _acceptDesktopHeaderDrag(MindMapProvider provider,
+      _DesktopHeaderDragData data, String targetPlacement) {
+    if (data is _DesktopHeaderBarDragData) {
+      unawaited(_acceptDesktopHeaderBarDrag(provider, data, targetPlacement));
+    } else if (data is _DesktopHeaderButtonDragData) {
+      unawaited(provider.moveDesktopHeaderButtonToPlacement(
+          data.commandId, targetPlacement));
+    }
+  }
+
+  /// 上下左右バー共通のドロップ受け口。実バーだけでなくドラッグ中に出す
+  /// 空辺プレースホルダーにも使い、ボタン単位の移動とバー同士の交換を
+  /// 同じ経路へ集約する。
+  Widget _buildDesktopHeaderDockTarget(
+    MindMapProvider provider,
+    String placement,
+    Widget child, {
+    bool placeholder = false,
+  }) {
+    return DragTarget<_DesktopHeaderDragData>(
+      onWillAcceptWithDetails: (details) =>
+          _canAcceptDesktopHeaderDrag(details.data, placement),
+      onAcceptWithDetails: (details) =>
+          _acceptDesktopHeaderDrag(provider, details.data, placement),
+      builder: (context, candidates, rejected) {
+        final hovered = candidates.isNotEmpty;
+        final showPlaceholder = placeholder && _activeDesktopHeaderDrag != null;
+        return AnimatedContainer(
+          duration: const Duration(milliseconds: 140),
+          curve: Curves.easeOut,
+          decoration: showPlaceholder
+              ? BoxDecoration(
+                  color: const Color(0xFF6C63FF)
+                      .withValues(alpha: hovered ? 0.28 : 0.10),
+                  borderRadius: BorderRadius.circular(16),
+                )
+              : null,
+          foregroundDecoration: (hovered || showPlaceholder)
+              ? BoxDecoration(
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: const Color(0xFF8D86FF)
+                        .withValues(alpha: hovered ? 0.95 : 0.45),
+                    width: hovered ? 2.0 : 1.0,
+                  ),
+                )
+              : null,
+          child: child,
+        );
+      },
+    );
+  }
+
+  /// バー全体を別の辺へ移す専用グリップ。下部バーの自由配置用 pan
+  /// ハンドルとは別に置くため、既存のフローティング移動も維持される。
+  Widget _buildDesktopHeaderDockMoveGrip(
+    MindMapProvider provider,
+    String placement, {
+    double width = 34,
+    double height = 30,
+    ValueChanged<Offset>? onFreeDrop,
+    VoidCallback? onDoubleTap,
+  }) {
+    final data = _DesktopHeaderBarDragData(placement);
+    Offset? lastGlobalPosition;
+    final grip = Tooltip(
+      message: provider
+          .t(onFreeDrop == null ? 'header.redockBar' : 'header.dragDock'),
+      child: MouseRegion(
+        cursor: SystemMouseCursors.grab,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onDoubleTap: onDoubleTap,
+          child: SizedBox(
+            width: width,
+            height: height,
+            child: const Icon(Icons.open_with_rounded,
+                size: 17, color: Colors.white54),
+          ),
+        ),
+      ),
+    );
+    return Draggable<_DesktopHeaderDragData>(
+      data: data,
+      dragAnchorStrategy: pointerDragAnchorStrategy,
+      onDragStarted: () => _beginDesktopHeaderDrag(data),
+      onDragUpdate: (details) =>
+          lastGlobalPosition = details.globalPosition,
+      onDragEnd: (details) {
+        if (!details.wasAccepted && onFreeDrop != null) {
+          onFreeDrop(lastGlobalPosition ??
+              details.offset + const Offset(23, 23));
+        }
+        _endDesktopHeaderDrag();
+      },
+      feedback: Material(
+        color: Colors.transparent,
+        child: Container(
+          width: 46,
+          height: 46,
+          decoration: BoxDecoration(
+            color: const Color(0xFF25253B).withValues(alpha: 0.96),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: const Color(0xFF8D86FF), width: 1.5),
+            boxShadow: const [
+              BoxShadow(color: Colors.black45, blurRadius: 12),
+            ],
+          ),
+          child: const Icon(Icons.open_with_rounded,
+              size: 20, color: Colors.white),
+        ),
+      ),
+      childWhenDragging: Opacity(opacity: 0.25, child: grip),
+      child: grip,
+    );
+  }
+
+  Widget _buildDesktopSideHeaderDock(
+    MindMapProvider provider,
+    String placement,
+    Color panelColor,
+    Color borderColor,
+    List<BoxShadow> shadow,
+  ) {
+    final ids = <String>[];
+    final rawIds = provider.customHeaderButtons;
+    for (int i = 0; i < rawIds.length; i++) {
+      final id = rawIds[i];
+      if (provider.desktopHeaderButtonPlacementFor(id) != placement ||
+          _isRetiredCustomCommand(id) ||
+          _hideCommandForCurrentLocale(id, provider)) continue;
+      ids.add(id);
+    }
+
+    Widget sideButton(int index) {
+      final id = ids[index];
+      final button = _buildCustomHeaderButton(id, provider);
+      if (button == null) return const SizedBox.shrink();
+      final slot = SizedBox(
+        width: _kHeaderCustomButtonExtent,
+        height: _kHeaderCustomButtonExtent,
+        child: Center(child: button),
+      );
+      if (!_reorderHeaderMode) {
+        final data = _DesktopHeaderButtonDragData(id, placement);
+        return _DesktopDraggableHeaderIcon(
+          data: data,
+          onDragStarted: () => _beginDesktopHeaderDrag(data),
+          onDragEnded: _endDesktopHeaderDrag,
+          child: slot,
+        );
+      }
+      return _ReorderableHeaderIcon(
+        index: index,
+        id: id,
+        desktopSourcePlacement: placement,
+        child: slot,
+        onDesktopDropped: (data) {
+          unawaited(provider.moveDesktopHeaderButtonToPlacement(
+            data.commandId,
+            placement,
+            beforeCommandId: id,
+          ));
+        },
+        onDragStartedGlobal: (data) => _beginDesktopHeaderDrag(data),
+        onDragEndGlobal: _endDesktopHeaderDrag,
+        onDropped: (fromIndex) {
+          if (fromIndex == index ||
+              fromIndex < 0 ||
+              fromIndex >= ids.length) return;
+          _reorderDesktopHeaderButtonsAt(
+              provider, placement, fromIndex, index);
+        },
+      );
+    }
+
+    final collapsed = provider.desktopHeaderDockCollapsedAt(placement);
+    final sideMenu = Material(
+      color: Colors.transparent,
+      child: Container(
+        width: 60,
+        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 6),
+        decoration: BoxDecoration(
+          color: panelColor,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: borderColor),
+          boxShadow: shadow,
+        ),
+        child: collapsed
+            ? Column(mainAxisSize: MainAxisSize.min, children: [
+                _buildDesktopHeaderDockMoveGrip(provider, placement,
+                    width: 46, height: 30),
+                IconButton(
+                  tooltip: provider.t('header.expandDock'),
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints.tightFor(width: 46, height: 36),
+                  icon: Icon(
+                    placement == 'left'
+                        ? Icons.chevron_right_rounded
+                        : Icons.chevron_left_rounded,
+                    color: Colors.white70,
+                    size: 21,
+                  ),
+                  onPressed: () => provider.setDesktopHeaderDockCollapsed(
+                      placement, false),
+                ),
+              ])
+            : Column(children: [
+                _buildDesktopHeaderDockMoveGrip(provider, placement,
+                    width: 46, height: 28),
+                Divider(height: 1, color: borderColor),
+                Expanded(
+                  // アプリ全体の ScrollbarTheme は常時表示だが、左右のドックだけは
+                  // スクロール操作中に現れ、停止するとフェードアウトさせる。
+                  child: ScrollbarTheme(
+                    data: ScrollbarTheme.of(context).copyWith(
+                      thumbVisibility: const WidgetStatePropertyAll(false),
+                      trackVisibility: const WidgetStatePropertyAll(false),
+                    ),
+                    child: SingleChildScrollView(
+                      key: PageStorageKey<String>(
+                          'desktop_header_buttons_$placement'),
+                      physics: const ClampingScrollPhysics(),
+                      child:
+                          Column(mainAxisSize: MainAxisSize.min, children: [
+                        for (int i = 0; i < ids.length; i++) sideButton(i),
+                      ]),
+                    ),
+                  ),
+                ),
+                Divider(height: 1, color: borderColor),
+                SizedBox(
+                  width: _kHeaderCustomButtonExtent,
+                  height: _kHeaderCustomButtonExtent,
+                  child: _buildHeaderCustomizeIcon(provider),
+                ),
+                IconButton(
+                  tooltip: provider.t('header.collapseDock'),
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints.tightFor(width: 46, height: 32),
+                  icon: Icon(
+                    placement == 'left'
+                        ? Icons.chevron_left_rounded
+                        : Icons.chevron_right_rounded,
+                    color: Colors.white54,
+                    size: 19,
+                  ),
+                  onPressed: () => provider.setDesktopHeaderDockCollapsed(
+                      placement, true),
+                ),
+              ]),
+      ),
+    );
+    return Positioned(
+      // この Stack は Scaffold/AppBar 全体を覆うため、12px だけでは左上の
+      // マップ一覧・右上の設定操作に重なる。toolbar 分を必ず予約する。
+      top: kToolbarHeight + 12,
+      bottom: collapsed ? null : 12,
+      left: placement == 'left' ? 10 : null,
+      right: placement == 'right' ? 10 : null,
+      child: SafeArea(
+        top: false,
+        child: _buildDesktopHeaderDockTarget(
+            provider, placement, sideMenu),
+      ),
+    );
+  }
+
+  Widget _buildDesktopBottomHeaderDock(
+    MindMapProvider provider,
+    List<String> ids,
+    Color panelColor,
+    Color borderColor,
+    List<BoxShadow> shadow,
+  ) {
+    final screen = MediaQuery.sizeOf(context);
+    // 起動直後やウィンドウ最小化中は Stack の実寸が一時的に極小になる。
+    // この間に clamp の下限が上限を超えないよう、寸法確定まで描画しない。
+    if (screen.width < 120 || screen.height < 96) {
+      return const SizedBox.shrink();
+    }
+    final maxWidth = math.max(96.0, screen.width - 24.0).toDouble();
+    final minWidth = math.min(180.0, maxWidth).toDouble();
+    final dockWidth = (_desktopBottomDockLiveWidth ??
+            provider.desktopBottomDockWidth)
+        .clamp(minWidth, maxWidth)
+        .toDouble();
+    final collapsed = provider.desktopHeaderDockCollapsedAt('bottom');
+    final actualWidth =
+        (collapsed ? math.min(104.0, maxWidth) : dockWidth).toDouble();
+    final dockHeight = collapsed ? 46.0 : 66.0;
+
+    Offset anchoredCenter() =>
+        Offset(screen.width / 2, screen.height - dockHeight / 2 - 12);
+    final requestedCenter = _desktopBottomDockLiveCenter ??
+        (provider.desktopBottomDockFloating
+            ? Offset(provider.desktopBottomDockX * screen.width,
+                provider.desktopBottomDockY * screen.height)
+            : anchoredCenter());
+    final center = Offset(
+      requestedCenter.dx
+          .clamp(actualWidth / 2 + 8, screen.width - actualWidth / 2 - 8)
+          .toDouble(),
+      requestedCenter.dy
+          .clamp(dockHeight / 2 + 8, screen.height - dockHeight / 2 - 8)
+          .toDouble(),
+    );
+
+    void freeDropBottomBar(Offset globalPosition) {
+      final renderBox = context.findRenderObject() as RenderBox?;
+      final localPosition =
+          renderBox?.globalToLocal(globalPosition) ?? globalPosition;
+      final next = Offset(
+        localPosition.dx
+            .clamp(actualWidth / 2 + 8,
+                screen.width - actualWidth / 2 - 8)
+            .toDouble(),
+        localPosition.dy
+            .clamp(dockHeight / 2 + 8,
+                screen.height - dockHeight / 2 - 8)
+            .toDouble(),
+      );
+      provider.setDesktopBottomDockPosition(
+        floating: true,
+        x: screen.width <= 0 ? 0.5 : next.dx / screen.width,
+        y: screen.height <= 0 ? 0.88 : next.dy / screen.height,
+      );
+      setState(() => _desktopBottomDockLiveCenter = null);
+    }
+
+    void resetBottomBarDock() {
+      setState(() => _desktopBottomDockLiveCenter = null);
+      provider.setDesktopBottomDockPosition(floating: false);
+    }
+
+    Widget resizeHandle(bool left) => Tooltip(
+          message: provider.t('header.resizeDock'),
+          child: MouseRegion(
+            cursor: SystemMouseCursors.resizeLeftRight,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onHorizontalDragUpdate: (details) {
+                final current = _desktopBottomDockLiveWidth ?? dockWidth;
+                final delta = (left ? -details.delta.dx : details.delta.dx) * 2;
+                setState(() {
+                  _desktopBottomDockLiveWidth =
+                      (current + delta).clamp(minWidth, maxWidth).toDouble();
+                });
+              },
+              onHorizontalDragEnd: (_) {
+                final next = _desktopBottomDockLiveWidth ?? dockWidth;
+                provider.setDesktopBottomDockWidth(next);
+                setState(() => _desktopBottomDockLiveWidth = null);
+              },
+              onHorizontalDragCancel: () {
+                final next = _desktopBottomDockLiveWidth ?? dockWidth;
+                provider.setDesktopBottomDockWidth(next);
+                setState(() => _desktopBottomDockLiveWidth = null);
+              },
+              child: Container(
+                width: 9,
+                margin: const EdgeInsets.symmetric(vertical: 8),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(5),
+                ),
+              ),
+            ),
+          ),
+        );
+
+    final content = Material(
+      color: Colors.transparent,
+      child: Container(
+        width: actualWidth,
+        height: dockHeight,
+        decoration: BoxDecoration(
+          color: panelColor,
+          borderRadius: BorderRadius.circular(collapsed ? 14 : 16),
+          border: Border.all(color: borderColor),
+          boxShadow: shadow,
+        ),
+        child: collapsed
+            ? Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                _buildDesktopHeaderDockMoveGrip(provider, 'bottom',
+                    width: 62,
+                    height: dockHeight,
+                    onFreeDrop: freeDropBottomBar,
+                    onDoubleTap: resetBottomBarDock),
+                IconButton(
+                  tooltip: provider.t('header.expandDock'),
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints.tightFor(width: 30, height: 40),
+                  icon: const Icon(Icons.unfold_more_rounded,
+                      color: Colors.white70, size: 19),
+                  onPressed: () => provider.setDesktopHeaderDockCollapsed(
+                      'bottom', false),
+                ),
+              ])
+            : Column(children: [
+                SizedBox(
+                  height: 16,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      _buildDesktopHeaderDockMoveGrip(provider, 'bottom',
+                          width: 98,
+                          height: 16,
+                          onFreeDrop: freeDropBottomBar,
+                          onDoubleTap: resetBottomBarDock),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: Row(children: [
+                    resizeHandle(true),
+                    Expanded(
+                      child: _HeaderCustomButtonsBar(
+                        provider: provider,
+                        buildButton: _buildCustomHeaderButton,
+                        buttonIds: ids,
+                        storageKey: 'desktop_header_buttons_bottom',
+                        reorderMode: _reorderHeaderMode,
+                        desktopPlacement: 'bottom',
+                        onDesktopButtonDragStarted:
+                            _beginDesktopHeaderDrag,
+                        onDesktopButtonDragEnded: _endDesktopHeaderDrag,
+                        fullWidth: true,
+                        maxWidth: math.max(0.0, dockWidth - 50).toDouble(),
+                        trailing: _buildHeaderCustomizeIcon(provider),
+                        onReorder: _reorderHeaderMode
+                            ? (oldIndex, newIndex) =>
+                                _reorderDesktopHeaderButtonsAt(provider,
+                                    'bottom', oldIndex, newIndex)
+                            : null,
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: provider.t('header.collapseDock'),
+                      visualDensity: VisualDensity.compact,
+                      constraints:
+                          const BoxConstraints.tightFor(width: 32, height: 40),
+                      icon: const Icon(Icons.unfold_less_rounded,
+                          color: Colors.white54, size: 18),
+                      onPressed: () => provider.setDesktopHeaderDockCollapsed(
+                          'bottom', true),
+                    ),
+                    resizeHandle(false),
+                  ]),
+                ),
+              ]),
+      ),
+    );
+
+    return Positioned(
+      left: center.dx - actualWidth / 2,
+      top: center.dy - dockHeight / 2,
+      child:
+          _buildDesktopHeaderDockTarget(provider, 'bottom', content),
+    );
+  }
+
+  Widget _buildDesktopHeaderButtonsDock(MindMapProvider provider) {
+    if (!_isDesktop ||
+        // Scaffold の Drawer よりこのドック用 Stack の方が後に描画されるため、
+        // 開いたマップ一覧の上へボタンバーが重ならないようにする。
+        _drawerOpen ||
+        _moveModeNodeId != null ||
+        _rangeSelectMode ||
+        _editingMapName) return const SizedBox.shrink();
+
+    final panelColor = Color.alphaBlend(
+      provider.headerColor.withValues(alpha: 0.88),
+      const Color(0xFF151522),
+    );
+    final borderColor = Colors.white.withValues(alpha: 0.12);
+    final shadow = <BoxShadow>[
+      BoxShadow(
+        color: Colors.black.withValues(alpha: 0.34),
+        blurRadius: 14,
+        offset: const Offset(0, 4),
+      ),
+    ];
+    final bottomIds = _visibleDesktopHeaderButtonsAt(provider, 'bottom');
+    final leftIds = _visibleDesktopHeaderButtonsAt(provider, 'left');
+    final rightIds = _visibleDesktopHeaderButtonsAt(provider, 'right');
+    // 要素が無いバーは常設しない。辺全体の DragTarget はカスタムボタンまたは
+    // バーをドラッグしている間だけ下の placeholder として表示する。
+    final bottomEnabled = bottomIds.isNotEmpty;
+    final leftEnabled = leftIds.isNotEmpty;
+    final rightEnabled = rightIds.isNotEmpty;
+    final showEmptyTargets = _activeDesktopHeaderDrag != null;
+    if (!bottomEnabled &&
+        !leftEnabled &&
+        !rightEnabled &&
+        !showEmptyTargets) {
+      return const SizedBox.shrink();
+    }
+
+    Widget emptySideTarget(String placement) => Positioned(
+          top: kToolbarHeight + 12,
+          bottom: 12,
+          left: placement == 'left' ? 10 : null,
+          right: placement == 'right' ? 10 : null,
+          child: SafeArea(
+            top: false,
+            child: _buildDesktopHeaderDockTarget(
+              provider,
+              placement,
+              const SizedBox(
+                width: 60,
+                child: Center(
+                  child: Icon(Icons.vertical_align_center_rounded,
+                      color: Colors.white38, size: 22),
+                ),
+              ),
+              placeholder: true,
+            ),
+          ),
+        );
+
+    Widget emptyBottomTarget() => Positioned(
+          left: 80,
+          right: 80,
+          bottom: 12,
+          child: SafeArea(
+            top: false,
+            child: _buildDesktopHeaderDockTarget(
+              provider,
+              'bottom',
+              const SizedBox(
+                width: double.infinity,
+                height: 64,
+                child: Center(
+                  child: Icon(Icons.horizontal_rule_rounded,
+                      color: Colors.white38, size: 28),
+                ),
+              ),
+              placeholder: true,
+            ),
+          ),
+        );
+
+    return Positioned.fill(
+      child: Stack(clipBehavior: Clip.none, children: [
+        if (bottomEnabled)
+          _buildDesktopBottomHeaderDock(
+              provider, bottomIds, panelColor, borderColor, shadow),
+        if (showEmptyTargets && !bottomEnabled) emptyBottomTarget(),
+        if (leftEnabled)
+          _buildDesktopSideHeaderDock(
+              provider, 'left', panelColor, borderColor, shadow),
+        if (showEmptyTargets && !leftEnabled) emptySideTarget('left'),
+        if (rightEnabled)
+          _buildDesktopSideHeaderDock(
+              provider, 'right', panelColor, borderColor, shadow),
+        if (showEmptyTargets && !rightEnabled) emptySideTarget('right'),
+      ]),
+    );
+  }
+
   Widget _buildHeaderMiddleCustomButtons(MindMapProvider provider,
       {double? maxWidth}) {
     if (!_isDesktop) return const SizedBox.shrink();
     // ── 全ページ種別で共通の customHeaderButtons を表示する ──
     // (= ユーザー要望 2026-07: マインドマップとフリーノート/ギャラリーで
     //  ヘッダーのボタン構成を揃える。 旧: normal 以外は galleryHeaderButtons)。
-    final ids = provider.customHeaderButtons;
-    if (ids.isEmpty) return const SizedBox.shrink();
-    return _HeaderCustomButtonsBar(
-      provider: provider,
-      buildButton: _buildCustomHeaderButton,
-      buttonIds: null,
-      reorderMode: _reorderHeaderMode,
-      maxWidth: maxWidth,
-      onReorder: _reorderHeaderMode
-          ? (oldIndex, newIndex) {
-              final int adjustedNew =
-                  newIndex > oldIndex ? newIndex + 1 : newIndex;
-              provider.reorderHeaderButtons(oldIndex, adjustedNew);
-            }
-          : null,
+    final ids = _visibleDesktopHeaderButtonsAt(provider, 'top');
+    // 空の上部バーも常設せず、ドラッグ中だけ配置先を表示する。
+    final enabled = ids.isNotEmpty;
+    final showEmptyTarget = !enabled && _activeDesktopHeaderDrag != null;
+    if (!enabled && !showEmptyTarget) return const SizedBox.shrink();
+
+    if (showEmptyTarget) {
+      return _buildDesktopHeaderDockTarget(
+        provider,
+        'top',
+        const SizedBox(
+          width: 176,
+          height: 42,
+          child: Center(
+            child: Icon(Icons.horizontal_rule_rounded,
+                color: Colors.white38, size: 28),
+          ),
+        ),
+        placeholder: true,
+      );
+    }
+
+    final collapsed = provider.desktopHeaderDockCollapsedAt('top');
+    final moveGrip = _buildDesktopHeaderDockMoveGrip(provider, 'top',
+        width: 32, height: 40);
+    final Widget content;
+    if (collapsed) {
+      content = Material(
+        color: Colors.transparent,
+        child: Container(
+          height: 42,
+          padding: const EdgeInsets.symmetric(horizontal: 3),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(14),
+          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            moveGrip,
+            IconButton(
+              tooltip: provider.t('header.expandDock'),
+              padding: EdgeInsets.zero,
+              constraints:
+                  const BoxConstraints.tightFor(width: 34, height: 38),
+              icon: const Icon(Icons.unfold_more_rounded,
+                  color: Colors.white70, size: 19),
+              onPressed: () => provider.setDesktopHeaderDockCollapsed(
+                  'top', false),
+            ),
+          ]),
+        ),
+      );
+    } else {
+      final barMaxWidth = maxWidth == null
+          ? null
+          : math.max(0.0, maxWidth - 66.0).toDouble();
+      Widget expanded = Material(
+        color: Colors.transparent,
+        child: Container(
+          height: _kHeaderCustomBarHeight,
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(15),
+          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            moveGrip,
+            _HeaderCustomButtonsBar(
+              provider: provider,
+              buildButton: _buildCustomHeaderButton,
+              buttonIds: ids,
+              storageKey: 'desktop_header_buttons_top',
+              reorderMode: _reorderHeaderMode,
+              desktopPlacement: 'top',
+              onDesktopButtonDragStarted: _beginDesktopHeaderDrag,
+              onDesktopButtonDragEnded: _endDesktopHeaderDrag,
+              maxWidth: barMaxWidth,
+              onReorder: _reorderHeaderMode
+                  ? (oldIndex, newIndex) =>
+                      _reorderDesktopHeaderButtonsAt(
+                          provider, 'top', oldIndex, newIndex)
+                  : null,
+            ),
+            IconButton(
+              tooltip: provider.t('header.collapseDock'),
+              padding: EdgeInsets.zero,
+              constraints:
+                  const BoxConstraints.tightFor(width: 34, height: 40),
+              icon: const Icon(Icons.unfold_less_rounded,
+                  color: Colors.white54, size: 18),
+              onPressed: () => provider.setDesktopHeaderDockCollapsed(
+                  'top', true),
+            ),
+          ]),
+        ),
+      );
+      if (maxWidth != null) {
+        expanded = ConstrainedBox(
+          constraints: BoxConstraints(maxWidth: maxWidth),
+          child: expanded,
+        );
+      }
+      content = expanded;
+    }
+
+    return _buildDesktopHeaderDockTarget(
+      provider,
+      'top',
+      content,
     );
   }
 
   Widget _buildHeaderCustomizeIcon(MindMapProvider provider) {
     return IconButton(
       icon: const Icon(Icons.tune_rounded, color: Colors.white70, size: 20),
-      tooltip: 'ヘッダー設定',
+      tooltip: provider.t('menu.customizeHeader'),
       padding: EdgeInsets.zero,
       constraints: const BoxConstraints.tightFor(
         width: _kHeaderCustomButtonExtent,
@@ -39872,9 +41733,6 @@ class _MindMapScreenState extends State<MindMapScreen>
       BuildContext context, MindMapProvider provider) {
     final isRangeMode = _rangeSelectMode;
     final hasRangeSelection = _rangeSelectedIds.isNotEmpty;
-    final mobileHeaderButtons = provider.currentPage.pageType == 'normal'
-        ? provider.customHeaderButtons
-        : provider.galleryHeaderButtons;
     final showMobileHeaderTray = !_isDesktop;
 
     return AppBar(
@@ -39882,8 +41740,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       elevation: 0,
       bottom: showMobileHeaderTray && _mobileHeaderCustomOpen
           ? PreferredSize(
-              preferredSize:
-                  const Size.fromHeight(_kHeaderCustomBarHeight),
+              preferredSize: const Size.fromHeight(_kHeaderCustomBarHeight),
               child: Container(
                 height: _kHeaderCustomBarHeight,
                 width: double.infinity,
@@ -39901,9 +41758,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                 child: _HeaderCustomButtonsBar(
                   provider: provider,
                   buildButton: _buildCustomHeaderButton,
-                  buttonIds: provider.currentPage.pageType == 'normal'
-                      ? null
-                      : mobileHeaderButtons,
+                  // カスタマイズ画面が編集する共通リストを全ページで表示する。
+                  // 旧実装はギャラリーだけ別リストを読んでいたため、追加した
+                  // 「戻る/進む」等が通常マップにだけ現れていた。
+                  buttonIds: null,
                   reorderMode: _reorderHeaderMode,
                   fullWidth: true,
                   trailing: _buildHeaderCustomizeIcon(provider),
@@ -39911,13 +41769,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                       ? (oldIndex, newIndex) {
                           final int adjustedNew =
                               newIndex > oldIndex ? newIndex + 1 : newIndex;
-                          if (provider.currentPage.pageType == 'normal') {
-                            provider.reorderHeaderButtons(
-                                oldIndex, adjustedNew);
-                          } else {
-                            provider.reorderGalleryHeaderButtons(
-                                oldIndex, adjustedNew);
-                          }
+                          provider.reorderHeaderButtons(oldIndex, adjustedNew);
                         }
                       : null,
                 ),
@@ -40131,7 +41983,7 @@ class _MindMapScreenState extends State<MindMapScreen>
               color: Colors.white70,
               size: 21,
             ),
-            tooltip: 'カスタムボタン',
+            tooltip: provider.t('menu.customizeHeader'),
             padding: EdgeInsets.zero,
             constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
             onPressed: () => setState(
@@ -40292,7 +42144,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                   IconButton(
                     icon: const Icon(Icons.delete_outline,
                         color: Colors.redAccent),
-                    tooltip: provider.t('tooltip.deleteSelected'),
+                    tooltip: provider.t(_isDesktop
+                        ? 'tooltip.deleteSelected'
+                        : 'tooltip.deleteSelectedMobile'),
                     padding: _isDesktop ? null : EdgeInsets.zero,
                     constraints: _isDesktop
                         ? null
@@ -42873,7 +44727,12 @@ class _MindMapScreenState extends State<MindMapScreen>
 
     final paintBundles = <({String pageName, List<_PaintSheet> sheets})>[];
     for (final page in mergeablePages.where((p) => p.pageType == 'paint')) {
-      final loaded = await _PaintStore.load(page.id);
+      final loaded = await _PaintStore.load(
+        page.id,
+        defaultSheetName: provider
+            .t('paint.defaultSheetName')
+            .replaceFirst('{n}', '1'),
+      );
       if (!ctx.mounted) return;
       paintBundles.add((pageName: page.name, sheets: loaded.sheets));
     }
@@ -43231,7 +45090,7 @@ class _MindMapScreenState extends State<MindMapScreen>
               // ── Ctrl+1〜9 基準フォルダー表示バッジ ──
               // _shortcutFolderId が現在のフォルダー ID と一致するときだけ表示。
               // ユーザーがどのフォルダーが基準か一目でわかるようにする。
-              if (provider.shortcutFolderId == folder.id) ...[
+              if (_isDesktop && provider.shortcutFolderId == folder.id) ...[
                 Tooltip(
                   message: provider.t('folder.tip.shortcutBase'),
                   child: Container(
@@ -43818,16 +45677,18 @@ class _MindMapScreenState extends State<MindMapScreen>
             icon: Icons.edit_outlined,
             iconColor: const Color(0xFF4FC3F7),
             label: provider.t('folder.rename')),
-        _menuItem<_FolderAction>(
-            value: _FolderAction.toggleShortcut,
-            icon: isShortcut
-                ? Icons.keyboard_command_key
-                : Icons.keyboard_outlined,
-            iconColor:
-                isShortcut ? const Color(0xFFFFB347) : const Color(0xFF6C63FF),
-            label: isShortcut
-                ? provider.t('folder.unsetShortcut')
-                : provider.t('folder.setShortcut')),
+        if (_isDesktop)
+          _menuItem<_FolderAction>(
+              value: _FolderAction.toggleShortcut,
+              icon: isShortcut
+                  ? Icons.keyboard_command_key
+                  : Icons.keyboard_outlined,
+              iconColor: isShortcut
+                  ? const Color(0xFFFFB347)
+                  : const Color(0xFF6C63FF),
+              label: isShortcut
+                  ? provider.t('folder.unsetShortcut')
+                  : provider.t('folder.setShortcut')),
         _menuItem<_FolderAction>(
             value: _FolderAction.export,
             icon: Icons.file_upload_outlined,
@@ -45057,13 +46918,17 @@ class _MindMapScreenState extends State<MindMapScreen>
               return Container(
                 width: canvasW,
                 height: canvasH,
-                // キャンバスの外枠を白線で視覚化（どこまでスクロール可能か分かるように）
-                decoration: BoxDecoration(
-                  border: Border.all(
-                    color: Colors.white.withValues(alpha: 0.35),
-                    width: 2.0,
-                  ),
-                ),
+                // 通常マップではスクロール可能範囲を外枠で示す。ギャラリーは
+                // 内容ぴったりの可変キャンバスに外側ハンドルも重なるため、枠が
+                // 左右非対称に見える。ギャラリーでは装飾枠を描かない。
+                decoration: isShelf
+                    ? null
+                    : BoxDecoration(
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.35),
+                          width: 2.0,
+                        ),
+                      ),
                 child: Stack(
                   key: _canvasKey,
                   clipBehavior: Clip.none,
@@ -45143,8 +47008,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                       Builder(builder: (_) {
                         final p = provider.currentPage;
                         final path = p.backgroundImagePath!;
-                        final file = File(path);
-                        if (!file.existsSync()) return const SizedBox.shrink();
+                        final templateId = _mapBackgroundTemplateId(path);
+                        final file = templateId == null ? File(path) : null;
+                        if (templateId == null && !file!.existsSync()) {
+                          return const SizedBox.shrink();
+                        }
                         final opacity =
                             (p.backgroundOpacityPercent.clamp(0, 100)) / 100.0;
                         BoxFit fit;
@@ -45167,14 +47035,17 @@ class _MindMapScreenState extends State<MindMapScreen>
                             height: canvasSize,
                             child: Opacity(
                               opacity: opacity,
-                              child: Image.file(
-                                file,
-                                fit: fit,
-                                repeat: repeat,
-                                errorBuilder: (_, __, ___) =>
-                                    const SizedBox.shrink(),
-                                gaplessPlayback: true,
-                              ),
+                              child: templateId != null
+                                  ? _MapBackgroundTemplateView(
+                                      templateId: templateId)
+                                  : Image.file(
+                                      file!,
+                                      fit: fit,
+                                      repeat: repeat,
+                                      errorBuilder: (_, __, ___) =>
+                                          const SizedBox.shrink(),
+                                      gaplessPlayback: true,
+                                    ),
                             ),
                           ),
                         );
@@ -45539,13 +47410,14 @@ class _MindMapScreenState extends State<MindMapScreen>
                                       return;
                                     }
                                     // 格納ノードなら展開ポップアップを表示。
-                                    // ただしギャラリーの表紙は、 展開/格納をトグル
-                                    //   する (= ユーザー要望: 表紙は展開しても消えず、
-                                    //   再び押すと格納)。 表紙は削除されない。
+                                    // ギャラリーの表紙は、 いきなり展開/格納せず
+                                    //   「編集 / 削除 / 展開・格納」 のメニューを
+                                    //   出す (= ユーザー要望: 表紙を押すといきなり
+                                    //   開かず項目が出るように)。
                                     if (node.isContainer) {
                                       if (provider.currentPage.pageType ==
                                           'bookshelf') {
-                                        provider.toggleBookshelfCover(node.id);
+                                        _showBookshelfCoverMenu(node);
                                       } else {
                                         _showContainerExpandPopup(
                                             node.id, ctrl);
@@ -45652,6 +47524,28 @@ class _MindMapScreenState extends State<MindMapScreen>
                         onRightClick: _isDesktop
                             ? (globalPos) =>
                                 _showNodeContextMenu(node.id, globalPos, ctrl)
+                            : null,
+                        onInlineEditingStarted: !_isDesktop
+                            ? () {
+                                if (!mounted) return;
+                                setState(
+                                    () => _nestedInlineEditNodeId = node.id);
+                                _scheduleInlineEditorReveal(node.id);
+                              }
+                            : null,
+                        onInlineEditingEnded: !_isDesktop
+                            ? () {
+                                if (!mounted ||
+                                    _nestedInlineEditNodeId != node.id) {
+                                  return;
+                                }
+                                setState(() => _nestedInlineEditNodeId = null);
+                              }
+                            : null,
+                        onRequestScreenFocus: _isDesktop
+                            ? () {
+                                if (mounted) _keyboardFocusNode.requestFocus();
+                              }
                             : null,
                         defaultTitleFontSize: provider.defaultTitleFontSize,
                         defaultMemoFontSize: provider.defaultMemoFontSize,
@@ -47279,7 +49173,10 @@ class _MindMapScreenState extends State<MindMapScreen>
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(provider.t('quickAdd.dialogHint'),
+            Text(
+                provider.t(_isDesktop
+                    ? 'quickAdd.dialogHint'
+                    : 'quickAdd.dialogHintMobile'),
                 style: const TextStyle(color: Colors.white54, fontSize: 12)),
             const SizedBox(height: 12),
             TextField(
@@ -49257,15 +51154,15 @@ class _MindMapScreenState extends State<MindMapScreen>
             ListTile(
               leading: const Icon(Icons.photo_camera_rounded,
                   color: Color(0xFF4FC3F7)),
-              title:
-                  const Text('カメラで読み取る', style: TextStyle(color: Colors.white)),
+              title: Text(provider.t('qr.scanWithCamera'),
+                  style: const TextStyle(color: Colors.white)),
               onTap: () => Navigator.pop(sctx, 'camera'),
             ),
             ListTile(
               leading:
                   const Icon(Icons.image_rounded, color: Color(0xFF4FC3F7)),
-              title:
-                  const Text('画像から読み取る', style: TextStyle(color: Colors.white)),
+              title: Text(provider.t('qr.scanFromImage'),
+                  style: const TextStyle(color: Colors.white)),
               onTap: () => Navigator.pop(sctx, 'gallery'),
             ),
             const SizedBox(height: 8),
@@ -49308,9 +51205,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (decoded == null || decoded.trim().isEmpty) {
       _appSnack(
           context,
-          const SnackBar(
-              content: Text('QRコードを認識できませんでした'),
-              backgroundColor: Color(0xFFE53935)));
+          SnackBar(
+              content: Text(provider.t('qr.notFound')),
+              backgroundColor: const Color(0xFFE53935)));
       return;
     }
     _showQrResultDialog(provider, decoded.trim());
@@ -49323,20 +51220,20 @@ class _MindMapScreenState extends State<MindMapScreen>
       context: context,
       builder: (dctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E32),
-        title: Row(children: const [
-          Icon(Icons.qr_code_scanner_rounded,
+        title: Row(children: [
+          const Icon(Icons.qr_code_scanner_rounded,
               color: Color(0xFF4FC3F7), size: 20),
-          SizedBox(width: 8),
+          const SizedBox(width: 8),
           Expanded(
-              child: Text('QRコード',
-                  style: TextStyle(color: Colors.white, fontSize: 16))),
+              child: Text(provider.t('qr.title'),
+                  style: const TextStyle(color: Colors.white, fontSize: 16))),
         ]),
         content: SizedBox(
           width: 380,
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             Align(
               alignment: Alignment.centerLeft,
-              child: Text(isUrl ? 'リンク' : '内容',
+              child: Text(provider.t(isUrl ? 'qr.link' : 'qr.content'),
                   style: const TextStyle(color: Colors.white54, fontSize: 12)),
             ),
             const SizedBox(height: 6),
@@ -49350,18 +51247,21 @@ class _MindMapScreenState extends State<MindMapScreen>
           TextButton(
             onPressed: () {
               Clipboard.setData(ClipboardData(text: content));
-              _appSnack(context, const SnackBar(content: Text('コピーしました')));
+              _appSnack(
+                  context, SnackBar(content: Text(provider.t('qr.copied'))));
             },
-            child: const Text('コピー', style: TextStyle(color: Colors.white54)),
+            child: Text(provider.t('btn.copy'),
+                style: const TextStyle(color: Colors.white54)),
           ),
           TextButton(
             onPressed: () => Navigator.pop(dctx),
-            child: const Text('閉じる', style: TextStyle(color: Colors.white54)),
+            child: Text(provider.t('btn.close'),
+                style: const TextStyle(color: Colors.white54)),
           ),
           ElevatedButton.icon(
             icon: Icon(isUrl ? Icons.open_in_new_rounded : Icons.search_rounded,
                 size: 18),
-            label: Text(isUrl ? '開く' : 'Google検索'),
+            label: Text(provider.t(isUrl ? 'btn.open' : 'search.googleSearch')),
             onPressed: () {
               Navigator.pop(dctx);
               if (isUrl) {
@@ -49925,8 +51825,8 @@ class _MindMapScreenState extends State<MindMapScreen>
         final png =
             await decodedUiImage.toByteData(format: ui.ImageByteFormat.png);
         if (png != null && png.lengthInBytes > 0) {
-          storedBytes = png.buffer
-              .asUint8List(png.offsetInBytes, png.lengthInBytes);
+          storedBytes =
+              png.buffer.asUint8List(png.offsetInBytes, png.lengthInBytes);
           safeExt = 'png';
         }
       }
@@ -51068,16 +52968,14 @@ class _MindMapScreenState extends State<MindMapScreen>
             final request = http.Request('GET', fetchUri)
               ..followRedirects = true
               ..maxRedirects = 3;
-            final response = await client
-                .send(request)
-                .timeout(const Duration(seconds: 10));
+            final response =
+                await client.send(request).timeout(const Duration(seconds: 10));
             if (response.statusCode < 200 || response.statusCode >= 300) {
-              throw HttpException(
-                  'HTTP ${response.statusCode}', uri: response.request?.url);
+              throw HttpException('HTTP ${response.statusCode}',
+                  uri: response.request?.url);
             }
             final announcedLength = response.contentLength;
-            if (announcedLength != null &&
-                announcedLength > maxResponseBytes) {
+            if (announcedLength != null && announcedLength > maxResponseBytes) {
               throw const FormatException('共有データが10MBを超えています。');
             }
 
@@ -51122,8 +53020,8 @@ class _MindMapScreenState extends State<MindMapScreen>
             context,
             const SnackBar(
               backgroundColor: Color(0xFF43B97F),
-              content: Text('共有ページを読み込みました。',
-                  style: TextStyle(color: Colors.white)),
+              content:
+                  Text('共有ページを読み込みました。', style: TextStyle(color: Colors.white)),
             ),
           );
         } catch (e) {
@@ -51218,11 +53116,13 @@ class _MindMapScreenState extends State<MindMapScreen>
                                               ?.text
                                               ?.trim() ??
                                           '';
-                                      if ((pasted == url || pasted == jsonUrl) &&
+                                      if ((pasted == url ||
+                                              pasted == jsonUrl) &&
                                           isHttpUrl(clipboardBeforeShare)) {
                                         pasted = clipboardBeforeShare;
                                       }
-                                      if (!dctx.mounted || pasted.isEmpty) return;
+                                      if (!dctx.mounted || pasted.isEmpty)
+                                        return;
                                       importUrlController
                                         ..text = pasted
                                         ..selection = TextSelection.collapsed(
@@ -51234,8 +53134,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                         ),
                         onSubmitted: importingSharedPage
                             ? null
-                            : (_) =>
-                                importSharedPage(dctx, setDialogState),
+                            : (_) => importSharedPage(dctx, setDialogState),
                         onChanged: (_) {
                           if (importError != null) {
                             setDialogState(() => importError = null);
@@ -53511,7 +55410,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                                                           .currentPageIndex]
                                                       .id)
                                               ? const Color(0xFF43B97F)
-                                              : Colors.white38,
+                                              : Colors.white70,
                                           size: 14,
                                         ),
                                         const SizedBox(width: 4),
@@ -53529,7 +55428,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                                                             .currentPageIndex]
                                                         .id)
                                                 ? const Color(0xFF43B97F)
-                                                : Colors.white38,
+                                                : Colors.white70,
                                             fontSize: 10,
                                             fontWeight: FontWeight.w600,
                                           ),
@@ -53542,7 +55441,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                             Row(children: [
                               Text('${provider.t('sync.groupCode')} ',
                                   style: const TextStyle(
-                                      color: Colors.white54, fontSize: 12)),
+                                      color: Colors.white70, fontSize: 12)),
                               Text(provider.currentGroupId ?? '',
                                   style: const TextStyle(
                                       color: Colors.white,
@@ -53572,7 +55471,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   child: const Icon(
                                     Icons.content_copy_rounded,
                                     size: 14,
-                                    color: Colors.white54,
+                                    color: Colors.white70,
                                   ),
                                 ),
                               ),
@@ -53580,7 +55479,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                           ])
                     : Text(provider.t('sync.notSyncingLocalOnly'),
                         style: const TextStyle(
-                            color: Colors.white54, fontSize: 12)),
+                            color: Colors.white70, fontSize: 12)),
               ),
 
               // ── 参加済みグループリスト（2つ以上の場合に切替UIを表示）──
@@ -53590,7 +55489,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                   alignment: Alignment.centerLeft,
                   child: Text(provider.t('sync.joinedGroupsTapSwitch'),
                       style:
-                          const TextStyle(color: Colors.white54, fontSize: 11)),
+                          const TextStyle(color: Colors.white70, fontSize: 11)),
                 ),
                 const SizedBox(height: 6),
                 Container(
@@ -53675,19 +55574,19 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     color: const Color(0xFF43B97F),
                                     borderRadius: BorderRadius.circular(4),
                                   ),
-                                  child: Text(provider.t('group.active'),
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 9,
-                                        fontWeight: FontWeight.w700,
-                                      )),
+                                   child: Text(provider.t('group.active'),
+                                       style: const TextStyle(
+                                         color: Color(0xFF101426),
+                                         fontSize: 9,
+                                         fontWeight: FontWeight.w700,
+                                       )),
                                 ),
                               IconButton(
                                 padding: EdgeInsets.zero,
                                 constraints: const BoxConstraints(
                                     minWidth: 28, minHeight: 28),
                                 icon: const Icon(Icons.content_copy_rounded,
-                                    color: Colors.white54, size: 14),
+                                    color: Colors.white70, size: 14),
                                 tooltip: provider.t('group.copyCode'),
                                 onPressed: () {
                                   Clipboard.setData(ClipboardData(text: gid));
@@ -53733,12 +55632,16 @@ class _MindMapScreenState extends State<MindMapScreen>
                                               Navigator.pop(cctx, false),
                                           child: Text(provider.t('btn.cancel'),
                                               style: const TextStyle(
-                                                  color: Colors.white54)),
+                                                  color: Colors.white70)),
                                         ),
                                         ElevatedButton(
-                                          style: ElevatedButton.styleFrom(
+                                         style: ElevatedButton.styleFrom(
                                               backgroundColor:
-                                                  Colors.redAccent),
+                                                  const Color(0xFFFF6B6B),
+                                              foregroundColor:
+                                                  const Color(0xFF101426),
+                                              textStyle: const TextStyle(
+                                                  fontWeight: FontWeight.w700)),
                                           onPressed: () =>
                                               Navigator.pop(cctx, true),
                                           child: Text(
@@ -53784,6 +55687,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                     label: Text(provider.t('sync.createGroup')),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF43B97F),
+                      foregroundColor: const Color(0xFF101426),
+                      textStyle: const TextStyle(fontWeight: FontWeight.w700),
                       padding: const EdgeInsets.symmetric(vertical: 10),
                     ),
                     onPressed: () async {
@@ -53805,7 +55710,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                           _appSnack(
                               context,
                               SnackBar(
-                                content: Text('Error: $e'),
+                                content: Text(provider
+                                    .t('sync.error')
+                                    .replaceFirst('{err}', '$e')),
                                 backgroundColor: Colors.redAccent,
                               ));
                         }
@@ -53834,7 +55741,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                           ? provider.t('sync.joinNewGroup')
                           : provider.t('sync.groupCodeHint'),
                       hintStyle: const TextStyle(
-                          color: Colors.white24,
+                          color: Colors.white70,
                           fontSize: 12,
                           letterSpacing: 0,
                           fontWeight: FontWeight.normal),
@@ -53865,7 +55772,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                           _appSnack(
                               context,
                               SnackBar(
-                                content: Text('Error: $e'),
+                                content: Text(provider
+                                    .t('sync.error')
+                                    .replaceFirst('{err}', '$e')),
                                 backgroundColor: Colors.redAccent,
                               ));
                         }
@@ -53877,6 +55786,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                 ElevatedButton(
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF4FC3F7),
+                    foregroundColor: const Color(0xFF101426),
+                    textStyle: const TextStyle(fontWeight: FontWeight.w700),
                     padding: const EdgeInsets.symmetric(
                         horizontal: 12, vertical: 10),
                   ),
@@ -53901,7 +55812,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                         _appSnack(
                             context,
                             SnackBar(
-                              content: Text('Error: $e'),
+                              content: Text(provider
+                                  .t('sync.error')
+                                  .replaceFirst('{err}', '$e')),
                               backgroundColor: Colors.redAccent,
                             ));
                       }
@@ -53921,6 +55834,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                     label: Text(provider.t('sync.upload')),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF43B97F),
+                      foregroundColor: const Color(0xFF101426),
+                      textStyle: const TextStyle(fontWeight: FontWeight.w700),
                       padding: const EdgeInsets.symmetric(vertical: 12),
                     ),
                     onPressed: provider.isUploading || provider.isDownloading
@@ -53934,7 +55849,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                 const SizedBox(height: 4),
                 Text(provider.t('sync.uploadHint'),
                     style:
-                        const TextStyle(color: Colors.white38, fontSize: 10)),
+                        const TextStyle(color: Colors.white70, fontSize: 10)),
                 const SizedBox(height: 12),
 
                 // ── ダウンロードボタン ──
@@ -53945,6 +55860,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                     label: Text(provider.t('sync.download')),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF4FC3F7),
+                      foregroundColor: const Color(0xFF101426),
+                      textStyle: const TextStyle(fontWeight: FontWeight.w700),
                       padding: const EdgeInsets.symmetric(vertical: 12),
                     ),
                     onPressed: provider.isUploading || provider.isDownloading
@@ -53958,7 +55875,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                 const SizedBox(height: 4),
                 Text(provider.t('sync.downloadHint'),
                     style:
-                        const TextStyle(color: Colors.white38, fontSize: 10)),
+                        const TextStyle(color: Colors.white70, fontSize: 10)),
                 const SizedBox(height: 16),
 
                 // ── 現在のアクティブグループから離脱 ──
@@ -53967,13 +55884,13 @@ class _MindMapScreenState extends State<MindMapScreen>
                   child: OutlinedButton.icon(
                     icon: const Icon(Icons.link_off_rounded,
                         size: 16, color: Colors.redAccent),
-                    label: Text(
-                        provider.joinedGroupIds.length >= 2
-                            ? provider.t('sync.leaveGroup')
-                            : provider.t('sync.leaveGroupShort'),
-                        style: const TextStyle(color: Colors.redAccent)),
-                    style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: Colors.redAccent),
+                     label: Text(
+                         provider.joinedGroupIds.length >= 2
+                             ? provider.t('sync.leaveGroup')
+                             : provider.t('sync.leaveGroupShort'),
+                        style: const TextStyle(color: Color(0xFFFF6B6B))),
+                     style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Color(0xFFFF6B6B)),
                       padding: const EdgeInsets.symmetric(vertical: 10),
                     ),
                     onPressed: () async {
@@ -53992,7 +55909,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             TextButton(
               onPressed: () => Navigator.pop(dctx),
               child: Text(provider.t('btn.close'),
-                  style: const TextStyle(color: Colors.white54)),
+                  style: const TextStyle(color: Colors.white70)),
             ),
           ],
         ),
@@ -54092,8 +56009,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   contentPadding: EdgeInsets.zero,
                                   controlAffinity:
                                       ListTileControlAffinity.leading,
-                                  activeColor: const Color(0xFF43B97F),
-                                  checkColor: Colors.white,
+                                   activeColor: const Color(0xFF43B97F),
+                                  checkColor: const Color(0xFF101426),
+                                  side: const BorderSide(color: Colors.white70),
                                   title: Row(children: [
                                     if (isCurrent)
                                       Container(
@@ -54107,8 +56025,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                                         ),
                                         child:
                                             Text(provider.t('common.current'),
-                                                style: const TextStyle(
-                                                  color: Colors.white,
+                                                 style: const TextStyle(
+                                                  color: Color(0xFF101426),
                                                   fontSize: 9,
                                                   fontWeight: FontWeight.w700,
                                                 )),
@@ -54118,19 +56036,23 @@ class _MindMapScreenState extends State<MindMapScreen>
                                           style: TextStyle(
                                               color: canSelect
                                                   ? Colors.white
-                                                  : Colors.white38,
+                                                  : Colors.white70,
                                               fontSize: 13),
                                           overflow: TextOverflow.ellipsis),
                                     ),
                                   ]),
                                   subtitle: Text(
                                       isLockedByOthers
-                                          ? '🔒 他のユーザーが制限中 (上書き不可)'
-                                          : 'ノード数: ${page.nodes.length}',
+                                          ? provider.t(
+                                              'upload.lockedByOtherOverwrite')
+                                          : provider
+                                              .t('admin.nodeCount')
+                                              .replaceFirst('{n}',
+                                                  '${page.nodes.length}'),
                                       style: TextStyle(
                                           color: isLockedByOthers
                                               ? const Color(0xFFFFB74D)
-                                              : Colors.white38,
+                                              : Colors.white70,
                                           fontSize: 10)),
                                   value: checked,
                                   onChanged: canSelect
@@ -54146,7 +56068,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                               ),
                               // ── 自動同期トグル ──
                               Tooltip(
-                                message: isAutoSync ? '自動同期: ON' : '自動同期: OFF',
+                                message: isAutoSync
+                                    ? provider.t('sync.autoSyncOn')
+                                    : provider.t('sync.autoSyncOff'),
                                 child: InkWell(
                                   borderRadius: BorderRadius.circular(16),
                                   onTap: () {
@@ -54162,7 +56086,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                                           : Icons.sync_disabled_rounded,
                                       color: isAutoSync
                                           ? const Color(0xFF43B97F)
-                                          : Colors.white24,
+                                          : Colors.white70,
                                       size: 18,
                                     ),
                                   ),
@@ -54181,10 +56105,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                               //   タップ不可 (= 解除権限なし)。
                               Tooltip(
                                 message: isLockedByOthers
-                                    ? '他のユーザーが制限中 (解除不可)'
+                                    ? provider
+                                        .t('upload.lockedByOtherCannotUnlock')
                                     : (isMyLocked
-                                        ? '再アップロード制限: ON (他ユーザーは上書き不可)'
-                                        : '再アップロード制限: OFF'),
+                                        ? provider.t('upload.restrictOn')
+                                        : provider.t('upload.restrictOff')),
                                 child: InkWell(
                                   borderRadius: BorderRadius.circular(16),
                                   onTap: isLockedByOthers
@@ -54227,7 +56152,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                                           ? const Color(0xFFFFB74D)
                                           : (isMyLocked
                                               ? const Color(0xFF43B97F)
-                                              : Colors.white24),
+                                              : Colors.white70),
                                       size: 18,
                                     ),
                                   ),
@@ -54250,13 +56175,13 @@ class _MindMapScreenState extends State<MindMapScreen>
                               .map((p) => p.id))),
                       child: Text(provider.t('btn.selectAll'),
                           style: const TextStyle(
-                              color: Colors.white54, fontSize: 11)),
+                              color: Colors.white70, fontSize: 11)),
                     ),
                     TextButton(
                       onPressed: () => setD(() => selected.clear()),
                       child: Text(provider.t('btn.deselectAll'),
                           style: const TextStyle(
-                              color: Colors.white54, fontSize: 11)),
+                              color: Colors.white70, fontSize: 11)),
                     ),
                   ]),
                   // ── 同期 + 制限機能の説明 ──
@@ -54268,10 +56193,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                       const SizedBox(width: 4),
                       Expanded(
                         child: Text(
-                          '右の同期アイコンをONにすると、変更時に自動でクラウドに同期されます',
-                          style: TextStyle(
-                              color: Colors.white.withValues(alpha: 0.3),
-                              fontSize: 9),
+                          provider.t('upload.autoSyncHint'),
+                          style: const TextStyle(
+                              color: Colors.white70, fontSize: 10),
                         ),
                       ),
                     ]),
@@ -54284,10 +56208,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                       const SizedBox(width: 4),
                       Expanded(
                         child: Text(
-                          '鍵アイコンをONにすると、 他ユーザーがこのマップを上書きアップロードできなくなります',
-                          style: TextStyle(
-                              color: Colors.white.withValues(alpha: 0.3),
-                              fontSize: 9),
+                          provider.t('upload.restrictHint'),
+                          style: const TextStyle(
+                              color: Colors.white70, fontSize: 10),
                         ),
                       ),
                     ]),
@@ -54301,11 +56224,15 @@ class _MindMapScreenState extends State<MindMapScreen>
                     TextButton(
                       onPressed: () => Navigator.pop(dctx),
                       child: Text(provider.t('btn.cancel'),
-                          style: const TextStyle(color: Colors.white54)),
+                          style: const TextStyle(color: Colors.white70)),
                     ),
                     ElevatedButton(
                       style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF43B97F)),
+                        backgroundColor: const Color(0xFF43B97F),
+                        foregroundColor: const Color(0xFF101426),
+                        textStyle:
+                            const TextStyle(fontWeight: FontWeight.w700),
+                      ),
                       onPressed: selected.isEmpty
                           ? null
                           : () async {
@@ -54351,12 +56278,14 @@ class _MindMapScreenState extends State<MindMapScreen>
                                       .lastSyncAttachmentFailed) {
                                     _appSnack(
                                         context,
-                                        const SnackBar(
+                                        SnackBar(
                                           content: Text(
-                                              '一部のファイル (PDF/画像/動画) のアップロードが完了しませんでした。'
-                                              '通信環境を確認して、もう一度アップロードしてください。'),
-                                          backgroundColor: Color(0xFFFF6B6B),
-                                          duration: Duration(seconds: 5),
+                                              provider.t(
+                                                  'upload.attachmentFailed')),
+                                          backgroundColor:
+                                              const Color(0xFFFF6B6B),
+                                          duration:
+                                              const Duration(seconds: 5),
                                         ));
                                   } else {
                                     _appSnack(
@@ -54384,11 +56313,14 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   if (isUploadRestrictedError(e)) {
                                     _appSnack(
                                         context,
-                                        const SnackBar(
+                                        SnackBar(
                                           content: Text(
-                                              '🔒 このマップは他のユーザーによって再アップロードが制限されています'),
-                                          backgroundColor: Color(0xFFFFB74D),
-                                          duration: Duration(seconds: 4),
+                                              provider.t(
+                                                  'upload.restrictedByOther')),
+                                          backgroundColor:
+                                              const Color(0xFFFFB74D),
+                                          duration:
+                                              const Duration(seconds: 4),
                                         ));
                                   } else {
                                     _appSnack(
@@ -54488,7 +56420,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                   const SizedBox(height: 12),
                   Text(provider.t('download.fetching'),
                       style:
-                          const TextStyle(color: Colors.white54, fontSize: 12)),
+                          const TextStyle(color: Colors.white70, fontSize: 12)),
                   const SizedBox(height: 20),
                 ] else if (errorMsg != null) ...[
                   const SizedBox(height: 8),
@@ -54497,17 +56429,17 @@ class _MindMapScreenState extends State<MindMapScreen>
                           .t('common.errorPrefix')
                           .replaceFirst('{err}', '$errorMsg'),
                       style: const TextStyle(
-                          color: Colors.redAccent, fontSize: 12)),
+                          color: Color(0xFFFF6B6B), fontSize: 12)),
                   const SizedBox(height: 8),
                 ] else if (cloudPages != null && cloudPages!.isEmpty) ...[
                   const SizedBox(height: 16),
                   Text(provider.t('download.empty'),
                       style:
-                          const TextStyle(color: Colors.white54, fontSize: 13)),
+                          const TextStyle(color: Colors.white70, fontSize: 13)),
                   const SizedBox(height: 4),
                   Text(provider.t('download.uploadFirst'),
                       style:
-                          const TextStyle(color: Colors.white38, fontSize: 11)),
+                          const TextStyle(color: Colors.white70, fontSize: 11)),
                   const SizedBox(height: 16),
                 ] else if (cloudPages != null) ...[
                   // ローカルに既にあるかどうかの表示
@@ -54526,7 +56458,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                           contentPadding: EdgeInsets.zero,
                           controlAffinity: ListTileControlAffinity.leading,
                           activeColor: const Color(0xFF4FC3F7),
-                          checkColor: Colors.white,
+                          checkColor: const Color(0xFF101426),
+                          side: const BorderSide(color: Colors.white70),
                           title: Text(page.name,
                               style: const TextStyle(
                                   color: Colors.white, fontSize: 13)),
@@ -54534,24 +56467,29 @@ class _MindMapScreenState extends State<MindMapScreen>
                             Expanded(
                               child: Text(
                                 existsLocal
-                                    ? 'ノード数: ${page.nodes.length}（ローカルを上書き）'
-                                    : 'ノード数: ${page.nodes.length}（新規追加）',
+                                    ? provider
+                                        .t('download.localOverwrite')
+                                        .replaceFirst(
+                                            '{n}', '${page.nodes.length}')
+                                    : provider
+                                        .t('download.localNew')
+                                        .replaceFirst(
+                                            '{n}', '${page.nodes.length}'),
                                 style: TextStyle(
                                     color: existsLocal
-                                        ? Colors.orangeAccent
-                                            .withValues(alpha: 0.7)
-                                        : Colors.white38,
+                                        ? const Color(0xFFFFB74D)
+                                        : Colors.white70,
                                     fontSize: 10),
                               ),
                             ),
                             const Icon(Icons.data_usage_rounded,
-                                size: 9, color: Colors.white38),
+                                size: 9, color: Colors.white70),
                             const SizedBox(width: 2),
                             Text(
                               MindMapProvider.formatBytes(
                                   provider.calculatePageSizeBytes(page)),
                               style: const TextStyle(
-                                  color: Colors.white54,
+                                  color: Colors.white70,
                                   fontSize: 10,
                                   fontWeight: FontWeight.w600),
                             ),
@@ -54574,13 +56512,13 @@ class _MindMapScreenState extends State<MindMapScreen>
                           () => selected.addAll(cloudPages!.map((p) => p.id))),
                       child: Text(provider.t('btn.selectAll'),
                           style: const TextStyle(
-                              color: Colors.white54, fontSize: 11)),
+                              color: Colors.white70, fontSize: 11)),
                     ),
                     TextButton(
                       onPressed: () => setD(() => selected.clear()),
                       child: Text(provider.t('btn.deselectAll'),
                           style: const TextStyle(
-                              color: Colors.white54, fontSize: 11)),
+                              color: Colors.white70, fontSize: 11)),
                     ),
                   ]),
                 ],
@@ -54592,7 +56530,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                     TextButton(
                       onPressed: () => Navigator.pop(dctx),
                       child: Text(provider.t('btn.cancel'),
-                          style: const TextStyle(color: Colors.white54)),
+                          style: const TextStyle(color: Colors.white70)),
                     ),
                     if (cloudPages != null && cloudPages!.isNotEmpty) ...[
                       // クラウドから削除
@@ -54622,11 +56560,16 @@ class _MindMapScreenState extends State<MindMapScreen>
                                             Navigator.pop(cctx, false),
                                         child: Text(provider.t('btn.cancel'),
                                             style: const TextStyle(
-                                                color: Colors.white54)),
+                                                color: Colors.white70)),
                                       ),
                                       ElevatedButton(
                                         style: ElevatedButton.styleFrom(
-                                            backgroundColor: Colors.redAccent),
+                                            backgroundColor:
+                                                const Color(0xFFFF6B6B),
+                                            foregroundColor:
+                                                const Color(0xFF101426),
+                                            textStyle: const TextStyle(
+                                                fontWeight: FontWeight.w700)),
                                         onPressed: () =>
                                             Navigator.pop(cctx, true),
                                         child: Text(provider.t('btn.deleteDo')),
@@ -54678,7 +56621,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                       ),
                       ElevatedButton(
                         style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF4FC3F7)),
+                          backgroundColor: const Color(0xFF4FC3F7),
+                          foregroundColor: const Color(0xFF101426),
+                          textStyle:
+                              const TextStyle(fontWeight: FontWeight.w700),
+                        ),
                         onPressed: selected.isEmpty
                             ? null
                             : () {
@@ -54702,7 +56649,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                                             provider.t('download.started')),
                                         backgroundColor: Color(0xFF4FC3F7),
                                         action: SnackBarAction(
-                                          label: '詳細',
+                                          label:
+                                              provider.t('download.details'),
                                           textColor: Colors.white,
                                           onPressed: () =>
                                               _showCloudDownloadDetailsDialog(
@@ -54735,13 +56683,14 @@ class _MindMapScreenState extends State<MindMapScreen>
                                           .lastSyncAttachmentFailed) {
                                         _appSnack(
                                             context,
-                                            const SnackBar(
+                                            SnackBar(
                                               content: Text(
-                                                  '一部のファイル (PDF/画像/動画) の中身がダウンロードできませんでした。'
-                                                  '通信環境を確認して、もう一度ダウンロードしてください。'),
+                                                  provider.t(
+                                                      'download.attachmentFailed')),
                                               backgroundColor:
-                                                  Color(0xFFFF6B6B),
-                                              duration: Duration(seconds: 5),
+                                                  const Color(0xFFFF6B6B),
+                                              duration:
+                                                  const Duration(seconds: 5),
                                             ));
                                       } else {
                                         _appSnack(
@@ -54786,15 +56735,17 @@ class _MindMapScreenState extends State<MindMapScreen>
     String statusLabel(CloudDownloadItem item) {
       switch (item.status) {
         case CloudDownloadItemStatus.pending:
-          return item.skip ? '除外予定' : '待機中';
+          return item.skip
+              ? provider.t('download.statusPendingSkip')
+              : provider.t('download.statusPending');
         case CloudDownloadItemStatus.downloading:
-          return '取得中';
+          return provider.t('download.statusDownloading');
         case CloudDownloadItemStatus.completed:
-          return '完了';
+          return provider.t('download.statusCompleted');
         case CloudDownloadItemStatus.failed:
-          return '失敗';
+          return provider.t('download.statusFailed');
         case CloudDownloadItemStatus.skipped:
-          return '除外';
+          return provider.t('download.statusSkipped');
       }
     }
 
@@ -54803,24 +56754,24 @@ class _MindMapScreenState extends State<MindMapScreen>
         case CloudDownloadItemStatus.completed:
           return const Color(0xFF43B97F);
         case CloudDownloadItemStatus.failed:
-          return Colors.redAccent;
+          return const Color(0xFFFF6B6B);
         case CloudDownloadItemStatus.downloading:
           return const Color(0xFF4FC3F7);
         case CloudDownloadItemStatus.skipped:
-          return Colors.white38;
+          return Colors.white70;
         case CloudDownloadItemStatus.pending:
-          return item.skip ? Colors.white38 : const Color(0xFFFFB347);
+          return item.skip ? Colors.white70 : const Color(0xFFFFB347);
       }
     }
 
     String kindLabel(String kind) {
       switch (kind) {
         case 'page':
-          return 'マップ本体';
+          return provider.t('download.kindPage');
         case 'video':
-          return '動画';
+          return provider.t('download.kindVideo');
         default:
-          return 'PDF/画像/添付';
+          return provider.t('download.kindAttachment');
       }
     }
 
@@ -54836,9 +56787,10 @@ class _MindMapScreenState extends State<MindMapScreen>
               const Icon(Icons.cloud_download_rounded,
                   color: Color(0xFF4FC3F7), size: 20),
               const SizedBox(width: 8),
-              const Expanded(
-                child: Text('ダウンロード詳細',
-                    style: TextStyle(color: Colors.white, fontSize: 14)),
+              Expanded(
+                child: Text(provider.t('download.detailsTitle'),
+                    style:
+                        const TextStyle(color: Colors.white, fontSize: 14)),
               ),
               if (p.isDownloading)
                 Text('${(p.syncProgress * 100).round()}%',
@@ -54850,11 +56802,11 @@ class _MindMapScreenState extends State<MindMapScreen>
             content: SizedBox(
               width: 460,
               child: items.isEmpty
-                  ? const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 18),
-                      child: Text('進行中または直近のダウンロード項目はありません',
-                          style:
-                              TextStyle(color: Colors.white54, fontSize: 12)),
+                  ? Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 18),
+                      child: Text(provider.t('download.detailsEmpty'),
+                          style: const TextStyle(
+                              color: Colors.white70, fontSize: 12)),
                     )
                   : ConstrainedBox(
                       constraints: const BoxConstraints(maxHeight: 460),
@@ -54930,33 +56882,41 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     style: TextStyle(
                                         color: item.status ==
                                                 CloudDownloadItemStatus.failed
-                                            ? Colors.redAccent
-                                            : Colors.white38,
+                                            ? const Color(0xFFFF6B6B)
+                                            : Colors.white70,
                                         fontSize: 10),
                                   ),
                                 ),
                                 if (item.canRetry)
                                   TextButton.icon(
+                                    style: TextButton.styleFrom(
+                                      foregroundColor:
+                                          const Color(0xFF81D4FA),
+                                    ),
                                     onPressed: p.isDownloading
                                         ? null
                                         : () =>
                                             p.retryCloudDownloadItem(item.id),
                                     icon: const Icon(Icons.refresh_rounded,
                                         size: 14),
-                                    label: const Text('再取得',
-                                        style: TextStyle(fontSize: 11)),
+                                    label: Text(provider.t('download.retry'),
+                                        style: const TextStyle(fontSize: 11)),
                                   )
                                 else if (canToggle)
                                   Row(
                                       mainAxisSize: MainAxisSize.min,
                                       children: [
-                                        const Text('取得',
-                                            style: TextStyle(
-                                                color: Colors.white54,
+                                        Text(provider.t('download.include'),
+                                            style: const TextStyle(
+                                                color: Colors.white70,
                                                 fontSize: 10)),
                                         Checkbox(
-                                          value: include,
-                                          activeColor: const Color(0xFF4FC3F7),
+                                         value: include,
+                                         activeColor: const Color(0xFF4FC3F7),
+                                          checkColor:
+                                              const Color(0xFF101426),
+                                          side: const BorderSide(
+                                              color: Colors.white70),
                                           visualDensity: VisualDensity.compact,
                                           onChanged: (v) =>
                                               p.setCloudDownloadItemSkipped(
@@ -54974,9 +56934,12 @@ class _MindMapScreenState extends State<MindMapScreen>
               if (failed > 0)
                 Padding(
                   padding: const EdgeInsets.only(right: 8),
-                  child: Text('$failed件の取得に失敗',
+                  child: Text(
+                      provider
+                          .t('download.failedCount')
+                          .replaceFirst('{n}', '$failed'),
                       style: const TextStyle(
-                          color: Colors.redAccent, fontSize: 11)),
+                          color: Color(0xFFFF6B6B), fontSize: 11)),
                 ),
               TextButton(
                 onPressed: () => Navigator.pop(dctx),
@@ -55114,6 +57077,7 @@ class _MindMapScreenState extends State<MindMapScreen>
               child: Text(provider.t('btn.cancel'),
                   style: const TextStyle(color: Colors.white54))),
           ElevatedButton(
+            autofocus: true,
             onPressed: () {
               Navigator.pop(ctx);
               provider.deletePage(index);
@@ -56106,6 +58070,69 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   // ─── カスタムキーバインド対応：キー→コマンド解決 ─────────────────────────────
 
+  /// UI 上で変更不可として扱うキー。固定コマンドだけでなく、Focus より先に
+  /// HardwareKeyboard で捕捉する実ショートカットも含める。
+  static const Set<String> _nonAssignableShortcutCombos = {
+    'ctrl',
+    'ctrl+click',
+    'ctrl+1',
+    'ctrl+2',
+    'ctrl+3',
+    'ctrl+4',
+    'ctrl+5',
+    'ctrl+6',
+    'ctrl+7',
+    'ctrl+8',
+    'ctrl+9',
+    'ctrl+k',
+    'ctrl+l',
+    'ctrl+shift+s',
+    'ctrl+f',
+    'ctrl+r',
+    'ctrl+shift+p',
+    'ctrl+shift+d',
+    'backspace',
+    'enter',
+    '↑',
+    '↓',
+    '←',
+    '→',
+    'ctrl++',
+    'ctrl+-',
+    'ctrl+0',
+    'esc',
+    'f6',
+    'alt+←',
+    'alt+→',
+    'ctrl+shift+\\',
+    'ctrl+shift+^',
+    'ctrl+shift+z',
+  };
+
+  static const Map<String, String> _shortcutAliases = {
+    'ctrl+shift+z': 'redo',
+  };
+
+  static String _normalizeShortcutCombo(String combo) =>
+      combo.trim().toLowerCase();
+
+  String? _effectiveShortcutKey(String commandId) {
+    for (final cmd in _commandDefs) {
+      if (cmd['id'] == commandId) {
+        return _customKeyBindings[commandId] ?? (cmd['defaultKey']! as String);
+      }
+    }
+    return null;
+  }
+
+  /// 直接捕捉が必要なキーも、一覧の無効化・再割り当てを尊重させる。
+  bool _shortcutCommandMatches(String commandId, String combo) {
+    if (_disabledShortcuts.contains(commandId)) return false;
+    final effective = _effectiveShortcutKey(commandId);
+    return effective != null &&
+        _normalizeShortcutCombo(effective) == _normalizeShortcutCombo(combo);
+  }
+
   /// LogicalKeyboardKey をショートカット表示文字列に変換
   static String? _logicalKeyLabel(LogicalKeyboardKey key) {
     // AOT(release)ビルドで const map<LogicalKeyboardKey,...> が評価エラーになるため
@@ -56171,6 +58198,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     // バックスラッシュ (\) は日本語 JIS の ¥ キーと同じ logical key。
     // `Ctrl+\` 等のショートカット表記で使うため明示的にラベル化。
     if (key == LogicalKeyboardKey.backslash) return '\\';
+    if (key == LogicalKeyboardKey.caret) return '^';
     return null;
   }
 
@@ -56194,30 +58222,15 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// カスタムバインディングを優先し、なければデフォルトを使用
   String? _commandForKeyCombo(String combo) {
     if (combo.isEmpty) return null;
-    final normalized = combo.trim().toLowerCase();
-    // 予約キー: ハードコードされた固定ショートカットには譲る
-    // （Ctrl+K/Ctrl+L は lockH/lockV のハードコード側に委譲する）
-    const reserved = {
-      'ctrl+k',
-      'ctrl+l',
-      'ctrl+v',
-    };
-    if (reserved.contains(normalized)) return null;
-    // 複数キーへのエイリアス: 同じコマンドを複数の組み合わせで呼び出せる
-    // （redo: Ctrl+Y が一般的だが、VSCode等を使う人のために Ctrl+Shift+Z も有効）
-    const aliases = {
-      'ctrl+shift+z': 'redo',
-    };
-    final aliased = aliases[normalized];
+    final normalized = _normalizeShortcutCombo(combo);
+    // Ctrl+Shift+Z は一覧にも固定の代替キーとして表示するため、redo の
+    // カスタム割り当てや無効化とは独立して常に有効にする。
+    final aliased = _shortcutAliases[normalized];
     if (aliased != null) {
-      // ただし ユーザーが redo のキーを手動で変更している場合は無効にする
-      // （変更後のキーと衝突しない範囲でエイリアスを提供）
-      if (!_customKeyBindings.containsKey(aliased)) {
-        // ユーザーが明示的に無効化したコマンドはエイリアス経由でも呼ばない
-        if (_disabledShortcuts.contains(aliased)) return null;
-        return aliased;
-      }
+      return aliased;
     }
+    // 固定キーは下流の専用ハンドラへ譲り、カスタムコマンドに奪わせない。
+    if (_nonAssignableShortcutCombos.contains(normalized)) return null;
     for (final cmd in _commandDefs) {
       final id = cmd['id']! as String;
       if (_fixedCommands.contains(id)) continue;
@@ -59795,19 +61808,19 @@ class _MindMapScreenState extends State<MindMapScreen>
             msg = '⚠ ${provider.lastSyncLimitMessage}';
             c = const Color(0xFFFFB74D);
           } else if (provider.lastSyncAttachmentFailed) {
-            msg = '一部のファイル (PDF/画像/動画) の中身がダウンロードできませんでした。詳細から再取得できます。';
+            msg = provider.t('download.attachmentFailedRetry');
             c = const Color(0xFFFF6B6B);
           } else {
-            msg = '最新の変更をダウンロードしました';
+            msg = provider.t('download.latestDownloaded');
             c = const Color(0xFF43B97F);
           }
           break;
         case 'up_to_date':
-          msg = '差分はありません（最新です）';
+          msg = provider.t('sync.upToDate');
           c = const Color(0xFF607D8B);
           break;
         case 'not_synced':
-          msg = 'クラウドにこのマップのデータがありません';
+          msg = provider.t('sync.notUploaded');
           c = const Color(0xFF607D8B);
           break;
         default:
@@ -59821,7 +61834,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             backgroundColor: c,
             action: r == 'downloaded'
                 ? SnackBarAction(
-                    label: '詳細',
+                    label: provider.t('download.details'),
                     textColor: Colors.white,
                     onPressed: () =>
                         _showCloudDownloadDetailsDialog(context, provider),
@@ -60141,7 +62154,9 @@ class _MindMapScreenState extends State<MindMapScreen>
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  deleteMode ? 'クラウドから削除' : 'クラウドからダウンロード',
+                  deleteMode
+                      ? provider.t('download.deleteTitle')
+                      : provider.t('sync.download'),
                   style: const TextStyle(color: Colors.white, fontSize: 14),
                 ),
               ),
@@ -60169,13 +62184,13 @@ class _MindMapScreenState extends State<MindMapScreen>
                           ? Icons.delete_outline_rounded
                           : Icons.delete_outline_rounded,
                       size: 12,
-                      color: deleteMode ? Colors.redAccent : Colors.white54,
+                      color: deleteMode ? Colors.redAccent : Colors.white70,
                     ),
                     const SizedBox(width: 4),
                     Text(
-                      deleteMode ? '削除モード' : '削除モード',
+                      provider.t('download.deleteMode'),
                       style: TextStyle(
-                        color: deleteMode ? Colors.redAccent : Colors.white54,
+                        color: deleteMode ? Colors.redAccent : Colors.white70,
                         fontSize: 10,
                         fontWeight: FontWeight.w600,
                       ),
@@ -60209,8 +62224,13 @@ class _MindMapScreenState extends State<MindMapScreen>
                       ),
                       const SizedBox(width: 6),
                       Text(
-                        '選択合計: ${MindMapProvider.formatBytes(totalSelectedBytes)}'
-                        ' (${selected.length}件)',
+                        provider
+                            .t('download.selectedTotal')
+                            .replaceFirst(
+                                '{size}',
+                                MindMapProvider.formatBytes(
+                                    totalSelectedBytes))
+                            .replaceFirst('{n}', '${selected.length}'),
                         style: TextStyle(
                           color: deleteMode
                               ? Colors.redAccent
@@ -60238,8 +62258,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                       return CheckboxListTile(
                         value: isSelected,
                         activeColor: deleteMode
-                            ? Colors.redAccent
+                            ? const Color(0xFFFF6B6B)
                             : const Color(0xFF4FC3F7),
+                        checkColor: const Color(0xFF101426),
+                        side: const BorderSide(color: Colors.white70),
                         title: Text(p.name,
                             style: const TextStyle(
                                 color: Colors.white, fontSize: 13)),
@@ -60247,18 +62269,18 @@ class _MindMapScreenState extends State<MindMapScreen>
                           Text(
                             '${p.nodes.length}${provider.t('drawer.nodeSuffix')}',
                             style: const TextStyle(
-                                color: Colors.white38, fontSize: 10),
+                                color: Colors.white70, fontSize: 10),
                           ),
                           const Text(' · ',
                               style: TextStyle(
                                   color: Colors.white24, fontSize: 10)),
                           Icon(Icons.data_usage_rounded,
-                              size: 9, color: Colors.white38),
+                              size: 9, color: Colors.white70),
                           const SizedBox(width: 2),
                           Text(
                             sizeText,
                             style: const TextStyle(
-                                color: Colors.white54,
+                                color: Colors.white70,
                                 fontSize: 10,
                                 fontWeight: FontWeight.w600),
                           ),
@@ -60267,7 +62289,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 style: TextStyle(
                                     color: Colors.white24, fontSize: 10)),
                             Text(
-                              deleteMode ? 'ローカルにも存在' : 'ローカルに存在',
+                              deleteMode
+                                  ? provider.t('download.localAlsoExists')
+                                  : provider.t('download.localExists'),
                               style: const TextStyle(
                                   color: Color(0xFFFFB347),
                                   fontSize: 10,
@@ -60305,12 +62329,12 @@ class _MindMapScreenState extends State<MindMapScreen>
                     selected.length == cloudPages.length
                         ? provider.t('btn.deselectAll')
                         : provider.t('btn.selectAll'),
-                    style: const TextStyle(color: Colors.white54)),
+                    style: const TextStyle(color: Colors.white70)),
               ),
               TextButton(
                   onPressed: () => Navigator.pop(dctx),
                   child: Text(provider.t('btn.cancel'),
-                      style: const TextStyle(color: Colors.white54))),
+                      style: const TextStyle(color: Colors.white70))),
               ElevatedButton.icon(
                 onPressed: selected.isEmpty
                     ? null
@@ -60336,11 +62360,16 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   onPressed: () => Navigator.pop(cctx, false),
                                   child: Text(provider.t('btn.cancel'),
                                       style: const TextStyle(
-                                          color: Colors.white54)),
+                                          color: Colors.white70)),
                                 ),
                                 ElevatedButton(
                                   style: ElevatedButton.styleFrom(
-                                      backgroundColor: Colors.redAccent),
+                                      backgroundColor:
+                                          const Color(0xFFFF6B6B),
+                                      foregroundColor:
+                                          const Color(0xFF101426),
+                                      textStyle: const TextStyle(
+                                          fontWeight: FontWeight.w700)),
                                   onPressed: () => Navigator.pop(cctx, true),
                                   child: Text(provider.t('btn.deleteDo')),
                                 ),
@@ -60386,7 +62415,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                                         Text(provider.t('download.started')),
                                     backgroundColor: const Color(0xFF4FC3F7),
                                     action: SnackBarAction(
-                                      label: '詳細',
+                                      label: provider.t('download.details'),
                                       textColor: Colors.white,
                                       onPressed: () =>
                                           _showCloudDownloadDetailsDialog(
@@ -60410,11 +62439,14 @@ class _MindMapScreenState extends State<MindMapScreen>
                               } else if (provider.lastSyncAttachmentFailed) {
                                 _appSnack(
                                     context,
-                                    const SnackBar(
+                                    SnackBar(
                                       content: Text(
-                                          '一部のファイル (PDF/画像/動画) の中身がダウンロードできませんでした。詳細から再取得できます。'),
-                                      backgroundColor: Color(0xFFFF6B6B),
-                                      duration: Duration(seconds: 5),
+                                          provider.t(
+                                              'download.attachmentFailedRetry')),
+                                      backgroundColor:
+                                          const Color(0xFFFF6B6B),
+                                      duration:
+                                          const Duration(seconds: 5),
                                     ));
                               } else {
                                 _appSnack(
@@ -60457,9 +62489,14 @@ class _MindMapScreenState extends State<MindMapScreen>
                         .t('download.countAction')
                         .replaceFirst('{n}', '${selected.length}')),
                 style: ElevatedButton.styleFrom(
-                    backgroundColor: deleteMode
-                        ? Colors.redAccent
-                        : const Color(0xFF4FC3F7)),
+                  backgroundColor: deleteMode
+                      ? Colors.redAccent
+                      : const Color(0xFF4FC3F7),
+                  foregroundColor: deleteMode
+                      ? Colors.white
+                      : const Color(0xFF101426),
+                  textStyle: const TextStyle(fontWeight: FontWeight.w700),
+                ),
               ),
             ],
           );
@@ -60776,7 +62813,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       'defaultKey': 'Ctrl+Shift+O'
     },
     // ガントチャート (= ツール: 全画面ダイアログで開く)。 ページではない。
-    {'id': 'gantt', 'labelKey': 'hdr.gantt', 'defaultKey': 'Ctrl+Shift+G'},
+    {'id': 'gantt', 'labelKey': 'hdr.gantt', 'defaultKey': 'Ctrl+Alt+G'},
     // 新しいお絵かき (ペイント) ページを作成 (= ユーザー要望: ショートカット)。
     {
       'id': 'newPaintPage',
@@ -60784,6 +62821,11 @@ class _MindMapScreenState extends State<MindMapScreen>
       'defaultKey': 'Ctrl+Shift+X'
     },
     // 新しい文章作成 (ドキュメント) ページを作成 (= ユーザー要望)。
+    {
+      'id': 'newDocumentPage',
+      'labelKey': 'drawer.newDocumentPage',
+      'defaultKey': 'Ctrl+Alt+D'
+    },
     // 新しいビデオエディター (動画編集) ページを作成 (= ユーザー要望)。
     {
       'id': 'newVideoEditorPage',
@@ -60797,10 +62839,14 @@ class _MindMapScreenState extends State<MindMapScreen>
       'defaultKey': 'Ctrl+Shift+Q'
     },
     // マップメモを開く (= ユーザー要望: ショートカット割り当て)。
-    {'id': 'mapMemo', 'labelKey': 'マップメモ', 'defaultKey': 'Ctrl+Shift+Y'},
+    {'id': 'mapMemo', 'labelKey': 'hdr.mapMemo', 'defaultKey': 'Ctrl+Shift+Y'},
     // 開いているページ (マインドマップ/ガント/お絵かき/ギャラリー) の名前を変更
     //   (= ユーザー要望: 名前を付けるショートカット)。
-    {'id': 'renamePage', 'labelKey': 'ページ名を変更', 'defaultKey': 'Ctrl+Shift+J'},
+    {
+      'id': 'renamePage',
+      'labelKey': 'cmd.renamePage',
+      'defaultKey': 'Ctrl+Shift+J'
+    },
     {
       'id': 'newFolder',
       'labelKey': 'drawer.newFolder',
@@ -60832,10 +62878,19 @@ class _MindMapScreenState extends State<MindMapScreen>
     // 素早く文字を入力してフラッシュカード登録 (= ユーザー要望: 空いている F
     //   キーに割り当て)。 F2=editTitle/F3=editMemo/F4=PDF AI 欄/F6=既存 と衝突
     //   しない F7 を既定にする。
-    {'id': 'quickFlashcard', 'labelKey': '素早く暗記カード登録', 'defaultKey': 'F7'},
-
+    {
+      'id': 'quickFlashcard',
+      'labelKey': 'cmd.quickFlashcard',
+      'defaultKey': 'F7'
+    },
+    {'id': 'editMemo', 'labelKey': 'cmd.editMemo', 'defaultKey': 'F3'},
     {'id': 'delete', 'labelKey': 'cmd.delete', 'defaultKey': 'Delete'},
-    {'id': 'cancelMode', 'labelKey': 'cmd.cancelMode', 'defaultKey': 'Esc'},
+    {
+      'id': 'cancelMode',
+      'labelKey': 'cmd.cancelMode',
+      'defaultKey': 'Esc',
+      'fixedSuffix': true
+    },
     // ── 追加: 基準位置の設定/移動 ──
     // 旧: Ctrl+J は配置候補 (snap) のトグルだったが、 ユーザー要望により
     // 「動作設定」 を開くショートカットに差し替えた。 配置候補のトグルは
@@ -60877,11 +62932,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       'labelKey': 'cmd.toggleTheme',
       'defaultKey': 'Ctrl+Shift+L'
     },
-    {
-      'id': 'newEvent',
-      'labelKey': 'cmd.newEvent',
-      'defaultKey': 'Ctrl+Shift+N'
-    },
+    {'id': 'newEvent', 'labelKey': 'cmd.newEvent', 'defaultKey': 'Ctrl+Alt+N'},
     {
       'id': 'openYoutube',
       'labelKey': 'cmd.openYoutube',
@@ -61086,10 +63137,47 @@ class _MindMapScreenState extends State<MindMapScreen>
       'defaultKey': 'Ctrl+0',
       'fixedSuffix': true
     },
+    {
+      'id': 'swapSplitPanels',
+      'labelKey': 'cmd.swapSplitPanels',
+      'defaultKey': 'F6',
+      'fixedSuffix': true
+    },
+    {
+      'id': 'historyBack',
+      'labelKey': 'cmd.historyBack',
+      'defaultKey': 'Alt+←',
+      'fixedSuffix': true
+    },
+    {
+      'id': 'historyForward',
+      'labelKey': 'cmd.historyForward',
+      'defaultKey': 'Alt+→',
+      'fixedSuffix': true
+    },
+    {
+      'id': 'splitRightFullscreen',
+      'labelKey': 'cmd.splitRightFullscreen',
+      'defaultKey': 'Ctrl+Shift+\\',
+      'fixedSuffix': true
+    },
+    {
+      'id': 'splitLeftFullscreen',
+      'labelKey': 'cmd.splitLeftFullscreen',
+      'defaultKey': 'Ctrl+Shift+^',
+      'fixedSuffix': true
+    },
+    {
+      'id': 'redoAlternate',
+      'labelKey': 'cmd.redoAlternate',
+      'defaultKey': 'Ctrl+Shift+Z',
+      'fixedSuffix': true
+    },
   ];
 
   /// 変更不可のコマンド（固定キー）
   static const Set<String> _fixedCommands = {
+    'cancelMode',
     'scroll',
     'switchMap',
     'ctrlSelect',
@@ -61107,6 +63195,27 @@ class _MindMapScreenState extends State<MindMapScreen>
     'zoomIn',
     'zoomOut',
     'zoomReset',
+    'swapSplitPanels',
+    'historyBack',
+    'historyForward',
+    'splitRightFullscreen',
+    'splitLeftFullscreen',
+    'redoAlternate',
+  };
+
+  /// キーボード側で専用分岐を持たず、ヘッダー/フッターと同じ実処理へ
+  /// 委譲するショートカットコマンド。
+  static const Set<String> _headerExecutedShortcutCommandIds = {
+    'bookshelf',
+    'newBookshelfPage',
+    'newPaintPage',
+    'newDocumentPage',
+    'newVideoEditorPage',
+    'gantt',
+    'memberSchedule',
+    'mapMemo',
+    'renamePage',
+    'openGmail',
   };
 
   /// ユーザーがカスタマイズしたキー割り当て（commandId → キー文字列）
@@ -61185,39 +63294,32 @@ class _MindMapScreenState extends State<MindMapScreen>
   }
 
   /// 重要キーセクションで表示するショートカット定義。
-  /// 並び順 = 「短いコマンド → 長いコマンド」、 同じ長さはアルファベット順。
-  ///   F2 (2)
-  ///   Ctrl+\ (6)            ← ユーザー要望「右分割 ctrl+\ と左分割 ctrl+^ を
-  ///   Ctrl+^ (6)              重要キーに加えて」 で追加
-  ///   Ctrl+G/H/S/U (6, alpha)
-  ///   Shift+ドラッグ (10)
-  ///   Ctrl+Shift+A/G/N/P/S (12, alpha)
+  /// グローバルに捕捉する固定キーも含め、一覧本体と実際の入力処理を揃える。
   static const List<Map<String, String?>> _importantKeysOrder = [
-    // ── 2 文字 ──
     {'id': 'editTitle'}, // F2
-    // ── 6 文字 (Ctrl+◯) ──
-    // 画面分割 (= ユーザー要望で追加された 2 つ)
+    {'id': 'editMemo'}, // F3
+    {'id': 'swapSplitPanels'}, // F6
+    {'id': 'historyBack'}, // Alt+←
+    {'id': 'historyForward'}, // Alt+→
     {'id': 'toggleSplitScreen'}, // Ctrl+\
     {'id': 'toggleSplitLeftScreen'}, // Ctrl+^
-    // 既存の Ctrl+◯ 系
     {'id': 'containerize'}, // Ctrl+G
     {'id': 'customizeHeader'}, // Ctrl+H
     {'id': 'cloudUpload'}, // Ctrl+S
     {'id': 'openYoutube'}, // Ctrl+U
-    // ── 10 文字 (Shift+ドラッグ) ──
-    // ユーザー要望: 多言語対応。 labelKey で文言、 keyKey でキーラベル
-    // 表示部分 (= 「Shift+ドラッグ」 / 「Shift+Drag」 等) も翻訳経由で取得。
     {
       'id': null,
       'labelKey': 'impKeys.shiftDragRangeSelect',
       'keyKey': 'shortcuts.shiftDragKey'
     },
-    // ── 12 文字 (Ctrl+Shift+◯, アルファベット順) ──
     {'id': 'addChildren'}, // Ctrl+Shift+A
     {'id': 'group'}, // Ctrl+Shift+G
     {'id': 'newNode'}, // Ctrl+Shift+N
     {'id': 'newPage'}, // Ctrl+Shift+P
     {'id': 'syncDialog'}, // Ctrl+Shift+S
+    {'id': 'redoAlternate'}, // Ctrl+Shift+Z
+    {'id': 'splitRightFullscreen'}, // Ctrl+Shift+\
+    {'id': 'splitLeftFullscreen'}, // Ctrl+Shift+^
   ];
 
   /// 重要キーリストの各行を build する。
@@ -61270,9 +63372,9 @@ class _MindMapScreenState extends State<MindMapScreen>
           isTopSplit ? const Color(0xFFFF6B6B) : const Color(0xFF2196F3);
       if (!_isDesktop) {
         if (id == 'toggleSplitScreen') {
-          label = '下分割';
+          label = provider.t('ve.splitDown');
         } else if (id == 'toggleSplitLeftScreen') {
-          label = '上分割';
+          label = provider.t('ve.splitUp');
         }
       }
       final Widget rowInner = Row(
@@ -61554,9 +63656,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                           // モバイル: 画面分割は上下分割表記 (ユーザー要望)
                           if (!_isDesktop) {
                             if (id == 'toggleSplitScreen') {
-                              label = '下分割';
+                              label = provider.t('ve.splitDown');
                             } else if (id == 'toggleSplitLeftScreen') {
-                              label = '上分割';
+                              label = provider.t('ve.splitUp');
                             }
                           }
                           final baseKey = cmd['defaultKey']! as String;
@@ -61774,15 +63876,16 @@ class _MindMapScreenState extends State<MindMapScreen>
         /// 重複していればコマンド名（翻訳済み）を返す
         String? _checkConflict(String inputKey) {
           if (inputKey.isEmpty) return null;
-          final normalized = inputKey.trim().toLowerCase();
+          final normalized = _normalizeShortcutCombo(inputKey);
+          if (_nonAssignableShortcutCombos.contains(normalized)) {
+            return provider.t('shortcuts.fixedKeyLabel');
+          }
           for (final cmd in _commandDefs) {
             final otherId = cmd['id']! as String;
             if (otherId == commandId) continue; // 自分自身はスキップ
-            if (_fixedCommands.contains(otherId)) continue; // 変更不可はスキップ
-            final otherKey =
-                (_customKeyBindings[otherId] ?? cmd['defaultKey']! as String)
-                    .trim()
-                    .toLowerCase();
+            final otherKey = _normalizeShortcutCombo(
+                (_customKeyBindings[otherId] ?? (cmd['defaultKey']! as String))
+                    .trim());
             if (otherKey == normalized) {
               return provider.t(cmd['labelKey']! as String);
             }
@@ -62127,6 +64230,64 @@ class _InlineTitleDialogState extends State<_InlineTitleDialog> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _titleFocus.requestFocus();
     });
+  }
+
+  /// キーボード (Gboard 等) から画像がコミットされた時の処理。
+  ///
+  /// ユーザー要望: 「モバイル版、直近のクリップボードに確かに画像が入って
+  ///   いるのに、このアプリは、ここでの画像貼り付けをサポートしませんと出て
+  ///   貼り付けることができない」 への対応。
+  /// Android の IME はテキスト入力欄へ画像を挿入する際に richContent
+  /// (commitContent) を使うが、 Flutter の TextField は
+  /// contentInsertionConfiguration を指定しないと受け取れず、 OS 側が
+  /// 「このアプリは画像の挿入をサポートしていません」 と表示してしまう。
+  /// ここで受け取った画像は編集中ノードの添付画像として保存する。
+  Future<void> _handleInsertedImage(KeyboardInsertedContent content) async {
+    final bytes = content.data;
+    if (bytes == null || bytes.isEmpty || !mounted) return;
+    final provider = context.read<MindMapProvider>();
+    try {
+      final mime = content.mimeType.toLowerCase();
+      var ext = 'png';
+      if (mime.contains('jpeg') || mime.contains('jpg')) {
+        ext = 'jpg';
+      } else if (mime.contains('gif')) {
+        ext = 'gif';
+      } else if (mime.contains('webp')) {
+        ext = 'webp';
+      } else if (mime.contains('bmp')) {
+        ext = 'bmp';
+      }
+      final appDir = await getApplicationDocumentsDirectory();
+      final attachDir = Directory('${appDir.path}/attachments');
+      if (!await attachDir.exists()) {
+        await attachDir.create(recursive: true);
+      }
+      final name = 'kbimg_${DateTime.now().millisecondsSinceEpoch}.$ext';
+      final destPath = '${attachDir.path}/$name';
+      await File(destPath).writeAsBytes(bytes, flush: true);
+      // 元画像の縦横比を記録 (NodeWidget の描画計算が使う)。
+      try {
+        final completer = Completer<ui.Image>();
+        ui.decodeImageFromList(bytes, completer.complete);
+        final im = await completer.future.timeout(const Duration(seconds: 3));
+        if (im.height > 0) {
+          provider.updateNodeAttachmentAspectRatio(
+              widget.node.id, im.width / im.height);
+        }
+        im.dispose();
+      } catch (_) {}
+      provider.updateNodeAttachment(widget.node.id, destPath, name);
+      if (mounted) {
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+          content: Text(provider.t('clip.imagePasted')),
+          backgroundColor: const Color(0xFF43B97F),
+          duration: const Duration(seconds: 2),
+        ));
+      }
+    } catch (e) {
+      debugPrint('キーボード画像挿入の保存に失敗: $e');
+    }
   }
 
   /// テキストが急激に変化して URL を含むようになった時に呼ぶ。
@@ -62588,6 +64749,12 @@ class _InlineTitleDialogState extends State<_InlineTitleDialog> {
                               minLines: 1,
                               keyboardType: TextInputType.multiline,
                               textInputAction: TextInputAction.newline,
+                              // IME からの画像挿入 (クリップボード画像の貼り
+                              // 付け) を受け付ける (= ユーザー要望)。
+                              contentInsertionConfiguration:
+                                  ContentInsertionConfiguration(
+                                onContentInserted: _handleInsertedImage,
+                              ),
                               onChanged: (v) => _handleTextChange(v, true),
                               style: const TextStyle(
                                   color: Colors.white,
@@ -62620,6 +64787,11 @@ class _InlineTitleDialogState extends State<_InlineTitleDialog> {
                               minLines: 2,
                               keyboardType: TextInputType.multiline,
                               textInputAction: TextInputAction.newline,
+                              // IME からの画像挿入も受け付ける (= ユーザー要望)。
+                              contentInsertionConfiguration:
+                                  ContentInsertionConfiguration(
+                                onContentInserted: _handleInsertedImage,
+                              ),
                               style: const TextStyle(
                                   color: Colors.white70, fontSize: 13),
                               decoration: InputDecoration(
@@ -64176,6 +66348,64 @@ class _ActionOverlayState extends State<_ActionOverlay>
   }
 }
 
+/// PC カスタムヘッダーのD&D payload。個別ボタンは index ではなく
+/// commandId と移動元の辺を持つため、別バーへ落としても別リストの同じ index を
+/// 誤って並び替えることがない。バー用 payload も同じ DragTarget で受ける。
+abstract class _DesktopHeaderDragData {
+  String get sourcePlacement;
+  const _DesktopHeaderDragData();
+}
+
+class _DesktopHeaderButtonDragData extends _DesktopHeaderDragData {
+  final String commandId;
+  @override
+  final String sourcePlacement;
+  const _DesktopHeaderButtonDragData(this.commandId, this.sourcePlacement);
+}
+
+class _DesktopHeaderBarDragData extends _DesktopHeaderDragData {
+  @override
+  final String sourcePlacement;
+  const _DesktopHeaderBarDragData(this.sourcePlacement);
+}
+
+/// 通常表示中のPCカスタムボタンを、クリック可能なままドラッグ移植できる
+/// ラッパー。並び替えモード用のWidgetと違い、子をAbsorbPointerで無効化しない。
+class _DesktopDraggableHeaderIcon extends StatelessWidget {
+  final _DesktopHeaderButtonDragData data;
+  final Widget child;
+  final VoidCallback onDragStarted;
+  final VoidCallback onDragEnded;
+  final ValueChanged<Offset>? onDragUpdate;
+
+  const _DesktopDraggableHeaderIcon({
+    required this.data,
+    required this.child,
+    required this.onDragStarted,
+    required this.onDragEnded,
+    this.onDragUpdate,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Draggable<_DesktopHeaderDragData>(
+      data: data,
+      dragAnchorStrategy: pointerDragAnchorStrategy,
+      onDragStarted: onDragStarted,
+      onDragUpdate: (details) => onDragUpdate?.call(details.globalPosition),
+      onDragEnd: (_) => onDragEnded(),
+      feedback: Material(
+        color: Colors.transparent,
+        child: IgnorePointer(
+          child: Opacity(opacity: 0.88, child: child),
+        ),
+      ),
+      childWhenDragging: Opacity(opacity: 0.22, child: child),
+      child: child,
+    );
+  }
+}
+
 /// カスタムヘッダーの共通寸法。
 const double _kHeaderCustomBarHeight = 48.0;
 const double _kHeaderCustomButtonExtent = 48.0;
@@ -64183,8 +66413,8 @@ const double _kDesktopHeaderSideReserve = 336.0;
 
 /// AppBar 上でカスタムヘッダーボタンを横並び表示するウィジェット
 ///
-/// 並び替え/削除は Ctrl+H → ヘッダーカスタマイズ画面で行う仕様。
-/// ここでは単純にボタンを左から右へ並べるだけ（ドラッグ機能は撤廃）。
+/// PCでは通常時も別バーへドラッグでき、並び替えモード中は同じバー内の
+/// 挿入位置まで指定できる。モバイルの従来並び替えはint indexのまま維持する。
 class _HeaderCustomButtonsBar extends StatefulWidget {
   final MindMapProvider provider;
   final Widget? Function(String cmdId, MindMapProvider provider) buildButton;
@@ -64200,6 +66430,15 @@ class _HeaderCustomButtonsBar extends StatefulWidget {
   /// ギャラリー等では provider.galleryHeaderButtons を渡す (= ユーザー要望:
   /// ギャラリーのヘッダーも独立してカスタマイズ)。
   final List<String>? buttonIds;
+  final String? storageKey;
+
+  /// PC の上下ドックで使う辺。指定時は int index ではなく
+  /// commandId + source placement の payload でドラッグし、別バーへの
+  /// ドロップも provider の atomic move API で処理する。
+  final String? desktopPlacement;
+  final void Function(_DesktopHeaderButtonDragData data)?
+      onDesktopButtonDragStarted;
+  final VoidCallback? onDesktopButtonDragEnded;
 
   /// モバイルの展開段では右側アクション分の予約幅を取らず、横幅いっぱい使う。
   final bool fullWidth;
@@ -64211,6 +66450,10 @@ class _HeaderCustomButtonsBar extends StatefulWidget {
     this.reorderMode = false,
     this.onReorder,
     this.buttonIds,
+    this.storageKey,
+    this.desktopPlacement,
+    this.onDesktopButtonDragStarted,
+    this.onDesktopButtonDragEnded,
     this.fullWidth = false,
     this.trailing,
     this.maxWidth,
@@ -64303,6 +66546,7 @@ class _HeaderCustomButtonsBarState extends State<_HeaderCustomButtonsBar> {
   bool get fullWidth => widget.fullWidth;
   Widget? get trailing => widget.trailing;
   double? get maxWidth => widget.maxWidth;
+  String? get desktopPlacement => widget.desktopPlacement;
   void Function(int, int)? get onReorder => widget.onReorder;
 
   @override
@@ -64347,8 +66591,7 @@ class _HeaderCustomButtonsBarState extends State<_HeaderCustomButtonsBar> {
     // と振動アニメのための若干の余白が加わるため、1 アイコンあたりの幅を
     // 48 → 58 に上げる。これをしないとアイコン側が膨らんだぶん右側メニュー
     // ボタンが画面外に押し出されてしまう。
-    final double perBtnW =
-        reorderMode ? 58.0 : _kHeaderCustomButtonExtent;
+    final double perBtnW = reorderMode ? 58.0 : _kHeaderCustomButtonExtent;
     final double rawButtonsW =
         buttons.length * perBtnW + (trailing == null ? 0.0 : perBtnW);
     final double endPadW = rawButtonsW > maxAvailable ? 56.0 : 0.0;
@@ -64371,18 +66614,50 @@ class _HeaderCustomButtonsBarState extends State<_HeaderCustomButtonsBar> {
             final id = buttons[i];
             final btn = widget.buildButton(id, provider);
             if (btn == null) return const SizedBox.shrink();
-            // 並び替えモードでなければ従来の描画
-            if (!reorderMode) return buttonSlot(btn);
+            // PCは通常表示中もボタン自体をドラッグできる。短いクリックは子の
+            // IconButtonへそのまま届き、ドラッグが成立した時だけ別バー移動になる。
+            if (!reorderMode) {
+              final slot = buttonSlot(btn);
+              if (desktopPlacement == null) return slot;
+              final data = _DesktopHeaderButtonDragData(id, desktopPlacement!);
+              return _DesktopDraggableHeaderIcon(
+                data: data,
+                onDragStarted: () =>
+                    widget.onDesktopButtonDragStarted?.call(data),
+                onDragUpdate: _handleChildDragUpdate,
+                onDragEnded: () {
+                  _stopAutoScroll();
+                  widget.onDesktopButtonDragEnded?.call();
+                },
+                child: slot,
+              );
+            }
             // 並び替えモード: 振動アニメと点線枠で視覚フィードバック、
             // Draggable + DragTarget でドラッグ交換を実現。
             return _ReorderableHeaderIcon(
               index: i,
               id: id,
+              desktopSourcePlacement: desktopPlacement,
               child: buttonSlot(btn),
               // ドラッグ位置を親へ通知して端でオートスクロールさせる
               // (= ユーザー要望: ドラッグに合わせて画面が追跡)。
               onDragUpdateGlobal: _handleChildDragUpdate,
               onDragEndGlobal: _stopAutoScroll,
+              onDragStartedGlobal: (data) {
+                if (data is _DesktopHeaderButtonDragData) {
+                  widget.onDesktopButtonDragStarted?.call(data);
+                }
+              },
+              onDesktopDropped: desktopPlacement == null
+                  ? null
+                  : (data) {
+                      unawaited(provider.moveDesktopHeaderButtonToPlacement(
+                        data.commandId,
+                        desktopPlacement!,
+                        beforeCommandId: id,
+                      ));
+                    },
+              onDesktopDragEnded: widget.onDesktopButtonDragEnded,
               onDropped: (fromIndex) {
                 if (onReorder != null && fromIndex != i) {
                   final fromSource =
@@ -64415,9 +66690,10 @@ class _HeaderCustomButtonsBarState extends State<_HeaderCustomButtonsBar> {
                   thumbVisibility: false,
                   child: SingleChildScrollView(
                     key: PageStorageKey<String>(
-                      buttonIds == null
+                      widget.storageKey ??
+                          (buttonIds == null
                           ? 'header_custom_buttons_bar_normal'
-                          : 'header_custom_buttons_bar_gallery',
+                          : 'header_custom_buttons_bar_gallery'),
                     ),
                     controller: _scrollCtrl,
                     scrollDirection: Axis.horizontal,
@@ -64441,6 +66717,10 @@ class _ReorderableHeaderIcon extends StatefulWidget {
   final String id;
   final Widget child;
   final void Function(int fromIndex) onDropped;
+  final String? desktopSourcePlacement;
+  final void Function(_DesktopHeaderButtonDragData data)? onDesktopDropped;
+  final void Function(_DesktopHeaderButtonDragData data)? onDragStartedGlobal;
+  final VoidCallback? onDesktopDragEnded;
 
   /// ドラッグ中の位置 (global) を親バーへ通知する (= 端でのオートスクロール用)。
   final void Function(Offset globalPos)? onDragUpdateGlobal;
@@ -64450,6 +66730,10 @@ class _ReorderableHeaderIcon extends StatefulWidget {
     required this.id,
     required this.child,
     required this.onDropped,
+    this.desktopSourcePlacement,
+    this.onDesktopDropped,
+    this.onDragStartedGlobal,
+    this.onDesktopDragEnded,
     this.onDragUpdateGlobal,
     this.onDragEndGlobal,
   });
@@ -64491,17 +66775,47 @@ class _ReorderableHeaderIconState extends State<_ReorderableHeaderIcon>
       absorbing: true,
       child: widget.child,
     );
-    return DragTarget<int>(
-      onWillAcceptWithDetails: (d) => d.data != widget.index,
-      onAcceptWithDetails: (d) => widget.onDropped(d.data),
+    final desktopData = widget.desktopSourcePlacement == null
+        ? null
+        : _DesktopHeaderButtonDragData(
+            widget.id, widget.desktopSourcePlacement!);
+    final Object dragData = desktopData ?? widget.index;
+
+    bool canAccept(Object data) {
+      if (desktopData != null) {
+        return data is _DesktopHeaderButtonDragData &&
+            data.commandId != widget.id;
+      }
+      return data is int && data != widget.index;
+    }
+
+    void accept(Object data) {
+      if (desktopData != null && data is _DesktopHeaderButtonDragData) {
+        widget.onDesktopDropped?.call(data);
+      } else if (desktopData == null && data is int) {
+        widget.onDropped(data);
+      }
+    }
+
+    return DragTarget<Object>(
+      onWillAcceptWithDetails: (d) => canAccept(d.data),
+      onAcceptWithDetails: (d) => accept(d.data),
       builder: (ctx, candidateData, rejectedData) {
         final isHovered = candidateData.isNotEmpty;
-        return Draggable<int>(
-          data: widget.index,
+        return Draggable<Object>(
+          data: dragData,
+          dragAnchorStrategy: pointerDragAnchorStrategy,
+          onDragStarted: () {
+            if (desktopData != null) {
+              widget.onDragStartedGlobal?.call(desktopData);
+            }
+          },
           onDragUpdate: (d) =>
               widget.onDragUpdateGlobal?.call(d.globalPosition),
-          onDragEnd: (_) => widget.onDragEndGlobal?.call(),
-          onDraggableCanceled: (_, __) => widget.onDragEndGlobal?.call(),
+          onDragEnd: (_) {
+            widget.onDragEndGlobal?.call();
+            if (desktopData != null) widget.onDesktopDragEnded?.call();
+          },
           feedback: Material(
             color: Colors.transparent,
             child: Opacity(opacity: 0.85, child: absorbedChild),
@@ -65098,6 +67412,8 @@ class _CtxButtonSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final useSingleCompactRow =
+        compact && MediaQuery.sizeOf(context).width < 600;
     return Padding(
       padding: const EdgeInsets.fromLTRB(8, 8, 8, 4),
       child: Container(
@@ -65124,17 +67440,28 @@ class _CtxButtonSection extends StatelessWidget {
             ),
             Padding(
               padding: EdgeInsets.fromLTRB(8, compact ? 2 : 4, 8, 8),
-              child: Wrap(
-                spacing: compact ? 5 : 6,
-                runSpacing: compact ? 5 : 6,
-                children: [
-                  for (final child in children)
-                    SizedBox(
-                        width: compact ? 42 : 96,
-                        height: compact ? 38 : null,
-                        child: child),
-                ],
-              ),
+              child: useSingleCompactRow
+                  // モバイルでは形状4個＋区切り＋方向3個を均等に詰め、
+                  // 「8方向」だけが二段目へ落ちないよう必ず一段で表示する。
+                  ? Row(
+                      children: [
+                        for (final child in children)
+                          Expanded(
+                            child: SizedBox(height: 38, child: child),
+                          ),
+                      ],
+                    )
+                  : Wrap(
+                      spacing: compact ? 5 : 6,
+                      runSpacing: compact ? 5 : 6,
+                      children: [
+                        for (final child in children)
+                          SizedBox(
+                              width: compact ? 42 : 96,
+                              height: compact ? 38 : null,
+                              child: child),
+                      ],
+                    ),
             ),
           ],
         ),
@@ -68549,9 +70876,10 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
       //   メッセージが表示されてしまう。 単一動画の時だけ即トーストを出し、
       //   チャンネル / プレイリストは embed 側 (取り込み完了の SnackBar) に任せる。
       //   list= 付き (= embed 側で選択ダイアログが出る) の時も出さない。
-      //   ただし Mix (RD…) / WL / LL はダイアログが出ず単一埋め込みに
-      //   なるため、 従来どおりトーストを出す。
-      final embedSideAsks = _embeddablePlaylistIdOf(url) != null;
+      //   Mix (RD…) / WL / LL も embed 側で「視聴中の動画のみ埋め込むか」
+      //   の確認ダイアログが出るようになったため、 ここでは出さない。
+      final embedSideAsks = _embeddablePlaylistIdOf(url) != null ||
+          _unfetchableListIdOf(url) != null;
       if (NodeWidget.extractVideoId(url) != null && !embedSideAsks) {
         _showWinEmbedToast(provider.t('embed.embedded'));
       }
@@ -70083,10 +72411,11 @@ class _MapMemoStore {
   // ── 複数メモ項目 (= ユーザー要望: 項目を複数登録して切り替え) ──
   // 新形式は `{"items":[{"n":name,"b":body},...],"sel":index}` を 1 つの
   // スコープキーに保存する。 旧形式 (単一 body = Quill Delta JSON / プレーン)
-  // は「メモ1」 1 件として読み込む (= 後方互換)。
+  // は既定名の 1 件として読み込む (= 後方互換)。
 
   /// 文字列 (旧/新どちらの形式でも) を項目リスト + 選択インデックスに変換。
-  static ({List<_MapMemoItem> items, int selected}) _parseItems(String raw) {
+  static ({List<_MapMemoItem> items, int selected}) _parseItems(
+      String raw, String defaultItemName) {
     final s = raw.trim();
     if (s.isNotEmpty) {
       try {
@@ -70096,27 +72425,28 @@ class _MapMemoStore {
           for (final e in (decoded['items'] as List)) {
             if (e is Map) {
               list.add(_MapMemoItem(
-                (e['n'] ?? 'メモ').toString(),
+                (e['n'] ?? defaultItemName).toString(),
                 (e['b'] ?? '').toString(),
               ));
             }
           }
-          if (list.isEmpty) list.add(_MapMemoItem('メモ1', ''));
+          if (list.isEmpty) list.add(_MapMemoItem(defaultItemName, ''));
           int sel = (decoded['sel'] as num?)?.toInt() ?? 0;
           if (sel < 0 || sel >= list.length) sel = 0;
           return (items: list, selected: sel);
         }
       } catch (_) {}
       // 旧形式 (単一 body): 1 件に移行。
-      return (items: [_MapMemoItem('メモ1', s)], selected: 0);
+      return (items: [_MapMemoItem(defaultItemName, s)], selected: 0);
     }
-    return (items: [_MapMemoItem('メモ1', '')], selected: 0);
+    return (items: [_MapMemoItem(defaultItemName, '')], selected: 0);
   }
 
   static Future<({List<_MapMemoItem> items, int selected})> loadItems(
-      String pageId, bool global) async {
+      String pageId, bool global,
+      {required String defaultItemName}) async {
     final raw = await loadScoped(pageId, global);
-    return _parseItems(raw);
+    return _parseItems(raw, defaultItemName);
   }
 
   /// Quill Delta JSON / プレーン文字列の本文が実質空かどうか。
@@ -70230,8 +72560,11 @@ class _InterviewRecordsDialogState extends State<_InterviewRecordsDialog> {
         backgroundColor: const Color(0xFF1E1E32),
         title: Text(
             index == null
-                ? (careers ? '経歴を追加' : '資格を追加')
-                : (careers ? '経歴を編集' : '資格を編集'),
+                ? context.read<MindMapProvider>().t(
+                    careers ? 'records.addCareer' : 'records.addQualification')
+                : context.read<MindMapProvider>().t(careers
+                    ? 'records.editCareer'
+                    : 'records.editQualification'),
             style: const TextStyle(color: Colors.white, fontSize: 15)),
         content: TextField(
           controller: ctrl,
@@ -70241,8 +72574,10 @@ class _InterviewRecordsDialogState extends State<_InterviewRecordsDialog> {
           style: const TextStyle(color: Colors.white),
           decoration: InputDecoration(
             hintText: careers
-                ? '例: 〇〇大学卒 / △△株式会社で 3 年 営業 / Python・SQL'
-                : '例: TOEIC 850 / 基本情報技術者 / 普通自動車免許',
+                ? context.read<MindMapProvider>().t('records.careerHint')
+                : context
+                    .read<MindMapProvider>()
+                    .t('records.qualificationHint'),
             hintStyle: const TextStyle(color: Colors.white38, fontSize: 12),
             enabledBorder: const OutlineInputBorder(
                 borderSide: BorderSide(color: Colors.white24)),
@@ -70653,8 +72988,12 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
       _speak(r);
     } catch (e) {
       if (!mounted) return;
+      final text = context
+          .read<MindMapProvider>()
+          .t('common.errorPrefix')
+          .replaceFirst('{err}', '$e');
       setState(() {
-        _msgs.add((role: 'ai', text: 'エラーが発生しました: $e'));
+        _msgs.add((role: 'ai', text: text));
         _loading = false;
       });
     }
@@ -70664,13 +73003,14 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
   Future<void> _startConversation() async {
     final provider = context.read<MindMapProvider>();
     if (!provider.hasActiveAiKey) {
-      _snack('AI を使うには設定で API キーを登録してください');
+      _snack(provider.t('talk.apiKeyRequired'));
       return;
     }
     // ナンパ練習は「場面・人物像」 が任意項目なので、 空でも開始できる
     //   (= ユーザー要望: 1 つの任意項目としてまとめて最下部に置く)。
     if (_topicCtrl.text.trim().isEmpty && !_isPickup) {
-      _snack(_isInterview ? '会社名を入力してください' : '売りたい製品を入力してください');
+      _snack(provider
+          .t(_isInterview ? 'talk.companyRequired' : 'talk.productRequired'));
       return;
     }
     // 設定を保存 (= ユーザー要望: 次回開いた時に前回の設定を復元)。
@@ -70857,7 +73197,10 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _verdict = '評価に失敗しました: $e';
+        _verdict = context
+            .read<MindMapProvider>()
+            .t('talk.evaluationFailed')
+            .replaceFirst('{err}', '$e');
         _evaluating = false;
       });
     }
@@ -70957,17 +73300,25 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
                 Expanded(
                   child: Text(
                       _isInterview
-                          ? 'AI 面接練習'
+                          ? context
+                              .read<MindMapProvider>()
+                              .t('hdr.interviewPractice')
                           : _isPickup
-                              ? 'ナンパ練習'
-                              : '営業ロープレ練習',
+                              ? context
+                                  .read<MindMapProvider>()
+                                  .t('hdr.pickupPractice')
+                              : context
+                                  .read<MindMapProvider>()
+                                  .t('hdr.rolePlayPractice'),
                       style: const TextStyle(
                           color: Colors.white,
                           fontSize: 16,
                           fontWeight: FontWeight.w700)),
                 ),
                 IconButton(
-                  tooltip: _ttsOn ? '読み上げ ON' : '読み上げ OFF',
+                  tooltip: context
+                      .read<MindMapProvider>()
+                      .t(_ttsOn ? 'talk.ttsOn' : 'talk.ttsOff'),
                   icon: Icon(
                       _ttsOn
                           ? Icons.volume_up_rounded
@@ -71005,25 +73356,33 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text(
             _isInterview
-                ? '会社名を入れると、 その会社で出題されそうな質問で AI が面接官役になり、 音声で会話練習できます。'
+                ? context.read<MindMapProvider>().t('talk.interviewDescription')
                 : _isPickup
-                    ? '場面や相手像を入れると、AI が相手役になって自然な声かけと会話継続を練習できます。'
-                    : '売り込みたい製品を入れると、 AI がクライアント役になって商談の練習ができます。',
+                    ? context
+                        .read<MindMapProvider>()
+                        .t('talk.pickupDescription')
+                    : context
+                        .read<MindMapProvider>()
+                        .t('talk.salesDescription'),
             style: const TextStyle(color: Colors.white60, fontSize: 12.5)),
         // ── 上部の主入力欄 (会社名 / 売りたい製品) ──
         // ナンパ練習では「場面＋人物像」 を 1 つの任意項目として最下部に
         //   まとめて置く (= ユーザー要望) ので、 ここでは出さない。
         if (!_isPickup) ...[
           const SizedBox(height: 16),
-          Text(_isInterview ? '会社名' : '売りたい製品',
+          Text(
+              context
+                  .read<MindMapProvider>()
+                  .t(_isInterview ? 'talk.companyName' : 'talk.productName'),
               style: TextStyle(
                   color: accent, fontSize: 12, fontWeight: FontWeight.w700)),
           const SizedBox(height: 6),
           TextField(
             controller: _topicCtrl,
             style: const TextStyle(color: Colors.white),
-            decoration:
-                _talkInputDeco(_isInterview ? '例: 〇〇株式会社' : '例: クラウド勤怠管理システム'),
+            decoration: _talkInputDeco(context
+                .read<MindMapProvider>()
+                .t(_isInterview ? 'talk.companyHint' : 'talk.productHint')),
           ),
         ],
         if (_isPickup) ...[
@@ -71038,9 +73397,13 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
             child: Row(children: [
               Icon(Icons.auto_awesome_rounded, color: accent, size: 18),
               const SizedBox(width: 8),
-              const Expanded(
-                child: Text('人物像・場面をAIがランダムに決める',
-                    style: TextStyle(color: Colors.white, fontSize: 12.5)),
+              Expanded(
+                child: Text(
+                    context
+                        .read<MindMapProvider>()
+                        .t('talk.pickupRandomProfile'),
+                    style:
+                        const TextStyle(color: Colors.white, fontSize: 12.5)),
               ),
               Switch(
                 value: _pickupRandomAi,
@@ -71050,14 +73413,15 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
             ]),
           ),
           const SizedBox(height: 16),
-          Text('ナンパをする場所',
+          Text(context.read<MindMapProvider>().t('talk.pickupPlace'),
               style: TextStyle(
                   color: accent, fontSize: 12, fontWeight: FontWeight.w700)),
           const SizedBox(height: 6),
           TextField(
             controller: _pickupPlaceCtrl,
             style: const TextStyle(color: Colors.white),
-            decoration: _talkInputDeco('例: 渋谷のカフェ / 友達の紹介 / InstagramのDM'),
+            decoration: _talkInputDeco(
+                context.read<MindMapProvider>().t('talk.pickupPlaceHint')),
           ),
         ],
         if (_isInterview) ...[
@@ -71160,7 +73524,7 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
           ],
           if (_isPickup) ...[
             const SizedBox(height: 16),
-            Text('相手の年齢範囲',
+            Text(context.read<MindMapProvider>().t('talk.pickupAgeRange'),
                 style: TextStyle(
                     color: accent, fontSize: 12, fontWeight: FontWeight.w700)),
             const SizedBox(height: 6),
@@ -71177,14 +73541,23 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
                   Row(children: [
                     Icon(Icons.woman_rounded, color: accent, size: 18),
                     const SizedBox(width: 8),
-                    Text('$_pickupAgeMin〜$_pickupAgeMax歳',
+                    Text(
+                        context
+                            .read<MindMapProvider>()
+                            .t('talk.pickupAgeRangeValue')
+                            .replaceFirst('{min}', '$_pickupAgeMin')
+                            .replaceFirst('{max}', '$_pickupAgeMax'),
                         style: const TextStyle(
                             color: Colors.white,
                             fontSize: 13,
                             fontWeight: FontWeight.w700)),
                     const Spacer(),
-                    const Text('18歳以上',
-                        style: TextStyle(color: Colors.white38, fontSize: 11)),
+                    Text(
+                        context
+                            .read<MindMapProvider>()
+                            .t('talk.pickupAdultOnly'),
+                        style: const TextStyle(
+                            color: Colors.white38, fontSize: 11)),
                   ]),
                   RangeSlider(
                     min: 18,
@@ -71192,7 +73565,15 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
                     divisions: 62,
                     values: RangeValues(
                         _pickupAgeMin.toDouble(), _pickupAgeMax.toDouble()),
-                    labels: RangeLabels('$_pickupAgeMin歳', '$_pickupAgeMax歳'),
+                    labels: RangeLabels(
+                        context
+                            .read<MindMapProvider>()
+                            .t('talk.ageValue')
+                            .replaceFirst('{age}', '$_pickupAgeMin'),
+                        context
+                            .read<MindMapProvider>()
+                            .t('talk.ageValue')
+                            .replaceFirst('{age}', '$_pickupAgeMax')),
                     activeColor: accent,
                     inactiveColor: Colors.white24,
                     onChanged: (v) {
@@ -71209,7 +73590,7 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
           const SizedBox(height: 16),
           Text(
               _isPickup
-                  ? '声のかけ方'
+                  ? context.read<MindMapProvider>().t('talk.pickupApproach')
                   : context.read<MindMapProvider>().t('talk.approach'),
               style: TextStyle(
                   color: accent, fontSize: 12, fontWeight: FontWeight.w700)),
@@ -71249,7 +73630,7 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
           //    要望)。 AI ランダム設定 ON の時は不要なので隠す。 ──
           if (_isPickup && !_pickupRandomAi) ...[
             const SizedBox(height: 16),
-            Text('練習したい場面・相手の人物像（任意）',
+            Text(context.read<MindMapProvider>().t('talk.pickupSceneProfile'),
                 style: TextStyle(
                     color: accent, fontSize: 12, fontWeight: FontWeight.w700)),
             const SizedBox(height: 6),
@@ -71258,8 +73639,8 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
               style: const TextStyle(color: Colors.white),
               minLines: 2,
               maxLines: 4,
-              decoration:
-                  _talkInputDeco('例: 休日の昼のカフェで一人で読書している落ち着いた人。空ならAIに任せます'),
+              decoration: _talkInputDeco(
+                  context.read<MindMapProvider>().t('talk.pickupSceneHint')),
             ),
           ],
         ],
@@ -71276,7 +73657,7 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
                 _isInterview
                     ? context.read<MindMapProvider>().t('talk.startInterview')
                     : _isPickup
-                        ? 'ナンパを始める'
+                        ? context.read<MindMapProvider>().t('talk.startPickup')
                         : context.read<MindMapProvider>().t('talk.startSales'),
                 style: const TextStyle(fontWeight: FontWeight.w700)),
             onPressed: _startConversation,
@@ -71304,7 +73685,9 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
                             .read<MindMapProvider>()
                             .t('talk.interviewFeedback')
                         : _isPickup
-                            ? 'ナンパフィードバック'
+                            ? context
+                                .read<MindMapProvider>()
+                                .t('talk.pickupFeedback')
                             : context
                                 .read<MindMapProvider>()
                                 .t('talk.salesFeedback'),
@@ -71973,7 +74356,7 @@ class _GanttChart {
       };
 
   factory _GanttChart.fromJson(Map m) => _GanttChart(
-        name: (m['name'] ?? 'チャート').toString(),
+        name: (m['name'] ?? '').toString(),
         kind: m['kind'] == 'schedule' ? 'schedule' : 'gantt',
         unit: m['unit'] == 'hour' ? 'hour' : 'day',
         fromHour: (m['from'] as num?)?.toInt() ?? 6,
@@ -72005,8 +74388,8 @@ class _GanttStore {
 
   /// 複数チャート対応の読み込み (= ユーザー要望)。 旧単一チャート形式は
   /// 1 チャートへ自動移行する。
-  static Future<({List<_GanttChart> charts, int sel})> loadAll(
-      String pageId) async {
+  static Future<({List<_GanttChart> charts, int sel})> loadAll(String pageId,
+      {required String defaultChartName}) async {
     try {
       final sp = await SharedPreferences.getInstance();
       final raw = sp.getString(_chartsKey(pageId));
@@ -72032,7 +74415,7 @@ class _GanttStore {
     return (
       charts: [
         _GanttChart(
-            name: 'チャート1',
+            name: defaultChartName,
             unit: unit,
             fromHour: hrs.$1,
             toHour: hrs.$2,
@@ -72237,11 +74620,21 @@ class _GanttPageViewState extends State<_GanttPageView> {
   }
 
   Future<void> _load() async {
-    final data = await _GanttStore.loadAll(widget.pageId);
+    final data = await _GanttStore.loadAll(
+      widget.pageId,
+      defaultChartName:
+          widget.provider.t('gantt.defaultChart').replaceFirst('{n}', '1'),
+    );
     final c12 = await _GanttStore.load12h();
     final charts = data.charts;
     // = ユーザー要望: 各チャートは最初から 1 行分ある状態にする。
-    for (final c in charts) {
+    for (var chartIndex = 0; chartIndex < charts.length; chartIndex++) {
+      final c = charts[chartIndex];
+      if (c.name.trim().isEmpty) {
+        c.name = widget.provider
+            .t('gantt.defaultChart')
+            .replaceFirst('{n}', '${chartIndex + 1}');
+      }
       if (c.tasks.isEmpty) {
         final now = DateTime.now();
         final start = c.unit == 'hour'
@@ -72252,7 +74645,7 @@ class _GanttPageViewState extends State<_GanttPageView> {
             : start.add(const Duration(days: 2));
         c.tasks.add((
           id: 'g${now.microsecondsSinceEpoch}',
-          name: '新しいタスク',
+          name: widget.provider.t('gantt.newTask'),
           startMs: start.millisecondsSinceEpoch,
           endMs: end.millisecondsSinceEpoch,
           color: _palette.first.toARGB32(),
@@ -72314,7 +74707,7 @@ class _GanttPageViewState extends State<_GanttPageView> {
               final scheduled = tz.TZDateTime.from(fireAt, tz.local);
               await flutterLocalNotificationsPlugin.zonedSchedule(
                 notifId,
-                'ガントチャート',
+                widget.provider.t('gantt.title'),
                 '${t.name.trim()} (${start.month}/${start.day})',
                 scheduled,
                 NotificationDetails(
@@ -72425,8 +74818,10 @@ class _GanttPageViewState extends State<_GanttPageView> {
           context,
           SnackBar(
             content: Text(_notifyEnabled
-                ? '予定の通知を ${_notifyHour.toString().padLeft(2, '0')}:${_notifyMinute.toString().padLeft(2, '0')} に設定しました'
-                : '予定の通知をオフにしました'),
+                ? widget.provider.t('gantt.notifyEnabledAt').replaceFirst(
+                    '{time}',
+                    '${_notifyHour.toString().padLeft(2, '0')}:${_notifyMinute.toString().padLeft(2, '0')}')
+                : widget.provider.t('gantt.notifyDisabled')),
             backgroundColor: const Color(0xFFFFB347),
             duration: const Duration(seconds: 2),
           ));
@@ -72469,11 +74864,13 @@ class _GanttPageViewState extends State<_GanttPageView> {
     final now = DateTime.now();
     final start = DateTime(now.year, now.month, now.day);
     final c = _GanttChart(
-      name: 'チャート${_charts.length + 1}',
+      name: widget.provider
+          .t('gantt.defaultChart')
+          .replaceFirst('{n}', '${_charts.length + 1}'),
       tasks: [
         (
           id: 'g${now.microsecondsSinceEpoch}',
-          name: '新しいタスク',
+          name: widget.provider.t('gantt.newTask'),
           startMs: start.millisecondsSinceEpoch,
           endMs: start.add(const Duration(days: 2)).millisecondsSinceEpoch,
           color: _palette.first.toARGB32(),
@@ -72609,7 +75006,7 @@ class _GanttPageViewState extends State<_GanttPageView> {
         : start.add(const Duration(days: 2));
     final t = (
       id: 'g${now.microsecondsSinceEpoch}',
-      name: '新しいタスク',
+      name: widget.provider.t('gantt.newTask'),
       startMs: start.millisecondsSinceEpoch,
       endMs: end.millisecondsSinceEpoch,
       color: _palette[_tasks.length % _palette.length].toARGB32(),
@@ -72754,7 +75151,7 @@ class _GanttPageViewState extends State<_GanttPageView> {
                   backgroundColor: const Color(0xFF4FC3F7),
                   foregroundColor: Colors.black),
               onPressed: () => Navigator.pop(dctx),
-              child: const Text('OK'),
+              child: Text(context.read<MindMapProvider>().t('btn.ok')),
             ),
           ],
         );
@@ -72917,7 +75314,9 @@ class _GanttPageViewState extends State<_GanttPageView> {
   Widget _ganttBar(_GanttTask t) {
     const handleW = 14.0;
     final units = _unitIndex(_d(t.startMs), _d(t.endMs)) + 1;
-    final label = _unit == 'hour' ? '$units時間' : '$units日';
+    final label = widget.provider
+        .t(_unit == 'hour' ? 'gantt.durationHours' : 'gantt.durationDays')
+        .replaceFirst('{n}', '$units');
     return Stack(children: [
       // 本体: タップで編集、 水平ドラッグで移動。
       Positioned.fill(
@@ -73035,7 +75434,9 @@ class _GanttPageViewState extends State<_GanttPageView> {
             : '${d.year}/${d.month}/${d.day}';
         return AlertDialog(
           backgroundColor: const Color(0xFF1E1E32),
-          title: Text(task == null ? 'タスクを追加' : 'タスクを編集',
+          title: Text(
+              widget.provider
+                  .t(task == null ? 'gantt.addTask' : 'gantt.editTask'),
               style: const TextStyle(color: Colors.white, fontSize: 15)),
           content: SizedBox(
             width: 360,
@@ -73311,7 +75712,8 @@ class _GanttPageViewState extends State<_GanttPageView> {
             // ── 12時間(AM/PM) / 24時間 表記の切替 (= ユーザー要望) ──
             if (_unit == 'hour')
               IconButton(
-                tooltip: _use12h ? '24時間表記に切替' : '午前/午後(12時間)表記に切替',
+                tooltip: widget.provider
+                    .t(_use12h ? 'gantt.switch24h' : 'gantt.switch12h'),
                 visualDensity: VisualDensity.compact,
                 icon: Icon(
                     _use12h
@@ -73661,9 +76063,7 @@ class _PaintText {
   bool italic;
   final List<_PaintStroke> erasers;
   _PaintText(this.pos, this.text, this.color, this.size,
-      {this.bold = false,
-      this.italic = false,
-      List<_PaintStroke>? erasers})
+      {this.bold = false, this.italic = false, List<_PaintStroke>? erasers})
       : erasers = erasers ?? [];
 
   Map<String, dynamic> toJson() => {
@@ -73836,10 +76236,9 @@ class _PaintEraseEdit {
 /// 用紙サイズプリセット (= ユーザー要望: A4/B5 等)。 px は 96dpi 相当の論理サイズ。
 class _PaintCanvasSize {
   final String id;
-  final String label;
   final double w;
   final double h;
-  const _PaintCanvasSize(this.id, this.label, this.w, this.h);
+  const _PaintCanvasSize(this.id, this.w, this.h);
 }
 
 /// ペイントのツールオプション欄の固定高さ (= ユーザー要望: ツール切替で高さが
@@ -73848,31 +76247,31 @@ class _PaintCanvasSize {
 const double _kPaintOptionsBarH = 56.0;
 
 const List<_PaintCanvasSize> _kPaintSizes = [
-  _PaintCanvasSize('a4p', 'A4 縦', 794, 1123),
-  _PaintCanvasSize('a4l', 'A4 横', 1123, 794),
-  _PaintCanvasSize('b5p', 'B5 縦', 689, 976),
-  _PaintCanvasSize('b5l', 'B5 横', 976, 689),
-  _PaintCanvasSize('sq', '正方形', 1000, 1000),
+  _PaintCanvasSize('a4p', 794, 1123),
+  _PaintCanvasSize('a4l', 1123, 794),
+  _PaintCanvasSize('b5p', 689, 976),
+  _PaintCanvasSize('b5l', 976, 689),
+  _PaintCanvasSize('sq', 1000, 1000),
   // ── 動画/SNS 比率 (= ユーザー要望: YouTubeショート/Instagram の 16:9・4:3) ──
-  _PaintCanvasSize('wide', '16:9 横 (ワイド)', 1280, 720),
-  _PaintCanvasSize('reels', '9:16 縦 (ショート/リール)', 720, 1280),
-  _PaintCanvasSize('r43l', '4:3 横', 1024, 768),
-  _PaintCanvasSize('r43p', '3:4 縦', 768, 1024),
+  _PaintCanvasSize('wide', 1280, 720),
+  _PaintCanvasSize('reels', 720, 1280),
+  _PaintCanvasSize('r43l', 1024, 768),
+  _PaintCanvasSize('r43p', 768, 1024),
   // ── 大判の A/B 判 (= ユーザー要望: A1・B1 等も) ──
-  _PaintCanvasSize('a3p', 'A3 縦', 1123, 1587),
-  _PaintCanvasSize('a2p', 'A2 縦', 1587, 2245),
-  _PaintCanvasSize('a1p', 'A1 縦', 2245, 3179),
-  _PaintCanvasSize('b4p', 'B4 縦', 976, 1378),
-  _PaintCanvasSize('b2p', 'B2 縦', 1949, 2756),
-  _PaintCanvasSize('b1p', 'B1 縦', 2756, 3898),
+  _PaintCanvasSize('a3p', 1123, 1587),
+  _PaintCanvasSize('a2p', 1587, 2245),
+  _PaintCanvasSize('a1p', 2245, 3179),
+  _PaintCanvasSize('b4p', 976, 1378),
+  _PaintCanvasSize('b2p', 1949, 2756),
+  _PaintCanvasSize('b1p', 2756, 3898),
   // ── 大判の横向き (= 段階選択 [A/B → 数字 → 縦/横] で横を選べるように。
   //    縦の寸法を入れ替えただけ) ──
-  _PaintCanvasSize('a3l', 'A3 横', 1587, 1123),
-  _PaintCanvasSize('a2l', 'A2 横', 2245, 1587),
-  _PaintCanvasSize('a1l', 'A1 横', 3179, 2245),
-  _PaintCanvasSize('b4l', 'B4 横', 1378, 976),
-  _PaintCanvasSize('b2l', 'B2 横', 2756, 1949),
-  _PaintCanvasSize('b1l', 'B1 横', 3898, 2756),
+  _PaintCanvasSize('a3l', 1587, 1123),
+  _PaintCanvasSize('a2l', 2245, 1587),
+  _PaintCanvasSize('a1l', 3179, 2245),
+  _PaintCanvasSize('b4l', 1378, 976),
+  _PaintCanvasSize('b2l', 2756, 1949),
+  _PaintCanvasSize('b1l', 3898, 2756),
 ];
 
 _PaintCanvasSize _paintSizeById(String id) => _kPaintSizes
@@ -73922,8 +76321,9 @@ class _PaintSheet {
         'im': images.map((e) => e.toJson()).toList(),
       };
 
-  factory _PaintSheet.fromJson(Map m) => _PaintSheet(
-        name: (m['n'] ?? 'シート').toString(),
+  factory _PaintSheet.fromJson(Map m, {String defaultName = 'Sheet'}) =>
+      _PaintSheet(
+        name: (m['n'] ?? defaultName).toString(),
         sizeId: (m['sz'] ?? 'a4p').toString(),
         customW: (m['cw'] as num?)?.toDouble() ?? 1000,
         customH: (m['ch'] as num?)?.toDouble() ?? 1000,
@@ -73952,9 +76352,18 @@ class _PaintStore {
 
   /// 旧形式 (ストロークのみ / {s,t}) と新形式 ({sheets,sel}) の両対応。
   static Future<({List<_PaintSheet> sheets, int sel})> load(
-      String pageId) async {
+    String pageId, {
+    String defaultSheetName = 'Sheet 1',
+  }) async {
     List<_PaintSheet> one(List<_PaintStroke> st, List<_PaintText> tx) =>
-        [_PaintSheet(name: 'シート1', sizeId: 'a4p', strokes: st, texts: tx)];
+        [
+          _PaintSheet(
+            name: defaultSheetName,
+            sizeId: 'a4p',
+            strokes: st,
+            texts: tx,
+          ),
+        ];
     try {
       final sp = await SharedPreferences.getInstance();
       final raw = sp.getString(_key(pageId));
@@ -73969,10 +76378,12 @@ class _PaintStore {
         if (dec['sheets'] is List) {
           final sheets = (dec['sheets'] as List)
               .whereType<Map>()
-              .map((m) => _PaintSheet.fromJson(m))
+              .map((m) =>
+                  _PaintSheet.fromJson(m, defaultName: defaultSheetName))
               .toList();
           if (sheets.isEmpty) {
-            sheets.add(_PaintSheet(name: 'シート1', sizeId: 'a4p'));
+            sheets.add(
+                _PaintSheet(name: defaultSheetName, sizeId: 'a4p'));
           }
           int sel = (dec['sel'] as num?)?.toInt() ?? 0;
           if (sel < 0 || sel >= sheets.length) sel = 0;
@@ -74144,6 +76555,14 @@ class _DocumentPageViewState extends State<_DocumentPageView> {
   /// null/空 で表紙なし。 縦開きの先頭にスクロールして消える表紙として表示する。
   String? _coverPath;
   String get _coverPrefsKey => 'document_cover_${widget.pageId}';
+
+  /// 全ページに共通表示するヘッダー／フッター。編集モード中は用紙上で直接
+  /// 入力し、通常モードでは固定テキストとして表示する。
+  final TextEditingController _headerCtrl = TextEditingController();
+  final TextEditingController _footerCtrl = TextEditingController();
+  bool _headerFooterEditMode = false;
+  String get _headerFooterPrefsKey =>
+      'document_header_footer_${widget.pageId}';
 
   static const String _coverTemplatePrefix = 'template:';
   static const List<_DocCoverTemplate> _coverTemplates = [
@@ -74412,6 +76831,14 @@ class _DocumentPageViewState extends State<_DocumentPageView> {
         final isTemplate = _coverTemplateForValue(cp) != null;
         final isLegacyFile = !isTemplate && File(cp).existsSync();
         if (isTemplate || isLegacyFile) _coverPath = cp;
+      }
+      final headerFooter = sp.getString(_headerFooterPrefsKey);
+      if (headerFooter != null && headerFooter.isNotEmpty) {
+        final decoded = jsonDecode(headerFooter);
+        if (decoded is Map) {
+          _headerCtrl.text = decoded['header']?.toString() ?? '';
+          _footerCtrl.text = decoded['footer']?.toString() ?? '';
+        }
       }
     } catch (_) {}
     if (!mounted) {
@@ -74807,6 +77234,29 @@ class _DocumentPageViewState extends State<_DocumentPageView> {
     }
   }
 
+  Future<void> _saveHeaderFooter() async {
+    final header = _headerCtrl.text;
+    final footer = _footerCtrl.text;
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setString(
+        _headerFooterPrefsKey,
+        jsonEncode({
+          'header': header,
+          'footer': footer,
+        }),
+      );
+    } catch (_) {}
+  }
+
+  void _toggleHeaderFooterEditMode() {
+    if (_headerFooterEditMode) {
+      // ignore: discarded_futures
+      _saveHeaderFooter();
+    }
+    setState(() => _headerFooterEditMode = !_headerFooterEditMode);
+  }
+
   @override
   void dispose() {
     _saveTimer?.cancel();
@@ -74819,6 +77269,9 @@ class _DocumentPageViewState extends State<_DocumentPageView> {
       f.dispose();
     }
     _pageCtrl.dispose();
+    _saveHeaderFooter();
+    _headerCtrl.dispose();
+    _footerCtrl.dispose();
     super.dispose();
   }
 
@@ -74934,6 +77387,20 @@ class _DocumentPageViewState extends State<_DocumentPageView> {
                   color: Color(0xFF4FC3F7), size: 17),
               onPressed: () => _pasteIntoController(
                   _activeIndex.clamp(0, _controllers.length - 1)),
+            ),
+            IconButton(
+              tooltip: _headerFooterEditMode
+                  ? 'ヘッダー／フッター編集を終了'
+                  : 'ヘッダー／フッターを編集',
+              visualDensity: VisualDensity.compact,
+              icon: Icon(
+                Icons.vertical_align_center_rounded,
+                color: _headerFooterEditMode
+                    ? const Color(0xFFFFC107)
+                    : Colors.white70,
+                size: 18,
+              ),
+              onPressed: _toggleHeaderFooterEditMode,
             ),
           ],
         );
@@ -75083,6 +77550,26 @@ class _DocumentPageViewState extends State<_DocumentPageView> {
               ),
             ),
           ),
+          Positioned(
+            top: 10,
+            left: _padLeft,
+            right: _padRight,
+            child: _buildHeaderFooterField(
+              controller: _headerCtrl,
+              hint: 'ヘッダー',
+              textAlign: TextAlign.left,
+            ),
+          ),
+          Positioned(
+            bottom: 10,
+            left: _padLeft,
+            right: _padRight,
+            child: _buildHeaderFooterField(
+              controller: _footerCtrl,
+              hint: 'フッター',
+              textAlign: TextAlign.center,
+            ),
+          ),
           // 本文エディタ (非スクロール → 親のスクロールに乗る)
           Padding(
             padding: const EdgeInsets.fromLTRB(
@@ -75141,6 +77628,43 @@ class _DocumentPageViewState extends State<_DocumentPageView> {
     }
     return framed;
   }
+
+  Widget _buildHeaderFooterField({
+    required TextEditingController controller,
+    required String hint,
+    required TextAlign textAlign,
+  }) {
+    if (_headerFooterEditMode) {
+      return TextField(
+        controller: controller,
+        textAlign: textAlign,
+        maxLines: 1,
+        style: const TextStyle(color: Colors.black87, fontSize: 11),
+        decoration: InputDecoration(
+          isDense: true,
+          hintText: hint,
+          hintStyle: const TextStyle(color: Colors.black38, fontSize: 11),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+          enabledBorder: const UnderlineInputBorder(
+            borderSide: BorderSide(color: Color(0xFFFFC107)),
+          ),
+          focusedBorder: const UnderlineInputBorder(
+            borderSide: BorderSide(color: Color(0xFFFF9800), width: 2),
+          ),
+        ),
+        onChanged: (_) => _saveHeaderFooter(),
+      );
+    }
+    if (controller.text.trim().isEmpty) return const SizedBox.shrink();
+    return Text(
+      controller.text,
+      textAlign: textAlign,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: const TextStyle(color: Colors.black54, fontSize: 11),
+    );
+  }
 }
 
 class _PaintPageView extends StatefulWidget {
@@ -75153,6 +77677,9 @@ class _PaintPageView extends StatefulWidget {
 }
 
 class _PaintPageViewState extends State<_PaintPageView> {
+  static bool get _isDesktop =>
+      !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
+
   List<_PaintSheet> _sheets = [];
   int _sel = 0;
   bool _loaded = false;
@@ -75640,8 +78167,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
     return best == null ? null : (index: index, handle: best);
   }
 
-  Rect _resizedPaintShapeRect(Rect original, _PaintShapeResizeHandle handle,
-      Offset pointer) {
+  Rect _resizedPaintShapeRect(
+      Rect original, _PaintShapeResizeHandle handle, Offset pointer) {
     const minSize = 12.0;
     var left = original.left;
     var top = original.top;
@@ -75711,8 +78238,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
         target.b = nextRect.bottomRight;
         target.erasers
           ..clear()
-          ..addAll(
-              _transformPaintErasers(original.erasers, oldRect, nextRect));
+          ..addAll(_transformPaintErasers(original.erasers, oldRect, nextRect));
       }
       _shapeResizeChanged = target.a != original.a || target.b != original.b;
       _dirty = _dirty || _shapeResizeChanged;
@@ -75993,7 +78519,16 @@ class _PaintPageViewState extends State<_PaintPageView> {
     Color(0xFFFFEB3B),
   ];
   static const _penWidths = [2.0, 4.0, 8.0, 16.0, 28.0];
-  static const _eraserWidths = [8.0, 16.0, 28.0, 44.0, 64.0];
+  static const _eraserWidths = [
+    8.0,
+    16.0,
+    28.0,
+    44.0,
+    64.0,
+    96.0,
+    128.0,
+    192.0,
+  ];
 
   _PaintSheet get _sheet => _sheets[_sel];
   _PaintCanvasSize get _csize => _sizeOf(_sheet);
@@ -76004,7 +78539,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
     if (s.sizeId == 'custom') {
       final w = s.customW > 0 ? s.customW : 1000.0;
       final h = s.customH > 0 ? s.customH : 1000.0;
-      return _PaintCanvasSize('custom', 'カスタム', w, h);
+      return _PaintCanvasSize('custom', w, h);
     }
     return _paintSizeById(s.sizeId);
   }
@@ -76016,7 +78551,12 @@ class _PaintPageViewState extends State<_PaintPageView> {
   }
 
   Future<void> _load() async {
-    final d = await _PaintStore.load(widget.pageId);
+    final d = await _PaintStore.load(
+      widget.pageId,
+      defaultSheetName: widget.provider
+          .t('paint.defaultSheetName')
+          .replaceFirst('{n}', '1'),
+    );
     if (!mounted) return;
     setState(() {
       _sheets = d.sheets;
@@ -76459,9 +78999,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
     return erasers
         .map((stroke) => _PaintStroke(
               stroke.color,
-              (stroke.width * strokeScale)
-                  .clamp(1.0, 100000.0)
-                  .toDouble(),
+              (stroke.width * strokeScale).clamp(1.0, 100000.0).toDouble(),
               stroke.points.map(mapPoint).toList(),
               erase: true,
             ))
@@ -76490,17 +79028,14 @@ class _PaintPageViewState extends State<_PaintPageView> {
     Offset mapPoint(Offset p) {
       final relative = p - oldA;
       final along = relative.dx * oldUnit.dx + relative.dy * oldUnit.dy;
-      final across =
-          relative.dx * oldNormal.dx + relative.dy * oldNormal.dy;
+      final across = relative.dx * oldNormal.dx + relative.dy * oldNormal.dy;
       return newA + newUnit * (along * scale) + newNormal * (across * scale);
     }
 
     return erasers
         .map((stroke) => _PaintStroke(
               stroke.color,
-              (stroke.width * scale)
-                  .clamp(1.0, 100000.0)
-                  .toDouble(),
+              (stroke.width * scale).clamp(1.0, 100000.0).toDouble(),
               stroke.points.map(mapPoint).toList(),
               erase: true,
             ))
@@ -76654,8 +79189,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
       if (sh.kind == 2) {
         hit = _distToSegment(p, sh.a, sh.b) <= tol;
       } else if (sh.kind == 3) {
-        hit = _distToSegment(p, sh.a, sh.b) <= tol ||
-            _arrowHeadHit(sh, p, r);
+        hit = _distToSegment(p, sh.a, sh.b) <= tol || _arrowHeadHit(sh, p, r);
       } else {
         final rect = Rect.fromPoints(sh.a, sh.b);
         if (sh.kind == 1) {
@@ -76731,6 +79265,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
       if (existingIndex >= 0 && existingIndex < _sheet.texts.length) {
         final t = _sheet.texts[existingIndex];
         _textEditCtrl.text = t.text;
+        _color = Color(t.color);
         _textSize = t.size;
         _textBold = t.bold;
         _textItalic = t.italic;
@@ -76760,20 +79295,16 @@ class _PaintPageViewState extends State<_PaintPageView> {
     int nextSelText = -1;
     setState(() {
       if (_textEditIndex >= 0 && _textEditIndex < _sheet.texts.length) {
-        if (txt.trim().isEmpty) {
-          _sheet.texts.removeAt(_textEditIndex);
-        } else {
-          final old = _sheet.texts[_textEditIndex];
-          final shiftedErasers = old.erasers.map(_cloneStroke).toList();
-          _shiftPaintErasers(shiftedErasers, pos - old.pos);
-          _sheet.texts[_textEditIndex] = _PaintText(
-              pos, txt, old.color, _textSize,
-              bold: _textBold,
-              italic: _textItalic,
-              erasers: shiftedErasers);
-          nextSelText = _textEditIndex;
-        }
-      } else if (txt.trim().isNotEmpty) {
+        final old = _sheet.texts[_textEditIndex];
+        final shiftedErasers = old.erasers.map(_cloneStroke).toList();
+        _shiftPaintErasers(shiftedErasers, pos - old.pos);
+        _sheet.texts[_textEditIndex] = _PaintText(
+            pos, txt, _color.toARGB32(), _textSize,
+            bold: _textBold, italic: _textItalic, erasers: shiftedErasers);
+        nextSelText = _textEditIndex;
+      } else {
+        // 空のまま Enter を押しても、位置と書式を持つ空テキスト要素を作る。
+        // 削除は選択後の明示操作に任せ、確定操作では暗黙に破棄しない。
         _redo.clear();
         _sheet.texts.add(_PaintText(pos, txt, _color.toARGB32(), _textSize,
             bold: _textBold, italic: _textItalic));
@@ -76824,6 +79355,18 @@ class _PaintPageViewState extends State<_PaintPageView> {
       _commitTextEdit(selectAfterCommit: false);
     }
     _textToolShapeMoving = false;
+
+    // テキストモードでも、直前に掴んだ図形のリサイズハンドルを操作できる
+    // ようにする。更新・Undo・消し跡の座標変換・保存は選択モードの既存経路へ
+    // 委譲するので、四角/楕円の8方向と線/矢印の両端を同じ挙動で変形できる。
+    final resizeHit = _shapeResizeHit(p, fit);
+    if (resizeHit != null) {
+      _textDragOrig = null;
+      _textToolShapeMoving = true;
+      _onSelectPanStart(p, fit);
+      return;
+    }
+
     final idx = _textAt(p);
     if (idx >= 0) {
       setState(() {
@@ -77094,8 +79637,12 @@ class _PaintPageViewState extends State<_PaintPageView> {
 
   void _addSheet() {
     setState(() {
-      _sheets.add(
-          _PaintSheet(name: 'シート${_sheets.length + 1}', sizeId: _sheet.sizeId));
+      _sheets.add(_PaintSheet(
+        name: widget.provider
+            .t('paint.defaultSheetName')
+            .replaceFirst('{n}', '${_sheets.length + 1}'),
+        sizeId: _sheet.sizeId,
+      ));
       _sel = _sheets.length - 1;
       _resetPaintSelectionState();
       _dirty = true;
@@ -77222,9 +79769,9 @@ class _PaintPageViewState extends State<_PaintPageView> {
   /// 多過ぎるので A か B か → 数字 → 縦か横か、 のように絞り込む)。 定型比率
   /// (正方形/16:9 等) とカスタムは種類ステップから直接選べる。
   Future<void> _pickRuleSpacing() async {
-    final selected =
-        await _simpleChoice('\u7f6b\u7dda\u306e\u9593\u9694', const [
-      ('0', '\u306a\u3057'),
+    final selected = await _simpleChoice(
+        widget.provider.t('paint.ruleSpacing'), [
+      ('0', widget.provider.t('common.none')),
       ('20', '20 px'),
       ('28', '28 px'),
       ('36', '36 px'),
@@ -77242,11 +79789,13 @@ class _PaintPageViewState extends State<_PaintPageView> {
 
   /// \u7528\u7d19\u30b5\u30a4\u30ba\u3092\u6bb5\u968e\u7684\u306b\u9078\u3076\u3002
   Future<void> _pickCanvasSize() async {
-    final cat = await _simpleChoice('用紙の種類', const [
-      ('a', 'A 判 (A4・A3・A2・A1)'),
-      ('b', 'B 判 (B5・B4・B2・B1)'),
-      ('ratio', '定型比率 (正方形・16:9・4:3 等)'),
-      ('custom', 'カスタム (独自サイズを指定)'),
+    final isJapanese = widget.provider.appLanguage == 'ja';
+    final cat = await _simpleChoice(
+        widget.provider.t('paint.paperType'), [
+      ('a', widget.provider.t('paint.paperA')),
+      if (isJapanese) ('b', widget.provider.t('paint.paperBJis')),
+      ('ratio', widget.provider.t('paint.paperRatio')),
+      ('custom', widget.provider.t('paint.paperCustom')),
     ]);
     if (cat == null) return;
     if (cat == 'custom') {
@@ -77256,22 +79805,25 @@ class _PaintPageViewState extends State<_PaintPageView> {
 
     String? id;
     if (cat == 'ratio') {
-      id = await _simpleChoice('比率を選択', const [
-        ('sq', '正方形 (1:1)'),
-        ('wide', '16:9 横 (ワイド)'),
-        ('reels', '9:16 縦 (ショート/リール)'),
-        ('r43l', '4:3 横'),
-        ('r43p', '3:4 縦'),
+      id = await _simpleChoice(widget.provider.t('paint.ratioTitle'), [
+        ('sq', widget.provider.t('paint.ratioSquare')),
+        ('wide', widget.provider.t('paint.ratioWide')),
+        ('reels', widget.provider.t('paint.ratioShort')),
+        ('r43l', widget.provider.t('paint.ratioLandscape43')),
+        ('r43p', widget.provider.t('paint.ratioPortrait34')),
       ]);
     } else {
       // A 判 / B 判: 数字 → 向き。 用意があるサイズだけ提示する。
       final nums = cat == 'a' ? ['4', '3', '2', '1'] : ['5', '4', '2', '1'];
-      final num = await _simpleChoice(cat == 'a' ? 'A 判のサイズ' : 'B 判のサイズ',
+      final num = await _simpleChoice(
+          widget.provider.t(
+              cat == 'a' ? 'paint.aSizeTitle' : 'paint.bJisSizeTitle'),
           [for (final n in nums) (n, '${cat.toUpperCase()}$n')]);
       if (num == null) return;
-      final ori = await _simpleChoice('向き', const [
-        ('p', '縦'),
-        ('l', '横'),
+      final ori = await _simpleChoice(
+          widget.provider.t('paint.orientation'), [
+        ('p', widget.provider.t('paint.portrait')),
+        ('l', widget.provider.t('paint.landscape')),
       ]);
       if (ori == null) return;
       id = '$cat$num$ori'; // 例: a4p / b5l
@@ -77386,7 +79938,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
   Future<void> _exportImage(bool jpg) async {
     final png = await _pngBytes(_sheet);
     if (png == null || !mounted) {
-      _snack('書き出しに失敗しました');
+      _snack(widget.provider.t('paint.exportFailed'));
       return;
     }
     Uint8List bytes = png;
@@ -77420,7 +79972,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
       if (!mounted) return;
       await _saveExport('${_safeName(_sheets.first.name)}.pdf', ['pdf'], bytes);
     } catch (e) {
-      if (mounted) _snack('PDF の書き出しに失敗しました');
+      if (mounted) _snack(widget.provider.t('paint.pdfExportFailed'));
     }
   }
 
@@ -77431,7 +79983,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
     String? dir;
     try {
       dir = await FilePicker.platform
-          .getDirectoryPath(dialogTitle: '全ページの保存先フォルダーを選択');
+          .getDirectoryPath(
+              dialogTitle: widget.provider.t('paint.exportFolder'));
     } catch (_) {
       dir = null;
     }
@@ -77458,7 +80011,11 @@ class _PaintPageViewState extends State<_PaintPageView> {
       } catch (_) {}
     }
     if (mounted) {
-      _snack(ok > 0 ? '$ok 枚を保存しました' : '保存に失敗しました');
+      _snack(ok > 0
+          ? widget.provider
+              .t('paint.savedCount')
+              .replaceFirst('{count}', '$ok')
+          : widget.provider.t('paint.saveFailed'));
     }
   }
 
@@ -77476,7 +80033,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
       final isDesktop = !kIsWeb &&
           (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
       final savedPath = await FilePicker.platform.saveFile(
-        dialogTitle: '書き出し先を選択',
+        dialogTitle: widget.provider.t('paint.exportDestination'),
         fileName: filename,
         type: FileType.custom,
         allowedExtensions: exts,
@@ -77484,9 +80041,9 @@ class _PaintPageViewState extends State<_PaintPageView> {
       );
       if (savedPath == null) return;
       if (isDesktop) await File(savedPath).writeAsBytes(bytes);
-      if (mounted) _snack('保存しました');
+      if (mounted) _snack(widget.provider.t('paint.saved'));
     } catch (e) {
-      if (mounted) _snack('保存に失敗しました');
+      if (mounted) _snack(widget.provider.t('paint.saveFailed'));
     }
   }
 
@@ -77683,11 +80240,12 @@ class _PaintPageViewState extends State<_PaintPageView> {
             height: 38,
             padding: const EdgeInsets.symmetric(horizontal: 12),
             alignment: Alignment.centerLeft,
-            child: const Row(children: [
-              Icon(Icons.notes_rounded, color: Color(0xFF4FC3F7), size: 18),
-              SizedBox(width: 8),
-              Text('\u30ce\u30fc\u30c8',
-                  style: TextStyle(
+            child: Row(children: [
+              const Icon(Icons.notes_rounded,
+                  color: Color(0xFF4FC3F7), size: 18),
+              const SizedBox(width: 8),
+              Text(widget.provider.t('paint.sideNote'),
+                  style: const TextStyle(
                       color: Colors.white,
                       fontSize: 13,
                       fontWeight: FontWeight.w700)),
@@ -77722,7 +80280,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
                     controller: ctrl,
                     focusNode: _noteFocus,
                     config: QuillEditorConfig(
-                      placeholder: '\u3053\u3053\u306b\u5165\u529b...',
+                      placeholder: widget.provider.t('paint.notePlaceholder'),
                       padding: const EdgeInsets.all(12),
                       scrollable: true,
                       expands: true,
@@ -77946,8 +80504,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
   }
 
   Widget _buildSheetTabs() {
-    final centerOnDesktop = !kIsWeb &&
-        (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
+    final centerOnDesktop =
+        !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
     return SizedBox(
       height: 38,
       child: Padding(
@@ -78041,16 +80599,19 @@ class _PaintPageViewState extends State<_PaintPageView> {
             constraints: BoxConstraints(minWidth: cns.maxWidth),
             child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
               _toolModeBtn(_PaintTool.text, Icons.text_fields_rounded,
-                  '\u30c6\u30ad\u30b9\u30c8'),
-              _toolModeBtn(_PaintTool.pen, Icons.edit_rounded, '\u30da\u30f3'),
+                  widget.provider.t('paint.toolText')),
+              _toolModeBtn(_PaintTool.pen, Icons.edit_rounded,
+                  widget.provider.t('paint.toolPen')),
               _toolModeBtn(_PaintTool.eraser, Icons.auto_fix_high_rounded,
-                  '\u6d88\u3057\u30b4\u30e0'),
-              _toolModeBtn(
-                  _PaintTool.shape, Icons.category_rounded, '\u56f3\u5f62'),
-              _toolModeBtn(
-                  _PaintTool.image, Icons.image_rounded, '\u753b\u50cf'),
+                  widget.provider.t('paint.toolEraser')),
+              _toolModeBtn(_PaintTool.shape, Icons.category_rounded,
+                  widget.provider.t('paint.toolShape')),
+              _toolModeBtn(_PaintTool.image, Icons.image_rounded,
+                  widget.provider.t('paint.toolImage')),
               _toolModeBtn(_PaintTool.select, Icons.highlight_alt_rounded,
-                  '\u9078\u629e/\u79fb\u52d5 (Esc\u3067\u3082\u5207\u66ff)'),
+                  widget.provider.t(_isDesktop
+                      ? 'paint.toolSelectMoveDesktop'
+                      : 'paint.toolSelectMove')),
               Container(
                   width: 1,
                   height: 22,
@@ -78079,7 +80640,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
                   onTap: _pickCanvasSize),
               _toolBtn(
                   icon: Icons.format_line_spacing_rounded,
-                  tooltip: '\u7f6b\u7dda',
+                  tooltip: widget.provider.t('paint.ruledLines'),
                   onTap: _pickRuleSpacing),
               PopupMenuButton<String>(
                 tooltip: widget.provider.t('paint.export'),
@@ -78233,8 +80794,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
             if (_selShapeSet.isNotEmpty) ...[
               kindBtn(0, Icons.crop_square_rounded,
                   widget.provider.t('shape.rect')),
-              kindBtn(1, Icons.circle_outlined,
-                  widget.provider.t('shape.ellipse')),
+              kindBtn(
+                  1, Icons.circle_outlined, widget.provider.t('shape.ellipse')),
               kindBtn(2, Icons.horizontal_rule_rounded,
                   widget.provider.t('shape.line')),
               kindBtn(3, Icons.north_east_rounded,
@@ -78259,7 +80820,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
             ],
             _toolBtn(
                 icon: Icons.copy_all_rounded,
-                tooltip: widget.provider.t('paint.duplicate'),
+                tooltip: widget.provider.t(
+                    _isDesktop ? 'paint.duplicate' : 'paint.duplicateMobile'),
                 onTap: _duplicatePaintSelection),
             _toolBtn(
                 icon: Icons.delete_outline_rounded,
@@ -78369,8 +80931,12 @@ class _PaintPageViewState extends State<_PaintPageView> {
     final measured = _measurePaintTextValue(
         _textEditCtrl.text, _textSize, _textBold, _textItalic);
     final minEditorW = math.min(maxW, math.max(160.0, 180.0 * fit));
-    final editorW =
-        (measured.width * fit + 4).clamp(minEditorW, maxW).toDouble();
+    // 確定後の TextPainter は明示改行だけを改行として扱う。編集中だけ右端で
+    // ソフトラップしないよう、外枠はキャンバス内に収めつつ、内側の入力面は
+    // 最長論理行ぶん確保して横スクロールさせる。IME/キャレット用の余白も含む。
+    final desiredEditorW = measured.width * fit + 12.0;
+    final editorW = desiredEditorW.clamp(minEditorW, maxW).toDouble();
+    final editorContentW = math.max(editorW, desiredEditorW).toDouble();
     final isDesktop =
         !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
     final double grabW = math.min(42.0, math.max(28.0, editorW));
@@ -78383,43 +80949,50 @@ class _PaintPageViewState extends State<_PaintPageView> {
         borderRadius: BorderRadius.circular(3),
         color: Colors.white.withValues(alpha: 0.55),
       ),
-      child: Focus(
-        canRequestFocus: false,
-        skipTraversal: true,
-        onKeyEvent: (node, event) {
-          if (!isDesktop || event is! KeyDownEvent) {
-            return KeyEventResult.ignored;
-          }
-          final isEnter = event.logicalKey == LogicalKeyboardKey.enter ||
-              event.logicalKey == LogicalKeyboardKey.numpadEnter;
-          if (isEnter && !HardwareKeyboard.instance.isShiftPressed) {
-            _commitTextEdit();
-            return KeyEventResult.handled;
-          }
-          return KeyEventResult.ignored;
-        },
-        child: TextField(
-          controller: _textEditCtrl,
-          focusNode: _textEditFocus,
-          autofocus: true,
-          maxLines: null,
-          keyboardType: TextInputType.multiline,
-          textInputAction: TextInputAction.newline,
-          cursorColor: const Color(0xFFEC407A),
-          onChanged: (_) => setState(() {}),
-          style: TextStyle(
-            color: _color,
-            fontSize: _textSize * fit,
-            fontWeight: _textBold ? FontWeight.bold : FontWeight.w500,
-            fontStyle: _textItalic ? FontStyle.italic : FontStyle.normal,
-            height: 1.2,
-          ),
-          decoration: InputDecoration(
-            isDense: true,
-            border: InputBorder.none,
-            contentPadding: EdgeInsets.zero,
-            hintText: widget.provider.t('paint.textHint'),
-            hintStyle: TextStyle(color: Colors.black38),
+      clipBehavior: Clip.hardEdge,
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: SizedBox(
+          width: editorContentW,
+          child: Focus(
+            canRequestFocus: false,
+            skipTraversal: true,
+            onKeyEvent: (node, event) {
+              if (!isDesktop || event is! KeyDownEvent) {
+                return KeyEventResult.ignored;
+              }
+              final isEnter = event.logicalKey == LogicalKeyboardKey.enter ||
+                  event.logicalKey == LogicalKeyboardKey.numpadEnter;
+              if (isEnter && !HardwareKeyboard.instance.isShiftPressed) {
+                _commitTextEdit();
+                return KeyEventResult.handled;
+              }
+              return KeyEventResult.ignored;
+            },
+            child: TextField(
+              controller: _textEditCtrl,
+              focusNode: _textEditFocus,
+              autofocus: true,
+              maxLines: null,
+              keyboardType: TextInputType.multiline,
+              textInputAction: TextInputAction.newline,
+              cursorColor: const Color(0xFFEC407A),
+              onChanged: (_) => setState(() {}),
+              style: TextStyle(
+                color: _color,
+                fontSize: _textSize * fit,
+                fontWeight: _textBold ? FontWeight.bold : FontWeight.w500,
+                fontStyle: _textItalic ? FontStyle.italic : FontStyle.normal,
+                height: 1.2,
+              ),
+              decoration: InputDecoration(
+                isDense: true,
+                border: InputBorder.none,
+                contentPadding: EdgeInsets.zero,
+                hintText: widget.provider.t('paint.textHint'),
+                hintStyle: TextStyle(color: Colors.black38),
+              ),
+            ),
           ),
         ),
       ),
@@ -78532,11 +81105,13 @@ class _PaintPageViewState extends State<_PaintPageView> {
       child: SingleChildScrollView(
         scrollDirection: Axis.horizontal,
         child: Row(mainAxisSize: MainAxisSize.min, children: [
-          kindBtn(0, Icons.crop_square_rounded, widget.provider.t('shape.rect')),
-          kindBtn(1, Icons.circle_outlined, widget.provider.t('shape.ellipse')),
           kindBtn(
-              2, Icons.horizontal_rule_rounded, widget.provider.t('shape.line')),
-          kindBtn(3, Icons.north_east_rounded, widget.provider.t('shape.arrow')),
+              0, Icons.crop_square_rounded, widget.provider.t('shape.rect')),
+          kindBtn(1, Icons.circle_outlined, widget.provider.t('shape.ellipse')),
+          kindBtn(2, Icons.horizontal_rule_rounded,
+              widget.provider.t('shape.line')),
+          kindBtn(
+              3, Icons.north_east_rounded, widget.provider.t('shape.arrow')),
           const SizedBox(width: 6),
           GestureDetector(
             onTap: () => setState(() => _shapeFill = !_shapeFill),
@@ -78580,32 +81155,49 @@ class _PaintPageViewState extends State<_PaintPageView> {
   Widget _widthDot(double w, {required bool isEraser}) {
     final cur = isEraser ? _eraserWidth : _penWidth;
     final selected = (cur - w).abs() < 0.01;
-    return GestureDetector(
-      onTap: () => setState(() {
-        if (isEraser) {
-          _eraserWidth = w;
-        } else {
-          _penWidth = w;
-        }
-      }),
-      child: Container(
-        width: 34,
-        height: 34,
-        margin: const EdgeInsets.symmetric(horizontal: 2),
-        decoration: BoxDecoration(
-          color: selected
-              ? const Color(0xFFEC407A).withValues(alpha: 0.25)
-              : Colors.transparent,
-          borderRadius: BorderRadius.circular(6),
-          border: Border.all(
-              color: selected ? const Color(0xFFEC407A) : Colors.white12),
-        ),
-        child: Center(
-          child: Container(
-            width: w.clamp(2.0, 22.0),
-            height: w.clamp(2.0, 22.0),
-            decoration: const BoxDecoration(
-                color: Colors.white, shape: BoxShape.circle),
+    return Tooltip(
+      message: '${w.round()} px',
+      child: GestureDetector(
+        onTap: () => setState(() {
+          if (isEraser) {
+            _eraserWidth = w;
+          } else {
+            _penWidth = w;
+          }
+        }),
+        child: Container(
+          width: 34,
+          height: 34,
+          margin: const EdgeInsets.symmetric(horizontal: 2),
+          decoration: BoxDecoration(
+            color: selected
+                ? const Color(0xFFEC407A).withValues(alpha: 0.25)
+                : Colors.transparent,
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(
+                color: selected ? const Color(0xFFEC407A) : Colors.white12),
+          ),
+          child: Center(
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                Container(
+                  width: w.clamp(2.0, 22.0),
+                  height: w.clamp(2.0, 22.0),
+                  decoration: const BoxDecoration(
+                      color: Colors.white, shape: BoxShape.circle),
+                ),
+                if (isEraser && w >= 28)
+                  Text(
+                    '${w.round()}',
+                    style: const TextStyle(
+                      color: Colors.black87,
+                      fontSize: 8,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+              ],
+            ),
           ),
         ),
       ),
@@ -78802,10 +81394,9 @@ class _PaintCanvasPainter extends CustomPainter {
     //    部分的にくり抜く。後から作った要素には過去の消し跡が適用されない。 ──
     final liveEraser = currentStroke?.erase == true ? currentStroke : null;
     for (final s in sheet.shapes) {
-      final shapeLiveEraser =
-          liveEraser != null && liveEraserShapes.contains(s)
-              ? liveEraser
-              : null;
+      final shapeLiveEraser = liveEraser != null && liveEraserShapes.contains(s)
+          ? liveEraser
+          : null;
       if (s.erasers.isEmpty && shapeLiveEraser == null) {
         _drawShape(canvas, s);
       } else {
@@ -78838,9 +81429,8 @@ class _PaintCanvasPainter extends CustomPainter {
         ),
         textDirection: TextDirection.ltr,
       )..layout();
-      final textLiveEraser = liveEraser != null && liveEraserTexts.contains(t)
-          ? liveEraser
-          : null;
+      final textLiveEraser =
+          liveEraser != null && liveEraserTexts.contains(t) ? liveEraser : null;
       if (t.erasers.isEmpty && textLiveEraser == null) {
         tp.paint(canvas, t.pos);
       } else {
@@ -82846,14 +85436,18 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
   static const _ytSideDownload = 'download';
   static const _ytSideStopBackground = 'stop_background';
 
+  // ── 既定順 ──
+  // UI 非表示 (hide_ui) は上から 7 番目に置く (= ユーザー要望 2026-07:
+  // 「UI非表示ボタンはサイドメニューに配置する時はデフォルトで上から
+  // 7番目に配置して欲しい」)。
   static const List<String> _defaultYoutubeSideActionOrder = [
-    _ytSideHideUi,
     _ytSideAiChat,
     _ytSideShareWithAi,
     _ytSideUiSettings,
     _ytSideClose,
     _ytSideHistoryBack,
     _ytSideHistoryForward,
+    _ytSideHideUi,
     _ytSideSearch,
     _ytSideEmbed,
     _ytSidePip,
@@ -82876,6 +85470,10 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
   /// 取得している間の二重タップを防ぎ、下段ボタンに進捗を表示する。
   bool _sharingVideoWithBrowserAi = false;
 
+  /// UI 非表示ボタンでフォーカス CSS (= 動画以外を隠す) を注入したか。
+  /// 復帰時に、 通常経路 (focusMode) の CSS を巻き添えで消さないための印。
+  bool _uiHiddenCssApplied = false;
+
   void _hideFullscreenControls() {
     FocusManager.instance.primaryFocus?.unfocus();
     _stopVideoMemoPreviewTimer();
@@ -82884,6 +85482,17 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
       _videoMemoPanelOpen = false;
     });
     _syncHiddenYoutubeVideoAlignment();
+    // ── 動画部分以外の YouTube ページ UI も CSS で隠す ──
+    // (= ユーザー要望 2026-07: 「非表示ボタンを押したら動画部分以外の
+    //  CSS も非表示にして欲しい」)。 watch / shorts ページの時だけ注入
+    //  (ホーム/検索ページで注入すると操作不能になるため)。
+    final onWatchPage = _currentVideoId != null ||
+        _currentUrl.contains('/watch') ||
+        _currentUrl.contains('/shorts/');
+    if (_isYoutube && !_isMp4 && onWatchPage) {
+      _uiHiddenCssApplied = true;
+      _injectStyle(force: true);
+    }
   }
 
   void _restoreFullscreenControls() {
@@ -82895,6 +85504,17 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
       }
     });
     _syncHiddenYoutubeVideoAlignment();
+    // UI 非表示で注入した CSS を撤去する。 ただし埋め込み再生 (focusMode)
+    // の通常経路が CSS を維持したいケース (= hideEmbedRelated ON) は残す。
+    if (_uiHiddenCssApplied) {
+      _uiHiddenCssApplied = false;
+      bool keep = false;
+      try {
+        keep = widget.focusMode &&
+            context.read<MindMapProvider>().hideEmbedRelated;
+      } catch (_) {}
+      if (!keep) _removeStyle();
+    }
   }
 
   /// YouTube 検索ボックス用の controller。
@@ -84434,11 +87054,18 @@ v.addEventListener('play', function() {
     return html;
   }
 
-  /// フォーカスモード CSS を注入
-  Future<void> _injectStyle() async {
+  /// フォーカスモード CSS を注入。
+  /// [force] = true は UI 非表示ボタン経由 (= hideEmbedRelated 設定に
+  /// 関わらず動画以外を隠す。 ユーザー要望 2026-07)。
+  Future<void> _injectStyle({bool force = false}) async {
     // ── 関連動画等を隠す設定が OFF なら CSS を入れない (= ユーザー要望) ──
+    // ただし UI 非表示ボタンで隠している間 (_uiHiddenCssApplied) は、
+    // watch→watch の SPA 遷移で通常経路の _injectStyle() が走っても
+    // 剥がさない (= 非表示のまま次の動画へ移っても隠れ続ける)。
     try {
-      if (!context.read<MindMapProvider>().hideEmbedRelated) {
+      if (!force &&
+          !_uiHiddenCssApplied &&
+          !context.read<MindMapProvider>().hideEmbedRelated) {
         await _removeStyle();
         return;
       }
@@ -85838,6 +88465,10 @@ v.addEventListener('play', function() {
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
+      // WebView 内の会話を縦スクロールした時に、親のボトムシートまで
+      // ドラッグされて上下してしまわないよう外枠は固定する。
+      // 閉じる操作は AI ヘッダー左端のボタンに一本化する。
+      enableDrag: false,
       useSafeArea: true,
       backgroundColor: Colors.transparent,
       barrierColor: Colors.black.withValues(alpha: 0.12),
@@ -86009,8 +88640,7 @@ v.addEventListener('play', function() {
                             onPressed: prefixController.clear,
                             child: Text(
                               provider.t('btn.clear'),
-                              style:
-                                  const TextStyle(color: Color(0xFFFF8A80)),
+                              style: const TextStyle(color: Color(0xFFFF8A80)),
                             ),
                           ),
                           const Spacer(),
@@ -86019,8 +88649,7 @@ v.addEventListener('play', function() {
                                 Navigator.of(sheetContext).pop(false),
                             child: Text(
                               provider.t('btn.cancel'),
-                              style:
-                                  const TextStyle(color: Colors.white54),
+                              style: const TextStyle(color: Colors.white54),
                             ),
                           ),
                           const SizedBox(width: 8),
@@ -86092,8 +88721,8 @@ v.addEventListener('play', function() {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(_youtubeUiLayoutPrefKey,
           _youtubeControlsInSideMenu ? 'side' : 'header');
-      await prefs.setString(_youtubeUiSidePrefKey,
-          _youtubeSideMenuOnLeft ? 'left' : 'right');
+      await prefs.setString(
+          _youtubeUiSidePrefKey, _youtubeSideMenuOnLeft ? 'left' : 'right');
     } catch (_) {}
   }
 
@@ -86121,8 +88750,7 @@ v.addEventListener('play', function() {
   void _resetYoutubeSideActionOrder() {
     setState(() {
       _youtubeSideActionOrderTouched = true;
-      _youtubeSideActionOrder =
-          List<String>.of(_defaultYoutubeSideActionOrder);
+      _youtubeSideActionOrder = List<String>.of(_defaultYoutubeSideActionOrder);
     });
     _saveYoutubeSideActionOrder();
   }
@@ -86264,9 +88892,7 @@ v.addEventListener('play', function() {
             (_currentUrl.startsWith('http://') ||
                 _currentUrl.startsWith('https://'));
       case _ytSideStopBackground:
-        return !kIsWeb &&
-            Platform.isAndroid &&
-            _BgPlaybackController.isRunning;
+        return !kIsWeb && Platform.isAndroid && _BgPlaybackController.isRunning;
     }
     return false;
   }
@@ -86289,8 +88915,7 @@ v.addEventListener('play', function() {
       builder: (sheetContext) => StatefulBuilder(
         builder: (sheetContext, setSheetState) {
           void update({bool? sideMenu, bool? sideOnLeft}) {
-            _setYoutubeUiLayout(
-                sideMenu: sideMenu, sideOnLeft: sideOnLeft);
+            _setYoutubeUiLayout(sideMenu: sideMenu, sideOnLeft: sideOnLeft);
             setSheetState(() {});
           }
 
@@ -86307,183 +88932,183 @@ v.addEventListener('play', function() {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                  Row(children: [
-                    const Icon(Icons.tune_rounded,
-                        color: Color(0xFF8C84FF), size: 21),
-                    const SizedBox(width: 10),
-                    const Expanded(
-                      child: Text('YouTube UI の配置',
-                          style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 16,
-                              fontWeight: FontWeight.w700)),
-                    ),
-                    IconButton(
-                      onPressed: () => Navigator.pop(sheetContext),
-                      icon: const Icon(Icons.close_rounded,
-                          color: Colors.white54),
-                    ),
-                  ]),
-                  const SizedBox(height: 10),
-                  Expanded(
-                    child: ListView(
-                      children: [
-                        RadioListTile<bool>(
-                          value: false,
-                          groupValue: _youtubeControlsInSideMenu,
-                          activeColor: const Color(0xFF8C84FF),
-                          title: const Text('ヘッダーに表示',
-                              style: TextStyle(color: Colors.white)),
-                          secondary: const Icon(Icons.view_agenda_rounded,
-                              color: Colors.white70),
-                          onChanged: (value) {
-                            if (value != null) update(sideMenu: value);
-                          },
-                        ),
-                        RadioListTile<bool>(
-                          value: true,
-                          groupValue: _youtubeControlsInSideMenu,
-                          activeColor: const Color(0xFF8C84FF),
-                          title: const Text('サイドメニューに表示',
-                              style: TextStyle(color: Colors.white)),
-                          secondary: const Icon(Icons.view_sidebar_rounded,
-                              color: Colors.white70),
-                          onChanged: (value) {
-                            if (value != null) update(sideMenu: value);
-                          },
-                        ),
-                        if (_youtubeControlsInSideMenu) ...[
-                          const Divider(color: Colors.white12),
-                          const Padding(
-                            padding: EdgeInsets.fromLTRB(16, 4, 16, 8),
-                            child: Text('サイドメニューの位置',
-                                style: TextStyle(
-                                    color: Colors.white54, fontSize: 12)),
+                    Row(children: [
+                      const Icon(Icons.tune_rounded,
+                          color: Color(0xFF8C84FF), size: 21),
+                      const SizedBox(width: 10),
+                      const Expanded(
+                        child: Text('YouTube UI の配置',
+                            style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700)),
+                      ),
+                      IconButton(
+                        onPressed: () => Navigator.pop(sheetContext),
+                        icon: const Icon(Icons.close_rounded,
+                            color: Colors.white54),
+                      ),
+                    ]),
+                    const SizedBox(height: 10),
+                    Expanded(
+                      child: ListView(
+                        children: [
+                          RadioListTile<bool>(
+                            value: false,
+                            groupValue: _youtubeControlsInSideMenu,
+                            activeColor: const Color(0xFF8C84FF),
+                            title: const Text('ヘッダーに表示',
+                                style: TextStyle(color: Colors.white)),
+                            secondary: const Icon(Icons.view_agenda_rounded,
+                                color: Colors.white70),
+                            onChanged: (value) {
+                              if (value != null) update(sideMenu: value);
+                            },
                           ),
-                          Row(children: [
-                            Expanded(
-                              child: ChoiceChip(
-                                selected: _youtubeSideMenuOnLeft,
-                                showCheckmark: false,
-                                avatar: const Icon(
-                                    Icons.align_horizontal_left_rounded,
-                                    size: 18),
-                                label: const Text('左'),
-                                onSelected: (_) => update(sideOnLeft: true),
-                              ),
-                            ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: ChoiceChip(
-                                selected: !_youtubeSideMenuOnLeft,
-                                showCheckmark: false,
-                                avatar: const Icon(
-                                    Icons.align_horizontal_right_rounded,
-                                    size: 18),
-                                label: const Text('右'),
-                                onSelected: (_) => update(sideOnLeft: false),
-                              ),
-                            ),
-                          ]),
-                        ],
-                        // ── ボタンの並び順 ──
-                        // ヘッダー表示でも編集できるよう常に表示する
-                        //   (= ユーザー要望 2026-07: 配置設定から UI ボタンを
-                        //   入れ替えられるように)。 サイドメニューは全ボタン、
-                        //   ヘッダーの右上ボタン列も (存在する 4 種の範囲で)
-                        //   この順序に従う。
-                        ...[
-                          const Divider(color: Colors.white12, height: 28),
-                          Row(children: [
-                            const Expanded(
-                              child: Text('UIボタンの並び順',
+                          RadioListTile<bool>(
+                            value: true,
+                            groupValue: _youtubeControlsInSideMenu,
+                            activeColor: const Color(0xFF8C84FF),
+                            title: const Text('サイドメニューに表示',
+                                style: TextStyle(color: Colors.white)),
+                            secondary: const Icon(Icons.view_sidebar_rounded,
+                                color: Colors.white70),
+                            onChanged: (value) {
+                              if (value != null) update(sideMenu: value);
+                            },
+                          ),
+                          if (_youtubeControlsInSideMenu) ...[
+                            const Divider(color: Colors.white12),
+                            const Padding(
+                              padding: EdgeInsets.fromLTRB(16, 4, 16, 8),
+                              child: Text('サイドメニューの位置',
                                   style: TextStyle(
-                                      color: Colors.white70,
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w700)),
+                                      color: Colors.white54, fontSize: 12)),
                             ),
-                            TextButton.icon(
-                              onPressed: () {
-                                _resetYoutubeSideActionOrder();
-                                setSheetState(() {});
-                              },
-                              icon: const Icon(Icons.restart_alt_rounded,
-                                  size: 17),
-                              label: const Text('初期順'),
-                            ),
-                          ]),
-                          const SizedBox(height: 4),
-                          for (var index = 0;
-                              index < _youtubeSideActionOrder.length;
-                              index++)
-                            Builder(builder: (_) {
-                              final id = _youtubeSideActionOrder[index];
-                              final currentlyVisible =
-                                  _isYoutubeSideActionCurrentlyVisible(id);
-                              final color = currentlyVisible
-                                  ? Colors.white70
-                                  : Colors.white30;
-                              return Container(
-                                key: ValueKey('youtube-side-order-$id'),
-                                margin: const EdgeInsets.only(bottom: 6),
-                                padding:
-                                    const EdgeInsets.fromLTRB(10, 5, 4, 5),
-                                decoration: BoxDecoration(
-                                  color:
-                                      Colors.white.withValues(alpha: 0.035),
-                                  borderRadius: BorderRadius.circular(9),
-                                  border: Border.all(color: Colors.white10),
+                            Row(children: [
+                              Expanded(
+                                child: ChoiceChip(
+                                  selected: _youtubeSideMenuOnLeft,
+                                  showCheckmark: false,
+                                  avatar: const Icon(
+                                      Icons.align_horizontal_left_rounded,
+                                      size: 18),
+                                  label: const Text('左'),
+                                  onSelected: (_) => update(sideOnLeft: true),
                                 ),
-                                child: Row(children: [
-                                  Icon(_youtubeSideActionIcon(id),
-                                      color: color, size: 20),
-                                  const SizedBox(width: 10),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(_youtubeSideActionLabel(id),
-                                            style: TextStyle(
-                                                color: color, fontSize: 12)),
-                                        if (!currentlyVisible)
-                                          const Text('現在の画面では非表示',
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: ChoiceChip(
+                                  selected: !_youtubeSideMenuOnLeft,
+                                  showCheckmark: false,
+                                  avatar: const Icon(
+                                      Icons.align_horizontal_right_rounded,
+                                      size: 18),
+                                  label: const Text('右'),
+                                  onSelected: (_) => update(sideOnLeft: false),
+                                ),
+                              ),
+                            ]),
+                          ],
+                          // ── ボタンの並び順 ──
+                          // ヘッダー表示でも編集できるよう常に表示する
+                          //   (= ユーザー要望 2026-07: 配置設定から UI ボタンを
+                          //   入れ替えられるように)。 サイドメニューは全ボタン、
+                          //   ヘッダーの右上ボタン列も (存在する 4 種の範囲で)
+                          //   この順序に従う。
+                          ...[
+                            const Divider(color: Colors.white12, height: 28),
+                            Row(children: [
+                              const Expanded(
+                                child: Text('UIボタンの並び順',
+                                    style: TextStyle(
+                                        color: Colors.white70,
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w700)),
+                              ),
+                              TextButton.icon(
+                                onPressed: () {
+                                  _resetYoutubeSideActionOrder();
+                                  setSheetState(() {});
+                                },
+                                icon: const Icon(Icons.restart_alt_rounded,
+                                    size: 17),
+                                label: const Text('初期順'),
+                              ),
+                            ]),
+                            const SizedBox(height: 4),
+                            for (var index = 0;
+                                index < _youtubeSideActionOrder.length;
+                                index++)
+                              Builder(builder: (_) {
+                                final id = _youtubeSideActionOrder[index];
+                                final currentlyVisible =
+                                    _isYoutubeSideActionCurrentlyVisible(id);
+                                final color = currentlyVisible
+                                    ? Colors.white70
+                                    : Colors.white30;
+                                return Container(
+                                  key: ValueKey('youtube-side-order-$id'),
+                                  margin: const EdgeInsets.only(bottom: 6),
+                                  padding:
+                                      const EdgeInsets.fromLTRB(10, 5, 4, 5),
+                                  decoration: BoxDecoration(
+                                    color:
+                                        Colors.white.withValues(alpha: 0.035),
+                                    borderRadius: BorderRadius.circular(9),
+                                    border: Border.all(color: Colors.white10),
+                                  ),
+                                  child: Row(children: [
+                                    Icon(_youtubeSideActionIcon(id),
+                                        color: color, size: 20),
+                                    const SizedBox(width: 10),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(_youtubeSideActionLabel(id),
                                               style: TextStyle(
-                                                  color: Colors.white24,
-                                                  fontSize: 9)),
-                                      ],
+                                                  color: color, fontSize: 12)),
+                                          if (!currentlyVisible)
+                                            const Text('現在の画面では非表示',
+                                                style: TextStyle(
+                                                    color: Colors.white24,
+                                                    fontSize: 9)),
+                                        ],
+                                      ),
                                     ),
-                                  ),
-                                  IconButton(
-                                    onPressed: index > 0
-                                        ? () => moveAction(id, -1)
-                                        : null,
-                                    constraints: const BoxConstraints(
-                                        minWidth: 34, minHeight: 34),
-                                    padding: EdgeInsets.zero,
-                                    icon: const Icon(
-                                        Icons.keyboard_arrow_up_rounded,
-                                        size: 22),
-                                  ),
-                                  IconButton(
-                                    onPressed: index <
-                                            _youtubeSideActionOrder.length - 1
-                                        ? () => moveAction(id, 1)
-                                        : null,
-                                    constraints: const BoxConstraints(
-                                        minWidth: 34, minHeight: 34),
-                                    padding: EdgeInsets.zero,
-                                    icon: const Icon(
-                                        Icons.keyboard_arrow_down_rounded,
-                                        size: 22),
-                                  ),
-                                ]),
-                              );
-                            }),
+                                    IconButton(
+                                      onPressed: index > 0
+                                          ? () => moveAction(id, -1)
+                                          : null,
+                                      constraints: const BoxConstraints(
+                                          minWidth: 34, minHeight: 34),
+                                      padding: EdgeInsets.zero,
+                                      icon: const Icon(
+                                          Icons.keyboard_arrow_up_rounded,
+                                          size: 22),
+                                    ),
+                                    IconButton(
+                                      onPressed: index <
+                                              _youtubeSideActionOrder.length - 1
+                                          ? () => moveAction(id, 1)
+                                          : null,
+                                      constraints: const BoxConstraints(
+                                          minWidth: 34, minHeight: 34),
+                                      padding: EdgeInsets.zero,
+                                      icon: const Icon(
+                                          Icons.keyboard_arrow_down_rounded,
+                                          size: 22),
+                                    ),
+                                  ]),
+                                );
+                              }),
+                          ],
                         ],
-                      ],
+                      ),
                     ),
-                  ),
                   ],
                 ),
               ),
@@ -86509,8 +89134,7 @@ v.addEventListener('play', function() {
           decoration: const InputDecoration(
             hintText: '動画・チャンネルを検索',
             hintStyle: TextStyle(color: Colors.white38),
-            prefixIcon:
-                Icon(Icons.search_rounded, color: Color(0xFF8C84FF)),
+            prefixIcon: Icon(Icons.search_rounded, color: Color(0xFF8C84FF)),
           ),
           onSubmitted: (query) {
             Navigator.pop(dctx);
@@ -86520,8 +89144,7 @@ v.addEventListener('play', function() {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dctx),
-            child: const Text('閉じる',
-                style: TextStyle(color: Colors.white54)),
+            child: const Text('閉じる', style: TextStyle(color: Colors.white54)),
           ),
           FilledButton.icon(
             onPressed: () {
@@ -86553,8 +89176,7 @@ v.addEventListener('play', function() {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Row(children: [
-                    const Icon(Icons.speed_rounded,
-                        color: Color(0xFF4FC3F7)),
+                    const Icon(Icons.speed_rounded, color: Color(0xFF4FC3F7)),
                     const SizedBox(width: 10),
                     const Text('再生速度',
                         style: TextStyle(
@@ -86591,8 +89213,7 @@ v.addEventListener('play', function() {
   void _copyCurrentVideoUrl() {
     final provider = context.read<MindMapProvider>();
     final shareUrl = (_currentUrl.isNotEmpty ? _currentUrl : widget.url)
-        .replaceFirst(
-            'https://m.youtube.com/', 'https://www.youtube.com/')
+        .replaceFirst('https://m.youtube.com/', 'https://www.youtube.com/')
         .replaceFirst('http://m.youtube.com/', 'https://www.youtube.com/');
     Clipboard.setData(ClipboardData(text: shareUrl));
     _appSnack(
@@ -86633,12 +89254,31 @@ v.addEventListener('play', function() {
 
   /// YouTube WebView の右端に重ねる共通サイズの丸ボタン。
   /// ヘルプ文や Tooltip は付けず、アイコンだけで構成する。
+  /// [framed] = false でヘッダー配置モード用の「○枠なし」 表示
+  /// (= ユーザー要望 2026-07: ヘッダーの他のボタンと見た目を揃えるため、
+  ///  ヘッダー配置モードのボタンからは丸枠を外す)。
   Widget _buildMobileYoutubeRailButton({
     required Widget icon,
     required Color color,
     required VoidCallback? onTap,
     VoidCallback? onLongPress,
+    bool framed = true,
   }) {
+    if (!framed) {
+      return Material(
+        color: Colors.transparent,
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: onTap,
+          onLongPress: onLongPress,
+          child: SizedBox(
+            width: 40,
+            height: 40,
+            child: Center(child: icon),
+          ),
+        ),
+      );
+    }
     return Material(
       color: Colors.black.withValues(alpha: 0.74),
       shape: CircleBorder(
@@ -86662,11 +89302,15 @@ v.addEventListener('play', function() {
   /// ヘッダーの既存順は固定し、サイドの並べ替え設定からは独立させる。
   Widget _buildMobileYoutubeActionRail({Axis axis = Axis.vertical}) {
     final showYoutubeShare = _isYoutube;
+    // ── ヘッダー配置モードは丸枠なし (framed:false) ──
+    // (= ユーザー要望 2026-07: ヘッダーの他のボタンと種類が異なって見える
+    //  ため、 ヘッダー配置モードのボタン UI からは○枠を外す)。
     final visibilityButton = _buildMobileYoutubeRailButton(
       color: const Color(0xFF6C63FF),
       icon: const Icon(Icons.visibility_off_rounded,
           color: Color(0xFF8C84FF), size: 21),
       onTap: _hideFullscreenControls,
+      framed: false,
     );
     final aiButton = _buildMobileYoutubeRailButton(
       color: const Color(0xFFBA68C8),
@@ -86674,6 +89318,7 @@ v.addEventListener('play', function() {
           color: Color(0xFFCE83D8), size: 21),
       onTap: () => _openMemoTextInAi(''),
       onLongPress: _showMobileVideoAiSettings,
+      framed: false,
     );
     final shareButton = showYoutubeShare
         ? _buildMobileYoutubeRailButton(
@@ -86693,13 +89338,14 @@ v.addEventListener('play', function() {
                 ? null
                 : _shareCurrentVideoWithBrowserAi,
             onLongPress: _showMobileVideoAiSettings,
+            framed: false,
           )
         : const SizedBox(width: 40, height: 40);
     final settingsButton = _buildMobileYoutubeRailButton(
       color: const Color(0xFFFFB347),
-      icon: const Icon(Icons.tune_rounded,
-          color: Color(0xFFFFB347), size: 21),
+      icon: const Icon(Icons.tune_rounded, color: Color(0xFFFFB347), size: 21),
       onTap: _showYoutubeUiSettings,
+      framed: false,
     );
     // ── 配置設定の並び順をヘッダーのボタン列にも適用する ──
     // (= ユーザー要望 2026-07: UI ボタンを配置設定から入れ替えられるように)。
@@ -86815,8 +89461,7 @@ v.addEventListener('play', function() {
         return _buildMobileYoutubeRailButton(
           color: Colors.white54,
           icon: Icon(Icons.arrow_forward_ios_rounded,
-              color: _canGoForward ? Colors.white70 : Colors.white24,
-              size: 18),
+              color: _canGoForward ? Colors.white70 : Colors.white24, size: 18),
           onTap: _canGoForward
               ? () async {
                   try {
@@ -86852,9 +89497,7 @@ v.addEventListener('play', function() {
               ? const Color(0xFF2196F3)
               : const Color(0xFFFF6B6B),
           icon: _splitPanelIcon(
-              _videoSplitDown
-                  ? _SplitIconFill.bottom
-                  : _SplitIconFill.top,
+              _videoSplitDown ? _SplitIconFill.bottom : _SplitIconFill.top,
               color: _videoSplitDown
                   ? const Color(0xFF2196F3)
                   : const Color(0xFFFF6B6B),
@@ -86999,8 +89642,12 @@ v.addEventListener('play', function() {
     return Positioned(
       top: 0,
       bottom: inSideMenu ? 0 : null,
-      left: onLeft ? 0 : null,
-      right: onLeft ? null : 0,
+      // ヘッダー配置時は YouTube の検索欄と重なる右端を避け、上中央に置く。
+      // サイド配置時だけ従来どおり左右端の復帰領域を維持する。
+      left: inSideMenu
+          ? (onLeft ? 0 : null)
+          : (MediaQuery.sizeOf(context).width - 56) / 2,
+      right: inSideMenu ? (onLeft ? null : 0) : null,
       width: 56,
       height: inSideMenu ? null : 56,
       child: Semantics(
@@ -87011,6 +89658,170 @@ v.addEventListener('play', function() {
           onTap: _restoreFullscreenControls,
           child: const SizedBox.expand(),
         ),
+      ),
+    );
+  }
+
+  /// モバイル YouTube のヘッダー配置。
+  ///
+  /// ブラウズ中は全操作を一段の横スクロール列へまとめる。動画視聴中は、
+  /// 一段目を閉じる・履歴・更新・再生速度だけに固定し、残りを二段目へ送る。
+  Widget _buildMobileYoutubeHeader(bool isVideo) {
+    if (!isVideo) {
+      const leadingIds = <String>[
+        _ytSideClose,
+        _ytSideHistoryBack,
+        _ytSideHistoryForward,
+        // 非表示ボタンを右端へ置かず、画面上中央付近へ来る順にする。
+        _ytSideHideUi,
+      ];
+      final ids = <String>[
+        ...leadingIds,
+        for (final id in _youtubeSideActionOrder)
+          if (!leadingIds.contains(id)) id,
+      ];
+      return Container(
+        height: 52,
+        color: Colors.black,
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          physics: const ClampingScrollPhysics(),
+          child: Row(
+            children: [
+              for (final id in ids)
+                if (_buildMobileYoutubeSideAction(id) case final control?) ...[
+                  control,
+                  const SizedBox(width: 6),
+                ],
+            ],
+          ),
+        ),
+      );
+    }
+
+    const primaryIds = <String>{
+      _ytSideClose,
+      _ytSideHistoryBack,
+      _ytSideHistoryForward,
+      _ytSideReload,
+      _ytSidePlaybackRate,
+    };
+    final secondaryIds = <String>[
+      for (final id in _youtubeSideActionOrder)
+        if (!primaryIds.contains(id)) id,
+    ];
+    final provider = context.read<MindMapProvider>();
+    final maxRate = context.watch<MindMapProvider>().videoMaxRate;
+    final divisions = ((maxRate - 1.0) * 4).round().clamp(4, 60);
+
+    return Container(
+      color: Colors.black,
+      padding: const EdgeInsets.fromLTRB(4, 3, 4, 4),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // 一段目: 閉じる / 戻る / 進む / 更新 / 速度バー / 速度設定
+          Row(
+            children: [
+              IconButton(
+                tooltip: '閉じる',
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                icon: const Icon(Icons.close_rounded,
+                    color: Color(0xFFFF8A80), size: 22),
+                onPressed: () => Navigator.pop(context),
+              ),
+              IconButton(
+                tooltip: provider.t('fsv.backHistory'),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 36),
+                icon: Icon(Icons.arrow_back_ios_new_rounded,
+                    color: _canGoBack ? Colors.white70 : Colors.white24,
+                    size: 18),
+                onPressed: _canGoBack
+                    ? () async {
+                        try {
+                          await _c?.goBack();
+                        } catch (_) {}
+                      }
+                    : null,
+              ),
+              IconButton(
+                tooltip: provider.t('fsv.forwardHistory'),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 36),
+                icon: Icon(Icons.arrow_forward_ios_rounded,
+                    color: _canGoForward ? Colors.white70 : Colors.white24,
+                    size: 18),
+                onPressed: _canGoForward
+                    ? () async {
+                        try {
+                          await _c?.goForward();
+                        } catch (_) {}
+                      }
+                    : null,
+              ),
+              IconButton(
+                tooltip: provider.t('fsv.reloadVideo'),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 34, minHeight: 36),
+                icon: const Icon(Icons.refresh_rounded,
+                    color: Colors.white70, size: 20),
+                onPressed: _reloadCurrentVideo,
+              ),
+              Text('${_playbackRate.toStringAsFixed(2)}x',
+                  style: const TextStyle(color: Colors.white54, fontSize: 10)),
+              Expanded(
+                child: SliderTheme(
+                  data: SliderThemeData(
+                    trackHeight: 2,
+                    thumbShape:
+                        const RoundSliderThumbShape(enabledThumbRadius: 5),
+                    activeTrackColor: Colors.white.withValues(alpha: 0.5),
+                    inactiveTrackColor: Colors.white.withValues(alpha: 0.15),
+                    thumbColor: Colors.white,
+                    overlayShape:
+                        const RoundSliderOverlayShape(overlayRadius: 10),
+                  ),
+                  child: Slider(
+                    value: _playbackRate.clamp(1.0, maxRate),
+                    min: 1.0,
+                    max: maxRate,
+                    divisions: divisions,
+                    onChanged: _changeRate,
+                  ),
+                ),
+              ),
+              IconButton(
+                tooltip: provider.t('video.tip.maxRate'),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 36),
+                icon: const Icon(Icons.tune_rounded,
+                    color: Color(0xFFFFB347), size: 19),
+                onPressed: () => _showMaxRateDialog(context),
+              ),
+            ],
+          ),
+          // 二段目: その他。収まり切らない操作は横スクロールで表示する。
+          SizedBox(
+            height: 48,
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              physics: const ClampingScrollPhysics(),
+              child: Row(
+                children: [
+                  for (final id in secondaryIds)
+                    if (_buildMobileYoutubeSideAction(id)
+                        case final control?) ...[
+                      control,
+                      const SizedBox(width: 6),
+                    ],
+                ],
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -87657,8 +90468,7 @@ v.addEventListener('play', function() {
             defaultTargetPlatform == TargetPlatform.iOS ||
             defaultTargetPlatform == TargetPlatform.fuchsia;
     final hasYoutubeActionUi = _isYoutube || _isMp4;
-    final useYoutubeSideMenu =
-        hasYoutubeActionUi && _youtubeControlsInSideMenu;
+    final useYoutubeSideMenu = hasYoutubeActionUi && _youtubeControlsInSideMenu;
     // ── 戻るボタン傍受: バックグラウンド再生 ON で動画再生中なら PiP に自動切替 ──
     // ユーザー要望: 「バックグラウンド再生状態から動画に戻ってきて画面を閉じる
     // とバックグラウンドが止まってしまう」 → 戻るボタンで素直に pop すると、
@@ -87695,727 +90505,796 @@ v.addEventListener('play', function() {
               Row(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-              if (!_hideAllControls &&
-                  useYoutubeSideMenu &&
-                  _youtubeSideMenuOnLeft)
-                _buildMobileYoutubeSideMenu(),
-              Expanded(
-                child: Column(children: [
-            // ── 上部バー (2 段構成) ──
-            // 1段目: [戻る] [タイトル] [マップに追加 / プレイリスト ナビ]
-            // 2段目: [WebView 戻る] [WebView 進む]  速度x [─ slider ─] [再読込]
-            // タイトルが長い時に再生速度バー達と争って省略されてしまう問題への対処。
-            // 動画ページ以外 (検索/チャンネル/一般 URL) では 2 段目は描画しない。
-            // UI を隠した後の復元操作も WebView 右端の固定レールが担当する。
-            if (!_hideAllControls && !useYoutubeSideMenu)
-              Container(
-                color: Colors.black,
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                child: Column(children: [
-                  if (hasYoutubeActionUi && !useYoutubeSideMenu)
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: _buildMobileYoutubeActionRail(
-                          axis: Axis.horizontal),
-                    ),
-                  // 1段目
-                  Row(children: [
-                    IconButton(
-                      icon: const Icon(Icons.arrow_back,
-                          color: Colors.white, size: 22),
-                      onPressed: () => Navigator.pop(context),
-                    ),
-                    // ── ブラウザ履歴の戻る / 進む ──
-                    // 動画ページに限らず常時表示する (= Instagram などで
-                    // 「ジェスチャー戻ろうとしてアプリ自体が閉じる」要望対応)。
-                    // 動画ページの 2 段目にも別の戻る/進むがあるが、そちらは
-                    // 動画コントロールに隣接しているのでこちらは独立。
-                    IconButton(
-                      tooltip:
-                          context.read<MindMapProvider>().t('fsv.backHistory'),
-                      padding: EdgeInsets.zero,
-                      constraints:
-                          const BoxConstraints(minWidth: 32, minHeight: 32),
-                      icon: Icon(Icons.arrow_back_ios_new_rounded,
-                          color: _canGoBack ? Colors.white70 : Colors.white24,
-                          size: 18),
-                      onPressed: _canGoBack
-                          ? () async {
-                              try {
-                                await _c?.goBack();
-                              } catch (_) {}
-                            }
-                          : null,
-                    ),
-                    IconButton(
-                      tooltip: context
-                          .read<MindMapProvider>()
-                          .t('fsv.forwardHistory'),
-                      padding: EdgeInsets.zero,
-                      constraints:
-                          const BoxConstraints(minWidth: 32, minHeight: 32),
-                      icon: Icon(Icons.arrow_forward_ios_rounded,
-                          color:
-                              _canGoForward ? Colors.white70 : Colors.white24,
-                          size: 18),
-                      onPressed: _canGoForward
-                          ? () async {
-                              try {
-                                await _c?.goForward();
-                              } catch (_) {}
-                            }
-                          : null,
-                    ),
-                    // ── 動画タイトルの表示は削除 (= ユーザー要望 2026-07:
-                    //   「UI配置設定ボタンの下に動画タイトル等を表示しないで、
-                    //   邪魔」)。 タイトルはタブや共有時のメタ情報としては
-                    //   引き続き保持する (_currentTitle) が、 バーには出さない。
-                    const Spacer(),
-                    // ── マップに埋め込むボタン (YouTube 動画 / チャンネルのみ) ──
-                    // 表示条件: `_isEmbeddableYoutubeUrl(_currentUrl)` でカバー
-                    // できない瞬間 (SPA 遷移直後など) でも、`_currentVideoId` が
-                    // セット済みなら動画ページとみなしてボタンを残す。これに
-                    // より「動画再生中に埋め込みボタンが消える」現象を防ぐ。
-                    if (widget.onEmbedUrl != null &&
-                        (_isEmbeddableYoutubeUrl(_currentUrl) ||
-                            _currentVideoId != null))
-                      IconButton(
-                        tooltip:
-                            context.read<MindMapProvider>().t('vmemo.addToMap'),
-                        padding: EdgeInsets.zero,
-                        constraints:
-                            const BoxConstraints(minWidth: 32, minHeight: 32),
-                        icon: const Icon(Icons.add_to_photos_rounded,
-                            color: Color(0xFF43B97F), size: 22),
-                        onPressed: () {
-                          // 埋め込み対象 URL は `_currentUrl` を優先するが、もし
-                          // 一時的に動画 URL から離れた状態 (広告等) なら、最後
-                          // に判定された動画 ID から watch URL を再構成する。
-                          String url = _currentUrl;
-                          if (!_isEmbeddableYoutubeUrl(url) &&
-                              _currentVideoId != null) {
-                            url =
-                                'https://m.youtube.com/watch?v=$_currentVideoId';
-                          }
-                          // ── ユーザー要望: 埋め込みボタンを押しても Player は閉じない ──
-                          // Navigator.pop を外し、 埋め込み後もそのまま視聴を続けられる
-                          // ようにする (= マップへの追加は onEmbedUrl 内で完結する)。
-                          widget.onEmbedUrl!(url);
-                        },
-                      ),
-                    // ── PiP (アプリ内ピクチャインピクチャ) ──
-                    // 動画再生ページに限り表示。タップでミニプレイヤーに移行。
-                    // フルスクリーンを閉じてもアプリ内に小さな WebView が残り
-                    // 動画を続けて視聴できる。
-                    // 表示条件:
-                    //   (a) YouTube 動画 (videoId 取得済み)
-                    //   (b) mp4 / ローカル動画 (= ダウンロード済みオフライン動画)
-                    //   いずれも _enterPiP 側で適切なモード (YouTube / Local /
-                    //   URL) に振り分けられる。
-                    if ((_isYoutube && _currentVideoId != null) || _isMp4)
-                      IconButton(
-                        tooltip: context.read<MindMapProvider>().t('fsv.pip'),
-                        padding: EdgeInsets.zero,
-                        constraints:
-                            const BoxConstraints(minWidth: 32, minHeight: 32),
-                        icon: const Icon(Icons.picture_in_picture_alt_rounded,
-                            color: Color(0xFF4FC3F7), size: 22),
-                        onPressed: _enterPiP,
-                      ),
-                    // ── 画面分割で開く ボタン ──
-                    // 現在の URL を MindMapScreen の画面分割パネルへ引き継ぎつつ
-                    // このフルスクリーンページを閉じる。 動画/PDF を見ながら
-                    // マップを編集できる「真の画面分割」 状態に遷移する。
-                    // onMoveToSplitPanel が渡されていない場合は非表示。
-                    if (widget.onMoveToSplitPanel != null)
-                      // ── 画面分割ボタン (1 つに統合 / 長押しで上・下を切替) ──
-                      // ユーザー要望: 長押しで「上に分割 / 下に分割」 を切り替えて、
-                      //   アイコンもその方向 (上/下) に切り変わるように。 タップは
-                      //   現在の方向で分割する。
-                      GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () =>
-                            _moveVideoToSplit(isLeftPanel: !_videoSplitDown),
-                        onLongPressStart: (_) {
-                          setState(() => _videoSplitDown = !_videoSplitDown);
-                          if (!useManualSplitTooltip) return;
-                          WidgetsBinding.instance.addPostFrameCallback((_) {
-                            if (!mounted) return;
-                            _videoSplitTooltipKey.currentState
-                                ?.ensureTooltipVisible();
-                          });
-                        },
-                        child: Padding(
-                          padding: EdgeInsets.all(6),
-                          child: Tooltip(
-                            key: _videoSplitTooltipKey,
-                            triggerMode: useManualSplitTooltip
-                                ? TooltipTriggerMode.manual
-                                : TooltipTriggerMode.longPress,
-                            message: context
-                                .read<MindMapProvider>()
-                                .t('split.openSplitTip'),
-                            child: _splitPanelIcon(
-                                _videoSplitDown
-                                    ? _SplitIconFill.bottom
-                                    : _SplitIconFill.top,
-                                color: _videoSplitDown
-                                    ? const Color(0xFF2196F3)
-                                    : const Color(0xFFFF6B6B),
-                                size: 22),
-                          ),
-                        ),
-                      ),
-                    // ── メモボタン (動画視聴中にメモを取る) ──
-                    // 動画再生ページ (YouTube / mp4 / ローカル) でだけ表示。
-                    // タップで動画レイヤーの上にメモパネルが下からせり上がる。
-                    // 動画は止めずに視聴を続けながら入力でき、 「マップに追加」 で
-                    // メモノードとしてキャンバス上に配置できる。
-                    if ((_isYoutube && _currentVideoId != null) || _isMp4)
-                      IconButton(
-                        tooltip: context
-                            .read<MindMapProvider>()
-                            .t('player.takeMemo'),
-                        padding: EdgeInsets.zero,
-                        constraints:
-                            const BoxConstraints(minWidth: 32, minHeight: 32),
-                        icon: Icon(
-                          _videoMemoPanelOpen
-                              ? Icons.sticky_note_2_rounded
-                              : Icons.sticky_note_2_outlined,
-                          color: _videoMemoPanelOpen
-                              ? const Color(0xFFFFB347)
-                              : Colors.white,
-                          size: 22,
-                        ),
-                        onPressed: _toggleVideoMemoPanel,
-                      ),
-                    // ── バックグラウンド再生 強制停止ボタン ──
-                    // ユーザー要望: 「動画を止めて画面を閉じてもバックグラウンド
-                    // 再生が起動してしまう」 → アプリ内で 1 タップで完全停止できる
-                    // 仕組みを用意。Service が動いている間だけ表示する。
-                    // 押すと:
-                    //   1. _BgPlaybackController.forceStop() で refCount=0 にリセット
-                    //      → 通知も即座に消える
-                    //   2. provider.backgroundPlaybackEnabled を false にして
-                    //      その後再生開始しても自動で再起動しないようにする
-                    //   3. SnackBar で停止を知らせる
-                    if (Platform.isAndroid && _BgPlaybackController.isRunning)
-                      IconButton(
-                        tooltip:
-                            context.read<MindMapProvider>().t('bg.stopAction'),
-                        padding: EdgeInsets.zero,
-                        constraints:
-                            const BoxConstraints(minWidth: 32, minHeight: 32),
-                        icon: const Icon(Icons.stop_circle_rounded,
-                            color: Colors.redAccent, size: 22),
-                        onPressed: () async {
-                          final provider = context.read<MindMapProvider>();
-                          // 設定も OFF にして、Lifecycle ハンドラが再起動しない
-                          // ようにする (= ユーザーの意図を尊重)。
-                          provider.setBackgroundPlaybackEnabled(false);
-                          await _BgPlaybackController.forceStop();
-                          if (!mounted) return;
-                          _appSnack(
-                            context,
-                            SnackBar(
-                              content: Text(provider.t('bg.stopped')),
-                              backgroundColor: Colors.redAccent,
-                              duration: const Duration(seconds: 2),
-                            ),
-                          );
-                          // ボタンを消すために rebuild
-                          setState(() {});
-                        },
-                      ),
-                    // ── ダウンロードボタン ──
-                    // mp4 直リンクの時だけ表示。
-                    // 端末のドキュメントフォルダ内 `Downloads/` に保存する。
-                    // YouTube 本体の端末保存は著作権/規約リスクが高いため
-                    // リリース版ではボタン自体を表示しない。
-                    // ── ダウンロードボタン ──
-                    // 表示条件:
-                    //   HTTP/HTTPS で配信されている mp4 直リンク
-                    if (_isMp4 &&
-                        (_currentUrl.startsWith('http://') ||
-                            _currentUrl.startsWith('https://')))
-                      IconButton(
-                        tooltip:
-                            context.read<MindMapProvider>().t('fsv.download'),
-                        padding: EdgeInsets.zero,
-                        constraints:
-                            const BoxConstraints(minWidth: 32, minHeight: 32),
-                        icon: const Icon(Icons.download_rounded,
-                            color: Color(0xFFFFB347), size: 22),
-                        onPressed: _downloadCurrentVideo,
-                      ),
-                    // プレイリストナビ (1段目右端)
-                    if (_playlist.length > 1) ...[
-                      IconButton(
-                        padding: EdgeInsets.zero,
-                        constraints:
-                            const BoxConstraints(minWidth: 32, minHeight: 32),
-                        icon: const Icon(Icons.skip_previous_rounded,
-                            color: Colors.white54, size: 20),
-                        onPressed: _playlistIndex > 0
-                            ? () {
-                                _playlistIndex--;
-                                _navigateTo(_playlist[_playlistIndex]);
-                              }
-                            : null,
-                      ),
-                      Text('${_playlistIndex + 1}/${_playlist.length}',
-                          style: const TextStyle(
-                              color: Colors.white38, fontSize: 11)),
-                      IconButton(
-                        padding: EdgeInsets.zero,
-                        constraints:
-                            const BoxConstraints(minWidth: 32, minHeight: 32),
-                        icon: const Icon(Icons.skip_next_rounded,
-                            color: Colors.white54, size: 20),
-                        onPressed: _playlistIndex < _playlist.length - 1
-                            ? () {
-                                _playlistIndex++;
-                                _navigateTo(_playlist[_playlistIndex]);
-                              }
-                            : null,
-                      ),
-                    ],
-                    // ── ヘッドレス再生 (紫のヘッドホン) ボタンは削除 ──
-                    // ユーザー要望: 「モバイルの YouTube 動画上部の紫のヘッドホン
-                    //   アイコンのボタンは意味を成していないので消して」。
-                    //   ヘッドレス再生の仕組み自体 (startHeadlessYoutube /
-                    //   フローティング停止ボタン) は残すが、 起動ボタンは出さない。
-                  ]),
-                  // 2段目 (動画ページかつ展開状態の時のみ表示)
-                  // ── ブラウザ戻る/進むボタンは 1 段目 (= 上記の IconButton 群)
-                  //    に同等のものがあるため、 重複削除。 ユーザー要望:
-                  //    「Android版で YouTube を開いた時に戻る/進むボタンが 2 つ
-                  //     あるから 1 つにして」。 旧実装は再生速度バーの左に
-                  //    `_canGoBack` / `_canGoForward` 連動のボタンを 1 セット
-                  //    重ねて出していた。 1 段目で十分のため撤去。
-                  if (isVideo && _speedBarExpanded)
-                    SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      physics: const ClampingScrollPhysics(),
-                      child: Row(children: [
-                        // ── IAW 版でも provider の videoMaxRate を反映 ──
-                        Builder(builder: (sctx) {
-                          final maxRate =
-                              context.watch<MindMapProvider>().videoMaxRate;
-                          if (_playbackRate > maxRate) {
-                            WidgetsBinding.instance.addPostFrameCallback((_) {
-                              if (mounted) _changeRate(maxRate);
-                            });
-                          }
-                          final divs =
-                              ((maxRate - 1.0) * 4).round().clamp(4, 60);
-                          return Row(mainAxisSize: MainAxisSize.min, children: [
-                            Text('${_playbackRate.toStringAsFixed(2)}x',
-                                style: const TextStyle(
-                                    color: Colors.white54, fontSize: 11)),
-                            SizedBox(
-                              width: 110,
-                              child: SliderTheme(
-                                data: SliderThemeData(
-                                  trackHeight: 2,
-                                  thumbShape: const RoundSliderThumbShape(
-                                      enabledThumbRadius: 5),
-                                  activeTrackColor:
-                                      Colors.white.withValues(alpha: 0.5),
-                                  inactiveTrackColor:
-                                      Colors.white.withValues(alpha: 0.15),
-                                  thumbColor: Colors.white,
-                                  overlayShape: const RoundSliderOverlayShape(
-                                      overlayRadius: 10),
-                                ),
-                                child: Slider(
-                                  value: _playbackRate.clamp(1.0, maxRate),
-                                  min: 1.0,
-                                  max: maxRate,
-                                  divisions: divs,
-                                  onChanged: _changeRate,
-                                ),
+                  if (!_hideAllControls &&
+                      useYoutubeSideMenu &&
+                      _youtubeSideMenuOnLeft)
+                    _buildMobileYoutubeSideMenu(),
+                  Expanded(
+                    child: Column(children: [
+                      // ── 上部バー (2 段構成) ──
+                      // 1段目: [戻る] [タイトル] [マップに追加 / プレイリスト ナビ]
+                      // 2段目: [WebView 戻る] [WebView 進む]  速度x [─ slider ─] [再読込]
+                      // タイトルが長い時に再生速度バー達と争って省略されてしまう問題への対処。
+                      // 動画ページ以外 (検索/チャンネル/一般 URL) では 2 段目は描画しない。
+                      // UI を隠した後の復元操作も WebView 右端の固定レールが担当する。
+                      if (!_hideAllControls &&
+                          !useYoutubeSideMenu &&
+                          hasYoutubeActionUi)
+                        _buildMobileYoutubeHeader(isVideo),
+                      // YouTube / mp4 は上の専用モバイルヘッダーを使う。一般 URL の
+                      // ビューアだけは既存ヘッダーを維持する。
+                      if (!_hideAllControls &&
+                          !useYoutubeSideMenu &&
+                          !hasYoutubeActionUi)
+                        Container(
+                          color: Colors.black,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 4),
+                          child: Column(children: [
+                            if (hasYoutubeActionUi && !useYoutubeSideMenu)
+                              Align(
+                                alignment: Alignment.centerRight,
+                                child: _buildMobileYoutubeActionRail(
+                                    axis: Axis.horizontal),
                               ),
-                            ),
-                            IconButton(
-                              tooltip: sctx
-                                  .read<MindMapProvider>()
-                                  .t('video.tip.maxRate'),
-                              padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints(
-                                  minWidth: 24, minHeight: 24),
-                              iconSize: 14,
-                              icon: const Icon(Icons.tune_rounded,
-                                  color: Colors.white54),
-                              onPressed: () => _showMaxRateDialog(sctx),
-                            ),
-                            // オフライン (mp4) 動画の左右キーのシーク秒数 (= ユーザー
-                            //   要望: 10秒既定 + 設定で変更可能に)。
-                            if (_isMp4)
+                            // 1段目
+                            Row(children: [
+                              IconButton(
+                                icon: const Icon(Icons.arrow_back,
+                                    color: Colors.white, size: 22),
+                                onPressed: () => Navigator.pop(context),
+                              ),
+                              // ── ブラウザ履歴の戻る / 進む ──
+                              // 動画ページに限らず常時表示する (= Instagram などで
+                              // 「ジェスチャー戻ろうとしてアプリ自体が閉じる」要望対応)。
+                              // 動画ページの 2 段目にも別の戻る/進むがあるが、そちらは
+                              // 動画コントロールに隣接しているのでこちらは独立。
                               IconButton(
                                 tooltip: context
                                     .read<MindMapProvider>()
-                                    .t('seek.title'),
+                                    .t('fsv.backHistory'),
                                 padding: EdgeInsets.zero,
                                 constraints: const BoxConstraints(
-                                    minWidth: 24, minHeight: 24),
-                                iconSize: 14,
-                                icon: const Icon(Icons.fast_forward_rounded,
-                                    color: Colors.white54),
-                                onPressed: () => _showSeekStepDialog(sctx),
+                                    minWidth: 32, minHeight: 32),
+                                icon: Icon(Icons.arrow_back_ios_new_rounded,
+                                    color: _canGoBack
+                                        ? Colors.white70
+                                        : Colors.white24,
+                                    size: 18),
+                                onPressed: _canGoBack
+                                    ? () async {
+                                        try {
+                                          await _c?.goBack();
+                                        } catch (_) {}
+                                      }
+                                    : null,
                               ),
-                          ]);
-                        }),
-                        // 動画再読み込みボタン (広告対策)
-                        // 通常のリロードだと検索結果ページに戻されるが、 これは
-                        // 「直近視聴した動画」 にリロードするため、 広告で詰まっ
-                        // た時の脱出経路になる。
-                        IconButton(
-                          tooltip: context
-                              .read<MindMapProvider>()
-                              .t('fsv.reloadVideo'),
-                          padding: EdgeInsets.zero,
-                          constraints:
-                              const BoxConstraints(minWidth: 32, minHeight: 32),
-                          icon: const Icon(Icons.refresh_rounded,
-                              color: Colors.white70, size: 20),
-                          onPressed: _reloadCurrentVideo,
-                        ),
-                        if (_isYoutube ||
-                            _currentUrl.startsWith('http://') ||
-                            _currentUrl.startsWith('https://'))
-                          IconButton(
-                            tooltip: context
-                                .read<MindMapProvider>()
-                                .t('ctx.shareVideoUrl'),
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints(
-                                minWidth: 32, minHeight: 32),
-                            icon: const Icon(Icons.share_rounded,
-                                color: Color(0xFF4FC3F7), size: 22),
-                            onPressed: () {
-                              final provider = context.read<MindMapProvider>();
-                              final shareUrl = _currentUrl
-                                  .replaceFirst('https://m.youtube.com/',
-                                      'https://www.youtube.com/')
-                                  .replaceFirst('http://m.youtube.com/',
-                                      'https://www.youtube.com/');
-                              Clipboard.setData(ClipboardData(text: shareUrl));
-                              _appSnack(
-                                context,
-                                SnackBar(
-                                  content:
-                                      Text(provider.t('ctx.videoUrlCopied')),
-                                  duration: const Duration(seconds: 2),
-                                  backgroundColor: const Color(0xFF2A2A3E),
-                                ),
-                              );
-                            },
-                          ),
-                      ]),
-                    ),
-                  // ── 3 段目: YouTube 検索バー (常設、折りたたみ可能) ──
-                  // YouTube モードの時だけ表示。 デフォルトは展開状態。
-                  // 1 段目右端の検索アイコン (search_off) で折り畳める。
-                  //
-                  // 設置理由: YouTube が同じ動画の広告ステートを保持していて、
-                  // 広告中に閉じる→開き直すと広告のまま動画にたどり着けない
-                  // バグがある。 検索バーが常に見えていれば、 ここに別動画名を
-                  // 入れて検索 → 別経路で開き直すという脱出手段が即取れる。
-                  if (_ytSearchPanelOpen && _isYoutube && !_isMp4)
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(8, 0, 8, 6),
-                      child: SizedBox(
-                        height: 32,
-                        child: TextField(
-                          controller: _ytSearchController,
-                          style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w500,
-                              height: 1.1),
-                          textInputAction: TextInputAction.search,
-                          cursorColor: const Color(0xFF6C63FF),
-                          decoration: InputDecoration(
-                            hintText: context
-                                .read<MindMapProvider>()
-                                .t('fsv.ytSearch'),
-                            hintStyle: const TextStyle(
-                                color: Colors.white38, fontSize: 12),
-                            filled: true,
-                            fillColor: Colors.white.withValues(alpha: 0.12),
-                            isDense: true,
-                            contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 4, vertical: 0),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(16),
-                              borderSide: BorderSide.none,
-                            ),
-                            focusedBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(16),
-                              borderSide: const BorderSide(
-                                  color: Color(0xFF6C63FF), width: 1.2),
-                            ),
-                            prefixIcon: const Icon(Icons.search_rounded,
-                                color: Color(0xFF6C63FF), size: 16),
-                            prefixIconConstraints: const BoxConstraints(
-                                minWidth: 28, minHeight: 28),
-                            suffixIcon:
-                                ValueListenableBuilder<TextEditingValue>(
-                              valueListenable: _ytSearchController,
-                              builder: (_, value, __) {
-                                if (value.text.isEmpty) {
-                                  return const SizedBox.shrink();
-                                }
-                                return IconButton(
+                              IconButton(
+                                tooltip: context
+                                    .read<MindMapProvider>()
+                                    .t('fsv.forwardHistory'),
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(
+                                    minWidth: 32, minHeight: 32),
+                                icon: Icon(Icons.arrow_forward_ios_rounded,
+                                    color: _canGoForward
+                                        ? Colors.white70
+                                        : Colors.white24,
+                                    size: 18),
+                                onPressed: _canGoForward
+                                    ? () async {
+                                        try {
+                                          await _c?.goForward();
+                                        } catch (_) {}
+                                      }
+                                    : null,
+                              ),
+                              // ── 動画タイトルの表示は削除 (= ユーザー要望 2026-07:
+                              //   「UI配置設定ボタンの下に動画タイトル等を表示しないで、
+                              //   邪魔」)。 タイトルはタブや共有時のメタ情報としては
+                              //   引き続き保持する (_currentTitle) が、 バーには出さない。
+                              const Spacer(),
+                              // ── マップに埋め込むボタン (YouTube 動画 / チャンネルのみ) ──
+                              // 表示条件: `_isEmbeddableYoutubeUrl(_currentUrl)` でカバー
+                              // できない瞬間 (SPA 遷移直後など) でも、`_currentVideoId` が
+                              // セット済みなら動画ページとみなしてボタンを残す。これに
+                              // より「動画再生中に埋め込みボタンが消える」現象を防ぐ。
+                              if (widget.onEmbedUrl != null &&
+                                  (_isEmbeddableYoutubeUrl(_currentUrl) ||
+                                      _currentVideoId != null))
+                                IconButton(
+                                  tooltip: context
+                                      .read<MindMapProvider>()
+                                      .t('vmemo.addToMap'),
                                   padding: EdgeInsets.zero,
                                   constraints: const BoxConstraints(
-                                      minWidth: 24, minHeight: 24),
-                                  iconSize: 14,
-                                  icon: const Icon(Icons.clear_rounded,
-                                      color: Colors.white60),
-                                  onPressed: () => _ytSearchController.clear(),
-                                );
-                              },
-                            ),
-                            suffixIconConstraints: const BoxConstraints(
-                                minWidth: 28, minHeight: 28),
-                          ),
-                          onSubmitted: (q) {
-                            _runYoutubeSearch(q);
-                            // 連続検索可能なのでバーは閉じない、 フォーカスだけ外す
-                            FocusScope.of(context).unfocus();
-                          },
+                                      minWidth: 32, minHeight: 32),
+                                  icon: const Icon(Icons.add_to_photos_rounded,
+                                      color: Color(0xFF43B97F), size: 22),
+                                  onPressed: () {
+                                    // 埋め込み対象 URL は `_currentUrl` を優先するが、もし
+                                    // 一時的に動画 URL から離れた状態 (広告等) なら、最後
+                                    // に判定された動画 ID から watch URL を再構成する。
+                                    String url = _currentUrl;
+                                    if (!_isEmbeddableYoutubeUrl(url) &&
+                                        _currentVideoId != null) {
+                                      url =
+                                          'https://m.youtube.com/watch?v=$_currentVideoId';
+                                    }
+                                    // ── ユーザー要望: 埋め込みボタンを押しても Player は閉じない ──
+                                    // Navigator.pop を外し、 埋め込み後もそのまま視聴を続けられる
+                                    // ようにする (= マップへの追加は onEmbedUrl 内で完結する)。
+                                    widget.onEmbedUrl!(url);
+                                  },
+                                ),
+                              // ── PiP (アプリ内ピクチャインピクチャ) ──
+                              // 動画再生ページに限り表示。タップでミニプレイヤーに移行。
+                              // フルスクリーンを閉じてもアプリ内に小さな WebView が残り
+                              // 動画を続けて視聴できる。
+                              // 表示条件:
+                              //   (a) YouTube 動画 (videoId 取得済み)
+                              //   (b) mp4 / ローカル動画 (= ダウンロード済みオフライン動画)
+                              //   いずれも _enterPiP 側で適切なモード (YouTube / Local /
+                              //   URL) に振り分けられる。
+                              if ((_isYoutube && _currentVideoId != null) ||
+                                  _isMp4)
+                                IconButton(
+                                  tooltip: context
+                                      .read<MindMapProvider>()
+                                      .t('fsv.pip'),
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(
+                                      minWidth: 32, minHeight: 32),
+                                  icon: const Icon(
+                                      Icons.picture_in_picture_alt_rounded,
+                                      color: Color(0xFF4FC3F7),
+                                      size: 22),
+                                  onPressed: _enterPiP,
+                                ),
+                              // ── 画面分割で開く ボタン ──
+                              // 現在の URL を MindMapScreen の画面分割パネルへ引き継ぎつつ
+                              // このフルスクリーンページを閉じる。 動画/PDF を見ながら
+                              // マップを編集できる「真の画面分割」 状態に遷移する。
+                              // onMoveToSplitPanel が渡されていない場合は非表示。
+                              if (widget.onMoveToSplitPanel != null)
+                                // ── 画面分割ボタン (1 つに統合 / 長押しで上・下を切替) ──
+                                // ユーザー要望: 長押しで「上に分割 / 下に分割」 を切り替えて、
+                                //   アイコンもその方向 (上/下) に切り変わるように。 タップは
+                                //   現在の方向で分割する。
+                                GestureDetector(
+                                  behavior: HitTestBehavior.opaque,
+                                  onTap: () => _moveVideoToSplit(
+                                      isLeftPanel: !_videoSplitDown),
+                                  onLongPressStart: (_) {
+                                    setState(() =>
+                                        _videoSplitDown = !_videoSplitDown);
+                                    if (!useManualSplitTooltip) return;
+                                    WidgetsBinding.instance
+                                        .addPostFrameCallback((_) {
+                                      if (!mounted) return;
+                                      _videoSplitTooltipKey.currentState
+                                          ?.ensureTooltipVisible();
+                                    });
+                                  },
+                                  child: Padding(
+                                    padding: EdgeInsets.all(6),
+                                    child: Tooltip(
+                                      key: _videoSplitTooltipKey,
+                                      triggerMode: useManualSplitTooltip
+                                          ? TooltipTriggerMode.manual
+                                          : TooltipTriggerMode.longPress,
+                                      message: context
+                                          .read<MindMapProvider>()
+                                          .t('split.openSplitTip'),
+                                      child: _splitPanelIcon(
+                                          _videoSplitDown
+                                              ? _SplitIconFill.bottom
+                                              : _SplitIconFill.top,
+                                          color: _videoSplitDown
+                                              ? const Color(0xFF2196F3)
+                                              : const Color(0xFFFF6B6B),
+                                          size: 22),
+                                    ),
+                                  ),
+                                ),
+                              // ── メモボタン (動画視聴中にメモを取る) ──
+                              // 動画再生ページ (YouTube / mp4 / ローカル) でだけ表示。
+                              // タップで動画レイヤーの上にメモパネルが下からせり上がる。
+                              // 動画は止めずに視聴を続けながら入力でき、 「マップに追加」 で
+                              // メモノードとしてキャンバス上に配置できる。
+                              if ((_isYoutube && _currentVideoId != null) ||
+                                  _isMp4)
+                                IconButton(
+                                  tooltip: context
+                                      .read<MindMapProvider>()
+                                      .t('player.takeMemo'),
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(
+                                      minWidth: 32, minHeight: 32),
+                                  icon: Icon(
+                                    _videoMemoPanelOpen
+                                        ? Icons.sticky_note_2_rounded
+                                        : Icons.sticky_note_2_outlined,
+                                    color: _videoMemoPanelOpen
+                                        ? const Color(0xFFFFB347)
+                                        : Colors.white,
+                                    size: 22,
+                                  ),
+                                  onPressed: _toggleVideoMemoPanel,
+                                ),
+                              // ── バックグラウンド再生 強制停止ボタン ──
+                              // ユーザー要望: 「動画を止めて画面を閉じてもバックグラウンド
+                              // 再生が起動してしまう」 → アプリ内で 1 タップで完全停止できる
+                              // 仕組みを用意。Service が動いている間だけ表示する。
+                              // 押すと:
+                              //   1. _BgPlaybackController.forceStop() で refCount=0 にリセット
+                              //      → 通知も即座に消える
+                              //   2. provider.backgroundPlaybackEnabled を false にして
+                              //      その後再生開始しても自動で再起動しないようにする
+                              //   3. SnackBar で停止を知らせる
+                              if (Platform.isAndroid &&
+                                  _BgPlaybackController.isRunning)
+                                IconButton(
+                                  tooltip: context
+                                      .read<MindMapProvider>()
+                                      .t('bg.stopAction'),
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(
+                                      minWidth: 32, minHeight: 32),
+                                  icon: const Icon(Icons.stop_circle_rounded,
+                                      color: Colors.redAccent, size: 22),
+                                  onPressed: () async {
+                                    final provider =
+                                        context.read<MindMapProvider>();
+                                    // 設定も OFF にして、Lifecycle ハンドラが再起動しない
+                                    // ようにする (= ユーザーの意図を尊重)。
+                                    provider
+                                        .setBackgroundPlaybackEnabled(false);
+                                    await _BgPlaybackController.forceStop();
+                                    if (!mounted) return;
+                                    _appSnack(
+                                      context,
+                                      SnackBar(
+                                        content: Text(provider.t('bg.stopped')),
+                                        backgroundColor: Colors.redAccent,
+                                        duration: const Duration(seconds: 2),
+                                      ),
+                                    );
+                                    // ボタンを消すために rebuild
+                                    setState(() {});
+                                  },
+                                ),
+                              // ── ダウンロードボタン ──
+                              // mp4 直リンクの時だけ表示。
+                              // 端末のドキュメントフォルダ内 `Downloads/` に保存する。
+                              // YouTube 本体の端末保存は著作権/規約リスクが高いため
+                              // リリース版ではボタン自体を表示しない。
+                              // ── ダウンロードボタン ──
+                              // 表示条件:
+                              //   HTTP/HTTPS で配信されている mp4 直リンク
+                              if (_isMp4 &&
+                                  (_currentUrl.startsWith('http://') ||
+                                      _currentUrl.startsWith('https://')))
+                                IconButton(
+                                  tooltip: context
+                                      .read<MindMapProvider>()
+                                      .t('fsv.download'),
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(
+                                      minWidth: 32, minHeight: 32),
+                                  icon: const Icon(Icons.download_rounded,
+                                      color: Color(0xFFFFB347), size: 22),
+                                  onPressed: _downloadCurrentVideo,
+                                ),
+                              // プレイリストナビ (1段目右端)
+                              if (_playlist.length > 1) ...[
+                                IconButton(
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(
+                                      minWidth: 32, minHeight: 32),
+                                  icon: const Icon(Icons.skip_previous_rounded,
+                                      color: Colors.white54, size: 20),
+                                  onPressed: _playlistIndex > 0
+                                      ? () {
+                                          _playlistIndex--;
+                                          _navigateTo(
+                                              _playlist[_playlistIndex]);
+                                        }
+                                      : null,
+                                ),
+                                Text(
+                                    '${_playlistIndex + 1}/${_playlist.length}',
+                                    style: const TextStyle(
+                                        color: Colors.white38, fontSize: 11)),
+                                IconButton(
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(
+                                      minWidth: 32, minHeight: 32),
+                                  icon: const Icon(Icons.skip_next_rounded,
+                                      color: Colors.white54, size: 20),
+                                  onPressed:
+                                      _playlistIndex < _playlist.length - 1
+                                          ? () {
+                                              _playlistIndex++;
+                                              _navigateTo(
+                                                  _playlist[_playlistIndex]);
+                                            }
+                                          : null,
+                                ),
+                              ],
+                              // ── ヘッドレス再生 (紫のヘッドホン) ボタンは削除 ──
+                              // ユーザー要望: 「モバイルの YouTube 動画上部の紫のヘッドホン
+                              //   アイコンのボタンは意味を成していないので消して」。
+                              //   ヘッドレス再生の仕組み自体 (startHeadlessYoutube /
+                              //   フローティング停止ボタン) は残すが、 起動ボタンは出さない。
+                            ]),
+                            // 2段目 (動画ページかつ展開状態の時のみ表示)
+                            // ── ブラウザ戻る/進むボタンは 1 段目 (= 上記の IconButton 群)
+                            //    に同等のものがあるため、 重複削除。 ユーザー要望:
+                            //    「Android版で YouTube を開いた時に戻る/進むボタンが 2 つ
+                            //     あるから 1 つにして」。 旧実装は再生速度バーの左に
+                            //    `_canGoBack` / `_canGoForward` 連動のボタンを 1 セット
+                            //    重ねて出していた。 1 段目で十分のため撤去。
+                            if (isVideo && _speedBarExpanded)
+                              SingleChildScrollView(
+                                scrollDirection: Axis.horizontal,
+                                physics: const ClampingScrollPhysics(),
+                                child: Row(children: [
+                                  // ── IAW 版でも provider の videoMaxRate を反映 ──
+                                  Builder(builder: (sctx) {
+                                    final maxRate = context
+                                        .watch<MindMapProvider>()
+                                        .videoMaxRate;
+                                    if (_playbackRate > maxRate) {
+                                      WidgetsBinding.instance
+                                          .addPostFrameCallback((_) {
+                                        if (mounted) _changeRate(maxRate);
+                                      });
+                                    }
+                                    final divs = ((maxRate - 1.0) * 4)
+                                        .round()
+                                        .clamp(4, 60);
+                                    return Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Text(
+                                              '${_playbackRate.toStringAsFixed(2)}x',
+                                              style: const TextStyle(
+                                                  color: Colors.white54,
+                                                  fontSize: 11)),
+                                          SizedBox(
+                                            width: 110,
+                                            child: SliderTheme(
+                                              data: SliderThemeData(
+                                                trackHeight: 2,
+                                                thumbShape:
+                                                    const RoundSliderThumbShape(
+                                                        enabledThumbRadius: 5),
+                                                activeTrackColor: Colors.white
+                                                    .withValues(alpha: 0.5),
+                                                inactiveTrackColor: Colors.white
+                                                    .withValues(alpha: 0.15),
+                                                thumbColor: Colors.white,
+                                                overlayShape:
+                                                    const RoundSliderOverlayShape(
+                                                        overlayRadius: 10),
+                                              ),
+                                              child: Slider(
+                                                value: _playbackRate.clamp(
+                                                    1.0, maxRate),
+                                                min: 1.0,
+                                                max: maxRate,
+                                                divisions: divs,
+                                                onChanged: _changeRate,
+                                              ),
+                                            ),
+                                          ),
+                                          IconButton(
+                                            tooltip: sctx
+                                                .read<MindMapProvider>()
+                                                .t('video.tip.maxRate'),
+                                            padding: EdgeInsets.zero,
+                                            constraints: const BoxConstraints(
+                                                minWidth: 24, minHeight: 24),
+                                            iconSize: 14,
+                                            icon: const Icon(Icons.tune_rounded,
+                                                color: Colors.white54),
+                                            onPressed: () =>
+                                                _showMaxRateDialog(sctx),
+                                          ),
+                                          // オフライン (mp4) 動画の左右キーのシーク秒数 (= ユーザー
+                                          //   要望: 10秒既定 + 設定で変更可能に)。
+                                          if (_isMp4)
+                                            IconButton(
+                                              tooltip: context
+                                                  .read<MindMapProvider>()
+                                                  .t('seek.title'),
+                                              padding: EdgeInsets.zero,
+                                              constraints: const BoxConstraints(
+                                                  minWidth: 24, minHeight: 24),
+                                              iconSize: 14,
+                                              icon: const Icon(
+                                                  Icons.fast_forward_rounded,
+                                                  color: Colors.white54),
+                                              onPressed: () =>
+                                                  _showSeekStepDialog(sctx),
+                                            ),
+                                        ]);
+                                  }),
+                                  // 動画再読み込みボタン (広告対策)
+                                  // 通常のリロードだと検索結果ページに戻されるが、 これは
+                                  // 「直近視聴した動画」 にリロードするため、 広告で詰まっ
+                                  // た時の脱出経路になる。
+                                  IconButton(
+                                    tooltip: context
+                                        .read<MindMapProvider>()
+                                        .t('fsv.reloadVideo'),
+                                    padding: EdgeInsets.zero,
+                                    constraints: const BoxConstraints(
+                                        minWidth: 32, minHeight: 32),
+                                    icon: const Icon(Icons.refresh_rounded,
+                                        color: Colors.white70, size: 20),
+                                    onPressed: _reloadCurrentVideo,
+                                  ),
+                                  if (_isYoutube ||
+                                      _currentUrl.startsWith('http://') ||
+                                      _currentUrl.startsWith('https://'))
+                                    IconButton(
+                                      tooltip: context
+                                          .read<MindMapProvider>()
+                                          .t('ctx.shareVideoUrl'),
+                                      padding: EdgeInsets.zero,
+                                      constraints: const BoxConstraints(
+                                          minWidth: 32, minHeight: 32),
+                                      icon: const Icon(Icons.share_rounded,
+                                          color: Color(0xFF4FC3F7), size: 22),
+                                      onPressed: () {
+                                        final provider =
+                                            context.read<MindMapProvider>();
+                                        final shareUrl = _currentUrl
+                                            .replaceFirst(
+                                                'https://m.youtube.com/',
+                                                'https://www.youtube.com/')
+                                            .replaceFirst(
+                                                'http://m.youtube.com/',
+                                                'https://www.youtube.com/');
+                                        Clipboard.setData(
+                                            ClipboardData(text: shareUrl));
+                                        _appSnack(
+                                          context,
+                                          SnackBar(
+                                            content: Text(provider
+                                                .t('ctx.videoUrlCopied')),
+                                            duration:
+                                                const Duration(seconds: 2),
+                                            backgroundColor:
+                                                const Color(0xFF2A2A3E),
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                ]),
+                              ),
+                            // ── 3 段目: YouTube 検索バー (常設、折りたたみ可能) ──
+                            // YouTube モードの時だけ表示。 デフォルトは展開状態。
+                            // 1 段目右端の検索アイコン (search_off) で折り畳める。
+                            //
+                            // 設置理由: YouTube が同じ動画の広告ステートを保持していて、
+                            // 広告中に閉じる→開き直すと広告のまま動画にたどり着けない
+                            // バグがある。 検索バーが常に見えていれば、 ここに別動画名を
+                            // 入れて検索 → 別経路で開き直すという脱出手段が即取れる。
+                            if (_ytSearchPanelOpen && _isYoutube && !_isMp4)
+                              Padding(
+                                padding: const EdgeInsets.fromLTRB(8, 0, 8, 6),
+                                child: SizedBox(
+                                  height: 32,
+                                  child: TextField(
+                                    controller: _ytSearchController,
+                                    style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w500,
+                                        height: 1.1),
+                                    textInputAction: TextInputAction.search,
+                                    cursorColor: const Color(0xFF6C63FF),
+                                    decoration: InputDecoration(
+                                      hintText: context
+                                          .read<MindMapProvider>()
+                                          .t('fsv.ytSearch'),
+                                      hintStyle: const TextStyle(
+                                          color: Colors.white38, fontSize: 12),
+                                      filled: true,
+                                      fillColor:
+                                          Colors.white.withValues(alpha: 0.12),
+                                      isDense: true,
+                                      contentPadding:
+                                          const EdgeInsets.symmetric(
+                                              horizontal: 4, vertical: 0),
+                                      border: OutlineInputBorder(
+                                        borderRadius: BorderRadius.circular(16),
+                                        borderSide: BorderSide.none,
+                                      ),
+                                      focusedBorder: OutlineInputBorder(
+                                        borderRadius: BorderRadius.circular(16),
+                                        borderSide: const BorderSide(
+                                            color: Color(0xFF6C63FF),
+                                            width: 1.2),
+                                      ),
+                                      prefixIcon: const Icon(
+                                          Icons.search_rounded,
+                                          color: Color(0xFF6C63FF),
+                                          size: 16),
+                                      prefixIconConstraints:
+                                          const BoxConstraints(
+                                              minWidth: 28, minHeight: 28),
+                                      suffixIcon: ValueListenableBuilder<
+                                          TextEditingValue>(
+                                        valueListenable: _ytSearchController,
+                                        builder: (_, value, __) {
+                                          if (value.text.isEmpty) {
+                                            return const SizedBox.shrink();
+                                          }
+                                          return IconButton(
+                                            padding: EdgeInsets.zero,
+                                            constraints: const BoxConstraints(
+                                                minWidth: 24, minHeight: 24),
+                                            iconSize: 14,
+                                            icon: const Icon(
+                                                Icons.clear_rounded,
+                                                color: Colors.white60),
+                                            onPressed: () =>
+                                                _ytSearchController.clear(),
+                                          );
+                                        },
+                                      ),
+                                      suffixIconConstraints:
+                                          const BoxConstraints(
+                                              minWidth: 28, minHeight: 28),
+                                    ),
+                                    onSubmitted: (q) {
+                                      _runYoutubeSearch(q);
+                                      // 連続検索可能なのでバーは閉じない、 フォーカスだけ外す
+                                      FocusScope.of(context).unfocus();
+                                    },
+                                  ),
+                                ),
+                              ),
+                          ]),
                         ),
-                      ),
-                    ),
-                ]),
-              ),
-            // ── 動画プレイヤー本体 ──
-            // mp4 (= ローカル動画) は VideoPlayer (= ExoPlayer / AVPlayer)、
-            // YouTube / 一般 URL は InAppWebView を使う。
-            Expanded(
-              child: Stack(children: [
-                if (_isMp4 && !_useWebViewFallback)
-                  _buildLocalVideoPlayer()
-                else
-                  iaw.InAppWebView(
-                    // 6.x API: WebUri を使う
-                    initialUrlRequest: iaw.URLRequest(
-                      url: iaw.WebUri((_isMp4 || _useWebViewFallback)
-                          ? 'about:blank'
-                          : _initialLoadTarget),
-                    ),
-                    // 6.x API: 統合された InAppWebViewSettings を使う
-                    initialSettings: iaw.InAppWebViewSettings(
-                      javaScriptEnabled: true,
-                      domStorageEnabled: true,
-                      useHybridComposition: true,
-                      mediaPlaybackRequiresUserGesture: false,
-                      allowsInlineMediaPlayback: true,
-                      transparentBackground: false,
-                      allowFileAccess: true,
-                      mixedContentMode:
-                          iaw.MixedContentMode.MIXED_CONTENT_COMPATIBILITY_MODE,
-                      // 縦ドラッグを親に渡さない (WebView 内で縦スクロール可能に)
-                      useShouldOverrideUrlLoading: true,
-                      // ── 新ウィンドウ / ポップアップを無効化 ──
-                      // YouTube 動画再生中、広告のクリックなどで `target="_blank"`
-                      // や `window.open(...)` 経由の新規ウィンドウが要求される
-                      // ことがある。サポートしていないと WebView 内のリンクが
-                      // 単純に「開かない」状態になり、ユーザーから見ると「タップ
-                      // しても何も起きずに動画も止まったまま進行不能」 に見える。
-                      // → supportMultipleWindows: false にすると新規ウィンドウ
-                      //   要求が現在の WebView 内ナビゲーションにフォールバック
-                      //   するので、shouldOverrideUrlLoading で URL を見て広告
-                      //   ドメインなら CANCEL、通常リンクなら ALLOW、と一元的に
-                      //   判定できるようになる。
-                      supportMultipleWindows: false,
-                      javaScriptCanOpenWindowsAutomatically: false,
-                      // ── ユーザーエージェント上書き ──
-                      // Android System WebView の既定 UA は最近のバージョンの
-                      // YouTube に "未認証ブラウザ" と判定され、エラー 153
-                      // ("動画プレーヤーの設定エラー" / "このビデオはここで再生
-                      // できません") が出る動画が増えた。
-                      // → Chrome モバイル相当の UA に偽装し、通常の m.youtube.com
-                      //   と同じ扱いになるようにする。これで埋め込み制限が緩和されて
-                      //   再生可能になるケースが多い。
-                      userAgent: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) '
-                          'AppleWebKit/537.36 (KHTML, like Gecko) '
-                          'Chrome/126.0.0.0 Mobile Safari/537.36',
-                      // ── サードパーティ Cookie を許可 ──
-                      // YouTube は再生時にいくつかドメインをまたいで認証情報を
-                      // やり取りする (accounts.google.com など)。Cookie が
-                      // 許可されないと一部動画でエラー 153 になることがある。
-                      thirdPartyCookiesEnabled: true,
-                      // ハードウェアアクセラレーション (Android 9+ で動画再生
-                      // 性能が向上する)
-                      hardwareAcceleration: true,
-                    ),
-                    onWebViewCreated: (controller) {
-                      _c = controller;
-                      controller.addJavaScriptHandler(
-                        handlerName: 'FlutterPosition',
-                        callback: (args) {
-                          if (args.isEmpty) return;
-                          final sec = double.tryParse(args[0].toString());
-                          if (sec != null &&
-                              _currentVideoId != null &&
-                              mounted) {
-                            context
-                                .read<MindMapProvider>()
-                                .saveVideoPosition(_currentVideoId!, sec);
-                          }
-                        },
-                      );
-                      controller.addJavaScriptHandler(
-                        handlerName: 'FlutterEnded',
-                        callback: (args) {
-                          if (_currentVideoId != null && mounted) {
-                            context
-                                .read<MindMapProvider>()
-                                .markVideoFullyWatched(_currentVideoId!);
-                          }
-                          if (_playlistIndex < _playlist.length - 1 &&
-                              mounted) {
-                            _playlistIndex++;
-                            _navigateTo(_playlist[_playlistIndex]);
-                          }
-                        },
-                      );
-                      controller.addJavaScriptHandler(
-                        handlerName: 'FlutterFallback',
-                        callback: (args) async {
-                          if (args.isEmpty) return;
-                          if (args[0].toString() == 'needBase64' && _isMp4) {
-                            final currentUrl = _playlist[_playlistIndex];
-                            if (!currentUrl.startsWith('http') &&
-                                !currentUrl.startsWith('data:')) {
-                              try {
-                                final bytes =
-                                    await File(currentUrl).readAsBytes();
-                                final b64 = base64Encode(bytes);
-                                final src = 'data:video/mp4;base64,$b64';
-                                _c?.evaluateJavascript(
-                                    source:
-                                        'var v=document.getElementById("v");'
-                                        'if(v){v.src="$src";v.load();v.play();}');
-                              } catch (_) {}
-                            }
-                          }
-                        },
-                      );
-                      // mp4 の場合: initState で postFrameCallback に予約した
-                      // _initialHtml がここで既に用意できているなら即ロード
-                      if (_isMp4 && _initialHtml != null) {
-                        controller.loadData(
-                          data: _initialHtml!,
-                          mimeType: 'text/html',
-                          encoding: 'utf-8',
-                        );
-                      }
-                      // WebView フォールバックモード: VideoPlayer 初期化に失敗
-                      // したケースで `_useWebViewFallback = true` & 再 build。
-                      // この場合、mp4 用 HTML を即時生成して loadData する。
-                      if (_useWebViewFallback &&
-                          _isMp4 &&
-                          !_fallbackHtmlLoaded) {
-                        _fallbackHtmlLoaded = true;
-                        () async {
-                          try {
-                            final html = await _buildMp4PlayerRaw(
-                                _playlist[_playlistIndex]);
-                            if (!mounted) return;
-                            await controller.loadData(
-                              data: html,
-                              mimeType: 'text/html',
-                              encoding: 'utf-8',
-                            );
-                          } catch (e) {
-                            debugPrint('WebView fallback loadData failed: $e');
-                          }
-                        }();
-                      }
-                    },
-                    onLoadStart: (controller, url) {
-                      // ここでも URL を解析・更新する。
-                      // チャンネルページなど onLoadStop が発火しない/遅いケースでも
-                      // ナビゲーション開始時点で埋め込みボタンを出せるように。
-                      final urlStr = url?.toString() ?? '';
-                      if (mounted) {
-                        setState(() {
-                          _loading = true;
-                          if (urlStr.isNotEmpty) _analyzeUrlSync(urlStr);
-                          // ページ遷移したら以前のタイトルをクリアして再取得を促す
-                          _currentTitle = '';
-                        });
-                      }
-                      _updateNavState();
-                      _persistBrowseUrl();
-                    },
-                    // YouTube のような SPA では画面遷移しても onLoadStop が
-                    // 発火しない/遅れることがある。履歴の追加を検知して URL を
-                    // 追従し、埋め込みボタンの表示を更新する。
-                    onUpdateVisitedHistory: (controller, url, androidIsReload) {
-                      final urlStr = url?.toString() ?? '';
-                      if (mounted &&
-                          urlStr.isNotEmpty &&
-                          urlStr != _currentUrl) {
-                        setState(() {
-                          _analyzeUrlSync(urlStr);
-                          // SPA 遷移時もタイトルをクリアして再取得 (動画→動画 等)
-                          _currentTitle = '';
-                        });
-                        // 動画ページなら新タイトルを polling
-                        _pollVideoTitle();
-                        // ── SPA 遷移時のフォーカス CSS 切り替え ──
-                        // YouTube は m.youtube.com 内を SPA で動くため、
-                        // watch → 検索 や watch → ホーム の遷移で onLoadStop が
-                        // 発火しないことが多い。`__MM_FS_STYLE__` が watch ページ
-                        // で貼られたまま残ると、検索結果ページで #mobile-topbar
-                        // (= 検索ボックスを含むトップバー) が display:none のまま
-                        // になり、ユーザーが検索ボックスに触れても何もできない、
-                        // という現象が起こる。
-                        // → 履歴更新時に URL を判定して、watch 以外なら CSS を
-                        //    撤去、watch ならポストポンドで _injectStyle() を呼ぶ。
-                        final isWatch = urlStr.contains('/watch') ||
-                            urlStr.contains('/shorts/') ||
-                            urlStr.contains('/embed/') ||
-                            urlStr.contains('youtu.be/');
-                        if (_isYoutube && isWatch) {
-                          // 動画埋め込み再生 (focusMode:true) の時だけ、 周辺 UI
-                          //   (関連動画/コメント/ヘッダー等) を隠す CSS を入れる。
-                          //   ブラウズ (focusMode:false) では素の YouTube UI を保つ。
-                          if (widget.focusMode) {
-                            _injectStyle();
-                            _injectPlaybackRate();
-                            _restorePosition();
-                          }
-                        } else {
-                          // ── watch 以外 (検索/ホーム/チャンネル/別サイト) では、
-                          //    過去に貼った フォーカス CSS を **focusMode に依らず必ず**
-                          //    撤去する。 = ユーザー報告「YouTube 動画を埋め込んで
-                          //    いないのに周りの CSS が非表示になる」 の対策。 CSS は
-                          //    header/footer/body 等の汎用セレクタを display:none に
-                          //    するため、 残ると遷移先のページが壊れる。 _removeStyle
-                          //    は未注入なら no-op (副作用なし) なので常に呼んで安全。──
-                          _removeStyle();
-                        }
-                      }
-                      _updateNavState();
-                      _persistBrowseUrl();
-                    },
-                    onLoadStop: (controller, url) async {
-                      // ── YouTube バックグラウンド再生対策 ──
-                      // ページロード完了直後に Page Visibility API を偽装。
-                      // YouTube の player は document.hidden を見て自動 pause
-                      // するので、ここで早期に偽装することで「画面オフ → 自動
-                      // pause」を阻止する。
-                      // (force play timer でも 200ms ごとに再注入されるが、
-                      //  YouTube が自身のリスナーを登録する前に仕込みたいので
-                      //  ロード完了の最も早いタイミングで実行)
-                      controller.evaluateJavascript(source: r'''
+                      // ── 動画プレイヤー本体 ──
+                      // mp4 (= ローカル動画) は VideoPlayer (= ExoPlayer / AVPlayer)、
+                      // YouTube / 一般 URL は InAppWebView を使う。
+                      Expanded(
+                        child: Stack(children: [
+                          if (_isMp4 && !_useWebViewFallback)
+                            _buildLocalVideoPlayer()
+                          else
+                            iaw.InAppWebView(
+                              // 6.x API: WebUri を使う
+                              initialUrlRequest: iaw.URLRequest(
+                                url: iaw.WebUri((_isMp4 || _useWebViewFallback)
+                                    ? 'about:blank'
+                                    : _initialLoadTarget),
+                              ),
+                              // 6.x API: 統合された InAppWebViewSettings を使う
+                              initialSettings: iaw.InAppWebViewSettings(
+                                javaScriptEnabled: true,
+                                domStorageEnabled: true,
+                                useHybridComposition: true,
+                                mediaPlaybackRequiresUserGesture: false,
+                                allowsInlineMediaPlayback: true,
+                                transparentBackground: false,
+                                allowFileAccess: true,
+                                mixedContentMode: iaw.MixedContentMode
+                                    .MIXED_CONTENT_COMPATIBILITY_MODE,
+                                // 縦ドラッグを親に渡さない (WebView 内で縦スクロール可能に)
+                                useShouldOverrideUrlLoading: true,
+                                // ── 新ウィンドウ / ポップアップを無効化 ──
+                                // YouTube 動画再生中、広告のクリックなどで `target="_blank"`
+                                // や `window.open(...)` 経由の新規ウィンドウが要求される
+                                // ことがある。サポートしていないと WebView 内のリンクが
+                                // 単純に「開かない」状態になり、ユーザーから見ると「タップ
+                                // しても何も起きずに動画も止まったまま進行不能」 に見える。
+                                // → supportMultipleWindows: false にすると新規ウィンドウ
+                                //   要求が現在の WebView 内ナビゲーションにフォールバック
+                                //   するので、shouldOverrideUrlLoading で URL を見て広告
+                                //   ドメインなら CANCEL、通常リンクなら ALLOW、と一元的に
+                                //   判定できるようになる。
+                                supportMultipleWindows: false,
+                                javaScriptCanOpenWindowsAutomatically: false,
+                                // ── ユーザーエージェント上書き ──
+                                // Android System WebView の既定 UA は最近のバージョンの
+                                // YouTube に "未認証ブラウザ" と判定され、エラー 153
+                                // ("動画プレーヤーの設定エラー" / "このビデオはここで再生
+                                // できません") が出る動画が増えた。
+                                // → Chrome モバイル相当の UA に偽装し、通常の m.youtube.com
+                                //   と同じ扱いになるようにする。これで埋め込み制限が緩和されて
+                                //   再生可能になるケースが多い。
+                                userAgent:
+                                    'Mozilla/5.0 (Linux; Android 14; Pixel 8) '
+                                    'AppleWebKit/537.36 (KHTML, like Gecko) '
+                                    'Chrome/126.0.0.0 Mobile Safari/537.36',
+                                // ── サードパーティ Cookie を許可 ──
+                                // YouTube は再生時にいくつかドメインをまたいで認証情報を
+                                // やり取りする (accounts.google.com など)。Cookie が
+                                // 許可されないと一部動画でエラー 153 になることがある。
+                                thirdPartyCookiesEnabled: true,
+                                // ハードウェアアクセラレーション (Android 9+ で動画再生
+                                // 性能が向上する)
+                                hardwareAcceleration: true,
+                              ),
+                              onWebViewCreated: (controller) {
+                                _c = controller;
+                                controller.addJavaScriptHandler(
+                                  handlerName: 'FlutterPosition',
+                                  callback: (args) {
+                                    if (args.isEmpty) return;
+                                    final sec =
+                                        double.tryParse(args[0].toString());
+                                    if (sec != null &&
+                                        _currentVideoId != null &&
+                                        mounted) {
+                                      context
+                                          .read<MindMapProvider>()
+                                          .saveVideoPosition(
+                                              _currentVideoId!, sec);
+                                    }
+                                  },
+                                );
+                                controller.addJavaScriptHandler(
+                                  handlerName: 'FlutterEnded',
+                                  callback: (args) {
+                                    if (_currentVideoId != null && mounted) {
+                                      context
+                                          .read<MindMapProvider>()
+                                          .markVideoFullyWatched(
+                                              _currentVideoId!);
+                                    }
+                                    if (_playlistIndex < _playlist.length - 1 &&
+                                        mounted) {
+                                      _playlistIndex++;
+                                      _navigateTo(_playlist[_playlistIndex]);
+                                    }
+                                  },
+                                );
+                                controller.addJavaScriptHandler(
+                                  handlerName: 'FlutterFallback',
+                                  callback: (args) async {
+                                    if (args.isEmpty) return;
+                                    if (args[0].toString() == 'needBase64' &&
+                                        _isMp4) {
+                                      final currentUrl =
+                                          _playlist[_playlistIndex];
+                                      if (!currentUrl.startsWith('http') &&
+                                          !currentUrl.startsWith('data:')) {
+                                        try {
+                                          final bytes = await File(currentUrl)
+                                              .readAsBytes();
+                                          final b64 = base64Encode(bytes);
+                                          final src =
+                                              'data:video/mp4;base64,$b64';
+                                          _c?.evaluateJavascript(
+                                              source:
+                                                  'var v=document.getElementById("v");'
+                                                  'if(v){v.src="$src";v.load();v.play();}');
+                                        } catch (_) {}
+                                      }
+                                    }
+                                  },
+                                );
+                                // mp4 の場合: initState で postFrameCallback に予約した
+                                // _initialHtml がここで既に用意できているなら即ロード
+                                if (_isMp4 && _initialHtml != null) {
+                                  controller.loadData(
+                                    data: _initialHtml!,
+                                    mimeType: 'text/html',
+                                    encoding: 'utf-8',
+                                  );
+                                }
+                                // WebView フォールバックモード: VideoPlayer 初期化に失敗
+                                // したケースで `_useWebViewFallback = true` & 再 build。
+                                // この場合、mp4 用 HTML を即時生成して loadData する。
+                                if (_useWebViewFallback &&
+                                    _isMp4 &&
+                                    !_fallbackHtmlLoaded) {
+                                  _fallbackHtmlLoaded = true;
+                                  () async {
+                                    try {
+                                      final html = await _buildMp4PlayerRaw(
+                                          _playlist[_playlistIndex]);
+                                      if (!mounted) return;
+                                      await controller.loadData(
+                                        data: html,
+                                        mimeType: 'text/html',
+                                        encoding: 'utf-8',
+                                      );
+                                    } catch (e) {
+                                      debugPrint(
+                                          'WebView fallback loadData failed: $e');
+                                    }
+                                  }();
+                                }
+                              },
+                              onLoadStart: (controller, url) {
+                                // ここでも URL を解析・更新する。
+                                // チャンネルページなど onLoadStop が発火しない/遅いケースでも
+                                // ナビゲーション開始時点で埋め込みボタンを出せるように。
+                                final urlStr = url?.toString() ?? '';
+                                if (mounted) {
+                                  setState(() {
+                                    _loading = true;
+                                    if (urlStr.isNotEmpty)
+                                      _analyzeUrlSync(urlStr);
+                                    // ページ遷移したら以前のタイトルをクリアして再取得を促す
+                                    _currentTitle = '';
+                                  });
+                                }
+                                _updateNavState();
+                                _persistBrowseUrl();
+                              },
+                              // YouTube のような SPA では画面遷移しても onLoadStop が
+                              // 発火しない/遅れることがある。履歴の追加を検知して URL を
+                              // 追従し、埋め込みボタンの表示を更新する。
+                              onUpdateVisitedHistory:
+                                  (controller, url, androidIsReload) {
+                                final urlStr = url?.toString() ?? '';
+                                if (mounted &&
+                                    urlStr.isNotEmpty &&
+                                    urlStr != _currentUrl) {
+                                  setState(() {
+                                    _analyzeUrlSync(urlStr);
+                                    // SPA 遷移時もタイトルをクリアして再取得 (動画→動画 等)
+                                    _currentTitle = '';
+                                  });
+                                  // 動画ページなら新タイトルを polling
+                                  _pollVideoTitle();
+                                  // ── SPA 遷移時のフォーカス CSS 切り替え ──
+                                  // YouTube は m.youtube.com 内を SPA で動くため、
+                                  // watch → 検索 や watch → ホーム の遷移で onLoadStop が
+                                  // 発火しないことが多い。`__MM_FS_STYLE__` が watch ページ
+                                  // で貼られたまま残ると、検索結果ページで #mobile-topbar
+                                  // (= 検索ボックスを含むトップバー) が display:none のまま
+                                  // になり、ユーザーが検索ボックスに触れても何もできない、
+                                  // という現象が起こる。
+                                  // → 履歴更新時に URL を判定して、watch 以外なら CSS を
+                                  //    撤去、watch ならポストポンドで _injectStyle() を呼ぶ。
+                                  final isWatch = urlStr.contains('/watch') ||
+                                      urlStr.contains('/shorts/') ||
+                                      urlStr.contains('/embed/') ||
+                                      urlStr.contains('youtu.be/');
+                                  if (_isYoutube && isWatch) {
+                                    // 動画埋め込み再生 (focusMode:true) の時だけ、 周辺 UI
+                                    //   (関連動画/コメント/ヘッダー等) を隠す CSS を入れる。
+                                    //   ブラウズ (focusMode:false) では素の YouTube UI を保つ。
+                                    if (widget.focusMode) {
+                                      _injectStyle();
+                                      _injectPlaybackRate();
+                                      _restorePosition();
+                                    }
+                                  } else {
+                                    // ── watch 以外 (検索/ホーム/チャンネル/別サイト) では、
+                                    //    過去に貼った フォーカス CSS を **focusMode に依らず必ず**
+                                    //    撤去する。 = ユーザー報告「YouTube 動画を埋め込んで
+                                    //    いないのに周りの CSS が非表示になる」 の対策。 CSS は
+                                    //    header/footer/body 等の汎用セレクタを display:none に
+                                    //    するため、 残ると遷移先のページが壊れる。 _removeStyle
+                                    //    は未注入なら no-op (副作用なし) なので常に呼んで安全。──
+                                    _removeStyle();
+                                  }
+                                }
+                                _updateNavState();
+                                _persistBrowseUrl();
+                              },
+                              onLoadStop: (controller, url) async {
+                                // ── YouTube バックグラウンド再生対策 ──
+                                // ページロード完了直後に Page Visibility API を偽装。
+                                // YouTube の player は document.hidden を見て自動 pause
+                                // するので、ここで早期に偽装することで「画面オフ → 自動
+                                // pause」を阻止する。
+                                // (force play timer でも 200ms ごとに再注入されるが、
+                                //  YouTube が自身のリスナーを登録する前に仕込みたいので
+                                //  ロード完了の最も早いタイミングで実行)
+                                controller.evaluateJavascript(source: r'''
                     (function() {
                       if (window.__MM_VISIBILITY_PATCHED__) return;
                       try {
@@ -88440,249 +91319,263 @@ v.addEventListener('play', function() {
                       } catch(e) {}
                     })();
                   ''').catchError((_) {});
-                      final urlStr = url?.toString() ?? _currentUrl;
-                      if (mounted) {
-                        // ページ遷移ごとに URL を再解析する (検索→動画タップ→
-                        // 他動画へ、などで _isYoutube / _currentVideoId 等を追従)
-                        setState(() {
-                          _loading = false;
-                          _analyzeUrlSync(urlStr);
-                        });
-                      }
-                      _updateNavState();
-                      _persistBrowseUrl();
-                      // タイトル取得
-                      try {
-                        final title = await controller.getTitle();
-                        if (mounted && title != null && title.isNotEmpty) {
-                          setState(() => _currentTitle = _cleanTitle(title));
-                        }
-                      } catch (_) {}
-                      // 動画ページなら、SPA で遅れて反映されるタイトルを polling で取得
-                      _pollVideoTitle();
-                      // ── 動画固有の演出 (フォーカスモード CSS / 再生速度 /
-                      //    位置保存 / 位置復元) は、実際に動画を再生している
-                      //    ページに限って適用する。
-                      // 検索結果 / チャンネル / 一般ブラウズページでは、
-                      // ヘッダーや検索ボックスを隠してしまうと使い物にならないため、
-                      // YouTube 本来の UI をそのまま残す。
-                      final isVideoWatchPage = urlStr.contains('/watch') ||
-                          urlStr.contains('/shorts/') ||
-                          urlStr.contains('/embed/') ||
-                          urlStr.contains('youtu.be/');
-                      if (_isYoutube && isVideoWatchPage) {
-                        // ── focusMode が true (= ノード動画埋め込み再生) の時だけ
-                        //    CSS を注入して関連動画 / コメント / ヘッダー / 検索
-                        //    ボックス を隠す。
-                        //    focusMode が false (= 「YouTubeを開く」ボタンから起動
-                        //    したブラウズモード) では、検索や別動画への遷移が必要
-                        //    なので素の YouTube UI を保つ。
-                        // ハイパーリンクからのジャンプは最優先で適用したい
-                        // (autoplay で 0 秒に戻される前に loadedmetadata 等の
-                        //  リスナーを仕掛けるため、 他の injection より先に呼ぶ)。
-                        await _restorePosition();
-                        if (widget.focusMode) {
-                          await _injectStyle();
-                        }
-                        await _injectPlaybackRate();
-                        await _injectPositionTracker();
-                      } else if (_isMp4) {
-                        await _injectPlaybackRate();
-                      } else {
-                        // ── watch / shorts / embed 以外 (検索結果・ホーム・
-                        //    チャンネル・一般 URL) では、以前 watch ページで貼った
-                        //    フォーカス CSS を撤去する。
-                        // 残したままだと #mobile-topbar / header / 検索ボックス
-                        //    が display:none のままになり、検索を含むトップバーが
-                        //    操作不能になる (ユーザー報告のバグ)。
-                        // ★ _isYoutube 依存を外す: YouTube watch → 非 YouTube
-                        //   サイト (Wikipedia 等) への遷移時に _isYoutube が
-                        //   false になって CSS が残り、新サイトの <header> /
-                        //   <footer> が display:none、 body 背景が黒に固定されて
-                        //   「YouTube動画を埋め込んでないのに CSS が消える」
-                        //   現象が起きていた (= ユーザー要望)。
-                        // ★ focusMode に依らず **必ず** 撤去する (残留防止)。
-                        //   focusMode:false で起動した場合は未注入なので no-op。
-                        await _removeStyle();
-                      }
-                      // それ以外 (YouTube 検索/チャンネル/一般ページ) は何も注入しない
-                    },
-                    onProgressChanged: (controller, p) {
-                      // SPA サイト (YouTube) では onLoadStop が発火しない事が
-                      // 多いので、進捗が 70% を超えたらローディングを外す。
-                      // また 100% で常に解除。
-                      if (mounted) {
-                        if (p >= 100 && _loading) {
-                          setState(() => _loading = false);
-                        } else if (p >= 70 && _loading) {
-                          setState(() => _loading = false);
-                        }
-                      }
-                    },
-                    // 6.x API: onReceivedError(controller, request, error)
-                    onReceivedError: (controller, request, error) {
-                      debugPrint('InAppWebView error: '
-                          'type=${error.type} desc=${error.description} '
-                          'url=${request.url}');
-                      if (mounted && _loading) {
-                        Future.delayed(const Duration(seconds: 3), () {
-                          if (mounted && _loading) {
-                            setState(() => _loading = false);
-                          }
-                        });
-                      }
-                    },
-                    // 6.x API: onReceivedHttpError(controller, request, response)
-                    onReceivedHttpError: (controller, request, response) {
-                      debugPrint('InAppWebView HTTP error: '
-                          '${response.statusCode} url=${request.url}');
-                    },
-                    // intent:// 等のスキームを遮断し、http/https/data/about/blob のみ許可
-                    shouldOverrideUrlLoading: (controller, navAction) async {
-                      final u =
-                          navAction.request.url?.toString().toLowerCase() ?? '';
-                      // ── 非 http スキームの遮断 (intent://, market://, mailto: 等) ──
-                      if (u.isEmpty) return iaw.NavigationActionPolicy.ALLOW;
-                      final isHttpish = u.startsWith('http://') ||
-                          u.startsWith('https://') ||
-                          u.startsWith('data:') ||
-                          u.startsWith('about:') ||
-                          u.startsWith('blob:') ||
-                          u.startsWith('file://');
-                      if (!isHttpish) {
-                        debugPrint('InAppWebView blocked non-http scheme: $u');
-                        return iaw.NavigationActionPolicy.CANCEL;
-                      }
-                      // ── YouTube 動画視聴中の広告クリックで進行不能になるバグ対策 ──
-                      // YouTube 動画再生中、広告のクリックスルーで以下の中継ドメインに
-                      // フレームをまたいで遷移する → 戻れずに進行不能になる現象が起きる。
-                      //   - googleadservices.com
-                      //   - doubleclick.net  (g.doubleclick.net 含む)
-                      //   - googlesyndication.com (pagead2.googlesyndication.com 等)
-                      //   - googletagservices.com / googletagmanager.com
-                      //   - adservice.google.* (国別ドメイン含む)
-                      //   - syndication.google.com / pagead*.googleadservices.com
-                      // これらは YouTube 内の動画再生では裏で動的に読み込まれる中間
-                      // リソースなので、 `shouldOverrideUrlLoading` (= top-level
-                      // フレームのナビゲーションのみ発火) で出てくる時はほぼ確実に
-                      // 「広告クリックで遷移しようとした」 状況。 ここで CANCEL すれば、
-                      // ユーザーは動画ページに留まったまま (= 広告クリックを単に
-                      // 無視) になる。
-                      // ノード動画再生 (focusMode = true) の時だけ有効化して、
-                      // 「YouTubeを開く」 ブラウズモード (focusMode = false) では
-                      // 広告ページも開けるようにしておく (ブラウザ的に使う想定)。
-                      bool isAdNavigation(String url) {
-                        return url.contains('googleadservices.com') ||
-                            url.contains('doubleclick.net') ||
-                            url.contains('googlesyndication.com') ||
-                            url.contains('googletagservices.com') ||
-                            url.contains('googletagmanager.com') ||
-                            url.contains('google-analytics.com') ||
-                            // adservice.google.com / .co.jp / .de など国別ドメイン
-                            RegExp(r'adservice\.google\.[a-z.]+')
-                                .hasMatch(url) ||
-                            // pagead/aclk?* (Google AdSense クリック中継)
-                            url.contains('/pagead/aclk') ||
-                            url.contains('/pagead/adview') ||
-                            url.contains('/pagead/conversion');
-                      }
+                                final urlStr = url?.toString() ?? _currentUrl;
+                                if (mounted) {
+                                  // ページ遷移ごとに URL を再解析する (検索→動画タップ→
+                                  // 他動画へ、などで _isYoutube / _currentVideoId 等を追従)
+                                  setState(() {
+                                    _loading = false;
+                                    _analyzeUrlSync(urlStr);
+                                  });
+                                }
+                                _updateNavState();
+                                _persistBrowseUrl();
+                                // タイトル取得
+                                try {
+                                  final title = await controller.getTitle();
+                                  if (mounted &&
+                                      title != null &&
+                                      title.isNotEmpty) {
+                                    setState(() =>
+                                        _currentTitle = _cleanTitle(title));
+                                  }
+                                } catch (_) {}
+                                // 動画ページなら、SPA で遅れて反映されるタイトルを polling で取得
+                                _pollVideoTitle();
+                                // ── 動画固有の演出 (フォーカスモード CSS / 再生速度 /
+                                //    位置保存 / 位置復元) は、実際に動画を再生している
+                                //    ページに限って適用する。
+                                // 検索結果 / チャンネル / 一般ブラウズページでは、
+                                // ヘッダーや検索ボックスを隠してしまうと使い物にならないため、
+                                // YouTube 本来の UI をそのまま残す。
+                                final isVideoWatchPage =
+                                    urlStr.contains('/watch') ||
+                                        urlStr.contains('/shorts/') ||
+                                        urlStr.contains('/embed/') ||
+                                        urlStr.contains('youtu.be/');
+                                if (_isYoutube && isVideoWatchPage) {
+                                  // ── focusMode が true (= ノード動画埋め込み再生) の時だけ
+                                  //    CSS を注入して関連動画 / コメント / ヘッダー / 検索
+                                  //    ボックス を隠す。
+                                  //    focusMode が false (= 「YouTubeを開く」ボタンから起動
+                                  //    したブラウズモード) では、検索や別動画への遷移が必要
+                                  //    なので素の YouTube UI を保つ。
+                                  // ハイパーリンクからのジャンプは最優先で適用したい
+                                  // (autoplay で 0 秒に戻される前に loadedmetadata 等の
+                                  //  リスナーを仕掛けるため、 他の injection より先に呼ぶ)。
+                                  await _restorePosition();
+                                  if (widget.focusMode) {
+                                    await _injectStyle();
+                                  }
+                                  await _injectPlaybackRate();
+                                  await _injectPositionTracker();
+                                } else if (_isMp4) {
+                                  await _injectPlaybackRate();
+                                } else {
+                                  // ── watch / shorts / embed 以外 (検索結果・ホーム・
+                                  //    チャンネル・一般 URL) では、以前 watch ページで貼った
+                                  //    フォーカス CSS を撤去する。
+                                  // 残したままだと #mobile-topbar / header / 検索ボックス
+                                  //    が display:none のままになり、検索を含むトップバーが
+                                  //    操作不能になる (ユーザー報告のバグ)。
+                                  // ★ _isYoutube 依存を外す: YouTube watch → 非 YouTube
+                                  //   サイト (Wikipedia 等) への遷移時に _isYoutube が
+                                  //   false になって CSS が残り、新サイトの <header> /
+                                  //   <footer> が display:none、 body 背景が黒に固定されて
+                                  //   「YouTube動画を埋め込んでないのに CSS が消える」
+                                  //   現象が起きていた (= ユーザー要望)。
+                                  // ★ focusMode に依らず **必ず** 撤去する (残留防止)。
+                                  //   focusMode:false で起動した場合は未注入なので no-op。
+                                  await _removeStyle();
+                                }
+                                // それ以外 (YouTube 検索/チャンネル/一般ページ) は何も注入しない
+                              },
+                              onProgressChanged: (controller, p) {
+                                // SPA サイト (YouTube) では onLoadStop が発火しない事が
+                                // 多いので、進捗が 70% を超えたらローディングを外す。
+                                // また 100% で常に解除。
+                                if (mounted) {
+                                  if (p >= 100 && _loading) {
+                                    setState(() => _loading = false);
+                                  } else if (p >= 70 && _loading) {
+                                    setState(() => _loading = false);
+                                  }
+                                }
+                              },
+                              // 6.x API: onReceivedError(controller, request, error)
+                              onReceivedError: (controller, request, error) {
+                                debugPrint('InAppWebView error: '
+                                    'type=${error.type} desc=${error.description} '
+                                    'url=${request.url}');
+                                if (mounted && _loading) {
+                                  Future.delayed(const Duration(seconds: 3),
+                                      () {
+                                    if (mounted && _loading) {
+                                      setState(() => _loading = false);
+                                    }
+                                  });
+                                }
+                              },
+                              // 6.x API: onReceivedHttpError(controller, request, response)
+                              onReceivedHttpError:
+                                  (controller, request, response) {
+                                debugPrint('InAppWebView HTTP error: '
+                                    '${response.statusCode} url=${request.url}');
+                              },
+                              // intent:// 等のスキームを遮断し、http/https/data/about/blob のみ許可
+                              shouldOverrideUrlLoading:
+                                  (controller, navAction) async {
+                                final u = navAction.request.url
+                                        ?.toString()
+                                        .toLowerCase() ??
+                                    '';
+                                // ── 非 http スキームの遮断 (intent://, market://, mailto: 等) ──
+                                if (u.isEmpty)
+                                  return iaw.NavigationActionPolicy.ALLOW;
+                                final isHttpish = u.startsWith('http://') ||
+                                    u.startsWith('https://') ||
+                                    u.startsWith('data:') ||
+                                    u.startsWith('about:') ||
+                                    u.startsWith('blob:') ||
+                                    u.startsWith('file://');
+                                if (!isHttpish) {
+                                  debugPrint(
+                                      'InAppWebView blocked non-http scheme: $u');
+                                  return iaw.NavigationActionPolicy.CANCEL;
+                                }
+                                // ── YouTube 動画視聴中の広告クリックで進行不能になるバグ対策 ──
+                                // YouTube 動画再生中、広告のクリックスルーで以下の中継ドメインに
+                                // フレームをまたいで遷移する → 戻れずに進行不能になる現象が起きる。
+                                //   - googleadservices.com
+                                //   - doubleclick.net  (g.doubleclick.net 含む)
+                                //   - googlesyndication.com (pagead2.googlesyndication.com 等)
+                                //   - googletagservices.com / googletagmanager.com
+                                //   - adservice.google.* (国別ドメイン含む)
+                                //   - syndication.google.com / pagead*.googleadservices.com
+                                // これらは YouTube 内の動画再生では裏で動的に読み込まれる中間
+                                // リソースなので、 `shouldOverrideUrlLoading` (= top-level
+                                // フレームのナビゲーションのみ発火) で出てくる時はほぼ確実に
+                                // 「広告クリックで遷移しようとした」 状況。 ここで CANCEL すれば、
+                                // ユーザーは動画ページに留まったまま (= 広告クリックを単に
+                                // 無視) になる。
+                                // ノード動画再生 (focusMode = true) の時だけ有効化して、
+                                // 「YouTubeを開く」 ブラウズモード (focusMode = false) では
+                                // 広告ページも開けるようにしておく (ブラウザ的に使う想定)。
+                                bool isAdNavigation(String url) {
+                                  return url.contains('googleadservices.com') ||
+                                      url.contains('doubleclick.net') ||
+                                      url.contains('googlesyndication.com') ||
+                                      url.contains('googletagservices.com') ||
+                                      url.contains('googletagmanager.com') ||
+                                      url.contains('google-analytics.com') ||
+                                      // adservice.google.com / .co.jp / .de など国別ドメイン
+                                      RegExp(r'adservice\.google\.[a-z.]+')
+                                          .hasMatch(url) ||
+                                      // pagead/aclk?* (Google AdSense クリック中継)
+                                      url.contains('/pagead/aclk') ||
+                                      url.contains('/pagead/adview') ||
+                                      url.contains('/pagead/conversion');
+                                }
 
-                      if (widget.focusMode && isAdNavigation(u)) {
-                        debugPrint(
-                            'InAppWebView blocked YouTube ad navigation: $u');
-                        return iaw.NavigationActionPolicy.CANCEL;
-                      }
-                      // ── 動画ページから外部ドメインへの遷移を抑止 (focusMode のみ) ──
-                      // 広告中継ドメインを抜けた後でも、最終的に広告主の URL に
-                      // 飛ばされた瞬間 (= youtube.com 配下を抜けた直後の遷移) を
-                      // 検知して CANCEL する。 これでクリック中継が新しい URL
-                      // パターンに変わっても 1 段階の保険として動く。
-                      // ただし焦点モード (= ノード再生) かつ「動画 watch ページから
-                      // 別ドメインへ」 の時に限定。 検索結果やブラウズでは普通に
-                      // 外部リンクを踏みたいケースもあるので影響しないようにする。
-                      if (widget.focusMode &&
-                          _isYoutube &&
-                          _currentVideoId != null) {
-                        final isExternal = !u.contains('youtube.com') &&
-                            !u.contains('youtu.be') &&
-                            !u.contains('googlevideo.com') &&
-                            !u.contains('ytimg.com') &&
-                            !u.contains('googleusercontent.com') &&
-                            !u.contains('gstatic.com') &&
-                            !u.contains('google.com/recaptcha') &&
-                            !u.contains('accounts.google.com');
-                        // top-level (= main frame) のみブロック対象。
-                        // navAction.isForMainFrame が利用できれば使う。
-                        final bool isMainFrame =
-                            navAction.isForMainFrame ?? true;
-                        if (isExternal && isMainFrame) {
-                          debugPrint(
-                              'InAppWebView blocked external nav from video: $u');
-                          return iaw.NavigationActionPolicy.CANCEL;
-                        }
-                      }
-                      return iaw.NavigationActionPolicy.ALLOW;
-                    },
-                    // ── 新規ウィンドウ要求の遮断 ──
-                    // supportMultipleWindows: false により基本的に新規ウィンドウは
-                    // 現在の WebView 内ナビゲーションへフォールバックするが、
-                    // 念のため onCreateWindow も cancel (= return false) にして
-                    // 二重に防御する。 これで「広告タップ → 真っ白な新規タブが
-                    // 裏で開かれて WebView がフリーズしたように見える」 現象を
-                    // 完全に塞ぐ。
-                    onCreateWindow: (controller, createWindowAction) async {
-                      // ── 広告等のポップアップ (window.open) は OS ブラウザの別タブで
-                      //    開く (= ユーザー要望: 広告が立ち上がる時は別タブで開く)。
-                      //    動画はアプリ内でそのまま再生継続。 URL が取れない空ポップ
-                      //    アップは従来通りブロック (白紙タブのフリーズ防止)。
-                      final us =
-                          createWindowAction.request.url?.toString() ?? '';
-                      if (us.startsWith('http://') ||
-                          us.startsWith('https://')) {
-                        final uri = Uri.tryParse(us);
-                        if (uri != null) {
-                          try {
-                            await launchUrl(uri,
-                                mode: LaunchMode.externalApplication);
-                          } catch (_) {}
-                        }
-                      }
-                      return false; // WebView 内には新規ウィンドウを作らない
-                    },
+                                if (widget.focusMode && isAdNavigation(u)) {
+                                  debugPrint(
+                                      'InAppWebView blocked YouTube ad navigation: $u');
+                                  return iaw.NavigationActionPolicy.CANCEL;
+                                }
+                                // ── 動画ページから外部ドメインへの遷移を抑止 (focusMode のみ) ──
+                                // 広告中継ドメインを抜けた後でも、最終的に広告主の URL に
+                                // 飛ばされた瞬間 (= youtube.com 配下を抜けた直後の遷移) を
+                                // 検知して CANCEL する。 これでクリック中継が新しい URL
+                                // パターンに変わっても 1 段階の保険として動く。
+                                // ただし焦点モード (= ノード再生) かつ「動画 watch ページから
+                                // 別ドメインへ」 の時に限定。 検索結果やブラウズでは普通に
+                                // 外部リンクを踏みたいケースもあるので影響しないようにする。
+                                if (widget.focusMode &&
+                                    _isYoutube &&
+                                    _currentVideoId != null) {
+                                  final isExternal = !u
+                                          .contains('youtube.com') &&
+                                      !u.contains('youtu.be') &&
+                                      !u.contains('googlevideo.com') &&
+                                      !u.contains('ytimg.com') &&
+                                      !u.contains('googleusercontent.com') &&
+                                      !u.contains('gstatic.com') &&
+                                      !u.contains('google.com/recaptcha') &&
+                                      !u.contains('accounts.google.com');
+                                  // top-level (= main frame) のみブロック対象。
+                                  // navAction.isForMainFrame が利用できれば使う。
+                                  final bool isMainFrame =
+                                      navAction.isForMainFrame ?? true;
+                                  if (isExternal && isMainFrame) {
+                                    debugPrint(
+                                        'InAppWebView blocked external nav from video: $u');
+                                    return iaw.NavigationActionPolicy.CANCEL;
+                                  }
+                                }
+                                return iaw.NavigationActionPolicy.ALLOW;
+                              },
+                              // ── 新規ウィンドウ要求の遮断 ──
+                              // supportMultipleWindows: false により基本的に新規ウィンドウは
+                              // 現在の WebView 内ナビゲーションへフォールバックするが、
+                              // 念のため onCreateWindow も cancel (= return false) にして
+                              // 二重に防御する。 これで「広告タップ → 真っ白な新規タブが
+                              // 裏で開かれて WebView がフリーズしたように見える」 現象を
+                              // 完全に塞ぐ。
+                              onCreateWindow:
+                                  (controller, createWindowAction) async {
+                                // ── 広告等のポップアップ (window.open) は OS ブラウザの別タブで
+                                //    開く (= ユーザー要望: 広告が立ち上がる時は別タブで開く)。
+                                //    動画はアプリ内でそのまま再生継続。 URL が取れない空ポップ
+                                //    アップは従来通りブロック (白紙タブのフリーズ防止)。
+                                final us = createWindowAction.request.url
+                                        ?.toString() ??
+                                    '';
+                                if (us.startsWith('http://') ||
+                                    us.startsWith('https://')) {
+                                  final uri = Uri.tryParse(us);
+                                  if (uri != null) {
+                                    try {
+                                      await launchUrl(uri,
+                                          mode: LaunchMode.externalApplication);
+                                    } catch (_) {}
+                                  }
+                                }
+                                return false; // WebView 内には新規ウィンドウを作らない
+                              },
+                            ),
+                          if (_loading)
+                            const Center(
+                              child: CircularProgressIndicator(
+                                valueColor: AlwaysStoppedAnimation<Color>(
+                                    Color(0xFFE53935)),
+                              ),
+                            ),
+                          // ── YouTube 検索パネル (旧: オーバーレイ実装) ──
+                          // 動画上にオーバーレイで降りてくる旧設計は削除。
+                          // 検索バーはトップバーの 3 段目に常設に変更 (折りたたみ可能)。
+                          // 詳細は `_ytSearchPanelOpen` の State 宣言コメント参照。
+                          // ── 動画視聴中メモパネル ──
+                          // [_videoMemoPanelOpen] = true の時だけ動画 / loading
+                          // インジケータの上にオーバーレイ。 Stack の最後の子なので
+                          // 自然に最前面に来る。 ヘッダーバーは別 Column 兄弟なので
+                          // 隠れない (= ヘッダーのメモボタンでいつでもトグルできる)。
+                          // 内部で Positioned.fill + Align(bottomCenter) のシート
+                          // 構造を取るため、 Stack の領域全体をキャプチャしつつ、
+                          // 表示は下半分のシートのみ。 残った上半分は dim フィルター
+                          // 越しに動画が透けて見える。 シート外タップで閉じる UX。
+                          if (_videoMemoPanelOpen)
+                            _buildVideoMemoPanel(context),
+                        ]),
+                      ),
+                    ]),
                   ),
-                if (_loading)
-                  const Center(
-                    child: CircularProgressIndicator(
-                      valueColor:
-                          AlwaysStoppedAnimation<Color>(Color(0xFFE53935)),
-                    ),
-                  ),
-                // ── YouTube 検索パネル (旧: オーバーレイ実装) ──
-                // 動画上にオーバーレイで降りてくる旧設計は削除。
-                // 検索バーはトップバーの 3 段目に常設に変更 (折りたたみ可能)。
-                // 詳細は `_ytSearchPanelOpen` の State 宣言コメント参照。
-                // ── 動画視聴中メモパネル ──
-                // [_videoMemoPanelOpen] = true の時だけ動画 / loading
-                // インジケータの上にオーバーレイ。 Stack の最後の子なので
-                // 自然に最前面に来る。 ヘッダーバーは別 Column 兄弟なので
-                // 隠れない (= ヘッダーのメモボタンでいつでもトグルできる)。
-                // 内部で Positioned.fill + Align(bottomCenter) のシート
-                // 構造を取るため、 Stack の領域全体をキャプチャしつつ、
-                // 表示は下半分のシートのみ。 残った上半分は dim フィルター
-                // 越しに動画が透けて見える。 シート外タップで閉じる UX。
-                if (_videoMemoPanelOpen) _buildVideoMemoPanel(context),
-              ]),
-            ),
-          ]),
-              ),
-              if (!_hideAllControls &&
-                  useYoutubeSideMenu &&
-                  !_youtubeSideMenuOnLeft)
-                _buildMobileYoutubeSideMenu(),
+                  if (!_hideAllControls &&
+                      useYoutubeSideMenu &&
+                      !_youtubeSideMenuOnLeft)
+                    _buildMobileYoutubeSideMenu(),
                 ],
               ),
-              if (_hideAllControls)
-                _buildHiddenYoutubeControlsRestoreTarget(),
+              if (_hideAllControls) _buildHiddenYoutubeControlsRestoreTarget(),
             ],
           ),
         ),
@@ -90997,6 +93890,168 @@ class _GroupForegroundPainter extends CustomPainter {
   @override
   bool shouldRepaint(_GroupForegroundPainter old) =>
       old.groups != groups || old.nodes != nodes;
+}
+
+class _MapBackgroundTemplateView extends StatelessWidget {
+  final String templateId;
+  const _MapBackgroundTemplateView({required this.templateId});
+
+  @override
+  Widget build(BuildContext context) => CustomPaint(
+        painter: _MapBackgroundTemplatePainter(templateId),
+        child: const SizedBox.expand(),
+      );
+}
+
+class _MapBackgroundTemplatePainter extends CustomPainter {
+  final String templateId;
+  const _MapBackgroundTemplatePainter(this.templateId);
+
+  Rect _rect(Size size) => Offset.zero & size;
+
+  void _fillGradient(Canvas canvas, Size size, List<Color> colors,
+      {Alignment begin = Alignment.topLeft,
+      Alignment end = Alignment.bottomRight}) {
+    canvas.drawRect(
+      _rect(size),
+      Paint()
+        ..shader = LinearGradient(begin: begin, end: end, colors: colors)
+            .createShader(_rect(size)),
+    );
+  }
+
+  void _drawGlow(Canvas canvas, Offset center, double radius, Color color) {
+    final bounds = Rect.fromCircle(center: center, radius: radius);
+    canvas.drawCircle(
+      center,
+      radius,
+      Paint()
+        ..shader = RadialGradient(colors: [
+          color,
+          color.withValues(alpha: 0),
+        ]).createShader(bounds),
+    );
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.isEmpty) return;
+    switch (templateId) {
+      case 'blueprint':
+        _fillGradient(canvas, size,
+            const [Color(0xFF071C34), Color(0xFF123B62), Color(0xFF0A2747)]);
+        final minor = Paint()
+          ..color = const Color(0xFF8BD8FF).withValues(alpha: 0.10)
+          ..strokeWidth = 1;
+        final major = Paint()
+          ..color = const Color(0xFFB9E8FF).withValues(alpha: 0.22)
+          ..strokeWidth = 1.4;
+        for (var i = 0; i <= 20; i++) {
+          final x = size.width * i / 20;
+          canvas.drawLine(
+              Offset(x, 0), Offset(x, size.height), i % 5 == 0 ? major : minor);
+        }
+        for (var i = 0; i <= 20; i++) {
+          final y = size.height * i / 20;
+          canvas.drawLine(
+              Offset(0, y), Offset(size.width, y), i % 5 == 0 ? major : minor);
+        }
+        return;
+      case 'paper':
+        _fillGradient(
+            canvas, size, const [Color(0xFFFFFCF2), Color(0xFFF1E8D2)]);
+        final rule = Paint()
+          ..color = const Color(0xFF7D9DB5).withValues(alpha: 0.26)
+          ..strokeWidth = 1;
+        for (var i = 1; i < 22; i++) {
+          final y = size.height * i / 22;
+          canvas.drawLine(Offset(0, y), Offset(size.width, y), rule);
+        }
+        canvas.drawLine(
+          Offset(size.width * 0.12, 0),
+          Offset(size.width * 0.12, size.height),
+          Paint()
+            ..color = const Color(0xFFD66C6C).withValues(alpha: 0.38)
+            ..strokeWidth = 1.5,
+        );
+        return;
+      case 'midnight':
+        _fillGradient(canvas, size,
+            const [Color(0xFF070B21), Color(0xFF17183C), Color(0xFF24143F)],
+            begin: Alignment.topCenter, end: Alignment.bottomCenter);
+        _drawGlow(canvas, Offset(size.width * 0.75, size.height * 0.18),
+            size.shortestSide * 0.28, const Color(0x334D7CFE));
+        for (var i = 0; i < 120; i++) {
+          final x = size.width * ((i * 73) % 101) / 100;
+          final y = size.height * ((i * i * 37 + 17) % 103) / 102;
+          final radius = 0.5 + (i % 4) * 0.35;
+          canvas.drawCircle(
+              Offset(x, y),
+              radius,
+              Paint()
+                ..color =
+                    Colors.white.withValues(alpha: 0.28 + (i % 5) * 0.12));
+        }
+        return;
+      case 'sage':
+        _fillGradient(canvas, size,
+            const [Color(0xFFE8F0E5), Color(0xFFB9CFB7), Color(0xFF789982)]);
+        final leafPaint = Paint()
+          ..color = const Color(0xFF315F4B).withValues(alpha: 0.16);
+        for (var i = 0; i < 8; i++) {
+          final center = Offset(size.width * (0.06 + i * 0.14),
+              size.height * (i.isEven ? 0.22 : 0.76));
+          canvas.save();
+          canvas.translate(center.dx, center.dy);
+          canvas.rotate((i.isEven ? -1 : 1) * 0.45);
+          canvas.drawOval(
+              Rect.fromCenter(
+                  center: Offset.zero,
+                  width: size.width * 0.24,
+                  height: size.height * 0.16),
+              leafPaint);
+          canvas.restore();
+        }
+        return;
+      case 'sunset':
+        _fillGradient(canvas, size,
+            const [Color(0xFFFFC08A), Color(0xFFF27B91), Color(0xFF7655A8)],
+            begin: Alignment.topLeft, end: Alignment.bottomRight);
+        _drawGlow(canvas, Offset(size.width * 0.78, size.height * 0.22),
+            size.shortestSide * 0.26, const Color(0x66FFF1B8));
+        for (var i = 0; i < 5; i++) {
+          final y = size.height * (0.58 + i * 0.08);
+          final wave = Path()
+            ..moveTo(0, y)
+            ..cubicTo(size.width * 0.25, y - size.height * 0.08,
+                size.width * 0.45, y + size.height * 0.08, size.width * 0.68, y)
+            ..cubicTo(size.width * 0.82, y - size.height * 0.05,
+                size.width * 0.92, y + size.height * 0.04, size.width, y);
+          canvas.drawPath(
+              wave,
+              Paint()
+                ..color = Colors.white.withValues(alpha: 0.14 - i * 0.018)
+                ..style = PaintingStyle.stroke
+                ..strokeWidth = 2);
+        }
+        return;
+      case 'aurora':
+      default:
+        _fillGradient(canvas, size,
+            const [Color(0xFF081225), Color(0xFF15295A), Color(0xFF19122E)]);
+        _drawGlow(canvas, Offset(size.width * 0.20, size.height * 0.20),
+            size.shortestSide * 0.45, const Color(0x8843E8B0));
+        _drawGlow(canvas, Offset(size.width * 0.68, size.height * 0.36),
+            size.shortestSide * 0.48, const Color(0x77705CFF));
+        _drawGlow(canvas, Offset(size.width * 0.85, size.height * 0.82),
+            size.shortestSide * 0.36, const Color(0x66F55AAE));
+        return;
+    }
+  }
+
+  @override
+  bool shouldRepaint(_MapBackgroundTemplatePainter oldDelegate) =>
+      oldDelegate.templateId != templateId;
 }
 
 class _GridPainter extends CustomPainter {
@@ -98536,7 +101591,9 @@ class _DayTimelinePageState extends State<_DayTimelinePage> {
               // タイムライン全体の縮尺を 3 段階で切替 (24h / 12h / 6h)
               IconButton(
                 icon: const Icon(Icons.zoom_out),
-                tooltip: context.read<MindMapProvider>().t('cal.zoomOut'),
+                tooltip: context
+                    .read<MindMapProvider>()
+                    .t(_isDesktop ? 'cal.zoomOut' : 'cal.zoomOutMobile'),
                 onPressed:
                     _zoomLevel > 1 ? () => _setZoomLevel(_zoomLevel - 1) : null,
               ),
@@ -98559,7 +101616,9 @@ class _DayTimelinePageState extends State<_DayTimelinePage> {
               ),
               IconButton(
                 icon: const Icon(Icons.zoom_in),
-                tooltip: context.read<MindMapProvider>().t('cal.zoomIn'),
+                tooltip: context
+                    .read<MindMapProvider>()
+                    .t(_isDesktop ? 'cal.zoomIn' : 'cal.zoomInMobile'),
                 onPressed:
                     _zoomLevel < 3 ? () => _setZoomLevel(_zoomLevel + 1) : null,
               ),
@@ -98609,10 +101668,12 @@ class _DayTimelinePageState extends State<_DayTimelinePage> {
               final isCtrl = HardwareKeyboard.instance.isControlPressed ||
                   HardwareKeyboard.instance.isMetaPressed;
               final isShift = HardwareKeyboard.instance.isShiftPressed;
-              // Ctrl+Shift+T: テーマ切替
+              final isAlt = HardwareKeyboard.instance.isAltPressed;
+              // Ctrl+Shift+L: テーマ切替
               if (isCtrl &&
                   isShift &&
-                  event.logicalKey == LogicalKeyboardKey.keyT) {
+                  !isAlt &&
+                  event.logicalKey == LogicalKeyboardKey.keyL) {
                 provider.setDarkMode(!provider.isDarkMode);
               }
               // Ctrl++ / Ctrl+= : タイムラインを拡大
@@ -98636,9 +101697,10 @@ class _DayTimelinePageState extends State<_DayTimelinePage> {
               }
               // 注: Esc と矢印キーは HardwareKeyboard グローバルハンドラで処理
               // （focus 喪失時にも確実に効くため）
-              // Ctrl+Shift+N: 新規イベント作成（現在時刻から1時間をプリフィル）
+              // Ctrl+Alt+N: 新規イベント作成（現在時刻から1時間をプリフィル）
               if (isCtrl &&
-                  isShift &&
+                  !isShift &&
+                  isAlt &&
                   event.logicalKey == LogicalKeyboardKey.keyN) {
                 final now = TimeOfDay.now();
                 final startStr =
@@ -103852,6 +106914,17 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
     }
     await _saveLockMemoNow();
     if (!mounted) return;
+    final isMobile = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+    if (isMobile) {
+      await GoogleSearchDialog.show(
+        context,
+        initialQuery: text,
+        initialMemo: text,
+        customTitle: 'ロック中メモを検索',
+        onAddNode: (_, __, ___) {},
+      );
+      return;
+    }
     final win = _lockFloatingWindowSize();
     GoogleSearchDialog.showFloating(
       context,
@@ -103877,6 +106950,21 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
     final query = widget.provider.browserAiApplyPrefix(text);
     await Clipboard.setData(ClipboardData(text: query));
     if (!mounted) return;
+    final isMobile = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+    if (isMobile) {
+      // 浮遊 WebView の再挿入は ChatGPT のページを再読込して入力を失わせるため、
+      // モバイルは独立した全画面 Route で開く。initialAiPrompt も併用し、URL
+      // パラメータを受け取らない Gemini にもロード完了後の入力注入を行う。
+      await GoogleSearchDialog.show(
+        context,
+        initialUrl: widget.provider.browserAiUrlForQuery(query),
+        initialMemo: text,
+        initialAiPrompt: query,
+        customTitle: '${widget.provider.browserAiTargetLabel} / ロック中メモ',
+        onAddNode: (_, __, ___) {},
+      );
+      return;
+    }
     final win = _lockFloatingWindowSize();
     GoogleSearchDialog.showFloating(
       context,
@@ -110321,8 +113409,10 @@ Future<void> _sendPdfTextToAi(BuildContext context, String? pdfPath,
   await Clipboard.setData(ClipboardData(text: text));
   if (!aiPanelOpen) openAiPanel();
   if (!context.mounted) return;
+  final isDesktop =
+      !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
   messenger?.showSnackBar(SnackBar(
-    content: Text(provider.t('pdf.copied')),
+    content: Text(provider.t(isDesktop ? 'pdf.copied' : 'pdf.copiedMobile')),
     backgroundColor: const Color(0xFF43B97F),
     duration: Duration(seconds: 4),
   ));
@@ -110710,73 +113800,88 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
     });
   }
 
-  Future<void> _renderSpreadPages() async {
+  /// 指定ページ群のうち未キャッシュのものをラスタしてキャッシュへ足す。
+  /// [prefetch] = true は先読み (= エラー時のモード解除や再スケジュールを
+  /// 行わない)。 戻り値: 対象ページが全てキャッシュ済みになったか。
+  ///
+  /// ユーザー要望 2026-07「見開きページモードで開くと PDF の読み込みが
+  /// 重たくなってフリーズしてしまう」 への対応:
+  ///   - 旧実装はページをめくる度にキャッシュを全消しして 2 ページを
+  ///     ラスタし直していた (= 巨大 PDF ではめくる度に全文書パースが
+  ///     走り、 行き来するだけで毎回固まる)。
+  ///   - 新実装はページ番号キーの追加型キャッシュ + 隣の見開きの先読みで、
+  ///     一度表示した/先読み済みの見開きへは即座に切り替わる。
+  Future<bool> _rasterSpreadPagesInto(List<int> pages,
+      {bool prefetch = false}) async {
     final path = _pdfFilePath;
-    if (path == null || !_spreadFitPageMode) return;
+    if (path == null) return false;
+    final need = <int>[
+      for (final p in pages)
+        if (p >= 1 &&
+            (_pdfTotalPages <= 0 || p <= _pdfTotalPages) &&
+            !_spreadPageImages.containsKey(p))
+          p
+    ];
+    if (need.isEmpty) return true;
     if (_spreadRendering) {
-      _spreadRenderPending = true;
-      return;
-    }
-    final start = _spreadStartPage;
-    final pages = <int>[start];
-    if (start > 1 && start + 1 <= _pdfTotalPages) pages.add(start + 1);
-    if (pages.isEmpty) return;
-    if (_spreadRenderedForStart == start &&
-        pages.every((page) => _spreadPageImages.containsKey(page))) {
-      return;
+      if (!prefetch) _spreadRenderPending = true;
+      return false;
     }
     _spreadRendering = true;
-    _spreadRenderPending = false;
-    final generation = ++_spreadRenderGeneration;
+    final generation = _spreadRenderGeneration;
     try {
       _fitPageBytes ??= await File(path).readAsBytes();
-      final rendered = <int, Uint8List>{};
-      final renderedSizes = <int, Size>{};
-      var pageIndex = 0;
+      if (!mounted ||
+          !_spreadFitPageMode ||
+          generation != _spreadRenderGeneration) {
+        return false;
+      }
+      var i = 0;
       await for (final page in printing.Printing.raster(
         _fitPageBytes!,
-        pages: pages.map((pageNumber) => pageNumber - 1).toList(),
+        pages: need.map((n) => n - 1).toList(),
         dpi: 92,
       )) {
-        final pageNumber = pages[pageIndex];
         final png = await page.toPng();
         if (!mounted ||
             !_spreadFitPageMode ||
             generation != _spreadRenderGeneration) {
-          return;
+          return false;
         }
-        rendered[pageNumber] = png;
-        renderedSizes[pageNumber] =
+        final n = need[i];
+        _spreadPageImages[n] = png;
+        _spreadPageImageSizes[n] =
             Size(page.width.toDouble(), page.height.toDouble());
-        pageIndex++;
-        if (pageIndex >= pages.length) break;
+        i++;
+        if (i >= need.length) break;
       }
-      if (!mounted ||
-          !_spreadFitPageMode ||
-          generation != _spreadRenderGeneration) {
-        return;
+      // ── キャッシュの間引き (= メモリ節約。 現在の見開きの近傍は残す) ──
+      if (_spreadPageImages.length > 14) {
+        final cur = _spreadStartPage;
+        final far = _spreadPageImages.keys.toList()
+          ..sort((a, b) => (b - cur).abs().compareTo((a - cur).abs()));
+        for (final k in far) {
+          if (_spreadPageImages.length <= 10) break;
+          if ((k - cur).abs() <= 4) break;
+          _spreadPageImages.remove(k);
+          _spreadPageImageSizes.remove(k);
+        }
       }
-      setState(() {
-        _spreadPageImages
-          ..clear()
-          ..addAll(rendered);
-        _spreadPageImageSizes
-          ..clear()
-          ..addAll(renderedSizes);
-        _spreadRenderedForStart = start;
-      });
+      return true;
     } catch (e) {
       debugPrint('見開き全体表示の生成失敗: $e');
-      if (mounted) {
+      if (!prefetch && mounted) {
         setState(() {
           _spreadFitPageMode = false;
-          _spreadPageImages.clear();
-          _spreadPageImageSizes.clear();
           _spreadRenderedForStart = -1;
         });
       }
+      return false;
     } finally {
       _spreadRendering = false;
+      // 先読み中にページ送りされた場合も、先読み完了後に保留中の前景描画を
+      // 必ず再開する。旧実装は prefetch の finally では pending を処理せず、
+      // 「見開きモードを準備中」のまま止まっていた。
       if (mounted &&
           _spreadFitPageMode &&
           (_spreadRenderPending ||
@@ -110787,29 +113892,43 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
     }
   }
 
+  Future<void> _renderSpreadPages() async {
+    if (!_spreadFitPageMode) return;
+    final start = _spreadStartPage;
+    final pages = <int>[start];
+    if (start > 1 && start + 1 <= _pdfTotalPages) pages.add(start + 1);
+    final ok = await _rasterSpreadPagesInto(pages);
+    if (!mounted || !_spreadFitPageMode) return;
+    if (!ok || _spreadStartPage != start) return;
+    setState(() => _spreadRenderedForStart = start);
+    // ── 隣の見開き (次/前) を背景で先読みして、 ページ送りを即時に ──
+    Future<void>.delayed(const Duration(milliseconds: 120), () {
+      if (!mounted || !_spreadFitPageMode || _spreadStartPage != start) {
+        return;
+      }
+      _rasterSpreadPagesInto(<int>[start + 2, start + 3, start - 2, start - 1],
+          prefetch: true);
+    });
+  }
+
   void _toggleSpreadPages() {
     _toggleSpreadFitPage();
   }
 
   void _toggleSpreadFitPage() {
+    final enabling = !_spreadFitPageMode;
     setState(() {
-      _spreadFitPageMode = !_spreadFitPageMode;
+      _spreadFitPageMode = enabling;
+      _spreadRenderGeneration++;
+      _spreadRenderPending = false;
       if (_spreadFitPageMode) {
         _fitPageMode = false;
         _spreadPageMode = false;
         _fitPageImage = null;
         _fitPageRenderedFor = -1;
-        _spreadPageImages.clear();
-        _spreadPageImageSizes.clear();
+        // 画像キャッシュは保持する (= 再度見開きに入った時に即表示。
+        //   ユーザー要望 2026-07: 見開きが重い問題への対応)。
         _spreadRenderedForStart = -1;
-        _spreadRenderGeneration++;
-        // ★ フリーズ対策 (= ユーザー報告: 見開きに切り替えるとフリーズ。 原因は
-        //   AI チャット欄 (ネイティブ WebView) と見開きラスタ生成が同時に走る競合)。
-        //   見開きと AI 欄は排他にする。 見開きへ入る時は AI 欄を閉じる。
-        if (_aiPanelOpen) {
-          _aiPanelOpen = false;
-          _aiWebViewCache = null; // 閉じたら WebView キャッシュを破棄
-        }
       }
     });
     if (_spreadFitPageMode) {
@@ -110821,14 +113940,33 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
         } catch (_) {}
         _scheduleSpreadPageRender();
       });
+    } else {
+      // 見開き中は背面 SfPdfViewer を動かさないため、解除時に一度だけ同期する。
+      _suppressPdfPageChangeBriefly();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        try {
+          _pdfViewerCtrl?.jumpToPage(_currentPage);
+        } catch (_) {}
+      });
     }
   }
 
   void _jumpSpreadPages(int delta) {
     if (_pdfTotalPages <= 0) return;
     final target = (_spreadStartPage + delta).clamp(1, _pdfTotalPages).toInt();
-    _jumpToPage(target);
-    if (_spreadFitPageMode) _scheduleSpreadPageRender();
+    _spreadPageDebounce?.cancel();
+    // 見開き画像と背面 SfPdfViewer の二重描画を避ける。ページ番号と保存値だけ
+    // 更新し、SfPdfViewer は見開き解除時に現在ページへ同期する。
+    setState(() {
+      _currentPage = target;
+      _pageInputCtrl.text = '$target';
+      _spreadRenderedForStart = -1;
+    });
+    if (_pdfFilePath != null) {
+      context.read<MindMapProvider>().setLastPdfPage(_pdfFilePath!, target);
+    }
+    _scheduleSpreadPageRender();
   }
 
   /// フィットモード中に表示する、 現在ページのラスタ画像オーバーレイ。
@@ -110855,8 +113993,8 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
     final start = _spreadStartPage;
     final pages = <int>[start];
     if (start > 1 && start + 1 <= _pdfTotalPages) pages.add(start + 1);
-    final ready = _spreadRenderedForStart == start &&
-        pages.every((page) => _spreadPageImages.containsKey(page));
+    // キャッシュにあれば即表示 (= 先読み済みの見開きは「準備中」を出さない)。
+    final ready = pages.every((page) => _spreadPageImages.containsKey(page));
     final pageLabel = pages.length == 1
         ? '$start / $_pdfTotalPages'
         : '$start-${pages.last} / $_pdfTotalPages';
@@ -111182,16 +114320,6 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
     setState(() {
       _aiPanelUrl = url;
       _aiPanelOpen = true;
-      // ★ フリーズ対策: 見開きラスタ生成と AI ネイティブ WebView の競合を避けるため、
-      //   AI 欄を開く時は見開き表示を解除する (= 見開きと AI 欄は排他)。
-      if (_spreadFitPageMode) {
-        _spreadFitPageMode = false;
-        _spreadPageDebounce?.cancel();
-        _spreadPageImages.clear();
-        _spreadPageImageSizes.clear();
-        _spreadRenderedForStart = -1;
-        _spreadRenderGeneration++;
-      }
     });
     // 選択した AI を既定として永続化 (= ユーザー要望「別の回でも同じ AI」)。
     try {
@@ -112590,7 +115718,7 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
       return KeyEventResult.ignored;
     }
     // ── メモパネル / AI パネルの ON/OFF トグル (= ユーザー要望) ──
-    // Ctrl+M (または F2) = メモパネル開閉、 Ctrl+I (または F3) = AI チャット
+    // Ctrl+M (または F3) = メモパネル開閉、 Ctrl+I (または F4) = AI チャット
     //   欄開閉。 PDF コントローラの有無に関係なく (URL ビューワーでも) 効くよう、
     //   `_pdfViewerCtrl == null` の早期 return より前に処理する。
     // KeyRepeat では連続トグルしないよう KeyDown のみ受ける。
@@ -112599,7 +115727,8 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
           HardwareKeyboard.instance.isMetaPressed;
       // メモパネル: Ctrl+M または F3 (= ユーザー要望: F2 はメモの中身
       //   編集に使いたいので、 メモパネル ON/OFF は F3 にずらす)
-      if (isCtrlForPanel && event.logicalKey == LogicalKeyboardKey.keyM) {
+      if ((isCtrlForPanel && event.logicalKey == LogicalKeyboardKey.keyM) ||
+          event.logicalKey == LogicalKeyboardKey.f3) {
         _suppressPdfPageChangeBriefly();
         setState(() => _memoPanelOpen = !_memoPanelOpen);
         return KeyEventResult.handled;
@@ -112929,7 +116058,8 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
     if (event is KeyDownEvent) {
       final isCtrlForPanel = HardwareKeyboard.instance.isControlPressed ||
           HardwareKeyboard.instance.isMetaPressed;
-      if (isCtrlForPanel && event.logicalKey == LogicalKeyboardKey.keyM) {
+      if ((isCtrlForPanel && event.logicalKey == LogicalKeyboardKey.keyM) ||
+          event.logicalKey == LogicalKeyboardKey.f3) {
         _suppressPdfPageChangeBriefly();
         setState(() => _memoPanelOpen = !_memoPanelOpen);
         return true;
@@ -113008,6 +116138,9 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
         double jumpVal = curJump.toDouble().clamp(1.0, 50.0);
         return StatefulBuilder(
           builder: (sctx, setLocal) => AlertDialog(
+            // PDF の中央を隠さず値を見比べられるよう、設定欄は画面端へ寄せる。
+            alignment: AlignmentDirectional.centerEnd,
+            insetPadding: const EdgeInsets.fromLTRB(12, 24, 12, 24),
             title:
                 Text(context.read<MindMapProvider>().t('pdf.keySettingsTitle')),
             content: SingleChildScrollView(
@@ -114938,13 +118071,7 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
               ),
               // マーカーバナー / FAB は廃止 (syncfusion 標準メニュー統合のため不要)
               // ── ページ全体表示オーバーレイ (= ユーザー要望) ──
-              //   ★ フリーズ対策: AI 欄を開いている間はラスタ競合を避けるため
-              //   オーバーレイを出さず、 ライブの SfPdfViewer をそのまま見せる
-              //   (= スクロール可能・フリーズしない)。 AI を閉じると復帰する。
-              //   見開きと AI 欄は排他にしているので通常ここは両立しないが、
-              //   念のため AI 欄が開いている間はオーバーレイを描かない。
-              if (_spreadFitPageMode && !_aiPanelOpen)
-                _buildSpreadPageOverlay(),
+              if (_spreadFitPageMode) _buildSpreadPageOverlay(),
               // ── 音声読み上げ操作バー (= ユーザー要望: PDF 音声読み上げ) ──
               if (_readerVisible && _reader != null)
                 Positioned(
@@ -115391,10 +118518,45 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
     );
   }
 
+  /// 見開き時の左右ドックを、PDF本体と区別しやすいカード状に整える。
+  /// 通常表示では既存のパネル外観を維持する。
+  Widget _spreadDockSurface({
+    required Widget child,
+    required Color accent,
+  }) {
+    if (!_spreadFitPageMode) return child;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: const Color(0xFF191927),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: accent.withValues(alpha: 0.42)),
+          boxShadow: const [
+            BoxShadow(
+              color: Colors.black45,
+              blurRadius: 16,
+              offset: Offset(0, 5),
+            ),
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(13),
+          child: child,
+        ),
+      ),
+    );
+  }
+
   Widget _buildCompactPdfFloatingTools(
       MindMapProvider provider, bool hasMemoPanel) {
     final screen = MediaQuery.of(context).size;
-    final panelHeight = (screen.height - 120).clamp(260.0, 520.0);
+    // ── 高さは画面いっぱいを使う ──
+    // 旧: 上限 520px にクランプしていたため、 ページ全体表示/見開き等の
+    // フィット系モードに入るとメモ欄/AI チャット欄が縦に縮んで見えた
+    // (= ユーザー要望 2026-07: 拡大率を小さくしても表示領域が変わらない
+    // ように)。 通常ドックと同じく画面高さ − ヘッダー分を確保する。
+    final panelHeight = math.max(260.0, screen.height - 120.0);
     final memoWidth = (screen.width * 0.22).clamp(240.0, 320.0);
     final aiWidth = (screen.width * 0.26).clamp(280.0, 380.0);
     return IgnorePointer(
@@ -115605,15 +118767,23 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                           (_fitPageMode ||
                               _spreadPageMode ||
                               _spreadFitPageMode);
-                      final showMemo =
-                          hasMemoPanel && _memoPanelOpen && !compactPdfMode;
+                      // 見開きではフローティングパネルをPDF上へ重ねず、通常時と
+                      // 同じ左右ドックを使う。ページ・ナビ矢印を隠さず、幅変更と
+                      // 左右入れ替えもそのまま利用できる。
+                      final useDockedSpreadPanels = _spreadFitPageMode;
+                      final showMemo = hasMemoPanel &&
+                          _memoPanelOpen &&
+                          (!compactPdfMode || useDockedSpreadPanels);
                       // 既定: メモ=左 / AI=右。入れ替え時は左右逆。
                       final memoOnLeft = !_panelsSwapped;
                       final screenW = MediaQuery.of(context).size.width;
                       final maxW = (screenW * 0.8).clamp(280.0, 1400.0);
                       final memoSlot = showMemo
                           ? _buildResizableDock(
-                              panel: _buildMemoPanelInner(provider),
+                              panel: _spreadDockSurface(
+                                child: _buildMemoPanelInner(provider),
+                                accent: const Color(0xFFFFC107),
+                              ),
                               width: _memoPanelWidth.clamp(240.0, maxW),
                               handleOnLeft: !memoOnLeft,
                               onResizeDelta: (dx) {
@@ -115626,9 +118796,13 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                               },
                             )
                           : null;
-                      final aiSlot = _aiPanelOpen && !compactPdfMode
+                      final aiSlot = _aiPanelOpen &&
+                              (!compactPdfMode || useDockedSpreadPanels)
                           ? _buildResizableDock(
-                              panel: _buildAiPanelInner(provider),
+                              panel: _spreadDockSurface(
+                                child: _buildAiPanelInner(provider),
+                                accent: const Color(0xFF4FC3F7),
+                              ),
                               width: _aiPanelWidth.clamp(280.0, maxW),
                               handleOnLeft: memoOnLeft,
                               onResizeDelta: (dx) {
@@ -115657,7 +118831,9 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                           if (rightSlot != null) rightSlot,
                         ],
                       );
-                      if (!compactPdfMode) return body;
+                      if (!compactPdfMode || useDockedSpreadPanels) {
+                        return body;
+                      }
                       return Stack(
                         children: [
                           Positioned.fill(child: body),
@@ -115903,72 +119079,77 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
     });
   }
 
-  Future<void> _renderSpreadPages() async {
+  /// 指定ページ群のうち未キャッシュのものをラスタしてキャッシュへ足す
+  /// (デスクトップ版と同じ、 追加型キャッシュ + 先読み方式。 ユーザー要望
+  /// 2026-07: 見開きモードが重い/フリーズする問題への対応)。
+  Future<bool> _rasterSpreadPagesInto(List<int> pages,
+      {bool prefetch = false}) async {
     final path = _pdfFilePath;
-    if (path == null || !_spreadFitPageMode) return;
+    if (path == null) return false;
+    final need = <int>[
+      for (final p in pages)
+        if (p >= 1 &&
+            (_pdfTotalPages <= 0 || p <= _pdfTotalPages) &&
+            !_spreadPageImages.containsKey(p))
+          p
+    ];
+    if (need.isEmpty) return true;
     if (_spreadRendering) {
-      _spreadRenderPending = true;
-      return;
-    }
-    final start = _spreadStartPage;
-    final pages = <int>[start];
-    if (start > 1 && start + 1 <= _pdfTotalPages) pages.add(start + 1);
-    if (_spreadRenderedForStart == start &&
-        pages.every((page) => _spreadPageImages.containsKey(page))) {
-      return;
+      if (!prefetch) _spreadRenderPending = true;
+      return false;
     }
     _spreadRendering = true;
-    _spreadRenderPending = false;
-    final generation = ++_spreadRenderGeneration;
+    final generation = _spreadRenderGeneration;
     try {
       _fitPageBytes ??= await File(path).readAsBytes();
-      final rendered = <int, Uint8List>{};
-      final renderedSizes = <int, Size>{};
-      var pageIndex = 0;
+      if (!mounted ||
+          !_spreadFitPageMode ||
+          generation != _spreadRenderGeneration) {
+        return false;
+      }
+      var i = 0;
       await for (final page in printing.Printing.raster(
         _fitPageBytes!,
-        pages: pages.map((pageNumber) => pageNumber - 1).toList(),
+        pages: need.map((n) => n - 1).toList(),
         dpi: 92,
       )) {
-        final pageNumber = pages[pageIndex];
         final png = await page.toPng();
         if (!mounted ||
             !_spreadFitPageMode ||
             generation != _spreadRenderGeneration) {
-          return;
+          return false;
         }
-        rendered[pageNumber] = png;
-        renderedSizes[pageNumber] =
+        final n = need[i];
+        _spreadPageImages[n] = png;
+        _spreadPageImageSizes[n] =
             Size(page.width.toDouble(), page.height.toDouble());
-        pageIndex++;
-        if (pageIndex >= pages.length) break;
+        i++;
+        if (i >= need.length) break;
       }
-      if (!mounted ||
-          !_spreadFitPageMode ||
-          generation != _spreadRenderGeneration) {
-        return;
+      if (_spreadPageImages.length > 14) {
+        final cur = _spreadStartPage;
+        final far = _spreadPageImages.keys.toList()
+          ..sort((a, b) => (b - cur).abs().compareTo((a - cur).abs()));
+        for (final k in far) {
+          if (_spreadPageImages.length <= 10) break;
+          if ((k - cur).abs() <= 4) break;
+          _spreadPageImages.remove(k);
+          _spreadPageImageSizes.remove(k);
+        }
       }
-      setState(() {
-        _spreadPageImages
-          ..clear()
-          ..addAll(rendered);
-        _spreadPageImageSizes
-          ..clear()
-          ..addAll(renderedSizes);
-        _spreadRenderedForStart = start;
-      });
+      return true;
     } catch (e) {
       debugPrint('見開き全体表示の生成失敗: $e');
-      if (mounted) {
+      if (!prefetch && mounted) {
         setState(() {
           _spreadFitPageMode = false;
-          _spreadPageImages.clear();
-          _spreadPageImageSizes.clear();
           _spreadRenderedForStart = -1;
         });
       }
+      return false;
     } finally {
       _spreadRendering = false;
+      // 先読み中に入ったページ送り要求も、先読み完了後に必ず処理する。
       if (mounted &&
           _spreadFitPageMode &&
           (_spreadRenderPending ||
@@ -115979,15 +119160,34 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
     }
   }
 
+  Future<void> _renderSpreadPages() async {
+    if (!_spreadFitPageMode) return;
+    final start = _spreadStartPage;
+    final pages = <int>[start];
+    if (start > 1 && start + 1 <= _pdfTotalPages) pages.add(start + 1);
+    final ok = await _rasterSpreadPagesInto(pages);
+    if (!mounted || !_spreadFitPageMode) return;
+    if (!ok || _spreadStartPage != start) return;
+    setState(() => _spreadRenderedForStart = start);
+    Future<void>.delayed(const Duration(milliseconds: 120), () {
+      if (!mounted || !_spreadFitPageMode || _spreadStartPage != start) {
+        return;
+      }
+      _rasterSpreadPagesInto(<int>[start + 2, start + 3, start - 2, start - 1],
+          prefetch: true);
+    });
+  }
+
   void _toggleSpreadPages() {
+    final enabling = !_spreadFitPageMode;
     setState(() {
-      _spreadFitPageMode = !_spreadFitPageMode;
+      _spreadFitPageMode = enabling;
+      _spreadRenderGeneration++;
+      _spreadRenderPending = false;
       if (_spreadFitPageMode) {
         _fitPageMode = false;
-        _spreadPageImages.clear();
-        _spreadPageImageSizes.clear();
+        // 画像キャッシュは保持 (= 再突入を即表示に。 2026-07 高速化)。
         _spreadRenderedForStart = -1;
-        _spreadRenderGeneration++;
       }
     });
     if (_spreadFitPageMode) {
@@ -115998,14 +119198,28 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
         } catch (_) {}
         _scheduleSpreadPageRender();
       });
+    } else {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        try {
+          _pdfViewerCtrl?.jumpToPage(_currentPage);
+        } catch (_) {}
+      });
     }
   }
 
   void _jumpSpreadPages(int delta) {
     if (_pdfTotalPages <= 0) return;
     final target = (_spreadStartPage + delta).clamp(1, _pdfTotalPages).toInt();
-    _jumpToPage(target);
-    if (_spreadFitPageMode) _scheduleSpreadPageRender();
+    _spreadPageDebounce?.cancel();
+    setState(() {
+      _currentPage = target;
+      _spreadRenderedForStart = -1;
+    });
+    if (_pdfFilePath != null) {
+      context.read<MindMapProvider>().setLastPdfPage(_pdfFilePath!, target);
+    }
+    _scheduleSpreadPageRender();
   }
 
   Widget _buildSpreadPageImage(int pageNumber) {
@@ -116027,8 +119241,8 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
     final start = _spreadStartPage;
     final pages = <int>[start];
     if (start > 1 && start + 1 <= _pdfTotalPages) pages.add(start + 1);
-    final ready = _spreadRenderedForStart == start &&
-        pages.every((page) => _spreadPageImages.containsKey(page));
+    // キャッシュにあれば即表示 (= 先読み済みの見開きは「準備中」を出さない)。
+    final ready = pages.every((page) => _spreadPageImages.containsKey(page));
     final pageLabel = pages.length == 1
         ? '$start / $_pdfTotalPages'
         : '$start-${pages.last} / $_pdfTotalPages';
@@ -116956,6 +120170,9 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
         double jumpVal = curJump.toDouble().clamp(1.0, 50.0);
         return StatefulBuilder(
           builder: (sctx, setLocal) => AlertDialog(
+            // モバイル版も中央の PDF 表示を避け、読み方向に応じた終端へ配置。
+            alignment: AlignmentDirectional.centerEnd,
+            insetPadding: const EdgeInsets.fromLTRB(12, 24, 12, 24),
             title:
                 Text(context.read<MindMapProvider>().t('pdf.keySettingsTitle')),
             content: SingleChildScrollView(
@@ -118392,6 +121609,9 @@ class _PdfMemoPanel extends StatefulWidget {
 }
 
 class _PdfMemoPanelState extends State<_PdfMemoPanel> {
+  static bool get _isDesktop =>
+      !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
+
   /// 複数選択モード中かどうか。 ヘッダーの「選択」 ボタンで ON/OFF。
   /// Ctrl / ⌘ / Shift + クリックでも自動突入する (= ファイラー風 UX)。
   bool _selectionMode = false;
@@ -118893,7 +122113,11 @@ class _PdfMemoPanelState extends State<_PdfMemoPanel> {
             title: Text(provider.t('pdfMemo.bulkDeleteTitle'),
                 style: const TextStyle(color: Colors.white, fontSize: 16)),
             content: Text(
-              provider.t('pdfMemo.bulkDeleteBody').replaceAll('{n}', '$count'),
+              provider
+                  .t(_isDesktop
+                      ? 'pdfMemo.bulkDeleteBody'
+                      : 'pdfMemo.bulkDeleteBodyMobile')
+                  .replaceAll('{n}', '$count'),
               style: const TextStyle(color: Colors.white70, fontSize: 13),
             ),
             actions: [
@@ -118999,7 +122223,10 @@ class _PdfMemoPanelState extends State<_PdfMemoPanel> {
               if (idx >= 0 && idx < _visibleMemos.length) {
                 final target = _visibleMemos[idx];
                 provider.removePdfMemo(widget.nodeId, target.id);
-                _showInlineBanner('🗑️ メモを削除しました（Ctrl+Z で元に戻せます）',
+                _showInlineBanner(
+                    _isDesktop
+                        ? '🗑️ メモを削除しました（Ctrl+Z で元に戻せます）'
+                        : provider.t('pdfMemo.deletedHintMobile'),
                     color: const Color(0xFF4FC3F7));
                 return KeyEventResult.handled;
               }
@@ -120829,7 +124056,10 @@ class _PdfMemoPanelState extends State<_PdfMemoPanel> {
       _beginInlineEdit(m);
     } else if (sel == 'delete') {
       provider.removePdfMemo(widget.nodeId, m.id);
-      _showInlineBanner('🗑️ メモを削除しました（Ctrl+Z で元に戻せます）',
+      _showInlineBanner(
+          _isDesktop
+              ? '🗑️ メモを削除しました（Ctrl+Z で元に戻せます）'
+              : provider.t('pdfMemo.deletedHintMobile'),
           color: const Color(0xFF4FC3F7));
     }
   }
@@ -126432,7 +129662,13 @@ class _PptxTextParagraph {
   /// この段落内のラン (= スタイル違いの文字列断片) 順序通り。
   List<_PptxTextRun> runs;
 
-  _PptxTextParagraph({required this.runs});
+  /// 段落の水平整列 (= `<a:pPr algn="...">`)。 'l' / 'ctr' / 'r' / 'just'。
+  /// null = 指定なし (= 左揃え扱い)。 PowerPoint のタイトル等は 'ctr' が
+  /// 多く、 これを無視すると「レイアウトが本家と違う」 見た目になる
+  /// (= ユーザー要望 2026-07: できる限り PowerPoint と揃える)。
+  String? align;
+
+  _PptxTextParagraph({required this.runs, this.align});
 
   /// 段落全体の文字列 (= 全ランの text を連結)。
   String get plainText => runs.map((r) => r.text).join();
@@ -126513,6 +129749,12 @@ class _PptxTextShape {
   /// powerpoint みたいに変えられるようにして」 への対応。
   int? tableGroupId;
 
+  /// テキストの縦方向アンカー (= `<a:bodyPr anchor="...">`)。
+  /// 't' = 上 (既定) / 'ctr' = 中央 / 'b' = 下。 PowerPoint のタイトル
+  /// スライドは 'ctr' が多く、 無視すると文字が枠の上に張り付いて見える
+  /// (= ユーザー要望 2026-07: レイアウトをできる限り PowerPoint と揃える)。
+  String? anchor;
+
   /// このシェイプに設定されているアニメーション種別 (null = なし)。
   ///
   /// ユーザー要望「アニメーションを入れられるようにして」 への対応。
@@ -126544,6 +129786,7 @@ class _PptxTextShape {
     this.originalSpXml,
     this.tableGroupId,
     this.animation,
+    this.anchor,
     List<_PptxTextParagraph>? paragraphs,
   }) : paragraphs = paragraphs ?? <_PptxTextParagraph>[];
 
@@ -126574,8 +129817,10 @@ class _PptxTextShape {
       originalSpXml: originalSpXml,
       tableGroupId: tableGroupId,
       animation: animation,
+      anchor: anchor,
       paragraphs: paragraphs
           .map((p) => _PptxTextParagraph(
+                align: p.align,
                 runs: p.runs
                     .map((r) => _PptxTextRun(
                           text: r.text,
@@ -126749,6 +129994,16 @@ class _PptxSlide {
   ///   `_PptxDecoShape` として保持し、 CustomPaint で塗りつぶしを再現。
   final List<_PptxDecoShape> decoShapes;
 
+  /// PowerPoint の表 (= `<p:graphicFrame><a:tbl>`) を取り込んだ表示専用の
+  /// セル群。 各セルを 1 つの `_PptxTextShape` として位置付きで保持する。
+  ///
+  /// ユーザー要望 2026-07「pptx ファイルの全ての要素が取り込めておらず
+  ///   レイアウトや表示が PowerPoint と異なる」 への対応。 旧仕様では
+  ///   graphicFrame (表) は一切パースされず、 表が丸ごと消えていた。
+  /// 表示専用 (= 保存時の spTree 再構築には含めない。 元 XML の
+  ///   graphicFrame がそのまま保持されるので PowerPoint 側の表は不変)。
+  final List<_PptxTextShape> tableShapes;
+
   /// 後方互換用 getter: 旧 `imageRefs` (= List<String>) を使ってる箇所を
   /// 壊さないため、 images からメディア名を抽出して返す。
   /// 新規コードでは [images] を使うこと。
@@ -126797,6 +130052,7 @@ class _PptxSlide {
     this.notesPath,
     this.notesDirty = false,
     this.decoShapes = const [],
+    this.tableShapes = const [],
   });
 }
 
@@ -126839,6 +130095,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
   final Map<String, Uint8List> _media = {};
   bool _loading = true;
   String? _loadError;
+  OverlayEntry? _noticeEntry;
   int _currentIndex = 0;
   final ScrollController _thumbScroll = ScrollController();
   final FocusNode _keyFocus = FocusNode();
@@ -126995,6 +130252,8 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
 
   @override
   void dispose() {
+    _noticeEntry?.remove();
+    _noticeEntry = null;
     _thumbScroll.dispose();
     _keyFocus.dispose();
     _editingTextCtrl?.dispose();
@@ -127109,10 +130368,66 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
 
   void _showSnack(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
-      content: Text(msg),
-      duration: const Duration(seconds: 3),
-    ));
+    final overlay = Overlay.maybeOf(context, rootOverlay: true);
+    if (overlay == null) {
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+        content: Text(msg),
+        duration: const Duration(seconds: 4),
+      ));
+      return;
+    }
+
+    // Office ビューアは全画面 Dialog 内でも使われるため、背後の Scaffold に
+    // SnackBar を出すとユーザーから見えない。現在ルートの最前面へ直接表示する。
+    _noticeEntry?.remove();
+    late final OverlayEntry entry;
+    entry = OverlayEntry(
+      builder: (_) => Positioned(
+        left: 16,
+        right: 16,
+        bottom: 24,
+        child: SafeArea(
+          child: IgnorePointer(
+            child: Align(
+              alignment: Alignment.bottomCenter,
+              child: Semantics(
+                container: true,
+                liveRegion: true,
+                child: Material(
+                  color: Colors.transparent,
+                  child: Container(
+                    constraints: const BoxConstraints(maxWidth: 720),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 18, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF2A2A3E),
+                      borderRadius: BorderRadius.circular(10),
+                      boxShadow: const [
+                        BoxShadow(
+                            color: Colors.black38,
+                            blurRadius: 14,
+                            offset: Offset(0, 5)),
+                      ],
+                    ),
+                    child: Text(msg,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.white)),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    _noticeEntry = entry;
+    overlay.insert(entry);
+    Future<void>.delayed(const Duration(seconds: 4), () {
+      if (_noticeEntry == entry) {
+        entry.remove();
+        _noticeEntry = null;
+      }
+    });
   }
 
   /// 現在の .pptx ファイルを別名でダウンロード (= コピー出力)。
@@ -127160,12 +130475,13 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
 
   /// 現在の .pptx をスライドごとに PDF ページとして保存。
   Future<void> _downloadAsPdf() async {
+    final provider = context.read<MindMapProvider>();
     try {
       // ── 日本語フォント事前チェック ──
       // 未配置なら警告ダイアログを出して、 ユーザーが続行 OK しなければ中止。
       final ok = await _PdfExporter.ensureJapaneseFontOrConfirm(context);
       if (!ok) return;
-      _showSnack('PDF を生成中...');
+      _showSnack(provider.t('video.exporting'));
       final bytes = await _PdfExporter.exportPptx(_slides, _media,
           slideWidthEmu: _slideWidthEmu, slideHeightEmu: _slideHeightEmu);
       String? outPath;
@@ -127175,7 +130491,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
       final defaultName = '$base.pdf';
       if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
         outPath = await FilePicker.platform.saveFile(
-          dialogTitle: 'PDF として保存',
+          dialogTitle: provider.t('pptx.saveAsPdf'),
           fileName: defaultName,
           type: FileType.custom,
           allowedExtensions: ['pdf'],
@@ -127195,16 +130511,14 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
         await File(outPath).writeAsBytes(bytes, flush: true);
         await OpenFilex.open(outPath);
       }
-      if (_PdfExporter.hasJapaneseFont) {
-        _showSnack('PDF 保存完了: $outPath');
-      } else {
-        _showSnack('PDF 保存完了 (注: 日本語フォント未配置のため日本語が'
-            ' □ になっています。 assets/fonts/NotoSansJP-Regular.ttf'
-            ' を追加してください)');
-      }
+      // フォント未配置時の注意は生成前のローカライズ済み確認ダイアログで
+      // 明示済み。保存完了はどちらの場合も必ず同じ成功通知を前面表示する。
+      _showSnack(provider
+          .t('export.success')
+          .replaceFirst('{path}', outPath ?? defaultName));
     } catch (e, st) {
       debugPrint('PptxViewer PDF export error: $e\n$st');
-      _showSnack('PDF 変換に失敗: $e');
+      _showSnack(provider.t('doc.saveFailed').replaceFirst('{err}', '$e'));
     }
   }
 
@@ -127910,6 +131224,8 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
           notesOriginalXml: notesOrigXml,
           notesPath: notesAbsPath,
           decoShapes: allDeco,
+          // ── 表 (graphicFrame/a:tbl) を表示専用セルとして取り込む ──
+          tableShapes: _extractTableShapes(xml),
         ));
         slideIdx++;
       }
@@ -128067,6 +131383,107 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
         '</p:notes>';
   }
 
+  /// スライド XML から表 (= `<p:graphicFrame><a:tbl>`) を表示専用の
+  /// セル群として抽出する (= ユーザー要望 2026-07: 表が丸ごと消えていた)。
+  /// 各セルはフレーム位置 + 列幅/行高の累積で EMU 座標を計算する。
+  /// gridSpan (横結合) は幅を合算し、 hMerge/vMerge のダミーセルはスキップ。
+  List<_PptxTextShape> _extractTableShapes(String xml) {
+    final result = <_PptxTextShape>[];
+    final frameReg = RegExp(
+        r'<p:graphicFrame\b[^>]*>([\s\S]*?)</p:graphicFrame>',
+        multiLine: true);
+    final offReg = RegExp(r'<a:off\s+x="(-?\d+)"\s+y="(-?\d+)"\s*/>');
+    final tblReg = RegExp(r'<a:tbl\b[^>]*>([\s\S]*?)</a:tbl>', multiLine: true);
+    final gridColReg = RegExp(r'<a:gridCol\s+w="(\d+)"');
+    final trReg = RegExp(r'<a:tr\b([^>]*)>([\s\S]*?)</a:tr>', multiLine: true);
+    final trHReg = RegExp(r'h="(\d+)"');
+    final tcReg = RegExp(r'<a:tc\b([^>]*)>([\s\S]*?)</a:tc>', multiLine: true);
+    final gridSpanReg = RegExp(r'gridSpan="(\d+)"');
+    final pReg = RegExp(r'<a:p\b[^>]*>([\s\S]*?)</a:p>', multiLine: true);
+    final tReg = RegExp(r'<a:t[^>]*>([^<]*)</a:t>');
+    final szReg = RegExp(r'\bsz="(\d+)"');
+    final boldReg = RegExp(r'<a:rPr\b[^>]*\bb="1"');
+    int groupSeq = 9000;
+    int cellSeq = 0;
+    for (final fm in frameReg.allMatches(xml)) {
+      final frame = fm.group(1) ?? '';
+      final tblM = tblReg.firstMatch(frame);
+      if (tblM == null) continue;
+      final om = offReg.firstMatch(frame);
+      final frameX = om != null ? (int.tryParse(om.group(1)!) ?? 0) : 914400;
+      final frameY = om != null ? (int.tryParse(om.group(2)!) ?? 0) : 914400;
+      final tbl = tblM.group(1)!;
+      final colWs = [
+        for (final g in gridColReg.allMatches(tbl))
+          int.tryParse(g.group(1)!) ?? 0
+      ];
+      if (colWs.isEmpty) continue;
+      final groupId = groupSeq++;
+      int y = frameY;
+      for (final trM in trReg.allMatches(tbl)) {
+        final rowH = int.tryParse(
+                trHReg.firstMatch(trM.group(1) ?? '')?.group(1) ?? '') ??
+            370840;
+        int x = frameX;
+        int col = 0;
+        for (final tcM in tcReg.allMatches(trM.group(2) ?? '')) {
+          final tcAttrs = tcM.group(1) ?? '';
+          final tcInner = tcM.group(2) ?? '';
+          // 横結合のダミーセル (hMerge) は、 直前の gridSpan セルが既に
+          // 幅と列を消費しているので、 何も進めずにスキップする
+          // (= 進めると後続セルが右へずれて重なる)。
+          if (tcAttrs.contains('hMerge')) continue;
+          // 縦結合のダミーセル (vMerge) は自分の列を占有するので幅は
+          // 進めるが、 セルとしては描画しない。
+          final isMergeDummy = tcAttrs.contains('vMerge');
+          int span = 1;
+          final spanM = gridSpanReg.firstMatch(tcAttrs);
+          if (spanM != null) span = int.tryParse(spanM.group(1)!) ?? 1;
+          int w = 0;
+          for (int s = 0; s < span; s++) {
+            final ci = col + s;
+            w += ci < colWs.length ? colWs[ci] : colWs.last;
+          }
+          if (!isMergeDummy) {
+            final lines = <String>[];
+            for (final pm in pReg.allMatches(tcInner)) {
+              final buf = StringBuffer();
+              for (final tm in tReg.allMatches(pm.group(1) ?? '')) {
+                buf.write(_unescapeXml(tm.group(1) ?? ''));
+              }
+              lines.add(buf.toString());
+            }
+            int? sz;
+            final szM = szReg.firstMatch(tcInner);
+            if (szM != null) sz = int.tryParse(szM.group(1)!);
+            final cell = _PptxTextShape(
+              id: -(200000 + cellSeq++),
+              text: lines.join('\n'),
+              offX: x,
+              offY: y,
+              extCx: w,
+              extCy: rowH,
+              fontSize: sz,
+              tableGroupId: groupId,
+            );
+            if (boldReg.hasMatch(tcInner)) {
+              cell.paragraphs = [
+                for (final line in lines)
+                  _PptxTextParagraph(
+                      runs: [_PptxTextRun(text: line, bold: true)]),
+              ];
+            }
+            result.add(cell);
+          }
+          x += w;
+          col += span;
+        }
+        y += rowH;
+      }
+    }
+    return result;
+  }
+
   List<_PptxTextShape> _parseSlideShapes(String xml, {String? layoutXml}) {
     // ── layout から placeholder の defRPr 色マップを構築 ──
     //
@@ -128083,6 +131500,13 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
     // map のキー: "type:idx" (例: "ctrTitle:0", "body:1")
     //   idx は無ければ "0" を使う。
     final layoutColorMap = <String, int>{};
+    // ── layout の placeholder 位置マップ ──
+    // slide.xml の <p:sp> に <a:xfrm> が無い場合、 PowerPoint は layout の
+    // 同じ placeholder の位置/サイズを継承する。 旧仕様はハードコードの
+    // 既定位置を使っていたため、 テンプレートのタイトル/本文がまったく
+    // 違う場所に描かれていた (= ユーザー要望 2026-07: レイアウトを
+    // できる限り PowerPoint と揃える)。 キー: "type:idx"。
+    final layoutXfrmMap = <String, List<int>>{};
     if (layoutXml != null) {
       final spInLayout =
           RegExp(r'<p:sp\b[^>]*>([\s\S]*?)</p:sp>', multiLine: true);
@@ -128090,6 +131514,29 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
       final phReg = RegExp(r'<p:ph\b([^/>]*)/?>');
       final phTypeAttr = RegExp(r'type="([^"]+)"');
       final phIdxAttr = RegExp(r'idx="([^"]+)"');
+      final xfrmInLayout = RegExp(r'<a:xfrm\b[^>]*>([\s\S]*?)</a:xfrm>');
+      final offInLayout = RegExp(r'<a:off\s+x="(-?\d+)"\s+y="(-?\d+)"\s*/>');
+      final extInLayout = RegExp(r'<a:ext\s+cx="(\d+)"\s+cy="(\d+)"\s*/>');
+      for (final spm in spInLayout.allMatches(layoutXml)) {
+        final spXml = spm.group(0)!;
+        final phM = phReg.firstMatch(spXml);
+        if (phM == null) continue;
+        final phAttrs = phM.group(1) ?? '';
+        final type = phTypeAttr.firstMatch(phAttrs)?.group(1) ?? '';
+        final idx = phIdxAttr.firstMatch(phAttrs)?.group(1) ?? '0';
+        final xm = xfrmInLayout.firstMatch(spXml);
+        if (xm == null) continue;
+        final inner = xm.group(1) ?? '';
+        final om = offInLayout.firstMatch(inner);
+        final em = extInLayout.firstMatch(inner);
+        if (om == null || em == null) continue;
+        layoutXfrmMap['$type:$idx'] = [
+          int.tryParse(om.group(1)!) ?? 0,
+          int.tryParse(om.group(2)!) ?? 0,
+          int.tryParse(em.group(1)!) ?? 0,
+          int.tryParse(em.group(2)!) ?? 0,
+        ];
+      }
       // defRPr / lstStyle 内の色
       final defRPrReg = RegExp(
           r'<a:(?:defRPr|lvl1pPr|lvl2pPr|lvl3pPr)\b[^>]*(?:/>|>([\s\S]*?)</a:(?:defRPr|lvl1pPr|lvl2pPr|lvl3pPr)>)');
@@ -128227,16 +131674,58 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
           extCx = int.tryParse(em.group(1)!) ?? extCx;
           extCy = int.tryParse(em.group(2)!) ?? extCy;
         }
+      } else {
+        // ── xfrm 無し = placeholder 継承 ──
+        // layout の同じ placeholder (type/idx) の位置・サイズを使う。
+        // (旧仕様のハードコード既定位置は最終フォールバックとして残す)。
+        final phM0 = phInSlideReg.firstMatch(inner);
+        if (phM0 != null) {
+          final phAttrs = phM0.group(1) ?? '';
+          final type = phTypeAttrSlide.firstMatch(phAttrs)?.group(1) ?? '';
+          final idxA = phIdxAttrSlide.firstMatch(phAttrs)?.group(1) ?? '0';
+          final inherited = layoutXfrmMap['$type:$idxA'] ??
+              layoutXfrmMap['$type:0'] ??
+              layoutXfrmMap[':$idxA'] ??
+              // title 系は別名 (title/ctrTitle) で登録されている場合がある
+              (type == 'title'
+                  ? layoutXfrmMap['ctrTitle:0']
+                  : (type == 'ctrTitle' ? layoutXfrmMap['title:0'] : null));
+          if (inherited != null && inherited.length >= 4) {
+            offX = inherited[0];
+            offY = inherited[1];
+            extCx = inherited[2];
+            extCy = inherited[3];
+          }
+        }
       }
       // ── 段落 / ラン単位でパース ──
       final paragraphs = <_PptxTextParagraph>[];
       final lines = <String>[]; // フォールバック用プレーンテキスト
+      // 段落の水平整列 (<a:pPr algn="...">)。
+      final pPrAlgnReg = RegExp(r'<a:pPr\b[^>]*\balgn="([a-z]+)"');
+      // 段落内改行 <a:br/> をラン列の順序どおりに拾うため、 a:r と a:br を
+      // 1 つの正規表現で順番にたどる (= 旧仕様は a:br を無視して行が連結
+      // されていた)。
+      final rOrBrReg =
+          RegExp(r'<a:r\b[^>]*>([\s\S]*?)</a:r>|<a:br\s*/>', multiLine: true);
       for (final pm in pReg.allMatches(inner)) {
         final pInner = pm.group(1) ?? '';
+        final algnM = pPrAlgnReg.firstMatch(pInner);
+        final paraAlign = algnM?.group(1);
         // この段落内のラン
         final runs = <_PptxTextRun>[];
         final paraBuf = StringBuffer();
-        for (final rm in rReg.allMatches(pInner)) {
+        for (final rm in rOrBrReg.allMatches(pInner)) {
+          if (rm.group(1) == null) {
+            // <a:br/> = 段落内改行
+            if (runs.isNotEmpty) {
+              runs.last.text += '\n';
+            } else {
+              runs.add(_PptxTextRun(text: '\n'));
+            }
+            paraBuf.write('\n');
+            continue;
+          }
           final rInner = rm.group(1) ?? '';
           // ラン内の rPr (= スタイル属性) と <a:t> (= テキスト本体)
           final rPrM = rPrReg.firstMatch(rInner);
@@ -128297,9 +131786,14 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
           }
           paraBuf.write(t);
         }
-        paragraphs.add(_PptxTextParagraph(runs: runs));
+        paragraphs.add(_PptxTextParagraph(runs: runs, align: paraAlign));
         lines.add(paraBuf.toString());
       }
+      // ── 縦アンカー (<a:bodyPr anchor="...">) ──
+      String? bodyAnchor;
+      final anchorM =
+          RegExp(r'<a:bodyPr\b[^>]*\banchor="([a-z]+)"').firstMatch(inner);
+      if (anchorM != null) bodyAnchor = anchorM.group(1);
       final text = lines.join('\n');
       // シェイプ全体のフォントサイズ / フォントファミリ (= 最初の rPr から)
       int? fontSize;
@@ -128348,6 +131842,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
         fontSize: fontSize,
         fontFamily: fontFamily,
         fontColor: shapeFontColor,
+        anchor: bodyAnchor,
         paragraphs: paragraphs,
         isNew: false,
         originalSpXml: spXml,
@@ -130596,6 +134091,12 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                               //   1=layout, 2=slide) で正しく重ねて描く。
                               for (final img in slide.images)
                                 _buildCanvasImage(img, canvasW, canvasH),
+                              // ── 表 (graphicFrame/a:tbl) のセル (表示専用) ──
+                              // ユーザー要望 2026-07「全ての要素が取り込めて
+                              //   おらずレイアウトが PowerPoint と異なる」
+                              //   への対応。 旧仕様では表が丸ごと消えていた。
+                              for (final cell in slide.tableShapes)
+                                _buildCanvasTableCell(cell, canvasW, canvasH),
                               // ── テキストシェイプ (= 編集可能) ──
                               for (final shape in slide.textShapes)
                                 _buildCanvasShape(
@@ -130807,6 +134308,41 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
     );
   }
 
+  /// 表 (= graphicFrame/a:tbl) の 1 セルを表示専用で描画する。
+  /// 枠線 + セル内テキスト。 編集・移動は不可 (= 保存時に元 XML の表を
+  /// そのまま保持するため)。
+  Widget _buildCanvasTableCell(
+      _PptxTextShape cell, double canvasW, double canvasH) {
+    final left = (cell.offX / _slideWidthEmu) * canvasW;
+    final top = (cell.offY / _slideHeightEmu) * canvasH;
+    final width = (cell.extCx / _slideWidthEmu) * canvasW;
+    final height = (cell.extCy / _slideHeightEmu) * canvasH;
+    final scale = canvasW / (_slideWidthEmu / 9525);
+    final ptSize = (cell.fontSize ?? 1400) / 100.0;
+    final renderFontSize = (ptSize * scale * 1.333).clamp(6.0, 200.0);
+    return Positioned(
+      left: left,
+      top: top,
+      width: width,
+      height: height,
+      child: IgnorePointer(
+        child: Container(
+          decoration: BoxDecoration(
+            border: Border.all(color: Colors.black38, width: 0.8),
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 2),
+          child: ClipRect(
+            child: _buildShapeText(
+              shape: cell,
+              renderFontSize: renderFontSize,
+              scale: scale,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildCanvasShape(
       _PptxTextShape shape, double canvasW, double canvasH, bool dark) {
     final left = (shape.offX / _slideWidthEmu) * canvasW;
@@ -130847,8 +134383,13 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
         shape.text.isEmpty ? 1 : (shape.text.split('\n').length).clamp(1, 999);
     // 必要高さ: lineCount * renderFontSize * 1.4 (= 行間) + 上下 padding
     final neededHeight = lineCount * renderFontSize * 1.4 + 12;
-    // 元の高さと必要高さの小さい方を採用 (= 元枠より大きくはしない)
-    final height = math.min(rawHeight, neededHeight);
+    // 元の高さと必要高さの小さい方を採用 (= 元枠より大きくはしない)。
+    // ただし縦アンカーが中央/下 (= anchor ctr/b) の時は枠の高さをそのまま
+    // 使う (縮めるとアンカー位置の再現ができないため。 ユーザー要望
+    // 2026-07: レイアウトを PowerPoint と揃える)。
+    final bool keepBoxHeight = shape.anchor == 'ctr' || shape.anchor == 'b';
+    final height =
+        keepBoxHeight ? rawHeight : math.min(rawHeight, neededHeight);
     final isSelected = _selectedShapeId == shape.id;
     final isEditing = isEditingThisShape;
     // 同じ表 (= グループ) のセルが選択中かどうか。 表選択中は枠の色を
@@ -130993,10 +134534,13 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
           //   表示し、 選択範囲ごとにスタイルを適用できる。
           child: isEditing
               ? _buildEditingTextField(shape, renderFontSize)
-              : _buildShapeText(
-                  shape: shape,
-                  renderFontSize: renderFontSize,
-                  scale: scale,
+              : _anchorWrapShapeText(
+                  shape,
+                  _buildShapeText(
+                    shape: shape,
+                    renderFontSize: renderFontSize,
+                    scale: scale,
+                  ),
                 ),
         ),
       ),
@@ -131684,10 +135228,37 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
       fontFamily: shape.fontFamily,
       height: 1.2,
     );
+    // ── 段落整列 (= <a:pPr algn>) を反映 ──
+    // Flutter の RichText は段落毎の align を持てないため、 最初に指定の
+    // ある段落の整列をシェイプ全体に適用する (= タイトル中央寄せ等の
+    // 大半のケースをカバー。 ユーザー要望 2026-07: PowerPoint と揃える)。
+    String? algn;
+    for (final p in shape.paragraphs) {
+      if (p.align != null) {
+        algn = p.align;
+        break;
+      }
+    }
+    final TextAlign textAlign;
+    switch (algn) {
+      case 'ctr':
+        textAlign = TextAlign.center;
+        break;
+      case 'r':
+        textAlign = TextAlign.right;
+        break;
+      case 'just':
+      case 'dist':
+        textAlign = TextAlign.justify;
+        break;
+      default:
+        textAlign = TextAlign.left;
+    }
     if (shape.paragraphs.isEmpty) {
       return Text(
         shape.text,
         style: defaultStyle,
+        textAlign: textAlign,
         overflow: TextOverflow.visible,
         softWrap: true,
       );
@@ -131724,8 +135295,20 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
     }
     return RichText(
       text: TextSpan(style: defaultStyle, children: spans),
+      textAlign: textAlign,
       overflow: TextOverflow.visible,
       softWrap: true,
+    );
+  }
+
+  /// 縦アンカー (= `<a:bodyPr anchor>`) を再現するラッパー。
+  /// anchor が ctr / b の時だけ、 枠の中でテキストを縦中央 / 下寄せにする。
+  Widget _anchorWrapShapeText(_PptxTextShape shape, Widget text) {
+    final a = shape.anchor;
+    if (a != 'ctr' && a != 'b') return text;
+    return Align(
+      alignment: a == 'ctr' ? Alignment.centerLeft : Alignment.bottomLeft,
+      child: SizedBox(width: double.infinity, child: text),
     );
   }
 
@@ -132701,6 +136284,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
   /// が必要なため現状未対応 (PNG のみ)。 PNG はロスレスで品質が高く、
   /// 多くの用途で代替可能。 JPG が必要な場合は次のターンで対応予定。
   Future<void> _exportSlideAsPng({bool allSlides = false}) async {
+    final provider = context.read<MindMapProvider>();
     if (_slides.isEmpty) {
       _showSnack('スライドがありません');
       return;
@@ -132714,6 +136298,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
             '${base.path}/Kamispec_PptxExport_${DateTime.now().millisecondsSinceEpoch}');
         await outDir.create(recursive: true);
         final originalIndex = _currentIndex;
+        var savedCount = 0;
         for (int i = 0; i < _slides.length; i++) {
           setState(() => _currentIndex = i);
           // build 完了 + Repaint まで待つ (= 1 フレーム以上)
@@ -132722,11 +136307,16 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
           if (bytes == null) continue;
           final fname =
               '${stem}_slide${(i + 1).toString().padLeft(2, '0')}.png';
-          await File('${outDir.path}/$fname').writeAsBytes(bytes);
+          await File('${outDir.path}/$fname').writeAsBytes(bytes, flush: true);
+          savedCount++;
         }
         setState(() => _currentIndex = originalIndex);
         if (mounted) {
-          _showSnack('${_slides.length} 枚を PNG で保存しました: ${outDir.path}');
+          _showSnack(savedCount == 0
+              ? provider.t('export.fail')
+              : provider
+                  .t('export.success')
+                  .replaceFirst('{path}', outDir.path));
         }
       } else {
         // 1 枚だけ
@@ -132738,14 +136328,17 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
         final fname =
             '${stem}_slide${(_currentIndex + 1).toString().padLeft(2, '0')}.png';
         final outPath = '${base.path}/$fname';
-        await File(outPath).writeAsBytes(bytes);
+        await File(outPath).writeAsBytes(bytes, flush: true);
         if (mounted) {
-          _showSnack('PNG として保存しました: $outPath');
+          _showSnack(
+              provider.t('export.success').replaceFirst('{path}', outPath));
         }
       }
     } catch (e, st) {
       debugPrint('画像エクスポート失敗: $e\n$st');
-      if (mounted) _showSnack('画像エクスポートに失敗: $e');
+      if (mounted) {
+        _showSnack(provider.t('doc.saveFailed').replaceFirst('{err}', '$e'));
+      }
     }
   }
 
@@ -135518,9 +139111,6 @@ class _PdfExporter {
     return doc.save();
   }
 
-  /// 日本語フォントが見つかってるかチェック。 ユーザーへの警告判断に使う。
-  static bool get hasJapaneseFont => _cachedJpFont != null;
-
   /// PDF 生成前にフォント存在を確認して、 未配置なら警告ダイアログを出す。
   ///
   /// 戻り値:
@@ -135710,19 +139300,33 @@ class _MemberSchedulePageViewState extends State<_MemberSchedulePageView> {
   // ── 日付ユーティリティ ──
   String _key(DateTime d) =>
       '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
-  String _weekdayJa(int wd) =>
-      const ['', '月', '火', '水', '木', '金', '土', '日'][wd];
+  String _weekdayLabel(int wd) => _p.t(const [
+        '',
+        'memberSchedule.weekdayMon',
+        'memberSchedule.weekdayTue',
+        'memberSchedule.weekdayWed',
+        'memberSchedule.weekdayThu',
+        'memberSchedule.weekdayFri',
+        'memberSchedule.weekdaySat',
+        'memberSchedule.weekdaySun',
+      ][wd]);
 
   // ── メンバー一覧 (自分 + 共有グループメンバー) ──
   List<({String? uid, String name, bool isMe})> _members() {
     final me = _p.displayName.trim();
     final out = <({String? uid, String name, bool isMe})>[
-      (uid: _p.currentUid, name: me.isEmpty ? '自分' : me, isMe: true),
+      (
+        uid: _p.currentUid,
+        name: me.isEmpty ? _p.t('memberSchedule.me') : me,
+        isMe: true
+      ),
     ];
     for (final m in _p.viewableCalendarMembers) {
       out.add((
         uid: m.uid,
-        name: m.displayName.trim().isEmpty ? '(名称未設定)' : m.displayName,
+        name: m.displayName.trim().isEmpty
+            ? _p.t('memberSchedule.unnamed')
+            : m.displayName,
         isMe: false,
       ));
     }
@@ -135762,7 +139366,9 @@ class _MemberSchedulePageViewState extends State<_MemberSchedulePageView> {
   Future<void> _sync({bool silent = false}) async {
     if (_syncing) return;
     if (_p.currentGroupId == null) {
-      if (!silent) _snack('同期グループに参加していません', const Color(0xFF2A2A3E));
+      if (!silent) {
+        _snack(_p.t('memberSchedule.notInSyncGroup'), const Color(0xFF2A2A3E));
+      }
       return;
     }
     setState(() => _syncing = true);
@@ -135773,12 +139379,15 @@ class _MemberSchedulePageViewState extends State<_MemberSchedulePageView> {
       }
       final dl = await _p.downloadCalendarEventsFromCloud();
       if (mounted && !silent) {
-        _snack(dl.success ? 'メンバーの予定を更新しました' : (dl.error ?? '同期に失敗しました'),
+        _snack(
+            dl.success
+                ? _p.t('memberSchedule.syncUpdated')
+                : (dl.error ?? _p.t('memberSchedule.syncFailed')),
             dl.success ? const Color(0xFF43B97F) : const Color(0xFFE53935));
       }
     } catch (e) {
       if (mounted && !silent) {
-        _snack('同期に失敗しました', const Color(0xFFE53935));
+        _snack(_p.t('memberSchedule.syncFailed'), const Color(0xFFE53935));
       }
     } finally {
       if (mounted) setState(() => _syncing = false);
@@ -135861,9 +139470,9 @@ class _MemberSchedulePageViewState extends State<_MemberSchedulePageView> {
   Future<void> _editOwnName() async {
     final current = _p.displayName.trim();
     final name = await _promptMemberName(
-      title: '自分の名前を編集',
-      initial: current.isEmpty ? '自分' : current,
-      hint: '表示名',
+      title: _p.t('memberSchedule.editOwnName'),
+      initial: current.isEmpty ? _p.t('memberSchedule.me') : current,
+      hint: _p.t('memberSchedule.displayName'),
     );
     if (name == null) return;
     await _p.setDisplayName(name);
@@ -135872,9 +139481,9 @@ class _MemberSchedulePageViewState extends State<_MemberSchedulePageView> {
 
   Future<void> _addManualMember() async {
     final name = await _promptMemberName(
-      title: 'メンバーを追加',
+      title: _p.t('memberSchedule.addMember'),
       initial: '',
-      hint: 'メンバー名',
+      hint: _p.t('memberSchedule.memberName'),
     );
     if (name == null) return;
     setState(() => _manualMembers.add(name));
@@ -135888,8 +139497,8 @@ class _MemberSchedulePageViewState extends State<_MemberSchedulePageView> {
       context: context,
       builder: (dctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E32),
-        title: const Text('メンバーを編集',
-            style: TextStyle(color: Colors.white, fontSize: 15)),
+        title: Text(_p.t('memberSchedule.editMember'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
         content: TextField(
           controller: ctrl,
           autofocus: true,
@@ -135897,7 +139506,7 @@ class _MemberSchedulePageViewState extends State<_MemberSchedulePageView> {
           textInputAction: TextInputAction.done,
           style: const TextStyle(color: Colors.white),
           decoration: InputDecoration(
-            hintText: 'メンバー名',
+            hintText: _p.t('memberSchedule.memberName'),
             hintStyle: const TextStyle(color: Colors.white38),
             counterStyle: const TextStyle(color: Colors.white38),
             filled: true,
@@ -135914,7 +139523,8 @@ class _MemberSchedulePageViewState extends State<_MemberSchedulePageView> {
             onPressed: () => Navigator.pop(dctx, '__delete__'),
             icon: const Icon(Icons.delete_outline,
                 color: Color(0xFFE57373), size: 18),
-            label: const Text('削除', style: TextStyle(color: Color(0xFFE57373))),
+            label: Text(_p.t('btn.delete'),
+                style: const TextStyle(color: Color(0xFFE57373))),
           ),
           TextButton(
             onPressed: () => Navigator.pop(dctx),
@@ -136179,7 +139789,10 @@ class _MemberSchedulePageViewState extends State<_MemberSchedulePageView> {
       if (!isMobile) ...[
         const Icon(Icons.groups_rounded, color: Color(0xFF66BB6A)),
         const SizedBox(width: 8),
-        Text(_focusDay == null ? 'メンバー予定表' : 'メンバー予定表（時間単位）',
+        Text(
+            _p.t(_focusDay == null
+                ? 'hdr.memberSchedule'
+                : 'memberSchedule.hourViewTitle'),
             style: const TextStyle(
                 color: Colors.white,
                 fontSize: 16,
@@ -136187,14 +139800,14 @@ class _MemberSchedulePageViewState extends State<_MemberSchedulePageView> {
       ],
       if (!isMobile) const Spacer(),
       IconButton(
-        tooltip: '自分の名前を編集',
+        tooltip: _p.t('memberSchedule.editOwnName'),
         visualDensity: VisualDensity.compact,
         icon:
             const Icon(Icons.edit_rounded, color: Color(0xFF66BB6A), size: 20),
         onPressed: _editOwnName,
       ),
       IconButton(
-        tooltip: 'メンバーを追加',
+        tooltip: _p.t('memberSchedule.addMember'),
         visualDensity: VisualDensity.compact,
         icon: const Icon(Icons.person_add_alt_1_rounded,
             color: Color(0xFF66BB6A), size: 20),
@@ -136246,7 +139859,9 @@ class _MemberSchedulePageViewState extends State<_MemberSchedulePageView> {
       // 共有 ON/OFF (= 同期グループに自分の予定を出すか)。
       if (inGroup)
         Tooltip(
-          message: _p.calendarGroupSharingEnabled ? '自分の予定を共有中' : '自分の予定は非共有',
+          message: _p.t(_p.calendarGroupSharingEnabled
+              ? 'memberSchedule.sharingOn'
+              : 'memberSchedule.sharingOff'),
           child: IconButton(
             visualDensity: VisualDensity.compact,
             icon: Icon(
@@ -136281,7 +139896,8 @@ class _MemberSchedulePageViewState extends State<_MemberSchedulePageView> {
                 child: CircularProgressIndicator(
                     strokeWidth: 2, color: Colors.black))
             : const Icon(Icons.sync_rounded, size: 18),
-        label: Text(_syncing ? '同期中' : '同期'),
+        label: Text(
+            _p.t(_syncing ? 'memberSchedule.syncing' : 'memberSchedule.sync')),
       ),
     ];
     return Padding(
@@ -136326,7 +139942,7 @@ class _MemberSchedulePageViewState extends State<_MemberSchedulePageView> {
                             ? const Color(0x2266BB6A)
                             : const Color(0xFF1A1A26)),
                     child: Text(
-                        '${d.month}/${d.day} (${_weekdayJa(d.weekday)})',
+                        '${d.month}/${d.day} (${_weekdayLabel(d.weekday)})',
                         style: const TextStyle(
                             color: Colors.white70, fontSize: 11)),
                   ),
@@ -136474,7 +140090,7 @@ class _MemberSchedulePageViewState extends State<_MemberSchedulePageView> {
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(14, 8, 8, 4),
-          child: Text('${day.month}/${day.day} (${_weekdayJa(day.weekday)})',
+          child: Text('${day.month}/${day.day} (${_weekdayLabel(day.weekday)})',
               style: const TextStyle(
                   color: Colors.white,
                   fontSize: 14,
@@ -138352,6 +141968,15 @@ class _DocxBlock {
   _DocxTableStyle? tableStyle;
   List<List<_DocxCellStyle>> tableCellStyles;
 
+  /// 元ファイル由来のブロックの、 元 XML 全文 (`<w:p>…</w:p>` /
+  /// `<w:tbl>…</w:tbl>`)。 保存/ダウンロード時、 ユーザーが編集していない
+  /// ブロックはこの XML をそのまま書き戻すことで、 行間・インデント・
+  /// ルビ・スタイル参照・画像アンカー等のパースしきれない情報を完全に
+  /// 保持する (= ユーザー要望 2026-07: ダウンロードすると元の docx と
+  /// レイアウトが異なる → Word にできる限り近づける)。
+  /// ブロックを編集したら null にして再生成へフォールバック。
+  String? originalXml;
+
   _DocxBlock.paragraph(
       {required this.paraStyle,
       required this.runs,
@@ -138424,6 +142049,7 @@ class _DocxBlock {
     c.imageWidthEmu = imageWidthEmu;
     c.imageHeightEmu = imageHeightEmu;
     c.mathTex = mathTex;
+    c.originalXml = originalXml;
     c.tableStyle = tableStyle?.copy();
     if (kind == _DocxBlockKind.table) {
       c.tableRows = tableRows
@@ -138482,6 +142108,7 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
 
   bool _loading = true;
   String? _loadError;
+  OverlayEntry? _noticeEntry;
 
   /// 文書本文 (ブロックのリスト)
   final List<_DocxBlock> _blocks = [];
@@ -138592,6 +142219,8 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
 
   @override
   void dispose() {
+    _noticeEntry?.remove();
+    _noticeEntry = null;
     _editCtrl.dispose();
     _editFocus.dispose();
     _scroll.dispose();
@@ -138702,14 +142331,22 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
         if (end < 0) break;
         final inner = body.substring(nextStart + 4, end);
         final block = _parseParagraph(inner, rels);
-        if (block != null) _blocks.add(block);
+        if (block != null) {
+          // 元 XML を保持 (= 未編集ブロックは保存時にそのまま書き戻す)。
+          block.originalXml = body.substring(nextStart, end + '</w:p>'.length);
+          _blocks.add(block);
+        }
         i = end + '</w:p>'.length;
       } else {
         final end = body.indexOf('</w:tbl>', nextStart);
         if (end < 0) break;
         final inner = body.substring(nextStart + 6, end);
         final block = _parseTable(inner, rels);
-        if (block != null) _blocks.add(block);
+        if (block != null) {
+          block.originalXml =
+              body.substring(nextStart, end + '</w:tbl>'.length);
+          _blocks.add(block);
+        }
         i = end + '</w:tbl>'.length;
       }
     }
@@ -138941,17 +142578,57 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
       .replaceAll("'", '&apos;');
 
   // ─── 編集オペレーション ─────────────────────────────────────────
-  void _beginEditBlock(int idx) {
+  void _beginEditBlock(int idx, {Offset? tapLocalPos}) {
     if (idx < 0 || idx >= _blocks.length) return;
     final b = _blocks[idx];
     if (b.kind != _DocxBlockKind.paragraph) return;
     _pushUndo();
     _commitEdit();
+    // ── クリックした位置にカーソルを置く ──
+    // (= ユーザー要望 2026-07: 「テキストを入力したらボックスの右端の位置に
+    //  カーソルが来るのではなく、 クリックした位置がピンポイントで編集
+    //  できるようにして」)。 タップ座標をブロックのテキストレイアウト
+    //  (TextPainter) で文字オフセットへ変換する。 変換できない時は従来
+    //  どおり文末。
+    int caret = b.plainText.length;
+    if (tapLocalPos != null) {
+      try {
+        final box =
+            _keyForBlock(idx).currentContext?.findRenderObject() as RenderBox?;
+        final width = box?.size.width;
+        if (width != null && width > 16) {
+          TextStyle st = _paragraphTextStyle(b.paraStyle, Colors.black);
+          if (b.fontSize != null && b.fontSize! > 0) {
+            st = st.copyWith(fontSize: b.fontSize);
+          }
+          final tp = TextPainter(
+            text: TextSpan(text: b.plainText, style: st),
+            textDirection: TextDirection.ltr,
+            textAlign: b.align.textAlign,
+            maxLines: null,
+          )..layout(maxWidth: width - 10);
+          // _buildBlockRow の Padding(horizontal:4, vertical:2) と
+          // _renderParagraph の縦 Padding を補正する。
+          final vp = _DocxParaStyleExt(b.paraStyle).isHeading ? 10.0 : 4.0;
+          final local = Offset(
+            (tapLocalPos.dx - 5).clamp(0.0, width),
+            (tapLocalPos.dy - 2 - vp).clamp(0.0, 100000.0),
+          );
+          caret = tp
+              .getPositionForOffset(local)
+              .offset
+              .clamp(0, b.plainText.length)
+              .toInt();
+          tp.dispose();
+        }
+      } catch (_) {
+        caret = b.plainText.length;
+      }
+    }
     setState(() {
       _editingIdx = idx;
       _editCtrl.text = b.plainText;
-      _editCtrl.selection =
-          TextSelection.collapsed(offset: _editCtrl.text.length);
+      _editCtrl.selection = TextSelection.collapsed(offset: caret);
       _selectedIdx = idx;
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -138968,6 +142645,8 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
         final newText = _editCtrl.text;
         if (b.plainText != newText) {
           b.plainText = newText;
+          // 編集済み → 元 XML は使えない (= 再生成にフォールバック)。
+          b.originalXml = null;
           _dirty = true;
         }
       }
@@ -138990,6 +142669,8 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
           if (cellPara.kind == _DocxBlockKind.paragraph) {
             if (cellPara.plainText != _editCtrl.text) {
               cellPara.plainText = _editCtrl.text;
+              // セル編集 → 表全体を再生成する必要がある。
+              tb.originalXml = null;
               _dirty = true;
             }
           }
@@ -139052,6 +142733,7 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
     _pushUndo();
     setState(() {
       b.paraStyle = style;
+      b.originalXml = null; // スタイル変更 → 再生成へ
       _dirty = true;
     });
   }
@@ -139064,6 +142746,7 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
     _pushUndo();
     setState(() {
       b.align = align;
+      b.originalXml = null; // 揃え変更 → 再生成へ
       _dirty = true;
     });
   }
@@ -139079,6 +142762,7 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
     final next = (current + delta).clamp(6.0, 96.0);
     setState(() {
       b.fontSize = next;
+      b.originalXml = null; // サイズ変更 → 再生成へ
       _dirty = true;
     });
   }
@@ -139250,6 +142934,7 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
     if (result != null && mounted) {
       setState(() {
         b.fontSize = result;
+        b.originalXml = null; // サイズ変更 → 再生成へ
         _dirty = true;
       });
     }
@@ -139478,6 +143163,7 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
         if (italic != null) r.italic = italic;
         if (underline != null) r.underline = underline;
       }
+      b.originalXml = null; // 書式変更 → 再生成へ
       _dirty = true;
     });
   }
@@ -139582,6 +143268,12 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
   }
 
   String _blockToXml(_DocxBlock b, {required String paraId}) {
+    // ── 未編集ブロックは元 XML をそのまま書き戻す ──
+    // (= ユーザー要望 2026-07: ダウンロードすると元の docx とレイアウトが
+    //  異なる。 パースで拾いきれない行間/インデント/スタイル参照/画像
+    //  アンカー等を失わないため、 編集していないブロックは再生成しない)。
+    final orig = b.originalXml;
+    if (orig != null && orig.isNotEmpty) return orig;
     switch (b.kind) {
       case _DocxBlockKind.paragraph:
         return _paragraphXml(b);
@@ -139775,7 +143467,40 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
   }
 
   /// メディア名から rId を生成 (= 'mokumoku_rId_<hash>')
+  /// 元ファイルの document.xml.rels にある media/ の rId マップ
+  /// (メディア名 → rId)。 未編集段落の元 XML が参照する r:embed を
+  /// 壊さないため、 元の rId を最優先で使い回す (= ユーザー要望 2026-07:
+  /// ダウンロードで画像/レイアウトが崩れる問題への対応)。
+  Map<String, String>? _origMediaRelIdCache;
+  Map<String, String> get _origMediaRelIds {
+    final cached = _origMediaRelIdCache;
+    if (cached != null) return cached;
+    final map = <String, String>{};
+    final orig = _origArchive;
+    if (orig != null) {
+      for (final f in orig.files) {
+        if (f.name == 'word/_rels/document.xml.rels' && f.isFile) {
+          final xml = utf8.decode(f.content as List<int>, allowMalformed: true);
+          for (final m
+              in RegExp(r'<Relationship\s+[^>]*?/?>').allMatches(xml)) {
+            final rel = m.group(0)!;
+            final idM = RegExp(r'Id="([^"]+)"').firstMatch(rel);
+            final tM = RegExp(r'Target="media/([^"]+)"').firstMatch(rel);
+            if (idM != null && tM != null) {
+              map[tM.group(1)!] = idM.group(1)!;
+            }
+          }
+          break;
+        }
+      }
+    }
+    return _origMediaRelIdCache = map;
+  }
+
   String _rIdForMedia(String mediaName) {
+    // 元ファイル由来のメディアは元の rId を使う (= 元 XML の r:embed と一致)。
+    final origId = _origMediaRelIds[mediaName];
+    if (origId != null) return origId;
     final h = mediaName.hashCode.abs() % 1000000;
     return 'rIdMM$h';
   }
@@ -139785,32 +143510,38 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
     sb.write('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<Relationships '
         'xmlns="http://schemas.openxmlformats.org/package/2006/relationships">');
-    // 元ファイルの relationships を引き継ぐ (画像以外)
+    // ── 元ファイルの relationships を **メディアも含めて** 引き継ぐ ──
+    // 旧仕様は media/ の rel を破棄してハッシュ rId で再生成していたが、
+    // 未編集段落の元 XML (r:embed="rIdN") が壊れるため、 元の rel を
+    // そのまま保持する (ヘッダー/フッター/スタイル等の rel も保持)。
     final orig = _origArchive;
     final usedIds = <String>{};
+    final relatedMediaTargets = <String>{};
     if (orig != null) {
       for (final f in orig.files) {
         if (f.name == 'word/_rels/document.xml.rels' && f.isFile) {
           final xml = utf8.decode(f.content as List<int>, allowMalformed: true);
-          final relRe = RegExp(r'<Relationship\s+[^/>]*\s*/?>');
+          // 注: 旧正規表現 `[^/>]*` は Type URL に含まれる '/' で必ず
+          // マッチ失敗し、 元の relationship (styles/numbering/header/
+          // footer/hyperlink 等) が 1 件も引き継がれていなかった。 これが
+          // 「ダウンロードするとヘッダー/フッターが消える・レイアウトが
+          // 崩れる」 主因 (= ユーザー要望 2026-07 で修正)。
+          final relRe = RegExp(r'<Relationship\s[^>]*>');
           for (final m in relRe.allMatches(xml)) {
             final rel = m.group(0)!;
-            // 画像 (media/) は破棄し、 後で再生成
-            if (rel.contains('Target="media/') ||
-                rel.contains("Target='media/")) {
-              continue;
-            }
-            // Id 抽出して既存リストに追加
             final idM = RegExp(r'Id="([^"]+)"').firstMatch(rel);
             if (idM != null) usedIds.add(idM.group(1)!);
+            final tM = RegExp(r'Target="media/([^"]+)"').firstMatch(rel);
+            if (tM != null) relatedMediaTargets.add(tM.group(1)!);
             sb.write(rel);
           }
           break;
         }
       }
     }
-    // メディアの relationships を生成
+    // 新規追加メディアの relationships を生成 (元から rel があるものは除く)
     _media.forEach((name, _) {
+      if (relatedMediaTargets.contains(name)) return;
       final rId = _rIdForMedia(name);
       if (usedIds.contains(rId)) return; // 既にあれば追加しない
       usedIds.add(rId);
@@ -139992,10 +143723,65 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
 
   void _showSnack(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
-      content: Text(msg),
-      duration: const Duration(seconds: 3),
-    ));
+    final overlay = Overlay.maybeOf(context, rootOverlay: true);
+    if (overlay == null) {
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+        content: Text(msg),
+        duration: const Duration(seconds: 4),
+      ));
+      return;
+    }
+
+    // 全画面 Dialog の背後へ通知が隠れないよう、ビューアより前面に出す。
+    _noticeEntry?.remove();
+    late final OverlayEntry entry;
+    entry = OverlayEntry(
+      builder: (_) => Positioned(
+        left: 16,
+        right: 16,
+        bottom: 24,
+        child: SafeArea(
+          child: IgnorePointer(
+            child: Align(
+              alignment: Alignment.bottomCenter,
+              child: Semantics(
+                container: true,
+                liveRegion: true,
+                child: Material(
+                  color: Colors.transparent,
+                  child: Container(
+                    constraints: const BoxConstraints(maxWidth: 720),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 18, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF2A2A3E),
+                      borderRadius: BorderRadius.circular(10),
+                      boxShadow: const [
+                        BoxShadow(
+                            color: Colors.black38,
+                            blurRadius: 14,
+                            offset: Offset(0, 5)),
+                      ],
+                    ),
+                    child: Text(msg,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.white)),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    _noticeEntry = entry;
+    overlay.insert(entry);
+    Future<void>.delayed(const Duration(seconds: 4), () {
+      if (_noticeEntry == entry) {
+        entry.remove();
+        _noticeEntry = null;
+      }
+    });
   }
 
   /// 現在の内容を .docx として別名で保存 (ダウンロード)。
@@ -140075,6 +143861,7 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
   /// 現在の内容を PDF として保存。
   /// 日本語フォントが未配置なら警告を出す (英字は出るが日本語は □ になる)。
   Future<void> _downloadAsPdf() async {
+    final provider = context.read<MindMapProvider>();
     try {
       _commitEdit();
       _commitTableEdit();
@@ -140082,7 +143869,7 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
       // 未配置なら警告ダイアログを出して、 ユーザーが続行 OK しなければ中止。
       final ok = await _PdfExporter.ensureJapaneseFontOrConfirm(context);
       if (!ok) return;
-      _showSnack('PDF を生成中...');
+      _showSnack(provider.t('video.exporting'));
       final bytes = await _PdfExporter.exportDocx(_blocks, _media);
       String? outPath;
       final base = _currentFileName.toLowerCase().endsWith('.docx')
@@ -140091,7 +143878,7 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
       final defaultName = '$base.pdf';
       if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
         outPath = await FilePicker.platform.saveFile(
-          dialogTitle: 'PDF として保存',
+          dialogTitle: provider.t('pptx.saveAsPdf'),
           fileName: defaultName,
           type: FileType.custom,
           allowedExtensions: ['pdf'],
@@ -140111,16 +143898,12 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
         await File(outPath).writeAsBytes(bytes, flush: true);
         await OpenFilex.open(outPath);
       }
-      if (_PdfExporter.hasJapaneseFont) {
-        _showSnack('PDF 保存完了: $outPath');
-      } else {
-        _showSnack('PDF 保存完了 (注: 日本語フォント未配置のため日本語が'
-            ' □ になっています。 assets/fonts/NotoSansJP-Regular.ttf'
-            ' を追加してください)');
-      }
+      _showSnack(provider
+          .t('export.success')
+          .replaceFirst('{path}', outPath ?? defaultName));
     } catch (e, st) {
       debugPrint('DocxEditor PDF export error: $e\n$st');
-      _showSnack('PDF 変換に失敗: $e');
+      _showSnack(provider.t('doc.saveFailed').replaceFirst('{err}', '$e'));
     }
   }
 
@@ -140356,6 +144139,10 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
   GlobalKey _keyForBlock(int idx) {
     return _blockKeys.putIfAbsent(idx, () => GlobalKey());
   }
+
+  /// ブロック行の onTapDown で記憶するタップ位置 (= クリック位置に
+  /// カーソルを置くため。 ユーザー要望 2026-07)。
+  Offset? _pendingDocxTapPos;
 
   /// 選択を delta (= +1 or -1) で動かす。 編集可能なブロックにスキップ。
   /// 移動先が paragraph タイプの場合は自動で編集モードに入る (= ユーザーが
@@ -141121,10 +144908,16 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
         // Flutter は「ダブルタップかも」 と判定するため onTap が ~300ms
         // 遅延する。 即時反応にするため onDoubleTap は外し、 paragraph は
         // クリック即編集モード、 table は内部セルの直接タップで編集に入る。
+        // ── onTapDown でタップ位置を記憶し、 クリック位置にカーソルを置く ──
+        // (= ユーザー要望 2026-07: クリックした位置がピンポイントで編集
+        //  できるように)。
+        onTapDown: (d) => _pendingDocxTapPos = d.localPosition,
         onTap: () {
           if (_blocks[i].kind == _DocxBlockKind.paragraph) {
             setState(() => _selectedIdx = i);
-            _beginEditBlock(i);
+            final tap = _pendingDocxTapPos;
+            _pendingDocxTapPos = null;
+            _beginEditBlock(i, tapLocalPos: tap);
           } else {
             setState(() => _selectedIdx = i);
           }
@@ -142049,11 +145842,9 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
                             event.logicalKey == LogicalKeyboardKey.numpadEnter;
                     if (isEnter && !HardwareKeyboard.instance.isShiftPressed) {
                       final t = ctrl.text.trim();
-                      if (t.isEmpty && !allowDelete) {
-                        Navigator.pop(dctx);
-                      } else {
-                        Navigator.pop(dctx, (t, size));
-                      }
+                      // 新規でも空文字を「確定」として返す。キャンセルだけは
+                      // null のままにし、新規空テキスト要素を作成可能にする。
+                      Navigator.pop(dctx, (t, size));
                       return KeyEventResult.handled;
                     }
                     return KeyEventResult.ignored;
@@ -142119,11 +145910,7 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
                   backgroundColor: const Color(0xFF43B97F)),
               onPressed: () {
                 final t = ctrl.text.trim();
-                if (t.isEmpty && !allowDelete) {
-                  Navigator.pop(dctx);
-                } else {
-                  Navigator.pop(dctx, (t, size));
-                }
+                Navigator.pop(dctx, (t, size));
               },
               child: const Text('OK', style: TextStyle(color: Colors.white)),
             ),
@@ -144781,13 +148568,16 @@ class _FlashcardDialogState extends State<_FlashcardDialog> {
     final cards = _folderId == _allId
         ? provider.flashcards
         : provider.flashcardsInFolder(_folderId);
+    final viewport = MediaQuery.sizeOf(context);
+    final largeDesktopLayout = viewport.width >= 800;
     return Dialog(
       backgroundColor: const Color(0xFF1A1A2E),
       insetPadding: const EdgeInsets.all(24),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       child: SizedBox(
-        width: 560,
-        height: 640,
+        width: largeDesktopLayout ? math.min(760.0, viewport.width - 48) : 560,
+        height:
+            largeDesktopLayout ? math.min(720.0, viewport.height - 48) : 640,
         child: Column(children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
@@ -144853,7 +148643,8 @@ class _FlashcardDialogState extends State<_FlashcardDialog> {
                 : ListView.builder(
                     padding: const EdgeInsets.all(12),
                     itemCount: cards.length,
-                    itemBuilder: (_, i) => _cardTile(provider, cards[i]),
+                    itemBuilder: (_, i) => _cardTile(provider, cards[i],
+                        large: largeDesktopLayout),
                   ),
           ),
           Padding(
@@ -144896,20 +148687,24 @@ class _FlashcardDialogState extends State<_FlashcardDialog> {
     );
   }
 
-  Widget _cardTile(MindMapProvider provider, Flashcard c) {
+  Widget _cardTile(MindMapProvider provider, Flashcard c,
+      {bool large = false}) {
     return Card(
       color: const Color(0xFF24243A),
-      margin: const EdgeInsets.only(bottom: 8),
+      margin: EdgeInsets.only(bottom: large ? 12 : 8),
       child: ListTile(
+        contentPadding: large
+            ? const EdgeInsets.symmetric(horizontal: 20, vertical: 8)
+            : null,
         title: Text(c.front.isEmpty ? '(表が空です)' : c.front,
-            style: const TextStyle(color: Colors.white, fontSize: 14),
-            maxLines: 2,
+            style: TextStyle(color: Colors.white, fontSize: large ? 16 : 14),
+            maxLines: large ? 3 : 2,
             overflow: TextOverflow.ellipsis),
         subtitle: Text(c.back.isEmpty ? '裏: (未設定)' : '裏: ${c.back}',
             style: TextStyle(
                 color: c.back.isEmpty ? Colors.white38 : Colors.white54,
-                fontSize: 12),
-            maxLines: 1,
+                fontSize: large ? 14 : 12),
+            maxLines: large ? 2 : 1,
             overflow: TextOverflow.ellipsis),
         onTap: () => _study(provider, [c], 0),
         trailing: PopupMenuButton<String>(
@@ -145378,6 +149173,7 @@ class _FlashcardStudyDialogState extends State<_FlashcardStudyDialog> {
     // モバイルは専用の全画面表示 (背景のオブジェクトが見えず集中できる) =
     //   ユーザー要望。 デスクトップは従来の中央ダイアログ。
     final isMobile = MediaQuery.of(context).size.width < 600;
+    final largeDesktopLayout = MediaQuery.sizeOf(context).width >= 800;
     return Focus(
       focusNode: _rootFocus,
       autofocus: true,
@@ -145390,7 +149186,11 @@ class _FlashcardStudyDialogState extends State<_FlashcardStudyDialog> {
             : RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         child: SafeArea(
           child: SizedBox(
-            width: isMobile ? double.infinity : 520,
+            width: isMobile
+                ? double.infinity
+                : largeDesktopLayout
+                    ? 720
+                    : 520,
             // モバイルは高さも画面いっぱいにして真の全画面にする (= ユーザー要望:
             //   集中の為の専用画面。 従来は内容分の高さで上下にキャンバスが見えた)。
             height: isMobile ? double.infinity : null,
@@ -145410,18 +149210,21 @@ class _FlashcardStudyDialogState extends State<_FlashcardStudyDialog> {
                 ),
                 Container(
                   width: double.infinity,
-                  margin: const EdgeInsets.symmetric(horizontal: 16),
-                  padding: const EdgeInsets.all(20),
+                  margin: EdgeInsets.symmetric(
+                      horizontal: largeDesktopLayout ? 24 : 16),
+                  padding: EdgeInsets.all(largeDesktopLayout ? 32 : 20),
                   decoration: BoxDecoration(
                       color: const Color(0xFF24243A),
                       borderRadius: BorderRadius.circular(12)),
                   child: Column(children: [
                     Text(context.read<MindMapProvider>().t('flash.front'),
-                        style: TextStyle(color: Colors.white38, fontSize: 11)),
-                    const SizedBox(height: 6),
+                        style: TextStyle(
+                            color: Colors.white38,
+                            fontSize: largeDesktopLayout ? 12 : 11)),
+                    SizedBox(height: largeDesktopLayout ? 10 : 6),
                     _RichMathText(c.front.isEmpty ? '(空)' : c.front,
                         color: Colors.white,
-                        fontSize: 18,
+                        fontSize: largeDesktopLayout ? 24 : 18,
                         fontWeight: FontWeight.w600,
                         textAlign: TextAlign.center),
                   ]),
@@ -145429,8 +149232,9 @@ class _FlashcardStudyDialogState extends State<_FlashcardStudyDialog> {
                 if (_revealed)
                   Container(
                     width: double.infinity,
-                    margin: const EdgeInsets.fromLTRB(16, 10, 16, 0),
-                    padding: const EdgeInsets.all(16),
+                    margin: EdgeInsets.fromLTRB(largeDesktopLayout ? 24 : 16,
+                        10, largeDesktopLayout ? 24 : 16, 0),
+                    padding: EdgeInsets.all(largeDesktopLayout ? 24 : 16),
                     decoration: BoxDecoration(
                         color: const Color(0xFF1B3A2E),
                         borderRadius: BorderRadius.circular(12)),
@@ -145439,11 +149243,12 @@ class _FlashcardStudyDialogState extends State<_FlashcardStudyDialog> {
                         children: [
                           Text(context.read<MindMapProvider>().t('flash.backA'),
                               style: TextStyle(
-                                  color: Colors.white38, fontSize: 11)),
+                                  color: Colors.white38,
+                                  fontSize: largeDesktopLayout ? 12 : 11)),
                           const SizedBox(height: 4),
                           _RichMathText(c.back.isEmpty ? '(未設定)' : c.back,
                               color: Colors.white,
-                              fontSize: 14,
+                              fontSize: largeDesktopLayout ? 18 : 14,
                               textAlign: TextAlign.left),
                           if (_correct != null) ...[
                             const Divider(color: Colors.white12, height: 18),

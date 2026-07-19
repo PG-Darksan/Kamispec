@@ -1,8 +1,7 @@
-// dart:ui を直接 import すると TextStyle 等が flutter/painting.dart と
-// 衝突するため、 painting.dart のみインポートする (これだけで Color /
-// Offset / Size / TextPainter / TextSpan / TextStyle / FontWeight /
-// TextDirection など本ファイルで必要なシンボルが全部入る)。
+// TextStyle 等は flutter/painting.dart から取り込み、 dart:ui からは
+// 上付き・下付き表示に必要な FontFeature だけを限定して取り込む。
 import 'dart:convert';
+import 'dart:ui' show FontFeature;
 import 'package:flutter/painting.dart';
 
 enum NodeContentType { none, memo, youtube, link, attachment, table }
@@ -1339,8 +1338,10 @@ class MindMapNode {
 
   /// Quill Delta の JSON 文字列を Flutter の [InlineSpan] に変換する
   /// (= ノードのリッチテキスト表示用)。 [baseStyle] を土台に、 各 op の
-  /// 属性 (bold / italic / underline / strike / color / size / header) を
-  /// 反映する。 解析に失敗したときは平文として 1 つの span を返す (防御的)。
+  /// 属性 (bold / italic / underline / strike / color / size / header / list
+  /// など) を反映する。 Quill のブロック属性は行末の改行 op に付くため、 op を
+  /// 行単位にまとめてから直前の本文へ適用する。 解析に失敗したときは平文として
+  /// 1 つの span を返す (防御的)。
   /// [sizeScale] はノード個別の文字サイズ設定によるスケール (= ユーザー要望:
   /// ギャラリー要素の文字サイズ設定が richText タイルに効かない問題の修正)。
   /// Quill エディタで明示的な数値サイズが付いた span は従来 baseStyle を
@@ -1370,89 +1371,202 @@ class MindMapNode {
     final baseColor = baseStyle.color;
     final bool bgIsLight =
         baseColor != null && baseColor.computeLuminance() < 0.5;
+    final codeBackground =
+        bgIsLight ? const Color(0x14000000) : const Color(0x24FFFFFF);
     final children = <InlineSpan>[];
+
+    Map<String, dynamic> attributeMap(dynamic raw) {
+      if (raw is! Map) return const <String, dynamic>{};
+      return raw.map(
+          (key, value) => MapEntry<String, dynamic>(key.toString(), value));
+    }
+
+    TextStyle lineStyleFor(Map<String, dynamic> attrs) {
+      var style = baseStyle;
+      final header = attrs['header'];
+      if (header is num) {
+        final multiplier = switch (header.toInt()) {
+          1 => 1.50,
+          2 => 1.30,
+          3 => 1.15,
+          4 => 1.08,
+          5 => 1.00,
+          6 => 0.95,
+          _ => 1.00,
+        };
+        style = style.copyWith(
+          fontSize: (baseStyle.fontSize ?? 12.0) * multiplier,
+          fontWeight: FontWeight.w800,
+        );
+      }
+      if (attrs['code-block'] == true) {
+        style = style.copyWith(
+          fontFamily: 'monospace',
+          backgroundColor: codeBackground,
+        );
+      }
+      return style;
+    }
+
+    TextStyle inlineStyleFor(
+        TextStyle lineStyle, Map<String, dynamic> attrs) {
+      var style = lineStyle;
+      if (attrs['bold'] == true) {
+        style = style.copyWith(fontWeight: FontWeight.w800);
+      }
+      if (attrs['italic'] == true) {
+        style = style.copyWith(fontStyle: FontStyle.italic);
+      }
+
+      final decorations = <TextDecoration>[];
+      if (attrs['underline'] == true) decorations.add(TextDecoration.underline);
+      if (attrs['strike'] == true) decorations.add(TextDecoration.lineThrough);
+
+      final color = attrs['color'];
+      if (color is String) {
+        final c = _parseCssColor(color);
+        if (c != null && _hasReadableContrast(c, bgIsLight)) {
+          style = style.copyWith(color: c);
+        }
+      }
+
+      // 背景色 (ハイライト) も反映 (= ユーザー要望: 編集したデザインを
+      //   マップ上に反映)。
+      final bg = attrs['background'];
+      if (bg is String) {
+        final c = _parseCssColor(bg);
+        if (c != null) style = style.copyWith(backgroundColor: c);
+      }
+
+      // フォント (Quill は 'sans-serif'/'serif'/'monospace' を持つ)。
+      final font = attrs['font'];
+      if (font is String && font.isNotEmpty) {
+        final fam = font == 'monospace'
+            ? 'monospace'
+            : font == 'serif'
+                ? 'serif'
+                : font == 'sans-serif'
+                    ? null // デフォルト
+                    : font; // 任意のフォント名
+        if (fam != null) style = style.copyWith(fontFamily: fam);
+      }
+
+      // インラインコードはユーザー指定の背景色を尊重しつつ等幅で表示。
+      if (attrs['code'] == true) {
+        style = style.copyWith(
+          fontFamily: 'monospace',
+          backgroundColor: style.backgroundColor ?? codeBackground,
+        );
+      }
+
+      // flutter_quill と同じ OpenType feature で上付き / 下付きを表す。
+      final script = attrs['script'];
+      if (script == 'super') {
+        style = style.copyWith(fontFeatures: const <FontFeature>[
+          FontFeature.liningFigures(),
+          FontFeature.superscripts(),
+        ]);
+      } else if (script == 'sub') {
+        style = style.copyWith(fontFeatures: const <FontFeature>[
+          FontFeature.liningFigures(),
+          FontFeature.subscripts(),
+        ]);
+      }
+
+      // リンクは青 + 下線で表示 (タップ動作はノード側に委譲)。
+      if (attrs['link'] is String) {
+        style = style.copyWith(color: const Color(0xFF4FC3F7));
+        decorations.add(TextDecoration.underline);
+      }
+      if (decorations.isNotEmpty) {
+        style = style.copyWith(
+          decoration: TextDecoration.combine(decorations),
+        );
+      }
+
+      // size: 'large'/'huge'/'small' or 数値
+      final size = attrs['size'];
+      if (size is String) {
+        final base = baseStyle.fontSize ?? 12.0;
+        if (size == 'large') style = style.copyWith(fontSize: base * 1.3);
+        if (size == 'huge') style = style.copyWith(fontSize: base * 1.6);
+        if (size == 'small') style = style.copyWith(fontSize: base * 0.85);
+        final numeric = double.tryParse(size);
+        if (numeric != null && numeric > 0) {
+          style = style.copyWith(fontSize: numeric * sizeScale);
+        }
+      } else if (size is num) {
+        // 明示サイズにもノードの文字サイズスケールを掛ける (上記 doc 参照)。
+        style = style.copyWith(fontSize: size.toDouble() * sizeScale);
+      }
+      return style;
+    }
+
+    final lineRuns = <({String text, Map<String, dynamic> attributes})>[];
+    var orderedListIndex = 0;
+
+    void flushLine(Map<String, dynamic> lineAttributes,
+        {required bool addNewline}) {
+      final lineStyle = lineStyleFor(lineAttributes);
+      final indentValue = lineAttributes['indent'];
+      final indent = indentValue is num
+          ? indentValue.toInt().clamp(0, 20).toInt()
+          : 0;
+      final indentPrefix = List<String>.filled(indent, '  ').join();
+
+      String prefix = indentPrefix;
+      final list = lineAttributes['list'];
+      if (list == 'ordered') {
+        orderedListIndex++;
+        prefix += '$orderedListIndex. ';
+      } else {
+        orderedListIndex = 0;
+        if (list == 'bullet') {
+          prefix += '• ';
+        } else if (list == 'checked') {
+          prefix += '☑ ';
+        } else if (list == 'unchecked') {
+          prefix += '☐ ';
+        } else if (lineAttributes['blockquote'] == true) {
+          prefix += '│ ';
+        }
+      }
+      if (prefix.isNotEmpty) {
+        children.add(TextSpan(text: prefix, style: lineStyle));
+      }
+      for (final run in lineRuns) {
+        children.add(TextSpan(
+          text: run.text,
+          style: inlineStyleFor(lineStyle, run.attributes),
+        ));
+      }
+      if (addNewline) {
+        children.add(TextSpan(text: '\n', style: lineStyle));
+      }
+      lineRuns.clear();
+    }
+
     for (final op in ops) {
       if (op is! Map) continue;
       final insert = op['insert'];
       if (insert is! String) continue; // 画像等の embed はスキップ
-      final attrs = op['attributes'];
-      var style = baseStyle;
-      if (attrs is Map) {
-        if (attrs['bold'] == true) {
-          style = style.copyWith(fontWeight: FontWeight.w700);
+      final attrs = attributeMap(op['attributes']);
+      final parts = insert.split('\n');
+      for (var i = 0; i < parts.length; i++) {
+        final part = parts[i];
+        if (part.isNotEmpty) {
+          lineRuns.add((text: part, attributes: attrs));
         }
-        if (attrs['italic'] == true) {
-          style = style.copyWith(fontStyle: FontStyle.italic);
-        }
-        final deco = <TextDecoration>[];
-        if (attrs['underline'] == true) deco.add(TextDecoration.underline);
-        if (attrs['strike'] == true) deco.add(TextDecoration.lineThrough);
-        if (deco.isNotEmpty) {
-          style = style.copyWith(decoration: TextDecoration.combine(deco));
-        }
-        final color = attrs['color'];
-        if (color is String) {
-          final c = _parseCssColor(color);
-          if (c != null && _hasReadableContrast(c, bgIsLight)) {
-            style = style.copyWith(color: c);
-          }
-        }
-        // 背景色 (ハイライト) も反映 (= ユーザー要望: 編集したデザインを
-        //   マップ上に反映)。
-        final bg = attrs['background'];
-        if (bg is String) {
-          final c = _parseCssColor(bg);
-          if (c != null) style = style.copyWith(backgroundColor: c);
-        }
-        // フォント (Quill は 'sans-serif'/'serif'/'monospace' を持つ)。
-        final font = attrs['font'];
-        if (font is String && font.isNotEmpty) {
-          final fam = font == 'monospace'
-              ? 'monospace'
-              : font == 'serif'
-                  ? 'serif'
-                  : font == 'sans-serif'
-                      ? null // デフォルト
-                      : font; // 任意のフォント名
-          if (fam != null) style = style.copyWith(fontFamily: fam);
-        }
-        // リンクは青 + 下線で表示 (タップ動作はノード側に委譲)。
-        if (attrs['link'] is String) {
-          style = style.copyWith(
-            color: const Color(0xFF4FC3F7),
-            decoration: TextDecoration.underline,
-          );
-        }
-        // 見出し (header: 1/2/3) はフォントを少し大きく + 太字に。
-        final header = attrs['header'];
-        if (header is num) {
-          final mult = header == 1
-              ? 1.5
-              : header == 2
-                  ? 1.3
-                  : 1.15;
-          style = style.copyWith(
-            fontSize: (baseStyle.fontSize ?? 12.0) * mult,
-            fontWeight: FontWeight.w700,
-          );
-        }
-        // size: 'large'/'huge'/'small' or 数値
-        final size = attrs['size'];
-        if (size is String) {
-          final base = baseStyle.fontSize ?? 12.0;
-          if (size == 'large') style = style.copyWith(fontSize: base * 1.3);
-          if (size == 'huge') style = style.copyWith(fontSize: base * 1.6);
-          if (size == 'small') style = style.copyWith(fontSize: base * 0.85);
-          final numeric = double.tryParse(size);
-          if (numeric != null && numeric > 0) {
-            style = style.copyWith(fontSize: numeric * sizeScale);
-          }
-        } else if (size is num) {
-          // 明示サイズにもノードの文字サイズスケールを掛ける (上記 doc 参照)。
-          style = style.copyWith(fontSize: size.toDouble() * sizeScale);
+        if (i < parts.length - 1) {
+          // ブロック属性はこの改行が閉じる行へ適用する。
+          flushLine(attrs, addNewline: true);
         }
       }
-      children.add(TextSpan(text: insert, style: style));
+    }
+    // 正常な Quill 文書は末尾改行を持つが、 外部/旧データが持たない場合も
+    // 最後の本文を失わないよう改行なしで確定する。
+    if (lineRuns.isNotEmpty) {
+      flushLine(const <String, dynamic>{}, addNewline: false);
     }
     if (children.isEmpty) {
       return TextSpan(text: '', style: baseStyle);

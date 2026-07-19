@@ -171,6 +171,24 @@ class MyApp extends StatelessWidget {
             windowManager.setTitle(provider.t('app.title'));
           }
           final baseColor = provider.headerColor;
+          // flutter_quill と Flutter 標準UIのロケールもアプリ内言語へ追従させる。
+          // Quill側で確実に提供される主要9言語以外は英語へフォールバックし、
+          // OS言語や日本語が意図せず混ざらないようにする。
+          const localizedFrameworkLanguages = {
+            'en',
+            'ja',
+            'zh',
+            'ko',
+            'es',
+            'fr',
+            'de',
+            'pt',
+            'ru',
+          };
+          final frameworkLanguage =
+              localizedFrameworkLanguages.contains(provider.appLanguage)
+                  ? provider.appLanguage
+                  : 'en';
           return MaterialApp(
             title: provider.t('app.title'),
             debugShowCheckedModeBanner: false,
@@ -183,9 +201,17 @@ class MyApp extends StatelessWidget {
               GlobalWidgetsLocalizations.delegate,
               GlobalCupertinoLocalizations.delegate,
             ],
+            locale: Locale(frameworkLanguage),
             supportedLocales: const [
-              Locale('ja'),
               Locale('en'),
+              Locale('ja'),
+              Locale('zh'),
+              Locale('ko'),
+              Locale('es'),
+              Locale('fr'),
+              Locale('de'),
+              Locale('pt'),
+              Locale('ru'),
             ],
             themeMode: provider.isDarkMode ? ThemeMode.dark : ThemeMode.light,
             theme: ThemeData(
