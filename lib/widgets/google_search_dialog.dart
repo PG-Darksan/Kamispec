@@ -370,6 +370,7 @@ class GoogleSearchDialog {
     double? initialWidth,
     double? initialHeight,
     bool hideChromeWhenExpanded = false,
+    bool initiallyExpanded = false,
   }) {
     final overlay = Overlay.of(context, rootOverlay: true);
     if (singletonKey != null) {
@@ -442,6 +443,7 @@ class GoogleSearchDialog {
         initialWidth: initialWidth,
         initialHeight: initialHeight,
         hideChromeWhenExpanded: hideChromeWhenExpanded,
+        initiallyExpanded: initiallyExpanded,
         pageKey: pageKey,
         onAddNode: onAddNode,
         onMoveToSplitPanel: onMoveToSplitPanel,
@@ -505,6 +507,7 @@ class _FloatingSearchWindow extends StatefulWidget {
   final double? initialWidth;
   final double? initialHeight;
   final bool hideChromeWhenExpanded;
+  final bool initiallyExpanded;
   final GlobalKey<_GoogleSearchPageState>? pageKey;
   const _FloatingSearchWindow({
     required this.initialQuery,
@@ -522,6 +525,7 @@ class _FloatingSearchWindow extends StatefulWidget {
     this.initialWidth,
     this.initialHeight,
     this.hideChromeWhenExpanded = false,
+    this.initiallyExpanded = false,
     this.pageKey,
   });
 
@@ -547,6 +551,12 @@ class _FloatingSearchWindowState extends State<_FloatingSearchWindow> {
   Rect? _resizeStartRect;
   Offset? _resizeStartPointer;
 
+  @override
+  void initState() {
+    super.initState();
+    _expandedToCompact = widget.initiallyExpanded;
+  }
+
   void _beginResize(Offset globalPointer, double w, double h) {
     _resizeStartRect = Rect.fromLTWH(_pos.dx, _pos.dy, w, h);
     _resizeStartPointer = globalPointer;
@@ -561,8 +571,12 @@ class _FloatingSearchWindowState extends State<_FloatingSearchWindow> {
     final p0 = _resizeStartPointer;
     if (start == null || p0 == null) return;
     final d = globalPointer - p0;
-    final maxW = math.max(_minW, screen.width - 8);
-    final maxH = math.max(_minH, screen.height - 8);
+    final maxW = _expandedToCompact
+        ? screen.width
+        : math.max(_minW, screen.width - 8);
+    final maxH = _expandedToCompact
+        ? screen.height
+        : math.max(_minH, screen.height - 8);
     double l = start.left, t = start.top, r = start.right, b = start.bottom;
     if (right) r = start.right + d.dx;
     if (left) l = start.left + d.dx;
@@ -666,8 +680,12 @@ class _FloatingSearchWindowState extends State<_FloatingSearchWindow> {
   Widget build(BuildContext context) {
     final provider = context.watch<MindMapProvider>();
     final screen = MediaQuery.of(context).size;
-    final maxW = math.max(_minW, screen.width - 8);
-    final maxH = math.max(_minH, screen.height - 8);
+    final maxW = _expandedToCompact
+        ? screen.width
+        : math.max(_minW, screen.width - 8);
+    final maxH = _expandedToCompact
+        ? screen.height
+        : math.max(_minH, screen.height - 8);
     final double w = (_userW ??
             (_expandedToCompact
                 ? screen.width

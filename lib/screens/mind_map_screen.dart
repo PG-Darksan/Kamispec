@@ -27074,6 +27074,18 @@ class _MindMapScreenState extends State<MindMapScreen>
       'color': Color(0xFF1FA463), // Drive グリーン
     },
     {
+      'id': 'openGoogleMaps',
+      'labelKey': 'hdr.openGoogleMaps',
+      'icon': Icons.map_rounded,
+      'color': Color(0xFF34A853),
+    },
+    {
+      'id': 'openGoogleEarth',
+      'labelKey': 'hdr.openGoogleEarth',
+      'icon': Icons.public_rounded,
+      'color': Color(0xFF4285F4),
+    },
+    {
       'id': 'sharePageLan',
       'labelKey': 'hdr.sharePageLan',
       'icon': Icons.share_rounded,
@@ -27300,6 +27312,8 @@ class _MindMapScreenState extends State<MindMapScreen>
         'openDeepL',
         'openGoogleCalendar',
         'openGoogleDrive',
+        'openGoogleMaps',
+        'openGoogleEarth',
       ],
     },
     {
@@ -29272,6 +29286,12 @@ class _MindMapScreenState extends State<MindMapScreen>
       case 'openGoogleDrive':
         _openGoogleDrive(context, provider);
         break;
+      case 'openGoogleMaps':
+        _openGoogleMaps(context, provider);
+        break;
+      case 'openGoogleEarth':
+        _openGoogleEarth(context, provider);
+        break;
       case 'openPaiza':
         _openPaiza(context, provider);
         break;
@@ -30770,6 +30790,26 @@ class _MindMapScreenState extends State<MindMapScreen>
     );
   }
 
+  /// Google マップを在アプリブラウザで開く。
+  void _openGoogleMaps(BuildContext ctx, MindMapProvider provider) async {
+    _openGoogleSearchDialog(
+      ctx,
+      provider,
+      initialUrl: 'https://www.google.com/maps',
+      customTitle: 'Google マップ',
+    );
+  }
+
+  /// Google Earth Web を在アプリブラウザで開く。
+  void _openGoogleEarth(BuildContext ctx, MindMapProvider provider) async {
+    _openGoogleSearchDialog(
+      ctx,
+      provider,
+      initialUrl: 'https://earth.google.com/web/',
+      customTitle: 'Google Earth',
+    );
+  }
+
   /// paiza を在アプリブラウザで開く (= ユーザー要望: カスタムボタン)。
   void _openPaiza(BuildContext ctx, MindMapProvider provider) async {
     _openGoogleSearchDialog(
@@ -31389,13 +31429,14 @@ class _MindMapScreenState extends State<MindMapScreen>
             required String label,
             required bool selected,
             required VoidCallback onTap,
+            IconData? icon,
           }) {
             return InkWell(
               onTap: onTap,
               borderRadius: BorderRadius.circular(10),
               child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                padding: EdgeInsets.symmetric(
+                    horizontal: icon == null ? 14 : 6, vertical: 8),
                 decoration: BoxDecoration(
                   color: selected
                       ? const Color(0xFFEF5350)
@@ -31405,14 +31446,17 @@ class _MindMapScreenState extends State<MindMapScreen>
                     color: selected ? const Color(0xFFEF5350) : Colors.white24,
                   ),
                 ),
-                child: Text(
-                  label,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w600,
-                    fontSize: 13,
-                  ),
-                ),
+                child: icon != null
+                    ? Icon(icon, color: Colors.white, size: 18)
+                    : Text(
+                        label,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 13,
+                        ),
+                      ),
               ),
             );
           }
@@ -31474,20 +31518,28 @@ class _MindMapScreenState extends State<MindMapScreen>
                             color: Colors.white70, fontSize: 12, height: 1.4),
                       ),
                       const SizedBox(height: 16),
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
+                      Row(
                         children: [
-                          for (final m in presets) presetChip(m),
-                          chip(
-                            label: provider.t('focusLock.reset'),
-                            selected: selectedMin == 0,
-                            onTap: () => setS(() {
-                              selectedMin = 0;
-                              minCtrl.text = '0';
-                              minCtrl.selection = const TextSelection.collapsed(
-                                  offset: 1);
-                            }),
+                          for (final m in presets) ...[
+                            Expanded(child: presetChip(m)),
+                            const SizedBox(width: 5),
+                          ],
+                          Tooltip(
+                            message: provider.t('focusLock.reset'),
+                            child: SizedBox(
+                              width: 38,
+                              child: chip(
+                                label: '',
+                                icon: Icons.restart_alt_rounded,
+                                selected: selectedMin == 0,
+                                onTap: () => setS(() {
+                                  selectedMin = 0;
+                                  minCtrl.text = '0';
+                                  minCtrl.selection =
+                                      const TextSelection.collapsed(offset: 1);
+                                }),
+                              ),
+                            ),
                           ),
                         ],
                       ),
@@ -32387,13 +32439,13 @@ class _MindMapScreenState extends State<MindMapScreen>
 
           // 集中ロックと同じ「加算チップ」。押す度に selectedMin へ加算する。
           Widget addChip(String label, VoidCallback onTap,
-              {bool selected = false}) {
+              {bool selected = false, IconData? icon}) {
             return InkWell(
               onTap: onTap,
               borderRadius: BorderRadius.circular(10),
               child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                padding: EdgeInsets.symmetric(
+                    horizontal: icon == null ? 14 : 6, vertical: 8),
                 decoration: BoxDecoration(
                   color: selected
                       ? const Color(0xFFEF5350)
@@ -32403,14 +32455,17 @@ class _MindMapScreenState extends State<MindMapScreen>
                     color: selected ? const Color(0xFFEF5350) : Colors.white24,
                   ),
                 ),
-                child: Text(
-                  label,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w600,
-                    fontSize: 13,
-                  ),
-                ),
+                child: icon != null
+                    ? Icon(icon, color: Colors.white, size: 18)
+                    : Text(
+                        label,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 13,
+                        ),
+                      ),
               ),
             );
           }
@@ -32433,47 +32488,36 @@ class _MindMapScreenState extends State<MindMapScreen>
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     // ── プリセット (= 押す度に加算。集中ロックと同じ操作感) ──
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
+                    Row(
                       children: [
-                        for (final m in presets)
-                          addChip('+${mins(m)}', () => setS(() {
-                                selectedMin =
-                                    (selectedMin + m).clamp(0, 600).toInt();
-                                minCtrl.text = '$selectedMin';
-                                minCtrl.selection = TextSelection.collapsed(
-                                    offset: minCtrl.text.length);
-                              })),
-                        addChip(provider.t('focusLock.reset'), () => setS(() {
-                              selectedMin = 0;
-                              minCtrl.text = '0';
-                              minCtrl.selection =
-                                  const TextSelection.collapsed(offset: 1);
-                            }), selected: selectedMin == 0),
+                        for (final m in presets) ...[
+                          Expanded(
+                            child: addChip('+${mins(m)}', () => setS(() {
+                                  selectedMin =
+                                      (selectedMin + m).clamp(0, 600).toInt();
+                                  minCtrl.text = '$selectedMin';
+                                  minCtrl.selection = TextSelection.collapsed(
+                                      offset: minCtrl.text.length);
+                                })),
+                          ),
+                          const SizedBox(width: 5),
+                        ],
+                        Tooltip(
+                          message: provider.t('focusLock.reset'),
+                          child: SizedBox(
+                            width: 38,
+                            child: addChip('', () => setS(() {
+                                  selectedMin = 0;
+                                  minCtrl.text = '0';
+                                  minCtrl.selection =
+                                      const TextSelection.collapsed(offset: 1);
+                                }),
+                                icon: Icons.restart_alt_rounded,
+                                selected: selectedMin == 0),
+                          ),
+                        ),
                       ],
                     ),
-                    const SizedBox(height: 8),
-                    Row(children: [
-                      const Icon(Icons.lock_person_rounded,
-                          color: Colors.white60, size: 18),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          provider.t('appLock.disableManualUnlock'),
-                          style: const TextStyle(
-                              color: Colors.white, fontSize: 13),
-                        ),
-                      ),
-                      Switch(
-                        value: provider.appLockDisableButtonUnlock,
-                        activeColor: const Color(0xFFEF5350),
-                        onChanged: (v) async {
-                          await provider.setAppLockDisableButtonUnlock(v);
-                          setS(() {});
-                        },
-                      ),
-                    ]),
                     const SizedBox(height: 12),
                     // ── 合計分数 (直接入力も可) + 開始ボタン ──
                     Row(children: [
@@ -32522,6 +32566,27 @@ class _MindMapScreenState extends State<MindMapScreen>
                                       Duration(minutes: selectedMin))),
                           child: Text(provider.t('focusLock.start')),
                         ),
+                      ),
+                    ]),
+                    const SizedBox(height: 8),
+                    Row(children: [
+                      const Icon(Icons.lock_person_rounded,
+                          color: Colors.white60, size: 18),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          provider.t('appLock.disableManualUnlock'),
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 13),
+                        ),
+                      ),
+                      Switch(
+                        value: provider.appLockDisableButtonUnlock,
+                        activeColor: const Color(0xFFEF5350),
+                        onChanged: (v) async {
+                          await provider.setAppLockDisableButtonUnlock(v);
+                          setS(() {});
+                        },
                       ),
                     ]),
                     const SizedBox(height: 8),
@@ -40973,8 +41038,12 @@ class _MindMapScreenState extends State<MindMapScreen>
     return DragTarget<_DesktopHeaderDragData>(
       onWillAcceptWithDetails: (details) =>
           _canAcceptDesktopHeaderDrag(details.data, placement),
-      onAcceptWithDetails: (details) =>
-          _acceptDesktopHeaderDrag(provider, details.data, placement),
+      onAcceptWithDetails: (details) {
+        // 移動元が先にツリーから消えて onDragEnd が欠ける経路でも、
+        // 空の配置候補が残らないよう受け入れ側で必ず解除する。
+        _endDesktopHeaderDrag();
+        _acceptDesktopHeaderDrag(provider, details.data, placement);
+      },
       builder: (context, candidates, rejected) {
         final hovered = candidates.isNotEmpty;
         final showPlaceholder = placeholder && _activeDesktopHeaderDrag != null;
@@ -59774,8 +59843,14 @@ class _MindMapScreenState extends State<MindMapScreen>
               ),
             ]),
             content: SizedBox(
-              width: 420,
-              height: 520,
+              width: _isDesktop
+                  ? math.min(900.0,
+                      math.max(420.0, MediaQuery.sizeOf(sctx).width - 120.0))
+                  : 420,
+              height: _isDesktop
+                  ? math.min(900.0,
+                      math.max(520.0, MediaQuery.sizeOf(sctx).height - 150.0))
+                  : 520,
               child: SingleChildScrollView(
                 child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -80934,7 +81009,10 @@ class _PaintPageViewState extends State<_PaintPageView> {
     // 確定後の TextPainter は明示改行だけを改行として扱う。編集中だけ右端で
     // ソフトラップしないよう、外枠はキャンバス内に収めつつ、内側の入力面は
     // 最長論理行ぶん確保して横スクロールさせる。IME/キャレット用の余白も含む。
-    final desiredEditorW = measured.width * fit + 12.0;
+    // キャレット・IME composing・スクロール余白を含めて幅を確保する。
+    // 実測値ぎりぎりだと空白入力時だけ不足してソフトラップしてしまう。
+    final desiredEditorW = measured.width * fit +
+        math.max(48.0, _textSize * fit * 2.0);
     final editorW = desiredEditorW.clamp(minEditorW, maxW).toDouble();
     final editorContentW = math.max(editorW, desiredEditorW).toDouble();
     final isDesktop =
@@ -80973,7 +81051,12 @@ class _PaintPageViewState extends State<_PaintPageView> {
               controller: _textEditCtrl,
               focusNode: _textEditFocus,
               autofocus: true,
-              maxLines: null,
+              // 入力欄の表示行数は実際に入力された改行だけで決める。
+              // 長い論理行は外側の横スクロールで扱い、見かけ上改行しない。
+              minLines:
+                  math.max(1, '\n'.allMatches(_textEditCtrl.text).length + 1),
+              maxLines:
+                  math.max(1, '\n'.allMatches(_textEditCtrl.text).length + 1),
               keyboardType: TextInputType.multiline,
               textInputAction: TextInputAction.newline,
               cursorColor: const Color(0xFFEC407A),
@@ -106916,11 +106999,14 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
     if (!mounted) return;
     final isMobile = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
     if (isMobile) {
-      await GoogleSearchDialog.show(
+      GoogleSearchDialog.showFloating(
         context,
         initialQuery: text,
         initialMemo: text,
         customTitle: 'ロック中メモを検索',
+        singletonKey: 'focus_lock_google',
+        initiallyExpanded: true,
+        hideChromeWhenExpanded: true,
         onAddNode: (_, __, ___) {},
       );
       return;
@@ -106952,15 +107038,18 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
     if (!mounted) return;
     final isMobile = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
     if (isMobile) {
-      // 浮遊 WebView の再挿入は ChatGPT のページを再読込して入力を失わせるため、
-      // モバイルは独立した全画面 Route で開く。initialAiPrompt も併用し、URL
-      // パラメータを受け取らない Gemini にもロード完了後の入力注入を行う。
-      await GoogleSearchDialog.show(
+      // 集中ロック自体がルート Overlay 上にあるため、通常の全画面 Route は
+      // その背面へ回る。ロックより後にルート Overlay へ全画面で挿入する。
+      // 同じ OverlayEntry を維持するので ChatGPT の不用意な再読込も避けられる。
+      GoogleSearchDialog.showFloating(
         context,
         initialUrl: widget.provider.browserAiUrlForQuery(query),
         initialMemo: text,
         initialAiPrompt: query,
         customTitle: '${widget.provider.browserAiTargetLabel} / ロック中メモ',
+        singletonKey: 'focus_lock_ai',
+        initiallyExpanded: true,
+        hideChromeWhenExpanded: true,
         onAddNode: (_, __, ___) {},
       );
       return;

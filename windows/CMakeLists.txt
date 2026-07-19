@@ -1,15 +1,11 @@
 # Project-level configuration.
 cmake_minimum_required(VERSION 3.14)
-project(mindmap_app LANGUAGES CXX)
+project(Kamispec LANGUAGES CXX)
 
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
-# NOTE: BINARY_NAME を変えるには windows/runner/CMakeLists.txt 側の
-#   ハードコード参照 ($<TARGET_FILE_DIR:mindmap_app> 等) も全て
-#   ${BINARY_NAME} に書き換えないと CMake が「No target "mindmap_app"」
-#   エラーになる。 exe ファイル名は mindmap_app のままでも、 表示上の
-#   アプリ名・アイコンは Runner.rc 経由で Kamispe になるので実害なし。
-set(BINARY_NAME "mindmap_app")
+# 実行ファイル名と CMake ターゲット名を製品名に統一する。
+set(BINARY_NAME "Kamispec")
 
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent
 # versions of CMake.
