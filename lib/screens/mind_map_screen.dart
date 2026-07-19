@@ -4658,6 +4658,14 @@ class _MindMapScreenState extends State<MindMapScreen>
         if (entry.mounted) entry.remove();
         Overlay.of(context, rootOverlay: true).insert(entry);
       } catch (_) {}
+      // ロックより前に開いていた動画・AI・Google検索も、この再挿入で
+      // 背面へ戻さない。次フレームで同じ OverlayEntry を積み直すため、
+      // WebView の状態や入力中のプロンプトをリセットせず最前面を保てる。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || _focusLockOverlay == null) return;
+        GoogleSearchDialog.bringFloatingSingletonsWithPrefixToFront(
+            context, 'focus_lock_');
+      });
     }
   }
 
@@ -31394,6 +31402,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     int selectedMin = 0;
     // 数値入力用 (ユーザー要望: カスタムを押さなくても直接分数を指定できる)。
     final minCtrl = TextEditingController(text: '$selectedMin');
+    final taskCtrl = TextEditingController();
 
     showDialog<void>(
       context: ctx,
@@ -31498,8 +31507,35 @@ class _MindMapScreenState extends State<MindMapScreen>
                         style: const TextStyle(
                             color: Colors.white70, fontSize: 12, height: 1.4),
                       ),
-                      const SizedBox(height: 16),
-                      Row(
+                      const SizedBox(height: 12),
+                      Row(children: [
+                        Expanded(
+                          child: chip(
+                            label: provider.t('focusLock.modeTimer'),
+                            icon: Icons.timer_rounded,
+                            selected: provider.focusLockMode == 'timer',
+                            onTap: () {
+                              provider.setFocusLockMode('timer');
+                              setS(() {});
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: chip(
+                            label: provider.t('focusLock.modeTasks'),
+                            icon: Icons.task_alt_rounded,
+                            selected: provider.focusLockMode == 'tasks',
+                            onTap: () {
+                              provider.setFocusLockMode('tasks');
+                              setS(() {});
+                            },
+                          ),
+                        ),
+                      ]),
+                      const SizedBox(height: 14),
+                      if (provider.focusLockMode == 'timer') ...[
+                        Row(
                         children: [
                           for (final m in presets) ...[
                             Expanded(child: presetChip(m)),
@@ -31588,6 +31624,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   color: Colors.white70, fontSize: 13)),
                         ],
                       ),
+                      ] else ...[
+                        _buildFocusLockTaskEditor(
+                            provider, taskCtrl, setS),
+                      ],
                       const SizedBox(height: 14),
                       const Divider(color: Colors.white12, height: 1),
                       const SizedBox(height: 10),
@@ -31725,6 +31765,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
+                          if (provider.focusLockMode == 'timer') ...[
                           // 分数で今すぐロック
                           ElevatedButton.icon(
                             style: ElevatedButton.styleFrom(
@@ -31769,6 +31810,32 @@ class _MindMapScreenState extends State<MindMapScreen>
                               _pickFocusLockUntil(context, provider);
                             },
                           ),
+                          ] else ...[
+                            ElevatedButton.icon(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF43B97F),
+                                foregroundColor: Colors.white,
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 12),
+                                shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(10)),
+                              ),
+                              icon:
+                                  const Icon(Icons.task_alt_rounded, size: 18),
+                              label: FittedBox(
+                                fit: BoxFit.scaleDown,
+                                child:
+                                    Text(provider.t('focusLock.startTasks')),
+                              ),
+                              onPressed: provider.focusLockTasks.isEmpty
+                                  ? null
+                                  : () {
+                                      Navigator.pop(dctx);
+                                      _startFocusLock(Duration.zero,
+                                          taskMode: true);
+                                    },
+                            ),
+                          ],
                           const SizedBox(height: 4),
                           Align(
                             alignment: Alignment.centerRight,
@@ -31790,6 +31857,100 @@ class _MindMapScreenState extends State<MindMapScreen>
           );
         },
       ),
+    ).whenComplete(() {
+      minCtrl.dispose();
+      taskCtrl.dispose();
+    });
+  }
+
+  Widget _buildFocusLockTaskEditor(
+    MindMapProvider provider,
+    TextEditingController taskCtrl,
+    void Function(void Function()) setDialogState,
+  ) {
+    Future<void> addTask() async {
+      final title = taskCtrl.text.trim();
+      if (title.isEmpty) return;
+      await provider.addFocusLockTask(title);
+      taskCtrl.clear();
+      setDialogState(() {});
+    }
+
+    final tasks = provider.focusLockTasks;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(provider.t('focusLock.taskModeHint'),
+            style: const TextStyle(
+                color: Colors.white60, fontSize: 12, height: 1.4)),
+        const SizedBox(height: 10),
+        Row(children: [
+          Expanded(
+            child: TextField(
+              controller: taskCtrl,
+              textInputAction: TextInputAction.done,
+              onSubmitted: (_) => addTask(),
+              style: const TextStyle(color: Colors.white, fontSize: 13),
+              decoration: InputDecoration(
+                isDense: true,
+                hintText: provider.t('focusLock.taskInputHint'),
+                hintStyle: const TextStyle(color: Colors.white38),
+                filled: true,
+                fillColor: Colors.white.withValues(alpha: 0.07),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(9),
+                  borderSide: BorderSide.none,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          IconButton.filled(
+            tooltip: provider.t('focusLock.addTask'),
+            style: IconButton.styleFrom(
+                backgroundColor: const Color(0xFF43B97F)),
+            icon: const Icon(Icons.add_rounded, size: 20),
+            onPressed: addTask,
+          ),
+        ]),
+        const SizedBox(height: 8),
+        if (tasks.isEmpty)
+          Text(provider.t('focusLock.noTasks'),
+              style: const TextStyle(color: Colors.white38, fontSize: 12))
+        else
+          for (final task in tasks)
+            Row(children: [
+              Checkbox(
+                value: task.completed,
+                activeColor: const Color(0xFF43B97F),
+                onChanged: (value) async {
+                  await provider.setFocusLockTaskCompleted(
+                      task.id, value ?? false);
+                  setDialogState(() {});
+                },
+              ),
+              Expanded(
+                child: Text(task.title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        color: task.completed ? Colors.white38 : Colors.white,
+                        fontSize: 13,
+                        decoration: task.completed
+                            ? TextDecoration.lineThrough
+                            : null)),
+              ),
+              IconButton(
+                tooltip: '削除',
+                icon: const Icon(Icons.delete_outline_rounded,
+                    color: Colors.white38, size: 18),
+                onPressed: () async {
+                  await provider.removeFocusLockTask(task.id);
+                  setDialogState(() {});
+                },
+              ),
+            ]),
+      ],
     );
   }
 
@@ -32935,9 +33096,11 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
   }
 
-  void _startFocusLock(Duration d, {bool manual = true}) {
+  void _startFocusLock(Duration d,
+      {bool manual = true, bool taskMode = false}) {
     if (_focusLockOverlay != null) return;
     final provider = context.read<MindMapProvider>();
+    if (taskMode && provider.focusLockTasks.isEmpty) return;
     // ── 集中ロックは初回のみ無料、 2 回目以降は Pro 以上 (= ユーザー要望) ──
     if (manual && !provider.canUseFocusLock) {
       _showPaywallDialog(provider,
@@ -32947,11 +33110,16 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (manual && !provider.isProUnlocked) {
       provider.recordFocusLockUse(); // 無料枠 (初回) を 1 消費
     }
+    if (taskMode) {
+      // 新しいセッションでは登録内容だけを再利用し、前回の完了状態は戻す。
+      provider.resetFocusLockTaskCompletion();
+    }
     // OS レベルの画面固定を試みる (= 他アプリへ飛べないようにする)。
     _osLockStart();
     _focusLockOverlay = OverlayEntry(
       builder: (_) => _FocusLockOverlay(
         duration: d,
+        taskMode: taskMode,
         provider: provider,
         onOpenContent: _openFocusLockContent,
         onClose: () {
@@ -40977,9 +41145,11 @@ class _MindMapScreenState extends State<MindMapScreen>
       return data.sourcePlacement != targetPlacement;
     }
     if (data is _DesktopHeaderButtonDragData) {
-      // 同じバーの余白へ落とす操作も受理する。provider 側で末尾移動または
-      // no-op に正規化されるため、別バー移動と同じ atomic API を使える。
-      return data.commandId.isNotEmpty;
+      // 同一バー内はボタン間の専用挿入スロットだけで受理する。外側の広い
+      // DragTarget が同一バーのドロップを末尾移動として奪うのを防ぎ、狙った
+      // 隙間へ正確に挿入する。別バーへの移動は上の実画面端ガードを通す。
+      return data.commandId.isNotEmpty &&
+          data.sourcePlacement != targetPlacement;
     }
     return false;
   }
@@ -41189,6 +41359,31 @@ class _MindMapScreenState extends State<MindMapScreen>
       ids.add(id);
     }
 
+    final activeButtonDrag = _activeDesktopHeaderDrag
+            is _DesktopHeaderButtonDragData
+        ? _activeDesktopHeaderDrag as _DesktopHeaderButtonDragData
+        : null;
+    final showInsertionGaps =
+        activeButtonDrag?.sourcePlacement == placement;
+
+    Widget insertionGap(String? beforeCommandId) {
+      return _DesktopHeaderInsertionGap(
+        barAxis: Axis.vertical,
+        placement: placement,
+        beforeCommandId: beforeCommandId,
+        active: showInsertionGaps &&
+            activeButtonDrag?.commandId != beforeCommandId,
+        onDragEnded: _endDesktopHeaderDrag,
+        onDropped: (data) {
+          unawaited(provider.moveDesktopHeaderButtonToPlacement(
+            data.commandId,
+            placement,
+            beforeCommandId: beforeCommandId,
+          ));
+        },
+      );
+    }
+
     Widget sideButton(int index) {
       final id = ids[index];
       final button = _buildCustomHeaderButton(id, provider);
@@ -41286,10 +41481,17 @@ class _MindMapScreenState extends State<MindMapScreen>
                       key: PageStorageKey<String>(
                           'desktop_header_buttons_$placement'),
                       physics: const ClampingScrollPhysics(),
-                      child:
-                          Column(mainAxisSize: MainAxisSize.min, children: [
-                        for (int i = 0; i < ids.length; i++) sideButton(i),
-                      ]),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (ids.isNotEmpty) insertionGap(ids.first),
+                          for (int i = 0; i < ids.length; i++) ...[
+                            sideButton(i),
+                            insertionGap(
+                                i + 1 < ids.length ? ids[i + 1] : null),
+                          ],
+                        ],
+                      ),
                     ),
                   ),
                 ),
@@ -41493,6 +41695,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                         onDesktopButtonDragStarted:
                             _beginDesktopHeaderDrag,
                         onDesktopButtonDragEnded: _endDesktopHeaderDrag,
+                        activeDesktopButtonDrag: _activeDesktopHeaderDrag
+                                is _DesktopHeaderButtonDragData
+                            ? _activeDesktopHeaderDrag
+                                as _DesktopHeaderButtonDragData
+                            : null,
                         fullWidth: true,
                         maxWidth: math.max(0.0, dockWidth - 50).toDouble(),
                         trailing: _buildHeaderCustomizeIcon(provider),
@@ -41707,6 +41914,10 @@ class _MindMapScreenState extends State<MindMapScreen>
               desktopPlacement: 'top',
               onDesktopButtonDragStarted: _beginDesktopHeaderDrag,
               onDesktopButtonDragEnded: _endDesktopHeaderDrag,
+              activeDesktopButtonDrag: _activeDesktopHeaderDrag
+                      is _DesktopHeaderButtonDragData
+                  ? _activeDesktopHeaderDrag as _DesktopHeaderButtonDragData
+                  : null,
               maxWidth: barMaxWidth,
               onReorder: _reorderHeaderMode
                   ? (oldIndex, newIndex) =>
@@ -58652,15 +58863,39 @@ class _MindMapScreenState extends State<MindMapScreen>
                 onPressed: () => Navigator.pop(ctx),
                 child: Text(provider.t('btn.cancel'),
                     style: const TextStyle(color: Colors.white54))),
-            ElevatedButton(
+            ElevatedButton.icon(
               // autofocus: true で Tab を使わずとも Enter が効く視覚キュー。
               // Focus 親の onKeyEvent で実際の処理は捕まえているが、ボタン
               // 自体のフォーカスリングが見えることでユーザー体感が良い。
               autofocus: true,
               onPressed: () => doDelete(ctx),
               style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.red.shade400),
-              child: Text(provider.t('btn.delete')),
+                backgroundColor: const Color(0xFFC62828),
+                foregroundColor: Colors.white,
+                minimumSize: const Size(92, 44),
+                padding: const EdgeInsets.symmetric(horizontal: 18),
+                elevation: 2,
+                textStyle: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w800,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(22),
+                  side: BorderSide(
+                    color: Colors.white.withValues(alpha: 0.28),
+                  ),
+                ),
+              ),
+              icon: const Icon(Icons.delete_forever_rounded,
+                  color: Colors.white, size: 18),
+              label: Text(
+                provider.t('btn.delete'),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
             ),
           ],
         ),
@@ -66484,6 +66719,84 @@ class _DesktopHeaderBarDragData extends _DesktopHeaderDragData {
   const _DesktopHeaderBarDragData(this.sourcePlacement);
 }
 
+/// 同一のPCカスタムバー内で、ボタンの「間」を明示する挿入先。
+///
+/// バー全体の DragTarget とは役割を分け、移動元と同じ辺のボタンだけを受理する。
+/// これにより別辺へ移す操作は引き続き実画面端の判定を必ず通る。
+class _DesktopHeaderInsertionGap extends StatelessWidget {
+  final Axis barAxis;
+  final String placement;
+  final String? beforeCommandId;
+  final bool active;
+  final ValueChanged<_DesktopHeaderButtonDragData> onDropped;
+  final VoidCallback onDragEnded;
+
+  const _DesktopHeaderInsertionGap({
+    required this.barAxis,
+    required this.placement,
+    required this.beforeCommandId,
+    required this.active,
+    required this.onDropped,
+    required this.onDragEnded,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final horizontal = barAxis == Axis.horizontal;
+    return SizedBox(
+      width: horizontal
+          ? _kDesktopHeaderInsertionGapExtent
+          : _kHeaderCustomButtonExtent,
+      height: horizontal
+          ? _kHeaderCustomButtonExtent
+          : _kDesktopHeaderInsertionGapExtent,
+      child: DragTarget<_DesktopHeaderDragData>(
+        onWillAcceptWithDetails: (details) {
+          final data = details.data;
+          return active &&
+              data is _DesktopHeaderButtonDragData &&
+              data.sourcePlacement == placement &&
+              data.commandId != beforeCommandId;
+        },
+        onAcceptWithDetails: (details) {
+          final data = details.data;
+          if (data is! _DesktopHeaderButtonDragData) return;
+          onDragEnded();
+          onDropped(data);
+        },
+        builder: (context, candidates, rejected) {
+          final hovered = candidates.isNotEmpty;
+          return AnimatedOpacity(
+            opacity: active ? 1 : 0,
+            duration: const Duration(milliseconds: 90),
+            child: Center(
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 90),
+                width: horizontal ? (hovered ? 6 : 3) : (hovered ? 34 : 24),
+                height: horizontal ? (hovered ? 34 : 24) : (hovered ? 6 : 3),
+                decoration: BoxDecoration(
+                  color: hovered
+                      ? const Color(0xFFFFB347)
+                      : const Color(0xFF8D86FF),
+                  borderRadius: BorderRadius.circular(4),
+                  boxShadow: hovered
+                      ? const [
+                          BoxShadow(
+                            color: Color(0x99FFB347),
+                            blurRadius: 8,
+                          ),
+                        ]
+                      : null,
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
 /// 通常表示中のPCカスタムボタンを、クリック可能なまま同一バー内で並べ替えたり
 /// 別バーへ移したりできるラッパー。子をAbsorbPointerで無効化しない。
 class _DesktopDraggableHeaderIcon extends StatelessWidget {
@@ -66526,6 +66839,8 @@ class _DesktopDraggableHeaderIcon extends StatelessWidget {
     return DragTarget<_DesktopHeaderDragData>(
       onWillAcceptWithDetails: (details) =>
           details.data is _DesktopHeaderButtonDragData &&
+          (details.data as _DesktopHeaderButtonDragData).sourcePlacement ==
+              data.sourcePlacement &&
           (details.data as _DesktopHeaderButtonDragData).commandId !=
               data.commandId,
       onAcceptWithDetails: (details) {
@@ -66552,6 +66867,7 @@ class _DesktopDraggableHeaderIcon extends StatelessWidget {
 /// カスタムヘッダーの共通寸法。
 const double _kHeaderCustomBarHeight = 48.0;
 const double _kHeaderCustomButtonExtent = 48.0;
+const double _kDesktopHeaderInsertionGapExtent = 8.0;
 const double _kDesktopHeaderSideReserve = 336.0;
 
 /// AppBar 上でカスタムヘッダーボタンを横並び表示するウィジェット
@@ -66582,6 +66898,7 @@ class _HeaderCustomButtonsBar extends StatefulWidget {
   final void Function(_DesktopHeaderButtonDragData data)?
       onDesktopButtonDragStarted;
   final VoidCallback? onDesktopButtonDragEnded;
+  final _DesktopHeaderButtonDragData? activeDesktopButtonDrag;
 
   /// モバイルの展開段では右側アクション分の予約幅を取らず、横幅いっぱい使う。
   final bool fullWidth;
@@ -66597,6 +66914,7 @@ class _HeaderCustomButtonsBar extends StatefulWidget {
     this.desktopPlacement,
     this.onDesktopButtonDragStarted,
     this.onDesktopButtonDragEnded,
+    this.activeDesktopButtonDrag,
     this.fullWidth = false,
     this.trailing,
     this.maxWidth,
@@ -66735,8 +67053,12 @@ class _HeaderCustomButtonsBarState extends State<_HeaderCustomButtonsBar> {
     // 48 → 58 に上げる。これをしないとアイコン側が膨らんだぶん右側メニュー
     // ボタンが画面外に押し出されてしまう。
     final double perBtnW = reorderMode ? 58.0 : _kHeaderCustomButtonExtent;
+    final desktopGapCount =
+        desktopPlacement == null || buttons.isEmpty ? 0 : buttons.length + 1;
     final double rawButtonsW =
-        buttons.length * perBtnW + (trailing == null ? 0.0 : perBtnW);
+        buttons.length * perBtnW +
+            desktopGapCount * _kDesktopHeaderInsertionGapExtent +
+            (trailing == null ? 0.0 : perBtnW);
     final double endPadW = rawButtonsW > maxAvailable ? 56.0 : 0.0;
     final desiredW = rawButtonsW + endPadW;
     final double w =
@@ -66748,11 +67070,35 @@ class _HeaderCustomButtonsBarState extends State<_HeaderCustomButtonsBar> {
           child: Center(child: child),
         );
 
+    Widget insertionGap(String? beforeCommandId) {
+      return _DesktopHeaderInsertionGap(
+        barAxis: Axis.horizontal,
+        placement: desktopPlacement!,
+        beforeCommandId: beforeCommandId,
+        active: widget.activeDesktopButtonDrag?.sourcePlacement ==
+                desktopPlacement &&
+            widget.activeDesktopButtonDrag?.commandId != beforeCommandId,
+        onDragEnded: () {
+          _stopAutoScroll();
+          widget.onDesktopButtonDragEnded?.call();
+        },
+        onDropped: (data) {
+          unawaited(provider.moveDesktopHeaderButtonToPlacement(
+            data.commandId,
+            desktopPlacement!,
+            beforeCommandId: beforeCommandId,
+          ));
+        },
+      );
+    }
+
     final row = Row(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        for (int i = 0; i < buttons.length; i++)
+        if (desktopPlacement != null && buttons.isNotEmpty)
+          insertionGap(buttons.first),
+        for (int i = 0; i < buttons.length; i++) ...[
           Builder(builder: (_) {
             final id = buttons[i];
             final btn = widget.buildButton(id, provider);
@@ -66819,6 +67165,9 @@ class _HeaderCustomButtonsBarState extends State<_HeaderCustomButtonsBar> {
               },
             );
           }),
+          if (desktopPlacement != null)
+            insertionGap(i + 1 < buttons.length ? buttons[i + 1] : null),
+        ],
         if (trailing != null) buttonSlot(trailing!),
         if (endPadW > 0) SizedBox(width: endPadW),
       ],
@@ -66934,6 +67283,7 @@ class _ReorderableHeaderIconState extends State<_ReorderableHeaderIcon>
     bool canAccept(Object data) {
       if (desktopData != null) {
         return data is _DesktopHeaderButtonDragData &&
+            data.sourcePlacement == desktopData.sourcePlacement &&
             data.commandId != widget.id;
       }
       return data is int && data != widget.index;
@@ -106849,11 +107199,13 @@ class _VoiceInputDialogState extends State<_VoiceInputDialog> {
 // ※ 通常アプリは OS 全体をロックできないため、 これは「アプリ内ロック」。
 class _FocusLockOverlay extends StatefulWidget {
   final Duration duration;
+  final bool taskMode;
   final MindMapProvider provider;
   final Future<void> Function(MindMapNode node) onOpenContent;
   final VoidCallback onClose;
   const _FocusLockOverlay({
     required this.duration,
+    this.taskMode = false,
     required this.provider,
     required this.onOpenContent,
     required this.onClose,
@@ -106908,18 +107260,19 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
     WakelockPlus.enable();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
 
-    // 終了予定時刻に OS 通知を予約 (アプリが裏に回っても気付ける)。
-    _scheduleCompletionNotification();
     _loadLockMemo();
-
-    _tick = Timer.periodic(const Duration(seconds: 1), (_) {
-      final left = _endAt.difference(DateTime.now()).inSeconds;
-      if (left <= 0) {
-        _onComplete();
-      } else {
-        if (mounted) setState(() => _remainSec = left);
-      }
-    });
+    if (!widget.taskMode) {
+      // 終了予定時刻に OS 通知を予約 (アプリが裏に回っても気付ける)。
+      _scheduleCompletionNotification();
+      _tick = Timer.periodic(const Duration(seconds: 1), (_) {
+        final left = _endAt.difference(DateTime.now()).inSeconds;
+        if (left <= 0) {
+          _onComplete();
+        } else {
+          if (mounted) setState(() => _remainSec = left);
+        }
+      });
+    }
   }
 
   @override
@@ -107031,8 +107384,32 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
     widget.onClose();
   }
 
+  Future<void> _setFocusTaskCompleted(
+      FocusLockTask task, bool completed) async {
+    if (_finished || !widget.taskMode) return;
+    await widget.provider.setFocusLockTaskCompleted(task.id, completed);
+    if (!mounted || _finished) return;
+    setState(() {});
+    // 空リストは完了扱いにしない。登録済みの全件完了時だけ解除する。
+    if (widget.provider.areAllFocusLockTasksCompleted) {
+      _onAllFocusTasksComplete();
+    }
+  }
+
+  void _onAllFocusTasksComplete() {
+    if (_finished || !widget.provider.areAllFocusLockTasksCompleted) return;
+    _finished = true;
+    HapticFeedback.heavyImpact();
+    _AudioAlarm.playAlarm(_AudioAlarm.prefKeyPomodoro);
+    widget.onClose();
+  }
+
   /// 緊急解除 (時間前に閉じる)。予約通知もキャンセル。
   void _emergencyExit() {
+    if (widget.taskMode &&
+        !widget.provider.areAllFocusLockTasksCompleted) {
+      return;
+    }
     if (_finished) return;
     _finished = true;
     _tick?.cancel();
@@ -108039,18 +108416,10 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
                 ? att
                 : '';
     if (target.isNotEmpty) {
-      final lowerTarget = target.toLowerCase();
-      final isYoutubeTarget = NodeWidget.extractVideoId(target) != null ||
-          lowerTarget.contains('youtube.com') ||
-          lowerTarget.contains('youtu.be');
-      final isVideoTarget = isYoutubeTarget ||
-          NodeWidget.isMp4Url(target) ||
-          _isLockFloatingVideoPath(target);
-      if (isVideoTarget) {
-        await widget.onOpenContent(node);
-      } else {
-        _openLockContentFloating(node, target);
-      }
+      // 通常の Navigator route は root Overlay 上のロック画面より背面に
+      // 積まれる。Web だけでなく YouTube / mp4 もロック後に挿入する
+      // 全画面 Overlay で開き、閉じた時は下のロック画面へそのまま戻す。
+      _openLockContentFloating(node, target);
       return;
     }
     if (kIsWeb || !Platform.isAndroid) {
@@ -108086,6 +108455,7 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
       } catch (_) {}
     }
     if (loadUrl.isEmpty) return;
+    final isMobile = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
     final win = _lockFloatingWindowSize();
     final title = node.title.trim().isEmpty ? 'ロック中コンテンツ' : node.title.trim();
     final singletonKey = 'focus_lock_content_${node.id}';
@@ -108097,6 +108467,7 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
       singletonKey: singletonKey,
       initialWidth: win.width,
       initialHeight: win.height,
+      initiallyExpanded: isMobile,
       hideChromeWhenExpanded: true,
       onAddNode: (_, __, ___) {},
     );
@@ -108497,6 +108868,74 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
     );
   }
 
+  Widget _buildFocusTaskPanel() {
+    final p = widget.provider;
+    final tasks = p.focusLockTasks;
+    final completed = tasks.where((task) => task.completed).length;
+    final title = p
+        .t('focusLock.taskProgress')
+        .replaceAll('{done}', '$completed')
+        .replaceAll('{total}', '${tasks.length}');
+
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 380),
+      margin: const EdgeInsets.symmetric(horizontal: 24),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+            color: const Color(0xFF43B97F).withValues(alpha: 0.5)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(title,
+              style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700)),
+          const SizedBox(height: 10),
+          LinearProgressIndicator(
+            value: tasks.isEmpty ? 0 : completed / tasks.length,
+            minHeight: 5,
+            borderRadius: BorderRadius.circular(3),
+            backgroundColor: Colors.white12,
+            valueColor:
+                const AlwaysStoppedAnimation<Color>(Color(0xFF43B97F)),
+          ),
+          const SizedBox(height: 8),
+          if (tasks.isEmpty)
+            Text(p.t('focusLock.noTasks'),
+                style: const TextStyle(color: Colors.white54, fontSize: 12))
+          else
+            for (final task in tasks)
+              CheckboxListTile(
+                dense: true,
+                controlAffinity: ListTileControlAffinity.leading,
+                contentPadding: EdgeInsets.zero,
+                activeColor: const Color(0xFF43B97F),
+                value: task.completed,
+                title: Text(task.title,
+                    style: TextStyle(
+                        color: task.completed ? Colors.white54 : Colors.white,
+                        fontSize: 13,
+                        decoration: task.completed
+                            ? TextDecoration.lineThrough
+                            : null)),
+                onChanged: (value) =>
+                    _setFocusTaskCompleted(task, value ?? false),
+              ),
+          const SizedBox(height: 4),
+          Text(p.t('focusLock.taskUnlockHint'),
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white38, fontSize: 11)),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final p = widget.provider;
@@ -108514,8 +108953,14 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Icon(Icons.lock_clock_rounded,
-                      color: Color(0xFFEF5350), size: 48),
+                  Icon(
+                      widget.taskMode
+                          ? Icons.task_alt_rounded
+                          : Icons.lock_clock_rounded,
+                      color: widget.taskMode
+                          ? const Color(0xFF43B97F)
+                          : const Color(0xFFEF5350),
+                      size: 48),
                   const SizedBox(height: 12),
                   Text(
                     p.t('focusLock.locked'),
@@ -108526,6 +108971,9 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
                         letterSpacing: 1.0),
                   ),
                   const SizedBox(height: 24),
+                  if (widget.taskMode)
+                    _buildFocusTaskPanel()
+                  else ...[
                   // ── カウントダウン (円形プログレス付き) ──
                   SizedBox(
                     width: 220,
@@ -108576,6 +109024,7 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
                       ),
                     ],
                   ),
+                  ],
                   const SizedBox(height: 20),
                   // ── 今日のタイムライン + ロック中メモ (ユーザー要望) ──
                   _buildUpcomingEvents(),
@@ -108589,7 +109038,7 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
                   // ── 緊急解除ボタン (3 秒長押し) ──
                   // 設定で表示/非表示を切り替える。現行UIでは
                   // focusLockHideUnlockButton == true が「表示する」。
-                  if (p.focusLockHideUnlockButton) ...[
+                  if (!widget.taskMode && p.focusLockHideUnlockButton) ...[
                     GestureDetector(
                       onTapDown: (_) => _startHold(),
                       onTapUp: (_) => _cancelHold(),
@@ -113389,12 +113838,31 @@ File _stablePdfFile(String path) {
   return _gStablePdfFile!;
 }
 
+/// Printing.raster は PDF 全体をメモリへ読み込むため、ビューア本体と同時に
+/// 大きな文書をラスタ化すると OS に終了されることがある。通常の
+/// SfPdfViewer 表示は維持し、サムネイル／見開き画像だけに安全上限を設ける。
+int get _pdfRasterSourceLimitBytes {
+  if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+    return 32 * 1024 * 1024;
+  }
+  return 96 * 1024 * 1024;
+}
+
+bool _isPdfRasterSourceSafe(String path) {
+  try {
+    return File(path).lengthSync() <= _pdfRasterSourceLimitBytes;
+  } catch (_) {
+    return false;
+  }
+}
+
 /// PDF の 1 ページ目をラスタライズしてサムネイル画像ファイルに保存する。
 /// 返り値はパスとアスペクト比 (= 幅/高さ)。 失敗時は null。
 /// (= ユーザー要望: PDF をダウンロード/取得してもノードにサムネイルを出す)
 Future<({String path, double aspect})?> _renderPdfThumbToFile(
     String pdfPath, String thumbDir) async {
   try {
+    if (!_isPdfRasterSourceSafe(pdfPath)) return null;
     final bytes = await File(pdfPath).readAsBytes();
     await for (final page
         in printing.Printing.raster(bytes, pages: [0], dpi: 96)) {
@@ -113694,13 +114162,10 @@ Future<void> _ensurePdfThumbForNode(
   if (nodeId == null || pdfPath == null || pdfPath.isEmpty) return;
   if (!pdfPath.toLowerCase().endsWith('.pdf')) return;
   if (!File(pdfPath).existsSync()) return;
-  // ★ 巨大 PDF 対策 (= ユーザー要望: 数 GB の PDF でも落ちずに開けるように) ──
-  //   サムネ生成は PDF 全バイトをメモリに読み込むため、 大きいファイルだと
-  //   OOM でアプリごと落ちる。 ビューア本体 (SfPdfViewer.file) はディスクから
-  //   ストリーム描画するので、 サムネだけスキップすれば巨大 PDF も読める。
-  try {
-    if (File(pdfPath).lengthSync() > 200 * 1024 * 1024) return; // 200MB 超はサムネ無し
-  } catch (_) {}
+  // モバイルでは、表示中の SfPdfViewer と同じ PDF をサムネイル用にもう一度
+  // 全読み込みしない。添付時に作成済みのサムネイルはそのまま利用する。
+  if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) return;
+  if (!_isPdfRasterSourceSafe(pdfPath)) return;
   final provider = context.read<MindMapProvider>();
   final node = provider.nodes[nodeId];
   if (node == null) return;
@@ -113999,6 +114464,8 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
   bool _spreadFitPageMode = false;
   final Map<int, Uint8List> _spreadPageImages = <int, Uint8List>{};
   final Map<int, Size> _spreadPageImageSizes = <int, Size>{};
+  final TransformationController _spreadTransformController =
+      TransformationController();
   int _spreadRenderedForStart = -1;
   bool _spreadRendering = false;
   bool _spreadRenderPending = false;
@@ -114032,6 +114499,10 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
       if (_fitPageMode) {
         _spreadPageMode = false;
         _spreadFitPageMode = false;
+        _spreadRenderGeneration++;
+        _spreadRenderPending = false;
+        _fitPageBytes = null;
+        _spreadTransformController.value = Matrix4.identity();
         _spreadPageImages.clear();
         _spreadPageImageSizes.clear();
         _spreadRenderedForStart = -1;
@@ -114058,6 +114529,30 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
     final page = _currentPage.clamp(1, _pdfTotalPages).toInt();
     if (page <= 1) return 1;
     return page.isEven ? page : page - 1;
+  }
+
+  bool _canEnableSpreadRaster() {
+    final path = _pdfFilePath;
+    if (path != null && _isPdfRasterSourceSafe(path)) return true;
+    final limitMb = _pdfRasterSourceLimitBytes ~/ (1024 * 1024);
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+      SnackBar(
+        content: Text(
+          'このPDFはサイズが大きいため、安定性を優先して見開き画像表示を無効にしました（上限 ${limitMb}MB）。',
+        ),
+        duration: const Duration(seconds: 4),
+      ),
+    );
+    return false;
+  }
+
+  void _adjustSpreadZoom(bool zoomIn) {
+    final current =
+        _spreadTransformController.value.getMaxScaleOnAxis().clamp(0.5, 6.0);
+    final next = (current + (zoomIn ? 0.1 : -0.1)).clamp(0.5, 6.0);
+    _spreadTransformController.value = Matrix4.identity()
+      ..setEntry(0, 0, next)
+      ..setEntry(1, 1, next);
   }
 
   void _scheduleSpreadPageRender() {
@@ -114098,6 +114593,9 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
     _spreadRendering = true;
     final generation = _spreadRenderGeneration;
     try {
+      if (!_isPdfRasterSourceSafe(path)) {
+        throw StateError('PDF is too large for safe spread rasterization');
+      }
       _fitPageBytes ??= await File(path).readAsBytes();
       if (!mounted ||
           !_spreadFitPageMode ||
@@ -114108,7 +114606,7 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
       await for (final page in printing.Printing.raster(
         _fitPageBytes!,
         pages: need.map((n) => n - 1).toList(),
-        dpi: 92,
+        dpi: 72,
       )) {
         final png = await page.toPng();
         if (!mounted ||
@@ -114124,13 +114622,12 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
         if (i >= need.length) break;
       }
       // ── キャッシュの間引き (= メモリ節約。 現在の見開きの近傍は残す) ──
-      if (_spreadPageImages.length > 14) {
+      if (_spreadPageImages.length > 6) {
         final cur = _spreadStartPage;
         final far = _spreadPageImages.keys.toList()
           ..sort((a, b) => (b - cur).abs().compareTo((a - cur).abs()));
         for (final k in far) {
-          if (_spreadPageImages.length <= 10) break;
-          if ((k - cur).abs() <= 4) break;
+          if (_spreadPageImages.length <= 4) break;
           _spreadPageImages.remove(k);
           _spreadPageImageSizes.remove(k);
         }
@@ -114141,7 +114638,11 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
       if (!prefetch && mounted) {
         setState(() {
           _spreadFitPageMode = false;
+          _fitPageBytes = null;
+          _spreadPageImages.clear();
+          _spreadPageImageSizes.clear();
           _spreadRenderedForStart = -1;
+          _spreadTransformController.value = Matrix4.identity();
         });
       }
       return false;
@@ -114170,13 +114671,7 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
     if (!ok || _spreadStartPage != start) return;
     setState(() => _spreadRenderedForStart = start);
     // ── 隣の見開き (次/前) を背景で先読みして、 ページ送りを即時に ──
-    Future<void>.delayed(const Duration(milliseconds: 120), () {
-      if (!mounted || !_spreadFitPageMode || _spreadStartPage != start) {
-        return;
-      }
-      _rasterSpreadPagesInto(<int>[start + 2, start + 3, start - 2, start - 1],
-          prefetch: true);
-    });
+
   }
 
   void _toggleSpreadPages() {
@@ -114185,6 +114680,7 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
 
   void _toggleSpreadFitPage() {
     final enabling = !_spreadFitPageMode;
+    if (enabling && !_canEnableSpreadRaster()) return;
     setState(() {
       _spreadFitPageMode = enabling;
       _spreadRenderGeneration++;
@@ -114194,9 +114690,13 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
         _spreadPageMode = false;
         _fitPageImage = null;
         _fitPageRenderedFor = -1;
-        // 画像キャッシュは保持する (= 再度見開きに入った時に即表示。
-        //   ユーザー要望 2026-07: 見開きが重い問題への対応)。
         _spreadRenderedForStart = -1;
+      } else {
+        _fitPageBytes = null;
+        _spreadPageImages.clear();
+        _spreadPageImageSizes.clear();
+        _spreadRenderedForStart = -1;
+        _spreadTransformController.value = Matrix4.identity();
       }
     });
     if (_spreadFitPageMode) {
@@ -114275,7 +114775,8 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
             Positioned.fill(
               child: ready
                   ? InteractiveViewer(
-                      minScale: 1.0,
+                      transformationController: _spreadTransformController,
+                      minScale: 0.5,
                       maxScale: 6.0,
                       child: Center(
                         child: FittedBox(
@@ -115927,6 +116428,11 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
     _aiQCaptureTimer?.cancel();
     _fitPageDebounce?.cancel();
     _spreadPageDebounce?.cancel();
+    _spreadRenderGeneration++;
+    _fitPageBytes = null;
+    _spreadPageImages.clear();
+    _spreadPageImageSizes.clear();
+    _spreadTransformController.dispose();
     // 音声読み上げを停止・破棄 (= ユーザー要望)。
     _reader?.dispose();
     super.dispose();
@@ -116085,6 +116591,10 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
       final isZoomOut = key == LogicalKeyboardKey.minus ||
           key == LogicalKeyboardKey.numpadSubtract;
       if (isZoomIn || isZoomOut) {
+        if (_spreadFitPageMode) {
+          _adjustSpreadZoom(isZoomIn);
+          return KeyEventResult.handled;
+        }
         try {
           if (isZoomIn && _fitPageMode) {
             _toggleFitPage();
@@ -119290,6 +119800,8 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
   bool _spreadFitPageMode = false;
   final Map<int, Uint8List> _spreadPageImages = <int, Uint8List>{};
   final Map<int, Size> _spreadPageImageSizes = <int, Size>{};
+  final TransformationController _spreadTransformController =
+      TransformationController();
   int _spreadRenderedForStart = -1;
   bool _spreadRendering = false;
   bool _spreadRenderPending = false;
@@ -119312,10 +119824,13 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
       _fitPageMode = !_fitPageMode;
       if (_fitPageMode) {
         _spreadFitPageMode = false;
+        _fitPageBytes = null;
         _spreadPageImages.clear();
         _spreadPageImageSizes.clear();
         _spreadRenderedForStart = -1;
         _spreadRenderGeneration++;
+        _spreadRenderPending = false;
+        _spreadTransformController.value = Matrix4.identity();
       }
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -119337,6 +119852,30 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
     final page = _currentPage.clamp(1, _pdfTotalPages).toInt();
     if (page <= 1) return 1;
     return page.isEven ? page : page - 1;
+  }
+
+  bool _canEnableSpreadRaster() {
+    final path = _pdfFilePath;
+    if (path != null && _isPdfRasterSourceSafe(path)) return true;
+    final limitMb = _pdfRasterSourceLimitBytes ~/ (1024 * 1024);
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+      SnackBar(
+        content: Text(
+          'このPDFはサイズが大きいため、安定性を優先して見開き画像表示を無効にしました（上限 ${limitMb}MB）。',
+        ),
+        duration: const Duration(seconds: 4),
+      ),
+    );
+    return false;
+  }
+
+  void _adjustSpreadZoom(bool zoomIn) {
+    final current =
+        _spreadTransformController.value.getMaxScaleOnAxis().clamp(0.5, 6.0);
+    final next = (current + (zoomIn ? 0.1 : -0.1)).clamp(0.5, 6.0);
+    _spreadTransformController.value = Matrix4.identity()
+      ..setEntry(0, 0, next)
+      ..setEntry(1, 1, next);
   }
 
   void _scheduleSpreadPageRender() {
@@ -119369,6 +119908,9 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
     _spreadRendering = true;
     final generation = _spreadRenderGeneration;
     try {
+      if (!_isPdfRasterSourceSafe(path)) {
+        throw StateError('PDF is too large for safe spread rasterization');
+      }
       _fitPageBytes ??= await File(path).readAsBytes();
       if (!mounted ||
           !_spreadFitPageMode ||
@@ -119379,7 +119921,7 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
       await for (final page in printing.Printing.raster(
         _fitPageBytes!,
         pages: need.map((n) => n - 1).toList(),
-        dpi: 92,
+        dpi: 72,
       )) {
         final png = await page.toPng();
         if (!mounted ||
@@ -119394,13 +119936,12 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
         i++;
         if (i >= need.length) break;
       }
-      if (_spreadPageImages.length > 14) {
+      if (_spreadPageImages.length > 6) {
         final cur = _spreadStartPage;
         final far = _spreadPageImages.keys.toList()
           ..sort((a, b) => (b - cur).abs().compareTo((a - cur).abs()));
         for (final k in far) {
-          if (_spreadPageImages.length <= 10) break;
-          if ((k - cur).abs() <= 4) break;
+          if (_spreadPageImages.length <= 4) break;
           _spreadPageImages.remove(k);
           _spreadPageImageSizes.remove(k);
         }
@@ -119411,7 +119952,11 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
       if (!prefetch && mounted) {
         setState(() {
           _spreadFitPageMode = false;
+          _fitPageBytes = null;
+          _spreadPageImages.clear();
+          _spreadPageImageSizes.clear();
           _spreadRenderedForStart = -1;
+          _spreadTransformController.value = Matrix4.identity();
         });
       }
       return false;
@@ -119437,25 +119982,25 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
     if (!mounted || !_spreadFitPageMode) return;
     if (!ok || _spreadStartPage != start) return;
     setState(() => _spreadRenderedForStart = start);
-    Future<void>.delayed(const Duration(milliseconds: 120), () {
-      if (!mounted || !_spreadFitPageMode || _spreadStartPage != start) {
-        return;
-      }
-      _rasterSpreadPagesInto(<int>[start + 2, start + 3, start - 2, start - 1],
-          prefetch: true);
-    });
+
   }
 
   void _toggleSpreadPages() {
     final enabling = !_spreadFitPageMode;
+    if (enabling && !_canEnableSpreadRaster()) return;
     setState(() {
       _spreadFitPageMode = enabling;
       _spreadRenderGeneration++;
       _spreadRenderPending = false;
       if (_spreadFitPageMode) {
         _fitPageMode = false;
-        // 画像キャッシュは保持 (= 再突入を即表示に。 2026-07 高速化)。
         _spreadRenderedForStart = -1;
+      } else {
+        _fitPageBytes = null;
+        _spreadPageImages.clear();
+        _spreadPageImageSizes.clear();
+        _spreadRenderedForStart = -1;
+        _spreadTransformController.value = Matrix4.identity();
       }
     });
     if (_spreadFitPageMode) {
@@ -119523,7 +120068,8 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
             Positioned.fill(
               child: ready
                   ? InteractiveViewer(
-                      minScale: 1.0,
+                      transformationController: _spreadTransformController,
+                      minScale: 0.5,
                       maxScale: 6.0,
                       child: Center(
                         child: FittedBox(
@@ -119899,6 +120445,11 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
     _highlightAutoTimer?.cancel();
     _fitPageDebounce?.cancel();
     _spreadPageDebounce?.cancel();
+    _spreadRenderGeneration++;
+    _fitPageBytes = null;
+    _spreadPageImages.clear();
+    _spreadPageImageSizes.clear();
+    _spreadTransformController.dispose();
     // 音声読み上げを停止・破棄 (= ユーザー要望)。
     _reader?.dispose();
     super.dispose();
@@ -119965,6 +120516,10 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
       final isZoomOut = key == LogicalKeyboardKey.minus ||
           key == LogicalKeyboardKey.numpadSubtract;
       if (isZoomIn || isZoomOut) {
+        if (_spreadFitPageMode) {
+          _adjustSpreadZoom(isZoomIn);
+          return KeyEventResult.handled;
+        }
         try {
           final current = _pdfViewerCtrl!.zoomLevel;
           // ステップを 0.1 に小さくして微調整できるように (= ユーザー要望)。

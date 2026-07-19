@@ -339,6 +339,29 @@ class GoogleSearchDialog {
       final overlay = Overlay.of(context, rootOverlay: true);
       entry.remove();
       overlay.insert(entry);
+      _floatingEntries.remove(entry);
+      _floatingEntries.add(entry);
+    } catch (_) {}
+  }
+
+  /// 指定接頭辞の singleton を、現在の重なり順を保って最前面へ戻す。
+  /// 集中ロック復帰時はロック自身が root Overlay の先頭へ戻るため、
+  /// その直後に `focus_lock_` 系ウィンドウをまとめて上へ積み直す。
+  static void bringFloatingSingletonsWithPrefixToFront(
+      BuildContext context, String keyPrefix) {
+    final targets = _floatingSingletonEntries.entries
+        .where((item) => item.key.startsWith(keyPrefix))
+        .map((item) => item.value)
+        .where((entry) => entry.mounted)
+        .toSet();
+    if (targets.isEmpty) return;
+    final ordered = _floatingEntries.where(targets.contains).toList();
+    try {
+      final overlay = Overlay.of(context, rootOverlay: true);
+      for (final entry in ordered) {
+        entry.remove();
+        overlay.insert(entry);
+      }
     } catch (_) {}
   }
 
@@ -389,6 +412,8 @@ class GoogleSearchDialog {
           if (existingEntry.mounted) {
             existingEntry.remove();
             overlay.insert(existingEntry);
+            _floatingEntries.remove(existingEntry);
+            _floatingEntries.add(existingEntry);
           }
         } catch (_) {}
         existingState.updateFloatingRequest(

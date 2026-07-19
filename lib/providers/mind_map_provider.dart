@@ -124,6 +124,42 @@ class FocusLockSchedule {
       );
 }
 
+/// 集中ロックを「タスク完了まで」実行する時のチェック項目。
+///
+/// タイトルと完了状態を一緒に永続化し、アプリが一時停止・再開しても
+/// ロック中の進捗を失わないようにする。
+class FocusLockTask {
+  final String id;
+  final String title;
+  final bool completed;
+
+  const FocusLockTask({
+    required this.id,
+    required this.title,
+    this.completed = false,
+  });
+
+  FocusLockTask copyWith({String? title, bool? completed}) => FocusLockTask(
+        id: id,
+        title: title ?? this.title,
+        completed: completed ?? this.completed,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'title': title,
+        'completed': completed,
+      };
+
+  factory FocusLockTask.fromJson(Map<String, dynamic> json) => FocusLockTask(
+        id: (json['id'] as String?)?.trim().isNotEmpty == true
+            ? (json['id'] as String).trim()
+            : 'flt_${DateTime.now().microsecondsSinceEpoch}',
+        title: (json['title'] as String? ?? '').trim(),
+        completed: json['completed'] as bool? ?? false,
+      );
+}
+
 /// グループ内のメンバー情報（カレンダー共有用）。
 /// `downloadCalendarEventsFromCloud` がグループの /members から取得し、
 /// UI のユーザー切替セレクタに表示する。
@@ -35390,6 +35426,43 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Iniciar bloqueio',
       'ru': 'Начать блокировку',
     },
+    'focusLock.modeTimer': {
+      'ja': '時間制',
+      'en': 'Timer',
+    },
+    'focusLock.modeTasks': {
+      'ja': 'タスク完了制',
+      'en': 'Until tasks are done',
+    },
+    'focusLock.taskModeHint': {
+      'ja': '登録したタスクがすべて完了するまでロックします。空の一覧や未完了のタスクがある状態では解除されません。',
+      'en':
+          'Keeps the lock active until every registered task is complete. An empty or incomplete list never unlocks it.',
+    },
+    'focusLock.taskInputHint': {
+      'ja': '取り組むタスクを入力',
+      'en': 'Enter a task',
+    },
+    'focusLock.addTask': {
+      'ja': 'タスクを追加',
+      'en': 'Add task',
+    },
+    'focusLock.noTasks': {
+      'ja': 'タスクを1件以上登録してください',
+      'en': 'Add at least one task',
+    },
+    'focusLock.startTasks': {
+      'ja': 'タスクがすべて完了するまでロック',
+      'en': 'Lock until all tasks are done',
+    },
+    'focusLock.taskProgress': {
+      'ja': '集中タスク {done}/{total}',
+      'en': 'Focus tasks {done}/{total}',
+    },
+    'focusLock.taskUnlockHint': {
+      'ja': 'すべて完了すると自動で解除されます',
+      'en': 'The lock ends automatically when all tasks are complete',
+    },
     'focusLock.description': {
       'ja': '設定した時間だけ全画面をロックして集中します。ロック中は操作できません。',
       'en':
@@ -37034,6 +37107,27 @@ class MindMapProvider extends ChangeNotifier {
             .toSet();
     _hideEmbedRelated = prefs.getBool('hideEmbedRelated') ?? true;
     _focusLockHideUnlockBtn = prefs.getBool('focusLockHideUnlockBtn') ?? false;
+    _focusLockMode = prefs.getString('focusLockMode') ?? 'timer';
+    if (!{'timer', 'tasks'}.contains(_focusLockMode)) {
+      _focusLockMode = 'timer';
+    }
+    _focusLockTasks = <FocusLockTask>[];
+    try {
+      final rawTasks = prefs.getString('focusLockTasksV1');
+      if (rawTasks != null && rawTasks.isNotEmpty) {
+        final decoded = jsonDecode(rawTasks);
+        if (decoded is List) {
+          _focusLockTasks = decoded
+              .whereType<Map>()
+              .map((item) => FocusLockTask.fromJson(
+                  Map<String, dynamic>.from(item)))
+              .where((task) => task.title.isNotEmpty)
+              .toList();
+        }
+      }
+    } catch (_) {
+      _focusLockTasks = <FocusLockTask>[];
+    }
     _focusLockLastDurationSeconds =
         (prefs.getInt('focusLockLastDurationSeconds') ?? (15 * 60))
             .clamp(0, 600 * 60)
@@ -38357,6 +38451,82 @@ class MindMapProvider extends ChangeNotifier {
       final prefs = await _prefsWithRetry();
       await prefs.setBool('focusLockHideSeconds', v);
     } catch (_) {}
+    notifyListeners();
+  }
+
+  /// 集中ロックの開始方式。`timer` は時間満了、`tasks` は全タスク完了で解除。
+  String _focusLockMode = 'timer';
+  String get focusLockMode => _focusLockMode;
+  Future<void> setFocusLockMode(String mode) async {
+    if (!{'timer', 'tasks'}.contains(mode) || mode == _focusLockMode) return;
+    _focusLockMode = mode;
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.setString('focusLockMode', mode);
+    } catch (_) {}
+    notifyListeners();
+  }
+
+  /// タスク完了制ロックで使う登録タスク。完了状態も含めて永続化する。
+  List<FocusLockTask> _focusLockTasks = <FocusLockTask>[];
+  List<FocusLockTask> get focusLockTasks =>
+      List<FocusLockTask>.unmodifiable(_focusLockTasks);
+
+  /// 空リストを完了扱いにしないことが重要。オーバーレイの自動解除判定は
+  /// 必ずこの getter を経由させる。
+  bool get areAllFocusLockTasksCompleted =>
+      _focusLockTasks.isNotEmpty &&
+      _focusLockTasks.every((task) => task.completed);
+
+  Future<void> _persistFocusLockTasks() async {
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.setString(
+        'focusLockTasksV1',
+        jsonEncode(_focusLockTasks.map((task) => task.toJson()).toList()),
+      );
+    } catch (_) {}
+  }
+
+  Future<void> addFocusLockTask(String title) async {
+    final normalized = title.trim();
+    if (normalized.isEmpty) return;
+    _focusLockTasks.add(FocusLockTask(
+      id: 'flt_${DateTime.now().microsecondsSinceEpoch}',
+      title: normalized,
+    ));
+    await _persistFocusLockTasks();
+    notifyListeners();
+  }
+
+  Future<void> removeFocusLockTask(String id) async {
+    final before = _focusLockTasks.length;
+    _focusLockTasks.removeWhere((task) => task.id == id);
+    if (_focusLockTasks.length == before) return;
+    await _persistFocusLockTasks();
+    notifyListeners();
+  }
+
+  Future<void> setFocusLockTaskCompleted(String id, bool completed) async {
+    final index = _focusLockTasks.indexWhere((task) => task.id == id);
+    if (index < 0 || _focusLockTasks[index].completed == completed) return;
+    _focusLockTasks[index] =
+        _focusLockTasks[index].copyWith(completed: completed);
+    await _persistFocusLockTasks();
+    notifyListeners();
+  }
+
+  /// 新しいタスク完了制セッションを開始する時だけ進捗を初期化する。
+  /// 登録内容は残すため、毎回同じルーティンを再利用できる。
+  Future<void> resetFocusLockTaskCompletion() async {
+    if (_focusLockTasks.isEmpty ||
+        !_focusLockTasks.any((task) => task.completed)) {
+      return;
+    }
+    _focusLockTasks = _focusLockTasks
+        .map((task) => task.copyWith(completed: false))
+        .toList();
+    await _persistFocusLockTasks();
     notifyListeners();
   }
 
@@ -49287,6 +49457,11 @@ $cleanQ
   @override
   void dispose() {
     if (_disposed) return;
+    _lastPdfPagePersistTimer?.cancel();
+    _lastPdfPagePersistTimer = null;
+    if (_lastPdfPagesDirty) {
+      unawaited(_persistLastPdfPages());
+    }
     _disposed = true;
     _syncTimer?.cancel();
     _autoSyncDebounce?.cancel();
@@ -55079,6 +55254,8 @@ $cleanQ
   // PDFビューア側の onPageChanged で逐次更新、 onDocumentLoaded で
   // ジャンプ復元する。
   Map<String, int> _lastPdfPages = {};
+  Timer? _lastPdfPagePersistTimer;
+  bool _lastPdfPagesDirty = false;
 
   /// [path] の PDF の最終閲覧ページ番号 (1-based)。 未記録なら null。
   int? lastPdfPageFor(String path) => _lastPdfPages[path];
@@ -55093,10 +55270,23 @@ $cleanQ
     // 値が変わらないなら書かない (= 書き込み頻度削減)
     if (_lastPdfPages[path] == page) return;
     _lastPdfPages[path] = page;
+    _lastPdfPagesDirty = true;
+    _lastPdfPagePersistTimer?.cancel();
+    _lastPdfPagePersistTimer = Timer(const Duration(milliseconds: 450), () {
+      _lastPdfPagePersistTimer = null;
+      unawaited(_persistLastPdfPages());
+    });
+  }
+
+  Future<void> _persistLastPdfPages() async {
+    if (!_lastPdfPagesDirty) return;
+    _lastPdfPagesDirty = false;
+    final encoded = jsonEncode(Map<String, int>.from(_lastPdfPages));
     try {
       final prefs = await _prefsWithRetry();
-      await prefs.setString('lastPdfPages_v1', jsonEncode(_lastPdfPages));
+      await prefs.setString('lastPdfPages_v1', encoded);
     } catch (e) {
+      _lastPdfPagesDirty = true;
       debugPrint('setLastPdfPage 永続化失敗: $e');
     }
     // notifyListeners 不要 (UI が反応する必要なし、 次回 open 時に使うだけ)
