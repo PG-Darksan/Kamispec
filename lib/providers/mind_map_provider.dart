@@ -2792,12 +2792,11 @@ class MindMapProvider extends ChangeNotifier {
       'FIREBASE_PROJECT_ID',
       defaultValue: 'mindmap-b6115'); // ← Firebaseプロジェクト名(例: mindmap-b6115)
 
-  // REST APIキーの取得優先順位:
-  //   1) FIREBASE_API_KEY_REST (REST API用、最優先)
-  //   2) FIREBASE_API_KEY_WINDOWS (Windows向けキー)
-  //   3) FIREBASE_API_KEY_ANDROID (Android向けキー)
-  //   4) FIREBASE_API_KEY_IOS / WEB / MACOS
-  // 通常、firebase_options.dart と同じAPIキーで問題なく動作します
+  // Firebase REST 認証でも API キーのアプリ制限は有効なため、
+  // 実行中のプラットフォーム用キーを最優先にする。旧実装は
+  // REST → Windows → Android の固定順で、Windows キーに既定値が
+  // あるため Android で Android キーが永久に選ばれず、端末制限に
+  // よって開発者認証・プラン復元が失敗していた。
   static const String _authApiKeyRest =
       String.fromEnvironment('FIREBASE_API_KEY_REST', defaultValue: '');
   static const String _authApiKeyWin = String.fromEnvironment(
@@ -2812,9 +2811,46 @@ class MindMapProvider extends ChangeNotifier {
       String.fromEnvironment('FIREBASE_API_KEY_WEB', defaultValue: '');
   static const String _authApiKeyMac =
       String.fromEnvironment('FIREBASE_API_KEY_MACOS', defaultValue: '');
+  static const bool _hasAuthApiKeyWin =
+      bool.hasEnvironment('FIREBASE_API_KEY_WINDOWS');
+  static const bool _hasAuthApiKeyAndroid =
+      bool.hasEnvironment('FIREBASE_API_KEY_ANDROID');
+  static const bool _hasAuthApiKeyIos =
+      bool.hasEnvironment('FIREBASE_API_KEY_IOS');
+  static const bool _hasAuthApiKeyWeb =
+      bool.hasEnvironment('FIREBASE_API_KEY_WEB');
+  static const bool _hasAuthApiKeyMac =
+      bool.hasEnvironment('FIREBASE_API_KEY_MACOS');
 
   static String get _authApiKey {
-    // 非空のものを上から優先して採用
+    // 旧ビルド設定で REST キーだけを明示していた場合は、その明示値を尊重する。
+    // platformキーも明示されている現在の設定では、アプリ制限に合う方を優先する。
+    final hasPlatformDefine = !kIsWeb
+        ? ((Platform.isAndroid && _hasAuthApiKeyAndroid) ||
+            (Platform.isIOS && _hasAuthApiKeyIos) ||
+            (Platform.isMacOS && _hasAuthApiKeyMac) ||
+            (Platform.isWindows && _hasAuthApiKeyWin))
+        : _hasAuthApiKeyWeb;
+    if (_authApiKeyRest.isNotEmpty && !hasPlatformDefine) {
+      return _authApiKeyRest;
+    }
+    if (!kIsWeb) {
+      if (Platform.isAndroid && _authApiKeyAndroid.isNotEmpty) {
+        return _authApiKeyAndroid;
+      }
+      if (Platform.isIOS && _authApiKeyIos.isNotEmpty) {
+        return _authApiKeyIos;
+      }
+      if (Platform.isMacOS && _authApiKeyMac.isNotEmpty) {
+        return _authApiKeyMac;
+      }
+      if (Platform.isWindows && _authApiKeyWin.isNotEmpty) {
+        return _authApiKeyWin;
+      }
+    } else if (_authApiKeyWeb.isNotEmpty) {
+      return _authApiKeyWeb;
+    }
+    // 専用キーが未設定の古いビルド設定との互換フォールバック。
     for (final k in [
       _authApiKeyRest,
       _authApiKeyWin,
@@ -40981,6 +41017,11 @@ class MindMapProvider extends ChangeNotifier {
   // ── 開発者モード ──────────────────────────────────────────────────────────
   bool _developerMode = false;
   bool get developerMode => _developerMode;
+  Timer? _developerModeRestoreTimer;
+  int _developerModeRestoreAttempt = 0;
+  bool _developerModeRestoreInFlight = false;
+  int _developerModeStateGeneration = 0;
+  Future<void> _developerModeRevocation = Future<void>.value();
 
   /// グローバルAPIキー（開発者が全ユーザー向けに設定）
   String? _globalGeminiApiKey;
@@ -41338,6 +41379,7 @@ class MindMapProvider extends ChangeNotifier {
 
   /// 開発者モードでの演じるプランを変更し、SharedPreferences に永続化する。
   Future<void> setDevImpersonatePlan(SubscriptionPlan plan) async {
+    if (!_developerMode || _disposed) return;
     _devImpersonatePlan = plan;
     final prefs = await _prefsWithRetry();
     await prefs.setString('dev_impersonate_plan', plan.name);
@@ -41528,6 +41570,10 @@ class MindMapProvider extends ChangeNotifier {
     // 累積ストレージ使用量 (月またぎでもリセットしない)
     _totalStorageBytes = prefs.getInt('totalStorageBytes') ?? 0;
     _resetMonthlyIfNeeded();
+    // 起動直後の UI は読み込み前の Free 初期値で一度 build される。
+    // 復元後に通知しないと、次の無関係な更新まで購入済みプランや
+    // 開発者用の演じプランが Free に離脱したように見えていた。
+    notifyListeners();
   }
 
   Future<void> _clearCoupon() async {
@@ -42551,54 +42597,183 @@ class MindMapProvider extends ChangeNotifier {
   /// = ユーザー要望: 失敗時に「パスワード違い」か「サーバーに接続できない」かを
   ///   区別して表示する (サーバー照合方式は維持)。
   Future<String?> activateDeveloperMode(String password) async {
+    // 直前の解除リクエストがサーバー上で完了してから再認証する。
+    // 新しい custom claim が古い revoke に後から消される競合を防ぐ。
+    try {
+      await _developerModeRevocation;
+    } catch (_) {}
+    if (_disposed) return t('dev.errConnection');
+    final requestGeneration = _developerModeStateGeneration;
     final err = await _verifyDeveloperPasswordOnServer(password);
+    if (_disposed || requestGeneration != _developerModeStateGeneration) {
+      return t('dev.errConnection');
+    }
     if (err == null) {
+      final generation = ++_developerModeStateGeneration;
+      _developerModeRestoreTimer?.cancel();
+      _developerModeRestoreTimer = null;
+      _developerModeRestoreAttempt = 0;
       _developerMode = true;
-      final prefs = await _prefsWithRetry();
-      await prefs.setBool('developer_mode', true);
-      await _loadDeveloperSettings();
       notifyListeners();
+      try {
+        final prefs = await _prefsWithRetry();
+        if (!_disposed && generation == _developerModeStateGeneration) {
+          await prefs.setBool('developer_mode', true);
+        }
+      } catch (e) {
+        debugPrint('開発者モード保存に失敗 (認証状態は維持): $e');
+      }
+      if (_disposed || generation != _developerModeStateGeneration) {
+        return null;
+      }
+      try {
+        await _loadDeveloperSettings();
+        if (!_disposed && generation == _developerModeStateGeneration) {
+          notifyListeners();
+        }
+      } catch (e) {
+        debugPrint('開発者設定の読み込みに失敗 (モードは維持): $e');
+      }
       // users.plan はサーバー正本のため変更せず、非課金メタデータだけ同期する。
-      _syncPlanToUserDoc();
+      if (!_disposed && generation == _developerModeStateGeneration) {
+        _syncPlanToUserDoc();
+      }
       return null;
     }
     return err;
   }
 
-  void deactivateDeveloperMode() {
+  Future<void> deactivateDeveloperMode() async {
+    final generation = ++_developerModeStateGeneration;
+    _developerModeRestoreTimer?.cancel();
+    _developerModeRestoreTimer = null;
+    _developerModeRestoreAttempt = 0;
     _developerMode = false;
-    _prefsWithRetry().then((p) => p.setBool('developer_mode', false));
     notifyListeners();
-    // サーバー側の custom claim も解除する。失敗してもローカル解除は優先する。
-    // ignore: discarded_futures
-    _revokeDeveloperModeOnServer();
-    // 開発者モード解除後の非課金メタデータを同期する。
-    _syncPlanToUserDoc();
+    final previousRevocation = _developerModeRevocation;
+    final operation = () async {
+      try {
+        await previousRevocation;
+      } catch (_) {}
+      try {
+        final prefs = await _prefsWithRetry();
+        if (!_disposed &&
+            generation == _developerModeStateGeneration &&
+            !_developerMode) {
+          await prefs.setBool('developer_mode', false);
+        }
+      } catch (e) {
+        debugPrint('開発者モード解除状態の保存に失敗: $e');
+      }
+      // サーバー側の custom claim も解除する。新しい認証は
+      // `_developerModeRevocation` を await するため、新旧の書き込み順は入れ替わない。
+      await _revokeDeveloperModeOnServer();
+      if (!_disposed &&
+          generation == _developerModeStateGeneration &&
+          !_developerMode) {
+        await _syncPlanToUserDoc();
+      }
+    }();
+    _developerModeRevocation = operation;
+    await operation;
   }
 
   Future<void> _loadDeveloperModeState() async {
-    final prefs = await _prefsWithRetry();
-    final locallyEnabled = prefs.getBool('developer_mode') ?? false;
-    if (!locallyEnabled) {
-      _developerMode = false;
-      return;
-    }
-
-    // ローカルフラグだけでは改ざん可能なので、サーバーの custom claim を正本に
-    // する。接続不能時も有料機能・管理機能を開けず、安全側へ閉じる。
-    final serverEnabled = await _fetchDeveloperModeStatusFromServer();
-    if (serverEnabled == true) {
-      _developerMode = true;
-      await _loadDeveloperSettings();
-    } else {
-      _developerMode = false;
-      // 明示的な false の時だけ保存値も消す。通信失敗(null)では保存値を残し、
-      // 次回起動時に正規 claim を再確認できるようにする。
-      if (serverEnabled == false) {
-        await prefs.setBool('developer_mode', false);
+    if (_developerModeRestoreInFlight || _disposed) return;
+    _developerModeRestoreInFlight = true;
+    final generation = _developerModeStateGeneration;
+    try {
+      final prefs = await _prefsWithRetry();
+      if (_disposed || generation != _developerModeStateGeneration) return;
+      final locallyEnabled = prefs.getBool('developer_mode') ?? false;
+      if (!locallyEnabled) {
+        _developerModeRestoreTimer?.cancel();
+        _developerModeRestoreTimer = null;
+        _developerModeRestoreAttempt = 0;
+        _developerMode = false;
+        return;
       }
+
+      // このフラグは以前のサーバー検証成功時だけ保存される。更新直後の認証初期化や
+      // 一時的なオフラインで開発者モード / 演じるプランから離脱して見えないよう、
+      // まず保存済みセッションを復元し、サーバー検証はバックグラウンドで行う。
+      // サーバーから明示的な false が返った場合だけ即座に解除・保存値削除する。
+      if (!_developerMode) {
+        _developerMode = true;
+        notifyListeners();
+      }
+      try {
+        await _loadDeveloperSettings();
+        if (!_disposed && generation == _developerModeStateGeneration) {
+          notifyListeners();
+        }
+      } catch (e) {
+        debugPrint('開発者設定のローカル復元に失敗 (モードは維持): $e');
+      }
+      final serverEnabled = await _fetchDeveloperModeStatusFromServer();
+      // 待機中に手動解除や再認証が行われた場合、古い応答で新しい状態を
+      // 上書きしない。保存状態を扱う非同期処理の世代を明示的に分離する。
+      if (_disposed || generation != _developerModeStateGeneration) return;
+      if (serverEnabled == true) {
+        _developerModeRestoreTimer?.cancel();
+        _developerModeRestoreTimer = null;
+        _developerModeRestoreAttempt = 0;
+        _developerMode = true;
+        notifyListeners();
+        try {
+          await _loadDeveloperSettings();
+          if (!_disposed && generation == _developerModeStateGeneration) {
+            notifyListeners();
+          }
+        } catch (e) {
+          debugPrint('開発者設定の再読込に失敗 (モードは維持): $e');
+        }
+      } else if (serverEnabled == false) {
+        _developerMode = false;
+        _developerModeRestoreTimer?.cancel();
+        _developerModeRestoreTimer = null;
+        _developerModeRestoreAttempt = 0;
+        // UI上の失効はディスク書き込みを待たず即時反映する。保存失敗で
+        // 開発者モードを再度有効化してはいけない。
+        notifyListeners();
+        try {
+          await prefs.setBool('developer_mode', false);
+        } catch (e) {
+          debugPrint('開発者モード失効状態の保存に失敗: $e');
+        }
+      } else {
+        // 通信失敗では復元済み状態を維持し、同じ起動中に有限回だけ再検証する。
+        _scheduleDeveloperModeRestore();
+      }
+    } catch (e) {
+      debugPrint('開発者モードの保存状態読み込みに失敗: $e');
+      if (generation == _developerModeStateGeneration) {
+        _scheduleDeveloperModeRestore();
+      }
+    } finally {
+      _developerModeRestoreInFlight = false;
     }
-    notifyListeners();
+  }
+
+  void _scheduleDeveloperModeRestore() {
+    if (_disposed || _developerModeRestoreTimer != null) return;
+    // 回線切替や更新直後のプラグイン/認証初期化の遅れを吸収する。
+    // 永久に通信し続けないよう最大 6 回で打ち切る。
+    const delays = <Duration>[
+      Duration(seconds: 2),
+      Duration(seconds: 5),
+      Duration(seconds: 10),
+      Duration(seconds: 20),
+      Duration(seconds: 30),
+      Duration(seconds: 30),
+    ];
+    if (_developerModeRestoreAttempt >= delays.length) return;
+    final delay = delays[_developerModeRestoreAttempt++];
+    _developerModeRestoreTimer = Timer(delay, () {
+      _developerModeRestoreTimer = null;
+      if (_disposed) return;
+      unawaited(_loadDeveloperModeState());
+    });
   }
 
   Future<void> setConnectionElbowSplitRatio(double v) async {
@@ -42679,6 +42854,7 @@ class MindMapProvider extends ChangeNotifier {
     if (trimmed.isEmpty) return t('dev.wrongPassword');
     // Firebase 未接続 / 設定不足はパスワード以前の問題なので接続エラーとして扱う。
     if (!await _ensureDeveloperAuthReady()) return t('dev.errConnection');
+    final verifiedUid = _uid;
 
     try {
       final res = await http
@@ -42696,7 +42872,15 @@ class MindMapProvider extends ChangeNotifier {
         if (data['ok'] == true && data['developer'] == true) {
           // custom claim が入った新しい ID token を取り直しておく。
           await _ensureFreshToken(force: true);
-          return null;
+          // refresh token 失効時に別の匿名 UID が作られた場合、
+          // 元 UID へ付与した claim は引き継がれない。その状態を
+          // 認証成功としてローカル保存しない。
+          if (verifiedUid == null || _uid != verifiedUid) {
+            return t('dev.errConnection');
+          }
+          final enabled = await _fetchDeveloperModeStatusFromServer(
+              forceRefresh: false);
+          return enabled == true ? null : t('dev.errConnection');
         }
         return t('dev.wrongPassword');
       }
@@ -42723,11 +42907,12 @@ class MindMapProvider extends ChangeNotifier {
     }
   }
 
-  Future<bool?> _fetchDeveloperModeStatusFromServer() async {
+  Future<bool?> _fetchDeveloperModeStatusFromServer(
+      {bool forceRefresh = true}) async {
     if (!await _ensureDeveloperAuthReady()) return null;
     try {
       // custom claim 反映済みの状態を見るため、起動時は保険で更新してから確認。
-      await _ensureFreshToken(force: true);
+      if (forceRefresh) await _ensureFreshToken(force: true);
       final res = await http
           .post(
             Uri.parse('$_functionsBaseUrl/developerModeStatus'),
@@ -42740,7 +42925,10 @@ class MindMapProvider extends ChangeNotifier {
           .timeout(const Duration(seconds: 20));
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
-        return data['ok'] == true && data['developer'] == true;
+        final developer = data['developer'];
+        if (data['ok'] == true && developer is bool) return developer;
+        debugPrint('developerModeStatus malformed response: ${res.body}');
+        return null;
       }
       debugPrint('developerModeStatus failed: ${res.statusCode} ${res.body}');
     } catch (e) {
@@ -42788,6 +42976,7 @@ class MindMapProvider extends ChangeNotifier {
   }
 
   Future<void> setGlobalGeminiApiKey(String key) async {
+    if (!_developerMode || _disposed) return;
     _globalGeminiApiKey = key.trim();
     final prefs = await _prefsWithRetry();
     await prefs.setString('global_gemini_api_key', _globalGeminiApiKey!);
@@ -42815,6 +43004,7 @@ class MindMapProvider extends ChangeNotifier {
   }
 
   Future<void> setInquiryEmail(String email) async {
+    if (!_developerMode || _disposed) return;
     _inquiryEmail = email.trim();
     final prefs = await _prefsWithRetry();
     await prefs.setString('inquiry_email', _inquiryEmail);
@@ -46831,8 +47021,18 @@ $cleanQ
     _loadAutoSyncPageIds();
     _loadNamedGroups();
     // 課金 SDK の初期通知より先に、前回保存した状態を必ず読み終える。
-    _proStateLoadFuture = _loadProState();
-    _loadDeveloperModeState();
+    // 開発者モードも同じ SharedPreferences の演じプランに依存
+    // するため、両方を並列起動せず必ずプラン復元の後に検証する。
+    // これで更新後の高速起動時に初期値が保存値を見かけ上
+    // 上書きするレースも避ける。
+    _proStateLoadFuture = _loadProState().catchError(
+      (Object e, StackTrace st) =>
+          debugPrint('プラン状態の復元に失敗 (起動は続行): $e\n$st'),
+    );
+    unawaited(_proStateLoadFuture!
+        .then((_) => _loadDeveloperModeState())
+        .catchError((Object e, StackTrace st) => debugPrint(
+            '開発者モードの復元に失敗 (起動は続行): $e\n$st')));
     _loadJoinedGroups();
     _loadColorSettings();
     loadDisplayName();
@@ -49625,6 +49825,8 @@ $cleanQ
     _syncTimer?.cancel();
     _autoSyncDebounce?.cancel();
     _startupSafetyTimer?.cancel();
+    _developerModeRestoreTimer?.cancel();
+    _developerModeRestoreTimer = null;
     _billing.dispose();
     if (!_initialLoadCompleter.isCompleted) {
       _initialLoadCompleter.complete();

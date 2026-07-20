@@ -14620,7 +14620,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
   }
 
-  void _commitShelfInlineTextEdit({bool cancel = false}) {
+  void _commitShelfInlineTextEdit(
+      {bool cancel = false, bool clearSelection = false}) {
     final nodeId = _inlineShelfEditNodeId;
     if (nodeId == null) return;
     final provider = context.read<MindMapProvider>();
@@ -14635,6 +14636,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     });
     if (cancel) {
       if (deleteEmpty) provider.deleteNode(nodeId);
+      if (clearSelection) _clearShelfElementSelection(provider);
       return;
     }
     if (trimmed.isEmpty) {
@@ -14644,11 +14646,13 @@ class _MindMapScreenState extends State<MindMapScreen>
         title: '',
         memo: '',
       );
+      if (clearSelection) _clearShelfElementSelection(provider);
       return;
     }
     final parts = _splitNodeBatchParts(provider, raw);
     if (parts.length > 1) {
       _expandDelimitedNodeText(provider, nodeId, parts);
+      if (clearSelection) _clearShelfElementSelection(provider);
       return;
     }
     final lines = raw.split('\n');
@@ -14660,6 +14664,26 @@ class _MindMapScreenState extends State<MindMapScreen>
       title: title,
       memo: memo,
     );
+    if (clearSelection) _clearShelfElementSelection(provider);
+  }
+
+  /// ギャラリーの空白をタップした時に、入力フォーカスだけでなく
+  /// タイルの単一/複数選択とアクションオーバーレイもまとめて解除する。
+  void _clearShelfElementSelection(MindMapProvider provider) {
+    _removeOverlay();
+    provider.selectNode(null);
+    if (!mounted) return;
+    setState(() {
+      _actionNodeId = null;
+      _selectedDecorationId = null;
+      _selectedConnections.clear();
+      _rangeSelectMode = false;
+      _rangeSelectedIds.clear();
+      _rangeSelectedDecorationIds.clear();
+      _rangeStart = null;
+      _rangeEnd = null;
+      _suppressNextRangeDeselect = false;
+    });
   }
 
   Widget _buildShelfInlineTextEditor(MindMapProvider provider) {
@@ -14719,7 +14743,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                   textAlignVertical: TextAlignVertical.top,
                   keyboardType: TextInputType.multiline,
                   textInputAction: TextInputAction.newline,
-                  onTapOutside: (_) => _commitShelfInlineTextEdit(),
+                  // Android では空白タップが TextField の
+                  // TapRegion で先に消費される端末がある。この段階で
+                  // 選択も落とし、「入力モードだけ終了」を防ぐ。
+                  onTapOutside: (_) => _commitShelfInlineTextEdit(
+                      clearSelection: !_isDesktop),
                   style: const TextStyle(
                     color: Color(0xFF101018),
                     fontSize: 15,
@@ -45048,18 +45076,80 @@ class _MindMapScreenState extends State<MindMapScreen>
                       .map((p) =>
                           _buildPageTile(context, provider, p, indent: 18)),
               ],
+              // フォルダー内のページを上位階層（現在の1階層モデルではルート）へ
+              // 戻すドロップ先。ルートページがまだ1件も無い場合でも表示する。
+              if (folders.isNotEmpty)
+                _buildDrawerRootDropTarget(context, provider),
               if (folders.isNotEmpty && rootPages.isNotEmpty)
-                const Divider(color: Colors.white10, height: 12),
+                const Divider(color: Colors.white10, height: 8),
               // ルート(フォルダー外)のページ
               ...rootPages.map((p) => _buildPageTile(context, provider, p)),
-              // (旧) フォルダー内ページをルートに戻す専用のドロップゾーンは廃止。
-              // 同じ操作はフォルダー外ページの上にドロップする / ページの「・・・」
-              // メニューから「フォルダーへ移動 → ルートに戻す」で行える。
             ],
           ),
         ),
       ),
     ]);
+  }
+
+  /// フォルダー内ページを上位階層へ戻すドロップ先。
+  ///
+  /// フォルダーモデルは永続化互換性のため従来どおり1階層のままなので、上位階層は
+  /// `folderId == null` のルートを意味する。移動には既存の一括APIを使い、`_pages`
+  /// の順序（Drawer内の並び順）を崩さない。
+  Widget _buildDrawerRootDropTarget(
+      BuildContext context, MindMapProvider provider) {
+    return DragTarget<_DrawerPageDragData>(
+      onWillAcceptWithDetails: (details) {
+        final ids = details.data.pageIds.toSet();
+        return provider.pages
+            .any((page) => ids.contains(page.id) && page.folderId != null);
+      },
+      onAcceptWithDetails: (details) {
+        provider.movePagesToFolder(details.data.pageIds, null);
+        setState(() {
+          _drawerSelectedPageIds.clear();
+          _drawerSelectedFolderIds.clear();
+          _drawerLastAnchorIndex = null;
+        });
+      },
+      builder: (context, candidates, rejected) {
+        final hovering = candidates.isNotEmpty;
+        final accent = hovering ? const Color(0xFF43B97F) : Colors.white38;
+        return AnimatedContainer(
+          duration: const Duration(milliseconds: 120),
+          margin: const EdgeInsets.fromLTRB(8, 6, 8, 2),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+          decoration: BoxDecoration(
+            color: hovering
+                ? const Color(0xFF43B97F).withValues(alpha: 0.18)
+                : Colors.white.withValues(alpha: 0.035),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: hovering
+                  ? const Color(0xFF43B97F)
+                  : Colors.white.withValues(alpha: 0.14),
+              width: hovering ? 1.5 : 1,
+            ),
+          ),
+          child: Row(children: [
+            Icon(Icons.drive_file_move_rounded,
+                color: accent, size: 18),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                provider.t('page.moveToRoot'),
+                style: TextStyle(
+                  color: hovering ? const Color(0xFF8CE9B9) : Colors.white60,
+                  fontSize: 12,
+                  fontWeight: hovering ? FontWeight.w700 : FontWeight.w500,
+                ),
+              ),
+            ),
+            Icon(Icons.keyboard_arrow_up_rounded, color: accent, size: 18),
+          ]),
+        );
+      },
+    );
   }
 
   /// drawer 複数選択時のツールバー。
@@ -47141,7 +47231,22 @@ class _MindMapScreenState extends State<MindMapScreen>
         _centerBookshelfView(pid, ctrl);
       });
     }
-    return InteractiveViewer.builder(
+    final isMobileShelf = !_isDesktop && curPage.pageType == 'bookshelf';
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      // InteractiveViewer の child より外に見える余白も viewport の
+      // 「何もない所」として扱う。child 内のノード/図形は手前の
+      // tap recognizer が受け取るため、ここは外側余白だけで発火する。
+      onTap: isMobileShelf
+          ? () {
+              if (_inlineShelfEditNodeId != null) {
+                _commitShelfInlineTextEdit(clearSelection: true);
+                return;
+              }
+              _clearShelfElementSelection(provider);
+            }
+          : null,
+      child: InteractiveViewer.builder(
       transformationController: ctrl,
       // 通常マップはキャンバス外へはスクロールできないよう margin をゼロに。
       // ギャラリーは中身を画面中央に寄せたい (= ユーザー要望: +ブロックを中央に)
@@ -47192,7 +47297,8 @@ class _MindMapScreenState extends State<MindMapScreen>
           //   ないところをダブルクリックで解除)。
           onTap: provider.currentPage.pageType == 'bookshelf' &&
                   _inlineShelfEditNodeId != null
-              ? () => _commitShelfInlineTextEdit()
+              ? () => _commitShelfInlineTextEdit(
+                  clearSelection: !_isDesktop)
               : (isRangeMode && !_rangeDragging && !_canvasLongPressActive
                   ? () {
                       if (_suppressNextRangeDeselect) {
@@ -47458,7 +47564,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                         // onTapUp ではなく onTap を使うことで確実に発火させる。
                         onTap: () {
                           if (isShelf && _inlineShelfEditNodeId != null) {
-                            _commitShelfInlineTextEdit();
+                            _commitShelfInlineTextEdit(
+                                clearSelection: !_isDesktop);
                             return;
                           }
                           if (isRangeMode) {
@@ -47480,6 +47587,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                           final p = _pendingTapCanvasPos;
                           if (p == null) return;
                           if (_clearShelfLineSelectionIfOutside(provider, p)) {
+                            if (isShelf && !_isDesktop) {
+                              _clearShelfElementSelection(provider);
+                            }
                             return;
                           }
                           final scale = ctrl.value.getMaxScaleOnAxis();
@@ -47496,7 +47606,14 @@ class _MindMapScreenState extends State<MindMapScreen>
                             }
                             return;
                           }
+                          final decorationHit =
+                              _decorationHitTest(p, scale);
                           _handleCanvasTapForDecoration(p, scale);
+                          if (isShelf && decorationHit == null) {
+                            // 編集中でない通常選択でも、ギャラリーの空白タップは
+                            // provider 側の選択を含めて完全に解除する。
+                            _clearShelfElementSelection(provider);
+                          }
                         },
                         onSecondaryTapUp: _isDesktop && !isRangeMode
                             ? (details) => _showCanvasContextMenu(
@@ -48195,6 +48312,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           ),
         );
       },
+    ),
     );
   }
 
@@ -60175,11 +60293,40 @@ class _MindMapScreenState extends State<MindMapScreen>
       BuildContext ctx, MindMapProvider provider) {
     final pwCtrl = TextEditingController();
     bool obscure = true;
+    bool authenticating = false;
+
+    Future<void> authenticate(BuildContext authCtx, StateSetter update) async {
+      if (authenticating) return;
+      update(() => authenticating = true);
+      String? err;
+      try {
+        err = await provider.activateDeveloperMode(pwCtrl.text);
+      } catch (e) {
+        debugPrint('開発者モード認証画面で例外: $e');
+        err = provider.t('dev.errConnection');
+      }
+      if (!authCtx.mounted) return;
+      update(() => authenticating = false);
+      if (err == null) {
+        Navigator.of(authCtx, rootNavigator: true).pop();
+        // pop 中のルートの上へ同期的に次を push すると、
+        // Android で管理画面が表示されないことがある。
+        Future<void>.microtask(() {
+          if (mounted) _showDeveloperModeScreen(ctx, provider);
+        });
+        return;
+      }
+      _appSnack(
+        authCtx,
+        SnackBar(content: Text(err), backgroundColor: Colors.redAccent),
+      );
+    }
+
     // ★ 全画面ルート化 (= ユーザー報告: Android で開発者モードに入れない)。
     //   言語ダイアログと同じく、 showDialog だと背後の WebView プラットフォーム
     //   ビューにタッチを奪われて入力欄/ボタンが反応しない。 不透明な全画面ルート
     //   にすれば背後がオフステージになり確実に操作できる。
-    Navigator.of(ctx, rootNavigator: true).push(
+    final passwordRoute = Navigator.of(ctx, rootNavigator: true).push(
       MaterialPageRoute<void>(
         fullscreenDialog: true,
         builder: (dctx) => Scaffold(
@@ -60187,8 +60334,10 @@ class _MindMapScreenState extends State<MindMapScreen>
           body: Center(
             child: SingleChildScrollView(
               child: StatefulBuilder(
-                builder: (sctx, setD) => AlertDialog(
-                  backgroundColor: const Color(0xFF1A1A2E),
+                builder: (sctx, setD) => PopScope(
+                  canPop: !authenticating,
+                  child: AlertDialog(
+                    backgroundColor: const Color(0xFF1A1A2E),
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(16)),
                   title: Row(children: [
@@ -60225,53 +60374,37 @@ class _MindMapScreenState extends State<MindMapScreen>
                           onPressed: () => setD(() => obscure = !obscure),
                         ),
                       ),
-                      onSubmitted: (_) async {
-                        final err =
-                            await provider.activateDeveloperMode(pwCtrl.text);
-                        if (!sctx.mounted) return;
-                        if (err == null) {
-                          Navigator.pop(sctx);
-                          _showDeveloperModeScreen(ctx, provider);
-                        } else {
-                          _appSnack(
-                            sctx,
-                            SnackBar(
-                                content: Text(err),
-                                backgroundColor: Colors.redAccent),
-                          );
-                        }
-                      },
+                      onSubmitted: authenticating
+                          ? null
+                          : (_) => authenticate(sctx, setD),
                     ),
                   ]),
                   actions: [
                     TextButton(
-                      onPressed: () => Navigator.pop(dctx),
+                      onPressed: authenticating
+                          ? null
+                          : () => Navigator.pop(dctx),
                       child: Text(provider.t('btn.cancel'),
                           style: const TextStyle(color: Colors.white54)),
                     ),
                     ElevatedButton(
                       style: ElevatedButton.styleFrom(
                           backgroundColor: const Color(0xFFBA68C8)),
-                      onPressed: () async {
-                        final err =
-                            await provider.activateDeveloperMode(pwCtrl.text);
-                        if (!dctx.mounted) return;
-                        if (err == null) {
-                          Navigator.pop(dctx);
-                          _showDeveloperModeScreen(ctx, provider);
-                        } else {
-                          _appSnack(
-                            dctx,
-                            SnackBar(
-                                content: Text(err),
-                                backgroundColor: Colors.redAccent),
-                          );
-                        }
-                      },
-                      child: Text(provider.t('dev.authenticate'),
-                          style: const TextStyle(color: Colors.white)),
+                      onPressed: authenticating
+                          ? null
+                          : () => authenticate(dctx, setD),
+                      child: authenticating
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2, color: Colors.white),
+                            )
+                          : Text(provider.t('dev.authenticate'),
+                              style: const TextStyle(color: Colors.white)),
                     ),
                   ],
+                ),
                 ),
               ),
             ),
@@ -60279,16 +60412,15 @@ class _MindMapScreenState extends State<MindMapScreen>
         ),
       ),
     );
+    unawaited(passwordRoute.whenComplete(pwCtrl.dispose));
   }
 
   /// 開発者モードのメイン画面
   void _showDeveloperModeScreen(BuildContext ctx, MindMapProvider provider) {
     final emailCtrl = TextEditingController(text: provider.inquiryEmail);
 
-    showDialog(
-      context: ctx,
-      barrierDismissible: false,
-      builder: (dctx) => StatefulBuilder(
+    final Widget Function(BuildContext) buildDeveloperContent =
+        (BuildContext dctx) => StatefulBuilder(
         builder: (sctx, setD) {
           return AlertDialog(
             backgroundColor: const Color(0xFF0D0D1A),
@@ -60328,11 +60460,13 @@ class _MindMapScreenState extends State<MindMapScreen>
               width: _isDesktop
                   ? math.min(900.0,
                       math.max(420.0, MediaQuery.sizeOf(sctx).width - 120.0))
-                  : 420,
+                  : math.min(420.0,
+                      math.max(260.0, MediaQuery.sizeOf(sctx).width - 64.0)),
               height: _isDesktop
                   ? math.min(900.0,
                       math.max(520.0, MediaQuery.sizeOf(sctx).height - 150.0))
-                  : 520,
+                  : math.min(620.0,
+                      math.max(280.0, MediaQuery.sizeOf(sctx).height - 180.0)),
               child: SingleChildScrollView(
                 child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -60397,6 +60531,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                                       onPressed: () async {
                                         await provider
                                             .setDevImpersonatePlan(plan);
+                                        if (!sctx.mounted ||
+                                            !provider.developerMode) {
+                                          return;
+                                        }
                                         setD(() {});
                                       },
                                       child: Text(
@@ -60460,7 +60598,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                               style: const TextStyle(color: Colors.black87)),
                           onPressed: () async {
                             await provider.setInquiryEmail(emailCtrl.text);
-                            if (!sctx.mounted) return;
+                            if (!sctx.mounted || !provider.developerMode) return;
                             _appSnack(
                               sctx,
                               SnackBar(
@@ -60617,8 +60755,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                               ),
                             );
                             if (ok == true) {
-                              provider.deactivateDeveloperMode();
+                              final deactivation =
+                                  provider.deactivateDeveloperMode();
                               if (dctx.mounted) Navigator.of(dctx).pop();
+                              await deactivation;
                             }
                           },
                         ),
@@ -60628,8 +60768,48 @@ class _MindMapScreenState extends State<MindMapScreen>
             ),
           );
         },
-      ),
-    );
+      );
+
+    final rootNavigator = Navigator.of(ctx, rootNavigator: true);
+    late final Route<void> developerRoute;
+    if (_isDesktop) {
+      developerRoute = DialogRoute<void>(
+        context: ctx,
+        barrierDismissible: false,
+        builder: buildDeveloperContent,
+      );
+    } else {
+      // Android/iOS は WebView が背後にある状態でダイアログを重ねると
+      // タップを奪われるため、不透明な全画面ルートに載せる。
+      developerRoute = MaterialPageRoute<void>(
+        fullscreenDialog: true,
+        builder: (routeCtx) => Scaffold(
+          backgroundColor: const Color(0xFF0D0D1A),
+          body: SafeArea(
+            child: Center(child: buildDeveloperContent(routeCtx)),
+          ),
+        ),
+      );
+    }
+
+    var closingRevokedRoute = false;
+    void closeIfDeveloperModeWasRevoked() {
+      if (provider.developerMode || closingRevokedRoute) return;
+      closingRevokedRoute = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final navigator = developerRoute.navigator;
+        if (developerRoute.isActive && navigator != null) {
+          navigator.removeRoute(developerRoute);
+        }
+      });
+    }
+
+    provider.addListener(closeIfDeveloperModeWasRevoked);
+    final developerFuture = rootNavigator.push(developerRoute);
+    unawaited(developerFuture.whenComplete(() {
+      provider.removeListener(closeIfDeveloperModeWasRevoked);
+      emailCtrl.dispose();
+    }));
   }
 
   Widget _devSection(String title, IconData icon, Color color) {
@@ -61017,8 +61197,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                 onPressed: () async {
                   // 確認ダイアログ無しで即解除。誤タップを避けるため
                   // 赤色で「解除」と明示している。
-                  provider.deactivateDeveloperMode();
+                  final deactivation = provider.deactivateDeveloperMode();
                   if (dctx.mounted) Navigator.of(dctx).pop();
+                  await deactivation;
                 },
                 icon: const Icon(Icons.logout_rounded,
                     size: 16, color: Color(0xFFE57373)),
@@ -68509,6 +68690,7 @@ class _WindowsWebViewSheetState extends State<_WindowsWebViewSheet> {
 
   /// セッション中のメモ履歴。
   final List<_VideoMemoEntry> _videoMemos = [];
+  late final Future<void> _videoMemoLoadFuture;
   // 旧 `_videoMemoIncludeTimestamp` トグルは廃止 (タイムスタンプフィールドの
   // 値の有無で時刻添付が決まるシンプルなロジックに変更)。
   /// 二重サブミット防止。
@@ -68673,7 +68855,7 @@ class _WindowsWebViewSheetState extends State<_WindowsWebViewSheet> {
     // この動画 (URL or videoId 単位) で過去に「履歴に保存」 したメモを
     // 現セッションのメモ一覧として読み込む。 セッションを越えてメモが
     // 残るので、 後日同じ動画を開いた時に見返せる。
-    _winLoadVideoMemoHistory();
+    _videoMemoLoadFuture = _winLoadVideoMemoHistory();
     // ── YouTube ナビ履歴の復元 ──
     // 前回このセッションで開いていた URL があれば、 widget.url の代わりに
     // それを初期 URL として使う (= 続きから始められる)。
@@ -68713,10 +68895,19 @@ class _WindowsWebViewSheetState extends State<_WindowsWebViewSheet> {
     final loaded = await _VideoMemoHistoryStore.loadForUrl(_winHistoryKeyUrl());
     if (!mounted) return;
     setState(() {
+      final merged = <_VideoMemoEntry>[..._videoMemos];
+      final knownIds = merged.map((entry) => entry.id).toSet();
+      for (final entry in loaded) {
+        if (knownIds.add(entry.id)) {
+          merged.add(entry);
+        }
+      }
       _videoMemos
         ..clear()
-        ..addAll(loaded.take(100));
+        ..addAll(merged.take(100));
     });
+    // 読込み中に追加された項目は、待機中の persist が
+    // この Future 完了後にマージ済みスナップショットを保存する。
   }
 
   /// このPC動画画面のメモ帳を識別する安定したキーを返す。
@@ -68731,6 +68922,7 @@ class _WindowsWebViewSheetState extends State<_WindowsWebViewSheet> {
 
   /// 現在の動画メモ項目を SharedPreferences に保存する。
   Future<void> _winPersistVideoMemos() async {
+    await _videoMemoLoadFuture;
     await _VideoMemoHistoryStore.saveForUrl(
       _winHistoryKeyUrl(),
       _videoMemos.take(100).toList(growable: false),
@@ -82924,6 +83116,7 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
   String _ctrlItemId = '';
   bool _playerSupported = true;
   bool _loadingVideo = false;
+  int _videoLoadGeneration = 0;
   bool _exporting = false; // 書き出し中
 
   // ── 再生クロック ──
@@ -82967,6 +83160,10 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
   // 横サイドパネル内のテキスト編集欄コントローラ (= ユーザー要望: 中央ダイアログ
   //   ではなく右の編集サイドメニューでテキスト/フォント/色を直接編集)。
   final TextEditingController _panelTextC = TextEditingController();
+  final TextEditingController _panelTitleC = TextEditingController();
+  final TextEditingController _panelStartC = TextEditingController();
+  final TextEditingController _panelDurationC = TextEditingController();
+  final TextEditingController _panelTrimC = TextEditingController();
   // テキスト入力のたびに保存すると重いので、 入力停止後にまとめて永続化する。
   Timer? _panelSaveDebounce;
   // パネルで最近使った文字色 (= 色変更をしやすく)。
@@ -83003,12 +83200,27 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
   @override
   void dispose() {
     if (_host?._veDropHandler == _onDropFiles) _host?._veDropHandler = null;
+    _videoLoadGeneration++;
+    _ctrlItemId = '';
+    _panelSaveDebounce?.cancel();
+    if (_loaded) {
+      final panelIndex = _items.indexWhere((e) => e.id == _panelItemId);
+      if (panelIndex >= 0) {
+        // ページ切替直前の時刻入力も、setStateせずモデルへ取り込んで保存する。
+        _applyPanelDetailsToModel(_items[panelIndex]);
+      }
+      unawaited(_VideoEditorStore.save(
+          widget.pageId, List<_VeItem>.from(_items, growable: false)));
+    }
     _focusNode.dispose();
     _tick?.cancel();
     _ctrl?.dispose();
     _hScroll.dispose();
     _panelTextC.dispose();
-    _panelSaveDebounce?.cancel();
+    _panelTitleC.dispose();
+    _panelStartC.dispose();
+    _panelDurationC.dispose();
+    _panelTrimC.dispose();
     super.dispose();
   }
 
@@ -83020,15 +83232,101 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
     _panelSaveDebounce = Timer(const Duration(milliseconds: 600), _persist);
   }
 
+  void _setPanelControllerText(TextEditingController controller, String value) {
+    if (controller.text == value) return;
+    controller.value = TextEditingValue(
+      text: value,
+      selection: TextSelection.collapsed(offset: value.length),
+    );
+  }
+
+  /// タイムライン上のドラッグや分割で値が変わった時も、サイドメニューの入力欄を
+  /// 選択中要素の最新値へ揃える。
+  void _syncPanelEditors(_VeItem it) {
+    _setPanelControllerText(_panelTitleC, it.title);
+    _setPanelControllerText(_panelStartC, _fmtPanelTime(it.startMs));
+    _setPanelControllerText(_panelDurationC, _fmtPanelTime(it.durationMs));
+    _setPanelControllerText(_panelTrimC, _fmtPanelTime(it.srcInMs));
+    if (it.kind == _VeKind.text) {
+      _setPanelControllerText(_panelTextC, it.text);
+    }
+  }
+
+  /// 編集欄ではミリ秒を失わない。既存の `_fmt` はタイムライン表示を短く保つため
+  /// 100ms 表示のままにし、サイドメニュー入力だけ3桁で往復させる。
+  static String _fmtPanelTime(int ms) {
+    if (ms < 0) ms = 0;
+    final totalSec = ms ~/ 1000;
+    final minutes = totalSec ~/ 60;
+    final seconds = (totalSec % 60).toString().padLeft(2, '0');
+    final millis = (ms % 1000).toString().padLeft(3, '0');
+    return '$minutes:$seconds.$millis';
+  }
+
+  /// サイドメニューの入力値をモデルへ反映する。dispose直前にも使うため、
+  /// このヘルパー自身はsetStateやcontroller同期を行わない。
+  void _applyPanelDetailsToModel(_VeItem it) {
+    final start = _parseTime(_panelStartC.text);
+    final duration = _parseTime(_panelDurationC.text);
+    final trim = _parseTime(_panelTrimC.text);
+    it.title = _panelTitleC.text;
+    if (it.kind == _VeKind.text) it.text = _panelTextC.text;
+    if (start != null) it.startMs = math.max(0, start);
+    if (duration != null && duration > 0) it.durationMs = duration;
+    if (trim != null && it.kind == _VeKind.video) {
+      it.srcInMs = math.max(0, trim);
+      if (it.srcDurationMs > 0) {
+        it.srcInMs = math.min(it.srcInMs, it.srcDurationMs - 1);
+      }
+    }
+    _clampVideoItemToSource(it);
+  }
+
+  void _clampVideoItemToSource(_VeItem it) {
+    if (it.kind != _VeKind.video || it.srcDurationMs <= 0) return;
+    it.srcInMs = it.srcInMs.clamp(0, math.max(0, it.srcDurationMs - 1));
+    // トリム開始以降に実在する尺だけを使う。残り尺を超える duration は
+    // プレビュー停止や ffmpeg の範囲外読みに繋がるため必ず丸める。
+    final remaining = math.max(1, it.srcDurationMs - it.srcInMs);
+    it.durationMs = it.durationMs.clamp(1, remaining);
+  }
+
+  /// サイドメニューの入力値を同期的に要素へ反映する。
+  void _applyPanelDetails(_VeItem it) {
+    setState(() => _applyPanelDetailsToModel(it));
+    _syncPanelEditors(it);
+  }
+
+  /// 時刻欄を含むサイドメニューの入力値を要素へ確定し、既存形式のまま保存する。
+  Future<void> _commitPanelDetails(_VeItem it) async {
+    _panelSaveDebounce?.cancel();
+    _applyPanelDetails(it);
+    await _persist();
+    if (mounted) await _seekTo(_playheadMs);
+  }
+
+  Future<void> _closeItemPanel(_VeItem it) async {
+    await _commitPanelDetails(it);
+    if (!mounted) return;
+    setState(() {
+      if (_panelItemId == it.id) _panelItemId = null;
+    });
+  }
+
   /// 要素を選択して右の編集サイドパネルを開く (= ユーザー要望: 要素クリックで
-  ///   横に編集メニュー)。 テキスト要素ならパネル内テキスト欄に内容を同期する。
+  ///   横に編集メニュー)。すべての詳細入力欄を現在値に同期する。
   void _openItemPanel(_VeItem it) {
+    final previousIndex = _items.indexWhere((e) => e.id == _panelItemId);
+    if (previousIndex >= 0) {
+      // 保存ボタンを押さず別要素へ移っても、入力中の時刻詳細を失わない。
+      _panelSaveDebounce?.cancel();
+      _applyPanelDetailsToModel(_items[previousIndex]);
+      unawaited(_persist());
+    }
+    _syncPanelEditors(it);
     setState(() {
       _selId = it.id;
       _panelItemId = it.id;
-      if (it.kind == _VeKind.text && _panelTextC.text != it.text) {
-        _panelTextC.text = it.text;
-      }
     });
   }
 
@@ -83069,10 +83367,10 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
       _items.add(split);
       _selId = split.id;
       _panelItemId = split.id;
-      _panelTextC.text = split.text;
-      _panelTextC.selection =
-          TextSelection(baseOffset: 0, extentOffset: split.text.length);
     });
+    _syncPanelEditors(split);
+    _panelTextC.selection =
+        TextSelection(baseOffset: 0, extentOffset: split.text.length);
     _persist();
     return true;
   }
@@ -83139,6 +83437,8 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
       }
       if (_items.isNotEmpty) _selId = _items.last.id;
     });
+    final selected = _sel;
+    if (selected != null) _openItemPanel(selected);
     _persist();
   }
 
@@ -83174,6 +83474,7 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
       _processing = true;
       _processMsg = '動画を読み込み中… 0%';
     });
+    if (added.isNotEmpty) _openItemPanel(added.last);
     await _persist();
     if (mounted) _seekTo(_playheadMs);
 
@@ -83207,6 +83508,9 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
           c += it.durationMs;
         }
       });
+      final panelIndex =
+          _items.indexWhere((item) => item.id == _panelItemId);
+      if (panelIndex >= 0) _syncPanelEditors(_items[panelIndex]);
       await _persist();
     }
     if (mounted) {
@@ -83337,14 +83641,20 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
   }
 
   Future<void> _loadVideoItem(_VeItem item, int ms, {bool play = false}) async {
-    if (_loadingVideo) return;
+    final generation = ++_videoLoadGeneration;
     _loadingVideo = true;
     _ctrlItemId = item.id;
+    bool isCurrentRequest() =>
+        mounted &&
+        generation == _videoLoadGeneration &&
+        _ctrlItemId == item.id &&
+        _items.any((candidate) => candidate.id == item.id);
     final old = _ctrl;
     _ctrl = null;
     try {
       await old?.dispose();
     } catch (_) {}
+    if (!isCurrentRequest()) return;
     VideoPlayerController? vpc;
     int lastPct = -1;
     try {
@@ -83354,14 +83664,15 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
         final pct = (f * 100).round();
         if (pct == lastPct) return;
         lastPct = pct;
-        if (mounted) {
+        if (isCurrentRequest()) {
           setState(() {
             _processing = true;
             _processMsg = '動画を読み込み中… $pct%';
           });
         }
       });
-      if (mounted && _processing) {
+      if (!isCurrentRequest()) return;
+      if (_processing) {
         setState(() {
           _processing = false;
           _processMsg = '';
@@ -83369,6 +83680,10 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
       }
       vpc = VideoPlayerController.file(File(p));
       await vpc.initialize().timeout(const Duration(seconds: 30));
+      if (!isCurrentRequest()) {
+        await vpc.dispose();
+        return;
+      }
       if (vpc.value.hasError || !vpc.value.isInitialized) {
         throw vpc.value.errorDescription ?? 'init failed';
       }
@@ -83376,32 +83691,50 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
       try {
         await vpc?.dispose();
       } catch (_) {}
+      if (!isCurrentRequest()) return;
       _loadingVideo = false;
-      if (mounted) {
-        setState(() {
-          _playerSupported = false;
-          _processing = false;
-          _processMsg = '';
-        });
-      }
+      setState(() {
+        _playerSupported = false;
+        _processing = false;
+        _processMsg = '';
+      });
+      return;
+    }
+    if (!isCurrentRequest()) {
+      await vpc.dispose();
       return;
     }
     final dur = vpc.value.duration.inMilliseconds;
     if (dur > 0 && item.srcDurationMs != dur) {
       item.srcDurationMs = dur;
-      _persist();
+      _clampVideoItemToSource(item);
+      unawaited(_persist());
     }
     final seekTo = item.srcInMs + (ms - item.startMs);
     await vpc.seekTo(
         Duration(milliseconds: seekTo.clamp(0, dur > 0 ? dur : seekTo)));
+    if (!isCurrentRequest()) {
+      await vpc.dispose();
+      return;
+    }
     try {
       await vpc.setPlaybackSpeed(_playbackRate);
     } catch (_) {}
-    if (play) await vpc.play();
+    if (!isCurrentRequest()) {
+      await vpc.dispose();
+      return;
+    }
+    if (play) {
+      await vpc.play();
+      if (!isCurrentRequest()) {
+        await vpc.dispose();
+        return;
+      }
+    }
     _ctrl = vpc;
     _playerSupported = true;
     _loadingVideo = false;
-    if (mounted) setState(() {});
+    setState(() {});
   }
 
   Future<void> _seekTo(int ms) async {
@@ -83418,9 +83751,16 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
             .seekTo(Duration(milliseconds: st.clamp(0, d > 0 ? d : st)));
       }
     } else {
+      _videoLoadGeneration++;
+      _loadingVideo = false;
+      _processing = false;
+      _processMsg = '';
       _ctrlItemId = '';
+      final old = _ctrl;
+      _ctrl = null;
       try {
-        await _ctrl?.pause();
+        await old?.pause();
+        await old?.dispose();
       } catch (_) {}
     }
     if (mounted) setState(() {});
@@ -83548,6 +83888,7 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
         _items.add(it);
         _selId = it.id;
       });
+      _openItemPanel(it);
       await _persist();
     } catch (_) {}
   }
@@ -83560,7 +83901,7 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
       layer: _freeLayer(startMs, 4000, 2),
       startMs: startMs,
       durationMs: 4000,
-      text: '',
+      text: widget.provider.t('ve.textShort'),
       x: 0.5,
       y: 0.82,
       fontSize: 34,
@@ -83570,10 +83911,7 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
       _items.add(it);
       _selId = it.id;
     });
-    await _editItem(it);
-    if (it.text.trim().isEmpty) {
-      setState(() => _items.remove(it));
-    }
+    _openItemPanel(it);
     await _persist();
   }
 
@@ -83583,14 +83921,20 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
     setState(() {
       _items.remove(it);
       _selId = null;
+      if (_panelItemId == it.id) _panelItemId = null;
     });
     await _persist();
+    if (!mounted) return;
     _seekTo(_playheadMs);
   }
 
   Future<void> _splitSelectedAtPlayhead() async {
     final it = _sel;
     if (it == null) return;
+    if (_panelItemId == it.id) {
+      // ツールバー経由の分割でも、サイドメニューの未確定入力を反映する。
+      _applyPanelDetailsToModel(it);
+    }
     const minPartMs = 200;
     final cutMs = _playheadMs;
     if (cutMs <= it.startMs + minPartMs || cutMs >= it.endMs - minPartMs) {
@@ -83633,9 +83977,10 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
       });
       _selId = after.id;
       _panelItemId = after.id;
-      if (after.kind == _VeKind.text) _panelTextC.text = after.text;
     });
+    _syncPanelEditors(after);
     await _persist();
+    if (!mounted) return;
     await _seekTo(cutMs);
   }
 
@@ -84757,6 +85102,7 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
       if (st != null) it.startMs = st < 0 ? 0 : st;
       if (du != null && du > 0) it.durationMs = du;
       if (tr != null && it.kind == _VeKind.video) it.srcInMs = tr < 0 ? 0 : tr;
+      _clampVideoItemToSource(it);
     });
     await _persist();
     _seekTo(_playheadMs);
@@ -85143,18 +85489,46 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
     );
   }
 
+  Widget _panelTimeField(String label, TextEditingController controller,
+      _VeItem it) {
+    return TextField(
+      controller: controller,
+      keyboardType: TextInputType.datetime,
+      textInputAction: TextInputAction.done,
+      onSubmitted: (_) => _commitPanelDetails(it),
+      style: const TextStyle(color: Colors.white, fontSize: 12),
+      decoration: InputDecoration(
+        labelText: label,
+        labelStyle: const TextStyle(color: Colors.white54, fontSize: 11),
+        isDense: true,
+        filled: true,
+        fillColor: const Color(0xFF15151F),
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 9, vertical: 10),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(6),
+          borderSide: BorderSide.none,
+        ),
+      ),
+    );
+  }
+
   /// 要素の設定を出す横サイドパネル (= ユーザー要望: 動画要素クリックで中央
-  /// ダイアログではなく、 横に再生速度・拡大率などを設定するメニュー)。
+  /// ダイアログではなく、すべての詳細プロパティを設定するメニュー)。
   Widget _buildItemSidePanel() {
     final idx = _items.indexWhere((e) => e.id == _panelItemId);
     if (idx < 0) return const SizedBox.shrink();
     final it = _items[idx];
     final isVideo = it.kind == _VeKind.video;
+    final panelWidth = math.min(
+      344.0,
+      math.max(220.0, MediaQuery.sizeOf(context).width - 12.0),
+    );
     return Positioned(
       top: 0,
       right: 0,
       bottom: 0,
-      width: 272,
+      width: panelWidth,
       child: Material(
         color: const Color(0xFF1E1E32),
         elevation: 16,
@@ -85182,7 +85556,7 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
                 IconButton(
                   icon:
                       const Icon(Icons.close, color: Colors.white54, size: 20),
-                  onPressed: () => setState(() => _panelItemId = null),
+                  onPressed: () => _closeItemPanel(it),
                 ),
               ]),
             ),
@@ -85193,6 +85567,141 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    // ── 全種類共通の詳細プロパティ ──
+                    Row(children: [
+                      const Icon(Icons.tune_rounded,
+                          color: Color(0xFFFF7043), size: 16),
+                      const SizedBox(width: 6),
+                      Text(widget.provider.t('ve.detailEdit'),
+                          style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700)),
+                    ]),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: _panelTitleC,
+                      maxLines: 1,
+                      textInputAction: TextInputAction.next,
+                      style: const TextStyle(color: Colors.white, fontSize: 13),
+                      decoration: InputDecoration(
+                        labelText: widget.provider.t('common.titleLabel'),
+                        labelStyle: const TextStyle(
+                            color: Colors.white54, fontSize: 11),
+                        isDense: true,
+                        filled: true,
+                        fillColor: const Color(0xFF15151F),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(6),
+                          borderSide: BorderSide.none,
+                        ),
+                      ),
+                      onChanged: (value) {
+                        setState(() => it.title = value);
+                        _persistDebounced();
+                      },
+                    ),
+                    const SizedBox(height: 8),
+                    LayoutBuilder(builder: (context, constraints) {
+                      final startField = _panelTimeField(
+                          widget.provider.t('ve.startPosition'),
+                          _panelStartC,
+                          it);
+                      final durationField = _panelTimeField(
+                          widget.provider.t('ve.duration'),
+                          _panelDurationC,
+                          it);
+                      if (constraints.maxWidth < 270) {
+                        return Column(children: [
+                          startField,
+                          const SizedBox(height: 8),
+                          durationField,
+                        ]);
+                      }
+                      return Row(children: [
+                        Expanded(child: startField),
+                        const SizedBox(width: 8),
+                        Expanded(child: durationField),
+                      ]);
+                    }),
+                    if (isVideo) ...[
+                      const SizedBox(height: 8),
+                      _panelTimeField(widget.provider.t('ve.trimStart'),
+                          _panelTrimC, it),
+                    ],
+                    const SizedBox(height: 8),
+                    Row(children: [
+                      const Icon(Icons.layers_rounded,
+                          color: Color(0xFFFF7043), size: 16),
+                      const SizedBox(width: 6),
+                      const Text('Layer',
+                          style:
+                              TextStyle(color: Colors.white54, fontSize: 12)),
+                      const Spacer(),
+                      DropdownButton<int>(
+                        value:
+                            it.layer.clamp(0, _kVeLayers - 1).toInt(),
+                        dropdownColor: const Color(0xFF24243A),
+                        underline: const SizedBox.shrink(),
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 12),
+                        items: [
+                          for (int layer = 0;
+                              layer < _kVeLayers;
+                              layer++)
+                            DropdownMenuItem(
+                                value: layer, child: Text('L$layer')),
+                        ],
+                        onChanged: (value) {
+                          if (value == null) return;
+                          setState(() => it.layer = value);
+                          _persist();
+                          _seekTo(_playheadMs);
+                        },
+                      ),
+                    ]),
+                    Row(children: [
+                      const Icon(Icons.animation_rounded,
+                          color: Color(0xFFFF7043), size: 16),
+                      const SizedBox(width: 6),
+                      Flexible(
+                        flex: 2,
+                        child: Text(widget.provider.t('video.anim'),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                color: Colors.white54, fontSize: 12)),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        flex: 3,
+                        child: DropdownButton<String>(
+                          value: _veAnims.any((a) => a.id == it.anim)
+                              ? it.anim
+                              : 'none',
+                          isExpanded: true,
+                          dropdownColor: const Color(0xFF24243A),
+                          underline: const SizedBox.shrink(),
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 12),
+                          items: [
+                            for (final anim in _veAnims)
+                              DropdownMenuItem(
+                                value: anim.id,
+                                child: Text(_veAnimLabel(anim.id)),
+                              ),
+                          ],
+                          onChanged: (value) {
+                            if (value == null) return;
+                            setState(() => it.anim = value);
+                            _persist();
+                          },
+                        ),
+                      ),
+                    ]),
+                    const SizedBox(height: 8),
+                    const Divider(color: Colors.white12, height: 1),
+                    const SizedBox(height: 12),
                     // ── テキスト要素のインライン編集 (= ユーザー要望: 中央
                     //    ダイアログではなく右の編集サイドメニューで文章・フォント・
                     //    色を直接・素早く変えられるように) ──
@@ -85208,8 +85717,9 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
                       const SizedBox(height: 6),
                       TextField(
                         controller: _panelTextC,
-                        maxLines: 1,
-                        textInputAction: TextInputAction.done,
+                        minLines: 2,
+                        maxLines: 5,
+                        textInputAction: TextInputAction.newline,
                         onSubmitted: (_) {
                           _panelSaveDebounce?.cancel();
                           _persist();
@@ -85387,6 +85897,38 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
                       const Divider(color: Colors.white12, height: 1),
                       const SizedBox(height: 12),
                     ],
+                    // ── ステージ上の位置 (全種類共通) ──
+                    Row(children: [
+                      const Icon(Icons.open_with_rounded,
+                          color: Color(0xFFFF7043), size: 16),
+                      const SizedBox(width: 6),
+                      Text('X ${(it.x * 100).round()}%',
+                          style: const TextStyle(
+                              color: Colors.white70, fontSize: 12)),
+                    ]),
+                    Slider(
+                      value: it.x.clamp(0.0, 1.0),
+                      min: 0,
+                      max: 1,
+                      activeColor: const Color(0xFFFF7043),
+                      onChanged: (value) => setState(() => it.x = value),
+                      onChangeEnd: (_) => _persist(),
+                    ),
+                    Row(children: [
+                      const SizedBox(width: 22),
+                      Text('Y ${(it.y * 100).round()}%',
+                          style: const TextStyle(
+                              color: Colors.white70, fontSize: 12)),
+                    ]),
+                    Slider(
+                      value: it.y.clamp(0.0, 1.0),
+                      min: 0,
+                      max: 1,
+                      activeColor: const Color(0xFFFF7043),
+                      onChanged: (value) => setState(() => it.y = value),
+                      onChangeEnd: (_) => _persist(),
+                    ),
+                    const SizedBox(height: 4),
                     // ── 拡大率 (要素ごと) ──
                     Row(children: [
                       const Icon(Icons.zoom_out_map_rounded,
@@ -85470,16 +86012,16 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
                       ),
                     ),
                     const SizedBox(height: 8),
-                    // ── 詳細編集 (テキスト/トリム/アニメ等) ──
+                    // 入力欄の開始位置・長さ・トリムを確定して保存する。
                     SizedBox(
                       width: double.infinity,
-                      child: OutlinedButton.icon(
-                        icon: const Icon(Icons.tune_rounded, size: 16),
-                        label: Text(widget.provider.t('ve.detailEdit')),
-                        style: OutlinedButton.styleFrom(
-                            foregroundColor: const Color(0xFFFF7043),
-                            side: const BorderSide(color: Color(0xFFFF7043))),
-                        onPressed: () => _editItem(it),
+                      child: ElevatedButton.icon(
+                        icon: const Icon(Icons.save_rounded, size: 16),
+                        label: Text(widget.provider.t('btn.save')),
+                        style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFFFF7043),
+                            foregroundColor: Colors.white),
+                        onPressed: () => _commitPanelDetails(it),
                       ),
                     ),
                   ],
@@ -85633,13 +86175,10 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
         child: Stack(clipBehavior: Clip.none, children: [
           GestureDetector(
             // クリックで選択 + 横の設定パネルを開く (= ユーザー要望: 中央
-            //   ダイアログではなく横にサイドメニュー)。 ダブルタップは詳細編集。
+            //   ダイアログではなく横にサイドメニュー)。
             onTap: () => _openItemPanel(it),
-            onDoubleTap: () {
-              setState(() => _selId = it.id);
-              _editItem(it);
-            },
-            onPanStart: (_) => setState(() => _selId = it.id),
+            onDoubleTap: () => _openItemPanel(it),
+            onPanStart: (_) => _openItemPanel(it),
             onPanUpdate: (d) {
               setState(() {
                 it.x = (it.x + d.delta.dx / w).clamp(0.0, 1.0);
@@ -85896,7 +86435,7 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
               visualDensity: VisualDensity.compact),
         ),
         TextButton(
-          onPressed: () => _editItem(it),
+          onPressed: () => _openItemPanel(it),
           child: Text(widget.provider.t('btn.edit'),
               style: TextStyle(color: Color(0xFF4FC3F7), fontSize: 12)),
         ),
@@ -86112,14 +86651,12 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
         behavior: HitTestBehavior.opaque,
         // クリックで選択 + 右の編集サイドメニューを開く (= ユーザー要望)。
         onTap: () => _openItemPanel(it),
-        // = ユーザー要望: ダブルクリックで詳細設定 (アニメ/文字サイズ/フォント等)。
-        onDoubleTap: () {
-          setState(() => _selId = it.id);
-          _editItem(it);
-        },
+        onDoubleTap: () => _openItemPanel(it),
         onPanStart: (_) {
+          _openItemPanel(it);
           setState(() {
             _selId = it.id;
+            _panelItemId = it.id;
             _dragId = it.id;
             _dragStartMs = it.startMs;
             _dragLayer = it.layer;
@@ -86141,6 +86678,7 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
         },
         onPanEnd: (_) {
           _dragId = null;
+          if (_panelItemId == it.id) _syncPanelEditors(it);
           _persist();
           _seekTo(_playheadMs);
         },
@@ -86148,8 +86686,10 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
         //    要素を長押しで動かせるように)。 即時パンはタイムラインの横スクロールと
         //    競合してしまうが、 長押し移動なら競合せず確実に掴んで動かせる。 ──
         onLongPressStart: (_) {
+          _openItemPanel(it);
           setState(() {
             _selId = it.id;
+            _panelItemId = it.id;
             _dragId = it.id;
             _dragStartMs = it.startMs;
             _dragLayer = it.layer;
@@ -86167,6 +86707,7 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
         },
         onLongPressEnd: (_) {
           _dragId = null;
+          if (_panelItemId == it.id) _syncPanelEditors(it);
           _persist();
           _seekTo(_playheadMs);
         },
@@ -86204,6 +86745,7 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
               onPanStart: (_) {
+                _openItemPanel(it);
                 _resizing = true;
                 _resizeLeft = true;
                 _dragId = it.id;
@@ -86239,6 +86781,8 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
                 _resizing = false;
                 _resizeLeft = false;
                 _dragId = null;
+                _clampVideoItemToSource(it);
+                if (_panelItemId == it.id) _syncPanelEditors(it);
                 _persist();
                 _seekTo(_playheadMs);
               },
@@ -86264,6 +86808,7 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
               onPanStart: (_) {
+                _openItemPanel(it);
                 _resizing = true;
                 _resizeLeft = false;
                 _dragId = it.id;
@@ -86276,12 +86821,22 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
                 _dragDx += d.delta.dx;
                 setState(() {
                   final dms = (_dragDx / _pxPerSec * 1000).round();
-                  it.durationMs = (_dragStartMs + dms).clamp(200, 1 << 30);
+                  final desired = _dragStartMs + dms;
+                  if (it.kind == _VeKind.video && it.srcDurationMs > 0) {
+                    final remaining =
+                        math.max(1, it.srcDurationMs - it.srcInMs);
+                    final minDuration = math.min(200, remaining);
+                    it.durationMs = desired.clamp(minDuration, remaining);
+                  } else {
+                    it.durationMs = desired.clamp(200, 1 << 30);
+                  }
                 });
               },
               onPanEnd: (_) {
                 _resizing = false;
                 _dragId = null;
+                _clampVideoItemToSource(it);
+                if (_panelItemId == it.id) _syncPanelEditors(it);
                 _persist();
               },
               child: Align(
@@ -86759,6 +87314,7 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
   /// 「追加済み」 マークが付くだけ。 削除しても既にマップ追加済みの
   /// ノードは消えない (マップ側の独立した実体になっている)。
   final List<_VideoMemoEntry> _videoMemos = [];
+  late final Future<void> _videoMemoLoadFuture;
   // 旧 `_videoMemoIncludeTimestamp` トグルは廃止 (タイムスタンプフィールドの
   // 値の有無で時刻添付が決まるシンプルなロジックに変更)。
   /// メモ追加処理中の二重タップ防止。
@@ -86787,14 +87343,15 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
   /// 入力中の文字が消えるのを防ぐ。
   final FocusNode _videoMemoTsFocus = FocusNode();
 
-  /// メモ入力欄の FocusNode。 編集中に Enter (Shift 無し) を押すと
-  /// 「マップに追加」 で確定する (= ユーザー要望)。 Shift+Enter は改行のまま。
+  /// メモ入力欄の FocusNode。編集中に Enter (Shift 無し) を押すと
+  /// まず独立したメモ項目として一覧へ追加する。マップ / AI /
+  /// Google 検索への送信は、追加後の各項目から行う。Shift+Enter は改行。
   late final FocusNode _videoMemoFocus = FocusNode(onKeyEvent: (node, event) {
     if (event is KeyDownEvent &&
         !HardwareKeyboard.instance.isShiftPressed &&
         (event.logicalKey == LogicalKeyboardKey.enter ||
             event.logicalKey == LogicalKeyboardKey.numpadEnter)) {
-      _submitVideoMemoToMap();
+      _saveVideoMemoLocally();
       return KeyEventResult.handled;
     }
     return KeyEventResult.ignored;
@@ -87266,7 +87823,7 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
     // ── 動画メモ履歴を復元 ──
     // 過去にこの動画で「履歴に保存」 したメモを呼び戻す。 セッションを
     // 越えて保持されるので、 後日同じ動画を開けば履歴一覧に再表示される。
-    _loadVideoMemoHistory();
+    _videoMemoLoadFuture = _loadVideoMemoHistory();
     // 画面ロック防止 ON: 動画再生中は画面が自動オフにならないようにする。
     // dispose で OFF に戻す。失敗しても致命的ではないので例外は無視。
     try {
@@ -88807,12 +89364,52 @@ v.addEventListener('play', function() {
   // で動画の現在再生位置を自動的にメモノードに添付する形に変更したため、
   // メモ本文への手動挿入は不要になった (= ボタン経路の出口を断った)。
 
-  /// 現在再生中の動画 URL を履歴のキーとして返す。
+  /// このモバイル動画画面のメモ一覧を識別する安定したキーを返す。
+  ///
+  /// プレイリスト移動後も一覧は同じ State で保持されるため、現在の
+  /// `_playlistIndex` をキーにすると、別動画へ移動した後の追加済み更新や削除が
+  /// 移動先動画の保存領域へ書かれてしまう。PC版と同じく画面を開いた時の URL を
+  /// 一覧キーに固定し、各メモの実際の動画は `sourceUrl` で識別する。
   String _historyKeyUrl() {
-    if (_playlist.isNotEmpty && _playlistIndex < _playlist.length) {
-      return _playlist[_playlistIndex];
+    final initial = widget.url.trim();
+    return initial.isNotEmpty ? initial : 'youtube_video_memos';
+  }
+
+  /// メモ項目を作った時点の動画 URL をスナップショットする。
+  /// 項目を追加した後に別の動画へ移動してからマップへ送っても、
+  /// 元の動画ノードに正しく接続できるようにする。
+  String _currentVideoMemoSourceUrl() {
+    if (_currentVideoId != null && _currentVideoId!.isNotEmpty) {
+      return 'https://www.youtube.com/watch?v=$_currentVideoId';
     }
-    return widget.url;
+
+    if (_playlist.isNotEmpty && _playlistIndex < _playlist.length) {
+      final source = _playlist[_playlistIndex].trim();
+      if (source.isNotEmpty) {
+        final videoId = NodeWidget.extractVideoId(source);
+        if (videoId != null) {
+          return 'https://www.youtube.com/watch?v=$videoId';
+        }
+        return source;
+      }
+    }
+
+    final current = _currentUrl.trim();
+    if (current.isNotEmpty) {
+      final videoId = NodeWidget.extractVideoId(current);
+      if (videoId != null) {
+        return 'https://www.youtube.com/watch?v=$videoId';
+      }
+      return current;
+    }
+    return widget.url.trim();
+  }
+
+  /// メモ項目の補助表示と Google 検索タイトル用に、
+  /// 作成時点の動画タイトルも保存する。
+  String? _currentVideoMemoSourceTitle() {
+    final title = _currentTitle.trim();
+    return title.isEmpty ? null : title;
   }
 
   /// 永続化されたメモ履歴を読み込んで `_videoMemos` に反映。
@@ -88820,24 +89417,36 @@ v.addEventListener('play', function() {
     final loaded = await _VideoMemoHistoryStore.loadForUrl(_historyKeyUrl());
     if (!mounted) return;
     setState(() {
+      final merged = <_VideoMemoEntry>[..._videoMemos];
+      final knownIds = merged.map((entry) => entry.id).toSet();
+      for (final entry in loaded) {
+        if (knownIds.add(entry.id)) {
+          merged.add(entry);
+        }
+      }
       _videoMemos
         ..clear()
-        ..addAll(loaded);
+        ..addAll(merged.take(100));
     });
+    // 読込み中の追加/削除は persist 側でこの Future を待つため、
+    // ここから再保存せずともマージ済み全件が次の書込みに入る。
   }
 
   /// 現在の `_videoMemos` を SharedPreferences に保存。
   Future<void> _persistVideoMemos() async {
-    await _VideoMemoHistoryStore.saveForUrl(_historyKeyUrl(), _videoMemos);
+    await _videoMemoLoadFuture;
+    final snapshot = _videoMemos.take(100).toList(growable: false);
+    await _VideoMemoHistoryStore.saveForUrl(_historyKeyUrl(), snapshot);
   }
 
   /// 「マップに追加」 を実行する内部処理。
   ///
-  /// [existingEntry] が non-null の場合、 過去にリスト追加だけしておいた
-  /// メモを今になってマップに上げる用途 (= 履歴行の「マップに追加」 ボタン)。
-  Future<void> _submitVideoMemoToMap({_VideoMemoEntry? existingEntry}) async {
+  /// 入力欄から直接送信せず、一度リストへ追加したメモ項目の
+  /// 「マップに追加」ボタンからのみ呼ぶ。
+  Future<void> _submitVideoMemoToMap(
+      {required _VideoMemoEntry existingEntry}) async {
     if (_videoMemoSubmitting) return;
-    final text = (existingEntry?.text ?? _videoMemoController.text).trim();
+    final text = existingEntry.text.trim();
     if (text.isEmpty) {
       _showInlineBanner('メモが空です', color: const Color(0xFFE57373));
       return;
@@ -88845,16 +89454,13 @@ v.addEventListener('play', function() {
     setState(() => _videoMemoSubmitting = true);
     try {
       final provider = context.read<MindMapProvider>();
-      // 動画 URL: YouTube は m.youtube.com/watch?v=ID 形式、 ローカルは
-      // _playlist の現在エントリ (= ファイルパス) をそのまま使う。
-      String videoUrl;
-      if (_isYoutube && _currentVideoId != null) {
-        videoUrl = 'https://m.youtube.com/watch?v=$_currentVideoId';
-      } else if (_playlist.isNotEmpty && _playlistIndex < _playlist.length) {
-        videoUrl = _playlist[_playlistIndex];
-      } else {
-        videoUrl = widget.url;
-      }
+      // 別動画へ移動後でも、項目作成時の動画へ紐づける。
+      // 旧形式の JSON には sourceUrl が無いため、その場合だけ現在動画へ
+      // フォールバックして保存互換性を保つ。
+      final snapshottedSource = (existingEntry.sourceUrl ?? '').trim();
+      final videoUrl = snapshottedSource.isNotEmpty
+          ? snapshottedSource
+          : _currentVideoMemoSourceUrl();
 
       // ── タイムスタンプ決定ロジック ──
       // 旧実装にはトグル `_videoMemoIncludeTimestamp` があり、 何らかの
@@ -88865,13 +89471,7 @@ v.addEventListener('play', function() {
       // 自動追従モードではフィールドに現在再生位置が常に流し込まれている
       // ので、 ユーザーが何も触らなければ必ず時刻が乗る。
       // 履歴経由 (existingEntry) のみ、 保存時の値を尊重する。
-      double? ts = existingEntry?.timestampSec;
-      if (ts == null) {
-        final tsText = _videoMemoTsCtrl.text.trim();
-        if (tsText.isNotEmpty) {
-          ts = _parseUserTimestamp(tsText);
-        }
-      }
+      final ts = existingEntry.timestampSec;
       // ts が null = タイムスタンプなしで保存 (ユーザーがフィールドを空にした)
       final headerLabel = ts != null ? '[${_formatTimestamp(ts)}]' : '';
 
@@ -88894,28 +89494,11 @@ v.addEventListener('play', function() {
       }
 
       setState(() {
-        if (existingEntry != null) {
-          existingEntry.addedToMap = true;
-        } else {
-          // マップに追加したメモは履歴の「下」 に自動で積む (= ユーザー要望:
-          //   履歴追加ボタンは設けず、 マップ追加で自動的に下へ追加)。
-          _videoMemos.add(
-            _VideoMemoEntry(
-              id: DateTime.now().microsecondsSinceEpoch.toString(),
-              text: text,
-              timestampSec: ts,
-              addedToMap: true,
-            ),
-          );
-          // 履歴は最新 5 件まで。 超えたら古いものから消す。
-          while (_videoMemos.length > 5) {
-            _videoMemos.removeAt(0);
-          }
-          _videoMemoController.clear();
-        }
+        existingEntry.addedToMap = true;
       });
       // 永続化 (履歴一覧をセッション越しに保持)
-      _persistVideoMemos();
+      await _persistVideoMemos();
+      if (!mounted) return;
 
       // 「マップにメモを追加」 をメモ欄の上のバナーで通知 (= ユーザー要望)。
       _showInlineBanner(
@@ -88931,17 +89514,23 @@ v.addEventListener('play', function() {
     }
   }
 
-  /// 入力中のテキストを「履歴」 にだけ保存する (= マップにはまだ追加しない)。
-  /// 後で履歴行の「マップに追加」 ボタンを押せば送信される。
+  /// 入力中のテキストを独立したメモ項目として追加する。
+  /// この時点ではマップへ送らず、各項目のボタンからマップ / AI /
+  /// Google 検索を選ぶ。
   void _saveVideoMemoLocally() {
     final text = _videoMemoController.text.trim();
-    if (text.isEmpty) return;
+    if (text.isEmpty) {
+      _showInlineBanner('メモが空です', color: const Color(0xFFE57373));
+      return;
+    }
     // タイムスタンプフィールドから値を取得 (空なら時刻なし)
     double? ts;
     final tsText = _videoMemoTsCtrl.text.trim();
     if (tsText.isNotEmpty) {
       ts = _parseUserTimestamp(tsText);
     }
+    final sourceUrl = _currentVideoMemoSourceUrl();
+    final sourceTitle = _currentVideoMemoSourceTitle();
     setState(() {
       _videoMemos.insert(
         0,
@@ -88950,12 +89539,17 @@ v.addEventListener('play', function() {
           text: text,
           timestampSec: ts,
           addedToMap: false,
+          sourceUrl: sourceUrl.isEmpty ? null : sourceUrl,
+          sourceTitle: sourceTitle,
         ),
       );
+      while (_videoMemos.length > 100) {
+        _videoMemos.removeLast();
+      }
       _videoMemoController.clear();
     });
-    // 永続化
-    _persistVideoMemos();
+    // 永続化。旧 JSON は _VideoMemoEntry.fromJson で引き続き読める。
+    unawaited(_persistVideoMemos());
   }
 
   /// メモ履歴行の削除。
@@ -88964,7 +89558,7 @@ v.addEventListener('play', function() {
       _videoMemos.removeWhere((e) => e.id == entry.id);
     });
     // 永続化 (削除を反映)
-    _persistVideoMemos();
+    unawaited(_persistVideoMemos());
   }
 
   /// メモパネルウィジェット。 動画レイヤーの最前面に重ねて表示する。
@@ -89083,7 +89677,7 @@ v.addEventListener('play', function() {
                             textInputAction: TextInputAction.newline,
                             decoration: InputDecoration(
                               hintText:
-                                  'ここに気づいたことをメモ…  下の「タイムスタンプ」 が自動で動画の現在時刻に追従します',
+                                  'ここに気づいたことをメモ…  入力後に「メモを追加」を押します',
                               hintStyle: const TextStyle(
                                   color: Colors.white38, fontSize: 12),
                               filled: true,
@@ -89282,40 +89876,26 @@ v.addEventListener('play', function() {
                             spacing: 6,
                             runSpacing: 6,
                             children: [
-                              // 旧「再生位置も保存」 トグルは廃止。
-                              // タイムスタンプの ON/OFF はフィールドの値の有無で
-                              // 決まるシンプルなロジックに変更したため、 トグル
-                              // 自体が不要になった。 ユーザーがタイムスタンプを
-                              // 入れたくない場合はフィールドを空にすればよい。
-                              // 「履歴に保存」 ボタンは廃止 (= ユーザー要望: 履歴追加
-                              //   ボタンは設けず、 マップに追加したら自動的に履歴の
-                              //   下へ積まれるようにした)。
+                              // 入力中の文章はまず独立したメモ項目へ追加する。
+                              // マップ / AI / Google 検索は、追加後の各項目に
+                              // 表示されるボタンから実行する。
                               ElevatedButton.icon(
-                                onPressed: _videoMemoSubmitting
-                                    ? null
-                                    : () => _submitVideoMemoToMap(),
+                                onPressed: _saveVideoMemoLocally,
                                 style: ElevatedButton.styleFrom(
-                                  backgroundColor: const Color(0xFF43B97F),
+                                  backgroundColor:
+                                      Colors.white.withValues(alpha: 0.12),
                                   foregroundColor: Colors.white,
+                                  side: const BorderSide(
+                                      color: Colors.white38, width: 1.2),
                                   padding: const EdgeInsets.symmetric(
                                       horizontal: 12, vertical: 6),
                                   minimumSize: const Size(0, 32),
                                   tapTargetSize:
                                       MaterialTapTargetSize.shrinkWrap,
                                 ),
-                                icon: _videoMemoSubmitting
-                                    ? const SizedBox(
-                                        width: 14,
-                                        height: 14,
-                                        child: CircularProgressIndicator(
-                                            strokeWidth: 2,
-                                            color: Colors.white))
-                                    : const Icon(Icons.add_to_photos_rounded,
-                                        size: 14),
-                                label: Text(
-                                    context
-                                        .read<MindMapProvider>()
-                                        .t('vmemo.addToMap'),
+                                icon: const Icon(Icons.add_rounded, size: 16),
+                                label: const Text(
+                                    'メモを追加',
                                     style: TextStyle(
                                         fontSize: 11,
                                         fontWeight: FontWeight.w700)),
@@ -89330,16 +89910,24 @@ v.addEventListener('play', function() {
                               color: Color(0x33FFFFFF),
                             ),
                             const SizedBox(height: 6),
-                            Row(children: [
-                              const Icon(Icons.history_rounded,
-                                  color: Colors.white54, size: 14),
-                              const SizedBox(width: 4),
-                              Text(
-                                'このセッションのメモ (${_videoMemos.length})',
-                                style: const TextStyle(
-                                    color: Colors.white54, fontSize: 11),
+                            Wrap(
+                              spacing: 6,
+                              runSpacing: 4,
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              children: [
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(Icons.history_rounded,
+                                      color: Colors.white54, size: 14),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    '動画メモ (${_videoMemos.length})',
+                                    style: const TextStyle(
+                                        color: Colors.white54, fontSize: 11),
+                                  ),
+                                ],
                               ),
-                              const SizedBox(width: 8),
                               // ── 一括で AI に送る (= ユーザー要望: セッションメモを
                               //    まとめて AI に渡す) ──
                               InkWell(
@@ -89362,7 +89950,6 @@ v.addEventListener('play', function() {
                                       ]),
                                 ),
                               ),
-                              const SizedBox(width: 6),
                               InkWell(
                                 onTap: _openVideoHistoryInGoogleSearch,
                                 borderRadius: BorderRadius.circular(6),
@@ -89485,6 +90072,33 @@ v.addEventListener('play', function() {
       initialMemo: text,
       customTitle: '動画メモを検索',
       anchorPos: const Offset(12, 8),
+      singletonKey: 'mobile_video_memo_google',
+      initialWidth: math.min(430.0, math.max(300.0, size.width - 16.0)),
+      initialHeight: math.min(430.0, math.max(300.0, size.height * 0.50)),
+      onAddNode: (_, __, ___) {},
+    );
+  }
+
+  /// 1 件の動画メモ項目だけを Google 検索へ渡す。
+  /// 作成時の動画タイトルが保存されていれば見出しに使うが、
+  /// 旧データの sourceTitle == null でも従来通り開ける。
+  void _openVideoMemoInGoogleSearch(_VideoMemoEntry entry) {
+    final text = entry.text.trim();
+    if (text.isEmpty) {
+      _showInlineBanner('検索できるメモがありません',
+          color: const Color(0xFFE57373));
+      return;
+    }
+    final size = MediaQuery.of(context).size;
+    final sourceTitle = (entry.sourceTitle ?? '').trim();
+    GoogleSearchDialog.showFloating(
+      context,
+      initialQuery: text,
+      initialMemo: text,
+      customTitle:
+          sourceTitle.isEmpty ? '動画メモを検索' : '$sourceTitle のメモを検索',
+      anchorPos: const Offset(12, 8),
+      // 同じ検索画面を再利用し、別項目を押した時は内容を更新する。
       singletonKey: 'mobile_video_memo_google',
       initialWidth: math.min(430.0, math.max(300.0, size.width - 16.0)),
       initialHeight: math.min(430.0, math.max(300.0, size.height * 0.50)),
@@ -90973,6 +91587,7 @@ v.addEventListener('play', function() {
   Widget _buildVideoMemoHistoryItem(_VideoMemoEntry entry) {
     final ts = entry.timestampSec;
     final canJump = ts != null;
+    final sourceTitle = (entry.sourceTitle ?? '').trim();
     return Material(
       color: Colors.transparent,
       child: InkWell(
@@ -90981,7 +91596,7 @@ v.addEventListener('play', function() {
         // タイムスタンプ無しのメモはクリックしても何もしない (= 通常の表示行)。
         onTap: canJump ? () => _seekVideoTo(ts) : null,
         child: Container(
-          // = ユーザー要望: 履歴は最大 5 件しか保持しない割に縦に長すぎたので詰める。
+          // メモ項目を複数並べても操作しやすいよう、1 件をコンパクトに表示。
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
           margin: const EdgeInsets.only(bottom: 3),
           decoration: BoxDecoration(
@@ -91023,11 +91638,26 @@ v.addEventListener('play', function() {
                 const SizedBox(width: 6),
               ],
               Expanded(
-                child: Text(
-                  entry.text,
-                  style: const TextStyle(color: Colors.white, fontSize: 11),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (sourceTitle.isNotEmpty)
+                      Text(
+                        sourceTitle,
+                        style: const TextStyle(
+                            color: Colors.white38, fontSize: 9),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    Text(
+                      entry.text,
+                      style:
+                          const TextStyle(color: Colors.white, fontSize: 11),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
                 ),
               ),
               const SizedBox(width: 6),
@@ -91057,6 +91687,14 @@ v.addEventListener('play', function() {
                 icon: const Icon(Icons.auto_awesome_rounded,
                     color: Color(0xFFBA68C8), size: 15),
                 onPressed: () => _openMemoTextInAi(entry.text),
+              ),
+              IconButton(
+                tooltip: 'このメモでGoogle検索',
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+                icon: const Icon(Icons.search_rounded,
+                    color: Color(0xFF4FC3F7), size: 15),
+                onPressed: () => _openVideoMemoInGoogleSearch(entry),
               ),
               IconButton(
                 tooltip: context.read<MindMapProvider>().t('btn.delete'),
