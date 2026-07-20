@@ -14521,8 +14521,8 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Очистить всё',
     },
     'paint.clearConfirm': {
-      'ja': 'このシートの内容をすべて消去しますか？',
-      'en': 'Erase all content of this sheet?',
+      'ja': 'このページの内容をすべて消去しますか？',
+      'en': 'Erase all content of this page?',
       'zh': '要清除此画板的所有内容吗？',
       'ko': '이 시트의 내용을 모두 지울까요?',
       'es': '¿Borrar todo el contenido de esta hoja?',
@@ -14530,6 +14530,54 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Den gesamten Inhalt dieses Blatts löschen?',
       'pt': 'Apagar todo o conteúdo desta folha?',
       'ru': 'Стереть всё содержимое этого листа?',
+    },
+    'paint.addNote': {
+      'ja': 'ノートを追加',
+      'en': 'Add note',
+    },
+    'paint.noteName': {
+      'ja': 'ノート名',
+      'en': 'Note name',
+    },
+    'paint.deleteNote': {
+      'ja': 'ノートを削除',
+      'en': 'Delete note',
+    },
+    'paint.deleteNoteConfirm': {
+      'ja': '「{name}」と中のすべてのページを削除しますか？',
+      'en': 'Delete “{name}” and all of its pages?',
+    },
+    'paint.defaultNoteName': {
+      'ja': 'ノート{n}',
+      'en': 'Note {n}',
+    },
+    'paint.addPage': {
+      'ja': 'ページを追加',
+      'en': 'Add page',
+    },
+    'paint.pageName': {
+      'ja': 'ページ名',
+      'en': 'Page name',
+    },
+    'paint.deletePage': {
+      'ja': 'ページを削除',
+      'en': 'Delete page',
+    },
+    'paint.deletePageConfirm': {
+      'ja': '「{name}」を削除しますか？',
+      'en': 'Delete “{name}”?',
+    },
+    'paint.defaultPageName': {
+      'ja': 'ページ{n}',
+      'en': 'Page {n}',
+    },
+    'paint.imagePickCancelled': {
+      'ja': '画像の選択をキャンセルしました',
+      'en': 'Image selection was cancelled',
+    },
+    'paint.imagePickFailed': {
+      'ja': '画像を追加できませんでした。別の画像を選択してください。',
+      'en': 'Could not add the image. Please choose another image.',
     },
     'paint.deleteSheet': {
       'ja': 'シートを削除',
@@ -24067,6 +24115,14 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Ellipse',
       'pt': 'Elipse',
       'ru': 'Эллипс',
+    },
+    'shape.triangle': {
+      'ja': '三角形',
+      'en': 'Triangle',
+    },
+    'shape.diamond': {
+      'ja': 'ひし形',
+      'en': 'Diamond',
     },
     'shape.circle': {
       'ja': '円',
@@ -35460,8 +35516,24 @@ class MindMapProvider extends ChangeNotifier {
       'en': 'Focus tasks {done}/{total}',
     },
     'focusLock.taskUnlockHint': {
-      'ja': 'すべて完了すると自動で解除されます',
-      'en': 'The lock ends automatically when all tasks are complete',
+      'ja': 'すべて完了後、確認してから解除できます',
+      'en': 'After all tasks are done, confirm before unlocking',
+    },
+    'focusLock.taskUnlockConfirmTitle': {
+      'ja': 'すべてのタスクが完了しました',
+      'en': 'All tasks are complete',
+    },
+    'focusLock.taskUnlockConfirmBody': {
+      'ja': '集中ロックを解除しますか？ チェック状態はそのまま維持されます。',
+      'en': 'Unlock Focus Lock? Your completed task checks will be kept.',
+    },
+    'focusLock.taskUnlockConfirmAction': {
+      'ja': '解除する',
+      'en': 'Unlock',
+    },
+    'focusLock.taskUnlockPendingAction': {
+      'ja': '完了を確認して解除',
+      'en': 'Confirm completion and unlock',
     },
     'focusLock.description': {
       'ja': '設定した時間だけ全画面をロックして集中します。ロック中は操作できません。',
@@ -37263,6 +37335,23 @@ class MindMapProvider extends ChangeNotifier {
         (prefs.getDouble('desktopBottomDockY') ?? 0.88)
             .clamp(0.0, 1.0)
             .toDouble();
+    for (final placement in const <String>['left', 'right']) {
+      _desktopSideDockHeightByPlacement[placement] =
+          (prefs.getDouble('desktopSideDockHeight_$placement') ?? 2400.0)
+              .clamp(176.0, 2400.0)
+              .toDouble();
+      _desktopSideDockFloatingByPlacement[placement] =
+          prefs.getBool('desktopSideDockFloating_$placement') ?? false;
+      _desktopSideDockXByPlacement[placement] =
+          (prefs.getDouble('desktopSideDockX_$placement') ??
+                  (placement == 'left' ? 0.04 : 0.96))
+              .clamp(0.0, 1.0)
+              .toDouble();
+      _desktopSideDockYByPlacement[placement] =
+          (prefs.getDouble('desktopSideDockY_$placement') ?? 0.52)
+              .clamp(0.0, 1.0)
+              .toDouble();
+    }
 
     // カスタムヘッダーボタン
     final customButtonsJson = prefs.getString('customHeaderButtons');
@@ -37695,6 +37784,35 @@ class MindMapProvider extends ChangeNotifier {
   double get desktopBottomDockX => _desktopBottomDockX;
   double _desktopBottomDockY = 0.88;
   double get desktopBottomDockY => _desktopBottomDockY;
+
+  final Map<String, double> _desktopSideDockHeightByPlacement = {
+    'left': 2400.0,
+    'right': 2400.0,
+  };
+  final Map<String, bool> _desktopSideDockFloatingByPlacement = {
+    'left': false,
+    'right': false,
+  };
+  final Map<String, double> _desktopSideDockXByPlacement = {
+    'left': 0.04,
+    'right': 0.96,
+  };
+  final Map<String, double> _desktopSideDockYByPlacement = {
+    'left': 0.52,
+    'right': 0.52,
+  };
+
+  bool _isDesktopSideDockPlacement(String placement) =>
+      placement == 'left' || placement == 'right';
+  double desktopSideDockHeightAt(String placement) =>
+      _desktopSideDockHeightByPlacement[placement] ?? 2400.0;
+  bool desktopSideDockFloatingAt(String placement) =>
+      _desktopSideDockFloatingByPlacement[placement] ?? false;
+  double desktopSideDockXAt(String placement) =>
+      _desktopSideDockXByPlacement[placement] ??
+      (placement == 'right' ? 0.96 : 0.04);
+  double desktopSideDockYAt(String placement) =>
+      _desktopSideDockYByPlacement[placement] ?? 0.52;
 
   final List<String> _customHeaderButtons = [];
   List<String> get customHeaderButtons =>
@@ -39959,6 +40077,47 @@ class MindMapProvider extends ChangeNotifier {
     _desktopHeaderBarCollisionMode = mode;
     final prefs = await _prefsWithRetry();
     await prefs.setString('desktopHeaderBarCollisionMode', mode);
+    notifyListeners();
+  }
+
+  Future<void> setDesktopSideDockHeight(
+      String placement, double height) async {
+    if (!_isDesktopSideDockPlacement(placement)) return;
+    final next = height.clamp(176.0, 2400.0).toDouble();
+    if ((desktopSideDockHeightAt(placement) - next).abs() < 0.5) return;
+    _desktopSideDockHeightByPlacement[placement] = next;
+    final prefs = await _prefsWithRetry();
+    await prefs.setDouble('desktopSideDockHeight_$placement', next);
+    notifyListeners();
+  }
+
+  Future<void> setDesktopSideDockPosition(
+    String placement, {
+    required bool floating,
+    double? x,
+    double? y,
+  }) async {
+    if (!_isDesktopSideDockPlacement(placement)) return;
+    final nextX = (x ?? desktopSideDockXAt(placement))
+        .clamp(0.0, 1.0)
+        .toDouble();
+    final nextY = (y ?? desktopSideDockYAt(placement))
+        .clamp(0.0, 1.0)
+        .toDouble();
+    if (desktopSideDockFloatingAt(placement) == floating &&
+        (desktopSideDockXAt(placement) - nextX).abs() < 0.0005 &&
+        (desktopSideDockYAt(placement) - nextY).abs() < 0.0005) {
+      return;
+    }
+    _desktopSideDockFloatingByPlacement[placement] = floating;
+    _desktopSideDockXByPlacement[placement] = nextX;
+    _desktopSideDockYByPlacement[placement] = nextY;
+    final prefs = await _prefsWithRetry();
+    await Future.wait([
+      prefs.setBool('desktopSideDockFloating_$placement', floating),
+      prefs.setDouble('desktopSideDockX_$placement', nextX),
+      prefs.setDouble('desktopSideDockY_$placement', nextY),
+    ]);
     notifyListeners();
   }
 

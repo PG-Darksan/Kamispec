@@ -1433,6 +1433,10 @@ class _MindMapScreenState extends State<MindMapScreen>
   double? _desktopBottomDockLiveWidth;
   Offset? _desktopBottomDockLiveCenter;
 
+  // 左右の縦型カスタムドックは、上下端のリサイズ中だけ高さをローカルで
+  // 保持する。操作終了時に provider へ保存して再起動後も復元する。
+  final Map<String, double> _desktopSideDockLiveHeights = {};
+
   // PC カスタムボタンのドラッグ中データ。バー移動ハンドル、または
   // 並び替えモード中の個別ボタンを掴んでいる間だけ保持し、ボタンが一つも
   // 無い画面端にもドロップ先を表示するために使う。
@@ -3093,6 +3097,7 @@ class _MindMapScreenState extends State<MindMapScreen>
   @override
   void initState() {
     super.initState();
+    _bottomToolbarExpandedNotifier.value = _bottomBarOpen;
     WidgetsBinding.instance.addObserver(this);
     _inlineShelfEditFocus.addListener(_handleShelfInlineFocusChanged);
     _inlineNodeEditFocus.addListener(_handleNodeInlineFocusChanged);
@@ -25269,8 +25274,11 @@ class _MindMapScreenState extends State<MindMapScreen>
   bool _canShowIcCardBalance(MindMapProvider provider) =>
       !kIsWeb && Platform.isAndroid && provider.appLanguage == 'ja';
 
-  bool _hideCommandForCurrentLocale(String? id, MindMapProvider provider) =>
-      id == 'icCardBalance' && !_canShowIcCardBalance(provider);
+  bool _hideCommandForCurrentLocale(String? id, MindMapProvider provider) {
+    if (id == 'icCardBalance' && !_canShowIcCardBalance(provider)) return true;
+    // キーボード前提の一覧はモバイルの表示・追加候補から除外する。
+    return id == 'shortcuts' && !_isDesktop;
+  }
 
   Widget _settingsTile({
     required IconData icon,
@@ -27779,6 +27787,14 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// タップ時の動作は _executeHeaderCommand に委譲（undo/redo等と共通ロジック）。
   Widget _buildBottomCustomButton(String commandId, MindMapProvider provider,
       TransformationController ctrl) {
+    if (_hideCommandForCurrentLocale(commandId, provider)) {
+      return _ToolBarBtn(
+        icon: Icons.add_circle_outline_rounded,
+        label: provider.t('bottomBar.empty'),
+        color: Colors.white.withValues(alpha: 0.2),
+        onTap: () => _showBottomBarCustomizeSheet(context, provider),
+      );
+    }
     if (_isRetiredCustomCommand(commandId)) {
       return _ToolBarBtn(
         icon: Icons.remove_circle_outline_rounded,
@@ -27967,6 +27983,20 @@ class _MindMapScreenState extends State<MindMapScreen>
   Widget _buildBottomThirdCustomButton(String commandId, int slotIndex,
       MindMapProvider provider, TransformationController ctrl,
       {bool fourthRow = false}) {
+    if (_hideCommandForCurrentLocale(commandId, provider)) {
+      return _ToolBarBtn(
+        icon: Icons.add_circle_outline_rounded,
+        label: provider.t('bottomBar.empty'),
+        color: Colors.white.withValues(alpha: 0.2),
+        onTap: () => _showBottomBottomBarCustomizeSheet(
+          context,
+          provider,
+          slotIndex,
+          thirdRow: !fourthRow,
+          fourthRow: fourthRow,
+        ),
+      );
+    }
     if (_isRetiredCustomCommand(commandId)) {
       return _ToolBarBtn(
         icon: Icons.add_circle_outline_rounded,
@@ -28072,6 +28102,15 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// (1 行目は固定 6 スロットでスロット位置が意味を持つため)。
   Widget _buildBottomTopCustomButton(String commandId, int slotIndex,
       MindMapProvider provider, TransformationController ctrl) {
+    if (_hideCommandForCurrentLocale(commandId, provider)) {
+      return _ToolBarBtn(
+        icon: Icons.add_circle_outline_rounded,
+        label: provider.t('bottomBar.empty'),
+        color: Colors.white.withValues(alpha: 0.2),
+        onTap: () =>
+            _showBottomTopBarCustomizeSheet(context, provider, slotIndex),
+      );
+    }
     if (_isRetiredCustomCommand(commandId)) {
       return _ToolBarBtn(
         icon: Icons.help_outline_rounded,
@@ -29217,7 +29256,9 @@ class _MindMapScreenState extends State<MindMapScreen>
         _addPageDialog(context, provider);
         break;
       case 'shortcuts':
-        _showShortcutsDialog(context);
+        if (_isDesktop) {
+          _showShortcutsDialog(context);
+        }
         break;
       case 'voiceInput':
         _showVoiceInputDialog(context, provider);
@@ -39658,6 +39699,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                                       }
                                     }
                                     if (hitSelected) {
+                                      // 選択範囲の直上にある操作列がドラッグを覆わない
+                                      // よう、移動開始と同時に閉じる。
+                                      _removeOverlay();
                                       setState(() {
                                         _rangeDragging = true;
                                         _rangeDragAnchor = canvasPos;
@@ -40017,6 +40061,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                                       _rangeDragDelta = Offset.zero;
                                       _currentSnap = null;
                                     });
+                                    _restoreMultiNodeActionOverlayAfterRangeDrag(
+                                        provider, ctrl);
                                   }
                                 },
                                 onPointerCancel: (e) {
@@ -40574,10 +40620,10 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// そのような場合は、AI 操作の try ブロックの開始時に
   /// `_setBottomBarLifted(true)` を呼び、finally で `false` に戻す形で
   /// 一連の SnackBar 表示中ずっとバーを持ち上げたままにできる。
-  void _setBottomBarLifted(bool lifted) {
+  void _setBottomBarLifted(bool _) {
     if (!mounted) return;
     try {
-      context.read<MindMapProvider>().setBottomBarLifted(lifted);
+      context.read<MindMapProvider>().setBottomBarLifted(false);
     } catch (_) {}
   }
 
@@ -41015,7 +41061,12 @@ class _MindMapScreenState extends State<MindMapScreen>
                       ),
                     ),
                     GestureDetector(
-                      onTap: () => setState(() => _bottomBarOpen = false),
+                      onTap: () {
+                        setState(() {
+                          _bottomBarOpen = false;
+                          _bottomToolbarExpandedNotifier.value = false;
+                        });
+                      },
                       child: Container(
                         width: 22,
                         height: 22,
@@ -41041,7 +41092,12 @@ class _MindMapScreenState extends State<MindMapScreen>
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         GestureDetector(
-                          onTap: () => setState(() => _bottomBarOpen = true),
+                          onTap: () {
+                            setState(() {
+                              _bottomBarOpen = true;
+                              _bottomToolbarExpandedNotifier.value = true;
+                            });
+                          },
                           child: Container(
                             width: 40,
                             height: 40,
@@ -41349,6 +41405,54 @@ class _MindMapScreenState extends State<MindMapScreen>
     Color borderColor,
     List<BoxShadow> shadow,
   ) {
+    final screen = MediaQuery.sizeOf(context);
+    if (screen.width < 120 || screen.height < 140) {
+      return const SizedBox.shrink();
+    }
+    final collapsed = provider.desktopHeaderDockCollapsedAt(placement);
+    final floating = provider.desktopSideDockFloatingAt(placement);
+    const dockWidth = 60.0;
+    const edgeMargin = 10.0;
+    final mediaPadding = MediaQuery.paddingOf(context);
+    final anchoredTop =
+        math.max(kToolbarHeight + 12.0, mediaPadding.top + 8.0).toDouble();
+    final anchoredBottom = math.max(12.0, mediaPadding.bottom + 8.0).toDouble();
+    final anchoredAvailableHeight =
+        math.max(96.0, screen.height - anchoredTop - anchoredBottom)
+            .toDouble();
+    final absoluteMaxHeight = math.max(96.0, screen.height - 16.0).toDouble();
+    final maxHeight = floating
+        ? absoluteMaxHeight
+        : math.min(absoluteMaxHeight, anchoredAvailableHeight).toDouble();
+    final minHeight = math.min(176.0, maxHeight).toDouble();
+    final dockHeight = (_desktopSideDockLiveHeights[placement] ??
+            provider.desktopSideDockHeightAt(placement))
+        .clamp(minHeight, maxHeight)
+        .toDouble();
+    final actualHeight = collapsed ? 78.0 : dockHeight;
+    final anchoredCenter = Offset(
+      placement == 'left'
+          ? edgeMargin + dockWidth / 2
+          : screen.width - edgeMargin - dockWidth / 2,
+      collapsed
+          ? anchoredTop + actualHeight / 2
+          : anchoredTop + anchoredAvailableHeight / 2,
+    );
+    final requestedCenter = floating
+        ? Offset(
+            provider.desktopSideDockXAt(placement) * screen.width,
+            provider.desktopSideDockYAt(placement) * screen.height,
+          )
+        : anchoredCenter;
+    final center = Offset(
+      requestedCenter.dx
+          .clamp(dockWidth / 2 + 8, screen.width - dockWidth / 2 - 8)
+          .toDouble(),
+      requestedCenter.dy
+          .clamp(actualHeight / 2 + 8, screen.height - actualHeight / 2 - 8)
+          .toDouble(),
+    );
+
     final ids = <String>[];
     final rawIds = provider.customHeaderButtons;
     for (int i = 0; i < rawIds.length; i++) {
@@ -41399,13 +41503,6 @@ class _MindMapScreenState extends State<MindMapScreen>
           data: data,
           onDragStarted: () => _beginDesktopHeaderDrag(data),
           onDragEnded: _endDesktopHeaderDrag,
-          onButtonDropped: (dropped) {
-            unawaited(provider.moveDesktopHeaderButtonToPlacement(
-              dropped.commandId,
-              placement,
-              beforeCommandId: id,
-            ));
-          },
           child: slot,
         );
       }
@@ -41414,13 +41511,6 @@ class _MindMapScreenState extends State<MindMapScreen>
         id: id,
         desktopSourcePlacement: placement,
         child: slot,
-        onDesktopDropped: (data) {
-          unawaited(provider.moveDesktopHeaderButtonToPlacement(
-            data.commandId,
-            placement,
-            beforeCommandId: id,
-          ));
-        },
         onDragStartedGlobal: (data) => _beginDesktopHeaderDrag(data),
         onDragEndGlobal: _endDesktopHeaderDrag,
         onDropped: (fromIndex) {
@@ -41433,12 +41523,89 @@ class _MindMapScreenState extends State<MindMapScreen>
       );
     }
 
-    final collapsed = provider.desktopHeaderDockCollapsedAt(placement);
+    void freeDropSideBar(Offset globalPosition) {
+      final renderBox = context.findRenderObject() as RenderBox?;
+      final localPosition =
+          renderBox?.globalToLocal(globalPosition) ?? globalPosition;
+      final next = Offset(
+        localPosition.dx
+            .clamp(dockWidth / 2 + 8, screen.width - dockWidth / 2 - 8)
+            .toDouble(),
+        localPosition.dy
+            .clamp(actualHeight / 2 + 8,
+                screen.height - actualHeight / 2 - 8)
+            .toDouble(),
+      );
+      // 端に固定していた時の暗黙の全高を、自由配置へ切り替えた瞬間の
+      // 実寸へ確定する。移動後にバーが急に伸びるのを防ぐ。
+      unawaited(provider.setDesktopSideDockHeight(placement, dockHeight));
+      unawaited(provider.setDesktopSideDockPosition(
+        placement,
+        floating: true,
+        x: next.dx / screen.width,
+        y: next.dy / screen.height,
+      ));
+      setState(() => _desktopSideDockLiveHeights.remove(placement));
+    }
+
+    void resetSideBarDock() {
+      setState(() => _desktopSideDockLiveHeights.remove(placement));
+      unawaited(provider.setDesktopSideDockPosition(
+        placement,
+        floating: false,
+      ));
+    }
+
+    void commitSideBarHeight() {
+      final next = _desktopSideDockLiveHeights[placement] ?? dockHeight;
+      unawaited(provider.setDesktopSideDockHeight(placement, next));
+      setState(() => _desktopSideDockLiveHeights.remove(placement));
+    }
+
+    Widget resizeHandle(bool top) => Tooltip(
+          message: provider.t('header.resizeDock'),
+          child: MouseRegion(
+            cursor: SystemMouseCursors.resizeUpDown,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onVerticalDragUpdate: (details) {
+                final current =
+                    _desktopSideDockLiveHeights[placement] ?? dockHeight;
+                final delta =
+                    (top ? -details.delta.dy : details.delta.dy) * 2;
+                setState(() {
+                  _desktopSideDockLiveHeights[placement] =
+                      (current + delta).clamp(minHeight, maxHeight).toDouble();
+                });
+              },
+              onVerticalDragEnd: (_) => commitSideBarHeight(),
+              onVerticalDragCancel: commitSideBarHeight,
+              child: SizedBox(
+                width: 46,
+                height: 9,
+                child: Center(
+                  child: Container(
+                    width: 24,
+                    height: 3,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.24),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+
     final sideMenu = Material(
       color: Colors.transparent,
       child: Container(
-        width: 60,
-        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 6),
+        width: dockWidth,
+        height: actualHeight,
+        padding: collapsed
+            ? const EdgeInsets.symmetric(horizontal: 5, vertical: 6)
+            : const EdgeInsets.symmetric(horizontal: 5),
         decoration: BoxDecoration(
           color: panelColor,
           borderRadius: BorderRadius.circular(16),
@@ -41447,8 +41614,14 @@ class _MindMapScreenState extends State<MindMapScreen>
         ),
         child: collapsed
             ? Column(mainAxisSize: MainAxisSize.min, children: [
-                _buildDesktopHeaderDockMoveGrip(provider, placement,
-                    width: 46, height: 30),
+                _buildDesktopHeaderDockMoveGrip(
+                  provider,
+                  placement,
+                  width: 46,
+                  height: 30,
+                  onFreeDrop: freeDropSideBar,
+                  onDoubleTap: resetSideBarDock,
+                ),
                 IconButton(
                   tooltip: provider.t('header.expandDock'),
                   padding: EdgeInsets.zero,
@@ -41466,8 +41639,15 @@ class _MindMapScreenState extends State<MindMapScreen>
                 ),
               ])
             : Column(children: [
-                _buildDesktopHeaderDockMoveGrip(provider, placement,
-                    width: 46, height: 28),
+                resizeHandle(true),
+                _buildDesktopHeaderDockMoveGrip(
+                  provider,
+                  placement,
+                  width: 46,
+                  height: 24,
+                  onFreeDrop: freeDropSideBar,
+                  onDoubleTap: resetSideBarDock,
+                ),
                 Divider(height: 1, color: borderColor),
                 Expanded(
                   // アプリ全体の ScrollbarTheme は常時表示だが、左右のドックだけは
@@ -41516,20 +41696,17 @@ class _MindMapScreenState extends State<MindMapScreen>
                   onPressed: () => provider.setDesktopHeaderDockCollapsed(
                       placement, true),
                 ),
+                resizeHandle(false),
               ]),
       ),
     );
     return Positioned(
-      // この Stack は Scaffold/AppBar 全体を覆うため、12px だけでは左上の
-      // マップ一覧・右上の設定操作に重なる。toolbar 分を必ず予約する。
-      top: kToolbarHeight + 12,
-      bottom: collapsed ? null : 12,
-      left: placement == 'left' ? 10 : null,
-      right: placement == 'right' ? 10 : null,
-      child: SafeArea(
-        top: false,
-        child: _buildDesktopHeaderDockTarget(
-            provider, placement, sideMenu),
+      left: center.dx - dockWidth / 2,
+      top: center.dy - actualHeight / 2,
+      child: _buildDesktopHeaderDockTarget(
+        provider,
+        placement,
+        sideMenu,
       ),
     );
   }
@@ -42055,6 +42232,9 @@ class _MindMapScreenState extends State<MindMapScreen>
       BuildContext context, MindMapProvider provider) {
     final isRangeMode = _rangeSelectMode;
     final hasRangeSelection = _rangeSelectedIds.isNotEmpty;
+    // 複数選択した要素を移動している間は、AppBar の一括操作を隠す。
+    // ドロップ後の setState で自動的に同じ操作列へ戻る。
+    final showRangeActions = hasRangeSelection && !_rangeDragging;
     final showMobileHeaderTray = !_isDesktop;
 
     return AppBar(
@@ -42365,7 +42545,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                           fontWeight: FontWeight.w600)),
                 )
               else if (isRangeMode) ...[
-                if (hasRangeSelection) ...[
+                if (showRangeActions) ...[
                   // ── AI一括: 左クリックで選択要素をまとめてブラウザ版 AI へ
                   //    (要素ごとに改行)、 右クリック/長押しでモデル切替・前提条件・
                   //    子要素生成モードの選択 (= ユーザー要望)。 一括編集は廃止。 ──
@@ -45047,16 +45227,19 @@ class _MindMapScreenState extends State<MindMapScreen>
     );
     if (ok != true || !ctx.mounted) return;
 
-    final paintBundles = <({String pageName, List<_PaintSheet> sheets})>[];
+    final paintBundles = <({String pageName, List<_PaintNote> notes})>[];
     for (final page in mergeablePages.where((p) => p.pageType == 'paint')) {
       final loaded = await _PaintStore.load(
         page.id,
-        defaultSheetName: provider
-            .t('paint.defaultSheetName')
+        defaultNoteName: provider
+            .t('paint.defaultNoteName')
+            .replaceFirst('{n}', '1'),
+        defaultPageName: provider
+            .t('paint.defaultPageName')
             .replaceFirst('{n}', '1'),
       );
       if (!ctx.mounted) return;
-      paintBundles.add((pageName: page.name, sheets: loaded.sheets));
+      paintBundles.add((pageName: page.name, notes: loaded.notes));
     }
 
     final nm = ctrl.text.trim();
@@ -45064,21 +45247,24 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (idx >= 0) {
       if (paintBundles.isNotEmpty && idx < provider.pages.length) {
         final mergedPage = provider.pages[idx];
-        final mergedSheets = <_PaintSheet>[];
+        final mergedNotes = <_PaintNote>[];
         for (final bundle in paintBundles) {
-          for (final sheet in bundle.sheets) {
-            final clone =
-                _PaintSheet.fromJson(Map<String, dynamic>.from(sheet.toJson()));
+          for (final note in bundle.notes) {
+            final clone = _PaintNote.fromJson(
+                Map<String, dynamic>.from(note.toJson()),
+                defaultName: provider
+                    .t('paint.defaultNoteName')
+                    .replaceFirst('{n}', '1'),
+                defaultPageName: provider
+                    .t('paint.defaultPageName')
+                    .replaceFirst('{n}', '1'));
             final pageName = bundle.pageName.trim();
-            final sheetName =
-                clone.name.trim().isEmpty ? 'Sheet' : clone.name.trim();
-            clone.name =
-                pageName.isEmpty ? sheetName : '$pageName - $sheetName';
-            mergedSheets.add(clone);
+            if (pageName.isNotEmpty) clone.name = '$pageName - ${clone.name}';
+            mergedNotes.add(clone);
           }
         }
-        if (mergedSheets.isNotEmpty) {
-          await _PaintStore.save(mergedPage.id, mergedSheets, 0);
+        if (mergedNotes.isNotEmpty) {
+          await _PaintStore.save(mergedPage.id, mergedNotes, 0);
         }
       }
       if (!mounted) return;
@@ -47760,6 +47946,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                                         // 範囲選択のグループドラッグ開始
                                         final canvasPos =
                                             _globalToCanvas(globalPos, ctrl);
+                                        _removeOverlay();
                                         HapticFeedback.mediumImpact();
                                         setState(() {
                                           _rangeDragging = true;
@@ -47816,6 +48003,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                                       _rangeDragAnchor = null;
                                       _rangeDragDelta = Offset.zero;
                                     });
+                                    _restoreMultiNodeActionOverlayAfterRangeDrag(
+                                        provider, ctrl);
                                   }
                                 : null)
                             : () {
@@ -59704,6 +59893,24 @@ class _MindMapScreenState extends State<MindMapScreen>
     Overlay.of(ctx).insert(_overlayEntry!);
   }
 
+  /// 複数選択の移動を確定した次のフレームで、操作列を移動後の位置に戻す。
+  /// ドラッグ中に別の操作で選択が変わった場合は復元しない。
+  void _restoreMultiNodeActionOverlayAfterRangeDrag(
+    MindMapProvider provider,
+    TransformationController ctrl,
+  ) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          _rangeDragging ||
+          !_rangeSelectMode ||
+          _rangeSelectedIds.length < 2 ||
+          _selectedConnections.isNotEmpty) {
+        return;
+      }
+      _showMultiNodeActionOverlay(context, provider, ctrl);
+    });
+  }
+
   /// 選択ノードのタイトルを、 グローバルのフラッシュカードデッキに「表面」
   /// としてまとめて新規登録する (= ユーザー要望: 範囲選択から独立ボタンで
   /// 一括カード化)。 グローバルデッキなのでフォルダー整理・削除ができる。
@@ -66805,7 +67012,6 @@ class _DesktopDraggableHeaderIcon extends StatelessWidget {
   final VoidCallback onDragStarted;
   final VoidCallback onDragEnded;
   final ValueChanged<Offset>? onDragUpdate;
-  final ValueChanged<_DesktopHeaderButtonDragData>? onButtonDropped;
 
   const _DesktopDraggableHeaderIcon({
     required this.data,
@@ -66813,7 +67019,6 @@ class _DesktopDraggableHeaderIcon extends StatelessWidget {
     required this.onDragStarted,
     required this.onDragEnded,
     this.onDragUpdate,
-    this.onButtonDropped,
   });
 
   @override
@@ -66835,32 +67040,9 @@ class _DesktopDraggableHeaderIcon extends StatelessWidget {
       childWhenDragging: Opacity(opacity: 0.22, child: child),
       child: child,
     );
-    if (onButtonDropped == null) return draggable;
-    return DragTarget<_DesktopHeaderDragData>(
-      onWillAcceptWithDetails: (details) =>
-          details.data is _DesktopHeaderButtonDragData &&
-          (details.data as _DesktopHeaderButtonDragData).sourcePlacement ==
-              data.sourcePlacement &&
-          (details.data as _DesktopHeaderButtonDragData).commandId !=
-              data.commandId,
-      onAcceptWithDetails: (details) {
-        final dropped = details.data;
-        if (dropped is! _DesktopHeaderButtonDragData) return;
-        onDragEnded();
-        onButtonDropped!(dropped);
-      },
-      builder: (context, candidates, rejected) => AnimatedContainer(
-        duration: const Duration(milliseconds: 100),
-        decoration: candidates.isEmpty
-            ? null
-            : BoxDecoration(
-                color: const Color(0xFF6C63FF).withValues(alpha: 0.18),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: const Color(0xFF8D86FF)),
-              ),
-        child: draggable,
-      ),
-    );
+    // アイコン本体はドロップ先にしない。並び替えは前後の細い挿入
+    // ギャップだけが受理し、移動先アイコンへのハイライトも出さない。
+    return draggable;
   }
 }
 
@@ -67118,13 +67300,6 @@ class _HeaderCustomButtonsBarState extends State<_HeaderCustomButtonsBar> {
                   _stopAutoScroll();
                   widget.onDesktopButtonDragEnded?.call();
                 },
-                onButtonDropped: (dropped) {
-                  unawaited(provider.moveDesktopHeaderButtonToPlacement(
-                    dropped.commandId,
-                    desktopPlacement!,
-                    beforeCommandId: id,
-                  ));
-                },
                 child: slot,
               );
             }
@@ -67144,15 +67319,6 @@ class _HeaderCustomButtonsBarState extends State<_HeaderCustomButtonsBar> {
                   widget.onDesktopButtonDragStarted?.call(data);
                 }
               },
-              onDesktopDropped: desktopPlacement == null
-                  ? null
-                  : (data) {
-                      unawaited(provider.moveDesktopHeaderButtonToPlacement(
-                        data.commandId,
-                        desktopPlacement!,
-                        beforeCommandId: id,
-                      ));
-                    },
               onDesktopDragEnded: widget.onDesktopButtonDragEnded,
               onDropped: (fromIndex) {
                 if (onReorder != null && fromIndex != i) {
@@ -67217,7 +67383,6 @@ class _ReorderableHeaderIcon extends StatefulWidget {
   final Widget child;
   final void Function(int fromIndex) onDropped;
   final String? desktopSourcePlacement;
-  final void Function(_DesktopHeaderButtonDragData data)? onDesktopDropped;
   final void Function(_DesktopHeaderButtonDragData data)? onDragStartedGlobal;
   final VoidCallback? onDesktopDragEnded;
 
@@ -67230,7 +67395,6 @@ class _ReorderableHeaderIcon extends StatefulWidget {
     required this.child,
     required this.onDropped,
     this.desktopSourcePlacement,
-    this.onDesktopDropped,
     this.onDragStartedGlobal,
     this.onDesktopDragEnded,
     this.onDragUpdateGlobal,
@@ -67281,11 +67445,9 @@ class _ReorderableHeaderIconState extends State<_ReorderableHeaderIcon>
     final Object dragData = desktopData ?? widget.index;
 
     bool canAccept(Object data) {
-      if (desktopData != null) {
-        return data is _DesktopHeaderButtonDragData &&
-            data.sourcePlacement == desktopData.sourcePlacement &&
-            data.commandId != widget.id;
-      }
+      // PC の各ドックには専用の挿入ギャップがあるため、アイコン本体は
+      // ドロップ候補にしない。従来のモバイル並び替えだけを維持する。
+      if (desktopData != null) return false;
       return data is int && data != widget.index;
     }
 
@@ -67295,12 +67457,7 @@ class _ReorderableHeaderIconState extends State<_ReorderableHeaderIcon>
     }
 
     void accept(Object data) {
-      if (desktopData != null && data is _DesktopHeaderButtonDragData) {
-        finishDrag();
-        widget.onDesktopDropped?.call(data);
-      } else if (desktopData == null && data is int) {
-        widget.onDropped(data);
-      }
+      if (desktopData == null && data is int) widget.onDropped(data);
     }
 
     return DragTarget<Object>(
@@ -76714,7 +76871,8 @@ enum _PaintShapeResizeHandle {
   end,
 }
 
-/// 図形要素 (= ユーザー要望: 図形挿入)。 kind: 0=四角,1=楕円,2=線,3=矢印。
+/// 図形要素 (= ユーザー要望: 図形挿入)。
+/// kind: 0=四角,1=楕円,2=線,3=矢印,4=三角,5=ひし形。
 class _PaintShape {
   int kind;
   Offset a, b;
@@ -76881,7 +77039,7 @@ const List<_PaintCanvasSize> _kPaintSizes = [
 _PaintCanvasSize _paintSizeById(String id) => _kPaintSizes
     .firstWhere((s) => s.id == id, orElse: () => _kPaintSizes.first);
 
-/// 1 シート (= 1 枚のキャンバス)。 ストローク/テキスト/図形/画像 + 用紙サイズ。
+/// 1 ページ (= 1 枚のキャンバス)。 ストローク/テキスト/図形/画像 + 用紙サイズ。
 class _PaintSheet {
   String name;
   String sizeId; // 'custom' の時は customW/customH を使う (= ユーザー要望)
@@ -76951,47 +77109,124 @@ class _PaintSheet {
       );
 }
 
+/// フリーノート 1 冊。各ノートは複数のキャンバスページを持つ。
+/// `pages` は旧 `sheets` と同じ要素形式なので、既存データの描画内容を
+/// 変換せず保持できる。
+class _PaintNote {
+  String name;
+  int selectedPage;
+  final List<_PaintSheet> pages;
+
+  _PaintNote({
+    required this.name,
+    required this.pages,
+    this.selectedPage = 0,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'n': name,
+        'sel': selectedPage,
+        'pages': pages.map((page) => page.toJson()).toList(),
+      };
+
+  factory _PaintNote.fromJson(
+    Map m, {
+    required String defaultName,
+    required String defaultPageName,
+  }) {
+    final pages = ((m['pages'] as List?) ?? const [])
+        .whereType<Map>()
+        .map((page) =>
+            _PaintSheet.fromJson(page, defaultName: defaultPageName))
+        .toList();
+    if (pages.isEmpty) {
+      pages.add(_PaintSheet(name: defaultPageName, sizeId: 'a4p'));
+    }
+    var selectedPage = (m['sel'] as num?)?.toInt() ?? 0;
+    if (selectedPage < 0 || selectedPage >= pages.length) selectedPage = 0;
+    return _PaintNote(
+      name: (m['n'] ?? defaultName).toString(),
+      pages: pages,
+      selectedPage: selectedPage,
+    );
+  }
+}
+
 class _PaintStore {
   static String _key(String pageId) => 'paint_$pageId';
 
-  /// 旧形式 (ストロークのみ / {s,t}) と新形式 ({sheets,sel}) の両対応。
-  static Future<({List<_PaintSheet> sheets, int sel})> load(
+  /// 旧形式 (ストロークのみ / {s,t} / {sheets,sel}) と新しい
+  /// `{notes,noteSel}` の両対応。旧シートは内容を失わず「1 ページのノート」
+  /// へ自動移行する。
+  static Future<({List<_PaintNote> notes, int noteSel})> load(
     String pageId, {
-    String defaultSheetName = 'Sheet 1',
+    String defaultNoteName = 'Note 1',
+    String defaultPageName = 'Page 1',
   }) async {
-    List<_PaintSheet> one(List<_PaintStroke> st, List<_PaintText> tx) =>
+    List<_PaintNote> one(List<_PaintStroke> st, List<_PaintText> tx) =>
         [
-          _PaintSheet(
-            name: defaultSheetName,
-            sizeId: 'a4p',
-            strokes: st,
-            texts: tx,
+          _PaintNote(
+            name: defaultNoteName,
+            pages: [
+              _PaintSheet(
+                name: defaultPageName,
+                sizeId: 'a4p',
+                strokes: st,
+                texts: tx,
+              ),
+            ],
           ),
         ];
     try {
       final sp = await SharedPreferences.getInstance();
       final raw = sp.getString(_key(pageId));
-      if (raw == null || raw.isEmpty) return (sheets: one([], []), sel: 0);
+      if (raw == null || raw.isEmpty) return (notes: one([], []), noteSel: 0);
       final dec = jsonDecode(raw);
       if (dec is List) {
         final st =
             dec.whereType<Map>().map((m) => _PaintStroke.fromJson(m)).toList();
-        return (sheets: one(st, []), sel: 0);
+        return (notes: one(st, []), noteSel: 0);
       }
       if (dec is Map) {
+        if (dec['notes'] is List) {
+          final notes = (dec['notes'] as List)
+              .whereType<Map>()
+              .map((note) => _PaintNote.fromJson(note,
+                  defaultName: defaultNoteName,
+                  defaultPageName: defaultPageName))
+              .toList();
+          if (notes.isEmpty) notes.addAll(one([], []));
+          var noteSel = (dec['noteSel'] as num?)?.toInt() ?? 0;
+          if (noteSel < 0 || noteSel >= notes.length) noteSel = 0;
+          return (notes: notes, noteSel: noteSel);
+        }
         if (dec['sheets'] is List) {
           final sheets = (dec['sheets'] as List)
               .whereType<Map>()
               .map((m) =>
-                  _PaintSheet.fromJson(m, defaultName: defaultSheetName))
+                  _PaintSheet.fromJson(m, defaultName: defaultPageName))
               .toList();
-          if (sheets.isEmpty) {
-            sheets.add(
-                _PaintSheet(name: defaultSheetName, sizeId: 'a4p'));
+          if (sheets.isEmpty) return (notes: one([], []), noteSel: 0);
+          // v2 の各シートを、同じ内容を持つ 1 ページのノートへ移行する。
+          // 既存の名前はノート名として継承し、ページには新しい既定名を使う。
+          final notes = <_PaintNote>[];
+          for (int i = 0; i < sheets.length; i++) {
+            final sheet = sheets[i];
+            final oldName = sheet.name.trim();
+            final isLegacyDefault = RegExp(r'^(?:Sheet|シート)\s*\d+$',
+                    caseSensitive: false)
+                .hasMatch(oldName);
+            sheet.name = defaultPageName;
+            notes.add(_PaintNote(
+              name: isLegacyDefault
+                  ? defaultNoteName.replaceFirst('1', '${i + 1}')
+                  : (oldName.isEmpty ? defaultNoteName : oldName),
+              pages: [sheet],
+            ));
           }
           int sel = (dec['sel'] as num?)?.toInt() ?? 0;
-          if (sel < 0 || sel >= sheets.length) sel = 0;
-          return (sheets: sheets, sel: sel);
+          if (sel < 0 || sel >= notes.length) sel = 0;
+          return (notes: notes, noteSel: sel);
         }
         final st = ((dec['s'] as List?) ?? const [])
             .whereType<Map>()
@@ -77001,21 +77236,22 @@ class _PaintStore {
             .whereType<Map>()
             .map((m) => _PaintText.fromJson(m))
             .toList();
-        return (sheets: one(st, tx), sel: 0);
+        return (notes: one(st, tx), noteSel: 0);
       }
     } catch (_) {}
-    return (sheets: one([], []), sel: 0);
+    return (notes: one([], []), noteSel: 0);
   }
 
   static Future<void> save(
-      String pageId, List<_PaintSheet> sheets, int sel) async {
+      String pageId, List<_PaintNote> notes, int noteSel) async {
     try {
       final sp = await SharedPreferences.getInstance();
       await sp.setString(
           _key(pageId),
           jsonEncode({
-            'sheets': sheets.map((s) => s.toJson()).toList(),
-            'sel': sel,
+            'v': 3,
+            'notes': notes.map((note) => note.toJson()).toList(),
+            'noteSel': noteSel,
           }));
     } catch (_) {}
   }
@@ -78286,6 +78522,9 @@ class _PaintPageViewState extends State<_PaintPageView> {
 
   List<_PaintSheet> _sheets = [];
   int _sel = 0;
+  List<_PaintNote> _notes = [];
+  int _noteSel = 0;
+  _PaintNote get _note => _notes[_noteSel];
   bool _loaded = false;
   bool _dirty = false;
   QuillController? _noteController;
@@ -78642,6 +78881,18 @@ class _PaintPageViewState extends State<_PaintPageView> {
             _distToSegment(p, shape.b, left) <= tolerance ||
             _distToSegment(p, left, right) <= tolerance ||
             _distToSegment(p, right, shape.b) <= tolerance;
+      case 4:
+      case 5:
+        final path = _paintPolygonPath(shape);
+        if (shape.fill) return path.contains(p);
+        final points = _paintPolygonPoints(shape);
+        for (int i = 0; i < points.length; i++) {
+          if (_distToSegment(p, points[i], points[(i + 1) % points.length]) <=
+              tolerance) {
+            return true;
+          }
+        }
+        return false;
       default:
         final outer = rect.inflate(tolerance);
         if (!outer.contains(p) || shape.fill) return outer.contains(p);
@@ -79157,16 +79408,24 @@ class _PaintPageViewState extends State<_PaintPageView> {
   Future<void> _load() async {
     final d = await _PaintStore.load(
       widget.pageId,
-      defaultSheetName: widget.provider
-          .t('paint.defaultSheetName')
+      defaultNoteName: widget.provider
+          .t('paint.defaultNoteName')
+          .replaceFirst('{n}', '1'),
+      defaultPageName: widget.provider
+          .t('paint.defaultPageName')
           .replaceFirst('{n}', '1'),
     );
     if (!mounted) return;
     setState(() {
-      _sheets = d.sheets;
-      _sel = d.sel;
+      _notes = d.notes;
+      _noteSel = d.noteSel;
+      _sheets = _note.pages;
+      _sel = _note.selectedPage;
       _loaded = true;
     });
+    // 読み込んだ旧 {sheets,sel} をここで v3 のノート/ページ形式として
+    // 保存し直す。以後の起動でも同じ二階層構造を使い、移行を遅延させない。
+    await _persist();
     await _importDocumentTextIntoCanvasIfNeeded();
     await _preloadImages();
   }
@@ -79212,7 +79471,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
         first.undo.add('text');
         _dirty = true;
       });
-      await _PaintStore.save(widget.pageId, _sheets, _sel);
+      _note.selectedPage = _sel;
+      await _PaintStore.save(widget.pageId, _notes, _noteSel);
       await sp.setBool(doneKey, true);
     } catch (_) {}
   }
@@ -79257,7 +79517,10 @@ class _PaintPageViewState extends State<_PaintPageView> {
     _paintFocus.dispose();
     _textEditCtrl.dispose();
     _textEditFocus.dispose();
-    if (_dirty) _PaintStore.save(widget.pageId, _sheets, _sel);
+    if (_dirty) {
+      _note.selectedPage = _sel;
+      _PaintStore.save(widget.pageId, _notes, _noteSel);
+    }
     // メモリ節約: デコード済み画像 (ui.Image) を破棄してネイティブメモリを
     //   解放する (= ユーザー要望: 全体のメモリ使用量を抑える)。
     for (final im in _imageCache.values) {
@@ -79271,7 +79534,32 @@ class _PaintPageViewState extends State<_PaintPageView> {
 
   Future<void> _persist() async {
     _dirty = false;
-    await _PaintStore.save(widget.pageId, _sheets, _sel);
+    _note.selectedPage = _sel;
+    await _PaintStore.save(widget.pageId, _notes, _noteSel);
+  }
+
+  List<Offset> _paintPolygonPoints(_PaintShape shape) {
+    final rect = Rect.fromPoints(shape.a, shape.b);
+    if (shape.kind == 4) {
+      return [
+        Offset(rect.center.dx, rect.top),
+        rect.bottomLeft,
+        rect.bottomRight,
+      ];
+    }
+    return [
+      Offset(rect.center.dx, rect.top),
+      Offset(rect.right, rect.center.dy),
+      Offset(rect.center.dx, rect.bottom),
+      Offset(rect.left, rect.center.dy),
+    ];
+  }
+
+  Path _paintPolygonPath(_PaintShape shape) {
+    final points = _paintPolygonPoints(shape);
+    return Path()
+      ..moveTo(points.first.dx, points.first.dy)
+      ..addPolygon(points, true);
   }
 
   void _selectTool(_PaintTool t) {
@@ -79296,6 +79584,9 @@ class _PaintPageViewState extends State<_PaintPageView> {
         _rangeRect = null;
       }
     });
+    // 画像ボタンを押した時点でピッカーを開く。従来は空白をもう一度タップ
+    // しないと何も起きず、ボタンが無反応に見えていた。
+    if (t == _PaintTool.image) unawaited(_pickAndAddImage());
   }
 
   void _onPanStart(Offset p) {
@@ -80057,17 +80348,44 @@ class _PaintPageViewState extends State<_PaintPageView> {
 
   Future<void> _pickAndAddImage() async {
     try {
-      final picked = await FilePicker.platform.pickFiles(type: FileType.image);
-      final srcPath = picked?.files.single.path;
-      if (srcPath == null || !mounted) return;
+      final picked = await FilePicker.platform.pickFiles(
+        type: FileType.image,
+        allowMultiple: false,
+        withData: !_isDesktop,
+      );
+      if (picked == null || picked.files.isEmpty) {
+        if (mounted) _snack(widget.provider.t('paint.imagePickCancelled'));
+        return;
+      }
+      final selected = picked.files.first;
+      final srcPath = selected.path;
+      final bytes = selected.bytes;
+      if ((srcPath == null || srcPath.isEmpty) &&
+          (bytes == null || bytes.isEmpty)) {
+        if (mounted) _snack(widget.provider.t('paint.imagePickFailed'));
+        return;
+      }
       final dir = await getApplicationDocumentsDirectory();
-      final dot = srcPath.lastIndexOf('.');
-      final ext = dot >= 0 ? srcPath.substring(dot) : '.png';
+      if (!await dir.exists()) await dir.create(recursive: true);
+      final sourceName =
+          selected.name.isNotEmpty ? selected.name : (srcPath ?? '');
+      final dot = sourceName.lastIndexOf('.');
+      final ext = dot >= 0 ? sourceName.substring(dot) : '.png';
       final dst =
           '${dir.path}/paint_img_${DateTime.now().microsecondsSinceEpoch}$ext';
-      await File(srcPath).copy(dst);
+      if (srcPath != null && srcPath.isNotEmpty && await File(srcPath).exists()) {
+        await File(srcPath).copy(dst);
+      } else if (bytes != null && bytes.isNotEmpty) {
+        await File(dst).writeAsBytes(bytes, flush: true);
+      } else {
+        if (mounted) _snack(widget.provider.t('paint.imagePickFailed'));
+        return;
+      }
       final im = await _loadUiImage(dst);
-      if (im == null || !mounted) return;
+      if (im == null || !mounted) {
+        if (mounted) _snack(widget.provider.t('paint.imagePickFailed'));
+        return;
+      }
       _imageCache[dst] = im;
       final cs = _csize;
       double w = im.width.toDouble();
@@ -80086,7 +80404,9 @@ class _PaintPageViewState extends State<_PaintPageView> {
         _dirty = true;
       });
       _persist();
-    } catch (_) {}
+    } catch (_) {
+      if (mounted) _snack(widget.provider.t('paint.imagePickFailed'));
+    }
   }
 
   /// テキストボックス + 書式 (太字/斜体/サイズ) で入力する (= ユーザー要望:
@@ -80239,11 +80559,11 @@ class _PaintPageViewState extends State<_PaintPageView> {
     _persist();
   }
 
-  void _addSheet() {
+  void _addPage() {
     setState(() {
       _sheets.add(_PaintSheet(
         name: widget.provider
-            .t('paint.defaultSheetName')
+            .t('paint.defaultPageName')
             .replaceFirst('{n}', '${_sheets.length + 1}'),
         sizeId: _sheet.sizeId,
       ));
@@ -80254,7 +80574,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
     _persist();
   }
 
-  void _selectSheet(int i) {
+  void _selectPage(int i) {
     if (i < 0 || i >= _sheets.length || i == _sel) return;
     setState(() {
       _sel = i;
@@ -80266,17 +80586,17 @@ class _PaintPageViewState extends State<_PaintPageView> {
     _persist();
   }
 
-  Future<void> _deleteSheet() async {
+  Future<void> _deletePage() async {
     if (_sheets.length <= 1) return;
     final ok = await showDialog<bool>(
       context: context,
       builder: (dctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E32),
-        title: Text(widget.provider.t('paint.deleteSheet'),
+        title: Text(widget.provider.t('paint.deletePage'),
             style: const TextStyle(color: Colors.white, fontSize: 15)),
         content: Text(
             widget.provider
-                .t('paint.deleteSheetConfirm')
+                .t('paint.deletePageConfirm')
                 .replaceFirst('{name}', _sheet.name),
             style: const TextStyle(color: Colors.white70)),
         actions: [
@@ -80304,13 +80624,13 @@ class _PaintPageViewState extends State<_PaintPageView> {
     _persist();
   }
 
-  Future<void> _renameSheet() async {
+  Future<void> _renamePage() async {
     final ctrl = TextEditingController(text: _sheet.name);
     final name = await showDialog<String>(
       context: context,
       builder: (dctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E32),
-        title: Text(widget.provider.t('paint.sheetName'),
+        title: Text(widget.provider.t('paint.pageName'),
             style: const TextStyle(color: Colors.white, fontSize: 15)),
         content: TextField(
           controller: ctrl,
@@ -80332,6 +80652,126 @@ class _PaintPageViewState extends State<_PaintPageView> {
     if (name == null || name.trim().isEmpty) return;
     setState(() {
       _sheet.name = name.trim();
+      _dirty = true;
+    });
+    _persist();
+  }
+
+  void _addNote() {
+    final inheritedSize = _sheets.isEmpty ? 'a4p' : _sheet.sizeId;
+    setState(() {
+      _note.selectedPage = _sel;
+      _notes.add(_PaintNote(
+        name: widget.provider
+            .t('paint.defaultNoteName')
+            .replaceFirst('{n}', '${_notes.length + 1}'),
+        pages: [
+          _PaintSheet(
+            name: widget.provider
+                .t('paint.defaultPageName')
+                .replaceFirst('{n}', '1'),
+            sizeId: inheritedSize,
+          ),
+        ],
+      ));
+      _noteSel = _notes.length - 1;
+      _sheets = _note.pages;
+      _sel = _note.selectedPage;
+      _redo.clear();
+      _resetPaintSelectionState();
+      _curStroke = null;
+      _curShape = null;
+      _dirty = true;
+    });
+    _persist();
+  }
+
+  void _selectNote(int i) {
+    if (i < 0 || i >= _notes.length || i == _noteSel) return;
+    setState(() {
+      _note.selectedPage = _sel;
+      _noteSel = i;
+      _sheets = _note.pages;
+      _sel = _note.selectedPage.clamp(0, _sheets.length - 1).toInt();
+      _redo.clear();
+      _resetPaintSelectionState();
+      _curStroke = null;
+      _curShape = null;
+    });
+    _preloadImages();
+    _persist();
+  }
+
+  Future<void> _renameNote() async {
+    final ctrl = TextEditingController(text: _note.name);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Text(widget.provider.t('paint.noteName'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          style: const TextStyle(color: Colors.white),
+          onSubmitted: (value) => Navigator.pop(dctx, value),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dctx),
+              child: Text(widget.provider.t('btn.cancel'),
+                  style: const TextStyle(color: Colors.white54))),
+          ElevatedButton(
+              onPressed: () => Navigator.pop(dctx, ctrl.text),
+              child: const Text('OK')),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    if (name == null || name.trim().isEmpty) return;
+    setState(() {
+      _note.name = name.trim();
+      _dirty = true;
+    });
+    _persist();
+  }
+
+  Future<void> _deleteNote() async {
+    if (_notes.length <= 1) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Text(widget.provider.t('paint.deleteNote'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        content: Text(
+            widget.provider
+                .t('paint.deleteNoteConfirm')
+                .replaceFirst('{name}', _note.name),
+            style: const TextStyle(color: Colors.white70)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dctx, false),
+              child: Text(widget.provider.t('btn.cancel'),
+                  style: const TextStyle(color: Colors.white54))),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFE57373),
+                foregroundColor: Colors.black),
+            onPressed: () => Navigator.pop(dctx, true),
+            child: Text(widget.provider.t('btn.delete')),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    setState(() {
+      _notes.removeAt(_noteSel);
+      if (_noteSel >= _notes.length) _noteSel = _notes.length - 1;
+      _sheets = _note.pages;
+      _sel = _note.selectedPage.clamp(0, _sheets.length - 1).toInt();
+      _redo.clear();
+      _resetPaintSelectionState();
       _dirty = true;
     });
     _persist();
@@ -80652,11 +81092,15 @@ class _PaintPageViewState extends State<_PaintPageView> {
   }
 
   void _snack(String msg) {
-    ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
-      content: Text(msg),
-      backgroundColor: const Color(0xFF1A1A2E),
-      duration: const Duration(seconds: 2),
-    ));
+    if (!mounted) return;
+    _appSnack(
+      context,
+      SnackBar(
+        content: Text(msg),
+        backgroundColor: const Color(0xFF1A1A2E),
+        duration: const Duration(seconds: 2),
+      ),
+    );
   }
 
   Future<void> _loadNote() async {
@@ -81111,7 +81555,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
     final centerOnDesktop =
         !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
     return SizedBox(
-      height: 38,
+      height: 72,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 6),
         child: Align(
@@ -81121,67 +81565,130 @@ class _PaintPageViewState extends State<_PaintPageView> {
             // 追加・名前変更・削除を中央付近の操作領域にまとめる。
             constraints: BoxConstraints(
                 maxWidth: centerOnDesktop ? 720 : double.infinity),
-            child: Row(children: [
-              Expanded(
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: Row(children: [
-                    for (int i = 0; i < _sheets.length; i++)
-                      Padding(
-                        padding:
-                            const EdgeInsets.only(right: 4, top: 5, bottom: 5),
-                        child: GestureDetector(
-                          onTap: () => _selectSheet(i),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 12, vertical: 4),
-                            alignment: Alignment.center,
-                            decoration: BoxDecoration(
-                              color: i == _sel
-                                  ? const Color(0xFFEC407A)
-                                      .withValues(alpha: 0.25)
-                                  : Colors.white10,
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(
+            child: Column(children: [
+              // ノートを先に切り替え、その中のページを下段で操作する二階層 UI。
+              SizedBox(
+                height: 34,
+                child: Row(children: [
+                  PopupMenuButton<int>(
+                    tooltip: widget.provider.t('paint.noteName'),
+                    onSelected: _selectNote,
+                    color: const Color(0xFF1E1E32),
+                    itemBuilder: (_) => [
+                      for (int i = 0; i < _notes.length; i++)
+                        PopupMenuItem(
+                          value: i,
+                          child: Text(_notes[i].name,
+                              style: const TextStyle(color: Colors.white)),
+                        ),
+                    ],
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      const Icon(Icons.menu_book_rounded,
+                          size: 18, color: Color(0xFFFFC857)),
+                      const SizedBox(width: 5),
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 150),
+                        child: Text(_note.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700)),
+                      ),
+                      const Icon(Icons.arrow_drop_down_rounded,
+                          color: Colors.white54),
+                    ]),
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    tooltip: widget.provider.t('paint.addNote'),
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.note_add_outlined,
+                        size: 19, color: Color(0xFFFFC857)),
+                    onPressed: _addNote,
+                  ),
+                  IconButton(
+                    tooltip: widget.provider.t('paint.noteName'),
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.edit_note_rounded,
+                        size: 19, color: Colors.white54),
+                    onPressed: _renameNote,
+                  ),
+                  IconButton(
+                    tooltip: widget.provider.t('paint.deleteNote'),
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.delete_forever_rounded,
+                        size: 18, color: Color(0xFFE57373)),
+                    onPressed: _notes.length > 1 ? _deleteNote : null,
+                  ),
+                ]),
+              ),
+              SizedBox(
+                height: 36,
+                child: Row(children: [
+                  Expanded(
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(children: [
+                        for (int i = 0; i < _sheets.length; i++)
+                          Padding(
+                            padding: const EdgeInsets.only(
+                                right: 4, top: 3, bottom: 3),
+                            child: GestureDetector(
+                              onTap: () => _selectPage(i),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 4),
+                                alignment: Alignment.center,
+                                decoration: BoxDecoration(
                                   color: i == _sel
                                       ? const Color(0xFFEC407A)
-                                      : Colors.white24),
+                                          .withValues(alpha: 0.25)
+                                      : Colors.white10,
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(
+                                      color: i == _sel
+                                          ? const Color(0xFFEC407A)
+                                          : Colors.white24),
+                                ),
+                                child: Text(_sheets[i].name,
+                                    style: TextStyle(
+                                        color: i == _sel
+                                            ? Colors.white
+                                            : Colors.white70,
+                                        fontSize: 12,
+                                        fontWeight: i == _sel
+                                            ? FontWeight.w700
+                                            : FontWeight.w500)),
+                              ),
                             ),
-                            child: Text(_sheets[i].name,
-                                style: TextStyle(
-                                    color: i == _sel
-                                        ? Colors.white
-                                        : Colors.white70,
-                                    fontSize: 12,
-                                    fontWeight: i == _sel
-                                        ? FontWeight.w700
-                                        : FontWeight.w500)),
                           ),
-                        ),
-                      ),
-                  ]),
-                ),
-              ),
-              IconButton(
-                tooltip: widget.provider.t('paint.addSheet'),
-                visualDensity: VisualDensity.compact,
-                icon: const Icon(Icons.add_box_outlined,
-                    size: 20, color: Color(0xFFEC407A)),
-                onPressed: _addSheet,
-              ),
-              IconButton(
-                tooltip: widget.provider.t('paint.sheetName'),
-                visualDensity: VisualDensity.compact,
-                icon: const Icon(Icons.edit_outlined,
-                    size: 18, color: Colors.white54),
-                onPressed: _renameSheet,
-              ),
-              IconButton(
-                tooltip: widget.provider.t('paint.deleteSheet'),
-                visualDensity: VisualDensity.compact,
-                icon: const Icon(Icons.delete_forever_rounded,
-                    size: 18, color: Color(0xFFE57373)),
-                onPressed: _deleteSheet,
+                      ]),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: widget.provider.t('paint.addPage'),
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.add_box_outlined,
+                        size: 20, color: Color(0xFFEC407A)),
+                    onPressed: _addPage,
+                  ),
+                  IconButton(
+                    tooltip: widget.provider.t('paint.pageName'),
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.edit_outlined,
+                        size: 18, color: Colors.white54),
+                    onPressed: _renamePage,
+                  ),
+                  IconButton(
+                    tooltip: widget.provider.t('paint.deletePage'),
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.delete_outline_rounded,
+                        size: 18, color: Color(0xFFE57373)),
+                    onPressed: _sheets.length > 1 ? _deletePage : null,
+                  ),
+                ]),
               ),
             ]),
           ),
@@ -81230,7 +81737,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
                   tooltip: widget.provider.t('paint.redo'),
                   onTap: _redo.isEmpty ? null : _redoAction),
               _toolBtn(
-                  icon: Icons.cleaning_services_rounded,
+                  icon: Icons.delete_sweep_rounded,
                   tooltip: widget.provider.t('paint.clearAll'),
                   onTap: _clearAll),
               Container(
@@ -81404,6 +81911,10 @@ class _PaintPageViewState extends State<_PaintPageView> {
                   widget.provider.t('shape.line')),
               kindBtn(3, Icons.north_east_rounded,
                   widget.provider.t('shape.arrow')),
+              kindBtn(4, Icons.change_history_rounded,
+                  widget.provider.t('shape.triangle')),
+              kindBtn(5, Icons.diamond_outlined,
+                  widget.provider.t('shape.diamond')),
               const SizedBox(width: 6),
               GestureDetector(
                 onTap: () => _applyShapeFillToSelection(!allFilled),
@@ -81724,6 +82235,10 @@ class _PaintPageViewState extends State<_PaintPageView> {
               widget.provider.t('shape.line')),
           kindBtn(
               3, Icons.north_east_rounded, widget.provider.t('shape.arrow')),
+          kindBtn(4, Icons.change_history_rounded,
+              widget.provider.t('shape.triangle')),
+          kindBtn(5, Icons.diamond_outlined,
+              widget.provider.t('shape.diamond')),
           const SizedBox(width: 6),
           GestureDetector(
             onTap: () => setState(() => _shapeFill = !_shapeFill),
@@ -81967,6 +82482,23 @@ class _PaintCanvasPainter extends CustomPainter {
               ..color = Color(s.color)
               ..style = PaintingStyle.fill
               ..isAntiAlias = true);
+        break;
+      case 4:
+        final triangle = Path()
+          ..moveTo(rect.center.dx, rect.top)
+          ..lineTo(rect.left, rect.bottom)
+          ..lineTo(rect.right, rect.bottom)
+          ..close();
+        canvas.drawPath(triangle, stroke);
+        break;
+      case 5:
+        final diamond = Path()
+          ..moveTo(rect.center.dx, rect.top)
+          ..lineTo(rect.right, rect.center.dy)
+          ..lineTo(rect.center.dx, rect.bottom)
+          ..lineTo(rect.left, rect.center.dy)
+          ..close();
+        canvas.drawPath(diamond, stroke);
         break;
       default:
         canvas.drawRect(rect, stroke);
@@ -93891,8 +94423,8 @@ Future<bool> _pageHasPlacedContent(dynamic page) async {
 
 /// 保存済みフリーノートの要素数。
 ///
-/// 現行形式 `{sheets:[{s,t,sh,im}],sel}` と、旧形式のストローク配列、
-/// `{s,t}` のいずれも読めるようにする。消しゴムマスク (`e:true`)
+/// 現行形式 `{notes:[{pages:[{s,t,sh,im}]}],noteSel}`、旧 `{sheets,...}`、
+/// ストローク配列、`{s,t}` のいずれも読めるようにする。消しゴムマスク (`e:true`)
 /// は表示中の対象を削る編集情報であり、独立した要素には数えない。
 Future<int> _paintElementCountForPage(String pageId) async {
   if (pageId.isEmpty) return 0;
@@ -93925,6 +94457,19 @@ Future<int> _paintElementCountForPage(String pageId) async {
       return listCount(decoded, skipEraseMasks: true);
     }
     if (decoded is Map) {
+      final notes = decoded['notes'];
+      if (notes is List) {
+        var total = 0;
+        for (final note in notes) {
+          if (note is! Map) continue;
+          final pages = note['pages'];
+          if (pages is! List) continue;
+          for (final page in pages) {
+            total += sheetCount(page);
+          }
+        }
+        return total;
+      }
       final sheets = decoded['sheets'];
       if (sheets is List) {
         var total = 0;
@@ -107228,6 +107773,10 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
   /// 二重発火防止フラグ。
   bool _finished = false;
 
+  /// 全タスク完了後の解除確認を重ねて表示しないためのフラグ。
+  /// キャンセル時は完了チェックもロックも維持し、後から再確認できる。
+  bool _taskUnlockConfirmationOpen = false;
+
   static const String _kLockMemoPrefsKey = 'focus_lock_memos_v2';
   static const String _kLegacyLockMemoPrefsKey = 'focus_lock_memo';
 
@@ -107390,15 +107939,56 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
     await widget.provider.setFocusLockTaskCompleted(task.id, completed);
     if (!mounted || _finished) return;
     setState(() {});
-    // 空リストは完了扱いにしない。登録済みの全件完了時だけ解除する。
+    // 空リストは完了扱いにしない。登録済みの全件完了時は、解除前に
+    // 明示確認を求める。チェックだけで一瞬にロックを閉じない。
     if (widget.provider.areAllFocusLockTasksCompleted) {
-      _onAllFocusTasksComplete();
+      await _requestFocusTaskUnlockConfirmation();
     }
   }
 
-  void _onAllFocusTasksComplete() {
+  Future<void> _requestFocusTaskUnlockConfirmation() async {
+    if (_finished ||
+        !mounted ||
+        !widget.taskMode ||
+        !widget.provider.areAllFocusLockTasksCompleted ||
+        _taskUnlockConfirmationOpen) {
+      return;
+    }
+    setState(() => _taskUnlockConfirmationOpen = true);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => PopScope(
+        canPop: false,
+        child: AlertDialog(
+          title: Text(widget.provider.t('focusLock.taskUnlockConfirmTitle')),
+          content: Text(widget.provider.t('focusLock.taskUnlockConfirmBody')),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: Text(widget.provider.t('focusLock.cancel')),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: Text(
+                  widget.provider.t('focusLock.taskUnlockConfirmAction')),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted) return;
+    setState(() => _taskUnlockConfirmationOpen = false);
+    // ダイアログ表示中に状態が変わっていた場合は、解除しない。
+    if (confirmed == true && widget.provider.areAllFocusLockTasksCompleted) {
+      _completeFocusTaskLock();
+    }
+  }
+
+  void _completeFocusTaskLock() {
     if (_finished || !widget.provider.areAllFocusLockTasksCompleted) return;
     _finished = true;
+    _tick?.cancel();
     HapticFeedback.heavyImpact();
     _AudioAlarm.playAlarm(_AudioAlarm.prefKeyPomodoro);
     widget.onClose();
@@ -107406,8 +107996,10 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
 
   /// 緊急解除 (時間前に閉じる)。予約通知もキャンセル。
   void _emergencyExit() {
-    if (widget.taskMode &&
-        !widget.provider.areAllFocusLockTasksCompleted) {
+    if (widget.taskMode) {
+      if (!widget.provider.areAllFocusLockTasksCompleted) return;
+      // 全件完了済みでも、長押しなどの解除操作は確認を経由する。
+      unawaited(_requestFocusTaskUnlockConfirmation());
       return;
     }
     if (_finished) return;
@@ -108931,6 +109523,20 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
           Text(p.t('focusLock.taskUnlockHint'),
               textAlign: TextAlign.center,
               style: const TextStyle(color: Colors.white38, fontSize: 11)),
+          if (p.areAllFocusLockTasksCompleted) ...[
+            const SizedBox(height: 8),
+            FilledButton.icon(
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF43B97F),
+                foregroundColor: Colors.white,
+              ),
+              onPressed: _taskUnlockConfirmationOpen
+                  ? null
+                  : _requestFocusTaskUnlockConfirmation,
+              icon: const Icon(Icons.lock_open_rounded, size: 17),
+              label: Text(p.t('focusLock.taskUnlockPendingAction')),
+            ),
+          ],
         ],
       ),
     );
@@ -113270,6 +113876,60 @@ class _DockedGoogleSearchPaneState extends State<_DockedGoogleSearchPane> {
   }
 }
 
+final ValueNotifier<bool> _bottomToolbarExpandedNotifier =
+    ValueNotifier<bool>(true);
+
+double _snackBarBottomClearance(BuildContext context) {
+  final desktop = !kIsWeb &&
+      (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
+  if (desktop) {
+    final media = MediaQuery.maybeOf(context);
+    final screenHeight = media?.size.height ?? 0.0;
+    if (screenHeight < 96.0) return 20.0;
+
+    try {
+      final provider = context.read<MindMapProvider>();
+      final bottomIds = provider.desktopHeaderButtonsForPlacement('bottom');
+      if (bottomIds.isEmpty) return 20.0;
+
+      final dockHeight = provider.desktopHeaderDockCollapsedAt('bottom')
+          ? 46.0
+          : 66.0;
+      if (!provider.desktopBottomDockFloating) {
+        return dockHeight + 24.0;
+      }
+
+      final minCenter = dockHeight / 2 + 8.0;
+      final maxCenter = screenHeight - dockHeight / 2 - 8.0;
+      final centerY = (provider.desktopBottomDockY * screenHeight)
+          .clamp(minCenter, maxCenter)
+          .toDouble();
+      final dockTop = centerY - dockHeight / 2;
+      final dockBottom = centerY + dockHeight / 2;
+      // 自由配置バーが下端の通知領域にある場合だけ、その上まで
+      // 持ち上げる。画面中央や上部に移動したバーは下端通知と重ならない。
+      if (dockBottom >= screenHeight - 160.0) {
+        return math.max(20.0, screenHeight - dockTop + 12.0).toDouble();
+      }
+    } catch (_) {}
+    return 20.0;
+  }
+
+  final safeBottom = MediaQuery.maybeOf(context)?.padding.bottom ?? 0.0;
+  if (!_bottomToolbarExpandedNotifier.value) return safeBottom + 62.0;
+
+  var rows = 2;
+  try {
+    final provider = context.read<MindMapProvider>();
+    if (provider.currentPlan == SubscriptionPlan.max) {
+      if (provider.bottomThirdRowEnabled) rows++;
+      if (provider.bottomFourthRowEnabled) rows++;
+    }
+  } catch (_) {}
+  // 1行は約46px、行間は9px。SafeAreaと12pxの余白も確保する。
+  return safeBottom + 24.0 + rows * 46.0 + (rows - 1) * 9.0;
+}
+
 ScaffoldFeatureController<SnackBar, SnackBarClosedReason> _appSnack(
   BuildContext ctx,
   SnackBar bar, {
@@ -113277,22 +113937,13 @@ ScaffoldFeatureController<SnackBar, SnackBarClosedReason> _appSnack(
 }) {
   final messenger = ScaffoldMessenger.of(ctx);
   messenger.hideCurrentSnackBar();
-  final patched = _patchSnackBarDuration(bar, processing: processing);
-  // 下部ツールバーを持ち上げる
-  MindMapProvider? provider;
+  final patched =
+      _patchSnackBarDuration(ctx, bar, processing: processing);
+  // 通知はバーの上へ出すため、旧方式のバー持ち上げ状態を確実に解除する。
   try {
-    provider = ctx.read<MindMapProvider>();
-    provider.setBottomBarLifted(true);
+    ctx.read<MindMapProvider>().setBottomBarLifted(false);
   } catch (_) {}
-  // 直接 messenger.showSnackBar を呼ぶ (= _appSnackM 経由ではない、
-  // 二重持ち上げ防止)。
-  final controller = messenger.showSnackBar(patched);
-  controller.closed.then((_) {
-    try {
-      provider?.setBottomBarLifted(false);
-    } catch (_) {}
-  });
-  return controller;
+  return messenger.showSnackBar(patched);
 }
 
 /// SnackBar の duration / 表示位置を要件に従って調整するヘルパ。
@@ -113317,7 +113968,8 @@ Widget _readableSnackContent(Widget content) {
   );
 }
 
-SnackBar _patchSnackBarDuration(SnackBar bar, {required bool processing}) {
+SnackBar _patchSnackBarDuration(BuildContext context, SnackBar bar,
+    {required bool processing}) {
   final original = bar.duration;
   Duration finalDuration = original;
   final isLongRunning = original >= const Duration(seconds: 30);
@@ -113327,22 +113979,13 @@ SnackBar _patchSnackBarDuration(SnackBar bar, {required bool processing}) {
     }
   }
 
-  // floating + margin を強制して下部 UI と被らないようにする。
-  // デスクトップ (Windows/macOS/Linux) ではボトムバーがないので、
-  // SnackBar をできるだけ画面下部に表示する (= ユーザー要望)。
-  // モバイル (Android/iOS) では、 SnackBar 表示時にボトムバー (カスタム
-  // ボタン) が `bottomBarLifted` で上方向に持ち上がってスペースを空ける。
-  // そのスペース (= カスタムボタンの下) に SnackBar を出すため、 下マージン
-  // は小さく (12px) して画面下端に寄せる。 以前は 140px にしていたため、
-  // 持ち上がったボトムバー本体と SnackBar が重なって (被って) しまっていた。
-  // 12px なら system nav bar の上・カスタムボタンの下にきれいに収まる。
+  // モバイルでは下部カスタムバーの行数に応じて十分な下余白を取り、
+  // メッセージを常にバーより上へ表示する。バー自体は動かさない。
   final behavior = bar.behavior ?? SnackBarBehavior.floating;
-  final bool isDesktopRuntime =
-      !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
-  final double defaultBottom = isDesktopRuntime ? 20.0 : 12.0;
   final margin = bar.margin ??
       (behavior == SnackBarBehavior.floating
-          ? EdgeInsets.fromLTRB(12, 0, 12, defaultBottom)
+          ? EdgeInsets.fromLTRB(
+              12, 0, 12, _snackBarBottomClearance(context))
           : null);
 
   return SnackBar(
@@ -113378,20 +114021,12 @@ ScaffoldFeatureController<SnackBar, SnackBarClosedReason>? _appSnackM(
 }) {
   if (messenger == null) return null;
   messenger.hideCurrentSnackBar();
-  final patched = _patchSnackBarDuration(bar, processing: processing);
-  MindMapProvider? provider;
+  final patched =
+      _patchSnackBarDuration(messenger.context, bar, processing: processing);
   try {
-    provider = messenger.context.read<MindMapProvider>();
-    provider.setBottomBarLifted(true);
+    messenger.context.read<MindMapProvider>().setBottomBarLifted(false);
   } catch (_) {}
-  // 直接 messenger.showSnackBar を呼ぶ (= _appSnackM の再帰を防止)
-  final controller = messenger.showSnackBar(patched);
-  controller.closed.then((_) {
-    try {
-      provider?.setBottomBarLifted(false);
-    } catch (_) {}
-  });
-  return controller;
+  return messenger.showSnackBar(patched);
 }
 
 void _showProRequiredDialog(BuildContext ctx, MindMapProvider provider) {
@@ -113851,6 +114486,24 @@ int get _pdfRasterSourceLimitBytes {
 bool _isPdfRasterSourceSafe(String path) {
   try {
     return File(path).lengthSync() <= _pdfRasterSourceLimitBytes;
+  } catch (_) {
+    return false;
+  }
+}
+
+/// 見開きでは PDF バイトの転送に加えて 2 ページ分の描画を行うため、1 ページの
+/// サムネイルより厳しい上限を使う。上限超過時はライブビューアを維持して、OOM に
+/// よるアプリ終了より安全な通常表示へのフォールバックを優先する。
+int get _pdfSpreadRasterSourceLimitBytes {
+  if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+    return 20 * 1024 * 1024;
+  }
+  return 64 * 1024 * 1024;
+}
+
+bool _isPdfSpreadRasterSourceSafe(String path) {
+  try {
+    return File(path).lengthSync() <= _pdfSpreadRasterSourceLimitBytes;
   } catch (_) {
     return false;
   }
@@ -114462,7 +115115,8 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
   bool _fitPageRendering = false;
   bool _spreadPageMode = false;
   bool _spreadFitPageMode = false;
-  final Map<int, Uint8List> _spreadPageImages = <int, Uint8List>{};
+  final Map<int, printing.PdfRaster> _spreadPageImages =
+      <int, printing.PdfRaster>{};
   final Map<int, Size> _spreadPageImageSizes = <int, Size>{};
   final TransformationController _spreadTransformController =
       TransformationController();
@@ -114470,6 +115124,8 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
   bool _spreadRendering = false;
   bool _spreadRenderPending = false;
   int _spreadRenderGeneration = 0;
+  static const Duration _spreadRasterTimeout = Duration(seconds: 18);
+  static const int _spreadRasterMaxPixels = 8 * 1000 * 1000;
   // PDF バイト列はページめくりの度に読み直すと重いので一度だけ読んでキャッシュ
   //   する (= ユーザー報告: メモ/AI 欄が開くタイミングでフリーズ。 ラスタ処理の
   //   負荷を減らす一手)。
@@ -114533,8 +115189,8 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
 
   bool _canEnableSpreadRaster() {
     final path = _pdfFilePath;
-    if (path != null && _isPdfRasterSourceSafe(path)) return true;
-    final limitMb = _pdfRasterSourceLimitBytes ~/ (1024 * 1024);
+    if (path != null && _isPdfSpreadRasterSourceSafe(path)) return true;
+    final limitMb = _pdfSpreadRasterSourceLimitBytes ~/ (1024 * 1024);
     ScaffoldMessenger.maybeOf(context)?.showSnackBar(
       SnackBar(
         content: Text(
@@ -114555,10 +115211,17 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
       ..setEntry(1, 1, next);
   }
 
-  void _scheduleSpreadPageRender() {
+  void _scheduleSpreadPageRender(
+      [Duration delay = const Duration(milliseconds: 320)]) {
     _spreadPageDebounce?.cancel();
     if (!_spreadFitPageMode) return;
-    _spreadPageDebounce = Timer(const Duration(milliseconds: 220), () {
+    // 1 文書につき raster は常に 1 本だけ。ページ送りが重なった場合は
+    // pending を立て、実行中の処理が終わった後に「最後のページ」だけ描画する。
+    if (_spreadRendering) {
+      _spreadRenderPending = true;
+      return;
+    }
+    _spreadPageDebounce = Timer(delay, () {
       if (mounted && _spreadFitPageMode) _renderSpreadPages();
     });
   }
@@ -114586,6 +115249,7 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
           p
     ];
     if (need.isEmpty) return true;
+    final requestedStart = pages.first;
     if (_spreadRendering) {
       if (!prefetch) _spreadRenderPending = true;
       return false;
@@ -114593,49 +115257,87 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
     _spreadRendering = true;
     final generation = _spreadRenderGeneration;
     try {
-      if (!_isPdfRasterSourceSafe(path)) {
+      if (!_isPdfSpreadRasterSourceSafe(path)) {
         throw StateError('PDF is too large for safe spread rasterization');
       }
-      _fitPageBytes ??= await File(path).readAsBytes();
+      // Printing.raster は Uint8List をプラットフォーム側へコピーする。ここを
+      // フィールドに保持すると、SfPdfViewer の文書データ + Dart の PDF バイト +
+      // ネイティブ側コピーが見開き中ずっと共存するため、大きな PDF で急激に
+      // メモリを消費する。1 回の描画にだけローカル保持して、完了後に解放する。
+      final pdfBytes = await File(path).readAsBytes();
       if (!mounted ||
           !_spreadFitPageMode ||
-          generation != _spreadRenderGeneration) {
+          generation != _spreadRenderGeneration ||
+          (!prefetch && _spreadStartPage != requestedStart)) {
         return false;
       }
-      var i = 0;
-      await for (final page in printing.Printing.raster(
-        _fitPageBytes!,
-        pages: need.map((n) => n - 1).toList(),
-        dpi: 72,
-      )) {
-        final png = await page.toPng();
+      final rasterDpi = (!kIsWeb && (Platform.isAndroid || Platform.isIOS))
+          ? 56.0
+          : 64.0;
+      // printing 5.14.3 の Windows 実装は MethodChannel ハンドラ内で
+      // PDFium のページループを同期実行する。複数ページを一度に渡すと、Dart の
+      // timeout や描画フレームが全ページ終了まで動けない。PDF の再解析回数は
+      // 増えるが、1 ページずつネイティブ処理を返し、間にフレームと世代確認を
+      // 挟むことで、連続したUI停止と複数RGBAバッファの滞留を防ぐ。
+      for (var i = 0; i < need.length; i++) {
+        final n = need[i];
+        printing.PdfRaster? page;
+        await for (final raster in printing.Printing.raster(
+          pdfBytes,
+          pages: <int>[n - 1],
+          dpi: rasterDpi,
+        ).timeout(_spreadRasterTimeout)) {
+          if (page != null) {
+            throw StateError('PDF rasterizer returned duplicate page data');
+          }
+          page = raster;
+        }
+        if (page == null) {
+          throw StateError('PDF rasterizer returned incomplete spread pages');
+        }
+        final pixelCount = page.width * page.height;
+        if (pixelCount > _spreadRasterMaxPixels) {
+          // printing API はRGBA確保後にだけ寸法を返すため事前判定はできない。
+          // ここで止めることで、少なくとも ui.Image 側の追加確保は防止する。
+          throw StateError('PDF page is too large for safe spread rendering');
+        }
         if (!mounted ||
             !_spreadFitPageMode ||
-            generation != _spreadRenderGeneration) {
+            generation != _spreadRenderGeneration ||
+            (!prefetch && _spreadStartPage != requestedStart)) {
           return false;
         }
-        final n = need[i];
-        _spreadPageImages[n] = png;
+        // PdfRaster は既に RGBA 画像。toPng() で圧縮して Image.memory で再び
+        // 展開する旧経路は UI アイソレートを詰まらせるため、そのまま保持する。
+        _spreadPageImages[n] = page;
         _spreadPageImageSizes[n] =
             Size(page.width.toDouble(), page.height.toDouble());
-        i++;
-        if (i >= need.length) break;
-      }
-      // ── キャッシュの間引き (= メモリ節約。 現在の見開きの近傍は残す) ──
-      if (_spreadPageImages.length > 6) {
-        final cur = _spreadStartPage;
-        final far = _spreadPageImages.keys.toList()
-          ..sort((a, b) => (b - cur).abs().compareTo((a - cur).abs()));
-        for (final k in far) {
-          if (_spreadPageImages.length <= 4) break;
-          _spreadPageImages.remove(k);
-          _spreadPageImageSizes.remove(k);
+        if (i + 1 < need.length) {
+          await WidgetsBinding.instance.endOfFrame;
+          if (!mounted ||
+              !_spreadFitPageMode ||
+              generation != _spreadRenderGeneration ||
+              (!prefetch && _spreadStartPage != requestedStart)) {
+            return false;
+          }
         }
+      }
+      // 見開き画像は現在の 1～2 ページだけを保持する。RGBA ページ画像と
+      // Flutter の ui.Image の両方がメモリを使うため、複数見開きの先読み
+      // キャッシュは低メモリ端末での終了原因になる。
+      final keep = pages.toSet();
+      for (final cached in _spreadPageImages.keys.toList()) {
+        if (keep.contains(cached)) continue;
+        _spreadPageImages.remove(cached);
+        _spreadPageImageSizes.remove(cached);
       }
       return true;
     } catch (e) {
       debugPrint('見開き全体表示の生成失敗: $e');
-      if (!prefetch && mounted) {
+      if (!prefetch &&
+          mounted &&
+          _spreadFitPageMode &&
+          generation == _spreadRenderGeneration) {
         setState(() {
           _spreadFitPageMode = false;
           _fitPageBytes = null;
@@ -114644,6 +115346,13 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
           _spreadRenderedForStart = -1;
           _spreadTransformController.value = Matrix4.identity();
         });
+        _appSnack(
+          context,
+          const SnackBar(
+            content: Text('このページは安全に画像化できなかったため、通常表示に戻しました。'),
+            duration: Duration(seconds: 4),
+          ),
+        );
       }
       return false;
     } finally {
@@ -114651,10 +115360,7 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
       // 先読み中にページ送りされた場合も、先読み完了後に保留中の前景描画を
       // 必ず再開する。旧実装は prefetch の finally では pending を処理せず、
       // 「見開きモードを準備中」のまま止まっていた。
-      if (mounted &&
-          _spreadFitPageMode &&
-          (_spreadRenderPending ||
-              _spreadStartPage != _spreadRenderedForStart)) {
+      if (mounted && _spreadFitPageMode && _spreadRenderPending) {
         _spreadRenderPending = false;
         _scheduleSpreadPageRender();
       }
@@ -114701,12 +115407,11 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
     });
     if (_spreadFitPageMode) {
       _suppressPdfPageChangeBriefly();
+      // このフレームで背面 SfPdfViewer をツリーから外し、文書解析・ページ描画と
+      // Printing.raster が同時に走らないようにする。解放処理用にさらに少し待つ。
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
-        try {
-          _pdfViewerCtrl?.jumpToPage(_spreadStartPage);
-        } catch (_) {}
-        _scheduleSpreadPageRender();
+        _scheduleSpreadPageRender(const Duration(milliseconds: 480));
       });
     } else {
       // 見開き中は背面 SfPdfViewer を動かさないため、解除時に一度だけ同期する。
@@ -114747,11 +115452,11 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
     return SizedBox(
       width: pageSize.width,
       height: pageSize.height,
-      child: Image.memory(
-        _spreadPageImages[pageNumber]!,
+      child: Image(
+        image: printing.PdfRasterImage(_spreadPageImages[pageNumber]!),
         fit: BoxFit.fill,
-        gaplessPlayback: true,
-        filterQuality: FilterQuality.medium,
+        gaplessPlayback: false,
+        filterQuality: FilterQuality.low,
       ),
     );
   }
@@ -118449,7 +119154,12 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
               //   重なる」 という指摘につながっていた (= ユーザー要望)。
               //   PDF は Expanded (= 本体 Row のセル) に収まるので、 1.0 でも
               //   サイドパネルの領域には食い込まない。
-              LayoutBuilder(
+              // 見開き画像の生成中は SfPdfViewer をツリーから外す。同じ PDF を
+              // Syncfusion と Printing が同時に解析・描画することが、切替時の
+              // フリーズとメモリ急増の主因だった。解除時は onDocumentLoaded の
+              // 既存復元処理で現在ページとハイライトを戻す。
+              if (!_spreadFitPageMode)
+                LayoutBuilder(
                 builder: (viewerCtx, viewerConstraints) {
                   final hasHiddenPdfPages = _pdfFilePath != null &&
                       context
@@ -119798,7 +120508,8 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
   //   (= ユーザー報告: ページをめくると落ちる)。
   Timer? _fitPageDebounce;
   bool _spreadFitPageMode = false;
-  final Map<int, Uint8List> _spreadPageImages = <int, Uint8List>{};
+  final Map<int, printing.PdfRaster> _spreadPageImages =
+      <int, printing.PdfRaster>{};
   final Map<int, Size> _spreadPageImageSizes = <int, Size>{};
   final TransformationController _spreadTransformController =
       TransformationController();
@@ -119807,6 +120518,8 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
   bool _spreadRenderPending = false;
   int _spreadRenderGeneration = 0;
   Timer? _spreadPageDebounce;
+  static const Duration _spreadRasterTimeout = Duration(seconds: 18);
+  static const int _spreadRasterMaxPixels = 8 * 1000 * 1000;
 
   /// ページ全体表示はライブの SfPdfViewer を縮小表示する。
   /// ラスタ画像の生成は AI WebView と競合してフリーズしやすいため使わない。
@@ -119856,8 +120569,8 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
 
   bool _canEnableSpreadRaster() {
     final path = _pdfFilePath;
-    if (path != null && _isPdfRasterSourceSafe(path)) return true;
-    final limitMb = _pdfRasterSourceLimitBytes ~/ (1024 * 1024);
+    if (path != null && _isPdfSpreadRasterSourceSafe(path)) return true;
+    final limitMb = _pdfSpreadRasterSourceLimitBytes ~/ (1024 * 1024);
     ScaffoldMessenger.maybeOf(context)?.showSnackBar(
       SnackBar(
         content: Text(
@@ -119878,10 +120591,17 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
       ..setEntry(1, 1, next);
   }
 
-  void _scheduleSpreadPageRender() {
+  void _scheduleSpreadPageRender(
+      [Duration delay = const Duration(milliseconds: 320)]) {
     _spreadPageDebounce?.cancel();
     if (!_spreadFitPageMode) return;
-    _spreadPageDebounce = Timer(const Duration(milliseconds: 220), () {
+    // 実行中の raster と次要求を並列化しない。連続ページ送りは最後の要求へ
+    // 畳み込み、完了後に 1 回だけ再実行する。
+    if (_spreadRendering) {
+      _spreadRenderPending = true;
+      return;
+    }
+    _spreadPageDebounce = Timer(delay, () {
       if (mounted && _spreadFitPageMode) _renderSpreadPages();
     });
   }
@@ -119901,6 +120621,7 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
           p
     ];
     if (need.isEmpty) return true;
+    final requestedStart = pages.first;
     if (_spreadRendering) {
       if (!prefetch) _spreadRenderPending = true;
       return false;
@@ -119908,48 +120629,80 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
     _spreadRendering = true;
     final generation = _spreadRenderGeneration;
     try {
-      if (!_isPdfRasterSourceSafe(path)) {
+      if (!_isPdfSpreadRasterSourceSafe(path)) {
         throw StateError('PDF is too large for safe spread rasterization');
       }
-      _fitPageBytes ??= await File(path).readAsBytes();
+      // PDF バイトは raster 呼び出し中だけ保持する。SfPdfViewer と Dart と
+      // プラットフォーム側で同じ文書を三重保持し続けるのを防ぐ。
+      final pdfBytes = await File(path).readAsBytes();
       if (!mounted ||
           !_spreadFitPageMode ||
-          generation != _spreadRenderGeneration) {
+          generation != _spreadRenderGeneration ||
+          (!prefetch && _spreadStartPage != requestedStart)) {
         return false;
       }
-      var i = 0;
-      await for (final page in printing.Printing.raster(
-        _fitPageBytes!,
-        pages: need.map((n) => n - 1).toList(),
-        dpi: 72,
-      )) {
-        final png = await page.toPng();
+      final rasterDpi = (!kIsWeb && (Platform.isAndroid || Platform.isIOS))
+          ? 56.0
+          : 64.0;
+      // Windows の printing プラグインはネイティブ側で全指定ページを同期処理
+      // するため、見開き2ページを別ジョブに分割する。各ページの間でFlutterへ
+      // 制御を戻し、モード解除・ページ変更の世代を再確認する。
+      for (var i = 0; i < need.length; i++) {
+        final n = need[i];
+        printing.PdfRaster? page;
+        await for (final raster in printing.Printing.raster(
+          pdfBytes,
+          pages: <int>[n - 1],
+          dpi: rasterDpi,
+        ).timeout(_spreadRasterTimeout)) {
+          if (page != null) {
+            throw StateError('PDF rasterizer returned duplicate page data');
+          }
+          page = raster;
+        }
+        if (page == null) {
+          throw StateError('PDF rasterizer returned incomplete spread pages');
+        }
+        final pixelCount = page.width * page.height;
+        if (pixelCount > _spreadRasterMaxPixels) {
+          // 寸法はRGBA生成後に返るAPIなので、追加のui.Image確保前に打ち切る。
+          throw StateError('PDF page is too large for safe spread rendering');
+        }
         if (!mounted ||
             !_spreadFitPageMode ||
-            generation != _spreadRenderGeneration) {
+            generation != _spreadRenderGeneration ||
+            (!prefetch && _spreadStartPage != requestedStart)) {
           return false;
         }
-        final n = need[i];
-        _spreadPageImages[n] = png;
+        // PNG への再エンコードを挟まず、raster の RGBA 画像を直接表示する。
+        _spreadPageImages[n] = page;
         _spreadPageImageSizes[n] =
             Size(page.width.toDouble(), page.height.toDouble());
-        i++;
-        if (i >= need.length) break;
-      }
-      if (_spreadPageImages.length > 6) {
-        final cur = _spreadStartPage;
-        final far = _spreadPageImages.keys.toList()
-          ..sort((a, b) => (b - cur).abs().compareTo((a - cur).abs()));
-        for (final k in far) {
-          if (_spreadPageImages.length <= 4) break;
-          _spreadPageImages.remove(k);
-          _spreadPageImageSizes.remove(k);
+        if (i + 1 < need.length) {
+          await WidgetsBinding.instance.endOfFrame;
+          if (!mounted ||
+              !_spreadFitPageMode ||
+              generation != _spreadRenderGeneration ||
+              (!prefetch && _spreadStartPage != requestedStart)) {
+            return false;
+          }
         }
+      }
+      // デコード済み画像を含むピークメモリを一定にするため、現在の見開きだけを
+      // 保持する。端末の画像キャッシュと合わせても最大 2 ページ相当に抑える。
+      final keep = pages.toSet();
+      for (final cached in _spreadPageImages.keys.toList()) {
+        if (keep.contains(cached)) continue;
+        _spreadPageImages.remove(cached);
+        _spreadPageImageSizes.remove(cached);
       }
       return true;
     } catch (e) {
       debugPrint('見開き全体表示の生成失敗: $e');
-      if (!prefetch && mounted) {
+      if (!prefetch &&
+          mounted &&
+          _spreadFitPageMode &&
+          generation == _spreadRenderGeneration) {
         setState(() {
           _spreadFitPageMode = false;
           _fitPageBytes = null;
@@ -119958,15 +120711,19 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
           _spreadRenderedForStart = -1;
           _spreadTransformController.value = Matrix4.identity();
         });
+        _appSnack(
+          context,
+          const SnackBar(
+            content: Text('このページは安全に画像化できなかったため、通常表示に戻しました。'),
+            duration: Duration(seconds: 4),
+          ),
+        );
       }
       return false;
     } finally {
       _spreadRendering = false;
       // 先読み中に入ったページ送り要求も、先読み完了後に必ず処理する。
-      if (mounted &&
-          _spreadFitPageMode &&
-          (_spreadRenderPending ||
-              _spreadStartPage != _spreadRenderedForStart)) {
+      if (mounted && _spreadFitPageMode && _spreadRenderPending) {
         _spreadRenderPending = false;
         _scheduleSpreadPageRender();
       }
@@ -120004,12 +120761,11 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
       }
     });
     if (_spreadFitPageMode) {
+      // このフレームで SfPdfViewer を描画ツリーから外してから raster を開始する。
+      // 同じ PDF の二重解析・二重描画が重ならないよう、解放用の猶予も設ける。
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
-        try {
-          _pdfViewerCtrl?.jumpToPage(_spreadStartPage);
-        } catch (_) {}
-        _scheduleSpreadPageRender();
+        _scheduleSpreadPageRender(const Duration(milliseconds: 480));
       });
     } else {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -120040,11 +120796,11 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
     return SizedBox(
       width: pageSize.width,
       height: pageSize.height,
-      child: Image.memory(
-        _spreadPageImages[pageNumber]!,
+      child: Image(
+        image: printing.PdfRasterImage(_spreadPageImages[pageNumber]!),
         fit: BoxFit.fill,
-        gaplessPlayback: true,
-        filterQuality: FilterQuality.medium,
+        gaplessPlayback: false,
+        filterQuality: FilterQuality.low,
       ),
     );
   }
@@ -120572,6 +121328,10 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
     // (= ユーザー要望「1 押下 = 1 ページ進む」 を確実にする)
     if (key == LogicalKeyboardKey.arrowRight ||
         key == LogicalKeyboardKey.arrowLeft) {
+      if (_spreadFitPageMode) {
+        _jumpSpreadPages(key == LogicalKeyboardKey.arrowRight ? 2 : -2);
+        return KeyEventResult.handled;
+      }
       return KeyEventResult.ignored;
     }
     final isSingleShotKey = key == LogicalKeyboardKey.pageDown ||
@@ -121812,7 +122572,10 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
             // ユーザー要望: 「PDF ビューワーの表示領域が小さい、 特に
             //   Android 版で左右の黒のスペース要らないから大きめに表示
             //   して欲しい」 への対応。
-            LayoutBuilder(
+            // 見開き中はライブビューアを停止し、PDF の二重解析・二重描画を
+            // 避ける。Focus は親に残るため Ctrl+/- と見開きページ送りは維持される。
+            if (!_spreadFitPageMode)
+              LayoutBuilder(
               builder: (viewerCtx, viewerConstraints) {
                 final hasHiddenPdfPages = _pdfFilePath != null &&
                     context

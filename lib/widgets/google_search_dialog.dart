@@ -35,14 +35,15 @@
 // なる。 「マップに追加」 で完了。
 
 import 'dart:async';
-import 'dart:convert' show jsonEncode, jsonDecode;
-import 'dart:io' show Platform, File;
+import 'dart:convert' show base64Decode, jsonEncode, jsonDecode;
+import 'dart:io' show Platform, File, HttpClient, HttpHeaders;
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart' as iaw;
 import 'package:webview_windows/webview_windows.dart' as wv_win;
@@ -1039,6 +1040,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   static const int _kGsMaxTabs = 15;
   bool _gsTabBarExpanded = false;
   bool _gsMobileToolsExpanded = false;
+  bool _webDownloadInProgress = false;
+  Timer? _captureNoticeTimer;
+  static const int _kMaxInAppDownloadBytes = 96 * 1024 * 1024;
 
   /// アクティブタブの WebView が「戻れる」 履歴を持つか。
   ///
@@ -2423,11 +2427,36 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   void _showCaptureSnack(String msg, Color bgColor) {
     if (!mounted) return;
     final messenger = ScaffoldMessenger.maybeOf(context);
-    messenger?.showSnackBar(SnackBar(
-      content: Text(msg, style: const TextStyle(fontSize: 12)),
+    if (messenger == null) return;
+    _captureNoticeTimer?.cancel();
+    messenger.clearMaterialBanners();
+    messenger.showMaterialBanner(MaterialBanner(
+      content: Text(
+        msg,
+        style: const TextStyle(color: Colors.white, fontSize: 12),
+      ),
       backgroundColor: bgColor,
-      duration: const Duration(seconds: 3),
+      leading: const Icon(Icons.info_outline_rounded, color: Colors.white),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      actions: [
+        IconButton(
+          tooltip: '閉じる',
+          visualDensity: VisualDensity.compact,
+          onPressed: () {
+            _captureNoticeTimer?.cancel();
+            messenger.hideCurrentMaterialBanner();
+          },
+          icon: const Icon(Icons.close_rounded, color: Colors.white70),
+        ),
+      ],
     ));
+    // ScaffoldMessenger の MaterialBanner は AppBar 直下に表示される。
+    // メモ / AI パネルや下部バーの高さに依存せず、必ずそれらより上で
+    // ダウンロード結果を確認できる。
+    _captureNoticeTimer = Timer(const Duration(seconds: 3), () {
+      if (!mounted) return;
+      ScaffoldMessenger.maybeOf(context)?.hideCurrentMaterialBanner();
+    });
   }
 
   /// 一番下までスクロールしてからスクショを 1 枚撮ってマップに追加。
@@ -3882,6 +3911,209 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     }
   }
 
+  String? _downloadNameFromDisposition(String? disposition) {
+    if (disposition == null || disposition.trim().isEmpty) return null;
+    final encoded = RegExp("filename\\*=UTF-8''([^;]+)", caseSensitive: false)
+        .firstMatch(disposition)
+        ?.group(1);
+    if (encoded != null && encoded.isNotEmpty) {
+      try {
+        return Uri.decodeComponent(encoded.trim());
+      } catch (_) {
+        return encoded.trim();
+      }
+    }
+    return RegExp(r'filename="?([^";]+)"?', caseSensitive: false)
+        .firstMatch(disposition)
+        ?.group(1)
+        ?.trim();
+  }
+
+  String _safeDownloadFileName(
+    iaw.DownloadStartRequest request, {
+    String? responseDisposition,
+    String? responseMime,
+  }) {
+    var name = (request.suggestedFilename ?? '').trim();
+    name = name.isEmpty
+        ? (_downloadNameFromDisposition(responseDisposition) ??
+            _downloadNameFromDisposition(request.contentDisposition) ??
+            '')
+        : name;
+    if (name.isEmpty) {
+      try {
+        final uri = Uri.parse(request.url.toString());
+        name = uri.pathSegments.lastWhere((part) => part.trim().isNotEmpty,
+            orElse: () => '');
+      } catch (_) {}
+    }
+    if (name.isEmpty || name == 'uc' || name == 'export') {
+      name = 'download_${DateTime.now().millisecondsSinceEpoch}';
+    }
+    try {
+      name = Uri.decodeComponent(name);
+    } catch (_) {}
+    name = name
+        .replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1F]'), '_')
+        .replaceAll(RegExp(r'^\.+'), '')
+        .trim();
+    if (name.isEmpty) name = 'download_${DateTime.now().millisecondsSinceEpoch}';
+    if (!name.contains('.')) {
+      final mime = (responseMime ?? request.mimeType ?? '').toLowerCase();
+      const extensions = <String, String>{
+        'application/pdf': '.pdf',
+        'application/zip': '.zip',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+            '.docx',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
+            '.xlsx',
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation':
+            '.pptx',
+        'image/png': '.png',
+        'image/jpeg': '.jpg',
+        'text/plain': '.txt',
+      };
+      name += extensions[mime] ?? '';
+    }
+    return name;
+  }
+
+  Future<({Uint8List bytes, String? disposition, String? mime})>
+      _readHttpDownload(iaw.DownloadStartRequest request) async {
+    final uri = Uri.parse(request.url.toString());
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 20);
+    try {
+      final httpRequest = await client.getUrl(uri);
+      final userAgent = request.userAgent?.trim();
+      if (userAgent != null && userAgent.isNotEmpty) {
+        httpRequest.headers.set(HttpHeaders.userAgentHeader, userAgent);
+      }
+      try {
+        final cookies = await iaw.CookieManager.instance()
+            .getCookies(url: iaw.WebUri(uri.toString()));
+        if (cookies.isNotEmpty) {
+          httpRequest.headers.set(HttpHeaders.cookieHeader,
+              cookies.map((cookie) => '${cookie.name}=${cookie.value}').join('; '));
+        }
+      } catch (_) {}
+      final response = await httpRequest.close();
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw StateError('HTTP ${response.statusCode}');
+      }
+      if (response.contentLength > _kMaxInAppDownloadBytes) {
+        throw StateError('ファイルがアプリ内保存の上限（96MB）を超えています');
+      }
+      final output = BytesBuilder(copy: false);
+      var received = 0;
+      await for (final chunk in response) {
+        received += chunk.length;
+        if (received > _kMaxInAppDownloadBytes) {
+          throw StateError('ファイルがアプリ内保存の上限（96MB）を超えています');
+        }
+        output.add(chunk);
+      }
+      return (
+        bytes: output.takeBytes(),
+        disposition: response.headers.value('content-disposition'),
+        mime: response.headers.contentType?.mimeType,
+      );
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  Future<({Uint8List bytes, String? disposition, String? mime})>
+      _readWebDownload(iaw.InAppWebViewController controller,
+          iaw.DownloadStartRequest request) async {
+    final url = request.url.toString();
+    if (url.startsWith('data:')) {
+      final data = Uri.parse(url).data;
+      if (data == null) throw StateError('data URLを読み取れませんでした');
+      final bytes = Uint8List.fromList(data.contentAsBytes());
+      if (bytes.length > _kMaxInAppDownloadBytes) {
+        throw StateError('ファイルがアプリ内保存の上限（96MB）を超えています');
+      }
+      return (bytes: bytes, disposition: null, mime: data.mimeType);
+    }
+    if (url.startsWith('blob:')) {
+      final result = await controller.callAsyncJavaScript(
+        functionBody: r'''
+          const response = await fetch(downloadUrl, {credentials: 'include'});
+          if (!response.ok) throw new Error('HTTP ' + response.status);
+          const blob = await response.blob();
+          if (blob.size > maxBytes) return {tooLarge: true, size: blob.size};
+          const dataUrl = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(blob);
+          });
+          return {dataUrl: dataUrl, mime: blob.type, size: blob.size};
+        ''',
+        arguments: <String, dynamic>{
+          'downloadUrl': url,
+          'maxBytes': _kMaxInAppDownloadBytes,
+        },
+      );
+      if (result?.error != null) throw StateError(result!.error!);
+      final value = result?.value;
+      if (value is! Map) throw StateError('blob URLを読み取れませんでした');
+      if (value['tooLarge'] == true) {
+        throw StateError('ファイルがアプリ内保存の上限（96MB）を超えています');
+      }
+      final dataUrl = value['dataUrl']?.toString() ?? '';
+      final comma = dataUrl.indexOf(',');
+      if (comma < 0) throw StateError('blobデータの形式が不正です');
+      final bytes = Uint8List.fromList(base64Decode(dataUrl.substring(comma + 1)));
+      return (
+        bytes: bytes,
+        disposition: null,
+        mime: value['mime']?.toString(),
+      );
+    }
+    return _readHttpDownload(request);
+  }
+
+  Future<void> _handleMobileWebDownload(iaw.InAppWebViewController controller,
+      iaw.DownloadStartRequest request) async {
+    if (_webDownloadInProgress) {
+      _showCaptureSnack('別のダウンロードを処理中です', const Color(0xFFFFC107));
+      return;
+    }
+    if (request.contentLength > _kMaxInAppDownloadBytes) {
+      _showCaptureSnack('96MBを超えるファイルは外部ブラウザで保存してください',
+          const Color(0xFFE57373));
+      return;
+    }
+    _webDownloadInProgress = true;
+    _showCaptureSnack('ファイルを取得しています…', const Color(0xFF4FC3F7));
+    try {
+      final payload = await _readWebDownload(controller, request);
+      final fileName = _safeDownloadFileName(
+        request,
+        responseDisposition: payload.disposition,
+        responseMime: payload.mime,
+      );
+      final saved = await FilePicker.platform.saveFile(
+        dialogTitle: 'ダウンロード先を選択',
+        fileName: fileName,
+        type: FileType.any,
+        bytes: payload.bytes,
+      );
+      if (!mounted) return;
+      if (saved != null) {
+        _showCaptureSnack('$fileName を保存しました', const Color(0xFF43B97F));
+      }
+    } catch (e) {
+      if (mounted) {
+        _showCaptureSnack('ダウンロードに失敗しました: $e',
+            const Color(0xFFE57373));
+      }
+    } finally {
+      _webDownloadInProgress = false;
+    }
+  }
+
   Widget _buildWebView() {
     final idx =
         (_gsActiveTab >= 0 && _gsActiveTab < _gsTabs.length) ? _gsActiveTab : 0;
@@ -3961,6 +4193,8 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         transparentBackground: false,
         // shouldOverrideUrlLoading コールバックを有効化 (= intent:// 等を弾く)
         useShouldOverrideUrlLoading: true,
+        // Drive等のContent-Disposition / blobダウンロードをFlutter側で保存する。
+        useOnDownloadStart: true,
         mediaPlaybackRequiresUserGesture: true,
         // ── Google ログイン情報を保持するための設定 ──
         // incognito をオフ + cache を有効にして、 Cookie をディスク永続化。
@@ -4001,6 +4235,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         allowFileAccess: true,
       ),
       onWebViewCreated: (c) => tab.iawCtrl = c,
+      onDownloadStartRequest: (controller, request) {
+        unawaited(_handleMobileWebDownload(controller, request));
+      },
       onTitleChanged: (c, title) {
         if (!mounted) return;
         tab.title = (title ?? '').isEmpty ? 'Google' : title!;
@@ -5734,6 +5971,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
 
   @override
   void dispose() {
+    _captureNoticeTimer?.cancel();
     _draftSaveDebounce?.cancel();
     if (_useDraft) {
       context.read<MindMapProvider>().setGoogleSearchMemoDraft(_memoCtrl.text);
@@ -5919,6 +6157,13 @@ const String _kGsWheelTameJs = r'''
   window.addEventListener('wheel', function(e){
     if (e.ctrlKey) return;            // Ctrl+ホイールのズームはそのまま
     if (e.defaultPrevented) return;
+    // Maps / Earth はホイール自体をズーム入力として使う。ここで横取りすると
+    // ページスクロールへ変換されて地図を拡大縮小できなくなるため素通しする。
+    var host = (location.hostname || '').toLowerCase();
+    var path = (location.pathname || '').toLowerCase();
+    var googleMap = (host === 'maps.google.com') ||
+                    (host.endsWith('.google.com') && path.indexOf('/maps') === 0);
+    if (host === 'earth.google.com' || googleMap) return;
     e.preventDefault();
     var dy = e.deltaY * FACTOR;
     var dx = e.deltaX * FACTOR;
