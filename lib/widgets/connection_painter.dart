@@ -111,6 +111,83 @@ class ConnectionPainter extends CustomPainter {
     );
   }
 
+  /// 接続線上の [position] (0..1) に対応する座標。ラベル描画とドラッグで共有する。
+  static Offset pointOnConnection(
+    NodeConnection conn,
+    MindMapNode from,
+    MindMapNode to, {
+    String fallbackLineStyle = 'curve',
+    double? position,
+  }) {
+    final t = (position ?? conn.labelPosition).clamp(0.0, 1.0).toDouble();
+    final p1 = _connectionAnchor(
+        from, conn.fromAnchor, conn.fromTableSide, conn.fromTableIndex);
+    final p2 = _connectionAnchor(
+        to, conn.toAnchor, conn.toTableSide, conn.toTableIndex);
+    final style = conn.lineStyle ?? fallbackLineStyle;
+    if (style == 'elbow') {
+      final points = elbowPointsFor(conn, from, to);
+      final lengths = <double>[];
+      var total = 0.0;
+      for (int i = 0; i < points.length - 1; i++) {
+        final length = (points[i + 1] - points[i]).distance;
+        lengths.add(length);
+        total += length;
+      }
+      if (total <= 0.001) return p1;
+      var remaining = total * t;
+      for (int i = 0; i < lengths.length; i++) {
+        if (remaining <= lengths[i] || i == lengths.length - 1) {
+          final localT = lengths[i] <= 0.001 ? 0.0 : remaining / lengths[i];
+          return Offset.lerp(points[i], points[i + 1],
+              localT.clamp(0.0, 1.0).toDouble())!;
+        }
+        remaining -= lengths[i];
+      }
+      return p2;
+    }
+    if (style == 'straight') return Offset.lerp(p1, p2, t)!;
+    final dist = (p1 - p2).distance;
+    final strength = (dist * 0.4).clamp(30.0, 150.0);
+    final cp1 = p1 + _controlOffset(conn.fromAnchor, strength);
+    final cp2 = p2 + _controlOffset(conn.toAnchor, strength);
+    final mt = 1.0 - t;
+    return Offset(
+      mt * mt * mt * p1.dx +
+          3 * mt * mt * t * cp1.dx +
+          3 * mt * t * t * cp2.dx +
+          t * t * t * p2.dx,
+      mt * mt * mt * p1.dy +
+          3 * mt * mt * t * cp1.dy +
+          3 * mt * t * t * cp2.dy +
+          t * t * t * p2.dy,
+    );
+  }
+
+  /// ポインタに最も近い線上の位置を返す。直接ラベルをドラッグする際に使う。
+  static double closestPositionOnConnection(
+    Offset point,
+    NodeConnection conn,
+    MindMapNode from,
+    MindMapNode to, {
+    String fallbackLineStyle = 'curve',
+  }) {
+    const samples = 100;
+    var bestT = conn.labelPosition;
+    var bestDistance = double.infinity;
+    for (int i = 0; i <= samples; i++) {
+      final t = i / samples;
+      final p = pointOnConnection(conn, from, to,
+          fallbackLineStyle: fallbackLineStyle, position: t);
+      final d = (p - point).distanceSquared;
+      if (d < bestDistance) {
+        bestDistance = d;
+        bestT = t;
+      }
+    }
+    return bestT.clamp(0.02, 0.98).toDouble();
+  }
+
   static Offset _connectionAnchor(
     MindMapNode node,
     AnchorDirection fallback,
@@ -290,10 +367,13 @@ class ConnectionPainter extends CustomPainter {
         return path;
       }
 
+      final configuredColor = conn.lineColorValue == null
+          ? to.color
+          : Color(conn.lineColorValue!);
       final paint = Paint()
         ..color = isSelected
             ? Colors.redAccent.withValues(alpha: 0.95)
-            : _effectiveLineColor(to.color).withValues(alpha: 0.6)
+            : _effectiveLineColor(configuredColor).withValues(alpha: 0.82)
         ..strokeWidth = isSelected ? (conn.strokeWidth + 1.0) : conn.strokeWidth
         ..style = PaintingStyle.stroke
         ..strokeCap = StrokeCap.round;
@@ -345,8 +425,9 @@ class ConnectionPainter extends CustomPainter {
         final dotPaint = Paint()
           ..color = isSelected
               ? Colors.redAccent.withValues(alpha: 0.9)
-              : _effectiveLineColor(
-                      nodes[conn.fromId]?.color ?? paint.color)
+              : _effectiveLineColor(conn.lineColorValue == null
+                      ? (nodes[conn.fromId]?.color ?? paint.color)
+                      : Color(conn.lineColorValue!))
                   .withValues(alpha: 0.8)
           ..style = PaintingStyle.fill;
         canvas.drawCircle(p1, dotRadius, dotPaint);
@@ -376,11 +457,8 @@ class ConnectionPainter extends CustomPainter {
       // ── ラベルを線の中央に描画 ──
       // 線のラベル (= 関係の名称等) を中央の制御点周辺に表示。
       if (conn.label != null && conn.label!.isNotEmpty) {
-        // 線の中央点 (= ベジェ曲線の t=0.5 の位置を近似)
-        final midPoint = Offset(
-          (p1.dx + 3 * cp1.dx + 3 * cp2.dx + p2.dx) / 8,
-          (p1.dy + 3 * cp1.dy + 3 * cp2.dy + p2.dy) / 8,
-        );
+        final midPoint = pointOnConnection(conn, from, to,
+            fallbackLineStyle: lineStyle);
         final textPainter = TextPainter(
           text: TextSpan(
             text: conn.label,
@@ -395,7 +473,7 @@ class ConnectionPainter extends CustomPainter {
             ),
           ),
           textDirection: TextDirection.ltr,
-          maxLines: 2,
+          maxLines: 8,
         )..layout(maxWidth: 200);
         // ── ラベル背景 ──
         // ノードと同じ色感を持たせるため、 接続先ノードの色をベースに描画。
@@ -408,7 +486,7 @@ class ConnectionPainter extends CustomPainter {
         );
         final bgColor = isSelected
             ? Colors.redAccent.withValues(alpha: 0.95)
-            : _effectiveLineColor(to.color).withValues(alpha: 0.95);
+            : _effectiveLineColor(configuredColor).withValues(alpha: 0.95);
         final bgPaint = Paint()..color = bgColor;
         canvas.drawRRect(
             RRect.fromRectAndRadius(labelRect, const Radius.circular(8)),
@@ -425,6 +503,12 @@ class ConnectionPainter extends CustomPainter {
             canvas,
             Offset(midPoint.dx - textPainter.width / 2,
                 midPoint.dy - textPainter.height / 2));
+        if (isSelected) {
+          final handlePaint = Paint()
+            ..color = Colors.white
+            ..style = PaintingStyle.fill;
+          canvas.drawCircle(midPoint, 4.0, handlePaint);
+        }
       }
     }
   }

@@ -256,8 +256,11 @@ const String _mapBackgroundTemplatePrefix = 'builtin-map-background:';
 
 const List<({String id, String labelKey})> _mapBackgroundTemplates = [
   (id: 'aurora', labelKey: 'bg.template.aurora'),
+  (id: 'nightSky', labelKey: 'bg.template.nightSky'),
+  (id: 'galaxy', labelKey: 'bg.template.galaxy'),
+  (id: 'rain', labelKey: 'bg.template.rain'),
+  (id: 'nature', labelKey: 'bg.template.nature'),
   (id: 'blueprint', labelKey: 'bg.template.blueprint'),
-  (id: 'paper', labelKey: 'bg.template.paper'),
   (id: 'midnight', labelKey: 'bg.template.midnight'),
   (id: 'sage', labelKey: 'bg.template.sage'),
   (id: 'sunset', labelKey: 'bg.template.sunset'),
@@ -989,6 +992,7 @@ class _MindMapScreenState extends State<MindMapScreen>
   final Set<NodeConnection> _selectedConnections = {};
   NodeConnection? _draggingConnectionBend;
   int? _draggingConnectionBendIndex;
+  NodeConnection? _draggingConnectionLabel;
   bool _suppressConnectionTapAfterBendDrag = false;
 
   // ── フローティングツール (計算機 / ストップウォッチ) ──
@@ -3118,6 +3122,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     _loadFlashcardGenSettings();
     // アラームを復元して再スケジュール (= 再起動後も鳴るように)。
     _loadAlarms();
+    // 手動登録したサブスクリプションと支払日前通知を復元。
+    _loadManagedSubscriptions();
     // タイムラインの睡眠時間 (圧縮表示) 設定を復元。
     _loadSleepTime();
     // ── モバイルは画面分割の既定を「上分割」 にする (= ユーザー要望) ──
@@ -4814,9 +4820,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       final percent = _scaleToPercent(s).clamp(50, 150);
       if (percent != _scalePercent) {
         _scalePercent = percent;
-        // setStateはリスナー内で直接呼べないのでpostFrameCallbackで
+        // setStateはリスナー内で直接呼べないのでpostFrameCallbackで。
+        // 拡大率は常時ツールバーに出さず、操作した時だけ数秒表示する。
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) setState(() {});
+          if (mounted) _showLockToast('\u{1F50D} $_scalePercent%');
         });
       }
       return;
@@ -4855,7 +4862,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       if (percent != _scalePercent) {
         _scalePercent = percent;
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) setState(() {});
+          if (mounted) _showLockToast('\u{1F50D} $_scalePercent%');
         });
       }
     }
@@ -5156,6 +5163,18 @@ class _MindMapScreenState extends State<MindMapScreen>
         fromAnchor: c.fromAnchor,
         toId: newToId,
         toAnchor: c.toAnchor,
+        strokeWidth: c.strokeWidth,
+        showArrow: c.showArrow,
+        arrowHeadScale: c.arrowHeadScale,
+        bidirectional: c.bidirectional,
+        label: c.label,
+        labelPosition: c.labelPosition,
+        lineColorValue: c.lineColorValue,
+        relationshipType: c.relationshipType,
+        lineStyle: c.lineStyle,
+        elbowSplitRatio: c.elbowSplitRatio,
+        elbowPointCount: c.elbowPointCount,
+        elbowBendPoints: c.elbowBendPoints,
       ));
     }
     return result;
@@ -5330,7 +5349,8 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// _lastMatrix を新しい行列に同期させてから ctrl.value を更新する。
   void _applyScale(int percent) {
     final scale = _percentToScale(percent);
-    setState(() => _scalePercent = percent);
+    _scalePercent = percent;
+    _showLockToast('\u{1F50D} $percent%');
     final provider = context.read<MindMapProvider>();
     if (provider.pages.isEmpty) return;
     final ctrl = _ctrlFor(provider.currentPage.id);
@@ -12916,9 +12936,19 @@ class _MindMapScreenState extends State<MindMapScreen>
           content: SizedBox(
             width: double.maxFinite,
             child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: math.max(
+                    260.0,
+                    MediaQuery.sizeOf(sctx).height -
+                        MediaQuery.paddingOf(sctx).vertical -
+                        180.0,
+                  ),
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
                   TextField(
                     controller: keywordCtrl,
                     autofocus: true,
@@ -13060,7 +13090,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                       ),
                     ]),
                   ],
-                ],
+                    ],
+                  ),
+                ),
               ),
             ),
           ),
@@ -15638,6 +15670,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         _selectedConnections.clear();
         _draggingConnectionBend = null;
         _draggingConnectionBendIndex = null;
+        _draggingConnectionLabel = null;
         _suppressConnectionTapAfterBendDrag = false;
         _rangeStart = null;
         _rangeEnd = null;
@@ -17901,6 +17934,22 @@ class _MindMapScreenState extends State<MindMapScreen>
     return null;
   }
 
+  NodeConnection? _hitConnectionLabel(
+      Offset canvasPos, MindMapProvider provider, double scale) {
+    if (provider.currentPage.pageType == 'bookshelf') return null;
+    final radius = math.max(12.0, 24.0 / math.max(scale, 0.1));
+    for (final conn in provider.connections.reversed) {
+      if (conn.label == null || conn.label!.isEmpty) continue;
+      final from = provider.nodes[conn.fromId];
+      final to = provider.nodes[conn.toId];
+      if (from == null || to == null) continue;
+      final point = ConnectionPainter.pointOnConnection(conn, from, to,
+          fallbackLineStyle: provider.connectionLineStyle);
+      if ((point - canvasPos).distance <= radius) return conn;
+    }
+    return null;
+  }
+
   void _onConnectionTap(Offset globalPos, TransformationController ctrl,
       MindMapProvider provider) {
     final canvasPos = _globalToCanvas(globalPos, ctrl);
@@ -18018,6 +18067,16 @@ class _MindMapScreenState extends State<MindMapScreen>
         onTap: () {
           _removeOverlay();
           _showMapShapePicker();
+        },
+      ),
+      _CtxMenuItem(
+        icon: Icons.account_tree_outlined,
+        label: '端子',
+        color: const Color(0xFF4DB6AC),
+        onTap: () {
+          _removeOverlay();
+          final canvasPos = _globalToCanvas(globalPos, ctrl);
+          _showTerminalBlockPicker(provider, canvasPos);
         },
       ),
       // ── メモ一覧 (= ユーザー要望: 他のマップ / PDF ビューワーで書いたメモを
@@ -22261,6 +22320,441 @@ class _MindMapScreenState extends State<MindMapScreen>
     );
   }
 
+  // ─── 手動サブスクリプション管理 ──────────────────────────────────────────
+  static const String _managedSubscriptionsPrefsKey =
+      'managed_subscriptions_v1';
+  final List<_ManagedSubscription> _managedSubscriptions = [];
+
+  Future<void> _loadManagedSubscriptions() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_managedSubscriptionsPrefsKey);
+      if (raw != null && raw.isNotEmpty) {
+        final decoded = jsonDecode(raw);
+        if (decoded is List) {
+          _managedSubscriptions
+            ..clear()
+            ..addAll(decoded
+                .whereType<Map>()
+                .map((item) => _ManagedSubscription.fromJson(
+                    Map<String, dynamic>.from(item)))
+                .where((item) => item.name.trim().isNotEmpty));
+        }
+      }
+    } catch (e) {
+      debugPrint('サブスク管理データの読込に失敗: $e');
+    }
+    for (final item in _managedSubscriptions) {
+      if (item.enabled) _scheduleManagedSubscription(item);
+    }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _saveManagedSubscriptions() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        _managedSubscriptionsPrefsKey,
+        jsonEncode(_managedSubscriptions.map((item) => item.toJson()).toList()),
+      );
+    } catch (e) {
+      debugPrint('サブスク管理データの保存に失敗: $e');
+    }
+  }
+
+  int _subscriptionNotificationId(String id) =>
+      1010000 + (id.hashCode.abs() % 70000);
+
+  DateTime _subscriptionBillingDate(
+      _ManagedSubscription item, int year, int month) {
+    final targetMonth = item.cycle == 'yearly' ? item.billingMonth : month;
+    final lastDay = DateTime(year, targetMonth + 1, 0).day;
+    return DateTime(
+        year, targetMonth, item.billingDay.clamp(1, lastDay).toInt(), 9);
+  }
+
+  DateTime _nextSubscriptionReminder(_ManagedSubscription item) {
+    final now = DateTime.now();
+    if (item.cycle == 'yearly') {
+      var year = now.year;
+      while (true) {
+        final billing =
+            _subscriptionBillingDate(item, year, item.billingMonth);
+        final reminder =
+            billing.subtract(Duration(days: item.notifyDaysBefore));
+        if (reminder.isAfter(now)) return reminder;
+        year++;
+      }
+    }
+    var cursor = DateTime(now.year, now.month, 1);
+    while (true) {
+      final billing =
+          _subscriptionBillingDate(item, cursor.year, cursor.month);
+      final reminder = billing.subtract(Duration(days: item.notifyDaysBefore));
+      if (reminder.isAfter(now)) return reminder;
+      cursor = DateTime(cursor.year, cursor.month + 1, 1);
+    }
+  }
+
+  DateTime _nextSubscriptionBilling(_ManagedSubscription item) {
+    final reminder = _nextSubscriptionReminder(item);
+    return reminder.add(Duration(days: item.notifyDaysBefore));
+  }
+
+  String _formatSubscriptionAmount(_ManagedSubscription item) {
+    final decimals = item.amount == item.amount.roundToDouble() ? 0 : 2;
+    return '${item.currency}${item.amount.toStringAsFixed(decimals)}';
+  }
+
+  void _cancelManagedSubscriptionNotification(_ManagedSubscription item) {
+    try {
+      flutterLocalNotificationsPlugin
+          .cancel(_subscriptionNotificationId(item.id));
+    } catch (_) {}
+    final key = 'subscription:${item.id}';
+    _pendingNotificationTimers[key]?.cancel();
+    _pendingNotificationTimers.remove(key);
+  }
+
+  void _scheduleManagedSubscription(_ManagedSubscription item) {
+    _cancelManagedSubscriptionNotification(item);
+    if (!item.enabled) return;
+    final fireAt = _nextSubscriptionReminder(item);
+    final billingAt = fireAt.add(Duration(days: item.notifyDaysBefore));
+    final timing = item.notifyDaysBefore == 0
+        ? '本日が支払日です'
+        : '${item.notifyDaysBefore}日後に支払い予定です';
+    _scheduleAbsoluteNotification(
+      notifId: _subscriptionNotificationId(item.id),
+      title: 'サブスク: ${item.name}',
+      body:
+          '$timing（${billingAt.month}/${billingAt.day}・${_formatSubscriptionAmount(item)}）',
+      fireAt: fireAt,
+      nodeId: 'subscription:${item.id}',
+    );
+  }
+
+  Future<_ManagedSubscription?> _showSubscriptionEditDialog(
+      BuildContext dialogContext,
+      {_ManagedSubscription? initial}) async {
+    final nameCtrl = TextEditingController(text: initial?.name ?? '');
+    final amountCtrl = TextEditingController(
+        text: initial == null ? '' : initial.amount.toString());
+    final currencyCtrl =
+        TextEditingController(text: initial?.currency ?? '¥');
+    final notifyCtrl = TextEditingController(
+        text: '${initial?.notifyDaysBefore ?? 3}');
+    var cycle = initial?.cycle ?? 'monthly';
+    var billingDay = initial?.billingDay ?? 1;
+    var billingMonth = initial?.billingMonth ?? DateTime.now().month;
+    var enabled = initial?.enabled ?? true;
+    String? error;
+
+    final result = await showDialog<_ManagedSubscription>(
+      context: dialogContext,
+      builder: (editContext) => StatefulBuilder(
+        builder: (editContext, setEdit) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          title: Text(initial == null ? 'サブスクを追加' : 'サブスクを編集',
+              style: const TextStyle(color: Colors.white, fontSize: 17)),
+          content: SizedBox(
+            width: 420,
+            child: SingleChildScrollView(
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                TextField(
+                  controller: nameCtrl,
+                  autofocus: true,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: _fcInputDeco('サービス名'),
+                ),
+                const SizedBox(height: 10),
+                Row(children: [
+                  SizedBox(
+                    width: 82,
+                    child: TextField(
+                      controller: currencyCtrl,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: _fcInputDeco('通貨'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextField(
+                      controller: amountCtrl,
+                      keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true),
+                      style: const TextStyle(color: Colors.white),
+                      decoration: _fcInputDeco('料金'),
+                    ),
+                  ),
+                ]),
+                const SizedBox(height: 12),
+                SegmentedButton<String>(
+                  segments: const [
+                    ButtonSegment(value: 'monthly', label: Text('月単位')),
+                    ButtonSegment(value: 'yearly', label: Text('年単位')),
+                  ],
+                  selected: {cycle},
+                  onSelectionChanged: (value) =>
+                      setEdit(() => cycle = value.first),
+                ),
+                const SizedBox(height: 12),
+                Row(children: [
+                  if (cycle == 'yearly') ...[
+                    Expanded(
+                      child: DropdownButtonFormField<int>(
+                        value: billingMonth,
+                        dropdownColor: const Color(0xFF2A2A3E),
+                        style: const TextStyle(color: Colors.white),
+                        decoration: _fcInputDeco('支払月'),
+                        items: [
+                          for (int month = 1; month <= 12; month++)
+                            DropdownMenuItem(
+                                value: month, child: Text('$month月')),
+                        ],
+                        onChanged: (value) => setEdit(
+                            () => billingMonth = value ?? billingMonth),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                  ],
+                  Expanded(
+                    child: DropdownButtonFormField<int>(
+                      value: billingDay,
+                      dropdownColor: const Color(0xFF2A2A3E),
+                      style: const TextStyle(color: Colors.white),
+                      decoration: _fcInputDeco('支払日'),
+                      items: [
+                        for (int day = 1; day <= 31; day++)
+                          DropdownMenuItem(value: day, child: Text('$day日')),
+                      ],
+                      onChanged: (value) =>
+                          setEdit(() => billingDay = value ?? billingDay),
+                    ),
+                  ),
+                ]),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: notifyCtrl,
+                  keyboardType: TextInputType.number,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: _fcInputDeco('何日前に通知するか（0 = 当日）'),
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  activeColor: const Color(0xFF26A69A),
+                  title: const Text('通知を有効にする',
+                      style: TextStyle(color: Colors.white, fontSize: 13)),
+                  value: enabled,
+                  onChanged: (value) => setEdit(() => enabled = value),
+                ),
+                if (error != null)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(error!,
+                        style: const TextStyle(
+                            color: Colors.redAccent, fontSize: 11)),
+                  ),
+              ]),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(editContext),
+              child: const Text('キャンセル'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final amount = double.tryParse(amountCtrl.text.trim());
+                final notify = int.tryParse(notifyCtrl.text.trim());
+                if (nameCtrl.text.trim().isEmpty ||
+                    amount == null ||
+                    amount < 0 ||
+                    notify == null ||
+                    notify < 0 ||
+                    notify > 365) {
+                  setEdit(() => error = 'サービス名・料金・通知日数を確認してください');
+                  return;
+                }
+                Navigator.pop(
+                  editContext,
+                  _ManagedSubscription(
+                    id: initial?.id ??
+                        DateTime.now().microsecondsSinceEpoch.toString(),
+                    name: nameCtrl.text.trim(),
+                    amount: amount,
+                    currency: currencyCtrl.text.trim().isEmpty
+                        ? '¥'
+                        : currencyCtrl.text.trim(),
+                    cycle: cycle,
+                    billingDay: billingDay,
+                    billingMonth: billingMonth,
+                    notifyDaysBefore: notify,
+                    enabled: enabled,
+                  ),
+                );
+              },
+              child: const Text('保存'),
+            ),
+          ],
+        ),
+      ),
+    );
+    nameCtrl.dispose();
+    amountCtrl.dispose();
+    currencyCtrl.dispose();
+    notifyCtrl.dispose();
+    return result;
+  }
+
+  String _subscriptionTotalsSummary() {
+    final monthlyByCurrency = <String, double>{};
+    for (final item in _managedSubscriptions.where((item) => item.enabled)) {
+      monthlyByCurrency.update(
+        item.currency,
+        (value) => value +
+            (item.cycle == 'yearly' ? item.amount / 12 : item.amount),
+        ifAbsent: () =>
+            item.cycle == 'yearly' ? item.amount / 12 : item.amount,
+      );
+    }
+    if (monthlyByCurrency.isEmpty) return '有効なサブスクはありません';
+    return monthlyByCurrency.entries.map((entry) {
+      final monthly = entry.value;
+      return '${entry.key}${monthly.toStringAsFixed(0)}/月・${entry.key}${(monthly * 12).toStringAsFixed(0)}/年';
+    }).join('  ');
+  }
+
+  void _showSubscriptionManagerDialog() {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialog) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          title: const Row(children: [
+            Icon(Icons.subscriptions_rounded, color: Color(0xFF26A69A)),
+            SizedBox(width: 8),
+            Text('サブスク管理',
+                style: TextStyle(color: Colors.white, fontSize: 17)),
+          ]),
+          content: SizedBox(
+            width: 540,
+            height:
+                math.min(540.0, MediaQuery.of(dialogContext).size.height * .7),
+            child: Column(children: [
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF26A69A).withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text(_subscriptionTotalsSummary(),
+                    style: const TextStyle(
+                        color: Color(0xFF80CBC4),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700)),
+              ),
+              const SizedBox(height: 8),
+              Expanded(
+                child: _managedSubscriptions.isEmpty
+                    ? const Center(
+                        child: Text('登録したサブスクはありません',
+                            style: TextStyle(color: Colors.white38)))
+                    : ListView.builder(
+                        itemCount: _managedSubscriptions.length,
+                        itemBuilder: (_, index) {
+                          final item = _managedSubscriptions[index];
+                          final billing = _nextSubscriptionBilling(item);
+                          return Card(
+                            color: Colors.white.withValues(alpha: 0.045),
+                            child: ListTile(
+                              onTap: () async {
+                                final edited = await _showSubscriptionEditDialog(
+                                    dialogContext,
+                                    initial: item);
+                                if (edited == null) return;
+                                _cancelManagedSubscriptionNotification(item);
+                                final currentIndex = _managedSubscriptions
+                                    .indexWhere((value) => value.id == item.id);
+                                if (currentIndex >= 0) {
+                                  _managedSubscriptions[currentIndex] = edited;
+                                }
+                                if (edited.enabled) {
+                                  _scheduleManagedSubscription(edited);
+                                }
+                                await _saveManagedSubscriptions();
+                                setDialog(() {});
+                              },
+                              leading: Switch(
+                                value: item.enabled,
+                                activeColor: const Color(0xFF26A69A),
+                                onChanged: (value) {
+                                  setDialog(() => item.enabled = value);
+                                  if (value) {
+                                    _scheduleManagedSubscription(item);
+                                  } else {
+                                    _cancelManagedSubscriptionNotification(item);
+                                  }
+                                  _saveManagedSubscriptions();
+                                },
+                              ),
+                              title: Text(item.name,
+                                  style: TextStyle(
+                                      color: item.enabled
+                                          ? Colors.white
+                                          : Colors.white38,
+                                      fontWeight: FontWeight.w700)),
+                              subtitle: Text(
+                                '${_formatSubscriptionAmount(item)} / ${item.cycle == 'yearly' ? '年' : '月'}'
+                                ' ・ 次回 ${billing.year}/${billing.month}/${billing.day}'
+                                ' ・ ${item.notifyDaysBefore == 0 ? '当日' : '${item.notifyDaysBefore}日前'}通知',
+                                style: const TextStyle(
+                                    color: Colors.white54, fontSize: 11),
+                              ),
+                              trailing: IconButton(
+                                icon: const Icon(Icons.delete_outline_rounded,
+                                    color: Colors.redAccent),
+                                onPressed: () {
+                                  _cancelManagedSubscriptionNotification(item);
+                                  setDialog(() => _managedSubscriptions
+                                      .removeWhere((value) => value.id == item.id));
+                                  _saveManagedSubscriptions();
+                                },
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+              ),
+            ]),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('閉じる'),
+            ),
+            FilledButton.icon(
+              style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF26A69A)),
+              onPressed: () async {
+                final item =
+                    await _showSubscriptionEditDialog(dialogContext);
+                if (item == null) return;
+                _managedSubscriptions.add(item);
+                if (item.enabled) _scheduleManagedSubscription(item);
+                await _saveManagedSubscriptions();
+                setDialog(() {});
+              },
+              icon: const Icon(Icons.add_rounded),
+              label: const Text('追加'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   /// Windows の OS 通知 (local_notifier トースト) を表示する。
   /// ユーザー要望「windows 版の通知方法を OS 通知に」 への対応。
   /// クリックすると、 ウィンドウを前面に出して該当ノードを選択する
@@ -22790,6 +23284,15 @@ class _MindMapScreenState extends State<MindMapScreen>
           } else {
             provider.updateConnections(targets, label: text);
           }
+        },
+        onLabelPositionChanged: (position) {
+          provider.updateConnections(targets, labelPosition: position);
+        },
+        onLineColorChanged: (value) {
+          provider.updateConnections(targets, lineColorValue: value);
+        },
+        onRelationshipTypeChanged: (type) {
+          provider.updateConnections(targets, relationshipType: type);
         },
         onReverse: () {
           _resetInteractionState();
@@ -27210,6 +27713,12 @@ class _MindMapScreenState extends State<MindMapScreen>
       'color': Color(0xFFFFB347),
     },
     {
+      'id': 'subscriptionManager',
+      'labelKey': 'hdr.subscriptionManager',
+      'icon': Icons.subscriptions_rounded,
+      'color': Color(0xFF26A69A),
+    },
+    {
       // 無音カメラ (= ユーザー要望)。
       'id': 'silentCamera',
       'labelKey': 'hdr.silentCamera',
@@ -27293,6 +27802,12 @@ class _MindMapScreenState extends State<MindMapScreen>
       'color': Color(0xFF4FC3F7),
     },
     {
+      'id': 'selectAll',
+      'labelKey': 'cmd.selectAll',
+      'icon': Icons.done_all_rounded,
+      'color': Color(0xFF26A69A),
+    },
+    {
       'id': 'addNode',
       'labelKey': 'bottomBar.node',
       'icon': Icons.add_circle_rounded,
@@ -27358,6 +27873,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         'file',
         'pasteClipboardImage',
         'rangeSelect',
+        'selectAll',
         'insertMapShape',
         'cutMode',
       ],
@@ -27598,25 +28114,10 @@ class _MindMapScreenState extends State<MindMapScreen>
               width: _kHeaderCustomButtonExtent,
               height: _kHeaderCustomButtonExtent,
               child: Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      _lockScale ? Icons.lock_rounded : Icons.lock_open_rounded,
-                      color: color,
-                      size: 17,
-                    ),
-                    const SizedBox(height: 1),
-                    Text(
-                      '$_scalePercent%',
-                      style: TextStyle(
-                        color: color,
-                        fontSize: 9,
-                        height: 1,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ],
+                child: Icon(
+                  _lockScale ? Icons.lock_rounded : Icons.lock_open_rounded,
+                  color: color,
+                  size: 21,
                 ),
               ),
             ),
@@ -27908,10 +28409,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     // 非トグル系は null。
     final bool? toggle = _headerToggleState(commandId, provider);
 
-    // ── lockScale: ラベルを倍率%に差し替え + アイコンをロック状態で切替 ──
+    // ── lockScale: アイコンをロック状態で切替 ──
     // 背景色は ON/OFF 共通 (= ユーザー設定色)。これにより色変更が常に
     // 反映され、ロック状態はアイコン (lock / lock_open) で表現する。
-    final displayLabel = commandId == 'lockScale' ? '$_scalePercent%' : label;
+    final displayLabel = label;
 
     // ── テーマモード: 太陽/月のおしゃれアイコン (色も切り替えあり) ──
     // ユーザー要望: テーマ切替は今のままで OK ということで、
@@ -28178,7 +28679,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         overrideOn != null ? Color(overrideOn) : defaultColor;
 
     final bool? toggle = _headerToggleState(commandId, provider);
-    final displayLabel = commandId == 'lockScale' ? '$_scalePercent%' : label;
+    final displayLabel = label;
 
     if (commandId == 'themeMode') {
       final bool isLight = !provider.isDarkMode;
@@ -29085,6 +29586,35 @@ class _MindMapScreenState extends State<MindMapScreen>
   }
 
   /// ヘッダーカスタムボタンのコマンド実行
+  void _selectAllMapElements(MindMapProvider provider) {
+    if (_selectedConnections.isNotEmpty) {
+      final mq = MediaQuery.of(context);
+      final overlayPos = _lastCtrlConnectionTapPos ??
+          Offset(mq.size.width / 2, mq.size.height / 2);
+      setState(() {
+        _selectedConnections.clear();
+        final hidden = provider.hiddenNodeIds;
+        _selectedConnections.addAll(provider.connections.where((c) =>
+            !hidden.contains(c.fromId) && !hidden.contains(c.toId)));
+        _connOverlayPendingOnCtrlUp = true;
+        _connOverlayIsMulti = true;
+        _lastCtrlConnectionTapPos = overlayPos;
+      });
+      return;
+    }
+    setState(() {
+      _rangeSelectMode = true;
+      _rangeSelectedIds.clear();
+      _rangeSelectedDecorationIds.clear();
+      final hidden = provider.hiddenNodeIds;
+      for (final n in provider.nodes.values) {
+        if (!hidden.contains(n.id)) _rangeSelectedIds.add(n.id);
+      }
+      _rangeSelectedDecorationIds
+          .addAll(provider.decorations.map((decoration) => decoration.id));
+    });
+  }
+
   void _executeHeaderCommand(String commandId, MindMapProvider provider) {
     // ── 動的ブックマークボタン (bookmark:<hex>) の早期分岐 ──
     // commandId が `bookmark:<hex>` 形式の動的 ID は switch ケースで
@@ -29454,6 +29984,9 @@ class _MindMapScreenState extends State<MindMapScreen>
         // アラーム管理ダイアログ (= ユーザー要望: アラーム機能)。
         _showAlarmsDialog();
         break;
+      case 'subscriptionManager':
+        _showSubscriptionManagerDialog();
+        break;
       case 'silentCamera':
         // 無音カメラ (= ユーザー要望)。 撮影して写真をマップに追加。
         _openSilentCamera();
@@ -29535,6 +30068,10 @@ class _MindMapScreenState extends State<MindMapScreen>
           _rangeSelectedDecorationIds.clear();
         });
         break;
+      case 'selectAll':
+        _removeOverlay();
+        _selectAllMapElements(provider);
+        break;
       case 'addNode':
         _removeOverlay();
         final s =
@@ -29558,6 +30095,86 @@ class _MindMapScreenState extends State<MindMapScreen>
       newNode,
       deleteWhenEmpty: true,
       allowDelimiterExpansion: true,
+    );
+  }
+
+  void _showTerminalBlockPicker(
+      MindMapProvider provider, Offset canvasPosition) {
+    const shapes = <({String id, String label, IconData icon})>[
+      (id: 'rounded', label: '角丸端子', icon: Icons.rounded_corner_rounded),
+      (id: 'rect', label: '処理', icon: Icons.crop_square_rounded),
+      (id: 'diamond', label: '判断（ひし形）', icon: Icons.diamond_outlined),
+      (id: 'parallelogram', label: '入出力', icon: Icons.transform_rounded),
+    ];
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF1E1E28),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 18),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('端子を追加',
+                  style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700)),
+              const SizedBox(height: 6),
+              const Text('追加するブロック形状を選択してください',
+                  style: TextStyle(color: Colors.white54, fontSize: 12)),
+              const SizedBox(height: 14),
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: [
+                  for (final shape in shapes)
+                    InkWell(
+                      borderRadius: BorderRadius.circular(10),
+                      onTap: () {
+                        Navigator.pop(sheetContext);
+                        final node = provider.addNodeAtCenterReturning(
+                            canvasPosition - const Offset(80, 21));
+                        provider.updateNodeShape(node.id, shape.id);
+                        if (provider.promptForTitleOnNodeCreate) {
+                          _startInlineTitleEdit(context, node,
+                              deleteWhenEmpty: true,
+                              allowDelimiterExpansion: true);
+                        }
+                      },
+                      child: Container(
+                        width: 112,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF4DB6AC)
+                              .withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                              color: const Color(0xFF4DB6AC)
+                                  .withValues(alpha: 0.45)),
+                        ),
+                        child: Column(mainAxisSize: MainAxisSize.min, children: [
+                          Icon(shape.icon,
+                              color: const Color(0xFF80CBC4), size: 28),
+                          const SizedBox(height: 7),
+                          Text(shape.label,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                  color: Colors.white, fontSize: 12)),
+                        ]),
+                      ),
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -29676,18 +30293,74 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// マップ上で装飾図形ドラッグを開始 (= 始点を記録)。
   /// 既存の InteractiveViewer の onPanStart 等から呼ばれる。
+  bool _decorationCanAttachToNode(MapDecorationKind kind) =>
+      kind == MapDecorationKind.line || kind == MapDecorationKind.arrow;
+
+  ({String nodeId, AnchorDirection anchor, Offset point})?
+      _nearestDecorationNodeAnchor(Offset point,
+          {double maxDistance = 34}) {
+    final provider = context.read<MindMapProvider>();
+    final hidden = provider.hiddenNodeIds;
+    ({String nodeId, AnchorDirection anchor, Offset point})? best;
+    var bestDistance = maxDistance;
+    for (final node in provider.nodes.values) {
+      if (hidden.contains(node.id)) continue;
+      for (final anchor in anchorsForMode(node.anchorMode)) {
+        final anchorPoint = node.anchorPoint(anchor);
+        final distance = (anchorPoint - point).distance;
+        if (distance <= bestDistance) {
+          bestDistance = distance;
+          best = (nodeId: node.id, anchor: anchor, point: anchorPoint);
+        }
+      }
+    }
+    return best;
+  }
+
+  MapDecoration _resolvedDecoration(
+      MapDecoration decoration, MindMapProvider provider) {
+    var start = decoration.start;
+    var end = decoration.end;
+    final startNode = decoration.startNodeId == null
+        ? null
+        : provider.nodes[decoration.startNodeId!];
+    final endNode = decoration.endNodeId == null
+        ? null
+        : provider.nodes[decoration.endNodeId!];
+    if (startNode != null && decoration.startNodeAnchor != null) {
+      start = startNode.anchorPoint(decoration.startNodeAnchor!);
+    }
+    if (endNode != null && decoration.endNodeAnchor != null) {
+      end = endNode.anchorPoint(decoration.endNodeAnchor!);
+    }
+    return decoration.copyWith(start: start, end: end);
+  }
+
+  List<MapDecoration> _resolvedDecorations(MindMapProvider provider) =>
+      provider.decorations
+          .map((decoration) => _resolvedDecoration(decoration, provider))
+          .toList(growable: false);
+
   void _handleDecorationPanStart(Offset canvasPoint) {
-    if (_drawingDecorationKind == null) return;
+    final kind = _drawingDecorationKind;
+    if (kind == null) return;
+    final snap = _decorationCanAttachToNode(kind)
+        ? _nearestDecorationNodeAnchor(canvasPoint)
+        : null;
     setState(() {
-      _drawingDecorationStart = canvasPoint;
-      _drawingDecorationEnd = canvasPoint;
+      _drawingDecorationStart = snap?.point ?? canvasPoint;
+      _drawingDecorationEnd = snap?.point ?? canvasPoint;
     });
   }
 
   void _handleDecorationPanUpdate(Offset canvasPoint) {
-    if (_drawingDecorationKind == null) return;
+    final kind = _drawingDecorationKind;
+    if (kind == null) return;
+    final snap = _decorationCanAttachToNode(kind)
+        ? _nearestDecorationNodeAnchor(canvasPoint)
+        : null;
     setState(() {
-      _drawingDecorationEnd = canvasPoint;
+      _drawingDecorationEnd = snap?.point ?? canvasPoint;
     });
   }
 
@@ -29696,12 +30369,20 @@ class _MindMapScreenState extends State<MindMapScreen>
     final start = _drawingDecorationStart;
     final end = _drawingDecorationEnd;
     if (start != null && end != null && (end - start).distance >= 6) {
+      final canAttach = _decorationCanAttachToNode(_drawingDecorationKind!);
+      final startSnap =
+          canAttach ? _nearestDecorationNodeAnchor(start) : null;
+      final endSnap = canAttach ? _nearestDecorationNodeAnchor(end) : null;
       // 6px 以上動いてれば確定 (= タップだけだと小さすぎるので破棄)
       final deco = MapDecoration(
         id: 'deco_${DateTime.now().microsecondsSinceEpoch}',
         kind: _drawingDecorationKind!,
-        start: start,
-        end: end,
+        start: startSnap?.point ?? start,
+        end: endSnap?.point ?? end,
+        startNodeId: startSnap?.nodeId,
+        startNodeAnchor: startSnap?.anchor,
+        endNodeId: endSnap?.nodeId,
+        endNodeAnchor: endSnap?.anchor,
         colorRgb: _shapeColorRgb,
         strokeWidth: _shapeStrokeWidth,
       );
@@ -29737,7 +30418,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     // ズームアウト時でもタップしやすいよう scale で割る。
     final s = scale <= 0 ? 1.0 : scale;
     final t = (14.0 / s).clamp(6.0, 90.0);
-    final decos = context.read<MindMapProvider>().decorations;
+    final provider = context.read<MindMapProvider>();
+    final decos = _resolvedDecorations(provider);
     for (final d in decos.reversed) {
       switch (d.kind) {
         case MapDecorationKind.line:
@@ -29783,7 +30465,8 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 範囲選択の矩形 [rect] (キャンバス座標) に重なる図形を
   /// `_rangeSelectedDecorationIds` に追加する。
   void _addDecorationsInRect(Rect rect) {
-    final decos = context.read<MindMapProvider>().decorations;
+    final provider = context.read<MindMapProvider>();
+    final decos = _resolvedDecorations(provider);
     for (final d in decos) {
       final r = Rect.fromPoints(d.start, d.end).inflate(1.0);
       if (rect.overlaps(r)) {
@@ -29798,6 +30481,39 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (id == null) return;
     context.read<MindMapProvider>().removeMapDecoration(id);
     setState(() => _selectedDecorationId = null);
+  }
+
+  void _detachDecorationEndpoint(MindMapProvider provider,
+      MapDecoration decoration, bool isStart) {
+    final resolved = _resolvedDecoration(decoration, provider);
+    provider.setDecorationEndpointAttachment(
+      decoration.id,
+      isStart: isStart,
+      point: isStart ? resolved.start : resolved.end,
+    );
+  }
+
+  void _snapDecorationEndpoint(
+      MindMapProvider provider, String decorationId, bool isStart) {
+    MapDecoration? decoration;
+    for (final candidate in provider.decorations) {
+      if (candidate.id == decorationId) {
+        decoration = candidate;
+        break;
+      }
+    }
+    if (decoration == null || !_decorationCanAttachToNode(decoration.kind)) {
+      return;
+    }
+    final point = isStart ? decoration.start : decoration.end;
+    final snap = _nearestDecorationNodeAnchor(point);
+    provider.setDecorationEndpointAttachment(
+      decorationId,
+      isStart: isStart,
+      nodeId: snap?.nodeId,
+      anchor: snap?.anchor,
+      point: snap?.point ?? point,
+    );
   }
 
   /// 選択中の図形に移動 / リサイズ用ハンドルを重ねる (キャンバス座標)。
@@ -29818,6 +30534,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       }
     }
     if (deco == null) return const [];
+    final sourceDecoration = deco;
+    deco = _resolvedDecoration(sourceDecoration, provider);
     final rawScale = ctrl.value.getMaxScaleOnAxis();
     final scale = rawScale <= 0 ? 1.0 : rawScale;
     final hs = 26.0 / scale; // 画面上で約 26px になるキャンバスサイズ
@@ -29826,7 +30544,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     final decoId = deco.id;
 
     Widget handle(Offset canvasPos, Color color, IconData? icon,
-        void Function(Offset canvasDelta) onDrag) {
+        void Function(Offset canvasDelta) onDrag,
+        {VoidCallback? onStart, VoidCallback? onEnd}) {
       return Positioned(
         left: canvasPos.dx - half,
         top: canvasPos.dy - half,
@@ -29837,15 +30556,18 @@ class _MindMapScreenState extends State<MindMapScreen>
           onPointerDown: (_) {
             setState(() => _draggingDecoration = true);
             provider.beginDecorationDrag();
+            onStart?.call();
           },
           // localDelta はこの subtree の座標系 (= キャンバス座標) なので、
           // InteractiveViewer の拡大率を自動で吸収済み。
           onPointerMove: (e) => onDrag(e.localDelta),
           onPointerUp: (_) {
+            onEnd?.call();
             provider.endDecorationDrag();
             if (mounted) setState(() => _draggingDecoration = false);
           },
           onPointerCancel: (_) {
+            onEnd?.call();
             provider.endDecorationDrag();
             if (mounted) setState(() => _draggingDecoration = false);
           },
@@ -29892,17 +30614,27 @@ class _MindMapScreenState extends State<MindMapScreen>
               if (!_decoBodyDragMoved) {
                 _decoBodyDragMoved = true;
                 provider.beginDecorationDrag();
+                _detachDecorationEndpoint(provider, sourceDecoration, true);
+                _detachDecorationEndpoint(provider, sourceDecoration, false);
               }
               provider.dragDecorationBy(decoId,
                   startDelta: e.localDelta, endDelta: e.localDelta);
             },
             onPointerUp: (_) {
-              if (_decoBodyDragMoved) provider.endDecorationDrag();
+              if (_decoBodyDragMoved) {
+                _snapDecorationEndpoint(provider, decoId, true);
+                _snapDecorationEndpoint(provider, decoId, false);
+                provider.endDecorationDrag();
+              }
               _decoBodyDragMoved = false;
               if (mounted) setState(() => _draggingDecoration = false);
             },
             onPointerCancel: (_) {
-              if (_decoBodyDragMoved) provider.endDecorationDrag();
+              if (_decoBodyDragMoved) {
+                _snapDecorationEndpoint(provider, decoId, true);
+                _snapDecorationEndpoint(provider, decoId, false);
+                provider.endDecorationDrag();
+              }
               _decoBodyDragMoved = false;
               if (mounted) setState(() => _draggingDecoration = false);
             },
@@ -29972,17 +30704,31 @@ class _MindMapScreenState extends State<MindMapScreen>
       bodyMove(),
       // 始点ハンドル (リサイズ)
       handle(deco.start, const Color(0xFF43B97F), null,
-          (cd) => provider.dragDecorationBy(decoId, startDelta: cd)),
+          (cd) => provider.dragDecorationBy(decoId, startDelta: cd),
+          onStart: () =>
+              _detachDecorationEndpoint(provider, sourceDecoration, true),
+          onEnd: () => _snapDecorationEndpoint(provider, decoId, true)),
       // 終点ハンドル (リサイズ)
       handle(deco.end, const Color(0xFF43B97F), null,
-          (cd) => provider.dragDecorationBy(decoId, endDelta: cd)),
+          (cd) => provider.dragDecorationBy(decoId, endDelta: cd),
+          onStart: () =>
+              _detachDecorationEndpoint(provider, sourceDecoration, false),
+          onEnd: () => _snapDecorationEndpoint(provider, decoId, false)),
       // 移動ハンドル (中央) — start/end を同じだけ動かす
       handle(
           center,
           const Color(0xFF4FC3F7),
           Icons.open_with_rounded,
           (cd) =>
-              provider.dragDecorationBy(decoId, startDelta: cd, endDelta: cd)),
+              provider.dragDecorationBy(decoId, startDelta: cd, endDelta: cd),
+          onStart: () {
+            _detachDecorationEndpoint(provider, sourceDecoration, true);
+            _detachDecorationEndpoint(provider, sourceDecoration, false);
+          },
+          onEnd: () {
+            _snapDecorationEndpoint(provider, decoId, true);
+            _snapDecorationEndpoint(provider, decoId, false);
+          }),
       // 文字移動ハンドル (アンバー) — 一番上に置いて掴みやすく
       if (textHandle != null) textHandle,
     ];
@@ -30261,6 +31007,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         }
       }
     }
+    if (deco != null) deco = _resolvedDecoration(deco, provider);
 
     // ── 図形の上辺中央 → グローバル → body Stack ローカル座標へ変換 ──
     final stackBox =
@@ -32649,6 +33396,9 @@ class _MindMapScreenState extends State<MindMapScreen>
           }
 
           // 集中ロックと同じ「加算チップ」。押す度に selectedMin へ加算する。
+          // ── ラベルは必ず 1 行 ──: Expanded の幅が狭い端末でも「+15分」等が
+          //   改行しないよう、maxLines:1 + FittedBox(scaleDown) で 1 行に収める
+          //   (= ユーザー要望: リセットボタンまで含めて 1 行に入り切るように)。
           Widget addChip(String label, VoidCallback onTap,
               {bool selected = false, IconData? icon}) {
             return InkWell(
@@ -32656,7 +33406,7 @@ class _MindMapScreenState extends State<MindMapScreen>
               borderRadius: BorderRadius.circular(10),
               child: Container(
                 padding: EdgeInsets.symmetric(
-                    horizontal: icon == null ? 14 : 6, vertical: 8),
+                    horizontal: icon == null ? 6 : 6, vertical: 8),
                 decoration: BoxDecoration(
                   color: selected
                       ? const Color(0xFFEF5350)
@@ -32668,13 +33418,18 @@ class _MindMapScreenState extends State<MindMapScreen>
                 ),
                 child: icon != null
                     ? Icon(icon, color: Colors.white, size: 18)
-                    : Text(
-                        label,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w600,
-                          fontSize: 13,
+                    : FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Text(
+                          label,
+                          maxLines: 1,
+                          softWrap: false,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 13,
+                          ),
                         ),
                       ),
               ),
@@ -38405,7 +39160,6 @@ class _MindMapScreenState extends State<MindMapScreen>
             }
             // どちらでもなければマップ拡大
             _applyScale((_scalePercent + 10).clamp(50, 200));
-            _showLockToast('🔍 $_scalePercent%');
             return;
           }
           // Ctrl + "-" → 縮小
@@ -38434,7 +39188,6 @@ class _MindMapScreenState extends State<MindMapScreen>
             }
             // どちらでもなければマップ縮小
             _applyScale((_scalePercent - 10).clamp(50, 200));
-            _showLockToast('🔍 $_scalePercent%');
             return;
           }
           // Ctrl + 0 → 100%にリセット
@@ -38443,7 +39196,6 @@ class _MindMapScreenState extends State<MindMapScreen>
               (event.logicalKey == LogicalKeyboardKey.digit0 ||
                   event.logicalKey == LogicalKeyboardKey.numpad0)) {
             _applyScale(100);
-            _showLockToast('🔍 $_scalePercent%');
             return;
           }
 
@@ -39633,6 +40385,21 @@ class _MindMapScreenState extends State<MindMapScreen>
                                       _drawingDecorationKind == null) {
                                     final canvasPos =
                                         _globalToCanvas(e.position, ctrl);
+                                    final labelHit = _hitConnectionLabel(
+                                        canvasPos,
+                                        provider,
+                                        ctrl.value.getMaxScaleOnAxis());
+                                    if (labelHit != null) {
+                                      _removeOverlay();
+                                      setState(() {
+                                        _draggingConnectionLabel = labelHit;
+                                        _suppressConnectionTapAfterBendDrag =
+                                            true;
+                                        _selectedConnections.clear();
+                                        _selectedConnections.add(labelHit);
+                                      });
+                                      return;
+                                    }
                                     final hit = _hitConnectionBendPoint(
                                         canvasPos,
                                         provider,
@@ -39718,7 +40485,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                                       for (final d in provider.decorations) {
                                         if (!_rangeSelectedDecorationIds
                                             .contains(d.id)) continue;
-                                        if (Rect.fromPoints(d.start, d.end)
+                                        final resolved =
+                                            _resolvedDecoration(d, provider);
+                                        if (Rect.fromPoints(
+                                                resolved.start, resolved.end)
                                             .inflate(10)
                                             .contains(canvasPos)) {
                                           hitSelected = true;
@@ -39776,6 +40546,30 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   }
                                 },
                                 onPointerMove: (e) {
+                                  if (_draggingConnectionLabel != null) {
+                                    final original = _draggingConnectionLabel!;
+                                    final conn =
+                                        _latestConnection(original, provider) ??
+                                            original;
+                                    final from = provider.nodes[conn.fromId];
+                                    final to = provider.nodes[conn.toId];
+                                    if (from != null && to != null) {
+                                      final canvasPos =
+                                          _globalToCanvas(e.position, ctrl);
+                                      final position = ConnectionPainter
+                                          .closestPositionOnConnection(
+                                        canvasPos,
+                                        conn,
+                                        from,
+                                        to,
+                                        fallbackLineStyle:
+                                            provider.connectionLineStyle,
+                                      );
+                                      provider.updateConnectionLabelPosition(
+                                          conn, position);
+                                    }
+                                    return;
+                                  }
                                   if (_draggingConnectionBend != null &&
                                       _draggingConnectionBendIndex != null) {
                                     final conn = _draggingConnectionBend!;
@@ -39851,6 +40645,18 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   }
                                 },
                                 onPointerUp: (e) {
+                                  if (_draggingConnectionLabel != null) {
+                                    setState(
+                                        () => _draggingConnectionLabel = null);
+                                    Future.delayed(
+                                        const Duration(milliseconds: 80), () {
+                                      if (mounted) {
+                                        _suppressConnectionTapAfterBendDrag =
+                                            false;
+                                      }
+                                    });
+                                    return;
+                                  }
                                   if (_draggingConnectionBend != null) {
                                     setState(() {
                                       _draggingConnectionBend = null;
@@ -40094,6 +40900,14 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   }
                                 },
                                 onPointerCancel: (e) {
+                                  if (_draggingConnectionLabel != null) {
+                                    setState(() {
+                                      _draggingConnectionLabel = null;
+                                      _suppressConnectionTapAfterBendDrag =
+                                          false;
+                                    });
+                                    return;
+                                  }
                                   if (_draggingConnectionBend != null) {
                                     setState(() {
                                       _draggingConnectionBend = null;
@@ -40193,13 +41007,18 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   ),
                                 ),
                               // 下部ツールバー
-                              // ギャラリーページでは下部バー (フッター) も出さない (= ユーザー要望)。
+                              // ── ギャラリー(bookshelf)でも下部バーを表示 ──
+                              //   (= ユーザー要望: モバイルのギャラリーページでも
+                              //   下部のボタンを使えるように)。中身は通常ページと
+                              //   同じ customBottomButtons / customBottomTopButtons を
+                              //   共有し、スロット長押しや⋮メニューの「下部バーを
+                              //   カスタマイズ」から設定できる。
+                              //   paint / document / videoEditor は専用ツールバーで
+                              //   画面全体を使うため従来どおり非表示。
                               if (_moveModeNodeId == null &&
                                   !_isDesktop &&
                                   !_isCanvasTextEditing &&
                                   MediaQuery.viewInsetsOf(context).bottom < 1 &&
-                                  provider.currentPage.pageType !=
-                                      'bookshelf' &&
                                   provider.currentPage.pageType != 'paint' &&
                                   provider.currentPage.pageType != 'document' &&
                                   provider.currentPage.pageType !=
@@ -47058,6 +47877,58 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   // ─── キャンバス ───────────────────────────────────────────────────────────
 
+  /// ページ背景を「表示領域いっぱい」に敷き詰める (= ユーザー要望: キャンバスの
+  /// 外に出られない枠から先にも背景が続くように)。InteractiveViewer の外側
+  /// (スクリーン座標) に固定配置するので、パン/ズームしても常に画面全体を覆う
+  /// 壁紙になる。cover=全面を覆う / tile=画像を敷き詰める / contain=画像全体を中央に。
+  Widget _buildInfinitePageBackground(
+      MindMapProvider provider, TransformationController ctrl) {
+    final page = provider.currentPage;
+    final path = (page.backgroundImagePath ?? '').trim();
+    if (path.isEmpty) return const SizedBox.shrink();
+    final templateId = _mapBackgroundTemplateId(path);
+    final opacity = (page.backgroundOpacityPercent.clamp(0, 100)) / 100.0;
+    Widget bg;
+    if (templateId != null) {
+      bg = AnimatedBuilder(
+        animation: ctrl,
+        builder: (_, __) => _MapBackgroundTemplateView(
+          templateId: templateId,
+          scrollOffset: ctrl.toScene(Offset.zero),
+        ),
+      );
+    } else {
+      final file = File(path);
+      if (!file.existsSync()) return const SizedBox.shrink();
+      BoxFit fit;
+      ImageRepeat repeat = ImageRepeat.noRepeat;
+      switch (page.backgroundFit) {
+        case 'contain':
+          fit = BoxFit.contain;
+          break;
+        case 'tile':
+          fit = BoxFit.none;
+          repeat = ImageRepeat.repeat;
+          break;
+        case 'cover':
+        default:
+          fit = BoxFit.cover;
+      }
+      bg = Image.file(
+        file,
+        fit: fit,
+        repeat: repeat,
+        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+        gaplessPlayback: true,
+      );
+    }
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: Opacity(opacity: opacity, child: bg),
+      ),
+    );
+  }
+
   Widget _buildCanvas(BuildContext context, MindMapProvider provider,
       TransformationController ctrl) {
     // カレンダーモード時はマインドマップ描画を置き換え
@@ -47139,6 +48010,10 @@ class _MindMapScreenState extends State<MindMapScreen>
         //   DragTarget の hit test 領域が子の自然サイズだけになり、
         //   InteractiveViewer の中央以外で drop が反応しなくなる。
         return Stack(fit: StackFit.expand, children: [
+          // ── 表示領域いっぱいの背景 (壁紙) ──
+          // InteractiveViewer の外側に固定配置し、キャンバスの枠を越えて
+          // パン/ズームしても常に画面全体が背景で覆われるようにする。
+          _buildInfinitePageBackground(provider, ctrl),
           Positioned.fill(
             child: _buildCanvasInner(context, provider, ctrl, nodes,
                 connections, isMoveMode, isRangeMode),
@@ -47623,58 +48498,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                       ),
                     ),
 
-                    // ── カスタム背景画像 (= ユーザー要望: マップの背景画像
-                    //   を自由にカスタマイズ) ──
-                    // ページに backgroundImagePath が設定されている場合のみ表示。
-                    // グリッドの背面に置くことでグリッド線が画像の上に乗り、
-                    // 不透明度はユーザーが 0〜100 で調整可能。
-                    if ((provider.currentPage.backgroundImagePath ?? '')
-                        .isNotEmpty)
-                      Builder(builder: (_) {
-                        final p = provider.currentPage;
-                        final path = p.backgroundImagePath!;
-                        final templateId = _mapBackgroundTemplateId(path);
-                        final file = templateId == null ? File(path) : null;
-                        if (templateId == null && !file!.existsSync()) {
-                          return const SizedBox.shrink();
-                        }
-                        final opacity =
-                            (p.backgroundOpacityPercent.clamp(0, 100)) / 100.0;
-                        BoxFit fit;
-                        ImageRepeat repeat = ImageRepeat.noRepeat;
-                        switch (p.backgroundFit) {
-                          case 'contain':
-                            fit = BoxFit.contain;
-                            break;
-                          case 'tile':
-                            fit = BoxFit.none;
-                            repeat = ImageRepeat.repeat;
-                            break;
-                          case 'cover':
-                          default:
-                            fit = BoxFit.cover;
-                        }
-                        return IgnorePointer(
-                          child: SizedBox(
-                            width: canvasSize,
-                            height: canvasSize,
-                            child: Opacity(
-                              opacity: opacity,
-                              child: templateId != null
-                                  ? _MapBackgroundTemplateView(
-                                      templateId: templateId)
-                                  : Image.file(
-                                      file!,
-                                      fit: fit,
-                                      repeat: repeat,
-                                      errorBuilder: (_, __, ___) =>
-                                          const SizedBox.shrink(),
-                                      gaplessPlayback: true,
-                                    ),
-                            ),
-                          ),
-                        );
-                      }),
+                    // ── カスタム背景画像は表示領域いっぱいの壁紙として
+                    //   InteractiveViewer の外側 (_buildInfinitePageBackground)
+                    //   に移動した (= ユーザー要望: 枠の外まで背景を続ける)。
+                    //   ここではキャンバス内には描かない。
 
                     RepaintBoundary(
                       child: CustomPaint(
@@ -47771,7 +48598,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                       child: CustomPaint(
                         size: Size(canvasSize, canvasSize),
                         painter: _DecorationPainter(
-                          decorations: provider.decorations,
+                          decorations: _resolvedDecorations(provider),
                           selectedId: _selectedDecorationId,
                           rangeSelectedIds: _rangeSelectedDecorationIds,
                           rangeDragDelta:
@@ -51775,26 +52602,39 @@ class _MindMapScreenState extends State<MindMapScreen>
         backgroundColor: const Color(0xFF1E1E32),
         shape: const RoundedRectangleBorder(
             borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
-        builder: (sctx) => SafeArea(
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            const SizedBox(height: 8),
-            ListTile(
-              leading: const Icon(Icons.photo_camera_rounded,
-                  color: Color(0xFF4FC3F7)),
-              title: Text(provider.t('qr.scanWithCamera'),
-                  style: const TextStyle(color: Colors.white)),
-              onTap: () => Navigator.pop(sctx, 'camera'),
-            ),
-            ListTile(
-              leading:
-                  const Icon(Icons.image_rounded, color: Color(0xFF4FC3F7)),
-              title: Text(provider.t('qr.scanFromImage'),
-                  style: const TextStyle(color: Colors.white)),
-              onTap: () => Navigator.pop(sctx, 'gallery'),
-            ),
-            const SizedBox(height: 8),
-          ]),
-        ),
+        builder: (sctx) {
+          // ── 選択肢は中央寄せで表示 (= ユーザー要望: QRコードリーダーの
+          //   項目は中央に表示されるように) ──
+          Widget choice(IconData icon, String label, String value) {
+            return InkWell(
+              onTap: () => Navigator.pop(sctx, value),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(icon, color: const Color(0xFF4FC3F7)),
+                    const SizedBox(width: 12),
+                    Text(label,
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 15)),
+                  ],
+                ),
+              ),
+            );
+          }
+
+          return SafeArea(
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              const SizedBox(height: 8),
+              choice(Icons.photo_camera_rounded,
+                  provider.t('qr.scanWithCamera'), 'camera'),
+              choice(Icons.image_rounded, provider.t('qr.scanFromImage'),
+                  'gallery'),
+              const SizedBox(height: 8),
+            ]),
+          );
+        },
       );
       if (choice == 'camera') {
         path = await Navigator.of(context).push<String>(
@@ -52193,6 +53033,43 @@ class _MindMapScreenState extends State<MindMapScreen>
     return lines.join('\n');
   }
 
+  /// クリップボードから画像を読めなかった時の保険 (主に Android)。
+  /// システムの画像ピッカー (file_picker → Android は権限不要のフォトピッカー /
+  /// ドキュメントピッカー) で画像を選ばせて貼り付ける。スクリーンショットは
+  /// クリップボードに一時 content:// URI で入り、貼り付け時には既に失効していて
+  /// 読めないことが多いため (= ユーザー要望「直前に撮ったスクショが貼れない」
+  /// への対策)。成功したら true。
+  Future<bool> _pickAndInsertImageFallback(
+    MindMapProvider provider,
+    Offset canvasPos, {
+    List<int>? shelfCell,
+  }) async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.image,
+        withData: true,
+      );
+      if (result == null || result.files.isEmpty) return false;
+      final f = result.files.first;
+      Uint8List? bytes = f.bytes;
+      if ((bytes == null || bytes.isEmpty) && (f.path ?? '').isNotEmpty) {
+        bytes = await File(f.path!).readAsBytes();
+      }
+      if (bytes == null || bytes.isEmpty) return false;
+      final ext = (f.extension ?? 'png').toLowerCase();
+      return await _addClipboardImageNodeAt(
+        provider,
+        canvasPos,
+        bytes,
+        ext,
+        shelfCell: shelfCell,
+      );
+    } catch (e) {
+      debugPrint('image picker fallback failed: $e');
+      return false;
+    }
+  }
+
   Future<void> _pasteClipboardImageAt(
     Offset canvasPos, {
     List<int>? shelfCell,
@@ -52226,6 +53103,20 @@ class _MindMapScreenState extends State<MindMapScreen>
         return;
       }
       final reader = await clipboard.read();
+      // クリップボードに画像ヒント (image/* 等) があるか。読めなくても
+      //   「画像を貼ろうとしている」判定に使い、ピッカー保険の起動条件にする。
+      final hadImageHint = reader.platformFormats.any((f) {
+        final l = f.toLowerCase();
+        return l.contains('image') ||
+            l.endsWith('.png') ||
+            l.endsWith('.jpeg') ||
+            l.endsWith('.jpg') ||
+            l.endsWith('.gif') ||
+            l.endsWith('.webp') ||
+            l.endsWith('.bmp') ||
+            l.endsWith('.tif') ||
+            l.endsWith('.tiff');
+      });
       // 対応する画像フォーマットを順に試す (PNG が最も一般的)
       final candidates = <(FileFormat, String)>[
         (Formats.png, 'png'),
@@ -52337,6 +53228,17 @@ class _MindMapScreenState extends State<MindMapScreen>
           } catch (_) {
             // テキスト読み取り失敗時は下のメッセージにフォールバック
           }
+        }
+        // ── Android 保険: クリップボードから読めなくても画像ピッカーで貼れる ──
+        // スクショの一時 content:// URI は貼り付け時には失効していて読めない
+        //   ことが多い (= ユーザー要望「直前に撮ったスクショが貼れない」)。
+        //   画像を貼ろうとしている時 (imageOnly / 画像ヒントあり) だけ開く。
+        if (!kIsWeb &&
+            Platform.isAndroid &&
+            (imageOnly || hadImageHint)) {
+          final picked = await _pickAndInsertImageFallback(provider, canvasPos,
+              shelfCell: shelfCell);
+          if (picked) return;
         }
         if (mounted) {
           // 何が入っているか分かるよう、 実際の形式も表示 (診断用)。
@@ -53494,36 +54396,13 @@ class _MindMapScreenState extends State<MindMapScreen>
       final html = _buildMapPreviewHtml(jsonStr, page.name);
       final body = utf8.encode(html);
       final jsonBody = utf8.encode(jsonStr);
-      final server =
-          await HttpServer.bind(InternetAddress.anyIPv4, 0, shared: true);
-      _lanShareServer = server;
-      final host = await _lanShareHostAddress();
-      final url = 'http://$host:${server.port}/';
-      final jsonUrl = '${url}page.json';
 
-      server.listen((request) async {
-        try {
-          if (request.uri.path == '/favicon.ico') {
-            request.response.statusCode = HttpStatus.notFound;
-            await request.response.close();
-            return;
-          }
-          if (request.uri.path == '/page.json') {
-            request.response.headers.contentType =
-                ContentType('application', 'json', charset: 'utf-8');
-            request.response.headers
-                .set(HttpHeaders.cacheControlHeader, 'no-store');
-            request.response.add(jsonBody);
-            await request.response.close();
-            return;
-          }
-          request.response.headers.contentType = ContentType.html;
-          request.response.headers
-              .set(HttpHeaders.cacheControlHeader, 'no-store');
-          request.response.add(body);
-          await request.response.close();
-        } catch (_) {}
-      });
+      // ── 公開サーバーは「共有を開始」を押すまで起動しない (= ユーザー要望) ──
+      // 共有ダイアログを開いただけでは LAN にサーバーを公開しない。
+      String url = '';
+      String jsonUrl = '';
+      bool sharing = false;
+      bool startingShare = false;
 
       String clipboardBeforeShare = '';
       try {
@@ -53660,18 +54539,89 @@ class _MindMapScreenState extends State<MindMapScreen>
         }
       }
 
+      // ── 「共有を開始」= ここで初めて公開サーバーを起動する (= ユーザー要望) ──
+      Future<void> startSharing(StateSetter setDialogState) async {
+        if (sharing || startingShare) return;
+        setDialogState(() => startingShare = true);
+        try {
+          final server =
+              await HttpServer.bind(InternetAddress.anyIPv4, 0, shared: true);
+          _lanShareServer = server;
+          final host = await _lanShareHostAddress();
+          url = 'http://$host:${server.port}/';
+          jsonUrl = '${url}page.json';
+
+          server.listen((request) async {
+            try {
+              if (request.uri.path == '/favicon.ico') {
+                request.response.statusCode = HttpStatus.notFound;
+                await request.response.close();
+                return;
+              }
+              if (request.uri.path == '/page.json') {
+                request.response.headers.contentType =
+                    ContentType('application', 'json', charset: 'utf-8');
+                request.response.headers
+                    .set(HttpHeaders.cacheControlHeader, 'no-store');
+                request.response.add(jsonBody);
+                await request.response.close();
+                return;
+              }
+              request.response.headers.contentType = ContentType.html;
+              request.response.headers
+                  .set(HttpHeaders.cacheControlHeader, 'no-store');
+              request.response.add(body);
+              await request.response.close();
+            } catch (_) {}
+          });
+
+          try {
+            await Clipboard.setData(ClipboardData(text: url));
+          } catch (_) {}
+          if (mounted) {
+            _appSnack(
+              context,
+              SnackBar(
+                backgroundColor: const Color(0xFF43B97F),
+                content: Text('ページ共有URLをコピーしました: $url',
+                    style: const TextStyle(color: Colors.white)),
+                duration: const Duration(seconds: 4),
+              ),
+            );
+          }
+          setDialogState(() {
+            sharing = true;
+            startingShare = false;
+          });
+        } catch (e) {
+          _lanShareServer = null;
+          setDialogState(() {
+            sharing = false;
+            startingShare = false;
+          });
+          if (mounted) {
+            _appSnack(
+              context,
+              SnackBar(
+                backgroundColor: const Color(0xFFFF6B6B),
+                content: Text('ページ共有を開始できませんでした: $e',
+                    style: const TextStyle(color: Colors.white)),
+              ),
+            );
+          }
+        }
+      }
+
+      Future<void> stopSharing(StateSetter setDialogState) async {
+        await _lanShareServer?.close(force: true);
+        _lanShareServer = null;
+        url = '';
+        jsonUrl = '';
+        setDialogState(() => sharing = false);
+      }
+
+      if (!mounted) return;
       try {
-        await Clipboard.setData(ClipboardData(text: url));
-        if (!mounted) return;
-        _appSnack(
-          context,
-          SnackBar(
-            backgroundColor: const Color(0xFF43B97F),
-            content: Text('ページ共有URLをコピーしました: $url',
-                style: const TextStyle(color: Colors.white)),
-            duration: const Duration(seconds: 4),
-          ),
-        );
         await showDialog<void>(
           context: context,
           builder: (dctx) => StatefulBuilder(
@@ -53686,31 +54636,89 @@ class _MindMapScreenState extends State<MindMapScreen>
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
-                          '同じ Wi-Fi / LAN にいる端末で下のURLを開くと、現在ページのプレビューを表示できます。',
-                          style:
-                              TextStyle(color: Colors.white60, fontSize: 12)),
-                      const SizedBox(height: 12),
-                      SelectableText(url,
-                          style: const TextStyle(
-                              color: Color(0xFF4FC3F7),
-                              fontSize: 13,
-                              fontWeight: FontWeight.w700)),
-                      const SizedBox(height: 12),
-                      const Text(
-                          'ページデータを保存する場合は、プレビュー内の「ページデータを保存」か下のJSON URLを使えます。',
-                          style:
-                              TextStyle(color: Colors.white60, fontSize: 12)),
-                      const SizedBox(height: 6),
-                      SelectableText(jsonUrl,
-                          style: const TextStyle(
-                              color: Color(0xFF43B97F),
-                              fontSize: 13,
-                              fontWeight: FontWeight.w700)),
-                      const SizedBox(height: 8),
-                      const Text('共有はアプリを閉じるか、停止するまで有効です。',
-                          style:
-                              TextStyle(color: Colors.white38, fontSize: 11)),
+                      // ── ファイアウォールで弾かれ得る旨の注意書き (= ユーザー要望) ──
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color:
+                              const Color(0xFFFFB347).withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                              color: const Color(0xFFFFB347)
+                                  .withValues(alpha: 0.5)),
+                        ),
+                        child: const Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Icon(Icons.warning_amber_rounded,
+                                color: Color(0xFFFFB347), size: 18),
+                            SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'OS やセキュリティソフトのファイアウォールにより、他の端末からの接続がブロックされる場合があります。つながらない時は、このアプリの通信（プライベートネットワーク）を許可してください。',
+                                style: TextStyle(
+                                    color: Color(0xFFFFD9A0), fontSize: 11),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      if (!sharing) ...[
+                        const Text(
+                            '「共有を開始」を押すと、同じ Wi-Fi / LAN の端末から現在ページのプレビューを開けるようになります。押すまで公開サーバーは起動しません。',
+                            style: TextStyle(
+                                color: Colors.white60, fontSize: 12)),
+                        const SizedBox(height: 12),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF43B97F),
+                              foregroundColor: Colors.white,
+                            ),
+                            onPressed: startingShare
+                                ? null
+                                : () => startSharing(setDialogState),
+                            icon: startingShare
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2, color: Colors.white),
+                                  )
+                                : const Icon(Icons.wifi_tethering_rounded,
+                                    size: 18),
+                            label: Text(startingShare ? '起動中…' : '共有を開始'),
+                          ),
+                        ),
+                      ] else ...[
+                        const Text(
+                            '同じ Wi-Fi / LAN にいる端末で下のURLを開くと、現在ページのプレビューを表示できます。',
+                            style: TextStyle(
+                                color: Colors.white60, fontSize: 12)),
+                        const SizedBox(height: 12),
+                        SelectableText(url,
+                            style: const TextStyle(
+                                color: Color(0xFF4FC3F7),
+                                fontSize: 13,
+                                fontWeight: FontWeight.w700)),
+                        const SizedBox(height: 12),
+                        const Text(
+                            'ページデータを保存する場合は、プレビュー内の「ページデータを保存」か下のJSON URLを使えます。',
+                            style: TextStyle(
+                                color: Colors.white60, fontSize: 12)),
+                        const SizedBox(height: 6),
+                        SelectableText(jsonUrl,
+                            style: const TextStyle(
+                                color: Color(0xFF43B97F),
+                                fontSize: 13,
+                                fontWeight: FontWeight.w700)),
+                        const SizedBox(height: 8),
+                        const Text('共有はアプリを閉じるか、停止するまで有効です。',
+                            style: TextStyle(
+                                color: Colors.white38, fontSize: 11)),
+                      ],
                       const SizedBox(height: 16),
                       const Divider(color: Colors.white12, height: 1),
                       const SizedBox(height: 14),
@@ -53803,32 +54811,31 @@ class _MindMapScreenState extends State<MindMapScreen>
                 ),
               ),
               actions: [
-                TextButton.icon(
-                  icon: const Icon(Icons.stop_circle_outlined,
-                      color: Color(0xFFFF8A80), size: 18),
-                  label: const Text('停止',
-                      style: TextStyle(color: Color(0xFFFF8A80))),
-                  onPressed: () async {
-                    await _lanShareServer?.close(force: true);
-                    _lanShareServer = null;
-                    if (dctx.mounted) Navigator.pop(dctx);
-                  },
-                ),
-                TextButton.icon(
-                  icon: const Icon(Icons.copy_rounded,
-                      color: Color(0xFF4FC3F7), size: 18),
-                  label: const Text('URLをコピー',
-                      style: TextStyle(color: Color(0xFF4FC3F7))),
-                  onPressed: () => Clipboard.setData(ClipboardData(text: url)),
-                ),
-                TextButton.icon(
-                  icon: const Icon(Icons.data_object_rounded,
-                      color: Color(0xFF43B97F), size: 18),
-                  label: const Text('JSONをコピー',
-                      style: TextStyle(color: Color(0xFF43B97F))),
-                  onPressed: () =>
-                      Clipboard.setData(ClipboardData(text: jsonUrl)),
-                ),
+                if (sharing) ...[
+                  TextButton.icon(
+                    icon: const Icon(Icons.stop_circle_outlined,
+                        color: Color(0xFFFF8A80), size: 18),
+                    label: const Text('停止',
+                        style: TextStyle(color: Color(0xFFFF8A80))),
+                    onPressed: () => stopSharing(setDialogState),
+                  ),
+                  TextButton.icon(
+                    icon: const Icon(Icons.copy_rounded,
+                        color: Color(0xFF4FC3F7), size: 18),
+                    label: const Text('URLをコピー',
+                        style: TextStyle(color: Color(0xFF4FC3F7))),
+                    onPressed: () =>
+                        Clipboard.setData(ClipboardData(text: url)),
+                  ),
+                  TextButton.icon(
+                    icon: const Icon(Icons.data_object_rounded,
+                        color: Color(0xFF43B97F), size: 18),
+                    label: const Text('JSONをコピー',
+                        style: TextStyle(color: Color(0xFF43B97F))),
+                    onPressed: () =>
+                        Clipboard.setData(ClipboardData(text: jsonUrl)),
+                  ),
+                ],
                 TextButton(
                   onPressed: () => Navigator.pop(dctx),
                   child: const Text('閉じる',
@@ -58478,6 +59485,21 @@ class _MindMapScreenState extends State<MindMapScreen>
     try {
       final reader = await clipboard.read();
 
+      // 画像ヒント (image/* 等) の有無。読めなくても Android の画像ピッカー
+      //   保険を起動するかの判定に使う。
+      final hadImageHint = reader.platformFormats.any((f) {
+        final l = f.toLowerCase();
+        return l.contains('image') ||
+            l.endsWith('.png') ||
+            l.endsWith('.jpeg') ||
+            l.endsWith('.jpg') ||
+            l.endsWith('.gif') ||
+            l.endsWith('.webp') ||
+            l.endsWith('.bmp') ||
+            l.endsWith('.tif') ||
+            l.endsWith('.tiff');
+      });
+
       // 1) 画像 (= ユーザー要望「画像のクリップボードからの貼り付けが上手く
       //    いっていない」 への対応で、 PNG/JPEG だけでなく GIF/WebP/BMP と
       //    Android content:// の取りこぼしにも対応する) ──
@@ -58643,6 +59665,15 @@ class _MindMapScreenState extends State<MindMapScreen>
           }
           return;
         }
+      }
+
+      // ── Android 保険: 画像もテキストも取れなかった → 画像ピッカーで貼る ──
+      // スクショの一時 content:// URI が失効して読めない場合の救済
+      //   (= ユーザー要望「直前に撮ったスクショが貼れない」)。画像ヒントが
+      //   あった時だけ開き、クリップボードが空の Ctrl+V では開かない。
+      if (!kIsWeb && Platform.isAndroid && hadImageHint) {
+        final picked = await _pickAndInsertImageFallback(provider, pasteCenter);
+        if (picked) return;
       }
     } catch (e) {
       // clipboard.read() が例外になった場合も Android native 経路を失わない。
@@ -64183,6 +65214,7 @@ class _MindMapScreenState extends State<MindMapScreen>
   }
 
   void _showShortcutsDialog(BuildContext ctx) {
+    if (!_isDesktop) return;
     final provider = context.read<MindMapProvider>();
     // ダイアログ寿命に合わせて 1 つのScrollControllerを使う
     final scrollCtrl = ScrollController();
@@ -65673,6 +66705,9 @@ class _ConnectionActionOverlay extends StatefulWidget {
 
   /// ラベル変更 (= 空文字なら削除扱い)
   final ValueChanged<String> onLabelChanged;
+  final ValueChanged<double> onLabelPositionChanged;
+  final ValueChanged<int?> onLineColorChanged;
+  final ValueChanged<String> onRelationshipTypeChanged;
   const _ConnectionActionOverlay({
     required this.screenPos,
     required this.connection,
@@ -65690,6 +66725,9 @@ class _ConnectionActionOverlay extends StatefulWidget {
     required this.onSaveDefaults,
     required this.onBidirectionalChanged,
     required this.onLabelChanged,
+    required this.onLabelPositionChanged,
+    required this.onLineColorChanged,
+    required this.onRelationshipTypeChanged,
   });
   @override
   State<_ConnectionActionOverlay> createState() =>
@@ -65706,6 +66744,11 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
   late String _lineStyle;
   late double _elbowSplitRatio;
   late int _elbowPointCount;
+  late double _labelPosition;
+  late int? _lineColorValue;
+  late String _relationshipType;
+  Offset? _panelPosition;
+  Timer? _labelSaveDebounce;
 
   /// 両方向矢印トグル state
   late bool _bidirectional;
@@ -65722,6 +66765,9 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
     _lineStyle = widget.connection.lineStyle ?? 'curve';
     _elbowSplitRatio = widget.connection.elbowSplitRatio;
     _elbowPointCount = widget.connection.elbowPointCount;
+    _labelPosition = widget.connection.labelPosition;
+    _lineColorValue = widget.connection.lineColorValue;
+    _relationshipType = widget.connection.relationshipType;
     _bidirectional = widget.connection.bidirectional;
     _labelCtrl = TextEditingController(text: widget.connection.label ?? '');
     _anim = AnimationController(
@@ -65734,6 +66780,7 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
   void dispose() {
     _anim.dispose();
     _labelCtrl.dispose();
+    _labelSaveDebounce?.cancel();
     super.dispose();
   }
 
@@ -65767,19 +66814,32 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
         lineStyle: _lineStyle,
         elbowSplitRatio: _elbowSplitRatio,
         elbowPointCount: _elbowPointCount,
+        labelPosition: _labelPosition,
+        lineColorValue: _lineColorValue,
+        relationshipType: _relationshipType,
       );
 
   @override
   Widget build(BuildContext context) {
     const double barW = 260.0;
     final mq = MediaQuery.of(context);
-    double left = widget.screenPos.dx - barW / 2;
-    double top = widget.screenPos.dy - 220;
+    double left = _panelPosition?.dx ?? widget.screenPos.dx - barW / 2;
+    double top = _panelPosition?.dy ?? widget.screenPos.dy - 220;
     final topMin = mq.padding.top + 64.0;
     final topMax = math.max(topMin, mq.size.height - 360.0);
     final leftMax = math.max(8.0, mq.size.width - barW - 8.0);
     left = left.clamp(8.0, leftMax);
     top = top.clamp(topMin, topMax);
+
+    void movePanel(DragUpdateDetails details) {
+      final next = Offset(left, top) + details.delta;
+      setState(() {
+        _panelPosition = Offset(
+          next.dx.clamp(8.0, leftMax).toDouble(),
+          next.dy.clamp(topMin, topMax).toDouble(),
+        );
+      });
+    }
 
     return Stack(children: [
       Positioned.fill(
@@ -65814,17 +66874,39 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(
-                      widget.selectedCount > 1
-                          ? context
-                              .watch<MindMapProvider>()
-                              .t('conn.settingsMulti')
-                              .replaceAll('{n}', '${widget.selectedCount}')
-                          : context.watch<MindMapProvider>().t('conn.settings'),
-                      style: const TextStyle(
-                          color: Colors.white54,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600)),
+                  GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onPanUpdate: movePanel,
+                    child: MouseRegion(
+                      cursor: SystemMouseCursors.move,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 2),
+                        child: Row(children: [
+                          const Icon(Icons.drag_indicator_rounded,
+                              color: Colors.white38, size: 17),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Text(
+                                widget.selectedCount > 1
+                                    ? context
+                                        .watch<MindMapProvider>()
+                                        .t('conn.settingsMulti')
+                                        .replaceAll(
+                                            '{n}', '${widget.selectedCount}')
+                                    : context
+                                        .watch<MindMapProvider>()
+                                        .t('conn.settings'),
+                                style: const TextStyle(
+                                    color: Colors.white70,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600)),
+                          ),
+                          const Icon(Icons.open_with_rounded,
+                              color: Colors.white30, size: 14),
+                        ]),
+                      ),
+                    ),
+                  ),
                   const SizedBox(height: 10),
                   // ── 線種: 個別リンクごとに曲線 / 直線 / 直角を切り替える ──
                   Row(children: [
@@ -65874,6 +66956,52 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
                                       fontWeight: FontWeight.w700)),
                             ]),
                           ),
+                        ),
+                      ),
+                  ]),
+                  const SizedBox(height: 8),
+                  Row(children: [
+                    const Icon(Icons.palette_outlined,
+                        color: Colors.white38, size: 14),
+                    const SizedBox(width: 4),
+                    const Text('リンク色',
+                        style: TextStyle(color: Colors.white38, fontSize: 10)),
+                    const Spacer(),
+                    for (final color in <Color?>[
+                      null,
+                      const Color(0xFFEF5350),
+                      const Color(0xFFFFA726),
+                      const Color(0xFF66BB6A),
+                      const Color(0xFF42A5F5),
+                      const Color(0xFFAB47BC),
+                      const Color(0xFFECEFF1),
+                    ])
+                      GestureDetector(
+                        onTap: () {
+                          final value = color?.toARGB32();
+                          setState(() => _lineColorValue = value);
+                          widget.onLineColorChanged(value);
+                        },
+                        child: Container(
+                          width: 23,
+                          height: 23,
+                          margin: const EdgeInsets.only(left: 5),
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: color ?? Colors.transparent,
+                            border: Border.all(
+                              color: _lineColorValue == color?.toARGB32()
+                                  ? const Color(0xFF80CBC4)
+                                  : Colors.white24,
+                              width: _lineColorValue == color?.toARGB32()
+                                  ? 2.5
+                                  : 1,
+                            ),
+                          ),
+                          child: color == null
+                              ? const Icon(Icons.auto_awesome_rounded,
+                                  color: Colors.white54, size: 12)
+                              : null,
                         ),
                       ),
                   ]),
@@ -66170,6 +67298,81 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
                     ),
                   ),
                   const SizedBox(height: 10),
+                  Row(children: [
+                    Expanded(
+                      child: GestureDetector(
+                        onTap: () {
+                          setState(() => _relationshipType = 'parentChild');
+                          widget.onRelationshipTypeChanged('parentChild');
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(vertical: 7),
+                          decoration: BoxDecoration(
+                            color: _relationshipType == 'parentChild'
+                                ? const Color(0xFF26A69A)
+                                    .withValues(alpha: 0.18)
+                                : Colors.white.withValues(alpha: 0.04),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                                color: _relationshipType == 'parentChild'
+                                    ? const Color(0xFF26A69A)
+                                    : Colors.white12),
+                          ),
+                          child: const Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.account_tree_rounded,
+                                    color: Color(0xFF80CBC4), size: 14),
+                                SizedBox(width: 5),
+                                Text('親 → 子',
+                                    style: TextStyle(
+                                        color: Colors.white70, fontSize: 11)),
+                              ]),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: GestureDetector(
+                        onTap: () {
+                          setState(() => _relationshipType = 'association');
+                          widget.onRelationshipTypeChanged('association');
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(vertical: 7),
+                          decoration: BoxDecoration(
+                            color: _relationshipType == 'association'
+                                ? const Color(0xFF7E57C2)
+                                    .withValues(alpha: 0.18)
+                                : Colors.white.withValues(alpha: 0.04),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                                color: _relationshipType == 'association'
+                                    ? const Color(0xFF7E57C2)
+                                    : Colors.white12),
+                          ),
+                          child: const Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.link_rounded,
+                                    color: Color(0xFFB39DDB), size: 14),
+                                SizedBox(width: 5),
+                                Text('関連',
+                                    style: TextStyle(
+                                        color: Colors.white70, fontSize: 11)),
+                              ]),
+                        ),
+                      ),
+                    ),
+                  ]),
+                  const SizedBox(height: 4),
+                  Text(
+                    _relationshipType == 'parentChild'
+                        ? '始点ノードを親、終点ノードを子として判定します'
+                        : '階層判定に含めない関連リンクです',
+                    style: const TextStyle(color: Colors.white30, fontSize: 9),
+                  ),
+                  const SizedBox(height: 10),
                   // ── ラベル入力欄 ──
                   // 接続線の中央に表示するテキスト。 空にすると非表示。
                   // フォーカスを失った時 (= onChanged で逐次反映ではなく) に
@@ -66181,6 +67384,10 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
                     Expanded(
                       child: TextField(
                         controller: _labelCtrl,
+                        keyboardType: TextInputType.multiline,
+                        textInputAction: TextInputAction.newline,
+                        minLines: 1,
+                        maxLines: 4,
                         style:
                             const TextStyle(color: Colors.white, fontSize: 12),
                         decoration: InputDecoration(
@@ -66207,9 +67414,14 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
                           contentPadding: const EdgeInsets.symmetric(
                               horizontal: 8, vertical: 6),
                         ),
-                        onSubmitted: (v) => widget.onLabelChanged(v.trim()),
-                        onEditingComplete: () =>
-                            widget.onLabelChanged(_labelCtrl.text.trim()),
+                        onChanged: (v) {
+                          setState(() {});
+                          _labelSaveDebounce?.cancel();
+                          _labelSaveDebounce =
+                              Timer(const Duration(milliseconds: 350), () {
+                            widget.onLabelChanged(v.trim());
+                          });
+                        },
                       ),
                     ),
                     if (_labelCtrl.text.isNotEmpty) ...[
@@ -66231,6 +67443,30 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
                       ),
                     ],
                   ]),
+                  if (_labelCtrl.text.isNotEmpty) ...[
+                    Row(children: [
+                      const Icon(Icons.open_with_rounded,
+                          color: Colors.white38, size: 14),
+                      const SizedBox(width: 4),
+                      const Text('タグ位置',
+                          style:
+                              TextStyle(color: Colors.white38, fontSize: 10)),
+                      Expanded(
+                        child: Slider(
+                          value: _labelPosition.clamp(0.02, 0.98),
+                          min: 0.02,
+                          max: 0.98,
+                          onChanged: (v) {
+                            setState(() => _labelPosition = v);
+                            widget.onLabelPositionChanged(v);
+                          },
+                        ),
+                      ),
+                    ]),
+                    const Text('タグをマップ上で直接ドラッグしても移動できます',
+                        style:
+                            TextStyle(color: Colors.white30, fontSize: 9)),
+                  ],
                   const SizedBox(height: 10),
                   // ── 方向を反転 ──
                   Row(mainAxisAlignment: MainAxisAlignment.center, children: [
@@ -69674,13 +70910,11 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
     }
     // 動画以外のページ（ホーム・検索等）ではフォーカスモードCSSを入れない
     if (!_isVideoPageUrl(_currentUrl)) return;
-    // ── 関連動画等を隠す設定が OFF なら CSS を入れない (= ユーザー要望) ──
-    try {
-      if (!context.read<MindMapProvider>().hideEmbedRelated) {
-        _removeFocusMode();
-        return;
-      }
-    } catch (_) {}
+    // ── ページ内コンテンツ(ノード)からの動画は常にフォーカス表示 ──
+    // ここに到達している時点で focusMode==true (上の early-return でブラウズ
+    // 起動は除外済み) なので、hideEmbedRelated 設定に関わらず必ず関連動画/
+    // コメント等を隠して動画を中央に配置する (= ユーザー要望 2026-07)。
+    // 再生速度/シークバー等のプレイヤー操作は _focusModeCSS 側で残している。
     final css = _focusModeCSS.replaceAll('\n', ' ').replaceAll("'", "\\'");
     _controller.executeScript('''
       (function() {
@@ -75254,6 +76488,8 @@ typedef _GanttTask = ({
   int startMs,
   int endMs,
   int color,
+  // ── 担当者名 (= ユーザー要望: ガントにユーザー名を記載できるように) ──
+  String assignee,
 });
 
 /// 1 枚のガントチャート (= ユーザー要望: チャート自体を複数作成できるように)。
@@ -75297,7 +76533,8 @@ class _GanttChart {
                   'n': t.name,
                   's': t.startMs,
                   'e': t.endMs,
-                  'c': t.color
+                  'c': t.color,
+                  'a': t.assignee,
                 })
             .toList(),
         if (kind == 'schedule') ...{
@@ -75322,6 +76559,7 @@ class _GanttChart {
                   startMs: (x['s'] as num?)?.toInt() ?? 0,
                   endMs: (x['e'] as num?)?.toInt() ?? 0,
                   color: (x['c'] as num?)?.toInt() ?? 0xFF4FC3F7,
+                  assignee: (x['a'] ?? '').toString(),
                 ))
             .toList(),
         people: ((m['people'] as List?) ?? const [])
@@ -75466,6 +76704,7 @@ class _GanttStore {
                 startMs: (m['s'] as num?)?.toInt() ?? 0,
                 endMs: (m['e'] as num?)?.toInt() ?? 0,
                 color: (m['c'] as num?)?.toInt() ?? 0xFF4FC3F7,
+                assignee: (m['a'] ?? '').toString(),
               ))
           .toList();
     } catch (_) {
@@ -75487,7 +76726,8 @@ class _GanttStore {
                       'n': t.name,
                       's': t.startMs,
                       'e': t.endMs,
-                      'c': t.color
+                      'c': t.color,
+                      'a': t.assignee,
                     })
                 .toList()));
       }
@@ -75517,6 +76757,12 @@ class _GanttPageViewState extends State<_GanttPageView> {
   // ── タスク名のインライン編集 (= ユーザー要望: クリックで名前変更) ──
   String? _editingNameId;
   final TextEditingController _nameEditCtrl = TextEditingController();
+  // ── バー選択 + サイドメニュー + キーで分割 (= ユーザー要望) ──
+  //   バーをタップで選択し、サイド編集メニューを開ける。選択中に S / Delete で
+  //   分割 / 削除する (動画エディターのクリップ操作に近い操作感)。
+  String? _selectedTaskId;
+  bool _sidePanelOpen = false;
+  final FocusNode _ganttFocus = FocusNode();
   // ── 表示単位 (= ユーザー要望: 日単位だけでなく時間単位のタスク表) ──
   //   'day' = 1 列 1 日、 'hour' = 1 列 1 時間。
   String _unit = 'day';
@@ -75566,10 +76812,89 @@ class _GanttPageViewState extends State<_GanttPageView> {
   @override
   void dispose() {
     _nameEditCtrl.dispose();
+    _ganttFocus.dispose();
     // 閉じる時点の予定で通知を組み直す (= 編集/追加/削除を反映)。
     // 無効時は前回分のキャンセルのみ行われる。 fire-and-forget。
     _rescheduleGanttNotifications();
     super.dispose();
+  }
+
+  /// バー選択。タップで選択し、サイドメニュー/キー操作の対象にする。
+  void _selectTask(String? id) {
+    setState(() => _selectedTaskId = id);
+    _ganttFocus.requestFocus();
+  }
+
+  /// 選択中タスクを「その位置(中央付近の単位境界)」で 2 つに分割する
+  /// (= ユーザー要望: 選択して何かのキーでその位置で分割)。
+  void _splitSelectedTask() {
+    final id = _selectedTaskId;
+    if (id == null) return;
+    final i = _tasks.indexWhere((x) => x.id == id);
+    if (i < 0) return;
+    final t = _tasks[i];
+    // 期間 (単位数)。 0 = 1 単位ぶんしかないので分割不可。
+    final span = _unitIndex(_d(t.startMs), _d(t.endMs));
+    if (span < 1) {
+      _appSnack(
+          context,
+          const SnackBar(
+              content: Text('1単位ぶんのタスクはこれ以上分割できません'),
+              duration: Duration(seconds: 2)));
+      return;
+    }
+    final half = span ~/ 2; // 前半に含める単位境界
+    final firstEnd = _shiftUnits(t.startMs, half);
+    final secondStart = _shiftUnits(t.startMs, half + 1);
+    final first = (
+      id: t.id,
+      name: t.name,
+      startMs: t.startMs,
+      endMs: firstEnd,
+      color: t.color,
+      assignee: t.assignee,
+    );
+    final second = (
+      id: 'g${DateTime.now().microsecondsSinceEpoch}',
+      name: t.name,
+      startMs: secondStart,
+      endMs: t.endMs,
+      color: t.color,
+      assignee: t.assignee,
+    );
+    setState(() {
+      _tasks[i] = first;
+      _tasks.insert(i + 1, second);
+      _selectedTaskId = second.id;
+    });
+    _saveCurrent();
+  }
+
+  void _deleteSelectedTask() {
+    final id = _selectedTaskId;
+    if (id == null) return;
+    setState(() {
+      _tasks.removeWhere((t) => t.id == id);
+      _selectedTaskId = null;
+    });
+    _saveCurrent();
+  }
+
+  /// サイドメニュー/キー操作のキーハンドラ。S=分割 / Delete=削除。
+  KeyEventResult _onGanttKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    // テキスト編集中 (タスク名インライン編集等) はキー操作を横取りしない。
+    if (_editingNameId != null) return KeyEventResult.ignored;
+    final k = event.logicalKey;
+    if (k == LogicalKeyboardKey.keyS) {
+      _splitSelectedTask();
+      return KeyEventResult.handled;
+    }
+    if (k == LogicalKeyboardKey.delete || k == LogicalKeyboardKey.backspace) {
+      _deleteSelectedTask();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
   }
 
   Future<void> _load() async {
@@ -75602,6 +76927,7 @@ class _GanttPageViewState extends State<_GanttPageView> {
           startMs: start.millisecondsSinceEpoch,
           endMs: end.millisecondsSinceEpoch,
           color: _palette.first.toARGB32(),
+          assignee: '',
         ));
       }
     }
@@ -75827,6 +77153,7 @@ class _GanttPageViewState extends State<_GanttPageView> {
           startMs: start.millisecondsSinceEpoch,
           endMs: start.add(const Duration(days: 2)).millisecondsSinceEpoch,
           color: _palette.first.toARGB32(),
+          assignee: '',
         )
       ],
     );
@@ -75944,6 +77271,7 @@ class _GanttPageViewState extends State<_GanttPageView> {
         startMs: t.startMs,
         endMs: t.endMs,
         color: t.color,
+        assignee: t.assignee,
       );
     });
     await _saveCurrent();
@@ -75963,6 +77291,7 @@ class _GanttPageViewState extends State<_GanttPageView> {
       startMs: start.millisecondsSinceEpoch,
       endMs: end.millisecondsSinceEpoch,
       color: _palette[_tasks.length % _palette.length].toARGB32(),
+      assignee: '',
     );
     setState(() {
       _tasks.add(t);
@@ -76135,6 +77464,7 @@ class _GanttPageViewState extends State<_GanttPageView> {
         startMs: startMs,
         endMs: endMs,
         color: t.color,
+        assignee: t.assignee,
       );
     });
   }
@@ -76267,25 +77597,45 @@ class _GanttPageViewState extends State<_GanttPageView> {
   Widget _ganttBar(_GanttTask t) {
     const handleW = 14.0;
     final units = _unitIndex(_d(t.startMs), _d(t.endMs)) + 1;
+    final selected = _selectedTaskId == t.id;
     final label = widget.provider
         .t(_unit == 'hour' ? 'gantt.durationHours' : 'gantt.durationDays')
         .replaceFirst('{n}', '$units');
+    final assignee = t.assignee.trim();
     return Stack(children: [
-      // 本体: タップで編集、 水平ドラッグで移動。
+      // 本体: タップで選択 / ダブルタップで編集、 水平ドラッグで移動。
       Positioned.fill(
         child: GestureDetector(
           behavior: HitTestBehavior.opaque,
-          onTap: () => _editTask(t),
-          onHorizontalDragStart: (_) => _beginGanttDrag(t),
+          onTap: () => _selectTask(t.id),
+          onDoubleTap: () => _editTask(t),
+          onHorizontalDragStart: (_) {
+            _selectTask(t.id);
+            _beginGanttDrag(t);
+          },
           onHorizontalDragUpdate: (d) => _ganttDragMove(d.delta.dx),
           onHorizontalDragEnd: (_) => _endGanttDrag(),
           child: Container(
             decoration: BoxDecoration(
               color: Color(t.color),
               borderRadius: BorderRadius.circular(6),
+              border: selected
+                  ? Border.all(color: Colors.white, width: 2)
+                  : null,
+              boxShadow: selected
+                  ? [
+                      BoxShadow(
+                          color: Colors.white.withValues(alpha: 0.5),
+                          blurRadius: 6)
+                    ]
+                  : null,
             ),
             alignment: Alignment.center,
-            child: Text(label,
+            padding: const EdgeInsets.symmetric(horizontal: handleW),
+            child: Text(
+                assignee.isEmpty ? label : '$label · $assignee',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
                     color: Colors.black87,
                     fontSize: 11,
@@ -76340,6 +77690,7 @@ class _GanttPageViewState extends State<_GanttPageView> {
 
   Future<void> _editTask(_GanttTask? task) async {
     final nameCtrl = TextEditingController(text: task?.name ?? '');
+    final assigneeCtrl = TextEditingController(text: task?.assignee ?? '');
     final now = DateTime.now();
     DateTime start = task != null ? _d(task.startMs) : _floorUnit(now);
     DateTime end = task != null
@@ -76401,6 +77752,19 @@ class _GanttPageViewState extends State<_GanttPageView> {
                 decoration: InputDecoration(
                   hintText: widget.provider.t('gantt.taskName'),
                   hintStyle: const TextStyle(color: Colors.white38),
+                ),
+              ),
+              const SizedBox(height: 10),
+              // ── 担当者 (= ユーザー要望: ガントにユーザー名を記載) ──
+              TextField(
+                controller: assigneeCtrl,
+                style: const TextStyle(color: Colors.white),
+                decoration: const InputDecoration(
+                  isDense: true,
+                  prefixIcon:
+                      Icon(Icons.person_outline_rounded, size: 18, color: Color(0xFF43B97F)),
+                  hintText: '担当者 (任意)',
+                  hintStyle: TextStyle(color: Colors.white38),
                 ),
               ),
               const SizedBox(height: 16),
@@ -76501,6 +77865,7 @@ class _GanttPageViewState extends State<_GanttPageView> {
           endMs: _floorUnit(end).millisecondsSinceEpoch,
           color: task?.color ??
               _palette[_tasks.length % _palette.length].toARGB32(),
+          assignee: assigneeCtrl.text.trim(),
         );
         if (task == null) {
           _tasks.add(newTask);
@@ -76614,9 +77979,14 @@ class _GanttPageViewState extends State<_GanttPageView> {
 
     final isMobile = MediaQuery.of(context).size.width < 600;
 
-    return Container(
+    return Focus(
+      focusNode: _ganttFocus,
+      onKeyEvent: _onGanttKey,
+      child: Container(
       color: const Color(0xFF12121C),
-      child: Column(children: [
+      child: Row(children: [
+        Expanded(
+          child: Column(children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
           child: Row(children: [
@@ -76690,6 +78060,21 @@ class _GanttPageViewState extends State<_GanttPageView> {
                       ? const Color(0xFFFFB347)
                       : Colors.white70),
               onPressed: _showGanttNotifySettings,
+            ),
+            // ── サイド編集メニューの開閉 (= ユーザー要望: 動画エディター風) ──
+            IconButton(
+              tooltip: 'サイドメニュー',
+              visualDensity: VisualDensity.compact,
+              icon: Icon(
+                  _sidePanelOpen
+                      ? Icons.view_sidebar_rounded
+                      : Icons.view_sidebar_outlined,
+                  size: 20,
+                  color: _sidePanelOpen
+                      ? const Color(0xFF4FC3F7)
+                      : Colors.white70),
+              onPressed: () =>
+                  setState(() => _sidePanelOpen = !_sidePanelOpen),
             ),
             const SizedBox(width: 8),
             ElevatedButton.icon(
@@ -76829,12 +78214,46 @@ class _GanttPageViewState extends State<_GanttPageView> {
                                           child: Padding(
                                             padding: const EdgeInsets.only(
                                                 left: 8, right: 4),
-                                            child: Text(t.name,
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: const TextStyle(
-                                                    color: Colors.white,
-                                                    fontSize: 13)),
+                                            child: Column(
+                                              mainAxisAlignment:
+                                                  MainAxisAlignment.center,
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                Text(t.name,
+                                                    maxLines: 1,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                    style: const TextStyle(
+                                                        color: Colors.white,
+                                                        fontSize: 13)),
+                                                if (t.assignee.trim().isNotEmpty)
+                                                  Row(
+                                                      mainAxisSize:
+                                                          MainAxisSize.min,
+                                                      children: [
+                                                        const Icon(
+                                                            Icons
+                                                                .person_rounded,
+                                                            size: 10,
+                                                            color: Color(
+                                                                0xFF43B97F)),
+                                                        const SizedBox(width: 2),
+                                                        Flexible(
+                                                          child: Text(
+                                                              t.assignee.trim(),
+                                                              maxLines: 1,
+                                                              overflow:
+                                                                  TextOverflow
+                                                                      .ellipsis,
+                                                              style: const TextStyle(
+                                                                  color: Color(
+                                                                      0xFF9BE7C4),
+                                                                  fontSize: 10)),
+                                                        ),
+                                                      ]),
+                                              ],
+                                            ),
                                           ),
                                         ),
                                 ),
@@ -76913,6 +78332,159 @@ class _GanttPageViewState extends State<_GanttPageView> {
               ),
             ),
           ),
+          ]),
+        ),
+        if (_sidePanelOpen) _buildGanttSidePanel(),
+      ]),
+      ),
+    );
+  }
+
+  // ── サイド編集メニュー (= ユーザー要望: 動画エディターのようなサイドメニュー) ──
+  //   タスク一覧 + 選択中タスクの編集 (名前/担当者/分割/削除)。
+  Widget _buildGanttSidePanel() {
+    _GanttTask? sel;
+    for (final t in _tasks) {
+      if (t.id == _selectedTaskId) {
+        sel = t;
+        break;
+      }
+    }
+    return Container(
+      width: 260,
+      decoration: const BoxDecoration(
+        color: Color(0xFF181824),
+        border: Border(left: BorderSide(color: Colors.white12)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 12, 8, 8),
+          child: Row(children: [
+            const Icon(Icons.tune_rounded, size: 18, color: Color(0xFF4FC3F7)),
+            const SizedBox(width: 8),
+            const Expanded(
+              child: Text('タスク編集',
+                  style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700)),
+            ),
+            IconButton(
+              tooltip: '閉じる',
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.close, size: 18, color: Colors.white54),
+              onPressed: () => setState(() => _sidePanelOpen = false),
+            ),
+          ]),
+        ),
+        const Divider(color: Colors.white12, height: 1),
+        Expanded(
+          child: ListView(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            children: [
+              for (final t in _tasks)
+                Container(
+                  margin:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: _selectedTaskId == t.id
+                        ? const Color(0xFF4FC3F7).withValues(alpha: 0.18)
+                        : Colors.white.withValues(alpha: 0.04),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                        color: _selectedTaskId == t.id
+                            ? const Color(0xFF4FC3F7)
+                            : Colors.white10),
+                  ),
+                  child: ListTile(
+                    dense: true,
+                    leading: Container(
+                      width: 12,
+                      height: 12,
+                      decoration: BoxDecoration(
+                          color: Color(t.color),
+                          borderRadius: BorderRadius.circular(3)),
+                    ),
+                    title: Text(t.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style:
+                            const TextStyle(color: Colors.white, fontSize: 13)),
+                    subtitle: t.assignee.trim().isEmpty
+                        ? null
+                        : Text(t.assignee.trim(),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                color: Color(0xFF9BE7C4), fontSize: 11)),
+                    onTap: () => _selectTask(t.id),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        const Divider(color: Colors.white12, height: 1),
+        // ── 選択中タスクの操作 ──
+        Padding(
+          padding: const EdgeInsets.all(10),
+          child: sel == null
+              ? const Text('バーをタップして選択すると、ここで編集・分割できます。',
+                  style: TextStyle(color: Colors.white38, fontSize: 11))
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(sel.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700)),
+                    const SizedBox(height: 8),
+                    Row(children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                              foregroundColor: const Color(0xFF4FC3F7),
+                              padding:
+                                  const EdgeInsets.symmetric(vertical: 8)),
+                          onPressed: () => _editTask(sel),
+                          icon: const Icon(Icons.edit_rounded, size: 15),
+                          label: const Text('編集', style: TextStyle(fontSize: 12)),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                              foregroundColor: const Color(0xFFFFB347),
+                              padding:
+                                  const EdgeInsets.symmetric(vertical: 8)),
+                          onPressed: _splitSelectedTask,
+                          icon: const Icon(Icons.call_split_rounded, size: 15),
+                          label:
+                              const Text('分割', style: TextStyle(fontSize: 12)),
+                        ),
+                      ),
+                    ]),
+                    const SizedBox(height: 6),
+                    SizedBox(
+                      width: double.infinity,
+                      child: TextButton.icon(
+                        style: TextButton.styleFrom(
+                            foregroundColor: const Color(0xFFFF6B6B)),
+                        onPressed: _deleteSelectedTask,
+                        icon: const Icon(Icons.delete_outline_rounded, size: 16),
+                        label: const Text('削除', style: TextStyle(fontSize: 12)),
+                      ),
+                    ),
+                    const Text('S キーで分割 / Delete で削除',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Colors.white24, fontSize: 10)),
+                  ],
+                ),
+        ),
       ]),
     );
   }
@@ -88519,6 +90091,19 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
     }
   }
 
+  /// ホーム / 検索 / チャンネル等、動画ではない YouTube 画面をその場で更新。
+  /// 動画用の「直近動画へ戻る」処理とは分け、現在の閲覧位置を維持する。
+  Future<void> _reloadCurrentYoutubePage() async {
+    final c = _c;
+    if (c == null) return;
+    try {
+      if (mounted) setState(() => _loading = true);
+      await c.reload();
+    } catch (e) {
+      debugPrint('YouTube page reload failed: $e');
+    }
+  }
+
   String? _extractVideoId(String url) {
     for (final p in [
       RegExp(r'youtu\.be/([a-zA-Z0-9_-]{11})'),
@@ -88763,9 +90348,16 @@ v.addEventListener('play', function() {
     // ただし UI 非表示ボタンで隠している間 (_uiHiddenCssApplied) は、
     // watch→watch の SPA 遷移で通常経路の _injectStyle() が走っても
     // 剥がさない (= 非表示のまま次の動画へ移っても隠れ続ける)。
+    // ── ページ内コンテンツ(ノード)からの動画は常にフォーカス表示 ──
+    // focusMode==true (= ノードの動画を開いた) 時は、hideEmbedRelated 設定に
+    // 関わらず必ず関連動画/コメント等を隠して動画を中央に配置する
+    // (= ユーザー要望 2026-07)。再生速度/シークバー等のプレイヤー操作は
+    // _focusModeCSS 側で残している。ブラウズ起動 (focusMode:false) は素の
+    // YouTube UI を保ちたいので、その場合のみ従来どおり設定を尊重する。
     try {
       if (!force &&
           !_uiHiddenCssApplied &&
+          !widget.focusMode &&
           !context.read<MindMapProvider>().hideEmbedRelated) {
         await _removeStyle();
         return;
@@ -91298,7 +92890,9 @@ v.addEventListener('play', function() {
           color: Colors.white54,
           icon: const Icon(Icons.refresh_rounded,
               color: Colors.white70, size: 21),
-          onTap: _reloadCurrentVideo,
+          onTap: _currentVideoId == null
+              ? _reloadCurrentYoutubePage
+              : _reloadCurrentVideo,
         );
       case _ytSideCopyUrl:
         return _buildMobileYoutubeRailButton(
@@ -91430,6 +93024,7 @@ v.addEventListener('play', function() {
         _ytSideClose,
         _ytSideHistoryBack,
         _ytSideHistoryForward,
+        _ytSideReload,
         // 非表示ボタンを右端へ置かず、画面上中央付近へ来る順にする。
         _ytSideHideUi,
       ];
@@ -95689,18 +97284,21 @@ class _GroupForegroundPainter extends CustomPainter {
 
 class _MapBackgroundTemplateView extends StatelessWidget {
   final String templateId;
-  const _MapBackgroundTemplateView({required this.templateId});
+  final Offset scrollOffset;
+  const _MapBackgroundTemplateView(
+      {required this.templateId, this.scrollOffset = Offset.zero});
 
   @override
   Widget build(BuildContext context) => CustomPaint(
-        painter: _MapBackgroundTemplatePainter(templateId),
+        painter: _MapBackgroundTemplatePainter(templateId, scrollOffset),
         child: const SizedBox.expand(),
       );
 }
 
 class _MapBackgroundTemplatePainter extends CustomPainter {
   final String templateId;
-  const _MapBackgroundTemplatePainter(this.templateId);
+  final Offset scrollOffset;
+  const _MapBackgroundTemplatePainter(this.templateId, this.scrollOffset);
 
   Rect _rect(Size size) => Offset.zero & size;
 
@@ -95726,6 +97324,62 @@ class _MapBackgroundTemplatePainter extends CustomPainter {
           color.withValues(alpha: 0),
         ]).createShader(bounds),
     );
+  }
+
+  double _wrap(double value, double extent) {
+    if (extent <= 0) return value;
+    final wrapped = value % extent;
+    return wrapped < 0 ? wrapped + extent : wrapped;
+  }
+
+  void _drawSparseStars(Canvas canvas, Size size,
+      {required int count,
+      required double parallax,
+      Color tint = Colors.white}) {
+    final span = size.width + 80;
+    for (var i = 0; i < count; i++) {
+      final baseX = size.width * ((i * 47 + i * i * 13) % 997) / 997;
+      final x = _wrap(baseX - scrollOffset.dx * parallax + 40, span) - 40;
+      final ySeed = ((i * 83 + i * i * 19 + 31) % 991) / 991;
+      final y = size.height * (0.06 + ySeed * 0.66) -
+          scrollOffset.dy * parallax * 0.08;
+      final radius = i % 9 == 0 ? 1.45 : (i % 4 == 0 ? 0.95 : 0.55);
+      final alpha = i % 9 == 0 ? 0.88 : (i % 4 == 0 ? 0.62 : 0.38);
+      canvas.drawCircle(
+          Offset(x, y), radius, Paint()..color = tint.withValues(alpha: alpha));
+      if (i % 13 == 0) {
+        final flare = Paint()
+          ..color = tint.withValues(alpha: 0.22)
+          ..strokeWidth = 0.7;
+        canvas.drawLine(Offset(x - 3, y), Offset(x + 3, y), flare);
+        canvas.drawLine(Offset(x, y - 3), Offset(x, y + 3), flare);
+      }
+    }
+  }
+
+  void _drawMountainLayer(Canvas canvas, Size size,
+      {required double baseY,
+      required double parallax,
+      required Color color,
+      double peakHeight = 0.22}) {
+    final shift = _wrap(scrollOffset.dx * parallax, size.width * 0.7);
+    final path = Path()..moveTo(-size.width - shift, size.height);
+    for (var tile = -2; tile <= 3; tile++) {
+      final left = tile * size.width * 0.7 - shift;
+      path
+        ..lineTo(left, size.height * baseY)
+        ..lineTo(left + size.width * 0.20,
+            size.height * (baseY - peakHeight * 0.55))
+        ..lineTo(left + size.width * 0.36,
+            size.height * (baseY - peakHeight))
+        ..lineTo(left + size.width * 0.54,
+            size.height * (baseY - peakHeight * 0.42))
+        ..lineTo(left + size.width * 0.70, size.height * baseY);
+    }
+    path
+      ..lineTo(size.width * 2, size.height)
+      ..close();
+    canvas.drawPath(path, Paint()..color = color);
   }
 
   @override
@@ -95772,20 +97426,144 @@ class _MapBackgroundTemplatePainter extends CustomPainter {
         return;
       case 'midnight':
         _fillGradient(canvas, size,
-            const [Color(0xFF070B21), Color(0xFF17183C), Color(0xFF24143F)],
+            const [Color(0xFF030817), Color(0xFF0C1833), Color(0xFF18233B)],
             begin: Alignment.topCenter, end: Alignment.bottomCenter);
-        _drawGlow(canvas, Offset(size.width * 0.75, size.height * 0.18),
-            size.shortestSide * 0.28, const Color(0x334D7CFE));
-        for (var i = 0; i < 120; i++) {
-          final x = size.width * ((i * 73) % 101) / 100;
-          final y = size.height * ((i * i * 37 + 17) % 103) / 102;
-          final radius = 0.5 + (i % 4) * 0.35;
-          canvas.drawCircle(
+        final moonX = _wrap(size.width * 0.78 - scrollOffset.dx * 0.018,
+            size.width + 140) - 70;
+        final moon = Offset(moonX, size.height * 0.18);
+        _drawGlow(canvas, moon, size.shortestSide * 0.20,
+            const Color(0x3378A7FF));
+        canvas.drawCircle(moon, size.shortestSide * 0.046,
+            Paint()..color = const Color(0xFFE4ECFF));
+        canvas.drawCircle(
+            moon.translate(size.shortestSide * 0.018,
+                -size.shortestSide * 0.010),
+            size.shortestSide * 0.043,
+            Paint()..color = const Color(0xFF08142B));
+        _drawSparseStars(canvas, size, count: 34, parallax: 0.012);
+        _drawMountainLayer(canvas, size,
+            baseY: 0.83,
+            parallax: 0.025,
+            peakHeight: 0.17,
+            color: const Color(0xFF17233A).withValues(alpha: 0.92));
+        _drawMountainLayer(canvas, size,
+            baseY: 0.94,
+            parallax: 0.055,
+            peakHeight: 0.25,
+            color: const Color(0xFF080E1E));
+        return;
+      case 'nightSky':
+        _fillGradient(canvas, size,
+            const [Color(0xFF07152E), Color(0xFF183C61), Color(0xFF496B82)],
+            begin: Alignment.topCenter, end: Alignment.bottomCenter);
+        final moonX = _wrap(size.width * 0.22 - scrollOffset.dx * 0.02,
+            size.width + 120) - 60;
+        _drawGlow(canvas, Offset(moonX, size.height * 0.20),
+            size.shortestSide * 0.18, const Color(0x44B6D8FF));
+        canvas.drawCircle(
+            Offset(moonX, size.height * 0.20),
+            size.shortestSide * 0.042,
+            Paint()..color = const Color(0xFFF0F5FF));
+        _drawSparseStars(canvas, size, count: 26, parallax: 0.016);
+        _drawMountainLayer(canvas, size,
+            baseY: 0.87,
+            parallax: 0.035,
+            peakHeight: 0.18,
+            color: const Color(0xFF20394A));
+        _drawMountainLayer(canvas, size,
+            baseY: 0.97,
+            parallax: 0.07,
+            peakHeight: 0.20,
+            color: const Color(0xFF10242B));
+        return;
+      case 'galaxy':
+        _fillGradient(canvas, size,
+            const [Color(0xFF050616), Color(0xFF171034), Color(0xFF07162A)]);
+        final bandShift = scrollOffset.dx * 0.025;
+        final band = Path()
+          ..moveTo(-size.width * 0.25 - bandShift, size.height * 0.88)
+          ..cubicTo(
+              size.width * 0.18 - bandShift,
+              size.height * 0.52,
+              size.width * 0.58 - bandShift,
+              size.height * 0.47,
+              size.width * 1.25 - bandShift,
+              size.height * 0.06);
+        canvas.drawPath(
+            band,
+            Paint()
+              ..color = const Color(0xFF8E67C7).withValues(alpha: 0.18)
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = size.shortestSide * 0.23
+              ..strokeCap = StrokeCap.round
+              ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 28));
+        _drawGlow(
+            canvas,
+            Offset(_wrap(size.width * 0.66 - scrollOffset.dx * 0.032,
+                size.width + 180), size.height * 0.38),
+            size.shortestSide * 0.30,
+            const Color(0x446F8EFF));
+        _drawSparseStars(canvas, size,
+            count: 48, parallax: 0.022, tint: const Color(0xFFE8E1FF));
+        return;
+      case 'rain':
+        _fillGradient(canvas, size,
+            const [Color(0xFF152533), Color(0xFF344D5A), Color(0xFF73878A)],
+            begin: Alignment.topCenter, end: Alignment.bottomCenter);
+        for (var i = 0; i < 46; i++) {
+          final x = _wrap(size.width * ((i * 61) % 101) / 100 -
+              scrollOffset.dx * 0.05, size.width + 50) - 25;
+          final y = size.height * ((i * 37 + 11) % 97) / 96;
+          final length = 8.0 + (i % 5) * 2.5;
+          canvas.drawLine(
               Offset(x, y),
-              radius,
+              Offset(x - length * 0.28, y + length),
               Paint()
-                ..color =
-                    Colors.white.withValues(alpha: 0.28 + (i % 5) * 0.12));
+                ..color = const Color(0xFFB9E2F4)
+                    .withValues(alpha: i % 3 == 0 ? 0.34 : 0.19)
+                ..strokeWidth = i % 4 == 0 ? 1.2 : 0.75
+                ..strokeCap = StrokeCap.round);
+        }
+        _drawMountainLayer(canvas, size,
+            baseY: 0.94,
+            parallax: 0.06,
+            peakHeight: 0.14,
+            color: const Color(0xFF263C42).withValues(alpha: 0.88));
+        return;
+      case 'nature':
+        _fillGradient(canvas, size,
+            const [Color(0xFF79B9D5), Color(0xFFB9D8C1), Color(0xFFE7D59D)],
+            begin: Alignment.topCenter, end: Alignment.bottomCenter);
+        final sunX = _wrap(size.width * 0.78 - scrollOffset.dx * 0.012,
+            size.width + 160) - 80;
+        _drawGlow(canvas, Offset(sunX, size.height * 0.22),
+            size.shortestSide * 0.22, const Color(0x66FFF0A8));
+        canvas.drawCircle(Offset(sunX, size.height * 0.22),
+            size.shortestSide * 0.045, Paint()..color = const Color(0xFFFFE7A3));
+        _drawMountainLayer(canvas, size,
+            baseY: 0.82,
+            parallax: 0.025,
+            peakHeight: 0.20,
+            color: const Color(0xFF789B82).withValues(alpha: 0.72));
+        _drawMountainLayer(canvas, size,
+            baseY: 0.94,
+            parallax: 0.06,
+            peakHeight: 0.22,
+            color: const Color(0xFF315F45));
+        final treePaint = Paint()..color = const Color(0xFF173C2D);
+        for (var i = 0; i < 10; i++) {
+          final x = _wrap(i * size.width * 0.16 - scrollOffset.dx * 0.10,
+              size.width + 100) - 50;
+          final h = size.height * (0.08 + (i % 3) * 0.018);
+          final base = size.height;
+          canvas.drawRect(Rect.fromLTWH(x - 1.5, base - h * 0.45, 3, h * 0.45),
+              treePaint);
+          final crown = Path()
+            ..moveTo(x, base - h)
+            ..lineTo(x - h * 0.24, base - h * 0.28)
+            ..lineTo(x + h * 0.24, base - h * 0.28)
+            ..close();
+          canvas.drawPath(crown, treePaint);
         }
         return;
       case 'sage':
@@ -95846,7 +97624,8 @@ class _MapBackgroundTemplatePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_MapBackgroundTemplatePainter oldDelegate) =>
-      oldDelegate.templateId != templateId;
+      oldDelegate.templateId != templateId ||
+      oldDelegate.scrollOffset != scrollOffset;
 }
 
 class _GridPainter extends CustomPainter {
@@ -104814,6 +106593,64 @@ class _AlarmEntry {
       );
 }
 
+/// ユーザーが手動登録する定期支払い。アプリ自身の課金契約とは独立した管理用。
+class _ManagedSubscription {
+  final String id;
+  String name;
+  double amount;
+  String currency;
+  String cycle; // monthly / yearly
+  int billingDay;
+  int billingMonth;
+  int notifyDaysBefore;
+  bool enabled;
+
+  _ManagedSubscription({
+    required this.id,
+    required this.name,
+    required this.amount,
+    this.currency = '¥',
+    this.cycle = 'monthly',
+    this.billingDay = 1,
+    this.billingMonth = 1,
+    this.notifyDaysBefore = 3,
+    this.enabled = true,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'amount': amount,
+        'currency': currency,
+        'cycle': cycle,
+        'billingDay': billingDay,
+        'billingMonth': billingMonth,
+        'notifyDaysBefore': notifyDaysBefore,
+        'enabled': enabled,
+      };
+
+  factory _ManagedSubscription.fromJson(Map<String, dynamic> json) =>
+      _ManagedSubscription(
+        id: (json['id'] ?? DateTime.now().microsecondsSinceEpoch).toString(),
+        name: (json['name'] ?? '').toString(),
+        amount: (json['amount'] as num?)?.toDouble() ?? 0,
+        currency: (json['currency'] ?? '¥').toString(),
+        cycle: json['cycle'] == 'yearly' ? 'yearly' : 'monthly',
+        billingDay: ((json['billingDay'] as num?)?.toInt() ?? 1)
+            .clamp(1, 31)
+            .toInt(),
+        billingMonth:
+            ((json['billingMonth'] as num?)?.toInt() ?? 1)
+                .clamp(1, 12)
+                .toInt(),
+        notifyDaysBefore:
+            ((json['notifyDaysBefore'] as num?)?.toInt() ?? 3)
+                .clamp(0, 365)
+                .toInt(),
+        enabled: json['enabled'] as bool? ?? true,
+      );
+}
+
 // なお audioplayers は 1 つの AudioPlayer インスタンスで同時に 1 音しか
 // 鳴らせないため、両方が同時に鳴るシナリオでも `_player` を共用する。
 // 上書き再生 (stop して新規再生) で動作させる。
@@ -108593,26 +110430,28 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
       return;
     }
     setState(() => _taskUnlockConfirmationOpen = true);
-    final confirmed = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) => PopScope(
-        canPop: false,
-        child: AlertDialog(
-          title: Text(widget.provider.t('focusLock.taskUnlockConfirmTitle')),
-          content: Text(widget.provider.t('focusLock.taskUnlockConfirmBody')),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(false),
-              child: Text(widget.provider.t('focusLock.cancel')),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(dialogContext).pop(true),
-              child: Text(
-                  widget.provider.t('focusLock.taskUnlockConfirmAction')),
-            ),
-          ],
-        ),
+    // ロック用オーバーレイは root オーバーレイへ直接 insert しているため、
+    // 通常の showDialog はロック画面の *背面* に描画されて操作できない
+    // (= 全タスク完了しても解除ボタンが押せない不具合の原因)。
+    // ロック画面より前面に出る _showLockFrontDialog を必ず使う。
+    final confirmed = await _showLockFrontDialog<bool>(
+      (dialogContext, close) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Text(widget.provider.t('focusLock.taskUnlockConfirmTitle'),
+            style: const TextStyle(color: Colors.white, fontSize: 16)),
+        content: Text(widget.provider.t('focusLock.taskUnlockConfirmBody'),
+            style: const TextStyle(color: Colors.white70)),
+        actions: [
+          TextButton(
+            onPressed: () => close(false),
+            child: Text(widget.provider.t('focusLock.cancel')),
+          ),
+          FilledButton(
+            onPressed: () => close(true),
+            child:
+                Text(widget.provider.t('focusLock.taskUnlockConfirmAction')),
+          ),
+        ],
       ),
     );
     if (!mounted) return;
@@ -108630,6 +110469,51 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
     HapticFeedback.heavyImpact();
     _AudioAlarm.playAlarm(_AudioAlarm.prefKeyPomodoro);
     widget.onClose();
+  }
+
+  /// ロック画面からタスクを追加する (= ユーザー要望: ロック中でも
+  /// 集中タスクを増やせる)。前面ダイアログでタイトルを入力させる。
+  Future<void> _addFocusTaskFromLock() async {
+    if (_finished || !widget.taskMode) return;
+    final ctrl = TextEditingController();
+    final title = await _showLockFrontDialog<String>(
+      (dialogContext, close) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: const Text('タスクを追加',
+            style: TextStyle(color: Colors.white, fontSize: 16)),
+        content: SizedBox(
+          width: 340,
+          child: TextField(
+            controller: ctrl,
+            autofocus: true,
+            style: const TextStyle(color: Colors.white),
+            textInputAction: TextInputAction.done,
+            onSubmitted: (v) => close(v),
+            decoration: const InputDecoration(
+              hintText: 'やることを入力…',
+              hintStyle: TextStyle(color: Colors.white38),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => close(null),
+            child: Text(widget.provider.t('focusLock.cancel')),
+          ),
+          FilledButton(
+            onPressed: () => close(ctrl.text),
+            child: const Text('追加'),
+          ),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    final trimmed = (title ?? '').trim();
+    if (trimmed.isEmpty) return;
+    await widget.provider.addFocusLockTask(trimmed);
+    if (!mounted) return;
+    // タスクが増えたので完了状態が崩れる → 解除ボタンは自動的に隠れる。
+    setState(() {});
   }
 
   /// 緊急解除 (時間前に閉じる)。予約通知もキャンセル。
@@ -110043,15 +111927,31 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
                 child: Text('メモは端末内に自動保存されます',
                     style: TextStyle(color: Colors.white38, fontSize: 11)),
               ),
-              TextButton(
+              // ── 「保存」→「ページに送る」に変更 (= ユーザー要望) ──
+              // メモは自動保存されるので、明示ボタンは現在ページへ 1 ノード
+              // として送る役割にする。送った後もメモ本文は残す。
+              TextButton.icon(
                 onPressed: () async {
+                  final text = _lockMemoCtrl.text.trim();
+                  if (text.isEmpty) {
+                    _appSnack(context,
+                        const SnackBar(content: Text('送るメモがありません')));
+                    return;
+                  }
                   await _saveLockMemoNow();
+                  widget.provider.addMemoNodeToCurrentPage(text);
                   if (!mounted) return;
-                  _appSnack(
-                      context, const SnackBar(content: Text('メモを保存しました')));
+                  _appSnack(context,
+                      const SnackBar(content: Text('メモをページに送りました')));
                 },
-                child:
-                    const Text('保存', style: TextStyle(color: Colors.white70)),
+                style: TextButton.styleFrom(
+                  foregroundColor: Colors.white70,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  minimumSize: const Size(0, 32),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                icon: const Icon(Icons.send_rounded, size: 15),
+                label: const Text('ページに送る'),
               ),
             ],
           ),
@@ -110158,6 +112058,22 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
                     _setFocusTaskCompleted(task, value ?? false),
               ),
           const SizedBox(height: 4),
+          // ── ロック中でもタスクを追加できる (= ユーザー要望) ──
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: _addFocusTaskFromLock,
+              style: TextButton.styleFrom(
+                foregroundColor: const Color(0xFF43B97F),
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                minimumSize: const Size(0, 32),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              icon: const Icon(Icons.add_rounded, size: 18),
+              label: const Text('タスクを追加', style: TextStyle(fontSize: 12)),
+            ),
+          ),
+          const SizedBox(height: 2),
           Text(p.t('focusLock.taskUnlockHint'),
               textAlign: TextAlign.center,
               style: const TextStyle(color: Colors.white38, fontSize: 11)),
@@ -146269,6 +148185,13 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
       return KeyEventResult.ignored;
     }
     final cur = _selectedIdx;
+    if ((event.logicalKey == LogicalKeyboardKey.delete ||
+            event.logicalKey == LogicalKeyboardKey.backspace) &&
+        cur != null) {
+      _deleteBlock(cur);
+      _docxFocusNode.requestFocus();
+      return KeyEventResult.handled;
+    }
     if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
       _moveSelection(-1);
       return KeyEventResult.handled;
@@ -147224,6 +149147,16 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
             }
             final sel = _editCtrl.selection;
             final textLen = _editCtrl.text.length;
+            // 新規作成直後の空段落 (= Word 上の新規テキストボックス相当) は
+            // 編集フォーカスが残っていても Backspace / Delete で削除できる。
+            if ((event.logicalKey == LogicalKeyboardKey.delete ||
+                    event.logicalKey == LogicalKeyboardKey.backspace) &&
+                _editCtrl.text.isEmpty) {
+              _commitEdit();
+              _deleteBlock(idx);
+              _docxFocusNode.requestFocus();
+              return KeyEventResult.handled;
+            }
             // ↑ + カーソル先頭 → 前の段落へジャンプ
             if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
               if (sel.isCollapsed && sel.baseOffset == 0 && idx > 0) {

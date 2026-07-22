@@ -503,6 +503,8 @@ List<AnchorDirection> anchorsForMode(NodeAnchorMode mode) {
 
 /// 2ノード間の接続情報
 class NodeConnection {
+  /// nullable 値を copyWith で「変更しない」と明示するための公開センチネル。
+  static const Object noChange = Object();
   final String fromId;
   final AnchorDirection fromAnchor;
   final String toId;
@@ -544,6 +546,17 @@ class NodeConnection {
   /// 接続線の中央に表示するラベル文字列。 null or 空文字なら非表示。
   final String? label;
 
+  /// ラベルを接続線上のどこに表示するか。0.0 = 始点、1.0 = 終点。
+  final double labelPosition;
+
+  /// 接続線の個別色。null は接続先ノード色を使う従来動作。
+  final int? lineColorValue;
+
+  /// 接続の意味。`parentChild` は from が親、to が子、`association` は関連線。
+  final String relationshipType;
+
+  bool get isParentChild => relationshipType == 'parentChild';
+
   const NodeConnection({
     required this.fromId,
     required this.fromAnchor,
@@ -554,6 +567,9 @@ class NodeConnection {
     this.arrowHeadScale = 0.5,
     this.bidirectional = false,
     this.label,
+    this.labelPosition = 0.5,
+    this.lineColorValue,
+    this.relationshipType = 'parentChild',
     this.lineStyle,
     this.elbowSplitRatio = 0.5,
     this.elbowPointCount = 2,
@@ -575,6 +591,9 @@ class NodeConnection {
     bool? bidirectional,
     String? label,
     bool clearLabel = false,
+    double? labelPosition,
+    Object? lineColorValue = noChange,
+    String? relationshipType,
     String? lineStyle,
     double? elbowSplitRatio,
     int? elbowPointCount,
@@ -595,6 +614,16 @@ class NodeConnection {
       arrowHeadScale: arrowHeadScale ?? this.arrowHeadScale,
       bidirectional: bidirectional ?? this.bidirectional,
       label: clearLabel ? null : (label ?? this.label),
+      labelPosition:
+          (labelPosition ?? this.labelPosition).clamp(0.02, 0.98).toDouble(),
+      lineColorValue: identical(lineColorValue, noChange)
+          ? this.lineColorValue
+          : lineColorValue as int?,
+      relationshipType: relationshipType == 'association'
+          ? 'association'
+          : (relationshipType == 'parentChild'
+              ? 'parentChild'
+              : this.relationshipType),
       lineStyle: lineStyle ?? this.lineStyle,
       elbowSplitRatio:
           (elbowSplitRatio ?? this.elbowSplitRatio).clamp(0.1, 0.9).toDouble(),
@@ -629,6 +658,10 @@ class NodeConnection {
         'arrowHeadScale': arrowHeadScale,
         if (bidirectional) 'bidirectional': bidirectional,
         if (label != null && label!.isNotEmpty) 'label': label,
+        if (labelPosition != 0.5) 'labelPosition': labelPosition,
+        if (lineColorValue != null) 'lineColorValue': lineColorValue,
+        if (relationshipType != 'parentChild')
+          'relationshipType': relationshipType,
         if (lineStyle != null && lineStyle!.isNotEmpty) 'lineStyle': lineStyle,
         if (elbowSplitRatio != 0.5) 'elbowSplitRatio': elbowSplitRatio,
         if (elbowPointCount != 2) 'elbowPointCount': elbowPointCount,
@@ -663,6 +696,12 @@ class NodeConnection {
       arrowHeadScale: (json['arrowHeadScale'] as num?)?.toDouble() ?? 1.0,
       bidirectional: json['bidirectional'] as bool? ?? false,
       label: json['label'] as String?,
+      labelPosition: ((json['labelPosition'] as num?)?.toDouble() ?? 0.5)
+          .clamp(0.02, 0.98)
+          .toDouble(),
+      lineColorValue: (json['lineColorValue'] as num?)?.toInt(),
+      relationshipType:
+          json['relationshipType'] == 'association' ? 'association' : 'parentChild',
       lineStyle: json['lineStyle'] as String?,
       elbowSplitRatio:
           ((json['elbowSplitRatio'] as num?)?.toDouble() ?? 0.5)

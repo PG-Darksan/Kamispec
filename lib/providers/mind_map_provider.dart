@@ -431,6 +431,9 @@ enum MapDecorationKind {
 
 /// マインドマップに配置される装飾図形 1 個分のデータ。
 class MapDecoration {
+  /// nullable の端子情報を [copyWith] で明示的に解除するためのセンチネル。
+  static const Object noChange = Object();
+
   /// 一意 ID。 削除や編集の対象を特定するため。
   final String id;
 
@@ -442,6 +445,13 @@ class MapDecoration {
 
   /// 終了点 (= マップ座標系)。
   Offset end;
+
+  /// 直線 / 矢印の端点をノード端子へ接続している場合の参照。
+  /// 座標だけでなくノード ID と方向を保存するため、ノード移動後も追従する。
+  String? startNodeId;
+  AnchorDirection? startNodeAnchor;
+  String? endNodeId;
+  AnchorDirection? endNodeAnchor;
 
   /// 色 (RGB 24bit 値、 例: 0xFF0000 = 赤)。 描画時に 0xFF000000 と OR する。
   int colorRgb;
@@ -463,6 +473,10 @@ class MapDecoration {
     required this.kind,
     required this.start,
     required this.end,
+    this.startNodeId,
+    this.startNodeAnchor,
+    this.endNodeId,
+    this.endNodeAnchor,
     this.colorRgb = 0x222222,
     this.strokeWidth = 2.5,
     this.text = '',
@@ -477,6 +491,10 @@ class MapDecoration {
         'startY': start.dy,
         'endX': end.dx,
         'endY': end.dy,
+        'startNodeId': startNodeId,
+        'startNodeAnchor': startNodeAnchor?.name,
+        'endNodeId': endNodeId,
+        'endNodeAnchor': endNodeAnchor?.name,
         'colorRgb': colorRgb,
         'strokeWidth': strokeWidth,
         'text': text,
@@ -495,6 +513,10 @@ class MapDecoration {
           (json['startY'] as num?)?.toDouble() ?? 0),
       end: Offset((json['endX'] as num?)?.toDouble() ?? 0,
           (json['endY'] as num?)?.toDouble() ?? 0),
+      startNodeId: json['startNodeId'] as String?,
+      startNodeAnchor: _anchorFromName(json['startNodeAnchor'] as String?),
+      endNodeId: json['endNodeId'] as String?,
+      endNodeAnchor: _anchorFromName(json['endNodeAnchor'] as String?),
       colorRgb: (json['colorRgb'] as num?)?.toInt() ?? 0x222222,
       strokeWidth: (json['strokeWidth'] as num?)?.toDouble() ?? 2.5,
       text: json['text'] as String? ?? '',
@@ -507,6 +529,10 @@ class MapDecoration {
     MapDecorationKind? kind,
     Offset? start,
     Offset? end,
+    Object? startNodeId = noChange,
+    Object? startNodeAnchor = noChange,
+    Object? endNodeId = noChange,
+    Object? endNodeAnchor = noChange,
     int? colorRgb,
     double? strokeWidth,
     String? text,
@@ -518,12 +544,31 @@ class MapDecoration {
       kind: kind ?? this.kind,
       start: start ?? this.start,
       end: end ?? this.end,
+      startNodeId: identical(startNodeId, noChange)
+          ? this.startNodeId
+          : startNodeId as String?,
+      startNodeAnchor: identical(startNodeAnchor, noChange)
+          ? this.startNodeAnchor
+          : startNodeAnchor as AnchorDirection?,
+      endNodeId:
+          identical(endNodeId, noChange) ? this.endNodeId : endNodeId as String?,
+      endNodeAnchor: identical(endNodeAnchor, noChange)
+          ? this.endNodeAnchor
+          : endNodeAnchor as AnchorDirection?,
       colorRgb: colorRgb ?? this.colorRgb,
       strokeWidth: strokeWidth ?? this.strokeWidth,
       text: text ?? this.text,
       textAnchorX: textAnchorX ?? this.textAnchorX,
       textAnchorY: textAnchorY ?? this.textAnchorY,
     );
+  }
+
+  static AnchorDirection? _anchorFromName(String? value) {
+    if (value == null) return null;
+    for (final anchor in AnchorDirection.values) {
+      if (anchor.name == value) return anchor;
+    }
+    return null;
   }
 }
 
@@ -8110,6 +8155,50 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Meia-noite',
       'ru': 'Полночь',
     },
+    'bg.template.nightSky': {
+      'ja': '夜空',
+      'en': 'Night sky',
+      'zh': '夜空',
+      'ko': '밤하늘',
+      'es': 'Cielo nocturno',
+      'fr': 'Ciel nocturne',
+      'de': 'Nachthimmel',
+      'pt': 'Céu noturno',
+      'ru': 'Ночное небо',
+    },
+    'bg.template.galaxy': {
+      'ja': '銀河',
+      'en': 'Galaxy',
+      'zh': '银河',
+      'ko': '은하',
+      'es': 'Galaxia',
+      'fr': 'Galaxie',
+      'de': 'Galaxie',
+      'pt': 'Galáxia',
+      'ru': 'Галактика',
+    },
+    'bg.template.rain': {
+      'ja': '雨',
+      'en': 'Rain',
+      'zh': '雨',
+      'ko': '비',
+      'es': 'Lluvia',
+      'fr': 'Pluie',
+      'de': 'Regen',
+      'pt': 'Chuva',
+      'ru': 'Дождь',
+    },
+    'bg.template.nature': {
+      'ja': '自然',
+      'en': 'Nature',
+      'zh': '自然',
+      'ko': '자연',
+      'es': 'Naturaleza',
+      'fr': 'Nature',
+      'de': 'Natur',
+      'pt': 'Natureza',
+      'ru': 'Природа',
+    },
     'bg.template.sage': {
       'ja': 'セージ',
       'en': 'Sage',
@@ -9101,6 +9190,17 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Alarm',
       'pt': 'Alarme',
       'ru': 'Будильник',
+    },
+    'hdr.subscriptionManager': {
+      'ja': 'サブスク管理',
+      'en': 'Subscriptions',
+      'zh': '订阅管理',
+      'ko': '구독 관리',
+      'es': 'Suscripciones',
+      'fr': 'Abonnements',
+      'de': 'Abonnements',
+      'pt': 'Assinaturas',
+      'ru': 'Подписки',
     },
     'hdr.silentCamera': {
       'ja': '無音カメラ',
@@ -37167,6 +37267,11 @@ class MindMapProvider extends ChangeNotifier {
             .toDouble();
     _connectionBidirectional =
         prefs.getBool('connectionBidirectional') ?? false;
+    _connectionLineColorValue = prefs.getInt('connectionLineColorValue');
+    _connectionRelationshipType =
+        prefs.getString('connectionRelationshipType') == 'association'
+            ? 'association'
+            : 'parentChild';
     // 画像貼り付けスケール (%): 0 = OFF / 1〜100 = 画像 × (% / 100)
     // 旧キー `pasteImageOriginalSize` (bool) があれば true→100, false→0 で
     // マイグレーション (= 旧バージョンユーザーの設定が壊れないように)。
@@ -37576,6 +37681,27 @@ class MindMapProvider extends ChangeNotifier {
       applyV4Defaults(_customHeaderButtons);
       applyV4Defaults(_galleryHeaderButtons);
       prefs.setBool('mig_header_default_buttons_v4', true);
+      prefs.setString('customHeaderButtons', jsonEncode(_customHeaderButtons));
+      prefs.setString(
+          'galleryHeaderButtons', jsonEncode(_galleryHeaderButtons));
+    }
+    // ── 範囲選択を通常ヘッダーの既定に追加 (= ユーザー要望) ──
+    // defaultHeaderButtons には rangeSelect が入っているが、既存ユーザーが
+    // 保存済みの customHeaderButtons には無いことがあるため、一度だけ補う。
+    // 以降の削除・並び替えはこのフラグで尊重する。ギャラリー側は別移行
+    // (mig_gallery_range_select_header_v1) 済みだが、念のため両方確認する。
+    if (prefs.getBool('mig_header_range_select_v1') != true) {
+      void ensureRangeSelect(List<String> buttons) {
+        if (buttons.contains('rangeSelect')) return;
+        final anchor = buttons.contains('mapMemo')
+            ? buttons.indexOf('mapMemo') + 1
+            : (buttons.contains('addNode') ? buttons.indexOf('addNode') + 1 : 0);
+        buttons.insert(anchor.clamp(0, buttons.length).toInt(), 'rangeSelect');
+      }
+
+      ensureRangeSelect(_customHeaderButtons);
+      ensureRangeSelect(_galleryHeaderButtons);
+      prefs.setBool('mig_header_range_select_v1', true);
       prefs.setString('customHeaderButtons', jsonEncode(_customHeaderButtons));
       prefs.setString(
           'galleryHeaderButtons', jsonEncode(_galleryHeaderButtons));
@@ -38527,6 +38653,10 @@ class MindMapProvider extends ChangeNotifier {
   double get connectionArrowHeadScale => _connectionArrowHeadScale;
   bool _connectionBidirectional = false;
   bool get connectionBidirectional => _connectionBidirectional;
+  int? _connectionLineColorValue;
+  int? get connectionLineColorValue => _connectionLineColorValue;
+  String _connectionRelationshipType = 'parentChild';
+  String get connectionRelationshipType => _connectionRelationshipType;
   Future<void> setConnectionLineStyle(String v) async {
     if (!{'curve', 'straight', 'elbow'}.contains(v)) return;
     _connectionLineStyle = v;
@@ -42805,6 +42935,8 @@ class MindMapProvider extends ChangeNotifier {
     _connectionShowArrow = conn.showArrow;
     _connectionArrowHeadScale = conn.arrowHeadScale.clamp(0.5, 3.0).toDouble();
     _connectionBidirectional = conn.bidirectional;
+    _connectionLineColorValue = conn.lineColorValue;
+    _connectionRelationshipType = conn.relationshipType;
     try {
       final prefs = await _prefsWithRetry();
       await prefs.setString('connectionLineStyle', _connectionLineStyle);
@@ -42817,6 +42949,14 @@ class MindMapProvider extends ChangeNotifier {
       await prefs.setDouble(
           'connectionArrowHeadScale', _connectionArrowHeadScale);
       await prefs.setBool('connectionBidirectional', _connectionBidirectional);
+      if (_connectionLineColorValue == null) {
+        await prefs.remove('connectionLineColorValue');
+      } else {
+        await prefs.setInt(
+            'connectionLineColorValue', _connectionLineColorValue!);
+      }
+      await prefs.setString(
+          'connectionRelationshipType', _connectionRelationshipType);
     } catch (_) {}
     notifyListeners();
   }
@@ -42842,6 +42982,8 @@ class MindMapProvider extends ChangeNotifier {
         arrowHeadScale: arrowHeadScale ?? _connectionArrowHeadScale,
         bidirectional: bidirectional ?? _connectionBidirectional,
         label: label,
+        lineColorValue: _connectionLineColorValue,
+        relationshipType: _connectionRelationshipType,
         lineStyle: _connectionLineStyle,
         elbowSplitRatio: _connectionElbowSplitRatio,
         elbowPointCount: _connectionElbowPointCount,
@@ -46945,6 +47087,31 @@ $cleanQ
     notifyListeners();
   }
 
+  /// 装飾線の片端をノード端子へ接続、または端子から解除する。
+  /// ドラッグ中に使うため undo / 保存はここでは行わず、呼び出し側が
+  /// [beginDecorationDrag] / [endDecorationDrag] で操作全体をまとめる。
+  void setDecorationEndpointAttachment(
+    String id, {
+    required bool isStart,
+    String? nodeId,
+    AnchorDirection? anchor,
+    Offset? point,
+  }) {
+    final idx = currentPage.decorations.indexWhere((d) => d.id == id);
+    if (idx < 0) return;
+    final d = currentPage.decorations[idx];
+    if (isStart) {
+      if (point != null) d.start = point;
+      d.startNodeId = nodeId;
+      d.startNodeAnchor = anchor;
+    } else {
+      if (point != null) d.end = point;
+      d.endNodeId = nodeId;
+      d.endNodeAnchor = anchor;
+    }
+    notifyListeners();
+  }
+
   /// ハンドルドラッグ終了: 1 度だけ保存。
   void endDecorationDrag() {
     currentPage.lastModifiedAt = DateTime.now();
@@ -50930,6 +51097,21 @@ $cleanQ
     return newNode;
   }
 
+  /// 集中ロック画面の「ページに送る」用: 現在ページへメモを 1 ノードとして追加する。
+  /// ギャラリー(本棚)ページではタイルとして、通常ページでは中央付近に置く。
+  /// (= ユーザー要望: ロック中に書いたメモをそのままページへ送れるようにする)
+  void addMemoNodeToCurrentPage(String text) {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return;
+    if (currentPage.pageType == 'bookshelf') {
+      addTextNoteToBookshelf(trimmed);
+      return;
+    }
+    // 中央付近(20000px キャンバスの中心)へ、重なりを避けて配置する。
+    final node = addNodeAtCenterReturning(const Offset(10000, 10000));
+    updateNodeMemo(node.id, trimmed);
+  }
+
   /// 音声入力で得たタイトル群から複数ノードを一括生成する (1 つの undo)。
   /// `center` 付近に縦に積んで配置する。 戻り値は生成したノード ID 一覧。
   ///
@@ -52196,6 +52378,18 @@ $cleanQ
         fromAnchor: fromDir,
         toId: conn.toId,
         toAnchor: toDir,
+        strokeWidth: conn.strokeWidth,
+        showArrow: conn.showArrow,
+        arrowHeadScale: conn.arrowHeadScale,
+        bidirectional: conn.bidirectional,
+        label: conn.label,
+        labelPosition: conn.labelPosition,
+        lineColorValue: conn.lineColorValue,
+        relationshipType: conn.relationshipType,
+        lineStyle: conn.lineStyle,
+        elbowSplitRatio: conn.elbowSplitRatio,
+        elbowPointCount: conn.elbowPointCount,
+        elbowBendPoints: conn.elbowBendPoints,
       ));
     }
 
@@ -52716,6 +52910,9 @@ $cleanQ
     bool? bidirectional,
     String? label,
     bool clearLabel = false,
+    double? labelPosition,
+    Object? lineColorValue = NodeConnection.noChange,
+    String? relationshipType,
     String? lineStyle,
     double? elbowSplitRatio,
     int? elbowPointCount,
@@ -52737,6 +52934,9 @@ $cleanQ
         bidirectional: bidirectional,
         label: label,
         clearLabel: clearLabel,
+        labelPosition: labelPosition,
+        lineColorValue: lineColorValue,
+        relationshipType: relationshipType,
         lineStyle: lineStyle,
         elbowSplitRatio: elbowSplitRatio,
         elbowPointCount: elbowPointCount,
@@ -52754,6 +52954,22 @@ $cleanQ
   void updateConnectionBendPoints(NodeConnection target, List<Offset> points) {
     updateConnections([target], elbowBendPoints: List<Offset>.from(points));
   }
+
+  void updateConnectionLabelPosition(NodeConnection target, double position) {
+    updateConnections([target], labelPosition: position);
+  }
+
+  /// 明示的に「親→子」として設定された接続だけを使う関係判定。
+  bool isParentOf(String parentId, String childId) => currentPage.connections
+      .any((c) => c.isParentChild && c.fromId == parentId && c.toId == childId);
+
+  Iterable<String> childNodeIdsOf(String parentId) => currentPage.connections
+      .where((c) => c.isParentChild && c.fromId == parentId)
+      .map((c) => c.toId);
+
+  Iterable<String> parentNodeIdsOf(String childId) => currentPage.connections
+      .where((c) => c.isParentChild && c.toId == childId)
+      .map((c) => c.fromId);
 
   /// 接続の方向を反転（A→B を B→A に）
   void reverseConnection(String fromId, String toId) {
@@ -58646,9 +58862,24 @@ $example
     for (var i = 0; i < list.length; i++) {
       final d = list[i];
       if (!ids.contains(d.id)) continue;
+      final startNode = d.startNodeId == null
+          ? null
+          : currentPage.nodes[d.startNodeId!];
+      final endNode =
+          d.endNodeId == null ? null : currentPage.nodes[d.endNodeId!];
+      final resolvedStart = startNode != null && d.startNodeAnchor != null
+          ? startNode.anchorPoint(d.startNodeAnchor!)
+          : d.start;
+      final resolvedEnd = endNode != null && d.endNodeAnchor != null
+          ? endNode.anchorPoint(d.endNodeAnchor!)
+          : d.end;
       list[i] = d.copyWith(
-        start: d.start + delta,
-        end: d.end + delta,
+        start: resolvedStart + delta,
+        end: resolvedEnd + delta,
+        startNodeId: null,
+        startNodeAnchor: null,
+        endNodeId: null,
+        endNodeAnchor: null,
       );
     }
     currentPage.lastModifiedAt = DateTime.now();
@@ -58767,6 +58998,18 @@ $example
           fromAnchor: conn.fromAnchor,
           toId: idMap[conn.toId]!,
           toAnchor: conn.toAnchor,
+          strokeWidth: conn.strokeWidth,
+          showArrow: conn.showArrow,
+          arrowHeadScale: conn.arrowHeadScale,
+          bidirectional: conn.bidirectional,
+          label: conn.label,
+          labelPosition: conn.labelPosition,
+          lineColorValue: conn.lineColorValue,
+          relationshipType: conn.relationshipType,
+          lineStyle: conn.lineStyle,
+          elbowSplitRatio: conn.elbowSplitRatio,
+          elbowPointCount: conn.elbowPointCount,
+          elbowBendPoints: conn.elbowBendPoints,
         ));
       }
     }
@@ -59103,11 +59346,21 @@ $example
       }
       // 装飾図形をクローン (オフセット + 新 ID)。
       for (final d in page.decorations) {
+        final remappedStartNodeId = d.startNodeId == null
+            ? null
+            : idMap[d.startNodeId!];
+        final remappedEndNodeId =
+            d.endNodeId == null ? null : idMap[d.endNodeId!];
         merged.decorations.add(MapDecoration(
           id: _uuid.v4(),
           kind: d.kind,
           start: d.start.translate(off.dx, off.dy),
           end: d.end.translate(off.dx, off.dy),
+          startNodeId: remappedStartNodeId,
+          startNodeAnchor:
+              remappedStartNodeId == null ? null : d.startNodeAnchor,
+          endNodeId: remappedEndNodeId,
+          endNodeAnchor: remappedEndNodeId == null ? null : d.endNodeAnchor,
           colorRgb: d.colorRgb,
           strokeWidth: d.strokeWidth,
           text: d.text,
@@ -59256,6 +59509,18 @@ $example
           fromAnchor: conn.fromAnchor,
           toId: idMap[conn.toId]!,
           toAnchor: conn.toAnchor,
+          strokeWidth: conn.strokeWidth,
+          showArrow: conn.showArrow,
+          arrowHeadScale: conn.arrowHeadScale,
+          bidirectional: conn.bidirectional,
+          label: conn.label,
+          labelPosition: conn.labelPosition,
+          lineColorValue: conn.lineColorValue,
+          relationshipType: conn.relationshipType,
+          lineStyle: conn.lineStyle,
+          elbowSplitRatio: conn.elbowSplitRatio,
+          elbowPointCount: conn.elbowPointCount,
+          elbowBendPoints: conn.elbowBendPoints,
         ));
       }
     }
