@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import '../models/mind_map_node.dart';
 
@@ -66,6 +68,8 @@ class ConnectionPainter extends CustomPainter {
       // ── 直角折れ線は各セグメントへの距離で判定 ──
       if (style == 'elbow') {
         final pts = elbowPointsFor(conn, from, to);
+        // 遠く離れた接続は、全セグメントとの距離計算へ進む前に除外する。
+        if (!_boundsForPoints(pts).inflate(best).contains(point)) continue;
         double d = double.infinity;
         for (int i = 0; i < pts.length - 1; i++) {
           final sd = _distToSegment(point, pts[i], pts[i + 1]);
@@ -78,18 +82,25 @@ class ConnectionPainter extends CustomPainter {
         continue;
       }
 
-      final Offset cp1, cp2;
       if (style == 'straight') {
-        // 制御点を線分上に置くとベジェは直線に退化する (描画と同一形状)。
-        cp1 = Offset.lerp(p1, p2, 1 / 3)!;
-        cp2 = Offset.lerp(p1, p2, 2 / 3)!;
-      } else {
-        final dist0 = (p1 - p2).distance;
-        final strength = (dist0 * 0.4).clamp(30.0, 150.0);
-        cp1 = p1 + _controlOffset(conn.fromAnchor, strength);
-        cp2 = p2 + _controlOffset(conn.toAnchor, strength);
+        if (!Rect.fromPoints(p1, p2).inflate(best).contains(point)) continue;
+        final dist = _distToSegment(point, p1, p2);
+        if (dist < best) {
+          best = dist;
+          result = conn;
+        }
+        continue;
       }
 
+      final dist0 = (p1 - p2).distance;
+      final strength = (dist0 * 0.4).clamp(30.0, 150.0);
+      final cp1 = p1 + _controlOffset(conn.fromAnchor, strength);
+      final cp2 = p2 + _controlOffset(conn.toAnchor, strength);
+      // 三次ベジェは4点の凸包内に収まる。クリックがその外なら、高コストな
+      // 20分割近似を実行しなくてもヒットしないことが確定する。
+      if (!_boundsForPoints([p1, cp1, cp2, p2]).inflate(best).contains(point)) {
+        continue;
+      }
       final dist = _distToCubic(point, p1, cp1, cp2, p2);
       if (dist < best) {
         best = dist;
@@ -97,6 +108,21 @@ class ConnectionPainter extends CustomPainter {
       }
     }
     return result;
+  }
+
+  static Rect _boundsForPoints(List<Offset> points) {
+    var minX = points.first.dx;
+    var maxX = minX;
+    var minY = points.first.dy;
+    var maxY = minY;
+    for (int i = 1; i < points.length; i++) {
+      final point = points[i];
+      minX = math.min(minX, point.dx);
+      maxX = math.max(maxX, point.dx);
+      minY = math.min(minY, point.dy);
+      maxY = math.max(maxY, point.dy);
+    }
+    return Rect.fromLTRB(minX, minY, maxX, maxY);
   }
 
   static List<Offset> elbowPointsFor(
@@ -393,10 +419,9 @@ class ConnectionPainter extends CustomPainter {
       if (isSelected) {
         final glowPaint = Paint()
           ..color = Colors.redAccent.withValues(alpha: 0.25)
-          ..strokeWidth = conn.strokeWidth + 8.0
+          ..strokeWidth = conn.strokeWidth + 6.0
           ..style = PaintingStyle.stroke
-          ..strokeCap = StrokeCap.round
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4);
+          ..strokeCap = StrokeCap.round;
         canvas.drawPath(buildLine(p1, p2), glowPaint);
       }
 

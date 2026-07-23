@@ -44,12 +44,18 @@
 
 package com.example.mindmap_app // ★★★ 既存の MainActivity.kt と同じ package に変更 ★★★
 
+import android.Manifest
 import android.app.ActivityManager
 import android.content.ClipboardManager
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.provider.Settings
 import android.util.Base64
 import androidx.core.content.pm.ShortcutInfoCompat
@@ -60,6 +66,7 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.io.IOException
 
 class MainActivity : FlutterActivity() {
 
@@ -67,6 +74,7 @@ class MainActivity : FlutterActivity() {
         private const val LOCK_CHANNEL = "app/lock"
         private const val CLIPBOARD_CHANNEL = "app/clipboard"
         private const val DEVICE_CHANNEL = "app/device"
+        private const val DOWNLOADS_CHANNEL = "app/downloads"
         // ホーム画面ショートカット用 (= マップごとにアプリ風アイコンを作る)
         private const val SHORTCUT_CHANNEL = "app/shortcuts"
         private const val EXTRA_PAGE_ID = "mindmap_page_id"
@@ -162,6 +170,62 @@ class MainActivity : FlutterActivity() {
                             Settings.Secure.ANDROID_ID
                         ) ?: ""
                         result.success(id)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+
+        // ── 画像を端末共有の Download フォルダーへ保存 ──
+        // path_provider の Android Downloads はアプリ専用領域になるため、
+        // Android 10+ は MediaStore、Android 9 以下は公開 Download を使う。
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, DOWNLOADS_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "saveImage" -> {
+                        val sourcePath = call.argument<String>("sourcePath")
+                        val requestedName = call.argument<String>("fileName")
+                        if (sourcePath.isNullOrBlank() || requestedName.isNullOrBlank()) {
+                            result.error(
+                                "bad_arguments",
+                                "sourcePath and fileName are required",
+                                null
+                            )
+                        } else {
+                            val source = File(sourcePath)
+                            if (!source.isFile) {
+                                result.error("source_missing", "Image file was not found", null)
+                            } else if (
+                                Build.VERSION.SDK_INT <= Build.VERSION_CODES.P &&
+                                checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) !=
+                                    PackageManager.PERMISSION_GRANTED
+                            ) {
+                                result.error(
+                                    "permission_required",
+                                    "Storage permission is required on Android 9 or earlier",
+                                    null
+                                )
+                            } else {
+                                Thread {
+                                    try {
+                                        val saved = saveImageToDownloads(source, requestedName)
+                                        runOnUiThread { result.success(saved) }
+                                    } catch (e: Exception) {
+                                        android.util.Log.e(
+                                            "MainActivity",
+                                            "Saving image to Downloads failed",
+                                            e
+                                        )
+                                        runOnUiThread {
+                                            result.error(
+                                                "save_failed",
+                                                e.message ?: e.javaClass.simpleName,
+                                                null
+                                            )
+                                        }
+                                    }
+                                }.start()
+                            }
+                        }
                     }
                     else -> result.notImplemented()
                 }
@@ -435,6 +499,114 @@ class MainActivity : FlutterActivity() {
             "mime" to mime,
             "hasImageHint" to hasImageHint,
             "status" to "ok"
+        )
+    }
+
+    private data class DownloadImageSpec(
+        val displayName: String,
+        val mimeType: String
+    )
+
+    /// 編集処理が PNG データを元の .jpg パスへ書く場合もあるため、
+    /// 拡張子だけでなくマジックバイトを優先して公開ファイル名と MIME を決める。
+    private fun downloadImageSpec(source: File, requestedName: String): DownloadImageSpec {
+        val header = ByteArray(32)
+        val readCount = source.inputStream().use { input -> input.read(header) }
+        val detected = if (readCount > 0) {
+            sniffImageMime(header.copyOf(readCount))
+        } else {
+            null
+        }
+        val mime = detected ?: guessImageMime(requestedName) ?: "image/jpeg"
+        val extension = when (mime) {
+            "image/png" -> "png"
+            "image/gif" -> "gif"
+            "image/webp" -> "webp"
+            "image/bmp" -> "bmp"
+            "image/tiff" -> "tiff"
+            "image/heic", "image/heif" -> "heic"
+            "image/avif" -> "avif"
+            else -> "jpg"
+        }
+        val baseName = requestedName
+            .replace('\\', '/')
+            .substringAfterLast('/')
+            .replace(Regex("""[\u0000-\u001F\u007F]"""), "_")
+            .trim()
+        val dot = baseName.lastIndexOf('.')
+        val stem = (if (dot > 0) baseName.substring(0, dot) else baseName)
+            .ifBlank { "image_${System.currentTimeMillis()}" }
+        return DownloadImageSpec("$stem.$extension", mime)
+    }
+
+    private fun saveImageToDownloads(
+        source: File,
+        requestedName: String
+    ): Map<String, String> {
+        val spec = downloadImageSpec(source, requestedName)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, spec.displayName)
+                put(MediaStore.MediaColumns.MIME_TYPE, spec.mimeType)
+                put(
+                    MediaStore.MediaColumns.RELATIVE_PATH,
+                    "${Environment.DIRECTORY_DOWNLOADS}/"
+                )
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val uri = contentResolver.insert(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                values
+            ) ?: throw IOException("MediaStore insert failed")
+            try {
+                contentResolver.openOutputStream(uri, "w")?.use { output ->
+                    source.inputStream().use { input -> input.copyTo(output) }
+                } ?: throw IOException("Download output stream is unavailable")
+                contentResolver.update(
+                    uri,
+                    ContentValues().apply {
+                        put(MediaStore.MediaColumns.IS_PENDING, 0)
+                    },
+                    null,
+                    null
+                )
+                return mapOf(
+                    "uri" to uri.toString(),
+                    "displayName" to spec.displayName,
+                    "displayPath" to "${Environment.DIRECTORY_DOWNLOADS}/${spec.displayName}"
+                )
+            } catch (e: Exception) {
+                contentResolver.delete(uri, null, null)
+                throw e
+            }
+        }
+
+        @Suppress("DEPRECATION")
+        val directory =
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        if (!directory.exists() && !directory.mkdirs()) {
+            throw IOException("Could not create the public Download directory")
+        }
+        val dot = spec.displayName.lastIndexOf('.')
+        val stem = if (dot > 0) spec.displayName.substring(0, dot) else spec.displayName
+        val suffix = if (dot > 0) spec.displayName.substring(dot) else ""
+        var destination = File(directory, spec.displayName)
+        var copyNumber = 1
+        while (destination.exists()) {
+            destination = File(directory, "$stem ($copyNumber)$suffix")
+            copyNumber += 1
+        }
+        source.copyTo(destination, overwrite = false)
+        MediaScannerConnection.scanFile(
+            this,
+            arrayOf(destination.absolutePath),
+            arrayOf(spec.mimeType),
+            null
+        )
+        return mapOf(
+            "uri" to Uri.fromFile(destination).toString(),
+            "displayName" to destination.name,
+            "displayPath" to "${Environment.DIRECTORY_DOWNLOADS}/${destination.name}"
         )
     }
 

@@ -846,6 +846,46 @@ class AiQAEntry {
   });
 }
 
+/// Ctrl+Z で直前のページ削除を復元するための、ページ外状態を含む退避データ。
+///
+/// [MindMapPage] 本体だけでは名前付きグループやページ単位の Undo 履歴が戻らない
+/// ため、削除時に消去するランタイム状態も同時に保持する。
+class _DeletedPageUndoRecord {
+  const _DeletedPageUndoRecord({
+    required this.page,
+    required this.index,
+    required this.wasHidden,
+    required this.wasFavorite,
+    required this.undoStack,
+    required this.redoStack,
+    required this.lastEditedAt,
+    required this.aiContext,
+    required this.namedGroups,
+    required this.groupColors,
+    required this.groupFontSizes,
+    required this.groupFontFamilies,
+    required this.groupLayoutRows,
+    required this.groupLayoutModes,
+    required this.groupPadding,
+  });
+
+  final MindMapPage page;
+  final int index;
+  final bool wasHidden;
+  final bool wasFavorite;
+  final List<_PageSnapshot>? undoStack;
+  final List<_PageSnapshot>? redoStack;
+  final DateTime? lastEditedAt;
+  final AiPageContext? aiContext;
+  final Map<String, Set<String>>? namedGroups;
+  final Map<String, int>? groupColors;
+  final Map<String, double>? groupFontSizes;
+  final Map<String, String>? groupFontFamilies;
+  final Map<String, int>? groupLayoutRows;
+  final Map<String, String>? groupLayoutModes;
+  final Map<String, List<double>>? groupPadding;
+}
+
 /// サブスクリプションプラン種別。
 /// - `free`: 無料プラン (制限あり: 2ページまで、クラウドデータは3日で削除、
 ///   YouTube動画ダウンロード不可)
@@ -3649,7 +3689,8 @@ class MindMapProvider extends ChangeNotifier {
 
   String get _pageId => _pages.isNotEmpty ? _pages[_currentPageIndex].id : '';
 
-  bool get canUndo => (_undoStacks[_pageId]?.length ?? 0) > 0;
+  bool get canUndo =>
+      canUndoDeletedPage || (_undoStacks[_pageId]?.length ?? 0) > 0;
   bool get canRedo => (_redoStacks[_pageId]?.length ?? 0) > 0;
 
   /// 現在のページ状態をUndo履歴に積む（変更前に呼ぶ）
@@ -3674,6 +3715,9 @@ class MindMapProvider extends ChangeNotifier {
 
   void _pushUndo() {
     if (_undoBatchDepth > 0) return; // バッチ中: 開始時のスナップショットに集約
+    // ページ削除後に別の編集を始めた場合、その編集が最新の Undo 対象になる。
+    // 削除復元をいつまでも最優先にすると Ctrl+Z の時系列が逆転するため破棄する。
+    _lastDeletedPageUndo = null;
     final id = _pageId;
     if (id.isEmpty) return;
     _undoStacks.putIfAbsent(id, () => []);
@@ -3688,6 +3732,9 @@ class MindMapProvider extends ChangeNotifier {
   }
 
   void undo() {
+    // ページ削除は現在ページのスナップショット履歴には入らないため、
+    // 通常の Ctrl+Z API の先頭で直前の削除を復元する。
+    if (undoLastDeletedPage()) return;
     final id = _pageId;
     final stack = _undoStacks[id];
     if (stack == null || stack.isEmpty) return;
@@ -50576,6 +50623,32 @@ $cleanQ
     );
   }
 
+  bool _pageStorageCaptureUsesCurrentBaseline(
+    _PageStorageCapture capture,
+  ) {
+    if (!mapEquals(capture.basePagesJson, _pageStorageBaseJson) ||
+        !mapEquals(
+          capture.basePageWriteTimes,
+          _pageStorageBaseWriteTimes,
+        ) ||
+        !listEquals(capture.baseOrder, _pageStorageBaseOrder) ||
+        capture.baseOrderWriteTimeMs != _pageStorageBaseOrderWriteTimeMs) {
+      return false;
+    }
+    if (capture.basePageAncestors.length != _pageStorageBaseAncestors.length) {
+      return false;
+    }
+    for (final entry in capture.basePageAncestors.entries) {
+      if (!listEquals(
+        entry.value,
+        _pageStorageBaseAncestors[entry.key],
+      )) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   void _mergeMaxTimestamps(
     Map<String, int> target,
     Map<String, int> source,
@@ -50607,17 +50680,86 @@ $cleanQ
     return hash.toRadixString(16).padLeft(8, '0');
   }
 
+  bool _isPageConflictCopyId(String pageId) => pageId.contains('_conflict_');
+
+  dynamic _canonicalStorageJson(dynamic value) {
+    if (value is Map) {
+      final keys = value.keys.map((key) => key.toString()).toList()..sort();
+      return <String, dynamic>{
+        for (final key in keys) key: _canonicalStorageJson(value[key]),
+      };
+    }
+    if (value is List) {
+      return value.map(_canonicalStorageJson).toList(growable: false);
+    }
+    return value;
+  }
+
+  /// 更新時刻・競合コピー用の ID/表示接尾辞を除いたページ内容の指紋。
+  ///
+  /// 従来は version と更新時刻込みの raw JSON から競合コピー ID を作っていた
+  /// ため、同じ内容でも保存のたびに別 ID となり、競合コピーが増殖し得た。
+  String? _pageConflictContentFingerprint(String raw) {
+    try {
+      final pageJson = Map<String, dynamic>.from(jsonDecode(raw) as Map)
+        ..remove('id')
+        ..remove('lastModifiedAt');
+      var name = pageJson['name']?.toString() ?? '';
+      const suffixes = <String>['（競合コピー）', ' (conflict copy)'];
+      var stripped = true;
+      while (stripped) {
+        stripped = false;
+        for (final suffix in suffixes) {
+          if (name.endsWith(suffix)) {
+            name = name.substring(0, name.length - suffix.length);
+            stripped = true;
+          }
+        }
+      }
+      pageJson['name'] = name;
+      final canonical = jsonEncode(_canonicalStorageJson(pageJson));
+      return '${_stableStorageHash(canonical)}_${canonical.length}';
+    } catch (_) {
+      return null;
+    }
+  }
+
+  bool _containsEquivalentPageConflictCopy(
+    String originalId,
+    String raw,
+    Iterable<Map<String, String>> sources,
+  ) {
+    final fingerprint = _pageConflictContentFingerprint(raw);
+    if (fingerprint == null) return false;
+    final prefix = '${originalId}_conflict_';
+    for (final source in sources) {
+      for (final entry in source.entries) {
+        if (!entry.key.startsWith(prefix)) continue;
+        if (_pageConflictContentFingerprint(entry.value) == fingerprint) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   ({String id, String json})? _makePageConflictCopy(
     String originalId,
     String raw,
     int version,
   ) {
+    // 競合コピー同士をさらに競合コピー化すると
+    // foo_conflict_..._conflict_... の連鎖が収束しないため生成しない。
+    if (_isPageConflictCopyId(originalId)) return null;
     try {
       final pageJson = Map<String, dynamic>.from(jsonDecode(raw) as Map);
       final originalName = pageJson['name']?.toString() ?? '';
       final suffix = _appLanguage == 'ja' ? '（競合コピー）' : ' (conflict copy)';
-      final conflictId =
-          '${originalId}_conflict_${version}_${_stableStorageHash(raw)}';
+      final fingerprint = _pageConflictContentFingerprint(raw);
+      if (fingerprint == null) return null;
+      // 論理内容だけから決まる ID にする。同じ競合を再検出しても putIfAbsent
+      // で同じ一件へ収束し、更新時刻の違いだけで項目が増えない。
+      final conflictId = '${originalId}_conflict_$fingerprint';
       pageJson
         ..['id'] = conflictId
         ..['name'] = originalName.endsWith(suffix)
@@ -50742,9 +50884,21 @@ $cleanQ
       }
       if (!losingAlreadyAncestor &&
           losingJson != null &&
-          !_samePageContent(losingJson, selectedJson)) {
+          !_samePageContent(losingJson, selectedJson) &&
+          !_isPageConflictCopyId(id) &&
+          !_containsEquivalentPageConflictCopy(
+            id,
+            losingJson,
+            <Map<String, String>>[
+              local.pagesJson,
+              remote.pagesJson,
+              mergedPages,
+            ],
+          )) {
         final conflict = _makePageConflictCopy(id, losingJson, losingVersion);
-        if (conflict != null) {
+        // ユーザーが削除した競合コピーは、同じ競合を持つ古いタブが再送しても
+        // 復活させない。内容指紋ベースの ID と tombstone の組み合わせで収束する。
+        if (conflict != null && !mergedTombstones.containsKey(conflict.id)) {
           mergedPages.putIfAbsent(conflict.id, () => conflict.json);
           mergedWriteTimes.putIfAbsent(
             conflict.id,
@@ -50959,10 +51113,17 @@ $cleanQ
       for (final page in _pages) page.id: jsonEncode(page.toJson()),
     };
 
-    // メモリが capture 時点から変わっていないページだけ基準を進める。
-    // await 中に行われた編集を「保存済み」と誤認しないため。
+    // 確定内容が capture と同じなら、メモリがその先へ進んでいても同一ローカル
+    // 系列の祖先として基準を進める。これを行わないと B1 の保存待ちに B2 が
+    // queue された時、B1 確定後も基準が A のままとなり、B2 対 B1 を同時編集と
+    // 誤判定して競合コピーを作り続ける。
+    //
+    // remote が勝って committed != capture かつ current も別内容の場合は、
+    // ローカル系列の祖先ではないため基準を進めない。
     for (final entry in committed.pagesJson.entries) {
-      if (currentJson[entry.key] == entry.value) {
+      final committedCapturedLocal =
+          capture.pagesJson[entry.key] == entry.value;
+      if (currentJson[entry.key] == entry.value || committedCapturedLocal) {
         _pageStorageBaseJson[entry.key] = entry.value;
         _pageStorageBaseWriteTimes[entry.key] =
             committed.pageWriteTimes[entry.key] ?? capture.capturedAtMs;
@@ -51165,12 +51326,18 @@ $cleanQ
     _pageStorageSaveRunning = true;
     try {
       while (_pendingPageStorageCapture != null) {
-        final capture = _pendingPageStorageCapture!;
+        var capture = _pendingPageStorageCapture!;
         final persistFonts = _pendingPageStoragePersistsFonts;
         final completer = _pendingPageStorageCompleter;
         _pendingPageStorageCapture = null;
         _pendingPageStoragePersistsFonts = false;
         _pendingPageStorageCompleter = null;
+        // 先行 commit の accept で基準やメモリが更新された後、古い基準を持つ
+        // immutable capture をそのまま使うと直列の B1→B2 を競合と誤認する。
+        // 現在メモリを最新基準上で再 capture してから次 commit を作る。
+        if (!_pageStorageCaptureUsesCurrentBaseline(capture)) {
+          capture = _capturePageStorage(touchChangedPages: false);
+        }
         try {
           await _writeCoordinatedPageStorage(
             capture,
@@ -51613,10 +51780,7 @@ $cleanQ
     notifyListeners();
   }
 
-  MindMapPage? _lastDeletedPage;
-  int _lastDeletedPageIndex = 0;
-  bool _lastDeletedPageWasHidden = false;
-  bool _lastDeletedPageWasFavorite = false;
+  _DeletedPageUndoRecord? _lastDeletedPageUndo;
 
   MindMapPage _clonePageForUndo(MindMapPage page) {
     return MindMapPage.fromJson(
@@ -51624,18 +51788,70 @@ $cleanQ
     );
   }
 
-  String? get lastDeletedPageName => _lastDeletedPage?.name;
-  bool get canUndoDeletedPage => _lastDeletedPage != null;
+  AiPageContext _cloneAiPageContextForUndo(AiPageContext source) {
+    final copy = AiPageContext(
+      fileName: source.fileName,
+      textContent: source.textContent,
+      filePath: source.filePath,
+      ext: source.ext,
+    );
+    copy.qaHistory.addAll(source.qaHistory);
+    return copy;
+  }
+
+  _DeletedPageUndoRecord _captureDeletedPageUndo(
+    MindMapPage page,
+    int index,
+  ) {
+    final id = page.id;
+    final aiContext = _aiPageContexts[id];
+    return _DeletedPageUndoRecord(
+      page: _clonePageForUndo(page),
+      index: index,
+      wasHidden: _hiddenPageIds.contains(id),
+      wasFavorite: _favoritePageIds.contains(id),
+      undoStack: _undoStacks[id] == null
+          ? null
+          : List<_PageSnapshot>.from(_undoStacks[id]!),
+      redoStack: _redoStacks[id] == null
+          ? null
+          : List<_PageSnapshot>.from(_redoStacks[id]!),
+      lastEditedAt: _pageLastEditedAt[id],
+      aiContext:
+          aiContext == null ? null : _cloneAiPageContextForUndo(aiContext),
+      namedGroups: _namedGroups[id]?.map(
+        (name, nodeIds) => MapEntry(name, Set<String>.from(nodeIds)),
+      ),
+      groupColors: _groupColors[id] == null
+          ? null
+          : Map<String, int>.from(_groupColors[id]!),
+      groupFontSizes: _groupFontSizes[id] == null
+          ? null
+          : Map<String, double>.from(_groupFontSizes[id]!),
+      groupFontFamilies: _groupFontFamilies[id] == null
+          ? null
+          : Map<String, String>.from(_groupFontFamilies[id]!),
+      groupLayoutRows: _groupLayoutRows[id] == null
+          ? null
+          : Map<String, int>.from(_groupLayoutRows[id]!),
+      groupLayoutModes: _groupLayoutModes[id] == null
+          ? null
+          : Map<String, String>.from(_groupLayoutModes[id]!),
+      groupPadding: _groupPadding[id]?.map(
+        (name, padding) => MapEntry(name, List<double>.from(padding)),
+      ),
+    );
+  }
+
+  String? get lastDeletedPageName => _lastDeletedPageUndo?.page.name;
+  bool get canUndoDeletedPage => _lastDeletedPageUndo != null;
 
   void deletePage(int index) {
     if (_pages.length <= 1) return;
     if (index < 0 || index >= _pages.length) return;
     final deletedPage = _pages[index];
     final deletedId = deletedPage.id;
-    _lastDeletedPage = _clonePageForUndo(deletedPage);
-    _lastDeletedPageIndex = index;
-    _lastDeletedPageWasHidden = _hiddenPageIds.contains(deletedId);
-    _lastDeletedPageWasFavorite = _favoritePageIds.contains(deletedId);
+    _lastDeletedPageUndo = _captureDeletedPageUndo(deletedPage, index);
     _markPageDeletedForStorage(deletedId);
     _pages.removeAt(index);
     _currentPageIndex = _currentPageIndex.clamp(0, _pages.length - 1);
@@ -51649,26 +51865,68 @@ $cleanQ
   }
 
   bool undoLastDeletedPage() {
-    final page = _lastDeletedPage;
-    if (page == null) return false;
-    if (_pages.any((p) => p.id == page.id)) {
-      _lastDeletedPage = null;
+    final record = _lastDeletedPageUndo;
+    if (record == null) return false;
+    final pageId = record.page.id;
+    if (_pages.any((page) => page.id == pageId)) {
+      _lastDeletedPageUndo = null;
       notifyListeners();
       return false;
     }
-    final insertAt = _lastDeletedPageIndex.clamp(0, _pages.length);
-    final restored = _clonePageForUndo(page)
+    final insertAt = record.index.clamp(0, _pages.length);
+    final restored = _clonePageForUndo(record.page)
       ..lastModifiedAt = DateTime.now().toUtc();
-    _pageDeletionTombstones.remove(page.id);
+    _pageDeletionTombstones.remove(pageId);
     _pages.insert(insertAt, restored);
     _currentPageIndex = insertAt;
     _selectedNodeId = null;
-    if (_lastDeletedPageWasHidden) _hiddenPageIds.add(page.id);
-    if (_lastDeletedPageWasFavorite) _favoritePageIds.add(page.id);
-    if (_lastDeletedPageWasHidden) unawaited(_persistHiddenPages());
-    if (_lastDeletedPageWasFavorite) unawaited(_persistFavoritePages());
-    _lastDeletedPage = null;
+    if (record.undoStack != null) {
+      _undoStacks[pageId] = List<_PageSnapshot>.from(record.undoStack!);
+    }
+    if (record.redoStack != null) {
+      _redoStacks[pageId] = List<_PageSnapshot>.from(record.redoStack!);
+    }
+    if (record.lastEditedAt != null) {
+      _pageLastEditedAt[pageId] = record.lastEditedAt!;
+    }
+    if (record.aiContext != null) {
+      _aiPageContexts[pageId] = _cloneAiPageContextForUndo(record.aiContext!);
+    }
+    if (record.namedGroups != null) {
+      _namedGroups[pageId] = record.namedGroups!.map(
+        (name, nodeIds) => MapEntry(name, Set<String>.from(nodeIds)),
+      );
+    }
+    if (record.groupColors != null) {
+      _groupColors[pageId] = Map<String, int>.from(record.groupColors!);
+    }
+    if (record.groupFontSizes != null) {
+      _groupFontSizes[pageId] =
+          Map<String, double>.from(record.groupFontSizes!);
+    }
+    if (record.groupFontFamilies != null) {
+      _groupFontFamilies[pageId] =
+          Map<String, String>.from(record.groupFontFamilies!);
+    }
+    if (record.groupLayoutRows != null) {
+      _groupLayoutRows[pageId] = Map<String, int>.from(record.groupLayoutRows!);
+    }
+    if (record.groupLayoutModes != null) {
+      _groupLayoutModes[pageId] =
+          Map<String, String>.from(record.groupLayoutModes!);
+    }
+    if (record.groupPadding != null) {
+      _groupPadding[pageId] = record.groupPadding!.map(
+        (name, padding) => MapEntry(name, List<double>.from(padding)),
+      );
+    }
+    if (record.wasHidden) _hiddenPageIds.add(pageId);
+    if (record.wasFavorite) _favoritePageIds.add(pageId);
+    if (record.wasHidden) unawaited(_persistHiddenPages());
+    if (record.wasFavorite) unawaited(_persistFavoritePages());
+    _lastDeletedPageUndo = null;
     _saveToStorage();
+    unawaited(_saveNamedGroups());
     notifyListeners();
     return true;
   }
@@ -60761,6 +61019,8 @@ $example
         anchorMode: node.anchorMode,
         attachmentPath: node.attachmentPath,
         attachmentName: node.attachmentName,
+        attachmentThumbPath: node.attachmentThumbPath,
+        attachmentAspectRatio: node.attachmentAspectRatio,
       );
       newIds.add(newId);
     }

@@ -1482,8 +1482,9 @@ class _NodeWidgetState extends State<NodeWidget> {
                                       ),
                                       // 画像はそのパス、 PDF/pptx はサムネイル画像
                                       //   (attachImgPath)。 http はネットワーク画像、
-                                      //   ローカルは File 経由。 サムネイルは表紙が
-                                      //   見えるよう上端基準で cover する。
+                                      //   ローカルは File 経由。実画像は端を切らず
+                                      //   全体表示し、文書サムネイルだけ表紙として
+                                      //   上端基準の cover を維持する。
                                       child: ColoredBox(
                                         color: Colors.white,
                                         child: attachImgPath
@@ -1492,8 +1493,12 @@ class _NodeWidgetState extends State<NodeWidget> {
                                                     .startsWith('https://')
                                             ? Image.network(
                                                 attachImgPath,
-                                                fit: BoxFit.cover,
-                                                alignment: Alignment.topCenter,
+                                                fit: isImageAttach
+                                                    ? BoxFit.contain
+                                                    : BoxFit.cover,
+                                                alignment: isImageAttach
+                                                    ? Alignment.center
+                                                    : Alignment.topCenter,
                                                 errorBuilder: (_, __, ___) =>
                                                     Container(
                                                   color: Colors.black54,
@@ -1505,8 +1510,12 @@ class _NodeWidgetState extends State<NodeWidget> {
                                               )
                                             : Image.file(
                                                 File(attachImgPath),
-                                                fit: BoxFit.cover,
-                                                alignment: Alignment.topCenter,
+                                                fit: isImageAttach
+                                                    ? BoxFit.contain
+                                                    : BoxFit.cover,
+                                                alignment: isImageAttach
+                                                    ? Alignment.center
+                                                    : Alignment.topCenter,
                                                 errorBuilder: (_, __, ___) =>
                                                     Container(
                                                   color: Colors.black54,

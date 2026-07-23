@@ -33,6 +33,10 @@
     <!-- ── 無音カメラ (camera プラグイン) 用 ── -->
     <!-- 写真撮影の権限。 camera プラグインは独自キャプチャのためシャッター音は鳴らない。 -->
     <uses-permission android:name="android.permission.CAMERA"/>
+    <!-- Android 9 以下で公開 Download へ保存するための旧ストレージ権限。
+         Android 10 以降は MediaStore を使うため要求しない。 -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28"/>
     <!-- カメラは必須ではない (端末に無くてもインストール可) -->
     <uses-feature android:name="android.hardware.camera" android:required="false"/>
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false"/>

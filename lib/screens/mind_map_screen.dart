@@ -18225,8 +18225,9 @@ class _MindMapScreenState extends State<MindMapScreen>
       MindMapProvider provider) {
     final canvasPos = _globalToCanvas(globalPos, ctrl);
     final painter = ConnectionPainter(
-      nodes: Map.of(provider.nodes),
-      connections: List.of(provider.connections),
+      nodes: provider.nodes,
+      connections: provider.connections,
+      lineStyle: provider.connectionLineStyle,
     );
     final hit = painter.findConnection(canvasPos);
     if (hit == null) {
@@ -18236,14 +18237,16 @@ class _MindMapScreenState extends State<MindMapScreen>
       }
       return;
     }
-    if (_selectedConnectionBends.isNotEmpty || _connectionBendPointerActive) {
-      setState(() => _clearConnectionBendDragFields(clearSelection: true));
-    }
+    final clearBendSelection =
+        _selectedConnectionBends.isNotEmpty || _connectionBendPointerActive;
     final isCtrl = HardwareKeyboard.instance.isControlPressed ||
         HardwareKeyboard.instance.isMetaPressed;
     if (isCtrl) {
       // Ctrl+クリック: トグル追加/削除（オーバーレイは出さず、Ctrlリリース時に表示）
       setState(() {
+        if (clearBendSelection) {
+          _clearConnectionBendDragFields(clearSelection: true);
+        }
         if (_selectedConnections.contains(hit)) {
           _selectedConnections.remove(hit);
         } else {
@@ -18255,10 +18258,16 @@ class _MindMapScreenState extends State<MindMapScreen>
     } else if (_selectedConnections.length > 1 &&
         _selectedConnections.contains(hit)) {
       // 複数選択中で、選択中の接続をクリック → 選択を維持してメニュー表示
+      if (clearBendSelection) {
+        setState(() => _clearConnectionBendDragFields(clearSelection: true));
+      }
       _showConnectionDeleteOverlay(hit, globalPos, provider);
     } else {
       // 通常クリック: 単一選択 + メニュー表示
       setState(() {
+        if (clearBendSelection) {
+          _clearConnectionBendDragFields(clearSelection: true);
+        }
         _selectedConnections.clear();
         _selectedConnections.add(hit);
         _lastCtrlConnectionTapPos = null;
@@ -18285,11 +18294,13 @@ class _MindMapScreenState extends State<MindMapScreen>
       return const <Widget>[];
     }
     final rolesByNode = <String, Set<String>>{};
+    final selectedKeys = _selectedConnections
+        .map((connection) => '${connection.fromId}\u{0}${connection.toId}')
+        .toSet();
+    // 選択キー作成と全接続の1回走査に分け、複数選択でも二重ループにしない。
     for (final connection in provider.connections) {
-      if (!_selectedConnections.contains(connection) ||
-          !connection.isParentChild) {
-        continue;
-      }
+      final key = '${connection.fromId}\u{0}${connection.toId}';
+      if (!selectedKeys.contains(key) || !connection.isParentChild) continue;
       rolesByNode
           .putIfAbsent(connection.fromId, () => <String>{})
           .add('parent');
@@ -18324,13 +18335,6 @@ class _MindMapScreenState extends State<MindMapScreen>
                 color: color.withValues(alpha: 0.96),
                 borderRadius: BorderRadius.circular(14),
                 border: Border.all(color: Colors.white70, width: 1.2),
-                boxShadow: [
-                  BoxShadow(
-                    color: color.withValues(alpha: 0.48),
-                    blurRadius: 10,
-                    spreadRadius: 1,
-                  ),
-                ],
               ),
               child: Text(
                 label,
@@ -22832,6 +22836,15 @@ class _MindMapScreenState extends State<MindMapScreen>
                 ]),
                 const SizedBox(height: 12),
                 SegmentedButton<String>(
+                  style: SegmentedButton.styleFrom(
+                    foregroundColor: Colors.white70,
+                    backgroundColor: Colors.white10,
+                    selectedForegroundColor: Colors.white,
+                    selectedBackgroundColor:
+                        const Color(0xFF26A69A).withValues(alpha: 0.58),
+                    side: const BorderSide(color: Colors.white24),
+                  ),
+                  showSelectedIcon: false,
                   segments: const [
                     ButtonSegment(value: 'monthly', label: Text('月単位')),
                     ButtonSegment(value: 'yearly', label: Text('年単位')),
@@ -29999,6 +30012,9 @@ class _MindMapScreenState extends State<MindMapScreen>
         // カレンダー表示中はカレンダー用のUndoを優先
         if (_calendarMode && provider.canUndoCalendar) {
           provider.undoCalendarEvents();
+        } else if (provider.canUndoDeletedPage) {
+          // ページ削除は通常のページ内履歴とは別枠。直後の Ctrl+Z で復元する。
+          _undoDeletedPageIfAvailable(provider);
         } else if (provider.aiInProgress &&
             !provider.hasUserActionsAfterAiStart) {
           // AI動作中で、AI開始後にユーザー操作がない場合のみ AI をキャンセル。
@@ -39815,6 +39831,9 @@ class _MindMapScreenState extends State<MindMapScreen>
             // カレンダー表示中はカレンダー用のUndoを優先
             if (_calendarMode && provider.canUndoCalendar) {
               provider.undoCalendarEvents();
+            } else if (provider.canUndoDeletedPage) {
+              // ページ削除直後は、AIキャンセルやページ内Undoより復元を優先。
+              _undoDeletedPageIfAvailable(provider);
             } else if (provider.aiInProgress &&
                 !provider.hasUserActionsAfterAiStart) {
               // AI動作中で、AI開始後にユーザー操作がない場合のみ AI をキャンセル。
@@ -47625,7 +47644,11 @@ class _MindMapScreenState extends State<MindMapScreen>
               child: Text(provider.t('btn.cancel'))),
           ElevatedButton.icon(
             style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFFF6B6B)),
+              backgroundColor: const Color(0xFFFF6B6B),
+              foregroundColor: Colors.white,
+              disabledBackgroundColor: const Color(0xFF6E404A),
+              disabledForegroundColor: Colors.white60,
+            ),
             onPressed:
                 allPagesWillBeDeleted ? null : () => Navigator.pop(dctx, true),
             icon: const Icon(Icons.delete_forever_rounded, size: 16),
@@ -54081,6 +54104,38 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (pasteWidth == null && isGallery) {
       pasteWidth = MindMapProvider.kShelfTileW;
     }
+    if (!mounted) return false;
+
+    // 端末の物理解像度を基準にした貼り付け幅は、モバイルの実ビューポートや
+    // 現在のズーム率より大きくなることがある。マップ表示領域の左右に余白を
+    // 残せる幅へ縮め、分割表示中も画像全体が最初から見えるようにする。
+    double? visibleCanvasLeft;
+    double? visibleCanvasRight;
+    if (!isGallery && pasteWidth != null) {
+      final ctrl = _ctrlFor(provider.currentPage.id);
+      final viewportBox =
+          _mapViewportKey.currentContext?.findRenderObject() as RenderBox?;
+      final viewportSize = viewportBox?.size ?? MediaQuery.sizeOf(context);
+      final scale = math.max(ctrl.value.getMaxScaleOnAxis(), 0.01);
+      final horizontalInset = math.min(16.0, viewportSize.width * 0.08);
+      final maxVisibleCanvasWidth =
+          math.max(80.0, (viewportSize.width - horizontalInset * 2) / scale);
+      pasteWidth = math.min(pasteWidth!, maxVisibleCanvasWidth);
+
+      if (viewportBox != null) {
+        final left = _globalToCanvas(
+          viewportBox.localToGlobal(Offset(horizontalInset, 0)),
+          ctrl,
+        ).dx;
+        final right = _globalToCanvas(
+          viewportBox
+              .localToGlobal(Offset(viewportSize.width - horizontalInset, 0)),
+          ctrl,
+        ).dx;
+        visibleCanvasLeft = math.min(left, right);
+        visibleCanvasRight = math.max(left, right);
+      }
+    }
 
     final appDir = await getApplicationDocumentsDirectory();
     final attachDir = Directory('${appDir.path}/attachments');
@@ -54096,8 +54151,17 @@ class _MindMapScreenState extends State<MindMapScreen>
     final double? finalWidth = pasteWidth;
     final double? finalAspect = pasteAspect;
     final nodeWidth = finalWidth ?? 160.0;
-    final newNode = provider
-        .addNodeAtCenterReturning(canvasPos - Offset(nodeWidth / 2, 21));
+    var nodePosition = canvasPos - Offset(nodeWidth / 2, 21);
+    if (visibleCanvasLeft != null && visibleCanvasRight != null) {
+      final maxLeft = visibleCanvasRight - nodeWidth;
+      if (maxLeft >= visibleCanvasLeft) {
+        nodePosition = Offset(
+          nodePosition.dx.clamp(visibleCanvasLeft, maxLeft).toDouble(),
+          nodePosition.dy,
+        );
+      }
+    }
+    final newNode = provider.addNodeAtCenterReturning(nodePosition);
     provider.updateNodeAttachment(newNode.id, destPath, name);
     if (finalWidth != null) {
       final keepHeight = provider.nodes[newNode.id]?.height ?? 42.0;
@@ -59336,6 +59400,18 @@ class _MindMapScreenState extends State<MindMapScreen>
     _confirmDeletePageAt(context, provider, provider.currentPageIndex);
   }
 
+  bool _undoDeletedPageIfAvailable(MindMapProvider provider) {
+    if (!provider.canUndoDeletedPage) return false;
+    final restored = provider.undoLastDeletedPage();
+    if (restored && mounted) {
+      _appSnack(
+        context,
+        SnackBar(content: Text(provider.t('page.restored'))),
+      );
+    }
+    return restored;
+  }
+
   void _showDeletedPageUndoSnack(
     BuildContext context,
     MindMapProvider provider,
@@ -59346,42 +59422,18 @@ class _MindMapScreenState extends State<MindMapScreen>
     final message = provider
         .t(empty ? 'page.deletedEmpty' : 'page.deleted')
         .replaceFirst('{name}', removedName);
-    final controller = _appSnack(
+    _appSnack(
       context,
       SnackBar(
-        content: StreamBuilder<int>(
-          stream: Stream<int>.periodic(
-            const Duration(seconds: 1),
-            (i) => 4 - i,
-          ).take(5),
-          initialData: 5,
-          builder: (_, snap) {
-            final sec = (snap.data ?? 5).clamp(0, 5).toInt();
-            final text = provider
-                .t('page.undoCountdown')
-                .replaceFirst('{message}', message)
-                .replaceFirst('{sec}', '$sec');
-            return Text(text);
-          },
+        content: Text(
+          '$message\nCtrl+Z / ${provider.t('page.undoDelete')}',
         ),
-        duration: const Duration(seconds: 5),
         action: SnackBarAction(
           label: provider.t('page.undoDelete'),
-          onPressed: () {
-            if (provider.undoLastDeletedPage() && mounted) {
-              _appSnack(
-                context,
-                SnackBar(content: Text(provider.t('page.restored'))),
-              );
-            }
-          },
+          onPressed: () => _undoDeletedPageIfAvailable(provider),
         ),
       ),
-      processing: true,
     );
-    Future.delayed(const Duration(seconds: 5), () {
-      if (mounted) controller.close();
-    });
   }
 
   Future<void> _confirmDeletePageAt(
@@ -60852,7 +60904,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                 // autofocus: true で Enter のフォーカスがこのボタンに乗る。
                 autofocus: true,
                 style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFFFF6B6B)),
+                  backgroundColor: const Color(0xFFFF6B6B),
+                  foregroundColor: Colors.white,
+                ),
                 onPressed: () => doDelete(dctx),
                 icon: const Icon(Icons.delete_outline, size: 16),
                 label: Text(provider.t('btn.delete')),
@@ -64163,6 +64217,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         void doDelete() {
           Navigator.pop(ctx);
           provider.deletePage(provider.currentPageIndex);
+          _showDeletedPageUndoSnack(context, provider, name, empty: false);
         }
 
         return KeyboardListener(
@@ -67509,8 +67564,8 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
     _bidirectional = widget.connection.bidirectional;
     _labelCtrl = TextEditingController(text: widget.connection.label ?? '');
     _anim = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 160));
-    _scale = CurvedAnimation(parent: _anim, curve: Curves.easeOutBack);
+        vsync: this, duration: const Duration(milliseconds: 90));
+    _scale = CurvedAnimation(parent: _anim, curve: Curves.easeOutCubic);
     _anim.forward();
   }
 
@@ -67560,16 +67615,25 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
 
   @override
   Widget build(BuildContext context) {
-    const double barW = 260.0;
-    const linkColors = <Color>[
-      Color(0xFFEF5350),
-      Color(0xFFFFA726),
-      Color(0xFF66BB6A),
-      Color(0xFF42A5F5),
-      Color(0xFFAB47BC),
-      Color(0xFFECEFF1),
-    ];
     final mq = MediaQuery.of(context);
+    final double barW = math.min(380.0, math.max(0.0, mq.size.width - 24.0));
+    const linkColors = <Color>[
+      Color(0xFFE53935),
+      Color(0xFFFF7043),
+      Color(0xFFFB8C00),
+      Color(0xFFF9A825),
+      Color(0xFF7CB342),
+      Color(0xFF43A047),
+      Color(0xFF00897B),
+      Color(0xFF00ACC1),
+      Color(0xFF1E88E5),
+      Color(0xFF3949AB),
+      Color(0xFF8E24AA),
+      Color(0xFFD81B60),
+      Color(0xFF6D4C41),
+      Color(0xFF546E7A),
+      Color(0xFF263238),
+    ];
     final showLineColorScrollbar = <TargetPlatform>{
       TargetPlatform.windows,
       TargetPlatform.macOS,
@@ -67755,7 +67819,8 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
                                 height: 40,
                                 child: Scrollbar(
                                   controller: _lineColorScrollController,
-                                  thumbVisibility: showLineColorScrollbar,
+                                  // タッチ端末でも色が横に続くことを視覚的に示す。
+                                  thumbVisibility: true,
                                   trackVisibility: showLineColorScrollbar,
                                   interactive: showLineColorScrollbar,
                                   scrollbarOrientation:
@@ -70025,7 +70090,7 @@ class _Btn extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final boxWidth = width ?? size;
-    final labelFontSize = boxWidth > size ? 10.0 : 9.0;
+    final labelFontSize = boxWidth > size ? 11.0 : 10.0;
     return GestureDetector(
       onTap: onTap,
       onLongPress: onLongPress,
@@ -70059,9 +70124,16 @@ class _Btn extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               textAlign: TextAlign.center,
               style: TextStyle(
-                  color: Colors.white70,
+                  color: Colors.white,
                   fontSize: labelFontSize,
-                  fontWeight: FontWeight.w600)),
+                  fontWeight: FontWeight.w700,
+                  shadows: const [
+                    Shadow(
+                      color: Colors.black87,
+                      blurRadius: 3,
+                      offset: Offset(0, 1),
+                    ),
+                  ])),
         ]),
       ),
     );
@@ -150935,20 +151007,63 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
     });
   }
 
+  void _rotateCounterClockwise() {
+    setState(() {
+      _rotationDeg = (_rotationDeg + 270) % 360;
+    });
+  }
+
   /// 画像を端末にダウンロード (= Downloads / Documents ディレクトリにコピー)。
   Future<void> _download() async {
     try {
+      final src = File(widget.filePath);
+      if (!await src.exists()) {
+        _showSnack('画像ファイルが見つかりません');
+        return;
+      }
+
+      // path_provider の Android Downloads はアプリ専用領域を返すため、
+      // 公開 Download コレクションへ保存するネイティブ経路を使う。
+      if (!kIsWeb && Platform.isAndroid) {
+        Future<String> saveToAndroidDownloads() async {
+          final response =
+              await const MethodChannel('app/downloads').invokeMethod<Object?>(
+            'saveImage',
+            <String, Object?>{
+              'sourcePath': widget.filePath,
+              'fileName': widget.fileName,
+            },
+          );
+          if (response is Map) {
+            final displayPath = response['displayPath']?.toString();
+            if (displayPath != null && displayPath.isNotEmpty) {
+              return displayPath;
+            }
+          }
+          return 'Download/${widget.fileName}';
+        }
+
+        String savedPath;
+        try {
+          savedPath = await saveToAndroidDownloads();
+        } on PlatformException catch (e) {
+          if (e.code != 'permission_required') rethrow;
+          final status = await Permission.storage.request();
+          if (!status.isGranted) {
+            throw FileSystemException('システムのDownloadフォルダーへの書き込み権限がありません');
+          }
+          savedPath = await saveToAndroidDownloads();
+        }
+        _showSnack('✓ $savedPath に保存しました');
+        return;
+      }
+
       Directory? dir;
       try {
         dir = await getDownloadsDirectory();
       } catch (_) {}
       dir ??= await getApplicationDocumentsDirectory();
       final dst = File('${dir.path}/${widget.fileName}');
-      final src = File(widget.filePath);
-      if (!await src.exists()) {
-        _showSnack('画像ファイルが見つかりません');
-        return;
-      }
       await src.copy(dst.path);
       _showSnack('✓ ${dst.path} に保存しました');
     } catch (e) {
@@ -151656,64 +151771,81 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
                 bottom: BorderSide(color: Colors.white12, width: 1),
               ),
             ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                IconButton(
-                  tooltip:
-                      context.read<MindMapProvider>().t('imgAnno.rotate90'),
-                  icon: const Icon(Icons.rotate_right_rounded,
-                      color: Colors.white70, size: 22),
-                  onPressed: _rotate,
+            child: LayoutBuilder(
+              builder: (context, constraints) => SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(minWidth: constraints.maxWidth),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      IconButton(
+                        tooltip: context
+                            .read<MindMapProvider>()
+                            .t('imgAnno.rotateLeft90'),
+                        icon: const Icon(Icons.rotate_left_rounded,
+                            color: Colors.white70, size: 22),
+                        onPressed: _rotateCounterClockwise,
+                      ),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        tooltip: context
+                            .read<MindMapProvider>()
+                            .t('imgAnno.rotate90'),
+                        icon: const Icon(Icons.rotate_right_rounded,
+                            color: Colors.white70, size: 22),
+                        onPressed: _rotate,
+                      ),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        tooltip: context
+                            .read<MindMapProvider>()
+                            .t('imgAnno.downloadDevice'),
+                        icon: const Icon(Icons.download_rounded,
+                            color: Color(0xFF43B97F), size: 22),
+                        onPressed: _download,
+                      ),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        tooltip:
+                            context.read<MindMapProvider>().t('imgAnno.crop'),
+                        icon: const Icon(Icons.crop_rounded,
+                            color: Color(0xFF4FC3F7), size: 22),
+                        onPressed: () => setState(() => _mode = 'crop'),
+                      ),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        tooltip: context
+                            .read<MindMapProvider>()
+                            .t('imgAnno.annotate'),
+                        icon: const Icon(Icons.edit_rounded,
+                            color: Color(0xFFFFB347), size: 22),
+                        onPressed: () => setState(() => _mode = 'annotate'),
+                      ),
+                      const SizedBox(width: 8),
+                      // 編集前のファイルへ戻すことが伝わる文書復元アイコン。
+                      IconButton(
+                        tooltip:
+                            context.read<MindMapProvider>().t('img.resetEdit'),
+                        icon: Icon(Icons.restore_page_rounded,
+                            color: _hasBackup
+                                ? const Color(0xFFFF6B6B)
+                                : Colors.white24,
+                            size: 22),
+                        onPressed: _hasBackup ? _resetToOriginal : null,
+                      ),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        tooltip: context.read<MindMapProvider>().t('btn.close'),
+                        icon: const Icon(Icons.close_rounded,
+                            color: Colors.white70, size: 22),
+                        onPressed: () => Navigator.of(context).pop(),
+                      ),
+                    ],
+                  ),
                 ),
-                const SizedBox(width: 8),
-                IconButton(
-                  tooltip: context
-                      .read<MindMapProvider>()
-                      .t('imgAnno.downloadDevice'),
-                  icon: const Icon(Icons.download_rounded,
-                      color: Color(0xFF43B97F), size: 22),
-                  onPressed: _download,
-                ),
-                const SizedBox(width: 8),
-                IconButton(
-                  tooltip: context.read<MindMapProvider>().t('imgAnno.crop'),
-                  icon: const Icon(Icons.crop_rounded,
-                      color: Color(0xFF4FC3F7), size: 22),
-                  onPressed: () => setState(() => _mode = 'crop'),
-                ),
-                const SizedBox(width: 8),
-                IconButton(
-                  tooltip:
-                      context.read<MindMapProvider>().t('imgAnno.annotate'),
-                  icon: const Icon(Icons.edit_rounded,
-                      color: Color(0xFFFFB347), size: 22),
-                  onPressed: () => setState(() => _mode = 'annotate'),
-                ),
-                const SizedBox(width: 8),
-                // ── 編集内容をリセット (= 編集前の画像に戻す) ──
-                // バックアップがある (= 一度でも編集を適用した) 場合のみ活性。
-                IconButton(
-                  tooltip: context.read<MindMapProvider>().t('img.resetEdit'),
-                  icon: Icon(Icons.restart_alt_rounded,
-                      color:
-                          _hasBackup ? const Color(0xFFFF6B6B) : Colors.white24,
-                      size: 22),
-                  onPressed: _hasBackup ? _resetToOriginal : null,
-                ),
-                // ── 閉じる (= ユーザー要望: 閉じるボタンを更新ボタンの右に置いて
-                //    中央に寄せる) ──
-                // 旧仕様ではヘッダー右端に孤立していて押しづらかったので、
-                //   通常モードでは更新(リセット)ボタンの右隣・中央寄せの
-                //   ツールバー内に配置する。
-                const SizedBox(width: 8),
-                IconButton(
-                  tooltip: context.read<MindMapProvider>().t('btn.close'),
-                  icon: const Icon(Icons.close_rounded,
-                      color: Colors.white70, size: 22),
-                  onPressed: () => Navigator.of(context).pop(),
-                ),
-              ],
+              ),
             ),
           ),
         // ── 画像本体 ──
