@@ -1392,6 +1392,71 @@ class FlashcardFolder {
       id: j['id'] as String? ?? '', name: (j['name'] as String?) ?? '');
 }
 
+/// SharedPreferences 上のマップ本体を複数ウィンドウ／Web タブ間で
+/// 調停するためのスナップショット。
+///
+/// 従来の `mindmap_pages_v3` はページ配列を丸ごと上書きするため、二つの
+/// タブがほぼ同時に保存すると、最後に保存したタブの古い配列で別タブの変更が
+/// 消える。v4 はページ単位の更新時刻・削除時刻と commitId を同じ JSON に
+/// まとめ、保存直前に必ず再読込して三方向マージする。
+class _PageStorageSnapshot {
+  const _PageStorageSnapshot({
+    required this.revision,
+    required this.commitId,
+    required this.writtenAtMs,
+    required this.pagesJson,
+    required this.order,
+    required this.pageWriteTimes,
+    required this.pageAncestors,
+    required this.tombstones,
+    required this.orderWriteTimeMs,
+  });
+
+  final int revision;
+  final String commitId;
+  final int writtenAtMs;
+  final Map<String, String> pagesJson;
+  final List<String> order;
+  final Map<String, int> pageWriteTimes;
+  final Map<String, List<int>> pageAncestors;
+  final Map<String, int> tombstones;
+  final int orderWriteTimeMs;
+}
+
+/// UI の状態を同期 I/O の開始前に固定したもの。
+///
+/// SharedPreferences の await 中にもユーザー操作は続けられるため、保存処理から
+/// `_pages` を直接参照すると、一つの commit 内に異なる時点のデータが混ざる。
+class _PageStorageCapture {
+  const _PageStorageCapture({
+    required this.capturedAtMs,
+    required this.basePagesJson,
+    required this.basePageWriteTimes,
+    required this.basePageAncestors,
+    required this.baseOrder,
+    required this.baseOrderWriteTimeMs,
+    required this.pagesJson,
+    required this.order,
+    required this.pageWriteTimes,
+    required this.pageAncestors,
+    required this.tombstones,
+    required this.orderWriteTimeMs,
+  });
+
+  final int capturedAtMs;
+  final Map<String, String> basePagesJson;
+  final Map<String, int> basePageWriteTimes;
+  final Map<String, List<int>> basePageAncestors;
+  final List<String> baseOrder;
+  final int baseOrderWriteTimeMs;
+  final Map<String, String> pagesJson;
+  final List<String> order;
+  final Map<String, int> pageWriteTimes;
+  final Map<String, List<int>> pageAncestors;
+  final Map<String, int> tombstones;
+  final int orderWriteTimeMs;
+}
+
 class MindMapProvider extends ChangeNotifier {
   static bool isMergeablePageType(String pageType) =>
       pageType != 'videoEditor' && pageType != 'document';
@@ -1427,8 +1492,26 @@ class MindMapProvider extends ChangeNotifier {
   String? get shortcutFolderId => _shortcutFolderId;
   static const _kShortcutFolderId = 'shortcut_folder_id';
   static const _storageKey = 'mindmap_pages_v3';
+  static const _coordinatedStorageKey = 'mindmap_pages_v4_coordinated';
   static const _foldersStorageKey = 'mindmap_folders_v1';
   final _uuid = const Uuid();
+
+  // 同一 Provider 内の非同期保存を直列化する。別タブ／別プロセスとの調停は
+  // `_writeCoordinatedPageStorage` が保存直前の reload + 三方向マージで行う。
+  bool _pageStorageSaveRunning = false;
+  _PageStorageCapture? _pendingPageStorageCapture;
+  bool _pendingPageStoragePersistsFonts = false;
+  Completer<void>? _pendingPageStorageCompleter;
+  final String _pageStorageWriterId = const Uuid().v4();
+  int _pageStorageCommitSequence = 0;
+  int _pageStorageRevision = 0;
+  bool _pageStorageBaselineLoaded = false;
+  final Map<String, String> _pageStorageBaseJson = {};
+  final Map<String, int> _pageStorageBaseWriteTimes = {};
+  final Map<String, List<int>> _pageStorageBaseAncestors = {};
+  final List<String> _pageStorageBaseOrder = [];
+  int _pageStorageBaseOrderWriteTimeMs = 0;
+  final Map<String, int> _pageDeletionTombstones = {};
 
   // ─── カレンダー機能 ────────────────────────────────────────────────
   // 日付文字列 (YYYY-MM-DD) → その日のイベント一覧
@@ -32802,6 +32885,28 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Inverter pai/filho',
       'ru': 'Поменять родителя/ребёнка',
     },
+    'conn.roleParent': {
+      'ja': '親',
+      'en': 'Parent',
+      'zh': '父',
+      'ko': '부모',
+      'es': 'Padre',
+      'fr': 'Parent',
+      'de': 'Eltern',
+      'pt': 'Pai',
+      'ru': 'Родитель',
+    },
+    'conn.roleChild': {
+      'ja': '子',
+      'en': 'Child',
+      'zh': '子',
+      'ko': '자식',
+      'es': 'Hijo',
+      'fr': 'Enfant',
+      'de': 'Kind',
+      'pt': 'Filho',
+      'ru': 'Ребёнок',
+    },
     'conn.delete': {
       'ja': '削除',
       'en': 'Delete',
@@ -50231,6 +50336,871 @@ $cleanQ
   ///      (= 旧実装は途中で throw すると全ページ破棄 → データ全消失だった)。
   ///   3. クラウド/ディスク保存 (_saveToStorage) は notifyListeners の「後」に
   ///      await せず行う (= ネットワーク待ちで UI が出ないのを防ぐ)。
+  int _pageTimestampFromJson(String? raw) {
+    if (raw == null || raw.isEmpty) return 0;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return 0;
+      return (decoded['lastModifiedAt'] as num?)?.toInt() ?? 0;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  Map<String, int> _intMapFromJson(dynamic value) {
+    if (value is! Map) return <String, int>{};
+    final result = <String, int>{};
+    value.forEach((dynamic key, dynamic rawValue) {
+      final parsed = rawValue is num
+          ? rawValue.toInt()
+          : int.tryParse(rawValue?.toString() ?? '');
+      if (parsed != null && parsed >= 0) result[key.toString()] = parsed;
+    });
+    return result;
+  }
+
+  Map<String, List<int>> _intListMapFromJson(dynamic value) {
+    if (value is! Map) return <String, List<int>>{};
+    final result = <String, List<int>>{};
+    value.forEach((dynamic key, dynamic rawValue) {
+      if (rawValue is! List) return;
+      final values = rawValue
+          .map((dynamic item) =>
+              item is num ? item.toInt() : int.tryParse(item?.toString() ?? ''))
+          .whereType<int>()
+          .where((item) => item > 0)
+          .toSet()
+          .toList();
+      if (values.length > 64) {
+        result[key.toString()] = values.sublist(values.length - 64);
+      } else {
+        result[key.toString()] = values;
+      }
+    });
+    return result;
+  }
+
+  _PageStorageSnapshot? _decodeCoordinatedPageStorage(String? raw) {
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map || decoded['pages'] is! List) return null;
+      final pagesJson = <String, String>{};
+      final physicalOrder = <String>[];
+      for (final item in decoded['pages'] as List<dynamic>) {
+        if (item is! Map) continue;
+        final id = item['id']?.toString();
+        if (id == null || id.isEmpty) continue;
+        pagesJson[id] = jsonEncode(item);
+        physicalOrder.add(id);
+      }
+      final storedOrder = (decoded['order'] as List<dynamic>?)
+              ?.map((dynamic id) => id.toString())
+              .where(pagesJson.containsKey)
+              .toList() ??
+          physicalOrder;
+      for (final id in physicalOrder) {
+        if (!storedOrder.contains(id)) storedOrder.add(id);
+      }
+      final pageWriteTimes = _intMapFromJson(decoded['pageWriteTimes']);
+      for (final entry in pagesJson.entries) {
+        pageWriteTimes.putIfAbsent(
+          entry.key,
+          () => _pageTimestampFromJson(entry.value),
+        );
+      }
+      return _PageStorageSnapshot(
+        revision: (decoded['revision'] as num?)?.toInt() ?? 0,
+        commitId: decoded['commitId']?.toString() ?? '',
+        writtenAtMs: (decoded['writtenAtMs'] as num?)?.toInt() ?? 0,
+        pagesJson: pagesJson,
+        order: storedOrder,
+        pageWriteTimes: pageWriteTimes,
+        pageAncestors: _intListMapFromJson(decoded['pageAncestors']),
+        tombstones: _intMapFromJson(decoded['deletedPages']),
+        orderWriteTimeMs: (decoded['orderWriteTimeMs'] as num?)?.toInt() ?? 0,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  _PageStorageSnapshot? _decodeLegacyPageStorage(String? raw) {
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) return null;
+      final pagesJson = <String, String>{};
+      final order = <String>[];
+      final writeTimes = <String, int>{};
+      var writtenAt = 0;
+      for (final item in decoded) {
+        if (item is! Map) continue;
+        final id = item['id']?.toString();
+        if (id == null || id.isEmpty) continue;
+        final pageJson = jsonEncode(item);
+        pagesJson[id] = pageJson;
+        order.add(id);
+        final pageTime = _pageTimestampFromJson(pageJson);
+        writeTimes[id] = pageTime;
+        writtenAt = math.max(writtenAt, pageTime);
+      }
+      if (pagesJson.isEmpty) return null;
+      return _PageStorageSnapshot(
+        revision: 0,
+        commitId: 'legacy',
+        writtenAtMs: writtenAt,
+        pagesJson: pagesJson,
+        order: order,
+        pageWriteTimes: writeTimes,
+        pageAncestors: const <String, List<int>>{},
+        tombstones: const <String, int>{},
+        orderWriteTimeMs: writtenAt,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  _PageStorageSnapshot _emptyPageStorageSnapshot() =>
+      const _PageStorageSnapshot(
+        revision: 0,
+        commitId: '',
+        writtenAtMs: 0,
+        pagesJson: <String, String>{},
+        order: <String>[],
+        pageWriteTimes: <String, int>{},
+        pageAncestors: <String, List<int>>{},
+        tombstones: <String, int>{},
+        orderWriteTimeMs: 0,
+      );
+
+  void _adoptInitialPageStorageBaseline(_PageStorageSnapshot snapshot) {
+    _pageStorageBaselineLoaded = true;
+    _pageStorageRevision = snapshot.revision;
+    _pageStorageBaseJson
+      ..clear()
+      ..addAll(snapshot.pagesJson);
+    _pageStorageBaseWriteTimes
+      ..clear()
+      ..addAll(snapshot.pageWriteTimes);
+    _pageStorageBaseAncestors
+      ..clear()
+      ..addAll(snapshot.pageAncestors.map(
+        (id, values) => MapEntry(id, List<int>.from(values)),
+      ));
+    _pageStorageBaseOrder
+      ..clear()
+      ..addAll(snapshot.order);
+    _pageStorageBaseOrderWriteTimeMs = snapshot.orderWriteTimeMs;
+    _pageDeletionTombstones
+      ..clear()
+      ..addAll(snapshot.tombstones);
+  }
+
+  _PageStorageCapture _capturePageStorage({
+    required bool touchChangedPages,
+  }) {
+    final now = DateTime.now().toUtc().millisecondsSinceEpoch;
+    final basePagesJson =
+        Map<String, String>.unmodifiable(_pageStorageBaseJson);
+    final basePageWriteTimes =
+        Map<String, int>.unmodifiable(_pageStorageBaseWriteTimes);
+    final basePageAncestors =
+        Map<String, List<int>>.unmodifiable(_pageStorageBaseAncestors.map(
+      (id, values) => MapEntry(id, List<int>.unmodifiable(values)),
+    ));
+    final baseOrder = List<String>.unmodifiable(_pageStorageBaseOrder);
+    final baseOrderWriteTimeMs = _pageStorageBaseOrderWriteTimeMs;
+    final pagesJson = <String, String>{};
+    final pageWriteTimes = <String, int>{};
+    final pageAncestors = <String, List<int>>{};
+    final order = <String>[];
+    for (final page in _pages) {
+      var raw = jsonEncode(page.toJson());
+      final changed = raw != basePagesJson[page.id];
+      if (changed && touchChangedPages) {
+        page.lastModifiedAt =
+            DateTime.fromMillisecondsSinceEpoch(now, isUtc: true);
+        raw = jsonEncode(page.toJson());
+      }
+      pagesJson[page.id] = raw;
+      order.add(page.id);
+      pageWriteTimes[page.id] = changed
+          ? now
+          : (basePageWriteTimes[page.id] ?? _pageTimestampFromJson(raw));
+      final ancestors = List<int>.from(basePageAncestors[page.id] ?? const []);
+      if (changed) {
+        final baseVersion = basePageWriteTimes[page.id] ?? 0;
+        if (baseVersion > 0 && !ancestors.contains(baseVersion)) {
+          ancestors.add(baseVersion);
+        }
+      }
+      pageAncestors[page.id] = ancestors.length > 64
+          ? ancestors.sublist(ancestors.length - 64)
+          : ancestors;
+    }
+
+    final tombstones = Map<String, int>.from(_pageDeletionTombstones);
+    // 削除経路を将来追加した際にマーカーの付け忘れがあっても、ロード時に
+    // 存在していたページが消えていれば削除として扱う。
+    for (final id in basePagesJson.keys) {
+      if (!pagesJson.containsKey(id)) {
+        tombstones[id] = math.max(tombstones[id] ?? 0, now);
+        final ancestors = List<int>.from(basePageAncestors[id] ?? const []);
+        final baseVersion = basePageWriteTimes[id] ?? 0;
+        if (baseVersion > 0 && !ancestors.contains(baseVersion)) {
+          ancestors.add(baseVersion);
+        }
+        pageAncestors[id] = ancestors.length > 64
+            ? ancestors.sublist(ancestors.length - 64)
+            : ancestors;
+      }
+    }
+    _pageDeletionTombstones.addAll(tombstones);
+
+    final orderChanged = !listEquals(order, baseOrder);
+    return _PageStorageCapture(
+      capturedAtMs: now,
+      basePagesJson: basePagesJson,
+      basePageWriteTimes: basePageWriteTimes,
+      basePageAncestors: basePageAncestors,
+      baseOrder: baseOrder,
+      baseOrderWriteTimeMs: baseOrderWriteTimeMs,
+      pagesJson: pagesJson,
+      order: order,
+      pageWriteTimes: pageWriteTimes,
+      pageAncestors: pageAncestors,
+      tombstones: tombstones,
+      orderWriteTimeMs: orderChanged ? now : baseOrderWriteTimeMs,
+    );
+  }
+
+  void _mergeMaxTimestamps(
+    Map<String, int> target,
+    Map<String, int> source,
+  ) {
+    for (final entry in source.entries) {
+      target[entry.key] = math.max(target[entry.key] ?? 0, entry.value);
+    }
+  }
+
+  bool _samePageContent(String? left, String? right) {
+    if (left == right) return true;
+    if (left == null || right == null) return false;
+    try {
+      final leftJson = Map<String, dynamic>.from(jsonDecode(left) as Map)
+        ..remove('lastModifiedAt');
+      final rightJson = Map<String, dynamic>.from(jsonDecode(right) as Map)
+        ..remove('lastModifiedAt');
+      return jsonEncode(leftJson) == jsonEncode(rightJson);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  String _stableStorageHash(String value) {
+    var hash = 0x811c9dc5;
+    for (final unit in value.codeUnits) {
+      hash = ((hash ^ unit) * 0x01000193) & 0xffffffff;
+    }
+    return hash.toRadixString(16).padLeft(8, '0');
+  }
+
+  ({String id, String json})? _makePageConflictCopy(
+    String originalId,
+    String raw,
+    int version,
+  ) {
+    try {
+      final pageJson = Map<String, dynamic>.from(jsonDecode(raw) as Map);
+      final originalName = pageJson['name']?.toString() ?? '';
+      final suffix = _appLanguage == 'ja' ? '（競合コピー）' : ' (conflict copy)';
+      final conflictId =
+          '${originalId}_conflict_${version}_${_stableStorageHash(raw)}';
+      pageJson
+        ..['id'] = conflictId
+        ..['name'] = originalName.endsWith(suffix)
+            ? originalName
+            : '$originalName$suffix'
+        ..['lastModifiedAt'] = math.max(version, 1);
+      return (id: conflictId, json: jsonEncode(pageJson));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  _PageStorageSnapshot _mergePageStorage(
+    _PageStorageCapture local,
+    _PageStorageSnapshot remote,
+  ) {
+    final mergedPages = <String, String>{};
+    final mergedWriteTimes = <String, int>{};
+    final mergedAncestors = <String, List<int>>{};
+    final mergedTombstones = <String, int>{};
+    final conflictOrder = <String>[];
+    _mergeMaxTimestamps(mergedTombstones, remote.tombstones);
+    _mergeMaxTimestamps(mergedTombstones, local.tombstones);
+
+    final ids = <String>{
+      ...local.basePagesJson.keys,
+      ...local.pagesJson.keys,
+      ...remote.pagesJson.keys,
+      ...mergedTombstones.keys,
+    };
+    for (final id in ids) {
+      final baseJson = local.basePagesJson[id];
+      final localJson = local.pagesJson[id];
+      final remoteJson = remote.pagesJson[id];
+      final localChanged = localJson != baseJson;
+      final remoteChanged = remoteJson != baseJson;
+      final localVersion = localJson == null
+          ? (local.tombstones[id] ?? local.capturedAtMs)
+          : (local.pageWriteTimes[id] ?? _pageTimestampFromJson(localJson));
+      final remoteVersion = remoteJson == null
+          ? (remote.tombstones[id] ?? remote.writtenAtMs)
+          : (remote.pageWriteTimes[id] ?? _pageTimestampFromJson(remoteJson));
+      final localAncestors =
+          List<int>.from(local.pageAncestors[id] ?? const []);
+      final remoteAncestors =
+          List<int>.from(remote.pageAncestors[id] ?? const []);
+
+      String? selectedJson;
+      int selectedVersion;
+      List<int> selectedAncestors;
+      String? losingJson;
+      int losingVersion = 0;
+      List<int> losingAncestors = const [];
+      if (localJson == remoteJson) {
+        selectedJson = localJson;
+        selectedVersion = math.max(localVersion, remoteVersion);
+        selectedAncestors = <int>{
+          ...localAncestors,
+          ...remoteAncestors,
+        }.toList();
+      } else if (!localChanged) {
+        selectedJson = remoteJson;
+        selectedVersion = remoteVersion;
+        selectedAncestors = remoteAncestors;
+        final baseVersion = local.basePageWriteTimes[id] ?? 0;
+        final remoteDescendsFromBase = baseVersion <= 0 ||
+            remoteVersion == baseVersion ||
+            remoteAncestors.contains(baseVersion);
+        if (!remoteDescendsFromBase &&
+            localJson != null &&
+            !_samePageContent(localJson, remoteJson)) {
+          losingJson = localJson;
+          losingVersion = localVersion;
+          losingAncestors = localAncestors;
+        }
+      } else if (!remoteChanged) {
+        selectedJson = localJson;
+        selectedVersion = localVersion;
+        selectedAncestors = localAncestors;
+      } else if (localVersion > remoteVersion) {
+        selectedJson = localJson;
+        selectedVersion = localVersion;
+        selectedAncestors = localAncestors;
+        losingJson = remoteJson;
+        losingVersion = remoteVersion;
+        losingAncestors = remoteAncestors;
+      } else {
+        // 同一ミリ秒の場合も全タブが同じ選択をするよう remote を優先し、
+        // 競合再試行が互いに上書きし続ける状態を避ける。
+        selectedJson = remoteJson;
+        selectedVersion = remoteVersion;
+        selectedAncestors = remoteAncestors;
+        losingJson = localJson;
+        losingVersion = localVersion;
+        losingAncestors = localAncestors;
+      }
+
+      final losingAlreadyAncestor =
+          losingVersion > 0 && selectedAncestors.contains(losingVersion);
+      if (losingVersion > 0 && !selectedAncestors.contains(losingVersion)) {
+        selectedAncestors.add(losingVersion);
+      }
+      for (final ancestor in losingAncestors) {
+        if (!selectedAncestors.contains(ancestor)) {
+          selectedAncestors.add(ancestor);
+        }
+      }
+      if (selectedAncestors.length > 64) {
+        selectedAncestors =
+            selectedAncestors.sublist(selectedAncestors.length - 64);
+      }
+      if (selectedJson != null || selectedAncestors.isNotEmpty) {
+        mergedAncestors[id] = selectedAncestors;
+      }
+
+      final deletedAt = mergedTombstones[id] ?? 0;
+      // ミリ秒精度で編集と削除が同時刻になった場合は、復元不能なデータ損失を
+      // 避けるためページ側を優先する。明確に新しい削除だけがページを抑止する。
+      if (selectedJson != null && selectedVersion >= deletedAt) {
+        mergedPages[id] = selectedJson;
+        mergedWriteTimes[id] = selectedVersion;
+      }
+      if (!losingAlreadyAncestor &&
+          losingJson != null &&
+          !_samePageContent(losingJson, selectedJson)) {
+        final conflict = _makePageConflictCopy(id, losingJson, losingVersion);
+        if (conflict != null) {
+          mergedPages.putIfAbsent(conflict.id, () => conflict.json);
+          mergedWriteTimes.putIfAbsent(
+            conflict.id,
+            () => math.max(losingVersion, 1),
+          );
+          mergedAncestors.putIfAbsent(
+            conflict.id,
+            () => List<int>.from(losingAncestors),
+          );
+          if (!conflictOrder.contains(conflict.id)) {
+            conflictOrder.add(conflict.id);
+          }
+        }
+      }
+    }
+
+    final localOrderChanged = !listEquals(local.order, local.baseOrder);
+    final remoteOrderChanged = !listEquals(remote.order, local.baseOrder);
+    final List<String> preferredOrder;
+    final int mergedOrderWriteTime;
+    if (!localOrderChanged) {
+      preferredOrder = remote.order;
+      mergedOrderWriteTime = remote.orderWriteTimeMs;
+    } else if (!remoteOrderChanged ||
+        local.orderWriteTimeMs > remote.orderWriteTimeMs) {
+      preferredOrder = local.order;
+      mergedOrderWriteTime = local.orderWriteTimeMs;
+    } else {
+      preferredOrder = remote.order;
+      mergedOrderWriteTime = remote.orderWriteTimeMs;
+    }
+    final mergedOrder = <String>[];
+    void appendOrder(Iterable<String> source) {
+      for (final id in source) {
+        if (mergedPages.containsKey(id) && !mergedOrder.contains(id)) {
+          mergedOrder.add(id);
+        }
+      }
+    }
+
+    appendOrder(preferredOrder);
+    appendOrder(local.order);
+    appendOrder(remote.order);
+    appendOrder(conflictOrder);
+    final remaining = mergedPages.keys
+        .where((id) => !mergedOrder.contains(id))
+        .toList()
+      ..sort();
+    mergedOrder.addAll(remaining);
+
+    return _PageStorageSnapshot(
+      revision: math.max(_pageStorageRevision, remote.revision),
+      commitId: '',
+      writtenAtMs: math.max(local.capturedAtMs, remote.writtenAtMs),
+      pagesJson: mergedPages,
+      order: mergedOrder,
+      pageWriteTimes: mergedWriteTimes,
+      pageAncestors: mergedAncestors,
+      tombstones: mergedTombstones,
+      orderWriteTimeMs: mergedOrderWriteTime,
+    );
+  }
+
+  String _encodeCoordinatedPageStorage(_PageStorageSnapshot snapshot) {
+    final orderedPages = <dynamic>[];
+    for (final id in snapshot.order) {
+      final raw = snapshot.pagesJson[id];
+      if (raw == null) continue;
+      try {
+        orderedPages.add(jsonDecode(raw));
+      } catch (_) {}
+    }
+    return jsonEncode({
+      'schema': 4,
+      'revision': snapshot.revision,
+      'commitId': snapshot.commitId,
+      'writtenAtMs': snapshot.writtenAtMs,
+      'orderWriteTimeMs': snapshot.orderWriteTimeMs,
+      'order': snapshot.order,
+      'pageWriteTimes': snapshot.pageWriteTimes,
+      'pageAncestors': snapshot.pageAncestors,
+      'deletedPages': snapshot.tombstones,
+      'pages': orderedPages,
+    });
+  }
+
+  String _encodeLegacyPageList(_PageStorageSnapshot snapshot) {
+    final pages = <dynamic>[];
+    for (final id in snapshot.order) {
+      final raw = snapshot.pagesJson[id];
+      if (raw == null) continue;
+      try {
+        pages.add(jsonDecode(raw));
+      } catch (_) {}
+    }
+    return jsonEncode(pages);
+  }
+
+  void _acceptCommittedPageStorage(
+    _PageStorageCapture capture,
+    _PageStorageSnapshot committed,
+  ) {
+    _pageStorageBaselineLoaded = true;
+    _pageStorageRevision = math.max(
+      _pageStorageRevision,
+      committed.revision,
+    );
+    var currentJson = <String, String>{
+      for (final page in _pages) page.id: jsonEncode(page.toJson()),
+    };
+    final currentPageId = _pages.isNotEmpty &&
+            _currentPageIndex >= 0 &&
+            _currentPageIndex < _pages.length
+        ? _pages[_currentPageIndex].id
+        : null;
+    var memoryChanged = false;
+
+    // ローカルが基準から変わっておらず、かつ保存待ちの間にも変化していない
+    // ページだけ、別タブで確定した内容をメモリにも反映する。これにより古い
+    // 表示を後から編集して、同一ページの新しい変更を上書きするのを防ぐ。
+    final candidateIds = <String>{
+      ...capture.basePagesJson.keys,
+      ...capture.pagesJson.keys,
+      ...committed.pagesJson.keys,
+    };
+    final remotelyWonConflictIds = candidateIds.where((id) {
+      final captured = capture.pagesJson[id];
+      return captured != capture.basePagesJson[id] &&
+          currentJson[id] == captured &&
+          committed.pagesJson[id] != captured;
+    }).toList();
+    final externallyChangedIds = candidateIds.where((id) {
+      final captured = capture.pagesJson[id];
+      return (captured == capture.basePagesJson[id] ||
+              remotelyWonConflictIds.contains(id)) &&
+          currentJson[id] == captured &&
+          committed.pagesJson[id] != captured;
+    }).toList();
+
+    // 追加・更新を先に適用し、その後に削除する。別タブが「旧ページを削除し
+    // 新ページを追加」した commit でも、常に最低一ページを維持できる。
+    for (final id in externallyChangedIds) {
+      final raw = committed.pagesJson[id];
+      if (raw == null) continue;
+      try {
+        final page = MindMapPage.fromJson(
+          jsonDecode(raw) as Map<String, dynamic>,
+        );
+        final index = _pages.indexWhere((candidate) => candidate.id == id);
+        if (index >= 0) {
+          _pages[index] = page;
+        } else {
+          _pages.add(page);
+        }
+        _undoStacks.remove(id);
+        _redoStacks.remove(id);
+        memoryChanged = true;
+      } catch (_) {}
+    }
+    for (final id in externallyChangedIds) {
+      if (committed.pagesJson.containsKey(id) || _pages.length <= 1) {
+        continue;
+      }
+      final index = _pages.indexWhere((candidate) => candidate.id == id);
+      if (index >= 0) {
+        _pages.removeAt(index);
+        _undoStacks.remove(id);
+        _redoStacks.remove(id);
+        memoryChanged = true;
+      }
+    }
+
+    final orderUnchangedSinceCapture = listEquals(
+      currentJson.keys.toList(),
+      capture.order,
+    );
+    if (orderUnchangedSinceCapture) {
+      final byId = <String, MindMapPage>{
+        for (final page in _pages) page.id: page,
+      };
+      final reordered = <MindMapPage>[];
+      for (final id in committed.order) {
+        final page = byId.remove(id);
+        if (page != null) reordered.add(page);
+      }
+      reordered.addAll(byId.values);
+      if (!listEquals(
+        reordered.map((page) => page.id).toList(),
+        _pages.map((page) => page.id).toList(),
+      )) {
+        _pages
+          ..clear()
+          ..addAll(reordered);
+        memoryChanged = true;
+      }
+    }
+
+    if (currentPageId != null) {
+      final newIndex = _pages.indexWhere((page) => page.id == currentPageId);
+      _currentPageIndex = newIndex >= 0
+          ? newIndex
+          : _currentPageIndex.clamp(0, _pages.length - 1);
+    } else {
+      _currentPageIndex = _currentPageIndex.clamp(0, _pages.length - 1);
+    }
+    if (_selectedNodeId != null &&
+        !_pages[_currentPageIndex].nodes.containsKey(_selectedNodeId)) {
+      _selectedNodeId = null;
+    }
+
+    currentJson = <String, String>{
+      for (final page in _pages) page.id: jsonEncode(page.toJson()),
+    };
+
+    // メモリが capture 時点から変わっていないページだけ基準を進める。
+    // await 中に行われた編集を「保存済み」と誤認しないため。
+    for (final entry in committed.pagesJson.entries) {
+      if (currentJson[entry.key] == entry.value) {
+        _pageStorageBaseJson[entry.key] = entry.value;
+        _pageStorageBaseWriteTimes[entry.key] =
+            committed.pageWriteTimes[entry.key] ?? capture.capturedAtMs;
+        _pageStorageBaseAncestors[entry.key] = List<int>.from(
+          committed.pageAncestors[entry.key] ?? const [],
+        );
+      }
+    }
+    final removedBaseIds = _pageStorageBaseJson.keys
+        .where((id) =>
+            !currentJson.containsKey(id) &&
+            !committed.pagesJson.containsKey(id))
+        .toList();
+    for (final id in removedBaseIds) {
+      _pageStorageBaseJson.remove(id);
+      _pageStorageBaseWriteTimes.remove(id);
+      _pageStorageBaseAncestors.remove(id);
+    }
+    _mergeMaxTimestamps(
+      _pageDeletionTombstones,
+      committed.tombstones,
+    );
+
+    final currentOrder = _pages.map((page) => page.id).toList();
+    if (listEquals(currentOrder, committed.order)) {
+      _pageStorageBaseOrder
+        ..clear()
+        ..addAll(committed.order);
+      _pageStorageBaseOrderWriteTimeMs = committed.orderWriteTimeMs;
+    }
+    if (memoryChanged) notifyListeners();
+  }
+
+  Future<RandomAccessFile?> _acquirePageStorageFileLock() async {
+    if (kIsWeb) return null;
+    final supportDirectory = await getApplicationSupportDirectory();
+    if (!await supportDirectory.exists()) {
+      await supportDirectory.create(recursive: true);
+    }
+    final lockFile = File(
+      '${supportDirectory.path}${Platform.pathSeparator}'
+      'mindmap_pages_v4.lock',
+    );
+    final handle = await lockFile.open(mode: FileMode.append);
+    try {
+      await handle.lock(FileLock.blockingExclusive);
+      return handle;
+    } catch (_) {
+      await handle.close();
+      rethrow;
+    }
+  }
+
+  Future<void> _releasePageStorageFileLock(
+    RandomAccessFile? handle,
+  ) async {
+    if (handle == null) return;
+    try {
+      await handle.unlock();
+    } catch (error) {
+      debugPrint('page storage lock release failed: $error');
+    }
+    try {
+      await handle.close();
+    } catch (error) {
+      debugPrint('page storage lock close failed: $error');
+    }
+  }
+
+  Future<void> _writeCoordinatedPageStorage(
+    _PageStorageCapture capture, {
+    required bool persistFontSettings,
+  }) async {
+    RandomAccessFile? storageLock;
+    try {
+      // SharedPreferences の reload/set はネイティブではプロセス間の原子性を
+      // 保証しないため、read-modify-write と検証を同じ OS ロック内で行う。
+      // Web はファイル API がないので commitId + retry の best-effort 調停。
+      storageLock = await _acquirePageStorageFileLock();
+      final prefs = await _prefsWithRetry();
+      _PageStorageSnapshot? lastCommitted;
+      Object? lastError;
+      StackTrace? lastStackTrace;
+      for (var attempt = 0; attempt < 4; attempt++) {
+        try {
+          await prefs.reload();
+          final remote = _decodeCoordinatedPageStorage(
+                prefs.getString(_coordinatedStorageKey),
+              ) ??
+              _decodeLegacyPageStorage(prefs.getString(_storageKey)) ??
+              _emptyPageStorageSnapshot();
+          final merged = _mergePageStorage(capture, remote);
+          final now = DateTime.now().toUtc().millisecondsSinceEpoch;
+          final commitId =
+              '$_pageStorageWriterId-${++_pageStorageCommitSequence}-$now';
+          final committed = _PageStorageSnapshot(
+            revision: math.max(merged.revision, remote.revision) + 1,
+            commitId: commitId,
+            writtenAtMs: now,
+            pagesJson: merged.pagesJson,
+            order: merged.order,
+            pageWriteTimes: merged.pageWriteTimes,
+            pageAncestors: merged.pageAncestors,
+            tombstones: merged.tombstones,
+            orderWriteTimeMs: merged.orderWriteTimeMs,
+          );
+          lastCommitted = committed;
+          await prefs.setString(
+            _coordinatedStorageKey,
+            _encodeCoordinatedPageStorage(committed),
+          );
+          // 旧バージョンからの読み込み互換用。現行版は必ず v4 を正とする。
+          await prefs.setString(_storageKey, _encodeLegacyPageList(committed));
+
+          // ほぼ同時に別タブが書いた場合を commitId で検出し、その内容を再度
+          // 三方向マージする。短い安定待ちを置くことで同時書込みを拾いやすくする。
+          await Future<void>.delayed(const Duration(milliseconds: 12));
+          await prefs.reload();
+          final observed = _decodeCoordinatedPageStorage(
+            prefs.getString(_coordinatedStorageKey),
+          );
+          if (observed?.commitId == commitId) {
+            _acceptCommittedPageStorage(capture, committed);
+            if (persistFontSettings) {
+              await prefs.setDouble(
+                'defaultTitleFontSize',
+                defaultTitleFontSize,
+              );
+              await prefs.setDouble(
+                'defaultMemoFontSize',
+                defaultMemoFontSize,
+              );
+            }
+            return;
+          }
+          lastError = StateError(
+            'page storage commit was superseded before verification',
+          );
+          lastStackTrace = StackTrace.current;
+        } catch (error, stackTrace) {
+          lastError = error;
+          lastStackTrace = stackTrace;
+        }
+        if (attempt < 3) {
+          await Future<void>.delayed(
+            Duration(milliseconds: 20 * (attempt + 1)),
+          );
+        }
+      }
+      // 最終書込み自体は成功している可能性がある。基準を進めず、呼出元へ
+      // 失敗を返す。fire-and-forget 経路のログ処理は queue 側で行う。
+      debugPrint(
+        'page storage commit was repeatedly superseded; '
+        'will reconcile on next save '
+        '(${lastCommitted?.commitId}, error: $lastError)',
+      );
+      if (lastError != null && lastStackTrace != null) {
+        Error.throwWithStackTrace(lastError, lastStackTrace);
+      }
+      throw StateError(
+        'page storage commit failed after all retry attempts',
+      );
+    } finally {
+      await _releasePageStorageFileLock(storageLock);
+    }
+  }
+
+  Future<void> _queuePageStorageSave(
+    _PageStorageCapture capture, {
+    required bool persistFontSettings,
+  }) {
+    // ドラッグ中は保存要求が高頻度で発生する。実行中の一件と最新の待機中
+    // 一件だけを残し、中間状態をまとめて I/O 待ちの長いキューを作らない。
+    _pendingPageStorageCapture = capture;
+    _pendingPageStoragePersistsFonts =
+        _pendingPageStoragePersistsFonts || persistFontSettings;
+    var completer = _pendingPageStorageCompleter;
+    if (completer == null) {
+      completer = Completer<void>();
+      _pendingPageStorageCompleter = completer;
+      // 元の Future は await 呼出元へエラーを伝える。同時に派生 Future で
+      // 即座にエラーを消費・記録し、fire-and-forget 呼出の未処理例外を防ぐ。
+      unawaited(
+        completer.future.then<void>(
+          (_) {},
+          onError: (Object error, StackTrace stackTrace) {
+            debugPrint(
+              'coordinated page save failed: $error\n$stackTrace',
+            );
+          },
+        ),
+      );
+    }
+    unawaited(_drainPageStorageSaves());
+    return completer.future;
+  }
+
+  Future<void> _drainPageStorageSaves() async {
+    if (_pageStorageSaveRunning) return;
+    _pageStorageSaveRunning = true;
+    try {
+      while (_pendingPageStorageCapture != null) {
+        final capture = _pendingPageStorageCapture!;
+        final persistFonts = _pendingPageStoragePersistsFonts;
+        final completer = _pendingPageStorageCompleter;
+        _pendingPageStorageCapture = null;
+        _pendingPageStoragePersistsFonts = false;
+        _pendingPageStorageCompleter = null;
+        try {
+          await _writeCoordinatedPageStorage(
+            capture,
+            persistFontSettings: persistFonts,
+          );
+          if (completer != null && !completer.isCompleted) {
+            completer.complete();
+          }
+        } catch (error, stackTrace) {
+          if (completer != null && !completer.isCompleted) {
+            completer.completeError(error, stackTrace);
+          }
+        }
+      }
+    } finally {
+      _pageStorageSaveRunning = false;
+      // finally と次のイベントの境界で追加された要求も取りこぼさない。
+      if (_pendingPageStorageCapture != null) {
+        unawaited(_drainPageStorageSaves());
+      }
+    }
+  }
+
+  void _markPageDeletedForStorage(String pageId) {
+    if (pageId.isEmpty) return;
+    final now = DateTime.now().toUtc().millisecondsSinceEpoch;
+    _pageDeletionTombstones[pageId] =
+        math.max(_pageDeletionTombstones[pageId] ?? 0, now);
+  }
+
   Future<void> _loadFromStorage() async {
     try {
       // フォルダー一覧を先に読む（ページ読み込み時に検証で使う）。
@@ -50240,13 +51210,32 @@ $cleanQ
       } catch (_) {}
 
       final prefs = await _prefsWithRetry();
+      try {
+        await prefs.reload();
+      } catch (_) {}
 
-      // v3 → 失敗(0枚)なら v2 から移行。 いずれも 1 枚ずつ復元する。
-      bool loaded = _tryLoadPagesFrom(prefs.getString(_storageKey));
-      bool migratedFromV2 = false;
-      if (!loaded) {
-        loaded = _tryLoadPagesFrom(prefs.getString('mindmap_pages_v2'));
-        migratedFromV2 = loaded;
+      // v4 は複数タブ調停済みの原本。存在する場合は空のスナップショットも
+      // 削除結果として尊重し、古い v3 を復活させない。
+      final coordinated = _decodeCoordinatedPageStorage(
+        prefs.getString(_coordinatedStorageKey),
+      );
+      bool loaded = false;
+      bool needsCoordinatedMigration = false;
+      if (coordinated != null) {
+        loaded = _tryLoadPagesFrom(_encodeLegacyPageList(coordinated));
+        _adoptInitialPageStorageBaseline(coordinated);
+      } else {
+        // v3 → 失敗(0枚)なら v2 から移行。いずれも 1 枚ずつ復元する。
+        var legacyRaw = prefs.getString(_storageKey);
+        var legacy = _decodeLegacyPageStorage(legacyRaw);
+        loaded = _tryLoadPagesFrom(legacyRaw);
+        if (!loaded) {
+          legacyRaw = prefs.getString('mindmap_pages_v2');
+          legacy = _decodeLegacyPageStorage(legacyRaw);
+          loaded = _tryLoadPagesFrom(legacyRaw);
+        }
+        if (legacy != null) _adoptInitialPageStorageBaseline(legacy);
+        needsCoordinatedMigration = loaded;
       }
 
       final bool freshOrEmpty = _pages.isEmpty;
@@ -50256,9 +51245,9 @@ $cleanQ
       // ★ まず UI を出す（ここまで来れば必ず pages は 1 枚以上）。
       notifyListeners();
 
-      // v2 からの移行 / 新規デフォルト作成時のみ、 UI 表示後に保存する
+      // 旧形式からの移行 / 新規デフォルト作成時のみ、 UI 表示後に保存する
       // (await しない = ネットワーク自動同期で起動が固まらないように)。
-      if (migratedFromV2 || freshOrEmpty) {
+      if (needsCoordinatedMigration || freshOrEmpty) {
         // ignore: discarded_futures
         _saveToStorage();
       }
@@ -50383,18 +51372,15 @@ $cleanQ
     }
   }
 
-  Future<void> _saveToStorage() async {
-    // 現在ページの最終更新日時を更新(編集のたびに呼ばれる経路)
-    if (_pages.isNotEmpty &&
-        _currentPageIndex >= 0 &&
-        _currentPageIndex < _pages.length) {
-      _pages[_currentPageIndex].lastModifiedAt = DateTime.now();
-    }
-    final prefs = await _prefsWithRetry();
-    await prefs.setString(
-        _storageKey, jsonEncode(_pages.map((p) => p.toJson()).toList()));
-    await prefs.setDouble('defaultTitleFontSize', defaultTitleFontSize);
-    await prefs.setDouble('defaultMemoFontSize', defaultMemoFontSize);
+  Future<void> _saveToStorage() {
+    // 基準スナップショットとの差分があるページだけ更新扱いにする。
+    // 「現在ページだから」という理由だけで時刻を進めると、古いタブを触った
+    // だけで別タブの新しい編集を上書きしてしまうため。
+    final capture = _capturePageStorage(touchChangedPages: true);
+    final save = _queuePageStorageSave(
+      capture,
+      persistFontSettings: true,
+    );
     // 自動同期が有効なページがあればデバウンス付きで同期
     _triggerAutoSync();
     // ── linkedDir フォルダーへの自動書き出し ──
@@ -50406,13 +51392,27 @@ $cleanQ
       // await しない (UI への影響を避けるため fire-and-forget)
       autoSavePageIfLinked(_pages[_currentPageIndex].id);
     }
+    return save;
   }
 
   /// Firestoreからの受信時に使用（ループ防止のためFirestore書き込みをしない）
-  Future<void> _saveToStorageLocal() async {
-    final prefs = await _prefsWithRetry();
-    await prefs.setString(
-        _storageKey, jsonEncode(_pages.map((p) => p.toJson()).toList()));
+  Future<void> _saveToStorageLocal() => _queuePageStorageSave(
+        _capturePageStorage(touchChangedPages: false),
+        persistFontSettings: false,
+      );
+
+  /// Web タブ／別ウィンドウから復帰した時に、未編集のページへ外部 commit を
+  /// 反映する。ローカルに差分があれば通常の三方向マージで保護される。
+  Future<void> reconcilePageStorageFromOtherTabs() {
+    // 初回ロード中に受信データを適用すると、その直後のロード処理が同じページを
+    // append して重複するため、初期基準が確定するまでは何もしない。
+    if (_pages.isEmpty || !_pageStorageBaselineLoaded) {
+      return Future<void>.value();
+    }
+    return _queuePageStorageSave(
+      _capturePageStorage(touchChangedPages: false),
+      persistFontSettings: false,
+    );
   }
 
   /// ページ種別ごとの既定名プレフィックス (= ユーザー要望: ビデオエディター
@@ -50636,6 +51636,7 @@ $cleanQ
     _lastDeletedPageIndex = index;
     _lastDeletedPageWasHidden = _hiddenPageIds.contains(deletedId);
     _lastDeletedPageWasFavorite = _favoritePageIds.contains(deletedId);
+    _markPageDeletedForStorage(deletedId);
     _pages.removeAt(index);
     _currentPageIndex = _currentPageIndex.clamp(0, _pages.length - 1);
     _selectedNodeId = null;
@@ -50656,7 +51657,10 @@ $cleanQ
       return false;
     }
     final insertAt = _lastDeletedPageIndex.clamp(0, _pages.length);
-    _pages.insert(insertAt, _clonePageForUndo(page));
+    final restored = _clonePageForUndo(page)
+      ..lastModifiedAt = DateTime.now().toUtc();
+    _pageDeletionTombstones.remove(page.id);
+    _pages.insert(insertAt, restored);
     _currentPageIndex = insertAt;
     _selectedNodeId = null;
     if (_lastDeletedPageWasHidden) _hiddenPageIds.add(page.id);
@@ -50966,6 +51970,7 @@ $cleanQ
       for (final p in toDelete) {
         final i = _pages.indexOf(p);
         if (i >= 0 && _pages.length > 1) {
+          _markPageDeletedForStorage(p.id);
           _pages.removeAt(i);
           _deletePageFromFirestore(p.id);
         }
@@ -51012,6 +52017,7 @@ $cleanQ
       if (_pages.length <= 1) break;
       final i = _pages.indexWhere((e) => e.id == pid);
       if (i < 0) continue;
+      _markPageDeletedForStorage(pid);
       _pages.removeAt(i);
       _deletePageFromFirestore(pid);
     }
@@ -53173,6 +54179,34 @@ $cleanQ
 
   void updateConnectionBendPoints(NodeConnection target, List<Offset> points) {
     updateConnections([target], elbowBendPoints: List<Offset>.from(points));
+  }
+
+  /// 複数リンクの節点を1回のドラッグとしてまとめて更新する。
+  /// [recordHistory] はドラッグ開始後の最初の更新だけ true にすることで、
+  /// Ctrl/Meta で選択した節点の一括移動を Undo 1 回で元に戻せる。
+  void updateConnectionBendPointsBatch(
+    Map<NodeConnection, List<Offset>> updates, {
+    bool recordHistory = true,
+  }) {
+    if (updates.isEmpty) return;
+    final conns = currentPage.connections;
+    final resolved = <int, List<Offset>>{};
+    for (final entry in updates.entries) {
+      final index = conns.indexWhere((connection) =>
+          connection.fromId == entry.key.fromId &&
+          connection.toId == entry.key.toId);
+      if (index >= 0) {
+        resolved[index] = List<Offset>.from(entry.value);
+      }
+    }
+    if (resolved.isEmpty) return;
+    if (recordHistory) _pushUndo();
+    for (final entry in resolved.entries) {
+      conns[entry.key] =
+          conns[entry.key].copyWith(elbowBendPoints: entry.value);
+    }
+    _saveToStorage();
+    notifyListeners();
   }
 
   void updateConnectionLabelPosition(NodeConnection target, double position) {
@@ -59621,6 +60655,9 @@ $example
 
     final sourceIds = srcs.map((p) => p.id).toSet();
     _pages.add(merged);
+    for (final pid in sourceIds) {
+      _markPageDeletedForStorage(pid);
+    }
     _pages.removeWhere((p) => sourceIds.contains(p.id));
     for (final pid in sourceIds) {
       _clearDeletedPageRuntimeState(pid);

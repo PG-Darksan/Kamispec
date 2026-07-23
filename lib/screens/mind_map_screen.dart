@@ -887,6 +887,9 @@ class _MindMapScreenState extends State<MindMapScreen>
   // 真上」 に重ねる際、 キャンバス座標 → グローバル座標 → この Stack の
   // ローカル座標へ変換するために使う (ユーザー要望)。
   final GlobalKey _bodyStackKey = GlobalKey();
+  // 分割表示を除いた、実際のマップ表示領域。ホイール移動とスクロールバーの
+  // クランプ計算を全画面サイズではなく現在のビューポートに合わせるために使う。
+  final GlobalKey _mapViewportKey = GlobalKey();
 
   // moveMode（長押し後の移動モード）
   String? _moveModeNodeId;
@@ -992,6 +995,14 @@ class _MindMapScreenState extends State<MindMapScreen>
   final Set<NodeConnection> _selectedConnections = {};
   NodeConnection? _draggingConnectionBend;
   int? _draggingConnectionBendIndex;
+  final Set<({String fromId, String toId, int index})>
+      _selectedConnectionBends = {};
+  bool _connectionBendPointerActive = false;
+  Offset? _connectionBendDragStart;
+  Map<NodeConnection, List<Offset>> _connectionBendDragInitialPoints = {};
+  bool _connectionBendDragHistoryRecorded = false;
+  bool _connectionBendDragMoved = false;
+  ({String fromId, String toId, int index})? _pendingConnectionBendToggleOff;
   NodeConnection? _draggingConnectionLabel;
   bool _suppressConnectionTapAfterBendDrag = false;
 
@@ -1369,6 +1380,10 @@ class _MindMapScreenState extends State<MindMapScreen>
   bool _lockH = false;
   bool _lockV = false;
   bool _lockScale = true;
+
+  /// マップ上のスクロールバーのうち、現在マウスが乗っている軸。
+  /// 横バー上では通常の上下ホイール入力を横移動へ読み替える。
+  Axis? _activeMapScrollbarAxis;
 
   // 中央表示の基準ノードID
   String? _centerTargetNodeId;
@@ -4635,11 +4650,26 @@ class _MindMapScreenState extends State<MindMapScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
+    // アプリ切替・ウィンドウ非アクティブ化では pointer-up/cancel が届かない
+    // 場合がある。パンを停止するドラッグ状態をここで必ず破棄しておく。
+    if (state != AppLifecycleState.resumed) {
+      _cancelInterruptedCanvasGesture();
+    }
     // ウィンドウが非アクティブになった時点でドラッグは成立しないため、
     // 配置候補だけが残らないよう確実に終了扱いにする。
     if (state != AppLifecycleState.resumed &&
         _activeDesktopHeaderDrag != null) {
       _endDesktopHeaderDrag();
+    }
+    // 別ウィンドウ／Web タブで保存された変更を、アプリへ戻った時点で
+    // ページ単位に調停する。ローカル未編集ページは最新内容へ更新し、
+    // 同じページの同時編集は Provider 側で競合コピーとして保護する。
+    if (state == AppLifecycleState.resumed) {
+      try {
+        unawaited(
+          context.read<MindMapProvider>().reconcilePageStorageFromOtherTabs(),
+        );
+      } catch (_) {}
     }
     // ── アプリ外脱出ロック (トグル式) の離脱対策 ──
     // ロック中にホーム / 他アプリへ飛ぼうとしても、前面に戻った
@@ -5493,6 +5523,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     setState(() {
       _moveModeNodeId = nodeId;
       _selectedConnections.clear();
+      _clearConnectionBendDragFields(clearSelection: true);
       _moveDragAnchor = canvasPos - node.position;
       _movingPos = node.position;
     });
@@ -14716,6 +14747,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       _actionNodeId = null;
       _selectedDecorationId = null;
       _selectedConnections.clear();
+      _clearConnectionBendDragFields(clearSelection: true);
       _rangeSelectMode = false;
       _rangeSelectedIds.clear();
       _rangeSelectedDecorationIds.clear();
@@ -15673,8 +15705,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         _movingPos = null;
         _currentSnap = null;
         _selectedConnections.clear();
-        _draggingConnectionBend = null;
-        _draggingConnectionBendIndex = null;
+        _clearConnectionBendDragFields(clearSelection: true);
         _draggingConnectionLabel = null;
         _suppressConnectionTapAfterBendDrag = false;
         _rangeStart = null;
@@ -15687,6 +15718,85 @@ class _MindMapScreenState extends State<MindMapScreen>
         _canvasLongPressActive = false;
         _canvasLongPressStart = null;
       });
+    }
+  }
+
+  /// OS・Platform View・ジェスチャーアリーナにポインター終了を奪われた場合でも、
+  /// InteractiveViewer を停止する一時フラグを残さない。
+  ///
+  /// 選択内容や範囲選択「モード」自体は維持し、進行中だったドラッグだけを破棄する。
+  /// これにより次の空白左ドラッグで直ちにパン操作へ戻れる。
+  void _cancelInterruptedCanvasGesture() {
+    _stopEdgeScroll();
+    final hasTransientState = _moveModeNodeId != null ||
+        _movingPos != null ||
+        _rangeStart != null ||
+        _rangeEnd != null ||
+        _rangeDragging ||
+        _canvasLongPressActive ||
+        _shelfHandleDragging ||
+        _shelfHandleHovering ||
+        _draggingDecoration ||
+        _drawingDecorationStart != null ||
+        _drawingDecorationEnd != null ||
+        _draggingConnectionLabel != null ||
+        _connectionBendPointerActive ||
+        _activeMapScrollbarAxis != null;
+    if (!hasTransientState || !mounted) return;
+    setState(() {
+      _moveModeNodeId = null;
+      _movingPos = null;
+      _moveDragAnchor = null;
+      _movingPointerId = null;
+      _currentSnap = null;
+      _siblingGuideParentId = null;
+      _siblingGuidePos = null;
+      _shelfSwapTargetId = null;
+      _rangeStart = null;
+      _rangeEnd = null;
+      _rangeDragging = false;
+      _rangeDragAnchor = null;
+      _rangeDragDelta = Offset.zero;
+      _canvasLongPressActive = false;
+      _canvasLongPressStart = null;
+      _shelfRowDragFrom = null;
+      _shelfColDragFrom = null;
+      _shelfHandlePointerCanvas = null;
+      _shelfHandleHovering = false;
+      _draggingDecoration = false;
+      _decoBodyDragMoved = false;
+      _drawingDecorationStart = null;
+      _drawingDecorationEnd = null;
+      _draggingConnectionLabel = null;
+      _suppressConnectionTapAfterBendDrag = false;
+      _activeMapScrollbarAxis = null;
+      _clearConnectionBendDragFields();
+    });
+  }
+
+  /// 新しい主ボタン操作がマップに届いた時、前回操作の取りこぼしだけを回収する。
+  /// マップ領域に実際にイベントが届いているため、分割パネルの hover 残留も解除可能。
+  void _recoverCanvasInputBeforePointerDown(PointerDownEvent event) {
+    final isPrimary = event.kind != PointerDeviceKind.mouse ||
+        event.buttons == kPrimaryMouseButton;
+    if (!isPrimary) return;
+    if (_splitPanelHover || _splitLeftPanelHover) {
+      setState(() {
+        _splitPanelHover = false;
+        _splitLeftPanelHover = false;
+      });
+    }
+    if (_moveModeNodeId != null ||
+        _rangeStart != null ||
+        _rangeEnd != null ||
+        _rangeDragging ||
+        _canvasLongPressActive ||
+        _shelfHandleDragging ||
+        _shelfHandleHovering ||
+        _draggingDecoration ||
+        _draggingConnectionLabel != null ||
+        _connectionBendPointerActive) {
+      _cancelInterruptedCanvasGesture();
     }
   }
 
@@ -17843,7 +17953,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       final pageId = provider.currentPage.id;
       final scale = _percentToScale(_scalePercent);
       _ctrlFor(pageId).value = _matrixFor(node.position, scale);
-      setState(() => _selectedConnections.clear());
+      setState(() {
+        _selectedConnections.clear();
+        _clearConnectionBendDragFields(clearSelection: true);
+      });
     }
 
     if (_isDesktop) {
@@ -17920,6 +18033,159 @@ class _MindMapScreenState extends State<MindMapScreen>
     return pts.sublist(1, pts.length - 1);
   }
 
+  ({String fromId, String toId, int index}) _connectionBendKey(
+          NodeConnection connection, int index) =>
+      (fromId: connection.fromId, toId: connection.toId, index: index);
+
+  Map<NodeConnection, Set<int>> _selectedBendIndicesFor(
+      Iterable<NodeConnection> connections) {
+    final result = <NodeConnection, Set<int>>{};
+    for (final connection in connections) {
+      final indices = _selectedConnectionBends
+          .where((key) =>
+              key.fromId == connection.fromId && key.toId == connection.toId)
+          .map((key) => key.index)
+          .toSet();
+      if (indices.isNotEmpty) result[connection] = indices;
+    }
+    return result;
+  }
+
+  void _clearConnectionBendDragFields({bool clearSelection = false}) {
+    _draggingConnectionBend = null;
+    _draggingConnectionBendIndex = null;
+    _connectionBendPointerActive = false;
+    _connectionBendDragStart = null;
+    _connectionBendDragInitialPoints = {};
+    _connectionBendDragHistoryRecorded = false;
+    _connectionBendDragMoved = false;
+    _pendingConnectionBendToggleOff = null;
+    if (clearSelection) _selectedConnectionBends.clear();
+  }
+
+  void _syncSelectedConnectionsToBends(
+    MindMapProvider provider, {
+    NodeConnection? fallback,
+  }) {
+    _selectedConnections
+      ..clear()
+      ..addAll(provider.connections.where((connection) =>
+          _selectedConnectionBends.any((selected) =>
+              selected.fromId == connection.fromId &&
+              selected.toId == connection.toId)));
+    if (_selectedConnections.isEmpty && fallback != null) {
+      _selectedConnections
+          .add(_latestConnection(fallback, provider) ?? fallback);
+    }
+  }
+
+  void _beginConnectionBendInteraction(
+    ({NodeConnection connection, int index}) hit,
+    Offset canvasPos,
+    MindMapProvider provider,
+  ) {
+    final key = _connectionBendKey(hit.connection, hit.index);
+    final additive = HardwareKeyboard.instance.isControlPressed ||
+        HardwareKeyboard.instance.isMetaPressed;
+    final wasSelected = _selectedConnectionBends.contains(key);
+
+    setState(() {
+      _connectionBendPointerActive = true;
+      _suppressConnectionTapAfterBendDrag = true;
+      if (additive && wasSelected) {
+        // Ctrl/Meta の単独クリックなら pointer-up で選択解除する。一方、
+        // そのままドラッグした場合は選択を維持して全節点を一括移動する。
+        _pendingConnectionBendToggleOff = key;
+      } else {
+        if (!additive && !wasSelected) {
+          _selectedConnectionBends.clear();
+        }
+        _selectedConnectionBends.add(key);
+      }
+      _draggingConnectionBend = hit.connection;
+      _draggingConnectionBendIndex = hit.index;
+
+      // 節点を選んだリンクだけを強調表示する。Ctrl/Meta なら別リンクの
+      // 節点も残るため、複数リンクをまたいだ一括移動にも対応できる。
+      _syncSelectedConnectionsToBends(provider, fallback: hit.connection);
+    });
+
+    _connectionBendDragStart = canvasPos;
+    _connectionBendDragHistoryRecorded = false;
+    _connectionBendDragMoved = false;
+    _connectionBendDragInitialPoints = {};
+
+    final selectedByConnection = _selectedBendIndicesFor(provider.connections);
+    for (final entry in selectedByConnection.entries) {
+      final points = _bendPointsForConnection(entry.key, provider);
+      if (entry.value.any((index) => index >= 0 && index < points.length)) {
+        _connectionBendDragInitialPoints[entry.key] = points;
+      }
+    }
+  }
+
+  void _updateSelectedConnectionBends(
+      Offset canvasPos, MindMapProvider provider, double scale) {
+    final dragStart = _connectionBendDragStart;
+    if (dragStart == null || _connectionBendDragInitialPoints.isEmpty) return;
+    final delta = canvasPos - dragStart;
+    // 画面上3px未満の揺れはクリックとして扱い、不要な保存・Undoを防ぐ。
+    if (!_connectionBendDragMoved &&
+        delta.distance * math.max(scale, 0.1) < 3.0) {
+      return;
+    }
+    _connectionBendDragMoved = true;
+    _pendingConnectionBendToggleOff = null;
+
+    final updates = <NodeConnection, List<Offset>>{};
+    for (final entry in _connectionBendDragInitialPoints.entries) {
+      final points = List<Offset>.from(entry.value);
+      var changed = false;
+      for (final selected in _selectedConnectionBends) {
+        if (selected.fromId != entry.key.fromId ||
+            selected.toId != entry.key.toId ||
+            selected.index < 0 ||
+            selected.index >= points.length) {
+          continue;
+        }
+        points[selected.index] = entry.value[selected.index] + delta;
+        changed = true;
+      }
+      if (changed) updates[entry.key] = points;
+    }
+    if (updates.isEmpty) return;
+    final recordHistory = !_connectionBendDragHistoryRecorded;
+    _connectionBendDragHistoryRecorded = true;
+    provider.updateConnectionBendPointsBatch(
+      updates,
+      recordHistory: recordHistory,
+    );
+  }
+
+  void _finishConnectionBendInteraction(
+    MindMapProvider provider, {
+    bool cancelled = false,
+  }) {
+    if (!mounted) return;
+    final toggleOff = !cancelled && !_connectionBendDragMoved
+        ? _pendingConnectionBendToggleOff
+        : null;
+    final fallback = _draggingConnectionBend;
+    setState(() {
+      if (toggleOff != null) {
+        _selectedConnectionBends.remove(toggleOff);
+        _syncSelectedConnectionsToBends(provider, fallback: fallback);
+      }
+      _clearConnectionBendDragFields();
+      if (cancelled) _suppressConnectionTapAfterBendDrag = false;
+    });
+    if (!cancelled) {
+      Future.delayed(const Duration(milliseconds: 80), () {
+        if (mounted) _suppressConnectionTapAfterBendDrag = false;
+      });
+    }
+  }
+
   ({NodeConnection connection, int index})? _hitConnectionBendPoint(
       Offset canvasPos, MindMapProvider provider, double scale) {
     if (provider.currentPage.pageType == 'bookshelf') return null;
@@ -17970,6 +18236,9 @@ class _MindMapScreenState extends State<MindMapScreen>
       }
       return;
     }
+    if (_selectedConnectionBends.isNotEmpty || _connectionBendPointerActive) {
+      setState(() => _clearConnectionBendDragFields(clearSelection: true));
+    }
     final isCtrl = HardwareKeyboard.instance.isControlPressed ||
         HardwareKeyboard.instance.isMetaPressed;
     if (isCtrl) {
@@ -18004,6 +18273,78 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (_selectedConnections.isEmpty) return;
     _showConnectionDeleteOverlay(
         _selectedConnections.first, globalPos, provider);
+  }
+
+  /// 選択中の親子リンクについて、接続元ノードへ「親」、接続先ノードへ
+  /// 「子」のピルを浮かせる。設定画面で関係種別を変えた直後にも追従するよう、
+  /// 選択時の古いインスタンスではなく provider の最新接続を参照する。
+  List<Widget> _buildSelectedConnectionRoleBadges(
+      MindMapProvider provider, Map<String, MindMapNode> nodes) {
+    if (_selectedConnections.isEmpty ||
+        provider.currentPage.pageType == 'bookshelf') {
+      return const <Widget>[];
+    }
+    final rolesByNode = <String, Set<String>>{};
+    for (final connection in provider.connections) {
+      if (!_selectedConnections.contains(connection) ||
+          !connection.isParentChild) {
+        continue;
+      }
+      rolesByNode
+          .putIfAbsent(connection.fromId, () => <String>{})
+          .add('parent');
+      rolesByNode.putIfAbsent(connection.toId, () => <String>{}).add('child');
+    }
+    if (rolesByNode.isEmpty) return const <Widget>[];
+
+    final parentLabel = provider.t('conn.roleParent');
+    final childLabel = provider.t('conn.roleChild');
+    return rolesByNode.entries.map((entry) {
+      final node = nodes[entry.key];
+      if (node == null || node.hiddenInContainer != null) {
+        return const SizedBox.shrink();
+      }
+      final isParent = entry.value.contains('parent');
+      final isChild = entry.value.contains('child');
+      final label = isParent && isChild
+          ? '$parentLabel・$childLabel'
+          : (isParent ? parentLabel : childLabel);
+      final color = isParent && isChild
+          ? const Color(0xFF7E57C2)
+          : (isParent ? const Color(0xFF26A69A) : const Color(0xFF42A5F5));
+      return Positioned(
+        left: node.position.dx + node.width / 2,
+        top: math.max(0.0, node.position.dy - 32.0),
+        child: FractionalTranslation(
+          translation: const Offset(-0.5, 0),
+          child: IgnorePointer(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.96),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: Colors.white70, width: 1.2),
+                boxShadow: [
+                  BoxShadow(
+                    color: color.withValues(alpha: 0.48),
+                    blurRadius: 10,
+                    spreadRadius: 1,
+                  ),
+                ],
+              ),
+              child: Text(
+                label,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }).toList(growable: false);
   }
 
   // ─── PC版：キャンバス右クリックメニュー ─────────────────────────────────
@@ -18080,8 +18421,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         color: const Color(0xFF4DB6AC),
         onTap: () {
           _removeOverlay();
-          final canvasPos = _globalToCanvas(globalPos, ctrl);
-          _showTerminalBlockPicker(provider, canvasPos);
+          _showTerminalBlockPicker(provider, _globalToCanvas(globalPos, ctrl));
         },
       ),
       // ── メモ一覧 (= ユーザー要望: 他のマップ / PDF ビューワーで書いたメモを
@@ -23260,17 +23600,33 @@ class _MindMapScreenState extends State<MindMapScreen>
           provider.updateConnections(targets, arrowHeadScale: s);
         },
         onLineStyleChanged: (style) {
+          if (style != 'elbow' && _selectedConnectionBends.isNotEmpty) {
+            setState(
+                () => _clearConnectionBendDragFields(clearSelection: true));
+          }
           provider.updateConnections(targets, lineStyle: style);
         },
         onElbowSplitRatioChanged: (ratio) {
+          if (_selectedConnectionBends.isNotEmpty) {
+            setState(
+                () => _clearConnectionBendDragFields(clearSelection: true));
+          }
           provider.updateConnections(targets,
               elbowSplitRatio: ratio, clearElbowBendPoints: true);
         },
         onElbowPointCountChanged: (count) {
+          if (_selectedConnectionBends.isNotEmpty) {
+            setState(
+                () => _clearConnectionBendDragFields(clearSelection: true));
+          }
           provider.updateConnections(targets,
               elbowPointCount: count, clearElbowBendPoints: true);
         },
         onClearElbowBendPoints: () {
+          if (_selectedConnectionBends.isNotEmpty) {
+            setState(
+                () => _clearConnectionBendDragFields(clearSelection: true));
+          }
           provider.updateConnections(targets, clearElbowBendPoints: true);
         },
         onSaveDefaults: (snapshot) {
@@ -29604,6 +29960,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       // このコマンドは接続線を含めず、キャンバス上の編集要素だけを選ぶ。
       // 接続線の複数選択は従来どおり Ctrl/Meta 操作の専用経路に任せる。
       _selectedConnections.clear();
+      _clearConnectionBendDragFields(clearSelection: true);
       _connOverlayPendingOnCtrlUp = false;
       _connOverlayIsMulti = false;
       _rangeSelectMode = true;
@@ -30109,73 +30466,80 @@ class _MindMapScreenState extends State<MindMapScreen>
       (id: 'diamond', label: '判断（ひし形）', icon: Icons.diamond_outlined),
       (id: 'parallelogram', label: '入出力', icon: Icons.transform_rounded),
     ];
-    showModalBottomSheet<void>(
+    showDialog<void>(
       context: context,
-      backgroundColor: const Color(0xFF1E1E28),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (sheetContext) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 14, 16, 18),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('端子を追加',
-                  style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w700)),
-              const SizedBox(height: 6),
-              const Text('追加するブロック形状を選択してください',
-                  style: TextStyle(color: Colors.white54, fontSize: 12)),
-              const SizedBox(height: 14),
-              Wrap(
-                spacing: 10,
-                runSpacing: 10,
-                children: [
-                  for (final shape in shapes)
-                    InkWell(
-                      borderRadius: BorderRadius.circular(10),
-                      onTap: () {
-                        Navigator.pop(sheetContext);
-                        final node = provider.addNodeAtCenterReturning(
-                            canvasPosition - const Offset(80, 21));
-                        provider.updateNodeShape(node.id, shape.id);
-                        if (provider.promptForTitleOnNodeCreate) {
-                          _startInlineTitleEdit(context, node,
-                              deleteWhenEmpty: true,
-                              allowDelimiterExpansion: true);
-                        }
-                      },
-                      child: Container(
-                        width: 112,
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 12),
-                        decoration: BoxDecoration(
-                          color:
-                              const Color(0xFF4DB6AC).withValues(alpha: 0.12),
+      barrierColor: Colors.black54,
+      builder: (dialogContext) => Dialog(
+        backgroundColor: const Color(0xFF1E1E28),
+        insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 540),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(18, 16, 18, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('端子を追加',
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700)),
+                const SizedBox(height: 6),
+                const Text('追加するブロック形状を選択してください',
+                    style: TextStyle(color: Colors.white54, fontSize: 12)),
+                const SizedBox(height: 14),
+                Center(
+                  child: Wrap(
+                    alignment: WrapAlignment.center,
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: [
+                      for (final shape in shapes)
+                        InkWell(
                           borderRadius: BorderRadius.circular(10),
-                          border: Border.all(
+                          onTap: () {
+                            Navigator.pop(dialogContext);
+                            final node = provider.addNodeAtCenterReturning(
+                                canvasPosition - const Offset(80, 21));
+                            provider.updateNodeShape(node.id, shape.id);
+                            if (provider.promptForTitleOnNodeCreate) {
+                              _startInlineTitleEdit(context, node,
+                                  deleteWhenEmpty: true,
+                                  allowDelimiterExpansion: true);
+                            }
+                          },
+                          child: Container(
+                            width: 112,
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 12),
+                            decoration: BoxDecoration(
                               color: const Color(0xFF4DB6AC)
-                                  .withValues(alpha: 0.45)),
+                                  .withValues(alpha: 0.12),
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(
+                                  color: const Color(0xFF4DB6AC)
+                                      .withValues(alpha: 0.45)),
+                            ),
+                            child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(shape.icon,
+                                      color: const Color(0xFF80CBC4), size: 28),
+                                  const SizedBox(height: 7),
+                                  Text(shape.label,
+                                      textAlign: TextAlign.center,
+                                      style: const TextStyle(
+                                          color: Colors.white, fontSize: 12)),
+                                ]),
+                          ),
                         ),
-                        child:
-                            Column(mainAxisSize: MainAxisSize.min, children: [
-                          Icon(shape.icon,
-                              color: const Color(0xFF80CBC4), size: 28),
-                          const SizedBox(height: 7),
-                          Text(shape.label,
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(
-                                  color: Colors.white, fontSize: 12)),
-                        ]),
-                      ),
-                    ),
-                ],
-              ),
-            ],
+                    ],
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -30184,7 +30548,7 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// YouTubeを検索バーが見える状態で開く（5倍速再生が最初から効いた状態）
   /// 視聴中の動画/チャンネルを「マップに埋め込む」ボタンでマインドマップに追加可能
-  /// 図形種類を選ぶピッカー (= ボトムシート)。
+  /// 図形種類を選ぶピッカー (= 画面中央のダイアログ)。
   ///
   /// ユーザー要望「直線や矢印線、 長方形等の図形を挿入できるようにして」 への
   /// 対応。 4 種類 (直線・矢印・長方形・楕円) から選び、 挿入モードに入る。
@@ -30204,44 +30568,55 @@ class _MindMapScreenState extends State<MindMapScreen>
       );
       return;
     }
-    showModalBottomSheet(
+    showDialog<void>(
       context: context,
-      backgroundColor: const Color(0xFF1E1E28),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (sheetCtx) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 6),
-                child: Text(provider.t('shape.pickerTitle'),
-                    style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 15,
-                        fontWeight: FontWeight.w600)),
-              ),
-              const SizedBox(height: 6),
-              Wrap(
-                alignment: WrapAlignment.center,
-                children: [
-                  for (final k in _shapeKindsOrder)
-                    _buildShapeChoice(sheetCtx, k, _shapeKindIcon(k),
-                        _shapeKindLabel(provider, k)),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: Text(
-                  provider.t('shape.pickerHint'),
-                  style: const TextStyle(color: Colors.white60, fontSize: 11),
+      barrierColor: Colors.black54,
+      builder: (dialogContext) => Dialog(
+        backgroundColor: const Color(0xFF1E1E28),
+        insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxWidth: 620,
+            maxHeight: MediaQuery.sizeOf(dialogContext).height * 0.82,
+          ),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  child: Text(provider.t('shape.pickerTitle'),
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600)),
                 ),
-              ),
-            ],
+                const SizedBox(height: 6),
+                Wrap(
+                  alignment: WrapAlignment.center,
+                  children: [
+                    for (final k in _shapeKindsOrder)
+                      _buildShapeChoice(
+                        dialogContext,
+                        k,
+                        _shapeKindIcon(k),
+                        _shapeKindLabel(provider, k),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Text(
+                    provider.t('shape.pickerHint'),
+                    style: const TextStyle(color: Colors.white60, fontSize: 11),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -30249,11 +30624,11 @@ class _MindMapScreenState extends State<MindMapScreen>
   }
 
   /// 図形ピッカーの 1 個分のアイテム (= アイコン + ラベル)。
-  Widget _buildShapeChoice(BuildContext sheetCtx, MapDecorationKind kind,
+  Widget _buildShapeChoice(BuildContext pickerContext, MapDecorationKind kind,
       IconData icon, String label) {
     return InkWell(
       onTap: () {
-        Navigator.of(sheetCtx).pop();
+        Navigator.of(pickerContext).pop();
         setState(() {
           _drawingDecorationKind = kind;
           _drawingDecorationStart = null;
@@ -40306,6 +40681,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                         child: Directionality(
                           textDirection: TextDirection.ltr,
                           child: Stack(
+                            key: _mapViewportKey,
                             children: [
                               Listener(
                                 behavior: HitTestBehavior.translucent,
@@ -40347,6 +40723,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 onPointerSignal: (event) =>
                                     _handleCanvasWheelScroll(event, ctrl),
                                 onPointerDown: (e) {
+                                  _recoverCanvasInputBeforePointerDown(e);
                                   // ── ショートカットキー復活処理 ──
                                   // ダイアログを開いて閉じる / メモパネル等を操作するとフォーカスが
                                   // 別の widget に移ってしまい、 ショートカット (Ctrl+Z 等) が
@@ -40378,6 +40755,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     if (labelHit != null) {
                                       _removeOverlay();
                                       setState(() {
+                                        _clearConnectionBendDragFields(
+                                            clearSelection: true);
                                         _draggingConnectionLabel = labelHit;
                                         _suppressConnectionTapAfterBendDrag =
                                             true;
@@ -40392,17 +40771,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                                         ctrl.value.getMaxScaleOnAxis());
                                     if (hit != null) {
                                       _removeOverlay();
-                                      setState(() {
-                                        _draggingConnectionBend =
-                                            hit.connection;
-                                        _draggingConnectionBendIndex =
-                                            hit.index;
-                                        _suppressConnectionTapAfterBendDrag =
-                                            true;
-                                        _selectedConnections.clear();
-                                        _selectedConnections
-                                            .add(hit.connection);
-                                      });
+                                      _beginConnectionBendInteraction(
+                                          hit, canvasPos, provider);
                                       return;
                                     }
                                   }
@@ -40558,17 +40928,12 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   }
                                   if (_draggingConnectionBend != null &&
                                       _draggingConnectionBendIndex != null) {
-                                    final conn = _draggingConnectionBend!;
-                                    final idx = _draggingConnectionBendIndex!;
-                                    final points = _bendPointsForConnection(
-                                        conn, provider);
-                                    if (idx >= 0 && idx < points.length) {
-                                      final canvasPos =
-                                          _globalToCanvas(e.position, ctrl);
-                                      points[idx] = canvasPos;
-                                      provider.updateConnectionBendPoints(
-                                          conn, points);
-                                    }
+                                    final canvasPos =
+                                        _globalToCanvas(e.position, ctrl);
+                                    _updateSelectedConnectionBends(
+                                        canvasPos,
+                                        provider,
+                                        ctrl.value.getMaxScaleOnAxis());
                                     return;
                                   }
                                   // 裁断モード: 始点が設定済みなら、プレビュー終点を更新
@@ -40643,17 +41008,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     });
                                     return;
                                   }
-                                  if (_draggingConnectionBend != null) {
-                                    setState(() {
-                                      _draggingConnectionBend = null;
-                                      _draggingConnectionBendIndex = null;
-                                    });
-                                    Future.delayed(
-                                        const Duration(milliseconds: 80), () {
-                                      if (mounted)
-                                        _suppressConnectionTapAfterBendDrag =
-                                            false;
-                                    });
+                                  if (_connectionBendPointerActive) {
+                                    _finishConnectionBendInteraction(provider);
                                     return;
                                   }
                                   // 裁断モードではポインタアップで何もしない（タップイベントで処理）
@@ -40892,20 +41248,15 @@ class _MindMapScreenState extends State<MindMapScreen>
                                       _suppressConnectionTapAfterBendDrag =
                                           false;
                                     });
-                                    return;
                                   }
-                                  if (_draggingConnectionBend != null) {
-                                    setState(() {
-                                      _draggingConnectionBend = null;
-                                      _draggingConnectionBendIndex = null;
-                                      _suppressConnectionTapAfterBendDrag =
-                                          false;
-                                    });
-                                    return;
+                                  if (_connectionBendPointerActive) {
+                                    _finishConnectionBendInteraction(provider,
+                                        cancelled: true);
                                   }
                                   if (_moveModeNodeId != null) {
                                     _onMoveModePointerCancel(e);
                                   }
+                                  _cancelInterruptedCanvasGesture();
                                 },
                                 // = ユーザー要望: お絵かき/ビデオエディターは専用ビューを表示。
                                 //   (ガント/予定表はページではなくカスタムボタンのツールへ移行)。
@@ -47891,6 +48242,344 @@ class _MindMapScreenState extends State<MindMapScreen>
     );
   }
 
+  Size _canvasDimensionForScrollbars(MindMapProvider provider) {
+    if (provider.currentPage.pageType == 'bookshelf') {
+      return provider.bookshelfCanvasSize();
+    }
+    // 実キャンバスと同じく、折りたたみで非表示の子孫は extent から除外する。
+    // 全ノードで計算すると、遠方の非表示ノードぶんだけ scrollbar が空白域へ
+    // 動けてしまい InteractiveViewer の実境界と食い違う。
+    final hidden = provider.hiddenNodeIds;
+    final visibleNodes = Map<String, MindMapNode>.fromEntries(
+      provider.nodes.entries.where((entry) => !hidden.contains(entry.key)),
+    );
+    final extent = computeCanvasSize(visibleNodes);
+    return Size(extent, extent);
+  }
+
+  EdgeInsets _canvasBoundaryMarginForScrollbars(
+      MindMapProvider provider, BuildContext context) {
+    if (provider.currentPage.pageType != 'bookshelf') {
+      return EdgeInsets.zero;
+    }
+    return EdgeInsets.fromLTRB(
+      2000,
+      2000,
+      2000 + (_splitOpen ? _splitPanelEffectiveSize(context) + 240.0 : 0.0),
+      2000,
+    );
+  }
+
+  void _setActiveMapScrollbarAxis(Axis? axis) {
+    if (!mounted || _activeMapScrollbarAxis == axis) return;
+    setState(() => _activeMapScrollbarAxis = axis);
+  }
+
+  void _setMapScrollbarProgress({
+    required MindMapProvider provider,
+    required TransformationController ctrl,
+    required Axis axis,
+    required double progress,
+    required Size viewportSize,
+  }) {
+    if ((axis == Axis.horizontal && _lockH) ||
+        (axis == Axis.vertical && _lockV)) {
+      return;
+    }
+    final canvasDim = _canvasDimensionForScrollbars(provider);
+    final margin = _canvasBoundaryMarginForScrollbars(provider, context);
+    final matrix = Matrix4.copy(ctrl.value);
+    final scale = matrix.getMaxScaleOnAxis();
+    final translation = matrix.getTranslation();
+    final normalized = progress.clamp(0.0, 1.0).toDouble();
+    var tx = translation.x;
+    var ty = translation.y;
+
+    if (axis == Axis.horizontal) {
+      final maxX = margin.left * scale;
+      final minX =
+          viewportSize.width - (canvasDim.width + margin.right) * scale;
+      final range = math.max(0.0, maxX - minX);
+      tx = range <= 0 ? (minX + maxX) / 2 : maxX - range * normalized;
+    } else {
+      final maxY = margin.top * scale;
+      final minY =
+          viewportSize.height - (canvasDim.height + margin.bottom) * scale;
+      final range = math.max(0.0, maxY - minY);
+      ty = range <= 0 ? (minY + maxY) / 2 : maxY - range * normalized;
+    }
+
+    matrix.setTranslationRaw(tx, ty, 0);
+    // TransformationController の listener は同期発火するため、直前行列を先に
+    // 合わせてロック補正が古いページ位置を参照しないようにする。
+    _lastMatrix = matrix.clone();
+    ctrl.value = matrix;
+  }
+
+  /// InteractiveViewer は Scrollable ではないため、変換行列と同期する縦横 2 本の
+  /// スクロールバーを重ねる。トラックのクリックとつまみのドラッグの両方に対応。
+  Widget _buildMapViewportScrollbars(
+      MindMapProvider provider, TransformationController ctrl) {
+    return Positioned.fill(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final viewport = constraints.biggest;
+          if (!viewport.width.isFinite ||
+              !viewport.height.isFinite ||
+              viewport.width < 80 ||
+              viewport.height < 80) {
+            return const SizedBox.shrink();
+          }
+          final canvasDim = _canvasDimensionForScrollbars(provider);
+          final margin = _canvasBoundaryMarginForScrollbars(provider, context);
+
+          return AnimatedBuilder(
+            animation: ctrl,
+            builder: (context, _) {
+              final matrix = ctrl.value;
+              final scale = matrix.getMaxScaleOnAxis();
+              final translation = matrix.getTranslation();
+              final horizontalRange = math.max(
+                0.0,
+                (canvasDim.width + margin.horizontal) * scale - viewport.width,
+              );
+              final verticalRange = math.max(
+                0.0,
+                (canvasDim.height + margin.vertical) * scale - viewport.height,
+              );
+              final horizontalMax = margin.left * scale;
+              final verticalMax = margin.top * scale;
+              final horizontalProgress = horizontalRange <= 0
+                  ? 0.0
+                  : ((horizontalMax - translation.x) / horizontalRange)
+                      .clamp(0.0, 1.0)
+                      .toDouble();
+              final verticalProgress = verticalRange <= 0
+                  ? 0.0
+                  : ((verticalMax - translation.y) / verticalRange)
+                      .clamp(0.0, 1.0)
+                      .toDouble();
+
+              const edgeInset = 6.0;
+              const oppositeBarSpace = 24.0;
+              const hitThickness = 18.0;
+              const innerInset = 2.0;
+              final horizontalTrackLength =
+                  math.max(1.0, viewport.width - edgeInset - oppositeBarSpace);
+              final verticalTrackLength =
+                  math.max(1.0, viewport.height - edgeInset - oppositeBarSpace);
+              final horizontalInnerLength =
+                  math.max(1.0, horizontalTrackLength - innerInset * 2);
+              final verticalInnerLength =
+                  math.max(1.0, verticalTrackLength - innerInset * 2);
+              final horizontalVisibleFraction = (viewport.width /
+                      math.max(viewport.width,
+                          (canvasDim.width + margin.horizontal) * scale))
+                  .clamp(0.0, 1.0)
+                  .toDouble();
+              final verticalVisibleFraction = (viewport.height /
+                      math.max(viewport.height,
+                          (canvasDim.height + margin.vertical) * scale))
+                  .clamp(0.0, 1.0)
+                  .toDouble();
+              final horizontalThumbLength = math.min(
+                horizontalInnerLength,
+                math.max(
+                    44.0, horizontalInnerLength * horizontalVisibleFraction),
+              );
+              final verticalThumbLength = math.min(
+                verticalInnerLength,
+                math.max(44.0, verticalInnerLength * verticalVisibleFraction),
+              );
+              final horizontalTravel =
+                  math.max(0.0, horizontalInnerLength - horizontalThumbLength);
+              final verticalTravel =
+                  math.max(0.0, verticalInnerLength - verticalThumbLength);
+              final horizontalThumbOffset =
+                  innerInset + horizontalTravel * horizontalProgress;
+              final verticalThumbOffset =
+                  innerInset + verticalTravel * verticalProgress;
+              final trackColor = provider.isDarkMode
+                  ? Colors.black.withValues(alpha: 0.44)
+                  : Colors.white.withValues(alpha: 0.72);
+              final idleThumbColor = provider.isDarkMode
+                  ? Colors.white.withValues(alpha: 0.62)
+                  : const Color(0xFF4E5268).withValues(alpha: 0.68);
+              const activeThumbColor = Color(0xFF6C63FF);
+
+              Widget horizontalBar() {
+                final active = _activeMapScrollbarAxis == Axis.horizontal;
+                final disabled = _lockH || horizontalRange <= 0;
+                return MouseRegion(
+                  cursor: disabled
+                      ? SystemMouseCursors.basic
+                      : SystemMouseCursors.resizeLeftRight,
+                  onEnter: (_) => _setActiveMapScrollbarAxis(Axis.horizontal),
+                  onExit: (_) {
+                    if (_activeMapScrollbarAxis == Axis.horizontal) {
+                      _setActiveMapScrollbarAxis(null);
+                    }
+                  },
+                  child: Semantics(
+                    label: '横スクロールバー',
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onHorizontalDragStart: disabled
+                          ? null
+                          : (_) => _setActiveMapScrollbarAxis(Axis.horizontal),
+                      onHorizontalDragUpdate: disabled || horizontalTravel <= 0
+                          ? null
+                          : (details) => _setMapScrollbarProgress(
+                                provider: provider,
+                                ctrl: ctrl,
+                                axis: Axis.horizontal,
+                                progress: horizontalProgress +
+                                    details.delta.dx / horizontalTravel,
+                                viewportSize: viewport,
+                              ),
+                      onTapUp: disabled || horizontalTravel <= 0
+                          ? null
+                          : (details) => _setMapScrollbarProgress(
+                                provider: provider,
+                                ctrl: ctrl,
+                                axis: Axis.horizontal,
+                                progress: (details.localPosition.dx -
+                                        innerInset -
+                                        horizontalThumbLength / 2) /
+                                    horizontalTravel,
+                                viewportSize: viewport,
+                              ),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: trackColor,
+                          borderRadius: BorderRadius.circular(9),
+                          border: Border.all(color: Colors.white24),
+                        ),
+                        child: Stack(
+                          children: [
+                            Positioned(
+                              left: horizontalThumbOffset,
+                              top: 3,
+                              width: horizontalThumbLength,
+                              bottom: 3,
+                              child: DecoratedBox(
+                                decoration: BoxDecoration(
+                                  color: disabled
+                                      ? idleThumbColor.withValues(alpha: 0.32)
+                                      : (active
+                                          ? activeThumbColor
+                                          : idleThumbColor),
+                                  borderRadius: BorderRadius.circular(7),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              }
+
+              Widget verticalBar() {
+                final active = _activeMapScrollbarAxis == Axis.vertical;
+                final disabled = _lockV || verticalRange <= 0;
+                return MouseRegion(
+                  cursor: disabled
+                      ? SystemMouseCursors.basic
+                      : SystemMouseCursors.resizeUpDown,
+                  onEnter: (_) => _setActiveMapScrollbarAxis(Axis.vertical),
+                  onExit: (_) {
+                    if (_activeMapScrollbarAxis == Axis.vertical) {
+                      _setActiveMapScrollbarAxis(null);
+                    }
+                  },
+                  child: Semantics(
+                    label: '縦スクロールバー',
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onVerticalDragStart: disabled
+                          ? null
+                          : (_) => _setActiveMapScrollbarAxis(Axis.vertical),
+                      onVerticalDragUpdate: disabled || verticalTravel <= 0
+                          ? null
+                          : (details) => _setMapScrollbarProgress(
+                                provider: provider,
+                                ctrl: ctrl,
+                                axis: Axis.vertical,
+                                progress: verticalProgress +
+                                    details.delta.dy / verticalTravel,
+                                viewportSize: viewport,
+                              ),
+                      onTapUp: disabled || verticalTravel <= 0
+                          ? null
+                          : (details) => _setMapScrollbarProgress(
+                                provider: provider,
+                                ctrl: ctrl,
+                                axis: Axis.vertical,
+                                progress: (details.localPosition.dy -
+                                        innerInset -
+                                        verticalThumbLength / 2) /
+                                    verticalTravel,
+                                viewportSize: viewport,
+                              ),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: trackColor,
+                          borderRadius: BorderRadius.circular(9),
+                          border: Border.all(color: Colors.white24),
+                        ),
+                        child: Stack(
+                          children: [
+                            Positioned(
+                              top: verticalThumbOffset,
+                              left: 3,
+                              height: verticalThumbLength,
+                              right: 3,
+                              child: DecoratedBox(
+                                decoration: BoxDecoration(
+                                  color: disabled
+                                      ? idleThumbColor.withValues(alpha: 0.32)
+                                      : (active
+                                          ? activeThumbColor
+                                          : idleThumbColor),
+                                  borderRadius: BorderRadius.circular(7),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              }
+
+              return Stack(
+                children: [
+                  Positioned(
+                    left: edgeInset,
+                    right: oppositeBarSpace,
+                    bottom: edgeInset,
+                    height: hitThickness,
+                    child: horizontalBar(),
+                  ),
+                  Positioned(
+                    top: edgeInset,
+                    right: edgeInset,
+                    bottom: oppositeBarSpace,
+                    width: hitThickness,
+                    child: verticalBar(),
+                  ),
+                ],
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+
   Widget _buildCanvas(BuildContext context, MindMapProvider provider,
       TransformationController ctrl) {
     // カレンダーモード時はマインドマップ描画を置き換え
@@ -48012,6 +48701,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                 ),
               ),
             ),
+          // マウスホイールを横移動へ切り替えるデスクトップ向け UI。
+          // モバイルでは下部ツールバーと操作領域が重なるため表示せず、
+          // 従来どおり空白ドラッグでパンする。
+          if (_isDesktop) _buildMapViewportScrollbars(provider, ctrl),
         ]);
       },
     );
@@ -48115,7 +48808,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             !_splitPanelHover &&
             !_shelfHandleHovering &&
             !_shelfHandleDragging &&
-            _draggingConnectionBend == null,
+            !_connectionBendPointerActive,
         panAxis: _lockH && !_lockV
             ? PanAxis.vertical
             : (_lockV && !_lockH ? PanAxis.horizontal : PanAxis.free),
@@ -48149,34 +48842,36 @@ class _MindMapScreenState extends State<MindMapScreen>
                         });
                       }
                     : null),
-            onDoubleTap:
-                isRangeMode && !_rangeDragging && !_canvasLongPressActive
+            onDoubleTap: isRangeMode &&
+                    !_rangeDragging &&
+                    !_canvasLongPressActive
+                ? () {
+                    _removeOverlay();
+                    setState(() {
+                      _rangeSelectMode = false;
+                      _rangeSelectedIds.clear();
+                      _rangeSelectedDecorationIds.clear();
+                      _rangeStart = null;
+                      _rangeEnd = null;
+                    });
+                  }
+                // ── 通常モード: 何もない場所をダブルクリックで選択解除 ──
+                // = ユーザー要望。 ノードはそれ自身が onDoubleTap を消費するため
+                //   (ジェスチャアリーナで手前のノードが勝つ)、 この空エリアの
+                //   ダブルタップはノード上では発火しない。
+                : (_drawingDecorationKind == null && !isMoveMode)
                     ? () {
                         _removeOverlay();
+                        provider.selectNode(null);
                         setState(() {
-                          _rangeSelectMode = false;
+                          _selectedDecorationId = null;
+                          _selectedConnections.clear();
+                          _clearConnectionBendDragFields(clearSelection: true);
                           _rangeSelectedIds.clear();
                           _rangeSelectedDecorationIds.clear();
-                          _rangeStart = null;
-                          _rangeEnd = null;
                         });
                       }
-                    // ── 通常モード: 何もない場所をダブルクリックで選択解除 ──
-                    // = ユーザー要望。 ノードはそれ自身が onDoubleTap を消費するため
-                    //   (ジェスチャアリーナで手前のノードが勝つ)、 この空エリアの
-                    //   ダブルタップはノード上では発火しない。
-                    : (_drawingDecorationKind == null && !isMoveMode)
-                        ? () {
-                            _removeOverlay();
-                            provider.selectNode(null);
-                            setState(() {
-                              _selectedDecorationId = null;
-                              _selectedConnections.clear();
-                              _rangeSelectedIds.clear();
-                              _rangeSelectedDecorationIds.clear();
-                            });
-                          }
-                        : null,
+                    : null,
             // ── 何もない場所を長押し ──────────────────
             // PC: 範囲選択ドラッグを開始 (既存仕様)。
             // モバイル (Android 等): クリップボードの画像をその位置に貼り付け
@@ -48259,6 +48954,13 @@ class _MindMapScreenState extends State<MindMapScreen>
                       _rangeEnd = null;
                       if (emptySelection) _rangeSelectMode = false;
                     });
+                  }
+                : null,
+            onLongPressCancel: _isDesktop
+                ? () {
+                    if (_canvasLongPressActive || _rangeStart != null) {
+                      _cancelInterruptedCanvasGesture();
+                    }
                   }
                 : null,
             onPanStart: _drawingDecorationKind != null
@@ -48346,6 +49048,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                         });
                       }
                     : null),
+            onPanCancel: (_drawingDecorationKind != null || isRangeMode)
+                ? _cancelInterruptedCanvasGesture
+                : null,
             child: Builder(
               builder: (context) {
                 final canvasSize = computeCanvasSize(nodes);
@@ -48531,6 +49236,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     ? const <NodeConnection>[]
                                     : _effectiveConnections(nodes, connections),
                             selectedConnections: _selectedConnections,
+                            selectedBendIndices:
+                                _selectedBendIndicesFor(connections),
                             // ライトモード時に pale な黄色の接続線を濃く補正するため
                             isDarkMode: provider.isDarkMode),
                       ),
@@ -48842,8 +49549,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                                         }
                                         return;
                                       }
-                                      setState(
-                                          () => _selectedConnections.clear());
+                                      setState(() {
+                                        _selectedConnections.clear();
+                                        _clearConnectionBendDragFields(
+                                            clearSelection: true);
+                                      });
                                       _showActionButtons(node.id, ctrl);
                                     },
                           onDoubleTap: (isMoveMode || isRangeMode)
@@ -48993,6 +49703,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                           },
                         );
                       }),
+
+                      ..._buildSelectedConnectionRoleBadges(
+                          provider, _movingNodes(nodes)),
 
                       if (!isShelf && _inlineNodeEditNodeId != null)
                         _buildNodeInlineTextEditor(provider),
@@ -59937,8 +60650,21 @@ class _MindMapScreenState extends State<MindMapScreen>
     final rawDx = event.scrollDelta.dx;
     final rawDy = event.scrollDelta.dy;
     if (rawDx == 0 && rawDy == 0) return;
-    double dx = _lockH ? 0.0 : -rawDx;
-    double dy = _lockV ? 0.0 : -rawDy;
+    double dx;
+    double dy;
+    if (_activeMapScrollbarAxis == Axis.horizontal) {
+      // 横バー上では一般的なマウスの上下ホイールを横移動として扱う。
+      final horizontalInput = rawDy != 0 ? rawDy : rawDx;
+      dx = _lockH ? 0.0 : -horizontalInput;
+      dy = 0.0;
+    } else if (_activeMapScrollbarAxis == Axis.vertical) {
+      final verticalInput = rawDy != 0 ? rawDy : rawDx;
+      dx = 0.0;
+      dy = _lockV ? 0.0 : -verticalInput;
+    } else {
+      dx = _lockH ? 0.0 : -rawDx;
+      dy = _lockV ? 0.0 : -rawDy;
+    }
     if (dx == 0 && dy == 0) return;
 
     final provider = context.read<MindMapProvider>();
@@ -59947,21 +60673,12 @@ class _MindMapScreenState extends State<MindMapScreen>
     double newX = t.x + dx;
     double newY = t.y + dy;
 
-    final nodes = provider.nodes;
-    final canvasDim = provider.currentPage.pageType == 'bookshelf'
-        ? provider.bookshelfCanvasSize()
-        : Size(computeCanvasSize(nodes), computeCanvasSize(nodes));
+    final canvasDim = _canvasDimensionForScrollbars(provider);
     final scale = m.getMaxScaleOnAxis();
-    final view =
-        View.of(context).physicalSize / View.of(context).devicePixelRatio;
-    final margin = provider.currentPage.pageType == 'bookshelf'
-        ? EdgeInsets.fromLTRB(
-            2000,
-            2000,
-            2000 +
-                (_splitOpen ? _splitPanelEffectiveSize(context) + 240.0 : 0.0),
-            2000)
-        : EdgeInsets.zero;
+    final viewportBox =
+        _mapViewportKey.currentContext?.findRenderObject() as RenderBox?;
+    final view = viewportBox?.size ?? MediaQuery.sizeOf(context);
+    final margin = _canvasBoundaryMarginForScrollbars(provider, context);
 
     final minX = view.width - (canvasDim.width + margin.right) * scale;
     final maxX = margin.left * scale;
@@ -59971,8 +60688,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     newY = _clampCanvasTranslation(newY, minY, maxY);
 
     m.setTranslationRaw(newX, newY, 0);
-    ctrl.value = m;
     _lastMatrix = m.clone();
+    ctrl.value = m;
   }
 
   void _handleArrowKey(LogicalKeyboardKey key, TransformationController ctrl) {
@@ -66769,6 +67486,7 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
   bool _collapsed = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
   Offset? _panelPosition;
   Timer? _labelSaveDebounce;
+  final ScrollController _lineColorScrollController = ScrollController();
 
   /// 両方向矢印トグル state
   late bool _bidirectional;
@@ -66801,6 +67519,7 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
     _anim.dispose();
     _labelCtrl.dispose();
     _labelSaveDebounce?.cancel();
+    _lineColorScrollController.dispose();
     super.dispose();
   }
 
@@ -66842,8 +67561,7 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
   @override
   Widget build(BuildContext context) {
     const double barW = 260.0;
-    const linkColors = <Color?>[
-      null,
+    const linkColors = <Color>[
       Color(0xFFEF5350),
       Color(0xFFFFA726),
       Color(0xFF66BB6A),
@@ -66852,6 +67570,11 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
       Color(0xFFECEFF1),
     ];
     final mq = MediaQuery.of(context);
+    final showLineColorScrollbar = <TargetPlatform>{
+      TargetPlatform.windows,
+      TargetPlatform.macOS,
+      TargetPlatform.linux,
+    }.contains(defaultTargetPlatform);
     double left = _panelPosition?.dx ?? widget.screenPos.dx - barW / 2;
     double top = _panelPosition?.dy ?? widget.screenPos.dy - 220;
     final topMin = mq.padding.top + 64.0;
@@ -67029,46 +67752,57 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
                             const SizedBox(width: 8),
                             Expanded(
                               child: SizedBox(
-                                height: 30,
-                                child: ListView.separated(
-                                  scrollDirection: Axis.horizontal,
-                                  itemCount: linkColors.length,
-                                  separatorBuilder: (_, __) =>
-                                      const SizedBox(width: 7),
-                                  itemBuilder: (_, index) {
-                                    final color = linkColors[index];
-                                    final value = color?.toARGB32();
-                                    final selected = _lineColorValue == value;
-                                    return GestureDetector(
-                                      behavior: HitTestBehavior.opaque,
-                                      onTap: () {
-                                        setState(() => _lineColorValue = value);
-                                        widget.onLineColorChanged(value);
-                                      },
-                                      child: Container(
-                                        width: 26,
-                                        height: 26,
-                                        margin: const EdgeInsets.symmetric(
-                                            vertical: 2),
-                                        decoration: BoxDecoration(
-                                          shape: BoxShape.circle,
-                                          color: color ?? Colors.transparent,
-                                          border: Border.all(
-                                            color: selected
-                                                ? const Color(0xFF80CBC4)
-                                                : Colors.white24,
-                                            width: selected ? 2.5 : 1,
+                                height: 40,
+                                child: Scrollbar(
+                                  controller: _lineColorScrollController,
+                                  thumbVisibility: showLineColorScrollbar,
+                                  trackVisibility: showLineColorScrollbar,
+                                  interactive: showLineColorScrollbar,
+                                  scrollbarOrientation:
+                                      ScrollbarOrientation.bottom,
+                                  thickness: 5,
+                                  radius: const Radius.circular(4),
+                                  child: ListView.separated(
+                                    controller: _lineColorScrollController,
+                                    scrollDirection: Axis.horizontal,
+                                    padding: const EdgeInsets.only(bottom: 9),
+                                    itemCount: linkColors.length,
+                                    separatorBuilder: (_, __) =>
+                                        const SizedBox(width: 7),
+                                    itemBuilder: (_, index) {
+                                      final color = linkColors[index];
+                                      final value = color.toARGB32();
+                                      final selected = _lineColorValue == value;
+                                      return GestureDetector(
+                                        behavior: HitTestBehavior.opaque,
+                                        onTap: () {
+                                          setState(
+                                              () => _lineColorValue = value);
+                                          widget.onLineColorChanged(value);
+                                        },
+                                        child: Container(
+                                          width: 26,
+                                          height: 26,
+                                          margin: const EdgeInsets.symmetric(
+                                              vertical: 2),
+                                          decoration: BoxDecoration(
+                                            shape: BoxShape.circle,
+                                            color: color,
+                                            border: Border.all(
+                                              color: selected
+                                                  ? const Color(0xFF80CBC4)
+                                                  : Colors.white24,
+                                              width: selected ? 2.5 : 1,
+                                            ),
                                           ),
+                                          child: selected
+                                              ? const Icon(Icons.check_rounded,
+                                                  color: Colors.white, size: 15)
+                                              : null,
                                         ),
-                                        child: color == null
-                                            ? const Icon(
-                                                Icons.auto_awesome_rounded,
-                                                color: Colors.white54,
-                                                size: 12)
-                                            : null,
-                                      ),
-                                    );
-                                  },
+                                      );
+                                    },
+                                  ),
                                 ),
                               ),
                             ),
@@ -69834,6 +70568,19 @@ class _WinTab {
   _WinTab({required this.url, this.title = '', this.pinned = false});
 }
 
+/// 共有 WebView に対して最後に開始したナビゲーション。
+///
+/// WebView2 の URL/title/loading ストリームには要求 ID が含まれない。複数要求を
+/// キューで推測すると、キャンセル済み要求の redirect を次のタブへ誤帰属させる
+/// ため、同時に追跡する所有者は常に最新の 1 件だけにする。
+class _WinTabNavigation {
+  final _WinTab tab;
+  final String requestedUrl;
+  final int generation;
+
+  const _WinTabNavigation(this.tab, this.requestedUrl, this.generation);
+}
+
 /// webview_windows には shouldOverrideUrlLoading が無いので、 ドキュメント生成時
 /// に注入してリンクの Ctrl/⌘+クリック・中クリックを捕まえ、 既定の遷移を止めて
 /// `window.chrome.webview.postMessage` で URL を Flutter 側へ渡す。 受け取った側は
@@ -69994,6 +70741,10 @@ class _WindowsWebViewSheetState extends State<_WindowsWebViewSheet> {
   //   まで切り替えられるように。切替でページは再読込される。)
   late List<_WinTab> _winTabs; // 各タブ（最大 _kMaxWinTabs）
   int _winActiveTab = 0;
+  late _WinTab _winDisplayedTab;
+  _WinTabNavigation? _winActiveNavigation;
+  int _winNavigationGeneration = 0;
+  bool _winActiveNavigationMatched = false;
   // 閉じたタブの履歴 (Ctrl+Shift+T で復元)。 末尾が直近に閉じたタブ。
   final List<_WinTab> _closedWinTabs = [];
   static const int _kMaxWinTabs = 15; // = ユーザー要望: もっと開けるように
@@ -70198,6 +70949,7 @@ class _WindowsWebViewSheetState extends State<_WindowsWebViewSheet> {
     _playlist = widget.playlist.isNotEmpty ? widget.playlist : [widget.url];
     _winTabs = [_WinTab(url: widget.url)]; // 最初のタブ = 現在開いている URL
     _winActiveTab = 0;
+    _winDisplayedTab = _winTabs[0];
     // ブラウズ用途 (focusMode=false) のシートだけを「アクティブなタブ置き場」
     //   として登録する。 Ctrl+U / 動画を開く 時に、 既に開いているこのシートへ
     //   新しいタブとして追加するために使う (= ユーザー要望)。
@@ -70215,9 +70967,8 @@ class _WindowsWebViewSheetState extends State<_WindowsWebViewSheet> {
     });
     _playlistIndex = widget.startIndex.clamp(0, _playlist.length - 1);
     // 動画タイトルの初期表示を呼び出し側 (ノードのタイトル等) からもらえる
-    // 場合はそれを使う。HTML の <title> も埋めているので、
-    // _controller.title.listen 側からも同じ文字列が流れ込んで上書きされる
-    // (= 表示は一貫する)。
+    // 場合はそれを使う。HTML の <title> も埋めておき、ロード完了時の
+    // DOM snapshot から同じ文字列を安全にタブへ確定する。
     if (widget.initialTitle != null && widget.initialTitle!.isNotEmpty) {
       _currentTitle = widget.initialTitle!;
     }
@@ -70249,9 +71000,15 @@ class _WindowsWebViewSheetState extends State<_WindowsWebViewSheet> {
     // controller の初期化完了を少し待ってから loadUrl
     await Future.delayed(const Duration(milliseconds: 500));
     if (!mounted || !_initialized) return;
-    try {
-      await _controller.loadUrl(latest);
-    } catch (_) {}
+    if (_winActiveTab >= 0 && _winActiveTab < _winTabs.length) {
+      final tab = _winTabs[_winActiveTab];
+      setState(() {
+        tab.url = latest;
+        _winShowTabPreview(tab);
+        _loading = true;
+      });
+      _winLoadForTab(tab, latest);
+    }
   }
 
   /// URL が YouTube 関連か判定。 履歴に追加するか / 復元するかの判定用。
@@ -70415,7 +71172,7 @@ html,body{width:100%;height:100%;background:#000;overflow:hidden;}
   String _buildMp4HtmlPlayer(String url) {
     // ── タイトル埋め込み (ヘッダーに動画名を表示するため) ──
     // widget.initialTitle が指定されていればそれを HTML の <title> として埋める。
-    // _controller.title.listen が <title> を拾うので、結果として
+    // ロード完了時の DOM snapshot が <title> を拾うので、結果として
     // _currentTitle がファイル名ではなく動画本来のタイトルになる。
     final rawTitle = widget.initialTitle ?? '';
     final escapedTitle = const HtmlEscape().convert(rawTitle);
@@ -70557,6 +71314,191 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
     return false;
   }
 
+  bool _winTabIsOpen(_WinTab tab) {
+    return _winTabs.any((candidate) => identical(candidate, tab));
+  }
+
+  /// URL ストリームの値が、明示的に開始したタブ遷移と同じページかを判定する。
+  /// YouTube は watch/embed 間で URL が正規化されるため videoId でも照合する。
+  bool _winSameNavigationUrl(String actual, String requested) {
+    if (actual == requested) return true;
+    final actualVideoId = _extractVideoIdFromWin(actual);
+    final requestedVideoId = _extractVideoIdFromWin(requested);
+    if (actualVideoId != null && actualVideoId == requestedVideoId) return true;
+    try {
+      final a = Uri.parse(actual);
+      final r = Uri.parse(requested);
+      return a.scheme == r.scheme &&
+          a.host.toLowerCase() == r.host.toLowerCase() &&
+          a.path == r.path &&
+          a.query == r.query;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 共有 WebView のロードを、active index ではなくタブ実体へ紐付けて開始する。
+  ///
+  /// 共有コントローラでは古い loadUrl はキャンセルされ得るため、過去要求の
+  /// キューは保持しない。以降の stream はこの最新 generation と一致する要求だけ
+  /// が受け取る。
+  void _winLoadForTab(_WinTab tab, String url) {
+    if (!_winTabIsOpen(tab)) return;
+    final playable = _toPlayableUrl(url);
+    final generation = ++_winNavigationGeneration;
+    _winActiveNavigation = _WinTabNavigation(tab, playable, generation);
+    _winActiveNavigationMatched = false;
+    try {
+      _controller.loadUrl(playable);
+    } catch (_) {
+      if (_winActiveNavigation?.generation == generation) {
+        _winActiveNavigation = null;
+        _winActiveNavigationMatched = false;
+      }
+    }
+  }
+
+  /// 最新の明示ロードに対応する URL を観測したかだけを保守的に記録する。
+  ///
+  /// URL stream 自体では tab state を変更しない。要求 URL と一致した通知でも、
+  /// 直後に旧ページの redirect が遅着し得るため、実 URL/title の確定は
+  /// navigationCompleted 後の DOM snapshot だけで行う。
+  void _winObserveUrlForActiveNavigation(String url) {
+    final navigation = _winActiveNavigation;
+    if (navigation != null &&
+        _winTabIsOpen(navigation.tab) &&
+        _winSameNavigationUrl(url, navigation.requestedUrl)) {
+      _winActiveNavigationMatched = true;
+    }
+  }
+
+  /// navigationCompleted 時点の実 URL/title を、完了した最新 generation の
+  /// 所有タブへ確定する。title stream はイベントに要求 ID が無く前後し得るため、
+  /// タブ state の更新には使わず、ここで同じ DOM snapshot から取得する。
+  Future<void> _winCommitCompletedNavigation() async {
+    final navigation = _winActiveNavigation;
+    final owner = navigation?.tab ?? _winDisplayedTab;
+    final generation = navigation?.generation ?? _winNavigationGeneration;
+    if (!_winTabIsOpen(owner)) return;
+
+    String? actualUrl;
+    String? actualTitle;
+    try {
+      final raw = await _controller.executeScript(r'''
+        (function() {
+          try {
+            return JSON.stringify({
+              url: String(window.location.href || ''),
+              title: String(document.title || '')
+            });
+          } catch (e) {
+            return '';
+          }
+        })()
+      ''');
+      dynamic decoded = raw;
+      // webview_windows の戻り値は環境により JSON 文字列がもう一段
+      // JSON-encode されるため、Map になるまで最大 2 回だけ展開する。
+      for (int i = 0; i < 2 && decoded is String; i++) {
+        final text = decoded.trim();
+        if (text.isEmpty) break;
+        try {
+          decoded = jsonDecode(text);
+        } catch (_) {
+          break;
+        }
+      }
+      if (decoded is Map) {
+        actualUrl = (decoded['url'] ?? '').toString().trim();
+        actualTitle = (decoded['title'] ?? '').toString().trim();
+      }
+    } catch (_) {}
+
+    if (!mounted ||
+        generation != _winNavigationGeneration ||
+        !_winTabIsOpen(owner)) {
+      return;
+    }
+    if (navigation != null) {
+      if (!identical(_winActiveNavigation, navigation)) return;
+      // 古い navigationCompleted が最新 loadUrl の直後に届く場合がある。
+      // 要求 URL を一度も観測しておらず、DOM も要求先でないなら確定しない。
+      if (!_winActiveNavigationMatched &&
+          (actualUrl == null ||
+              !_winSameNavigationUrl(actualUrl!, navigation.requestedUrl))) {
+        return;
+      }
+      _winActiveNavigationMatched = true;
+    }
+
+    // ダウンロード対象を固定中に別動画へ自動遷移した場合は、誤った URL を
+    // tab state へ確定する前に元ページへ戻す。
+    final lock = _downloadingLockUrl;
+    if (lock != null && actualUrl != null) {
+      final lockVid = _extractVideoIdFromWin(lock);
+      final actualVid = _extractVideoIdFromWin(actualUrl!);
+      if (lockVid != null && actualVid != null && lockVid != actualVid) {
+        _winLoadForTab(owner, lock);
+        if (!_downloadAutoNavBackWarned) {
+          _downloadAutoNavBackWarned = true;
+          _appSnack(
+            context,
+            SnackBar(
+              content:
+                  Text(context.read<MindMapProvider>().t('video.autoReverted')),
+              backgroundColor: const Color(0xFFFFB347),
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        }
+        return;
+      }
+    }
+
+    final ownerIsActive = _winActiveTab >= 0 &&
+        _winActiveTab < _winTabs.length &&
+        identical(_winTabs[_winActiveTab], owner);
+    setState(() {
+      _winDisplayedTab = owner;
+      if (actualUrl != null && actualUrl!.isNotEmpty) owner.url = actualUrl!;
+      if (actualTitle != null && actualTitle!.isNotEmpty) {
+        owner.title = _cleanTitle(actualTitle!);
+      }
+      if (ownerIsActive) {
+        _currentUrl = owner.url;
+        _currentTitle = owner.title;
+        _loading = false;
+      }
+      if (navigation != null && identical(_winActiveNavigation, navigation)) {
+        _winActiveNavigation = null;
+        _winActiveNavigationMatched = false;
+      }
+    });
+    if (ownerIsActive) {
+      final committedUrl = owner.url;
+      if (!_isVideoPageUrl(committedUrl)) {
+        _removeFocusMode();
+      }
+      if (widget.onEmbedUrl != null) {
+        try {
+          context.read<MindMapProvider>().saveYoutubeBrowseUrl(committedUrl);
+        } catch (_) {}
+      }
+      if (_isYoutubeUrl(committedUrl)) {
+        _YoutubeNavHistory.recordVisit(committedUrl);
+      }
+      _onPageLoaded();
+    }
+  }
+
+  /// ロード待ち中は WebView の遅延イベントよりも、選択したタブ自身の保存値を
+  /// ヘッダーへ表示する。これにより A→B→C と素早く切替えても A の URL/title
+  /// が B や C のプレビューへ混入しない。
+  void _winShowTabPreview(_WinTab tab) {
+    _currentUrl = tab.url;
+    _currentTitle = tab.title;
+  }
+
   Future<void> _initController() async {
     // Linux: webview_windows 非対応 → CEF (build 側の LinuxWebViewWidget) で
     //   表示する。 wv_win コントローラは初期化しない (= 呼ぶと例外)。
@@ -70587,90 +71529,34 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
         // 次の動画へ。 ギャラリーから playlist 付きで開いた時のみ働く)。
         if (_isEndedWebMessage(msg)) _handleWinPlaylistEnded();
       });
-      _controller.title.listen((t) {
-        if (mounted && t != null) {
-          setState(() {
-            _currentTitle = _cleanTitle(t);
-            // アクティブなタブのページ名を更新 (= ユーザー要望: タブに
-            // 開いているページ名を表示)。
-            if (_winActiveTab >= 0 && _winActiveTab < _winTabs.length) {
-              _winTabs[_winActiveTab].title = _currentTitle;
-            }
-          });
-        }
-      });
-      // WebView2 が遷移するたびに現在URLを記録（埋め込みボタンで利用）
+      // title stream は URL stream と到着順が保証されず、タブ/要求 ID も無い。
+      // タブ state は navigationCompleted 後の DOM snapshot だけから更新する。
+      // URL stream も同様に所有者推測へ使わず、最新要求との一致確認だけに使う。
       _controller.url.listen((u) {
         if (mounted && u.isNotEmpty) {
-          // ── ダウンロード中の URL ロック ──
-          // YouTube の autoplay (関連動画自動再生) でダウンロード対象の
-          // 動画から別動画に遷移してしまうと、 ユーザーが「ダウンロード
-          // した動画と違うものが再生されている」 と混乱する原因になる。
-          // ダウンロード自体は開始時に videoId を捕まえているので動くが、
-          // UX として強制的に元 URL に戻す。
-          // 判定は videoId 単位で行う (URL クエリの細かい違いは無視)。
-          final lock = _downloadingLockUrl;
-          if (lock != null) {
-            final lockVid = _extractVideoIdFromWin(lock);
-            final curVid = _extractVideoIdFromWin(u);
-            // 動画ページ間の遷移で videoId が変わった場合だけ介入
-            // (検索ページ等への遷移はそもそも動画 ID が無いので no-op)。
-            if (lockVid != null && curVid != null && lockVid != curVid) {
-              // 元の URL に戻す
-              try {
-                _controller.loadUrl(_toPlayableUrl(lock));
-              } catch (_) {}
-              if (!_downloadAutoNavBackWarned) {
-                _downloadAutoNavBackWarned = true;
-                _appSnack(
-                  context,
-                  SnackBar(
-                    content: Text(context
-                        .read<MindMapProvider>()
-                        .t('video.autoReverted')),
-                    backgroundColor: const Color(0xFFFFB347),
-                    duration: const Duration(seconds: 3),
-                  ),
-                );
-              }
-              return; // _currentUrl はあえて更新しない
-            }
-          }
-          setState(() => _currentUrl = u);
-          // ★ 動画ページから検索結果 / ホーム / 非 YouTube サイトへの SPA
-          //   遷移時、 以前注入したフォーカスモード CSS (`__MM_WIN_FOCUS__`)
-          //   を撤去する。 残ったままだと新ページの <header> / <footer> /
-          //   body が display:none / 黒背景に固定されて「CSS が消える」
-          //   ように見える (= ユーザー報告)。
-          if (!_isVideoPageUrl(u)) {
-            _removeFocusMode();
-          }
-          // 「YouTubeを開く」起動 (onEmbedUrl != null) の時だけ
-          // 最後に開いていたページを永続化 → 次回起動時に再開できる。
-          // 動画ページや埋め込みページは saveYoutubeBrowseUrl 内で除外される。
-          if (widget.onEmbedUrl != null) {
-            try {
-              context.read<MindMapProvider>().saveYoutubeBrowseUrl(u);
-            } catch (_) {}
-          }
-          // ── 前後 3 件分の YouTube 履歴を SharedPreferences で永続化 ──
-          // 動画ページ / 検索ページ / チャンネルページなど、 ユーザーが
-          // 実際にナビゲートした URL を最大 3 件まで保存する。
-          // 次回ノードを開いた時、 履歴の最新 URL から復元可能。
-          if (_isYoutubeUrl(u)) {
-            _YoutubeNavHistory.recordVisit(u);
-          }
+          _winObserveUrlForActiveNavigation(u);
         }
       });
       _controller.loadingState.listen((state) {
         if (mounted) {
-          setState(() => _loading = state == wv_win.LoadingState.loading);
+          final navigationOwner = _winActiveNavigation?.tab ?? _winDisplayedTab;
+          final ownerIsActive = _winActiveTab >= 0 &&
+              _winActiveTab < _winTabs.length &&
+              identical(_winTabs[_winActiveTab], navigationOwner);
+          if (ownerIsActive && state == wv_win.LoadingState.loading) {
+            setState(() => _loading = state == wv_win.LoadingState.loading);
+          }
           if (state == wv_win.LoadingState.navigationCompleted) {
-            _onPageLoaded();
+            unawaited(_winCommitCompletedNavigation());
           }
         }
       });
-      await _controller.loadUrl(_toPlayableUrl(_playlist[_playlistIndex]));
+      if (_winActiveTab >= 0 && _winActiveTab < _winTabs.length) {
+        final tab = _winTabs[_winActiveTab];
+        final initialUrl = _playlist[_playlistIndex];
+        tab.url = initialUrl;
+        _winLoadForTab(tab, initialUrl);
+      }
       if (mounted) setState(() => _initialized = true);
     } catch (e) {
       // 初期化失敗時はエラー表示
@@ -70704,10 +71590,15 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
       } catch (_) {}
     }
     if (_playlistIndex < _playlist.length - 1) {
-      setState(() => _playlistIndex++);
-      try {
-        _controller.loadUrl(_toPlayableUrl(_playlist[_playlistIndex]));
-      } catch (_) {}
+      if (_winActiveTab < 0 || _winActiveTab >= _winTabs.length) return;
+      final tab = _winTabs[_winActiveTab];
+      setState(() {
+        _playlistIndex++;
+        tab.url = _playlist[_playlistIndex];
+        _winShowTabPreview(tab);
+        _loading = true;
+      });
+      _winLoadForTab(tab, tab.url);
     }
   }
 
@@ -73266,12 +74157,13 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
   /// 別のタブへ切り替える。現在のタブの URL を保存してから読み込み直す。
   void _switchWinTab(int i) {
     if (i == _winActiveTab || i < 0 || i >= _winTabs.length) return;
-    _winTabs[_winActiveTab].url = _currentUrl; // 現タブの現在地を保存
+    final target = _winTabs[i];
     setState(() {
       _winActiveTab = i;
+      _winShowTabPreview(target);
       _loading = true;
     });
-    _controller.loadUrl(_toPlayableUrl(_winTabs[i].url));
+    _winLoadForTab(target, target.url);
   }
 
   /// 新しいタブ（YouTube ホーム）を開く。最大 _kMaxWinTabs まで。
@@ -73283,13 +74175,15 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
     final home = context
         .read<MindMapProvider>()
         .localizeYoutubeUrl('https://www.youtube.com/');
-    _winTabs[_winActiveTab].url = _currentUrl; // 現タブの現在地を保存
+    late final _WinTab target;
     setState(() {
-      _winTabs.add(_WinTab(url: home, title: 'YouTube'));
+      target = _WinTab(url: home, title: 'YouTube');
+      _winTabs.add(target);
       _winActiveTab = _winTabs.length - 1;
+      _winShowTabPreview(target);
       _loading = true;
     });
-    _controller.loadUrl(home);
+    _winLoadForTab(target, home);
   }
 
   /// タブを閉じる。最後の 1 枚は閉じない。お気に入りタブを閉じたら保存も更新。
@@ -73298,7 +74192,9 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
     final wasActive = i == _winActiveTab;
     final wasPinned = _winTabs[i].pinned;
     // 閉じたタブを履歴に積む (Ctrl+Shift+T で復元できるように)。
-    final closingUrl = wasActive ? _currentUrl : _winTabs[i].url;
+    final closingUrl = wasActive && identical(_winTabs[i], _winDisplayedTab)
+        ? _currentUrl
+        : _winTabs[i].url;
     if (closingUrl.isNotEmpty) {
       _closedWinTabs.add(_WinTab(url: closingUrl, title: _winTabs[i].title));
       if (_closedWinTabs.length > 20) _closedWinTabs.removeAt(0);
@@ -73314,7 +74210,9 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
     });
     if (wasPinned) _winSavePinnedTabs();
     if (wasActive) {
-      _controller.loadUrl(_toPlayableUrl(_winTabs[_winActiveTab].url));
+      final target = _winTabs[_winActiveTab];
+      setState(() => _winShowTabPreview(target));
+      _winLoadForTab(target, target.url);
     }
   }
 
@@ -73339,21 +74237,25 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
     if (url.isEmpty) return;
     if (_winTabs.length >= _kMaxWinTabs) {
       // 上限に達しているときは現在のタブで開く。
-      _winTabs[_winActiveTab].url = _currentUrl;
-      setState(() => _loading = true);
-      _controller.loadUrl(_toPlayableUrl(url));
+      final target = _winTabs[_winActiveTab];
+      setState(() {
+        target.url = url;
+        _winShowTabPreview(target);
+        _loading = true;
+      });
+      _winLoadForTab(target, url);
       return;
     }
-    _winTabs[_winActiveTab].url = _currentUrl; // 現タブの現在地を保存
     final tab = _WinTab(url: url, title: '');
     setState(() {
       _winTabs.add(tab);
       if (activate) {
         _winActiveTab = _winTabs.length - 1;
+        _winShowTabPreview(tab);
         _loading = true;
       }
     });
-    if (activate) _controller.loadUrl(_toPlayableUrl(url));
+    if (activate) _winLoadForTab(tab, url);
     _fetchAndSetTabTitle(tab, url);
   }
 
@@ -73379,13 +74281,15 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
   void _reopenClosedWinTab() {
     if (_closedWinTabs.isEmpty || _winTabs.length >= _kMaxWinTabs) return;
     final t = _closedWinTabs.removeLast();
-    _winTabs[_winActiveTab].url = _currentUrl; // 現タブの現在地を保存
+    late final _WinTab target;
     setState(() {
-      _winTabs.add(_WinTab(url: t.url, title: t.title));
+      target = _WinTab(url: t.url, title: t.title);
+      _winTabs.add(target);
       _winActiveTab = _winTabs.length - 1;
+      _winShowTabPreview(target);
       _loading = true;
     });
-    _controller.loadUrl(_toPlayableUrl(t.url));
+    _winLoadForTab(target, t.url);
   }
 
   /// Ctrl+W = アクティブタブを閉じる (最後の 1 枚ならシート全体を閉じる)。
@@ -73417,17 +74321,16 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
   /// 指定タブに任意サイトを開く（タブ右クリックの「○○を開く」から）。
   void _openSiteInTab(int i, String url, String name) {
     if (i < 0 || i >= _winTabs.length) return;
-    if (i != _winActiveTab) {
-      _winTabs[_winActiveTab].url = _currentUrl; // 現タブ保存
-    }
+    final target = _winTabs[i];
     setState(() {
-      _winTabs[i].url = url;
-      _winTabs[i].title = name;
+      target.url = url;
+      target.title = name;
       _winActiveTab = i;
+      _winShowTabPreview(target);
       _loading = true;
     });
-    _controller.loadUrl(_toPlayableUrl(url));
-    if (_winTabs[i].pinned) _winSavePinnedTabs();
+    _winLoadForTab(target, url);
+    if (target.pinned) _winSavePinnedTabs();
   }
 
   /// タブ右クリックのメニュー: お気に入り(保持) 切替 + サイトを開く。
@@ -73478,7 +74381,7 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
     if (selected == 'pin') {
       setState(() {
         // アクティブタブは現在地を反映してからピン留め（正しい URL を保存）
-        if (i == _winActiveTab) {
+        if (i == _winActiveTab && identical(_winTabs[i], _winDisplayedTab)) {
           _winTabs[i].url = _currentUrl;
           if (_currentTitle.isNotEmpty) _winTabs[i].title = _currentTitle;
         }
@@ -73521,13 +74424,15 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
       _openSiteInTab(_winActiveTab, site.$2, site.$1);
       return;
     }
-    _winTabs[_winActiveTab].url = _currentUrl;
+    late final _WinTab target;
     setState(() {
-      _winTabs.add(_WinTab(url: site.$2, title: site.$1));
+      target = _WinTab(url: site.$2, title: site.$1);
+      _winTabs.add(target);
       _winActiveTab = _winTabs.length - 1;
+      _winShowTabPreview(target);
       _loading = true;
     });
-    _controller.loadUrl(_toPlayableUrl(site.$2));
+    _winLoadForTab(target, site.$2);
   }
 
   /// お気に入り(保持)タブを SharedPreferences に保存。
@@ -73562,19 +74467,30 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
       }
       if (restored.isEmpty || !mounted) return;
       setState(() {
-        final curUrl = _winTabs.isNotEmpty ? _winTabs[0].url : widget.url;
-        final tabs = <_WinTab>[...restored];
-        final existing = tabs.indexWhere((t) => t.url == curUrl);
-        if (existing >= 0) {
-          _winActiveTab = existing;
-        } else {
-          // 現在開いている URL を末尾に（未ピンの作業用タブとして）
-          tabs.add(_WinTab(
-              url: curUrl,
-              title: _currentTitle.isNotEmpty ? _currentTitle : ''));
-          _winActiveTab = tabs.length - 1;
+        // SharedPreferences 待ちの間にユーザーが開いたタブを消さないよう、
+        // 復元一覧で置換せず既存 tab identity へマージする。
+        final activeTab =
+            (_winActiveTab >= 0 && _winActiveTab < _winTabs.length)
+                ? _winTabs[_winActiveTab]
+                : _winTabs.first;
+        final tabs = List<_WinTab>.from(_winTabs);
+        for (final saved in restored) {
+          final existing = tabs.indexWhere((tab) => tab.url == saved.url);
+          if (existing >= 0) {
+            final tab = tabs[existing];
+            tab.pinned = true;
+            if (tab.title.isEmpty) tab.title = saved.title;
+          } else if (tabs.length < _kMaxWinTabs) {
+            tabs.add(saved);
+          }
         }
         _winTabs = tabs;
+        final activeIndex =
+            _winTabs.indexWhere((tab) => identical(tab, activeTab));
+        _winActiveTab = activeIndex >= 0 ? activeIndex : 0;
+        if (!_winTabIsOpen(_winDisplayedTab)) {
+          _winDisplayedTab = _winTabs[_winActiveTab];
+        }
       });
     } catch (_) {}
   }
@@ -73638,8 +74554,9 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
   /// タブ i を任意のフォルダーに保存する。
   Future<void> _winSaveTabToFolder(int i) async {
     if (i < 0 || i >= _winTabs.length) return;
-    final url = (i == _winActiveTab) ? _currentUrl : _winTabs[i].url;
-    final title = (i == _winActiveTab && _currentTitle.isNotEmpty)
+    final isDisplayed = identical(_winTabs[i], _winDisplayedTab);
+    final url = isDisplayed ? _currentUrl : _winTabs[i].url;
+    final title = (isDisplayed && _currentTitle.isNotEmpty)
         ? _currentTitle
         : _winTabs[i].title;
     if (url.isEmpty) return;
@@ -73793,24 +74710,24 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
   /// フォルダー内のタブをまとめて開く。
   void _winOpenFolder(List<Map<String, String>> tabs) {
     if (tabs.isEmpty) return;
-    if (_winActiveTab >= 0 && _winActiveTab < _winTabs.length) {
-      _winTabs[_winActiveTab].url = _currentUrl; // 現タブ保存
-    }
     bool added = false;
+    _WinTab? target;
     setState(() {
       for (final t in tabs) {
         if (_winTabs.length >= _kMaxWinTabs) break;
         final u = t['url'] ?? '';
         if (u.isEmpty) continue;
-        _winTabs.add(_WinTab(url: u, title: t['title'] ?? ''));
+        target = _WinTab(url: u, title: t['title'] ?? '');
+        _winTabs.add(target!);
         _winActiveTab = _winTabs.length - 1;
         added = true;
       }
-      if (added) _loading = true;
+      if (added && target != null) {
+        _winShowTabPreview(target!);
+        _loading = true;
+      }
     });
-    if (added && _winActiveTab >= 0 && _winActiveTab < _winTabs.length) {
-      _controller.loadUrl(_toPlayableUrl(_winTabs[_winActiveTab].url));
-    }
+    if (added && target != null) _winLoadForTab(target!, target!.url);
   }
 
   /// 上部のタブバー（タブ一覧 + サイトボタン + 新規タブ「＋」）。
@@ -74074,11 +74991,14 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
                   icon: const Icon(Icons.refresh_rounded,
                       color: Colors.white70, size: 18),
                   onPressed: () {
+                    if (_winActiveTab < 0 || _winActiveTab >= _winTabs.length) {
+                      return;
+                    }
+                    final tab = _winTabs[_winActiveTab];
                     setState(() {
                       _loading = true;
                     });
-                    _controller
-                        .loadUrl(_toPlayableUrl(_playlist[_playlistIndex]));
+                    _winLoadForTab(tab, tab.url);
                   },
                 ),
                 if (_isYoutube ||
@@ -74108,12 +75028,14 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
                       color: Colors.white54, size: 18),
                   onPressed: _playlistIndex > 0
                       ? () {
+                          final tab = _winTabs[_winActiveTab];
                           setState(() {
                             _playlistIndex--;
+                            tab.url = _playlist[_playlistIndex];
+                            _winShowTabPreview(tab);
                             _loading = true;
                           });
-                          _controller.loadUrl(
-                              _toPlayableUrl(_playlist[_playlistIndex]));
+                          _winLoadForTab(tab, tab.url);
                         }
                       : null,
                 ),
@@ -74125,12 +75047,14 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
                       color: Colors.white54, size: 18),
                   onPressed: _playlistIndex < _playlist.length - 1
                       ? () {
+                          final tab = _winTabs[_winActiveTab];
                           setState(() {
                             _playlistIndex++;
+                            tab.url = _playlist[_playlistIndex];
+                            _winShowTabPreview(tab);
                             _loading = true;
                           });
-                          _controller.loadUrl(
-                              _toPlayableUrl(_playlist[_playlistIndex]));
+                          _winLoadForTab(tab, tab.url);
                         }
                       : null,
                 ),

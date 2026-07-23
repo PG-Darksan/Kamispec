@@ -8,6 +8,10 @@ class ConnectionPainter extends CustomPainter {
   /// 選択中の接続（複数選択対応）
   final Set<NodeConnection> selectedConnections;
 
+  /// Ctrl/Meta で個別選択された直角リンクの節点番号。
+  /// 選択済み節点だけを強く描画し、一括移動の対象を判別できるようにする。
+  final Map<NodeConnection, Set<int>> selectedBendIndices;
+
   /// ダークモード設定。ライトモードでは pale な黄色の接続線が白背景に
   /// 溶けて見えなくなるため、ノード背景と同様に濃いアンバーへ補正する。
   final bool isDarkMode;
@@ -23,9 +27,11 @@ class ConnectionPainter extends CustomPainter {
     required this.nodes,
     required this.connections,
     Set<NodeConnection>? selectedConnections,
+    Map<NodeConnection, Set<int>>? selectedBendIndices,
     this.isDarkMode = true,
     this.lineStyle = 'curve',
-  }) : selectedConnections = selectedConnections ?? {};
+  })  : selectedConnections = selectedConnections ?? {},
+        selectedBendIndices = selectedBendIndices ?? const {};
 
   /// 接続線の表示色を計算。黄色系の色は視認性が低いためユーザー要望により
   /// 全廃。pale な黄色を ブラック(Blue Gray 900) に置き換える。
@@ -97,8 +103,8 @@ class ConnectionPainter extends CustomPainter {
       NodeConnection conn, MindMapNode from, MindMapNode to) {
     final p1 = _connectionAnchor(
         from, conn.fromAnchor, conn.fromTableSide, conn.fromTableIndex);
-    final p2 =
-        _connectionAnchor(to, conn.toAnchor, conn.toTableSide, conn.toTableIndex);
+    final p2 = _connectionAnchor(
+        to, conn.toAnchor, conn.toTableSide, conn.toTableIndex);
     if (conn.elbowBendPoints.isNotEmpty) {
       return [p1, ...conn.elbowBendPoints, p2];
     }
@@ -139,8 +145,8 @@ class ConnectionPainter extends CustomPainter {
       for (int i = 0; i < lengths.length; i++) {
         if (remaining <= lengths[i] || i == lengths.length - 1) {
           final localT = lengths[i] <= 0.001 ? 0.0 : remaining / lengths[i];
-          return Offset.lerp(points[i], points[i + 1],
-              localT.clamp(0.0, 1.0).toDouble())!;
+          return Offset.lerp(
+              points[i], points[i + 1], localT.clamp(0.0, 1.0).toDouble())!;
         }
         remaining -= lengths[i];
       }
@@ -269,20 +275,27 @@ class ConnectionPainter extends CustomPainter {
   /// アンカー方向に応じたコントロールポイントのオフセット
   static Offset _controlOffset(AnchorDirection dir, double s) {
     switch (dir) {
-      case AnchorDirection.north:     return Offset(0, -s);
-      case AnchorDirection.south:     return Offset(0, s);
-      case AnchorDirection.east:      return Offset(s, 0);
-      case AnchorDirection.west:      return Offset(-s, 0);
-      case AnchorDirection.northEast: return Offset(s * 0.7, -s * 0.7);
-      case AnchorDirection.northWest: return Offset(-s * 0.7, -s * 0.7);
-      case AnchorDirection.southEast: return Offset(s * 0.7, s * 0.7);
-      case AnchorDirection.southWest: return Offset(-s * 0.7, s * 0.7);
+      case AnchorDirection.north:
+        return Offset(0, -s);
+      case AnchorDirection.south:
+        return Offset(0, s);
+      case AnchorDirection.east:
+        return Offset(s, 0);
+      case AnchorDirection.west:
+        return Offset(-s, 0);
+      case AnchorDirection.northEast:
+        return Offset(s * 0.7, -s * 0.7);
+      case AnchorDirection.northWest:
+        return Offset(-s * 0.7, -s * 0.7);
+      case AnchorDirection.southEast:
+        return Offset(s * 0.7, s * 0.7);
+      case AnchorDirection.southWest:
+        return Offset(-s * 0.7, s * 0.7);
     }
   }
 
   /// 三次ベジェ曲線上の最近傍距離を近似計算（20分割）
-  double _distToCubic(
-      Offset p, Offset p0, Offset c1, Offset c2, Offset p1) {
+  double _distToCubic(Offset p, Offset p0, Offset c1, Offset c2, Offset p1) {
     double minDist = double.infinity;
     const steps = 20;
     Offset prev = p0;
@@ -367,9 +380,8 @@ class ConnectionPainter extends CustomPainter {
         return path;
       }
 
-      final configuredColor = conn.lineColorValue == null
-          ? to.color
-          : Color(conn.lineColorValue!);
+      final configuredColor =
+          conn.lineColorValue == null ? to.color : Color(conn.lineColorValue!);
       final paint = Paint()
         ..color = isSelected
             ? Colors.redAccent.withValues(alpha: 0.95)
@@ -390,14 +402,11 @@ class ConnectionPainter extends CustomPainter {
 
       // ── 線の終端を矢印の根元まで短縮して描画 ──
       if (conn.showArrow) {
-        final arrowLen =
-            (10.0 + conn.strokeWidth * 2.0) * conn.arrowHeadScale;
+        final arrowLen = (10.0 + conn.strokeWidth * 2.0) * conn.arrowHeadScale;
         final dir2 = p2 - cp2;
         final d2 = dir2.distance;
         final tip = p2;
-        final base = d2 > 0.001
-            ? p2 - (dir2 / d2) * arrowLen
-            : p2;
+        final base = d2 > 0.001 ? p2 - (dir2 / d2) * arrowLen : p2;
         // ── 始点側の矢印 (両方向の場合) ──
         // bidirectional == true なら from 側にも矢印を描画する。
         // 線の始点も矢印の根元までずらす必要がある。
@@ -407,8 +416,8 @@ class ConnectionPainter extends CustomPainter {
           final d1 = dir1.distance;
           final base1 = d1 > 0.001 ? p1 - (dir1 / d1) * arrowLen : p1;
           lineStart = base1;
-          _drawFilledArrow(canvas, cp1, p1, paint.color,
-              conn.strokeWidth, conn.arrowHeadScale);
+          _drawFilledArrow(canvas, cp1, p1, paint.color, conn.strokeWidth,
+              conn.arrowHeadScale);
         }
         // 線は矢印の根元まで
         canvas.drawPath(buildLine(lineStart, base), paint);
@@ -441,24 +450,29 @@ class ConnectionPainter extends CustomPainter {
       // ── 直角リンクの中間節点ハンドル ──
       // 選択中だけ表示し、画面側のヒットテストでこの点をドラッグできる。
       if (isSelected && style == 'elbow' && poly != null && poly.length > 2) {
-        final handleFill = Paint()
-          ..color = const Color(0xFF80CBC4)
-          ..style = PaintingStyle.fill;
-        final handleBorder = Paint()
-          ..color = Colors.white.withValues(alpha: 0.95)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.5;
+        final selectedIndices = selectedBendIndices[conn] ?? const <int>{};
         for (int i = 1; i < poly.length - 1; i++) {
-          canvas.drawCircle(poly[i], 6.0, handleFill);
-          canvas.drawCircle(poly[i], 6.0, handleBorder);
+          final isBendSelected = selectedIndices.contains(i - 1);
+          final radius = isBendSelected ? 8.0 : 5.5;
+          final handleFill = Paint()
+            ..color = isBendSelected
+                ? const Color(0xFFFFB74D)
+                : const Color(0xFF80CBC4).withValues(alpha: 0.82)
+            ..style = PaintingStyle.fill;
+          final handleBorder = Paint()
+            ..color = Colors.white.withValues(alpha: 0.95)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = isBendSelected ? 2.2 : 1.4;
+          canvas.drawCircle(poly[i], radius, handleFill);
+          canvas.drawCircle(poly[i], radius, handleBorder);
         }
       }
 
       // ── ラベルを線の中央に描画 ──
       // 線のラベル (= 関係の名称等) を中央の制御点周辺に表示。
       if (conn.label != null && conn.label!.isNotEmpty) {
-        final midPoint = pointOnConnection(conn, from, to,
-            fallbackLineStyle: lineStyle);
+        final midPoint =
+            pointOnConnection(conn, from, to, fallbackLineStyle: lineStyle);
         final textPainter = TextPainter(
           text: TextSpan(
             text: conn.label,
@@ -514,11 +528,11 @@ class ConnectionPainter extends CustomPainter {
   }
 
   /// 塗りつぶし矢印ヘッドを描画（→型の大きな三角形）
-  void _drawFilledArrow(Canvas canvas, Offset from, Offset tip,
-      Color color, double strokeWidth, double scale) {
+  void _drawFilledArrow(Canvas canvas, Offset from, Offset tip, Color color,
+      double strokeWidth, double scale) {
     // 矢印サイズ: 線の太さに応じてスケール、さらにユーザー設定倍率を乗算
     final arrowLength = (12.0 + strokeWidth * 2.5) * scale; // 矢印の長さ
-    final arrowWidth = (8.0 + strokeWidth * 2.0) * scale;   // 矢印の幅（片側）
+    final arrowWidth = (8.0 + strokeWidth * 2.0) * scale; // 矢印の幅（片側）
     final dist = (from - tip).distance;
     if (dist < 0.001) return;
 
@@ -568,6 +582,7 @@ class ConnectionPainter extends CustomPainter {
       oldDelegate.nodes != nodes ||
       oldDelegate.connections != connections ||
       oldDelegate.selectedConnections != selectedConnections ||
+      oldDelegate.selectedBendIndices != selectedBendIndices ||
       oldDelegate.isDarkMode != isDarkMode ||
       oldDelegate.lineStyle != lineStyle;
 }
