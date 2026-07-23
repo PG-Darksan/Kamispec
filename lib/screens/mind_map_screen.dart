@@ -12949,147 +12949,154 @@ class _MindMapScreenState extends State<MindMapScreen>
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                  TextField(
-                    controller: keywordCtrl,
-                    autofocus: true,
-                    style: const TextStyle(color: Colors.white, fontSize: 14),
-                    decoration: InputDecoration(
-                      filled: true,
-                      fillColor: Colors.white.withValues(alpha: 0.07),
-                      hintText:
-                          context.read<MindMapProvider>().t('yt.searchKeyword'),
-                      hintStyle:
-                          const TextStyle(color: Colors.white38, fontSize: 13),
-                      border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide.none),
-                      prefixIcon: const Icon(Icons.search,
-                          color: Colors.white38, size: 18),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  Row(children: [
-                    Text(context.read<MindMapProvider>().t('yt.countLabel'),
-                        style: TextStyle(color: Colors.white54, fontSize: 12)),
-                    const SizedBox(width: 4),
-                    SizedBox(
-                      width: 50,
-                      child: TextField(
-                        controller: countCtrl,
-                        keyboardType: TextInputType.number,
-                        textAlign: TextAlign.center,
+                      TextField(
+                        controller: keywordCtrl,
+                        autofocus: true,
                         style:
-                            const TextStyle(color: Colors.white, fontSize: 13),
+                            const TextStyle(color: Colors.white, fontSize: 14),
                         decoration: InputDecoration(
                           filled: true,
                           fillColor: Colors.white.withValues(alpha: 0.07),
-                          contentPadding: const EdgeInsets.symmetric(
-                              vertical: 6, horizontal: 8),
-                          border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(8),
-                              borderSide: BorderSide.none),
-                        ),
-                      ),
-                    ),
-                  ]),
-                  const SizedBox(height: 10),
-                  Row(children: [
-                    Text(context.read<MindMapProvider>().t('yt.length'),
-                        style: TextStyle(color: Colors.white54, fontSize: 12)),
-                    const SizedBox(width: 4),
-                    SizedBox(
-                      width: 44,
-                      child: TextField(
-                        controller: minMinCtrl,
-                        keyboardType: TextInputType.number,
-                        textAlign: TextAlign.center,
-                        style:
-                            const TextStyle(color: Colors.white, fontSize: 13),
-                        decoration: InputDecoration(
-                          filled: true,
-                          fillColor: Colors.white.withValues(alpha: 0.07),
-                          contentPadding: const EdgeInsets.symmetric(
-                              vertical: 6, horizontal: 6),
-                          border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(8),
-                              borderSide: BorderSide.none),
-                          hintText: '0',
-                          hintStyle: const TextStyle(
-                              color: Colors.white24, fontSize: 12),
-                        ),
-                      ),
-                    ),
-                    const Text(' 〜 ',
-                        style: TextStyle(color: Colors.white38, fontSize: 12)),
-                    SizedBox(
-                      width: 44,
-                      child: TextField(
-                        controller: maxMinCtrl,
-                        keyboardType: TextInputType.number,
-                        textAlign: TextAlign.center,
-                        style:
-                            const TextStyle(color: Colors.white, fontSize: 13),
-                        decoration: InputDecoration(
-                          filled: true,
-                          fillColor: Colors.white.withValues(alpha: 0.07),
-                          contentPadding: const EdgeInsets.symmetric(
-                              vertical: 6, horizontal: 6),
-                          border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(8),
-                              borderSide: BorderSide.none),
-                          hintText: '∞',
-                          hintStyle: const TextStyle(
-                              color: Colors.white24, fontSize: 12),
-                        ),
-                      ),
-                    ),
-                    Text(
-                        context
-                            .read<MindMapProvider>()
-                            .t('common.minutesSuffix'),
-                        style: TextStyle(color: Colors.white54, fontSize: 12)),
-                  ]),
-                  // 生成済み動画の履歴
-                  if (provider.generatedVideoCount > 0) ...[
-                    const SizedBox(height: 14),
-                    Row(children: [
-                      Icon(Icons.history_rounded,
-                          color: Colors.white.withValues(alpha: 0.3), size: 14),
-                      const SizedBox(width: 4),
-                      Text(
-                          context
+                          hintText: context
                               .read<MindMapProvider>()
-                              .t('yt.generated')
-                              .replaceFirst(
-                                  '{n}', '\${provider.generatedVideoCount}'),
-                          style: TextStyle(
-                              color: Colors.white.withValues(alpha: 0.4),
-                              fontSize: 11)),
-                      const Spacer(),
-                      GestureDetector(
-                        onTap: () {
-                          provider.clearGeneratedVideoIds();
-                          setDialogState(() {});
-                        },
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 3),
-                          decoration: BoxDecoration(
-                            color: Colors.red.withValues(alpha: 0.15),
-                            borderRadius: BorderRadius.circular(6),
+                              .t('yt.searchKeyword'),
+                          hintStyle: const TextStyle(
+                              color: Colors.white38, fontSize: 13),
+                          border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: BorderSide.none),
+                          prefixIcon: const Icon(Icons.search,
+                              color: Colors.white38, size: 18),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Row(children: [
+                        Text(context.read<MindMapProvider>().t('yt.countLabel'),
+                            style:
+                                TextStyle(color: Colors.white54, fontSize: 12)),
+                        const SizedBox(width: 4),
+                        SizedBox(
+                          width: 50,
+                          child: TextField(
+                            controller: countCtrl,
+                            keyboardType: TextInputType.number,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 13),
+                            decoration: InputDecoration(
+                              filled: true,
+                              fillColor: Colors.white.withValues(alpha: 0.07),
+                              contentPadding: const EdgeInsets.symmetric(
+                                  vertical: 6, horizontal: 8),
+                              border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                  borderSide: BorderSide.none),
+                            ),
                           ),
-                          child: Text(
+                        ),
+                      ]),
+                      const SizedBox(height: 10),
+                      Row(children: [
+                        Text(context.read<MindMapProvider>().t('yt.length'),
+                            style:
+                                TextStyle(color: Colors.white54, fontSize: 12)),
+                        const SizedBox(width: 4),
+                        SizedBox(
+                          width: 44,
+                          child: TextField(
+                            controller: minMinCtrl,
+                            keyboardType: TextInputType.number,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 13),
+                            decoration: InputDecoration(
+                              filled: true,
+                              fillColor: Colors.white.withValues(alpha: 0.07),
+                              contentPadding: const EdgeInsets.symmetric(
+                                  vertical: 6, horizontal: 6),
+                              border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                  borderSide: BorderSide.none),
+                              hintText: '0',
+                              hintStyle: const TextStyle(
+                                  color: Colors.white24, fontSize: 12),
+                            ),
+                          ),
+                        ),
+                        const Text(' 〜 ',
+                            style:
+                                TextStyle(color: Colors.white38, fontSize: 12)),
+                        SizedBox(
+                          width: 44,
+                          child: TextField(
+                            controller: maxMinCtrl,
+                            keyboardType: TextInputType.number,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 13),
+                            decoration: InputDecoration(
+                              filled: true,
+                              fillColor: Colors.white.withValues(alpha: 0.07),
+                              contentPadding: const EdgeInsets.symmetric(
+                                  vertical: 6, horizontal: 6),
+                              border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                  borderSide: BorderSide.none),
+                              hintText: '∞',
+                              hintStyle: const TextStyle(
+                                  color: Colors.white24, fontSize: 12),
+                            ),
+                          ),
+                        ),
+                        Text(
+                            context
+                                .read<MindMapProvider>()
+                                .t('common.minutesSuffix'),
+                            style:
+                                TextStyle(color: Colors.white54, fontSize: 12)),
+                      ]),
+                      // 生成済み動画の履歴
+                      if (provider.generatedVideoCount > 0) ...[
+                        const SizedBox(height: 14),
+                        Row(children: [
+                          Icon(Icons.history_rounded,
+                              color: Colors.white.withValues(alpha: 0.3),
+                              size: 14),
+                          const SizedBox(width: 4),
+                          Text(
                               context
                                   .read<MindMapProvider>()
-                                  .t('yt.clearHistory'),
+                                  .t('yt.generated')
+                                  .replaceFirst('{n}',
+                                      '\${provider.generatedVideoCount}'),
                               style: TextStyle(
-                                  color: Colors.redAccent,
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w600)),
-                        ),
-                      ),
-                    ]),
-                  ],
+                                  color: Colors.white.withValues(alpha: 0.4),
+                                  fontSize: 11)),
+                          const Spacer(),
+                          GestureDetector(
+                            onTap: () {
+                              provider.clearGeneratedVideoIds();
+                              setDialogState(() {});
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: Colors.red.withValues(alpha: 0.15),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                  context
+                                      .read<MindMapProvider>()
+                                      .t('yt.clearHistory'),
+                                  style: TextStyle(
+                                      color: Colors.redAccent,
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w600)),
+                            ),
+                          ),
+                        ]),
+                      ],
                     ],
                   ),
                 ),
@@ -14778,8 +14785,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                   // Android では空白タップが TextField の
                   // TapRegion で先に消費される端末がある。この段階で
                   // 選択も落とし、「入力モードだけ終了」を防ぐ。
-                  onTapOutside: (_) => _commitShelfInlineTextEdit(
-                      clearSelection: !_isDesktop),
+                  onTapOutside: (_) =>
+                      _commitShelfInlineTextEdit(clearSelection: !_isDesktop),
                   style: const TextStyle(
                     color: Color(0xFF101018),
                     fontSize: 15,
@@ -15274,9 +15281,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           provider.createBookshelfCover(
             newIds,
             '',
-            cell: cell == null
-                ? null
-                : [cell[0] + linkOffset, cell[1]],
+            cell: cell == null ? null : [cell[0] + linkOffset, cell[1]],
           );
         }
         if (mounted) {
@@ -22378,8 +22383,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (item.cycle == 'yearly') {
       var year = now.year;
       while (true) {
-        final billing =
-            _subscriptionBillingDate(item, year, item.billingMonth);
+        final billing = _subscriptionBillingDate(item, year, item.billingMonth);
         final reminder =
             billing.subtract(Duration(days: item.notifyDaysBefore));
         if (reminder.isAfter(now)) return reminder;
@@ -22388,8 +22392,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
     var cursor = DateTime(now.year, now.month, 1);
     while (true) {
-      final billing =
-          _subscriptionBillingDate(item, cursor.year, cursor.month);
+      final billing = _subscriptionBillingDate(item, cursor.year, cursor.month);
       final reminder = billing.subtract(Duration(days: item.notifyDaysBefore));
       if (reminder.isAfter(now)) return reminder;
       cursor = DateTime(cursor.year, cursor.month + 1, 1);
@@ -22440,10 +22443,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     final nameCtrl = TextEditingController(text: initial?.name ?? '');
     final amountCtrl = TextEditingController(
         text: initial == null ? '' : initial.amount.toString());
-    final currencyCtrl =
-        TextEditingController(text: initial?.currency ?? '¥');
-    final notifyCtrl = TextEditingController(
-        text: '${initial?.notifyDaysBefore ?? 3}');
+    final currencyCtrl = TextEditingController(text: initial?.currency ?? '¥');
+    final notifyCtrl =
+        TextEditingController(text: '${initial?.notifyDaysBefore ?? 3}');
     var cycle = initial?.cycle ?? 'monthly';
     var billingDay = initial?.billingDay ?? 1;
     var billingMonth = initial?.billingMonth ?? DateTime.now().month;
@@ -22481,8 +22483,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                   Expanded(
                     child: TextField(
                       controller: amountCtrl,
-                      keyboardType: const TextInputType.numberWithOptions(
-                          decimal: true),
+                      keyboardType:
+                          const TextInputType.numberWithOptions(decimal: true),
                       style: const TextStyle(color: Colors.white),
                       decoration: _fcInputDeco('料金'),
                     ),
@@ -22512,8 +22514,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                             DropdownMenuItem(
                                 value: month, child: Text('$month月')),
                         ],
-                        onChanged: (value) => setEdit(
-                            () => billingMonth = value ?? billingMonth),
+                        onChanged: (value) =>
+                            setEdit(() => billingMonth = value ?? billingMonth),
                       ),
                     ),
                     const SizedBox(width: 8),
@@ -22612,10 +22614,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     for (final item in _managedSubscriptions.where((item) => item.enabled)) {
       monthlyByCurrency.update(
         item.currency,
-        (value) => value +
-            (item.cycle == 'yearly' ? item.amount / 12 : item.amount),
-        ifAbsent: () =>
-            item.cycle == 'yearly' ? item.amount / 12 : item.amount,
+        (value) =>
+            value + (item.cycle == 'yearly' ? item.amount / 12 : item.amount),
+        ifAbsent: () => item.cycle == 'yearly' ? item.amount / 12 : item.amount,
       );
     }
     if (monthlyByCurrency.isEmpty) return '有効なサブスクはありません';
@@ -22634,8 +22635,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           title: const Row(children: [
             Icon(Icons.subscriptions_rounded, color: Color(0xFF26A69A)),
             SizedBox(width: 8),
-            Text('サブスク管理',
-                style: TextStyle(color: Colors.white, fontSize: 17)),
+            Text('サブスク管理', style: TextStyle(color: Colors.white, fontSize: 17)),
           ]),
           content: SizedBox(
             width: 540,
@@ -22670,9 +22670,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                             color: Colors.white.withValues(alpha: 0.045),
                             child: ListTile(
                               onTap: () async {
-                                final edited = await _showSubscriptionEditDialog(
-                                    dialogContext,
-                                    initial: item);
+                                final edited =
+                                    await _showSubscriptionEditDialog(
+                                        dialogContext,
+                                        initial: item);
                                 if (edited == null) return;
                                 _cancelManagedSubscriptionNotification(item);
                                 final currentIndex = _managedSubscriptions
@@ -22694,7 +22695,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   if (value) {
                                     _scheduleManagedSubscription(item);
                                   } else {
-                                    _cancelManagedSubscriptionNotification(item);
+                                    _cancelManagedSubscriptionNotification(
+                                        item);
                                   }
                                   _saveManagedSubscriptions();
                                 },
@@ -22717,8 +22719,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     color: Colors.redAccent),
                                 onPressed: () {
                                   _cancelManagedSubscriptionNotification(item);
-                                  setDialog(() => _managedSubscriptions
-                                      .removeWhere((value) => value.id == item.id));
+                                  setDialog(() =>
+                                      _managedSubscriptions.removeWhere(
+                                          (value) => value.id == item.id));
                                   _saveManagedSubscriptions();
                                 },
                               ),
@@ -22738,8 +22741,7 @@ class _MindMapScreenState extends State<MindMapScreen>
               style: FilledButton.styleFrom(
                   backgroundColor: const Color(0xFF26A69A)),
               onPressed: () async {
-                final item =
-                    await _showSubscriptionEditDialog(dialogContext);
+                final item = await _showSubscriptionEditDialog(dialogContext);
                 if (item == null) return;
                 _managedSubscriptions.add(item);
                 if (item.enabled) _scheduleManagedSubscription(item);
@@ -23308,8 +23310,7 @@ class _MindMapScreenState extends State<MindMapScreen>
   // ─── インラインタイトル編集 ───────────────────────────────────────────
 
   void _startInlineTitleEdit(BuildContext ctx, MindMapNode node,
-      {bool deleteWhenEmpty = false,
-      bool allowDelimiterExpansion = false}) {
+      {bool deleteWhenEmpty = false, bool allowDelimiterExpansion = false}) {
     _removeOverlay();
     final provider = ctx.read<MindMapProvider>();
     // ギャラリーでは通常ノード用のインラインエディターを描画しないため、
@@ -26775,8 +26776,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     borderRadius: BorderRadius.circular(9),
                                     onTap: () async {
                                       if (!canDisable) return;
-                                      await provider.setDesktopHeaderDockEnabled(
-                                          placement.$1, !selected);
+                                      await provider
+                                          .setDesktopHeaderDockEnabled(
+                                              placement.$1, !selected);
                                       setS(() {});
                                     },
                                     child: AnimatedContainer(
@@ -27200,14 +27202,26 @@ class _MindMapScreenState extends State<MindMapScreen>
             onSelected: onPlacementChanged,
             itemBuilder: (_) => [
               for (final item in const [
-                ('top', Icons.vertical_align_top_rounded,
-                    'header.placementTop'),
-                ('bottom', Icons.vertical_align_bottom_rounded,
-                    'header.placementBottom'),
-                ('left', Icons.align_horizontal_left_rounded,
-                    'header.placementLeft'),
-                ('right', Icons.align_horizontal_right_rounded,
-                    'header.placementRight'),
+                (
+                  'top',
+                  Icons.vertical_align_top_rounded,
+                  'header.placementTop'
+                ),
+                (
+                  'bottom',
+                  Icons.vertical_align_bottom_rounded,
+                  'header.placementBottom'
+                ),
+                (
+                  'left',
+                  Icons.align_horizontal_left_rounded,
+                  'header.placementLeft'
+                ),
+                (
+                  'right',
+                  Icons.align_horizontal_right_rounded,
+                  'header.placementRight'
+                ),
               ])
                 PopupMenuItem<String>(
                   value: item.$1,
@@ -28496,8 +28510,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                   ? () =>
                       _showCustomPageContextMenu(context, provider, commandId)
                   : commandId.startsWith('bookmark:')
-                      ? () =>
-                          _showBookmarkButtonContextMenu(context, commandId)
+                      ? () => _showBookmarkButtonContextMenu(context, commandId)
                       : () => _showCustomItemContextMenu(context, commandId),
       onSecondaryTap: commandId.startsWith('customPage')
           ? () => _showCustomPageContextMenu(context, provider, commandId)
@@ -29587,22 +29600,12 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// ヘッダーカスタムボタンのコマンド実行
   void _selectAllMapElements(MindMapProvider provider) {
-    if (_selectedConnections.isNotEmpty) {
-      final mq = MediaQuery.of(context);
-      final overlayPos = _lastCtrlConnectionTapPos ??
-          Offset(mq.size.width / 2, mq.size.height / 2);
-      setState(() {
-        _selectedConnections.clear();
-        final hidden = provider.hiddenNodeIds;
-        _selectedConnections.addAll(provider.connections.where((c) =>
-            !hidden.contains(c.fromId) && !hidden.contains(c.toId)));
-        _connOverlayPendingOnCtrlUp = true;
-        _connOverlayIsMulti = true;
-        _lastCtrlConnectionTapPos = overlayPos;
-      });
-      return;
-    }
     setState(() {
+      // このコマンドは接続線を含めず、キャンバス上の編集要素だけを選ぶ。
+      // 接続線の複数選択は従来どおり Ctrl/Meta 操作の専用経路に任せる。
+      _selectedConnections.clear();
+      _connOverlayPendingOnCtrlUp = false;
+      _connOverlayIsMulti = false;
       _rangeSelectMode = true;
       _rangeSelectedIds.clear();
       _rangeSelectedDecorationIds.clear();
@@ -30151,14 +30154,15 @@ class _MindMapScreenState extends State<MindMapScreen>
                         padding: const EdgeInsets.symmetric(
                             horizontal: 8, vertical: 12),
                         decoration: BoxDecoration(
-                          color: const Color(0xFF4DB6AC)
-                              .withValues(alpha: 0.12),
+                          color:
+                              const Color(0xFF4DB6AC).withValues(alpha: 0.12),
                           borderRadius: BorderRadius.circular(10),
                           border: Border.all(
                               color: const Color(0xFF4DB6AC)
                                   .withValues(alpha: 0.45)),
                         ),
-                        child: Column(mainAxisSize: MainAxisSize.min, children: [
+                        child:
+                            Column(mainAxisSize: MainAxisSize.min, children: [
                           Icon(shape.icon,
                               color: const Color(0xFF80CBC4), size: 28),
                           const SizedBox(height: 7),
@@ -30297,8 +30301,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       kind == MapDecorationKind.line || kind == MapDecorationKind.arrow;
 
   ({String nodeId, AnchorDirection anchor, Offset point})?
-      _nearestDecorationNodeAnchor(Offset point,
-          {double maxDistance = 34}) {
+      _nearestDecorationNodeAnchor(Offset point, {double maxDistance = 34}) {
     final provider = context.read<MindMapProvider>();
     final hidden = provider.hiddenNodeIds;
     ({String nodeId, AnchorDirection anchor, Offset point})? best;
@@ -30370,8 +30373,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     final end = _drawingDecorationEnd;
     if (start != null && end != null && (end - start).distance >= 6) {
       final canAttach = _decorationCanAttachToNode(_drawingDecorationKind!);
-      final startSnap =
-          canAttach ? _nearestDecorationNodeAnchor(start) : null;
+      final startSnap = canAttach ? _nearestDecorationNodeAnchor(start) : null;
       final endSnap = canAttach ? _nearestDecorationNodeAnchor(end) : null;
       // 6px 以上動いてれば確定 (= タップだけだと小さすぎるので破棄)
       final deco = MapDecoration(
@@ -30483,8 +30485,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     setState(() => _selectedDecorationId = null);
   }
 
-  void _detachDecorationEndpoint(MindMapProvider provider,
-      MapDecoration decoration, bool isStart) {
+  void _detachDecorationEndpoint(
+      MindMapProvider provider, MapDecoration decoration, bool isStart) {
     final resolved = _resolvedDecoration(decoration, provider);
     provider.setDecorationEndpointAttachment(
       decoration.id,
@@ -30722,13 +30724,12 @@ class _MindMapScreenState extends State<MindMapScreen>
           (cd) =>
               provider.dragDecorationBy(decoId, startDelta: cd, endDelta: cd),
           onStart: () {
-            _detachDecorationEndpoint(provider, sourceDecoration, true);
-            _detachDecorationEndpoint(provider, sourceDecoration, false);
-          },
-          onEnd: () {
-            _snapDecorationEndpoint(provider, decoId, true);
-            _snapDecorationEndpoint(provider, decoId, false);
-          }),
+        _detachDecorationEndpoint(provider, sourceDecoration, true);
+        _detachDecorationEndpoint(provider, sourceDecoration, false);
+      }, onEnd: () {
+        _snapDecorationEndpoint(provider, decoId, true);
+        _snapDecorationEndpoint(provider, decoId, false);
+      }),
       // 文字移動ハンドル (アンバー) — 一番上に置いて掴みやすく
       if (textHandle != null) textHandle,
     ];
@@ -32271,8 +32272,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                 label: '+$m${provider.t('focusLock.minutesSuffix')}',
                 selected: false,
                 onTap: () => setS(() {
-                  selectedMin =
-                      (selectedMin + m).clamp(0, 600).toInt();
+                  selectedMin = (selectedMin + m).clamp(0, 600).toInt();
                   minCtrl.text = '$selectedMin';
                   minCtrl.selection =
                       TextSelection.collapsed(offset: minCtrl.text.length);
@@ -32352,97 +32352,98 @@ class _MindMapScreenState extends State<MindMapScreen>
                       const SizedBox(height: 14),
                       if (provider.focusLockMode == 'timer') ...[
                         Row(
-                        children: [
-                          for (final m in presets) ...[
-                            Expanded(child: presetChip(m)),
-                            const SizedBox(width: 5),
-                          ],
-                          Tooltip(
-                            message: provider.t('focusLock.reset'),
-                            child: SizedBox(
-                              width: 38,
-                              child: chip(
-                                label: '',
-                                icon: Icons.restart_alt_rounded,
-                                selected: selectedMin == 0,
-                                onTap: () => setS(() {
-                                  selectedMin = 0;
-                                  minCtrl.text = '0';
-                                  minCtrl.selection =
-                                      const TextSelection.collapsed(offset: 1);
-                                }),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      // ── 分数の直接指定 (スライダー + 数値入力) ──
-                      // ユーザー要望: カスタムを押さなくてもバー / 数値で分数を
-                      //   指定できるように、 常時表示にする。
-                      Row(
-                        children: [
-                          Expanded(
-                            child: SliderTheme(
-                              data: SliderTheme.of(dctx2).copyWith(
-                                activeTrackColor: const Color(0xFFEF5350),
-                                thumbColor: const Color(0xFFEF5350),
-                                inactiveTrackColor:
-                                    Colors.white.withValues(alpha: 0.15),
-                              ),
-                              child: Slider(
-                                min: 0,
-                                max: 600,
-                                value: selectedMin.clamp(0, 600).toDouble(),
-                                onChanged: (v) => setS(() {
-                                  selectedMin = v.round();
-                                  minCtrl.text = '$selectedMin';
-                                  minCtrl.selection = TextSelection.collapsed(
-                                      offset: minCtrl.text.length);
-                                }),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          SizedBox(
-                            width: 64,
-                            child: TextField(
-                              controller: minCtrl,
-                              keyboardType: TextInputType.number,
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.w700),
-                              decoration: InputDecoration(
-                                isDense: true,
-                                contentPadding: const EdgeInsets.symmetric(
-                                    vertical: 8, horizontal: 4),
-                                filled: true,
-                                fillColor: Colors.white.withValues(alpha: 0.07),
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(8),
-                                  borderSide: BorderSide.none,
+                          children: [
+                            for (final m in presets) ...[
+                              Expanded(child: presetChip(m)),
+                              const SizedBox(width: 5),
+                            ],
+                            Tooltip(
+                              message: provider.t('focusLock.reset'),
+                              child: SizedBox(
+                                width: 38,
+                                child: chip(
+                                  label: '',
+                                  icon: Icons.restart_alt_rounded,
+                                  selected: selectedMin == 0,
+                                  onTap: () => setS(() {
+                                    selectedMin = 0;
+                                    minCtrl.text = '0';
+                                    minCtrl.selection =
+                                        const TextSelection.collapsed(
+                                            offset: 1);
+                                  }),
                                 ),
                               ),
-                              onChanged: (t) {
-                                final v = int.tryParse(t);
-                                if (v != null) {
-                                  setS(() => selectedMin =
-                                      v.clamp(0, 600).toInt());
-                                }
-                              },
                             ),
-                          ),
-                          const SizedBox(width: 4),
-                          Text(provider.t('focusLock.minutesSuffix'),
-                              style: const TextStyle(
-                                  color: Colors.white70, fontSize: 13)),
-                        ],
-                      ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        // ── 分数の直接指定 (スライダー + 数値入力) ──
+                        // ユーザー要望: カスタムを押さなくてもバー / 数値で分数を
+                        //   指定できるように、 常時表示にする。
+                        Row(
+                          children: [
+                            Expanded(
+                              child: SliderTheme(
+                                data: SliderTheme.of(dctx2).copyWith(
+                                  activeTrackColor: const Color(0xFFEF5350),
+                                  thumbColor: const Color(0xFFEF5350),
+                                  inactiveTrackColor:
+                                      Colors.white.withValues(alpha: 0.15),
+                                ),
+                                child: Slider(
+                                  min: 0,
+                                  max: 600,
+                                  value: selectedMin.clamp(0, 600).toDouble(),
+                                  onChanged: (v) => setS(() {
+                                    selectedMin = v.round();
+                                    minCtrl.text = '$selectedMin';
+                                    minCtrl.selection = TextSelection.collapsed(
+                                        offset: minCtrl.text.length);
+                                  }),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            SizedBox(
+                              width: 64,
+                              child: TextField(
+                                controller: minCtrl,
+                                keyboardType: TextInputType.number,
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w700),
+                                decoration: InputDecoration(
+                                  isDense: true,
+                                  contentPadding: const EdgeInsets.symmetric(
+                                      vertical: 8, horizontal: 4),
+                                  filled: true,
+                                  fillColor:
+                                      Colors.white.withValues(alpha: 0.07),
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(8),
+                                    borderSide: BorderSide.none,
+                                  ),
+                                ),
+                                onChanged: (t) {
+                                  final v = int.tryParse(t);
+                                  if (v != null) {
+                                    setS(() =>
+                                        selectedMin = v.clamp(0, 600).toInt());
+                                  }
+                                },
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            Text(provider.t('focusLock.minutesSuffix'),
+                                style: const TextStyle(
+                                    color: Colors.white70, fontSize: 13)),
+                          ],
+                        ),
                       ] else ...[
-                        _buildFocusLockTaskEditor(
-                            provider, taskCtrl, setS),
+                        _buildFocusLockTaskEditor(provider, taskCtrl, setS),
                       ],
                       const SizedBox(height: 14),
                       const Divider(color: Colors.white12, height: 1),
@@ -32582,50 +32583,53 @@ class _MindMapScreenState extends State<MindMapScreen>
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
                           if (provider.focusLockMode == 'timer') ...[
-                          // 分数で今すぐロック
-                          ElevatedButton.icon(
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFFEF5350),
-                              foregroundColor: Colors.white,
-                              padding: const EdgeInsets.symmetric(vertical: 12),
-                              shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(10)),
+                            // 分数で今すぐロック
+                            ElevatedButton.icon(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFFEF5350),
+                                foregroundColor: Colors.white,
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 12),
+                                shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(10)),
+                              ),
+                              icon: const Icon(Icons.timer_rounded, size: 18),
+                              label: FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  child: Text(
+                                      provider.t('focusLock.startMinutes'))),
+                              onPressed: selectedMin <= 0
+                                  ? null
+                                  : () {
+                                      final mins =
+                                          selectedMin.clamp(1, 600).toInt();
+                                      Navigator.pop(dctx);
+                                      _startFocusLock(Duration(minutes: mins));
+                                    },
                             ),
-                            icon: const Icon(Icons.timer_rounded, size: 18),
-                            label: FittedBox(
-                                fit: BoxFit.scaleDown,
-                                child:
-                                    Text(provider.t('focusLock.startMinutes'))),
-                            onPressed: selectedMin <= 0
-                                ? null
-                                : () {
-                                    final mins =
-                                        selectedMin.clamp(1, 600).toInt();
-                                    Navigator.pop(dctx);
-                                    _startFocusLock(Duration(minutes: mins));
-                                  },
-                          ),
-                          const SizedBox(height: 8),
-                          // 指定時刻までロック (= ユーザー要望: 現在時刻から
-                          //   何時何分までロックするか設定できるように)
-                          OutlinedButton.icon(
-                            style: OutlinedButton.styleFrom(
-                              foregroundColor: const Color(0xFFD4A017),
-                              side: const BorderSide(color: Color(0xFFD4A017)),
-                              padding: const EdgeInsets.symmetric(vertical: 12),
-                              shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(10)),
+                            const SizedBox(height: 8),
+                            // 指定時刻までロック (= ユーザー要望: 現在時刻から
+                            //   何時何分までロックするか設定できるように)
+                            OutlinedButton.icon(
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: const Color(0xFFD4A017),
+                                side:
+                                    const BorderSide(color: Color(0xFFD4A017)),
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 12),
+                                shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(10)),
+                              ),
+                              icon: const Icon(Icons.alarm_rounded, size: 18),
+                              label: FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  child:
+                                      Text(provider.t('focusLock.startUntil'))),
+                              onPressed: () {
+                                Navigator.pop(dctx);
+                                _pickFocusLockUntil(context, provider);
+                              },
                             ),
-                            icon: const Icon(Icons.alarm_rounded, size: 18),
-                            label: FittedBox(
-                                fit: BoxFit.scaleDown,
-                                child:
-                                    Text(provider.t('focusLock.startUntil'))),
-                            onPressed: () {
-                              Navigator.pop(dctx);
-                              _pickFocusLockUntil(context, provider);
-                            },
-                          ),
                           ] else ...[
                             ElevatedButton.icon(
                               style: ElevatedButton.styleFrom(
@@ -32640,8 +32644,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   const Icon(Icons.task_alt_rounded, size: 18),
                               label: FittedBox(
                                 fit: BoxFit.scaleDown,
-                                child:
-                                    Text(provider.t('focusLock.startTasks')),
+                                child: Text(provider.t('focusLock.startTasks')),
                               ),
                               onPressed: provider.focusLockTasks.isEmpty
                                   ? null
@@ -32723,8 +32726,8 @@ class _MindMapScreenState extends State<MindMapScreen>
           const SizedBox(width: 6),
           IconButton.filled(
             tooltip: provider.t('focusLock.addTask'),
-            style: IconButton.styleFrom(
-                backgroundColor: const Color(0xFF43B97F)),
+            style:
+                IconButton.styleFrom(backgroundColor: const Color(0xFF43B97F)),
             icon: const Icon(Icons.add_rounded, size: 20),
             onPressed: addTask,
           ),
@@ -33458,13 +33461,17 @@ class _MindMapScreenState extends State<MindMapScreen>
                       children: [
                         for (final m in presets) ...[
                           Expanded(
-                            child: addChip('+${mins(m)}', () => setS(() {
-                                  selectedMin =
-                                      (selectedMin + m).clamp(0, 600).toInt();
-                                  minCtrl.text = '$selectedMin';
-                                  minCtrl.selection = TextSelection.collapsed(
-                                      offset: minCtrl.text.length);
-                                })),
+                            child: addChip(
+                                '+${mins(m)}',
+                                () => setS(() {
+                                      selectedMin = (selectedMin + m)
+                                          .clamp(0, 600)
+                                          .toInt();
+                                      minCtrl.text = '$selectedMin';
+                                      minCtrl.selection =
+                                          TextSelection.collapsed(
+                                              offset: minCtrl.text.length);
+                                    })),
                           ),
                           const SizedBox(width: 5),
                         ],
@@ -33472,12 +33479,15 @@ class _MindMapScreenState extends State<MindMapScreen>
                           message: provider.t('focusLock.reset'),
                           child: SizedBox(
                             width: 38,
-                            child: addChip('', () => setS(() {
-                                  selectedMin = 0;
-                                  minCtrl.text = '0';
-                                  minCtrl.selection =
-                                      const TextSelection.collapsed(offset: 1);
-                                }),
+                            child: addChip(
+                                '',
+                                () => setS(() {
+                                      selectedMin = 0;
+                                      minCtrl.text = '0';
+                                      minCtrl.selection =
+                                          const TextSelection.collapsed(
+                                              offset: 1);
+                                    }),
                                 icon: Icons.restart_alt_rounded,
                                 selected: selectedMin == 0),
                           ),
@@ -39508,32 +39518,8 @@ class _MindMapScreenState extends State<MindMapScreen>
               }
             }
           } else if (commandId == 'selectAll') {
-            // 接続選択中→全接続選択、それ以外→全ノード選択
-            if (_selectedConnections.isNotEmpty) {
-              final mq = MediaQuery.of(context);
-              final overlayPos = _lastCtrlConnectionTapPos ??
-                  Offset(mq.size.width / 2, mq.size.height / 2);
-              setState(() {
-                _selectedConnections.clear();
-                final hidden = provider.hiddenNodeIds;
-                final visibleConns = provider.connections.where((c) =>
-                    !hidden.contains(c.fromId) && !hidden.contains(c.toId));
-                _selectedConnections.addAll(visibleConns);
-                _connOverlayPendingOnCtrlUp = true;
-                _connOverlayIsMulti = true;
-                _lastCtrlConnectionTapPos = overlayPos;
-              });
-            } else {
-              setState(() {
-                _rangeSelectMode = true;
-                _rangeSelectedIds.clear();
-                _rangeSelectedDecorationIds.clear();
-                final hidden = provider.hiddenNodeIds;
-                for (final n in provider.nodes.values) {
-                  if (!hidden.contains(n.id)) _rangeSelectedIds.add(n.id);
-                }
-              });
-            }
+            _removeOverlay();
+            _selectAllMapElements(provider);
           } else if (commandId == 'openDrawer') {
             if (_scaffoldKey.currentState?.isDrawerOpen == true) {
               _scaffoldKey.currentState?.closeDrawer();
@@ -42006,8 +41992,7 @@ class _MindMapScreenState extends State<MindMapScreen>
   }
 
   void _exitHeaderReorderMode() {
-    if (!mounted ||
-        (!_reorderHeaderMode && _activeDesktopHeaderDrag == null)) {
+    if (!mounted || (!_reorderHeaderMode && _activeDesktopHeaderDrag == null)) {
       return;
     }
     setState(() {
@@ -42102,9 +42087,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     // 空バーは常設しないため、衝突確認の対象も実際に要素があるバーだけにする。
     final targetHasBar =
         provider.desktopHeaderButtonsForPlacement(targetPlacement).isNotEmpty;
-    var mode = targetHasBar
-        ? provider.desktopHeaderBarCollisionMode
-        : 'merge';
+    var mode = targetHasBar ? provider.desktopHeaderBarCollisionMode : 'merge';
     if (mode == 'ask') {
       mode = await _askDesktopHeaderBarCollisionMode(provider) ?? '';
     }
@@ -42142,8 +42125,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     bool placeholder = false,
   }) {
     return DragTarget<_DesktopHeaderDragData>(
-      onWillAcceptWithDetails: (details) => _canAcceptDesktopHeaderDrag(
-          details.data, placement, details.offset),
+      onWillAcceptWithDetails: (details) =>
+          _canAcceptDesktopHeaderDrag(details.data, placement, details.offset),
       onAcceptWithDetails: (details) {
         // 移動元が先にツリーから消えて onDragEnd が欠ける経路でも、
         // 空の配置候補が残らないよう受け入れ側で必ず解除する。
@@ -42212,12 +42195,11 @@ class _MindMapScreenState extends State<MindMapScreen>
       data: data,
       dragAnchorStrategy: pointerDragAnchorStrategy,
       onDragStarted: () => _beginDesktopHeaderDrag(data),
-      onDragUpdate: (details) =>
-          lastGlobalPosition = details.globalPosition,
+      onDragUpdate: (details) => lastGlobalPosition = details.globalPosition,
       onDragEnd: (details) {
         if (!details.wasAccepted && onFreeDrop != null) {
-          onFreeDrop(lastGlobalPosition ??
-              details.offset + const Offset(23, 23));
+          onFreeDrop(
+              lastGlobalPosition ?? details.offset + const Offset(23, 23));
         }
         _endDesktopHeaderDrag();
       },
@@ -42265,8 +42247,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         math.max(kToolbarHeight + 12.0, mediaPadding.top + 8.0).toDouble();
     final anchoredBottom = math.max(12.0, mediaPadding.bottom + 8.0).toDouble();
     final anchoredAvailableHeight =
-        math.max(96.0, screen.height - anchoredTop - anchoredBottom)
-            .toDouble();
+        math.max(96.0, screen.height - anchoredTop - anchoredBottom).toDouble();
     final absoluteMaxHeight = math.max(96.0, screen.height - 16.0).toDouble();
     final maxHeight = floating
         ? absoluteMaxHeight
@@ -42310,20 +42291,19 @@ class _MindMapScreenState extends State<MindMapScreen>
       ids.add(id);
     }
 
-    final activeButtonDrag = _activeDesktopHeaderDrag
-            is _DesktopHeaderButtonDragData
-        ? _activeDesktopHeaderDrag as _DesktopHeaderButtonDragData
-        : null;
-    final showInsertionGaps =
-        activeButtonDrag?.sourcePlacement == placement;
+    final activeButtonDrag =
+        _activeDesktopHeaderDrag is _DesktopHeaderButtonDragData
+            ? _activeDesktopHeaderDrag as _DesktopHeaderButtonDragData
+            : null;
+    final showInsertionGaps = activeButtonDrag?.sourcePlacement == placement;
 
     Widget insertionGap(String? beforeCommandId) {
       return _DesktopHeaderInsertionGap(
         barAxis: Axis.vertical,
         placement: placement,
         beforeCommandId: beforeCommandId,
-        active: showInsertionGaps &&
-            activeButtonDrag?.commandId != beforeCommandId,
+        active:
+            showInsertionGaps && activeButtonDrag?.commandId != beforeCommandId,
         onDragEnded: _endDesktopHeaderDrag,
         onDropped: (data) {
           unawaited(provider.moveDesktopHeaderButtonToPlacement(
@@ -42361,11 +42341,9 @@ class _MindMapScreenState extends State<MindMapScreen>
         onDragStartedGlobal: (data) => _beginDesktopHeaderDrag(data),
         onDragEndGlobal: _endDesktopHeaderDrag,
         onDropped: (fromIndex) {
-          if (fromIndex == index ||
-              fromIndex < 0 ||
-              fromIndex >= ids.length) return;
-          _reorderDesktopHeaderButtonsAt(
-              provider, placement, fromIndex, index);
+          if (fromIndex == index || fromIndex < 0 || fromIndex >= ids.length)
+            return;
+          _reorderDesktopHeaderButtonsAt(provider, placement, fromIndex, index);
         },
       );
     }
@@ -42379,8 +42357,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             .clamp(dockWidth / 2 + 8, screen.width - dockWidth / 2 - 8)
             .toDouble(),
         localPosition.dy
-            .clamp(actualHeight / 2 + 8,
-                screen.height - actualHeight / 2 - 8)
+            .clamp(actualHeight / 2 + 8, screen.height - actualHeight / 2 - 8)
             .toDouble(),
       );
       // 端に固定していた時の暗黙の全高を、自由配置へ切り替えた瞬間の
@@ -42418,8 +42395,7 @@ class _MindMapScreenState extends State<MindMapScreen>
               onVerticalDragUpdate: (details) {
                 final current =
                     _desktopSideDockLiveHeights[placement] ?? dockHeight;
-                final delta =
-                    (top ? -details.delta.dy : details.delta.dy) * 2;
+                final delta = (top ? -details.delta.dy : details.delta.dy) * 2;
                 setState(() {
                   _desktopSideDockLiveHeights[placement] =
                       (current + delta).clamp(minHeight, maxHeight).toDouble();
@@ -42481,8 +42457,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                     color: Colors.white70,
                     size: 21,
                   ),
-                  onPressed: () => provider.setDesktopHeaderDockCollapsed(
-                      placement, false),
+                  onPressed: () =>
+                      provider.setDesktopHeaderDockCollapsed(placement, false),
                 ),
               ])
             : Column(children: [
@@ -42540,8 +42516,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                     color: Colors.white54,
                     size: 19,
                   ),
-                  onPressed: () => provider.setDesktopHeaderDockCollapsed(
-                      placement, true),
+                  onPressed: () =>
+                      provider.setDesktopHeaderDockCollapsed(placement, true),
                 ),
                 resizeHandle(false),
               ]),
@@ -42573,10 +42549,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
     final maxWidth = math.max(96.0, screen.width - 24.0).toDouble();
     final minWidth = math.min(180.0, maxWidth).toDouble();
-    final dockWidth = (_desktopBottomDockLiveWidth ??
-            provider.desktopBottomDockWidth)
-        .clamp(minWidth, maxWidth)
-        .toDouble();
+    final dockWidth =
+        (_desktopBottomDockLiveWidth ?? provider.desktopBottomDockWidth)
+            .clamp(minWidth, maxWidth)
+            .toDouble();
     final collapsed = provider.desktopHeaderDockCollapsedAt('bottom');
     final actualWidth =
         (collapsed ? math.min(104.0, maxWidth) : dockWidth).toDouble();
@@ -42604,12 +42580,10 @@ class _MindMapScreenState extends State<MindMapScreen>
           renderBox?.globalToLocal(globalPosition) ?? globalPosition;
       final next = Offset(
         localPosition.dx
-            .clamp(actualWidth / 2 + 8,
-                screen.width - actualWidth / 2 - 8)
+            .clamp(actualWidth / 2 + 8, screen.width - actualWidth / 2 - 8)
             .toDouble(),
         localPosition.dy
-            .clamp(dockHeight / 2 + 8,
-                screen.height - dockHeight / 2 - 8)
+            .clamp(dockHeight / 2 + 8, screen.height - dockHeight / 2 - 8)
             .toDouble(),
       );
       provider.setDesktopBottomDockPosition(
@@ -42687,8 +42661,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                       const BoxConstraints.tightFor(width: 30, height: 40),
                   icon: const Icon(Icons.unfold_more_rounded,
                       color: Colors.white70, size: 19),
-                  onPressed: () => provider.setDesktopHeaderDockCollapsed(
-                      'bottom', false),
+                  onPressed: () =>
+                      provider.setDesktopHeaderDockCollapsed('bottom', false),
                 ),
               ])
             : Column(children: [
@@ -42716,8 +42690,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                         storageKey: 'desktop_header_buttons_bottom',
                         reorderMode: _reorderHeaderMode,
                         desktopPlacement: 'bottom',
-                        onDesktopButtonDragStarted:
-                            _beginDesktopHeaderDrag,
+                        onDesktopButtonDragStarted: _beginDesktopHeaderDrag,
                         onDesktopButtonDragEnded: _endDesktopHeaderDrag,
                         activeDesktopButtonDrag: _activeDesktopHeaderDrag
                                 is _DesktopHeaderButtonDragData
@@ -42729,8 +42702,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                         trailing: _buildHeaderCustomizeIcon(provider),
                         onReorder: _reorderHeaderMode
                             ? (oldIndex, newIndex) =>
-                                _reorderDesktopHeaderButtonsAt(provider,
-                                    'bottom', oldIndex, newIndex)
+                                _reorderDesktopHeaderButtonsAt(
+                                    provider, 'bottom', oldIndex, newIndex)
                             : null,
                       ),
                     ),
@@ -42754,8 +42727,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     return Positioned(
       left: center.dx - actualWidth / 2,
       top: center.dy - dockHeight / 2,
-      child:
-          _buildDesktopHeaderDockTarget(provider, 'bottom', content),
+      child: _buildDesktopHeaderDockTarget(provider, 'bottom', content),
     );
   }
 
@@ -42789,10 +42761,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     final leftEnabled = leftIds.isNotEmpty;
     final rightEnabled = rightIds.isNotEmpty;
     final showEmptyTargets = _activeDesktopHeaderDrag != null;
-    if (!bottomEnabled &&
-        !leftEnabled &&
-        !rightEnabled &&
-        !showEmptyTargets) {
+    if (!bottomEnabled && !leftEnabled && !rightEnabled && !showEmptyTargets) {
       return const SizedBox.shrink();
     }
 
@@ -42887,8 +42856,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
 
     final collapsed = provider.desktopHeaderDockCollapsedAt('top');
-    final moveGrip = _buildDesktopHeaderDockMoveGrip(provider, 'top',
-        width: 32, height: 40);
+    final moveGrip =
+        _buildDesktopHeaderDockMoveGrip(provider, 'top', width: 32, height: 40);
     final Widget content;
     if (collapsed) {
       content = Material(
@@ -42905,20 +42874,18 @@ class _MindMapScreenState extends State<MindMapScreen>
             IconButton(
               tooltip: provider.t('header.expandDock'),
               padding: EdgeInsets.zero,
-              constraints:
-                  const BoxConstraints.tightFor(width: 34, height: 38),
+              constraints: const BoxConstraints.tightFor(width: 34, height: 38),
               icon: const Icon(Icons.unfold_more_rounded,
                   color: Colors.white70, size: 19),
-              onPressed: () => provider.setDesktopHeaderDockCollapsed(
-                  'top', false),
+              onPressed: () =>
+                  provider.setDesktopHeaderDockCollapsed('top', false),
             ),
           ]),
         ),
       );
     } else {
-      final barMaxWidth = maxWidth == null
-          ? null
-          : math.max(0.0, maxWidth - 66.0).toDouble();
+      final barMaxWidth =
+          maxWidth == null ? null : math.max(0.0, maxWidth - 66.0).toDouble();
       Widget expanded = Material(
         color: Colors.transparent,
         child: Container(
@@ -42938,26 +42905,24 @@ class _MindMapScreenState extends State<MindMapScreen>
               desktopPlacement: 'top',
               onDesktopButtonDragStarted: _beginDesktopHeaderDrag,
               onDesktopButtonDragEnded: _endDesktopHeaderDrag,
-              activeDesktopButtonDrag: _activeDesktopHeaderDrag
-                      is _DesktopHeaderButtonDragData
-                  ? _activeDesktopHeaderDrag as _DesktopHeaderButtonDragData
-                  : null,
+              activeDesktopButtonDrag:
+                  _activeDesktopHeaderDrag is _DesktopHeaderButtonDragData
+                      ? _activeDesktopHeaderDrag as _DesktopHeaderButtonDragData
+                      : null,
               maxWidth: barMaxWidth,
               onReorder: _reorderHeaderMode
-                  ? (oldIndex, newIndex) =>
-                      _reorderDesktopHeaderButtonsAt(
-                          provider, 'top', oldIndex, newIndex)
+                  ? (oldIndex, newIndex) => _reorderDesktopHeaderButtonsAt(
+                      provider, 'top', oldIndex, newIndex)
                   : null,
             ),
             IconButton(
               tooltip: provider.t('header.collapseDock'),
               padding: EdgeInsets.zero,
-              constraints:
-                  const BoxConstraints.tightFor(width: 34, height: 40),
+              constraints: const BoxConstraints.tightFor(width: 34, height: 40),
               icon: const Icon(Icons.unfold_less_rounded,
                   color: Colors.white54, size: 18),
-              onPressed: () => provider.setDesktopHeaderDockCollapsed(
-                  'top', true),
+              onPressed: () =>
+                  provider.setDesktopHeaderDockCollapsed('top', true),
             ),
           ]),
         ),
@@ -45951,8 +45916,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             ),
           ),
           child: Row(children: [
-            Icon(Icons.drive_file_move_rounded,
-                color: accent, size: 18),
+            Icon(Icons.drive_file_move_rounded, color: accent, size: 18),
             const SizedBox(width: 8),
             Expanded(
               child: Text(
@@ -46140,12 +46104,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     for (final page in mergeablePages.where((p) => p.pageType == 'paint')) {
       final loaded = await _PaintStore.load(
         page.id,
-        defaultNoteName: provider
-            .t('paint.defaultNoteName')
-            .replaceFirst('{n}', '1'),
-        defaultPageName: provider
-            .t('paint.defaultPageName')
-            .replaceFirst('{n}', '1'),
+        defaultNoteName:
+            provider.t('paint.defaultNoteName').replaceFirst('{n}', '1'),
+        defaultPageName:
+            provider.t('paint.defaultPageName').replaceFirst('{n}', '1'),
       );
       if (!ctx.mounted) return;
       paintBundles.add((pageName: page.name, notes: loaded.notes));
@@ -48122,1024 +48084,1035 @@ class _MindMapScreenState extends State<MindMapScreen>
             }
           : null,
       child: InteractiveViewer.builder(
-      transformationController: ctrl,
-      // 通常マップはキャンバス外へはスクロールできないよう margin をゼロに。
-      // ギャラリーは中身を画面中央に寄せたい (= ユーザー要望: +ブロックを中央に)
-      //   ので余白を確保し、 _centerBookshelfView の中央寄せが端で詰まって
-      //   左上に張り付かないようにする。
-      boundaryMargin: provider.currentPage.pageType == 'bookshelf'
-          // 右に分割パネル (AI チャット等) を出すと最終列がパネルの下に隠れて
-          //   見えなくなる。 パネル幅ぶん右マージンを増やし、 中身を左へ余分に
-          //   スクロールして最終列をパネルの外まで送り出せるようにする
-          //   (= ユーザー要望: AI チャット欄を出しても全要素を見られるように)。
-          ? EdgeInsets.fromLTRB(
-              2000,
-              2000,
-              2000 +
-                  (_splitOpen
-                      ? _splitPanelEffectiveSize(context) + 240.0
-                      : 0.0),
-              2000)
-          : EdgeInsets.zero,
-      minScale: 0.15,
-      maxScale: 3.0,
-      // ★ マウスカーソル位置でアクティブ側を切替 ★
-      // 画面分割中: カーソルがパネル側 → マップ静止 (PDF/WebView に譲る)
-      //             カーソルがマップ側 → マップ通常動作
-      // _splitPanelHover は MouseRegion.onEnter/onExit で自動更新される。
-      panEnabled: !_pauseViewer &&
-          !isRangeMode &&
-          !(_lockH && _lockV) &&
-          !_splitPanelHover &&
-          !_shelfHandleHovering &&
-          !_shelfHandleDragging &&
-          _draggingConnectionBend == null,
-      panAxis: _lockH && !_lockV
-          ? PanAxis.vertical
-          : (_lockV && !_lockH ? PanAxis.horizontal : PanAxis.free),
-      scaleEnabled: !_pauseViewer &&
-          !isRangeMode &&
-          !_effectiveLockScale &&
-          !_splitPanelHover &&
-          !_shelfHandleHovering,
-      builder: (BuildContext context, Quad viewport) {
-        return GestureDetector(
-          behavior: (isRangeMode || _canvasLongPressActive)
-              ? HitTestBehavior.opaque
-              : HitTestBehavior.translucent,
-          // 範囲選択中: 空エリアの 1 タップは選択解除のみ (モードは維持)、
-          //   ダブルクリックで範囲選択モードを終了する (= ユーザー要望: 何も
-          //   ないところをダブルクリックで解除)。
-          onTap: provider.currentPage.pageType == 'bookshelf' &&
-                  _inlineShelfEditNodeId != null
-              ? () => _commitShelfInlineTextEdit(
-                  clearSelection: !_isDesktop)
-              : (isRangeMode && !_rangeDragging && !_canvasLongPressActive
-                  ? () {
-                      if (_suppressNextRangeDeselect) {
-                        setState(() => _suppressNextRangeDeselect = false);
-                        return;
-                      }
-                      setState(() {
-                        _rangeSelectedIds.clear();
-                        _rangeSelectedDecorationIds.clear();
-                        _rangeStart = null;
-                        _rangeEnd = null;
-                      });
-                    }
-                  : null),
-          onDoubleTap: isRangeMode && !_rangeDragging && !_canvasLongPressActive
-              ? () {
-                  _removeOverlay();
-                  setState(() {
-                    _rangeSelectMode = false;
-                    _rangeSelectedIds.clear();
-                    _rangeSelectedDecorationIds.clear();
-                    _rangeStart = null;
-                    _rangeEnd = null;
-                  });
-                }
-              // ── 通常モード: 何もない場所をダブルクリックで選択解除 ──
-              // = ユーザー要望。 ノードはそれ自身が onDoubleTap を消費するため
-              //   (ジェスチャアリーナで手前のノードが勝つ)、 この空エリアの
-              //   ダブルタップはノード上では発火しない。
-              : (_drawingDecorationKind == null && !isMoveMode)
-                  ? () {
-                      _removeOverlay();
-                      provider.selectNode(null);
-                      setState(() {
-                        _selectedDecorationId = null;
-                        _selectedConnections.clear();
-                        _rangeSelectedIds.clear();
-                        _rangeSelectedDecorationIds.clear();
-                      });
-                    }
-                  : null,
-          // ── 何もない場所を長押し ──────────────────
-          // PC: 範囲選択ドラッグを開始 (既存仕様)。
-          // モバイル (Android 等): クリップボードの画像をその位置に貼り付け
-          //   (ユーザー要望「Android版でマップを長押ししたらクリップボードに
-          //   保存した画像を出せる機能」)。
-          // モバイルの範囲選択モード中は、 アプリ内クリップボード/切り取りが
-          //   空なら反応しない (= 範囲選択操作中の長押しで OS クリップボード
-          //   から意図しないノードが作られるのを防ぐ。 従来ガードの維持)。
-          onLongPressStart: (!isMoveMode &&
-                  (_isDesktop
-                      ? !isRangeMode
-                      : (!isRangeMode ||
-                          _clipboard.isNotEmpty ||
-                          _cutNodeIds.isNotEmpty)))
-              ? (details) {
-                  final canvasPos =
-                      _globalToCanvas(details.globalPosition, ctrl);
-                  // ノードの上ではない場合のみ反応 (= 空エリア限定)
-                  bool onNode = false;
-                  for (final n in nodes.values) {
-                    final r = Rect.fromLTWH(
-                        n.position.dx, n.position.dy, n.width, n.visualHeight);
-                    if (r.contains(canvasPos)) {
-                      onNode = true;
-                      break;
-                    }
-                  }
-                  if (onNode) return;
-                  if (_isDesktop) {
-                    // PC: 範囲選択開始 (既存仕様)
-                    setState(() {
-                      _canvasLongPressActive = true;
-                      _canvasLongPressStart = canvasPos;
-                      _rangeSelectMode = true;
-                      _rangeSelectedIds.clear();
-                      _rangeSelectedDecorationIds.clear();
-                      _rangeStart = canvasPos;
-                      _rangeEnd = canvasPos;
-                    });
-                  } else {
-                    // モバイル: アプリ内コピー済みノードを優先し、なければOS画像を貼り付け
-                    if (!_pasteAppClipboardAt(provider, canvasPos)) {
-                      _pasteClipboardImageAt(canvasPos);
-                    }
-                  }
-                }
-              : null,
-          onLongPressMoveUpdate: _isDesktop && _canvasLongPressActive
-              ? (details) {
-                  final canvasPos =
-                      _globalToCanvas(details.globalPosition, ctrl);
-                  setState(() {
-                    _rangeEnd = canvasPos;
-                  });
-                }
-              : null,
-          onLongPressEnd: _isDesktop && _canvasLongPressActive
-              ? (_) {
-                  // 範囲選択確定
-                  if (_rangeStart != null && _rangeEnd != null) {
-                    final rect = Rect.fromPoints(_rangeStart!, _rangeEnd!);
-                    // 親に格納された (折りたたみ) 子ノードは除外。
-                    final hiddenIds = provider.hiddenNodeIds;
-                    for (final node in nodes.values) {
-                      if (hiddenIds.contains(node.id)) continue;
-                      final nodeRect = Rect.fromLTWH(node.position.dx,
-                          node.position.dy, node.width, node.visualHeight);
-                      if (rect.overlaps(nodeRect)) {
-                        _rangeSelectedIds.add(node.id);
-                      }
-                    }
-                    _addDecorationsInRect(rect);
-                  }
-                  final emptySelection = _rangeSelectedIds.isEmpty &&
-                      _rangeSelectedDecorationIds.isEmpty;
-                  setState(() {
-                    _canvasLongPressActive = false;
-                    _canvasLongPressStart = null;
-                    _rangeStart = null;
-                    _rangeEnd = null;
-                    if (emptySelection) _rangeSelectMode = false;
-                  });
-                }
-              : null,
-          onPanStart: _drawingDecorationKind != null
-              ? (details) {
-                  // ユーザー要望「直線や矢印線、 長方形等の図形を挿入できる
-                  //   ようにして」 への対応。 挿入モード中はドラッグで装飾の
-                  //   start/end を記録する。
-                  final canvasPos =
-                      _globalToCanvas(details.globalPosition, ctrl);
-                  _handleDecorationPanStart(canvasPos);
-                }
-              : (isRangeMode && !_rangeDragging && !_canvasLongPressActive
-                  ? (details) {
-                      final canvasPos =
-                          _globalToCanvas(details.globalPosition, ctrl);
-                      // 選択済みノード上なら何もしない（Listenerがドラッグ処理する）
-                      if (_rangeSelectedIds.isNotEmpty) {
-                        for (final id in _rangeSelectedIds) {
-                          final n = nodes[id];
-                          if (n == null) continue;
-                          final r = Rect.fromLTWH(n.position.dx, n.position.dy,
-                              n.width, n.visualHeight);
-                          if (r.contains(canvasPos)) return;
+        transformationController: ctrl,
+        // 通常マップはキャンバス外へはスクロールできないよう margin をゼロに。
+        // ギャラリーは中身を画面中央に寄せたい (= ユーザー要望: +ブロックを中央に)
+        //   ので余白を確保し、 _centerBookshelfView の中央寄せが端で詰まって
+        //   左上に張り付かないようにする。
+        boundaryMargin: provider.currentPage.pageType == 'bookshelf'
+            // 右に分割パネル (AI チャット等) を出すと最終列がパネルの下に隠れて
+            //   見えなくなる。 パネル幅ぶん右マージンを増やし、 中身を左へ余分に
+            //   スクロールして最終列をパネルの外まで送り出せるようにする
+            //   (= ユーザー要望: AI チャット欄を出しても全要素を見られるように)。
+            ? EdgeInsets.fromLTRB(
+                2000,
+                2000,
+                2000 +
+                    (_splitOpen
+                        ? _splitPanelEffectiveSize(context) + 240.0
+                        : 0.0),
+                2000)
+            : EdgeInsets.zero,
+        minScale: 0.15,
+        maxScale: 3.0,
+        // ★ マウスカーソル位置でアクティブ側を切替 ★
+        // 画面分割中: カーソルがパネル側 → マップ静止 (PDF/WebView に譲る)
+        //             カーソルがマップ側 → マップ通常動作
+        // _splitPanelHover は MouseRegion.onEnter/onExit で自動更新される。
+        panEnabled: !_pauseViewer &&
+            !isRangeMode &&
+            !(_lockH && _lockV) &&
+            !_splitPanelHover &&
+            !_shelfHandleHovering &&
+            !_shelfHandleDragging &&
+            _draggingConnectionBend == null,
+        panAxis: _lockH && !_lockV
+            ? PanAxis.vertical
+            : (_lockV && !_lockH ? PanAxis.horizontal : PanAxis.free),
+        scaleEnabled: !_pauseViewer &&
+            !isRangeMode &&
+            !_effectiveLockScale &&
+            !_splitPanelHover &&
+            !_shelfHandleHovering,
+        builder: (BuildContext context, Quad viewport) {
+          return GestureDetector(
+            behavior: (isRangeMode || _canvasLongPressActive)
+                ? HitTestBehavior.opaque
+                : HitTestBehavior.translucent,
+            // 範囲選択中: 空エリアの 1 タップは選択解除のみ (モードは維持)、
+            //   ダブルクリックで範囲選択モードを終了する (= ユーザー要望: 何も
+            //   ないところをダブルクリックで解除)。
+            onTap: provider.currentPage.pageType == 'bookshelf' &&
+                    _inlineShelfEditNodeId != null
+                ? () => _commitShelfInlineTextEdit(clearSelection: !_isDesktop)
+                : (isRangeMode && !_rangeDragging && !_canvasLongPressActive
+                    ? () {
+                        if (_suppressNextRangeDeselect) {
+                          setState(() => _suppressNextRangeDeselect = false);
+                          return;
                         }
+                        setState(() {
+                          _rangeSelectedIds.clear();
+                          _rangeSelectedDecorationIds.clear();
+                          _rangeStart = null;
+                          _rangeEnd = null;
+                        });
                       }
-                      // それ以外→範囲選択矩形
+                    : null),
+            onDoubleTap:
+                isRangeMode && !_rangeDragging && !_canvasLongPressActive
+                    ? () {
+                        _removeOverlay();
+                        setState(() {
+                          _rangeSelectMode = false;
+                          _rangeSelectedIds.clear();
+                          _rangeSelectedDecorationIds.clear();
+                          _rangeStart = null;
+                          _rangeEnd = null;
+                        });
+                      }
+                    // ── 通常モード: 何もない場所をダブルクリックで選択解除 ──
+                    // = ユーザー要望。 ノードはそれ自身が onDoubleTap を消費するため
+                    //   (ジェスチャアリーナで手前のノードが勝つ)、 この空エリアの
+                    //   ダブルタップはノード上では発火しない。
+                    : (_drawingDecorationKind == null && !isMoveMode)
+                        ? () {
+                            _removeOverlay();
+                            provider.selectNode(null);
+                            setState(() {
+                              _selectedDecorationId = null;
+                              _selectedConnections.clear();
+                              _rangeSelectedIds.clear();
+                              _rangeSelectedDecorationIds.clear();
+                            });
+                          }
+                        : null,
+            // ── 何もない場所を長押し ──────────────────
+            // PC: 範囲選択ドラッグを開始 (既存仕様)。
+            // モバイル (Android 等): クリップボードの画像をその位置に貼り付け
+            //   (ユーザー要望「Android版でマップを長押ししたらクリップボードに
+            //   保存した画像を出せる機能」)。
+            // モバイルの範囲選択モード中は、 アプリ内クリップボード/切り取りが
+            //   空なら反応しない (= 範囲選択操作中の長押しで OS クリップボード
+            //   から意図しないノードが作られるのを防ぐ。 従来ガードの維持)。
+            onLongPressStart: (!isMoveMode &&
+                    (_isDesktop
+                        ? !isRangeMode
+                        : (!isRangeMode ||
+                            _clipboard.isNotEmpty ||
+                            _cutNodeIds.isNotEmpty)))
+                ? (details) {
+                    final canvasPos =
+                        _globalToCanvas(details.globalPosition, ctrl);
+                    // ノードの上ではない場合のみ反応 (= 空エリア限定)
+                    bool onNode = false;
+                    for (final n in nodes.values) {
+                      final r = Rect.fromLTWH(n.position.dx, n.position.dy,
+                          n.width, n.visualHeight);
+                      if (r.contains(canvasPos)) {
+                        onNode = true;
+                        break;
+                      }
+                    }
+                    if (onNode) return;
+                    if (_isDesktop) {
+                      // PC: 範囲選択開始 (既存仕様)
                       setState(() {
+                        _canvasLongPressActive = true;
+                        _canvasLongPressStart = canvasPos;
+                        _rangeSelectMode = true;
+                        _rangeSelectedIds.clear();
+                        _rangeSelectedDecorationIds.clear();
                         _rangeStart = canvasPos;
                         _rangeEnd = canvasPos;
                       });
+                    } else {
+                      // モバイル: アプリ内コピー済みノードを優先し、なければOS画像を貼り付け
+                      if (!_pasteAppClipboardAt(provider, canvasPos)) {
+                        _pasteClipboardImageAt(canvasPos);
+                      }
                     }
-                  : null),
-          onPanUpdate: _drawingDecorationKind != null
-              ? (details) {
-                  final canvasPos =
-                      _globalToCanvas(details.globalPosition, ctrl);
-                  _handleDecorationPanUpdate(canvasPos);
-                }
-              : (isRangeMode && !_rangeDragging
-                  ? (details) {
-                      final canvasPos =
-                          _globalToCanvas(details.globalPosition, ctrl);
-                      if (_rangeStart != null) {
+                  }
+                : null,
+            onLongPressMoveUpdate: _isDesktop && _canvasLongPressActive
+                ? (details) {
+                    final canvasPos =
+                        _globalToCanvas(details.globalPosition, ctrl);
+                    setState(() {
+                      _rangeEnd = canvasPos;
+                    });
+                  }
+                : null,
+            onLongPressEnd: _isDesktop && _canvasLongPressActive
+                ? (_) {
+                    // 範囲選択確定
+                    if (_rangeStart != null && _rangeEnd != null) {
+                      final rect = Rect.fromPoints(_rangeStart!, _rangeEnd!);
+                      // 親に格納された (折りたたみ) 子ノードは除外。
+                      final hiddenIds = provider.hiddenNodeIds;
+                      for (final node in nodes.values) {
+                        if (hiddenIds.contains(node.id)) continue;
+                        final nodeRect = Rect.fromLTWH(node.position.dx,
+                            node.position.dy, node.width, node.visualHeight);
+                        if (rect.overlaps(nodeRect)) {
+                          _rangeSelectedIds.add(node.id);
+                        }
+                      }
+                      _addDecorationsInRect(rect);
+                    }
+                    final emptySelection = _rangeSelectedIds.isEmpty &&
+                        _rangeSelectedDecorationIds.isEmpty;
+                    setState(() {
+                      _canvasLongPressActive = false;
+                      _canvasLongPressStart = null;
+                      _rangeStart = null;
+                      _rangeEnd = null;
+                      if (emptySelection) _rangeSelectMode = false;
+                    });
+                  }
+                : null,
+            onPanStart: _drawingDecorationKind != null
+                ? (details) {
+                    // ユーザー要望「直線や矢印線、 長方形等の図形を挿入できる
+                    //   ようにして」 への対応。 挿入モード中はドラッグで装飾の
+                    //   start/end を記録する。
+                    final canvasPos =
+                        _globalToCanvas(details.globalPosition, ctrl);
+                    _handleDecorationPanStart(canvasPos);
+                  }
+                : (isRangeMode && !_rangeDragging && !_canvasLongPressActive
+                    ? (details) {
+                        final canvasPos =
+                            _globalToCanvas(details.globalPosition, ctrl);
+                        // 選択済みノード上なら何もしない（Listenerがドラッグ処理する）
+                        if (_rangeSelectedIds.isNotEmpty) {
+                          for (final id in _rangeSelectedIds) {
+                            final n = nodes[id];
+                            if (n == null) continue;
+                            final r = Rect.fromLTWH(n.position.dx,
+                                n.position.dy, n.width, n.visualHeight);
+                            if (r.contains(canvasPos)) return;
+                          }
+                        }
+                        // それ以外→範囲選択矩形
                         setState(() {
+                          _rangeStart = canvasPos;
                           _rangeEnd = canvasPos;
                         });
                       }
-                      // ── 画面端に近づいたら自動スクロール ──
-                      _autoScrollIfNeeded(details.globalPosition, ctrl);
-                    }
-                  : null),
-          onPanEnd: _drawingDecorationKind != null
-              ? (_) {
-                  _handleDecorationPanEnd();
-                }
-              : (isRangeMode && !_rangeDragging
-                  ? (_) {
-                      // ── 自動スクロールタイマーを必ず停止 ──
-                      _stopEdgeScroll();
-                      // 範囲選択確定
-                      if (_rangeStart != null && _rangeEnd != null) {
-                        final rect = Rect.fromPoints(_rangeStart!, _rangeEnd!);
-                        // 親に格納された (折りたたみ) 子ノードは除外。
-                        final hiddenIds = provider.hiddenNodeIds;
-                        for (final node in nodes.values) {
-                          if (hiddenIds.contains(node.id)) continue;
-                          final nodeRect = Rect.fromLTWH(node.position.dx,
-                              node.position.dy, node.width, node.visualHeight);
-                          if (rect.overlaps(nodeRect)) {
-                            _rangeSelectedIds.add(node.id);
-                          }
+                    : null),
+            onPanUpdate: _drawingDecorationKind != null
+                ? (details) {
+                    final canvasPos =
+                        _globalToCanvas(details.globalPosition, ctrl);
+                    _handleDecorationPanUpdate(canvasPos);
+                  }
+                : (isRangeMode && !_rangeDragging
+                    ? (details) {
+                        final canvasPos =
+                            _globalToCanvas(details.globalPosition, ctrl);
+                        if (_rangeStart != null) {
+                          setState(() {
+                            _rangeEnd = canvasPos;
+                          });
                         }
-                        _addDecorationsInRect(rect);
+                        // ── 画面端に近づいたら自動スクロール ──
+                        _autoScrollIfNeeded(details.globalPosition, ctrl);
                       }
-                      final emptySelection = _rangeSelectedIds.isEmpty &&
-                          _rangeSelectedDecorationIds.isEmpty;
-                      setState(() {
-                        _rangeStart = null;
-                        _rangeEnd = null;
-                        if (emptySelection) _rangeSelectMode = false;
-                      });
-                    }
-                  : null),
-          child: Builder(
-            builder: (context) {
-              final canvasSize = computeCanvasSize(nodes);
-              // ── ギャラリーページ: キャンバスを中身 (+ボックス含む) ぴったりにして
-              //    範囲外へはパンできないようにする (= ユーザー要望) ──
-              final bool isShelf = provider.currentPage.pageType == 'bookshelf';
-              final canvasDim = isShelf
-                  ? provider.bookshelfCanvasSize()
-                  : Size(canvasSize, canvasSize);
-              final double canvasW = canvasDim.width;
-              final double canvasH = canvasDim.height;
-              // 常設の +ボックス群 (= 埋めたセルの右と下のフロンティア)。
-              final List<List<int>> frontierCells =
-                  isShelf ? provider.bookshelfFrontierCells() : const [];
-              final List<Rect> frontierRects =
-                  isShelf ? provider.bookshelfFrontierRects() : const [];
-              // 背景パネルはブロック (ノード) の後ろにだけ描く (= +ボックスや
-              // 空きの後ろには描かない = ユーザー要望)。
-              final List<Rect> shelfRects = isShelf
-                  ? nodes.values
-                      .map((n) => Rect.fromLTWH(n.position.dx, n.position.dy,
-                          n.width, n.visualHeight))
-                      .toList()
-                  : const <Rect>[];
-              return Container(
-                width: canvasW,
-                height: canvasH,
-                // 通常マップではスクロール可能範囲を外枠で示す。ギャラリーは
-                // 内容ぴったりの可変キャンバスに外側ハンドルも重なるため、枠が
-                // 左右非対称に見える。ギャラリーでは装飾枠を描かない。
-                decoration: isShelf
-                    ? null
-                    : BoxDecoration(
-                        border: Border.all(
-                          color: Colors.white.withValues(alpha: 0.35),
-                          width: 2.0,
-                        ),
-                      ),
-                child: Stack(
-                  key: _canvasKey,
-                  clipBehavior: Clip.none,
-                  children: [
-                    Positioned.fill(
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        // ── タップ位置を onTapDown で記録 ──
-                        // onTap は位置を持たないので、 図形ヒットテスト用に
-                        // ここでキャンバス座標を控えておく。 挿入モード中も記録する
-                        // (タップ = ドラッグではない ので既存図形の選択に使える)。
-                        onTapDown: isRangeMode
-                            ? null
-                            : (details) {
-                                _pendingTapCanvasPos = _globalToCanvas(
-                                    details.globalPosition, ctrl);
-                              },
-                        // ── タップ確定: 範囲選択解除 or 図形の選択/解除 ──
-                        // onTapUp ではなく onTap を使うことで確実に発火させる。
-                        onTap: () {
-                          if (isShelf && _inlineShelfEditNodeId != null) {
-                            _commitShelfInlineTextEdit(
-                                clearSelection: !_isDesktop);
-                            return;
-                          }
-                          if (isRangeMode) {
-                            // 直前のオーバーレイ閉じクリックはカウントしない
-                            if (_suppressNextRangeDeselect) {
-                              setState(
-                                  () => _suppressNextRangeDeselect = false);
-                              return;
+                    : null),
+            onPanEnd: _drawingDecorationKind != null
+                ? (_) {
+                    _handleDecorationPanEnd();
+                  }
+                : (isRangeMode && !_rangeDragging
+                    ? (_) {
+                        // ── 自動スクロールタイマーを必ず停止 ──
+                        _stopEdgeScroll();
+                        // 範囲選択確定
+                        if (_rangeStart != null && _rangeEnd != null) {
+                          final rect =
+                              Rect.fromPoints(_rangeStart!, _rangeEnd!);
+                          // 親に格納された (折りたたみ) 子ノードは除外。
+                          final hiddenIds = provider.hiddenNodeIds;
+                          for (final node in nodes.values) {
+                            if (hiddenIds.contains(node.id)) continue;
+                            final nodeRect = Rect.fromLTWH(
+                                node.position.dx,
+                                node.position.dy,
+                                node.width,
+                                node.visualHeight);
+                            if (rect.overlaps(nodeRect)) {
+                              _rangeSelectedIds.add(node.id);
                             }
-                            setState(() {
-                              _rangeSelectMode = false;
-                              _rangeSelectedIds.clear();
-                              _rangeSelectedDecorationIds.clear();
-                              _rangeStart = null;
-                              _rangeEnd = null;
-                            });
-                            return;
                           }
-                          final p = _pendingTapCanvasPos;
-                          if (p == null) return;
-                          if (_clearShelfLineSelectionIfOutside(provider, p)) {
-                            if (isShelf && !_isDesktop) {
-                              _clearShelfElementSelection(provider);
-                            }
-                            return;
-                          }
-                          final scale = ctrl.value.getMaxScaleOnAxis();
-                          // ── 挿入モード中のタップ ──
-                          // 描画はドラッグ (onPan) で行うので、 タップ (= ドラッグ
-                          //   ではない) は既存図形の選択に使える。 図形に当たれば
-                          //   挿入モードを抜けて選択 (ハンドルが出る)、 外れたら
-                          //   挿入モードを維持して続けて描けるようにする。
-                          if (_drawingDecorationKind != null) {
-                            final hit = _decorationHitTest(p, scale);
-                            if (hit != null) {
-                              _exitShapeInsertMode();
-                              setState(() => _selectedDecorationId = hit);
-                            }
-                            return;
-                          }
-                          final decorationHit =
-                              _decorationHitTest(p, scale);
-                          _handleCanvasTapForDecoration(p, scale);
-                          if (isShelf && decorationHit == null) {
-                            // 編集中でない通常選択でも、ギャラリーの空白タップは
-                            // provider 側の選択を含めて完全に解除する。
-                            _clearShelfElementSelection(provider);
-                          }
-                        },
-                        onSecondaryTapUp: _isDesktop && !isRangeMode
-                            ? (details) => _showCanvasContextMenu(
-                                details.globalPosition, ctrl, provider)
-                            : null,
-                        child: const SizedBox.expand(),
-                      ),
-                    ),
-
-                    // ── カスタム背景画像は表示領域いっぱいの壁紙として
-                    //   InteractiveViewer の外側 (_buildInfinitePageBackground)
-                    //   に移動した (= ユーザー要望: 枠の外まで背景を続ける)。
-                    //   ここではキャンバス内には描かない。
-
-                    RepaintBoundary(
-                      child: CustomPaint(
-                        size: isShelf
-                            ? Size(canvasW, canvasH)
-                            : Size(canvasSize, canvasSize),
-                        // ギャラリーページは網目グリッドではなく、 木目調 + 棚板の
-                        // 背景にする (= ユーザー要望: 後ろの網目を別のものに)。
-                        painter: isShelf
-                            ? _BookshelfBackgroundPainter(
-                                tileRects: shelfRects,
-                                isDark: provider.isDarkMode,
-                              )
-                            : _GridPainter(
-                                isDesktop: !kIsWeb &&
-                                    (Platform.isWindows ||
-                                        Platform.isMacOS ||
-                                        Platform.isLinux),
-                                isDark: provider.isDarkMode,
-                              ),
-                      ),
-                    ),
-                    // ── グループ背景（付箋風にノードの後ろに表示）──
-                    if (provider.namedGroups.isNotEmpty) ...[
-                      Builder(builder: (_) {
-                        final co = _groupColorOverrides(provider);
-                        final fs = _groupFontSizeOverrides(provider);
-                        final ff = _groupFontFamilyOverrides(provider);
-                        final pd = _groupPaddingOverrides(provider);
-                        return CustomPaint(
-                          size: Size(canvasSize, canvasSize),
-                          painter: _GroupBackgroundPainter(
-                            groups: provider.namedGroups,
-                            nodes: nodes,
-                            colorOverrides: co,
-                            fontSizeOverrides: fs,
-                            fontFamilyOverrides: ff,
-                            paddingOverrides: pd,
-                            isDark: provider.isDarkMode,
-                          ),
-                        );
-                      }),
-                      // ── グループラベルのタップ領域 ──
-                      ..._buildGroupLabelTaps(provider, nodes, ctrl),
-                      // ── グループ枠の拡張ハンドル ──
-                      ..._buildGroupResizeHandles(provider, nodes, ctrl),
-                    ],
-                    CustomPaint(
-                      size: Size(canvasSize, canvasSize),
-                      painter: ConnectionPainter(
-                          nodes: _movingNodes(nodes),
-                          // 格納ノード処理:
-                          //   両端が隠れているノード → 非表示
-                          //   片方だけが隠れている → 見えている側と「その隠れたノードの
-                          //   格納先コンテナ」の接続に置換し、コンテナが外部と接続しているように見せる
-                          // ギャラリー(本棚)では要素同士を繋ぐリンクは出さない
-                          //   (= ユーザー要望)。
-                          connections:
-                              provider.currentPage.pageType == 'bookshelf'
-                                  ? const <NodeConnection>[]
-                                  : _effectiveConnections(nodes, connections),
-                          selectedConnections: _selectedConnections,
-                          // ライトモード時に pale な黄色の接続線を濃く補正するため
-                          isDarkMode: provider.isDarkMode),
-                    ),
-                    // ── 装飾図形の描画 (= 直線/矢印/長方形/楕円) ──
-                    // ユーザー要望「直線や矢印線、 長方形等の図形を挿入できる
-                    //   ようにして」 への対応。 provider.decorations を読み取って、
-                    //   CustomPaint で描画する。 ノードと同じキャンバス座標系で
-                    //   描かれるので、 マップのパン/ズームに追従する。
-                    //
-                    //   選択中の装飾 (= _selectedDecorationId) は強調表示。
-                    // ── 図形レイヤー (タップで直接選択できるようにする) ──
-                    // _DecorationPainter.hitTest が図形上で true を返すので、
-                    //   deferToChild により「図形の上のタップ」 だけをここで拾える。
-                    //   図形以外のタップは透過して下の fill (= 選択解除) に届く。
-                    //   これで下層 fill のヒットテストに依存せず確実に選択できる。
-                    GestureDetector(
-                      behavior: HitTestBehavior.deferToChild,
-                      onTapDown: (d) => _pendingTapCanvasPos =
-                          _globalToCanvas(d.globalPosition, ctrl),
-                      onTap: () {
-                        final p = _pendingTapCanvasPos;
-                        if (p == null) return;
-                        final scale = ctrl.value.getMaxScaleOnAxis();
-                        final hit = _decorationHitTest(p, scale);
-                        if (hit != null) {
-                          if (_drawingDecorationKind != null) {
-                            _exitShapeInsertMode();
-                          }
-                          setState(() => _selectedDecorationId = hit);
+                          _addDecorationsInRect(rect);
                         }
-                      },
-                      child: CustomPaint(
-                        size: Size(canvasSize, canvasSize),
-                        painter: _DecorationPainter(
-                          decorations: _resolvedDecorations(provider),
-                          selectedId: _selectedDecorationId,
-                          rangeSelectedIds: _rangeSelectedDecorationIds,
-                          rangeDragDelta:
-                              _rangeDragging ? _rangeDragDelta : Offset.zero,
-                          hitScale: ctrl.value.getMaxScaleOnAxis(),
-                        ),
-                      ),
-                    ),
-                    // ── 選択中の図形のハンドル (移動 / リサイズ) ──
-                    // ユーザー要望「挿入した図形を選択して移動・大きさや形状を
-                    //   変えられるように」 への対応。 中央=移動、 始点/終点=リサイズ。
-                    ..._buildDecorationHandles(provider, ctrl),
-                    // 描画中プレビュー (= 装飾挿入モードでドラッグ中)
-                    if (_drawingDecorationKind != null &&
-                        _drawingDecorationStart != null &&
-                        _drawingDecorationEnd != null)
-                      IgnorePointer(
-                        child: CustomPaint(
-                          size: Size(canvasSize, canvasSize),
-                          painter: _DecorationPainter(
-                            decorations: [
-                              MapDecoration(
-                                id: '__preview__',
-                                kind: _drawingDecorationKind!,
-                                start: _drawingDecorationStart!,
-                                end: _drawingDecorationEnd!,
-                                colorRgb: _shapeColorRgb,
-                                strokeWidth: _shapeStrokeWidth,
-                              ),
-                            ],
-                            selectedId: null,
+                        final emptySelection = _rangeSelectedIds.isEmpty &&
+                            _rangeSelectedDecorationIds.isEmpty;
+                        setState(() {
+                          _rangeStart = null;
+                          _rangeEnd = null;
+                          if (emptySelection) _rangeSelectMode = false;
+                        });
+                      }
+                    : null),
+            child: Builder(
+              builder: (context) {
+                final canvasSize = computeCanvasSize(nodes);
+                // ── ギャラリーページ: キャンバスを中身 (+ボックス含む) ぴったりにして
+                //    範囲外へはパンできないようにする (= ユーザー要望) ──
+                final bool isShelf =
+                    provider.currentPage.pageType == 'bookshelf';
+                final canvasDim = isShelf
+                    ? provider.bookshelfCanvasSize()
+                    : Size(canvasSize, canvasSize);
+                final double canvasW = canvasDim.width;
+                final double canvasH = canvasDim.height;
+                // 常設の +ボックス群 (= 埋めたセルの右と下のフロンティア)。
+                final List<List<int>> frontierCells =
+                    isShelf ? provider.bookshelfFrontierCells() : const [];
+                final List<Rect> frontierRects =
+                    isShelf ? provider.bookshelfFrontierRects() : const [];
+                // 背景パネルはブロック (ノード) の後ろにだけ描く (= +ボックスや
+                // 空きの後ろには描かない = ユーザー要望)。
+                final List<Rect> shelfRects = isShelf
+                    ? nodes.values
+                        .map((n) => Rect.fromLTWH(n.position.dx, n.position.dy,
+                            n.width, n.visualHeight))
+                        .toList()
+                    : const <Rect>[];
+                return Container(
+                  width: canvasW,
+                  height: canvasH,
+                  // 通常マップではスクロール可能範囲を外枠で示す。ギャラリーは
+                  // 内容ぴったりの可変キャンバスに外側ハンドルも重なるため、枠が
+                  // 左右非対称に見える。ギャラリーでは装飾枠を描かない。
+                  decoration: isShelf
+                      ? null
+                      : BoxDecoration(
+                          border: Border.all(
+                            color: Colors.white.withValues(alpha: 0.35),
+                            width: 2.0,
                           ),
                         ),
-                      ),
-                    // 裁断線のプレビュー描画（始点が設定済みの時）
-                    if (_cutMode && _cutStartPoint != null)
-                      IgnorePointer(
-                        child: CustomPaint(
-                          size: Size(canvasSize, canvasSize),
-                          painter: _CutPreviewPainter(
-                            start: _cutStartPoint!,
-                            end: _cutPreviewEnd ?? _cutStartPoint!,
-                          ),
-                        ),
-                      ),
-                    // 裁断直後の「実行済み線」を一瞬表示（フェードアウト）
-                    if (_cutFadingLine != null && _cutFadingLine!.length == 2)
-                      IgnorePointer(
-                        child: CustomPaint(
-                          size: Size(canvasSize, canvasSize),
-                          painter: _CutPreviewPainter(
-                            start: _cutFadingLine![0],
-                            end: _cutFadingLine![1],
-                            solid: true,
-                          ),
-                        ),
-                      ),
-
-                    // 接続線のタップ判定レイヤー（ノードの下）
-                    if (!isMoveMode && !isRangeMode)
+                  child: Stack(
+                    key: _canvasKey,
+                    clipBehavior: Clip.none,
+                    children: [
                       Positioned.fill(
                         child: GestureDetector(
-                          behavior: HitTestBehavior.translucent,
-                          onTapUp: (details) {
-                            if (_suppressConnectionTapAfterBendDrag) {
-                              _suppressConnectionTapAfterBendDrag = false;
+                          behavior: HitTestBehavior.opaque,
+                          // ── タップ位置を onTapDown で記録 ──
+                          // onTap は位置を持たないので、 図形ヒットテスト用に
+                          // ここでキャンバス座標を控えておく。 挿入モード中も記録する
+                          // (タップ = ドラッグではない ので既存図形の選択に使える)。
+                          onTapDown: isRangeMode
+                              ? null
+                              : (details) {
+                                  _pendingTapCanvasPos = _globalToCanvas(
+                                      details.globalPosition, ctrl);
+                                },
+                          // ── タップ確定: 範囲選択解除 or 図形の選択/解除 ──
+                          // onTapUp ではなく onTap を使うことで確実に発火させる。
+                          onTap: () {
+                            if (isShelf && _inlineShelfEditNodeId != null) {
+                              _commitShelfInlineTextEdit(
+                                  clearSelection: !_isDesktop);
                               return;
                             }
-                            // 並び替えモード中の解除挙動:
-                            //   モバイル → シングルタップで解除 (ダブルタップは指で狙いにくいため)
-                            //   デスクトップ → ダブルクリック (誤解除防止)
-                            // モバイル版で接続線タップ等と競合する懸念があるが、
-                            // 並び替えモード中は誤操作防止の方が優先度が高い。
-                            if (_reorderHeaderMode && !_isDesktop) {
-                              _exitHeaderReorderMode();
-                              return;
-                            }
-                            // 基準位置設定モード
-                            if (_settingRefMode) {
-                              final canvasPos =
-                                  _globalToCanvas(details.globalPosition, ctrl);
-                              final pageId = provider.currentPage.id;
-                              setState(() {
-                                _referencePos = canvasPos;
-                                _pageReferencePositions[pageId] = canvasPos;
-                                _showRefMarker = true;
-                                _settingRefMode = false;
-                              });
-                              _saveReferencePositions();
-                              Future.delayed(const Duration(seconds: 3), () {
-                                if (mounted)
-                                  setState(() => _showRefMarker = false);
-                              });
-                              return;
-                            }
-                            // ── 図形 (装飾) の選択を最優先で判定 ──
-                            // この接続線タップ判定レイヤーは装飾レイヤーより上に
-                            //   重なっており、 タップを先取りしてしまうため、 図形の
-                            //   選択がここまで到達していなかった (= 図形をタップしても
-                            //   反応しない原因)。 ここで図形のヒットテストを行い、
-                            //   当たれば選択して終了する。
-                            final canvasPos =
-                                _globalToCanvas(details.globalPosition, ctrl);
-                            final scale = ctrl.value.getMaxScaleOnAxis();
-                            if (_hitConnectionBendPoint(
-                                    canvasPos, provider, scale) !=
-                                null) {
-                              return;
-                            }
-                            final decoHit =
-                                _decorationHitTest(canvasPos, scale);
-                            if (decoHit != null) {
-                              if (_drawingDecorationKind != null) {
-                                _exitShapeInsertMode();
+                            if (isRangeMode) {
+                              // 直前のオーバーレイ閉じクリックはカウントしない
+                              if (_suppressNextRangeDeselect) {
+                                setState(
+                                    () => _suppressNextRangeDeselect = false);
+                                return;
                               }
-                              setState(() => _selectedDecorationId = decoHit);
+                              setState(() {
+                                _rangeSelectMode = false;
+                                _rangeSelectedIds.clear();
+                                _rangeSelectedDecorationIds.clear();
+                                _rangeStart = null;
+                                _rangeEnd = null;
+                              });
                               return;
                             }
-                            // 図形に当たらなかった場合、 選択中の図形があれば解除
-                            if (_selectedDecorationId != null) {
-                              setState(() => _selectedDecorationId = null);
+                            final p = _pendingTapCanvasPos;
+                            if (p == null) return;
+                            if (_clearShelfLineSelectionIfOutside(
+                                provider, p)) {
+                              if (isShelf && !_isDesktop) {
+                                _clearShelfElementSelection(provider);
+                              }
+                              return;
                             }
-                            _onConnectionTap(
-                                details.globalPosition, ctrl, provider);
+                            final scale = ctrl.value.getMaxScaleOnAxis();
+                            // ── 挿入モード中のタップ ──
+                            // 描画はドラッグ (onPan) で行うので、 タップ (= ドラッグ
+                            //   ではない) は既存図形の選択に使える。 図形に当たれば
+                            //   挿入モードを抜けて選択 (ハンドルが出る)、 外れたら
+                            //   挿入モードを維持して続けて描けるようにする。
+                            if (_drawingDecorationKind != null) {
+                              final hit = _decorationHitTest(p, scale);
+                              if (hit != null) {
+                                _exitShapeInsertMode();
+                                setState(() => _selectedDecorationId = hit);
+                              }
+                              return;
+                            }
+                            final decorationHit = _decorationHitTest(p, scale);
+                            _handleCanvasTapForDecoration(p, scale);
+                            if (isShelf && decorationHit == null) {
+                              // 編集中でない通常選択でも、ギャラリーの空白タップは
+                              // provider 側の選択を含めて完全に解除する。
+                              _clearShelfElementSelection(provider);
+                            }
                           },
-                          // デスクトップ: ダブルクリック解除 (誤解除防止)
-                          onDoubleTap: _reorderHeaderMode && _isDesktop
-                              ? _exitHeaderReorderMode
-                              : null,
-                          onSecondaryTapUp: _isDesktop
+                          onSecondaryTapUp: _isDesktop && !isRangeMode
                               ? (details) => _showCanvasContextMenu(
                                   details.globalPosition, ctrl, provider)
                               : null,
+                          child: const SizedBox.expand(),
                         ),
                       ),
 
-                    // ── グループ領域のダブルタップ領域（ノードより下に配置）──
-                    if (provider.namedGroups.isNotEmpty)
-                      ..._buildGroupAreaTaps(provider, nodes, ctrl),
+                      // ── カスタム背景画像は表示領域いっぱいの壁紙として
+                      //   InteractiveViewer の外側 (_buildInfinitePageBackground)
+                      //   に移動した (= ユーザー要望: 枠の外まで背景を続ける)。
+                      //   ここではキャンバス内には描かない。
 
-                    // ── ギャラリーの「+ボックス」 群 (= 埋めたセルの右と下に出る白い箱。
-                    //    ここに PDF/画像/動画/テキストを入れていく = ユーザー要望) ──
-                    if (isShelf)
-                      for (int fi = 0;
-                          fi < frontierRects.length &&
-                              fi < frontierCells.length;
-                          fi++)
-                        Positioned(
-                          left: frontierRects[fi].left,
-                          top: frontierRects[fi].top,
-                          width: frontierRects[fi].width,
-                          height: frontierRects[fi].height,
-                          child: _buildShelfAddBox(provider, ctrl,
-                              cell: frontierCells[fi]),
+                      RepaintBoundary(
+                        child: CustomPaint(
+                          size: isShelf
+                              ? Size(canvasW, canvasH)
+                              : Size(canvasSize, canvasSize),
+                          // ギャラリーページは網目グリッドではなく、 木目調 + 棚板の
+                          // 背景にする (= ユーザー要望: 後ろの網目を別のものに)。
+                          painter: isShelf
+                              ? _BookshelfBackgroundPainter(
+                                  tileRects: shelfRects,
+                                  isDark: provider.isDarkMode,
+                                )
+                              : _GridPainter(
+                                  isDesktop: !kIsWeb &&
+                                      (Platform.isWindows ||
+                                          Platform.isMacOS ||
+                                          Platform.isLinux),
+                                  isDark: provider.isDarkMode,
+                                ),
                         ),
-
-                    ...nodes.values
-                        // 格納ノード内に隠されているノードは画面に描画しない
-                        .where((n) => n.hiddenInContainer == null)
-                        .map((node) {
-                      final isMove = _moveModeNodeId == node.id;
-                      final isRangeSelected =
-                          _rangeSelectedIds.contains(node.id);
-                      AnchorDirection? highlight;
-                      if (_currentSnap != null &&
-                          _currentSnap!.nodeId == node.id) {
-                        highlight = _currentSnap!.toAnchor;
-                      }
-                      // 範囲ドラッグ時のポジション
-                      Offset? posOverride;
-                      bool dragging = false;
-                      if (isMove && _movingPos != null) {
-                        posOverride = _movingPos;
-                        dragging = true;
-                      } else if (_rangeDragging && isRangeSelected) {
-                        posOverride = Offset(
-                          (node.position.dx + _rangeDragDelta.dx)
-                              .clamp(0.0, 20000.0),
-                          (node.position.dy + _rangeDragDelta.dy)
-                              .clamp(0.0, 20000.0),
-                        );
-                        dragging = true;
-                      }
-                      return NodeWidget(
-                        key: ValueKey(node.id),
-                        node: node,
-                        isCut: _cutNodeIds.contains(node.id),
-                        isShelf: isShelf,
-                        // ギャラリーで入れ替わる先の要素を枠で強調 (= ユーザー要望)
-                        isSwapTarget: _shelfSwapTargetId == node.id,
-                        isSelected: _actionNodeId == node.id ||
-                            isMove ||
-                            isRangeSelected,
-                        // モバイルの範囲選択モードで、複数選択中のノード上は
-                        // 通常のパン (指でスライド) で即ドラッグ開始できるようにする。
-                        // 長押しが要らなくなるので「選択 → 動かせない」感が解消。
-                        enablePanDrag: !_isDesktop &&
-                            isRangeMode &&
-                            isRangeSelected &&
-                            _rangeSelectedIds.length > 1,
-                        isSearchHit: _searchResultIds.contains(node.id),
-                        isCurrentSearchResult: _searchResultIds.isNotEmpty &&
-                            _searchResultIndex < _searchResultIds.length &&
-                            _searchResultIds[_searchResultIndex] == node.id,
-                        // ライトモード時は黄色ハイライトが見えづらいので濃い色を使うため
-                        // テーマ情報を NodeWidget に渡す
-                        isDarkMode: provider.isDarkMode,
-                        positionOverride: posOverride,
-                        forceDragging: dragging,
-                        highlightAnchors: highlight == null
-                            ? const <AnchorDirection>{}
-                            : <AnchorDirection>{highlight},
-                        // 接続ラベル「接続」の出し分け:
-                        //   - 単一ドラッグ: ドラッグ中ノード自身に出す
-                        //   - 範囲ドラッグ: 最も近接した「ソース選択ノード」に出す
-                        //     (= _currentSnap.sourceNodeId が一致するノード)
-                        currentSnap: (isMove ||
-                                (_rangeDragging &&
-                                    _currentSnap?.sourceNodeId == node.id))
-                            ? _currentSnap
-                            : null,
-                        onTap: isRangeMode
-                            ? () {
-                                setState(() {
-                                  if (isRangeSelected) {
-                                    _rangeSelectedIds.remove(node.id);
-                                  } else {
-                                    _rangeSelectedIds.add(node.id);
-                                  }
-                                });
-                              }
-                            : isMoveMode
-                                ? () => _resetInteractionState()
-                                : () {
-                                    // Ctrl+クリックで複数選択
-                                    if (_isDesktop &&
-                                        (HardwareKeyboard
-                                                .instance.isControlPressed ||
-                                            HardwareKeyboard
-                                                .instance.isMetaPressed)) {
-                                      setState(() {
-                                        _rangeSelectMode = true;
-                                        if (_rangeSelectedIds
-                                            .contains(node.id)) {
-                                          _rangeSelectedIds.remove(node.id);
-                                          if (_rangeSelectedIds.isEmpty) {
-                                            _rangeSelectMode = false;
-                                          }
-                                        } else {
-                                          _rangeSelectedIds.add(node.id);
-                                        }
-                                      });
-                                      _removeOverlay();
-                                      return;
-                                    }
-                                    if (_playlistLoadMoreInfo
-                                        .containsKey(node.id)) {
-                                      _handleLoadMoreNodeTap(node.id, provider);
-                                      return;
-                                    }
-                                    // 格納ノードなら展開ポップアップを表示。
-                                    // ギャラリーの表紙は、 いきなり展開/格納せず
-                                    //   「編集 / 削除 / 展開・格納」 のメニューを
-                                    //   出す (= ユーザー要望: 表紙を押すといきなり
-                                    //   開かず項目が出るように)。
-                                    if (node.isContainer) {
-                                      if (provider.currentPage.pageType ==
-                                          'bookshelf') {
-                                        _showBookshelfCoverMenu(node);
-                                      } else {
-                                        _showContainerExpandPopup(
-                                            node.id, ctrl);
-                                      }
-                                      return;
-                                    }
-                                    setState(
-                                        () => _selectedConnections.clear());
-                                    _showActionButtons(node.id, ctrl);
-                                  },
-                        onDoubleTap: (isMoveMode || isRangeMode)
-                            ? null
-                            : () => _startInlineTitleEdit(context, node),
-                        onLongPressStart: (isMoveMode && !isMove)
-                            ? null
-                            : isRangeMode
-                                ? (isRangeSelected &&
-                                        _rangeSelectedIds.length > 1
-                                    ? (globalPos) {
-                                        // 範囲選択のグループドラッグ開始
-                                        final canvasPos =
-                                            _globalToCanvas(globalPos, ctrl);
-                                        _removeOverlay();
-                                        HapticFeedback.mediumImpact();
-                                        setState(() {
-                                          _rangeDragging = true;
-                                          _rangeDragAnchor = canvasPos;
-                                          _rangeDragDelta = Offset.zero;
-                                        });
-                                        // エッジスクロール開始
-                                        _lastDragGlobalPos = globalPos;
-                                        _edgeScrollCtrl = ctrl;
-                                        _startEdgeScrollTimer();
-                                      }
-                                    : null)
-                                : (globalPos) {
-                                    // PC/モバイル共通: ドラッグでノード移動。
-                                    //   デスクトップでは NodeWidget の onPanStart
-                                    //   (マウスドラッグ) がこの同じ
-                                    //   onLongPressStart コールバックを呼ぶため、
-                                    //   ここを「削除確認」にしてしまうとドラッグ
-                                    //   移動が削除ダイアログに化けて移動できなく
-                                    //   なる。削除は右クリックメニュー / アクション
-                                    //   バーの削除ボタンから行う。
-                                    _onLongPressNodeStart(
-                                        node.id, globalPos, ctrl);
-                                  },
-                        onLongPressMoveUpdate: isRangeMode
-                            ? (_rangeDragging
-                                ? (globalPos) {
-                                    final canvasPos =
-                                        _globalToCanvas(globalPos, ctrl);
-                                    if (_rangeDragAnchor != null) {
-                                      setState(() {
-                                        _rangeDragDelta =
-                                            canvasPos - _rangeDragAnchor!;
-                                      });
-                                    }
-                                    // エッジスクロール更新
-                                    _autoScrollIfNeeded(globalPos, ctrl);
-                                  }
-                                : null)
-                            : (globalPos) {
-                                // PC/モバイル共通: ドラッグ中はノードを移動。
-                                _onLongPressNodeMove(globalPos, ctrl);
-                              },
-                        onLongPressEnd: isRangeMode
-                            ? (_rangeDragging
-                                ? () {
-                                    // グループドラッグ確定
-                                    _stopEdgeScroll();
-                                    provider.moveNodes(
-                                        Set.of(_rangeSelectedIds),
-                                        _rangeDragDelta);
-                                    setState(() {
-                                      _rangeDragging = false;
-                                      _rangeDragAnchor = null;
-                                      _rangeDragDelta = Offset.zero;
-                                    });
-                                    _restoreMultiNodeActionOverlayAfterRangeDrag(
-                                        provider, ctrl);
-                                  }
-                                : null)
-                            : () {
-                                // PC/モバイル共通: ドラッグ確定でノード移動を確定。
-                                _onLongPressNodeEnd();
-                              },
-                        onThumbnailTap: _nodeHasLink(node)
-                            ? () => _openNodeLink(node)
-                            : null,
-                        onAttachmentTap: (node.attachmentPath ?? '').isNotEmpty
-                            ? () => _openAttachment(node.attachmentPath!,
-                                nodeId: node.id)
-                            : null,
-                        // サブマップ埋め込みピル → 履歴に積んで遷移
-                        onLinkedMapTap: (node.linkedPageId ?? '').isNotEmpty
-                            ? () => _navigateToPage(node.linkedPageId!)
-                            : null,
-                        // ── メモノードのタイムスタンプタップ ──
-                        // 動画メモ (= NodeContentType.memo + memoText が `[mm:ss]`
-                        //   形式) で発火。 親動画ノードを辿って、 その動画を
-                        //   タップされた秒数からシーク再生開始する。
-                        onMemoTimestampTap:
-                            node.contentType == NodeContentType.memo
-                                ? (sec) => _jumpFromMemoTimestamp(node, sec)
-                                : null,
-                        onRightClick: _isDesktop
-                            ? (globalPos) =>
-                                _showNodeContextMenu(node.id, globalPos, ctrl)
-                            : null,
-                        onInlineEditingStarted: !_isDesktop
-                            ? () {
-                                if (!mounted) return;
-                                setState(
-                                    () => _nestedInlineEditNodeId = node.id);
-                                _scheduleInlineEditorReveal(node.id);
-                              }
-                            : null,
-                        onInlineEditingEnded: !_isDesktop
-                            ? () {
-                                if (!mounted ||
-                                    _nestedInlineEditNodeId != node.id) {
-                                  return;
-                                }
-                                setState(() => _nestedInlineEditNodeId = null);
-                              }
-                            : null,
-                        onRequestScreenFocus: _isDesktop
-                            ? () {
-                                if (mounted) _keyboardFocusNode.requestFocus();
-                              }
-                            : null,
-                        defaultTitleFontSize: provider.defaultTitleFontSize,
-                        defaultMemoFontSize: provider.defaultMemoFontSize,
-                        uploadProgress: provider.getUploadProgress(node.id),
-                        showResizeHandles: _actionNodeId == node.id,
-                        onSizeChanged: (w, h, dx, dy) {
-                          provider.updateNodeSize(node.id, w, h);
-                          if (dx != 0 || dy != 0) {
-                            final cur = provider.nodes[node.id];
-                            if (cur != null) {
-                              provider.updateNodePosition(
-                                  node.id,
-                                  Offset(
-                                    (cur.position.dx + dx).clamp(0.0, 20000.0),
-                                    (cur.position.dy + dy).clamp(0.0, 20000.0),
-                                  ));
-                            }
-                          }
-                        },
-                      );
-                    }),
-
-                    if (!isShelf && _inlineNodeEditNodeId != null)
-                      _buildNodeInlineTextEditor(provider),
-
-                    // ── ギャラリーの行/列 掴みハンドル (= ユーザー要望: 行単位/
-                    //    列単位でドラッグして並べ替え)。 ノードの上に重ねて掴める。 ──
-                    if (isShelf && !isRangeMode)
-                      ..._buildShelfReorderHandles(provider, ctrl),
-
-                    if (isShelf && _inlineShelfEditNodeId != null)
-                      _buildShelfInlineTextEditor(provider),
-
-                    // ── グループ非メンバー表示（ノードの上に描画）──
-                    if (provider.namedGroups.isNotEmpty)
-                      IgnorePointer(
-                        child: Builder(builder: (_) {
+                      ),
+                      // ── グループ背景（付箋風にノードの後ろに表示）──
+                      if (provider.namedGroups.isNotEmpty) ...[
+                        Builder(builder: (_) {
                           final co = _groupColorOverrides(provider);
+                          final fs = _groupFontSizeOverrides(provider);
+                          final ff = _groupFontFamilyOverrides(provider);
+                          final pd = _groupPaddingOverrides(provider);
                           return CustomPaint(
                             size: Size(canvasSize, canvasSize),
-                            painter: _GroupForegroundPainter(
+                            painter: _GroupBackgroundPainter(
                               groups: provider.namedGroups,
                               nodes: nodes,
                               colorOverrides: co,
+                              fontSizeOverrides: fs,
+                              fontFamilyOverrides: ff,
+                              paddingOverrides: pd,
+                              isDark: provider.isDarkMode,
                             ),
                           );
                         }),
+                        // ── グループラベルのタップ領域 ──
+                        ..._buildGroupLabelTaps(provider, nodes, ctrl),
+                        // ── グループ枠の拡張ハンドル ──
+                        ..._buildGroupResizeHandles(provider, nodes, ctrl),
+                      ],
+                      CustomPaint(
+                        size: Size(canvasSize, canvasSize),
+                        painter: ConnectionPainter(
+                            nodes: _movingNodes(nodes),
+                            // 格納ノード処理:
+                            //   両端が隠れているノード → 非表示
+                            //   片方だけが隠れている → 見えている側と「その隠れたノードの
+                            //   格納先コンテナ」の接続に置換し、コンテナが外部と接続しているように見せる
+                            // ギャラリー(本棚)では要素同士を繋ぐリンクは出さない
+                            //   (= ユーザー要望)。
+                            connections:
+                                provider.currentPage.pageType == 'bookshelf'
+                                    ? const <NodeConnection>[]
+                                    : _effectiveConnections(nodes, connections),
+                            selectedConnections: _selectedConnections,
+                            // ライトモード時に pale な黄色の接続線を濃く補正するため
+                            isDarkMode: provider.isDarkMode),
                       ),
-
-                    // 範囲選択矩形の描画
-                    if (_rangeStart != null && _rangeEnd != null)
-                      Positioned.fill(
-                        child: IgnorePointer(
+                      // ── 装飾図形の描画 (= 直線/矢印/長方形/楕円) ──
+                      // ユーザー要望「直線や矢印線、 長方形等の図形を挿入できる
+                      //   ようにして」 への対応。 provider.decorations を読み取って、
+                      //   CustomPaint で描画する。 ノードと同じキャンバス座標系で
+                      //   描かれるので、 マップのパン/ズームに追従する。
+                      //
+                      //   選択中の装飾 (= _selectedDecorationId) は強調表示。
+                      // ── 図形レイヤー (タップで直接選択できるようにする) ──
+                      // _DecorationPainter.hitTest が図形上で true を返すので、
+                      //   deferToChild により「図形の上のタップ」 だけをここで拾える。
+                      //   図形以外のタップは透過して下の fill (= 選択解除) に届く。
+                      //   これで下層 fill のヒットテストに依存せず確実に選択できる。
+                      GestureDetector(
+                        behavior: HitTestBehavior.deferToChild,
+                        onTapDown: (d) => _pendingTapCanvasPos =
+                            _globalToCanvas(d.globalPosition, ctrl),
+                        onTap: () {
+                          final p = _pendingTapCanvasPos;
+                          if (p == null) return;
+                          final scale = ctrl.value.getMaxScaleOnAxis();
+                          final hit = _decorationHitTest(p, scale);
+                          if (hit != null) {
+                            if (_drawingDecorationKind != null) {
+                              _exitShapeInsertMode();
+                            }
+                            setState(() => _selectedDecorationId = hit);
+                          }
+                        },
+                        child: CustomPaint(
+                          size: Size(canvasSize, canvasSize),
+                          painter: _DecorationPainter(
+                            decorations: _resolvedDecorations(provider),
+                            selectedId: _selectedDecorationId,
+                            rangeSelectedIds: _rangeSelectedDecorationIds,
+                            rangeDragDelta:
+                                _rangeDragging ? _rangeDragDelta : Offset.zero,
+                            hitScale: ctrl.value.getMaxScaleOnAxis(),
+                          ),
+                        ),
+                      ),
+                      // ── 選択中の図形のハンドル (移動 / リサイズ) ──
+                      // ユーザー要望「挿入した図形を選択して移動・大きさや形状を
+                      //   変えられるように」 への対応。 中央=移動、 始点/終点=リサイズ。
+                      ..._buildDecorationHandles(provider, ctrl),
+                      // 描画中プレビュー (= 装飾挿入モードでドラッグ中)
+                      if (_drawingDecorationKind != null &&
+                          _drawingDecorationStart != null &&
+                          _drawingDecorationEnd != null)
+                        IgnorePointer(
                           child: CustomPaint(
-                            painter: _RangeSelectionPainter(
-                              start: _rangeStart!,
-                              end: _rangeEnd!,
-                            ),
-                          ),
-                        ),
-                      ),
-
-                    // 兄弟スナップガイド
-                    if (_siblingGuidePos != null && _moveModeNodeId != null)
-                      Positioned(
-                        left: _siblingGuidePos!.dx - 2,
-                        top: _siblingGuidePos!.dy - 2,
-                        child: IgnorePointer(
-                          child: Container(
-                            width: 144,
-                            height: 60,
-                            decoration: BoxDecoration(
-                              border: Border.all(
-                                  color: const Color(0xFF4FC3F7)
-                                      .withValues(alpha: 0.7),
-                                  width: 2),
-                              borderRadius: BorderRadius.circular(18),
-                              color: const Color(0xFF4FC3F7)
-                                  .withValues(alpha: 0.08),
-                            ),
-                            child: Center(
-                              child: Text(
-                                  context
-                                      .read<MindMapProvider>()
-                                      .t('sibling.placeHere'),
-                                  style: const TextStyle(
-                                      color: Color(0xFF4FC3F7),
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w600)),
-                            ),
-                          ),
-                        ),
-                      ),
-
-                    // 基準位置マーカー（設定直後の一時表示）
-                    if (_showRefMarker)
-                      Builder(builder: (_) {
-                        final pid = provider.currentPage.id;
-                        final pos =
-                            _pageReferencePositions[pid] ?? _referencePos;
-                        return Positioned(
-                          left: pos.dx - 18,
-                          top: pos.dy - 18,
-                          child: IgnorePointer(
-                            child: AnimatedOpacity(
-                              opacity: 1.0,
-                              duration: const Duration(milliseconds: 300),
-                              child: Container(
-                                width: 36,
-                                height: 36,
-                                decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  color: const Color(0xFF43B97F)
-                                      .withValues(alpha: 0.2),
-                                  border: Border.all(
-                                      color: const Color(0xFF43B97F),
-                                      width: 2.5),
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: const Color(0xFF43B97F)
-                                          .withValues(alpha: 0.4),
-                                      blurRadius: 16,
-                                      spreadRadius: 4,
-                                    ),
-                                  ],
+                            size: Size(canvasSize, canvasSize),
+                            painter: _DecorationPainter(
+                              decorations: [
+                                MapDecoration(
+                                  id: '__preview__',
+                                  kind: _drawingDecorationKind!,
+                                  start: _drawingDecorationStart!,
+                                  end: _drawingDecorationEnd!,
+                                  colorRgb: _shapeColorRgb,
+                                  strokeWidth: _shapeStrokeWidth,
                                 ),
-                                child: const Icon(Icons.close_rounded,
-                                    color: Color(0xFF43B97F), size: 22),
+                              ],
+                              selectedId: null,
+                            ),
+                          ),
+                        ),
+                      // 裁断線のプレビュー描画（始点が設定済みの時）
+                      if (_cutMode && _cutStartPoint != null)
+                        IgnorePointer(
+                          child: CustomPaint(
+                            size: Size(canvasSize, canvasSize),
+                            painter: _CutPreviewPainter(
+                              start: _cutStartPoint!,
+                              end: _cutPreviewEnd ?? _cutStartPoint!,
+                            ),
+                          ),
+                        ),
+                      // 裁断直後の「実行済み線」を一瞬表示（フェードアウト）
+                      if (_cutFadingLine != null && _cutFadingLine!.length == 2)
+                        IgnorePointer(
+                          child: CustomPaint(
+                            size: Size(canvasSize, canvasSize),
+                            painter: _CutPreviewPainter(
+                              start: _cutFadingLine![0],
+                              end: _cutFadingLine![1],
+                              solid: true,
+                            ),
+                          ),
+                        ),
+
+                      // 接続線のタップ判定レイヤー（ノードの下）
+                      if (!isMoveMode && !isRangeMode)
+                        Positioned.fill(
+                          child: GestureDetector(
+                            behavior: HitTestBehavior.translucent,
+                            onTapUp: (details) {
+                              if (_suppressConnectionTapAfterBendDrag) {
+                                _suppressConnectionTapAfterBendDrag = false;
+                                return;
+                              }
+                              // 並び替えモード中の解除挙動:
+                              //   モバイル → シングルタップで解除 (ダブルタップは指で狙いにくいため)
+                              //   デスクトップ → ダブルクリック (誤解除防止)
+                              // モバイル版で接続線タップ等と競合する懸念があるが、
+                              // 並び替えモード中は誤操作防止の方が優先度が高い。
+                              if (_reorderHeaderMode && !_isDesktop) {
+                                _exitHeaderReorderMode();
+                                return;
+                              }
+                              // 基準位置設定モード
+                              if (_settingRefMode) {
+                                final canvasPos = _globalToCanvas(
+                                    details.globalPosition, ctrl);
+                                final pageId = provider.currentPage.id;
+                                setState(() {
+                                  _referencePos = canvasPos;
+                                  _pageReferencePositions[pageId] = canvasPos;
+                                  _showRefMarker = true;
+                                  _settingRefMode = false;
+                                });
+                                _saveReferencePositions();
+                                Future.delayed(const Duration(seconds: 3), () {
+                                  if (mounted)
+                                    setState(() => _showRefMarker = false);
+                                });
+                                return;
+                              }
+                              // ── 図形 (装飾) の選択を最優先で判定 ──
+                              // この接続線タップ判定レイヤーは装飾レイヤーより上に
+                              //   重なっており、 タップを先取りしてしまうため、 図形の
+                              //   選択がここまで到達していなかった (= 図形をタップしても
+                              //   反応しない原因)。 ここで図形のヒットテストを行い、
+                              //   当たれば選択して終了する。
+                              final canvasPos =
+                                  _globalToCanvas(details.globalPosition, ctrl);
+                              final scale = ctrl.value.getMaxScaleOnAxis();
+                              if (_hitConnectionBendPoint(
+                                      canvasPos, provider, scale) !=
+                                  null) {
+                                return;
+                              }
+                              final decoHit =
+                                  _decorationHitTest(canvasPos, scale);
+                              if (decoHit != null) {
+                                if (_drawingDecorationKind != null) {
+                                  _exitShapeInsertMode();
+                                }
+                                setState(() => _selectedDecorationId = decoHit);
+                                return;
+                              }
+                              // 図形に当たらなかった場合、 選択中の図形があれば解除
+                              if (_selectedDecorationId != null) {
+                                setState(() => _selectedDecorationId = null);
+                              }
+                              _onConnectionTap(
+                                  details.globalPosition, ctrl, provider);
+                            },
+                            // デスクトップ: ダブルクリック解除 (誤解除防止)
+                            onDoubleTap: _reorderHeaderMode && _isDesktop
+                                ? _exitHeaderReorderMode
+                                : null,
+                            onSecondaryTapUp: _isDesktop
+                                ? (details) => _showCanvasContextMenu(
+                                    details.globalPosition, ctrl, provider)
+                                : null,
+                          ),
+                        ),
+
+                      // ── グループ領域のダブルタップ領域（ノードより下に配置）──
+                      if (provider.namedGroups.isNotEmpty)
+                        ..._buildGroupAreaTaps(provider, nodes, ctrl),
+
+                      // ── ギャラリーの「+ボックス」 群 (= 埋めたセルの右と下に出る白い箱。
+                      //    ここに PDF/画像/動画/テキストを入れていく = ユーザー要望) ──
+                      if (isShelf)
+                        for (int fi = 0;
+                            fi < frontierRects.length &&
+                                fi < frontierCells.length;
+                            fi++)
+                          Positioned(
+                            left: frontierRects[fi].left,
+                            top: frontierRects[fi].top,
+                            width: frontierRects[fi].width,
+                            height: frontierRects[fi].height,
+                            child: _buildShelfAddBox(provider, ctrl,
+                                cell: frontierCells[fi]),
+                          ),
+
+                      ...nodes.values
+                          // 格納ノード内に隠されているノードは画面に描画しない
+                          .where((n) => n.hiddenInContainer == null)
+                          .map((node) {
+                        final isMove = _moveModeNodeId == node.id;
+                        final isRangeSelected =
+                            _rangeSelectedIds.contains(node.id);
+                        AnchorDirection? highlight;
+                        if (_currentSnap != null &&
+                            _currentSnap!.nodeId == node.id) {
+                          highlight = _currentSnap!.toAnchor;
+                        }
+                        // 範囲ドラッグ時のポジション
+                        Offset? posOverride;
+                        bool dragging = false;
+                        if (isMove && _movingPos != null) {
+                          posOverride = _movingPos;
+                          dragging = true;
+                        } else if (_rangeDragging && isRangeSelected) {
+                          posOverride = Offset(
+                            (node.position.dx + _rangeDragDelta.dx)
+                                .clamp(0.0, 20000.0),
+                            (node.position.dy + _rangeDragDelta.dy)
+                                .clamp(0.0, 20000.0),
+                          );
+                          dragging = true;
+                        }
+                        return NodeWidget(
+                          key: ValueKey(node.id),
+                          node: node,
+                          isCut: _cutNodeIds.contains(node.id),
+                          isShelf: isShelf,
+                          // ギャラリーで入れ替わる先の要素を枠で強調 (= ユーザー要望)
+                          isSwapTarget: _shelfSwapTargetId == node.id,
+                          isSelected: _actionNodeId == node.id ||
+                              isMove ||
+                              isRangeSelected,
+                          // モバイルの範囲選択モードで、複数選択中のノード上は
+                          // 通常のパン (指でスライド) で即ドラッグ開始できるようにする。
+                          // 長押しが要らなくなるので「選択 → 動かせない」感が解消。
+                          enablePanDrag: !_isDesktop &&
+                              isRangeMode &&
+                              isRangeSelected &&
+                              _rangeSelectedIds.length > 1,
+                          isSearchHit: _searchResultIds.contains(node.id),
+                          isCurrentSearchResult: _searchResultIds.isNotEmpty &&
+                              _searchResultIndex < _searchResultIds.length &&
+                              _searchResultIds[_searchResultIndex] == node.id,
+                          // ライトモード時は黄色ハイライトが見えづらいので濃い色を使うため
+                          // テーマ情報を NodeWidget に渡す
+                          isDarkMode: provider.isDarkMode,
+                          positionOverride: posOverride,
+                          forceDragging: dragging,
+                          highlightAnchors: highlight == null
+                              ? const <AnchorDirection>{}
+                              : <AnchorDirection>{highlight},
+                          // 接続ラベル「接続」の出し分け:
+                          //   - 単一ドラッグ: ドラッグ中ノード自身に出す
+                          //   - 範囲ドラッグ: 最も近接した「ソース選択ノード」に出す
+                          //     (= _currentSnap.sourceNodeId が一致するノード)
+                          currentSnap: (isMove ||
+                                  (_rangeDragging &&
+                                      _currentSnap?.sourceNodeId == node.id))
+                              ? _currentSnap
+                              : null,
+                          onTap: isRangeMode
+                              ? () {
+                                  setState(() {
+                                    if (isRangeSelected) {
+                                      _rangeSelectedIds.remove(node.id);
+                                    } else {
+                                      _rangeSelectedIds.add(node.id);
+                                    }
+                                  });
+                                }
+                              : isMoveMode
+                                  ? () => _resetInteractionState()
+                                  : () {
+                                      // Ctrl+クリックで複数選択
+                                      if (_isDesktop &&
+                                          (HardwareKeyboard
+                                                  .instance.isControlPressed ||
+                                              HardwareKeyboard
+                                                  .instance.isMetaPressed)) {
+                                        setState(() {
+                                          _rangeSelectMode = true;
+                                          if (_rangeSelectedIds
+                                              .contains(node.id)) {
+                                            _rangeSelectedIds.remove(node.id);
+                                            if (_rangeSelectedIds.isEmpty) {
+                                              _rangeSelectMode = false;
+                                            }
+                                          } else {
+                                            _rangeSelectedIds.add(node.id);
+                                          }
+                                        });
+                                        _removeOverlay();
+                                        return;
+                                      }
+                                      if (_playlistLoadMoreInfo
+                                          .containsKey(node.id)) {
+                                        _handleLoadMoreNodeTap(
+                                            node.id, provider);
+                                        return;
+                                      }
+                                      // 格納ノードなら展開ポップアップを表示。
+                                      // ギャラリーの表紙は、 いきなり展開/格納せず
+                                      //   「編集 / 削除 / 展開・格納」 のメニューを
+                                      //   出す (= ユーザー要望: 表紙を押すといきなり
+                                      //   開かず項目が出るように)。
+                                      if (node.isContainer) {
+                                        if (provider.currentPage.pageType ==
+                                            'bookshelf') {
+                                          _showBookshelfCoverMenu(node);
+                                        } else {
+                                          _showContainerExpandPopup(
+                                              node.id, ctrl);
+                                        }
+                                        return;
+                                      }
+                                      setState(
+                                          () => _selectedConnections.clear());
+                                      _showActionButtons(node.id, ctrl);
+                                    },
+                          onDoubleTap: (isMoveMode || isRangeMode)
+                              ? null
+                              : () => _startInlineTitleEdit(context, node),
+                          onLongPressStart: (isMoveMode && !isMove)
+                              ? null
+                              : isRangeMode
+                                  ? (isRangeSelected &&
+                                          _rangeSelectedIds.length > 1
+                                      ? (globalPos) {
+                                          // 範囲選択のグループドラッグ開始
+                                          final canvasPos =
+                                              _globalToCanvas(globalPos, ctrl);
+                                          _removeOverlay();
+                                          HapticFeedback.mediumImpact();
+                                          setState(() {
+                                            _rangeDragging = true;
+                                            _rangeDragAnchor = canvasPos;
+                                            _rangeDragDelta = Offset.zero;
+                                          });
+                                          // エッジスクロール開始
+                                          _lastDragGlobalPos = globalPos;
+                                          _edgeScrollCtrl = ctrl;
+                                          _startEdgeScrollTimer();
+                                        }
+                                      : null)
+                                  : (globalPos) {
+                                      // PC/モバイル共通: ドラッグでノード移動。
+                                      //   デスクトップでは NodeWidget の onPanStart
+                                      //   (マウスドラッグ) がこの同じ
+                                      //   onLongPressStart コールバックを呼ぶため、
+                                      //   ここを「削除確認」にしてしまうとドラッグ
+                                      //   移動が削除ダイアログに化けて移動できなく
+                                      //   なる。削除は右クリックメニュー / アクション
+                                      //   バーの削除ボタンから行う。
+                                      _onLongPressNodeStart(
+                                          node.id, globalPos, ctrl);
+                                    },
+                          onLongPressMoveUpdate: isRangeMode
+                              ? (_rangeDragging
+                                  ? (globalPos) {
+                                      final canvasPos =
+                                          _globalToCanvas(globalPos, ctrl);
+                                      if (_rangeDragAnchor != null) {
+                                        setState(() {
+                                          _rangeDragDelta =
+                                              canvasPos - _rangeDragAnchor!;
+                                        });
+                                      }
+                                      // エッジスクロール更新
+                                      _autoScrollIfNeeded(globalPos, ctrl);
+                                    }
+                                  : null)
+                              : (globalPos) {
+                                  // PC/モバイル共通: ドラッグ中はノードを移動。
+                                  _onLongPressNodeMove(globalPos, ctrl);
+                                },
+                          onLongPressEnd: isRangeMode
+                              ? (_rangeDragging
+                                  ? () {
+                                      // グループドラッグ確定
+                                      _stopEdgeScroll();
+                                      provider.moveNodes(
+                                          Set.of(_rangeSelectedIds),
+                                          _rangeDragDelta);
+                                      setState(() {
+                                        _rangeDragging = false;
+                                        _rangeDragAnchor = null;
+                                        _rangeDragDelta = Offset.zero;
+                                      });
+                                      _restoreMultiNodeActionOverlayAfterRangeDrag(
+                                          provider, ctrl);
+                                    }
+                                  : null)
+                              : () {
+                                  // PC/モバイル共通: ドラッグ確定でノード移動を確定。
+                                  _onLongPressNodeEnd();
+                                },
+                          onThumbnailTap: _nodeHasLink(node)
+                              ? () => _openNodeLink(node)
+                              : null,
+                          onAttachmentTap:
+                              (node.attachmentPath ?? '').isNotEmpty
+                                  ? () => _openAttachment(node.attachmentPath!,
+                                      nodeId: node.id)
+                                  : null,
+                          // サブマップ埋め込みピル → 履歴に積んで遷移
+                          onLinkedMapTap: (node.linkedPageId ?? '').isNotEmpty
+                              ? () => _navigateToPage(node.linkedPageId!)
+                              : null,
+                          // ── メモノードのタイムスタンプタップ ──
+                          // 動画メモ (= NodeContentType.memo + memoText が `[mm:ss]`
+                          //   形式) で発火。 親動画ノードを辿って、 その動画を
+                          //   タップされた秒数からシーク再生開始する。
+                          onMemoTimestampTap:
+                              node.contentType == NodeContentType.memo
+                                  ? (sec) => _jumpFromMemoTimestamp(node, sec)
+                                  : null,
+                          onRightClick: _isDesktop
+                              ? (globalPos) =>
+                                  _showNodeContextMenu(node.id, globalPos, ctrl)
+                              : null,
+                          onInlineEditingStarted: !_isDesktop
+                              ? () {
+                                  if (!mounted) return;
+                                  setState(
+                                      () => _nestedInlineEditNodeId = node.id);
+                                  _scheduleInlineEditorReveal(node.id);
+                                }
+                              : null,
+                          onInlineEditingEnded: !_isDesktop
+                              ? () {
+                                  if (!mounted ||
+                                      _nestedInlineEditNodeId != node.id) {
+                                    return;
+                                  }
+                                  setState(
+                                      () => _nestedInlineEditNodeId = null);
+                                }
+                              : null,
+                          onRequestScreenFocus: _isDesktop
+                              ? () {
+                                  if (mounted)
+                                    _keyboardFocusNode.requestFocus();
+                                }
+                              : null,
+                          defaultTitleFontSize: provider.defaultTitleFontSize,
+                          defaultMemoFontSize: provider.defaultMemoFontSize,
+                          uploadProgress: provider.getUploadProgress(node.id),
+                          showResizeHandles: _actionNodeId == node.id,
+                          onSizeChanged: (w, h, dx, dy) {
+                            provider.updateNodeSize(node.id, w, h);
+                            if (dx != 0 || dy != 0) {
+                              final cur = provider.nodes[node.id];
+                              if (cur != null) {
+                                provider.updateNodePosition(
+                                    node.id,
+                                    Offset(
+                                      (cur.position.dx + dx)
+                                          .clamp(0.0, 20000.0),
+                                      (cur.position.dy + dy)
+                                          .clamp(0.0, 20000.0),
+                                    ));
+                              }
+                            }
+                          },
+                        );
+                      }),
+
+                      if (!isShelf && _inlineNodeEditNodeId != null)
+                        _buildNodeInlineTextEditor(provider),
+
+                      // ── ギャラリーの行/列 掴みハンドル (= ユーザー要望: 行単位/
+                      //    列単位でドラッグして並べ替え)。 ノードの上に重ねて掴める。 ──
+                      if (isShelf && !isRangeMode)
+                        ..._buildShelfReorderHandles(provider, ctrl),
+
+                      if (isShelf && _inlineShelfEditNodeId != null)
+                        _buildShelfInlineTextEditor(provider),
+
+                      // ── グループ非メンバー表示（ノードの上に描画）──
+                      if (provider.namedGroups.isNotEmpty)
+                        IgnorePointer(
+                          child: Builder(builder: (_) {
+                            final co = _groupColorOverrides(provider);
+                            return CustomPaint(
+                              size: Size(canvasSize, canvasSize),
+                              painter: _GroupForegroundPainter(
+                                groups: provider.namedGroups,
+                                nodes: nodes,
+                                colorOverrides: co,
+                              ),
+                            );
+                          }),
+                        ),
+
+                      // 範囲選択矩形の描画
+                      if (_rangeStart != null && _rangeEnd != null)
+                        Positioned.fill(
+                          child: IgnorePointer(
+                            child: CustomPaint(
+                              painter: _RangeSelectionPainter(
+                                start: _rangeStart!,
+                                end: _rangeEnd!,
                               ),
                             ),
                           ),
-                        );
-                      }),
-                  ],
-                ),
-              );
-            },
-          ),
-        );
-      },
-    ),
+                        ),
+
+                      // 兄弟スナップガイド
+                      if (_siblingGuidePos != null && _moveModeNodeId != null)
+                        Positioned(
+                          left: _siblingGuidePos!.dx - 2,
+                          top: _siblingGuidePos!.dy - 2,
+                          child: IgnorePointer(
+                            child: Container(
+                              width: 144,
+                              height: 60,
+                              decoration: BoxDecoration(
+                                border: Border.all(
+                                    color: const Color(0xFF4FC3F7)
+                                        .withValues(alpha: 0.7),
+                                    width: 2),
+                                borderRadius: BorderRadius.circular(18),
+                                color: const Color(0xFF4FC3F7)
+                                    .withValues(alpha: 0.08),
+                              ),
+                              child: Center(
+                                child: Text(
+                                    context
+                                        .read<MindMapProvider>()
+                                        .t('sibling.placeHere'),
+                                    style: const TextStyle(
+                                        color: Color(0xFF4FC3F7),
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w600)),
+                              ),
+                            ),
+                          ),
+                        ),
+
+                      // 基準位置マーカー（設定直後の一時表示）
+                      if (_showRefMarker)
+                        Builder(builder: (_) {
+                          final pid = provider.currentPage.id;
+                          final pos =
+                              _pageReferencePositions[pid] ?? _referencePos;
+                          return Positioned(
+                            left: pos.dx - 18,
+                            top: pos.dy - 18,
+                            child: IgnorePointer(
+                              child: AnimatedOpacity(
+                                opacity: 1.0,
+                                duration: const Duration(milliseconds: 300),
+                                child: Container(
+                                  width: 36,
+                                  height: 36,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    color: const Color(0xFF43B97F)
+                                        .withValues(alpha: 0.2),
+                                    border: Border.all(
+                                        color: const Color(0xFF43B97F),
+                                        width: 2.5),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: const Color(0xFF43B97F)
+                                            .withValues(alpha: 0.4),
+                                        blurRadius: 16,
+                                        spreadRadius: 4,
+                                      ),
+                                    ],
+                                  ),
+                                  child: const Icon(Icons.close_rounded,
+                                      color: Color(0xFF43B97F), size: 22),
+                                ),
+                              ),
+                            ),
+                          );
+                        }),
+                    ],
+                  ),
+                );
+              },
+            ),
+          );
+        },
+      ),
     );
   }
 
@@ -52616,8 +52589,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                     Icon(icon, color: const Color(0xFF4FC3F7)),
                     const SizedBox(width: 12),
                     Text(label,
-                        style: const TextStyle(
-                            color: Colors.white, fontSize: 15)),
+                        style:
+                            const TextStyle(color: Colors.white, fontSize: 15)),
                   ],
                 ),
               ),
@@ -53077,17 +53050,19 @@ class _MindMapScreenState extends State<MindMapScreen>
   }) async {
     final provider = context.read<MindMapProvider>();
     var addingClipboardImage = false;
+    var androidHadImageHint = imageOnly;
     try {
       // Android は URI 形式の画像を super_clipboard が取りこぼす端末があるため、
       // 登録が安定しているアプリ固有 MethodChannel を先に試す。
       if (!kIsWeb && Platform.isAndroid) {
         final nativeImage = await _readAndroidClipboardImage();
-        if (nativeImage != null) {
+        androidHadImageHint = androidHadImageHint || nativeImage.hasImageHint;
+        if (nativeImage.bytes != null && nativeImage.bytes!.isNotEmpty) {
           addingClipboardImage = true;
           await _addClipboardImageNodeAt(
             provider,
             canvasPos,
-            nativeImage.bytes,
+            nativeImage.bytes!,
             nativeImage.ext,
             shelfCell: shelfCell,
           );
@@ -53096,6 +53071,11 @@ class _MindMapScreenState extends State<MindMapScreen>
       }
       final clipboard = SystemClipboard.instance;
       if (clipboard == null) {
+        if (!kIsWeb && Platform.isAndroid && androidHadImageHint) {
+          final picked = await _pickAndInsertImageFallback(provider, canvasPos,
+              shelfCell: shelfCell);
+          if (picked) return;
+        }
         if (mounted) {
           _appSnack(context,
               SnackBar(content: Text(provider.t('clip.noReadSupport'))));
@@ -53105,18 +53085,19 @@ class _MindMapScreenState extends State<MindMapScreen>
       final reader = await clipboard.read();
       // クリップボードに画像ヒント (image/* 等) があるか。読めなくても
       //   「画像を貼ろうとしている」判定に使い、ピッカー保険の起動条件にする。
-      final hadImageHint = reader.platformFormats.any((f) {
-        final l = f.toLowerCase();
-        return l.contains('image') ||
-            l.endsWith('.png') ||
-            l.endsWith('.jpeg') ||
-            l.endsWith('.jpg') ||
-            l.endsWith('.gif') ||
-            l.endsWith('.webp') ||
-            l.endsWith('.bmp') ||
-            l.endsWith('.tif') ||
-            l.endsWith('.tiff');
-      });
+      var hadImageHint = androidHadImageHint ||
+          reader.platformFormats.any((f) {
+            final l = f.toLowerCase();
+            return l.contains('image') ||
+                l.endsWith('.png') ||
+                l.endsWith('.jpeg') ||
+                l.endsWith('.jpg') ||
+                l.endsWith('.gif') ||
+                l.endsWith('.webp') ||
+                l.endsWith('.bmp') ||
+                l.endsWith('.tif') ||
+                l.endsWith('.tiff');
+          });
       // 対応する画像フォーマットを順に試す (PNG が最も一般的)
       final candidates = <(FileFormat, String)>[
         (Formats.png, 'png'),
@@ -53167,8 +53148,9 @@ class _MindMapScreenState extends State<MindMapScreen>
       }
       if ((bytes == null || bytes.isEmpty) && !kIsWeb && Platform.isAndroid) {
         final nativeImage = await _readAndroidClipboardImage();
-        if (nativeImage != null) {
-          bytes = nativeImage.bytes;
+        hadImageHint = hadImageHint || nativeImage.hasImageHint;
+        if (nativeImage.bytes != null && nativeImage.bytes!.isNotEmpty) {
+          bytes = nativeImage.bytes!;
           ext = nativeImage.ext;
         }
       }
@@ -53233,9 +53215,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         // スクショの一時 content:// URI は貼り付け時には失効していて読めない
         //   ことが多い (= ユーザー要望「直前に撮ったスクショが貼れない」)。
         //   画像を貼ろうとしている時 (imageOnly / 画像ヒントあり) だけ開く。
-        if (!kIsWeb &&
-            Platform.isAndroid &&
-            (imageOnly || hadImageHint)) {
+        if (!kIsWeb && Platform.isAndroid && (imageOnly || hadImageHint)) {
           final picked = await _pickAndInsertImageFallback(provider, canvasPos,
               shelfCell: shelfCell);
           if (picked) return;
@@ -53271,12 +53251,13 @@ class _MindMapScreenState extends State<MindMapScreen>
       // Android MethodChannel を必ずもう一度試す。
       if (!addingClipboardImage && !kIsWeb && Platform.isAndroid) {
         final nativeImage = await _readAndroidClipboardImage();
-        if (nativeImage != null) {
+        androidHadImageHint = androidHadImageHint || nativeImage.hasImageHint;
+        if (nativeImage.bytes != null && nativeImage.bytes!.isNotEmpty) {
           try {
             await _addClipboardImageNodeAt(
               provider,
               canvasPos,
-              nativeImage.bytes,
+              nativeImage.bytes!,
               nativeImage.ext,
               shelfCell: shelfCell,
             );
@@ -53285,6 +53266,11 @@ class _MindMapScreenState extends State<MindMapScreen>
             debugPrint(
                 'Android clipboard image fallback add failed: $nativeError');
           }
+        }
+        if (imageOnly || androidHadImageHint) {
+          final picked = await _pickAndInsertImageFallback(provider, canvasPos,
+              shelfCell: shelfCell);
+          if (picked) return;
         }
       }
       debugPrint('クリップボード画像の貼り付けに失敗: $e');
@@ -53427,12 +53413,18 @@ class _MindMapScreenState extends State<MindMapScreen>
     return true;
   }
 
-  Future<({Uint8List bytes, String ext})?> _readAndroidClipboardImage() async {
-    if (kIsWeb || !Platform.isAndroid) return null;
+  Future<({Uint8List? bytes, String ext, bool hasImageHint})>
+      _readAndroidClipboardImage() async {
+    if (kIsWeb || !Platform.isAndroid) {
+      return (bytes: null, ext: 'png', hasImageHint: false);
+    }
     try {
       final raw = await const MethodChannel('app/clipboard')
           .invokeMethod<dynamic>('readClipboardImage');
-      if (raw is! Map) return null;
+      if (raw is! Map) {
+        return (bytes: null, ext: 'png', hasImageHint: false);
+      }
+      final hasImageHint = raw['hasImageHint'] == true;
       final rawBytes = raw['bytes'];
       Uint8List? bytes;
       if (rawBytes is Uint8List) {
@@ -53440,12 +53432,28 @@ class _MindMapScreenState extends State<MindMapScreen>
       } else if (rawBytes is List) {
         bytes = Uint8List.fromList(rawBytes.cast<int>());
       }
-      if (bytes == null || bytes.isEmpty) return null;
+      final tempPath = raw['path'] as String?;
+      if ((bytes == null || bytes.isEmpty) &&
+          tempPath != null &&
+          tempPath.isNotEmpty) {
+        final tempFile = File(tempPath);
+        try {
+          if (await tempFile.exists()) bytes = await tempFile.readAsBytes();
+        } finally {
+          try {
+            if (await tempFile.exists()) await tempFile.delete();
+          } catch (_) {}
+        }
+      }
       final mime = (raw['mime'] as String? ?? '').toLowerCase();
-      return (bytes: bytes, ext: _clipboardExtFromMime(mime));
+      return (
+        bytes: bytes,
+        ext: _clipboardExtFromMime(mime),
+        hasImageHint: hasImageHint,
+      );
     } catch (e) {
       debugPrint('Android clipboard image fallback failed: $e');
-      return null;
+      return (bytes: null, ext: 'png', hasImageHint: false);
     }
   }
 
@@ -54667,8 +54675,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                       if (!sharing) ...[
                         const Text(
                             '「共有を開始」を押すと、同じ Wi-Fi / LAN の端末から現在ページのプレビューを開けるようになります。押すまで公開サーバーは起動しません。',
-                            style: TextStyle(
-                                color: Colors.white60, fontSize: 12)),
+                            style:
+                                TextStyle(color: Colors.white60, fontSize: 12)),
                         const SizedBox(height: 12),
                         SizedBox(
                           width: double.infinity,
@@ -54695,8 +54703,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                       ] else ...[
                         const Text(
                             '同じ Wi-Fi / LAN にいる端末で下のURLを開くと、現在ページのプレビューを表示できます。',
-                            style: TextStyle(
-                                color: Colors.white60, fontSize: 12)),
+                            style:
+                                TextStyle(color: Colors.white60, fontSize: 12)),
                         const SizedBox(height: 12),
                         SelectableText(url,
                             style: const TextStyle(
@@ -54706,8 +54714,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                         const SizedBox(height: 12),
                         const Text(
                             'ページデータを保存する場合は、プレビュー内の「ページデータを保存」か下のJSON URLを使えます。',
-                            style: TextStyle(
-                                color: Colors.white60, fontSize: 12)),
+                            style:
+                                TextStyle(color: Colors.white60, fontSize: 12)),
                         const SizedBox(height: 6),
                         SelectableText(jsonUrl,
                             style: const TextStyle(
@@ -54716,8 +54724,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 fontWeight: FontWeight.w700)),
                         const SizedBox(height: 8),
                         const Text('共有はアプリを閉じるか、停止するまで有効です。',
-                            style: TextStyle(
-                                color: Colors.white38, fontSize: 11)),
+                            style:
+                                TextStyle(color: Colors.white38, fontSize: 11)),
                       ],
                       const SizedBox(height: 16),
                       const Divider(color: Colors.white12, height: 1),
@@ -57208,12 +57216,12 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     color: const Color(0xFF43B97F),
                                     borderRadius: BorderRadius.circular(4),
                                   ),
-                                   child: Text(provider.t('group.active'),
-                                       style: const TextStyle(
-                                         color: Color(0xFF101426),
-                                         fontSize: 9,
-                                         fontWeight: FontWeight.w700,
-                                       )),
+                                  child: Text(provider.t('group.active'),
+                                      style: const TextStyle(
+                                        color: Color(0xFF101426),
+                                        fontSize: 9,
+                                        fontWeight: FontWeight.w700,
+                                      )),
                                 ),
                               IconButton(
                                 padding: EdgeInsets.zero,
@@ -57269,7 +57277,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                                                   color: Colors.white70)),
                                         ),
                                         ElevatedButton(
-                                         style: ElevatedButton.styleFrom(
+                                          style: ElevatedButton.styleFrom(
                                               backgroundColor:
                                                   const Color(0xFFFF6B6B),
                                               foregroundColor:
@@ -57518,12 +57526,12 @@ class _MindMapScreenState extends State<MindMapScreen>
                   child: OutlinedButton.icon(
                     icon: const Icon(Icons.link_off_rounded,
                         size: 16, color: Colors.redAccent),
-                     label: Text(
-                         provider.joinedGroupIds.length >= 2
-                             ? provider.t('sync.leaveGroup')
-                             : provider.t('sync.leaveGroupShort'),
+                    label: Text(
+                        provider.joinedGroupIds.length >= 2
+                            ? provider.t('sync.leaveGroup')
+                            : provider.t('sync.leaveGroupShort'),
                         style: const TextStyle(color: Color(0xFFFF6B6B))),
-                     style: OutlinedButton.styleFrom(
+                    style: OutlinedButton.styleFrom(
                       side: const BorderSide(color: Color(0xFFFF6B6B)),
                       padding: const EdgeInsets.symmetric(vertical: 10),
                     ),
@@ -57643,7 +57651,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   contentPadding: EdgeInsets.zero,
                                   controlAffinity:
                                       ListTileControlAffinity.leading,
-                                   activeColor: const Color(0xFF43B97F),
+                                  activeColor: const Color(0xFF43B97F),
                                   checkColor: const Color(0xFF101426),
                                   side: const BorderSide(color: Colors.white70),
                                   title: Row(children: [
@@ -57659,7 +57667,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                                         ),
                                         child:
                                             Text(provider.t('common.current'),
-                                                 style: const TextStyle(
+                                                style: const TextStyle(
                                                   color: Color(0xFF101426),
                                                   fontSize: 9,
                                                   fontWeight: FontWeight.w700,
@@ -57864,8 +57872,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFF43B97F),
                         foregroundColor: const Color(0xFF101426),
-                        textStyle:
-                            const TextStyle(fontWeight: FontWeight.w700),
+                        textStyle: const TextStyle(fontWeight: FontWeight.w700),
                       ),
                       onPressed: selected.isEmpty
                           ? null
@@ -57913,13 +57920,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     _appSnack(
                                         context,
                                         SnackBar(
-                                          content: Text(
-                                              provider.t(
-                                                  'upload.attachmentFailed')),
+                                          content: Text(provider
+                                              .t('upload.attachmentFailed')),
                                           backgroundColor:
                                               const Color(0xFFFF6B6B),
-                                          duration:
-                                              const Duration(seconds: 5),
+                                          duration: const Duration(seconds: 5),
                                         ));
                                   } else {
                                     _appSnack(
@@ -57948,13 +57953,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     _appSnack(
                                         context,
                                         SnackBar(
-                                          content: Text(
-                                              provider.t(
-                                                  'upload.restrictedByOther')),
+                                          content: Text(provider
+                                              .t('upload.restrictedByOther')),
                                           backgroundColor:
                                               const Color(0xFFFFB74D),
-                                          duration:
-                                              const Duration(seconds: 4),
+                                          duration: const Duration(seconds: 4),
                                         ));
                                   } else {
                                     _appSnack(
@@ -58283,8 +58286,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                                             provider.t('download.started')),
                                         backgroundColor: Color(0xFF4FC3F7),
                                         action: SnackBarAction(
-                                          label:
-                                              provider.t('download.details'),
+                                          label: provider.t('download.details'),
                                           textColor: Colors.white,
                                           onPressed: () =>
                                               _showCloudDownloadDetailsDialog(
@@ -58318,9 +58320,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                                         _appSnack(
                                             context,
                                             SnackBar(
-                                              content: Text(
-                                                  provider.t(
-                                                      'download.attachmentFailed')),
+                                              content: Text(provider.t(
+                                                  'download.attachmentFailed')),
                                               backgroundColor:
                                                   const Color(0xFFFF6B6B),
                                               duration:
@@ -58423,8 +58424,7 @@ class _MindMapScreenState extends State<MindMapScreen>
               const SizedBox(width: 8),
               Expanded(
                 child: Text(provider.t('download.detailsTitle'),
-                    style:
-                        const TextStyle(color: Colors.white, fontSize: 14)),
+                    style: const TextStyle(color: Colors.white, fontSize: 14)),
               ),
               if (p.isDownloading)
                 Text('${(p.syncProgress * 100).round()}%',
@@ -58524,8 +58524,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 if (item.canRetry)
                                   TextButton.icon(
                                     style: TextButton.styleFrom(
-                                      foregroundColor:
-                                          const Color(0xFF81D4FA),
+                                      foregroundColor: const Color(0xFF81D4FA),
                                     ),
                                     onPressed: p.isDownloading
                                         ? null
@@ -58545,10 +58544,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                                                 color: Colors.white70,
                                                 fontSize: 10)),
                                         Checkbox(
-                                         value: include,
-                                         activeColor: const Color(0xFF4FC3F7),
-                                          checkColor:
-                                              const Color(0xFF101426),
+                                          value: include,
+                                          activeColor: const Color(0xFF4FC3F7),
+                                          checkColor: const Color(0xFF101426),
                                           side: const BorderSide(
                                               color: Colors.white70),
                                           visualDensity: VisualDensity.compact,
@@ -59445,14 +59443,16 @@ class _MindMapScreenState extends State<MindMapScreen>
 
     // Android では super_clipboard の登録状態に依存せず画像を貼れるよう、
     // アプリ固有 MethodChannel を先に確認する。
+    var androidHadImageHint = false;
     if (!kIsWeb && Platform.isAndroid) {
       final nativeImage = await _readAndroidClipboardImage();
-      if (nativeImage != null) {
+      androidHadImageHint = nativeImage.hasImageHint;
+      if (nativeImage.bytes != null && nativeImage.bytes!.isNotEmpty) {
         try {
           await _addClipboardImageNodeAt(
             provider,
             pasteCenter,
-            nativeImage.bytes,
+            nativeImage.bytes!,
             nativeImage.ext,
           );
         } catch (e) {
@@ -59474,6 +59474,10 @@ class _MindMapScreenState extends State<MindMapScreen>
 
     final clipboard = SystemClipboard.instance;
     if (clipboard == null) {
+      if (!kIsWeb && Platform.isAndroid && androidHadImageHint) {
+        final picked = await _pickAndInsertImageFallback(provider, pasteCenter);
+        if (picked) return;
+      }
       if (mounted) {
         _appSnack(
             context, SnackBar(content: Text(provider.t('clip.noReadSupport'))));
@@ -59487,18 +59491,19 @@ class _MindMapScreenState extends State<MindMapScreen>
 
       // 画像ヒント (image/* 等) の有無。読めなくても Android の画像ピッカー
       //   保険を起動するかの判定に使う。
-      final hadImageHint = reader.platformFormats.any((f) {
-        final l = f.toLowerCase();
-        return l.contains('image') ||
-            l.endsWith('.png') ||
-            l.endsWith('.jpeg') ||
-            l.endsWith('.jpg') ||
-            l.endsWith('.gif') ||
-            l.endsWith('.webp') ||
-            l.endsWith('.bmp') ||
-            l.endsWith('.tif') ||
-            l.endsWith('.tiff');
-      });
+      var hadImageHint = androidHadImageHint ||
+          reader.platformFormats.any((f) {
+            final l = f.toLowerCase();
+            return l.contains('image') ||
+                l.endsWith('.png') ||
+                l.endsWith('.jpeg') ||
+                l.endsWith('.jpg') ||
+                l.endsWith('.gif') ||
+                l.endsWith('.webp') ||
+                l.endsWith('.bmp') ||
+                l.endsWith('.tif') ||
+                l.endsWith('.tiff');
+          });
 
       // 1) 画像 (= ユーザー要望「画像のクリップボードからの貼り付けが上手く
       //    いっていない」 への対応で、 PNG/JPEG だけでなく GIF/WebP/BMP と
@@ -59583,8 +59588,10 @@ class _MindMapScreenState extends State<MindMapScreen>
           !kIsWeb &&
           Platform.isAndroid) {
         final nativeImage = await _readAndroidClipboardImage();
-        if (nativeImage != null) {
-          imgBytes = nativeImage.bytes;
+        hadImageHint = hadImageHint || nativeImage.hasImageHint;
+        androidHadImageHint = androidHadImageHint || nativeImage.hasImageHint;
+        if (nativeImage.bytes != null && nativeImage.bytes!.isNotEmpty) {
+          imgBytes = nativeImage.bytes!;
           imgExt = nativeImage.ext;
         }
       }
@@ -59604,7 +59611,11 @@ class _MindMapScreenState extends State<MindMapScreen>
       if (reader.canProvide(Formats.plainText)) {
         final text = await reader.readValue(Formats.plainText);
         final trimmed = text?.trim() ?? '';
-        if (trimmed.isNotEmpty) {
+        final looksLikeUnreadableImageUri = androidHadImageHint &&
+            (trimmed.startsWith('content://') ||
+                trimmed.startsWith('file://') ||
+                trimmed.startsWith('data:image/'));
+        if (trimmed.isNotEmpty && !looksLikeUnreadableImageUri) {
           // URL 判定: 1行で http:// または https:// で始まる
           final isUrl = !trimmed.contains('\n') &&
               (trimmed.startsWith('http://') || trimmed.startsWith('https://'));
@@ -59679,12 +59690,13 @@ class _MindMapScreenState extends State<MindMapScreen>
       // clipboard.read() が例外になった場合も Android native 経路を失わない。
       if (!addingClipboardImage && !kIsWeb && Platform.isAndroid) {
         final nativeImage = await _readAndroidClipboardImage();
-        if (nativeImage != null) {
+        androidHadImageHint = androidHadImageHint || nativeImage.hasImageHint;
+        if (nativeImage.bytes != null && nativeImage.bytes!.isNotEmpty) {
           try {
             await _addClipboardImageNodeAt(
               provider,
               pasteCenter,
-              nativeImage.bytes,
+              nativeImage.bytes!,
               nativeImage.ext,
             );
             return;
@@ -59692,6 +59704,11 @@ class _MindMapScreenState extends State<MindMapScreen>
             debugPrint(
                 'Android clipboard image fallback add failed: $nativeError');
           }
+        }
+        if (androidHadImageHint) {
+          final picked =
+              await _pickAndInsertImageFallback(provider, pasteCenter);
+          if (picked) return;
         }
       }
       if (mounted) {
@@ -61369,73 +61386,74 @@ class _MindMapScreenState extends State<MindMapScreen>
                   canPop: !authenticating,
                   child: AlertDialog(
                     backgroundColor: const Color(0xFF1A1A2E),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16)),
-                  title: Row(children: [
-                    const Icon(Icons.lock_rounded,
-                        color: Color(0xFFBA68C8), size: 20),
-                    const SizedBox(width: 8),
-                    Text(provider.t('dev.authNeeded'),
-                        style:
-                            const TextStyle(color: Colors.white, fontSize: 16)),
-                  ]),
-                  content: Column(mainAxisSize: MainAxisSize.min, children: [
-                    Text(provider.t('dev.authDesc'),
-                        style: const TextStyle(
-                            color: Colors.white54, fontSize: 13)),
-                    const SizedBox(height: 16),
-                    TextField(
-                      controller: pwCtrl,
-                      obscureText: obscure,
-                      autofocus: true,
-                      style: const TextStyle(color: Colors.white),
-                      decoration: InputDecoration(
-                        labelText: provider.t('dev.password'),
-                        labelStyle: const TextStyle(color: Colors.white38),
-                        filled: true,
-                        fillColor: Colors.white.withValues(alpha: 0.05),
-                        border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(8),
-                            borderSide: BorderSide.none),
-                        suffixIcon: IconButton(
-                          icon: Icon(
-                              obscure ? Icons.visibility_off : Icons.visibility,
-                              color: Colors.white38,
-                              size: 18),
-                          onPressed: () => setD(() => obscure = !obscure),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16)),
+                    title: Row(children: [
+                      const Icon(Icons.lock_rounded,
+                          color: Color(0xFFBA68C8), size: 20),
+                      const SizedBox(width: 8),
+                      Text(provider.t('dev.authNeeded'),
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 16)),
+                    ]),
+                    content: Column(mainAxisSize: MainAxisSize.min, children: [
+                      Text(provider.t('dev.authDesc'),
+                          style: const TextStyle(
+                              color: Colors.white54, fontSize: 13)),
+                      const SizedBox(height: 16),
+                      TextField(
+                        controller: pwCtrl,
+                        obscureText: obscure,
+                        autofocus: true,
+                        style: const TextStyle(color: Colors.white),
+                        decoration: InputDecoration(
+                          labelText: provider.t('dev.password'),
+                          labelStyle: const TextStyle(color: Colors.white38),
+                          filled: true,
+                          fillColor: Colors.white.withValues(alpha: 0.05),
+                          border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide: BorderSide.none),
+                          suffixIcon: IconButton(
+                            icon: Icon(
+                                obscure
+                                    ? Icons.visibility_off
+                                    : Icons.visibility,
+                                color: Colors.white38,
+                                size: 18),
+                            onPressed: () => setD(() => obscure = !obscure),
+                          ),
                         ),
+                        onSubmitted: authenticating
+                            ? null
+                            : (_) => authenticate(sctx, setD),
                       ),
-                      onSubmitted: authenticating
-                          ? null
-                          : (_) => authenticate(sctx, setD),
-                    ),
-                  ]),
-                  actions: [
-                    TextButton(
-                      onPressed: authenticating
-                          ? null
-                          : () => Navigator.pop(dctx),
-                      child: Text(provider.t('btn.cancel'),
-                          style: const TextStyle(color: Colors.white54)),
-                    ),
-                    ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFFBA68C8)),
-                      onPressed: authenticating
-                          ? null
-                          : () => authenticate(dctx, setD),
-                      child: authenticating
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(
-                                  strokeWidth: 2, color: Colors.white),
-                            )
-                          : Text(provider.t('dev.authenticate'),
-                              style: const TextStyle(color: Colors.white)),
-                    ),
-                  ],
-                ),
+                    ]),
+                    actions: [
+                      TextButton(
+                        onPressed:
+                            authenticating ? null : () => Navigator.pop(dctx),
+                        child: Text(provider.t('btn.cancel'),
+                            style: const TextStyle(color: Colors.white54)),
+                      ),
+                      ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFFBA68C8)),
+                        onPressed: authenticating
+                            ? null
+                            : () => authenticate(dctx, setD),
+                        child: authenticating
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2, color: Colors.white),
+                              )
+                            : Text(provider.t('dev.authenticate'),
+                                style: const TextStyle(color: Colors.white)),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -61450,356 +61468,366 @@ class _MindMapScreenState extends State<MindMapScreen>
   void _showDeveloperModeScreen(BuildContext ctx, MindMapProvider provider) {
     final emailCtrl = TextEditingController(text: provider.inquiryEmail);
 
-    final Widget Function(BuildContext) buildDeveloperContent =
-        (BuildContext dctx) => StatefulBuilder(
-        builder: (sctx, setD) {
-          return AlertDialog(
-            backgroundColor: const Color(0xFF0D0D1A),
-            shape:
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-            title: Row(children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFBA68C8).withValues(alpha: 0.2),
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(
-                      color: const Color(0xFFBA68C8).withValues(alpha: 0.5)),
+    final Widget Function(BuildContext) buildDeveloperContent = (BuildContext
+            dctx) =>
+        StatefulBuilder(
+          builder: (sctx, setD) {
+            return AlertDialog(
+              backgroundColor: const Color(0xFF0D0D1A),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16)),
+              title: Row(children: [
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFBA68C8).withValues(alpha: 0.2),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(
+                        color: const Color(0xFFBA68C8).withValues(alpha: 0.5)),
+                  ),
+                  child: const Text('DEVELOPER',
+                      style: TextStyle(
+                          color: Color(0xFFBA68C8),
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 1.5)),
                 ),
-                child: const Text('DEVELOPER',
-                    style: TextStyle(
-                        color: Color(0xFFBA68C8),
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 1.5)),
-              ),
-              const SizedBox(width: 10),
-              Text(provider.t('dev.title'),
-                  style: const TextStyle(color: Colors.white, fontSize: 16)),
-              const Spacer(),
-              IconButton(
-                icon: const Icon(Icons.close, color: Colors.white54, size: 20),
-                tooltip: provider.t('dev.closeKeep'),
-                onPressed: () {
-                  // ダイアログを閉じるだけで、開発者モードはアクティブのまま。
-                  // ログアウトしたい場合は下部の「開発者モードを解除」ボタンを使う。
-                  Navigator.pop(dctx);
-                },
-              ),
-            ]),
-            content: SizedBox(
-              width: _isDesktop
-                  ? math.min(900.0,
-                      math.max(420.0, MediaQuery.sizeOf(sctx).width - 120.0))
-                  : math.min(420.0,
-                      math.max(260.0, MediaQuery.sizeOf(sctx).width - 64.0)),
-              height: _isDesktop
-                  ? math.min(900.0,
-                      math.max(520.0, MediaQuery.sizeOf(sctx).height - 150.0))
-                  : math.min(620.0,
-                      math.max(280.0, MediaQuery.sizeOf(sctx).height - 180.0)),
-              child: SingleChildScrollView(
-                child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // (旧 AI APIキー設定セクションは削除しました 2026-05。
-                      //  各ユーザーが個別に Gemini API キーを設定する運用に変更)
+                const SizedBox(width: 10),
+                Text(provider.t('dev.title'),
+                    style: const TextStyle(color: Colors.white, fontSize: 16)),
+                const Spacer(),
+                IconButton(
+                  icon:
+                      const Icon(Icons.close, color: Colors.white54, size: 20),
+                  tooltip: provider.t('dev.closeKeep'),
+                  onPressed: () {
+                    // ダイアログを閉じるだけで、開発者モードはアクティブのまま。
+                    // ログアウトしたい場合は下部の「開発者モードを解除」ボタンを使う。
+                    Navigator.pop(dctx);
+                  },
+                ),
+              ]),
+              content: SizedBox(
+                width: _isDesktop
+                    ? math.min(900.0,
+                        math.max(420.0, MediaQuery.sizeOf(sctx).width - 120.0))
+                    : math.min(420.0,
+                        math.max(260.0, MediaQuery.sizeOf(sctx).width - 64.0)),
+                height: _isDesktop
+                    ? math.min(900.0,
+                        math.max(520.0, MediaQuery.sizeOf(sctx).height - 150.0))
+                    : math.min(
+                        620.0,
+                        math.max(
+                            280.0, MediaQuery.sizeOf(sctx).height - 180.0)),
+                child: SingleChildScrollView(
+                  child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // (旧 AI APIキー設定セクションは削除しました 2026-05。
+                        //  各ユーザーが個別に Gemini API キーを設定する運用に変更)
 
-                      // ── プラン切替 (開発者モード専用) ──
-                      // ライセンス引継ぎや課金機能のテスト用に、Free / Pro / Max を
-                      // 自由に切り替えて UI 制限の挙動を確認できる。
-                      // 開発者モードを抜けると `_proSubscribed` / クーポン状態に
-                      // 基づく実際のプランに戻る。
-                      _devSection(
-                          'プラン切替 (テスト用)',
-                          Icons.workspace_premium_rounded,
-                          const Color(0xFFFFB347)),
-                      const SizedBox(height: 8),
-                      Container(
-                        padding: const EdgeInsets.all(10),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.04),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: Colors.white12),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              '現在のプラン: ${provider.devImpersonatePlan.name.toUpperCase()}',
-                              style: const TextStyle(
-                                  color: Colors.white70,
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w600),
-                            ),
-                            const SizedBox(height: 8),
-                            Row(children: [
-                              for (final plan in SubscriptionPlan.values)
-                                Expanded(
-                                  child: Padding(
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 3),
-                                    child: ElevatedButton(
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor:
-                                            provider.devImpersonatePlan == plan
-                                                ? const Color(0xFFFFB347)
-                                                : const Color(0xFF1A2030),
-                                        foregroundColor:
-                                            provider.devImpersonatePlan == plan
-                                                ? Colors.black87
-                                                : Colors.white70,
-                                        side: BorderSide(
-                                            color:
-                                                provider.devImpersonatePlan ==
-                                                        plan
-                                                    ? const Color(0xFFFFB347)
-                                                    : Colors.white24),
-                                        padding: const EdgeInsets.symmetric(
-                                            vertical: 8),
-                                        minimumSize: const Size(0, 36),
-                                      ),
-                                      onPressed: () async {
-                                        await provider
-                                            .setDevImpersonatePlan(plan);
-                                        if (!sctx.mounted ||
-                                            !provider.developerMode) {
-                                          return;
-                                        }
-                                        setD(() {});
-                                      },
-                                      child: Text(
-                                        plan.name.toUpperCase(),
-                                        style: const TextStyle(
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.w700),
+                        // ── プラン切替 (開発者モード専用) ──
+                        // ライセンス引継ぎや課金機能のテスト用に、Free / Pro / Max を
+                        // 自由に切り替えて UI 制限の挙動を確認できる。
+                        // 開発者モードを抜けると `_proSubscribed` / クーポン状態に
+                        // 基づく実際のプランに戻る。
+                        _devSection(
+                            'プラン切替 (テスト用)',
+                            Icons.workspace_premium_rounded,
+                            const Color(0xFFFFB347)),
+                        const SizedBox(height: 8),
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.04),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.white12),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                '現在のプラン: ${provider.devImpersonatePlan.name.toUpperCase()}',
+                                style: const TextStyle(
+                                    color: Colors.white70,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600),
+                              ),
+                              const SizedBox(height: 8),
+                              Row(children: [
+                                for (final plan in SubscriptionPlan.values)
+                                  Expanded(
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 3),
+                                      child: ElevatedButton(
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor:
+                                              provider.devImpersonatePlan ==
+                                                      plan
+                                                  ? const Color(0xFFFFB347)
+                                                  : const Color(0xFF1A2030),
+                                          foregroundColor:
+                                              provider.devImpersonatePlan ==
+                                                      plan
+                                                  ? Colors.black87
+                                                  : Colors.white70,
+                                          side: BorderSide(
+                                              color:
+                                                  provider.devImpersonatePlan ==
+                                                          plan
+                                                      ? const Color(0xFFFFB347)
+                                                      : Colors.white24),
+                                          padding: const EdgeInsets.symmetric(
+                                              vertical: 8),
+                                          minimumSize: const Size(0, 36),
+                                        ),
+                                        onPressed: () async {
+                                          await provider
+                                              .setDevImpersonatePlan(plan);
+                                          if (!sctx.mounted ||
+                                              !provider.developerMode) {
+                                            return;
+                                          }
+                                          setD(() {});
+                                        },
+                                        child: Text(
+                                          plan.name.toUpperCase(),
+                                          style: const TextStyle(
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.w700),
+                                        ),
                                       ),
                                     ),
                                   ),
-                                ),
-                            ]),
-                            const SizedBox(height: 6),
-                            const Text(
-                              'FREE: 2ページ制限 / クラウド1週間で削除 / 動画DL不可\n'
-                              'PRO: 無制限 / 永久クラウド保存 / 動画DL可\n'
-                              'MAX: PRO と同じ機能 (将来用の識別)',
-                              style: TextStyle(
-                                  color: Colors.white38,
-                                  fontSize: 10,
-                                  height: 1.5),
-                            ),
-                          ],
-                        ),
-                      ),
-
-                      const SizedBox(height: 20),
-
-                      // ── 問い合わせ先メール ──
-                      _devSection('問い合わせ先メールアドレス', Icons.email_rounded,
-                          const Color(0xFF4FC3F7)),
-                      const SizedBox(height: 8),
-                      TextField(
-                        controller: emailCtrl,
-                        style:
-                            const TextStyle(color: Colors.white, fontSize: 13),
-                        keyboardType: TextInputType.emailAddress,
-                        decoration: InputDecoration(
-                          hintText: 'example@email.com',
-                          hintStyle: const TextStyle(color: Colors.white24),
-                          filled: true,
-                          fillColor: Colors.white.withValues(alpha: 0.05),
-                          border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(8),
-                              borderSide: BorderSide.none),
-                          contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 10),
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      SizedBox(
-                        width: double.infinity,
-                        child: ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFF4FC3F7),
-                              padding:
-                                  const EdgeInsets.symmetric(vertical: 10)),
-                          icon: const Icon(Icons.save_rounded,
-                              size: 16, color: Colors.black87),
-                          label: Text(provider.t('btn.save'),
-                              style: const TextStyle(color: Colors.black87)),
-                          onPressed: () async {
-                            await provider.setInquiryEmail(emailCtrl.text);
-                            if (!sctx.mounted || !provider.developerMode) return;
-                            _appSnack(
-                              sctx,
-                              SnackBar(
-                                  content: Text(provider.t('dev.emailSaved')),
-                                  backgroundColor: const Color(0xFF4FC3F7)),
-                            );
-                          },
-                        ),
-                      ),
-
-                      const SizedBox(height: 20),
-
-                      // ── クーポン管理 (3 ページ目以降の有料化解放用) ──
-                      // 任意の割引率と有効期限のクーポンコードを生成し、
-                      // ユーザーに配布できる。100% 割引にすればその瞬間で
-                      // Pro 同等にページ無制限が解放される。
-                      _devSection(provider.t('dev.coupon.title'),
-                          Icons.local_offer_rounded, const Color(0xFF4FC3F7)),
-                      const SizedBox(height: 8),
-                      SizedBox(
-                        width: double.infinity,
-                        child: ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFF1A2030),
-                              side: const BorderSide(
-                                  color: Color(0xFF4FC3F7), width: 1),
-                              padding:
-                                  const EdgeInsets.symmetric(vertical: 10)),
-                          icon: const Icon(Icons.local_offer_rounded,
-                              size: 16, color: Color(0xFF4FC3F7)),
-                          label: Text(provider.t('dev.coupon.create'),
-                              style: const TextStyle(color: Color(0xFF4FC3F7))),
-                          onPressed: () {
-                            Navigator.pop(dctx);
-                            _showCouponManagerDialog(ctx, provider);
-                          },
-                        ),
-                      ),
-
-                      const SizedBox(height: 20),
-
-                      // ── プラン別ユーザー一覧 ──
-                      // /users コレクションを取得し、free / pro / coupon の
-                      // 内訳と各ユーザーの詳細をダイアログで表示する。
-                      _devSection(provider.t('dev.users.title'),
-                          Icons.group_rounded, const Color(0xFF9CCC65)),
-                      const SizedBox(height: 8),
-                      SizedBox(
-                        width: double.infinity,
-                        child: ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFF1A2A14),
-                              side: const BorderSide(
-                                  color: Color(0xFF9CCC65), width: 1),
-                              padding:
-                                  const EdgeInsets.symmetric(vertical: 10)),
-                          icon: const Icon(Icons.group_rounded,
-                              size: 16, color: Color(0xFF9CCC65)),
-                          label: Text(provider.t('dev.users.title'),
-                              style: const TextStyle(color: Color(0xFF9CCC65))),
-                          onPressed: () {
-                            Navigator.pop(dctx);
-                            _showUsersByPlanDialog(ctx, provider);
-                          },
-                        ),
-                      ),
-
-                      const SizedBox(height: 20),
-
-                      // ── 問い合わせ受信箱 ──
-                      _devSection('問い合わせ受信箱', Icons.inbox_rounded,
-                          const Color(0xFFFFB347)),
-                      const SizedBox(height: 8),
-                      SizedBox(
-                        width: double.infinity,
-                        child: ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFF1A1A0D),
-                              side: const BorderSide(
-                                  color: Color(0xFFFFB347), width: 1),
-                              padding:
-                                  const EdgeInsets.symmetric(vertical: 10)),
-                          icon: const Icon(Icons.mail_rounded,
-                              size: 16, color: Color(0xFFFFB347)),
-                          label: Text(provider.t('dev.openInbox'),
-                              style: TextStyle(color: Color(0xFFFFB347))),
-                          onPressed: () {
-                            Navigator.pop(dctx);
-                            showDialog(
-                              context: ctx,
-                              builder: (_) =>
-                                  _DevInboxDialog(provider: provider),
-                            );
-                          },
-                        ),
-                      ),
-                      // ── 開発者モードを解除 (ログアウト) ──
-                      // 一度入った開発者モードは SharedPreferences で永続化されて
-                      // いるため、再起動しても維持される。明示的にこのボタンを
-                      // 押すまで解除されない。誤タップ防止のため確認ダイアログを
-                      // はさむ。
-                      const SizedBox(height: 24),
-                      const Divider(color: Color(0xFF333333), height: 1),
-                      const SizedBox(height: 16),
-                      _devSection('開発者モードを終了', Icons.logout_rounded,
-                          const Color(0xFFE57373)),
-                      const SizedBox(height: 8),
-                      SizedBox(
-                        width: double.infinity,
-                        child: ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFF2A0D0D),
-                              side: const BorderSide(
-                                  color: Color(0xFFE57373), width: 1),
-                              padding:
-                                  const EdgeInsets.symmetric(vertical: 10)),
-                          icon: const Icon(Icons.logout_rounded,
-                              size: 16, color: Color(0xFFE57373)),
-                          label: Text(provider.t('dev.logout'),
-                              style: const TextStyle(
-                                  color: Color(0xFFE57373),
-                                  fontWeight: FontWeight.w700)),
-                          onPressed: () async {
-                            // 確認ダイアログ
-                            final ok = await showDialog<bool>(
-                              context: ctx,
-                              builder: (cdctx) => AlertDialog(
-                                backgroundColor: const Color(0xFF1E1E1E),
-                                shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(14)),
-                                title: Text(provider.t('dev.logoutTitle'),
-                                    style: const TextStyle(
-                                        color: Colors.white, fontSize: 16)),
-                                content: Text(provider.t('dev.logoutBody'),
-                                    style: const TextStyle(
-                                        color: Colors.white70, fontSize: 13)),
-                                actions: [
-                                  TextButton(
-                                    onPressed: () =>
-                                        Navigator.of(cdctx).pop(false),
-                                    child: Text(provider.t('btn.cancel'),
-                                        style: const TextStyle(
-                                            color: Colors.white60)),
-                                  ),
-                                  TextButton(
-                                    onPressed: () =>
-                                        Navigator.of(cdctx).pop(true),
-                                    child: Text(provider.t('dev.disableBtn'),
-                                        style: const TextStyle(
-                                            color: Color(0xFFE57373),
-                                            fontWeight: FontWeight.w700)),
-                                  ),
-                                ],
+                              ]),
+                              const SizedBox(height: 6),
+                              const Text(
+                                'FREE: 2ページ制限 / クラウド1週間で削除 / 動画DL不可\n'
+                                'PRO: 無制限 / 永久クラウド保存 / 動画DL可\n'
+                                'MAX: PRO と同じ機能 (将来用の識別)',
+                                style: TextStyle(
+                                    color: Colors.white38,
+                                    fontSize: 10,
+                                    height: 1.5),
                               ),
-                            );
-                            if (ok == true) {
-                              final deactivation =
-                                  provider.deactivateDeveloperMode();
-                              if (dctx.mounted) Navigator.of(dctx).pop();
-                              await deactivation;
-                            }
-                          },
+                            ],
+                          ),
                         ),
-                      ),
-                    ]),
+
+                        const SizedBox(height: 20),
+
+                        // ── 問い合わせ先メール ──
+                        _devSection('問い合わせ先メールアドレス', Icons.email_rounded,
+                            const Color(0xFF4FC3F7)),
+                        const SizedBox(height: 8),
+                        TextField(
+                          controller: emailCtrl,
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 13),
+                          keyboardType: TextInputType.emailAddress,
+                          decoration: InputDecoration(
+                            hintText: 'example@email.com',
+                            hintStyle: const TextStyle(color: Colors.white24),
+                            filled: true,
+                            fillColor: Colors.white.withValues(alpha: 0.05),
+                            border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(8),
+                                borderSide: BorderSide.none),
+                            contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 10),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF4FC3F7),
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 10)),
+                            icon: const Icon(Icons.save_rounded,
+                                size: 16, color: Colors.black87),
+                            label: Text(provider.t('btn.save'),
+                                style: const TextStyle(color: Colors.black87)),
+                            onPressed: () async {
+                              await provider.setInquiryEmail(emailCtrl.text);
+                              if (!sctx.mounted || !provider.developerMode)
+                                return;
+                              _appSnack(
+                                sctx,
+                                SnackBar(
+                                    content: Text(provider.t('dev.emailSaved')),
+                                    backgroundColor: const Color(0xFF4FC3F7)),
+                              );
+                            },
+                          ),
+                        ),
+
+                        const SizedBox(height: 20),
+
+                        // ── クーポン管理 (3 ページ目以降の有料化解放用) ──
+                        // 任意の割引率と有効期限のクーポンコードを生成し、
+                        // ユーザーに配布できる。100% 割引にすればその瞬間で
+                        // Pro 同等にページ無制限が解放される。
+                        _devSection(provider.t('dev.coupon.title'),
+                            Icons.local_offer_rounded, const Color(0xFF4FC3F7)),
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF1A2030),
+                                side: const BorderSide(
+                                    color: Color(0xFF4FC3F7), width: 1),
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 10)),
+                            icon: const Icon(Icons.local_offer_rounded,
+                                size: 16, color: Color(0xFF4FC3F7)),
+                            label: Text(provider.t('dev.coupon.create'),
+                                style:
+                                    const TextStyle(color: Color(0xFF4FC3F7))),
+                            onPressed: () {
+                              Navigator.pop(dctx);
+                              _showCouponManagerDialog(ctx, provider);
+                            },
+                          ),
+                        ),
+
+                        const SizedBox(height: 20),
+
+                        // ── プラン別ユーザー一覧 ──
+                        // /users コレクションを取得し、free / pro / coupon の
+                        // 内訳と各ユーザーの詳細をダイアログで表示する。
+                        _devSection(provider.t('dev.users.title'),
+                            Icons.group_rounded, const Color(0xFF9CCC65)),
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF1A2A14),
+                                side: const BorderSide(
+                                    color: Color(0xFF9CCC65), width: 1),
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 10)),
+                            icon: const Icon(Icons.group_rounded,
+                                size: 16, color: Color(0xFF9CCC65)),
+                            label: Text(provider.t('dev.users.title'),
+                                style:
+                                    const TextStyle(color: Color(0xFF9CCC65))),
+                            onPressed: () {
+                              Navigator.pop(dctx);
+                              _showUsersByPlanDialog(ctx, provider);
+                            },
+                          ),
+                        ),
+
+                        const SizedBox(height: 20),
+
+                        // ── 問い合わせ受信箱 ──
+                        _devSection('問い合わせ受信箱', Icons.inbox_rounded,
+                            const Color(0xFFFFB347)),
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF1A1A0D),
+                                side: const BorderSide(
+                                    color: Color(0xFFFFB347), width: 1),
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 10)),
+                            icon: const Icon(Icons.mail_rounded,
+                                size: 16, color: Color(0xFFFFB347)),
+                            label: Text(provider.t('dev.openInbox'),
+                                style: TextStyle(color: Color(0xFFFFB347))),
+                            onPressed: () {
+                              Navigator.pop(dctx);
+                              showDialog(
+                                context: ctx,
+                                builder: (_) =>
+                                    _DevInboxDialog(provider: provider),
+                              );
+                            },
+                          ),
+                        ),
+                        // ── 開発者モードを解除 (ログアウト) ──
+                        // 一度入った開発者モードは SharedPreferences で永続化されて
+                        // いるため、再起動しても維持される。明示的にこのボタンを
+                        // 押すまで解除されない。誤タップ防止のため確認ダイアログを
+                        // はさむ。
+                        const SizedBox(height: 24),
+                        const Divider(color: Color(0xFF333333), height: 1),
+                        const SizedBox(height: 16),
+                        _devSection('開発者モードを終了', Icons.logout_rounded,
+                            const Color(0xFFE57373)),
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF2A0D0D),
+                                side: const BorderSide(
+                                    color: Color(0xFFE57373), width: 1),
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 10)),
+                            icon: const Icon(Icons.logout_rounded,
+                                size: 16, color: Color(0xFFE57373)),
+                            label: Text(provider.t('dev.logout'),
+                                style: const TextStyle(
+                                    color: Color(0xFFE57373),
+                                    fontWeight: FontWeight.w700)),
+                            onPressed: () async {
+                              // 確認ダイアログ
+                              final ok = await showDialog<bool>(
+                                context: ctx,
+                                builder: (cdctx) => AlertDialog(
+                                  backgroundColor: const Color(0xFF1E1E1E),
+                                  shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(14)),
+                                  title: Text(provider.t('dev.logoutTitle'),
+                                      style: const TextStyle(
+                                          color: Colors.white, fontSize: 16)),
+                                  content: Text(provider.t('dev.logoutBody'),
+                                      style: const TextStyle(
+                                          color: Colors.white70, fontSize: 13)),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () =>
+                                          Navigator.of(cdctx).pop(false),
+                                      child: Text(provider.t('btn.cancel'),
+                                          style: const TextStyle(
+                                              color: Colors.white60)),
+                                    ),
+                                    TextButton(
+                                      onPressed: () =>
+                                          Navigator.of(cdctx).pop(true),
+                                      child: Text(provider.t('dev.disableBtn'),
+                                          style: const TextStyle(
+                                              color: Color(0xFFE57373),
+                                              fontWeight: FontWeight.w700)),
+                                    ),
+                                  ],
+                                ),
+                              );
+                              if (ok == true) {
+                                final deactivation =
+                                    provider.deactivateDeveloperMode();
+                                if (dctx.mounted) Navigator.of(dctx).pop();
+                                await deactivation;
+                              }
+                            },
+                          ),
+                        ),
+                      ]),
+                ),
               ),
-            ),
-          );
-        },
-      );
+            );
+          },
+        );
 
     final rootNavigator = Navigator.of(ctx, rootNavigator: true);
     late final Route<void> developerRoute;
@@ -63995,10 +64023,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                       Text(
                         provider
                             .t('download.selectedTotal')
-                            .replaceFirst(
-                                '{size}',
-                                MindMapProvider.formatBytes(
-                                    totalSelectedBytes))
+                            .replaceFirst('{size}',
+                                MindMapProvider.formatBytes(totalSelectedBytes))
                             .replaceFirst('{n}', '${selected.length}'),
                         style: TextStyle(
                           color: deleteMode
@@ -64133,10 +64159,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 ),
                                 ElevatedButton(
                                   style: ElevatedButton.styleFrom(
-                                      backgroundColor:
-                                          const Color(0xFFFF6B6B),
-                                      foregroundColor:
-                                          const Color(0xFF101426),
+                                      backgroundColor: const Color(0xFFFF6B6B),
+                                      foregroundColor: const Color(0xFF101426),
                                       textStyle: const TextStyle(
                                           fontWeight: FontWeight.w700)),
                                   onPressed: () => Navigator.pop(cctx, true),
@@ -64209,13 +64233,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 _appSnack(
                                     context,
                                     SnackBar(
-                                      content: Text(
-                                          provider.t(
-                                              'download.attachmentFailedRetry')),
-                                      backgroundColor:
-                                          const Color(0xFFFF6B6B),
-                                      duration:
-                                          const Duration(seconds: 5),
+                                      content: Text(provider
+                                          .t('download.attachmentFailedRetry')),
+                                      backgroundColor: const Color(0xFFFF6B6B),
+                                      duration: const Duration(seconds: 5),
                                     ));
                               } else {
                                 _appSnack(
@@ -64258,12 +64279,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                         .t('download.countAction')
                         .replaceFirst('{n}', '${selected.length}')),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: deleteMode
-                      ? Colors.redAccent
-                      : const Color(0xFF4FC3F7),
-                  foregroundColor: deleteMode
-                      ? Colors.white
-                      : const Color(0xFF101426),
+                  backgroundColor:
+                      deleteMode ? Colors.redAccent : const Color(0xFF4FC3F7),
+                  foregroundColor:
+                      deleteMode ? Colors.white : const Color(0xFF101426),
                   textStyle: const TextStyle(fontWeight: FontWeight.w700),
                 ),
               ),
@@ -66747,6 +66766,7 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
   late double _labelPosition;
   late int? _lineColorValue;
   late String _relationshipType;
+  bool _collapsed = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
   Offset? _panelPosition;
   Timer? _labelSaveDebounce;
 
@@ -66822,11 +66842,21 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
   @override
   Widget build(BuildContext context) {
     const double barW = 260.0;
+    const linkColors = <Color?>[
+      null,
+      Color(0xFFEF5350),
+      Color(0xFFFFA726),
+      Color(0xFF66BB6A),
+      Color(0xFF42A5F5),
+      Color(0xFFAB47BC),
+      Color(0xFFECEFF1),
+    ];
     final mq = MediaQuery.of(context);
     double left = _panelPosition?.dx ?? widget.screenPos.dx - barW / 2;
     double top = _panelPosition?.dy ?? widget.screenPos.dy - 220;
     final topMin = mq.padding.top + 64.0;
-    final topMax = math.max(topMin, mq.size.height - 360.0);
+    final estimatedHeight = _collapsed ? 64.0 : 360.0;
+    final topMax = math.max(topMin, mq.size.height - estimatedHeight - 8.0);
     final leftMax = math.max(8.0, mq.size.width - barW - 8.0);
     left = left.clamp(8.0, leftMax);
     top = top.clamp(topMin, topMax);
@@ -66859,6 +66889,9 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
             color: Colors.transparent,
             child: Container(
               width: barW,
+              constraints: BoxConstraints(
+                maxHeight: math.max(64.0, mq.size.height - top - 8.0),
+              ),
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
               decoration: BoxDecoration(
                 color: const Color(0xFF1A1A30),
@@ -66901,602 +66934,704 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
                                     fontSize: 11,
                                     fontWeight: FontWeight.w600)),
                           ),
-                          const Icon(Icons.open_with_rounded,
-                              color: Colors.white30, size: 14),
+                          IconButton(
+                            tooltip: _collapsed ? '接続設定を開く' : '接続設定を折り畳む',
+                            visualDensity: VisualDensity.compact,
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                                minWidth: 30, minHeight: 30),
+                            icon: Icon(
+                              _collapsed
+                                  ? Icons.expand_more_rounded
+                                  : Icons.expand_less_rounded,
+                              color: Colors.white54,
+                              size: 20,
+                            ),
+                            onPressed: () =>
+                                setState(() => _collapsed = !_collapsed),
+                          ),
                         ]),
                       ),
                     ),
                   ),
-                  const SizedBox(height: 10),
-                  // ── 線種: 個別リンクごとに曲線 / 直線 / 直角を切り替える ──
-                  Row(children: [
-                    const Icon(Icons.account_tree_rounded,
-                        color: Colors.white38, size: 14),
-                    const SizedBox(width: 4),
-                    const Text('線種',
-                        style: TextStyle(color: Colors.white38, fontSize: 10)),
-                    const Spacer(),
-                    for (final style in const ['curve', 'straight', 'elbow'])
-                      Padding(
-                        padding: const EdgeInsets.only(left: 4),
-                        child: GestureDetector(
-                          onTap: () {
-                            setState(() => _lineStyle = style);
-                            widget.onLineStyleChanged(style);
-                          },
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 7, vertical: 5),
-                            decoration: BoxDecoration(
-                              color: _lineStyle == style
-                                  ? const Color(0xFF4FC3F7)
-                                      .withValues(alpha: 0.22)
-                                  : Colors.white.withValues(alpha: 0.05),
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(
-                                color: _lineStyle == style
-                                    ? const Color(0xFF4FC3F7)
-                                    : Colors.white.withValues(alpha: 0.10),
+                  if (!_collapsed)
+                    Flexible(
+                      child: SingleChildScrollView(
+                        child: Column(children: [
+                          const SizedBox(height: 10),
+                          // ── 線種: 個別リンクごとに曲線 / 直線 / 直角を切り替える ──
+                          Row(children: [
+                            const Icon(Icons.account_tree_rounded,
+                                color: Colors.white38, size: 14),
+                            const SizedBox(width: 4),
+                            const Text('線種',
+                                style: TextStyle(
+                                    color: Colors.white38, fontSize: 10)),
+                            const Spacer(),
+                            for (final style in const [
+                              'curve',
+                              'straight',
+                              'elbow'
+                            ])
+                              Padding(
+                                padding: const EdgeInsets.only(left: 4),
+                                child: GestureDetector(
+                                  onTap: () {
+                                    setState(() => _lineStyle = style);
+                                    widget.onLineStyleChanged(style);
+                                  },
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 7, vertical: 5),
+                                    decoration: BoxDecoration(
+                                      color: _lineStyle == style
+                                          ? const Color(0xFF4FC3F7)
+                                              .withValues(alpha: 0.22)
+                                          : Colors.white
+                                              .withValues(alpha: 0.05),
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(
+                                        color: _lineStyle == style
+                                            ? const Color(0xFF4FC3F7)
+                                            : Colors.white
+                                                .withValues(alpha: 0.10),
+                                      ),
+                                    ),
+                                    child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(_lineStyleIcon(style),
+                                              color: _lineStyle == style
+                                                  ? const Color(0xFF4FC3F7)
+                                                  : Colors.white54,
+                                              size: 14),
+                                          const SizedBox(width: 3),
+                                          Text(_lineStyleLabel(style),
+                                              style: TextStyle(
+                                                  color: _lineStyle == style
+                                                      ? const Color(0xFFB3E5FC)
+                                                      : Colors.white54,
+                                                  fontSize: 10,
+                                                  fontWeight: FontWeight.w700)),
+                                        ]),
+                                  ),
+                                ),
+                              ),
+                          ]),
+                          const SizedBox(height: 8),
+                          Row(children: [
+                            const Icon(Icons.palette_outlined,
+                                color: Colors.white38, size: 14),
+                            const SizedBox(width: 4),
+                            const Text('リンク色',
+                                style: TextStyle(
+                                    color: Colors.white38, fontSize: 10)),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: SizedBox(
+                                height: 30,
+                                child: ListView.separated(
+                                  scrollDirection: Axis.horizontal,
+                                  itemCount: linkColors.length,
+                                  separatorBuilder: (_, __) =>
+                                      const SizedBox(width: 7),
+                                  itemBuilder: (_, index) {
+                                    final color = linkColors[index];
+                                    final value = color?.toARGB32();
+                                    final selected = _lineColorValue == value;
+                                    return GestureDetector(
+                                      behavior: HitTestBehavior.opaque,
+                                      onTap: () {
+                                        setState(() => _lineColorValue = value);
+                                        widget.onLineColorChanged(value);
+                                      },
+                                      child: Container(
+                                        width: 26,
+                                        height: 26,
+                                        margin: const EdgeInsets.symmetric(
+                                            vertical: 2),
+                                        decoration: BoxDecoration(
+                                          shape: BoxShape.circle,
+                                          color: color ?? Colors.transparent,
+                                          border: Border.all(
+                                            color: selected
+                                                ? const Color(0xFF80CBC4)
+                                                : Colors.white24,
+                                            width: selected ? 2.5 : 1,
+                                          ),
+                                        ),
+                                        child: color == null
+                                            ? const Icon(
+                                                Icons.auto_awesome_rounded,
+                                                color: Colors.white54,
+                                                size: 12)
+                                            : null,
+                                      ),
+                                    );
+                                  },
+                                ),
                               ),
                             ),
-                            child:
-                                Row(mainAxisSize: MainAxisSize.min, children: [
-                              Icon(_lineStyleIcon(style),
-                                  color: _lineStyle == style
-                                      ? const Color(0xFF4FC3F7)
-                                      : Colors.white54,
-                                  size: 14),
-                              const SizedBox(width: 3),
-                              Text(_lineStyleLabel(style),
-                                  style: TextStyle(
-                                      color: _lineStyle == style
-                                          ? const Color(0xFFB3E5FC)
-                                          : Colors.white54,
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.w700)),
+                          ]),
+                          if (_lineStyle == 'elbow') ...[
+                            const SizedBox(height: 8),
+                            Row(children: [
+                              const Icon(Icons.call_split_rounded,
+                                  color: Colors.white38, size: 14),
+                              const SizedBox(width: 4),
+                              Text(
+                                  '節点位置 ${(_elbowSplitRatio * 10).round()}:${(10 - _elbowSplitRatio * 10).round()}',
+                                  style: const TextStyle(
+                                      color: Colors.white38, fontSize: 10)),
+                              Expanded(
+                                child: SliderTheme(
+                                  data: SliderThemeData(
+                                    trackHeight: 2,
+                                    thumbShape: const RoundSliderThumbShape(
+                                        enabledThumbRadius: 5),
+                                    activeTrackColor: const Color(0xFF80CBC4),
+                                    inactiveTrackColor:
+                                        Colors.white.withValues(alpha: 0.1),
+                                    thumbColor: Colors.white,
+                                    overlayShape: const RoundSliderOverlayShape(
+                                        overlayRadius: 10),
+                                  ),
+                                  child: Slider(
+                                    value: _elbowSplitRatio.clamp(0.1, 0.9),
+                                    min: 0.1,
+                                    max: 0.9,
+                                    divisions: 8,
+                                    onChanged: (v) {
+                                      setState(() => _elbowSplitRatio = v);
+                                      widget.onElbowSplitRatioChanged(v);
+                                    },
+                                  ),
+                                ),
+                              ),
                             ]),
-                          ),
-                        ),
-                      ),
-                  ]),
-                  const SizedBox(height: 8),
-                  Row(children: [
-                    const Icon(Icons.palette_outlined,
-                        color: Colors.white38, size: 14),
-                    const SizedBox(width: 4),
-                    const Text('リンク色',
-                        style: TextStyle(color: Colors.white38, fontSize: 10)),
-                    const Spacer(),
-                    for (final color in <Color?>[
-                      null,
-                      const Color(0xFFEF5350),
-                      const Color(0xFFFFA726),
-                      const Color(0xFF66BB6A),
-                      const Color(0xFF42A5F5),
-                      const Color(0xFFAB47BC),
-                      const Color(0xFFECEFF1),
-                    ])
-                      GestureDetector(
-                        onTap: () {
-                          final value = color?.toARGB32();
-                          setState(() => _lineColorValue = value);
-                          widget.onLineColorChanged(value);
-                        },
-                        child: Container(
-                          width: 23,
-                          height: 23,
-                          margin: const EdgeInsets.only(left: 5),
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: color ?? Colors.transparent,
-                            border: Border.all(
-                              color: _lineColorValue == color?.toARGB32()
-                                  ? const Color(0xFF80CBC4)
-                                  : Colors.white24,
-                              width: _lineColorValue == color?.toARGB32()
-                                  ? 2.5
-                                  : 1,
+                            Row(children: [
+                              const Icon(Icons.scatter_plot_rounded,
+                                  color: Colors.white38, size: 14),
+                              const SizedBox(width: 4),
+                              const Text('節点数',
+                                  style: TextStyle(
+                                      color: Colors.white38, fontSize: 10)),
+                              const Spacer(),
+                              IconButton(
+                                visualDensity: VisualDensity.compact,
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(
+                                    minWidth: 28, minHeight: 28),
+                                icon: const Icon(Icons.remove_rounded,
+                                    color: Colors.white70, size: 16),
+                                onPressed: _elbowPointCount <= 1
+                                    ? null
+                                    : () {
+                                        final next = (_elbowPointCount - 1)
+                                            .clamp(1, 8)
+                                            .toInt();
+                                        setState(() => _elbowPointCount = next);
+                                        widget.onElbowPointCountChanged(next);
+                                      },
+                              ),
+                              Text('$_elbowPointCount',
+                                  style: const TextStyle(
+                                      color: Color(0xFF80CBC4),
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w700)),
+                              IconButton(
+                                visualDensity: VisualDensity.compact,
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(
+                                    minWidth: 28, minHeight: 28),
+                                icon: const Icon(Icons.add_rounded,
+                                    color: Colors.white70, size: 16),
+                                onPressed: _elbowPointCount >= 8
+                                    ? null
+                                    : () {
+                                        final next = (_elbowPointCount + 1)
+                                            .clamp(1, 8)
+                                            .toInt();
+                                        setState(() => _elbowPointCount = next);
+                                        widget.onElbowPointCountChanged(next);
+                                      },
+                              ),
+                              TextButton(
+                                onPressed: widget.onClearElbowBendPoints,
+                                child: const Text('節点リセット',
+                                    style: TextStyle(
+                                        color: Colors.white54, fontSize: 10)),
+                              ),
+                            ]),
+                          ],
+                          const SizedBox(height: 10),
+                          // ── 線の太さ ──
+                          Row(children: [
+                            const Icon(Icons.line_weight_rounded,
+                                color: Colors.white38, size: 14),
+                            const SizedBox(width: 4),
+                            Text(
+                                context
+                                    .read<MindMapProvider>()
+                                    .t('conn.thickness'),
+                                style: const TextStyle(
+                                    color: Colors.white38, fontSize: 10)),
+                            Expanded(
+                              child: SliderTheme(
+                                data: SliderThemeData(
+                                  trackHeight: 2,
+                                  thumbShape: const RoundSliderThumbShape(
+                                      enabledThumbRadius: 5),
+                                  activeTrackColor: const Color(0xFF4FC3F7),
+                                  inactiveTrackColor:
+                                      Colors.white.withValues(alpha: 0.1),
+                                  thumbColor: Colors.white,
+                                  overlayShape: const RoundSliderOverlayShape(
+                                      overlayRadius: 10),
+                                ),
+                                child: Slider(
+                                  value: _sw,
+                                  min: 1.0,
+                                  max: 8.0,
+                                  divisions: 7,
+                                  onChanged: (v) {
+                                    setState(() => _sw = v);
+                                    widget.onStrokeWidthChanged(v);
+                                  },
+                                ),
+                              ),
+                            ),
+                            Text('${_sw.round()}',
+                                style: const TextStyle(
+                                    color: Color(0xFF4FC3F7), fontSize: 10)),
+                          ]),
+                          // ── 矢印先端のサイズ ──
+                          Row(children: [
+                            const Icon(Icons.arrow_forward_rounded,
+                                color: Colors.white38, size: 14),
+                            const SizedBox(width: 4),
+                            Text(
+                                context.read<MindMapProvider>().t('conn.arrow'),
+                                style: const TextStyle(
+                                    color: Colors.white38, fontSize: 10)),
+                            Expanded(
+                              child: SliderTheme(
+                                data: SliderThemeData(
+                                  trackHeight: 2,
+                                  thumbShape: const RoundSliderThumbShape(
+                                      enabledThumbRadius: 5),
+                                  activeTrackColor: const Color(0xFFBA68C8),
+                                  inactiveTrackColor:
+                                      Colors.white.withValues(alpha: 0.1),
+                                  thumbColor: Colors.white,
+                                  overlayShape: const RoundSliderOverlayShape(
+                                      overlayRadius: 10),
+                                ),
+                                child: Slider(
+                                  value: _arrowScale.clamp(0.5, 3.0),
+                                  min: 0.5,
+                                  max: 3.0,
+                                  divisions: 25,
+                                  onChanged: _arrow
+                                      ? (v) {
+                                          setState(() => _arrowScale = v);
+                                          widget.onArrowHeadScaleChanged(v);
+                                        }
+                                      : null,
+                                ),
+                              ),
+                            ),
+                            Text('${(_arrowScale * 200).round()}%',
+                                style: TextStyle(
+                                    color: _arrow
+                                        ? const Color(0xFFBA68C8)
+                                        : Colors.white24,
+                                    fontSize: 10)),
+                          ]),
+                          // ── 矢印 ON/OFF ──
+                          GestureDetector(
+                            onTap: () {
+                              setState(() => _arrow = !_arrow);
+                              widget.onShowArrowChanged(_arrow);
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 7),
+                              decoration: BoxDecoration(
+                                color: _arrow
+                                    ? const Color(0xFF43B97F)
+                                        .withValues(alpha: 0.15)
+                                    : Colors.white.withValues(alpha: 0.05),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(
+                                  color: _arrow
+                                      ? const Color(0xFF43B97F)
+                                          .withValues(alpha: 0.4)
+                                      : Colors.white.withValues(alpha: 0.1),
+                                ),
+                              ),
+                              child: Row(children: [
+                                Icon(
+                                  _arrow
+                                      ? Icons.arrow_forward_rounded
+                                      : Icons.remove_rounded,
+                                  color: _arrow
+                                      ? const Color(0xFF43B97F)
+                                      : Colors.white38,
+                                  size: 16,
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  _arrow
+                                      ? context
+                                          .read<MindMapProvider>()
+                                          .t('conn.arrowOn')
+                                      : context
+                                          .read<MindMapProvider>()
+                                          .t('conn.arrowOff'),
+                                  style: TextStyle(
+                                    color: _arrow
+                                        ? const Color(0xFF43B97F)
+                                        : Colors.white54,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const Spacer(),
+                                Icon(
+                                  _arrow
+                                      ? Icons.check_circle_rounded
+                                      : Icons.circle_outlined,
+                                  color: _arrow
+                                      ? const Color(0xFF43B97F)
+                                      : Colors.white24,
+                                  size: 16,
+                                ),
+                              ]),
                             ),
                           ),
-                          child: color == null
-                              ? const Icon(Icons.auto_awesome_rounded,
-                                  color: Colors.white54, size: 12)
-                              : null,
-                        ),
-                      ),
-                  ]),
-                  if (_lineStyle == 'elbow') ...[
-                    const SizedBox(height: 8),
-                    Row(children: [
-                      const Icon(Icons.call_split_rounded,
-                          color: Colors.white38, size: 14),
-                      const SizedBox(width: 4),
-                      Text(
-                          '節点位置 ${(_elbowSplitRatio * 10).round()}:${(10 - _elbowSplitRatio * 10).round()}',
-                          style: const TextStyle(
-                              color: Colors.white38, fontSize: 10)),
-                      Expanded(
-                        child: SliderTheme(
-                          data: SliderThemeData(
-                            trackHeight: 2,
-                            thumbShape: const RoundSliderThumbShape(
-                                enabledThumbRadius: 5),
-                            activeTrackColor: const Color(0xFF80CBC4),
-                            inactiveTrackColor:
-                                Colors.white.withValues(alpha: 0.1),
-                            thumbColor: Colors.white,
-                            overlayShape: const RoundSliderOverlayShape(
-                                overlayRadius: 10),
-                          ),
-                          child: Slider(
-                            value: _elbowSplitRatio.clamp(0.1, 0.9),
-                            min: 0.1,
-                            max: 0.9,
-                            divisions: 8,
-                            onChanged: (v) {
-                              setState(() => _elbowSplitRatio = v);
-                              widget.onElbowSplitRatioChanged(v);
-                            },
-                          ),
-                        ),
-                      ),
-                    ]),
-                    Row(children: [
-                      const Icon(Icons.scatter_plot_rounded,
-                          color: Colors.white38, size: 14),
-                      const SizedBox(width: 4),
-                      const Text('節点数',
-                          style:
-                              TextStyle(color: Colors.white38, fontSize: 10)),
-                      const Spacer(),
-                      IconButton(
-                        visualDensity: VisualDensity.compact,
-                        padding: EdgeInsets.zero,
-                        constraints:
-                            const BoxConstraints(minWidth: 28, minHeight: 28),
-                        icon: const Icon(Icons.remove_rounded,
-                            color: Colors.white70, size: 16),
-                        onPressed: _elbowPointCount <= 1
-                            ? null
-                            : () {
-                                final next =
-                                    (_elbowPointCount - 1).clamp(1, 8).toInt();
-                                setState(() => _elbowPointCount = next);
-                                widget.onElbowPointCountChanged(next);
-                              },
-                      ),
-                      Text('$_elbowPointCount',
-                          style: const TextStyle(
-                              color: Color(0xFF80CBC4),
-                              fontSize: 12,
-                              fontWeight: FontWeight.w700)),
-                      IconButton(
-                        visualDensity: VisualDensity.compact,
-                        padding: EdgeInsets.zero,
-                        constraints:
-                            const BoxConstraints(minWidth: 28, minHeight: 28),
-                        icon: const Icon(Icons.add_rounded,
-                            color: Colors.white70, size: 16),
-                        onPressed: _elbowPointCount >= 8
-                            ? null
-                            : () {
-                                final next =
-                                    (_elbowPointCount + 1).clamp(1, 8).toInt();
-                                setState(() => _elbowPointCount = next);
-                                widget.onElbowPointCountChanged(next);
-                              },
-                      ),
-                      TextButton(
-                        onPressed: widget.onClearElbowBendPoints,
-                        child: const Text('節点リセット',
-                            style:
-                                TextStyle(color: Colors.white54, fontSize: 10)),
-                      ),
-                    ]),
-                  ],
-                  const SizedBox(height: 10),
-                  // ── 線の太さ ──
-                  Row(children: [
-                    const Icon(Icons.line_weight_rounded,
-                        color: Colors.white38, size: 14),
-                    const SizedBox(width: 4),
-                    Text(context.read<MindMapProvider>().t('conn.thickness'),
-                        style: const TextStyle(
-                            color: Colors.white38, fontSize: 10)),
-                    Expanded(
-                      child: SliderTheme(
-                        data: SliderThemeData(
-                          trackHeight: 2,
-                          thumbShape: const RoundSliderThumbShape(
-                              enabledThumbRadius: 5),
-                          activeTrackColor: const Color(0xFF4FC3F7),
-                          inactiveTrackColor:
-                              Colors.white.withValues(alpha: 0.1),
-                          thumbColor: Colors.white,
-                          overlayShape:
-                              const RoundSliderOverlayShape(overlayRadius: 10),
-                        ),
-                        child: Slider(
-                          value: _sw,
-                          min: 1.0,
-                          max: 8.0,
-                          divisions: 7,
-                          onChanged: (v) {
-                            setState(() => _sw = v);
-                            widget.onStrokeWidthChanged(v);
-                          },
-                        ),
-                      ),
-                    ),
-                    Text('${_sw.round()}',
-                        style: const TextStyle(
-                            color: Color(0xFF4FC3F7), fontSize: 10)),
-                  ]),
-                  // ── 矢印先端のサイズ ──
-                  Row(children: [
-                    const Icon(Icons.arrow_forward_rounded,
-                        color: Colors.white38, size: 14),
-                    const SizedBox(width: 4),
-                    Text(context.read<MindMapProvider>().t('conn.arrow'),
-                        style: const TextStyle(
-                            color: Colors.white38, fontSize: 10)),
-                    Expanded(
-                      child: SliderTheme(
-                        data: SliderThemeData(
-                          trackHeight: 2,
-                          thumbShape: const RoundSliderThumbShape(
-                              enabledThumbRadius: 5),
-                          activeTrackColor: const Color(0xFFBA68C8),
-                          inactiveTrackColor:
-                              Colors.white.withValues(alpha: 0.1),
-                          thumbColor: Colors.white,
-                          overlayShape:
-                              const RoundSliderOverlayShape(overlayRadius: 10),
-                        ),
-                        child: Slider(
-                          value: _arrowScale.clamp(0.5, 3.0),
-                          min: 0.5,
-                          max: 3.0,
-                          divisions: 25,
-                          onChanged: _arrow
-                              ? (v) {
-                                  setState(() => _arrowScale = v);
-                                  widget.onArrowHeadScaleChanged(v);
-                                }
-                              : null,
-                        ),
-                      ),
-                    ),
-                    Text('${(_arrowScale * 200).round()}%',
-                        style: TextStyle(
-                            color: _arrow
-                                ? const Color(0xFFBA68C8)
-                                : Colors.white24,
-                            fontSize: 10)),
-                  ]),
-                  // ── 矢印 ON/OFF ──
-                  GestureDetector(
-                    onTap: () {
-                      setState(() => _arrow = !_arrow);
-                      widget.onShowArrowChanged(_arrow);
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 7),
-                      decoration: BoxDecoration(
-                        color: _arrow
-                            ? const Color(0xFF43B97F).withValues(alpha: 0.15)
-                            : Colors.white.withValues(alpha: 0.05),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                          color: _arrow
-                              ? const Color(0xFF43B97F).withValues(alpha: 0.4)
-                              : Colors.white.withValues(alpha: 0.1),
-                        ),
-                      ),
-                      child: Row(children: [
-                        Icon(
-                          _arrow
-                              ? Icons.arrow_forward_rounded
-                              : Icons.remove_rounded,
-                          color:
-                              _arrow ? const Color(0xFF43B97F) : Colors.white38,
-                          size: 16,
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          _arrow
-                              ? context
-                                  .read<MindMapProvider>()
-                                  .t('conn.arrowOn')
-                              : context
-                                  .read<MindMapProvider>()
-                                  .t('conn.arrowOff'),
-                          style: TextStyle(
-                            color: _arrow
-                                ? const Color(0xFF43B97F)
-                                : Colors.white54,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const Spacer(),
-                        Icon(
-                          _arrow
-                              ? Icons.check_circle_rounded
-                              : Icons.circle_outlined,
-                          color:
-                              _arrow ? const Color(0xFF43B97F) : Colors.white24,
-                          size: 16,
-                        ),
-                      ]),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  // ── 両方向矢印トグル ──
-                  // ON にすると from 側にも矢印を表示 (= A ↔ B)。
-                  // 矢印 OFF 状態の時は選択不可 (= 矢印無しなら方向の概念がない)。
-                  GestureDetector(
-                    onTap: _arrow
-                        ? () {
-                            setState(() => _bidirectional = !_bidirectional);
-                            widget.onBidirectionalChanged(_bidirectional);
-                          }
-                        : null,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 7),
-                      decoration: BoxDecoration(
-                        color: (_arrow && _bidirectional)
-                            ? const Color(0xFF6C63FF).withValues(alpha: 0.15)
-                            : Colors.white.withValues(alpha: 0.05),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                          color: (_arrow && _bidirectional)
-                              ? const Color(0xFF6C63FF).withValues(alpha: 0.4)
-                              : Colors.white.withValues(alpha: 0.1),
-                        ),
-                      ),
-                      child: Row(children: [
-                        Icon(
-                          _bidirectional
-                              ? Icons.compare_arrows_rounded
-                              : Icons.arrow_forward_rounded,
-                          color: !_arrow
-                              ? Colors.white24
-                              : (_bidirectional
-                                  ? const Color(0xFF6C63FF)
-                                  : Colors.white54),
-                          size: 16,
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          _bidirectional ? '両方向 (↔)' : '単方向 (→)',
-                          style: TextStyle(
-                            color: !_arrow
-                                ? Colors.white24
-                                : (_bidirectional
+                          const SizedBox(height: 10),
+                          // ── 両方向矢印トグル ──
+                          // ON にすると from 側にも矢印を表示 (= A ↔ B)。
+                          // 矢印 OFF 状態の時は選択不可 (= 矢印無しなら方向の概念がない)。
+                          GestureDetector(
+                            onTap: _arrow
+                                ? () {
+                                    setState(
+                                        () => _bidirectional = !_bidirectional);
+                                    widget
+                                        .onBidirectionalChanged(_bidirectional);
+                                  }
+                                : null,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 7),
+                              decoration: BoxDecoration(
+                                color: (_arrow && _bidirectional)
                                     ? const Color(0xFF6C63FF)
-                                    : Colors.white54),
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
+                                        .withValues(alpha: 0.15)
+                                    : Colors.white.withValues(alpha: 0.05),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(
+                                  color: (_arrow && _bidirectional)
+                                      ? const Color(0xFF6C63FF)
+                                          .withValues(alpha: 0.4)
+                                      : Colors.white.withValues(alpha: 0.1),
+                                ),
+                              ),
+                              child: Row(children: [
+                                Icon(
+                                  _bidirectional
+                                      ? Icons.compare_arrows_rounded
+                                      : Icons.arrow_forward_rounded,
+                                  color: !_arrow
+                                      ? Colors.white24
+                                      : (_bidirectional
+                                          ? const Color(0xFF6C63FF)
+                                          : Colors.white54),
+                                  size: 16,
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  _bidirectional ? '両方向 (↔)' : '単方向 (→)',
+                                  style: TextStyle(
+                                    color: !_arrow
+                                        ? Colors.white24
+                                        : (_bidirectional
+                                            ? const Color(0xFF6C63FF)
+                                            : Colors.white54),
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const Spacer(),
+                                Icon(
+                                  (_arrow && _bidirectional)
+                                      ? Icons.check_circle_rounded
+                                      : Icons.circle_outlined,
+                                  color: !_arrow
+                                      ? Colors.white24
+                                      : (_bidirectional
+                                          ? const Color(0xFF6C63FF)
+                                          : Colors.white24),
+                                  size: 16,
+                                ),
+                              ]),
+                            ),
                           ),
-                        ),
-                        const Spacer(),
-                        Icon(
-                          (_arrow && _bidirectional)
-                              ? Icons.check_circle_rounded
-                              : Icons.circle_outlined,
-                          color: !_arrow
-                              ? Colors.white24
-                              : (_bidirectional
-                                  ? const Color(0xFF6C63FF)
-                                  : Colors.white24),
-                          size: 16,
-                        ),
-                      ]),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  Row(children: [
-                    Expanded(
-                      child: GestureDetector(
-                        onTap: () {
-                          setState(() => _relationshipType = 'parentChild');
-                          widget.onRelationshipTypeChanged('parentChild');
-                        },
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(vertical: 7),
-                          decoration: BoxDecoration(
-                            color: _relationshipType == 'parentChild'
-                                ? const Color(0xFF26A69A)
-                                    .withValues(alpha: 0.18)
-                                : Colors.white.withValues(alpha: 0.04),
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(
-                                color: _relationshipType == 'parentChild'
-                                    ? const Color(0xFF26A69A)
-                                    : Colors.white12),
+                          const SizedBox(height: 10),
+                          Row(children: [
+                            Expanded(
+                              child: GestureDetector(
+                                onTap: () {
+                                  setState(
+                                      () => _relationshipType = 'parentChild');
+                                  widget
+                                      .onRelationshipTypeChanged('parentChild');
+                                },
+                                child: Container(
+                                  padding:
+                                      const EdgeInsets.symmetric(vertical: 7),
+                                  decoration: BoxDecoration(
+                                    color: _relationshipType == 'parentChild'
+                                        ? const Color(0xFF26A69A)
+                                            .withValues(alpha: 0.18)
+                                        : Colors.white.withValues(alpha: 0.04),
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(
+                                        color:
+                                            _relationshipType == 'parentChild'
+                                                ? const Color(0xFF26A69A)
+                                                : Colors.white12),
+                                  ),
+                                  child: const Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      children: [
+                                        Icon(Icons.account_tree_rounded,
+                                            color: Color(0xFF80CBC4), size: 14),
+                                        SizedBox(width: 5),
+                                        Text('親 → 子',
+                                            style: TextStyle(
+                                                color: Colors.white70,
+                                                fontSize: 11)),
+                                      ]),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: GestureDetector(
+                                onTap: () {
+                                  setState(
+                                      () => _relationshipType = 'association');
+                                  widget
+                                      .onRelationshipTypeChanged('association');
+                                },
+                                child: Container(
+                                  padding:
+                                      const EdgeInsets.symmetric(vertical: 7),
+                                  decoration: BoxDecoration(
+                                    color: _relationshipType == 'association'
+                                        ? const Color(0xFF7E57C2)
+                                            .withValues(alpha: 0.18)
+                                        : Colors.white.withValues(alpha: 0.04),
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(
+                                        color:
+                                            _relationshipType == 'association'
+                                                ? const Color(0xFF7E57C2)
+                                                : Colors.white12),
+                                  ),
+                                  child: const Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      children: [
+                                        Icon(Icons.link_rounded,
+                                            color: Color(0xFFB39DDB), size: 14),
+                                        SizedBox(width: 5),
+                                        Text('関連',
+                                            style: TextStyle(
+                                                color: Colors.white70,
+                                                fontSize: 11)),
+                                      ]),
+                                ),
+                              ),
+                            ),
+                          ]),
+                          const SizedBox(height: 4),
+                          Text(
+                            _relationshipType == 'parentChild'
+                                ? '始点ノードを親、終点ノードを子として判定します'
+                                : '階層判定に含めない関連リンクです',
+                            style: const TextStyle(
+                                color: Colors.white30, fontSize: 9),
                           ),
-                          child: const Row(
+                          if (_relationshipType == 'parentChild') ...[
+                            const SizedBox(height: 6),
+                            SizedBox(
+                              width: double.infinity,
+                              height: 34,
+                              child: OutlinedButton.icon(
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: const Color(0xFF80CBC4),
+                                  side: const BorderSide(
+                                      color: Color(0x554DB6AC)),
+                                  padding:
+                                      const EdgeInsets.symmetric(horizontal: 8),
+                                  visualDensity: VisualDensity.compact,
+                                ),
+                                onPressed: widget.onReverse,
+                                icon: const Icon(Icons.swap_horiz_rounded,
+                                    size: 16),
+                                label: Text(
+                                  context
+                                      .watch<MindMapProvider>()
+                                      .t('conn.reverseParentChild'),
+                                  style: const TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w700),
+                                ),
+                              ),
+                            ),
+                          ],
+                          const SizedBox(height: 10),
+                          // ── ラベル入力欄 ──
+                          // 接続線の中央に表示するテキスト。 空にすると非表示。
+                          // フォーカスを失った時 (= onChanged で逐次反映ではなく) に
+                          // provider に保存して、 typing 中の連続再描画を避ける。
+                          Row(children: [
+                            const Icon(Icons.label_outline_rounded,
+                                color: Colors.white54, size: 16),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: TextField(
+                                controller: _labelCtrl,
+                                keyboardType: TextInputType.multiline,
+                                textInputAction: TextInputAction.newline,
+                                minLines: 1,
+                                maxLines: 4,
+                                style: const TextStyle(
+                                    color: Colors.white, fontSize: 12),
+                                decoration: InputDecoration(
+                                  hintText: context
+                                      .read<MindMapProvider>()
+                                      .t('connection.labelHint'),
+                                  hintStyle: const TextStyle(
+                                      color: Colors.white38, fontSize: 11),
+                                  filled: true,
+                                  fillColor:
+                                      Colors.white.withValues(alpha: 0.05),
+                                  isDense: true,
+                                  border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                      borderSide: BorderSide(
+                                          color: Colors.white
+                                              .withValues(alpha: 0.1))),
+                                  enabledBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                      borderSide: BorderSide(
+                                          color: Colors.white
+                                              .withValues(alpha: 0.1))),
+                                  focusedBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                      borderSide: const BorderSide(
+                                          color: Color(0xFFBA68C8))),
+                                  contentPadding: const EdgeInsets.symmetric(
+                                      horizontal: 8, vertical: 6),
+                                ),
+                                onChanged: (v) {
+                                  setState(() {});
+                                  _labelSaveDebounce?.cancel();
+                                  _labelSaveDebounce = Timer(
+                                      const Duration(milliseconds: 350), () {
+                                    widget.onLabelChanged(v.trim());
+                                  });
+                                },
+                              ),
+                            ),
+                            if (_labelCtrl.text.isNotEmpty) ...[
+                              const SizedBox(width: 4),
+                              IconButton(
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(
+                                    minWidth: 24, minHeight: 24),
+                                icon: const Icon(Icons.close_rounded,
+                                    color: Colors.white54, size: 14),
+                                tooltip: context
+                                    .read<MindMapProvider>()
+                                    .t('connection.deleteLabel'),
+                                onPressed: () {
+                                  _labelCtrl.clear();
+                                  widget.onLabelChanged('');
+                                  setState(() {});
+                                },
+                              ),
+                            ],
+                          ]),
+                          if (_labelCtrl.text.isNotEmpty) ...[
+                            Row(children: [
+                              const Icon(Icons.open_with_rounded,
+                                  color: Colors.white38, size: 14),
+                              const SizedBox(width: 4),
+                              const Text('タグ位置',
+                                  style: TextStyle(
+                                      color: Colors.white38, fontSize: 10)),
+                              Expanded(
+                                child: Slider(
+                                  value: _labelPosition.clamp(0.02, 0.98),
+                                  min: 0.02,
+                                  max: 0.98,
+                                  onChanged: (v) {
+                                    setState(() => _labelPosition = v);
+                                    widget.onLabelPositionChanged(v);
+                                  },
+                                ),
+                              ),
+                            ]),
+                            const Text('タグをマップ上で直接ドラッグしても移動できます',
+                                style: TextStyle(
+                                    color: Colors.white30, fontSize: 9)),
+                          ],
+                          const SizedBox(height: 10),
+                          // ── 方向を反転 ──
+                          Row(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
-                                Icon(Icons.account_tree_rounded,
-                                    color: Color(0xFF80CBC4), size: 14),
-                                SizedBox(width: 5),
-                                Text('親 → 子',
-                                    style: TextStyle(
-                                        color: Colors.white70, fontSize: 11)),
+                                _Btn(
+                                  icon: Icons.swap_horiz_rounded,
+                                  label: context.watch<MindMapProvider>().t(
+                                      _relationshipType == 'parentChild'
+                                          ? 'conn.reverseParentChild'
+                                          : 'conn.reverseDirection'),
+                                  color: const Color(0xFF4FC3F7),
+                                  size: 40.0,
+                                  onTap: widget.onReverse,
+                                ),
+                                const SizedBox(width: 8),
+                                _Btn(
+                                  icon: Icons.save_rounded,
+                                  label: '設定保存',
+                                  color: const Color(0xFF80CBC4),
+                                  size: 40.0,
+                                  onTap: () => widget
+                                      .onSaveDefaults(_snapshotConnection()),
+                                ),
+                                const SizedBox(width: 8),
+                                // ── 削除ボタン ──
+                                _Btn(
+                                  icon: Icons.link_off_rounded,
+                                  label: context
+                                      .read<MindMapProvider>()
+                                      .t('conn.delete'),
+                                  color: Colors.red.shade400,
+                                  size: 40.0,
+                                  onTap: widget.onDelete,
+                                ),
                               ]),
-                        ),
+                        ]),
                       ),
                     ),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: GestureDetector(
-                        onTap: () {
-                          setState(() => _relationshipType = 'association');
-                          widget.onRelationshipTypeChanged('association');
-                        },
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(vertical: 7),
-                          decoration: BoxDecoration(
-                            color: _relationshipType == 'association'
-                                ? const Color(0xFF7E57C2)
-                                    .withValues(alpha: 0.18)
-                                : Colors.white.withValues(alpha: 0.04),
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(
-                                color: _relationshipType == 'association'
-                                    ? const Color(0xFF7E57C2)
-                                    : Colors.white12),
-                          ),
-                          child: const Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(Icons.link_rounded,
-                                    color: Color(0xFFB39DDB), size: 14),
-                                SizedBox(width: 5),
-                                Text('関連',
-                                    style: TextStyle(
-                                        color: Colors.white70, fontSize: 11)),
-                              ]),
-                        ),
-                      ),
-                    ),
-                  ]),
-                  const SizedBox(height: 4),
-                  Text(
-                    _relationshipType == 'parentChild'
-                        ? '始点ノードを親、終点ノードを子として判定します'
-                        : '階層判定に含めない関連リンクです',
-                    style: const TextStyle(color: Colors.white30, fontSize: 9),
-                  ),
-                  const SizedBox(height: 10),
-                  // ── ラベル入力欄 ──
-                  // 接続線の中央に表示するテキスト。 空にすると非表示。
-                  // フォーカスを失った時 (= onChanged で逐次反映ではなく) に
-                  // provider に保存して、 typing 中の連続再描画を避ける。
-                  Row(children: [
-                    const Icon(Icons.label_outline_rounded,
-                        color: Colors.white54, size: 16),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: TextField(
-                        controller: _labelCtrl,
-                        keyboardType: TextInputType.multiline,
-                        textInputAction: TextInputAction.newline,
-                        minLines: 1,
-                        maxLines: 4,
-                        style:
-                            const TextStyle(color: Colors.white, fontSize: 12),
-                        decoration: InputDecoration(
-                          hintText: context
-                              .read<MindMapProvider>()
-                              .t('connection.labelHint'),
-                          hintStyle: const TextStyle(
-                              color: Colors.white38, fontSize: 11),
-                          filled: true,
-                          fillColor: Colors.white.withValues(alpha: 0.05),
-                          isDense: true,
-                          border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(8),
-                              borderSide: BorderSide(
-                                  color: Colors.white.withValues(alpha: 0.1))),
-                          enabledBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(8),
-                              borderSide: BorderSide(
-                                  color: Colors.white.withValues(alpha: 0.1))),
-                          focusedBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(8),
-                              borderSide:
-                                  const BorderSide(color: Color(0xFFBA68C8))),
-                          contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 6),
-                        ),
-                        onChanged: (v) {
-                          setState(() {});
-                          _labelSaveDebounce?.cancel();
-                          _labelSaveDebounce =
-                              Timer(const Duration(milliseconds: 350), () {
-                            widget.onLabelChanged(v.trim());
-                          });
-                        },
-                      ),
-                    ),
-                    if (_labelCtrl.text.isNotEmpty) ...[
-                      const SizedBox(width: 4),
-                      IconButton(
-                        padding: EdgeInsets.zero,
-                        constraints:
-                            const BoxConstraints(minWidth: 24, minHeight: 24),
-                        icon: const Icon(Icons.close_rounded,
-                            color: Colors.white54, size: 14),
-                        tooltip: context
-                            .read<MindMapProvider>()
-                            .t('connection.deleteLabel'),
-                        onPressed: () {
-                          _labelCtrl.clear();
-                          widget.onLabelChanged('');
-                          setState(() {});
-                        },
-                      ),
-                    ],
-                  ]),
-                  if (_labelCtrl.text.isNotEmpty) ...[
-                    Row(children: [
-                      const Icon(Icons.open_with_rounded,
-                          color: Colors.white38, size: 14),
-                      const SizedBox(width: 4),
-                      const Text('タグ位置',
-                          style:
-                              TextStyle(color: Colors.white38, fontSize: 10)),
-                      Expanded(
-                        child: Slider(
-                          value: _labelPosition.clamp(0.02, 0.98),
-                          min: 0.02,
-                          max: 0.98,
-                          onChanged: (v) {
-                            setState(() => _labelPosition = v);
-                            widget.onLabelPositionChanged(v);
-                          },
-                        ),
-                      ),
-                    ]),
-                    const Text('タグをマップ上で直接ドラッグしても移動できます',
-                        style:
-                            TextStyle(color: Colors.white30, fontSize: 9)),
-                  ],
-                  const SizedBox(height: 10),
-                  // ── 方向を反転 ──
-                  Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                    _Btn(
-                      icon: Icons.swap_horiz_rounded,
-                      label: context
-                          .watch<MindMapProvider>()
-                          .t('conn.reverseDirection'),
-                      color: const Color(0xFF4FC3F7),
-                      size: 40.0,
-                      onTap: widget.onReverse,
-                    ),
-                    const SizedBox(width: 8),
-                    _Btn(
-                      icon: Icons.save_rounded,
-                      label: '設定保存',
-                      color: const Color(0xFF80CBC4),
-                      size: 40.0,
-                      onTap: () => widget.onSaveDefaults(_snapshotConnection()),
-                    ),
-                    const SizedBox(width: 8),
-                    // ── 削除ボタン ──
-                    _Btn(
-                      icon: Icons.link_off_rounded,
-                      label: context.read<MindMapProvider>().t('conn.delete'),
-                      color: Colors.red.shade400,
-                      size: 40.0,
-                      onTap: widget.onDelete,
-                    ),
-                  ]),
                 ],
               ),
             ),
@@ -68654,10 +68789,9 @@ class _HeaderCustomButtonsBarState extends State<_HeaderCustomButtonsBar> {
     final double perBtnW = reorderMode ? 58.0 : _kHeaderCustomButtonExtent;
     final desktopGapCount =
         desktopPlacement == null || buttons.isEmpty ? 0 : buttons.length + 1;
-    final double rawButtonsW =
-        buttons.length * perBtnW +
-            desktopGapCount * _kDesktopHeaderInsertionGapExtent +
-            (trailing == null ? 0.0 : perBtnW);
+    final double rawButtonsW = buttons.length * perBtnW +
+        desktopGapCount * _kDesktopHeaderInsertionGapExtent +
+        (trailing == null ? 0.0 : perBtnW);
     final double endPadW = rawButtonsW > maxAvailable ? 56.0 : 0.0;
     final desiredW = rawButtonsW + endPadW;
     final double w =
@@ -68774,8 +68908,8 @@ class _HeaderCustomButtonsBarState extends State<_HeaderCustomButtonsBar> {
                     key: PageStorageKey<String>(
                       widget.storageKey ??
                           (buttonIds == null
-                          ? 'header_custom_buttons_bar_normal'
-                          : 'header_custom_buttons_bar_gallery'),
+                              ? 'header_custom_buttons_bar_normal'
+                              : 'header_custom_buttons_bar_gallery'),
                     ),
                     controller: _scrollCtrl,
                     scrollDirection: Axis.horizontal,
@@ -71617,8 +71751,7 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
       context,
       initialQuery: text,
       initialMemo: text,
-      customTitle:
-          sourceTitle.isEmpty ? '動画メモを検索' : '$sourceTitle のメモを検索',
+      customTitle: sourceTitle.isEmpty ? '動画メモを検索' : '$sourceTitle のメモを検索',
       anchorPos: const Offset(16, 16),
       // 同じ検索画面を再利用しつつ、別項目を押した時は入力内容を更新する。
       singletonKey: 'win_video_memo_google',
@@ -72851,15 +72984,14 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
                     if (sourceTitle.isNotEmpty)
                       Text(
                         sourceTitle,
-                        style: const TextStyle(
-                            color: Colors.white38, fontSize: 9),
+                        style:
+                            const TextStyle(color: Colors.white38, fontSize: 9),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
                     Text(
                       entry.text,
-                      style:
-                          const TextStyle(color: Colors.white, fontSize: 11),
+                      style: const TextStyle(color: Colors.white, fontSize: 11),
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -77619,9 +77751,8 @@ class _GanttPageViewState extends State<_GanttPageView> {
             decoration: BoxDecoration(
               color: Color(t.color),
               borderRadius: BorderRadius.circular(6),
-              border: selected
-                  ? Border.all(color: Colors.white, width: 2)
-                  : null,
+              border:
+                  selected ? Border.all(color: Colors.white, width: 2) : null,
               boxShadow: selected
                   ? [
                       BoxShadow(
@@ -77632,8 +77763,7 @@ class _GanttPageViewState extends State<_GanttPageView> {
             ),
             alignment: Alignment.center,
             padding: const EdgeInsets.symmetric(horizontal: handleW),
-            child: Text(
-                assignee.isEmpty ? label : '$label · $assignee',
+            child: Text(assignee.isEmpty ? label : '$label · $assignee',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
@@ -77761,8 +77891,8 @@ class _GanttPageViewState extends State<_GanttPageView> {
                 style: const TextStyle(color: Colors.white),
                 decoration: const InputDecoration(
                   isDense: true,
-                  prefixIcon:
-                      Icon(Icons.person_outline_rounded, size: 18, color: Color(0xFF43B97F)),
+                  prefixIcon: Icon(Icons.person_outline_rounded,
+                      size: 18, color: Color(0xFF43B97F)),
                   hintText: '担当者 (任意)',
                   hintStyle: TextStyle(color: Colors.white38),
                 ),
@@ -77983,359 +78113,387 @@ class _GanttPageViewState extends State<_GanttPageView> {
       focusNode: _ganttFocus,
       onKeyEvent: _onGanttKey,
       child: Container(
-      color: const Color(0xFF12121C),
-      child: Row(children: [
-        Expanded(
-          child: Column(children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
-          child: Row(children: [
-            if (!isMobile) ...[
-              const Icon(Icons.view_timeline_rounded, color: Color(0xFF4FC3F7)),
-              const SizedBox(width: 8),
-              Flexible(
-                child: Text(widget.provider.t('gantt.title'),
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 16,
-                        fontWeight: FontWeight.w700)),
-              ),
-              const SizedBox(width: 8),
-            ],
-            // ── 日 / 時間 の単位切替 (= ユーザー要望: 時間単位のタスク表) ──
-            SegmentedButton<String>(
-              segments: [
-                ButtonSegment(
-                    value: 'day', label: Text(widget.provider.t('gantt.day'))),
-                ButtonSegment(
-                    value: 'hour',
-                    label: Text(widget.provider.t('gantt.hour'))),
-              ],
-              selected: {_unit},
-              showSelectedIcon: false,
-              style: SegmentedButton.styleFrom(
-                visualDensity: VisualDensity.compact,
-                foregroundColor: Colors.white70,
-                selectedForegroundColor: Colors.white,
-                selectedBackgroundColor:
-                    const Color(0xFF4FC3F7).withValues(alpha: 0.5),
-              ),
-              onSelectionChanged: (s) => _setUnit(s.first),
-            ),
-            // ── 表示する時間帯の設定 (時間モードのみ) (= ユーザー要望) ──
-            if (_unit == 'hour')
-              IconButton(
-                tooltip: context.read<MindMapProvider>().t('gantt.timeRange'),
-                visualDensity: VisualDensity.compact,
-                icon: const Icon(Icons.schedule_rounded,
-                    size: 20, color: Colors.white70),
-                onPressed: _showHoursDialog,
-              ),
-            // ── 12時間(AM/PM) / 24時間 表記の切替 (= ユーザー要望) ──
-            if (_unit == 'hour')
-              IconButton(
-                tooltip: widget.provider
-                    .t(_use12h ? 'gantt.switch24h' : 'gantt.switch12h'),
-                visualDensity: VisualDensity.compact,
-                icon: Icon(
-                    _use12h
-                        ? Icons.access_time_filled_rounded
-                        : Icons.access_time_rounded,
-                    size: 20,
-                    color: _use12h ? const Color(0xFF4FC3F7) : Colors.white70),
-                onPressed: _toggle12h,
-              ),
-            // ── 予定の通知設定 (= ユーザー要望: ガントの予定が通知される時刻を設定) ──
-            IconButton(
-              tooltip:
-                  context.read<MindMapProvider>().t('gantt.notifySettings'),
-              visualDensity: VisualDensity.compact,
-              icon: Icon(
-                  _notifyEnabled
-                      ? Icons.notifications_active_rounded
-                      : Icons.notifications_none_rounded,
-                  size: 20,
-                  color: _notifyEnabled
-                      ? const Color(0xFFFFB347)
-                      : Colors.white70),
-              onPressed: _showGanttNotifySettings,
-            ),
-            // ── サイド編集メニューの開閉 (= ユーザー要望: 動画エディター風) ──
-            IconButton(
-              tooltip: 'サイドメニュー',
-              visualDensity: VisualDensity.compact,
-              icon: Icon(
-                  _sidePanelOpen
-                      ? Icons.view_sidebar_rounded
-                      : Icons.view_sidebar_outlined,
-                  size: 20,
-                  color: _sidePanelOpen
-                      ? const Color(0xFF4FC3F7)
-                      : Colors.white70),
-              onPressed: () =>
-                  setState(() => _sidePanelOpen = !_sidePanelOpen),
-            ),
-            const SizedBox(width: 8),
-            ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF4FC3F7),
-                  foregroundColor: Colors.black,
-                  visualDensity: VisualDensity.compact),
-              onPressed: () => _editTask(null),
-              icon: const Icon(Icons.add, size: 18),
-              label: Text(widget.provider.t('btn.add')),
-            ),
-          ]),
-        ),
-        // ── チャート切替タブ (= ユーザー要望: チャートを複数作成) ──
-        _buildChartTabs(),
-        const Divider(color: Colors.white12, height: 1),
-        if (_tasks.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
-            child: Row(children: [
-              Icon(Icons.open_with_rounded, size: 12, color: Colors.white38),
-              SizedBox(width: 6),
-              Expanded(
-                child: Text(widget.provider.t('gantt.dragHint'),
-                    style: TextStyle(color: Colors.white38, fontSize: 11)),
-              ),
-            ]),
-          ),
-        if (_tasks.isEmpty)
+        color: const Color(0xFF12121C),
+        child: Row(children: [
           Expanded(
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: _addQuickTask,
-              child: Center(
-                child: Text(widget.provider.t('gantt.noTasks'),
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.white38)),
-              ),
-            ),
-          )
-        else
-          Expanded(
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: SizedBox(
-                width: _nameW + timelineW,
-                child: SingleChildScrollView(
-                  child: Stack(children: [
-                    // ── 背景グリッド (= ユーザー要望: 枠線が分かるように) ──
-                    Positioned.fill(
-                      child: CustomPaint(
-                        painter: _GanttGridPainter(
-                          nameW: _nameW,
-                          colW: _colW,
-                          totalCols: totalCols,
-                          axisH: 28,
-                          rowH: _rowH,
-                          rowCount: _tasks.length + 1,
-                          boldCols: boldCols,
-                        ),
-                      ),
+            child: Column(children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
+                child: Row(children: [
+                  if (!isMobile) ...[
+                    const Icon(Icons.view_timeline_rounded,
+                        color: Color(0xFF4FC3F7)),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(widget.provider.t('gantt.title'),
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700)),
                     ),
-                    Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          // 時刻 / 日付軸
-                          Row(children: [
-                            const SizedBox(width: _nameW, height: 28),
-                            for (int i = 0; i < cols.length; i++)
-                              SizedBox(
-                                width: _colW,
-                                height: 28,
-                                // = ユーザー要望: 日付をクリックでその日の時間表示へ。
-                                //   日付セル (日モード or 時間モードの日境界) のみ。
-                                child: GestureDetector(
-                                  behavior: HitTestBehavior.opaque,
-                                  onTap:
-                                      (_unit == 'day' || boldCols.contains(i))
-                                          ? () => _focusDayHourView(cols[i])
-                                          : null,
-                                  child: Center(
-                                    child: _axisLabelWidget(
-                                        cols[i],
-                                        boldCols.contains(i),
-                                        amPmCenters.contains(i)),
-                                  ),
-                                ),
-                              ),
-                          ]),
-                          for (final t in _tasks)
-                            SizedBox(
-                              height: _rowH,
-                              child: Row(children: [
-                                SizedBox(
-                                  width: _nameW,
-                                  // クリックでタスク名をインライン編集 (= ユーザー
-                                  //   要望)。 編集中は TextField を表示する。
-                                  child: _editingNameId == t.id
-                                      ? Padding(
-                                          padding: const EdgeInsets.symmetric(
-                                              horizontal: 6),
-                                          child: TextField(
-                                            controller: _nameEditCtrl,
-                                            autofocus: true,
-                                            style: const TextStyle(
-                                                color: Colors.white,
-                                                fontSize: 13),
-                                            decoration: const InputDecoration(
-                                              isDense: true,
-                                              contentPadding:
-                                                  EdgeInsets.symmetric(
-                                                      vertical: 6),
-                                              border: UnderlineInputBorder(
-                                                  borderSide: BorderSide(
-                                                      color:
-                                                          Color(0xFF4FC3F7))),
-                                              enabledBorder:
-                                                  UnderlineInputBorder(
-                                                      borderSide: BorderSide(
-                                                          color: Color(
-                                                              0xFF4FC3F7))),
-                                              focusedBorder:
-                                                  UnderlineInputBorder(
-                                                      borderSide: BorderSide(
-                                                          color: Color(
-                                                              0xFF4FC3F7))),
-                                            ),
-                                            onSubmitted: (_) =>
-                                                _commitNameEdit(t),
-                                            onTapOutside: (_) =>
-                                                _commitNameEdit(t),
-                                          ),
-                                        )
-                                      : GestureDetector(
-                                          behavior: HitTestBehavior.opaque,
-                                          onTap: () => _beginNameEdit(t),
-                                          child: Padding(
-                                            padding: const EdgeInsets.only(
-                                                left: 8, right: 4),
-                                            child: Column(
-                                              mainAxisAlignment:
-                                                  MainAxisAlignment.center,
-                                              crossAxisAlignment:
-                                                  CrossAxisAlignment.start,
-                                              children: [
-                                                Text(t.name,
-                                                    maxLines: 1,
-                                                    overflow:
-                                                        TextOverflow.ellipsis,
-                                                    style: const TextStyle(
-                                                        color: Colors.white,
-                                                        fontSize: 13)),
-                                                if (t.assignee.trim().isNotEmpty)
-                                                  Row(
-                                                      mainAxisSize:
-                                                          MainAxisSize.min,
-                                                      children: [
-                                                        const Icon(
-                                                            Icons
-                                                                .person_rounded,
-                                                            size: 10,
-                                                            color: Color(
-                                                                0xFF43B97F)),
-                                                        const SizedBox(width: 2),
-                                                        Flexible(
-                                                          child: Text(
-                                                              t.assignee.trim(),
-                                                              maxLines: 1,
-                                                              overflow:
-                                                                  TextOverflow
-                                                                      .ellipsis,
-                                                              style: const TextStyle(
-                                                                  color: Color(
-                                                                      0xFF9BE7C4),
-                                                                  fontSize: 10)),
-                                                        ),
-                                                      ]),
-                                              ],
-                                            ),
-                                          ),
-                                        ),
-                                ),
-                                Expanded(
-                                  child: Stack(children: [
-                                    Positioned(
-                                      left: _colIndex(cols, _d(t.startMs)) *
-                                          _colW,
-                                      top: 8,
-                                      width: math.max(
-                                          _colW,
-                                          (_colIndex(cols, _d(t.endMs)) -
-                                                  _colIndex(
-                                                      cols, _d(t.startMs)) +
-                                                  1) *
-                                              _colW),
-                                      height: _rowH - 16,
-                                      // タップで編集 / ドラッグで移動 / 端ドラッグで
-                                      //   期間変更 (= ユーザー要望)。
-                                      child: _ganttBar(t),
-                                    ),
-                                  ]),
-                                ),
-                              ]),
-                            ),
-                          // ── 「行を追加」 行 (= ユーザー要望: ガントチャート上を
-                          //    クリックして行・予定を追加) ──
-                          GestureDetector(
-                            behavior: HitTestBehavior.opaque,
-                            onTap: _addQuickTask,
-                            child: Container(
-                              height: _rowH,
-                              alignment: Alignment.centerLeft,
-                              padding: const EdgeInsets.only(left: 8),
-                              child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    const Icon(Icons.add_circle_outline_rounded,
-                                        size: 16, color: Color(0xFF4FC3F7)),
-                                    const SizedBox(width: 6),
-                                    Text(widget.provider.t('gantt.addRow'),
-                                        style: const TextStyle(
-                                            color: Colors.white54,
-                                            fontSize: 12)),
-                                  ]),
-                            ),
-                          ),
-                        ]),
-                    // ── 現在時刻インジケーター (= ユーザー要望) ──
-                    if (nowX != null)
-                      Positioned(
-                        left: _nameW + nowX!,
-                        top: 22,
-                        bottom: 0,
-                        width: 2,
-                        child: IgnorePointer(
-                          child: Container(color: const Color(0xFFFF5252)),
-                        ),
-                      ),
-                    if (nowX != null)
-                      Positioned(
-                        left: _nameW + nowX! - 4,
-                        top: 17,
-                        width: 10,
-                        height: 10,
-                        child: IgnorePointer(
-                          child: Container(
-                            decoration: const BoxDecoration(
-                                color: Color(0xFFFF5252),
-                                shape: BoxShape.circle),
-                          ),
-                        ),
-                      ),
+                    const SizedBox(width: 8),
+                  ],
+                  // ── 日 / 時間 の単位切替 (= ユーザー要望: 時間単位のタスク表) ──
+                  SegmentedButton<String>(
+                    segments: [
+                      ButtonSegment(
+                          value: 'day',
+                          label: Text(widget.provider.t('gantt.day'))),
+                      ButtonSegment(
+                          value: 'hour',
+                          label: Text(widget.provider.t('gantt.hour'))),
+                    ],
+                    selected: {_unit},
+                    showSelectedIcon: false,
+                    style: SegmentedButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      foregroundColor: Colors.white70,
+                      selectedForegroundColor: Colors.white,
+                      selectedBackgroundColor:
+                          const Color(0xFF4FC3F7).withValues(alpha: 0.5),
+                    ),
+                    onSelectionChanged: (s) => _setUnit(s.first),
+                  ),
+                  // ── 表示する時間帯の設定 (時間モードのみ) (= ユーザー要望) ──
+                  if (_unit == 'hour')
+                    IconButton(
+                      tooltip:
+                          context.read<MindMapProvider>().t('gantt.timeRange'),
+                      visualDensity: VisualDensity.compact,
+                      icon: const Icon(Icons.schedule_rounded,
+                          size: 20, color: Colors.white70),
+                      onPressed: _showHoursDialog,
+                    ),
+                  // ── 12時間(AM/PM) / 24時間 表記の切替 (= ユーザー要望) ──
+                  if (_unit == 'hour')
+                    IconButton(
+                      tooltip: widget.provider
+                          .t(_use12h ? 'gantt.switch24h' : 'gantt.switch12h'),
+                      visualDensity: VisualDensity.compact,
+                      icon: Icon(
+                          _use12h
+                              ? Icons.access_time_filled_rounded
+                              : Icons.access_time_rounded,
+                          size: 20,
+                          color: _use12h
+                              ? const Color(0xFF4FC3F7)
+                              : Colors.white70),
+                      onPressed: _toggle12h,
+                    ),
+                  // ── 予定の通知設定 (= ユーザー要望: ガントの予定が通知される時刻を設定) ──
+                  IconButton(
+                    tooltip: context
+                        .read<MindMapProvider>()
+                        .t('gantt.notifySettings'),
+                    visualDensity: VisualDensity.compact,
+                    icon: Icon(
+                        _notifyEnabled
+                            ? Icons.notifications_active_rounded
+                            : Icons.notifications_none_rounded,
+                        size: 20,
+                        color: _notifyEnabled
+                            ? const Color(0xFFFFB347)
+                            : Colors.white70),
+                    onPressed: _showGanttNotifySettings,
+                  ),
+                  // ── サイド編集メニューの開閉 (= ユーザー要望: 動画エディター風) ──
+                  IconButton(
+                    tooltip: 'サイドメニュー',
+                    visualDensity: VisualDensity.compact,
+                    icon: Icon(
+                        _sidePanelOpen
+                            ? Icons.view_sidebar_rounded
+                            : Icons.view_sidebar_outlined,
+                        size: 20,
+                        color: _sidePanelOpen
+                            ? const Color(0xFF4FC3F7)
+                            : Colors.white70),
+                    onPressed: () =>
+                        setState(() => _sidePanelOpen = !_sidePanelOpen),
+                  ),
+                  const SizedBox(width: 8),
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF4FC3F7),
+                        foregroundColor: Colors.black,
+                        visualDensity: VisualDensity.compact),
+                    onPressed: () => _editTask(null),
+                    icon: const Icon(Icons.add, size: 18),
+                    label: Text(widget.provider.t('btn.add')),
+                  ),
+                ]),
+              ),
+              // ── チャート切替タブ (= ユーザー要望: チャートを複数作成) ──
+              _buildChartTabs(),
+              const Divider(color: Colors.white12, height: 1),
+              if (_tasks.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
+                  child: Row(children: [
+                    Icon(Icons.open_with_rounded,
+                        size: 12, color: Colors.white38),
+                    SizedBox(width: 6),
+                    Expanded(
+                      child: Text(widget.provider.t('gantt.dragHint'),
+                          style:
+                              TextStyle(color: Colors.white38, fontSize: 11)),
+                    ),
                   ]),
                 ),
-              ),
-            ),
+              if (_tasks.isEmpty)
+                Expanded(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: _addQuickTask,
+                    child: Center(
+                      child: Text(widget.provider.t('gantt.noTasks'),
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Colors.white38)),
+                    ),
+                  ),
+                )
+              else
+                Expanded(
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: SizedBox(
+                      width: _nameW + timelineW,
+                      child: SingleChildScrollView(
+                        child: Stack(children: [
+                          // ── 背景グリッド (= ユーザー要望: 枠線が分かるように) ──
+                          Positioned.fill(
+                            child: CustomPaint(
+                              painter: _GanttGridPainter(
+                                nameW: _nameW,
+                                colW: _colW,
+                                totalCols: totalCols,
+                                axisH: 28,
+                                rowH: _rowH,
+                                rowCount: _tasks.length + 1,
+                                boldCols: boldCols,
+                              ),
+                            ),
+                          ),
+                          Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                // 時刻 / 日付軸
+                                Row(children: [
+                                  const SizedBox(width: _nameW, height: 28),
+                                  for (int i = 0; i < cols.length; i++)
+                                    SizedBox(
+                                      width: _colW,
+                                      height: 28,
+                                      // = ユーザー要望: 日付をクリックでその日の時間表示へ。
+                                      //   日付セル (日モード or 時間モードの日境界) のみ。
+                                      child: GestureDetector(
+                                        behavior: HitTestBehavior.opaque,
+                                        onTap: (_unit == 'day' ||
+                                                boldCols.contains(i))
+                                            ? () => _focusDayHourView(cols[i])
+                                            : null,
+                                        child: Center(
+                                          child: _axisLabelWidget(
+                                              cols[i],
+                                              boldCols.contains(i),
+                                              amPmCenters.contains(i)),
+                                        ),
+                                      ),
+                                    ),
+                                ]),
+                                for (final t in _tasks)
+                                  SizedBox(
+                                    height: _rowH,
+                                    child: Row(children: [
+                                      SizedBox(
+                                        width: _nameW,
+                                        // クリックでタスク名をインライン編集 (= ユーザー
+                                        //   要望)。 編集中は TextField を表示する。
+                                        child: _editingNameId == t.id
+                                            ? Padding(
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                        horizontal: 6),
+                                                child: TextField(
+                                                  controller: _nameEditCtrl,
+                                                  autofocus: true,
+                                                  style: const TextStyle(
+                                                      color: Colors.white,
+                                                      fontSize: 13),
+                                                  decoration:
+                                                      const InputDecoration(
+                                                    isDense: true,
+                                                    contentPadding:
+                                                        EdgeInsets.symmetric(
+                                                            vertical: 6),
+                                                    border: UnderlineInputBorder(
+                                                        borderSide: BorderSide(
+                                                            color: Color(
+                                                                0xFF4FC3F7))),
+                                                    enabledBorder:
+                                                        UnderlineInputBorder(
+                                                            borderSide: BorderSide(
+                                                                color: Color(
+                                                                    0xFF4FC3F7))),
+                                                    focusedBorder:
+                                                        UnderlineInputBorder(
+                                                            borderSide: BorderSide(
+                                                                color: Color(
+                                                                    0xFF4FC3F7))),
+                                                  ),
+                                                  onSubmitted: (_) =>
+                                                      _commitNameEdit(t),
+                                                  onTapOutside: (_) =>
+                                                      _commitNameEdit(t),
+                                                ),
+                                              )
+                                            : GestureDetector(
+                                                behavior:
+                                                    HitTestBehavior.opaque,
+                                                onTap: () => _beginNameEdit(t),
+                                                child: Padding(
+                                                  padding:
+                                                      const EdgeInsets.only(
+                                                          left: 8, right: 4),
+                                                  child: Column(
+                                                    mainAxisAlignment:
+                                                        MainAxisAlignment
+                                                            .center,
+                                                    crossAxisAlignment:
+                                                        CrossAxisAlignment
+                                                            .start,
+                                                    children: [
+                                                      Text(t.name,
+                                                          maxLines: 1,
+                                                          overflow: TextOverflow
+                                                              .ellipsis,
+                                                          style:
+                                                              const TextStyle(
+                                                                  color: Colors
+                                                                      .white,
+                                                                  fontSize:
+                                                                      13)),
+                                                      if (t.assignee
+                                                          .trim()
+                                                          .isNotEmpty)
+                                                        Row(
+                                                            mainAxisSize:
+                                                                MainAxisSize
+                                                                    .min,
+                                                            children: [
+                                                              const Icon(
+                                                                  Icons
+                                                                      .person_rounded,
+                                                                  size: 10,
+                                                                  color: Color(
+                                                                      0xFF43B97F)),
+                                                              const SizedBox(
+                                                                  width: 2),
+                                                              Flexible(
+                                                                child: Text(
+                                                                    t.assignee
+                                                                        .trim(),
+                                                                    maxLines: 1,
+                                                                    overflow:
+                                                                        TextOverflow
+                                                                            .ellipsis,
+                                                                    style: const TextStyle(
+                                                                        color: Color(
+                                                                            0xFF9BE7C4),
+                                                                        fontSize:
+                                                                            10)),
+                                                              ),
+                                                            ]),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ),
+                                      ),
+                                      Expanded(
+                                        child: Stack(children: [
+                                          Positioned(
+                                            left:
+                                                _colIndex(cols, _d(t.startMs)) *
+                                                    _colW,
+                                            top: 8,
+                                            width: math.max(
+                                                _colW,
+                                                (_colIndex(cols, _d(t.endMs)) -
+                                                        _colIndex(cols,
+                                                            _d(t.startMs)) +
+                                                        1) *
+                                                    _colW),
+                                            height: _rowH - 16,
+                                            // タップで編集 / ドラッグで移動 / 端ドラッグで
+                                            //   期間変更 (= ユーザー要望)。
+                                            child: _ganttBar(t),
+                                          ),
+                                        ]),
+                                      ),
+                                    ]),
+                                  ),
+                                // ── 「行を追加」 行 (= ユーザー要望: ガントチャート上を
+                                //    クリックして行・予定を追加) ──
+                                GestureDetector(
+                                  behavior: HitTestBehavior.opaque,
+                                  onTap: _addQuickTask,
+                                  child: Container(
+                                    height: _rowH,
+                                    alignment: Alignment.centerLeft,
+                                    padding: const EdgeInsets.only(left: 8),
+                                    child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const Icon(
+                                              Icons.add_circle_outline_rounded,
+                                              size: 16,
+                                              color: Color(0xFF4FC3F7)),
+                                          const SizedBox(width: 6),
+                                          Text(
+                                              widget.provider.t('gantt.addRow'),
+                                              style: const TextStyle(
+                                                  color: Colors.white54,
+                                                  fontSize: 12)),
+                                        ]),
+                                  ),
+                                ),
+                              ]),
+                          // ── 現在時刻インジケーター (= ユーザー要望) ──
+                          if (nowX != null)
+                            Positioned(
+                              left: _nameW + nowX!,
+                              top: 22,
+                              bottom: 0,
+                              width: 2,
+                              child: IgnorePointer(
+                                child:
+                                    Container(color: const Color(0xFFFF5252)),
+                              ),
+                            ),
+                          if (nowX != null)
+                            Positioned(
+                              left: _nameW + nowX! - 4,
+                              top: 17,
+                              width: 10,
+                              height: 10,
+                              child: IgnorePointer(
+                                child: Container(
+                                  decoration: const BoxDecoration(
+                                      color: Color(0xFFFF5252),
+                                      shape: BoxShape.circle),
+                                ),
+                              ),
+                            ),
+                        ]),
+                      ),
+                    ),
+                  ),
+                ),
+            ]),
           ),
-          ]),
-        ),
-        if (_sidePanelOpen) _buildGanttSidePanel(),
-      ]),
+          if (_sidePanelOpen) _buildGanttSidePanel(),
+        ]),
       ),
     );
   }
@@ -78447,11 +78605,11 @@ class _GanttPageViewState extends State<_GanttPageView> {
                         child: OutlinedButton.icon(
                           style: OutlinedButton.styleFrom(
                               foregroundColor: const Color(0xFF4FC3F7),
-                              padding:
-                                  const EdgeInsets.symmetric(vertical: 8)),
+                              padding: const EdgeInsets.symmetric(vertical: 8)),
                           onPressed: () => _editTask(sel),
                           icon: const Icon(Icons.edit_rounded, size: 15),
-                          label: const Text('編集', style: TextStyle(fontSize: 12)),
+                          label:
+                              const Text('編集', style: TextStyle(fontSize: 12)),
                         ),
                       ),
                       const SizedBox(width: 6),
@@ -78459,8 +78617,7 @@ class _GanttPageViewState extends State<_GanttPageView> {
                         child: OutlinedButton.icon(
                           style: OutlinedButton.styleFrom(
                               foregroundColor: const Color(0xFFFFB347),
-                              padding:
-                                  const EdgeInsets.symmetric(vertical: 8)),
+                              padding: const EdgeInsets.symmetric(vertical: 8)),
                           onPressed: _splitSelectedTask,
                           icon: const Icon(Icons.call_split_rounded, size: 15),
                           label:
@@ -78475,7 +78632,8 @@ class _GanttPageViewState extends State<_GanttPageView> {
                         style: TextButton.styleFrom(
                             foregroundColor: const Color(0xFFFF6B6B)),
                         onPressed: _deleteSelectedTask,
-                        icon: const Icon(Icons.delete_outline_rounded, size: 16),
+                        icon:
+                            const Icon(Icons.delete_outline_rounded, size: 16),
                         label: const Text('削除', style: TextStyle(fontSize: 12)),
                       ),
                     ),
@@ -78900,8 +79058,7 @@ class _PaintNote {
   }) {
     final pages = ((m['pages'] as List?) ?? const [])
         .whereType<Map>()
-        .map((page) =>
-            _PaintSheet.fromJson(page, defaultName: defaultPageName))
+        .map((page) => _PaintSheet.fromJson(page, defaultName: defaultPageName))
         .toList();
     if (pages.isEmpty) {
       pages.add(_PaintSheet(name: defaultPageName, sizeId: 'a4p'));
@@ -78927,8 +79084,7 @@ class _PaintStore {
     String defaultNoteName = 'Note 1',
     String defaultPageName = 'Page 1',
   }) async {
-    List<_PaintNote> one(List<_PaintStroke> st, List<_PaintText> tx) =>
-        [
+    List<_PaintNote> one(List<_PaintStroke> st, List<_PaintText> tx) => [
           _PaintNote(
             name: defaultNoteName,
             pages: [
@@ -78967,8 +79123,7 @@ class _PaintStore {
         if (dec['sheets'] is List) {
           final sheets = (dec['sheets'] as List)
               .whereType<Map>()
-              .map((m) =>
-                  _PaintSheet.fromJson(m, defaultName: defaultPageName))
+              .map((m) => _PaintSheet.fromJson(m, defaultName: defaultPageName))
               .toList();
           if (sheets.isEmpty) return (notes: one([], []), noteSel: 0);
           // v2 の各シートを、同じ内容を持つ 1 ページのノートへ移行する。
@@ -78977,9 +79132,9 @@ class _PaintStore {
           for (int i = 0; i < sheets.length; i++) {
             final sheet = sheets[i];
             final oldName = sheet.name.trim();
-            final isLegacyDefault = RegExp(r'^(?:Sheet|シート)\s*\d+$',
-                    caseSensitive: false)
-                .hasMatch(oldName);
+            final isLegacyDefault =
+                RegExp(r'^(?:Sheet|シート)\s*\d+$', caseSensitive: false)
+                    .hasMatch(oldName);
             sheet.name = defaultPageName;
             notes.add(_PaintNote(
               name: isLegacyDefault
@@ -79165,8 +79320,7 @@ class _DocumentPageViewState extends State<_DocumentPageView> {
   final TextEditingController _headerCtrl = TextEditingController();
   final TextEditingController _footerCtrl = TextEditingController();
   bool _headerFooterEditMode = false;
-  String get _headerFooterPrefsKey =>
-      'document_header_footer_${widget.pageId}';
+  String get _headerFooterPrefsKey => 'document_header_footer_${widget.pageId}';
 
   static const String _coverTemplatePrefix = 'template:';
   static const List<_DocCoverTemplate> _coverTemplates = [
@@ -79993,9 +80147,8 @@ class _DocumentPageViewState extends State<_DocumentPageView> {
                   _activeIndex.clamp(0, _controllers.length - 1)),
             ),
             IconButton(
-              tooltip: _headerFooterEditMode
-                  ? 'ヘッダー／フッター編集を終了'
-                  : 'ヘッダー／フッターを編集',
+              tooltip:
+                  _headerFooterEditMode ? 'ヘッダー／フッター編集を終了' : 'ヘッダー／フッターを編集',
               visualDensity: VisualDensity.compact,
               icon: Icon(
                 Icons.vertical_align_center_rounded,
@@ -81172,12 +81325,10 @@ class _PaintPageViewState extends State<_PaintPageView> {
   Future<void> _load() async {
     final d = await _PaintStore.load(
       widget.pageId,
-      defaultNoteName: widget.provider
-          .t('paint.defaultNoteName')
-          .replaceFirst('{n}', '1'),
-      defaultPageName: widget.provider
-          .t('paint.defaultPageName')
-          .replaceFirst('{n}', '1'),
+      defaultNoteName:
+          widget.provider.t('paint.defaultNoteName').replaceFirst('{n}', '1'),
+      defaultPageName:
+          widget.provider.t('paint.defaultPageName').replaceFirst('{n}', '1'),
     );
     if (!mounted) return;
     setState(() {
@@ -82137,7 +82288,9 @@ class _PaintPageViewState extends State<_PaintPageView> {
       final ext = dot >= 0 ? sourceName.substring(dot) : '.png';
       final dst =
           '${dir.path}/paint_img_${DateTime.now().microsecondsSinceEpoch}$ext';
-      if (srcPath != null && srcPath.isNotEmpty && await File(srcPath).exists()) {
+      if (srcPath != null &&
+          srcPath.isNotEmpty &&
+          await File(srcPath).exists()) {
         await File(srcPath).copy(dst);
       } else if (bytes != null && bytes.isNotEmpty) {
         await File(dst).writeAsBytes(bytes, flush: true);
@@ -82577,8 +82730,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
   /// 多過ぎるので A か B か → 数字 → 縦か横か、 のように絞り込む)。 定型比率
   /// (正方形/16:9 等) とカスタムは種類ステップから直接選べる。
   Future<void> _pickRuleSpacing() async {
-    final selected = await _simpleChoice(
-        widget.provider.t('paint.ruleSpacing'), [
+    final selected =
+        await _simpleChoice(widget.provider.t('paint.ruleSpacing'), [
       ('0', widget.provider.t('common.none')),
       ('20', '20 px'),
       ('28', '28 px'),
@@ -82598,8 +82751,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
   /// \u7528\u7d19\u30b5\u30a4\u30ba\u3092\u6bb5\u968e\u7684\u306b\u9078\u3076\u3002
   Future<void> _pickCanvasSize() async {
     final isJapanese = widget.provider.appLanguage == 'ja';
-    final cat = await _simpleChoice(
-        widget.provider.t('paint.paperType'), [
+    final cat = await _simpleChoice(widget.provider.t('paint.paperType'), [
       ('a', widget.provider.t('paint.paperA')),
       if (isJapanese) ('b', widget.provider.t('paint.paperBJis')),
       ('ratio', widget.provider.t('paint.paperRatio')),
@@ -82624,12 +82776,11 @@ class _PaintPageViewState extends State<_PaintPageView> {
       // A 判 / B 判: 数字 → 向き。 用意があるサイズだけ提示する。
       final nums = cat == 'a' ? ['4', '3', '2', '1'] : ['5', '4', '2', '1'];
       final num = await _simpleChoice(
-          widget.provider.t(
-              cat == 'a' ? 'paint.aSizeTitle' : 'paint.bJisSizeTitle'),
+          widget.provider
+              .t(cat == 'a' ? 'paint.aSizeTitle' : 'paint.bJisSizeTitle'),
           [for (final n in nums) (n, '${cat.toUpperCase()}$n')]);
       if (num == null) return;
-      final ori = await _simpleChoice(
-          widget.provider.t('paint.orientation'), [
+      final ori = await _simpleChoice(widget.provider.t('paint.orientation'), [
         ('p', widget.provider.t('paint.portrait')),
         ('l', widget.provider.t('paint.landscape')),
       ]);
@@ -82790,9 +82941,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
     if (_sheets.isEmpty) return;
     String? dir;
     try {
-      dir = await FilePicker.platform
-          .getDirectoryPath(
-              dialogTitle: widget.provider.t('paint.exportFolder'));
+      dir = await FilePicker.platform.getDirectoryPath(
+          dialogTitle: widget.provider.t('paint.exportFolder'));
     } catch (_) {
       dir = null;
     }
@@ -82820,9 +82970,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
     }
     if (mounted) {
       _snack(ok > 0
-          ? widget.provider
-              .t('paint.savedCount')
-              .replaceFirst('{count}', '$ok')
+          ? widget.provider.t('paint.savedCount').replaceFirst('{count}', '$ok')
           : widget.provider.t('paint.saveFailed'));
     }
   }
@@ -83483,7 +83631,9 @@ class _PaintPageViewState extends State<_PaintPageView> {
                   widget.provider.t('paint.toolShape')),
               _toolModeBtn(_PaintTool.image, Icons.image_rounded,
                   widget.provider.t('paint.toolImage')),
-              _toolModeBtn(_PaintTool.select, Icons.highlight_alt_rounded,
+              _toolModeBtn(
+                  _PaintTool.select,
+                  Icons.highlight_alt_rounded,
                   widget.provider.t(_isDesktop
                       ? 'paint.toolSelectMoveDesktop'
                       : 'paint.toolSelectMove')),
@@ -83815,8 +83965,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
     // 最長論理行ぶん確保して横スクロールさせる。IME/キャレット用の余白も含む。
     // キャレット・IME composing・スクロール余白を含めて幅を確保する。
     // 実測値ぎりぎりだと空白入力時だけ不足してソフトラップしてしまう。
-    final desiredEditorW = measured.width * fit +
-        math.max(48.0, _textSize * fit * 2.0);
+    final desiredEditorW =
+        measured.width * fit + math.max(48.0, _textSize * fit * 2.0);
     final editorW = desiredEditorW.clamp(minEditorW, maxW).toDouble();
     final editorContentW = math.max(editorW, desiredEditorW).toDouble();
     final isDesktop =
@@ -84001,8 +84151,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
               3, Icons.north_east_rounded, widget.provider.t('shape.arrow')),
           kindBtn(4, Icons.change_history_rounded,
               widget.provider.t('shape.triangle')),
-          kindBtn(5, Icons.diamond_outlined,
-              widget.provider.t('shape.diamond')),
+          kindBtn(
+              5, Icons.diamond_outlined, widget.provider.t('shape.diamond')),
           const SizedBox(width: 6),
           GestureDetector(
             onTap: () => setState(() => _shapeFill = !_shapeFill),
@@ -84704,6 +84854,8 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
   // ── タイムライン ──
   double _pxPerSec = 80;
   final ScrollController _hScroll = ScrollController();
+  final DraggableScrollableController _itemPanelSheetController =
+      DraggableScrollableController();
 
   // ── ドラッグ状態 ──
   String? _dragId;
@@ -84788,6 +84940,7 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
     _tick?.cancel();
     _ctrl?.dispose();
     _hScroll.dispose();
+    _itemPanelSheetController.dispose();
     _panelTextC.dispose();
     _panelTitleC.dispose();
     _panelStartC.dispose();
@@ -85080,8 +85233,7 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
           c += it.durationMs;
         }
       });
-      final panelIndex =
-          _items.indexWhere((item) => item.id == _panelItemId);
+      final panelIndex = _items.indexWhere((item) => item.id == _panelItemId);
       if (panelIndex >= 0) _syncPanelEditors(_items[panelIndex]);
       await _persist();
     }
@@ -87061,8 +87213,8 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
     );
   }
 
-  Widget _panelTimeField(String label, TextEditingController controller,
-      _VeItem it) {
+  Widget _panelTimeField(
+      String label, TextEditingController controller, _VeItem it) {
     return TextField(
       controller: controller,
       keyboardType: TextInputType.datetime,
@@ -87075,8 +87227,7 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
         isDense: true,
         filled: true,
         fillColor: const Color(0xFF15151F),
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 9, vertical: 10),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 9, vertical: 10),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(6),
           borderSide: BorderSide.none,
@@ -87092,24 +87243,69 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
     if (idx < 0) return const SizedBox.shrink();
     final it = _items[idx];
     final isVideo = it.kind == _VeKind.video;
-    final panelWidth = math.min(
-      344.0,
-      math.max(220.0, MediaQuery.sizeOf(context).width - 12.0),
-    );
-    return Positioned(
-      top: 0,
-      right: 0,
-      bottom: 0,
-      width: panelWidth,
-      child: Material(
+    final screenSize = MediaQuery.sizeOf(context);
+    final useMobileSheet = screenSize.shortestSide < 600;
+    final mobileMinSheetSize =
+        (76.0 / screenSize.height).clamp(0.12, 0.30).toDouble();
+
+    Widget buildPanel(ScrollController? scrollController,
+        {required bool compact}) {
+      return Material(
         color: const Color(0xFF1E1E32),
         elevation: 16,
         child: SafeArea(
+          top: !compact,
           child:
               Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            if (compact)
+              Center(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onVerticalDragUpdate: (details) {
+                    if (!_itemPanelSheetController.isAttached) return;
+                    final nextSize = (_itemPanelSheetController.size -
+                            details.delta.dy / screenSize.height)
+                        .clamp(mobileMinSheetSize, 0.72)
+                        .toDouble();
+                    _itemPanelSheetController.jumpTo(nextSize);
+                  },
+                  onVerticalDragEnd: (_) {
+                    if (!_itemPanelSheetController.isAttached) return;
+                    final snapSizes = <double>[
+                      mobileMinSheetSize,
+                      0.36,
+                      0.72,
+                    ];
+                    final currentSize = _itemPanelSheetController.size;
+                    final targetSize = snapSizes.reduce(
+                      (a, b) =>
+                          (a - currentSize).abs() <= (b - currentSize).abs()
+                              ? a
+                              : b,
+                    );
+                    unawaited(_itemPanelSheetController.animateTo(
+                      targetSize,
+                      duration: const Duration(milliseconds: 180),
+                      curve: Curves.easeOutCubic,
+                    ));
+                  },
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 7, 24, 5),
+                    child: Container(
+                      width: 42,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: Colors.white24,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             // ヘッダー
             Padding(
-              padding: const EdgeInsets.fromLTRB(14, 10, 4, 6),
+              padding: EdgeInsets.fromLTRB(
+                  compact ? 10 : 14, compact ? 5 : 10, 4, 6),
               child: Row(children: [
                 Icon(_kindIcon(it.kind), color: _layerColor(it.kind), size: 18),
                 const SizedBox(width: 8),
@@ -87135,7 +87331,8 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
             const Divider(color: Colors.white12, height: 1),
             Expanded(
               child: SingleChildScrollView(
-                padding: const EdgeInsets.all(14),
+                controller: scrollController,
+                padding: EdgeInsets.all(compact ? 10 : 14),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -87198,8 +87395,8 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
                     }),
                     if (isVideo) ...[
                       const SizedBox(height: 8),
-                      _panelTimeField(widget.provider.t('ve.trimStart'),
-                          _panelTrimC, it),
+                      _panelTimeField(
+                          widget.provider.t('ve.trimStart'), _panelTrimC, it),
                     ],
                     const SizedBox(height: 8),
                     Row(children: [
@@ -87211,16 +87408,13 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
                               TextStyle(color: Colors.white54, fontSize: 12)),
                       const Spacer(),
                       DropdownButton<int>(
-                        value:
-                            it.layer.clamp(0, _kVeLayers - 1).toInt(),
+                        value: it.layer.clamp(0, _kVeLayers - 1).toInt(),
                         dropdownColor: const Color(0xFF24243A),
                         underline: const SizedBox.shrink(),
-                        style: const TextStyle(
-                            color: Colors.white, fontSize: 12),
+                        style:
+                            const TextStyle(color: Colors.white, fontSize: 12),
                         items: [
-                          for (int layer = 0;
-                              layer < _kVeLayers;
-                              layer++)
+                          for (int layer = 0; layer < _kVeLayers; layer++)
                             DropdownMenuItem(
                                 value: layer, child: Text('L$layer')),
                         ],
@@ -87602,7 +87796,41 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
             ),
           ]),
         ),
-      ),
+      );
+    }
+
+    if (useMobileSheet) {
+      return Positioned.fill(
+        child: DraggableScrollableSheet(
+          controller: _itemPanelSheetController,
+          expand: false,
+          initialChildSize: 0.36,
+          minChildSize: mobileMinSheetSize,
+          maxChildSize: 0.72,
+          snap: true,
+          snapSizes: [mobileMinSheetSize, 0.36, 0.72],
+          builder: (context, scrollController) => Padding(
+            padding: const EdgeInsets.fromLTRB(6, 0, 6, 6),
+            child: ClipRRect(
+              borderRadius:
+                  const BorderRadius.vertical(top: Radius.circular(16)),
+              child: buildPanel(scrollController, compact: true),
+            ),
+          ),
+        ),
+      );
+    }
+
+    final panelWidth = math.min(
+      344.0,
+      math.max(220.0, screenSize.width - 12.0),
+    );
+    return Positioned(
+      top: 0,
+      right: 0,
+      bottom: 0,
+      width: panelWidth,
+      child: buildPanel(null, compact: false),
     );
   }
 
@@ -91268,8 +91496,7 @@ v.addEventListener('play', function() {
                             keyboardType: TextInputType.multiline,
                             textInputAction: TextInputAction.newline,
                             decoration: InputDecoration(
-                              hintText:
-                                  'ここに気づいたことをメモ…  入力後に「メモを追加」を押します',
+                              hintText: 'ここに気づいたことをメモ…  入力後に「メモを追加」を押します',
                               hintStyle: const TextStyle(
                                   color: Colors.white38, fontSize: 12),
                               filled: true,
@@ -91486,8 +91713,7 @@ v.addEventListener('play', function() {
                                       MaterialTapTargetSize.shrinkWrap,
                                 ),
                                 icon: const Icon(Icons.add_rounded, size: 16),
-                                label: const Text(
-                                    'メモを追加',
+                                label: const Text('メモを追加',
                                     style: TextStyle(
                                         fontSize: 11,
                                         fontWeight: FontWeight.w700)),
@@ -91503,66 +91729,71 @@ v.addEventListener('play', function() {
                             ),
                             const SizedBox(height: 6),
                             Wrap(
-                              spacing: 6,
-                              runSpacing: 4,
-                              crossAxisAlignment: WrapCrossAlignment.center,
-                              children: [
-                              Row(
-                                mainAxisSize: MainAxisSize.min,
+                                spacing: 6,
+                                runSpacing: 4,
+                                crossAxisAlignment: WrapCrossAlignment.center,
                                 children: [
-                                  const Icon(Icons.history_rounded,
-                                      color: Colors.white54, size: 14),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    '動画メモ (${_videoMemos.length})',
-                                    style: const TextStyle(
-                                        color: Colors.white54, fontSize: 11),
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(Icons.history_rounded,
+                                          color: Colors.white54, size: 14),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        '動画メモ (${_videoMemos.length})',
+                                        style: const TextStyle(
+                                            color: Colors.white54,
+                                            fontSize: 11),
+                                      ),
+                                    ],
                                   ),
-                                ],
-                              ),
-                              // ── 一括で AI に送る (= ユーザー要望: セッションメモを
-                              //    まとめて AI に渡す) ──
-                              InkWell(
-                                onTap: _sendVideoHistoryToAi,
-                                borderRadius: BorderRadius.circular(6),
-                                child: const Padding(
-                                  padding: EdgeInsets.symmetric(
-                                      horizontal: 6, vertical: 2),
-                                  child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Icon(Icons.auto_awesome_rounded,
-                                            color: Color(0xFFBA68C8), size: 14),
-                                        SizedBox(width: 3),
-                                        Text('一括でAIに送る',
-                                            style: TextStyle(
+                                  // ── 一括で AI に送る (= ユーザー要望: セッションメモを
+                                  //    まとめて AI に渡す) ──
+                                  InkWell(
+                                    onTap: _sendVideoHistoryToAi,
+                                    borderRadius: BorderRadius.circular(6),
+                                    child: const Padding(
+                                      padding: EdgeInsets.symmetric(
+                                          horizontal: 6, vertical: 2),
+                                      child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Icon(Icons.auto_awesome_rounded,
                                                 color: Color(0xFFBA68C8),
-                                                fontSize: 10,
-                                                fontWeight: FontWeight.w700)),
-                                      ]),
-                                ),
-                              ),
-                              InkWell(
-                                onTap: _openVideoHistoryInGoogleSearch,
-                                borderRadius: BorderRadius.circular(6),
-                                child: const Padding(
-                                  padding: EdgeInsets.symmetric(
-                                      horizontal: 6, vertical: 2),
-                                  child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Icon(Icons.search_rounded,
-                                            color: Color(0xFF4FC3F7), size: 14),
-                                        SizedBox(width: 3),
-                                        Text('Google検索',
-                                            style: TextStyle(
+                                                size: 14),
+                                            SizedBox(width: 3),
+                                            Text('一括でAIに送る',
+                                                style: TextStyle(
+                                                    color: Color(0xFFBA68C8),
+                                                    fontSize: 10,
+                                                    fontWeight:
+                                                        FontWeight.w700)),
+                                          ]),
+                                    ),
+                                  ),
+                                  InkWell(
+                                    onTap: _openVideoHistoryInGoogleSearch,
+                                    borderRadius: BorderRadius.circular(6),
+                                    child: const Padding(
+                                      padding: EdgeInsets.symmetric(
+                                          horizontal: 6, vertical: 2),
+                                      child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Icon(Icons.search_rounded,
                                                 color: Color(0xFF4FC3F7),
-                                                fontSize: 10,
-                                                fontWeight: FontWeight.w700)),
-                                      ]),
-                                ),
-                              ),
-                            ]),
+                                                size: 14),
+                                            SizedBox(width: 3),
+                                            Text('Google検索',
+                                                style: TextStyle(
+                                                    color: Color(0xFF4FC3F7),
+                                                    fontSize: 10,
+                                                    fontWeight:
+                                                        FontWeight.w700)),
+                                          ]),
+                                    ),
+                                  ),
+                                ]),
                             const SizedBox(height: 4),
                             Flexible(
                               child: ListView.separated(
@@ -91677,8 +91908,7 @@ v.addEventListener('play', function() {
   void _openVideoMemoInGoogleSearch(_VideoMemoEntry entry) {
     final text = entry.text.trim();
     if (text.isEmpty) {
-      _showInlineBanner('検索できるメモがありません',
-          color: const Color(0xFFE57373));
+      _showInlineBanner('検索できるメモがありません', color: const Color(0xFFE57373));
       return;
     }
     final size = MediaQuery.of(context).size;
@@ -91687,8 +91917,7 @@ v.addEventListener('play', function() {
       context,
       initialQuery: text,
       initialMemo: text,
-      customTitle:
-          sourceTitle.isEmpty ? '動画メモを検索' : '$sourceTitle のメモを検索',
+      customTitle: sourceTitle.isEmpty ? '動画メモを検索' : '$sourceTitle のメモを検索',
       anchorPos: const Offset(12, 8),
       // 同じ検索画面を再利用し、別項目を押した時は内容を更新する。
       singletonKey: 'mobile_video_memo_google',
@@ -93240,15 +93469,14 @@ v.addEventListener('play', function() {
                     if (sourceTitle.isNotEmpty)
                       Text(
                         sourceTitle,
-                        style: const TextStyle(
-                            color: Colors.white38, fontSize: 9),
+                        style:
+                            const TextStyle(color: Colors.white38, fontSize: 9),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
                     Text(
                       entry.text,
-                      style:
-                          const TextStyle(color: Colors.white, fontSize: 11),
+                      style: const TextStyle(color: Colors.white, fontSize: 11),
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -97368,12 +97596,11 @@ class _MapBackgroundTemplatePainter extends CustomPainter {
       final left = tile * size.width * 0.7 - shift;
       path
         ..lineTo(left, size.height * baseY)
-        ..lineTo(left + size.width * 0.20,
-            size.height * (baseY - peakHeight * 0.55))
-        ..lineTo(left + size.width * 0.36,
-            size.height * (baseY - peakHeight))
-        ..lineTo(left + size.width * 0.54,
-            size.height * (baseY - peakHeight * 0.42))
+        ..lineTo(
+            left + size.width * 0.20, size.height * (baseY - peakHeight * 0.55))
+        ..lineTo(left + size.width * 0.36, size.height * (baseY - peakHeight))
+        ..lineTo(
+            left + size.width * 0.54, size.height * (baseY - peakHeight * 0.42))
         ..lineTo(left + size.width * 0.70, size.height * baseY);
     }
     path
@@ -97428,16 +97655,17 @@ class _MapBackgroundTemplatePainter extends CustomPainter {
         _fillGradient(canvas, size,
             const [Color(0xFF030817), Color(0xFF0C1833), Color(0xFF18233B)],
             begin: Alignment.topCenter, end: Alignment.bottomCenter);
-        final moonX = _wrap(size.width * 0.78 - scrollOffset.dx * 0.018,
-            size.width + 140) - 70;
+        final moonX = _wrap(
+                size.width * 0.78 - scrollOffset.dx * 0.018, size.width + 140) -
+            70;
         final moon = Offset(moonX, size.height * 0.18);
-        _drawGlow(canvas, moon, size.shortestSide * 0.20,
-            const Color(0x3378A7FF));
+        _drawGlow(
+            canvas, moon, size.shortestSide * 0.20, const Color(0x3378A7FF));
         canvas.drawCircle(moon, size.shortestSide * 0.046,
             Paint()..color = const Color(0xFFE4ECFF));
         canvas.drawCircle(
-            moon.translate(size.shortestSide * 0.018,
-                -size.shortestSide * 0.010),
+            moon.translate(
+                size.shortestSide * 0.018, -size.shortestSide * 0.010),
             size.shortestSide * 0.043,
             Paint()..color = const Color(0xFF08142B));
         _drawSparseStars(canvas, size, count: 34, parallax: 0.012);
@@ -97456,8 +97684,9 @@ class _MapBackgroundTemplatePainter extends CustomPainter {
         _fillGradient(canvas, size,
             const [Color(0xFF07152E), Color(0xFF183C61), Color(0xFF496B82)],
             begin: Alignment.topCenter, end: Alignment.bottomCenter);
-        final moonX = _wrap(size.width * 0.22 - scrollOffset.dx * 0.02,
-            size.width + 120) - 60;
+        final moonX = _wrap(
+                size.width * 0.22 - scrollOffset.dx * 0.02, size.width + 120) -
+            60;
         _drawGlow(canvas, Offset(moonX, size.height * 0.20),
             size.shortestSide * 0.18, const Color(0x44B6D8FF));
         canvas.drawCircle(
@@ -97499,8 +97728,10 @@ class _MapBackgroundTemplatePainter extends CustomPainter {
               ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 28));
         _drawGlow(
             canvas,
-            Offset(_wrap(size.width * 0.66 - scrollOffset.dx * 0.032,
-                size.width + 180), size.height * 0.38),
+            Offset(
+                _wrap(size.width * 0.66 - scrollOffset.dx * 0.032,
+                    size.width + 180),
+                size.height * 0.38),
             size.shortestSide * 0.30,
             const Color(0x446F8EFF));
         _drawSparseStars(canvas, size,
@@ -97511,8 +97742,10 @@ class _MapBackgroundTemplatePainter extends CustomPainter {
             const [Color(0xFF152533), Color(0xFF344D5A), Color(0xFF73878A)],
             begin: Alignment.topCenter, end: Alignment.bottomCenter);
         for (var i = 0; i < 46; i++) {
-          final x = _wrap(size.width * ((i * 61) % 101) / 100 -
-              scrollOffset.dx * 0.05, size.width + 50) - 25;
+          final x = _wrap(
+                  size.width * ((i * 61) % 101) / 100 - scrollOffset.dx * 0.05,
+                  size.width + 50) -
+              25;
           final y = size.height * ((i * 37 + 11) % 97) / 96;
           final length = 8.0 + (i % 5) * 2.5;
           canvas.drawLine(
@@ -97534,12 +97767,15 @@ class _MapBackgroundTemplatePainter extends CustomPainter {
         _fillGradient(canvas, size,
             const [Color(0xFF79B9D5), Color(0xFFB9D8C1), Color(0xFFE7D59D)],
             begin: Alignment.topCenter, end: Alignment.bottomCenter);
-        final sunX = _wrap(size.width * 0.78 - scrollOffset.dx * 0.012,
-            size.width + 160) - 80;
+        final sunX = _wrap(
+                size.width * 0.78 - scrollOffset.dx * 0.012, size.width + 160) -
+            80;
         _drawGlow(canvas, Offset(sunX, size.height * 0.22),
             size.shortestSide * 0.22, const Color(0x66FFF0A8));
-        canvas.drawCircle(Offset(sunX, size.height * 0.22),
-            size.shortestSide * 0.045, Paint()..color = const Color(0xFFFFE7A3));
+        canvas.drawCircle(
+            Offset(sunX, size.height * 0.22),
+            size.shortestSide * 0.045,
+            Paint()..color = const Color(0xFFFFE7A3));
         _drawMountainLayer(canvas, size,
             baseY: 0.82,
             parallax: 0.025,
@@ -97553,11 +97789,12 @@ class _MapBackgroundTemplatePainter extends CustomPainter {
         final treePaint = Paint()..color = const Color(0xFF173C2D);
         for (var i = 0; i < 10; i++) {
           final x = _wrap(i * size.width * 0.16 - scrollOffset.dx * 0.10,
-              size.width + 100) - 50;
+                  size.width + 100) -
+              50;
           final h = size.height * (0.08 + (i % 3) * 0.018);
           final base = size.height;
-          canvas.drawRect(Rect.fromLTWH(x - 1.5, base - h * 0.45, 3, h * 0.45),
-              treePaint);
+          canvas.drawRect(
+              Rect.fromLTWH(x - 1.5, base - h * 0.45, 3, h * 0.45), treePaint);
           final crown = Path()
             ..moveTo(x, base - h)
             ..lineTo(x - h * 0.24, base - h * 0.28)
@@ -106636,17 +106873,13 @@ class _ManagedSubscription {
         amount: (json['amount'] as num?)?.toDouble() ?? 0,
         currency: (json['currency'] ?? '¥').toString(),
         cycle: json['cycle'] == 'yearly' ? 'yearly' : 'monthly',
-        billingDay: ((json['billingDay'] as num?)?.toInt() ?? 1)
-            .clamp(1, 31)
-            .toInt(),
+        billingDay:
+            ((json['billingDay'] as num?)?.toInt() ?? 1).clamp(1, 31).toInt(),
         billingMonth:
-            ((json['billingMonth'] as num?)?.toInt() ?? 1)
-                .clamp(1, 12)
-                .toInt(),
-        notifyDaysBefore:
-            ((json['notifyDaysBefore'] as num?)?.toInt() ?? 3)
-                .clamp(0, 365)
-                .toInt(),
+            ((json['billingMonth'] as num?)?.toInt() ?? 1).clamp(1, 12).toInt(),
+        notifyDaysBefore: ((json['notifyDaysBefore'] as num?)?.toInt() ?? 3)
+            .clamp(0, 365)
+            .toInt(),
         enabled: json['enabled'] as bool? ?? true,
       );
 }
@@ -110448,8 +110681,7 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
           ),
           FilledButton(
             onPressed: () => close(true),
-            child:
-                Text(widget.provider.t('focusLock.taskUnlockConfirmAction')),
+            child: Text(widget.provider.t('focusLock.taskUnlockConfirmAction')),
           ),
         ],
       ),
@@ -111934,15 +112166,15 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
                 onPressed: () async {
                   final text = _lockMemoCtrl.text.trim();
                   if (text.isEmpty) {
-                    _appSnack(context,
-                        const SnackBar(content: Text('送るメモがありません')));
+                    _appSnack(
+                        context, const SnackBar(content: Text('送るメモがありません')));
                     return;
                   }
                   await _saveLockMemoNow();
                   widget.provider.addMemoNodeToCurrentPage(text);
                   if (!mounted) return;
-                  _appSnack(context,
-                      const SnackBar(content: Text('メモをページに送りました')));
+                  _appSnack(
+                      context, const SnackBar(content: Text('メモをページに送りました')));
                 },
                 style: TextButton.styleFrom(
                   foregroundColor: Colors.white70,
@@ -112014,8 +112246,8 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.05),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-            color: const Color(0xFF43B97F).withValues(alpha: 0.5)),
+        border:
+            Border.all(color: const Color(0xFF43B97F).withValues(alpha: 0.5)),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -112032,8 +112264,7 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
             minHeight: 5,
             borderRadius: BorderRadius.circular(3),
             backgroundColor: Colors.white12,
-            valueColor:
-                const AlwaysStoppedAnimation<Color>(Color(0xFF43B97F)),
+            valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF43B97F)),
           ),
           const SizedBox(height: 8),
           if (tasks.isEmpty)
@@ -112134,56 +112365,56 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
                   if (widget.taskMode)
                     _buildFocusTaskPanel()
                   else ...[
-                  // ── カウントダウン (円形プログレス付き) ──
-                  SizedBox(
-                    width: 220,
-                    height: 220,
-                    child: Stack(
-                      alignment: Alignment.center,
+                    // ── カウントダウン (円形プログレス付き) ──
+                    SizedBox(
+                      width: 220,
+                      height: 220,
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          SizedBox(
+                            width: 220,
+                            height: 220,
+                            child: CircularProgressIndicator(
+                              value: progress,
+                              strokeWidth: 8,
+                              backgroundColor:
+                                  Colors.white.withValues(alpha: 0.08),
+                              valueColor: const AlwaysStoppedAnimation(
+                                  Color(0xFFEF5350)),
+                            ),
+                          ),
+                          Text(
+                            _fmt(_remainSec),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 44,
+                              fontWeight: FontWeight.w800,
+                              fontFeatures: [FontFeature.tabularFigures()],
+                              letterSpacing: 1.0,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    // ── 現在時刻 → 解除時刻 (ユーザー要望) ──
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        SizedBox(
-                          width: 220,
-                          height: 220,
-                          child: CircularProgressIndicator(
-                            value: progress,
-                            strokeWidth: 8,
-                            backgroundColor:
-                                Colors.white.withValues(alpha: 0.08),
-                            valueColor:
-                                const AlwaysStoppedAnimation(Color(0xFFEF5350)),
-                          ),
-                        ),
+                        const Icon(Icons.schedule_rounded,
+                            color: Colors.white38, size: 15),
+                        const SizedBox(width: 6),
                         Text(
-                          _fmt(_remainSec),
+                          '${_fmtClock(DateTime.now())}  →  '
+                          '${_fmtClock(_endAt)} ${p.t('focusLock.unlockAt')}',
                           style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 44,
-                            fontWeight: FontWeight.w800,
-                            fontFeatures: [FontFeature.tabularFigures()],
-                            letterSpacing: 1.0,
-                          ),
+                              color: Colors.white54,
+                              fontSize: 14,
+                              fontFeatures: [FontFeature.tabularFigures()]),
                         ),
                       ],
                     ),
-                  ),
-                  const SizedBox(height: 16),
-                  // ── 現在時刻 → 解除時刻 (ユーザー要望) ──
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.schedule_rounded,
-                          color: Colors.white38, size: 15),
-                      const SizedBox(width: 6),
-                      Text(
-                        '${_fmtClock(DateTime.now())}  →  '
-                        '${_fmtClock(_endAt)} ${p.t('focusLock.unlockAt')}',
-                        style: const TextStyle(
-                            color: Colors.white54,
-                            fontSize: 14,
-                            fontFeatures: [FontFeature.tabularFigures()]),
-                      ),
-                    ],
-                  ),
                   ],
                   const SizedBox(height: 20),
                   // ── 今日のタイムライン + ロック中メモ (ユーザー要望) ──
@@ -116434,8 +116665,8 @@ final ValueNotifier<bool> _bottomToolbarExpandedNotifier =
     ValueNotifier<bool>(true);
 
 double _snackBarBottomClearance(BuildContext context) {
-  final desktop = !kIsWeb &&
-      (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
+  final desktop =
+      !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
   if (desktop) {
     final media = MediaQuery.maybeOf(context);
     final screenHeight = media?.size.height ?? 0.0;
@@ -116446,9 +116677,8 @@ double _snackBarBottomClearance(BuildContext context) {
       final bottomIds = provider.desktopHeaderButtonsForPlacement('bottom');
       if (bottomIds.isEmpty) return 20.0;
 
-      final dockHeight = provider.desktopHeaderDockCollapsedAt('bottom')
-          ? 46.0
-          : 66.0;
+      final dockHeight =
+          provider.desktopHeaderDockCollapsedAt('bottom') ? 46.0 : 66.0;
       if (!provider.desktopBottomDockFloating) {
         return dockHeight + 24.0;
       }
@@ -116491,8 +116721,7 @@ ScaffoldFeatureController<SnackBar, SnackBarClosedReason> _appSnack(
 }) {
   final messenger = ScaffoldMessenger.of(ctx);
   messenger.hideCurrentSnackBar();
-  final patched =
-      _patchSnackBarDuration(ctx, bar, processing: processing);
+  final patched = _patchSnackBarDuration(ctx, bar, processing: processing);
   // 通知はバーの上へ出すため、旧方式のバー持ち上げ状態を確実に解除する。
   try {
     ctx.read<MindMapProvider>().setBottomBarLifted(false);
@@ -116538,8 +116767,7 @@ SnackBar _patchSnackBarDuration(BuildContext context, SnackBar bar,
   final behavior = bar.behavior ?? SnackBarBehavior.floating;
   final margin = bar.margin ??
       (behavior == SnackBarBehavior.floating
-          ? EdgeInsets.fromLTRB(
-              12, 0, 12, _snackBarBottomClearance(context))
+          ? EdgeInsets.fromLTRB(12, 0, 12, _snackBarBottomClearance(context))
           : null);
 
   return SnackBar(
@@ -117825,9 +118053,8 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
           (!prefetch && _spreadStartPage != requestedStart)) {
         return false;
       }
-      final rasterDpi = (!kIsWeb && (Platform.isAndroid || Platform.isIOS))
-          ? 56.0
-          : 64.0;
+      final rasterDpi =
+          (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) ? 56.0 : 64.0;
       // printing 5.14.3 の Windows 実装は MethodChannel ハンドラ内で
       // PDFium のページループを同期実行する。複数ページを一度に渡すと、Dart の
       // timeout や描画フレームが全ページ終了まで動けない。PDF の再解析回数は
@@ -117931,7 +118158,6 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
     if (!ok || _spreadStartPage != start) return;
     setState(() => _spreadRenderedForStart = start);
     // ── 隣の見開き (次/前) を背景で先読みして、 ページ送りを即時に ──
-
   }
 
   void _toggleSpreadPages() {
@@ -121714,403 +121940,408 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
               // 既存復元処理で現在ページとハイライトを戻す。
               if (!_spreadFitPageMode)
                 LayoutBuilder(
-                builder: (viewerCtx, viewerConstraints) {
-                  final hasHiddenPdfPages = _pdfFilePath != null &&
-                      context
-                          .read<MindMapProvider>()
-                          .hiddenPdfPagesFor(_pdfFilePath!)
-                          .isNotEmpty;
-                  final liveWidthFactor =
-                      (_spreadPageMode || _spreadFitPageMode)
-                          ? 1.0
-                          : _pdfLiveWidthFactor(viewerConstraints);
-                  final liveLayoutMode = _fitPageMode
-                      ? sf_pdf.PdfPageLayoutMode.single
-                      : (_spreadPageMode || _spreadFitPageMode)
-                          ? sf_pdf.PdfPageLayoutMode.continuous
-                          : (pdfHoriz && hasHiddenPdfPages)
-                              ? sf_pdf.PdfPageLayoutMode.single
-                              : sf_pdf.PdfPageLayoutMode.continuous;
-                  final liveScrollDirection = (_fitPageMode ||
-                          _spreadPageMode ||
-                          _spreadFitPageMode ||
-                          pdfHoriz)
-                      ? sf_pdf.PdfScrollDirection.horizontal
-                      : sf_pdf.PdfScrollDirection.vertical;
-                  return Align(
-                    alignment: Alignment.topCenter,
-                    child: FractionallySizedBox(
-                      widthFactor: liveWidthFactor,
-                      heightFactor: 1.0,
-                      child: Localizations(
-                        locale: const Locale('ja'),
-                        delegates: const [
-                          GlobalMaterialLocalizations.delegate,
-                          GlobalWidgetsLocalizations.delegate,
-                          GlobalCupertinoLocalizations.delegate,
-                        ],
-                        child: Listener(
-                          key: _pdfAreaKey,
-                          behavior: HitTestBehavior.translucent,
-                          // ── 右クリック検出 (全画面 PDF) ──
-                          // 右クリックでメニュー (= メモ追加 / ページ非表示 等)。
-                          // localPosition を渡してその位置にメモを置けるようにする。
-                          onPointerDown: (event) {
-                            if (event.kind == PointerDeviceKind.mouse &&
-                                event.buttons == kSecondaryMouseButton) {
-                              _showFullscreenPdfContextMenu(event.position,
-                                  localPos: event.localPosition);
-                            }
-                          },
-                          child: sf_pdf.SfPdfViewer.file(
-                            _stablePdfFile(_pdfFilePath!),
-                            key: ValueKey(_pdfFilePath),
-                            controller: _pdfViewerCtrl,
-                            // ── ページレイアウト: continuous (Word ライクな縦連続流) ──
-                            // ↑/↓ で sub-page スクロール (1/N ページずつ滑らかに移動) を可能にするため。
-                            // 1 ページがビューポートに収まる視覚は FractionallySizedBox で表示幅を絞って
-                            // 実現する。 ←/→ overshoot は HardwareKeyboard ハンドラと Focus.onKeyEvent
-                            // の二重起動が原因だったので、 そちらでガードを入れて解消した。
-                            // ── ユーザー要望: PDF ページ非表示が確実にスキップされるよう ──
-                            // single モードに変更 (= 連続スクロール無効、 1 ページずつ表示)。
-                            // continuous モードだと「ページ移動後にスクロールで戻ると非表示
-                            // ページが見える」 バグがあった。 single モードでは jumpToPage 後
-                            // は確実にそのページだけが画面に映る。
-                            // = ユーザー要望: ページめくりをシームレスに。 single モードは
-                            //   1 ページごとに再ラスタライズされて「読み込み」 が入り重いので、
-                            //   既定では横/縦とも continuous に統一する。 ただし非表示ページが
-                            //   設定されている時だけは strict な single にして確実にスキップする
-                            //   (continuous だとスクロールで非表示ページが見えてしまうため)。
-                            pageLayoutMode: liveLayoutMode,
-                            scrollDirection: liveScrollDirection,
-                            // テキスト選択を有効にすると、 ドラッグでテキストを選択できる
-                            // (= 選択 + コピーが可能、 syncfusion 側でハイライト等のマーカー
-                            //  メニューも出るバージョンがある)。
-                            // 副作用としてビューア空白部分のドラッグでパンができなくなるが、
-                            // continuous モードでのスクロールはホイール / 矢印キーが主なので OK。
-                            enableTextSelection: true,
-                            // ダブルタップによるズームを切ると、 配置モード時の単タップが
-                            // 確実に拾える (ダブルタップ判定の遅延がなくなる)。
-                            enableDoubleTapZooming: false,
-                            // ズーム上限を 4.0 まで広げる (デフォルト 3.0)。
-                            // 注: syncfusion v28 系では minZoomLevel が公開されておらず、
-                            //     最小ズームは内部的に 1.0 で固定。 そのため「ページ幅が
-                            //     ビューア幅にぴったり」 (= zoom 1.0) より引きで表示する
-                            //     ことはこのライブラリでは出来ない。 ご了承ください。
-                            maxZoomLevel: 4.0,
-                            // ── ズーム変化を追跡 ──
-                            // 拡大率に応じて表示幅 (widthFactor) を広げ、 横スクロールを
-                            // 減らすため (ユーザー要望)。 Ctrl+/Ctrl- / ピンチ両方で発火。
-                            onZoomLevelChanged: (details) {
-                              final z = details.newZoomLevel;
-                              if (mounted &&
-                                  (z - _pdfZoomLevel).abs() > 0.001) {
-                                setState(() => _pdfZoomLevel = z);
+                  builder: (viewerCtx, viewerConstraints) {
+                    final hasHiddenPdfPages = _pdfFilePath != null &&
+                        context
+                            .read<MindMapProvider>()
+                            .hiddenPdfPagesFor(_pdfFilePath!)
+                            .isNotEmpty;
+                    final liveWidthFactor =
+                        (_spreadPageMode || _spreadFitPageMode)
+                            ? 1.0
+                            : _pdfLiveWidthFactor(viewerConstraints);
+                    final liveLayoutMode = _fitPageMode
+                        ? sf_pdf.PdfPageLayoutMode.single
+                        : (_spreadPageMode || _spreadFitPageMode)
+                            ? sf_pdf.PdfPageLayoutMode.continuous
+                            : (pdfHoriz && hasHiddenPdfPages)
+                                ? sf_pdf.PdfPageLayoutMode.single
+                                : sf_pdf.PdfPageLayoutMode.continuous;
+                    final liveScrollDirection = (_fitPageMode ||
+                            _spreadPageMode ||
+                            _spreadFitPageMode ||
+                            pdfHoriz)
+                        ? sf_pdf.PdfScrollDirection.horizontal
+                        : sf_pdf.PdfScrollDirection.vertical;
+                    return Align(
+                      alignment: Alignment.topCenter,
+                      child: FractionallySizedBox(
+                        widthFactor: liveWidthFactor,
+                        heightFactor: 1.0,
+                        child: Localizations(
+                          locale: const Locale('ja'),
+                          delegates: const [
+                            GlobalMaterialLocalizations.delegate,
+                            GlobalWidgetsLocalizations.delegate,
+                            GlobalCupertinoLocalizations.delegate,
+                          ],
+                          child: Listener(
+                            key: _pdfAreaKey,
+                            behavior: HitTestBehavior.translucent,
+                            // ── 右クリック検出 (全画面 PDF) ──
+                            // 右クリックでメニュー (= メモ追加 / ページ非表示 等)。
+                            // localPosition を渡してその位置にメモを置けるようにする。
+                            onPointerDown: (event) {
+                              if (event.kind == PointerDeviceKind.mouse &&
+                                  event.buttons == kSecondaryMouseButton) {
+                                _showFullscreenPdfContextMenu(event.position,
+                                    localPos: event.localPosition);
                               }
                             },
-                            // ── syncfusion 側でアノテーションが追加された時のフック ──
-                            // ユーザーがテキスト選択メニューの「Highlight」 を押した時、
-                            // syncfusion 内部で HighlightAnnotation が addAnnotation される。
-                            // このタイミングを捕まえて、 マーカーモードの色を反映 + 永続化する。
-                            // 自前の `_addHighlightForSelection` 経由で追加したものは
-                            // `_suppressAnnotationCallback` で除外して二重保存を防ぐ。
-                            onAnnotationAdded: (annotation) {
-                              _handleAnnotationAdded(annotation);
-                            },
-                            // ── テキスト選択中の文字列 + 行 bounds を追跡 ──
-                            // マーカーモード ON 中は、 選択が安定したら自動でハイライトを適用する。
-                            // (= 「マーカーボタン → モード ON → 範囲選択するだけでマーカーが引かれる」 体験)。
-                            onTextSelectionChanged: (details) {
-                              if (!mounted) return;
-                              final t = details.selectedText;
-                              dynamic lines;
-                              try {
-                                lines = (details as dynamic).selectedTextLines;
-                              } catch (_) {}
-                              if (t != _selectedPdfText ||
-                                  lines != _selectedPdfLines) {
-                                setState(() {
-                                  _selectedPdfText = t;
-                                  _selectedPdfLines = lines;
-                                });
-                              }
-                              // ── 自動適用デバウンス ──
-                              // 選択直後すぐ適用したいので 100ms に短縮。 syncfusion が選択を
-                              // 勝手にクリアする (= _selectedPdfText が空になる) ケースがある
-                              // ため、 timer 発火時の "現在状態" 一致ガードは撤去し、 トリガー
-                              // 時点の text / lines をクロージャで持ち越して使う方式に変更。
-                              _highlightAutoTimer?.cancel();
-                              if (_activeMarkerColor != null &&
-                                  t != null &&
-                                  t.isNotEmpty &&
-                                  t != _lastAutoAppliedText &&
-                                  widget.nodeId != null) {
-                                final triggerText = t;
-                                final triggerLines = lines;
-                                _highlightAutoTimer = Timer(
-                                    const Duration(milliseconds: 100), () {
-                                  if (!mounted) return;
-                                  if (_activeMarkerColor == null) return;
-                                  _lastAutoAppliedText = triggerText;
-                                  // 状態が変わっていても、 トリガー時の値で適用できるように
-                                  // 一時的に _selectedPdf* を上書きしてから適用 → 元に戻す。
-                                  final savedText = _selectedPdfText;
-                                  final savedLines = _selectedPdfLines;
-                                  _selectedPdfText = triggerText;
-                                  _selectedPdfLines = triggerLines;
-                                  _addHighlightForSelection().then((_) {
+                            child: sf_pdf.SfPdfViewer.file(
+                              _stablePdfFile(_pdfFilePath!),
+                              key: ValueKey(_pdfFilePath),
+                              controller: _pdfViewerCtrl,
+                              // ── ページレイアウト: continuous (Word ライクな縦連続流) ──
+                              // ↑/↓ で sub-page スクロール (1/N ページずつ滑らかに移動) を可能にするため。
+                              // 1 ページがビューポートに収まる視覚は FractionallySizedBox で表示幅を絞って
+                              // 実現する。 ←/→ overshoot は HardwareKeyboard ハンドラと Focus.onKeyEvent
+                              // の二重起動が原因だったので、 そちらでガードを入れて解消した。
+                              // ── ユーザー要望: PDF ページ非表示が確実にスキップされるよう ──
+                              // single モードに変更 (= 連続スクロール無効、 1 ページずつ表示)。
+                              // continuous モードだと「ページ移動後にスクロールで戻ると非表示
+                              // ページが見える」 バグがあった。 single モードでは jumpToPage 後
+                              // は確実にそのページだけが画面に映る。
+                              // = ユーザー要望: ページめくりをシームレスに。 single モードは
+                              //   1 ページごとに再ラスタライズされて「読み込み」 が入り重いので、
+                              //   既定では横/縦とも continuous に統一する。 ただし非表示ページが
+                              //   設定されている時だけは strict な single にして確実にスキップする
+                              //   (continuous だとスクロールで非表示ページが見えてしまうため)。
+                              pageLayoutMode: liveLayoutMode,
+                              scrollDirection: liveScrollDirection,
+                              // テキスト選択を有効にすると、 ドラッグでテキストを選択できる
+                              // (= 選択 + コピーが可能、 syncfusion 側でハイライト等のマーカー
+                              //  メニューも出るバージョンがある)。
+                              // 副作用としてビューア空白部分のドラッグでパンができなくなるが、
+                              // continuous モードでのスクロールはホイール / 矢印キーが主なので OK。
+                              enableTextSelection: true,
+                              // ダブルタップによるズームを切ると、 配置モード時の単タップが
+                              // 確実に拾える (ダブルタップ判定の遅延がなくなる)。
+                              enableDoubleTapZooming: false,
+                              // ズーム上限を 4.0 まで広げる (デフォルト 3.0)。
+                              // 注: syncfusion v28 系では minZoomLevel が公開されておらず、
+                              //     最小ズームは内部的に 1.0 で固定。 そのため「ページ幅が
+                              //     ビューア幅にぴったり」 (= zoom 1.0) より引きで表示する
+                              //     ことはこのライブラリでは出来ない。 ご了承ください。
+                              maxZoomLevel: 4.0,
+                              // ── ズーム変化を追跡 ──
+                              // 拡大率に応じて表示幅 (widthFactor) を広げ、 横スクロールを
+                              // 減らすため (ユーザー要望)。 Ctrl+/Ctrl- / ピンチ両方で発火。
+                              onZoomLevelChanged: (details) {
+                                final z = details.newZoomLevel;
+                                if (mounted &&
+                                    (z - _pdfZoomLevel).abs() > 0.001) {
+                                  setState(() => _pdfZoomLevel = z);
+                                }
+                              },
+                              // ── syncfusion 側でアノテーションが追加された時のフック ──
+                              // ユーザーがテキスト選択メニューの「Highlight」 を押した時、
+                              // syncfusion 内部で HighlightAnnotation が addAnnotation される。
+                              // このタイミングを捕まえて、 マーカーモードの色を反映 + 永続化する。
+                              // 自前の `_addHighlightForSelection` 経由で追加したものは
+                              // `_suppressAnnotationCallback` で除外して二重保存を防ぐ。
+                              onAnnotationAdded: (annotation) {
+                                _handleAnnotationAdded(annotation);
+                              },
+                              // ── テキスト選択中の文字列 + 行 bounds を追跡 ──
+                              // マーカーモード ON 中は、 選択が安定したら自動でハイライトを適用する。
+                              // (= 「マーカーボタン → モード ON → 範囲選択するだけでマーカーが引かれる」 体験)。
+                              onTextSelectionChanged: (details) {
+                                if (!mounted) return;
+                                final t = details.selectedText;
+                                dynamic lines;
+                                try {
+                                  lines =
+                                      (details as dynamic).selectedTextLines;
+                                } catch (_) {}
+                                if (t != _selectedPdfText ||
+                                    lines != _selectedPdfLines) {
+                                  setState(() {
+                                    _selectedPdfText = t;
+                                    _selectedPdfLines = lines;
+                                  });
+                                }
+                                // ── 自動適用デバウンス ──
+                                // 選択直後すぐ適用したいので 100ms に短縮。 syncfusion が選択を
+                                // 勝手にクリアする (= _selectedPdfText が空になる) ケースがある
+                                // ため、 timer 発火時の "現在状態" 一致ガードは撤去し、 トリガー
+                                // 時点の text / lines をクロージャで持ち越して使う方式に変更。
+                                _highlightAutoTimer?.cancel();
+                                if (_activeMarkerColor != null &&
+                                    t != null &&
+                                    t.isNotEmpty &&
+                                    t != _lastAutoAppliedText &&
+                                    widget.nodeId != null) {
+                                  final triggerText = t;
+                                  final triggerLines = lines;
+                                  _highlightAutoTimer = Timer(
+                                      const Duration(milliseconds: 100), () {
                                     if (!mounted) return;
-                                    // 適用後 _selectedPdfText/_selectedPdfLines は null に
-                                    // なっているので、 通常の状態保持は不要。
-                                  }).catchError((_) {
-                                    // 失敗時は元の状態に戻す
-                                    if (!mounted) return;
-                                    setState(() {
-                                      _selectedPdfText = savedText;
-                                      _selectedPdfLines = savedLines;
+                                    if (_activeMarkerColor == null) return;
+                                    _lastAutoAppliedText = triggerText;
+                                    // 状態が変わっていても、 トリガー時の値で適用できるように
+                                    // 一時的に _selectedPdf* を上書きしてから適用 → 元に戻す。
+                                    final savedText = _selectedPdfText;
+                                    final savedLines = _selectedPdfLines;
+                                    _selectedPdfText = triggerText;
+                                    _selectedPdfLines = triggerLines;
+                                    _addHighlightForSelection().then((_) {
+                                      if (!mounted) return;
+                                      // 適用後 _selectedPdfText/_selectedPdfLines は null に
+                                      // なっているので、 通常の状態保持は不要。
+                                    }).catchError((_) {
+                                      // 失敗時は元の状態に戻す
+                                      if (!mounted) return;
+                                      setState(() {
+                                        _selectedPdfText = savedText;
+                                        _selectedPdfLines = savedLines;
+                                      });
                                     });
                                   });
-                                });
-                              }
-                            },
-                            onPageChanged: (details) {
-                              // ズーム直後 (Ctrl + / -) はページ番号の巻き添え更新を無視
-                              //   する (= ユーザー要望「ズームで表示ページ番号が変わるのを
-                              //   防いで」)。
-                              final suppressed =
-                                  DateTime.now().millisecondsSinceEpoch <
-                                      _suppressPageChangeUntilMs;
-                              if (suppressed) return;
-                              // ページが実際に変わった時だけ再構築 (= ユーザー要望: ページ
-                              //   めくりのたびに画面全体が再構築されて重いのを軽減)。
-                              if (mounted &&
-                                  _currentPage != details.newPageNumber) {
-                                setState(() {
-                                  _currentPage = details.newPageNumber;
-                                  // タイトルバーのページ入力欄も追従させる
-                                  if (_pageInputCtrl.text !=
-                                      '${details.newPageNumber}') {
-                                    _pageInputCtrl.text =
-                                        '${details.newPageNumber}';
-                                  }
-                                });
-                                // フィット表示中はページが変わったら画像を作り直す。
-                                //   連続めくりで毎回ラスタすると落ちるので debounce。
-                                if (_fitPageMode) _scheduleFitPageRender();
-                                if (_spreadFitPageMode)
-                                  _scheduleSpreadPageRender();
-                              }
-                              // ── PDF 最終ページ記録 (= 次回オープン時に復元) ──
-                              // ユーザー要望: 「PDF を再度開き直す時に一番最後に開いたページ
-                              // からスタート」。 onPageChanged は連続発火するが、 provider 側
-                              // で「値が変わらないなら書かない」 ガードがあるため低負荷。
-                              if (_pdfFilePath != null) {
-                                try {
-                                  context
-                                      .read<MindMapProvider>()
-                                      .setLastPdfPage(
-                                          _pdfFilePath!, details.newPageNumber);
-                                } catch (_) {/* context 無効時は無視 */}
-                              }
-                              // ── 非表示 PDF ページ → 自動スキップ ──
-                              // 画面分割版 (`_handleSplitPdfPageChanged`) と同じロジックに
-                              // 揃え、 末尾 / 先頭で詰まらないように方向反転まで実装する。
-                              if (_pdfFilePath != null &&
-                                  _pdfViewerCtrl != null) {
-                                final provider =
-                                    context.read<MindMapProvider>();
-                                final hidden =
-                                    provider.hiddenPdfPagesFor(_pdfFilePath!);
-                                if (hidden.contains(details.newPageNumber)) {
-                                  final isForward = details.newPageNumber >=
-                                      details.oldPageNumber;
-                                  final maxPage = _pdfViewerCtrl!.pageCount;
-                                  if (maxPage > 0) {
-                                    int target = details.newPageNumber;
-                                    bool decided = false;
-                                    for (int i = 0; i < maxPage; i++) {
-                                      if (isForward) {
-                                        target++;
-                                        if (target > maxPage) {
-                                          // 末尾を超えたら戻り方向にやり直す
-                                          target = details.newPageNumber - 1;
-                                          if (target < 1) break;
-                                          for (int j = 0; j < maxPage; j++) {
-                                            if (!hidden.contains(target)) {
-                                              decided = true;
-                                              break;
-                                            }
-                                            target--;
-                                            if (target < 1) break;
-                                          }
-                                          break;
-                                        }
-                                      } else {
-                                        target--;
-                                        if (target < 1) {
-                                          // 先頭を下回ったら前進方向にやり直す
-                                          target = details.newPageNumber + 1;
-                                          if (target > maxPage) break;
-                                          for (int j = 0; j < maxPage; j++) {
-                                            if (!hidden.contains(target)) {
-                                              decided = true;
-                                              break;
-                                            }
-                                            target++;
-                                            if (target > maxPage) break;
-                                          }
-                                          break;
-                                        }
-                                      }
-                                      if (!hidden.contains(target)) {
-                                        decided = true;
-                                        break;
-                                      }
-                                    }
-                                    if (decided &&
-                                        target != details.newPageNumber) {
-                                      WidgetsBinding.instance
-                                          .addPostFrameCallback((_) {
-                                        if (!mounted || _pdfViewerCtrl == null)
-                                          return;
-                                        try {
-                                          _pdfViewerCtrl!.jumpToPage(target);
-                                        } catch (_) {}
-                                      });
-                                    }
-                                  }
                                 }
-                              }
-                            },
-                            onDocumentLoaded: (details) {
-                              if (mounted) {
-                                setState(() {
-                                  _pdfTotalPages = details.document.pages.count;
-                                  _pageInputCtrl.text = '$_currentPage';
-                                });
-                                // ── PDF サムネイルが無ければ生成 (= ユーザー要望) ──
-                                _ensurePdfThumbForNode(
-                                    context, widget.nodeId, _pdfFilePath);
-                                // 非表示ページがある場合、 最初の表示可能ページに自動ジャンプ
+                              },
+                              onPageChanged: (details) {
+                                // ズーム直後 (Ctrl + / -) はページ番号の巻き添え更新を無視
+                                //   する (= ユーザー要望「ズームで表示ページ番号が変わるのを
+                                //   防いで」)。
+                                final suppressed =
+                                    DateTime.now().millisecondsSinceEpoch <
+                                        _suppressPageChangeUntilMs;
+                                if (suppressed) return;
+                                // ページが実際に変わった時だけ再構築 (= ユーザー要望: ページ
+                                //   めくりのたびに画面全体が再構築されて重いのを軽減)。
+                                if (mounted &&
+                                    _currentPage != details.newPageNumber) {
+                                  setState(() {
+                                    _currentPage = details.newPageNumber;
+                                    // タイトルバーのページ入力欄も追従させる
+                                    if (_pageInputCtrl.text !=
+                                        '${details.newPageNumber}') {
+                                      _pageInputCtrl.text =
+                                          '${details.newPageNumber}';
+                                    }
+                                  });
+                                  // フィット表示中はページが変わったら画像を作り直す。
+                                  //   連続めくりで毎回ラスタすると落ちるので debounce。
+                                  if (_fitPageMode) _scheduleFitPageRender();
+                                  if (_spreadFitPageMode)
+                                    _scheduleSpreadPageRender();
+                                }
+                                // ── PDF 最終ページ記録 (= 次回オープン時に復元) ──
+                                // ユーザー要望: 「PDF を再度開き直す時に一番最後に開いたページ
+                                // からスタート」。 onPageChanged は連続発火するが、 provider 側
+                                // で「値が変わらないなら書かない」 ガードがあるため低負荷。
                                 if (_pdfFilePath != null) {
+                                  try {
+                                    context
+                                        .read<MindMapProvider>()
+                                        .setLastPdfPage(_pdfFilePath!,
+                                            details.newPageNumber);
+                                  } catch (_) {/* context 無効時は無視 */}
+                                }
+                                // ── 非表示 PDF ページ → 自動スキップ ──
+                                // 画面分割版 (`_handleSplitPdfPageChanged`) と同じロジックに
+                                // 揃え、 末尾 / 先頭で詰まらないように方向反転まで実装する。
+                                if (_pdfFilePath != null &&
+                                    _pdfViewerCtrl != null) {
                                   final provider =
                                       context.read<MindMapProvider>();
                                   final hidden =
                                       provider.hiddenPdfPagesFor(_pdfFilePath!);
-                                  if (hidden.isNotEmpty) {
-                                    int first = 1;
-                                    while (first <= _pdfTotalPages &&
-                                        hidden.contains(first)) {
-                                      first++;
-                                    }
-                                    if (first > 1 && first <= _pdfTotalPages) {
-                                      WidgetsBinding.instance
-                                          .addPostFrameCallback((_) {
-                                        if (!mounted || _pdfViewerCtrl == null)
-                                          return;
-                                        try {
-                                          _pdfViewerCtrl!.jumpToPage(first);
-                                        } catch (_) {}
-                                      });
+                                  if (hidden.contains(details.newPageNumber)) {
+                                    final isForward = details.newPageNumber >=
+                                        details.oldPageNumber;
+                                    final maxPage = _pdfViewerCtrl!.pageCount;
+                                    if (maxPage > 0) {
+                                      int target = details.newPageNumber;
+                                      bool decided = false;
+                                      for (int i = 0; i < maxPage; i++) {
+                                        if (isForward) {
+                                          target++;
+                                          if (target > maxPage) {
+                                            // 末尾を超えたら戻り方向にやり直す
+                                            target = details.newPageNumber - 1;
+                                            if (target < 1) break;
+                                            for (int j = 0; j < maxPage; j++) {
+                                              if (!hidden.contains(target)) {
+                                                decided = true;
+                                                break;
+                                              }
+                                              target--;
+                                              if (target < 1) break;
+                                            }
+                                            break;
+                                          }
+                                        } else {
+                                          target--;
+                                          if (target < 1) {
+                                            // 先頭を下回ったら前進方向にやり直す
+                                            target = details.newPageNumber + 1;
+                                            if (target > maxPage) break;
+                                            for (int j = 0; j < maxPage; j++) {
+                                              if (!hidden.contains(target)) {
+                                                decided = true;
+                                                break;
+                                              }
+                                              target++;
+                                              if (target > maxPage) break;
+                                            }
+                                            break;
+                                          }
+                                        }
+                                        if (!hidden.contains(target)) {
+                                          decided = true;
+                                          break;
+                                        }
+                                      }
+                                      if (decided &&
+                                          target != details.newPageNumber) {
+                                        WidgetsBinding.instance
+                                            .addPostFrameCallback((_) {
+                                          if (!mounted ||
+                                              _pdfViewerCtrl == null) return;
+                                          try {
+                                            _pdfViewerCtrl!.jumpToPage(target);
+                                          } catch (_) {}
+                                        });
+                                      }
                                     }
                                   }
                                 }
-                                // ドキュメント開いた直後に PDF にフォーカスを戻す
-                                // (検索バーから戻った時など、 すぐ ↑↓ が効くように)
-                                _pdfFocusNode.requestFocus();
-                                // 初期 zoom を少し引き気味 (0.7) にして画面に余裕を持たせる。
-                                // continuous モードでは zoomLevel=1.0 がページ幅 = ビューア幅
-                                // (fit-width) 相当なので、 ここを下げると画面に対してページが
-                                // 一回り小さく表示され、 縦の見える範囲も広がる。
-                                // single モードでは syncfusion が自動でページを viewport にフィットさせるため、
-                                // 明示的な zoomLevel 設定は不要。 保存済みハイライトの復元のみ実施。
-                                WidgetsBinding.instance
-                                    .addPostFrameCallback((_) {
-                                  if (!mounted || _pdfViewerCtrl == null)
-                                    return;
-                                  _restoreSavedHighlights();
-                                  if (_spreadFitPageMode)
-                                    _scheduleSpreadPageRender();
-                                });
-                                // ── ページ全体表示 (fit-page) の既定 ON は廃止 ──
-                                //   (= ユーザー要望: 機能していないので削除)。 PDF は
-                                //   ライブの SfPdfViewer (幅フィット) のみで表示する。
-                                //   raster オーバーレイは使わないので AI 欄との競合
-                                //   フリーズも根本的に起きない。
-                                // ── PDF 最終ページ復元 ──
-                                // ユーザー要望: 「PDF を再度開き直す時に一番最後に開いたページ
-                                // からスタート」。 hidden ロジックが先に first jump していても、
-                                // ここで上書きで最終ページに飛ぶ (= 直近の閲覧位置を優先)。
-                                if (_pdfFilePath != null) {
-                                  try {
-                                    final lastPage = context
-                                        .read<MindMapProvider>()
-                                        .lastPdfPageFor(_pdfFilePath!);
-                                    if (lastPage != null &&
-                                        lastPage >= 1 &&
-                                        lastPage <= _pdfTotalPages) {
-                                      // syncfusion の jumpToPage はロード直後では確実に動作
-                                      // しないため、 Future.delayed で 200ms 待ってから実行。
-                                      Future.delayed(
-                                          const Duration(milliseconds: 200),
-                                          () {
-                                        if (!mounted || _pdfViewerCtrl == null)
-                                          return;
-                                        try {
-                                          _pdfViewerCtrl!.jumpToPage(lastPage);
-                                          setState(() {
-                                            _currentPage = lastPage;
-                                            _pageInputCtrl.text = '$lastPage';
-                                          });
-                                        } catch (e) {
-                                          debugPrint('最終ページ復元失敗: $e');
-                                        }
-                                      });
+                              },
+                              onDocumentLoaded: (details) {
+                                if (mounted) {
+                                  setState(() {
+                                    _pdfTotalPages =
+                                        details.document.pages.count;
+                                    _pageInputCtrl.text = '$_currentPage';
+                                  });
+                                  // ── PDF サムネイルが無ければ生成 (= ユーザー要望) ──
+                                  _ensurePdfThumbForNode(
+                                      context, widget.nodeId, _pdfFilePath);
+                                  // 非表示ページがある場合、 最初の表示可能ページに自動ジャンプ
+                                  if (_pdfFilePath != null) {
+                                    final provider =
+                                        context.read<MindMapProvider>();
+                                    final hidden = provider
+                                        .hiddenPdfPagesFor(_pdfFilePath!);
+                                    if (hidden.isNotEmpty) {
+                                      int first = 1;
+                                      while (first <= _pdfTotalPages &&
+                                          hidden.contains(first)) {
+                                        first++;
+                                      }
+                                      if (first > 1 &&
+                                          first <= _pdfTotalPages) {
+                                        WidgetsBinding.instance
+                                            .addPostFrameCallback((_) {
+                                          if (!mounted ||
+                                              _pdfViewerCtrl == null) return;
+                                          try {
+                                            _pdfViewerCtrl!.jumpToPage(first);
+                                          } catch (_) {}
+                                        });
+                                      }
                                     }
-                                  } catch (_) {/* context 無効時は無視 */}
-                                }
-                                // ── AI パネルは「PDF が完全に描画されてから」 開く ──
-                                // PDF(SfPdfViewer) と AI(WebView=Chromium) を同時に
-                                // 生成するとフリーズ + メモリ圧迫する (= ユーザー報告)。
-                                // onDocumentLoaded は「解析完了」 であって初回ページの
-                                // 描画完了ではないため、 ここで最初の描画フレームを待ち、
-                                // さらに 2 秒の余裕を取ってから AI を生成する。 こうすると
-                                // PDF を先に軽快に読み始められ、 WebView 生成が描画と
-                                // 競合しない (= サクサク)。
-                                if (_pendingAiAutoOpen && !_aiPanelOpen) {
-                                  _pendingAiAutoOpen = false;
+                                  }
+                                  // ドキュメント開いた直後に PDF にフォーカスを戻す
+                                  // (検索バーから戻った時など、 すぐ ↑↓ が効くように)
+                                  _pdfFocusNode.requestFocus();
+                                  // 初期 zoom を少し引き気味 (0.7) にして画面に余裕を持たせる。
+                                  // continuous モードでは zoomLevel=1.0 がページ幅 = ビューア幅
+                                  // (fit-width) 相当なので、 ここを下げると画面に対してページが
+                                  // 一回り小さく表示され、 縦の見える範囲も広がる。
+                                  // single モードでは syncfusion が自動でページを viewport にフィットさせるため、
+                                  // 明示的な zoomLevel 設定は不要。 保存済みハイライトの復元のみ実施。
                                   WidgetsBinding.instance
                                       .addPostFrameCallback((_) {
-                                    Future.delayed(
-                                        const Duration(milliseconds: 2000), () {
-                                      if (!mounted || _aiPanelOpen) return;
-                                      // メモ欄も AI 欄と「同時に」 開く (= ユーザー要望:
-                                      //   メモだけ起動時に付いて AI が後から開くのは変
-                                      //   なので、 読み込み後に両方まとめて出す)。
-                                      if (widget.nodeId != null) {
-                                        setState(() => _memoPanelOpen = true);
-                                      }
-                                      _openAiPanel(context
-                                          .read<MindMapProvider>()
-                                          .pdfAiPanelDefault);
-                                    });
+                                    if (!mounted || _pdfViewerCtrl == null)
+                                      return;
+                                    _restoreSavedHighlights();
+                                    if (_spreadFitPageMode)
+                                      _scheduleSpreadPageRender();
                                   });
+                                  // ── ページ全体表示 (fit-page) の既定 ON は廃止 ──
+                                  //   (= ユーザー要望: 機能していないので削除)。 PDF は
+                                  //   ライブの SfPdfViewer (幅フィット) のみで表示する。
+                                  //   raster オーバーレイは使わないので AI 欄との競合
+                                  //   フリーズも根本的に起きない。
+                                  // ── PDF 最終ページ復元 ──
+                                  // ユーザー要望: 「PDF を再度開き直す時に一番最後に開いたページ
+                                  // からスタート」。 hidden ロジックが先に first jump していても、
+                                  // ここで上書きで最終ページに飛ぶ (= 直近の閲覧位置を優先)。
+                                  if (_pdfFilePath != null) {
+                                    try {
+                                      final lastPage = context
+                                          .read<MindMapProvider>()
+                                          .lastPdfPageFor(_pdfFilePath!);
+                                      if (lastPage != null &&
+                                          lastPage >= 1 &&
+                                          lastPage <= _pdfTotalPages) {
+                                        // syncfusion の jumpToPage はロード直後では確実に動作
+                                        // しないため、 Future.delayed で 200ms 待ってから実行。
+                                        Future.delayed(
+                                            const Duration(milliseconds: 200),
+                                            () {
+                                          if (!mounted ||
+                                              _pdfViewerCtrl == null) return;
+                                          try {
+                                            _pdfViewerCtrl!
+                                                .jumpToPage(lastPage);
+                                            setState(() {
+                                              _currentPage = lastPage;
+                                              _pageInputCtrl.text = '$lastPage';
+                                            });
+                                          } catch (e) {
+                                            debugPrint('最終ページ復元失敗: $e');
+                                          }
+                                        });
+                                      }
+                                    } catch (_) {/* context 無効時は無視 */}
+                                  }
+                                  // ── AI パネルは「PDF が完全に描画されてから」 開く ──
+                                  // PDF(SfPdfViewer) と AI(WebView=Chromium) を同時に
+                                  // 生成するとフリーズ + メモリ圧迫する (= ユーザー報告)。
+                                  // onDocumentLoaded は「解析完了」 であって初回ページの
+                                  // 描画完了ではないため、 ここで最初の描画フレームを待ち、
+                                  // さらに 2 秒の余裕を取ってから AI を生成する。 こうすると
+                                  // PDF を先に軽快に読み始められ、 WebView 生成が描画と
+                                  // 競合しない (= サクサク)。
+                                  if (_pendingAiAutoOpen && !_aiPanelOpen) {
+                                    _pendingAiAutoOpen = false;
+                                    WidgetsBinding.instance
+                                        .addPostFrameCallback((_) {
+                                      Future.delayed(
+                                          const Duration(milliseconds: 2000),
+                                          () {
+                                        if (!mounted || _aiPanelOpen) return;
+                                        // メモ欄も AI 欄と「同時に」 開く (= ユーザー要望:
+                                        //   メモだけ起動時に付いて AI が後から開くのは変
+                                        //   なので、 読み込み後に両方まとめて出す)。
+                                        if (widget.nodeId != null) {
+                                          setState(() => _memoPanelOpen = true);
+                                        }
+                                        _openAiPanel(context
+                                            .read<MindMapProvider>()
+                                            .pdfAiPanelDefault);
+                                      });
+                                    });
+                                  }
                                 }
-                              }
-                            },
-                            onDocumentLoadFailed: (details) {
-                              if (mounted) {
-                                setState(() => _pdfError =
-                                    '${details.error}: ${details.description}');
-                              }
-                            },
-                          ),
-                        ), // Listener 閉じ (= 全画面 PDF の右クリック検出)
+                              },
+                              onDocumentLoadFailed: (details) {
+                                if (mounted) {
+                                  setState(() => _pdfError =
+                                      '${details.error}: ${details.description}');
+                                }
+                              },
+                            ),
+                          ), // Listener 閉じ (= 全画面 PDF の右クリック検出)
+                        ),
                       ),
-                    ),
-                  );
-                },
-              ),
+                    );
+                  },
+                ),
               // マーカーバナー / FAB は廃止 (syncfusion 標準メニュー統合のため不要)
               // ── ページ全体表示オーバーレイ (= ユーザー要望) ──
               if (_spreadFitPageMode) _buildSpreadPageOverlay(),
@@ -123195,9 +123426,8 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
           (!prefetch && _spreadStartPage != requestedStart)) {
         return false;
       }
-      final rasterDpi = (!kIsWeb && (Platform.isAndroid || Platform.isIOS))
-          ? 56.0
-          : 64.0;
+      final rasterDpi =
+          (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) ? 56.0 : 64.0;
       // Windows の printing プラグインはネイティブ側で全指定ページを同期処理
       // するため、見開き2ページを別ジョブに分割する。各ページの間でFlutterへ
       // 制御を戻し、モード解除・ページ変更の世代を再確認する。
@@ -123293,7 +123523,6 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
     if (!mounted || !_spreadFitPageMode) return;
     if (!ok || _spreadStartPage != start) return;
     setState(() => _spreadRenderedForStart = start);
-
   }
 
   void _toggleSpreadPages() {
@@ -125130,278 +125359,283 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
             // 避ける。Focus は親に残るため Ctrl+/- と見開きページ送りは維持される。
             if (!_spreadFitPageMode)
               LayoutBuilder(
-              builder: (viewerCtx, viewerConstraints) {
-                final hasHiddenPdfPages = _pdfFilePath != null &&
-                    context
-                        .read<MindMapProvider>()
-                        .hiddenPdfPagesFor(_pdfFilePath!)
-                        .isNotEmpty;
-                final liveWidthFactor = _pdfLiveWidthFactor(viewerConstraints);
-                final liveLayoutMode = (_fitPageMode || _spreadFitPageMode)
-                    ? sf_pdf.PdfPageLayoutMode.single
-                    : (pdfHoriz && hasHiddenPdfPages)
-                        ? sf_pdf.PdfPageLayoutMode.single
-                        : sf_pdf.PdfPageLayoutMode.continuous;
-                final liveScrollDirection =
-                    (_fitPageMode || _spreadFitPageMode || pdfHoriz)
-                        ? sf_pdf.PdfScrollDirection.horizontal
-                        : sf_pdf.PdfScrollDirection.vertical;
-                return Align(
-                  alignment: Alignment.topCenter,
-                  child: FractionallySizedBox(
-                    widthFactor: liveWidthFactor,
-                    heightFactor: 1.0,
-                    child: Localizations(
-                      locale: const Locale('ja'),
-                      delegates: const [
-                        GlobalMaterialLocalizations.delegate,
-                        GlobalWidgetsLocalizations.delegate,
-                        GlobalCupertinoLocalizations.delegate,
-                      ],
-                      child: sf_pdf.SfPdfViewer.file(
-                        _stablePdfFile(_pdfFilePath!),
-                        controller: _pdfViewerCtrl,
-                        // ── ユーザー要望: PDF ページ非表示が全画面でも効くように ──
-                        // continuous モードだとスクロールで戻ると非表示ページが見えてしまう
-                        // バグがあったため、 single モードに変更 (= 1 ページずつ表示)。
-                        // = ユーザー要望: シームレスなページめくり。 既定 continuous、
-                        //   非表示ページ設定時のみ strict single (上の全画面版と同方針)。
-                        pageLayoutMode: liveLayoutMode,
+                builder: (viewerCtx, viewerConstraints) {
+                  final hasHiddenPdfPages = _pdfFilePath != null &&
+                      context
+                          .read<MindMapProvider>()
+                          .hiddenPdfPagesFor(_pdfFilePath!)
+                          .isNotEmpty;
+                  final liveWidthFactor =
+                      _pdfLiveWidthFactor(viewerConstraints);
+                  final liveLayoutMode = (_fitPageMode || _spreadFitPageMode)
+                      ? sf_pdf.PdfPageLayoutMode.single
+                      : (pdfHoriz && hasHiddenPdfPages)
+                          ? sf_pdf.PdfPageLayoutMode.single
+                          : sf_pdf.PdfPageLayoutMode.continuous;
+                  final liveScrollDirection =
+                      (_fitPageMode || _spreadFitPageMode || pdfHoriz)
+                          ? sf_pdf.PdfScrollDirection.horizontal
+                          : sf_pdf.PdfScrollDirection.vertical;
+                  return Align(
+                    alignment: Alignment.topCenter,
+                    child: FractionallySizedBox(
+                      widthFactor: liveWidthFactor,
+                      heightFactor: 1.0,
+                      child: Localizations(
+                        locale: const Locale('ja'),
+                        delegates: const [
+                          GlobalMaterialLocalizations.delegate,
+                          GlobalWidgetsLocalizations.delegate,
+                          GlobalCupertinoLocalizations.delegate,
+                        ],
+                        child: sf_pdf.SfPdfViewer.file(
+                          _stablePdfFile(_pdfFilePath!),
+                          controller: _pdfViewerCtrl,
+                          // ── ユーザー要望: PDF ページ非表示が全画面でも効くように ──
+                          // continuous モードだとスクロールで戻ると非表示ページが見えてしまう
+                          // バグがあったため、 single モードに変更 (= 1 ページずつ表示)。
+                          // = ユーザー要望: シームレスなページめくり。 既定 continuous、
+                          //   非表示ページ設定時のみ strict single (上の全画面版と同方針)。
+                          pageLayoutMode: liveLayoutMode,
 
-                        scrollDirection: liveScrollDirection,
+                          scrollDirection: liveScrollDirection,
 
-                        enableTextSelection:
-                            true, // テキスト選択 + コピー対応 (Dialog 版と同じ)
-                        enableDoubleTapZooming: false,
-                        // ズーム上限を 4.0 (Dialog 版と同じ。 minZoomLevel は v28 で未公開)
-                        maxZoomLevel: 4.0,
-                        // syncfusion がアノテーションを追加した時のフック (Dialog 版と同じ)
-                        onAnnotationAdded: (annotation) {
-                          _handleAnnotationAdded(annotation);
-                        },
-                        // 選択中テキスト + 行 bounds の追跡 + マーカー自動適用 (Dialog 版と同じ)
-                        onTextSelectionChanged: (details) {
-                          if (!mounted) return;
-                          final t = details.selectedText;
-                          dynamic lines;
-                          try {
-                            lines = (details as dynamic).selectedTextLines;
-                          } catch (_) {}
-                          if (t != _selectedPdfText ||
-                              lines != _selectedPdfLines) {
-                            setState(() {
-                              _selectedPdfText = t;
-                              _selectedPdfLines = lines;
-                            });
-                          }
-                          _highlightAutoTimer?.cancel();
-                          if (_activeMarkerColor != null &&
-                              t != null &&
-                              t.isNotEmpty &&
-                              t != _lastAutoAppliedText &&
-                              widget.nodeId != null) {
-                            final triggerText = t;
-                            final triggerLines = lines;
-                            _highlightAutoTimer =
-                                Timer(const Duration(milliseconds: 100), () {
-                              if (!mounted) return;
-                              if (_activeMarkerColor == null) return;
-                              _lastAutoAppliedText = triggerText;
-                              final savedText = _selectedPdfText;
-                              final savedLines = _selectedPdfLines;
-                              _selectedPdfText = triggerText;
-                              _selectedPdfLines = triggerLines;
-                              _addHighlightForSelection().catchError((_) {
+                          enableTextSelection:
+                              true, // テキスト選択 + コピー対応 (Dialog 版と同じ)
+                          enableDoubleTapZooming: false,
+                          // ズーム上限を 4.0 (Dialog 版と同じ。 minZoomLevel は v28 で未公開)
+                          maxZoomLevel: 4.0,
+                          // syncfusion がアノテーションを追加した時のフック (Dialog 版と同じ)
+                          onAnnotationAdded: (annotation) {
+                            _handleAnnotationAdded(annotation);
+                          },
+                          // 選択中テキスト + 行 bounds の追跡 + マーカー自動適用 (Dialog 版と同じ)
+                          onTextSelectionChanged: (details) {
+                            if (!mounted) return;
+                            final t = details.selectedText;
+                            dynamic lines;
+                            try {
+                              lines = (details as dynamic).selectedTextLines;
+                            } catch (_) {}
+                            if (t != _selectedPdfText ||
+                                lines != _selectedPdfLines) {
+                              setState(() {
+                                _selectedPdfText = t;
+                                _selectedPdfLines = lines;
+                              });
+                            }
+                            _highlightAutoTimer?.cancel();
+                            if (_activeMarkerColor != null &&
+                                t != null &&
+                                t.isNotEmpty &&
+                                t != _lastAutoAppliedText &&
+                                widget.nodeId != null) {
+                              final triggerText = t;
+                              final triggerLines = lines;
+                              _highlightAutoTimer =
+                                  Timer(const Duration(milliseconds: 100), () {
                                 if (!mounted) return;
-                                setState(() {
-                                  _selectedPdfText = savedText;
-                                  _selectedPdfLines = savedLines;
+                                if (_activeMarkerColor == null) return;
+                                _lastAutoAppliedText = triggerText;
+                                final savedText = _selectedPdfText;
+                                final savedLines = _selectedPdfLines;
+                                _selectedPdfText = triggerText;
+                                _selectedPdfLines = triggerLines;
+                                _addHighlightForSelection().catchError((_) {
+                                  if (!mounted) return;
+                                  setState(() {
+                                    _selectedPdfText = savedText;
+                                    _selectedPdfLines = savedLines;
+                                  });
                                 });
                               });
-                            });
-                          }
-                        },
-                        onPageChanged: (details) {
-                          // ページが実際に変わった時だけ再構築 (= ユーザー要望: ページめくりの
-                          //   たびに画面全体が再構築されて重いのを軽減)。
-                          if (mounted &&
-                              _currentPage != details.newPageNumber) {
-                            setState(() {
-                              _currentPage = details.newPageNumber;
-                              if (_pageInputCtrl.text !=
-                                  '${details.newPageNumber}') {
-                                _pageInputCtrl.text =
-                                    '${details.newPageNumber}';
-                              }
-                            });
-                            // 連続めくりで毎回ラスタすると落ちるので debounce。
-                            if (_fitPageMode) _scheduleFitPageRender();
-                            if (_spreadFitPageMode) _scheduleSpreadPageRender();
-                          }
-                          // ── PDF 最終ページ記録 (= 次回オープン時に復元) ──
-                          // ユーザー要望: 「最後に開いた PDF のページが開かれるようにして」。
-                          // NodePdfView (= ノードに添付した PDF を全画面表示する版) でも
-                          // ページ移動のたびに provider に保存する。
-                          if (_pdfFilePath != null) {
-                            try {
-                              context.read<MindMapProvider>().setLastPdfPage(
-                                  _pdfFilePath!, details.newPageNumber);
-                            } catch (_) {/* context 無効時は無視 */}
-                          }
-                          // ── 非表示 PDF ページ → 自動スキップ ──
-                          // 画面分割版 (`_handleSplitPdfPageChanged`) と同じロジックに
-                          // 揃え、 末尾 / 先頭で詰まらないように方向反転まで実装する。
-                          if (_pdfFilePath != null && _pdfViewerCtrl != null) {
-                            final provider = context.read<MindMapProvider>();
-                            final hidden =
-                                provider.hiddenPdfPagesFor(_pdfFilePath!);
-                            if (hidden.contains(details.newPageNumber)) {
-                              final isForward = details.newPageNumber >=
-                                  details.oldPageNumber;
-                              final maxPage = _pdfViewerCtrl!.pageCount;
-                              if (maxPage > 0) {
-                                int target = details.newPageNumber;
-                                bool decided = false;
-                                for (int i = 0; i < maxPage; i++) {
-                                  if (isForward) {
-                                    target++;
-                                    if (target > maxPage) {
-                                      target = details.newPageNumber - 1;
-                                      if (target < 1) break;
-                                      for (int j = 0; j < maxPage; j++) {
-                                        if (!hidden.contains(target)) {
-                                          decided = true;
-                                          break;
-                                        }
-                                        target--;
-                                        if (target < 1) break;
-                                      }
-                                      break;
-                                    }
-                                  } else {
-                                    target--;
-                                    if (target < 1) {
-                                      target = details.newPageNumber + 1;
-                                      if (target > maxPage) break;
-                                      for (int j = 0; j < maxPage; j++) {
-                                        if (!hidden.contains(target)) {
-                                          decided = true;
-                                          break;
-                                        }
-                                        target++;
-                                        if (target > maxPage) break;
-                                      }
-                                      break;
-                                    }
-                                  }
-                                  if (!hidden.contains(target)) {
-                                    decided = true;
-                                    break;
-                                  }
-                                }
-                                if (decided &&
-                                    target != details.newPageNumber) {
-                                  WidgetsBinding.instance
-                                      .addPostFrameCallback((_) {
-                                    if (!mounted || _pdfViewerCtrl == null)
-                                      return;
-                                    try {
-                                      _pdfViewerCtrl!.jumpToPage(target);
-                                    } catch (_) {}
-                                  });
-                                }
-                              }
                             }
-                          }
-                        },
-                        onDocumentLoaded: (details) {
-                          if (mounted) {
-                            setState(() {
-                              _pdfTotalPages = details.document.pages.count;
-                              _pageInputCtrl.text = '$_currentPage';
-                            });
-                            // ── PDF サムネイルが無ければ生成 (= ユーザー要望) ──
-                            _ensurePdfThumbForNode(
-                                context, widget.nodeId, _pdfFilePath);
-                            _pdfFocusNode.requestFocus();
-                            // 初期 zoom を少し引き気味に (Dialog 版と同じ)
-                            // single モードで自動 fit (Dialog 版と同じ理由)
-                            WidgetsBinding.instance.addPostFrameCallback((_) {
-                              if (!mounted || _pdfViewerCtrl == null) return;
-                              _restoreSavedHighlights();
-                            });
-                            // ── ページ全体表示 (fit-page) の既定 ON は廃止 ──
-                            //   (= ユーザー要望: 機能していないので削除)。 PDF は
-                            //   ライブの SfPdfViewer (幅フィット) のみで表示する。
-                            if (_spreadFitPageMode) _scheduleSpreadPageRender();
-                            // 非表示ページがある場合、 最初の表示可能ページに自動ジャンプ
+                          },
+                          onPageChanged: (details) {
+                            // ページが実際に変わった時だけ再構築 (= ユーザー要望: ページめくりの
+                            //   たびに画面全体が再構築されて重いのを軽減)。
+                            if (mounted &&
+                                _currentPage != details.newPageNumber) {
+                              setState(() {
+                                _currentPage = details.newPageNumber;
+                                if (_pageInputCtrl.text !=
+                                    '${details.newPageNumber}') {
+                                  _pageInputCtrl.text =
+                                      '${details.newPageNumber}';
+                                }
+                              });
+                              // 連続めくりで毎回ラスタすると落ちるので debounce。
+                              if (_fitPageMode) _scheduleFitPageRender();
+                              if (_spreadFitPageMode)
+                                _scheduleSpreadPageRender();
+                            }
+                            // ── PDF 最終ページ記録 (= 次回オープン時に復元) ──
+                            // ユーザー要望: 「最後に開いた PDF のページが開かれるようにして」。
+                            // NodePdfView (= ノードに添付した PDF を全画面表示する版) でも
+                            // ページ移動のたびに provider に保存する。
                             if (_pdfFilePath != null) {
+                              try {
+                                context.read<MindMapProvider>().setLastPdfPage(
+                                    _pdfFilePath!, details.newPageNumber);
+                              } catch (_) {/* context 無効時は無視 */}
+                            }
+                            // ── 非表示 PDF ページ → 自動スキップ ──
+                            // 画面分割版 (`_handleSplitPdfPageChanged`) と同じロジックに
+                            // 揃え、 末尾 / 先頭で詰まらないように方向反転まで実装する。
+                            if (_pdfFilePath != null &&
+                                _pdfViewerCtrl != null) {
                               final provider = context.read<MindMapProvider>();
                               final hidden =
                                   provider.hiddenPdfPagesFor(_pdfFilePath!);
-                              if (hidden.isNotEmpty) {
-                                int first = 1;
-                                while (first <= _pdfTotalPages &&
-                                    hidden.contains(first)) {
-                                  first++;
-                                }
-                                if (first > 1 && first <= _pdfTotalPages) {
-                                  WidgetsBinding.instance
-                                      .addPostFrameCallback((_) {
-                                    if (!mounted || _pdfViewerCtrl == null)
-                                      return;
-                                    try {
-                                      _pdfViewerCtrl!.jumpToPage(first);
-                                    } catch (_) {}
-                                  });
+                              if (hidden.contains(details.newPageNumber)) {
+                                final isForward = details.newPageNumber >=
+                                    details.oldPageNumber;
+                                final maxPage = _pdfViewerCtrl!.pageCount;
+                                if (maxPage > 0) {
+                                  int target = details.newPageNumber;
+                                  bool decided = false;
+                                  for (int i = 0; i < maxPage; i++) {
+                                    if (isForward) {
+                                      target++;
+                                      if (target > maxPage) {
+                                        target = details.newPageNumber - 1;
+                                        if (target < 1) break;
+                                        for (int j = 0; j < maxPage; j++) {
+                                          if (!hidden.contains(target)) {
+                                            decided = true;
+                                            break;
+                                          }
+                                          target--;
+                                          if (target < 1) break;
+                                        }
+                                        break;
+                                      }
+                                    } else {
+                                      target--;
+                                      if (target < 1) {
+                                        target = details.newPageNumber + 1;
+                                        if (target > maxPage) break;
+                                        for (int j = 0; j < maxPage; j++) {
+                                          if (!hidden.contains(target)) {
+                                            decided = true;
+                                            break;
+                                          }
+                                          target++;
+                                          if (target > maxPage) break;
+                                        }
+                                        break;
+                                      }
+                                    }
+                                    if (!hidden.contains(target)) {
+                                      decided = true;
+                                      break;
+                                    }
+                                  }
+                                  if (decided &&
+                                      target != details.newPageNumber) {
+                                    WidgetsBinding.instance
+                                        .addPostFrameCallback((_) {
+                                      if (!mounted || _pdfViewerCtrl == null)
+                                        return;
+                                      try {
+                                        _pdfViewerCtrl!.jumpToPage(target);
+                                      } catch (_) {}
+                                    });
+                                  }
                                 }
                               }
                             }
-                            // ── PDF 最終ページ復元 (NodePdfView 版) ──
-                            // ユーザー要望: 「最後に開いた PDF のページが開かれるようにして」。
-                            // hidden ロジックが先に first jump していても、 ここで上書きで
-                            // 最終ページに飛ぶ (= 直近の閲覧位置を優先)。
-                            // syncfusion の jumpToPage はロード直後だと無視されることがある
-                            // ので、 Future.delayed で 200ms 待ってから実行する。
-                            if (_pdfFilePath != null) {
-                              try {
-                                final lastPage = context
-                                    .read<MindMapProvider>()
-                                    .lastPdfPageFor(_pdfFilePath!);
-                                if (lastPage != null &&
-                                    lastPage >= 1 &&
-                                    lastPage <= _pdfTotalPages) {
-                                  Future.delayed(
-                                      const Duration(milliseconds: 200), () {
-                                    if (!mounted || _pdfViewerCtrl == null)
-                                      return;
-                                    try {
-                                      _pdfViewerCtrl!.jumpToPage(lastPage);
-                                      setState(() {
-                                        _currentPage = lastPage;
-                                        _pageInputCtrl.text = '$lastPage';
-                                      });
-                                    } catch (e) {
-                                      debugPrint('最終ページ復元失敗: $e');
-                                    }
-                                  });
+                          },
+                          onDocumentLoaded: (details) {
+                            if (mounted) {
+                              setState(() {
+                                _pdfTotalPages = details.document.pages.count;
+                                _pageInputCtrl.text = '$_currentPage';
+                              });
+                              // ── PDF サムネイルが無ければ生成 (= ユーザー要望) ──
+                              _ensurePdfThumbForNode(
+                                  context, widget.nodeId, _pdfFilePath);
+                              _pdfFocusNode.requestFocus();
+                              // 初期 zoom を少し引き気味に (Dialog 版と同じ)
+                              // single モードで自動 fit (Dialog 版と同じ理由)
+                              WidgetsBinding.instance.addPostFrameCallback((_) {
+                                if (!mounted || _pdfViewerCtrl == null) return;
+                                _restoreSavedHighlights();
+                              });
+                              // ── ページ全体表示 (fit-page) の既定 ON は廃止 ──
+                              //   (= ユーザー要望: 機能していないので削除)。 PDF は
+                              //   ライブの SfPdfViewer (幅フィット) のみで表示する。
+                              if (_spreadFitPageMode)
+                                _scheduleSpreadPageRender();
+                              // 非表示ページがある場合、 最初の表示可能ページに自動ジャンプ
+                              if (_pdfFilePath != null) {
+                                final provider =
+                                    context.read<MindMapProvider>();
+                                final hidden =
+                                    provider.hiddenPdfPagesFor(_pdfFilePath!);
+                                if (hidden.isNotEmpty) {
+                                  int first = 1;
+                                  while (first <= _pdfTotalPages &&
+                                      hidden.contains(first)) {
+                                    first++;
+                                  }
+                                  if (first > 1 && first <= _pdfTotalPages) {
+                                    WidgetsBinding.instance
+                                        .addPostFrameCallback((_) {
+                                      if (!mounted || _pdfViewerCtrl == null)
+                                        return;
+                                      try {
+                                        _pdfViewerCtrl!.jumpToPage(first);
+                                      } catch (_) {}
+                                    });
+                                  }
                                 }
-                              } catch (_) {/* context 無効時は無視 */}
+                              }
+                              // ── PDF 最終ページ復元 (NodePdfView 版) ──
+                              // ユーザー要望: 「最後に開いた PDF のページが開かれるようにして」。
+                              // hidden ロジックが先に first jump していても、 ここで上書きで
+                              // 最終ページに飛ぶ (= 直近の閲覧位置を優先)。
+                              // syncfusion の jumpToPage はロード直後だと無視されることがある
+                              // ので、 Future.delayed で 200ms 待ってから実行する。
+                              if (_pdfFilePath != null) {
+                                try {
+                                  final lastPage = context
+                                      .read<MindMapProvider>()
+                                      .lastPdfPageFor(_pdfFilePath!);
+                                  if (lastPage != null &&
+                                      lastPage >= 1 &&
+                                      lastPage <= _pdfTotalPages) {
+                                    Future.delayed(
+                                        const Duration(milliseconds: 200), () {
+                                      if (!mounted || _pdfViewerCtrl == null)
+                                        return;
+                                      try {
+                                        _pdfViewerCtrl!.jumpToPage(lastPage);
+                                        setState(() {
+                                          _currentPage = lastPage;
+                                          _pageInputCtrl.text = '$lastPage';
+                                        });
+                                      } catch (e) {
+                                        debugPrint('最終ページ復元失敗: $e');
+                                      }
+                                    });
+                                  }
+                                } catch (_) {/* context 無効時は無視 */}
+                              }
                             }
-                          }
-                        },
-                        onDocumentLoadFailed: (details) {
-                          if (mounted) {
-                            setState(() => _pdfError =
-                                '${details.error}: ${details.description}');
-                          }
-                        },
+                          },
+                          onDocumentLoadFailed: (details) {
+                            if (mounted) {
+                              setState(() => _pdfError =
+                                  '${details.error}: ${details.description}');
+                            }
+                          },
+                        ),
                       ),
                     ),
-                  ),
-                );
-              },
-            ),
+                  );
+                },
+              ),
             // マーカーバナー / FAB 廃止 (Dialog 版と同じ理由)
             if (_spreadFitPageMode) _buildSpreadPageOverlay(),
             // ── 音声読み上げ操作バー (= ユーザー要望: PDF 音声読み上げ) ──

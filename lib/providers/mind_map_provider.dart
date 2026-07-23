@@ -550,8 +550,9 @@ class MapDecoration {
       startNodeAnchor: identical(startNodeAnchor, noChange)
           ? this.startNodeAnchor
           : startNodeAnchor as AnchorDirection?,
-      endNodeId:
-          identical(endNodeId, noChange) ? this.endNodeId : endNodeId as String?,
+      endNodeId: identical(endNodeId, noChange)
+          ? this.endNodeId
+          : endNodeId as String?,
       endNodeAnchor: identical(endNodeAnchor, noChange)
           ? this.endNodeAnchor
           : endNodeAnchor as AnchorDirection?,
@@ -18390,7 +18391,8 @@ class MindMapProvider extends ChangeNotifier {
       'zh': '要删除此封面及其中的 {n} 个项目吗？',
       'ko': '이 표지와 안의 항목 {n}개를 모두 삭제할까요?',
       'es': '¿Eliminar esta portada y los {n} elementos que contiene?',
-      'fr': 'Supprimer cette couverture et les {n} éléments qu\'elle contient ?',
+      'fr':
+          'Supprimer cette couverture et les {n} éléments qu\'elle contient ?',
       'de': 'Dieses Cover und alle {n} enthaltenen Elemente löschen?',
       'pt': 'Excluir esta capa e todos os {n} itens dentro dela?',
       'ru': 'Удалить эту обложку и все {n} элементов внутри неё?',
@@ -19188,10 +19190,13 @@ class MindMapProvider extends ChangeNotifier {
       'zh': '重新上传限制：开（其他用户无法覆盖）',
       'ko': '재업로드 제한: 켜짐(다른 사용자는 덮어쓰기 불가)',
       'es': 'Restricción de resubida: activada (otros no pueden sobrescribir)',
-      'fr': 'Restriction de renvoi : activée (les autres ne peuvent pas remplacer)',
-      'de': 'Erneutes Hochladen beschränkt: EIN (andere können nicht überschreiben)',
+      'fr':
+          'Restriction de renvoi : activée (les autres ne peuvent pas remplacer)',
+      'de':
+          'Erneutes Hochladen beschränkt: EIN (andere können nicht überschreiben)',
       'pt': 'Restrição de reenvio: ativada (outros não podem substituir)',
-      'ru': 'Ограничение повторной загрузки: ВКЛ. (другие не могут перезаписать)',
+      'ru':
+          'Ограничение повторной загрузки: ВКЛ. (другие не могут перезаписать)',
     },
     'upload.restrictOff': {
       'ja': '再アップロード制限: OFF',
@@ -19206,36 +19211,54 @@ class MindMapProvider extends ChangeNotifier {
     },
     'upload.autoSyncHint': {
       'ja': '右の同期アイコンをONにすると、変更時に自動でクラウドへ同期します',
-      'en': 'Turn on the sync icon at right to sync changes to the cloud automatically',
+      'en':
+          'Turn on the sync icon at right to sync changes to the cloud automatically',
       'zh': '开启右侧同步图标后，更改会自动同步到云端',
       'ko': '오른쪽 동기화 아이콘을 켜면 변경 사항이 클라우드에 자동 동기화됩니다',
-      'es': 'Activa el icono de sincronización de la derecha para sincronizar los cambios automáticamente',
-      'fr': 'Activez l’icône de synchronisation à droite pour envoyer automatiquement les modifications',
-      'de': 'Aktiviere rechts das Sync-Symbol, um Änderungen automatisch zu synchronisieren',
-      'pt': 'Ative o ícone de sincronização à direita para sincronizar alterações automaticamente',
-      'ru': 'Включите значок синхронизации справа для автоматической отправки изменений',
+      'es':
+          'Activa el icono de sincronización de la derecha para sincronizar los cambios automáticamente',
+      'fr':
+          'Activez l’icône de synchronisation à droite pour envoyer automatiquement les modifications',
+      'de':
+          'Aktiviere rechts das Sync-Symbol, um Änderungen automatisch zu synchronisieren',
+      'pt':
+          'Ative o ícone de sincronização à direita para sincronizar alterações automaticamente',
+      'ru':
+          'Включите значок синхронизации справа для автоматической отправки изменений',
     },
     'upload.restrictHint': {
       'ja': '鍵アイコンをONにすると、他ユーザーはこのマップを上書きアップロードできません',
-      'en': 'Turn on the lock icon to prevent other users from overwriting this map',
+      'en':
+          'Turn on the lock icon to prevent other users from overwriting this map',
       'zh': '开启锁定图标后，其他用户将无法覆盖上传此地图',
       'ko': '잠금 아이콘을 켜면 다른 사용자가 이 맵을 덮어쓸 수 없습니다',
-      'es': 'Activa el candado para impedir que otros usuarios sobrescriban este mapa',
-      'fr': 'Activez le cadenas pour empêcher les autres utilisateurs de remplacer cette carte',
-      'de': 'Aktiviere das Schloss, damit andere diese Karte nicht überschreiben können',
-      'pt': 'Ative o cadeado para impedir que outros usuários substituam este mapa',
-      'ru': 'Включите замок, чтобы другие пользователи не могли перезаписать эту карту',
+      'es':
+          'Activa el candado para impedir que otros usuarios sobrescriban este mapa',
+      'fr':
+          'Activez le cadenas pour empêcher les autres utilisateurs de remplacer cette carte',
+      'de':
+          'Aktiviere das Schloss, damit andere diese Karte nicht überschreiben können',
+      'pt':
+          'Ative o cadeado para impedir que outros usuários substituam este mapa',
+      'ru':
+          'Включите замок, чтобы другие пользователи не могли перезаписать эту карту',
     },
     'upload.attachmentFailed': {
       'ja': '一部のファイル（PDF・画像・動画）をアップロードできませんでした。通信環境を確認して、もう一度アップロードしてください。',
-      'en': 'Some files (PDFs, images, or videos) could not be uploaded. Check your connection and try again.',
+      'en':
+          'Some files (PDFs, images, or videos) could not be uploaded. Check your connection and try again.',
       'zh': '部分文件（PDF、图片或视频）无法上传。请检查网络后重试。',
       'ko': '일부 파일(PDF, 이미지 또는 동영상)을 업로드하지 못했습니다. 네트워크를 확인하고 다시 시도해 주세요.',
-      'es': 'No se pudieron subir algunos archivos (PDF, imágenes o vídeos). Comprueba la conexión e inténtalo de nuevo.',
-      'fr': 'Certains fichiers (PDF, images ou vidéos) n’ont pas pu être envoyés. Vérifiez la connexion et réessayez.',
-      'de': 'Einige Dateien (PDFs, Bilder oder Videos) konnten nicht hochgeladen werden. Prüfe die Verbindung und versuche es erneut.',
-      'pt': 'Não foi possível enviar alguns arquivos (PDFs, imagens ou vídeos). Verifique a conexão e tente novamente.',
-      'ru': 'Не удалось загрузить некоторые файлы (PDF, изображения или видео). Проверьте соединение и повторите попытку.',
+      'es':
+          'No se pudieron subir algunos archivos (PDF, imágenes o vídeos). Comprueba la conexión e inténtalo de nuevo.',
+      'fr':
+          'Certains fichiers (PDF, images ou vidéos) n’ont pas pu être envoyés. Vérifiez la connexion et réessayez.',
+      'de':
+          'Einige Dateien (PDFs, Bilder oder Videos) konnten nicht hochgeladen werden. Prüfe die Verbindung und versuche es erneut.',
+      'pt':
+          'Não foi possível enviar alguns arquivos (PDFs, imagens ou vídeos). Verifique a conexão e tente novamente.',
+      'ru':
+          'Не удалось загрузить некоторые файлы (PDF, изображения или видео). Проверьте соединение и повторите попытку.',
     },
     'upload.restrictedByOther': {
       'ja': '🔒 このマップは他のユーザーによって再アップロードが制限されています',
@@ -19244,7 +19267,8 @@ class MindMapProvider extends ChangeNotifier {
       'ko': '🔒 다른 사용자가 이 맵의 재업로드를 제한했습니다',
       'es': '🔒 Otro usuario ha restringido la resubida de este mapa',
       'fr': '🔒 Un autre utilisateur a limité le renvoi de cette carte',
-      'de': '🔒 Ein anderer Benutzer hat das erneute Hochladen dieser Karte beschränkt',
+      'de':
+          '🔒 Ein anderer Benutzer hat das erneute Hochladen dieser Karte beschränkt',
       'pt': '🔒 Outro usuário restringiu o reenvio deste mapa',
       'ru': '🔒 Другой пользователь ограничил повторную загрузку этой карты',
     },
@@ -19271,31 +19295,49 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Узлов: {n} (добавить как новую)',
     },
     'download.details': {
-      'ja': '詳細', 'en': 'Details', 'zh': '详情', 'ko': '상세',
-      'es': 'Detalles', 'fr': 'Détails', 'de': 'Details',
-      'pt': 'Detalhes', 'ru': 'Подробнее',
+      'ja': '詳細',
+      'en': 'Details',
+      'zh': '详情',
+      'ko': '상세',
+      'es': 'Detalles',
+      'fr': 'Détails',
+      'de': 'Details',
+      'pt': 'Detalhes',
+      'ru': 'Подробнее',
     },
     'download.attachmentFailed': {
       'ja': '一部のファイル（PDF・画像・動画）をダウンロードできませんでした。通信環境を確認して、もう一度ダウンロードしてください。',
-      'en': 'Some files (PDFs, images, or videos) could not be downloaded. Check your connection and try again.',
+      'en':
+          'Some files (PDFs, images, or videos) could not be downloaded. Check your connection and try again.',
       'zh': '部分文件（PDF、图片或视频）无法下载。请检查网络后重试。',
       'ko': '일부 파일(PDF, 이미지 또는 동영상)을 다운로드하지 못했습니다. 네트워크를 확인하고 다시 시도해 주세요.',
-      'es': 'No se pudieron descargar algunos archivos (PDF, imágenes o vídeos). Comprueba la conexión e inténtalo de nuevo.',
-      'fr': 'Certains fichiers (PDF, images ou vidéos) n’ont pas pu être téléchargés. Vérifiez la connexion et réessayez.',
-      'de': 'Einige Dateien (PDFs, Bilder oder Videos) konnten nicht heruntergeladen werden. Prüfe die Verbindung und versuche es erneut.',
-      'pt': 'Não foi possível baixar alguns arquivos (PDFs, imagens ou vídeos). Verifique a conexão e tente novamente.',
-      'ru': 'Не удалось скачать некоторые файлы (PDF, изображения или видео). Проверьте соединение и повторите попытку.',
+      'es':
+          'No se pudieron descargar algunos archivos (PDF, imágenes o vídeos). Comprueba la conexión e inténtalo de nuevo.',
+      'fr':
+          'Certains fichiers (PDF, images ou vidéos) n’ont pas pu être téléchargés. Vérifiez la connexion et réessayez.',
+      'de':
+          'Einige Dateien (PDFs, Bilder oder Videos) konnten nicht heruntergeladen werden. Prüfe die Verbindung und versuche es erneut.',
+      'pt':
+          'Não foi possível baixar alguns arquivos (PDFs, imagens ou vídeos). Verifique a conexão e tente novamente.',
+      'ru':
+          'Не удалось скачать некоторые файлы (PDF, изображения или видео). Проверьте соединение и повторите попытку.',
     },
     'download.attachmentFailedRetry': {
       'ja': '一部のファイル（PDF・画像・動画）をダウンロードできませんでした。詳細から再取得できます。',
-      'en': 'Some files (PDFs, images, or videos) could not be downloaded. You can retry them from Details.',
+      'en':
+          'Some files (PDFs, images, or videos) could not be downloaded. You can retry them from Details.',
       'zh': '部分文件（PDF、图片或视频）无法下载。可从“详情”中重试。',
       'ko': '일부 파일(PDF, 이미지 또는 동영상)을 다운로드하지 못했습니다. 상세에서 다시 받을 수 있습니다.',
-      'es': 'No se pudieron descargar algunos archivos (PDF, imágenes o vídeos). Puedes reintentarlo desde Detalles.',
-      'fr': 'Certains fichiers (PDF, images ou vidéos) n’ont pas pu être téléchargés. Réessayez depuis Détails.',
-      'de': 'Einige Dateien (PDFs, Bilder oder Videos) konnten nicht heruntergeladen werden. Unter Details kannst du es erneut versuchen.',
-      'pt': 'Não foi possível baixar alguns arquivos (PDFs, imagens ou vídeos). Tente novamente em Detalhes.',
-      'ru': 'Не удалось скачать некоторые файлы (PDF, изображения или видео). Повторите попытку в разделе «Подробнее».',
+      'es':
+          'No se pudieron descargar algunos archivos (PDF, imágenes o vídeos). Puedes reintentarlo desde Detalles.',
+      'fr':
+          'Certains fichiers (PDF, images ou vidéos) n’ont pas pu être téléchargés. Réessayez depuis Détails.',
+      'de':
+          'Einige Dateien (PDFs, Bilder oder Videos) konnten nicht heruntergeladen werden. Unter Details kannst du es erneut versuchen.',
+      'pt':
+          'Não foi possível baixar alguns arquivos (PDFs, imagens ou vídeos). Tente novamente em Detalhes.',
+      'ru':
+          'Не удалось скачать некоторые файлы (PDF, изображения или видео). Повторите попытку в разделе «Подробнее».',
     },
     'download.latestDownloaded': {
       'ja': '最新の変更をダウンロードしました',
@@ -19309,10 +19351,15 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Последние изменения скачаны',
     },
     'download.detailsTitle': {
-      'ja': 'ダウンロード詳細', 'en': 'Download details', 'zh': '下载详情',
-      'ko': '다운로드 상세', 'es': 'Detalles de la descarga',
-      'fr': 'Détails du téléchargement', 'de': 'Download-Details',
-      'pt': 'Detalhes do download', 'ru': 'Сведения о скачивании',
+      'ja': 'ダウンロード詳細',
+      'en': 'Download details',
+      'zh': '下载详情',
+      'ko': '다운로드 상세',
+      'es': 'Detalles de la descarga',
+      'fr': 'Détails du téléchargement',
+      'de': 'Download-Details',
+      'pt': 'Detalhes do download',
+      'ru': 'Сведения о скачивании',
     },
     'download.detailsEmpty': {
       'ja': '進行中または直近のダウンロード項目はありません',
@@ -19326,74 +19373,147 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Нет текущих или недавних элементов скачивания',
     },
     'download.statusPendingSkip': {
-      'ja': '除外予定', 'en': 'Will skip', 'zh': '将排除', 'ko': '제외 예정',
-      'es': 'Se omitirá', 'fr': 'Sera exclu', 'de': 'Wird übersprungen',
-      'pt': 'Será ignorado', 'ru': 'Будет пропущено',
+      'ja': '除外予定',
+      'en': 'Will skip',
+      'zh': '将排除',
+      'ko': '제외 예정',
+      'es': 'Se omitirá',
+      'fr': 'Sera exclu',
+      'de': 'Wird übersprungen',
+      'pt': 'Será ignorado',
+      'ru': 'Будет пропущено',
     },
     'download.statusPending': {
-      'ja': '待機中', 'en': 'Waiting', 'zh': '等待中', 'ko': '대기 중',
-      'es': 'En espera', 'fr': 'En attente', 'de': 'Wartet',
-      'pt': 'Aguardando', 'ru': 'Ожидание',
+      'ja': '待機中',
+      'en': 'Waiting',
+      'zh': '等待中',
+      'ko': '대기 중',
+      'es': 'En espera',
+      'fr': 'En attente',
+      'de': 'Wartet',
+      'pt': 'Aguardando',
+      'ru': 'Ожидание',
     },
     'download.statusDownloading': {
-      'ja': '取得中', 'en': 'Downloading', 'zh': '下载中', 'ko': '받는 중',
-      'es': 'Descargando', 'fr': 'Téléchargement', 'de': 'Wird geladen',
-      'pt': 'Baixando', 'ru': 'Скачивание',
+      'ja': '取得中',
+      'en': 'Downloading',
+      'zh': '下载中',
+      'ko': '받는 중',
+      'es': 'Descargando',
+      'fr': 'Téléchargement',
+      'de': 'Wird geladen',
+      'pt': 'Baixando',
+      'ru': 'Скачивание',
     },
     'download.statusCompleted': {
-      'ja': '完了', 'en': 'Complete', 'zh': '完成', 'ko': '완료',
-      'es': 'Completado', 'fr': 'Terminé', 'de': 'Abgeschlossen',
-      'pt': 'Concluído', 'ru': 'Готово',
+      'ja': '完了',
+      'en': 'Complete',
+      'zh': '完成',
+      'ko': '완료',
+      'es': 'Completado',
+      'fr': 'Terminé',
+      'de': 'Abgeschlossen',
+      'pt': 'Concluído',
+      'ru': 'Готово',
     },
     'download.statusFailed': {
-      'ja': '失敗', 'en': 'Failed', 'zh': '失败', 'ko': '실패',
-      'es': 'Fallido', 'fr': 'Échec', 'de': 'Fehlgeschlagen',
-      'pt': 'Falhou', 'ru': 'Ошибка',
+      'ja': '失敗',
+      'en': 'Failed',
+      'zh': '失败',
+      'ko': '실패',
+      'es': 'Fallido',
+      'fr': 'Échec',
+      'de': 'Fehlgeschlagen',
+      'pt': 'Falhou',
+      'ru': 'Ошибка',
     },
     'download.statusSkipped': {
-      'ja': '除外', 'en': 'Skipped', 'zh': '已排除', 'ko': '제외됨',
-      'es': 'Omitido', 'fr': 'Exclu', 'de': 'Übersprungen',
-      'pt': 'Ignorado', 'ru': 'Пропущено',
+      'ja': '除外',
+      'en': 'Skipped',
+      'zh': '已排除',
+      'ko': '제외됨',
+      'es': 'Omitido',
+      'fr': 'Exclu',
+      'de': 'Übersprungen',
+      'pt': 'Ignorado',
+      'ru': 'Пропущено',
     },
     'download.kindPage': {
-      'ja': 'マップ本体', 'en': 'Map data', 'zh': '地图主体', 'ko': '맵 본문',
-      'es': 'Datos del mapa', 'fr': 'Données de la carte',
-      'de': 'Kartendaten', 'pt': 'Dados do mapa', 'ru': 'Данные карты',
+      'ja': 'マップ本体',
+      'en': 'Map data',
+      'zh': '地图主体',
+      'ko': '맵 본문',
+      'es': 'Datos del mapa',
+      'fr': 'Données de la carte',
+      'de': 'Kartendaten',
+      'pt': 'Dados do mapa',
+      'ru': 'Данные карты',
     },
     'download.kindVideo': {
-      'ja': '動画', 'en': 'Video', 'zh': '视频', 'ko': '동영상',
-      'es': 'Vídeo', 'fr': 'Vidéo', 'de': 'Video', 'pt': 'Vídeo',
+      'ja': '動画',
+      'en': 'Video',
+      'zh': '视频',
+      'ko': '동영상',
+      'es': 'Vídeo',
+      'fr': 'Vidéo',
+      'de': 'Video',
+      'pt': 'Vídeo',
       'ru': 'Видео',
     },
     'download.kindAttachment': {
-      'ja': 'PDF・画像・添付', 'en': 'PDF, image, or attachment',
-      'zh': 'PDF、图片或附件', 'ko': 'PDF, 이미지 또는 첨부 파일',
+      'ja': 'PDF・画像・添付',
+      'en': 'PDF, image, or attachment',
+      'zh': 'PDF、图片或附件',
+      'ko': 'PDF, 이미지 또는 첨부 파일',
       'es': 'PDF, imagen o archivo adjunto',
       'fr': 'PDF, image ou pièce jointe',
-      'de': 'PDF, Bild oder Anhang', 'pt': 'PDF, imagem ou anexo',
+      'de': 'PDF, Bild oder Anhang',
+      'pt': 'PDF, imagem ou anexo',
       'ru': 'PDF, изображение или вложение',
     },
     'download.retry': {
-      'ja': '再取得', 'en': 'Retry', 'zh': '重试', 'ko': '다시 받기',
-      'es': 'Reintentar', 'fr': 'Réessayer', 'de': 'Erneut laden',
-      'pt': 'Tentar novamente', 'ru': 'Повторить',
+      'ja': '再取得',
+      'en': 'Retry',
+      'zh': '重试',
+      'ko': '다시 받기',
+      'es': 'Reintentar',
+      'fr': 'Réessayer',
+      'de': 'Erneut laden',
+      'pt': 'Tentar novamente',
+      'ru': 'Повторить',
     },
     'download.include': {
-      'ja': '取得', 'en': 'Include', 'zh': '下载', 'ko': '받기',
-      'es': 'Incluir', 'fr': 'Inclure', 'de': 'Einbeziehen',
-      'pt': 'Incluir', 'ru': 'Скачать',
+      'ja': '取得',
+      'en': 'Include',
+      'zh': '下载',
+      'ko': '받기',
+      'es': 'Incluir',
+      'fr': 'Inclure',
+      'de': 'Einbeziehen',
+      'pt': 'Incluir',
+      'ru': 'Скачать',
     },
     'download.failedCount': {
-      'ja': '{n}件の取得に失敗', 'en': '{n} failed', 'zh': '{n} 项下载失败',
-      'ko': '{n}개 받기 실패', 'es': '{n} con error',
-      'fr': '{n} échecs', 'de': '{n} fehlgeschlagen',
-      'pt': '{n} falharam', 'ru': 'Не удалось скачать: {n}',
+      'ja': '{n}件の取得に失敗',
+      'en': '{n} failed',
+      'zh': '{n} 项下载失败',
+      'ko': '{n}개 받기 실패',
+      'es': '{n} con error',
+      'fr': '{n} échecs',
+      'de': '{n} fehlgeschlagen',
+      'pt': '{n} falharam',
+      'ru': 'Не удалось скачать: {n}',
     },
     'download.deleteMode': {
-      'ja': '削除モード', 'en': 'Delete mode', 'zh': '删除模式',
-      'ko': '삭제 모드', 'es': 'Modo de eliminación',
-      'fr': 'Mode suppression', 'de': 'Löschmodus',
-      'pt': 'Modo de exclusão', 'ru': 'Режим удаления',
+      'ja': '削除モード',
+      'en': 'Delete mode',
+      'zh': '删除模式',
+      'ko': '삭제 모드',
+      'es': 'Modo de eliminación',
+      'fr': 'Mode suppression',
+      'de': 'Löschmodus',
+      'pt': 'Modo de exclusão',
+      'ru': 'Режим удаления',
     },
     'download.selectedTotal': {
       'ja': '選択合計: {size}（{n}件）',
@@ -19407,32 +19527,48 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Всего выбрано: {size} ({n})',
     },
     'download.localAlsoExists': {
-      'ja': 'ローカルにも存在', 'en': 'Also exists locally',
-      'zh': '本地也存在', 'ko': '로컬에도 있음',
-      'es': 'También existe localmente', 'fr': 'Existe aussi en local',
-      'de': 'Auch lokal vorhanden', 'pt': 'Também existe localmente',
+      'ja': 'ローカルにも存在',
+      'en': 'Also exists locally',
+      'zh': '本地也存在',
+      'ko': '로컬에도 있음',
+      'es': 'También existe localmente',
+      'fr': 'Existe aussi en local',
+      'de': 'Auch lokal vorhanden',
+      'pt': 'Também existe localmente',
       'ru': 'Также есть локально',
     },
     'download.localExists': {
-      'ja': 'ローカルに存在', 'en': 'Exists locally', 'zh': '本地存在',
-      'ko': '로컬에 있음', 'es': 'Existe localmente',
-      'fr': 'Existe en local', 'de': 'Lokal vorhanden',
-      'pt': 'Existe localmente', 'ru': 'Есть локально',
+      'ja': 'ローカルに存在',
+      'en': 'Exists locally',
+      'zh': '本地存在',
+      'ko': '로컬에 있음',
+      'es': 'Existe localmente',
+      'fr': 'Existe en local',
+      'de': 'Lokal vorhanden',
+      'pt': 'Existe localmente',
+      'ru': 'Есть локально',
     },
     'sync.firebaseConfigMissing': {
       'ja': 'Firebase設定が不足しています。ビルド時に次を設定してください: {fields}',
-      'en': 'Firebase configuration is incomplete. Set these values when building: {fields}',
+      'en':
+          'Firebase configuration is incomplete. Set these values when building: {fields}',
       'zh': 'Firebase 配置不完整。请在构建时设置以下值：{fields}',
       'ko': 'Firebase 설정이 부족합니다. 빌드할 때 다음 값을 설정하세요: {fields}',
-      'es': 'La configuración de Firebase está incompleta. Define estos valores al compilar: {fields}',
-      'fr': 'La configuration Firebase est incomplète. Définissez ces valeurs lors de la compilation : {fields}',
-      'de': 'Die Firebase-Konfiguration ist unvollständig. Lege beim Build diese Werte fest: {fields}',
-      'pt': 'A configuração do Firebase está incompleta. Defina estes valores ao compilar: {fields}',
-      'ru': 'Конфигурация Firebase неполна. Укажите при сборке следующие значения: {fields}',
+      'es':
+          'La configuración de Firebase está incompleta. Define estos valores al compilar: {fields}',
+      'fr':
+          'La configuration Firebase est incomplète. Définissez ces valeurs lors de la compilation : {fields}',
+      'de':
+          'Die Firebase-Konfiguration ist unvollständig. Lege beim Build diese Werte fest: {fields}',
+      'pt':
+          'A configuração do Firebase está incompleta. Defina estes valores ao compilar: {fields}',
+      'ru':
+          'Конфигурация Firebase неполна. Укажите при сборке следующие значения: {fields}',
     },
     'sync.firebaseNotConfigured': {
       'ja': 'Firebaseが設定されていません',
-      'en': 'Firebase is not configured', 'zh': 'Firebase 未配置',
+      'en': 'Firebase is not configured',
+      'zh': 'Firebase 未配置',
       'ko': 'Firebase가 설정되지 않았습니다',
       'es': 'Firebase no está configurado',
       'fr': 'Firebase n’est pas configuré',
@@ -19442,16 +19578,20 @@ class MindMapProvider extends ChangeNotifier {
     },
     'sync.firebaseDisconnected': {
       'ja': 'Firebaseに接続されていません',
-      'en': 'Not connected to Firebase', 'zh': '未连接到 Firebase',
+      'en': 'Not connected to Firebase',
+      'zh': '未连接到 Firebase',
       'ko': 'Firebase에 연결되어 있지 않습니다',
-      'es': 'Sin conexión a Firebase', 'fr': 'Non connecté à Firebase',
+      'es': 'Sin conexión a Firebase',
+      'fr': 'Non connecté à Firebase',
       'de': 'Nicht mit Firebase verbunden',
-      'pt': 'Não conectado ao Firebase', 'ru': 'Нет подключения к Firebase',
+      'pt': 'Não conectado ao Firebase',
+      'ru': 'Нет подключения к Firebase',
     },
     'sync.groupCreateFailed': {
       'ja': 'グループの作成に失敗しました: {err}',
       'en': 'Failed to create the group: {err}',
-      'zh': '创建群组失败：{err}', 'ko': '그룹 생성 실패: {err}',
+      'zh': '创建群组失败：{err}',
+      'ko': '그룹 생성 실패: {err}',
       'es': 'No se pudo crear el grupo: {err}',
       'fr': 'Échec de la création du groupe : {err}',
       'de': 'Gruppe konnte nicht erstellt werden: {err}',
@@ -19461,7 +19601,8 @@ class MindMapProvider extends ChangeNotifier {
     'sync.anonymousAuthFailed': {
       'ja': '匿名認証に失敗しました: {err}',
       'en': 'Anonymous authentication failed: {err}',
-      'zh': '匿名身份验证失败：{err}', 'ko': '익명 인증 실패: {err}',
+      'zh': '匿名身份验证失败：{err}',
+      'ko': '익명 인증 실패: {err}',
       'es': 'Error de autenticación anónima: {err}',
       'fr': 'Échec de l’authentification anonyme : {err}',
       'de': 'Anonyme Authentifizierung fehlgeschlagen: {err}',
@@ -19474,8 +19615,10 @@ class MindMapProvider extends ChangeNotifier {
       'zh': '匿名身份验证响应缺少必要信息',
       'ko': '익명 인증 응답에 필요한 정보가 없습니다',
       'es': 'Faltan datos necesarios en la respuesta de autenticación anónima',
-      'fr': 'La réponse d’authentification anonyme ne contient pas les données requises',
-      'de': 'In der Antwort der anonymen Authentifizierung fehlen erforderliche Daten',
+      'fr':
+          'La réponse d’authentification anonyme ne contient pas les données requises',
+      'de':
+          'In der Antwort der anonymen Authentifizierung fehlen erforderliche Daten',
       'pt': 'Faltam dados necessários na resposta de autenticação anônima',
       'ru': 'В ответе анонимной аутентификации отсутствуют необходимые данные',
     },
@@ -19496,7 +19639,8 @@ class MindMapProvider extends ChangeNotifier {
       'zh': '令牌刷新响应缺少必要信息',
       'ko': '토큰 갱신 응답에 필요한 정보가 없습니다',
       'es': 'Faltan datos necesarios en la respuesta de renovación del token',
-      'fr': 'La réponse de renouvellement du jeton ne contient pas les données requises',
+      'fr':
+          'La réponse de renouvellement du jeton ne contient pas les données requises',
       'de': 'In der Antwort zur Token-Erneuerung fehlen erforderliche Daten',
       'pt': 'Faltam dados necessários na resposta de atualização do token',
       'ru': 'В ответе обновления токена отсутствуют необходимые данные',
@@ -19515,7 +19659,8 @@ class MindMapProvider extends ChangeNotifier {
     'sync.groupLimit': {
       'ja': '参加できるグループは最大{n}件です',
       'en': 'You can join up to {n} groups',
-      'zh': '最多可加入 {n} 个群组', 'ko': '최대 {n}개 그룹에 참여할 수 있습니다',
+      'zh': '最多可加入 {n} 个群组',
+      'ko': '최대 {n}개 그룹에 참여할 수 있습니다',
       'es': 'Puedes unirte a un máximo de {n} grupos',
       'fr': 'Vous pouvez rejoindre jusqu’à {n} groupes',
       'de': 'Du kannst bis zu {n} Gruppen beitreten',
@@ -19525,7 +19670,8 @@ class MindMapProvider extends ChangeNotifier {
     'sync.invalidGroupCode': {
       'ja': 'グループコードの形式が正しくありません',
       'en': 'The group code format is invalid',
-      'zh': '群组代码格式无效', 'ko': '그룹 코드 형식이 올바르지 않습니다',
+      'zh': '群组代码格式无效',
+      'ko': '그룹 코드 형식이 올바르지 않습니다',
       'es': 'El formato del código de grupo no es válido',
       'fr': 'Le format du code de groupe est incorrect',
       'de': 'Das Format des Gruppencodes ist ungültig',
@@ -19535,7 +19681,8 @@ class MindMapProvider extends ChangeNotifier {
     'sync.groupNotFound': {
       'ja': '指定された同期グループが見つかりません',
       'en': 'The specified sync group was not found',
-      'zh': '找不到指定的同步群组', 'ko': '지정한 동기화 그룹을 찾을 수 없습니다',
+      'zh': '找不到指定的同步群组',
+      'ko': '지정한 동기화 그룹을 찾을 수 없습니다',
       'es': 'No se encontró el grupo de sincronización indicado',
       'fr': 'Le groupe de synchronisation indiqué est introuvable',
       'de': 'Die angegebene Sync-Gruppe wurde nicht gefunden',
@@ -19545,8 +19692,10 @@ class MindMapProvider extends ChangeNotifier {
     'sync.groupJoinFailed': {
       'ja': '同期グループへの参加登録に失敗しました',
       'en': 'Failed to register with the sync group',
-      'zh': '加入同步群组失败', 'ko': '동기화 그룹 참여 등록에 실패했습니다',
-      'es': 'No se pudo registrar la participación en el grupo de sincronización',
+      'zh': '加入同步群组失败',
+      'ko': '동기화 그룹 참여 등록에 실패했습니다',
+      'es':
+          'No se pudo registrar la participación en el grupo de sincronización',
       'fr': 'Échec de l’inscription au groupe de synchronisation',
       'de': 'Registrierung bei der Sync-Gruppe fehlgeschlagen',
       'pt': 'Falha ao registrar a participação no grupo de sincronização',
@@ -19554,40 +19703,61 @@ class MindMapProvider extends ChangeNotifier {
     },
     'sync.monthlyUploadLimit': {
       'ja': '今月のアップロード上限（{limit} GB）に達しました。来月まで待つか、上位プランをご検討ください。',
-      'en': 'You reached this month’s upload limit ({limit} GB). Wait until next month or consider a higher plan.',
+      'en':
+          'You reached this month’s upload limit ({limit} GB). Wait until next month or consider a higher plan.',
       'zh': '已达到本月上传上限（{limit} GB）。请等到下月或考虑升级方案。',
       'ko': '이번 달 업로드 한도({limit}GB)에 도달했습니다. 다음 달까지 기다리거나 상위 요금제를 고려하세요.',
-      'es': 'Has alcanzado el límite mensual de subida ({limit} GB). Espera al próximo mes o considera un plan superior.',
-      'fr': 'Vous avez atteint la limite mensuelle d’envoi ({limit} Go). Attendez le mois prochain ou choisissez une offre supérieure.',
-      'de': 'Das monatliche Upload-Limit ({limit} GB) ist erreicht. Warte bis nächsten Monat oder erwäge einen höheren Tarif.',
-      'pt': 'Você atingiu o limite mensal de upload ({limit} GB). Aguarde o próximo mês ou considere um plano superior.',
-      'ru': 'Достигнут месячный лимит загрузки ({limit} ГБ). Подождите до следующего месяца или выберите более высокий тариф.',
+      'es':
+          'Has alcanzado el límite mensual de subida ({limit} GB). Espera al próximo mes o considera un plan superior.',
+      'fr':
+          'Vous avez atteint la limite mensuelle d’envoi ({limit} Go). Attendez le mois prochain ou choisissez une offre supérieure.',
+      'de':
+          'Das monatliche Upload-Limit ({limit} GB) ist erreicht. Warte bis nächsten Monat oder erwäge einen höheren Tarif.',
+      'pt':
+          'Você atingiu o limite mensal de upload ({limit} GB). Aguarde o próximo mês ou considere um plano superior.',
+      'ru':
+          'Достигнут месячный лимит загрузки ({limit} ГБ). Подождите до следующего месяца или выберите более высокий тариф.',
     },
     'sync.storageLimit': {
-      'ja': 'クラウド容量の上限（{limit} GB）に達しました（使用中 {used} GB）。不要なファイルや動画を削除するか、上位プランをご検討ください。',
-      'en': 'Cloud storage is full ({limit} GB; {used} GB used). Delete unneeded files or videos, or consider a higher plan.',
+      'ja':
+          'クラウド容量の上限（{limit} GB）に達しました（使用中 {used} GB）。不要なファイルや動画を削除するか、上位プランをご検討ください。',
+      'en':
+          'Cloud storage is full ({limit} GB; {used} GB used). Delete unneeded files or videos, or consider a higher plan.',
       'zh': '云存储已达上限（{limit} GB；已用 {used} GB）。请删除不需要的文件或视频，或考虑升级方案。',
-      'ko': '클라우드 용량 한도({limit}GB, {used}GB 사용)에 도달했습니다. 불필요한 파일이나 동영상을 삭제하거나 상위 요금제를 고려하세요.',
-      'es': 'El almacenamiento en la nube está lleno ({limit} GB; {used} GB usados). Elimina archivos o vídeos innecesarios o considera un plan superior.',
-      'fr': 'Le stockage cloud est plein ({limit} Go ; {used} Go utilisés). Supprimez des fichiers ou vidéos inutiles, ou choisissez une offre supérieure.',
-      'de': 'Der Cloud-Speicher ist voll ({limit} GB; {used} GB belegt). Lösche unnötige Dateien oder Videos oder erwäge einen höheren Tarif.',
-      'pt': 'O armazenamento na nuvem está cheio ({limit} GB; {used} GB usados). Exclua arquivos ou vídeos desnecessários ou considere um plano superior.',
-      'ru': 'Облачное хранилище заполнено ({limit} ГБ; использовано {used} ГБ). Удалите ненужные файлы или видео либо выберите более высокий тариф.',
+      'ko':
+          '클라우드 용량 한도({limit}GB, {used}GB 사용)에 도달했습니다. 불필요한 파일이나 동영상을 삭제하거나 상위 요금제를 고려하세요.',
+      'es':
+          'El almacenamiento en la nube está lleno ({limit} GB; {used} GB usados). Elimina archivos o vídeos innecesarios o considera un plan superior.',
+      'fr':
+          'Le stockage cloud est plein ({limit} Go ; {used} Go utilisés). Supprimez des fichiers ou vidéos inutiles, ou choisissez une offre supérieure.',
+      'de':
+          'Der Cloud-Speicher ist voll ({limit} GB; {used} GB belegt). Lösche unnötige Dateien oder Videos oder erwäge einen höheren Tarif.',
+      'pt':
+          'O armazenamento na nuvem está cheio ({limit} GB; {used} GB usados). Exclua arquivos ou vídeos desnecessários ou considere um plano superior.',
+      'ru':
+          'Облачное хранилище заполнено ({limit} ГБ; использовано {used} ГБ). Удалите ненужные файлы или видео либо выберите более высокий тариф.',
     },
     'sync.monthlyDownloadLimit': {
       'ja': '今月のダウンロード上限（{limit} GB）に達しました。来月まで待つか、上位プランをご検討ください。',
-      'en': 'You reached this month’s download limit ({limit} GB). Wait until next month or consider a higher plan.',
+      'en':
+          'You reached this month’s download limit ({limit} GB). Wait until next month or consider a higher plan.',
       'zh': '已达到本月下载上限（{limit} GB）。请等到下月或考虑升级方案。',
       'ko': '이번 달 다운로드 한도({limit}GB)에 도달했습니다. 다음 달까지 기다리거나 상위 요금제를 고려하세요.',
-      'es': 'Has alcanzado el límite mensual de descarga ({limit} GB). Espera al próximo mes o considera un plan superior.',
-      'fr': 'Vous avez atteint la limite mensuelle de téléchargement ({limit} Go). Attendez le mois prochain ou choisissez une offre supérieure.',
-      'de': 'Das monatliche Download-Limit ({limit} GB) ist erreicht. Warte bis nächsten Monat oder erwäge einen höheren Tarif.',
-      'pt': 'Você atingiu o limite mensal de download ({limit} GB). Aguarde o próximo mês ou considere um plano superior.',
-      'ru': 'Достигнут месячный лимит скачивания ({limit} ГБ). Подождите до следующего месяца или выберите более высокий тариф.',
+      'es':
+          'Has alcanzado el límite mensual de descarga ({limit} GB). Espera al próximo mes o considera un plan superior.',
+      'fr':
+          'Vous avez atteint la limite mensuelle de téléchargement ({limit} Go). Attendez le mois prochain ou choisissez une offre supérieure.',
+      'de':
+          'Das monatliche Download-Limit ({limit} GB) ist erreicht. Warte bis nächsten Monat oder erwäge einen höheren Tarif.',
+      'pt':
+          'Você atingiu o limite mensal de download ({limit} GB). Aguarde o próximo mês ou considere um plano superior.',
+      'ru':
+          'Достигнут месячный лимит скачивания ({limit} ГБ). Подождите до следующего месяца или выберите более высокий тариф.',
     },
     'sync.fileUploadFailed': {
       'ja': 'ファイルのアップロードに失敗しました: {name}',
-      'en': 'Failed to upload file: {name}', 'zh': '文件上传失败：{name}',
+      'en': 'Failed to upload file: {name}',
+      'zh': '文件上传失败：{name}',
       'ko': '파일 업로드 실패: {name}',
       'es': 'No se pudo subir el archivo: {name}',
       'fr': 'Échec de l’envoi du fichier : {name}',
@@ -19597,7 +19767,8 @@ class MindMapProvider extends ChangeNotifier {
     },
     'sync.videoUploadFailed': {
       'ja': '動画のアップロードに失敗しました: {name}',
-      'en': 'Failed to upload video: {name}', 'zh': '视频上传失败：{name}',
+      'en': 'Failed to upload video: {name}',
+      'zh': '视频上传失败：{name}',
       'ko': '동영상 업로드 실패: {name}',
       'es': 'No se pudo subir el vídeo: {name}',
       'fr': 'Échec de l’envoi de la vidéo : {name}',
@@ -19606,21 +19777,31 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Не удалось загрузить видео: {name}',
     },
     'sync.untitledItem': {
-      'ja': '無題の要素', 'en': 'Untitled item', 'zh': '无标题元素',
-      'ko': '제목 없는 요소', 'es': 'Elemento sin título',
-      'fr': 'Élément sans titre', 'de': 'Unbenanntes Element',
-      'pt': 'Item sem título', 'ru': 'Элемент без названия',
+      'ja': '無題の要素',
+      'en': 'Untitled item',
+      'zh': '无标题元素',
+      'ko': '제목 없는 요소',
+      'es': 'Elemento sin título',
+      'fr': 'Élément sans titre',
+      'de': 'Unbenanntes Element',
+      'pt': 'Item sem título',
+      'ru': 'Элемент без названия',
     },
     'sync.pageMainLabel': {
-      'ja': '{name} / マップ本体', 'en': '{name} / Map data',
-      'zh': '{name} / 地图主体', 'ko': '{name} / 맵 본문',
-      'es': '{name} / Datos del mapa', 'fr': '{name} / Données de la carte',
-      'de': '{name} / Kartendaten', 'pt': '{name} / Dados do mapa',
+      'ja': '{name} / マップ本体',
+      'en': '{name} / Map data',
+      'zh': '{name} / 地图主体',
+      'ko': '{name} / 맵 본문',
+      'es': '{name} / Datos del mapa',
+      'fr': '{name} / Données de la carte',
+      'de': '{name} / Kartendaten',
+      'pt': '{name} / Dados do mapa',
       'ru': '{name} / Данные карты',
     },
     'sync.itemDownloadFailed': {
       'ja': '{name} をダウンロードできませんでした',
-      'en': 'Could not download {name}', 'zh': '无法下载 {name}',
+      'en': 'Could not download {name}',
+      'zh': '无法下载 {name}',
       'ko': '{name}을(를) 다운로드하지 못했습니다',
       'es': 'No se pudo descargar {name}',
       'fr': 'Impossible de télécharger {name}',
@@ -19630,7 +19811,8 @@ class MindMapProvider extends ChangeNotifier {
     },
     'sync.retryingItem': {
       'ja': '{name} を再ダウンロード中...',
-      'en': 'Retrying {name}...', 'zh': '正在重新下载 {name}...',
+      'en': 'Retrying {name}...',
+      'zh': '正在重新下载 {name}...',
       'ko': '{name} 다시 다운로드 중...',
       'es': 'Reintentando la descarga de {name}...',
       'fr': 'Nouvelle tentative de téléchargement de {name}...',
@@ -19639,9 +19821,15 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Повторное скачивание {name}...',
     },
     'sync.cancelling': {
-      'ja': 'キャンセル中…', 'en': 'Cancelling…', 'zh': '正在取消…',
-      'ko': '취소 중…', 'es': 'Cancelando…', 'fr': 'Annulation…',
-      'de': 'Wird abgebrochen…', 'pt': 'Cancelando…', 'ru': 'Отмена…',
+      'ja': 'キャンセル中…',
+      'en': 'Cancelling…',
+      'zh': '正在取消…',
+      'ko': '취소 중…',
+      'es': 'Cancelando…',
+      'fr': 'Annulation…',
+      'de': 'Wird abgebrochen…',
+      'pt': 'Cancelando…',
+      'ru': 'Отмена…',
     },
     'sync.uploadingPageProgress': {
       'ja': '{name} をアップロード中...（{current}/{total}）',
@@ -19656,11 +19844,14 @@ class MindMapProvider extends ChangeNotifier {
     },
     'sync.downloadingPage': {
       'ja': '{name} をダウンロード中...',
-      'en': 'Downloading {name}...', 'zh': '正在下载 {name}...',
-      'ko': '{name} 다운로드 중...', 'es': 'Descargando {name}...',
+      'en': 'Downloading {name}...',
+      'zh': '正在下载 {name}...',
+      'ko': '{name} 다운로드 중...',
+      'es': 'Descargando {name}...',
       'fr': 'Téléchargement de {name}...',
       'de': '{name} wird heruntergeladen...',
-      'pt': 'Baixando {name}...', 'ru': 'Скачивание {name}...',
+      'pt': 'Baixando {name}...',
+      'ru': 'Скачивание {name}...',
     },
     'sync.downloadingPageProgress': {
       'ja': '{name} をダウンロード中...（{current}/{total}）',
@@ -19675,29 +19866,44 @@ class MindMapProvider extends ChangeNotifier {
     },
     'sync.cloudListTimeout': {
       'ja': 'クラウド一覧の取得がタイムアウトしました。通信環境、またはクラウド上のページ数やサイズを確認してください。',
-      'en': 'Fetching the cloud list timed out. Check your connection and the number or size of cloud pages.',
+      'en':
+          'Fetching the cloud list timed out. Check your connection and the number or size of cloud pages.',
       'zh': '获取云端列表超时。请检查网络以及云端页面的数量或大小。',
       'ko': '클라우드 목록을 가져오는 데 시간이 초과되었습니다. 네트워크와 클라우드 페이지 수 또는 크기를 확인하세요.',
-      'es': 'Se agotó el tiempo al obtener la lista de la nube. Comprueba la conexión y el número o tamaño de las páginas.',
-      'fr': 'La récupération de la liste cloud a expiré. Vérifiez la connexion ainsi que le nombre ou la taille des pages.',
-      'de': 'Das Abrufen der Cloud-Liste hat zu lange gedauert. Prüfe Verbindung, Anzahl und Größe der Cloud-Seiten.',
-      'pt': 'A obtenção da lista da nuvem expirou. Verifique a conexão e a quantidade ou o tamanho das páginas.',
-      'ru': 'Истекло время получения списка из облака. Проверьте соединение, число и размер облачных страниц.',
+      'es':
+          'Se agotó el tiempo al obtener la lista de la nube. Comprueba la conexión y el número o tamaño de las páginas.',
+      'fr':
+          'La récupération de la liste cloud a expiré. Vérifiez la connexion ainsi que le nombre ou la taille des pages.',
+      'de':
+          'Das Abrufen der Cloud-Liste hat zu lange gedauert. Prüfe Verbindung, Anzahl und Größe der Cloud-Seiten.',
+      'pt':
+          'A obtenção da lista da nuvem expirou. Verifique a conexão e a quantidade ou o tamanho das páginas.',
+      'ru':
+          'Истекло время получения списка из облака. Проверьте соединение, число и размер облачных страниц.',
     },
     'sync.cloudPermissionError': {
-      'ja': 'アクセス権限エラー（403）。Firebase Consoleでプロジェクト「{project}」のFirestoreルールを確認してください。',
-      'en': 'Access denied (403). Check the Firestore rules for project “{project}” in Firebase Console.',
+      'ja':
+          'アクセス権限エラー（403）。Firebase Consoleでプロジェクト「{project}」のFirestoreルールを確認してください。',
+      'en':
+          'Access denied (403). Check the Firestore rules for project “{project}” in Firebase Console.',
       'zh': '访问权限错误（403）。请在 Firebase Console 中检查项目“{project}”的 Firestore 规则。',
-      'ko': '접근 권한 오류(403). Firebase Console에서 프로젝트 “{project}”의 Firestore 규칙을 확인하세요.',
-      'es': 'Acceso denegado (403). Comprueba las reglas de Firestore del proyecto “{project}” en Firebase Console.',
-      'fr': 'Accès refusé (403). Vérifiez les règles Firestore du projet « {project} » dans Firebase Console.',
-      'de': 'Zugriff verweigert (403). Prüfe in der Firebase Console die Firestore-Regeln für „{project}“.',
-      'pt': 'Acesso negado (403). Verifique as regras do Firestore do projeto “{project}” no Firebase Console.',
-      'ru': 'Доступ запрещён (403). Проверьте правила Firestore проекта «{project}» в Firebase Console.',
+      'ko':
+          '접근 권한 오류(403). Firebase Console에서 프로젝트 “{project}”의 Firestore 규칙을 확인하세요.',
+      'es':
+          'Acceso denegado (403). Comprueba las reglas de Firestore del proyecto “{project}” en Firebase Console.',
+      'fr':
+          'Accès refusé (403). Vérifiez les règles Firestore du projet « {project} » dans Firebase Console.',
+      'de':
+          'Zugriff verweigert (403). Prüfe in der Firebase Console die Firestore-Regeln für „{project}“.',
+      'pt':
+          'Acesso negado (403). Verifique as regras do Firestore do projeto “{project}” no Firebase Console.',
+      'ru':
+          'Доступ запрещён (403). Проверьте правила Firestore проекта «{project}» в Firebase Console.',
     },
     'sync.cloudFetchFailed': {
       'ja': 'データ取得に失敗しました: {status}',
-      'en': 'Failed to fetch data: {status}', 'zh': '获取数据失败：{status}',
+      'en': 'Failed to fetch data: {status}',
+      'zh': '获取数据失败：{status}',
       'ko': '데이터 가져오기 실패: {status}',
       'es': 'No se pudieron obtener los datos: {status}',
       'fr': 'Échec de la récupération des données : {status}',
@@ -21824,15 +22030,15 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Вставить',
     },
     'cmd.selectAll': {
-      'ja': '全選択（ノード / 接続）',
-      'en': 'Select all (nodes / links)',
-      'zh': '全选（节点 / 连接）',
-      'ko': '모두 선택 (노드 / 연결)',
-      'es': 'Seleccionar todo (nodos / enlaces)',
-      'fr': 'Tout sélectionner (nœuds / liens)',
-      'de': 'Alles auswählen (Knoten / Verbindungen)',
-      'pt': 'Selecionar tudo (nós / conexões)',
-      'ru': 'Выделить всё (узлы / связи)',
+      'ja': 'ノード・図形を全選択',
+      'en': 'Select all nodes & shapes',
+      'zh': '全选节点和图形',
+      'ko': '노드·도형 모두 선택',
+      'es': 'Seleccionar nodos y formas',
+      'fr': 'Sélectionner nœuds et formes',
+      'de': 'Knoten und Formen auswählen',
+      'pt': 'Selecionar nós e formas',
+      'ru': 'Выделить узлы и фигуры',
     },
     'cmd.group': {
       'ja': 'グループ化',
@@ -32585,6 +32791,17 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Inverter',
       'ru': 'Инвертир.',
     },
+    'conn.reverseParentChild': {
+      'ja': '親子を反転',
+      'en': 'Swap parent/child',
+      'zh': '互换父子',
+      'ko': '부모·자식 반전',
+      'es': 'Invertir padre/hijo',
+      'fr': 'Inverser parent/enfant',
+      'de': 'Eltern/Kind tauschen',
+      'pt': 'Inverter pai/filho',
+      'ru': 'Поменять родителя/ребёнка',
+    },
     'conn.delete': {
       'ja': '削除',
       'en': 'Delete',
@@ -33879,15 +34096,15 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Сменить папку',
     },
     'page.moveToRoot': {
-      'ja': 'ルート（フォルダー外）',
-      'en': 'Root (no folder)',
-      'zh': '根目录（无文件夹）',
-      'ko': '루트 (폴더 없음)',
-      'es': 'Raíz (sin carpeta)',
-      'fr': 'Racine (aucun dossier)',
-      'de': 'Stamm (kein Ordner)',
-      'pt': 'Raiz (sem pasta)',
-      'ru': 'Корень (без папки)',
+      'ja': 'フォルダーなし',
+      'en': 'No folder',
+      'zh': '无文件夹',
+      'ko': '폴더 없음',
+      'es': 'Sin carpeta',
+      'fr': 'Aucun dossier',
+      'de': 'Kein Ordner',
+      'pt': 'Sem pasta',
+      'ru': 'Без папки',
     },
     'page.export': {
       'ja': 'プレビュー用ファイルとして書き出し',
@@ -37332,8 +37549,8 @@ class MindMapProvider extends ChangeNotifier {
         if (decoded is List) {
           _focusLockTasks = decoded
               .whereType<Map>()
-              .map((item) => FocusLockTask.fromJson(
-                  Map<String, dynamic>.from(item)))
+              .map((item) =>
+                  FocusLockTask.fromJson(Map<String, dynamic>.from(item)))
               .where((task) => task.title.isNotEmpty)
               .toList();
         }
@@ -37468,14 +37685,12 @@ class MindMapProvider extends ChangeNotifier {
         _desktopHeaderDockCollapsedByPlacement['bottom'] ?? false;
     _desktopBottomDockFloating =
         prefs.getBool('desktopBottomDockFloating') ?? false;
-    _desktopBottomDockX =
-        (prefs.getDouble('desktopBottomDockX') ?? 0.5)
-            .clamp(0.0, 1.0)
-            .toDouble();
-    _desktopBottomDockY =
-        (prefs.getDouble('desktopBottomDockY') ?? 0.88)
-            .clamp(0.0, 1.0)
-            .toDouble();
+    _desktopBottomDockX = (prefs.getDouble('desktopBottomDockX') ?? 0.5)
+        .clamp(0.0, 1.0)
+        .toDouble();
+    _desktopBottomDockY = (prefs.getDouble('desktopBottomDockY') ?? 0.88)
+        .clamp(0.0, 1.0)
+        .toDouble();
     for (final placement in const <String>['left', 'right']) {
       _desktopSideDockHeightByPlacement[placement] =
           (prefs.getDouble('desktopSideDockHeight_$placement') ?? 2400.0)
@@ -37695,13 +37910,34 @@ class MindMapProvider extends ChangeNotifier {
         if (buttons.contains('rangeSelect')) return;
         final anchor = buttons.contains('mapMemo')
             ? buttons.indexOf('mapMemo') + 1
-            : (buttons.contains('addNode') ? buttons.indexOf('addNode') + 1 : 0);
+            : (buttons.contains('addNode')
+                ? buttons.indexOf('addNode') + 1
+                : 0);
         buttons.insert(anchor.clamp(0, buttons.length).toInt(), 'rangeSelect');
       }
 
       ensureRangeSelect(_customHeaderButtons);
       ensureRangeSelect(_galleryHeaderButtons);
       prefs.setBool('mig_header_range_select_v1', true);
+      prefs.setString('customHeaderButtons', jsonEncode(_customHeaderButtons));
+      prefs.setString(
+          'galleryHeaderButtons', jsonEncode(_galleryHeaderButtons));
+    }
+    // ── 全選択を既定ヘッダーへ追加し、主要な選択操作をノード生成の隣へ ──
+    // 一度だけ既存配置にも適用する。以後は移行フラグにより、ユーザーが行った
+    // 削除・並べ替えを尊重する。
+    if (prefs.getBool('mig_header_select_all_v1') != true) {
+      void placeSelectionActions(List<String> buttons) {
+        buttons.removeWhere((id) => id == 'selectAll' || id == 'rangeSelect');
+        final addNodeIndex = buttons.indexOf('addNode');
+        final insertAt = addNodeIndex >= 0 ? addNodeIndex + 1 : 0;
+        buttons.insert(insertAt.clamp(0, buttons.length), 'selectAll');
+        buttons.insert((insertAt + 1).clamp(0, buttons.length), 'rangeSelect');
+      }
+
+      placeSelectionActions(_customHeaderButtons);
+      placeSelectionActions(_galleryHeaderButtons);
+      prefs.setBool('mig_header_select_all_v1', true);
       prefs.setString('customHeaderButtons', jsonEncode(_customHeaderButtons));
       prefs.setString(
           'galleryHeaderButtons', jsonEncode(_galleryHeaderButtons));
@@ -37912,8 +38148,7 @@ class MindMapProvider extends ChangeNotifier {
     'swap',
   };
   String _desktopHeaderBarCollisionMode = 'ask';
-  String get desktopHeaderBarCollisionMode =>
-      _desktopHeaderBarCollisionMode;
+  String get desktopHeaderBarCollisionMode => _desktopHeaderBarCollisionMode;
 
   /// PC版ではボタン単位で表示辺を上/下/左/右へ分けられる。
   /// 保存値が無いボタンは従来の一括配置を継承するため、既存設定と互換になる。
@@ -37924,8 +38159,8 @@ class MindMapProvider extends ChangeNotifier {
       _desktopHeaderButtonPlacement;
 
   List<String> desktopHeaderButtonsForPlacement(String placement) =>
-      List<String>.unmodifiable(customHeaderButtons.where(
-          (id) => desktopHeaderButtonPlacementFor(id) == placement));
+      List<String>.unmodifiable(customHeaderButtons
+          .where((id) => desktopHeaderButtonPlacementFor(id) == placement));
 
   double _desktopBottomDockWidth = 640.0;
   double get desktopBottomDockWidth => _desktopBottomDockWidth;
@@ -37983,9 +38218,10 @@ class MindMapProvider extends ChangeNotifier {
   /// 通常ページのヘッダー初期デフォルト。
   static const List<String> defaultHeaderButtons = [
     'addNode',
+    'selectAll',
+    'rangeSelect',
     'mapMemo',
     'openYoutube',
-    'rangeSelect',
     'openAi',
     'googleSearch',
     'shortcuts',
@@ -38807,9 +39043,8 @@ class MindMapProvider extends ChangeNotifier {
         !_focusLockTasks.any((task) => task.completed)) {
       return;
     }
-    _focusLockTasks = _focusLockTasks
-        .map((task) => task.copyWith(completed: false))
-        .toList();
+    _focusLockTasks =
+        _focusLockTasks.map((task) => task.copyWith(completed: false)).toList();
     await _persistFocusLockTasks();
     notifyListeners();
   }
@@ -40134,11 +40369,8 @@ class MindMapProvider extends ChangeNotifier {
     }
     _desktopHeaderButtonPlacementById.clear();
     for (final entry in resolved.entries) {
-      _setDesktopHeaderButtonPlacementResolved(
-          entry.key,
-          entry.value == sourcePlacement
-              ? targetPlacement
-              : entry.value);
+      _setDesktopHeaderButtonPlacementResolved(entry.key,
+          entry.value == sourcePlacement ? targetPlacement : entry.value);
     }
 
     _desktopHeaderEnabledDockPlacements
@@ -40163,8 +40395,7 @@ class MindMapProvider extends ChangeNotifier {
           jsonEncode(_desktopHeaderEnabledDockPlacements.toList())),
       prefs.setString('desktopHeaderDockCollapsedByPlacement',
           jsonEncode(_desktopHeaderDockCollapsedByPlacement)),
-      prefs.setBool(
-          'desktopBottomDockCollapsed', _desktopBottomDockCollapsed),
+      prefs.setBool('desktopBottomDockCollapsed', _desktopBottomDockCollapsed),
     ]);
     notifyListeners();
   }
@@ -40229,8 +40460,7 @@ class MindMapProvider extends ChangeNotifier {
           jsonEncode(_desktopHeaderEnabledDockPlacements.toList())),
       prefs.setString('desktopHeaderDockCollapsedByPlacement',
           jsonEncode(_desktopHeaderDockCollapsedByPlacement)),
-      prefs.setBool(
-          'desktopBottomDockCollapsed', _desktopBottomDockCollapsed),
+      prefs.setBool('desktopBottomDockCollapsed', _desktopBottomDockCollapsed),
     ]);
     notifyListeners();
   }
@@ -40246,8 +40476,7 @@ class MindMapProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> setDesktopSideDockHeight(
-      String placement, double height) async {
+  Future<void> setDesktopSideDockHeight(String placement, double height) async {
     if (!_isDesktopSideDockPlacement(placement)) return;
     final next = height.clamp(176.0, 2400.0).toDouble();
     if ((desktopSideDockHeightAt(placement) - next).abs() < 0.5) return;
@@ -40264,12 +40493,10 @@ class MindMapProvider extends ChangeNotifier {
     double? y,
   }) async {
     if (!_isDesktopSideDockPlacement(placement)) return;
-    final nextX = (x ?? desktopSideDockXAt(placement))
-        .clamp(0.0, 1.0)
-        .toDouble();
-    final nextY = (y ?? desktopSideDockYAt(placement))
-        .clamp(0.0, 1.0)
-        .toDouble();
+    final nextX =
+        (x ?? desktopSideDockXAt(placement)).clamp(0.0, 1.0).toDouble();
+    final nextY =
+        (y ?? desktopSideDockYAt(placement)).clamp(0.0, 1.0).toDouble();
     if (desktopSideDockFloatingAt(placement) == floating &&
         (desktopSideDockXAt(placement) - nextX).abs() < 0.0005 &&
         (desktopSideDockYAt(placement) - nextY).abs() < 0.0005) {
@@ -43020,8 +43247,8 @@ class MindMapProvider extends ChangeNotifier {
           if (verifiedUid == null || _uid != verifiedUid) {
             return t('dev.errConnection');
           }
-          final enabled = await _fetchDeveloperModeStatusFromServer(
-              forceRefresh: false);
+          final enabled =
+              await _fetchDeveloperModeStatusFromServer(forceRefresh: false);
           return enabled == true ? null : t('dev.errConnection');
         }
         return t('dev.wrongPassword');
@@ -47193,13 +47420,12 @@ $cleanQ
     // これで更新後の高速起動時に初期値が保存値を見かけ上
     // 上書きするレースも避ける。
     _proStateLoadFuture = _loadProState().catchError(
-      (Object e, StackTrace st) =>
-          debugPrint('プラン状態の復元に失敗 (起動は続行): $e\n$st'),
+      (Object e, StackTrace st) => debugPrint('プラン状態の復元に失敗 (起動は続行): $e\n$st'),
     );
     unawaited(_proStateLoadFuture!
         .then((_) => _loadDeveloperModeState())
-        .catchError((Object e, StackTrace st) => debugPrint(
-            '開発者モードの復元に失敗 (起動は続行): $e\n$st')));
+        .catchError((Object e, StackTrace st) =>
+            debugPrint('開発者モードの復元に失敗 (起動は続行): $e\n$st')));
     _loadJoinedGroups();
     _loadColorSettings();
     loadDisplayName();
@@ -47470,8 +47696,8 @@ $cleanQ
       throw Exception(_firebaseInitError ?? t('sync.firebaseNotConfigured'));
     }
     if (_joinedGroupIds.length >= maxJoinedGroups) {
-      throw Exception(t('sync.groupLimit')
-          .replaceFirst('{n}', '$maxJoinedGroups'));
+      throw Exception(
+          t('sync.groupLimit').replaceFirst('{n}', '$maxJoinedGroups'));
     }
     // 8桁英数字のグループコードを生成
     final code = _uuid.v4().replaceAll('-', '').substring(0, 8).toUpperCase();
@@ -47499,8 +47725,8 @@ $cleanQ
     // 既に参加中のグループでなければ上限チェック
     if (!_joinedGroupIds.contains(code) &&
         _joinedGroupIds.length >= maxJoinedGroups) {
-      throw Exception(t('sync.groupLimit')
-          .replaceFirst('{n}', '$maxJoinedGroups'));
+      throw Exception(
+          t('sync.groupLimit').replaceFirst('{n}', '$maxJoinedGroups'));
     }
     if (!await _groupExists(code)) {
       throw Exception(t('sync.groupNotFound'));
@@ -47891,8 +48117,8 @@ $cleanQ
       }),
     );
     if (res.statusCode < 200 || res.statusCode >= 300) {
-      throw Exception(t('sync.groupCreateFailed').replaceFirst(
-          '{err}', 'HTTP ${res.statusCode} ${res.body}'));
+      throw Exception(t('sync.groupCreateFailed')
+          .replaceFirst('{err}', 'HTTP ${res.statusCode} ${res.body}'));
     }
   }
 
@@ -48021,8 +48247,7 @@ $cleanQ
             _pages[idx].uploadRestricted = true;
             _pages[idx].restrictedByUid = remoteRestrictedBy;
             notifyListeners();
-            throw _UploadRestrictedException(
-                t('upload.restrictedByOther'));
+            throw _UploadRestrictedException(t('upload.restrictedByOther'));
           }
         }
         // 404 (ドキュメント未作成) はスルー (= 初回アップロード)
@@ -48366,8 +48591,7 @@ $cleanQ
         _pages[idx].restrictedByUid != null &&
         _pages[idx].restrictedByUid!.isNotEmpty &&
         _pages[idx].restrictedByUid != _uid) {
-      throw _UploadRestrictedException(
-          t('upload.lockedByOtherCannotUnlock'));
+      throw _UploadRestrictedException(t('upload.lockedByOtherCannotUnlock'));
     }
     _pages[idx].uploadRestricted = restricted;
     if (restricted) {
@@ -48445,8 +48669,8 @@ $cleanQ
       if (!canUseUploadBytes(fileLength)) {
         final limitGb =
             (monthlyUploadLimit / 1024 / 1024 / 1024).toStringAsFixed(1);
-        _lastSyncLimitMessage = t('sync.monthlyUploadLimit')
-            .replaceFirst('{limit}', limitGb);
+        _lastSyncLimitMessage =
+            t('sync.monthlyUploadLimit').replaceFirst('{limit}', limitGb);
         throw Exception(_lastSyncLimitMessage);
       }
       // ── 累積ストレージ容量チェック ──
@@ -48646,8 +48870,8 @@ $cleanQ
         if (!canUseDownloadBytes(size)) {
           final limitGb =
               (monthlyDownloadLimit / 1024 / 1024 / 1024).toStringAsFixed(1);
-          _lastSyncLimitMessage = t('sync.monthlyDownloadLimit')
-              .replaceFirst('{limit}', limitGb);
+          _lastSyncLimitMessage =
+              t('sync.monthlyDownloadLimit').replaceFirst('{limit}', limitGb);
           throw Exception(_lastSyncLimitMessage);
         }
 
@@ -48988,8 +49212,7 @@ $cleanQ
         id: _cloudPageItemId(page.id),
         pageId: page.id,
         nodeId: '',
-        label:
-            t('sync.pageMainLabel').replaceFirst('{name}', page.name),
+        label: t('sync.pageMainLabel').replaceFirst('{name}', page.name),
         fileName: '',
         kind: 'page',
       );
@@ -49144,8 +49367,7 @@ $cleanQ
     _markCloudDownloadItem(
       item.id,
       CloudDownloadItemStatus.failed,
-      error: t('sync.itemDownloadFailed')
-          .replaceFirst('{name}', item.fileName),
+      error: t('sync.itemDownloadFailed').replaceFirst('{name}', item.fileName),
     );
     notifyListeners();
     return false;
@@ -49165,8 +49387,7 @@ $cleanQ
     _isDownloading = true;
     _downloadStartedAt = DateTime.now();
     _syncCancelRequested = false;
-    _syncStatusText =
-        t('sync.retryingItem').replaceFirst('{name}', item.label);
+    _syncStatusText = t('sync.retryingItem').replaceFirst('{name}', item.label);
     _syncProgress = item.progress;
     item.skip = false;
     notifyListeners();
@@ -49248,8 +49469,8 @@ $cleanQ
         if (contentLength > 0 && !canUseDownloadBytes(contentLength)) {
           final limitGb =
               (monthlyDownloadLimit / 1024 / 1024 / 1024).toStringAsFixed(1);
-          _lastSyncLimitMessage = t('sync.monthlyDownloadLimit')
-              .replaceFirst('{limit}', limitGb);
+          _lastSyncLimitMessage =
+              t('sync.monthlyDownloadLimit').replaceFirst('{limit}', limitGb);
           await streamedRes.stream.drain<void>();
           return null;
         }
@@ -49588,8 +49809,8 @@ $cleanQ
         _downloadStartedAt = DateTime.now();
         _syncCancelRequested = false;
         _syncProgress = 0.0;
-        _syncStatusText = t('sync.downloadingPage')
-            .replaceFirst('{name}', cloudPage.name);
+        _syncStatusText =
+            t('sync.downloadingPage').replaceFirst('{name}', cloudPage.name);
         _lastSyncAttachmentFailed = false;
         _lastSyncLimitMessage = null;
         _prepareCloudDownloadItems([cloudPage]);
@@ -49823,8 +50044,7 @@ $cleanQ
           for (final item in _cloudDownloadItems.values
               .where((item) => item.pageId == page.id)) {
             item.skip = true;
-            _markCloudDownloadItem(
-                item.id, CloudDownloadItemStatus.skipped,
+            _markCloudDownloadItem(item.id, CloudDownloadItemStatus.skipped,
                 progress: 1.0);
           }
           notifyListeners();
@@ -52981,8 +53201,15 @@ $cleanQ
     conns[idx] = old.copyWith(
       fromId: old.toId,
       fromAnchor: old.toAnchor,
+      fromTableSide: old.toTableSide,
+      fromTableIndex: old.toTableIndex,
       toId: old.fromId,
       toAnchor: old.fromAnchor,
+      toTableSide: old.fromTableSide,
+      toTableIndex: old.fromTableIndex,
+      labelPosition: 1.0 - old.labelPosition,
+      elbowSplitRatio: 1.0 - old.elbowSplitRatio,
+      elbowBendPoints: old.elbowBendPoints.reversed.toList(growable: false),
     );
     _saveToStorage();
     notifyListeners();
@@ -58862,9 +59089,8 @@ $example
     for (var i = 0; i < list.length; i++) {
       final d = list[i];
       if (!ids.contains(d.id)) continue;
-      final startNode = d.startNodeId == null
-          ? null
-          : currentPage.nodes[d.startNodeId!];
+      final startNode =
+          d.startNodeId == null ? null : currentPage.nodes[d.startNodeId!];
       final endNode =
           d.endNodeId == null ? null : currentPage.nodes[d.endNodeId!];
       final resolvedStart = startNode != null && d.startNodeAnchor != null
@@ -59346,9 +59572,8 @@ $example
       }
       // 装飾図形をクローン (オフセット + 新 ID)。
       for (final d in page.decorations) {
-        final remappedStartNodeId = d.startNodeId == null
-            ? null
-            : idMap[d.startNodeId!];
+        final remappedStartNodeId =
+            d.startNodeId == null ? null : idMap[d.startNodeId!];
         final remappedEndNodeId =
             d.endNodeId == null ? null : idMap[d.endNodeId!];
         merged.decorations.add(MapDecoration(

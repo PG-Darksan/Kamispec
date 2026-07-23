@@ -51,6 +51,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.util.Base64
 import androidx.core.content.pm.ShortcutInfoCompat
 import androidx.core.content.pm.ShortcutManagerCompat
 import androidx.core.graphics.drawable.IconCompat
@@ -97,6 +98,10 @@ class MainActivity : FlutterActivity() {
         // (path_provider はこの repo の依存に無いので登録しない。
         //  shared_preferences が確実に登録されれば初回オンボーディングは出る。)
         safeAddPlugin(flutterEngine, "io.flutter.plugins.sharedpreferences.SharedPreferencesPlugin")
+        // ffmpeg の初期化で GeneratedPluginRegistrant が中断しても、Android の
+        // 画像クリップボード経路が失われないよう依存順で先に登録する。
+        safeAddPlugin(flutterEngine, "dev.irondash.engine_context.IrondashEngineContextPlugin")
+        safeAddPlugin(flutterEngine, "com.superlist.super_native_extensions.SuperNativeExtensionsPlugin")
 
         // 残りのプラグインは従来どおり自動登録。 本来は下の proguard keep
         //   (com.antonkarpenko) で ffmpeg_kit のロードが直り中断しなくなるが、
@@ -136,7 +141,14 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CLIPBOARD_CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
-                    "readClipboardImage" -> result.success(readClipboardImage())
+                    "readClipboardImage" -> {
+                        // 高解像度スクリーンショットをUIスレッドで全読み込みすると、
+                        // HyperOS端末などで貼り付けが固まるためバックグラウンドで処理。
+                        Thread {
+                            val payload = readClipboardImage()
+                            runOnUiThread { result.success(payload) }
+                        }.start()
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -231,51 +243,199 @@ class MainActivity : FlutterActivity() {
 
     /// Android のスクリーンショット直後など、Flutter 側の super_clipboard が
     /// content:// 画像を取りこぼすケース用のフォールバック。
-    private fun readClipboardImage(): Map<String, Any>? {
+    private fun readClipboardImage(): Map<String, Any> {
         return try {
             val manager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            val clip = manager.primaryClip ?: return null
+            val clip = manager.primaryClip
+                ?: return mapOf("hasImageHint" to false, "status" to "empty")
             val describedImageMime = (0 until clip.description.mimeTypeCount)
                 .map { clip.description.getMimeType(it) }
                 .firstOrNull { it.startsWith("image/", ignoreCase = true) }
+            var hasImageHint = describedImageMime != null
+
             for (i in 0 until clip.itemCount) {
                 val item = clip.getItemAt(i)
-                // 共有シートや一部の画像アプリは ClipData.Item.uri ではなく
-                // Intent.EXTRA_STREAM に content:// URI を格納する。モバイルで
-                // 貼り付け不能になっていたこの形式も読み取る。
-                val streamUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    item.intent?.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
-                } else {
-                    @Suppress("DEPRECATION")
-                    item.intent?.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
-                }
-                val uri = item.uri
-                    ?: item.intent?.data
-                    ?: streamUri
-                    ?: uriFromClipboardText(item.text?.toString())
-                if (uri == null) continue
-                val guessed = guessImageMime(uri)
-                val declaredImageMime = try {
-                    contentResolver.getType(uri)
+                val textCandidates = linkedSetOf<String>()
+                item.text?.toString()?.let(textCandidates::add)
+                item.htmlText?.let(textCandidates::add)
+                item.intent?.getCharSequenceExtra(Intent.EXTRA_TEXT)
+                    ?.toString()?.let(textCandidates::add)
+                try {
+                    item.coerceToText(this)?.toString()?.let(textCandidates::add)
                 } catch (_: Exception) {
-                    null
                 }
-                    ?.takeIf { it.startsWith("image/", ignoreCase = true) }
-                val bytes = try {
-                    contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                } catch (_: Exception) {
-                    null
-                } ?: continue
-                if (bytes.isEmpty()) continue
-                val sniffed = sniffImageMime(bytes)
-                val imageMime = declaredImageMime ?: guessed ?: sniffed ?: describedImageMime
-                if (imageMime == null) continue
-                return mapOf("bytes" to bytes, "mime" to imageMime)
+
+                for (text in textCandidates) {
+                    decodeClipboardDataImage(text)?.let { (bytes, mime) ->
+                        return cacheClipboardImage(bytes, mime, true)
+                    }
+                }
+
+                val uriCandidates = linkedSetOf<Uri>()
+                item.uri?.let(uriCandidates::add)
+                item.intent?.data?.let(uriCandidates::add)
+                addIntentStreamUris(item.intent, uriCandidates)
+                item.intent?.clipData?.let { nested ->
+                    for (j in 0 until nested.itemCount) {
+                        val nestedItem = nested.getItemAt(j)
+                        nestedItem.uri?.let(uriCandidates::add)
+                        nestedItem.intent?.data?.let(uriCandidates::add)
+                        addIntentStreamUris(nestedItem.intent, uriCandidates)
+                    }
+                }
+                for (text in textCandidates) {
+                    uriFromClipboardText(text)?.let(uriCandidates::add)
+                    Regex("""(?:content|file)://[^\s\"'<>]+""",
+                        RegexOption.IGNORE_CASE).findAll(text).forEach { match ->
+                        runCatching {
+                            Uri.parse(match.value.replace("&amp;", "&"))
+                        }.getOrNull()?.let(uriCandidates::add)
+                    }
+                }
+
+                for (uri in uriCandidates) {
+                    val guessed = guessImageMime(uri)
+                    if (guessed != null || uri.scheme == "content" || uri.scheme == "file") {
+                        hasImageHint = true
+                    }
+                    val declaredImageMime = try {
+                        contentResolver.getType(uri)
+                    } catch (_: Exception) {
+                        null
+                    }?.takeIf { it.startsWith("image/", ignoreCase = true) }
+                    if (declaredImageMime != null) hasImageHint = true
+
+                    var bytes: ByteArray? = null
+                    // HyperOSの一時URIはコピー直後に公開が間に合わないことがあるため、
+                    // 短い間隔で再試行する。
+                    for (attempt in 0 until 3) {
+                        bytes = readClipboardUriBytes(uri)
+                        if (bytes != null && bytes.isNotEmpty()) break
+                        if (attempt < 2) Thread.sleep(140L)
+                    }
+                    if (bytes == null || bytes.isEmpty()) continue
+                    val sniffed = sniffImageMime(bytes)
+                    val imageMime = sniffed ?: declaredImageMime ?: guessed ?: describedImageMime
+                    if (imageMime == null) continue
+                    return cacheClipboardImage(bytes, imageMime, true)
+                }
             }
-            null
+            mapOf(
+                "hasImageHint" to hasImageHint,
+                "status" to if (hasImageHint) "unreadable" else "not_image"
+            )
         } catch (e: Exception) {
+            android.util.Log.w("MainActivity", "Clipboard image read failed: ${e.javaClass.simpleName}")
+            mapOf(
+                "hasImageHint" to true,
+                "status" to "error",
+                "errorType" to e.javaClass.simpleName
+            )
+        }
+    }
+
+    private fun addIntentStreamUris(intent: Intent?, target: MutableSet<Uri>) {
+        if (intent == null) return
+        val single = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+        }
+        single?.let(target::add)
+        val multiple = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
+        }
+        multiple?.forEach(target::add)
+    }
+
+    private fun decodeClipboardDataImage(text: String): Pair<ByteArray, String>? {
+        val match = Regex(
+            """data:(image/[A-Za-z0-9.+-]+);base64,([A-Za-z0-9+/=\r\n\t ]+)""",
+            RegexOption.IGNORE_CASE
+        ).find(text) ?: return null
+        return try {
+            val mime = match.groupValues[1].lowercase()
+            val bytes = Base64.decode(match.groupValues[2], Base64.DEFAULT)
+            if (bytes.isEmpty()) null else Pair(bytes, mime)
+        } catch (_: Exception) {
             null
         }
+    }
+
+    private fun readClipboardUriBytes(uri: Uri): ByteArray? {
+        if (uri.scheme == "file") {
+            return try {
+                uri.path?.let { File(it) }?.takeIf { it.isFile }?.readBytes()
+            } catch (_: Exception) {
+                null
+            }
+        }
+        try {
+            contentResolver.openInputStream(uri)?.use { input ->
+                val bytes = input.readBytes()
+                if (bytes.isNotEmpty()) return bytes
+            }
+        } catch (e: Exception) {
+            android.util.Log.d("MainActivity",
+                "Clipboard openInputStream failed (${uri.authority}): ${e.javaClass.simpleName}")
+        }
+        try {
+            contentResolver.openAssetFileDescriptor(uri, "r")?.use { descriptor ->
+                descriptor.createInputStream().use { input ->
+                    val bytes = input.readBytes()
+                    if (bytes.isNotEmpty()) return bytes
+                }
+            }
+        } catch (_: Exception) {
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+            try {
+                contentResolver.openTypedAssetFileDescriptor(uri, "image/*", null)
+                    ?.use { descriptor ->
+                        descriptor.createInputStream().use { input ->
+                            val bytes = input.readBytes()
+                            if (bytes.isNotEmpty()) return bytes
+                        }
+                    }
+            } catch (_: Exception) {
+            }
+        }
+        return null
+    }
+
+    private fun cacheClipboardImage(
+        bytes: ByteArray,
+        mime: String,
+        hasImageHint: Boolean
+    ): Map<String, Any> {
+        val dir = File(cacheDir, "clipboard_import")
+        if (!dir.exists()) dir.mkdirs()
+        val cutoff = System.currentTimeMillis() - 24L * 60L * 60L * 1000L
+        dir.listFiles()?.filter { it.lastModified() < cutoff }?.forEach {
+            runCatching { it.delete() }
+        }
+        val ext = when {
+            mime.contains("jpeg") || mime.contains("jpg") -> "jpg"
+            mime.contains("webp") -> "webp"
+            mime.contains("gif") -> "gif"
+            mime.contains("bmp") -> "bmp"
+            mime.contains("tiff") || mime.contains("tif") -> "tiff"
+            mime.contains("heic") || mime.contains("heif") -> "heic"
+            mime.contains("avif") -> "avif"
+            else -> "png"
+        }
+        val file = File(dir, "clipboard_${System.currentTimeMillis()}.$ext")
+        file.writeBytes(bytes)
+        return mapOf(
+            "path" to file.absolutePath,
+            "mime" to mime,
+            "hasImageHint" to hasImageHint,
+            "status" to "ok"
+        )
     }
 
     private fun uriFromClipboardText(text: String?): Uri? {
