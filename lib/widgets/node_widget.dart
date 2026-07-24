@@ -477,6 +477,8 @@ class _NodeWidgetState extends State<NodeWidget> {
   @override
   Widget build(BuildContext context) {
     final node = widget.node;
+    final canLongPressDrag = widget.onLongPressStart != null;
+    final canPanDrag = (_isDesktop || widget.enablePanDrag) && canLongPressDrag;
     // ── ノード背景の表示色補正 ──
     // 黄色系の色 (HSL hue 40-70°, lightness > 55%) はライトモードの白い
     // canvas に対してコントラスト不足で視認性が悪い。ユーザー要望により
@@ -877,30 +879,41 @@ class _NodeWidgetState extends State<NodeWidget> {
                           ? (details) =>
                               widget.onRightClick?.call(details.globalPosition)
                           : null,
-                      onLongPressStart: (details) {
-                        HapticFeedback.mediumImpact();
-                        widget.onLongPressStart?.call(details.globalPosition);
-                      },
-                      onLongPressMoveUpdate: (details) {
-                        widget.onLongPressMoveUpdate
-                            ?.call(details.globalPosition);
-                      },
-                      onLongPressEnd: (_) {
-                        widget.onLongPressEnd?.call();
-                      },
-                      onLongPressCancel: () {
-                        widget.onLongPressEnd?.call();
-                      },
+                      onLongPressStart: canLongPressDrag
+                          ? (details) {
+                              HapticFeedback.mediumImpact();
+                              widget.onLongPressStart!(details.globalPosition);
+                            }
+                          : null,
+                      onLongPressMoveUpdate: canLongPressDrag
+                          ? (details) {
+                              widget.onLongPressMoveUpdate
+                                  ?.call(details.globalPosition);
+                            }
+                          : null,
+                      onLongPressEnd: canLongPressDrag
+                          ? (_) {
+                              widget.onLongPressEnd?.call();
+                            }
+                          : null,
+                      onLongPressCancel: canLongPressDrag
+                          ? () {
+                              widget.onLongPressEnd?.call();
+                            }
+                          : null,
                       // ── デスクトップ: マウスドラッグで即座に移動 ──
                       // ── モバイル: 複数選択モード時は通常パンで即移動 (enablePanDrag) ──
-                      onPanStart: (_isDesktop || widget.enablePanDrag)
+                      // 範囲選択中は親キャンバスが pan を受け取る必要がある。
+                      // コールバックが無いノードまで recognizer を登録すると
+                      // ジェスチャーアリーナを奪い、選択矩形が出ないことがある。
+                      onPanStart: canPanDrag
                           ? (details) {
                               _panDragActive = true;
                               widget.onLongPressStart
                                   ?.call(details.globalPosition);
                             }
                           : null,
-                      onPanUpdate: (_isDesktop || widget.enablePanDrag)
+                      onPanUpdate: canPanDrag
                           ? (details) {
                               if (_panDragActive) {
                                 widget.onLongPressMoveUpdate
@@ -908,7 +921,7 @@ class _NodeWidgetState extends State<NodeWidget> {
                               }
                             }
                           : null,
-                      onPanEnd: (_isDesktop || widget.enablePanDrag)
+                      onPanEnd: canPanDrag
                           ? (_) {
                               if (_panDragActive) {
                                 _panDragActive = false;
@@ -916,7 +929,7 @@ class _NodeWidgetState extends State<NodeWidget> {
                               }
                             }
                           : null,
-                      onPanCancel: (_isDesktop || widget.enablePanDrag)
+                      onPanCancel: canPanDrag
                           ? () {
                               if (_panDragActive) {
                                 _panDragActive = false;

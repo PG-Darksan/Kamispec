@@ -37,6 +37,14 @@
          Android 10 以降は MediaStore を使うため要求しない。 -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28"/>
+    <!-- ── 直近のスクリーンショット貼り付け用 (= ユーザー要望) ── -->
+    <!-- クリップボードから画像が読めない時に、 端末ギャラリーの最新画像
+         (直近のスクショ) を MediaStore から読むための権限。
+         Android 13+ は READ_MEDIA_IMAGES、 Android 12 以下は
+         READ_EXTERNAL_STORAGE (読み取り) を使う。 -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32"/>
     <!-- カメラは必須ではない (端末に無くてもインストール可) -->
     <uses-feature android:name="android.hardware.camera" android:required="false"/>
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false"/>

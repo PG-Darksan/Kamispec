@@ -406,12 +406,17 @@ class ConnectionPainter extends CustomPainter {
         return path;
       }
 
-      final configuredColor =
-          conn.lineColorValue == null ? to.color : Color(conn.lineColorValue!);
+      // 色が未指定の接続はテーマに追従する。
+      // ライト背景では黒、ダーク背景では白にすることで、既存データも
+      // テーマ切替直後に自動で読みやすい色へ変わる。明示色はそのまま維持する。
+      final configuredColor = conn.lineColorValue == null
+          ? (isDarkMode ? Colors.white : Colors.black)
+          : Color(conn.lineColorValue!);
+      final resolvedColor = _effectiveLineColor(configuredColor);
       final paint = Paint()
         ..color = isSelected
             ? Colors.redAccent.withValues(alpha: 0.95)
-            : _effectiveLineColor(configuredColor).withValues(alpha: 0.82)
+            : resolvedColor.withValues(alpha: 0.82)
         ..strokeWidth = isSelected ? (conn.strokeWidth + 1.0) : conn.strokeWidth
         ..style = PaintingStyle.stroke
         ..strokeCap = StrokeCap.round;
@@ -459,14 +464,14 @@ class ConnectionPainter extends CustomPainter {
         final dotPaint = Paint()
           ..color = isSelected
               ? Colors.redAccent.withValues(alpha: 0.9)
-              : _effectiveLineColor(conn.lineColorValue == null
-                      ? (nodes[conn.fromId]?.color ?? paint.color)
-                      : Color(conn.lineColorValue!))
-                  .withValues(alpha: 0.8)
+              : resolvedColor.withValues(alpha: 0.8)
           ..style = PaintingStyle.fill;
         canvas.drawCircle(p1, dotRadius, dotPaint);
         final dotBorder = Paint()
-          ..color = Colors.white.withValues(alpha: 0.5)
+          ..color = (resolvedColor.computeLuminance() > 0.5
+                  ? Colors.black
+                  : Colors.white)
+              .withValues(alpha: 0.5)
           ..style = PaintingStyle.stroke
           ..strokeWidth = 1.0;
         canvas.drawCircle(p1, dotRadius, dotBorder);
@@ -498,16 +503,26 @@ class ConnectionPainter extends CustomPainter {
       if (conn.label != null && conn.label!.isNotEmpty) {
         final midPoint =
             pointOnConnection(conn, from, to, fallbackLineStyle: lineStyle);
+        final bgColor = isSelected
+            ? Colors.redAccent.withValues(alpha: 0.95)
+            : resolvedColor.withValues(alpha: 0.95);
+        final labelOnLightBackground = bgColor.computeLuminance() > 0.5;
+        final labelForeground =
+            labelOnLightBackground ? Colors.black87 : Colors.white;
         final textPainter = TextPainter(
           text: TextSpan(
             text: conn.label,
             style: TextStyle(
-              color: Colors.white,
+              color: labelForeground,
               fontSize: 12 + conn.strokeWidth * 0.5,
               fontWeight: FontWeight.w700,
-              shadows: const [
+              shadows: [
                 Shadow(
-                    color: Colors.black54, blurRadius: 2, offset: Offset(0, 1)),
+                    color: labelOnLightBackground
+                        ? Colors.white54
+                        : Colors.black54,
+                    blurRadius: 2,
+                    offset: const Offset(0, 1)),
               ],
             ),
           ),
@@ -523,16 +538,14 @@ class ConnectionPainter extends CustomPainter {
           width: textPainter.width + 14,
           height: textPainter.height + 8,
         );
-        final bgColor = isSelected
-            ? Colors.redAccent.withValues(alpha: 0.95)
-            : _effectiveLineColor(configuredColor).withValues(alpha: 0.95);
         final bgPaint = Paint()..color = bgColor;
         canvas.drawRRect(
             RRect.fromRectAndRadius(labelRect, const Radius.circular(8)),
             bgPaint);
         // ── 縁取り (= ノード境界感を出す) ──
         final borderPaint = Paint()
-          ..color = Colors.white.withValues(alpha: 0.45)
+          ..color = (labelOnLightBackground ? Colors.black : Colors.white)
+              .withValues(alpha: 0.45)
           ..style = PaintingStyle.stroke
           ..strokeWidth = 1.0;
         canvas.drawRRect(

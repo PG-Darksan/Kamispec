@@ -14838,6 +14838,25 @@ class MindMapProvider extends ChangeNotifier {
       'ja': 'ページ{n}',
       'en': 'Page {n}',
     },
+    // フリーノートの二階層タブ用ラベル (= ユーザー要望: ノートとページの
+    //   違いが分かるように)。 ノート = ページを束ねるノートブック、
+    //   ページ = その中の 1 枚のキャンバス。
+    'paint.tabsNoteLabel': {
+      'ja': 'ノート',
+      'en': 'Notebook',
+    },
+    'paint.tabsPageLabel': {
+      'ja': 'ページ',
+      'en': 'Page',
+    },
+    'paint.tabsNoteHint': {
+      'ja': 'ノートブック（ページの束）',
+      'en': 'Notebook (a binder of pages)',
+    },
+    'paint.tabsPageHint': {
+      'ja': 'このノート内のページ',
+      'en': 'Pages inside this notebook',
+    },
     'paint.imagePickCancelled': {
       'ja': '画像の選択をキャンセルしました',
       'en': 'Image selection was cancelled',
@@ -52594,6 +52613,29 @@ $cleanQ
     // 中央付近(20000px キャンバスの中心)へ、重なりを避けて配置する。
     final node = addNodeAtCenterReturning(const Offset(10000, 10000));
     updateNodeMemo(node.id, trimmed);
+  }
+
+  /// 集中ロック画面の「ページを選んで送る」用: 指定インデックスのページへ
+  /// メモを 1 ノードとして追加する。 既存の addMemoNodeToCurrentPage を
+  /// 流用するため一時的に現在ページを切り替え、 追加後に元へ戻す
+  /// (他所の一時切替イディオムと同じ)。 flip と restore の間に await を
+  /// 挟まないので UI が誤ったページを描画するフレームは発生しない。
+  void addMemoNodeToPage(int pageIndex, String text) {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return;
+    if (pageIndex < 0 || pageIndex >= _pages.length) return;
+    if (pageIndex == _currentPageIndex) {
+      addMemoNodeToCurrentPage(trimmed);
+      return;
+    }
+    final savedIdx = _currentPageIndex;
+    _currentPageIndex = pageIndex;
+    try {
+      addMemoNodeToCurrentPage(trimmed);
+    } finally {
+      _currentPageIndex = savedIdx;
+    }
+    notifyListeners();
   }
 
   /// 音声入力で得たタイトル群から複数ノードを一括生成する (1 つの undo)。

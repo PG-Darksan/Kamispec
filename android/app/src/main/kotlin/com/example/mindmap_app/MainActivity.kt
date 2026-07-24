@@ -157,6 +157,15 @@ class MainActivity : FlutterActivity() {
                             runOnUiThread { result.success(payload) }
                         }.start()
                     }
+                    // クリップボードに読める画像が無い時の救済:
+                    //   端末ギャラリーの最新画像 (= 直近のスクリーンショット) を返す。
+                    //   (Dart: _readAndroidLatestScreenshot)
+                    "getLatestImage" -> {
+                        Thread {
+                            val payload = queryLatestImage()
+                            runOnUiThread { result.success(payload) }
+                        }.start()
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -395,6 +404,59 @@ class MainActivity : FlutterActivity() {
                 "status" to "error",
                 "errorType" to e.javaClass.simpleName
             )
+        }
+    }
+
+    /// クリップボードに読める画像が無い時の救済: 端末ギャラリーの最新画像
+    /// (= 直近に撮ったスクリーンショット) を MediaStore から読み出す。
+    /// Screenshots バケットを優先し、 無ければ端末全体の最新画像へフォールバック。
+    /// 既存の readClipboardUriBytes / sniffImageMime / cacheClipboardImage を再利用。
+    private fun queryLatestImage(): Map<String, Any> {
+        return try {
+            val projection = arrayOf(
+                MediaStore.Images.Media._ID,
+                MediaStore.Images.Media.MIME_TYPE,
+                MediaStore.Images.Media.DATE_ADDED
+            )
+            val sort = "${MediaStore.Images.Media.DATE_ADDED} DESC"
+            fun queryOne(selection: String?, args: Array<String>?): Uri? {
+                contentResolver.query(
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                    projection, selection, args, sort
+                )?.use { c ->
+                    if (c.moveToFirst()) {
+                        val id = c.getLong(
+                            c.getColumnIndexOrThrow(MediaStore.Images.Media._ID))
+                        return Uri.withAppendedPath(
+                            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                            id.toString())
+                    }
+                }
+                return null
+            }
+            val uri = (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                queryOne(
+                    "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ?",
+                    arrayOf("%Screenshots%"))
+            } else {
+                queryOne(
+                    "${MediaStore.Images.Media.BUCKET_DISPLAY_NAME} = ?",
+                    arrayOf("Screenshots"))
+            })
+                ?: queryOne(null, null)
+                ?: return mapOf("hasImageHint" to false, "status" to "empty")
+            val bytes = readClipboardUriBytes(uri)
+                ?: return mapOf("hasImageHint" to true, "status" to "unreadable")
+            val mime = contentResolver.getType(uri)
+                ?: sniffImageMime(bytes)
+                ?: "image/png"
+            cacheClipboardImage(bytes, mime, true)
+        } catch (e: SecurityException) {
+            mapOf("hasImageHint" to true, "status" to "permission")
+        } catch (e: Exception) {
+            android.util.Log.w(
+                "MainActivity", "queryLatestImage failed: ${e.javaClass.simpleName}")
+            mapOf("hasImageHint" to true, "status" to "error")
         }
     }
 

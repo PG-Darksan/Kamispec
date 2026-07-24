@@ -18,6 +18,7 @@ import '../providers/mind_map_provider.dart';
 import '../services/billing_service.dart';
 import '../services/home_shortcut_service.dart';
 import '../services/ic_card_reader.dart';
+import '../utils/gantt_time_utils.dart';
 // メッセージ機能 (messaging_dialog.dart) はユーザー要望で廃止したため import 削除。
 import '../widgets/connection_painter.dart';
 import '../widgets/node_widget.dart';
@@ -14330,6 +14331,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         'pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp',
         'mp4', 'mov', 'm4v', 'pptx', 'docx', 'xlsx',
         'txt', 'md', 'csv', // テキスト系 (= ユーザー要望)
+        'ipynb', // Jupyter Notebook (= ユーザー要望: ギャラリーに埋め込む)
       ],
     );
     if (result == null) return;
@@ -44995,6 +44997,34 @@ class _MindMapScreenState extends State<MindMapScreen>
               ]),
             ),
             const Divider(color: Colors.white12, height: 1),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 7, 10, 7),
+              child: SizedBox(
+                width: double.infinity,
+                height: 34,
+                child: OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFFC4B5FD),
+                    side: const BorderSide(color: Color(0x667C6CFF)),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  onPressed: () => _showAddCalendarEventDialog(
+                    ctx,
+                    provider,
+                    todayKey,
+                    '',
+                    '',
+                    initialAllDay: true,
+                  ),
+                  icon: const Icon(Icons.playlist_add_check_rounded, size: 18),
+                  label: const Text(
+                    'この日のTODOを登録',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+                  ),
+                ),
+              ),
+            ),
+            const Divider(color: Colors.white12, height: 1),
             // ── 終日の予定 (= ユーザー要望: その日の終日予定を常に上部に表示) ──
             if (allDayEvents.isNotEmpty)
               Container(
@@ -45583,7 +45613,7 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 初期値として、 タイトル + 開始/終了時刻を入力させる。
   Future<void> _showAddCalendarEventDialog(BuildContext ctx,
       MindMapProvider provider, String dateKey, String start, String end,
-      {CalendarEvent? editEvent}) async {
+      {CalendarEvent? editEvent, bool initialAllDay = false}) async {
     final isEdit = editEvent != null;
     final titleCtrl = TextEditingController(text: editEvent?.title ?? '');
     final startCtrl =
@@ -45591,8 +45621,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     final endCtrl = TextEditingController(text: editEvent?.endTime ?? end);
     // 終日フラグ (= ユーザー要望: 予定を終日登録できるように)。 開始時刻が
     //   空の既存予定 (= 既に終日扱い) を開いた時は ON で開く。
-    bool allDay = isEdit &&
-        (editEvent.startTime == null || editEvent.startTime!.trim().isEmpty);
+    bool allDay = isEdit
+        ? (editEvent.startTime == null || editEvent.startTime!.trim().isEmpty)
+        : initialAllDay;
     bool lockDuringEvent = editEvent?.lockDuringEvent ?? false;
     bool appLockDuringEvent = editEvent?.appLockDuringEvent ?? false;
     // 戻り値: 'save' = 追加/保存, 'delete' = 削除, null = キャンセル
@@ -52722,6 +52753,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (l.endsWith('.txt')) return 'text/plain';
     if (l.endsWith('.md')) return 'text/markdown';
     if (l.endsWith('.json')) return 'application/json';
+    if (l.endsWith('.ipynb')) return 'application/json';
     if (l.endsWith('.csv')) return 'text/csv';
     if (l.endsWith('.html') || l.endsWith('.htm')) return 'text/html';
     if (l.endsWith('.docx')) {
@@ -53305,43 +53337,53 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (_isDesktop) {
       path = await _pickImageForQr();
     } else {
-      // モバイル: 撮影 / 画像から を選ばせる。
-      final choice = await showModalBottomSheet<String>(
+      // モバイル: 撮影 / 画像からを画面中央の項目として選ばせる。
+      // BottomSheet だと項目自体が下端に固定されるため、中央 Dialog を使う。
+      final choice = await showDialog<String>(
         context: context,
-        backgroundColor: const Color(0xFF1E1E32),
-        shape: const RoundedRectangleBorder(
-            borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
         builder: (sctx) {
-          // ── 選択肢は中央寄せで表示 (= ユーザー要望: QRコードリーダーの
-          //   項目は中央に表示されるように) ──
           Widget choice(IconData icon, String label, String value) {
-            return InkWell(
-              onTap: () => Navigator.pop(sctx, value),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(icon, color: const Color(0xFF4FC3F7)),
-                    const SizedBox(width: 12),
-                    Text(label,
-                        style:
-                            const TextStyle(color: Colors.white, fontSize: 15)),
-                  ],
+            return SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () => Navigator.pop(sctx, value),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Colors.white,
+                  side: const BorderSide(color: Colors.white24),
+                  padding: const EdgeInsets.symmetric(vertical: 14),
                 ),
+                icon: Icon(icon, color: const Color(0xFF4FC3F7)),
+                label: Text(label, style: const TextStyle(fontSize: 15)),
               ),
             );
           }
 
-          return SafeArea(
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              const SizedBox(height: 8),
-              choice(Icons.photo_camera_rounded,
-                  provider.t('qr.scanWithCamera'), 'camera'),
-              choice(Icons.image_rounded, provider.t('qr.scanFromImage'),
-                  'gallery'),
-              const SizedBox(height: 8),
+          return AlertDialog(
+            backgroundColor: const Color(0xFF1E1E32),
+            title: Row(children: [
+              const Icon(Icons.qr_code_scanner_rounded,
+                  color: Color(0xFF4FC3F7), size: 22),
+              const SizedBox(width: 10),
+              Text(provider.t('qr.title'),
+                  style: const TextStyle(color: Colors.white, fontSize: 16)),
             ]),
+            content: SizedBox(
+              width: 320,
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                choice(Icons.photo_camera_rounded,
+                    provider.t('qr.scanWithCamera'), 'camera'),
+                const SizedBox(height: 10),
+                choice(Icons.image_rounded, provider.t('qr.scanFromImage'),
+                    'gallery'),
+              ]),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(sctx),
+                child: Text(provider.t('btn.cancel'),
+                    style: const TextStyle(color: Colors.white54)),
+              ),
+            ],
           );
         },
       );
@@ -53754,6 +53796,45 @@ class _MindMapScreenState extends State<MindMapScreen>
     List<int>? shelfCell,
   }) async {
     try {
+      // ── Android: ファイル選択に落ちる前に、直近のスクリーンショットを
+      //   優先して貼り付ける (= ユーザー要望: クリップボード画像が読めない時に
+      //   「フォルダー設定 (ファイル選択)」 が開くのではなく、 直近に撮った
+      //   スクショがそのまま貼り付けられるように)。 端末ギャラリーの最新画像を
+      //   MediaStore から取得する。 見つからない / 権限拒否なら従来どおり
+      //   ファイル選択にフォールバックする。
+      if (!kIsWeb && Platform.isAndroid) {
+        var granted = await Permission.photos.isGranted ||
+            await Permission.storage.isGranted;
+        if (!granted) {
+          granted = (await Permission.photos.request()).isGranted;
+          if (!granted) {
+            granted = (await Permission.storage.request()).isGranted;
+          }
+        }
+        if (granted) {
+          final latest = await _readAndroidLatestScreenshot();
+          if (latest.bytes != null && latest.bytes!.isNotEmpty) {
+            final ok = await _addClipboardImageNodeAt(
+              provider,
+              canvasPos,
+              latest.bytes!,
+              latest.ext,
+              shelfCell: shelfCell,
+            );
+            if (ok) {
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('直近のスクリーンショットを貼り付けました'),
+                    duration: Duration(seconds: 2),
+                  ),
+                );
+              }
+              return true;
+            }
+          }
+        }
+      }
       final result = await FilePicker.platform.pickFiles(
         type: FileType.image,
         withData: true,
@@ -54246,6 +54327,46 @@ class _MindMapScreenState extends State<MindMapScreen>
     return 'png';
   }
 
+  /// クリップボードに読める画像が無かった時の救済として、 端末ギャラリーの
+  /// 最新画像 (= 直近に撮ったスクリーンショット) を MediaStore から読み出す。
+  /// (= ユーザー要望: クリップボードから貼り付けられない時に「フォルダー設定
+  ///   (ファイル選択)」 が開くのではなく、 直近のスクショが貼り付くように)。
+  /// クリップボードの一時 content:// URI は権限が切れて読めないことが多いため、
+  /// ネイティブ側 (getLatestImage) で MediaStore を直接クエリする。
+  Future<({Uint8List? bytes, String ext})> _readAndroidLatestScreenshot() async {
+    if (kIsWeb || !Platform.isAndroid) return (bytes: null, ext: 'png');
+    try {
+      final raw = await const MethodChannel('app/clipboard')
+          .invokeMethod<dynamic>('getLatestImage');
+      if (raw is! Map) return (bytes: null, ext: 'png');
+      Uint8List? bytes;
+      final rawBytes = raw['bytes'];
+      if (rawBytes is Uint8List) {
+        bytes = rawBytes;
+      } else if (rawBytes is List) {
+        bytes = Uint8List.fromList(rawBytes.cast<int>());
+      }
+      final tempPath = raw['path'] as String?;
+      if ((bytes == null || bytes.isEmpty) &&
+          tempPath != null &&
+          tempPath.isNotEmpty) {
+        final tempFile = File(tempPath);
+        try {
+          if (await tempFile.exists()) bytes = await tempFile.readAsBytes();
+        } finally {
+          try {
+            if (await tempFile.exists()) await tempFile.delete();
+          } catch (_) {}
+        }
+      }
+      final mime = (raw['mime'] as String? ?? '').toLowerCase();
+      return (bytes: bytes, ext: _clipboardExtFromMime(mime));
+    } catch (e) {
+      debugPrint('latest screenshot read failed: $e');
+      return (bytes: null, ext: 'png');
+    }
+  }
+
   /// super_clipboard の getFile (コールバック式) を Future にラップして
   /// 画像バイト列を取得する。 失敗時は null。
   /// バイト読み取りは既存の _handlePaste と同じ getStream() 方式に揃える
@@ -54561,6 +54682,50 @@ class _MindMapScreenState extends State<MindMapScreen>
                 _openOfficeInSplitPanel(p, n,
                     mode: 'pptx', isLeftPanel: isLeftPanel);
               },
+            )),
+          ),
+        ));
+      }
+      return;
+    }
+
+    // ─── .ipynb (Jupyter Notebook) はアプリ内ビューア (読み取り専用) ───
+    // (= ユーザー要望: ipynb などの拡張子もエディタとして開けるように)。
+    // JSON をそのまま生テキストで開くのではなく、 セル (markdown / code) と
+    // 実行結果を整形して表示する専用ビューアで開く。
+    if (ext == 'ipynb' && isLocal && inAppPref) {
+      final fileName = resolveFileName();
+      if (_isDesktop) {
+        showDialog<void>(
+          context: context,
+          barrierColor: Colors.black.withValues(alpha: 0.92),
+          builder: (_) => Dialog.fullscreen(
+            backgroundColor:
+                isDark ? const Color(0xFF1A1A24) : const Color(0xFFD8D8D4),
+            child: _IpynbViewerDialog(
+              filePath: path,
+              fileName: fileName,
+              isDarkMode: isDark,
+              onRenamed: (newPath, newName) =>
+                  _notifyAttachmentRenamed(nodeId, newPath, newName),
+            ),
+          ),
+        );
+      } else {
+        Navigator.of(context).push<void>(MaterialPageRoute<void>(
+          fullscreenDialog: true,
+          builder: (_) => Scaffold(
+            backgroundColor:
+                isDark ? const Color(0xFF1A1A24) : const Color(0xFFD8D8D4),
+            // モバイルは Scaffold 直下なのでヘッダーがノッチ/ステータスバーに
+            //   重なる。 SafeArea で少し下げて押しやすくする。
+            body: SafeArea(
+                child: _IpynbViewerDialog(
+              filePath: path,
+              fileName: fileName,
+              isDarkMode: isDark,
+              onRenamed: (newPath, newName) =>
+                  _notifyAttachmentRenamed(nodeId, newPath, newName),
             )),
           ),
         ));
@@ -58779,8 +58944,6 @@ class _MindMapScreenState extends State<MindMapScreen>
             provider.fetchCloudPageList().then((pages) {
               cloudPages = pages;
               loading = false;
-              // デフォルト全選択
-              selected.addAll(pages.map((p) => p.id));
               if (sctx.mounted) setD(() {});
             }).catchError((e) {
               errorMsg = e.toString();
@@ -67617,7 +67780,8 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
   Widget build(BuildContext context) {
     final mq = MediaQuery.of(context);
     final double barW = math.min(380.0, math.max(0.0, mq.size.width - 24.0));
-    const linkColors = <Color>[
+    const linkColors = <Color?>[
+      null,
       Color(0xFFE53935),
       Color(0xFFFF7043),
       Color(0xFFFB8C00),
@@ -67836,7 +68000,7 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
                                         const SizedBox(width: 7),
                                     itemBuilder: (_, index) {
                                       final color = linkColors[index];
-                                      final value = color.toARGB32();
+                                      final value = color?.toARGB32();
                                       final selected = _lineColorValue == value;
                                       return GestureDetector(
                                         behavior: HitTestBehavior.opaque,
@@ -67852,7 +68016,7 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
                                               vertical: 2),
                                           decoration: BoxDecoration(
                                             shape: BoxShape.circle,
-                                            color: color,
+                                            color: color ?? Colors.transparent,
                                             border: Border.all(
                                               color: selected
                                                   ? const Color(0xFF80CBC4)
@@ -67860,10 +68024,19 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
                                               width: selected ? 2.5 : 1,
                                             ),
                                           ),
-                                          child: selected
-                                              ? const Icon(Icons.check_rounded,
-                                                  color: Colors.white, size: 15)
-                                              : null,
+                                          child: color == null
+                                              ? Icon(
+                                                  Icons.auto_awesome_rounded,
+                                                  color: selected
+                                                      ? const Color(0xFF80CBC4)
+                                                      : Colors.white70,
+                                                  size: 15)
+                                              : selected
+                                                  ? const Icon(
+                                                      Icons.check_rounded,
+                                                      color: Colors.white,
+                                                      size: 15)
+                                                  : null,
                                         ),
                                       );
                                     },
@@ -77622,12 +77795,21 @@ typedef _GanttTask = ({
 
 /// 1 枚のガントチャート (= ユーザー要望: チャート自体を複数作成できるように)。
 /// 名前 + 表示単位 + 表示時間帯 + タスク群。
+GanttBlockedInterval? _tryParseGanttBlockedInterval(Map value) {
+  try {
+    return GanttBlockedInterval.fromJson(value);
+  } catch (_) {
+    return null;
+  }
+}
+
 class _GanttChart {
   String name;
   String kind; // 'gantt' | 'schedule' (= ユーザー要望: 人×日付の予定表)
   String unit; // 'day' | 'hour'
   int fromHour;
   int toHour;
+  List<GanttBlockedInterval> blockedIntervals;
   List<_GanttTask> tasks;
   // ── schedule 用: 人(行) × 日付(列) の予定グリッド ──
   List<String> people;
@@ -77640,12 +77822,14 @@ class _GanttChart {
     this.unit = 'day',
     this.fromHour = 6,
     this.toHour = 24,
+    List<GanttBlockedInterval>? blockedIntervals,
     List<_GanttTask>? tasks,
     List<String>? people,
     this.schedStartMs = 0,
     this.schedDays = 7,
     Map<String, String>? cells,
-  })  : tasks = tasks ?? [],
+  })  : blockedIntervals = blockedIntervals ?? [],
+        tasks = tasks ?? [],
         people = people ?? ['自分'],
         cells = cells ?? {};
 
@@ -77655,6 +77839,7 @@ class _GanttChart {
         'unit': unit,
         'from': fromHour,
         'to': toHour,
+        'blocked': blockedIntervals.map((interval) => interval.toJson()).toList(),
         'tasks': tasks
             .map((t) => {
                   'id': t.id,
@@ -77679,6 +77864,12 @@ class _GanttChart {
         unit: m['unit'] == 'hour' ? 'hour' : 'day',
         fromHour: (m['from'] as num?)?.toInt() ?? 6,
         toHour: (m['to'] as num?)?.toInt() ?? 24,
+        blockedIntervals: normalizeGanttBlockedIntervals(
+          ((m['blocked'] as List?) ?? const [])
+              .whereType<Map>()
+              .map(_tryParseGanttBlockedInterval)
+              .whereType<GanttBlockedInterval>(),
+        ),
         tasks: ((m['tasks'] as List?) ?? const [])
             .whereType<Map>()
             .map((x) => (
@@ -77898,9 +78089,13 @@ class _GanttPageViewState extends State<_GanttPageView> {
   //   [_showFromHour, _showToHour) の時間だけ列に出す。 0〜24 で全表示。
   int _showFromHour = 0;
   int _showToHour = 24;
+  List<GanttBlockedInterval> _blockedIntervals = [];
   bool _hourVisible(int h) =>
       (_showFromHour == 0 && _showToHour == 24) ||
       (h >= _showFromHour && h < _showToHour);
+  bool _isBlockedColumn(DateTime column) =>
+      _unit == 'hour' &&
+      isGanttHourColumnBlocked(column, _blockedIntervals);
   // ── 時刻表記 (= ユーザー要望: 13時 より 1時 + AM/PM 表記、 切替可) ──
   //   true = 午前/午後 (12h)、 false = 24h。 prefs `gantt_clock12h` (全体共通)。
   bool _use12h = true;
@@ -78068,6 +78263,8 @@ class _GanttPageViewState extends State<_GanttPageView> {
       _unit = c.unit;
       _showFromHour = c.fromHour;
       _showToHour = c.toHour;
+      _blockedIntervals =
+          List<GanttBlockedInterval>.from(c.blockedIntervals);
       _use12h = c12;
       _loaded = true;
     });
@@ -78243,6 +78440,8 @@ class _GanttPageViewState extends State<_GanttPageView> {
     c.unit = _unit;
     c.fromHour = _showFromHour;
     c.toHour = _showToHour;
+    c.blockedIntervals =
+        List<GanttBlockedInterval>.from(_blockedIntervals);
   }
 
   Future<void> _saveCurrent() async {
@@ -78260,6 +78459,8 @@ class _GanttPageViewState extends State<_GanttPageView> {
       _unit = c.unit;
       _showFromHour = c.fromHour;
       _showToHour = c.toHour;
+      _blockedIntervals =
+          List<GanttBlockedInterval>.from(c.blockedIntervals);
       _editingNameId = null;
       _focusDay = null;
     });
@@ -78292,6 +78493,8 @@ class _GanttPageViewState extends State<_GanttPageView> {
       _unit = c.unit;
       _showFromHour = c.fromHour;
       _showToHour = c.toHour;
+      _blockedIntervals =
+          List<GanttBlockedInterval>.from(c.blockedIntervals);
       _editingNameId = null;
       _focusDay = null;
     });
@@ -78364,6 +78567,8 @@ class _GanttPageViewState extends State<_GanttPageView> {
       _unit = c.unit;
       _showFromHour = c.fromHour;
       _showToHour = c.toHour;
+      _blockedIntervals =
+          List<GanttBlockedInterval>.from(c.blockedIntervals);
     });
     _saveCurrent();
   }
@@ -78501,11 +78706,129 @@ class _GanttPageViewState extends State<_GanttPageView> {
     return best;
   }
 
-  /// 時間モードで表示する時間帯を設定するダイアログ (= ユーザー要望: 表示しない
-  /// 時間帯を設定)。 [_showFromHour, _showToHour) の時間だけ列に出す。
+  /// 時間モードの表示範囲と、タスクを設定しない時間帯を編集する。
+  /// 設定不可時間帯は列自体を消さず、重なったタスク部分だけ描画から除外する。
   Future<void> _showHoursDialog() async {
     int from = _showFromHour, to = _showToHour;
-    await showDialog<void>(
+    var blocked = List<GanttBlockedInterval>.from(_blockedIntervals);
+
+    String formatMinute(int minute) {
+      if (minute == 24 * 60) return '24:00';
+      final hour = (minute ~/ 60) % 24;
+      final min = minute % 60;
+      return '${hour.toString().padLeft(2, '0')}:'
+          '${min.toString().padLeft(2, '0')}';
+    }
+
+    String intervalLabel(GanttBlockedInterval interval) {
+      final overnight = interval.endMinute < interval.startMinute;
+      return '${formatMinute(interval.startMinute)} 〜 '
+          '${formatMinute(interval.endMinute)}${overnight ? '（翌日）' : ''}';
+    }
+
+    Future<GanttBlockedInterval?> pickBlockedInterval(
+        BuildContext parentContext) async {
+      int startHour = 12;
+      int endHour = 13;
+      return showDialog<GanttBlockedInterval>(
+        context: parentContext,
+        builder: (pickCtx) => StatefulBuilder(
+          builder: (pickCtx, setPick) {
+            Widget dropdown(int value, ValueChanged<int?> onChanged) {
+              return DropdownButton<int>(
+                value: value,
+                dropdownColor: const Color(0xFF2A2A3E),
+                style: const TextStyle(color: Colors.white),
+                items: [
+                  for (int hour = 0; hour < 24; hour++)
+                    DropdownMenuItem(
+                      value: hour,
+                      child: Text(
+                          '${hour.toString().padLeft(2, '0')}:00'),
+                    ),
+                ],
+                onChanged: onChanged,
+              );
+            }
+
+            return AlertDialog(
+              backgroundColor: const Color(0xFF1E1E32),
+              title: const Text(
+                'タスクを設定しない時間帯',
+                style: TextStyle(color: Colors.white, fontSize: 15),
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      dropdown(startHour, (value) {
+                        if (value != null) {
+                          setPick(() => startHour = value);
+                        }
+                      }),
+                      const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 10),
+                        child: Text('〜',
+                            style: TextStyle(color: Colors.white70)),
+                      ),
+                      dropdown(endHour, (value) {
+                        if (value != null) {
+                          setPick(() => endHour = value);
+                        }
+                      }),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    startHour == endHour
+                        ? '開始と終了には別の時刻を指定してください。'
+                        : endHour < startHour
+                            ? '日をまたぐ設定として保存します。'
+                            : 'この区間に重なるタスク部分だけを無視します。',
+                    style: TextStyle(
+                      color: startHour == endHour
+                          ? const Color(0xFFFF8A80)
+                          : Colors.white54,
+                      fontSize: 11,
+                    ),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(pickCtx),
+                  child: Text(
+                    context.read<MindMapProvider>().t('btn.cancel'),
+                    style: const TextStyle(color: Colors.white54),
+                  ),
+                ),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF4FC3F7),
+                    foregroundColor: Colors.black,
+                  ),
+                  onPressed: startHour == endHour
+                      ? null
+                      : () => Navigator.pop(
+                            pickCtx,
+                            GanttBlockedInterval(
+                              startMinute: startHour * 60,
+                              endMinute: endHour * 60,
+                            ),
+                          ),
+                  child: Text(context.read<MindMapProvider>().t('btn.add')),
+                ),
+              ],
+            );
+          },
+        ),
+      );
+    }
+
+    final confirmed = await showDialog<bool>(
       context: context,
       builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
         Widget hourDropdown(int value, bool isFrom) {
@@ -78535,16 +78858,125 @@ class _GanttPageViewState extends State<_GanttPageView> {
 
         return AlertDialog(
           backgroundColor: const Color(0xFF1E1E32),
-          title: Text(context.read<MindMapProvider>().t('gantt.timeRange'),
-              style: TextStyle(color: Colors.white, fontSize: 15)),
-          content: Row(mainAxisSize: MainAxisSize.min, children: [
-            hourDropdown(from, true),
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 10),
-              child: Text('〜', style: TextStyle(color: Colors.white70)),
+          title: const Text(
+            '表示時間・設定不可時間帯',
+            style: TextStyle(color: Colors.white, fontSize: 15),
+          ),
+          content: SizedBox(
+            width: 420,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    '表示する時間帯',
+                    style: TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      hourDropdown(from, true),
+                      const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 10),
+                        child: Text('〜',
+                            style: TextStyle(color: Colors.white70)),
+                      ),
+                      hourDropdown(to, false),
+                    ],
+                  ),
+                  const Divider(color: Colors.white12, height: 24),
+                  Row(
+                    children: [
+                      const Expanded(
+                        child: Text(
+                          'タスクを設定しない時間帯',
+                          style:
+                              TextStyle(color: Colors.white70, fontSize: 12),
+                        ),
+                      ),
+                      if (blocked.isNotEmpty)
+                        TextButton(
+                          onPressed: () => setD(() => blocked = []),
+                          child: const Text(
+                            'すべて解除',
+                            style:
+                                TextStyle(color: Colors.white54, fontSize: 11),
+                          ),
+                        ),
+                      IconButton(
+                        tooltip: '設定不可時間帯を追加',
+                        visualDensity: VisualDensity.compact,
+                        icon: const Icon(
+                          Icons.add_circle_outline_rounded,
+                          color: Color(0xFF4FC3F7),
+                        ),
+                        onPressed: () async {
+                          final interval = await pickBlockedInterval(dctx);
+                          if (interval == null) return;
+                          setD(() {
+                            blocked = normalizeGanttBlockedIntervals(
+                              [...blocked, interval],
+                            );
+                          });
+                        },
+                      ),
+                    ],
+                  ),
+                  if (blocked.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 8),
+                      child: Text(
+                        '未設定です。＋から追加できます。',
+                        style: TextStyle(color: Colors.white38, fontSize: 11),
+                      ),
+                    )
+                  else
+                    for (int i = 0; i < blocked.length; i++)
+                      Container(
+                        margin: const EdgeInsets.only(top: 6),
+                        padding: const EdgeInsets.only(left: 12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFF6B6B)
+                              .withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: const Color(0x44FF6B6B)),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(
+                              Icons.block_rounded,
+                              color: Color(0xFFFF8A80),
+                              size: 16,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                intervalLabel(blocked[i]),
+                                style: const TextStyle(
+                                    color: Colors.white70, fontSize: 12),
+                              ),
+                            ),
+                            IconButton(
+                              tooltip: '解除',
+                              visualDensity: VisualDensity.compact,
+                              icon: const Icon(Icons.close_rounded,
+                                  color: Colors.white54, size: 17),
+                              onPressed: () =>
+                                  setD(() => blocked.removeAt(i)),
+                            ),
+                          ],
+                        ),
+                      ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    '斜線の時間帯では、タスクの重なった部分だけが表示・所要時間から除外されます。',
+                    style: TextStyle(color: Colors.white38, fontSize: 10),
+                  ),
+                ],
+              ),
             ),
-            hourDropdown(to, false),
-          ]),
+          ),
           actions: [
             TextButton(
               onPressed: () {
@@ -78556,20 +78988,29 @@ class _GanttPageViewState extends State<_GanttPageView> {
               child: Text(context.read<MindMapProvider>().t('gantt.showAll'),
                   style: const TextStyle(color: Colors.white54)),
             ),
+            TextButton(
+              onPressed: () => Navigator.pop(dctx, false),
+              child: Text(
+                context.read<MindMapProvider>().t('btn.cancel'),
+                style: const TextStyle(color: Colors.white54),
+              ),
+            ),
             ElevatedButton(
               style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF4FC3F7),
                   foregroundColor: Colors.black),
-              onPressed: () => Navigator.pop(dctx),
+              onPressed: () => Navigator.pop(dctx, true),
               child: Text(context.read<MindMapProvider>().t('btn.ok')),
             ),
           ],
         );
       }),
     );
+    if (confirmed != true) return;
     setState(() {
       _showFromHour = from;
       _showToHour = to;
+      _blockedIntervals = blocked;
     });
     await _saveCurrent();
   }
@@ -78721,14 +79162,112 @@ class _GanttPageViewState extends State<_GanttPageView> {
     await _saveCurrent();
   }
 
+  int _activeTaskUnits(_GanttTask task) {
+    if (_unit != 'hour' || _blockedIntervals.isEmpty) {
+      return _unitIndex(_d(task.startMs), _d(task.endMs)) + 1;
+    }
+    final start = _floorUnit(_d(task.startMs));
+    final end = _floorUnit(_d(task.endMs));
+    final allTaskColumns = <DateTime>[];
+    var cursor = start;
+    int guard = 0;
+    while (!cursor.isAfter(end) && guard++ < 50000) {
+      allTaskColumns.add(cursor);
+      cursor = cursor.add(const Duration(hours: 1));
+    }
+    return ganttActiveColumnCount(
+      columns: allTaskColumns,
+      start: _d(task.startMs),
+      end: _d(task.endMs),
+      blocked: _blockedIntervals,
+    );
+  }
+
+  List<Widget> _ganttBarSegments(
+      _GanttTask task, List<DateTime> columns) {
+    if (_unit != 'hour') {
+      final startIndex = _colIndex(columns, _d(task.startMs));
+      final endIndex = _colIndex(columns, _d(task.endMs));
+      return [
+        Positioned(
+          left: startIndex * _colW,
+          top: 8,
+          width: math.max(_colW, (endIndex - startIndex + 1) * _colW),
+          height: _rowH - 16,
+          child: _ganttBar(task),
+        ),
+      ];
+    }
+
+    final segments = ganttTaskSegments(
+      columns: columns,
+      start: _d(task.startMs),
+      end: _d(task.endMs),
+      blocked: _blockedIntervals,
+    );
+    if (segments.isEmpty) {
+      if (_activeTaskUnits(task) > 0) return const [];
+      return [
+        Positioned(
+          left: 6,
+          top: 12,
+          child: Tooltip(
+            message: 'このタスクは設定不可時間帯にのみ重なっています',
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => _selectTask(task.id),
+              onDoubleTap: () => _editTask(task),
+              child: const Icon(
+                Icons.warning_amber_rounded,
+                color: Color(0xFFFF8A80),
+                size: 20,
+              ),
+            ),
+          ),
+        ),
+      ];
+    }
+
+    int labelSegment = 0;
+    for (int i = 1; i < segments.length; i++) {
+      if (segments[i].columnCount > segments[labelSegment].columnCount) {
+        labelSegment = i;
+      }
+    }
+    final activeUnits = _activeTaskUnits(task);
+    return [
+      for (int i = 0; i < segments.length; i++)
+        Positioned(
+          left: segments[i].startIndex * _colW,
+          top: 8,
+          width: segments[i].columnCount * _colW,
+          height: _rowH - 16,
+          child: _ganttBar(
+            task,
+            units: activeUnits,
+            showLabel: i == labelSegment,
+            showStartHandle: i == 0,
+            showEndHandle: i == segments.length - 1,
+          ),
+        ),
+    ];
+  }
+
   /// バー (本体 + 左右リサイズハンドル) を構築する。
-  Widget _ganttBar(_GanttTask t) {
+  Widget _ganttBar(
+    _GanttTask t, {
+    int? units,
+    bool showLabel = true,
+    bool showStartHandle = true,
+    bool showEndHandle = true,
+  }) {
     const handleW = 14.0;
-    final units = _unitIndex(_d(t.startMs), _d(t.endMs)) + 1;
+    final visibleUnits =
+        units ?? _unitIndex(_d(t.startMs), _d(t.endMs)) + 1;
     final selected = _selectedTaskId == t.id;
     final label = widget.provider
         .t(_unit == 'hour' ? 'gantt.durationHours' : 'gantt.durationDays')
-        .replaceFirst('{n}', '$units');
+        .replaceFirst('{n}', '$visibleUnits');
     final assignee = t.assignee.trim();
     return Stack(children: [
       // 本体: タップで選択 / ダブルタップで編集、 水平ドラッグで移動。
@@ -78759,32 +79298,36 @@ class _GanttPageViewState extends State<_GanttPageView> {
             ),
             alignment: Alignment.center,
             padding: const EdgeInsets.symmetric(horizontal: handleW),
-            child: Text(assignee.isEmpty ? label : '$label · $assignee',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                    color: Colors.black87,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700)),
+            child: showLabel
+                ? Text(assignee.isEmpty ? label : '$label · $assignee',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Colors.black87,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700))
+                : null,
           ),
         ),
       ),
       // 左端ハンドル (開始日リサイズ)
-      Positioned(
-        left: 0,
-        top: 0,
-        bottom: 0,
-        width: handleW,
-        child: _ganttHandle(t, true),
-      ),
+      if (showStartHandle)
+        Positioned(
+          left: 0,
+          top: 0,
+          bottom: 0,
+          width: handleW,
+          child: _ganttHandle(t, true),
+        ),
       // 右端ハンドル (終了日リサイズ)
-      Positioned(
-        right: 0,
-        top: 0,
-        bottom: 0,
-        width: handleW,
-        child: _ganttHandle(t, false),
-      ),
+      if (showEndHandle)
+        Positioned(
+          right: 0,
+          top: 0,
+          bottom: 0,
+          width: handleW,
+          child: _ganttHandle(t, false),
+        ),
     ]);
   }
 
@@ -79054,6 +79597,11 @@ class _GanttPageViewState extends State<_GanttPageView> {
     if (cols.isEmpty) cols.add(start0);
     final totalCols = cols.length;
     final timelineW = totalCols * _colW;
+    final blockedCols = <int>{
+      if (_unit == 'hour')
+        for (int i = 0; i < cols.length; i++)
+          if (_isBlockedColumn(cols[i])) i,
+    };
 
     // ── AM/PM ラベルは各ブロックの中央 1 か所だけに出す (= ユーザー要望) ──
     final amPmCenters = <int>{};
@@ -79268,6 +79816,7 @@ class _GanttPageViewState extends State<_GanttPageView> {
                                 rowH: _rowH,
                                 rowCount: _tasks.length + 1,
                                 boldCols: boldCols,
+                                blockedCols: blockedCols,
                               ),
                             ),
                           ),
@@ -79407,25 +79956,10 @@ class _GanttPageViewState extends State<_GanttPageView> {
                                               ),
                                       ),
                                       Expanded(
-                                        child: Stack(children: [
-                                          Positioned(
-                                            left:
-                                                _colIndex(cols, _d(t.startMs)) *
-                                                    _colW,
-                                            top: 8,
-                                            width: math.max(
-                                                _colW,
-                                                (_colIndex(cols, _d(t.endMs)) -
-                                                        _colIndex(cols,
-                                                            _d(t.startMs)) +
-                                                        1) *
-                                                    _colW),
-                                            height: _rowH - 16,
-                                            // タップで編集 / ドラッグで移動 / 端ドラッグで
-                                            //   期間変更 (= ユーザー要望)。
-                                            child: _ganttBar(t),
-                                          ),
-                                        ]),
+                                        child: Stack(
+                                          children:
+                                              _ganttBarSegments(t, cols),
+                                        ),
                                       ),
                                     ]),
                                   ),
@@ -79655,6 +80189,7 @@ class _GanttGridPainter extends CustomPainter {
   final int totalCols;
   final int rowCount;
   final Set<int> boldCols; // 日の変わり目の列インデックス (強調表示)。
+  final Set<int> blockedCols; // タスクを設定しない時間帯。
   _GanttGridPainter({
     required this.nameW,
     required this.colW,
@@ -79663,16 +80198,39 @@ class _GanttGridPainter extends CustomPainter {
     required this.totalCols,
     required this.rowCount,
     required this.boldCols,
+    required this.blockedCols,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
+    final blockedFill = Paint()
+      ..color = const Color(0x24FF5252)
+      ..style = PaintingStyle.fill;
+    final blockedStripe = Paint()
+      ..color = const Color(0x40FF8A80)
+      ..strokeWidth = 1;
     final thin = Paint()
       ..color = const Color(0x22FFFFFF)
       ..strokeWidth = 1;
     final bold = Paint()
       ..color = const Color(0x55FFFFFF)
       ..strokeWidth = 1;
+    for (final i in blockedCols) {
+      final rect = Rect.fromLTWH(nameW + i * colW, 0, colW, size.height);
+      canvas.drawRect(rect, blockedFill);
+      canvas.save();
+      canvas.clipRect(rect);
+      for (double x = rect.left - size.height;
+          x < rect.right;
+          x += 12) {
+        canvas.drawLine(
+          Offset(x, rect.bottom),
+          Offset(x + size.height, rect.top),
+          blockedStripe,
+        );
+      }
+      canvas.restore();
+    }
     // 縦線 (列境界)。 日の変わり目の列を強調。
     for (int i = 0; i <= totalCols; i++) {
       final x = nameW + i * colW;
@@ -84462,8 +85020,13 @@ class _PaintPageViewState extends State<_PaintPageView> {
   Widget _buildSheetTabs() {
     final centerOnDesktop =
         !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
+    // ノート = アンバー / ページ = ピンク で色分けし、 ラベル・囲み・段差で
+    //   二階層 (ノートブック ⊃ ページ) を明確に区別する
+    //   (= ユーザー要望: ノートとページの違いが分かりにくいので改善)。
+    const noteColor = Color(0xFFFFC857);
+    const pageColor = Color(0xFFEC407A);
     return SizedBox(
-      height: 72,
+      height: 88,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 6),
         child: Align(
@@ -84473,132 +85036,196 @@ class _PaintPageViewState extends State<_PaintPageView> {
             // 追加・名前変更・削除を中央付近の操作領域にまとめる。
             constraints: BoxConstraints(
                 maxWidth: centerOnDesktop ? 720 : double.infinity),
-            child: Column(children: [
-              // ノートを先に切り替え、その中のページを下段で操作する二階層 UI。
-              SizedBox(
-                height: 34,
-                child: Row(children: [
-                  PopupMenuButton<int>(
-                    tooltip: widget.provider.t('paint.noteName'),
-                    onSelected: _selectNote,
-                    color: const Color(0xFF1E1E32),
-                    itemBuilder: (_) => [
-                      for (int i = 0; i < _notes.length; i++)
-                        PopupMenuItem(
-                          value: i,
-                          child: Text(_notes[i].name,
-                              style: const TextStyle(color: Colors.white)),
-                        ),
-                    ],
-                    child: Row(mainAxisSize: MainAxisSize.min, children: [
-                      const Icon(Icons.menu_book_rounded,
-                          size: 18, color: Color(0xFFFFC857)),
-                      const SizedBox(width: 5),
-                      ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: 150),
-                        child: Text(_note.name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w700)),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // ── 上段: ノート (= ページを束ねるノートブック) ──
+                Container(
+                  height: 36,
+                  decoration: BoxDecoration(
+                    color: noteColor.withValues(alpha: 0.10),
+                    borderRadius: BorderRadius.circular(9),
+                    border:
+                        Border.all(color: noteColor.withValues(alpha: 0.35)),
+                  ),
+                  padding: const EdgeInsets.only(left: 8, right: 2),
+                  child: Row(children: [
+                    const Icon(Icons.menu_book_rounded,
+                        size: 16, color: noteColor),
+                    const SizedBox(width: 4),
+                    Tooltip(
+                      message: widget.provider.t('paint.tabsNoteHint'),
+                      child: Text(
+                        widget.provider.t('paint.tabsNoteLabel'),
+                        style: const TextStyle(
+                            color: noteColor,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w800),
                       ),
-                      const Icon(Icons.arrow_drop_down_rounded,
-                          color: Colors.white54),
+                    ),
+                    const SizedBox(width: 8),
+                    // ノート選択 (残り幅いっぱい / 長い名前は省略)。
+                    Expanded(
+                      child: PopupMenuButton<int>(
+                        tooltip: widget.provider.t('paint.noteName'),
+                        onSelected: _selectNote,
+                        color: const Color(0xFF1E1E32),
+                        itemBuilder: (_) => [
+                          for (int i = 0; i < _notes.length; i++)
+                            PopupMenuItem(
+                              value: i,
+                              child: Text(_notes[i].name,
+                                  style:
+                                      const TextStyle(color: Colors.white)),
+                            ),
+                        ],
+                        child: Row(mainAxisSize: MainAxisSize.min, children: [
+                          Flexible(
+                            child: Text(_note.name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700)),
+                          ),
+                          const Icon(Icons.arrow_drop_down_rounded,
+                              color: Colors.white54),
+                        ]),
+                      ),
+                    ),
+                    TextButton.icon(
+                      onPressed: _addNote,
+                      icon: const Icon(Icons.note_add_outlined,
+                          size: 17, color: noteColor),
+                      label: Text(widget.provider.t('paint.addNote'),
+                          style:
+                              const TextStyle(color: noteColor, fontSize: 11)),
+                      style: TextButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        padding: const EdgeInsets.symmetric(horizontal: 6),
+                        minimumSize: const Size(0, 30),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: widget.provider.t('paint.noteName'),
+                      visualDensity: VisualDensity.compact,
+                      icon: const Icon(Icons.edit_note_rounded,
+                          size: 19, color: Colors.white54),
+                      onPressed: _renameNote,
+                    ),
+                    IconButton(
+                      tooltip: widget.provider.t('paint.deleteNote'),
+                      visualDensity: VisualDensity.compact,
+                      icon: const Icon(Icons.delete_forever_rounded,
+                          size: 18, color: Color(0xFFE57373)),
+                      onPressed: _notes.length > 1 ? _deleteNote : null,
+                    ),
+                  ]),
+                ),
+                const SizedBox(height: 6),
+                // ── 下段: ページ (= このノート内の 1 枚) ──
+                //   左インデント + 色分け + ラベルで「ノートの中身」だと
+                //   ひと目で分かるようにする。
+                Padding(
+                  padding: const EdgeInsets.only(left: 16),
+                  child: Container(
+                    height: 38,
+                    decoration: BoxDecoration(
+                      color: pageColor.withValues(alpha: 0.10),
+                      borderRadius: BorderRadius.circular(9),
+                      border:
+                          Border.all(color: pageColor.withValues(alpha: 0.35)),
+                    ),
+                    padding: const EdgeInsets.only(left: 8, right: 2),
+                    child: Row(children: [
+                      const Icon(Icons.description_outlined,
+                          size: 15, color: pageColor),
+                      const SizedBox(width: 4),
+                      Tooltip(
+                        message: widget.provider.t('paint.tabsPageHint'),
+                        child: Text(
+                          widget.provider.t('paint.tabsPageLabel'),
+                          style: const TextStyle(
+                              color: pageColor,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w800),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          child: Row(children: [
+                            for (int i = 0; i < _sheets.length; i++)
+                              Padding(
+                                padding: const EdgeInsets.only(
+                                    right: 4, top: 3, bottom: 3),
+                                child: GestureDetector(
+                                  onTap: () => _selectPage(i),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 12, vertical: 4),
+                                    alignment: Alignment.center,
+                                    decoration: BoxDecoration(
+                                      color: i == _sel
+                                          ? pageColor.withValues(alpha: 0.30)
+                                          : Colors.white10,
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(
+                                          color: i == _sel
+                                              ? pageColor
+                                              : Colors.white24),
+                                    ),
+                                    child: Text(_sheets[i].name,
+                                        style: TextStyle(
+                                            color: i == _sel
+                                                ? Colors.white
+                                                : Colors.white70,
+                                            fontSize: 12,
+                                            fontWeight: i == _sel
+                                                ? FontWeight.w700
+                                                : FontWeight.w500)),
+                                  ),
+                                ),
+                              ),
+                          ]),
+                        ),
+                      ),
+                      TextButton.icon(
+                        onPressed: _addPage,
+                        icon: const Icon(Icons.add_box_outlined,
+                            size: 17, color: pageColor),
+                        label: Text(widget.provider.t('paint.addPage'),
+                            style: const TextStyle(
+                                color: pageColor, fontSize: 11)),
+                        style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.symmetric(horizontal: 6),
+                          minimumSize: const Size(0, 30),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: widget.provider.t('paint.pageName'),
+                        visualDensity: VisualDensity.compact,
+                        icon: const Icon(Icons.edit_outlined,
+                            size: 18, color: Colors.white54),
+                        onPressed: _renamePage,
+                      ),
+                      IconButton(
+                        tooltip: widget.provider.t('paint.deletePage'),
+                        visualDensity: VisualDensity.compact,
+                        icon: const Icon(Icons.delete_outline_rounded,
+                            size: 18, color: Color(0xFFE57373)),
+                        onPressed: _sheets.length > 1 ? _deletePage : null,
+                      ),
                     ]),
                   ),
-                  const Spacer(),
-                  IconButton(
-                    tooltip: widget.provider.t('paint.addNote'),
-                    visualDensity: VisualDensity.compact,
-                    icon: const Icon(Icons.note_add_outlined,
-                        size: 19, color: Color(0xFFFFC857)),
-                    onPressed: _addNote,
-                  ),
-                  IconButton(
-                    tooltip: widget.provider.t('paint.noteName'),
-                    visualDensity: VisualDensity.compact,
-                    icon: const Icon(Icons.edit_note_rounded,
-                        size: 19, color: Colors.white54),
-                    onPressed: _renameNote,
-                  ),
-                  IconButton(
-                    tooltip: widget.provider.t('paint.deleteNote'),
-                    visualDensity: VisualDensity.compact,
-                    icon: const Icon(Icons.delete_forever_rounded,
-                        size: 18, color: Color(0xFFE57373)),
-                    onPressed: _notes.length > 1 ? _deleteNote : null,
-                  ),
-                ]),
-              ),
-              SizedBox(
-                height: 36,
-                child: Row(children: [
-                  Expanded(
-                    child: SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      child: Row(children: [
-                        for (int i = 0; i < _sheets.length; i++)
-                          Padding(
-                            padding: const EdgeInsets.only(
-                                right: 4, top: 3, bottom: 3),
-                            child: GestureDetector(
-                              onTap: () => _selectPage(i),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 12, vertical: 4),
-                                alignment: Alignment.center,
-                                decoration: BoxDecoration(
-                                  color: i == _sel
-                                      ? const Color(0xFFEC407A)
-                                          .withValues(alpha: 0.25)
-                                      : Colors.white10,
-                                  borderRadius: BorderRadius.circular(8),
-                                  border: Border.all(
-                                      color: i == _sel
-                                          ? const Color(0xFFEC407A)
-                                          : Colors.white24),
-                                ),
-                                child: Text(_sheets[i].name,
-                                    style: TextStyle(
-                                        color: i == _sel
-                                            ? Colors.white
-                                            : Colors.white70,
-                                        fontSize: 12,
-                                        fontWeight: i == _sel
-                                            ? FontWeight.w700
-                                            : FontWeight.w500)),
-                              ),
-                            ),
-                          ),
-                      ]),
-                    ),
-                  ),
-                  IconButton(
-                    tooltip: widget.provider.t('paint.addPage'),
-                    visualDensity: VisualDensity.compact,
-                    icon: const Icon(Icons.add_box_outlined,
-                        size: 20, color: Color(0xFFEC407A)),
-                    onPressed: _addPage,
-                  ),
-                  IconButton(
-                    tooltip: widget.provider.t('paint.pageName'),
-                    visualDensity: VisualDensity.compact,
-                    icon: const Icon(Icons.edit_outlined,
-                        size: 18, color: Colors.white54),
-                    onPressed: _renamePage,
-                  ),
-                  IconButton(
-                    tooltip: widget.provider.t('paint.deletePage'),
-                    visualDensity: VisualDensity.compact,
-                    icon: const Icon(Icons.delete_outline_rounded,
-                        size: 18, color: Color(0xFFE57373)),
-                    onPressed: _sheets.length > 1 ? _deletePage : null,
-                  ),
-                ]),
-              ),
-            ]),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -85874,6 +86501,10 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
   // 既定を大きめにして、 上部タイトルバー廃止と合わせてプレビューを広く取る
   //   (= ユーザー要望: プレビュー画面が小さ過ぎる)。
   double _previewHeight = 330;
+  // モバイルで要素編集パネルを画面下部にドッキングする時の高さ (= ユーザー
+  //   要望: 編集パネルがプレビューや要素を隠さないように、 重ねず下部に
+  //   場所を確保して並べる)。 上端のグリップを縦ドラッグで変えられる。
+  double _veDockPanelH = 300;
   // 横サイドパネルで設定中の要素 ID (= ユーザー要望: 動画要素クリックで横に
   //   再生速度・拡大率などの設定パネルを出す)。 null = 非表示。
   String? _panelItemId;
@@ -87914,21 +88545,30 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
         child: Stack(fit: StackFit.expand, children: [
           Container(
             color: const Color(0xFF12121C),
-            child: Column(children: [
-              // ── プレビューを最上部に置いて広く取る (= ユーザー要望: プレビュー
-              //    画面が小さ過ぎる)。 上部の大きなタイトルバーは廃止。 ──
-              _buildPreview(),
-              _buildPreviewResizeHandle(),
-              _buildTransport(),
-              if (_sel != null) _buildSelBar(),
-              // ── 操作ボタンはプレビューとタイムラインの間の左端へ (= ユーザー要望) ──
-              _buildToolStrip(),
-              const Divider(color: Colors.white12, height: 1),
-              Expanded(child: _buildTimeline()),
-            ]),
+            // ── モバイルで編集パネルを開いている間は、下部にパネル分の場所を
+            //    空けてプレビュー/タイムラインを上へ寄せる (= ユーザー要望:
+            //    編集項目で要素やプレビューが隠れないよう、 重ねず並べる)。 ──
+            child: Padding(
+              padding: EdgeInsets.only(
+                  bottom: (_veNarrow && _panelItemId != null)
+                      ? _dockPanelHeight()
+                      : 0),
+              child: Column(children: [
+                // ── プレビューを最上部に置いて広く取る (= ユーザー要望: プレビュー
+                //    画面が小さ過ぎる)。 上部の大きなタイトルバーは廃止。 ──
+                _buildPreview(),
+                _buildPreviewResizeHandle(),
+                _buildTransport(),
+                if (_sel != null) _buildSelBar(),
+                // ── 操作ボタンはプレビューとタイムラインの間の左端へ (= ユーザー要望) ──
+                _buildToolStrip(),
+                const Divider(color: Colors.white12, height: 1),
+                Expanded(child: _buildTimeline()),
+              ]),
+            ),
           ),
-          // ── 横サイドパネル (= ユーザー要望: 動画要素クリックで中央ダイアログ
-          //    ではなく、 横に再生速度・拡大率などの設定パネルを出す) ──
+          // ── 要素編集パネル。 モバイルは下部ドッキング (重ねない)、
+          //    デスクトップは右横オーバーレイ (= ユーザー要望)。 ──
           if (_panelItemId != null) _buildItemSidePanel(),
           // ── 処理中バナー (= ユーザー要望: 何％か表示) ──
           if (_processing)
@@ -88037,11 +88677,25 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
     );
   }
 
+  /// モバイル (狭い画面) 判定。 要素編集パネルを画面下部にドッキングするか、
+  /// デスクトップのように右横オーバーレイにするかの分岐に使う。
+  bool get _veNarrow => MediaQuery.sizeOf(context).shortestSide < 600;
+
+  /// 下部ドッキング編集パネルの高さ (クランプ済み)。 上端グリップで可変。
+  double _dockPanelHeight() {
+    final maxH = MediaQuery.sizeOf(context).height * 0.6;
+    return _veDockPanelH.clamp(160.0, maxH).toDouble();
+  }
+
   Widget _buildPreview() {
     // 画面が低いときにプレビューが伸び過ぎてタイムライン等を押し出さないよう、
     //   利用可能な高さ内にクランプする (= オーバーフロー防止)。
-    final maxH = (MediaQuery.of(context).size.height - 240)
-        .clamp(140.0, 4000.0)
+    // モバイルで編集パネルを開いている間は、その分だけ上限を下げてプレビューと
+    //   タイムラインが下部パネルに隠れないようにする (= ユーザー要望)。
+    final reserve =
+        (_veNarrow && _panelItemId != null) ? _dockPanelHeight() : 0.0;
+    final maxH = (MediaQuery.of(context).size.height - 240 - reserve)
+        .clamp(120.0, 4000.0)
         .toDouble();
     final h = _previewHeight.clamp(120.0, maxH).toDouble();
     return Container(
@@ -88241,8 +88895,6 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
     final isVideo = it.kind == _VeKind.video;
     final screenSize = MediaQuery.sizeOf(context);
     final useMobileSheet = screenSize.shortestSide < 600;
-    final mobileMinSheetSize =
-        (76.0 / screenSize.height).clamp(0.12, 0.30).toDouble();
 
     Widget buildPanel(ScrollController? scrollController,
         {required bool compact}) {
@@ -88258,32 +88910,16 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
                 child: GestureDetector(
                   behavior: HitTestBehavior.opaque,
                   onVerticalDragUpdate: (details) {
-                    if (!_itemPanelSheetController.isAttached) return;
-                    final nextSize = (_itemPanelSheetController.size -
-                            details.delta.dy / screenSize.height)
-                        .clamp(mobileMinSheetSize, 0.72)
-                        .toDouble();
-                    _itemPanelSheetController.jumpTo(nextSize);
-                  },
-                  onVerticalDragEnd: (_) {
-                    if (!_itemPanelSheetController.isAttached) return;
-                    final snapSizes = <double>[
-                      mobileMinSheetSize,
-                      0.36,
-                      0.72,
-                    ];
-                    final currentSize = _itemPanelSheetController.size;
-                    final targetSize = snapSizes.reduce(
-                      (a, b) =>
-                          (a - currentSize).abs() <= (b - currentSize).abs()
-                              ? a
-                              : b,
-                    );
-                    unawaited(_itemPanelSheetController.animateTo(
-                      targetSize,
-                      duration: const Duration(milliseconds: 180),
-                      curve: Curves.easeOutCubic,
-                    ));
+                    // 上端グリップの縦ドラッグで下部ドッキングパネルの高さを
+                    // 変える。 上へドラッグ (delta.dy<0) で高くする。 Column 側の
+                    // 余白も同じ高さで連動するのでプレビュー/タイムラインと
+                    // 重ならない (= ユーザー要望)。
+                    final maxH = MediaQuery.sizeOf(context).height * 0.6;
+                    setState(() {
+                      _veDockPanelH = (_veDockPanelH - details.delta.dy)
+                          .clamp(160.0, maxH)
+                          .toDouble();
+                    });
                   },
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(24, 7, 24, 5),
@@ -88796,23 +89432,19 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
     }
 
     if (useMobileSheet) {
-      return Positioned.fill(
-        child: DraggableScrollableSheet(
-          controller: _itemPanelSheetController,
-          expand: false,
-          initialChildSize: 0.36,
-          minChildSize: mobileMinSheetSize,
-          maxChildSize: 0.72,
-          snap: true,
-          snapSizes: [mobileMinSheetSize, 0.36, 0.72],
-          builder: (context, scrollController) => Padding(
-            padding: const EdgeInsets.fromLTRB(6, 0, 6, 6),
-            child: ClipRRect(
-              borderRadius:
-                  const BorderRadius.vertical(top: Radius.circular(16)),
-              child: buildPanel(scrollController, compact: true),
-            ),
-          ),
+      // ── 画面下部にドッキング (= ユーザー要望: 編集項目で要素やプレビューが
+      //    隠れないように、 重ねず下部に並べる)。 build() 側の Column が同じ
+      //    高さ分だけ下に余白を空けているので、 プレビュー/タイムラインと
+      //    重ならない。 上端グリップを縦ドラッグで高さを変えられる。 ──
+      return Positioned(
+        left: 0,
+        right: 0,
+        bottom: 0,
+        height: _dockPanelHeight(),
+        child: ClipRRect(
+          borderRadius:
+              const BorderRadius.vertical(top: Radius.circular(16)),
+          child: buildPanel(null, compact: true),
         ),
       );
     }
@@ -111967,6 +112599,83 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
     );
   }
 
+  /// ロック中メモを「どのページに送るか」を選ばせてから 1 ノードとして送る
+  /// (= ユーザー要望)。 ロック Overlay はルート Overlay 上にあるため通常の
+  /// showDialog は背面に回る。 必ず _showLockFrontDialog を使う。
+  Future<void> _sendLockMemoToPage() async {
+    final text = _lockMemoCtrl.text.trim();
+    if (text.isEmpty) {
+      _appSnack(context, const SnackBar(content: Text('送るメモがありません')));
+      return;
+    }
+    await _saveLockMemoNow();
+    if (!mounted) return;
+    final provider = widget.provider;
+    final pages = provider.pages;
+    // ページが 1 つだけなら選ぶ余地がないのでそのまま送る。
+    if (pages.length <= 1) {
+      provider.addMemoNodeToCurrentPage(text);
+      if (!mounted) return;
+      _appSnack(context, const SnackBar(content: Text('メモをページに送りました')));
+      return;
+    }
+    final currentIdx = provider.currentPageIndex;
+    final listH = (pages.length * 52).clamp(60, 360).toDouble();
+    final chosen = await _showLockFrontDialog<int>(
+      (dctx, close) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: const Text('送るページを選択',
+            style: TextStyle(color: Colors.white, fontSize: 16)),
+        contentPadding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+        content: SizedBox(
+          width: 340,
+          height: listH,
+          child: Scrollbar(
+            child: ListView.builder(
+              itemCount: pages.length,
+              itemBuilder: (_, i) {
+                final isCurrent = i == currentIdx;
+                return ListTile(
+                  dense: true,
+                  leading: Icon(isCurrent ? Icons.map : Icons.map_outlined,
+                      color: isCurrent
+                          ? const Color(0xFFFFD54F)
+                          : Colors.white54,
+                      size: 20),
+                  title: Text(
+                    isCurrent ? '${pages[i].name}（現在）' : pages[i].name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        color: isCurrent
+                            ? const Color(0xFFFFD54F)
+                            : Colors.white,
+                        fontSize: 14),
+                  ),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10)),
+                  onTap: () => close(i),
+                );
+              },
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => close(),
+            child: const Text('キャンセル',
+                style: TextStyle(color: Colors.white70)),
+          ),
+        ],
+      ),
+    );
+    if (chosen == null || !mounted) return;
+    provider.addMemoNodeToPage(chosen, text);
+    if (!mounted) return;
+    _appSnack(context,
+        SnackBar(content: Text('「${pages[chosen].name}」にメモを送りました')));
+  }
+
   void _showLockAiSettingsOverlay() {
     if (!mounted) return;
     _lockAiSettingsOverlay?.remove();
@@ -112680,7 +113389,7 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
-                  '今日のタイムライン',
+                  '取り組むべきタスク',
                   style: TextStyle(
                       color: Colors.white.withValues(alpha: 0.8),
                       fontSize: 12,
@@ -112688,7 +113397,7 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
                 ),
               ),
               IconButton(
-                tooltip: '予定を追加',
+                tooltip: 'タスクを追加',
                 constraints:
                     const BoxConstraints.tightFor(width: 32, height: 32),
                 padding: EdgeInsets.zero,
@@ -112700,7 +113409,7 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
           ),
           const SizedBox(height: 8),
           if (events.isEmpty)
-            const Text('今日の予定はまだありません。＋から追加できます。',
+            const Text('取り組むべきタスクはまだありません。＋から追加できます。',
                 style: TextStyle(color: Colors.white54, fontSize: 12))
           else
             ConstrainedBox(
@@ -113155,23 +113864,11 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
                 child: Text('メモは端末内に自動保存されます',
                     style: TextStyle(color: Colors.white38, fontSize: 11)),
               ),
-              // ── 「保存」→「ページに送る」に変更 (= ユーザー要望) ──
-              // メモは自動保存されるので、明示ボタンは現在ページへ 1 ノード
+              // ── 「保存」→「ページを選んで送る」に変更 (= ユーザー要望) ──
+              // メモは自動保存されるので、明示ボタンは選んだページへ 1 ノード
               // として送る役割にする。送った後もメモ本文は残す。
               TextButton.icon(
-                onPressed: () async {
-                  final text = _lockMemoCtrl.text.trim();
-                  if (text.isEmpty) {
-                    _appSnack(
-                        context, const SnackBar(content: Text('送るメモがありません')));
-                    return;
-                  }
-                  await _saveLockMemoNow();
-                  widget.provider.addMemoNodeToCurrentPage(text);
-                  if (!mounted) return;
-                  _appSnack(
-                      context, const SnackBar(content: Text('メモをページに送りました')));
-                },
+                onPressed: _sendLockMemoToPage,
                 style: TextButton.styleFrom(
                   foregroundColor: Colors.white70,
                   padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -113179,7 +113876,7 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
                   tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                 ),
                 icon: const Icon(Icons.send_rounded, size: 15),
-                label: const Text('ページに送る'),
+                label: const Text('ページを選んで送る'),
               ),
             ],
           ),
@@ -147443,6 +148140,469 @@ class _DocxSnapshot {
   final List<_DocxBlock> blocks;
   final int? selectedIdx;
   _DocxSnapshot(this.blocks, this.selectedIdx);
+}
+
+// ─── .ipynb (Jupyter Notebook) 読み取り専用ビューア ───────────────────
+// (= ユーザー要望: ipynb などの拡張子もエディタとして開けるように)。
+// 追加の依存パッケージ無しで実装 (jsonDecode / base64Decode / _MathRenderer)。
+// nbformat v4 (トップレベル 'cells') と v3 ('worksheets[].cells') に対応。
+
+/// パース済みの 1 セル。
+class _IpynbCell {
+  final String type; // 'markdown' | 'code' | 'raw'
+  final String source;
+  final List<_IpynbOutput> outputs;
+  final int? execCount;
+  const _IpynbCell(this.type, this.source, this.outputs, this.execCount);
+}
+
+/// code セルの 1 出力 (標準出力 / テキスト結果 / 画像 / エラー)。
+class _IpynbOutput {
+  final String kind; // 'text' | 'stream' | 'error' | 'image'
+  final String? text;
+  final Uint8List? image;
+  const _IpynbOutput._(this.kind, this.text, this.image);
+  factory _IpynbOutput.text(String? t) => _IpynbOutput._('text', t, null);
+  factory _IpynbOutput.stream(String? t) => _IpynbOutput._('stream', t, null);
+  factory _IpynbOutput.error(String? t) => _IpynbOutput._('error', t, null);
+  factory _IpynbOutput.image(Uint8List b) => _IpynbOutput._('image', null, b);
+}
+
+class _IpynbViewerDialog extends StatefulWidget {
+  final String filePath;
+  final String fileName;
+  final bool isDarkMode;
+
+  /// 他ビューアと引数形状を合わせるためのフック (このビューアは読み取り専用
+  /// なので実際には呼ばれない)。
+  final void Function(String newPath, String newName)? onRenamed;
+  final VoidCallback? onSaved;
+
+  const _IpynbViewerDialog({
+    required this.filePath,
+    required this.fileName,
+    this.isDarkMode = true,
+    this.onRenamed,
+    this.onSaved,
+  });
+
+  @override
+  State<_IpynbViewerDialog> createState() => _IpynbViewerDialogState();
+}
+
+class _IpynbViewerDialogState extends State<_IpynbViewerDialog> {
+  List<_IpynbCell> _cells = const [];
+  bool _loading = true;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  static String _stripAnsi(String s) =>
+      s.replaceAll(RegExp(r'\x1B\[[0-9;?]*[ -/]*[@-~]'), '');
+
+  String _joinSource(dynamic src) {
+    if (src is List) return src.map((e) => e.toString()).join();
+    if (src == null) return '';
+    return src.toString();
+  }
+
+  List<dynamic> _extractCells(dynamic root) {
+    if (root is Map) {
+      final cells = root['cells'];
+      if (cells is List) return cells;
+      // nbformat v3: worksheets[].cells
+      final ws = root['worksheets'];
+      if (ws is List) {
+        final out = <dynamic>[];
+        for (final w in ws) {
+          if (w is Map && w['cells'] is List) {
+            out.addAll(w['cells'] as List);
+          }
+        }
+        return out;
+      }
+    }
+    return const [];
+  }
+
+  Uint8List? _decodeB64Image(dynamic v) {
+    if (v is! String || v.isEmpty) return null;
+    try {
+      return base64Decode(v.replaceAll('\n', '').replaceAll('\r', '').trim());
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void _parseOutput(Map<dynamic, dynamic> o, List<_IpynbOutput> sink) {
+    final ot = (o['output_type'] ?? '').toString();
+    if (ot == 'stream') {
+      sink.add(_IpynbOutput.stream(_joinSource(o['text'])));
+    } else if (ot == 'error') {
+      final tb = o['traceback'];
+      final raw = (tb is List)
+          ? tb.map((e) => e.toString()).join('\n')
+          : (o['evalue']?.toString() ??
+              o['ename']?.toString() ??
+              'Error');
+      sink.add(_IpynbOutput.error(_stripAnsi(raw)));
+    } else if (ot == 'execute_result' || ot == 'display_data') {
+      final data = o['data'];
+      if (data is Map) {
+        final png = _decodeB64Image(data['image/png']) ??
+            _decodeB64Image(data['image/jpeg']);
+        if (png != null) {
+          sink.add(_IpynbOutput.image(png));
+          return;
+        }
+        final tp = data['text/plain'];
+        if (tp != null) {
+          sink.add(_IpynbOutput.text(_joinSource(tp)));
+          return;
+        }
+        final html = data['text/html'];
+        if (html != null) {
+          sink.add(_IpynbOutput.text(_joinSource(html)));
+          return;
+        }
+      }
+    }
+  }
+
+  Future<void> _load() async {
+    try {
+      final text = await File(widget.filePath).readAsString();
+      final dynamic root = jsonDecode(text);
+      final cellsRaw = _extractCells(root);
+      final parsed = <_IpynbCell>[];
+      for (final c in cellsRaw) {
+        if (c is! Map) continue;
+        final type = (c['cell_type'] ?? 'raw').toString();
+        final source = _joinSource(c['source']);
+        final outputs = <_IpynbOutput>[];
+        if (type == 'code') {
+          final outs = c['outputs'];
+          if (outs is List) {
+            for (final o in outs) {
+              if (o is Map) _parseOutput(o, outputs);
+            }
+          }
+        }
+        final ec = c['execution_count'];
+        parsed.add(
+            _IpynbCell(type, source, outputs, ec is int ? ec : null));
+      }
+      if (!mounted) return;
+      setState(() {
+        _cells = parsed;
+        _loading = false;
+      });
+    } catch (e) {
+      debugPrint('ipynb load error: $e');
+      if (!mounted) return;
+      setState(() {
+        _error = '$e';
+        _loading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = widget.isDarkMode;
+    final bg = dark ? const Color(0xFF1A1A24) : const Color(0xFFF4F4F2);
+    final fg = dark ? Colors.white : const Color(0xFF1A1A24);
+    return Column(
+      children: [
+        // ── ヘッダー ──
+        Container(
+          height: 52,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          color: dark ? const Color(0xFF23233A) : const Color(0xFFE4E4E0),
+          child: Row(
+            children: [
+              const Icon(Icons.menu_book_rounded,
+                  color: Color(0xFFF37726), size: 20),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  widget.fileName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      color: fg, fontSize: 15, fontWeight: FontWeight.w600),
+                ),
+              ),
+              IconButton(
+                tooltip: '外部アプリで開く',
+                icon: Icon(Icons.open_in_new,
+                    color: fg.withValues(alpha: 0.7), size: 20),
+                onPressed: () => OpenFilex.open(widget.filePath),
+              ),
+              IconButton(
+                tooltip: '閉じる',
+                icon: Icon(Icons.close, color: fg, size: 22),
+                onPressed: () => Navigator.of(context).maybePop(),
+              ),
+            ],
+          ),
+        ),
+        Expanded(child: _buildBody(dark, bg, fg)),
+      ],
+    );
+  }
+
+  Widget _buildBody(bool dark, Color bg, Color fg) {
+    if (_loading) {
+      return Container(
+        color: bg,
+        child: const Center(child: CircularProgressIndicator()),
+      );
+    }
+    if (_error != null) {
+      return Container(
+        color: bg,
+        alignment: Alignment.center,
+        padding: const EdgeInsets.all(24),
+        child: Text(
+          'ノートブックを読み込めませんでした\n$_error',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: fg.withValues(alpha: 0.8)),
+        ),
+      );
+    }
+    if (_cells.isEmpty) {
+      return Container(
+        color: bg,
+        alignment: Alignment.center,
+        child: Text('空のノートブックです',
+            style: TextStyle(color: fg.withValues(alpha: 0.7))),
+      );
+    }
+    return Container(
+      color: bg,
+      child: ListView.builder(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+        itemCount: _cells.length,
+        itemBuilder: (_, i) => _buildCell(_cells[i], dark, fg),
+      ),
+    );
+  }
+
+  Widget _buildCell(_IpynbCell cell, bool dark, Color fg) {
+    if (cell.type == 'markdown') return _buildMarkdownCell(cell, dark, fg);
+    if (cell.type == 'code') return _buildCodeCell(cell, dark, fg);
+    // raw セル
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: SelectableText(
+        cell.source,
+        style: TextStyle(
+            color: fg.withValues(alpha: 0.75),
+            fontFamily: 'monospace',
+            fontSize: 13),
+      ),
+    );
+  }
+
+  /// $...$ を含む行はインライン数式として _MathRenderer で描画。
+  Widget _buildMdInline(String line, Color fg,
+      {double size = 14, FontWeight weight = FontWeight.normal}) {
+    if (!RegExp(r'\$[^$]+\$').hasMatch(line)) {
+      return SelectableText(line,
+          style: TextStyle(
+              color: fg, fontSize: size, fontWeight: weight, height: 1.4));
+    }
+    final parts = line.split(r'$');
+    final spans = <Widget>[];
+    for (var k = 0; k < parts.length; k++) {
+      final seg = parts[k];
+      if (k.isOdd) {
+        spans.add(_MathRenderer(tex: seg, displayMode: false, color: fg));
+      } else if (seg.isNotEmpty) {
+        spans.add(Text(seg,
+            style: TextStyle(
+                color: fg, fontSize: size, fontWeight: weight, height: 1.4)));
+      }
+    }
+    return Wrap(crossAxisAlignment: WrapCrossAlignment.center, children: spans);
+  }
+
+  Widget _codeBlock(String code, bool dark, Color fg) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: dark ? const Color(0xFF11111A) : const Color(0xFFECECEC),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: SelectableText(
+        code,
+        style: TextStyle(
+            color: dark ? const Color(0xFFD6E2F0) : const Color(0xFF1A1A24),
+            fontFamily: 'monospace',
+            fontSize: 12.5,
+            height: 1.35),
+      ),
+    );
+  }
+
+  Widget _buildMarkdownCell(_IpynbCell cell, bool dark, Color fg) {
+    final lines = cell.source.split('\n');
+    final widgets = <Widget>[];
+    bool inFence = false;
+    final codeBuf = <String>[];
+    for (final raw in lines) {
+      if (raw.trimLeft().startsWith('```')) {
+        if (inFence) {
+          widgets.add(_codeBlock(codeBuf.join('\n'), dark, fg));
+          codeBuf.clear();
+          inFence = false;
+        } else {
+          inFence = true;
+        }
+        continue;
+      }
+      if (inFence) {
+        codeBuf.add(raw);
+        continue;
+      }
+      final trimmed = raw.trimRight();
+      if (trimmed.trim().isEmpty) {
+        widgets.add(const SizedBox(height: 8));
+        continue;
+      }
+      if (trimmed.startsWith('### ')) {
+        widgets.add(Padding(
+            padding: const EdgeInsets.only(top: 4, bottom: 2),
+            child: _buildMdInline(trimmed.substring(4), fg,
+                size: 15, weight: FontWeight.w700)));
+      } else if (trimmed.startsWith('## ')) {
+        widgets.add(Padding(
+            padding: const EdgeInsets.only(top: 6, bottom: 3),
+            child: _buildMdInline(trimmed.substring(3), fg,
+                size: 18, weight: FontWeight.w700)));
+      } else if (trimmed.startsWith('# ')) {
+        widgets.add(Padding(
+            padding: const EdgeInsets.only(top: 8, bottom: 4),
+            child: _buildMdInline(trimmed.substring(2), fg,
+                size: 21, weight: FontWeight.w800)));
+      } else if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+        widgets.add(Padding(
+            padding: const EdgeInsets.only(left: 8, top: 1, bottom: 1),
+            child: _buildMdInline('•  ${trimmed.substring(2)}', fg)));
+      } else {
+        widgets.add(_buildMdInline(trimmed, fg));
+      }
+    }
+    if (inFence && codeBuf.isNotEmpty) {
+      widgets.add(_codeBlock(codeBuf.join('\n'), dark, fg));
+    }
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 10),
+      child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start, children: widgets),
+    );
+  }
+
+  Widget _buildCodeCell(_IpynbCell cell, bool dark, Color fg) {
+    final gutter = cell.execCount != null ? 'In [${cell.execCount}]' : 'In [ ]';
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: double.infinity,
+            decoration: BoxDecoration(
+              color: dark ? const Color(0xFF11131C) : const Color(0xFFF0F0F3),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(
+                  color:
+                      dark ? const Color(0xFF2A2A3D) : const Color(0xFFD8D8DC)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(10, 6, 10, 0),
+                  child: Text(gutter,
+                      style: const TextStyle(
+                          color: Color(0xFF5C9DFF),
+                          fontFamily: 'monospace',
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700)),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(10, 2, 10, 10),
+                  child: SelectableText(
+                    cell.source,
+                    style: TextStyle(
+                        color: dark
+                            ? const Color(0xFFE6ECF5)
+                            : const Color(0xFF15151E),
+                        fontFamily: 'monospace',
+                        fontSize: 12.5,
+                        height: 1.4),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          for (final o in cell.outputs) _buildOutput(o, dark, fg),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildOutput(_IpynbOutput o, bool dark, Color fg) {
+    if (o.kind == 'image' && o.image != null) {
+      return Container(
+        margin: const EdgeInsets.only(top: 6, left: 6),
+        alignment: Alignment.centerLeft,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: Image.memory(
+            o.image!,
+            fit: BoxFit.contain,
+            errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+          ),
+        ),
+      );
+    }
+    final isError = o.kind == 'error';
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 6, left: 6),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: isError
+            ? Colors.redAccent.withValues(alpha: 0.12)
+            : (dark ? const Color(0xFF0E0E16) : const Color(0xFFF7F7F7)),
+        borderRadius: BorderRadius.circular(4),
+        border: isError
+            ? Border.all(color: Colors.redAccent.withValues(alpha: 0.4))
+            : null,
+      ),
+      child: SelectableText(
+        o.text ?? '',
+        style: TextStyle(
+            color: isError
+                ? Colors.redAccent.withValues(alpha: 0.95)
+                : fg.withValues(alpha: 0.85),
+            fontFamily: 'monospace',
+            fontSize: 12,
+            height: 1.35),
+      ),
+    );
+  }
 }
 
 class _DocxViewerDialog extends StatefulWidget {
