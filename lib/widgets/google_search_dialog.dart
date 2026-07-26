@@ -41,6 +41,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
@@ -49,11 +50,14 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart' as iaw;
 import 'package:webview_windows/webview_windows.dart' as wv_win;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 // 自動スクショ → PDF 化 (= ユーザー要望) に使用。
 import 'package:pdf/pdf.dart' as pdf;
 import 'package:pdf/widgets.dart' as pw;
 
 import '../providers/mind_map_provider.dart';
+import '../utils/embedded_oauth_guard.dart';
+import '../utils/google_map_pinch_utils.dart';
 
 enum _GSearchSplitIconFill { left, right, top, bottom }
 
@@ -1129,7 +1133,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   //   ツールバーのトグルで開閉できるようにした。
   // ── ユーザー要望: Google 検索を立ち上げた時にメモ欄が常に開いて表示領域が
   //    小さくなるのを避けたいので、 デフォルトは false (= 閉じた状態) にする。
-  //    開きたいときはツールバーのメモボタン (F3) で開ける。
+  //    開きたいときはツールバーのメモボタンまたは Ctrl+M で開ける。
   // ※ 縦分割 (モバイル) は _memoPanelExpanded + _buildCollapsibleMemoPanel
   //   が同等の開閉を担うため、 こちらは横分割専用。
   bool _memoSideExpanded = false;
@@ -1149,6 +1153,256 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   bool get _winInitialized => _activeTab?.winReady ?? false;
   String? get _winInitError => _activeTab?.winError;
   iaw.InAppWebViewController? get _iawCtrl => _activeTab?.iawCtrl;
+
+  void _beginDesktopMapPinch(_GsTab tab) {
+    tab.mapPinchLastScale = 1.0;
+    tab.mapPinchLogRemainder = 0.0;
+  }
+
+  void _updateDesktopMapPinch(
+      _GsTab tab, PointerPanZoomUpdateEvent event) {
+    if (!isGoogleMapOrEarthUrl(tab.url) || tab.winCtrl == null) return;
+    final currentScale = event.scale.clamp(0.01, 100.0).toDouble();
+    final previousScale =
+        tab.mapPinchLastScale.clamp(0.01, 100.0).toDouble();
+    tab.mapPinchLastScale = currentScale;
+    final zoom = accumulateGoogleMapZoomSteps(
+      previousScale: previousScale,
+      currentScale: currentScale,
+      remainder: tab.mapPinchLogRemainder,
+    );
+    tab.mapPinchLogRemainder = zoom.remainder;
+    if (zoom.steps == 0) return;
+    _queueDesktopMapZoom(
+      tab,
+      zoom.steps,
+      event.localPosition,
+    );
+  }
+
+  void _handleDesktopMapPointerSignal(
+      _GsTab tab, PointerSignalEvent event) {
+    // 一部の Windows Precision Touchpad ドライバーは pinch を
+    // PointerPanZoom ではなく Ctrl+trackpad-wheel として送る。
+    if (event is! PointerScrollEvent ||
+        event.kind != PointerDeviceKind.trackpad ||
+        (!HardwareKeyboard.instance.isControlPressed &&
+            !HardwareKeyboard.instance.isMetaPressed) ||
+        !isGoogleMapOrEarthUrl(tab.url)) {
+      return;
+    }
+    final dy = event.scrollDelta.dy;
+    if (!dy.isFinite || dy == 0) return;
+    tab.mapPinchSignalRemainder += -dy;
+    final steps = (tab.mapPinchSignalRemainder / 60.0)
+        .truncate()
+        .clamp(-3, 3)
+        .toInt();
+    if (steps == 0) return;
+    tab.mapPinchSignalRemainder -= steps * 60.0;
+    _queueDesktopMapZoom(tab, steps, event.localPosition);
+  }
+
+  void _queueDesktopMapZoom(_GsTab tab, int steps, Offset localPosition) {
+    if (steps == 0 || !isGoogleMapOrEarthUrl(tab.url)) return;
+    tab.mapPinchPendingSteps =
+        (tab.mapPinchPendingSteps + steps).clamp(-12, 12).toInt();
+    tab.mapPinchLocalPosition = localPosition;
+    if (!tab.mapPinchDispatching) {
+      unawaited(_drainDesktopMapZoom(tab));
+    }
+  }
+
+  Future<void> _drainDesktopMapZoom(_GsTab tab) async {
+    if (tab.mapPinchDispatching) return;
+    tab.mapPinchDispatching = true;
+    try {
+      while (mounted && tab.mapPinchPendingSteps != 0) {
+        final controller = tab.winCtrl;
+        if (controller == null || !isGoogleMapOrEarthUrl(tab.url)) {
+          tab.mapPinchPendingSteps = 0;
+          break;
+        }
+
+        final batch = tab.mapPinchPendingSteps.clamp(-4, 4).toInt();
+        tab.mapPinchPendingSteps -= batch;
+        final x = tab.mapPinchLocalPosition.dx
+            .clamp(1.0, 100000.0)
+            .toStringAsFixed(2);
+        final y = tab.mapPinchLocalPosition.dy
+            .clamp(1.0, 100000.0)
+            .toStringAsFixed(2);
+        try {
+          await controller.executeScript(_desktopMapZoomScript(batch, x, y));
+        } catch (_) {
+          tab.mapPinchPendingSteps = 0;
+          break;
+        }
+        // WebGL pages occasionally discard consecutive synchronous clicks.
+        await Future<void>.delayed(const Duration(milliseconds: 18));
+      }
+    } finally {
+      tab.mapPinchDispatching = false;
+      if (mounted &&
+          tab.mapPinchPendingSteps != 0 &&
+          isGoogleMapOrEarthUrl(tab.url)) {
+        unawaited(_drainDesktopMapZoom(tab));
+      }
+    }
+  }
+
+  String _desktopMapZoomScript(int steps, String x, String y) {
+    final count = steps.abs().clamp(1, 4).toInt();
+    final zoomIn = steps > 0;
+    final wheelDelta = zoomIn ? -100 : 100;
+    return '''
+(function() {
+  try {
+    var host = (location.hostname || '').toLowerCase();
+    var path = (location.pathname || '').toLowerCase();
+    var googleHost = /(^|\\.)google\\.(com|[a-z]{2,3}|co\\.[a-z]{2}|com\\.[a-z]{2})\$/.test(host);
+    var first = host.split('.')[0] || '';
+    var mapPage = googleHost && (first === 'maps' || first === 'earth' ||
+                  path === '/maps' || path.indexOf('/maps/') === 0);
+    if (!mapPage) return 'wrong-page';
+
+    var zoomIn = ${zoomIn ? 'true' : 'false'};
+    var count = $count;
+    var selectors = zoomIn
+      ? [
+          'button[jsaction*="zoomIn" i]',
+          '[role="button"][jsaction*="zoomIn" i]',
+          '.widget-zoom-in',
+          'button[aria-label*="Zoom in" i]',
+          'button[title*="Zoom in" i]',
+          'button[aria-label*="拡大"]',
+          'button[aria-label*="ズームイン"]'
+        ]
+      : [
+          'button[jsaction*="zoomOut" i]',
+          '[role="button"][jsaction*="zoomOut" i]',
+          '.widget-zoom-out',
+          'button[aria-label*="Zoom out" i]',
+          'button[title*="Zoom out" i]',
+          'button[aria-label*="縮小"]',
+          'button[aria-label*="ズームアウト"]'
+        ];
+
+    function visible(el) {
+      if (!el || el.disabled || el.getAttribute('aria-disabled') === 'true') {
+        return false;
+      }
+      var rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    }
+
+    // Maps の通常 DOM ならここで即座に見つかる。大きな地図 DOM を毎回
+    // 全走査しないため、Shadow DOM 探索より先に高速経路を試す。
+    for (var fastIndex = 0; fastIndex < selectors.length; fastIndex++) {
+      var fastButton = null;
+      try { fastButton = document.querySelector(selectors[fastIndex]); }
+      catch (_) {}
+      if (visible(fastButton)) {
+        for (var fastClick = 0; fastClick < count; fastClick++) {
+          fastButton.click();
+        }
+        return 'button-fast:' + count;
+      }
+    }
+
+    // Earth のコントロールは Shadow DOM 内に入る版があるため、開いている
+    // shadowRoot と同一オリジン iframe も探索する。
+    var roots = [document];
+    var rootIndex = 0;
+    while (rootIndex < roots.length && roots.length < 300) {
+      var root = roots[rootIndex++];
+      var all;
+      try { all = root.querySelectorAll('*'); } catch (_) { all = []; }
+      for (var ai = 0; ai < all.length; ai++) {
+        if (all[ai].shadowRoot) roots.push(all[ai].shadowRoot);
+        if (all[ai].tagName === 'IFRAME') {
+          try {
+            if (all[ai].contentDocument) roots.push(all[ai].contentDocument);
+          } catch (_) {}
+        }
+      }
+    }
+
+    function findButton() {
+      for (var ri = 0; ri < roots.length; ri++) {
+        for (var si = 0; si < selectors.length; si++) {
+          var direct = null;
+          try { direct = roots[ri].querySelector(selectors[si]); } catch (_) {}
+          if (visible(direct)) return direct;
+        }
+      }
+      var words = zoomIn
+        ? ['zoom in', '拡大', 'ズームイン', '放大', '확대', 'acercar',
+           'agrandir', 'vergrößern', 'ampliar', 'aproximar', 'приблизить']
+        : ['zoom out', '縮小', 'ズームアウト', '缩小', '축소', 'alejar',
+           'dézoomer', 'verkleinern', 'reduzir', 'afastar', 'отдалить'];
+      for (var rj = 0; rj < roots.length; rj++) {
+        var candidates;
+        try {
+          candidates = roots[rj].querySelectorAll(
+            'button,[role="button"],[tabindex="0"]'
+          );
+        } catch (_) { candidates = []; }
+        for (var ci = 0; ci < candidates.length; ci++) {
+          var candidate = candidates[ci];
+          if (!visible(candidate)) continue;
+          var label = [
+            candidate.getAttribute('aria-label') || '',
+            candidate.getAttribute('title') || '',
+            candidate.getAttribute('data-tooltip') || ''
+          ].join(' ').toLowerCase();
+          for (var wi = 0; wi < words.length; wi++) {
+            if (label.indexOf(words[wi]) >= 0) return candidate;
+          }
+        }
+      }
+      return null;
+    }
+
+    var button = findButton();
+    if (button) {
+      for (var bi = 0; bi < count; bi++) button.click();
+      return 'button:' + count;
+    }
+
+    // 最終手段。Maps が DOM wheel を受ける版ではピンチ位置を中心にズームする。
+    // ボタンが見つかった場合とは排他的なので二重ズームしない。
+    var px = Math.max(1, Math.min(window.innerWidth - 1, $x));
+    var py = Math.max(1, Math.min(window.innerHeight - 1, $y));
+    var target = document.elementFromPoint(px, py) ||
+                 document.querySelector('canvas') ||
+                 document.body ||
+                 document.documentElement;
+    if (!target) return 'no-target';
+    for (var ei = 0; ei < count; ei++) {
+      target.dispatchEvent(new WheelEvent('wheel', {
+        deltaX: 0,
+        deltaY: $wheelDelta,
+        deltaMode: 0,
+        clientX: px,
+        clientY: py,
+        bubbles: true,
+        cancelable: true,
+        composed: true
+      }));
+    }
+    return 'wheel:' + count;
+  } catch (e) {
+    return 'error: ' + e;
+  }
+})();
+''';
+  }
+
+  void _endDesktopMapPinch(_GsTab tab) {
+    tab.mapPinchLastScale = 1.0;
+    tab.mapPinchLogRemainder = 0.0;
+  }
 
   // ── 生成 AI サイドパネル (= ユーザー要望: PDF ビューアと同様に 5 種の AI を
   //    サイドメニューで開いて、 メモを渡したり左右入れ替えたりできるように) ──
@@ -1185,6 +1439,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   bool _aiWinInitStarted = false;
   bool _aiWinInitialized = false;
   String? _aiWinInitError;
+  bool _aiWinOAuthHandoffInProgress = false;
+  DateTime? _aiWinLastOAuthHandoffAt;
+  String _aiWinLastSafeServiceUrl = '';
 
   /// AI 欄用モバイル InAppWebView コントローラ (= JS 注入用)。
   iaw.InAppWebViewController? _aiIawCtrl;
@@ -1287,6 +1544,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       _aiPanelOpen = true;
       _aiDefaultId = aiId;
     });
+    if (isSafeExternalServiceUrl(url)) {
+      _aiWinLastSafeServiceUrl = url;
+    }
     if (_isDesktop) {
       if (!_aiWinInitStarted) {
         _aiWinInitStarted = true;
@@ -1309,6 +1569,10 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   Future<void> _initAiWinWebView(String url) async {
     try {
       await _aiWinCtrl.initialize();
+      try {
+        await _aiWinCtrl
+            .setPopupWindowPolicy(wv_win.WebviewPopupWindowPolicy.sameWindow);
+      } catch (_) {}
       // ── AI チャット欄をマウスホイールでスクロールできるように (= ユーザー
       //    要望) ──。 AI サイトは内側のスクロールコンテナを使うため
       //    webview_windows のネイティブホイールでは動かないことがある。 検索
@@ -1316,10 +1580,104 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       try {
         await _aiWinCtrl.addScriptToExecuteOnDocumentCreated(_kGsWheelTameJs);
       } catch (_) {}
+      if (isSafeExternalServiceUrl(url)) {
+        _aiWinLastSafeServiceUrl = url;
+      }
+      _aiWinCtrl.url.listen((currentUrl) {
+        if (currentUrl.isEmpty) return;
+        if (isBlockedEmbeddedOAuthUrl(currentUrl)) {
+          unawaited(_handoffAiOAuthToExternalBrowser());
+          return;
+        }
+        if (isSafeExternalServiceUrl(currentUrl)) {
+          _aiWinLastSafeServiceUrl = currentUrl;
+        }
+      });
       await _aiWinCtrl.loadUrl(url);
       if (mounted) setState(() => _aiWinInitialized = true);
     } catch (e) {
       if (mounted) setState(() => _aiWinInitError = e.toString());
+    }
+  }
+
+  /// Google 等が埋め込み WebView を拒否した場合は、直前の AI サービスを
+  /// 既定ブラウザで開く。WebView 自体も直前ページへ戻し、認証 URL との間で
+  /// SourceChanged が発火し続ける状態を止める。
+  Future<void> _handoffAiOAuthToExternalBrowser() async {
+    if (_aiWinOAuthHandoffInProgress) return;
+    final fallback = isSafeExternalServiceUrl(_aiWinLastSafeServiceUrl)
+        ? _aiWinLastSafeServiceUrl
+        : (isSafeExternalServiceUrl(_aiPanelUrl) ? _aiPanelUrl : '');
+    if (fallback.isEmpty) return;
+
+    _aiWinOAuthHandoffInProgress = true;
+    try {
+      final now = DateTime.now();
+      final recentlyOpened = _aiWinLastOAuthHandoffAt != null &&
+          now.difference(_aiWinLastOAuthHandoffAt!) <
+              const Duration(seconds: 30);
+      if (!recentlyOpened) {
+        _aiWinLastOAuthHandoffAt = now;
+        try {
+          await launchUrl(
+            Uri.parse(fallback),
+            mode: LaunchMode.externalApplication,
+          );
+          if (mounted) {
+            _showCaptureSnack(
+              'Googleログインは既定のブラウザで続けてください',
+              const Color(0xFF6C63FF),
+            );
+          }
+        } catch (_) {}
+      }
+      try {
+        await _aiWinCtrl.loadUrl(fallback);
+      } catch (_) {}
+    } finally {
+      Future<void>.delayed(const Duration(seconds: 2), () {
+        if (mounted) _aiWinOAuthHandoffInProgress = false;
+      });
+    }
+  }
+
+  Future<void> _handoffSearchOAuthToExternalBrowser(
+    _GsTab tab,
+    wv_win.WebviewController controller,
+  ) async {
+    if (tab.oauthHandoffInProgress) return;
+    final fallback = isSafeExternalServiceUrl(tab.lastSafeServiceUrl)
+        ? tab.lastSafeServiceUrl
+        : 'https://www.google.com/';
+
+    tab.oauthHandoffInProgress = true;
+    try {
+      final now = DateTime.now();
+      final recentlyOpened = tab.lastOAuthHandoffAt != null &&
+          now.difference(tab.lastOAuthHandoffAt!) <
+              const Duration(seconds: 30);
+      if (!recentlyOpened) {
+        tab.lastOAuthHandoffAt = now;
+        try {
+          await launchUrl(
+            Uri.parse(fallback),
+            mode: LaunchMode.externalApplication,
+          );
+          if (mounted) {
+            _showCaptureSnack(
+              'Googleログインは既定のブラウザで続けてください',
+              const Color(0xFF6C63FF),
+            );
+          }
+        } catch (_) {}
+      }
+      try {
+        await controller.loadUrl(fallback);
+      } catch (_) {}
+    } finally {
+      Future<void>.delayed(const Duration(seconds: 2), () {
+        tab.oauthHandoffInProgress = false;
+      });
     }
   }
 
@@ -1646,11 +2004,24 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     //   ★ タイムアウト保険: 万一ハングしても 1.5 秒で WebView を作る
     //   (= 永久スピナーにしない)。
     if (!_isDesktop) {
-      _seedGoogleConsentCookies()
-          .timeout(const Duration(milliseconds: 1500), onTimeout: () {})
-          .whenComplete(() {
-        if (mounted) setState(() => _gsCookiesReady = true);
-      });
+      // ── 直接サイト起動 (Google マップ/Earth/paiza 等、 initialUrl 指定) は
+      //    同意 Cookie の投入完了を待たずに WebView を即生成して立ち上がりを
+      //    速くする (= ユーザー要望: Google マップ/Earth の立ち上がりが遅い)。
+      //    Cookie はバックグラウンドで引き続き投入する。 Google 検索/ホームは
+      //    従来通り投入完了を待つ (= 同意ページへのリダイレクトを避けるため)。 ──
+      final bool directSiteOpen =
+          (widget.initialUrl ?? '').trim().isNotEmpty;
+      if (directSiteOpen) {
+        _gsCookiesReady = true;
+        _seedGoogleConsentCookies()
+            .timeout(const Duration(milliseconds: 1500), onTimeout: () {});
+      } else {
+        _seedGoogleConsentCookies()
+            .timeout(const Duration(milliseconds: 1500), onTimeout: () {})
+            .whenComplete(() {
+          if (mounted) setState(() => _gsCookiesReady = true);
+        });
+      }
     } else {
       _gsCookiesReady = true;
     }
@@ -1764,10 +2135,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       _undoDelete();
       return true;
     }
-    // ── F3 / Ctrl+M: メモ欄の開閉 (= ユーザー要望: F3 で左にメモ) ──
+    // ── Ctrl+M: メモ欄の開閉 ──
     // 既定レイアウトではメモは左側に出る (AI は右側)。
-    if (key == LogicalKeyboardKey.f3 ||
-        (ctrl && key == LogicalKeyboardKey.keyM)) {
+    if (ctrl && key == LogicalKeyboardKey.keyM) {
       if (!widget.minimalMode) {
         setState(() => _memoSideExpanded = !_memoSideExpanded);
       }
@@ -1832,7 +2202,8 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         await ctrl
             .setPopupWindowPolicy(wv_win.WebviewPopupWindowPolicy.sameWindow);
       } catch (_) {}
-      // Ctrl/中クリック・target=_blank/window.open を新しいタブで開く。
+      // Ctrl/中クリックだけを新しいタブで開く。target=_blank / window.open は
+      // WebView2 に任せ、Google 等の OAuth ポップアップを壊さない。
       try {
         await ctrl
             .addScriptToExecuteOnDocumentCreated(_kGsCtrlClickInterceptorJs);
@@ -1846,7 +2217,6 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         final url = _parseGsCtrlClickMessage(msg);
         if (url != null) _openGsTabBackground(url);
       });
-      await ctrl.loadUrl(tab.url);
       ctrl.title.listen((t) {
         if (!mounted) return;
         tab.title = t.isEmpty ? 'Google' : t;
@@ -1855,6 +2225,13 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       });
       ctrl.url.listen((u) {
         if (!mounted) return;
+        if (isBlockedEmbeddedOAuthUrl(u)) {
+          unawaited(_handoffSearchOAuthToExternalBrowser(tab, ctrl));
+          return;
+        }
+        if (isSafeExternalServiceUrl(u)) {
+          tab.lastSafeServiceUrl = u;
+        }
         tab.url = u;
         if (identical(tab, _activeTab)) {
           _currentUrl = u;
@@ -1863,6 +2240,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         }
         setState(() {});
       });
+      // 初回 URL が認証ページへリダイレクトする場合も取りこぼさないよう、
+      // URL 監視を登録してから読み込む。
+      await ctrl.loadUrl(tab.url);
       tab.winReady = true;
       if (mounted) setState(() {});
     } catch (e) {
@@ -4174,7 +4554,16 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         child: const CircularProgressIndicator(),
       );
     }
-    return wv_win.Webview(tab.winCtrl!);
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerPanZoomStart: (_) => _beginDesktopMapPinch(tab),
+      onPointerPanZoomUpdate: (event) =>
+          _updateDesktopMapPinch(tab, event),
+      onPointerPanZoomEnd: (_) => _endDesktopMapPinch(tab),
+      onPointerSignal: (event) =>
+          _handleDesktopMapPointerSignal(tab, event),
+      child: wv_win.Webview(tab.winCtrl!),
+    );
   }
 
   /// モバイル: 1 タブ分の InAppWebView。 keepAlive で切替時の状態を保持する。
@@ -4188,6 +4577,14 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       initialUrlRequest: iaw.URLRequest(url: iaw.WebUri(tab.url)),
       initialSettings: iaw.InAppWebViewSettings(
         javaScriptEnabled: true,
+        // ── ピンチによる拡大・縮小を有効化 (= ユーザー要望: Google マップ/Earth
+        //    等で拡大縮小ジェスチャーに対応) ──
+        //   Android の WebView はピンチズームを既定で無効化しており、
+        //   builtInZoomControls を true にしないと二本指ズームが効かない。
+        //   +/- のオンスクリーンボタンは邪魔なので displayZoomControls で隠す。
+        supportZoom: true,
+        builtInZoomControls: true,
+        displayZoomControls: false,
         // 透明背景を無効化 (= ユーザー報告: Android で WebView が見えない/
         //   真っ白になる対策。 透明合成だと中身が描画されないことがある)。
         transparentBackground: false,
@@ -5030,7 +5427,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                   IconButton(
                     icon: const Icon(Icons.close_rounded,
                         color: Colors.white70, size: 20),
-                    tooltip: 'メモを閉じる (F3)',
+                    tooltip: 'メモを閉じる (Ctrl+M)',
                     visualDensity: VisualDensity.compact,
                     padding: const EdgeInsets.all(4),
                     constraints: const BoxConstraints(),
@@ -5539,7 +5936,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                           tooltip: (_memoSideExpanded
                                   ? provider.t('gsearch.hideMemo')
                                   : provider.t('gsearch.showMemo')) +
-                              ' (F3)',
+                              ' (Ctrl+M)',
                           visualDensity: VisualDensity.compact,
                           padding: const EdgeInsets.all(6),
                           constraints: const BoxConstraints(),
@@ -5847,7 +6244,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                     children: [
                       // ── 左パネル (既定=メモ、 入れ替え時=AI) ──
                       // ユーザー要望: メモと AI が同じ方向に出ないように。
-                      //   既定では F3 でメモが「左」、 F4 で AI が「右」 に出る。
+                      //   既定ではメモが「左」、AI が「右」に出る。
                       ..._horizontalLeftPanel(provider),
                       Expanded(flex: 3, child: _buildWebView()),
                       // ── 右パネル (既定=AI、 入れ替え時=メモ) ──
@@ -6133,6 +6530,9 @@ class TabFolderStore {
 class _GsTab {
   String url;
   String title;
+  String lastSafeServiceUrl;
+  bool oauthHandoffInProgress = false;
+  DateTime? lastOAuthHandoffAt;
   // ── タブごとに独立した検索用 WebView (= ユーザー要望: タブを切り替えても
   //    再読み込みされないように。 IndexedStack で全タブを生かしておく) ──
   // デスクトップ (webview_windows)
@@ -6140,10 +6540,18 @@ class _GsTab {
   bool winReady = false; // initialize 完了
   bool winInitStarted = false; // initialize 起動済み (二重起動防止)
   String? winError;
+  double mapPinchLastScale = 1.0;
+  double mapPinchLogRemainder = 0.0;
+  double mapPinchSignalRemainder = 0.0;
+  int mapPinchPendingSteps = 0;
+  bool mapPinchDispatching = false;
+  Offset mapPinchLocalPosition = Offset.zero;
   // モバイル (flutter_inappwebview)。 keepAlive で切替時の状態を保持する。
   iaw.InAppWebViewController? iawCtrl;
   final iaw.InAppWebViewKeepAlive iawKeepAlive = iaw.InAppWebViewKeepAlive();
-  _GsTab({required this.url, this.title = ''});
+  _GsTab({required this.url, this.title = ''})
+      : lastSafeServiceUrl =
+            isSafeExternalServiceUrl(url) ? url : 'https://www.google.com/';
 }
 
 /// 検索 WebView のホイール感度を下げる (= ユーザー要望: ノードから開いた
@@ -6161,9 +6569,12 @@ const String _kGsWheelTameJs = r'''
     // ページスクロールへ変換されて地図を拡大縮小できなくなるため素通しする。
     var host = (location.hostname || '').toLowerCase();
     var path = (location.pathname || '').toLowerCase();
-    var googleMap = (host === 'maps.google.com') ||
-                    (host.endsWith('.google.com') && path.indexOf('/maps') === 0);
-    if (host === 'earth.google.com' || googleMap) return;
+    var googleHost = /(^|\.)google\.(com|[a-z]{2,3}|co\.[a-z]{2}|com\.[a-z]{2})$/.test(host);
+    var first = host.split('.')[0] || '';
+    var googleMap = googleHost &&
+                    (first === 'maps' || first === 'earth' ||
+                     path === '/maps' || path.indexOf('/maps/') === 0);
+    if (googleMap) return;
     e.preventDefault();
     var dy = e.deltaY * FACTOR;
     var dx = e.deltaX * FACTOR;
@@ -6208,11 +6619,9 @@ const String _kGsCtrlClickInterceptorJs = r'''
     if (!a) return;
     var ctrlish = e.ctrlKey || e.metaKey;
     var mid = isAux && e.button === 1;
-    var tgt = (a.getAttribute('target') || a.target || '');
-    var blank = (tgt === '_blank');
-    // Ctrl/中クリック、 または target=_blank (= 普通のブラウザで新しいタブが
-    //   開かれるリンク・広告等) の時だけ新しいタブで開く。
-    if (!ctrlish && !mid && !blank) return;
+    // 通常クリックや target=_blank は WebView2 の popup policy に任せる。
+    // OAuth SDK が window.open の戻り値を監視できる状態も維持する。
+    if (!ctrlish && !mid) return;
     var href = a.href;
     if (!href || href.indexOf('javascript:') === 0) return;
     e.preventDefault(); e.stopPropagation();
@@ -6220,22 +6629,6 @@ const String _kGsCtrlClickInterceptorJs = r'''
   }
   document.addEventListener('click', function(e){ handle(e, false); }, true);
   document.addEventListener('auxclick', function(e){ handle(e, true); }, true);
-  try {
-    var _open = window.open;
-    window.open = function(url, name, feats){
-      try {
-        if (name === '_self' || name === '_top' || name === '_parent') {
-          return _open ? _open.apply(window, arguments) : null;
-        }
-        var u = '' + (url || '');
-        if (u.indexOf('http://') === 0 || u.indexOf('https://') === 0) {
-          send(u);
-          return null;
-        }
-      } catch(e){}
-      return _open ? _open.apply(window, arguments) : null;
-    };
-  } catch(e){}
 })();
 ''';
 

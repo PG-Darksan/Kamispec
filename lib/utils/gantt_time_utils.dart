@@ -253,6 +253,87 @@ int ganttActiveColumnCount({
       blocked: blocked,
     ).fold(0, (total, segment) => total + segment.columnCount);
 
+/// Returns the hourly column at [value], rounded down to the hour.
+DateTime _floorHour(DateTime value) =>
+    DateTime(value.year, value.month, value.day, value.hour);
+
+/// Finds the closest assignable hourly column in [forward]'s direction.
+///
+/// `null` is returned when every hour of the day is blocked. This also keeps
+/// callers from looping forever when a user deliberately configures a
+/// full-day non-working interval.
+DateTime? ganttSnapToActiveHour({
+  required DateTime value,
+  required Iterable<GanttBlockedInterval> blocked,
+  bool forward = true,
+}) {
+  final normalized = normalizeGanttBlockedIntervals(blocked);
+  var cursor = _floorHour(value);
+  if (normalized.isEmpty) return cursor;
+
+  // Daily intervals repeat, so looking through one complete day is enough to
+  // prove that there is (or is not) an assignable hourly column.
+  for (var checked = 0; checked < 24; checked++) {
+    if (!_isHourColumnBlockedByNormalized(cursor, normalized)) return cursor;
+    cursor = cursor.add(Duration(hours: forward ? 1 : -1));
+  }
+  return null;
+}
+
+/// Shifts [from] by [activeSteps] assignable hourly columns.
+///
+/// Blocked columns are skipped and do not consume a step. [from] itself is
+/// first snapped in the direction of travel. A zero shift therefore still
+/// returns an assignable column.
+DateTime? ganttShiftActiveHours({
+  required DateTime from,
+  required int activeSteps,
+  required Iterable<GanttBlockedInterval> blocked,
+}) {
+  final normalized = normalizeGanttBlockedIntervals(blocked);
+  final forward = activeSteps >= 0;
+  final snapped = ganttSnapToActiveHour(
+    value: from,
+    blocked: normalized,
+    forward: forward,
+  );
+  if (snapped == null) return null;
+  var cursor = snapped;
+
+  var remaining = activeSteps.abs();
+  while (remaining > 0) {
+    cursor = cursor.add(Duration(hours: forward ? 1 : -1));
+    if (!_isHourColumnBlockedByNormalized(cursor, normalized)) {
+      remaining--;
+    }
+  }
+  return cursor;
+}
+
+/// Returns every assignable hourly column in the inclusive [start]–[end]
+/// range. This is useful for splitting and normalising tasks without counting
+/// non-working time as task duration.
+List<DateTime> ganttActiveHoursInRange({
+  required DateTime start,
+  required DateTime end,
+  required Iterable<GanttBlockedInterval> blocked,
+}) {
+  var cursor = _floorHour(start);
+  final last = _floorHour(end);
+  if (last.isBefore(cursor)) return const <DateTime>[];
+
+  final normalized = normalizeGanttBlockedIntervals(blocked);
+  final result = <DateTime>[];
+  var guard = 0;
+  while (!cursor.isAfter(last) && guard++ < 50000) {
+    if (!_isHourColumnBlockedByNormalized(cursor, normalized)) {
+      result.add(cursor);
+    }
+    cursor = cursor.add(const Duration(hours: 1));
+  }
+  return List<DateTime>.unmodifiable(result);
+}
+
 const int _minutesPerDay = 24 * 60;
 
 class _MinuteRange {

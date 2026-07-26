@@ -19,6 +19,7 @@ import '../services/billing_service.dart';
 import '../services/home_shortcut_service.dart';
 import '../services/ic_card_reader.dart';
 import '../utils/gantt_time_utils.dart';
+import '../utils/embedded_oauth_guard.dart';
 // メッセージ機能 (messaging_dialog.dart) はユーザー要望で廃止したため import 削除。
 import '../widgets/connection_painter.dart';
 import '../widgets/node_widget.dart';
@@ -251,6 +252,40 @@ String? decodeQrFromImageBytes(Uint8List bytes) {
     // NotFoundException / FormatException 等 = QR 未検出。
     return null;
   }
+}
+
+/// WebView 内の AI サイトへ、選択画像を個別の File として注入するための
+/// 転送データを作る。重いファイル読み込みと base64 化は [compute] で行う。
+List<Map<String, String>> _readAiImagePayloads(List<String> paths) {
+  const mimeByExt = <String, String>{
+    'png': 'image/png',
+    'jpg': 'image/jpeg',
+    'jpeg': 'image/jpeg',
+    'gif': 'image/gif',
+    'webp': 'image/webp',
+    'bmp': 'image/bmp',
+    'heic': 'image/heic',
+    'heif': 'image/heif',
+  };
+  final result = <Map<String, String>>[];
+  for (final path in paths) {
+    try {
+      final file = File(path);
+      if (!file.existsSync()) continue;
+      final dot = path.lastIndexOf('.');
+      final ext = dot >= 0 ? path.substring(dot + 1).toLowerCase() : '';
+      final mime = mimeByExt[ext];
+      if (mime == null) continue;
+      final bytes = file.readAsBytesSync();
+      if (bytes.isEmpty) continue;
+      result.add(<String, String>{
+        'name': path.split(RegExp(r'[/\\]')).last,
+        'mime': mime,
+        'base64': base64Encode(bytes),
+      });
+    } catch (_) {}
+  }
+  return result;
 }
 
 const String _mapBackgroundTemplatePrefix = 'builtin-map-background:';
@@ -1385,6 +1420,9 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// マップ上のスクロールバーのうち、現在マウスが乗っている軸。
   /// 横バー上では通常の上下ホイール入力を横移動へ読み替える。
   Axis? _activeMapScrollbarAxis;
+  bool _mapScrollbarsVisible = false;
+  bool _mapScrollbarShowPending = false;
+  Timer? _mapScrollbarHideTimer;
 
   // 中央表示の基準ノードID
   String? _centerTargetNodeId;
@@ -1424,17 +1462,6 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   // モバイル用ヘッダーカスタムボタン段の開閉。
   bool _mobileHeaderCustomOpen = false;
-
-  /// 下部ツールバーを SnackBar と被らないように一時的に上方向に持ち上げるか。
-  /// AI 処理中など長時間表示される SnackBar を出すときに true にし、
-  /// SnackBar の終了後 false に戻す。`_buildBottomToolBar` 内で
-  /// `AnimatedPositioned` の bottom 値を切り替えて使う。
-  /// (旧) この State の `_bottomBarLifted` は廃止し、`MindMapProvider`
-  /// 側の `bottomBarLifted` で管理する形に変更した。これにより
-  /// グローバルな `_appSnack` ヘルパからどの State にいても下バーを
-  /// 持ち上げ/戻しできる。互換のためフィールドだけ残す (使われない)。
-  // ignore: unused_field
-  bool _bottomBarLifted = false;
 
   /// 設定シート (歯車/Space キーで開くダイアログ) が開いているかどうか。
   /// Space キーで 2 回目押した時に閉じるためのトグル判定に使う。
@@ -1946,7 +1973,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     final rightOfficeName = _splitOfficeFileName;
 
     if (!leftOpen && !rightOpen) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      _appSnack(context, SnackBar(
         content: Text(context.read<MindMapProvider>().t('split.noPanelToSwap')),
         duration: Duration(seconds: 2),
         backgroundColor: Color(0xFFFFA726),
@@ -3390,6 +3417,34 @@ class _MindMapScreenState extends State<MindMapScreen>
         return true;
       }
     }
+    // F2はFocusベースのKeyboardListenerだけに任せると、アクションバーや
+    // 添付ビューアーがFocusを奪った後に届かない。マップが最前面で、
+    // テキスト入力中でない時はグローバルハンドラから直接編集を開始する。
+    if (_isDesktop &&
+        event is KeyDownEvent &&
+        event.logicalKey == LogicalKeyboardKey.f2 &&
+        _shortcutCommandMatches('editTitle', 'F2') &&
+        !HardwareKeyboard.instance.isControlPressed &&
+        !HardwareKeyboard.instance.isMetaPressed &&
+        !HardwareKeyboard.instance.isShiftPressed &&
+        !HardwareKeyboard.instance.isAltPressed) {
+      final route = ModalRoute.of(context);
+      if (_focusLockOverlay != null ||
+          _splitPanelHover ||
+          _splitLeftPanelHover ||
+          route == null ||
+          !route.isCurrent ||
+          _primaryFocusOwnsEmbeddedF2() ||
+          _isPrimaryEditableTextFocused()) {
+        return false;
+      }
+      final provider = context.read<MindMapProvider>();
+      final id = _nodeIdForDirectEdit(provider);
+      final node = id == null ? null : provider.nodes[id];
+      if (node == null) return false;
+      _startInlineTitleEdit(context, node);
+      return true;
+    }
     // ── F6: 分割パネル(左右)の中身を入れ替え (= ユーザー要望) ──
     // マップが最前面の時だけ処理する。PDF ビューア等が前面にあるときは
     // false を返して消費せず、そちら側の F6 ハンドラに委ねる。
@@ -3477,6 +3532,40 @@ class _MindMapScreenState extends State<MindMapScreen>
     final widget = ctx.widget;
     if (widget is EditableText) return true;
     return ctx.findAncestorWidgetOfExactType<EditableText>() != null;
+  }
+
+  bool _primaryFocusOwnsEmbeddedF2() {
+    final focusContext = FocusManager.instance.primaryFocus?.context;
+    if (focusContext == null) return false;
+    return focusContext
+                .findAncestorStateOfType<_SpreadsheetEditorDialogState>() !=
+            null ||
+        focusContext.findAncestorStateOfType<_DocxViewerDialogState>() != null ||
+        focusContext.findAncestorStateOfType<_PptxViewerDialogState>() != null ||
+        focusContext.findAncestorStateOfType<_PdfMemoPanelState>() != null;
+  }
+
+  String? _nodeIdForDirectEdit(MindMapProvider provider) {
+    if (_selectedConnections.isNotEmpty ||
+        _selectedDecorationId != null ||
+        _rangeSelectedDecorationIds.isNotEmpty) {
+      return null;
+    }
+    final actionId = _actionNodeId;
+    if (actionId != null && provider.nodes.containsKey(actionId)) {
+      return actionId;
+    }
+    if (_rangeSelectedIds.isNotEmpty) {
+      if (_rangeSelectedIds.length != 1) return null;
+      final rangeId = _rangeSelectedIds.first;
+      if (provider.nodes.containsKey(rangeId)) return rangeId;
+      return null;
+    }
+    final selectedId = provider.selectedNodeId;
+    if (selectedId != null && provider.nodes.containsKey(selectedId)) {
+      return selectedId;
+    }
+    return null;
   }
 
   /// Repeats held arrow-key movement after the initial delay.
@@ -4576,6 +4665,7 @@ class _MindMapScreenState extends State<MindMapScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _edgeScrollTimer?.cancel();
+    _mapScrollbarHideTimer?.cancel();
     _lockToastTimer?.cancel();
     _cutFadeTimer?.cancel();
     _eventNotifyTimer?.cancel();
@@ -4842,6 +4932,13 @@ class _MindMapScreenState extends State<MindMapScreen>
       _lastMatrix = ctrl.value.clone();
       return;
     }
+    final previousTranslation = _lastMatrix!.getTranslation();
+    final currentTranslation = ctrl.value.getTranslation();
+    if ((previousTranslation.x - currentTranslation.x).abs() > 0.1 ||
+        (previousTranslation.y - currentTranslation.y).abs() > 0.1) {
+      _markMapScrollActivity();
+    }
+
     // ギャラリー (本棚) のパンを内容範囲に制限 (= ユーザー要望)。
     _clampBookshelfPan(ctrl);
     if (!_lockH && !_lockV && !_lockScale) {
@@ -7559,7 +7656,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                   final label = labelCtrl.text.trim();
                   final url = urlCtrl.text.trim();
                   if (label.isEmpty || url.isEmpty) {
-                    ScaffoldMessenger.maybeOf(sctx)?.showSnackBar(SnackBar(
+                    _appSnack(sctx, SnackBar(
                       backgroundColor: const Color(0xFFE57373),
                       duration: const Duration(seconds: 2),
                       content: Text(label.isEmpty
@@ -7800,7 +7897,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     final b = _bookmarkButtonsCache[id];
     if (b == null) {
       if (!mounted) return;
-      ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(SnackBar(
+      _appSnack(ctx, SnackBar(
         backgroundColor: const Color(0xFFE57373),
         duration: const Duration(seconds: 2),
         content: Text(provider.t('fav.notFound')),
@@ -7899,7 +7996,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                   Navigator.of(sheetCtx).pop();
                   await _removeBookmarkButton(id);
                   if (!mounted) return;
-                  ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+                  _appSnack(context, SnackBar(
                     backgroundColor: const Color(0xFF607D8B),
                     duration: const Duration(seconds: 2),
                     content: Text(provider
@@ -8262,7 +8359,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         }
       } catch (_) {}
       if (mounted) {
-        ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+        _appSnack(context, SnackBar(
           backgroundColor: const Color(0xFF43B97F),
           duration: const Duration(seconds: 3),
           content: Text(
@@ -8330,7 +8427,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       msg = 'スロット $slotId を ${places.join(' / ')} から取り除きました';
       bg = const Color(0xFF43B97F);
     }
-    ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+    _appSnack(context, SnackBar(
       backgroundColor: bg,
       duration: const Duration(seconds: 3),
       content: Text(msg),
@@ -8473,7 +8570,7 @@ class _MindMapScreenState extends State<MindMapScreen>
   void _showSlotEmptyHint(
       BuildContext ctx, MindMapProvider provider, int slotIdx) {
     if (!mounted) return;
-    ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(SnackBar(
+    _appSnack(ctx, SnackBar(
       backgroundColor: const Color(0xFF1A1A2E),
       duration: const Duration(seconds: 4),
       content: Row(children: [
@@ -10294,7 +10391,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     } catch (e) {
       debugPrint('getDirectoryPath 失敗: $e');
       if (mounted) {
-        ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(SnackBar(
+        _appSnack(ctx, SnackBar(
           backgroundColor: const Color(0xFFE57373),
           content: Text(provider
               .t('quiz.folderSelectFailed')
@@ -10307,7 +10404,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     final root = Directory(dirPath);
     if (!root.existsSync()) {
       if (mounted) {
-        ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(SnackBar(
+        _appSnack(ctx, SnackBar(
           backgroundColor: const Color(0xFFE57373),
           content: Text(provider.t('quiz.folderNotFound')),
         ));
@@ -10586,7 +10683,7 @@ class _MindMapScreenState extends State<MindMapScreen>
 
     if (mounted) {
       Navigator.of(ctx, rootNavigator: true).pop(); // プログレス閉じ
-      ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(SnackBar(
+      _appSnack(ctx, SnackBar(
         backgroundColor: const Color(0xFF43B97F),
         duration: const Duration(seconds: 3),
         content: Text(
@@ -12331,7 +12428,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     messenger.hideCurrentSnackBar();
     _pendingAutofillSuggestions = suggestions;
     _pendingAutofillShownAt = DateTime.now();
-    final controller = messenger.showSnackBar(
+    final controller = _appSnackM(
+      messenger,
       SnackBar(
         backgroundColor: const Color(0xFF1E1E32),
         duration: const Duration(seconds: 6),
@@ -12353,7 +12451,8 @@ class _MindMapScreenState extends State<MindMapScreen>
           onPressed: _applyPendingAutofill,
         ),
       ),
-    );
+      processing: true,
+    )!;
     controller.closed.then((_) {
       if (mounted) {
         _pendingAutofillSuggestions = null;
@@ -12451,7 +12550,8 @@ class _MindMapScreenState extends State<MindMapScreen>
             return KeyEventResult.handled;
           }
           if (event is KeyDownEvent &&
-              event.logicalKey == LogicalKeyboardKey.f2) {
+              event.logicalKey == LogicalKeyboardKey.f2 &&
+              _shortcutCommandMatches('editTitle', 'F2')) {
             final latestProvider = context.read<MindMapProvider>();
             final latestNode = latestProvider.nodes[nodeId];
             if (latestNode != null) {
@@ -17604,21 +17704,10 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// アプリ内 WebView では OAuth ポップアップが動かないサイトかどうか。
   ///
-  /// 旧仕様: claude.ai も外部ブラウザに転送していたが、 ユーザー要望
-  ///   「Claude 以外全てアプリ内でログインできるけど、 Claude は外部
-  ///   ブラウザ開かないといけないの？ アプリ内で完結できるなら完結できる
-  ///   ようにして」 を受けて claude.ai はリストから除外。 既存の
-  ///   `_SplitWindowsWebView` の window.open パッチ + InAppWebView の
-  ///   `setSupportMultipleWindows: false` でアプリ内 navigation に
-  ///   フォールバックさせる方針。
-  /// 完全に動かないケース (= accounts.google.com 直接アクセス等) のみ
-  /// 外部ブラウザに送る。
+  /// Google などはセキュリティ上、埋め込みブラウザでのログインを拒否する。
+  /// URL の部分一致は偽装ホストも拾うため、共有ヘルパーで host を厳密比較する。
   bool _isOAuthBlockedUrl(String url) {
-    final lower = url.toLowerCase();
-    return lower.contains('accounts.google.com') ||
-        lower.contains('accounts.youtube.com') ||
-        lower.contains('login.microsoftonline.com') ||
-        lower.contains('appleid.apple.com');
+    return isBlockedEmbeddedOAuthUrl(url);
   }
 
   Future<void> _launchUrl(String url, {String? nodeId}) async {
@@ -17719,7 +17808,8 @@ class _MindMapScreenState extends State<MindMapScreen>
   Future<void> _showInAppViewer(BuildContext ctx, String urlOrPath,
       {bool isLocalFile = false,
       String? nodeId,
-      double initialRate = 1.0}) async {
+      double initialRate = 1.0,
+      bool? useRootNavigator}) async {
     // 表示用 URL を組み立てる。 ローカルパスは file:// に変換。
     String displayUrl = urlOrPath;
     if (isLocalFile) {
@@ -17777,6 +17867,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           final mb = (len / 1024 / 1024).toStringAsFixed(0);
           final choice = await showDialog<String>(
             context: ctx,
+            useRootNavigator: useRootNavigator ?? true,
             builder: (dctx) => AlertDialog(
               backgroundColor: const Color(0xFF1E1E32),
               title: Text(context.read<MindMapProvider>().t('pdf.largeTitle'),
@@ -17824,6 +17915,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (_isDesktop) {
       await showDialog<void>(
         context: ctx,
+        useRootNavigator: useRootNavigator ?? true,
         barrierColor: Colors.black.withValues(alpha: 0.92),
         // ── フルスクリーン Dialog ──
         // 通常の Dialog は IntrinsicWidth/SafeArea でラップされて中央に
@@ -17876,7 +17968,8 @@ class _MindMapScreenState extends State<MindMapScreen>
         },
       );
     } else {
-      await Navigator.of(ctx).push<void>(MaterialPageRoute<void>(
+      await Navigator.of(ctx, rootNavigator: useRootNavigator ?? false)
+          .push<void>(MaterialPageRoute<void>(
         fullscreenDialog: true,
         builder: (_) => _InAppViewerPage(
           url: displayUrl,
@@ -17967,7 +18060,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         context: ctx,
         barrierColor: Colors.black54,
         barrierDismissible: true,
-        barrierLabel: 'メモ一覧',
+        barrierLabel: context.read<MindMapProvider>().t('menu.memoList'),
         transitionDuration: const Duration(milliseconds: 220),
         pageBuilder: (_, __, ___) {
           return Align(
@@ -21126,6 +21219,7 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   void _showMapBackgroundDialog(
       BuildContext ctx, MindMapProvider provider) async {
+    var applyToAllPages = false;
     showDialog<void>(
       context: ctx,
       builder: (dctx) {
@@ -21136,9 +21230,19 @@ class _MindMapScreenState extends State<MindMapScreen>
           final templateId = _mapBackgroundTemplateId(backgroundPath);
           final opacity = page.backgroundOpacityPercent.clamp(0, 100);
           final fit = page.backgroundFit;
+          final hue = page.backgroundHueDegrees.clamp(-180, 180).toInt();
+          final saturation =
+              page.backgroundSaturationPercent.clamp(0, 200).toInt();
+          final brightness =
+              page.backgroundBrightnessPercent.clamp(50, 150).toInt();
           Widget preview;
           if (templateId != null) {
-            preview = _MapBackgroundTemplateView(templateId: templateId);
+            preview = _MapBackgroundTemplateView(
+              templateId: templateId,
+              hueDegrees: hue,
+              saturationPercent: saturation,
+              brightnessPercent: brightness,
+            );
           } else if (hasBg && File(backgroundPath).existsSync()) {
             preview = Image.file(
               File(backgroundPath),
@@ -21192,6 +21296,32 @@ class _MindMapScreenState extends State<MindMapScreen>
                           : preview,
                     ),
                     const SizedBox(height: 14),
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      dense: true,
+                      controlAffinity: ListTileControlAffinity.leading,
+                      activeColor: const Color(0xFF6C63FF),
+                      value: applyToAllPages,
+                      title: Text(
+                        provider.t('bg.applyAllPages'),
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 13),
+                      ),
+                      subtitle: Text(
+                        provider.t('bg.applyAllPagesHint'),
+                        style: const TextStyle(
+                            color: Colors.white54, fontSize: 11),
+                      ),
+                      onChanged: (value) async {
+                        final enabled = value ?? false;
+                        setD(() => applyToAllPages = enabled);
+                        if (enabled) {
+                          await provider.applyPageBackgroundToAll(page.id);
+                          if (sctx.mounted) setD(() {});
+                        }
+                      },
+                    ),
+                    const SizedBox(height: 8),
                     Text(provider.t('bg.templates'),
                         style: const TextStyle(
                             color: Colors.white70, fontSize: 13)),
@@ -21212,10 +21342,12 @@ class _MindMapScreenState extends State<MindMapScreen>
                               onTap: () async {
                                 if (selected) return;
                                 await provider.setPageBackgroundImage(page.id,
-                                    _mapBackgroundTemplatePath(template.id));
+                                    _mapBackgroundTemplatePath(template.id),
+                                    applyToAll: applyToAllPages);
                                 if (page.backgroundFit != 'cover') {
                                   await provider.setPageBackgroundFit(
-                                      page.id, 'cover');
+                                      page.id, 'cover',
+                                      applyToAll: applyToAllPages);
                                 }
                                 setD(() {});
                               },
@@ -21234,7 +21366,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   fit: StackFit.expand,
                                   children: [
                                     _MapBackgroundTemplateView(
-                                        templateId: template.id),
+                                      templateId: template.id,
+                                      hueDegrees: hue,
+                                      saturationPercent: saturation,
+                                      brightnessPercent: brightness,
+                                    ),
                                     Align(
                                       alignment: Alignment.bottomCenter,
                                       child: Container(
@@ -21320,7 +21456,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 return;
                               }
                               await provider.setPageBackgroundImage(
-                                  page.id, destPath);
+                                page.id,
+                                destPath,
+                                applyToAll: applyToAllPages,
+                              );
                               setD(() {});
                             },
                           ),
@@ -21337,7 +21476,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                             label: Text(provider.t('bg.clear')),
                             onPressed: () async {
                               await provider.setPageBackgroundImage(
-                                  page.id, null);
+                                page.id,
+                                null,
+                                applyToAll: applyToAllPages,
+                              );
                               setD(() {});
                             },
                           ),
@@ -21369,10 +21511,119 @@ class _MindMapScreenState extends State<MindMapScreen>
                           ? null
                           : (v) async {
                               await provider.setPageBackgroundOpacity(
-                                  page.id, v.round());
+                                page.id,
+                                v.round(),
+                                applyToAll: applyToAllPages,
+                              );
                               setD(() {});
                             },
                     ),
+                    if (templateId != null) ...[
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          const Icon(Icons.palette_outlined,
+                              color: Colors.white54, size: 18),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              provider.t('bg.colorTone'),
+                              style: const TextStyle(
+                                  color: Colors.white70, fontSize: 13),
+                            ),
+                          ),
+                          TextButton(
+                            onPressed:
+                                hue == 0 && saturation == 100 && brightness == 100
+                                    ? null
+                                    : () async {
+                                        await provider.setPageBackgroundTone(
+                                          page.id,
+                                          hueDegrees: 0,
+                                          saturationPercent: 100,
+                                          brightnessPercent: 100,
+                                          applyToAll: applyToAllPages,
+                                        );
+                                        if (sctx.mounted) setD(() {});
+                                      },
+                            child: Text(provider.t('bg.resetTone')),
+                          ),
+                        ],
+                      ),
+                      Text(
+                        provider.t('bg.hue').replaceFirst('{n}', '$hue'),
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 12),
+                      ),
+                      Slider(
+                        value: hue.toDouble(),
+                        min: -180,
+                        max: 180,
+                        divisions: 360,
+                        activeColor: const Color(0xFF6C63FF),
+                        label: '$hue°',
+                        onChanged: (value) async {
+                          await provider.setPageBackgroundTone(
+                            page.id,
+                            hueDegrees: value.round(),
+                            saturationPercent: saturation,
+                            brightnessPercent: brightness,
+                            applyToAll: applyToAllPages,
+                          );
+                          if (sctx.mounted) setD(() {});
+                        },
+                      ),
+                      Text(
+                        provider
+                            .t('bg.saturation')
+                            .replaceFirst('{n}', '$saturation'),
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 12),
+                      ),
+                      Slider(
+                        value: saturation.toDouble(),
+                        min: 0,
+                        max: 200,
+                        divisions: 200,
+                        activeColor: const Color(0xFF6C63FF),
+                        label: '$saturation%',
+                        onChanged: (value) async {
+                          await provider.setPageBackgroundTone(
+                            page.id,
+                            hueDegrees: hue,
+                            saturationPercent: value.round(),
+                            brightnessPercent: brightness,
+                            applyToAll: applyToAllPages,
+                          );
+                          if (sctx.mounted) setD(() {});
+                        },
+                      ),
+                      Text(
+                        provider
+                            .t('bg.brightness')
+                            .replaceFirst('{n}', '$brightness'),
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 12),
+                      ),
+                      Slider(
+                        value: brightness.toDouble(),
+                        min: 50,
+                        max: 150,
+                        divisions: 100,
+                        activeColor: const Color(0xFF6C63FF),
+                        label: '$brightness%',
+                        onChanged: (value) async {
+                          await provider.setPageBackgroundTone(
+                            page.id,
+                            hueDegrees: hue,
+                            saturationPercent: saturation,
+                            brightnessPercent: value.round(),
+                            applyToAll: applyToAllPages,
+                          );
+                          if (sctx.mounted) setD(() {});
+                        },
+                      ),
+                    ],
                     if (templateId == null) ...[
                       const SizedBox(height: 4),
                       // ── 表示モード ──
@@ -21397,7 +21648,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   : (sel) async {
                                       if (!sel) return;
                                       await provider.setPageBackgroundFit(
-                                          page.id, mode.$1);
+                                        page.id,
+                                        mode.$1,
+                                        applyToAll: applyToAllPages,
+                                      );
                                       setD(() {});
                                     },
                               // ── 暗背景でも白飛びしないよう、 マテリアル
@@ -22030,7 +22284,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (result == null || result == Duration.zero) return;
     _scheduleNodeNotification(node, result);
     if (mounted) {
-      ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+      _appSnack(context, SnackBar(
         backgroundColor: const Color(0xFF1A1A2E),
         content: Row(children: [
           const Icon(Icons.alarm_on_rounded,
@@ -22263,7 +22517,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (diff.isNegative || diff.inSeconds < 5) {
       // 過去 or 直近過ぎる場合は警告
       if (ctx.mounted) {
-        ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(SnackBar(
+        _appSnack(ctx, SnackBar(
           backgroundColor: Colors.redAccent,
           content: Text('${provider.t('notif.pastDateTime')}'
               '${scheduled.year}/${scheduled.month}/${scheduled.day} '
@@ -22721,7 +22975,12 @@ class _MindMapScreenState extends State<MindMapScreen>
     final targetMonth = item.cycle == 'yearly' ? item.billingMonth : month;
     final lastDay = DateTime(year, targetMonth + 1, 0).day;
     return DateTime(
-        year, targetMonth, item.billingDay.clamp(1, lastDay).toInt(), 9);
+      year,
+      targetMonth,
+      item.billingDay.clamp(1, lastDay).toInt(),
+      item.notifyHour,
+      item.notifyMinute,
+    );
   }
 
   DateTime _nextSubscriptionReminder(_ManagedSubscription item) {
@@ -22752,7 +23011,49 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   String _formatSubscriptionAmount(_ManagedSubscription item) {
     final decimals = item.amount == item.amount.roundToDouble() ? 0 : 2;
-    return '${item.currency}${item.amount.toStringAsFixed(decimals)}';
+    return '${item.currency}${_groupedNumber(item.amount, decimals)}';
+  }
+
+  /// 設定言語の慣習に合わせて 3 桁区切り + 小数点で数値を整形する
+  /// (= ユーザー要望: 桁数が多いと分かりにくいので 1,400 のような区切りを入れる)。
+  /// 区切り記号は言語ごとに一般的なものを選ぶ (英/日/韓/中= 1,400、独/西/伊/葡=
+  /// 1.400、仏/露= 1 400 等)。 intl 依存を増やさないよう手書きで整形する。
+  String _groupedNumber(double value, int decimals) {
+    final lang = context.read<MindMapProvider>().appLanguage;
+    // 「.」区切り + 「,」小数 (欧州の一部)。
+    const dotGroupCommaDecimal = {
+      'de', 'es', 'it', 'pt', 'nl', 'tr', 'el', 'ro', 'da', 'id'
+    };
+    // 「(半角スペース)」区切り + 「,」小数 (仏/露/北欧/東欧の一部)。
+    const spaceGroupCommaDecimal = {
+      'fr', 'ru', 'uk', 'pl', 'cs', 'hu', 'fi', 'sv', 'no'
+    };
+    String groupSep;
+    String decimalSep;
+    if (spaceGroupCommaDecimal.contains(lang)) {
+      groupSep = ' '; // ノーブレークスペース
+      decimalSep = ',';
+    } else if (dotGroupCommaDecimal.contains(lang)) {
+      groupSep = '.';
+      decimalSep = ',';
+    } else {
+      // 既定 (en/ja/ko/zh/... ): 「,」区切り + 「.」小数。
+      groupSep = ',';
+      decimalSep = '.';
+    }
+    final neg = value < 0;
+    final fixed = value.abs().toStringAsFixed(decimals);
+    final dotIdx = fixed.indexOf('.');
+    final intPart = dotIdx >= 0 ? fixed.substring(0, dotIdx) : fixed;
+    final fracPart = dotIdx >= 0 ? fixed.substring(dotIdx + 1) : '';
+    final buf = StringBuffer();
+    for (int i = 0; i < intPart.length; i++) {
+      if (i > 0 && (intPart.length - i) % 3 == 0) buf.write(groupSep);
+      buf.write(intPart[i]);
+    }
+    var out = buf.toString();
+    if (decimals > 0) out = '$out$decimalSep$fracPart';
+    return neg ? '-$out' : out;
   }
 
   void _cancelManagedSubscriptionNotification(_ManagedSubscription item) {
@@ -22770,12 +23071,13 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (!item.enabled) return;
     final fireAt = _nextSubscriptionReminder(item);
     final billingAt = fireAt.add(Duration(days: item.notifyDaysBefore));
+    final provider = context.read<MindMapProvider>();
     final timing = item.notifyDaysBefore == 0
-        ? '本日が支払日です'
-        : '${item.notifyDaysBefore}日後に支払い予定です';
+        ? provider.t('sub.dueToday')
+        : '${item.notifyDaysBefore}${provider.t('sub.dueInDays')}';
     _scheduleAbsoluteNotification(
       notifId: _subscriptionNotificationId(item.id),
-      title: 'サブスク: ${item.name}',
+      title: '${provider.t('sub.notifPrefix')}: ${item.name}',
       body:
           '$timing（${billingAt.month}/${billingAt.day}・${_formatSubscriptionAmount(item)}）',
       fireAt: fireAt,
@@ -22783,15 +23085,60 @@ class _MindMapScreenState extends State<MindMapScreen>
     );
   }
 
+  /// 設定言語に応じた既定の通貨記号 (= ユーザー要望: 通貨は設定言語の通貨が
+  /// デフォルトで入るように)。 手入力で上書きできる。
+  String _defaultCurrencyForLocale() {
+    final lang = context.read<MindMapProvider>().appLanguage;
+    const map = <String, String>{
+      'ja': '¥',
+      'en': '\$',
+      'zh': '¥',
+      'zh-TW': 'NT\$',
+      'ko': '₩',
+      'es': '€',
+      'fr': '€',
+      'de': '€',
+      'it': '€',
+      'nl': '€',
+      'pt': 'R\$',
+      'ru': '₽',
+      'pl': 'zł',
+      'tr': '₺',
+      'th': '฿',
+      'vi': '₫',
+      'id': 'Rp',
+      'hi': '₹',
+      'ar': 'ر.س',
+      'uk': '₴',
+      'sv': 'kr',
+      'no': 'kr',
+      'da': 'kr',
+      'fi': '€',
+      'cs': 'Kč',
+      'el': '€',
+      'he': '₪',
+      'ro': 'lei',
+      'hu': 'Ft',
+      'ms': 'RM',
+    };
+    return map[lang] ?? '\$';
+  }
+
   Future<_ManagedSubscription?> _showSubscriptionEditDialog(
       BuildContext dialogContext,
       {_ManagedSubscription? initial}) async {
+    final provider = context.read<MindMapProvider>();
     final nameCtrl = TextEditingController(text: initial?.name ?? '');
     final amountCtrl = TextEditingController(
         text: initial == null ? '' : initial.amount.toString());
-    final currencyCtrl = TextEditingController(text: initial?.currency ?? '¥');
+    final currencyCtrl = TextEditingController(
+        text: initial?.currency ?? _defaultCurrencyForLocale());
     final notifyCtrl =
         TextEditingController(text: '${initial?.notifyDaysBefore ?? 3}');
+    var notifyTime = TimeOfDay(
+      hour: initial?.notifyHour ?? 9,
+      minute: initial?.notifyMinute ?? 0,
+    );
     var cycle = initial?.cycle ?? 'monthly';
     var billingDay = initial?.billingDay ?? 1;
     var billingMonth = initial?.billingMonth ?? DateTime.now().month;
@@ -22803,7 +23150,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       builder: (editContext) => StatefulBuilder(
         builder: (editContext, setEdit) => AlertDialog(
           backgroundColor: const Color(0xFF1E1E32),
-          title: Text(initial == null ? 'サブスクを追加' : 'サブスクを編集',
+          title: Text(
+              initial == null
+                  ? provider.t('sub.addTitle')
+                  : provider.t('sub.editTitle'),
               style: const TextStyle(color: Colors.white, fontSize: 17)),
           content: SizedBox(
             width: 420,
@@ -22813,7 +23163,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                   controller: nameCtrl,
                   autofocus: true,
                   style: const TextStyle(color: Colors.white),
-                  decoration: _fcInputDeco('サービス名'),
+                  decoration: _fcInputDeco(provider.t('sub.serviceName')),
                 ),
                 const SizedBox(height: 10),
                 Row(children: [
@@ -22822,7 +23172,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                     child: TextField(
                       controller: currencyCtrl,
                       style: const TextStyle(color: Colors.white),
-                      decoration: _fcInputDeco('通貨'),
+                      decoration: _fcInputDeco(provider.t('sub.currency')),
                     ),
                   ),
                   const SizedBox(width: 8),
@@ -22832,7 +23182,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                       keyboardType:
                           const TextInputType.numberWithOptions(decimal: true),
                       style: const TextStyle(color: Colors.white),
-                      decoration: _fcInputDeco('料金'),
+                      decoration: _fcInputDeco(provider.t('sub.amount')),
                     ),
                   ),
                 ]),
@@ -22847,9 +23197,13 @@ class _MindMapScreenState extends State<MindMapScreen>
                     side: const BorderSide(color: Colors.white24),
                   ),
                   showSelectedIcon: false,
-                  segments: const [
-                    ButtonSegment(value: 'monthly', label: Text('月単位')),
-                    ButtonSegment(value: 'yearly', label: Text('年単位')),
+                  segments: [
+                    ButtonSegment(
+                        value: 'monthly',
+                        label: Text(provider.t('sub.monthly'))),
+                    ButtonSegment(
+                        value: 'yearly',
+                        label: Text(provider.t('sub.yearly'))),
                   ],
                   selected: {cycle},
                   onSelectionChanged: (value) =>
@@ -22863,11 +23217,13 @@ class _MindMapScreenState extends State<MindMapScreen>
                         value: billingMonth,
                         dropdownColor: const Color(0xFF2A2A3E),
                         style: const TextStyle(color: Colors.white),
-                        decoration: _fcInputDeco('支払月'),
+                        decoration: _fcInputDeco(provider.t('sub.billingMonth')),
                         items: [
                           for (int month = 1; month <= 12; month++)
                             DropdownMenuItem(
-                                value: month, child: Text('$month月')),
+                                value: month,
+                                child: Text(
+                                    '$month${provider.t('sub.monthSuffix')}')),
                         ],
                         onChanged: (value) =>
                             setEdit(() => billingMonth = value ?? billingMonth),
@@ -22880,10 +23236,12 @@ class _MindMapScreenState extends State<MindMapScreen>
                       value: billingDay,
                       dropdownColor: const Color(0xFF2A2A3E),
                       style: const TextStyle(color: Colors.white),
-                      decoration: _fcInputDeco('支払日'),
+                      decoration: _fcInputDeco(provider.t('sub.billingDay')),
                       items: [
                         for (int day = 1; day <= 31; day++)
-                          DropdownMenuItem(value: day, child: Text('$day日')),
+                          DropdownMenuItem(
+                              value: day,
+                              child: Text('$day${provider.t('sub.daySuffix')}')),
                       ],
                       onChanged: (value) =>
                           setEdit(() => billingDay = value ?? billingDay),
@@ -22895,13 +23253,43 @@ class _MindMapScreenState extends State<MindMapScreen>
                   controller: notifyCtrl,
                   keyboardType: TextInputType.number,
                   style: const TextStyle(color: Colors.white),
-                  decoration: _fcInputDeco('何日前に通知するか（0 = 当日）'),
+                  decoration: _fcInputDeco(provider.t('sub.notifyDaysLabel')),
+                ),
+                const SizedBox(height: 10),
+                InkWell(
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: () async {
+                    final picked = await showTimePicker(
+                      context: editContext,
+                      initialTime: notifyTime,
+                      helpText: provider.t('sub.notifyTimeLabel'),
+                    );
+                    if (picked != null && editContext.mounted) {
+                      setEdit(() => notifyTime = picked);
+                    }
+                  },
+                  child: InputDecorator(
+                    decoration:
+                        _fcInputDeco(provider.t('sub.notifyTimeLabel')),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          MaterialLocalizations.of(editContext)
+                              .formatTimeOfDay(notifyTime),
+                          style: const TextStyle(color: Colors.white),
+                        ),
+                        const Icon(Icons.schedule_rounded,
+                            color: Colors.white54, size: 20),
+                      ],
+                    ),
+                  ),
                 ),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
                   activeColor: const Color(0xFF26A69A),
-                  title: const Text('通知を有効にする',
-                      style: TextStyle(color: Colors.white, fontSize: 13)),
+                  title: Text(provider.t('sub.enableNotify'),
+                      style: const TextStyle(color: Colors.white, fontSize: 13)),
                   value: enabled,
                   onChanged: (value) => setEdit(() => enabled = value),
                 ),
@@ -22918,7 +23306,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(editContext),
-              child: const Text('キャンセル'),
+              child: Text(provider.t('btn.cancel')),
             ),
             FilledButton(
               onPressed: () {
@@ -22930,7 +23318,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                     notify == null ||
                     notify < 0 ||
                     notify > 365) {
-                  setEdit(() => error = 'サービス名・料金・通知日数を確認してください');
+                  setEdit(() => error = provider.t('sub.validationError'));
                   return;
                 }
                 Navigator.pop(
@@ -22941,17 +23329,19 @@ class _MindMapScreenState extends State<MindMapScreen>
                     name: nameCtrl.text.trim(),
                     amount: amount,
                     currency: currencyCtrl.text.trim().isEmpty
-                        ? '¥'
+                        ? _defaultCurrencyForLocale()
                         : currencyCtrl.text.trim(),
                     cycle: cycle,
                     billingDay: billingDay,
                     billingMonth: billingMonth,
                     notifyDaysBefore: notify,
+                    notifyHour: notifyTime.hour,
+                    notifyMinute: notifyTime.minute,
                     enabled: enabled,
                   ),
                 );
               },
-              child: const Text('保存'),
+              child: Text(provider.t('btn.save')),
             ),
           ],
         ),
@@ -22974,23 +23364,26 @@ class _MindMapScreenState extends State<MindMapScreen>
         ifAbsent: () => item.cycle == 'yearly' ? item.amount / 12 : item.amount,
       );
     }
-    if (monthlyByCurrency.isEmpty) return '有効なサブスクはありません';
+    final provider = context.read<MindMapProvider>();
+    if (monthlyByCurrency.isEmpty) return provider.t('sub.noneActive');
     return monthlyByCurrency.entries.map((entry) {
       final monthly = entry.value;
-      return '${entry.key}${monthly.toStringAsFixed(0)}/月・${entry.key}${(monthly * 12).toStringAsFixed(0)}/年';
+      return '${entry.key}${_groupedNumber(monthly, 0)}/${provider.t('sub.perMonth')}・${entry.key}${_groupedNumber(monthly * 12, 0)}/${provider.t('sub.perYear')}';
     }).join('  ');
   }
 
   void _showSubscriptionManagerDialog() {
+    final provider = context.read<MindMapProvider>();
     showDialog<void>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (dialogContext, setDialog) => AlertDialog(
           backgroundColor: const Color(0xFF1E1E32),
-          title: const Row(children: [
-            Icon(Icons.subscriptions_rounded, color: Color(0xFF26A69A)),
-            SizedBox(width: 8),
-            Text('サブスク管理', style: TextStyle(color: Colors.white, fontSize: 17)),
+          title: Row(children: [
+            const Icon(Icons.subscriptions_rounded, color: Color(0xFF26A69A)),
+            const SizedBox(width: 8),
+            Text(provider.t('sub.manageTitle'),
+                style: const TextStyle(color: Colors.white, fontSize: 17)),
           ]),
           content: SizedBox(
             width: 540,
@@ -23013,14 +23406,20 @@ class _MindMapScreenState extends State<MindMapScreen>
               const SizedBox(height: 8),
               Expanded(
                 child: _managedSubscriptions.isEmpty
-                    ? const Center(
-                        child: Text('登録したサブスクはありません',
-                            style: TextStyle(color: Colors.white38)))
+                    ? Center(
+                        child: Text(provider.t('sub.empty'),
+                            style: const TextStyle(color: Colors.white38)))
                     : ListView.builder(
                         itemCount: _managedSubscriptions.length,
                         itemBuilder: (_, index) {
                           final item = _managedSubscriptions[index];
                           final billing = _nextSubscriptionBilling(item);
+                          final notifyTime =
+                              MaterialLocalizations.of(dialogContext)
+                                  .formatTimeOfDay(TimeOfDay(
+                            hour: item.notifyHour,
+                            minute: item.notifyMinute,
+                          ));
                           return Card(
                             color: Colors.white.withValues(alpha: 0.045),
                             child: ListTile(
@@ -23063,9 +23462,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                                           : Colors.white38,
                                       fontWeight: FontWeight.w700)),
                               subtitle: Text(
-                                '${_formatSubscriptionAmount(item)} / ${item.cycle == 'yearly' ? '年' : '月'}'
-                                ' ・ 次回 ${billing.year}/${billing.month}/${billing.day}'
-                                ' ・ ${item.notifyDaysBefore == 0 ? '当日' : '${item.notifyDaysBefore}日前'}通知',
+                                '${_formatSubscriptionAmount(item)} / ${item.cycle == 'yearly' ? provider.t('sub.perYear') : provider.t('sub.perMonth')}'
+                                ' ・ ${provider.t('sub.next')} ${billing.year}/${billing.month}/${billing.day}'
+                                ' ・ ${item.notifyDaysBefore == 0 ? provider.t('sub.notifyOnDay') : '${item.notifyDaysBefore}${provider.t('sub.daysBeforeNotify')}'}'
+                                ' ($notifyTime)',
                                 style: const TextStyle(
                                     color: Colors.white54, fontSize: 11),
                               ),
@@ -23090,7 +23490,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('閉じる'),
+              child: Text(provider.t('btn.close')),
             ),
             FilledButton.icon(
               style: FilledButton.styleFrom(
@@ -23104,7 +23504,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                 setDialog(() {});
               },
               icon: const Icon(Icons.add_rounded),
-              label: const Text('追加'),
+              label: Text(provider.t('sub.add')),
             ),
           ],
         ),
@@ -23500,7 +23900,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       provider.updateNodeAttachment(nodeId, destPath, fileName);
 
       if (mounted) {
-        ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+        _appSnack(context, SnackBar(
           backgroundColor: const Color(0xFF1A1A2E),
           content: Row(children: [
             const Icon(Icons.check_circle_rounded,
@@ -23518,7 +23918,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     } catch (e, st) {
       debugPrint('ファイル作成エラー: $e\n$st');
       if (mounted) {
-        ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+        _appSnack(context, SnackBar(
           backgroundColor: Colors.redAccent,
           content:
               Text(provider.t('file.createFailed').replaceFirst('{err}', '$e')),
@@ -24043,6 +24443,14 @@ class _MindMapScreenState extends State<MindMapScreen>
     final ap = (n.attachmentPath ?? '').trim();
     if (ap.isEmpty) return null;
     if (ap.startsWith('http://') || ap.startsWith('https://')) return null;
+    final uri = Uri.tryParse(ap);
+    if (uri?.scheme.toLowerCase() == 'file') {
+      try {
+        return uri!.toFilePath();
+      } catch (_) {
+        return null;
+      }
+    }
     return ap;
   }
 
@@ -24057,6 +24465,199 @@ class _MindMapScreenState extends State<MindMapScreen>
         'heif',
         'bmp',
       }.contains(ext);
+
+  /// ローカルでそのまま UTF-8 テキストとして読める添付拡張子か。
+  bool _isTextLikeAttachmentExt(String ext) => const {
+        'txt',
+        'md',
+        'markdown',
+        'csv',
+        'tsv',
+        'json',
+        'log',
+        'dart',
+        'py',
+        'js',
+        'ts',
+        'java',
+        'kt',
+        'cpp',
+        'c',
+        'h',
+        'hpp',
+        'cs',
+        'go',
+        'rb',
+        'rs',
+        'swift',
+        'sh',
+        'yml',
+        'yaml',
+        'xml',
+        'html',
+        'htm',
+        'css',
+      }.contains(ext);
+
+  /// ノードに添付されたファイルからローカルで本文テキストを抽出する
+  /// (= ユーザー要望: API キーが無くても、 貼りついたファイルの中身をブラウザ版
+  /// AI に渡せるように)。 抽出できない/未対応の形式は null を返す。
+  Future<String?> _extractAttachmentTextForAi(String path, String ext) async {
+    const int kMaxChars = 12000;
+    String clip(String s) => s.length > kMaxChars
+        ? '${s.substring(0, kMaxChars)}\n... [truncated]'
+        : s;
+    try {
+      final file = File(path);
+      if (!await file.exists()) return null;
+      // ── プレーンテキスト系 ──
+      if (_isTextLikeAttachmentExt(ext)) {
+        String text;
+        try {
+          text = await file.readAsString();
+        } catch (_) {
+          // UTF-8 で読めない (Shift-JIS 等) → バイト列から復元。
+          text = String.fromCharCodes(await file.readAsBytes());
+        }
+        return clip(text.trim());
+      }
+      final bytes = await file.readAsBytes();
+      // ── PDF ──
+      if (ext == 'pdf') {
+        final doc = sfpdf.PdfDocument(inputBytes: bytes);
+        try {
+          return clip(sfpdf.PdfTextExtractor(doc).extractText().trim());
+        } finally {
+          doc.dispose();
+        }
+      }
+      // ── docx (Word) ──
+      if (ext == 'docx') {
+        return clip(_extractOoxmlText(bytes, 'word/document.xml'));
+      }
+      // ── pptx (PowerPoint): 全スライドのテキストを結合 ──
+      if (ext == 'pptx') {
+        final archive = ZipDecoder().decodeBytes(bytes);
+        final slides = archive.files
+            .where((f) =>
+                f.isFile &&
+                RegExp(r'ppt/slides/slide\d+\.xml$').hasMatch(f.name))
+            .toList()
+          ..sort((a, b) => a.name.compareTo(b.name));
+        final buf = StringBuffer();
+        for (final f in slides) {
+          buf.writeln(_stripXmlTags(
+              utf8.decode(f.content as List<int>, allowMalformed: true)));
+        }
+        return clip(buf.toString().trim());
+      }
+      // ── xlsx (Excel): 各シートのセルをタブ区切りで結合 ──
+      if (ext == 'xlsx') {
+        final excel = xls.Excel.decodeBytes(bytes);
+        final buf = StringBuffer();
+        for (final entry in excel.tables.entries) {
+          buf.writeln('[${entry.key}]');
+          for (final row in entry.value.rows) {
+            final cells = row.map((c) => _xlsxCellToPlain(c?.value)).toList();
+            if (cells.any((c) => c.trim().isNotEmpty)) {
+              buf.writeln(cells.join('\t'));
+            }
+          }
+        }
+        return clip(buf.toString().trim());
+      }
+    } catch (e) {
+      debugPrint('添付テキスト抽出失敗: $e');
+    }
+    return null;
+  }
+
+  /// xlsx セル値をプレーン文字列へ変換する (AI 添付抽出用の簡易版)。
+  String _xlsxCellToPlain(xls.CellValue? v) {
+    if (v == null) return '';
+    if (v is xls.TextCellValue) {
+      // excel 4.x の TextCellValue.value は独自 TextSpan 型 → dynamic で走査。
+      final buf = StringBuffer();
+      void walk(dynamic span) {
+        if (span == null) return;
+        try {
+          final t = span.text;
+          if (t is String) buf.write(t);
+        } catch (_) {}
+        try {
+          final children = span.children;
+          if (children is Iterable) {
+            for (final c in children) {
+              walk(c);
+            }
+          }
+        } catch (_) {}
+      }
+
+      walk(v.value);
+      final r = buf.toString();
+      return r.isEmpty ? v.value.toString() : r;
+    }
+    if (v is xls.IntCellValue) return v.value.toString();
+    if (v is xls.DoubleCellValue) {
+      final d = v.value;
+      return d == d.truncateToDouble() ? d.toInt().toString() : d.toString();
+    }
+    if (v is xls.BoolCellValue) return v.value ? 'TRUE' : 'FALSE';
+    if (v is xls.DateCellValue) {
+      return '${v.year.toString().padLeft(4, '0')}-'
+          '${v.month.toString().padLeft(2, '0')}-'
+          '${v.day.toString().padLeft(2, '0')}';
+    }
+    if (v is xls.DateTimeCellValue) {
+      return '${v.year.toString().padLeft(4, '0')}-'
+          '${v.month.toString().padLeft(2, '0')}-'
+          '${v.day.toString().padLeft(2, '0')} '
+          '${v.hour.toString().padLeft(2, '0')}:'
+          '${v.minute.toString().padLeft(2, '0')}';
+    }
+    if (v is xls.TimeCellValue) {
+      return '${v.hour.toString().padLeft(2, '0')}:'
+          '${v.minute.toString().padLeft(2, '0')}';
+    }
+    if (v is xls.FormulaCellValue) return '=${v.formula}';
+    return v.toString();
+  }
+
+  /// OOXML (docx) の指定 XML パートを取り出してプレーンテキスト化する。
+  String _extractOoxmlText(List<int> bytes, String partPath) {
+    try {
+      final archive = ZipDecoder().decodeBytes(bytes);
+      for (final f in archive.files) {
+        if (f.isFile && f.name == partPath) {
+          return _stripXmlTags(
+              utf8.decode(f.content as List<int>, allowMalformed: true));
+        }
+      }
+    } catch (_) {}
+    return '';
+  }
+
+  /// XML タグを除去して段落/改行を保ったプレーンテキストにする (docx/pptx 用)。
+  String _stripXmlTags(String xml) {
+    var s = xml;
+    // 段落・改行・タブを明示的な区切りへ。
+    s = s.replaceAll(RegExp(r'</w:p>|</a:p>'), '\n');
+    s = s.replaceAll(RegExp(r'<w:br\s*/?>|<a:br\s*/?>'), '\n');
+    s = s.replaceAll(RegExp(r'<w:tab\s*/?>|<a:tab\s*/?>'), '\t');
+    // 残りのタグを除去。
+    s = s.replaceAll(RegExp(r'<[^>]+>'), '');
+    // XML エンティティを復元。
+    s = s
+        .replaceAll('&amp;', '&')
+        .replaceAll('&lt;', '<')
+        .replaceAll('&gt;', '>')
+        .replaceAll('&quot;', '"')
+        .replaceAll('&apos;', "'");
+    // 連続する空行を圧縮。
+    s = s.replaceAll(RegExp(r'\n{3,}'), '\n\n');
+    return s.trim();
+  }
 
   /// ローカル画像をシステムのクリップボードへ書き込む (= ユーザー要望: API キーが
   /// 無い時はブラウザ版 AI に貼り付けられるよう画像をコピーする)。 成功で true。
@@ -24097,7 +24698,89 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
   }
 
-  void _openBrowserAiForNode(String nodeId) {
+  Future<int> _copyImageFilesToClipboard(
+    Iterable<String> paths, {
+    String? fallbackText,
+  }) async {
+    try {
+      final clipboard = SystemClipboard.instance;
+      if (clipboard == null) return 0;
+      final seen = <String>{};
+      final validPaths = <String>[];
+      for (final rawPath in paths) {
+        final file = File(rawPath).absolute;
+        final path = file.path;
+        if (!seen.add(path) || !await file.exists()) continue;
+        final dot = path.lastIndexOf('.');
+        final ext = dot >= 0 ? path.substring(dot + 1).toLowerCase() : '';
+        if (!_isAiImageExt(ext)) continue;
+        validPaths.add(path);
+      }
+      if (validPaths.isEmpty) return 0;
+
+      // Windowsでは標準画像表現が先頭providerから採用されるため、PNG/JPEG
+      // 等を先頭へ置く。各画像は別DataWriterItemのまま保持し、結合しない。
+      const bitmapExts = <String>{'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'};
+      validPaths.sort((a, b) {
+        String extOf(String value) {
+          final dot = value.lastIndexOf('.');
+          return dot >= 0 ? value.substring(dot + 1).toLowerCase() : '';
+        }
+
+        final aBitmap = bitmapExts.contains(extOf(a));
+        final bBitmap = bitmapExts.contains(extOf(b));
+        if (aBitmap == bBitmap) return 0;
+        return aBitmap ? -1 : 1;
+      });
+
+      final items = <DataWriterItem>[];
+      for (final path in validPaths) {
+        final file = File(path);
+        final dot = path.lastIndexOf('.');
+        final ext = dot >= 0 ? path.substring(dot + 1).toLowerCase() : '';
+        final item = DataWriterItem(
+          suggestedName: path.split(RegExp(r'[/\\]')).last,
+        );
+        // 受け側が画像貼り付けを扱える場合の表現。全画像に個別に付ける。
+        if (bitmapExts.contains(ext)) {
+          final bytes = await file.readAsBytes();
+          switch (ext) {
+            case 'png':
+              item.add(Formats.png(bytes));
+              break;
+            case 'jpg':
+            case 'jpeg':
+              item.add(Formats.jpeg(bytes));
+              break;
+            case 'gif':
+              item.add(Formats.gif(bytes));
+              break;
+            case 'webp':
+              item.add(Formats.webp(bytes));
+              break;
+            case 'bmp':
+              item.add(Formats.bmp(bytes));
+              break;
+          }
+        }
+        // 複数ファイルとして扱うAIサイト向けの表現。
+        item.add(Formats.fileUri(Uri.file(path)));
+        if (items.isEmpty &&
+            fallbackText != null &&
+            fallbackText.trim().isNotEmpty) {
+          item.add(Formats.plainText(fallbackText));
+        }
+        items.add(item);
+      }
+      await clipboard.write(items);
+      return items.length;
+    } catch (e) {
+      debugPrint('複数画像クリップボードコピー失敗: $e');
+      return 0;
+    }
+  }
+
+  Future<void> _openBrowserAiForNode(String nodeId) async {
     if (!mounted) return;
     final provider = context.read<MindMapProvider>();
     final node = provider.nodes[nodeId];
@@ -24123,44 +24806,66 @@ class _MindMapScreenState extends State<MindMapScreen>
       final dot = mediaPath.lastIndexOf('.');
       final ext = dot >= 0 ? mediaPath.substring(dot + 1).toLowerCase() : '';
       final bool isImage = _isAiImageExt(ext);
-      final bool isSupported =
-          isImage || const {'pdf', 'docx', 'pptx'}.contains(ext);
-      if (isSupported) {
-        // (1) API キーあり → API に画像/ファイルを直接渡して回答を表示。
-        if (provider.hasActiveAiKey) {
-          _askAiQuestionAndPlace(
-              question: content, sourceNodeId: nodeId, mediaNode: node);
-          return;
-        }
-        // (2) キー無し & 画像 → 画像をクリップボードへコピーしてブラウザ AI へ。
+      // API がバイナリのまま受け取れる形式 (Gemini/Claude ネイティブ対応)。
+      final bool isApiDoc = const {'pdf', 'docx', 'pptx'}.contains(ext);
+      // ローカルで本文テキストを抽出できる形式 (= キーが無くてもブラウザ AI に
+      //   中身を渡せる)。
+      final bool isTextExtractable =
+          isApiDoc || _isTextLikeAttachmentExt(ext) || ext == 'xlsx';
+      if (isImage || isTextExtractable) {
+        // ── 既定はブラウザ版 AI に送る (= ユーザー要望: 明示的に API キーを使う
+        //    ボタンを押さない限り基本的にブラウザ版へ)。 API キーで添付そのものを
+        //    直接解析させたい時は、 AI ボタンを右クリック/長押し →「AI に質問して
+        //    回答を取得」 (API) を使う。 ──
+        // (1) 画像 → 元画像をFileとしてブラウザAIへ自動添付する。
+        // クリップボードにも個別画像のまま残し、サイト側DOM変更時の保険にする。
         if (isImage) {
+          final imagePayloads =
+              await compute(_readAiImagePayloads, <String>[mediaPath]);
+          if (!mounted) return;
           _sendQueryToBrowserAi(
-              content.isEmpty ? '貼り付けた画像について教えてください。' : content);
+            content.isEmpty ? '貼り付けた画像について教えてください。' : content,
+            copyTextToClipboard: false,
+            imagePayloads: imagePayloads,
+          );
           _copyImageFileToClipboard(mediaPath).then((copied) {
             if (!mounted) return;
             _appSnack(
               context,
               SnackBar(
                 content: Text(copied
-                    ? (_isDesktop
-                        ? '画像をクリップボードにコピーしました。AI の入力欄で貼り付け (Ctrl+V) してください。'
-                        : '画像をクリップボードにコピーしました。AI の入力欄を長押しして貼り付けてください。')
-                    : '画像をコピーできませんでした。API キーを設定すると画像を直接 AI に渡せます。'),
+                    ? '画像を個別ファイルのまま AI へ添付しています。'
+                        '反映されない場合は入力欄へ貼り付けてください。'
+                    : '画像をコピーできませんでした。AI ボタン右クリックの「AI に質問して回答を取得」で API に直接渡せます。'),
                 backgroundColor:
                     copied ? const Color(0xFF43B97F) : const Color(0xFFE57373),
-                duration: const Duration(seconds: 3),
+                duration: const Duration(seconds: 4),
               ),
             );
           });
           return;
         }
-        // (3) キー無し & 非画像ファイル → ブラウザ AI に貼れないので案内。
+        // (2) ドキュメント/テキスト → ローカルで本文を抽出してブラウザ AI に同梱
+        //     (= ユーザー要望: ノードに貼りついたファイルも AI に渡す。 ただし
+        //     既定はブラウザ版)。
+        final extracted = await _extractAttachmentTextForAi(mediaPath, ext);
+        if (!mounted) return;
+        final name =
+            node.attachmentName ?? mediaPath.split(RegExp(r'[/\\]')).last;
+        if (extracted != null && extracted.trim().isNotEmpty) {
+          final combined = content.isEmpty
+              ? '【添付ファイル「$name」の内容】\n$extracted'
+              : '$content\n\n【添付ファイル「$name」の内容】\n$extracted';
+          _sendQueryToBrowserAi(combined);
+          return;
+        }
+        // (3) 抽出できなかった場合 → 案内 + 本文のみブラウザへ送信。
         _appSnack(
           context,
           SnackBar(
             content: Text(content.isEmpty
-                ? 'このファイルを AI に渡すには API キーの設定が必要です。'
-                : 'ファイルは API キー設定時のみ AI に渡せます。本文のみ AI に送ります。'),
+                ? 'このファイルの内容を読み取れませんでした。AI ボタン右クリックの「AI に質問して回答を取得」で API に直接渡せます。'
+                : 'ファイルの内容を読み取れませんでした。本文のみ AI に送ります。'),
             backgroundColor: const Color(0xFFE57373),
             duration: const Duration(seconds: 3),
           ),
@@ -24202,13 +24907,19 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 任意のテキスト [content] をブラウザ版 AI のチャット欄へ送る (= ノードの AI
   /// ボタン / 範囲選択の一括 AI で共用)。 前提条件を先頭に付け、 開いている AI
   /// パネルへ inject、 無ければ設定中の AI を右パネルに開いて inject する。
-  void _sendQueryToBrowserAi(String content) {
+  void _sendQueryToBrowserAi(
+    String content, {
+    bool copyTextToClipboard = true,
+    List<Map<String, String>> imagePayloads = const <Map<String, String>>[],
+  }) {
     if (content.trim().isEmpty || !mounted) return;
     final provider = context.read<MindMapProvider>();
     // 前提条件 (= ユーザー要望: 「日本語で答えて」 等) を先頭に付ける。
     final query = provider.browserAiApplyPrefix(content);
     // 用語をクリップボードにもコピー (プレフィル非対応サイトの貼り付け用)。
-    Clipboard.setData(ClipboardData(text: query));
+    if (copyTextToClipboard) {
+      unawaited(Clipboard.setData(ClipboardData(text: query)));
+    }
     final url = provider.browserAiUrlForQuery(query);
 
     void injectInto({required bool left, required bool reuse}) {
@@ -24220,11 +24931,18 @@ class _MindMapScreenState extends State<MindMapScreen>
       //   dup 判定して二重入力しない) なので、 リトライ回数と最大待ち時間を
       //   伸ばして初回の取りこぼしを無くす。
       final delays = reuse
-          ? const [150, 600, 1500, 3000]
-          : const [1200, 2400, 3800, 5500, 7500, 9500, 12000, 15000];
+          ? const [150, 600, 1500, 3000, 6000, 10000, 16000, 24000, 36000]
+          : const [
+              1200, 2400, 3800, 5500, 7500, 9500, 12000, 15000, 20000,
+              28000, 38000, 48000
+            ];
       for (final ms in delays) {
-        Future.delayed(Duration(milliseconds: ms),
-            () => _injectTitleToSplitAi(query, token, left: left));
+        Future.delayed(Duration(milliseconds: ms), () {
+          _injectTitleToSplitAi(query, token, left: left);
+          if (imagePayloads.isNotEmpty) {
+            _injectImagesToSplitAi(imagePayloads, token, left: left);
+          }
+        });
       }
     }
 
@@ -24254,13 +24972,17 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// 範囲選択した複数要素の本文を、 要素ごとに改行で区切ってブラウザ版 AI へ
   /// まとめて送る (= ユーザー要望: AI 一括でそのままブラウザ AI に渡す)。
-  void _sendBulkNodesToBrowserAi() {
+  Future<void> _sendBulkNodesToBrowserAi() async {
     if (!mounted) return;
     final provider = context.read<MindMapProvider>();
     final parts = <String>[];
+    final localImages = <String>[];
+    var imageNumber = 0;
+    var elementNumber = 0;
     for (final id in _rangeSelectedIds) {
       final n = provider.nodes[id];
       if (n == null) continue;
+      elementNumber++;
       final rt = n.richText;
       String t;
       if (rt != null && rt.trim().isNotEmpty) {
@@ -24270,9 +24992,46 @@ class _MindMapScreenState extends State<MindMapScreen>
         final title = n.title.trim();
         t = memo.isEmpty ? title : '$title\n$memo';
       }
-      if (t.trim().isNotEmpty) parts.add(t.trim());
+
+      final mediaPath = _localMediaPathOfNode(n);
+      String? imageName;
+      if (mediaPath != null) {
+        final dot = mediaPath.lastIndexOf('.');
+        final ext =
+            dot >= 0 ? mediaPath.substring(dot + 1).toLowerCase() : '';
+        if (_isAiImageExt(ext)) {
+          localImages.add(mediaPath);
+          imageNumber++;
+          imageName = (n.attachmentName ?? '').trim();
+          if (imageName.isEmpty) {
+            imageName = mediaPath.split(RegExp(r'[/\\]')).last;
+          }
+        }
+      }
+
+      final urls = <String>[];
+      for (final value in [
+        (n.youtubeUrl ?? '').trim(),
+        (n.linkUrl ?? '').trim(),
+        (n.attachmentPath ?? '').trim(),
+      ]) {
+        if ((value.startsWith('http://') || value.startsWith('https://')) &&
+            !urls.contains(value) &&
+            !t.contains(value)) {
+          urls.add(value);
+        }
+      }
+      final section = <String>[];
+      if (t.isNotEmpty) section.add(t);
+      if (imageName != null) {
+        section.add('【添付画像 #$imageNumber: $imageName】');
+      }
+      section.addAll(urls);
+      if (section.isNotEmpty) {
+        parts.add('【要素 $elementNumber】\n${section.join('\n')}');
+      }
     }
-    if (parts.isEmpty) {
+    if (parts.isEmpty && localImages.isEmpty) {
       _appSnack(
           context,
           SnackBar(
@@ -24281,8 +25040,45 @@ class _MindMapScreenState extends State<MindMapScreen>
               duration: const Duration(seconds: 2)));
       return;
     }
-    // 要素ごとに改行で区切って結合 (= ユーザー要望)。
-    _sendQueryToBrowserAi(parts.join('\n'));
+    final content = parts.isEmpty
+        ? '貼り付けた選択画像を、要素の順番に沿ってまとめて分析してください。'
+        : parts.join('\n\n');
+    final imagePayloads = localImages.isEmpty
+        ? const <Map<String, String>>[]
+        : await compute(_readAiImagePayloads, localImages);
+    if (!mounted) return;
+    // 本文と、元画像を1枚ずつ独立したFileとして同じAIパネルへ渡す。
+    _sendQueryToBrowserAi(
+      content,
+      copyTextToClipboard: localImages.isEmpty,
+      imagePayloads: imagePayloads,
+    );
+    if (localImages.isEmpty) return;
+
+    final copied = await _copyImageFilesToClipboard(
+      localImages,
+      fallbackText: provider.browserAiApplyPrefix(content),
+    );
+    if (!mounted) return;
+    final attached = imagePayloads.length;
+    final message = attached > 0
+        ? '$attached 枚の画像を、結合せず個別ファイルのまま AI へ添付しています。'
+            '${copied > 0 ? '反映されない場合に備えてクリップボードにもコピーしました。' : ''}'
+        : copied > 0
+            ? '$copied 枚の画像を個別にコピーしました。'
+                'AI の入力欄へ貼り付けてください。'
+            : '画像を AI に渡せませんでした。'
+                'AI ボタン右クリックのAPI送信を利用してください。';
+    _appSnack(
+      context,
+      SnackBar(
+        content: Text(message),
+        backgroundColor: attached > 0 || copied > 0
+            ? const Color(0xFF43B97F)
+            : const Color(0xFFE57373),
+        duration: const Duration(seconds: 4),
+      ),
+    );
   }
 
   /// 範囲選択の一括 AI ボタン右クリック/長押し → モデル切替 / 前提条件 / 子要素
@@ -24524,6 +25320,229 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 分割パネルで開いた AI のチャット入力欄に [text] を挿入する。
   /// 既に同じ文字列が入っている (= ?q= で入った / 挿入済み) 場合はスキップ。
   /// [left] = true で左パネル、 false で右パネルの WebView に挿入する。
+  void _injectImagesToSplitAi(
+    List<Map<String, String>> images,
+    int token, {
+    bool left = false,
+  }) {
+    if (!mounted || images.isEmpty || token != _splitAiInjectSeq) return;
+    final provider = context.read<MindMapProvider>();
+    final targetUrl = left ? _splitLeftCurrentUrl : _splitCurrentUrl;
+    // 遅延注入中に別サイトへ移動した場合、ローカル画像を誤送信しない。
+    if (_panelAiId(provider, targetUrl) == null) return;
+    final payload = jsonEncode(images);
+    final js = '''
+(function() {
+  try {
+    if (window.__mmNodeAiImagesToken === $token) return 'dup';
+    var specs = $payload;
+    if (!Array.isArray(specs) || !specs.length) return 'empty';
+    var files = [];
+    for (var i = 0; i < specs.length; i++) {
+      var spec = specs[i] || {};
+      var binary = atob(spec.base64 || '');
+      var bytes = new Uint8Array(binary.length);
+      for (var j = 0; j < binary.length; j++) {
+        bytes[j] = binary.charCodeAt(j);
+      }
+      files.push(new File(
+        [bytes],
+        spec.name || ('kamispec-image-' + (i + 1) + '.png'),
+        { type: spec.mime || 'image/png', lastModified: Date.now() }
+      ));
+    }
+    if (!files.length) return 'empty';
+
+    function transferFor(list) {
+      var transfer = new DataTransfer();
+      for (var i = 0; i < list.length; i++) {
+        transfer.items.add(list[i]);
+      }
+      return transfer;
+    }
+
+    function collectRoots() {
+      var roots = [document];
+      for (var i = 0; i < roots.length; i++) {
+        var elements = roots[i].querySelectorAll('*');
+        for (var j = 0; j < elements.length; j++) {
+          if (elements[j].shadowRoot &&
+              roots.indexOf(elements[j].shadowRoot) < 0) {
+            roots.push(elements[j].shadowRoot);
+          }
+        }
+      }
+      return roots;
+    }
+
+    function accepts(input, file) {
+      var accept = String(input.accept || '').trim().toLowerCase();
+      if (!accept) return true;
+      var values = accept.split(',');
+      var mime = String(file.type || '').toLowerCase();
+      var name = String(file.name || '').toLowerCase();
+      for (var i = 0; i < values.length; i++) {
+        var value = values[i].trim();
+        if (value === mime) return true;
+        if (value.slice(-2) === '/*' &&
+            mime.indexOf(value.slice(0, -1)) === 0) return true;
+        if (value.charAt(0) === '.' &&
+            name.slice(-value.length) === value) return true;
+      }
+      return false;
+    }
+
+    var roots = collectRoots();
+    var selectors = [
+      'form[data-type="unified-composer"] input[type="file"]',
+      'input[data-testid="file-upload-input"]',
+      'input[data-testid="upload-file-input"]',
+      'images-files-uploader input[type="file"]',
+      'input[type="file"][accept*="image"]',
+      'input[type="file"][multiple]',
+      'input[type="file"]'
+    ];
+    var candidates = [];
+    for (var r = 0; r < roots.length; r++) {
+      for (var s = 0; s < selectors.length; s++) {
+        var found = roots[r].querySelectorAll(selectors[s]);
+        for (var f = 0; f < found.length; f++) {
+          if (candidates.indexOf(found[f]) < 0) candidates.push(found[f]);
+        }
+      }
+    }
+    var scored = [];
+    for (var c = 0; c < candidates.length; c++) {
+      var candidate = candidates[c];
+      if (candidate.disabled) continue;
+      if (files.length > 1 && !candidate.multiple) continue;
+      var allAccepted = true;
+      for (var a = 0; a < files.length; a++) {
+        if (!accepts(candidate, files[a])) { allAccepted = false; break; }
+      }
+      if (!allAccepted) continue;
+      var meta = [
+        candidate.id,
+        candidate.name,
+        candidate.getAttribute('aria-label'),
+        candidate.getAttribute('data-testid')
+      ].join(' ');
+      var score = candidate.multiple ? 30 : 0;
+      if (/upload|file|attach/i.test(meta)) score += 40;
+      if (/avatar|profile|icon|logo/i.test(meta)) score -= 180;
+      var form = candidate.closest('form');
+      if (form && form.querySelector(
+          '#prompt-textarea,textarea,[contenteditable="true"]')) score += 80;
+      if (candidate.closest(
+          '[data-type="unified-composer"],[class*="composer" i],' +
+          '[class*="prompt" i]')) score += 50;
+      if (candidate.closest(
+          '[class*="avatar" i],[class*="profile" i]')) score -= 180;
+      scored.push({ input: candidate, score: score });
+    }
+    scored.sort(function(a, b) { return b.score - a.score; });
+
+    if (scored.length) {
+      var input = scored[0].input;
+      var transfer = transferFor(files);
+      var descriptor = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        'files'
+      );
+      if (descriptor && descriptor.set) {
+        descriptor.set.call(input, transfer.files);
+      } else {
+        input.files = transfer.files;
+      }
+      var staged = input.files ? input.files.length : 0;
+      if (!staged) return 'file-input-empty';
+      input.dispatchEvent(new Event(
+        'input', { bubbles: true, composed: true }
+      ));
+      input.dispatchEvent(new Event(
+        'change', { bubbles: true, composed: true }
+      ));
+      window.__mmNodeAiImagesToken = $token;
+      return 'file-input:' + staged;
+    }
+
+    // file input がDOMに出ていないサイト向けに、composerへ一度だけdropを試す。
+    // 画像は合成せず、同じDataTransfer内の個別Fileとして渡す。
+    var promptSelectors = [
+      '#prompt-textarea',
+      'div.ProseMirror[contenteditable="true"]',
+      'rich-textarea [contenteditable="true"]',
+      'div.ql-editor[contenteditable="true"]',
+      '[data-lexical-editor="true"][contenteditable="true"]',
+      'textarea',
+      '[role="textbox"][contenteditable="true"]',
+      '[contenteditable="true"]'
+    ];
+    var target = null;
+    for (var rr = 0; rr < roots.length && !target; rr++) {
+      for (var ps = 0; ps < promptSelectors.length && !target; ps++) {
+        var prompts = roots[rr].querySelectorAll(promptSelectors[ps]);
+        for (var pi = prompts.length - 1; pi >= 0; pi--) {
+          var rect = prompts[pi].getBoundingClientRect();
+          if (rect.width > 20 && rect.height > 10) {
+            target = prompts[pi];
+            break;
+          }
+        }
+      }
+    }
+    if (!target) return 'not-found';
+    var transfer = transferFor(files);
+    target.focus();
+    var dropHandled = false;
+    try {
+      target.dispatchEvent(new DragEvent('dragenter', {
+        bubbles: true, cancelable: true, composed: true,
+        dataTransfer: transfer
+      }));
+      target.dispatchEvent(new DragEvent('dragover', {
+        bubbles: true, cancelable: true, composed: true,
+        dataTransfer: transfer
+      }));
+      var drop = new DragEvent('drop', {
+        bubbles: true, cancelable: true, composed: true,
+        dataTransfer: transfer
+      });
+      dropHandled = !target.dispatchEvent(drop);
+    } catch (_) {}
+    if (dropHandled) {
+      window.__mmNodeAiImagesToken = $token;
+      return 'drop:' + files.length;
+    }
+
+    // dropを受け付けないサイトだけpasteへフォールバックする。
+    var paste = new Event(
+      'paste', { bubbles: true, cancelable: true, composed: true }
+    );
+    Object.defineProperty(paste, 'clipboardData', { value: transfer });
+    if (!target.dispatchEvent(paste)) {
+      window.__mmNodeAiImagesToken = $token;
+      return 'paste:' + files.length;
+    }
+    return 'not-handled';
+  } catch (e) {
+    return 'error: ' + e;
+  }
+})();
+''';
+    try {
+      if (!kIsWeb && Platform.isWindows) {
+        final controller =
+            left ? _splitLeftWinController : _splitWinController;
+        final ready = left ? _splitLeftWinInitialized : _splitWinInitialized;
+        if (ready) controller?.executeScript(js);
+      } else {
+        (left ? _splitLeftIawController : _splitIawController)
+            ?.evaluateJavascript(source: js);
+      }
+    } catch (_) {}
+  }
+
   void _injectTitleToSplitAi(String text, int token, {bool left = false}) {
     if (!mounted) return;
     // 古い (キャンセル済み) 注入バッチは実行しない (= ユーザー要望: AI ボタンで
@@ -24535,7 +25554,6 @@ class _MindMapScreenState extends State<MindMapScreen>
     final js = '''
 (function() {
   try {
-    if (window.__mmNodeAiToken === $token) return 'dup';
     var text = $escaped;
     var t = (text || '').trim();
     if (!t) return 'empty';
@@ -24567,6 +25585,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     var isField = tag === 'TEXTAREA' || tag === 'INPUT';
     var existing = isField ? (best.value || '')
                            : (best.innerText || best.textContent || '');
+    if (window.__mmNodeAiToken === $token &&
+        existing.indexOf(t) !== -1) return 'dup';
     if (existing.indexOf(t) !== -1) { window.__mmNodeAiToken = $token; return 'already'; }
     best.focus();
     if (isField) {
@@ -24942,10 +25962,17 @@ class _MindMapScreenState extends State<MindMapScreen>
       if (result == 'gen') {
         _generateChildrenForNode(nodeId);
       } else if (result == 'ask') {
-        // ノードのタイトルを質問として AI に投げ、 回答をマップ/メモへ。
+        // 明示的な API 送信 (= ユーザー要望: この「AI に質問して回答を取得」 が
+        //   API キーを使う明示ボタン)。 添付 (画像/PDF/docx/pptx) があれば、
+        //   それも API に直接渡して解析させる。
         final n = context.read<MindMapProvider>().nodes[nodeId];
         if (n != null) {
-          _askAiQuestionAndPlace(question: n.title, sourceNodeId: nodeId);
+          final hasLocalMedia = _localMediaPathOfNode(n) != null;
+          _askAiQuestionAndPlace(
+            question: n.title,
+            sourceNodeId: nodeId,
+            mediaNode: hasLocalMedia ? n : null,
+          );
         }
       } else if (result.startsWith('q:')) {
         // 質問モード: モデルを保存 (= 次回も同じモデル) してから開く。
@@ -25751,7 +26778,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                                         color: provider.autofillSequenceEnabled
                                             ? const Color(0xFFFFB347)
                                             : Colors.white54,
-                                        title: '連番タイトル オートフィル',
+                                        title:
+                                            provider.t('menu.autofillSequence'),
                                         value: provider.autofillSequenceEnabled,
                                         onChanged: (v) {
                                           provider
@@ -25847,8 +26875,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                                       _settingsTile(
                                         icon: Icons.sticky_note_2_rounded,
                                         color: const Color(0xFFFFC107),
-                                        title: 'メモ一覧',
-                                        subtitle: 'PDF / サイト / ノードのメモを一覧',
+                                        title: provider.t('menu.memoList'),
+                                        subtitle: provider.t('menu.memoListSub'),
                                         onTap: () {
                                           Navigator.pop(sctx);
                                           _showPdfMemoListPanel(ctx);
@@ -25926,8 +26954,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   _settingsTile(
                                     icon: Icons.no_accounts_rounded,
                                     color: const Color(0xFFE57373),
-                                    title: 'ログアウト',
-                                    subtitle: 'Cookie を消去',
+                                    title: provider.t('menu.logout'),
+                                    subtitle: provider.t('menu.logoutSub'),
                                     onTap: () {
                                       Navigator.pop(sctx);
                                       _confirmClearAllWebLogin();
@@ -26936,6 +27964,12 @@ class _MindMapScreenState extends State<MindMapScreen>
     // 「ヘッダーに表示中」 リストの RawScrollbar とその子 SingleChildScrollView
     // で共有することで、 サムが常時表示される。
     final ScrollController hcsScrollCtrl = ScrollController();
+    // ── Ctrl / Shift でまとめて選択して追加する状態 (= ユーザー要望) ──
+    //   候補チップを Ctrl(個別トグル)/Shift(範囲) で複数選択し、「まとめて追加」で
+    //   一度にバーへ送れるようにする。 StatefulBuilder の setS をまたいで保持
+    //   したいのでダイアログ寿命のローカル変数に置く。
+    final Set<String> multiSelIds = <String>{};
+    String? multiSelAnchor;
     showDialog(
       context: ctx,
       barrierColor: Colors.black54,
@@ -26999,6 +28033,78 @@ class _MindMapScreenState extends State<MindMapScreen>
                           !_isDesktop ||
                           (c['id'] != 'appLock' && c['id'] != 'focusLock'))
                       .toList();
+                  // ── 追加候補を「表示順」で平坦化 (Ctrl/Shift の範囲選択 &
+                  //    まとめ追加用)。 下のカテゴリ別セクションと同じ並び順で
+                  //    id を集める。 ──
+                  final flatAvailableIds = <String>[];
+                  {
+                    final byIdFlat = <String, Map<String, dynamic>>{
+                      for (final c in availableCmds) c['id'] as String: c
+                    };
+                    final categorizedFlat = <String>{};
+                    for (final cat in _headerButtonCategories) {
+                      categorizedFlat
+                          .addAll(cat['commandIds'] as List<String>);
+                    }
+                    for (final cat in _headerButtonCategories) {
+                      final base = List<String>.from(
+                          cat['commandIds'] as List<String>);
+                      if (cat['id'] == 'other') {
+                        for (final c in availableCmds) {
+                          final id = c['id'] as String;
+                          if (!categorizedFlat.contains(id) &&
+                              !base.contains(id)) {
+                            base.add(id);
+                          }
+                        }
+                      }
+                      for (final id in base) {
+                        if (byIdFlat.containsKey(id)) {
+                          flatAvailableIds.add(id);
+                        }
+                      }
+                    }
+                  }
+                  // 候補チップのタップ処理。 Ctrl(個別トグル)/Shift(範囲) 押下時は
+                  //   まとめ選択に入れ、 修飾キー無しは従来通り 1 個だけ即追加。
+                  void handleCandidateTap(String id) {
+                    final keys = HardwareKeyboard.instance.logicalKeysPressed;
+                    final bool ctrlHeld = keys.contains(
+                            LogicalKeyboardKey.controlLeft) ||
+                        keys.contains(LogicalKeyboardKey.controlRight) ||
+                        keys.contains(LogicalKeyboardKey.metaLeft) ||
+                        keys.contains(LogicalKeyboardKey.metaRight);
+                    final bool shiftHeld =
+                        keys.contains(LogicalKeyboardKey.shiftLeft) ||
+                            keys.contains(LogicalKeyboardKey.shiftRight);
+                    if (ctrlHeld || shiftHeld) {
+                      if (shiftHeld && multiSelAnchor != null) {
+                        final a = flatAvailableIds.indexOf(multiSelAnchor!);
+                        final b = flatAvailableIds.indexOf(id);
+                        if (a >= 0 && b >= 0) {
+                          final lo = a < b ? a : b;
+                          final hi = a < b ? b : a;
+                          for (int k = lo; k <= hi; k++) {
+                            multiSelIds.add(flatAvailableIds[k]);
+                          }
+                        } else {
+                          multiSelIds.add(id);
+                        }
+                      } else {
+                        // Ctrl: 個別トグル
+                        if (!multiSelIds.remove(id)) multiSelIds.add(id);
+                      }
+                      multiSelAnchor = id;
+                      setS(() {});
+                      return;
+                    }
+                    // 修飾キー無し = 従来通り 1 個だけ即追加。
+                    multiSelIds.remove(id);
+                    hcbAdd(id).then((_) {
+                      if (mounted) setS(() {});
+                    });
+                  }
+
                   return Column(
                     // 候補が無いとき / 少ないときに「追加できるボタン」エリアが
                     // 巨大に開くのを防ぐため、Column 自体は内容に合わせる。
@@ -27333,6 +28439,59 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   fontWeight: FontWeight.w600),
                             ),
                         ]),
+                        // ── Ctrl / Shift でまとめて選択して追加できるヒント ──
+                        //   (= ユーザー要望)。 デスクトップのみ (修飾キーが要る)。
+                        if (_isDesktop) ...[
+                          const SizedBox(height: 2),
+                          Text(provider.t('header.multiSelectHint'),
+                              style: const TextStyle(
+                                  color: Colors.white38, fontSize: 10.5)),
+                        ],
+                        // ── まとめ選択中のアクション行 (まとめて追加 / 選択解除) ──
+                        if (multiSelIds.isNotEmpty) ...[
+                          const SizedBox(height: 8),
+                          Row(children: [
+                            Expanded(
+                              child: ElevatedButton.icon(
+                                style: ElevatedButton.styleFrom(
+                                    backgroundColor: const Color(0xFFFFB347),
+                                    foregroundColor: Colors.black,
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 8),
+                                    minimumSize: const Size(0, 34)),
+                                icon: const Icon(Icons.playlist_add_rounded,
+                                    size: 16),
+                                label: Text(
+                                    '${provider.t('header.addSelected')} (${multiSelIds.length})',
+                                    style: const TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w700)),
+                                onPressed: () async {
+                                  // 表示順 (flatAvailableIds) に追加する。
+                                  for (final aid in flatAvailableIds) {
+                                    if (multiSelIds.contains(aid)) {
+                                      await hcbAdd(aid);
+                                    }
+                                  }
+                                  multiSelIds.clear();
+                                  multiSelAnchor = null;
+                                  if (mounted) setS(() {});
+                                },
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            TextButton(
+                              onPressed: () {
+                                multiSelIds.clear();
+                                multiSelAnchor = null;
+                                setS(() {});
+                              },
+                              child: Text(provider.t('header.clearSelection'),
+                                  style: const TextStyle(
+                                      color: Colors.white54, fontSize: 12)),
+                            ),
+                          ]),
+                        ],
                         const SizedBox(height: 6),
                         // 候補数で高さが伸び縮みするコンテナ。Expanded だと
                         // 候補が無い・少ないときも巨大に開いてしまうため、
@@ -27417,12 +28576,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                                         id: id,
                                         isAdded: false,
                                         enabled: !atLimit,
+                                        selected: multiSelIds.contains(id),
                                         onTap: atLimit
                                             ? null
-                                            : () async {
-                                                await hcbAdd(id);
-                                                setS(() {});
-                                              },
+                                            : () => handleCandidateTap(id),
                                       ));
                                     }
                                     if (chipsForCat.isEmpty) continue;
@@ -27622,6 +28779,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     required bool isAdded,
     required VoidCallback? onTap,
     bool enabled = true,
+    // ── Ctrl/Shift でまとめて選択中の候補チップ (= ユーザー要望) ──
+    //   選択中は枠を強調してチェックアイコンを出す。
+    bool selected = false,
   }) {
     final provider = context.read<MindMapProvider>();
     final cmd = _headerCustomizableCommands.firstWhere((c) => c['id'] == id,
@@ -27637,20 +28797,26 @@ class _MindMapScreenState extends State<MindMapScreen>
     // 暗すぎる既定色 (黒系) はダーク背景の選択画面で見えないので明るくする
     //   (= ユーザー要望: 選択画面で黒いボタンが見えない)。
     if (color.computeLuminance() < 0.12) color = const Color(0xFFEFEFEF);
+    const selColor = Color(0xFFFFB347);
     return InkWell(
       onTap: enabled ? onTap : null,
       borderRadius: BorderRadius.circular(8),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
         decoration: BoxDecoration(
-          color: isAdded
-              ? color.withValues(alpha: 0.2)
-              : Colors.white.withValues(alpha: enabled ? 0.04 : 0.015),
+          color: selected
+              ? selColor.withValues(alpha: 0.22)
+              : (isAdded
+                  ? color.withValues(alpha: 0.2)
+                  : Colors.white.withValues(alpha: enabled ? 0.04 : 0.015)),
           borderRadius: BorderRadius.circular(8),
           border: Border.all(
-              color:
-                  isAdded ? color : (enabled ? Colors.white12 : Colors.white10),
-              width: 1.3),
+              color: selected
+                  ? selColor
+                  : (isAdded
+                      ? color
+                      : (enabled ? Colors.white12 : Colors.white10)),
+              width: selected ? 1.8 : 1.3),
         ),
         child: Row(mainAxisSize: MainAxisSize.min, children: [
           if (icon != null)
@@ -27660,19 +28826,24 @@ class _MindMapScreenState extends State<MindMapScreen>
           if (icon != null) const SizedBox(width: 6),
           Text(label,
               style: TextStyle(
-                  color: isAdded
+                  color: isAdded || selected
                       ? Colors.white
                       : (enabled ? Colors.white70 : Colors.white24),
                   fontSize: 12,
                   fontWeight: FontWeight.w600)),
           const SizedBox(width: 6),
           Icon(
-            isAdded
-                ? Icons.remove_circle_outline_rounded
-                : Icons.add_circle_outline_rounded,
+            selected
+                ? Icons.check_circle_rounded
+                : (isAdded
+                    ? Icons.remove_circle_outline_rounded
+                    : Icons.add_circle_outline_rounded),
             size: 14,
-            color:
-                isAdded ? Colors.redAccent : (enabled ? color : Colors.white24),
+            color: selected
+                ? selColor
+                : (isAdded
+                    ? Colors.redAccent
+                    : (enabled ? color : Colors.white24)),
           ),
         ]),
       ),
@@ -29988,6 +31159,18 @@ class _MindMapScreenState extends State<MindMapScreen>
       _rangeSelectedDecorationIds
           .addAll(provider.decorations.map((decoration) => decoration.id));
     });
+    // ── 全選択でも複数選択メニュー (一括AI/他ページへ転送/グループ化/カード化/
+    //    削除) を出す (= ユーザー要望: 範囲選択と同じ図のボタン一覧を全選択でも
+    //    表示)。 overlay は選択確定後の座標計算が要るので次フレームで表示する。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (_rangeSelectMode &&
+          _rangeSelectedIds.length >= 2 &&
+          _selectedConnections.isEmpty) {
+        _showMultiNodeActionOverlay(
+            context, provider, _ctrlFor(provider.currentPage.id));
+      }
+    });
   }
 
   void _executeHeaderCommand(String commandId, MindMapProvider provider) {
@@ -30143,14 +31326,14 @@ class _MindMapScreenState extends State<MindMapScreen>
       //    固定 ID ('global_gantt' / 'global_schedule') に保存される。
       case 'gantt':
         _openToolDialog(
-            'ガントチャート',
+            provider.t('gantt.title'),
             Icons.view_timeline_rounded,
             const Color(0xFF4FC3F7),
             _GanttPageView(provider: provider, pageId: 'global_gantt'));
         break;
       case 'memberSchedule':
         _openToolDialog(
-            'メンバー予定表',
+            provider.t('hdr.memberSchedule'),
             Icons.groups_rounded,
             const Color(0xFF66BB6A),
             _MemberSchedulePageView(
@@ -30655,7 +31838,8 @@ class _MindMapScreenState extends State<MindMapScreen>
         });
         // ヒントを SnackBar で出す (モードは × / Esc まで継続)。
         final provider = context.read<MindMapProvider>();
-        ScaffoldMessenger.of(context).showSnackBar(
+        _appSnack(
+          context,
           SnackBar(
             content: Text('$label: ${provider.t('shape.dragHint')}'),
             duration: const Duration(seconds: 2),
@@ -31999,8 +33183,51 @@ class _MindMapScreenState extends State<MindMapScreen>
     );
   }
 
-  /// Google Earth Web を在アプリブラウザで開く。
+  /// Google Earth を開く。
+  ///
+  /// モバイル版 Earth Web は Android/iOS の埋め込み WebView を正式な
+  /// 対象にしておらず、重い WebGL 初期化の後に未対応画面となることがある。
+  /// モバイルでは端末用 Earth アプリを直接起動し、未導入ならストアへ送る。
+  /// デスクトップだけは従来どおりアプリ内 WebView を使う。
   void _openGoogleEarth(BuildContext ctx, MindMapProvider provider) async {
+    if (!kIsWeb && Platform.isAndroid) {
+      try {
+        await const AndroidIntent(
+          action: 'action_view',
+          data: 'https://earth.google.com/web/',
+          package: 'com.google.earth',
+        ).launch();
+        return;
+      } catch (_) {
+        // Earth 未導入時は Play ストアを即座に開く。
+        try {
+          await launchUrl(
+            Uri.parse('market://details?id=com.google.earth'),
+            mode: LaunchMode.externalApplication,
+          );
+          return;
+        } catch (_) {
+          await launchUrl(
+            Uri.parse(
+                'https://play.google.com/store/apps/details?id=com.google.earth'),
+            mode: LaunchMode.externalApplication,
+          );
+          return;
+        }
+      }
+    }
+    if (!kIsWeb && Platform.isIOS) {
+      final nativeUri = Uri.parse('comgoogleearth://');
+      if (await canLaunchUrl(nativeUri)) {
+        await launchUrl(nativeUri, mode: LaunchMode.externalApplication);
+      } else {
+        await launchUrl(
+          Uri.parse('https://apps.apple.com/app/google-earth/id293622097'),
+          mode: LaunchMode.externalApplication,
+        );
+      }
+      return;
+    }
     _openGoogleSearchDialog(
       ctx,
       provider,
@@ -34296,7 +35523,8 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 全画面の集中ロックオーバーレイを起動する。
   /// [manual] = ユーザーが手動で開始した場合 true (= 課金ゲート対象)。 ジオ
   /// フェンス/スケジュールによる自動起動は false (ゲートしない)。
-  Future<void> _openFocusLockContent(MindMapNode node) async {
+  Future<void> _openFocusLockContent(MindMapNode node,
+      {BuildContext? presentationContext}) async {
     final yt = (node.youtubeUrl ?? '').trim();
     if (yt.isNotEmpty) {
       await _openLink(yt);
@@ -34309,7 +35537,11 @@ class _MindMapScreenState extends State<MindMapScreen>
           _isLocalVideoFile(att)) {
         await _openLink(att);
       } else {
-        _openAttachment(att, nodeId: node.id);
+        await _openAttachment(
+          att,
+          nodeId: node.id,
+          presentationContext: presentationContext,
+        );
       }
       return;
     }
@@ -37245,112 +38477,6 @@ class _MindMapScreenState extends State<MindMapScreen>
     controller.dispose();
   }
 
-  // ─── メモ編集 ──────────────────────────────────────────────────────────────
-
-  void _editMemo(BuildContext ctx, MindMapNode node) {
-    final prov = ctx.read<MindMapProvider>();
-    final ctrl = TextEditingController(text: node.memoText ?? '');
-    void doSave(BuildContext dctx) {
-      ctx.read<MindMapProvider>().updateNodeMemo(node.id, ctrl.text);
-      Navigator.pop(dctx);
-    }
-
-    // Enter単独 → 保存、Shift+Enter → 改行挿入
-    KeyEventResult handleEnter(KeyEvent event, BuildContext dctx) {
-      if (event is! KeyDownEvent && event is! KeyRepeatEvent)
-        return KeyEventResult.ignored;
-      if (event.logicalKey != LogicalKeyboardKey.enter &&
-          event.logicalKey != LogicalKeyboardKey.numpadEnter) {
-        return KeyEventResult.ignored;
-      }
-      final isShift = HardwareKeyboard.instance.isShiftPressed;
-      if (!isShift) {
-        doSave(dctx);
-        return KeyEventResult.handled;
-      }
-      // Shift+Enter: カーソル位置に改行を挿入
-      final sel = ctrl.selection;
-      final text = ctrl.text;
-      final start = sel.start >= 0 ? sel.start : text.length;
-      final end = sel.end >= 0 ? sel.end : text.length;
-      final newText = text.replaceRange(start, end, '\n');
-      ctrl.value = TextEditingValue(
-        text: newText,
-        selection: TextSelection.collapsed(offset: start + 1),
-      );
-      return KeyEventResult.handled;
-    }
-
-    showDialog(
-      context: ctx,
-      builder: (dctx) => KeyboardListener(
-        focusNode: FocusNode(),
-        autofocus: false,
-        onKeyEvent: (event) {
-          if (event is KeyDownEvent &&
-              event.logicalKey == LogicalKeyboardKey.escape) {
-            doSave(dctx);
-          }
-        },
-        child: AlertDialog(
-          backgroundColor: const Color(0xFF2A2A3E),
-          title: Row(children: [
-            Container(
-                width: 28,
-                height: 28,
-                decoration: const BoxDecoration(
-                    color: Color(0xFF43B97F), shape: BoxShape.circle),
-                child: const Icon(Icons.note_rounded,
-                    color: Colors.white, size: 18)),
-            const SizedBox(width: 10),
-            Text(prov.t('memo.dialogTitle'),
-                style: const TextStyle(color: Colors.white, fontSize: 16)),
-          ]),
-          content: SizedBox(
-            height: 200,
-            child: Focus(
-              onKeyEvent: (n, event) => handleEnter(event, dctx),
-              child: TextField(
-                controller: ctrl,
-                autofocus: true,
-                maxLines: null,
-                expands: true,
-                textAlignVertical: TextAlignVertical.top,
-                keyboardType: TextInputType.multiline,
-                textInputAction: TextInputAction.newline,
-                style: const TextStyle(color: Colors.white, fontSize: 14),
-                decoration: InputDecoration(
-                  filled: true,
-                  fillColor: Colors.white.withValues(alpha: 0.07),
-                  hintText: prov.t('node.hintMemo'),
-                  hintStyle:
-                      const TextStyle(color: Colors.white38, fontSize: 13),
-                  border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      borderSide: BorderSide.none),
-                  contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                ),
-              ),
-            ),
-          ),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.pop(dctx),
-                child: Text(prov.t('node.cancel'),
-                    style: const TextStyle(color: Colors.white54))),
-            ElevatedButton(
-              onPressed: () => doSave(dctx),
-              style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF43B97F)),
-              child: Text(prov.t('node.save')),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   /// 画面分割パネル本体。 親 Row の子として固定幅で配置される。
   /// 開いていないときは SizedBox.shrink を返す (= ゼロ幅で消える)。
   ///
@@ -38329,7 +39455,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                   _reloadSplitPanel(isLeft: false);
                 }),
               if (isWeb)
-                item(Icons.logout_rounded, 'ログアウト / 別アカウントでログイン', () {
+                item(
+                    Icons.logout_rounded,
+                    context
+                        .read<MindMapProvider>()
+                        .t('menu.logoutSwitchAccount'), () {
                   Navigator.of(sheetCtx).pop();
                   _confirmClearSplitLogin(isLeft: false);
                 }),
@@ -40048,22 +41178,11 @@ class _MindMapScreenState extends State<MindMapScreen>
               _resetInteractionState();
             }
           } else if (commandId == 'editTitle') {
-            final selId = _actionNodeId ?? provider.selectedNodeId;
+            final selId = _nodeIdForDirectEdit(provider);
             if (selId != null) {
               final node = provider.nodes[selId];
               if (node != null) {
                 _startInlineTitleEdit(context, node);
-              }
-            }
-          } else if (commandId == 'editMemo') {
-            final selId = _actionNodeId ?? provider.selectedNodeId;
-            if (selId != null) {
-              final node = provider.nodes[selId];
-              if (node != null) {
-                _removeOverlay();
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  if (mounted) _editMemo(context, node);
-                });
               }
             }
           } else if (commandId == 'quickFlashcard') {
@@ -40661,8 +41780,12 @@ class _MindMapScreenState extends State<MindMapScreen>
                 }
               },
               appBar: _buildAppBar(context, provider),
-              body: Stack(
-                key: _bodyStackKey,
+              body: Padding(
+                // 端へ固定したボタンバーはページを覆わず、専用の余白へ収める。
+                // 自由配置へ切り替えたバーだけは従来どおりページ上へ重ねる。
+                padding: _desktopAnchoredDockInsets(provider),
+                child: Stack(
+                  key: _bodyStackKey,
                 children: [
                   // ── メインレイアウト: Row で完全分離 ──
                   // 旧実装: メインキャンバスを Padding(right: panelWidth) で縮めて、
@@ -41716,6 +42839,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                       ),
                     ),
                 ],
+                ),
               ),
             ),
             _buildDesktopHeaderButtonsDock(provider),
@@ -41745,7 +42869,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                       onTap: () async {
                         await stopHeadlessYoutube();
                         if (!mounted) return;
-                        ScaffoldMessenger.of(context).showSnackBar(
+                        _appSnack(
+                          context,
                           SnackBar(
                             content: Text(provider.t('headless.stopped')),
                             backgroundColor: const Color(0xFF2A2A3E),
@@ -41793,44 +42918,6 @@ class _MindMapScreenState extends State<MindMapScreen>
   }
 
   // YouTube FABを左下に表示するためのボディ内Stack — 廃止: _buildBottomToolBar に統合
-
-  /// 下部ツールバーを SnackBar の高さぶん持ち上げてから SnackBar を表示し、
-  /// SnackBar が閉じたら自動で元の位置に戻す。
-  ///
-  /// 旧実装は SnackBar が画面下部に出るとモバイルの下部ボタンバー (リンク・
-  /// ファイル・範囲選択・ノード・戻る・進む・拡大率ロック) と完全に被って
-  /// しまっていた。AI 処理中 (最長 180 秒) の長時間 SnackBar では特に深刻。
-  /// このヘルパを通すと、`_bottomBarLifted` を true にして
-  /// `AnimatedPositioned` で 240ms かけてバーを 80px 持ち上げ、その上に
-  /// SnackBar が乗る形になる。SnackBar の `closed` future を await して
-  /// 終了を検知し、終わったらバーを元に戻す。
-  ///
-  /// SnackBar 自体は `floating` モードにはしない (画面端いっぱいの方が
-  /// 視認性が高い)。バーが移動したぶん SnackBar との重なりが解消される。
-  ///
-  /// 戻り値: SnackBar が dismissed になった理由 (action タップ / タイムアウト等)。
-  /// 互換のために残してある旧 API。新規コードは `_appSnack` を直接使えばよい。
-  Future<SnackBarClosedReason> _showLiftedSnackBar(SnackBar snackBar) async {
-    // `_appSnack` が下バー持ち上げ + duration 調整を自動でやってくれる
-    final controller = _appSnack(context, snackBar);
-    return await controller.closed;
-  }
-
-  /// 下部ツールバーの持ち上げ状態を直接切り替える。
-  ///
-  /// 「処理中スナックバー → 成功/失敗スナックバー」のように **連続して**
-  /// 複数の SnackBar を表示する処理 (AI 要約フロー等) では、
-  /// `_showLiftedSnackBar` の `closed` future が処理途中で resolve して
-  /// しまうとバーが一瞬下がってしまう。
-  /// そのような場合は、AI 操作の try ブロックの開始時に
-  /// `_setBottomBarLifted(true)` を呼び、finally で `false` に戻す形で
-  /// 一連の SnackBar 表示中ずっとバーを持ち上げたままにできる。
-  void _setBottomBarLifted(bool _) {
-    if (!mounted) return;
-    try {
-      context.read<MindMapProvider>().setBottomBarLifted(false);
-    } catch (_) {}
-  }
 
   // ─── 下部ツールバー（横並び） ───────────────────────────────────────────────
 
@@ -42329,6 +43416,31 @@ class _MindMapScreenState extends State<MindMapScreen>
                 ),
         ),
       ),
+    );
+  }
+
+  /// 画面端へ固定したデスクトップ用ボタンバーの専用レイアウト領域。
+  ///
+  /// ドック自体は Scaffold の外側にある overlay へ描画されるため、以前は
+  /// カレンダーやキャンバスの上へ重なっていた。固定中だけ body を内側へ
+  /// 押し込み、自由配置中は余白を戻すことで両方の操作感を保つ。
+  EdgeInsets _desktopAnchoredDockInsets(MindMapProvider provider) {
+    if (!_isDesktop) return EdgeInsets.zero;
+    bool hasAnchoredSide(String placement) {
+      return _visibleDesktopHeaderButtonsAt(provider, placement).isNotEmpty &&
+          !provider.desktopSideDockFloatingAt(placement);
+    }
+
+    final hasBottom =
+        _visibleDesktopHeaderButtonsAt(provider, 'bottom').isNotEmpty &&
+            !provider.desktopBottomDockFloating;
+    // side: edge 10 + dock 60 + pageとの間隔10
+    // bottom: edge 12 + dock最大66 + pageとの間隔10
+    return EdgeInsets.fromLTRB(
+      hasAnchoredSide('left') ? 80 : 0,
+      0,
+      hasAnchoredSide('right') ? 80 : 0,
+      hasBottom ? 88 : 0,
     );
   }
 
@@ -42932,11 +44044,19 @@ class _MindMapScreenState extends State<MindMapScreen>
 
     Offset anchoredCenter() =>
         Offset(screen.width / 2, screen.height - dockHeight / 2 - 12);
-    final requestedCenter = _desktopBottomDockLiveCenter ??
+    final unshiftedCenter = _desktopBottomDockLiveCenter ??
         (provider.desktopBottomDockFloating
             ? Offset(provider.desktopBottomDockX * screen.width,
                 provider.desktopBottomDockY * screen.height)
             : anchoredCenter());
+    // 通知は画面の最下部側へ表示する。下部ドックが通知領域にある時だけ、
+    // 表示中は一時的にドックを上へ逃がす（保存位置そのものは変更しない）。
+    // すでに画面中央より上へ移動済みの自由配置ドックは動かさない。
+    final shouldLiftForSnack = provider.bottomBarLifted &&
+        unshiftedCenter.dy + dockHeight / 2 > screen.height - 104.0;
+    final requestedCenter = shouldLiftForSnack
+        ? Offset(unshiftedCenter.dx, unshiftedCenter.dy - 104.0)
+        : unshiftedCenter;
     final center = Offset(
       requestedCenter.dx
           .clamp(actualWidth / 2 + 8, screen.width - actualWidth / 2 - 8)
@@ -44115,14 +45235,6 @@ class _MindMapScreenState extends State<MindMapScreen>
                     if (v == 'lockV') setState(() => _lockV = !_lockV);
                     if (v == 'sync') _showSyncDialog(context, provider);
                     if (v == 'inquiry') _showInquiryDialog(context, provider);
-                    if (v == 'backgroundPlayback') {
-                      // ── バックグラウンド再生を有効にする ──
-                      // Android のバッテリー最適化除外画面に飛ばす。
-                      // ユーザーが設定画面で「制限なし」「最適化しない」を選ぶと、
-                      // 画面オフでも音声再生 / タイマーカウントダウンが確実に
-                      // 継続するようになる (Doze モードの影響を受けない)。
-                      _showBackgroundPlaybackDialog(context);
-                    }
                     // 'messaging' (メッセージ機能) は廃止 (ユーザー要望)。
                     if (v == 'autoLayout') {
                       provider.autoLayoutTree(referencePos: _currentRefPos());
@@ -44252,26 +45364,6 @@ class _MindMapScreenState extends State<MindMapScreen>
                             style: const TextStyle(color: Colors.white)),
                       ]),
                     ),
-                    // ── バックグラウンド再生を有効にする (モバイル限定) ──
-                    // タップすると Android のバッテリー最適化除外設定画面に
-                    // ジャンプして、ユーザーが「制限なし」「最適化しない」を
-                    // 選べるようにする。設定後、画面オフでも音声 / タイマーが
-                    // 確実に継続する。
-                    // デスクトップ (Windows / macOS / Linux) ではバッテリー最適化
-                    // 自体が存在せず、`_showBackgroundPlaybackDialog` も
-                    // 「Android 端末専用」と案内するだけなので、メニューから
-                    // 除外する。
-                    if (!_isDesktop)
-                      PopupMenuItem(
-                        value: 'backgroundPlayback',
-                        child: Row(children: [
-                          const Icon(Icons.battery_charging_full_rounded,
-                              color: Color(0xFF4FC3F7), size: 18),
-                          const SizedBox(width: 8),
-                          Text(provider.t('bg.enable'),
-                              style: const TextStyle(color: Colors.white)),
-                        ]),
-                      ),
                     const PopupMenuDivider(),
                     // ── ヘッダー/下部ボタンのカスタマイズは三点メニュー直下に
                     //    昇格 (= ユーザー要望: 設定シート内から 1 階層上げる) ──
@@ -48262,6 +49354,9 @@ class _MindMapScreenState extends State<MindMapScreen>
         builder: (_, __) => _MapBackgroundTemplateView(
           templateId: templateId,
           scrollOffset: ctrl.toScene(Offset.zero),
+          hueDegrees: page.backgroundHueDegrees,
+          saturationPercent: page.backgroundSaturationPercent,
+          brightnessPercent: page.backgroundBrightnessPercent,
         ),
       );
     } else {
@@ -48324,8 +49419,31 @@ class _MindMapScreenState extends State<MindMapScreen>
     );
   }
 
+  void _markMapScrollActivity() {
+    if (!mounted || !_isDesktop) return;
+    _mapScrollbarHideTimer?.cancel();
+    if (!_mapScrollbarsVisible && !_mapScrollbarShowPending) {
+      _mapScrollbarShowPending = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _mapScrollbarShowPending = false;
+        if (!mounted || _mapScrollbarsVisible) return;
+        setState(() => _mapScrollbarsVisible = true);
+      });
+    }
+    _mapScrollbarHideTimer = Timer(const Duration(milliseconds: 900), () {
+      if (!mounted) return;
+      if (_mapScrollbarsVisible || _activeMapScrollbarAxis != null) {
+        setState(() {
+          _mapScrollbarsVisible = false;
+          _activeMapScrollbarAxis = null;
+        });
+      }
+    });
+  }
+
   void _setActiveMapScrollbarAxis(Axis? axis) {
     if (!mounted || _activeMapScrollbarAxis == axis) return;
+    if (axis != null) _markMapScrollActivity();
     setState(() => _activeMapScrollbarAxis = axis);
   }
 
@@ -48340,6 +49458,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         (axis == Axis.vertical && _lockV)) {
       return;
     }
+    _markMapScrollActivity();
     final canvasDim = _canvasDimensionForScrollbars(provider);
     final margin = _canvasBoundaryMarginForScrollbars(provider, context);
     final matrix = Matrix4.copy(ctrl.value);
@@ -48758,7 +49877,8 @@ class _MindMapScreenState extends State<MindMapScreen>
           // マウスホイールを横移動へ切り替えるデスクトップ向け UI。
           // モバイルでは下部ツールバーと操作領域が重なるため表示せず、
           // 従来どおり空白ドラッグでパンする。
-          if (_isDesktop) _buildMapViewportScrollbars(provider, ctrl),
+          if (_isDesktop && _mapScrollbarsVisible)
+            _buildMapViewportScrollbars(provider, ctrl),
         ]);
       },
     );
@@ -49588,6 +50708,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                                             node.id, provider);
                                         return;
                                       }
+                                      provider.selectNode(node.id);
                                       // 格納ノードなら展開ポップアップを表示。
                                       // ギャラリーの表紙は、 いきなり展開/格納せず
                                       //   「編集 / 削除 / 展開・格納」 のメニューを
@@ -49688,12 +50809,18 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   _onLongPressNodeEnd();
                                 },
                           onThumbnailTap: _nodeHasLink(node)
-                              ? () => _openNodeLink(node)
+                              ? () {
+                                  provider.selectNode(node.id);
+                                  _openNodeLink(node);
+                                }
                               : null,
                           onAttachmentTap:
                               (node.attachmentPath ?? '').isNotEmpty
-                                  ? () => _openAttachment(node.attachmentPath!,
-                                      nodeId: node.id)
+                                  ? () {
+                                      provider.selectNode(node.id);
+                                      _openAttachment(node.attachmentPath!,
+                                          nodeId: node.id);
+                                    }
                                   : null,
                           // サブマップ埋め込みピル → 履歴に積んで遷移
                           onLinkedMapTap: (node.linkedPageId ?? '').isNotEmpty
@@ -49708,8 +50835,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   ? (sec) => _jumpFromMemoTimestamp(node, sec)
                                   : null,
                           onRightClick: _isDesktop
-                              ? (globalPos) =>
-                                  _showNodeContextMenu(node.id, globalPos, ctrl)
+                              ? (globalPos) {
+                                  provider.selectNode(node.id);
+                                  _showNodeContextMenu(
+                                      node.id, globalPos, ctrl);
+                                }
                               : null,
                           onInlineEditingStarted: !_isDesktop
                               ? () {
@@ -53823,7 +54953,8 @@ class _MindMapScreenState extends State<MindMapScreen>
             );
             if (ok) {
               if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
+                _appSnack(
+                  context,
                   const SnackBar(
                     content: Text('直近のスクリーンショットを貼り付けました'),
                     duration: Duration(seconds: 2),
@@ -54486,7 +55617,11 @@ class _MindMapScreenState extends State<MindMapScreen>
     'gradle', 'cmake',
   };
 
-  void _openAttachment(String path, {String? nodeId}) {
+  Future<void> _openAttachment(
+    String path, {
+    String? nodeId,
+    BuildContext? presentationContext,
+  }) async {
     // 拡張子取得 (URL クエリやフラグメントを除去)
     String cleaned = path;
     final qi = cleaned.indexOf('?');
@@ -54499,6 +55634,8 @@ class _MindMapScreenState extends State<MindMapScreen>
 
     final provider = mounted ? context.read<MindMapProvider>() : null;
     final inAppPref = provider?.openLinksInApp ?? true;
+    final viewerContext = presentationContext ?? context;
+    final useRootNavigator = presentationContext == null;
 
     // ─── 共通: ファイル名解決ヘルパ ───────────────────────────────────
     String resolveFileName() {
@@ -54526,8 +55663,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (isSpreadsheet && isLocal && inAppPref) {
       final fileName = resolveFileName();
       if (_isDesktop) {
-        showDialog<void>(
-          context: context,
+        await showDialog<void>(
+          context: viewerContext,
+          useRootNavigator: useRootNavigator,
           barrierColor: Colors.black.withValues(alpha: 0.92),
           builder: (_) => Dialog.fullscreen(
             backgroundColor:
@@ -54543,7 +55681,10 @@ class _MindMapScreenState extends State<MindMapScreen>
               //   excel が左画面分割に対応していないから対応するように
               //   して」) ──
               onSplitOpen: (p, n, {bool isLeftPanel = false}) {
-                Navigator.of(context).pop();
+                Navigator.of(
+                  viewerContext,
+                  rootNavigator: useRootNavigator,
+                ).pop();
                 _openOfficeInSplitPanel(p, n,
                     mode: 'xlsx', isLeftPanel: isLeftPanel);
               },
@@ -54551,7 +55692,10 @@ class _MindMapScreenState extends State<MindMapScreen>
           ),
         );
       } else {
-        Navigator.of(context).push<void>(MaterialPageRoute<void>(
+        await Navigator.of(
+          viewerContext,
+          rootNavigator: useRootNavigator,
+        ).push<void>(MaterialPageRoute<void>(
           fullscreenDialog: true,
           builder: (_) => Scaffold(
             backgroundColor:
@@ -54567,7 +55711,10 @@ class _MindMapScreenState extends State<MindMapScreen>
               onRenamed: (newPath, newName) =>
                   _notifyAttachmentRenamed(nodeId, newPath, newName),
               onSplitOpen: (p, n, {bool isLeftPanel = false}) {
-                Navigator.of(context).pop();
+                Navigator.of(
+                  viewerContext,
+                  rootNavigator: useRootNavigator,
+                ).pop();
                 _openOfficeInSplitPanel(p, n,
                     mode: 'xlsx', isLeftPanel: isLeftPanel);
               },
@@ -54583,8 +55730,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (isDocx && isLocal && inAppPref) {
       final fileName = resolveFileName();
       if (_isDesktop) {
-        showDialog<void>(
-          context: context,
+        await showDialog<void>(
+          context: viewerContext,
+          useRootNavigator: useRootNavigator,
           barrierColor: Colors.black.withValues(alpha: 0.92),
           builder: (_) => Dialog.fullscreen(
             backgroundColor:
@@ -54602,7 +55750,10 @@ class _MindMapScreenState extends State<MindMapScreen>
               // 開き直す。 _openOfficeInSplitPanel が左右の自動振り分けも
               // 担当する。
               onSplitOpen: (p, n, {bool isLeftPanel = false}) {
-                Navigator.of(context).pop();
+                Navigator.of(
+                  viewerContext,
+                  rootNavigator: useRootNavigator,
+                ).pop();
                 _openOfficeInSplitPanel(p, n,
                     mode: 'docx', isLeftPanel: isLeftPanel);
               },
@@ -54610,7 +55761,10 @@ class _MindMapScreenState extends State<MindMapScreen>
           ),
         );
       } else {
-        Navigator.of(context).push<void>(MaterialPageRoute<void>(
+        await Navigator.of(
+          viewerContext,
+          rootNavigator: useRootNavigator,
+        ).push<void>(MaterialPageRoute<void>(
           fullscreenDialog: true,
           builder: (_) => Scaffold(
             backgroundColor:
@@ -54626,7 +55780,10 @@ class _MindMapScreenState extends State<MindMapScreen>
               onRenamed: (newPath, newName) =>
                   _notifyAttachmentRenamed(nodeId, newPath, newName),
               onSplitOpen: (p, n, {bool isLeftPanel = false}) {
-                Navigator.of(context).pop();
+                Navigator.of(
+                  viewerContext,
+                  rootNavigator: useRootNavigator,
+                ).pop();
                 _openOfficeInSplitPanel(p, n,
                     mode: 'docx', isLeftPanel: isLeftPanel);
               },
@@ -54642,8 +55799,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (isPptx && isLocal && inAppPref) {
       final fileName = resolveFileName();
       if (_isDesktop) {
-        showDialog<void>(
-          context: context,
+        await showDialog<void>(
+          context: viewerContext,
+          useRootNavigator: useRootNavigator,
           barrierColor: Colors.black.withValues(alpha: 0.92),
           builder: (_) => Dialog.fullscreen(
             backgroundColor:
@@ -54655,7 +55813,10 @@ class _MindMapScreenState extends State<MindMapScreen>
               onRenamed: (newPath, newName) =>
                   _notifyAttachmentRenamed(nodeId, newPath, newName),
               onSplitOpen: (p, n, {bool isLeftPanel = false}) {
-                Navigator.of(context).pop();
+                Navigator.of(
+                  viewerContext,
+                  rootNavigator: useRootNavigator,
+                ).pop();
                 _openOfficeInSplitPanel(p, n,
                     mode: 'pptx', isLeftPanel: isLeftPanel);
               },
@@ -54663,7 +55824,10 @@ class _MindMapScreenState extends State<MindMapScreen>
           ),
         );
       } else {
-        Navigator.of(context).push<void>(MaterialPageRoute<void>(
+        await Navigator.of(
+          viewerContext,
+          rootNavigator: useRootNavigator,
+        ).push<void>(MaterialPageRoute<void>(
           fullscreenDialog: true,
           builder: (_) => Scaffold(
             backgroundColor:
@@ -54678,7 +55842,10 @@ class _MindMapScreenState extends State<MindMapScreen>
               onRenamed: (newPath, newName) =>
                   _notifyAttachmentRenamed(nodeId, newPath, newName),
               onSplitOpen: (p, n, {bool isLeftPanel = false}) {
-                Navigator.of(context).pop();
+                Navigator.of(
+                  viewerContext,
+                  rootNavigator: useRootNavigator,
+                ).pop();
                 _openOfficeInSplitPanel(p, n,
                     mode: 'pptx', isLeftPanel: isLeftPanel);
               },
@@ -54696,8 +55863,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (ext == 'ipynb' && isLocal && inAppPref) {
       final fileName = resolveFileName();
       if (_isDesktop) {
-        showDialog<void>(
-          context: context,
+        await showDialog<void>(
+          context: viewerContext,
+          useRootNavigator: useRootNavigator,
           barrierColor: Colors.black.withValues(alpha: 0.92),
           builder: (_) => Dialog.fullscreen(
             backgroundColor:
@@ -54712,7 +55880,10 @@ class _MindMapScreenState extends State<MindMapScreen>
           ),
         );
       } else {
-        Navigator.of(context).push<void>(MaterialPageRoute<void>(
+        await Navigator.of(
+          viewerContext,
+          rootNavigator: useRootNavigator,
+        ).push<void>(MaterialPageRoute<void>(
           fullscreenDialog: true,
           builder: (_) => Scaffold(
             backgroundColor:
@@ -54744,8 +55915,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (isTextLike && isLocal && inAppPref) {
       final fileName = resolveFileName();
       if (_isDesktop) {
-        showDialog<void>(
-          context: context,
+        await showDialog<void>(
+          context: viewerContext,
+          useRootNavigator: useRootNavigator,
           barrierColor: Colors.black.withValues(alpha: 0.92),
           builder: (_) => Dialog.fullscreen(
             backgroundColor:
@@ -54761,7 +55933,10 @@ class _MindMapScreenState extends State<MindMapScreen>
           ),
         );
       } else {
-        Navigator.of(context).push<void>(MaterialPageRoute<void>(
+        await Navigator.of(
+          viewerContext,
+          rootNavigator: useRootNavigator,
+        ).push<void>(MaterialPageRoute<void>(
           fullscreenDialog: true,
           builder: (_) => Scaffold(
             backgroundColor:
@@ -54788,8 +55963,13 @@ class _MindMapScreenState extends State<MindMapScreen>
     // - syncfusion_flutter_pdfviewer が全プラットフォーム (Win/macOS/Linux/
     //   iOS/Android) で動くので Platform 制限なし。
     if (isPdf && inAppPref) {
-      _showInAppViewer(context, path,
-          isLocalFile: !path.startsWith('http'), nodeId: nodeId);
+      await _showInAppViewer(
+        viewerContext,
+        path,
+        isLocalFile: !path.startsWith('http'),
+        nodeId: nodeId,
+        useRootNavigator: useRootNavigator,
+      );
       return;
     }
     // ── 画像ファイルはアプリ内エディターで開く ──
@@ -54804,21 +55984,23 @@ class _MindMapScreenState extends State<MindMapScreen>
         ext == 'bmp';
     if (isImage && isLocal) {
       final fileName = resolveFileName();
-      showDialog<void>(
-        context: context,
+      await showDialog<void>(
+        context: viewerContext,
+        useRootNavigator: useRootNavigator,
         barrierColor: Colors.black.withValues(alpha: 0.92),
         builder: (_) => Dialog.fullscreen(
           backgroundColor: const Color(0xFF1A1A24),
           child: _ImageEditorDialog(
             filePath: path,
             fileName: fileName,
+            useRootNavigator: useRootNavigator,
             onSaved: () => _notifyAttachmentEdited(nodeId),
           ),
         ),
       );
       return;
     }
-    OpenFilex.open(path);
+    await OpenFilex.open(path);
   }
 
   /// 添付ファイルが内蔵エディタで書き換えられた時に呼ぶ。
@@ -56203,7 +57385,6 @@ class _MindMapScreenState extends State<MindMapScreen>
     // ── ここから一連の SnackBar 表示中、下部ボタンバーを持ち上げる ──
     // 処理中 (180s) → 成功/失敗 (4-8s) を連続で出す間ずっと持ち上げ続ける。
     // try/finally で確実に元に戻す。
-    _setBottomBarLifted(true);
 
     // 進行中スナックバー (キャンセル不可、長時間待機)
     final messenger = ScaffoldMessenger.of(context);
@@ -56277,8 +57458,6 @@ class _MindMapScreenState extends State<MindMapScreen>
           ));
       // 失敗 SnackBar の終了も待ってから lift を解除
       await failController?.closed;
-    } finally {
-      _setBottomBarLifted(false);
     }
   }
 
@@ -56541,7 +57720,6 @@ class _MindMapScreenState extends State<MindMapScreen>
     final rootPos = _rootPositionForAiResult(provider, addToCurrent);
 
     // 一連の SnackBar 表示中、下部ボタンバーを持ち上げる (要約フローと同パターン)
-    _setBottomBarLifted(true);
 
     // 進行中スナックバー (網羅モードのみ「停止」アクション付き)。
     final messenger = ScaffoldMessenger.of(context);
@@ -56651,8 +57829,6 @@ class _MindMapScreenState extends State<MindMapScreen>
                 style: const TextStyle(color: Colors.white)),
           ));
       await failController?.closed;
-    } finally {
-      _setBottomBarLifted(false);
     }
   }
 
@@ -56696,7 +57872,6 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (session == null) return;
     final messenger = ScaffoldMessenger.of(context);
     messenger.hideCurrentSnackBar();
-    _setBottomBarLifted(true);
 
     // 中断されているページに切り替えてから再開 (見た目の一貫性のため)
     if (session.pageIndex >= 0 &&
@@ -56793,8 +57968,6 @@ class _MindMapScreenState extends State<MindMapScreen>
                 style: const TextStyle(color: Colors.white)),
           ));
       await failController?.closed;
-    } finally {
-      _setBottomBarLifted(false);
     }
   }
 
@@ -59585,9 +60758,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     final message = provider
         .t(empty ? 'page.deletedEmpty' : 'page.deleted')
         .replaceFirst('{name}', removedName);
-    _appSnack(
+    final controller = _appSnack(
       context,
       SnackBar(
+        duration: const Duration(seconds: 3),
         content: Text(
           '$message\nCtrl+Z / ${provider.t('page.undoDelete')}',
         ),
@@ -59597,6 +60771,12 @@ class _MindMapScreenState extends State<MindMapScreen>
         ),
       ),
     );
+    final timer = Timer(const Duration(seconds: 3), () {
+      // action付きSnackBarはアクセシビリティ設定時にdurationが無効になる。
+      // 別のScaffoldで通知が出ても、この削除通知自体は3秒で必ず閉じる。
+      controller.close();
+    });
+    controller.closed.whenComplete(timer.cancel);
   }
 
   Future<void> _confirmDeletePageAt(
@@ -60881,6 +62061,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       dy = _lockV ? 0.0 : -rawDy;
     }
     if (dx == 0 && dy == 0) return;
+    _markMapScrollActivity();
 
     final provider = context.read<MindMapProvider>();
     final m = Matrix4.copy(ctrl.value);
@@ -60923,6 +62104,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (_lockH) dx = 0;
     if (_lockV) dy = 0;
     if (dx == 0 && dy == 0) return;
+    _markMapScrollActivity();
     final m = Matrix4.copy(ctrl.value);
     final t = m.getTranslation();
     double newX = t.x + dx;
@@ -61964,6 +63146,11 @@ class _MindMapScreenState extends State<MindMapScreen>
           _removeOverlay();
           // = ユーザー要望: 選択要素をまとめてブラウザ版 AI へ (要素ごとに改行)。
           _sendBulkNodesToBrowserAi();
+        },
+        // 右クリック / 長押し → モデル切替 / 前提条件 / 子要素生成 (= ユーザー要望)。
+        onBulkAIMode: () {
+          _removeOverlay();
+          _showBulkAiModeMenu();
         },
         onDelete: () {
           _removeOverlay();
@@ -65599,14 +66786,12 @@ class _MindMapScreenState extends State<MindMapScreen>
     },
     {'id': 'editTitle', 'labelKey': 'cmd.editTitle', 'defaultKey': 'F2'},
     // 素早く文字を入力してフラッシュカード登録 (= ユーザー要望: 空いている F
-    //   キーに割り当て)。 F2=editTitle/F3=editMemo/F4=PDF AI 欄/F6=既存 と衝突
-    //   しない F7 を既定にする。
+    //   キーに割り当て)。F2/F4/F6 と衝突しない F7 を既定にする。
     {
       'id': 'quickFlashcard',
       'labelKey': 'cmd.quickFlashcard',
       'defaultKey': 'F7'
     },
-    {'id': 'editMemo', 'labelKey': 'cmd.editMemo', 'defaultKey': 'F3'},
     {'id': 'delete', 'labelKey': 'cmd.delete', 'defaultKey': 'Delete'},
     {
       'id': 'cancelMode',
@@ -66020,7 +67205,6 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// グローバルに捕捉する固定キーも含め、一覧本体と実際の入力処理を揃える。
   static const List<Map<String, String?>> _importantKeysOrder = [
     {'id': 'editTitle'}, // F2
-    {'id': 'editMemo'}, // F3
     {'id': 'swapSplitPanels'}, // F6
     {'id': 'historyBack'}, // Alt+←
     {'id': 'historyForward'}, // Alt+→
@@ -67003,7 +68187,7 @@ class _InlineTitleDialogState extends State<_InlineTitleDialog> {
       } catch (_) {}
       provider.updateNodeAttachment(widget.node.id, destPath, name);
       if (mounted) {
-        ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+        _appSnack(context, SnackBar(
           content: Text(provider.t('clip.imagePasted')),
           backgroundColor: const Color(0xFF43B97F),
           duration: const Duration(seconds: 2),
@@ -70852,11 +72036,8 @@ const String _kCtrlClickInterceptorJs = r'''
     if (!a) return;
     var ctrlish = e.ctrlKey || e.metaKey;
     var mid = isAux && e.button === 1;
-    var tgt = (a.getAttribute('target') || a.target || '');
-    var blank = (tgt === '_blank');
-    // Ctrl/中クリック、 または target=_blank (= 普通のブラウザで新しいタブが
-    //   開かれるリンク・広告等) の時だけ新しいタブで開く。
-    if (!ctrlish && !mid && !blank) return;
+    // 通常クリックと target=_blank は WebView2 の popup policy に任せる。
+    if (!ctrlish && !mid) return;
     var href = a.href;
     if (!href || href.indexOf('javascript:') === 0) return;
     e.preventDefault(); e.stopPropagation();
@@ -70864,23 +72045,6 @@ const String _kCtrlClickInterceptorJs = r'''
   }
   document.addEventListener('click', function(e){ handle(e, false); }, true);
   document.addEventListener('auxclick', function(e){ handle(e, true); }, true);
-  // window.open / ポップアップ (広告等) も新しいタブで開く。
-  try {
-    var _open = window.open;
-    window.open = function(url, name, feats){
-      try {
-        if (name === '_self' || name === '_top' || name === '_parent') {
-          return _open ? _open.apply(window, arguments) : null;
-        }
-        var u = '' + (url || '');
-        if (u.indexOf('http://') === 0 || u.indexOf('https://') === 0) {
-          send(u);
-          return null;
-        }
-      } catch(e){}
-      return _open ? _open.apply(window, arguments) : null;
-    };
-  } catch(e){}
 })();
 ''';
 
@@ -70975,6 +72139,9 @@ class _WindowsWebViewSheetState extends State<_WindowsWebViewSheet> {
 
   /// WebView で現在表示中の URL（埋め込み判定用）
   String _currentUrl = '';
+  String _oauthLastSafeServiceUrl = '';
+  bool _oauthHandoffInProgress = false;
+  DateTime? _lastOAuthHandoffAt;
   bool _isYoutube = false;
   bool _isMp4 = false;
   int _playlistIndex = 0;
@@ -71191,6 +72358,9 @@ class _WindowsWebViewSheetState extends State<_WindowsWebViewSheet> {
     super.initState();
     _playbackRate = widget.initialRate;
     _currentUrl = widget.url;
+    if (isSafeExternalServiceUrl(widget.url)) {
+      _oauthLastSafeServiceUrl = widget.url;
+    }
     _playlist = widget.playlist.isNotEmpty ? widget.playlist : [widget.url];
     _winTabs = [_WinTab(url: widget.url)]; // 最初のタブ = 現在開いている URL
     _winActiveTab = 0;
@@ -71234,6 +72404,56 @@ class _WindowsWebViewSheetState extends State<_WindowsWebViewSheet> {
     // なる (ユーザー報告)。
     if (widget.onEmbedUrl != null && !widget.forceHome) {
       _restoreYoutubeNavHistory();
+    }
+  }
+
+  Future<void> _handoffSheetOAuthToExternalBrowser() async {
+    final now = DateTime.now();
+    final last = _lastOAuthHandoffAt;
+    if (_oauthHandoffInProgress ||
+        (last != null && now.difference(last) < const Duration(seconds: 30))) {
+      return;
+    }
+    final fallback = isSafeExternalServiceUrl(_oauthLastSafeServiceUrl)
+        ? _oauthLastSafeServiceUrl
+        : (isSafeExternalServiceUrl(widget.url) ? widget.url : '');
+    if (fallback.isEmpty) return;
+
+    _oauthHandoffInProgress = true;
+    _lastOAuthHandoffAt = now;
+    try {
+      final opened = await launchUrl(
+        Uri.parse(fallback),
+        mode: LaunchMode.externalApplication,
+      );
+      if (opened && mounted) {
+        _appSnack(
+          context,
+          const SnackBar(
+            content: Text('Google などのログインは外部ブラウザで続けてください'),
+            backgroundColor: Color(0xFF6C63FF),
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('OAuth 外部ブラウザ起動失敗: $e');
+    } finally {
+      // 認証ページに留まって更新を繰り返さないよう、直前のサービスへ戻す。
+      if (mounted &&
+          _winActiveTab >= 0 &&
+          _winActiveTab < _winTabs.length) {
+        final tab = _winTabs[_winActiveTab];
+        setState(() {
+          tab.url = fallback;
+          _winShowTabPreview(tab);
+          _loading = true;
+        });
+        _winLoadForTab(tab, fallback);
+      }
+      Future<void>.delayed(const Duration(seconds: 2), () {
+        if (mounted) _oauthHandoffInProgress = false;
+      });
     }
   }
 
@@ -71617,6 +72837,23 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
     }
   }
 
+  /// url stream の最新値でヘッダー表示用の [_currentUrl] をライブ更新する。
+  /// navigationCompleted が発火しない YouTube 等の SPA 内遷移でも、動画メモ /
+  /// AI / 埋め込みボタンの表示条件 (= _currentUrl に動画 ID があるか) が正しく
+  /// 再評価されるようにする。 tab.url / title の確定 (DOM snapshot) には触れない。
+  void _winSyncLiveUrl(String u) {
+    // 表示中タブがアクティブな時だけ更新する (裏タブの redirect 混入を防ぐ)。
+    final bool ownerIsActive = _winActiveTab >= 0 &&
+        _winActiveTab < _winTabs.length &&
+        identical(_winTabs[_winActiveTab], _winDisplayedTab);
+    if (!ownerIsActive) return;
+    // ローカル mp4 は data:/file: ラッパになり、元パス判定 (_playlist) を壊す
+    //   ので _currentUrl を書き換えない (mp4 は _isMp4 フラグ側で処理)。
+    if (u.startsWith('data:') || u.startsWith('file:')) return;
+    if (u == _currentUrl) return;
+    setState(() => _currentUrl = u);
+  }
+
   /// navigationCompleted 時点の実 URL/title を、完了した最新 generation の
   /// 所有タブへ確定する。title stream はイベントに要求 ID が無く前後し得るため、
   /// タブ state の更新には使わず、ここで同じ DOM snapshot から取得する。
@@ -71779,7 +73016,21 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
       // URL stream も同様に所有者推測へ使わず、最新要求との一致確認だけに使う。
       _controller.url.listen((u) {
         if (mounted && u.isNotEmpty) {
+          if (isBlockedEmbeddedOAuthUrl(u)) {
+            unawaited(_handoffSheetOAuthToExternalBrowser());
+            return;
+          }
+          if (isSafeExternalServiceUrl(u)) {
+            _oauthLastSafeServiceUrl = u;
+          }
           _winObserveUrlForActiveNavigation(u);
+          // ── SPA 遷移対応 (= ユーザー報告: PC で YouTube を開いても動画メモ /
+          //    AI / 埋め込みボタンが出ない) ──。 YouTube は watch ページへ移っても
+          //    ページ内 (history API) 遷移のため navigationCompleted が発火せず、
+          //    ヘッダー用の _currentUrl が更新されずボタン表示条件を満たさない。
+          //    url stream は SourceChanged (history API 含む) で発火するので、
+          //    表示中タブの _currentUrl をライブ更新してボタンを出す。
+          _winSyncLiveUrl(u);
         }
       });
       _controller.loadingState.listen((state) {
@@ -72824,7 +74075,9 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
   void _sendVideoMemoToAi() {
     final text = _videoMemoController.text.trim();
     if (text.isEmpty) {
-      _showInlineBanner('メモが空です', color: const Color(0xFFE57373));
+      _showInlineBanner(
+          context.read<MindMapProvider>().t('vmemo.empty'),
+          color: const Color(0xFFE57373));
       return;
     }
     _sendTextToVideoAi(text);
@@ -72843,7 +74096,9 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
 
   void _sendVideoHistoryToAi() {
     if (_videoMemos.isEmpty) {
-      _showInlineBanner('送れるメモがありません', color: const Color(0xFFE57373));
+      _showInlineBanner(
+          context.read<MindMapProvider>().t('vmemo.noMemosToSend'),
+          color: const Color(0xFFE57373));
       return;
     }
     final text = _videoHistoryText();
@@ -72851,13 +74106,16 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
   }
 
   void _openVideoHistoryInGoogleSearch() {
+    final provider = context.read<MindMapProvider>();
     if (_videoMemos.isEmpty) {
-      _showInlineBanner('検索できるメモがありません', color: const Color(0xFFE57373));
+      _showInlineBanner(provider.t('vmemo.noMemosToSearch'),
+          color: const Color(0xFFE57373));
       return;
     }
     final text = _videoHistoryText().trim();
     if (text.isEmpty) {
-      _showInlineBanner('検索できるメモがありません', color: const Color(0xFFE57373));
+      _showInlineBanner(provider.t('vmemo.noMemosToSearch'),
+          color: const Color(0xFFE57373));
       return;
     }
     final size = MediaQuery.of(context).size;
@@ -72865,7 +74123,7 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
       context,
       initialQuery: text,
       initialMemo: text,
-      customTitle: '動画メモを検索',
+      customTitle: provider.t('vmemo.searchTitle'),
       anchorPos: const Offset(16, 16),
       singletonKey: 'win_video_memo_google',
       initialWidth: math.min(520.0, math.max(360.0, size.width * 0.42)),
@@ -72877,8 +74135,10 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
   /// 1件の動画メモ本文だけを Google 検索へ渡す。
   void _openVideoMemoInGoogleSearch(_VideoMemoEntry entry) {
     final text = entry.text.trim();
+    final provider = context.read<MindMapProvider>();
     if (text.isEmpty) {
-      _showInlineBanner('検索できるメモがありません', color: const Color(0xFFE57373));
+      _showInlineBanner(provider.t('vmemo.noMemosToSearch'),
+          color: const Color(0xFFE57373));
       return;
     }
     final size = MediaQuery.of(context).size;
@@ -72887,7 +74147,11 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
       context,
       initialQuery: text,
       initialMemo: text,
-      customTitle: sourceTitle.isEmpty ? '動画メモを検索' : '$sourceTitle のメモを検索',
+      customTitle: sourceTitle.isEmpty
+          ? provider.t('vmemo.searchTitle')
+          : provider
+              .t('vmemo.searchSourceTitle')
+              .replaceFirst('{title}', sourceTitle),
       anchorPos: const Offset(16, 16),
       // 同じ検索画面を再利用しつつ、別項目を押した時は入力内容を更新する。
       singletonKey: 'win_video_memo_google',
@@ -73079,7 +74343,7 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
               maxLines: 5,
               style: const TextStyle(color: Colors.white, fontSize: 13),
               decoration: InputDecoration(
-                hintText: '例: 日本語で答えて / 専門用語をかみ砕いて解説して',
+                hintText: provider.t('ai.prefixHint'),
                 hintStyle: const TextStyle(color: Colors.white38, fontSize: 12),
                 filled: true,
                 fillColor: Colors.white.withValues(alpha: 0.06),
@@ -73431,7 +74695,9 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
                                 : Icons.close_fullscreen_rounded,
                             color: Colors.white54,
                             size: 16),
-                        tooltip: collapsed ? '展開' : '折り畳む',
+                        tooltip: context
+                            .read<MindMapProvider>()
+                            .t(collapsed ? 'ctx.expand' : 'ctx.collapse'),
                         onPressed: onToggleCollapse,
                       ),
                       IconButton(
@@ -73516,9 +74782,12 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
       );
       if (!mounted) return;
       _showInlineBanner(
-          node != null ? '📋 画像を動画メモとしてマップに貼り付けました' : '画像の貼り付けに失敗しました',
-          color:
-              node != null ? const Color(0xFF43B97F) : const Color(0xFFE57373));
+        node != null
+            ? provider.t('vmemo.imagePastedToMap')
+            : provider.t('vmemo.imagePasteFailed'),
+        color:
+            node != null ? const Color(0xFF43B97F) : const Color(0xFFE57373),
+      );
     } catch (e) {
       debugPrint('動画メモの画像貼り付け失敗: $e');
     }
@@ -73557,7 +74826,9 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
     if (_videoMemoSubmitting) return;
     final text = (existingEntry?.text ?? _videoMemoController.text).trim();
     if (text.isEmpty) {
-      _showInlineBanner('メモが空です', color: const Color(0xFFE57373));
+      _showInlineBanner(
+          context.read<MindMapProvider>().t('vmemo.empty'),
+          color: const Color(0xFFE57373));
       return;
     }
     setState(() => _videoMemoSubmitting = true);
@@ -73591,7 +74862,8 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
       if (!mounted) return;
       if (node == null) {
         // ルート SnackBar はメモ欄の上に見えないので、 パネル内バナーで通知。
-        _showInlineBanner('メモの追加に失敗しました', color: const Color(0xFFE57373));
+        _showInlineBanner(provider.t('vmemo.addFailed'),
+            color: const Color(0xFFE57373));
         return;
       }
 
@@ -73622,12 +74894,21 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
 
       // 「マップにメモを追加」 をメモ欄の上のバナーで通知 (= ユーザー要望)。
       _showInlineBanner(
-          headerLabel.isNotEmpty ? 'マップにメモを追加 $headerLabel' : 'マップにメモを追加',
+          headerLabel.isNotEmpty
+              ? provider
+                  .t('vmemo.addedToMapAt')
+                  .replaceFirst('{timestamp}', headerLabel)
+              : provider.t('vmemo.addedToMap'),
           color: const Color(0xFF43B97F));
     } catch (e) {
       debugPrint('Win addVideoMemoNode failed: $e');
       if (mounted) {
-        _showInlineBanner('メモの追加に失敗: $e', color: const Color(0xFFE57373));
+        _showInlineBanner(
+            context
+                .read<MindMapProvider>()
+                .t('vmemo.addFailedWithError')
+                .replaceFirst('{error}', '$e'),
+            color: const Color(0xFFE57373));
       }
     } finally {
       if (mounted) setState(() => _videoMemoSubmitting = false);
@@ -73639,7 +74920,9 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
   void _winSaveVideoMemoLocally() {
     final text = _videoMemoController.text.trim();
     if (text.isEmpty) {
-      _showInlineBanner('メモが空です', color: const Color(0xFFE57373));
+      _showInlineBanner(
+          context.read<MindMapProvider>().t('vmemo.empty'),
+          color: const Color(0xFFE57373));
       return;
     }
     // タイムスタンプフィールドから値を取得 (空なら時刻なし)
@@ -73684,6 +74967,7 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
   /// デスクトップでは画面が広いので、 右下のサイドカード (幅 380px) で
   /// 表示する。 動画は左側に大きく見えたまま。
   Widget _buildWinVideoMemoPanel(BuildContext context, Size area) {
+    final provider = context.read<MindMapProvider>();
     // = ユーザー要望: AI(左下)と同時に使えるよう、 メモは右下にドックし
     //   フルスクリーンの暗幕は出さない (動画と AI パネルを操作できる)。
     return _winVideoDockPanel(
@@ -73727,7 +75011,7 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
       onClose: _toggleWinVideoMemoPanel,
       icon: Icons.sticky_note_2_rounded,
       iconColor: const Color(0xFFFFB347),
-      title: '動画メモ',
+      title: provider.t('vmemo.title'),
       // 「マップにメモを追加」 等の通知をメモ欄の上に重ねる (= ユーザー要望)。
       bannerOverlay: _buildWinPanelBanner(),
       // メモ本文を AI チャット欄に送る (= ユーザー要望: 動画メモから書いた
@@ -73742,8 +75026,8 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
             constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
             icon: const Icon(Icons.smart_toy_outlined,
                 color: Color(0xFFBA68C8), size: 18),
-            tooltip:
-                '${context.read<MindMapProvider>().t('vmemo.sendToAi')} (右クリック: モデル/前提条件)',
+            tooltip: '${provider.t('vmemo.sendToAi')} '
+                '(${provider.t('tooltip.aiMenuPrereqSuffix')})',
             onPressed: _sendVideoMemoToAi,
           ),
         ),
@@ -73764,7 +75048,7 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
               keyboardType: TextInputType.multiline,
               textInputAction: TextInputAction.newline,
               decoration: InputDecoration(
-                hintText: context.read<MindMapProvider>().t('vmemo.hint'),
+                hintText: provider.t('vmemo.inputHint'),
                 hintStyle: const TextStyle(color: Colors.white38, fontSize: 11),
                 filled: true,
                 fillColor: Colors.white.withValues(alpha: 0.08),
@@ -73787,9 +75071,9 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
                 const Icon(Icons.access_time_rounded,
                     color: Colors.white70, size: 14),
                 const SizedBox(width: 5),
-                const Text(
-                  'タイムスタンプ:',
-                  style: TextStyle(
+                Text(
+                  '${provider.t('vmemo.timestamp')}:',
+                  style: const TextStyle(
                       color: Colors.white70,
                       fontSize: 11,
                       fontWeight: FontWeight.w600),
@@ -73865,7 +75149,7 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
                           ),
                           const SizedBox(width: 2),
                           Text(
-                            '現在時刻',
+                            provider.t('vmemo.currentTime'),
                             style: TextStyle(
                               color: _videoMemoTsManualOverride
                                   ? const Color(0xFF4FC3F7)
@@ -73930,7 +75214,7 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
                         ),
                         const SizedBox(width: 4),
                         Text(
-                          'タイムスタンプ',
+                          provider.t('vmemo.timestamp'),
                           style: TextStyle(
                             color: _winVideoMemoShowTimestamp
                                 ? Colors.white
@@ -73958,9 +75242,9 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
                     elevation: 0,
                   ),
                   icon: const Icon(Icons.add_rounded, size: 16),
-                  label: const Text(
-                    'メモを追加',
-                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+                  label: Text(
+                    provider.t('vmemo.addMemo'),
+                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
                   ),
                 ),
               ],
@@ -73974,7 +75258,9 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
                 const Icon(Icons.history_rounded,
                     color: Colors.white54, size: 14),
                 const SizedBox(width: 4),
-                Text('動画メモ (${_videoMemos.length})',
+                Text(provider
+                    .t('vmemo.history')
+                    .replaceFirst('{count}', '${_videoMemos.length}'),
                     style:
                         const TextStyle(color: Colors.white54, fontSize: 11)),
                 const SizedBox(width: 8),
@@ -73993,12 +75279,12 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
                           color:
                               const Color(0xFFBA68C8).withValues(alpha: 0.5)),
                     ),
-                    child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                      Icon(Icons.auto_awesome_rounded,
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      const Icon(Icons.auto_awesome_rounded,
                           color: Color(0xFFBA68C8), size: 13),
-                      SizedBox(width: 4),
-                      Text('一括でAIに送る',
-                          style: TextStyle(
+                      const SizedBox(width: 4),
+                      Text(provider.t('vmemo.sendAllToAi'),
+                          style: const TextStyle(
                               color: Color(0xFFBA68C8),
                               fontSize: 10,
                               fontWeight: FontWeight.w700)),
@@ -74019,12 +75305,12 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
                           color:
                               const Color(0xFF4FC3F7).withValues(alpha: 0.5)),
                     ),
-                    child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                      Icon(Icons.search_rounded,
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      const Icon(Icons.search_rounded,
                           color: Color(0xFF4FC3F7), size: 13),
-                      SizedBox(width: 4),
-                      Text('Google検索',
-                          style: TextStyle(
+                      const SizedBox(width: 4),
+                      Text(provider.t('hdr.googleSearch'),
+                          style: const TextStyle(
                               color: Color(0xFF4FC3F7),
                               fontSize: 10,
                               fontWeight: FontWeight.w700)),
@@ -74155,7 +75441,9 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
                       : () => _winSubmitVideoMemoToMap(existingEntry: entry),
                 ),
               IconButton(
-                tooltip: 'このメモをAIに送る',
+                tooltip: context
+                    .read<MindMapProvider>()
+                    .t('vmemo.sendThisToAi'),
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
                 icon: const Icon(Icons.auto_awesome_rounded,
@@ -74163,7 +75451,9 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
                 onPressed: () => _sendTextToVideoAi(entry.text),
               ),
               IconButton(
-                tooltip: 'このメモでGoogle検索',
+                tooltip: context
+                    .read<MindMapProvider>()
+                    .t('vmemo.searchThisOnGoogle'),
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
                 icon: const Icon(Icons.search_rounded,
@@ -75075,7 +76365,9 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
     // Ctrl+M でメモ、 Ctrl+Shift+A で AI をトグル。 WebView にフォーカスが
     // ある間はネイティブ側がキーを消費するため、 ツールバー/パネル側に
     // フォーカスがあるときに効く (ベストエフォート)。
-    final bool isYt = _isYoutube && _extractVideoIdFromWin(_currentUrl) != null;
+    // _currentUrl から動画 ID が取れれば YouTube 動画ページと確定できるので、
+    //   フラグ (_isYoutube) の確定を待たずにボタンを出す (= ユーザー報告対応)。
+    final bool isYt = _extractVideoIdFromWin(_currentUrl) != null;
     return CallbackShortcuts(
       bindings: <ShortcutActivator, VoidCallback>{
         const SingleActivator(LogicalKeyboardKey.keyM, control: true): () {
@@ -75328,7 +76620,7 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
               // モバイル版と同じく、再生中の YouTube 動画をフローティング小窓に
               // 切り出してマップ操作の傍らで再生し続けられるようにする。
               // 現状 mp4 (HTML プレイヤー) は対象外 (videoId が無いため)。
-              if (_isYoutube && _extractVideoIdFromWin(_currentUrl) != null)
+              if (_extractVideoIdFromWin(_currentUrl) != null)
                 IconButton(
                   icon: const Icon(Icons.picture_in_picture_alt_rounded,
                       color: Color(0xFF4FC3F7), size: 20),
@@ -75341,8 +76633,7 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
               //    表示条件をメモボタンと揃えるだけで mp4 でも動く) ──
               // ── ボタン配置: パネルと同じく AI を左、 メモを右に並べる
               //    (= ユーザー要望: AI が左・メモが右に立ち上がるのでボタンも合わせる)。
-              if ((_isYoutube && _extractVideoIdFromWin(_currentUrl) != null) ||
-                  _isMp4)
+              if (_extractVideoIdFromWin(_currentUrl) != null || _isMp4)
                 // ── 右クリック/長押しで AI モデル切替 + 前提条件の画面 (= ユーザー
                 //    要望: AI ボタンのモデルアイコンを右クリックで動画メモと同じ
                 //    モデル選択 + 前提条件の画面を出す)。 左クリックは AI パネル開閉。 ──
@@ -75358,8 +76649,8 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
                           : Colors.white,
                       size: 20,
                     ),
-                    tooltip:
-                        '${context.read<MindMapProvider>().t('player.aiChat')} (右クリック: モデル/前提条件)',
+                    tooltip: '${context.read<MindMapProvider>().t('player.aiChat')} '
+                        '(${context.read<MindMapProvider>().t('tooltip.aiMenuPrereqSuffix')})',
                     onPressed: _toggleWinVideoAiPanel,
                   ),
                 ),
@@ -75368,8 +76659,7 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
               // 視聴中だけ表示。 タップで動画レイヤーの上にメモパネルが
               // 下からせり上がる。 動画は止めずに視聴を続けながら入力でき、
               // 「マップに追加」 でメモノードとしてキャンバス上に配置できる。
-              if ((_isYoutube && _extractVideoIdFromWin(_currentUrl) != null) ||
-                  _isMp4)
+              if (_extractVideoIdFromWin(_currentUrl) != null || _isMp4)
                 IconButton(
                   icon: Icon(
                     _videoMemoPanelOpen
@@ -78073,6 +79363,7 @@ class _GanttPageViewState extends State<_GanttPageView> {
   int _dragOrigStartMs = 0;
   int _dragOrigEndMs = 0;
   double _dragAccumPx = 0;
+  int _dragActiveUnits = 1;
   // ── タスク名のインライン編集 (= ユーザー要望: クリックで名前変更) ──
   String? _editingNameId;
   final TextEditingController _nameEditCtrl = TextEditingController();
@@ -78096,6 +79387,48 @@ class _GanttPageViewState extends State<_GanttPageView> {
   bool _isBlockedColumn(DateTime column) =>
       _unit == 'hour' &&
       isGanttHourColumnBlocked(column, _blockedIntervals);
+
+  ({DateTime start, DateTime end})? _normalizeTaskRange(
+    DateTime start,
+    DateTime end,
+  ) {
+    final flooredStart = _floorUnit(start);
+    final flooredEnd = _floorUnit(end);
+    if (_unit != 'hour' || _blockedIntervals.isEmpty) {
+      return (
+        start: flooredStart,
+        end: flooredEnd.isBefore(flooredStart) ? flooredStart : flooredEnd,
+      );
+    }
+
+    final active = ganttActiveHoursInRange(
+      start: flooredStart,
+      end: flooredEnd.isBefore(flooredStart) ? flooredStart : flooredEnd,
+      blocked: _blockedIntervals,
+    );
+    if (active.isNotEmpty) {
+      return (start: active.first, end: active.last);
+    }
+
+    final next = ganttSnapToActiveHour(
+      value: flooredStart,
+      blocked: _blockedIntervals,
+    );
+    return next == null ? null : (start: next, end: next);
+  }
+
+  DateTime? _defaultTaskEnd(DateTime start, {int activeUnits = 3}) {
+    if (_unit != 'hour' || _blockedIntervals.isEmpty) {
+      return _unit == 'hour'
+          ? start.add(Duration(hours: activeUnits - 1))
+          : start.add(Duration(days: activeUnits - 1));
+    }
+    return ganttShiftActiveHours(
+      from: start,
+      activeSteps: activeUnits - 1,
+      blocked: _blockedIntervals,
+    );
+  }
   // ── 時刻表記 (= ユーザー要望: 13時 より 1時 + AM/PM 表記、 切替可) ──
   //   true = 午前/午後 (12h)、 false = 24h。 prefs `gantt_clock12h` (全体共通)。
   bool _use12h = true;
@@ -78156,19 +79489,45 @@ class _GanttPageViewState extends State<_GanttPageView> {
     final i = _tasks.indexWhere((x) => x.id == id);
     if (i < 0) return;
     final t = _tasks[i];
-    // 期間 (単位数)。 0 = 1 単位ぶんしかないので分割不可。
-    final span = _unitIndex(_d(t.startMs), _d(t.endMs));
-    if (span < 1) {
-      _appSnack(
+    int firstEnd;
+    int secondStart;
+    if (_unit == 'hour' && _blockedIntervals.isNotEmpty) {
+      // 非稼働時間は分割位置の計算にも含めない。例えば 21:00〜翌
+      // 07:00（22:00〜06:00 が非稼働）は 21:00 / 06:00〜07:00
+      // のように、実際に作業できる時間だけを二分する。
+      final active = ganttActiveHoursInRange(
+        start: _d(t.startMs),
+        end: _d(t.endMs),
+        blocked: _blockedIntervals,
+      );
+      if (active.length < 2) {
+        _appSnack(
           context,
-          const SnackBar(
-              content: Text('1単位ぶんのタスクはこれ以上分割できません'),
-              duration: Duration(seconds: 2)));
-      return;
+          SnackBar(
+              content: Text(widget.provider.t('gantt.splitTooShort')),
+              duration: const Duration(seconds: 2)),
+        );
+        return;
+      }
+      final firstCount = (active.length + 1) ~/ 2;
+      firstEnd = active[firstCount - 1].millisecondsSinceEpoch;
+      secondStart = active[firstCount].millisecondsSinceEpoch;
+    } else {
+      // 期間 (単位数)。 0 = 1 単位ぶんしかないので分割不可。
+      final span = _unitIndex(_d(t.startMs), _d(t.endMs));
+      if (span < 1) {
+        _appSnack(
+          context,
+          SnackBar(
+              content: Text(widget.provider.t('gantt.splitTooShort')),
+              duration: const Duration(seconds: 2)),
+        );
+        return;
+      }
+      final half = span ~/ 2;
+      firstEnd = _shiftUnits(t.startMs, half);
+      secondStart = _shiftUnits(t.startMs, half + 1);
     }
-    final half = span ~/ 2; // 前半に含める単位境界
-    final firstEnd = _shiftUnits(t.startMs, half);
-    final secondStart = _shiftUnits(t.startMs, half + 1);
     final first = (
       id: t.id,
       name: t.name,
@@ -78231,6 +79590,16 @@ class _GanttPageViewState extends State<_GanttPageView> {
     // = ユーザー要望: 各チャートは最初から 1 行分ある状態にする。
     for (var chartIndex = 0; chartIndex < charts.length; chartIndex++) {
       final c = charts[chartIndex];
+      // ── 旧バージョンで日本語のまま保存された自動既定名「チャート{n}」 を、
+      //    現在の表示言語の既定名へ移行する (= ユーザー要望: チャート名の多言語
+      //    対応)。 数字で終わる自動生成名だけが対象で、 ユーザーが付けた独自名
+      //    は書き換えない。 日本語表示時は同じ文字列なので無変更。 ──
+      final autoMatch = RegExp(r'^チャート(\d+)$').firstMatch(c.name.trim());
+      if (autoMatch != null) {
+        c.name = widget.provider
+            .t('gantt.defaultChart')
+            .replaceFirst('{n}', autoMatch.group(1)!);
+      }
       if (c.name.trim().isEmpty) {
         c.name = widget.provider
             .t('gantt.defaultChart')
@@ -78238,12 +79607,29 @@ class _GanttPageViewState extends State<_GanttPageView> {
       }
       if (c.tasks.isEmpty) {
         final now = DateTime.now();
-        final start = c.unit == 'hour'
+        var start = c.unit == 'hour'
             ? DateTime(now.year, now.month, now.day, now.hour)
             : DateTime(now.year, now.month, now.day);
-        final end = c.unit == 'hour'
-            ? start.add(const Duration(hours: 2))
-            : start.add(const Duration(days: 2));
+        DateTime end;
+        if (c.unit == 'hour' && c.blockedIntervals.isNotEmpty) {
+          final activeStart = ganttSnapToActiveHour(
+            value: start,
+            blocked: c.blockedIntervals,
+          );
+          // 全日を設定不可にしたチャートへ自動タスクを作らない。
+          if (activeStart == null) continue;
+          start = activeStart;
+          end = ganttShiftActiveHours(
+                from: start,
+                activeSteps: 2,
+                blocked: c.blockedIntervals,
+              ) ??
+              start;
+        } else {
+          end = c.unit == 'hour'
+              ? start.add(const Duration(hours: 2))
+              : start.add(const Duration(days: 2));
+        }
         c.tasks.add((
           id: 'g${now.microsecondsSinceEpoch}',
           name: widget.provider.t('gantt.newTask'),
@@ -78614,10 +80000,26 @@ class _GanttPageViewState extends State<_GanttPageView> {
   /// (= ユーザー要望: クリックで行・予定の追加)。
   Future<void> _addQuickTask() async {
     final now = DateTime.now();
-    final start = _floorUnit(now);
-    final end = _unit == 'hour'
-        ? start.add(const Duration(hours: 2))
-        : start.add(const Duration(days: 2));
+    var start = _floorUnit(now);
+    if (_unit == 'hour' && _blockedIntervals.isNotEmpty) {
+      final activeStart = ganttSnapToActiveHour(
+        value: start,
+        blocked: _blockedIntervals,
+      );
+      if (activeStart == null) {
+        _appSnack(
+          context,
+          SnackBar(
+            content: Text(widget.provider.t('gantt.noAvailableHours')),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+        return;
+      }
+      start = activeStart;
+    }
+    final end = _defaultTaskEnd(start);
+    if (end == null) return;
     final t = (
       id: 'g${now.microsecondsSinceEpoch}',
       name: widget.provider.t('gantt.newTask'),
@@ -78722,8 +80124,11 @@ class _GanttPageViewState extends State<_GanttPageView> {
 
     String intervalLabel(GanttBlockedInterval interval) {
       final overnight = interval.endMinute < interval.startMinute;
+      final suffix = overnight
+          ? widget.provider.t('gantt.nextDaySuffix')
+          : '';
       return '${formatMinute(interval.startMinute)} 〜 '
-          '${formatMinute(interval.endMinute)}${overnight ? '（翌日）' : ''}';
+          '${formatMinute(interval.endMinute)}$suffix';
     }
 
     Future<GanttBlockedInterval?> pickBlockedInterval(
@@ -78753,9 +80158,9 @@ class _GanttPageViewState extends State<_GanttPageView> {
 
             return AlertDialog(
               backgroundColor: const Color(0xFF1E1E32),
-              title: const Text(
-                'タスクを設定しない時間帯',
-                style: TextStyle(color: Colors.white, fontSize: 15),
+              title: Text(
+                widget.provider.t('gantt.blockedRange'),
+                style: const TextStyle(color: Colors.white, fontSize: 15),
               ),
               content: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -78784,10 +80189,10 @@ class _GanttPageViewState extends State<_GanttPageView> {
                   const SizedBox(height: 8),
                   Text(
                     startHour == endHour
-                        ? '開始と終了には別の時刻を指定してください。'
+                        ? widget.provider.t('gantt.blockedDifferentHours')
                         : endHour < startHour
-                            ? '日をまたぐ設定として保存します。'
-                            : 'この区間に重なるタスク部分だけを無視します。',
+                            ? widget.provider.t('gantt.blockedOvernightHint')
+                            : widget.provider.t('gantt.blockedOverlapHint'),
                     style: TextStyle(
                       color: startHour == endHour
                           ? const Color(0xFFFF8A80)
@@ -78858,9 +80263,9 @@ class _GanttPageViewState extends State<_GanttPageView> {
 
         return AlertDialog(
           backgroundColor: const Color(0xFF1E1E32),
-          title: const Text(
-            '表示時間・設定不可時間帯',
-            style: TextStyle(color: Colors.white, fontSize: 15),
+          title: Text(
+            widget.provider.t('gantt.timeAndBlockedTitle'),
+            style: const TextStyle(color: Colors.white, fontSize: 15),
           ),
           content: SizedBox(
             width: 420,
@@ -78869,9 +80274,9 @@ class _GanttPageViewState extends State<_GanttPageView> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text(
-                    '表示する時間帯',
-                    style: TextStyle(color: Colors.white70, fontSize: 12),
+                  Text(
+                    widget.provider.t('gantt.visibleTimeRange'),
+                    style: const TextStyle(color: Colors.white70, fontSize: 12),
                   ),
                   Row(
                     mainAxisSize: MainAxisSize.min,
@@ -78888,24 +80293,25 @@ class _GanttPageViewState extends State<_GanttPageView> {
                   const Divider(color: Colors.white12, height: 24),
                   Row(
                     children: [
-                      const Expanded(
+                      Expanded(
                         child: Text(
-                          'タスクを設定しない時間帯',
-                          style:
-                              TextStyle(color: Colors.white70, fontSize: 12),
+                          widget.provider.t('gantt.blockedRange'),
+                          style: const TextStyle(
+                              color: Colors.white70, fontSize: 12),
                         ),
                       ),
                       if (blocked.isNotEmpty)
                         TextButton(
                           onPressed: () => setD(() => blocked = []),
-                          child: const Text(
-                            'すべて解除',
-                            style:
-                                TextStyle(color: Colors.white54, fontSize: 11),
+                          child: Text(
+                            widget.provider.t('gantt.blockedClearAll'),
+                            style: const TextStyle(
+                                color: Colors.white54, fontSize: 11),
                           ),
                         ),
                       IconButton(
-                        tooltip: '設定不可時間帯を追加',
+                        tooltip: widget.provider
+                            .t('gantt.blockedAddTooltip'),
                         visualDensity: VisualDensity.compact,
                         icon: const Icon(
                           Icons.add_circle_outline_rounded,
@@ -78924,11 +80330,12 @@ class _GanttPageViewState extends State<_GanttPageView> {
                     ],
                   ),
                   if (blocked.isEmpty)
-                    const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 8),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
                       child: Text(
-                        '未設定です。＋から追加できます。',
-                        style: TextStyle(color: Colors.white38, fontSize: 11),
+                        widget.provider.t('gantt.blockedEmpty'),
+                        style: const TextStyle(
+                            color: Colors.white38, fontSize: 11),
                       ),
                     )
                   else
@@ -78958,7 +80365,8 @@ class _GanttPageViewState extends State<_GanttPageView> {
                               ),
                             ),
                             IconButton(
-                              tooltip: '解除',
+                              tooltip: widget.provider
+                                  .t('gantt.blockedRemoveTooltip'),
                               visualDensity: VisualDensity.compact,
                               icon: const Icon(Icons.close_rounded,
                                   color: Colors.white54, size: 17),
@@ -78969,9 +80377,10 @@ class _GanttPageViewState extends State<_GanttPageView> {
                         ),
                       ),
                   const SizedBox(height: 4),
-                  const Text(
-                    '斜線の時間帯では、タスクの重なった部分だけが表示・所要時間から除外されます。',
-                    style: TextStyle(color: Colors.white38, fontSize: 10),
+                  Text(
+                    widget.provider.t('gantt.blockedDescription'),
+                    style: const TextStyle(
+                        color: Colors.white38, fontSize: 10),
                   ),
                 ],
               ),
@@ -79020,6 +80429,16 @@ class _GanttPageViewState extends State<_GanttPageView> {
     _dragOrigStartMs = t.startMs;
     _dragOrigEndMs = t.endMs;
     _dragAccumPx = 0;
+    if (_unit == 'hour' && _blockedIntervals.isNotEmpty) {
+      _dragActiveUnits = ganttActiveHoursInRange(
+        start: _d(t.startMs),
+        end: _d(t.endMs),
+        blocked: _blockedIntervals,
+      ).length;
+      if (_dragActiveUnits < 1) _dragActiveUnits = 1;
+    } else {
+      _dragActiveUnits = _unitIndex(_d(t.startMs), _d(t.endMs)) + 1;
+    }
   }
 
   void _applyGanttTask(int startMs, int endMs) {
@@ -79043,8 +80462,25 @@ class _GanttPageViewState extends State<_GanttPageView> {
     if (_dragId == null) return;
     _dragAccumPx += dx;
     final n = (_dragAccumPx / _colW).round();
-    _applyGanttTask(
-        _shiftUnits(_dragOrigStartMs, n), _shiftUnits(_dragOrigEndMs, n));
+    var startMs = _shiftUnits(_dragOrigStartMs, n);
+    var endMs = _shiftUnits(_dragOrigEndMs, n);
+    if (_unit == 'hour' && _blockedIntervals.isNotEmpty) {
+      final activeStart = ganttSnapToActiveHour(
+        value: _d(startMs),
+        blocked: _blockedIntervals,
+        forward: n >= 0,
+      );
+      if (activeStart == null) return;
+      final activeEnd = ganttShiftActiveHours(
+        from: activeStart,
+        activeSteps: _dragActiveUnits - 1,
+        blocked: _blockedIntervals,
+      );
+      if (activeEnd == null) return;
+      startMs = activeStart.millisecondsSinceEpoch;
+      endMs = activeEnd.millisecondsSinceEpoch;
+    }
+    _applyGanttTask(startMs, endMs);
   }
 
   /// 左端ハンドルをドラッグ → 開始のみ変更 (終了は固定、 終了は越えない)。
@@ -79053,6 +80489,23 @@ class _GanttPageViewState extends State<_GanttPageView> {
     _dragAccumPx += dx;
     final n = (_dragAccumPx / _colW).round();
     var ns = _shiftUnits(_dragOrigStartMs, n);
+    if (_unit == 'hour' && _blockedIntervals.isNotEmpty) {
+      var activeStart = ganttSnapToActiveHour(
+        value: _d(ns),
+        blocked: _blockedIntervals,
+        forward: n >= 0,
+      );
+      if (activeStart == null) return;
+      if (activeStart.millisecondsSinceEpoch > _dragOrigEndMs) {
+        activeStart = ganttSnapToActiveHour(
+          value: _d(_dragOrigEndMs),
+          blocked: _blockedIntervals,
+          forward: false,
+        );
+        if (activeStart == null) return;
+      }
+      ns = activeStart.millisecondsSinceEpoch;
+    }
     if (ns > _dragOrigEndMs) ns = _dragOrigEndMs;
     _applyGanttTask(ns, _dragOrigEndMs);
   }
@@ -79063,6 +80516,22 @@ class _GanttPageViewState extends State<_GanttPageView> {
     _dragAccumPx += dx;
     final n = (_dragAccumPx / _colW).round();
     var ne = _shiftUnits(_dragOrigEndMs, n);
+    if (_unit == 'hour' && _blockedIntervals.isNotEmpty) {
+      var activeEnd = ganttSnapToActiveHour(
+        value: _d(ne),
+        blocked: _blockedIntervals,
+        forward: n >= 0,
+      );
+      if (activeEnd == null) return;
+      if (activeEnd.millisecondsSinceEpoch < _dragOrigStartMs) {
+        activeEnd = ganttSnapToActiveHour(
+          value: _d(_dragOrigStartMs),
+          blocked: _blockedIntervals,
+        );
+        if (activeEnd == null) return;
+      }
+      ne = activeEnd.millisecondsSinceEpoch;
+    }
     if (ne < _dragOrigStartMs) ne = _dragOrigStartMs;
     _applyGanttTask(_dragOrigStartMs, ne);
   }
@@ -79212,7 +80681,8 @@ class _GanttPageViewState extends State<_GanttPageView> {
           left: 6,
           top: 12,
           child: Tooltip(
-            message: 'このタスクは設定不可時間帯にのみ重なっています',
+            message:
+                widget.provider.t('gantt.taskOnlyBlocked'),
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
               onTap: () => _selectTask(task.id),
@@ -79362,11 +80832,28 @@ class _GanttPageViewState extends State<_GanttPageView> {
     final assigneeCtrl = TextEditingController(text: task?.assignee ?? '');
     final now = DateTime.now();
     DateTime start = task != null ? _d(task.startMs) : _floorUnit(now);
+    if (task == null &&
+        _unit == 'hour' &&
+        _blockedIntervals.isNotEmpty) {
+      final activeStart = ganttSnapToActiveHour(
+        value: start,
+        blocked: _blockedIntervals,
+      );
+      if (activeStart == null) {
+        _appSnack(
+          context,
+          SnackBar(
+            content: Text(widget.provider.t('gantt.noAvailableHours')),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+        return;
+      }
+      start = activeStart;
+    }
     DateTime end = task != null
         ? _d(task.endMs)
-        : (_unit == 'hour'
-            ? start.add(const Duration(hours: 2))
-            : start.add(const Duration(days: 2)));
+        : (_defaultTaskEnd(start) ?? start);
     final result = await showDialog<String>(
       context: context,
       builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
@@ -79428,12 +80915,12 @@ class _GanttPageViewState extends State<_GanttPageView> {
               TextField(
                 controller: assigneeCtrl,
                 style: const TextStyle(color: Colors.white),
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   isDense: true,
-                  prefixIcon: Icon(Icons.person_outline_rounded,
+                  prefixIcon: const Icon(Icons.person_outline_rounded,
                       size: 18, color: Color(0xFF43B97F)),
-                  hintText: '担当者 (任意)',
-                  hintStyle: TextStyle(color: Colors.white38),
+                  hintText: widget.provider.t('gantt.assigneeHint'),
+                  hintStyle: const TextStyle(color: Colors.white38),
                 ),
               ),
               const SizedBox(height: 16),
@@ -79475,8 +80962,17 @@ class _GanttPageViewState extends State<_GanttPageView> {
                     final nm = nameCtrl.text.trim();
                     if (nm.isEmpty) return;
                     String two(int n) => n.toString().padLeft(2, '0');
-                    final s = _floorUnit(start);
-                    final e = _floorUnit(end);
+                    final normalized = _normalizeTaskRange(start, end);
+                    if (normalized == null) {
+                      _appSnack(
+                        context,
+                        SnackBar(content: Text(
+                            widget.provider.t('gantt.noAvailableHours'))),
+                      );
+                      return;
+                    }
+                    final s = normalized.start;
+                    final e = normalized.end;
                     final dateKey = '${s.year}-${two(s.month)}-${two(s.day)}';
                     await widget.provider.addCalendarEvent(
                       dateKey,
@@ -79523,6 +81019,21 @@ class _GanttPageViewState extends State<_GanttPageView> {
       }),
     );
     if (result == null) return;
+    final normalized = result == 'save'
+        ? _normalizeTaskRange(start, end)
+        : null;
+    if (result == 'save' && normalized == null) {
+      if (mounted) {
+        _appSnack(
+          context,
+          SnackBar(
+            content: Text(widget.provider.t('gantt.noAvailableHours')),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+      return;
+    }
     setState(() {
       if (result == 'delete' && task != null) {
         _tasks.removeWhere((t) => t.id == task.id);
@@ -79530,8 +81041,8 @@ class _GanttPageViewState extends State<_GanttPageView> {
         final newTask = (
           id: task?.id ?? 'g${DateTime.now().microsecondsSinceEpoch}',
           name: nameCtrl.text.trim(),
-          startMs: _floorUnit(start).millisecondsSinceEpoch,
-          endMs: _floorUnit(end).millisecondsSinceEpoch,
+          startMs: normalized!.start.millisecondsSinceEpoch,
+          endMs: normalized.end.millisecondsSinceEpoch,
           color: task?.color ??
               _palette[_tasks.length % _palette.length].toARGB32(),
           assignee: assigneeCtrl.text.trim(),
@@ -79702,8 +81213,9 @@ class _GanttPageViewState extends State<_GanttPageView> {
                   // ── 表示する時間帯の設定 (時間モードのみ) (= ユーザー要望) ──
                   if (_unit == 'hour')
                     IconButton(
-                      tooltip:
-                          context.read<MindMapProvider>().t('gantt.timeRange'),
+                      tooltip: context
+                          .read<MindMapProvider>()
+                          .t('gantt.timeAndBlockedTitle'),
                       visualDensity: VisualDensity.compact,
                       icon: const Icon(Icons.schedule_rounded,
                           size: 20, color: Colors.white70),
@@ -79743,7 +81255,7 @@ class _GanttPageViewState extends State<_GanttPageView> {
                   ),
                   // ── サイド編集メニューの開閉 (= ユーザー要望: 動画エディター風) ──
                   IconButton(
-                    tooltip: 'サイドメニュー',
+                    tooltip: widget.provider.t('gantt.sideMenu'),
                     visualDensity: VisualDensity.compact,
                     icon: Icon(
                         _sidePanelOpen
@@ -80050,15 +81562,15 @@ class _GanttPageViewState extends State<_GanttPageView> {
           child: Row(children: [
             const Icon(Icons.tune_rounded, size: 18, color: Color(0xFF4FC3F7)),
             const SizedBox(width: 8),
-            const Expanded(
-              child: Text('タスク編集',
-                  style: TextStyle(
+            Expanded(
+              child: Text(widget.provider.t('gantt.editTask'),
+                  style: const TextStyle(
                       color: Colors.white,
                       fontSize: 14,
                       fontWeight: FontWeight.w700)),
             ),
             IconButton(
-              tooltip: '閉じる',
+              tooltip: widget.provider.t('btn.close'),
               visualDensity: VisualDensity.compact,
               icon: const Icon(Icons.close, size: 18, color: Colors.white54),
               onPressed: () => setState(() => _sidePanelOpen = false),
@@ -80116,8 +81628,9 @@ class _GanttPageViewState extends State<_GanttPageView> {
         Padding(
           padding: const EdgeInsets.all(10),
           child: sel == null
-              ? const Text('バーをタップして選択すると、ここで編集・分割できます。',
-                  style: TextStyle(color: Colors.white38, fontSize: 11))
+              ? Text(widget.provider.t('gantt.sideEmptyHint'),
+                  style:
+                      const TextStyle(color: Colors.white38, fontSize: 11))
               : Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   mainAxisSize: MainAxisSize.min,
@@ -80138,8 +81651,8 @@ class _GanttPageViewState extends State<_GanttPageView> {
                               padding: const EdgeInsets.symmetric(vertical: 8)),
                           onPressed: () => _editTask(sel),
                           icon: const Icon(Icons.edit_rounded, size: 15),
-                          label:
-                              const Text('編集', style: TextStyle(fontSize: 12)),
+                          label: Text(widget.provider.t('btn.edit'),
+                              style: const TextStyle(fontSize: 12)),
                         ),
                       ),
                       const SizedBox(width: 6),
@@ -80150,8 +81663,8 @@ class _GanttPageViewState extends State<_GanttPageView> {
                               padding: const EdgeInsets.symmetric(vertical: 8)),
                           onPressed: _splitSelectedTask,
                           icon: const Icon(Icons.call_split_rounded, size: 15),
-                          label:
-                              const Text('分割', style: TextStyle(fontSize: 12)),
+                          label: Text(widget.provider.t('gantt.splitTask'),
+                              style: const TextStyle(fontSize: 12)),
                         ),
                       ),
                     ]),
@@ -80164,12 +81677,14 @@ class _GanttPageViewState extends State<_GanttPageView> {
                         onPressed: _deleteSelectedTask,
                         icon:
                             const Icon(Icons.delete_outline_rounded, size: 16),
-                        label: const Text('削除', style: TextStyle(fontSize: 12)),
+                        label: Text(widget.provider.t('btn.delete'),
+                            style: const TextStyle(fontSize: 12)),
                       ),
                     ),
-                    const Text('S キーで分割 / Delete で削除',
+                    Text(widget.provider.t('gantt.sideShortcutHint'),
                         textAlign: TextAlign.center,
-                        style: TextStyle(color: Colors.white24, fontSize: 10)),
+                        style: const TextStyle(
+                            color: Colors.white24, fontSize: 10)),
                   ],
                 ),
         ),
@@ -90561,7 +92076,9 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
   static const _ytSidePlaylistPrevious = 'playlist_previous';
   static const _ytSidePlaylistNext = 'playlist_next';
   static const _ytSideDownload = 'download';
-  static const _ytSideStopBackground = 'stop_background';
+  // 永続 ID は既存の並び順設定を壊さないため旧名を維持するが、現在は
+  // 「停止専用」ではなくバックグラウンド再生の ON/OFF トグルとして使う。
+  static const _ytSideBackgroundPlayback = 'stop_background';
 
   // ── 既定順 ──
   // UI 非表示 (hide_ui) は上から 7 番目に置く (= ユーザー要望 2026-07:
@@ -90588,7 +92105,7 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
     _ytSidePlaylistPrevious,
     _ytSidePlaylistNext,
     _ytSideDownload,
-    _ytSideStopBackground,
+    _ytSideBackgroundPlayback,
   ];
   List<String> _youtubeSideActionOrder =
       List<String>.of(_defaultYoutubeSideActionOrder);
@@ -90596,6 +92113,9 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
   /// 視聴中の動画情報をブラウザ AI へ渡す処理中。WebView から説明・再生位置を
   /// 取得している間の二重タップを防ぎ、下段ボタンに進捗を表示する。
   bool _sharingVideoWithBrowserAi = false;
+
+  /// バックグラウンド再生トグルの連打防止。
+  bool _backgroundPlaybackToggleBusy = false;
 
   /// UI 非表示ボタンでフォーカス CSS (= 動画以外を隠す) を注入したか。
   /// 復帰時に、 通常経路 (focusMode) の CSS を巻き添えで消さないための印。
@@ -92896,7 +94416,9 @@ v.addEventListener('play', function() {
     if (_videoMemoSubmitting) return;
     final text = existingEntry.text.trim();
     if (text.isEmpty) {
-      _showInlineBanner('メモが空です', color: const Color(0xFFE57373));
+      _showInlineBanner(
+          context.read<MindMapProvider>().t('vmemo.empty'),
+          color: const Color(0xFFE57373));
       return;
     }
     setState(() => _videoMemoSubmitting = true);
@@ -92937,7 +94459,8 @@ v.addEventListener('play', function() {
       if (!mounted) return;
       if (node == null) {
         // ルート SnackBar はメモ欄の上に見えにくいので、 パネル内バナーで通知。
-        _showInlineBanner('メモの追加に失敗しました', color: const Color(0xFFE57373));
+        _showInlineBanner(provider.t('vmemo.addFailed'),
+            color: const Color(0xFFE57373));
         return;
       }
 
@@ -92950,12 +94473,21 @@ v.addEventListener('play', function() {
 
       // 「マップにメモを追加」 をメモ欄の上のバナーで通知 (= ユーザー要望)。
       _showInlineBanner(
-          headerLabel.isNotEmpty ? 'マップにメモを追加 $headerLabel' : 'マップにメモを追加',
+          headerLabel.isNotEmpty
+              ? provider
+                  .t('vmemo.addedToMapAt')
+                  .replaceFirst('{timestamp}', headerLabel)
+              : provider.t('vmemo.addedToMap'),
           color: const Color(0xFF43B97F));
     } catch (e) {
       debugPrint('addVideoMemoNode failed: $e');
       if (mounted) {
-        _showInlineBanner('メモの追加に失敗: $e', color: const Color(0xFFE57373));
+        _showInlineBanner(
+            context
+                .read<MindMapProvider>()
+                .t('vmemo.addFailedWithError')
+                .replaceFirst('{error}', '$e'),
+            color: const Color(0xFFE57373));
       }
     } finally {
       if (mounted) setState(() => _videoMemoSubmitting = false);
@@ -92968,7 +94500,9 @@ v.addEventListener('play', function() {
   void _saveVideoMemoLocally() {
     final text = _videoMemoController.text.trim();
     if (text.isEmpty) {
-      _showInlineBanner('メモが空です', color: const Color(0xFFE57373));
+      _showInlineBanner(
+          context.read<MindMapProvider>().t('vmemo.empty'),
+          color: const Color(0xFFE57373));
       return;
     }
     // タイムスタンプフィールドから値を取得 (空なら時刻なし)
@@ -93013,6 +94547,7 @@ v.addEventListener('play', function() {
   /// 動画タップ等を奪わないよう、 Positioned.fill ではなく
   /// Align(bottomCenter) で下半分にだけ存在する Material を返す。
   Widget _buildVideoMemoPanel(BuildContext context) {
+    final provider = context.read<MindMapProvider>();
     final media = MediaQuery.of(context);
     final keyboard = media.viewInsets.bottom;
     final maxHeight = media.size.height * 0.55;
@@ -93091,10 +94626,10 @@ v.addEventListener('play', function() {
                             const Icon(Icons.sticky_note_2_rounded,
                                 color: Color(0xFFFFB347), size: 18),
                             const SizedBox(width: 6),
-                            const Expanded(
+                            Expanded(
                               child: Text(
-                                '動画メモ',
-                                style: TextStyle(
+                                provider.t('vmemo.title'),
+                                style: const TextStyle(
                                     color: Colors.white,
                                     fontSize: 14,
                                     fontWeight: FontWeight.w700),
@@ -93124,7 +94659,7 @@ v.addEventListener('play', function() {
                             keyboardType: TextInputType.multiline,
                             textInputAction: TextInputAction.newline,
                             decoration: InputDecoration(
-                              hintText: 'ここに気づいたことをメモ…  入力後に「メモを追加」を押します',
+                              hintText: provider.t('vmemo.inputHint'),
                               hintStyle: const TextStyle(
                                   color: Colors.white38, fontSize: 12),
                               filled: true,
@@ -93193,9 +94728,7 @@ v.addEventListener('play', function() {
                                         ),
                                         const SizedBox(width: 4),
                                         Text(
-                                          _videoMemoShowTimestamp
-                                              ? '再生位置を含める'
-                                              : '再生位置を含める',
+                                          provider.t('vmemo.includePosition'),
                                           style: TextStyle(
                                             fontSize: 11,
                                             fontWeight: FontWeight.w600,
@@ -93219,9 +94752,9 @@ v.addEventListener('play', function() {
                               const Icon(Icons.access_time_rounded,
                                   color: Colors.white70, size: 16),
                               const SizedBox(width: 6),
-                              const Text(
-                                'タイムスタンプ:',
-                                style: TextStyle(
+                              Text(
+                                '${provider.t('vmemo.timestamp')}:',
+                                style: const TextStyle(
                                     color: Colors.white70,
                                     fontSize: 12,
                                     fontWeight: FontWeight.w600),
@@ -93302,7 +94835,7 @@ v.addEventListener('play', function() {
                                         ),
                                         const SizedBox(width: 3),
                                         Text(
-                                          '現在時刻',
+                                          provider.t('vmemo.currentTime'),
                                           style: TextStyle(
                                             color: _videoMemoTsManualOverride
                                                 ? const Color(0xFF4FC3F7)
@@ -93341,8 +94874,8 @@ v.addEventListener('play', function() {
                                       MaterialTapTargetSize.shrinkWrap,
                                 ),
                                 icon: const Icon(Icons.add_rounded, size: 16),
-                                label: const Text('メモを追加',
-                                    style: TextStyle(
+                                label: Text(provider.t('vmemo.addMemo'),
+                                    style: const TextStyle(
                                         fontSize: 11,
                                         fontWeight: FontWeight.w700)),
                               ),
@@ -93368,7 +94901,10 @@ v.addEventListener('play', function() {
                                           color: Colors.white54, size: 14),
                                       const SizedBox(width: 4),
                                       Text(
-                                        '動画メモ (${_videoMemos.length})',
+                                        provider
+                                            .t('vmemo.history')
+                                            .replaceFirst('{count}',
+                                                '${_videoMemos.length}'),
                                         style: const TextStyle(
                                             color: Colors.white54,
                                             fontSize: 11),
@@ -93380,18 +94916,18 @@ v.addEventListener('play', function() {
                                   InkWell(
                                     onTap: _sendVideoHistoryToAi,
                                     borderRadius: BorderRadius.circular(6),
-                                    child: const Padding(
-                                      padding: EdgeInsets.symmetric(
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(
                                           horizontal: 6, vertical: 2),
                                       child: Row(
                                           mainAxisSize: MainAxisSize.min,
                                           children: [
-                                            Icon(Icons.auto_awesome_rounded,
+                                            const Icon(Icons.auto_awesome_rounded,
                                                 color: Color(0xFFBA68C8),
                                                 size: 14),
-                                            SizedBox(width: 3),
-                                            Text('一括でAIに送る',
-                                                style: TextStyle(
+                                            const SizedBox(width: 3),
+                                            Text(provider.t('vmemo.sendAllToAi'),
+                                                style: const TextStyle(
                                                     color: Color(0xFFBA68C8),
                                                     fontSize: 10,
                                                     fontWeight:
@@ -93402,18 +94938,18 @@ v.addEventListener('play', function() {
                                   InkWell(
                                     onTap: _openVideoHistoryInGoogleSearch,
                                     borderRadius: BorderRadius.circular(6),
-                                    child: const Padding(
-                                      padding: EdgeInsets.symmetric(
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(
                                           horizontal: 6, vertical: 2),
                                       child: Row(
                                           mainAxisSize: MainAxisSize.min,
                                           children: [
-                                            Icon(Icons.search_rounded,
+                                            const Icon(Icons.search_rounded,
                                                 color: Color(0xFF4FC3F7),
                                                 size: 14),
-                                            SizedBox(width: 3),
-                                            Text('Google検索',
-                                                style: TextStyle(
+                                            const SizedBox(width: 3),
+                                            Text(provider.t('hdr.googleSearch'),
+                                                style: const TextStyle(
                                                     color: Color(0xFF4FC3F7),
                                                     fontSize: 10,
                                                     fontWeight:
@@ -93499,7 +95035,9 @@ v.addEventListener('play', function() {
 
   void _sendVideoHistoryToAi() {
     if (_videoMemos.isEmpty) {
-      _showInlineBanner('送れるメモがありません', color: const Color(0xFFE57373));
+      _showInlineBanner(
+          context.read<MindMapProvider>().t('vmemo.noMemosToSend'),
+          color: const Color(0xFFE57373));
       return;
     }
     final text = _videoHistoryText();
@@ -93507,13 +95045,16 @@ v.addEventListener('play', function() {
   }
 
   void _openVideoHistoryInGoogleSearch() {
+    final provider = context.read<MindMapProvider>();
     if (_videoMemos.isEmpty) {
-      _showInlineBanner('検索できるメモがありません', color: const Color(0xFFE57373));
+      _showInlineBanner(provider.t('vmemo.noMemosToSearch'),
+          color: const Color(0xFFE57373));
       return;
     }
     final text = _videoHistoryText().trim();
     if (text.isEmpty) {
-      _showInlineBanner('検索できるメモがありません', color: const Color(0xFFE57373));
+      _showInlineBanner(provider.t('vmemo.noMemosToSearch'),
+          color: const Color(0xFFE57373));
       return;
     }
     final size = MediaQuery.of(context).size;
@@ -93521,7 +95062,7 @@ v.addEventListener('play', function() {
       context,
       initialQuery: text,
       initialMemo: text,
-      customTitle: '動画メモを検索',
+      customTitle: provider.t('vmemo.searchTitle'),
       anchorPos: const Offset(12, 8),
       singletonKey: 'mobile_video_memo_google',
       initialWidth: math.min(430.0, math.max(300.0, size.width - 16.0)),
@@ -93535,8 +95076,10 @@ v.addEventListener('play', function() {
   /// 旧データの sourceTitle == null でも従来通り開ける。
   void _openVideoMemoInGoogleSearch(_VideoMemoEntry entry) {
     final text = entry.text.trim();
+    final provider = context.read<MindMapProvider>();
     if (text.isEmpty) {
-      _showInlineBanner('検索できるメモがありません', color: const Color(0xFFE57373));
+      _showInlineBanner(provider.t('vmemo.noMemosToSearch'),
+          color: const Color(0xFFE57373));
       return;
     }
     final size = MediaQuery.of(context).size;
@@ -93545,7 +95088,11 @@ v.addEventListener('play', function() {
       context,
       initialQuery: text,
       initialMemo: text,
-      customTitle: sourceTitle.isEmpty ? '動画メモを検索' : '$sourceTitle のメモを検索',
+      customTitle: sourceTitle.isEmpty
+          ? provider.t('vmemo.searchTitle')
+          : provider
+              .t('vmemo.searchSourceTitle')
+              .replaceFirst('{title}', sourceTitle),
       anchorPos: const Offset(12, 8),
       // 同じ検索画面を再利用し、別項目を押した時は内容を更新する。
       singletonKey: 'mobile_video_memo_google',
@@ -94004,8 +95551,11 @@ v.addEventListener('play', function() {
         return '次の動画';
       case _ytSideDownload:
         return '動画を保存';
-      case _ytSideStopBackground:
-        return 'バックグラウンド再生を停止';
+      case _ytSideBackgroundPlayback:
+        final provider = context.read<MindMapProvider>();
+        return provider.backgroundPlaybackEnabled
+            ? provider.t('bg.statusOn')
+            : provider.t('bg.statusOff');
     }
     return id;
   }
@@ -94052,8 +95602,10 @@ v.addEventListener('play', function() {
         return Icons.skip_next_rounded;
       case _ytSideDownload:
         return Icons.download_rounded;
-      case _ytSideStopBackground:
-        return Icons.stop_circle_rounded;
+      case _ytSideBackgroundPlayback:
+        return context.read<MindMapProvider>().backgroundPlaybackEnabled
+            ? Icons.play_circle_fill_rounded
+            : Icons.play_circle_outline_rounded;
     }
     return Icons.extension_rounded;
   }
@@ -94098,8 +95650,8 @@ v.addEventListener('play', function() {
         return _isMp4 &&
             (_currentUrl.startsWith('http://') ||
                 _currentUrl.startsWith('https://'));
-      case _ytSideStopBackground:
-        return !kIsWeb && Platform.isAndroid && _BgPlaybackController.isRunning;
+      case _ytSideBackgroundPlayback:
+        return !kIsWeb && Platform.isAndroid && isVideo;
     }
     return false;
   }
@@ -94443,20 +95995,51 @@ v.addEventListener('play', function() {
     if (url.isNotEmpty) callback(url);
   }
 
-  Future<void> _stopVideoBackgroundPlayback() async {
+  Future<void> _toggleVideoBackgroundPlayback() async {
+    if (kIsWeb || !Platform.isAndroid || _backgroundPlaybackToggleBusy) return;
     final provider = context.read<MindMapProvider>();
-    provider.setBackgroundPlaybackEnabled(false);
-    await _BgPlaybackController.forceStop();
-    if (!mounted) return;
-    _appSnack(
-      context,
-      SnackBar(
-        content: Text(provider.t('bg.stopped')),
-        backgroundColor: Colors.redAccent,
-        duration: const Duration(seconds: 2),
-      ),
-    );
-    setState(() {});
+    final next = !provider.backgroundPlaybackEnabled;
+    setState(() => _backgroundPlaybackToggleBusy = true);
+    try {
+      await provider.setBackgroundPlaybackEnabled(next);
+      if (next) {
+        // Android の省電力制限対象なら、動画画面から直接除外を依頼する。
+        // 拒否された場合も設定自体は保持し、次回この画面を開いた時に再度
+        // Foreground Service を開始できるようにする。
+        try {
+          if (!await Permission.ignoreBatteryOptimizations.isGranted) {
+            await Permission.ignoreBatteryOptimizations.request();
+          }
+        } catch (_) {}
+        if (!mounted) return;
+        await _initAndStartForegroundService();
+      } else {
+        // refCount を含めて完全停止し、常駐通知も即座に消す。
+        await _BgPlaybackController.forceStop();
+      }
+      if (!mounted) return;
+      _appSnack(
+        context,
+        SnackBar(
+          content: Text(
+            next ? provider.t('bg.statusOn') : provider.t('bg.stopped'),
+          ),
+          backgroundColor:
+              next ? const Color(0xFF43B97F) : Colors.redAccent,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    } catch (e) {
+      debugPrint('バックグラウンド再生の切り替えに失敗: $e');
+      if (next) {
+        await provider.setBackgroundPlaybackEnabled(false);
+        await _BgPlaybackController.forceStop();
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _backgroundPlaybackToggleBusy = false);
+      }
+    }
   }
 
   /// YouTube WebView の右端に重ねる共通サイズの丸ボタン。
@@ -94801,12 +96384,42 @@ v.addEventListener('play', function() {
               color: Color(0xFFFFB347), size: 21),
           onTap: _downloadCurrentVideo,
         );
-      case _ytSideStopBackground:
-        return _buildMobileYoutubeRailButton(
-          color: Colors.redAccent,
-          icon: const Icon(Icons.stop_circle_rounded,
-              color: Colors.redAccent, size: 21),
-          onTap: _stopVideoBackgroundPlayback,
+      case _ytSideBackgroundPlayback:
+        final provider = context.watch<MindMapProvider>();
+        final enabled = provider.backgroundPlaybackEnabled;
+        final statusLabel =
+            provider.t(enabled ? 'bg.statusOn' : 'bg.statusOff');
+        return Semantics(
+          button: true,
+          label: provider.t('bg.title'),
+          value: statusLabel,
+          child: Tooltip(
+            message: statusLabel,
+            child: _buildMobileYoutubeRailButton(
+              color: enabled ? const Color(0xFF43B97F) : Colors.white54,
+              icon: _backgroundPlaybackToggleBusy
+                  ? SizedBox(
+                      width: 17,
+                      height: 17,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color:
+                            enabled ? const Color(0xFF43B97F) : Colors.white70,
+                      ),
+                    )
+                  : Icon(
+                      enabled
+                          ? Icons.play_circle_fill_rounded
+                          : Icons.play_circle_outline_rounded,
+                      color:
+                          enabled ? const Color(0xFF43B97F) : Colors.white70,
+                      size: 21,
+                    ),
+              onTap: _backgroundPlaybackToggleBusy
+                  ? null
+                  : _toggleVideoBackgroundPlayback,
+            ),
+          ),
         );
     }
     // 新しいバージョンの設定値など未知 ID が来ても描画を止めない。
@@ -95132,7 +96745,9 @@ v.addEventListener('play', function() {
                 ),
               // ── 個別 AI 送信 (= ユーザー要望: セッションメモを 1 件ずつ AI に送る) ──
               IconButton(
-                tooltip: 'AIに送る',
+                tooltip: context
+                    .read<MindMapProvider>()
+                    .t('vmemo.sendThisToAi'),
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
                 icon: const Icon(Icons.auto_awesome_rounded,
@@ -95140,7 +96755,9 @@ v.addEventListener('play', function() {
                 onPressed: () => _openMemoTextInAi(entry.text),
               ),
               IconButton(
-                tooltip: 'このメモでGoogle検索',
+                tooltip: context
+                    .read<MindMapProvider>()
+                    .t('vmemo.searchThisOnGoogle'),
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
                 icon: const Icon(Icons.search_rounded,
@@ -95955,48 +97572,6 @@ v.addEventListener('play', function() {
                                   ),
                                   onPressed: _toggleVideoMemoPanel,
                                 ),
-                              // ── バックグラウンド再生 強制停止ボタン ──
-                              // ユーザー要望: 「動画を止めて画面を閉じてもバックグラウンド
-                              // 再生が起動してしまう」 → アプリ内で 1 タップで完全停止できる
-                              // 仕組みを用意。Service が動いている間だけ表示する。
-                              // 押すと:
-                              //   1. _BgPlaybackController.forceStop() で refCount=0 にリセット
-                              //      → 通知も即座に消える
-                              //   2. provider.backgroundPlaybackEnabled を false にして
-                              //      その後再生開始しても自動で再起動しないようにする
-                              //   3. SnackBar で停止を知らせる
-                              if (Platform.isAndroid &&
-                                  _BgPlaybackController.isRunning)
-                                IconButton(
-                                  tooltip: context
-                                      .read<MindMapProvider>()
-                                      .t('bg.stopAction'),
-                                  padding: EdgeInsets.zero,
-                                  constraints: const BoxConstraints(
-                                      minWidth: 32, minHeight: 32),
-                                  icon: const Icon(Icons.stop_circle_rounded,
-                                      color: Colors.redAccent, size: 22),
-                                  onPressed: () async {
-                                    final provider =
-                                        context.read<MindMapProvider>();
-                                    // 設定も OFF にして、Lifecycle ハンドラが再起動しない
-                                    // ようにする (= ユーザーの意図を尊重)。
-                                    provider
-                                        .setBackgroundPlaybackEnabled(false);
-                                    await _BgPlaybackController.forceStop();
-                                    if (!mounted) return;
-                                    _appSnack(
-                                      context,
-                                      SnackBar(
-                                        content: Text(provider.t('bg.stopped')),
-                                        backgroundColor: Colors.redAccent,
-                                        duration: const Duration(seconds: 2),
-                                      ),
-                                    );
-                                    // ボタンを消すために rebuild
-                                    setState(() {});
-                                  },
-                                ),
                               // ── ダウンロードボタン ──
                               // mp4 直リンクの時だけ表示。
                               // 端末のドキュメントフォルダ内 `Downloads/` に保存する。
@@ -96496,12 +98071,19 @@ v.addEventListener('play', function() {
                                       urlStr.contains('/embed/') ||
                                       urlStr.contains('youtu.be/');
                                   if (_isYoutube && isWatch) {
+                                    // ── 再生速度はフォーカスモードに関わらず維持する ──
+                                    //   (= ユーザー報告: モバイルで別の動画へ移動すると
+                                    //   4倍に設定したのに 1倍へ戻る)。 YouTube の SPA 遷移
+                                    //   (動画→動画) では onLoadStop が発火せず、 JS 実行
+                                    //   コンテキストが作り直されて __MM_RATE__ が失われる
+                                    //   ことがあるため、 watch へ遷移する度に必ず再注入する。
+                                    _injectPlaybackRate();
                                     // 動画埋め込み再生 (focusMode:true) の時だけ、 周辺 UI
-                                    //   (関連動画/コメント/ヘッダー等) を隠す CSS を入れる。
-                                    //   ブラウズ (focusMode:false) では素の YouTube UI を保つ。
+                                    //   (関連動画/コメント/ヘッダー等) を隠す CSS + 位置復元
+                                    //   を行う。 ブラウズ (focusMode:false) では素の YouTube
+                                    //   UI と自由な遷移を保つ。
                                     if (widget.focusMode) {
                                       _injectStyle();
-                                      _injectPlaybackRate();
                                       _restorePosition();
                                     }
                                   } else {
@@ -99141,14 +100723,99 @@ class _GroupForegroundPainter extends CustomPainter {
 class _MapBackgroundTemplateView extends StatelessWidget {
   final String templateId;
   final Offset scrollOffset;
-  const _MapBackgroundTemplateView(
-      {required this.templateId, this.scrollOffset = Offset.zero});
+  final int hueDegrees;
+  final int saturationPercent;
+  final int brightnessPercent;
+  const _MapBackgroundTemplateView({
+    required this.templateId,
+    this.scrollOffset = Offset.zero,
+    this.hueDegrees = 0,
+    this.saturationPercent = 100,
+    this.brightnessPercent = 100,
+  });
 
   @override
-  Widget build(BuildContext context) => CustomPaint(
-        painter: _MapBackgroundTemplatePainter(templateId, scrollOffset),
-        child: const SizedBox.expand(),
+  Widget build(BuildContext context) {
+    Widget result = CustomPaint(
+      painter: _MapBackgroundTemplatePainter(templateId, scrollOffset),
+      child: const SizedBox.expand(),
+    );
+    final brightness = brightnessPercent.clamp(50, 150) / 100.0;
+    if ((brightness - 1.0).abs() > 0.001) {
+      result = ColorFiltered(
+        colorFilter: ColorFilter.matrix(<double>[
+          brightness, 0, 0, 0, 0,
+          0, brightness, 0, 0, 0,
+          0, 0, brightness, 0, 0,
+          0, 0, 0, 1, 0,
+        ]),
+        child: result,
       );
+    }
+    final saturation = saturationPercent.clamp(0, 200) / 100.0;
+    if ((saturation - 1.0).abs() > 0.001) {
+      const red = 0.213;
+      const green = 0.715;
+      const blue = 0.072;
+      final inverse = 1.0 - saturation;
+      result = ColorFiltered(
+        colorFilter: ColorFilter.matrix(<double>[
+          inverse * red + saturation,
+          inverse * green,
+          inverse * blue,
+          0,
+          0,
+          inverse * red,
+          inverse * green + saturation,
+          inverse * blue,
+          0,
+          0,
+          inverse * red,
+          inverse * green,
+          inverse * blue + saturation,
+          0,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+        ]),
+        child: result,
+      );
+    }
+    final radians = hueDegrees.clamp(-180, 180) * math.pi / 180.0;
+    if (radians.abs() > 0.001) {
+      final cosine = math.cos(radians);
+      final sine = math.sin(radians);
+      result = ColorFiltered(
+        colorFilter: ColorFilter.matrix(<double>[
+          0.213 + cosine * 0.787 - sine * 0.213,
+          0.715 - cosine * 0.715 - sine * 0.715,
+          0.072 - cosine * 0.072 + sine * 0.928,
+          0,
+          0,
+          0.213 - cosine * 0.213 + sine * 0.143,
+          0.715 + cosine * 0.285 + sine * 0.140,
+          0.072 - cosine * 0.072 - sine * 0.283,
+          0,
+          0,
+          0.213 - cosine * 0.213 - sine * 0.787,
+          0.715 - cosine * 0.715 + sine * 0.715,
+          0.072 + cosine * 0.928 + sine * 0.072,
+          0,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+        ]),
+        child: result,
+      );
+    }
+    return result;
+  }
 }
 
 class _MapBackgroundTemplatePainter extends CustomPainter {
@@ -102262,6 +103929,10 @@ class _MultiNodeActionOverlay extends StatelessWidget {
   final int count;
   final VoidCallback onClose;
   final VoidCallback onBulkAI;
+
+  /// AI 一括ボタンの右クリック / 長押し → モデル切替 / 前提条件の設定
+  /// (= ユーザー要望: 要素の AI ボタンと同じくモード選択を出す)。
+  final VoidCallback onBulkAIMode;
   final VoidCallback onDelete;
   final VoidCallback onCopy;
   final VoidCallback onGroup;
@@ -102280,6 +103951,7 @@ class _MultiNodeActionOverlay extends StatelessWidget {
     required this.count,
     required this.onClose,
     required this.onBulkAI,
+    required this.onBulkAIMode,
     required this.onDelete,
     required this.onCopy,
     required this.onGroup,
@@ -102313,13 +103985,19 @@ class _MultiNodeActionOverlay extends StatelessWidget {
           onTap: onTap,
         );
     final buttons = [
-      // 一括編集は廃止 (= ユーザー要望)。 AI 一括のみ残す。
-      multiBtn(
-        icon: Icons.auto_awesome_rounded,
-        label: provider.t('multi.bulkAi'),
-        color: const Color(0xFFFFB347),
-        size: btnSize,
-        onTap: onBulkAI,
+      // AI 一括: 左タップ=まとめてブラウザ AI へ / 右クリック・長押し=モデル切替 /
+      //   前提条件の設定 (= ユーザー要望: 要素の AI ボタンと同じモード選択)。
+      GestureDetector(
+        onSecondaryTapDown: (_) => onBulkAIMode(),
+        child: _Btn(
+          icon: Icons.auto_awesome_rounded,
+          label: provider.t('multi.bulkAi'),
+          color: const Color(0xFFFFB347),
+          size: btnSize,
+          width: btnWidth,
+          onTap: onBulkAI,
+          onLongPress: onBulkAIMode,
+        ),
       ),
       multiBtn(
         icon: Icons.drive_file_move_rounded,
@@ -108468,6 +110146,8 @@ class _ManagedSubscription {
   int billingDay;
   int billingMonth;
   int notifyDaysBefore;
+  int notifyHour;
+  int notifyMinute;
   bool enabled;
 
   _ManagedSubscription({
@@ -108479,6 +110159,8 @@ class _ManagedSubscription {
     this.billingDay = 1,
     this.billingMonth = 1,
     this.notifyDaysBefore = 3,
+    this.notifyHour = 9,
+    this.notifyMinute = 0,
     this.enabled = true,
   });
 
@@ -108491,6 +110173,8 @@ class _ManagedSubscription {
         'billingDay': billingDay,
         'billingMonth': billingMonth,
         'notifyDaysBefore': notifyDaysBefore,
+        'notifyHour': notifyHour,
+        'notifyMinute': notifyMinute,
         'enabled': enabled,
       };
 
@@ -108507,6 +110191,12 @@ class _ManagedSubscription {
             ((json['billingMonth'] as num?)?.toInt() ?? 1).clamp(1, 12).toInt(),
         notifyDaysBefore: ((json['notifyDaysBefore'] as num?)?.toInt() ?? 3)
             .clamp(0, 365)
+            .toInt(),
+        notifyHour: ((json['notifyHour'] as num?)?.toInt() ?? 9)
+            .clamp(0, 23)
+            .toInt(),
+        notifyMinute: ((json['notifyMinute'] as num?)?.toInt() ?? 0)
+            .clamp(0, 59)
             .toInt(),
         enabled: json['enabled'] as bool? ?? true,
       );
@@ -112066,6 +113756,59 @@ class _VoiceInputDialogState extends State<_VoiceInputDialog> {
   }
 }
 
+/// 集中ロックより前面に挿入した専用 Navigator の初期ルート。
+///
+/// [onOpen] が同 Navigator (`useRootNavigator: false`) にファイルビューアを
+/// push し、ビューアが閉じるまで待ってからロック前面 Overlay も片付ける。
+/// これによりファイル形式ごとにロック画面の重なり順を実装し直す必要がない。
+class _LockFrontContentLauncher extends StatefulWidget {
+  final Future<void> Function(BuildContext viewerContext) onOpen;
+  final VoidCallback onFinished;
+
+  const _LockFrontContentLauncher({
+    required this.onOpen,
+    required this.onFinished,
+  });
+
+  @override
+  State<_LockFrontContentLauncher> createState() =>
+      _LockFrontContentLauncherState();
+}
+
+class _LockFrontContentLauncherState
+    extends State<_LockFrontContentLauncher> {
+  bool _started = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _open());
+  }
+
+  Future<void> _open() async {
+    if (_started || !mounted) return;
+    _started = true;
+    try {
+      await widget.onOpen(context);
+    } catch (e) {
+      debugPrint('ロック前面ファイルビューアの起動に失敗: $e');
+    } finally {
+      if (mounted) widget.onFinished();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return const PopScope(
+      canPop: false,
+      child: ColoredBox(
+        color: Color(0xFF1A1A24),
+        child: Center(child: CircularProgressIndicator()),
+      ),
+    );
+  }
+}
+
 // ─── 集中ロック オーバーレイ (Android のみ) ──────────────────────────────
 // 設定した時間だけ全画面をロックして集中するためのフルスクリーン UI。
 //
@@ -112082,7 +113825,10 @@ class _FocusLockOverlay extends StatefulWidget {
   final Duration duration;
   final bool taskMode;
   final MindMapProvider provider;
-  final Future<void> Function(MindMapNode node) onOpenContent;
+  final Future<void> Function(
+    MindMapNode node, {
+    BuildContext? presentationContext,
+  }) onOpenContent;
   final VoidCallback onClose;
   const _FocusLockOverlay({
     required this.duration,
@@ -113459,13 +115205,41 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
     final yt = (node.youtubeUrl ?? '').trim();
     final att = (node.attachmentPath ?? '').trim();
     final link = (node.linkUrl ?? '').trim();
+
+    if (att.isNotEmpty) {
+      // ローカルの添付ビューアは root Navigator に積むと、先に root
+      // Overlay へ挿入されたロック画面の背面へ入る。画像だけを特別扱い
+      // せず、Office / PDF / ipynb / テキストを含む全ての内蔵ビューアを
+      // ロック画面より後に挿入した専用 Navigator 上で開く。
+      if (_isRemoteLockPath(att) || _isLockFloatingVideoPath(att)) {
+        _openLockContentFloating(node, att);
+        return;
+      }
+      final localPath = _lockLocalFilePath(att);
+      final openNode = localPath == att
+          ? node
+          : node.copyWith(attachmentPath: localPath);
+      if (await File(localPath).exists() &&
+          _canOpenLockAttachmentInApp(localPath)) {
+        await _openLockAttachmentInApp(openNode);
+      } else {
+        // 内蔵ビューア対象外、設定で外部表示を選んでいる形式、または
+        // 消失済みファイルは従来どおり外部起動へ渡す。Android の画面固定
+        // は一時解除し、外部アプリがロック画面より前に出られるようにする。
+        if (!kIsWeb && Platform.isAndroid) {
+          await _launchWhileLocked(() => widget.onOpenContent(openNode));
+        } else {
+          await widget.onOpenContent(openNode);
+        }
+      }
+      return;
+    }
+
     final target = yt.isNotEmpty
         ? yt
-        : link.isNotEmpty
-            ? link
-            : _isLockFloatingVideoPath(att)
-                ? att
-                : '';
+        : _isLockFloatingVideoPath(att)
+            ? att
+            : link;
     if (target.isNotEmpty) {
       // 通常の Navigator route は root Overlay 上のロック画面より背面に
       // 積まれる。Web だけでなく YouTube / mp4 もロック後に挿入する
@@ -113480,8 +115254,67 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
     await _launchWhileLocked(() => widget.onOpenContent(node));
   }
 
-  bool _isLockFloatingVideoPath(String path) {
+  bool _isRemoteLockPath(String path) {
     final lower = path.trim().toLowerCase();
+    return lower.startsWith('http://') || lower.startsWith('https://');
+  }
+
+  String _lockLocalFilePath(String path) {
+    final uri = Uri.tryParse(path.trim());
+    if (uri?.scheme.toLowerCase() == 'file') {
+      try {
+        return uri!.toFilePath();
+      } catch (_) {}
+    }
+    return path.trim();
+  }
+
+  String _lockPathWithoutQuery(String path) {
+    final query = path.indexOf('?');
+    final fragment = path.indexOf('#');
+    var end = path.length;
+    if (query >= 0 && query < end) end = query;
+    if (fragment >= 0 && fragment < end) end = fragment;
+    return path.substring(0, end).toLowerCase();
+  }
+
+  bool _isLockImagePath(String path) {
+    final lower = _lockPathWithoutQuery(path);
+    return lower.endsWith('.jpg') ||
+        lower.endsWith('.jpeg') ||
+        lower.endsWith('.png') ||
+        lower.endsWith('.gif') ||
+        lower.endsWith('.webp') ||
+        lower.endsWith('.bmp');
+  }
+
+  bool _canOpenLockAttachmentInApp(String path) {
+    if (_isLockImagePath(path)) return true;
+    if (!widget.provider.openLinksInApp) return false;
+    final lower = _lockPathWithoutQuery(path).replaceAll('\\', '/');
+    final name = lower.split('/').last;
+    final dot = name.lastIndexOf('.');
+    final ext = dot >= 0 ? name.substring(dot + 1) : '';
+    if (const {
+      'xlsx',
+      'xls',
+      'csv',
+      'tsv',
+      'docx',
+      'pptx',
+      'ppt',
+      'ipynb',
+      'pdf',
+    }.contains(ext)) {
+      return true;
+    }
+    return _MindMapScreenState._kTextEditorExts.contains(ext) ||
+        name == 'dockerfile' ||
+        name == 'makefile';
+  }
+
+  bool _isLockFloatingVideoPath(String path) {
+    final lower = _lockPathWithoutQuery(path.trim());
     if (lower.isEmpty) return false;
     if (lower.startsWith('http://') || lower.startsWith('https://')) {
       return NodeWidget.isMp4Url(lower) ||
@@ -113494,6 +115327,27 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
         lower.endsWith('.webm') ||
         lower.endsWith('.m4v') ||
         lower.endsWith('.mov');
+  }
+
+  Future<void> _openLockAttachmentInApp(MindMapNode node) async {
+    await _showLockFrontDialog<void>((overlayContext, close) {
+      final size = MediaQuery.sizeOf(overlayContext);
+      return SizedBox(
+        width: size.width,
+        height: size.height,
+        child: Navigator(
+          onGenerateRoute: (_) => MaterialPageRoute<void>(
+            builder: (_) => _LockFrontContentLauncher(
+              onOpen: (viewerContext) => widget.onOpenContent(
+                node,
+                presentationContext: viewerContext,
+              ),
+              onFinished: close,
+            ),
+          ),
+        ),
+      );
+    });
   }
 
   void _openLockContentFloating(MindMapNode node, String rawUrl) {
@@ -118358,54 +120212,13 @@ final ValueNotifier<bool> _bottomToolbarExpandedNotifier =
     ValueNotifier<bool>(true);
 
 double _snackBarBottomClearance(BuildContext context) {
-  final desktop =
-      !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
-  if (desktop) {
-    final media = MediaQuery.maybeOf(context);
-    final screenHeight = media?.size.height ?? 0.0;
-    if (screenHeight < 96.0) return 20.0;
-
-    try {
-      final provider = context.read<MindMapProvider>();
-      final bottomIds = provider.desktopHeaderButtonsForPlacement('bottom');
-      if (bottomIds.isEmpty) return 20.0;
-
-      final dockHeight =
-          provider.desktopHeaderDockCollapsedAt('bottom') ? 46.0 : 66.0;
-      if (!provider.desktopBottomDockFloating) {
-        return dockHeight + 24.0;
-      }
-
-      final minCenter = dockHeight / 2 + 8.0;
-      final maxCenter = screenHeight - dockHeight / 2 - 8.0;
-      final centerY = (provider.desktopBottomDockY * screenHeight)
-          .clamp(minCenter, maxCenter)
-          .toDouble();
-      final dockTop = centerY - dockHeight / 2;
-      final dockBottom = centerY + dockHeight / 2;
-      // 自由配置バーが下端の通知領域にある場合だけ、その上まで
-      // 持ち上げる。画面中央や上部に移動したバーは下端通知と重ならない。
-      if (dockBottom >= screenHeight - 160.0) {
-        return math.max(20.0, screenHeight - dockTop + 12.0).toDouble();
-      }
-    } catch (_) {}
-    return 20.0;
-  }
-
   final safeBottom = MediaQuery.maybeOf(context)?.padding.bottom ?? 0.0;
-  if (!_bottomToolbarExpandedNotifier.value) return safeBottom + 62.0;
-
-  var rows = 2;
-  try {
-    final provider = context.read<MindMapProvider>();
-    if (provider.currentPlan == SubscriptionPlan.max) {
-      if (provider.bottomThirdRowEnabled) rows++;
-      if (provider.bottomFourthRowEnabled) rows++;
-    }
-  } catch (_) {}
-  // 1行は約46px、行間は9px。SafeAreaと12pxの余白も確保する。
-  return safeBottom + 24.0 + rows * 46.0 + (rows - 1) * 9.0;
+  // メッセージはボタンバーより画面下端側へ表示する。重なりそうな時は
+  // メッセージを上へ逃がさず、表示中だけボタンバーを持ち上げる。
+  return safeBottom + 12.0;
 }
+
+int _appSnackGeneration = 0;
 
 ScaffoldFeatureController<SnackBar, SnackBarClosedReason> _appSnack(
   BuildContext ctx,
@@ -118413,13 +120226,22 @@ ScaffoldFeatureController<SnackBar, SnackBarClosedReason> _appSnack(
   bool processing = false,
 }) {
   final messenger = ScaffoldMessenger.of(ctx);
+  final generation = ++_appSnackGeneration;
+  MindMapProvider? provider;
   messenger.hideCurrentSnackBar();
   final patched = _patchSnackBarDuration(ctx, bar, processing: processing);
-  // 通知はバーの上へ出すため、旧方式のバー持ち上げ状態を確実に解除する。
   try {
-    ctx.read<MindMapProvider>().setBottomBarLifted(false);
+    provider = ctx.read<MindMapProvider>();
+    provider.setBottomBarLifted(true);
   } catch (_) {}
-  return messenger.showSnackBar(patched);
+  final controller = messenger.showSnackBar(patched);
+  controller.closed.whenComplete(() {
+    if (_appSnackGeneration != generation) return;
+    try {
+      provider?.setBottomBarLifted(false);
+    } catch (_) {}
+  });
+  return controller;
 }
 
 /// SnackBar の duration / 表示位置を要件に従って調整するヘルパ。
@@ -118455,8 +120277,7 @@ SnackBar _patchSnackBarDuration(BuildContext context, SnackBar bar,
     }
   }
 
-  // モバイルでは下部カスタムバーの行数に応じて十分な下余白を取り、
-  // メッセージを常にバーより上へ表示する。バー自体は動かさない。
+  // 通知はSafeArea直上へ置き、重なる下部バー側を表示中だけ退避させる。
   final behavior = bar.behavior ?? SnackBarBehavior.floating;
   final margin = bar.margin ??
       (behavior == SnackBarBehavior.floating
@@ -118495,13 +120316,23 @@ ScaffoldFeatureController<SnackBar, SnackBarClosedReason>? _appSnackM(
   bool processing = false,
 }) {
   if (messenger == null) return null;
+  final generation = ++_appSnackGeneration;
+  MindMapProvider? provider;
   messenger.hideCurrentSnackBar();
   final patched =
       _patchSnackBarDuration(messenger.context, bar, processing: processing);
   try {
-    messenger.context.read<MindMapProvider>().setBottomBarLifted(false);
+    provider = messenger.context.read<MindMapProvider>();
+    provider.setBottomBarLifted(true);
   } catch (_) {}
-  return messenger.showSnackBar(patched);
+  final controller = messenger.showSnackBar(patched);
+  controller.closed.whenComplete(() {
+    if (_appSnackGeneration != generation) return;
+    try {
+      provider?.setBottomBarLifted(false);
+    } catch (_) {}
+  });
+  return controller;
 }
 
 void _showProRequiredDialog(BuildContext ctx, MindMapProvider provider) {
@@ -119558,6 +121389,9 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
   wv_win.WebviewController? _winCtrl;
   bool _winReady = false;
   String? _winError;
+  String _oauthLastSafeServiceUrl = '';
+  bool _oauthHandoffInProgress = false;
+  DateTime? _lastOAuthHandoffAt;
   // macOS / Linux / iOS / Android: flutter_inappwebview (URL モード時)
   iaw.InAppWebViewController? _iawCtrl;
   // PDF モード: syncfusion ネイティブ描画コントローラ
@@ -121453,6 +123287,9 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
   void initState() {
     super.initState();
     _currentUrl = widget.url;
+    if (isSafeExternalServiceUrl(widget.url)) {
+      _oauthLastSafeServiceUrl = widget.url;
+    }
     // 画面分割から引き継いだ再生速度を初期値に (ユーザー要望)。
     _videoPlaybackRate = widget.initialRate;
     _pulseCtrl = AnimationController(
@@ -121478,9 +123315,9 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
       _memoPanelOpen = false;
     }
     _pdfFocusNode = FocusNode(debugLabel: 'pdf_viewer_dialog');
-    // メモ/AI パネルのトグル (F3/F4 等) を WebView・PDF どちらでも効かせる
+    // メモ/AI パネルのトグルを WebView・PDF どちらでも効かせる
     //   ため、 グローバルキーハンドラは常に登録する (= ユーザー要望: URL
-    //   から開いた Web ページでも F3/F4 が効かなかったバグの修正)。
+    //   から開いた Web ページでもショートカットを使えるようにする)。
     HardwareKeyboard.instance.addHandler(_globalPdfKeyHandler);
     if (widget.isPdf) {
       _initPdf();
@@ -121527,21 +123364,78 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
     });
   }
 
+  Future<void> _handoffViewerOAuthToExternalBrowser(
+    wv_win.WebviewController ctrl,
+  ) async {
+    final now = DateTime.now();
+    final last = _lastOAuthHandoffAt;
+    if (_oauthHandoffInProgress ||
+        (last != null && now.difference(last) < const Duration(seconds: 30))) {
+      return;
+    }
+    final fallback = isSafeExternalServiceUrl(_oauthLastSafeServiceUrl)
+        ? _oauthLastSafeServiceUrl
+        : (isSafeExternalServiceUrl(widget.url) ? widget.url : '');
+    if (fallback.isEmpty) return;
+
+    _oauthHandoffInProgress = true;
+    _lastOAuthHandoffAt = now;
+    try {
+      final opened = await launchUrl(
+        Uri.parse(fallback),
+        mode: LaunchMode.externalApplication,
+      );
+      if (opened && mounted) {
+        _appSnack(
+          context,
+          const SnackBar(
+            content: Text('Google などのログインは外部ブラウザで続けてください'),
+            backgroundColor: Color(0xFF6C63FF),
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('OAuth 外部ブラウザ起動失敗: $e');
+    } finally {
+      // 認証 URL を WebView2 に残すと更新が繰り返されるため、直前の
+      // サービス画面へ一度だけ戻す。外部ブラウザ側ではそのまま認証できる。
+      try {
+        await ctrl.loadUrl(fallback);
+      } catch (_) {}
+      Future<void>.delayed(const Duration(seconds: 2), () {
+        if (mounted) _oauthHandoffInProgress = false;
+      });
+    }
+  }
+
   Future<void> _initWindows() async {
     try {
       final ctrl = wv_win.WebviewController();
       await ctrl.initialize();
-      await ctrl.loadUrl(widget.url);
+      try {
+        await ctrl
+            .setPopupWindowPolicy(wv_win.WebviewPopupWindowPolicy.sameWindow);
+      } catch (_) {}
       ctrl.title.listen((t) {
         if (mounted && t.isNotEmpty) setState(() => _title = t);
       });
       // URL 変化を listen してメモのフィルタリングに反映
       ctrl.url.listen((u) {
+        if (isBlockedEmbeddedOAuthUrl(u)) {
+          unawaited(_handoffViewerOAuthToExternalBrowser(ctrl));
+          return;
+        }
+        if (isSafeExternalServiceUrl(u)) {
+          _oauthLastSafeServiceUrl = u;
+        }
         if (mounted && u.isNotEmpty) {
           setState(() => _currentUrl = u);
           _scheduleWebVideoProbe();
         }
       });
+      // 初回リダイレクトも認証 URL 監視の対象にする。
+      await ctrl.loadUrl(widget.url);
       if (mounted) {
         setState(() {
           _winCtrl = ctrl;
@@ -121670,17 +123564,14 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
       return KeyEventResult.ignored;
     }
     // ── メモパネル / AI パネルの ON/OFF トグル (= ユーザー要望) ──
-    // Ctrl+M (または F3) = メモパネル開閉、 Ctrl+I (または F4) = AI チャット
+    // Ctrl+M = メモパネル開閉、 Ctrl+I (または F4) = AI チャット
     //   欄開閉。 PDF コントローラの有無に関係なく (URL ビューワーでも) 効くよう、
     //   `_pdfViewerCtrl == null` の早期 return より前に処理する。
     // KeyRepeat では連続トグルしないよう KeyDown のみ受ける。
     if (event is KeyDownEvent) {
       final isCtrlForPanel = HardwareKeyboard.instance.isControlPressed ||
           HardwareKeyboard.instance.isMetaPressed;
-      // メモパネル: Ctrl+M または F3 (= ユーザー要望: F2 はメモの中身
-      //   編集に使いたいので、 メモパネル ON/OFF は F3 にずらす)
-      if ((isCtrlForPanel && event.logicalKey == LogicalKeyboardKey.keyM) ||
-          event.logicalKey == LogicalKeyboardKey.f3) {
+      if (isCtrlForPanel && event.logicalKey == LogicalKeyboardKey.keyM) {
         _suppressPdfPageChangeBriefly();
         setState(() => _memoPanelOpen = !_memoPanelOpen);
         return KeyEventResult.handled;
@@ -122010,12 +123901,11 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
     // (= ユーザー要望: Web サイトのリンクを開いた時にもショートカットが
     //   効くように。 旧実装は冒頭で `!widget.isPdf` の場合に即 return して
     //   いたため、 Web ページ表示中は WebView がフォーカスを握り、
-    //   Ctrl+M/F3 (メモ) ・ Ctrl+I/F4 (AI) が一切効かなかった。)
+    //   Ctrl+M (メモ) ・ Ctrl+I/F4 (AI) が効かなかった。)
     if (event is KeyDownEvent) {
       final isCtrlForPanel = HardwareKeyboard.instance.isControlPressed ||
           HardwareKeyboard.instance.isMetaPressed;
-      if ((isCtrlForPanel && event.logicalKey == LogicalKeyboardKey.keyM) ||
-          event.logicalKey == LogicalKeyboardKey.f3) {
+      if (isCtrlForPanel && event.logicalKey == LogicalKeyboardKey.keyM) {
         _suppressPdfPageChangeBriefly();
         setState(() => _memoPanelOpen = !_memoPanelOpen);
         return true;
@@ -133076,22 +134966,83 @@ class _SplitWindowsWebView extends StatefulWidget {
 }
 
 class _SplitWindowsWebViewState extends State<_SplitWindowsWebView> {
-  final wv_win.WebviewController _controller = wv_win.WebviewController();
+  wv_win.WebviewController _controller = wv_win.WebviewController();
   bool _initialized = false;
+  bool _initializing = false;
+  int _initAttempt = 0;
+  Timer? _initRetryTimer;
   String? _error;
+  bool _oauthHandoffInProgress = false;
+  DateTime? _lastOAuthHandoffAt;
+  String _lastSafeServiceUrl = '';
 
   /// 直近にロード / 報告した URL。 onUrlChanged で親へ通知した URL が
   /// 親の setState 経由で widget.url に echo されてきても、 didUpdateWidget
   /// で再ロードしてしまわないようにするためのガード。
   String _lastLoadedOrReportedUrl = '';
 
+  /// 埋め込み WebView を拒否する OAuth 画面へ移動したら、認証 URL 自体では
+  /// なく直前のサービス URL を既定ブラウザで開く。ブラウザ側でもう一度
+  /// 「Google で続行」を押せば通常のブラウザセッションで認証できる。
+  ///
+  /// 同時に WebView を直前ページへ戻すことで、認証画面とサービス画面を
+  /// 行き来する SourceChanged の更新ループを止める。
+  Future<void> _handoffOAuthToExternalBrowser() async {
+    if (_oauthHandoffInProgress) return;
+    final fallback = isSafeExternalServiceUrl(_lastSafeServiceUrl)
+        ? _lastSafeServiceUrl
+        : (isSafeExternalServiceUrl(widget.url) ? widget.url : '');
+    if (fallback.isEmpty) return;
+
+    _oauthHandoffInProgress = true;
+    try {
+      final now = DateTime.now();
+      final recentlyOpened = _lastOAuthHandoffAt != null &&
+          now.difference(_lastOAuthHandoffAt!) < const Duration(seconds: 30);
+      if (!recentlyOpened) {
+        _lastOAuthHandoffAt = now;
+        try {
+          final opened = await launchUrl(
+            Uri.parse(fallback),
+            mode: LaunchMode.externalApplication,
+          );
+          if (opened && mounted) {
+            _appSnack(
+              context,
+              const SnackBar(
+                content: Text('Googleログインは既定のブラウザで続けてください'),
+                backgroundColor: Color(0xFF6C63FF),
+                duration: Duration(seconds: 3),
+              ),
+            );
+          }
+        } catch (e) {
+          debugPrint('OAuth external-browser handoff failed: $e');
+        }
+      }
+
+      _lastLoadedOrReportedUrl = fallback;
+      try {
+        await _controller.loadUrl(fallback);
+      } catch (_) {}
+    } finally {
+      Future<void>.delayed(const Duration(seconds: 2), () {
+        if (mounted) _oauthHandoffInProgress = false;
+      });
+    }
+  }
+
   @override
   void initState() {
     super.initState();
+    if (isSafeExternalServiceUrl(widget.url)) {
+      _lastSafeServiceUrl = widget.url;
+    }
     _init();
   }
 
   Future<void> _init() async {
+    if (_initialized || _initializing || !mounted) return;
     // ── Linux: webview_windows 非対応 → CEF (build 側の LinuxWebViewWidget) に
     //   委譲する。 wv_win コントローラは初期化しない (= 呼ぶと例外)。 初期化済み
     //   フラグだけ立てて表示に進める。 コントローラ駆動の JS 注入機能は Linux
@@ -133103,123 +135054,89 @@ class _SplitWindowsWebViewState extends State<_SplitWindowsWebView> {
       setState(() => _initialized = true);
       return;
     }
+    _initializing = true;
+    final attempt = ++_initAttempt;
+    final controller = _controller;
     try {
-      await _controller.initialize();
-      await _controller.setBackgroundColor(const Color(0xFF0F0F1A));
-      // ── popup を抑止する JS injection (Claude / ChatGPT の OAuth 対応) ──
-      // 旧実装は url Stream 1 本に 300ms 遅延だけだったので、 Claude.ai
-      // のような重いページで JS コンテキストが間に合わずパッチが当たらない
-      // ことがあり、 結果として window.open が走って 「暗転して進めない」
-      // ユーザー報告に繋がっていた。 また fake child window の closed=true
-      // を 5 秒後に遅らせる設計だったが、 これ自体が Auth0 のポップアップ
-      // 待ちオーバーレイを最大 5 秒 stuck させる原因になっていた。
-      // ── 改良点 ──
-      // 1. 同じパッチを 0ms / 150ms / 600ms / 1500ms の 4 タイミングで試行
-      //    (= JS コンテキストが立ち上がる前後どこかで必ず命中する)
-      // 2. loadingState.navigationCompleted でも追加再注入 (= 確実)
-      // 3. fake window の closed=true を 1500ms に短縮 (オーバーレイ stuck
-      //    時間を 5s → 1.5s に短縮し、 暗転の体感を激減)
-      // 4. 安全網として、 Auth0 / 各種ロックオーバーレイを抑止する CSS も
-      //    一緒に注入 (パッチが完全に失敗しても画面が真っ暗のまま止まる
-      //    のを防ぐ)
-      const popupPatchJs = r'''
-        (function() {
-          if (window.__mokumoku_popup_patched) return;
-          window.__mokumoku_popup_patched = true;
-          // ── window.open を上書きして same-window navigation に ──
-          window.open = function(url, target, features) {
-            if (url) {
-              try { window.location.href = url; } catch (e) {}
-            }
-            var fake = {
-              closed: false,
-              close: function() { this.closed = true; },
-              focus: function() {},
-              blur: function() {},
-              postMessage: function() {},
-              location: {
-                get href() { return window.location.href; },
-                set href(v) { try { window.location.href = v; } catch (e) {} },
-                replace: function(u) { try { window.location.href = u; } catch (e) {} },
-              },
-              document: { close: function() {}, write: function() {} },
-            };
-            // 1.5 秒で closed=true (= OAuth 完了とみなしてオーバーレイ解除)
-            setTimeout(function() { fake.closed = true; }, 1500);
-            return fake;
-          };
-          // target="_blank" のリンクも同じウィンドウで開くように
-          document.addEventListener('click', function(ev) {
-            var a = ev.target;
-            while (a && a.tagName !== 'A') { a = a.parentElement; }
-            if (a && a.target === '_blank' && a.href) {
-              ev.preventDefault();
-              window.location.href = a.href;
-            }
-          }, true);
-          // ── オーバーレイ buster (= パッチ失敗時の最後の砦) ──
-          // Auth0 / Claude が popup を待っている間に表示する暗幕系の
-          // オーバーレイ DOM を CSS で強制非表示にする。 これがあれば
-          // 万一 window.open フックが間に合わなくても、 ユーザーの画面が
-          // 真っ暗のまま固まることはなくなる。
-          try {
-            if (!document.getElementById('__mokumoku_oauth_overlay_buster__')) {
-              var style = document.createElement('style');
-              style.id = '__mokumoku_oauth_overlay_buster__';
-              style.textContent = ''
-                + '.auth0-lock-overlay,'
-                + 'div[data-loader-popup="true"],'
-                + 'div.popup-blocked-overlay {'
-                + '  display: none !important;'
-                + '  pointer-events: none !important;'
-                + '}'
-                + 'body.no-scroll, html.no-scroll {'
-                + '  overflow: auto !important;'
-                + '}';
-              (document.head || document.documentElement).appendChild(style);
-            }
-          } catch (e) {}
-        })();
-      ''';
-
-      void tryInject() {
-        if (!mounted) return;
-        try {
-          _controller.executeScript(popupPatchJs);
-        } catch (_) {/* JS コンテキスト未準備時は無視 */}
-      }
-
-      // ── URL 変更時: 複数タイミングで再注入 (race を緩和) ──
-      _controller.url.listen((u) {
-        // ── 現在 URL を親へ通知 (= 全画面切り替えでセッション保持) ──
-        // 自分が報告した URL を覚えておき、 didUpdateWidget での echo
-        // 再ロードを防ぐ。
-        if (u.isNotEmpty) {
-          _lastLoadedOrReportedUrl = u;
-          widget.onUrlChanged?.call(u);
+      // WebView2 Runtime が稀に initialize Future を完了しないことがある。
+      // 永久スピナーを避け、一定時間後に新しい controller で自動再試行する。
+      await controller
+          .initialize()
+          .timeout(const Duration(seconds: 12));
+      if (!mounted || !identical(controller, _controller)) return;
+      await controller.setBackgroundColor(const Color(0xFF0F0F1A));
+      // popup を現在の WebView に流し、URL stream で OAuth 遷移を検知する。
+      // window.open の偽装は認証 SDK の popup polling/postMessage を壊し、
+      // 同じ画面を再読込し続ける原因になるため行わない。
+      try {
+        await controller
+            .setPopupWindowPolicy(wv_win.WebviewPopupWindowPolicy.sameWindow);
+      } catch (_) {}
+      controller.url.listen((u) {
+        if (u.isEmpty) return;
+        if (isBlockedEmbeddedOAuthUrl(u)) {
+          unawaited(_handoffOAuthToExternalBrowser());
+          return;
         }
-        for (final ms in <int>[0, 150, 600, 1500]) {
-          Future.delayed(Duration(milliseconds: ms), tryInject);
+        if (isSafeExternalServiceUrl(u)) {
+          _lastSafeServiceUrl = u;
         }
+        _lastLoadedOrReportedUrl = u;
+        widget.onUrlChanged?.call(u);
       });
-
-      // ── navigationCompleted でも再注入 (= DOM が必ず存在する) ──
-      // 他の WebView (9822 / 41866 行等) で実証済みの確実なフック地点。
-      _controller.loadingState.listen((state) {
-        if (state == wv_win.LoadingState.navigationCompleted) {
-          tryInject();
-        }
+      // Runtime の準備が終わった時点で初期化画面を外す。以前は AI サイトの
+      // loadUrl 完了までスピナーを出していたため、通信遅延も初期化停止に見えた。
+      setState(() {
+        _initialized = true;
+        _initializing = false;
+        _error = null;
       });
-      await _controller.loadUrl(widget.url);
-      _lastLoadedOrReportedUrl = widget.url;
-      if (!mounted) return;
-      widget.onControllerReady(_controller);
+      widget.onControllerReady(controller);
       widget.onInitialized();
-      setState(() => _initialized = true);
+      try {
+        await controller
+            .loadUrl(widget.url)
+            .timeout(const Duration(seconds: 15));
+      } catch (e) {
+        debugPrint('Split WebView initial navigation delayed/failed: $e');
+      }
+      _lastLoadedOrReportedUrl = widget.url;
     } catch (e) {
-      if (!mounted) return;
-      setState(() => _error = e.toString());
+      if (!mounted || !identical(controller, _controller)) return;
+      _initializing = false;
+      if (attempt < 3) {
+        // タイムアウトした controller を使い回さず、短いバックオフ後に交換する。
+        _initRetryTimer?.cancel();
+        _initRetryTimer = Timer(Duration(milliseconds: 700 * attempt), () {
+          if (!mounted || _initialized) return;
+          final previous = _controller;
+          _controller = wv_win.WebviewController();
+          try {
+            unawaited(previous.dispose());
+          } catch (_) {}
+          _init();
+          setState(() {});
+        });
+        setState(() => _error = null);
+      } else {
+        setState(() => _error = e.toString());
+      }
     }
+  }
+
+  void _retryInitialization() {
+    if (_initializing) return;
+    _initRetryTimer?.cancel();
+    final previous = _controller;
+    _controller = wv_win.WebviewController();
+    try {
+      unawaited(previous.dispose());
+    } catch (_) {}
+    setState(() {
+      _error = null;
+      _initAttempt = 0;
+    });
+    _init();
   }
 
   @override
@@ -133229,19 +135146,26 @@ class _SplitWindowsWebViewState extends State<_SplitWindowsWebView> {
     // ただし、 webview 自身の遷移を onUrlChanged で親へ通知 → 親の
     // setState で widget.url に echo されてきたケースでは再ロードしない
     // (= 無限ループ / 余計なリロード防止)。
-    if (_initialized &&
-        widget.url != oldWidget.url &&
-        widget.url.isNotEmpty &&
-        widget.url != _lastLoadedOrReportedUrl) {
-      _lastLoadedOrReportedUrl = widget.url;
-      _controller.loadUrl(widget.url);
+    if (!_initialized ||
+        widget.url == oldWidget.url ||
+        widget.url.isEmpty ||
+        widget.url == _lastLoadedOrReportedUrl) return;
+    if (isBlockedEmbeddedOAuthUrl(widget.url)) {
+      unawaited(_handoffOAuthToExternalBrowser());
+      return;
     }
+    if (isSafeExternalServiceUrl(widget.url)) {
+      _lastSafeServiceUrl = widget.url;
+    }
+    _lastLoadedOrReportedUrl = widget.url;
+    _controller.loadUrl(widget.url);
   }
 
   @override
   void dispose() {
+    _initRetryTimer?.cancel();
     // Linux では _controller を initialize していないので dispose しない。
-    if (!Platform.isLinux) _controller.dispose();
+    if (!Platform.isLinux) unawaited(_controller.dispose());
     super.dispose();
   }
 
@@ -133259,10 +135183,28 @@ class _SplitWindowsWebViewState extends State<_SplitWindowsWebView> {
         color: const Color(0xFF0F0F1A),
         alignment: Alignment.center,
         padding: const EdgeInsets.all(24),
-        child: Text(
-          'WebView 初期化エラー:\n$_error',
-          style: const TextStyle(color: Colors.redAccent, fontSize: 12),
-          textAlign: TextAlign.center,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'WebView 初期化エラー:\n$_error',
+              style:
+                  const TextStyle(color: Colors.redAccent, fontSize: 12),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 14),
+            OutlinedButton.icon(
+              onPressed: _retryInitialization,
+              icon: const Icon(Icons.refresh_rounded, size: 17),
+              label: Text(
+                context.read<MindMapProvider>().t('fsv.retry'),
+              ),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.white70,
+                side: const BorderSide(color: Colors.white24),
+              ),
+            ),
+          ],
         ),
       );
     }
@@ -151951,10 +153893,14 @@ class _ImageEditorDialog extends StatefulWidget {
   final String filePath;
   final String fileName;
   final VoidCallback? onSaved;
+  final VoidCallback? onClose;
+  final bool useRootNavigator;
   const _ImageEditorDialog({
     required this.filePath,
     required this.fileName,
     this.onSaved,
+    this.onClose,
+    this.useRootNavigator = true,
   });
   @override
   State<_ImageEditorDialog> createState() => _ImageEditorDialogState();
@@ -152011,6 +153957,15 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
     _loadIntrinsicSize();
   }
 
+  void _closeEditor() {
+    final onClose = widget.onClose;
+    if (onClose != null) {
+      onClose();
+      return;
+    }
+    Navigator.of(context).maybePop();
+  }
+
   /// 起動時に既存バックアップの有無を調べてリセットボタンの活性を決める。
   Future<void> _checkBackupExists() async {
     try {
@@ -152048,6 +154003,7 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
     // 適用済みの編集を破棄するため確認を取る。
     final ok = await showDialog<bool>(
       context: context,
+      useRootNavigator: widget.useRootNavigator,
       builder: (dctx) => AlertDialog(
         backgroundColor: const Color(0xFF24243A),
         title: Text(context.read<MindMapProvider>().t('img.resetEdit'),
@@ -152409,6 +154365,7 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
         !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
     return showDialog<(String, double)>(
       context: context,
+      useRootNavigator: widget.useRootNavigator,
       builder: (dctx) => StatefulBuilder(
         builder: (sctx, setD) => AlertDialog(
           backgroundColor: const Color(0xFF24243A),
@@ -152912,7 +154869,7 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
                 tooltip: context.read<MindMapProvider>().t('btn.close'),
                 icon: const Icon(Icons.close_rounded,
                     color: Colors.white60, size: 20),
-                onPressed: () => Navigator.of(context).pop(),
+                onPressed: _closeEditor,
               ),
           ]),
         ),
@@ -153000,7 +154957,7 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
                         tooltip: context.read<MindMapProvider>().t('btn.close'),
                         icon: const Icon(Icons.close_rounded,
                             color: Colors.white70, size: 22),
-                        onPressed: () => Navigator.of(context).pop(),
+                        onPressed: _closeEditor,
                       ),
                     ],
                   ),

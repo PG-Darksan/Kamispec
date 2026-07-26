@@ -37,6 +37,12 @@ int Scale(int source, double scale_factor) {
   return static_cast<int>(source * scale_factor);
 }
 
+HICON LoadAppIcon(int width, int height) {
+  return reinterpret_cast<HICON>(LoadImageW(
+      GetModuleHandle(nullptr), MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON,
+      width, height, LR_DEFAULTCOLOR | LR_SHARED));
+}
+
 // Dynamically loads the |EnableNonClientDpiScaling| from the User32 module.
 // This API is only needed for PerMonitor V1 awareness mode.
 void EnableFullDpiSupportIfAvailable(HWND hwnd) {
@@ -88,7 +94,8 @@ WindowClassRegistrar* WindowClassRegistrar::instance_ = nullptr;
 
 const wchar_t* WindowClassRegistrar::GetWindowClass() {
   if (!class_registered_) {
-    WNDCLASS window_class{};
+    WNDCLASSEXW window_class{};
+    window_class.cbSize = sizeof(window_class);
     window_class.hCursor = LoadCursor(nullptr, IDC_ARROW);
     window_class.lpszClassName = kWindowClassName;
     window_class.style = CS_HREDRAW | CS_VREDRAW;
@@ -96,18 +103,19 @@ const wchar_t* WindowClassRegistrar::GetWindowClass() {
     window_class.cbWndExtra = 0;
     window_class.hInstance = GetModuleHandle(nullptr);
     window_class.hIcon =
-        LoadIcon(window_class.hInstance, MAKEINTRESOURCE(IDI_APP_ICON));
+        LoadAppIcon(GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON));
+    window_class.hIconSm = LoadAppIcon(GetSystemMetrics(SM_CXSMICON),
+                                      GetSystemMetrics(SM_CYSMICON));
     window_class.hbrBackground = 0;
     window_class.lpszMenuName = nullptr;
     window_class.lpfnWndProc = Win32Window::WndProc;
-    RegisterClass(&window_class);
-    class_registered_ = true;
+    class_registered_ = RegisterClassExW(&window_class) != 0;
   }
   return kWindowClassName;
 }
 
 void WindowClassRegistrar::UnregisterWindowClass() {
-  UnregisterClass(kWindowClassName, nullptr);
+  UnregisterClassW(kWindowClassName, GetModuleHandle(nullptr));
   class_registered_ = false;
 }
 
@@ -142,6 +150,20 @@ bool Win32Window::Create(const std::wstring& title,
 
   if (!window) {
     return false;
+  }
+
+  // Set the large/small icons explicitly on each window instead of relying
+  // only on the window-class fallback, so the title bar / taskbar keep the
+  // app icon after DPI changes or an Explorer restart.
+  if (const HICON large_icon =
+          LoadAppIcon(GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON))) {
+    SendMessageW(window, WM_SETICON, ICON_BIG,
+                 reinterpret_cast<LPARAM>(large_icon));
+  }
+  if (const HICON small_icon = LoadAppIcon(GetSystemMetrics(SM_CXSMICON),
+                                           GetSystemMetrics(SM_CYSMICON))) {
+    SendMessageW(window, WM_SETICON, ICON_SMALL,
+                 reinterpret_cast<LPARAM>(small_icon));
   }
 
   UpdateTheme(window);

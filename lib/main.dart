@@ -99,7 +99,7 @@ void main(List<String> args) async {
     await windowManager.ensureInitialized();
     await windowManager.waitUntilReadyToShow(
       const WindowOptions(
-        title: 'MokuMoku',
+        title: 'Kamispec',
       ),
       () async {
         await windowManager.show();

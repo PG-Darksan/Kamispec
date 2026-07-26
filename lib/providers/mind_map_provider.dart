@@ -270,6 +270,12 @@ class MindMapPage {
   /// 既定 'cover'。
   String backgroundFit;
 
+  /// 組み込み背景テンプレートの色調。旧データに値が無い場合は、いずれも
+  /// ニュートラル値になり従来どおりの描画になる。
+  int backgroundHueDegrees;
+  int backgroundSaturationPercent;
+  int backgroundBrightnessPercent;
+
   /// ページ種別。 'normal' = 通常マップ、 'bookshelf' = ギャラリーページ
   /// (= ユーザー要望: PDF/画像/動画を等間隔・同寸のタイルで自動整列する専用
   ///  ページ)。 ギャラリーページではノード追加・貼り付け・YouTube 取り込みの後に
@@ -298,6 +304,9 @@ class MindMapPage {
     this.backgroundImagePath,
     this.backgroundOpacityPercent = 50,
     this.backgroundFit = 'cover',
+    this.backgroundHueDegrees = 0,
+    this.backgroundSaturationPercent = 100,
+    this.backgroundBrightnessPercent = 100,
     this.pageType = 'normal',
     this.shelfPerRow = 0,
     this.shelfRows = 0,
@@ -326,6 +335,13 @@ class MindMapPage {
           'backgroundOpacityPercent': backgroundOpacityPercent,
         if (backgroundImagePath != null && backgroundFit != 'cover')
           'backgroundFit': backgroundFit,
+        if (backgroundImagePath != null && backgroundHueDegrees != 0)
+          'backgroundHueDegrees': backgroundHueDegrees,
+        if (backgroundImagePath != null &&
+            backgroundSaturationPercent != 100)
+          'backgroundSaturationPercent': backgroundSaturationPercent,
+        if (backgroundImagePath != null && backgroundBrightnessPercent != 100)
+          'backgroundBrightnessPercent': backgroundBrightnessPercent,
         // ギャラリーページ種別 (= 既定 'normal' の時は省略して旧版互換)
         if (pageType != 'normal') 'pageType': pageType,
         if (shelfPerRow != 0) 'shelfPerRow': shelfPerRow,
@@ -348,6 +364,18 @@ class MindMapPage {
       backgroundOpacityPercent:
           (json['backgroundOpacityPercent'] as int?) ?? 50,
       backgroundFit: (json['backgroundFit'] as String?) ?? 'cover',
+      backgroundHueDegrees:
+          ((json['backgroundHueDegrees'] as num?)?.round() ?? 0)
+              .clamp(-180, 180)
+              .toInt(),
+      backgroundSaturationPercent:
+          ((json['backgroundSaturationPercent'] as num?)?.round() ?? 100)
+              .clamp(0, 200)
+              .toInt(),
+      backgroundBrightnessPercent:
+          ((json['backgroundBrightnessPercent'] as num?)?.round() ?? 100)
+              .clamp(50, 150)
+              .toInt(),
       pageType: (json['pageType'] as String?) ?? 'normal',
       shelfPerRow: (json['shelfPerRow'] as int?) ?? 0,
       shelfRows: (json['shelfRows'] as int?) ?? 0,
@@ -4086,7 +4114,7 @@ class MindMapProvider extends ChangeNotifier {
   /// 下部ツールバー (モバイル下のカスタムボタン群) を SnackBar の高さぶん
   /// 持ち上げているか。SnackBar 表示中だけ true になり、SnackBar が閉じたら
   /// false に戻る。`_buildBottomToolBar` が AnimatedPositioned でこの値を
-  /// 監視し、240ms かけて 80px 上にスライドする。
+  /// 監視し、240ms かけて 96px 上にスライドする。
   ///
   /// 統一の SnackBar 表示ヘルパ (`_appSnack`) で自動制御される。
   bool _bottomBarLifted = false;
@@ -8417,6 +8445,83 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Anzeigemodus',
       'pt': 'Modo de exibição',
       'ru': 'Режим отображения',
+    },
+    'bg.applyAllPages': {
+      'ja': '全てのページに適用',
+      'en': 'Apply to all pages',
+      'zh': '应用到所有页面',
+      'ko': '모든 페이지에 적용',
+      'es': 'Aplicar a todas las páginas',
+      'fr': 'Appliquer à toutes les pages',
+      'de': 'Auf alle Seiten anwenden',
+      'pt': 'Aplicar a todas as páginas',
+      'ru': 'Применить ко всем страницам',
+    },
+    'bg.applyAllPagesHint': {
+      'ja': 'オンにすると現在の設定を全ページへ反映し、その後の変更も同期します',
+      'en': 'Copies the current settings to every page and keeps later changes in sync',
+      'zh': '将当前设置复制到所有页面，并同步之后的更改',
+      'ko': '현재 설정을 모든 페이지에 복사하고 이후 변경도 동기화합니다',
+      'es': 'Copia la configuración actual y sincroniza los cambios posteriores',
+      'fr': 'Copie les réglages actuels et synchronise les changements suivants',
+      'de': 'Kopiert die aktuellen Einstellungen und synchronisiert weitere Änderungen',
+      'pt': 'Copia as definições atuais e sincroniza as alterações seguintes',
+      'ru': 'Копирует текущие настройки и синхронизирует дальнейшие изменения',
+    },
+    'bg.colorTone': {
+      'ja': 'テンプレートの色調',
+      'en': 'Template color tone',
+      'zh': '模板色调',
+      'ko': '템플릿 색조',
+      'es': 'Tono de la plantilla',
+      'fr': 'Teinte du modèle',
+      'de': 'Farbton der Vorlage',
+      'pt': 'Tom do modelo',
+      'ru': 'Цветовой тон шаблона',
+    },
+    'bg.hue': {
+      'ja': '色相: {n}°',
+      'en': 'Hue: {n}°',
+      'zh': '色相：{n}°',
+      'ko': '색상: {n}°',
+      'es': 'Matiz: {n}°',
+      'fr': 'Teinte : {n}°',
+      'de': 'Farbton: {n}°',
+      'pt': 'Matiz: {n}°',
+      'ru': 'Оттенок: {n}°',
+    },
+    'bg.saturation': {
+      'ja': '彩度: {n}%',
+      'en': 'Saturation: {n}%',
+      'zh': '饱和度：{n}%',
+      'ko': '채도: {n}%',
+      'es': 'Saturación: {n}%',
+      'fr': 'Saturation : {n}%',
+      'de': 'Sättigung: {n}%',
+      'pt': 'Saturação: {n}%',
+      'ru': 'Насыщенность: {n}%',
+    },
+    'bg.brightness': {
+      'ja': '明度: {n}%',
+      'en': 'Brightness: {n}%',
+      'zh': '亮度：{n}%',
+      'ko': '밝기: {n}%',
+      'es': 'Brillo: {n}%',
+      'fr': 'Luminosité : {n}%',
+      'de': 'Helligkeit: {n}%',
+      'pt': 'Brilho: {n}%',
+      'ru': 'Яркость: {n}%',
+    },
+    'bg.resetTone': {
+      'ja': '色調をリセット',
+      'en': 'Reset color tone',
+      'zh': '重置色调',
+      'ko': '색조 초기화',
+      'es': 'Restablecer tono',
+      'fr': 'Réinitialiser la teinte',
+      'de': 'Farbton zurücksetzen',
+      'pt': 'Repor tom',
+      'ru': 'Сбросить цветовой тон',
     },
     'bg.fitCover': {
       'ja': '全体を覆う',
@@ -17274,6 +17379,172 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Faixa de horário a exibir',
       'ru': 'Отображаемый диапазон времени',
     },
+    'gantt.timeAndBlockedTitle': {
+      'ja': '表示時間・非稼働時間帯',
+      'en': 'Visible and non-working hours',
+      'zh': '显示时间与非工作时间',
+      'ko': '표시 시간 및 비작업 시간',
+      'es': 'Horas visibles y no laborables',
+      'fr': 'Heures visibles et non travaillées',
+      'de': 'Sichtbare Zeiten und arbeitsfreie Stunden',
+      'pt': 'Horas visíveis e não úteis',
+      'ru': 'Отображение и нерабочее время',
+    },
+    'gantt.visibleTimeRange': {
+      'ja': '表示する時間帯',
+      'en': 'Hours shown on the chart',
+      'zh': '图表中显示的时间',
+      'ko': '차트에 표시할 시간',
+      'es': 'Horas mostradas en el gráfico',
+      'fr': 'Heures affichées sur le diagramme',
+      'de': 'Im Diagramm angezeigte Stunden',
+      'pt': 'Horas mostradas no gráfico',
+      'ru': 'Часы, отображаемые на диаграмме',
+    },
+    'gantt.blockedRange': {
+      'ja': 'タスク時間に含めない時間帯',
+      'en': 'Hours excluded from task time',
+      'zh': '不计入任务时间的时段',
+      'ko': '작업 시간에서 제외할 시간대',
+      'es': 'Horas excluidas del tiempo de tarea',
+      'fr': 'Heures exclues du temps de tâche',
+      'de': 'Von der Aufgabenzeit ausgeschlossene Stunden',
+      'pt': 'Horas excluídas do tempo da tarefa',
+      'ru': 'Время, исключённое из длительности задачи',
+    },
+    'gantt.blockedClearAll': {
+      'ja': 'すべて解除',
+      'en': 'Clear all',
+      'zh': '全部清除',
+      'ko': '모두 해제',
+      'es': 'Borrar todo',
+      'fr': 'Tout effacer',
+      'de': 'Alle entfernen',
+      'pt': 'Limpar tudo',
+      'ru': 'Очистить всё',
+    },
+    'gantt.blockedAddTooltip': {
+      'ja': '非稼働時間帯を追加',
+      'en': 'Add non-working hours',
+      'zh': '添加非工作时间',
+      'ko': '비작업 시간 추가',
+      'es': 'Añadir horas no laborables',
+      'fr': 'Ajouter des heures non travaillées',
+      'de': 'Arbeitsfreie Stunden hinzufügen',
+      'pt': 'Adicionar horas não úteis',
+      'ru': 'Добавить нерабочее время',
+    },
+    'gantt.blockedEmpty': {
+      'ja': '未設定です。＋から追加できます。',
+      'en': 'None set. Use + to add one.',
+      'zh': '尚未设置。可通过 + 添加。',
+      'ko': '설정되지 않았습니다. +로 추가하세요.',
+      'es': 'No hay ninguna. Usa + para añadir.',
+      'fr': 'Aucune plage définie. Utilisez + pour en ajouter.',
+      'de': 'Nicht festgelegt. Mit + hinzufügen.',
+      'pt': 'Nenhuma definida. Use + para adicionar.',
+      'ru': 'Не задано. Нажмите +, чтобы добавить.',
+    },
+    'gantt.blockedRemoveTooltip': {
+      'ja': '解除',
+      'en': 'Remove',
+      'zh': '移除',
+      'ko': '해제',
+      'es': 'Quitar',
+      'fr': 'Retirer',
+      'de': 'Entfernen',
+      'pt': 'Remover',
+      'ru': 'Удалить',
+    },
+    'gantt.blockedDescription': {
+      'ja': '斜線の時間帯は自動割り当て・移動・分割で飛ばされ、重なった部分だけが表示と所要時間から除外されます。',
+      'en':
+          'Hatched hours are skipped during placement, moving, and splitting; only overlapping portions are excluded from display and duration.',
+      'zh': '自动分配、移动和拆分时会跳过阴影时段；仅重叠部分不显示且不计入时长。',
+      'ko': '빗금 시간대는 자동 배치·이동·분할에서 건너뛰며, 겹친 부분만 표시와 소요 시간에서 제외됩니다.',
+      'es':
+          'Las horas rayadas se omiten al asignar, mover y dividir; solo la parte solapada se excluye de la vista y la duración.',
+      'fr':
+          'Les heures hachurées sont ignorées lors du placement, déplacement et découpage ; seules les parties superposées sont exclues de l’affichage et de la durée.',
+      'de':
+          'Schraffierte Stunden werden beim Zuweisen, Verschieben und Teilen übersprungen; nur Überlappungen zählen nicht zur Anzeige und Dauer.',
+      'pt':
+          'As horas hachuradas são ignoradas ao atribuir, mover e dividir; apenas as partes sobrepostas são excluídas da exibição e duração.',
+      'ru':
+          'Заштрихованные часы пропускаются при назначении, переносе и разделении; из вида и длительности исключаются только пересечения.',
+    },
+    'gantt.blockedDifferentHours': {
+      'ja': '開始と終了には別の時刻を指定してください。',
+      'en': 'Choose different start and end times.',
+      'zh': '请选择不同的开始和结束时间。',
+      'ko': '시작과 종료 시간을 다르게 지정하세요.',
+      'es': 'Elige horas de inicio y fin distintas.',
+      'fr': 'Choisissez des heures de début et de fin différentes.',
+      'de': 'Wählen Sie unterschiedliche Start- und Endzeiten.',
+      'pt': 'Escolha horários de início e fim diferentes.',
+      'ru': 'Укажите разное время начала и окончания.',
+    },
+    'gantt.blockedOvernightHint': {
+      'ja': '日をまたぐ非稼働時間として保存します。',
+      'en': 'This will be saved as an overnight non-working period.',
+      'zh': '将保存为跨夜非工作时段。',
+      'ko': '자정을 넘는 비작업 시간으로 저장합니다.',
+      'es': 'Se guardará como un período no laborable nocturno.',
+      'fr': 'Cette plage non travaillée passera par minuit.',
+      'de': 'Wird als arbeitsfreier Zeitraum über Mitternacht gespeichert.',
+      'pt': 'Será salvo como período não útil durante a noite.',
+      'ru': 'Будет сохранено как нерабочий период через полночь.',
+    },
+    'gantt.blockedOverlapHint': {
+      'ja': 'この区間に重なるタスク部分だけを無視します。',
+      'en': 'Only task portions overlapping this period are ignored.',
+      'zh': '仅忽略与此时段重叠的任务部分。',
+      'ko': '이 시간대와 겹치는 작업 부분만 무시합니다.',
+      'es': 'Solo se ignoran las partes de tareas que se solapen.',
+      'fr': 'Seules les parties de tâches superposées seront ignorées.',
+      'de': 'Nur überlappende Teile von Aufgaben werden ignoriert.',
+      'pt': 'Apenas as partes sobrepostas das tarefas serão ignoradas.',
+      'ru': 'Будут игнорироваться только пересекающиеся части задач.',
+    },
+    'gantt.nextDaySuffix': {
+      'ja': '（翌日）',
+      'en': ' (next day)',
+      'zh': '（次日）',
+      'ko': ' (다음 날)',
+      'es': ' (día siguiente)',
+      'fr': ' (lendemain)',
+      'de': ' (Folgetag)',
+      'pt': ' (dia seguinte)',
+      'ru': ' (следующий день)',
+    },
+    'gantt.taskOnlyBlocked': {
+      'ja': 'このタスクは非稼働時間帯にのみ重なっています',
+      'en': 'This task overlaps only non-working hours',
+      'zh': '此任务仅与非工作时间重叠',
+      'ko': '이 작업은 비작업 시간대에만 겹칩니다',
+      'es': 'Esta tarea solo coincide con horas no laborables',
+      'fr': 'Cette tâche ne chevauche que des heures non travaillées',
+      'de': 'Diese Aufgabe liegt ausschließlich in arbeitsfreien Stunden',
+      'pt': 'Esta tarefa coincide apenas com horas não úteis',
+      'ru': 'Задача целиком находится в нерабочем времени',
+    },
+    'gantt.noAvailableHours': {
+      'ja': '全時間帯が非稼働に設定されているため、タスクを割り当てられません',
+      'en':
+          'A task cannot be assigned because every hour is set as non-working',
+      'zh': '所有时段均设为非工作时间，无法分配任务',
+      'ko': '모든 시간대가 비작업으로 설정되어 작업을 배치할 수 없습니다',
+      'es':
+          'No se puede asignar una tarea porque todas las horas son no laborables',
+      'fr':
+          'Impossible d’assigner une tâche car toutes les heures sont non travaillées',
+      'de':
+          'Es kann keine Aufgabe zugewiesen werden, da alle Stunden arbeitsfrei sind',
+      'pt':
+          'Não é possível atribuir uma tarefa porque todas as horas são não úteis',
+      'ru':
+          'Задачу нельзя назначить: все часы отмечены как нерабочие',
+    },
     'gantt.showAll': {
       'ja': '全表示',
       'en': 'Show all',
@@ -17423,6 +17694,84 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Nova tarefa',
       'ru': 'Новая задача',
     },
+    'gantt.assigneeHint': {
+      'ja': '担当者 (任意)',
+      'en': 'Assignee (optional)',
+      'zh': '负责人（可选）',
+      'ko': '담당자 (선택)',
+      'es': 'Responsable (opcional)',
+      'fr': 'Responsable (facultatif)',
+      'de': 'Zuständig (optional)',
+      'pt': 'Responsável (opcional)',
+      'ru': 'Ответственный (необязательно)',
+    },
+    // ── 設定シート等の未対応項目 (= ユーザー要望: 多言語対応) ──
+    'menu.autofillSequence': {
+      'ja': '連番タイトル オートフィル',
+      'en': 'Sequential title autofill',
+      'zh': '连续标题自动填充',
+      'ko': '연번 제목 자동 채우기',
+      'es': 'Autocompletar títulos secuenciales',
+      'fr': 'Remplissage auto de titres séquentiels',
+      'de': 'Fortlaufende Titel automatisch',
+      'pt': 'Preenchimento de títulos sequenciais',
+      'ru': 'Автозаполнение нумерованных заголовков',
+    },
+    'menu.memoList': {
+      'ja': 'メモ一覧',
+      'en': 'Memo list',
+      'zh': '备忘录列表',
+      'ko': '메모 목록',
+      'es': 'Lista de notas',
+      'fr': 'Liste des mémos',
+      'de': 'Notizliste',
+      'pt': 'Lista de memorandos',
+      'ru': 'Список заметок',
+    },
+    'menu.memoListSub': {
+      'ja': 'PDF / サイト / ノードのメモを一覧',
+      'en': 'PDF / site / node memos',
+      'zh': 'PDF / 网站 / 节点备忘录',
+      'ko': 'PDF / 사이트 / 노드 메모',
+      'es': 'Notas de PDF / sitio / nodo',
+      'fr': 'Mémos PDF / site / nœud',
+      'de': 'PDF-/Website-/Knoten-Notizen',
+      'pt': 'Memorandos de PDF / site / nó',
+      'ru': 'Заметки PDF / сайтов / узлов',
+    },
+    'menu.logout': {
+      'ja': 'ログアウト',
+      'en': 'Log out',
+      'zh': '退出登录',
+      'ko': '로그아웃',
+      'es': 'Cerrar sesión',
+      'fr': 'Déconnexion',
+      'de': 'Abmelden',
+      'pt': 'Sair',
+      'ru': 'Выйти',
+    },
+    'menu.logoutSub': {
+      'ja': 'Cookie を消去',
+      'en': 'Clear cookies',
+      'zh': '清除 Cookie',
+      'ko': '쿠키 삭제',
+      'es': 'Borrar cookies',
+      'fr': 'Effacer les cookies',
+      'de': 'Cookies löschen',
+      'pt': 'Limpar cookies',
+      'ru': 'Очистить cookie',
+    },
+    'menu.logoutSwitchAccount': {
+      'ja': 'ログアウト / 別アカウントでログイン',
+      'en': 'Log out / switch account',
+      'zh': '退出 / 切换账号',
+      'ko': '로그아웃 / 계정 전환',
+      'es': 'Cerrar sesión / cambiar cuenta',
+      'fr': 'Déconnexion / changer de compte',
+      'de': 'Abmelden / Konto wechseln',
+      'pt': 'Sair / trocar de conta',
+      'ru': 'Выйти / сменить аккаунт',
+    },
     'gantt.durationHours': {
       'ja': '{n}時間',
       'en': '{n} hr',
@@ -17488,6 +17837,61 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Zur 12-Stunden-Anzeige (AM/PM) wechseln',
       'pt': 'Mudar para o formato de 12 horas (AM/PM)',
       'ru': 'Переключить на 12-часовой формат (AM/PM)',
+    },
+    'gantt.sideMenu': {
+      'ja': 'サイドメニュー',
+      'en': 'Side menu',
+      'zh': '侧边菜单',
+      'ko': '사이드 메뉴',
+      'es': 'Menú lateral',
+      'fr': 'Menu latéral',
+      'de': 'Seitenmenü',
+      'pt': 'Menu lateral',
+      'ru': 'Боковое меню',
+    },
+    'gantt.splitTask': {
+      'ja': '分割',
+      'en': 'Split',
+      'zh': '拆分',
+      'ko': '분할',
+      'es': 'Dividir',
+      'fr': 'Scinder',
+      'de': 'Teilen',
+      'pt': 'Dividir',
+      'ru': 'Разделить',
+    },
+    'gantt.sideEmptyHint': {
+      'ja': 'バーをタップして選択すると、ここで編集・分割できます。',
+      'en': 'Tap a bar to select it, then edit or split it here.',
+      'zh': '点击任务条将其选中，即可在此编辑或拆分。',
+      'ko': '막대를 탭해 선택하면 여기에서 편집하거나 분할할 수 있습니다.',
+      'es': 'Toca una barra para seleccionarla y editarla o dividirla aquí.',
+      'fr': 'Touchez une barre pour la sélectionner, puis la modifier ou la scinder ici.',
+      'de': 'Balken antippen, um ihn hier zu bearbeiten oder zu teilen.',
+      'pt': 'Toque em uma barra para selecioná-la e editá-la ou dividi-la aqui.',
+      'ru': 'Нажмите на полосу, чтобы выбрать, изменить или разделить её здесь.',
+    },
+    'gantt.sideShortcutHint': {
+      'ja': 'S キーで分割 / Delete で削除',
+      'en': 'S to split / Delete to remove',
+      'zh': '按 S 拆分 / 按 Delete 删除',
+      'ko': 'S 키로 분할 / Delete 키로 삭제',
+      'es': 'S para dividir / Delete para eliminar',
+      'fr': 'S pour scinder / Suppr. pour supprimer',
+      'de': 'S zum Teilen / Entf zum Löschen',
+      'pt': 'S para dividir / Delete para excluir',
+      'ru': 'S — разделить / Delete — удалить',
+    },
+    'gantt.splitTooShort': {
+      'ja': '1単位ぶんのタスクはこれ以上分割できません',
+      'en': 'A one-unit task cannot be split any further',
+      'zh': '只有一个单位的任务无法继续拆分',
+      'ko': '1단위 길이의 작업은 더 이상 분할할 수 없습니다',
+      'es': 'Una tarea de una unidad no se puede dividir más',
+      'fr': 'Une tâche d’une unité ne peut pas être davantage scindée',
+      'de': 'Eine Aufgabe mit einer Einheit kann nicht weiter geteilt werden',
+      'pt': 'Uma tarefa de uma unidade não pode mais ser dividida',
+      'ru': 'Задачу длительностью в одну единицу нельзя разделить дальше',
     },
     'pip.fullscreen': {
       'ja': '全画面に戻す',
@@ -18377,6 +18781,237 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Zur Karte hinzufügen',
       'pt': 'Adicionar ao mapa',
       'ru': 'Добавить на карту',
+    },
+    'vmemo.title': {
+      'ja': '動画メモ',
+      'en': 'Video notes',
+      'zh': '视频笔记',
+      'ko': '동영상 메모',
+      'es': 'Notas del vídeo',
+      'fr': 'Notes vidéo',
+      'de': 'Videonotizen',
+      'pt': 'Notas do vídeo',
+      'ru': 'Заметки к видео',
+    },
+    'vmemo.inputHint': {
+      'ja': 'ここに気づいたことをメモ… 入力後に「メモを追加」を押します',
+      'en': 'Note what you notice here… then select “Add memo”',
+      'zh': '在此记录你注意到的内容… 输入后选择“添加笔记”',
+      'ko': '여기에 알아챈 것을 메모… 입력 후 “메모 추가”를 선택하세요',
+      'es': 'Anota aquí lo que observes… luego selecciona «Añadir nota»',
+      'fr': 'Notez ici ce que vous remarquez… puis sélectionnez « Ajouter la note »',
+      'de': 'Notieren Sie hier Ihre Beobachtungen… wählen Sie dann „Notiz hinzufügen“',
+      'pt': 'Anote aqui o que observar… depois selecione “Adicionar nota”',
+      'ru': 'Запишите здесь свои наблюдения… затем выберите «Добавить заметку»',
+    },
+    'vmemo.timestamp': {
+      'ja': 'タイムスタンプ',
+      'en': 'Timestamp',
+      'zh': '时间戳',
+      'ko': '타임스탬프',
+      'es': 'Marca de tiempo',
+      'fr': 'Horodatage',
+      'de': 'Zeitstempel',
+      'pt': 'Carimbo de data/hora',
+      'ru': 'Метка времени',
+    },
+    'vmemo.currentTime': {
+      'ja': '現在時刻',
+      'en': 'Current time',
+      'zh': '当前时间',
+      'ko': '현재 시간',
+      'es': 'Tiempo actual',
+      'fr': 'Temps actuel',
+      'de': 'Aktuelle Zeit',
+      'pt': 'Tempo atual',
+      'ru': 'Текущее время',
+    },
+    'vmemo.includePosition': {
+      'ja': '再生位置を含める',
+      'en': 'Include playback position',
+      'zh': '包含播放位置',
+      'ko': '재생 위치 포함',
+      'es': 'Incluir posición de reproducción',
+      'fr': 'Inclure la position de lecture',
+      'de': 'Wiedergabeposition einschließen',
+      'pt': 'Incluir posição de reprodução',
+      'ru': 'Добавить позицию воспроизведения',
+    },
+    'vmemo.addMemo': {
+      'ja': 'メモを追加',
+      'en': 'Add memo',
+      'zh': '添加笔记',
+      'ko': '메모 추가',
+      'es': 'Añadir nota',
+      'fr': 'Ajouter la note',
+      'de': 'Notiz hinzufügen',
+      'pt': 'Adicionar nota',
+      'ru': 'Добавить заметку',
+    },
+    'vmemo.history': {
+      'ja': '動画メモ ({count})',
+      'en': 'Video notes ({count})',
+      'zh': '视频笔记（{count}）',
+      'ko': '동영상 메모 ({count})',
+      'es': 'Notas del vídeo ({count})',
+      'fr': 'Notes vidéo ({count})',
+      'de': 'Videonotizen ({count})',
+      'pt': 'Notas do vídeo ({count})',
+      'ru': 'Заметки к видео ({count})',
+    },
+    'vmemo.sendAllToAi': {
+      'ja': '一括で AI に送る',
+      'en': 'Send all to AI',
+      'zh': '全部发送给 AI',
+      'ko': '모두 AI에 보내기',
+      'es': 'Enviar todo a la IA',
+      'fr': 'Tout envoyer à l’IA',
+      'de': 'Alle an die KI senden',
+      'pt': 'Enviar tudo à IA',
+      'ru': 'Отправить всё в ИИ',
+    },
+    'vmemo.empty': {
+      'ja': 'メモが空です',
+      'en': 'The memo is empty',
+      'zh': '笔记为空',
+      'ko': '메모가 비어 있습니다',
+      'es': 'La nota está vacía',
+      'fr': 'La note est vide',
+      'de': 'Die Notiz ist leer',
+      'pt': 'A nota está vazia',
+      'ru': 'Заметка пуста',
+    },
+    'vmemo.noMemosToSend': {
+      'ja': '送れるメモがありません',
+      'en': 'There are no memos to send',
+      'zh': '没有可发送的笔记',
+      'ko': '보낼 메모가 없습니다',
+      'es': 'No hay notas para enviar',
+      'fr': 'Aucune note à envoyer',
+      'de': 'Es gibt keine Notizen zum Senden',
+      'pt': 'Não há notas para enviar',
+      'ru': 'Нет заметок для отправки',
+    },
+    'vmemo.noMemosToSearch': {
+      'ja': '検索できるメモがありません',
+      'en': 'There are no memos to search',
+      'zh': '没有可搜索的笔记',
+      'ko': '검색할 메모가 없습니다',
+      'es': 'No hay notas para buscar',
+      'fr': 'Aucune note à rechercher',
+      'de': 'Es gibt keine Notizen zum Suchen',
+      'pt': 'Não há notas para pesquisar',
+      'ru': 'Нет заметок для поиска',
+    },
+    'vmemo.searchTitle': {
+      'ja': '動画メモを検索',
+      'en': 'Search video notes',
+      'zh': '搜索视频笔记',
+      'ko': '동영상 메모 검색',
+      'es': 'Buscar notas del vídeo',
+      'fr': 'Rechercher dans les notes vidéo',
+      'de': 'Videonotizen durchsuchen',
+      'pt': 'Pesquisar notas do vídeo',
+      'ru': 'Поиск по заметкам к видео',
+    },
+    'vmemo.searchSourceTitle': {
+      'ja': '{title} のメモを検索',
+      'en': 'Search notes for {title}',
+      'zh': '搜索 {title} 的笔记',
+      'ko': '{title} 메모 검색',
+      'es': 'Buscar notas de {title}',
+      'fr': 'Rechercher les notes de {title}',
+      'de': 'Notizen zu {title} durchsuchen',
+      'pt': 'Pesquisar notas de {title}',
+      'ru': 'Искать заметки к {title}',
+    },
+    'vmemo.sendThisToAi': {
+      'ja': 'このメモを AI に送る',
+      'en': 'Send this memo to AI',
+      'zh': '将此笔记发送给 AI',
+      'ko': '이 메모를 AI에 보내기',
+      'es': 'Enviar esta nota a la IA',
+      'fr': 'Envoyer cette note à l’IA',
+      'de': 'Diese Notiz an die KI senden',
+      'pt': 'Enviar esta nota à IA',
+      'ru': 'Отправить эту заметку в ИИ',
+    },
+    'vmemo.searchThisOnGoogle': {
+      'ja': 'このメモを Google で検索',
+      'en': 'Search this memo on Google',
+      'zh': '在 Google 中搜索此笔记',
+      'ko': '이 메모를 Google에서 검색',
+      'es': 'Buscar esta nota en Google',
+      'fr': 'Rechercher cette note sur Google',
+      'de': 'Diese Notiz mit Google suchen',
+      'pt': 'Pesquisar esta nota no Google',
+      'ru': 'Искать эту заметку в Google',
+    },
+    'vmemo.addFailed': {
+      'ja': 'メモの追加に失敗しました',
+      'en': 'Failed to add the memo',
+      'zh': '添加笔记失败',
+      'ko': '메모를 추가하지 못했습니다',
+      'es': 'No se pudo añadir la nota',
+      'fr': 'Échec de l’ajout de la note',
+      'de': 'Notiz konnte nicht hinzugefügt werden',
+      'pt': 'Falha ao adicionar a nota',
+      'ru': 'Не удалось добавить заметку',
+    },
+    'vmemo.addFailedWithError': {
+      'ja': 'メモの追加に失敗: {error}',
+      'en': 'Failed to add the memo: {error}',
+      'zh': '添加笔记失败：{error}',
+      'ko': '메모 추가 실패: {error}',
+      'es': 'No se pudo añadir la nota: {error}',
+      'fr': 'Échec de l’ajout de la note : {error}',
+      'de': 'Notiz konnte nicht hinzugefügt werden: {error}',
+      'pt': 'Falha ao adicionar a nota: {error}',
+      'ru': 'Не удалось добавить заметку: {error}',
+    },
+    'vmemo.addedToMap': {
+      'ja': 'マップにメモを追加',
+      'en': 'Memo added to the map',
+      'zh': '笔记已添加到地图',
+      'ko': '맵에 메모를 추가했습니다',
+      'es': 'Nota añadida al mapa',
+      'fr': 'Note ajoutée à la carte',
+      'de': 'Notiz zur Karte hinzugefügt',
+      'pt': 'Nota adicionada ao mapa',
+      'ru': 'Заметка добавлена на карту',
+    },
+    'vmemo.addedToMapAt': {
+      'ja': 'マップにメモを追加 {timestamp}',
+      'en': 'Memo added to the map {timestamp}',
+      'zh': '笔记已添加到地图 {timestamp}',
+      'ko': '맵에 메모를 추가했습니다 {timestamp}',
+      'es': 'Nota añadida al mapa {timestamp}',
+      'fr': 'Note ajoutée à la carte {timestamp}',
+      'de': 'Notiz zur Karte hinzugefügt {timestamp}',
+      'pt': 'Nota adicionada ao mapa {timestamp}',
+      'ru': 'Заметка добавлена на карту {timestamp}',
+    },
+    'vmemo.imagePastedToMap': {
+      'ja': '📋 画像を動画メモとしてマップに貼り付けました',
+      'en': '📋 Image pasted to the map as a video memo',
+      'zh': '📋 图片已作为视频笔记粘贴到地图',
+      'ko': '📋 이미지를 동영상 메모로 맵에 붙여넣었습니다',
+      'es': '📋 Imagen pegada en el mapa como nota de vídeo',
+      'fr': '📋 Image collée sur la carte comme note vidéo',
+      'de': '📋 Bild als Videonotiz in die Karte eingefügt',
+      'pt': '📋 Imagem colada no mapa como nota de vídeo',
+      'ru': '📋 Изображение вставлено на карту как заметка к видео',
+    },
+    'vmemo.imagePasteFailed': {
+      'ja': '画像の貼り付けに失敗しました',
+      'en': 'Failed to paste the image',
+      'zh': '粘贴图片失败',
+      'ko': '이미지를 붙여넣지 못했습니다',
+      'es': 'No se pudo pegar la imagen',
+      'fr': 'Échec du collage de l’image',
+      'de': 'Bild konnte nicht eingefügt werden',
+      'pt': 'Falha ao colar a imagem',
+      'ru': 'Не удалось вставить изображение',
     },
     'embed.title': {
       'ja': '動画を埋め込む',
@@ -30468,6 +31103,342 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Verfügbare Schaltflächen',
       'pt': 'Botões disponíveis',
       'ru': 'Доступные кнопки',
+    },
+    // ── まとめて選択して追加 (= ユーザー要望: Ctrl/Shift で複数のカスタムボタンを
+    //    選択してまとめてバーへ送る) ──
+    'header.multiSelectHint': {
+      'ja': 'Ctrl / Shift でまとめて選択できます',
+      'en': 'Hold Ctrl / Shift to select several at once',
+      'zh': '按住 Ctrl / Shift 可一次选择多个',
+      'ko': 'Ctrl / Shift 로 여러 개를 한 번에 선택',
+      'es': 'Mantén Ctrl / Shift para seleccionar varios',
+      'fr': 'Ctrl / Maj pour en sélectionner plusieurs',
+      'de': 'Strg / Umschalt für Mehrfachauswahl',
+      'pt': 'Segure Ctrl / Shift para selecionar vários',
+      'ru': 'Ctrl / Shift — выбрать несколько сразу',
+    },
+    'header.addSelected': {
+      'ja': 'まとめて追加',
+      'en': 'Add selected',
+      'zh': '批量添加',
+      'ko': '선택 항목 추가',
+      'es': 'Añadir selección',
+      'fr': 'Ajouter la sélection',
+      'de': 'Auswahl hinzufügen',
+      'pt': 'Adicionar selecionados',
+      'ru': 'Добавить выбранные',
+    },
+    'header.clearSelection': {
+      'ja': '選択解除',
+      'en': 'Clear selection',
+      'zh': '取消选择',
+      'ko': '선택 해제',
+      'es': 'Quitar selección',
+      'fr': 'Effacer la sélection',
+      'de': 'Auswahl aufheben',
+      'pt': 'Limpar seleção',
+      'ru': 'Снять выбор',
+    },
+    // ── 手動サブスクリプション管理ダイアログ (= ユーザー要望: 多言語対応) ──
+    'sub.manageTitle': {
+      'ja': 'サブスク管理',
+      'en': 'Subscriptions',
+      'zh': '订阅管理',
+      'ko': '구독 관리',
+      'es': 'Suscripciones',
+      'fr': 'Abonnements',
+      'de': 'Abonnements',
+      'pt': 'Assinaturas',
+      'ru': 'Подписки',
+    },
+    'sub.addTitle': {
+      'ja': 'サブスクを追加',
+      'en': 'Add subscription',
+      'zh': '添加订阅',
+      'ko': '구독 추가',
+      'es': 'Añadir suscripción',
+      'fr': 'Ajouter un abonnement',
+      'de': 'Abo hinzufügen',
+      'pt': 'Adicionar assinatura',
+      'ru': 'Добавить подписку',
+    },
+    'sub.editTitle': {
+      'ja': 'サブスクを編集',
+      'en': 'Edit subscription',
+      'zh': '编辑订阅',
+      'ko': '구독 편집',
+      'es': 'Editar suscripción',
+      'fr': 'Modifier l\'abonnement',
+      'de': 'Abo bearbeiten',
+      'pt': 'Editar assinatura',
+      'ru': 'Изменить подписку',
+    },
+    'sub.serviceName': {
+      'ja': 'サービス名',
+      'en': 'Service name',
+      'zh': '服务名称',
+      'ko': '서비스 이름',
+      'es': 'Nombre del servicio',
+      'fr': 'Nom du service',
+      'de': 'Dienstname',
+      'pt': 'Nome do serviço',
+      'ru': 'Название сервиса',
+    },
+    'sub.currency': {
+      'ja': '通貨',
+      'en': 'Currency',
+      'zh': '货币',
+      'ko': '통화',
+      'es': 'Moneda',
+      'fr': 'Devise',
+      'de': 'Währung',
+      'pt': 'Moeda',
+      'ru': 'Валюта',
+    },
+    'sub.amount': {
+      'ja': '料金',
+      'en': 'Amount',
+      'zh': '金额',
+      'ko': '요금',
+      'es': 'Importe',
+      'fr': 'Montant',
+      'de': 'Betrag',
+      'pt': 'Valor',
+      'ru': 'Сумма',
+    },
+    'sub.monthly': {
+      'ja': '月単位',
+      'en': 'Monthly',
+      'zh': '按月',
+      'ko': '월간',
+      'es': 'Mensual',
+      'fr': 'Mensuel',
+      'de': 'Monatlich',
+      'pt': 'Mensal',
+      'ru': 'Ежемесячно',
+    },
+    'sub.yearly': {
+      'ja': '年単位',
+      'en': 'Yearly',
+      'zh': '按年',
+      'ko': '연간',
+      'es': 'Anual',
+      'fr': 'Annuel',
+      'de': 'Jährlich',
+      'pt': 'Anual',
+      'ru': 'Ежегодно',
+    },
+    'sub.billingMonth': {
+      'ja': '支払月',
+      'en': 'Billing month',
+      'zh': '付款月份',
+      'ko': '결제 월',
+      'es': 'Mes de pago',
+      'fr': 'Mois de paiement',
+      'de': 'Abrechnungsmonat',
+      'pt': 'Mês de cobrança',
+      'ru': 'Месяц оплаты',
+    },
+    'sub.billingDay': {
+      'ja': '支払日',
+      'en': 'Billing day',
+      'zh': '付款日',
+      'ko': '결제일',
+      'es': 'Día de pago',
+      'fr': 'Jour de paiement',
+      'de': 'Abrechnungstag',
+      'pt': 'Dia de cobrança',
+      'ru': 'День оплаты',
+    },
+    // 数字の後ろに付く単位 (CJK のみ。 欧文は空)。
+    'sub.monthSuffix': {
+      'ja': '月',
+      'en': '',
+      'zh': '月',
+      'ko': '월',
+      'es': '',
+      'fr': '',
+      'de': '',
+      'pt': '',
+      'ru': '',
+    },
+    'sub.daySuffix': {
+      'ja': '日',
+      'en': '',
+      'zh': '日',
+      'ko': '일',
+      'es': '',
+      'fr': '',
+      'de': '',
+      'pt': '',
+      'ru': '',
+    },
+    'sub.notifyDaysLabel': {
+      'ja': '何日前に通知するか（0 = 当日）',
+      'en': 'Days before to notify (0 = same day)',
+      'zh': '提前几天提醒（0 = 当天）',
+      'ko': '며칠 전에 알림 (0 = 당일)',
+      'es': 'Días antes para avisar (0 = mismo día)',
+      'fr': 'Jours avant pour notifier (0 = le jour même)',
+      'de': 'Tage vorher benachrichtigen (0 = am Tag)',
+      'pt': 'Dias antes para avisar (0 = no dia)',
+      'ru': 'За сколько дней уведомить (0 = в день)',
+    },
+    'sub.notifyTimeLabel': {
+      'ja': '通知時刻',
+      'en': 'Notification time',
+      'zh': '提醒时间',
+      'ko': '알림 시간',
+      'es': 'Hora de aviso',
+      'fr': 'Heure de notification',
+      'de': 'Benachrichtigungszeit',
+      'pt': 'Hora da notificação',
+      'ru': 'Время уведомления',
+    },
+    'sub.enableNotify': {
+      'ja': '通知を有効にする',
+      'en': 'Enable notifications',
+      'zh': '启用通知',
+      'ko': '알림 사용',
+      'es': 'Activar notificaciones',
+      'fr': 'Activer les notifications',
+      'de': 'Benachrichtigungen aktivieren',
+      'pt': 'Ativar notificações',
+      'ru': 'Включить уведомления',
+    },
+    'sub.validationError': {
+      'ja': 'サービス名・料金・通知日数を確認してください',
+      'en': 'Check the service name, amount, and notify days',
+      'zh': '请检查服务名称、金额和通知天数',
+      'ko': '서비스 이름·요금·알림 일수를 확인하세요',
+      'es': 'Revisa el nombre, el importe y los días de aviso',
+      'fr': 'Vérifiez le nom, le montant et les jours d\'avis',
+      'de': 'Prüfe Name, Betrag und Vorlauftage',
+      'pt': 'Verifique o nome, o valor e os dias de aviso',
+      'ru': 'Проверьте название, сумму и дни уведомления',
+    },
+    'sub.add': {
+      'ja': '追加',
+      'en': 'Add',
+      'zh': '添加',
+      'ko': '추가',
+      'es': 'Añadir',
+      'fr': 'Ajouter',
+      'de': 'Hinzufügen',
+      'pt': 'Adicionar',
+      'ru': 'Добавить',
+    },
+    'sub.empty': {
+      'ja': '登録したサブスクはありません',
+      'en': 'No subscriptions yet',
+      'zh': '尚未登记订阅',
+      'ko': '등록된 구독이 없습니다',
+      'es': 'No hay suscripciones',
+      'fr': 'Aucun abonnement',
+      'de': 'Keine Abos',
+      'pt': 'Nenhuma assinatura',
+      'ru': 'Нет подписок',
+    },
+    'sub.noneActive': {
+      'ja': '有効なサブスクはありません',
+      'en': 'No active subscriptions',
+      'zh': '没有有效的订阅',
+      'ko': '활성 구독이 없습니다',
+      'es': 'Sin suscripciones activas',
+      'fr': 'Aucun abonnement actif',
+      'de': 'Keine aktiven Abos',
+      'pt': 'Sem assinaturas ativas',
+      'ru': 'Нет активных подписок',
+    },
+    'sub.perMonth': {
+      'ja': '月',
+      'en': 'mo',
+      'zh': '月',
+      'ko': '월',
+      'es': 'mes',
+      'fr': 'mois',
+      'de': 'Mon.',
+      'pt': 'mês',
+      'ru': 'мес',
+    },
+    'sub.perYear': {
+      'ja': '年',
+      'en': 'yr',
+      'zh': '年',
+      'ko': '년',
+      'es': 'año',
+      'fr': 'an',
+      'de': 'Jahr',
+      'pt': 'ano',
+      'ru': 'год',
+    },
+    'sub.next': {
+      'ja': '次回',
+      'en': 'Next',
+      'zh': '下次',
+      'ko': '다음',
+      'es': 'Próximo',
+      'fr': 'Prochain',
+      'de': 'Nächste',
+      'pt': 'Próximo',
+      'ru': 'Далее',
+    },
+    'sub.notifyOnDay': {
+      'ja': '当日通知',
+      'en': 'Same-day',
+      'zh': '当天提醒',
+      'ko': '당일 알림',
+      'es': 'Mismo día',
+      'fr': 'Le jour même',
+      'de': 'Am Tag',
+      'pt': 'No dia',
+      'ru': 'В день',
+    },
+    // `${n}${sub.daysBeforeNotify}` の形で使う。 欧文は先頭に半角スペースを含める。
+    'sub.daysBeforeNotify': {
+      'ja': '日前に通知',
+      'en': ' days before',
+      'zh': '天前提醒',
+      'ko': '일 전 알림',
+      'es': ' días antes',
+      'fr': ' jours avant',
+      'de': ' Tage vorher',
+      'pt': ' dias antes',
+      'ru': ' дн. до',
+    },
+    'sub.notifPrefix': {
+      'ja': 'サブスク',
+      'en': 'Subscription',
+      'zh': '订阅',
+      'ko': '구독',
+      'es': 'Suscripción',
+      'fr': 'Abonnement',
+      'de': 'Abo',
+      'pt': 'Assinatura',
+      'ru': 'Подписка',
+    },
+    'sub.dueToday': {
+      'ja': '本日が支払日です',
+      'en': 'Payment is due today',
+      'zh': '今天是付款日',
+      'ko': '오늘이 결제일입니다',
+      'es': 'El pago vence hoy',
+      'fr': 'Paiement dû aujourd\'hui',
+      'de': 'Zahlung heute fällig',
+      'pt': 'Pagamento vence hoje',
+      'ru': 'Оплата сегодня',
+    },
+    // `${n}${sub.dueInDays}` の形で使う。 欧文は先頭に半角スペースを含める。
+    'sub.dueInDays': {
+      'ja': '日後に支払い予定です',
+      'en': ' days until payment',
+      'zh': '天后付款',
+      'ko': '일 후 결제 예정',
+      'es': ' días para el pago',
+      'fr': ' jours avant paiement',
+      'de': ' Tage bis zur Zahlung',
+      'pt': ' dias até o pagamento',
+      'ru': ' дн. до оплаты',
     },
     'header.emptyHint': {
       'ja': '下のボタンをタップしてボタン領域に追加できます',
@@ -48697,6 +49668,19 @@ $cleanQ
     if (current.backgroundFit != base.backgroundFit) {
       cloudPage.backgroundFit = current.backgroundFit;
     }
+    if (current.backgroundHueDegrees != base.backgroundHueDegrees) {
+      cloudPage.backgroundHueDegrees = current.backgroundHueDegrees;
+    }
+    if (current.backgroundSaturationPercent !=
+        base.backgroundSaturationPercent) {
+      cloudPage.backgroundSaturationPercent =
+          current.backgroundSaturationPercent;
+    }
+    if (current.backgroundBrightnessPercent !=
+        base.backgroundBrightnessPercent) {
+      cloudPage.backgroundBrightnessPercent =
+          current.backgroundBrightnessPercent;
+    }
     return cloudPage;
   }
 
@@ -48715,25 +49699,37 @@ $cleanQ
   ///   カスタマイズ」) ────────────────────────────────────────────────
   /// 指定ページの背景画像パスをセットして永続化する。 `path` が null なら
   /// 背景画像を解除 (= グリッドのみに戻す)。
-  Future<void> setPageBackgroundImage(String pageId, String? path) async {
-    final idx = _pages.indexWhere((p) => p.id == pageId);
-    if (idx < 0) return;
+  Future<void> setPageBackgroundImage(String pageId, String? path,
+      {bool applyToAll = false}) async {
+    final targets = applyToAll
+        ? _pages
+        : _pages.where((page) => page.id == pageId).toList();
+    if (targets.isEmpty) return;
     _pushUndo();
-    _pages[idx].backgroundImagePath = path;
-    _pages[idx].lastModifiedAt = DateTime.now();
+    final now = DateTime.now();
+    for (final page in targets) {
+      page.backgroundImagePath = path;
+      page.lastModifiedAt = now;
+    }
     notifyListeners();
     await _saveToStorageLocal();
     _triggerAutoSync();
   }
 
   /// 指定ページの背景画像の不透明度 (0〜100) をセットして永続化する。
-  Future<void> setPageBackgroundOpacity(String pageId, int percent) async {
-    final idx = _pages.indexWhere((p) => p.id == pageId);
-    if (idx < 0) return;
-    final clamped = percent.clamp(0, 100);
-    if (_pages[idx].backgroundOpacityPercent == clamped) return;
-    _pages[idx].backgroundOpacityPercent = clamped;
-    _pages[idx].lastModifiedAt = DateTime.now();
+  Future<void> setPageBackgroundOpacity(String pageId, int percent,
+      {bool applyToAll = false}) async {
+    final targets = applyToAll
+        ? _pages
+        : _pages.where((page) => page.id == pageId).toList();
+    if (targets.isEmpty) return;
+    final clamped = percent.clamp(0, 100).toInt();
+    if (targets.every((p) => p.backgroundOpacityPercent == clamped)) return;
+    final now = DateTime.now();
+    for (final page in targets) {
+      page.backgroundOpacityPercent = clamped;
+      page.lastModifiedAt = now;
+    }
     notifyListeners();
     await _saveToStorageLocal();
     _triggerAutoSync();
@@ -48741,13 +49737,72 @@ $cleanQ
 
   /// 指定ページの背景画像の表示モード ('cover' / 'contain' / 'tile') を
   /// セットして永続化する。
-  Future<void> setPageBackgroundFit(String pageId, String fit) async {
+  Future<void> setPageBackgroundFit(String pageId, String fit,
+      {bool applyToAll = false}) async {
     if (fit != 'cover' && fit != 'contain' && fit != 'tile') return;
-    final idx = _pages.indexWhere((p) => p.id == pageId);
-    if (idx < 0) return;
-    if (_pages[idx].backgroundFit == fit) return;
-    _pages[idx].backgroundFit = fit;
-    _pages[idx].lastModifiedAt = DateTime.now();
+    final targets = applyToAll
+        ? _pages
+        : _pages.where((page) => page.id == pageId).toList();
+    if (targets.isEmpty || targets.every((p) => p.backgroundFit == fit)) return;
+    final now = DateTime.now();
+    for (final page in targets) {
+      page.backgroundFit = fit;
+      page.lastModifiedAt = now;
+    }
+    notifyListeners();
+    await _saveToStorageLocal();
+    _triggerAutoSync();
+  }
+
+  /// 組み込み背景テンプレートの色相・彩度・明度をまとめて更新する。
+  Future<void> setPageBackgroundTone(
+    String pageId, {
+    required int hueDegrees,
+    required int saturationPercent,
+    required int brightnessPercent,
+    bool applyToAll = false,
+  }) async {
+    final targets = applyToAll
+        ? _pages
+        : _pages.where((page) => page.id == pageId).toList();
+    if (targets.isEmpty) return;
+    final hue = hueDegrees.clamp(-180, 180).toInt();
+    final saturation = saturationPercent.clamp(0, 200).toInt();
+    final brightness = brightnessPercent.clamp(50, 150).toInt();
+    if (targets.every((page) =>
+        page.backgroundHueDegrees == hue &&
+        page.backgroundSaturationPercent == saturation &&
+        page.backgroundBrightnessPercent == brightness)) {
+      return;
+    }
+    final now = DateTime.now();
+    for (final page in targets) {
+      page.backgroundHueDegrees = hue;
+      page.backgroundSaturationPercent = saturation;
+      page.backgroundBrightnessPercent = brightness;
+      page.lastModifiedAt = now;
+    }
+    notifyListeners();
+    await _saveToStorageLocal();
+    _triggerAutoSync();
+  }
+
+  /// 現在の背景一式を既存の全ページへコピーする。以後ダイアログ内で
+  /// [applyToAll] を使うと、その場での変更も全ページへ同期される。
+  Future<void> applyPageBackgroundToAll(String sourcePageId) async {
+    final sourceIndex = _pages.indexWhere((page) => page.id == sourcePageId);
+    if (sourceIndex < 0 || _pages.isEmpty) return;
+    final source = _pages[sourceIndex];
+    final now = DateTime.now();
+    for (final page in _pages) {
+      page.backgroundImagePath = source.backgroundImagePath;
+      page.backgroundOpacityPercent = source.backgroundOpacityPercent;
+      page.backgroundFit = source.backgroundFit;
+      page.backgroundHueDegrees = source.backgroundHueDegrees;
+      page.backgroundSaturationPercent = source.backgroundSaturationPercent;
+      page.backgroundBrightnessPercent = source.backgroundBrightnessPercent;
+      page.lastModifiedAt = now;
+    }
     notifyListeners();
     await _saveToStorageLocal();
     _triggerAutoSync();

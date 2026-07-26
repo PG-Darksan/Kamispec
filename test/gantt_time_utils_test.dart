@@ -313,4 +313,88 @@ void main() {
       );
     });
   });
+
+  group('active-hour scheduling', () {
+    const overnight = <GanttBlockedInterval>[
+      GanttBlockedInterval(startMinute: 22 * 60, endMinute: 6 * 60),
+    ];
+
+    test('snaps a blocked hour in either direction', () {
+      final blocked = DateTime(2026, 7, 25, 3, 42);
+
+      expect(
+        ganttSnapToActiveHour(
+          value: blocked,
+          blocked: overnight,
+        ),
+        DateTime(2026, 7, 25, 6),
+      );
+      expect(
+        ganttSnapToActiveHour(
+          value: blocked,
+          blocked: overnight,
+          forward: false,
+        ),
+        DateTime(2026, 7, 24, 21),
+      );
+    });
+
+    test('shifts by working hours without counting an overnight interval', () {
+      final start = DateTime(2026, 7, 24, 20);
+
+      expect(
+        ganttShiftActiveHours(
+          from: start,
+          activeSteps: 3,
+          blocked: overnight,
+        ),
+        DateTime(2026, 7, 25, 7),
+      );
+      expect(
+        ganttShiftActiveHours(
+          from: DateTime(2026, 7, 25, 7),
+          activeSteps: -3,
+          blocked: overnight,
+        ),
+        start,
+      );
+    });
+
+    test('returns only assignable columns for split calculations', () {
+      expect(
+        ganttActiveHoursInRange(
+          start: DateTime(2026, 7, 24, 21),
+          end: DateTime(2026, 7, 25, 7),
+          blocked: overnight,
+        ),
+        <DateTime>[
+          DateTime(2026, 7, 24, 21),
+          DateTime(2026, 7, 25, 6),
+          DateTime(2026, 7, 25, 7),
+        ],
+      );
+    });
+
+    test('full-day blocking is reported instead of looping forever', () {
+      const fullDay = <GanttBlockedInterval>[
+        GanttBlockedInterval(startMinute: 0, endMinute: 1440),
+      ];
+
+      expect(
+        ganttSnapToActiveHour(
+          value: DateTime(2026, 7, 24, 12),
+          blocked: fullDay,
+        ),
+        isNull,
+      );
+      expect(
+        ganttShiftActiveHours(
+          from: DateTime(2026, 7, 24, 12),
+          activeSteps: 4,
+          blocked: fullDay,
+        ),
+        isNull,
+      );
+    });
+  });
 }
