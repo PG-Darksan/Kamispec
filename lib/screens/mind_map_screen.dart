@@ -12773,8 +12773,41 @@ class _MindMapScreenState extends State<MindMapScreen>
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setStateDialog) {
+          // ── クーポンは Google ログインが前提 (= ユーザー要望) ──
+          //    ログインしていなければ、 まずブラウザで認証してもらう。
+          //    認証情報が入っていないビルドではこの入口は出さない。
+          final needsGoogle =
+              provider.canUseGoogleSignIn && !provider.googleSignedIn;
+
+          Future<void> doSignIn() async {
+            if (busy) return;
+            setStateDialog(() {
+              busy = true;
+              errorMsg = provider.t('account.openingBrowser');
+            });
+            try {
+              final who = await provider.signInWithGoogle();
+              if (!ctx.mounted) return;
+              setStateDialog(() {
+                busy = false;
+                errorMsg = who == null ? provider.t('account.cancelled') : null;
+              });
+            } catch (e) {
+              if (!ctx.mounted) return;
+              setStateDialog(() {
+                busy = false;
+                errorMsg = '$e';
+              });
+            }
+          }
+
           Future<void> doApply() async {
             if (busy) return;
+            // ログインしていなければ、 適用の前にログインを済ませる。
+            if (provider.canUseGoogleSignIn && !provider.googleSignedIn) {
+              await doSignIn();
+              if (!ctx.mounted || !provider.googleSignedIn) return;
+            }
             setStateDialog(() {
               busy = true;
               errorMsg = null;
@@ -12824,6 +12857,79 @@ class _MindMapScreenState extends State<MindMapScreen>
                   Text(provider.t('coupon.hint'),
                       style:
                           const TextStyle(color: Colors.white54, fontSize: 11)),
+                  // ── ログイン状態の案内 (= ユーザー要望: クーポン適用時は
+                  //    Google アカウントへのログインを求める) ──
+                  if (provider.canUseGoogleSignIn) ...[
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF15151F),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                            color: needsGoogle
+                                ? const Color(0xFFFFB74D)
+                                : const Color(0xFF9CCC65),
+                            width: 1),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(children: [
+                            Icon(
+                                needsGoogle
+                                    ? Icons.lock_person_rounded
+                                    : Icons.verified_user_rounded,
+                                size: 16,
+                                color: needsGoogle
+                                    ? const Color(0xFFFFB74D)
+                                    : const Color(0xFF9CCC65)),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                needsGoogle
+                                    ? provider.t('coupon.errNeedGoogle')
+                                    : (provider.googleEmail.isEmpty
+                                        ? provider.t('account.signedIn')
+                                        : provider.googleEmail),
+                                style: TextStyle(
+                                    color: needsGoogle
+                                        ? const Color(0xFFFFB74D)
+                                        : Colors.white,
+                                    fontSize: 12),
+                              ),
+                            ),
+                          ]),
+                          if (needsGoogle) ...[
+                            const SizedBox(height: 6),
+                            Text(provider.t('coupon.googleWhy'),
+                                style: const TextStyle(
+                                    color: Colors.white54,
+                                    fontSize: 11,
+                                    height: 1.5)),
+                            const SizedBox(height: 8),
+                            SizedBox(
+                              width: double.infinity,
+                              child: ElevatedButton.icon(
+                                style: ElevatedButton.styleFrom(
+                                    backgroundColor: const Color(0xFF1A2030),
+                                    foregroundColor: Colors.white,
+                                    side: const BorderSide(
+                                        color: Color(0xFF4FC3F7), width: 1)),
+                                icon: const Icon(Icons.account_circle_rounded,
+                                    size: 16, color: Color(0xFF4FC3F7)),
+                                label: Text(provider.t('coupon.signInButton'),
+                                    style: const TextStyle(
+                                        color: Color(0xFF4FC3F7),
+                                        fontSize: 12)),
+                                onPressed: busy ? null : doSignIn,
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 12),
                   TextField(
                     controller: ctrl,
@@ -73446,6 +73552,35 @@ class _MindMapScreenState extends State<MindMapScreen>
 
                         const SizedBox(height: 20),
 
+                        // ── 利用者の属性 (= ユーザー要望: Google アカウントの
+                        //    年齢 / 性別 / 国を分析に使いたい) ──
+                        _devSection(provider.t('analytics.title'),
+                            Icons.insights_rounded, const Color(0xFFBA68C8)),
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF241A2E),
+                                foregroundColor: Colors.white,
+                                side: const BorderSide(
+                                    color: Color(0xFFBA68C8), width: 1),
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 10)),
+                            icon: const Icon(Icons.insights_rounded,
+                                size: 16, color: Color(0xFFBA68C8)),
+                            label: Text(provider.t('analytics.title'),
+                                style:
+                                    const TextStyle(color: Color(0xFFBA68C8))),
+                            onPressed: () {
+                              Navigator.pop(dctx);
+                              _showAnalyticsProfileDialog(ctx, provider);
+                            },
+                          ),
+                        ),
+
+                        const SizedBox(height: 20),
+
                         // ── 問い合わせ受信箱 ──
                         _devSection('問い合わせ受信箱', Icons.inbox_rounded,
                             const Color(0xFFFFB347)),
@@ -73761,6 +73896,16 @@ class _MindMapScreenState extends State<MindMapScreen>
                   detailLine('expires', (u['planExpiresAt'] as String?) ?? ''),
                   detailLine('updated', (u['planUpdatedAt'] as String?) ?? ''),
                   detailLine('coupon', (u['couponCode'] as String?) ?? ''),
+                  // ── 属性 (= ユーザー要望: 年齢 / 性別 / 国を分析に) ──
+                  //    未取得は 0 で入るので、 空欄として扱う。
+                  detailLine(
+                      'age',
+                      ((u['ageYears'] as String?) ?? '') == '0'
+                          ? ''
+                          : ((u['ageYears'] as String?) ?? '')),
+                  detailLine('gender', (u['gender'] as String?) ?? ''),
+                  detailLine('country', (u['country'] as String?) ?? ''),
+                  detailLine('locale', (u['locale'] as String?) ?? ''),
                   detailLine('lastSeen', (u['lastSeen'] as String?) ?? ''),
                 ],
               ),
@@ -74018,6 +74163,170 @@ class _MindMapScreenState extends State<MindMapScreen>
               style: TextStyle(
                   color: color, fontSize: 13, fontWeight: FontWeight.w800)),
         ],
+      ),
+    );
+  }
+
+  /// 開発者モード専用: この端末の利用者属性 (年齢 / 性別 / 国 / 言語)。
+  /// = ユーザー要望: Google アカウントから年齢・性別・国を取って分析に使いたい。
+  ///
+  /// 国と言語はログイン情報と端末の地域設定から自動で入る。 生年月日と性別は
+  /// Google の機密スコープなので、 ここのボタンで追加の同意を取った時だけ入る。
+  void _showAnalyticsProfileDialog(
+      BuildContext ctx, MindMapProvider provider) {
+    showDialog<void>(
+      context: ctx,
+      builder: (dctx) => StatefulBuilder(
+        builder: (sctx, setD) {
+          var busy = false;
+          String? message;
+          var isError = false;
+
+          Widget row(String label, String value) => Padding(
+                padding: const EdgeInsets.symmetric(vertical: 3),
+                child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  SizedBox(
+                    width: 96,
+                    child: Text(label,
+                        style: const TextStyle(
+                            color: Colors.white38, fontSize: 12)),
+                  ),
+                  Expanded(
+                    child: SelectableText(
+                      value.isEmpty ? provider.t('analytics.unknown') : value,
+                      style: TextStyle(
+                          color: value.isEmpty ? Colors.white38 : Colors.white,
+                          fontSize: 12.5),
+                    ),
+                  ),
+                ]),
+              );
+
+          Future<void> doFetch() async {
+            if (busy) return;
+            setD(() {
+              busy = true;
+              message = provider.t('account.openingBrowser');
+              isError = false;
+            });
+            final err = await provider.fetchGoogleProfileDetails();
+            if (!sctx.mounted) return;
+            setD(() {
+              busy = false;
+              message = err ?? provider.t('analytics.done');
+              isError = err != null;
+            });
+          }
+
+          final age = provider.analyticsAge;
+          final updated = provider.analyticsUpdatedAt;
+          return AlertDialog(
+            backgroundColor: const Color(0xFF1E1E1E),
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+            title: Row(children: [
+              const Icon(Icons.insights_rounded,
+                  color: Color(0xFFBA68C8), size: 22),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(provider.t('analytics.title'),
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700)),
+              ),
+            ]),
+            content: SizedBox(
+              width: 420,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF15151F),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Column(children: [
+                        row(provider.t('analytics.age'),
+                            age == null ? '' : '$age'),
+                        row(provider.t('analytics.gender'),
+                            provider.analyticsGender),
+                        row(provider.t('analytics.country'),
+                            provider.analyticsCountry),
+                        row(provider.t('analytics.language'),
+                            provider.analyticsLocale),
+                        row(provider.t('analytics.source'),
+                            provider.analyticsSource),
+                        row('UID', provider.currentUid ?? ''),
+                        row('updated',
+                            updated == null
+                                ? ''
+                                : '${updated.year}/${updated.month.toString().padLeft(2, '0')}/'
+                                    '${updated.day.toString().padLeft(2, '0')} '
+                                    '${updated.hour.toString().padLeft(2, '0')}:'
+                                    '${updated.minute.toString().padLeft(2, '0')}'),
+                      ]),
+                    ),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF241A2E),
+                            foregroundColor: Colors.white,
+                            side: const BorderSide(
+                                color: Color(0xFFBA68C8), width: 1),
+                            padding: const EdgeInsets.symmetric(vertical: 10)),
+                        icon: busy
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2, color: Color(0xFFBA68C8)))
+                            : const Icon(Icons.download_rounded,
+                                size: 16, color: Color(0xFFBA68C8)),
+                        label: Text(provider.t('analytics.fetchFromGoogle'),
+                            style: const TextStyle(color: Color(0xFFBA68C8))),
+                        onPressed: busy || !provider.googleSignedIn
+                            ? null
+                            : doFetch,
+                      ),
+                    ),
+                    if (!provider.googleSignedIn) ...[
+                      const SizedBox(height: 8),
+                      Text(provider.t('analytics.needSignIn'),
+                          style: const TextStyle(
+                              color: Color(0xFFFFB74D), fontSize: 11.5)),
+                    ],
+                    if (message != null) ...[
+                      const SizedBox(height: 8),
+                      SelectableText(message!,
+                          style: TextStyle(
+                              color: isError
+                                  ? const Color(0xFFFF6B6B)
+                                  : const Color(0xFF9CCC65),
+                              fontSize: 11.5)),
+                    ],
+                    const SizedBox(height: 12),
+                    Text(provider.t('analytics.note'),
+                        style: const TextStyle(
+                            color: Colors.white38, fontSize: 11, height: 1.6)),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: busy ? null : () => Navigator.pop(dctx),
+                child: Text(provider.t('btn.close'),
+                    style: const TextStyle(color: Colors.white60)),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -87213,6 +87522,9 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
             },
           ),
         ),
+        // ── 画面更新はツールバー側 (上の段) に 1 つだけ置く ──
+        //    タブ列にも足したところ、 同じボタンが 2 つ並んでしまったので
+        //    こちらは外した (= ユーザー報告: 二重に付いている)。
         // ── 「タブを選ぶ」 モードの切替 (= ユーザー要望: タブを複数選択して
         //    まとめてフォルダーへ)。 押すだけで選べるようにするためのボタン。 ──
         IconButton(
@@ -116786,6 +117098,9 @@ v.addEventListener('play', function() {
       //    (= ユーザー要望: 動画を開く前の YouTube の画面の時点でメモ欄や
       //    AI チャット欄を開けるように)。 AI と同じく常時表示。 ──
       case _ytSideMemo:
+      // ── 画面更新も動画を開く前の画面で使えるように (= ユーザー要望:
+      //    一覧や検索結果の画面にも更新ボタンが欲しい)。 ──
+      case _ytSideReload:
         return true;
       case _ytSideShareWithAi:
         return _isYoutube;

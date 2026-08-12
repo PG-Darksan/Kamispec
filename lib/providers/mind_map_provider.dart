@@ -40073,6 +40073,131 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Cupom aplicado',
       'ru': 'Купон применён',
     },
+    // ── 分析用の属性 (= ユーザー要望: 年齢 / 性別 / 国) ──
+    'analytics.title': {
+      'ja': '利用者の属性 (分析用)',
+      'en': 'User attributes (for analytics)',
+      'zh': '用户属性（用于分析）',
+      'ko': '사용자 속성 (분석용)',
+      'es': 'Atributos del usuario (analítica)',
+      'fr': 'Attributs utilisateur (analyse)',
+      'de': 'Nutzermerkmale (Auswertung)',
+      'pt': 'Atributos do usuário (análise)',
+      'ru': 'Атрибуты пользователя (аналитика)',
+    },
+    'analytics.needSignIn': {
+      'ja': '先に Google アカウントでログインしてください',
+      'en': 'Sign in with your Google account first',
+      'zh': '请先登录 Google 账号',
+      'ko': '먼저 Google 계정으로 로그인하세요',
+      'es': 'Primero inicia sesión con tu cuenta de Google',
+      'fr': 'Connectez-vous d abord avec votre compte Google',
+      'de': 'Bitte zuerst bei Google anmelden',
+      'pt': 'Primeiro entre com sua conta do Google',
+      'ru': 'Сначала войдите в аккаунт Google',
+    },
+    'analytics.noAccessToken': {
+      'ja': 'Google から API 用の鍵が返りませんでした',
+      'en': 'Google did not return an API access token',
+      'zh': 'Google 未返回 API 访问令牌',
+      'ko': 'Google에서 API 액세스 토큰이 오지 않았습니다',
+      'es': 'Google no devolvió un token de acceso a la API',
+      'fr': 'Google n a pas renvoyé de jeton d accès API',
+      'de': 'Google hat kein API-Zugriffstoken zurückgegeben',
+      'pt': 'O Google não retornou um token de acesso da API',
+      'ru': 'Google не вернул токен доступа к API',
+    },
+    'analytics.fetchFromGoogle': {
+      'ja': 'Google から取得 (生年月日 / 性別)',
+      'en': 'Fetch from Google (birthday / gender)',
+      'zh': '从 Google 获取（生日 / 性别）',
+      'ko': 'Google에서 가져오기 (생년월일 / 성별)',
+      'es': 'Obtener de Google (fecha de nacimiento / género)',
+      'fr': 'Récupérer depuis Google (date de naissance / genre)',
+      'de': 'Von Google abrufen (Geburtstag / Geschlecht)',
+      'pt': 'Obter do Google (data de nascimento / gênero)',
+      'ru': 'Получить из Google (дата рождения / пол)',
+    },
+    'analytics.age': {
+      'ja': '年齢', 'en': 'Age', 'zh': '年龄', 'ko': '나이', 'es': 'Edad',
+      'fr': 'Âge', 'de': 'Alter', 'pt': 'Idade', 'ru': 'Возраст',
+    },
+    'analytics.gender': {
+      'ja': '性別', 'en': 'Gender', 'zh': '性别', 'ko': '성별',
+      'es': 'Género', 'fr': 'Genre', 'de': 'Geschlecht', 'pt': 'Gênero',
+      'ru': 'Пол',
+    },
+    'analytics.country': {
+      'ja': '国', 'en': 'Country', 'zh': '国家', 'ko': '국가', 'es': 'País',
+      'fr': 'Pays', 'de': 'Land', 'pt': 'País', 'ru': 'Страна',
+    },
+    'analytics.language': {
+      'ja': '言語', 'en': 'Language', 'zh': '语言', 'ko': '언어',
+      'es': 'Idioma', 'fr': 'Langue', 'de': 'Sprache', 'pt': 'Idioma',
+      'ru': 'Язык',
+    },
+    'analytics.source': {
+      'ja': '取得元', 'en': 'Source', 'zh': '来源', 'ko': '출처',
+      'es': 'Origen', 'fr': 'Source', 'de': 'Quelle', 'pt': 'Origem',
+      'ru': 'Источник',
+    },
+    'analytics.unknown': {
+      'ja': '不明', 'en': 'Unknown', 'zh': '未知', 'ko': '알 수 없음',
+      'es': 'Desconocido', 'fr': 'Inconnu', 'de': 'Unbekannt',
+      'pt': 'Desconhecido', 'ru': 'Неизвестно',
+    },
+    'analytics.done': {
+      'ja': '取得しました',
+      'en': 'Fetched',
+      'zh': '已获取',
+      'ko': '가져왔습니다',
+      'es': 'Obtenido',
+      'fr': 'Récupéré',
+      'de': 'Abgerufen',
+      'pt': 'Obtido',
+      'ru': 'Получено',
+    },
+    'analytics.note': {
+      'ja': '国と言語は端末の設定とログイン情報から自動で入ります。 生年月日と性別は '
+          'Google の機密スコープなので、 本人が設定していて同意した時だけ取れます '
+          '(一般公開には Google の審査が必要)。 取得した内容は users/{uid} に保存され、'
+          ' 上の利用者一覧にも出ます。',
+      'en': 'Country and language come from the device settings and the sign-in '
+          'info automatically. Birthday and gender are Google sensitive scopes: '
+          'they only arrive when the person has set them and consents (Google '
+          'verification is required before general release). What is fetched is '
+          'stored in users/{uid} and shown in the user list above.',
+      'zh': '国家和语言会自动来自设备设置与登录信息。生日和性别属于 Google 敏感权限，'
+          '仅在本人已设置并同意时才能获取（正式发布需通过 Google 审核）。获取的内容会保存到 '
+          'users/{uid}，并显示在上面的用户列表中。',
+      'ko': '국가와 언어는 기기 설정과 로그인 정보에서 자동으로 채워집니다. 생년월일과 성별은 '
+          'Google 민감 범위라서 본인이 설정하고 동의한 경우에만 가져올 수 있습니다 '
+          '(일반 공개에는 Google 심사 필요). 가져온 내용은 users/{uid}에 저장되고 위 사용자 '
+          '목록에도 표시됩니다.',
+      'es': 'El país y el idioma se obtienen automáticamente de la configuración del '
+          'dispositivo y del inicio de sesión. La fecha de nacimiento y el género son '
+          'ámbitos sensibles de Google: solo llegan si la persona los ha configurado y '
+          'da su consentimiento (se requiere verificación de Google antes de una '
+          'publicación general). Lo obtenido se guarda en users/{uid}.',
+      'fr': 'Le pays et la langue proviennent automatiquement des réglages de l appareil '
+          'et de la connexion. La date de naissance et le genre sont des portées '
+          'sensibles Google : elles ne sont fournies que si la personne les a définies '
+          'et consent (une vérification Google est requise avant une diffusion '
+          'générale). Les données sont enregistrées dans users/{uid}.',
+      'de': 'Land und Sprache kommen automatisch aus den Geräteeinstellungen und der '
+          'Anmeldung. Geburtstag und Geschlecht sind sensible Google-Scopes: Sie '
+          'kommen nur, wenn die Person sie gesetzt hat und zustimmt (vor einer '
+          'allgemeinen Veröffentlichung ist eine Google-Prüfung nötig). Die Daten '
+          'werden in users/{uid} gespeichert.',
+      'pt': 'País e idioma vêm automaticamente das configurações do aparelho e do login. '
+          'Data de nascimento e gênero são escopos sensíveis do Google: só chegam se a '
+          'pessoa os definiu e consentiu (é preciso verificação do Google antes de uma '
+          'publicação geral). O que é obtido fica em users/{uid}.',
+      'ru': 'Страна и язык подставляются автоматически из настроек устройства и данных '
+          'входа. Дата рождения и пол — чувствительные разрешения Google: они приходят '
+          'только если человек их указал и дал согласие (для общего выпуска нужна '
+          'проверка Google). Полученное сохраняется в users/{uid}.',
+    },
     'coupon.errEmpty': {
       'ja': 'コードを入力してください',
       'en': 'Please enter a code',
@@ -40083,6 +40208,40 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Bitte einen Code eingeben',
       'pt': 'Insira um código',
       'ru': 'Введите код',
+    },
+    // ── クーポンは Google ログインが前提 (= ユーザー要望) ──
+    'coupon.errNeedGoogle': {
+      'ja': 'クーポンの適用には Google アカウントへのログインが必要です',
+      'en': 'Sign in with your Google account to use a coupon',
+      'zh': '使用优惠券需要登录 Google 账号',
+      'ko': '쿠폰을 사용하려면 Google 계정 로그인이 필요합니다',
+      'es': 'Inicia sesión con tu cuenta de Google para usar un cupón',
+      'fr': 'Connectez-vous avec votre compte Google pour utiliser un code promo',
+      'de': 'Zum Einlösen eines Gutscheins bei Google anmelden',
+      'pt': 'Entre com sua conta do Google para usar um cupom',
+      'ru': 'Чтобы применить купон, войдите в аккаунт Google',
+    },
+    'coupon.googleWhy': {
+      'ja': 'ログインしたアカウントにクーポンを結び付けます。 別の端末でも同じ特典が使えます。',
+      'en': 'The coupon is tied to the account you sign in with, so the same benefit works on your other devices.',
+      'zh': '优惠券将与登录的账号绑定，在其他设备上也能使用同样的权益。',
+      'ko': '로그인한 계정에 쿠폰을 연결합니다. 다른 기기에서도 같은 혜택을 사용할 수 있습니다.',
+      'es': 'El cupón queda vinculado a la cuenta con la que inicias sesión, así el mismo beneficio funciona en tus otros dispositivos.',
+      'fr': 'Le code promo est lié au compte utilisé, le même avantage fonctionne donc sur vos autres appareils.',
+      'de': 'Der Gutschein wird mit dem angemeldeten Konto verknüpft, damit derselbe Vorteil auch auf anderen Geräten gilt.',
+      'pt': 'O cupom fica vinculado à conta usada no login, então o mesmo benefício vale nos seus outros aparelhos.',
+      'ru': 'Купон привязывается к аккаунту, с которым вы вошли, поэтому та же выгода действует на других устройствах.',
+    },
+    'coupon.signInButton': {
+      'ja': 'Google アカウントでログイン',
+      'en': 'Sign in with Google',
+      'zh': '使用 Google 账号登录',
+      'ko': 'Google 계정으로 로그인',
+      'es': 'Iniciar sesión con Google',
+      'fr': 'Se connecter avec Google',
+      'de': 'Mit Google anmelden',
+      'pt': 'Entrar com o Google',
+      'ru': 'Войти через Google',
     },
     'coupon.errNotFound': {
       'ja': '無効なクーポンコードです',
@@ -54946,6 +55105,13 @@ class MindMapProvider extends ChangeNotifier {
       bool retriedAfterAuthFailure = false}) async {
     final trimmed = code.trim().toUpperCase();
     if (trimmed.isEmpty) return t('coupon.errEmpty');
+    // ── クーポンは Google アカウントでログインしてから (= ユーザー要望) ──
+    //    ログインしていないと端末ごとに別人扱いになり、 同じコードを
+    //    何台でも使い回せてしまう。 ログインできない配布 (認証情報が
+    //    入っていないビルド) では、 従来どおり匿名のまま通す。
+    if (canUseGoogleSignIn && !_googleSignedIn) {
+      return t('coupon.errNeedGoogle');
+    }
     // ── まず Dev コードとして代行サーバーに聞く (= ユーザー要望: Dev に
     //    入れるコードを発行できるように)。 入口はクーポン欄ひとつに揃え、
     //    そのコードが Dev かどうかはサーバーが答える。 知らないコードなら
@@ -55711,6 +55877,13 @@ class MindMapProvider extends ChangeNotifier {
           _firestoreAnyString(fields['stripeSubscriptionId']),
       'rcStore': _firestoreAnyString(fields['rcStore']),
       'rcAppUserId': _firestoreAnyString(fields['rcAppUserId']),
+      // ── 分析用の属性 (= ユーザー要望: 年齢 / 性別 / 国) ──
+      'ageYears': _firestoreAnyString(fields['ageYears']),
+      'birthYear': _firestoreAnyString(fields['birthYear']),
+      'gender': _firestoreAnyString(fields['gender']),
+      'country': _firestoreAnyString(fields['country']),
+      'locale': _firestoreAnyString(fields['locale']),
+      'profileSource': _firestoreAnyString(fields['profileSource']),
     };
   }
 
@@ -60963,6 +61136,8 @@ $cleanQ
     //   下部ボタンが空)。 他のロードがハングしても起動フローが進む。
     _loadEssentialUiState();
     unawaited(_loadGoogleSession());
+    // 分析用の属性 (国 / 言語 / 年齢 / 性別) を読み直す (= ユーザー要望)。
+    unawaited(_loadAnalyticsProfile());
     _loadFromStorage().then((_) {
       // ロード完了後に最後に開いたページを復元
       // (= 起動時に前回作業していたマップが自動で開く)
@@ -61111,6 +61286,12 @@ $cleanQ
       //   (= ユーザー報告: チャージしたのに AI が動かない)。
       //   クレジットはプランと無関係なので、 起動時に毎回確かめる。
       unawaited(probeAiRelay(force: true));
+      // 既にログイン済みの端末でも、 アイコンがまだ Google の物でなければ
+      //   取りに行く (= ユーザー要望: ログインした時のアイコンは Google 垢の
+      //   アイコンに。 ログインし直さなくても反映されるように)。
+      if (_googleSignedIn && (_googleAvatarPath ?? '').isEmpty) {
+        unawaited(refreshGoogleAvatar());
+      }
     } catch (e) {
       _firebaseEnabled = false;
       _firebaseInitError =
@@ -61183,6 +61364,7 @@ $cleanQ
       final prefs = await _prefsWithRetry();
       _googleSignedIn = prefs.getBool('google_signed_in') ?? false;
       _googleEmail = prefs.getString('google_email') ?? '';
+      _googleAvatarPath = prefs.getString('google_avatar_path');
       notifyListeners();
     } catch (_) {}
   }
@@ -61193,8 +61375,9 @@ $cleanQ
     if (!canUseGoogleSignIn) {
       throw Exception(t('account.notConfigured'));
     }
-    final googleIdToken = await GoogleAuth.signIn(onWaiting: onWaiting);
-    if (googleIdToken == null) return null;
+    final signIn = await GoogleAuth.signIn(onWaiting: onWaiting);
+    if (signIn == null) return null;
+    final googleIdToken = signIn.idToken;
 
     // Google の証明書を Firebase の利用者に引き換える。 同じ Google
     //   アカウントなら、 どの端末でも同じ uid が返る。
@@ -61232,6 +61415,8 @@ $cleanQ
     //   ユーザー名を決める機能は無くす)。
     final gName = (data['displayName'] as String?) ?? '';
     if (gName.isNotEmpty) _displayName = gName;
+    // アイコンも Google アカウントの物に合わせる (= ユーザー要望)。
+    await _applyGoogleAvatar((data['photoUrl'] as String?) ?? '');
 
     final prefs = await _prefsWithRetry();
     await prefs.setString('firebase_refresh_token', refresh);
@@ -61240,6 +61425,23 @@ $cleanQ
     await prefs.setString('google_email', _googleEmail);
     if (gName.isNotEmpty) await prefs.setString('displayName', gName);
 
+    // ── 分析用の属性 (= ユーザー要望: 年齢・性別・国) ──
+    //    ふだんのログインで必ず取れるのは「国 / 言語」 だけ。 Google が
+    //    ID トークンと一緒に返す locale と、 端末の地域設定から拾う。
+    //    生年月日と性別は追加の許可が要るので `fetchGoogleProfileDetails`。
+    try {
+      final raw = data['rawUserInfo'];
+      if (raw is String && raw.isNotEmpty) {
+        final info = jsonDecode(raw);
+        if (info is Map) {
+          final loc = '${info['locale'] ?? ''}'.trim();
+          if (loc.isNotEmpty) _analyticsLocale = loc;
+        }
+      }
+    } catch (_) {}
+    await _captureDeviceRegion();
+    await _saveAnalyticsProfile();
+
     notifyListeners();
     // このアカウントの状態 (プラン / 使用量) を取り込む。
     await pullAccountState();
@@ -61247,6 +61449,248 @@ $cleanQ
     unawaited(probeAiRelay());
     unawaited(refreshCreditBalance());
     return _googleEmail.isEmpty ? uid : _googleEmail;
+  }
+
+  // ─── 分析用の属性 (年齢 / 性別 / 国) ────────────────────────────────────
+  // = ユーザー要望: Google アカウントから年齢・性別・国を取って分析に使いたい。
+  //
+  // 取れるもの / 取れないものは Google 側の都合で決まる:
+  //   - 国 …… アカウントに住所が入っていれば People API から。 ふつうは
+  //            入っていないので、 端末の地域設定 (ja_JP → JP) で補う。
+  //   - 言語 … ログイン時に Google が返す locale。 追加の許可は要らない。
+  //   - 生年月日 / 性別 …… People API + 機密スコープ。 本人が設定していて、
+  //            かつ同意した時だけ返る (未設定なら空で返る)。 一般公開には
+  //            Google の OAuth 審査が要る。
+  String _analyticsGender = '';
+  int _analyticsBirthYear = 0;
+  int _analyticsBirthMonth = 0;
+  int _analyticsBirthDay = 0;
+  String _analyticsCountry = '';
+  String _analyticsLocale = '';
+  String _analyticsSource = '';
+  int _analyticsUpdatedAtMs = 0;
+
+  String get analyticsGender => _analyticsGender;
+  String get analyticsCountry => _analyticsCountry;
+  String get analyticsLocale => _analyticsLocale;
+  String get analyticsSource => _analyticsSource;
+  int get analyticsBirthYear => _analyticsBirthYear;
+  DateTime? get analyticsUpdatedAt => _analyticsUpdatedAtMs == 0
+      ? null
+      : DateTime.fromMillisecondsSinceEpoch(_analyticsUpdatedAtMs);
+
+  /// 生年月日から数えた今の年齢。 年が分からない時は null。
+  int? get analyticsAge {
+    if (_analyticsBirthYear <= 0) return null;
+    final now = DateTime.now();
+    var age = now.year - _analyticsBirthYear;
+    if (_analyticsBirthMonth > 0) {
+      final hadBirthday = now.month > _analyticsBirthMonth ||
+          (now.month == _analyticsBirthMonth &&
+              (_analyticsBirthDay <= 0 || now.day >= _analyticsBirthDay));
+      if (!hadBirthday) age -= 1;
+    }
+    return age < 0 || age > 130 ? null : age;
+  }
+
+  Future<void> _loadAnalyticsProfile() async {
+    try {
+      final prefs = await _prefsWithRetry();
+      _analyticsGender = prefs.getString('analytics_gender') ?? '';
+      _analyticsBirthYear = prefs.getInt('analytics_birth_year') ?? 0;
+      _analyticsBirthMonth = prefs.getInt('analytics_birth_month') ?? 0;
+      _analyticsBirthDay = prefs.getInt('analytics_birth_day') ?? 0;
+      _analyticsCountry = prefs.getString('analytics_country') ?? '';
+      _analyticsLocale = prefs.getString('analytics_locale') ?? '';
+      _analyticsSource = prefs.getString('analytics_source') ?? '';
+      _analyticsUpdatedAtMs = prefs.getInt('analytics_updated_at') ?? 0;
+    } catch (_) {}
+    // 端末の地域はいつでも取れるので、 未設定なら埋めておく。
+    if (_analyticsCountry.isEmpty) {
+      await _captureDeviceRegion();
+      await _saveAnalyticsProfile();
+    }
+    notifyListeners();
+  }
+
+  Future<void> _saveAnalyticsProfile() async {
+    _analyticsUpdatedAtMs = DateTime.now().millisecondsSinceEpoch;
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.setString('analytics_gender', _analyticsGender);
+      await prefs.setInt('analytics_birth_year', _analyticsBirthYear);
+      await prefs.setInt('analytics_birth_month', _analyticsBirthMonth);
+      await prefs.setInt('analytics_birth_day', _analyticsBirthDay);
+      await prefs.setString('analytics_country', _analyticsCountry);
+      await prefs.setString('analytics_locale', _analyticsLocale);
+      await prefs.setString('analytics_source', _analyticsSource);
+      await prefs.setInt('analytics_updated_at', _analyticsUpdatedAtMs);
+    } catch (_) {}
+  }
+
+  /// 端末の地域設定から国 / 言語を拾う (許可も通信も要らない)。
+  /// 例: `ja_JP` → 言語 ja / 国 JP。
+  Future<void> _captureDeviceRegion() async {
+    try {
+      final name = Platform.localeName; // ja_JP.UTF-8 のこともある
+      final base = name.split('.').first.replaceAll('-', '_');
+      final parts = base.split('_');
+      if (parts.isNotEmpty && parts.first.isNotEmpty) {
+        if (_analyticsLocale.isEmpty) _analyticsLocale = parts.first;
+      }
+      if (parts.length >= 2 && parts[1].length == 2) {
+        if (_analyticsCountry.isEmpty) {
+          _analyticsCountry = parts[1].toUpperCase();
+          if (_analyticsSource.isEmpty) _analyticsSource = 'device';
+        }
+      }
+    } catch (_) {}
+  }
+
+  /// Google に「生年月日 / 性別 / 住所の国」 を聞きに行く (= 開発者モードの
+  /// 分析画面から手動で実行)。 成功したら null、 駄目なら理由を返す。
+  ///
+  /// 追加の許可を聞き直すので、 ブラウザがもう一度開く。 断られた場合や
+  /// 本人が未設定の場合は、 取れた分だけ保存する。
+  Future<String?> fetchGoogleProfileDetails({VoidCallback? onWaiting}) async {
+    if (!GoogleAuth.isConfigured || !GoogleAuth.isSupported) {
+      return t('account.notConfigured');
+    }
+    if (!_googleSignedIn) return t('analytics.needSignIn');
+    try {
+      final res = await GoogleAuth.signIn(
+        onWaiting: onWaiting,
+        extraScopes: GoogleAuth.profileDetailScopes,
+        includeGrantedScopes: true,
+      );
+      if (res == null) return t('account.cancelled');
+      if (res.accessToken.isEmpty) return t('analytics.noAccessToken');
+      final api = await http.get(
+        Uri.parse('https://people.googleapis.com/v1/people/me'
+            '?personFields=birthdays,genders,locales,addresses'),
+        headers: {'Authorization': 'Bearer ${res.accessToken}'},
+      ).timeout(const Duration(seconds: 30));
+      if (api.statusCode != 200) {
+        return 'People API ${api.statusCode}: ${api.body}';
+      }
+      final data = jsonDecode(api.body) as Map<String, dynamic>;
+
+      // 生年月日: 年が入っているものを優先 (年の無い誕生日だけの人もいる)。
+      final birthdays = (data['birthdays'] as List?) ?? const [];
+      Map? best;
+      for (final b in birthdays) {
+        if (b is! Map) continue;
+        final d = b['date'];
+        if (d is! Map) continue;
+        if (d['year'] != null) {
+          best = d;
+          break;
+        }
+        best ??= d;
+      }
+      if (best != null) {
+        _analyticsBirthYear = (best['year'] as num?)?.toInt() ?? 0;
+        _analyticsBirthMonth = (best['month'] as num?)?.toInt() ?? 0;
+        _analyticsBirthDay = (best['day'] as num?)?.toInt() ?? 0;
+      }
+
+      final genders = (data['genders'] as List?) ?? const [];
+      if (genders.isNotEmpty && genders.first is Map) {
+        _analyticsGender =
+            '${(genders.first as Map)['value'] ?? ''}'.trim();
+      }
+
+      final locales = (data['locales'] as List?) ?? const [];
+      if (locales.isNotEmpty && locales.first is Map) {
+        final v = '${(locales.first as Map)['value'] ?? ''}'.trim();
+        if (v.isNotEmpty) _analyticsLocale = v;
+      }
+
+      final addresses = (data['addresses'] as List?) ?? const [];
+      for (final a in addresses) {
+        if (a is! Map) continue;
+        final cc = '${a['countryCode'] ?? ''}'.trim();
+        if (cc.isNotEmpty) {
+          _analyticsCountry = cc.toUpperCase();
+          break;
+        }
+      }
+      if (_analyticsCountry.isEmpty) await _captureDeviceRegion();
+      _analyticsSource = 'google';
+      await _saveAnalyticsProfile();
+      notifyListeners();
+      unawaited(pushAccountState());
+      return null;
+    } catch (e) {
+      return '$e';
+    }
+  }
+
+  /// Google アカウントの写真をアイコンにする (= ユーザー要望: ログインした時の
+  /// アイコンは Google 垢のアイコンに)。
+  ///
+  /// 画像アバターは「ファイルの場所」 で持っているので、 一度落として端末に
+  /// 置いてから設定する。 落とせなかった時は今のアイコンをそのまま残す。
+  Future<void> _applyGoogleAvatar(String photoUrl) async {
+    final url = photoUrl.trim();
+    if (url.isEmpty) return;
+    try {
+      // s96-c のような大きさ指定が付いていることがあるので、 少し大きめに。
+      final sized = url.contains('=s')
+          ? url.replaceFirst(RegExp(r'=s\d+(-c)?$'), '=s256-c')
+          : url;
+      final res = await http
+          .get(Uri.parse(sized))
+          .timeout(const Duration(seconds: 20));
+      if (res.statusCode != 200 || res.bodyBytes.isEmpty) return;
+      final dir = await getApplicationSupportDirectory();
+      final file =
+          File('${dir.path}${Platform.pathSeparator}google_avatar.png');
+      await file.writeAsBytes(res.bodyBytes, flush: true);
+      // 同じ場所に上書きすると Flutter の画像キャッシュが古い絵を出すので、
+      //   読み直させるために一度キャッシュから外す。
+      try {
+        await FileImage(file).evict();
+      } catch (_) {}
+      _googleAvatarPath = file.path;
+      try {
+        final prefs = await _prefsWithRetry();
+        await prefs.setString('google_avatar_path', file.path);
+      } catch (_) {}
+      await setUserAvatarImage(file.path);
+    } catch (e) {
+      debugPrint('Google アイコンの取得に失敗: $e');
+    }
+  }
+
+  /// Google から落としてきたアイコンの置き場所 (ログアウト時に外すため)。
+  String? _googleAvatarPath;
+
+  /// ログイン済みの端末で、 Google アカウントの今の写真をアイコンに反映する。
+  /// (ログインし直さなくても切り替わるように。 写真が無いアカウントなら何もしない)
+  Future<void> refreshGoogleAvatar() async {
+    if (!_googleSignedIn) return;
+    try {
+      await _ensureFreshToken();
+      if (_idToken == null) return;
+      final res = await http
+          .post(
+            Uri.parse(
+                'https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=$_authApiKey'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'idToken': _idToken}),
+          )
+          .timeout(const Duration(seconds: 30));
+      if (res.statusCode != 200) return;
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      final users = data['users'];
+      if (users is! List || users.isEmpty) return;
+      final me = users.first;
+      if (me is! Map) return;
+      await _applyGoogleAvatar('${me['photoUrl'] ?? ''}');
+    } catch (e) {
+      debugPrint('Google アイコンの更新に失敗: $e');
+    }
   }
 
   /// ログアウトして、 この端末だけの匿名利用に戻す。
@@ -61262,6 +61706,15 @@ $cleanQ
       await prefs.remove('google_email');
       await prefs.remove('firebase_refresh_token');
       await prefs.remove('firebase_uid');
+      // Google のアイコンを使っていたなら外す (= 別人のアイコンが残らないよう)。
+      final gAvatar = _googleAvatarPath ?? prefs.getString('google_avatar_path');
+      if (gAvatar != null && gAvatar.isNotEmpty) {
+        if (_userAvatarImagePath == gAvatar) {
+          await setUserAvatarImage(null);
+        }
+        _googleAvatarPath = null;
+        await prefs.remove('google_avatar_path');
+      }
     } catch (_) {}
     notifyListeners();
     try {
@@ -61302,6 +61755,14 @@ $cleanQ
         'monthlyDownloadBytes': {'integerValue': '$_monthlyDownloadBytes'},
         'totalStorageBytes': {'integerValue': '$_totalStorageBytes'},
         'displayName': {'stringValue': _displayName ?? ''},
+        // ── 分析用の属性 (= ユーザー要望: 年齢 / 性別 / 国を見たい) ──
+        //    取れていない項目は空のまま送る (集計側で「不明」 として数える)。
+        'country': {'stringValue': _analyticsCountry},
+        'locale': {'stringValue': _analyticsLocale},
+        'gender': {'stringValue': _analyticsGender},
+        'birthYear': {'integerValue': '$_analyticsBirthYear'},
+        'ageYears': {'integerValue': '${analyticsAge ?? 0}'},
+        'profileSource': {'stringValue': _analyticsSource},
         'updatedAt': {'stringValue': DateTime.now().toUtc().toIso8601String()},
       };
       final mask = fields.keys

@@ -20,8 +20,36 @@ import 'package:url_launcher/url_launcher.dart';
 /// 合言葉 (client secret) は「インストール型アプリ」 用のもので、 Google の
 /// 仕様上ひみつにはできない。 代わりに PKCE (使い捨ての符号) で、 横取り
 /// されても他人が使えないようにしている。
+/// ログインで受け取ったもの。
+/// [idToken] は Firebase の利用者に引き換えるための証明書、
+/// [accessToken] は Google の API (People API など) を呼ぶための鍵。
+class GoogleSignInResult {
+  final String idToken;
+  final String accessToken;
+  final String grantedScopes;
+  const GoogleSignInResult({
+    required this.idToken,
+    this.accessToken = '',
+    this.grantedScopes = '',
+  });
+}
+
 class GoogleAuth {
   GoogleAuth._();
+
+  /// 生年月日・性別を読むための追加の許可 (= ユーザー要望: 年齢や性別を
+  /// 分析に使いたい)。
+  ///
+  /// ★ この 2 つは Google の「機密スコープ」。 一般公開するには Google の
+  ///   審査 (OAuth 検証) が要る。 審査前はテストユーザーだけが許可でき、
+  ///   それ以外の人には同意画面でブロックされる。 そのため、 ふだんの
+  ///   ログインには含めず、 必要な時だけ追加で聞く形にしている
+  ///   (= 失敗してもログインそのものは壊れない)。
+  static const List<String> profileDetailScopes = [
+    'https://www.googleapis.com/auth/user.birthday.read',
+    'https://www.googleapis.com/auth/user.gender.read',
+    'https://www.googleapis.com/auth/user.addresses.read',
+  ];
 
   /// Google Cloud コンソールで作る「デスクトップアプリ」 の認証情報。
   /// 未設定ならログイン機能そのものを出さない。
@@ -48,13 +76,18 @@ class GoogleAuth {
     return base64Url.encode(data).replaceAll('=', '');
   }
 
-  /// ログインさせて Google の ID トークンを返す。
+  /// ログインさせて Google の ID トークン (と API 用の鍵) を返す。
   /// 利用者が閉じた / 断った場合は null。
   ///
   /// [onWaiting] はブラウザを開いた直後に呼ばれる (画面に案内を出す用)。
-  static Future<String?> signIn({
+  /// [extraScopes] を渡すと、 その許可も一緒に聞く (= 生年月日・性別)。
+  /// [includeGrantedScopes] true なら今まで許した分もそのまま持ち越す
+  /// (= 追加の許可だけを聞き直す「段階的な同意」)。
+  static Future<GoogleSignInResult?> signIn({
     VoidCallback? onWaiting,
     Duration timeout = const Duration(minutes: 3),
+    List<String> extraScopes = const [],
+    bool includeGrantedScopes = false,
   }) async {
     if (!isConfigured) {
       throw Exception('GOOGLE_OAUTH_CLIENT_ID が設定されていません');
@@ -72,16 +105,20 @@ class GoogleAuth {
           .replaceAll('=', '');
       final state = _randomUrlSafe(16);
 
+      final scope =
+          ['openid', 'email', 'profile', ...extraScopes].join(' ');
       final authUrl = Uri.https('accounts.google.com', '/o/oauth2/v2/auth', {
         'client_id': clientId,
         'redirect_uri': redirectUri,
         'response_type': 'code',
-        'scope': 'openid email profile',
+        'scope': scope,
         'code_challenge': challenge,
         'code_challenge_method': 'S256',
         'state': state,
         // 毎回アカウントを選べるように (端末を渡す時に別人が入らないよう)。
-        'prompt': 'select_account',
+        // 追加の許可を聞く時は、 今のアカウントのまま同意画面だけ出す。
+        'prompt': includeGrantedScopes ? 'consent' : 'select_account',
+        if (includeGrantedScopes) 'include_granted_scopes': 'true',
       });
 
       if (!await launchUrl(authUrl, mode: LaunchMode.externalApplication)) {
@@ -130,7 +167,11 @@ class GoogleAuth {
       if (idToken == null || idToken.isEmpty) {
         throw Exception('Google から ID トークンが返りませんでした');
       }
-      return idToken;
+      return GoogleSignInResult(
+        idToken: idToken,
+        accessToken: (data['access_token'] as String?) ?? '',
+        grantedScopes: (data['scope'] as String?) ?? '',
+      );
     } finally {
       await server?.close(force: true);
     }

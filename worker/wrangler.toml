@@ -1,0 +1,79 @@
+# HisatorNotebook 課金 / AI 代行 Worker の設定
+#
+# デプロイ:
+#   cd worker
+#   npx wrangler login          # 初回のみ (ブラウザで認証)
+#   npx wrangler deploy
+#
+# ⚠ カスタムドメイン (api.hisator-notebook.com) について
+#   このファイルにはあえて routes / custom_domain を書いていません。
+#   既にダッシュボード側で api.hisator-notebook.com が hisator-billing に
+#   紐づいているため、 ここに書くと設定がぶつかって外れる可能性があります。
+#   スクリプトだけを更新する形にしておけば、 既存の紐づけはそのまま残ります。
+
+name = "hisator-billing"
+main = "billing-worker.js"
+account_id = "f273395cbd590da9ad1e36e4b6180d70"
+compatibility_date = "2026-08-01"
+
+# workers.dev のサブドメインには公開しない。
+#   api.hisator-notebook.com (カスタムドメイン) だけで運用しているため。
+#   これを書かないと deploy の最後に「workers.dev を登録しろ」 と言われて
+#   コマンドがエラー終了する (実際にはカスタムドメイン側へ反映済み)。
+workers_dev = false
+
+# 配信先 (= 既にダッシュボードで紐づけてあるカスタムドメイン)。
+#   これを書かないと wrangler は「どこにも配信しない」 (No targets deployed)
+#   状態で版を上げるだけになり、 本番が更新されない。
+[[routes]]
+pattern = "api.hisator-notebook.com"
+custom_domain = true
+
+# 既存の KV。 コード側は env.ENTITLEMENTS で参照する。
+# プラン (entitlement)、 使用量 (usage:*)、 クレジット残高 (credit:*) を
+# すべてこの 1 つに入れている。
+[[kv_namespaces]]
+binding = "ENTITLEMENTS"
+id = "89f00541e9144397a86332386a1a261a"
+
+[vars]
+# 決済が終わった後にブラウザが戻る先。
+CREDIT_RETURN_URL = "https://hisator-notebook.com/thanks"
+# 本人確認 (ID トークン) の検証に使う。 公開情報なので vars で良い。
+FIREBASE_PROJECT_ID = "mindmap-b6115"
+
+# Stripe の従量課金メーターを使う場合だけ設定する (前払いクレジット方式では
+# 不要)。 空のままで問題ない。
+# STRIPE_METER_EVENT_NAME = "ai_usage"
+
+# ── シークレット (このファイルには書かない。 コマンドで登録する) ──
+#
+#   npx wrangler secret put GEMINI_API_KEY
+#   npx wrangler secret put OPENAI_API_KEY
+#   npx wrangler secret put ANTHROPIC_API_KEY
+#   npx wrangler secret put STRIPE_SECRET_KEY
+#   npx wrangler secret put STRIPE_WEBHOOK_SECRET
+#   npx wrangler secret put ADMIN_UIDS
+#
+# ADMIN_UIDS は Dev コードを発行できる人の uid (Firebase の匿名 uid) を
+#   「,」 区切りで並べたもの。 例: "abc123..., def456..."
+#   ここに載っていない uid からの /dev/issue は 403 で弾かれる。
+#   自分の uid はアプリの ⋮ メニュー → 開発者モード → 「Dev コードを発行」
+#   の画面に表示される (コピーできる)。
+#
+# 既に登録済みのシークレットは wrangler deploy で消えません。
+# 今 STRIPE_SECRET_KEY と STRIPE_WEBHOOK_SECRET が入っているなら、
+# 追加で必要なのは AI 3 社のキーだけです。
+# 登録済みの一覧は npx wrangler secret list で確認できます。
+
+# ── 残高の金庫 (Durable Object) ──
+#   KV は「読んで書く」 の間に割り込まれるため、 同時リクエストで
+#   引き落としが消えることがあった。 uid ごとに 1 つだけ作られ、 中で
+#   順番に処理される Durable Object に残高を持たせて取りこぼしを無くす。
+[[durable_objects.bindings]]
+name = "CREDITS"
+class_name = "CreditAccount"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["CreditAccount"]
