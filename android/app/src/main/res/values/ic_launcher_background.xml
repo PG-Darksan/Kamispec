@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- アダプティブアイコンの背景。 金の枠が映えるよう濃紺にする
+         (= ユーザー要望: モバイルでも枠が分かるように)。 -->
+    <color name="ic_launcher_background">#101830</color>
+</resources>

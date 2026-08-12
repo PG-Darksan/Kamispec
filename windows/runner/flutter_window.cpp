@@ -1,4 +1,4 @@
-#include "flutter_window.h"
+﻿#include "flutter_window.h"
 
 #include <optional>
 
@@ -51,6 +51,29 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  // ── 閉じる保険 (= ユーザー報告: アプリを終了させられない事がある) ──
+  // × (WM_CLOSE) を受けたら、 Dart 側の終了処理が固まっていても 4 秒後に
+  // 必ずプロセスを終える監視スレッドを立てる。 2 回目の × は即終了。
+  // この下の HandleTopLevelWindowProc で window_manager (preventClose) が
+  // WM_CLOSE を横取りするため、 最上流のここで仕掛ける。
+  if (message == WM_CLOSE) {
+    static LONG close_count = 0;
+    if (::InterlockedIncrement(&close_count) >= 2) {
+      ::TerminateProcess(::GetCurrentProcess(), 0);
+    }
+    HANDLE watchdog = ::CreateThread(
+        nullptr, 0,
+        [](LPVOID) -> DWORD {
+          ::Sleep(4000);
+          ::TerminateProcess(::GetCurrentProcess(), 0);
+          return 0;
+        },
+        nullptr, 0, nullptr);
+    if (watchdog) {
+      ::CloseHandle(watchdog);
+    }
+  }
+
   // Give Flutter, including plugins, an opportunity to handle window messages.
   if (flutter_controller_) {
     std::optional<LRESULT> result =

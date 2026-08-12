@@ -1,7 +1,7 @@
 name: mindmap_app
-description: Kamispec - Mind Map App with notes and YouTube embedding
+description: HisatorNotebook - Mind Map App with notes and YouTube embedding
 publish_to: 'none'
-version: 1.0.0+18
+version: 1.0.0+34
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -29,6 +29,13 @@ dependencies:
   webview_windows: ^0.2.2
 
   uuid: ^4.3.3
+  # 共有パスワードのハッシュ化 (SHA-256) に使用。
+  # 元々 transitive で入っていたものを直接依存に昇格しただけなので
+  # 依存解決は変わらない。
+  crypto: ^3.0.3
+  # Windows の「プログラムから開く」 一覧に自分を登録する (HKCU のみ)。
+  # 元々 transitive で入っているバージョンをそのまま直接依存にした。
+  win32_registry: ^2.1.0
   json_annotation: ^4.8.1
   cupertino_icons: ^1.0.6
   flutter_colorpicker: ^1.0.3
@@ -58,6 +65,10 @@ dependencies:
   # Firebase REST API
   http: ^1.2.0
   desktop_drop: ^0.7.0
+  # ── モバイル: 他のアプリの上にメモを小さく表示 (= ユーザー要望) ──
+  # Android の SYSTEM_ALERT_WINDOW オーバーレイに別エントリポイントの
+  # Flutter UI を出す。 Android 専用 (iOS/デスクトップでは呼ばない)。
+  flutter_overlay_window: ^0.5.0
 
   # Ctrl+V でクリップボード画像/テキスト取得
   # 0.9.x へバンプ: device_info_plus ^11 を要求する flutter_localizations と
@@ -132,6 +143,14 @@ dependencies:
   # 実行中) のみ ON にして、終わったら OFF に戻す。
   wakelock_plus: ^1.2.5
 
+  # ── 高リフレッシュレート対応 (= ユーザー要望: 120Hz / 144Hz 等) ──
+  # Android は既定で 60Hz に固定されることが多く、 端末が 120Hz でも
+  #   アプリだけ 60Hz で描画される。 このプラグインで対応モードを問い合わせ、
+  #   最も滑らかなモードへ切り替える。 **Android 専用** なので呼び出しは
+  #   必ず Platform.isAndroid でガードすること (他 OS では例外)。
+  # Windows は Flutter がモニターのリフレッシュレートで描画するため対応不要。
+  flutter_displaymode: ^0.6.0
+
   # ── バッテリー最適化除外申請 ──
   # 「バックグラウンド再生を有効にする」設定から、Android のバッテリー
   # 最適化除外画面 (REQUEST_IGNORE_BATTERY_OPTIMIZATIONS) を直接開く。
@@ -184,6 +203,8 @@ dependencies:
   # ui.Image は PNG しか出せないため、 JPG 変換に image パッケージを使う。
   # printing が既に依存しているので解決済み (バージョンは lock に合わせる)。
   image: ^4.3.0
+  # Win32 直叩き (自動操作のスクショ用 BitBlt) に使用
+  ffi: ^2.1.3
 
   # ── QR コードリーダー (= ユーザー要望: QR コードリーダー機能とボタン) ──
   # zxing2 は純 Dart 実装 (ネイティブプラグイン不要) なので Windows / Android
@@ -265,6 +286,34 @@ dev_dependencies:
   flutter_lints: ^3.0.0
   build_runner: ^2.4.8
   json_serializable: ^6.7.1
+  # Microsoft Store / サイドロード用の MSIX パッケージ生成 (= ユーザー要望)。
+  #   `dart run msix:create` で build/windows/.../Release を .msix にまとめる。
+  msix: ^3.16.8
+
+# ── MSIX (Windows パッケージ) 設定 ──────────────────────────────────────
+# Partner Center の Product identity をそのまま反映済み (= ユーザー提供値)。
+#   Package/Identity/Name      Darksan.Kamispec
+#   Package/Identity/Publisher CN=BB5643C0-04E4-44B9-839E-09B54138A1D4
+#   Publisher display name     Darksan
+# publisher が Partner Center 発行の Publisher ID (CN=<GUID>) なので、
+#   手元の証明書では署名できない → `store: true` で **未署名の Store 提出用**
+#   パッケージを作る (Microsoft 側が取り込み時に署名する)。
+#   そのため、 この .msix はダブルクリックでのサイドロードはできない。
+#   ローカル検証したい時だけ store: false + publisher 行を外して作り直すこと。
+# Store 用バージョンは 4 桁で 4 番目を 0 にする規約 (例 1.0.24.0)。
+msix_config:
+  display_name: HisatorNotebook
+  publisher_display_name: Darksan
+  identity_name: Darksan.Kamispec
+  publisher: CN=BB5643C0-04E4-44B9-839E-09B54138A1D4
+  msix_version: 1.0.34.0
+  logo_path: windows/runner/resources/msix_logo.png
+  capabilities: internetClient, microphone, removableStorage
+  output_name: HisatorNotebook
+  store: true
+  # 証明書を OS にインストールするか聞く対話プロンプトを出さない
+  #   (= CI / 非対話環境で `dart run msix:create` が固まるのを防ぐ)。
+  install_certificate: false
 
 flutter:
   uses-material-design: true

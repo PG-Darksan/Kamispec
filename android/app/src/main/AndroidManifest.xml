@@ -33,6 +33,10 @@
     <!-- ── 無音カメラ (camera プラグイン) 用 ── -->
     <!-- 写真撮影の権限。 camera プラグインは独自キャプチャのためシャッター音は鳴らない。 -->
     <uses-permission android:name="android.permission.CAMERA"/>
+    <!-- WebView (Google マップ / Earth) の現在地取得に使う
+         (= ユーザー要望: 位置情報を有効化できるように) -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
     <!-- Android 9 以下で公開 Download へ保存するための旧ストレージ権限。
          Android 10 以降は MediaStore を使うため要求しない。 -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
@@ -56,8 +60,14 @@
     <uses-permission android:name="android.permission.NFC"/>
     <uses-feature android:name="android.hardware.nfc" android:required="false"/>
 
+    <!-- ── フローティングメモ (flutter_overlay_window) 用 ── -->
+    <!-- 他のアプリの上にメモを小さく表示する (= ユーザー要望)。
+         SYSTEM_ALERT_WINDOW はユーザーが設定画面で明示的に許可する。 -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
+
     <application
-        android:label="Kamispec"
+        android:label="HisatorNB"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true">
@@ -69,18 +79,18 @@
             android:theme="@style/LaunchTheme"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
-            android:windowSoftInputMode="adjustResize"
-            android:showWhenLocked="true"
-            android:turnScreenOn="true">
+            android:windowSoftInputMode="adjustResize">
             <!--
                 ── Activity 属性の意味 ──
-                showWhenLocked="true":
-                    ロック画面の上にこの Activity を表示できる。
-                    Flutter エンジンが onPause→onStop に落ちずに
-                    動画再生・タイマーが継続する。
-                turnScreenOn="true":
-                    Activity が前面に来たとき (例: 通知タップで
-                    フォアグラウンド復帰したとき) に画面を点ける。
+                showWhenLocked / turnScreenOn は削除 (2026-07-30):
+                    旧: ロック画面の上に Activity を表示して動画再生・
+                    タイマーを継続させる目的で true にしていたが、
+                    Xiaomi HyperOS (Poco F6 Pro 等) では「キーガードの
+                    上に載る Activity」 と扱われ、 ホームへ戻る / 端末の
+                    ファイラーを開く等でアプリを離れると背後のキーガード
+                    (ロック画面) が再表示される不具合になっていた
+                    (= ユーザー報告)。 バックグラウンド音声は
+                    audio_service が担うため、 この属性なしで問題ない。
                 configChanges:
                     画面回転・キーボード表示・ロケール変更など、本来は
                     Activity を破棄して再生成する変更を Flutter 側で
@@ -147,6 +157,17 @@
         <receiver
             android:name="com.dexterous.flutterlocalnotifications.ActionBroadcastReceiver"
             android:exported="false"/>
+
+        <!-- ── フローティングメモ (flutter_overlay_window) の OverlayService ── -->
+        <!-- 他のアプリの上にメモ UI を表示する Foreground Service。 -->
+        <service
+            android:name="flutter.overlay.window.flutter_overlay_window.OverlayService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="floating_memo_overlay"/>
+        </service>
 
         <meta-data
             android:name="flutterEmbedding"

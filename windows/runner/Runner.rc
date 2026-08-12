@@ -90,12 +90,12 @@ BEGIN
         BLOCK "040904e4"
         BEGIN
             VALUE "CompanyName", "com.example" "\0"
-            VALUE "FileDescription", "Kamispec" "\0"
+            VALUE "FileDescription", "HisatorNotebook" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "Kamispec" "\0"
+            VALUE "InternalName", "HisatorNotebook" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 com.example. All rights reserved." "\0"
-            VALUE "OriginalFilename", "Kamispec.exe" "\0"
-            VALUE "ProductName", "Kamispec" "\0"
+            VALUE "OriginalFilename", "HisatorNotebook.exe" "\0"
+            VALUE "ProductName", "HisatorNotebook" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

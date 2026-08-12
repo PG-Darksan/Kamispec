@@ -30,6 +30,10 @@ class BillingPlanName {
   static const String free = 'free';
   static const String pro = 'pro';
   static const String max = 'max';
+
+  /// 決済を通さずに AI を呼べる開発 / 検証用の枠。 購入では手に入らず、
+  /// 引き換えコードでサーバー (Worker) が付与した時だけ返ってくる。
+  static const String dev = 'dev';
 }
 
 /// ユーザーが購入をキャンセルしたことを表す例外。
@@ -72,6 +76,12 @@ class BillingService {
     required this.restApiKey,
     required this.webLinkPro,
     required this.webLinkMax,
+    this.stripeLinkProMonthly = '',
+    this.stripeLinkProYearly = '',
+    this.stripeLinkMaxMonthly = '',
+    this.stripeLinkMaxYearly = '',
+    this.stripeTestMode = false,
+    this.entitlementApiBase = '',
     this.onPlanChanged,
   });
 
@@ -86,6 +96,138 @@ class BillingService {
   /// Windows 用 Web Purchase Link (Pro / Max)。Stripe 連携後に設定。
   final String webLinkPro;
   final String webLinkMax;
+
+  // ── Stripe 決済リンク (デスクトップ用の直接経路) ──
+  // RevenueCat Web Billing を使わず、 Stripe の Payment Link をそのまま開く。
+  // 購入者の紐付けは client_reference_id に Firebase UID を渡して行う。
+  final String stripeLinkProMonthly;
+  final String stripeLinkProYearly;
+  final String stripeLinkMaxMonthly;
+  final String stripeLinkMaxYearly;
+
+  /// テスト環境のリンクを使っているか (UI に注意書きを出すため)。
+  final bool stripeTestMode;
+
+  // ── 表示用の価格 (= ユーザー要望: 課金画面に金額と割引率を出す) ──
+  //
+  // ★ Stripe の Payment Link は金額を返さないので、 画面に出す数字はここに
+  //   持っている。 **Stripe 側で価格を変えたらここも直すこと**。 直し忘れると
+  //   「画面の金額」 と「決済ページの金額」 が食い違う。
+  //   年額は「1 か月あたり」 の額。 年間の請求額は 12 倍して出す。
+  static const double proMonthlyUsd = 9.99;
+  static const double proYearlyPerMonthUsd = 7.99;
+  static const double maxMonthlyUsd = 19.99;
+  static const double maxYearlyPerMonthUsd = 15.99;
+
+  /// プランと課金周期から「1 か月あたりの額 (USD)」 を引く。
+  static double priceUsdFor({required String planName, required bool yearly}) {
+    if (planName == BillingPlanName.max) {
+      return yearly ? maxYearlyPerMonthUsd : maxMonthlyUsd;
+    }
+    return yearly ? proYearlyPerMonthUsd : proMonthlyUsd;
+  }
+
+  /// 年額にすると何 % 安くなるか (四捨五入した整数)。
+  /// 月額が 0 以下なら 0 を返す。
+  static int yearlyDiscountPercent(String planName) {
+    final m = priceUsdFor(planName: planName, yearly: false);
+    final y = priceUsdFor(planName: planName, yearly: true);
+    if (m <= 0) return 0;
+    return (((m - y) / m) * 100).round();
+  }
+
+  /// 年額を選んだ時に実際に請求される 1 年分の額 (USD)。
+  static double yearlyTotalUsd(String planName) =>
+      priceUsdFor(planName: planName, yearly: true) * 12;
+
+  /// 権利照会 API のベース URL (Cloudflare Worker)。
+  /// 例: https://api.hisator-notebook.com
+  final String entitlementApiBase;
+
+  /// Stripe 決済リンクが 1 本でも設定されているか。
+  bool get hasStripeLinks =>
+      stripeLinkProMonthly.isNotEmpty ||
+      stripeLinkProYearly.isNotEmpty ||
+      stripeLinkMaxMonthly.isNotEmpty ||
+      stripeLinkMaxYearly.isNotEmpty;
+
+  /// プランと課金周期から決済リンクを引く。
+  String stripeLinkFor({required String planName, required bool yearly}) {
+    if (planName == BillingPlanName.max) {
+      return yearly ? stripeLinkMaxYearly : stripeLinkMaxMonthly;
+    }
+    return yearly ? stripeLinkProYearly : stripeLinkProMonthly;
+  }
+
+  /// Stripe の決済ページをブラウザで開く (デスクトップ)。
+  ///
+  /// `client_reference_id` に Firebase UID を渡すので、 Stripe 側の
+  /// Checkout Session からどのユーザーの購入か特定できる。 決済完了後の
+  /// 権利付与は Webhook を受けるサーバー側で行う (未構築の間は、 購入後に
+  /// 手動でプランを反映する運用になる)。
+  Future<bool> openStripeCheckout({
+    required String planName,
+    required bool yearly,
+    required String appUserId,
+  }) async {
+    final base = stripeLinkFor(planName: planName, yearly: yearly);
+    if (base.isEmpty) {
+      debugPrint('BillingService: Stripe link 未設定 ($planName/$yearly)');
+      return false;
+    }
+    final sep = base.contains('?') ? '&' : '?';
+    final uri = Uri.parse('$base${sep}client_reference_id='
+        '${Uri.encodeComponent(appUserId)}');
+    try {
+      if (await canLaunchUrl(uri)) {
+        return launchUrl(uri, mode: LaunchMode.externalApplication);
+      }
+    } catch (e) {
+      debugPrint('BillingService.openStripeCheckout 失敗: $e');
+    }
+    return false;
+  }
+
+  /// Stripe のカスタマーポータル (no-code ログインリンク)。
+  /// ユーザーが購入時のメールアドレスでログインして、 解約・支払い方法の
+  /// 変更・請求履歴の確認を自分で行える (= ユーザー要望: 定期購入を解約
+  /// できるように)。 Stripe ダッシュボード → 設定 → Billing →
+  /// カスタマーポータル で有効化して、 発行されたログインリンクを
+  /// env.json の STRIPE_CUSTOMER_PORTAL_LINK に入れる。
+  static const String stripeCustomerPortalUrl = String.fromEnvironment(
+      'STRIPE_CUSTOMER_PORTAL_LINK',
+      defaultValue: '');
+
+  /// 定期購入の管理ページ (解約・支払い方法変更) を開く。
+  ///
+  /// - Android: RevenueCat の managementURL (購入した Google アカウントの
+  ///   Play ストア定期購入管理画面へ直行)。 取れなければ Play の定期購入
+  ///   一覧へフォールバック。 Play の購入は端末の Google アカウントに必ず
+  ///   紐づくので、 そのアカウントでログインしていれば解約できる。
+  /// - Windows: Stripe のカスタマーポータル。 リンク未設定なら false を
+  ///   返し、 呼び出し側で案内を出す。
+  Future<bool> openManagementPage() async {
+    try {
+      if (isNativeBilling) {
+        String? url;
+        try {
+          final info = await Purchases.getCustomerInfo();
+          url = info.managementURL;
+        } catch (_) {}
+        url ??= 'https://play.google.com/store/account/subscriptions'
+            '?package=com.kamispec.app';
+        return await launchUrl(Uri.parse(url),
+            mode: LaunchMode.externalApplication);
+      }
+      if (stripeCustomerPortalUrl.isNotEmpty) {
+        return await launchUrl(Uri.parse(stripeCustomerPortalUrl),
+            mode: LaunchMode.externalApplication);
+      }
+    } catch (e) {
+      debugPrint('BillingService.openManagementPage 失敗: $e');
+    }
+    return false;
+  }
 
   /// プラン状態が変化したときに呼ばれるコールバック (引数はプラン名)。
   /// provider 側で `applyBillingPlanByName` に繋ぐ。
@@ -307,6 +449,38 @@ class BillingService {
       return launchUrl(uri, mode: LaunchMode.externalApplication);
     }
     return false;
+  }
+
+  /// Cloudflare Worker の権利 API で現在のプランを取得する。
+  ///
+  /// Stripe の Webhook を受けた Worker が KV に書いた結果を読むだけなので、
+  /// クライアントが勝手にプランを詐称することはできない (アプリは判定を
+  /// 持たず、 サーバーの答えをそのまま使う)。
+  ///
+  /// 戻り値が **null は「判定できなかった」** (未設定・圏外・サーバー障害)。
+  /// free と区別できないと、 通信に失敗しただけで有料ユーザーを解約扱いに
+  /// してしまうため、 呼び出し側は null の時は今の状態を変えないこと。
+  Future<String?> fetchPlanViaEntitlementApi({required String appUserId}) async {
+    if (entitlementApiBase.isEmpty || appUserId.isEmpty) return null;
+    try {
+      final uri = Uri.parse('$entitlementApiBase/entitlement'
+          '?uid=${Uri.encodeComponent(appUserId)}');
+      final res = await http.get(uri).timeout(const Duration(seconds: 12));
+      if (res.statusCode != 200) {
+        debugPrint('entitlement API: ${res.statusCode} ${res.body}');
+        return null;
+      }
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      final plan = (data['plan'] as String? ?? '').toLowerCase();
+      // Dev はサーバーだけが付与できる (アプリからは要求できない)。
+      if (plan == BillingPlanName.dev) return BillingPlanName.dev;
+      if (plan == BillingPlanName.max) return BillingPlanName.max;
+      if (plan == BillingPlanName.pro) return BillingPlanName.pro;
+      return BillingPlanName.free;
+    } catch (e) {
+      debugPrint('BillingService.fetchPlanViaEntitlementApi 失敗: $e');
+      return null;
+    }
   }
 
   /// REST API で現在の entitlement を確認 (Windows)。

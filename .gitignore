@@ -15,3 +15,6 @@ build_apk.log
 .idea/
 .vscode/
 *.iml
+
+# Stripe Webhook 署名シークレット (Worker へ設定済み。コミットしない)
+worker/_whsec.txt

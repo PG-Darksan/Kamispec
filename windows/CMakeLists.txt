@@ -1,11 +1,11 @@
 # Project-level configuration.
 cmake_minimum_required(VERSION 3.14)
-project(Kamispec LANGUAGES CXX)
+project(HisatorNotebook LANGUAGES CXX)
 
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
 # 実行ファイル名と CMake ターゲット名を製品名に統一する。
-set(BINARY_NAME "Kamispec")
+set(BINARY_NAME "HisatorNotebook")
 
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent
 # versions of CMake.

@@ -36,7 +36,7 @@
 
 import 'dart:async';
 import 'dart:convert' show base64Decode, jsonEncode, jsonDecode;
-import 'dart:io' show Platform, File, HttpClient, HttpHeaders;
+import 'dart:io' show Platform, File, Directory, HttpClient, HttpHeaders;
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -48,7 +48,12 @@ import 'package:file_picker/file_picker.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart' as iaw;
 import 'package:webview_windows/webview_windows.dart' as wv_win;
+import '../services/screen_capture.dart';
+import 'paywall_hook.dart';
+import 'shot_manager_dialog.dart';
+import 'web_automation_panel.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 // 自動スクショ → PDF 化 (= ユーザー要望) に使用。
@@ -163,6 +168,11 @@ class GoogleSearchDialog {
     /// null の場合はボタン非表示。
     void Function(String currentUrl, {bool isLeftPanel})? onMoveToSplitPanel,
 
+    /// 「フローティングで開く」 ボタン押下時、 現在の URL を引数として
+    /// 呼ばれる (= ユーザー要望: サイトボタンにフローティング機能)。
+    /// null の場合はボタン非表示。 デスクトップ専用。
+    void Function(String currentUrl)? onFloatRequest,
+
     /// ★ ボタン押下時に呼ばれる動的ブックマークボタン作成コールバック。
     /// 戻り値: 作成成功なら true、 キャンセル / 失敗なら false。
     /// 未設定 (= null) の場合は従来通り SharedPreferences に直接追加。
@@ -218,6 +228,7 @@ class GoogleSearchDialog {
                   initialAiPrompt: initialAiPrompt,
                   onAddNode: onAddNode,
                   onMoveToSplitPanel: onMoveToSplitPanel,
+                  onFloatRequest: onFloatRequest,
                   onCreateBookmarkButton: onCreateBookmarkButton,
                   compactMode: true,
                   minimalMode: true,
@@ -238,6 +249,7 @@ class GoogleSearchDialog {
                         initialAiPrompt: initialAiPrompt,
                         onAddNode: onAddNode,
                         onMoveToSplitPanel: onMoveToSplitPanel,
+                  onFloatRequest: onFloatRequest,
                         onCreateBookmarkButton: onCreateBookmarkButton,
                         compactMode: true,
                       );
@@ -279,6 +291,7 @@ class GoogleSearchDialog {
                   initialAiPrompt: initialAiPrompt,
                   onAddNode: onAddNode,
                   onMoveToSplitPanel: onMoveToSplitPanel,
+                  onFloatRequest: onFloatRequest,
                   onCreateBookmarkButton: onCreateBookmarkButton,
                   compactMode: true,
                 ),
@@ -314,6 +327,7 @@ class GoogleSearchDialog {
           initialAiPrompt: initialAiPrompt,
           onAddNode: onAddNode,
           onMoveToSplitPanel: onMoveToSplitPanel,
+                  onFloatRequest: onFloatRequest,
           onCreateBookmarkButton: onCreateBookmarkButton,
         ),
         transitionsBuilder: (_, animation, __, child) {
@@ -390,6 +404,10 @@ class GoogleSearchDialog {
         onAddNode,
     void Function(String currentUrl, {bool isLeftPanel})? onMoveToSplitPanel,
     Future<bool> Function(String url, String title)? onCreateBookmarkButton,
+    // ── ウィンドウをドラッグして離した位置で埋め込み等を行うコールバック
+    //    (= ユーザー要望: 分割画面のところへドラッグしたら埋め込める)。
+    //    true を返すとウィンドウを閉じる。 ──
+    bool Function(Offset globalPos, String currentUrl)? onDragDrop,
     Offset? anchorPos,
     String? singletonKey,
     // 初期ウィンドウサイズの上書き (null = 既定)。 ロック中メモの AI /
@@ -478,6 +496,7 @@ class GoogleSearchDialog {
         onAddNode: onAddNode,
         onMoveToSplitPanel: onMoveToSplitPanel,
         onCreateBookmarkButton: onCreateBookmarkButton,
+        onDragDrop: onDragDrop,
         onClose: closeEntry,
         // 「全画面表示」 → このフローティングを閉じて compactMode で開き直す
         onExpandToCompact: (url, query, memo) {
@@ -521,6 +540,10 @@ class _FloatingSearchWindow extends StatefulWidget {
   final void Function(String currentUrl, {bool isLeftPanel})?
       onMoveToSplitPanel;
   final Future<bool> Function(String url, String title)? onCreateBookmarkButton;
+
+  /// ドラッグ終了時に呼ばれる。 true を返すとウィンドウを閉じる
+  /// (= 分割セルへの埋め込み成功など)。
+  final bool Function(Offset globalPos, String currentUrl)? onDragDrop;
   final VoidCallback onClose;
   final void Function(
           String currentUrl, String currentQuery, String currentMemo)
@@ -548,6 +571,7 @@ class _FloatingSearchWindow extends StatefulWidget {
     required this.onAddNode,
     required this.onMoveToSplitPanel,
     required this.onCreateBookmarkButton,
+    this.onDragDrop,
     required this.onClose,
     required this.onExpandToCompact,
     this.initialOffset = Offset.zero,
@@ -565,6 +589,14 @@ class _FloatingSearchWindow extends StatefulWidget {
 
 class _FloatingSearchWindowState extends State<_FloatingSearchWindow> {
   Offset _pos = const Offset(-1, -1); // 未配置マーカー
+
+  /// ドロップ判定用: 現在 URL を読むためのページキー (singleton 指定が
+  /// 無い時も自前で持つ)。
+  late final GlobalKey<_GoogleSearchPageState> _pageKeyForDrop =
+      widget.pageKey ?? GlobalKey<_GoogleSearchPageState>();
+
+  /// ヘッダードラッグ中の最後のポインタ位置 (ドロップ判定用)。
+  Offset? _headerDragGlobal;
   bool _expandedToCompact = false;
   Offset? _expandedCloseButtonPos;
   bool _draggingExpandedCloseButton = false;
@@ -795,6 +827,7 @@ class _FloatingSearchWindowState extends State<_FloatingSearchWindow> {
                     behavior: HitTestBehavior.opaque,
                     onPanUpdate: (d) {
                       if (_expandedToCompact) return;
+                      _headerDragGlobal = d.globalPosition;
                       setState(() {
                         final np = _pos + d.delta;
                         _pos = Offset(
@@ -802,6 +835,17 @@ class _FloatingSearchWindowState extends State<_FloatingSearchWindow> {
                           np.dy.clamp(0.0, maxTop),
                         );
                       });
+                    },
+                    // ── ドロップ埋め込み (= ユーザー要望: 分割画面の所へ
+                    //    ドラッグしたら埋め込めるように)。 ──
+                    onPanEnd: (_) {
+                      final g = _headerDragGlobal;
+                      _headerDragGlobal = null;
+                      if (g == null || widget.onDragDrop == null) return;
+                      final url =
+                          _pageKeyForDrop.currentState?._currentUrl ?? '';
+                      if (url.isEmpty) return;
+                      if (widget.onDragDrop!(g, url)) widget.onClose();
                     },
                     child: Container(
                       height: 40,
@@ -843,7 +887,7 @@ class _FloatingSearchWindowState extends State<_FloatingSearchWindow> {
                     borderRadius: const BorderRadius.vertical(
                         bottom: Radius.circular(13)),
                     child: _GoogleSearchPage(
-                      key: widget.pageKey,
+                      key: _pageKeyForDrop,
                       initialQuery: widget.initialQuery,
                       initialMemo: widget.initialMemo,
                       customTitle: widget.customTitle,
@@ -945,6 +989,10 @@ class _GoogleSearchPage extends StatefulWidget {
   final void Function(String currentUrl, {bool isLeftPanel})?
       onMoveToSplitPanel;
 
+  /// 「フローティングで開く」 ボタン押下時、 現在の URL を引数として呼ばれる。
+  /// null の場合はボタン非表示 (= ユーザー要望: サイトボタンにフローティング)。
+  final void Function(String currentUrl)? onFloatRequest;
+
   /// ★ ボタン押下時に呼ばれる動的ブックマークボタン作成コールバック。
   /// 戻り値: 作成成功なら true、 キャンセル / 失敗なら false。
   final Future<bool> Function(String url, String title)? onCreateBookmarkButton;
@@ -997,6 +1045,7 @@ class _GoogleSearchPage extends StatefulWidget {
     this.initialAiPrompt = '',
     required this.onAddNode,
     this.onMoveToSplitPanel,
+    this.onFloatRequest,
     this.onCreateBookmarkButton,
     this.compactMode = false,
     this.minimalMode = false,
@@ -1688,7 +1737,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   void _sendTextToAi(String rawText) {
     final text = rawText.trim();
     if (text.isEmpty) {
-      _showCaptureSnack('このメモは本文が空のため AI に送れません', const Color(0xFFE57373));
+      _showCaptureSnack(context.read<MindMapProvider>().t('gs.memoEmptyAi'), const Color(0xFFE57373));
       return;
     }
     Clipboard.setData(ClipboardData(text: text));
@@ -1766,11 +1815,11 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   /// プロンプトと共に既存の _sendTextToAi に渡す (AI 欄が閉じていれば開いて入力欄
   /// へ自動入力。 送信はユーザーが Enter で行う)。
   Future<void> _shareSearchPageWithAi() async {
-    _showCaptureSnack('ページ内容を取得して AI に共有中…', const Color(0xFFFFC107));
+    _showCaptureSnack(context.read<MindMapProvider>().t('gs.sharingPageWithAi'), const Color(0xFFFFC107));
     final raw = await _readVisibleSearchPageText();
     var body = raw.trim();
     if (body.isEmpty) {
-      _showCaptureSnack('ページ本文を取得できませんでした', const Color(0xFFE57373));
+      _showCaptureSnack(context.read<MindMapProvider>().t('gs.pageTextFailed'), const Color(0xFFE57373));
       return;
     }
     // 長すぎる本文は AI 入力欄に収まらず挿入も不安定になるため上限を設ける。
@@ -1790,7 +1839,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   void _sendTextToDeepL(String rawText) {
     final text = rawText.trim();
     if (text.isEmpty) {
-      _showCaptureSnack('このメモは本文が空のため DeepL に送れません', const Color(0xFFE57373));
+      _showCaptureSnack(context.read<MindMapProvider>().t('gs.memoEmptyDeepl'), const Color(0xFFE57373));
       return;
     }
     Clipboard.setData(ClipboardData(text: text));
@@ -1817,7 +1866,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       } catch (_) {}
     }
     if (mounted) {
-      _showCaptureSnack('🌐 メモを DeepL に送りました', const Color(0xFF0F73B8));
+      _showCaptureSnack(context.read<MindMapProvider>().t('gs.memoSentDeepl'), const Color(0xFF0F73B8));
     }
   }
 
@@ -2196,7 +2245,26 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     final ctrl = wv_win.WebviewController();
     tab.winCtrl = ctrl;
     try {
-      await ctrl.initialize();
+      // ── 初期化をタイムアウト + 数回リトライで堅牢に (= ユーザー報告:
+      //    WebView の所でエラーが出る) ──
+      //    多数の WebView を同時に立ち上げると initialize が一時的に失敗
+      //    (unsupported_platform 等) する事があり、 一度で諦めると
+      //    「WebView2 が無い」 かのように見えてしまう。 少し待って作り直す。
+      Object? initErr;
+      var ok = false;
+      for (var attempt = 0; attempt < 3 && !ok; attempt++) {
+        try {
+          if (attempt > 0) {
+            await Future<void>.delayed(
+                Duration(milliseconds: 400 * attempt));
+          }
+          await ctrl.initialize().timeout(const Duration(seconds: 12));
+          ok = true;
+        } catch (e) {
+          initErr = e;
+        }
+      }
+      if (!ok) throw initErr ?? Exception('WebView init failed');
       // ポップアップ / 新規ウィンドウは現在の WebView 内で開く (広告から戻れる)。
       try {
         await ctrl
@@ -2207,6 +2275,16 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       try {
         await ctrl
             .addScriptToExecuteOnDocumentCreated(_kGsCtrlClickInterceptorJs);
+        // ── 位置情報を渡す (= ユーザー報告: Google マップ / Earth で現在地
+        //    が表示されない)。 詳細は provider の geolocationShimJs 参照。 ──
+        try {
+          final prov = context.read<MindMapProvider>();
+          await prov.ensureApproxLocation();
+          final geoJs = prov.geolocationShimJs();
+          if (geoJs != null) {
+            await ctrl.addScriptToExecuteOnDocumentCreated(geoJs);
+          }
+        } catch (_) {}
       } catch (_) {}
       // ホイール感度を下げる (= ユーザー要望: スクロールが速すぎる)。
       try {
@@ -2717,7 +2795,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         IconButton(
           icon: const Icon(Icons.arrow_back_rounded,
               color: Colors.white, size: 20),
-          tooltip: '戻る',
+          tooltip: context.read<MindMapProvider>().t('btn.back'),
           visualDensity: VisualDensity.compact,
           padding: const EdgeInsets.all(4),
           constraints: const BoxConstraints(),
@@ -2729,7 +2807,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         IconButton(
           icon: const Icon(Icons.arrow_forward_rounded,
               color: Colors.white, size: 20),
-          tooltip: '進む',
+          tooltip: context.read<MindMapProvider>().t('split.forward'),
           visualDensity: VisualDensity.compact,
           padding: const EdgeInsets.all(4),
           constraints: const BoxConstraints(),
@@ -2738,7 +2816,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         IconButton(
           icon:
               const Icon(Icons.refresh_rounded, color: Colors.white, size: 20),
-          tooltip: '再読み込み',
+          tooltip: context.read<MindMapProvider>().t('player.reload'),
           visualDensity: VisualDensity.compact,
           padding: const EdgeInsets.all(4),
           constraints: const BoxConstraints(),
@@ -2770,6 +2848,48 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
           constraints: const BoxConstraints(),
           onPressed: _doSearch,
         ),
+        // ── 自動操作パネル (= ユーザー要望: 指定箇所のタップ / スワイプ /
+        //    ホールドの回数や時間を設定して自動実行、 スクショとの組合せも) ──
+        // ── 実行中の停止ボタンは全体ヘッダーに常設する (= ユーザー要望:
+        //    スクショのたびに出たり消えたりしないように)。 ここは
+        //    キャプチャ範囲 (WebView 部分) の外なので写り込まない。 ──
+        if (_autoRunning)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.redAccent,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                minimumSize: const Size(0, 30),
+              ),
+              icon: const Icon(Icons.stop_rounded, size: 17),
+              label: Text(provider.t('auto.stop'),
+                  style: const TextStyle(
+                      fontSize: 12, fontWeight: FontWeight.w700)),
+              onPressed: () => _autoStop?.call(),
+            ),
+          ),
+        if (!widget.minimalMode)
+          IconButton(
+            // AI ボタンと同じ絵柄だと紛らわしいので別アイコンにする
+            // (= ユーザー要望)。
+            icon: Icon(Icons.play_circle_outline_rounded,
+                color: _autoPanelOpen ? const Color(0xFF80CBC4) : Colors.white,
+                size: 20),
+            tooltip: provider.t('auto.title'),
+            visualDensity: VisualDensity.compact,
+            padding: const EdgeInsets.all(6),
+            constraints: const BoxConstraints(),
+            onPressed: () {
+              // 自動操作は Pro 以上限定 (= ユーザー要望)。
+              if (!provider.canUseWebAutomation) {
+                _showPlanNotice(provider.t('paywall.proRequiredAutomation'));
+                return;
+              }
+              setState(() => _autoPanelOpen = !_autoPanelOpen);
+            },
+          ),
         // ── ブックマーク追加 / リンク埋め込み ──
         // モバイル (縦) ではここに置くと AI ボタン等と被るので、 横分割時
         //   のみ検索バーに置き、 モバイルでは AppBar の actions 側へ移す
@@ -2820,7 +2940,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
       actions: [
         IconButton(
-          tooltip: '閉じる',
+          tooltip: context.read<MindMapProvider>().t('btn.close'),
           visualDensity: VisualDensity.compact,
           onPressed: () {
             _captureNoticeTimer?.cancel();
@@ -2851,7 +2971,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       await _addPageInfoAsNode();
       return;
     }
-    _showCaptureSnack('ページ末尾までスクロールしています...', const Color(0xFF4FC3F7));
+    _showCaptureSnack(context.read<MindMapProvider>().t('gs.scrollingToBottom'), const Color(0xFF4FC3F7));
     try {
       // ページの一番下にスクロール
       await _iawCtrl!.evaluateJavascript(source: '''
@@ -2865,12 +2985,12 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       // viewport をキャプチャ
       final png = await _iawCtrl!.takeScreenshot();
       if (png == null) {
-        _showCaptureSnack('スクショの取得に失敗しました', const Color(0xFFE57373));
+        _showCaptureSnack(context.read<MindMapProvider>().t('gs.shotFailed'), const Color(0xFFE57373));
         return;
       }
       await _saveScreenshotAsNode(png);
     } catch (e) {
-      _showCaptureSnack('スクショ生成に失敗しました: $e', const Color(0xFFE57373));
+      _showCaptureSnack(context.read<MindMapProvider>().t('gs.shotGenFailed').replaceFirst('{e}', '$e'), const Color(0xFFE57373));
     }
   }
 
@@ -2886,7 +3006,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       await _addPageInfoAsNode();
       return;
     }
-    _showCaptureSnack('ページ全体をキャプチャ中...', const Color(0xFFFFC107));
+    _showCaptureSnack(context.read<MindMapProvider>().t('gs.capturingFullPage'), const Color(0xFFFFC107));
     try {
       // ── 1. スクロール可能な総高さ + viewport 高さを取得 ──
       final scrollHeightRaw = await _iawCtrl!.evaluateJavascript(source: '''
@@ -2904,7 +3024,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
           ? viewHeightRaw.toInt()
           : int.tryParse('$viewHeightRaw') ?? 0;
       if (scrollHeight <= 0 || viewHeight <= 0) {
-        _showCaptureSnack('ページサイズの取得に失敗しました', const Color(0xFFE57373));
+        _showCaptureSnack(context.read<MindMapProvider>().t('gs.pageSizeFailed'), const Color(0xFFE57373));
         return;
       }
       // 安全のため最大セグメント数を制限 (= 異常な巨大ページで OOM 防止)
@@ -2926,18 +3046,18 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       await _iawCtrl!.evaluateJavascript(
           source: 'window.scrollTo({top: 0, behavior: "instant"});');
       if (segments.isEmpty) {
-        _showCaptureSnack('スクショの取得に失敗しました', const Color(0xFFE57373));
+        _showCaptureSnack(context.read<MindMapProvider>().t('gs.shotFailed'), const Color(0xFFE57373));
         return;
       }
       // ── 2. 縦結合 ──
       final combined = await _combineImagesVertically(segments);
       if (combined.isEmpty) {
-        _showCaptureSnack('画像結合に失敗しました', const Color(0xFFE57373));
+        _showCaptureSnack(context.read<MindMapProvider>().t('gs.combineFailed'), const Color(0xFFE57373));
         return;
       }
       await _saveScreenshotAsNode(combined);
     } catch (e) {
-      _showCaptureSnack('フルページスクショに失敗しました: $e', const Color(0xFFE57373));
+      _showCaptureSnack(context.read<MindMapProvider>().t('gs.fullShotFailed').replaceFirst('{e}', '$e'), const Color(0xFFE57373));
     }
   }
 
@@ -2967,12 +3087,14 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
         return AlertDialog(
           backgroundColor: const Color(0xFF1E1E32),
-          title: const Row(children: [
-            Icon(Icons.burst_mode_rounded, color: Color(0xFF4FC3F7), size: 20),
-            SizedBox(width: 10),
+          title: Row(children: [
+            const Icon(Icons.burst_mode_rounded,
+                color: Color(0xFF4FC3F7), size: 20),
+            const SizedBox(width: 10),
             Expanded(
-                child: Text('自動スクショ → PDF',
-                    style: TextStyle(color: Colors.white, fontSize: 16))),
+                child: Text(context.read<MindMapProvider>().t('gs.autoShotPdf'),
+                    style: const TextStyle(
+                        color: Colors.white, fontSize: 16))),
           ]),
           content: Column(mainAxisSize: MainAxisSize.min, children: [
             const Text(
@@ -3002,8 +3124,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
             ]),
             const SizedBox(height: 10),
             Row(children: [
-              const Text('スワイプ量',
-                  style: TextStyle(color: Colors.white54, fontSize: 12)),
+              Text(context.read<MindMapProvider>().t('gs.swipeAmount'),
+                  style:
+                      const TextStyle(color: Colors.white54, fontSize: 12)),
               Expanded(
                 child: Slider(
                   value: swipeFrac,
@@ -3020,12 +3143,13 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(dctx),
-              child:
-                  const Text('キャンセル', style: TextStyle(color: Colors.white54)),
+              child: Text(context.read<MindMapProvider>().t('btn.cancel'),
+                  style: const TextStyle(color: Colors.white54)),
             ),
             ElevatedButton(
               style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF4FC3F7)),
+                  backgroundColor: const Color(0xFF4FC3F7),
+                  foregroundColor: Color(0xFF10241F),),
               onPressed: () {
                 final count =
                     (int.tryParse(countCtrl.text.trim()) ?? 10).clamp(1, 100);
@@ -3038,7 +3162,8 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                   swipeFrac: swipeFrac
                 ));
               },
-              child: const Text('開始', style: TextStyle(color: Colors.black)),
+              child: Text(context.read<MindMapProvider>().t('gs.start'),
+                  style: const TextStyle(color: Colors.black)),
             ),
           ],
         );
@@ -3052,7 +3177,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   /// 設定に従ってスワイプ + スクショを繰り返し、 PDF にまとめて保存する。
   Future<void> _autoSwipeCaptureToPdf() async {
     if (_iawCtrl == null) {
-      _showCaptureSnack('この機能はモバイル版のブラウザで利用できます', const Color(0xFFE57373));
+      _showCaptureSnack(context.read<MindMapProvider>().t('gs.mobileOnly'), const Color(0xFFE57373));
       return;
     }
     final cfg = await _showAutoCaptureConfig();
@@ -3092,19 +3217,19 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       await _iawCtrl!.evaluateJavascript(
           source: 'window.scrollTo({top: 0, behavior: "instant"});');
       if (shots.isEmpty) {
-        _showCaptureSnack('スクショを取得できませんでした', const Color(0xFFE57373));
+        _showCaptureSnack(context.read<MindMapProvider>().t('gs.shotFailed'), const Color(0xFFE57373));
         return;
       }
       await _saveShotsAsPdf(shots);
     } catch (e) {
-      _showCaptureSnack('自動キャプチャに失敗しました: $e', const Color(0xFFE57373));
+      _showCaptureSnack(context.read<MindMapProvider>().t('gs.autoCaptureFailed').replaceFirst('{e}', '$e'), const Color(0xFFE57373));
     }
   }
 
   /// 撮ったスクショ群を 1 つの PDF にまとめて保存し、 マップに PDF ノードとして
   /// 追加する (= アプリ内 PDF ビューアで開ける)。
   Future<void> _saveShotsAsPdf(List<Uint8List> shots) async {
-    _showCaptureSnack('PDF を作成中…', const Color(0xFFFFC107));
+    _showCaptureSnack(context.read<MindMapProvider>().t('gs.makingPdf'), const Color(0xFFFFC107));
     try {
       final doc = pw.Document();
       for (final png in shots) {
@@ -3138,9 +3263,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       provider.updateNodeTitle(newNode.id, '📄 $title (${shots.length}枚)');
       provider.updateNodeAttachment(newNode.id, file.path, filename);
       _showCaptureSnack(
-          '${shots.length} 枚を PDF にまとめてマップに追加しました', const Color(0xFF43B97F));
+          context.read<MindMapProvider>().t('gs.pdfDone').replaceFirst('{n}', '${shots.length}'), const Color(0xFF43B97F));
     } catch (e) {
-      _showCaptureSnack('PDF の作成に失敗しました: $e', const Color(0xFFE57373));
+      _showCaptureSnack(context.read<MindMapProvider>().t('gs.pdfFailed').replaceFirst('{e}', '$e'), const Color(0xFFE57373));
     }
   }
 
@@ -3241,7 +3366,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   Future<void> _addCurrentPageToBookmarks() async {
     final url = _currentUrl;
     if (url.isEmpty) {
-      _showCaptureSnack('URL が取れません', const Color(0xFFE57373));
+      _showCaptureSnack(context.read<MindMapProvider>().t('gs.noUrl'), const Color(0xFFE57373));
       return;
     }
     String title;
@@ -3265,7 +3390,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       final ok = await cb(url, title);
       if (!mounted) return;
       if (ok) {
-        _showCaptureSnack('お気に入りボタンを作成: $title', const Color(0xFF43B97F));
+        _showCaptureSnack(context.read<MindMapProvider>().t('gs.favCreated').replaceFirst('{t}', title), const Color(0xFF43B97F));
       }
       // ok == false (= ユーザーがキャンセル) の場合はスナックを出さない
       return;
@@ -3273,7 +3398,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     // ── 旧仕組み: 検索ダイアログ内のブックマーク一覧に追加するだけ ──
     await _GoogleSearchBookmarks.add(url: url, title: title);
     if (mounted) {
-      _showCaptureSnack('ブックマークに追加: $title', const Color(0xFF43B97F));
+      _showCaptureSnack(context.read<MindMapProvider>().t('gs.bookmarkAdded').replaceFirst('{t}', title), const Color(0xFF43B97F));
     }
   }
 
@@ -3286,7 +3411,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       builder: (ctx, snapshot) {
         final items = snapshot.data ?? const <_BookmarkItem>[];
         return PopupMenuButton<int>(
-          tooltip: 'お気に入りページ (${items.length}件)',
+          tooltip: context.read<MindMapProvider>().t('gs.favPages').replaceFirst('{n}', '${items.length}'),
           color: const Color(0xFF22222E),
           icon: Stack(
             clipBehavior: Clip.none,
@@ -3435,16 +3560,16 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                   ),
                 ),
               const PopupMenuDivider(),
-              const PopupMenuItem<int>(
+              PopupMenuItem<int>(
                 value: -1,
                 child: Row(
                   children: [
-                    Icon(Icons.delete_outline_rounded,
+                    const Icon(Icons.delete_outline_rounded,
                         color: Color(0xFFE57373), size: 16),
-                    SizedBox(width: 8),
-                    Text('全て削除',
-                        style:
-                            TextStyle(color: Color(0xFFE57373), fontSize: 12)),
+                    const SizedBox(width: 8),
+                    Text(context.read<MindMapProvider>().t('gs.deleteAll'),
+                        style: const TextStyle(
+                            color: Color(0xFFE57373), fontSize: 12)),
                   ],
                 ),
               ),
@@ -3503,7 +3628,8 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
               ),
             ),
             const SizedBox(width: 8),
-            const Text('お気に入りを編集', style: TextStyle(color: Colors.white)),
+            Text(context.read<MindMapProvider>().t('gs.editFav'),
+                style: const TextStyle(color: Colors.white)),
           ]),
           content: SizedBox(
             width: 360,
@@ -3517,8 +3643,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis),
                 const SizedBox(height: 12),
-                const Text('表示名',
-                    style: TextStyle(color: Colors.white70, fontSize: 12)),
+                Text(context.read<MindMapProvider>().t('gs.displayName'),
+                    style: const TextStyle(
+                        color: Colors.white70, fontSize: 12)),
                 const SizedBox(height: 4),
                 TextField(
                   controller: labelCtrl,
@@ -3536,8 +3663,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                   ),
                 ),
                 const SizedBox(height: 14),
-                const Text('アイコンを選択',
-                    style: TextStyle(color: Colors.white70, fontSize: 12)),
+                Text(context.read<MindMapProvider>().t('gs.chooseIcon'),
+                    style: const TextStyle(
+                        color: Colors.white70, fontSize: 12)),
                 const SizedBox(height: 6),
                 // アイコン候補グリッド
                 SizedBox(
@@ -3584,13 +3712,13 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
           actions: [
             TextButton(
               onPressed: () => Navigator.of(dctx).pop(false),
-              child:
-                  const Text('キャンセル', style: TextStyle(color: Colors.white54)),
+              child: Text(context.read<MindMapProvider>().t('btn.cancel'),
+                  style: const TextStyle(color: Colors.white54)),
             ),
             FilledButton.icon(
               onPressed: () => Navigator.of(dctx).pop(true),
               icon: const Icon(Icons.check_rounded, size: 16),
-              label: const Text('保存'),
+              label: Text(context.read<MindMapProvider>().t('btn.save')),
               style: FilledButton.styleFrom(
                 backgroundColor: const Color(0xFFFFB347),
                 foregroundColor: Colors.black,
@@ -3608,7 +3736,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       );
       await _GoogleSearchBookmarks.updateAt(idx, updated);
       if (mounted) {
-        _showCaptureSnack('お気に入り ${idx + 1} を更新しました', const Color(0xFF43B97F));
+        _showCaptureSnack(context.read<MindMapProvider>().t('gs.favUpdated').replaceFirst('{n}', '${idx + 1}'), const Color(0xFF43B97F));
       }
     }
     labelCtrl.dispose();
@@ -3823,15 +3951,16 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       color: const Color(0xFF22222E),
       position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx, pos.dy),
       items: [
-        const PopupMenuItem<String>(
+        PopupMenuItem<String>(
           value: 'folder',
-          child: Text('フォルダーに保存',
-              style: TextStyle(color: Colors.white, fontSize: 13)),
+          child: Text(context.read<MindMapProvider>().t('gs.saveToFolder'),
+              style: const TextStyle(color: Colors.white, fontSize: 13)),
         ),
         const PopupMenuDivider(),
         ..._gsSites.map((s) => PopupMenuItem<String>(
               value: 'site:${s.$1}',
-              child: Text('${s.$1} を開く',
+              child: Text(
+                  context.read<MindMapProvider>().t('gs.openSite').replaceFirst('{s}', s.$1),
                   style: const TextStyle(color: Colors.white, fontSize: 13)),
             )),
       ],
@@ -3856,8 +3985,11 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       items: _gsSites
           .map((s) => PopupMenuItem<String>(
                 value: s.$1,
-                child: Text('${s.$1} を新しいタブで開く',
-                    style: const TextStyle(color: Colors.white, fontSize: 13)),
+                child: Text(
+                    context.read<MindMapProvider>().t('gs.openSiteNewTab')
+                        .replaceFirst('{s}', s.$1),
+                    style:
+                        const TextStyle(color: Colors.white, fontSize: 13)),
               ))
           .toList(),
     );
@@ -3901,15 +4033,16 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       context: context,
       builder: (dctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E32),
-        title: const Text('フォルダーに保存',
-            style: TextStyle(color: Colors.white, fontSize: 15)),
+        title: Text(context.read<MindMapProvider>().t('gs.saveToFolder'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             if (existing.isNotEmpty) ...[
-              const Text('既存のフォルダー',
-                  style: TextStyle(color: Colors.white54, fontSize: 12)),
+              Text(context.read<MindMapProvider>().t('gs.existingFolders'),
+                  style:
+                      const TextStyle(color: Colors.white54, fontSize: 12)),
               const SizedBox(height: 6),
               Wrap(
                 spacing: 6,
@@ -3924,16 +4057,17 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                     .toList(),
               ),
               const SizedBox(height: 12),
-              const Text('または新規フォルダー',
-                  style: TextStyle(color: Colors.white54, fontSize: 12)),
+              Text(context.read<MindMapProvider>().t('gs.orNewFolder'),
+                  style:
+                      const TextStyle(color: Colors.white54, fontSize: 12)),
             ],
             TextField(
               controller: ctrl,
               autofocus: existing.isEmpty,
               style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(
-                hintText: 'フォルダー名',
-                hintStyle: TextStyle(color: Colors.white38),
+              decoration: InputDecoration(
+                hintText: context.read<MindMapProvider>().t('gs.folderName'),
+                hintStyle: const TextStyle(color: Colors.white38),
               ),
               onSubmitted: (v) => Navigator.pop(dctx, v.trim()),
             ),
@@ -3942,14 +4076,15 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dctx, null),
-            child: const Text('キャンセル', style: TextStyle(color: Colors.white54)),
+            child: Text(context.read<MindMapProvider>().t('btn.cancel'),
+                style: const TextStyle(color: Colors.white54)),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF6C63FF),
                 foregroundColor: Colors.white),
             onPressed: () => Navigator.pop(dctx, ctrl.text.trim()),
-            child: const Text('保存'),
+            child: Text(context.read<MindMapProvider>().t('btn.save')),
           ),
         ],
       ),
@@ -3965,8 +4100,8 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
         return AlertDialog(
           backgroundColor: const Color(0xFF1E1E32),
-          title: const Text('フォルダー',
-              style: TextStyle(color: Colors.white, fontSize: 15)),
+          title: Text(context.read<MindMapProvider>().t('gs.folder'),
+              style: const TextStyle(color: Colors.white, fontSize: 15)),
           content: SizedBox(
             width: 320,
             child: Column(
@@ -3979,7 +4114,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                         title: Text(e.key,
                             style: const TextStyle(
                                 color: Colors.white, fontSize: 14)),
-                        subtitle: Text('${e.value.length} 件',
+                        subtitle: Text(
+                            context.read<MindMapProvider>().t('gs.itemCount')
+                                .replaceFirst('{n}', '${e.value.length}'),
                             style: const TextStyle(
                                 color: Colors.white38, fontSize: 11)),
                         trailing: IconButton(
@@ -4004,7 +4141,8 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(dctx),
-              child: const Text('閉じる', style: TextStyle(color: Colors.white54)),
+              child: Text(context.read<MindMapProvider>().t('btn.close'),
+                  style: const TextStyle(color: Colors.white54)),
             ),
           ],
         );
@@ -4082,7 +4220,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                       trailing: IconButton(
                         icon: const Icon(Icons.close_rounded,
                             color: Color(0xFFE57373), size: 18),
-                        tooltip: 'このタブを削除',
+                        tooltip: context.read<MindMapProvider>().t('gs.deleteThisTab'),
                         onPressed: () async {
                           final url = items[idx]['url'];
                           final folders = await TabFolderStore.load();
@@ -4111,7 +4249,8 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(dctx),
-              child: const Text('閉じる', style: TextStyle(color: Colors.white54)),
+              child: Text(context.read<MindMapProvider>().t('btn.close'),
+                  style: const TextStyle(color: Colors.white54)),
             ),
             if (items.isNotEmpty)
               ElevatedButton.icon(
@@ -4119,7 +4258,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                     backgroundColor: const Color(0xFF6C63FF),
                     foregroundColor: Colors.white),
                 icon: const Icon(Icons.open_in_full_rounded, size: 16),
-                label: const Text('すべて開く'),
+                label: Text(context.read<MindMapProvider>().t('gs.openAll')),
                 onPressed: () {
                   Navigator.pop(dctx);
                   _gsOpenFolder(items);
@@ -4208,11 +4347,11 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         GestureDetector(
           onTap: _showGsFoldersMenu,
           behavior: HitTestBehavior.opaque,
-          child: const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
             child: Tooltip(
-              message: 'フォルダー（保存したタブを開く）',
-              child: Icon(Icons.folder_rounded,
+              message: context.read<MindMapProvider>().t('gs.folderTip'),
+              child: const Icon(Icons.folder_rounded,
                   color: Color(0xFFFFB347), size: 18),
             ),
           ),
@@ -4223,11 +4362,12 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
           GestureDetector(
             onTapDown: (d) => _showGsNewTabSiteMenu(d.globalPosition),
             behavior: HitTestBehavior.opaque,
-            child: const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
               child: Tooltip(
-                message: '新しいタブ（サイトを選択）',
-                child: Icon(Icons.add_rounded, color: Colors.white70, size: 20),
+                message: context.read<MindMapProvider>().t('gs.newTabTip'),
+                child: const Icon(Icons.add_rounded,
+                    color: Colors.white70, size: 20),
               ),
             ),
           ),
@@ -4241,7 +4381,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   Future<void> _addPageInfoAsNode() async {
     try {
       if (!mounted) return;
-      _showCaptureSnack('ページ情報をマップに追加中...', const Color(0xFF4FC3F7));
+      _showCaptureSnack(context.read<MindMapProvider>().t('gs.addingPageInfo'), const Color(0xFF4FC3F7));
       final provider = context.read<MindMapProvider>();
       // タイトル: Windows なら _pageTitle (= _winCtrl.title.listen で更新済)、
       // それ以外なら _currentUrl のドメイン部分を抜き出して使う。
@@ -4254,9 +4394,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       try {
         provider.updateNodeLink(newNode.id, _currentUrl);
       } catch (_) {/* updateNodeLink が無い古い provider 用フォールバック */}
-      _showCaptureSnack('ページ情報をマップに追加しました', const Color(0xFF43B97F));
+      _showCaptureSnack(context.read<MindMapProvider>().t('gs.pageInfoAdded'), const Color(0xFF43B97F));
     } catch (e) {
-      _showCaptureSnack('追加に失敗しました: $e', const Color(0xFFE57373));
+      _showCaptureSnack(context.read<MindMapProvider>().t('gs.addFailed').replaceFirst('{e}', '$e'), const Color(0xFFE57373));
     }
   }
 
@@ -4285,9 +4425,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       final newNode = provider.addNodeAtCenterReturning(const Offset(900, 900));
       provider.updateNodeTitle(newNode.id, '📸 $title');
       provider.updateNodeAttachment(newNode.id, file.path, filename);
-      _showCaptureSnack('スクショをマップに追加しました', const Color(0xFF43B97F));
+      _showCaptureSnack(context.read<MindMapProvider>().t('gs.shotAdded'), const Color(0xFF43B97F));
     } catch (e) {
-      _showCaptureSnack('保存に失敗しました: $e', const Color(0xFFE57373));
+      _showCaptureSnack(context.read<MindMapProvider>().t('gs.saveFailed').replaceFirst('{e}', '$e'), const Color(0xFFE57373));
     }
   }
 
@@ -4457,16 +4597,19 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   Future<void> _handleMobileWebDownload(iaw.InAppWebViewController controller,
       iaw.DownloadStartRequest request) async {
     if (_webDownloadInProgress) {
-      _showCaptureSnack('別のダウンロードを処理中です', const Color(0xFFFFC107));
+      _showCaptureSnack(context.read<MindMapProvider>().t('gs.dlBusy'), const Color(0xFFFFC107));
       return;
     }
     if (request.contentLength > _kMaxInAppDownloadBytes) {
-      _showCaptureSnack('96MBを超えるファイルは外部ブラウザで保存してください',
+      _showCaptureSnack(context.read<MindMapProvider>().t('gs.dlTooBig'),
           const Color(0xFFE57373));
       return;
     }
     _webDownloadInProgress = true;
-    _showCaptureSnack('ファイルを取得しています…', const Color(0xFF4FC3F7));
+    _showCaptureSnack(context.read<MindMapProvider>().t('gs.dlFetching'), const Color(0xFF4FC3F7));
+    // 保存ダイアログのタイトルは await の前に取っておく (= context を
+    // 非同期ギャップ後に触らないため)。
+    final saveDialogTitle = context.read<MindMapProvider>().t('save.downloadDir');
     try {
       final payload = await _readWebDownload(controller, request);
       final fileName = _safeDownloadFileName(
@@ -4475,18 +4618,18 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         responseMime: payload.mime,
       );
       final saved = await FilePicker.platform.saveFile(
-        dialogTitle: 'ダウンロード先を選択',
+        dialogTitle: saveDialogTitle,
         fileName: fileName,
         type: FileType.any,
         bytes: payload.bytes,
       );
       if (!mounted) return;
       if (saved != null) {
-        _showCaptureSnack('$fileName を保存しました', const Color(0xFF43B97F));
+        _showCaptureSnack(context.read<MindMapProvider>().t('gs.dlSaved').replaceFirst('{f}', fileName), const Color(0xFF43B97F));
       }
     } catch (e) {
       if (mounted) {
-        _showCaptureSnack('ダウンロードに失敗しました: $e',
+        _showCaptureSnack(context.read<MindMapProvider>().t('gs.dlFailed').replaceFirst('{e}', '$e'),
             const Color(0xFFE57373));
       }
     } finally {
@@ -4494,7 +4637,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     }
   }
 
-  Widget _buildWebView() {
+  Widget _buildWebViewCore() {
     final idx =
         (_gsActiveTab >= 0 && _gsActiveTab < _gsTabs.length) ? _gsActiveTab : 0;
     if (_gsTabs.isEmpty) {
@@ -4521,6 +4664,395 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       index: idx,
       children: [
         for (int i = 0; i < _gsTabs.length; i++) _buildWinTabWebView(i),
+      ],
+    );
+  }
+
+  // ── 自動操作 (= ユーザー要望: 指定箇所のタップ/スワイプ/ホールド回数や
+  //    時間を設定して自動実行 + スクショと組み合わせ) ──
+  final GlobalKey _webAreaKey = GlobalKey();
+  bool _autoPanelOpen = false;
+
+  /// 自動操作の記録中か (= ユーザー要望: フローを組まなくても操作を覚えて
+  /// 再現できるように)。 ON の間は WebView にオーバーレイを重ね、 タップを
+  /// パネルへ流してから同じ位置をページへ送る。
+  bool _autoRecording = false;
+  final GlobalKey<WebAutomationPanelState> _autoPanelKey =
+      GlobalKey<WebAutomationPanelState>();
+
+  /// 座標ピック中の completer (1 点 / 2 点)。
+  Completer<Offset?>? _pickPointCompleter;
+  Completer<Rect?>? _pickRectCompleter;
+  Offset? _pickRectFirst;
+
+  Future<Offset?> _pickPointOnPage() {
+    _pickPointCompleter?.complete(null);
+    final c = Completer<Offset?>();
+    setState(() => _pickPointCompleter = c);
+    return c.future;
+  }
+
+  Future<Rect?> _pickRectOnPage() {
+    _pickRectCompleter?.complete(null);
+    final c = Completer<Rect?>();
+    setState(() {
+      _pickRectCompleter = c;
+      _pickRectFirst = null;
+    });
+    return c.future;
+  }
+
+  void _handlePickTap(Offset local) {
+    if (_pickPointCompleter != null) {
+      final c = _pickPointCompleter!;
+      setState(() => _pickPointCompleter = null);
+      c.complete(local);
+      return;
+    }
+    if (_pickRectCompleter != null) {
+      if (_pickRectFirst == null) {
+        setState(() => _pickRectFirst = local);
+        return;
+      }
+      final a = _pickRectFirst!;
+      final c = _pickRectCompleter!;
+      setState(() {
+        _pickRectCompleter = null;
+        _pickRectFirst = null;
+      });
+      c.complete(Rect.fromPoints(a, local));
+    }
+  }
+
+  /// 有料プランが必要な時の誘導モーダル (= ユーザー要望)。
+  void _showPlanNotice(String message) {
+    if (!mounted) return;
+    showPaywallModal(context, message);
+  }
+
+  /// フローティング自動操作パネルの位置 / 折りたたみ状態
+  /// (= ユーザー要望: 欄を設けるとスクショできる範囲が狭まるので浮遊窓に)。
+  Offset _autoPanelPos = const Offset(80, 90);
+  bool _autoPanelCollapsed = false;
+
+  /// AI 欄を浮遊窓にするか (= ユーザー要望: AI チャット欄のフローティング
+  /// 機能も使えるように)。 true の間は横の欄には出さず、 ドラッグできる
+  /// 窓として前面に出す。 WebView コントローラは同じものを使い回すので、
+  /// 会話は途切れない。
+  bool _aiPanelFloating = false;
+  Offset _aiFloatPos = const Offset(140, 120);
+  double _aiFloatW = 460;
+  double _aiFloatH = 560;
+
+  /// 自動操作の実行状態 (= ユーザー要望: 実行中は窓のヘッダーに停止ボタン
+  /// だけを出す)。
+  bool _autoRunning = false;
+  VoidCallback? _autoStop;
+
+  /// この実行ぶんの保存先 (= ユーザー要望: フロー実行の度に別フォルダ)。
+  String? _autoRunDir;
+
+  /// キャプチャ中だけパネルを隠すためのフラグ (= ユーザー要望: スクショに
+  /// ボタンや欄が写り込まないように)。
+  bool _autoPanelHiddenForShot = false;
+
+  /// WebView 領域 (または指定した部分矩形) を画面キャプチャして PNG 保存。
+  /// パネル / ピック用オーバーレイは一時的に隠してから撮る。
+  Future<String?> _captureWebArea(Rect? region) async {
+    if (mounted) {
+      setState(() => _autoPanelHiddenForShot = true);
+      // 隠した状態を実際に画面へ反映させてから撮る
+      await WidgetsBinding.instance.endOfFrame;
+      await Future.delayed(const Duration(milliseconds: 90));
+    }
+    try {
+      final box =
+          _webAreaKey.currentContext?.findRenderObject() as RenderBox?;
+      if (box == null) return null;
+      final dpr = MediaQuery.of(context).devicePixelRatio;
+      final origin = box.localToGlobal(Offset.zero);
+      final area = region == null
+          ? Rect.fromLTWH(0, 0, box.size.width, box.size.height)
+          : region;
+      // JPEG で保存する (= ユーザー要望: データ容量が小さく済む)。
+      final png = captureScreenRectJpg(
+        ((origin.dx + area.left) * dpr).round(),
+        ((origin.dy + area.top) * dpr).round(),
+        (area.width * dpr).round(),
+        (area.height * dpr).round(),
+      );
+      if (png == null) return null;
+      // 実行ごとのフォルダへ保存する (未実行時はルート)。
+      final shotDir = _autoRunDir != null
+          ? Directory(_autoRunDir!)
+          : await automationShotsDir();
+      if (!await shotDir.exists()) await shotDir.create(recursive: true);
+      // ── 連番のシンプルなファイル名 (1.png, 2.png ...) にする
+      //    (= ユーザー要望: 画像名が長すぎる) ──
+      var next = 1;
+      try {
+        for (final f in shotDir.listSync().whereType<File>()) {
+          final name = f.path.split(Platform.pathSeparator).last;
+          final lower = name.toLowerCase();
+          if (!lower.endsWith('.png') && !lower.endsWith('.jpg')) continue;
+          final n = int.tryParse(name.substring(0, name.length - 4));
+          if (n != null && n >= next) next = n + 1;
+        }
+      } catch (_) {}
+      final path = '${shotDir.path}/$next.jpg';
+      await File(path).writeAsBytes(png, flush: true);
+      return path;
+    } catch (_) {
+      return null;
+    } finally {
+      if (mounted) setState(() => _autoPanelHiddenForShot = false);
+    }
+  }
+
+  /// フローティングの自動操作パネル。
+  Widget _buildFloatingAutoPanel(MindMapProvider provider) {
+    final size = MediaQuery.of(context).size;
+    // 画面に合わせて大きめに (= ユーザー要望: 自動操作の画面をもう少し
+    // 大きく)。 画面が狭い時ははみ出さないよう縮める。
+    // ── モバイルでも収まる大きさにする (= ユーザー要望: オーバーフロー
+    //    してしまうので人間が使いやすいサイズに)。 画面幅いっぱいまで許し、
+    //    高さは操作の邪魔にならないよう画面の 6 割程度に抑える。 ──
+    final narrow = size.width < 560;
+    final w = narrow
+        ? (size.width - 16).clamp(260.0, 460.0).toDouble()
+        : 460.0;
+    final h = _autoPanelCollapsed
+        ? 42.0
+        : (narrow
+            ? (size.height * 0.62).clamp(260.0, size.height - 120).toDouble()
+            : (size.height - 90).clamp(320.0, 720.0).toDouble());
+    return Positioned(
+      left: _autoPanelPos.dx.clamp(0.0, (size.width - w).clamp(0.0, 99999.0)),
+      top: _autoPanelPos.dy.clamp(0.0, (size.height - h).clamp(0.0, 99999.0)),
+      child: Material(
+        color: Colors.transparent,
+        child: Container(
+          width: w,
+          height: h,
+          decoration: BoxDecoration(
+            color: const Color(0xFF1B1B2A),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.white24),
+            boxShadow: const [
+              BoxShadow(color: Colors.black54, blurRadius: 18),
+            ],
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: Column(children: [
+            // ドラッグ用ヘッダー
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onPanUpdate: (d) => setState(() {
+                _autoPanelPos += d.delta;
+              }),
+              child: Container(
+                height: 30,
+                color: const Color(0xFF23233A),
+                padding: const EdgeInsets.only(left: 8, right: 2),
+                child: Row(children: [
+                  const Icon(Icons.drag_indicator_rounded,
+                      size: 15, color: Colors.white38),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(provider.t('auto.title'),
+                        style: const TextStyle(
+                            color: Colors.white70, fontSize: 11.5)),
+                  ),
+                  // 実行中は停止ボタンだけにする (= ユーザー要望)。
+                  if (_autoRunning)
+                    TextButton.icon(
+                      style: TextButton.styleFrom(
+                        foregroundColor: Colors.white,
+                        backgroundColor: Colors.redAccent,
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        minimumSize: const Size(0, 26),
+                      ),
+                      icon: const Icon(Icons.stop_rounded, size: 15),
+                      label: Text(provider.t('auto.stop'),
+                          style: const TextStyle(fontSize: 11)),
+                      onPressed: () => _autoStop?.call(),
+                    )
+                  else ...[
+                    IconButton(
+                      visualDensity: VisualDensity.compact,
+                      padding: EdgeInsets.zero,
+                      constraints:
+                          const BoxConstraints(minWidth: 26, minHeight: 26),
+                      icon: Icon(
+                          _autoPanelCollapsed
+                              ? Icons.expand_more_rounded
+                              : Icons.expand_less_rounded,
+                          size: 16,
+                          color: Colors.white54),
+                      onPressed: () => setState(
+                          () => _autoPanelCollapsed = !_autoPanelCollapsed),
+                    ),
+                    IconButton(
+                      visualDensity: VisualDensity.compact,
+                      padding: EdgeInsets.zero,
+                      constraints:
+                          const BoxConstraints(minWidth: 26, minHeight: 26),
+                      icon: const Icon(Icons.close_rounded,
+                          size: 16, color: Colors.white54),
+                      onPressed: () => setState(() => _autoPanelOpen = false),
+                    ),
+                  ],
+                ]),
+              ),
+            ),
+            if (!_autoPanelCollapsed)
+              Expanded(
+                child: WebAutomationPanel(
+                  key: _autoPanelKey,
+                  exec: _autoExecJs,
+                  evalJs: _autoEvalJs,
+                  onRecordingChanged: (rec) {
+                    if (!mounted) return;
+                    setState(() => _autoRecording = rec);
+                  },
+                  capture: _captureWebArea,
+                  pickPoint: _pickPointOnPage,
+                  pickRect: _pickRectOnPage,
+                  onClose: () => setState(() => _autoPanelOpen = false),
+                  onRunningChanged: (running, stop) async {
+                    if (!mounted) return;
+                    if (running) {
+                      // 実行ごとに保存先フォルダを分ける (= ユーザー要望)。
+                      try {
+                        final d = await newAutomationRunDir();
+                        _autoRunDir = d.path;
+                      } catch (_) {}
+                    }
+                    if (!mounted) return;
+                    setState(() {
+                      _autoRunning = running;
+                      _autoStop = stop;
+                      // 実行を始めたら欄を畳んで停止ボタンだけにする
+                      // (= ユーザー要望)。 終わったら開き直す。
+                      _autoPanelCollapsed = running;
+                    });
+                  },
+                ),
+              ),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _autoExecJs(String js) async {
+    try {
+      if (_isDesktop) {
+        await _winCtrl?.executeScript(js);
+      } else {
+        await _iawCtrl?.evaluateJavascript(source: js);
+      }
+    } catch (_) {}
+  }
+
+  /// JS を評価して結果を文字列で受け取る (= ユーザー要望: テキストの
+  /// 入力先要素を GUI で選べるように)。 取得できなければ null。
+  Future<String?> _autoEvalJs(String js) async {
+    try {
+      if (_isDesktop) {
+        final r = await _winCtrl?.executeScript(js);
+        return r?.toString();
+      }
+      final r = await _iawCtrl?.evaluateJavascript(source: js);
+      return r?.toString();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// WebView 本体 + 座標ピック用オーバーレイ。
+  Widget _buildWebView() {
+    final picking = !_autoPanelHiddenForShot &&
+        (_pickPointCompleter != null || _pickRectCompleter != null);
+    // 記録中はタップを拾って記録 → 同じ位置をページへ送る (= ユーザー要望)。
+    final recording = _autoRecording && !_autoPanelHiddenForShot;
+    return Stack(
+      key: _webAreaKey,
+      children: [
+        Positioned.fill(child: _buildWebViewCore()),
+        if (!picking && recording)
+          Positioned.fill(
+            child: Listener(
+              behavior: HitTestBehavior.translucent,
+              // ホイール / スワイプのスクロールも記録する。
+              onPointerSignal: (e) {
+                if (e is PointerScrollEvent) {
+                  _autoPanelKey.currentState?.recordScroll(e.scrollDelta.dy);
+                }
+              },
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTapDown: (d) {
+                  // ignore: discarded_futures
+                  _autoPanelKey.currentState?.recordTap(d.localPosition);
+                },
+                child: Container(
+                  color: const Color(0x14E57373),
+                  alignment: Alignment.topCenter,
+                  child: Container(
+                    margin: const EdgeInsets.only(top: 6),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: const Color(0xCCE57373),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      const Icon(Icons.fiber_manual_record_rounded,
+                          size: 12, color: Colors.white),
+                      const SizedBox(width: 5),
+                      Text(
+                          context
+                              .read<MindMapProvider>()
+                              .t('auto.recordingBadge'),
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700)),
+                    ]),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        if (picking)
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTapDown: (d) => _handlePickTap(d.localPosition),
+              child: Container(
+                color: const Color(0x224FC3F7),
+                alignment: Alignment.topCenter,
+                child: Container(
+                  margin: const EdgeInsets.only(top: 10),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.black87,
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    _pickRectCompleter != null
+                        ? (_pickRectFirst == null
+                            ? context.read<MindMapProvider>().t('auto.pickA')
+                            : context.read<MindMapProvider>().t('auto.pickB'))
+                        : context.read<MindMapProvider>().t('auto.pickTap'),
+                    style: const TextStyle(color: Colors.white, fontSize: 12),
+                  ),
+                ),
+              ),
+            ),
+          ),
       ],
     );
   }
@@ -4562,7 +5094,13 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       onPointerPanZoomEnd: (_) => _endDesktopMapPinch(tab),
       onPointerSignal: (event) =>
           _handleDesktopMapPointerSignal(tab, event),
-      child: wv_win.Webview(tab.winCtrl!),
+      child: wv_win.Webview(
+        tab.winCtrl!,
+        // 位置情報などの権限要求を許可する (= ユーザー要望: Google マップ /
+        // Earth を開いた時に現在地を有効化できるように)。
+        permissionRequested: (url, kind, isUserInitiated) async =>
+            wv_win.WebviewPermissionDecision.allow,
+      ),
     );
   }
 
@@ -4575,6 +5113,21 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       key: ValueKey('gsiaw_${tab.iawKeepAlive.hashCode}'),
       keepAlive: tab.iawKeepAlive,
       initialUrlRequest: iaw.URLRequest(url: iaw.WebUri(tab.url)),
+      // ── 位置情報 (= ユーザー要望: Google マップ / Earth で現在地を使える
+      //    ように)。 端末側の権限を求めた上で、 サイトからの要求を許可する。 ──
+      onGeolocationPermissionsShowPrompt: (c, origin) async {
+        try {
+          if (!await Permission.location.isGranted) {
+            await Permission.location.request();
+          }
+        } catch (_) {}
+        return iaw.GeolocationPermissionShowPromptResponse(
+            origin: origin, allow: true, retain: true);
+      },
+      onPermissionRequest: (c, req) async =>
+          iaw.PermissionResponse(
+              resources: req.resources,
+              action: iaw.PermissionResponseAction.GRANT),
       initialSettings: iaw.InAppWebViewSettings(
         javaScriptEnabled: true,
         // ── ピンチによる拡大・縮小を有効化 (= ユーザー要望: Google マップ/Earth
@@ -4912,7 +5465,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
               IconButton(
                 icon: const Icon(Icons.translate_rounded,
                     color: Color(0xFF0F73B8), size: 20),
-                tooltip: 'このメモを DeepL に送る',
+                tooltip: context.read<MindMapProvider>().t('gs.memoToDeepl'),
                 visualDensity: VisualDensity.compact,
                 padding: const EdgeInsets.all(8),
                 constraints: const BoxConstraints(),
@@ -5140,7 +5693,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                     _miniIconButton(
                       icon: Icons.smart_toy_rounded,
                       color: const Color(0xFF4FC3F7),
-                      tooltip: 'AI に送る',
+                      tooltip: context.read<MindMapProvider>().t('gs.sendToAi'),
                       onTap: () => _sendTextToAi(memo.text),
                     ),
                     const SizedBox(width: 2),
@@ -5148,7 +5701,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                     _miniIconButton(
                       icon: Icons.translate_rounded,
                       color: const Color(0xFF0F73B8),
-                      tooltip: 'DeepL に送る',
+                      tooltip: context.read<MindMapProvider>().t('gs.sendToDeepl'),
                       onTap: () => _sendTextToDeepL(memo.text),
                     ),
                     const SizedBox(width: 2),
@@ -5228,16 +5781,33 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                         fontWeight: FontWeight.w700)),
               ),
               PopupMenuButton<String>(
-                tooltip: 'AI を選択',
+                tooltip: context.read<MindMapProvider>().t('gs.chooseAi'),
                 icon: const Icon(Icons.expand_more_rounded,
                     color: Colors.white70, size: 18),
                 color: const Color(0xFF1E1E32),
                 onSelected: _openAiPanel,
                 itemBuilder: (_) => _aiMenuItems(),
               ),
+              // ── 浮遊窓にする / 欄に戻す (= ユーザー要望) ──
+              IconButton(
+                tooltip: provider.t(
+                    _aiPanelFloating ? 'gs.aiDock' : 'gs.aiFloat'),
+                icon: Icon(
+                    _aiPanelFloating
+                        ? Icons.picture_in_picture_alt_rounded
+                        : Icons.open_in_new_rounded,
+                    color: _aiPanelFloating
+                        ? const Color(0xFF4FC3F7)
+                        : Colors.white70,
+                    size: 18),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                onPressed: () =>
+                    setState(() => _aiPanelFloating = !_aiPanelFloating),
+              ),
               // ── AI チャット画面を再読み込み (= ユーザー要望) ──
               IconButton(
-                tooltip: 'AI チャットを再読み込み',
+                tooltip: context.read<MindMapProvider>().t('gs.reloadAi'),
                 icon: const Icon(Icons.refresh_rounded,
                     color: Colors.white70, size: 18),
                 padding: EdgeInsets.zero,
@@ -5246,7 +5816,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
               ),
               if (showSwap)
                 IconButton(
-                  tooltip: 'メモ欄と左右を入れ替え (F6)',
+                  tooltip: context.read<MindMapProvider>().t('gs.swapMemoAi'),
                   icon: const Icon(Icons.swap_horiz_rounded,
                       color: Colors.white70, size: 18),
                   padding: EdgeInsets.zero,
@@ -5256,7 +5826,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                       setState(() => _panelsSwapped = !_panelsSwapped),
                 ),
               IconButton(
-                tooltip: 'AI 欄を閉じる',
+                tooltip: context.read<MindMapProvider>().t('gs.closeAi'),
                 icon: const Icon(Icons.close_rounded,
                     color: Colors.white60, size: 18),
                 padding: EdgeInsets.zero,
@@ -5285,9 +5855,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   /// AI 欄の WebView 本体 (Windows / モバイルで分岐)。
   Widget _buildAiWebView() {
     if (_aiPanelUrl.isEmpty) {
-      return const Center(
-        child: Text('AI を選択してください',
-            style: TextStyle(color: Colors.white38, fontSize: 12)),
+      return Center(
+        child: Text(context.read<MindMapProvider>().t('gs.chooseAiFirst'),
+            style: const TextStyle(color: Colors.white38, fontSize: 12)),
       );
     }
     if (_isDesktop) {
@@ -5310,7 +5880,11 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
           child: const CircularProgressIndicator(),
         );
       }
-      return wv_win.Webview(_aiWinCtrl);
+      return wv_win.Webview(
+        _aiWinCtrl,
+        permissionRequested: (url, kind, isUserInitiated) async =>
+            wv_win.WebviewPermissionDecision.allow,
+      );
     }
     return iaw.InAppWebView(
       initialUrlRequest: iaw.URLRequest(url: iaw.WebUri(_aiPanelUrl)),
@@ -5377,8 +5951,72 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     if (_panelsSwapped) {
       return [_memoSidePanel(provider)];
     }
+    // 浮遊表示中は横の欄には出さない (= ユーザー要望)。
+    if (_aiPanelFloating) return const [];
     final ai = _aiSidePanel(provider);
     return ai != null ? [ai] : const [];
+  }
+
+  /// AI 欄の浮遊窓 (= ユーザー要望: AI チャット欄もフローティングで使いたい)。
+  Widget _buildFloatingAiPanel(MindMapProvider provider) {
+    final screen = MediaQuery.of(context).size;
+    final w = _aiFloatW.clamp(300.0, screen.width);
+    final h = _aiFloatH.clamp(240.0, screen.height);
+    final maxLeft = math.max(0.0, screen.width - w);
+    final maxTop = math.max(0.0, screen.height - h);
+    return Positioned(
+      left: _aiFloatPos.dx.clamp(0.0, maxLeft),
+      top: _aiFloatPos.dy.clamp(0.0, maxTop),
+      child: Material(
+        color: Colors.transparent,
+        child: Container(
+          width: w,
+          height: h,
+          decoration: BoxDecoration(
+            color: const Color(0xFF1E1E32),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.white24),
+            boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 18)],
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: Stack(children: [
+            Column(children: [
+              // ドラッグ用の帯 (パネル自身のヘッダーは中に残る)
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onPanUpdate: (d) => setState(() => _aiFloatPos += d.delta),
+                child: Container(
+                  height: 18,
+                  color: const Color(0xFF12121C),
+                  alignment: Alignment.center,
+                  child: const Icon(Icons.drag_handle_rounded,
+                      size: 14, color: Colors.white38),
+                ),
+              ),
+              Expanded(child: _buildAiPanel(provider, showSwap: false)),
+            ]),
+            Positioned(
+              right: 0,
+              bottom: 0,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onPanUpdate: (d) => setState(() {
+                  _aiFloatW = (_aiFloatW + d.delta.dx)
+                      .clamp(300.0, screen.width);
+                  _aiFloatH = (_aiFloatH + d.delta.dy)
+                      .clamp(240.0, screen.height);
+                }),
+                child: const Padding(
+                  padding: EdgeInsets.all(4),
+                  child: Icon(Icons.south_east_rounded,
+                      size: 14, color: Colors.white38),
+                ),
+              ),
+            ),
+          ]),
+        ),
+      ),
+    );
   }
 
   /// メモパネル全体 (エディタ + 仕切り + 保存済みリスト)。
@@ -5406,8 +6044,8 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                   const Icon(Icons.sticky_note_2_rounded,
                       color: Color(0xFFFFB347), size: 16),
                   const SizedBox(width: 6),
-                  const Text('メモ',
-                      style: TextStyle(
+                  Text(context.read<MindMapProvider>().t('gs.memo'),
+                      style: const TextStyle(
                           color: Colors.white,
                           fontSize: 13,
                           fontWeight: FontWeight.w700)),
@@ -5416,7 +6054,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                   IconButton(
                     icon: const Icon(Icons.swap_horiz_rounded,
                         color: Colors.white70, size: 20),
-                    tooltip: 'メモと AI を左右入れ替え (F6)',
+                    tooltip: context.read<MindMapProvider>().t('gs.swapAiMemo'),
                     visualDensity: VisualDensity.compact,
                     padding: const EdgeInsets.all(4),
                     constraints: const BoxConstraints(),
@@ -5427,7 +6065,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                   IconButton(
                     icon: const Icon(Icons.close_rounded,
                         color: Colors.white70, size: 20),
-                    tooltip: 'メモを閉じる (Ctrl+M)',
+                    tooltip: context.read<MindMapProvider>().t('gs.closeMemoKey'),
                     visualDensity: VisualDensity.compact,
                     padding: const EdgeInsets.all(4),
                     constraints: const BoxConstraints(),
@@ -5466,7 +6104,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                 IconButton(
                   icon: const Icon(Icons.note_add_rounded,
                       color: Color(0xFFFFB347), size: 18),
-                  tooltip: '新規メモ',
+                  tooltip: context.read<MindMapProvider>().t('gs.newMemo'),
                   visualDensity: VisualDensity.compact,
                   padding: EdgeInsets.zero,
                   constraints:
@@ -5653,7 +6291,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         onTap: _shareSearchPageWithAi,
       ),
       PopupMenuButton<double>(
-        tooltip: '動画の再生速度',
+        tooltip: context.read<MindMapProvider>().t('gs.videoRate'),
         color: const Color(0xFF1E1E32),
         padding: EdgeInsets.zero,
         onSelected: (r) {
@@ -5716,7 +6354,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
           icon: Icons.photo_camera_rounded,
           label: 'スクショ',
           color: const Color(0xFFBA68C8),
-          tooltip: '今の画面をスクショしてマップに追加',
+          tooltip: context.read<MindMapProvider>().t('gs.shotToMap'),
           onTap: _captureViewportAndAdd,
         ),
     ];
@@ -5772,16 +6410,16 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       await _addPageInfoAsNode();
       return;
     }
-    _showCaptureSnack('スクショを撮っています...', const Color(0xFF4FC3F7));
+    _showCaptureSnack(context.read<MindMapProvider>().t('gs.takingShot'), const Color(0xFF4FC3F7));
     try {
       final png = await _iawCtrl!.takeScreenshot();
       if (png == null) {
-        _showCaptureSnack('スクショの取得に失敗しました', const Color(0xFFE57373));
+        _showCaptureSnack(context.read<MindMapProvider>().t('gs.shotFailed'), const Color(0xFFE57373));
         return;
       }
       await _saveScreenshotAsNode(png);
     } catch (e) {
-      _showCaptureSnack('スクショ生成に失敗しました: $e', const Color(0xFFE57373));
+      _showCaptureSnack(context.read<MindMapProvider>().t('gs.shotGenFailed').replaceFirst('{e}', '$e'), const Color(0xFFE57373));
     }
   }
 
@@ -5841,6 +6479,20 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       child: CallbackShortcuts(
         bindings: {
           const SingleActivator(LogicalKeyboardKey.escape): () {
+            // ── 座標ピック中は「選択モードの解除」 だけを行う
+            //    (= ユーザー報告: Esc で検索画面ごと閉じてしまう) ──
+            if (_pickPointCompleter != null || _pickRectCompleter != null) {
+              final pc = _pickPointCompleter;
+              final rc = _pickRectCompleter;
+              setState(() {
+                _pickPointCompleter = null;
+                _pickRectCompleter = null;
+                _pickRectFirst = null;
+              });
+              pc?.complete(null);
+              rc?.complete(null);
+              return;
+            }
             if (_selectedMemoIds.isNotEmpty) {
               setState(() {
                 _selectedMemoIds.clear();
@@ -6023,7 +6675,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                         IconButton(
                           icon: const Icon(Icons.ios_share_rounded,
                               color: Color(0xFF4FC3F7), size: 20),
-                          tooltip: '表示中のページの内容を AI に共有して質問',
+                          tooltip: context.read<MindMapProvider>().t('gs.sharePageAi'),
                           visualDensity: VisualDensity.compact,
                           padding: const EdgeInsets.all(6),
                           constraints: const BoxConstraints(),
@@ -6033,7 +6685,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                       //    動画の再生速度を変えられるように) ──
                       if (!widget.minimalMode && !isMobileHeader)
                         PopupMenuButton<double>(
-                          tooltip: '動画の再生速度',
+                          tooltip: context.read<MindMapProvider>().t('gs.videoRate'),
                           icon: Icon(
                             _searchVideoRate == 1.0
                                 ? Icons.speed_rounded
@@ -6086,11 +6738,31 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                         IconButton(
                           icon: const Icon(Icons.translate_rounded,
                               color: Color(0xFF0F73B8), size: 22),
-                          tooltip: 'DeepL を開く',
+                          tooltip: context.read<MindMapProvider>().t('gs.openDeepl'),
                           visualDensity: VisualDensity.compact,
                           padding: const EdgeInsets.all(6),
                           constraints: const BoxConstraints(),
                           onPressed: _openDeepLPanel,
+                        ),
+                      // ── フローティングで開く (= ユーザー要望: Instagram
+                      //    等のサイトボタンにフローティング機能) ──
+                      // ドラッグできる浮遊パネルに現在のページを移す。
+                      if (widget.onFloatRequest != null && _isDesktop)
+                        IconButton(
+                          icon: const Icon(
+                              Icons.picture_in_picture_alt_rounded,
+                              color: Color(0xFF80CBC4),
+                              size: 20),
+                          tooltip: context
+                              .read<MindMapProvider>()
+                              .t('split.toFloating'),
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.all(6),
+                          constraints: const BoxConstraints(),
+                          onPressed: () {
+                            widget.onFloatRequest!(_currentUrl);
+                            _closeSelf();
+                          },
                         ),
                       // ── 画面分割で開く ──
                       // ユーザー要望: モバイルは 1 ボタンに統合して「上分割」 のみにする
@@ -6159,7 +6831,8 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                           !widget.minimalMode &&
                           !isMobileHeader)
                         PopupMenuButton<String>(
-                          tooltip: 'その他',
+                          tooltip:
+                              context.read<MindMapProvider>().t('gs.other'),
                           icon: const Icon(Icons.more_vert_rounded,
                               color: Colors.white, size: 22),
                           color: const Color(0xFF1E1E32),
@@ -6239,7 +6912,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                       ),
                     ],
                   ),
-            body: useHorizontal
+            body: Stack(children: [
+              Positioned.fill(
+                child: useHorizontal
                 ? Row(
                     children: [
                       // ── 左パネル (既定=メモ、 入れ替え時=AI) ──
@@ -6262,10 +6937,24 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                       if (!widget.minimalMode && !_memoPanelOnTop)
                         _buildCollapsibleMemoPanel(provider),
                       // ── AI 欄 (= モバイルでは下端に固定高さで表示) ──
-                      if (!widget.minimalMode && _aiPanelOpen)
+                      if (!widget.minimalMode &&
+                          _aiPanelOpen &&
+                          !_aiPanelFloating)
                         _buildMobileAiPanel(provider),
                     ],
                   ),
+              ),
+              // ── 自動操作はフローティング窓で出す (= ユーザー要望: 欄を
+              //    設けるとスクショできる範囲が狭まるため)。 キャプチャ中は
+              //    写り込まないよう一時的に隠す。 ──
+              // 実行中は窓自体を出さない (停止はヘッダーのボタンで行う
+              // = ユーザー要望: 点滅しないように)。
+              if (_autoPanelOpen && !_autoPanelHiddenForShot && !_autoRunning)
+                _buildFloatingAutoPanel(provider),
+              // AI 欄の浮遊窓 (= ユーザー要望)
+              if (_aiPanelOpen && _aiPanelFloating)
+                _buildFloatingAiPanel(provider),
+            ]),
           ),
         ),
       ),
@@ -6347,7 +7036,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                       IconButton(
                         icon: const Icon(Icons.close_rounded,
                             color: Colors.white70, size: 20),
-                        tooltip: 'メモを閉じる',
+                        tooltip: context.read<MindMapProvider>().t('gs.closeMemo'),
                         visualDensity: VisualDensity.compact,
                         padding: const EdgeInsets.all(6),
                         constraints: const BoxConstraints(),

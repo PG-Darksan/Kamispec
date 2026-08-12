@@ -470,7 +470,20 @@ enum NodeAnchorMode {
   twoWay, // 左右のみ (east, west)
   fourWay, // 上下左右 (north, south, east, west)
   eightWay, // 8方向 (上下左右＋斜め)
+  // ── 斜め 4 方向 (= ユーザー要望: 4 方向に右上/右下/左上/左下の斜めバージョン
+  //    も加えて、 形状の 4 ボタンと数を揃える) ──
+  // JSON は index 保存なので **必ず末尾に追加** すること (既存データ互換)。
+  fourWayDiagonal, // 斜めのみ (northEast, southEast, southWest, northWest)
 }
+
+/// 設定 UI に並べる順番 (= 2方向 → 4方向 → 斜め4方向 → 8方向)。
+/// enum の宣言順は JSON 互換のため変えられないので、 表示順は別に持つ。
+const List<NodeAnchorMode> kNodeAnchorModeOrder = [
+  NodeAnchorMode.twoWay,
+  NodeAnchorMode.fourWay,
+  NodeAnchorMode.fourWayDiagonal,
+  NodeAnchorMode.eightWay,
+];
 
 /// ノードの接続方向
 enum AnchorDirection {
@@ -495,6 +508,13 @@ List<AnchorDirection> anchorsForMode(NodeAnchorMode mode) {
         AnchorDirection.south,
         AnchorDirection.east,
         AnchorDirection.west,
+      ];
+    case NodeAnchorMode.fourWayDiagonal:
+      return [
+        AnchorDirection.northEast,
+        AnchorDirection.southEast,
+        AnchorDirection.southWest,
+        AnchorDirection.northWest,
       ];
     case NodeAnchorMode.eightWay:
       return AnchorDirection.values;
@@ -732,6 +752,10 @@ class MindMapNode {
   Offset position;
   NodeContentType contentType;
   String? memoText;
+
+  /// 要素の上に出す説明書き (= ユーザー要望: F3 で書ける注釈)。
+  /// ノードの外側 (上) に浮かせて描くので `visualHeight` には含めない。
+  String? caption;
   String? youtubeUrl;
   String? linkUrl;
   Color color;
@@ -857,6 +881,7 @@ class MindMapNode {
     required this.position,
     this.contentType = NodeContentType.none,
     this.memoText,
+    this.caption,
     this.youtubeUrl,
     this.linkUrl,
     Color? color,
@@ -1183,6 +1208,7 @@ class MindMapNode {
     Offset? position,
     NodeContentType? contentType,
     String? memoText,
+    Object? caption = _sentinel,
     String? youtubeUrl,
     String? linkUrl,
     Color? color,
@@ -1217,6 +1243,10 @@ class MindMapNode {
       position: position ?? this.position,
       contentType: contentType ?? this.contentType,
       memoText: memoText ?? this.memoText,
+      // 空文字を渡せば消せるよう sentinel 方式にする。
+      caption: identical(caption, _sentinel)
+          ? this.caption
+          : caption as String?,
       youtubeUrl: youtubeUrl ?? this.youtubeUrl,
       linkUrl: linkUrl ?? this.linkUrl,
       color: color ?? this.color,
@@ -1275,6 +1305,7 @@ class MindMapNode {
       'y': position.dy,
       'contentType': contentType.index,
       'memoText': memoText,
+      if ((caption ?? '').isNotEmpty) 'caption': caption,
       'youtubeUrl': youtubeUrl,
       'linkUrl': linkUrl,
       'color': color.toARGB32(),
@@ -1333,6 +1364,7 @@ class MindMapNode {
       ),
       contentType: ct,
       memoText: json['memoText'] as String?,
+      caption: json['caption'] as String?,
       youtubeUrl: json['youtubeUrl'] as String?,
       linkUrl: json['linkUrl'] as String?,
       color: Color(json['color'] as int),
@@ -1342,7 +1374,9 @@ class MindMapNode {
       collapsedChildIds: (json['collapsedChildIds'] as List<dynamic>?)
           ?.map((e) => e as String)
           .toList(),
-      anchorMode: NodeAnchorMode.values[(json['anchorMode'] as int?) ?? 0],
+      // 範囲外 (将来 / 破損データ) は既定の twoWay へフォールバックする。
+      anchorMode: NodeAnchorMode.values[
+          ((json['anchorMode'] as int?) ?? 0).clamp(0, NodeAnchorMode.values.length - 1)],
       attachmentPath: json['attachmentPath'] as String?,
       attachmentName: json['attachmentName'] as String?,
       attachmentThumbPath: json['attachmentThumbPath'] as String?,
@@ -1388,7 +1422,7 @@ class MindMapNode {
   /// 見た目が変わらなかった。 明示サイズにもこのスケールを掛けることで、
   /// 相対的な大小関係を保ったまま全体が設定に追従する。
   static InlineSpan buildRichSpan(String deltaJson, TextStyle baseStyle,
-      {double sizeScale = 1.0}) {
+      {double sizeScale = 1.0, Color? linkColor}) {
     List<dynamic> ops;
     try {
       final decoded = jsonDecode(deltaJson);
@@ -1513,8 +1547,10 @@ class MindMapNode {
       }
 
       // リンクは青 + 下線で表示 (タップ動作はノード側に委譲)。
+      // 色は呼び出し側が背景の明暗に応じて渡せる (= ユーザー要望: 黒系/白系の
+      // 背景では自動で見やすい青に変える)。 未指定は従来の水色。
       if (attrs['link'] is String) {
-        style = style.copyWith(color: const Color(0xFF4FC3F7));
+        style = style.copyWith(color: linkColor ?? const Color(0xFF4FC3F7));
         decorations.add(TextDecoration.underline);
       }
       if (decorations.isNotEmpty) {

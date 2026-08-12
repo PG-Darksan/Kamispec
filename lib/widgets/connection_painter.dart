@@ -18,6 +18,15 @@ class ConnectionPainter extends CustomPainter {
   /// 溶けて見えなくなるため、ノード背景と同様に濃いアンバーへ補正する。
   final bool isDarkMode;
 
+  /// ページ背景 (壁紙 / テンプレート) が暗いかどうか。
+  /// null ならテーマ (isDarkMode) に従う。 暗い壁紙 + ライトテーマのような
+  /// 組み合わせでも線が自動で見やすい色になる (= ユーザー要望: 背景を黒系に
+  /// したのにリンクの色が白にならない → 視認性に合わせて自動調整)。
+  final bool? darkBackground;
+
+  /// 背景の明暗の実効値 (壁紙判定があればそれを優先)。
+  bool get _dark => darkBackground ?? isDarkMode;
+
   /// 古い接続データや未設定接続に使うフォールバック線種。
   /// 個々の接続は [NodeConnection.lineStyle] を優先する。
   ///   'curve'    = 従来のベジェ曲線 (既定)
@@ -31,19 +40,25 @@ class ConnectionPainter extends CustomPainter {
     Set<NodeConnection>? selectedConnections,
     Map<NodeConnection, Set<int>>? selectedBendIndices,
     this.isDarkMode = true,
+    this.darkBackground,
     this.lineStyle = 'curve',
   })  : selectedConnections = selectedConnections ?? {},
         selectedBendIndices = selectedBendIndices ?? const {};
 
   /// 接続線の表示色を計算。黄色系の色は視認性が低いためユーザー要望により
-  /// 全廃。pale な黄色を ブラック(Blue Gray 900) に置き換える。
-  /// ダーク/ライトモード両方で適用。
+  /// 全廃。pale な黄色を置き換える (明背景=ブラック / 暗背景=ホワイト系)。
+  /// さらに背景の明暗と溶け合う色 (暗背景の黒 / 明背景の白) は自動で
+  /// 反転させ、常に見やすい色にする (= ユーザー要望)。
   Color _effectiveLineColor(Color base) {
     final hsl = HSLColor.fromColor(base);
+    var c = base;
     if (hsl.hue >= 40 && hsl.hue <= 70 && hsl.lightness > 0.55) {
-      return const Color(0xFF263238);
+      c = _dark ? const Color(0xFFECEFF1) : const Color(0xFF263238);
     }
-    return base;
+    final lum = c.computeLuminance();
+    if (_dark && lum < 0.09) return Colors.white;
+    if (!_dark && lum > 0.85) return const Color(0xFF263238);
+    return c;
   }
 
   // ─── ヒットテスト用：接続をクリックしたか判定 ───────────────────────────────
@@ -148,7 +163,7 @@ class ConnectionPainter extends CustomPainter {
     NodeConnection conn,
     MindMapNode from,
     MindMapNode to, {
-    String fallbackLineStyle = 'curve',
+    String fallbackLineStyle = 'elbow',
     double? position,
   }) {
     final t = (position ?? conn.labelPosition).clamp(0.0, 1.0).toDouble();
@@ -202,7 +217,7 @@ class ConnectionPainter extends CustomPainter {
     NodeConnection conn,
     MindMapNode from,
     MindMapNode to, {
-    String fallbackLineStyle = 'curve',
+    String fallbackLineStyle = 'elbow',
   }) {
     const samples = 100;
     var bestT = conn.labelPosition;
@@ -410,7 +425,7 @@ class ConnectionPainter extends CustomPainter {
       // ライト背景では黒、ダーク背景では白にすることで、既存データも
       // テーマ切替直後に自動で読みやすい色へ変わる。明示色はそのまま維持する。
       final configuredColor = conn.lineColorValue == null
-          ? (isDarkMode ? Colors.white : Colors.black)
+          ? (_dark ? Colors.white : Colors.black)
           : Color(conn.lineColorValue!);
       final resolvedColor = _effectiveLineColor(configuredColor);
       final paint = Paint()
@@ -622,5 +637,6 @@ class ConnectionPainter extends CustomPainter {
       oldDelegate.selectedConnections != selectedConnections ||
       oldDelegate.selectedBendIndices != selectedBendIndices ||
       oldDelegate.isDarkMode != isDarkMode ||
+      oldDelegate.darkBackground != darkBackground ||
       oldDelegate.lineStyle != lineStyle;
 }

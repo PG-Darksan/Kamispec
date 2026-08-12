@@ -1,265 +1,226 @@
 rules_version = '2';
 
-// ════════════════════════════════════════════════════════════════════════
-//  Kamispec / MokuMoku  Firestore セキュリティルール (雛形)
-// ════════════════════════════════════════════════════════════════════════
+// ============================================================================
+//  HisatorNotebook — Firestore セキュリティルール
 //
-// 目的: 課金プラン (users/{uid}.plan 等) を「サーバー(Cloud Function = Admin
-//   SDK)だけが書ける」 ようにし、 アプリ(クライアント)からは変更できなくする。
-//   Admin SDK の書き込みはルールを完全にバイパスするので、 Cloud Function は
-//   このルールに関係なく plan を更新できる。
+//  いまの実装は「アクセス制限をすべてアプリ側 (Dart) で行う」形になっており、
+//  サーバー側には何の制限もありません。 つまり、
+//    ・他人の同期グループのページを読む / 書き換える
+//    ・他人の予定 (カレンダー) を読む
+//    ・クーポンの currentUses を書き換えて使い放題にする
+//    ・users/{uid} の plan を書き換える
+//  が、 技術的に可能な状態です。 有料公開の前にここを埋める必要があります。
 //
-// ⚠️ 重要な前提:
-//   - このアプリは匿名認証 (request.auth.uid = 匿名localId)。
-//   - これを deploy すると、 ここに列挙していないコレクションへの
-//     クライアントアクセスは「すべて拒否」されます (Firestore は
-//     デフォルト拒否)。 既存機能を壊さないよう、 既知のコレクションを
-//     下に列挙しています。 もし弾かれる箇所があれば、 該当 match を追加し、
-//     必ず先にテスト環境 (エミュレータ/別プロジェクト) で確認してください。
-//   - 本番では各 match の "if request.auth != null" を、 所有者チェックや
-//     グループメンバーチェックへ段階的に厳格化してください
-//     (CLAUDE.md の「クライアント側セキュリティのみ」 警告を参照)。
+//  ── 使い方 ──────────────────────────────────────────────────────────
+//   1. Firebase コンソール → Firestore Database → 「ルール」 タブ
+//   2. この中身を貼り付けて 「公開」
+//   3. その前に必ず 「ルール プレイグラウンド」 か、 テスト用の別プロジェクトで
+//      一通り動かして確認してください (下の「確認する所」 参照)
 //
-// プラン移行メモ:
-//   plan をロックすると、 アプリ側で plan を users ドキュメントへ書いていた
-//   経路 (RevenueCat 反映ミラー・クーポン・ライセンス・dev) はその書き込みが
-//   拒否されます。 ただし現在の課金判定 (currentPlan) はローカル(prefs)基準
-//   なので、 端末の有料機能ロック自体は影響を受けません。 グループ表示用の
-//   users.plan は今後 Cloud Function が正本として更新します。
+//  ── 先にやっておくこと ──────────────────────────────────────────────
+//   開発者 (自分) の uid を admins に登録します。 これをしないと、
+//   クーポンの発行・ユーザー一覧・問い合わせの返信ができなくなります。
+//
+//     コレクション: admins   ドキュメント ID: 自分の uid
+//     (uid はアプリの 設定 → 一番上の行に 「UID: ...」 で出ています)
+//     中身は空で構いません。
+//
+//  ── 確認する所 ──────────────────────────────────────────────────────
+//   □ 同期グループを作る / 参加する / ページを上げる・落とす
+//   □ カレンダーの共有 (自分の予定が上がる / 相手の予定が見える)
+//   □ クーポンを発行する (開発者モード) / 別端末で引き換える
+//   □ 問い合わせを送る / 開発者の受信箱に出る / 返信が届く
+//   □ ページの共同編集 (公開コードで参加)
+// ============================================================================
 
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // ── 共通の判定 ──────────────────────────────────────────────────
     function signedIn() {
       return request.auth != null;
     }
-
-    function isDeveloper() {
-      return signedIn() && request.auth.token.developer == true;
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
     }
-
-    function isGroupHost(gid) {
+    // 開発者かどうか。 admins/{uid} が存在すれば開発者。
+    function isAdmin() {
       return signedIn()
-        && get(/databases/$(database)/documents/groups/$(gid)).data.host
-             == request.auth.uid;
+          && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
     }
-
-    function isGroupMember(gid) {
+    // その同期グループの参加者か。 参加時に members/{uid} を作るので、
+    // それが存在することを「参加済み」 の証拠として使う。
+    function isMember(gid) {
       return signedIn()
-        && exists(/databases/$(database)/documents/groups/$(gid)/members/$(request.auth.uid));
+          && exists(/databases/$(database)/documents/groups/$(gid)/members/$(request.auth.uid));
+    }
+    // 書き換えようとしているフィールドが、 許した名前だけに収まっているか。
+    function onlyFields(allowed) {
+      return request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(allowed);
     }
 
-    // ── 課金で保護するフィールド ──
-    function billingFields() {
-      return [
-        'plan',
-        'subscriptionStatus',
-        'planExpiresAt',
-        'stripeCustomerId',
-        'stripeSubscriptionId',
-        'planSource',
-        'planUpdatedAt'
-      ];
+    // ── 開発者の名簿 ────────────────────────────────────────────────
+    // 自分が開発者かどうかだけ読める。 追加・削除はコンソールから手で行う。
+    match /admins/{uid} {
+      allow get: if isSelf(uid) || isAdmin();
+      allow list, write: if false;
     }
 
-    // 受信データに課金フィールドが「一切含まれていない」か
-    function noBillingFieldsIncoming() {
-      return !request.resource.data.keys().hasAny(billingFields());
-    }
-
-    // 既存値と課金フィールドが「変化していない」か (作成時は resource==null
-    //   なので呼ばない。 update 専用)
-    function billingUnchanged() {
-      return request.resource.data.get('plan', null)
-                == resource.data.get('plan', null)
-        && request.resource.data.get('subscriptionStatus', null)
-                == resource.data.get('subscriptionStatus', null)
-        && request.resource.data.get('planExpiresAt', null)
-                == resource.data.get('planExpiresAt', null)
-        && request.resource.data.get('stripeCustomerId', null)
-                == resource.data.get('stripeCustomerId', null)
-        && request.resource.data.get('stripeSubscriptionId', null)
-                == resource.data.get('stripeSubscriptionId', null)
-        && request.resource.data.get('planSource', null)
-                == resource.data.get('planSource', null);
-    }
-
-    // ── users/{uid}: 本人のみ。 課金フィールドはクライアント書き込み不可 ──
+    // ── 利用者ごとの情報 (表示名 / プラン / 最終アクセス) ────────────
+    // 本人だけが読み書きできる。 開発者はプラン別一覧のために全体を読める。
+    //
+    // ※ plan は本人が書ける (= 書き換えれば free→max と自称できる) が、
+    //   実際の権利は代行サーバー (Cloudflare Worker) の KV が持っており、
+    //   AI もクラウド容量もそちらで判定するため、 ここを偽っても
+    //   有料機能そのものは使えない。
     match /users/{uid} {
-      allow read: if request.auth != null
-                  && (request.auth.uid == uid || isDeveloper());
-
-      // 新規作成: 本人。 ただし課金フィールドは付けられない
-      //   (= 自分を pro/max にして作る、 を防ぐ)。
-      allow create: if request.auth != null
-                    && request.auth.uid == uid
-                    && noBillingFieldsIncoming();
-
-      // 更新: 本人。 課金フィールドは「現状と同じ値」 でなければ拒否
-      //   (= displayName 等は変更可、 plan 等は変えられない)。
-      allow update: if request.auth != null
-                    && request.auth.uid == uid
-                    && billingUnchanged();
-
-      allow delete: if false;
+      allow read: if isSelf(uid) || isAdmin();
+      allow list: if isAdmin();
+      allow write: if isSelf(uid);
     }
 
-    // ── グループ (ページ/メンバー/カレンダー) ──
-    // グループコードを知る認証ユーザーはメタ情報を GET して参加できる。
-    // ページと予定の本文は、参加登録後のメンバー/ホストだけに限定する。
+    // ── 同期グループ ────────────────────────────────────────────────
     match /groups/{gid} {
-      allow get: if signedIn();
+      // 参加者だけが中を見られる。 作成は誰でも (= 新しいグループを作る時)。
+      allow get: if isMember(gid);
       allow list: if false;
-      allow create: if signedIn()
-                    && request.resource.data.host == request.auth.uid;
-      allow update, delete: if isGroupHost(gid);
+      allow create: if signedIn();
+      // グループの設定を変えられるのは作った人だけ。
+      allow update: if isMember(gid)
+                    && resource.data.host == request.auth.uid;
+      allow delete: if isMember(gid)
+                    && resource.data.host == request.auth.uid;
 
-      match /members/{memberUid} {
-        allow read: if isGroupMember(gid) || isGroupHost(gid);
-        allow create: if signedIn()
-                      && memberUid == request.auth.uid
-                      && request.resource.data.uid == request.auth.uid
-                      && request.resource.data.keys().hasOnly([
-                           'uid', 'displayName', 'lastSeen',
-                           'allowCalendarSharing'
-                         ])
-                      && exists(/databases/$(database)/documents/groups/$(gid));
-        allow update: if signedIn()
-                      && memberUid == request.auth.uid
-                      && request.resource.data.uid == request.auth.uid
-                      && request.resource.data.diff(resource.data).affectedKeys()
-                           .hasOnly([
-                             'uid', 'displayName', 'lastSeen',
-                             'allowCalendarSharing'
-                           ]);
-        allow delete: if signedIn()
-                      && (memberUid == request.auth.uid || isGroupHost(gid));
+      // 参加者の名簿。 自分の行だけ作れる / 消せる。 他人の行は読むだけ。
+      match /members/{uid} {
+        allow read: if isMember(gid);
+        // 参加の瞬間はまだ member ではないので、 作成だけは
+        //   「自分の uid の行」 であれば通す。
+        allow create: if isSelf(uid);
+        allow update, delete: if isSelf(uid);
       }
 
+      // 共有ページ。 参加者なら読み書きできる。
       match /pages/{pageId} {
-        allow read, create: if isGroupMember(gid) || isGroupHost(gid);
-        allow update, delete: if (isGroupMember(gid) || isGroupHost(gid))
-          && (resource.data.get('uploadRestricted', false) != true
-              || resource.data.get('restrictedByUid', '') == request.auth.uid);
+        allow read: if isMember(gid);
+        allow create: if isMember(gid);
+        // ★ 上げ直しの禁止 (uploadRestricted) を、 サーバー側でも効かせる。
+        //   ロックした本人だけが解除・上書きできる。
+        allow update: if isMember(gid)
+                      && (
+                           !(resource.data.keys().hasAny(['uploadRestricted']))
+                           || resource.data.uploadRestricted != true
+                           || resource.data.restrictedByUid == request.auth.uid
+                         );
+        allow delete: if isMember(gid);
       }
 
-      match /calendar/{ownerUid} {
-        allow read: if isGroupMember(gid) || isGroupHost(gid);
-        allow create, update, delete: if signedIn()
-                                     && ownerUid == request.auth.uid
-                                     && (isGroupMember(gid) || isGroupHost(gid));
+      // 予定表。 1 人 1 ドキュメント。 書けるのは自分の分だけ。
+      match /calendar/{docId} {
+        allow read: if isMember(gid);
+        allow write: if isMember(gid)
+                     && (docId == request.auth.uid
+                         // 旧版が使っていた 1 枚だけの置き場 (読み取り互換)。
+                         || docId == 'events');
+      }
+
+      // 上に書いていない下位コレクションは触らせない。
+      match /{other=**} {
+        allow read, write: if false;
       }
     }
 
-    // ── メッセージ ── 暫定: 認証済みなら可 (アプリ側で送受信フィルタ)。
-    //   TODO(本番): fromUid==自分 / 宛先が自分 or 自分のグループ で絞る。
-    match /messages/{msgId} {
-      allow read, write: if request.auth != null;
-    }
-
-    // ── 問い合わせ ── 本人と developer のみ閲覧。返信改変は developer 限定。
-    match /inquiries/{msgId} {
-      allow get: if isDeveloper()
-                 || (signedIn() && resource.data.uid == request.auth.uid);
-      allow list: if isDeveloper();
+    // ── ページの共同編集 (公開コードで参加する仕組み) ───────────────
+    // 8 文字の公開コードを知っていることが参加の条件、 という設計なので、
+    // ログインしていれば読み書きできる形にしている。
+    // ※ コードは推測されにくい長さだが、 秘密ではない。 見せたくない資料を
+    //   共同編集に出さないよう、 アプリ側の説明で伝えること。
+    match /published/{code} {
+      allow read: if signedIn();
       allow create: if signedIn()
-                    && request.resource.data.uid == request.auth.uid
-                    && request.resource.data.reply == ''
-                    && request.resource.data.status == 'open';
-      allow update: if isDeveloper();
-      allow delete: if isDeveloper()
-                    || (signedIn() && resource.data.uid == request.auth.uid);
+                    && request.resource.data.ownerUid == request.auth.uid;
+      // 後から書き換えられるのは公開した本人だけ。
+      allow update, delete: if signedIn()
+                            && resource.data.ownerUid == request.auth.uid;
+
+      // 本文。 参加者が編集するのでログイン済みなら書ける。
+      match /doc/{docId} {
+        allow read, write: if signedIn();
+      }
+      // 参加者の在席情報。 自分の行だけ。
+      match /peers/{clientId} {
+        allow read: if signedIn();
+        allow write: if signedIn();
+      }
     }
 
-    // ── 管理設定 ── API キー等を含み得るため developer claim 限定。
-    match /admin/{docId} {
-      allow read, write: if isDeveloper();
-    }
-
-    // ── クーポン ──
-    // 一覧・管理は developer claim のみ。通常ユーザーは入力したコードだけ GET。
-    // currentUses は +1 だけ許可し、同時更新時には後続書込がルールで失敗する。
+    // ── クーポン ────────────────────────────────────────────────────
+    // 発行できるのは開発者だけ。 利用者は「コードを確かめる」 ために読めるが、
+    // 書き換えは使用回数の 1 増やしだけに絞る。
     match /coupons/{code} {
       allow get: if signedIn();
-      allow list: if isDeveloper();
-      allow create, delete: if isDeveloper();
-      allow update: if isDeveloper()
-        || (signedIn()
-            && request.resource.data.diff(resource.data).affectedKeys()
-                 .hasOnly(['currentUses', 'lastRedemptionId'])
-            && request.resource.data.currentUses
-                 == resource.data.get('currentUses', 0) + 1
-            && request.resource.data.lastRedemptionId is string
-            && !exists(/databases/$(database)/documents/coupons/$(code)/redemptions/$(request.resource.data.lastRedemptionId))
-            && getAfter(/databases/$(database)/documents/coupons/$(code)/redemptions/$(request.resource.data.lastRedemptionId)).data.uid
-                 == request.auth.uid
-            && getAfter(/databases/$(database)/documents/coupons/$(code)/redemptions/$(request.resource.data.lastRedemptionId)).data.atomicVersion
-                 == 1
-            && (resource.data.get('maxUses', 0) == 0
-                || request.resource.data.currentUses
-                     <= resource.data.maxUses));
+      allow list: if isAdmin();
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin()
+                    // 引き換え: currentUses と最後に引き換えた端末の記録だけ。
+                    || (signedIn()
+                        && onlyFields(['currentUses', 'lastRedemptionId'])
+                        && request.resource.data.currentUses
+                           == resource.data.currentUses + 1);
 
-      match /redemptions/{deviceId} {
-        allow get: if signedIn();
-        allow list, delete, update: if isDeveloper();
+      // 引き換え済みの記録。 1 端末 1 枚。 作るのは本人、 消すのは開発者。
+      match /redemptions/{devId} {
+        allow read: if signedIn();
         allow create: if signedIn()
-                      && request.resource.data.uid == request.auth.uid
-                      && request.resource.data.atomicVersion == 1
-                      && request.resource.data.validMonthsAfterUse
-                           == get(/databases/$(database)/documents/coupons/$(code)).data
-                                .get('validMonthsAfterUse', 0)
-                      && getAfter(/databases/$(database)/documents/coupons/$(code)).data.currentUses
-                           == get(/databases/$(database)/documents/coupons/$(code)).data
-                                .get('currentUses', 0) + 1
-                      && (request.resource.data.validMonthsAfterUse == 0
-                          || (request.resource.data.benefitExpiresAt is timestamp
-                              && request.resource.data.benefitExpiresAt > request.time
-                              && request.resource.data.benefitExpiresAt
-                                   <= request.time + duration.value(
-                                        request.resource.data.validMonthsAfterUse * 32,
-                                        'd')));
+                      && request.resource.data.uid == request.auth.uid;
+        allow update: if false;
+        allow delete: if isAdmin();
       }
     }
 
-    // ── ライセンス ──
-    // 発行元のサーバー正本 plan と一致する購入ライセンスだけ作成可能。
-    // 消費時は entitlement 本文を不変にし、現在 UID を最大1件だけ追加する。
-    match /licenses/{code} {
-      allow get: if signedIn();
-      allow list, delete: if false;
+    // ── メッセージ ──────────────────────────────────────────────────
+    // 送るのは自分名義でのみ。 読めるのは宛先か送り主 (と開発者)。
+    match /messages/{msgId} {
       allow create: if signedIn()
-                    && request.resource.data.sourceUid == request.auth.uid
-                    && request.resource.data.proSubscribed == true
-                    && request.resource.data.plan in ['pro', 'max']
-                    && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.plan
-                         == request.resource.data.plan
-                    && request.resource.data.expiresAt > request.time
-                    && request.resource.data.expiresAt
-                         <= request.time + duration.value(8, 'd');
+                    && request.resource.data.fromUid == request.auth.uid;
+      allow read: if isAdmin()
+                  || (signedIn()
+                      && (resource.data.get('toUid', '') == request.auth.uid
+                          || resource.data.fromUid == request.auth.uid));
+      allow list: if isAdmin();
+      // 既読フラグを立てる / 自分宛を消す。
       allow update: if signedIn()
-                    && resource.data.get('sourceWasDev', false) != true
-                    && resource.data.expiresAt > request.time
-                    && request.resource.data.diff(resource.data).affectedKeys()
-                         .hasOnly(['consumedByUids', 'consumedByDeviceIds',
-                                   'lastConsumedAt'])
-                    && request.resource.data.get('consumedByUids', [])
-                         .hasAll(resource.data.get('consumedByUids', []))
-                    && request.auth.uid
-                         in request.resource.data.get('consumedByUids', [])
-                    && request.resource.data.get('consumedByUids', []).size()
-                         <= resource.data.get('consumedByUids', []).size() + 1
-                    && request.resource.data.get('consumedByUids', []).size()
-                         + (resource.data.get('consumedByUid', '') == '' ? 0 : 1)
-                         <= 4
-                    && request.resource.data.get('consumedByDeviceIds', [])
-                         .hasAll(resource.data.get('consumedByDeviceIds', []))
-                    && request.resource.data.get('consumedByDeviceIds', []).size()
-                         <= resource.data.get('consumedByDeviceIds', []).size() + 1
-                    && request.resource.data.get('consumedByDeviceIds', []).size() <= 4;
+                    && resource.data.get('toUid', '') == request.auth.uid
+                    && onlyFields(['read']);
+      allow delete: if isAdmin()
+                    || (signedIn()
+                        && (resource.data.get('toUid', '') == request.auth.uid
+                            || resource.data.fromUid == request.auth.uid));
     }
 
-    // ── 上記以外は既定で拒否 ──
-    //   (ここに無いコレクションにアクセスして弾かれたら、 その match を
-    //    追加してください。 デプロイ前にエミュレータで動作確認推奨。)
+    // ── お問い合わせ ────────────────────────────────────────────────
+    // これまで「誰でも書き放題」 だった所。 自分名義の新規作成だけに絞る。
+    // 返信を書けるのは開発者だけ。
+    match /inquiries/{id} {
+      allow create: if signedIn()
+                    && request.resource.data.uid == request.auth.uid;
+      allow read: if isAdmin()
+                  || (signedIn() && resource.data.uid == request.auth.uid);
+      allow list: if isAdmin();
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ── アプリ全体の設定 (問い合わせ先メールなど) ───────────────────
+    match /admin/{docId} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    // ── ここに書いていないものはすべて拒否 ─────────────────────────
+    match /{document=**} {
+      allow read, write: if false;
+    }
   }
 }

@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../models/mind_map_node.dart';
 import '../providers/mind_map_provider.dart';
+import 'doc_preview.dart';
 
 /// ドラッグ中のスナップ先情報
 ///
@@ -133,6 +134,13 @@ class NodeWidget extends StatefulWidget {
   /// 分かるよう枠を目立たせる)。 オレンジの強い枠 + グローで強調する。
   final bool isSwapTarget;
 
+  /// ギャラリーのタイルに文字が入り切らなかった時に出す「全文を見る」 ボタンの
+  /// 押下 (= ユーザー要望: 入り切らない文字を表示する)。
+  /// ギャラリーのタイルは大きさが固定なので、 長い文章は途中で切れる。
+  /// 切れている時だけ隅にボタンを出し、 押すと全文を読めるようにする。
+  /// null を渡すとボタン自体を出さない (= ギャラリー以外)。
+  final VoidCallback? onShowFullText;
+
   const NodeWidget({
     required super.key,
     required this.node,
@@ -140,6 +148,7 @@ class NodeWidget extends StatefulWidget {
     this.isCut = false,
     this.isShelf = false,
     this.isSwapTarget = false,
+    this.onShowFullText,
     this.isSearchHit = false,
     this.isCurrentSearchResult = false,
     this.positionOverride,
@@ -277,6 +286,7 @@ class _NodeWidgetState extends State<NodeWidget> {
     required double width,
     required double height,
     required bool squareBottom,
+    String? path,
   }) {
     Color color;
     IconData icon;
@@ -302,6 +312,12 @@ class _NodeWidgetState extends State<NodeWidget> {
         icon = Icons.notes_rounded;
     }
     final compact = height < 110;
+    // ── 中身のさわりを出す (= ユーザー要望: xlsx などもサムネイルで
+    //    中身が見えるように) ──
+    //    読めた時だけ、 アイコンの代わりに文字を並べた「紙面風」 にする。
+    //    読めない / 小さすぎる時は従来どおりアイコンだけ。
+    final canPreview =
+        !compact && path != null && path.isNotEmpty && DocPreview.supports(ext);
     return Container(
       width: width,
       height: height,
@@ -319,9 +335,52 @@ class _NodeWidgetState extends State<NodeWidget> {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(icon,
-              size: compact ? 24 : 34,
-              color: Colors.white.withValues(alpha: 0.95)),
+          if (canPreview)
+            Expanded(
+              child: FutureBuilder<List<String>>(
+                future: DocPreview.load(path, ext),
+                builder: (ctx, snap) {
+                  final lines = snap.data ?? const <String>[];
+                  if (lines.isEmpty) {
+                    return Center(
+                      child: Icon(icon,
+                          size: 34,
+                          color: Colors.white.withValues(alpha: 0.95)),
+                    );
+                  }
+                  return Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 6, vertical: 5),
+                    decoration: BoxDecoration(
+                      // 白い紙の上に文字が乗っているように見せる。
+                      color: Colors.white.withValues(alpha: 0.92),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: ClipRect(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          for (final l in lines)
+                            Text(l,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Color(0xFF212121),
+                                  fontSize: 7.5,
+                                  height: 1.45,
+                                )),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            )
+          else
+            Icon(icon,
+                size: compact ? 24 : 34,
+                color: Colors.white.withValues(alpha: 0.95)),
           SizedBox(height: compact ? 3 : 6),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 1.5),
@@ -472,6 +531,65 @@ class _NodeWidgetState extends State<NodeWidget> {
     } else {
       widget.onTap();
     }
+  }
+
+  /// カーソルを乗せた時に出す下読み用の文字。 長すぎる時は途中で切る
+  /// (画面を覆う大きさの吹き出しにしないため)。 全文は窓の方で読む。
+  static String _fullTextPreview(MindMapNode node) {
+    final rich = node.richText;
+    String text;
+    if (rich != null && rich.isNotEmpty) {
+      text = MindMapNode.buildRichSpan(rich, const TextStyle())
+          .toPlainText()
+          .trim();
+    } else {
+      final memo = (node.memoText ?? '').trim();
+      text = memo.isEmpty ? node.title : '${node.title}\n$memo'.trim();
+    }
+    if (text.length > 400) return '${text.substring(0, 400)}…';
+    return text;
+  }
+
+  /// ギャラリーのタイルに文字が入り切っているかを測る。
+  ///
+  /// タイルは大きさが固定 (clampHeight) なので、 長い文章は
+  ///   - 平文のタイトル / メモ → maxLines + 省略記号 (…) で途中まで
+  ///   - リッチテキスト        → 枠からはみ出して見えないまま
+  /// のどちらかで読めなくなる。 実際に描くのと同じ span を組んで測り、
+  /// 入り切らない時だけ「全文を見る」 ボタンを出す (= ユーザー要望)。
+  bool _shelfTextOverflows({
+    required MindMapNode node,
+    required double maxWidth,
+    required double maxHeight,
+    required TextStyle titleStyle,
+    required TextStyle memoStyle,
+    required TextStyle richBaseStyle,
+    required double richSizeScale,
+    required Color linkColor,
+  }) {
+    if (maxWidth <= 1 || maxHeight <= 1) return false;
+    final rich = node.richText;
+    final InlineSpan span;
+    if (rich != null && rich.isNotEmpty) {
+      span = MindMapNode.buildRichSpan(rich, richBaseStyle,
+          sizeScale: richSizeScale, linkColor: linkColor);
+    } else {
+      final memo = node.memoText ?? '';
+      if (node.title.isEmpty && memo.isEmpty) return false;
+      span = TextSpan(children: [
+        TextSpan(text: node.title, style: titleStyle),
+        // 描画側はメモを 4px の間を空けた別 Text にしている。 改行 1 つで
+        //   近い高さになるので、 測定はこれで足りる。
+        if (memo.isNotEmpty) TextSpan(text: '\n$memo', style: memoStyle),
+      ]);
+    }
+    final tp = TextPainter(
+      text: span,
+      textDirection: TextDirection.ltr,
+      textAlign: TextAlign.center,
+    )..layout(maxWidth: maxWidth);
+    // 端数で毎回ボタンが出ないよう、 少しだけ余裕を見る。
+    return tp.height > maxHeight + 2.0;
   }
 
   @override
@@ -652,15 +770,22 @@ class _NodeWidgetState extends State<NodeWidget> {
     final double linkedMapBarH = hasLinkedMap ? 28.0 : 0;
     // ── Office / テキスト添付は「表紙カード」 として描画する ──
     // (= ユーザー要望: docx や xlsx, txt 等をマップに埋め込んだら表紙が
-    //    見えるように)。 サムネイル画像が生成される PDF/pptx (hasThumb) は
-    //    従来どおり画像表紙、 それ以外の文書系はタイプ色 + アイコン +
-    //    ファイル名のカードを表紙にする。
+    //    見えるように)。 PDF / pptx は 1 ページ目を実際に描画したサムネイルが
+    //    あるので、 従来どおり画像を表紙にする。
+    //
+    // ★ docx / xlsx / テキスト系はサムネイルがあっても使わない。
+    //   これらを描画する手段をアプリは持っておらず、 過去に作られた
+    //   サムネイルは**真っ白な画像**になっていた (実測: 395x512 の全画素 255)。
+    //   その白画像が優先されて、 タイルが真っ白に見えていた。
+    //   いまは中身の文字を読んで表紙に出せるので、 常に表紙カードを使う。
+    const docCoverExts = {
+      'docx', 'doc', 'xlsx', 'xls', 'csv', 'txt', 'md', //
+    };
+    const thumbnailableExts = {'pptx', 'ppt'};
     final bool isDocCoverAttach = hasAttachment &&
         !isImageAttach &&
-        !hasThumb &&
-        const {
-          'docx', 'doc', 'xlsx', 'xls', 'csv', 'txt', 'md', 'pptx', 'ppt', //
-        }.contains(attachExt);
+        (docCoverExts.contains(attachExt) ||
+            (!hasThumb && thumbnailableExts.contains(attachExt)));
     final double attachH = hasAttachment
         ? ((isImageAttach || hasThumb)
             // 添付画像 / サムネイルにアスペクト比 (= width / height) が指定
@@ -701,6 +826,15 @@ class _NodeWidgetState extends State<NodeWidget> {
     final Color memoTextColor = _isLightBg
         ? const Color(0xCC000000)
         : Colors.white.withValues(alpha: 0.75);
+    // ── リンク文字色は実背景の明暗で自動調整 (= ユーザー要望: 黒背景では
+    //    白リンク、 白背景では黒リンクになるように。 中間の色付き背景は
+    //    従来の水色) ──
+    final double _bgLum = effectiveColor.computeLuminance();
+    final Color linkTextColor = _bgLum > 0.7
+        ? const Color(0xDD000000) // 白系背景 → 黒リンク
+        : _bgLum < 0.12
+            ? Colors.white // 黒系背景 → 白リンク
+            : const Color(0xFF4FC3F7); // 中間 → 従来の水色
 
     // メモ全文表示のための推定高さ。
     // ★ mind_map_node.dart の visualHeight のメモ計算と必ず一致させる
@@ -729,7 +863,56 @@ class _NodeWidgetState extends State<NodeWidget> {
       memoExtraH = memoLines * (memoFontSize * 1.3) + 8;
     }
 
-    final double bodyH = node.height + memoExtraH;
+    // ── 高さ固定タイル (ギャラリー) で「隙間」 を作らない ──
+    // (= ユーザー要望: YouTube の動画を埋め込んだ時に隙間が生まれる。
+    //    サムネイルの大きさは変えずに文章を書く領域を広げて、 周りの要素と
+    //    同じ大きさになるように)。
+    // 旧: 本文枠を必ず node.height 取ってから、 その下にサムネイルを足して
+    //     いたため、 動画タイルだけ (node.height + サムネイル高) になり、
+    //     周りのテキストタイル (node.height) より背が高く / 余白が目立った。
+    // 新: clampHeight の時は合計を node.height に固定し、 サムネイルや
+    //     リンクバーが使う分を引いた「残り全部」 を本文領域にする。
+    //     サムネイル自体のサイズ (thumbH) は変えない。
+    final double fixedExtras = thumbH + linkBarH + linkedMapBarH + attachH;
+    final double minBodyH = node.height < 28.0 ? node.height : 28.0;
+    final double clampedBodyH = node.clampHeight
+        ? (node.height - fixedExtras).clamp(minBodyH, node.height).toDouble()
+        : node.height;
+    final double bodyH =
+        node.clampHeight ? clampedBodyH : node.height + memoExtraH;
+    // ── ギャラリーで文字が入り切らないタイルを見つける (= ユーザー要望:
+    //    入り切らない文字を表示する)。 タイルの大きさは固定なので長い文章は
+    //    途中で切れる。 切れている時だけ隅に「全文」 のボタンを出す。 ──
+    final double _richFontSize =
+        (node.memoFontSize ?? node.titleFontSize ?? widget.defaultMemoFontSize)
+            .clamp(6.0, 28.0);
+    final bool _shelfTextClipped = widget.isShelf &&
+        node.clampHeight &&
+        widget.onShowFullText != null &&
+        node.tableData == null &&
+        !isShelfLinkCard &&
+        _shelfTextOverflows(
+          node: node,
+          // 本文枠は Container の左右 padding 10 を引いた幅 (描画と同じ)。
+          maxWidth: nw - 20,
+          // 同じく上下 padding 8 を引いた高さ。
+          maxHeight: clampedBodyH - 16,
+          titleStyle:
+              TextStyle(fontSize: titleFontSize, fontWeight: FontWeight.w700),
+          // ギャラリーはメモもタイトルと同じ大きさ・太さで描いている。
+          memoStyle: TextStyle(
+              fontSize: titleFontSize,
+              height: 1.3,
+              fontWeight: FontWeight.w700),
+          richBaseStyle: TextStyle(
+              color: titleTextColor,
+              fontSize: _richFontSize,
+              height: 1.3,
+              fontWeight: FontWeight.w600),
+          richSizeScale:
+              _richFontSize / widget.defaultMemoFontSize.clamp(6.0, 28.0),
+          linkColor: linkTextColor,
+        );
     // ── 表ノードはタイトル/メモ/サムネイル等を持たない ──
     // totalH = タイトルバー (タイトル空時 14px、 タイトル有時はテキスト分膨らむ)
     //        + 表本体 (内容ベースの推定値) + 14 (下端パディング)。
@@ -767,8 +950,19 @@ class _NodeWidgetState extends State<NodeWidget> {
     final rawNodeShape = node.shape ?? 'rounded';
     final String nodeShape =
         rawNodeShape == 'stadium' ? 'rounded' : rawNodeShape;
-    final bool polyShape =
-        nodeShape == 'diamond' || nodeShape == 'parallelogram';
+    // 多角形 (ShapeDecoration で描く) 形状の一覧。 端子の種類を増やした
+    // (= ユーザー要望: 追加できる端子の種類を増やして)。
+    const polyShapes = {
+      'diamond',
+      'parallelogram',
+      'hexagon',
+      'document',
+      'cylinder',
+      'trapezoid',
+      'chevron',
+      'circle',
+    };
+    final bool polyShape = polyShapes.contains(nodeShape);
     final double bodyRadius = node.tableData != null
         ? 8.0
         : nodeShape == 'rect'
@@ -1033,9 +1227,12 @@ class _NodeWidgetState extends State<NodeWidget> {
                                 )
                               : Container(
                                   width: nw,
+                                  // 高さ固定タイルでは「サムネイル等を除いた
+                                  // 残り」 が本文領域 (= ユーザー要望: 隙間を
+                                  // 作らず周りの要素と同じ大きさに)。
                                   constraints: node.clampHeight
                                       ? BoxConstraints.tightFor(
-                                          height: node.height)
+                                          height: clampedBodyH)
                                       : BoxConstraints(minHeight: node.height),
                                   alignment: Alignment.center,
                                   padding: const EdgeInsets.symmetric(
@@ -1088,6 +1285,9 @@ class _NodeWidgetState extends State<NodeWidget> {
                                                           .clamp(6.0, 28.0) /
                                                       widget.defaultMemoFontSize
                                                           .clamp(6.0, 28.0),
+                                                  // 背景の明暗に応じたリンク色
+                                                  // (= ユーザー要望)。
+                                                  linkColor: linkTextColor,
                                                 ),
                                                 textAlign: TextAlign.center,
                                               )
@@ -1156,18 +1356,13 @@ class _NodeWidgetState extends State<NodeWidget> {
                                                         color: effMemoColor,
                                                         fontSize: effMemoSize,
                                                         height: 1.3,
-                                                        // 既定で太字 (= ユーザー要望:
-                                                        //   文字が細すぎる)。
                                                         fontWeight:
                                                             FontWeight.w700,
                                                       ),
                                                       textAlign:
                                                           TextAlign.center,
-                                                      // ギャラリーの固定高タイルは
-                                                      //   height 内に省略表示する。
                                                       maxLines: node.clampHeight
-                                                          ? ((node.height -
-                                                                      22) /
+                                                          ? ((node.height - 22) /
                                                                   (effMemoSize *
                                                                       1.3))
                                                               .floor()
@@ -1478,6 +1673,7 @@ class _NodeWidgetState extends State<NodeWidget> {
                                 ext: attachExt,
                                 name: node.attachmentName ??
                                     attachExt.toUpperCase(),
+                                path: node.attachmentPath,
                                 width: nw,
                                 height: attachH,
                                 squareBottom: hasLinkBar,
@@ -1722,8 +1918,9 @@ class _NodeWidgetState extends State<NodeWidget> {
                               blurRadius: 8)
                         ],
                       ),
-                      child: const Text('接続',
-                          style: TextStyle(
+                      child: Text(
+                          context.read<MindMapProvider>().t('nw.connect'),
+                          style: const TextStyle(
                               color: Colors.white,
                               fontSize: 11,
                               fontWeight: FontWeight.w700)),
@@ -1869,6 +2066,45 @@ class _NodeWidgetState extends State<NodeWidget> {
                 },
               ),
             ],
+            // ── 文字が入り切らないギャラリータイルの「全文」 ボタン ──
+            // (= ユーザー要望: 入り切らない文字を表示する)。 切れている時だけ
+            //   右下に出る。 押すと全文を読める窓が開く。 パソコンでは
+            //   カーソルを乗せるだけでも中身が覗ける。
+            //   Tooltip は triggerMode を manual にして、 このタイル自身の
+            //   長押し (= 並べ替えのドラッグ) を邪魔しないようにする。
+            //   選択中はここに大きさ変更のつまみが出るので、 その時は隠す
+            //   (重なるとつまみを掴めなくなる)。
+            if (_shelfTextClipped && !widget.showResizeHandles)
+              Positioned(
+                right: 2,
+                bottom: 2,
+                child: Tooltip(
+                  triggerMode: TooltipTriggerMode.manual,
+                  waitDuration: const Duration(milliseconds: 300),
+                  message: _fullTextPreview(node),
+                  textStyle: const TextStyle(
+                      color: Colors.white, fontSize: 12, height: 1.4),
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: widget.onShowFullText,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 5, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: _isLightBg
+                            ? const Color(0xCC000000)
+                            : const Color(0xCCFFFFFF),
+                        borderRadius: BorderRadius.circular(7),
+                      ),
+                      child: Icon(
+                        Icons.more_horiz_rounded,
+                        size: 13,
+                        color: _isLightBg ? Colors.white : Colors.black87,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             // ── 格納ノード（isContainer = true）の右上バッジ ──
             // 📦 アイコン + 含まれているノード数で、一目で格納ノードと分かるように
             if (node.isContainer)
@@ -2085,7 +2321,9 @@ class _PlayBtn extends StatelessWidget {
 /// (= ユーザー要望: フローチャートの基本記法にブロックの形状を変えられる
 ///    ように)。 ShapeDecoration に渡すことで塗り・影・枠線が形状に沿う。
 class _FlowShapeBorder extends ShapeBorder {
-  /// 'diamond' (ひし形 = 判断) | 'parallelogram' (平行四辺形 = 入出力)
+  /// 'diamond' (判断) | 'parallelogram' (入出力) | 'hexagon' (準備) |
+  /// 'document' (書類) | 'cylinder' (データベース) | 'trapezoid' (手作業) |
+  /// 'chevron' (工程/矢印) | 'circle' (結合子)
   final String kind;
   final BorderSide side;
   const _FlowShapeBorder(this.kind, {this.side = BorderSide.none});
@@ -2094,22 +2332,95 @@ class _FlowShapeBorder extends ShapeBorder {
   EdgeInsetsGeometry get dimensions => EdgeInsets.all(side.width);
 
   Path _path(Rect rect) {
-    if (kind == 'diamond') {
-      return Path()
-        ..moveTo(rect.center.dx, rect.top)
-        ..lineTo(rect.right, rect.center.dy)
-        ..lineTo(rect.center.dx, rect.bottom)
-        ..lineTo(rect.left, rect.center.dy)
-        ..close();
+    switch (kind) {
+      case 'diamond':
+        return Path()
+          ..moveTo(rect.center.dx, rect.top)
+          ..lineTo(rect.right, rect.center.dy)
+          ..lineTo(rect.center.dx, rect.bottom)
+          ..lineTo(rect.left, rect.center.dy)
+          ..close();
+      case 'hexagon':
+        {
+          // 準備 (六角形)
+          final c = (rect.width * 0.16).clamp(8.0, 34.0).toDouble();
+          return Path()
+            ..moveTo(rect.left + c, rect.top)
+            ..lineTo(rect.right - c, rect.top)
+            ..lineTo(rect.right, rect.center.dy)
+            ..lineTo(rect.right - c, rect.bottom)
+            ..lineTo(rect.left + c, rect.bottom)
+            ..lineTo(rect.left, rect.center.dy)
+            ..close();
+        }
+      case 'document':
+        {
+          // 書類 (下辺が波打つ長方形)
+          final w = rect.height * 0.16;
+          return Path()
+            ..moveTo(rect.left, rect.top)
+            ..lineTo(rect.right, rect.top)
+            ..lineTo(rect.right, rect.bottom - w)
+            ..quadraticBezierTo(rect.left + rect.width * 0.75,
+                rect.bottom - w * 2.4, rect.center.dx, rect.bottom - w)
+            ..quadraticBezierTo(rect.left + rect.width * 0.25,
+                rect.bottom + w * 0.4, rect.left, rect.bottom - w)
+            ..close();
+        }
+      case 'cylinder':
+        {
+          // データベース (円筒)
+          final e = (rect.height * 0.18).clamp(6.0, 24.0).toDouble();
+          return Path()
+            ..moveTo(rect.left, rect.top + e)
+            ..arcToPoint(Offset(rect.right, rect.top + e),
+                radius: Radius.elliptical(rect.width / 2, e),
+                clockwise: true)
+            ..lineTo(rect.right, rect.bottom - e)
+            ..arcToPoint(Offset(rect.left, rect.bottom - e),
+                radius: Radius.elliptical(rect.width / 2, e),
+                clockwise: true)
+            ..close();
+        }
+      case 'trapezoid':
+        {
+          // 手作業 (台形)
+          final s = (rect.width * 0.14).clamp(8.0, 34.0).toDouble();
+          return Path()
+            ..moveTo(rect.left + s, rect.top)
+            ..lineTo(rect.right - s, rect.top)
+            ..lineTo(rect.right, rect.bottom)
+            ..lineTo(rect.left, rect.bottom)
+            ..close();
+        }
+      case 'chevron':
+        {
+          // 工程 (右向き矢印ブロック)
+          final s = (rect.width * 0.14).clamp(10.0, 40.0).toDouble();
+          return Path()
+            ..moveTo(rect.left, rect.top)
+            ..lineTo(rect.right - s, rect.top)
+            ..lineTo(rect.right, rect.center.dy)
+            ..lineTo(rect.right - s, rect.bottom)
+            ..lineTo(rect.left, rect.bottom)
+            ..lineTo(rect.left + s, rect.center.dy)
+            ..close();
+        }
+      case 'circle':
+        // 結合子 (楕円)
+        return Path()..addOval(rect);
+      default:
+        {
+          // parallelogram: 上辺を右へずらした平行四辺形
+          final double skew = (rect.width * 0.18).clamp(10.0, 40.0).toDouble();
+          return Path()
+            ..moveTo(rect.left + skew, rect.top)
+            ..lineTo(rect.right, rect.top)
+            ..lineTo(rect.right - skew, rect.bottom)
+            ..lineTo(rect.left, rect.bottom)
+            ..close();
+        }
     }
-    // parallelogram: 上辺を右へずらした平行四辺形
-    final double skew = (rect.width * 0.18).clamp(10.0, 40.0).toDouble();
-    return Path()
-      ..moveTo(rect.left + skew, rect.top)
-      ..lineTo(rect.right, rect.top)
-      ..lineTo(rect.right - skew, rect.bottom)
-      ..lineTo(rect.left, rect.bottom)
-      ..close();
   }
 
   @override
@@ -2825,13 +3136,15 @@ class _NodeTableInlineWidgetState extends State<_NodeTableInlineWidget> {
                 color: const Color(0xFF43B97F),
                 elevation: 6,
                 borderRadius: BorderRadius.circular(14),
-                child: const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
                   child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    Icon(Icons.check_rounded, color: Colors.white, size: 14),
-                    SizedBox(width: 3),
-                    Text('確定',
-                        style: TextStyle(
+                    const Icon(Icons.check_rounded,
+                        color: Colors.white, size: 14),
+                    const SizedBox(width: 3),
+                    Text(context.read<MindMapProvider>().t('paint.confirm'),
+                        style: const TextStyle(
                             color: Colors.white,
                             fontSize: 11,
                             fontWeight: FontWeight.w700)),
