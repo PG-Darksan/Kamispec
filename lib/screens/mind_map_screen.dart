@@ -194,7 +194,10 @@ import '../main.dart'
         // 保存済みのメモを消さないよう、 1 項目として積む形で渡す。
         appendFloatingMemoItem,
         // 「プログラムから開く」 で渡されたファイル (= ユーザー要望)。
-        pendingOpenFilePaths;
+        pendingOpenFilePaths,
+        // 起動済みの本体へ後から引き渡されたファイルの合図 (= ユーザー要望:
+        // 既に開いているアプリの上で表示する)。
+        openWithFilesTick;
 // フローティングメモ (他のアプリの上に小さくメモ表示)。 Android 専用。
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 
@@ -1676,6 +1679,28 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 設定シートのショートカット (Space) を最後に処理した時刻。
   /// フォーカス経路とグローバル経路の二重発火を弾くために使う。
   DateTime? _lastSettingsShortcutAt;
+
+  /// Space の KeyDown が一時的な状態に阻まれて設定を開けなかった印。
+  /// 同じ押下の KeyUp でもう一度だけ判定し直す (= ユーザー報告:
+  /// 選択解除した直後などに時々 Space で設定が開かない)。
+  bool _pendingSpaceSettingsRetry = false;
+
+  /// Space で設定シートを開いてよい状態か。 KeyDown と KeyUp の再判定で共用。
+  ///
+  /// ★ 分割パネルの hover フラグは「パネルが実際に開いている時」 だけ見る。
+  ///   MouseRegion はホバー中にウィジェットごと消えると onExit が呼ばれず、
+  ///   パネルを閉じた後もフラグだけ残って Space を塞ぐことがあるため。
+  bool _spaceSettingsGuardsPass() {
+    final route = ModalRoute.of(context);
+    return _focusLockOverlay == null &&
+        !(_splitPanelHover && _splitOpen) &&
+        !(_splitLeftPanelHover && _splitLeftOpen) &&
+        !_searchVisible &&
+        !_editingMapName &&
+        route != null &&
+        route.isCurrent &&
+        !_isPrimaryEditableTextFocused();
+  }
 
   /// ヘッダーカスタムボタン並び替えモード。
   /// true の間はヘッダーの各カスタムアイコンが LongPressDraggable として
@@ -3398,6 +3423,13 @@ class _MindMapScreenState extends State<MindMapScreen>
         _handlePendingOpenFiles();
       });
     }
+    // ── 起動中に 2 個目の「アプリで開く」 から引き渡されたファイルを開く ──
+    // (= ユーザー要望: 新規でアプリを立ち上げず、 既に開いている画面の上で
+    //  表示する)。 main() の待ち受けが pendingOpenFilePaths に足して
+    //  この tick を増やす。
+    if (_isDesktop) {
+      openWithFilesTick.addListener(_onOpenWithFilesArrived);
+    }
     // ── デスクトップの購入状態をサーバーと同期 ──
     // Stripe の決済は外部ブラウザで完結するので、 起動時に Cloudflare Worker
     // の権利 API を読んで最新のプランを取り込む。
@@ -3782,8 +3814,14 @@ class _MindMapScreenState extends State<MindMapScreen>
     // カスに依存しないグローバルハンドラからも開けるようにする。
     // 閉じる方はシート自身の Focus が担当するので、 ここでは開くだけ
     // (マップが最前面 = route.isCurrent の時に限る)。
+    //
+    // ★ KeyDown が一時的な状態 (閉じかけのダイアログ / 消えかけのフォー
+    //   カス等) に阻まれた時は、 同じ押下の KeyUp でもう一度判定する
+    //   (= ユーザー報告: 選択解除した直後などに Space で設定が開かない
+    //   ことがある。 押した瞬間だけ条件が崩れていても、 離す頃には状態が
+    //   落ち着いているので開ける)。
     if (_isDesktop &&
-        event is KeyDownEvent &&
+        (event is KeyDownEvent || event is KeyUpEvent) &&
         event.logicalKey == LogicalKeyboardKey.space &&
         !_settingsSheetOpen &&
         !HardwareKeyboard.instance.isControlPressed &&
@@ -3791,17 +3829,21 @@ class _MindMapScreenState extends State<MindMapScreen>
         !HardwareKeyboard.instance.isShiftPressed &&
         !HardwareKeyboard.instance.isAltPressed &&
         _shortcutCommandMatches('openSettings', 'Space')) {
-      final route = ModalRoute.of(context);
-      if (_focusLockOverlay == null &&
-          !_splitPanelHover &&
-          !_splitLeftPanelHover &&
-          !_searchVisible &&
-          !_editingMapName &&
-          route != null &&
-          route.isCurrent &&
-          !_isPrimaryEditableTextFocused()) {
-        _toggleSettingsSheetFromShortcut(context.read<MindMapProvider>());
-        return true;
+      if (_spaceSettingsGuardsPass()) {
+        if (event is KeyDownEvent) {
+          _pendingSpaceSettingsRetry = false;
+          _toggleSettingsSheetFromShortcut(context.read<MindMapProvider>());
+          return true;
+        }
+        // KeyUp: KeyDown 側が阻まれていた時だけ開き直す (通常の押下で
+        // 二重に開かないよう、 KeyDown が開けた時はフラグが下りている)。
+        if (_pendingSpaceSettingsRetry) {
+          _pendingSpaceSettingsRetry = false;
+          _toggleSettingsSheetFromShortcut(context.read<MindMapProvider>());
+          return true;
+        }
+      } else if (event is KeyDownEvent) {
+        _pendingSpaceSettingsRetry = true;
       }
     }
     // ── F6: 分割パネル(左右)の中身を入れ替え (= ユーザー要望) ──
@@ -5100,6 +5142,11 @@ class _MindMapScreenState extends State<MindMapScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    if (_isDesktop) {
+      try {
+        openWithFilesTick.removeListener(_onOpenWithFilesArrived);
+      } catch (_) {}
+    }
     _pdfPageUiTimer?.cancel();
     _pdfPageUiTimer = null;
     _captionCtrl.dispose();
@@ -20023,6 +20070,14 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///
   /// マップへの追加はビューア内の「ページに追加」 ボタン、 またはメモ /
   /// AI を使った時点で行われる (= 開いただけではマップを汚さない)。
+  /// 起動済みの本体へ「アプリで開く」 のファイルが引き渡された時 (= main()
+  /// の待ち受けが受信した時) に呼ばれる。 既に開いている画面の上で開く。
+  void _onOpenWithFilesArrived() {
+    if (!mounted) return;
+    // ignore: discarded_futures
+    _handlePendingOpenFiles();
+  }
+
   Future<void> _handlePendingOpenFiles() async {
     if (pendingOpenFilePaths.isEmpty || !mounted) return;
     final paths = List<String>.from(pendingOpenFilePaths);
@@ -20069,11 +20124,104 @@ class _MindMapScreenState extends State<MindMapScreen>
       );
       return;
     }
+    // ── 既に同じファイルをマップへ埋め込み済みなら、 そのノードで開く ──
+    // (= ユーザー要望: アプリで開くを選んだ時、 既に挿入されている所で
+    //  開かれるように)。 そのページへ切り替えてノードを見せた上で、
+    //  ノード紐付きのビューア (メモ / AI がそのまま使える) を開く。
+    final existing = await _findEmbeddedAttachmentFor(path);
+    if (existing != null && mounted) {
+      final provider = context.read<MindMapProvider>();
+      final idx = provider.pages.indexWhere((p) => p.id == existing.pageId);
+      if (idx >= 0) {
+        if (provider.currentPage.id != existing.pageId) {
+          provider.switchPage(idx);
+        }
+        provider.selectNode(existing.nodeId);
+        final n = provider.nodes[existing.nodeId];
+        if (n != null) {
+          try {
+            _ctrlFor(existing.pageId).value =
+                _matrixFor(n.position, _percentToScale(_scalePercent));
+          } catch (_) {}
+        }
+        _appSnack(
+          context,
+          SnackBar(
+            content: Text(provider.t('openWith.openedExisting')),
+            backgroundColor: const Color(0xFF43B97F),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+        await _showInAppViewer(context, existing.path,
+            isLocalFile: true, nodeId: existing.nodeId);
+        return;
+      }
+    }
+    if (!mounted) return;
     // それ以外 (PDF / 文書 など) は従来どおりビューアで開く。
     await _showInAppViewer(context, path, isLocalFile: true);
   }
 
+  /// [path] と同じファイルを添付しているノードを全ページから探す
+  /// (= ユーザー要望: 既に埋め込んだ PDF を「アプリで開く」 したら、 既に
+  ///  挿入されている所で開く)。
+  ///
+  /// ドロップで埋め込んだファイルは attachments フォルダへコピーされて
+  /// パスが変わっているので、 パス一致に加えて 「ファイル名 + サイズが同じ」
+  /// も同一とみなす。 見つからなければ null。
+  Future<({String pageId, String nodeId, String path})?>
+      _findEmbeddedAttachmentFor(String path) async {
+    final provider = context.read<MindMapProvider>();
+    // 起動直後はまだページが読み込まれていないので少しだけ待つ
+    // (読み込みが遅くても最大 ~3 秒で諦めて普通に開く)。
+    try {
+      await provider.initialLoadDone.timeout(const Duration(seconds: 2));
+    } catch (_) {}
+    for (var i = 0; i < 10 && provider.pages.isEmpty; i++) {
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+    final base = _baseName(path).toLowerCase();
+    int size = -1;
+    try {
+      size = File(path).lengthSync();
+    } catch (_) {}
+    for (final p in provider.pages) {
+      for (final n in p.nodes.values) {
+        final ap = n.attachmentPath;
+        if (ap == null || ap.isEmpty) continue;
+        if (ap == path) return (pageId: p.id, nodeId: n.id, path: ap);
+        if (_baseName(ap).toLowerCase() != base) continue;
+        try {
+          final f = File(ap);
+          if (!f.existsSync()) continue;
+          if (size >= 0 && f.lengthSync() == size) {
+            return (pageId: p.id, nodeId: n.id, path: ap);
+          }
+        } catch (_) {}
+      }
+    }
+    return null;
+  }
+
   String _baseName(String path) => path.split(RegExp(r'[/\\]')).last;
+
+  /// ページ種別 → マップ一覧 (Drawer) と同じアイコンと色
+  /// (= ユーザー要望: 別ページに送る等の選択肢のアイコンをマップ一覧と
+  ///  揃える)。 `_DrawerTile` の leading と同じ対応表。
+  static (IconData, Color) _pageKindIconOf(MindMapPage p) {
+    switch (p.pageType) {
+      case 'bookshelf':
+        return (Icons.shelves, const Color(0xFFFF7043));
+      case 'paint':
+        return (Icons.brush_rounded, const Color(0xFFEC407A));
+      case 'document':
+        return (Icons.article_rounded, const Color(0xFF4FC3F7));
+      case 'videoEditor':
+        return (Icons.movie_creation_rounded, const Color(0xFFFF7043));
+      default:
+        return (Icons.map, const Color(0xFF8B84FF));
+    }
+  }
 
   /// 開いている添付ノードを別のページへ移す (= ユーザー要望: 開いている
   /// PDF をページに埋め込んだり移動したりできるように)。
@@ -20099,8 +20247,9 @@ class _MindMapScreenState extends State<MindMapScreen>
             SimpleDialogOption(
               onPressed: () => Navigator.pop(dctx, p.id),
               child: Row(children: [
-                const Icon(Icons.account_tree_rounded,
-                    color: Color(0xFF4FC3F7), size: 18),
+                // ページ種別ごとのアイコン (= マップ一覧と同じ見た目)。
+                Icon(_pageKindIconOf(p).$1,
+                    color: _pageKindIconOf(p).$2, size: 18),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(p.name,
@@ -20153,6 +20302,9 @@ class _MindMapScreenState extends State<MindMapScreen>
         final id =
             provider.addAttachmentNodeToPage(idx, path, fileName);
         if (id != null) {
+          // 1 枚目のサムネイルも付ける (= ユーザー報告: アプリから開くで
+          // 埋め込むとサムネイルが表示されない)。
+          _generateEmbedAttachmentThumb(provider, id, path);
           _appSnack(
             context,
             SnackBar(
@@ -20181,6 +20333,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     final node = provider.addNodeAtCenterReturning(pos);
     provider.updateNodeTitle(node.id, fileName);
     provider.updateNodeAttachment(node.id, path, fileName);
+    // 1 枚目のサムネイルも付ける (= ユーザー報告: ドロップと違って
+    // アプリから開くで埋め込むとサムネイルが表示されない)。
+    _generateEmbedAttachmentThumb(provider, node.id, path);
     _appSnack(
       context,
       SnackBar(
@@ -20191,6 +20346,31 @@ class _MindMapScreenState extends State<MindMapScreen>
       ),
     );
     return node.id;
+  }
+
+  /// 「アプリから開く」 などで添付したノードに 1 枚目のサムネイルを付ける
+  /// (= ユーザー報告: ドロップした時と違ってサムネイルが表示されない)。
+  /// ドロップ経路 (_generateAttachmentThumbnail) と同じ生成処理を非同期で
+  /// 走らせ、 完了したらノードへ反映する。
+  void _generateEmbedAttachmentThumb(
+      MindMapProvider provider, String nodeId, String path) {
+    final ext = path.split('.').last.toLowerCase();
+    if (!const ['pdf', 'pptx', 'docx', 'xlsx'].contains(ext)) return;
+    // 巨大 PDF はラスタライズしない (ビューア側と同じ安全上限)。
+    if (ext == 'pdf' && !_isPdfRasterSourceSafe(path)) return;
+    // ignore: discarded_futures
+    () async {
+      try {
+        final appDir = await getApplicationDocumentsDirectory();
+        final thumbDir = Directory('${appDir.path}/attachments');
+        if (!thumbDir.existsSync()) thumbDir.createSync(recursive: true);
+        final thumb =
+            await _generateAttachmentThumbnail(path, ext, thumbDir.path);
+        if (thumb != null && mounted) {
+          provider.setAttachmentThumb(nodeId, thumb.path, thumb.aspect);
+        }
+      } catch (_) {}
+    }();
   }
 
   Future<void> _showInAppViewer(BuildContext ctx, String urlOrPath,
@@ -20316,8 +20496,11 @@ class _MindMapScreenState extends State<MindMapScreen>
         builder: (dctx) {
           // 分割中はアクティブ側ペインの領域内での「全画面」 にする
           // (= ユーザー要望: 分割した画面上での全画面)。
+          // ★ PDF だけは分割中でも本当の全画面で開く (= ユーザー報告:
+          //   分割した画面上で PDF を開くとフリーズしてしまう。 ペインの
+          //   狭い領域に Syncfusion ビューアを押し込むのをやめる)。
           return Padding(
-            padding: _activePaneDialogInsets(),
+            padding: isPdf ? EdgeInsets.zero : _activePaneDialogInsets(),
             child: Dialog.fullscreen(
             backgroundColor: const Color(0xFF1A1A24),
             child: _InAppViewerDialog(
@@ -35097,17 +35280,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       case 'closeSplit':
         // ── 画面分割を解除して 1 画面に戻す (= ユーザー要望: ショートカット
         //    キーが欲しい) ──
-        //    埋め込んでいた Web / ツールも一緒に片付けて、 編集していた
-        //    ページだけの表示に戻す。 分割していない時は何もしない。
-        if (!_mapSplitOpen) break;
-        setState(() {
-          _mapSplitOpen = false;
-          _mapSplitQuad = false;
-          _mapSplitEditorSlot = 0;
-          _mapSplitCellWeb.clear();
-          _mapSplitCellWebCur.clear();
-          _mapSplitCellTool.clear();
-        });
+        _closeMapSplit();
         break;
       case 'floatingMemo':
         // フローティングメモ。
@@ -55087,6 +55260,22 @@ class _MindMapScreenState extends State<MindMapScreen>
     });
   }
 
+  /// 画面分割を解除して 1 画面に戻す。 埋め込んでいた Web / ツールも一緒に
+  /// 片付けて、 編集していたページだけの表示に戻す。 分割していなければ
+  /// 何もしない。 ヘッダーの closeSplit コマンドと、 ページ名バッジの
+  /// メニュー (= ユーザー要望: 分割画面を閉じる項目) から共用。
+  void _closeMapSplit() {
+    if (!_mapSplitOpen) return;
+    setState(() {
+      _mapSplitOpen = false;
+      _mapSplitQuad = false;
+      _mapSplitEditorSlot = 0;
+      _mapSplitCellWeb.clear();
+      _mapSplitCellWebCur.clear();
+      _mapSplitCellTool.clear();
+    });
+  }
+
   /// 分割セルに埋め込んだ Web (Google 検索 / YouTube 等) の URL。
   /// (= ユーザー要望: 要素から立ち上げた検索や動画を分割画面に埋め込み、
   ///    動画を再生しながら別のページを編集できるように)。 キー = セル番号。
@@ -56228,6 +56417,26 @@ class _MindMapScreenState extends State<MindMapScreen>
               },
             ),
 
+            // ── トグル: 「アプリで開く」 を別ウィンドウで開くか (Windows のみ。
+            //    = ユーザー要望: 既に起動しているならその画面で開き、 別アプリを
+            //    立ち上げるかは設定で選べるように) ──
+            if (!kIsWeb && Platform.isWindows)
+              _settingsToggleTile(
+                icon: provider.openWithNewInstance
+                    ? Icons.open_in_new_rounded
+                    : Icons.tab_rounded,
+                color: provider.openWithNewInstance
+                    ? const Color(0xFF4FC3F7)
+                    : Colors.white54,
+                title: provider.t('menu.openWithNewInstance'),
+                helpKey: 'help.openWithNewInstance',
+                value: provider.openWithNewInstance,
+                onChanged: (v) {
+                  provider.setOpenWithNewInstance(v);
+                  setS(() {});
+                },
+              ),
+
             // ── トグル: 視聴済み自動削除 ──
             _settingsToggleTile(
               icon: provider.autoDeleteWatched
@@ -56725,9 +56934,22 @@ class _MindMapScreenState extends State<MindMapScreen>
                 style: const TextStyle(color: Colors.redAccent, fontSize: 13)),
           ),
         ],
+        // ── 分割そのものを閉じる (= ユーザー要望: ページ名をクリックした
+        //    時に分割画面を閉じる項目も出るように)。 どのセルからでも
+        //    選べるよう、 埋め込みの有無に関わらず常に出す。 ──
+        PopupMenuItem(
+          value: '__closeSplit__',
+          child: Text('✕ ${provider.t('cmd.closeSplit')}',
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: Color(0xFFFFB74D), fontSize: 13)),
+        ),
       ],
     );
     if (sel == null || !mounted) return;
+    if (sel == '__closeSplit__') {
+      _closeMapSplit();
+      return;
+    }
     if (sel == '__addPage__') {
       // 「＋新規追加」 を押したセル自身に新ページを出す (= ユーザー報告:
       //   4 分割で追加すると左上のページが切り替わってしまう)。
@@ -70760,10 +70982,11 @@ class _MindMapScreenState extends State<MindMapScreen>
     final message = provider
         .t(empty ? 'page.deletedEmpty' : 'page.deleted')
         .replaceFirst('{name}', removedName);
+    // 5 秒表示 (= ユーザー要望: 現状より 2 秒ぐらい長めに)。
     final controller = _appSnack(
       context,
       SnackBar(
-        duration: const Duration(seconds: 3),
+        duration: const Duration(seconds: 5),
         content: Text(
           '$message\nCtrl+Z / ${provider.t('page.undoDelete')}',
         ),
@@ -70773,9 +70996,9 @@ class _MindMapScreenState extends State<MindMapScreen>
         ),
       ),
     );
-    final timer = Timer(const Duration(seconds: 3), () {
+    final timer = Timer(const Duration(seconds: 5), () {
       // action付きSnackBarはアクセシビリティ設定時にdurationが無効になる。
-      // 別のScaffoldで通知が出ても、この削除通知自体は3秒で必ず閉じる。
+      // 別のScaffoldで通知が出ても、この削除通知自体は5秒で必ず閉じる。
       controller.close();
     });
     controller.closed.whenComplete(timer.cancel);
@@ -147510,16 +147733,16 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
             value: pg.id,
             height: 36,
             child: Row(children: [
+              // ページ種別ごとのアイコン (= マップ一覧と同じ見た目。
+              //   今開いているページだけは「ここ」 の印を優先)。
               Icon(
                   pg.id == curId
                       ? Icons.radio_button_checked_rounded
-                      : (pg.pageType == 'bookshelf'
-                          ? Icons.photo_library_rounded
-                          : Icons.account_tree_rounded),
+                      : _MindMapScreenState._pageKindIconOf(pg).$1,
                   size: 15,
                   color: pg.id == curId
                       ? const Color(0xFF43B97F)
-                      : Colors.white38),
+                      : _MindMapScreenState._pageKindIconOf(pg).$2),
               const SizedBox(width: 8),
               Flexible(
                 child: Text(pg.name,

@@ -4210,6 +4210,20 @@ class MindMapProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ── 「アプリで開く」 を別アプリ (新しいウィンドウ) で開くか ──
+  //    (= ユーザー要望: 既に起動しているならその画面で開き、 動作設定に
+  //    別アプリを立ち上げるかの項目を設ける)。
+  //    false (既定) = 起動済みの画面へ引き渡す / true = 毎回新しく立ち上げる。
+  //    実際の引き渡し判定は main() (起動直後) が prefs を直接読む。
+  bool _openWithNewInstance = false;
+  bool get openWithNewInstance => _openWithNewInstance;
+  Future<void> setOpenWithNewInstance(bool v) async {
+    _openWithNewInstance = v;
+    final prefs = await _prefsWithRetry();
+    await prefs.setBool('openWithNewInstance', v);
+    notifyListeners();
+  }
+
   // ── メモ欄の一括折りたたみ (ユーザー要望) ────────────────────────────
   //
   // true: 全ノードのメモ表示を「閉じる」(node_widget が memo Text を
@@ -29983,6 +29997,49 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Schnittmodus umschalten',
       'pt': 'Alternar modo corte',
       'ru': 'Переключить режим резки',
+    },
+    // 「アプリで開く」 を別アプリで開くか (= ユーザー要望)。
+    'menu.openWithNewInstance': {
+      'ja': '「アプリで開く」は別ウィンドウで開く',
+      'en': 'Open files in a new window',
+      'zh': '在新窗口中打开文件',
+      'ko': '파일을 새 창에서 열기',
+      'es': 'Abrir archivos en una ventana nueva',
+      'fr': 'Ouvrir les fichiers dans une nouvelle fenêtre',
+      'de': 'Dateien in einem neuen Fenster öffnen',
+      'pt': 'Abrir arquivos em uma nova janela',
+      'ru': 'Открывать файлы в новом окне',
+    },
+    'help.openWithNewInstance': {
+      'ja': 'OFF: 「アプリで開く」で開いたファイルは、既に起動している画面の上に表示します。\n'
+          'ON: 毎回新しくアプリを立ち上げて開きます。',
+      'en': 'OFF: files opened with "Open with" appear in the window that is '
+          'already running.\nON: a new app window is launched every time.',
+      'zh': 'OFF: 通过「打开方式」打开的文件会显示在已运行的窗口中。\nON: 每次都启动新的应用窗口。',
+      'ko': 'OFF: "연결 프로그램"으로 연 파일은 이미 실행 중인 창에 표시됩니다.\n'
+          'ON: 매번 새 앱 창을 시작합니다.',
+      'es': 'OFF: los archivos abiertos con "Abrir con" aparecen en la ventana '
+          'ya abierta.\nON: se inicia una ventana nueva cada vez.',
+      'fr': 'OFF : les fichiers ouverts via « Ouvrir avec » s\'affichent dans la '
+          'fenêtre déjà ouverte.\nON : une nouvelle fenêtre est lancée à chaque fois.',
+      'de': 'OFF: mit „Öffnen mit“ geöffnete Dateien erscheinen im bereits '
+          'laufenden Fenster.\nON: es wird jedes Mal ein neues Fenster gestartet.',
+      'pt': 'OFF: arquivos abertos com "Abrir com" aparecem na janela já aberta.\n'
+          'ON: uma nova janela é iniciada toda vez.',
+      'ru': 'OFF: файлы, открытые через «Открыть с помощью», показываются в уже '
+          'запущенном окне.\nON: каждый раз запускается новое окно.',
+    },
+    // 「アプリで開く」 したファイルが既にマップへ埋め込み済みだった時。
+    'openWith.openedExisting': {
+      'ja': '埋め込み済みの要素で開きました',
+      'en': 'Opened from the already-embedded element',
+      'zh': '已从已嵌入的元素打开',
+      'ko': '이미 삽입된 요소에서 열었습니다',
+      'es': 'Abierto desde el elemento ya insertado',
+      'fr': 'Ouvert depuis l\'élément déjà intégré',
+      'de': 'Über das bereits eingebettete Element geöffnet',
+      'pt': 'Aberto a partir do elemento já inserido',
+      'ru': 'Открыто из уже встроенного элемента',
     },
     // 画面分割を解除して 1 画面に戻す (= ユーザー要望)。
     'cmd.closeSplit': {
@@ -67536,6 +67593,8 @@ $cleanQ
     _snapEnabled = prefs.getBool('snapEnabled') ?? true;
     // Esc で閲覧画面を閉じるか (= ユーザー要望: 誤爆を止められるように)。
     _closeViewerWithEsc = prefs.getBool('closeViewerWithEsc') ?? true;
+    // 「アプリで開く」 を別アプリで開くか (= ユーザー要望)。
+    _openWithNewInstance = prefs.getBool('openWithNewInstance') ?? false;
     // メモ欄一括折りたたみ (デフォルト false = 従来通り全文表示)
     _memoCollapsedGlobal = prefs.getBool('memoCollapsedGlobal') ?? false;
     // 動画ノードの重複生成許可フラグ (デフォルト false)
@@ -78280,6 +78339,26 @@ $example
     return parents;
   }
 
+  /// 削除で「生き残るノードとの接続」 が実際に 1 本でも切れるか。
+  /// 接続が消える前 (削除の前) に呼ぶこと。
+  ///
+  /// ★ 何とも繋がっていない孤立ノードを消した時は false になる。 その場合は
+  ///   詰め直しをしない (= ユーザー報告: 周りと紐づかない全く関係ない要素を
+  ///   削除したら周りのノードが下に下がる。 親なし削除 = 「ルート同士の
+  ///   詰め直し」 が孤立ノードの削除でも走り、 無関係な全ルートの枝を
+  ///   積み直していた)。
+  bool _deletionTearsEdge(Set<String> ids) {
+    final nodeMap = currentPage.nodes;
+    for (final c in currentPage.connections) {
+      final delFrom = ids.contains(c.fromId);
+      final delTo = ids.contains(c.toId);
+      if (delFrom == delTo) continue; // 両端とも消える / 両端とも残る
+      final survivingId = delFrom ? c.toId : c.fromId;
+      if (nodeMap.containsKey(survivingId)) return true;
+    }
+    return false;
+  }
+
   /// 削除の後に、 残った兄弟を詰める
   /// (= ユーザー要望: 子要素を消したら周りの要素も詰まるように)。
   ///
@@ -78318,6 +78397,8 @@ $example
     final ids = _expandDeletionForContainers({id});
     // 詰め直しの基準にする親を、 接続が消える前に控えておく。
     final parentsForCompact = _parentsOfNodesForCompact(ids);
+    // 孤立ノードの削除なら詰め直し不要 (接続が消える前に判定)。
+    final tearsEdge = _deletionTearsEdge(ids);
     for (final rid in ids) {
       nodeMap.remove(rid);
       // 関連するすべての接続を削除
@@ -78330,8 +78411,10 @@ $example
     }
     // メンバーだけ消した場合は親コンテナの件数表示を更新 / 空表紙を除去。
     _pruneContainersAfterDelete();
-    // 空いた隙間を詰める (= ユーザー要望)。
-    _compactSiblingsAfterDelete(parentsForCompact);
+    // 空いた隙間を詰める (= ユーザー要望)。 接続が 1 本も切れていない
+    // (= 孤立ノードを消しただけ) なら何も動かさない (= ユーザー報告:
+    // 関係ない要素を消したら周りのノードが下に下がる)。
+    if (tearsEdge) _compactSiblingsAfterDelete(parentsForCompact);
     // = ユーザー要望: ギャラリーは削除後に左詰めして gap を除去。
     // ★ compactShelfCells は論理セル (_shelfCells) を詰めるだけで、 タイルは
     //   node.position で描画されるため見た目が動かなかった (= ユーザー報告:
@@ -78363,6 +78446,8 @@ $example
     final all = _expandDeletionForContainers(ids);
     // 詰め直しの基準にする親を、 接続が消える前に控えておく。
     final parentsForCompact = _parentsOfNodesForCompact(all);
+    // 孤立ノードだけの削除なら詰め直し不要 (接続が消える前に判定)。
+    final tearsEdge = _deletionTearsEdge(all);
     for (final id in all) {
       nodeMap.remove(id);
       currentPage.connections
@@ -78373,8 +78458,9 @@ $example
     // メンバーだけ消した場合は親コンテナの件数表示を更新 / 空表紙を除去。
     _pruneContainersAfterDelete();
     // 空いた隙間を詰める (= ユーザー要望: 複数の子要素を消した時も
-    //   周りの要素が詰まるように)。
-    _compactSiblingsAfterDelete(parentsForCompact);
+    //   周りの要素が詰まるように)。 接続が 1 本も切れていない (= 孤立
+    //   ノードだけ消した) なら何も動かさない (= ユーザー報告)。
+    if (tearsEdge) _compactSiblingsAfterDelete(parentsForCompact);
     // = ユーザー要望: ギャラリーは削除後に左詰めして gap を除去。
     // ★ compactShelfCells は論理セル (_shelfCells) を詰めるだけで、 タイルは
     //   node.position で描画されるため見た目が動かなかった (= ユーザー報告:
@@ -79102,15 +79188,21 @@ $example
 
   /// 添付ファイル (PDF / pptx 等) のサムネイル画像とアスペクト比を設定する
   /// (= ユーザー要望: ドロップした PDF / pptx の 1 枚目をサムネイル表示)。
+  ///
+  /// ★ currentPage 限定ではなく全ページから探す。 「アプリから開く」 の
+  ///   「ページに追加」 で別ページへ埋め込んだノードにもサムネイルを
+  ///   付けられるように (= ユーザー報告: サムネイルが表示されない)。
   void setAttachmentThumb(String id, String thumbPath, double aspectRatio) {
-    final node = currentPage.nodes[id];
-    if (node == null) return;
-    currentPage.nodes[id] = node.copyWith(
+    final found = _findPageAndNodeById(id);
+    if (found == null) return;
+    final page = found.$1;
+    final node = found.$2;
+    page.nodes[id] = node.copyWith(
       attachmentThumbPath: thumbPath,
       attachmentAspectRatio: aspectRatio > 0 ? aspectRatio : null,
     );
     // ギャラリーページではサムネ確定で本来比が入るので、 統一比を再計算して再タイル。
-    _autoArrangeIfBookshelf();
+    if (identical(page, currentPage)) _autoArrangeIfBookshelf();
     _saveToStorage();
     notifyListeners();
   }

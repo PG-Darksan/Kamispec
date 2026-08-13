@@ -1,6 +1,17 @@
 import 'dart:async';
 import 'dart:math' as math;
-import 'dart:io' show Platform, File, FileMode, Process, exit, pid;
+import 'dart:io'
+    show
+        Platform,
+        File,
+        FileMode,
+        Process,
+        exit,
+        pid,
+        HttpServer,
+        HttpClient,
+        InternetAddress,
+        ContentType;
 import 'dart:convert';
 // オーバーレイの AI モードから直接問い合わせるため (= ユーザー要望)。
 import 'package:http/http.dart' as http;
@@ -1524,6 +1535,103 @@ List<String> _openFilePathsFromArgs(List<String> args) {
   return out;
 }
 
+// ── 「アプリで開く」 の 1 窓運用 (= ユーザー要望: 既にアプリが起動している
+//    なら、 新しく立ち上げずにその画面の上でファイルを表示する) ──
+//
+// 本体は 127.0.0.1 のこのポートでファイルの引き渡しを待ち受ける。
+// 2 個目の起動はまずここへ渡してみて、 渡せたら自分は即終了する。
+// 動作設定「別ウィンドウで開く」 (prefs `openWithNewInstance`) を ON に
+// すると従来どおり毎回新しく立ち上がる。
+const int _kOpenWithPort = 38641;
+const String _kOpenWithToken = 'HisatorNotebook-openwith-v1';
+
+/// 「アプリで開く」 で渡されたファイルが後から (= 起動済みの本体に) 届いた
+/// 合図。 画面側 (mind_map_screen) が listen して開く。
+final ValueNotifier<int> openWithFilesTick = ValueNotifier<int>(0);
+
+/// 起動済みの本体へファイルを引き渡す。 成功したら true (呼び出し側は終了)。
+Future<bool> _forwardOpenFilesToRunningInstance(List<String> paths) async {
+  final client = HttpClient();
+  client.connectionTimeout = const Duration(milliseconds: 600);
+  try {
+    final req = await client
+        .post('127.0.0.1', _kOpenWithPort, '/open')
+        .timeout(const Duration(milliseconds: 900));
+    req.headers.set('x-hisator-token', _kOpenWithToken);
+    req.headers.contentType = ContentType.json;
+    req.write(jsonEncode({'paths': paths}));
+    final res = await req.close().timeout(const Duration(seconds: 2));
+    final body = await res
+        .transform(utf8.decoder)
+        .join()
+        .timeout(const Duration(seconds: 1));
+    // トークンを確認して、 たまたま同じポートを使う別アプリへ渡して
+    // しまっていないかを見分ける。
+    return res.statusCode == 200 && body.contains(_kOpenWithToken);
+  } catch (_) {
+    return false;
+  } finally {
+    try {
+      client.close(force: true);
+    } catch (_) {}
+  }
+}
+
+/// 本体側: ファイルの引き渡しを待ち受ける。 bind できなければ黙って諦める
+/// (= ポートが他で使われていても本体の機能には影響しない)。
+Future<void> _startOpenWithReceiver() async {
+  try {
+    final server =
+        await HttpServer.bind(InternetAddress.loopbackIPv4, _kOpenWithPort);
+    server.listen((req) async {
+      try {
+        if (req.method == 'POST' &&
+            req.uri.path == '/open' &&
+            req.headers.value('x-hisator-token') == _kOpenWithToken) {
+          final body = await utf8.decoder.bind(req).join();
+          final data = jsonDecode(body) as Map<String, dynamic>;
+          final paths = (data['paths'] as List?)
+                  ?.whereType<String>()
+                  .where((p) {
+                try {
+                  return File(p).existsSync();
+                } catch (_) {
+                  return false;
+                }
+              }).toList() ??
+              const <String>[];
+          if (paths.isNotEmpty) {
+            pendingOpenFilePaths.addAll(paths);
+            openWithFilesTick.value++;
+            // 最小化していても前面へ出す。
+            try {
+              await windowManager.restore();
+            } catch (_) {}
+            try {
+              await windowManager.show();
+              await windowManager.focus();
+            } catch (_) {}
+          }
+          req.response.statusCode = 200;
+          req.response.write(_kOpenWithToken);
+        } else {
+          req.response.statusCode = 404;
+        }
+      } catch (_) {
+        try {
+          req.response.statusCode = 500;
+        } catch (_) {}
+      } finally {
+        try {
+          await req.response.close();
+        } catch (_) {}
+      }
+    });
+  } catch (_) {
+    // 既に別の本体が待ち受けている / ポートが使えない → 何もしない。
+  }
+}
+
 /// このアプリを「プログラムから開く」 の一覧に載せる (Windows / HKCU のみ)。
 /// 管理者権限は不要で、 既定のアプリを勝手に奪うこともしない。
 /// 一覧に出ることで、 ユーザーが .txt / .pdf をこのアプリで開けるようになる。
@@ -1650,6 +1758,26 @@ void main(List<String> args) async {
       HomeShortcutService.pageIdFromArgs(args);
   // ── 「プログラムから開く」 で渡されたファイル (= ユーザー要望) ──
   pendingOpenFilePaths.addAll(_openFilePathsFromArgs(args));
+  // ── 既に本体が起動しているなら、 そちらへ渡して自分は終了する ──
+  // (= ユーザー要望: 新規でアプリを立ち上げずにその上で表示)。
+  // 動作設定「別ウィンドウで開く」 が ON なら従来どおり立ち上げる。
+  if (!kIsWeb && Platform.isWindows && pendingOpenFilePaths.isNotEmpty) {
+    bool newInstance = false;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      newInstance = prefs.getBool('openWithNewInstance') ?? false;
+    } catch (_) {}
+    if (!newInstance &&
+        await _forwardOpenFilesToRunningInstance(
+            List<String>.from(pendingOpenFilePaths))) {
+      exit(0);
+    }
+  }
+  // 本体としてファイルの引き渡しを待ち受ける (Windows のみ)。
+  if (!kIsWeb && Platform.isWindows) {
+    // ignore: discarded_futures
+    _startOpenWithReceiver();
+  }
   // ignore: discarded_futures
   _registerWindowsOpenWith();
   SystemChrome.setPreferredOrientations([
