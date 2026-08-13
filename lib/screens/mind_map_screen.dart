@@ -46316,8 +46316,9 @@ class _MindMapScreenState extends State<MindMapScreen>
             } else {
               provider.undo();
             }
-          } else if (commandId == 'redo' || commandId == 'redoAlternate') {
-            // redoAlternate = Ctrl+Shift+Z (変更可能化 = ユーザー要望)。
+          } else if (commandId == 'redo') {
+            // 旧 redoAlternate (Ctrl+Shift+Z) は廃止 (= ユーザー要望:
+            // Ctrl+Y に同じ機能があるなら要らない)。
             provider.redo();
           } else if (commandId == 'historyBack') {
             // 変更可能化 (= ユーザー要望)。 分割パネルの履歴を優先するのは
@@ -72991,8 +72992,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     'esc',
   };
 
-  /// 旧: Ctrl+Shift+Z → redo の固定エイリアス。 redoAlternate が通常の
-  /// コマンドになった (= 変更可能) ため廃止。 空のまま残す。
+  /// 旧: Ctrl+Shift+Z → redo の固定エイリアス。 Ctrl+Shift+Z の
+  /// やり直しは廃止された (= ユーザー要望: Ctrl+Y があれば要らない) ため
+  /// 空。 仕組みだけ残してある。
   static const Map<String, String> _shortcutAliases = {};
 
   static String _normalizeShortcutCombo(String combo) =>
@@ -78160,11 +78162,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       'labelKey': 'cmd.splitLeftFullscreen',
       'defaultKey': 'Ctrl+Shift+^'
     },
-    {
-      'id': 'redoAlternate',
-      'labelKey': 'cmd.redoAlternate',
-      'defaultKey': 'Ctrl+Shift+Z'
-    },
+    // 旧 'redoAlternate' (Ctrl+Shift+Z = やり直すの別キー) は廃止
+    // (= ユーザー要望: Ctrl+Y に同じ機能があるなら要らない)。
   ];
 
   /// 変更不可のコマンド（固定キー）
@@ -78302,7 +78301,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     {'id': 'newNode'}, // Ctrl+Shift+N
     {'id': 'newPage'}, // Ctrl+Shift+P
     {'id': 'syncDialog'}, // Ctrl+Shift+S
-    {'id': 'redoAlternate'}, // Ctrl+Shift+Z
+    // 旧 redoAlternate (Ctrl+Shift+Z) は廃止 (= ユーザー要望)。
     {'id': 'splitRightFullscreen'}, // Ctrl+Shift+\
     {'id': 'splitLeftFullscreen'}, // Ctrl+Shift+^
   ];
