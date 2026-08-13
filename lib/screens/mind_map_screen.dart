@@ -25913,6 +25913,113 @@ class _MindMapScreenState extends State<MindMapScreen>
     }).join('  ');
   }
 
+  // ── 契約している各サービスの「登録内容の管理」 ページ ──
+  // = ユーザー要望: Amazon などにログインしているアカウントからサブスクを
+  //   取れないか。
+  //
+  // ★ 調べた結果: Amazon / Netflix / YouTube Premium などは、 契約の一覧を
+  //   外部アプリへ渡す API を公開していない (Login with Amazon で分かるのは
+  //   名前・メール・郵便番号だけ。 SP-API は出品者向け)。 つまり「勝手に
+  //   取ってくる」 ことは仕組み上できない。
+  //   代わりに、 アプリ内ブラウザ (ログイン状態はそのまま) で各社の
+  //   契約管理ページを直接開けるようにした。 その場で契約状況を確認でき、
+  //   解約もそのページから行える。
+  static const List<(String, String, String)> _subscriptionServiceLinks = [
+    ('Amazon', 'https://www.amazon.co.jp/gp/primecentral', '🅰'),
+    ('Kindle Unlimited', 'https://www.amazon.co.jp/kindle-dbs/ku/ku-central', '📚'),
+    ('Netflix', 'https://www.netflix.com/YourAccount', '🎬'),
+    ('Spotify', 'https://www.spotify.com/jp/account/overview/', '🎵'),
+    ('YouTube', 'https://www.youtube.com/paid_memberships', '▶'),
+    ('Google', 'https://play.google.com/store/account/subscriptions', '🅶'),
+    ('Apple', 'https://apps.apple.com/account/subscriptions', '🍎'),
+    ('Microsoft', 'https://account.microsoft.com/services/', '🪟'),
+    ('Adobe', 'https://account.adobe.com/plans', '🅰️'),
+    ('Disney+', 'https://www.disneyplus.com/ja-jp/account/subscription', '🏰'),
+    ('DAZN', 'https://www.dazn.com/ja-JP/account', '⚽'),
+    ('Hulu', 'https://www.hulu.jp/account', '🇭'),
+  ];
+
+  /// サービスの契約ページを開くボタン列。
+  Widget _buildSubscriptionServiceLinks(
+      BuildContext dialogContext, void Function(void Function()) setDialog) {
+    final provider = context.read<MindMapProvider>();
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.04),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.white12),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Icon(Icons.travel_explore_rounded,
+              size: 15, color: Color(0xFF80CBC4)),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(provider.t('sub.checkOnService'),
+                style: const TextStyle(
+                    color: Color(0xFF80CBC4),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700)),
+          ),
+        ]),
+        const SizedBox(height: 4),
+        Text(provider.t('sub.checkOnServiceNote'),
+            style: const TextStyle(
+                color: Colors.white38, fontSize: 10.5, height: 1.45)),
+        const SizedBox(height: 8),
+        SizedBox(
+          height: 30,
+          child: ListView(
+            scrollDirection: Axis.horizontal,
+            children: [
+              for (final s in _subscriptionServiceLinks)
+                Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: InkWell(
+                    onTap: () {
+                      Navigator.pop(dialogContext);
+                      _openGoogleSearchDialog(
+                        context,
+                        provider,
+                        initialUrl: s.$2,
+                        customTitle: s.$1,
+                      );
+                    },
+                    borderRadius: BorderRadius.circular(8),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF26A69A).withValues(alpha: 0.14),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                            color:
+                                const Color(0xFF26A69A).withValues(alpha: 0.5)),
+                      ),
+                      child: Row(mainAxisSize: MainAxisSize.min, children: [
+                        Text(s.$3, style: const TextStyle(fontSize: 12)),
+                        const SizedBox(width: 5),
+                        Text(s.$1,
+                            style: const TextStyle(
+                                color: Color(0xFF80CBC4),
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w700)),
+                        const SizedBox(width: 4),
+                        const Icon(Icons.open_in_new_rounded,
+                            size: 11, color: Color(0xFF80CBC4)),
+                      ]),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ]),
+    );
+  }
+
   void _showSubscriptionManagerDialog() {
     final provider = context.read<MindMapProvider>();
     showDialog<void>(
@@ -25944,6 +26051,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                         fontSize: 12,
                         fontWeight: FontWeight.w700)),
               ),
+              const SizedBox(height: 8),
+              // ── 各サービスの契約ページを開いて確認 / 解約する
+              //    (= ユーザー要望: Amazon 等からサブスクを取れないか) ──
+              _buildSubscriptionServiceLinks(dialogContext, setDialog),
               const SizedBox(height: 8),
               Expanded(
                 child: _managedSubscriptions.isEmpty
@@ -29340,13 +29451,55 @@ class _MindMapScreenState extends State<MindMapScreen>
                                                   fontWeight: FontWeight.w600),
                                             ),
                                             const SizedBox(height: 2),
-                                            Text(
-                                              'UID: ${provider.currentUid ?? provider.t('msg.uidNotFetched')}',
-                                              style: const TextStyle(
-                                                  color: Colors.white38,
-                                                  fontSize: 10,
-                                                  fontFamily: 'monospace'),
-                                              overflow: TextOverflow.ellipsis,
+                                            // ── UID はタップでコピー ──
+                                            // (= ユーザー報告: コピーしようと
+                                            //  するとアイコンの設定が開いて
+                                            //  しまう)。 行全体のタップより
+                                            //  内側のこちらが先に受け取る。
+                                            InkWell(
+                                              onTap: () async {
+                                                final uid =
+                                                    provider.currentUid ?? '';
+                                                if (uid.isEmpty) return;
+                                                await Clipboard.setData(
+                                                    ClipboardData(text: uid));
+                                                if (!sctx.mounted) return;
+                                                _appSnack(
+                                                  sctx,
+                                                  SnackBar(
+                                                    backgroundColor:
+                                                        const Color(0xFF43B97F),
+                                                    duration: const Duration(
+                                                        seconds: 2),
+                                                    content: Text(provider
+                                                        .t('msg.uidCopied')),
+                                                  ),
+                                                );
+                                              },
+                                              borderRadius:
+                                                  BorderRadius.circular(4),
+                                              child: Row(
+                                                mainAxisSize: MainAxisSize.min,
+                                                children: [
+                                                  Flexible(
+                                                    child: Text(
+                                                      'UID: ${provider.currentUid ?? provider.t('msg.uidNotFetched')}',
+                                                      style: const TextStyle(
+                                                          color: Colors.white38,
+                                                          fontSize: 10,
+                                                          fontFamily:
+                                                              'monospace'),
+                                                      overflow: TextOverflow
+                                                          .ellipsis,
+                                                    ),
+                                                  ),
+                                                  const SizedBox(width: 4),
+                                                  const Icon(
+                                                      Icons.content_copy_rounded,
+                                                      size: 11,
+                                                      color: Colors.white38),
+                                                ],
+                                              ),
                                             ),
                                             // 名前は Google アカウント由来。
                                             //   手で決める機能は廃止した
@@ -57227,13 +57380,28 @@ class _MindMapScreenState extends State<MindMapScreen>
     final oldId = provider.currentPage.id;
     // 既にアクティブなら何もしない (パン終了とタップの両方から呼ばれても
     // 二重に切り替わらないように冪等にする)。 nodeId の選択処理だけは行う。
-    if (oldId != pageId) {
+    final switched = oldId != pageId;
+    if (switched) {
       final idx = provider.pages.indexWhere((p) => p.id == pageId);
       if (idx < 0) return;
       // ペインで見えていた位置をそのまま編集用コントローラへ、 逆に旧編集
       // ページの位置をペイン用コントローラへ引き継ぐ (見た目が飛ばない)。
-      _ctrlFor(pageId).value = _ctrlFor('split_$pageId').value.clone();
-      _ctrlFor('split_$oldId').value = _ctrlFor(oldId).value.clone();
+      //
+      // ★ 引き渡しは「ページと編集セルを切り替えた後」 に行う
+      //   (= ユーザー報告: アクティブにすると謎に左端へ飛ぶ)。
+      //   ここで先に代入すると、 まだ旧ページ・旧セルのままの状態で
+      //   ギャラリーのパン制限 (_clampBookshelfPan) が働き、 旧ページの
+      //   内容範囲に合わせて位置を切り詰められてしまう。
+      final paneMatrix = _ctrlFor('split_$pageId').value.clone();
+      final editorMatrix = _ctrlFor(oldId).value.clone();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        // 引き渡しの間だけパン制限を止める (中途半端な状態で切り詰めない)。
+        _clampingShelf = true;
+        _ctrlFor(pageId).value = paneMatrix;
+        _ctrlFor('split_$oldId').value = editorMatrix;
+        _clampingShelf = false;
+      });
       // ギャラリーは初回表示時の自動センタリングが走ると位置が飛ぶので、
       // アクティブ化時は「センタリング済み」 扱いにして抑止する
       // (= ユーザー要望: アクティブになった時に変な位置へ動く問題の修正)。
@@ -57279,6 +57447,11 @@ class _MindMapScreenState extends State<MindMapScreen>
         provider.selectNode(nodeId);
         final ctrl = _ctrlFor(pageId);
         if (n.isContainer) {
+          // ★ アクティブ化のためのクリックでは、 格納ノードを開いたり
+          //   閉じたりしない (= ユーザー報告: 分割の別画面を触っただけで
+          //   格納していた子ノードが展開/収納される)。 選ぶだけにして、
+          //   開閉はアクティブになった後のもう 1 回のクリックで行う。
+          if (switched) return;
           if (provider.currentPage.pageType == 'bookshelf') {
             _showBookshelfCoverMenu(n);
           } else {

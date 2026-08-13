@@ -38255,6 +38255,19 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Seu UID',
       'ru': 'Ваш UID',
     },
+    // UID をタップでコピーした時の知らせ (= ユーザー報告: コピーしようと
+    // するとアイコン設定が開いてしまう → UID 行だけコピーに割り当てた)。
+    'msg.uidCopied': {
+      'ja': 'UID をコピーしました',
+      'en': 'Copied the UID',
+      'zh': '已复制 UID',
+      'ko': 'UID를 복사했습니다',
+      'es': 'UID copiado',
+      'fr': 'UID copié',
+      'de': 'UID kopiert',
+      'pt': 'UID copiado',
+      'ru': 'UID скопирован',
+    },
     'msg.uidNotFetched': {
       'ja': '（未取得）',
       'en': '(not available)',
@@ -42095,6 +42108,59 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Снять выбор',
     },
     // ── 手動サブスクリプション管理ダイアログ (= ユーザー要望: 多言語対応) ──
+    // 各サービスの契約ページを開いて確認・解約する (= ユーザー要望:
+    // Amazon 等のアカウントからサブスクを取れないか)。
+    'sub.checkOnService': {
+      'ja': 'サービスの契約ページを開いて確認・解約する',
+      'en': 'Open a service page to check or cancel',
+      'zh': '打开服务的订阅页面查看或取消',
+      'ko': '서비스의 구독 페이지를 열어 확인·해지',
+      'es': 'Abrir la página del servicio para revisar o cancelar',
+      'fr': 'Ouvrir la page du service pour vérifier ou résilier',
+      'de': 'Dienstseite öffnen, um zu prüfen oder zu kündigen',
+      'pt': 'Abrir a página do serviço para verificar ou cancelar',
+      'ru': 'Открыть страницу сервиса, чтобы проверить или отменить',
+    },
+    'sub.checkOnServiceNote': {
+      'ja': 'Amazon などは契約の一覧を外部アプリへ渡す仕組みを公開していないため、'
+          '自動での取り込みはできません。 ログイン済みのアプリ内ブラウザで管理ページを'
+          '開くので、 その場で確認と解約ができます。 金額はここに登録しておくと'
+          '合計や更新前の知らせに使えます。',
+      'en': 'Services like Amazon do not publish a way for other apps to read your '
+          'subscriptions, so they cannot be imported automatically. These buttons '
+          'open the management page in the in-app browser (already signed in), '
+          'where you can check and cancel. Register the amount here to get totals '
+          'and reminders before renewal.',
+      'zh': 'Amazon 等未公开可供外部应用读取订阅的接口，因此无法自动导入。'
+          '这些按钮会在应用内浏览器（已登录）打开管理页面，可直接查看并取消。'
+          '在此登记金额后可用于合计与续费前提醒。',
+      'ko': 'Amazon 등은 구독 목록을 외부 앱에 넘기는 방법을 공개하지 않아 자동으로 '
+          '가져올 수 없습니다. 이 버튼은 로그인된 앱 내 브라우저에서 관리 페이지를 열어 '
+          '바로 확인·해지할 수 있게 합니다. 금액을 여기에 등록하면 합계와 갱신 전 알림에 '
+          '쓰입니다.',
+      'es': 'Servicios como Amazon no publican una forma de que otras apps lean tus '
+          'suscripciones, así que no se pueden importar automáticamente. Estos botones '
+          'abren la página de gestión en el navegador interno (ya con sesión iniciada), '
+          'donde puedes revisar y cancelar. Registra el importe aquí para totales y avisos.',
+      'fr': 'Des services comme Amazon ne publient aucun moyen pour une autre '
+          'application de lire vos abonnements : l import automatique est impossible. '
+          'Ces boutons ouvrent la page de gestion dans le navigateur intégré (déjà '
+          'connecté), où vous pouvez vérifier et résilier. Saisissez le montant ici '
+          'pour les totaux et les rappels.',
+      'de': 'Dienste wie Amazon bieten keine Schnittstelle, über die andere Apps deine '
+          'Abos lesen könnten – ein automatischer Import ist daher nicht möglich. Diese '
+          'Schaltflächen öffnen die Verwaltungsseite im integrierten Browser (bereits '
+          'angemeldet), wo du prüfen und kündigen kannst. Trage den Betrag hier ein für '
+          'Summen und Erinnerungen.',
+      'pt': 'Serviços como a Amazon não publicam uma forma de outros apps lerem suas '
+          'assinaturas, então não dá para importar automaticamente. Estes botões abrem a '
+          'página de gerenciamento no navegador do app (já conectado), onde você pode '
+          'verificar e cancelar. Registre o valor aqui para totais e lembretes.',
+      'ru': 'Такие сервисы, как Amazon, не предоставляют способа читать ваши подписки из '
+          'других приложений, поэтому импортировать их автоматически нельзя. Эти кнопки '
+          'открывают страницу управления во встроенном браузере (вы уже вошли), где можно '
+          'проверить и отменить. Укажите сумму здесь для итогов и напоминаний.',
+    },
     'sub.manageTitle': {
       'ja': 'サブスク管理',
       'en': 'Subscriptions',
