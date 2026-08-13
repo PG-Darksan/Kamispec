@@ -1708,6 +1708,11 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// Esc キー or 画面タップで解除。
   bool _reorderHeaderMode = false;
 
+  /// カスタマイズ画面の「配置中のボタン」 リストの高さ (画面高に対する割合)。
+  /// 0 以下 = 既定 (デスクトップ 0.26 / モバイル 0.32)。 境界のドラッグで
+  /// 変更でき、 prefs `hdrCustPlacedFrac` に保存される (= ユーザー要望)。
+  double _hcbPlacedFrac = 0;
+
   // PC下部カスタムボタンドックをドラッグ/リサイズしている間だけ使う
   // ライブ値。操作終了時に provider へ保存するため、ドラッグ中の
   // SharedPreferences 書き込みとアプリ全体の再描画を避けられる。
@@ -31455,6 +31460,17 @@ class _MindMapScreenState extends State<MindMapScreen>
     // 「ヘッダーに表示中」 リストの RawScrollbar とその子 SingleChildScrollView
     // で共有することで、 サムが常時表示される。
     final ScrollController hcsScrollCtrl = ScrollController();
+    // ── 配置済みリストの高さ (画面高に対する割合)。 境界のドラッグで変更
+    //    できる (= ユーザー要望)。 前回の値を prefs から読み込む。 ──
+    if (_hcbPlacedFrac <= 0) {
+      // ignore: discarded_futures
+      SharedPreferences.getInstance().then((sp) {
+        final v = sp.getDouble('hdrCustPlacedFrac');
+        if (v != null && v > 0) {
+          _hcbPlacedFrac = v.clamp(0.12, 0.68).toDouble();
+        }
+      });
+    }
     // ── Ctrl / Shift でまとめて選択して追加する状態 (= ユーザー要望) ──
     //   候補チップを Ctrl(個別トグル)/Shift(範囲) で複数選択し、「まとめて追加」で
     //   一度にバーへ送れるようにする。 StatefulBuilder の setS をまたいで保持
@@ -31858,7 +31874,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                       // 追加/削除しても枠のサイズも下の「追加できるボタン」の
                       // 位置も動かない。 中身が溢れる場合は内側でスクロールする。
                       SizedBox(
-                        height: maxH * (_isDesktop ? 0.26 : 0.32),
+                        // 境界のドラッグで高さを変えられる (= ユーザー要望)。
+                        height: maxH *
+                            (_hcbPlacedFrac > 0
+                                ? _hcbPlacedFrac
+                                : (_isDesktop ? 0.26 : 0.32)),
                         child: Container(
                           padding: const EdgeInsets.all(8),
                           decoration: BoxDecoration(
@@ -31943,7 +31963,44 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 ),
                         ),
                       ),
-                      const SizedBox(height: 14),
+                      // ── 境界のドラッグバー (= ユーザー要望: 配置済みと
+                      //    追加できるボタンの間の境界を動かして表示領域を
+                      //    変えられるように)。 変更した高さは次回も引き継ぐ。 ──
+                      MouseRegion(
+                        cursor: SystemMouseCursors.resizeUpDown,
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onVerticalDragUpdate: (d) {
+                            setS(() {
+                              final cur = _hcbPlacedFrac > 0
+                                  ? _hcbPlacedFrac
+                                  : (_isDesktop ? 0.26 : 0.32);
+                              _hcbPlacedFrac = (cur + d.delta.dy / maxH)
+                                  .clamp(0.12, 0.68)
+                                  .toDouble();
+                            });
+                          },
+                          onVerticalDragEnd: (_) {
+                            // ignore: discarded_futures
+                            SharedPreferences.getInstance().then((sp) => sp
+                                .setDouble(
+                                    'hdrCustPlacedFrac', _hcbPlacedFrac));
+                          },
+                          child: SizedBox(
+                            height: 14,
+                            child: Center(
+                              child: Container(
+                                width: 64,
+                                height: 4,
+                                decoration: BoxDecoration(
+                                  color: Colors.white24,
+                                  borderRadius: BorderRadius.circular(2),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
 
                       // 追加可能なボタン一覧。
                       // 候補ゼロでもセクションごと消さずに枠だけ残す
@@ -150148,13 +150205,17 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                   color: const Color(0xFF4FC3F7),
                   size: 18),
               const SizedBox(width: 6),
-              Expanded(
+              Flexible(
                 child: Text(_aiPanelLabel,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                         color: Colors.white,
                         fontSize: 13,
                         fontWeight: FontWeight.w700)),
               ),
+              // ── モデル (AI) 切替は名前のすぐ右に置く (= ユーザー要望:
+              //    右端まで離れていると切替ボタンだと分からない)。 ──
               PopupMenuButton<String>(
                 tooltip: context.read<MindMapProvider>().t('pdf.aiSelectTip'),
                 icon: const Icon(Icons.expand_more_rounded,
@@ -150163,6 +150224,7 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                 onSelected: _openAiPanel,
                 itemBuilder: (_) => _aiMenuItems(),
               ),
+              const Spacer(),
               // ── 戻る (= ユーザー要望: リンクを踏んだ時に戻れるように) ──
               IconButton(
                 tooltip: context.read<MindMapProvider>().t('btn.back'),
@@ -153934,6 +153996,31 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                           ),
                         ],
                         // 読む方向の切替は ⋮ 設定メニューの一番上へ移動 (= ユーザー要望)。
+                        // ── メモパネルの開閉 (外に出す) ──
+                        // ★ メモは左パネルに開くので、 ボタンも AI (右パネル) より
+                        //   左に置く (= ユーザー要望: ヘッダーの並びと開かれる
+                        //   左右が逆なのが気になる)。
+                        if (hasMemoPanel)
+                          IconButton(
+                            tooltip: _memoPanelOpen
+                                ? 'メモパネルを閉じる (Ctrl+M)'
+                                : 'メモパネルを開く (Ctrl+M)',
+                            icon: Icon(
+                              _memoPanelOpen
+                                  ? Icons.sticky_note_2
+                                  : Icons.sticky_note_2_outlined,
+                              color: const Color(0xFFFFC107),
+                              size: 20,
+                            ),
+                            onPressed: () async {
+                              _suppressPdfPageChangeBriefly();
+                              // 開くタイミングでマップへ追加する (メモは
+                              // ノードに紐付くため)。
+                              if (!_memoPanelOpen) await _ensureNode();
+                              if (!mounted) return;
+                              setState(() => _memoPanelOpen = !_memoPanelOpen);
+                            },
+                          ),
                         // ── 生成 AI チャット欄を開く / 閉じる (トグル) ──
                         // 左クリック: 開いていなければ既定 AI を開く。 既に
                         //   開いていれば閉じる (= ユーザー要望「AI のアイコンを
@@ -153970,28 +154057,6 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                             },
                           ),
                         ),
-                        // ── メモパネルの開閉 (外に出す) ──
-                        if (hasMemoPanel)
-                          IconButton(
-                            tooltip: _memoPanelOpen
-                                ? 'メモパネルを閉じる (Ctrl+M)'
-                                : 'メモパネルを開く (Ctrl+M)',
-                            icon: Icon(
-                              _memoPanelOpen
-                                  ? Icons.sticky_note_2
-                                  : Icons.sticky_note_2_outlined,
-                              color: const Color(0xFFFFC107),
-                              size: 20,
-                            ),
-                            onPressed: () async {
-                              _suppressPdfPageChangeBriefly();
-                              // 開くタイミングでマップへ追加する (メモは
-                              // ノードに紐付くため)。
-                              if (!_memoPanelOpen) await _ensureNode();
-                              if (!mounted) return;
-                              setState(() => _memoPanelOpen = !_memoPanelOpen);
-                            },
-                          ),
                         // ── ページに追加 (= ユーザー要望) ──
                         // まだマップに載っていない時だけ出す。
                         if (_canAddToPage)
@@ -159594,15 +159659,11 @@ class _PdfMemoPanelState extends State<_PdfMemoPanel> {
       BuildContext ctx, MindMapProvider provider, List<PdfMemo> memos) {
     return Row(
       children: [
-        const Icon(Icons.sticky_note_2, color: Color(0xFFFFC107), size: 18),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Text(context.read<MindMapProvider>().t('common.memoLabel'),
-              style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600)),
-        ),
+        // 「Memo」 の文字は出さない (= ユーザー報告: 幅が足りず 2 行に
+        //   折り返して見苦しい)。 アイコンだけにして横のボタンに場所を譲る。
+        Icon(Icons.sticky_note_2, color: const Color(0xFFFFC107), size: 18,
+            semanticLabel: context.read<MindMapProvider>().t('common.memoLabel')),
+        const Spacer(),
         // 選択モード突入ボタン (メモが 1 つもない時は非表示)
         if (memos.isNotEmpty)
           IconButton(
@@ -161197,6 +161258,7 @@ class _PdfMemoEditDialogState extends State<_PdfMemoEditDialog> {
   /// 画像が消える」 バグを防ぐ (= ユーザー要望)。
   String? _attachedImagePath;
 
+  /// メモの色 (= ユーザー要望: カラーバリエーションが少ないから増やす)。
   static const _palette = <int>[
     0xFFFFC107, // amber
     0xFF4FC3F7, // light blue
@@ -161204,6 +161266,14 @@ class _PdfMemoEditDialogState extends State<_PdfMemoEditDialog> {
     0xFFE57373, // red
     0xFF9575CD, // purple
     0xFFFFB347, // orange
+    0xFF26C6DA, // cyan
+    0xFFF06292, // pink
+    0xFFAED581, // light green
+    0xFF7986CB, // indigo
+    0xFFA1887F, // brown
+    0xFF90A4AE, // blue grey
+    0xFFFFF176, // light yellow
+    0xFFFFFFFF, // white
   ];
 
   @override
@@ -161400,7 +161470,11 @@ class _PdfMemoEditDialogState extends State<_PdfMemoEditDialog> {
 
     return AlertDialog(
       backgroundColor: const Color(0xFF1E1E2E),
-      title: Text(isEdit ? 'メモを編集' : 'メモを追加',
+      // 多言語対応 (= ユーザー報告: タイトルと追加ボタンが日本語固定だった)。
+      title: Text(
+          context
+              .read<MindMapProvider>()
+              .t(isEdit ? 'pmemo.editTitle' : 'pmemo.addTitle'),
           style: const TextStyle(color: Colors.white)),
       content: SizedBox(
         width: 380,
@@ -161488,7 +161562,9 @@ class _PdfMemoEditDialogState extends State<_PdfMemoEditDialog> {
               backgroundColor: const Color(0xFFFFC107),
               foregroundColor: Colors.black87),
           onPressed: _handleConfirm,
-          child: Text(isEdit ? '更新' : '追加'),
+          child: Text(context
+              .read<MindMapProvider>()
+              .t(isEdit ? 'btn.update' : 'btn.add')),
         ),
       ],
     );
