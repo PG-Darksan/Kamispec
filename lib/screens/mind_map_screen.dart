@@ -824,6 +824,84 @@ String _splitVideoFillJs(bool on) {
 ''';
 }
 
+/// 音楽サイト (SoundCloud / Spotify 等) を裏に回っても止めない JS
+/// (= ユーザー要望: バックグラウンド再生)。
+///
+/// 仕組み: ページは `visibilitychange` / `blur` を見て自分で一時停止する
+/// ことがあるので、
+///   1) document.hidden / visibilityState を常に「表示中」 と答えさせる
+///   2) それらのイベントを握りつぶす
+///   3) 念のため、 勝手に止まった `<audio>/<video>` を鳴らし直す
+/// の 3 つを行う。 ユーザーが自分で押した一時停止は尊重する
+/// (= 直前に再生中だった要素だけを鳴らし直す)。
+const String _kWebAudioKeepAliveJs = r'''
+(function(){
+  if (window.__mmAudioKeepAlive) return;
+  window.__mmAudioKeepAlive = true;
+  try {
+    // 1) 「隠れていない」 ことにする
+    Object.defineProperty(document, 'hidden',
+        {configurable: true, get: function(){ return false; }});
+    Object.defineProperty(document, 'visibilityState',
+        {configurable: true, get: function(){ return 'visible'; }});
+    Object.defineProperty(document, 'webkitHidden',
+        {configurable: true, get: function(){ return false; }});
+  } catch(e) {}
+  // 2) 停止のきっかけになるイベントを止める
+  ['visibilitychange','webkitvisibilitychange','blur','pagehide','freeze']
+      .forEach(function(t){
+    window.addEventListener(t, function(ev){
+      ev.stopImmediatePropagation();
+    }, true);
+    document.addEventListener(t, function(ev){
+      ev.stopImmediatePropagation();
+    }, true);
+  });
+  // 3) 勝手に止まったら鳴らし直す (利用者の一時停止は尊重)
+  function media(){
+    try {
+      return [].slice.call(document.querySelectorAll('audio,video'));
+    } catch(e) { return []; }
+  }
+  media().forEach(function(m){
+    if (m.__mmHooked) return;
+    m.__mmHooked = true;
+    m.addEventListener('play', function(){ m.__mmWanted = true; });
+    m.addEventListener('pause', function(){
+      // 利用者操作なら __mmUserPause が直前に立つ
+      if (!m.__mmUserPause) {
+        setTimeout(function(){
+          try { if (m.__mmWanted && m.paused) m.play(); } catch(e){}
+        }, 200);
+      }
+      m.__mmUserPause = false;
+    });
+  });
+  document.addEventListener('click', function(){
+    media().forEach(function(m){ m.__mmUserPause = true; });
+  }, true);
+  document.addEventListener('keydown', function(){
+    media().forEach(function(m){ m.__mmUserPause = true; });
+  }, true);
+  if (window.__mmAudioTimer) clearInterval(window.__mmAudioTimer);
+  window.__mmAudioTimer = setInterval(function(){
+    media().forEach(function(m){
+      if (m.__mmHooked) return;
+      m.__mmHooked = true;
+      m.addEventListener('play', function(){ m.__mmWanted = true; });
+      m.addEventListener('pause', function(){
+        if (!m.__mmUserPause) {
+          setTimeout(function(){
+            try { if (m.__mmWanted && m.paused) m.play(); } catch(e){}
+          }, 200);
+        }
+        m.__mmUserPause = false;
+      });
+    });
+  }, 2000);
+})();
+''';
+
 String _webVideoRateJs(double rawRate) {
   final rate = rawRate.clamp(0.25, 16.0).toDouble().toStringAsFixed(3);
   return '''
@@ -1253,12 +1331,8 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 集中ロック (Android のみ。設定した時間だけ全画面ロック)
   OverlayEntry? _focusLockOverlay;
 
-  /// 同一ネットワーク内で現在ページを一時共有するローカル HTTP サーバー。
-  HttpServer? _lanShareServer;
-
-  /// LAN 共有ダイアログで最後に入力した相手側 URL。
-  static const String _lastLanShareImportUrlKey =
-      'last_lan_share_import_url_v1';
+  // LAN 共有 (_lanShareServer / _lastLanShareImportUrlKey) は廃止
+  //   (= ユーザー要望: リアルタイム共同編集があるので不要)。
 
   /// アプリ外脱出ロック (Android のみ。タイマー無しのトグル式)。
   /// カスタムボタン 'appLock' で ON/OFF する。ON の間は OS の画面固定
@@ -5219,8 +5293,6 @@ class _MindMapScreenState extends State<MindMapScreen>
     _weatherOverlay = null;
     _focusLockOverlay?.remove();
     _focusLockOverlay = null;
-    _lanShareServer?.close(force: true);
-    _lanShareServer = null;
     _focusLockScheduleTimer?.cancel();
     _focusLockScheduleTimer = null;
     _geofenceTimer?.cancel();
@@ -33023,12 +33095,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       'icon': Icons.menu_book_rounded,
       'color': Color(0xFF37B7C3),
     },
-    {
-      'id': 'sharePageLan',
-      'labelKey': 'hdr.sharePageLan',
-      'icon': Icons.share_rounded,
-      'color': Color(0xFF26C6DA),
-    },
+    // 旧 'sharePageLan' (LAN 共有) は廃止 (= ユーザー要望: サーバー経由の
+    //   リアルタイム共同編集があるので不要)。
     // ── お気に入りページ スロット (customPage1〜5) は配置候補から除外 ──
     // 旧仕様では事前定義された 5 個のスロットを配置エディタから選んで
     // ヘッダー / フッターに置いてもらう方式だったが、 「英語キーがそのまま
@@ -33265,7 +33333,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       'icon': Icons.language_rounded,
       'commandIds': <String>[
         'googleSearch',
-        'sharePageLan',
+        // 'sharePageLan' (LAN 共有) は廃止 (= ユーザー要望)。
         'openGmail',
         'openYoutube',
         'openSoundCloud',
@@ -33421,10 +33489,19 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (commandId == 'moveLockMenu') {
       return PopupMenuButton<String>(
         tooltip: provider.t('hdr.moveLockMenu'),
+        // ★ 他のヘッダーボタン (InkWell + padding12 + icon20 = 44px 四方) と
+        //   同じ寸法にそろえる (= ユーザー報告: ボタンの配置が歪に見える)。
+        //   PopupMenuButton の既定は padding8 + icon24 + 最小 48px で、
+        //   1 個だけ大きく/詰まって見えていた。
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints.tightFor(
+            width: _kHeaderCustomButtonExtent - 4,
+            height: _kHeaderCustomButtonExtent - 4),
+        iconSize: 20,
         icon: Icon(icon,
             color:
                 (_lockH || _lockV) ? const Color(0xFFE53935) : defaultOnColor,
-            size: 22),
+            size: 20),
         color: const Color(0xFF1E1E32),
         onSelected: (id) => _executeHeaderCommand(id, provider),
         itemBuilder: (_) => [
@@ -33447,7 +33524,13 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (commandId == 'refMenu') {
       return PopupMenuButton<String>(
         tooltip: provider.t('hdr.refMenu'),
-        icon: Icon(icon, color: defaultOnColor, size: 22),
+        // 他のヘッダーボタンと同じ寸法にそろえる (= ユーザー報告)。
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints.tightFor(
+            width: _kHeaderCustomButtonExtent - 4,
+            height: _kHeaderCustomButtonExtent - 4),
+        iconSize: 20,
+        icon: Icon(icon, color: defaultOnColor, size: 20),
         color: const Color(0xFF1E1E32),
         onSelected: (v) {
           if (v == 'goRef') {
@@ -35547,9 +35630,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       case 'googleSearch':
         _openGoogleSearchDialog(context, provider);
         break;
-      case 'sharePageLan':
-        _shareCurrentPageOnLan(provider);
-        break;
+      // 'sharePageLan' (LAN 共有) は廃止 (= ユーザー要望)。 配置済みでも
+      //   何も起きない。
       case 'openClaude':
         _toggleUrlInSplitPanel('https://claude.ai/');
         break;
@@ -57005,6 +57087,24 @@ class _MindMapScreenState extends State<MindMapScreen>
               },
             ),
 
+            // ── トグル: 音楽サイトのバックグラウンド再生 (= ユーザー要望:
+            //    SoundCloud / Spotify を裏に回っても止めない) ──
+            _settingsToggleTile(
+              icon: provider.webAudioBackground
+                  ? Icons.music_note_rounded
+                  : Icons.music_off_rounded,
+              color: provider.webAudioBackground
+                  ? const Color(0xFF66BB6A)
+                  : Colors.white54,
+              title: provider.t('menu.webAudioBg'),
+              helpKey: 'help.webAudioBg',
+              value: provider.webAudioBackground,
+              onChanged: (v) {
+                provider.setWebAudioBackground(v);
+                setS(() {});
+              },
+            ),
+
             // ── トグル: 「アプリで開く」 を別ウィンドウで開くか (Windows のみ。
             //    = ユーザー要望: 既に起動しているならその画面で開き、 別アプリを
             //    立ち上げるかは設定で選べるように) ──
@@ -59362,38 +59462,6 @@ class _MindMapScreenState extends State<MindMapScreen>
                         // ── グループ枠の拡張ハンドル ──
                         ..._buildGroupResizeHandles(provider, nodes, ctrl),
                       ],
-                      RepaintBoundary(
-                        child: CustomPaint(
-                        size: Size(canvasSize, canvasSize),
-                        painter: ConnectionPainter(
-                            // 設定した線の形を既存の接続にも反映する
-                            // (= これまで渡しておらず既定のままだった)。
-                            lineStyle: provider.connectionLineStyle,
-                            nodes: _movingNodes(nodes),
-                            // 格納ノード処理:
-                            //   両端が隠れているノード → 非表示
-                            //   片方だけが隠れている → 見えている側と「その隠れたノードの
-                            //   格納先コンテナ」の接続に置換し、コンテナが外部と接続しているように見せる
-                            // ギャラリー(本棚)では要素同士を繋ぐリンクは出さない
-                            //   (= ユーザー要望)。
-                            connections: provider.currentPage.pageType ==
-                                    'bookshelf'
-                                ? const <NodeConnection>[]
-                                : _cullConnections(
-                                    _effectiveConnections(nodes, connections),
-                                    nodes,
-                                    cullRect),
-                            selectedConnections: _selectedConnections,
-                            selectedBendIndices:
-                                _selectedBendIndicesFor(connections),
-                            // ライトモード時に pale な黄色の接続線を濃く補正するため
-                            isDarkMode: provider.isDarkMode,
-                            // 背景 (壁紙) の明暗に合わせて線色を自動調整
-                            // (= ユーザー要望)。
-                            darkBackground: _pageBackgroundIsDark(
-                                provider, provider.currentPage)),
-                        ),
-                      ),
                       // ── 装飾図形の描画 (= 直線/矢印/長方形/楕円) ──
                       // ユーザー要望「直線や矢印線、 長方形等の図形を挿入できる
                       //   ようにして」 への対応。 provider.decorations を読み取って、
@@ -59435,6 +59503,41 @@ class _MindMapScreenState extends State<MindMapScreen>
                             // 描く (= 5 段階レイヤー)。 ここは 1〜3 だけ。
                             layers: const {1, 2, 3},
                           ),
+                        ),
+                      ),
+                      // ── 接続線はノードと同じ層 (レイヤー3相当) に描く ──
+                      // (= ユーザー報告: 接続線が図形のレイヤー1より下に
+                      //  来てしまう)。 図形レイヤー1〜3 の後、 ノードの直前。
+                      RepaintBoundary(
+                        child: CustomPaint(
+                        size: Size(canvasSize, canvasSize),
+                        painter: ConnectionPainter(
+                            // 設定した線の形を既存の接続にも反映する
+                            // (= これまで渡しておらず既定のままだった)。
+                            lineStyle: provider.connectionLineStyle,
+                            nodes: _movingNodes(nodes),
+                            // 格納ノード処理:
+                            //   両端が隠れているノード → 非表示
+                            //   片方だけが隠れている → 見えている側と「その隠れたノードの
+                            //   格納先コンテナ」の接続に置換し、コンテナが外部と接続しているように見せる
+                            // ギャラリー(本棚)では要素同士を繋ぐリンクは出さない
+                            //   (= ユーザー要望)。
+                            connections: provider.currentPage.pageType ==
+                                    'bookshelf'
+                                ? const <NodeConnection>[]
+                                : _cullConnections(
+                                    _effectiveConnections(nodes, connections),
+                                    nodes,
+                                    cullRect),
+                            selectedConnections: _selectedConnections,
+                            selectedBendIndices:
+                                _selectedBendIndicesFor(connections),
+                            // ライトモード時に pale な黄色の接続線を濃く補正するため
+                            isDarkMode: provider.isDarkMode,
+                            // 背景 (壁紙) の明暗に合わせて線色を自動調整
+                            // (= ユーザー要望)。
+                            darkBackground: _pageBackgroundIsDark(
+                                provider, provider.currentPage)),
                         ),
                       ),
                       // ── 選択中の図形のハンドル (移動 / リサイズ) ──
@@ -67187,524 +67290,9 @@ class _MindMapScreenState extends State<MindMapScreen>
 </body></html>''';
   }
 
-  bool _isPrivateIpv4(String host) {
-    final parts = host.split('.').map(int.tryParse).toList();
-    if (parts.length != 4 || parts.any((p) => p == null)) return false;
-    final a = parts[0]!;
-    final b = parts[1]!;
-    return a == 10 ||
-        (a == 172 && b >= 16 && b <= 31) ||
-        (a == 192 && b == 168);
-  }
-
-  Future<String> _lanShareHostAddress() async {
-    try {
-      final interfaces = await NetworkInterface.list(
-          type: InternetAddressType.IPv4, includeLinkLocal: false);
-      final addresses = <InternetAddress>[
-        for (final iface in interfaces)
-          for (final a in iface.addresses)
-            if (!a.isLoopback) a,
-      ];
-      final private = addresses.where((a) => _isPrivateIpv4(a.address));
-      if (private.isNotEmpty) return private.first.address;
-      if (addresses.isNotEmpty) return addresses.first.address;
-    } catch (_) {}
-    return InternetAddress.loopbackIPv4.address;
-  }
-
-  Future<void> _shareCurrentPageOnLan(MindMapProvider provider) async {
-    try {
-      await _lanShareServer?.close(force: true);
-      _lanShareServer = null;
-
-      final page = provider.currentPage;
-      final jsonStr = provider.exportPageAsJson(page.id);
-      final html = _buildMapPreviewHtml(jsonStr, page.name);
-      final body = utf8.encode(html);
-      final jsonBody = utf8.encode(jsonStr);
-
-      // ── 公開サーバーは「共有を開始」を押すまで起動しない (= ユーザー要望) ──
-      // 共有ダイアログを開いただけでは LAN にサーバーを公開しない。
-      String url = '';
-      String jsonUrl = '';
-      bool sharing = false;
-      bool startingShare = false;
-
-      String clipboardBeforeShare = '';
-      try {
-        clipboardBeforeShare =
-            (await Clipboard.getData(Clipboard.kTextPlain))?.text?.trim() ?? '';
-      } catch (_) {}
-
-      SharedPreferences? sharePrefs;
-      String lastImportUrl = '';
-      try {
-        sharePrefs = await SharedPreferences.getInstance();
-        lastImportUrl =
-            sharePrefs.getString(_lastLanShareImportUrlKey)?.trim() ?? '';
-      } catch (_) {}
-
-      bool isHttpUrl(String value) {
-        final parsed = Uri.tryParse(value.trim());
-        return parsed != null &&
-            parsed.host.isNotEmpty &&
-            (parsed.scheme == 'http' || parsed.scheme == 'https');
-      }
-
-      final importUrlController = TextEditingController(
-        text: lastImportUrl.isNotEmpty
-            ? lastImportUrl
-            : (isHttpUrl(clipboardBeforeShare) ? clipboardBeforeShare : ''),
-      );
-      bool importingSharedPage = false;
-      String? importError;
-
-      Future<void> importSharedPage(
-          BuildContext dctx, StateSetter setDialogState) async {
-        if (importingSharedPage) return;
-        final input = importUrlController.text.trim();
-        final uri = Uri.tryParse(input);
-        if (uri == null ||
-            uri.host.isEmpty ||
-            (uri.scheme != 'http' && uri.scheme != 'https')) {
-          setDialogState(() {
-            importError = 'http:// または https:// で始まる共有URLを入力してください。';
-          });
-          return;
-        }
-
-        // 共有ダイアログで最初に表示される URL はプレビュー用のルート URL。
-        // 相手がそれをそのまま貼り付けても、アプリ間読み込みでは JSON の
-        // エンドポイントへ自動で解決する。明示的な /page.json や他の JSON URL
-        // が入力された場合は、その URL を変更せずに利用する。
-        final fetchUri = uri.path.isEmpty || uri.path == '/'
-            ? uri.replace(path: '/page.json', fragment: '')
-            : uri;
-
-        setDialogState(() {
-          importingSharedPage = true;
-          importError = null;
-        });
-
-        try {
-          try {
-            final prefs = sharePrefs ?? await SharedPreferences.getInstance();
-            await prefs.setString(_lastLanShareImportUrlKey, input);
-            sharePrefs = prefs;
-          } catch (_) {}
-
-          const maxResponseBytes = 10 * 1024 * 1024;
-          final client = http.Client();
-          late final String responseText;
-          try {
-            final request = http.Request('GET', fetchUri)
-              ..followRedirects = true
-              ..maxRedirects = 3;
-            final response =
-                await client.send(request).timeout(const Duration(seconds: 10));
-            if (response.statusCode < 200 || response.statusCode >= 300) {
-              throw HttpException('HTTP ${response.statusCode}',
-                  uri: response.request?.url);
-            }
-            final announcedLength = response.contentLength;
-            if (announcedLength != null && announcedLength > maxResponseBytes) {
-              throw const FormatException('共有データが10MBを超えています。');
-            }
-
-            final bytes = BytesBuilder(copy: false);
-            int receivedBytes = 0;
-            await response.stream.forEach((chunk) {
-              receivedBytes += chunk.length;
-              if (receivedBytes > maxResponseBytes) {
-                throw const FormatException('共有データが10MBを超えています。');
-              }
-              bytes.add(chunk);
-            }).timeout(const Duration(seconds: 20));
-            responseText = utf8.decode(bytes.takeBytes(), allowMalformed: true);
-          } finally {
-            client.close();
-          }
-
-          if (!dctx.mounted) return;
-          final result = provider.importFromJsonString(responseText);
-          if (result['success'] != true) {
-            throw FormatException(
-                (result['message'] ?? '共有ページを読み込めませんでした').toString());
-          }
-
-          final firstPageId = result['firstPageId'] as String?;
-          if (firstPageId == null || firstPageId.isEmpty) {
-            throw const FormatException('共有データに読み込めるページがありません。');
-          }
-          final index =
-              provider.pages.indexWhere((page) => page.id == firstPageId);
-          if (index < 0) {
-            throw const FormatException('読み込んだページを開けませんでした。');
-          }
-          provider.switchPage(index);
-
-          if (dctx.mounted) Navigator.pop(dctx);
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) _centerOnRoot();
-          });
-          if (!mounted) return;
-          _appSnack(
-            context,
-            SnackBar(
-              backgroundColor: const Color(0xFF43B97F),
-              content: Text(context.read<MindMapProvider>().t('share.loaded'),
-                  style: const TextStyle(color: Colors.white)),
-            ),
-          );
-        } catch (e) {
-          if (!dctx.mounted) return;
-          setDialogState(() {
-            importingSharedPage = false;
-            importError = context
-                .read<MindMapProvider>()
-                .t('share.loadFailed')
-                .replaceFirst('{e}', '$e');
-          });
-        }
-      }
-
-      // ── 「共有を開始」= ここで初めて公開サーバーを起動する (= ユーザー要望) ──
-      Future<void> startSharing(StateSetter setDialogState) async {
-        if (sharing || startingShare) return;
-        setDialogState(() => startingShare = true);
-        try {
-          final server =
-              await HttpServer.bind(InternetAddress.anyIPv4, 0, shared: true);
-          _lanShareServer = server;
-          final host = await _lanShareHostAddress();
-          url = 'http://$host:${server.port}/';
-          jsonUrl = '${url}page.json';
-
-          server.listen((request) async {
-            try {
-              if (request.uri.path == '/favicon.ico') {
-                request.response.statusCode = HttpStatus.notFound;
-                await request.response.close();
-                return;
-              }
-              if (request.uri.path == '/page.json') {
-                request.response.headers.contentType =
-                    ContentType('application', 'json', charset: 'utf-8');
-                request.response.headers
-                    .set(HttpHeaders.cacheControlHeader, 'no-store');
-                request.response.add(jsonBody);
-                await request.response.close();
-                return;
-              }
-              request.response.headers.contentType = ContentType.html;
-              request.response.headers
-                  .set(HttpHeaders.cacheControlHeader, 'no-store');
-              request.response.add(body);
-              await request.response.close();
-            } catch (_) {}
-          });
-
-          try {
-            await Clipboard.setData(ClipboardData(text: url));
-          } catch (_) {}
-          if (mounted) {
-            _appSnack(
-              context,
-              SnackBar(
-                backgroundColor: const Color(0xFF43B97F),
-                content: Text(
-                    context.read<MindMapProvider>()
-                        .t('share.urlCopied')
-                        .replaceFirst('{url}', url),
-                    style: const TextStyle(color: Colors.white)),
-                duration: const Duration(seconds: 4),
-              ),
-            );
-          }
-          setDialogState(() {
-            sharing = true;
-            startingShare = false;
-          });
-        } catch (e) {
-          _lanShareServer = null;
-          setDialogState(() {
-            sharing = false;
-            startingShare = false;
-          });
-          if (mounted) {
-            _appSnack(
-              context,
-              SnackBar(
-                backgroundColor: const Color(0xFFFF6B6B),
-                content: Text(
-                    context.read<MindMapProvider>()
-                        .t('share.startFailed')
-                        .replaceFirst('{e}', '$e'),
-                    style: const TextStyle(color: Colors.white)),
-              ),
-            );
-          }
-        }
-      }
-
-      Future<void> stopSharing(StateSetter setDialogState) async {
-        await _lanShareServer?.close(force: true);
-        _lanShareServer = null;
-        url = '';
-        jsonUrl = '';
-        setDialogState(() => sharing = false);
-      }
-
-      if (!mounted) return;
-      try {
-        await showDialog<void>(
-          context: context,
-          builder: (dctx) => StatefulBuilder(
-            builder: (dctx, setDialogState) => AlertDialog(
-              backgroundColor: const Color(0xFF1E1E32),
-              title: Text(context.read<MindMapProvider>().t('share.lanTitle'),
-                  style:
-                      const TextStyle(color: Colors.white, fontSize: 16)),
-              content: SizedBox(
-                width: 420,
-                child: SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // ── ファイアウォールで弾かれ得る旨の注意書き (= ユーザー要望) ──
-                      Container(
-                        padding: const EdgeInsets.all(10),
-                        decoration: BoxDecoration(
-                          color:
-                              const Color(0xFFFFB347).withValues(alpha: 0.12),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
-                              color: const Color(0xFFFFB347)
-                                  .withValues(alpha: 0.5)),
-                        ),
-                        // 多言語対応 (= ユーザー報告: 日本語のままだった)。
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Icon(Icons.warning_amber_rounded,
-                                color: Color(0xFFFFB347), size: 18),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                context
-                                    .read<MindMapProvider>()
-                                    .t('share.fwWarn'),
-                                style: const TextStyle(
-                                    color: Color(0xFFFFD9A0), fontSize: 11),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                      if (!sharing) ...[
-                        Text(context.read<MindMapProvider>().t('share.startDesc'),
-                            style: const TextStyle(
-                                color: Colors.white60, fontSize: 12)),
-                        const SizedBox(height: 12),
-                        SizedBox(
-                          width: double.infinity,
-                          child: ElevatedButton.icon(
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFF43B97F),
-                              foregroundColor: Colors.white,
-                            ),
-                            onPressed: startingShare
-                                ? null
-                                : () => startSharing(setDialogState),
-                            icon: startingShare
-                                ? const SizedBox(
-                                    width: 16,
-                                    height: 16,
-                                    child: CircularProgressIndicator(
-                                        strokeWidth: 2, color: Colors.white),
-                                  )
-                                : const Icon(Icons.wifi_tethering_rounded,
-                                    size: 18),
-                            label: Text(context.read<MindMapProvider>().t(
-                                startingShare
-                                    ? 'share.starting'
-                                    : 'share.startBtn')),
-                          ),
-                        ),
-                      ] else ...[
-                        Text(
-                            context
-                                .read<MindMapProvider>()
-                                .t('share.sharingDesc'),
-                            style: const TextStyle(
-                                color: Colors.white60, fontSize: 12)),
-                        const SizedBox(height: 12),
-                        SelectableText(url,
-                            style: const TextStyle(
-                                color: Color(0xFF4FC3F7),
-                                fontSize: 13,
-                                fontWeight: FontWeight.w700)),
-                        const SizedBox(height: 12),
-                        Text(context.read<MindMapProvider>().t('share.jsonHint'),
-                            style: const TextStyle(
-                                color: Colors.white60, fontSize: 12)),
-                        const SizedBox(height: 6),
-                        SelectableText(jsonUrl,
-                            style: const TextStyle(
-                                color: Color(0xFF43B97F),
-                                fontSize: 13,
-                                fontWeight: FontWeight.w700)),
-                        const SizedBox(height: 8),
-                        Text(context.read<MindMapProvider>().t('share.activeUntil'),
-                            style: const TextStyle(
-                                color: Colors.white38, fontSize: 11)),
-                      ],
-                      const SizedBox(height: 16),
-                      const Divider(color: Colors.white12, height: 1),
-                      const SizedBox(height: 14),
-                      TextField(
-                        controller: importUrlController,
-                        enabled: !importingSharedPage,
-                        keyboardType: TextInputType.url,
-                        autocorrect: false,
-                        style:
-                            const TextStyle(color: Colors.white, fontSize: 13),
-                        decoration: InputDecoration(
-                          labelText: context.read<MindMapProvider>().t('share.peerUrl'),
-                          labelStyle: const TextStyle(color: Colors.white60),
-                          hintText: 'http://192.168.x.x:xxxx/',
-                          hintStyle: const TextStyle(color: Colors.white24),
-                          filled: true,
-                          fillColor: const Color(0xFF151526),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          suffixIcon: IconButton(
-                            icon: const Icon(Icons.content_paste_rounded,
-                                color: Color(0xFF4FC3F7)),
-                            onPressed: importingSharedPage
-                                ? null
-                                : () async {
-                                    try {
-                                      var pasted = (await Clipboard.getData(
-                                                  Clipboard.kTextPlain))
-                                              ?.text
-                                              ?.trim() ??
-                                          '';
-                                      if ((pasted == url ||
-                                              pasted == jsonUrl) &&
-                                          isHttpUrl(clipboardBeforeShare)) {
-                                        pasted = clipboardBeforeShare;
-                                      }
-                                      if (!dctx.mounted || pasted.isEmpty)
-                                        return;
-                                      importUrlController
-                                        ..text = pasted
-                                        ..selection = TextSelection.collapsed(
-                                            offset: pasted.length);
-                                      setDialogState(() => importError = null);
-                                    } catch (_) {}
-                                  },
-                          ),
-                        ),
-                        onSubmitted: importingSharedPage
-                            ? null
-                            : (_) => importSharedPage(dctx, setDialogState),
-                        onChanged: (_) {
-                          if (importError != null) {
-                            setDialogState(() => importError = null);
-                          }
-                        },
-                      ),
-                      if (importError != null) ...[
-                        const SizedBox(height: 8),
-                        Text(importError!,
-                            style: const TextStyle(
-                                color: Color(0xFFFF8A80), fontSize: 11)),
-                      ],
-                      const SizedBox(height: 10),
-                      SizedBox(
-                        width: double.infinity,
-                        child: ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF26A69A),
-                            foregroundColor: Colors.white,
-                          ),
-                          onPressed: importingSharedPage
-                              ? null
-                              : () => importSharedPage(dctx, setDialogState),
-                          icon: importingSharedPage
-                              ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(
-                                      strokeWidth: 2, color: Colors.white),
-                                )
-                              : const Icon(Icons.download_rounded, size: 18),
-                          label: Text(context.read<MindMapProvider>().t(
-                              importingSharedPage
-                                  ? 'share.loading'
-                                  : 'share.loadBtn')),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              actions: [
-                if (sharing) ...[
-                  TextButton.icon(
-                    icon: const Icon(Icons.stop_circle_outlined,
-                        color: Color(0xFFFF8A80), size: 18),
-                    label: Text(context.read<MindMapProvider>().t('btn.stop'),
-                        style: const TextStyle(color: Color(0xFFFF8A80))),
-                    onPressed: () => stopSharing(setDialogState),
-                  ),
-                  TextButton.icon(
-                    icon: const Icon(Icons.copy_rounded,
-                        color: Color(0xFF4FC3F7), size: 18),
-                    label: Text(context.read<MindMapProvider>().t('share.copyUrl'),
-                        style: const TextStyle(color: Color(0xFF4FC3F7))),
-                    onPressed: () =>
-                        Clipboard.setData(ClipboardData(text: url)),
-                  ),
-                  TextButton.icon(
-                    icon: const Icon(Icons.data_object_rounded,
-                        color: Color(0xFF43B97F), size: 18),
-                    label: Text(context.read<MindMapProvider>().t('share.copyJson'),
-                        style: const TextStyle(color: Color(0xFF43B97F))),
-                    onPressed: () =>
-                        Clipboard.setData(ClipboardData(text: jsonUrl)),
-                  ),
-                ],
-                TextButton(
-                  onPressed: () => Navigator.pop(dctx),
-                  child: Text(context.read<MindMapProvider>().t('btn.close'),
-                      style: const TextStyle(color: Colors.white54)),
-                ),
-              ],
-            ),
-          ),
-        );
-      } finally {
-        importUrlController.dispose();
-      }
-    } catch (e) {
-      if (!mounted) return;
-      _appSnack(
-        context,
-        SnackBar(
-          backgroundColor: const Color(0xFFFF6B6B),
-          content: Text(
-              context.read<MindMapProvider>().t('share.startFailed').replaceFirst('{e}', '$e'),
-              style: const TextStyle(color: Colors.white)),
-        ),
-      );
-    }
-  }
+  // ── LAN 共有 (同じネットワークでページを共有) は廃止 ──
+  //    (= ユーザー要望: サーバー経由のリアルタイム共同編集があるので、
+  //     SSL 化されていないページ共有は不要)。
 
   /// フォルダー(中の全ページ)を 1 つの JSON ファイルにまとめて書き出す
   /// フォルダーをディレクトリとして書き出す (zip 化せず生のディレクトリ)。
@@ -81961,10 +81549,19 @@ class _HeaderCustomButtonsBarState extends State<_HeaderCustomButtonsBar> {
     final double w =
         fullWidth ? maxAvailable : desiredW.clamp(0.0, maxAvailable).toDouble();
 
+    // ★ すべてのボタンを同じ 48px 四方の枠に「はみ出させずに」 収める
+    //   (= ユーザー報告: ボタンの配置が歪に見える)。 中身の自然サイズが
+    //   44px だったり 48px だったりすると等間隔にならないので、
+    //   FittedBox で枠に合わせてから中央に置く。
     Widget buttonSlot(Widget child) => SizedBox(
           width: _kHeaderCustomButtonExtent,
           height: _kHeaderCustomButtonExtent,
-          child: Center(child: child),
+          child: Center(
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: child,
+            ),
+          ),
         );
 
     Widget insertionGap(String? beforeCommandId) {
@@ -146857,6 +146454,22 @@ class _WinGoogleSearchViewState extends State<_WinGoogleSearchView> {
     } catch (_) {}
   }
 
+  /// 音楽サイトなら「裏に回っても止めない」 JS を流す (= ユーザー要望:
+  /// SoundCloud / Spotify 等のバックグラウンド再生)。 設定が OFF なら何も
+  /// しない。 対象サイト以外にも流さない (普通のページの挙動は変えない)。
+  void _applyWebAudioKeepAlive(String url) {
+    if (!mounted) return;
+    try {
+      final p = context.read<MindMapProvider>();
+      if (!p.webAudioBackground) return;
+      if (!MindMapProvider.isBackgroundAudioSite(url)) return;
+      // 読み込み直後は要素が揃っていないことがあるので少し置いて流す。
+      Future.delayed(const Duration(milliseconds: 600), () {
+        if (mounted) execJs(_kWebAudioKeepAliveJs);
+      });
+    } catch (_) {}
+  }
+
   final wv_win.WebviewController _ctrl = wv_win.WebviewController();
 
   /// モバイル側のコントローラ (= flutter_inappwebview)。
@@ -146937,6 +146550,7 @@ class _WinGoogleSearchViewState extends State<_WinGoogleSearchView> {
         if (u.isEmpty) return;
         _cur = u;
         widget.onUrlChanged?.call(u);
+        _applyWebAudioKeepAlive(u);
         // 検索結果を開いたはずがホームに丸められたら一度だけ再読込。
         final uu = Uri.tryParse(u);
         if (_wantsResults &&
@@ -147004,12 +146618,14 @@ class _WinGoogleSearchViewState extends State<_WinGoogleSearchView> {
           if (url == null) return;
           _cur = url.toString();
           widget.onUrlChanged?.call(_cur);
+          _applyWebAudioKeepAlive(_cur);
         },
         // YouTube 等の SPA は onLoadStop が走らないので history でも拾う。
         onUpdateVisitedHistory: (c, url, _) {
           if (url == null) return;
           _cur = url.toString();
           widget.onUrlChanged?.call(_cur);
+          _applyWebAudioKeepAlive(_cur);
         },
       );
     }

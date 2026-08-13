@@ -4499,6 +4499,32 @@ class MindMapProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ── 音楽サイト (SoundCloud / Spotify 等) のバックグラウンド再生 ──
+  //    (= ユーザー要望)。 OS/ブラウザは画面を離れると音を止めることが
+  //    あるので、 WebView へ「止めない」 JS を流し、 wakelock で
+  //    再生を維持する。
+  //    ★ SoundCloud は埋め込み再生が公式に認められている。 Spotify は
+  //      非公式クライアントでの再生を規約で制限しているため、 既定 OFF の
+  //      任意設定にして利用者の判断に委ねる。
+  bool _webAudioBackground = false;
+  bool get webAudioBackground => _webAudioBackground;
+  Future<void> setWebAudioBackground(bool v) async {
+    _webAudioBackground = v;
+    final prefs = await _prefsWithRetry();
+    await prefs.setBool('webAudioBackground', v);
+    notifyListeners();
+  }
+
+  /// バックグラウンド再生を効かせる音楽サイトか (URL 判定)。
+  static bool isBackgroundAudioSite(String url) {
+    final u = url.toLowerCase();
+    return u.contains('soundcloud.com') ||
+        u.contains('open.spotify.com') ||
+        u.contains('music.youtube.com') ||
+        u.contains('bandcamp.com') ||
+        u.contains('mixcloud.com');
+  }
+
   /// PiP (ピクチャインピクチャ) ミニプレイヤーの拡大率。
   /// デフォルト 1.0 で幅 300px。範囲 0.5 (= 150px) 〜 2.0 (= 600px)。
   /// 右下のリサイズハンドルをドラッグして変更でき、SharedPreferences に
@@ -18504,6 +18530,68 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Lang drücken',
       'pt': 'Pressionar e segurar',
       'ru': 'Долгое нажатие',
+    },
+    // ── ヘッダーの表示 / 非表示 (= ユーザー要望) ──
+    'gs.hideHeader': {
+      'ja': 'ヘッダーを隠す',
+      'en': 'Hide the header',
+      'zh': '隐藏标题栏',
+      'ko': '헤더 숨기기',
+      'es': 'Ocultar la cabecera',
+      'fr': 'Masquer l\'en-tête',
+      'de': 'Kopfzeile ausblenden',
+      'pt': 'Ocultar o cabeçalho',
+      'ru': 'Скрыть заголовок',
+    },
+    'gs.showHeader': {
+      'ja': 'ヘッダーを表示',
+      'en': 'Show the header',
+      'zh': '显示标题栏',
+      'ko': '헤더 표시',
+      'es': 'Mostrar la cabecera',
+      'fr': 'Afficher l\'en-tête',
+      'de': 'Kopfzeile einblenden',
+      'pt': 'Mostrar o cabeçalho',
+      'ru': 'Показать заголовок',
+    },
+    // ── 音楽サイトのバックグラウンド再生 (= ユーザー要望) ──
+    'menu.webAudioBg': {
+      'ja': '音楽サイトをバックグラウンド再生',
+      'en': 'Keep music sites playing in the background',
+      'zh': '音乐网站后台播放',
+      'ko': '음악 사이트 백그라운드 재생',
+      'es': 'Mantener los sitios de música sonando en segundo plano',
+      'fr': 'Garder les sites de musique en lecture en arrière-plan',
+      'de': 'Musik-Websites im Hintergrund weiterspielen',
+      'pt': 'Manter sites de música tocando em segundo plano',
+      'ru': 'Проигрывать музыкальные сайты в фоне',
+    },
+    'help.webAudioBg': {
+      'ja': 'SoundCloud などを開いたまま他の画面に移っても再生を止めません。'
+          '※Spotify は公式の規約上、非公式クライアントでの再生を制限しています。'
+          '利用は自己責任でお願いします。',
+      'en': 'Keeps SoundCloud and similar sites playing when you move to another '
+          'screen. Note: Spotify\'s terms restrict playback in unofficial '
+          'clients — use at your own risk.',
+      'zh': '打开 SoundCloud 等站点后切换到其他画面也不会停止播放。'
+          '注意：Spotify 条款限制非官方客户端播放，请自行承担风险。',
+      'ko': 'SoundCloud 등을 연 채 다른 화면으로 이동해도 재생이 멈추지 않습니다. '
+          '※Spotify는 약관상 비공식 클라이언트 재생을 제한합니다. 사용은 자기 책임입니다.',
+      'es': 'Mantiene la reproducción de SoundCloud y similares al cambiar de '
+          'pantalla. Nota: los términos de Spotify restringen la reproducción en '
+          'clientes no oficiales; úsalo bajo tu responsabilidad.',
+      'fr': 'Garde SoundCloud et similaires en lecture quand vous changez d\'écran. '
+          'Note : les conditions de Spotify limitent la lecture dans les clients '
+          'non officiels — à vos risques.',
+      'de': 'Hält SoundCloud & Co. am Laufen, wenn du den Bildschirm wechselst. '
+          'Hinweis: Spotifys Bedingungen beschränken die Wiedergabe in inoffiziellen '
+          'Clients — Nutzung auf eigene Verantwortung.',
+      'pt': 'Mantém o SoundCloud e similares tocando ao mudar de tela. Observação: '
+          'os termos do Spotify restringem a reprodução em clientes não oficiais — '
+          'use por sua conta e risco.',
+      'ru': 'Оставляет SoundCloud и подобные сайты играть при переходе на другой '
+          'экран. Примечание: условия Spotify ограничивают воспроизведение в '
+          'неофициальных клиентах — на ваш риск.',
     },
     'gs.tabsShow': {
       'ja': 'タブを表示',
@@ -51902,6 +51990,10 @@ class MindMapProvider extends ChangeNotifier {
     // 背景を自分で設定できるようになったので不要)。 設定のダークモード
     // トグルと Ctrl+Shift+L は残る。
     'themeMode',
+    // LAN 共有は廃止 (2026-08-13、= ユーザー要望: サーバー経由のリアルタイム
+    // 共同編集があるので、 SSL 化されていないページ共有は不要)。 過去の
+    // 移行コードが再追加しても、 ここで弾かれて表示されない。
+    'sharePageLan',
   };
   List<String> _filterRemovedButtons(List<String> ids) =>
       List.unmodifiable(ids.where((id) => !_removedButtonIds.contains(id)));
@@ -68250,6 +68342,8 @@ $cleanQ
     // バックグラウンド再生 (画面オフ時の継続再生) フラグ
     _backgroundPlaybackEnabled =
         prefs.getBool('backgroundPlaybackEnabled') ?? false;
+    // 音楽サイトのバックグラウンド再生 (= ユーザー要望)。 既定 OFF。
+    _webAudioBackground = prefs.getBool('webAudioBackground') ?? false;
     // PiP ミニプレイヤーの拡大率 (0.5〜2.0)
     _pipScale = (prefs.getDouble('pipScale') ?? 1.0).clamp(0.5, 2.0);
     // カレンダーのタイムゾーン (オプション、未設定なら null = 端末ローカル)
