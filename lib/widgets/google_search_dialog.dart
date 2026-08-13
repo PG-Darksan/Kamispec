@@ -3340,17 +3340,24 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     final isBookmark = _gsSaveAsBookmark;
     void toggle() => setState(() => _gsSaveAsBookmark = !_gsSaveAsBookmark);
     final desktop = _isDesktop;
-    final switchHint = desktop ? '右クリック' : '長押し';
+    // 多言語対応 (= ユーザー報告: ヘルパーテキストが日本語固定だった)。
+    final p = context.read<MindMapProvider>();
+    final switchHint =
+        p.t(desktop ? 'gs.hintRightClick' : 'gs.hintLongPress');
     return GestureDetector(
       onSecondaryTap: desktop ? toggle : null,
       onLongPress: desktop ? null : toggle,
       child: Tooltip(
         message: isBookmark
-            ? 'お気に入りボタンに追加\n$switchHint でリンク埋め込みに切替'
-            : 'リンクとして埋め込み\n$switchHint でお気に入り登録に切替',
+            ? '${p.t('gs.addBookmarkBtn')}\n'
+                '${p.t('gs.switchToEmbed').replaceFirst('{hint}', switchHint)}'
+            : '${p.t('gs.embedAsLink')}\n'
+                '${p.t('gs.switchToBookmark').replaceFirst('{hint}', switchHint)}',
         child: IconButton(
           icon: Icon(
-            isBookmark ? Icons.bookmark_add_rounded : Icons.add_link_rounded,
+            // 埋め込みは「+」 のアイコンにする (= ユーザー要望: + ボタン
+            // みたいなアイコンにして欲しい)。
+            isBookmark ? Icons.bookmark_add_rounded : Icons.add_box_rounded,
             color:
                 isBookmark ? const Color(0xFFFFB347) : const Color(0xFF4FC3F7),
             size: 22,
@@ -6254,9 +6261,11 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         icon: _gsTabBarExpanded
             ? Icons.view_week_rounded
             : Icons.view_week_outlined,
-        label: 'タブ',
+        label: context.read<MindMapProvider>().t('gs.tabShort'),
         color: const Color(0xFF4FC3F7),
-        tooltip: _gsTabBarExpanded ? 'タブを隠す' : 'タブを表示',
+        tooltip: context
+            .read<MindMapProvider>()
+            .t(_gsTabBarExpanded ? 'gs.tabsHide' : 'gs.tabsShow'),
         onTap: () => setState(() => _gsTabBarExpanded = !_gsTabBarExpanded),
       ),
       if (widget.onMoveToSplitPanel != null)
@@ -6296,7 +6305,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         icon: _aiPanelOpen ? Icons.smart_toy_rounded : Icons.smart_toy_outlined,
         label: 'AI',
         color: const Color(0xFF4FC3F7),
-        tooltip: _aiPanelOpen ? 'AI 欄を閉じる' : 'AI 欄を開く',
+        tooltip: context
+            .read<MindMapProvider>()
+            .t(_aiPanelOpen ? 'gs.aiClose' : 'gs.aiOpen'),
         onTap: () {
           if (_aiPanelOpen) {
             setState(() => _aiPanelOpen = false);
@@ -6587,7 +6598,10 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                                 : Colors.white70,
                             size: 22,
                           ),
-                          tooltip: _gsTabBarExpanded ? 'タブを隠す' : 'タブを表示',
+                          tooltip: context.read<MindMapProvider>().t(
+                              _gsTabBarExpanded
+                                  ? 'gs.tabsHide'
+                                  : 'gs.tabsShow'),
                           visualDensity: VisualDensity.compact,
                           padding: const EdgeInsets.all(6),
                           constraints: const BoxConstraints(),
@@ -6675,9 +6689,15 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                               color: const Color(0xFF4FC3F7),
                               size: 22,
                             ),
-                            tooltip: (_aiPanelOpen ? 'AI 欄を閉じる' : 'AI 欄を開く') +
-                                ' (F4)\n' +
-                                (_isDesktop ? '右クリックで AI 切替' : '長押しで AI 切替'),
+                            tooltip: () {
+                              // 多言語対応 (= ユーザー報告)。
+                              final p = context.read<MindMapProvider>();
+                              final hint = p.t(_isDesktop
+                                  ? 'gs.hintRightClick'
+                                  : 'gs.hintLongPress');
+                              return '${p.t(_aiPanelOpen ? 'gs.aiClose' : 'gs.aiOpen')} (F4)\n'
+                                  '${p.t('gs.aiSwitchHint').replaceFirst('{hint}', hint)}';
+                            }(),
                             visualDensity: VisualDensity.compact,
                             padding: const EdgeInsets.all(6),
                             constraints: const BoxConstraints(),
@@ -6888,10 +6908,14 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                                 'reload', Icons.refresh_rounded, '再読み込み'),
                             _gsOverflowItem('memo', Icons.sticky_note_2_rounded,
                                 _memoPanelExpanded ? 'メモ欄を閉じる' : 'メモ欄を開く'),
+                            _gsOverflowItem('embed', Icons.add_box_rounded,
+                                context.read<MindMapProvider>().t('gs.embedAsLink')),
                             _gsOverflowItem(
-                                'embed', Icons.add_link_rounded, 'リンクとして埋め込み'),
-                            _gsOverflowItem('bookmark',
-                                Icons.bookmark_add_rounded, 'お気に入りに追加'),
+                                'bookmark',
+                                Icons.bookmark_add_rounded,
+                                context
+                                    .read<MindMapProvider>()
+                                    .t('gs.addBookmarkBtn')),
                             if (!_isDesktop)
                               _gsOverflowItem('autoCapture',
                                   Icons.burst_mode_rounded, '自動スクショ → PDF'),

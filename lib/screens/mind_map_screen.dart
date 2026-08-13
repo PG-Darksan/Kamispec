@@ -1713,6 +1713,10 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 変更でき、 prefs `hdrCustPlacedFrac` に保存される (= ユーザー要望)。
   double _hcbPlacedFrac = 0;
 
+  /// カスタマイズ画面で「これから追加するボタン」 を入れる端 (= ユーザー要望:
+  /// 上下左右のボタンが今から配置するボタンに適用されるように)。
+  String _hcbTargetPlacement = 'top';
+
   // PC下部カスタムボタンドックをドラッグ/リサイズしている間だけ使う
   // ライブ値。操作終了時に provider へ保存するため、ドラッグ中の
   // SharedPreferences 書き込みとアプリ全体の再描画を避けられる。
@@ -1788,6 +1792,11 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// 図形本体ドラッグで実際に移動が発生したか (タップでの no-op undo 回避用)。
   bool _decoBodyDragMoved = false;
+
+  /// 図形の「移動」 ドラッグ中 (本体 / 中央ハンドル) か。 エッジ自動スクロール
+  /// でビューが動いた分だけ図形も追従させる (= ユーザー要望: ノードと同じく
+  /// 画面外に出ようとした時だけ画面が追跡する)。
+  bool _decoDragFollowsScroll = false;
 
   // 拡大率ロック状態: _lockScale のフラグをそのまま使う
   // （PC版でもトラックパッドのピンチジェスチャーで拡縮できるように）
@@ -6481,7 +6490,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (!_rangeDragging &&
         _moveModeNodeId == null &&
         !isDrawingRangeSelect &&
-        !_shelfHandleDragging) {
+        !_shelfHandleDragging &&
+        // 図形の移動ドラッグ中も追尾対象 (= ユーザー要望)。
+        !_draggingDecoration) {
       _stopEdgeScroll();
       return;
     }
@@ -6608,6 +6619,19 @@ class _MindMapScreenState extends State<MindMapScreen>
       setState(() {
         _shelfHandlePointerCanvas = _globalToCanvas(pos, ctrl);
       });
+    } else if (_draggingDecoration &&
+        _decoDragFollowsScroll &&
+        _selectedDecorationId != null) {
+      // 図形の移動ドラッグ中: ビューがスクロールした分だけ図形も動かして、
+      // カーソルの下に図形が残り続けるようにする (= ノードと同じ挙動)。
+      final scale = ctrl.value.getMaxScaleOnAxis();
+      if (scale > 0) {
+        final d = Offset(-dx / scale, -dy / scale);
+        context.read<MindMapProvider>().dragDecorationBy(
+            _selectedDecorationId!,
+            startDelta: d,
+            endDelta: d);
+      }
     }
   }
 
@@ -31452,7 +31476,15 @@ class _MindMapScreenState extends State<MindMapScreen>
     //   ヘッダーのボタンを揃えて欲しい」 (= ユーザー要望 2026-07) に従い、
     //   どのページから開いても共通の customHeaderButtons を編集する。
     List<String> hcbList() => provider.customHeaderButtons;
-    Future<void> hcbAdd(String id) => provider.addHeaderButton(id);
+    // 追加時に「これから追加するボタンの配置先」 を適用する (= ユーザー要望)。
+    Future<void> hcbAdd(String id) async {
+      await provider.addHeaderButton(id);
+      if (_isDesktop) {
+        await provider.setDesktopHeaderButtonPlacementFor(
+            id, _hcbTargetPlacement);
+      }
+    }
+
     Future<void> hcbRemove(String id) => provider.removeHeaderButton(id);
     Future<void> hcbReorder(int o, int n) =>
         provider.reorderHeaderButtons(o, n);
@@ -31837,6 +31869,103 @@ class _MindMapScreenState extends State<MindMapScreen>
                                                 : Colors.white70,
                                           ),
                                           const SizedBox(width: 6),
+                                          Text(
+                                            provider.t(placement.$3),
+                                            style: TextStyle(
+                                              color: selected
+                                                  ? Colors.white
+                                                  : Colors.white70,
+                                              fontSize: 11,
+                                              fontWeight: selected
+                                                  ? FontWeight.w700
+                                                  : FontWeight.w500,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                );
+                              }),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        // ── 新しく追加するボタンの配置先 (= ユーザー要望:
+                        //    上下左右のボタンが「今から配置するボタン」 に
+                        //    適用されるように。 ここで選んだ端に、 下の候補から
+                        //    追加したボタンがそのまま入る)。 ──
+                        Text(provider.t('header.newButtonTarget'),
+                            style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600)),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            for (final placement in [
+                              (
+                                'top',
+                                Icons.vertical_align_top_rounded,
+                                'header.placementTop'
+                              ),
+                              (
+                                'bottom',
+                                Icons.vertical_align_bottom_rounded,
+                                'header.placementBottom'
+                              ),
+                              (
+                                'left',
+                                Icons.align_horizontal_left_rounded,
+                                'header.placementLeft'
+                              ),
+                              (
+                                'right',
+                                Icons.align_horizontal_right_rounded,
+                                'header.placementRight'
+                              ),
+                            ])
+                              Builder(builder: (_) {
+                                final selected =
+                                    _hcbTargetPlacement == placement.$1;
+                                return Material(
+                                  color: Colors.transparent,
+                                  child: InkWell(
+                                    borderRadius: BorderRadius.circular(9),
+                                    onTap: () => setS(() =>
+                                        _hcbTargetPlacement = placement.$1),
+                                    child: AnimatedContainer(
+                                      duration:
+                                          const Duration(milliseconds: 140),
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 12, vertical: 7),
+                                      decoration: BoxDecoration(
+                                        color: selected
+                                            ? Color.alphaBlend(
+                                                accentColor.withValues(
+                                                    alpha: 0.28),
+                                                const Color(0xFF2A2A42),
+                                              )
+                                            : const Color(0xFF29293B),
+                                        borderRadius:
+                                            BorderRadius.circular(9),
+                                        border: Border.all(
+                                          color: selected
+                                              ? accentColor
+                                              : Colors.white24,
+                                          width: selected ? 1.5 : 1,
+                                        ),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(placement.$2,
+                                              size: 14,
+                                              color: selected
+                                                  ? Colors.white
+                                                  : Colors.white60),
+                                          const SizedBox(width: 5),
                                           Text(
                                             provider.t(placement.$3),
                                             style: TextStyle(
@@ -36225,34 +36354,48 @@ class _MindMapScreenState extends State<MindMapScreen>
     final border = 2.0 / scale;
     final decoId = deco.id;
 
+    // ★ Listener → GestureDetector に変更 (= ユーザー報告: 図形を掴んで
+    //   移動させようとすると画面の方が動いてしまう)。 Listener はジェスチャ
+    //   アリーナに参加しないため、 InteractiveViewer のパンにポインタを
+    //   奪われることがあった。 GestureDetector のドラッグはアリーナで勝つので
+    //   マップは動かない。 delta はドラッグレコグナイザが localDelta 基準で
+    //   計算するため、 従来どおりキャンバス座標のまま使える。
     Widget handle(Offset canvasPos, Color color, IconData? icon,
         void Function(Offset canvasDelta) onDrag,
-        {VoidCallback? onStart, VoidCallback? onEnd}) {
+        {VoidCallback? onStart,
+        VoidCallback? onEnd,
+        bool followScroll = false}) {
+      void finish() {
+        _stopEdgeScroll();
+        _decoDragFollowsScroll = false;
+        onEnd?.call();
+        provider.endDecorationDrag();
+        if (mounted) setState(() => _draggingDecoration = false);
+      }
+
       return Positioned(
         left: canvasPos.dx - half,
         top: canvasPos.dy - half,
         width: hs,
         height: hs,
-        child: Listener(
+        child: GestureDetector(
           behavior: HitTestBehavior.opaque,
-          onPointerDown: (_) {
-            setState(() => _draggingDecoration = true);
+          onPanDown: (_) {
+            setState(() {
+              _draggingDecoration = true;
+              _decoDragFollowsScroll = followScroll;
+            });
             provider.beginDecorationDrag();
             onStart?.call();
           },
-          // localDelta はこの subtree の座標系 (= キャンバス座標) なので、
-          // InteractiveViewer の拡大率を自動で吸収済み。
-          onPointerMove: (e) => onDrag(e.localDelta),
-          onPointerUp: (_) {
-            onEnd?.call();
-            provider.endDecorationDrag();
-            if (mounted) setState(() => _draggingDecoration = false);
+          onPanUpdate: (d) {
+            onDrag(d.delta);
+            // 画面の端に来たらビューを追跡させる (= ユーザー要望:
+            // 選択中は画面固定、 画面外に出ようとした時だけ追跡)。
+            if (followScroll) _autoScrollIfNeeded(d.globalPosition, ctrl);
           },
-          onPointerCancel: (_) {
-            onEnd?.call();
-            provider.endDecorationDrag();
-            if (mounted) setState(() => _draggingDecoration = false);
-          },
+          onPanEnd: (_) => finish(),
+          onPanCancel: finish,
           child: Container(
             decoration: BoxDecoration(
               color: color,
@@ -36277,22 +36420,36 @@ class _MindMapScreenState extends State<MindMapScreen>
     //   リサイズ/移動ハンドルより下 (リストの先頭) に置くので、 ハンドル位置
     //   ではハンドルが優先される。 細い線でも掴めるよう少し外側に広げる。
     final bbox = Rect.fromPoints(deco.start, deco.end).inflate(10.0 / scale);
+    // 本体ドラッグも GestureDetector (アリーナで勝つ = マップが動かない)。
+    void bodyFinish() {
+      _stopEdgeScroll();
+      _decoDragFollowsScroll = false;
+      if (_decoBodyDragMoved) {
+        _snapDecorationEndpoint(provider, decoId, true);
+        _snapDecorationEndpoint(provider, decoId, false);
+        provider.endDecorationDrag();
+      }
+      _decoBodyDragMoved = false;
+      if (mounted) setState(() => _draggingDecoration = false);
+    }
+
     Widget bodyMove() => Positioned(
           left: bbox.left,
           top: bbox.top,
           width: bbox.width,
           height: bbox.height,
-          child: Listener(
+          child: GestureDetector(
             behavior: HitTestBehavior.opaque,
             // ポインタDOWNで即ビューアを止める (マップの同時パンを防ぐ)。
             // undo はタップでは積まず、 最初の移動で積む。
-            onPointerDown: (_) {
+            onPanDown: (_) {
               _decoBodyDragMoved = false;
+              _decoDragFollowsScroll = true;
               if (!_draggingDecoration) {
                 setState(() => _draggingDecoration = true);
               }
             },
-            onPointerMove: (e) {
+            onPanUpdate: (d) {
               if (!_decoBodyDragMoved) {
                 _decoBodyDragMoved = true;
                 provider.beginDecorationDrag();
@@ -36300,26 +36457,12 @@ class _MindMapScreenState extends State<MindMapScreen>
                 _detachDecorationEndpoint(provider, sourceDecoration, false);
               }
               provider.dragDecorationBy(decoId,
-                  startDelta: e.localDelta, endDelta: e.localDelta);
+                  startDelta: d.delta, endDelta: d.delta);
+              // 画面の端に来たらビューを追跡 (= ユーザー要望)。
+              _autoScrollIfNeeded(d.globalPosition, ctrl);
             },
-            onPointerUp: (_) {
-              if (_decoBodyDragMoved) {
-                _snapDecorationEndpoint(provider, decoId, true);
-                _snapDecorationEndpoint(provider, decoId, false);
-                provider.endDecorationDrag();
-              }
-              _decoBodyDragMoved = false;
-              if (mounted) setState(() => _draggingDecoration = false);
-            },
-            onPointerCancel: (_) {
-              if (_decoBodyDragMoved) {
-                _snapDecorationEndpoint(provider, decoId, true);
-                _snapDecorationEndpoint(provider, decoId, false);
-                provider.endDecorationDrag();
-              }
-              _decoBodyDragMoved = false;
-              if (mounted) setState(() => _draggingDecoration = false);
-            },
+            onPanEnd: (_) => bodyFinish(),
+            onPanCancel: bodyFinish,
             child: const SizedBox.expand(),
           ),
         );
@@ -36336,35 +36479,34 @@ class _MindMapScreenState extends State<MindMapScreen>
       final tb = Rect.fromPoints(dd.start, dd.end);
       final tx = tb.left + tb.width * dd.textAnchorX;
       final ty = tb.top + tb.height * dd.textAnchorY - hs * 1.3;
+      void textFinish() {
+        provider.endDecorationDrag();
+        if (mounted) setState(() => _draggingDecoration = false);
+      }
+
       textHandle = Positioned(
         left: tx - half,
         top: ty - half,
         width: hs,
         height: hs,
-        child: Listener(
+        child: GestureDetector(
           behavior: HitTestBehavior.opaque,
-          onPointerDown: (_) {
+          onPanDown: (_) {
             setState(() => _draggingDecoration = true);
             provider.beginDecorationDrag();
           },
-          onPointerMove: (e) {
-            // localDelta はキャンバス座標。 外接矩形サイズで正規化して
+          onPanUpdate: (d) {
+            // delta はキャンバス座標。 外接矩形サイズで正規化して
             //   アンカーを増分更新する (= 同オブジェクト参照なので最新値を読む)。
             final w = (dd.end.dx - dd.start.dx).abs();
             final h = (dd.end.dy - dd.start.dy).abs();
             if (w < 1 || h < 1) return;
-            final nx = (dd.textAnchorX + e.localDelta.dx / w).clamp(0.0, 1.0);
-            final ny = (dd.textAnchorY + e.localDelta.dy / h).clamp(0.0, 1.0);
+            final nx = (dd.textAnchorX + d.delta.dx / w).clamp(0.0, 1.0);
+            final ny = (dd.textAnchorY + d.delta.dy / h).clamp(0.0, 1.0);
             provider.dragDecorationTextAnchor(decoId, nx, ny);
           },
-          onPointerUp: (_) {
-            provider.endDecorationDrag();
-            if (mounted) setState(() => _draggingDecoration = false);
-          },
-          onPointerCancel: (_) {
-            provider.endDecorationDrag();
-            if (mounted) setState(() => _draggingDecoration = false);
-          },
+          onPanEnd: (_) => textFinish(),
+          onPanCancel: textFinish,
           child: Container(
             decoration: BoxDecoration(
               color: const Color(0xFFFFB300),
@@ -36396,13 +36538,15 @@ class _MindMapScreenState extends State<MindMapScreen>
           onStart: () =>
               _detachDecorationEndpoint(provider, sourceDecoration, false),
           onEnd: () => _snapDecorationEndpoint(provider, decoId, false)),
-      // 移動ハンドル (中央) — start/end を同じだけ動かす
+      // 移動ハンドル (中央) — start/end を同じだけ動かす。
+      // 画面端でのビュー追跡あり (= ユーザー要望)。
       handle(
           center,
           const Color(0xFF4FC3F7),
           Icons.open_with_rounded,
           (cd) =>
               provider.dragDecorationBy(decoId, startDelta: cd, endDelta: cd),
+          followScroll: true,
           onStart: () {
         _detachDecorationEndpoint(provider, sourceDecoration, true);
         _detachDecorationEndpoint(provider, sourceDecoration, false);
@@ -67217,7 +67361,10 @@ class _MindMapScreenState extends State<MindMapScreen>
           if (!dctx.mounted) return;
           setDialogState(() {
             importingSharedPage = false;
-            importError = '読み込みに失敗しました: $e';
+            importError = context
+                .read<MindMapProvider>()
+                .t('share.loadFailed')
+                .replaceFirst('{e}', '$e');
           });
         }
       }
@@ -67337,16 +67484,19 @@ class _MindMapScreenState extends State<MindMapScreen>
                               color: const Color(0xFFFFB347)
                                   .withValues(alpha: 0.5)),
                         ),
-                        child: const Row(
+                        // 多言語対応 (= ユーザー報告: 日本語のままだった)。
+                        child: Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Icon(Icons.warning_amber_rounded,
+                            const Icon(Icons.warning_amber_rounded,
                                 color: Color(0xFFFFB347), size: 18),
-                            SizedBox(width: 8),
+                            const SizedBox(width: 8),
                             Expanded(
                               child: Text(
-                                'OS やセキュリティソフトのファイアウォールにより、他の端末からの接続がブロックされる場合があります。つながらない時は、このアプリの通信（プライベートネットワーク）を許可してください。',
-                                style: TextStyle(
+                                context
+                                    .read<MindMapProvider>()
+                                    .t('share.fwWarn'),
+                                style: const TextStyle(
                                     color: Color(0xFFFFD9A0), fontSize: 11),
                               ),
                             ),
@@ -67355,10 +67505,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                       ),
                       const SizedBox(height: 14),
                       if (!sharing) ...[
-                        const Text(
-                            '「共有を開始」を押すと、同じ Wi-Fi / LAN の端末から現在ページのプレビューを開けるようになります。押すまで公開サーバーは起動しません。',
-                            style:
-                                TextStyle(color: Colors.white60, fontSize: 12)),
+                        Text(context.read<MindMapProvider>().t('share.startDesc'),
+                            style: const TextStyle(
+                                color: Colors.white60, fontSize: 12)),
                         const SizedBox(height: 12),
                         SizedBox(
                           width: double.infinity,
@@ -67379,14 +67528,19 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   )
                                 : const Icon(Icons.wifi_tethering_rounded,
                                     size: 18),
-                            label: Text(startingShare ? '起動中…' : '共有を開始'),
+                            label: Text(context.read<MindMapProvider>().t(
+                                startingShare
+                                    ? 'share.starting'
+                                    : 'share.startBtn')),
                           ),
                         ),
                       ] else ...[
-                        const Text(
-                            '同じ Wi-Fi / LAN にいる端末で下のURLを開くと、現在ページのプレビューを表示できます。',
-                            style:
-                                TextStyle(color: Colors.white60, fontSize: 12)),
+                        Text(
+                            context
+                                .read<MindMapProvider>()
+                                .t('share.sharingDesc'),
+                            style: const TextStyle(
+                                color: Colors.white60, fontSize: 12)),
                         const SizedBox(height: 12),
                         SelectableText(url,
                             style: const TextStyle(
@@ -67394,10 +67548,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 fontSize: 13,
                                 fontWeight: FontWeight.w700)),
                         const SizedBox(height: 12),
-                        const Text(
-                            'ページデータを保存する場合は、プレビュー内の「ページデータを保存」か下のJSON URLを使えます。',
-                            style:
-                                TextStyle(color: Colors.white60, fontSize: 12)),
+                        Text(context.read<MindMapProvider>().t('share.jsonHint'),
+                            style: const TextStyle(
+                                color: Colors.white60, fontSize: 12)),
                         const SizedBox(height: 6),
                         SelectableText(jsonUrl,
                             style: const TextStyle(
@@ -67491,9 +67644,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                                       strokeWidth: 2, color: Colors.white),
                                 )
                               : const Icon(Icons.download_rounded, size: 18),
-                          label: Text(importingSharedPage
-                              ? '読み込み中…'
-                              : 'このURLからページを読み込む'),
+                          label: Text(context.read<MindMapProvider>().t(
+                              importingSharedPage
+                                  ? 'share.loading'
+                                  : 'share.loadBtn')),
                         ),
                       ),
                     ],
