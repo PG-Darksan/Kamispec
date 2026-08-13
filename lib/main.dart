@@ -1761,7 +1761,12 @@ void main(List<String> args) async {
   // ── 既に本体が起動しているなら、 そちらへ渡して自分は終了する ──
   // (= ユーザー要望: 新規でアプリを立ち上げずにその上で表示)。
   // 動作設定「別ウィンドウで開く」 が ON なら従来どおり立ち上げる。
-  if (!kIsWeb && Platform.isWindows && pendingOpenFilePaths.isNotEmpty) {
+  // --new-window 付き (= 本体の「新しいウィンドウで開く」 の選択から
+  // 起動された) 時も引き渡さず、 このプロセスがそのまま窓になる。
+  if (!kIsWeb &&
+      Platform.isWindows &&
+      pendingOpenFilePaths.isNotEmpty &&
+      !args.contains('--new-window')) {
     bool newInstance = false;
     try {
       final prefs = await SharedPreferences.getInstance();

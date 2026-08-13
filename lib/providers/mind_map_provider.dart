@@ -524,6 +524,11 @@ class MapDecoration {
   double textAnchorX;
   double textAnchorY;
 
+  /// レイヤー (1〜5、 既定 3 = ユーザー要望: 5 段階のレイヤー機能)。
+  /// 同じ層では従来どおり後から描いた物が手前。 番号が大きい層ほど手前で、
+  /// 4〜5 はノードよりも手前に描かれる (1〜3 は従来どおりノードの後ろ)。
+  int layer;
+
   MapDecoration({
     required this.id,
     required this.kind,
@@ -538,6 +543,7 @@ class MapDecoration {
     this.text = '',
     this.textAnchorX = 0.5,
     this.textAnchorY = 0.5,
+    this.layer = 3,
   });
 
   Map<String, dynamic> toJson() => {
@@ -556,6 +562,8 @@ class MapDecoration {
         'text': text,
         'textAnchorX': textAnchorX,
         'textAnchorY': textAnchorY,
+        // 既定 (3) のときは書かない (旧バージョンとの互換維持)。
+        if (layer != 3) 'layer': layer,
       };
 
   factory MapDecoration.fromJson(Map<String, dynamic> json) {
@@ -578,6 +586,7 @@ class MapDecoration {
       text: json['text'] as String? ?? '',
       textAnchorX: (json['textAnchorX'] as num?)?.toDouble() ?? 0.5,
       textAnchorY: (json['textAnchorY'] as num?)?.toDouble() ?? 0.5,
+      layer: ((json['layer'] as num?)?.toInt() ?? 3).clamp(1, 5),
     );
   }
 
@@ -594,6 +603,7 @@ class MapDecoration {
     String? text,
     double? textAnchorX,
     double? textAnchorY,
+    int? layer,
   }) {
     return MapDecoration(
       id: id,
@@ -617,6 +627,7 @@ class MapDecoration {
       text: text ?? this.text,
       textAnchorX: textAnchorX ?? this.textAnchorX,
       textAnchorY: textAnchorY ?? this.textAnchorY,
+      layer: layer ?? this.layer,
     );
   }
 
@@ -30029,6 +30040,59 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'OFF: файлы, открытые через «Открыть с помощью», показываются в уже '
           'запущенном окне.\nON: каждый раз запускается новое окно.',
     },
+    // 「アプリで開く」 した時に別の画面 (動画等) が開いていた時の確認。
+    'openWith.busyTitle': {
+      'ja': '開いている画面があります',
+      'en': 'Another screen is open',
+      'zh': '已有打开的画面',
+      'ko': '열려 있는 화면이 있습니다',
+      'es': 'Hay otra pantalla abierta',
+      'fr': 'Un autre écran est ouvert',
+      'de': 'Ein anderer Bildschirm ist geöffnet',
+      'pt': 'Há outra tela aberta',
+      'ru': 'Открыт другой экран',
+    },
+    'openWith.busyMsg': {
+      'ja': '動画などの画面を表示中です。 今の画面を閉じてこのファイルを'
+          '開くか、 新しいウィンドウで開くかを選んでください。',
+      'en': 'A video or viewer is currently showing. Close it and open this '
+          'file here, or open the file in a new window.',
+      'zh': '正在显示视频等画面。请选择关闭当前画面后打开此文件，还是在新窗口中打开。',
+      'ko': '동영상 등의 화면이 표시 중입니다. 현재 화면을 닫고 이 파일을 열지, '
+          '새 창에서 열지 선택하세요.',
+      'es': 'Se está mostrando un vídeo u otro visor. Ciérralo y abre este '
+          'archivo aquí, o ábrelo en una ventana nueva.',
+      'fr': 'Une vidéo ou une visionneuse est affichée. Fermez-la pour ouvrir '
+          'ce fichier ici, ou ouvrez-le dans une nouvelle fenêtre.',
+      'de': 'Gerade wird ein Video oder Viewer angezeigt. Schließen und die '
+          'Datei hier öffnen, oder in einem neuen Fenster öffnen.',
+      'pt': 'Um vídeo ou visualizador está sendo exibido. Feche-o e abra este '
+          'arquivo aqui, ou abra em uma nova janela.',
+      'ru': 'Сейчас показывается видео или просмотрщик. Закрыть его и открыть '
+          'файл здесь, или открыть файл в новом окне.',
+    },
+    'openWith.busyOverwrite': {
+      'ja': '今の画面を閉じて開く',
+      'en': 'Close it and open here',
+      'zh': '关闭当前画面并打开',
+      'ko': '현재 화면을 닫고 열기',
+      'es': 'Cerrar y abrir aquí',
+      'fr': 'Fermer et ouvrir ici',
+      'de': 'Schließen und hier öffnen',
+      'pt': 'Fechar e abrir aqui',
+      'ru': 'Закрыть и открыть здесь',
+    },
+    'openWith.busyNewWindow': {
+      'ja': '新しいウィンドウで開く',
+      'en': 'Open in a new window',
+      'zh': '在新窗口中打开',
+      'ko': '새 창에서 열기',
+      'es': 'Abrir en una ventana nueva',
+      'fr': 'Ouvrir dans une nouvelle fenêtre',
+      'de': 'In neuem Fenster öffnen',
+      'pt': 'Abrir em uma nova janela',
+      'ru': 'Открыть в новом окне',
+    },
     // 「アプリで開く」 したファイルが既にマップへ埋め込み済みだった時。
     'openWith.openedExisting': {
       'ja': '埋め込み済みの要素で開きました',
@@ -31460,6 +31524,29 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Ebene',
       'pt': 'Camada',
       'ru': 'Слой',
+    },
+    // マインドマップの図形レイヤー (= ユーザー要望: 5 段階のレイヤー機能)。
+    'shape.layerTip': {
+      'ja': 'レイヤー (1〜5)。 4 以上は要素より手前に表示',
+      'en': 'Layer (1–5). 4 and above draw in front of elements',
+      'zh': '图层 (1–5)。4 以上显示在元素前面',
+      'ko': '레이어 (1~5). 4 이상은 요소보다 앞에 표시',
+      'es': 'Capa (1–5). 4 o más se dibujan delante de los elementos',
+      'fr': 'Calque (1–5). 4 et plus s\'affichent devant les éléments',
+      'de': 'Ebene (1–5). Ab 4 vor den Elementen gezeichnet',
+      'pt': 'Camada (1–5). 4 ou mais ficam à frente dos elementos',
+      'ru': 'Слой (1–5). 4 и выше рисуются поверх элементов',
+    },
+    'shape.layerFront': {
+      'ja': '要素より手前',
+      'en': 'in front of elements',
+      'zh': '在元素前面',
+      'ko': '요소보다 앞',
+      'es': 'delante de los elementos',
+      'fr': 'devant les éléments',
+      'de': 'vor den Elementen',
+      'pt': 'à frente dos elementos',
+      'ru': 'поверх элементов',
     },
     'paint.layerAdd': {
       'ja': 'レイヤーを追加',
@@ -61566,6 +61653,20 @@ $cleanQ
     if (idx < 0) return;
     _pushUndo();
     currentPage.decorations[idx] = updated;
+    currentPage.lastModifiedAt = DateTime.now();
+    _saveToStorage();
+    notifyListeners();
+  }
+
+  /// 装飾のレイヤー (1〜5) を変更する (= ユーザー要望: マインドマップにも
+  /// 5 段階のレイヤー機能)。 4〜5 はノードより手前に描かれる。
+  void setDecorationLayer(String id, int layer) {
+    final idx = currentPage.decorations.indexWhere((d) => d.id == id);
+    if (idx < 0) return;
+    final v = layer.clamp(1, 5);
+    if (currentPage.decorations[idx].layer == v) return;
+    _pushUndo();
+    currentPage.decorations[idx].layer = v;
     currentPage.lastModifiedAt = DateTime.now();
     _saveToStorage();
     notifyListeners();

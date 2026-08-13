@@ -20082,6 +20082,69 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (pendingOpenFilePaths.isEmpty || !mounted) return;
     final paths = List<String>.from(pendingOpenFilePaths);
     pendingOpenFilePaths.clear();
+    // ── 動画などの画面を表示中なら、 どう開くかを先に選ぶ ──
+    // (= ユーザー報告: YouTube を開いている時に PDF を上に開いたら、 下の
+    //  YouTube 画面に戻した時にフリーズした。 重ねて開かず、 今の画面を
+    //  閉じて開くか、 新しいアプリを立ち上げて開くかを選べるように)。
+    final nav = Navigator.of(context, rootNavigator: true);
+    if (_isDesktop && nav.canPop()) {
+      final provider = context.read<MindMapProvider>();
+      final choice = await showDialog<String>(
+        context: context,
+        useRootNavigator: true,
+        builder: (dctx) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          title: Row(children: [
+            const Icon(Icons.layers_rounded,
+                color: Color(0xFFFFB347), size: 20),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(provider.t('openWith.busyTitle'),
+                  style: const TextStyle(color: Colors.white, fontSize: 15)),
+            ),
+          ]),
+          content: Text(provider.t('openWith.busyMsg'),
+              style: const TextStyle(
+                  color: Colors.white70, fontSize: 13, height: 1.5)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dctx),
+              child: Text(provider.t('btn.cancel'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(dctx, 'newWindow'),
+              child: Text(provider.t('openWith.busyNewWindow'),
+                  style: const TextStyle(color: Color(0xFF4FC3F7))),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF6C63FF),
+                  foregroundColor: Colors.white),
+              onPressed: () => Navigator.pop(dctx, 'overwrite'),
+              child: Text(provider.t('openWith.busyOverwrite')),
+            ),
+          ],
+        ),
+      );
+      if (!mounted || choice == null) return; // キャンセル = 何もしない
+      if (choice == 'newWindow') {
+        // 別プロセスで開く。 --new-window を付けると 2 個目側は起動済みの
+        // 本体へ引き渡さず、 そのまま新しいウィンドウとして立ち上がる。
+        try {
+          await Process.start(
+              Platform.resolvedExecutable, ['--new-window', ...paths],
+              mode: ProcessStartMode.detached);
+        } catch (_) {}
+        return;
+      }
+      // 上書き: 開いている画面 (動画 / ビューア等) を全部閉じてから開く。
+      // WebView の後始末が終わる前に次のビューアを重ねるとフリーズの原因に
+      // なるため、 少しだけ待つ。
+      nav.popUntil((r) => r.isFirst);
+      await Future.delayed(const Duration(milliseconds: 400));
+      if (!mounted) return;
+    }
     // ── 保存データの読み込みは待たずに、 すぐビューアを開く ──
     // (= ユーザー要望: 「アプリから開く」 で立ち上がるまでが遅い)。
     // 以前はここで読み込み完了を待っていたが、 それは「マップに追加」 した
@@ -35770,7 +35833,14 @@ class _MindMapScreenState extends State<MindMapScreen>
     final s = scale <= 0 ? 1.0 : scale;
     final t = (14.0 / s).clamp(6.0, 90.0);
     final provider = context.read<MindMapProvider>();
-    final decos = _resolvedDecorations(provider);
+    // 手前 (レイヤー番号が大きい方、 同じ層では後から描いた方) から
+    // 当てる (= 5 段階レイヤー対応: 重なっている時は上の層を選ぶ)。
+    final indexed = _resolvedDecorations(provider).asMap().entries.toList()
+      ..sort((a, b) {
+        final byLayer = a.value.layer.compareTo(b.value.layer);
+        return byLayer != 0 ? byLayer : a.key.compareTo(b.key);
+      });
+    final decos = [for (final e in indexed) e.value];
     for (final d in decos.reversed) {
       switch (d.kind) {
         case MapDecorationKind.line:
@@ -36333,6 +36403,16 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// ツールバー本体の組み立て + 図形に追従する配置計算。
   Widget _buildShapeSelectionToolbarBody(
       MindMapProvider provider, TransformationController ctrl) {
+    // 選択中の図形のレイヤー (レイヤーボタンの表示用)。
+    var selLayer = 3;
+    if (_selectedDecorationId != null) {
+      for (final d in provider.decorations) {
+        if (d.id == _selectedDecorationId) {
+          selLayer = d.layer;
+          break;
+        }
+      }
+    }
     // ── ツールバーの中身 (色・ボタンは従来と同一) ──
     final bar = Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -36363,6 +36443,56 @@ class _MindMapScreenState extends State<MindMapScreen>
             label: Text(provider.t('shape.textLabel'),
                 style: const TextStyle(color: Color(0xFFFFC107))),
             onPressed: () => _showDecorationTextDialog(provider),
+          ),
+          // ── レイヤー 1〜5 (= ユーザー要望: マインドマップにも 5 段階の
+          //    レイヤー機能)。 4 以上はノードより手前に描かれる。 ──
+          PopupMenuButton<int>(
+            tooltip: provider.t('shape.layerTip'),
+            color: const Color(0xFF1E1E32),
+            onSelected: (v) {
+              final id = _selectedDecorationId;
+              if (id != null) provider.setDecorationLayer(id, v);
+              setState(() {});
+            },
+            itemBuilder: (_) => [
+              for (var i = 1; i <= 5; i++)
+                PopupMenuItem(
+                  value: i,
+                  height: 34,
+                  child: Row(children: [
+                    Icon(
+                        i == selLayer
+                            ? Icons.radio_button_checked_rounded
+                            : Icons.radio_button_off_rounded,
+                        size: 15,
+                        color: i == selLayer
+                            ? const Color(0xFF80CBC4)
+                            : Colors.white38),
+                    const SizedBox(width: 8),
+                    Text('${provider.t('paint.layer')} $i',
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 12.5)),
+                    if (i >= 4) ...[
+                      const SizedBox(width: 6),
+                      Text(provider.t('shape.layerFront'),
+                          style: const TextStyle(
+                              color: Colors.white38, fontSize: 10.5)),
+                    ],
+                  ]),
+                ),
+            ],
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                const Icon(Icons.layers_rounded,
+                    color: Color(0xFF80CBC4), size: 18),
+                const SizedBox(width: 4),
+                Text('$selLayer',
+                    style: const TextStyle(
+                        color: Color(0xFF80CBC4),
+                        fontWeight: FontWeight.w700)),
+              ]),
+            ),
           ),
           TextButton.icon(
             icon: const Icon(Icons.delete_outline_rounded,
@@ -57468,12 +57598,13 @@ class _MindMapScreenState extends State<MindMapScreen>
                         ),
                       ),
                     ),
-                    // 装飾図形
+                    // 装飾図形 (レイヤー 1〜3 = ノードの後ろ)
                     Positioned.fill(
                       child: IgnorePointer(
                         child: CustomPaint(
                           painter: _DecorationPainter(
                             decorations: page.decorations,
+                            layers: const {1, 2, 3},
                           ),
                         ),
                       ),
@@ -57610,6 +57741,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                           left: n.position.dx,
                           top: n.position.dy,
                           child: NodeWidget(
+                            // (レイヤー 4〜5 の図形はこの後に重ねる)
                             key: ValueKey('map_split_${page.id}_${n.id}'),
                             node: n,
                             isSelected: false,
@@ -57625,6 +57757,17 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 nodeId: n.id, slot: slot),
                           ),
                         ),
+                    // 図形レイヤー 4〜5 (= ノードより手前。 編集側と同じ)。
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: CustomPaint(
+                          painter: _DecorationPainter(
+                            decorations: page.decorations,
+                            layers: const {4, 5},
+                          ),
+                        ),
+                      ),
+                    ),
                   ]),
                 ),
               ),
@@ -58830,6 +58973,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                             rangeDragDelta:
                                 _rangeDragging ? _rangeDragDelta : Offset.zero,
                             hitScale: ctrl.value.getMaxScaleOnAxis(),
+                            // レイヤー 4〜5 はノードより手前の別ペインターで
+                            // 描く (= 5 段階レイヤー)。 ここは 1〜3 だけ。
+                            layers: const {1, 2, 3},
                           ),
                         ),
                       ),
@@ -59294,6 +59440,24 @@ class _MindMapScreenState extends State<MindMapScreen>
                           },
                         );
                       }),
+
+                      // ── 図形レイヤー 4〜5 (= ユーザー要望: 5 段階レイヤー)。
+                      //    ノードより手前に描く。 タップは下 (接続線タップ層の
+                      //    図形ヒットテスト) が拾うので表示専用。 ──
+                      IgnorePointer(
+                        child: CustomPaint(
+                          size: Size(canvasSize, canvasSize),
+                          painter: _DecorationPainter(
+                            decorations: _resolvedDecorations(provider),
+                            selectedId: _selectedDecorationId,
+                            rangeSelectedIds: _rangeSelectedDecorationIds,
+                            rangeDragDelta:
+                                _rangeDragging ? _rangeDragDelta : Offset.zero,
+                            hitScale: ctrl.value.getMaxScaleOnAxis(),
+                            layers: const {4, 5},
+                          ),
+                        ),
+                      ),
 
                       // ── 共同編集: 他の参加者が編集中の要素に枠と名前を
                       //    重ねる (= ユーザー要望: どのユーザーが操作して
@@ -105213,8 +105377,13 @@ class _PaintPageViewState extends State<_PaintPageView> {
                 IconButton(
                   tooltip: widget.provider.t('paint.deletePage'),
                   visualDensity: VisualDensity.compact,
-                  icon: const Icon(Icons.delete_outline_rounded,
-                      size: 18, color: Color(0xFFE57373)),
+                  // 隣の名前変更ボタンと同じ無彩色にする (= ユーザー要望:
+                  // 削除のボタンだけ色が付いているのが変)。
+                  icon: Icon(Icons.delete_outline_rounded,
+                      size: 18,
+                      color: _sheets.length > 1
+                          ? Colors.white54
+                          : Colors.white24),
                   onPressed: _sheets.length > 1 ? _deletePage : null,
                 ),
               ]),
@@ -105477,6 +105646,10 @@ class _PaintPageViewState extends State<_PaintPageView> {
                     tooltip: widget.provider.t('paint.insertTable'),
                     onTap: _insertPaintTable),
               ),
+              // ── レイヤー選択 (= ユーザー要望: 文書モードや表の挿入の並びに
+              //    レイヤーを設定できるボタン。 5 段階から選ぶ)。 選んだ
+              //    レイヤーに描かれ、 上の番号ほど手前に表示される。 ──
+              _buildToolbarLayerButton(),
               // ── ノートの回転 (= ユーザー要望: 押す度に既定 15° ずつ回転。
               //    長押し / 右クリックでステップ角と回転方向を設定)。
               //    アイコンは回転方向 (時計回り/反時計回り) に合わせて切替
@@ -105542,8 +105715,10 @@ class _PaintPageViewState extends State<_PaintPageView> {
                   onTap: _showPaintHelpDialog),
               PopupMenuButton<String>(
                 tooltip: widget.provider.t('paint.export'),
+                // 周りのツールボタンと同じ無彩色にする (= ユーザー要望:
+                // 書き出しのボタンだけ色が付いているのが変)。
                 icon: const Icon(Icons.download_rounded,
-                    size: 20, color: Color(0xFF4FC3F7)),
+                    size: 20, color: Colors.white70),
                 color: const Color(0xFF1E1E32),
                 onSelected: (v) {
                   if (v == 'png') _exportImage(false);
@@ -107215,6 +107390,74 @@ class _PaintPageViewState extends State<_PaintPageView> {
     );
   }
 
+  /// ツールバーのレイヤー選択ボタン (= ユーザー要望: 文書モードや表の挿入の
+  /// 並びに、 5 段階でレイヤーを設定できるボタン)。 現在のレイヤー番号を
+  /// アイコンの右下に小さく出す。 選んだレイヤーに描かれ (消しゴムも
+  /// そのレイヤーだけに効く)、 上の番号ほど手前に表示される。
+  Widget _buildToolbarLayerButton() {
+    final p = widget.provider;
+    return Tooltip(
+      message: '${p.t('paint.layer')}\n${p.t('paint.layerHint')}',
+      child: PopupMenuButton<int>(
+        color: const Color(0xFF1E1E32),
+        onSelected: (v) {
+          setState(() {
+            _activeLayer = v;
+            // 消しゴム側のレイヤー選択列にも同じ番号が並ぶようにする。
+            if (_layerCountPref < v + 1) _layerCountPref = v + 1;
+          });
+        },
+        itemBuilder: (_) => [
+          for (var i = 0; i < 5; i++)
+            PopupMenuItem(
+              value: i,
+              height: 34,
+              child: Row(children: [
+                Icon(
+                    i == _activeLayer
+                        ? Icons.radio_button_checked_rounded
+                        : Icons.radio_button_off_rounded,
+                    size: 15,
+                    color: i == _activeLayer
+                        ? const Color(0xFFEC407A)
+                        : Colors.white38),
+                const SizedBox(width: 8),
+                Text('${p.t('paint.layer')} ${i + 1}',
+                    style:
+                        const TextStyle(color: Colors.white, fontSize: 12.5)),
+              ]),
+            ),
+        ],
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          child: Stack(clipBehavior: Clip.none, children: [
+            Icon(Icons.layers_rounded,
+                size: 20,
+                color: _activeLayer > 0
+                    ? const Color(0xFFEC407A)
+                    : Colors.white70),
+            Positioned(
+              right: -5,
+              bottom: -4,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 3),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF2B2B3D),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text('${_activeLayer + 1}',
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 9,
+                        fontWeight: FontWeight.w700)),
+              ),
+            ),
+          ]),
+        ),
+      ),
+    );
+  }
+
   Widget _toolBtn(
       {required IconData icon,
       VoidCallback? onTap,
@@ -107792,15 +108035,17 @@ class _PaintCanvasPainter extends CustomPainter {
         canvas.drawLine(Offset(0, y), Offset(logicalW, y), rulePaint);
       }
     }
-    // ── z 順に全要素を描く (= ユーザー要望: 後から配置した要素が手前に
-    //    来る + 前面へ/背面へでレイヤーを変えられる)。 旧データは全て z=0
-    //    なので、 タイプ順 (画像→ペン→図形→テキスト) の従来の見た目を保つ
-    //    よう (z, タイプ, index) の安定ソートで描く。 ──
+    // ── レイヤー → z 順に全要素を描く ──
+    //    (= ユーザー要望: 後から配置した要素が手前 + 前面へ/背面へ +
+    //     5 段階のレイヤー。 上のレイヤー (番号が大きい) は常に手前)。
+    //    旧データは全て lyr=0 / z=0 なので、 タイプ順 (画像→ペン→図形→
+    //    テキスト) の従来の見た目を保つよう (lyr, z, タイプ, index) の
+    //    安定ソートで描く。 ──
     final liveEraser = currentStroke?.erase == true ? currentStroke : null;
-    final drawOps = <(int, int, int, void Function())>[];
+    final drawOps = <(int, int, int, int, void Function())>[];
     for (int i = 0; i < sheet.images.length; i++) {
       final it = sheet.images[i];
-      drawOps.add((it.z, 0, i, () {
+      drawOps.add((it.lyr, it.z, 0, i, () {
         final im = images[it.path];
         if (im == null) return;
         final src =
@@ -107811,13 +108056,13 @@ class _PaintCanvasPainter extends CustomPainter {
     for (int i = 0; i < sheet.strokes.length; i++) {
       final s = sheet.strokes[i];
       if (s.erase) continue;
-      drawOps.add((s.z, 1, i, () => _drawStroke(canvas, s)));
+      drawOps.add((s.lyr, s.z, 1, i, () => _drawStroke(canvas, s)));
     }
     // 図形/テキストは要素ごとのレイヤーに描き、各要素が持つ消去マスクだけで
     // 部分的にくり抜く。後から作った要素には過去の消し跡が適用されない。
     for (int i = 0; i < sheet.shapes.length; i++) {
       final s = sheet.shapes[i];
-      drawOps.add((s.z, 2, i, () {
+      drawOps.add((s.lyr, s.z, 2, i, () {
         final shapeLiveEraser =
             liveEraser != null && liveEraserShapes.contains(s)
                 ? liveEraser
@@ -107842,7 +108087,7 @@ class _PaintCanvasPainter extends CustomPainter {
       if (ti == editingText) continue; // 編集中はインライン欄が表示するので隠す
       if (t.text.isEmpty && ti != selText) continue;
       final tiCap = ti;
-      drawOps.add((t.z, 3, ti, () {
+      drawOps.add((t.lyr, t.z, 3, ti, () {
         final style = TextStyle(
           color: Color(t.color),
           fontSize: t.size,
@@ -107933,14 +108178,16 @@ class _PaintCanvasPainter extends CustomPainter {
       }));
     }
     drawOps.sort((a, b) {
-      final dz = a.$1.compareTo(b.$1);
+      final dl = a.$1.compareTo(b.$1); // レイヤー (5 段階)
+      if (dl != 0) return dl;
+      final dz = a.$2.compareTo(b.$2);
       if (dz != 0) return dz;
-      final dt = a.$2.compareTo(b.$2);
+      final dt = a.$3.compareTo(b.$3);
       if (dt != 0) return dt;
-      return a.$3.compareTo(b.$3);
+      return a.$4.compareTo(b.$4);
     });
     for (final op in drawOps) {
-      op.$4();
+      op.$5();
     }
     // ライブ描画中のペン/図形のプレビューは常に最前面。
     if (currentStroke != null && !currentStroke!.erase) {
@@ -108024,7 +108271,7 @@ class _PaintCanvasPainter extends CustomPainter {
       // シーンをもう一度描く (ぼかしレイヤーへ)。 ぼかしペン自身は
       // 何も描かないので再帰しない。
       for (final op in drawOps) {
-        op.$4();
+        op.$5();
       }
       if (currentStroke != null &&
           !currentStroke!.erase &&
@@ -129461,13 +129708,36 @@ class _DecorationPainter extends CustomPainter {
 
   /// 当たり判定をズームに合わせるための現在スケール (画面上で約14px相当)。
   final double hitScale;
+
+  /// このペインターが描くレイヤー番号 (= ユーザー要望: 5 段階のレイヤー)。
+  /// null なら全部。 レイヤー 4〜5 はノードより手前の別ペインターで描くため、
+  /// ノード下のペインターには {1,2,3} を渡す。
+  final Set<int>? layers;
   _DecorationPainter({
     required this.decorations,
     this.selectedId,
     this.rangeSelectedIds = const {},
     this.rangeDragDelta = Offset.zero,
     this.hitScale = 1.0,
+    this.layers,
   });
+
+  /// 描画対象 (レイヤーで絞った上で、 番号の小さい層から順に。 同じ層は
+  /// 従来どおりリスト順 = 後から描いた物が手前)。 sort は不安定なので
+  /// 元の並び順をタイブレークに使う。
+  List<MapDecoration> get _visibleSorted {
+    final list = <(int, MapDecoration)>[];
+    for (var i = 0; i < decorations.length; i++) {
+      final d = decorations[i];
+      if (layers != null && !layers!.contains(d.layer)) continue;
+      list.add((i, d));
+    }
+    list.sort((a, b) {
+      final byLayer = a.$2.layer.compareTo(b.$2.layer);
+      return byLayer != 0 ? byLayer : a.$1.compareTo(b.$1);
+    });
+    return [for (final e in list) e.$2];
+  }
 
   /// 点 [position] (キャンバス座標) が図形上なら true。
   /// これを返すことで CustomPaint が hitTestSelf=true になり、 これを包む
@@ -129486,6 +129756,8 @@ class _DecorationPainter extends CustomPainter {
     final s = hitScale <= 0 ? 1.0 : hitScale;
     final t = (14.0 / s).clamp(6.0, 90.0);
     for (final d in decorations) {
+      // レイヤーで絞っている時は、 描いていない図形では当たらない。
+      if (layers != null && !layers!.contains(d.layer)) continue;
       switch (d.kind) {
         case MapDecorationKind.line:
         case MapDecorationKind.arrow:
@@ -129505,7 +129777,7 @@ class _DecorationPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    for (final d0 in decorations) {
+    for (final d0 in _visibleSorted) {
       final isSelected = d0.id == selectedId;
       final isRangeSel = rangeSelectedIds.contains(d0.id);
       // 範囲ドラッグ中は、 範囲選択された図形を delta だけずらして描画する。
@@ -185614,15 +185886,48 @@ class _FloatingWebWindowState extends State<_FloatingWebWindow> {
   late String _cur = widget.url;
   StreamSubscription<String>? _urlSub;
 
+  // ── 再生速度バー (= ユーザー要望: フローティングモードでも再生速度を
+  //    変えられる速度バーを付けて欲しい) ──
+  /// JS を流し込むための WebView State への鍵。
+  final GlobalKey<_WinGoogleSearchViewState> _webKey =
+      GlobalKey<_WinGoogleSearchViewState>();
+
+  /// 現在の再生速度 (1.0 = 等速)。
+  double _rate = 1.0;
+
+  /// 速度バー (スライダー行) を開いているか。 ヘッダーの「1.0x」 で開閉。
+  bool _rateBarOpen = false;
+
+  /// ページ遷移後の再適用タイマー (ページが変わると JS が消えるため)。
+  Timer? _rateReapplyTimer;
+
+  /// 現在の速度を WebView 内の動画へ適用する。
+  void _applyRate() {
+    _webKey.currentState?.execJs(_webVideoRateJs(_rate));
+  }
+
+  /// ページ遷移から少し待って速度を掛け直す (動画要素の生成を待つ)。
+  void _scheduleRateReapply() {
+    if ((_rate - 1.0).abs() < 0.01) return;
+    _rateReapplyTimer?.cancel();
+    _rateReapplyTimer = Timer(const Duration(milliseconds: 1200), () {
+      if (mounted) _applyRate();
+    });
+  }
+
   void _attachController(wv_win.WebviewController c) {
     _urlSub = c.url.listen((u) {
-      if (u.isNotEmpty) _cur = u;
+      if (u.isNotEmpty) {
+        if (u != _cur) _scheduleRateReapply();
+        _cur = u;
+      }
     });
   }
 
   @override
   void dispose() {
     _urlSub?.cancel();
+    _rateReapplyTimer?.cancel();
     super.dispose();
   }
 
@@ -185631,9 +185936,13 @@ class _FloatingWebWindowState extends State<_FloatingWebWindow> {
   /// ページ」 を渡せるよう、 現在 URL だけ受け取る。
   Widget _buildWebBody() {
     return _WinGoogleSearchView(
+      key: _webKey,
       url: widget.url,
       onController: _attachController,
-      onUrlChanged: (u) => _cur = u,
+      onUrlChanged: (u) {
+        if (u != _cur) _scheduleRateReapply();
+        _cur = u;
+      },
     );
   }
 
@@ -185692,6 +186001,25 @@ class _FloatingWebWindowState extends State<_FloatingWebWindow> {
                           style: const TextStyle(
                               color: Colors.white70, fontSize: 11)),
                     ),
+                    // ── 再生速度 (= ユーザー要望: フローティングでも速度を
+                    //    変えられる速度バー)。 押すとスライダー行を開閉。 ──
+                    TextButton(
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 6),
+                        minimumSize: const Size(0, 30),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      onPressed: () =>
+                          setState(() => _rateBarOpen = !_rateBarOpen),
+                      child: Text('${_rate.toStringAsFixed(2)}x',
+                          style: TextStyle(
+                              color: _rateBarOpen ||
+                                      (_rate - 1.0).abs() > 0.01
+                                  ? const Color(0xFF4FC3F7)
+                                  : Colors.white54,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700)),
+                    ),
                     // ── ペインへ送るメニュー (= ユーザー要望: ドラッグの他に
                     //    ボタンからも送り先を選べるように) ──
                     if (widget.onSendTo != null)
@@ -185725,6 +186053,66 @@ class _FloatingWebWindowState extends State<_FloatingWebWindow> {
                   ]),
                 ),
               ),
+              // ── 速度バー (= ユーザー要望)。 0.25x〜最大倍率 (動作設定の
+              //    動画最大倍率に従う) をスライダーで変える。 ──
+              if (_rateBarOpen)
+                Container(
+                  height: 30,
+                  color: const Color(0xFF15152A),
+                  padding: const EdgeInsets.only(left: 8, right: 4),
+                  child: Builder(builder: (bctx) {
+                    final maxRate = bctx
+                        .read<MindMapProvider>()
+                        .videoMaxRate
+                        .clamp(2.0, 16.0)
+                        .toDouble();
+                    return Row(children: [
+                      const Icon(Icons.speed_rounded,
+                          size: 14, color: Color(0xFF4FC3F7)),
+                      Expanded(
+                        child: SliderTheme(
+                          data: SliderTheme.of(bctx).copyWith(
+                            trackHeight: 2,
+                            thumbShape: const RoundSliderThumbShape(
+                                enabledThumbRadius: 6),
+                            overlayShape: const RoundSliderOverlayShape(
+                                overlayRadius: 12),
+                          ),
+                          child: Slider(
+                            value: _rate.clamp(0.25, maxRate).toDouble(),
+                            min: 0.25,
+                            max: maxRate,
+                            divisions: ((maxRate - 0.25) / 0.25).round(),
+                            activeColor: const Color(0xFF4FC3F7),
+                            inactiveColor: Colors.white24,
+                            label: '${_rate.toStringAsFixed(2)}x',
+                            onChanged: (v) {
+                              setState(() => _rate = v);
+                              _applyRate();
+                            },
+                          ),
+                        ),
+                      ),
+                      // 1.0x へ戻す。
+                      InkWell(
+                        onTap: () {
+                          setState(() => _rate = 1.0);
+                          _applyRate();
+                        },
+                        borderRadius: BorderRadius.circular(6),
+                        child: const Padding(
+                          padding: EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 4),
+                          child: Text('1x',
+                              style: TextStyle(
+                                  color: Colors.white54,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w700)),
+                        ),
+                      ),
+                    ]);
+                  }),
+                ),
               Expanded(
                 child: ClipRRect(
                   borderRadius:
