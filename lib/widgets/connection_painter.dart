@@ -43,7 +43,46 @@ class ConnectionPainter extends CustomPainter {
     this.darkBackground,
     this.lineStyle = 'curve',
   })  : selectedConnections = selectedConnections ?? {},
-        selectedBendIndices = selectedBendIndices ?? const {};
+        selectedBendIndices = selectedBendIndices ?? const {},
+        singleChildSources = singleChildSourceIds(connections);
+
+  /// ぶら下がる先が 1 つしか無い元ノードの id
+  /// (= 分岐が無いので折れ (節点) を作らずまっすぐ結ぶ)。
+  final Set<String> singleChildSources;
+
+  /// 出ていく線が 1 本だけのノードを集める。
+  static Set<String> singleChildSourceIds(List<NodeConnection> connections) {
+    final count = <String, int>{};
+    for (final c in connections) {
+      count[c.fromId] = (count[c.fromId] ?? 0) + 1;
+    }
+    return {
+      for (final e in count.entries)
+        if (e.value == 1) e.key
+    };
+  }
+
+  /// 実際に描く線種。
+  ///
+  /// ★ 折れ線 (elbow) でも、 **ぶら下がる先が 1 つだけ**なら直線にする
+  ///   (= ユーザー要望: 表が 1 つしか生成されない時に節点が付くのはおかしい)。
+  ///   分岐が無いのに直角の角が付くと、 線が回り道して見える。
+  ///   利用者が自分でその線の線種を選んだ物 (`conn.lineStyle` あり) と、
+  ///   手で節点を動かした物 (`elbowBendPoints` あり) はそのまま残す。
+  String effectiveStyle(NodeConnection conn) =>
+      resolveStyle(conn, lineStyle, singleChildSources);
+
+  static String resolveStyle(
+    NodeConnection conn,
+    String fallback,
+    Set<String> singleChildSources,
+  ) {
+    final style = conn.lineStyle ?? fallback;
+    if (style != 'elbow') return style;
+    if (conn.lineStyle != null) return style; // 個別指定は尊重する
+    if (conn.elbowBendPoints.isNotEmpty) return style; // 手で曲げた線は残す
+    return singleChildSources.contains(conn.fromId) ? 'straight' : style;
+  }
 
   /// 接続線の表示色を計算。黄色系の色は視認性が低いためユーザー要望により
   /// 全廃。pale な黄色を置き換える (明背景=ブラック / 暗背景=ホワイト系)。
@@ -78,7 +117,7 @@ class ConnectionPainter extends CustomPainter {
           from, conn.fromAnchor, conn.fromTableSide, conn.fromTableIndex);
       final p2 = _connectionAnchor(
           to, conn.toAnchor, conn.toTableSide, conn.toTableIndex);
-      final style = conn.lineStyle ?? lineStyle;
+      final style = effectiveStyle(conn);
 
       // ── 直角折れ線は各セグメントへの距離で判定 ──
       if (style == 'elbow') {
@@ -165,13 +204,15 @@ class ConnectionPainter extends CustomPainter {
     MindMapNode to, {
     String fallbackLineStyle = 'elbow',
     double? position,
+    // ぶら下がる先が 1 つだけの線は直線扱いにするための一覧 (= ユーザー要望)。
+    Set<String> singleChildSources = const {},
   }) {
     final t = (position ?? conn.labelPosition).clamp(0.0, 1.0).toDouble();
     final p1 = _connectionAnchor(
         from, conn.fromAnchor, conn.fromTableSide, conn.fromTableIndex);
     final p2 = _connectionAnchor(
         to, conn.toAnchor, conn.toTableSide, conn.toTableIndex);
-    final style = conn.lineStyle ?? fallbackLineStyle;
+    final style = resolveStyle(conn, fallbackLineStyle, singleChildSources);
     if (style == 'elbow') {
       final points = elbowPointsFor(conn, from, to);
       final lengths = <double>[];
@@ -383,7 +424,7 @@ class ConnectionPainter extends CustomPainter {
           from, conn.fromAnchor, conn.fromTableSide, conn.fromTableIndex);
       final p2 = _connectionAnchor(
           to, conn.toAnchor, conn.toTableSide, conn.toTableIndex);
-      final style = conn.lineStyle ?? lineStyle;
+      final style = effectiveStyle(conn);
 
       // ── 線スタイルごとの形状 (= ユーザー要望: 直線 / 直角折れ限定設定) ──
       // elbow は折れ線 (poly)、 straight は制御点を線分上に置いた退化ベジェ、
@@ -517,7 +558,9 @@ class ConnectionPainter extends CustomPainter {
       // 線のラベル (= 関係の名称等) を中央の制御点周辺に表示。
       if (conn.label != null && conn.label!.isNotEmpty) {
         final midPoint =
-            pointOnConnection(conn, from, to, fallbackLineStyle: lineStyle);
+            pointOnConnection(conn, from, to,
+                fallbackLineStyle: lineStyle,
+                singleChildSources: singleChildSources);
         final bgColor = isSelected
             ? Colors.redAccent.withValues(alpha: 0.95)
             : resolvedColor.withValues(alpha: 0.95);

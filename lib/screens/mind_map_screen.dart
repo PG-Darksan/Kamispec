@@ -20717,8 +20717,16 @@ class _MindMapScreenState extends State<MindMapScreen>
       Offset canvasPos, MindMapProvider provider, double scale) {
     if (provider.currentPage.pageType == 'bookshelf') return null;
     final radius = math.max(8.0, 14.0 / math.max(scale, 0.1));
+    // ぶら下がる先が 1 つだけの線は直線で描くので、 節点のつまみも出さない
+    // (= ユーザー要望: 表が 1 つの時に節点が付くのはおかしい)。
+    final singles =
+        ConnectionPainter.singleChildSourceIds(provider.connections);
     for (final conn in provider.connections.reversed) {
-      if ((conn.lineStyle ?? provider.connectionLineStyle) != 'elbow') continue;
+      if (ConnectionPainter.resolveStyle(
+              conn, provider.connectionLineStyle, singles) !=
+          'elbow') {
+        continue;
+      }
       final from = provider.nodes[conn.fromId];
       final to = provider.nodes[conn.toId];
       if (from == null || to == null) continue;
@@ -20742,7 +20750,9 @@ class _MindMapScreenState extends State<MindMapScreen>
       final to = provider.nodes[conn.toId];
       if (from == null || to == null) continue;
       final point = ConnectionPainter.pointOnConnection(conn, from, to,
-          fallbackLineStyle: provider.connectionLineStyle);
+          fallbackLineStyle: provider.connectionLineStyle,
+          singleChildSources:
+              ConnectionPainter.singleChildSourceIds(provider.connections));
       if ((point - canvasPos).distance <= radius) return conn;
     }
     return null;
@@ -56731,12 +56741,98 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
   }
 
-  /// 分割ペインのギャラリー行/列グリップの表示用チップ。
-  /// 編集側の掴み (_shelfHandleVisual) と同じ見た目にそろえる
-  /// (= ユーザー要望: 非アクティブ時に表示が変わるのはおかしい)。
-  Widget _paneShelfHandleChip(String label, {bool vertical = true}) {
-    return IgnorePointer(
-      child: _shelfHandleVisual(false, vertical: vertical),
+  // ── 分割ペイン (非アクティブ側) のギャラリー行/列ドラッグ ──
+  // = ユーザー要望: アクティブでも非アクティブでも掴みの挙動を変えない。
+  // 掴んでいる間はこのペインの中だけで完結させ (ページを切り替えると
+  // ウィジェットが作り直されてドラッグが途切れるため)、 指を離した時に
+  // 「そのページを編集側にしてから移動」 を実行する。
+  int? _paneShelfRowDragFrom;
+  int? _paneShelfColDragFrom;
+  Offset? _paneShelfDragPos;
+
+  /// [rects] (行/列の帯) のうち [v] に最も近い番号。
+  int _nearestPaneLine(List<Rect> rects, double v, {required bool vertical}) {
+    var best = 0;
+    var bestD = double.infinity;
+    for (var i = 0; i < rects.length; i++) {
+      final c = vertical ? rects[i].center.dy : rects[i].center.dx;
+      final d = (c - v).abs();
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+    return best;
+  }
+
+  /// 分割ペインのギャラリー行/列グリップ。
+  /// 編集側の掴み (_shelfHandleVisual) と見た目・掴み心地をそろえる
+  /// (= ユーザー要望: 非アクティブ時に表示や挙動が変わるのはおかしい)。
+  Widget _paneShelfHandleChip(
+    MindMapProvider provider,
+    MindMapPage page,
+    int slot,
+    int index, {
+    required bool vertical,
+    required List<Rect> lineRects,
+  }) {
+    final dragging = vertical
+        ? _paneShelfRowDragFrom == index
+        : _paneShelfColDragFrom == index;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onPanStart: (d) {
+        setState(() {
+          if (vertical) {
+            _paneShelfRowDragFrom = index;
+          } else {
+            _paneShelfColDragFrom = index;
+          }
+          _paneShelfDragPos = lineRects[index].center;
+        });
+      },
+      onPanUpdate: (d) {
+        // ペイン内のキャンバス座標へ (ドラッグ量をそのまま足す)。
+        final cur = _paneShelfDragPos;
+        if (cur == null) return;
+        setState(() => _paneShelfDragPos = cur + d.delta);
+      },
+      onPanCancel: () => setState(() {
+        _paneShelfRowDragFrom = null;
+        _paneShelfColDragFrom = null;
+        _paneShelfDragPos = null;
+      }),
+      onPanEnd: (_) {
+        final from = vertical ? _paneShelfRowDragFrom : _paneShelfColDragFrom;
+        final pos = _paneShelfDragPos;
+        setState(() {
+          _paneShelfRowDragFrom = null;
+          _paneShelfColDragFrom = null;
+          _paneShelfDragPos = null;
+        });
+        if (from == null || pos == null) return;
+        final target = _nearestPaneLine(
+            lineRects, vertical ? pos.dy : pos.dx,
+            vertical: vertical);
+        if (target == from) {
+          // 動かさなかった時は「押しただけ」 と同じ扱いで編集側にする。
+          _mapSplitActivate(provider, page.id, slot: slot);
+          return;
+        }
+        // 並べ替えは「そのページを編集側にしてから」 実行する
+        // (provider の並べ替えは現在ページに対して働くため)。
+        _mapSplitActivate(provider, page.id, slot: slot);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          if (provider.currentPage.id != page.id) return;
+          if (vertical) {
+            provider.moveShelfRow(from, target);
+          } else {
+            provider.moveShelfColumn(from, target);
+          }
+        });
+      },
+      child: _shelfHandleVisual(dragging, vertical: vertical),
     );
   }
 
@@ -56904,6 +57000,28 @@ class _MindMapScreenState extends State<MindMapScreen>
                         ),
                       ),
                     ),
+                    // ── ギャラリー: タイル群の背後に敷板を敷く ──
+                    // ★ 編集側と同じ層をペインにも敷く (= ユーザー報告:
+                    //   分割で非アクティブになると + ボックスの隙間の背景が
+                    //   変わってしまう)。 これが無いと隙間から壁紙が透けて、
+                    //   アクティブ時と見た目が変わっていた。
+                    if (paneShelf)
+                      Positioned(
+                        left: 0,
+                        top: 0,
+                        width: paneCanvas.width,
+                        height: paneCanvas.height,
+                        child: IgnorePointer(
+                          child: CustomPaint(
+                            size: paneCanvas,
+                            painter: _ShelfBackdropPainter(
+                              nodes: page.nodes,
+                              isDark: provider.isDarkMode,
+                              addRects: paneFrontierRects,
+                            ),
+                          ),
+                        ),
+                      ),
                     // 接続線
                     Positioned.fill(
                       child: IgnorePointer(
@@ -56952,8 +57070,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                             width: math.max(
                                 paneRowHandles[i].width, _shelfHandleThick),
                             height: paneRowHandles[i].height,
-                            child: _paneShelfHandleChip('${i + 1}',
-                                vertical: true),
+                            child: _paneShelfHandleChip(
+                                provider, page, slot, i,
+                                vertical: true,
+                                lineRects: paneRowHandles),
                           ),
                       if (paneColHandles.length > 1)
                         for (var i = 0; i < paneColHandles.length; i++)
@@ -56965,8 +57085,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                             width: paneColHandles[i].width,
                             height: math.max(
                                 paneColHandles[i].height, _shelfHandleThick),
-                            child: _paneShelfHandleChip('${i + 1}',
-                                vertical: false),
+                            child: _paneShelfHandleChip(
+                                provider, page, slot, i,
+                                vertical: false,
+                                lineRects: paneColHandles),
                           ),
                       // ── 行/列の番号バッジ (= ユーザー要望: アクティブか
                       //    どうかに関わらず常に表示)。 編集側と同じ見た目。 ──
@@ -161788,6 +161910,7 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
 
   @override
   void dispose() {
+    _sheetToastTimer?.cancel();
     _editCtrl.dispose();
     _editFocus.dispose();
     _keyFocus.dispose();
@@ -161801,6 +161924,107 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
   // ── 数式バー (= ユーザー要望: Excel と同じく上部にセル内容/数式) ──
   final TextEditingController _formulaCtrl = TextEditingController();
   final FocusNode _formulaFocus = FocusNode();
+
+  // ── 範囲選択 (= ユーザー要望: セルの範囲を選んで図や表にできるように) ──
+  // 選択の起点。 null なら 1 セルだけの選択 (_selRow/_selCol)。
+  int? _rangeAnchorRow;
+  int? _rangeAnchorCol;
+
+  /// 選択範囲 (行/列の開始・終了。 いずれも含む)。
+  ({int r1, int c1, int r2, int c2}) get _range {
+    final ar = _rangeAnchorRow ?? _selRow;
+    final ac = _rangeAnchorCol ?? _selCol;
+    return (
+      r1: math.min(ar, _selRow),
+      c1: math.min(ac, _selCol),
+      r2: math.max(ar, _selRow),
+      c2: math.max(ac, _selCol),
+    );
+  }
+
+  bool get _hasRange {
+    final r = _range;
+    return r.r1 != r.r2 || r.c1 != r.c2;
+  }
+
+  bool _inRange(int r, int c) {
+    final s = _range;
+    return r >= s.r1 && r <= s.r2 && c >= s.c1 && c <= s.c2;
+  }
+
+  /// 選択範囲の中身を行 × 列で取り出す (数式は計算結果を使う)。
+  List<List<String>> _rangeCells() {
+    final s = _range;
+    final out = <List<String>>[];
+    for (var r = s.r1; r <= s.r2 && r < _rowCount; r++) {
+      final row = <String>[];
+      for (var c = s.c1; c <= s.c2 && c < _colCount; c++) {
+        row.add(_displayValue(r, c));
+      }
+      out.add(row);
+    }
+    return out;
+  }
+
+  /// 選択の起点を今のセルに置き直す (ふつうのクリック)。
+  void _resetRangeAnchor() {
+    _rangeAnchorRow = null;
+    _rangeAnchorCol = null;
+  }
+
+  /// Shift 併用でクリック / 矢印した時に、 起点を覚えて範囲を伸ばす。
+  void _ensureRangeAnchor() {
+    _rangeAnchorRow ??= _selRow;
+    _rangeAnchorCol ??= _selCol;
+  }
+
+  // ── 画面内のお知らせ ──
+  // ★ この画面は全画面のダイアログなので、 SnackBar を出すと後ろに隠れて
+  //   「押しても何も起きない」 ように見える。 画面の中に自分で出す。
+  String? _sheetToastMsg;
+  Color _sheetToastColor = const Color(0xFF43B97F);
+  Timer? _sheetToastTimer;
+
+  void _sheetToast(String msg, {bool error = false}) {
+    _sheetToastTimer?.cancel();
+    setState(() {
+      _sheetToastMsg = msg;
+      _sheetToastColor =
+          error ? const Color(0xFFE57373) : const Color(0xFF43B97F);
+    });
+    _sheetToastTimer = Timer(const Duration(seconds: 4), () {
+      if (mounted) setState(() => _sheetToastMsg = null);
+    });
+  }
+
+  /// 選択範囲を表ノードにしてマップへ置く。
+  void _rangeToTable() {
+    final provider = context.read<MindMapProvider>();
+    final cells = _rangeCells();
+    if (cells.isEmpty) return;
+    final node = provider.addTableNodeFromCells(cells,
+        headerRow: cells.length > 1, title: '');
+    _sheetToast(
+        node == null
+            ? provider.t('sheet.rangeFailed')
+            : provider.t('sheet.rangeToTableDone'),
+        error: node == null);
+  }
+
+  /// 選択範囲を棒グラフの画像にしてマップへ置く。
+  Future<void> _rangeToChart() async {
+    final provider = context.read<MindMapProvider>();
+    final cells = _rangeCells();
+    if (cells.isEmpty) return;
+    final node = await provider.addChartNodeFromCells(cells,
+        title: _currentFileName.replaceAll(RegExp(r'\.[^.]+$'), ''));
+    if (!mounted) return;
+    _sheetToast(
+        node == null
+            ? provider.t('sheet.rangeNeedsNumbers')
+            : provider.t('sheet.rangeToChartDone'),
+        error: node == null);
+  }
 
   void _invalidateFormulaCache() {
     _formulaEval = null;
@@ -162859,25 +163083,41 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
 
     if (_editingRow != null) return KeyEventResult.ignored;
 
-    if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
-      setState(() => _selRow = (_selRow + 1).clamp(0, _rowCount - 1));
+    // ── 矢印キー: Shift 併用なら範囲を伸ばす (= ユーザー要望: 範囲選択) ──
+    void moveSel(int dr, int dc) {
+      setState(() {
+        if (shift) {
+          _ensureRangeAnchor();
+        } else {
+          _resetRangeAnchor();
+        }
+        _selRow = (_selRow + dr).clamp(0, _rowCount - 1);
+        _selCol = (_selCol + dc).clamp(0, _colCount - 1);
+      });
       _ensureSelVisible();
+    }
+
+    if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+      moveSel(1, 0);
       return KeyEventResult.handled;
     }
     if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
-      setState(() => _selRow = (_selRow - 1).clamp(0, _rowCount - 1));
-      _ensureSelVisible();
+      moveSel(-1, 0);
       return KeyEventResult.handled;
     }
-    if (event.logicalKey == LogicalKeyboardKey.arrowRight ||
-        (event.logicalKey == LogicalKeyboardKey.tab && !shift)) {
-      setState(() => _selCol = (_selCol + 1).clamp(0, _colCount - 1));
-      _ensureSelVisible();
+    if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+      moveSel(0, 1);
       return KeyEventResult.handled;
     }
-    if (event.logicalKey == LogicalKeyboardKey.arrowLeft ||
-        (event.logicalKey == LogicalKeyboardKey.tab && shift)) {
-      setState(() => _selCol = (_selCol - 1).clamp(0, _colCount - 1));
+    if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+      moveSel(0, -1);
+      return KeyEventResult.handled;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.tab) {
+      setState(() {
+        _resetRangeAnchor();
+        _selCol = (_selCol + (shift ? -1 : 1)).clamp(0, _colCount - 1);
+      });
       _ensureSelVisible();
       return KeyEventResult.handled;
     }
@@ -163234,20 +163474,47 @@ $csvText
       },
       child: Container(
         color: bg,
-        child: Column(
-          children: [
-            _buildHeader(dark, fg),
-            // ── 数式バー (= ユーザー要望: Excel と同じく上のバーに選択中の
-            //    セルの内容・数式を表示 / 編集できるように)。 以前この位置に
-            //    あったシートタブと紛らわしかった (「メモ」 と書かれた所) ──
-            if (!_loading && _loadError == null) _buildFormulaBar(dark, fg),
-            Expanded(child: body),
-            // ── シートの切り替えタブは左下へ (= ユーザー要望: Excel と同じ) ──
-            if (_kind == _SpreadsheetKind.xlsx && _sheetNames.isNotEmpty)
-              _buildSheetTabs(dark, fg),
-            _buildStatusBar(dark, fg),
-          ],
-        ),
+        child: Stack(children: [
+          Column(
+            children: [
+              _buildHeader(dark, fg),
+              // ── 数式バー (= ユーザー要望: Excel と同じく上のバーに選択中の
+              //    セルの内容・数式を表示 / 編集できるように)。 以前この位置に
+              //    あったシートタブと紛らわしかった (「メモ」 と書かれた所) ──
+              if (!_loading && _loadError == null) _buildFormulaBar(dark, fg),
+              Expanded(child: body),
+              // ── シートの切り替えタブは左下へ (= ユーザー要望: Excel と同じ) ──
+              if (_kind == _SpreadsheetKind.xlsx && _sheetNames.isNotEmpty)
+                _buildSheetTabs(dark, fg),
+              _buildStatusBar(dark, fg),
+            ],
+          ),
+          // 画面内のお知らせ (全画面ダイアログなので SnackBar は使えない)。
+          if (_sheetToastMsg != null)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 56,
+              child: Center(
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: _sheetToastColor,
+                    borderRadius: BorderRadius.circular(10),
+                    boxShadow: const [
+                      BoxShadow(color: Colors.black45, blurRadius: 10),
+                    ],
+                  ),
+                  child: Text(_sheetToastMsg!,
+                      style: const TextStyle(
+                          color: Colors.black87,
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w700)),
+                ),
+              ),
+            ),
+        ]),
       ),
     );
   }
@@ -163521,8 +163788,70 @@ $csvText
             ),
           ),
         ),
+        // ── 選択範囲を図/表にする (= ユーザー要望: .xlsx や .csv でセルの
+        //    範囲を選んで図や表化)。 範囲を選んでいる時だけ出す。 ──
+        if (_hasRange) ...[
+          Builder(builder: (_) {
+            final s = _range;
+            final label = '${_colLabel(s.c1)}${s.r1 + 1}:'
+                '${_colLabel(s.c2)}${s.r2 + 1}';
+            return Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: Text(label,
+                  style: TextStyle(
+                      color: fg.withValues(alpha: 0.55), fontSize: 11)),
+            );
+          }),
+          _sheetRangeButton(
+            icon: Icons.table_chart_rounded,
+            color: const Color(0xFF26C6DA),
+            label: context.read<MindMapProvider>().t('sheet.rangeToTable'),
+            onTap: _rangeToTable,
+          ),
+          const SizedBox(width: 4),
+          _sheetRangeButton(
+            icon: Icons.bar_chart_rounded,
+            color: const Color(0xFF9CCC65),
+            label: context.read<MindMapProvider>().t('sheet.rangeToChart'),
+            onTap: () {
+              // ignore: discarded_futures
+              _rangeToChart();
+            },
+          ),
+        ],
         const SizedBox(width: 8),
       ]),
+    );
+  }
+
+  /// 数式バー右側の「選択範囲を〜」 ボタン。
+  Widget _sheetRangeButton({
+    required IconData icon,
+    required Color color,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return Tooltip(
+      message: label,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(6),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.14),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: color.withValues(alpha: 0.5)),
+          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(icon, size: 14, color: color),
+            const SizedBox(width: 4),
+            Text(label,
+                style: TextStyle(
+                    color: color, fontSize: 11, fontWeight: FontWeight.w700)),
+          ]),
+        ),
+      ),
     );
   }
 
@@ -163764,12 +164093,26 @@ $csvText
               dark: dark,
               controller: editing ? _editCtrl : null,
               focusNode: editing ? _editFocus : null,
+              inRange: _hasRange && _inRange(r, c),
               onTap: () {
-                if (selected) {
+                // Shift + クリックで範囲選択 (= ユーザー要望: 範囲を選んで
+                //   図や表にできるように)。 ふつうのクリックは 1 セル選択。
+                final shift = HardwareKeyboard.instance.isShiftPressed;
+                if (shift) {
+                  _commitEdit();
+                  setState(() {
+                    _ensureRangeAnchor();
+                    _selRow = r;
+                    _selCol = c;
+                  });
+                  return;
+                }
+                if (selected && !_hasRange) {
                   _beginEdit(r, c);
                 } else {
                   _commitEdit();
                   setState(() {
+                    _resetRangeAnchor();
                     _selRow = r;
                     _selCol = c;
                   });
@@ -163967,6 +164310,9 @@ class _SsDataCell extends StatelessWidget {
   /// 数式 (= で始まる) を評価表示中かどうか。 true ならフォントを少し
   /// 区別 (青系 + italic) して 「これは数式の結果」 と分かるようにする。
   final bool isFormula;
+
+  /// 範囲選択に含まれているか (= ユーザー要望: 範囲を選んで図や表に)。
+  final bool inRange;
   final TextEditingController? controller;
   final FocusNode? focusNode;
   final VoidCallback onTap;
@@ -163990,6 +164336,7 @@ class _SsDataCell extends StatelessWidget {
     required this.onTabNext,
     required this.onTabPrev,
     this.isFormula = false,
+    this.inRange = false,
     this.controller,
     this.focusNode,
   });
@@ -164002,7 +164349,12 @@ class _SsDataCell extends StatelessWidget {
             ? (dark
                 ? const Color(0xFF3A3A55).withValues(alpha: 0.55)
                 : const Color(0xFFD0D8FF).withValues(alpha: 0.55))
-            : (dark ? const Color(0xFF1A1A24) : Colors.white);
+            // 範囲選択の中は薄く塗る (= ユーザー要望: 範囲が分かるように)。
+            : inRange
+                ? (dark
+                    ? const Color(0xFF3A3A55).withValues(alpha: 0.30)
+                    : const Color(0xFFD0D8FF).withValues(alpha: 0.35))
+                : (dark ? const Color(0xFF1A1A24) : Colors.white);
     final fg = dark ? Colors.white : const Color(0xFF1A1A24);
     final borderColor = selected
         ? const Color(0xFF6C63FF)

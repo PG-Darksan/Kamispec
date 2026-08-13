@@ -27704,6 +27704,61 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Fechar os visualizadores com a tecla Esc',
       'ru': 'Закрывать окна просмотра клавишей Esc',
     },
+    // ── 選択範囲を図/表にする (= ユーザー要望) ──
+    'sheet.rangeToTable': {
+      'ja': '表にする', 'en': 'To table', 'zh': '生成表格', 'ko': '표로 만들기',
+      'es': 'A tabla', 'fr': 'En tableau', 'de': 'Als Tabelle',
+      'pt': 'Em tabela', 'ru': 'В таблицу',
+    },
+    'sheet.rangeToChart': {
+      'ja': 'グラフにする', 'en': 'To chart', 'zh': '生成图表',
+      'ko': '그래프로 만들기', 'es': 'A gráfico', 'fr': 'En graphique',
+      'de': 'Als Diagramm', 'pt': 'Em gráfico', 'ru': 'В диаграмму',
+    },
+    'sheet.rangeToTableDone': {
+      'ja': '選んだ範囲を表としてマップに置きました',
+      'en': 'Added the selected range to the map as a table',
+      'zh': '已将所选范围作为表格添加到导图',
+      'ko': '선택한 범위를 표로 맵에 추가했습니다',
+      'es': 'El rango seleccionado se añadió al mapa como tabla',
+      'fr': 'La plage sélectionnée a été ajoutée à la carte sous forme de tableau',
+      'de': 'Der markierte Bereich wurde als Tabelle zur Map hinzugefügt',
+      'pt': 'O intervalo selecionado foi adicionado ao mapa como tabela',
+      'ru': 'Выбранный диапазон добавлен на карту в виде таблицы',
+    },
+    'sheet.rangeToChartDone': {
+      'ja': '選んだ範囲をグラフにしてマップに置きました',
+      'en': 'Added a chart of the selected range to the map',
+      'zh': '已将所选范围生成图表并添加到导图',
+      'ko': '선택한 범위를 그래프로 만들어 맵에 추가했습니다',
+      'es': 'Se añadió al mapa un gráfico del rango seleccionado',
+      'fr': 'Un graphique de la plage sélectionnée a été ajouté à la carte',
+      'de': 'Ein Diagramm des markierten Bereichs wurde zur Map hinzugefügt',
+      'pt': 'Um gráfico do intervalo selecionado foi adicionado ao mapa',
+      'ru': 'Диаграмма выбранного диапазона добавлена на карту',
+    },
+    'sheet.rangeNeedsNumbers': {
+      'ja': 'グラフにするには、 1 列目に項目名、 2 列目以降に数値が要ります',
+      'en': 'A chart needs labels in the first column and numbers in the rest',
+      'zh': '生成图表需要第一列为项目名、其余列为数值',
+      'ko': '그래프를 만들려면 첫 열에 항목명, 나머지 열에 숫자가 필요합니다',
+      'es': 'Un gráfico necesita etiquetas en la primera columna y números en el resto',
+      'fr': 'Un graphique nécessite des libellés dans la première colonne et des nombres ensuite',
+      'de': 'Für ein Diagramm braucht es Beschriftungen in der ersten Spalte und Zahlen in den übrigen',
+      'pt': 'Um gráfico precisa de rótulos na primeira coluna e números nas demais',
+      'ru': 'Для диаграммы нужны подписи в первом столбце и числа в остальных',
+    },
+    'sheet.rangeFailed': {
+      'ja': '選んだ範囲を置けませんでした',
+      'en': 'Could not add the selected range',
+      'zh': '无法添加所选范围',
+      'ko': '선택한 범위를 추가하지 못했습니다',
+      'es': 'No se pudo añadir el rango seleccionado',
+      'fr': 'Impossible d ajouter la plage sélectionnée',
+      'de': 'Der markierte Bereich konnte nicht hinzugefügt werden',
+      'pt': 'Não foi possível adicionar o intervalo selecionado',
+      'ru': 'Не удалось добавить выбранный диапазон',
+    },
     'sheet.formulaHint': {
       'ja': 'セルの内容や数式 (= で始めると計算します)',
       'en': 'Cell contents or a formula (start with = to calculate)',
@@ -75742,6 +75797,272 @@ $cleanQ
     _saveToStorage();
     notifyListeners();
     return newNode;
+  }
+
+  // ── 表計算の選択範囲を図/表にする (= ユーザー要望: .xlsx や .csv で
+  //    セルの範囲を選んで図や表にできるように) ──
+
+  /// 選択範囲の中身をそのまま表ノードにして、 今のページの中央付近に置く。
+  /// [cells] は行 × 列の文字列。 戻り値は作ったノード。
+  MindMapNode? addTableNodeFromCells(
+    List<List<String>> cells, {
+    bool headerRow = true,
+    String title = '',
+  }) {
+    final rows = cells.where((r) => r.isNotEmpty).toList();
+    if (rows.isEmpty) return null;
+    final cols = rows.fold<int>(0, (m, r) => math.max(m, r.length));
+    if (cols == 0) return null;
+    final norm = [
+      for (final r in rows)
+        [for (var c = 0; c < cols; c++) c < r.length ? r[c] : '']
+    ];
+    // 中身の長さで列幅を決める (短い表が間延びしないように)。
+    var maxLen = 1;
+    for (final r in norm) {
+      for (final c in r) {
+        if (c.length > maxLen) maxLen = c.length;
+      }
+    }
+    final colW = (maxLen * 11.0 + 26).clamp(74.0, 220.0).toDouble();
+    final table = TableData(
+      cells: norm,
+      headerRow: headerRow,
+      defaultColWidth: colW,
+      defaultRowHeight: 30.0,
+    );
+    final width = (table.totalWidth + 28.0).clamp(120.0, 2000.0).toDouble();
+    final node = MindMapNode(
+      id: _uuid.v4(),
+      title: title,
+      position: _freeSpotNear(const Offset(10000, 10000), width, 200),
+      contentType: NodeContentType.table,
+      tableData: table,
+      width: width,
+      height: 14.0,
+      color: const Color(0xFF26C6DA),
+    );
+    _pushUndo();
+    currentPage.nodes[node.id] = node;
+    _selectedNodeId = node.id;
+    _saveToStorage();
+    notifyListeners();
+    return node;
+  }
+
+  /// 既にある物と重ならない置き場所を探す (雑でよいので少しずつ下へずらす)。
+  Offset _freeSpotNear(Offset base, double w, double h) {
+    var pos = base;
+    for (var i = 0; i < 40; i++) {
+      final rect = Rect.fromLTWH(pos.dx, pos.dy, w, h);
+      final hit = currentPage.nodes.values.any((n) =>
+          n.hiddenInContainer == null &&
+          Rect.fromLTWH(n.position.dx, n.position.dy, n.width, n.visualHeight)
+              .overlaps(rect));
+      if (!hit) return pos;
+      pos = Offset(pos.dx, pos.dy + h + 40);
+    }
+    return pos;
+  }
+
+  /// 選択範囲から棒グラフの画像を作って画像ノードとして置く。
+  ///
+  /// 数え方は表計算の常識に合わせる:
+  ///   - 1 列目 … 項目名 (横軸のラベル)
+  ///   - 2 列目以降 … 数値 (系列)。 数値に読めない列は飛ばす
+  ///   - 1 行目が文字だけなら見出しとして凡例に使う
+  /// 数値が 1 つも無ければ null を返す (呼び出し側で案内を出す)。
+  Future<MindMapNode?> addChartNodeFromCells(
+    List<List<String>> cells, {
+    String title = '',
+  }) async {
+    if (cells.isEmpty) return null;
+    final cols = cells.fold<int>(0, (m, r) => math.max(m, r.length));
+    if (cols < 2) return null;
+
+    double? num0(String s) {
+      final t = s.trim().replaceAll(',', '').replaceAll('%', '');
+      if (t.isEmpty) return null;
+      return double.tryParse(t);
+    }
+
+    // 先頭行が「数値を含まない」 なら見出し行とみなす。
+    final first = cells.first;
+    final headerIsText = first.skip(1).every((c) => num0(c) == null);
+    final header = headerIsText ? first : const <String>[];
+    final body = headerIsText ? cells.skip(1).toList() : cells;
+    if (body.isEmpty) return null;
+
+    // 数値として使える列を選ぶ。
+    final seriesCols = <int>[];
+    for (var c = 1; c < cols; c++) {
+      final any = body.any((r) => c < r.length && num0(r[c]) != null);
+      if (any) seriesCols.add(c);
+    }
+    if (seriesCols.isEmpty) return null;
+
+    final labels = [
+      for (final r in body) r.isEmpty ? '' : r.first.trim(),
+    ];
+    final series = <List<double>>[
+      for (final c in seriesCols)
+        [
+          for (final r in body) (c < r.length ? num0(r[c]) : null) ?? 0.0,
+        ]
+    ];
+    final names = [
+      for (var i = 0; i < seriesCols.length; i++)
+        seriesCols[i] < header.length
+            ? header[seriesCols[i]].trim()
+            : '系列${i + 1}',
+    ];
+
+    final bytes = await _renderBarChartPng(labels, series, names, title);
+    if (bytes == null) return null;
+    final dir = await getApplicationSupportDirectory();
+    final chartDir = Directory('${dir.path}${Platform.pathSeparator}charts');
+    if (!await chartDir.exists()) await chartDir.create(recursive: true);
+    final path = '${chartDir.path}${Platform.pathSeparator}'
+        'chart_${DateTime.now().millisecondsSinceEpoch}.png';
+    await File(path).writeAsBytes(bytes, flush: true);
+
+    const w = 420.0;
+    final node = MindMapNode(
+      id: _uuid.v4(),
+      title: title.isEmpty ? 'グラフ' : title,
+      position: _freeSpotNear(const Offset(10000, 10000), w, 320),
+      width: w,
+      height: 50.0,
+      color: const Color(0xFF9CCC65),
+      contentType: NodeContentType.attachment,
+    );
+    node.attachmentPath = path;
+    node.attachmentName = _baseName(path);
+    node.attachmentAspectRatio = 4 / 3;
+    _pushUndo();
+    currentPage.nodes[node.id] = node;
+    _selectedNodeId = node.id;
+    _saveToStorage();
+    notifyListeners();
+    return node;
+  }
+
+  /// 棒グラフを PNG に描く。 系列が複数なら並べて描く。
+  Future<Uint8List?> _renderBarChartPng(
+    List<String> labels,
+    List<List<double>> series,
+    List<String> names,
+    String title,
+  ) async {
+    if (labels.isEmpty || series.isEmpty) return null;
+    const w = 960.0;
+    const h = 720.0;
+    const padL = 96.0;
+    const padR = 40.0;
+    const padT = 84.0;
+    const padB = 110.0;
+    const palette = [
+      Color(0xFF4FC3F7),
+      Color(0xFF9CCC65),
+      Color(0xFFFFB347),
+      Color(0xFFBA68C8),
+      Color(0xFFE57373),
+      Color(0xFF4DB6AC),
+    ];
+
+    double maxV = 0;
+    for (final s in series) {
+      for (final v in s) {
+        if (v > maxV) maxV = v;
+      }
+    }
+    if (maxV <= 0) maxV = 1;
+    // 目盛りはきりの良い値に切り上げる。
+    final step = math.pow(10, (math.log(maxV) / math.ln10).floor()).toDouble();
+    final top = (maxV / step).ceil() * step;
+
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder, const Rect.fromLTWH(0, 0, w, h));
+    canvas.drawRect(const Rect.fromLTWH(0, 0, w, h), Paint()..color = Colors.white);
+
+    void text(String s, Offset at,
+        {double size = 20, Color color = const Color(0xFF37474F),
+        bool center = false, bool bold = false}) {
+      final tp = TextPainter(
+        text: TextSpan(
+          text: s,
+          style: TextStyle(
+              color: color,
+              fontSize: size,
+              fontWeight: bold ? FontWeight.w700 : FontWeight.w500),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout(maxWidth: 200);
+      tp.paint(canvas, center ? at - Offset(tp.width / 2, 0) : at);
+    }
+
+    if (title.trim().isNotEmpty) {
+      text(title.trim(), const Offset(w / 2, 26),
+          size: 26, center: true, bold: true);
+    }
+
+    // 目盛り線 + 値。
+    final axis = Paint()
+      ..color = const Color(0xFFCFD8DC)
+      ..strokeWidth = 1;
+    const ticks = 5;
+    for (var i = 0; i <= ticks; i++) {
+      final y = padT + (h - padT - padB) * (1 - i / ticks);
+      canvas.drawLine(Offset(padL, y), Offset(w - padR, y), axis);
+      final v = top * i / ticks;
+      // 整数はそのまま、 端数がある時だけ小数 1 桁で出す。
+      final label =
+          (v - v.roundToDouble()).abs() < 0.005 ? v.round().toString() : v.toStringAsFixed(1);
+      text(label, Offset(padL - 12, y - 11),
+          size: 16, color: const Color(0xFF78909C));
+    }
+
+    final plotW = w - padL - padR;
+    final plotH = h - padT - padB;
+    final groupW = plotW / labels.length;
+    final barW = (groupW * 0.72) / series.length;
+    for (var g = 0; g < labels.length; g++) {
+      final gx = padL + groupW * g;
+      for (var s = 0; s < series.length; s++) {
+        final v = g < series[s].length ? series[s][g] : 0.0;
+        final bh = plotH * (v / top);
+        final rect = Rect.fromLTWH(
+          gx + groupW * 0.14 + barW * s,
+          padT + plotH - bh,
+          barW - 4,
+          bh,
+        );
+        canvas.drawRRect(
+          RRect.fromRectAndCorners(rect,
+              topLeft: const Radius.circular(4),
+              topRight: const Radius.circular(4)),
+          Paint()..color = palette[s % palette.length],
+        );
+      }
+      text(labels[g], Offset(gx + groupW / 2, padT + plotH + 12),
+          size: 17, center: true);
+    }
+
+    // 凡例。
+    if (series.length > 1) {
+      var lx = padL;
+      for (var s = 0; s < series.length; s++) {
+        canvas.drawRect(Rect.fromLTWH(lx, h - 44, 18, 18),
+            Paint()..color = palette[s % palette.length]);
+        text(names[s], Offset(lx + 24, h - 46), size: 16);
+        lx += 24 + names[s].length * 11.0 + 26;
+      }
+    }
+
+    final pic = recorder.endRecording();
+    final img = await pic.toImage(w.toInt(), h.toInt());
+    final data = await img.toByteData(format: ui.ImageByteFormat.png);
+    return data?.buffer.asUint8List();
   }
 
   MindMapNode? createTableFromNodes(Set<String> ids) {
