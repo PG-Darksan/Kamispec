@@ -30159,8 +30159,15 @@ class _MindMapScreenState extends State<MindMapScreen>
                       ),
                     ],
 
-                    // ─── サブスクリプションの管理・解約 (= ユーザー要望) ───
-                    // 解約・支払い方法の変更・返金の相談はストア側で行う。
+                    // ─── 契約中のサブスク (= ユーザー要望: Google アカウント
+                    //     から契約中のサブスクを表示して、 アプリから解約) ───
+                    // Google ログイン中の uid で課金サーバーに照会し、 状態と
+                    // 次回請求日を出して、 その場で解約 / 取り消しができる。
+                    const SizedBox(height: 10),
+                    _SubscriptionPanel(provider: provider),
+
+                    // ─── サブスクリプションの管理・解約 (ストアのページ) ───
+                    // 支払い方法の変更・返金の相談・Play の購入はストア側で。
                     // Android: Play の購入は端末の Google アカウントに必ず
                     //   紐づくので、 Play ストアの「定期購入」 からいつでも
                     //   解約できる (RevenueCat managementURL で直行)。
@@ -56001,6 +56008,24 @@ class _MindMapScreenState extends State<MindMapScreen>
               value: provider.snapEnabled,
               onChanged: (v) {
                 provider.setSnapEnabled(v);
+                setS(() {});
+              },
+            ),
+
+            // ── トグル: Esc キーで閲覧画面を閉じる (= ユーザー要望: Excel /
+            //    Word / YouTube などが Esc で閉じてしまうのを止められるように) ──
+            _settingsToggleTile(
+              icon: provider.closeViewerWithEsc
+                  ? Icons.keyboard_return_rounded
+                  : Icons.keyboard_hide_rounded,
+              color: provider.closeViewerWithEsc
+                  ? const Color(0xFFFFB347)
+                  : Colors.white54,
+              title: provider.t('menu.escClose'),
+              helpKey: 'help.escClose',
+              value: provider.closeViewerWithEsc,
+              onChanged: (v) {
+                provider.setCloseViewerWithEsc(v);
                 setS(() {});
               },
             ),
@@ -87689,6 +87714,11 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
             _toggleWinVideoMemoPanel,
         const SingleActivator(LogicalKeyboardKey.keyA,
             control: true, shift: true): _toggleWinVideoAiPanel,
+        // ── Esc で閉じない設定 (= ユーザー要望: YouTube の画面が Esc で
+        //    閉じるのを止めたい)。 何もしない割り当てで消費して、 既定の
+        //    「ダイアログを閉じる」 まで届かせない。 ──
+        if (!context.watch<MindMapProvider>().closeViewerWithEsc)
+          const SingleActivator(LogicalKeyboardKey.escape): () {},
       },
       child: Focus(
         autofocus: true,
@@ -124414,6 +124444,309 @@ class _DesktopFloatingMemoState extends State<_DesktopFloatingMemo> {
   }
 }
 
+/// 契約中のサブスクを表示して、 その場で解約 / 解約の取り消しをする欄。
+/// (= ユーザー要望: Google アカウントから契約中のサブスクを表示して、
+///  アプリから解約できるように)
+///
+/// 契約は課金サーバー (Worker) が uid で持っているので、 Google
+/// アカウントでログインしていれば端末を変えても同じ契約が出る。
+/// Google Play で買った契約はストア側の管理なので、 その旨だけ出す。
+class _SubscriptionPanel extends StatefulWidget {
+  final MindMapProvider provider;
+  const _SubscriptionPanel({required this.provider});
+
+  @override
+  State<_SubscriptionPanel> createState() => _SubscriptionPanelState();
+}
+
+class _SubscriptionPanelState extends State<_SubscriptionPanel> {
+  bool _loading = true;
+  bool _busy = false;
+  String? _error;
+  Map<String, dynamic>? _info;
+
+  MindMapProvider get _p => widget.provider;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  Future<void> _load() async {
+    if (!_p.googleSignedIn) {
+      setState(() {
+        _loading = false;
+        _info = null;
+        _error = null;
+      });
+      return;
+    }
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final info = await _p.fetchSubscriptionInfo();
+      if (!mounted) return;
+      setState(() {
+        _info = info;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = '$e'.replaceFirst('Exception: ', '');
+        _loading = false;
+      });
+    }
+  }
+
+  /// UNIX 秒 → 「2026/08/13」。
+  String _fmtDate(dynamic unixSec) {
+    final n = unixSec is num ? unixSec.toInt() : null;
+    if (n == null || n <= 0) return '-';
+    final d = DateTime.fromMillisecondsSinceEpoch(n * 1000);
+    return '${d.year}/${d.month.toString().padLeft(2, '0')}/'
+        '${d.day.toString().padLeft(2, '0')}';
+  }
+
+  /// 100 円単位 (Stripe は最小単位) → 「¥1,200 / 月」。
+  String _fmtAmount(Map<String, dynamic> sub) {
+    final amount = sub['amount'];
+    if (amount is! num) return '-';
+    final cur = '${sub['currency'] ?? ''}'.toUpperCase();
+    // 円のように小数を持たない通貨はそのまま、 それ以外は 1/100。
+    const zeroDecimal = {'JPY', 'KRW', 'VND', 'CLP'};
+    final v = zeroDecimal.contains(cur)
+        ? amount.toDouble()
+        : amount.toDouble() / 100.0;
+    final sym = cur == 'JPY' ? '¥' : (cur == 'USD' ? '\$' : '');
+    final body = sym.isEmpty
+        ? '${v.toStringAsFixed(zeroDecimal.contains(cur) ? 0 : 2)} $cur'
+        : '$sym${v.toStringAsFixed(zeroDecimal.contains(cur) ? 0 : 2)}';
+    final interval = '${sub['interval'] ?? ''}';
+    final unit = interval == 'year'
+        ? _p.t('plan.perYear')
+        : (interval == 'month' ? _p.t('plan.perMonth') : '');
+    return unit.isEmpty ? body : '$body $unit';
+  }
+
+  Future<void> _confirmCancel(Map<String, dynamic> sub) async {
+    final until = _fmtDate(sub['currentPeriodEnd']);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: Text(_p.t('sub.cancelConfirmTitle'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        content: Text(
+            _p.t('sub.cancelConfirmBody').replaceFirst('{date}', until),
+            style: const TextStyle(
+                color: Colors.white70, fontSize: 13, height: 1.6)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, false),
+            child: Text(_p.t('btn.cancel'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFE57373),
+                foregroundColor: Colors.black),
+            onPressed: () => Navigator.pop(dctx, true),
+            child: Text(_p.t('sub.cancelBtn')),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await _apply(true, until: until);
+  }
+
+  Future<void> _apply(bool cancel, {String? until}) async {
+    setState(() => _busy = true);
+    try {
+      final info = await _p.setSubscriptionCancel(cancel);
+      if (!mounted) return;
+      setState(() {
+        _info = info;
+        _busy = false;
+        _error = null;
+      });
+      final sub = info['subscription'];
+      final end = sub is Map ? _fmtDate(sub['currentPeriodEnd']) : (until ?? '-');
+      _appSnack(
+        context,
+        SnackBar(
+          backgroundColor: const Color(0xFF43B97F),
+          content: Text(cancel
+              ? _p.t('sub.cancelled').replaceFirst('{date}', end)
+              : _p.t('sub.resumed')),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = '$e'.replaceFirst('Exception: ', '');
+      });
+    }
+  }
+
+  Widget _row(String label, String value, {Color? valueColor}) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          SizedBox(
+            width: 92,
+            child: Text(label,
+                style: const TextStyle(color: Colors.white38, fontSize: 11)),
+          ),
+          Expanded(
+            child: Text(value,
+                style: TextStyle(
+                    color: valueColor ?? Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600)),
+          ),
+        ]),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    final sub = _info?['subscription'];
+    final isPlay = '${_info?['store'] ?? ''}' == 'play';
+    final willCancel = sub is Map && sub['cancelAtPeriodEnd'] == true;
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF9575CD).withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(8),
+        border:
+            Border.all(color: const Color(0xFF9575CD).withValues(alpha: 0.3)),
+      ),
+      padding: const EdgeInsets.all(10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            const Icon(Icons.card_membership_rounded,
+                color: Color(0xFF9575CD), size: 18),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(_p.t('sub.currentTitle'),
+                  style: const TextStyle(
+                      color: Color(0xFF9575CD),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700)),
+            ),
+            if (_p.googleSignedIn)
+              InkWell(
+                onTap: _loading || _busy ? null : _load,
+                borderRadius: BorderRadius.circular(6),
+                child: const Padding(
+                  padding: EdgeInsets.all(4),
+                  child: Icon(Icons.refresh_rounded,
+                      color: Colors.white38, size: 16),
+                ),
+              ),
+          ]),
+          const SizedBox(height: 6),
+          if (!_p.googleSignedIn)
+            Text(_p.t('sub.needSignIn'),
+                style: const TextStyle(
+                    color: Color(0xFFFFB74D), fontSize: 11.5, height: 1.5))
+          else if (_loading)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2, color: Color(0xFF9575CD)),
+              ),
+            )
+          else if (_error != null)
+            Text(_error!,
+                style: const TextStyle(
+                    color: Color(0xFFFF8A80), fontSize: 11, height: 1.5))
+          else if (isPlay)
+            Text(_p.t('sub.storeManaged'),
+                style: const TextStyle(
+                    color: Colors.white54, fontSize: 11, height: 1.5))
+          else if (sub is! Map)
+            Text(_p.t('sub.none'),
+                style: const TextStyle(
+                    color: Colors.white54, fontSize: 11.5, height: 1.5))
+          else ...[
+            _row(
+              _p.t('sub.status'),
+              willCancel
+                  ? _p
+                      .t('sub.willCancel')
+                      .replaceFirst('{date}', _fmtDate(sub['currentPeriodEnd']))
+                  : '${sub['status'] ?? '-'}',
+              valueColor: willCancel
+                  ? const Color(0xFFFFB74D)
+                  : const Color(0xFF9CCC65),
+            ),
+            _row(
+                willCancel ? _p.t('sub.endsOn') : _p.t('sub.nextBilling'),
+                _fmtDate(sub['currentPeriodEnd'])),
+            _row(_p.t('sub.amount'), _fmtAmount(sub.cast<String, dynamic>())),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: willCancel
+                  ? ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF1A2A14),
+                        foregroundColor: Colors.white,
+                        side: const BorderSide(
+                            color: Color(0xFF9CCC65), width: 1),
+                      ),
+                      icon: _busy
+                          ? const SizedBox(
+                              width: 13,
+                              height: 13,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2, color: Color(0xFF9CCC65)))
+                          : const Icon(Icons.replay_rounded,
+                              size: 15, color: Color(0xFF9CCC65)),
+                      label: Text(_p.t('sub.resumeBtn'),
+                          style: const TextStyle(
+                              color: Color(0xFF9CCC65), fontSize: 12)),
+                      onPressed: _busy ? null : () => _apply(false),
+                    )
+                  : ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF2A1A1A),
+                        foregroundColor: Colors.white,
+                        side: const BorderSide(
+                            color: Color(0xFFE57373), width: 1),
+                      ),
+                      icon: _busy
+                          ? const SizedBox(
+                              width: 13,
+                              height: 13,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2, color: Color(0xFFE57373)))
+                          : const Icon(Icons.cancel_outlined,
+                              size: 15, color: Color(0xFFE57373)),
+                      label: Text(_p.t('sub.cancelBtn'),
+                          style: const TextStyle(
+                              color: Color(0xFFE57373), fontSize: 12)),
+                      onPressed: _busy
+                          ? null
+                          : () => _confirmCancel(sub.cast<String, dynamic>()),
+                    ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
 /// 「2 分割に戻す」 アイコン: 左右に四角を 1 つずつ (= ユーザー要望)。
 /// 共同編集で他の参加者が編集中の要素に重ねる枠 + 名前
 /// (= ユーザー要望: どのユーザーが操作しているか表示されるように)。
@@ -152391,6 +152724,12 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
       autofocus: true,
       onKeyEvent: (node, event) {
         if (event is! KeyDownEvent) return KeyEventResult.ignored;
+        // ── Esc で閉じない設定 (= ユーザー要望: 開いた画面が Esc で
+        //    閉じるのを止めたい)。 消費して既定の dismiss へ流さない。 ──
+        if (event.logicalKey == LogicalKeyboardKey.escape &&
+            !context.read<MindMapProvider>().closeViewerWithEsc) {
+          return KeyEventResult.handled;
+        }
         final isCtrl = HardwareKeyboard.instance.isControlPressed ||
             HardwareKeyboard.instance.isMetaPressed;
         if (!isCtrl) return KeyEventResult.ignored;
@@ -161452,10 +161791,16 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
     _editCtrl.dispose();
     _editFocus.dispose();
     _keyFocus.dispose();
+    _formulaCtrl.dispose();
+    _formulaFocus.dispose();
     _vScroll.dispose();
     _hScroll.dispose();
     super.dispose();
   }
+
+  // ── 数式バー (= ユーザー要望: Excel と同じく上部にセル内容/数式) ──
+  final TextEditingController _formulaCtrl = TextEditingController();
+  final FocusNode _formulaFocus = FocusNode();
 
   void _invalidateFormulaCache() {
     _formulaEval = null;
@@ -162497,6 +162842,21 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
       return KeyEventResult.handled;
     }
 
+    // ── Esc の扱い ──
+    // 編集中なら「編集をやめる」 (Excel と同じ)。 それ以外は、 設定で
+    // 「Esc で閲覧画面を閉じる」 を切っていれば何もしないで消費する
+    // (= ユーザー要望: Excel などが Esc で閉じてしまうのを止めたい)。
+    if (event.logicalKey == LogicalKeyboardKey.escape) {
+      if (_editingRow != null) {
+        _cancelEdit();
+        return KeyEventResult.handled;
+      }
+      if (!context.read<MindMapProvider>().closeViewerWithEsc) {
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored; // 従来どおりダイアログを閉じる
+    }
+
     if (_editingRow != null) return KeyEventResult.ignored;
 
     if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
@@ -162877,9 +163237,14 @@ $csvText
         child: Column(
           children: [
             _buildHeader(dark, fg),
-            if (_kind == _SpreadsheetKind.xlsx && _sheetNames.length > 1)
-              _buildSheetTabs(dark, fg),
+            // ── 数式バー (= ユーザー要望: Excel と同じく上のバーに選択中の
+            //    セルの内容・数式を表示 / 編集できるように)。 以前この位置に
+            //    あったシートタブと紛らわしかった (「メモ」 と書かれた所) ──
+            if (!_loading && _loadError == null) _buildFormulaBar(dark, fg),
             Expanded(child: body),
+            // ── シートの切り替えタブは左下へ (= ユーザー要望: Excel と同じ) ──
+            if (_kind == _SpreadsheetKind.xlsx && _sheetNames.isNotEmpty)
+              _buildSheetTabs(dark, fg),
             _buildStatusBar(dark, fg),
           ],
         ),
@@ -163080,13 +163445,111 @@ $csvText
     );
   }
 
+  /// 数式バー (= ユーザー要望: Excel と同じく上部にセル参照 + 内容/数式)。
+  /// 選択セルの生の値 (数式なら = から) を表示し、 ここで書いて Enter で
+  /// そのセルへ反映できる。 バーに入力中は追従を止める。
+  Widget _buildFormulaBar(bool dark, Color fg) {
+    final hasCell = _rowCount > 0 && _selRow < _rowCount && _selCol < _colCount;
+    final raw = hasCell ? _rows[_selRow][_selCol] : '';
+    if (!_formulaFocus.hasFocus && _formulaCtrl.text != raw) {
+      _formulaCtrl.text = raw;
+    }
+    return Container(
+      height: 34,
+      decoration: BoxDecoration(
+        color: dark ? const Color(0xFF1E1E2A) : const Color(0xFFF6F6F2),
+        border: Border(
+          bottom: BorderSide(color: dark ? Colors.white10 : Colors.black12),
+        ),
+      ),
+      child: Row(children: [
+        // セル参照 (A1 形式)
+        Container(
+          width: 64,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            border: Border(
+              right:
+                  BorderSide(color: dark ? Colors.white12 : Colors.black12),
+            ),
+          ),
+          child: Text(
+            hasCell ? '${_colLabel(_selCol)}${_selRow + 1}' : '',
+            style: TextStyle(
+                color: fg.withValues(alpha: 0.85),
+                fontSize: 12.5,
+                fontWeight: FontWeight.w700,
+                fontFeatures: const [FontFeature.tabularFigures()]),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          child: Text('fx',
+              style: TextStyle(
+                  color: fg.withValues(alpha: 0.45),
+                  fontSize: 12,
+                  fontStyle: FontStyle.italic,
+                  fontWeight: FontWeight.w700)),
+        ),
+        Expanded(
+          // Esc はバーから抜けるだけにして、 画面を閉じる方へは流さない。
+          child: Focus(
+            onKeyEvent: (n, e) {
+              if (e is KeyDownEvent &&
+                  e.logicalKey == LogicalKeyboardKey.escape) {
+                _keyFocus.requestFocus();
+                return KeyEventResult.handled;
+              }
+              return KeyEventResult.ignored;
+            },
+            child: TextField(
+            controller: _formulaCtrl,
+            focusNode: _formulaFocus,
+            enabled: hasCell,
+            style: TextStyle(color: fg, fontSize: 13),
+            cursorColor: const Color(0xFF6C63FF),
+            decoration: InputDecoration(
+              isDense: true,
+              border: InputBorder.none,
+              hintText: context.read<MindMapProvider>().t('sheet.formulaHint'),
+              hintStyle:
+                  TextStyle(color: fg.withValues(alpha: 0.3), fontSize: 12),
+            ),
+            // バーを触った時点でセル内の編集は確定しておく (二重編集を防ぐ)。
+            onTap: _commitEdit,
+            onSubmitted: _commitFormulaBar,
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+      ]),
+    );
+  }
+
+  /// 数式バーの内容を選択セルへ反映する。
+  void _commitFormulaBar(String v) {
+    if (_rowCount > 0 && _selRow < _rowCount && _selCol < _colCount) {
+      if (_rows[_selRow][_selCol] != v) {
+        _pushUndo();
+        setState(() {
+          _rows[_selRow][_selCol] = v;
+          _dirty = true;
+        });
+        _invalidateFormulaCache();
+      }
+    }
+    _keyFocus.requestFocus();
+  }
+
   Widget _buildSheetTabs(bool dark, Color fg) {
     return Container(
       height: 36,
       decoration: BoxDecoration(
         color: dark ? const Color(0xFF1E1E2A) : const Color(0xFFE8E8E2),
+        // 下段配置になったので区切り線は上側に (= ユーザー要望: シートの
+        // 切り替えは左下に)。
         border: Border(
-          bottom: BorderSide(color: dark ? Colors.white10 : Colors.black12),
+          top: BorderSide(color: dark ? Colors.white10 : Colors.black12),
         ),
       ),
       child: ListView.builder(
@@ -167843,13 +168306,26 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
       );
     }
 
-    return Container(
-      color: bg,
-      child: Column(
-        children: [
-          _buildHeader(dark, fg),
-          Expanded(child: body),
-        ],
+    // ── Esc で閉じない設定 (= ユーザー要望) のため、 何もフォーカスが
+    //    無い時もキーを受け取れるよう Focus で包む。 ──
+    return Focus(
+      autofocus: true,
+      onKeyEvent: (node, event) {
+        if (event is KeyDownEvent &&
+            event.logicalKey == LogicalKeyboardKey.escape &&
+            !context.read<MindMapProvider>().closeViewerWithEsc) {
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      child: Container(
+        color: bg,
+        child: Column(
+          children: [
+            _buildHeader(dark, fg),
+            Expanded(child: body),
+          ],
+        ),
       ),
     );
   }
@@ -171318,6 +171794,12 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
     // Ctrl+Y = Redo (Windows 慣習)
     if (isCtrl && event.logicalKey == LogicalKeyboardKey.keyY) {
       _redo();
+      return KeyEventResult.handled;
+    }
+    // ── Esc で閉じない設定 (= ユーザー要望: 開いた画面が Esc で閉じるのを
+    //    止めたい)。 消費して既定の「ダイアログを閉じる」 へ流さない。 ──
+    if (event.logicalKey == LogicalKeyboardKey.escape &&
+        !context.read<MindMapProvider>().closeViewerWithEsc) {
       return KeyEventResult.handled;
     }
     return KeyEventResult.ignored;
@@ -179083,6 +179565,10 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
         setState(() => _selectedIdx = null);
         return KeyEventResult.handled;
       }
+      // ── Esc で閉じない設定 (= ユーザー要望) ──
+      if (!context.read<MindMapProvider>().closeViewerWithEsc) {
+        return KeyEventResult.handled;
+      }
       // 閉じる処理は async なので fire-and-forget
       _tryCloseWithConfirm();
       return KeyEventResult.handled;
@@ -183136,13 +183622,12 @@ Future<void> showFileAiAssistDialogGlobal(
   ValueChanged<String>? onApply,
 }) async {
   final provider = ctx.read<MindMapProvider>();
-  if (!provider.hasActiveAiKey) {
-    ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(SnackBar(
-      backgroundColor: Color(0xFFE57373),
-      content: Text(provider.t('ai.geminiKeyUnset')),
-    ));
-    return;
-  }
+  // ★ ここで早々に return しないこと (= ユーザー報告: Word を開いて AI を
+  //   押しても何も出ない)。 以前は AI が使えない時に SnackBar を出して
+  //   戻っていたが、 ビューアは全画面のダイアログなので SnackBar がその裏に
+  //   隠れ、 利用者からは「押しても無反応」 にしか見えなかった。
+  //   画面は必ず開き、 使えない理由はダイアログの中に赤字で出す。
+  final aiReady = provider.hasActiveAiKey;
   final promptCtrl = TextEditingController();
   String? aiResult;
   bool loading = false;
@@ -183168,7 +183653,10 @@ Future<void> showFileAiAssistDialogGlobal(
                 '全文だけを出力してください (前置きや説明は不要)。\n'
                 '\n=== ファイル内容 ===\n$truncated\n=== ここまで ===\n\n'
                 'ユーザーの指示: $userPrompt';
-            final raw = await provider.askGemini(fullPrompt);
+            // ★ askGemini を直接呼ばないこと。 自分の Gemini キーが無いと
+            //   その場で例外になり、 代行サーバー (前払いクレジット) を
+            //   使っている人は一切使えなかった。 askAi は代行経由。
+            final raw = await provider.askAi(fullPrompt);
             setS(() {
               aiResult = raw.trim();
               loading = false;
@@ -183219,6 +183707,31 @@ Future<void> showFileAiAssistDialogGlobal(
                     ),
                   ),
                 ),
+                // ── AI が使えない時の理由 (= 押しても無反応にしない) ──
+                if (!aiReady) ...[
+                  const SizedBox(height: 10),
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFE57373).withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(
+                          color: const Color(0xFFE57373).withValues(alpha: 0.5)),
+                    ),
+                    child: Row(children: [
+                      const Icon(Icons.info_outline_rounded,
+                          color: Color(0xFFFF8A80), size: 16),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(provider.t('aiAssist.unavailable'),
+                            style: const TextStyle(
+                                color: Color(0xFFFF8A80),
+                                fontSize: 11.5,
+                                height: 1.5)),
+                      ),
+                    ]),
+                  ),
+                ],
                 const SizedBox(height: 12),
                 Text(provider.t('aiAssist.instruction'),
                     style: TextStyle(color: Colors.white70, fontSize: 12)),

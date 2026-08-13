@@ -120,6 +120,18 @@ export default {
       return handleDevRedeem(request, env);
     }
 
+    // ── 契約中のサブスク照会 / 解約 (= ユーザー要望: アプリの中で契約を見て
+    //    そのまま解約できるように) ──
+    if (url.pathname === '/billing/subscription' && request.method === 'GET') {
+      return handleSubscriptionInfo(request, env);
+    }
+    if (url.pathname === '/billing/cancel' && request.method === 'POST') {
+      return handleSubscriptionCancel(request, env, true);
+    }
+    if (url.pathname === '/billing/resume' && request.method === 'POST') {
+      return handleSubscriptionCancel(request, env, false);
+    }
+
     // ── 公式サイトの訪問者数 (= ユーザー要望: HP の訪問者数が出ない) ──
     //   以前使っていた無料の外部カウンター (counterapi.dev v1) が廃止され
     //   410 Gone を返すようになったため、 自前の KV で数える。
@@ -137,6 +149,111 @@ export default {
     return new Response('Not found', { status: 404 });
   },
 };
+
+// ─── 契約中のサブスク (照会 / 解約 / 解約の取り消し) ─────────────────────
+// = ユーザー要望: 「Google アカウントから契約中のサブスクを表示して、
+//   アプリから解約できるようにして欲しい」。
+//
+// 誰の契約かは Firebase の ID トークン (= Google ログイン) で決まるので、
+// 同じアカウントでログインしていればどの端末からでも同じ契約が見える。
+// Stripe の契約だけを扱う。 Google Play の購入はストア側の管理なので、
+// `store: 'play'` を返してアプリ側で管理ページへ誘導する。
+
+/// Stripe のサブスクを、 アプリで表示しやすい形に整える。
+function normalizeSubscription(sub) {
+  if (!sub || sub.error) return null;
+  const item = ((sub.items && sub.items.data) || [])[0] || {};
+  const price = item.price || {};
+  const recurring = price.recurring || {};
+  return {
+    id: sub.id,
+    status: sub.status, // active / trialing / past_due / canceled ...
+    cancelAtPeriodEnd: !!sub.cancel_at_period_end,
+    currentPeriodEnd: subPeriodEnd(sub),
+    canceledAt: sub.canceled_at || null,
+    amount: typeof price.unit_amount === 'number' ? price.unit_amount : null,
+    currency: (price.currency || '').toUpperCase(),
+    interval: recurring.interval || null, // month / year
+    intervalCount: recurring.interval_count || 1,
+    planName: (sub.metadata && sub.metadata.plan) || null,
+  };
+}
+
+/// この uid の Stripe サブスクを 1 件返す (無ければ null)。
+async function findSubscription(env, ent) {
+  if (!env.STRIPE_SECRET_KEY || !ent) return null;
+  // ① 権利情報に控えてある subscriptionId を優先。
+  if (ent.subscriptionId) {
+    const sub = await stripeApiGet(env, `subscriptions/${ent.subscriptionId}`);
+    const norm = normalizeSubscription(sub);
+    if (norm) return norm;
+  }
+  // ② 顧客 ID から今ある契約を探す (解約済みも含めて最新 1 件)。
+  if (ent.customerId) {
+    const list = await stripeApiGet(
+      env,
+      `subscriptions?customer=${encodeURIComponent(ent.customerId)}&status=all&limit=10`,
+    );
+    const arr = (list && list.data) || [];
+    const live = arr.find((s) =>
+      ['active', 'trialing', 'past_due', 'unpaid'].includes(s.status),
+    );
+    return normalizeSubscription(live || arr[0]);
+  }
+  return null;
+}
+
+async function handleSubscriptionInfo(request, env) {
+  const uid = await authUid(request, env);
+  if (!uid) return unauthorized();
+  const ent = await readEntitlement(env, uid);
+  const plan = (ent && ent.plan) || 'free';
+  // Play ストアの購入はここでは解約できない (ストア側の管理)。
+  if (ent && ent.store === 'play') {
+    return json({ plan, store: 'play', subscription: null });
+  }
+  if (!env.STRIPE_SECRET_KEY) {
+    return json({ plan, store: 'stripe', subscription: null });
+  }
+  try {
+    const sub = await findSubscription(env, ent);
+    return json({ plan, store: 'stripe', subscription: sub });
+  } catch (e) {
+    return json({ error: String(e) }, 502);
+  }
+}
+
+/// 解約 (期間の終わりで停止) / 解約の取り消し。
+/// 即時解約にはしない。 支払い済みの期間は使えた方が親切で、 返金の
+/// 問い合わせも減るため (= Stripe の cancel_at_period_end)。
+async function handleSubscriptionCancel(request, env, cancel) {
+  const uid = await authUid(request, env);
+  if (!uid) return unauthorized();
+  if (!env.STRIPE_SECRET_KEY) return json({ error: 'stripe not configured' }, 503);
+  const ent = await readEntitlement(env, uid);
+  if (ent && ent.store === 'play') {
+    return json({ error: 'managed by store' }, 409);
+  }
+  const current = await findSubscription(env, ent);
+  if (!current) return json({ error: 'no subscription' }, 404);
+  const updated = await stripeApi(env, `subscriptions/${current.id}`, {
+    cancel_at_period_end: cancel ? 'true' : 'false',
+  });
+  if (updated && updated.error) {
+    return json({ error: updated.error.message || 'stripe error' }, 502);
+  }
+  const norm = normalizeSubscription(updated);
+  // 権利情報にも反映しておく (アプリが次に照会した時にずれないように)。
+  if (ent) {
+    await putEntitlement(env, uid, {
+      ...ent,
+      status: norm ? norm.status : ent.status,
+      currentPeriodEnd: norm ? norm.currentPeriodEnd : ent.currentPeriodEnd,
+      cancelAtPeriodEnd: norm ? norm.cancelAtPeriodEnd : cancel,
+    });
+  }
+  return json({ plan: (ent && ent.plan) || 'free', store: 'stripe', subscription: norm });
+}
 
 // ─── 公式サイトの訪問者数 ───────────────────────────────────────────────
 // 合計と「今日の分」 を KV に持つ。 KV は読んで書く間に割り込まれ得るので

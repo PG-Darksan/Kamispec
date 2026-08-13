@@ -4198,6 +4198,18 @@ class MindMapProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ── Esc で閉じるか (= ユーザー要望: Excel / Word / YouTube などで開いた
+  //    画面が Esc で閉じてしまうのを止めたい) ──
+  //    true (既定) = 今までどおり Esc で閉じる / false = 閉じない。
+  bool _closeViewerWithEsc = true;
+  bool get closeViewerWithEsc => _closeViewerWithEsc;
+  Future<void> setCloseViewerWithEsc(bool v) async {
+    _closeViewerWithEsc = v;
+    final prefs = await _prefsWithRetry();
+    await prefs.setBool('closeViewerWithEsc', v);
+    notifyListeners();
+  }
+
   // ── メモ欄の一括折りたたみ (ユーザー要望) ────────────────────────────
   //
   // true: 全ノードのメモ表示を「閉じる」(node_widget が memo Text を
@@ -12777,6 +12789,27 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'KI-Hilfe ({type})',
       'pt': 'Assistência de IA ({type})',
       'ru': 'Помощь ИИ ({type})',
+    },
+    // AI が使えない時に、 ファイル AI の画面の中へ理由を出す
+    // (= ユーザー報告: Word を開いて AI を押しても何も表示されない)。
+    'aiAssist.unavailable': {
+      'ja': 'AI がまだ使えません。 ⋮ メニュー → プラン・使用状況 で AI クレジットを'
+          'チャージするか、 通信状態をご確認ください。',
+      'en': 'AI is not available yet. Add AI credit from ⋮ → Plan & usage, '
+          'or check your connection.',
+      'zh': 'AI 尚不可用。请在 ⋮ → 套餐与用量 中充值 AI 额度，或检查网络连接。',
+      'ko': 'AI를 아직 사용할 수 없습니다. ⋮ → 요금제·사용량에서 AI 크레딧을 '
+          '충전하거나 통신 상태를 확인하세요.',
+      'es': 'La IA aún no está disponible. Añade crédito de IA desde ⋮ → Plan y uso, '
+          'o comprueba tu conexión.',
+      'fr': 'L IA n est pas encore disponible. Ajoutez du crédit IA depuis ⋮ → Offre '
+          'et utilisation, ou vérifiez votre connexion.',
+      'de': 'Die KI ist noch nicht verfügbar. Lade KI-Guthaben unter ⋮ → Tarif & '
+          'Nutzung auf oder prüfe die Verbindung.',
+      'pt': 'A IA ainda não está disponível. Adicione crédito de IA em ⋮ → Plano e '
+          'uso, ou verifique a conexão.',
+      'ru': 'ИИ пока недоступен. Пополните ИИ-кредит в ⋮ → Тариф и использование '
+          'или проверьте соединение.',
     },
     'aiAssist.instruction': {
       'ja': 'AI への指示',
@@ -22440,6 +22473,51 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Ao arrastar um nó, contornos suaves aparecem perto de outros nós mostrando onde ele pode encaixar. Soltando ali, ele se alinha e conecta automaticamente. Desligado, o nó fica onde você soltar, sem conexão automática.',
       'ru': 'При перетаскивании узла рядом с соседними узлами появляются бледные рамки-подсказки. Отпустите на такой рамке — узел выровняется и соединится автоматически. Выключено: узел останется там, где отпустили, без автосоединения.',
     },
+    'help.escClose': {
+      'ja': 'Excel / Word / PDF / YouTube などをアプリ内で開いた画面を、Esc キーで閉じるかどうかの設定です。'
+          'ON (既定) なら今までどおり Esc で閉じます。'
+          'OFF にすると Esc では閉じなくなり、右上の ✕ ボタンでだけ閉じられます。'
+          '編集中に指が当たって閉じてしまう事故を防ぎたい時に OFF にしてください。'
+          'なお、セルや文章の編集中の Esc は「編集をやめる」動作のままで、画面は閉じません。',
+      'en': 'Controls whether the Esc key closes viewers opened inside the app '
+          '(Excel, Word, PDF, YouTube and so on). ON (default) keeps the current '
+          'behaviour. OFF means Esc no longer closes them and only the ✕ button '
+          'does, which prevents accidentally losing the screen while editing. '
+          'Esc while editing a cell or a paragraph still just cancels that edit.',
+      'zh': '设置是否用 Esc 键关闭在应用内打开的画面（Excel / Word / PDF / YouTube 等）。'
+          '开启（默认）保持原有行为；关闭后 Esc 不再关闭画面，只能用右上角 ✕ 关闭，可避免编辑时误触关闭。'
+          '编辑单元格或段落时按 Esc 仍然只是取消编辑。',
+      'ko': 'Excel / Word / PDF / YouTube 등 앱 안에서 연 화면을 Esc 키로 닫을지 설정합니다. '
+          'ON(기본)이면 지금까지처럼 Esc로 닫히고, OFF면 Esc로 닫히지 않고 오른쪽 위 ✕ 로만 '
+          '닫을 수 있어 편집 중 실수로 닫히는 것을 막을 수 있습니다. 셀이나 문장을 편집 중일 때의 '
+          'Esc는 그대로 편집 취소입니다.',
+      'es': 'Define si la tecla Esc cierra los visores abiertos dentro de la app '
+          '(Excel, Word, PDF, YouTube…). Activado (por defecto) mantiene el '
+          'comportamiento actual; desactivado, Esc ya no cierra y solo lo hace el '
+          'botón ✕, evitando cierres accidentales mientras editas. Esc durante la '
+          'edición de una celda o un párrafo sigue solo cancelando esa edición.',
+      'fr': 'Détermine si la touche Échap ferme les visionneuses ouvertes dans '
+          'l application (Excel, Word, PDF, YouTube…). Activé (par défaut) : '
+          'comportement actuel. Désactivé : Échap ne ferme plus, seul le bouton ✕ '
+          'le fait, ce qui évite les fermetures accidentelles pendant l édition. '
+          'Échap pendant la saisie d une cellule ou d un paragraphe annule '
+          'seulement cette saisie.',
+      'de': 'Legt fest, ob die Esc-Taste in der App geöffnete Ansichten schließt '
+          '(Excel, Word, PDF, YouTube …). An (Standard): wie bisher. Aus: Esc '
+          'schließt nicht mehr, nur die ✕-Schaltfläche – so geht die Ansicht beim '
+          'Bearbeiten nicht versehentlich verloren. Esc beim Bearbeiten einer '
+          'Zelle oder eines Absatzes bricht weiterhin nur diese Eingabe ab.',
+      'pt': 'Define se a tecla Esc fecha os visualizadores abertos dentro do app '
+          '(Excel, Word, PDF, YouTube…). Ligado (padrão) mantém o comportamento '
+          'atual; desligado, o Esc não fecha mais e só o botão ✕ fecha, evitando '
+          'fechamentos acidentais durante a edição. O Esc ao editar uma célula ou '
+          'um parágrafo continua apenas cancelando a edição.',
+      'ru': 'Определяет, закрывает ли клавиша Esc окна просмотра внутри приложения '
+          '(Excel, Word, PDF, YouTube и другие). Включено (по умолчанию) — как '
+          'раньше. Выключено — Esc больше не закрывает, только кнопка ✕, что '
+          'исключает случайное закрытие при редактировании. Esc во время правки '
+          'ячейки или абзаца по-прежнему просто отменяет ввод.',
+    },
     'help.autofillSequence': {
       'ja': 'ノードに「第一章」のような連番のタイトルを入力すると、同じ親を持つ空の兄弟ノードに「第二章」「第三章」…を自動で提案する機能です。'
           '漢数字・算用数字・ローマ数字・ひらがな・カタカナに対応しています。'
@@ -27613,6 +27691,30 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Recolher campos de nota',
       'ru': 'Свернуть поля заметок',
     },
+    // Esc で閲覧画面を閉じるか (= ユーザー要望: Excel / Word / YouTube などが
+    // Esc で閉じてしまうのを止められるように)。
+    'menu.escClose': {
+      'ja': 'Esc キーで閲覧画面を閉じる',
+      'en': 'Close viewers with the Esc key',
+      'zh': '用 Esc 键关闭查看画面',
+      'ko': 'Esc 키로 열람 화면 닫기',
+      'es': 'Cerrar los visores con la tecla Esc',
+      'fr': 'Fermer les visionneuses avec la touche Échap',
+      'de': 'Ansichten mit Esc schließen',
+      'pt': 'Fechar os visualizadores com a tecla Esc',
+      'ru': 'Закрывать окна просмотра клавишей Esc',
+    },
+    'sheet.formulaHint': {
+      'ja': 'セルの内容や数式 (= で始めると計算します)',
+      'en': 'Cell contents or a formula (start with = to calculate)',
+      'zh': '单元格内容或公式（以 = 开头即计算）',
+      'ko': '셀 내용 또는 수식 (=로 시작하면 계산)',
+      'es': 'Contenido de la celda o fórmula (empieza con = para calcular)',
+      'fr': 'Contenu de la cellule ou formule (commencez par = pour calculer)',
+      'de': 'Zellinhalt oder Formel (mit = beginnen zum Rechnen)',
+      'pt': 'Conteúdo da célula ou fórmula (comece com = para calcular)',
+      'ru': 'Содержимое ячейки или формула (начните с = для расчёта)',
+    },
     'menu.snap': {
       'ja': '配置候補',
       'en': 'Snap suggestions',
@@ -27831,6 +27933,189 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Läuft ab: {date}',
       'pt': 'Expira: {date}',
       'ru': 'Истекает: {date}',
+    },
+    // ── アプリの中で契約状況を見て解約まで行う (= ユーザー要望) ──
+    'sub.currentTitle': {
+      'ja': '契約中のプラン',
+      'en': 'Your subscription',
+      'zh': '当前订阅',
+      'ko': '가입 중인 요금제',
+      'es': 'Tu suscripción',
+      'fr': 'Votre abonnement',
+      'de': 'Dein Abo',
+      'pt': 'Sua assinatura',
+      'ru': 'Ваша подписка',
+    },
+    'sub.none': {
+      'ja': 'このアカウントで契約中のサブスクリプションはありません',
+      'en': 'No active subscription on this account',
+      'zh': '此账号没有进行中的订阅',
+      'ko': '이 계정에 이용 중인 구독이 없습니다',
+      'es': 'No hay suscripción activa en esta cuenta',
+      'fr': 'Aucun abonnement actif sur ce compte',
+      'de': 'Kein aktives Abo für dieses Konto',
+      'pt': 'Nenhuma assinatura ativa nesta conta',
+      'ru': 'В этом аккаунте нет активной подписки',
+    },
+    'sub.needSignIn': {
+      'ja': '契約状況を見るには Google アカウントへのログインが必要です',
+      'en': 'Sign in with Google to see your subscription',
+      'zh': '登录 Google 账号后可查看订阅状态',
+      'ko': '구독 상태를 보려면 Google 계정 로그인이 필요합니다',
+      'es': 'Inicia sesión con Google para ver tu suscripción',
+      'fr': 'Connectez-vous avec Google pour voir votre abonnement',
+      'de': 'Zum Anzeigen des Abos bei Google anmelden',
+      'pt': 'Entre com o Google para ver sua assinatura',
+      'ru': 'Войдите через Google, чтобы увидеть подписку',
+    },
+    'plan.perMonth': {
+      'ja': '/ 月', 'en': '/ month', 'zh': '/ 月', 'ko': '/ 월',
+      'es': '/ mes', 'fr': '/ mois', 'de': '/ Monat', 'pt': '/ mês',
+      'ru': '/ мес.',
+    },
+    'plan.perYear': {
+      'ja': '/ 年', 'en': '/ year', 'zh': '/ 年', 'ko': '/ 년',
+      'es': '/ año', 'fr': '/ an', 'de': '/ Jahr', 'pt': '/ ano',
+      'ru': '/ год',
+    },
+    'sub.status': {
+      'ja': '状態', 'en': 'Status', 'zh': '状态', 'ko': '상태',
+      'es': 'Estado', 'fr': 'Statut', 'de': 'Status', 'pt': 'Status',
+      'ru': 'Статус',
+    },
+    'sub.nextBilling': {
+      'ja': '次回の請求日',
+      'en': 'Next billing date',
+      'zh': '下次扣款日',
+      'ko': '다음 결제일',
+      'es': 'Próximo cobro',
+      'fr': 'Prochaine facturation',
+      'de': 'Nächste Abrechnung',
+      'pt': 'Próxima cobrança',
+      'ru': 'Следующее списание',
+    },
+    'sub.endsOn': {
+      'ja': '利用できる期限',
+      'en': 'Access ends on',
+      'zh': '可使用至',
+      'ko': '이용 종료일',
+      'es': 'El acceso termina el',
+      'fr': 'Accès jusqu au',
+      'de': 'Zugang endet am',
+      'pt': 'Acesso termina em',
+      'ru': 'Доступ до',
+    },
+    // 'sub.amount' (料金) は既にこの下 (プラン表示側) にあるのでそれを使う。
+    'sub.cancelBtn': {
+      'ja': 'このサブスクを解約する',
+      'en': 'Cancel this subscription',
+      'zh': '取消此订阅',
+      'ko': '이 구독 해지하기',
+      'es': 'Cancelar esta suscripción',
+      'fr': 'Résilier cet abonnement',
+      'de': 'Dieses Abo kündigen',
+      'pt': 'Cancelar esta assinatura',
+      'ru': 'Отменить эту подписку',
+    },
+    'sub.resumeBtn': {
+      'ja': '解約をやめて継続する',
+      'en': 'Keep the subscription',
+      'zh': '撤销取消并继续订阅',
+      'ko': '해지를 취소하고 계속 이용',
+      'es': 'Mantener la suscripción',
+      'fr': 'Annuler la résiliation',
+      'de': 'Kündigung zurücknehmen',
+      'pt': 'Manter a assinatura',
+      'ru': 'Отменить отмену подписки',
+    },
+    'sub.cancelConfirmTitle': {
+      'ja': 'サブスクを解約しますか？',
+      'en': 'Cancel this subscription?',
+      'zh': '要取消此订阅吗？',
+      'ko': '구독을 해지할까요?',
+      'es': '¿Cancelar esta suscripción?',
+      'fr': 'Résilier cet abonnement ?',
+      'de': 'Dieses Abo kündigen?',
+      'pt': 'Cancelar esta assinatura?',
+      'ru': 'Отменить эту подписку?',
+    },
+    'sub.cancelConfirmBody': {
+      'ja': '支払い済みの期間 ({date} まで) はそのまま使えます。 その後は無料プランに'
+          '戻り、 追加の請求は発生しません。 期限までなら解約を取り消せます。',
+      'en': 'You keep access until {date}, the end of the period you already paid '
+          'for. After that the plan returns to free and you are not billed again. '
+          'You can undo the cancellation until then.',
+      'zh': '您可继续使用至已付费周期结束（{date}）。之后将回到免费方案，不会再扣款。'
+          '在此之前可以撤销取消。',
+      'ko': '이미 결제한 기간({date}까지)은 그대로 사용할 수 있습니다. 이후에는 무료 '
+          '요금제로 돌아가며 추가 청구는 없습니다. 그때까지는 해지를 취소할 수 있습니다.',
+      'es': 'Conservas el acceso hasta {date}, el final del periodo ya pagado. '
+          'Después el plan vuelve a ser gratuito y no se te cobra de nuevo. '
+          'Puedes deshacer la cancelación hasta entonces.',
+      'fr': 'Vous gardez l accès jusqu au {date}, fin de la période déjà payée. '
+          'Ensuite l offre repasse en gratuit, sans nouvelle facturation. '
+          'Vous pouvez annuler la résiliation jusque-là.',
+      'de': 'Du behältst den Zugang bis {date}, dem Ende des bereits bezahlten '
+          'Zeitraums. Danach wird der Tarif wieder kostenlos, ohne weitere '
+          'Abbuchung. Bis dahin kannst du die Kündigung zurücknehmen.',
+      'pt': 'Você mantém o acesso até {date}, fim do período já pago. Depois o '
+          'plano volta a ser gratuito e não há nova cobrança. Até lá é possível '
+          'desfazer o cancelamento.',
+      'ru': 'Доступ сохранится до {date} — конца уже оплаченного периода. Затем '
+          'тариф станет бесплатным, новых списаний не будет. До этого момента '
+          'отмену можно отозвать.',
+    },
+    'sub.cancelled': {
+      'ja': '解約しました。 {date} まではこのまま使えます。',
+      'en': 'Cancelled. You can keep using it until {date}.',
+      'zh': '已取消。可继续使用至 {date}。',
+      'ko': '해지했습니다. {date}까지는 그대로 사용할 수 있습니다.',
+      'es': 'Cancelada. Puedes seguir usándola hasta el {date}.',
+      'fr': 'Résilié. Vous pouvez continuer jusqu au {date}.',
+      'de': 'Gekündigt. Bis {date} weiter nutzbar.',
+      'pt': 'Cancelada. Você pode continuar usando até {date}.',
+      'ru': 'Отменено. Можно пользоваться до {date}.',
+    },
+    'sub.resumed': {
+      'ja': '解約を取り消しました。 このまま継続されます。',
+      'en': 'Cancellation undone. The subscription continues.',
+      'zh': '已撤销取消，订阅将继续。',
+      'ko': '해지를 취소했습니다. 구독이 계속됩니다.',
+      'es': 'Cancelación deshecha. La suscripción continúa.',
+      'fr': 'Résiliation annulée. L abonnement continue.',
+      'de': 'Kündigung zurückgenommen. Das Abo läuft weiter.',
+      'pt': 'Cancelamento desfeito. A assinatura continua.',
+      'ru': 'Отмена отозвана. Подписка продолжается.',
+    },
+    'sub.willCancel': {
+      'ja': '解約予定 ({date} で終了)',
+      'en': 'Cancels on {date}',
+      'zh': '将于 {date} 结束',
+      'ko': '{date}에 종료 예정',
+      'es': 'Se cancela el {date}',
+      'fr': 'Prend fin le {date}',
+      'de': 'Endet am {date}',
+      'pt': 'Termina em {date}',
+      'ru': 'Завершится {date}',
+    },
+    'sub.storeManaged': {
+      'ja': 'この契約はストア (Google Play) の管理です。 下の「管理ページを開く」'
+          ' から解約してください。',
+      'en': 'This purchase is managed by the store (Google Play). Cancel it from '
+          '“Open the management page” below.',
+      'zh': '该订阅由商店（Google Play）管理，请通过下方“打开管理页面”取消。',
+      'ko': '이 구독은 스토어(Google Play)에서 관리합니다. 아래 “관리 페이지 열기”에서 '
+          '해지하세요.',
+      'es': 'Esta compra la gestiona la tienda (Google Play). Cancélala desde '
+          '“Abrir la página de gestión”.',
+      'fr': 'Cet achat est géré par le store (Google Play). Résiliez-le via '
+          '« Ouvrir la page de gestion ».',
+      'de': 'Dieser Kauf wird vom Store (Google Play) verwaltet. Kündige ihn über '
+          '„Verwaltungsseite öffnen“.',
+      'pt': 'Esta compra é gerenciada pela loja (Google Play). Cancele em '
+          '“Abrir a página de gerenciamento”.',
+      'ru': 'Эта покупка управляется магазином (Google Play). Отмените её через '
+          '«Открыть страницу управления».',
     },
     'usage.manageSub': {
       'ja': 'サブスクリプションの管理・解約',
@@ -57192,6 +57477,48 @@ class MindMapProvider extends ChangeNotifier {
     return j['url'] as String?;
   }
 
+  // ── 契約中のサブスクリプション (= ユーザー要望: アプリの中で契約状況を
+  //    見て、 そのまま解約までできるように) ──
+  // Stripe の契約は Worker (課金サーバー) が uid → subscriptionId を
+  // 知っているので、 そこ経由で照会・解約する。 Google アカウントで
+  // ログインしていれば、 どの端末でも同じ uid = 同じ契約が見える。
+
+  /// 契約状況を照会する。 戻り値は Worker の JSON
+  /// (`plan`, `subscription: {status, cancelAtPeriodEnd, currentPeriodEnd,
+  /// amount, currency, interval}` / 契約が無ければ subscription = null)。
+  Future<Map<String, dynamic>> fetchSubscriptionInfo() async {
+    const base = relayApiBase;
+    if (base.isEmpty) throw Exception(t('relay.notConfigured'));
+    await _ensureFreshToken();
+    final res = await http
+        .get(Uri.parse('$base/billing/subscription'), headers: _relayHeaders())
+        .timeout(const Duration(seconds: 30));
+    final j = jsonDecode(res.body) as Map<String, dynamic>;
+    if (res.statusCode != 200) {
+      throw Exception('${j['error'] ?? 'HTTP ${res.statusCode}'}');
+    }
+    return j;
+  }
+
+  /// 解約 (期間終了で止める) / 解約の取り消し。 成功したら最新の契約状況を返す。
+  Future<Map<String, dynamic>> setSubscriptionCancel(bool cancel) async {
+    const base = relayApiBase;
+    if (base.isEmpty) throw Exception(t('relay.notConfigured'));
+    await _ensureFreshToken();
+    final res = await http
+        .post(
+          Uri.parse('$base/billing/${cancel ? 'cancel' : 'resume'}'),
+          headers: _relayHeaders(json: true),
+          body: '{}',
+        )
+        .timeout(const Duration(seconds: 30));
+    final j = jsonDecode(res.body) as Map<String, dynamic>;
+    if (res.statusCode != 200) {
+      throw Exception('${j['error'] ?? 'HTTP ${res.statusCode}'}');
+    }
+    return j;
+  }
+
   /// サーバーが代行できるモデルの一覧 (料金つき)。
   List<dynamic> _relayModels = const [];
   List<dynamic> get relayModels => _relayModels;
@@ -67086,6 +67413,8 @@ $cleanQ
     defaultTitleFontSize = prefs.getDouble('defaultTitleFontSize') ?? 15.0;
     defaultMemoFontSize = prefs.getDouble('defaultMemoFontSize') ?? 12.0;
     _snapEnabled = prefs.getBool('snapEnabled') ?? true;
+    // Esc で閲覧画面を閉じるか (= ユーザー要望: 誤爆を止められるように)。
+    _closeViewerWithEsc = prefs.getBool('closeViewerWithEsc') ?? true;
     // メモ欄一括折りたたみ (デフォルト false = 従来通り全文表示)
     _memoCollapsedGlobal = prefs.getBool('memoCollapsedGlobal') ?? false;
     // 動画ノードの重複生成許可フラグ (デフォルト false)
