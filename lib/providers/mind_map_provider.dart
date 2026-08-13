@@ -8791,6 +8791,40 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Imagem de fundo do mapa',
       'ru': 'Фоновое изображение карты',
     },
+    // ── AI で背景画像を作る (= ユーザー要望: 背景設定に AI 生成の項目) ──
+    'bg.aiGenerate': {
+      'ja': '✨ AIで背景画像を作る',
+      'en': '✨ Generate a background with AI',
+      'zh': '✨ 用 AI 生成背景图片',
+      'ko': '✨ AI로 배경 이미지 만들기',
+      'es': '✨ Generar un fondo con IA',
+      'fr': '✨ Générer un fond avec l\'IA',
+      'de': '✨ Hintergrund mit KI erzeugen',
+      'pt': '✨ Gerar um fundo com IA',
+      'ru': '✨ Создать фон с помощью ИИ',
+    },
+    'bg.aiPromptHint': {
+      'ja': 'どんな背景? (例: 星空と静かな森、水彩風)',
+      'en': 'What kind of background? (e.g. starry sky over a quiet forest, watercolor)',
+      'zh': '想要什么背景？(如：星空下的安静森林，水彩风)',
+      'ko': '어떤 배경? (예: 별하늘과 조용한 숲, 수채화풍)',
+      'es': '¿Qué fondo? (p. ej., cielo estrellado sobre un bosque, acuarela)',
+      'fr': 'Quel fond ? (ex. ciel étoilé sur une forêt calme, aquarelle)',
+      'de': 'Welcher Hintergrund? (z. B. Sternenhimmel über stillem Wald, Aquarell)',
+      'pt': 'Que fundo? (ex.: céu estrelado sobre floresta calma, aquarela)',
+      'ru': 'Какой фон? (напр., звёздное небо над тихим лесом, акварель)',
+    },
+    'bg.aiFailed': {
+      'ja': '背景画像を生成できませんでした',
+      'en': 'Could not generate the background image',
+      'zh': '无法生成背景图片',
+      'ko': '배경 이미지를 생성하지 못했습니다',
+      'es': 'No se pudo generar la imagen de fondo',
+      'fr': 'Impossible de générer l\'image de fond',
+      'de': 'Hintergrundbild konnte nicht erzeugt werden',
+      'pt': 'Não foi possível gerar a imagem de fundo',
+      'ru': 'Не удалось создать фоновое изображение',
+    },
     // ── 自作背景メーカー (= ユーザー要望: テンプレ風の背景を自分で作る) ──
     'bg.makerOpen': {
       'ja': '🎨 背景を自作する',
@@ -42322,6 +42356,41 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Cancelar assinaturas',
       'ru': 'Отмена подписок',
     },
+    // ── Web 自動操作の AI フロー作成 (= ユーザー要望: Google 検索の
+    //    自動化のフロー作成で AI を使えるように) ──
+    'auto.aiBuild': {
+      'ja': 'AIでフロー作成',
+      'en': 'Build flow with AI',
+      'zh': '用 AI 生成流程',
+      'ko': 'AI로 플로우 생성',
+      'es': 'Crear flujo con IA',
+      'fr': 'Créer le flux avec l\'IA',
+      'de': 'Ablauf mit KI erstellen',
+      'pt': 'Criar fluxo com IA',
+      'ru': 'Создать поток с ИИ',
+    },
+    'auto.aiHint': {
+      'ja': '例: 下に3回スクロールして、スクショを撮るのを5回繰り返して',
+      'en': 'e.g. Scroll down 3 times and take a screenshot, repeat 5 times',
+      'zh': '例：向下滚动 3 次并截图，重复 5 次',
+      'ko': '예: 아래로 3번 스크롤하고 스크린샷 찍기를 5번 반복',
+      'es': 'p. ej.: Baja 3 veces y captura pantalla, repite 5 veces',
+      'fr': 'ex. : Défiler 3 fois vers le bas puis capturer, répéter 5 fois',
+      'de': 'z. B.: 3-mal nach unten scrollen und Screenshot, 5-mal wiederholen',
+      'pt': 'ex.: Role 3 vezes para baixo e capture a tela, repita 5 vezes',
+      'ru': 'напр.: Прокрутить вниз 3 раза и сделать скриншот, повторить 5 раз',
+    },
+    'auto.aiDone': {
+      'ja': 'AIがフローを作成しました ({n} 手順)。座標が必要な手順は「変更」から指定してください',
+      'en': 'AI built the flow ({n} steps). Set coordinates via "edit" where needed',
+      'zh': 'AI 已生成流程（{n} 步）。需要坐标的步骤请通过“更改”指定',
+      'ko': 'AI가 플로우를 생성했습니다 ({n}단계). 좌표가 필요한 단계는 "변경"에서 지정하세요',
+      'es': 'La IA creó el flujo ({n} pasos). Ajusta coordenadas con "editar" si hace falta',
+      'fr': 'L\'IA a créé le flux ({n} étapes). Réglez les coordonnées via « modifier » si besoin',
+      'de': 'KI hat den Ablauf erstellt ({n} Schritte). Koordinaten ggf. über „Ändern“ setzen',
+      'pt': 'A IA criou o fluxo ({n} passos). Defina coordenadas em "editar" se preciso',
+      'ru': 'ИИ создал поток ({n} шагов). Координаты при необходимости задайте через «изменить»',
+    },
     // ── AI 自動化フロー (= ユーザー要望: AI から指示を出して自動化操作の
     //    フローを作れるように) ──
     'hdr.aiFlow': {
@@ -51548,6 +51617,10 @@ class MindMapProvider extends ChangeNotifier {
     // マップ分割はヘッダー右上の常設ボタンへ移行 (2026-08-01、= ユーザー
     // 要望: 既に右上にあるからカスタムボタンからは削除)。
     'mapSplit',
+    // テーマ (ダーク/ライト) 切替ボタンは廃止 (2026-08-13、= ユーザー要望:
+    // 背景を自分で設定できるようになったので不要)。 設定のダークモード
+    // トグルと Ctrl+Shift+L は残る。
+    'themeMode',
   };
   List<String> _filterRemovedButtons(List<String> ids) =>
       List.unmodifiable(ids.where((id) => !_removedButtonIds.contains(id)));

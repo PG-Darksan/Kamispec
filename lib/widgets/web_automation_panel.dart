@@ -421,6 +421,130 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
     } catch (_) {}
   }
 
+  // ── AI でフローを作る (= ユーザー要望: Google 検索の自動化のフロー作成で
+  //    AI に指示を出して手順を組み立てられるように) ──
+  bool _aiBusy = false;
+
+  Future<void> _aiBuildFlow(MindMapProvider provider) async {
+    final ctrl = TextEditingController();
+    final req = await showDialog<String>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF2A2A3E),
+        title: Row(children: [
+          const Icon(Icons.auto_awesome_rounded,
+              color: Color(0xFFBA68C8), size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(provider.t('auto.aiBuild'),
+                style: const TextStyle(color: Colors.white, fontSize: 15)),
+          ),
+        ]),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          maxLines: 3,
+          minLines: 2,
+          style: const TextStyle(color: Colors.white, fontSize: 13),
+          decoration: InputDecoration(
+            hintText: provider.t('auto.aiHint'),
+            hintStyle: const TextStyle(color: Colors.white38, fontSize: 11.5),
+            filled: true,
+            fillColor: Colors.white.withValues(alpha: 0.06),
+            border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide.none),
+          ),
+          onSubmitted: (v) => Navigator.pop(dctx, v.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx),
+            child: Text(provider.t('common.cancel'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFBA68C8),
+                foregroundColor: Colors.white),
+            icon: const Icon(Icons.auto_awesome_rounded, size: 15),
+            label: Text(provider.t('auto.aiBuild')),
+            onPressed: () => Navigator.pop(dctx, ctrl.text.trim()),
+          ),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    if (req == null || req.isEmpty || !mounted) return;
+    setState(() {
+      _aiBusy = true;
+      _status = '…';
+    });
+    try {
+      final prompt = '''
+あなたは Web ページの自動操作フローを作る道具です。
+次の依頼を、 下の形式の JSON だけで出力してください
+(説明文・コードフェンス・前置きは一切不要)。
+
+{"steps":[
+ {"kind":"scroll","scrollDir":"down","count":3,"intervalMs":400},
+ {"kind":"wait","durationMs":1000},
+ {"kind":"tap","x":0,"y":0,"count":1,"intervalMs":200},
+ {"kind":"swipe","x":300,"y":600,"x2":300,"y2":200,"durationMs":300},
+ {"kind":"hold","x":0,"y":0,"durationMs":800},
+ {"kind":"type","text":"入力する文字","selector":"","submit":true},
+ {"kind":"shot","count":1},
+ {"kind":"loop","count":5,"children":[{"kind":"scroll","scrollDir":"down","count":1},{"kind":"shot","count":1}]}
+]}
+
+ルール:
+- kind は tap / hold / swipe / scroll / wait / shot / type / loop のみ。
+- scrollDir は down / up / right / left。
+- 画面上の正確な座標は分からないので、 タップ等の座標は 0 のままでよい
+  (利用者が後から画面上で指定し直す)。 できるだけ scroll / wait / type /
+  shot / loop を使って組み立てる。
+- 「繰り返す」 依頼は loop の children に中身を入れる。
+- steps は 30 個以内。
+
+依頼: $req''';
+      final out = (await provider.askAi(prompt)).trim();
+      var body = out;
+      final fence = RegExp(r'```[a-zA-Z]*\s*\n([\s\S]*?)\n?```');
+      final fm = fence.firstMatch(body);
+      if (fm != null) body = fm.group(1) ?? body;
+      final s = body.indexOf('{');
+      final e = body.lastIndexOf('}');
+      if (s < 0 || e <= s) throw Exception(provider.t('aiflow.failed'));
+      final m = jsonDecode(body.substring(s, e + 1));
+      final list = (m is Map ? m['steps'] : null);
+      if (list is! List || list.isEmpty) {
+        throw Exception(provider.t('aiflow.failed'));
+      }
+      final steps = [
+        for (final j in list)
+          if (j is Map) WebAutoStep.fromJson(Map<String, dynamic>.from(j)),
+      ];
+      if (steps.isEmpty) throw Exception(provider.t('aiflow.failed'));
+      if (!mounted) return;
+      setState(() {
+        _steps
+          ..clear()
+          ..addAll(steps);
+        _status = provider
+            .t('auto.aiDone')
+            .replaceFirst('{n}', '${steps.length}');
+      });
+      await _save();
+    } catch (e) {
+      if (mounted) {
+        setState(
+            () => _status = '$e'.replaceFirst('Exception: ', ''));
+      }
+    } finally {
+      if (mounted) setState(() => _aiBusy = false);
+    }
+  }
+
   // ─── JS 合成イベント ──────────────────────────────────────────────────
   String _pointerJs(String type, double x, double y, {int buttons = 1}) {
     final xi = x.round();
@@ -1366,6 +1490,34 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
                   label: Text(provider.t('auto.stop'),
                       style: const TextStyle(fontSize: 11)),
                   onPressed: _requestStop,
+                ),
+              // ── AI でフロー作成 (= ユーザー要望: 指示を出すと AI が手順を
+              //    組み立てる) ──
+              if (!_running && !_recording)
+                Padding(
+                  padding: const EdgeInsets.only(right: 4),
+                  child: OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFFBA68C8),
+                      side: const BorderSide(color: Color(0xFFBA68C8)),
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                      minimumSize: const Size(0, 28),
+                    ),
+                    icon: _aiBusy
+                        ? const SizedBox(
+                            width: 12,
+                            height: 12,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                valueColor: AlwaysStoppedAnimation(
+                                    Color(0xFFBA68C8))),
+                          )
+                        : const Icon(Icons.auto_awesome_rounded, size: 14),
+                    label: Text(provider.t('auto.aiBuild'),
+                        style: const TextStyle(
+                            fontSize: 11, fontWeight: FontWeight.w700)),
+                    onPressed: _aiBusy ? null : () => _aiBuildFlow(provider),
+                  ),
                 ),
               // フローの保存 / 呼び出し (= ユーザー要望: フロー名を保存して
               // 呼び出せるように)

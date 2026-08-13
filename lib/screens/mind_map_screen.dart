@@ -23930,6 +23930,106 @@ class _MindMapScreenState extends State<MindMapScreen>
     });
   }
 
+  /// AI で背景画像を生成してページに設定する (= ユーザー要望: 背景設定画面に
+  /// 「AIで背景画像を作る」)。 生成〜保存〜設定は MCP と同じ
+  /// mcpGeneratePageBackground を使い回す。 成功したら true。
+  Future<bool> _generateAiBackgroundForPage(
+      BuildContext ctx, MindMapProvider provider, String pageId,
+      {bool applyToAll = false}) async {
+    final ctrl = TextEditingController();
+    var busy = false;
+    final ok = await showDialog<bool>(
+      context: ctx,
+      barrierDismissible: false,
+      builder: (dctx) => StatefulBuilder(
+        builder: (dctx, setD) => AlertDialog(
+          backgroundColor: const Color(0xFF2A2A3E),
+          title: Row(children: [
+            const Icon(Icons.auto_awesome_rounded,
+                color: Color(0xFFBA68C8), size: 18),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(provider.t('bg.aiGenerate'),
+                  style: const TextStyle(color: Colors.white, fontSize: 15)),
+            ),
+          ]),
+          content: TextField(
+            controller: ctrl,
+            autofocus: true,
+            enabled: !busy,
+            maxLines: 2,
+            style: const TextStyle(color: Colors.white, fontSize: 13),
+            decoration: InputDecoration(
+              hintText: provider.t('bg.aiPromptHint'),
+              hintStyle:
+                  const TextStyle(color: Colors.white38, fontSize: 11.5),
+              filled: true,
+              fillColor: Colors.white.withValues(alpha: 0.06),
+              border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide.none),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: busy ? null : () => Navigator.pop(dctx, false),
+              child: Text(provider.t('btn.cancel'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFBA68C8),
+                  foregroundColor: Colors.white),
+              icon: busy
+                  ? const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor:
+                              AlwaysStoppedAnimation(Colors.white)),
+                    )
+                  : const Icon(Icons.auto_awesome_rounded, size: 15),
+              label: Text(provider.t('bg.aiGenerate')),
+              onPressed: busy
+                  ? null
+                  : () async {
+                      final p = ctrl.text.trim();
+                      if (p.isEmpty) return;
+                      setD(() => busy = true);
+                      try {
+                        final path = await provider
+                            .mcpGeneratePageBackground(pageId, p);
+                        // 「全ページに適用」 が ON なら他のページへも配る。
+                        if (applyToAll) {
+                          await provider.setPageBackgroundImage(pageId, path,
+                              applyToAll: true);
+                        }
+                        if (dctx.mounted) Navigator.pop(dctx, true);
+                      } catch (e) {
+                        setD(() => busy = false);
+                        if (mounted) {
+                          _appSnack(
+                            context,
+                            SnackBar(
+                              content: Text(
+                                  '${provider.t('bg.aiFailed')}: '
+                                  '${'$e'.replaceFirst('Exception: ', '')}'),
+                              backgroundColor: const Color(0xFFE57373),
+                            ),
+                          );
+                        }
+                      }
+                    },
+            ),
+          ],
+        ),
+      ),
+    );
+    ctrl.dispose();
+    return ok == true;
+  }
+
   void _showMapBackgroundDialog(
       BuildContext ctx, MindMapProvider provider) async {
     var applyToAllPages = false;
@@ -24184,6 +24284,26 @@ class _MindMapScreenState extends State<MindMapScreen>
                           ).then((_) {
                             if (sctx.mounted) setD(() {});
                           });
+                        },
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    // ── AI で背景画像を作る (= ユーザー要望: 背景設定に
+                    //    AI 生成の項目を追加) ──
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: const Color(0xFFCE93D8),
+                          side: const BorderSide(color: Color(0xFFBA68C8)),
+                        ),
+                        icon: const Icon(Icons.auto_awesome_rounded, size: 18),
+                        label: Text(provider.t('bg.aiGenerate')),
+                        onPressed: () async {
+                          final ok = await _generateAiBackgroundForPage(
+                              sctx, provider, page.id,
+                              applyToAll: applyToAllPages);
+                          if (ok && sctx.mounted) setD(() {});
                         },
                       ),
                     ),
@@ -26458,463 +26578,6 @@ class _MindMapScreenState extends State<MindMapScreen>
     );
   }
 
-  // ══════════ AI 自動化フロー (= ユーザー要望: AI から指示を出して
-  //             自動化操作のフローを作れるように) ══════════
-  //
-  // やりたいことを文章で書くと、 AI がアプリ内操作の手順 (JSON) を組み立て、
-  // MCP と同じ provider の窓口 (mcpCreatePage / mcpAddNode /
-  // mcpConnectNodes / mcpTidyPage) で順に実行する。 フローは prefs
-  // `aiFlows_v1` に保存でき、 何度でも実行し直せる。
-
-  /// 保存済みフロー ({'name': String, 'steps': List} の一覧)。
-  List<Map<String, dynamic>> _aiFlows = [];
-  bool _aiFlowsLoaded = false;
-
-  Future<void> _loadAiFlows() async {
-    if (_aiFlowsLoaded) return;
-    _aiFlowsLoaded = true;
-    try {
-      final sp = await SharedPreferences.getInstance();
-      final raw = sp.getString('aiFlows_v1');
-      if (raw == null || raw.isEmpty) return;
-      final list = jsonDecode(raw);
-      if (list is List) {
-        _aiFlows = [
-          for (final e in list)
-            if (e is Map && e['steps'] is List)
-              {'name': '${e['name'] ?? ''}', 'steps': e['steps'] as List},
-        ];
-      }
-    } catch (_) {}
-  }
-
-  Future<void> _persistAiFlows() async {
-    try {
-      final sp = await SharedPreferences.getInstance();
-      await sp.setString('aiFlows_v1', jsonEncode(_aiFlows));
-    } catch (_) {}
-  }
-
-  /// フローの 1 手順を人が読める 1 行にする (プレビュー用)。
-  String _aiFlowStepLabel(Map step) {
-    final op = '${step['op'] ?? ''}';
-    switch (op) {
-      case 'createPage':
-        return '📄 ${step['name'] ?? ''} (${step['type'] ?? 'normal'})';
-      case 'addNode':
-        final parent = '${step['parent'] ?? ''}';
-        return '🔵 ${step['title'] ?? ''}'
-            '${parent.isNotEmpty ? ' ← $parent' : ''}';
-      case 'connect':
-        return '🔗 ${step['from'] ?? ''} → ${step['to'] ?? ''}';
-      case 'tidy':
-        return '🧹 自動整列';
-      case 'switchPage':
-        return '📑 ${step['name'] ?? ''}';
-      default:
-        return '❓ $op';
-    }
-  }
-
-  /// フロー (手順の配列) を順に実行する。 実行できた手順数を返す。
-  Future<int> _runAiFlowSteps(List steps) async {
-    final provider = context.read<MindMapProvider>();
-    var pageId = provider.currentPage.id;
-    // 直近で作った/見つけたノード (title → id)。 parent / connect の解決に使う。
-    final titleToId = <String, String>{};
-    var placed = 0; // 位置ずらし用の連番
-    var done = 0;
-
-    String? findNodeId(String title) {
-      final hit = titleToId[title];
-      if (hit != null) return hit;
-      final page = provider.mcpPageById(pageId);
-      if (page == null) return null;
-      for (final n in page.nodes.values) {
-        if (n.title.trim() == title.trim()) return n.id;
-      }
-      return null;
-    }
-
-    for (final raw in steps) {
-      if (raw is! Map) continue;
-      final op = '${raw['op'] ?? ''}';
-      try {
-        switch (op) {
-          case 'createPage':
-            final id = provider.mcpCreatePage(
-              type: '${raw['type'] ?? 'normal'}',
-              name: '${raw['name'] ?? ''}'.trim().isEmpty
-                  ? null
-                  : '${raw['name']}'.trim(),
-            );
-            if (id != null) {
-              pageId = id;
-              titleToId.clear();
-              placed = 0;
-              done++;
-            }
-            break;
-          case 'addNode':
-            final title = '${raw['title'] ?? ''}'.trim();
-            if (title.isEmpty) break;
-            // 中央付近から格子状に並べる (重ならないように)。
-            final x = 4600.0 + (placed % 4) * 240.0;
-            final y = 4600.0 + (placed ~/ 4) * 130.0;
-            final memo = '${raw['memo'] ?? ''}'.trim();
-            final url = '${raw['url'] ?? ''}'.trim();
-            final id = provider.mcpAddNode(
-              pageId,
-              title: title,
-              x: x,
-              y: y,
-              memo: memo.isEmpty ? null : memo,
-              url: url.isEmpty ? null : url,
-            );
-            if (id != null) {
-              titleToId[title] = id;
-              placed++;
-              done++;
-              final parent = '${raw['parent'] ?? ''}'.trim();
-              if (parent.isNotEmpty) {
-                final pid = findNodeId(parent);
-                if (pid != null) {
-                  provider.mcpConnectNodes(pageId, pid, id);
-                }
-              }
-            }
-            break;
-          case 'connect':
-            final from = findNodeId('${raw['from'] ?? ''}');
-            final to = findNodeId('${raw['to'] ?? ''}');
-            if (from != null && to != null) {
-              if (provider.mcpConnectNodes(pageId, from, to)) done++;
-            }
-            break;
-          case 'tidy':
-            provider.mcpTidyPage(pageId);
-            done++;
-            break;
-          case 'switchPage':
-            final name = '${raw['name'] ?? ''}'.trim();
-            final idx =
-                provider.pages.indexWhere((p) => p.name.trim() == name);
-            if (idx >= 0) {
-              provider.switchPage(idx);
-              pageId = provider.pages[idx].id;
-              titleToId.clear();
-              done++;
-            }
-            break;
-        }
-      } catch (e) {
-        debugPrint('AI フロー手順の実行に失敗 ($op): $e');
-      }
-      // UI が追いつけるよう少しだけ間を置く。
-      await Future.delayed(const Duration(milliseconds: 30));
-    }
-    return done;
-  }
-
-  /// AI にフロー (JSON) を組み立てさせる。
-  Future<Map<String, dynamic>?> _generateAiFlow(String request) async {
-    final provider = context.read<MindMapProvider>();
-    final prompt = '''
-あなたはマインドマップアプリの自動化フローを作る道具です。
-次の依頼を、 下の形式の JSON だけで出力してください
-(説明文・コードフェンス・前置きは一切不要)。
-
-{"name":"フロー名","steps":[
- {"op":"createPage","type":"normal","name":"ページ名"},
- {"op":"addNode","title":"ノード名","memo":"補足(任意)","url":"リンク(任意)","parent":"親ノードのtitle(任意)"},
- {"op":"connect","from":"ノードA","to":"ノードB"},
- {"op":"tidy"}
-]}
-
-ルール:
-- createPage は新しいページが必要な時だけ最初に 1 回。 type は
-  normal / bookshelf / paint のどれか。 無ければ今開いているページに作る。
-- addNode の parent に既存/先に作ったノードの title を書くと線で繋がる。
-- 仕上げに {"op":"tidy"} を 1 回入れると自動整列される。
-- steps は 40 個以内。
-
-依頼: $request''';
-    final out = (await provider.askAi(prompt)).trim();
-    // コードフェンスで囲まれていたら剥がして、 最初の { から最後の } までを
-    // JSON として読む。
-    var body = out;
-    final fence = RegExp(r'```[a-zA-Z]*\s*\n([\s\S]*?)\n?```');
-    final fm = fence.firstMatch(body);
-    if (fm != null) body = fm.group(1) ?? body;
-    final s = body.indexOf('{');
-    final e = body.lastIndexOf('}');
-    if (s < 0 || e <= s) return null;
-    try {
-      final m = jsonDecode(body.substring(s, e + 1));
-      if (m is Map<String, dynamic> && m['steps'] is List) return m;
-    } catch (_) {}
-    return null;
-  }
-
-  /// AI 自動化フローのダイアログ。
-  void _showAiFlowDialog() {
-    final provider = context.read<MindMapProvider>();
-    // ignore: discarded_futures
-    _loadAiFlows();
-    final reqCtrl = TextEditingController();
-    var busy = false;
-    var running = false;
-    Map<String, dynamic>? draft; // AI が作った未保存のフロー
-    showDialog<void>(
-      context: context,
-      builder: (dctx) => StatefulBuilder(
-        builder: (dctx, setD) {
-          Future<void> generate() async {
-            final req = reqCtrl.text.trim();
-            if (req.isEmpty || busy) return;
-            setD(() => busy = true);
-            try {
-              final flow = await _generateAiFlow(req);
-              if (flow == null) {
-                throw Exception(provider.t('aiflow.failed'));
-              }
-              setD(() => draft = flow);
-            } catch (e) {
-              if (mounted) {
-                _appSnack(
-                  context,
-                  SnackBar(
-                    content: Text('$e'.replaceFirst('Exception: ', '')),
-                    backgroundColor: const Color(0xFFE57373),
-                  ),
-                );
-              }
-            } finally {
-              setD(() => busy = false);
-            }
-          }
-
-          Future<void> runFlow(List steps) async {
-            if (running) return;
-            setD(() => running = true);
-            final n = await _runAiFlowSteps(steps);
-            if (!mounted) return;
-            if (dctx.mounted) Navigator.pop(dctx);
-            _appSnack(
-              context,
-              SnackBar(
-                content: Text(provider
-                    .t('aiflow.done')
-                    .replaceFirst('{n}', '$n')),
-                backgroundColor: const Color(0xFF43B97F),
-              ),
-            );
-          }
-
-          final d = draft;
-          return AlertDialog(
-            backgroundColor: const Color(0xFF1E1E32),
-            title: Row(children: [
-              const Icon(Icons.smart_toy_rounded,
-                  color: Color(0xFFBA68C8), size: 20),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(provider.t('hdr.aiFlow'),
-                    style:
-                        const TextStyle(color: Colors.white, fontSize: 15)),
-              ),
-            ]),
-            content: SizedBox(
-              width: 480,
-              child: SingleChildScrollView(
-                child:
-                    Column(mainAxisSize: MainAxisSize.min, children: [
-                  Text(provider.t('aiflow.desc'),
-                      style: const TextStyle(
-                          color: Colors.white60,
-                          fontSize: 11.5,
-                          height: 1.5)),
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: reqCtrl,
-                    maxLines: 3,
-                    minLines: 2,
-                    style:
-                        const TextStyle(color: Colors.white, fontSize: 13),
-                    decoration: InputDecoration(
-                      hintText: provider.t('aiflow.inputHint'),
-                      hintStyle: const TextStyle(
-                          color: Colors.white30, fontSize: 11.5),
-                      filled: true,
-                      fillColor: Colors.white.withValues(alpha: 0.06),
-                      border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(8),
-                          borderSide: BorderSide.none),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFFBA68C8),
-                          foregroundColor: Colors.white),
-                      onPressed: busy ? null : generate,
-                      icon: busy
-                          ? const SizedBox(
-                              width: 14,
-                              height: 14,
-                              child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  valueColor: AlwaysStoppedAnimation(
-                                      Colors.white)),
-                            )
-                          : const Icon(Icons.auto_awesome_rounded,
-                              size: 16),
-                      label: Text(provider.t('aiflow.generate')),
-                    ),
-                  ),
-                  // ── 生成された手順のプレビュー + 実行 / 保存 ──
-                  if (d != null) ...[
-                    const SizedBox(height: 10),
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text(
-                          '${provider.t('aiflow.stepsTitle')} — ${d['name'] ?? ''}',
-                          style: const TextStyle(
-                              color: Color(0xFFCE93D8),
-                              fontSize: 12,
-                              fontWeight: FontWeight.w700)),
-                    ),
-                    const SizedBox(height: 6),
-                    Container(
-                      width: double.infinity,
-                      constraints: const BoxConstraints(maxHeight: 180),
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.05),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: SingleChildScrollView(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            for (final s in (d['steps'] as List))
-                              if (s is Map)
-                                Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                      vertical: 2),
-                                  child: Text(_aiFlowStepLabel(s),
-                                      style: const TextStyle(
-                                          color: Colors.white70,
-                                          fontSize: 11.5)),
-                                ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Row(children: [
-                      TextButton.icon(
-                        onPressed: () {
-                          _aiFlows.add({
-                            'name': '${d['name'] ?? ''}',
-                            'steps': d['steps'] as List,
-                          });
-                          unawaited(_persistAiFlows());
-                          setD(() {});
-                          _showLockToast(provider.t('aiflow.saved'));
-                        },
-                        icon: const Icon(Icons.bookmark_add_rounded,
-                            size: 16, color: Color(0xFF4FC3F7)),
-                        label: Text(provider.t('aiflow.save'),
-                            style: const TextStyle(
-                                color: Color(0xFF4FC3F7))),
-                      ),
-                      const Spacer(),
-                      ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF43B97F),
-                            foregroundColor: Colors.white),
-                        onPressed: running
-                            ? null
-                            : () => runFlow(d['steps'] as List),
-                        icon: running
-                            ? const SizedBox(
-                                width: 14,
-                                height: 14,
-                                child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    valueColor: AlwaysStoppedAnimation(
-                                        Colors.white)),
-                              )
-                            : const Icon(Icons.play_arrow_rounded,
-                                size: 18),
-                        label: Text(provider.t('aiflow.run')),
-                      ),
-                    ]),
-                  ],
-                  // ── 保存済みフロー ──
-                  if (_aiFlows.isNotEmpty) ...[
-                    const Divider(color: Colors.white12, height: 20),
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text(provider.t('aiflow.savedTitle'),
-                          style: const TextStyle(
-                              color: Colors.white54,
-                              fontSize: 12,
-                              fontWeight: FontWeight.w700)),
-                    ),
-                    const SizedBox(height: 4),
-                    for (final f in List.of(_aiFlows))
-                      Row(children: [
-                        const Icon(Icons.bookmark_rounded,
-                            size: 14, color: Color(0xFF4FC3F7)),
-                        const SizedBox(width: 6),
-                        Expanded(
-                          child: Text('${f['name']}',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                  color: Colors.white, fontSize: 12.5)),
-                        ),
-                        IconButton(
-                          visualDensity: VisualDensity.compact,
-                          tooltip: provider.t('aiflow.run'),
-                          icon: const Icon(Icons.play_arrow_rounded,
-                              size: 18, color: Color(0xFF43B97F)),
-                          onPressed: running
-                              ? null
-                              : () => runFlow(f['steps'] as List),
-                        ),
-                        IconButton(
-                          visualDensity: VisualDensity.compact,
-                          icon: const Icon(Icons.delete_outline_rounded,
-                              size: 16, color: Colors.white38),
-                          onPressed: () {
-                            _aiFlows.remove(f);
-                            unawaited(_persistAiFlows());
-                            setD(() {});
-                          },
-                        ),
-                      ]),
-                  ],
-                ]),
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(dctx),
-                child: Text(provider.t('btn.close'),
-                    style: const TextStyle(color: Colors.white54)),
-              ),
-            ],
-          );
-        },
-      ),
-    ).whenComplete(reqCtrl.dispose);
-  }
-
   void _showSubscriptionManagerDialog() {
     final provider = context.read<MindMapProvider>();
     // AI で作った解約リンクボタンを読み込んでから開く (初回のみ)。
@@ -26931,131 +26594,19 @@ class _MindMapScreenState extends State<MindMapScreen>
             Text(provider.t('sub.manageTitle'),
                 style: const TextStyle(color: Colors.white, fontSize: 17)),
           ]),
+          // ── サブスクの登録・金額管理はやめた (= ユーザー要望: このアプリ
+          //    では管理しづらい。 「有効なサブスク」 「登録したサブスク」 の
+          //    欄と追加ボタンは出さず、 解約サイトへ飛べるだけの画面にする)。
           content: SizedBox(
             width: 540,
-            height:
-                math.min(540.0, MediaQuery.of(dialogContext).size.height * .7),
-            child: Column(children: [
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF26A69A).withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Text(_subscriptionTotalsSummary(),
-                    style: const TextStyle(
-                        color: Color(0xFF80CBC4),
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700)),
-              ),
-              const SizedBox(height: 8),
-              // ── 各サービスの契約ページを開いて確認 / 解約する
-              //    (= ユーザー要望: Amazon 等からサブスクを取れないか) ──
-              _buildSubscriptionServiceLinks(dialogContext, setDialog),
-              const SizedBox(height: 8),
-              Expanded(
-                child: _managedSubscriptions.isEmpty
-                    ? Center(
-                        child: Text(provider.t('sub.empty'),
-                            style: const TextStyle(color: Colors.white38)))
-                    : ListView.builder(
-                        itemCount: _managedSubscriptions.length,
-                        itemBuilder: (_, index) {
-                          final item = _managedSubscriptions[index];
-                          final billing = _nextSubscriptionBilling(item);
-                          final notifyTime =
-                              MaterialLocalizations.of(dialogContext)
-                                  .formatTimeOfDay(TimeOfDay(
-                            hour: item.notifyHour,
-                            minute: item.notifyMinute,
-                          ));
-                          return Card(
-                            color: Colors.white.withValues(alpha: 0.045),
-                            child: ListTile(
-                              onTap: () async {
-                                final edited =
-                                    await _showSubscriptionEditDialog(
-                                        dialogContext,
-                                        initial: item);
-                                if (edited == null) return;
-                                _cancelManagedSubscriptionNotification(item);
-                                final currentIndex = _managedSubscriptions
-                                    .indexWhere((value) => value.id == item.id);
-                                if (currentIndex >= 0) {
-                                  _managedSubscriptions[currentIndex] = edited;
-                                }
-                                if (edited.enabled) {
-                                  _scheduleManagedSubscription(edited);
-                                }
-                                await _saveManagedSubscriptions();
-                                setDialog(() {});
-                              },
-                              leading: Switch(
-                                value: item.enabled,
-                                activeColor: const Color(0xFF26A69A),
-                                onChanged: (value) {
-                                  setDialog(() => item.enabled = value);
-                                  if (value) {
-                                    _scheduleManagedSubscription(item);
-                                  } else {
-                                    _cancelManagedSubscriptionNotification(
-                                        item);
-                                  }
-                                  _saveManagedSubscriptions();
-                                },
-                              ),
-                              title: Text(item.name,
-                                  style: TextStyle(
-                                      color: item.enabled
-                                          ? Colors.white
-                                          : Colors.white38,
-                                      fontWeight: FontWeight.w700)),
-                              subtitle: Text(
-                                '${_formatSubscriptionAmount(item)} / ${item.cycle == 'yearly' ? provider.t('sub.perYear') : provider.t('sub.perMonth')}'
-                                ' ・ ${provider.t('sub.next')} ${billing.year}/${billing.month}/${billing.day}'
-                                ' ・ ${item.notifyDaysBefore == 0 ? provider.t('sub.notifyOnDay') : '${item.notifyDaysBefore}${provider.t('sub.daysBeforeNotify')}'}'
-                                ' ($notifyTime)',
-                                style: const TextStyle(
-                                    color: Colors.white54, fontSize: 11),
-                              ),
-                              trailing: IconButton(
-                                icon: const Icon(Icons.delete_outline_rounded,
-                                    color: Colors.redAccent),
-                                onPressed: () {
-                                  _cancelManagedSubscriptionNotification(item);
-                                  setDialog(() =>
-                                      _managedSubscriptions.removeWhere(
-                                          (value) => value.id == item.id));
-                                  _saveManagedSubscriptions();
-                                },
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-              ),
-            ]),
+            child: SingleChildScrollView(
+              child: _buildSubscriptionServiceLinks(dialogContext, setDialog),
+            ),
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(dialogContext),
               child: Text(provider.t('btn.close')),
-            ),
-            FilledButton.icon(
-              style: FilledButton.styleFrom(
-                  backgroundColor: const Color(0xFF26A69A),
-                  foregroundColor: Colors.white,),
-              onPressed: () async {
-                final item = await _showSubscriptionEditDialog(dialogContext);
-                if (item == null) return;
-                _managedSubscriptions.add(item);
-                if (item.enabled) _scheduleManagedSubscription(item);
-                await _saveManagedSubscriptions();
-                setDialog(() {});
-              },
-              icon: const Icon(Icons.add_rounded),
-              label: Text(provider.t('sub.add')),
             ),
           ],
         ),
@@ -32985,14 +32536,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       'color': Color(0xFF66BB6A),
       'legacy': true,
     },
-    // ── AI 自動化フロー (= ユーザー要望: AI から指示を出して自動化操作の
-    //    フローを作れるように) ──
-    {
-      'id': 'aiFlow',
-      'labelKey': 'hdr.aiFlow',
-      'icon': Icons.smart_toy_rounded,
-      'color': Color(0xFFBA68C8),
-    },
+    // (旧 'aiFlow' カスタムボタンは廃止 = ユーザー要望: AI のフロー作成は
+    //  Google 検索の自動操作パネル側の機能として提供する)
     // ── AI 面接練習 / 営業ロープレ練習 (= ユーザー要望: 音声会話で練習) ──
     {
       'id': 'interviewPractice',
@@ -33040,13 +32585,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     // 注: 'mapSplit' (前回のレイアウトで開閉) はコマンドとして残してある。
     // 注: 旧 'pickupPractice' (ナンパ練習) はユーザー要望で機能ごと削除。
     // 保存済みレイアウトからは provider の _removedButtonIds が取り除く。
-    {
-      'id': 'themeMode',
-      'labelKey': 'hdr.themeMode',
-      // アイコンは _buildCustomHeaderButton 側で状態依存（sun/moon）で切替
-      'icon': Icons.brightness_6_rounded,
-      'color': Color(0xFF00E5FF),
-    },
+    // 旧 'themeMode' (テーマ切替ボタン) は配置候補から廃止 (= ユーザー要望:
+    // 背景を自分で設定できるので不要)。 provider の _removedButtonIds が
+    // 保存済みレイアウトからも取り除く。 設定のダークモードは残る。
     {
       'id': 'addPage',
       'labelKey': 'hdr.addPage',
@@ -33528,8 +33069,6 @@ class _MindMapScreenState extends State<MindMapScreen>
       'commandIds': <String>[
         // openAi = 統合ボタン (1 つで全 AI、 右クリック/長押しで切替)。
         'openAi',
-        // AI 自動化フロー (= ユーザー要望)。
-        'aiFlow',
         'openChatGPT', 'openGemini', 'openClaude',
         'openDeepSeek', 'openGrok',
       ],
@@ -35770,10 +35309,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       case 'voiceInput':
         _showVoiceInputDialog(context, provider);
         break;
-      case 'aiFlow':
-        // AI 自動化フロー (= ユーザー要望)。
-        _showAiFlowDialog();
-        break;
+      // 旧 'aiFlow' は廃止 (AI のフロー作成は Google 検索の自動操作
+      //   パネルへ移動 = ユーザー要望)。 配置済みでも何も起きない。
       // 'messaging' (メッセージ機能) は廃止。 旧データで配置されていても
       //   何も起きないよう、 case を削除 (= default で無視)。
       case 'openYoutube':
@@ -41521,23 +41058,23 @@ class _MindMapScreenState extends State<MindMapScreen>
       }
     }
 
+    // ── 項目の色は常にヘッダーの色に合わせる (= ユーザー要望: 言語設定の
+    //    項目の色はヘッダーに設定したカラーになるように)。 以前はカスタム色を
+    //    設定した時だけで、 既定のままだと青 (0xFF1976D2) 固定だった。 ──
     final baseColor = provider.headerColor;
-    final langPrimary =
-        provider.hasCustomHeaderColor ? baseColor : const Color(0xFF1976D2);
+    // 白背景のダイアログで見えるよう、 明るすぎる色だけ少し濃くする。
+    final langPrimary = baseColor.computeLuminance() > 0.82
+        ? HSLColor.fromColor(baseColor).withLightness(0.5).toColor()
+        : baseColor;
     final langOnPrimary = langPrimary.computeLuminance() > 0.45
         ? const Color(0xFF101322)
         : Colors.white;
-    final langRouteBg = provider.hasCustomHeaderColor
-        ? Color.alphaBlend(
-            baseColor.withValues(alpha: 0.34), const Color(0xFF12121E))
-        : const Color(0xFF12121E);
-    final langDialogBg = provider.hasCustomHeaderColor
-        ? Color.alphaBlend(baseColor.withValues(alpha: 0.08), Colors.white)
-        : Colors.white;
-    final langPanelBg = provider.hasCustomHeaderColor
-        ? Color.alphaBlend(
-            baseColor.withValues(alpha: 0.05), const Color(0xFFF5F7FA))
-        : const Color(0xFFF5F7FA);
+    final langRouteBg = Color.alphaBlend(
+        baseColor.withValues(alpha: 0.34), const Color(0xFF12121E));
+    final langDialogBg =
+        Color.alphaBlend(baseColor.withValues(alpha: 0.08), Colors.white);
+    final langPanelBg = Color.alphaBlend(
+        baseColor.withValues(alpha: 0.05), const Color(0xFFF5F7FA));
 
     // ★ 全画面ルート化 (= ユーザー報告: Android で言語ダイアログのスライダー/
     //   チップ/一覧が一切反応しない問題の修正)。 原因はダイアログ背後にある
