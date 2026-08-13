@@ -498,10 +498,25 @@ class _FloatingMemoOverlayState extends State<FloatingMemoOverlay> {
               ),
             ),
           ),
-          if (_aiAnswer.isNotEmpty)
-            Align(
-              alignment: Alignment.centerRight,
-              child: TextButton.icon(
+          Row(children: [
+            // ここの AI は鍵 (代行 / 自分のキー) を叩く形なので、 いつもの
+            //   ブラウザ版をそのまま使いたい人向けの逃げ道を置く
+            //   (= ユーザー要望: ブラウザ版で開けるようにして)。
+            TextButton.icon(
+              style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  minimumSize: const Size(0, 30)),
+              icon: const Icon(Icons.open_in_browser_rounded,
+                  size: 15, color: Color(0xFF4FC3F7)),
+              label: Text(FloatL10n.t('memo.aiBrowser'),
+                  style:
+                      const TextStyle(color: Color(0xFF4FC3F7), fontSize: 11.5)),
+              // ignore: discarded_futures
+              onPressed: () => _openBrowserAi(_aiCtrl.text),
+            ),
+            const Spacer(),
+            if (_aiAnswer.isNotEmpty)
+              TextButton.icon(
                 style: TextButton.styleFrom(
                     padding: const EdgeInsets.symmetric(horizontal: 6),
                     minimumSize: const Size(0, 30)),
@@ -523,9 +538,36 @@ class _FloatingMemoOverlayState extends State<FloatingMemoOverlay> {
                   _persistMode();
                 },
               ),
-            ),
+          ]),
         ],
       );
+
+  /// ブラウザ版の AI を既定のブラウザで開く。
+  /// オーバーレイからは provider を触れないので、 選んでいる AI は
+  /// prefs (`browser_ai_target`) から読む。
+  Future<void> _openBrowserAi(String text) async {
+    const targets = <String, String>{
+      'chatgpt': 'https://chatgpt.com/?q={q}',
+      'gemini': 'https://gemini.google.com/app?q={q}',
+      'perplexity': 'https://www.perplexity.ai/search?q={q}',
+      'claude': 'https://claude.ai/new?q={q}',
+      'grok': 'https://grok.com/?q={q}',
+      'deepseek': 'https://chat.deepseek.com/?q={q}',
+    };
+    var tmpl = targets['chatgpt']!;
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.reload();
+      final id = (sp.getString('browser_ai_target') ?? '').trim();
+      if (targets.containsKey(id)) tmpl = targets[id]!;
+    } catch (_) {}
+    final url = tmpl.replaceAll('{q}', Uri.encodeComponent(text.trim()));
+    try {
+      await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+    } catch (e) {
+      debugPrint('ブラウザ版 AI を開けませんでした: $e');
+    }
+  }
 
   /// 本体アプリへ「このメモをページに追加して」 と伝える。
   /// オーバーレイからは provider を触れないので、 prefs に置いて渡す。
@@ -1368,6 +1410,13 @@ class FloatL10n {
       'fr': 'Garder en note', 'de': 'Als Notiz behalten',
       'pt': 'Guardar como nota', 'ru': 'Сохранить в заметку',
     },
+    'memo.aiBrowser': {
+      'ja': 'ブラウザ版で開く', 'en': 'Open the browser version',
+      'zh': '用网页版打开', 'ko': '브라우저 버전으로 열기',
+      'es': 'Abrir la versión web', 'fr': 'Ouvrir la version web',
+      'de': 'Browser-Version öffnen', 'pt': 'Abrir a versão web',
+      'ru': 'Открыть веб-версию',
+    },
     'memo.openMemo': {
       'ja': 'メモを開く', 'en': 'Open the memo', 'zh': '打开备忘录',
       'ko': '메모 열기', 'es': 'Abrir la nota', 'fr': 'Ouvrir la note',
@@ -1730,8 +1779,20 @@ void main(List<String> args) async {
   if (!kIsWeb && args.isNotEmpty && args.first.startsWith('--floating-web=')) {
     final url = Uri.decodeComponent(
         args.first.substring('--floating-web='.length));
+    // --floating-pin … 開いた瞬間から「常に手前」 (= ユーザー要望:
+    //   ディアクティブでも前面に出るピン機能)。
+    final pinned = args.contains('--floating-pin');
+    // --floating-title=… … 窓のタイトル (URL の代わりに出す)。
+    String? title;
+    for (final a in args) {
+      if (a.startsWith('--floating-title=')) {
+        title = Uri.decodeComponent(a.substring('--floating-title='.length));
+        break;
+      }
+    }
     await FloatL10n.load();
-    runApp(_FloatingWebWindowApp(url: url));
+    runApp(_FloatingWebWindowApp(
+        url: url, startPinned: pinned, title: title));
     return;
   }
   // ── サブウィンドウ (発表者モードの「聴衆ウィンドウ」) として起動された場合 ──
@@ -2652,10 +2713,22 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
               ),
             ),
           ),
-          if (_aiAnswer.isNotEmpty)
-            Align(
-              alignment: Alignment.centerRight,
-              child: TextButton.icon(
+          Row(children: [
+            // ── ブラウザ版の AI で開く ──
+            //   この窓の AI は鍵 (= API/代行) を叩く形。 いつも使っている
+            //   ChatGPT 等をそのまま使いたい場合はこちら
+            //   (= ユーザー要望: ブラウザ版で開けるようにして)。
+            TextButton.icon(
+              icon: const Icon(Icons.open_in_browser_rounded,
+                  size: 15, color: Color(0xFF4FC3F7)),
+              label: Text(FloatL10n.t('memo.aiBrowser'),
+                  style:
+                      const TextStyle(color: Color(0xFF4FC3F7), fontSize: 11)),
+              onPressed: () => _openAiFor(_aiInput.text),
+            ),
+            const Spacer(),
+            if (_aiAnswer.isNotEmpty)
+              TextButton.icon(
                 icon: const Icon(Icons.note_add_outlined,
                     size: 15, color: Color(0xFF43B97F)),
                 label: Text(FloatL10n.t('memo.aiKeep'),
@@ -2663,7 +2736,7 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
                         color: Color(0xFF43B97F), fontSize: 11)),
                 onPressed: _keepAiAnswerAsMemo,
               ),
-            ),
+          ]),
         ]),
       );
 
@@ -2760,10 +2833,9 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
     await _fitWindowToContent();
   }
 
-  /// 本体側の浮遊 AI パネル (ブラウザ版 AI) を開く。
-  /// ふだんは `_enterAiMode` でこの窓の中に AI を出すので使わないが、
-  /// 「ブラウザの AI で開きたい」 場合の逃げ道として残してある。
-  // ignore: unused_element
+  /// ブラウザ版の AI (ChatGPT 等) を本体に頼んで開く。
+  /// この窓の中の AI は鍵を叩く形なので、 いつものブラウザ版を使いたい
+  /// 時はこちら (= ユーザー要望)。 本体が「アプリの外の窓」 で開く。
   Future<void> _openAiFor(String text) async {
     try {
       await DesktopMultiWindow.invokeMethod(0, 'openFloatingAi', text.trim());
@@ -4086,7 +4158,15 @@ class _AudienceWindowAppState extends State<_AudienceWindowApp> {
 /// WebView には何の影響も無い (b88 で直した不具合の再発を避けるため)。
 class _FloatingWebWindowApp extends StatefulWidget {
   final String url;
-  const _FloatingWebWindowApp({required this.url});
+
+  /// 開いた瞬間から「常に手前」 にするか (= ユーザー要望: フローティング AI は
+  /// ディアクティブでも前面に出てほしい)。
+  final bool startPinned;
+
+  /// 窓のタイトル (省略時は URL)。
+  final String? title;
+  const _FloatingWebWindowApp(
+      {required this.url, this.startPinned = false, this.title});
   @override
   State<_FloatingWebWindowApp> createState() => _FloatingWebWindowAppState();
 }
@@ -4095,7 +4175,14 @@ class _FloatingWebWindowAppState extends State<_FloatingWebWindowApp> {
   final wv_win.WebviewController _ctrl = wv_win.WebviewController();
   bool _ready = false;
   String? _error;
-  bool _pinned = false;
+  late bool _pinned = widget.startPinned;
+
+  /// 常に手前を維持し直すタイマー。
+  ///
+  /// ★ Windows は他アプリをクリックした時などに TOPMOST が外れることが
+  ///   あるので、 ピン中は定期的に付け直す (= ユーザー要望: ディアクティブ
+  ///   でも前面に出たまま)。
+  Timer? _topTimer;
 
   @override
   void initState() {
@@ -4107,7 +4194,16 @@ class _FloatingWebWindowAppState extends State<_FloatingWebWindowApp> {
   Future<void> _init() async {
     try {
       await windowManager.ensureInitialized();
-      await windowManager.setTitle(widget.url);
+      await windowManager.setTitle(
+          (widget.title != null && widget.title!.isNotEmpty)
+              ? widget.title!
+              : widget.url);
+      if (_pinned) {
+        try {
+          await windowManager.setAlwaysOnTop(true);
+        } catch (_) {}
+        _startTopTimer();
+      }
       await _ctrl.initialize();
       await _ctrl.loadUrl(widget.url);
       if (mounted) setState(() => _ready = true);
@@ -4116,16 +4212,33 @@ class _FloatingWebWindowAppState extends State<_FloatingWebWindowApp> {
     }
   }
 
+  void _startTopTimer() {
+    _topTimer?.cancel();
+    _topTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
+      if (!_pinned) return;
+      try {
+        await windowManager.setAlwaysOnTop(true);
+      } catch (_) {}
+    });
+  }
+
   Future<void> _togglePin() async {
     final next = !_pinned;
     setState(() => _pinned = next);
     try {
       await windowManager.setAlwaysOnTop(next);
     } catch (_) {}
+    if (next) {
+      _startTopTimer();
+    } else {
+      _topTimer?.cancel();
+      _topTimer = null;
+    }
   }
 
   @override
   void dispose() {
+    _topTimer?.cancel();
     try {
       _ctrl.dispose();
     } catch (_) {}
@@ -4150,14 +4263,17 @@ class _FloatingWebWindowAppState extends State<_FloatingWebWindowApp> {
                   size: 15, color: Color(0xFF4FC3F7)),
               const SizedBox(width: 8),
               Expanded(
-                child: Text(widget.url,
+                child: Text(
+                    (widget.title != null && widget.title!.isNotEmpty)
+                        ? widget.title!
+                        : widget.url,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                         color: Colors.white54, fontSize: 11)),
               ),
               IconButton(
-                tooltip: FloatL10n.t('float.pin'),
+                tooltip: FloatL10n.t(_pinned ? 'memo.unpin' : 'memo.pin'),
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
                 icon: Icon(

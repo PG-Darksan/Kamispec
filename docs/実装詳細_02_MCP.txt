@@ -1,0 +1,391 @@
+════════════════════════════════════════════════════════════════════
+ HisatorNotebook 実装詳細 (2) MCP サーバー / AI エージェント
+════════════════════════════════════════════════════════════════════
+ 対象ファイル
+   lib/services/mcp_server.dart            … サーバー本体 + ツール定義 + 実行
+   lib/providers/mind_map_provider.dart    … 起動/停止管理 + mcp* 公開 facade
+   lib/screens/mind_map_screen.dart        … アプリ内 MCP チャット (_McpChatDialog)
+
+ 何ができるか
+   Claude Desktop / Claude Code のような外部の MCP クライアント、または
+   アプリ内蔵の AI チャットから、ページ・ノード・背景・ファイル・アプリ機能を
+   操作できる。変更は既存の保存経路 (_saveToStorage) に乗るので、
+   起動中の画面に即座に反映され、そのまま永続化される。
+
+
+────────────────────────────────────────────────────────────────────
+【1】全体像 — 2 つの入口が同じ実行部を共有する
+────────────────────────────────────────────────────────────────────
+
+   ┌──────────────────────────┐        ┌──────────────────────────┐
+   │ 外部の MCP クライアント   │        │ アプリ内 MCP チャット      │
+   │ (Claude Code など)        │        │ (_McpChatDialog)          │
+   └───────────┬──────────────┘        └───────────┬──────────────┘
+               │ HTTP POST /mcp                     │ 直接 Dart 呼び出し
+               │ (JSON-RPC 2.0)                     │ (HTTP を通さない)
+               ↓                                     ↓
+        McpServer._handle → _dispatch          McpServer.callTool
+               │                                     │
+               └──────────────┬──────────────────────┘
+                              ↓
+                   McpServer.callTool(name, args)
+                              ↓
+                 MindMapProvider の mcp* facade
+                              ↓
+                 既存のモデル操作 + _saveToStorage
+                              ↓
+                 notifyListeners() → 画面が即更新
+
+ ★ アプリ内チャットは HTTP を経由しない。だから MCP サーバーを
+   立てなくても (外部公開を許可しなくても) 普通に動く。
+
+
+────────────────────────────────────────────────────────────────────
+【2】サーバーの起動フロー
+────────────────────────────────────────────────────────────────────
+
+  アプリ起動 → MindMapProvider のコンストラクタが _loadMcpServerSetting()
+      ↡
+  デスクトップ (Windows / macOS / Linux) 以外なら何もせず終了
+      ↡
+  prefs から読む
+      mcp_external_allowed … 外部アプリからの接続を許すか (既定 false)
+      mcp_server_enabled   … MCP 機能そのものが ON か
+      ↡
+  mcp_server_enabled が true なら setMcpServerEnabled(true, persist:false)
+      ↡
+  _startMcpListener()
+      ├ _mcpExternalAllowed が false → **null を返して待ち受けを立てない**
+      │    (アプリ内チャットだけで使う既定の状態)
+      └ true → McpServer を生成し start(token: UUIDv4 からハイフンを除いた 32 文字)
+      ↡
+  McpServer.start():
+      ポート 8765 から 8774 まで順に HttpServer.bind(127.0.0.1, port) を試す
+      ├ SocketException (塞がっている) → 次のポートへ
+      └ 成功 → url = http://127.0.0.1:<port>/mcp?token=<token>
+      ↡
+  listen(_handle) を開始し、URL を返す
+      ↡
+  ⋮メニューに接続用 URL が表示される。ユーザーはこれをコピーして
+      claude mcp add --transport http kamispec <URL>
+    のように登録する
+
+  ★ 待ち受けは 127.0.0.1 のみ。LAN には一切公開しない。
+  ★ 合言葉 (token) は起動のたびに作り直す。前回の URL は再起動後には通らない。
+
+
+────────────────────────────────────────────────────────────────────
+【3】リクエスト処理 (McpServer._handle)
+────────────────────────────────────────────────────────────────────
+
+  HTTP リクエスト到着
+      ↡
+  ① パスが /mcp か? → 違えば 404
+      ↡
+  ② _authorized(req) で合言葉を照合
+        ・_token が null / 空 → 合言葉なし運用として全部通す
+        ・URL の ?token=xxx が一致 → OK
+        ・Authorization: Bearer xxx が一致 → OK
+        ・どれも合わない → 401 "unauthorized"
+      ↡
+  ③ メソッドで分岐
+        GET    → 405 (SSE ストリームは提供しない)
+        DELETE → 200 (セッション終了。受理するだけ)
+        POST 以外 → 405
+      ↡
+  ④ 本文を UTF-8 で読んで jsonDecode。Map でなければ 400
+      ↡
+  ⑤ msg['id'] が null なら notification (notifications/initialized 等)
+        → 202 Accepted を返して終わり (応答本体は返さない)
+      ↡
+  ⑥ _dispatch(method, params) を実行
+      ├ 成功 → {jsonrpc:'2.0', id, result}
+      ├ _McpMethodNotFound → {error:{code:-32601, message:'Method not found: …'}}
+      └ その他の例外 → {error:{code:-32603, message:'<e>'}}
+      ↡
+  ⑦ Content-Type: application/json; charset=utf-8 で書いて close
+
+  ※ トランスポートは Streamable HTTP の最小実装。
+    SSE ストリームは持たず、各リクエストに JSON で即応答する。
+
+
+────────────────────────────────────────────────────────────────────
+【4】_dispatch が扱う JSON-RPC メソッド
+────────────────────────────────────────────────────────────────────
+
+  initialize
+      ↡
+    {protocolVersion: 相手が言ってきた版 (既定 '2025-06-18'),
+     capabilities: {tools: {listChanged: false}},
+     serverInfo: {name: 'kamispec-mcp', version: '1.0.0'}}
+
+  ping        → {} を返すだけ
+
+  tools/list  → {tools: McpServer.toolDefs}
+                (toolDefs は static。アプリ内チャットとも共有する)
+
+  tools/call  → callTool(params.name, params.arguments) を実行 (【6】)
+
+  それ以外    → _McpMethodNotFound を投げる
+
+
+────────────────────────────────────────────────────────────────────
+【5】ツール定義 (McpServer.toolDefs) 一覧
+────────────────────────────────────────────────────────────────────
+
+ _tool(name, description, properties, required) で
+ {name, description, inputSchema:{type:'object', properties, required}}
+ の形に組み立てている。
+
+ ■ 読み取り / ページ
+   list_pages                 全ページ (id, name, type, ノード数) を返す
+   read_page                  1 ページを完全な JSON で返す
+                              (nodes / connections / decorations)
+   create_page                新規ページ作成。type は
+                              normal / bookshelf / paint / videoEditor
+                              ★ "document" 型は作れない。文章を書きたい時は
+                                paint を作って append_document_text を使う
+
+ ■ マインドマップ (normal)
+   add_node                   ノード追加。**バッチ形が推奨**
+                              nodes: [{title, memo?, url?, color?,
+                                       parentIndex?, parentId?}]
+                              parentIndex は同じ配列内の先に作ったノードの
+                              0 始まり番号で、同時に接続線も引く
+                              → 中心 + 子をまとめて 1 回で作れる
+                              座標は省略推奨 (後でアプリが並べ直す)
+   update_node                title / memo / 位置の更新
+   delete_node                ノードと接続線を削除
+   connect_nodes              接続。**バッチ形推奨**
+                              connections: [{fromId, toId, label?}]
+   add_image_node             画像ノード。imageBase64+fileName か imagePath
+   add_table_node             表ノード。rows は 2 次元配列、先頭行が見出し
+
+ ■ 背景
+   generate_page_background   AI で背景画像を描き起こして設定する (推奨)
+                              prompt / opacityPercent(既定70) / fit(cover…)
+                              画像 1 枚分のクレジットを消費する
+   set_page_background        既存の画像・組み込みテンプレート・解除
+                              template は wood / chalkboard / ocean / sakura /
+                              fireworks / castle / aurora / nightSky / galaxy /
+                              rain / nature / blueprint / midnight / sage / sunset
+                              色調整 hueDegrees / saturationPercent /
+                              brightnessPercent も可
+
+ ■ マインドマップ以外のページ
+   add_gallery_item           ギャラリー (bookshelf) にタイル追加。
+                              texts で一括投入 (1 件ずつ呼ばせない)
+   add_paint_text             フリーノート (paint) に文字を書く。
+                              texts で一括。x/y 省略で上から縦に積む
+   append_document_text       ノート (paint / document) の末尾に段落を追記。
+                              texts で一括
+   add_video_editor_item      動画エディター (videoEditor) のタイムラインに
+                              1 項目追加。kind は text / video / image。
+                              startMs 省略でそのレイヤーの末尾、
+                              durationMs 既定 4000、layer 0 が最背面
+
+ ■ ファイル作成
+   create_document_file       本物の文書ファイルを作って保存し、ページに貼る
+                              kind = xlsx / csv → rows
+                                     docx / txt / md / pdf → title + paragraphs
+                                       (pdf は rows も足せる)
+                                     pptx → slides:[{title, bullets:[…]}]
+                              pageId は normal か bookshelf を渡すこと
+                              (paint / videoEditor はファイルタイルを持てない)
+
+ ■ アプリ機能の起動
+   list_app_commands          起動できる機能の id + ラベル一覧
+   run_app_command            id を指定して機能を開く
+                              例: flashcards / silentCamera / calendar / qrReader
+
+ ★ バッチ引数を用意した理由: 1 件ずつのツールしか無いと AI が途中で
+   取りこぼす (4 個頼んで 1 個しか置かれない事故が実際に起きた)。
+
+
+────────────────────────────────────────────────────────────────────
+【6】callTool の実行フロー (代表例)
+────────────────────────────────────────────────────────────────────
+
+ 共通の戻り値
+   成功 _ok(data)  → {content:[{type:'text', text: 文字列 or jsonEncode}],
+                      isError:false}
+   失敗 _err(msg)  → {content:[{type:'text', text: msg}], isError:true}
+
+──── add_node (バッチ) ────
+
+  args.nodes が配列で 1 件以上か?
+      ↡ YES
+  配列を先頭から順に処理
+      ↡
+  provider.mcpAddNode(pageId, title, x?, y?, memo?, url?, colorValue?)
+      ↡
+  戻り値 null (ページが無い) → failed に積んで次へ
+  成功 → ids に追加
+      ↡
+  親を決める
+      parentId が指定されていればそれ
+      無くて parentIndex が 0 ≦ pi < ids.length-1 なら ids[pi]
+      ↡
+  親が決まれば provider.mcpConnectNodes(pageId, parent, id) でその場で接続
+      ↡
+  全部終わって ids が空なら _err('page not found')
+  そうでなければ _ok({nodeIds:[…], failed?:[…]})
+
+──── add_image_node ────
+
+  imagePath があればそれを使う
+      ↡ 無く imageBase64 がある場合
+  base64Decode → アプリ書類フォルダ/mcp_images/ を作成
+      ↡
+  fileName の \ / : * ? " < > | を _ に置換、拡張子が無ければ .png を付ける
+      ↡
+  <ミリ秒>_<fileName> で保存し、そのパスを使う
+      ↡
+  File(path).existsSync() を確認 (無ければ _err)
+      ↡
+  provider.mcpAddImageNode(pageId, filePath, title?, x?, y?)
+
+──── generate_page_background ────
+
+  provider.mcpGeneratePageBackground(pageId, prompt, opacityPercent?, fit?)
+      ↡
+  内部で AI 画像生成 (前払いクレジットから 1 枚分を消費) → 保存 → 背景に設定
+      ↡
+  _ok({background: 保存パス}) / 例外は _err('<e>')
+
+──── add_table_node ────
+
+  rows が非空の配列か検証 (だめなら _err)
+      ↡
+  2 次元配列に正規化 (要素が配列でなければ 1 セルの行として扱う)
+      ↡
+  provider.mcpAddTableNode(pageId, rows, headerRow(既定true), x?, y?)
+      ↡
+  title があれば provider.updateNodeCaption(id, title) で表の上に説明書きを付ける
+      ↡
+  _ok({nodeId, rows: 行数})
+
+──── run_app_command ────
+
+  provider.mcpRunCommand(id)
+      ↡
+  失敗した場合のメッセージが親切になっている:
+    「id が違う (list_app_commands を見よ)」か、
+    「利用者本人しか始められない機能 (LAN 共有・クラウド同期・
+      アプリロック/集中ロック) なので、ユーザーにボタンを押すよう伝えよ」
+  ★ 危険な操作を AI に勝手に実行させないための線引き。
+
+
+────────────────────────────────────────────────────────────────────
+【7】アプリ内 MCP チャット (_McpChatDialog) のエージェントループ
+────────────────────────────────────────────────────────────────────
+
+  ユーザーが文を入力して送信
+      ↡
+  provider.hasActiveAiKey が false → その場で AI 設定を開いて中断
+      ↡
+  添付ファイルがあれば [添付ファイル: 名前]\n<抽出テキスト> を質問に足す
+  写真があれば AiInputImage として別に持つ (文字にできないため)
+      ↡
+  会話履歴に user メッセージを積む
+      ↡
+  ── ループ開始 (最大 24 往復) ──
+      ↡
+  ① _systemPrompt() を組み立てる
+        ・provider.mcpPreamble (利用者が書き置いた前提) を最優先で先頭に
+        ・「あなたはマインドマップアプリを操作するアシスタントです」
+        ・ツール定義 = jsonEncode(McpServer.toolDefs)
+        ・現在のページ一覧 = jsonEncode(provider.mcpListPages())
+        ・ツールを使う時は説明文を付けず {"tool":"名前","args":{…}} だけ返す
+        ・返答は provider.languageInstructionForAi() の言語で、
+          JSON や ID を並べず普通の文章で
+        ・座標 (x,y) は指定しない (アプリが後で並べる)
+        ・主題ノードは 1 つだけ、同名を重ねない
+        ・create_page の戻り pageId をそのまま以降に使う
+        ・最後の説明文の前に read_page で実際の中身を確認し、
+          本当に作られた物だけを説明する (やっていない事を書かせない)
+        ・作ったノードは必ず connect_nodes で親につなぐ
+          (つながっていないノードは「根」扱いでバラバラに並ぶ)
+        ・比較・一覧・数値は add_table_node で表にする
+        ・背景の指示は generate_page_background を既定にする
+        ・機能を開く指示は run_app_command
+      ↡
+  ② prompt = systemPrompt + 会話履歴 + "アシスタント:"
+      ↡
+  ③ provider.askAi(prompt, images: 1 往復目だけ写真を付ける)
+        ★ 写真を毎回付けると同じ画像の分だけ何度も課金される
+          (画像は入力トークンとして数えられる)
+      ↡
+  ④ _parseToolCall(reply) で {"tool":…,"args":…} を取り出す
+      ↡
+  ┌ ツール呼び出しでない or 24 往復目 → 【終了処理】へ
+  │
+  └ ツール呼び出しだった
+        ↡
+      args.pageId を _touchedPageIds に覚える (後でまとめて整列するため)
+        ↡
+      画面に「何をしているか」の行を出す (_toolLabel で人が読める言葉に)
+        ↡
+      _tools.callTool(name, args) を直接呼ぶ ← HTTP を通らない
+        ↡
+      例外が出たら {isError:true, text:'error: …'} を自前で作る
+        ↡
+      create_page なら戻り値の pageId も _touchedPageIds に足す
+        ↡
+      画面には「完了 / 失敗」の 1 行だけ出す (動作名を 2 度並べない)
+      AI に渡す raw には本物の戻り値を入れる (1200 文字で打ち切り)
+        ★ 表示を人向けに変えても AI には本物を渡さないと、結果が分からず
+          同じ操作を繰り返してしまう
+        ↡
+      ①へ戻る
+
+  ── 【終了処理】 ──
+      ↡
+  _touchedPageIds のページを provider.mcpTidyPage(pid) で
+  ツリーとして並べ直す
+      ★ AI が決めた座標は当てにならず要素が離れて置かれるため、
+        出来上がりを必ず整列し直す
+      ↡
+  24 往復の上限で止まった場合は生の JSON を出さず
+  t('mcp.tooManySteps') に差し替える
+      ↡
+  AI の説明文を画面と会話ログ (provider.appendMcpChat) に記録
+      ↡
+  provider.refreshCreditBalance() で残高を取り直し、
+  「あと何トークン使えるか」を meta 行として表示
+
+
+────────────────────────────────────────────────────────────────────
+【8】安全のための線引き
+────────────────────────────────────────────────────────────────────
+
+  ・待ち受けは 127.0.0.1 固定。LAN・外部からは届かない。
+  ・外部接続は既定で不許可 (mcp_external_allowed = false)。
+    許可を切ると即座に _mcpServer.stop() で待ち受けを畳む。
+  ・許可しても合言葉 (32 文字) を知らないと 401。合言葉は起動ごとに再生成。
+  ・run_app_command は、利用者本人しか始めてはいけない機能
+    (LAN 共有 / クラウド同期 / アプリロック / 集中ロック) を実行できない。
+  ・mcpPageById(pageId) は pageId が空文字の時「今開いているページ」に
+    フォールバックする。AI が create_page の戻りを取り違えて空を渡し、
+    「作成しました」とだけ言って何も起きない事故を防ぐため。
+
+
+────────────────────────────────────────────────────────────────────
+【9】接続の手順 (利用者向け)
+────────────────────────────────────────────────────────────────────
+
+  ⋮メニュー → MCP サーバー を ON
+      ↡
+  「外部アプリからの接続を許可」も ON にする
+      ↡
+  表示された URL (合言葉付き) をコピー
+      例: http://127.0.0.1:8765/mcp?token=xxxxxxxx
+      ↡
+  claude mcp add --transport http kamispec "<URL>"
+      ↡
+  Claude 側から tools/list が飛んできて 18 個のツールが見える
+      ↡
+  「〇〇についてのマップを作って」等と指示すると tools/call が飛び、
+  アプリの画面がその場で書き換わる
+
+  ※ アプリを再起動すると合言葉が変わるので、URL を登録し直す必要がある。

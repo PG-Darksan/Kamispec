@@ -6951,9 +6951,11 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                         ),
                       // ── ヘッダーを隠す (= ユーザー要望: Google 検索の
                       //    ヘッダーを非表示にするボタン)。 隠すと本文だけに
-                      //    なり、 左上に出る小さな「>」 で戻せる。 ──
+                      //    なり、 同じ右上に出る小さな山形で戻せる。 ──
                       IconButton(
-                        icon: const Icon(Icons.visibility_off_outlined,
+                        // 柔らかい印象のアイコン (= ユーザー要望: 目のアイコンが
+                        // 不気味)。 上向きの山形 = 「畳んで仕舞う」。
+                        icon: const Icon(Icons.keyboard_arrow_up_rounded,
                             color: Colors.white70, size: 21),
                         tooltip: provider.t('gs.hideHeader'),
                         visualDensity: VisualDensity.compact,
@@ -7018,19 +7020,23 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
               // AI 欄の浮遊窓 (= ユーザー要望)
               if (_aiPanelOpen && _aiPanelFloating)
                 _buildFloatingAiPanel(provider),
-              // ── ヘッダーを隠している時に戻す小さなボタン (= ユーザー要望:
-              //    Google 検索のヘッダーを非表示にできるように)。 最前面に
-              //    置かないと WebView の下に隠れて戻せなくなる。 ──
+              // ── ヘッダーを隠している時に戻す小さなボタン ──
+              //    ★ 隠すボタンと同じ「右上」 に出す (= ユーザー要望: 右端で
+              //      押したのに左端に出てきて押しにくい)。 閉じるボタンの
+              //      すぐ左あたりに来るので、 指/カーソルをほぼ動かさずに
+              //      戻せる。 最前面に置かないと WebView の下に隠れる。
               if (_gsHeaderHidden && !widget.hideAppBar)
                 Positioned(
-                  left: 4,
-                  top: 4,
+                  right: 6,
+                  top: 6,
                   child: Material(
                     color: Colors.black.withValues(alpha: 0.55),
                     shape: const CircleBorder(),
                     child: IconButton(
-                      icon: const Icon(Icons.visibility_rounded,
-                          color: Colors.white70, size: 18),
+                      // 柔らかい印象のアイコンにする (= ユーザー要望:
+                      // 目のアイコンが不気味)。 下向きの山形 = 「出てくる」。
+                      icon: const Icon(Icons.keyboard_arrow_down_rounded,
+                          color: Colors.white70, size: 20),
                       tooltip: provider.t('gs.showHeader'),
                       visualDensity: VisualDensity.compact,
                       padding: const EdgeInsets.all(6),

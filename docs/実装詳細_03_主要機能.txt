@@ -1,0 +1,607 @@
+════════════════════════════════════════════════════════════════════
+ HisatorNotebook 実装詳細 (3) 主要機能の処理の流れ
+════════════════════════════════════════════════════════════════════
+ 決済 / AI クレジットは (1)、MCP は (2) を参照。
+ このファイルはそれ以外の主要機能を扱う。
+
+ 主な置き場所
+   lib/main.dart                          起動・サブ窓・オーバーレイ・外部窓
+   lib/providers/mind_map_provider.dart   全状態 (文書ツリー・同期・設定)
+   lib/screens/mind_map_screen.dart       ほぼ全 UI (god state + 約 190 の私有クラス)
+   lib/widgets/node_widget.dart           ノード 1 個の描画
+   lib/widgets/connection_painter.dart    接続線の描画とヒットテスト
+
+
+────────────────────────────────────────────────────────────────────
+【1】アプリの起動
+────────────────────────────────────────────────────────────────────
+
+  main(args)
+      ↡
+  引数を見て「どの姿で起動するか」を先に決める
+      --floating-web=<url>  → 外部フローティング窓として起動 (【12】)
+      それ以外              → 通常のアプリ本体
+      ↡
+  WidgetsFlutterBinding.ensureInitialized()
+      ↡
+  画面の向きを固定 → タイムゾーン初期化 (Asia/Tokyo、失敗時 UTC)
+      ★ zonedSchedule (Android の正確な通知) に必須
+      ↡
+  flutter_local_notifications を初期化
+      Android チャンネル mokumoku_node_reminders を作る
+      ↡
+  Android 13+ なら通知許可と正確アラーム許可を要求
+      ↡
+  デスクトップなら windowManager を初期化、
+  local_notifier.setup(shortcutPolicy: requireCreate)
+      ↡
+  「アプリで開く」の 1 窓運用のため 127.0.0.1:38641 を待ち受ける (【11】)
+      ↡
+  runApp(MyApp)
+      ↡
+  MyApp が ChangeNotifierProvider(create: (_) => MindMapProvider()) を 1 個だけ置く
+      ↡
+  MindMapProvider のコンストラクタが約 25 個の _load* を投げっぱなしで開始
+      ↡
+  そのうち _loadFromStorage だけが .then で続きを持つ
+      → _restoreLastOpenedPage → サムネイル生成
+      ↡
+  テーマは provider.isDarkMode、シード色 0xFF6C63FF
+
+
+────────────────────────────────────────────────────────────────────
+【2】文書ツリーの構造と保存
+────────────────────────────────────────────────────────────────────
+
+ 構造
+   MindMapFolder (平坦。入れ子にならない)
+       └ MindMapPage  (nodes: Map<String,MindMapNode>, connections, decorations)
+             └ MindMapNode (NodeContentType: none/memo/youtube/link/attachment/table)
+
+ 保存の流れ
+
+  ノードを動かす等の編集
+      ↡
+  provider の該当メソッド (updateNodePosition 等) がモデルを書き換える
+      ↡
+  notifyListeners() で画面が再構築される
+      ↡
+  _saveToStorage()
+      ├ SharedPreferences の mindmap_pages_v3 にツリー全体を JSON で書く
+      └ _triggerAutoSync() を呼ぶ (自動同期の対象ページなら後でクラウドへ)
+      ↡
+  受信側で使う時だけ _saveToStorageLocal() (クラウドへ送らない版) を使う
+
+ 読み込み
+
+  _loadFromStorage()
+      ↡
+  mindmap_folders_v1 からフォルダ一覧
+      ↡
+  mindmap_pages_v3 を読む
+      ├ 無ければ mindmap_pages_v2 (旧版) を読んで v3 へ移行
+      └ MindMapPage.fromJson が legacy な parentId を connection に変換
+      ↡
+  last_opened_page_id のページを開く
+
+ ★ JSON の直列化はすべて手書き (json_serializable は宣言だけで .g.dart は無い)。
+   読み込みは防御的 (as num? / ?? 既定値 / 添字の範囲チェック)。
+   後方互換を必ず保つこと。
+
+
+────────────────────────────────────────────────────────────────────
+【3】ノードを作る・つなぐ
+────────────────────────────────────────────────────────────────────
+
+  キャンバスのボタン / ショートカットでノード追加
+      ↡
+  provider.addNodeAtCenterReturning() (呼び出し箇所は約 20)
+      ★ 画面側に _addNode のようなメソッドは無い
+      ↡
+  「作成時にタイトルを聞く」設定が ON なら _InlineTitleDialog を出す
+      ↡
+  ノードが nodes マップに入る → 保存 → 再描画
+
+ 接続線の作り方 (ここが独特)
+
+  ノードを長押ししてドラッグ (_onLongPressNodeStart → Move)
+      ↡
+  ドラッグ中、_detectAnchorSnap が近くのノードの接続点を探す
+      ↡
+  距離が _kAnchorSnapDist (28.0) 以内なら吸着候補として表示
+      ↡
+  指を離す (_onLongPressNodeEnd)
+      ↡
+  吸着していれば provider.connectNodes(from, to) が呼ばれ、線ができる
+      ★ 「線を引く」ジェスチャーは無い。落とした時の吸着で暗黙に繋がる。
+
+ 接続線の選択
+
+  キャンバスをタップ → _onConnectionTap
+      ↡
+  ConnectionPainter.findConnection(Offset) が
+  3 次ベジェ曲線に対して 14px 以内のヒットテストを行う
+      ↡
+  当たれば _ConnectionActionOverlay を出す
+
+ ★ 描画の z 順 (Stack)
+     グリッド → グループ背景 → 接続線 → 図形(装飾) → 切断プレビュー
+     → ノード → グループ前景 → 範囲選択の矩形
+   接続線はノードと同じ層 (レイヤー 3 相当) で描くので、
+   レイヤー 1〜3 の図形より手前、4〜5 の図形より奥になる。
+
+
+────────────────────────────────────────────────────────────────────
+【4】ノードの描画と当たり判定 (visualHeight の同期)
+────────────────────────────────────────────────────────────────────
+
+  NodeWidget がノードを描く
+      ↡
+  タイトル / メモ / 画像 / 動画サムネ / 表 の有無で高さが変わる
+      ↡
+  一方 MindMapNode.visualHeight ゲッターが
+  「そのノードが実際に何 px の高さで描かれるか」を計算する
+      ↡
+  接続線のアンカー位置、範囲選択の当たり判定、自動整列、
+  カリング判定 …… すべてこの visualHeight を使う
+
+  ★ node_widget.dart の描画ロジックと visualHeight を必ず同時に直すこと。
+    ずれるとノードの当たり判定や接続線の根元が「見た目」とずれる。
+    attachmentAspectRatio (画像の元アスペクト比) もこの計算に入る。
+
+
+────────────────────────────────────────────────────────────────────
+【5】キャンバスの描画とカリング (大量ノード対策)
+────────────────────────────────────────────────────────────────────
+
+  _buildCanvas → _buildCanvasInner
+      ↡
+  InteractiveViewer.builder (minScale 0.15 / maxScale 3.0 / boundaryMargin 0)
+      ↡
+  builder に viewport (Quad = シーン座標の四角形) が渡ってくる
+      ↡
+  現在ページのノード数を数える
+      ├ 250 個 (_kCullNodeThreshold) 以下 → 全部描く (単純な方が速い)
+      └ 250 個超 → 「見えている範囲だけ描く」に切り替え
+            ↡
+        _cullRectFromViewport(viewport)
+            4 頂点の最小/最大から矩形を作り、
+            _kCullMargin = 800px ぶん外側に広げる
+            (スクロールした瞬間に空白が見えないように)
+            ↡
+        範囲外のノードは NodeWidget を作らない
+            ↡
+        _cullConnections(): 両端のノードがどちらも範囲外の線は描かない
+
+  ★ 操作中 (ドラッグ・範囲選択など) は例外扱いで間引かない。
+
+  変形の監視
+
+  _onTransformChanged
+      ↡
+  軸ロック (Ctrl+K = 水平、Ctrl+L = 垂直) と倍率ロックを強制する
+      ↡
+  _scalePercent (画面に出す倍率表示) を同期
+
+  _pauseViewer ゲッターが true の間は InteractiveViewer の
+  パン/ズームを止める (ノード・範囲・図形のドラッグ中、分割パネルのホバー中)。
+
+
+────────────────────────────────────────────────────────────────────
+【6】格納ノード (Ctrl+G)
+────────────────────────────────────────────────────────────────────
+
+  複数ノードを範囲選択して Ctrl+G (コマンド id: containerize)
+      ↡
+  provider.createContainerFromNodes(ids)
+      ↡
+  選ばれた各ノードに hiddenInContainer = <新しい容器の id> を書き込む
+      → そのノードは描画されず、接続線も抑制される
+      ↡
+  isContainer = true / containedNodeIds = [ids…] を持つ代表ノードを 1 個作る
+      ↡
+  保存 → 再描画 (見た目は 1 個のノードになる)
+
+  展開 (unpackContainer)
+      ↡
+  各メンバーの hiddenInContainer を消す
+      ↡
+  容器ノードを削除 → 元の姿に戻る
+
+
+────────────────────────────────────────────────────────────────────
+【7】サブマップ (リンクページ) とナビゲーション履歴
+────────────────────────────────────────────────────────────────────
+
+  ノードに linkedPageId を設定する
+      ↡
+  そのノードはタップで別ページへ飛ぶ「リンク」になる
+      ↡
+  タップ → _navigateToPage(pageId)
+      ↡
+  _navHistory (List) に積み、_navIndex を進める (ブラウザと同じ形)
+      ↡
+  Alt+← / Alt+→ で戻る・進む
+      → この時は _navigateToPage(pageId, suppressPush: true) を使い、
+        履歴を二重に積まない
+
+
+────────────────────────────────────────────────────────────────────
+【8】クラウド同期 (Firestore REST API)
+────────────────────────────────────────────────────────────────────
+
+ cloud_firestore プラグインは使わず、package:http で REST を直接叩く。
+ グループ = 8 文字の共有コード (gid)。認証は匿名 (Identity Toolkit)。
+
+──── アップロード ────
+
+  Ctrl+S / 同期ボタン
+      ↡
+  isMaxUnlocked でなければ t('paywall.maxRequiredCloudSync') を投げる
+      ↡
+  連打ガード: _isUploading / _isDownloading が立っていたら無視
+      (ただし古くなったフラグ (stale) なら解除して続行)
+      ↡
+  Firebase 未初期化なら _initFirebase() → _signInAnonymously()
+      ↡
+  グループ未参加なら t('sync.joinGroupFirst')
+      ↡
+  await の前にフラグを立てて再入を防ぐ
+      ↡
+  ★ この瞬間のページ内容をスナップショットとして固定する
+    (アップロード中に編集しても、送るのは押した時点の内容)
+      ↡
+  ページごとに
+      ① 添付ファイル (画像・動画) を Storage REST でアップロード
+         この時 canUseUploadBytes / canUseStorageBytes で
+         プラン別の上限を確認し、recordUploadBytes で計上する
+      ② _savePageToFirestore: groups/{gid}/pages/{pageId} に
+         PATCH (updateMask.fieldPaths=…) で json / namedGroupsJson /
+         expiresAt / uploadRestricted を書く
+         expiresAt は無料プラン +7 日 / 有料は null (TTL ポリシーで自動削除)
+      ↡
+  成功したら prefs に
+      page_synced_json_<pageId> … 送った JSON (次回マージの基準)
+      page_uploaded_<pageId>    … サーバーの updateTime
+    を保存する
+      ↡
+  進捗 (_syncProgress / _syncStatusText) を随時 notifyListeners()
+
+──── ダウンロード (3-way マージ) ────
+
+  クラウドのページ一覧を取得 (fetchCloudPageList)
+      ↡
+  取り込むページを選ぶ
+      ↡
+  ページごとに
+      ① マージ前の素のクラウド JSON を控える (次回の基準にするため)
+      ② prefs の page_synced_json_<pageId> を基準 (base) として読む
+      ③ _mergeLocalEditsIntoCloudPage(cloudPage, baseJson: base)
+            base → local の差分を、cloud の上に乗せる
+            ★ 衝突時はローカル優先
+      ④ _upsertDownloadedPage(merged) でローカルに反映
+      ⑤ 控えておいたクラウド JSON を page_synced_json_ として保存
+      ⑥ 付箋 (namedGroups)、フリーノートの中身 (paintJson) を復元
+      ⑦ _downloadPageAttachments で添付を順に取得
+      ↡
+  Esc が押されていたら (_syncCancelRequested) その時点で中断
+      ↡
+  _saveToStorageLocal() + _saveNamedGroups() で永続化
+
+ ★ アクセス制御はすべてクライアント側の Dart にしかない。
+   本番では Firestore Security Rules に同じ規則を書く必要がある
+   (リポジトリに .rules は無い)。
+
+
+────────────────────────────────────────────────────────────────────
+【9】通知・リマインダー
+────────────────────────────────────────────────────────────────────
+
+ provider には通知プラグインのコードが 1 行も無い。
+ スケジュールは main.dart (初期化) と mind_map_screen.dart (発行) が持つ。
+
+  ノードの「後で知らせる」/ カレンダーの予定登録
+      ↡
+  _scheduleNodeNotification (ノード) または
+  カレンダーの予定登録 (notify && startTime → fireAt = 開始 − leadMinutes)
+      ↡
+  どちらも _scheduleAbsoluteNotification に集約される
+      ↡
+  ① 過去の時刻ならそのまま捨てる
+      ↡
+  ② Android → flutter_local_notifications.zonedSchedule()
+        チャンネル mokumoku_node_reminders、正確アラーム
+        ★ ここでタイムゾーン初期化が効いてくる
+      ↡
+  ③ Windows/デスクトップ → メモリ上の Timer を張り、
+        発火時に local_notifier のトースト (_showWindowsOsNotification)
+      ↡
+  ④ アプリが前面にある場合の保険として、アプリ内オーバーレイ
+        (_showNodeNotificationOverlay) も出す
+      ↡
+  張った Timer は _pendingNotificationTimers (Map<String,Timer>) に
+  キー付きで持ち、dispose で全部キャンセルする
+
+  ★ 起動時にリマインダーを張り直す処理は無い。
+    永続性は「Android の OS アラーム」と「カレンダーに残る予定」が担う。
+
+  別系統として _eventNotifyTimer が 30 秒ごとに
+  _checkEventNotifications を回し、前面にいる間だけ
+  SnackBar でカレンダー予定を知らせる。
+
+
+────────────────────────────────────────────────────────────────────
+【10】キーボードショートカット
+────────────────────────────────────────────────────────────────────
+
+  キー入力
+      ↡
+  _commandForKeyCombo(combo) が組み合わせ → コマンド id を解決
+      ├ _commandDefs (約 60 個の {id, labelKey, defaultKey}) を引く
+      ├ ユーザーの上書き (_customKeyBindings) を優先
+      ├ 別名を解決 (例: ctrl+shift+z → redo)
+      └ _disabledShortcuts (prefs `disabled_shortcuts`) にある id は飛ばす
+      ↡
+  解決した id に対応する処理を実行
+
+  矢印キーだけは HardwareKeyboard のハンドラ
+  _handleMainGlobalArrowKey を通る (initState で登録、dispose で解除)。
+  Esc によるキャンセル (同期中止・一括動画ダウンロード中止) もここ。
+
+  固定/予約の組み合わせ
+      Ctrl+K = 水平ロック / Ctrl+L = 垂直ロック
+      Ctrl+1〜9 = ショートカットフォルダ内のマップ切替
+      Ctrl+Shift+Z = redo の別名
+
+
+────────────────────────────────────────────────────────────────────
+【11】「アプリで開く」の 1 窓運用
+────────────────────────────────────────────────────────────────────
+
+  エクスプローラーから PDF 等を「HistorNote で開く」
+      ↡
+  main() が 127.0.0.1:38641 に接続を試みる
+      ↡
+  ┌ 繋がった (= 既にアプリが起動している)
+  │     ファイルパスをトークン付きで送って自分は exit する
+  │         ↡
+  │     既存のアプリ側が受け取り、そのファイルを開く
+  │     ★ 既に同じ PDF が埋め込まれていれば、その場所で開く
+  │
+  └ 繋がらない (= 1 個目)
+        自分が 38641 を待ち受けて通常起動する
+
+  ※ 動作設定の openWithNewInstance を ON にすると、
+    毎回新しいプロセスを立てる従来の挙動に戻せる。
+
+
+────────────────────────────────────────────────────────────────────
+【12】フローティング窓 (メモ / AI / 電卓 / 計算機)
+────────────────────────────────────────────────────────────────────
+
+ ★ 大前提: desktop_multi_window の「サブ窓」には webview_windows
+   (WebView2) を登録できない。登録するとサブ窓を閉じた後、本体でも
+   WebView が作れなくなる。したがってサブ窓では WebView を新設しない。
+
+──── メモ窓 (サブ窓 = desktop_multi_window) ────
+
+  ヘッダーの「メモを外に出す」
+      ↡
+  openFloatingToolWindow(kind:'memo') → DesktopMultiWindow.createWindow
+      ↡
+  サブ窓側で _MemoWindowApp が動く (自前の MaterialApp)
+      ↡
+  メモの中身は SharedPreferences 経由で本体と共有
+      ↡
+  本体の機能が要る操作は DesktopMultiWindow.invokeMethod(0, …) で委譲
+        floatingMemoAskAi     … AI に質問 (窓は鍵を持たないため本体が代行)
+        floatingMemoPages     … 追加先のページ一覧をもらう
+        floatingMemoToNodePage… 指定ページにメモノードを追加
+        openFloatingAi        … ブラウザ版 AI を開いてもらう
+        openFloatingWeb       … Google 検索を開いてもらう
+
+  ※ サブ窓の State.context は自作 MaterialApp の外にあるので、
+    showDialog / ScaffoldMessenger は navigatorKey 経由で呼ぶ。
+
+──── AI の外部窓 (別プロセス) ────
+
+  「フローティング AI」を開く
+      ↡
+  _openDesktopFloatingAi(provider, query?)
+      ↡
+  provider.browserAiTargetDef から URL テンプレートとラベルを取る
+      (chatgpt / gemini / perplexity / claude / grok / deepseek)
+      ↡
+  openExternalWebWindow(url, pinned: true, title: ラベル)
+      ↡
+  Process.start(自分の実行ファイル, ['--floating-web=<url>',
+                '--floating-pin', '--floating-title=<label>'],
+                mode: detached)
+      ★ サブ窓ではなく**もう 1 プロセス**起動する。
+        OS から見て普通の窓なので、アプリの枠の外へ自由に動かせる。
+        WebView の保存先は実行ファイル基準で共有されるので、
+        本体でログイン済みならその状態のまま開く。
+      ↡
+  新プロセスの main() が --floating-web= を見つけて
+  _FloatingWebWindowApp(url, startPinned, title) を runApp
+      ↡
+  windowManager.setTitle(title) → setAlwaysOnTop(true)
+      ↡
+  ピン中は 3 秒ごとに setAlwaysOnTop(true) を掛け直す
+      ★ Windows は他アプリをクリックした時などに TOPMOST が外れるため。
+        これで「ディアクティブでも前面に出たまま」になる
+      ↡
+  WebviewController を initialize → loadUrl
+      ↡
+  上部バーの📌でピンの ON/OFF を切り替え (OFF でタイマー停止)
+  ✕は自分だけ終わればよいので exit(0)
+
+  ※ 外部窓が開けない環境 (モバイル等) では、従来どおり
+    アプリ内の浮遊パネル (_FloatingAiSwitcherPanel) に落ちる。
+
+──── メモ窓の AI をブラウザ版で開く ────
+
+  メモ窓の AI 画面には 2 通りある
+      ① 窓の中の AI  … 鍵 (代行サーバー / 自分のキー) を叩く軽い画面
+                        (サブ窓に WebView を載せられないため)
+      ② ブラウザ版で開く … 上記の外部窓を本体に開いてもらう
+      ↡
+  「ブラウザ版で開く」を押す
+      ↡
+  _openAiFor(text) → invokeMethod(0, 'openFloatingAi', text)
+      ↡
+  本体が _openDesktopFloatingAi を実行 → 外部窓が立ち上がる
+
+  ※ Android のオーバーレイ (FloatingMemoOverlay) でも同じボタンがあり、
+    そちらは prefs の browser_ai_target を読んで
+    launchUrl(externalApplication) で既定ブラウザを開く。
+
+
+────────────────────────────────────────────────────────────────────
+【13】ページの種類 (pageType)
+────────────────────────────────────────────────────────────────────
+
+  normal       … 通常のマインドマップ
+  bookshelf    … ギャラリー (2 次元のセル格子。prefs shelfCells_v1)
+  paint        … フリーノート (お絵かき + 文字。文書もここで書く)
+  document     … 便箋型のメモ帳 (罫線 30px ピッチ + Quill エディタ)
+  videoEditor  … 動画編集タイムライン (ffmpeg)
+  aiStudio     … AI スライド生成
+  markdown     … Markdown / Mermaid のプレビュー付きエディタ
+
+ ★ ガントチャートとメンバー予定表は「ページ」ではなくヘッダーボタンの
+   ツール (Dialog.fullscreen を _openToolDialog で開く。
+   固定 id は global_gantt / global_schedule)。
+
+ ★ paint / document / videoEditor の中身は prefs に保存されていて、
+   ページ JSON には載らない。したがってクラウド同期に乗るのは
+   paint だけ (paintJson フィールドとして実装済み)。他 2 つは未対応。
+
+
+────────────────────────────────────────────────────────────────────
+【14】多言語対応 (i18n)
+────────────────────────────────────────────────────────────────────
+
+ ARB / gen_l10n は使わない。自前の巨大な const Map。
+
+  UI に文字を出す
+      ↡
+  provider.t('some.key')
+      ↡
+  _translations['some.key'] を引く
+      ↡
+  言語の解決順 : _appLanguage → 'en' → 'ja' → キーそのもの
+      ★ 既定言語は 'en'。ja より en が先。
+      ↡
+  30 言語に対応しているが完全翻訳は 9 言語。
+  残り 21 は BETA 扱いで英語が出る (生のキーは絶対に出ない)。
+
+ ★ サブ窓とオーバーレイは provider を持てないので、
+   main.dart 内の FloatL10n.t() という別のテーブルを使う。
+
+
+────────────────────────────────────────────────────────────────────
+【15】PDF ビューアとページ固定メモ
+────────────────────────────────────────────────────────────────────
+
+  PDF を開く
+      ↡
+  デスクトップは _InAppViewerDialog、モバイルは _InAppViewerPage
+      ★ 機能ごとに双子クラスがある。片方だけ直すと環境で挙動がずれる
+      ↡
+  syncfusion_flutter_pdfviewer で表示
+      (pdfx から乗り換えた。Windows で白紙になったのと、
+       onPageChanged / jumpToPage が PDF メモに必要だったため)
+      ↡
+  ページが変わると onPageChanged が飛び、そのページに紐づくメモを出す
+      ↡
+  メモは MindMapNode.pdfMemos として保存され、
+  pdfMemoFolders で名前付きフォルダに分類できる
+      ↡
+  マーカー (ハイライト) は prefs pdfHighlights に
+  {ページ, 行ごとの矩形, 色} で保存される
+
+  ★ 重い同期処理 (PdfDocument / PdfTextExtractor) は compute で
+    別 isolate に逃がしてある。開いた瞬間の固まりは Syncfusion 内部の
+    解析なので、こちら側では取り切れない。
+
+
+────────────────────────────────────────────────────────────────────
+【16】集中ロック (フォーカスロック)
+────────────────────────────────────────────────────────────────────
+
+  設定でロック時間 / 曜日を登録 (FocusLockSchedule)
+      startMin / endMin は 0 時からの分。start > end は日をまたぐ
+      days は 1=月〜7=日。空なら毎日
+      ↡
+  provider が prefs focusLockSchedules に JSON で保存
+      ↡
+  画面側の _checkFocusLockSchedule が 30 秒ごとに現在時刻を確認 (Android のみ)
+      ↡
+  時間帯に入ったら _FocusLockOverlay を全面に出す
+      ↡
+  終了時刻に完了通知を予約 (_scheduleCompletionNotification、
+  ノードと同じチャンネルを再利用)
+      ↡
+  ロック画面の AI / 転送はダイアログではなく Stack の中のパネル + 浮遊窓
+  (singletonKey。前面に出し直す処理が必須)
+
+
+────────────────────────────────────────────────────────────────────
+【17】ページ消失に対する備え
+────────────────────────────────────────────────────────────────────
+
+  予防
+      編集のたびに page_backups/ フォルダへ自動退避
+      ↡
+  復旧
+      ⋮メニューの復元 UI から選ぶ
+      ↡
+  クラウド由来の消失は prefs の page_synced_json_* から拾える
+      ★ その際は tombstone (削除済みの印) を消さないと復活しない
+
+
+────────────────────────────────────────────────────────────────────
+【18】Google アカウントでの共有
+────────────────────────────────────────────────────────────────────
+
+  ループバック OAuth でログイン
+      ↡
+  Firebase の uid が端末をまたいで固定される
+      ↡
+  同じ uid = 同じ
+        プラン (【1】の権利情報)
+        AI クレジット残高
+        使用量
+        Stripe の契約 (アプリ内から解約できる)
+  が全端末で共有される
+
+  ※ かつてあった「ユーザー名の設定」「ライセンス引き継ぎ」は廃止。
+
+
+────────────────────────────────────────────────────────────────────
+【19】ビルドと配布
+────────────────────────────────────────────────────────────────────
+
+  型チェック (analyzer がこのリポジトリでは壊れているため)
+      dart format -o none <files>      … 構文チェック
+      flutter build bundle --no-pub    … 型チェック
+      ★ 終わったら build/flutter_assets を必ず消す。
+        残すと kernel_blob.bin が Windows の Release 出力に混ざる。
+      ↡
+  Windows
+      flutter build windows --release --dart-define-from-file=env.json --no-pub
+      ★ アプリが起動中だと exe がロックされて LNK1104 になる。先に終了させる。
+      ↡
+  Android
+      flutter build apk --release --dart-define-from-file=env.json
+      ★ R8 が ffmpeg_kit (com.antonkarpenko) を難読化すると
+        JNI_OnLoad が失敗し、GeneratedPluginRegistrant が
+        java.lang.Error で中断して以降のプラグインが全滅する。
+        proguard に keep を入れてある。
+      ↡
+  releases/<タグ>/ に zip + APK + SHA256SUMS + release-notes.md を置き、
+  gh CLI で GitHub Releases (PG-Darksan/Kamispec) に上げる
+
+  ★ env.json は API キーの塊。git-ignore されている事を毎回確認し、
+    絶対にコミットしない。

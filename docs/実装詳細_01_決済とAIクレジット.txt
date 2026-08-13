@@ -1,0 +1,665 @@
+════════════════════════════════════════════════════════════════════
+ HisatorNotebook 実装詳細 (1) 決済・サブスクリプション・AI クレジット
+════════════════════════════════════════════════════════════════════
+ 対象ファイル
+   lib/services/billing_service.dart      … アプリ側の課金抽象
+   lib/providers/mind_map_provider.dart   … プラン解決・クレジット・代行呼び出し
+   worker/billing-worker.js               … Cloudflare Worker (決済の正)
+   worker/wrangler.toml                   … KV / Durable Object の結び付け
+
+ 大前提
+   ・アプリは「支払われたかどうか」を自分で判断しない。
+     クライアント判定にすると、決済ページから戻っただけで Pro になれてしまう。
+   ・判定の正は必ず Stripe → Worker(KV) → アプリ の順で流れる。
+   ・本物の API キー (Stripe secret / Gemini / OpenAI / Anthropic) は
+     Worker のシークレットにだけ置く。アプリには絶対に埋めない。
+
+
+────────────────────────────────────────────────────────────────────
+【1】プラットフォームによる決済経路の分岐
+────────────────────────────────────────────────────────────────────
+
+BillingService.isNativeBilling / isWindowsDesktop で二股に分かれる。
+
+  アプリ起動、MindMapProvider が BillingService を生成
+      ↡
+  BillingService.configure(appUserId: Firebase UID) が呼ばれる
+      ↡
+  isNativeBilling (Android / iOS / macOS) か判定
+      ↡
+  ┌ true  → RevenueCat SDK を使う経路へ (【2】)
+  └ false → Windows / Linux。SDK は非対応なので configure は即 return。
+             Stripe Payment Link + Worker 照会の経路へ (【3】)
+
+  ※ release ビルドで apiKeyMobile が "test_" で始まる場合は configure を中止する。
+     RevenueCat の Test Store キーは release で使えず、SDK が
+    「Wrong API Key」ダイアログを出してアプリを落とすため。
+
+
+────────────────────────────────────────────────────────────────────
+【2】Android の購入フロー (RevenueCat SDK)
+────────────────────────────────────────────────────────────────────
+
+  Purchases.setLogLevel(warn) → PurchasesConfiguration(apiKey)..appUserID = UID
+      ↡
+  Purchases.configure() で SDK 初期化。_configured = true
+      ↡
+  addCustomerInfoUpdateListener を登録
+      （更新・解約・期限切れを SDK が push で教えてくれる）
+      ↡
+  起動時に getCustomerInfo() を 1 回呼び、現在の状態を反映
+      ↡
+  _planFromCustomerInfo(info): entitlements.active に
+      "max" があれば max / "pro" があれば pro / どちらも無ければ free
+      ↡
+  onPlanChanged?.call(planName)  ← 文字列だけを返す (provider を import しない)
+      ↡
+  MindMapProvider.applyBillingPlanByName(name) が受け取り、
+  SubscriptionPlan enum に変換して保存 + notifyListeners()
+
+──── 購入ボタンを押した時 ────
+
+  fetchPackages()
+      ↡
+  Purchases.getOfferings() → current が null なら 'default' → 先頭の順にフォールバック
+      ↡
+  package identifier ("pro_monthly" 等) から
+      planName = max で始まれば max、それ以外 pro
+      isYearly = "year" か "annual" を含むか
+      priceString = storeProduct.priceString (ローカライズ済み)
+      ↡
+  UI がその一覧を並べる
+      ↡
+  purchasePackage(pkg)
+      ↡
+  _googleOldProductIdentifierFor(pkg) で「今契約中の product id」を調べる
+      （Pro 月額 → Max 月額のような乗り換えで必要。渡さないと Play が
+        「別サブスクの新規購入」扱いにして切替ダイアログに進めない）
+      ↡
+  ┌ 旧 id 無し → Purchases.purchasePackage(pkg.raw)
+  └ 旧 id あり → GoogleProductChangeInfo(旧id,
+                    prorationMode: immediateWithTimeProration) 付きで購入
+      ↡
+  戻り値は SDK バージョンで型が違うので使わず、getCustomerInfo() で取り直す
+      ↡
+  _planFromCustomerInfo → onPlanChanged
+      ↡
+  ユーザーがキャンセルした場合は PlatformException の code が
+  purchaseCancelledError → BillingCancelledException に変換して投げる
+  (UI 側は握りつぶして静かに閉じるだけでよい)
+
+──── 復元 ────
+  restore() → Purchases.restorePurchases() → _planFromCustomerInfo → onPlanChanged
+
+
+────────────────────────────────────────────────────────────────────
+【3】Windows / Linux の購入フロー (Stripe Payment Link)
+────────────────────────────────────────────────────────────────────
+
+  ユーザーが「Pro 月額」等を押す
+      ↡
+  BillingService.openStripeCheckout(planName, yearly, appUserId)
+      ↡
+  stripeLinkFor(plan, yearly) で 4 本のリンクから 1 本選ぶ
+      (stripeLinkProMonthly / ProYearly / MaxMonthly / MaxYearly。env.json 由来)
+      ↡
+  URL の末尾に  ?client_reference_id=<Firebase UID>  を足す
+      ← これが「誰が買ったか」の唯一の紐付け
+      ↡
+  launchUrl(externalApplication) で既定ブラウザを開く
+      ↡
+  ── ここでアプリの手を離れる。以降は Stripe → Worker の世界 ──
+      ↡
+  ユーザーが決済完了
+      ↡
+  Stripe が Worker の /stripe/webhook を叩く (【4】)
+      ↡
+  アプリに戻ってきたら fetchPlanViaEntitlementApi(uid) で Worker に照会 (【5】)
+
+  ※ 画面に出す金額は BillingService の定数
+       proMonthlyUsd = 9.99 / proYearlyPerMonthUsd = 7.99
+       maxMonthlyUsd = 19.99 / maxYearlyPerMonthUsd = 15.99
+     Stripe 側で価格を変えたらここも必ず直す (画面と決済ページの数字がずれる)。
+     年額は「1 か月あたり」の額。yearlyTotalUsd() が 12 倍して年額を出し、
+     yearlyDiscountPercent() が割引率 (四捨五入) を出す。
+
+
+────────────────────────────────────────────────────────────────────
+【4】Stripe Webhook の受け口 (Worker /stripe/webhook)
+────────────────────────────────────────────────────────────────────
+
+  POST /stripe/webhook が届く
+      ↡
+  本文を text で読む (署名検証は生バイト列に対して行うので、先に JSON にしない)
+      ↡
+  verifyStripeSignature(payload, "Stripe-Signature", STRIPE_WEBHOOK_SECRET)
+      ├ ヘッダを t=…,v1=… に分解
+      ├ |今の時刻 - t| > 300 秒ならリプレイとみなして拒否
+      ├ HMAC-SHA256("<t>.<payload>", secret) を計算して 16 進に
+      └ v1 と定数時間比較 (1 文字ずつ XOR して OR、タイミング攻撃対策)
+      ↡
+  合わなければ 400 "bad signature" で終了
+      ↡
+  JSON.parse して event.type で分岐
+
+  ┌─ checkout.session.completed ────────────────────────────────┐
+  │   uid = session.client_reference_id                          │
+  │       ↡                                                       │
+  │   metadata.kind === 'credit' か?                              │
+  │   ├ YES (クレジットのチャージ)                                │
+  │   │     credit_evt:<session.id> が KV にあるか確認 (二重計上防止)│
+  │   │         ↡ 無ければ                                        │
+  │   │     usd = amount_total / 100  (最小通貨単位 → ドル)        │
+  │   │         ↡                                                 │
+  │   │     addCredit(uid, usd, note, eventId) で残高に加算        │
+  │   │         ↡                                                 │
+  │   │     credit_evt:<id> に印を置く (TTL 90 日)                 │
+  │   │                                                            │
+  │   └ NO (サブスクの購入)                                        │
+  │         plan を上から順に決める:                                │
+  │           1. session.metadata.plan                             │
+  │           2. planFromLink(payment_link, env.PLAN_MAP)          │
+  │              PLAN_MAP は {"plink_xxx":"pro"} の JSON            │
+  │           3. planFromSession(): line_items → price.metadata.plan│
+  │              → 無ければ products/<id>.metadata.plan             │
+  │             ↡                                                  │
+  │         putEntitlement(uid, {plan, status:'active',            │
+  │             subscriptionId, customerId, currentPeriodEnd:null})│
+  │             ↡                                                  │
+  │         サブスク側にも metadata[uid] / metadata[plan] を書き戻す│
+  │         さらに KV に sub:<subscriptionId> = uid を置く          │
+  │         (更新・解約イベントで uid を逆引きするため)             │
+  └───────────────────────────────────────────────────────────────┘
+
+  ┌─ customer.subscription.created / updated ──────────────────┐
+  │   uid = sub.metadata.uid、無ければ KV の sub:<id> から引く   │
+  │       ↡                                                      │
+  │   status が active / trialing / past_due なら有効とみなす     │
+  │       ↡                                                      │
+  │   putEntitlement(uid, {plan: 有効ならmetadata.plan(既定pro)   │
+  │                        / 無効なら 'free',                     │
+  │                        status, subscriptionId, customerId,    │
+  │                        currentPeriodEnd: subPeriodEnd(sub)})  │
+  └──────────────────────────────────────────────────────────────┘
+
+  ┌─ customer.subscription.deleted ────────────────────────────┐
+  │   同じく uid を引き、plan:'free' / status:'canceled' を書く   │
+  └──────────────────────────────────────────────────────────────┘
+
+      ↡
+  例外が出ても catch してログするだけ。必ず 200 {received:true} を返す
+  (200 を返さないと Stripe が延々と再送してくる)
+
+  ※ subPeriodEnd(sub) は current_period_end を
+      ① sub 直下 → ② items.data[].current_period_end の順に探す。
+      Stripe が API 更新でこの項目を items の下へ移したため両対応。
+      ここが取れないと期限切れ判定が働かず、支払いが止まっても権利が残る。
+
+
+────────────────────────────────────────────────────────────────────
+【5】アプリがプランを知る (Worker /entitlement)
+────────────────────────────────────────────────────────────────────
+
+  BillingService.fetchPlanViaEntitlementApi(appUserId)
+      ↡
+  GET  <ENTITLEMENT_API_BASE>/entitlement?uid=<uid>   (timeout 12 秒)
+      ↡
+  Worker: KV から uid のレコードを読む
+      ├ 無い / 壊れている → {plan:'free'}
+      ├ currentPeriodEnd + 3 日 < 今 → plan を 'free'、status 'expired' に落とす
+      │    (3 日の猶予は決済の遅延・再試行を吸収するため)
+      └ plan が 'dev' で devExpiresAt を過ぎている → 'free' に落とす
+      ↡
+  アプリ: HTTP 200 以外なら **null を返す**
+      ★ ここが重要。null は「判定できなかった」であって free ではない。
+        圏外やサーバー障害を free と解釈すると、通信に失敗しただけで
+        有料ユーザーが解約扱いになる。呼び出し側は null の時は
+        今の状態を一切変えない。
+      ↡
+  'dev' / 'max' / 'pro' / それ以外は 'free' に正規化して返す
+      ↡
+  provider.applyBillingPlanByName() → currentPlan が更新される
+
+  ※ 旧経路として RevenueCat REST /v1/subscribers/{id} を読む
+     fetchPlanViaRest() も残っている (public key で読める)。
+     entitlements[key].expires_date を今と比べて有効判定し、max > pro の順で返す。
+     pollPlanAfterWebPurchase() は 5 秒間隔で最大 6 回これを叩き、
+     決済 → 反映のタイムラグを吸収する。
+
+
+────────────────────────────────────────────────────────────────────
+【6】アプリの中で契約を見る・解約する
+────────────────────────────────────────────────────────────────────
+
+  「サブスク解約」を開く
+      ↡
+  provider が Worker に GET /billing/subscription
+      Authorization: Bearer <Firebase ID トークン>
+      ↡
+  Worker: authUid(request) で本人確認 (【8】) → 通らなければ 401
+      ↡
+  readEntitlement(uid) で KV の権利情報を読む
+      ↡
+  ┌ ent.store === 'play' → {store:'play', subscription:null} を返す
+  │     → アプリは「ストアの管理画面へ」と案内し、
+  │        BillingService.openManagementPage() が
+  │        RevenueCat の managementURL (無ければ Play の定期購入一覧) を開く
+  │
+  └ Stripe の場合 → findSubscription(env, ent)
+        ① ent.subscriptionId があれば subscriptions/<id> を直接取得
+        ② 無ければ customerId から subscriptions?status=all&limit=10 を引き、
+           active/trialing/past_due/unpaid の物を優先、無ければ最新 1 件
+        ↡
+      normalizeSubscription() で
+        {id, status, cancelAtPeriodEnd, currentPeriodEnd, canceledAt,
+         amount, currency, interval, intervalCount, planName} に整形して返す
+      ↡
+  アプリが契約内容 (金額・周期・次回更新日) を表示
+
+──── 解約ボタン ────
+
+  POST /billing/cancel (Bearer トークン付き)
+      ↡
+  authUid → readEntitlement → store==='play' なら 409 "managed by store"
+      ↡
+  findSubscription で対象を特定 (無ければ 404)
+      ↡
+  Stripe API: subscriptions/<id> に cancel_at_period_end=true を PATCH
+      ★ 即時解約にはしない。支払い済みの期間は使えた方が親切で、
+        返金の問い合わせも減るため。
+      ↡
+  KV の権利情報にも status / currentPeriodEnd / cancelAtPeriodEnd を書き戻す
+      ↡
+  整形した subscription を返す → アプリが「◯月◯日まで利用できます」と表示
+
+  ※ /billing/resume は同じ関数を cancel=false で呼び、解約予約を取り消す。
+
+
+────────────────────────────────────────────────────────────────────
+【7】前払い AI クレジット (チャージ)
+────────────────────────────────────────────────────────────────────
+
+  なぜ前払いか: 後払いだとカード拒否・チャージバックの回収リスクを
+  こちらが負う。先に預かれば取りっぱぐれない。
+
+  アプリ「チャージ」ボタン (packs = 10 ドル単位の個数)
+      ↡
+  provider.createCreditCheckoutUrl(packs)
+      ↡
+  POST /credits/checkout  (Bearer トークン + {uid, packs})
+      ↡
+  Worker: authUid で本人確認 → packs を 1〜20 に丸める → amountUsd = 10 × packs
+      ↡
+  Stripe API: checkout/sessions を作成
+        mode=payment (サブスクではない、都度払い)
+        client_reference_id = uid
+        metadata[kind] = 'credit'   ← webhook がこれを見て残高加算に回す
+        line_items[0][price_data][unit_amount] = amountUsd × 100
+        success_url / cancel_url = CREDIT_RETURN_URL
+      ↡
+  KV に credit_pending:<uid> = session.id を置く (TTL 24 時間)
+      ← webhook が未設定・不達でも回収できるようにする保険
+      ↡
+  session.url をアプリへ返す
+      ↡
+  アプリが外部ブラウザでその URL を開く (アプリ内に決済画面は出さない)
+      ↡
+  決済完了 → webhook が checkout.session.completed(kind=credit) を受けて加算 (【4】)
+
+──── webhook が来なかった場合の保険 ────
+
+  アプリが残高を読む: GET /credits/balance
+      ↡
+  Worker: settlePendingCheckout(uid) を先に走らせる
+      ├ KV の credit_pending:<uid> を読む
+      ├ Stripe に checkout/sessions/<id> を照会
+      ├ payment_status === 'paid' かつ credit_evt:<id> が未処理 → addCredit
+      └ status === 'expired' → credit_pending を消す
+      ↡
+  readCredit(uid) → 残高・累計チャージ・累計使用・直近 20 件の明細を返す
+      ↡
+  アプリ側 provider._creditBalanceUsd 等に反映 → notifyListeners()
+
+
+────────────────────────────────────────────────────────────────────
+【8】本人確認 (Firebase ID トークンの検証)
+────────────────────────────────────────────────────────────────────
+
+  以前は本文の uid をそのまま信じていたため、uid を知る者なら誰でも
+  他人の残高を使えた。今は必ずトークンから uid を取り出す。
+
+  アプリ: provider._ensureFreshToken() で ID トークンを更新
+      ↡
+  リクエストに  Authorization: Bearer <JWT>  を付ける (_relayHeaders)
+      ↡
+  Worker authUid(request) → verifyFirebaseIdToken(token)
+      ↡
+  ① JWT を "." で 3 分割。header.alg === 'RS256' かつ kid がある事を確認
+      ↡
+  ② payload の中身を検査
+        aud === FIREBASE_PROJECT_ID
+        iss === https://securetoken.google.com/<projectId>
+        sub が存在する
+        exp が (今 - 60 秒) より後
+      ↡
+  ③ Google の JWKS を取得
+        https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com
+        → 1 時間メモリキャッシュ (_jwksCache / _jwksAt)
+      ↡
+  ④ header.kid に一致する鍵を crypto.subtle.importKey で読み込み
+      ↡
+  ⑤ crypto.subtle.verify(RSASSA-PKCS1-v1_5, "<header>.<payload>", signature)
+      ↡
+  通れば payload.sub を uid として返す。だめなら null → 401 unauthorized
+
+  ★ これにより、アプリを改造して他人の uid を送っても通らない。
+
+
+────────────────────────────────────────────────────────────────────
+【9】AI 代行実行と課金 (Worker /ai/generate)
+────────────────────────────────────────────────────────────────────
+
+  provider.askAi(prompt)
+      ↡
+  canUseAiRelay か判定
+      (relayApiBase が設定済み && _relayAvailable == true &&
+       (残高 > 0 || Dev プラン))
+      ├ 満たさない → t('relay.notConfigured') / t('credit.insufficient') を投げる
+      └ 満たす     → askAiViaRelay()
+      ↡
+  POST /ai/generate  Bearer トークン付き
+      body: {uid, prompt: languageInstructionForAi() + prompt,
+             model: _relayModel, maxTokens?, images?}
+      ★ 返答言語の指定を先頭に付ける。代行経路だけこれが抜けていたため、
+        日本語設定でも英語で返ってきていた (既定経路なのでほぼ全員が該当)。
+      ↡
+  ── ここから Worker 側 ──
+      ↡
+  authUid で本人確認 (【8】) → 401 なら終わり
+      ↡
+  model を検証 (priceFor に無ければ DEFAULT_MODEL='gemini-flash-latest')
+  maxTokens を 256〜32000 に丸める
+      ↡
+  sanitizeInputImages(body.images)
+      ├ 最大 4 枚、許可 MIME (jpeg/png/webp/gif/heic/heif) 以外は jpeg 扱い
+      └ base64 前換算で合計 6MB を超えたら null → 413 を返す
+      ↡
+  livePrices(env) で単価表を引く
+      ├ KV の model_prices_v1 が 12 時間以内ならそれを使う
+      └ 古ければ OpenRouter の /api/v1/models を取得し、
+         vendor(openai/anthropic/google) → provider に写像して
+         100 万トークンあたりの入出力単価を作り直し、KV に 24h TTL で保存
+      ↡
+  findLivePrice(prices, model) → 無ければ priceFor(model)
+      (日付付き id は日付を落として照合、ドット表記も試す)
+      ↡
+  providerKey(env, provider) でその会社のキーを取得。無ければ 503
+      ↡
+  isDevEntitlement(readEntitlement(uid)) で Dev 枠かどうか判定
+      ↡
+  ── 残高の事前確保 (最大でかかる額) ──
+      imageTokens = 画像枚数 × 1600 (見積り)
+      worstCase = ((promptLen/3.5 + imageTokens)/1e6 × 入力単価
+                   + maxTokens/1e6 × 出力単価) × (1 + MARKUP)
+      MARKUP = 0.20 (= 原価 + 2 割。アプリの kUsageMarkupRate と揃える)
+      ↡
+  Dev でなければ CreditAccount(Durable Object) に /reserve で worstCase を確保
+      ├ 残高不足 → 402 {error:'insufficient credit', balanceUsd, neededUsd, packUsd}
+      └ 確保成功 → reserved = worstCase
+      ★ 先に確保するのが肝。同時に何本来ても Durable Object の中で
+        順番に処理されるので、残高以上には絶対に使えない。
+        (以前は事前チェックのみで、同時リクエストが全部素通りし得た)
+      ↡
+  月上限の確認: usage:<uid>:<YYYY-MM> の billedUsd が
+      通常 50 USD / Dev 200 USD 以上なら 429 で断る
+      ↡
+  callProvider(env, model, prompt, maxTokens, images) で上流を呼ぶ (【10】)
+      ↡
+  ┌ 失敗 → /settle {hold: reserved, actual: 0} で確保を全額返し、
+  │        502 (もしくは上流のステータス) を返す
+  │
+  └ 成功 → cost = inTok/1e6 × 入力単価 + outTok/1e6 × 出力単価
+           billed = cost × (1 + MARKUP)
+           ↡
+        Dev 枠 → 引き落とさない (使用量の記録だけ行う)
+        通常   → /settle {hold: reserved, actual: billed}
+                 (確保分を戻して実費だけ引く = 精算)
+           ↡
+        usage:<uid>:<ym> に inputTokens / outputTokens / costUsd / billedUsd を加算
+           ↡
+        {text, model, provider, usage, credit:{balanceUsd, low, packUsd},
+         monthly} を返す
+      ↡
+  ── アプリ側 ──
+      402 → 残高を反映して t('credit.insufficient') を投げる (画面がチャージを促す)
+      429 → t('relay.capReached')
+      413 → t('ai.imageTooLarge')
+      404 → _relayAvailable = false にして以後この経路を使わない
+      200 → credit / monthly / usage を取り込み、recordAppKeyUsage で
+            ローカルの累計トークン表示にも足す
+            (原価は Worker の計算値をそのまま使う。請求根拠は Worker 側なので
+             表示を Worker に合わせる)
+
+
+────────────────────────────────────────────────────────────────────
+【10】callProvider — 3 社を同じ形にそろえる
+────────────────────────────────────────────────────────────────────
+
+ OpenRouter は経由するだけで 5% 抜かれるので使わず、各社と直接やり取りする。
+
+ ● Gemini
+     POST generativelanguage.googleapis.com/v1beta/models/<model>:generateContent?key=
+       contents[0].parts = [画像の inline_data..., {text: prompt}]
+       ★ 画像を先に置くと、後ろの指示文がその画像に掛かる
+       ↡
+     usageMetadata.promptTokenCount / candidatesTokenCount を読む
+
+ ● OpenAI
+     上限トークンの引数名が世代で違うので 3 段構えで投げる
+       ① max_completion_tokens + reasoning_effort:'low'
+       ② エラーに reasoning_effort が含まれる → reasoning_effort を外して再送
+       ③ エラーに max_completion_tokens が含まれる → 旧 max_tokens で再送
+       ↡
+     roomy = min(32000, max(maxTokens, maxTokens×4))
+       ★ max_completion_tokens は「考えている分 (推論トークン)」も数える。
+         4096 のままだと考えるだけで使い切り、本文が空で返る。
+       ↡
+     本文の取り出し pick(): content が文字列 / 断片配列 / refusal のどれでも拾う
+       ↡
+     空 かつ finish_reason==='stop' なら、「返事を書いて」と 1 度だけ念押しして再取得。
+     その場合は 2 回分のトークンを合算して課金する (実際に 2 回呼んでいるため)
+       ↡
+     それでも空なら 502 に finish_reason と reasoning_tokens を添えて返す
+     (黙って空の吹き出しを出さない)
+
+ ● Anthropic
+     POST api.anthropic.com/v1/messages (x-api-key, anthropic-version: 2023-06-01)
+       content = [画像の source(base64)..., {type:'text', text: prompt}]
+       ↡
+     usage.input_tokens / output_tokens を読む
+
+ いずれも {ok, text, inTok, outTok} の同じ形で返す。
+
+
+────────────────────────────────────────────────────────────────────
+【11】画像生成の課金 (Worker /ai/image)
+────────────────────────────────────────────────────────────────────
+
+ テキストと違い「1 枚いくら」の課金なので枚数で数える。
+
+  POST /ai/image {prompt, model?}
+      ↡
+  authUid → 401 チェック
+      ↡
+  IMAGE_MODELS から原価を引く (gemini-2.5-flash-image = $0.039)
+  billed = 原価 × (1 + MARKUP)
+      ↡
+  Dev でなければ /reserve で 1 枚分を先に確保 (足りなければ 402)
+      ↡
+  月上限チェック (テキストと同じ)
+      ↡
+  希望モデル → 他の画像モデルの順に総当たりで generateContent
+      (responseModalities: ['IMAGE','TEXT'])
+      提供状況がキーやリージョンで変わるため
+      ↡
+  応答の parts から inlineData(=画像) を探す。無ければ次のモデルへ
+      ↡
+  ┌ 見つかった → /settle {hold, actual: billed} で精算
+  │              usage に images を +1 して KV に保存
+  │              {imageBase64, mimeType, model, usage, credit, monthly} を返す
+  └ 全滅      → /settle {hold, actual: 0} で確保を返し 502
+
+
+────────────────────────────────────────────────────────────────────
+【12】残高の金庫 = Durable Object (CreditAccount)
+────────────────────────────────────────────────────────────────────
+
+ なぜ KV ではだめか: KV は「読んで書く」の間に割り込まれる。同時に
+ リクエストが来ると引き落としが上書きで消える。Durable Object は
+ uid ごとに 1 つだけ作られ、中の処理が順番に実行される。
+
+  creditOp(env, uid, op, body)
+      ↡
+  env.CREDITS.idFromName(uid) → その uid 専用のインスタンスを取得
+      ↡
+  https://credits.internal<op>?uid=... に POST
+      ↡
+  DO 側 load(uid):
+      storage の 'credit' が無ければ KV の credit:<uid> から引き継いで作る
+      ↡
+  op で分岐
+      /read    … 現在の {balanceUsd, totalChargedUsd, totalSpentUsd, ledger}
+      /add     … eventId があれば evt:<id> で二重加算を防ぎ、残高と累計に加算
+      /reserve … balanceUsd < usd なら ok:false。足りれば先に引く
+      /settle  … balance += hold - actual。actual>0 なら累計使用と明細に記録
+      ↡
+  save(): 明細は直近 200 件だけ残し、storage に保存 + KV にも複製
+      (管理画面や障害時に中身を読めるようにするため)
+
+  ※ env.CREDITS の binding が無い環境では creditOp が null を返し、
+    呼び出し側が従来の KV 方式 (readCredit/spendCredit) に落ちる。
+    取りこぼし対策は効かないが動作はする。
+
+
+────────────────────────────────────────────────────────────────────
+【13】Dev プラン (決済を通さずに AI を使える枠)
+────────────────────────────────────────────────────────────────────
+
+ なぜサーバーに要るか: AI を実際に呼ぶのは Worker で、支払いもそこで
+ 残高から引かれる。アプリ側だけで「自分は Dev だ」と決めても、Worker が
+ 知らなければ「残高不足」で断られるだけになる。
+
+──── 発行 (管理者だけ) ────
+
+  POST /dev/issue {maxUses, months, expiresAt, note} + Bearer トークン
+      ↡
+  authUid → isAdminUid(env, uid) で ADMIN_UIDS (シークレット) と照合
+      ★ アプリ側の開発者モードのパスワードは「画面の入口」に過ぎない。
+        本当の防壁はこの uid 照合。
+      ↡
+  makeDevCode(): 紛らわしい文字 (O/0/I/1) を除いた 32 字種から 8 文字
+      ↡
+  KV に devcode:<CODE> = {code, note, maxUses, months, expiresAt,
+                          currentUses:0, createdAt, createdBy, revoked}
+      ↡
+  コードを返す
+
+──── 引き換え (誰でも。正しいコードを持っている人だけ通る) ────
+
+  POST /dev/redeem {code} + Bearer トークン
+      ↡
+  readDevCode → 無い / revoked なら 404、expiresAt 超過なら 410
+      ↡
+  devredeem:<CODE>:<uid> があるか確認
+      ├ 無い → maxUses に達していれば 409、そうでなければ currentUses+1 して印を置く
+      └ ある → 使用回数は数えない (同じ人が何度押しても 1 回)
+      ↡
+  devExpiresAt = months>0 ? 今 + months×30日 : 0 (無期限)
+      ↡
+  putEntitlement(uid, {...前の値, plan:'dev', status:'active',
+                       devCode, devExpiresAt, currentPeriodEnd:null})
+      ★ currentPeriodEnd を null にするのは、Stripe 由来の期限切れ判定に
+        巻き込まれないようにするため。
+
+  /dev/codes … 管理者が発行済み一覧を見る (devcode: プレフィックスで list)
+  /dev/revoke … 管理者がコードを削除する
+
+  ※ Dev 枠は残高を引かないぶん暴走すると全額こちらの持ち出しになるので、
+    月上限は残したまま 200 USD に広げてある。
+
+
+────────────────────────────────────────────────────────────────────
+【14】KV に置いている物の一覧 (namespace: ENTITLEMENTS)
+────────────────────────────────────────────────────────────────────
+
+  <uid>                        権利情報 {plan, status, subscriptionId,
+                                customerId, currentPeriodEnd, devCode,
+                                devExpiresAt, store, updatedAt}
+  sub:<subscriptionId>         subscriptionId → uid の逆引き
+  credit:<uid>                 残高の複製 {balanceUsd, totalChargedUsd,
+                                totalSpentUsd, ledger, updatedAt}
+  credit_pending:<uid>         未決済のチャージ session id (TTL 24h)
+  credit_evt:<sessionId>       チャージ済みの印 (TTL 90 日、二重計上防止)
+  usage:<uid>:<YYYY-MM>        月次使用量 {inputTokens, outputTokens,
+                                costUsd, billedUsd, images}
+  devcode:<CODE>               Dev コードの定義
+  devredeem:<CODE>:<uid>       その人が引き換え済みの印
+  model_prices_v1              OpenRouter 由来の単価表 (12h で作り直し)
+  models_discovered_v1         各社に聞いた「今使えるモデル」(12h)
+  site:visits:total            公式サイトの累計訪問数
+  site:visits:<YYYY-MM-DD>     日別訪問数 (TTL 400 日)
+
+
+────────────────────────────────────────────────────────────────────
+【15】モデル一覧の作り方 (Worker /ai/models)
+────────────────────────────────────────────────────────────────────
+
+  GET /ai/models
+      ↡
+  discoverModels(env): 各社の API に「今使えるモデル」を聞く (12h キャッシュ)
+      Gemini … v1beta/models。generateContent 非対応や
+               embedding/imagen/veo/tts 系は除外
+      OpenAI … v1/models。gpt-/o1〜o9 で始まる物だけ。
+               embedding/audio/realtime/tts/whisper/image/dall/moderation/
+               transcribe/search/instruct は除外
+      Anthropic … v1/models
+      ↡
+  livePrices(env): OpenRouter から実単価を取り込む
+      ↡
+  会社ごとに
+      ① AI_MODELS (手で単価を確定させた現行モデル) を無条件で載せる
+      ② isCurrentModel() を通った物を modelGeneration() の降順に最大 3 件追加
+      ↡
+  push(id): 実価格が確認できた物だけを出す (推定では出さない)
+      ・inputPerMTok / outputPerMTok … 原価
+      ・billedInputPerMTok / billedOutputPerMTok … 原価 × (1+MARKUP)
+      ↡
+  {markup, models:[...]} を返す (合計 10 件程度)
+
+  isCurrentModel の除外規則
+      ・日付入りスナップショット (…-2025-08-07 / …-20251001) は別名があるので除く
+      ・codex / customtools は用途外
+      ・preview / exp は出さない
+      ・OpenAI は gpt-5 以降、Anthropic は claude-(opus|sonnet|haiku|fable)-5 以降
+        または 4-5 以降、Gemini は -latest か gemini-3 以降
+
+
+────────────────────────────────────────────────────────────────────
+【16】この設計で守られていること / 注意点
+────────────────────────────────────────────────────────────────────
+
+  守られていること
+    ・アプリを改造しても、他人の uid で残高を使えない (ID トークン検証)
+    ・クライアントがトークン数を詐称できない (Worker が上流の usage を読む)
+    ・同時リクエストで残高がマイナスにならない (Durable Object + reserve/settle)
+    ・同じ決済で二重に加算されない (credit_evt / DO の evt:)
+    ・webhook が偽装されない (HMAC-SHA256 + 5 分のリプレイ窓)
+    ・webhook が届かなくても回収できる (credit_pending の照合)
+    ・通信障害で有料ユーザーが解約扱いにならない (null は「不明」)
+
+  注意点
+    ・MARKUP は Worker の定数 (0.20) とアプリの kUsageMarkupRate (0.20) の
+      2 か所にある。片方だけ変えると表示と請求がずれる。
+      (ソース内の一部コメントに「1 割」と書かれた古い記述が残っている)
+    ・BillingService の価格定数は Stripe と手動で同期する必要がある。
+    ・Play ストアの購入は Worker からは解約できない (store:'play' → 案内のみ)。

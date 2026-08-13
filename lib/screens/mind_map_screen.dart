@@ -56117,12 +56117,10 @@ class _MindMapScreenState extends State<MindMapScreen>
         _openPopOutWindow(context.read<MindMapProvider>(), kind: 'memo');
         break;
       case 'openFloatingAi':
-        // メモ窓 (サブウィンドウ) では WebView2 が動かないため、 本体側の
-        // 浮遊 AI パネルで開く (= ユーザー報告: AI チャット欄を開くと
-        // webview 関連のエラー)。 本体を前面に出してからパネルを開く。
-        try {
-          await windowManager.show();
-        } catch (_) {}
+        // メモ窓 (サブウィンドウ) では WebView2 が動かないため、 本体に
+        // 頼んで開いてもらう (= ユーザー報告: AI チャット欄を開くと
+        // webview 関連のエラー)。 今は本体もパネルではなく「アプリの外の
+        // 窓」 を起動するので、 本体を前面に出す必要はない。
         final aiQuery = '${call.arguments ?? ''}'.trim();
         _openDesktopFloatingAi(context.read<MindMapProvider>(),
             query: aiQuery.isEmpty ? null : aiQuery);
@@ -56482,22 +56480,30 @@ class _MindMapScreenState extends State<MindMapScreen>
     );
   }
 
-  /// デスクトップ: AI を「アプリ内のドラッグできる浮遊パネル」 として開く
-  /// (= ユーザー要望: フローティング AI と統合)。
+  /// デスクトップ: AI を「アプリの外の窓」 として開く (= ユーザー要望:
+  /// フローティング AI はアプリの外に出て、 ディアクティブでも前面に出る
+  /// ピン機能が欲しい)。
   ///
-  /// ★ 別ウィンドウ (DesktopMultiWindow) では WebView2 が初期化できず
-  ///   「AI ウィンドウを開けませんでした (unsupported_platform)」 になる。
-  ///   WebView は本体エンジンでしか動かないため、 本体内の浮遊パネルにする。
+  /// ★ サブ窓 (DesktopMultiWindow) では WebView2 が初期化できないので、
+  ///   同じ実行ファイルをもう 1 プロセス起動する (= OS から見て普通の窓)。
+  ///   これならアプリの枠の外へ自由に動かせて、 常に手前 (TOPMOST) にも
+  ///   できる。 WebView の保存先は共有なので、 ログイン状態もそのまま。
+  ///   起動時からピン ON で開く。
   void _openDesktopFloatingAi(MindMapProvider provider, {String? query}) {
-    // モデル切替バー付きのパネルで開く (= ユーザー要望: フローティング AI に
-    // モデルを切り替えるボタンを付けて)。
+    final def = provider.browserAiTargetDef;
+    final tmpl = (def['url'] as String?) ?? 'https://chatgpt.com/';
+    final q = (query ?? '').trim();
+    final url = tmpl.replaceAll('{q}', Uri.encodeComponent(q));
+    final label = (def['label'] as String?) ?? 'AI';
+    final ok = openExternalWebWindow(url, pinned: true, title: label);
+    if (ok) return;
+    // 外の窓を開けない環境 (= モバイル等) では、 従来どおりアプリ内の
+    //   浮遊パネルで開く。
     _showFloatingPanelWindow(
-      (_) => _FloatingAiSwitcherPanel(query: (query ?? '').trim()),
+      (_) => _FloatingAiSwitcherPanel(query: q),
       width: 560,
       height: 720,
       memoryKey: 'ai',
-      // 「アプリの外に出す」 ボタンは付けない (= ユーザー要望: フローティング
-      // AI 自体が浮かせて使うものなので、 さらに外へ出す項目は紛らわしい)。
     );
   }
 
@@ -95352,7 +95358,12 @@ Future<bool> openFloatingToolWindow({
 /// 代わりに**同じ実行ファイルをもう 1 プロセス起動**する。 OS から見て普通の
 /// 窓なので画面のどこへでも動かせる。 WebView の保存先は実行ファイル基準で
 /// 共有されるので、 本体でログイン済みならその状態のまま開く。
-bool openExternalWebWindow(String url) {
+/// [pinned] = true なら、 開いた瞬間から「常に手前」 (= 他のアプリを
+/// 触っていても前面に出たまま) にする (= ユーザー要望: フローティング AI は
+/// ディアクティブでも前面に出るピン機能が欲しい)。
+/// [title] を渡すと窓のタイトルに使う (URL の代わり)。
+bool openExternalWebWindow(String url,
+    {bool pinned = false, String? title}) {
   final isDesktop =
       !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
   final u = url.trim();
@@ -95360,7 +95371,12 @@ bool openExternalWebWindow(String url) {
   try {
     Process.start(
       Platform.resolvedExecutable,
-      ['--floating-web=${Uri.encodeComponent(u)}'],
+      [
+        '--floating-web=${Uri.encodeComponent(u)}',
+        if (pinned) '--floating-pin',
+        if (title != null && title.trim().isNotEmpty)
+          '--floating-title=${Uri.encodeComponent(title.trim())}',
+      ],
       mode: ProcessStartMode.detached,
     );
     return true;
