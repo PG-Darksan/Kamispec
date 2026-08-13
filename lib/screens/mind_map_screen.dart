@@ -3846,10 +3846,15 @@ class _MindMapScreenState extends State<MindMapScreen>
         _pendingSpaceSettingsRetry = true;
       }
     }
-    // ── F6: 分割パネル(左右)の中身を入れ替え (= ユーザー要望) ──
+    // ── F6 (変更可能): 分割パネル(左右)の中身を入れ替え (= ユーザー要望) ──
     // マップが最前面の時だけ処理する。PDF ビューア等が前面にあるときは
     // false を返して消費せず、そちら側の F6 ハンドラに委ねる。
-    if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.f6) {
+    // ★ 割り当ての変更・無効化を尊重する (= ユーザー要望: 変更不可を
+    //   変更できるように)。 押されたコンボが swapSplitPanels の現在の
+    //   割り当てと一致した時だけ動く。
+    if (event is KeyDownEvent &&
+        _shortcutCommandMatches(
+            'swapSplitPanels', _getPressedKeyCombo(event))) {
       final r = ModalRoute.of(context);
       final fp = FocusManager.instance.primaryFocus;
       final editing = fp != null && fp.context?.widget is EditableText;
@@ -5151,6 +5156,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     _pdfPageUiTimer = null;
     _captionCtrl.dispose();
     _captionFocus.dispose();
+    _subAiCtrl.dispose();
     if (_isDesktop) {
       try {
         DesktopMultiWindow.setMethodHandler(null);
@@ -21246,16 +21252,8 @@ class _MindMapScreenState extends State<MindMapScreen>
           _showPdfMemoListPanel(context);
         },
       ),
-      if (_isDesktop)
-        _CtxMenuItem(
-          icon: Icons.link_rounded,
-          label: provider.t('ctx.insertLink'),
-          color: const Color(0xFF4FC3F7),
-          onTap: () {
-            _removeOverlay();
-            _addLinkNodeFromCanvas(context, provider, ctrl, globalPos);
-          },
-        ),
+      // 「リンクを挿入 (リンクノードを追加)」 は廃止 (= ユーザー要望:
+      // URL は直接貼り付ければノードになるので専用機能は不要)。
       if (_isDesktop)
         _CtxMenuItem(
           icon: Icons.attach_file_rounded,
@@ -26197,6 +26195,54 @@ class _MindMapScreenState extends State<MindMapScreen>
   ];
 
   /// サービスの契約ページを開くボタン列。
+  // ── AI に解約リンクを聞く (= ユーザー要望: AI に指示を出したらその
+  //    サービスの解約リンクを出せるように) ──
+  final TextEditingController _subAiCtrl = TextEditingController();
+  bool _subAiBusy = false;
+
+  Future<void> _askAiForCancelLink(BuildContext dialogContext,
+      void Function(void Function()) setDialog) async {
+    final provider = context.read<MindMapProvider>();
+    final name = _subAiCtrl.text.trim();
+    if (name.isEmpty || _subAiBusy) return;
+    try {
+      setDialog(() => _subAiBusy = true);
+    } catch (_) {
+      _subAiBusy = true;
+    }
+    try {
+      // URL 1 行だけを返させて、 本文から最初の URL を拾う。
+      final prompt = '「$name」というサブスクリプションサービスの解約 (退会) '
+          '手続きページの URL を教えてください。 公式の解約手続きページ、 '
+          '無ければ契約・アカウント管理ページの URL を 1 行だけ、 URL のみで'
+          '出力してください。 前置きや説明は不要です。';
+      final out = (await provider.askAi(prompt)).trim();
+      final m = RegExp(r'https?://[^\s"<>\)\]]+').firstMatch(out);
+      if (m == null) throw Exception(provider.t('sub.aiLinkFailed'));
+      final url = m.group(0)!;
+      if (!mounted) return;
+      if (dialogContext.mounted) Navigator.pop(dialogContext);
+      // アプリ内ブラウザで解約ページを開く (サービスのボタンと同じ動き)。
+      _openGoogleSearchDialog(context, provider,
+          initialUrl: url, customTitle: name);
+    } catch (e) {
+      if (mounted) {
+        _appSnack(
+          context,
+          SnackBar(
+            content: Text('$e'.replaceFirst('Exception: ', '')),
+            backgroundColor: const Color(0xFFE57373),
+          ),
+        );
+      }
+    } finally {
+      _subAiBusy = false;
+      try {
+        setDialog(() {});
+      } catch (_) {}
+    }
+  }
+
   Widget _buildSubscriptionServiceLinks(
       BuildContext dialogContext, void Function(void Function()) setDialog) {
     final provider = context.read<MindMapProvider>();
@@ -26226,52 +26272,103 @@ class _MindMapScreenState extends State<MindMapScreen>
             style: const TextStyle(
                 color: Colors.white38, fontSize: 10.5, height: 1.45)),
         const SizedBox(height: 8),
-        SizedBox(
-          height: 30,
-          child: ListView(
-            scrollDirection: Axis.horizontal,
-            children: [
-              for (final s in _subscriptionServiceLinks)
-                Padding(
-                  padding: const EdgeInsets.only(right: 6),
-                  child: InkWell(
-                    onTap: () {
-                      Navigator.pop(dialogContext);
-                      _openGoogleSearchDialog(
-                        context,
-                        provider,
-                        initialUrl: s.$2,
-                        customTitle: s.$1,
-                      );
-                    },
-                    borderRadius: BorderRadius.circular(8),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 5),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF26A69A).withValues(alpha: 0.14),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(
-                            color:
-                                const Color(0xFF26A69A).withValues(alpha: 0.5)),
-                      ),
-                      child: Row(mainAxisSize: MainAxisSize.min, children: [
-                        Text(s.$3, style: const TextStyle(fontSize: 12)),
-                        const SizedBox(width: 5),
-                        Text(s.$1,
-                            style: const TextStyle(
-                                color: Color(0xFF80CBC4),
-                                fontSize: 11.5,
-                                fontWeight: FontWeight.w700)),
-                        const SizedBox(width: 4),
-                        const Icon(Icons.open_in_new_rounded,
-                            size: 11, color: Color(0xFF80CBC4)),
-                      ]),
-                    ),
-                  ),
+        // ── AI に解約リンクを聞く (= ユーザー要望)。 一覧に無いサービスは
+        //    名前を入れると AI が解約ページの URL を探して開く。 ──
+        Row(children: [
+          Expanded(
+            child: SizedBox(
+              height: 32,
+              child: TextField(
+                controller: _subAiCtrl,
+                style: const TextStyle(color: Colors.white, fontSize: 12),
+                decoration: InputDecoration(
+                  hintText: provider.t('sub.aiAskHint'),
+                  hintStyle:
+                      const TextStyle(color: Colors.white30, fontSize: 11.5),
+                  isDense: true,
+                  contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 8),
+                  filled: true,
+                  fillColor: Colors.white.withValues(alpha: 0.06),
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide.none),
                 ),
-            ],
+                onSubmitted: (_) =>
+                    _askAiForCancelLink(dialogContext, setDialog),
+              ),
+            ),
           ),
+          const SizedBox(width: 6),
+          SizedBox(
+            height: 32,
+            child: ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFBA68C8),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+              ),
+              onPressed: _subAiBusy
+                  ? null
+                  : () => _askAiForCancelLink(dialogContext, setDialog),
+              icon: _subAiBusy
+                  ? const SizedBox(
+                      width: 13,
+                      height: 13,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation(Colors.white)),
+                    )
+                  : const Icon(Icons.auto_awesome_rounded, size: 14),
+              label: Text(provider.t('sub.aiAskLink'),
+                  style: const TextStyle(fontSize: 11)),
+            ),
+          ),
+        ]),
+        const SizedBox(height: 8),
+        // ── 有名どころのサービス一覧 ──
+        // ★ 横スクロールをやめて折り返しで全部見えるようにした
+        //   (= ユーザー報告: 一覧がスクロールできない)。
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            for (final s in _subscriptionServiceLinks)
+              InkWell(
+                onTap: () {
+                  Navigator.pop(dialogContext);
+                  _openGoogleSearchDialog(
+                    context,
+                    provider,
+                    initialUrl: s.$2,
+                    customTitle: s.$1,
+                  );
+                },
+                borderRadius: BorderRadius.circular(8),
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF26A69A).withValues(alpha: 0.14),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                        color: const Color(0xFF26A69A).withValues(alpha: 0.5)),
+                  ),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    Text(s.$3, style: const TextStyle(fontSize: 12)),
+                    const SizedBox(width: 5),
+                    Text(s.$1,
+                        style: const TextStyle(
+                            color: Color(0xFF80CBC4),
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w700)),
+                    const SizedBox(width: 4),
+                    const Icon(Icons.open_in_new_rounded,
+                        size: 11, color: Color(0xFF80CBC4)),
+                  ]),
+                ),
+              ),
+          ],
         ),
       ]),
     );
@@ -32761,14 +32858,11 @@ class _MindMapScreenState extends State<MindMapScreen>
     // 注: 旧 'zoom' は lockScale と完全に同じ動作 (拡大率の固定/解除トグル) で
     // ユーザーから「2 つあって紛らわしい」と指摘があったためカスタマイズ
     // 候補から除外。executor 側の case 'zoom' は既存保存データの後方互換用に残す。
-    // ── モバイル下部バー 1 行目のデフォルトコマンド (リンク/ファイル/範囲選択/ノード) ──
+    // ── モバイル下部バー 1 行目のデフォルトコマンド (ファイル/範囲選択/ノード) ──
     // ヘッダー側にも追加できるよう同じレジストリに登録する。
-    {
-      'id': 'link',
-      'labelKey': 'bottomBar.link',
-      'icon': Icons.link_rounded,
-      'color': Color(0xFF4FC3F7),
-    },
+    // 注: 旧 'link' (リンクノードを追加) はカスタマイズ候補から除外
+    //   (= ユーザー要望: URL は直接貼り付ければよいので専用機能は不要)。
+    //   executor 側の case 'link' は既存保存レイアウトの後方互換用に残す。
     {
       'id': 'file',
       'labelKey': 'bottomBar.file',
@@ -32866,7 +32960,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       'commandIds': <String>[
         'addNode',
         'addPage',
-        'link',
+        // 'link' (リンクノードを追加) は廃止 (= ユーザー要望)。
         'file',
         'pasteClipboardImage',
         'rangeSelect',
@@ -45306,29 +45400,9 @@ class _MindMapScreenState extends State<MindMapScreen>
           }
 
           // ── Alt+← / Alt+→: 履歴ナビゲーション ──
-          // 優先順位:
-          //   1. 画面分割パネルが開いていて、 そちらの履歴が空でなければ
-          //      画面分割の前/次の URL に戻る (= ユーザー要望「画面分割
-          //      が上書きされたら開くのめんどくさいから alt+←→ で以前
-          //      画面分割で開いていた画面に戻って切り替えられるように
-          //      して欲しい」)
-          //   2. そうでなければサブマップ履歴の戻る / 進む
-          if (isAlt && event.logicalKey == LogicalKeyboardKey.arrowLeft) {
-            if (_splitOpen && _splitHistory.isNotEmpty) {
-              _splitNavigateBack();
-            } else {
-              _navigateBack();
-            }
-            return;
-          }
-          if (isAlt && event.logicalKey == LogicalKeyboardKey.arrowRight) {
-            if (_splitOpen && _splitForwardHistory.isNotEmpty) {
-              _splitNavigateForward();
-            } else {
-              _navigateForward();
-            }
-            return;
-          }
+          // 変更可能化 (= ユーザー要望) に伴い、 コマンド解決経由の
+          // historyBack / historyForward へ移動した (この下の
+          // _commandForKeyCombo → ディスパッチ)。
 
           // ── Enter: 連番オートフィル一括適用 ──
           // 「兄弟ノードに連番を一括適用しますか」 SnackBar が表示中の
@@ -45442,6 +45516,10 @@ class _MindMapScreenState extends State<MindMapScreen>
           // - Ctrl+Shift+\\ → 右画面分割パネルを全画面表示に
           // - Ctrl+Shift+^ → 左画面分割パネルを全画面表示に
           // 元のパネルは閉じる (= 全画面に切替)。
+          // ★ 変更可能化 (= ユーザー要望): 既定キーのままの時だけこの直接
+          //   ハンドラで拾う (JIS の ^ はキーコードが揺れるため、 既定キー
+          //   ではコンボ解決に頼らずここで確実に判定する)。 付け替えた時は
+          //   下のコマンド解決 (splitRight/LeftFullscreen) が動く。
           if (isCtrl && isShift) {
             final isBackslash =
                 event.logicalKey == LogicalKeyboardKey.backslash;
@@ -45449,7 +45527,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                 event.physicalKey == PhysicalKeyboardKey.equal ||
                 (event.character ?? '') == '^';
             // Ctrl+Shift+\\ → 右パネルを全画面化
-            if (isBackslash && _splitOpen && _splitCurrentUrl.isNotEmpty) {
+            if (isBackslash &&
+                _shortcutCommandMatches(
+                    'splitRightFullscreen', 'Ctrl+Shift+\\') &&
+                _splitOpen &&
+                _splitCurrentUrl.isNotEmpty) {
               final url = _splitCurrentUrl;
               final nodeId = _splitOriginNodeId;
               _setSplitOpen(false);
@@ -45458,6 +45540,8 @@ class _MindMapScreenState extends State<MindMapScreen>
             }
             // Ctrl+Shift+^ → 左パネルを全画面化
             if (isShiftCaret &&
+                _shortcutCommandMatches(
+                    'splitLeftFullscreen', 'Ctrl+Shift+^') &&
                 _splitLeftOpen &&
                 (_splitLeftLocalPdfPath != null ||
                     _splitLeftCurrentUrl.isNotEmpty)) {
@@ -45601,11 +45685,13 @@ class _MindMapScreenState extends State<MindMapScreen>
             return;
           }
 
-          // Ctrl+F: 検索パネルを開く
+          // Ctrl+F: 検索パネルを開く (変更可能化 = 既定キーのままの時だけ
+          // ここで拾う。 付け替えた時はコマンド解決 'search' が動く)。
           if (isCtrl &&
               !isShift &&
               !isAlt &&
-              event.logicalKey == LogicalKeyboardKey.keyF) {
+              event.logicalKey == LogicalKeyboardKey.keyF &&
+              _shortcutCommandMatches('search', 'Ctrl+F')) {
             setState(() {
               _searchVisible = true;
               _searchReplaceExpanded = false;
@@ -45672,8 +45758,71 @@ class _MindMapScreenState extends State<MindMapScreen>
             } else {
               provider.undo();
             }
-          } else if (commandId == 'redo') {
+          } else if (commandId == 'redo' || commandId == 'redoAlternate') {
+            // redoAlternate = Ctrl+Shift+Z (変更可能化 = ユーザー要望)。
             provider.redo();
+          } else if (commandId == 'historyBack') {
+            // 変更可能化 (= ユーザー要望)。 分割パネルの履歴を優先するのは
+            // 旧固定キー (Alt+←) と同じ。
+            if (_splitOpen && _splitHistory.isNotEmpty) {
+              _splitNavigateBack();
+            } else {
+              _navigateBack();
+            }
+          } else if (commandId == 'historyForward') {
+            if (_splitOpen && _splitForwardHistory.isNotEmpty) {
+              _splitNavigateForward();
+            } else {
+              _navigateForward();
+            }
+          } else if (commandId == 'swapSplitPanels') {
+            _swapSplitPanels();
+          } else if (commandId == 'splitRightFullscreen') {
+            // 右分割パネルを全画面表示に (元パネルは閉じる)。
+            if (_splitOpen && _splitCurrentUrl.isNotEmpty) {
+              final url = _splitCurrentUrl;
+              final nodeId = _splitOriginNodeId;
+              _setSplitOpen(false);
+              _showInAppViewer(context, url, nodeId: nodeId);
+            }
+          } else if (commandId == 'splitLeftFullscreen') {
+            if (_splitLeftOpen &&
+                (_splitLeftLocalPdfPath != null ||
+                    _splitLeftCurrentUrl.isNotEmpty)) {
+              final url = _splitLeftLocalPdfPath ?? _splitLeftCurrentUrl;
+              _closeSplitLeftPanel();
+              _showInAppViewer(context, url);
+            }
+          } else if (commandId == 'search') {
+            setState(() {
+              _searchVisible = true;
+              _searchReplaceExpanded = false;
+              _searchQuery = '';
+              _searchCtrl.clear();
+              _replaceCtrl.clear();
+              _searchResultIds = [];
+              _searchResultIndex = 0;
+            });
+            WidgetsBinding.instance
+                .addPostFrameCallback((_) => _searchFocusNode.requestFocus());
+          } else if (commandId == 'syncDialog') {
+            _showSyncDialog(context, provider);
+          } else if (commandId == 'autoSyncPage') {
+            _autoSyncCurrentPage(context, provider);
+          } else if (commandId == 'newPage') {
+            _addPageDialog(context, provider);
+          } else if (commandId == 'deletePage') {
+            _confirmDeletePage(context, provider);
+          } else if (commandId == 'lockH') {
+            final newLockH = !_lockH;
+            setState(() => _lockH = newLockH);
+            _showLockToast(
+                provider.t(newLockH ? 'toast.lockHOn' : 'toast.lockHOff'));
+          } else if (commandId == 'lockV') {
+            final newLockV = !_lockV;
+            setState(() => _lockV = newLockV);
+            _showLockToast(
+                provider.t(newLockV ? 'toast.lockVOn' : 'toast.lockVOff'));
           } else if (commandId == 'copy') {
             if (_rangeSelectedIds.isNotEmpty) {
               _handleCopy(provider);
@@ -46180,42 +46329,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                       .addPostFrameCallback((_) => _centerOnRoot());
                 }
               }
-            } else if (isCtrl &&
-                !isShift &&
-                event.logicalKey == LogicalKeyboardKey.keyR) {
-              // Ctrl+R: クラウドと比較して新しければダウンロード
-              _autoSyncCurrentPage(context, provider);
-            } else if (isCtrl &&
-                isShift &&
-                event.logicalKey == LogicalKeyboardKey.keyP) {
-              // Ctrl+Shift+P: 新規ページ作成（名前入力ダイアログ）
-              _addPageDialog(context, provider);
-            } else if (isCtrl &&
-                isShift &&
-                event.logicalKey == LogicalKeyboardKey.keyD) {
-              // Ctrl+Shift+D: 現在のマップを削除
-              _confirmDeletePage(context, provider);
-            } else if (isCtrl &&
-                isShift &&
-                event.logicalKey == LogicalKeyboardKey.keyS) {
-              // Ctrl+Shift+S: クラウド同期画面を開く
-              _showSyncDialog(context, provider);
-            } else if (isCtrl &&
-                !isShift &&
-                event.logicalKey == LogicalKeyboardKey.keyK) {
-              // Ctrl+K: 左右方向の移動を固定/解除（横スクロールロック）
-              final newLockH = !_lockH;
-              setState(() => _lockH = newLockH);
-              _showLockToast(
-                  provider.t(newLockH ? 'toast.lockHOn' : 'toast.lockHOff'));
-            } else if (isCtrl &&
-                !isShift &&
-                event.logicalKey == LogicalKeyboardKey.keyL) {
-              // Ctrl+L: 上下方向の移動を固定/解除（縦スクロールロック）
-              final newLockV = !_lockV;
-              setState(() => _lockV = newLockV);
-              _showLockToast(
-                  provider.t(newLockV ? 'toast.lockVOn' : 'toast.lockVOff'));
+            // Ctrl+R / Ctrl+Shift+P / Ctrl+Shift+D / Ctrl+Shift+S /
+            // Ctrl+K / Ctrl+L の直接ハンドラは廃止 (= 変更可能化。
+            // コマンド解決経由の autoSyncPage / newPage / deletePage /
+            // syncDialog / lockH / lockV ディスパッチが担当する)。
             } else if (event.logicalKey == LogicalKeyboardKey.backspace) {
               // Backspace: 削除（Delete と同じ挙動 — 図形/範囲図形にも対応）
               if (_rangeSelectedDecorationIds.isNotEmpty) {
@@ -72296,6 +72413,10 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// UI 上で変更不可として扱うキー。固定コマンドだけでなく、Focus より先に
   /// HardwareKeyboard で捕捉する実ショートカットも含める。
+  /// 他のコマンドへ割り当てられない予約コンボ。
+  /// ★ 変更可能化 (= ユーザー要望) に伴い、 コマンド側で自由に付け替えられる
+  ///   コンボ (Ctrl+K / Ctrl+F / F6 / Alt+←→ 等) はここから外した。
+  ///   残っているのはキーの族・ジェスチャ・Esc などの構造的なものだけ。
   static const Set<String> _nonAssignableShortcutCombos = {
     'ctrl',
     'ctrl+click',
@@ -72308,13 +72429,6 @@ class _MindMapScreenState extends State<MindMapScreen>
     'ctrl+7',
     'ctrl+8',
     'ctrl+9',
-    'ctrl+k',
-    'ctrl+l',
-    'ctrl+shift+s',
-    'ctrl+f',
-    'ctrl+r',
-    'ctrl+shift+p',
-    'ctrl+shift+d',
     'backspace',
     'enter',
     '↑',
@@ -72325,17 +72439,11 @@ class _MindMapScreenState extends State<MindMapScreen>
     'ctrl+-',
     'ctrl+0',
     'esc',
-    'f6',
-    'alt+←',
-    'alt+→',
-    'ctrl+shift+\\',
-    'ctrl+shift+^',
-    'ctrl+shift+z',
   };
 
-  static const Map<String, String> _shortcutAliases = {
-    'ctrl+shift+z': 'redo',
-  };
+  /// 旧: Ctrl+Shift+Z → redo の固定エイリアス。 redoAlternate が通常の
+  /// コマンドになった (= 変更可能) ため廃止。 空のまま残す。
+  static const Map<String, String> _shortcutAliases = {};
 
   static String _normalizeShortcutCombo(String combo) =>
       combo.trim().toLowerCase();
@@ -77420,47 +77528,25 @@ class _MindMapScreenState extends State<MindMapScreen>
       'defaultKey': 'Ctrl+Click',
       'fixedSuffix': true
     },
-    {
-      'id': 'lockH',
-      'labelKey': 'cmd.lockH',
-      'defaultKey': 'Ctrl+K',
-      'fixedSuffix': true
-    },
-    {
-      'id': 'lockV',
-      'labelKey': 'cmd.lockV',
-      'defaultKey': 'Ctrl+L',
-      'fixedSuffix': true
-    },
+    // ↓ここから: 以前は固定だったが変更可能にした (= ユーザー要望)。
+    {'id': 'lockH', 'labelKey': 'cmd.lockH', 'defaultKey': 'Ctrl+K'},
+    {'id': 'lockV', 'labelKey': 'cmd.lockV', 'defaultKey': 'Ctrl+L'},
     {
       'id': 'syncDialog',
       'labelKey': 'cmd.syncDialog',
-      'defaultKey': 'Ctrl+Shift+S',
-      'fixedSuffix': true
+      'defaultKey': 'Ctrl+Shift+S'
     },
-    {
-      'id': 'search',
-      'labelKey': 'cmd.search',
-      'defaultKey': 'Ctrl+F',
-      'fixedSuffix': true
-    },
+    {'id': 'search', 'labelKey': 'cmd.search', 'defaultKey': 'Ctrl+F'},
     {
       'id': 'autoSyncPage',
       'labelKey': 'cmd.autoSyncPage',
-      'defaultKey': 'Ctrl+R',
-      'fixedSuffix': true
+      'defaultKey': 'Ctrl+R'
     },
-    {
-      'id': 'newPage',
-      'labelKey': 'cmd.newPage',
-      'defaultKey': 'Ctrl+Shift+P',
-      'fixedSuffix': true
-    },
+    {'id': 'newPage', 'labelKey': 'cmd.newPage', 'defaultKey': 'Ctrl+Shift+P'},
     {
       'id': 'deletePage',
       'labelKey': 'cmd.deletePage',
-      'defaultKey': 'Ctrl+Shift+D',
-      'fixedSuffix': true
+      'defaultKey': 'Ctrl+Shift+D'
     },
     {
       'id': 'rangeBackspace',
@@ -77498,70 +77584,58 @@ class _MindMapScreenState extends State<MindMapScreen>
       'defaultKey': 'Ctrl+0',
       'fixedSuffix': true
     },
+    // ↓これらも変更可能にした (= ユーザー要望)。
     {
       'id': 'swapSplitPanels',
       'labelKey': 'cmd.swapSplitPanels',
-      'defaultKey': 'F6',
-      'fixedSuffix': true
+      'defaultKey': 'F6'
     },
     {
       'id': 'historyBack',
       'labelKey': 'cmd.historyBack',
-      'defaultKey': 'Alt+←',
-      'fixedSuffix': true
+      'defaultKey': 'Alt+←'
     },
     {
       'id': 'historyForward',
       'labelKey': 'cmd.historyForward',
-      'defaultKey': 'Alt+→',
-      'fixedSuffix': true
+      'defaultKey': 'Alt+→'
     },
     {
       'id': 'splitRightFullscreen',
       'labelKey': 'cmd.splitRightFullscreen',
-      'defaultKey': 'Ctrl+Shift+\\',
-      'fixedSuffix': true
+      'defaultKey': 'Ctrl+Shift+\\'
     },
     {
       'id': 'splitLeftFullscreen',
       'labelKey': 'cmd.splitLeftFullscreen',
-      'defaultKey': 'Ctrl+Shift+^',
-      'fixedSuffix': true
+      'defaultKey': 'Ctrl+Shift+^'
     },
     {
       'id': 'redoAlternate',
       'labelKey': 'cmd.redoAlternate',
-      'defaultKey': 'Ctrl+Shift+Z',
-      'fixedSuffix': true
+      'defaultKey': 'Ctrl+Shift+Z'
     },
   ];
 
   /// 変更不可のコマンド（固定キー）
+  ///
+  /// ★ 単独のキーコンボを持つコマンドは変更可能にした (= ユーザー要望:
+  ///   「変更不可って技術的に変更できるよね？変更できるようにして」)。
+  ///   残っているのは「キーの族 (矢印 / Ctrl+1〜9 / Esc)」 や
+  ///   クリック・ドラッグ併用のジェスチャで、 1 個のコンボとして
+  ///   再割り当てできないものだけ。
   static const Set<String> _fixedCommands = {
     'cancelMode',
     'scroll',
     'switchMap',
     'ctrlSelect',
     'multiSelect',
-    'lockH',
-    'lockV',
-    'syncDialog',
-    'search',
-    'autoSyncPage',
-    'newPage',
-    'deletePage',
     'rangeBackspace',
     'openEventInCalendar',
     'calendarArrows',
     'zoomIn',
     'zoomOut',
     'zoomReset',
-    'swapSplitPanels',
-    'historyBack',
-    'historyForward',
-    'splitRightFullscreen',
-    'splitLeftFullscreen',
-    'redoAlternate',
   };
 
   /// キーボード側で専用分岐を持たず、ヘッダー/フッターと同じ実処理へ

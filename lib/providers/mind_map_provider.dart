@@ -10603,16 +10603,17 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Alarme',
       'ru': 'Будильник',
     },
+    // = ユーザー要望: 「サブスク管理」 ではなく「サブスク解約」 という名前に。
     'hdr.subscriptionManager': {
-      'ja': 'サブスク管理',
-      'en': 'Subscriptions',
-      'zh': '订阅管理',
-      'ko': '구독 관리',
-      'es': 'Suscripciones',
-      'fr': 'Abonnements',
-      'de': 'Abonnements',
-      'pt': 'Assinaturas',
-      'ru': 'Подписки',
+      'ja': 'サブスク解約',
+      'en': 'Cancel subscriptions',
+      'zh': '退订服务',
+      'ko': '구독 해지',
+      'es': 'Cancelar suscripciones',
+      'fr': 'Résilier des abonnements',
+      'de': 'Abos kündigen',
+      'pt': 'Cancelar assinaturas',
+      'ru': 'Отмена подписок',
     },
     'hdr.silentCamera': {
       'ja': '無音カメラ',
@@ -42305,16 +42306,52 @@ class MindMapProvider extends ChangeNotifier {
           'открывают страницу управления во встроенном браузере (вы уже вошли), где можно '
           'проверить и отменить. Укажите сумму здесь для итогов и напоминаний.',
     },
+    // = ユーザー要望: 「サブスク管理」 ではなく「サブスク解約」。 サービスを
+    //   開いてそこから解約する画面、 という位置付け。
     'sub.manageTitle': {
-      'ja': 'サブスク管理',
-      'en': 'Subscriptions',
-      'zh': '订阅管理',
-      'ko': '구독 관리',
-      'es': 'Suscripciones',
-      'fr': 'Abonnements',
-      'de': 'Abonnements',
-      'pt': 'Assinaturas',
-      'ru': 'Подписки',
+      'ja': 'サブスク解約',
+      'en': 'Cancel subscriptions',
+      'zh': '退订服务',
+      'ko': '구독 해지',
+      'es': 'Cancelar suscripciones',
+      'fr': 'Résilier des abonnements',
+      'de': 'Abos kündigen',
+      'pt': 'Cancelar assinaturas',
+      'ru': 'Отмена подписок',
+    },
+    // ── AI に解約リンクを聞く (= ユーザー要望) ──
+    'sub.aiAskLink': {
+      'ja': 'AIに解約リンクを聞く',
+      'en': 'Ask AI for the cancel link',
+      'zh': '让 AI 查找退订链接',
+      'ko': 'AI에게 해지 링크 묻기',
+      'es': 'Pedir a la IA el enlace de baja',
+      'fr': 'Demander le lien de résiliation à l\'IA',
+      'de': 'KI nach dem Kündigungslink fragen',
+      'pt': 'Pedir à IA o link de cancelamento',
+      'ru': 'Спросить у ИИ ссылку для отмены',
+    },
+    'sub.aiAskHint': {
+      'ja': 'サービス名を入力 (例: U-NEXT)',
+      'en': 'Service name (e.g. U-NEXT)',
+      'zh': '输入服务名称 (如 U-NEXT)',
+      'ko': '서비스 이름 입력 (예: U-NEXT)',
+      'es': 'Nombre del servicio (p. ej., U-NEXT)',
+      'fr': 'Nom du service (ex. U-NEXT)',
+      'de': 'Dienstname (z. B. U-NEXT)',
+      'pt': 'Nome do serviço (ex.: U-NEXT)',
+      'ru': 'Название сервиса (напр., U-NEXT)',
+    },
+    'sub.aiLinkFailed': {
+      'ja': '解約リンクを取得できませんでした',
+      'en': 'Could not get a cancel link',
+      'zh': '未能获取退订链接',
+      'ko': '해지 링크를 가져오지 못했습니다',
+      'es': 'No se pudo obtener el enlace de baja',
+      'fr': 'Impossible d\'obtenir le lien de résiliation',
+      'de': 'Kündigungslink konnte nicht ermittelt werden',
+      'pt': 'Não foi possível obter o link de cancelamento',
+      'ru': 'Не удалось получить ссылку для отмены',
     },
     'sub.addTitle': {
       'ja': 'サブスクを追加',
@@ -51661,8 +51698,9 @@ class MindMapProvider extends ChangeNotifier {
   static const int mobileBottomTopCustomSlots = 6;
 
   /// 1段目のデフォルト値 (起動時にユーザー設定が空なら自動で埋める)
+  /// 注: 旧 'link' (リンクノードを追加) は廃止 (= ユーザー要望: URL は
+  ///   直接貼り付ければよい)。 保存済みレイアウトに残っていても動作はする。
   static const List<String> defaultBottomTopButtons = [
-    'link',
     'file',
     'rangeSelect',
     'addNode',
