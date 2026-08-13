@@ -588,7 +588,21 @@ class _FloatingSearchWindow extends StatefulWidget {
 }
 
 class _FloatingSearchWindowState extends State<_FloatingSearchWindow> {
-  Offset _pos = const Offset(-1, -1); // 未配置マーカー
+  /// ウィンドウ位置 (未配置は dx < 0)。
+  ///
+  /// ★ 移動のたびに setState で中身 (WebView を含む) ごと作り直すと、
+  ///   動かすだけで画面が更新されたように見える (= ユーザー報告: 大きさを
+  ///   変えていないのに移動のたびに画面更新が入る)。 位置は ValueNotifier
+  ///   にして、 Positioned のオフセットだけを動かす (中身は再ビルドしない)。
+  final ValueNotifier<Offset> _posN = ValueNotifier(const Offset(-1, -1));
+  Offset get _pos => _posN.value;
+  set _pos(Offset v) => _posN.value = v;
+
+  @override
+  void dispose() {
+    _posN.dispose();
+    super.dispose();
+  }
 
   /// ドロップ判定用: 現在 URL を読むためのページキー (singleton 指定が
   /// 無い時も自前で持つ)。
@@ -778,8 +792,6 @@ class _FloatingSearchWindowState extends State<_FloatingSearchWindow> {
         );
       }
     }
-    final left = _expandedToCompact ? 0.0 : _pos.dx.clamp(0.0, maxLeft);
-    final top = _expandedToCompact ? 0.0 : _pos.dy.clamp(0.0, maxTop);
     final radius = _expandedToCompact ? 0.0 : 14.0;
     final hideExpandedChrome =
         widget.hideChromeWhenExpanded && _expandedToCompact;
@@ -797,10 +809,8 @@ class _FloatingSearchWindowState extends State<_FloatingSearchWindow> {
           screen.height - expandedCloseSize - 8.0),
     );
 
-    return Positioned(
-      left: left,
-      top: top,
-      child: Material(
+    // ── 中身は 1 回だけ作り、 移動 (位置変更) では再ビルドしない ──
+    final content = Material(
         type: MaterialType.transparency,
         child: Container(
           width: w,
@@ -828,13 +838,14 @@ class _FloatingSearchWindowState extends State<_FloatingSearchWindow> {
                     onPanUpdate: (d) {
                       if (_expandedToCompact) return;
                       _headerDragGlobal = d.globalPosition;
-                      setState(() {
-                        final np = _pos + d.delta;
-                        _pos = Offset(
-                          np.dx.clamp(0.0, maxLeft),
-                          np.dy.clamp(0.0, maxTop),
-                        );
-                      });
+                      // setState しない: 位置は ValueNotifier 経由で
+                      // Positioned だけが動く (= 中身の再ビルドを避けて、
+                      // 移動のたびの画面更新を無くす)。
+                      final np = _pos + d.delta;
+                      _pos = Offset(
+                        np.dx.clamp(0.0, maxLeft),
+                        np.dy.clamp(0.0, maxTop),
+                      );
                     },
                     // ── ドロップ埋め込み (= ユーザー要望: 分割画面の所へ
                     //    ドラッグしたら埋め込めるように)。 ──
@@ -967,7 +978,17 @@ class _FloatingSearchWindowState extends State<_FloatingSearchWindow> {
             // ── リサイズハンドル (境界ドラッグで縦横を変更) ──
             if (!_expandedToCompact) ..._buildResizeHandles(screen, w, h),
           ]),
-        ),
+        ));
+    // 位置の変更 (ドラッグ移動) では Positioned のオフセットだけを更新し、
+    // 中身 (WebView 含む) は再ビルドしない (= ユーザー報告: 移動のたびに
+    // 画面更新が入る問題の対策)。
+    return ValueListenableBuilder<Offset>(
+      valueListenable: _posN,
+      child: content,
+      builder: (context, pos, child) => Positioned(
+        left: _expandedToCompact ? 0.0 : pos.dx.clamp(0.0, maxLeft),
+        top: _expandedToCompact ? 0.0 : pos.dy.clamp(0.0, maxTop),
+        child: child!,
       ),
     );
   }
