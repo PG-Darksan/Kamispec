@@ -78072,9 +78072,14 @@ $example
   }
 
   /// あるノードの子孫IDを再帰的に取得（接続の from→to 方向を子とみなす）
-  Set<String> getDescendants(String nodeId) {
+  Set<String> getDescendants(String nodeId) =>
+      getDescendantsOnPage(currentPage, nodeId);
+
+  /// [page] 指定版の子孫取得。 分割ペインは currentPage 以外のページを
+  /// 描くので、 そちら用。
+  Set<String> getDescendantsOnPage(MindMapPage page, String nodeId) {
     final result = <String>{};
-    final conns = currentPage.connections;
+    final conns = page.connections;
     void collect(String id) {
       for (final c in conns) {
         if (c.fromId == id && !result.contains(c.toId)) {
@@ -78177,16 +78182,24 @@ $example
   }
 
   /// 折りたたみ状態で非表示にすべきノードIDの集合
-  Set<String> get hiddenNodeIds {
+  Set<String> get hiddenNodeIds => hiddenNodeIdsOnPage(currentPage);
+
+  /// [page] 指定版の「折りたたみで隠すノード」。
+  ///
+  /// ★ 分割ペイン (非アクティブ側) 用。 currentPage 前提の [hiddenNodeIds]
+  ///   しか無かったため、 ペインでは折りたたみが一切効かず子が全部見えて
+  ///   いた。 その結果、 ペインをアクティブ / 非アクティブに切り替えるたびに
+  ///   子ノードが勝手に展開 / 収納されるように見えていた (= ユーザー報告)。
+  Set<String> hiddenNodeIdsOnPage(MindMapPage page) {
     final hidden = <String>{};
-    for (final node in currentPage.nodes.values) {
+    for (final node in page.nodes.values) {
       if (node.collapsed) {
-        hidden.addAll(getDescendants(node.id));
+        hidden.addAll(getDescendantsOnPage(page, node.id));
       } else {
         for (final childId in node.collapsedChildIds ?? const <String>[]) {
-          if (!currentPage.nodes.containsKey(childId)) continue;
+          if (!page.nodes.containsKey(childId)) continue;
           hidden.add(childId);
-          hidden.addAll(getDescendants(childId));
+          hidden.addAll(getDescendantsOnPage(page, childId));
         }
       }
     }

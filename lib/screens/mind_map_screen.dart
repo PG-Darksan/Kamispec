@@ -6028,24 +6028,12 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 分割中の Ctrl+± やノード追加がアクティブ側で動くように)。
   /// [global] = true なら画面全体座標、 false なら編集ビューポート内の
   /// ローカル座標 (ctrl の translation と組で使う)。
-  /// 編集セルの画面上の割合矩形 (0..1)。 2 分割 / 4 分割の両対応。
-  Rect _editorCellFrac() {
-    if (!_mapSplitQuad) {
-      // 向きはユーザー設定 (_mapSplitStacked) に従う。
-      if (!_mapSplitStacked) {
-        return _mapSplitEditorSlot == 0
-            ? const Rect.fromLTRB(0, 0, 0.5, 1)
-            : const Rect.fromLTRB(0.5, 0, 1, 1);
-      }
-      return _mapSplitEditorSlot == 0
-          ? const Rect.fromLTRB(0, 0, 1, 0.5)
-          : const Rect.fromLTRB(0, 0.5, 1, 1);
-    }
-    final col = _mapSplitEditorSlot % 2;
-    final row = _mapSplitEditorSlot ~/ 2;
-    return Rect.fromLTWH(col * 0.5, row * 0.5, 0.5, 0.5);
-  }
-
+  //
+  // ★ 編集セルの矩形は `_splitCellGlobalRect(_mapSplitEditorSlot)` に一本化。
+  //   以前は 0.5 決め打ちの割合矩形 (_editorCellFrac) を別に持っていたため、
+  //   境界線をドラッグして分割比を変えるとズーム / ノード追加 / 全画面
+  //   ダイアログの基準点がセルの中心からずれ、 操作のたびに表示が変な方向へ
+  //   動いていた (= ユーザー報告)。
   Offset _editorViewportCenter(MindMapProvider provider,
       {bool global = false}) {
     final s = View.of(context).physicalSize / View.of(context).devicePixelRatio;
@@ -6055,12 +6043,13 @@ class _MindMapScreenState extends State<MindMapScreen>
         t != 'document' &&
         t != 'videoEditor';
     if (!split) return Offset(s.width / 2, s.height / 2);
-    final f = _editorCellFrac();
-    if (!global) {
-      // ペイン内ローカル座標 (ctrl の translation と組で使う)。
-      return Offset(s.width * f.width / 2, s.height * f.height / 2);
-    }
-    return Offset(s.width * f.center.dx, s.height * f.center.dy);
+    // ★ セルの矩形は _splitCellGlobalRect と同じ計算で求める (AppBar の
+    //   高さを引いた body 基準 + 境界線の比率)。 画面全体の割合で計算して
+    //   いた頃は、 ズームやノード追加の基準点がセルの中心から常にずれて
+    //   いた (= ユーザー報告: 切り替えや操作で変な方向に動く)。
+    final r = _splitCellGlobalRect(_mapSplitEditorSlot);
+    // ペイン内ローカル座標 (ctrl の translation と組で使う) / 画面全体座標。
+    return global ? r.center : Offset(r.width / 2, r.height / 2);
   }
 
   void _applyScale(int percent) {
@@ -11808,12 +11797,13 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (!split) return EdgeInsets.zero;
     final s = View.of(context).physicalSize / View.of(context).devicePixelRatio;
     // 編集セルの矩形 (2 分割 / 4 分割両対応) の外側を inset で埋める。
-    final f = _editorCellFrac();
+    // 境界線をドラッグした後もぴったり合うよう、 実際のセル矩形を使う。
+    final r = _splitCellGlobalRect(_mapSplitEditorSlot);
     return EdgeInsets.fromLTRB(
-      s.width * f.left,
-      s.height * f.top,
-      s.width * (1 - f.right),
-      s.height * (1 - f.bottom),
+      r.left,
+      r.top,
+      (s.width - r.right).clamp(0.0, s.width),
+      (s.height - r.bottom).clamp(0.0, s.height),
     );
   }
 
@@ -14540,7 +14530,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       final nodeBottomY =
           (node.position.dy + node.visualHeight) * sc + t.y;
       final room = view.height - nodeBottomY;
-      final need = _kActionBarsRoom;
+      // 4 分割のセルのように表示領域が低い時は、 200px も動かすと画面が
+      // まるごと流れて見える (= ユーザー報告: 切り替えると変な方向に動く)。
+      // 見えている高さの 1/3 を上限にする。
+      final need = math.min(_kActionBarsRoom, view.height / 3);
       if (room >= need) return; // 既に下に出せる
       var shift = need - room;
       // 上に出し過ぎてノードが画面外へ消えないよう、 動かす量を抑える。
@@ -14558,7 +14551,10 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 「ボタンは上・色/サイズは下」 の既定配置で収まる。
   static const double _kActionBarsRoom = 200.0;
 
-  void _showActionButtons(String nodeId, TransformationController ctrl) {
+  /// [ensureRoom] = false なら操作バーのための自動スクロールをしない
+  /// (= 分割ペインをアクティブ化したクリックでは表示位置を動かさない)。
+  void _showActionButtons(String nodeId, TransformationController ctrl,
+      {bool ensureRoom = true}) {
     _removeOverlay();
     setState(() => _actionNodeId = nodeId);
 
@@ -14572,7 +14568,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     // 下の方のノードなら、 画面を少し上へ動かして操作バーを下に出せるように
     //   する (= ユーザー要望)。 overlay はノード位置に追従するので、 先に
     //   動かしてから位置を計算する。
-    _ensureRoomBelowNode(node, ctrl);
+    if (ensureRoom) _ensureRoomBelowNode(node, ctrl);
 
     // ── スクロール / ズームでは閉じない ──
     // ユーザー要望「ノードをタップした際に出てくる項目は、 何かアクションが
@@ -29420,20 +29416,46 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 // 名前は Google アカウントから受け取るので、
                                 //   ここでは変更できない (= ユーザー要望:
                                 //   ユーザー名を設定する機能は無くす)。
-                                // 行のどこを押してもアイコン選択が開くようにする。
-                                //   右端の「>」 だけ出ていて実際は小さな丸しか
-                                //   反応せず、 押しても何も起きない行に見えて
-                                //   いた (= 実際に触って分かった)。
-                                InkWell(
-                                    onTap: () =>
-                                        _showAvatarPickerDialog(sctx, provider),
-                                    borderRadius: BorderRadius.circular(10),
-                                    child: Padding(
+                                // ★ アイコン選択は画像を押した時だけ開く
+                                //   (= ユーザー要望)。 行全体を押せるように
+                                //   していた頃は、 UID を選んだりコピー
+                                //   しようとするたびにアイコン設定が開いて
+                                //   邪魔になっていた。
+                                Padding(
                                     padding: const EdgeInsets.symmetric(
                                         horizontal: 4, vertical: 6),
                                     child: Row(children: [
-                                      // アバター (タップでアイコン選択 / 画像設定)
-                                      _userAvatarVisual(provider, size: 48),
+                                      // アバター (ここだけタップでアイコン選択 /
+                                      //   画像設定)。 押せる所が分かるように
+                                      //   小さな鉛筆を右下に重ねる。
+                                      InkWell(
+                                        onTap: () => _showAvatarPickerDialog(
+                                            sctx, provider),
+                                        customBorder: const CircleBorder(),
+                                        child: Stack(
+                                          clipBehavior: Clip.none,
+                                          children: [
+                                            _userAvatarVisual(provider,
+                                                size: 48),
+                                            Positioned(
+                                              right: -1,
+                                              bottom: -1,
+                                              child: Container(
+                                                padding:
+                                                    const EdgeInsets.all(3),
+                                                decoration: const BoxDecoration(
+                                                  color: Color(0xFF2B2B3D),
+                                                  shape: BoxShape.circle,
+                                                ),
+                                                child: const Icon(
+                                                    Icons.edit_rounded,
+                                                    size: 10,
+                                                    color: Colors.white70),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
                                       const SizedBox(width: 14),
                                       Expanded(
                                         child: Column(
@@ -29454,8 +29476,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                                             // ── UID はタップでコピー ──
                                             // (= ユーザー報告: コピーしようと
                                             //  するとアイコンの設定が開いて
-                                            //  しまう)。 行全体のタップより
-                                            //  内側のこちらが先に受け取る。
+                                            //  しまう)。 行全体のタップは
+                                            //  やめたので、 ここだけが反応する。
                                             InkWell(
                                               onTap: () async {
                                                 final uid =
@@ -29517,10 +29539,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                                           ],
                                         ),
                                       ),
-                                      const Icon(Icons.chevron_right_rounded,
-                                          color: Colors.white38),
+                                      // 「>」 は行全体が押せる合図になって
+                                      //   しまうので置かない (= 押せるのは
+                                      //   アイコンと UID だけ)。
                                     ]),
-                                )),
+                                ),
                                 const Divider(
                                     color: Colors.white12, height: 24),
                                 // 言語
@@ -54074,21 +54097,20 @@ class _MindMapScreenState extends State<MindMapScreen>
       {MindMapPage? pageOverride}) {
     // ── 分割ペイン用: 指定ページのノード範囲から算出する ──
     if (pageOverride != null) {
-      double minX = double.infinity, minY = double.infinity;
-      double maxX = -double.infinity, maxY = -double.infinity;
-      for (final n in pageOverride.nodes.values) {
-        minX = math.min(minX, n.position.dx);
-        minY = math.min(minY, n.position.dy);
-        maxX = math.max(maxX, n.position.dx + n.width);
-        maxY = math.max(maxY, n.position.dy + n.visualHeight);
-      }
       if (pageOverride.pageType == 'bookshelf') {
         // +ボックス格子まで含めた実寸 (= 編集側と同じ) を使う。
         final s = provider.bookshelfCanvasSize(pageOverride: pageOverride);
         return Size(math.max(1.0, s.width), math.max(1.0, s.height));
       }
-      if (!minX.isFinite) return const Size(2000, 2000);
-      final extent = computeCanvasSize(pageOverride.nodes);
+      // 編集側と同じく、 折りたたみで隠れているノードは除外する
+      // (= ペインの InteractiveViewer の実境界と食い違わせない)。
+      final paneHidden = provider.hiddenNodeIdsOnPage(pageOverride);
+      final paneVisible = paneHidden.isEmpty
+          ? pageOverride.nodes
+          : Map<String, MindMapNode>.fromEntries(pageOverride.nodes.entries
+              .where((e) => !paneHidden.contains(e.key)));
+      if (paneVisible.isEmpty) return const Size(2000, 2000);
+      final extent = computeCanvasSize(paneVisible);
       return Size(extent, extent);
     }
     if (provider.currentPage.pageType == 'bookshelf') {
@@ -54548,6 +54570,19 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 編集キャンバスが入っているセル番号。 ペインをタップするとその場で
   /// 編集側が移る (= ユーザー要望) ため可変。
   int _mapSplitEditorSlot = 0;
+
+  /// 分割ペインをアクティブ化した時刻 (epoch ms)。
+  ///
+  /// ペインの Listener(onPointerUp) はタップ認識より先に走るので、 同じ
+  /// クリックから続けて届くノードの onTap では既に切替が終わっており、
+  /// 「アクティブ化のためのクリックか」 を切替有無では判定できない。
+  /// この時刻からの経過で見分ける。
+  int _splitActivatedAtMs = 0;
+
+  /// アクティブ化したのと同じクリックか (= 開閉や表示位置の自動調整を
+  /// 抑えたい操作か)。
+  bool get _justActivatedSplitPane =>
+      DateTime.now().millisecondsSinceEpoch - _splitActivatedAtMs < 600;
 
   /// 4 分割モード (= ユーザー要望: 画面 4 分割とかできるように)。
   bool _mapSplitQuad = false;
@@ -57023,11 +57058,33 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
     final paneCtrl = _ctrlFor('split_${page.id}');
     final bool paneShelf = page.pageType == 'bookshelf';
+    // ── 折りたたみ (collapsed) をペインにも反映する ──
+    // ★ 以前は page.nodes をそのまま描いていたので、 ペイン側だけ折りたたみが
+    //   無視されて子ノードが全部見えていた。 アクティブ / 非アクティブを
+    //   切り替えるたびに子が展開 / 収納されるように見える原因
+    //   (= ユーザー報告: 4 分割で切り替えると子要素が勝手に展開/収納される)。
+    //   キャンバスの大きさも編集側と同じ「見えているノード」 基準にしないと、
+    //   引き継いだ表示位置が境界クランプでずれる。
+    final Set<String> paneHidden =
+        paneShelf ? const <String>{} : provider.hiddenNodeIdsOnPage(page);
+    final Map<String, MindMapNode> paneNodes = paneHidden.isEmpty
+        ? page.nodes
+        : Map<String, MindMapNode>.fromEntries(
+            page.nodes.entries.where((e) => !paneHidden.contains(e.key)));
+    final List<NodeConnection> paneConnections = paneShelf
+        ? const <NodeConnection>[]
+        : (paneHidden.isEmpty
+            ? page.connections
+            : page.connections
+                .where((c) =>
+                    !paneHidden.contains(c.fromId) &&
+                    !paneHidden.contains(c.toId))
+                .toList());
     // ギャラリーは編集側と同じ実寸キャンバス + 実際の +ボックス格子を使う
     // (= ユーザー要望: 分割の右側でもギャラリーが正しく表示されるように)。
     final Size paneCanvas = paneShelf
         ? provider.bookshelfCanvasSize(pageOverride: page)
-        : Size.square(computeCanvasSize(page.nodes));
+        : Size.square(computeCanvasSize(paneNodes));
     final List<Rect> paneFrontierRects = paneShelf
         ? provider.bookshelfFrontierRects(pageOverride: page)
         : const <Rect>[];
@@ -57134,7 +57191,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                           painter: paneShelf
                               ? _BookshelfBackgroundPainter(
                                   tileRects: [
-                                    for (final n in page.nodes.values)
+                                    for (final n in paneNodes.values)
                                       if (n.hiddenInContainer == null)
                                         Rect.fromLTWH(
                                             n.position.dx,
@@ -57168,7 +57225,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                           child: CustomPaint(
                             size: paneCanvas,
                             painter: _ShelfBackdropPainter(
-                              nodes: page.nodes,
+                              nodes: paneNodes,
                               isDark: provider.isDarkMode,
                               addRects: paneFrontierRects,
                             ),
@@ -57180,10 +57237,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                       child: IgnorePointer(
                         child: CustomPaint(
                           painter: ConnectionPainter(
-                            nodes: page.nodes,
-                            connections: paneShelf
-                                ? const <NodeConnection>[]
-                                : page.connections,
+                            nodes: paneNodes,
+                            connections: paneConnections,
                             isDarkMode: provider.isDarkMode,
                             darkBackground:
                                 _pageBackgroundIsDark(provider, page),
@@ -57327,7 +57382,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                     // ノード (タップでこのページがその場で編集側になり、
                     //   そのノードが選択されてアクションボタンが出る
                     //   = ユーザー要望: 左側と同様の機能が使えるように)
-                    for (final n in page.nodes.values)
+                    for (final n in paneNodes.values)
                       if (n.hiddenInContainer == null)
                         Positioned(
                           left: n.position.dx,
@@ -57387,25 +57442,34 @@ class _MindMapScreenState extends State<MindMapScreen>
       // ペインで見えていた位置をそのまま編集用コントローラへ、 逆に旧編集
       // ページの位置をペイン用コントローラへ引き継ぐ (見た目が飛ばない)。
       //
-      // ★ 引き渡しは「ページと編集セルを切り替えた後」 に行う
-      //   (= ユーザー報告: アクティブにすると謎に左端へ飛ぶ)。
-      //   ここで先に代入すると、 まだ旧ページ・旧セルのままの状態で
-      //   ギャラリーのパン制限 (_clampBookshelfPan) が働き、 旧ページの
-      //   内容範囲に合わせて位置を切り詰められてしまう。
+      // ★ 引き渡しは「同じフレームのうちに」 同期で行う。
+      //   ・postFrameCallback にすると、 切替後の最初の 1 フレームだけ
+      //     編集キャンバスが古い行列 (一度も編集していないページなら単位
+      //     行列) で描かれ、 次のフレームで正しい位置へ跳ねる =
+      //     「アクティブにすると要素が変な方向に動く」 の正体 (= ユーザー報告)。
+      //   ・かといって素のまま代入するとギャラリーのパン制限
+      //     (_clampBookshelfPan) が旧ページ基準で働いて切り詰められるので、
+      //     引き渡しの間だけ制限を止める。
       final paneMatrix = _ctrlFor('split_$pageId').value.clone();
       final editorMatrix = _ctrlFor(oldId).value.clone();
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        // 引き渡しの間だけパン制限を止める (中途半端な状態で切り詰めない)。
-        _clampingShelf = true;
-        _ctrlFor(pageId).value = paneMatrix;
-        _ctrlFor('split_$oldId').value = editorMatrix;
-        _clampingShelf = false;
-      });
+      _clampingShelf = true;
+      // ★ 代入より先に _lastMatrix を新しい行列へそろえる。 軸ロック
+      //   (Ctrl+K / Ctrl+L) 中は _onTransformChanged が「直前の行列」 へ
+      //   巻き戻すので、 旧ページの行列が残っていると引き継いだ位置が
+      //   そこへ引きずられてしまう (_applyScale と同じ手当て)。
+      _lastMatrix = paneMatrix.clone();
+      _ctrlFor(pageId).value = paneMatrix;
+      _ctrlFor('split_$oldId').value = editorMatrix;
+      _clampingShelf = false;
       // ギャラリーは初回表示時の自動センタリングが走ると位置が飛ぶので、
       // アクティブ化時は「センタリング済み」 扱いにして抑止する
       // (= ユーザー要望: アクティブになった時に変な位置へ動く問題の修正)。
       _shelfCenteredPages.add(pageId);
+      // このクリックでアクティブ化したことを控える。 Listener(onPointerUp) は
+      // タップ認識より先に走るため、 続いて届くノードの onTap の時点では既に
+      // 切替済みで「切替と同時のクリックか」 が判別できない。 時刻で見分ける
+      // (= ユーザー報告: 分割の別画面を触っただけで子ノードが展開/収納される)。
+      _splitActivatedAtMs = DateTime.now().millisecondsSinceEpoch;
       provider.switchPage(idx);
       setState(() {
         // タップされたセルへ編集側が移り、 旧編集セルには旧ページが残る
@@ -57438,6 +57502,12 @@ class _MindMapScreenState extends State<MindMapScreen>
       return;
     }
     if (nodeId != null) {
+      // アクティブ化のためのクリックだったか (= このクリックで切り替わった、
+      // または直前に Listener 側が切り替えたばかりか)。 判定したら控えは
+      // 使い切る: そうしないと 600ms 以内の 2 回目のクリックまで無視されて
+      // 「格納ノードが開けない」 になってしまう。
+      final activating = switched || _justActivatedSplitPane;
+      _splitActivatedAtMs = 0;
       // 切替後のフレームで、 タップされたノードを選択してアクション
       // ボタンを表示する (= 左側と同じタップ体験)。
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -57451,7 +57521,9 @@ class _MindMapScreenState extends State<MindMapScreen>
           //   閉じたりしない (= ユーザー報告: 分割の別画面を触っただけで
           //   格納していた子ノードが展開/収納される)。 選ぶだけにして、
           //   開閉はアクティブになった後のもう 1 回のクリックで行う。
-          if (switched) return;
+          //   ペインの Listener(onPointerUp) が先に切替を済ませてしまうので、
+          //   switched だけでは判定できない (時刻でも見る)。
+          if (activating) return;
           if (provider.currentPage.pageType == 'bookshelf') {
             _showBookshelfCoverMenu(n);
           } else {
@@ -57463,7 +57535,10 @@ class _MindMapScreenState extends State<MindMapScreen>
           _selectedConnections.clear();
           _clearConnectionBendDragFields(clearSelection: true);
         });
-        _showActionButtons(nodeId, ctrl);
+        // アクティブ化と同時のクリックでは、 操作バーの場所を作るための
+        // 自動スクロールをしない (= ユーザー報告: 切り替えた瞬間に表示が
+        // 変な方向へ動く)。 引き継いだ表示位置をそのまま保つ。
+        _showActionButtons(nodeId, ctrl, ensureRoom: !activating);
       });
     }
   }
