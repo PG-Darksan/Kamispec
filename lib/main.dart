@@ -1071,6 +1071,38 @@ class FloatL10n {
       'es': 'Nota', 'fr': 'Note', 'de': 'Notiz', 'pt': 'Nota',
       'ru': 'Заметка',
     },
+    // ── AI モデルの切り替え (= ユーザー要望: AI ボタンを長押し / 右クリック
+    //    でモデルを変更できるように) ──
+    'memo.aiModel': {
+      'ja': 'AI モデルを変更', 'en': 'Change AI model', 'zh': '更改 AI 模型',
+      'ko': 'AI 모델 변경', 'es': 'Cambiar modelo de IA',
+      'fr': 'Changer de modèle d\'IA', 'de': 'KI-Modell wechseln',
+      'pt': 'Mudar modelo de IA', 'ru': 'Сменить модель ИИ',
+    },
+    'memo.aiModelSet': {
+      'ja': 'モデルを変更しました', 'en': 'Model changed', 'zh': '已更改模型',
+      'ko': '모델을 변경했습니다', 'es': 'Modelo cambiado',
+      'fr': 'Modèle changé', 'de': 'Modell gewechselt',
+      'pt': 'Modelo alterado', 'ru': 'Модель изменена',
+    },
+    'memo.aiModelNone': {
+      'ja': 'モデル一覧を取得できませんでした', 'en': 'Could not load the model list',
+      'zh': '无法获取模型列表', 'ko': '모델 목록을 가져오지 못했습니다',
+      'es': 'No se pudo cargar la lista de modelos',
+      'fr': 'Impossible de charger la liste des modèles',
+      'de': 'Modellliste konnte nicht geladen werden',
+      'pt': 'Não foi possível carregar a lista de modelos',
+      'ru': 'Не удалось получить список моделей',
+    },
+    'memo.aiModelHint': {
+      'ja': '長押し / 右クリックでモデルを変更', 'en': 'Long-press / right-click to change model',
+      'zh': '长按 / 右键更改模型', 'ko': '길게 누르기 / 우클릭으로 모델 변경',
+      'es': 'Mantén pulsado / clic derecho para cambiar de modelo',
+      'fr': 'Appui long / clic droit pour changer de modèle',
+      'de': 'Lang drücken / Rechtsklick zum Modellwechsel',
+      'pt': 'Pressione e segure / clique direito para mudar o modelo',
+      'ru': 'Долгое нажатие / правый клик — смена модели',
+    },
     // ── 複数メモ (= ユーザー要望: フローティングメモを複数保存) ──
     'memo.book1': {
       'ja': 'メモ 1', 'en': 'Memo 1', 'zh': '备忘录 1', 'ko': '메모 1',
@@ -2750,6 +2782,90 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
     }
   }
 
+  /// フリーメモの AI / Google 検索に渡す文。
+  /// 範囲選択があればその部分だけ、 無ければ全文
+  /// (= ユーザー要望: 範囲選択した所を AI や Google 検索に渡す)。
+  String _freeTargetText() {
+    final sel = _free.selection;
+    if (sel.isValid && !sel.isCollapsed) {
+      final t = sel.textInside(_free.text).trim();
+      if (t.isNotEmpty) return t;
+    }
+    return _free.text.trim();
+  }
+
+  /// AI モデルの切り替えメニュー (= ユーザー要望: AI ボタンを長押し /
+  /// 右クリックでモデルを変更)。 一覧と現在値は本体から受け取り、 選んだら
+  /// 本体の設定 (relayModel) を書き換える。 この窓は鍵を持たない。
+  Future<void> _showAiModelMenu(BuildContext btnCtx) async {
+    List<Map<String, dynamic>> models = [];
+    String current = '';
+    try {
+      final raw =
+          await DesktopMultiWindow.invokeMethod(0, 'floatingMemoAiModels');
+      final m = jsonDecode('$raw') as Map<String, dynamic>;
+      current = '${m['current'] ?? ''}';
+      models = (m['models'] as List? ?? const [])
+          .whereType<Map>()
+          .map((e) => e.cast<String, dynamic>())
+          .toList();
+    } catch (_) {}
+    if (!mounted || !btnCtx.mounted) return;
+    if (models.isEmpty) {
+      _snack(FloatL10n.t('memo.aiModelNone'), color: const Color(0xFFE57373));
+      return;
+    }
+    final box = btnCtx.findRenderObject() as RenderBox?;
+    final pos =
+        box == null ? const Offset(60, 60) : box.localToGlobal(Offset.zero);
+    final chosen = await showMenu<String>(
+      context: btnCtx,
+      position:
+          RelativeRect.fromLTRB(pos.dx, pos.dy + 24, pos.dx + 1, pos.dy + 25),
+      color: const Color(0xFF23233A),
+      items: [
+        PopupMenuItem<String>(
+          enabled: false,
+          height: 28,
+          child: Text(FloatL10n.t('memo.aiModel'),
+              style: const TextStyle(
+                  color: Color(0xFF8890A6),
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w700)),
+        ),
+        for (final m in models)
+          PopupMenuItem<String>(
+            value: '${m['id']}',
+            height: 32,
+            child: Row(children: [
+              Icon(
+                  '${m['id']}' == current
+                      ? Icons.radio_button_checked_rounded
+                      : Icons.radio_button_off_rounded,
+                  size: 14,
+                  color: '${m['id']}' == current
+                      ? const Color(0xFFBA68C8)
+                      : Colors.white38),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text('${m['label'] ?? m['id']}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style:
+                        const TextStyle(color: Colors.white, fontSize: 12)),
+              ),
+            ]),
+          ),
+      ],
+    );
+    if (chosen == null || chosen.isEmpty) return;
+    try {
+      await DesktopMultiWindow.invokeMethod(
+          0, 'floatingMemoSetAiModel', chosen);
+      _snack(FloatL10n.t('memo.aiModelSet'));
+    } catch (_) {}
+  }
+
   /// 追加先のページを選んでマップへ (= ユーザー要望: ページを指定できるように)。
   /// [texts] は 1 件ずつ別々のメモノードになる (= 動画メモの「まとめてマップに
   /// 追加」 と同じ)。 追加できたら true。
@@ -3233,15 +3349,34 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
                 // AI を開く (= ユーザー要望: 新しい窓を出さず、 メモの所が
                 //   そのまま AI の画面に切り替わる)。
                 if (!_webMode && !_aiMode && !_chromeHidden)
-                  IconButton(
-                    padding: EdgeInsets.zero,
-                    constraints:
-                        const BoxConstraints(minWidth: 26, minHeight: 26),
-                    tooltip: FloatL10n.t('memo.openAi'),
-                    icon: const Icon(Icons.auto_awesome_rounded,
-                        size: 15, color: Color(0xFFBA68C8)),
-                    onPressed: () => _enterAiMode(''),
-                  ),
+                  Builder(builder: (btnCtx) {
+                    // 長押し / 右クリックでモデルを変更 (= ユーザー要望)。
+                    return GestureDetector(
+                      onLongPress: () {
+                        // ignore: discarded_futures
+                        _showAiModelMenu(btnCtx);
+                      },
+                      onSecondaryTap: () {
+                        // ignore: discarded_futures
+                        _showAiModelMenu(btnCtx);
+                      },
+                      // IconButton の tooltip は長押しでも開いてしまい、
+                      // モデル変更の長押しを食うので手動トリガーで包む。
+                      child: Tooltip(
+                        message:
+                            '${FloatL10n.t('memo.openAi')}\n${FloatL10n.t('memo.aiModelHint')}',
+                        triggerMode: TooltipTriggerMode.manual,
+                        child: IconButton(
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                              minWidth: 26, minHeight: 26),
+                          icon: const Icon(Icons.auto_awesome_rounded,
+                              size: 15, color: Color(0xFFBA68C8)),
+                          onPressed: () => _enterAiMode(''),
+                        ),
+                      ),
+                    );
+                  }),
                 // ── 目のボタン: 上のボタン類と下の 3 つをまとめて隠す ──
                 //    (= ユーザー要望: メモのアイコンや文字、 AI などの
                 //     ボタンも一緒に消えるように)。 これだけは残しておかないと
@@ -3388,20 +3523,41 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
               ),
               child: Row(children: [
                 Expanded(
-                  child: TextButton.icon(
-                    icon: const Icon(Icons.auto_awesome_rounded,
-                        size: 14, color: Color(0xFFBA68C8)),
-                    label: Text(FloatL10n.t('memo.toAi'),
-                        style: TextStyle(
-                            color: Color(0xFFBA68C8), fontSize: 11)),
-                    onPressed: () {
-                      final t = _free.text.trim();
-                      if (t.isEmpty) return;
-                      _enterAiMode(t);
-                    },
-                  ),
+                  // 範囲選択があればその部分だけを AI へ (= ユーザー要望)。
+                  // 長押し / 右クリックでモデルを変更 (= ユーザー要望)。
+                  child: Builder(builder: (btnCtx) {
+                    return GestureDetector(
+                      onLongPress: () {
+                        // ignore: discarded_futures
+                        _showAiModelMenu(btnCtx);
+                      },
+                      onSecondaryTap: () {
+                        // ignore: discarded_futures
+                        _showAiModelMenu(btnCtx);
+                      },
+                      child: Tooltip(
+                        message: FloatL10n.t('memo.aiModelHint'),
+                        // 長押しをツールチップに食われないようにする
+                        // (トリガーは hover のみ)。
+                        triggerMode: TooltipTriggerMode.manual,
+                        child: TextButton.icon(
+                          icon: const Icon(Icons.auto_awesome_rounded,
+                              size: 14, color: Color(0xFFBA68C8)),
+                          label: Text(FloatL10n.t('memo.toAi'),
+                              style: TextStyle(
+                                  color: Color(0xFFBA68C8), fontSize: 11)),
+                          onPressed: () {
+                            final t = _freeTargetText();
+                            if (t.isEmpty) return;
+                            _enterAiMode(t);
+                          },
+                        ),
+                      ),
+                    );
+                  }),
                 ),
                 Expanded(
+                  // 範囲選択があればその部分だけを検索 (= ユーザー要望)。
                   child: TextButton.icon(
                     icon: const Icon(Icons.search_rounded,
                         size: 15, color: Color(0xFF4FC3F7)),
@@ -3409,7 +3565,7 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
                         style: TextStyle(
                             color: Color(0xFF4FC3F7), fontSize: 11)),
                     onPressed: () {
-                      final t = _free.text.trim();
+                      final t = _freeTargetText();
                       if (t.isEmpty) return;
                       // ignore: discarded_futures
                       _openGoogleFor(t);

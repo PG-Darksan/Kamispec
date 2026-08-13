@@ -20187,6 +20187,21 @@ class _MindMapScreenState extends State<MindMapScreen>
       );
       return;
     }
+    // ── テキスト / Markdown 等はアプリ内テキストエディタで開く ──
+    // (= ユーザー要望: マークダウン形式を開いた時にプレビュー機能が無い。
+    //  ビューアの素のテキスト表示ではなく、 添付ファイルと同じテキスト
+    //  エディタで開く。 .md はエディタの Markdown / Mermaid プレビューが
+    //  使える)。
+    {
+      final dot = lower.lastIndexOf('.');
+      final ext = dot >= 0 ? lower.substring(dot + 1) : '';
+      if (_kTextEditorExts.contains(ext)) {
+        final ex = await _findEmbeddedAttachmentFor(path);
+        if (!mounted) return;
+        await _openAttachment(ex?.path ?? path, nodeId: ex?.nodeId);
+        return;
+      }
+    }
     // ── 既に同じファイルをマップへ埋め込み済みなら、 そのノードで開く ──
     // (= ユーザー要望: アプリで開くを選んだ時、 既に挿入されている所で
     //  開かれるように)。 そのページへ切り替えてノードを見せた上で、
@@ -55562,6 +55577,43 @@ class _MindMapScreenState extends State<MindMapScreen>
             // 先頭の ⚠ を目印にして、 メモ窓側で赤字にする。
             return '⚠$e';
           }
+        }
+      case 'floatingMemoAiModels':
+        // メモ窓の「AI モデルを変更」 メニュー用 (= ユーザー要望: AI ボタンの
+        //   長押し / 右クリックでモデルを変更)。 一覧と現在値を返す。
+        {
+          final provider = context.read<MindMapProvider>();
+          if (provider.relayModels.isEmpty) {
+            try {
+              await provider.refreshRelayModels();
+            } catch (_) {}
+          }
+          String label(String id) => id.replaceAll(RegExp(r'-\d{8}$'), '');
+          final models = <Map<String, String>>[
+            for (final e in provider.relayModels)
+              if (e is Map &&
+                  e['available'] == true &&
+                  '${e['id'] ?? ''}'.isNotEmpty)
+                {'id': '${e['id']}', 'label': label('${e['id']}')},
+          ];
+          // 一覧が取れない時でも、 今のモデルだけは出す。
+          if (models.isEmpty && provider.relayModel.isNotEmpty) {
+            models.add({
+              'id': provider.relayModel,
+              'label': label(provider.relayModel),
+            });
+          }
+          return jsonEncode(
+              {'current': provider.relayModel, 'models': models});
+        }
+      case 'floatingMemoSetAiModel':
+        // メモ窓で選んだモデルを本体の設定 (relayModel) に反映する。
+        {
+          final id = '${call.arguments ?? ''}'.trim();
+          if (id.isNotEmpty) {
+            await context.read<MindMapProvider>().setRelayModel(id);
+          }
+          return 'ok';
         }
       case 'openFloatingMemo':
         // フローティング AI のヘッダーから (= ユーザー要望)。
@@ -95356,6 +95408,71 @@ bool openExternalWebWindow(String url) {
 /// 左に本文、 右に描画結果を並べる。 描画は WebView に
 /// marked.js (Markdown) と mermaid.js (図) を読み込ませて行う。
 /// 本文は prefs (markdown_<pageId>) に素のテキストで保存する。
+/// Markdown 本文を埋め込んだプレビュー用 HTML。
+/// marked (Markdown) と mermaid (図) を CDN から読み込む。
+/// ネットに繋がらない時は、 素のテキストがそのまま出る。
+/// Markdown ページと、 .md ファイルを開くテキストエディタの両方で使う
+/// (= ユーザー要望: マークダウン形式を開いた時にもプレビュー機能)。
+String _markdownPreviewHtml(String md, bool dark) {
+  final fg = dark ? '#E8EAF2' : '#16181D';
+  final bg = dark ? '#14141F' : '#FFFFFF';
+  final code = dark ? '#1E1E2E' : '#F3F4F8';
+  final border = dark ? '#2E2E44' : '#DDE1EA';
+  final theme = dark ? 'dark' : 'default';
+  final src = jsonEncode(md);
+  return '''<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body{margin:0;padding:18px 20px;background:$bg;color:$fg;
+       font-family:"Yu Gothic UI","Meiryo","Segoe UI",sans-serif;
+       font-size:14px;line-height:1.75;}
+  h1,h2,h3{border-bottom:1px solid $border;padding-bottom:6px;}
+  code{background:$code;padding:2px 5px;border-radius:4px;
+       font-family:Consolas,monospace;font-size:12.5px;}
+  pre{background:$code;padding:12px 14px;border-radius:8px;overflow-x:auto;}
+  pre code{background:none;padding:0;}
+  table{border-collapse:collapse;margin:10px 0;}
+  th,td{border:1px solid $border;padding:6px 10px;}
+  th{background:$code;}
+  blockquote{border-left:4px solid $border;margin:10px 0;padding:4px 14px;
+             color:#8890A6;}
+  img{max-width:100%;}
+  .mermaid{background:transparent;margin:14px 0;text-align:center;}
+  #err{color:#E57373;font-size:12px;white-space:pre-wrap;}
+</style></head><body>
+<div id="out"></div><div id="err"></div>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: false, theme: '$theme' });
+  const src = $src;
+  const out = document.getElementById('out');
+  try {
+    // ```mermaid ブロックだけ先に取り出して div.mermaid に置き換える。
+    const blocks = [];
+    const replaced = src.replace(/```mermaid\\s*([\\s\\S]*?)```/g, (m, code) => {
+      blocks.push(code.trim());
+      return '<div class="mermaid-slot" data-i="' + (blocks.length - 1) + '"></div>';
+    });
+    out.innerHTML = (window.marked ? marked.parse(replaced) : replaced);
+    const slots = out.querySelectorAll('.mermaid-slot');
+    for (const el of slots) {
+      const i = Number(el.getAttribute('data-i'));
+      try {
+        const { svg } = await mermaid.render('m' + i + '_' + Date.now(), blocks[i]);
+        el.innerHTML = svg;
+        el.className = 'mermaid';
+      } catch (e) {
+        el.innerHTML = '<pre style="color:#E57373">' + String(e) + '</pre>';
+      }
+    }
+  } catch (e) {
+    document.getElementById('err').textContent = String(e);
+    out.textContent = src;
+  }
+</script></body></html>''';
+}
+
 class _MarkdownPageView extends StatefulWidget {
   final MindMapProvider provider;
   final String pageId;
@@ -95490,7 +95607,7 @@ graph TD
 
   Future<void> _render() async {
     if (!mounted || !_preview) return;
-    final html = _buildHtml(_ctrl.text, widget.provider.isDarkMode);
+    final html = _markdownPreviewHtml(_ctrl.text, widget.provider.isDarkMode);
     try {
       if (_isDesktopPlatform) {
         // data: URI は長さ制限に当たる事があるので loadStringContent を使う
@@ -95505,69 +95622,6 @@ graph TD
     } catch (e) {
       debugPrint('markdown プレビューの描画に失敗: $e');
     }
-  }
-
-  /// 本文を埋め込んだプレビュー用 HTML。
-  /// marked (Markdown) と mermaid (図) を CDN から読み込む。
-  /// ネットに繋がらない時は、 素のテキストがそのまま出る。
-  String _buildHtml(String md, bool dark) {
-    final fg = dark ? '#E8EAF2' : '#16181D';
-    final bg = dark ? '#14141F' : '#FFFFFF';
-    final code = dark ? '#1E1E2E' : '#F3F4F8';
-    final border = dark ? '#2E2E44' : '#DDE1EA';
-    final theme = dark ? 'dark' : 'default';
-    final src = jsonEncode(md);
-    return '''<!doctype html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-  body{margin:0;padding:18px 20px;background:$bg;color:$fg;
-       font-family:"Yu Gothic UI","Meiryo","Segoe UI",sans-serif;
-       font-size:14px;line-height:1.75;}
-  h1,h2,h3{border-bottom:1px solid $border;padding-bottom:6px;}
-  code{background:$code;padding:2px 5px;border-radius:4px;
-       font-family:Consolas,monospace;font-size:12.5px;}
-  pre{background:$code;padding:12px 14px;border-radius:8px;overflow-x:auto;}
-  pre code{background:none;padding:0;}
-  table{border-collapse:collapse;margin:10px 0;}
-  th,td{border:1px solid $border;padding:6px 10px;}
-  th{background:$code;}
-  blockquote{border-left:4px solid $border;margin:10px 0;padding:4px 14px;
-             color:#8890A6;}
-  img{max-width:100%;}
-  .mermaid{background:transparent;margin:14px 0;text-align:center;}
-  #err{color:#E57373;font-size:12px;white-space:pre-wrap;}
-</style></head><body>
-<div id="out"></div><div id="err"></div>
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-<script type="module">
-  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
-  mermaid.initialize({ startOnLoad: false, theme: '$theme' });
-  const src = $src;
-  const out = document.getElementById('out');
-  try {
-    // ```mermaid ブロックだけ先に取り出して div.mermaid に置き換える。
-    const blocks = [];
-    const replaced = src.replace(/```mermaid\\s*([\\s\\S]*?)```/g, (m, code) => {
-      blocks.push(code.trim());
-      return '<div class="mermaid-slot" data-i="' + (blocks.length - 1) + '"></div>';
-    });
-    out.innerHTML = (window.marked ? marked.parse(replaced) : replaced);
-    const slots = out.querySelectorAll('.mermaid-slot');
-    for (const el of slots) {
-      const i = Number(el.getAttribute('data-i'));
-      try {
-        const { svg } = await mermaid.render('m' + i + '_' + Date.now(), blocks[i]);
-        el.innerHTML = svg;
-        el.className = 'mermaid';
-      } catch (e) {
-        el.innerHTML = '<pre style="color:#E57373">' + String(e) + '</pre>';
-      }
-    }
-  } catch (e) {
-    document.getElementById('err').textContent = String(e);
-    out.textContent = src;
-  }
-</script></body></html>''';
   }
 
   /// AI に Markdown / Mermaid を書いてもらう (= ユーザー要望)。
@@ -172615,6 +172669,103 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
   /// 数式プレビューモード ON の時、 $...$ / $$...$$ を MathJax 風に描画。
   bool _mathPreview = false;
 
+  // ── Markdown プレビュー (= ユーザー要望: マークダウン形式を開いた時の
+  //    プレビュー機能 + Mermaid 記法) ──
+  /// Markdown ファイルか (.md / .markdown)。
+  bool get _isMarkdownFile {
+    final l = _currentFileName.toLowerCase();
+    return l.endsWith('.md') || l.endsWith('.markdown');
+  }
+
+  /// Markdown プレビューモード (編集ビューと切り替え)。
+  bool _mdPreview = false;
+
+  /// プレビュー用 WebView (デスクトップ = WebView2 / モバイル = iaw)。
+  wv_win.WebviewController? _mdWin;
+  bool _mdWinReady = false;
+  bool _mdWinFailed = false;
+  iaw.InAppWebViewController? _mdIaw;
+
+  /// プレビューを開く / 閉じる。 開く時に現在の本文を描画する。
+  Future<void> _toggleMdPreview() async {
+    _commitEdit();
+    final next = !_mdPreview;
+    setState(() => _mdPreview = next);
+    if (!next) return;
+    if (!kIsWeb &&
+        (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      if (_mdWin == null && !_mdWinFailed) {
+        try {
+          final c = wv_win.WebviewController();
+          await c.initialize().timeout(const Duration(seconds: 12));
+          await c.setBackgroundColor(const Color(0xFF14141F));
+          if (!mounted || !_mdPreview) {
+            await c.dispose();
+            return;
+          }
+          setState(() {
+            _mdWin = c;
+            _mdWinReady = true;
+          });
+        } catch (e) {
+          debugPrint('markdown ファイルプレビューの初期化に失敗: $e');
+          if (mounted) setState(() => _mdWinFailed = true);
+          return;
+        }
+      }
+    }
+    await _renderMdPreview();
+  }
+
+  Future<void> _renderMdPreview() async {
+    if (!mounted || !_mdPreview) return;
+    final html = _markdownPreviewHtml(_lines.join('\n'), widget.isDarkMode);
+    try {
+      if (!kIsWeb &&
+          (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+        if (_mdWinReady) await _mdWin?.loadStringContent(html);
+      } else {
+        final uri =
+            Uri.dataFromString(html, mimeType: 'text/html', encoding: utf8)
+                .toString();
+        await _mdIaw?.loadUrl(
+            urlRequest: iaw.URLRequest(url: iaw.WebUri(uri)));
+      }
+    } catch (e) {
+      debugPrint('markdown ファイルプレビューの描画に失敗: $e');
+    }
+  }
+
+  /// プレビュー本体 (デスクトップ = WebView2 / モバイル = InAppWebView)。
+  Widget _buildMdPreviewBody() {
+    if (!kIsWeb &&
+        (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      if (_mdWinFailed) {
+        return Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Text(
+                context.read<MindMapProvider>().t('md.previewUnavailable'),
+                style: const TextStyle(color: Colors.white54, fontSize: 12)),
+          ),
+        );
+      }
+      if (!_mdWinReady || _mdWin == null) {
+        return const Center(child: CircularProgressIndicator(strokeWidth: 2));
+      }
+      return wv_win.Webview(_mdWin!);
+    }
+    final uri = Uri.dataFromString(
+            _markdownPreviewHtml(_lines.join('\n'), widget.isDarkMode),
+            mimeType: 'text/html',
+            encoding: utf8)
+        .toString();
+    return iaw.InAppWebView(
+      initialUrlRequest: iaw.URLRequest(url: iaw.WebUri(uri)),
+      onWebViewCreated: (c) => _mdIaw = c,
+    );
+  }
+
   // ─── レイアウト定数 ─────────────────────────────────────────────
   static const double _lineHeight = 22.0;
   static const double _gutterWidth = 52.0;
@@ -172634,6 +172785,9 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
     _keyFocus.dispose();
     _scroll.dispose();
     _reader?.dispose();
+    try {
+      _mdWin?.dispose();
+    } catch (_) {}
     super.dispose();
   }
 
@@ -173401,6 +173555,9 @@ $currentText
           ),
         ),
       );
+    } else if (_mdPreview && _isMarkdownFile) {
+      // Markdown プレビュー (= ユーザー要望: Mermaid 記法も描画)。
+      body = _buildMdPreviewBody();
     } else if (_mathPreview && _mathCapable) {
       body = _buildMathPreview(dark, fg);
     } else {
@@ -173512,6 +173669,22 @@ $currentText
                       fontWeight: FontWeight.w700)),
             ),
           const Spacer(),
+          // ── Markdown プレビュー切替 (.md のみ。 Mermaid 記法も描画) ──
+          // (= ユーザー要望: マークダウン形式を開いた時のプレビュー機能)。
+          if (_isMarkdownFile)
+            IconButton(
+              tooltip: context.read<MindMapProvider>().t('md.togglePreview'),
+              icon: Icon(
+                _mdPreview ? Icons.edit_rounded : Icons.visibility_rounded,
+                color: _mdPreview
+                    ? const Color(0xFF4DB6AC)
+                    : fg.withValues(alpha: 0.7),
+              ),
+              onPressed: () {
+                // ignore: discarded_futures
+                _toggleMdPreview();
+              },
+            ),
           // 数式プレビューモード切替 (対応拡張子のみ)
           if (_mathCapable)
             IconButton(
@@ -173524,7 +173697,10 @@ $currentText
               ),
               onPressed: () {
                 _commitEdit();
-                setState(() => _mathPreview = !_mathPreview);
+                setState(() {
+                  _mathPreview = !_mathPreview;
+                  if (_mathPreview) _mdPreview = false;
+                });
               },
             ),
           // 音声読み上げ (= ユーザー要望: テキストファイルの音声読み上げ)
