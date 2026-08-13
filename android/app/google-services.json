@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "767346963841",
+    "project_id": "mindmap-b6115",
+    "storage_bucket": "mindmap-b6115.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:767346963841:android:8a15a7148cfa5a829de480",
+        "android_client_info": {
+          "package_name": "com.kamispec.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDGYWpsyuMJo1omHJnAyfGcb0LYFWG5nUc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -1,0 +1,191 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET"/>
+
+    <!-- ── バックグラウンド再生・タイマー継続のための権限 ── -->
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <!-- audio_service が要求する Foreground Service 権限 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
+    <!-- Doze モード除外申請 -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
+    <!-- Android 13+ で常駐通知に必要 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+
+    <!-- ── 「後で通知」 用の権限 (flutter_local_notifications) ── -->
+    <!-- 指定時間後に正確に発火させるためのアラーム権限 (Android 12+ で要)。
+         USE_EXACT_ALARM は Play Store で承認不要 (= デフォルト許可)。
+         SCHEDULE_EXACT_ALARM は Android 13 以下で必要。
+         両方宣言しておくと、 OS 側で適切なものが使われる。 -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>
+    <!-- 端末再起動後にも予約済み通知を復元 (= boot 後に AlarmManager 再登録) -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+    <!-- 音/振動を伴う通知 -->
+    <uses-permission android:name="android.permission.VIBRATE"/>
+
+    <!-- ── 音声入力 (speech_to_text) 用 ── -->
+    <!-- マイク入力の権限。 これが無いと initialize が必ず失敗し、
+         「音声認識を利用できません」 になる。 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+
+    <!-- ── 無音カメラ (camera プラグイン) 用 ── -->
+    <!-- 写真撮影の権限。 camera プラグインは独自キャプチャのためシャッター音は鳴らない。 -->
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <!-- WebView (Google マップ / Earth) の現在地取得に使う
+         (= ユーザー要望: 位置情報を有効化できるように) -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+    <!-- Android 9 以下で公開 Download へ保存するための旧ストレージ権限。
+         Android 10 以降は MediaStore を使うため要求しない。 -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28"/>
+    <!-- ── 直近のスクリーンショット貼り付け用 (= ユーザー要望) ── -->
+    <!-- クリップボードから画像が読めない時に、 端末ギャラリーの最新画像
+         (直近のスクショ) を MediaStore から読むための権限。
+         Android 13+ は READ_MEDIA_IMAGES、 Android 12 以下は
+         READ_EXTERNAL_STORAGE (読み取り) を使う。 -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32"/>
+    <!-- カメラは必須ではない (端末に無くてもインストール可) -->
+    <uses-feature android:name="android.hardware.camera" android:required="false"/>
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false"/>
+
+    <!-- ── IC カード残高取得 (nfc_manager): 交通系 FeliCa 読み取り用 ── -->
+    <!-- NFC で Suica/PASMO 等の残高を読む。 NFC 非搭載端末でもインストール
+         できるよう uses-feature は required="false" にする (= 非対応端末では
+         アプリ側で「FeliCa に対応していません」 と表示してフォールバック)。 -->
+    <uses-permission android:name="android.permission.NFC"/>
+    <uses-feature android:name="android.hardware.nfc" android:required="false"/>
+
+    <!-- ── フローティングメモ (flutter_overlay_window) 用 ── -->
+    <!-- 他のアプリの上にメモを小さく表示する (= ユーザー要望)。
+         SYSTEM_ALERT_WINDOW はユーザーが設定画面で明示的に許可する。 -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
+
+    <application
+        android:label="HisatorNB"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+            <!--
+                ── Activity 属性の意味 ──
+                showWhenLocked / turnScreenOn は削除 (2026-07-30):
+                    旧: ロック画面の上に Activity を表示して動画再生・
+                    タイマーを継続させる目的で true にしていたが、
+                    Xiaomi HyperOS (Poco F6 Pro 等) では「キーガードの
+                    上に載る Activity」 と扱われ、 ホームへ戻る / 端末の
+                    ファイラーを開く等でアプリを離れると背後のキーガード
+                    (ロック画面) が再表示される不具合になっていた
+                    (= ユーザー報告)。 バックグラウンド音声は
+                    audio_service が担うため、 この属性なしで問題ない。
+                configChanges:
+                    画面回転・キーボード表示・ロケール変更など、本来は
+                    Activity を破棄して再生成する変更を Flutter 側で
+                    ハンドルすると宣言。
+            -->
+            <meta-data
+                android:name="io.flutter.embedding.android.NormalTheme"
+                android:resource="@style/NormalTheme"/>
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+            <!-- audio_service: ロック画面のメディアコントロール / 通知タップ
+                 の戻り先として MainActivity を指定 -->
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </activity>
+
+        <!-- ── audio_service の Foreground Service ── -->
+        <!-- バックグラウンド再生 ON のときに動画再生開始で起動する。
+             foregroundServiceType="mediaPlayback" を指定することで、
+             OS にメディア再生中を宣言し、画面オフ・スリープ中も
+             停止されにくくなる (Android 14+ で必須)。 -->
+        <service
+            android:name="com.ryanheise.audioservice.AudioService"
+            android:foregroundServiceType="mediaPlayback"
+            android:exported="true"
+            tools:ignore="Instantiatable">
+            <intent-filter>
+                <action android:name="android.media.browse.MediaBrowserService" />
+            </intent-filter>
+        </service>
+
+        <!-- audio_service: メディアボタンレシーバー (ヘッドセットの再生/停止
+             ボタン等を Service に転送する) -->
+        <receiver
+            android:name="com.ryanheise.audioservice.MediaButtonReceiver"
+            android:exported="true"
+            tools:ignore="Instantiatable">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
+
+        <!-- ── 「後で通知」 用の receiver (flutter_local_notifications) ── -->
+        <!-- ScheduledNotificationReceiver: AlarmManager から呼ばれて通知を発火。
+             ScheduledNotificationBootReceiver: 端末再起動後に予約を復元。
+             ActionBroadcastReceiver: 通知のアクションボタンタップを受ける。
+             どれも公式プラグインが提供するクラスをそのまま登録する。 -->
+        <receiver
+            android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver"
+            android:exported="false"/>
+        <receiver
+            android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED"/>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
+                <action android:name="android.intent.action.QUICKBOOT_POWERON"/>
+                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON"/>
+            </intent-filter>
+        </receiver>
+        <receiver
+            android:name="com.dexterous.flutterlocalnotifications.ActionBroadcastReceiver"
+            android:exported="false"/>
+
+        <!-- ── フローティングメモ (flutter_overlay_window) の OverlayService ── -->
+        <!-- 他のアプリの上にメモ UI を表示する Foreground Service。 -->
+        <service
+            android:name="flutter.overlay.window.flutter_overlay_window.OverlayService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="floating_memo_overlay"/>
+        </service>
+
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2"/>
+    </application>
+
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.PROCESS_TEXT"/>
+            <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- ── 音声認識サービスの可視性 (Android 11+ で必須) ── -->
+        <!-- これが無いと SpeechRecognizer.isRecognitionAvailable() が false を
+             返し、 speech_to_text の initialize が失敗して
+             「音声認識を利用できません」 になる。 端末側にも Google アプリ等の
+             音声認識エンジンが入っている必要がある。 -->
+        <intent>
+            <action android:name="android.speech.RecognitionService"/>
+        </intent>
+    </queries>
+</manifest>

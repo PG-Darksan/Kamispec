@@ -1,0 +1,226 @@
+rules_version = '2';
+
+// ============================================================================
+//  HisatorNotebook — Firestore セキュリティルール
+//
+//  いまの実装は「アクセス制限をすべてアプリ側 (Dart) で行う」形になっており、
+//  サーバー側には何の制限もありません。 つまり、
+//    ・他人の同期グループのページを読む / 書き換える
+//    ・他人の予定 (カレンダー) を読む
+//    ・クーポンの currentUses を書き換えて使い放題にする
+//    ・users/{uid} の plan を書き換える
+//  が、 技術的に可能な状態です。 有料公開の前にここを埋める必要があります。
+//
+//  ── 使い方 ──────────────────────────────────────────────────────────
+//   1. Firebase コンソール → Firestore Database → 「ルール」 タブ
+//   2. この中身を貼り付けて 「公開」
+//   3. その前に必ず 「ルール プレイグラウンド」 か、 テスト用の別プロジェクトで
+//      一通り動かして確認してください (下の「確認する所」 参照)
+//
+//  ── 先にやっておくこと ──────────────────────────────────────────────
+//   開発者 (自分) の uid を admins に登録します。 これをしないと、
+//   クーポンの発行・ユーザー一覧・問い合わせの返信ができなくなります。
+//
+//     コレクション: admins   ドキュメント ID: 自分の uid
+//     (uid はアプリの 設定 → 一番上の行に 「UID: ...」 で出ています)
+//     中身は空で構いません。
+//
+//  ── 確認する所 ──────────────────────────────────────────────────────
+//   □ 同期グループを作る / 参加する / ページを上げる・落とす
+//   □ カレンダーの共有 (自分の予定が上がる / 相手の予定が見える)
+//   □ クーポンを発行する (開発者モード) / 別端末で引き換える
+//   □ 問い合わせを送る / 開発者の受信箱に出る / 返信が届く
+//   □ ページの共同編集 (公開コードで参加)
+// ============================================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── 共通の判定 ──────────────────────────────────────────────────
+    function signedIn() {
+      return request.auth != null;
+    }
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+    // 開発者かどうか。 admins/{uid} が存在すれば開発者。
+    function isAdmin() {
+      return signedIn()
+          && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+    // その同期グループの参加者か。 参加時に members/{uid} を作るので、
+    // それが存在することを「参加済み」 の証拠として使う。
+    function isMember(gid) {
+      return signedIn()
+          && exists(/databases/$(database)/documents/groups/$(gid)/members/$(request.auth.uid));
+    }
+    // 書き換えようとしているフィールドが、 許した名前だけに収まっているか。
+    function onlyFields(allowed) {
+      return request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(allowed);
+    }
+
+    // ── 開発者の名簿 ────────────────────────────────────────────────
+    // 自分が開発者かどうかだけ読める。 追加・削除はコンソールから手で行う。
+    match /admins/{uid} {
+      allow get: if isSelf(uid) || isAdmin();
+      allow list, write: if false;
+    }
+
+    // ── 利用者ごとの情報 (表示名 / プラン / 最終アクセス) ────────────
+    // 本人だけが読み書きできる。 開発者はプラン別一覧のために全体を読める。
+    //
+    // ※ plan は本人が書ける (= 書き換えれば free→max と自称できる) が、
+    //   実際の権利は代行サーバー (Cloudflare Worker) の KV が持っており、
+    //   AI もクラウド容量もそちらで判定するため、 ここを偽っても
+    //   有料機能そのものは使えない。
+    match /users/{uid} {
+      allow read: if isSelf(uid) || isAdmin();
+      allow list: if isAdmin();
+      allow write: if isSelf(uid);
+    }
+
+    // ── 同期グループ ────────────────────────────────────────────────
+    match /groups/{gid} {
+      // 参加者だけが中を見られる。 作成は誰でも (= 新しいグループを作る時)。
+      allow get: if isMember(gid);
+      allow list: if false;
+      allow create: if signedIn();
+      // グループの設定を変えられるのは作った人だけ。
+      allow update: if isMember(gid)
+                    && resource.data.host == request.auth.uid;
+      allow delete: if isMember(gid)
+                    && resource.data.host == request.auth.uid;
+
+      // 参加者の名簿。 自分の行だけ作れる / 消せる。 他人の行は読むだけ。
+      match /members/{uid} {
+        allow read: if isMember(gid);
+        // 参加の瞬間はまだ member ではないので、 作成だけは
+        //   「自分の uid の行」 であれば通す。
+        allow create: if isSelf(uid);
+        allow update, delete: if isSelf(uid);
+      }
+
+      // 共有ページ。 参加者なら読み書きできる。
+      match /pages/{pageId} {
+        allow read: if isMember(gid);
+        allow create: if isMember(gid);
+        // ★ 上げ直しの禁止 (uploadRestricted) を、 サーバー側でも効かせる。
+        //   ロックした本人だけが解除・上書きできる。
+        allow update: if isMember(gid)
+                      && (
+                           !(resource.data.keys().hasAny(['uploadRestricted']))
+                           || resource.data.uploadRestricted != true
+                           || resource.data.restrictedByUid == request.auth.uid
+                         );
+        allow delete: if isMember(gid);
+      }
+
+      // 予定表。 1 人 1 ドキュメント。 書けるのは自分の分だけ。
+      match /calendar/{docId} {
+        allow read: if isMember(gid);
+        allow write: if isMember(gid)
+                     && (docId == request.auth.uid
+                         // 旧版が使っていた 1 枚だけの置き場 (読み取り互換)。
+                         || docId == 'events');
+      }
+
+      // 上に書いていない下位コレクションは触らせない。
+      match /{other=**} {
+        allow read, write: if false;
+      }
+    }
+
+    // ── ページの共同編集 (公開コードで参加する仕組み) ───────────────
+    // 8 文字の公開コードを知っていることが参加の条件、 という設計なので、
+    // ログインしていれば読み書きできる形にしている。
+    // ※ コードは推測されにくい長さだが、 秘密ではない。 見せたくない資料を
+    //   共同編集に出さないよう、 アプリ側の説明で伝えること。
+    match /published/{code} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+                    && request.resource.data.ownerUid == request.auth.uid;
+      // 後から書き換えられるのは公開した本人だけ。
+      allow update, delete: if signedIn()
+                            && resource.data.ownerUid == request.auth.uid;
+
+      // 本文。 参加者が編集するのでログイン済みなら書ける。
+      match /doc/{docId} {
+        allow read, write: if signedIn();
+      }
+      // 参加者の在席情報。 自分の行だけ。
+      match /peers/{clientId} {
+        allow read: if signedIn();
+        allow write: if signedIn();
+      }
+    }
+
+    // ── クーポン ────────────────────────────────────────────────────
+    // 発行できるのは開発者だけ。 利用者は「コードを確かめる」 ために読めるが、
+    // 書き換えは使用回数の 1 増やしだけに絞る。
+    match /coupons/{code} {
+      allow get: if signedIn();
+      allow list: if isAdmin();
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin()
+                    // 引き換え: currentUses と最後に引き換えた端末の記録だけ。
+                    || (signedIn()
+                        && onlyFields(['currentUses', 'lastRedemptionId'])
+                        && request.resource.data.currentUses
+                           == resource.data.currentUses + 1);
+
+      // 引き換え済みの記録。 1 端末 1 枚。 作るのは本人、 消すのは開発者。
+      match /redemptions/{devId} {
+        allow read: if signedIn();
+        allow create: if signedIn()
+                      && request.resource.data.uid == request.auth.uid;
+        allow update: if false;
+        allow delete: if isAdmin();
+      }
+    }
+
+    // ── メッセージ ──────────────────────────────────────────────────
+    // 送るのは自分名義でのみ。 読めるのは宛先か送り主 (と開発者)。
+    match /messages/{msgId} {
+      allow create: if signedIn()
+                    && request.resource.data.fromUid == request.auth.uid;
+      allow read: if isAdmin()
+                  || (signedIn()
+                      && (resource.data.get('toUid', '') == request.auth.uid
+                          || resource.data.fromUid == request.auth.uid));
+      allow list: if isAdmin();
+      // 既読フラグを立てる / 自分宛を消す。
+      allow update: if signedIn()
+                    && resource.data.get('toUid', '') == request.auth.uid
+                    && onlyFields(['read']);
+      allow delete: if isAdmin()
+                    || (signedIn()
+                        && (resource.data.get('toUid', '') == request.auth.uid
+                            || resource.data.fromUid == request.auth.uid));
+    }
+
+    // ── お問い合わせ ────────────────────────────────────────────────
+    // これまで「誰でも書き放題」 だった所。 自分名義の新規作成だけに絞る。
+    // 返信を書けるのは開発者だけ。
+    match /inquiries/{id} {
+      allow create: if signedIn()
+                    && request.resource.data.uid == request.auth.uid;
+      allow read: if isAdmin()
+                  || (signedIn() && resource.data.uid == request.auth.uid);
+      allow list: if isAdmin();
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ── アプリ全体の設定 (問い合わせ先メールなど) ───────────────────
+    match /admin/{docId} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    // ── ここに書いていないものはすべて拒否 ─────────────────────────
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

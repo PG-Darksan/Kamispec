@@ -1,0 +1,28 @@
+build/
+.dart_tool/
+.android/
+.ios/
+# 環境変数ファイル（API キーが入っているので絶対にコミットしない）
+env.json
+env.*.json
+.env
+.env.*
+
+# 別リポジトリ/ローカル成果物 (ロールバック用チェックポイントには含めない)
+Kamispec/
+# ビルド成果物の保管先。 GitHub Releases にも上げているので git には入れない
+#   (= 1 回 100MB 超 × 回数ぶん、 リポジトリが肥大化する)。
+releases/
+# Gradle のビルドキャッシュ。 executionHistory.bin だけで 78MB あり、 ビルドの
+#   たびに中身が変わるため、 コミットするとリポジトリが一気に膨らむ
+#   (= .git が 36GB になった主因)。 再生成されるので追跡しない。
+android/.gradle/
+.gradle/
+*.log
+build_apk.log
+.idea/
+.vscode/
+*.iml
+
+# Stripe Webhook 署名シークレット (Worker へ設定済み。コミットしない)
+worker/_whsec.txt
