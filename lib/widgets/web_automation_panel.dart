@@ -12,6 +12,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show HardwareKeyboard;
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -19,7 +20,28 @@ import '../providers/mind_map_provider.dart';
 import 'shot_manager_dialog.dart';
 
 /// 1 ステップの種類。
-enum WebAutoKind { tap, hold, swipe, scroll, wait, shot, type, loop }
+/// 1 ステップの種類。 open = リンクを開く (= ユーザー要望)。
+/// 自動操作の手順の種類。
+///
+/// `click` と `scrollTo` は後から足した (= ユーザー報告: AI に「フッターの
+/// スクショを撮って」「Windows 版のタブに切り替えて」 と頼んでも、 途中で
+/// 止まったり切り替えられなかったりする)。 原因は AI が座標しか指定できず、
+/// 画面に何があるかを知らないまま組み立てていたこと。
+///   ・click     … 文字 / セレクタで要素を探して押す (座標が要らない)
+///   ・scrollTo  … 一番下 / 一番上まで一気に送る (フッターの撮影が確実になる)
+enum WebAutoKind {
+  tap,
+  hold,
+  swipe,
+  scroll,
+  wait,
+  shot,
+  type,
+  open,
+  loop,
+  click,
+  scrollTo
+}
 
 class WebAutoStep {
   WebAutoKind kind;
@@ -246,7 +268,10 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
   /// 記録せず、 動作と動作の間はなるべく短く。
   static const int _kRecordIntervalMs = 120;
 
-  int _loop = 1;
+  /// 全体の繰り返し回数。 = ユーザー要望で設定欄は廃止し、 常に 1 周。
+  /// (繰り返したい時は「繰り返し」 ブロックの中に手順を入れる)。
+  /// 旧データを読んでも 1 に丸める。
+  static const int _loop = 1;
   bool _running = false;
   String _status = '';
   bool _cancel = false;
@@ -256,6 +281,15 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
     super.initState();
     _load();
     _loadFlows();
+    // 前に使った指示 (= ユーザー要望: 呼び出せるように)。
+    // ignore: discarded_futures
+    _loadAiPrompts();
+  }
+
+  @override
+  void dispose() {
+    _aiCtrl.dispose();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -264,7 +298,6 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
       final s = prefs.getString(_prefsKey);
       if (s == null || s.isEmpty) return;
       final m = jsonDecode(s) as Map<String, dynamic>;
-      _loop = (m['loop'] as num?)?.toInt() ?? 1;
       final list = (m['steps'] as List?) ?? const [];
       _steps
         ..clear()
@@ -341,7 +374,6 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
     );
     if (name == null || name.isEmpty) return;
     _flows[name] = {
-      'loop': _loop,
       'steps': _steps.map((e) => e.toJson()).toList(),
     };
     await _persistFlows();
@@ -399,7 +431,6 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
     final data = _flows[sel];
     if (data is! Map) return;
     setState(() {
-      _loop = (data['loop'] as num?)?.toInt() ?? 1;
       _steps
         ..clear()
         ..addAll(((data['steps'] as List?) ?? const [])
@@ -415,7 +446,6 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
       await prefs.setString(
           _prefsKey,
           jsonEncode({
-            'loop': _loop,
             'steps': _steps.map((e) => e.toJson()).toList(),
           }));
     } catch (_) {}
@@ -425,86 +455,205 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
   //    AI に指示を出して手順を組み立てられるように) ──
   bool _aiBusy = false;
 
-  Future<void> _aiBuildFlow(MindMapProvider provider) async {
-    final ctrl = TextEditingController();
-    final req = await showDialog<String>(
-      context: context,
-      builder: (dctx) => AlertDialog(
-        backgroundColor: const Color(0xFF2A2A3E),
-        title: Row(children: [
-          const Icon(Icons.auto_awesome_rounded,
-              color: Color(0xFFBA68C8), size: 18),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(provider.t('auto.aiBuild'),
-                style: const TextStyle(color: Colors.white, fontSize: 15)),
+  /// AI 入力欄を開いているか (= ユーザー要望: 画面中央のダイアログではなく
+  /// 自動操作の設定画面の上に出す)。
+  bool _aiFormOpen = false;
+  final TextEditingController _aiCtrl = TextEditingController();
+
+  /// 前に使った指示 (= ユーザー要望: フロー作成に使ったプロンプトを覚えて
+  /// おいて呼び出せるように)。 prefs `autoAiPrompts` に古い順で持つ。
+  List<String> _aiPrompts = [];
+  static const String _kAiPromptsKey = 'autoAiPrompts';
+
+  Future<void> _loadAiPrompts() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final list = sp.getStringList(_kAiPromptsKey) ?? const [];
+      if (mounted) setState(() => _aiPrompts = List<String>.from(list));
+    } catch (_) {}
+  }
+
+  /// 使った指示を覚える (同じ物は 1 つに。 20 件まで)。
+  void _rememberAiPrompt(String v) {
+    final t = v.trim();
+    if (t.isEmpty) return;
+    final list = List<String>.from(_aiPrompts)
+      ..remove(t)
+      ..add(t);
+    while (list.length > 20) {
+      list.removeAt(0);
+    }
+    setState(() => _aiPrompts = list);
+    // ignore: discarded_futures
+    SharedPreferences.getInstance()
+        .then((sp) => sp.setStringList(_kAiPromptsKey, list))
+        .catchError((_) => false);
+  }
+
+  /// フロー作成で使うモデルを選ぶ (= ユーザー要望: ここでも設定したい)。
+  /// AI アシスタント等と同じ設定 (relayModel) を共有する。
+  Widget _buildAiModelPicker(MindMapProvider provider) {
+    String label(String id) => id.replaceAll(RegExp(r'-\d{8}$'), '');
+    final models = [
+      for (final m in provider.relayModels)
+        if (m is Map && m['available'] == true) m
+    ];
+    return PopupMenuButton<String>(
+      tooltip: provider.t('mcp.model'),
+      color: const Color(0xFF1E1E32),
+      onSelected: (id) async {
+        await provider.setRelayModel(id);
+        if (mounted) setState(() {});
+      },
+      itemBuilder: (_) => [
+        for (final m in models)
+          PopupMenuItem<String>(
+            value: '${m['id']}',
+            child: Row(children: [
+              Icon(
+                  '${m['id']}' == provider.relayModel
+                      ? Icons.radio_button_checked_rounded
+                      : Icons.radio_button_off_rounded,
+                  size: 13,
+                  color: '${m['id']}' == provider.relayModel
+                      ? const Color(0xFFBA68C8)
+                      : Colors.white38),
+              const SizedBox(width: 8),
+              Text(label('${m['id']}'),
+                  style:
+                      const TextStyle(color: Colors.white, fontSize: 12)),
+            ]),
           ),
-        ]),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          maxLines: 3,
-          minLines: 2,
-          style: const TextStyle(color: Colors.white, fontSize: 13),
-          decoration: InputDecoration(
-            hintText: provider.t('auto.aiHint'),
-            hintStyle: const TextStyle(color: Colors.white38, fontSize: 11.5),
-            filled: true,
-            fillColor: Colors.white.withValues(alpha: 0.06),
-            border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
-                borderSide: BorderSide.none),
+        if (models.isEmpty)
+          PopupMenuItem<String>(
+            enabled: false,
+            child: Text(label(provider.relayModel),
+                style:
+                    const TextStyle(color: Colors.white54, fontSize: 12)),
           ),
-          onSubmitted: (v) => Navigator.pop(dctx, v.trim()),
+      ],
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.white24),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dctx),
-            child: Text(provider.t('common.cancel'),
-                style: const TextStyle(color: Colors.white54)),
-          ),
-          ElevatedButton.icon(
-            style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFBA68C8),
-                foregroundColor: Colors.white),
-            icon: const Icon(Icons.auto_awesome_rounded, size: 15),
-            label: Text(provider.t('auto.aiBuild')),
-            onPressed: () => Navigator.pop(dctx, ctrl.text.trim()),
-          ),
-        ],
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          const Icon(Icons.memory_rounded, size: 13, color: Colors.white54),
+          const SizedBox(width: 5),
+          Text(label(provider.relayModel),
+              style: const TextStyle(color: Colors.white70, fontSize: 10.5)),
+          const Icon(Icons.expand_more_rounded,
+              size: 13, color: Colors.white38),
+        ]),
       ),
     );
-    ctrl.dispose();
-    if (req == null || req.isEmpty || !mounted) return;
+  }
+
+  /// 今開いているページの中身を短くまとめて返す (AI に見せる用)。
+  ///
+  /// = ユーザー報告「フッターのスクショを頼むと途中で止まる」「タブに
+  ///   切り替えてと頼んでも切り替えてくれない」。 原因は AI が画面に何が
+  ///   あるかを知らないまま、 座標 0 のタップを並べていたこと。 押せる物の
+  ///   文字を渡せば、 click で名指しできる。
+  Future<String> _pageSnapshot() async {
+    final ev = widget.evalJs;
+    if (ev == null) return '';
+    try {
+      final js = '(function(){'
+          'var out={url:location.href,title:document.title,'
+          ' scrollY:Math.round(window.scrollY),'
+          ' viewH:Math.round(window.innerHeight),'
+          ' pageH:Math.round(document.body?document.body.scrollHeight:0),'
+          ' items:[]};'
+          'var seen={};'
+          'var cand=document.querySelectorAll('
+          ' "a,button,[role=button],[role=tab],input,summary");'
+          'for(var i=0;i<cand.length&&out.items.length<60;i++){'
+          ' var c=cand[i];'
+          ' var r=c.getBoundingClientRect();'
+          ' if(!r||(r.width<=1&&r.height<=1)) continue;'
+          ' var t=(c.innerText||c.textContent||c.getAttribute("aria-label")'
+          '  ||c.getAttribute("placeholder")||c.value||"").'
+          '  replace(/\\s+/g," ").trim();'
+          ' if(!t||t.length>60) continue;'
+          ' if(seen[t]) continue; seen[t]=1;'
+          ' out.items.push({t:t,tag:c.tagName.toLowerCase()});'
+          '}'
+          'var hs=document.querySelectorAll("h1,h2");'
+          'out.heads=[];'
+          'for(var k=0;k<hs.length&&out.heads.length<12;k++){'
+          ' var ht=(hs[k].innerText||"").replace(/\\s+/g," ").trim();'
+          ' if(ht) out.heads.push(ht);'
+          '}'
+          'return JSON.stringify(out);'
+          '})();';
+      final r = await ev(js);
+      if (r == null) return '';
+      // WebView によっては引用符で包まれて返る。
+      var s = r.trim();
+      if (s.startsWith('"') && s.endsWith('"') && s.length > 1) {
+        try {
+          s = jsonDecode(s) as String;
+        } catch (_) {}
+      }
+      return s.length > 4000 ? s.substring(0, 4000) : s;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  /// AI に渡す手順の書き方 (フロー作成とエージェントで共通)。
+  static const String _kFlowFormatRules = '''
+{"steps":[
+ {"kind":"open","text":"https://example.com/","durationMs":2500},
+ {"kind":"click","text":"Windows 版","durationMs":1200},
+ {"kind":"scrollTo","scrollDir":"bottom","durationMs":1200},
+ {"kind":"scroll","scrollDir":"down","count":3,"intervalMs":400},
+ {"kind":"wait","durationMs":1000},
+ {"kind":"type","text":"入力する文字","selector":"","submit":true},
+ {"kind":"shot","count":1},
+ {"kind":"tap","x":0,"y":0,"count":1,"intervalMs":200},
+ {"kind":"loop","count":5,"children":[{"kind":"scroll","scrollDir":"down","count":1},{"kind":"shot","count":1}]}
+]}
+
+ルール:
+- kind は open / click / scrollTo / scroll / wait / shot / type / tap /
+  hold / swipe / loop のみ。
+- **押す操作は必ず click を使い、 text に画面に見えている文字をそのまま
+  書く** (例: {"kind":"click","text":"Windows 版"})。 tap は座標が要るので
+  基本的に使わない。 下の「今の画面」 に出ている文字から選ぶこと。
+- ページの一番下 (フッター) へ行くには {"kind":"scrollTo","scrollDir":"bottom"}
+  を使う。 一番上へ戻るのは "top"。 少しずつ送るのが scroll。
+- 「フッターを撮って」 の類は scrollTo(bottom) → wait → shot の 3 手順で足りる。
+  スクロールの回数を当てにいかないこと。
+- 「上から下まで全部撮って」 の類だけ、 loop(children: scroll(down) + shot) を
+  count 8〜12 で使う。
+- open は「そのページを開く」。 text に URL、 durationMs に読み込み待ち (ms)。
+- scrollDir は down / up / right / left (scrollTo では bottom / top)。
+- steps は 30 個以内。''';
+
+  /// 入力欄の中身で組み立てる。 呼ぶ前に欄は閉じる。
+  Future<void> _aiBuildFlowFrom(MindMapProvider provider, String request) async {
+    final req = request.trim();
+    if (req.isEmpty || !mounted) return;
     setState(() {
       _aiBusy = true;
       _status = '…';
     });
     try {
+      // 今の画面を見せてから組み立ててもらう (= ユーザー報告への対処)。
+      final snap = await _pageSnapshot();
       final prompt = '''
 あなたは Web ページの自動操作フローを作る道具です。
 次の依頼を、 下の形式の JSON だけで出力してください
 (説明文・コードフェンス・前置きは一切不要)。
 
-{"steps":[
- {"kind":"scroll","scrollDir":"down","count":3,"intervalMs":400},
- {"kind":"wait","durationMs":1000},
- {"kind":"tap","x":0,"y":0,"count":1,"intervalMs":200},
- {"kind":"swipe","x":300,"y":600,"x2":300,"y2":200,"durationMs":300},
- {"kind":"hold","x":0,"y":0,"durationMs":800},
- {"kind":"type","text":"入力する文字","selector":"","submit":true},
- {"kind":"shot","count":1},
- {"kind":"loop","count":5,"children":[{"kind":"scroll","scrollDir":"down","count":1},{"kind":"shot","count":1}]}
-]}
+$_kFlowFormatRules
+${snap.isEmpty ? '' : '''
 
-ルール:
-- kind は tap / hold / swipe / scroll / wait / shot / type / loop のみ。
-- scrollDir は down / up / right / left。
-- 画面上の正確な座標は分からないので、 タップ等の座標は 0 のままでよい
-  (利用者が後から画面上で指定し直す)。 できるだけ scroll / wait / type /
-  shot / loop を使って組み立てる。
-- 「繰り返す」 依頼は loop の children に中身を入れる。
-- steps は 30 個以内。
+【今の画面】 (url / title / 押せる物の文字 items / 見出し heads)
+$snap'''}
 
 依頼: $req''';
       final out = (await provider.askAi(prompt)).trim();
@@ -542,6 +691,156 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
       }
     } finally {
       if (mounted) setState(() => _aiBusy = false);
+    }
+  }
+
+  /// セレクタ、 無ければ見えている文字で要素を探して押す JS。
+  ///
+  /// ページ内リンク / ボタン / タブの切り替えは、 座標より文字で探す方が
+  /// 確実 (= ユーザー報告: 「Windows 版のタブに切り替えて」 が効かない)。
+  String _clickByJs(String selector, String text) {
+    final sel = jsonEncode(selector.trim());
+    final want = jsonEncode(text.trim());
+    return '(function(){'
+        'var sel=$sel, want=$want, el=null;'
+        'if(sel){try{el=document.querySelector(sel);}catch(e){}}'
+        'if(!el&&want){'
+        // 押せそうな物から、 表示されていて文字が一致する要素を探す。
+        ' var cand=document.querySelectorAll('
+        '  "a,button,[role=button],[role=tab],input[type=submit],'
+        '[onclick],summary,li,label");'
+        ' var norm=function(s){return String(s||"").replace(/\\s+/g," ").trim()'
+        '  .toLowerCase();};'
+        ' var w=norm(want), exact=null, partial=null;'
+        ' for(var i=0;i<cand.length;i++){'
+        '  var c=cand[i];'
+        '  var r=c.getBoundingClientRect();'
+        '  if(!r||(r.width<=0&&r.height<=0)) continue;'
+        '  var t=norm(c.innerText||c.textContent||c.getAttribute("aria-label")'
+        '   ||c.getAttribute("title")||c.value);'
+        '  if(!t) continue;'
+        '  if(t===w){exact=c;break;}'
+        '  if(!partial&&t.indexOf(w)>=0&&t.length<w.length+40){partial=c;}'
+        ' }'
+        ' el=exact||partial;'
+        '}'
+        'if(!el) return "notfound";'
+        'try{el.scrollIntoView({block:"center",behavior:"instant"});}catch(e){'
+        ' try{el.scrollIntoView();}catch(e2){}}'
+        'try{el.focus();}catch(e){}'
+        'try{el.click();return "ok";}catch(e){}'
+        // click() が効かない作りの物 (JS で拾っている等) には合成イベントを送る。
+        'try{var r=el.getBoundingClientRect();'
+        ' var x=r.left+r.width/2, y=r.top+r.height/2;'
+        ' var o={clientX:x,clientY:y,bubbles:true,cancelable:true,'
+        '  composed:true,view:window};'
+        ' el.dispatchEvent(new MouseEvent("mousedown",o));'
+        ' el.dispatchEvent(new MouseEvent("mouseup",o));'
+        ' el.dispatchEvent(new MouseEvent("click",o));'
+        '}catch(e){}'
+        'return "ok";'
+        '})();';
+  }
+
+  // ── AI エージェント (= ユーザー要望: 開いている画面をリアルタイムに見な
+  //    がら自動化を進められないか) ────────────────────────────────────
+  /// エージェントで動かしているか。
+  bool _agentBusy = false;
+
+  /// 途中で止めるための合図。
+  bool _agentStop = false;
+
+  /// 画面を見ながら、 1 手ずつ考えて実行する。
+  ///
+  /// 先に全部組み立てる「フロー作成」 と違い、 毎回いまの画面を見てから
+  /// 次の 1 手を決めるので、 「フッターまで行けたか」「タブが切り替わったか」
+  /// を確かめながら進められる。 やった手順はフローとして残るので、 後から
+  /// 手直しして繰り返し実行できる。
+  Future<void> _runAgent(MindMapProvider provider, String request) async {
+    final req = request.trim();
+    if (req.isEmpty || !mounted || _agentBusy) return;
+    setState(() {
+      _agentBusy = true;
+      _agentStop = false;
+      _steps.clear();
+      _status = provider.t('agent.thinking');
+    });
+    final done = <String>[];
+    try {
+      // 手数の上限。 止まらなくなるのを防ぐ。
+      for (var turn = 0; turn < 12; turn++) {
+        if (_agentStop || !mounted) break;
+        final snap = await _pageSnapshot();
+        final prompt = '''
+あなたは Web ページを操作する担当です。 依頼を達成するために、
+**次にやる 1〜3 手**だけを JSON で出してください
+(説明文・コードフェンス・前置きは一切不要)。
+
+出力の形:
+{"done":false,"steps":[ …手順… ]}
+- 依頼が済んだと判断したら {"done":true,"steps":[]} を返してください。
+- steps の書き方は下と同じです。
+
+$_kFlowFormatRules
+
+【今の画面】 (url / title / 押せる物の文字 items / 見出し heads /
+ scrollY と pageH で今どのあたりかが分かります)
+${snap.isEmpty ? '(画面の中身を読めませんでした)' : snap}
+
+【ここまでにやったこと】
+${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
+
+依頼: $req''';
+        final out = (await provider.askAi(prompt)).trim();
+        if (_agentStop || !mounted) break;
+        var body = out;
+        final fence = RegExp(r'```[a-zA-Z]*\s*\n([\s\S]*?)\n?```');
+        final fm = fence.firstMatch(body);
+        if (fm != null) body = fm.group(1) ?? body;
+        final s = body.indexOf('{');
+        final e = body.lastIndexOf('}');
+        if (s < 0 || e <= s) break;
+        final m = jsonDecode(body.substring(s, e + 1));
+        if (m is! Map) break;
+        if (m['done'] == true) {
+          if (mounted) setState(() => _status = provider.t('agent.done'));
+          break;
+        }
+        final list = m['steps'];
+        if (list is! List || list.isEmpty) break;
+        final steps = <WebAutoStep>[
+          for (final j in list)
+            if (j is Map) WebAutoStep.fromJson(Map<String, dynamic>.from(j)),
+        ];
+        if (steps.isEmpty) break;
+        if (!mounted) return;
+        // 実行した手順はフローに積んでいく (後で使い回せるように)。
+        setState(() {
+          _steps.addAll(steps);
+          _status = provider
+              .t('agent.step')
+              .replaceFirst('{n}', '${turn + 1}');
+        });
+        for (final st in steps) {
+          if (_agentStop) break;
+          done.add('- ${st.kind.name}'
+              '${st.text.isEmpty ? '' : ' "${st.text}"'}'
+              '${st.scrollDir.isEmpty ? '' : ' ${st.scrollDir}'}');
+        }
+        await _runSteps(steps, provider.t('agent.label'));
+        await _save();
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _status = '$e'.replaceFirst('Exception: ', ''));
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _agentBusy = false;
+          _agentStop = false;
+        });
+      }
     }
   }
 
@@ -691,6 +990,45 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
             if (_cancel) return;
             await widget.exec(_typeJs(s));
             await Future.delayed(_intervalOf(s));
+          }
+          break;
+        case WebAutoKind.open:
+          // ── リンクを開く (= ユーザー要望: 「このページを開いて上から下まで
+          //    スクショ」 のような手順を組めるように) ──
+          //    WebView の中で移動するだけなので、 外のブラウザは開かない。
+          {
+            var u = s.text.trim();
+            if (u.isEmpty) break;
+            if (!u.startsWith('http://') && !u.startsWith('https://')) {
+              u = 'https://$u';
+            }
+            await widget.exec('location.href = ${jsonEncode(u)};');
+            // 読み込みを待つ。 durationMs を待ち時間として使う (既定 2 秒)。
+            final waitMs = s.durationMs <= 0 ? 2000 : s.durationMs;
+            await Future.delayed(Duration(milliseconds: waitMs));
+          }
+          break;
+        case WebAutoKind.click:
+          // ── 文字 / セレクタで要素を探して押す (= 座標に頼らない) ──
+          for (var c = 0; c < (s.count <= 0 ? 1 : s.count); c++) {
+            if (_cancel) return;
+            await widget.exec(_clickByJs(s.selector, s.text));
+            // 押した先が別ページなら読み込みを待つ。
+            await Future.delayed(Duration(
+                milliseconds: s.durationMs <= 0 ? 800 : s.durationMs));
+          }
+          break;
+        case WebAutoKind.scrollTo:
+          // ── 一番下 / 一番上まで送る (= フッターの撮影を確実にする) ──
+          {
+            final toTop = s.scrollDir == 'top' || s.scrollDir == 'up';
+            await widget.exec(toTop
+                ? 'window.scrollTo({top:0,behavior:"smooth"});'
+                : 'window.scrollTo({top:document.body.scrollHeight,'
+                    'behavior:"smooth"});');
+            // 遅延読み込みの絵が出るまで少し待つ。
+            await Future.delayed(Duration(
+                milliseconds: s.durationMs <= 0 ? 1200 : s.durationMs));
           }
           break;
         case WebAutoKind.wait:
@@ -890,8 +1228,14 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
         return p.t('auto.kindShot');
       case WebAutoKind.type:
         return p.t('auto.kindType');
+      case WebAutoKind.open:
+        return p.t('auto.kindOpen');
       case WebAutoKind.loop:
         return p.t('auto.kindLoop');
+      case WebAutoKind.click:
+        return p.t('auto.kindClick');
+      case WebAutoKind.scrollTo:
+        return p.t('auto.kindScrollTo');
     }
   }
 
@@ -911,8 +1255,14 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
         return Icons.photo_camera_rounded;
       case WebAutoKind.type:
         return Icons.keyboard_rounded;
+      case WebAutoKind.open:
+        return Icons.link_rounded;
       case WebAutoKind.loop:
         return Icons.repeat_rounded;
+      case WebAutoKind.click:
+        return Icons.ads_click_rounded;
+      case WebAutoKind.scrollTo:
+        return Icons.vertical_align_bottom_rounded;
     }
   }
 
@@ -964,12 +1314,72 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
                   count: k == WebAutoKind.loop ? 2 : 1,
                   durationMs: k == WebAutoKind.scroll
                       ? 600
-                      : (k == WebAutoKind.wait ? 1000 : 400),
+                      : (k == WebAutoKind.wait
+                          ? 1000
+                          : (k == WebAutoKind.open
+                              ? 2000
+                              : (k == WebAutoKind.scrollTo ||
+                                      k == WebAutoKind.click
+                                  ? 1200
+                                  : 400))),
+                  // 端まで送るのは既定で「一番下」 (フッター狙い)。
+                  scrollDir:
+                      k == WebAutoKind.scrollTo ? 'bottom' : 'down',
                 )));
             _save();
           },
         ),
     ]);
+  }
+
+  // ─── フローの複数選択 (= ユーザー要望: Ctrl / Shift でまとめて消す) ───
+  /// 選んでいる手順 (同一性で持つので、 入れ子の中身も同じ仕組みで扱える)。
+  final Set<WebAutoStep> _stepSel = <WebAutoStep>{};
+
+  /// Shift の範囲選択の起点 (同じ list の中だけで有効)。
+  List<WebAutoStep>? _selAnchorList;
+  int _selAnchorIndex = -1;
+
+  void _toggleStepSel(List<WebAutoStep> list, int index) {
+    final keys = HardwareKeyboard.instance;
+    setState(() {
+      if (keys.isShiftPressed &&
+          identical(_selAnchorList, list) &&
+          _selAnchorIndex >= 0) {
+        final lo = _selAnchorIndex < index ? _selAnchorIndex : index;
+        final hi = _selAnchorIndex < index ? index : _selAnchorIndex;
+        for (var k = lo; k <= hi && k < list.length; k++) {
+          _stepSel.add(list[k]);
+        }
+        return;
+      }
+      final s = list[index];
+      if (_stepSel.contains(s)) {
+        _stepSel.remove(s);
+      } else {
+        _stepSel.add(s);
+      }
+      _selAnchorList = list;
+      _selAnchorIndex = index;
+    });
+  }
+
+  /// 選んだ手順をまとめて消す (入れ子の中も辿る)。
+  void _deleteSelectedSteps() {
+    void prune(List<WebAutoStep> list) {
+      list.removeWhere(_stepSel.contains);
+      for (final s in list) {
+        if (s.kind == WebAutoKind.loop) prune(s.children);
+      }
+    }
+
+    setState(() {
+      prune(_steps);
+      _stepSel.clear();
+      _selAnchorList = null;
+      _selAnchorIndex = -1;
+    });
+    _save();
   }
 
   /// 1 ステップのタイル。 繰り返しブロックは中に子ステップを並べる
@@ -980,26 +1390,47 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
     final s = list[index];
     final isLoop = s.kind == WebAutoKind.loop;
     final label = path.isEmpty ? '${index + 1}' : '$path-${index + 1}';
+    // ── Ctrl / Shift でまとめて選ぶ (= ユーザー要望: フローもまとめて消したい)。
+    //    見出しの行をクリックで選択。 選択中は上のバーからまとめて消せる。
+    final picked = _stepSel.contains(s);
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.04),
+        color: picked
+            ? const Color(0xFF6C63FF).withValues(alpha: 0.20)
+            : Colors.white.withValues(alpha: 0.04),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.white12),
+        border: Border.all(
+            color: picked ? const Color(0xFF8D86FF) : Colors.white12),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(children: [
-            Icon(_kindIcon(s.kind),
-                size: 15, color: const Color(0xFF80CBC4)),
-            const SizedBox(width: 6),
-            Text('$label. ${_kindLabel(provider, s.kind)}',
-                style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 12.5,
-                    fontWeight: isLoop ? FontWeight.w700 : FontWeight.w400)),
+            // 見出しをクリック = 選択の足し引き (Shift で範囲)。
+            InkWell(
+              borderRadius: BorderRadius.circular(6),
+              onTap: () => _toggleStepSel(list, index),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 2, vertical: 2),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(picked ? Icons.check_circle_rounded : _kindIcon(s.kind),
+                      size: 15,
+                      color: picked
+                          ? const Color(0xFF8D86FF)
+                          : const Color(0xFF80CBC4)),
+                  const SizedBox(width: 6),
+                  Text('$label. ${_kindLabel(provider, s.kind)}',
+                      style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 12.5,
+                          fontWeight:
+                              isLoop ? FontWeight.w700 : FontWeight.w400)),
+                ]),
+              ),
+            ),
             const Spacer(),
             // この項目だけ試す (= ユーザー要望)
             IconButton(
@@ -1119,6 +1550,98 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
                   _save();
                 },
               ),
+            // ── リンクを開く (= ユーザー要望: 「このページを開いて上から下まで
+            //    スクショ」 のような手順を組めるように) ──
+            if (s.kind == WebAutoKind.open) ...[
+              SizedBox(
+                width: 300,
+                child: TextFormField(
+                  initialValue: s.text,
+                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                  decoration: InputDecoration(
+                    isDense: true,
+                    labelText: provider.t('auto.openUrl'),
+                    labelStyle:
+                        const TextStyle(color: Colors.white54, fontSize: 10),
+                    hintText: 'https://example.com/',
+                    hintStyle:
+                        const TextStyle(color: Colors.white24, fontSize: 10),
+                    filled: true,
+                    fillColor: Colors.white.withValues(alpha: 0.06),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(6),
+                        borderSide: BorderSide.none),
+                  ),
+                  onChanged: (v) {
+                    s.text = v.trim();
+                    _save();
+                  },
+                ),
+              ),
+              _numField(provider.t('auto.openWait'), s.durationMs, (v) {
+                s.durationMs = v.clamp(0, 60000);
+              }, width: 96),
+            ],
+            // ── 要素を押す (= ユーザー報告: 座標だと切り替えられない) ──
+            if (s.kind == WebAutoKind.click) ...[
+              SizedBox(
+                width: 240,
+                child: TextFormField(
+                  initialValue: s.text,
+                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                  decoration: InputDecoration(
+                    isDense: true,
+                    labelText: provider.t('auto.clickText'),
+                    labelStyle:
+                        const TextStyle(color: Colors.white54, fontSize: 10),
+                    hintText: provider.t('auto.clickTextHint'),
+                    hintStyle:
+                        const TextStyle(color: Colors.white24, fontSize: 10),
+                    filled: true,
+                    fillColor: Colors.white.withValues(alpha: 0.06),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(6),
+                        borderSide: BorderSide.none),
+                  ),
+                  onChanged: (v) {
+                    s.text = v.trim();
+                    _save();
+                  },
+                ),
+              ),
+              _numField(provider.t('auto.openWait'), s.durationMs, (v) {
+                s.durationMs = v.clamp(0, 60000);
+              }, width: 96),
+            ],
+            // ── 端まで送る (= フッターの撮影を確実にする) ──
+            if (s.kind == WebAutoKind.scrollTo) ...[
+              for (final d in const ['bottom', 'top'])
+                Padding(
+                  padding: const EdgeInsets.only(right: 4),
+                  child: ChoiceChip(
+                    label: Text(
+                        provider.t(d == 'bottom'
+                            ? 'auto.scrollBottom'
+                            : 'auto.scrollTop'),
+                        style: const TextStyle(fontSize: 10.5)),
+                    selected: s.scrollDir == d,
+                    visualDensity: VisualDensity.compact,
+                    backgroundColor: const Color(0xFF2A2A44),
+                    selectedColor: const Color(0xFFBA68C8),
+                    labelStyle: TextStyle(
+                        color: s.scrollDir == d
+                            ? Colors.black
+                            : Colors.white70),
+                    onSelected: (_) {
+                      setState(() => s.scrollDir = d);
+                      _save();
+                    },
+                  ),
+                ),
+              _numField(provider.t('auto.openWait'), s.durationMs, (v) {
+                s.durationMs = v.clamp(0, 60000);
+              }, width: 96),
+            ],
             // ── テキスト入力 (= ユーザー要望) ──
             if (s.kind == WebAutoKind.type) ...[
               OutlinedButton.icon(
@@ -1491,9 +2014,30 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
                       style: const TextStyle(fontSize: 11)),
                   onPressed: _requestStop,
                 ),
+              // ── エージェントを止める (= 動いている間だけ出す) ──
+              if (_agentBusy)
+                Padding(
+                  padding: const EdgeInsets.only(right: 4),
+                  child: OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFFE57373),
+                      side: const BorderSide(color: Color(0xFFE57373)),
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                      minimumSize: const Size(0, 28),
+                    ),
+                    icon: const Icon(Icons.stop_rounded, size: 14),
+                    label: Text(provider.t('auto.agentStop'),
+                        style: const TextStyle(
+                            fontSize: 11, fontWeight: FontWeight.w700)),
+                    onPressed: () => setState(() {
+                      _agentStop = true;
+                      _cancel = true;
+                    }),
+                  ),
+                ),
               // ── AI でフロー作成 (= ユーザー要望: 指示を出すと AI が手順を
               //    組み立てる) ──
-              if (!_running && !_recording)
+              if (!_running && !_recording && !_agentBusy)
                 Padding(
                   padding: const EdgeInsets.only(right: 4),
                   child: OutlinedButton.icon(
@@ -1516,7 +2060,9 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
                     label: Text(provider.t('auto.aiBuild'),
                         style: const TextStyle(
                             fontSize: 11, fontWeight: FontWeight.w700)),
-                    onPressed: _aiBusy ? null : () => _aiBuildFlow(provider),
+                    onPressed: _aiBusy
+                        ? null
+                        : () => setState(() => _aiFormOpen = !_aiFormOpen),
                   ),
                 ),
               // フローの保存 / 呼び出し (= ユーザー要望: フロー名を保存して
@@ -1562,11 +2108,178 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
             child: Text(provider.t('auto.hint'),
                 style: const TextStyle(color: Colors.white38, fontSize: 10.5)),
           ),
+          // ── AI でフローを作る入力欄 (= ユーザー要望: 画面中央のダイアログ
+          //    ではなく、 自動操作の設定画面の上に出す) ──
+          if (_aiFormOpen)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
+              child: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFBA68C8).withValues(alpha: 0.10),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                      color: const Color(0xFFBA68C8).withValues(alpha: 0.5)),
+                ),
+                child: Column(children: [
+                  TextField(
+                    controller: _aiCtrl,
+                    autofocus: true,
+                    maxLines: 3,
+                    minLines: 2,
+                    style:
+                        const TextStyle(color: Colors.white, fontSize: 12.5),
+                    decoration: InputDecoration(
+                      isDense: true,
+                      hintText: provider.t('auto.aiHint'),
+                      hintStyle: const TextStyle(
+                          color: Colors.white38, fontSize: 11),
+                      filled: true,
+                      fillColor: Colors.black.withValues(alpha: 0.25),
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(6),
+                          borderSide: BorderSide.none),
+                    ),
+                    onSubmitted: (v) {
+                      _rememberAiPrompt(v);
+                      setState(() => _aiFormOpen = false);
+                      _aiBuildFlowFrom(provider, v);
+                    },
+                  ),
+                  const SizedBox(height: 6),
+                  // ── 使うモデル + 前に使った指示 (= ユーザー要望) ──
+                  Row(children: [
+                    _buildAiModelPicker(provider),
+                    const SizedBox(width: 6),
+                    if (_aiPrompts.isNotEmpty)
+                      PopupMenuButton<String>(
+                        tooltip: provider.t('auto.aiHistory'),
+                        color: const Color(0xFF1E1E32),
+                        onSelected: (v) => setState(() {
+                          _aiCtrl.text = v;
+                          _aiCtrl.selection = TextSelection.collapsed(
+                              offset: v.length);
+                        }),
+                        itemBuilder: (_) => [
+                          for (final p in _aiPrompts.reversed)
+                            PopupMenuItem<String>(
+                              value: p,
+                              child: SizedBox(
+                                width: 260,
+                                child: Text(p,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                        color: Colors.white, fontSize: 12)),
+                              ),
+                            ),
+                        ],
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.white24),
+                          ),
+                          child: Row(mainAxisSize: MainAxisSize.min, children: [
+                            const Icon(Icons.history_rounded,
+                                size: 13, color: Colors.white54),
+                            const SizedBox(width: 4),
+                            Text(provider.t('auto.aiHistory'),
+                                style: const TextStyle(
+                                    color: Colors.white54, fontSize: 10.5)),
+                          ]),
+                        ),
+                      ),
+                  ]),
+                  const SizedBox(height: 6),
+                  Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                    TextButton(
+                      style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          foregroundColor: Colors.white54),
+                      onPressed: () => setState(() => _aiFormOpen = false),
+                      child: Text(provider.t('common.cancel'),
+                          style: const TextStyle(fontSize: 11.5)),
+                    ),
+                    const SizedBox(width: 6),
+                    // ── 画面を見ながら 1 手ずつ進める (= ユーザー要望:
+                    //    AI エージェントのように) ──
+                    OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                          foregroundColor: const Color(0xFF80CBC4),
+                          side: const BorderSide(color: Color(0xFF80CBC4)),
+                          visualDensity: VisualDensity.compact),
+                      icon: const Icon(Icons.smart_toy_rounded, size: 14),
+                      label: Text(provider.t('auto.agentRun'),
+                          style: const TextStyle(fontSize: 11.5)),
+                      onPressed: () {
+                        final v = _aiCtrl.text;
+                        _rememberAiPrompt(v);
+                        setState(() => _aiFormOpen = false);
+                        _runAgent(provider, v);
+                      },
+                    ),
+                    const SizedBox(width: 6),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFFBA68C8),
+                          foregroundColor: Colors.white,
+                          visualDensity: VisualDensity.compact),
+                      icon: const Icon(Icons.auto_awesome_rounded, size: 14),
+                      label: Text(provider.t('auto.aiBuild'),
+                          style: const TextStyle(fontSize: 11.5)),
+                      onPressed: () {
+                        final v = _aiCtrl.text;
+                        _rememberAiPrompt(v);
+                        setState(() => _aiFormOpen = false);
+                        _aiBuildFlowFrom(provider, v);
+                      },
+                    ),
+                  ]),
+                ]),
+              ),
+            ),
           // ステップ追加ボタン
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8),
             child: _addChips(provider, _steps),
           ),
+          // ── まとめて消すバー (= ユーザー要望: Ctrl / Shift で複数選択) ──
+          if (_stepSel.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 6, 8, 0),
+              child: Row(children: [
+                Text(
+                    provider
+                        .t('auto.selected')
+                        .replaceFirst('{n}', '${_stepSel.length}'),
+                    style: const TextStyle(
+                        color: Color(0xFF8D86FF), fontSize: 11.5)),
+                const Spacer(),
+                TextButton(
+                  style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      foregroundColor: Colors.white38),
+                  onPressed: () => setState(() {
+                    _stepSel.clear();
+                    _selAnchorList = null;
+                    _selAnchorIndex = -1;
+                  }),
+                  child: Text(provider.t('mcp.clearSelection'),
+                      style: const TextStyle(fontSize: 11)),
+                ),
+                TextButton.icon(
+                  style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      foregroundColor: const Color(0xFFFF8A80)),
+                  icon: const Icon(Icons.delete_sweep_rounded, size: 15),
+                  label: Text(provider.t('mcp.deleteSelected'),
+                      style: const TextStyle(fontSize: 11)),
+                  onPressed: _deleteSelectedSteps,
+                ),
+              ]),
+            ),
           const SizedBox(height: 8),
           Expanded(
             child: _steps.isEmpty
@@ -1584,11 +2297,10 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
           const Divider(height: 1, color: Colors.white12),
           Padding(
             padding: const EdgeInsets.all(8),
+            // 全体の繰り返し回数の欄は廃止 (= ユーザー要望: 繰り返しは
+            //   繰り返しブロックの中で指定すればいいだけ)。 保存済みの値は
+            //   読み込むが、 常に 1 周として走る。
             child: Row(children: [
-              _numField(provider.t('auto.loop'), _loop, (v) {
-                _loop = v.clamp(1, 999);
-              }, width: 72),
-              const SizedBox(width: 8),
               Expanded(
                 child: Text(_status,
                     maxLines: 2,

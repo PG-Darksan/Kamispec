@@ -37,19 +37,11 @@ class GoogleSignInResult {
 class GoogleAuth {
   GoogleAuth._();
 
-  /// 生年月日・性別を読むための追加の許可 (= ユーザー要望: 年齢や性別を
-  /// 分析に使いたい)。
-  ///
-  /// ★ この 2 つは Google の「機密スコープ」。 一般公開するには Google の
-  ///   審査 (OAuth 検証) が要る。 審査前はテストユーザーだけが許可でき、
-  ///   それ以外の人には同意画面でブロックされる。 そのため、 ふだんの
-  ///   ログインには含めず、 必要な時だけ追加で聞く形にしている
-  ///   (= 失敗してもログインそのものは壊れない)。
-  static const List<String> profileDetailScopes = [
-    'https://www.googleapis.com/auth/user.birthday.read',
-    'https://www.googleapis.com/auth/user.gender.read',
-    'https://www.googleapis.com/auth/user.addresses.read',
-  ];
+  // 旧 `profileDetailScopes` (生年月日 / 性別 / 住所を読む機密スコープ) は
+  //   廃止 (= ユーザー要望: 自分自身のアカウント情報を取りに行っても意味が
+  //   無い)。 機密スコープを一切要求しなくなったので、 Google の OAuth 審査
+  //   (検証) も不要になった。 `signIn` の [extraScopes] の仕組みだけ残して
+  //   ある (将来また追加の許可が要る時のため)。
 
   /// Google Cloud コンソールで作る「デスクトップアプリ」 の認証情報。
   /// 未設定ならログイン機能そのものを出さない。
@@ -130,7 +122,20 @@ class GoogleAuth {
       late final StreamSubscription<HttpRequest> sub;
       sub = server.listen((req) async {
         final q = req.uri.queryParameters;
-        final ok = q['state'] == state && (q['code']?.isNotEmpty ?? false);
+        // ── 本物のコールバック以外は無視して待ち続ける (PKCE 点検で強化) ──
+        // ブラウザの favicon.ico 取得や、 ポートスキャン等の無関係な
+        // アクセスが 1 回来ただけでログイン待ちが打ち切られていた。
+        // state 不一致 (= 第三者が偽のコードを差し込もうとした) も同様に
+        // 捨てて、 正しい state の応答だけを受け付ける。
+        final isCallback = q.containsKey('code') || q.containsKey('error');
+        if (!isCallback || q['state'] != state) {
+          try {
+            req.response.statusCode = HttpStatus.notFound;
+            await req.response.close();
+          } catch (_) {}
+          return;
+        }
+        final ok = q['code']?.isNotEmpty ?? false;
         req.response
           ..statusCode = HttpStatus.ok
           ..headers.contentType = ContentType.html

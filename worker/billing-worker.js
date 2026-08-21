@@ -119,6 +119,9 @@ export default {
     if (url.pathname === '/dev/redeem' && request.method === 'POST') {
       return handleDevRedeem(request, env);
     }
+    if (url.pathname === '/dev/release' && request.method === 'POST') {
+      return handleDevRelease(request, env);
+    }
 
     // ── 契約中のサブスク照会 / 解約 (= ユーザー要望: アプリの中で契約を見て
     //    そのまま解約できるように) ──
@@ -130,6 +133,33 @@ export default {
     }
     if (url.pathname === '/billing/resume' && request.method === 'POST') {
       return handleSubscriptionCancel(request, env, false);
+    }
+
+    // ── 迷惑な送信者を止める (= ユーザー要望: 開発者がスパムと判断した人は
+    //    バグ報告を送れないようにする) ──
+    //    止める判断は ADMIN_UIDS の本人だけができる。 自分が止められて
+    //    いるかは誰でも聞ける (本人確認は要る)。
+    if (url.pathname === '/inquiry/blocked' && request.method === 'GET') {
+      return handleInquiryBlocked(request, env, url);
+    }
+    if (url.pathname === '/inquiry/block' && request.method === 'POST') {
+      return handleInquiryBlock(request, env);
+    }
+
+    // ── マークダウンのプレビューをネットに公開する (= ユーザー要望) ──
+    //    /p/<id> は誰でも見られる普通のページ。 作成・一覧・取り消しは
+    //    本人 (Firebase の ID トークン) だけができる。
+    if (url.pathname.startsWith('/p/') && request.method === 'GET') {
+      return handlePubView(url, env);
+    }
+    if (url.pathname === '/pub/create' && request.method === 'POST') {
+      return handlePubCreate(request, env, url);
+    }
+    if (url.pathname === '/pub/list' && request.method === 'GET') {
+      return handlePubList(request, env, url);
+    }
+    if (url.pathname === '/pub/delete' && request.method === 'POST') {
+      return handlePubDelete(request, env);
     }
 
     // ── 公式サイトの訪問者数 (= ユーザー要望: HP の訪問者数が出ない) ──
@@ -255,6 +285,345 @@ async function handleSubscriptionCancel(request, env, cancel) {
   return json({ plan: (ent && ent.plan) || 'free', store: 'stripe', subscription: norm });
 }
 
+// ─── 迷惑な送信者を止める ─────────────────────────────────────────────
+//
+// バグ報告は誰でも送れる形にしてあるので、 いたずらに連投されると受信箱が
+// 埋まる。 開発者が個別に止められるようにする。
+//
+// 置き場所を Firestore ではなくここにした理由:
+//   Firestore は inquiries だけ書き込みを開けてあり、 他のコレクションは
+//   規則で閉じている (実際に 403 になることを確認した)。 規則を開けると
+//   「止められた本人が自分の印を消す」 ことができてしまう。 Worker なら
+//   ADMIN_UIDS の本人だけが書き込めるので、 消される心配が無い。
+//
+// 保存先: KV  inqblock:<uid> = { blocked, reason, updatedAt, by }
+function inqBlockKey(uid) {
+  return `inqblock:${uid}`;
+}
+
+/// 止められているかを返す。 uid の指定は管理者だけ (本人は指定なしで聞く)。
+async function handleInquiryBlocked(request, env, url) {
+  const me = await authUid(request, env);
+  if (!me) return unauthorized();
+  const asked = (url.searchParams.get('uid') || '').trim();
+  const target = asked && isAdminUid(env, me) ? asked : me;
+  const raw = await env.ENTITLEMENTS.get(inqBlockKey(target));
+  if (!raw) return json({ uid: target, blocked: false, reason: '' });
+  let doc = {};
+  try {
+    doc = JSON.parse(raw);
+  } catch (_) {}
+  return json({
+    uid: target,
+    blocked: doc.blocked === true,
+    reason: String(doc.reason || ''),
+  });
+}
+
+/// 止める / 戻す。 ADMIN_UIDS の本人だけ。
+async function handleInquiryBlock(request, env) {
+  const me = await authUid(request, env);
+  if (!me) return unauthorized();
+  if (!isAdminUid(env, me)) return json({ error: 'forbidden' }, 403);
+  let body;
+  try {
+    body = await request.json();
+  } catch (_) {
+    return json({ error: 'bad request' }, 400);
+  }
+  const uid = String(body.uid || '').trim();
+  if (!uid) return json({ error: 'bad request' }, 400);
+  const blocked = body.blocked !== false;
+  if (!blocked) {
+    await env.ENTITLEMENTS.delete(inqBlockKey(uid));
+    return json({ ok: true, uid, blocked: false });
+  }
+  await env.ENTITLEMENTS.put(
+    inqBlockKey(uid),
+    JSON.stringify({
+      blocked: true,
+      reason: String(body.reason || '').slice(0, 200),
+      updatedAt: Date.now(),
+      by: me,
+    }),
+  );
+  return json({ ok: true, uid, blocked: true });
+}
+
+// ─── マークダウンの公開ページ ─────────────────────────────────────────
+//
+// アプリで書いた物を、 リンクを知っている人なら誰でも読める形で置く。
+// 中身は出来上がった HTML をそのまま KV に入れるだけ。 見る側はただの
+// 静的ページなので、 スマホでもブラウザがあれば読める。
+//
+// ★ 必ず期限を付ける (期限なしの置きっぱなしは作れない)。
+//   ・書いた本人が忘れても、 いつかは消える
+//   ・リンクが漏れても、 露出が永久には続かない
+//   ・こちらの保管量も自然に頭打ちになる
+//   既定は 7 日。 アプリのクラウド保存 (無料 7 日 / 有料 30 日) と揃えてある。
+const PUB_MAX_BYTES = 2 * 1024 * 1024; // 1 ページ 2MB まで
+const PUB_MAX_PER_USER = 30; // 1 人が同時に公開できる数
+const PUB_MAX_DAYS = 30;
+const PUB_DEFAULT_DAYS = 7;
+
+/// 公開 id (短く、 読み違えない文字だけ)。
+function newPubId() {
+  const alphabet = 'abcdefghijkmnpqrstuvwxyz23456789';
+  const bytes = crypto.getRandomValues(new Uint8Array(12));
+  let s = '';
+  for (const b of bytes) s += alphabet[b % alphabet.length];
+  return s;
+}
+
+function pubKey(id) {
+  return `pub:${id}`;
+}
+
+function pubIndexKey(uid) {
+  return `pubidx:${uid}`;
+}
+
+/// 公開ページを表示する。 期限切れは KV が自動で消すので 404 になる。
+async function handlePubView(url, env) {
+  const id = url.pathname.slice(3).replace(/[^a-z0-9]/g, '');
+  if (!id) return pubNotFound();
+  const raw = await env.ENTITLEMENTS.get(pubKey(id));
+  if (!raw) return pubNotFound();
+  let doc;
+  try {
+    doc = JSON.parse(raw);
+  } catch (_) {
+    return pubNotFound();
+  }
+  // ── 合言葉が付いているページ (= ユーザー要望) ──
+  //   画面側で SHA-256 にしてから ?k= で送ってもらい、 ここで突き合わせる。
+  //   生の合言葉は行き来しないし、 こちらにも残さない。
+  if (doc.pwHash) {
+    const k = (url.searchParams.get('k') || '').toLowerCase();
+    if (k !== String(doc.pwHash).toLowerCase()) {
+      return pubGate(Boolean(k));
+    }
+  }
+  // ── Markdown を落とす (= ユーザー要望: 読む人が自分の PC に保存できる) ──
+  if (url.searchParams.get('dl') === 'md') {
+    if (!doc.md) return pubNotFound();
+    const name = String(doc.title || 'markdown').replace(/[\\/:*?"<>|]/g, '_');
+    return new Response(doc.md, {
+      headers: {
+        'content-type': 'text/markdown; charset=utf-8',
+        'content-disposition':
+          `attachment; filename="${encodeURIComponent(name)}.md"`,
+        'cache-control': 'no-store',
+      },
+    });
+  }
+  return new Response(doc.html || '', {
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      // 期限付きなので長くは持たせない。 消した後に残り続けると困る。
+      'cache-control': 'public, max-age=300',
+      // 検索には載せない (= リンクを知っている人だけに読ませる)。
+      'x-robots-tag': 'noindex, nofollow',
+      'referrer-policy': 'no-referrer',
+    },
+  });
+}
+
+/// 合言葉を聞く画面。 [wrong] なら「違います」 と添える。
+function pubGate(wrong) {
+  const html =
+    '<!doctype html><html lang="ja"><head><meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<title>合言葉</title><style>' +
+    'body{margin:0;display:flex;align-items:center;justify-content:center;' +
+    'min-height:100vh;background:#14141F;color:#E8EAF2;' +
+    'font-family:"Yu Gothic UI","Meiryo","Segoe UI",sans-serif;}' +
+    '.box{width:min(92vw,360px);text-align:center}' +
+    'h1{font-size:17px;margin:0 0 6px}' +
+    'p{color:#9aa0b5;font-size:12.5px;margin:0 0 16px}' +
+    'input{width:100%;box-sizing:border-box;padding:11px 12px;font-size:14px;' +
+    'border-radius:8px;border:1px solid #2E2E44;background:#1E1E32;' +
+    'color:#E8EAF2;}' +
+    'button{margin-top:10px;width:100%;padding:11px;border:0;border-radius:8px;' +
+    'background:#7FD8A0;color:#10101A;font-size:14px;font-weight:700;' +
+    'cursor:pointer}' +
+    '.ng{color:#E57373;font-size:12px;margin-top:10px}' +
+    '</style></head><body><div class="box">' +
+    '<h1>合言葉を入れてください</h1>' +
+    '<p>このページは合言葉を知っている人だけが読めます。</p>' +
+    '<input id="pw" type="password" autofocus>' +
+    '<button id="go">開く</button>' +
+    (wrong ? '<div class="ng">合言葉が違います</div>' : '') +
+    '<script>' +
+    'async function open_(){' +
+    'var v=document.getElementById("pw").value;' +
+    'if(!v)return;' +
+    'var b=new TextEncoder().encode(v);' +
+    'var h=await crypto.subtle.digest("SHA-256",b);' +
+    'var k=Array.from(new Uint8Array(h)).map(function(x){' +
+    'return x.toString(16).padStart(2,"0")}).join("");' +
+    'var u=new URL(location.href);u.searchParams.set("k",k);' +
+    'location.href=u.toString();}' +
+    'document.getElementById("go").addEventListener("click",open_);' +
+    'document.getElementById("pw").addEventListener("keydown",function(e){' +
+    'if(e.key==="Enter")open_();});' +
+    '</scr' + 'ipt>' +
+    '</div></body></html>';
+  return new Response(html, {
+    status: wrong ? 401 : 200,
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'no-store',
+      'x-robots-tag': 'noindex, nofollow',
+    },
+  });
+}
+
+function pubNotFound() {
+  const html =
+    '<!doctype html><html lang="ja"><head><meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<title>ページが見つかりません</title><style>' +
+    'body{margin:0;display:flex;align-items:center;justify-content:center;' +
+    'min-height:100vh;background:#14141F;color:#E8EAF2;' +
+    'font-family:"Yu Gothic UI","Meiryo","Segoe UI",sans-serif;text-align:center}' +
+    'p{margin:.4em;color:#9aa0b5;font-size:14px}h1{font-size:20px;margin:0}' +
+    '</style></head><body><div><h1>ページが見つかりません</h1>' +
+    '<p>公開の期限が切れたか、 取り消された可能性があります。</p>' +
+    '</div></body></html>';
+  return new Response(html, {
+    status: 404,
+    headers: { 'content-type': 'text/html; charset=utf-8' },
+  });
+}
+
+/// 公開する。 本文 (html) と表題、 何日置くかを受け取る。
+async function handlePubCreate(request, env, url) {
+  const uid = await authUid(request, env);
+  if (!uid) return unauthorized();
+  let body;
+  try {
+    body = await request.json();
+  } catch (_) {
+    return json({ error: 'bad request' }, 400);
+  }
+  const html = String(body.html || '');
+  if (!html.trim()) return json({ error: 'empty' }, 400);
+  const bytes =
+    new TextEncoder().encode(html).length +
+    new TextEncoder().encode(String(body.md || '')).length;
+  if (bytes > PUB_MAX_BYTES) {
+    return json({ error: 'too large', maxBytes: PUB_MAX_BYTES }, 413);
+  }
+  // 期限は時間で受け取れる (= ユーザー要望: 1 か月以内なら細かく決めたい)。
+  // 昔の呼び出しは days しか送らないので、 その時は日→時間に直す。
+  const rawHours = parseInt(body.hours, 10);
+  const hours = Number.isFinite(rawHours) && rawHours > 0
+    ? Math.min(PUB_MAX_DAYS * 24, Math.max(1, rawHours))
+    : Math.min(
+        PUB_MAX_DAYS,
+        Math.max(1, parseInt(body.days, 10) || PUB_DEFAULT_DAYS),
+      ) * 24;
+  const days = Math.max(1, Math.round(hours / 24));
+  const title = String(body.title || '').slice(0, 120);
+
+  // 同じ id を渡されたら、 その本人のページだけ差し替える (= 更新)。
+  let id = String(body.id || '').replace(/[^a-z0-9]/g, '');
+  const index = await readPubIndex(env, uid);
+  if (id) {
+    if (!index.some((e) => e.id === id)) return json({ error: 'not found' }, 404);
+  } else {
+    if (index.length >= PUB_MAX_PER_USER) {
+      return json({ error: 'too many', max: PUB_MAX_PER_USER }, 429);
+    }
+    id = newPubId();
+  }
+
+  const ttl = hours * 60 * 60;
+  const expiresAt = Math.floor(Date.now() / 1000) + ttl;
+  // 合言葉は SHA-256 にしてから置く (生のまま持たない)。
+  let pwHash = '';
+  const pw = String(body.pw == null ? '' : body.pw).trim();
+  if (pw) pwHash = await sha256Hex(pw);
+  const md = String(body.md || '');
+  await env.ENTITLEMENTS.put(
+    pubKey(id),
+    JSON.stringify({
+      html,
+      md,
+      title,
+      uid,
+      pwHash,
+      expiresAt,
+      updatedAt: Date.now(),
+    }),
+    { expirationTtl: ttl },
+  );
+  const next = index.filter((e) => e.id !== id);
+  next.push({ id, title, expiresAt, bytes });
+  await writePubIndex(env, uid, next);
+
+  return json({
+    id,
+    url: `${url.origin}/p/${id}`,
+    expiresAt,
+    days,
+    hours,
+  });
+}
+
+/// 自分が公開しているページの一覧。
+async function handlePubList(request, env, url) {
+  const uid = await authUid(request, env);
+  if (!uid) return unauthorized();
+  const index = await readPubIndex(env, uid);
+  const now = Math.floor(Date.now() / 1000);
+  // 期限切れは KV から消えているので、 控えの方も落としておく。
+  const live = index.filter((e) => (e.expiresAt || 0) > now);
+  if (live.length !== index.length) await writePubIndex(env, uid, live);
+  return json({
+    items: live.map((e) => ({ ...e, url: `${url.origin}/p/${e.id}` })),
+    max: PUB_MAX_PER_USER,
+  });
+}
+
+/// 公開をやめる (すぐ消す)。
+async function handlePubDelete(request, env) {
+  const uid = await authUid(request, env);
+  if (!uid) return unauthorized();
+  let body;
+  try {
+    body = await request.json();
+  } catch (_) {
+    return json({ error: 'bad request' }, 400);
+  }
+  const id = String(body.id || '').replace(/[^a-z0-9]/g, '');
+  if (!id) return json({ error: 'bad request' }, 400);
+  const index = await readPubIndex(env, uid);
+  // 他人のページは消せない (控えに無ければ拒む)。
+  if (!index.some((e) => e.id === id)) return json({ error: 'not found' }, 404);
+  await env.ENTITLEMENTS.delete(pubKey(id));
+  await writePubIndex(env, uid, index.filter((e) => e.id !== id));
+  return json({ ok: true });
+}
+
+async function readPubIndex(env, uid) {
+  try {
+    const raw = await env.ENTITLEMENTS.get(pubIndexKey(uid));
+    const v = raw ? JSON.parse(raw) : [];
+    return Array.isArray(v) ? v : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+async function writePubIndex(env, uid, list) {
+  // 控えは中身の期限より少し長く持たせる (一覧から自分で消せるように)。
+  await env.ENTITLEMENTS.put(pubIndexKey(uid), JSON.stringify(list), {
+    expirationTtl: (PUB_MAX_DAYS + 7) * 24 * 60 * 60,
+  });
+}
+
 // ─── 公式サイトの訪問者数 ───────────────────────────────────────────────
 // 合計と「今日の分」 を KV に持つ。 KV は読んで書く間に割り込まれ得るので
 // 厳密ではないが、 訪問者カウンターは 1 件ずれても実害が無いのでこれで足りる。
@@ -263,21 +632,41 @@ async function handleSubscriptionCancel(request, env, cancel) {
 // SITE_VISITS_BASE を置いてそこから足せるようにしてある (未設定なら 0)。
 const SITE_VISITS_KEY = 'site:visits:total';
 
+// ★ 数が「戻らない」 ための控え (= ユーザー要望: 永続的にリセットされずに
+//   数え続けたい)。 本体キーと同じ値をもう 1 つ別名で持っておき、 読む時は
+//   両方の大きい方を採る。 これで
+//     ・KV の書き込みが片方だけ失敗した
+//     ・取り違えて本体キーだけ消した
+//   といった時でも、 表示上の数が減らない。
+const SITE_VISITS_MIRROR_KEY = 'site:visits:total:mirror';
+
 async function handleSiteVisits(env, increment) {
   try {
     const base = parseInt(env.SITE_VISITS_BASE || '0', 10) || 0;
     const today = new Date().toISOString().slice(0, 10);
     const dayKey = `site:visits:${today}`;
-    let total = parseInt((await env.ENTITLEMENTS.get(SITE_VISITS_KEY)) || '0', 10) || 0;
+    const rawTotal =
+      parseInt((await env.ENTITLEMENTS.get(SITE_VISITS_KEY)) || '0', 10) || 0;
+    const rawMirror =
+      parseInt((await env.ENTITLEMENTS.get(SITE_VISITS_MIRROR_KEY)) || '0', 10) ||
+      0;
+    // 片方が欠けても大きい方を正とする (= 数が戻らない)。
+    let total = Math.max(rawTotal, rawMirror);
     let day = parseInt((await env.ENTITLEMENTS.get(dayKey)) || '0', 10) || 0;
     if (increment) {
       total += 1;
       day += 1;
+      // 本体と控えの両方に書く (どちらも TTL 無し = 期限で消えない)。
       await env.ENTITLEMENTS.put(SITE_VISITS_KEY, String(total));
+      await env.ENTITLEMENTS.put(SITE_VISITS_MIRROR_KEY, String(total));
       // 日別は 400 日で自然に消す (ずっと貯め続けない)。
       await env.ENTITLEMENTS.put(dayKey, String(day), {
         expirationTtl: 60 * 60 * 24 * 400,
       });
+    } else if (rawTotal !== rawMirror) {
+      // 読み取りのついでに、 ずれていたら大きい方へ揃えておく (自己修復)。
+      await env.ENTITLEMENTS.put(SITE_VISITS_KEY, String(total));
+      await env.ENTITLEMENTS.put(SITE_VISITS_MIRROR_KEY, String(total));
     }
     return new Response(
       JSON.stringify({ count: total + base, today: day, date: today }),
@@ -735,6 +1124,47 @@ async function handleDevRedeem(request, env) {
     currentPeriodEnd: null,
   });
   return json({ ok: true, plan: 'dev', devExpiresAt });
+}
+
+/// Dev 枠を返上して、 本来のプランに戻す。
+///
+/// 開発者モードに入ると、 管理者は自分あてに Dev 枠を自己発行する
+/// (`handleDevIssue` → `handleDevRedeem`)。 これは権利情報に残るので、
+/// 開発者モードを抜けても Dev のままになっていた (= ユーザー報告:
+/// 「開発者モードからログアウトしてもプランが Dev のまま」)。 抜けた時に
+/// これを呼んで元へ戻す。
+///
+/// 自己発行できるのが管理者だけなので、 返上も管理者だけに閉じる。
+/// 配布した Dev コードを引き換えただけの人 (= 開発者モードには入れない)
+/// の権利を、 この経路で消してしまわないようにするため。
+async function handleDevRelease(request, env) {
+  const uid = await authUid(request, env);
+  if (!uid) return unauthorized();
+  if (!isAdminUid(env, uid)) return json({ error: 'forbidden' }, 403);
+  const ent = await readEntitlement(env, uid);
+  if (!ent) return json({ ok: true, plan: 'free' });
+  if (ent.plan !== 'dev') return json({ ok: true, plan: ent.plan || 'free' });
+
+  // 実際に払っている契約が残っていればそれに戻す。 無ければ free。
+  let plan = 'free';
+  let status = 'canceled';
+  let currentPeriodEnd = null;
+  try {
+    const sub = await findSubscription(env, ent);
+    if (sub && ['active', 'trialing', 'past_due'].includes(sub.status)) {
+      plan = sub.planName || 'pro';
+      status = sub.status;
+      currentPeriodEnd = sub.currentPeriodEnd;
+    }
+  } catch (e) {
+    console.log('dev release: 契約の照会に失敗', String(e));
+  }
+
+  const next = { ...ent, plan, status, currentPeriodEnd };
+  delete next.devCode;
+  delete next.devExpiresAt;
+  await putEntitlement(env, uid, next);
+  return json({ ok: true, plan });
 }
 
 
@@ -1334,7 +1764,7 @@ function sanitizeInputImages(raw) {
 /// 各社の API を叩いて、 本文とトークン数を同じ形にして返す。
 /// [images] があれば画像も一緒に渡す (対応していない会社では無視される)。
 /// 戻り: { ok, status, text, inTok, outTok, detail }
-async function callProvider(env, model, prompt, maxTokens, images) {
+async function callProvider(env, model, prompt, maxTokens, images, reasoning) {
   const imgs = Array.isArray(images) ? images : [];
   // 提供元は実価格表から引く。 推定表にしか無い / どちらにも無いモデルでも
   //   落ちないようにする (以前は priceFor が null を返すと例外だった)。
@@ -1347,27 +1777,45 @@ async function callProvider(env, model, prompt, maxTokens, images) {
   }
 
   if (spec.provider === 'gemini') {
-    const r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [
-                // 画像を先に置くと、 後ろの指示文がその画像に掛かる。
-                ...imgs.map((im) => ({
-                  inline_data: { mime_type: im.mime, data: im.data },
-                })),
-                { text: prompt },
-              ],
-            },
-          ],
-        }),
-      }
-    );
-    const d = await r.json();
+    // 考える深さ (= ユーザー要望: 推論レベルを選べるように)。
+    //   'auto' は今までどおり (指定なし = モデルの既定)。
+    //   受け付けないモデルもあるので、 断られたら外して投げ直す。
+    const budget =
+      reasoning === 'low' ? 0
+        : reasoning === 'medium' ? 8192
+        : reasoning === 'high' ? 24576
+        : null;
+    const askG = (withThinking) =>
+      fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  // 画像を先に置くと、 後ろの指示文がその画像に掛かる。
+                  ...imgs.map((im) => ({
+                    inline_data: { mime_type: im.mime, data: im.data },
+                  })),
+                  { text: prompt },
+                ],
+              },
+            ],
+            ...(withThinking && budget !== null
+              ? { generationConfig: { thinkingConfig: { thinkingBudget: budget } } }
+              : {}),
+          }),
+        }
+      );
+    let r = await askG(true);
+    let d = await r.json();
+    if (!r.ok && budget !== null &&
+        JSON.stringify(d?.error ?? d ?? '').includes('thinking')) {
+      r = await askG(false);
+      d = await r.json();
+    }
     if (!r.ok) return { ok: false, status: 502, detail: d };
     const um = d?.usageMetadata ?? {};
     return {
@@ -1417,8 +1865,10 @@ async function callProvider(env, model, prompt, maxTokens, images) {
         }),
       });
     const errText = (d) => JSON.stringify(d?.error ?? d ?? '');
-    // ① 新しい世代 + 推論ひかえめ
-    let r = await ask('max_completion_tokens', { reasoning_effort: 'low' });
+    // ① 新しい世代 + 指定された推論の深さ (既定は今までどおり ひかえめ)
+    const effort =
+      reasoning === 'medium' || reasoning === 'high' ? reasoning : 'low';
+    let r = await ask('max_completion_tokens', { reasoning_effort: effort });
     let d = await r.json();
     // ② 推論の指定を受け付けないモデルなら、 それを外して
     if (!r.ok && errText(d).includes('reasoning_effort')) {
@@ -1535,6 +1985,16 @@ async function callProvider(env, model, prompt, maxTokens, images) {
     body: JSON.stringify({
       model,
       max_tokens: maxTokens,
+      // じっくり考えさせる指定 (= ユーザー要望)。 high の時だけ。
+      //   考える枠は本文の枠より小さくないといけない。
+      ...(reasoning === 'high' && maxTokens > 2048
+        ? {
+            thinking: {
+              type: 'enabled',
+              budget_tokens: Math.min(8000, maxTokens - 1024),
+            },
+          }
+        : {}),
       messages: [
         {
           role: 'user',
@@ -1628,6 +2088,12 @@ async function handleAiGenerate(request, env) {
   if (!uid) return unauthorized();
   const prompt = String(body.prompt || '');
   const model = body.model && priceFor(body.model) ? body.model : DEFAULT_MODEL;
+  // 考える深さ (= ユーザー要望: 推論レベルを設定したい)。
+  //   指定が無い時 (古いアプリからの呼び出し) は 'auto' = 今までどおり
+  //   各社の既定 / OpenAI はひかえめ。 新しいアプリは必ず 3 つのどれかを送る。
+  const reasoning = ['low', 'medium', 'high'].includes(String(body.reasoning))
+    ? String(body.reasoning)
+    : 'auto';
   let maxTokens = Number(body.maxTokens || 4096);
   if (!Number.isFinite(maxTokens)) maxTokens = 4096;
   maxTokens = Math.min(32000, Math.max(256, Math.round(maxTokens)));
@@ -1706,7 +2172,7 @@ async function handleAiGenerate(request, env) {
     return json({ error: 'monthly cap reached', usage: used }, 429);
   }
 
-  const res = await callProvider(env, model, prompt, maxTokens, images);
+  const res = await callProvider(env, model, prompt, maxTokens, images, reasoning);
   if (!res.ok) {
     // 失敗したら確保した分をそのまま返す。
     if (reserved > 0) {
@@ -1946,7 +2412,25 @@ async function handleAiUsage(url, env, request) {
   if (!uid) return unauthorized();
   const ym = url.searchParams.get('ym') || currentYm();
   const used = await readUsage(env, uid, ym);
-  return json({ ym, markup: MARKUP, capUsd: MONTHLY_HARD_CAP_USD, ...used });
+  // Dev 権利者には Dev 枠の上限を返す (= ユーザー要望: 大元の残り表示)。
+  const devEnt = isDevEntitlement(await readEntitlement(env, uid));
+  return json({
+    ym,
+    markup: MARKUP,
+    capUsd: devEnt ? DEV_MONTHLY_CAP_USD : MONTHLY_HARD_CAP_USD,
+    dev: devEnt,
+    ...used,
+  });
+}
+
+async function sha256Hex(text) {
+  const buf = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(text),
+  );
+  return Array.from(new Uint8Array(buf))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
 }
 
 function json(obj, status = 200) {

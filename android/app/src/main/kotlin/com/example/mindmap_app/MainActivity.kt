@@ -78,6 +78,8 @@ class MainActivity : FlutterActivity() {
         // ホーム画面ショートカット用 (= マップごとにアプリ風アイコンを作る)
         private const val SHORTCUT_CHANNEL = "app/shortcuts"
         private const val EXTRA_PAGE_ID = "mindmap_page_id"
+        // ボタン (カスタム項目) を一発で呼び出すショートカット用
+        private const val EXTRA_COMMAND_ID = "mindmap_command_id"
     }
 
     /// 集中ロックが要求されている間 true。
@@ -256,6 +258,18 @@ class MainActivity : FlutterActivity() {
                         result.success(pinMapShortcut(pageId, label))
                     }
                 }
+                // ホーム画面にボタン (カスタム項目) のショートカットを作成
+                "pinCommandShortcut" -> {
+                    val commandId = call.argument<String>("commandId")
+                    val label = call.argument<String>("label") ?: "Shortcut"
+                    // ボタンのアイコンをそのまま使う (= ユーザー要望)。
+                    val iconPng = call.argument<ByteArray>("iconPng")
+                    if (commandId.isNullOrEmpty()) {
+                        result.success(false)
+                    } else {
+                        result.success(pinCommandShortcut(commandId, label, iconPng))
+                    }
+                }
                 "isPinSupported" -> {
                     result.success(
                         ShortcutManagerCompat.isRequestPinShortcutSupported(this))
@@ -265,6 +279,12 @@ class MainActivity : FlutterActivity() {
                 "getInitialPageId" -> {
                     val id = intent?.getStringExtra(EXTRA_PAGE_ID)
                     intent?.removeExtra(EXTRA_PAGE_ID)
+                    result.success(id)
+                }
+                // コールド起動時、 起動 intent の extra からボタン ID を取り出す。
+                "getInitialCommandId" -> {
+                    val id = intent?.getStringExtra(EXTRA_COMMAND_ID)
+                    intent?.removeExtra(EXTRA_COMMAND_ID)
                     result.success(id)
                 }
                 else -> result.notImplemented()
@@ -305,6 +325,55 @@ class MainActivity : FlutterActivity() {
                 .setShortLabel(safe)
                 .setLongLabel(safe)
                 .setIcon(IconCompat.createWithResource(this, R.mipmap.ic_launcher))
+                .setIntent(launch)
+                .build()
+            ShortcutManagerCompat.requestPinShortcut(this, shortcut, null)
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /// ホーム画面に「ボタンを一発で呼び出す」 ピン留めショートカットを作成する。
+    /// タップすると extra 付きでアプリが起動し、 Flutter 側がその動作を実行する。
+    /// [iconPng] が来ていればそれをアイコンにする (= ユーザー要望: ボタンの
+    /// アイコンがそのままショートカットのアイコンになる)。
+    private fun pinCommandShortcut(
+        commandId: String,
+        label: String,
+        iconPng: ByteArray? = null,
+    ): Boolean {
+        return try {
+            if (!ShortcutManagerCompat.isRequestPinShortcutSupported(this)) {
+                return false
+            }
+            val launch = Intent(this, MainActivity::class.java).apply {
+                action = Intent.ACTION_MAIN
+                addCategory(Intent.CATEGORY_LAUNCHER)
+                putExtra(EXTRA_COMMAND_ID, commandId)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+            }
+            val safe = if (label.isBlank()) "Shortcut" else label
+            // ID に使えるのは限られた文字なので、 英数字以外は落とす。
+            val key = commandId.replace(Regex("[^A-Za-z0-9_.-]"), "_")
+            val icon = try {
+                if (iconPng != null && iconPng.isNotEmpty()) {
+                    val bmp = android.graphics.BitmapFactory
+                        .decodeByteArray(iconPng, 0, iconPng.size)
+                    if (bmp != null) IconCompat.createWithBitmap(bmp)
+                    else IconCompat.createWithResource(this, R.mipmap.ic_launcher)
+                } else {
+                    IconCompat.createWithResource(this, R.mipmap.ic_launcher)
+                }
+            } catch (_: Exception) {
+                IconCompat.createWithResource(this, R.mipmap.ic_launcher)
+            }
+            val shortcut = ShortcutInfoCompat.Builder(this, "mindmap_cmd_$key")
+                .setShortLabel(safe)
+                .setLongLabel(safe)
+                .setIcon(icon)
                 .setIntent(launch)
                 .build()
             ShortcutManagerCompat.requestPinShortcut(this, shortcut, null)
@@ -755,6 +824,12 @@ class MainActivity : FlutterActivity() {
         if (!id.isNullOrEmpty()) {
             shortcutChannel?.invokeMethod("openPage", id)
             intent.removeExtra(EXTRA_PAGE_ID)
+        }
+        // ボタンのショートカット (= 起動中にタップされた場合)。
+        val cmd = intent.getStringExtra(EXTRA_COMMAND_ID)
+        if (!cmd.isNullOrEmpty()) {
+            shortcutChannel?.invokeMethod("openCommand", cmd)
+            intent.removeExtra(EXTRA_COMMAND_ID)
         }
     }
 

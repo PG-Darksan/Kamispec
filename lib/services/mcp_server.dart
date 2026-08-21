@@ -230,7 +230,14 @@ class McpServer {
         'index of an earlier node in the same array and also draws the '
         'connection, so a whole map (centre + children) is one call. '
         'Coordinates are optional and normally unnecessary - the page is '
-        'tidied into a tree afterwards. Returns nodeIds in the same order.',
+        'tidied into a tree afterwards. Returns nodeIds in the same order. '
+        'ALWAYS put links in "url", never as bare text inside "memo": a node '
+        'with "url" becomes a real clickable link, and a YouTube WATCH url '
+        '(https://www.youtube.com/watch?v=VIDEOID or https://youtu.be/VIDEOID) '
+        'becomes an embedded video node with a thumbnail that plays in the '
+        'app. Search urls (/results?search_query=...) are NOT videos, so give '
+        'the actual watch url when you know the video. "memo" and "url" can '
+        'be used together on the same node.',
         {
           'pageId': {'type': 'string'},
           'nodes': {
@@ -257,24 +264,35 @@ class McpServer {
         ['pageId']),
     _tool(
         'update_node',
-        'Update a node title / memo / position.',
+        'Update a node title / memo / position. "node" accepts EITHER the '
+        'node id OR its current TITLE (e.g. {"node":"春","title":"春（はる）"}) '
+        '- using the title means you do not have to look up ids. '
+        '("nodeId" is accepted as an alias.)',
         {
           'pageId': {'type': 'string'},
+          'node': {'type': 'string'},
           'nodeId': {'type': 'string'},
           'title': {'type': 'string'},
           'memo': {'type': 'string'},
           'x': {'type': 'number'},
           'y': {'type': 'number'},
         },
-        ['pageId', 'nodeId']),
+        ['pageId']),
     _tool(
         'delete_node',
-        'Delete a node (and its connections) from a page.',
+        'Delete a node (and its connections) from a page. "node" accepts '
+        'EITHER the node id OR its TITLE. To remove several at once pass '
+        '"nodes" (array of ids or titles).',
         {
           'pageId': {'type': 'string'},
+          'node': {'type': 'string'},
           'nodeId': {'type': 'string'},
+          'nodes': {
+            'type': 'array',
+            'items': {'type': 'string'},
+          },
         },
-        ['pageId', 'nodeId']),
+        ['pageId']),
     _tool(
         'generate_page_background',
         'Draw a NEW background image with AI and set it as the page '
@@ -324,8 +342,13 @@ class McpServer {
     _tool(
         'connect_nodes',
         'Connect nodes with arrow lines. PREFER the batch form: pass '
-        '"connections" as an array of {fromId, toId, label?} to make every '
-        'link in ONE call.',
+        '"connections" as an array of {from, to, label?} to make every '
+        'link in ONE call. '
+        'IMPORTANT: "from"/"to" accept EITHER the node id OR the node '
+        'TITLE exactly as shown on the map (e.g. {"from":"春","to":"夏",'
+        '"label":"次の季節へ"}). Using titles is recommended - you do not '
+        'need to look up ids. ("fromId"/"toId" are accepted as aliases.) '
+        'Connecting the same pair twice just updates the label.',
         {
           'pageId': {'type': 'string'},
           'connections': {
@@ -333,12 +356,16 @@ class McpServer {
             'items': {
               'type': 'object',
               'properties': {
+                'from': {'type': 'string'},
+                'to': {'type': 'string'},
                 'fromId': {'type': 'string'},
                 'toId': {'type': 'string'},
                 'label': {'type': 'string'},
               },
             },
           },
+          'from': {'type': 'string'},
+          'to': {'type': 'string'},
           'fromId': {'type': 'string'},
           'toId': {'type': 'string'},
           'label': {'type': 'string'},
@@ -438,13 +465,20 @@ class McpServer {
         ['pageId']),
     _tool(
         'add_video_editor_item',
-        'Add one item to the timeline of a VIDEO EDITOR page (pageType '
+        'Add items to the timeline of a VIDEO EDITOR page (pageType '
         '"videoEditor"). kind: "text" (caption; requires text), "video" or '
         '"image" (requires an absolute local path). startMs defaults to the '
         'end of that layer, durationMs defaults to 4000. layer 0 is the '
-        'back-most; captions usually go on layer 1. Returns itemId.',
+        'back-most; captions usually go on layer 1. '
+        'IMPORTANT: to add several captions, pass them ALL AT ONCE in '
+        '"texts" (array of strings) in a SINGLE call - do not call this '
+        'tool once per caption. Returns itemId(s).',
         {
           'pageId': {'type': 'string'},
+          'texts': {
+            'type': 'array',
+            'items': {'type': 'string'},
+          },
           'kind': {'type': 'string', 'enum': ['text', 'video', 'image']},
           'text': {'type': 'string'},
           'path': {'type': 'string'},
@@ -454,7 +488,7 @@ class McpServer {
           'fontSize': {'type': 'number'},
           'color': {'type': 'integer'},
         },
-        ['pageId', 'kind']),
+        ['pageId']),
     // ─── アプリの機能ボタン (= ユーザー要望: フラッシュカードや無音カメラ
     //     のようなカスタムボタン機能も操れるように) ───────────────────
     // ─── 文書ファイルの作成 (= ユーザー要望) ─────────────────────────
@@ -524,6 +558,77 @@ class McpServer {
           'id': {'type': 'string'},
         },
         ['id']),
+    // ─── アプリの説明書 (= ユーザー要望: skills のように、 必要な時だけ
+    //     詳しい仕様を読ませる。 常時渡す要約は AGENTS.md 側) ────────────
+    _tool(
+        'list_app_docs',
+        'List the built-in documentation about this app that you can read. '
+        'Returns {name, title} pairs. Read one with read_app_doc when you '
+        'need the exact behaviour of a feature (billing, MCP tools, sync, '
+        'node layout, known bugs) instead of guessing.',
+        {}),
+    _tool(
+        'read_app_doc',
+        'Read one built-in app document by name (see list_app_docs). '
+        'Names: "billing" (payments / subscription / AI credit), '
+        '"mcp" (MCP tools and the agent loop), '
+        '"features" (startup, saving, cloud sync, notifications, shortcuts), '
+        '"layout" (how nodes are placed, pushed aside and auto-arranged), '
+        '"qa" (bug checklist). The text is Markdown with Mermaid diagrams.',
+        {
+          'name': {'type': 'string'},
+        },
+        ['name']),
+    // ─── 開いているテキストファイル (= ユーザー要望: テキストエディタの
+    //     中身を MCP / AI から編集できるように) ─────────────────────────
+    _tool(
+        'text_file_status',
+        'Check the text file currently open in the app text editor. '
+        'Returns {open, fileName, lineCount}. The other text_file_* tools '
+        'work on this file. If "open" is false, no text editor is open - '
+        'ask the user to open a text file first.',
+        {}),
+    _tool(
+        'text_file_read',
+        'Read the text file currently open in the app text editor as '
+        'numbered lines. Optionally pass startLine/endLine (1-based, '
+        'inclusive) to read only part of a long file.',
+        {
+          'startLine': {'type': 'integer'},
+          'endLine': {'type': 'integer'},
+        }),
+    _tool(
+        'text_file_edit',
+        'Edit the text file currently open in the app text editor. Pass '
+        'ALL edits in ONE call as the "edits" array - do not call this '
+        'tool once per line. Each edit is {"action": "replace" | "insert" '
+        '| "delete" | "set_all", "start": int, "end": int, "text": "..."}. '
+        'Line numbers are 1-based and refer to the file BEFORE this call '
+        '(edits are applied bottom-up, so earlier line numbers stay '
+        'valid). "replace" rewrites lines start..end with text (may '
+        'contain newlines). "insert" inserts text before line start '
+        '(start = lineCount+1 appends at the end). "delete" removes lines '
+        'start..end. "set_all" replaces the whole file with text and must '
+        'be the only edit in the call. The change appears in the editor '
+        'immediately; the user saves the file themselves.',
+        {
+          'edits': {
+            'type': 'array',
+            'items': {
+              'type': 'object',
+              'properties': {
+                'action': {
+                  'type': 'string',
+                  'enum': ['replace', 'insert', 'delete', 'set_all']
+                },
+                'start': {'type': 'integer'},
+                'end': {'type': 'integer'},
+                'text': {'type': 'string'},
+              },
+            },
+          },
+        },
+        ['edits']),
   ];
 
   // ─── ツール実行 ───────────────────────────────────────────────────────
@@ -638,7 +743,11 @@ class McpServer {
               }
             }
             if (ids.isEmpty) return _err('page not found');
+            // id と題名を組で返す (= 続けて connect_nodes を呼ぶ時に、
+            //   どの id がどのノードか迷わないように)。
             return _ok({
+              'nodes': _provider.mcpNodeIndex(pageId).where(
+                  (e) => ids.contains(e['id'])).toList(),
               'nodeIds': ids,
               if (failed.isNotEmpty) 'failed': failed,
             });
@@ -655,19 +764,56 @@ class McpServer {
           return id == null ? _err('page not found') : _ok({'nodeId': id});
         }
       case 'update_node':
-        final ok = _provider.mcpUpdateNode(
-          a['pageId'] as String? ?? '',
-          a['nodeId'] as String? ?? '',
-          title: a['title'] as String?,
-          memo: a['memo'] as String?,
-          x: numOf('x'),
-          y: numOf('y'),
-        );
-        return ok ? _ok('updated') : _err('page or node not found');
+        {
+          // id でも題名でもよい (= ユーザー報告: AI が id の書き写しを誤る)。
+          final pageId = a['pageId'] as String? ?? '';
+          final key = '${a['node'] ?? a['nodeId'] ?? ''}'.trim();
+          final ok = _provider.mcpUpdateNode(
+            pageId,
+            key,
+            title: a['title'] as String?,
+            memo: a['memo'] as String?,
+            x: numOf('x'),
+            y: numOf('y'),
+          );
+          return ok
+              ? _ok('updated')
+              : _err('no node "$key" on that page. Available nodes (use the '
+                  '"title" value as "node"): '
+                  '${jsonEncode(_provider.mcpNodeIndex(pageId))}');
+        }
       case 'delete_node':
-        final ok = _provider.mcpDeleteNode(
-            a['pageId'] as String? ?? '', a['nodeId'] as String? ?? '');
-        return ok ? _ok('deleted') : _err('page or node not found');
+        {
+          final pageId = a['pageId'] as String? ?? '';
+          // まとめて消せる形も持たせる (= 1 件ずつだと AI が取りこぼす)。
+          final batch = a['nodes'];
+          if (batch is List && batch.isNotEmpty) {
+            var done = 0;
+            final missed = <String>[];
+            for (final e in batch) {
+              final k = '${e ?? ''}'.trim();
+              if (_provider.mcpDeleteNode(pageId, k)) {
+                done++;
+              } else {
+                missed.add(k);
+              }
+            }
+            return done == 0
+                ? _err('none of $missed were found. Available nodes: '
+                    '${jsonEncode(_provider.mcpNodeIndex(pageId))}')
+                : _ok({
+                    'deleted': done,
+                    if (missed.isNotEmpty) 'failed': missed,
+                  });
+          }
+          final key = '${a['node'] ?? a['nodeId'] ?? ''}'.trim();
+          final ok = _provider.mcpDeleteNode(pageId, key);
+          return ok
+              ? _ok('deleted')
+              : _err('no node "$key" on that page. Available nodes (use the '
+                  '"title" value as "node"): '
+                  '${jsonEncode(_provider.mcpNodeIndex(pageId))}');
+        }
       case 'generate_page_background':
         {
           try {
@@ -703,33 +849,51 @@ class McpServer {
       case 'connect_nodes':
         {
           final pageId = a['pageId'] as String? ?? '';
+          // id でも題名でもよい (= ユーザー報告: AI が id の特定に手こずって
+          //   接続できなかった)。 どちらの書き方も受ける。
+          String key(Map<String, dynamic> m, String a1, String a2) {
+            final v1 = '${m[a1] ?? ''}'.trim();
+            return v1.isNotEmpty ? v1 : '${m[a2] ?? ''}'.trim();
+          }
+
           // まとめて繋げる形 (= 取りこぼし対策)。
           final batch = a['connections'];
           if (batch is List && batch.isNotEmpty) {
             var done = 0;
+            final missed = <String>[];
             for (final e in batch) {
               if (e is! Map) continue;
               final m = e.cast<String, dynamic>();
-              if (_provider.mcpConnectNodes(
-                pageId,
-                '${m['fromId'] ?? ''}',
-                '${m['toId'] ?? ''}',
-                label: m['label'] as String?,
-              )) {
+              final f = key(m, 'from', 'fromId');
+              final t = key(m, 'to', 'toId');
+              if (_provider.mcpConnectNodes(pageId, f, t,
+                  label: m['label'] as String?)) {
                 done++;
+              } else {
+                missed.add('$f -> $t');
               }
             }
-            return done == 0
-                ? _err('page or node not found')
-                : _ok({'connected': done});
+            if (done == 0) {
+              // 「見つからない」 だけでは AI が直しようがないので、 その
+              //   ページに在るノードの id と題名を返して選び直させる。
+              return _err('could not connect ${missed.join(', ')}. '
+                  'Available nodes on this page (use the "title" value as '
+                  '"from"/"to"): ${jsonEncode(_provider.mcpNodeIndex(pageId))}');
+            }
+            return _ok({
+              'connected': done,
+              if (missed.isNotEmpty) 'failed': missed,
+            });
           }
-          final ok = _provider.mcpConnectNodes(
-            pageId,
-            a['fromId'] as String? ?? '',
-            a['toId'] as String? ?? '',
-            label: a['label'] as String?,
-          );
-          return ok ? _ok('connected') : _err('page or node not found');
+          final f = key(a, 'from', 'fromId');
+          final t = key(a, 'to', 'toId');
+          final ok = _provider.mcpConnectNodes(pageId, f, t,
+              label: a['label'] as String?);
+          return ok
+              ? _ok('connected')
+              : _err('could not connect "$f" -> "$t". '
+                  'Available nodes on this page (use the "title" value as '
+                  '"from"/"to"): ${jsonEncode(_provider.mcpNodeIndex(pageId))}');
         }
       case 'add_table_node':
         {
@@ -869,6 +1033,28 @@ class McpServer {
       case 'add_video_editor_item':
         {
           final pageId = a['pageId'] as String? ?? '';
+          // まとめて字幕を置ける形 (= 1 件ずつだと AI が取りこぼす)。
+          final batch = a['texts'];
+          if (batch is List && batch.isNotEmpty) {
+            final ids = <String>[];
+            for (final e in batch) {
+              final t = '${e ?? ''}'.trim();
+              if (t.isEmpty) continue;
+              final one = await _provider.mcpAddVideoEditorItem(
+                pageId,
+                kind: 'text',
+                text: t,
+                layer: (a['layer'] as num?)?.toInt() ?? 1,
+                durationMs: (a['durationMs'] as num?)?.toInt(),
+                fontSize: numOf('fontSize'),
+                colorValue: (a['color'] as num?)?.toInt(),
+              );
+              if (one != null) ids.add(one);
+            }
+            return ids.isEmpty
+                ? _err('not a video editor page: $pageId')
+                : _ok({'itemIds': ids});
+          }
           final id = await _provider.mcpAddVideoEditorItem(
             pageId,
             kind: a['kind'] as String? ?? '',
@@ -920,6 +1106,45 @@ class McpServer {
                   'that only the user may start themselves (sharing over '
                   'the local network, cloud sync, and the app/focus locks). '
                   'For those, tell the user to press the button.');
+        }
+      case 'list_app_docs':
+        return _ok(_provider.mcpListAppDocs());
+      case 'read_app_doc':
+        {
+          final name = a['name'] as String? ?? '';
+          final text = await _provider.mcpReadAppDoc(name);
+          return text == null
+              ? _err('unknown doc: "$name" (call list_app_docs for valid names)')
+              : _ok(text);
+        }
+      case 'text_file_status':
+        return _ok(_provider.mcpTextFileStatus());
+      case 'text_file_read':
+        {
+          final r = _provider.mcpTextFileRead(
+            startLine: (a['startLine'] as num?)?.toInt(),
+            endLine: (a['endLine'] as num?)?.toInt(),
+          );
+          return r == null
+              ? _err('no text file is open in the app text editor - '
+                  'ask the user to open one first')
+              : _ok(r);
+        }
+      case 'text_file_edit':
+        {
+          final raw = a['edits'];
+          if (raw is! List || raw.isEmpty) {
+            return _err('edits must be a non-empty array');
+          }
+          final edits = <Map<String, dynamic>>[
+            for (final e in raw)
+              if (e is Map) e.cast<String, dynamic>()
+          ];
+          if (edits.isEmpty) return _err('edits must contain objects');
+          final err = _provider.mcpTextFileEdit(edits);
+          return err == null
+              ? _ok('edited (${edits.length} edit(s) applied)')
+              : _err(err);
         }
       default:
         return _err('unknown tool: $name');

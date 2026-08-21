@@ -43,10 +43,24 @@ service cloud.firestore {
     function isSelf(uid) {
       return signedIn() && request.auth.uid == uid;
     }
-    // 開発者かどうか。 admins/{uid} が存在すれば開発者。
+    // 開発者かどうか。
+    //
+    // ・下の kAdminUids に直接書いた uid
+    // ・または admins/{uid} が存在する場合
+    //
+    // uid を直接書いているのは、 admins コレクションが (この規則でも、
+    // 公開前の規則でも) 書き込み禁止で、 最初の 1 件をアプリからは作れない
+    // ため。 コンソールでの手作業を挟まずに済むようにしている。
+    // 増やす時はこの配列に足すか、 コンソールで admins/{uid} を作る。
+    // ※ uid は秘密ではない (規則も公開情報)。 これは「誰が開発者か」 の
+    //   名簿であって、 合言葉ではない。
+    function kAdminUids() {
+      return ['pkjWRiOBoOVm6qQfiXkDOrSa8O12'];
+    }
     function isAdmin() {
       return signedIn()
-          && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+          && (kAdminUids().hasAny([request.auth.uid])
+              || exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
     }
     // その同期グループの参加者か。 参加時に members/{uid} を作るので、
     // それが存在することを「参加済み」 の証拠として使う。

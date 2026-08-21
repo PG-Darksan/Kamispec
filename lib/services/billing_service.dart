@@ -114,8 +114,8 @@ class BillingService {
   //   持っている。 **Stripe 側で価格を変えたらここも直すこと**。 直し忘れると
   //   「画面の金額」 と「決済ページの金額」 が食い違う。
   //   年額は「1 か月あたり」 の額。 年間の請求額は 12 倍して出す。
-  static const double proMonthlyUsd = 9.99;
-  static const double proYearlyPerMonthUsd = 7.99;
+  static const double proMonthlyUsd = 5.99;
+  static const double proYearlyPerMonthUsd = 4.79;
   static const double maxMonthlyUsd = 19.99;
   static const double maxYearlyPerMonthUsd = 15.99;
 

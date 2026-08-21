@@ -577,6 +577,10 @@ class NodeConnection {
 
   bool get isParentChild => relationshipType == 'parentChild';
 
+  /// 描画レイヤー 1〜5 (既定 3)。 図形 (MapDecoration) と同じ考え方で、
+  /// 大きいほど手前に描かれる (= ユーザー要望: レイヤーをノードやリンクにも)。
+  final int layer;
+
   const NodeConnection({
     required this.fromId,
     required this.fromAnchor,
@@ -598,6 +602,7 @@ class NodeConnection {
     this.fromTableIndex,
     this.toTableSide,
     this.toTableIndex,
+    this.layer = 3,
   });
 
   NodeConnection copyWith({
@@ -623,6 +628,7 @@ class NodeConnection {
     Object? fromTableIndex = _sentinel,
     Object? toTableSide = _sentinel,
     Object? toTableIndex = _sentinel,
+    int? layer,
   }) {
     return NodeConnection(
       fromId: fromId ?? this.fromId,
@@ -663,6 +669,7 @@ class NodeConnection {
       toTableIndex: toTableIndex == _sentinel
           ? this.toTableIndex
           : toTableIndex as int?,
+      layer: (layer ?? this.layer).clamp(1, 5).toInt(),
     );
   }
 
@@ -693,6 +700,7 @@ class NodeConnection {
         if (fromTableIndex != null) 'fromTableIndex': fromTableIndex,
         if (toTableSide != null) 'toTableSide': toTableSide,
         if (toTableIndex != null) 'toTableIndex': toTableIndex,
+        if (layer != 3) 'layer': layer,
       };
 
   factory NodeConnection.fromJson(Map<String, dynamic> json) {
@@ -735,6 +743,7 @@ class NodeConnection {
       fromTableIndex: (json['fromTableIndex'] as num?)?.toInt(),
       toTableSide: json['toTableSide'] as String?,
       toTableIndex: (json['toTableIndex'] as num?)?.toInt(),
+      layer: ((json['layer'] as num?)?.toInt() ?? 3).clamp(1, 5).toInt(),
     );
   }
 
@@ -865,6 +874,10 @@ class MindMapNode {
   /// (= ユーザー要望) を実現する。 既定 false (= 従来どおり内容で高さが伸びる)。
   bool clampHeight;
 
+  /// 描画レイヤー 1〜5 (既定 3)。 図形・接続線と同じ考え方で、 大きいほど
+  /// 手前に描かれる (= ユーザー要望: レイヤーをノードやリンクにも適用)。
+  int layer;
+
   /// ノードの形状 (= ユーザー要望: フローチャートの基本記法にブロックの
   /// 形状を変えられるように)。
   ///   null / 'rounded'  = 角丸長方形 (従来の既定)
@@ -908,6 +921,7 @@ class MindMapNode {
     this.tableData,
     this.richText,
     this.clampHeight = false,
+    this.layer = 3,
     this.shape,
   }) : color = color ?? const Color(0xFF6C63FF);
 
@@ -1235,6 +1249,7 @@ class MindMapNode {
     Object? tableData = _sentinel,
     Object? richText = _sentinel,
     bool? clampHeight,
+    int? layer,
     Object? shape = _sentinel,
   }) {
     return MindMapNode(
@@ -1292,6 +1307,7 @@ class MindMapNode {
       richText: richText == _sentinel ? this.richText : richText as String?,
       clampHeight: clampHeight ?? this.clampHeight,
       shape: shape == _sentinel ? this.shape : shape as String?,
+      layer: (layer ?? this.layer).clamp(1, 5).toInt(),
     );
   }
 
@@ -1345,6 +1361,7 @@ class MindMapNode {
       // 高さ固定フラグ (ギャラリーのテキストタイル)。 既定 false のときは
       //   キーを出さず後方互換を保つ。
       if (clampHeight) 'clampHeight': true,
+      if (layer != 3) 'layer': layer,
       // ノード形状 (フローチャート記法)。 既定 (null/'rounded') は出さない。
       if (shape != null && shape != 'rounded') 'shape': shape,
     };
@@ -1405,6 +1422,7 @@ class MindMapNode {
           : null,
       richText: json['richText'] as String?,
       clampHeight: json['clampHeight'] as bool? ?? false,
+      layer: ((json['layer'] as num?)?.toInt() ?? 3).clamp(1, 5).toInt(),
       shape: json['shape'] as String?,
     );
   }

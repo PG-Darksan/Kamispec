@@ -4,6 +4,10 @@ import 'dart:io'
     show
         Platform,
         File,
+        // メモに貼る画像の置き場所を作るのに要る (= ユーザー要望)。
+        Directory,
+        // サブ窓で WebView を作れない時に外の窓を起動するのに要る。
+        ProcessStartMode,
         FileMode,
         Process,
         exit,
@@ -13,6 +17,10 @@ import 'dart:io'
         InternetAddress,
         ContentType;
 import 'dart:convert';
+// 録画の範囲選び窓の「選んだ所以外を暗くする」 描画に要る。
+import 'dart:ui' as ui;
+// 録画の操作窓を画面キャプチャから外すため (Win32 を直に呼ぶ)。
+import 'dart:ffi' as ffi;
 // オーバーレイの AI モードから直接問い合わせるため (= ユーザー要望)。
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
@@ -34,6 +42,9 @@ import 'widgets/calc_body.dart';
 import 'package:webview_windows/webview_windows.dart' as wv_win;
 import 'package:win32_registry/win32_registry.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:file_picker/file_picker.dart';
+// メモに画像を貼り付けるため (= ユーザー要望)。
+import 'package:super_clipboard/super_clipboard.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:local_notifier/local_notifier.dart';
@@ -45,6 +56,12 @@ import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'providers/mind_map_provider.dart';
 import 'screens/mind_map_screen.dart';
 import 'services/home_shortcut_service.dart';
+// 録画窓の中の範囲選び (デスクトップの写しを撮る) に使う。
+import 'services/screen_capture.dart' as scap;
+// 録画窓の中のプレビュー再生 (デスクトップは fvp バックエンド)。
+import 'package:video_player/video_player.dart';
+// 録画窓が自分の窓の大きさを変える (GetWindowRect) のに使う。
+import 'package:ffi/ffi.dart' as pkgffi;
 // Linux 専用 WebView (CEF) の初期化。 中身は flutter_linux_webview を import
 //   するが Linux 専用プラグインなので Windows/Android のネイティブには影響しない。
 import 'services/linux_webview.dart' as linux_wv;
@@ -97,6 +114,10 @@ class FloatMemoItem {
   final String id;
   String text;
 
+  /// 貼り付けた画像の場所 (= ユーザー要望: フローティングメモに画像を
+  /// 貼れるように)。 空なら文字だけの項目。
+  String image;
+
   /// 作成時刻 (UNIX ms)。 動画メモの再生位置バッジと同じ位置に時刻を出す。
   final int savedAt;
 
@@ -108,24 +129,35 @@ class FloatMemoItem {
     required this.text,
     int? savedAt,
     this.addedToMap = false,
+    this.image = '',
   }) : savedAt = savedAt ?? DateTime.now().millisecondsSinceEpoch;
 
-  factory FloatMemoItem.create(String text) => FloatMemoItem(
+  factory FloatMemoItem.create(String text, {String image = ''}) =>
+      FloatMemoItem(
         id: DateTime.now().microsecondsSinceEpoch.toString(),
         text: text,
+        image: image,
       );
 
-  Map<String, dynamic> toJson() =>
-      {'id': id, 'text': text, 'savedAt': savedAt, 'addedToMap': addedToMap};
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'text': text,
+        'savedAt': savedAt,
+        'addedToMap': addedToMap,
+        if (image.isNotEmpty) 'image': image,
+      };
 
   static FloatMemoItem? fromJson(Map j) {
     final t = '${j['text'] ?? ''}';
-    if (t.trim().isEmpty) return null;
+    final img = '${j['image'] ?? ''}';
+    // 画像だけの項目もある (= 文字が空でも捨てない)。
+    if (t.trim().isEmpty && img.trim().isEmpty) return null;
     return FloatMemoItem(
       id: '${j['id'] ?? DateTime.now().microsecondsSinceEpoch}',
       text: t,
       savedAt: j['savedAt'] is num ? (j['savedAt'] as num).toInt() : null,
       addedToMap: j['addedToMap'] == true,
+      image: img,
     );
   }
 }
@@ -149,9 +181,14 @@ class FloatMemoBook {
     this.mode = 'list',
   }) : items = items ?? [];
 
-  factory FloatMemoBook.create(String name) => FloatMemoBook(
+  /// [mode] を渡すと、 そのモード ('list' / 'free') で作る。
+  /// = ユーザー要望: 新しいメモを追加した時、 追加を押す前のメモと同じ
+  ///   モードで始まってほしい (毎回箇条書きに戻るのが気になる)。
+  factory FloatMemoBook.create(String name, {String mode = 'list'}) =>
+      FloatMemoBook(
         id: DateTime.now().microsecondsSinceEpoch.toString(),
         name: name,
+        mode: mode == 'free' ? 'free' : 'list',
       );
 
   Map<String, dynamic> toJson() => {
@@ -1097,6 +1134,263 @@ class FloatL10n {
   }
 
   static const Map<String, Map<String, String>> _table = {
+    // ── 外に出した AI アシスタントの窓 (= ユーザー要望) ──
+    'assist.title': {
+      'ja': 'AI アシスタント',
+      'en': 'AI assistant',
+      'zh': 'AI 助手',
+      'ko': 'AI 어시스턴트',
+      'es': 'Asistente de IA',
+      'fr': 'Assistant IA',
+      'de': 'KI-Assistent',
+      'pt': 'Assistente de IA',
+      'ru': 'ИИ-ассистент',
+    },
+    'assist.hint': {
+      'ja': 'AIへの指示を入力… (Enterで送信)',
+      'en': 'Tell the AI what to do (Enter to send)',
+      'zh': '输入对 AI 的指示（回车发送）',
+      'ko': 'AI에게 지시를 입력 (Enter로 전송)',
+      'es': 'Indica a la IA qué hacer (Enter para enviar)',
+      'fr': 'Dites a l IA quoi faire (Entree pour envoyer)',
+      'de': 'Anweisung an die KI (Enter zum Senden)',
+      'pt': 'Diga a IA o que fazer (Enter para enviar)',
+      'ru': 'Укажите задачу для ИИ (Enter — отправить)',
+    },
+    'assist.empty': {
+      'ja': 'このまま指示を書くと、本体のアプリが動きます。\n'
+          '（考える所はアプリ本体に残っています）',
+      'en': 'Type here and the main app will do the work.\n'
+          '(The thinking stays in the main app.)',
+      'zh': '在此输入指示，主程序会执行。',
+      'ko': '여기에 지시를 쓰면 본체 앱이 작업합니다.',
+      'es': 'Escribe aqui y la aplicacion principal hara el trabajo.',
+      'fr': 'Ecrivez ici et l application principale agit.',
+      'de': 'Hier schreiben - die Haupt-App fuehrt es aus.',
+      'pt': 'Escreva aqui e o aplicativo principal executa.',
+      'ru': 'Пишите здесь — работу выполнит основное приложение.',
+    },
+    'assist.thinking': {
+      'ja': '考えています',
+      'en': 'Thinking',
+      'zh': '思考中',
+      'ko': '생각 중',
+      'es': 'Pensando',
+      'fr': 'Reflexion',
+      'de': 'Denkt nach',
+      'pt': 'Pensando',
+      'ru': 'Думает',
+    },
+    'assist.stopping': {
+      'ja': '止めています…',
+      'en': 'Stopping...',
+      'zh': '正在停止…',
+      'ko': '중지하는 중…',
+      'es': 'Deteniendo...',
+      'fr': 'Arret...',
+      'de': 'Wird gestoppt...',
+      'pt': 'Parando...',
+      'ru': 'Останавливаем…',
+    },
+    'assist.stop': {
+      'ja': '停止',
+      'en': 'Stop',
+      'zh': '停止',
+      'ko': '중지',
+      'es': 'Detener',
+      'fr': 'Arreter',
+      'de': 'Stopp',
+      'pt': 'Parar',
+      'ru': 'Стоп',
+    },
+    'assist.pin': {
+      'ja': '常に手前に出す',
+      'en': 'Keep on top',
+      'zh': '始终置顶',
+      'ko': '항상 위에 표시',
+      'es': 'Mantener al frente',
+      'fr': 'Toujours au premier plan',
+      'de': 'Immer im Vordergrund',
+      'pt': 'Manter na frente',
+      'ru': 'Поверх всех окон',
+    },
+    'assist.close': {
+      'ja': '閉じる',
+      'en': 'Close',
+      'zh': '关闭',
+      'ko': '닫기',
+      'es': 'Cerrar',
+      'fr': 'Fermer',
+      'de': 'Schliessen',
+      'pt': 'Fechar',
+      'ru': 'Закрыть',
+    },
+    // ── 画面録画の操作窓 (= ユーザー要望) ──
+    'rec.start': {
+      'ja': '録画開始',
+      'en': 'Record',
+      'zh': '开始录制',
+      'ko': '녹화 시작',
+      'es': 'Grabar',
+      'fr': 'Enregistrer',
+      'de': 'Aufnehmen',
+      'pt': 'Gravar',
+      'ru': 'Запись',
+    },
+    'rec.stop': {
+      'ja': '停止',
+      'en': 'Stop',
+      'zh': '停止',
+      'ko': '중지',
+      'es': 'Parar',
+      'fr': 'Arreter',
+      'de': 'Stopp',
+      'pt': 'Parar',
+      'ru': 'Стоп',
+    },
+    'rec.whole': {
+      'ja': '画面全体',
+      'en': 'Whole screen',
+      'zh': '整个屏幕',
+      'ko': '전체 화면',
+      'es': 'Pantalla completa',
+      'fr': 'Tout l ecran',
+      'de': 'Ganzer Bildschirm',
+      'pt': 'Tela inteira',
+      'ru': 'Весь экран',
+    },
+    'rec.area': {
+      'ja': '範囲',
+      'en': 'Area',
+      'zh': '范围',
+      'ko': '범위',
+      'es': 'Area',
+      'fr': 'Zone',
+      'de': 'Bereich',
+      'pt': 'Area',
+      'ru': 'Область',
+    },
+    'rec.saveDir': {
+      'ja': '保存先を選ぶ',
+      'en': 'Choose save folder',
+      'zh': '选择保存位置',
+      'ko': '저장 위치 선택',
+      'es': 'Elegir carpeta',
+      'fr': 'Choisir le dossier',
+      'de': 'Speicherort waehlen',
+      'pt': 'Escolher pasta',
+      'ru': 'Выбрать папку',
+    },
+    'rec.openFolder': {
+      'ja': '場所を開く',
+      'en': 'Show in folder',
+      'zh': '打开位置',
+      'ko': '위치 열기',
+      'es': 'Abrir carpeta',
+      'fr': 'Ouvrir le dossier',
+      'de': 'Ordner oeffnen',
+      'pt': 'Abrir pasta',
+      'ru': 'Открыть папку',
+    },
+    'rec.notCaptured': {
+      'ja': 'この窓は録画に写りません',
+      'en': 'This window is not captured in the recording',
+      'zh': '此窗口不会被录进去',
+      'ko': '이 창은 녹화에 찍히지 않습니다',
+      'es': 'Esta ventana no se graba',
+      'fr': 'Cette fenetre n est pas enregistree',
+      'de': 'Dieses Fenster wird nicht aufgenommen',
+      'pt': 'Esta janela nao e gravada',
+      'ru': 'Это окно не попадает в запись',
+    },
+    'rec.preview': {
+      'ja': '撮影後にプレビュー',
+      'en': 'Preview when done',
+      'zh': '录完后预览',
+      'ko': '촬영 후 미리보기',
+      'es': 'Vista previa al terminar',
+      'fr': 'Apercu a la fin',
+      'de': 'Vorschau danach',
+      'pt': 'Previa ao terminar',
+      'ru': 'Предпросмотр после',
+    },
+    'rec.regionTitle': {
+      'ja': '録る範囲を選ぶ',
+      'en': 'Choose the area to record',
+      'zh': '选择录制范围',
+      'ko': '녹화할 범위 선택',
+      'es': 'Elige el área a grabar',
+      'fr': 'Choisir la zone à enregistrer',
+      'de': 'Aufnahmebereich wählen',
+      'pt': 'Escolha a área a gravar',
+      'ru': 'Выберите область записи',
+    },
+    'rec.regionHint': {
+      'ja': '画面の上をなぞると、その範囲だけを録ります。なぞらずに「録画開始」を押すと画面全体です。',
+      'en': 'Drag over the picture to record just that area. Press Start without dragging to record the whole screen.',
+      'zh': '在画面上拖动即可只录制该范围。不拖动直接点“开始录制”则录制整个屏幕。',
+      'ko': '화면 위를 드래그하면 그 범위만 녹화합니다. 드래그하지 않고 시작을 누르면 전체 화면입니다.',
+      'es': 'Arrastra sobre la imagen para grabar solo esa zona. Pulsa Iniciar sin arrastrar para toda la pantalla.',
+      'fr': 'Faites glisser sur l\'image pour n\'enregistrer que cette zone. Sans glisser, tout l\'écran est enregistré.',
+      'de': 'Ziehe über das Bild, um nur diesen Bereich aufzunehmen. Ohne Ziehen wird der ganze Bildschirm aufgenommen.',
+      'pt': 'Arraste sobre a imagem para gravar só essa área. Sem arrastar, grava a tela inteira.',
+      'ru': 'Проведите по изображению, чтобы записать только эту область. Без выделения записывается весь экран.',
+    },
+    'rec.regionWhole': {
+      'ja': '画面全体を録ります',
+      'en': 'Recording the whole screen',
+      'zh': '录制整个屏幕',
+      'ko': '전체 화면을 녹화합니다',
+      'es': 'Se grabará toda la pantalla',
+      'fr': 'Tout l\'écran sera enregistré',
+      'de': 'Der ganze Bildschirm wird aufgenommen',
+      'pt': 'A tela inteira será gravada',
+      'ru': 'Будет записан весь экран',
+    },
+    'rec.regionReset': {
+      'ja': '選び直す',
+      'en': 'Clear',
+      'zh': '重选',
+      'ko': '다시 선택',
+      'es': 'Borrar',
+      'fr': 'Effacer',
+      'de': 'Zurücksetzen',
+      'pt': 'Limpar',
+      'ru': 'Сбросить',
+    },
+    'rec.previewTitle': {
+      'ja': '録画のプレビュー',
+      'en': 'Recording preview',
+      'zh': '录制预览',
+      'ko': '녹화 미리보기',
+      'es': 'Vista previa de la grabación',
+      'fr': 'Aperçu de l\'enregistrement',
+      'de': 'Aufnahmevorschau',
+      'pt': 'Prévia da gravação',
+      'ru': 'Предпросмотр записи',
+    },
+    'rec.close': {
+      'ja': '閉じる',
+      'en': 'Close',
+      'zh': '关闭',
+      'ko': '닫기',
+      'es': 'Cerrar',
+      'fr': 'Fermer',
+      'de': 'Schließen',
+      'pt': 'Fechar',
+      'ru': 'Закрыть',
+    },
+    'rec.stopKey': {
+      'ja': '停止キー',
+      'en': 'Stop key',
+      'zh': '停止键',
+      'ko': '중지 키',
+      'es': 'Tecla de parada',
+      'fr': 'Touche d\'arret',
+      'de': 'Stopp-Taste',
+      'pt': 'Tecla de parada',
+      'ru': 'Клавиша остановки',
+    },
     'float.pin': {
       'ja': '常に手前に表示', 'en': 'Always on top', 'zh': '始终置顶',
       'ko': '항상 위에 표시', 'es': 'Siempre visible',
@@ -1107,6 +1401,99 @@ class FloatL10n {
       'ja': '関数電卓', 'en': 'Calculator', 'zh': '科学计算器', 'ko': '공학용 계산기',
       'es': 'Calculadora', 'fr': 'Calculatrice', 'de': 'Rechner',
       'pt': 'Calculadora', 'ru': 'Калькулятор',
+    },
+    'float.openMemo': {
+      'ja': 'フローティングメモを開く', 'en': 'Open the floating memo',
+      'zh': '打开浮动便签', 'ko': '플로팅 메모 열기',
+      'es': 'Abrir la nota flotante', 'fr': 'Ouvrir le mémo flottant',
+      'de': 'Schwebende Notiz öffnen', 'pt': 'Abrir a nota flutuante',
+      'ru': 'Открыть плавающую заметку',
+    },
+    'float.backHome': {
+      'ja': '元の画面に戻る', 'en': 'Back to the original page',
+      'zh': '返回原来的页面', 'ko': '원래 화면으로 돌아가기',
+      'es': 'Volver a la página original', 'fr': 'Revenir à la page d’origine',
+      'de': 'Zur ursprünglichen Seite zurück', 'pt': 'Voltar à página original',
+      'ru': 'Вернуться к исходной странице',
+    },
+    // 外の窓で動画を見る時の再生速度 (= ユーザー要望: 要素から開いた
+    //   YouTube は外の窓で立ち上がるので、 速度もそこで変えられるように)。
+    'float.playbackRate': {
+      'ja': '再生速度', 'en': 'Playback speed', 'zh': '播放速度',
+      'ko': '재생 속도', 'es': 'Velocidad de reproducción',
+      'fr': 'Vitesse de lecture', 'de': 'Wiedergabegeschwindigkeit',
+      'pt': 'Velocidade de reprodução', 'ru': 'Скорость воспроизведения',
+    },
+    'memo.openAiApi': {
+      'ja': 'アプリの AI で聞く (API)', 'en': 'Ask the built-in AI (API)',
+      'zh': '用应用内 AI 提问（API）', 'ko': '앱의 AI로 묻기 (API)',
+      'es': 'Preguntar a la IA integrada (API)',
+      'fr': "Demander à l'IA intégrée (API)",
+      'de': 'Die eingebaute KI fragen (API)',
+      'pt': 'Perguntar à IA integrada (API)',
+      'ru': 'Спросить встроенный ИИ (API)',
+    },
+    'float.browserAi': {
+      'ja': 'ブラウザAI (この窓で開く)', 'en': 'Browser AI (opens in this window)',
+      'zh': '浏览器 AI（在此窗口打开）', 'ko': '브라우저 AI (이 창에서 열기)',
+      'es': 'IA del navegador (en esta ventana)',
+      'fr': 'IA navigateur (dans cette fenêtre)',
+      'de': 'Browser-KI (in diesem Fenster)',
+      'pt': 'IA do navegador (nesta janela)',
+      'ru': 'Браузерный ИИ (в этом окне)',
+    },
+    // ── ストップウォッチ / タイマーの外部窓 (= ユーザー要望) ──
+    'timer.title': {
+      'ja': 'ストップウォッチ / タイマー', 'en': 'Stopwatch / Timer',
+      'zh': '秒表 / 计时器', 'ko': '스톱워치 / 타이머',
+      'es': 'Cronómetro / Temporizador', 'fr': 'Chrono / Minuteur',
+      'de': 'Stoppuhr / Timer', 'pt': 'Cronômetro / Timer',
+      'ru': 'Секундомер / Таймер',
+    },
+    'timer.stopwatch': {
+      'ja': 'ストップウォッチ', 'en': 'Stopwatch', 'zh': '秒表', 'ko': '스톱워치',
+      'es': 'Cronómetro', 'fr': 'Chrono', 'de': 'Stoppuhr',
+      'pt': 'Cronômetro', 'ru': 'Секундомер',
+    },
+    'timer.countdown': {
+      'ja': 'タイマー', 'en': 'Timer', 'zh': '计时器', 'ko': '타이머',
+      'es': 'Temporizador', 'fr': 'Minuteur', 'de': 'Timer',
+      'pt': 'Timer', 'ru': 'Таймер',
+    },
+    'timer.pomodoro': {
+      'ja': 'ポモドーロ', 'en': 'Pomodoro', 'zh': '番茄钟', 'ko': '뽀모도로',
+      'es': 'Pomodoro', 'fr': 'Pomodoro', 'de': 'Pomodoro',
+      'pt': 'Pomodoro', 'ru': 'Помодоро',
+    },
+    'timer.work': {
+      'ja': '作業', 'en': 'Work', 'zh': '工作', 'ko': '작업',
+      'es': 'Trabajo', 'fr': 'Travail', 'de': 'Arbeit',
+      'pt': 'Trabalho', 'ru': 'Работа',
+    },
+    'timer.break': {
+      'ja': '休憩', 'en': 'Break', 'zh': '休息', 'ko': '휴식',
+      'es': 'Descanso', 'fr': 'Pause', 'de': 'Pause',
+      'pt': 'Pausa', 'ru': 'Перерыв',
+    },
+    'timer.start': {
+      'ja': 'スタート', 'en': 'Start', 'zh': '开始', 'ko': '시작',
+      'es': 'Iniciar', 'fr': 'Démarrer', 'de': 'Start',
+      'pt': 'Iniciar', 'ru': 'Старт',
+    },
+    'timer.stop': {
+      'ja': 'ストップ', 'en': 'Stop', 'zh': '停止', 'ko': '정지',
+      'es': 'Parar', 'fr': 'Arrêter', 'de': 'Stopp',
+      'pt': 'Parar', 'ru': 'Стоп',
+    },
+    'timer.reset': {
+      'ja': 'リセット', 'en': 'Reset', 'zh': '重置', 'ko': '리셋',
+      'es': 'Reiniciar', 'fr': 'Réinitialiser', 'de': 'Zurücksetzen',
+      'pt': 'Zerar', 'ru': 'Сброс',
+    },
+    'timer.done': {
+      'ja': '時間になりました', 'en': "Time's up", 'zh': '时间到了', 'ko': '시간이 됐습니다',
+      'es': 'Tiempo cumplido', 'fr': 'Temps écoulé', 'de': 'Zeit ist um',
+      'pt': 'Tempo esgotado', 'ru': 'Время вышло',
     },
     'memo.title': {
       'ja': 'メモ', 'en': 'Memo', 'zh': '备忘录', 'ko': '메모',
@@ -1144,6 +1531,89 @@ class FloatL10n {
       'de': 'Lang drücken / Rechtsklick zum Modellwechsel',
       'pt': 'Pressione e segure / clique direito para mudar o modelo',
       'ru': 'Долгое нажатие / правый клик — смена модели',
+    },
+    // ── フローティング AI 窓の追加ボタン (= ユーザー要望) ──
+    'memo.openAssistant': {
+      'ja': 'AI アシスタントを開く', 'en': 'Open the AI assistant',
+      'zh': '打开 AI 助手', 'ko': 'AI 어시스턴트 열기',
+      'es': 'Abrir el asistente de IA', 'fr': "Ouvrir l'assistant IA",
+      'de': 'KI-Assistenten öffnen', 'pt': 'Abrir o assistente de IA',
+      'ru': 'Открыть ИИ-ассистента',
+    },
+    'memo.assistantFailed': {
+      'ja': '本体のアプリが見つかりませんでした', 'en': 'Could not reach the main app',
+      'zh': '未找到主应用', 'ko': '본체 앱을 찾지 못했습니다',
+      'es': 'No se pudo contactar con la aplicación principal',
+      'fr': "Impossible de joindre l'application principale",
+      'de': 'Haupt-App nicht erreichbar',
+      'pt': 'Não foi possível acessar o aplicativo principal',
+      'ru': 'Не удалось связаться с основным приложением',
+    },
+    'memo.aiPrefixTip': {
+      'ja': '前提条件を入力欄に入れる (長押し / 右クリックで編集)',
+      'en': 'Insert your standing instructions (long-press / right-click to edit)',
+      'zh': '将前提条件插入输入框（长按 / 右键编辑）',
+      'ko': '전제 조건을 입력란에 넣기 (길게 누르기 / 우클릭으로 편집)',
+      'es': 'Insertar tus instrucciones fijas (mantén pulsado / clic derecho para editar)',
+      'fr': 'Insérer vos consignes permanentes (appui long / clic droit pour modifier)',
+      'de': 'Standardvorgaben einfügen (lang drücken / Rechtsklick zum Bearbeiten)',
+      'pt': 'Inserir suas instruções fixas (pressione e segure / clique direito para editar)',
+      'ru': 'Вставить постоянные указания (долгое нажатие / правый клик — изменить)',
+    },
+    'memo.aiPrefixTitle': {
+      'ja': '前提条件', 'en': 'Standing instructions', 'zh': '前提条件',
+      'ko': '전제 조건', 'es': 'Instrucciones fijas',
+      'fr': 'Consignes permanentes', 'de': 'Standardvorgaben',
+      'pt': 'Instruções fixas', 'ru': 'Постоянные указания',
+    },
+    'memo.aiPrefixDesc': {
+      'ja': 'AI に渡す文の先頭に、いつも付けたい指示を書いておけます。',
+      'en': 'Text you always want prepended to what you send the AI.',
+      'zh': '可以写下每次都要加在发送给 AI 的内容前面的指示。',
+      'ko': 'AI에 보내는 문장 앞에 항상 붙일 지시를 적어 둘 수 있습니다.',
+      'es': 'Texto que quieres anteponer siempre a lo que envías a la IA.',
+      'fr': "Texte à ajouter systématiquement avant ce que vous envoyez à l'IA.",
+      'de': 'Text, der immer vor Ihre KI-Eingabe gesetzt wird.',
+      'pt': 'Texto que você quer sempre antes do que envia para a IA.',
+      'ru': 'Текст, который всегда добавляется перед вашим запросом к ИИ.',
+    },
+    'memo.aiPrefixHint': {
+      'ja': '例: 日本語で、結論から答えて',
+      'en': 'e.g. Answer in English, conclusion first',
+      'zh': '例：用中文回答，先说结论',
+      'ko': '예: 한국어로, 결론부터 답해줘',
+      'es': 'ej.: Responde en español, primero la conclusión',
+      'fr': "ex. : Réponds en français, conclusion d'abord",
+      'de': 'z. B. Antworte auf Deutsch, Fazit zuerst',
+      'pt': 'ex.: Responda em português, conclusão primeiro',
+      'ru': 'напр.: Отвечай по-русски, сначала вывод',
+    },
+    'memo.hideHeader': {
+      'ja': 'ヘッダーを隠す', 'en': 'Hide the header', 'zh': '隐藏标题栏',
+      'ko': '헤더 숨기기', 'es': 'Ocultar el encabezado',
+      'fr': "Masquer l'en-tête", 'de': 'Kopfzeile ausblenden',
+      'pt': 'Ocultar o cabeçalho', 'ru': 'Скрыть заголовок',
+    },
+    'memo.showHeader': {
+      'ja': 'ヘッダーを表示', 'en': 'Show the header', 'zh': '显示标题栏',
+      'ko': '헤더 표시', 'es': 'Mostrar el encabezado',
+      'fr': "Afficher l'en-tête", 'de': 'Kopfzeile einblenden',
+      'pt': 'Mostrar o cabeçalho', 'ru': 'Показать заголовок',
+    },
+    'btn.cancel': {
+      'ja': 'キャンセル', 'en': 'Cancel', 'zh': '取消', 'ko': '취소',
+      'es': 'Cancelar', 'fr': 'Annuler', 'de': 'Abbrechen',
+      'pt': 'Cancelar', 'ru': 'Отмена',
+    },
+    'btn.clear': {
+      'ja': 'クリア', 'en': 'Clear', 'zh': '清除', 'ko': '지우기',
+      'es': 'Borrar', 'fr': 'Effacer', 'de': 'Löschen',
+      'pt': 'Limpar', 'ru': 'Очистить',
+    },
+    'btn.save': {
+      'ja': '保存', 'en': 'Save', 'zh': '保存', 'ko': '저장',
+      'es': 'Guardar', 'fr': 'Enregistrer', 'de': 'Speichern',
+      'pt': 'Salvar', 'ru': 'Сохранить',
     },
     // ── 複数メモ (= ユーザー要望: フローティングメモを複数保存) ──
     'memo.book1': {
@@ -1267,6 +1737,62 @@ class FloatL10n {
       'pt': 'Digite acima e pressione Enter para adicionar',
       'ru': 'Введите выше и нажмите Enter, чтобы добавить',
     },
+    'memo.saveAsText': {
+      'ja': 'テキストで保存', 'en': 'Save as text', 'zh': '保存为文本',
+      'ko': '텍스트로 저장', 'es': 'Guardar como texto',
+      'fr': 'Enregistrer en texte', 'de': 'Als Text speichern',
+      'pt': 'Salvar como texto', 'ru': 'Сохранить как текст',
+    },
+    'memo.saveDir': {
+      'ja': '保存場所の設定', 'en': 'Save location', 'zh': '保存位置',
+      'ko': '저장 위치', 'es': 'Ubicacion de guardado',
+      'fr': 'Dossier d\'enregistrement', 'de': 'Speicherort',
+      'pt': 'Local de salvamento', 'ru': 'Папка сохранения',
+    },
+    'memo.saveDirPick': {
+      'ja': '保存場所を選ぶ...', 'en': 'Choose folder...',
+      'zh': '选择文件夹...', 'ko': '폴더 선택...',
+      'es': 'Elegir carpeta...', 'fr': 'Choisir un dossier...',
+      'de': 'Ordner wahlen...', 'pt': 'Escolher pasta...',
+      'ru': 'Выбрать папку...',
+    },
+    'memo.saveDirDefault': {
+      'ja': '既定の場所に戻す', 'en': 'Use the default folder',
+      'zh': '恢复默认位置', 'ko': '기본 위치로',
+      'es': 'Usar la carpeta predeterminada',
+      'fr': 'Revenir au dossier par defaut',
+      'de': 'Standardordner verwenden', 'pt': 'Usar a pasta padrao',
+      'ru': 'Папка по умолчанию',
+    },
+    'memo.saveDirHint': {
+      'ja': '右クリックで保存場所', 'en': 'Right-click for the save location',
+      'zh': '右键设置保存位置', 'ko': '오른쪽 클릭으로 저장 위치',
+      'es': 'Clic derecho: ubicacion de guardado',
+      'fr': 'Clic droit : dossier d\'enregistrement',
+      'de': 'Rechtsklick: Speicherort',
+      'pt': 'Clique direito: local de salvamento',
+      'ru': 'Правый клик — папка сохранения',
+    },
+    'memo.saved': {
+      'ja': '保存しました: {path}', 'en': 'Saved: {path}', 'zh': '已保存：{path}',
+      'ko': '저장했습니다: {path}', 'es': 'Guardado: {path}',
+      'fr': 'Enregistré : {path}', 'de': 'Gespeichert: {path}',
+      'pt': 'Salvo: {path}', 'ru': 'Сохранено: {path}',
+    },
+    'memo.pasteImage': {
+      'ja': '画像を貼り付け', 'en': 'Paste an image', 'zh': '粘贴图片',
+      'ko': '이미지 붙여넣기', 'es': 'Pegar una imagen', 'fr': 'Coller une image',
+      'de': 'Bild einfügen', 'pt': 'Colar uma imagem', 'ru': 'Вставить изображение',
+    },
+    'memo.noImage': {
+      'ja': 'クリップボードに画像がありません', 'en': 'No image on the clipboard',
+      'zh': '剪贴板中没有图片', 'ko': '클립보드에 이미지가 없습니다',
+      'es': 'No hay imagen en el portapapeles',
+      'fr': "Pas d'image dans le presse-papiers",
+      'de': 'Kein Bild in der Zwischenablage',
+      'pt': 'Nenhuma imagem na área de transferência',
+      'ru': 'В буфере обмена нет изображения',
+    },
     'memo.add': {
       'ja': '追加', 'en': 'Add', 'zh': '添加', 'ko': '추가',
       'es': 'Añadir', 'fr': 'Ajouter', 'de': 'Hinzufügen',
@@ -1312,6 +1838,28 @@ class FloatL10n {
       'es': 'Añadido al mapa', 'fr': 'Ajouté à la carte',
       'de': 'Zur Map hinzugefügt', 'pt': 'Adicionado ao mapa',
       'ru': 'Добавлено на карту',
+    },
+    'memo.mainNotRunning': {
+      'ja': '本体のアプリが起動していません', 'en': 'The main app is not running',
+      'zh': '主应用未启动', 'ko': '본체 앱이 실행되어 있지 않습니다',
+      'es': 'La aplicacion principal no esta abierta',
+      'fr': "L'application principale n'est pas lancee",
+      'de': 'Die Haupt-App lauft nicht',
+      'pt': 'O aplicativo principal nao esta aberto',
+      'ru': 'Основное приложение не запущено',
+    },
+    // 本体が起動していなくても追加できる (= ユーザー要望): 控えておいて
+    // 本体の次回起動時にマップへ追加する。
+    'memo.queuedForNextLaunch': {
+      'ja': '控えました。本体の次回起動時にマップへ追加されます',
+      'en': 'Saved. It will be added to the map next time the app starts',
+      'zh': '已保存。主应用下次启动时会添加到地图',
+      'ko': '보관했습니다. 본체 다음 실행 시 맵에 추가됩니다',
+      'es': 'Guardado. Se añadirá al mapa la próxima vez que abras la app',
+      'fr': "Enregistré. Ce sera ajouté à la carte au prochain démarrage",
+      'de': 'Gespeichert. Wird beim nächsten Start zur Map hinzugefügt',
+      'pt': 'Salvo. Será adicionado ao mapa na próxima abertura do app',
+      'ru': 'Сохранено. Будет добавлено на карту при следующем запуске',
     },
     'memo.noPages': {
       'ja': '追加できるページがありません',
@@ -1630,6 +2178,288 @@ const String _kOpenWithToken = 'HisatorNotebook-openwith-v1';
 /// 合図。 画面側 (mind_map_screen) が listen して開く。
 final ValueNotifier<int> openWithFilesTick = ValueNotifier<int>(0);
 
+/// フローティング AI 窓 (別プロセス) から「AI アシスタントを開いて」 と
+/// 頼まれた合図 (= ユーザー要望)。 画面側が listen して MCP チャットを開く。
+/// 値は「一緒に渡したい文」 (空なら何も入れずに開く)。
+final ValueNotifier<String?> assistantRequestFromFloating =
+    ValueNotifier<String?>(null);
+
+/// ショートカット起動でボタンの開き方が「フローティング」 の時に開く URL。
+/// 本体を立ち上げないために main 側で解決する (screen 側の対応表の写し)。
+String? _shortcutFloatingUrl(SharedPreferences prefs, String id) {
+  const urls = <String, String>{
+    'openChatGPT': 'https://chatgpt.com/',
+    'openGemini': 'https://gemini.google.com/app',
+    'openClaude': 'https://claude.ai/',
+    'openDeepSeek': 'https://chat.deepseek.com/',
+    'openGrok': 'https://grok.com/',
+    'openGmail': 'https://mail.google.com/',
+    'openReddit': 'https://www.reddit.com/',
+    'openYoutube': 'https://m.youtube.com/',
+    'openYoutubeMusic': 'https://music.youtube.com/',
+    'openDeepL': 'https://www.deepl.com/translator',
+    'openGoogleCalendar': 'https://calendar.google.com/',
+    'openGoogleDrive': 'https://drive.google.com/',
+    'openGoogleMaps': 'https://www.google.com/maps',
+    'openGoogleEarth': 'https://earth.google.com/web/',
+    'openKindle': 'https://read.amazon.co.jp/',
+    'openSlack': 'https://app.slack.com/',
+    'openDiscord': 'https://discord.com/channels/@me',
+    'openSpotify': 'https://open.spotify.com/',
+    'openSoundCloud': 'https://soundcloud.com/',
+    'openAmazon': 'https://www.amazon.co.jp/',
+    'openQiita': 'https://qiita.com/',
+    'openLINE': 'https://line.me/ja/',
+  };
+  if (id == 'openAi') {
+    final t = prefs.getString('browser_ai_target') ?? 'chatgpt';
+    final def = MindMapProvider.browserAiTargets.firstWhere(
+      (e) => e['id'] == t,
+      orElse: () => MindMapProvider.browserAiTargets.first,
+    );
+    return (def['url'] ?? '').replaceAll('{q}', '');
+  }
+  if (id == 'openInstagram') {
+    final landing = prefs.getString('instagramLanding') ?? 'home';
+    final user = (prefs.getString('instagramUsername') ?? '').trim();
+    if (landing == 'dm') return 'https://www.instagram.com/direct/inbox/';
+    if (landing == 'profile' && user.isNotEmpty) {
+      return 'https://www.instagram.com/$user/';
+    }
+    return 'https://www.instagram.com/';
+  }
+  return urls[id];
+}
+
+/// メモに貼る画像をアプリの中へコピーして、 その場所を返す。
+/// = ユーザー要望: フローティングメモに画像を貼り付けられるように。
+Future<String?> importFloatMemoImage({Uint8List? bytes, String? srcPath}) async {
+  try {
+    final dir = await getApplicationDocumentsDirectory();
+    final d = Directory('${dir.path}/memo_images');
+    if (!await d.exists()) await d.create(recursive: true);
+    final stamp = DateTime.now().millisecondsSinceEpoch;
+    if (bytes != null && bytes.isNotEmpty) {
+      final dest = '${d.path}/memo_$stamp.png';
+      await File(dest).writeAsBytes(bytes, flush: true);
+      return dest;
+    }
+    if (srcPath != null && srcPath.trim().isNotEmpty) {
+      final src = File(srcPath);
+      if (!await src.exists()) return null;
+      final dot = srcPath.lastIndexOf('.');
+      final ext = dot >= 0 ? srcPath.substring(dot) : '.png';
+      final dest = '${d.path}/memo_$stamp$ext';
+      await src.copy(dest);
+      return dest;
+    }
+  } catch (e) {
+    debugPrint('メモ画像の取り込みに失敗: $e');
+  }
+  return null;
+}
+
+/// クリップボードの画像を取り込む。 画像が無ければ null。
+Future<String?> importFloatMemoImageFromClipboard() async {
+  try {
+    final clipboard = SystemClipboard.instance;
+    if (clipboard == null) return null;
+    final reader = await clipboard.read();
+    for (final fmt in const [
+      Formats.png,
+      Formats.jpeg,
+      Formats.gif,
+      Formats.webp,
+      Formats.bmp,
+    ]) {
+      if (!reader.canProvide(fmt)) continue;
+      final completer = Completer<Uint8List?>();
+      reader.getFile(fmt, (file) async {
+        try {
+          final chunks = <int>[];
+          await for (final c in file.getStream()) {
+            chunks.addAll(c);
+          }
+          if (!completer.isCompleted) {
+            completer.complete(Uint8List.fromList(chunks));
+          }
+        } catch (_) {
+          if (!completer.isCompleted) completer.complete(null);
+        }
+      }, onError: (_) {
+        if (!completer.isCompleted) completer.complete(null);
+      });
+      final bytes = await completer.future
+          .timeout(const Duration(seconds: 10), onTimeout: () => null);
+      if (bytes != null && bytes.isNotEmpty) {
+        return importFloatMemoImage(bytes: bytes);
+      }
+    }
+  } catch (e) {
+    debugPrint('クリップボードからの画像取り込みに失敗: $e');
+  }
+  return null;
+}
+
+/// サービスごとの DM 未読数 (ホスト名 → 件数)。 外部フローティング窓が
+/// ページ題の「(3)」 などから拾って /badge で知らせてくる
+/// (= ユーザー要望: Instagram / Slack / Discord などの DM 通知を表示)。
+final Map<String, int> serviceUnreadCounts = {};
+final ValueNotifier<int> serviceBadgeTick = ValueNotifier<int>(0);
+
+/// デスクトップのショートカットから「このボタンを実行して」 と届いた合図
+/// (= ユーザー要望: カスタムボタンを一発で呼び出すショートカット)。
+/// 値はボタン (コマンド) の ID。 画面側が listen して実行する。
+final ValueNotifier<String?> commandRequestFromShortcut =
+    ValueNotifier<String?>(null);
+
+/// 起動済みの本体へ「このボタンを実行して」 と頼む。 成功したら true
+/// (= 呼び出し側の 2 個目のプロセスはそのまま終了してよい)。
+Future<bool> _forwardCommandToRunningInstance(String commandId) async {
+  final client = HttpClient();
+  client.connectionTimeout = const Duration(milliseconds: 600);
+  try {
+    final req = await client
+        .post('127.0.0.1', _kOpenWithPort, '/command')
+        .timeout(const Duration(milliseconds: 900));
+    req.headers.set('x-hisator-token', _kOpenWithToken);
+    req.headers.contentType = ContentType.json;
+    req.write(jsonEncode({'id': commandId}));
+    final res = await req.close().timeout(const Duration(seconds: 2));
+    final body = await res
+        .transform(utf8.decoder)
+        .join()
+        .timeout(const Duration(seconds: 1));
+    return res.statusCode == 200 && body.contains(_kOpenWithToken);
+  } catch (_) {
+    return false;
+  } finally {
+    try {
+      client.close(force: true);
+    } catch (_) {}
+  }
+}
+
+/// 外の窓 (= 別プロセスのフローティング Web 窓) を本体の分割ペインの上に
+/// 置いて放した時、 本体側で「そのペインへ埋め込めるか」 を判定する差し込み口。
+///
+/// = ユーザー要望「要素から YouTube を立ち上げる時はいきなり外部に出す
+///   モードで開き、 それを画面分割の他のペインの上に置いたら埋め込まれる
+///   ようにして」。
+///
+/// 画面 (mind_map_screen) が起動時に登録する。 [frameOnScreen] は外の窓の
+/// 画面座標での枠。 戻り値 true = 埋め込んだ (外の窓は閉じてよい)。
+Future<bool> Function(Rect frameOnScreen, String url)? floatingWindowDropProbe;
+
+/// 単体で開いたメモ窓 (ショートカット起動 = 別プロセス) からの頼みごとを
+/// 本体が受ける口 (= ユーザー報告: マップに追加しようとすると「追加できる
+/// ページがありません」 と出る)。 サブウィンドウと同じ method/args を渡す。
+/// 画面 (mind_map_screen) が起動時に登録する。
+Future<String> Function(String method, dynamic args)? floatingMemoBridge;
+
+/// メモ窓側: 本体へ頼む (別プロセス版)。 本体が起動していなければ空。
+Future<String> requestFromMainApp(String method, [dynamic args]) async {
+  final client = HttpClient();
+  try {
+    final req = await client
+        .post(InternetAddress.loopbackIPv4.address, _kOpenWithPort, '/memo')
+        .timeout(const Duration(seconds: 2));
+    req.headers.set('x-hisator-token', _kOpenWithToken);
+    req.headers.contentType = ContentType.json;
+    req.write(jsonEncode({'method': method, 'args': args}));
+    final res = await req.close().timeout(const Duration(seconds: 20));
+    final body = await utf8.decoder.bind(res).join();
+    final m = jsonDecode(body);
+    if (m is Map && m['token'] == _kOpenWithToken) return '${m['result'] ?? ''}';
+  } catch (_) {
+    // 本体が起動していない / 応答しない。
+  } finally {
+    try {
+      client.close(force: true);
+    } catch (_) {}
+  }
+  return '';
+}
+
+/// 外の窓 → 本体へ「この枠の位置で放したので、 ペインに入るなら入れて」 と頼む。
+/// 埋め込まれたら true (= 呼び出した外の窓は自分を閉じる)。
+Future<bool> requestEmbedIntoRunningInstance(String url, Rect frame) async {
+  final client = HttpClient();
+  client.connectionTimeout = const Duration(milliseconds: 600);
+  try {
+    final req = await client
+        .post('127.0.0.1', _kOpenWithPort, '/embed')
+        .timeout(const Duration(milliseconds: 900));
+    req.headers.set('x-hisator-token', _kOpenWithToken);
+    req.headers.contentType = ContentType.json;
+    req.write(jsonEncode({
+      'url': url,
+      'x': frame.left,
+      'y': frame.top,
+      'w': frame.width,
+      'h': frame.height,
+    }));
+    final res = await req.close().timeout(const Duration(seconds: 3));
+    final body = await res
+        .transform(utf8.decoder)
+        .join()
+        .timeout(const Duration(seconds: 1));
+    return res.statusCode == 200 &&
+        body.contains(_kOpenWithToken) &&
+        body.contains('embedded');
+  } catch (_) {
+    return false;
+  } finally {
+    try {
+      client.close(force: true);
+    } catch (_) {}
+  }
+}
+
+/// 別プロセスの窓から本体へ「AI アシスタントを開いて」 と頼む。
+/// 本体アプリを起こして AI アシスタントを開く (= ユーザー報告: ショートカット
+/// から開いた窓でアシスタントを押すと「本体のアプリが見つかりませんでした」)。
+/// 起動済みなら転送、 居なければ本体を立ち上げてアシスタントを開かせる。
+Future<bool> openAssistantAnyway(String text) async {
+  if (await requestAssistantFromRunningInstance(text)) return true;
+  try {
+    await Process.start(
+      Platform.resolvedExecutable,
+      ['--command=aiAssistant', '--new-window'],
+      mode: ProcessStartMode.detached,
+    );
+    return true;
+  } catch (e) {
+    debugPrint('本体アプリを起動できませんでした: $e');
+    return false;
+  }
+}
+
+Future<bool> requestAssistantFromRunningInstance(String text) async {
+  final client = HttpClient();
+  client.connectionTimeout = const Duration(milliseconds: 600);
+  try {
+    final req = await client
+        .post('127.0.0.1', _kOpenWithPort, '/assistant')
+        .timeout(const Duration(milliseconds: 900));
+    req.headers.set('x-hisator-token', _kOpenWithToken);
+    req.headers.contentType = ContentType.json;
+    req.write(jsonEncode({'text': text}));
+    final res = await req.close().timeout(const Duration(seconds: 2));
+    final body = await res
+        .transform(utf8.decoder)
+        .join()
+        .timeout(const Duration(seconds: 1));
+    return res.statusCode == 200 && body.contains(_kOpenWithToken);
+  } catch (_) {
+    return false;
+  } finally {
+    try {
+      client.close(force: true);
+    } catch (_) {}
+  }
+}
+
 /// 起動済みの本体へファイルを引き渡す。 成功したら true (呼び出し側は終了)。
 Future<bool> _forwardOpenFilesToRunningInstance(List<String> paths) async {
   final client = HttpClient();
@@ -1693,6 +2523,118 @@ Future<void> _startOpenWithReceiver() async {
               await windowManager.focus();
             } catch (_) {}
           }
+          req.response.statusCode = 200;
+          req.response.write(_kOpenWithToken);
+        } else if (req.method == 'POST' &&
+            req.uri.path == '/command' &&
+            req.headers.value('x-hisator-token') == _kOpenWithToken) {
+          // ── デスクトップのショートカットからの「このボタンを実行して」 ──
+          //    (= ユーザー要望: ボタンを一発で呼び出すショートカット)
+          try {
+            final body = await utf8.decoder.bind(req).join();
+            final data = jsonDecode(body);
+            final id = (data is Map ? '${data['id'] ?? ''}' : '').trim();
+            if (id.isNotEmpty) commandRequestFromShortcut.value = id;
+          } catch (_) {}
+          try {
+            await windowManager.restore();
+          } catch (_) {}
+          try {
+            await windowManager.show();
+            await windowManager.focus();
+          } catch (_) {}
+          req.response.statusCode = 200;
+          req.response.write(_kOpenWithToken);
+        } else if (req.method == 'POST' &&
+            req.uri.path == '/badge' &&
+            req.headers.value('x-hisator-token') == _kOpenWithToken) {
+          // ── 外部フローティング窓からの DM 未読数の知らせ ──
+          //    (= ユーザー要望: DM 通知の表示)。 窓は前に出さない。
+          try {
+            final body = await utf8.decoder.bind(req).join();
+            final data = jsonDecode(body);
+            if (data is Map) {
+              final host = '${data['host'] ?? ''}'.trim();
+              final count = int.tryParse('${data['count'] ?? ''}') ?? 0;
+              if (host.isNotEmpty) {
+                serviceUnreadCounts[host] = count;
+                serviceBadgeTick.value++;
+              }
+            }
+          } catch (_) {}
+          req.response.statusCode = 200;
+          req.response.write(_kOpenWithToken);
+        } else if (req.method == 'POST' &&
+            req.uri.path == '/embed' &&
+            req.headers.value('x-hisator-token') == _kOpenWithToken) {
+          // ── 外の窓を分割ペインの上に置いて放した ──
+          //    (= ユーザー要望: 外に出した YouTube を分割ペインの上に
+          //     置いたら、 そのペインに埋め込まれるように)。
+          //    判定は画面側 (分割セルの位置を知っている) に任せる。
+          //    窓は前に出さない (= 埋め込みは本体の中で起きるだけ)。
+          bool embedded = false;
+          try {
+            final body = await utf8.decoder.bind(req).join();
+            final data = jsonDecode(body);
+            final probe = floatingWindowDropProbe;
+            if (data is Map && probe != null) {
+              final url = '${data['url'] ?? ''}'.trim();
+              final x = (data['x'] as num?)?.toDouble();
+              final y = (data['y'] as num?)?.toDouble();
+              final w = (data['w'] as num?)?.toDouble();
+              final h = (data['h'] as num?)?.toDouble();
+              if (url.isNotEmpty &&
+                  x != null &&
+                  y != null &&
+                  w != null &&
+                  h != null) {
+                embedded = await probe(Rect.fromLTWH(x, y, w, h), url)
+                    .timeout(const Duration(seconds: 2), onTimeout: () => false);
+              }
+            }
+          } catch (_) {}
+          req.response.statusCode = 200;
+          req.response.write('$_kOpenWithToken${embedded ? ' embedded' : ''}');
+        } else if (req.method == 'POST' &&
+            req.uri.path == '/memo' &&
+            req.headers.value('x-hisator-token') == _kOpenWithToken) {
+          // ── 単体で開いたメモ窓からの頼みごと (ページ一覧 / マップに追加 /
+          //    AI) ──  (= ユーザー報告: 追加できるページがありませんと出る)。
+          //    窓は前に出さない (メモ窓で作業中なので邪魔しない)。
+          var out = '';
+          try {
+            final body = await utf8.decoder.bind(req).join();
+            final data = jsonDecode(body);
+            final bridge = floatingMemoBridge;
+            if (data is Map && bridge != null) {
+              out = await bridge('${data['method'] ?? ''}', data['args'])
+                  .timeout(const Duration(seconds: 18), onTimeout: () => '');
+            }
+          } catch (_) {}
+          req.response.statusCode = 200;
+          req.response.headers.contentType = ContentType.json;
+          req.response
+              .write(jsonEncode({'token': _kOpenWithToken, 'result': out}));
+        } else if (req.method == 'POST' &&
+            req.uri.path == '/assistant' &&
+            req.headers.value('x-hisator-token') == _kOpenWithToken) {
+          // ── フローティング AI 窓からの「AI アシスタントを開いて」 ──
+          //    (= ユーザー要望: 別プロセスの窓からアシスタントを呼べるように)
+          try {
+            final body = await utf8.decoder.bind(req).join();
+            final data = jsonDecode(body);
+            final text = (data is Map ? '${data['text'] ?? ''}' : '').trim();
+            assistantRequestFromFloating.value = text;
+          } catch (_) {
+            assistantRequestFromFloating.value = '';
+          }
+          try {
+            await windowManager.restore();
+          } catch (_) {}
+          try {
+            await windowManager.show();
+            await windowManager.focus();
+          } catch (_) {}
           req.response.statusCode = 200;
           req.response.write(_kOpenWithToken);
         } else {
@@ -1782,17 +2724,52 @@ void main(List<String> args) async {
     // --floating-pin … 開いた瞬間から「常に手前」 (= ユーザー要望:
     //   ディアクティブでも前面に出るピン機能)。
     final pinned = args.contains('--floating-pin');
+    // --floating-embed … 本体の分割ペインの上に置いて放したら、 そのペインへ
+    //   埋め込んで自分は閉じる (= ユーザー要望: 要素から開いた YouTube は
+    //   外の窓で立ち上がり、 分割ペインの上に置くと埋め込まれる)。
+    //   要素から開いた窓だけに付ける (= ふつうのフローティング AI 等が
+    //   本体の上を通っただけで吸い込まれないように)。
+    final embeddable = args.contains('--floating-embed');
     // --floating-title=… … 窓のタイトル (URL の代わりに出す)。
     String? title;
+    // --floating-x/y/w/h … 掴んで外へ出した時の位置と大きさ
+    //   (= ユーザー要望: そのままの姿で外へ出したい)。
+    double? fx, fy, fw, fh;
     for (final a in args) {
       if (a.startsWith('--floating-title=')) {
         title = Uri.decodeComponent(a.substring('--floating-title='.length));
-        break;
+      } else if (a.startsWith('--floating-x=')) {
+        fx = double.tryParse(a.substring('--floating-x='.length));
+      } else if (a.startsWith('--floating-y=')) {
+        fy = double.tryParse(a.substring('--floating-y='.length));
+      } else if (a.startsWith('--floating-w=')) {
+        fw = double.tryParse(a.substring('--floating-w='.length));
+      } else if (a.startsWith('--floating-h=')) {
+        fh = double.tryParse(a.substring('--floating-h='.length));
       }
     }
     await FloatL10n.load();
     runApp(_FloatingWebWindowApp(
-        url: url, startPinned: pinned, title: title));
+      url: url,
+      startPinned: pinned,
+      embeddable: embeddable,
+      title: title,
+      initialFrame: (fw != null && fh != null)
+          ? Rect.fromLTWH(fx ?? 100, fy ?? 100, fw, fh)
+          : null,
+      initialPosition: (fw == null || fh == null) && fx != null && fy != null
+          ? Offset(fx, fy)
+          : null,
+    ));
+    return;
+  }
+  // ── メモだけを単独で立ち上げる (= ユーザー要望: フローティングメモの
+  //    ショートカットから、 裏で本体アプリまで開いてしまうのをやめる) ──
+  //    本体とは別プロセスなので、 マップの画面は一切立ち上がらない。
+  //    メモの中身は同じ保存先を読み書きするので、 本体で見ても同じもの。
+  if (!kIsWeb && args.isNotEmpty && args.first == '--floating-memo') {
+    await FloatL10n.load();
+    runApp(const _MemoWindowApp(windowId: -1, args: {}));
     return;
   }
   // ── サブウィンドウ (発表者モードの「聴衆ウィンドウ」) として起動された場合 ──
@@ -1826,6 +2803,34 @@ void main(List<String> args) async {
       runApp(_CalcWindowApp(windowId: windowId));
       return;
     }
+    // AI アシスタントの窓 (= ユーザー要望: アプリの外に出せるように)。
+    //   考える所は本体に残し、 この窓は表示と入力だけを受け持つ。
+    if (kind == 'assistant') {
+      runApp(_AssistantWindowApp(
+          windowId: windowId, pinned: argMap['pinned'] != false));
+      return;
+    }
+    // 画面録画の操作窓 (= ユーザー要望: 録画ボタンをアプリの外へ / 録画に
+    //   写り込まないように)。
+    if (kind == 'screenrec') {
+      // 撮り終えたプレビューをこの窓の中で再生するため、 この窓でも
+      // fvp を video_player の実装として登録する (= ユーザー要望:
+      // 範囲選びもプレビューも全部 1 つの窓の中で)。
+      try {
+        fvp.registerWith(options: {
+          'platforms': ['windows', 'linux', 'macos'],
+        });
+      } catch (_) {}
+      runApp(_ScreenRecWindowApp(windowId: windowId));
+      return;
+    }
+    // ストップウォッチ / タイマーの外部窓 (= ユーザー要望: タイマーも外に)。
+    if (kind == 'timer') {
+      runApp(_TimerWindowApp(
+          windowId: windowId,
+          initialTab: (argMap['tab'] == 'pomodoro') ? 2 : 0));
+      return;
+    }
     runApp(_AudienceWindowApp(windowId: windowId, args: argMap));
     return;
   }
@@ -1849,6 +2854,60 @@ void main(List<String> args) async {
   //   ページ ID を記録 (Windows)。 Android は MethodChannel 経由で別途取得する。
   HomeShortcutService.windowsLaunchPageId =
       HomeShortcutService.pageIdFromArgs(args);
+  // ボタンを一発で呼び出すショートカット (--command=<id>) から起動された場合。
+  HomeShortcutService.windowsLaunchCommandId =
+      HomeShortcutService.commandIdFromArgs(args);
+  final shortcutCmd = HomeShortcutService.windowsLaunchCommandId ?? '';
+  if (!kIsWeb && Platform.isWindows && shortcutCmd.isNotEmpty) {
+    // ── 開き方が「フローティング」 のボタンは、 本体を立ち上げずに
+    //    このプロセス自身が外部フローティング窓になる (= ユーザー要望:
+    //    後ろの大元のアプリを起動させずにフローティングだけ表示)。 ──
+    // ── フローティングメモのショートカット ──
+    //    = ユーザー報告「立ち上げると裏で大元のアプリがページを開いた状態で
+    //    立ち上がってしまう。 メモの機能だけが立ち上がってほしい」。
+    //    本体を起動せず、 このプロセス自身がメモ窓になる。
+    if (shortcutCmd == 'floatingMemo' ||
+        shortcutCmd == 'popOutMemo' ||
+        // 統合後の「メモ」 ボタン (= ユーザー要望)。
+        shortcutCmd == 'mapMemo') {
+      await FloatL10n.load();
+      runApp(const _MemoWindowApp(windowId: -1, args: {}));
+      return;
+    }
+    // ── ショートカットは「それ単体」 で開く (= ユーザー要望: 全ての
+    //    ショートカットはフローティングモード単体で動作するように) ──
+    //    本体アプリ (マップの画面) は立ち上げない。
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      // Web ページで完結するボタン (AI / Gmail / YouTube 等) は、
+      //   このプロセス自身が浮かぶ Web 窓になる。
+      final url = _shortcutFloatingUrl(prefs, shortcutCmd);
+      if (url != null && url.isNotEmpty) {
+        await FloatL10n.load();
+        runApp(_FloatingWebWindowApp(url: url));
+        return;
+      }
+      // 電卓 / タイマーも単体で開ける (窓 1 つで完結するため)。
+      if (shortcutCmd == 'calculator' || shortcutCmd == 'stopwatch' ||
+          shortcutCmd == 'pomodoro') {
+        await FloatL10n.load();
+        if (shortcutCmd == 'calculator') {
+          runApp(const _CalcWindowApp(windowId: -1));
+        } else {
+          runApp(_TimerWindowApp(
+              windowId: -1,
+              initialTab: shortcutCmd == 'pomodoro' ? 2 : 0));
+        }
+        return;
+      }
+    } catch (_) {}
+    // 既に本体が起動しているなら、 そちらに実行させて自分は終了する
+    // (= 二重起動しない。 ファイルの引き渡しと同じ考え方)。
+    if (!args.contains('--new-window') &&
+        await _forwardCommandToRunningInstance(shortcutCmd)) {
+      exit(0);
+    }
+  }
   // ── 「プログラムから開く」 で渡されたファイル (= ユーザー要望) ──
   pendingOpenFilePaths.addAll(_openFilePathsFromArgs(args));
   // ── 既に本体が起動しているなら、 そちらへ渡して自分は終了する ──
@@ -2201,16 +3260,125 @@ class MyApp extends StatelessWidget {
 /// アプリの外に出すフローティングメモ (= ユーザー要望: PC でもアプリの外に
 /// 表示したい)。 本体と同じ SharedPreferences を読み書きするので、 どちらで
 /// 編集しても内容は共有される。 常に手前に出したいので枠なしの小窓にする。
+/// ブラウザ版 AI に毎回添える「前提条件」 の保存先 (窓をまたいで共通)。
+const String kBrowserAiPrefixKey = 'browser_ai_prefix';
+
+Future<String> loadBrowserAiPrefix() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
+    return prefs.getString(kBrowserAiPrefixKey) ?? '';
+  } catch (_) {
+    return '';
+  }
+}
+
+/// 「前提条件」 を書き換えるダイアログ (= ユーザー要望: ブラウザ版 AI に
+/// 切り替える時もモデルの選択や前提条件の設定ができるように)。
+/// 保存したら新しい文、 取り消しなら null を返す。
+Future<String?> editBrowserAiPrefix(BuildContext ctx) async {
+  final ctrl = TextEditingController(text: await loadBrowserAiPrefix());
+  if (!ctx.mounted) {
+    ctrl.dispose();
+    return null;
+  }
+  final saved = await showDialog<String>(
+    context: ctx,
+    builder: (dctx) => AlertDialog(
+      backgroundColor: const Color(0xFF1E1E32),
+      title: Text(FloatL10n.t('memo.aiPrefixTitle'),
+          style: const TextStyle(color: Colors.white, fontSize: 15)),
+      content: SizedBox(
+        width: 360,
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text(FloatL10n.t('memo.aiPrefixDesc'),
+                style: const TextStyle(color: Colors.white54, fontSize: 12)),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: ctrl,
+            autofocus: true,
+            minLines: 2,
+            maxLines: 5,
+            style: const TextStyle(color: Colors.white, fontSize: 13),
+            decoration: InputDecoration(
+              hintText: FloatL10n.t('memo.aiPrefixHint'),
+              hintStyle: const TextStyle(color: Colors.white24, fontSize: 12),
+              filled: true,
+              fillColor: Colors.white.withValues(alpha: 0.06),
+              border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide.none),
+            ),
+          ),
+        ]),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dctx, '__cancel__'),
+          child: Text(FloatL10n.t('btn.cancel'),
+              style: const TextStyle(color: Colors.white54)),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(dctx, ''),
+          child: Text(FloatL10n.t('btn.clear'),
+              style: const TextStyle(color: Color(0xFFFF8A80))),
+        ),
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFBA68C8),
+              foregroundColor: Colors.white),
+          onPressed: () => Navigator.pop(dctx, ctrl.text.trim()),
+          child: Text(FloatL10n.t('btn.save')),
+        ),
+      ],
+    ),
+  );
+  ctrl.dispose();
+  if (saved == null || saved == '__cancel__') return null;
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(kBrowserAiPrefixKey, saved);
+  } catch (_) {}
+  return saved;
+}
+
+/// 他の浮遊窓の中に「フローティングメモと同じ画面」 を出すための入口
+/// (= ユーザー要望: AI エージェントからメモを開いた時に、 簡易メモではなく
+/// いつものメモが出るように)。 保存先も同じなので、 どこで書いても同じ
+/// メモ帳に積まれる。
+class FloatingMemoView extends StatelessWidget {
+  const FloatingMemoView({super.key});
+  @override
+  Widget build(BuildContext context) =>
+      const _MemoWindowApp(windowId: -1, args: {}, embedded: true);
+}
+
 class _MemoWindowApp extends StatefulWidget {
+  /// desktop_multi_window のサブ窓 id。
+  /// **-1 = 単独プロセスとして開いている** (= ユーザー要望: フローティング
+  /// メモのショートカットから、 本体アプリを立ち上げずにメモだけ出す)。
   final int windowId;
   final Map<String, dynamic> args;
-  const _MemoWindowApp({required this.windowId, required this.args});
+
+  /// 他の窓の中に**そのまま埋め込んで**使うか (= ユーザー要望: フローティング
+  /// AI からメモを開いた時、 フローティングメモと同じ画面が出るように)。
+  /// true の時は窓の大きさ・常に手前・閉じるといった「窓の操作」 をしない。
+  final bool embedded;
+  const _MemoWindowApp(
+      {required this.windowId, required this.args, this.embedded = false});
+
+  /// 本体アプリの中のサブ窓ではなく、 自分だけで動いているか。
+  /// 埋め込みの時は窓を持たないので false 扱い (窓の操作をしない)。
+  bool get standalone => windowId < 0 && !embedded;
 
   @override
   State<_MemoWindowApp> createState() => _MemoWindowAppState();
 }
 
-class _MemoWindowAppState extends State<_MemoWindowApp> {
+class _MemoWindowAppState extends State<_MemoWindowApp> with WindowListener {
   /// ダイアログ / SnackBar 用の context。
   ///
   /// ★ この State の `context` は自分が組み立てる MaterialApp より **上** に
@@ -2274,6 +3442,15 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
   void initState() {
     super.initState();
     _load();
+    // ── 単独プロセスで開いた時の窓の大きさ (= ユーザー要望: ショートカット
+    //    から開くと横長になる。 アプリの中で開くのと同じ縦長にして、
+    //    最後に閉じた大きさを覚えておいてほしい) ──
+    //    サブ窓の時は親が大きさを決めるので触らない。
+    if (widget.standalone) {
+      windowManager.addListener(this);
+      // ignore: discarded_futures
+      _restoreStandaloneSize();
+    }
     // ── Enter で確定 / Shift+Enter で改行 (= ユーザー要望) ──
     // IME 変換中の Enter (変換確定) は奪わない。
     _inputFocus.onKeyEvent = (node, event) {
@@ -2307,7 +3484,8 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
       });
     });
     // ── 他のアプリ (Chrome / Edge 等) の上に出し続ける ──
-    _applyAlwaysOnTop(true);
+    //    埋め込みの時は入れ物の窓に任せる (= 自分では触らない)。
+    if (!widget.embedded) _applyAlwaysOnTop(true);
     // 間隔を広げる (4 秒 → 10 秒)。 実際に外れた時だけ張り直すので、
     //   入力の邪魔になりにくい (= ユーザー報告: 入力状態が安定しない)。
     _topTimer = Timer.periodic(const Duration(seconds: 10), (_) {
@@ -2322,6 +3500,61 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
     });
   }
 
+  /// 単独プロセスで開いた時の窓の大きさの記憶先。
+  static const String _kMemoWinSizeKey = 'floatingMemoWindowSize';
+
+  /// 既定の大きさ。 アプリの中で開くメモと同じく縦長にする。
+  static const Size _kMemoWinDefault = Size(460, 560);
+
+  Timer? _sizeSaveTimer;
+
+  /// 前回閉じた大きさで開く (無ければ縦長の既定値)。
+  Future<void> _restoreStandaloneSize() async {
+    try {
+      await windowManager.ensureInitialized();
+      await windowManager.setTitle(FloatL10n.t('memo.title'));
+      var size = _kMemoWinDefault;
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_kMemoWinSizeKey) ?? '';
+      final m = RegExp(r'^(\d+)x(\d+)$').firstMatch(raw);
+      if (m != null) {
+        size = Size(
+          double.parse(m.group(1)!).clamp(320.0, 3000.0),
+          double.parse(m.group(2)!).clamp(240.0, 3000.0),
+        );
+      }
+      await windowManager.setSize(size);
+      await windowManager.center();
+    } catch (_) {}
+  }
+
+  /// 今の大きさを控える (続けて動く間は最後の 1 回だけ書く)。
+  void _scheduleSaveWinSize() {
+    if (!widget.standalone) return;
+    _sizeSaveTimer?.cancel();
+    _sizeSaveTimer = Timer(const Duration(milliseconds: 500), () {
+      // ignore: discarded_futures
+      _saveWinSize();
+    });
+  }
+
+  Future<void> _saveWinSize() async {
+    if (!widget.standalone) return;
+    try {
+      final s = await windowManager.getSize();
+      if (s.width < 100 || s.height < 100) return;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+          _kMemoWinSizeKey, '${s.width.round()}x${s.height.round()}');
+    } catch (_) {}
+  }
+
+  @override
+  void onWindowResize() => _scheduleSaveWinSize();
+
+  @override
+  void onWindowResized() => _scheduleSaveWinSize();
+
   int _inputLineCount() {
     final t = _input.text;
     if (t.isEmpty) return 1;
@@ -2329,6 +3562,7 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
   }
 
   Future<void> _applyAlwaysOnTop(bool on) async {
+    if (widget.embedded) return;
     try {
       await windowManager.ensureInitialized();
       // 既にその状態なら呼ばない (= ユーザー報告: 入力状態が安定しない)。
@@ -2400,7 +3634,9 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
               const SizedBox(width: 8),
               Flexible(
                 child: Text(
-                    '${_books[i].name} (${_books[i].items.length})',
+                    // 件数の (0) は箇条書きの数で、 自由記入では増えないため
+                    //   意味が伝わらない (= ユーザー要望で削除)。
+                    _books[i].name,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style:
@@ -2451,13 +3687,22 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
       return;
     }
     if (chosen == 'new') {
-      final name = await _askText(FloatL10n.t('memo.newBook'),
-          initial: '${FloatL10n.t('memo.bookPrefix')} ${_books.length + 1}');
-      if (name == null || !mounted) return;
+      // ── 名前は聞かない (= ユーザー要望: 追加のたびに入力を求めない) ──
+      //    「メモ 4」 のように順に付け、 変えたい人は後から
+      //    「名前の変更」 で直す。 既にある番号は飛ばす。
+      var n = _books.length + 1;
+      final used = _books.map((b) => b.name).toSet();
+      var auto = '${FloatL10n.t('memo.bookPrefix')} $n';
+      while (used.contains(auto)) {
+        n++;
+        auto = '${FloatL10n.t('memo.bookPrefix')} $n';
+      }
       _book.free = _free.text;
       setState(() {
         _books.add(FloatMemoBook.create(
-            name.trim().isEmpty ? '${_books.length + 1}' : name.trim()));
+            auto,
+            // 今開いているメモと同じモードで始める (= ユーザー要望)。
+            mode: _book.mode));
         _bookIndex = _books.length - 1;
         _free.text = '';
         _input.clear();
@@ -2536,7 +3781,10 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
   /// 履歴が無いなら余計なスペースを確保しない (= ユーザー要望)。
   /// 項目数に合わせて窓の高さを合わせる (上限あり、 Web モード中は触らない)。
   Future<void> _fitWindowToContent() async {
-    if (_webMode) return;
+    if (widget.embedded) return;
+    // 単独プロセスの時は利用者が決めた大きさを尊重する
+    //   (= ユーザー要望: 最後に閉じた縦横で開いてほしい)。
+    if (_webMode || widget.standalone) return;
     const header = 34.0;
     // setSize は OS のタイトルバーと枠を含む外寸なので、 その分を足す。
     const chrome = 44.0;
@@ -2579,6 +3827,123 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
     await saveFloatingMemoFooterHidden(_chromeHidden);
   }
 
+  /// ブラウザ版 AI (ChatGPT 等) を **この窓の中で** 開く。
+  ///
+  /// = ユーザー要望「フローティングメモからフローティング AI を開く時は
+  ///   既定でブラウザ版にして、 新しいウィンドウではなくメモの画面自体が
+  ///   AI に変わるように」。 本体と同じ prefs (`browser_ai_target`) を読み、
+  ///   選んでいる AI のページを _openWeb でこの窓に表示する。
+  /// [id] を渡すとその AI を開き、 次回の既定にもする。
+  /// 今のメモを AI に渡す (= ユーザー要望: 下の「AIに渡す」 と
+  /// ヘッダーの AI を統合。 既定はブラウザ版 AI)。
+  Future<void> _sendToAi(String text) async {
+    final t = text.trim();
+    if (t.isEmpty) return;
+    await _openBrowserAi(query: t);
+  }
+
+  /// 今 AI に渡したい文。 自由記入なら選んだ所 (無ければ全文)、
+  /// 箇条書きなら全項目。
+  String _aiTargetText() =>
+      _memoMode == 'free' ? _freeTargetText() : _allItemsText();
+
+  Future<void> _openBrowserAi({String? id, String query = ''}) async {
+    var target = (id ?? '').trim();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (target.isEmpty) {
+        target = (prefs.getString('browser_ai_target') ?? '').trim();
+      } else {
+        await prefs.setString('browser_ai_target', target);
+      }
+    } catch (_) {}
+    final def = MindMapProvider.browserAiTargets.firstWhere(
+      (e) => e['id'] == target,
+      orElse: () => MindMapProvider.browserAiTargets.first,
+    );
+    var q = query.trim();
+    // 前提条件があれば頭に添える (= ユーザー要望: ブラウザ版でも前提条件)。
+    final prefix = await loadBrowserAiPrefix();
+    if (q.isNotEmpty && prefix.trim().isNotEmpty) {
+      q = '${prefix.trim()}\n\n$q';
+    }
+    // 渡したい文があれば質問欄に載せた形で開く (= ユーザー要望: AI に渡す)。
+    final url = (def['url'] ?? '')
+        .replaceAll('{q}', q.isEmpty ? '' : Uri.encodeComponent(q));
+    if (url.isEmpty) return;
+    await _openWeb(url, def['label'] ?? 'AI');
+  }
+
+  /// どのブラウザ AI を開くか選ぶ (= 長押し / 右クリック)。
+  /// アプリの API チャットを使いたい時のための項目も置く。
+  Future<void> _showBrowserAiMenu(BuildContext btnCtx) async {
+    final box = btnCtx.findRenderObject() as RenderBox?;
+    final pos =
+        box == null ? const Offset(60, 60) : box.localToGlobal(Offset.zero);
+    final chosen = await showMenu<String>(
+      context: btnCtx,
+      position:
+          RelativeRect.fromLTRB(pos.dx, pos.dy + 24, pos.dx + 1, pos.dy + 25),
+      color: const Color(0xFF23233A),
+      items: [
+        PopupMenuItem<String>(
+          enabled: false,
+          height: 28,
+          child: Text(FloatL10n.t('float.browserAi'),
+              style: const TextStyle(
+                  color: Color(0xFF8890A6),
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w700)),
+        ),
+        for (final t in MindMapProvider.browserAiTargets)
+          PopupMenuItem<String>(
+            value: 'web:${t['id']}',
+            height: 32,
+            child: Text(t['label'] ?? '${t['id']}',
+                style: const TextStyle(color: Colors.white, fontSize: 12)),
+          ),
+        const PopupMenuDivider(height: 6),
+        // アプリの AI アシスタント (API) に切り替える (= ユーザー要望)。
+        PopupMenuItem<String>(
+          value: 'api',
+          height: 32,
+          child: Text(FloatL10n.t('memo.openAiApi'),
+              style: const TextStyle(color: Colors.white70, fontSize: 12)),
+        ),
+        // そのアシスタントが使うモデルを選ぶ (= ユーザー要望)。
+        PopupMenuItem<String>(
+          value: 'model',
+          height: 32,
+          child: Text(FloatL10n.t('memo.aiModel'),
+              style: const TextStyle(color: Colors.white70, fontSize: 12)),
+        ),
+        // 毎回 AI に添える前提条件 (= ユーザー要望: ブラウザ版に切り替える
+        //   時も前提条件の設定ができるように)。 外の窓と同じ設定を使う。
+        PopupMenuItem<String>(
+          value: 'prefix',
+          height: 32,
+          child: Text(FloatL10n.t('memo.aiPrefixTitle'),
+              style: const TextStyle(color: Colors.white70, fontSize: 12)),
+        ),
+      ],
+    );
+    if (chosen == null || !mounted) return;
+    if (chosen == 'api') {
+      // アプリの AI にも「今のメモ」 をそのまま渡す。
+      _enterAiMode(_aiTargetText());
+      return;
+    }
+    if (chosen == 'model') {
+      await _showAiModelMenu(btnCtx);
+      return;
+    }
+    if (chosen == 'prefix') {
+      await editBrowserAiPrefix(_dlgCtx ?? btnCtx);
+      return;
+    }
+    await _openBrowserAi(id: chosen.substring(4), query: _aiTargetText());
+  }
+
   /// メモの所を AI の画面に切り替える (= ユーザー要望: 別窓を出さない)。
   /// [text] があれば質問欄に入れておく (項目の「AIに渡す」 から)。
   void _enterAiMode(String text) {
@@ -2597,6 +3962,7 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
   }
 
   Future<void> _growWindowForAi() async {
+    if (widget.embedded) return;
     try {
       final cur = await windowManager.getSize();
       if (cur.height < 480) {
@@ -2617,8 +3983,7 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
       _aiAnswer = '';
     });
     try {
-      final res =
-          await DesktopMultiWindow.invokeMethod(0, 'floatingMemoAskAi', q);
+      final res = await _askMain('floatingMemoAskAi', q);
       if (!mounted) return;
       final text = '${res ?? ''}'.trim();
       setState(() {
@@ -2773,6 +4138,152 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
     });
   }
 
+  /// クリップボードの画像をメモに足す (= ユーザー要望)。
+  /// 入力欄に文字があれば、 その文字を説明として一緒に持たせる。
+  Future<void> _addImageItem() async {
+    final path = await importFloatMemoImageFromClipboard();
+    if (path == null) {
+      _snack(FloatL10n.t('memo.noImage'), color: const Color(0xFFE57373));
+      return;
+    }
+    final caption = _input.text.trim();
+    setState(() {
+      _items.insert(0, FloatMemoItem.create(caption, image: path));
+      _input.clear();
+    });
+    // ignore: discarded_futures
+    _persist();
+    // ignore: discarded_futures
+    _fitWindowToContent();
+  }
+
+  /// 今のメモをテキストファイルに書き出す (= ユーザー要望)。
+  /// 箇条書きなら 1 行ずつ、 自由記入なら本文をそのまま書く。
+  /// メモをテキストで保存する時の置き場所 (= ユーザー要望: 指定できるように)。
+  /// 空なら 書類/memo_export。
+  static const String kMemoSaveDirKey = 'memoSaveDir';
+
+  /// フォルダ選択に渡せる形に直す (= ユーザー報告: 保存場所を選ぼうとすると
+  /// 「パラメーターの値が違う」 と出る)。 実在しない / 区切りが `/` のままの
+  /// パスは Windows のダイアログが受け付けないので、 その時は渡さない。
+  String? _safeInitialDir(String path) {
+    var p = path.trim();
+    if (p.isEmpty) return null;
+    if (Platform.isWindows) p = p.replaceAll('/', Platform.pathSeparator);
+    try {
+      if (!Directory(p).existsSync()) return null;
+    } catch (_) {
+      return null;
+    }
+    return p;
+  }
+
+  Future<String> _memoSaveDir() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.reload();
+      final v = (sp.getString(kMemoSaveDirKey) ?? '').trim();
+      if (v.isNotEmpty && await Directory(v).exists()) return v;
+    } catch (_) {}
+    final dir = await getApplicationDocumentsDirectory();
+    return '${dir.path}/memo_export';
+  }
+
+  /// 保存アイコンを右クリックした時に出す「保存場所の設定」 (= ユーザー要望)。
+  Future<void> _showSaveDirMenu(BuildContext btnCtx) async {
+    final box = btnCtx.findRenderObject() as RenderBox?;
+    final pos =
+        box == null ? const Offset(60, 60) : box.localToGlobal(Offset.zero);
+    final now = await _memoSaveDir();
+    if (!mounted) return;
+    final chosen = await showMenu<String>(
+      context: btnCtx,
+      position:
+          RelativeRect.fromLTRB(pos.dx, pos.dy + 24, pos.dx + 1, pos.dy + 25),
+      color: const Color(0xFF23233A),
+      items: [
+        PopupMenuItem<String>(
+          enabled: false,
+          height: 30,
+          child: SizedBox(
+            width: 240,
+            child: Text('${FloatL10n.t('memo.saveDir')}\n$now',
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    color: Color(0xFF8890A6), fontSize: 10.5)),
+          ),
+        ),
+        PopupMenuItem<String>(
+          value: 'pick',
+          height: 32,
+          child: Text(FloatL10n.t('memo.saveDirPick'),
+              style: const TextStyle(color: Colors.white, fontSize: 12)),
+        ),
+        PopupMenuItem<String>(
+          value: 'reset',
+          height: 32,
+          child: Text(FloatL10n.t('memo.saveDirDefault'),
+              style: const TextStyle(color: Colors.white70, fontSize: 12)),
+        ),
+      ],
+    );
+    if (chosen == null || !mounted) return;
+    try {
+      final sp = await SharedPreferences.getInstance();
+      if (chosen == 'reset') {
+        await sp.remove(kMemoSaveDirKey);
+        if (mounted) _snack(FloatL10n.t('memo.saveDirDefault'));
+        return;
+      }
+      final dir = await FilePicker.platform.getDirectoryPath(
+        dialogTitle: FloatL10n.t('memo.saveDir'),
+        initialDirectory: _safeInitialDir(now),
+      );
+      if (dir == null || dir.trim().isEmpty) return;
+      await sp.setString(kMemoSaveDirKey, dir.trim());
+      if (mounted) _snack('${FloatL10n.t('memo.saveDir')}: ${dir.trim()}');
+    } catch (e) {
+      if (mounted) _snack('$e', color: const Color(0xFFE57373));
+    }
+  }
+
+  Future<void> _saveAsText() async {
+    try {
+      final buf = StringBuffer()
+        ..writeln(_book.name)
+        ..writeln('');
+      if (_memoMode == 'free') {
+        buf.writeln(_free.text);
+      } else {
+        for (final it in _items.reversed) {
+          final t = DateTime.fromMillisecondsSinceEpoch(it.savedAt);
+          final stamp = '${t.year}/${t.month.toString().padLeft(2, '0')}/'
+              '${t.day.toString().padLeft(2, '0')} '
+              '${t.hour.toString().padLeft(2, '0')}:'
+              '${t.minute.toString().padLeft(2, '0')}';
+          buf.writeln('[$stamp] ${it.text}');
+          if (it.image.isNotEmpty) buf.writeln('  (画像) ${it.image}');
+        }
+      }
+      // 置き場所は設定があればそちら (= ユーザー要望)。
+      final d = Directory(await _memoSaveDir());
+      if (!await d.exists()) await d.create(recursive: true);
+      final now = DateTime.now();
+      final stamp = '${now.year}${now.month.toString().padLeft(2, '0')}'
+          '${now.day.toString().padLeft(2, '0')}_'
+          '${now.hour.toString().padLeft(2, '0')}'
+          '${now.minute.toString().padLeft(2, '0')}';
+      var base = _book.name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
+      if (base.isEmpty) base = 'memo';
+      final dest = '${d.path}/${base}_$stamp.txt';
+      await File(dest).writeAsString(buf.toString(), flush: true);
+      _snack(FloatL10n.t('memo.saved').replaceFirst('{path}', dest));
+    } catch (e) {
+      _snack('$e', color: const Color(0xFFE57373));
+    }
+  }
+
   void _removeItem(int i) {
     setState(() => _items.removeAt(i));
     // ignore: discarded_futures
@@ -2791,13 +4302,15 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
       _webReady = false;
       _webTitle = title;
     });
-    // Web は読む領域が要るので広げる。
-    try {
-      final cur = await windowManager.getSize();
-      if (cur.height < 520) {
-        await windowManager.setSize(Size(cur.width, 560));
-      }
-    } catch (_) {}
+    // Web は読む領域が要るので広げる (埋め込みの時は入れ物に任せる)。
+    if (!widget.embedded) {
+      try {
+        final cur = await windowManager.getSize();
+        if (cur.height < 520) {
+          await windowManager.setSize(Size(cur.width, 560));
+        }
+      } catch (_) {}
+    }
     try {
       final c = wv_win.WebviewController();
       await c.initialize();
@@ -2812,9 +4325,22 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
         _webReady = true;
       });
     } catch (e) {
-      _snack('${FloatL10n.t('memo.openFailed')}: $e',
-          color: const Color(0xFFE57373));
+      // ── アプリの中のサブ窓では WebView を作れない ──
+      //    (= ユーザー報告: MissingPluginException が出て開けない)。
+      //    サブ窓のエンジンには webview_windows を登録していないため。
+      //    その時は「アプリの外の窓」 として開き直す (別プロセスなので確実)。
+      debugPrint('メモ窓での WebView 作成に失敗、 外の窓で開きます: $e');
       await _closeWeb();
+      try {
+        await Process.start(
+          Platform.resolvedExecutable,
+          ['--floating-web=${Uri.encodeComponent(url)}'],
+          mode: ProcessStartMode.detached,
+        );
+      } catch (e2) {
+        _snack('${FloatL10n.t('memo.openFailed')}: $e2',
+            color: const Color(0xFFE57373));
+      }
     }
   }
 
@@ -2837,6 +4363,12 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
   /// この窓の中の AI は鍵を叩く形なので、 いつものブラウザ版を使いたい
   /// 時はこちら (= ユーザー要望)。 本体が「アプリの外の窓」 で開く。
   Future<void> _openAiFor(String text) async {
+    // 単体で開いた窓は本体に頼れないので、 この窓の中で開く (= ユーザー報告
+    //   対策: 本体が起動していないと何も起きなかった)。
+    if (widget.standalone) {
+      await _openBrowserAi(query: text);
+      return;
+    }
     try {
       await DesktopMultiWindow.invokeMethod(0, 'openFloatingAi', text.trim());
     } catch (_) {
@@ -2844,14 +4376,14 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
     }
   }
 
-  /// Google 検索も同じ理由で本体側の浮遊パネルに委譲する。
+  /// Google 検索はメモ欄そのものを検索画面に切り替える (= ユーザー要望:
+  /// 別の窓ではなく、 この窓が Google 検索になるように)。
+  /// サブ窓で WebView を作れない環境では、 _openWeb の中の保険が
+  /// 「アプリの外の窓」 へ自動で逃がすので何も起きないままにはならない。
   Future<void> _openGoogleFor(String text) async {
-    try {
-      await DesktopMultiWindow.invokeMethod(0, 'openFloatingWeb',
-          'https://www.google.com/search?q=${Uri.encodeComponent(text)}');
-    } catch (_) {
-      _snack(FloatL10n.t('memo.openFailed'), color: const Color(0xFFE57373));
-    }
+    final searchUrl =
+        'https://www.google.com/search?q=${Uri.encodeComponent(text)}';
+    await _openWeb(searchUrl, 'Google');
   }
 
   /// フリーメモの AI / Google 検索に渡す文。
@@ -2873,9 +4405,8 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
     List<Map<String, dynamic>> models = [];
     String current = '';
     try {
-      final raw =
-          await DesktopMultiWindow.invokeMethod(0, 'floatingMemoAiModels');
-      final m = jsonDecode('$raw') as Map<String, dynamic>;
+      final raw = await _askMain('floatingMemoAiModels');
+      final m = jsonDecode(raw) as Map<String, dynamic>;
       current = '${m['current'] ?? ''}';
       models = (m['models'] as List? ?? const [])
           .whereType<Map>()
@@ -2932,10 +4463,25 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
     );
     if (chosen == null || chosen.isEmpty) return;
     try {
-      await DesktopMultiWindow.invokeMethod(
-          0, 'floatingMemoSetAiModel', chosen);
+      await _askMain('floatingMemoSetAiModel', chosen);
       _snack(FloatL10n.t('memo.aiModelSet'));
     } catch (_) {}
+  }
+
+  /// 本体へ頼む。 アプリの中から開いたサブウィンドウなら
+  /// desktop_multi_window、 ショートカットなどで**単体で開いた窓**なら別
+  /// プロセスなので 127.0.0.1 越しに頼む (= ユーザー報告: 単体で開いたメモ
+  /// から「マップに追加」 すると「追加できるページがありません」 と出る)。
+  Future<String> _askMain(String method, [dynamic args]) async {
+    if (!widget.standalone) {
+      try {
+        final r = await DesktopMultiWindow.invokeMethod(0, method, args);
+        return '${r ?? ''}';
+      } catch (_) {
+        return '';
+      }
+    }
+    return requestFromMainApp(method, args);
   }
 
   /// 追加先のページを選んでマップへ (= ユーザー要望: ページを指定できるように)。
@@ -2947,14 +4493,39 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
     if (list.isEmpty) return false;
     List<Map<String, dynamic>> pages = [];
     try {
-      final raw = await DesktopMultiWindow.invokeMethod(0, 'floatingMemoPages');
-      pages = (jsonDecode('$raw') as List)
+      final raw = await _askMain('floatingMemoPages');
+      pages = (jsonDecode(raw) as List)
           .whereType<Map>()
           .map((e) => e.cast<String, dynamic>())
           .toList();
     } catch (_) {}
     if (!mounted || !btnCtx.mounted) return false;
     if (pages.isEmpty) {
+      // ── 本体が起きていない時は控えておき、 次回起動時に追加する
+      //    (= ユーザー要望: 本体が起動していなくても追加できるように)。
+      //    prefs は本体と同じ保存先なので、 本体が次に起きた時に読める。 ──
+      if (widget.standalone) {
+        try {
+          final sp = await SharedPreferences.getInstance();
+          final raw = sp.getString('pending_memo_to_map_v1');
+          final queue = <dynamic>[];
+          if (raw != null && raw.isNotEmpty) {
+            final d = jsonDecode(raw);
+            if (d is List) queue.addAll(d);
+          }
+          for (final t in list) {
+            queue.add({'text': t, 'at': DateTime.now().toIso8601String()});
+          }
+          await sp.setString('pending_memo_to_map_v1', jsonEncode(queue));
+          _snack(FloatL10n.t('memo.queuedForNextLaunch'),
+              color: const Color(0xFF43B97F));
+          return true;
+        } catch (_) {
+          _snack(FloatL10n.t('memo.mainNotRunning'),
+              color: const Color(0xFFE57373));
+          return false;
+        }
+      }
       _snack(FloatL10n.t('memo.noPages'), color: const Color(0xFFE57373));
       return false;
     }
@@ -2996,9 +4567,9 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
     var ok = false;
     for (final t in list) {
       try {
-        await DesktopMultiWindow.invokeMethod(0, 'floatingMemoToNodePage',
+        final r = await _askMain('floatingMemoToNodePage',
             jsonEncode({'text': t, 'pageId': chosen}));
-        ok = true;
+        if (r == 'ok') ok = true;
       } catch (_) {}
     }
     if (ok) _snack(FloatL10n.t('memo.addedToMap'));
@@ -3015,6 +4586,21 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
       } catch (_) {}
       _webCtrl = null;
     }
+    // ── 単独プロセスの時は自分を終わらせる (= ユーザー要望: ショートカット
+    //    から出したメモ窓は、 本体とは無関係に開いて閉じる) ──
+    //    WebView2 の後始末を待つと数秒固まるので、 見た目を消してから
+    //    即終了する (× を押した時と同じ考え方)。
+    if (widget.standalone) {
+      _sizeSaveTimer?.cancel();
+      await _saveWinSize();
+      try {
+        await windowManager.hide().timeout(const Duration(milliseconds: 300));
+      } catch (_) {}
+      try {
+        Process.killPid(pid);
+      } catch (_) {}
+      exit(0);
+    }
     try {
       await DesktopMultiWindow.invokeMethod(0, 'focusMain');
     } catch (_) {}
@@ -3025,6 +4611,12 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
 
   @override
   void dispose() {
+    if (widget.standalone) {
+      _sizeSaveTimer?.cancel();
+      try {
+        windowManager.removeListener(this);
+      } catch (_) {}
+    }
     _topTimer?.cancel();
     _freeSaveTimer?.cancel();
     // ignore: discarded_futures
@@ -3119,25 +4711,6 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
 
   /// 一覧の上に出す「件数 + まとめて〜」 の帯 (= 動画メモの履歴ヘッダーと同じ)。
   Widget _itemsHeaderBar() {
-    Widget act(IconData icon, Color color, String label, VoidCallback onTap) =>
-        InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(6),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              Icon(icon, size: 13, color: color),
-              if (label.isNotEmpty) ...[
-                const SizedBox(width: 3),
-                Text(label,
-                    style: TextStyle(
-                        color: color,
-                        fontSize: 10,
-                        fontWeight: FontWeight.w700)),
-              ],
-            ]),
-          ),
-        );
     return Padding(
       padding: const EdgeInsets.fromLTRB(8, 4, 6, 2),
       child: Wrap(
@@ -3154,28 +4727,9 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
                     .replaceFirst('{n}', '${_items.length}'),
                 style: const TextStyle(color: Colors.white38, fontSize: 10.5)),
           ]),
-          act(Icons.auto_awesome_rounded, const Color(0xFFBA68C8),
-              FloatL10n.t('memo.allToAi'), () {
-            final t = _allItemsText().trim();
-            if (t.isNotEmpty) _enterAiMode(t);
-          }),
-          Builder(
-            builder: (btnCtx) => act(Icons.library_add_rounded,
-                const Color(0xFF43B97F), FloatL10n.t('memo.allToMap'), () {
-              // ignore: discarded_futures
-              _addAllItemsToMap(btnCtx);
-            }),
-          ),
-          act(Icons.search_rounded, const Color(0xFF4FC3F7),
-              FloatL10n.t('memo.googleSearch'), () {
-            final t = _allItemsText().trim();
-            // ignore: discarded_futures
-            if (t.isNotEmpty) _openGoogleFor(t);
-          }),
-          act(Icons.delete_sweep_rounded, const Color(0xFFE57373), '', () {
-            // ignore: discarded_futures
-            _clearAllItems();
-          }),
+          // ── まとめて AI / マップ / 検索 / 保存 / 全消し は
+          //    ヘッダーへ移した (= ユーザー要望: 全ての下のボタンを
+          //    ヘッダーに配置して欲しい)。 ここは件数だけ出す。 ──
         ],
       ),
     );
@@ -3186,6 +4740,67 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
   Widget _itemTile(int i) {
     final item = _items[i];
     final text = item.text;
+    // 画像付きの項目は、 上に絵を出してから下に文字を並べる (= ユーザー要望)。
+    if (item.image.isNotEmpty) {
+      return Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(6),
+          onTap: () {
+            // ignore: discarded_futures
+            _editItem(i);
+          },
+          child: Container(
+            margin: const EdgeInsets.fromLTRB(8, 0, 8, 3),
+            padding: const EdgeInsets.all(6),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.04),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: Colors.white12),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(children: [
+                  Text(_clock(item.savedAt),
+                      style: const TextStyle(
+                          color: Color(0xFF4FC3F7),
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700)),
+                  const Spacer(),
+                  InkWell(
+                    onTap: () => _removeItem(i),
+                    child: const Icon(Icons.close_rounded,
+                        size: 14, color: Colors.white38),
+                  ),
+                ]),
+                const SizedBox(height: 4),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: Image.file(
+                    File(item.image),
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, __, ___) => Container(
+                      height: 60,
+                      alignment: Alignment.center,
+                      color: Colors.white10,
+                      child: const Icon(Icons.broken_image_outlined,
+                          color: Colors.white24, size: 18),
+                    ),
+                  ),
+                ),
+                if (text.trim().isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(text,
+                      style: const TextStyle(
+                          color: Colors.white, fontSize: 12, height: 1.35)),
+                ],
+              ],
+            ),
+          ),
+        ),
+      );
+    }
     return Material(
       color: Colors.transparent,
       child: InkWell(
@@ -3290,6 +4905,10 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
     );
   }
 
+  /// ヘッダーにカーソルが乗っているか (= ユーザー要望: 非表示ボタンは
+  /// ホバー中だけ出す)。
+  bool _headerHover = false;
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -3300,7 +4919,10 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
         backgroundColor: const Color(0xFF1B1B2A),
         body: Column(children: [
           // ドラッグで動かせるタイトル帯。
-          GestureDetector(
+          MouseRegion(
+            onEnter: (_) => setState(() => _headerHover = true),
+            onExit: (_) => setState(() => _headerHover = false),
+            child: GestureDetector(
             behavior: HitTestBehavior.opaque,
             onPanStart: (_) => _dragger.start(),
             onPanUpdate: (d) =>
@@ -3426,11 +5048,11 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
                     return GestureDetector(
                       onLongPress: () {
                         // ignore: discarded_futures
-                        _showAiModelMenu(btnCtx);
+                        _showBrowserAiMenu(btnCtx);
                       },
                       onSecondaryTap: () {
                         // ignore: discarded_futures
-                        _showAiModelMenu(btnCtx);
+                        _showBrowserAiMenu(btnCtx);
                       },
                       // IconButton の tooltip は長押しでも開いてしまい、
                       // モデル変更の長押しを食うので手動トリガーで包む。
@@ -3444,16 +5066,114 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
                               minWidth: 26, minHeight: 26),
                           icon: const Icon(Icons.auto_awesome_rounded,
                               size: 15, color: Color(0xFFBA68C8)),
-                          onPressed: () => _enterAiMode(''),
+                          // ── 下の「AIに渡す」 と統合 (= ユーザー要望) ──
+                          //   既定は**ブラウザ版 AI** に今のメモを渡して
+                          //   この窓の中で開く。 長押し / 右クリックで
+                          //   渡し先 (AI サイト / アプリのアシスタント /
+                          //   モデル) を選べる。
+                          onPressed: () {
+                            // ignore: discarded_futures
+                            _sendToAi(_aiTargetText());
+                          },
                         ),
                       ),
                     );
                   }),
+                // ── ここから下の「下のバーから移してきた」 ボタン ──
+                //    (= ユーザー要望: 全ての下のボタンをヘッダーに配置)。
+                //    自由記入なら選んだ所、 箇条書きなら全項目が対象。
+                if (!_webMode && !_aiMode && !_chromeHidden)
+                  IconButton(
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints(minWidth: 26, minHeight: 26),
+                    tooltip: FloatL10n.t('memo.googleSearch'),
+                    icon: const Icon(Icons.search_rounded,
+                        size: 15, color: Color(0xFF4FC3F7)),
+                    onPressed: () {
+                      final t = _aiTargetText().trim();
+                      if (t.isEmpty) return;
+                      // ignore: discarded_futures
+                      _openGoogleFor(t);
+                    },
+                  ),
+                if (!_webMode && !_aiMode && !_chromeHidden)
+                  Builder(builder: (btnCtx) {
+                    return IconButton(
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(
+                          minWidth: 26, minHeight: 26),
+                      tooltip: FloatL10n.t('memo.addToMap'),
+                      icon: const Icon(Icons.add_to_photos_rounded,
+                          size: 15, color: Color(0xFF43B97F)),
+                      onPressed: () {
+                        if (_memoMode == 'free') {
+                          final t = _free.text.trim();
+                          if (t.isEmpty) return;
+                          // ignore: discarded_futures
+                          _addToMapWithPicker(btnCtx, [t]);
+                        } else {
+                          // ignore: discarded_futures
+                          _addAllItemsToMap(btnCtx);
+                        }
+                      },
+                    );
+                  }),
+                // テキストで保存。 右クリックで保存場所の設定 (= ユーザー要望)。
+                if (!_webMode && !_aiMode && !_chromeHidden)
+                  Builder(builder: (btnCtx) {
+                    return GestureDetector(
+                      onSecondaryTap: () {
+                        // ignore: discarded_futures
+                        _showSaveDirMenu(btnCtx);
+                      },
+                      onLongPress: () {
+                        // ignore: discarded_futures
+                        _showSaveDirMenu(btnCtx);
+                      },
+                      child: Tooltip(
+                        message: '${FloatL10n.t('memo.saveAsText')}\n'
+                            '${FloatL10n.t('memo.saveDirHint')}',
+                        triggerMode: TooltipTriggerMode.manual,
+                        child: IconButton(
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                              minWidth: 26, minHeight: 26),
+                          icon: const Icon(Icons.save_alt_rounded,
+                              size: 15, color: Colors.white54),
+                          onPressed: () {
+                            // ignore: discarded_futures
+                            _saveAsText();
+                          },
+                        ),
+                      ),
+                    );
+                  }),
+                // 全部消す (箇条書きの時だけ)。
+                if (!_webMode && !_aiMode && !_chromeHidden &&
+                    _memoMode == 'list' && _items.isNotEmpty)
+                  IconButton(
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints(minWidth: 26, minHeight: 26),
+                    tooltip: FloatL10n.t('memo.clearAll'),
+                    icon: const Icon(Icons.delete_sweep_rounded,
+                        size: 15, color: Color(0xFFE57373)),
+                    onPressed: () {
+                      // ignore: discarded_futures
+                      _clearAllItems();
+                    },
+                  ),
                 // ── 目のボタン: 上のボタン類と下の 3 つをまとめて隠す ──
                 //    (= ユーザー要望: メモのアイコンや文字、 AI などの
-                //     ボタンも一緒に消えるように)。 これだけは残しておかないと
-                //     戻せなくなるので常に出す。
-                if (!_webMode && !_aiMode)
+                //     ボタンも一緒に消えるように)。
+                //    ★ 出し方の決まり (= ユーザー要望):
+                //      ・「非表示にする」 ボタンは**いつでも**出しておく。
+                //      ・「表示に戻す」 ボタンはヘッダーにカーソルが乗った
+                //        時だけ出す (隠した意味が薄れないように)。
+                //    ★ Web / AI に切り替えている間も出す (= ユーザー要望:
+                //      切り替えたら表示/非表示ボタンが無くなるのが気になる)。
+                if (!_chromeHidden || _headerHover)
                   IconButton(
                     padding: EdgeInsets.zero,
                     constraints:
@@ -3471,6 +5191,41 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
                             : const Color(0xFF80CBC4)),
                     onPressed: _toggleChrome,
                   ),
+                // ── ブラウザ AI 表示中: どの AI にするか切り替える ──
+                //    (= ユーザー要望: 切り替えた後にモデルの切り替えが
+                //     行えないのが気になる)。 押すと一覧が出て、 選ぶと
+                //     この窓の中で開き直す。
+                if (_webMode)
+                  Builder(builder: (btnCtx) {
+                    return IconButton(
+                      padding: EdgeInsets.zero,
+                      constraints:
+                          const BoxConstraints(minWidth: 26, minHeight: 26),
+                      tooltip: FloatL10n.t('float.browserAi'),
+                      icon: const Icon(Icons.smart_toy_rounded,
+                          size: 15, color: Color(0xFFBA68C8)),
+                      onPressed: () {
+                        // ignore: discarded_futures
+                        _showBrowserAiMenu(btnCtx);
+                      },
+                    );
+                  }),
+                // ── アプリの AI (API) 表示中: 使うモデルを切り替える ──
+                if (_aiMode)
+                  Builder(builder: (btnCtx) {
+                    return IconButton(
+                      padding: EdgeInsets.zero,
+                      constraints:
+                          const BoxConstraints(minWidth: 26, minHeight: 26),
+                      tooltip: FloatL10n.t('memo.aiModel'),
+                      icon: const Icon(Icons.memory_rounded,
+                          size: 15, color: Color(0xFFBA68C8)),
+                      onPressed: () {
+                        // ignore: discarded_futures
+                        _showAiModelMenu(btnCtx);
+                      },
+                    );
+                  }),
                 // 手前固定の切り替え。
                 if (!_chromeHidden || _webMode || _aiMode)
                   IconButton(
@@ -3497,6 +5252,7 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
                 //    (= ユーザー要望: ✕ が 2 つあるので下の方は要らない)。
               ]),
             ),
+          ),
           ),
           // ── 入力欄 (上に配置。 Enter で書いた所の下に項目が増えていく
           //    = ユーザー要望)。 Shift+Enter で改行できる。 ──
@@ -3525,6 +5281,17 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
                           color: Colors.white24, fontSize: 12),
                     ),
                   ),
+                ),
+                // 画像を貼り付ける (= ユーザー要望)。 クリップボードに
+                //   画像があればそれを 1 項目として足す。
+                IconButton(
+                  tooltip: FloatL10n.t('memo.pasteImage'),
+                  icon: const Icon(Icons.image_outlined,
+                      size: 17, color: Color(0xFFFFB347)),
+                  onPressed: () {
+                    // ignore: discarded_futures
+                    _addImageItem();
+                  },
                 ),
                 IconButton(
                   tooltip: FloatL10n.t('memo.add'),
@@ -3585,84 +5352,9 @@ class _MemoWindowAppState extends State<_MemoWindowApp> {
           ),
           // ── フリーメモの活用ボタン (全文を対象にする) ──
           //    ヘッダーの目のボタンで隠せる (= ユーザー要望)。
-          if (!_webMode && !_aiMode && _memoMode == 'free' && !_chromeHidden)
-            Container(
-              height: 36,
-              decoration: const BoxDecoration(
-                color: Color(0xFF23233A),
-                border: Border(
-                    top: BorderSide(color: Color(0xFF32324A), width: 1)),
-              ),
-              child: Row(children: [
-                Expanded(
-                  // 範囲選択があればその部分だけを AI へ (= ユーザー要望)。
-                  // 長押し / 右クリックでモデルを変更 (= ユーザー要望)。
-                  child: Builder(builder: (btnCtx) {
-                    return GestureDetector(
-                      onLongPress: () {
-                        // ignore: discarded_futures
-                        _showAiModelMenu(btnCtx);
-                      },
-                      onSecondaryTap: () {
-                        // ignore: discarded_futures
-                        _showAiModelMenu(btnCtx);
-                      },
-                      child: Tooltip(
-                        message: FloatL10n.t('memo.aiModelHint'),
-                        // 長押しをツールチップに食われないようにする
-                        // (トリガーは hover のみ)。
-                        triggerMode: TooltipTriggerMode.manual,
-                        child: TextButton.icon(
-                          icon: const Icon(Icons.auto_awesome_rounded,
-                              size: 14, color: Color(0xFFBA68C8)),
-                          label: Text(FloatL10n.t('memo.toAi'),
-                              style: TextStyle(
-                                  color: Color(0xFFBA68C8), fontSize: 11)),
-                          onPressed: () {
-                            final t = _freeTargetText();
-                            if (t.isEmpty) return;
-                            _enterAiMode(t);
-                          },
-                        ),
-                      ),
-                    );
-                  }),
-                ),
-                Expanded(
-                  // 範囲選択があればその部分だけを検索 (= ユーザー要望)。
-                  child: TextButton.icon(
-                    icon: const Icon(Icons.search_rounded,
-                        size: 15, color: Color(0xFF4FC3F7)),
-                    label: Text(FloatL10n.t('memo.googleSearch'),
-                        style: TextStyle(
-                            color: Color(0xFF4FC3F7), fontSize: 11)),
-                    onPressed: () {
-                      final t = _freeTargetText();
-                      if (t.isEmpty) return;
-                      // ignore: discarded_futures
-                      _openGoogleFor(t);
-                    },
-                  ),
-                ),
-                Expanded(
-                  child: Builder(builder: (btnCtx) {
-                    return TextButton.icon(
-                      icon: const Icon(Icons.add_to_photos_rounded,
-                          size: 14, color: Color(0xFF43B97F)),
-                      label: Text(FloatL10n.t('memo.addToMap'),
-                          style: TextStyle(
-                              color: Color(0xFF43B97F), fontSize: 11)),
-                      onPressed: () {
-                        final t = _free.text.trim();
-                        if (t.isEmpty) return;
-                        // ignore: discarded_futures
-                        _addToMapWithPicker(btnCtx, [t]);
-                      },
-                    );
-                  }),
-                ),
-              ]),
-            ),
+          // ── 自由記入の下のバー (AIに渡す / 検索 / マップに追加 /
+          //    保存) は無くした (= ユーザー要望: 全ての下のボタンを
+          //    ヘッダーに配置)。 同じものがヘッダーに並んでいる。 ──
         ]),
       ),
     );
@@ -4156,6 +5848,10 @@ class _AudienceWindowAppState extends State<_AudienceWindowApp> {
 ///
 /// 本体とは別プロセスで動く。 そのため、 この窓を閉じても本体側の
 /// WebView には何の影響も無い (b88 で直した不具合の再発を避けるため)。
+/// フローティング AI 窓のダイアログ用 navigator (= サブ窓と同じ理由:
+/// State.context は自作 MaterialApp の外なので、 showDialog はこれを使う)。
+final GlobalKey<NavigatorState> _navKeyFloating = GlobalKey<NavigatorState>();
+
 class _FloatingWebWindowApp extends StatefulWidget {
   final String url;
 
@@ -4165,17 +5861,359 @@ class _FloatingWebWindowApp extends StatefulWidget {
 
   /// 窓のタイトル (省略時は URL)。
   final String? title;
+
+  /// 掴んで外へ出された時の位置と大きさ (= ユーザー要望: そのままの姿で外へ)。
+  /// null なら前回の大きさ、 それも無ければ縦長の既定値で開く。
+  final Rect? initialFrame;
+
+  /// 場所だけの指定 (= ユーザー要望: 押したボタンの近くに出す)。
+  /// 大きさは前回のまま、 位置だけこの点に合わせる。
+  final Offset? initialPosition;
+
+  /// 本体の分割ペインの上に置いて放したら、 そのペインへ埋め込んで自分は
+  /// 閉じるか (= ユーザー要望)。 要素から開いた窓だけ true。
+  final bool embeddable;
   const _FloatingWebWindowApp(
-      {required this.url, this.startPinned = false, this.title});
+      {required this.url,
+      this.startPinned = false,
+      this.embeddable = false,
+      this.title,
+      this.initialFrame,
+      this.initialPosition});
   @override
   State<_FloatingWebWindowApp> createState() => _FloatingWebWindowAppState();
 }
 
-class _FloatingWebWindowAppState extends State<_FloatingWebWindowApp> {
+class _FloatingWebWindowAppState extends State<_FloatingWebWindowApp>
+    with WindowListener {
   final wv_win.WebviewController _ctrl = wv_win.WebviewController();
   bool _ready = false;
   String? _error;
   late bool _pinned = widget.startPinned;
+
+  // ─── AI の切り替え / 前提条件 / ヘッダー表示 (= ユーザー要望) ───────────
+  /// 今開いている AI の id (browserAiTargets の id)。 URL から推定する。
+  late String _aiId = _guessAiId(widget.url);
+
+  /// 窓に出す題 (AI を切り替えたら差し替える)。
+  late String _title = (widget.title != null && widget.title!.isNotEmpty)
+      ? widget.title!
+      : widget.url;
+
+  /// 毎回 AI に渡す前提条件 (本体と同じ prefs キーを共有)。
+  String _prefix = '';
+
+  /// ヘッダーを出すか (= ユーザー要望: 表示/非表示の切り替え)。
+  bool _headerVisible = true;
+
+  /// 動画サイトらしい URL か (= 速度バーを自動で出す判定)。
+  static bool _looksVideoUrl(String u) {
+    final l = u.toLowerCase();
+    return l.contains('youtube.com') ||
+        l.contains('youtu.be') ||
+        l.contains('youtube-nocookie.com') ||
+        l.contains('vimeo.com') ||
+        l.contains('nicovideo.jp') ||
+        l.contains('twitch.tv') ||
+        l.contains('dailymotion.com') ||
+        l.contains('bilibili.com') ||
+        l.endsWith('.mp4') ||
+        l.contains('.mp4?');
+  }
+
+  /// ヘッダーの表示 / 非表示。 OS のタイトルバーも一緒に隠す
+  /// (= ユーザー報告: ボタンを押してもいちばん上の帯 (OS のタイトルバー) が
+  /// 残って、 隠れたように見えなかった)。
+  Future<void> _setHeaderVisible(bool v) async {
+    setState(() => _headerVisible = v);
+    try {
+      await windowManager.setTitleBarStyle(
+        v ? TitleBarStyle.normal : TitleBarStyle.hidden,
+        windowButtonVisibility: v,
+      );
+    } catch (_) {}
+  }
+
+  /// ヘッダーが隠れている時、 上端にカーソルが乗っているか
+  /// (= ユーザー要望: 乗せるまで表示ボタンを出さない)。
+  bool _hoverTop = false;
+
+  static const String _kPrefixKey = kBrowserAiPrefixKey;
+  static const String _kTargetKey = 'browser_ai_target';
+
+  /// URL からどの AI かを推定する。
+  static String _guessAiId(String url) {
+    final u = url.toLowerCase();
+    for (final t in MindMapProvider.browserAiTargets) {
+      final id = t['id'] ?? '';
+      if (id.isNotEmpty && u.contains(id)) return id;
+    }
+    if (u.contains('openai')) return 'chatgpt';
+    if (u.contains('x.ai')) return 'grok';
+    return MindMapProvider.browserAiTargets.first['id'] ?? 'chatgpt';
+  }
+
+  Map<String, String> get _aiDef =>
+      MindMapProvider.browserAiTargets.firstWhere(
+        (e) => e['id'] == _aiId,
+        orElse: () => MindMapProvider.browserAiTargets.first,
+      );
+
+  /// タイトルの監視 (= DM 未読数を拾うため)。
+  StreamSubscription<String>? _titleSub;
+
+  /// 現在 URL の監視 (= 分割ペインへ埋め込む時に今見ているページを渡すため)。
+  StreamSubscription<String>? _urlSub;
+  int _lastReportedUnread = -1;
+
+  /// ページ題の「(3) …」 から未読数を拾って本体へ知らせる
+  /// (= ユーザー要望: Instagram / Slack / Discord などの DM 通知)。
+  void _reportUnreadFromTitle(String t) {
+    final m = RegExp(r'^\s*\((\d+)\+?\)').firstMatch(t);
+    final count = m == null ? 0 : (int.tryParse(m.group(1) ?? '') ?? 0);
+    if (count == _lastReportedUnread) return;
+    _lastReportedUnread = count;
+    String host = '';
+    try {
+      host = Uri.parse(_lastLoadedUrl).host;
+    } catch (_) {}
+    if (host.isEmpty) return;
+    unawaited(() async {
+      final client = HttpClient();
+      client.connectionTimeout = const Duration(milliseconds: 600);
+      try {
+        final req = await client.post('127.0.0.1', _kOpenWithPort, '/badge');
+        req.headers.set('x-hisator-token', _kOpenWithToken);
+        req.headers.contentType = ContentType.json;
+        req.write(jsonEncode({'host': host, 'count': count}));
+        await req.close().timeout(const Duration(seconds: 2));
+      } catch (_) {} finally {
+        try {
+          client.close(force: true);
+        } catch (_) {}
+      }
+    }());
+  }
+
+  /// AI に切り替える前に開いていた「元のページ」 (= ユーザー要望: 戻れるように)。
+  String? _homeUrl;
+  String? _homeTitle;
+
+  /// 最後に明示的に読み込んだ URL (元のページを覚えるために使う)。
+  late String _lastLoadedUrl = widget.url;
+
+  /// この URL がブラウザ AI のものか (元のページとして覚えるかの判定)。
+  static bool _isAiHost(String url) {
+    try {
+      final h = Uri.parse(url).host.toLowerCase();
+      if (h.isEmpty) return false;
+      for (final t in MindMapProvider.browserAiTargets) {
+        final th =
+            Uri.parse((t['url'] ?? '').replaceAll('{q}', '')).host.toLowerCase();
+        if (th.isNotEmpty && th == h) return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  /// AI に切り替える前のページへ戻る (= ユーザー要望: 元のフローティング
+  /// 画面に戻れる戻るボタン)。
+  Future<void> _goHome() async {
+    final u = _homeUrl;
+    if (u == null || u.isEmpty) return;
+    final t = _homeTitle;
+    setState(() {
+      _homeUrl = null;
+      _homeTitle = null;
+      if (t != null && t.isNotEmpty) _title = t;
+    });
+    try {
+      await windowManager.setTitle(_title);
+    } catch (_) {}
+    try {
+      await _ctrl.loadUrl(u);
+    } catch (_) {}
+    _lastLoadedUrl = u;
+  }
+
+  /// 別の AI に切り替える (窓はそのまま、 中身だけ差し替える)。
+  Future<void> _switchAi(String id) async {
+    final def = MindMapProvider.browserAiTargets.firstWhere(
+      (e) => e['id'] == id,
+      orElse: () => MindMapProvider.browserAiTargets.first,
+    );
+    final tmpl = def['url'] ?? '';
+    // クエリ無しで開く (= 既に開いている会話を潰さないよう、 素の URL へ)。
+    final url = tmpl.replaceAll('{q}', '');
+    // AI ではないページから切り替える時は、 戻り先として覚えておく
+    // (= ユーザー要望)。 AI → AI の切り替えでは上書きしない。
+    if (_homeUrl == null && !_isAiHost(_lastLoadedUrl)) {
+      _homeUrl = _lastLoadedUrl;
+      _homeTitle = _title;
+    }
+    _lastLoadedUrl = url;
+    setState(() {
+      _aiId = id;
+      _title = def['label'] ?? id;
+    });
+    try {
+      await windowManager.setTitle(_title);
+    } catch (_) {}
+    try {
+      await _ctrl.loadUrl(url);
+    } catch (_) {}
+    // 次に開く時もこの AI にする (本体と同じ prefs キー)。
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_kTargetKey, id);
+    } catch (_) {}
+  }
+
+  Future<void> _loadPrefix() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (!mounted) return;
+      setState(() => _prefix = prefs.getString(_kPrefixKey) ?? '');
+    } catch (_) {}
+  }
+
+  /// 前提条件を編集する (本体の設定と同じものを書き換える)。
+  Future<void> _editPrefix() async {
+    final ctrl = TextEditingController(text: _prefix);
+    final saved = await showDialog<String>(
+      context: _navKeyFloating.currentContext ?? context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Text(FloatL10n.t('memo.aiPrefixTitle'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        content: SizedBox(
+          width: 360,
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(FloatL10n.t('memo.aiPrefixDesc'),
+                  style: const TextStyle(color: Colors.white54, fontSize: 12)),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: ctrl,
+              autofocus: true,
+              minLines: 2,
+              maxLines: 5,
+              style: const TextStyle(color: Colors.white, fontSize: 13),
+              decoration: InputDecoration(
+                hintText: FloatL10n.t('memo.aiPrefixHint'),
+                hintStyle:
+                    const TextStyle(color: Colors.white24, fontSize: 12),
+                filled: true,
+                fillColor: Colors.white.withValues(alpha: 0.06),
+                border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide: BorderSide.none),
+              ),
+            ),
+          ]),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, '__cancel__'),
+            child: Text(FloatL10n.t('btn.cancel'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, ''),
+            child: Text(FloatL10n.t('btn.clear'),
+                style: const TextStyle(color: Color(0xFFFF8A80))),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFBA68C8),
+                foregroundColor: Colors.white),
+            onPressed: () => Navigator.pop(dctx, ctrl.text.trim()),
+            child: Text(FloatL10n.t('btn.save')),
+          ),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    if (saved == null || saved == '__cancel__') return;
+    setState(() => _prefix = saved);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_kPrefixKey, saved);
+    } catch (_) {}
+  }
+
+  /// 前提条件を AI の入力欄へ差し込む (空なら編集ダイアログを出す)。
+  Future<void> _insertPrefix() async {
+    if (_prefix.trim().isEmpty) {
+      await _editPrefix();
+      if (_prefix.trim().isEmpty) return;
+    }
+    final esc = jsonEncode(_prefix);
+    // 本体の AI 欄と同じ挿入 JS (contenteditable → textarea の順に探す)。
+    final js = '''
+(function(){
+  try{
+    var text = $esc;
+    function area(el){var r=el.getBoundingClientRect();
+      if(r.width<80||r.height<16)return 0;
+      if(r.bottom<0||r.top>window.innerHeight)return 0;return r.width*r.height;}
+    var sels=['div.ProseMirror[contenteditable="true"]','#prompt-textarea',
+      'div[contenteditable="true"].ql-editor','div[contenteditable="true"]'];
+    var best=null,ba=0;
+    for(var i=0;i<sels.length;i++){var ns=document.querySelectorAll(sels[i]);
+      for(var j=0;j<ns.length;j++){var a=area(ns[j]);if(a>ba){ba=a;best=ns[j];}}
+      if(best)break;}
+    if(best){best.focus();
+      try{var rg=document.createRange();rg.selectNodeContents(best);
+        rg.collapse(false);var s=window.getSelection();s.removeAllRanges();
+        s.addRange(rg);}catch(e){}
+      var ex=(best.innerText||best.textContent||'').trim();
+      try{document.execCommand('insertText',false,(ex?'\\n':'')+text);}
+      catch(e){best.innerText=ex+(ex?'\\n':'')+text;
+        best.dispatchEvent(new InputEvent('input',{bubbles:true}));}
+      return 'ok';}
+    var tas=document.querySelectorAll('textarea, input[type="text"]');
+    var bt=null,bta=0;
+    for(var k=0;k<tas.length;k++){var t=area(tas[k]);if(t>bta){bta=t;bt=tas[k];}}
+    if(bt){bt.focus();var ev=bt.value||'';
+      var nv=ev+(ev?'\\n':'')+text;
+      var proto=bt.tagName==='TEXTAREA'?window.HTMLTextAreaElement.prototype
+        :window.HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto,'value').set.call(bt,nv);
+      bt.dispatchEvent(new Event('input',{bubbles:true}));return 'ok-ta';}
+    return 'not-found';
+  }catch(e){return 'err';}
+})();
+''';
+    try {
+      await _ctrl.executeScript(js);
+    } catch (_) {}
+  }
+
+  /// 本体の AI アシスタント (MCP チャット) を開いてもらう。
+  /// メモ表示に切り替えているか。
+  ///
+  /// = ユーザー要望「フローティング AI からフローティングメモを呼び出すと
+  ///   別枠が開いてしまう。 そうじゃなくてフローティング AI の画面がメモに
+  ///   切り替わるようにして欲しい」。 別プロセス / 別窓は作らず、 この窓の
+  ///   中身だけ差し替える。 メモの中身は本体・メモ窓と同じ保存先を読み書き
+  ///   するので、 どこで書いても同じメモ帳になる。
+  bool _memoMode = false;
+
+  Future<void> _callAssistant() async {
+    final ok = await openAssistantAnyway('');
+    if (!ok && mounted) {
+      final ctx = _navKeyFloating.currentContext;
+      if (ctx != null) {
+        ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(SnackBar(
+          content: Text(FloatL10n.t('memo.assistantFailed')),
+          duration: const Duration(seconds: 3),
+        ));
+      }
+    }
+  }
 
   /// 常に手前を維持し直すタイマー。
   ///
@@ -4187,17 +6225,174 @@ class _FloatingWebWindowAppState extends State<_FloatingWebWindowApp> {
   @override
   void initState() {
     super.initState();
+    // 窓の大きさが変わったら控える (= ユーザー要望: 次回その大きさで開く)。
+    windowManager.addListener(this);
     // ignore: discarded_futures
     _init();
+    // ignore: discarded_futures
+    _loadPrefix();
+    // ignore: discarded_futures
+    _loadMaxRate();
   }
+
+  @override
+  void onWindowResized() => _scheduleSaveSize();
+
+  @override
+  void onWindowResize() => _scheduleSaveSize();
+
+  // ─── 動画の再生速度 (= ユーザー要望: 要素から開いた YouTube は外の窓で
+  //     立ち上がるので、 速度もこの窓で変えられるように) ───────────────
+  /// 今の再生速度 (1.0 = 等速)。
+  double _rate = 1.0;
+
+  /// ページが変わると JS が消えるので、 少し待って掛け直すタイマー。
+  Timer? _rateReapplyTimer;
+
+  Future<void> _applyRate() async {
+    try {
+      await _ctrl.executeScript(webVideoRateJs(_rate));
+    } catch (_) {}
+  }
+
+  void _scheduleRateReapply() {
+    if ((_rate - 1.0).abs() < 0.01) return;
+    _rateReapplyTimer?.cancel();
+    _rateReapplyTimer = Timer(const Duration(milliseconds: 1200), () {
+      if (!mounted) return;
+      // ignore: discarded_futures
+      _applyRate();
+    });
+  }
+
+  /// 速度の候補 (本体の速度バーと同じ考え方で、 2 倍より上も出す)。
+  static const List<double> _kRateChoices = [
+    0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0
+  ];
+
+  /// 速度バー (スライダーの行) を開いているか (= ユーザー要望: どのモードで
+  /// 開いても再生速度バーが出るように)。 ヘッダーの「1.00x」 で開閉する。
+  bool _rateBarOpen = false;
+
+  /// 速度の上限 (本体の動作設定と同じ prefs を読む)。
+  double _maxRate = 4.0;
+
+  Future<void> _loadMaxRate() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final v = sp.getDouble('videoMaxRate') ?? 4.0;
+      if (mounted) setState(() => _maxRate = v.clamp(1.5, 16.0).toDouble());
+    } catch (_) {}
+  }
+
+  /// 埋め込みを頼んでいる最中か (連打・多重送信を防ぐ)。
+  bool _embedAsking = false;
+
+  /// 窓を動かし終えた (= マウスを放した) 合図。
+  ///
+  /// ここで本体に「今この枠の位置に置いたよ」 と伝え、 分割ペインの上なら
+  /// 埋め込んでもらう (= ユーザー要望: 外に出した YouTube を分割ペインの
+  /// 上に置いたら埋め込まれるように)。 ペインの上でなければ本体は何もせず、
+  /// この窓もそのまま残る。
+  @override
+  void onWindowMoved() {
+    if (!widget.embeddable) return;
+    // ignore: discarded_futures
+    _tryEmbedIntoMainWindow();
+  }
+
+  Future<void> _tryEmbedIntoMainWindow() async {
+    if (_embedAsking || !mounted) return;
+    _embedAsking = true;
+    try {
+      final bounds = await windowManager.getBounds();
+      // 最小化中などは座標があり得ない値になるので投げない。
+      if (bounds.left < -8000 || bounds.top < -8000) return;
+      final ok = await requestEmbedIntoRunningInstance(_lastLoadedUrl, bounds);
+      if (!ok) return;
+      // 埋め込まれたのでこの窓は役目を終える。 見た目は先に消して、
+      // WebView2 の後始末を待たずに終わらせる (= ×押下と同じ考え方)。
+      try {
+        await windowManager.hide().timeout(const Duration(milliseconds: 300));
+      } catch (_) {}
+      try {
+        Process.killPid(pid);
+      } catch (_) {}
+      exit(0);
+    } catch (_) {
+      // 本体が居ない / 応答しない時は何もしない (窓はそのまま)。
+    } finally {
+      _embedAsking = false;
+    }
+  }
+
+  /// 最後に閉じた時の窓の大きさを覚えておくキー (= ユーザー要望:
+  /// フローティング AI は最後に閉じた大きさで開く)。
+  static const String _kSizeKey = 'floatingAiWindowSize';
+  Timer? _sizeSaveTimer;
+
+  /// 今の窓の大きさを控える (連続で動く間は最後の 1 回だけ書く)。
+  void _scheduleSaveSize() {
+    _sizeSaveTimer?.cancel();
+    _sizeSaveTimer = Timer(const Duration(milliseconds: 600), () async {
+      try {
+        final s = await windowManager.getSize();
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(
+            _kSizeKey, '${s.width.round()}x${s.height.round()}');
+      } catch (_) {}
+    });
+  }
+
+  /// 開く時の位置と大きさを決める。
+  ///
+  /// 1. 掴んで外へ出された時は、 その場所・その大きさのまま (= ユーザー要望)。
+  /// 2. そうでなければ前回閉じた大きさ。
+  /// 3. どちらも無ければ**縦長**の既定値 (= ユーザー要望: 既定の横幅が
+  ///    大きすぎるので、 高さはそのままに横を絞って縦長に)。
+  Future<void> _restoreSize() async {
+    // ① 掴んで出された時の枠をそのまま使う。
+    final f = widget.initialFrame;
+    if (f != null && f.width >= 200 && f.height >= 160) {
+      try {
+        await windowManager.setBounds(f);
+        return;
+      } catch (_) {}
+    }
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_kSizeKey) ?? '';
+      final m = RegExp(r'^(\d+)x(\d+)$').firstMatch(raw);
+      if (m != null) {
+        // ② 前回の大きさ。
+        final w = double.parse(m.group(1)!).clamp(320.0, 4000.0);
+        final h = double.parse(m.group(2)!).clamp(240.0, 3000.0);
+        await windowManager.setSize(Size(w, h));
+        return;
+      }
+      // ③ 既定は縦長 (高さは今までどおり、 横幅だけ絞る)。
+      final cur = await windowManager.getSize();
+      final h = cur.height < 240 ? 720.0 : cur.height;
+      await windowManager.setSize(Size(_kDefaultFloatWebWidth, h));
+    } catch (_) {}
+  }
+
+  /// 外に出した窓の既定の横幅 (= ユーザー要望: 既定が横に大きすぎる)。
+  static const double _kDefaultFloatWebWidth = 480;
 
   Future<void> _init() async {
     try {
       await windowManager.ensureInitialized();
-      await windowManager.setTitle(
-          (widget.title != null && widget.title!.isNotEmpty)
-              ? widget.title!
-              : widget.url);
+      await windowManager.setTitle(_title);
+      // 最後に閉じた大きさで開く (= ユーザー要望)。
+      await _restoreSize();
+      // 場所だけの指定 (= ボタンの近くに出す) が来ていたら移す。
+      final p0 = widget.initialPosition;
+      if (p0 != null && widget.initialFrame == null) {
+        try {
+          await windowManager.setPosition(p0);
+        } catch (_) {}
+      }
       if (_pinned) {
         try {
           await windowManager.setAlwaysOnTop(true);
@@ -4205,6 +6400,22 @@ class _FloatingWebWindowAppState extends State<_FloatingWebWindowApp> {
         _startTopTimer();
       }
       await _ctrl.initialize();
+      // DM 未読数をページ題から拾う (= ユーザー要望: DM 通知)。
+      _titleSub = _ctrl.title.listen(_reportUnreadFromTitle);
+      // 今見ているページを追いかける。 分割ペインへ埋め込む時は、 開いた
+      // 時の URL ではなく「今見ている動画」 を渡したい (= ユーザー要望)。
+      _urlSub = _ctrl.url.listen((u) {
+        if (u.isEmpty) return;
+        if (u != _lastLoadedUrl) _scheduleRateReapply();
+        _lastLoadedUrl = u;
+        // 動画サイトへ移動したら速度バーを自動で出す (= ユーザー要望:
+        // YouTube を開く時は必ず出るように)。
+        if (!_rateBarOpen && _looksVideoUrl(u) && mounted) {
+          setState(() => _rateBarOpen = true);
+        }
+      });
+      // 動画サイトなら速度バーを最初から出す (= ユーザー要望)。
+      if (_looksVideoUrl(widget.url)) _rateBarOpen = true;
       await _ctrl.loadUrl(widget.url);
       if (mounted) setState(() => _ready = true);
     } catch (e) {
@@ -4217,6 +6428,11 @@ class _FloatingWebWindowAppState extends State<_FloatingWebWindowApp> {
     _topTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
       if (!_pinned) return;
       try {
+        // ★ 既に最前面フラグが立っているなら何もしない (= ユーザー報告:
+        //   3 秒ごとに窓を持ち上げ直していたせいで、 本体アプリを触るたびに
+        //   消えたり出たりを繰り返して邪魔)。 最前面は一度立てれば OS が
+        //   維持するので、 フラグが外れてしまった時だけ掛け直す。
+        if (await windowManager.isAlwaysOnTop()) return;
         await windowManager.setAlwaysOnTop(true);
       } catch (_) {}
     });
@@ -4238,7 +6454,12 @@ class _FloatingWebWindowAppState extends State<_FloatingWebWindowApp> {
 
   @override
   void dispose() {
+    _titleSub?.cancel();
+    _urlSub?.cancel();
+    _rateReapplyTimer?.cancel();
     _topTimer?.cancel();
+    _sizeSaveTimer?.cancel();
+    windowManager.removeListener(this);
     try {
       _ctrl.dispose();
     } catch (_) {}
@@ -4249,79 +6470,349 @@ class _FloatingWebWindowAppState extends State<_FloatingWebWindowApp> {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
+      navigatorKey: _navKeyFloating,
       theme: ThemeData.dark(useMaterial3: true),
       home: Scaffold(
         backgroundColor: const Color(0xFF12121C),
         body: Column(children: [
-          // ── 上のバー (常に前面 / 再読み込み / 閉じる) ──
-          Container(
-            height: 34,
-            color: const Color(0xFF1A1A2E),
-            padding: const EdgeInsets.symmetric(horizontal: 6),
-            child: Row(children: [
-              const Icon(Icons.public_rounded,
-                  size: 15, color: Color(0xFF4FC3F7)),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                    (widget.title != null && widget.title!.isNotEmpty)
-                        ? widget.title!
-                        : widget.url,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        color: Colors.white54, fontSize: 11)),
-              ),
-              IconButton(
-                tooltip: FloatL10n.t(_pinned ? 'memo.unpin' : 'memo.pin'),
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-                icon: Icon(
-                    _pinned
-                        ? Icons.push_pin_rounded
-                        : Icons.push_pin_outlined,
-                    size: 16,
-                    color: _pinned ? const Color(0xFF4FC3F7) : Colors.white38),
-                onPressed: _togglePin,
-              ),
-              IconButton(
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-                icon: const Icon(Icons.refresh_rounded,
-                    size: 16, color: Colors.white38),
-                onPressed: () {
-                  // ignore: discarded_futures
-                  _ctrl.reload();
-                },
-              ),
-              IconButton(
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-                icon: const Icon(Icons.close_rounded,
-                    size: 16, color: Colors.white54),
-                onPressed: () {
-                  // 別プロセスなので、 自分だけ終わればよい。
-                  exit(0);
-                },
-              ),
-            ]),
-          ),
-          Expanded(
-            child: _error != null
-                ? Center(
-                    child: Padding(
-                      padding: const EdgeInsets.all(24),
-                      child: Text(_error!,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                              color: Color(0xFFEF9A9A), fontSize: 12)),
+          // ── 上のバー (AI 切替 / アシスタント / 前提条件 / 常に前面 /
+          //    再読み込み / ヘッダーを隠す / 閉じる) ──
+          //    ★ 隠している時は 6px の帯だけ残し、 そこにカーソルを乗せた時
+          //      だけ「表示」 ボタンが出る (= ユーザー要望)。
+          if (_headerVisible)
+            Container(
+              height: 34,
+              color: const Color(0xFF1A1A2E),
+              padding: const EdgeInsets.symmetric(horizontal: 6),
+              child: Row(children: [
+                // ── 左端は窓の題だけ (= ユーザー要望: AI の窓でもないのに
+                //    左端にモデル名が出ているのは変。 ブラウザ AI は右側の
+                //    ✨ ボタンに移動した) ──
+                const Icon(Icons.public_rounded,
+                    size: 14, color: Colors.white38),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(_title,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: Colors.white54,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600)),
+                ),
+                // ── 元のページへ戻る (= ユーザー要望: AI に切り替えた後で
+                //    元のフローティング画面に戻れるように) ──
+                if (_homeUrl != null)
+                  IconButton(
+                    tooltip: FloatL10n.t('float.backHome'),
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints(minWidth: 28, minHeight: 28),
+                    icon: const Icon(Icons.arrow_back_rounded,
+                        size: 16, color: Color(0xFF4FC3F7)),
+                    onPressed: () {
+                      // ignore: discarded_futures
+                      _goHome();
+                    },
+                  ),
+                // ── ブラウザ AI (= ユーザー要望: 右側に並べて、 押すとモデルを
+                //    選べる。 選ぶと**この窓がそのまま**フローティング AI に
+                //    切り替わる)。 キラキラ (✨) は AI アシスタントに譲って、
+                //    こちらはロボットのアイコン (= ユーザー要望)。 ──
+                PopupMenuButton<String>(
+                  tooltip: FloatL10n.t('float.browserAi'),
+                  color: const Color(0xFF1E1E32),
+                  onSelected: (id) {
+                    // ignore: discarded_futures
+                    _switchAi(id);
+                  },
+                  itemBuilder: (_) {
+                    // ★ 今この窓で AI を開いている時だけ丸印を付ける
+                    //   (= ユーザー要望: AI 画面でもないのに ChatGPT に
+                    //   チェックが入っているのは変)。
+                    final checked =
+                        _isAiHost(_lastLoadedUrl) ? _aiId : null;
+                    return [
+                      for (final t in MindMapProvider.browserAiTargets)
+                        PopupMenuItem<String>(
+                          value: t['id'],
+                          height: 34,
+                          child: Row(children: [
+                            Icon(
+                                t['id'] == checked
+                                    ? Icons.radio_button_checked_rounded
+                                    : Icons.radio_button_off_rounded,
+                                size: 14,
+                                color: t['id'] == checked
+                                    ? const Color(0xFF4FC3F7)
+                                    : Colors.white38),
+                            const SizedBox(width: 8),
+                            Text(t['label'] ?? '',
+                                style: const TextStyle(
+                                    color: Colors.white, fontSize: 12.5)),
+                          ]),
+                        ),
+                    ];
+                  },
+                  child: const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 6),
+                    child: Icon(Icons.smart_toy_rounded,
+                        size: 16, color: Color(0xFFBA68C8)),
+                  ),
+                ),
+                // ── 再生速度 (= ユーザー要望: どのモードで開いても
+                //    再生速度バーが出るように)。 押すと下にスライダーの
+                //    バーが開く (本体の浮遊窓と同じ形)。 ──
+                Tooltip(
+                  message: FloatL10n.t('float.playbackRate'),
+                  child: TextButton(
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 6),
+                      minimumSize: const Size(0, 28),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     ),
-                  )
-                : _ready
-                    ? wv_win.Webview(_ctrl)
-                    : const Center(
-                        child: CircularProgressIndicator(
-                            color: Color(0xFF4FC3F7), strokeWidth: 2)),
+                    onPressed: () =>
+                        setState(() => _rateBarOpen = !_rateBarOpen),
+                    child: Text(
+                      '${_rate.toStringAsFixed(2)}x',
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w700,
+                        color: _rateBarOpen || (_rate - 1.0).abs() > 0.01
+                            ? const Color(0xFF4FC3F7)
+                            : Colors.white38,
+                      ),
+                    ),
+                  ),
+                ),
+                // ── メモに切り替える / Web に戻る ──
+                // = ユーザー要望「フローティング AI からメモを呼ぶと別枠が
+                //   開いてしまう。 この画面がメモに切り替わるように」。
+                //   別窓は作らず、 この窓の中身だけ差し替える。
+                IconButton(
+                  tooltip: FloatL10n.t(
+                      _memoMode ? 'memo.backToMemo' : 'float.openMemo'),
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 28, minHeight: 28),
+                  icon: Icon(
+                      _memoMode
+                          ? Icons.arrow_back_rounded
+                          : Icons.sticky_note_2_rounded,
+                      size: 16,
+                      color: _memoMode
+                          ? const Color(0xFF4FC3F7)
+                          : const Color(0xFFFFB347)),
+                  onPressed: () => setState(() => _memoMode = !_memoMode),
+                ),
+                // ── AI アシスタント (本体の MCP チャット) を呼ぶ。
+                //    アプリ内と同じキラキラ (✨) にする (= ユーザー要望)。 ──
+                IconButton(
+                  tooltip: FloatL10n.t('memo.openAssistant'),
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 28, minHeight: 28),
+                  icon: const Icon(Icons.auto_awesome_rounded,
+                      size: 16, color: Color(0xFF43B97F)),
+                  onPressed: () {
+                    // ignore: discarded_futures
+                    _callAssistant();
+                  },
+                ),
+                // ── 前提条件 (押すと入力欄へ挿入、 長押し/右クリックで編集) ──
+                GestureDetector(
+                  onLongPress: () {
+                    // ignore: discarded_futures
+                    _editPrefix();
+                  },
+                  onSecondaryTap: () {
+                    // ignore: discarded_futures
+                    _editPrefix();
+                  },
+                  child: IconButton(
+                    tooltip: FloatL10n.t('memo.aiPrefixTip'),
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints(minWidth: 28, minHeight: 28),
+                    icon: Icon(Icons.tips_and_updates_outlined,
+                        size: 16,
+                        color: _prefix.trim().isEmpty
+                            ? Colors.white38
+                            : const Color(0xFFBA68C8)),
+                    onPressed: () {
+                      // ignore: discarded_futures
+                      _insertPrefix();
+                    },
+                  ),
+                ),
+                IconButton(
+                  tooltip: FloatL10n.t(_pinned ? 'memo.unpin' : 'memo.pin'),
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 28, minHeight: 28),
+                  icon: Icon(
+                      _pinned
+                          ? Icons.push_pin_rounded
+                          : Icons.push_pin_outlined,
+                      size: 16,
+                      color:
+                          _pinned ? const Color(0xFF4FC3F7) : Colors.white38),
+                  onPressed: _togglePin,
+                ),
+                IconButton(
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 28, minHeight: 28),
+                  icon: const Icon(Icons.refresh_rounded,
+                      size: 16, color: Colors.white38),
+                  onPressed: () {
+                    // ignore: discarded_futures
+                    _ctrl.reload();
+                  },
+                ),
+                // ── ヘッダーを隠す (= ユーザー要望) ──
+                IconButton(
+                  tooltip: FloatL10n.t('memo.hideHeader'),
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 28, minHeight: 28),
+                  icon: const Icon(Icons.keyboard_double_arrow_up_rounded,
+                      size: 16, color: Colors.white38),
+                  onPressed: () => _setHeaderVisible(false),
+                ),
+                IconButton(
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 28, minHeight: 28),
+                  icon: const Icon(Icons.close_rounded,
+                      size: 16, color: Colors.white54),
+                  onPressed: () async {
+                    // 閉じる直前の大きさを覚えておく (= ユーザー要望:
+                    // 次回はこの大きさで開く)。
+                    _sizeSaveTimer?.cancel();
+                    try {
+                      final s = await windowManager.getSize();
+                      final prefs = await SharedPreferences.getInstance();
+                      await prefs.setString(_kSizeKey,
+                          '${s.width.round()}x${s.height.round()}');
+                    } catch (_) {}
+                    // 別プロセスなので、 自分だけ終わればよい。
+                    exit(0);
+                  },
+                ),
+              ]),
+            )
+          else
+            // 隠している時: 上端の細い帯。 カーソルを乗せた時だけボタンが出る。
+            MouseRegion(
+              onEnter: (_) => setState(() => _hoverTop = true),
+              onExit: (_) => setState(() => _hoverTop = false),
+              child: Container(
+                height: _hoverTop ? 26 : 6,
+                width: double.infinity,
+                color: const Color(0xFF1A1A2E),
+                alignment: Alignment.centerRight,
+                child: _hoverTop
+                    ? IconButton(
+                        tooltip: FloatL10n.t('memo.showHeader'),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(
+                            minWidth: 26, minHeight: 26),
+                        icon: const Icon(
+                            Icons.keyboard_double_arrow_down_rounded,
+                            size: 15,
+                            color: Colors.white54),
+                        onPressed: () => _setHeaderVisible(true),
+                      )
+                    : const SizedBox.shrink(),
+              ),
+            ),
+          // ── 再生速度バー (= ユーザー要望: 必ず再生速度バーの付いたモードで
+          //    開くように)。 ヘッダーの「1.00x」 で開閉する。 ──
+          if (_rateBarOpen && _headerVisible)
+            Container(
+              height: 30,
+              color: const Color(0xFF15152A),
+              padding: const EdgeInsets.only(left: 8, right: 4),
+              child: Row(children: [
+                const Icon(Icons.speed_rounded,
+                    size: 14, color: Color(0xFF4FC3F7)),
+                Expanded(
+                  child: SliderTheme(
+                    data: SliderThemeData(
+                      trackHeight: 2,
+                      thumbShape:
+                          const RoundSliderThumbShape(enabledThumbRadius: 5),
+                      overlayShape:
+                          const RoundSliderOverlayShape(overlayRadius: 10),
+                      activeTrackColor: const Color(0xFF4FC3F7),
+                      inactiveTrackColor: Colors.white24,
+                      thumbColor: const Color(0xFF4FC3F7),
+                    ),
+                    child: Slider(
+                      value: _rate.clamp(0.25, _maxRate),
+                      min: 0.25,
+                      max: _maxRate,
+                      divisions: ((_maxRate - 0.25) * 4).round().clamp(4, 64),
+                      onChanged: (v) {
+                        setState(() => _rate = v);
+                        // ignore: discarded_futures
+                        _applyRate();
+                      },
+                    ),
+                  ),
+                ),
+                // よく使う速度をすぐ選べるように (= 押すだけで切り替え)。
+                for (final r in const [1.0, 1.5, 2.0])
+                  TextButton(
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      minimumSize: const Size(0, 26),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    onPressed: () {
+                      setState(() => _rate = r);
+                      // ignore: discarded_futures
+                      _applyRate();
+                    },
+                    child: Text('${r}x',
+                        style: TextStyle(
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.w700,
+                            color: (r - _rate).abs() < 0.01
+                                ? const Color(0xFF4FC3F7)
+                                : Colors.white38)),
+                  ),
+              ]),
+            ),
+          // ── 中身: Web ⇄ メモ ──
+          // = ユーザー要望「フローティング AI からフローティングメモを呼ぶと
+          //   別枠が開いてしまう。 そうじゃなくてこの画面がメモに切り替わる
+          //   ように」。 WebView は Offstage で生かしたままにして、 メモから
+          //   戻った時に会話が消えないようにする。
+          Expanded(
+            child: Stack(children: [
+              Offstage(
+                offstage: _memoMode,
+                child: _error != null
+                    ? Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(24),
+                          child: Text(_error!,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                  color: Color(0xFFEF9A9A), fontSize: 12)),
+                        ),
+                      )
+                    : _ready
+                        ? wv_win.Webview(_ctrl)
+                        : const Center(
+                            child: CircularProgressIndicator(
+                                color: Color(0xFF4FC3F7), strokeWidth: 2)),
+              ),
+              // = ユーザー要望: メモを開いた時はフローティングメモと同じ
+              //   画面が出るように (簡易メモから差し替え)。
+              if (_memoMode) const Positioned.fill(child: FloatingMemoView()),
+            ]),
           ),
         ]),
       ),
@@ -4329,9 +6820,1396 @@ class _FloatingWebWindowAppState extends State<_FloatingWebWindowApp> {
   }
 }
 
+/// 外のフローティング窓の中に出す簡易メモ。
+///
+/// = ユーザー要望「フローティング AI からメモを呼ぶと別枠が開いてしまう。
+///   この画面がメモに切り替わるように」。 別窓 (`_MemoWindowApp`) と同じ
+///   保存先 (`loadFloatingMemoText` / `saveFloatingMemoText`) を読み書きする
+///   ので、 どちらで書いても同じメモ帳に積まれる。
+///
+/// この窓には Provider がいないので、 文言は `FloatL10n` から取る。
+class _FloatMemoPane extends StatefulWidget {
+  const _FloatMemoPane();
+  @override
+  State<_FloatMemoPane> createState() => _FloatMemoPaneState();
+}
+
+class _FloatMemoPaneState extends State<_FloatMemoPane> {
+  List<FloatMemoBook> _books = [];
+  int _active = 0;
+  bool _loading = true;
+  final TextEditingController _input = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    // ignore: discarded_futures
+    _reload();
+  }
+
+  @override
+  void dispose() {
+    _input.dispose();
+    super.dispose();
+  }
+
+  Future<void> _reload() async {
+    try {
+      final parsed = parseFloatingMemoBooks(await loadFloatingMemoText());
+      if (!mounted) return;
+      setState(() {
+        _books = parsed.books;
+        _active = parsed.active;
+        _loading = false;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _add() async {
+    final t = _input.text.trim();
+    if (t.isEmpty) return;
+    _input.clear();
+    await appendFloatingMemoItem(t);
+    await _reload();
+  }
+
+  Future<void> _delete(FloatMemoItem item) async {
+    try {
+      if (_active < 0 || _active >= _books.length) return;
+      _books[_active].items.removeWhere((e) => e.id == item.id);
+      await saveFloatingMemoText(encodeFloatingMemoBooks(_books, _active));
+      if (mounted) setState(() {});
+    } catch (_) {}
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) {
+      return const ColoredBox(
+        color: Color(0xFF1B1B2A),
+        child: Center(
+          child: SizedBox(
+            width: 22,
+            height: 22,
+            child: CircularProgressIndicator(
+                strokeWidth: 2, color: Color(0xFFFFB347)),
+          ),
+        ),
+      );
+    }
+    final items = (_active >= 0 && _active < _books.length)
+        ? _books[_active].items
+        : const <FloatMemoItem>[];
+    return ColoredBox(
+      color: const Color(0xFF1B1B2A),
+      child: Column(children: [
+        Expanded(
+          child: items.isEmpty
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Text(FloatL10n.t('memo.emptyHint'),
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                            color: Colors.white38, fontSize: 12, height: 1.5)),
+                  ),
+                )
+              : ListView.separated(
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  itemCount: items.length,
+                  separatorBuilder: (_, __) =>
+                      const Divider(color: Colors.white10, height: 1),
+                  itemBuilder: (_, i) {
+                    final it = items[i];
+                    final t = DateTime.fromMillisecondsSinceEpoch(it.savedAt);
+                    return Padding(
+                      padding: const EdgeInsets.fromLTRB(10, 6, 4, 6),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.only(top: 2, right: 8),
+                            child: Text(
+                              '${t.hour.toString().padLeft(2, '0')}:'
+                              '${t.minute.toString().padLeft(2, '0')}',
+                              style: const TextStyle(
+                                  color: Colors.white24, fontSize: 10),
+                            ),
+                          ),
+                          Expanded(
+                            child: SelectableText(it.text,
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 12.5,
+                                    height: 1.4)),
+                          ),
+                          IconButton(
+                            tooltip: FloatL10n.t('memo.delete'),
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                                minWidth: 26, minHeight: 26),
+                            icon: const Icon(Icons.close_rounded,
+                                size: 14, color: Colors.white38),
+                            onPressed: () {
+                              // ignore: discarded_futures
+                              _delete(it);
+                            },
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+        ),
+        const Divider(color: Colors.white12, height: 1),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(8, 6, 6, 8),
+          child: Row(children: [
+            Expanded(
+              child: TextField(
+                controller: _input,
+                minLines: 1,
+                maxLines: 4,
+                style: const TextStyle(color: Colors.white, fontSize: 12.5),
+                decoration: InputDecoration(
+                  isDense: true,
+                  hintText: FloatL10n.t('memo.hintList'),
+                  hintStyle:
+                      const TextStyle(color: Colors.white24, fontSize: 11.5),
+                  filled: true,
+                  fillColor: Colors.white.withValues(alpha: 0.06),
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide.none),
+                ),
+                onSubmitted: (_) {
+                  // ignore: discarded_futures
+                  _add();
+                },
+              ),
+            ),
+            IconButton(
+              tooltip: FloatL10n.t('memo.add'),
+              icon: const Icon(Icons.add_circle_rounded,
+                  size: 20, color: Color(0xFFFFB347)),
+              onPressed: () {
+                // ignore: discarded_futures
+                _add();
+              },
+            ),
+          ]),
+        ),
+      ]),
+    );
+  }
+}
+
+
+/// AI アシスタントをアプリの外に出した窓 (= ユーザー要望)。
+///
+/// ★ この窓は「表示と入力だけ」 を持つ。 考える所 (会話の続行、 ページの
+///   書き換え) は本体 (windowId 0) に残したまま動く。 サブ窓のエンジンには
+///   本体と同じ状態が無く、 ここで AI を動かしてもページを触れないため。
+///   やり取りは 'assistCmd' (窓 → 本体) と 'assistState' (本体 → 窓) だけ。
+class _AssistantWindowApp extends StatefulWidget {
+  final int windowId;
+  final bool pinned;
+  const _AssistantWindowApp({required this.windowId, this.pinned = true});
+  @override
+  State<_AssistantWindowApp> createState() => _AssistantWindowAppState();
+}
+
+class _AssistantWindowAppState extends State<_AssistantWindowApp> {
+  final List<({String role, String text})> _msgs = [];
+  final TextEditingController _input = TextEditingController();
+  final ScrollController _scroll = ScrollController();
+  bool _busy = false;
+  bool _canceling = false;
+  int _step = 0;
+  int _maxRounds = 24;
+  String _model = '';
+  String _balance = '';
+  Timer? _poll;
+  int _hwnd = 0;
+  late bool _pinned = widget.pinned;
+
+  @override
+  void initState() {
+    super.initState();
+    // 本体からの押し出しを受ける。
+    DesktopMultiWindow.setMethodHandler((call, from) async {
+      if (call.method == 'assistState') _apply(call.arguments);
+      return null;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _grabHwnd();
+      // ignore: discarded_futures
+      _refresh();
+    });
+    // 押し出しが届かない時の保険 (負荷を掛けないよう間隔は広め)。
+    _poll = Timer.periodic(const Duration(seconds: 3), (_) {
+      // ignore: discarded_futures
+      _refresh();
+    });
+  }
+
+  @override
+  void dispose() {
+    _poll?.cancel();
+    _input.dispose();
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  /// 自分の窓のハンドルを控える (常に手前の切り替えに使う)。
+  void _grabHwnd() {
+    if (!Platform.isWindows) return;
+    try {
+      final user32 = ffi.DynamicLibrary.open('user32.dll');
+      final getActive = user32
+          .lookupFunction<ffi.IntPtr Function(), int Function()>(
+              'GetActiveWindow');
+      final getForeground = user32
+          .lookupFunction<ffi.IntPtr Function(), int Function()>(
+              'GetForegroundWindow');
+      var hwnd = getActive();
+      if (hwnd == 0) hwnd = getForeground();
+      if (hwnd == 0) return;
+      _hwnd = hwnd;
+      if (_pinned) _applyTopmost(true);
+    } catch (_) {}
+  }
+
+  void _applyTopmost(bool on) {
+    if (_hwnd == 0) return;
+    try {
+      final user32 = ffi.DynamicLibrary.open('user32.dll');
+      final setWindowPos = user32.lookupFunction<
+          ffi.Int32 Function(ffi.IntPtr, ffi.IntPtr, ffi.Int32, ffi.Int32,
+              ffi.Int32, ffi.Int32, ffi.Uint32),
+          int Function(int, int, int, int, int, int, int)>('SetWindowPos');
+      const hwndTopmost = -1;
+      const hwndNoTopmost = -2;
+      const swpNoMove = 0x0002, swpNoSize = 0x0001, swpNoActivate = 0x0010;
+      setWindowPos(_hwnd, on ? hwndTopmost : hwndNoTopmost, 0, 0, 0, 0,
+          swpNoMove | swpNoSize | swpNoActivate);
+    } catch (_) {}
+  }
+
+  void _apply(dynamic raw) {
+    try {
+      final m = (raw is Map) ? raw : null;
+      final js = '${m?['json'] ?? ''}';
+      if (js.isEmpty) return;
+      final d = jsonDecode(js);
+      if (d is! Map) return;
+      final list = <({String role, String text})>[];
+      for (final e in (d['msgs'] as List? ?? const [])) {
+        if (e is Map) {
+          list.add((role: '${e['role'] ?? 'ai'}', text: '${e['text'] ?? ''}'));
+        }
+      }
+      final grew = list.length != _msgs.length;
+      if (!mounted) return;
+      setState(() {
+        _msgs
+          ..clear()
+          ..addAll(list);
+        _busy = d['busy'] == true;
+        _canceling = d['canceling'] == true;
+        _step = (d['step'] as num?)?.toInt() ?? 0;
+        _maxRounds = (d['maxRounds'] as num?)?.toInt() ?? 24;
+        _model = '${d['model'] ?? ''}';
+        _balance = '${d['balance'] ?? ''}';
+      });
+      if (grew) _scrollToEnd();
+    } catch (_) {}
+  }
+
+  void _scrollToEnd() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scroll.hasClients) return;
+      _scroll.animateTo(_scroll.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 180), curve: Curves.easeOut);
+    });
+  }
+
+  Future<void> _refresh() async {
+    try {
+      _apply(await DesktopMultiWindow.invokeMethod(0, 'assistState'));
+    } catch (_) {}
+  }
+
+  /// 本体へ注文を出す。 ★ 返事は待たない (AI の応答は分単位で掛かるため、
+  /// 待つと窓と本体の両方が固まる)。
+  void _cmd(String cmd, {String? value}) {
+    unawaited(() async {
+      try {
+        _apply(await DesktopMultiWindow.invokeMethod(
+            0, 'assistCmd', {'cmd': cmd, if (value != null) 'value': value}));
+      } catch (_) {}
+    }());
+  }
+
+  void _send() {
+    final text = _input.text.trim();
+    if (text.isEmpty || _busy) return;
+    _input.clear();
+    // 送った文はすぐ画面に出す (本体からの押し出しを待たない)。
+    setState(() {
+      _msgs.add((role: 'user', text: text));
+      _busy = true;
+    });
+    _scrollToEnd();
+    _cmd('send', value: text);
+  }
+
+  Future<void> _closeSelf() async {
+    // ★ 閉じる前にタイマーを必ず止める。 走らせたまま窓を閉じると
+    //   プロセスが巻き添えで固まることがある。
+    _poll?.cancel();
+    _poll = null;
+    try {
+      await DesktopMultiWindow.invokeMethod(0, 'assistClosed');
+    } catch (_) {}
+    try {
+      await WindowController.fromWindowId(widget.windowId).close();
+    } catch (_) {}
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const accent = Color(0xFFBA68C8);
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData.dark(useMaterial3: true),
+      home: Scaffold(
+        backgroundColor: const Color(0xFF15152A),
+        body: SafeArea(
+          child: Column(children: [
+            // ── ヘッダー ──
+            Container(
+              padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
+              color: const Color(0xFF1E1E32),
+              child: Row(children: [
+                const Icon(Icons.auto_awesome_rounded,
+                    color: accent, size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(FloatL10n.t('assist.title'),
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700)),
+                ),
+                IconButton(
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 30, minHeight: 30),
+                  tooltip: FloatL10n.t('assist.pin'),
+                  icon: Icon(Icons.push_pin_rounded,
+                      size: 16, color: _pinned ? accent : Colors.white38),
+                  onPressed: () {
+                    setState(() => _pinned = !_pinned);
+                    _applyTopmost(_pinned);
+                  },
+                ),
+                IconButton(
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 30, minHeight: 30),
+                  tooltip: FloatL10n.t('assist.close'),
+                  icon: const Icon(Icons.close_rounded,
+                      size: 16, color: Colors.white54),
+                  onPressed: () {
+                    // ignore: discarded_futures
+                    _closeSelf();
+                  },
+                ),
+              ]),
+            ),
+            // ── 会話 ──
+            Expanded(
+              child: _msgs.isEmpty
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Text(FloatL10n.t('assist.empty'),
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                                color: Colors.white38,
+                                fontSize: 12,
+                                height: 1.6)),
+                      ),
+                    )
+                  : ListView.builder(
+                      controller: _scroll,
+                      padding: const EdgeInsets.all(12),
+                      itemCount: _msgs.length,
+                      itemBuilder: (c, i) {
+                        final m = _msgs[i];
+                        final isUser = m.role == 'user';
+                        return Align(
+                          alignment: isUser
+                              ? Alignment.centerRight
+                              : Alignment.centerLeft,
+                          child: Container(
+                            margin: const EdgeInsets.only(bottom: 8),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 8),
+                            constraints: const BoxConstraints(maxWidth: 420),
+                            decoration: BoxDecoration(
+                              color: isUser
+                                  ? accent.withValues(alpha: 0.85)
+                                  : const Color(0xFF23233C),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: SelectableText(m.text,
+                                style: TextStyle(
+                                    color: isUser
+                                        ? Colors.white
+                                        : Colors.white70,
+                                    fontSize: 12.5,
+                                    height: 1.5)),
+                          ),
+                        );
+                      },
+                    ),
+            ),
+            // ── 進み具合と停止 ──
+            if (_busy)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+                child: Row(children: [
+                  const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: accent)),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                        _canceling
+                            ? FloatL10n.t('assist.stopping')
+                            : '${FloatL10n.t('assist.thinking')} '
+                                '($_step / $_maxRounds)',
+                        style: const TextStyle(
+                            color: Colors.white38, fontSize: 11)),
+                  ),
+                  TextButton(
+                    style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        minimumSize: const Size(0, 28)),
+                    onPressed: _canceling ? null : () => _cmd('stop'),
+                    child: Text(FloatL10n.t('assist.stop'),
+                        style: const TextStyle(
+                            color: Color(0xFFE57373), fontSize: 11.5)),
+                  ),
+                ]),
+              ),
+            // ── 使っているモデルと残り ──
+            if (_model.isNotEmpty || _balance.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 0, 14, 4),
+                child: Row(children: [
+                  Text(_model,
+                      style: const TextStyle(
+                          color: Colors.white38, fontSize: 10.5)),
+                  const Spacer(),
+                  Flexible(
+                    child: Text(_balance,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            color: Colors.white38, fontSize: 10.5)),
+                  ),
+                ]),
+              ),
+            // ── 入力 ──
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+              child: Row(children: [
+                Expanded(
+                  child: Focus(
+                    onKeyEvent: (n, e) {
+                      if (e is! KeyDownEvent) return KeyEventResult.ignored;
+                      if (e.logicalKey != LogicalKeyboardKey.enter &&
+                          e.logicalKey != LogicalKeyboardKey.numpadEnter) {
+                        return KeyEventResult.ignored;
+                      }
+                      if (HardwareKeyboard.instance.isShiftPressed) {
+                        return KeyEventResult.ignored;
+                      }
+                      _send();
+                      return KeyEventResult.handled;
+                    },
+                    child: TextField(
+                      controller: _input,
+                      minLines: 1,
+                      maxLines: 5,
+                      style: const TextStyle(
+                          color: Colors.white, fontSize: 12.5),
+                      decoration: InputDecoration(
+                        isDense: true,
+                        filled: true,
+                        fillColor: const Color(0xFF1E1E32),
+                        hintText: FloatL10n.t('assist.hint'),
+                        hintStyle: const TextStyle(
+                            color: Colors.white24, fontSize: 12),
+                        border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(10),
+                            borderSide: BorderSide.none),
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 10),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Material(
+                  color: _busy ? Colors.white12 : accent,
+                  shape: const CircleBorder(),
+                  child: InkWell(
+                    customBorder: const CircleBorder(),
+                    onTap: _busy ? null : _send,
+                    child: Padding(
+                      padding: const EdgeInsets.all(8),
+                      child: Icon(Icons.arrow_upward_rounded,
+                          size: 16,
+                          color: _busy ? Colors.white38 : Colors.black),
+                    ),
+                  ),
+                ),
+              ]),
+            ),
+          ]),
+        ),
+      ),
+    );
+  }
+}
+
+/// 画面録画の操作だけを持つ小さな窓 (= ユーザー要望)。
+///
+/// ★ この窓は「録画に写らない」。 Windows の
+///   SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE) を掛けると、
+///   画面を取り込む側 (ffmpeg の gdigrab を含む) からは無いものとして
+///   扱われるため、 停止ボタンごと録画に入り込まない。
+/// 録画そのものは本体 (windowId 0) が持っているので、 操作は IPC で頼む。
+class _ScreenRecWindowApp extends StatefulWidget {
+  final int windowId;
+  const _ScreenRecWindowApp({required this.windowId});
+  @override
+  State<_ScreenRecWindowApp> createState() => _ScreenRecWindowAppState();
+}
+
+class _ScreenRecWindowAppState extends State<_ScreenRecWindowApp> {
+  bool _recording = false;
+  String _label = '00:00';
+  String _target = 'screen';
+  String _saveDir = '';
+  String _lastSaved = '';
+  bool _preview = true;
+  Timer? _poll;
+
+  /// 今の表示。 bar = 操作の帯 / region = 範囲選び / preview = 撮れた動画。
+  /// (= ユーザー要望: 範囲選びもプレビューも全部この 1 つの窓の中で)
+  String _view = 'bar';
+
+  /// この窓のハンドル (自分の大きさを変えるのに使う)。
+  int _hwnd = 0;
+
+  /// 帯の時の窓の位置と大きさ (範囲選び/プレビューから戻る時に使う)。
+  (int, int, int, int)? _savedRect;
+
+  // ── 範囲選び ──
+  Uint8List? _shot;
+  int _vx = 0, _vy = 0, _vw = 1, _vh = 1;
+  Offset? _dragFrom;
+  Offset? _dragTo;
+  Size _shotViewSize = Size.zero;
+
+  // ── プレビュー ──
+  String _previewPath = '';
+  VideoPlayerController? _pv;
+  bool _pvFailed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // ★ ここで windowManager を触らない。 サブ窓から呼ぶと本体側の窓を
+    //   掴もうとして固まることがある (= ユーザー報告: 外に出すとフリーズ)。
+    //   位置と大きさは本体が createWindow の後に決めている。
+    // 本体からの押し出しを受ける。
+    DesktopMultiWindow.setMethodHandler((call, from) async {
+      if (call.method == 'recState') _apply(call.arguments);
+      // 撮り終えた動画をこの窓の中で見せる (= ユーザー要望)。
+      if (call.method == 'recPreview') {
+        final m = call.arguments;
+        final path = (m is Map) ? '${m['path'] ?? ''}' : '';
+        unawaited(_enterPreview(path));
+      }
+      return null;
+    });
+    // 描画が出てから除外を掛ける (それまで窓の実体が無い)。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _excludeFromCapture();
+      // ignore: discarded_futures
+      _refresh();
+    });
+    // 押し出しが届かない時の保険。 間隔は広めにして負荷を掛けない。
+    _poll = Timer.periodic(const Duration(seconds: 3), (_) {
+      // ignore: discarded_futures
+      _refresh();
+    });
+  }
+
+  /// この窓を画面キャプチャから外す (Windows 10 2004 以降)。
+  void _excludeFromCapture() {
+    if (!Platform.isWindows) return;
+    try {
+      final user32 = ffi.DynamicLibrary.open('user32.dll');
+      final getForeground = user32.lookupFunction<ffi.IntPtr Function(),
+          int Function()>('GetForegroundWindow');
+      final getActive = user32.lookupFunction<ffi.IntPtr Function(),
+          int Function()>('GetActiveWindow');
+      final setAffinity = user32.lookupFunction<
+          ffi.Int32 Function(ffi.IntPtr, ffi.Uint32),
+          int Function(int, int)>('SetWindowDisplayAffinity');
+      var hwnd = getActive();
+      if (hwnd == 0) hwnd = getForeground();
+      if (hwnd == 0) return;
+      _hwnd = hwnd; // 自分の大きさを変える時に使う
+      const wdaExcludeFromCapture = 0x00000011;
+      setAffinity(hwnd, wdaExcludeFromCapture);
+      // 他のフローティング機能と同じく、 既定で前面に出す (= ユーザー要望)。
+      if (_pinned) _applyTopmost(true);
+    } catch (_) {
+      // 古い Windows では効かない。 その時は普通の窓として動く。
+    }
+  }
+
+  /// 常に手前に表示 (= ユーザー要望: 他のフローティング機能と同様に)。
+  bool _pinned = true;
+
+  void _applyTopmost(bool on) {
+    if (_hwnd == 0) return;
+    try {
+      final user32 = ffi.DynamicLibrary.open('user32.dll');
+      final setWindowPos = user32.lookupFunction<
+          ffi.Int32 Function(ffi.IntPtr, ffi.IntPtr, ffi.Int32, ffi.Int32,
+              ffi.Int32, ffi.Int32, ffi.Uint32),
+          int Function(int, int, int, int, int, int, int)>('SetWindowPos');
+      // HWND_TOPMOST = -1 / HWND_NOTOPMOST = -2。
+      // SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE = 0x13。
+      setWindowPos(_hwnd, on ? -1 : -2, 0, 0, 0, 0, 0x13);
+    } catch (_) {}
+  }
+
+  /// 今の窓の位置と大きさ (物理ピクセル)。 取れなければ null。
+  (int, int, int, int)? _winRect() {
+    if (_hwnd == 0) return null;
+    try {
+      final user32 = ffi.DynamicLibrary.open('user32.dll');
+      final getWindowRect = user32.lookupFunction<
+          ffi.Int32 Function(ffi.IntPtr, ffi.Pointer<ffi.Int32>),
+          int Function(int, ffi.Pointer<ffi.Int32>)>('GetWindowRect');
+      final p = pkgffi.calloc<ffi.Int32>(4);
+      try {
+        if (getWindowRect(_hwnd, p) == 0) return null;
+        return (p[0], p[1], p[2] - p[0], p[3] - p[1]);
+      } finally {
+        pkgffi.calloc.free(p);
+      }
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 窓を動かす / 大きさを変える (物理ピクセル)。
+  void _moveWin(int x, int y, int w, int h) {
+    if (_hwnd == 0) return;
+    try {
+      final user32 = ffi.DynamicLibrary.open('user32.dll');
+      final moveWindow = user32.lookupFunction<
+          ffi.Int32 Function(ffi.IntPtr, ffi.Int32, ffi.Int32, ffi.Int32,
+              ffi.Int32, ffi.Int32),
+          int Function(int, int, int, int, int, int)>('MoveWindow');
+      moveWindow(_hwnd, x, y, w, h, 1);
+    } catch (_) {}
+  }
+
+  /// 帯の時の窓の位置へ戻す。
+  void _restoreBarRect() {
+    final r = _savedRect;
+    _savedRect = null;
+    if (r != null) _moveWin(r.$1, r.$2, r.$3, r.$4);
+  }
+
+  // ── 範囲選び (この窓が大きくなって、 なぞってもらう) ──
+  Future<void> _enterRegionSelect() async {
+    final v = scap.virtualScreenRect();
+    // 写しが撮れない環境では画面全体で始める。
+    final shot = v == null
+        ? null
+        : scap.captureScreenRectPng(v.x, v.y, v.width, v.height);
+    if (v == null || shot == null) {
+      _cmd('start', value: '{}');
+      return;
+    }
+    _savedRect ??= _winRect();
+    setState(() {
+      _view = 'region';
+      _shot = shot;
+      _vx = v.x;
+      _vy = v.y;
+      _vw = v.width;
+      _vh = v.height;
+      _dragFrom = null;
+      _dragTo = null;
+    });
+    final w = (v.width * 0.86).round();
+    final h = (v.height * 0.86).round();
+    _moveWin(v.x + (v.width - w) ~/ 2, v.y + (v.height - h) ~/ 2, w, h);
+  }
+
+  /// 表示上の矩形 → 画面の物理ピクセルの矩形 (本体と同じ換算)。
+  Map<String, int>? _regionMap() {
+    final a = _dragFrom, b = _dragTo;
+    if (a == null || b == null || _shotViewSize.width <= 0) return null;
+    final sx = _vw / _shotViewSize.width;
+    final sy = _vh / _shotViewSize.height;
+    final l = math.min(a.dx, b.dx) * sx;
+    final t = math.min(a.dy, b.dy) * sy;
+    final r = math.max(a.dx, b.dx) * sx;
+    final bo = math.max(a.dy, b.dy) * sy;
+    final w = (r - l).round();
+    final h = (bo - t).round();
+    if (w < 16 || h < 16) return null;
+    // 偶数に丸める (libx264 の都合。 本体の evened() と同じ)。
+    return {
+      'x': _vx + l.round(),
+      'y': _vy + t.round(),
+      'w': w - (w % 2),
+      'h': h - (h % 2),
+    };
+  }
+
+  void _cancelRegion() {
+    setState(() {
+      _view = 'bar';
+      _shot = null;
+    });
+    _restoreBarRect();
+  }
+
+  void _startFromRegion() {
+    final region = _regionMap();
+    setState(() {
+      _view = 'bar';
+      _shot = null;
+    });
+    _restoreBarRect();
+    // 選んでいなければ画面全体 (本体側と同じ扱い)。
+    _cmd('start',
+        value: jsonEncode({if (region != null) 'region': region}));
+  }
+
+  // ── 撮れた動画のプレビュー (この窓の中で再生する) ──
+  Future<void> _enterPreview(String path) async {
+    if (path.isEmpty || !mounted) return;
+    final old = _pv;
+    _pv = null;
+    try {
+      await old?.dispose();
+    } catch (_) {}
+    _savedRect ??= _winRect();
+    setState(() {
+      _view = 'preview';
+      _previewPath = path;
+      _pvFailed = false;
+    });
+    final v = scap.virtualScreenRect();
+    if (v != null) {
+      final w = (v.width * 0.5)
+          .clamp(560.0, math.max(560.0, v.width.toDouble()))
+          .round();
+      final h = (w * 9 / 16).round() + 150;
+      _moveWin(v.x + (v.width - w) ~/ 2, v.y + (v.height - h) ~/ 2, w, h);
+    }
+    try {
+      final vc = VideoPlayerController.file(File(path));
+      await vc.initialize();
+      if (!mounted || _view != 'preview') {
+        await vc.dispose();
+        return;
+      }
+      vc.addListener(_pvTick);
+      setState(() => _pv = vc);
+      await vc.play();
+    } catch (_) {
+      if (mounted) setState(() => _pvFailed = true);
+    }
+  }
+
+  void _pvTick() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _closePreview() async {
+    final vc = _pv;
+    _pv = null;
+    vc?.removeListener(_pvTick);
+    try {
+      await vc?.dispose();
+    } catch (_) {}
+    if (mounted) {
+      setState(() {
+        _view = 'bar';
+        _previewPath = '';
+      });
+    }
+    _restoreBarRect();
+    // 本体へ知らせる (自動で出した窓なら本体が片付ける)。
+    _cmd('previewClosed');
+  }
+
+  Future<void> _refresh() async {
+    try {
+      final r = await DesktopMultiWindow.invokeMethod(0, 'screenRecState');
+      _apply(r);
+    } catch (_) {}
+  }
+
+  /// 本体へ注文を出す。 ★ 返事は待たない。
+  /// 待つと、 本体が範囲選びのモーダルを開いている間ずっと止まってしまう。
+  void _cmd(String cmd, {String? value}) {
+    unawaited(() async {
+      try {
+        final r = await DesktopMultiWindow.invokeMethod(
+            0, 'screenRecCmd', {'cmd': cmd, if (value != null) 'value': value});
+        _apply(r);
+      } catch (_) {}
+    }());
+  }
+
+  void _apply(dynamic r) {
+    if (r is! Map || !mounted) return;
+    setState(() {
+      _recording = r['recording'] == true;
+      _label = '${r['label'] ?? '00:00'}';
+      _target = '${r['target'] ?? 'screen'}';
+      _saveDir = '${r['saveDir'] ?? ''}';
+      _lastSaved = '${r['lastSaved'] ?? ''}';
+      if (r.containsKey('preview')) _preview = r['preview'] == true;
+      if (r.containsKey('stopKey')) _stopKey = '${r['stopKey'] ?? ''}';
+    });
+  }
+
+  /// 録画停止のショートカット (表示用。 本体から受け取る)。
+  String _stopKey = '';
+
+  @override
+  void dispose() {
+    _poll?.cancel();
+    // プレビュー再生が残っていれば必ず止める (= サブ窓の後始末教訓:
+    // 止め漏れが本体巻き添えの原因になる)。
+    final vc = _pv;
+    _pv = null;
+    vc?.removeListener(_pvTick);
+    try {
+      // ignore: discarded_futures
+      vc?.dispose();
+    } catch (_) {}
+    try {
+      unawaited(DesktopMultiWindow.invokeMethod(0, 'screenRecClosed'));
+    } catch (_) {}
+    super.dispose();
+  }
+
+  Widget _chip(String id, IconData icon, String label) {
+    final on = _target == id;
+    return Padding(
+      padding: const EdgeInsets.only(right: 4),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: _recording ? null : () => _cmd('target', value: id),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+          decoration: BoxDecoration(
+            color: on ? const Color(0xFF39395C) : Colors.transparent,
+            borderRadius: BorderRadius.circular(10),
+            border:
+                Border.all(color: on ? const Color(0xFF9575CD) : Colors.white24),
+          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(icon, size: 13, color: on ? Colors.white : Colors.white54),
+            const SizedBox(width: 5),
+            Text(label,
+                style: TextStyle(
+                    color: on ? Colors.white : Colors.white54, fontSize: 11.5)),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      home: Scaffold(
+        backgroundColor: const Color(0xFF1B1B2C),
+        // 範囲選びもプレビューもこの 1 つの窓の中で切り替える
+        // (= ユーザー要望: 別の画面が立ち上がるのは使いにくい)。
+        body: _view == 'region'
+            ? _buildRegionSelect()
+            : _view == 'preview'
+                ? _buildPreview()
+                : _buildBar(),
+      ),
+    );
+  }
+
+  Widget _buildBar() {
+    return Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(children: [
+                Icon(Icons.screenshot_monitor_rounded,
+                    size: 17,
+                    color: _recording
+                        ? const Color(0xFFE53935)
+                        : const Color(0xFF9575CD)),
+                const SizedBox(width: 8),
+                if (_recording) ...[
+                  Container(
+                    width: 10,
+                    height: 10,
+                    decoration: const BoxDecoration(
+                        color: Color(0xFFE53935), shape: BoxShape.circle),
+                  ),
+                  const SizedBox(width: 7),
+                  Text(_label,
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700)),
+                  const Spacer(),
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFFE53935),
+                        foregroundColor: Colors.white,
+                        visualDensity: VisualDensity.compact),
+                    icon: const Icon(Icons.stop_rounded, size: 16),
+                    label: Text(FloatL10n.t('rec.stop')),
+                    onPressed: () => _cmd('stop'),
+                  ),
+                ] else ...[
+                  _chip('screen', Icons.desktop_windows_rounded,
+                      FloatL10n.t('rec.whole')),
+                  _chip('region', Icons.crop_rounded, FloatL10n.t('rec.area')),
+                  const Spacer(),
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF9575CD),
+                        foregroundColor: Colors.white,
+                        visualDensity: VisualDensity.compact),
+                    icon: const Icon(Icons.fiber_manual_record_rounded,
+                        size: 16),
+                    label: Text(FloatL10n.t('rec.start')),
+                    // 範囲なら、 この窓が大きくなってその場で選ぶ
+                    // (= ユーザー要望: 別の画面を立ち上げない)。
+                    onPressed: () {
+                      if (_target == 'region') {
+                        unawaited(_enterRegionSelect());
+                      } else {
+                        _cmd('start', value: '{}');
+                      }
+                    },
+                  ),
+                ],
+                IconButton(
+                  tooltip: FloatL10n.t('rec.saveDir'),
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 30, minHeight: 30),
+                  icon: Icon(Icons.drive_file_move_outline,
+                      size: 17,
+                      color: _saveDir.isEmpty
+                          ? Colors.white38
+                          : const Color(0xFF9CCC65)),
+                  onPressed: _recording ? null : () => _cmd('pickDir'),
+                ),
+                if (_lastSaved.isNotEmpty)
+                  IconButton(
+                    tooltip: FloatL10n.t('rec.openFolder'),
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints(minWidth: 30, minHeight: 30),
+                    icon: const Icon(Icons.folder_open_rounded,
+                        size: 17, color: Color(0xFF9CCC65)),
+                    onPressed: () => _cmd('openFolder'),
+                  ),
+                // ── 常に手前に表示 (= ユーザー要望: 他のフローティングと
+                //    同じように前面へ出せるように) ──
+                IconButton(
+                  tooltip: FloatL10n.t('float.pin'),
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 28, minHeight: 28),
+                  icon: Icon(
+                      _pinned
+                          ? Icons.push_pin_rounded
+                          : Icons.push_pin_outlined,
+                      size: 15,
+                      color: _pinned
+                          ? const Color(0xFF9575CD)
+                          : Colors.white38),
+                  onPressed: () {
+                    setState(() => _pinned = !_pinned);
+                    _applyTopmost(_pinned);
+                  },
+                ),
+              ]),
+              const SizedBox(height: 6),
+              Row(children: [
+                // ── 撮影後にプレビューを出すか (= ユーザー要望) ──
+                InkWell(
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: () => _cmd('preview', value: _preview ? '0' : '1'),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 2, vertical: 2),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      Icon(
+                          _preview
+                              ? Icons.check_box_rounded
+                              : Icons.check_box_outline_blank_rounded,
+                          size: 14,
+                          color: _preview
+                              ? const Color(0xFF9CCC65)
+                              : Colors.white38),
+                      const SizedBox(width: 4),
+                      Text(FloatL10n.t('rec.preview'),
+                          style: TextStyle(
+                              color: _preview
+                                  ? Colors.white70
+                                  : Colors.white38,
+                              fontSize: 10.5)),
+                    ]),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                // 録画中は停止ショートカットも見せる (= ユーザー要望)。
+                if (_recording && _stopKey.isNotEmpty) ...[
+                  Text(
+                      '${FloatL10n.t('rec.stopKey')}: '
+                      '${_stopKey.toUpperCase()}',
+                      style: const TextStyle(
+                          color: Color(0xFF9575CD), fontSize: 10.5)),
+                  const SizedBox(width: 8),
+                ],
+                Expanded(
+                  child: Text(FloatL10n.t('rec.notCaptured'),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: Colors.white38, fontSize: 10.5)),
+                ),
+              ]),
+              if (_saveDir.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text(_saveDir,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: Colors.white24, fontSize: 10)),
+                ),
+            ],
+          ),
+        );
+  }
+
+  /// 範囲選び (この窓の中でなぞって選ぶ)。
+  Widget _buildRegionSelect() {
+    final region = _regionMap();
+    return Column(children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
+        child: Row(children: [
+          const Icon(Icons.crop_rounded, color: Color(0xFF9575CD), size: 19),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(FloatL10n.t('rec.regionTitle'),
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700)),
+          ),
+          IconButton(
+            icon: const Icon(Icons.close_rounded,
+                color: Colors.white54, size: 20),
+            onPressed: _cancelRegion,
+          ),
+        ]),
+      ),
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: Text(FloatL10n.t('rec.regionHint'),
+            style: const TextStyle(color: Colors.white54, fontSize: 12)),
+      ),
+      const SizedBox(height: 10),
+      Expanded(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: _shot == null
+              ? const Center(
+                  child:
+                      CircularProgressIndicator(color: Color(0xFF9575CD)))
+              : Center(
+                  child: AspectRatio(
+                    aspectRatio: _vw / _vh,
+                    child: LayoutBuilder(builder: (ctx, c) {
+                      _shotViewSize = Size(c.maxWidth, c.maxHeight);
+                      return GestureDetector(
+                        onPanStart: (d) => setState(() {
+                          _dragFrom = d.localPosition;
+                          _dragTo = d.localPosition;
+                        }),
+                        onPanUpdate: (d) =>
+                            setState(() => _dragTo = d.localPosition),
+                        child: Stack(children: [
+                          Positioned.fill(
+                            child: Image.memory(_shot!,
+                                fit: BoxFit.fill, gaplessPlayback: true),
+                          ),
+                          if (_dragFrom != null && _dragTo != null)
+                            Positioned.fill(
+                              child: CustomPaint(
+                                painter: _RecRegionWinPainter(
+                                    _dragFrom!, _dragTo!),
+                              ),
+                            ),
+                        ]),
+                      );
+                    }),
+                  ),
+                ),
+        ),
+      ),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+        child: Row(children: [
+          Expanded(
+            child: Text(
+                region == null
+                    ? FloatL10n.t('rec.regionWhole')
+                    : '${region['w']} x ${region['h']}  '
+                        '(+${region['x']}, +${region['y']})',
+                style: const TextStyle(
+                    color: Color(0xFF9CCC65), fontSize: 12.5)),
+          ),
+          TextButton(
+            onPressed: () => setState(() {
+              _dragFrom = null;
+              _dragTo = null;
+            }),
+            child: Text(FloatL10n.t('rec.regionReset'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+          const SizedBox(width: 4),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF9575CD),
+                foregroundColor: Colors.white),
+            icon: const Icon(Icons.fiber_manual_record_rounded, size: 16),
+            label: Text(FloatL10n.t('rec.start')),
+            onPressed: _startFromRegion,
+          ),
+        ]),
+      ),
+    ]);
+  }
+
+  String _fmtDur(Duration d) {
+    final m = d.inMinutes.toString().padLeft(2, '0');
+    final s = (d.inSeconds % 60).toString().padLeft(2, '0');
+    return '$m:$s';
+  }
+
+  /// 撮れた動画のプレビュー (この窓の中で再生)。
+  Widget _buildPreview() {
+    final vc = _pv;
+    final ready = vc != null && vc.value.isInitialized;
+    final dur = ready ? vc.value.duration : Duration.zero;
+    final pos = ready ? vc.value.position : Duration.zero;
+    final ratio =
+        ready && vc.value.aspectRatio.isFinite && vc.value.aspectRatio > 0.1
+            ? vc.value.aspectRatio
+            : 16 / 9;
+    return Column(children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
+        child: Row(children: [
+          const Icon(Icons.movie_rounded, color: Color(0xFF9575CD), size: 19),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(FloatL10n.t('rec.previewTitle'),
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700)),
+          ),
+          IconButton(
+            icon: const Icon(Icons.close_rounded,
+                color: Colors.white54, size: 20),
+            onPressed: () => unawaited(_closePreview()),
+          ),
+        ]),
+      ),
+      Expanded(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: _pvFailed
+              ? Center(
+                  child: Text(_previewPath,
+                      style: const TextStyle(
+                          color: Colors.white70, fontSize: 12)),
+                )
+              : !ready
+                  ? const Center(
+                      child: CircularProgressIndicator(
+                          color: Color(0xFF9575CD)))
+                  : Center(
+                      child: AspectRatio(
+                        aspectRatio: ratio,
+                        child: ColoredBox(
+                          color: Colors.black,
+                          child: VideoPlayer(vc),
+                        ),
+                      ),
+                    ),
+        ),
+      ),
+      if (ready)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(10, 4, 10, 0),
+          child: Row(children: [
+            IconButton(
+              icon: Icon(
+                  vc.value.isPlaying
+                      ? Icons.pause_rounded
+                      : Icons.play_arrow_rounded,
+                  color: Colors.white,
+                  size: 24),
+              onPressed: () {
+                if (vc.value.isPlaying) {
+                  // ignore: discarded_futures
+                  vc.pause();
+                } else {
+                  // ignore: discarded_futures
+                  vc.play();
+                }
+              },
+            ),
+            Text(_fmtDur(pos),
+                style:
+                    const TextStyle(color: Colors.white70, fontSize: 11.5)),
+            Expanded(
+              child: Slider(
+                value: dur.inMilliseconds <= 0
+                    ? 0
+                    : pos.inMilliseconds
+                        .clamp(0, dur.inMilliseconds)
+                        .toDouble(),
+                max: math.max(1, dur.inMilliseconds).toDouble(),
+                activeColor: const Color(0xFF9575CD),
+                inactiveColor: Colors.white24,
+                onChanged: (v) {
+                  // ignore: discarded_futures
+                  vc.seekTo(Duration(milliseconds: v.round()));
+                },
+              ),
+            ),
+            Text(_fmtDur(dur),
+                style:
+                    const TextStyle(color: Colors.white70, fontSize: 11.5)),
+          ]),
+        ),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 2, 16, 10),
+        child: Row(children: [
+          Expanded(
+            child: Text(_previewPath,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style:
+                    const TextStyle(color: Colors.white38, fontSize: 10.5)),
+          ),
+          TextButton.icon(
+            icon: const Icon(Icons.folder_open_rounded,
+                size: 16, color: Color(0xFF9CCC65)),
+            label: Text(FloatL10n.t('rec.openFolder'),
+                style:
+                    const TextStyle(color: Color(0xFF9CCC65), fontSize: 12)),
+            onPressed: () {
+              try {
+                Process.run('explorer',
+                    ['/select,', _previewPath.replaceAll('/', '\\')]);
+              } catch (_) {}
+            },
+          ),
+          const SizedBox(width: 4),
+          TextButton(
+            onPressed: () => unawaited(_closePreview()),
+            child: Text(FloatL10n.t('rec.close'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+        ]),
+      ),
+    ]);
+  }
+}
+
+/// 選んだ所以外を暗くする (範囲選び窓用。 本体の _RecRegionPainter と同じ)。
+class _RecRegionWinPainter extends CustomPainter {
+  final Offset a;
+  final Offset b;
+  _RecRegionWinPainter(this.a, this.b);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final r = Rect.fromPoints(a, b);
+    final dim = Paint()..color = Colors.black.withValues(alpha: 0.55);
+    canvas.save();
+    canvas.clipRect(r, clipOp: ui.ClipOp.difference);
+    canvas.drawRect(Offset.zero & size, dim);
+    canvas.restore();
+    canvas.drawRect(
+        r,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2
+          ..color = const Color(0xFF9575CD));
+  }
+
+  @override
+  bool shouldRepaint(_RecRegionWinPainter old) => old.a != a || old.b != b;
+}
+
 class _CalcWindowApp extends StatefulWidget {
+  /// -1 = 単独プロセス (= ショートカットから直接開いた時)。
   final int windowId;
   const _CalcWindowApp({required this.windowId});
+
+  bool get standalone => windowId < 0;
   @override
   State<_CalcWindowApp> createState() => _CalcWindowAppState();
 }
@@ -4341,9 +8219,26 @@ class _CalcWindowAppState extends State<_CalcWindowApp> {
   bool _pinned = true;
   Timer? _topTimer;
 
+  /// 電卓の中身の実寸を測るための鍵 (= 窓の高さを中身に合わせる)。
+  final GlobalKey _calcBodyKey = GlobalKey();
+
+  /// 窓の高さを中身にぴったり合わせる (= ユーザー報告: 外部モードで
+  /// 下に謎のスペースが空く)。 決め打ちの高さをやめて、 描画後に実寸で直す。
+  Future<void> _fitToContent() async {
+    try {
+      final h = _calcBodyKey.currentContext?.size?.height;
+      if (h == null || h <= 0) return;
+      await windowManager.ensureInitialized();
+      final cur = await windowManager.getSize();
+      // 34 = 自前ヘッダー、 44 = OS のタイトルバーと枠 (メモ窓と同じ見積もり)。
+      await windowManager.setSize(Size(cur.width, h + 34.0 + 44.0));
+    } catch (_) {}
+  }
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _fitToContent());
     // 他のアプリの上に出し続ける (メモ窓と同じ方式)。
     // ignore: discarded_futures
     _applyTop(true);
@@ -4380,6 +8275,13 @@ class _CalcWindowAppState extends State<_CalcWindowApp> {
   Future<void> _close() async {
     _topTimer?.cancel();
     _topTimer = null;
+    // 単独プロセスなら自分を終わらせる (= ショートカットから開いた時)。
+    if (widget.standalone) {
+      try {
+        Process.killPid(pid);
+      } catch (_) {}
+      exit(0);
+    }
     try {
       await DesktopMultiWindow.invokeMethod(0, 'focusMain');
     } catch (_) {}
@@ -4454,10 +8356,522 @@ class _CalcWindowAppState extends State<_CalcWindowApp> {
             ),
           ),
           // ── 本体 (アプリ内オーバーレイと共通の CalcBody) ──
-          const Expanded(
+          Expanded(
             child: SingleChildScrollView(
-              child: CalcBody(),
+              child: KeyedSubtree(
+                  key: _calcBodyKey, child: const CalcBody()),
             ),
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
+// ─── ストップウォッチ / タイマーの外部窓 (= ユーザー要望: タイマーも外に) ───
+//
+// 電卓窓と同じ作法: 常に手前 (ピンで切替)、 自前ヘッダーでドラッグ移動、
+// 閉じる時はタイマーを全部止めてから本体へフォーカスを返す。
+class _TimerWindowApp extends StatefulWidget {
+  /// -1 = 単独プロセス (= ショートカットから直接開いた時)。
+  final int windowId;
+
+  bool get standalone => windowId < 0;
+
+  /// 0=ストップウォッチ / 1=タイマー / 2=ポモドーロ。
+  final int initialTab;
+  const _TimerWindowApp({required this.windowId, this.initialTab = 0});
+  @override
+  State<_TimerWindowApp> createState() => _TimerWindowAppState();
+}
+
+class _TimerWindowAppState extends State<_TimerWindowApp> {
+  final _WinDragger _dragger = _WinDragger();
+  bool _pinned = true;
+  Timer? _topTimer;
+
+  /// 0 = ストップウォッチ、 1 = タイマー、 2 = ポモドーロ。
+  late int _tab = widget.initialTab.clamp(0, 2);
+
+  // ── ポモドーロ (= ユーザー要望: ポモドーロもフローティングで) ──
+  int _pomoWorkMin = 25;
+  int _pomoBreakMin = 5;
+  bool _pomoOnBreak = false;
+  bool _pomoRunning = false;
+  int _pomoLeftSec = 25 * 60;
+  int _pomoCycles = 0;
+  DateTime? _pomoEndsAt;
+
+  // ── ストップウォッチ ──
+  final Stopwatch _sw = Stopwatch();
+
+  // ── タイマー (カウントダウン) ──
+  int _totalSec = 300;
+  int _leftSec = 300;
+  bool _running = false;
+
+  /// 時間切れの点滅表示中か。
+  bool _done = false;
+
+  /// 表示の更新と残り時間の減算 (0.1 秒刻み)。
+  Timer? _tick;
+  DateTime? _timerEndsAt;
+
+  void _ensureTick() {
+    _tick ??= Timer.periodic(const Duration(milliseconds: 100), (_) {
+      if (!mounted) return;
+      if (_running && _timerEndsAt != null) {
+        final left = _timerEndsAt!.difference(DateTime.now()).inMilliseconds;
+        if (left <= 0) {
+          _running = false;
+          _leftSec = 0;
+          _done = true;
+          _timerEndsAt = null;
+          // 気付けるように音を 1 回鳴らして前面に出す (音は OS 依存)。
+          try {
+            SystemSound.play(SystemSoundType.alert);
+          } catch (_) {}
+          // ignore: discarded_futures
+          _applyTop(true);
+        } else {
+          _leftSec = (left / 1000).ceil();
+        }
+      }
+      // ── ポモドーロ: 時間が来たら作業⇄休憩を自動で切り替える ──
+      if (_pomoRunning && _pomoEndsAt != null) {
+        final left = _pomoEndsAt!.difference(DateTime.now()).inMilliseconds;
+        if (left <= 0) {
+          if (!_pomoOnBreak) _pomoCycles++;
+          _pomoOnBreak = !_pomoOnBreak;
+          final nextMin = _pomoOnBreak ? _pomoBreakMin : _pomoWorkMin;
+          _pomoLeftSec = nextMin * 60;
+          _pomoEndsAt = DateTime.now().add(Duration(minutes: nextMin));
+          try {
+            SystemSound.play(SystemSoundType.alert);
+          } catch (_) {}
+          // ignore: discarded_futures
+          _applyTop(true);
+        } else {
+          _pomoLeftSec = (left / 1000).ceil();
+        }
+      }
+      setState(() {});
+    });
+  }
+
+  Future<void> _applyTop(bool on) async {
+    try {
+      await windowManager.ensureInitialized();
+      try {
+        if (await windowManager.isAlwaysOnTop() == on) return;
+      } catch (_) {}
+      await windowManager.setAlwaysOnTop(on);
+    } catch (_) {}
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    // ignore: discarded_futures
+    _applyTop(true);
+    _ensureTick();
+    _topTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      if (!mounted) {
+        _topTimer?.cancel();
+        _topTimer = null;
+        return;
+      }
+      // ignore: discarded_futures
+      if (_pinned) _applyTop(true);
+    });
+  }
+
+  @override
+  void dispose() {
+    _tick?.cancel();
+    _tick = null;
+    _topTimer?.cancel();
+    _topTimer = null;
+    super.dispose();
+  }
+
+  /// 閉じる: タイマーを全部止めてから本体へフォーカスを返して閉じる
+  /// (= サブ窓の後始末教訓: タイマー停止漏れが本体巻き添えの原因になる)。
+  Future<void> _close() async {
+    _tick?.cancel();
+    _tick = null;
+    _topTimer?.cancel();
+    _topTimer = null;
+    _sw.stop();
+    try {
+      await DesktopMultiWindow.invokeMethod(0, 'focusMain');
+    } catch (_) {}
+    try {
+      await WindowController.fromWindowId(widget.windowId).close();
+    } catch (_) {}
+  }
+
+  String _fmtSw(Duration d) {
+    final m = d.inMinutes.toString().padLeft(2, '0');
+    final s = (d.inSeconds % 60).toString().padLeft(2, '0');
+    final t = (d.inMilliseconds % 1000) ~/ 100;
+    return '$m:$s.$t';
+  }
+
+  String _fmtSec(int sec) {
+    final m = (sec ~/ 60).toString().padLeft(2, '0');
+    final s = (sec % 60).toString().padLeft(2, '0');
+    return '$m:$s';
+  }
+
+  Widget _bigBtn(String label, Color color, VoidCallback onTap) {
+    return ElevatedButton(
+      style: ElevatedButton.styleFrom(
+        backgroundColor: color.withValues(alpha: 0.22),
+        foregroundColor: Colors.white,
+        minimumSize: const Size(96, 40),
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      ),
+      onPressed: onTap,
+      child: Text(label, style: const TextStyle(fontSize: 13)),
+    );
+  }
+
+  Widget _chip(String label, VoidCallback onTap) {
+    return OutlinedButton(
+      style: OutlinedButton.styleFrom(
+        foregroundColor: Colors.white70,
+        side: const BorderSide(color: Colors.white24),
+        minimumSize: const Size(0, 32),
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+      ),
+      onPressed: onTap,
+      child: Text(label, style: const TextStyle(fontSize: 12)),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const acc = Color(0xFF4FC3F7);
+    final sw = _sw.elapsed;
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        brightness: Brightness.dark,
+        useMaterial3: true,
+        scaffoldBackgroundColor: const Color(0xFF1B1B2A),
+      ),
+      home: Scaffold(
+        backgroundColor:
+            _done ? const Color(0xFF4A1B22) : const Color(0xFF1B1B2A),
+        body: Column(children: [
+          // ── ドラッグで動かせるタイトル帯 (電卓窓と同じ作法) ──
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onPanStart: (_) => _dragger.start(),
+            onPanUpdate: (d) =>
+                _dragger.update(d, View.of(context).devicePixelRatio),
+            child: Container(
+              height: 34,
+              color: const Color(0xFF23233A),
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Row(children: [
+                const Icon(Icons.timer_rounded, color: acc, size: 16),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(FloatL10n.t('timer.title'),
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700),
+                      overflow: TextOverflow.ellipsis),
+                ),
+                IconButton(
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 28, minHeight: 28),
+                  tooltip: FloatL10n.t('float.pin'),
+                  icon: Icon(
+                      _pinned
+                          ? Icons.push_pin_rounded
+                          : Icons.push_pin_outlined,
+                      color: _pinned ? acc : Colors.white38,
+                      size: 15),
+                  onPressed: () {
+                    setState(() => _pinned = !_pinned);
+                    // ignore: discarded_futures
+                    _applyTop(_pinned);
+                  },
+                ),
+                IconButton(
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 28, minHeight: 28),
+                  icon: const Icon(Icons.close,
+                      color: Colors.white54, size: 16),
+                  onPressed: () {
+                    // ignore: discarded_futures
+                    _close();
+                  },
+                ),
+              ]),
+            ),
+          ),
+          // ── ストップウォッチ / タイマーの切替タブ ──
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 10, 10, 0),
+            child: Row(children: [
+              for (final e in [
+                (0, FloatL10n.t('timer.stopwatch')),
+                (1, FloatL10n.t('timer.countdown')),
+                (2, FloatL10n.t('timer.pomodoro')),
+              ])
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 3),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(9),
+                      onTap: () => setState(() => _tab = e.$1),
+                      child: Container(
+                        height: 34,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color: _tab == e.$1
+                              ? acc.withValues(alpha: 0.22)
+                              : Colors.white.withValues(alpha: 0.05),
+                          borderRadius: BorderRadius.circular(9),
+                          border: Border.all(
+                              color:
+                                  _tab == e.$1 ? acc : Colors.white12),
+                        ),
+                        child: Text(e.$2,
+                            style: TextStyle(
+                                color: _tab == e.$1
+                                    ? Colors.white
+                                    : Colors.white60,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600)),
+                      ),
+                    ),
+                  ),
+                ),
+            ]),
+          ),
+          Expanded(
+            child: _tab == 2
+                // ── ポモドーロ (作業⇄休憩を自動でくり返す) ──
+                ? Column(mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                          (_pomoOnBreak
+                                  ? FloatL10n.t('timer.break')
+                                  : FloatL10n.t('timer.work')) +
+                              (_pomoCycles > 0 ? '  ×$_pomoCycles' : ''),
+                          style: TextStyle(
+                              color: _pomoOnBreak
+                                  ? const Color(0xFF43B97F)
+                                  : const Color(0xFFFF8A80),
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700)),
+                      const SizedBox(height: 4),
+                      Text(_fmtSec(_pomoLeftSec),
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 44,
+                              fontWeight: FontWeight.w700,
+                              fontFeatures: [FontFeature.tabularFigures()])),
+                      const SizedBox(height: 8),
+                      // 作業・休憩の長さ (分)。 止まっている時に変えられる。
+                      Row(mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(FloatL10n.t('timer.work'),
+                                style: const TextStyle(
+                                    color: Colors.white54, fontSize: 11)),
+                            const SizedBox(width: 4),
+                            _chip('-', () => setState(() {
+                                  _pomoWorkMin =
+                                      (_pomoWorkMin - 5).clamp(5, 90);
+                                  if (!_pomoRunning && !_pomoOnBreak) {
+                                    _pomoLeftSec = _pomoWorkMin * 60;
+                                  }
+                                })),
+                            Padding(
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 4),
+                              child: Text('$_pomoWorkMin',
+                                  style: const TextStyle(
+                                      color: Colors.white, fontSize: 12)),
+                            ),
+                            _chip('+', () => setState(() {
+                                  _pomoWorkMin =
+                                      (_pomoWorkMin + 5).clamp(5, 90);
+                                  if (!_pomoRunning && !_pomoOnBreak) {
+                                    _pomoLeftSec = _pomoWorkMin * 60;
+                                  }
+                                })),
+                            const SizedBox(width: 14),
+                            Text(FloatL10n.t('timer.break'),
+                                style: const TextStyle(
+                                    color: Colors.white54, fontSize: 11)),
+                            const SizedBox(width: 4),
+                            _chip('-', () => setState(() {
+                                  _pomoBreakMin =
+                                      (_pomoBreakMin - 1).clamp(1, 30);
+                                })),
+                            Padding(
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 4),
+                              child: Text('$_pomoBreakMin',
+                                  style: const TextStyle(
+                                      color: Colors.white, fontSize: 12)),
+                            ),
+                            _chip('+', () => setState(() {
+                                  _pomoBreakMin =
+                                      (_pomoBreakMin + 1).clamp(1, 30);
+                                })),
+                          ]),
+                      const SizedBox(height: 12),
+                      Row(mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            _bigBtn(
+                                _pomoRunning
+                                    ? FloatL10n.t('timer.stop')
+                                    : FloatL10n.t('timer.start'),
+                                _pomoRunning
+                                    ? const Color(0xFFFF8A80)
+                                    : const Color(0xFF43B97F), () {
+                              setState(() {
+                                if (_pomoRunning) {
+                                  _pomoRunning = false;
+                                  _pomoEndsAt = null;
+                                } else {
+                                  _pomoRunning = true;
+                                  if (_pomoLeftSec <= 0) {
+                                    _pomoLeftSec = _pomoWorkMin * 60;
+                                  }
+                                  _pomoEndsAt = DateTime.now()
+                                      .add(Duration(seconds: _pomoLeftSec));
+                                }
+                              });
+                            }),
+                            const SizedBox(width: 10),
+                            _bigBtn(FloatL10n.t('timer.reset'),
+                                const Color(0xFF7986CB), () {
+                              setState(() {
+                                _pomoRunning = false;
+                                _pomoEndsAt = null;
+                                _pomoOnBreak = false;
+                                _pomoCycles = 0;
+                                _pomoLeftSec = _pomoWorkMin * 60;
+                              });
+                            }),
+                          ]),
+                    ])
+                : _tab == 0
+                // ── ストップウォッチ ──
+                ? Column(mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(_fmtSw(sw),
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 44,
+                              fontWeight: FontWeight.w700,
+                              fontFeatures: [
+                                FontFeature.tabularFigures()
+                              ])),
+                      const SizedBox(height: 14),
+                      Row(mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            _bigBtn(
+                                _sw.isRunning
+                                    ? FloatL10n.t('timer.stop')
+                                    : FloatL10n.t('timer.start'),
+                                _sw.isRunning
+                                    ? const Color(0xFFFF8A80)
+                                    : const Color(0xFF43B97F), () {
+                              setState(() =>
+                                  _sw.isRunning ? _sw.stop() : _sw.start());
+                            }),
+                            const SizedBox(width: 10),
+                            _bigBtn(FloatL10n.t('timer.reset'),
+                                const Color(0xFF7986CB), () {
+                              setState(() => _sw.reset());
+                            }),
+                          ]),
+                    ])
+                // ── タイマー (カウントダウン) ──
+                : Column(mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                          _done
+                              ? FloatL10n.t('timer.done')
+                              : _fmtSec(_leftSec),
+                          style: TextStyle(
+                              color: _done
+                                  ? const Color(0xFFFF8A80)
+                                  : Colors.white,
+                              fontSize: _done ? 30 : 44,
+                              fontWeight: FontWeight.w700,
+                              fontFeatures: const [
+                                FontFeature.tabularFigures()
+                              ])),
+                      const SizedBox(height: 10),
+                      // 時間を足すボタン (押すだけで設定できる)。
+                      Row(mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            _chip('+1', () => setState(() {
+                                  _totalSec += 60;
+                                  _leftSec += 60;
+                                  _done = false;
+                                })),
+                            const SizedBox(width: 6),
+                            _chip('+5', () => setState(() {
+                                  _totalSec += 300;
+                                  _leftSec += 300;
+                                  _done = false;
+                                })),
+                            const SizedBox(width: 6),
+                            _chip('+10', () => setState(() {
+                                  _totalSec += 600;
+                                  _leftSec += 600;
+                                  _done = false;
+                                })),
+                          ]),
+                      const SizedBox(height: 12),
+                      Row(mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            _bigBtn(
+                                _running
+                                    ? FloatL10n.t('timer.stop')
+                                    : FloatL10n.t('timer.start'),
+                                _running
+                                    ? const Color(0xFFFF8A80)
+                                    : const Color(0xFF43B97F), () {
+                              setState(() {
+                                if (_running) {
+                                  _running = false;
+                                  _timerEndsAt = null;
+                                } else if (_leftSec > 0) {
+                                  _running = true;
+                                  _done = false;
+                                  _timerEndsAt = DateTime.now()
+                                      .add(Duration(seconds: _leftSec));
+                                }
+                              });
+                            }),
+                            const SizedBox(width: 10),
+                            _bigBtn(FloatL10n.t('timer.reset'),
+                                const Color(0xFF7986CB), () {
+                              setState(() {
+                                _running = false;
+                                _timerEndsAt = null;
+                                _leftSec = _totalSec;
+                                _done = false;
+                              });
+                            }),
+                          ]),
+                    ]),
           ),
         ]),
       ),

@@ -7,6 +7,13 @@ env.json
 env.*.json
 .env
 .env.*
+# ★ 控え (バックアップ) も必ず除外する。
+#   `env.json` と `env.*.json` だけでは `env.json.bak_pricechange` のような
+#   名前が素通りし、 `git add -A` で公開リポジトリに載ってしまう
+#   (= 実際に取りこぼしを発見。 中身は Gemini / OAuth / RevenueCat の実キー)。
+env.json*
+env.*
+*.env
 
 # 別リポジトリ/ローカル成果物 (ロールバック用チェックポイントには含めない)
 Kamispec/
@@ -26,3 +33,29 @@ build_apk.log
 
 # Stripe Webhook 署名シークレット (Worker へ設定済み。コミットしない)
 worker/_whsec.txt
+
+# ── 鍵・資格情報の一般形 (先回りして塞ぐ) ──────────────────────────
+#   ここに挙げた物は「まだ置いていなくても」 置いた瞬間に除外されるように
+#   しておく。 公開リポジトリなので、 一度でも push すると取り消せない。
+# Android の署名鍵とそのパスワード (key.properties.example は追跡してよい)
+android/key.properties
+key.properties
+*.jks
+*.keystore
+# 証明書・秘密鍵
+*.pem
+*.p12
+*.pfx
+*.key
+# サービスアカウント / 各種資格情報の JSON
+service-account*.json
+*credentials*.json
+secrets.json
+# 秘密を含みがちな控え全般 (バックアップ・退避)
+*.bak_*
+*secret*.txt
+*token*.txt
+
+# WACK (ストア審査の事前検査) の作業一式。証明書と 74MB の msix を含むので上げない。
+wack/
+

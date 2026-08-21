@@ -54,6 +54,52 @@ const int _srcCopy = 0x00CC0020;
 const int _captureBlt = 0x40000000;
 const int _diRgbColors = 0;
 
+/// 仮想デスクトップ全体 (複数のモニターを含む) の位置と大きさ。
+/// 物理ピクセル。 Windows 以外では null。
+///
+/// = ユーザー要望「録画する範囲を指定できるように」。 範囲を選ぶ画面で
+///   デスクトップ全体を写して、 その上をなぞってもらうために使う。
+({int x, int y, int width, int height})? virtualScreenRect() {
+  if (!_isWindows) return null;
+  try {
+    final user32 = DynamicLibrary.open('user32.dll');
+    final getMetrics = user32.lookupFunction<Int32 Function(Int32),
+        int Function(int)>('GetSystemMetrics');
+    // SM_XVIRTUALSCREEN=76 / SM_YVIRTUALSCREEN=77
+    // SM_CXVIRTUALSCREEN=78 / SM_CYVIRTUALSCREEN=79
+    final x = getMetrics(76);
+    final y = getMetrics(77);
+    var w = getMetrics(78);
+    var h = getMetrics(79);
+    if (w <= 0 || h <= 0) {
+      // 取れない環境では主モニターだけ (SM_CXSCREEN=0 / SM_CYSCREEN=1)。
+      w = getMetrics(0);
+      h = getMetrics(1);
+    }
+    if (w <= 0 || h <= 0) return null;
+    return (x: x, y: y, width: w, height: h);
+  } catch (_) {
+    return null;
+  }
+}
+
+/// つながっているモニターの数。 取れない環境では 1。
+///
+/// = 画面録画のカーソル点滅対策で「1 枚だけなら ddagrab を使える」 の判定に
+///   使う (ddagrab は 1 つの出力しか撮れないため)。
+int monitorCount() {
+  if (!_isWindows) return 1;
+  try {
+    final user32 = DynamicLibrary.open('user32.dll');
+    final getMetrics = user32.lookupFunction<Int32 Function(Int32),
+        int Function(int)>('GetSystemMetrics');
+    final n = getMetrics(80); // SM_CMONITORS
+    return n > 0 ? n : 1;
+  } catch (_) {
+    return 1;
+  }
+}
+
 /// 画面座標 (物理ピクセル) の矩形をキャプチャして PNG で返す。
 Uint8List? captureScreenRectPng(int x, int y, int width, int height) =>
     _captureScreenRect(x, y, width, height, jpeg: false);

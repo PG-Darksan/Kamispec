@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <desktop_multi_window/desktop_multi_window_plugin.h>
+#include <fvp/fvp_plugin_c_api.h>
 #include <url_launcher_windows/url_launcher_windows.h>
 #include <window_manager/window_manager_plugin.h>
 
@@ -52,6 +53,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
         engine->GetRegistrarForPlugin("WindowManagerPlugin"));
     UrlLauncherWindowsRegisterWithRegistrar(
         engine->GetRegistrarForPlugin("UrlLauncherWindows"));
+    // fvp: the screen-recorder sub-window plays the finished recording
+    // inside itself (video_player backed by fvp). Unlike webview_windows,
+    // fvp keeps no process-wide host that breaks on engine teardown --
+    // each texture/player belongs to its own engine.
+    FvpPluginCApiRegisterWithRegistrar(
+        engine->GetRegistrarForPlugin("FvpPluginCApi"));
   });
 
   FlutterWindow window(project);

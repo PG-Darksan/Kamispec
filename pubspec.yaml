@@ -36,6 +36,10 @@ dependencies:
   # Windows の「プログラムから開く」 一覧に自分を登録する (HKCU のみ)。
   # 元々 transitive で入っているバージョンをそのまま直接依存にした。
   win32_registry: ^2.1.0
+  # ショートカット (.lnk) を Windows 本来の作り方 (IShellLink + IPersistFile)
+  #   で作るために使う。 PowerShell を起動して作ると、 セキュリティソフトの
+  #   振る舞い検知に「悪意ある動作」 として止められる (= ユーザー報告)。
+  win32: ^5.15.0
   json_annotation: ^4.8.1
   cupertino_icons: ^1.0.6
   flutter_colorpicker: ^1.0.3
@@ -306,7 +310,7 @@ msix_config:
   publisher_display_name: Darksan
   identity_name: Darksan.Kamispec
   publisher: CN=BB5643C0-04E4-44B9-839E-09B54138A1D4
-  msix_version: 1.0.34.0
+  msix_version: 1.0.36.0
   logo_path: windows/runner/resources/msix_logo.png
   capabilities: internetClient, microphone, removableStorage
   output_name: HisatorNotebook
@@ -340,3 +344,24 @@ flutter:
     # 交通系IC 駅コード→駅名 変換テーブル (= ユーザー要望: 駅コードを駅名表示)。
     #   ファイルが空でも可 (未登録は駅コード表示にフォールバック)。
     - assets/transit/station_codes.csv
+    # マークダウンプレビュー用 JS (= ユーザー報告: Mermaid が描画されない)。
+    #   CDN ダウンロード依存を無くすため同梱し、 初回にローカルへ書き出して
+    #   file:// プレビューから読む。 オフラインでも必ず描画できる。
+    - assets/js/marked.min.js
+    - assets/js/mermaid.min.js
+    # シンタックスハイライト + 数式 (KaTeX でなく自己完結の MathJax SVG 版)
+    #   (= ユーザー要望: プレビューの発展)。 同じくオフライン動作。
+    - assets/js/highlight.min.js
+    - assets/js/hljs-dark.css
+    - assets/js/hljs-light.css
+    - assets/js/tex-svg.js
+    # AI に渡すアプリの説明書 (= ユーザー要望: skills / AGENTS.md のように
+    #   既定で AI へ渡す)。 AGENTS.md は毎回、 docs/ は read_app_doc で
+    #   必要な時だけ読ませる (毎回渡すとトークンを食い潰すため)。
+    - assets/ai/AGENTS.md
+    - assets/ai/docs/billing.md
+    - assets/ai/docs/mcp.md
+    - assets/ai/docs/features.md
+    - assets/ai/docs/layout.md
+    - assets/ai/docs/qa.md
+    - assets/ai/docs/website.md

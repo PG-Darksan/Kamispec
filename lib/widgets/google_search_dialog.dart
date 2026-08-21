@@ -408,6 +408,10 @@ class GoogleSearchDialog {
     //    (= ユーザー要望: 分割画面のところへドラッグしたら埋め込める)。
     //    true を返すとウィンドウを閉じる。 ──
     bool Function(Offset globalPos, String currentUrl)? onDragDrop,
+    // ── アプリの外の本物の窓へ出す (= ユーザー要望: 要素から立ち上がる
+    //    Google 検索も外に出せるフローティングで開けるように)。
+    //    true を返すとこの浮遊窓は閉じる。 null ならボタンを出さない。 ──
+    bool Function(String currentUrl)? onPopOut,
     Offset? anchorPos,
     String? singletonKey,
     // 初期ウィンドウサイズの上書き (null = 既定)。 ロック中メモの AI /
@@ -497,6 +501,7 @@ class GoogleSearchDialog {
         onMoveToSplitPanel: onMoveToSplitPanel,
         onCreateBookmarkButton: onCreateBookmarkButton,
         onDragDrop: onDragDrop,
+        onPopOut: onPopOut,
         onClose: closeEntry,
         // 「全画面表示」 → このフローティングを閉じて compactMode で開き直す
         onExpandToCompact: (url, query, memo) {
@@ -544,6 +549,10 @@ class _FloatingSearchWindow extends StatefulWidget {
   /// ドラッグ終了時に呼ばれる。 true を返すとウィンドウを閉じる
   /// (= 分割セルへの埋め込み成功など)。
   final bool Function(Offset globalPos, String currentUrl)? onDragDrop;
+
+  /// 「アプリの外の窓へ出す」 (= ユーザー要望)。 true を返すとこの窓を閉じる。
+  /// null なら外出しボタンを出さない (= 外の窓を作れない環境)。
+  final bool Function(String currentUrl)? onPopOut;
   final VoidCallback onClose;
   final void Function(
           String currentUrl, String currentQuery, String currentMemo)
@@ -572,6 +581,7 @@ class _FloatingSearchWindow extends StatefulWidget {
     required this.onMoveToSplitPanel,
     required this.onCreateBookmarkButton,
     this.onDragDrop,
+    this.onPopOut,
     required this.onClose,
     required this.onExpandToCompact,
     this.initialOffset = Offset.zero,
@@ -879,6 +889,26 @@ class _FloatingSearchWindowState extends State<_FloatingSearchWindow> {
                                     fontWeight: FontWeight.w600),
                                 overflow: TextOverflow.ellipsis),
                           ),
+                          // ── アプリの外の本物の窓へ出す (= ユーザー要望:
+                          //    要素から立ち上がる Google 検索も、 アプリの外に
+                          //    出せるフローティングで開けるように) ──
+                          //    出した窓は分割ペインの上に置くと埋め込まれる。
+                          if (widget.onPopOut != null)
+                            IconButton(
+                              icon: const Icon(Icons.open_in_new_rounded,
+                                  color: Color(0xFFFFB347), size: 17),
+                              tooltip: provider.t('gs.popOut'),
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                  minWidth: 32, minHeight: 32),
+                              onPressed: () {
+                                final url =
+                                    _pageKeyForDrop.currentState?._currentUrl ??
+                                        widget.initialUrl ??
+                                        '';
+                                if (widget.onPopOut!(url)) widget.onClose();
+                              },
+                            ),
                           IconButton(
                             icon: const Icon(Icons.close_rounded,
                                 color: Colors.white54, size: 18),
@@ -1118,9 +1148,22 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   /// ヘッダーを非表示にするボタン)。 隠すと本文だけになり、 左上の小さな
   /// 目のボタンで戻せる。
   bool _gsHeaderHidden = false;
+
+  /// ヘッダーを隠している間、 上端にカーソルが乗っているか
+  /// (= ユーザー要望: 隠したら、 ホバーするまで戻すボタンも出さない)。
+  bool _gsHeaderHover = false;
+
+  /// カーソルのある環境か。 スマホはホバーが無いので、 戻すボタンを
+  /// 隠してしまうと二度と戻せなくなる → 常に出す。
+  bool get _gsHoverCapable =>
+      !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
   bool _gsMobileToolsExpanded = false;
   bool _webDownloadInProgress = false;
   Timer? _captureNoticeTimer;
+
+  /// お知らせ帯 (MaterialBanner) を出した messenger。 この画面が閉じた後でも
+  /// 帯を消せるように掴んでおく。
+  ScaffoldMessengerState? _bannerMessenger;
   static const int _kMaxInAppDownloadBytes = 96 * 1024 * 1024;
 
   /// アクティブタブの WebView が「戻れる」 履歴を持つか。
@@ -2979,9 +3022,19 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     // ScaffoldMessenger の MaterialBanner は AppBar 直下に表示される。
     // メモ / AI パネルや下部バーの高さに依存せず、必ずそれらより上で
     // ダウンロード結果を確認できる。
+    //
+    // ★ 3 秒で必ず閉じる (= ユーザー報告: 「ページ情報をマップに追加しま
+    //   した」 がいつまでも消えない)。 MaterialBanner は SnackBar と違い
+    //   自分では消えないので、 この Timer だけが頼り。 以前は
+    //   `if (!mounted) return;` で抜けていたため、 3 秒経つ前にこの画面を
+    //   閉じると (= マップに追加した直後に検索を閉じる、 よくある流れ)
+    //   消し手が居なくなって出しっぱなしになっていた。 掴んでおいた
+    //   messenger を使い、 この画面が生きているかに関係なく消す。
+    _bannerMessenger = messenger;
     _captureNoticeTimer = Timer(const Duration(seconds: 3), () {
-      if (!mounted) return;
-      ScaffoldMessenger.maybeOf(context)?.hideCurrentMaterialBanner();
+      try {
+        messenger.hideCurrentMaterialBanner();
+      } catch (_) {/* messenger が既に無い時は何もしなくてよい */}
     });
   }
 
@@ -7025,24 +7078,54 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
               //      押したのに左端に出てきて押しにくい)。 閉じるボタンの
               //      すぐ左あたりに来るので、 指/カーソルをほぼ動かさずに
               //      戻せる。 最前面に置かないと WebView の下に隠れる。
+              // ★ ヘッダーを隠している間は、 上端にカーソルを乗せるまで
+              //   この「戻す」 ボタンも出さない (= ユーザー要望: 隠したのに
+              //   ボタンだけ残っていると隠した意味が薄い)。 上端の細い帯に
+              //   カーソルが入った時だけ現れる。 触れる手段が無いスマホでは
+              //   従来どおり常に出す (ホバーが無いため)。
               if (_gsHeaderHidden && !widget.hideAppBar)
                 Positioned(
-                  right: 6,
-                  top: 6,
-                  child: Material(
-                    color: Colors.black.withValues(alpha: 0.55),
-                    shape: const CircleBorder(),
-                    child: IconButton(
-                      // 柔らかい印象のアイコンにする (= ユーザー要望:
-                      // 目のアイコンが不気味)。 下向きの山形 = 「出てくる」。
-                      icon: const Icon(Icons.keyboard_arrow_down_rounded,
-                          color: Colors.white70, size: 20),
-                      tooltip: provider.t('gs.showHeader'),
-                      visualDensity: VisualDensity.compact,
-                      padding: const EdgeInsets.all(6),
-                      constraints: const BoxConstraints(),
-                      onPressed: () =>
-                          setState(() => _gsHeaderHidden = false),
+                  left: 0,
+                  right: 0,
+                  top: 0,
+                  height: 40,
+                  child: MouseRegion(
+                    opaque: false,
+                    onEnter: (_) {
+                      if (!_gsHeaderHover) {
+                        setState(() => _gsHeaderHover = true);
+                      }
+                    },
+                    onExit: (_) {
+                      if (_gsHeaderHover) {
+                        setState(() => _gsHeaderHover = false);
+                      }
+                    },
+                    child: Align(
+                      alignment: Alignment.topRight,
+                      child: (_gsHeaderHover || !_gsHoverCapable)
+                          ? Padding(
+                              padding: const EdgeInsets.only(right: 6, top: 6),
+                              child: Material(
+                                color: Colors.black.withValues(alpha: 0.55),
+                                shape: const CircleBorder(),
+                                child: IconButton(
+                                  // 柔らかい印象のアイコンにする (= ユーザー要望:
+                                  // 目のアイコンが不気味)。 下向きの山形 = 「出てくる」。
+                                  icon: const Icon(
+                                      Icons.keyboard_arrow_down_rounded,
+                                      color: Colors.white70,
+                                      size: 20),
+                                  tooltip: provider.t('gs.showHeader'),
+                                  visualDensity: VisualDensity.compact,
+                                  padding: const EdgeInsets.all(6),
+                                  constraints: const BoxConstraints(),
+                                  onPressed: () =>
+                                      setState(() => _gsHeaderHidden = false),
+                                ),
+                              ),
+                            )
+                          : const SizedBox.shrink(),
                     ),
                   ),
                 ),
@@ -7149,6 +7232,13 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
 
   @override
   void dispose() {
+    // 出しっぱなしのお知らせ帯があれば、 閉じる時に一緒に消す
+    // (= 消し手が居なくなって残り続けるのを防ぐ)。
+    if (_captureNoticeTimer?.isActive ?? false) {
+      try {
+        _bannerMessenger?.hideCurrentMaterialBanner();
+      } catch (_) {}
+    }
     _captureNoticeTimer?.cancel();
     _draftSaveDebounce?.cancel();
     if (_useDraft) {
