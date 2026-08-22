@@ -1006,6 +1006,15 @@ class _FloatingMemoOverlayState extends State<FloatingMemoOverlay> {
 /// 「後で通知」 で使う Android の通知チャンネル ID。
 const String kNodeReminderChannelId = 'mokumoku_node_reminders';
 
+/// 未保存の編集がある画面 (テキスト / Word / PowerPoint エディタ等) の
+/// 「閉じて良いか」 確認。 各エディタが開いている間だけ登録する。
+///
+/// アプリ本体の × ボタンで閉じる前に順に呼び、 1 つでも false (= ユーザーが
+/// キャンセル) を返したら終了を中止する (= ユーザー要望: アプリ自体の
+/// 閉じるボタンを押しても変更内容を保存しますかのダイアログが出るように)。
+/// 各ガードは未保存変更が無ければ黙って true を返す。
+final Map<int, Future<bool> Function()> kUnsavedCloseGuards = {};
+
 /// 本体ウィンドウを閉じる時の後始末。
 ///
 /// 浮遊窓 (メモ / AI) は本体と同じプロセスの別ウィンドウなので、 本体だけを
@@ -1045,6 +1054,23 @@ class _MainWindowCloser extends WindowListener {
     if (_closing) return;
     _closing = true;
     _stampClose('enter');
+    // ── 未保存の編集があるエディタの確認 (= ユーザー要望: アプリ自体の
+    //    × でも「変更内容を保存しますか」 を出す)。 ダイアログ表示中に
+    //    watchdog で殺さないよう、 確認が済んでから終了シーケンスに入る。
+    try {
+      for (final guard in List.of(kUnsavedCloseGuards.values)) {
+        bool ok = true;
+        try {
+          ok = await guard();
+        } catch (_) {}
+        if (!ok) {
+          // ユーザーがキャンセル → 閉じるのを中止。
+          _stampClose('cancelled-by-guard');
+          _closing = false;
+          return;
+        }
+      }
+    } catch (_) {}
     // ── 何があっても 1.5 秒後には必ずプロセスを終わらせる保険 ──
     //   (= ユーザー報告: × ボタンを押しても固まって閉じない)。
     //   下の子ウィンドウ close や destroy は、 WebView2 や応答しない
