@@ -4260,8 +4260,9 @@ class MindMapProvider extends ChangeNotifier {
 
   // ── Esc で閉じるか (= ユーザー要望: Excel / Word / YouTube などで開いた
   //    画面が Esc で閉じてしまうのを止めたい) ──
-  //    true (既定) = 今までどおり Esc で閉じる / false = 閉じない。
-  bool _closeViewerWithEsc = true;
+  //    既定は OFF (= ユーザー要望: Esc を押すたびに確認が積み上がって
+  //    画面が暗くなるのを防ぐ)。 使いたい人は動作設定で ON にできる。
+  bool _closeViewerWithEsc = false;
   bool get closeViewerWithEsc => _closeViewerWithEsc;
   Future<void> setCloseViewerWithEsc(bool v) async {
     _closeViewerWithEsc = v;
@@ -14587,15 +14588,15 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Заметки',
     },
     'text.aiPanel': {
-      'ja': 'AIチャット',
-      'en': 'AI chat',
-      'zh': 'AI聊天',
-      'ko': 'AI 채팅',
-      'es': 'Chat de IA',
-      'fr': 'Chat IA',
-      'de': 'KI-Chat',
-      'pt': 'Chat de IA',
-      'ru': 'ИИ-чат',
+      'ja': 'AI',
+      'en': 'AI',
+      'zh': 'AI',
+      'ko': 'AI',
+      'es': 'IA',
+      'fr': 'IA',
+      'de': 'KI',
+      'pt': 'IA',
+      'ru': 'ИИ',
     },
     'text.memoEmpty': {
       'ja': 'メモはまだありません',
@@ -74752,7 +74753,7 @@ $cleanQ
     defaultMemoFontSize = prefs.getDouble('defaultMemoFontSize') ?? 12.0;
     _snapEnabled = prefs.getBool('snapEnabled') ?? true;
     // Esc で閲覧画面を閉じるか (= ユーザー要望: 誤爆を止められるように)。
-    _closeViewerWithEsc = prefs.getBool('closeViewerWithEsc') ?? true;
+    _closeViewerWithEsc = prefs.getBool('closeViewerWithEsc') ?? false;
     // 「アプリで開く」 を別アプリで開くか (= ユーザー要望)。
     _openWithNewInstance = prefs.getBool('openWithNewInstance') ?? false;
     // メモ欄一括折りたたみ (デフォルト false = 従来通り全文表示)

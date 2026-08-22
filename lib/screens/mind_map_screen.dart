@@ -180383,6 +180383,97 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
     });
   }
 
+  // ─── ダウンロード (= ユーザー要望: xlsx にもダウンロードボタン) ─────
+
+  /// 保存先を聞いてバイト列を書き出す共通部分。 取り消しなら false。
+  Future<bool> _saveBytesAs(
+      String defaultName, String ext, List<int> bytes) async {
+    String? outPath;
+    if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
+      outPath = await FilePicker.platform.saveFile(
+        dialogTitle: context.read<MindMapProvider>().t('fsv.download'),
+        fileName: defaultName,
+        type: FileType.custom,
+        allowedExtensions: [ext],
+      );
+      if (outPath == null) return false;
+      if (!outPath.toLowerCase().endsWith('.$ext')) outPath = '$outPath.$ext';
+      await File(outPath).writeAsBytes(bytes, flush: true);
+    } else {
+      final dir = await getApplicationDocumentsDirectory();
+      final exportDir = Directory('${dir.path}/exports');
+      if (!await exportDir.exists()) await exportDir.create(recursive: true);
+      outPath = '${exportDir.path}/$defaultName';
+      await File(outPath).writeAsBytes(bytes, flush: true);
+      await OpenFilex.open(outPath);
+    }
+    if (mounted) _showSnack('ダウンロード完了: $outPath');
+    return true;
+  }
+
+  /// 今の中身をそのままの形式で別の場所へ保存する。
+  Future<void> _downloadSheetCopy() async {
+    try {
+      _commitEdit();
+      // 保存済みの内容を書き出す (未保存分も含めたいので、 先に保存する)。
+      await _save();
+      final bytes = await File(_currentFilePath).readAsBytes();
+      final ext = _kind == _SpreadsheetKind.xlsx
+          ? 'xlsx'
+          : (_kind == _SpreadsheetKind.tsv ? 'tsv' : 'csv');
+      await _saveBytesAs(_currentFileName, ext, bytes);
+    } catch (e) {
+      if (mounted) _showSnack('ダウンロードに失敗: $e');
+    }
+  }
+
+  /// 今のシートを CSV にして保存する。
+  Future<void> _downloadSheetAsCsv() async {
+    try {
+      _commitEdit();
+      final rows = _rows;
+      final (dataRows, dataCols) = _findDataBounds(rows);
+      final trimmed = <List<String>>[
+        for (int r = 0; r < dataRows; r++)
+          [for (int c = 0; c < dataCols; c++) rows[r][c]],
+      ];
+      final out =
+          const ListToCsvConverter(fieldDelimiter: ',', eol: '\n')
+              .convert(trimmed);
+      final base = _currentFileName.contains('.')
+          ? _currentFileName.substring(0, _currentFileName.lastIndexOf('.'))
+          : _currentFileName;
+      await _saveBytesAs(
+          '$base-$_activeSheet.csv', 'csv', utf8.encode('\uFEFF$out\n'));
+    } catch (e) {
+      if (mounted) _showSnack('ダウンロードに失敗: $e');
+    }
+  }
+
+  /// 今のシートを PDF にして保存する。
+  Future<void> _downloadSheetAsPdf() async {
+    try {
+      _commitEdit();
+      final ok = await _PdfExporter.ensureJapaneseFontOrConfirm(context);
+      if (!ok) return;
+      final rows = _rows;
+      final (dataRows, dataCols) = _findDataBounds(rows);
+      // 表示どおり (数式は結果) で出す。
+      final trimmed = <List<String>>[
+        for (int r = 0; r < dataRows; r++)
+          [for (int c = 0; c < dataCols; c++) _displayValue(r, c)],
+      ];
+      final bytes = await _PdfExporter.exportSheet(
+          '$_currentFileName — $_activeSheet', trimmed);
+      final base = _currentFileName.contains('.')
+          ? _currentFileName.substring(0, _currentFileName.lastIndexOf('.'))
+          : _currentFileName;
+      await _saveBytesAs('$base.pdf', 'pdf', bytes);
+    } catch (e) {
+      if (mounted) _showSnack('PDF にできませんでした: $e');
+    }
+  }
+
   // ─── コピー / 貼り付け / オートフィル (= ユーザー要望) ─────────────
 
   /// アプリ内のコピー控え (行 × 列)。 別のアプリへは TSV で渡す。
@@ -180595,6 +180686,29 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
     (name: 'MID(文字列, 開始, 数)', desc: '途中から取り出す'),
     (name: 'NOW()', desc: '今の日時'),
     (name: 'TODAY()', desc: '今日の日付'),
+    // ── 検索 / 条件つき集計 (= ユーザー要望で追加) ──
+    (
+      name: 'VLOOKUP(値, 範囲, 何列目, [FALSE])',
+      desc: '範囲の左端から値を探して、 その行の指定列を返す。\n'
+          '例: =VLOOKUP(A2,D2:F20,3,FALSE)'
+    ),
+    (name: 'HLOOKUP(値, 範囲, 何行目)', desc: '上端から探して、 その列の指定行を返す'),
+    (name: 'INDEX(範囲, 行, [列])', desc: '範囲の中の位置で取り出す'),
+    (name: 'MATCH(値, 範囲)', desc: '値が何番目にあるか'),
+    (name: 'SUMIF(範囲, 条件, [合計範囲])', desc: '条件に合う行だけ合計。 例: =SUMIF(A:A,">10",B:B)'),
+    (name: 'COUNTIF(範囲, 条件)', desc: '条件に合う個数。 条件は ">10" "<>x" など'),
+    (name: 'AVERAGEIF(範囲, 条件, [平均範囲])', desc: '条件に合う行だけ平均'),
+    (name: 'COUNTBLANK(範囲)', desc: '空のセルの個数'),
+    (name: 'PRODUCT(範囲)', desc: '掛け算の合計'),
+    (name: 'MEDIAN(範囲)', desc: '真ん中の値'),
+    (name: 'ROUNDUP / ROUNDDOWN(数, 桁)', desc: '切り上げ / 切り捨て'),
+    (name: 'CEILING(数) / FLOOR(数)', desc: '整数へ切り上げ / 切り捨て'),
+    (name: 'SUBSTITUTE(文字列, 前, 後)', desc: '文字を置き換える'),
+    (name: 'REPLACE(文字列, 開始, 文字数, 置換)', desc: '位置を指定して置き換える'),
+    (name: 'FIND / SEARCH(探す, 文字列)', desc: '何文字目にあるか (SEARCH は大小無視)'),
+    (name: 'TEXT(数, 桁)', desc: '小数の桁を揃えて文字にする'),
+    (name: 'VALUE(文字列)', desc: '文字を数に変える'),
+    (name: 'ISBLANK(値) / ISNUMBER(値)', desc: '空か / 数字かを調べる'),
   ];
 
   Future<void> _showFormulaHelp() async {
@@ -181735,13 +181849,6 @@ $csvText
               setState(() => _showFormulaResults = !_showFormulaResults);
             },
           ),
-          // ── 使える関数の一覧 (= ユーザー要望) ──
-          IconButton(
-            tooltip: '使える関数一覧',
-            icon: const Icon(Icons.help_outline_rounded,
-                color: Color(0xFF82AAFF)),
-            onPressed: () => unawaited(_showFormulaHelp()),
-          ),
           // ── 図 / 表の挿入・CSV 取り込み (= ユーザー要望)。 xlsx だけ ──
           if (_kind == _SpreadsheetKind.xlsx) ...[
             IconButton(
@@ -181788,6 +181895,58 @@ $csvText
             ),
           ),
           const SizedBox(width: 6),
+          // ── ダウンロード (= ユーザー要望: xlsx にもダウンロードボタン) ──
+          PopupMenuButton<String>(
+            tooltip: context.read<MindMapProvider>().t('fsv.download'),
+            icon: Icon(Icons.download_rounded, color: fg),
+            color: dark ? const Color(0xFF22222E) : Colors.white,
+            onSelected: (v) async {
+              if (v == 'same') {
+                await _downloadSheetCopy();
+              } else if (v == 'csv') {
+                await _downloadSheetAsCsv();
+              } else if (v == 'pdf') {
+                await _downloadSheetAsPdf();
+              }
+            },
+            itemBuilder: (_) => [
+              PopupMenuItem(
+                value: 'same',
+                child: Row(children: [
+                  const Icon(Icons.table_chart_outlined,
+                      size: 16, color: Color(0xFF2E7D32)),
+                  const SizedBox(width: 8),
+                  Text('このまま保存', style: TextStyle(color: fg, fontSize: 13)),
+                ]),
+              ),
+              PopupMenuItem(
+                value: 'csv',
+                child: Row(children: [
+                  const Icon(Icons.view_list_outlined,
+                      size: 16, color: Color(0xFF7B1FA2)),
+                  const SizedBox(width: 8),
+                  Text('CSV として保存 (今のシート)',
+                      style: TextStyle(color: fg, fontSize: 13)),
+                ]),
+              ),
+              PopupMenuItem(
+                value: 'pdf',
+                child: Row(children: [
+                  const Icon(Icons.picture_as_pdf_outlined,
+                      size: 16, color: Color(0xFFFF6B6B)),
+                  const SizedBox(width: 8),
+                  Text('PDF に変換', style: TextStyle(color: fg, fontSize: 13)),
+                ]),
+              ),
+            ],
+          ),
+          // ── 使える関数の一覧 (= ユーザー要望: 端に置く) ──
+          IconButton(
+            tooltip: '使える関数一覧',
+            icon: const Icon(Icons.help_outline_rounded,
+                color: Color(0xFF82AAFF)),
+            onPressed: () => unawaited(_showFormulaHelp()),
+          ),
           // Builder で × ボタン自身の context を取り、 未保存確認をその
           // すぐ近くに出す (= ユーザー要望)。
           Builder(
@@ -193644,6 +193803,12 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
   // ── 複数行の範囲選択 (= ユーザー要望: Ctrl+Shift+↑↓ で複数行を
   //    まとめて選べるように) ──
   /// 選び始めた行。 null = 選択していない。
+  /// 行の上をなぞって複数行を選んでいる最中か (= ユーザー要望: 選択状態で
+  /// 上下にドラッグしたら複数行選択されるように)。 Listener + MouseRegion
+  /// で見ているので、 指でのスクロールは今までどおり効く。
+  bool _lineDragSelecting = false;
+  int? _lineDragAnchor;
+
   int? _selAnchorLine;
 
   /// 今いる行 (アンカーとの間が選択範囲になる)。
@@ -195909,11 +196074,13 @@ $currentText
           if (_isDesktopEditor)
             IconButton(
               tooltip: context.read<MindMapProvider>().t('text.aiPanel'),
+              // ── アイコンはキラキラの紫 (= ユーザー要望: 他の画面の
+              //    AI ボタンと見た目を揃える) ──
               icon: Icon(
-                Icons.forum_outlined,
+                Icons.auto_awesome_rounded,
                 color: _aiPanelOpen
-                    ? const Color(0xFF6C63FF)
-                    : fg.withValues(alpha: 0.7),
+                    ? const Color(0xFFAB47BC)
+                    : const Color(0xFFAB47BC).withValues(alpha: 0.75),
               ),
               onPressed: () {
                 if (_aiPanelOpen) {
@@ -195929,6 +196096,45 @@ $currentText
                 }
               },
             ),
+          // ── ダウンロード (= ユーザー要望: テキストにもダウンロード
+          //    ボタンを作って PDF に変換できるように) ──
+          PopupMenuButton<String>(
+            tooltip: context.read<MindMapProvider>().t('fsv.download'),
+            icon: Icon(Icons.download_rounded, color: fg),
+            color: dark ? const Color(0xFF22222E) : Colors.white,
+            onSelected: (v) async {
+              if (v == 'same') {
+                await _downloadTextCopy();
+              } else if (v == 'pdf') {
+                await _downloadTextAsPdf();
+              }
+            },
+            itemBuilder: (_) => [
+              PopupMenuItem(
+                value: 'same',
+                child: Row(children: [
+                  Icon(_languageIcon(_language),
+                      size: 16, color: _languageColor(_language)),
+                  const SizedBox(width: 8),
+                  Text('このまま保存',
+                      style: TextStyle(color: fg, fontSize: 13)),
+                ]),
+              ),
+              PopupMenuItem(
+                value: 'pdf',
+                child: Row(children: [
+                  const Icon(Icons.picture_as_pdf_outlined,
+                      size: 16, color: Color(0xFFFF6B6B)),
+                  const SizedBox(width: 8),
+                  Text(
+                      _isPreviewableFile
+                          ? 'PDF に変換 (プレビューの内容)'
+                          : 'PDF に変換',
+                      style: TextStyle(color: fg, fontSize: 13)),
+                ]),
+              ),
+            ],
+          ),
           // ── プレビュー切替 (.md は Mermaid 記法も描画、 .html は書いた
           //    ページをそのまま表示 = ユーザー要望) ──
           if (_isPreviewableFile)
@@ -196147,6 +196353,84 @@ $currentText
     final id = await cb(pageId: pageId);
     if (id != null && mounted) setState(() => _nodeId = id);
     return id;
+  }
+
+  /// このファイルを別の場所へコピー保存する (= ユーザー要望:
+  /// テキストにもダウンロードボタンを)。
+  Future<void> _downloadTextCopy() async {
+    try {
+      _commitEdit();
+      final text = _lines.join('\n');
+      final defaultName = _currentFileName;
+      final ext = defaultName.contains('.')
+          ? defaultName.substring(defaultName.lastIndexOf('.') + 1)
+          : 'txt';
+      String? outPath;
+      if (_isDesktopEditor) {
+        outPath = await FilePicker.platform.saveFile(
+          dialogTitle: context.read<MindMapProvider>().t('fsv.download'),
+          fileName: defaultName,
+          type: FileType.custom,
+          allowedExtensions: [ext],
+        );
+        if (outPath == null) return;
+        await File(outPath).writeAsString(text, flush: true);
+      } else {
+        final dir = await getApplicationDocumentsDirectory();
+        final exportDir = Directory('${dir.path}/exports');
+        if (!await exportDir.exists()) await exportDir.create(recursive: true);
+        outPath = '${exportDir.path}/$defaultName';
+        await File(outPath).writeAsString(text, flush: true);
+        await OpenFilex.open(outPath);
+      }
+      _showSnackBar('ダウンロード完了: $outPath');
+    } catch (e) {
+      _showSnackBar('ダウンロードに失敗: $e');
+    }
+  }
+
+  /// 中身を PDF にして保存する (= ユーザー要望: プレビューモードで PDF に
+  /// 変換できるように)。 Markdown は見出し / 箇条書きを整えて、 HTML は
+  /// タグを外した中身を出す。
+  Future<void> _downloadTextAsPdf() async {
+    final provider = context.read<MindMapProvider>();
+    try {
+      _commitEdit();
+      final ok = await _PdfExporter.ensureJapaneseFontOrConfirm(context);
+      if (!ok) return;
+      _showSnackBar(provider.t('video.exporting'));
+      final bytes = await _PdfExporter.exportPlainLines(
+        _lines,
+        markdown: _isMarkdownFile,
+        html: _isHtmlFile,
+      );
+      final base = _currentFileName.contains('.')
+          ? _currentFileName.substring(0, _currentFileName.lastIndexOf('.'))
+          : _currentFileName;
+      final defaultName = '$base.pdf';
+      String? outPath;
+      if (_isDesktopEditor) {
+        outPath = await FilePicker.platform.saveFile(
+          dialogTitle: provider.t('pptx.saveAsPdf'),
+          fileName: defaultName,
+          type: FileType.custom,
+          allowedExtensions: ['pdf'],
+        );
+        if (outPath == null) return;
+        if (!outPath.toLowerCase().endsWith('.pdf')) outPath = '$outPath.pdf';
+        await File(outPath).writeAsBytes(bytes, flush: true);
+      } else {
+        final dir = await getApplicationDocumentsDirectory();
+        final exportDir = Directory('${dir.path}/exports');
+        if (!await exportDir.exists()) await exportDir.create(recursive: true);
+        outPath = '${exportDir.path}/$defaultName';
+        await File(outPath).writeAsBytes(bytes, flush: true);
+        await OpenFilex.open(outPath);
+      }
+      _showSnackBar('PDF にしました: $outPath');
+    } catch (e) {
+      _showSnackBar('PDF にできませんでした: $e');
+    }
   }
 
   /// 追加先のページを選んでから追加する (= PDF ビューアと同じ UI)。
@@ -197326,7 +197610,11 @@ $currentText
 
   Widget _buildEditor(bool dark, Color fg) {
     final bg = dark ? const Color(0xFF1A1A24) : const Color(0xFFF5F5F0);
-    return Container(
+    return Listener(
+      // なぞり選択の終わり (= ユーザー要望: 上下ドラッグで複数行選択)。
+      onPointerUp: (_) => _lineDragSelecting = false,
+      onPointerCancel: (_) => _lineDragSelecting = false,
+      child: Container(
       color: bg,
       child: ListView.builder(
         controller: _scroll,
@@ -197353,6 +197641,7 @@ $currentText
           }
           return _buildLine(i, dark, fg);
         },
+      ),
       ),
     );
   }
@@ -197477,7 +197766,25 @@ $currentText
     // 始める (= ユーザー要望: クリックしたら即座にその場所が編集できる)。
     return LayoutBuilder(builder: (ctx, cons) {
       final textW = math.max(0.0, cons.maxWidth - _gutterWidth);
-      return InkWell(
+      return MouseRegion(
+        // ── なぞって複数行選択 (= ユーザー要望) ──
+        onEnter: (_) {
+          if (!_lineDragSelecting) return;
+          final a = _lineDragAnchor;
+          if (a == null) return;
+          if (_editingIdx != null) _commitEdit();
+          setState(() {
+            _selAnchorLine = a;
+            _selFocusLine = idx;
+          });
+        },
+        child: Listener(
+          onPointerDown: (_) {
+            if (_editingIdx == idx) return; // 編集中の行は文字選択に任せる
+            _lineDragSelecting = true;
+            _lineDragAnchor = idx;
+          },
+          child: InkWell(
         onTapDown: (d) => _lineTapPos = d.localPosition,
         onTap: () {
           int? caret;
@@ -197546,6 +197853,8 @@ $currentText
             ],
           ),
         ),
+          ), // InkWell
+        ), // Listener
       );
     });
   }
@@ -198366,6 +198675,151 @@ class _PdfExporter {
   }
 
   /// _DocxBlock のリストから PDF を生成する。
+  /// テキスト / Markdown / HTML を PDF にする (= ユーザー要望: テキスト
+  /// ファイルもダウンロードして PDF に変換できるように)。
+  ///
+  /// Markdown は見出し (#) を大きく、 箇条書き (- / *) を字下げして出す。
+  /// HTML はタグを外した中身を出す (= プレビューで見えている文字に近づける)。
+  static Future<Uint8List> exportPlainLines(List<String> lines,
+      {bool markdown = false, bool html = false}) async {
+    final font = await _loadJapaneseFont();
+    final doc = pw.Document();
+    final pageTheme = pw.PageTheme(
+      pageFormat: pdf.PdfPageFormat.a4,
+      margin: const pw.EdgeInsets.symmetric(horizontal: 46, vertical: 54),
+      theme: font != null
+          ? pw.ThemeData.withFont(
+              base: font, bold: font, italic: font, boldItalic: font)
+          : pw.ThemeData.base(),
+    );
+    var src = List<String>.from(lines);
+    if (html) {
+      // タグを外して、 段落らしい所で改行する。
+      var t = src.join('\n');
+      t = t.replaceAll(
+          RegExp(r'<(script|style)[\s\S]*?</\1>', caseSensitive: false), '');
+      t = t.replaceAll(
+          RegExp(r'<br\s*/?>|</p>|</div>|</h[1-6]>', caseSensitive: false),
+          '\n');
+      t = t.replaceAll(RegExp(r'<[^>]+>'), '');
+      t = t
+          .replaceAll('&nbsp;', ' ')
+          .replaceAll('&lt;', '<')
+          .replaceAll('&gt;', '>')
+          .replaceAll('&amp;', '&');
+      src = t.split('\n');
+      // 空行が続くところは 1 行にまとめる。
+      final out = <String>[];
+      for (final l in src) {
+        final v = l.trimRight();
+        if (v.trim().isEmpty && (out.isEmpty || out.last.trim().isEmpty)) {
+          continue;
+        }
+        out.add(v);
+      }
+      src = out;
+    }
+    final widgets = <pw.Widget>[];
+    var inFence = false;
+    for (final raw in src) {
+      final line = raw;
+      if (markdown && line.trimLeft().startsWith('```')) {
+        inFence = !inFence;
+        continue;
+      }
+      if (line.trim().isEmpty) {
+        widgets.add(pw.SizedBox(height: 6));
+        continue;
+      }
+      double size = 10.5;
+      var bold = false;
+      var text = line;
+      var indent = 0.0;
+      if (markdown && !inFence) {
+        final h = RegExp(r'^(#{1,6})\s+(.*)$').firstMatch(line.trimLeft());
+        if (h != null) {
+          final lv = h.group(1)!.length;
+          size = [20.0, 17.0, 15.0, 13.0, 12.0, 11.0][lv - 1];
+          bold = true;
+          text = h.group(2)!;
+        } else {
+          final li = RegExp(r'^(\s*)([-*+]|\d+\.)\s+(.*)$').firstMatch(line);
+          if (li != null) {
+            indent = 12.0 + li.group(1)!.length * 4.0;
+            text = '・${li.group(3)}';
+          }
+        }
+        // 強調記号は読みにくいので落とす。
+        text = text
+            .replaceAll(RegExp(r'\*\*(.+?)\*\*'), r'$1')
+            .replaceAll(RegExp(r'`(.+?)`'), r'$1');
+      }
+      widgets.add(pw.Padding(
+        padding: pw.EdgeInsets.only(bottom: 3, left: indent),
+        child: pw.Text(
+          text,
+          style: pw.TextStyle(
+            font: font,
+            fontSize: size,
+            fontWeight: bold ? pw.FontWeight.bold : pw.FontWeight.normal,
+          ),
+        ),
+      ));
+    }
+    if (widgets.isEmpty) widgets.add(pw.SizedBox());
+    doc.addPage(pw.MultiPage(pageTheme: pageTheme, build: (ctx) => widgets));
+    return doc.save();
+  }
+
+  /// 表 (シート) を PDF にする (= ユーザー要望: xlsx もダウンロードから
+  /// PDF に)。 罫線付きの表として並べる。
+  static Future<Uint8List> exportSheet(
+      String title, List<List<String>> rows) async {
+    final font = await _loadJapaneseFont();
+    final doc = pw.Document();
+    // 列が多い時は横向きにする (= はみ出して読めなくなるのを防ぐ)。
+    final cols = rows.fold<int>(0, (m, r) => math.max(m, r.length));
+    final landscape = cols > 6;
+    final pageTheme = pw.PageTheme(
+      pageFormat: landscape
+          ? pdf.PdfPageFormat.a4.landscape
+          : pdf.PdfPageFormat.a4,
+      margin: const pw.EdgeInsets.all(28),
+      theme: font != null
+          ? pw.ThemeData.withFont(
+              base: font, bold: font, italic: font, boldItalic: font)
+          : pw.ThemeData.base(),
+    );
+    final body = <List<String>>[
+      for (final r in rows)
+        [
+          for (int c = 0; c < cols; c++) c < r.length ? r[c] : '',
+        ],
+    ];
+    doc.addPage(pw.MultiPage(
+      pageTheme: pageTheme,
+      build: (ctx) => [
+        pw.Text(title,
+            style: pw.TextStyle(
+                font: font, fontSize: 14, fontWeight: pw.FontWeight.bold)),
+        pw.SizedBox(height: 8),
+        pw.TableHelper.fromTextArray(
+          data: body,
+          cellStyle: pw.TextStyle(font: font, fontSize: 8.5),
+          headerStyle: pw.TextStyle(
+              font: font, fontSize: 9, fontWeight: pw.FontWeight.bold),
+          headerCount: body.length > 1 ? 1 : 0,
+          border: pw.TableBorder.all(
+              color: const pdf.PdfColor.fromInt(0xFF9E9E9E), width: 0.4),
+          cellAlignment: pw.Alignment.centerLeft,
+          cellPadding:
+              const pw.EdgeInsets.symmetric(horizontal: 3, vertical: 2),
+        ),
+      ],
+    ));
+    return doc.save();
+  }
+
   static Future<Uint8List> exportDocx(
       List<_DocxBlock> blocks, Map<String, Uint8List> media) async {
     final font = await _loadJapaneseFont();
@@ -208790,9 +209244,319 @@ class _FormulaEvaluator {
           return '${d.year}-${d.month.toString().padLeft(2, '0')}-'
               '${d.day.toString().padLeft(2, '0')}';
         }
+      // ── ここから追加分 (= ユーザー要望: VLOOKUP 等、 使える関数を増やす) ──
+      case 'SUMIF':
+        {
+          // SUMIF(範囲, 条件, [合計範囲])
+          if (args.length < 2) return '#N/A';
+          final rng = _rangeCells(args[0]);
+          if (rng == null) return '#N/A';
+          final cond = _evalNode(args[1]);
+          final sumRng =
+              args.length >= 3 ? _rangeCells(args[2]) : rng;
+          if (sumRng == null) return '#N/A';
+          num total = 0;
+          for (int i = 0; i < rng.length; i++) {
+            if (!_matchCriteria(rng[i], cond)) continue;
+            if (i < sumRng.length) total += _toNum(sumRng[i]);
+          }
+          return total;
+        }
+      case 'COUNTIF':
+        {
+          if (args.length < 2) return '#N/A';
+          final rng = _rangeCells(args[0]);
+          if (rng == null) return '#N/A';
+          final cond = _evalNode(args[1]);
+          var n = 0;
+          for (final v in rng) {
+            if (_matchCriteria(v, cond)) n++;
+          }
+          return n;
+        }
+      case 'AVERAGEIF':
+        {
+          if (args.length < 2) return '#N/A';
+          final rng = _rangeCells(args[0]);
+          if (rng == null) return '#N/A';
+          final cond = _evalNode(args[1]);
+          final avgRng = args.length >= 3 ? _rangeCells(args[2]) : rng;
+          if (avgRng == null) return '#N/A';
+          num total = 0;
+          var n = 0;
+          for (int i = 0; i < rng.length; i++) {
+            if (!_matchCriteria(rng[i], cond)) continue;
+            if (i < avgRng.length) {
+              total += _toNum(avgRng[i]);
+              n++;
+            }
+          }
+          return n == 0 ? '#DIV/0' : total / n;
+        }
+      case 'VLOOKUP':
+        {
+          // VLOOKUP(探す値, 範囲, 何列目, [FALSE=完全一致])
+          if (args.length < 3) return '#N/A';
+          final key = _evalNode(args[0]);
+          final grid = _rangeGrid(args[1]);
+          if (grid == null || grid.isEmpty) return '#N/A';
+          final colIdx = _toNum(_evalNode(args[2])).toInt();
+          if (colIdx < 1) return '#VALUE';
+          final fourth = args.length >= 4 ? _evalNode(args[3]) : false;
+          final approx =
+              (fourth is bool) ? fourth : (_toNum(fourth) != 0);
+          final exact = !approx;
+          for (final row in grid) {
+            if (row.isEmpty) continue;
+            final left = row.first;
+            final hit = exact
+                ? _sameValue(left, key)
+                : _toNum(left) <= _toNum(key);
+            if (hit && _sameValue(left, key)) {
+              return colIdx <= row.length ? row[colIdx - 1] : '#REF';
+            }
+          }
+          if (!exact) {
+            // 近い値 (以下で一番大きい物) を返す。
+            dynamic best;
+            num bestN = double.negativeInfinity;
+            for (final row in grid) {
+              if (row.isEmpty) continue;
+              final n = _toNum(row.first);
+              if (n <= _toNum(key) && n >= bestN) {
+                bestN = n;
+                best = colIdx <= row.length ? row[colIdx - 1] : '#REF';
+              }
+            }
+            if (best != null) return best;
+          }
+          return '#N/A';
+        }
+      case 'HLOOKUP':
+        {
+          // HLOOKUP(探す値, 範囲, 何行目)
+          if (args.length < 3) return '#N/A';
+          final key = _evalNode(args[0]);
+          final grid = _rangeGrid(args[1]);
+          if (grid == null || grid.isEmpty) return '#N/A';
+          final rowIdx = _toNum(_evalNode(args[2])).toInt();
+          if (rowIdx < 1 || rowIdx > grid.length) return '#REF';
+          final head = grid.first;
+          for (int c = 0; c < head.length; c++) {
+            if (_sameValue(head[c], key)) {
+              final row = grid[rowIdx - 1];
+              return c < row.length ? row[c] : '#REF';
+            }
+          }
+          return '#N/A';
+        }
+      case 'INDEX':
+        {
+          // INDEX(範囲, 行, [列])
+          if (args.length < 2) return '#N/A';
+          final grid = _rangeGrid(args[0]);
+          if (grid == null || grid.isEmpty) return '#N/A';
+          final r = _toNum(_evalNode(args[1])).toInt();
+          final c = args.length >= 3 ? _toNum(_evalNode(args[2])).toInt() : 1;
+          if (r < 1 || r > grid.length) return '#REF';
+          final row = grid[r - 1];
+          if (c < 1 || c > row.length) return '#REF';
+          return row[c - 1];
+        }
+      case 'MATCH':
+        {
+          // MATCH(探す値, 範囲) — 何番目かを返す
+          if (args.length < 2) return '#N/A';
+          final key = _evalNode(args[0]);
+          final rng = _rangeCells(args[1]);
+          if (rng == null) return '#N/A';
+          for (int i = 0; i < rng.length; i++) {
+            if (_sameValue(rng[i], key)) return i + 1;
+          }
+          return '#N/A';
+        }
+      case 'ROUNDUP':
+      case 'ROUNDDOWN':
+        {
+          if (args.isEmpty) return '#N/A';
+          final v = _toNum(_evalNode(args[0]));
+          final digits =
+              args.length >= 2 ? _toNum(_evalNode(args[1])).toInt() : 0;
+          final f = math.pow(10, digits).toDouble();
+          final x = v * f;
+          final r = name == 'ROUNDUP' ? x.ceil() : x.floor();
+          final out = (v < 0)
+              ? (name == 'ROUNDUP' ? x.floor() : x.ceil()) / f
+              : r / f;
+          return digits <= 0 ? out.round() : out;
+        }
+      case 'CEILING':
+        {
+          if (args.isEmpty) return '#N/A';
+          return _toNum(_evalNode(args[0])).ceil();
+        }
+      case 'FLOOR':
+        {
+          if (args.isEmpty) return '#N/A';
+          return _toNum(_evalNode(args[0])).floor();
+        }
+      case 'PRODUCT':
+        {
+          num v = 1;
+          for (final x in flatAll()) {
+            v *= _toNum(x);
+          }
+          return v;
+        }
+      case 'MEDIAN':
+        {
+          final nums = <num>[
+            for (final x in flatAll())
+              if (x is num || num.tryParse('$x') != null) _toNum(x),
+          ]..sort();
+          if (nums.isEmpty) return '#N/A';
+          final mid = nums.length ~/ 2;
+          return nums.length.isOdd
+              ? nums[mid]
+              : (nums[mid - 1] + nums[mid]) / 2;
+        }
+      case 'COUNTBLANK':
+        {
+          var n = 0;
+          for (final x in flatAll()) {
+            if (_toStr(x).trim().isEmpty) n++;
+          }
+          return n;
+        }
+      case 'SUBSTITUTE':
+        {
+          if (args.length < 3) return '#N/A';
+          return _toStr(_evalNode(args[0]))
+              .replaceAll(_toStr(_evalNode(args[1])),
+                  _toStr(_evalNode(args[2])));
+        }
+      case 'REPLACE':
+        {
+          // REPLACE(文字列, 開始, 文字数, 置き換え)
+          if (args.length < 4) return '#N/A';
+          final t = _toStr(_evalNode(args[0]));
+          final start = _toNum(_evalNode(args[1])).toInt() - 1;
+          final len = _toNum(_evalNode(args[2])).toInt();
+          final rep = _toStr(_evalNode(args[3]));
+          if (start < 0 || start > t.length) return '#VALUE';
+          final end = math.min<int>(t.length, start + math.max<int>(0, len));
+          return t.substring(0, start) + rep + t.substring(end);
+        }
+      case 'FIND':
+      case 'SEARCH':
+        {
+          if (args.length < 2) return '#N/A';
+          var needle = _toStr(_evalNode(args[0]));
+          var hay = _toStr(_evalNode(args[1]));
+          if (name == 'SEARCH') {
+            needle = needle.toLowerCase();
+            hay = hay.toLowerCase();
+          }
+          final i = hay.indexOf(needle);
+          return i < 0 ? '#VALUE' : i + 1;
+        }
+      case 'TEXT':
+        {
+          // TEXT(値, 桁数) — 小数の桁を揃える簡易版。
+          if (args.isEmpty) return '';
+          final v = _toNum(_evalNode(args[0]));
+          final d = args.length >= 2 ? _toNum(_evalNode(args[1])).toInt() : 0;
+          return v.toStringAsFixed(math.max(0, d));
+        }
+      case 'VALUE':
+        {
+          if (args.isEmpty) return 0;
+          return num.tryParse(_toStr(_evalNode(args[0])).trim()) ?? '#VALUE';
+        }
+      case 'ISBLANK':
+        {
+          if (args.isEmpty) return true;
+          return _toStr(_evalNode(args[0])).trim().isEmpty;
+        }
+      case 'ISNUMBER':
+        {
+          if (args.isEmpty) return false;
+          final v = _evalNode(args[0]);
+          return v is num || num.tryParse(_toStr(v).trim()) != null;
+        }
       default:
         return '#NAME';
     }
+  }
+
+  /// 引数が範囲なら 1 次元の値の並びを返す (範囲でなければ null)。
+  /// (= ユーザー要望で足した SUMIF / VLOOKUP 等が使う)
+  List<dynamic>? _rangeCells(_AstNode n) {
+    if (n is! _AstRange) {
+      final v = _evalNode(n);
+      return v is List ? v : null;
+    }
+    final out = <dynamic>[];
+    for (int r = n.r1; r <= n.r2; r++) {
+      for (int c = n.c1; c <= n.c2; c++) {
+        out.add(evalCell(r, c));
+      }
+    }
+    return out;
+  }
+
+  /// 引数が範囲なら 行 × 列 の形で返す (VLOOKUP / INDEX 用)。
+  List<List<dynamic>>? _rangeGrid(_AstNode n) {
+    if (n is! _AstRange) return null;
+    final out = <List<dynamic>>[];
+    for (int r = n.r1; r <= n.r2; r++) {
+      final row = <dynamic>[];
+      for (int c = n.c1; c <= n.c2; c++) {
+        row.add(evalCell(r, c));
+      }
+      out.add(row);
+    }
+    return out;
+  }
+
+  /// 2 つの値が同じか (数字は数として、 それ以外は大文字小文字を無視)。
+  static bool _sameValue(dynamic a, dynamic b) {
+    final na = num.tryParse(_toStr(a).trim());
+    final nb = num.tryParse(_toStr(b).trim());
+    if (na != null && nb != null) return na == nb;
+    return _toStr(a).trim().toLowerCase() == _toStr(b).trim().toLowerCase();
+  }
+
+  /// SUMIF / COUNTIF の条件。 '>10' '<=3' '<>x' や、 ただの値に対応。
+  static bool _matchCriteria(dynamic value, dynamic criteria) {
+    final c = _toStr(criteria).trim();
+    final m = RegExp(r'^(>=|<=|<>|>|<|=)\s*(.*)$').firstMatch(c);
+    if (m == null) return _sameValue(value, c);
+    final op = m.group(1)!;
+    final rhs = m.group(2)!.trim();
+    final nv = num.tryParse(_toStr(value).trim());
+    final nr = num.tryParse(rhs);
+    if (nv != null && nr != null) {
+      switch (op) {
+        case '>':
+          return nv > nr;
+        case '<':
+          return nv < nr;
+        case '>=':
+          return nv >= nr;
+        case '<=':
+          return nv <= nr;
+        case '<>':
+          return nv != nr;
+        case '=':
+          return nv == nr;
+      }
+    }
+    final sv = _toStr(value).trim().toLowerCase();
+    final sr = rhs.toLowerCase();
+    if (op == '<>') return sv != sr;
+    if (op == '=') return sv == sr;
+    return false;
   }
 
   // ─── 値変換ヘルパ ─────────────────────────────────────────────────
@@ -211860,7 +212624,12 @@ Future<T?> _showDialogNearAnchor<T>(
 /// × ボタンはヘッダー右端にあるので、 [hostContext] (= エディタ本体) の
 /// 右上内側に置けば × のすぐ近くに出る。
 /// 返り値: 'save' / 'discard' / 'cancel' / null (外側タップ)。
+/// 未保存確認が今出ているか (= ユーザー報告: Esc を押すたびにダイアログが
+/// 積み上がって画面が真っ暗になる)。 出ている間は新しく出さない。
+bool _unsavedConfirmOpen = false;
+
 Future<String?> _showUnsavedConfirmNear(BuildContext hostContext) {
+  if (_unsavedConfirmOpen) return Future<String?>.value(null);
   final provider = hostContext.read<MindMapProvider>();
   final title = provider.t('doc.unsavedChanges');
   final message = provider.t('doc.discardChangesClose');
@@ -211894,8 +212663,12 @@ Future<String?> _showUnsavedConfirmNear(BuildContext hostContext) {
   top = top.clamp(8.0, math.max(8.0, screen.height - 180));
   final completer = Completer<String?>();
   late OverlayEntry entry;
+  // 出ている間は 2 枚目を出さない (= ユーザー報告: Esc 連打で溜まって
+  // 画面が真っ暗になる)。
+  _unsavedConfirmOpen = true;
   void finish(String? v) {
     if (completer.isCompleted) return;
+    _unsavedConfirmOpen = false;
     completer.complete(v);
     try {
       entry.remove();
