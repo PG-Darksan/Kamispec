@@ -336,10 +336,20 @@ Future<File> _floatingAiLastFile() async {
 @pragma('vm:entry-point')
 void overlayMain() {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const MaterialApp(
-    debugShowCheckedModeBanner: false,
-    home: FloatingMemoOverlay(),
-  ));
+  // ── 表示言語を読んでから出す (= ユーザー報告: フローティング AI が
+  //    英語表記になる)。 オーバーレイは本体と別のエンジンで動くので、
+  //    ここで読み直さないと FloatL10n が既定の英語のままになる。 ──
+  unawaited(FloatL10n.load().then((_) {
+    runApp(const MaterialApp(
+      debugShowCheckedModeBanner: false,
+      home: FloatingMemoOverlay(),
+    ));
+  }).catchError((_) {
+    runApp(const MaterialApp(
+      debugShowCheckedModeBanner: false,
+      home: FloatingMemoOverlay(),
+    ));
+  }));
 }
 
 /// 他のアプリの上に出る小さなメモカード。 入力は自動保存され、 本体アプリの
@@ -377,6 +387,9 @@ class _FloatingMemoOverlayState extends State<FloatingMemoOverlay> {
   /// true  = focusPointer (この窓に文字を打てる)
   /// false = defaultFlag  (この窓はキー入力を取らない → 後ろが操作しやすい)
   bool _inputEnabled = true;
+
+  /// リサイズの取っ手を掴んでいる最中か (= 今の大きさを出すため)。
+  bool _resizing = false;
 
   Future<void> _toggleInputMode() async {
     final next = !_inputEnabled;
@@ -471,6 +484,30 @@ class _FloatingMemoOverlayState extends State<FloatingMemoOverlay> {
         ),
         onChanged: (_) => _scheduleSave(),
       );
+
+  /// メモ / AI の切り替えボタン 1 個 (= ユーザー要望: 位置を固定)。
+  /// 選んでいる方だけ色が付く。 押しても並び順は変わらない。
+  Widget _modeButton({
+    required bool isAi,
+    required IconData icon,
+    required Color onColor,
+    required String tip,
+  }) {
+    final on = (_mode == 'ai') == isAi;
+    return IconButton(
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+      tooltip: tip,
+      icon: Icon(icon, size: 16, color: on ? onColor : Colors.white30),
+      onPressed: on
+          ? null
+          : () {
+              setState(() => _mode = isAi ? 'ai' : 'memo');
+              // ignore: discarded_futures
+              _persistMode();
+            },
+    );
+  }
 
   /// AI モードの中身 (= ユーザー要望: フローティング AI をアプリの外に)。
   ///
@@ -857,35 +894,19 @@ class _FloatingMemoOverlayState extends State<FloatingMemoOverlay> {
             child: Padding(
             padding: const EdgeInsets.fromLTRB(8, 2, 2, 0),
             child: Row(children: [
-              Icon(
-                  _mode == 'ai'
-                      ? Icons.auto_awesome_rounded
-                      : Icons.sticky_note_2_rounded,
-                  color: _mode == 'ai'
-                      ? const Color(0xFFBA68C8)
-                      : const Color(0xFFFFB347),
-                  size: 16),
-              const SizedBox(width: 6),
-              // メモ / AI の切り替え (= ユーザー要望: AI もアプリの外に)。
-              IconButton(
-                padding: EdgeInsets.zero,
-                constraints:
-                    const BoxConstraints(minWidth: 28, minHeight: 28),
-                tooltip: _mode == 'ai'
-                    ? FloatL10n.t('memo.title')
-                    : FloatL10n.t('memo.openAi'),
-                icon: Icon(
-                    _mode == 'ai'
-                        ? Icons.sticky_note_2_outlined
-                        : Icons.auto_awesome_outlined,
-                    size: 15,
-                    color: Colors.white54),
-                onPressed: () {
-                  setState(() => _mode = _mode == 'ai' ? 'memo' : 'ai');
-                  // ignore: discarded_futures
-                  _persistMode();
-                },
-              ),
+              // ── メモ / AI は場所の変わらない 2 つのボタンにする
+              //    (= ユーザー要望: 切り替えるたびにボタンの位置が
+              //    入れ替わると使いにくい)。 今どちらかは色で示す。 ──
+              _modeButton(
+                  isAi: false,
+                  icon: Icons.sticky_note_2_rounded,
+                  onColor: const Color(0xFFFFB347),
+                  tip: FloatL10n.t('memo.title')),
+              _modeButton(
+                  isAi: true,
+                  icon: Icons.auto_awesome_rounded,
+                  onColor: const Color(0xFFBA68C8),
+                  tip: FloatL10n.t('memo.openAi')),
               // タイトル文字は出さない (= ユーザー要望: 幅が足りず潰れる)。
               //   何のモードかは左のアイコンの色と形で分かる。
               //   空いた分はボタンの間隔として使う。
@@ -975,28 +996,69 @@ class _FloatingMemoOverlayState extends State<FloatingMemoOverlay> {
             ),
           ),
           ]),
-          // ── 右下のリサイズグリップ (= ユーザー要望: ドラッグで大きさ調整) ──
+          // ── 右下のリサイズグリップ (= ユーザー要望: 大きさ調節が難しい
+          //    のでもっと調整しやすく)。 掴める所を大きく (36×36) して、
+          //    掴んでいる間は今の大きさを数字で出す。 ──
           Positioned(
             right: 0,
             bottom: 0,
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
+              onPanStart: (_) => setState(() => _resizing = true),
               onPanUpdate: (d) {
                 _memoW = (_memoW + d.delta.dx).clamp(180.0, _kMaxW);
                 _memoH = (_memoH + d.delta.dy).clamp(160.0, _kMaxH);
                 _applyOverlaySize(collapsed: false);
+                setState(() {});
               },
               onPanEnd: (_) {
-                setState(() {});
+                setState(() => _resizing = false);
                 _persistSize();
               },
-              child: const Padding(
-                padding: EdgeInsets.all(4),
-                child: Icon(Icons.south_east_rounded,
-                    size: 14, color: Colors.white38),
+              onPanCancel: () => setState(() => _resizing = false),
+              child: Container(
+                width: 36,
+                height: 36,
+                alignment: Alignment.bottomRight,
+                padding: const EdgeInsets.all(3),
+                child: Container(
+                  width: 22,
+                  height: 22,
+                  decoration: BoxDecoration(
+                    color: _resizing
+                        ? const Color(0xFF6C63FF)
+                        : Colors.white.withValues(alpha: 0.14),
+                    borderRadius: const BorderRadius.only(
+                        bottomRight: Radius.circular(10),
+                        topLeft: Radius.circular(10)),
+                  ),
+                  child: Icon(Icons.open_in_full_rounded,
+                      size: 13,
+                      color: _resizing ? Colors.white : Colors.white60),
+                ),
               ),
             ),
           ),
+          // 掴んでいる間だけ、 今の大きさを見せる (= 目安が無いと合わせ
+          // にくいため)。
+          if (_resizing)
+            Positioned(
+              right: 40,
+              bottom: 8,
+              child: IgnorePointer(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.6),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text('${_memoW.round()} × ${_memoH.round()}',
+                      style: const TextStyle(
+                          color: Colors.white, fontSize: 10.5)),
+                ),
+              ),
+            ),
         ]),
       ),
     );

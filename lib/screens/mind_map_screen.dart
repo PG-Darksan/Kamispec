@@ -9660,6 +9660,13 @@ class _MindMapScreenState extends State<MindMapScreen>
                   return label.toLowerCase().contains(q) ||
                       '${c['id']}'.toLowerCase().contains(q);
                 }).toList();
+          // ── 画面に収まる大きさにする (= ユーザー報告: モバイルで
+          //    「ショートカットにするボタンを選ぶ」 の右端が切れる。
+          //    幅 400 固定だったので、 狭い端末で画面からはみ出していた) ──
+          final scr = MediaQuery.sizeOf(dctx);
+          final dlgW = math.min(400.0, scr.width - 16.0);
+          final listH =
+              math.min(300.0, math.max(120.0, scr.height - 280.0));
           return _positionNearAnchor(
             dctx,
             anchor,
@@ -9778,7 +9785,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                     ),
                     const SizedBox(height: 8),
                     SizedBox(
-                      height: 300,
+                      height: listH,
                       child: Scrollbar(
                         child: ListView.builder(
                           itemCount: shown.length,
@@ -9795,6 +9802,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   id, (c['icon'] as IconData?) ?? Icons.circle,
                                   color: color, size: 20),
                               title: Text(label,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(
                                       color: Colors.white, fontSize: 13)),
                               onTap: () async {
@@ -9846,7 +9855,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                 ),
               ),
             ),
-            const Size(400, 470),
+            Size(dlgW, listH + 170),
           );
         },
       ),
@@ -30740,6 +30749,14 @@ class _MindMapScreenState extends State<MindMapScreen>
                           'Markdown',
                           const Color(0xFF6C63FF)
                         ),
+                        // HTML (= ユーザー要望: マークダウンみたいに編集
+                        //   してプレビューを出せるように)。
+                        (
+                          'html',
+                          Icons.code_rounded,
+                          'HTML',
+                          const Color(0xFFFF7043)
+                        ),
                         (
                           'docx',
                           Icons.description_outlined,
@@ -36994,6 +37011,15 @@ class _MindMapScreenState extends State<MindMapScreen>
       'color': Color(0xFF26A69A),
     },
     {
+      // ファイルを作成 (= ユーザー要望: モバイルはキャンバス右クリックが
+      //   使えず「ファイルを生成」 に辿り着けないので、 ボタンとして出す)。
+      //   押すと形式と名前を聞いて、 画面の中央にファイルノードを作る。
+      'id': 'createFile',
+      'labelKey': 'file.create',
+      'icon': Icons.note_add_rounded,
+      'color': Color(0xFF4FC3F7),
+    },
+    {
       // 画面録画 (= ユーザー要望: カスタムボタンとしても搭載)。
       //   押すと範囲を選んで録画開始、 もう一度押すと停止して保存。
       'id': 'screenRecord',
@@ -37182,6 +37208,8 @@ class _MindMapScreenState extends State<MindMapScreen>
         'addPage',
         // 'link' (リンクノードを追加) は廃止 (= ユーザー要望)。
         'file',
+        // ファイルを作成 (= ユーザー要望: モバイルにもボタンを)。
+        'createFile',
         'rangeSelect',
         'selectAll',
         'insertMapShape',
@@ -39800,6 +39828,16 @@ class _MindMapScreenState extends State<MindMapScreen>
       case 'screenRecord':
         // 画面録画 (= ユーザー要望: Windows+G のような操作パネルを出す)。
         setState(() => _recBarOpen = !_recBarOpen);
+        break;
+      case 'createFile':
+        // ファイルを作成 (= ユーザー要望: モバイルにもボタンを)。
+        // 画面 (分割中はアクティブ側ペイン) の中央にファイルノードを作る。
+        _removeOverlay();
+        unawaited(_createFileNodeAt(
+            provider,
+            _globalToCanvas(_editorViewportCenter(provider, global: true),
+                    _ctrlFor(provider.currentPage.id)) -
+                const Offset(80, 21)));
         break;
       case 'ocrSearch':
         // APIキー必須のAI OCR実装だったため廃止。既存配置が残っていても起動しない。
@@ -53076,11 +53114,18 @@ class _MindMapScreenState extends State<MindMapScreen>
                       ),
                     ),
                     GestureDetector(
-                      // 収納 = 畳むだけ。 バーごと消すのはヘッダーの非表示
-                      // ボタン (toggleBottomBar) の役目 (= ユーザー要望)。
+                      // ── モバイルは「非表示」 にする (= ユーザー要望:
+                      //    収納/展開ではなく表示/非表示の切り替えに)。
+                      //    画面下端の帯をタップ / 上スワイプで戻せる。
+                      //    デスクトップは従来どおり畳むだけ。 ──
                       onTap: () {
                         setState(() {
-                          _bottomBarCollapsed = true;
+                          if (_isDesktop) {
+                            _bottomBarCollapsed = true;
+                          } else {
+                            _bottomBarOpen = false;
+                            _bottomBarCollapsed = false;
+                          }
                           _bottomToolbarExpandedNotifier.value = false;
                         });
                       },
@@ -53094,19 +53139,25 @@ class _MindMapScreenState extends State<MindMapScreen>
                           border: Border.all(
                               color: Colors.white.withValues(alpha: 0.1)),
                         ),
-                        child: const Icon(Icons.chevron_right_rounded,
-                            color: Colors.white30, size: 14),
+                        child: Icon(
+                            _isDesktop
+                                ? Icons.chevron_right_rounded
+                                : Icons.visibility_off_rounded,
+                            color: Colors.white30,
+                            size: 14),
                       ),
                     ),
                   ],
                 )
               // 閉じた状態: 小さな開くボタンのみ。
-              // ── モバイルで「非表示」 (ヘッダーのボタン) にした時は、
-              //    開くボタンも出さない。 画面下端の透明な帯をタップ /
-              //    上スワイプすると戻せるので操作不能にはならない。
-              //    「収納」 (バーの横のボタン) の時は、 消さずに畳むだけ
-              //    なので、 開き直すつまみを見える形で残す
-              //    (= ユーザー要望: 収納は消えないように)。 ──
+              // ── モバイルで「非表示」 にした時は開くボタンも出さない。
+              //    画面下端の透明な帯をタップ / 上スワイプすると戻せるので
+              //    操作不能にはならない。 ──
+              // ── 畳んだ状態のつまみ (モバイル) ──
+              //    モバイルは「収納」 を廃止したのでこの状態には入らないが、
+              //    途中の状態が残っていた時のために、 押したら「非表示」 に
+              //    揃える (= ユーザー要望: 1 つに集約されたボタンを押すと
+              //    展開ではなく非表示になるように)。
               : (!_isDesktop && _bottomBarCollapsed)
                   ? Align(
                       alignment: Alignment.bottomRight,
@@ -53115,8 +53166,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                         child: GestureDetector(
                           onTap: () {
                             setState(() {
+                              _bottomBarOpen = false;
                               _bottomBarCollapsed = false;
-                              _bottomToolbarExpandedNotifier.value = true;
+                              _bottomToolbarExpandedNotifier.value = false;
                             });
                           },
                           child: Container(
@@ -53130,7 +53182,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   color:
                                       Colors.white.withValues(alpha: 0.12)),
                             ),
-                            child: const Icon(Icons.chevron_left_rounded,
+                            child: const Icon(Icons.visibility_off_rounded,
                                 color: Colors.white54, size: 15),
                           ),
                         ),
@@ -54609,6 +54661,21 @@ class _MindMapScreenState extends State<MindMapScreen>
       if (mounted) setState(() {});
       return;
     }
+    // ── Android は OS の MediaProjection で録る (= ユーザー要望: モバイル
+    //    版でも画面録画に対応)。 範囲指定はできないので画面全体。 ──
+    if (Platform.isAndroid) {
+      try {
+        await rec.startAndroid();
+        if (!mounted) return;
+        _screenRecSnack(
+            provider.t('ve.screenRecStarted'), const Color(0xFF43B97F));
+        _pushScreenRecState();
+      } catch (e) {
+        if (mounted) _screenRecSnack('$e', const Color(0xFFE57373));
+      }
+      if (mounted) setState(() {});
+      return;
+    }
     if (!Platform.isWindows) {
       _screenRecSnack(provider.t('ve.screenRecDesktopOnly'),
           const Color(0xFFFFB347));
@@ -54766,10 +54833,15 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (!_recBarOpen) return const SizedBox.shrink();
     final rec = ScreenRecorder.instance;
     final media = MediaQuery.sizeOf(context);
+    // ── バーが画面からはみ出さないようにする (= ユーザー報告: モバイルで
+    //    画面録画のバーを消せない。 幅が画面より広く、 右端の × が画面外に
+    //    出ていたのが原因)。 中の道具は横スクロールに逃がし、 × は常に
+    //    バーの右端に見えるようにする。 ──
+    final barMaxW = math.max(200.0, media.width - 16);
     final pos = _recBarPos ??
-        Offset((media.width - 360) / 2, 74);
+        Offset(math.max(0.0, (media.width - 360) / 2), 74);
     return Positioned(
-      left: pos.dx.clamp(0.0, math.max(0.0, media.width - 220)),
+      left: pos.dx.clamp(0.0, math.max(0.0, media.width - barMaxW)),
       top: pos.dy.clamp(0.0, math.max(0.0, media.height - 80)),
       child: AnimatedBuilder(
         animation: rec,
@@ -54782,6 +54854,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             }),
             child: Container(
               padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+              constraints: BoxConstraints(maxWidth: barMaxW),
               decoration: BoxDecoration(
                 color: const Color(0xF21B1B2C),
                 borderRadius: BorderRadius.circular(14),
@@ -54797,6 +54870,12 @@ class _MindMapScreenState extends State<MindMapScreen>
                 ],
               ),
               child: Row(mainAxisSize: MainAxisSize.min, children: [
+                // ── 道具の列は入り切らなければ横スクロール。 × は列の外
+                //    (右端) に固定するので、 いつでも押して閉じられる。 ──
+                Flexible(
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
                 Icon(Icons.screenshot_monitor_rounded,
                     size: 17,
                     color: rec.recording
@@ -54828,46 +54907,57 @@ class _MindMapScreenState extends State<MindMapScreen>
                   ],
                 ] else ...[
                   // ── 待機中: 対象を選んで開始 ──
-                  _recTargetChip(provider, 'screen', Icons.desktop_windows_rounded,
-                      provider.t('ve.recTargetScreen')),
-                  const SizedBox(width: 4),
-                  _recTargetChip(provider, 'region', Icons.crop_rounded,
-                      provider.t('ve.recTargetRegion')),
-                  const SizedBox(width: 10),
+                  //    範囲指定は Windows だけ (Android の MediaProjection は
+                  //    画面全体しか撮れない)。
+                  if (_isDesktop) ...[
+                    _recTargetChip(
+                        provider,
+                        'screen',
+                        Icons.desktop_windows_rounded,
+                        provider.t('ve.recTargetScreen')),
+                    const SizedBox(width: 4),
+                    _recTargetChip(provider, 'region', Icons.crop_rounded,
+                        provider.t('ve.recTargetRegion')),
+                    const SizedBox(width: 10),
+                  ],
                   _recBarButton(
                     icon: Icons.fiber_manual_record_rounded,
                     label: provider.t('ve.recStart'),
                     color: const Color(0xFF9575CD),
                     onTap: () => unawaited(_recBarStart(provider)),
                   ),
-                  const SizedBox(width: 2),
-                  // ── アプリの外の窓へ出す (= ユーザー要望: 録画に写り込ま
-                  //    ないよう、 独立した窓で操作する) ──
-                  IconButton(
-                    tooltip: provider.t('ve.recPopOut'),
-                    padding: EdgeInsets.zero,
-                    constraints:
-                        const BoxConstraints(minWidth: 30, minHeight: 30),
-                    icon: const Icon(Icons.open_in_new_rounded,
-                        size: 16, color: Color(0xFF9575CD)),
-                    onPressed: () => unawaited(openScreenRecWindow()),
-                  ),
-                  const SizedBox(width: 2),
-                  // ── 保存先を選ぶ (= ユーザー要望) ──
-                  IconButton(
-                    tooltip: _recSaveDir.isEmpty
-                        ? provider.t('ve.recSaveDirPick')
-                        : '${provider.t('ve.recSaveDirPick')}\n$_recSaveDir',
-                    padding: EdgeInsets.zero,
-                    constraints:
-                        const BoxConstraints(minWidth: 30, minHeight: 30),
-                    icon: Icon(Icons.drive_file_move_outline,
-                        size: 17,
-                        color: _recSaveDir.isEmpty
-                            ? Colors.white38
-                            : const Color(0xFF9CCC65)),
-                    onPressed: () => unawaited(_pickRecSaveDir(provider)),
-                  ),
+                  // ── アプリの外の窓へ出す / 保存先を選ぶ ──
+                  //    どちらもデスクトップの別窓・フォルダー選択が前提で、
+                  //    モバイルでは押しても何も起きなかったので出さない
+                  //    (= ユーザー報告: 外部に出すボタンが反応しない)。
+                  //    Android の保存先はアプリ専用フォルダー固定。
+                  if (_isDesktop) ...[
+                    const SizedBox(width: 2),
+                    IconButton(
+                      tooltip: provider.t('ve.recPopOut'),
+                      padding: EdgeInsets.zero,
+                      constraints:
+                          const BoxConstraints(minWidth: 30, minHeight: 30),
+                      icon: const Icon(Icons.open_in_new_rounded,
+                          size: 16, color: Color(0xFF9575CD)),
+                      onPressed: () => unawaited(openScreenRecWindow()),
+                    ),
+                    const SizedBox(width: 2),
+                    IconButton(
+                      tooltip: _recSaveDir.isEmpty
+                          ? provider.t('ve.recSaveDirPick')
+                          : '${provider.t('ve.recSaveDirPick')}\n$_recSaveDir',
+                      padding: EdgeInsets.zero,
+                      constraints:
+                          const BoxConstraints(minWidth: 30, minHeight: 30),
+                      icon: Icon(Icons.drive_file_move_outline,
+                          size: 17,
+                          color: _recSaveDir.isEmpty
+                              ? Colors.white38
+                              : const Color(0xFF9CCC65)),
+                      onPressed: () => unawaited(_pickRecSaveDir(provider)),
+                    ),
+                  ],
                   const SizedBox(width: 2),
                   // ── 撮影後にプレビューを出すか (= ユーザー要望) ──
                   IconButton(
@@ -54883,44 +54973,50 @@ class _MindMapScreenState extends State<MindMapScreen>
                     onPressed: () =>
                         unawaited(_setRecPreviewAfter(!_recPreviewAfter)),
                   ),
-                  const SizedBox(width: 2),
-                  // ── 停止ショートカットの設定 (= ユーザー要望) ──
-                  IconButton(
-                    tooltip: _recStopHotkey.isEmpty
-                        ? provider.t('ve.recHotkeyTitle')
-                        : '${provider.t('ve.recHotkeyTitle')}\n'
-                            '${_recStopHotkey.toUpperCase()}',
-                    padding: EdgeInsets.zero,
-                    constraints:
-                        const BoxConstraints(minWidth: 30, minHeight: 30),
-                    icon: Icon(Icons.keyboard_rounded,
-                        size: 17,
-                        color: _recStopHotkey.isEmpty
-                            ? Colors.white38
-                            : const Color(0xFF9575CD)),
-                    onPressed: () =>
-                        unawaited(_editRecStopHotkey(provider)),
-                  ),
-                  if (_recLastSaved != null) ...[
+                  // ── 停止ショートカット / 保存先を開く: キーボードと
+                  //    エクスプローラーが前提なのでデスクトップだけ。 ──
+                  if (_isDesktop) ...[
                     const SizedBox(width: 2),
                     IconButton(
-                      tooltip: provider.t('ve.screenRecOpenFolder'),
+                      tooltip: _recStopHotkey.isEmpty
+                          ? provider.t('ve.recHotkeyTitle')
+                          : '${provider.t('ve.recHotkeyTitle')}\n'
+                              '${_recStopHotkey.toUpperCase()}',
                       padding: EdgeInsets.zero,
                       constraints:
                           const BoxConstraints(minWidth: 30, minHeight: 30),
-                      icon: const Icon(Icons.folder_open_rounded,
-                          size: 17, color: Color(0xFF9CCC65)),
-                      onPressed: () {
-                        try {
-                          Process.run('explorer', [
-                            '/select,',
-                            _recLastSaved!.replaceAll('/', '\\')
-                          ]);
-                        } catch (_) {}
-                      },
+                      icon: Icon(Icons.keyboard_rounded,
+                          size: 17,
+                          color: _recStopHotkey.isEmpty
+                              ? Colors.white38
+                              : const Color(0xFF9575CD)),
+                      onPressed: () =>
+                          unawaited(_editRecStopHotkey(provider)),
                     ),
+                    if (_recLastSaved != null) ...[
+                      const SizedBox(width: 2),
+                      IconButton(
+                        tooltip: provider.t('ve.screenRecOpenFolder'),
+                        padding: EdgeInsets.zero,
+                        constraints:
+                            const BoxConstraints(minWidth: 30, minHeight: 30),
+                        icon: const Icon(Icons.folder_open_rounded,
+                            size: 17, color: Color(0xFF9CCC65)),
+                        onPressed: () {
+                          try {
+                            Process.run('explorer', [
+                              '/select,',
+                              _recLastSaved!.replaceAll('/', '\\')
+                            ]);
+                          } catch (_) {}
+                        },
+                      ),
+                    ],
                   ],
                 ],
+                    ]),
+                  ),
+                ),
                 const SizedBox(width: 2),
                 IconButton(
                   tooltip: provider.t('btn.close'),
@@ -54996,6 +55092,17 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///  ユーザー要望: 範囲選びもプレビューも全部 1 つの窓の中で)。
   Future<void> _recBarStart(MindMapProvider provider,
       {ScreenRecRegion? preset, bool presetGiven = false}) async {
+    // ── Android は OS の MediaProjection で画面全体を録る
+    //    (= ユーザー要望: モバイル版でも画面録画に対応)。 ──
+    if (Platform.isAndroid) {
+      try {
+        await ScreenRecorder.instance.startAndroid();
+        if (mounted) setState(() => _recLastSaved = null);
+      } catch (e) {
+        if (mounted) _screenRecSnack('$e', const Color(0xFFE57373));
+      }
+      return;
+    }
     if (!Platform.isWindows) {
       _screenRecSnack(provider.t('ve.screenRecDesktopOnly'),
           const Color(0xFFFFB347));
@@ -81328,13 +81435,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           _removeOverlay();
           _showNameGroupDialog(ctx, provider);
         },
-        // ── 画像を一括保存 ──
-        // ── フラッシュカードに登録 (= ユーザー要望: 独立したボタン) ──
-        onFlashcard: () {
-          final ids = Set.of(_rangeSelectedIds);
-          _removeOverlay();
-          _registerSelectedAsFlashcards(ctx, provider, ids);
-        },
+        // (「カード化」 は廃止 = ユーザー要望)
       ),
     );
     Overlay.of(ctx).insert(_overlayEntry!);
@@ -81554,44 +81655,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     backFocus.dispose();
   }
 
-  Future<void> _registerSelectedAsFlashcards(
-      BuildContext ctx, MindMapProvider provider, Set<String> ids) async {
-    // フラッシュカードボタン (_showFlashcardMode) が読む _FlashcardStore に
-    //   保存する (= F7 登録と同じストア。 旧 provider.addFlashcard は別ストアで
-    //   ボタンから見えなかった)。
-    final pageId = provider.currentPage.id;
-    final existing = await _FlashcardStore.load(pageId);
-    final fronts = existing.map((c) => c.front).toSet();
-    int added = 0;
-    for (final id in ids) {
-      final n = provider.nodes[id];
-      if (n == null) continue;
-      final front = n.title.trim();
-      if (front.isEmpty || fronts.contains(front)) continue;
-      // メモがあれば裏面に。 なければ空 (後から追記/AI 生成できる)。
-      final back = (n.memoText ?? '').trim();
-      await _FlashcardStore.add(pageId, (
-        front: front,
-        back: back,
-        group: '',
-        global: false,
-        image: '',
-        imageSide: 'front'
-      ));
-      fronts.add(front);
-      added++;
-    }
-    if (!mounted) return;
-    _appSnack(
-        context,
-        SnackBar(
-          content: Text(added > 0
-              ? '$added 枚のフラッシュカードを登録しました（フラッシュカード画面で整理できます）'
-              : '新しく登録できるカードがありませんでした'),
-          backgroundColor: const Color(0xFF26C6DA),
-          duration: const Duration(seconds: 3),
-        ));
-  }
+  // (_registerSelectedAsFlashcards は廃止 = ユーザー要望: 複数選択の
+  //  「カード化」 ボタンを無くしたため呼び出し元が無くなった)
 
   // ─── 複数ノード一括編集 ───────────────────────────────────────────────────────
 
@@ -110158,6 +110223,12 @@ $body''';
     });
     // タブ追加ボタン (= ユーザー要望: AI ボタンの左に置く)。
     final addTabBtn = _btn(Icons.add_rounded, provider.t('md.tabAdd'), _addTab);
+    // タブ削除ボタン (= ユーザー要望: モバイルは右クリックが無いので、
+    // 開いているタブをボタンから消せるように)。 消しても Ctrl+Z で戻せる。
+    final delTabBtn = _btn(
+        Icons.close_rounded,
+        provider.t('md.tabDelete'),
+        _tabs.length <= 1 ? null : () => unawaited(_deleteTab(_sel)));
     final children = <Widget>[
             // (紫のノートのアイコンは削除 = ユーザー要望: 意味を成していない)
             // ── 開いているページ (タブ)。 添付ファイルでも使える
@@ -110168,6 +110239,7 @@ $body''';
                 child: _buildTabStrip(provider),
               ),
             if (_tabBarVisible) addTabBtn,
+            if (_tabBarVisible) delTabBtn,
             const SizedBox(width: 6),
             aiBtn,
             const Spacer(),
@@ -110289,59 +110361,56 @@ $body''';
       //    (= ユーザー要望)。 タブ追加 (+) はその左に置く (= ユーザー要望)。
       //    他のボタン列の流れから外し、 Stack でヘッダー全幅の中央に重ねる。 ──
       final rowChildren = children
-          .where((w) => !identical(w, aiBtn) && !identical(w, addTabBtn))
+          .where((w) =>
+              !identical(w, aiBtn) &&
+              !identical(w, addTabBtn) &&
+              !identical(w, delTabBtn))
           .toList();
       return Stack(children: [
         Row(children: rowChildren),
         Center(
           child: Row(mainAxisSize: MainAxisSize.min, children: [
             if (_tabBarVisible) addTabBtn,
+            if (_tabBarVisible) delTabBtn,
             const SizedBox(width: 4),
             aiBtn,
           ]),
         ),
       ]);
     }
-    // ── モバイルは 2 段にする (= ユーザー要望: AI ボタンはヘッダー中央、
-    //    タブは小さく、 残りの道具は下の段で左右に流せるように) ──
-    //    上段: タブ + 追加 (左) / AI (中央固定) / ヘッダーを隠す (右端)
-    //    下段: 残りの道具 (横スクロール)
+    // ── モバイルも 1 段に並べる (= ユーザー要望: ヘッダーの項目は 1 列に)。
+    //    左: タブ + 追加 / 削除 → 中: 道具の列 (横スクロール) → 右: 隠す。
+    //    タブ列と道具の列はどちらも横スクロールするが、 別々のウィジェット
+    //    なので入れ子にはならない (= 指の動きが取り合いにならない)。
     final tabMaxW =
         math.max(80.0, MediaQuery.of(context).size.width / 2 - 90);
-    return Column(children: [
-      SizedBox(
-        height: 40,
-        child: Stack(children: [
-          Row(children: [
-            if (_tabBarVisible)
-              Flexible(
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(maxWidth: tabMaxW),
-                  child: _buildTabStrip(provider),
-                ),
-              ),
-            if (_tabBarVisible)
-              _btn(Icons.add_rounded, provider.t('md.tabAdd'), _addTab),
-            const Spacer(),
-            hideBtn,
-          ]),
-          Center(child: aiBtn),
-        ]),
-      ),
-      SizedBox(
-        height: 36,
-        child: SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            // Spacer より後ろ = 道具の列。 末尾の「隠す」 は上段へ移した。
-            children: children.sublist(
-                children.indexWhere((w) => w is Spacer) + 1,
-                children.length - 1),
+    // Spacer より後ろ = 道具の列。 末尾の「隠す」 は右端に固定するので除く。
+    final tools = children.sublist(
+        children.indexWhere((w) => w is Spacer) + 1, children.length - 1);
+    return SizedBox(
+      height: 40,
+      child: Row(children: [
+        if (_tabBarVisible)
+          Flexible(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxWidth: tabMaxW),
+              child: _buildTabStrip(provider),
+            ),
+          ),
+        if (_tabBarVisible) addTabBtn,
+        if (_tabBarVisible) delTabBtn,
+        Expanded(
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [aiBtn, const SizedBox(width: 4), ...tools],
+            ),
           ),
         ),
-      ),
-    ]);
+        hideBtn,
+      ]),
+    );
   }
 }
 
@@ -144281,10 +144350,6 @@ class _MultiNodeActionOverlay extends StatelessWidget {
   final VoidCallback onCopy;
   final VoidCallback onGroup;
 
-  /// 「フラッシュカードに登録」: 選択ノードのタイトルを各カードの表面として
-  /// まとめて新規登録する (= ユーザー要望: 独立したボタンとして)
-  final VoidCallback onFlashcard;
-
   /// 「複製」: 選択ノードをその場で複製 (旧: ヘッダー右上のボタン列から移設)。
   final VoidCallback onDuplicate;
 
@@ -144303,7 +144368,6 @@ class _MultiNodeActionOverlay extends StatelessWidget {
     required this.onDelete,
     required this.onCopy,
     required this.onGroup,
-    required this.onFlashcard,
     required this.onDuplicate,
     this.onBulkDownload,
     this.bulkDownloadIcon = Icons.download_rounded,
@@ -144381,15 +144445,8 @@ class _MultiNodeActionOverlay extends StatelessWidget {
           size: btnSize,
           onTap: onBulkDownload!,
         ),
-      // ── フラッシュカードに登録 (= ユーザー要望: 独立したボタンとして) ──
-      // 選択ノードのタイトルを各カードの表面としてまとめて新規登録する。
-      multiBtn(
-        icon: Icons.style_rounded,
-        label: provider.t('multi.toCards'),
-        color: const Color(0xFF26C6DA),
-        size: btnSize,
-        onTap: onFlashcard,
-      ),
+      // (「カード化」 ボタンは廃止 = ユーザー要望: 複数選択した時の項目に
+      //  カード化は要らない。 フラッシュカードはヘッダーの専用ボタンから)
       // ── 「画像を一括保存」 は独立ボタンを廃止 (= ユーザー要望: 画像保存は
       //    一括DL に纏めて)。 画像もノードの添付なので、 上の「一括DL」 が
       //    そのまま受け持つ (画像だけを選んでいる時は、 そのボタンが
@@ -178588,11 +178645,130 @@ class _SplitWindowsWebViewState extends State<_SplitWindowsWebView> {
 //   - 保存時は元パスに同形式で上書き、Excel インスタンスを使い回して書式保持
 //   - 未保存変更がある状態で閉じようとしたら確認ダイアログ
 
+/// 表 (= ユーザー要望: xlsx で表の挿入ができるように) 1 個分。
+/// セルの中身は今までどおり文字列のまま持ち、 見た目 (見出しの塗り / 縞 /
+/// 罫線) だけをこの範囲情報として重ねる。 保存時は excel の CellStyle に
+/// 変換して書き出すので、 本家 Excel で開いても同じ見た目になる。
+class _SsTable {
+  int row;
+  int col;
+  int rows;
+  int cols;
+
+  /// 見出し行の背景色 / 文字色 / 縞 / 罫線 (RGB 24bit、 null = 無し)。
+  final int? headerFill;
+  final int? headerFont;
+  final int? bandFill;
+  final int? line;
+
+  _SsTable({
+    required this.row,
+    required this.col,
+    required this.rows,
+    required this.cols,
+    this.headerFill,
+    this.headerFont,
+    this.bandFill,
+    this.line,
+  });
+
+  bool contains(int r, int c) =>
+      r >= row && r < row + rows && c >= col && c < col + cols;
+
+  _SsTable copy() => _SsTable(
+        row: row,
+        col: col,
+        rows: rows,
+        cols: cols,
+        headerFill: headerFill,
+        headerFont: headerFont,
+        bandFill: bandFill,
+        line: line,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'r': row,
+        'c': col,
+        'rows': rows,
+        'cols': cols,
+        if (headerFill != null) 'head': headerFill,
+        if (headerFont != null) 'headFont': headerFont,
+        if (bandFill != null) 'band': bandFill,
+        if (line != null) 'line': line,
+      };
+
+  static _SsTable? fromJson(Map m) {
+    final r = (m['r'] as num?)?.toInt();
+    final c = (m['c'] as num?)?.toInt();
+    final rows = (m['rows'] as num?)?.toInt();
+    final cols = (m['cols'] as num?)?.toInt();
+    if (r == null || c == null || rows == null || cols == null) return null;
+    return _SsTable(
+      row: r,
+      col: c,
+      rows: rows,
+      cols: cols,
+      headerFill: (m['head'] as num?)?.toInt(),
+      headerFont: (m['headFont'] as num?)?.toInt(),
+      bandFill: (m['band'] as num?)?.toInt(),
+      line: (m['line'] as num?)?.toInt(),
+    );
+  }
+}
+
+/// シートに貼った図 (= ユーザー要望: xlsx で図の挿入ができるように)。
+/// 位置はセル番号 + そこからのピクセル、 大きさはピクセルで持つ。
+/// 保存時に xlsx の drawing (xl/media + xl/drawings) として書き出す。
+class _SsImage {
+  final Uint8List bytes;
+  final String ext;
+  final String mediaName;
+  int row;
+  int col;
+  double width;
+  double height;
+
+  _SsImage({
+    required this.bytes,
+    required this.ext,
+    required this.mediaName,
+    required this.row,
+    required this.col,
+    required this.width,
+    required this.height,
+  });
+
+  _SsImage copy() => _SsImage(
+        bytes: bytes,
+        ext: ext,
+        mediaName: mediaName,
+        row: row,
+        col: col,
+        width: width,
+        height: height,
+      );
+
+  /// 中身 (bytes) は xl/media 側に入るので、 ここでは置き場所だけ。
+  Map<String, dynamic> toJson() => {
+        'media': mediaName,
+        'ext': ext,
+        'r': row,
+        'c': col,
+        'w': width,
+        'h': height,
+      };
+}
+
 enum _SpreadsheetKind { csv, tsv, xlsx }
 
 /// _SpreadsheetEditorDialog の undo/redo 用スナップショット。
 /// シート全体 (= 全シートの 2 次元セル値) + 選択状態を持つ。
 class _SheetSnapshot {
+  /// 表 / 図も一緒に控える (= ユーザー要望: Ctrl+Z で作った表も取り消せる
+  /// ように)。 シート名 → その中身。
+  Map<String, List<_SsTable>> tables = const {};
+  Map<String, List<_SsImage>> images = const {};
+
   final Map<String, List<List<String>>> sheets;
   final List<String> sheetNames;
   final String activeSheet;
@@ -178697,13 +178873,23 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
     for (final e in _sheets.entries) {
       copy[e.key] = e.value.map((row) => List<String>.from(row)).toList();
     }
-    return _SheetSnapshot(
+    final snap = _SheetSnapshot(
       copy,
       List<String>.from(_sheetNames),
       _activeSheet,
       _selRow,
       _selCol,
     );
+    // 表 / 図も控える (= ユーザー要望: Ctrl+Z で作った表を取り消せるように)。
+    snap.tables = {
+      for (final e in _sheetTables.entries)
+        e.key: [for (final t in e.value) t.copy()],
+    };
+    snap.images = {
+      for (final e in _sheetImages.entries)
+        e.key: [for (final i in e.value) i.copy()],
+    };
+    return snap;
   }
 
   /// スナップショットから状態を復元 (編集モードは解除)。
@@ -178719,6 +178905,18 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
       _activeSheet = s.activeSheet;
       _selRow = s.selRow;
       _selCol = s.selCol;
+      _sheetTables
+        ..clear()
+        ..addAll({
+          for (final e in s.tables.entries)
+            e.key: [for (final t in e.value) t.copy()],
+        });
+      _sheetImages
+        ..clear()
+        ..addAll({
+          for (final e in s.images.entries)
+            e.key: [for (final i in e.value) i.copy()],
+        });
       _editingRow = null;
       _editingCol = null;
       _dirty = true;
@@ -178785,6 +178983,42 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
   final FocusNode _formulaFocus = FocusNode();
 
   // ── 範囲選択 (= ユーザー要望: セルの範囲を選んで図や表にできるように) ──
+  /// シートごとの表 (= ユーザー要望: 図や表の挿入)。 キーはシート名。
+  final Map<String, List<_SsTable>> _sheetTables = {};
+
+  /// シートごとの図 (= ユーザー要望: 図や表の挿入)。 キーはシート名。
+  final Map<String, List<_SsImage>> _sheetImages = {};
+
+  List<_SsTable> get _tables => _sheetTables[_activeSheet] ??= [];
+  List<_SsImage> get _images => _sheetImages[_activeSheet] ??= [];
+
+  /// [r],[c] を含む表 (無ければ null)。 セルの色付けに使う。
+  _SsTable? _tableAt(int r, int c) {
+    for (final t in _tables) {
+      if (t.contains(r, c)) return t;
+    }
+    return null;
+  }
+
+  /// 表のセル背景色 (見出し行 / 縞)。 表の外なら null。
+  int? _tableFillAt(int r, int c) {
+    final t = _tableAt(r, c);
+    if (t == null) return null;
+    final rel = r - t.row;
+    if (rel == 0) return t.headerFill;
+    if (t.bandFill != null && rel % 2 == 0) return t.bandFill;
+    return null;
+  }
+
+  /// マウスのボタンを押したままセルをなぞっている最中か
+  /// (= ユーザー要望: ドラッグで範囲選択)。 Listener + MouseRegion で
+  /// 見ているので、 指でのスクロールは今までどおり効く。
+  bool _dragSelecting = false;
+
+  /// ドラッグ開始セル (= 範囲の起点)。
+  int? _dragAnchorRow;
+  int? _dragAnchorCol;
+
   // 選択の起点。 null なら 1 セルだけの選択 (_selRow/_selCol)。
   int? _rangeAnchorRow;
   int? _rangeAnchorCol;
@@ -179123,10 +179357,74 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
     }
   }
 
+  /// 保存時に入れておいたアプリ用の控え (xl/hnMeta.json) から、 表と図を
+  /// 復元する (= ユーザー要望: 図や表を excel ファイル上に置いたままに)。
+  /// 図の中身は xl/media から読み直す。
+  void _restoreSheetExtras(Uint8List bytes) {
+    try {
+      final archive = ZipDecoder().decodeBytes(bytes);
+      List<int>? find(String name) {
+        for (final f in archive.files) {
+          if (f.name == name && f.isFile) return f.content as List<int>;
+        }
+        return null;
+      }
+
+      final raw = find('xl/hnMeta.json');
+      if (raw == null) return;
+      final meta = jsonDecode(utf8.decode(raw, allowMalformed: true));
+      if (meta is! Map) return;
+      _sheetTables.clear();
+      _sheetImages.clear();
+      final tables = meta['tables'];
+      if (tables is Map) {
+        tables.forEach((k, v) {
+          if (v is! List) return;
+          final list = <_SsTable>[];
+          for (final e in v) {
+            if (e is Map) {
+              final t = _SsTable.fromJson(e);
+              if (t != null) list.add(t);
+            }
+          }
+          if (list.isNotEmpty) _sheetTables['$k'] = list;
+        });
+      }
+      final images = meta['images'];
+      if (images is Map) {
+        images.forEach((k, v) {
+          if (v is! List) return;
+          final list = <_SsImage>[];
+          for (final e in v) {
+            if (e is! Map) continue;
+            final media = '${e['media'] ?? ''}';
+            if (media.isEmpty) continue;
+            final data = find('xl/media/$media');
+            if (data == null) continue;
+            list.add(_SsImage(
+              bytes: Uint8List.fromList(data),
+              ext: '${e['ext'] ?? 'png'}',
+              mediaName: media,
+              row: (e['r'] as num?)?.toInt() ?? 0,
+              col: (e['c'] as num?)?.toInt() ?? 0,
+              width: (e['w'] as num?)?.toDouble() ?? 240,
+              height: (e['h'] as num?)?.toDouble() ?? 180,
+            ));
+          }
+          if (list.isNotEmpty) _sheetImages['$k'] = list;
+        });
+      }
+    } catch (e) {
+      debugPrint('xlsx の表 / 図の復元に失敗: $e');
+    }
+  }
+
   Future<void> _loadFile() async {
     try {
       final bytes = await File(_currentFilePath).readAsBytes();
       if (_kind == _SpreadsheetKind.xlsx) {
+        // 前回置いた表 / 図を戻す (= ユーザー要望)。
+        _restoreSheetExtras(bytes);
         xls.Excel? excel;
         try {
           excel = xls.Excel.decodeBytes(bytes);
@@ -179620,6 +179918,233 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
     return (rowCount, colCount);
   }
 
+  /// 挿入した表の見た目を excel の CellStyle に変換して当てる。
+  /// (見出し行の塗り + 白文字 + 太字 / 縞 / 罫線)。
+  void _applyTableStyles(xls.Excel excel) {
+    xls.ExcelColor col(int? rgb) => rgb == null
+        ? xls.ExcelColor.none
+        : xls.ExcelColor.fromHexString(
+            'FF${(rgb & 0xFFFFFF).toRadixString(16).padLeft(6, '0').toUpperCase()}');
+    for (final name in _sheetNames) {
+      final tables = _sheetTables[name];
+      if (tables == null || tables.isEmpty) continue;
+      final sheet = excel[name];
+      for (final t in tables) {
+        final border = t.line == null
+            ? null
+            : xls.Border(
+                borderStyle: xls.BorderStyle.Thin, borderColorHex: col(t.line));
+        for (int r = t.row; r < t.row + t.rows; r++) {
+          final rel = r - t.row;
+          final isHeader = rel == 0;
+          final banded = t.bandFill != null && rel > 0 && rel % 2 == 0;
+          for (int c = t.col; c < t.col + t.cols; c++) {
+            sheet
+                .cell(xls.CellIndex.indexByColumnRow(
+                    columnIndex: c, rowIndex: r))
+                .cellStyle = xls.CellStyle(
+              backgroundColorHex: isHeader
+                  ? col(t.headerFill)
+                  : (banded ? col(t.bandFill) : xls.ExcelColor.none),
+              fontColorHex:
+                  isHeader && t.headerFont != null ? col(t.headerFont) : col(0),
+              bold: isHeader,
+              leftBorder: border,
+              rightBorder: border,
+              topBorder: border,
+              bottomBorder: border,
+            );
+          }
+        }
+      }
+    }
+  }
+
+  /// 出来上がった xlsx の zip に、 貼った図を drawing として足す。
+  /// 図が無ければ元のバイト列をそのまま返す。
+  Uint8List _embedImagesIntoXlsx(Uint8List src) {
+    final hasImages = _sheetImages.values.any((v) => v.isNotEmpty);
+    final hasTables = _sheetTables.values.any((v) => v.isNotEmpty);
+    if (!hasImages && !hasTables) return src;
+    try {
+      final archive = ZipDecoder().decodeBytes(src);
+      final out = Archive();
+      // シート名 → xl/worksheets/sheetN.xml を workbook.xml + rels から引く。
+      String part(String name) {
+        for (final f in archive.files) {
+          if (f.name == name && f.isFile) {
+            return utf8.decode(f.content as List<int>, allowMalformed: true);
+          }
+        }
+        return '';
+      }
+
+      final wb = part('xl/workbook.xml');
+      final wbRels = part('xl/_rels/workbook.xml.rels');
+      // シート名 → sheet ファイル名
+      final sheetFileOf = <String, String>{};
+      for (final m in RegExp(r'<sheet\b[^>]*/?>').allMatches(wb)) {
+        final tag = m.group(0)!;
+        final nm = RegExp(r'name="([^"]*)"').firstMatch(tag)?.group(1);
+        final rid = RegExp(r'r:id="([^"]+)"').firstMatch(tag)?.group(1);
+        if (nm == null || rid == null) continue;
+        final rel =
+            RegExp('<Relationship[^>]*Id="$rid"[^>]*>').firstMatch(wbRels);
+        if (rel == null) continue;
+        final target =
+            RegExp(r'Target="([^"]+)"').firstMatch(rel.group(0)!)?.group(1);
+        if (target == null) continue;
+        sheetFileOf[nm] =
+            target.startsWith('/') ? target.substring(1) : 'xl/$target';
+      }
+
+      final updated = <String, List<int>>{};
+      var types = part('[Content_Types].xml');
+      var drawingNo = 0;
+      final exts = <String>{};
+
+      for (final entry in _sheetImages.entries) {
+        final imgs = entry.value;
+        if (imgs.isEmpty) continue;
+        final sheetPath = sheetFileOf[entry.key];
+        if (sheetPath == null) continue;
+        drawingNo++;
+        final drawingPath = 'xl/drawings/hnDrawing$drawingNo.xml';
+        final drawingRelsPath =
+            'xl/drawings/_rels/hnDrawing$drawingNo.xml.rels';
+        final anchors = StringBuffer();
+        final drels = StringBuffer(
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">');
+        var i = 0;
+        for (final im in imgs) {
+          i++;
+          exts.add(im.ext);
+          updated['xl/media/${im.mediaName}'] = im.bytes;
+          drels.write('<Relationship Id="rIdHN$i" '
+              'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" '
+              'Target="../media/${im.mediaName}"/>');
+          // 画面の 1px ≒ 9525 EMU。 セル番号をそのままアンカーに使う。
+          final cx = (im.width * 9525).round();
+          final cy = (im.height * 9525).round();
+          anchors.write('<xdr:oneCellAnchor>'
+              '<xdr:from><xdr:col>${im.col}</xdr:col><xdr:colOff>0</xdr:colOff>'
+              '<xdr:row>${im.row}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>'
+              '<xdr:ext cx="$cx" cy="$cy"/>'
+              '<xdr:pic><xdr:nvPicPr>'
+              '<xdr:cNvPr id="${1000 + i}" name="HNImage$i"/>'
+              '<xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr>'
+              '</xdr:nvPicPr>'
+              '<xdr:blipFill><a:blip r:embed="rIdHN$i"/>'
+              '<a:stretch><a:fillRect/></a:stretch></xdr:blipFill>'
+              '<xdr:spPr><a:xfrm><a:off x="0" y="0"/>'
+              '<a:ext cx="$cx" cy="$cy"/></a:xfrm>'
+              '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr>'
+              '</xdr:pic><xdr:clientData/></xdr:oneCellAnchor>');
+        }
+        drels.write('</Relationships>');
+        updated[drawingRelsPath] = utf8.encode(drels.toString());
+        updated[drawingPath] = utf8.encode(
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" '
+            'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            '$anchors</xdr:wsDr>');
+
+        // シート側: rels に drawing を足して <drawing r:id> を付ける。
+        final base = sheetPath.split('/').last;
+        final relsPath =
+            '${sheetPath.substring(0, sheetPath.length - base.length)}_rels/$base.rels';
+        var rels = updated.containsKey(relsPath)
+            ? utf8.decode(updated[relsPath]!)
+            : part(relsPath);
+        if (rels.isEmpty) {
+          rels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+              '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+              '</Relationships>';
+        }
+        final drawRid = 'rIdHNDraw$drawingNo';
+        if (!rels.contains(drawRid)) {
+          rels = rels.replaceFirst(
+              '</Relationships>',
+              '<Relationship Id="$drawRid" '
+              'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" '
+              'Target="../drawings/hnDrawing$drawingNo.xml"/></Relationships>');
+        }
+        updated[relsPath] = utf8.encode(rels);
+
+        var sx = updated.containsKey(sheetPath)
+            ? utf8.decode(updated[sheetPath]!)
+            : part(sheetPath);
+        if (sx.isNotEmpty && !sx.contains('<drawing ')) {
+          // <drawing> は </worksheet> の直前 (仕様上ほぼ最後の要素)。
+          sx = sx.replaceFirst(
+              '</worksheet>', '<drawing r:id="$drawRid"/></worksheet>');
+          updated[sheetPath] = utf8.encode(sx);
+        }
+
+        if (types.isNotEmpty && !types.contains('/$drawingPath')) {
+          types = types.replaceFirst(
+              '</Types>',
+              '<Override PartName="/$drawingPath" '
+              'ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>'
+              '</Types>');
+        }
+      }
+      for (final ext in exts) {
+        if (types.isNotEmpty && !types.contains('Extension="$ext"')) {
+          types = types.replaceFirst('</Types>',
+              '<Default Extension="$ext" ContentType="image/$ext"/></Types>');
+        }
+      }
+      // ── アプリ用の控え (= ユーザー要望: 図や表を excel ファイル上に
+      //    置いたままにする)。 これを読み戻すことで、 開き直しても表の
+      //    テンプレートや図の位置がそのまま復元できる。 Excel は知らない
+      //    パートを無視するので、 本家で開いても問題にならない。 ──
+      updated['xl/hnMeta.json'] = utf8.encode(jsonEncode({
+        'tables': {
+          for (final e in _sheetTables.entries)
+            if (e.value.isNotEmpty)
+              e.key: [for (final t in e.value) t.toJson()],
+        },
+        'images': {
+          for (final e in _sheetImages.entries)
+            if (e.value.isNotEmpty)
+              e.key: [for (final i in e.value) i.toJson()],
+        },
+      }));
+      if (types.isNotEmpty && !types.contains('Extension="json"')) {
+        types = types.replaceFirst('</Types>',
+            '<Default Extension="json" ContentType="application/json"/>'
+            '</Types>');
+      }
+      if (types.isNotEmpty) updated['[Content_Types].xml'] = utf8.encode(types);
+
+      final written = <String>{};
+      for (final f in archive.files) {
+        if (!f.isFile) continue;
+        written.add(f.name);
+        final u = updated[f.name];
+        if (u != null) {
+          out.addFile(ArchiveFile(f.name, u.length, u));
+        } else {
+          out.addFile(ArchiveFile(f.name, f.size, f.content as List<int>));
+        }
+      }
+      updated.forEach((name, data) {
+        if (!written.contains(name)) {
+          out.addFile(ArchiveFile(name, data.length, data));
+        }
+      });
+      final zipped = ZipEncoder().encode(out);
+      if (zipped == null) return src;
+      return Uint8List.fromList(zipped);
+    } catch (e) {
+      debugPrint('xlsx への図の埋め込みに失敗: $e');
+      return src; // 図が入らないだけで、 表データは失わない。
+    }
+  }
+
   Future<void> _save() async {
     try {
       final file = File(_currentFilePath);
@@ -179649,9 +180174,16 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
             }
           }
         }
+        // ── 表の見た目を CellStyle として焼き込む (= ユーザー要望:
+        //    表の挿入。 本家 Excel で開いても同じ見た目になる) ──
+        _applyTableStyles(excel);
         final bytes = excel.encode();
         if (bytes == null) throw Exception('XLSX エンコード失敗');
-        await file.writeAsBytes(bytes, flush: true);
+        // ── 貼った図を xlsx へ埋め込む (= ユーザー要望: 図の挿入)。
+        //    excel パッケージは図を扱えないので、 出来た zip に
+        //    xl/media + xl/drawings を足して結び直す。 ──
+        final withImages = _embedImagesIntoXlsx(Uint8List.fromList(bytes));
+        await file.writeAsBytes(withImages, flush: true);
       } else {
         final rows = _sheets[_activeSheet] ?? const [];
         // CSV/TSV も実データ範囲のみ書き出し
@@ -179851,6 +180383,697 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
     });
   }
 
+  // ─── コピー / 貼り付け / オートフィル (= ユーザー要望) ─────────────
+
+  /// アプリ内のコピー控え (行 × 列)。 別のアプリへは TSV で渡す。
+  List<List<String>>? _clipCells;
+
+  /// 選択範囲 (無ければ 1 セル) を TSV にして返す。
+  List<List<String>> _selectedCells() {
+    final rg = _hasRange
+        ? _range
+        : (r1: _selRow, c1: _selCol, r2: _selRow, c2: _selCol);
+    return [
+      for (int r = rg.r1; r <= rg.r2 && r < _rowCount; r++)
+        [
+          for (int c = rg.c1; c <= rg.c2 && c < _colCount; c++) _rows[r][c],
+        ],
+    ];
+  }
+
+  /// セルのコピー (= ユーザー要望)。 他のアプリにも TSV で渡す。
+  Future<void> _copyCells({bool cut = false}) async {
+    _commitEdit();
+    final cells = _selectedCells();
+    if (cells.isEmpty) return;
+    _clipCells = [for (final r in cells) List<String>.from(r)];
+    try {
+      await Clipboard.setData(
+          ClipboardData(text: cells.map((r) => r.join('\t')).join('\n')));
+    } catch (_) {}
+    if (cut) {
+      _pushUndo();
+      final rg = _hasRange
+          ? _range
+          : (r1: _selRow, c1: _selCol, r2: _selRow, c2: _selCol);
+      setState(() {
+        for (int r = rg.r1; r <= rg.r2 && r < _rowCount; r++) {
+          for (int c = rg.c1; c <= rg.c2 && c < _colCount; c++) {
+            _rows[r][c] = '';
+          }
+        }
+        _dirty = true;
+      });
+      _invalidateFormulaCache();
+    }
+    _showSnack(cut ? '切り取りました' : 'コピーしました');
+  }
+
+  /// 貼り付け (= ユーザー要望)。 選択セルを左上として流し込む。
+  /// 外のアプリからの TSV / CSV も受け取れる。
+  Future<void> _pasteCells() async {
+    _commitEdit();
+    List<List<String>>? cells;
+    try {
+      final data = await Clipboard.getData('text/plain');
+      final text = data?.text;
+      if (text != null && text.trim().isNotEmpty) {
+        final lines = text.replaceAll('\r\n', '\n').split('\n');
+        while (lines.isNotEmpty && lines.last.isEmpty) {
+          lines.removeLast();
+        }
+        // タブ区切りが 1 つでもあれば TSV、 無ければカンマで割る。
+        final delim = text.contains('\t') ? '\t' : ',';
+        cells = [for (final l in lines) l.split(delim)];
+      }
+    } catch (_) {}
+    cells ??= _clipCells;
+    if (cells == null || cells.isEmpty) return;
+    _pushUndo();
+    final r0 = _selRow;
+    final c0 = _selCol;
+    setState(() {
+      for (int i = 0; i < cells!.length; i++) {
+        final r = r0 + i;
+        while (_rowCount <= r) {
+          _rows.add(List<String>.filled(math.max(1, _colCount), '',
+              growable: true));
+        }
+        for (int j = 0; j < cells[i].length; j++) {
+          final c = c0 + j;
+          for (final row in _rows) {
+            while (row.length <= c) {
+              row.add('');
+            }
+          }
+          _rows[r][c] = cells[i][j];
+        }
+      }
+      _dirty = true;
+    });
+    _invalidateFormulaCache();
+  }
+
+  /// オートフィルのドラッグ中の行き先 (null = ドラッグしていない)。
+  int? _fillToRow;
+  int? _fillToCol;
+
+  /// オートフィルを確定する (= ユーザー要望)。
+  /// 元の範囲を下 / 右へ伸ばす。 数字や「1 月」 のような連番は増やし、
+  /// それ以外は繰り返しコピーする。
+  void _applyAutoFill() {
+    final toR = _fillToRow;
+    final toC = _fillToCol;
+    setState(() {
+      _fillToRow = null;
+      _fillToCol = null;
+    });
+    if (toR == null || toC == null) return;
+    final rg = _hasRange
+        ? _range
+        : (r1: _selRow, c1: _selCol, r2: _selRow, c2: _selCol);
+    // 下方向 / 右方向のどちらへ伸ばすか (大きく動いた方)。
+    final downCount = toR - rg.r2;
+    final rightCount = toC - rg.c2;
+    if (downCount <= 0 && rightCount <= 0) return;
+    final vertical = downCount >= rightCount;
+    _pushUndo();
+    setState(() {
+      if (vertical) {
+        final srcRows = rg.r2 - rg.r1 + 1;
+        while (_rowCount <= toR) {
+          _rows.add(List<String>.filled(math.max(1, _colCount), '',
+              growable: true));
+        }
+        for (int c = rg.c1; c <= rg.c2 && c < _colCount; c++) {
+          final src = [
+            for (int r = rg.r1; r <= rg.r2 && r < _rowCount; r++) _rows[r][c],
+          ];
+          final step = _fillStep(src);
+          for (int r = rg.r2 + 1; r <= toR; r++) {
+            final n = r - rg.r2; // 1 始まり
+            final base = src[(n - 1) % srcRows];
+            _rows[r][c] = _fillValue(base, step, ((n - 1) ~/ srcRows) + 1);
+          }
+        }
+      } else {
+        final srcCols = rg.c2 - rg.c1 + 1;
+        for (final row in _rows) {
+          while (row.length <= toC) {
+            row.add('');
+          }
+        }
+        for (int r = rg.r1; r <= rg.r2 && r < _rowCount; r++) {
+          final src = [
+            for (int c = rg.c1; c <= rg.c2 && c < _rows[r].length; c++)
+              _rows[r][c],
+          ];
+          final step = _fillStep(src);
+          for (int c = rg.c2 + 1; c <= toC; c++) {
+            final n = c - rg.c2;
+            final base = src[(n - 1) % srcCols];
+            _rows[r][c] = _fillValue(base, step, ((n - 1) ~/ srcCols) + 1);
+          }
+        }
+      }
+      _dirty = true;
+    });
+    _invalidateFormulaCache();
+  }
+
+  /// 連番の増分。 元が数字 2 個以上なら差、 数字 1 個なら 1、
+  /// 数字でなければ null (= そのままコピー)。
+  num? _fillStep(List<String> src) {
+    final nums = <num>[];
+    for (final v in src) {
+      final n = num.tryParse(v.trim());
+      if (n == null) return null; // 1 つでも数字でなければコピー扱い
+      nums.add(n);
+    }
+    if (nums.isEmpty) return null;
+    if (nums.length == 1) return 1;
+    final d = nums[1] - nums[0];
+    // 等差になっていない時は最初の差をそのまま使う (Excel と同じ考え方)。
+    return d;
+  }
+
+  /// [base] を [round] 周目としてずらした値。
+  String _fillValue(String base, num? step, int round) {
+    if (step == null) return base;
+    final n = num.tryParse(base.trim());
+    if (n == null) return base;
+    final v = n + step * round;
+    if (v is int || v == v.roundToDouble()) return v.toInt().toString();
+    return '$v';
+  }
+
+  /// 使える関数の一覧 (= ユーザー要望: 使える関数一覧を載せておいて)。
+  static const List<({String name, String desc})> _kFormulaHelp = [
+    (name: 'SUM(範囲)', desc: '合計。 例: =SUM(A1:A10)'),
+    (name: 'AVERAGE(範囲)', desc: '平均。 AVG / MEAN も同じ'),
+    (name: 'MIN(範囲)', desc: '最小値'),
+    (name: 'MAX(範囲)', desc: '最大値'),
+    (name: 'COUNT(範囲)', desc: '数字の個数'),
+    (name: 'COUNTA(範囲)', desc: '空でないセルの個数'),
+    (name: 'IF(条件, 真, 偽)', desc: '条件分け。 例: =IF(A1>10,"多い","少ない")'),
+    (name: 'IFERROR(式, 代わり)', desc: 'エラーの時に別の値を出す'),
+    (name: 'AND(…) / OR(…) / NOT(…)', desc: '論理式'),
+    (name: 'TRUE() / FALSE()', desc: '真 / 偽'),
+    (name: 'ROUND(数, 桁)', desc: '四捨五入。 桁は省略可'),
+    (name: 'ABS(数)', desc: '絶対値'),
+    (name: 'INT(数)', desc: '小数を切り捨てて整数に'),
+    (name: 'MOD(数, 除数)', desc: '余り'),
+    (name: 'SQRT(数)', desc: '平方根'),
+    (name: 'POWER(数, 指数)', desc: 'べき乗。 ^ でも書ける'),
+    (name: 'PI()', desc: '円周率'),
+    (name: 'LEN(文字列)', desc: '文字数'),
+    (name: 'UPPER / LOWER(文字列)', desc: '大文字 / 小文字にする'),
+    (name: 'TRIM(文字列)', desc: '前後の空白を取る'),
+    (name: 'CONCAT(…)', desc: '文字をつなぐ。 CONCATENATE も同じ'),
+    (name: 'LEFT(文字列, 数)', desc: '左から取り出す'),
+    (name: 'RIGHT(文字列, 数)', desc: '右から取り出す'),
+    (name: 'MID(文字列, 開始, 数)', desc: '途中から取り出す'),
+    (name: 'NOW()', desc: '今の日時'),
+    (name: 'TODAY()', desc: '今日の日付'),
+  ];
+
+  Future<void> _showFormulaHelp() async {
+    await showDialog<void>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E2E),
+        title: const Text('使える関数',
+            style: TextStyle(color: Colors.white, fontSize: 15)),
+        content: SizedBox(
+          width: 420,
+          height: 420,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                  'セルに = で始めて書くと計算します。 '
+                  '+ - * / ^ と ( ) 、 A1 や A1:B5 の指定が使えます。',
+                  style: TextStyle(color: Colors.white54, fontSize: 11.5)),
+              const SizedBox(height: 10),
+              Expanded(
+                child: ListView.builder(
+                  itemCount: _kFormulaHelp.length,
+                  itemBuilder: (_, i) {
+                    final f = _kFormulaHelp[i];
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(f.name,
+                              style: const TextStyle(
+                                  color: Color(0xFF82AAFF),
+                                  fontSize: 12.5,
+                                  fontWeight: FontWeight.w700)),
+                          Text(f.desc,
+                              style: const TextStyle(
+                                  color: Colors.white70, fontSize: 11.5)),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx),
+            child: const Text('閉じる', style: TextStyle(color: Colors.white54)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 貼った図をマップへ出す (= ユーザー要望: 外のマップにも出せるように)。
+  Future<void> _sendImageToMap(_SsImage im) async {
+    try {
+      final provider = context.read<MindMapProvider>();
+      final dir = await getApplicationDocumentsDirectory();
+      final att = Directory('${dir.path}/attachments');
+      if (!await att.exists()) await att.create(recursive: true);
+      final path = '${att.path}/${im.mediaName}';
+      await File(path).writeAsBytes(im.bytes, flush: true);
+      if (!mounted) return;
+      final id = provider.mcpAddImageNode(provider.currentPage.id,
+          filePath: path, title: im.mediaName);
+      _showSnack(id == null ? 'マップへ出せませんでした' : '✓ マップに図を置きました');
+    } catch (e) {
+      if (mounted) _showSnack('マップへ出せませんでした: $e');
+    }
+  }
+
+  /// 挿入した表をマップへ出す (= ユーザー要望)。 表の範囲をそのまま
+  /// 表ノードにする。
+  void _sendTableToMap(_SsTable t) {
+    final provider = context.read<MindMapProvider>();
+    final cells = <List<String>>[
+      for (int r = t.row; r < t.row + t.rows && r < _rowCount; r++)
+        [
+          for (int c = t.col; c < t.col + t.cols && c < _colCount; c++)
+            _rows[r][c],
+        ],
+    ];
+    if (cells.isEmpty) return;
+    final node = provider.addTableNodeFromCells(cells,
+        headerRow: cells.length > 1, title: '');
+    _showSnack(node == null ? 'マップへ出せませんでした' : '✓ マップに表を置きました');
+  }
+
+  // ─── 図 / 表の挿入 と CSV 取り込み (= ユーザー要望) ─────────────────
+
+  /// 表のテンプレート (Excel の「テーブルスタイル」 に相当する簡易版)。
+  static const List<({String name, int? head, int? headFont, int? band,
+      int? line})> _kSsTableThemes = [
+    (name: '罫線のみ', head: null, headFont: null, band: null, line: 0x9E9E9E),
+    (
+      name: 'ブルー',
+      head: 0x4472C4,
+      headFont: 0xFFFFFF,
+      band: 0xD9E2F3,
+      line: 0x8EAADB
+    ),
+    (
+      name: 'グリーン',
+      head: 0x70AD47,
+      headFont: 0xFFFFFF,
+      band: 0xE2EFDA,
+      line: 0xA9D18E
+    ),
+    (
+      name: 'オレンジ',
+      head: 0xED7D31,
+      headFont: 0xFFFFFF,
+      band: 0xFBE5D6,
+      line: 0xF4B183
+    ),
+    (
+      name: 'モノクロ',
+      head: 0x404040,
+      headFont: 0xFFFFFF,
+      band: 0xEDEDED,
+      line: 0xBFBFBF
+    ),
+  ];
+
+  /// 前に選んだ表テンプレート (セッション内で覚える)。
+  int _ssTableTheme = 1;
+
+  /// 表を挿入する (= ユーザー要望: xlsx で表の挿入)。
+  /// 選んでいるセルを左上として、 行数 × 列数の範囲に見出し行・縞・罫線を
+  /// 付ける。 範囲を選んでいればその大きさを初期値にする。
+  Future<void> _insertSpreadsheetTable() async {
+    if (_kind != _SpreadsheetKind.xlsx) {
+      _showSnack('表を挿入できるのは xlsx だけです');
+      return;
+    }
+    _commitEdit();
+    // 範囲を選んでいれば、 その大きさを初期値にする。
+    final sel = _hasRange ? _range : null;
+    final rowsCtrl = TextEditingController(
+        text: '${sel == null ? 4 : (sel.r2 - sel.r1 + 1)}');
+    final colsCtrl = TextEditingController(
+        text: '${sel == null ? 3 : (sel.c2 - sel.c1 + 1)}');
+    var theme = _ssTableTheme.clamp(0, _kSsTableThemes.length - 1);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => StatefulBuilder(builder: (sctx, setD) {
+        final th = _kSsTableThemes[theme];
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E1E2E),
+          title: const Text('表を挿入',
+              style: TextStyle(color: Colors.white, fontSize: 15)),
+          content: SizedBox(
+            width: 280,
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Row(children: [
+                Expanded(
+                  child: TextField(
+                    controller: rowsCtrl,
+                    keyboardType: TextInputType.number,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: const InputDecoration(
+                        labelText: '行数',
+                        labelStyle: TextStyle(color: Colors.white60)),
+                    onChanged: (_) => setD(() {}),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: TextField(
+                    controller: colsCtrl,
+                    keyboardType: TextInputType.number,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: const InputDecoration(
+                        labelText: '列数',
+                        labelStyle: TextStyle(color: Colors.white60)),
+                    onChanged: (_) => setD(() {}),
+                  ),
+                ),
+              ]),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 4,
+                runSpacing: 4,
+                children: [
+                  for (int i = 0; i < _kSsTableThemes.length; i++)
+                    InkWell(
+                      borderRadius: BorderRadius.circular(6),
+                      onTap: () => setD(() => theme = i),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: theme == i
+                              ? const Color(0xFF6C63FF)
+                              : Colors.white.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(_kSsTableThemes[i].name,
+                            style: TextStyle(
+                                fontSize: 11,
+                                color: theme == i
+                                    ? Colors.white
+                                    : Colors.white70)),
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              // ちいさなプレビュー。
+              SizedBox(
+                width: 240,
+                height: 96,
+                child: Column(children: [
+                  for (var r = 0;
+                      r < math.min(int.tryParse(rowsCtrl.text) ?? 4, 8);
+                      r++)
+                    Expanded(
+                      child: Row(children: [
+                        for (var c = 0;
+                            c < math.min(int.tryParse(colsCtrl.text) ?? 3, 8);
+                            c++)
+                          Expanded(
+                            child: Container(
+                              margin: const EdgeInsets.all(0.5),
+                              decoration: BoxDecoration(
+                                color: r == 0
+                                    ? (th.head != null
+                                        ? Color(0xFF000000 | th.head!)
+                                        : Colors.white10)
+                                    : (th.band != null && r % 2 == 0
+                                        ? Color(0xFF000000 | th.band!)
+                                        : Colors.white.withValues(alpha: 0.05)),
+                                border: Border.all(
+                                    color: th.line != null
+                                        ? Color(0xFF000000 | th.line!)
+                                        : Colors.white24,
+                                    width: 0.5),
+                              ),
+                            ),
+                          ),
+                      ]),
+                    ),
+                ]),
+              ),
+            ]),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dctx, false),
+              child:
+                  const Text('キャンセル', style: TextStyle(color: Colors.white54)),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dctx, true),
+              child: const Text('挿入'),
+            ),
+          ],
+        );
+      }),
+    );
+    final rows = (int.tryParse(rowsCtrl.text) ?? 4).clamp(1, 200);
+    final cols = (int.tryParse(colsCtrl.text) ?? 3).clamp(1, 60);
+    rowsCtrl.dispose();
+    colsCtrl.dispose();
+    if (ok != true || !mounted) return;
+    _pushUndo();
+    _ssTableTheme = theme;
+    final th = _kSsTableThemes[theme];
+    final r0 = sel?.r1 ?? _selRow;
+    final c0 = sel?.c1 ?? _selCol;
+    setState(() {
+      // 足りない行 / 列は伸ばしておく (= はみ出して置けないのを防ぐ)。
+      while (_rowCount < r0 + rows) {
+        _rows.add(List<String>.filled(
+            math.max(1, _colCount), '',
+            growable: true));
+      }
+      final needCols = c0 + cols;
+      if (_colCount < needCols) {
+        for (final row in _rows) {
+          while (row.length < needCols) {
+            row.add('');
+          }
+        }
+      }
+      _tables.add(_SsTable(
+        row: r0,
+        col: c0,
+        rows: rows,
+        cols: cols,
+        headerFill: th.head,
+        headerFont: th.headFont,
+        bandFill: th.band,
+        line: th.line,
+      ));
+      _dirty = true;
+    });
+  }
+
+  /// 図を挿入する (= ユーザー要望: xlsx で図の挿入)。
+  /// 選んでいるセルの位置に貼り、 保存時に xlsx へ埋め込む。
+  Future<void> _insertSpreadsheetImage() async {
+    if (_kind != _SpreadsheetKind.xlsx) {
+      _showSnack('図を挿入できるのは xlsx だけです');
+      return;
+    }
+    final res = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['png', 'jpg', 'jpeg', 'gif', 'bmp'],
+      withData: true,
+    );
+    if (res == null || res.files.isEmpty || !mounted) return;
+    final f = res.files.first;
+    Uint8List? bytes = f.bytes;
+    if (bytes == null && f.path != null) {
+      try {
+        bytes = await File(f.path!).readAsBytes();
+      } catch (_) {}
+    }
+    if (bytes == null || !mounted) {
+      _showSnack('画像を読み込めませんでした');
+      return;
+    }
+    var ext = (f.extension ?? 'png').toLowerCase();
+    if (ext == 'jpg') ext = 'jpeg';
+    double aspect = 4 / 3;
+    try {
+      final codec = await ui.instantiateImageCodec(bytes);
+      final frame = await codec.getNextFrame();
+      aspect = frame.image.width / frame.image.height;
+      frame.image.dispose();
+    } catch (_) {}
+    if (!mounted) return;
+    _pushUndo();
+    const baseW = 240.0;
+    setState(() {
+      _images.add(_SsImage(
+        bytes: bytes!,
+        ext: ext,
+        mediaName:
+            'hnimg_${DateTime.now().millisecondsSinceEpoch}_${_images.length}.$ext',
+        row: _selRow,
+        col: _selCol,
+        width: baseW,
+        height: baseW / (aspect <= 0 ? 1.3333 : aspect),
+      ));
+      _dirty = true;
+    });
+    _showSnack('✓ 図を挿入しました (保存で xlsx に埋め込まれます)');
+  }
+
+  /// CSV を取り込んでシートとして追加する (= ユーザー要望: xlsx 編集画面の
+  /// 中に csv ファイルの取り込みを付けて、 csv を xlsx の中に埋め込める
+  /// ように)。 取り込んだ内容は新しいシートになる。
+  Future<void> _importCsvIntoWorkbook() async {
+    if (_kind != _SpreadsheetKind.xlsx) {
+      _showSnack('CSV を取り込めるのは xlsx だけです');
+      return;
+    }
+    final res = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['csv', 'tsv', 'txt'],
+      withData: true,
+    );
+    if (res == null || res.files.isEmpty || !mounted) return;
+    final f = res.files.first;
+    String? text;
+    try {
+      final data = f.bytes ??
+          (f.path != null ? await File(f.path!).readAsBytes() : null);
+      if (data != null) {
+        // BOM 付き / 無しの UTF-8 を読む (壊れた文字は落とさず置換)。
+        text = utf8.decode(data, allowMalformed: true);
+        if (text.isNotEmpty && text.codeUnitAt(0) == 0xFEFF) {
+          text = text.substring(1);
+        }
+      }
+    } catch (_) {}
+    if (text == null || !mounted) {
+      _showSnack('CSV を読み込めませんでした');
+      return;
+    }
+    final delim = (f.extension ?? '').toLowerCase() == 'tsv' ? '\t' : ',';
+    List<List<String>> rows;
+    try {
+      final parsed = const CsvToListConverter(shouldParseNumbers: false)
+          .convert(text, fieldDelimiter: delim, eol: '\n');
+      rows = [
+        for (final r in parsed) [for (final c in r) '$c'],
+      ];
+    } catch (_) {
+      rows = [
+        for (final line in text.split(RegExp(r'\r?\n')))
+          line.split(delim),
+      ];
+    }
+    // 末尾の空行を落とす。
+    while (rows.isNotEmpty && rows.last.every((c) => c.trim().isEmpty)) {
+      rows.removeLast();
+    }
+    if (rows.isEmpty) {
+      _showSnack('CSV が空でした');
+      return;
+    }
+    // 列数を揃える (= 行ごとに長さが違うと編集で落ちるため)。
+    final cols = rows.fold<int>(0, (a, r) => math.max(a, r.length));
+    for (final r in rows) {
+      while (r.length < cols) {
+        r.add('');
+      }
+    }
+    _commitEdit();
+    _pushUndo();
+    // シート名はファイル名から (Excel の制限に合わせて 31 文字 + 記号除去)。
+    var base = (f.name.contains('.')
+            ? f.name.substring(0, f.name.lastIndexOf('.'))
+            : f.name)
+        .replaceAll(RegExp(r'[\\/*?\[\]:]'), '_')
+        .trim();
+    if (base.isEmpty) base = 'CSV';
+    if (base.length > 28) base = base.substring(0, 28);
+    var name = base;
+    var n = 2;
+    while (_sheetNames.contains(name)) {
+      name = '$base$n';
+      n++;
+    }
+    setState(() {
+      _sheets[name] = rows;
+      _sheetNames.add(name);
+      _activeSheet = name;
+      _selRow = 0;
+      _selCol = 0;
+      _rangeAnchorRow = null;
+      _rangeAnchorCol = null;
+      _dirty = true;
+    });
+    _invalidateFormulaCache();
+    _showSnack('✓ 「$name」 として取り込みました (保存で xlsx に入ります)');
+  }
+
+  /// 新しいシートを足す (= ユーザー要望: シート名の右端の + から追加)。
+  /// csv / tsv は 1 枚しか書き出せないので、 xlsx の時だけ有効。
+  void _addSheet() {
+    if (_kind != _SpreadsheetKind.xlsx) {
+      _showSnack('シートを増やせるのは xlsx だけです');
+      return;
+    }
+    _commitEdit();
+    _pushUndo();
+    // 「Sheet2」 「Sheet3」 … と空いている番号を探す。
+    var n = _sheetNames.length + 1;
+    var name = 'Sheet$n';
+    while (_sheetNames.contains(name)) {
+      n++;
+      name = 'Sheet$n';
+    }
+    setState(() {
+      // 既定の広さは今のシートと揃える (= 空すぎて使いにくいのを防ぐ)。
+      final rows = math.max(30, _rowCount);
+      final cols = math.max(15, _colCount);
+      _sheets[name] = List.generate(
+          rows, (_) => List<String>.filled(cols, '', growable: true),
+          growable: true);
+      _sheetNames.add(name);
+      _activeSheet = name;
+      _selRow = 0;
+      _selCol = 0;
+      _rangeAnchorRow = null;
+      _rangeAnchorCol = null;
+      _dirty = true;
+    });
+    _invalidateFormulaCache();
+  }
+
   void _insertRow(int at) {
     _pushUndo();
     final cols = _colCount.clamp(1, 1 << 30);
@@ -179909,6 +181132,22 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
     if (ctrl && event.logicalKey == LogicalKeyboardKey.keyS) {
       _save();
       return KeyEventResult.handled;
+    }
+    // ── セルのコピー / 切り取り / 貼り付け (= ユーザー要望) ──
+    //    セルを編集中は普通の文字コピーに任せる。
+    if (ctrl && _editingRow == null) {
+      if (event.logicalKey == LogicalKeyboardKey.keyC) {
+        unawaited(_copyCells());
+        return KeyEventResult.handled;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.keyX) {
+        unawaited(_copyCells(cut: true));
+        return KeyEventResult.handled;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.keyV) {
+        unawaited(_pasteCells());
+        return KeyEventResult.handled;
+      }
     }
     // Ctrl+Z = Undo, Ctrl+Shift+Z = Redo
     if (ctrl && event.logicalKey == LogicalKeyboardKey.keyZ) {
@@ -180496,6 +181735,32 @@ $csvText
               setState(() => _showFormulaResults = !_showFormulaResults);
             },
           ),
+          // ── 使える関数の一覧 (= ユーザー要望) ──
+          IconButton(
+            tooltip: '使える関数一覧',
+            icon: const Icon(Icons.help_outline_rounded,
+                color: Color(0xFF82AAFF)),
+            onPressed: () => unawaited(_showFormulaHelp()),
+          ),
+          // ── 図 / 表の挿入・CSV 取り込み (= ユーザー要望)。 xlsx だけ ──
+          if (_kind == _SpreadsheetKind.xlsx) ...[
+            IconButton(
+              tooltip: '図を挿入',
+              icon: const Icon(Icons.image_outlined, color: Color(0xFF4FC3F7)),
+              onPressed: () => unawaited(_insertSpreadsheetImage()),
+            ),
+            IconButton(
+              tooltip: '表を挿入',
+              icon: const Icon(Icons.grid_on_rounded, color: Color(0xFF43B97F)),
+              onPressed: () => unawaited(_insertSpreadsheetTable()),
+            ),
+            IconButton(
+              tooltip: 'CSV ファイルの取り込み',
+              icon: const Icon(Icons.file_download_outlined,
+                  color: Color(0xFFFFB347)),
+              onPressed: () => unawaited(_importCsvIntoWorkbook()),
+            ),
+          ],
           // AI 編集ボタン
           IconButton(
             tooltip: context.read<MindMapProvider>().t('doc.aiRewrite'),
@@ -180617,6 +181882,15 @@ $csvText
             ),
           ),
         ),
+        // ── カーソルが挿入した表の中にある時は、 その表をそのまま
+        //    マップへ出せるようにする (= ユーザー要望) ──
+        if (!_hasRange && _tableAt(_selRow, _selCol) != null)
+          _sheetRangeButton(
+            icon: Icons.table_chart_rounded,
+            color: const Color(0xFF26C6DA),
+            label: 'この表をマップへ出す',
+            onTap: () => _sendTableToMap(_tableAt(_selRow, _selCol)!),
+          ),
         // ── 選択範囲を図/表にする (= ユーザー要望: .xlsx や .csv でセルの
         //    範囲を選んで図や表化)。 範囲を選んでいる時だけ出す。 ──
         if (_hasRange) ...[
@@ -180712,8 +181986,21 @@ $csvText
       ),
       child: ListView.builder(
         scrollDirection: Axis.horizontal,
-        itemCount: _sheetNames.length,
+        // 末尾に「+」 を 1 つ足す (= ユーザー要望: シート名の右端の + で
+        // 新しいシートを追加できるように)。
+        itemCount: _sheetNames.length + 1,
         itemBuilder: (_, i) {
+          if (i == _sheetNames.length) {
+            return InkWell(
+              onTap: _addSheet,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                alignment: Alignment.center,
+                child: Icon(Icons.add_rounded,
+                    size: 18, color: fg.withValues(alpha: 0.7)),
+              ),
+            );
+          }
           final name = _sheetNames[i];
           final active = name == _activeSheet;
           return InkWell(
@@ -180780,7 +182067,13 @@ $csvText
       focusNode: _keyFocus,
       autofocus: true,
       onKeyEvent: _onKeyEvent,
-      child: LayoutBuilder(
+      // ── 指 / マウスを離したら範囲ドラッグを終える (= ユーザー要望:
+      //    ドラッグで範囲選択)。 セルの外で離しても確実に止まるよう、
+      //    表全体で受ける。 ──
+      child: Listener(
+        onPointerUp: (_) => _dragSelecting = false,
+        onPointerCancel: (_) => _dragSelecting = false,
+        child: LayoutBuilder(
         builder: (ctx, cons) {
           final tableW = _rowHeaderWidth + _colCount * _cellWidth + _cellWidth;
           final tableH =
@@ -180804,14 +182097,19 @@ $csvText
                     child: SizedBox(
                       width: tableW,
                       height: tableH,
-                      child: Column(
-                        children: [
-                          _buildColumnHeaderRow(dark, fg),
-                          ...List.generate(
-                              _rowCount, (r) => _buildDataRow(r, dark, fg)),
-                          _buildAppendRow(dark, fg),
-                        ],
-                      ),
+                      child: Stack(children: [
+                        Column(
+                          children: [
+                            _buildColumnHeaderRow(dark, fg),
+                            ...List.generate(
+                                _rowCount, (r) => _buildDataRow(r, dark, fg)),
+                            _buildAppendRow(dark, fg),
+                          ],
+                        ),
+                        // ── 貼った図 (= ユーザー要望: 図の挿入)。
+                        //    ドラッグで動かせる。 ✕ で消す。 ──
+                        for (final im in _images) _buildSheetImage(im),
+                      ]),
                     ),
                   ),
                 ),
@@ -180819,6 +182117,116 @@ $csvText
             ),
           );
         },
+      ),
+      ),
+    );
+  }
+
+  /// シートに貼った図 1 個 (= ユーザー要望: 図の挿入)。
+  /// 位置はセル番号から計算し、 ドラッグで動かす。 右下でサイズ変更。
+  Widget _buildSheetImage(_SsImage im) {
+    final left = _rowHeaderWidth + im.col * _cellWidth;
+    final top = _colHeaderHeight + im.row * _cellHeight;
+    return Positioned(
+      left: left,
+      top: top,
+      width: im.width,
+      height: im.height,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onPanUpdate: (d) {
+          setState(() {
+            // セル単位で動かす (= 表と位置が揃うように)。
+            final nc = ((left + d.delta.dx - _rowHeaderWidth) / _cellWidth)
+                .round()
+                .clamp(0, math.max(0, _colCount - 1));
+            final nr = ((top + d.delta.dy - _colHeaderHeight) / _cellHeight)
+                .round()
+                .clamp(0, math.max(0, _rowCount - 1));
+            im.col = nc.toInt();
+            im.row = nr.toInt();
+            _dirty = true;
+          });
+        },
+        child: Stack(clipBehavior: Clip.none, children: [
+          Positioned.fill(
+            child: Container(
+              decoration: BoxDecoration(
+                border: Border.all(
+                    color: const Color(0xFF4FC3F7).withValues(alpha: 0.6)),
+              ),
+              child: Image.memory(im.bytes, fit: BoxFit.fill),
+            ),
+          ),
+          // 右下: 大きさを変える
+          Positioned(
+            right: -6,
+            bottom: -6,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onPanUpdate: (d) {
+                setState(() {
+                  im.width = math.max(40.0, im.width + d.delta.dx);
+                  im.height = math.max(30.0, im.height + d.delta.dy);
+                  _dirty = true;
+                });
+              },
+              child: Container(
+                width: 13,
+                height: 13,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF4FC3F7),
+                  borderRadius: BorderRadius.circular(3),
+                  border: Border.all(color: Colors.white, width: 1.2),
+                ),
+              ),
+            ),
+          ),
+          // 左上: マップへ出す (= ユーザー要望: 外のマップにも出せるように)
+          Positioned(
+            left: -8,
+            top: -8,
+            child: GestureDetector(
+              onTap: () => unawaited(_sendImageToMap(im)),
+              child: Container(
+                width: 18,
+                height: 18,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF6C63FF),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white, width: 1.2),
+                ),
+                child: const Icon(Icons.open_in_new_rounded,
+                    size: 11, color: Colors.white),
+              ),
+            ),
+          ),
+          // 右上: 消す
+          Positioned(
+            right: -8,
+            top: -8,
+            child: GestureDetector(
+              onTap: () {
+                _pushUndo();
+                setState(() {
+                  _images.remove(im);
+                  _dirty = true;
+                });
+              },
+              child: Container(
+                width: 18,
+                height: 18,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE57373),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white, width: 1.2),
+                ),
+                child: const Icon(Icons.close_rounded,
+                    size: 12, color: Colors.white),
+              ),
+            ),
+          ),
+        ]),
       ),
     );
   }
@@ -180912,6 +182320,20 @@ $csvText
             // 元の値が = で始まり、表示モード ON の時は数式マーカー
             final isFormula =
                 !editing && _showFormulaResults && _rows[r][c].startsWith('=');
+            final tbl = _tableAt(r, c);
+            // オートフィルの取っ手は、 選択 (範囲) の右下のセルに出す。
+            final rg = _hasRange
+                ? _range
+                : (r1: _selRow, c1: _selCol, r2: _selRow, c2: _selCol);
+            final isFillHandleCell = r == rg.r2 && c == rg.c2;
+            // ドラッグ中に「ここまで入りますよ」 と示す枠。
+            final inFillPreview = _fillToRow != null &&
+                _fillToCol != null &&
+                r >= rg.r1 &&
+                c >= rg.c1 &&
+                r <= math.max(rg.r2, _fillToRow!) &&
+                c <= math.max(rg.c2, _fillToCol!) &&
+                (r > rg.r2 || c > rg.c2);
             return _SsDataCell(
               width: _cellWidth,
               height: _cellHeight,
@@ -180920,6 +182342,40 @@ $csvText
               editing: editing,
               selected: selected,
               dark: dark,
+              // オートフィル (= ユーザー要望)。
+              showFillHandle: isFillHandleCell && _editingRow == null,
+              inFillPreview: inFillPreview,
+              onFillDrag: (delta) {
+                setState(() {
+                  final baseX = (rg.c2 + 1) * _cellWidth;
+                  final baseY = (rg.r2 + 1) * _cellHeight;
+                  final curX = (_fillToCol == null
+                          ? baseX
+                          : (_fillToCol! + 1) * _cellWidth) +
+                      delta.dx;
+                  final curY = (_fillToRow == null
+                          ? baseY
+                          : (_fillToRow! + 1) * _cellHeight) +
+                      delta.dy;
+                  _fillToCol = (curX / _cellWidth).round() - 1;
+                  _fillToRow = (curY / _cellHeight).round() - 1;
+                  if (_fillToCol! < rg.c2) _fillToCol = rg.c2;
+                  if (_fillToRow! < rg.r2) _fillToRow = rg.r2;
+                  // 伸ばせるのは 1 方向だけ (Excel と同じ)。
+                  if (_fillToRow! - rg.r2 >= _fillToCol! - rg.c2) {
+                    _fillToCol = rg.c2;
+                  } else {
+                    _fillToRow = rg.r2;
+                  }
+                });
+              },
+              onFillEnd: _applyAutoFill,
+              // 表 (= ユーザー要望: 表の挿入) の見た目。
+              tableFill: _tableFillAt(r, c),
+              tableLine: tbl?.line,
+              tableHeaderFont: (tbl != null && r == tbl.row)
+                  ? tbl.headerFont
+                  : null,
               controller: editing ? _editCtrl : null,
               focusNode: editing ? _editFocus : null,
               inRange: _hasRange && _inRange(r, c),
@@ -180946,6 +182402,28 @@ $csvText
                     _selCol = c;
                   });
                 }
+              },
+              // ── ドラッグで範囲選択 (= ユーザー要望) ──
+              //    押した所を起点にして、 なぞったセルまでを範囲にする。
+              onPointerDown: () {
+                if (_editingRow != null) return;
+                _dragSelecting = true;
+                _dragAnchorRow = r;
+                _dragAnchorCol = c;
+              },
+              onPointerEnter: () {
+                if (!_dragSelecting) return;
+                final ar = _dragAnchorRow;
+                final ac = _dragAnchorCol;
+                if (ar == null || ac == null) return;
+                if (_selRow == r && _selCol == c && _hasRange) return;
+                _commitEdit();
+                setState(() {
+                  _rangeAnchorRow = ar;
+                  _rangeAnchorCol = ac;
+                  _selRow = r;
+                  _selCol = c;
+                });
               },
               onDoubleTap: () => _beginEdit(r, c),
               onSubmitted: () {
@@ -181151,6 +182629,30 @@ class _SsDataCell extends StatelessWidget {
   final VoidCallback onTabNext;
   final VoidCallback onTabPrev;
 
+  /// マウスのボタンを押した瞬間 (= 範囲ドラッグの起点)。
+  /// Listener なのでジェスチャの取り合いにならず、 指でのスクロールは
+  /// そのまま効く (= ユーザー要望: ドラッグで範囲選択)。
+  final VoidCallback? onPointerDown;
+
+  /// ボタンを押したままこのセルに入ってきた時 (= 範囲を伸ばす)。
+  final VoidCallback? onPointerEnter;
+
+  /// オートフィルの取っ手を出すか (= 選択の右下のセル)。
+  final bool showFillHandle;
+
+  /// オートフィルのドラッグ中で、 このセルが埋まる予定か。
+  final bool inFillPreview;
+
+  /// 取っ手をドラッグした量 / 離した合図。
+  final void Function(Offset delta)? onFillDrag;
+  final VoidCallback? onFillEnd;
+
+  /// 表 (= ユーザー要望: 表の挿入) の見た目。 いずれも RGB 24bit、
+  /// null なら普通のセルとして描く。
+  final int? tableFill;
+  final int? tableLine;
+  final int? tableHeaderFont;
+
   const _SsDataCell({
     required this.width,
     required this.height,
@@ -181168,6 +182670,15 @@ class _SsDataCell extends StatelessWidget {
     this.inRange = false,
     this.controller,
     this.focusNode,
+    this.onPointerDown,
+    this.onPointerEnter,
+    this.tableFill,
+    this.tableLine,
+    this.tableHeaderFont,
+    this.showFillHandle = false,
+    this.inFillPreview = false,
+    this.onFillDrag,
+    this.onFillEnd,
   });
 
   @override
@@ -181183,13 +182694,26 @@ class _SsDataCell extends StatelessWidget {
                 ? (dark
                     ? const Color(0xFF3A3A55).withValues(alpha: 0.30)
                     : const Color(0xFFD0D8FF).withValues(alpha: 0.35))
-                : (dark ? const Color(0xFF1A1A24) : Colors.white);
-    final fg = dark ? Colors.white : const Color(0xFF1A1A24);
+                // 表の塗り (= ユーザー要望: 表の挿入)。
+                : tableFill != null
+                    ? Color(0xFF000000 | tableFill!)
+                    : (dark ? const Color(0xFF1A1A24) : Colors.white);
+    final fg = tableHeaderFont != null
+        ? Color(0xFF000000 | tableHeaderFont!)
+        : (dark ? Colors.white : const Color(0xFF1A1A24));
     final borderColor = selected
         ? const Color(0xFF6C63FF)
-        : (dark ? Colors.white10 : Colors.black12);
+        : tableLine != null
+            ? Color(0xFF000000 | tableLine!)
+            : (dark ? Colors.white10 : Colors.black12);
 
-    return GestureDetector(
+    return MouseRegion(
+      onEnter: onPointerEnter == null ? null : (_) => onPointerEnter!.call(),
+      child: Listener(
+        onPointerDown:
+            onPointerDown == null ? null : (_) => onPointerDown!.call(),
+        child: Stack(clipBehavior: Clip.none, children: [
+          GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: onTap,
       onDoubleTap: onDoubleTap,
@@ -181198,7 +182722,12 @@ class _SsDataCell extends StatelessWidget {
         height: height,
         decoration: BoxDecoration(
           color: bg,
-          border: Border.all(color: borderColor, width: selected ? 1.5 : 0.5),
+          // オートフィルで埋まる予定の所は枠を出す (= ユーザー要望)。
+          border: inFillPreview
+              ? Border.all(
+                  color: const Color(0xFF6C63FF).withValues(alpha: 0.7),
+                  width: 1)
+              : Border.all(color: borderColor, width: selected ? 1.5 : 0.5),
         ),
         padding: const EdgeInsets.symmetric(horizontal: 6),
         alignment: Alignment.centerLeft,
@@ -181244,6 +182773,33 @@ class _SsDataCell extends StatelessWidget {
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis),
       ),
+          ), // GestureDetector
+          // ── オートフィルの取っ手 (= ユーザー要望) ──
+          //    右下の小さな四角。 下 / 右へ引っ張ると連番やコピーで埋まる。
+          if (showFillHandle)
+            Positioned(
+              right: -3,
+              bottom: -3,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onPanUpdate: (d) => onFillDrag?.call(d.delta),
+                onPanEnd: (_) => onFillEnd?.call(),
+                onPanCancel: () => onFillEnd?.call(),
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.precise,
+                  child: Container(
+                    width: 9,
+                    height: 9,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF6C63FF),
+                      border: Border.all(color: Colors.white, width: 1),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ]), // Stack
+      ), // Listener
     );
   }
 }
@@ -181572,6 +183128,114 @@ class _PptxTextParagraph {
 
   /// 段落全体の文字列 (= 全ランの text を連結)。
   String get plainText => runs.map((r) => r.text).join();
+}
+
+/// 登録したスライドマスター 1 件 (= ユーザー要望: スライドマスター登録は
+/// 複数行えて、 呼び出せるように)。
+///
+/// 「そのスライドの見た目 (背景色 + 図形 + テキスト枠)」 を名前付きで控えた
+/// もの。 適用すると、 他の全スライドの背後に敷かれ、 保存時に
+/// slideLayout1 へ焼き込まれる (= 編集中は触れない共通背景になる)。
+/// prefs にファイル単位で JSON 保存するので、 開き直しても残る。
+class _PptxMaster {
+  String id;
+  String name;
+  int? bgColor;
+  final List<_PptxDrawShape> drawShapes;
+  final List<_PptxTextShape> textShapes;
+
+  _PptxMaster({
+    required this.id,
+    required this.name,
+    this.bgColor,
+    List<_PptxDrawShape>? drawShapes,
+    List<_PptxTextShape>? textShapes,
+  })  : drawShapes = drawShapes ?? <_PptxDrawShape>[],
+        textShapes = textShapes ?? <_PptxTextShape>[];
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        if (bgColor != null) 'bg': bgColor,
+        'shapes': [
+          for (final d in drawShapes)
+            {
+              'kind': d.kind,
+              'x': d.offX,
+              'y': d.offY,
+              'cx': d.extCx,
+              'cy': d.extCy,
+              if (d.fillColor != null) 'fill': d.fillColor,
+              'line': d.lineColor,
+              'lw': d.lineWidthPt100,
+            },
+        ],
+        // テキストは見た目の再現に要る分だけ持つ (ラン単位の飾りは持たない)。
+        'texts': [
+          for (final t in textShapes)
+            {
+              'text': t.text,
+              'x': t.offX,
+              'y': t.offY,
+              'cx': t.extCx,
+              'cy': t.extCy,
+              if (t.fontSize != null) 'sz': t.fontSize,
+              if (t.fontColor != null) 'color': t.fontColor,
+              if (t.fontFamily != null) 'font': t.fontFamily,
+              if (t.anchor != null) 'anchor': t.anchor,
+              if (t.cellFillColor != null) 'cellFill': t.cellFillColor,
+              if (t.cellLineColor != null) 'cellLine': t.cellLineColor,
+            },
+        ],
+      };
+
+  static _PptxMaster? fromJson(Map<String, dynamic> m, int Function() nextId) {
+    try {
+      final draws = <_PptxDrawShape>[];
+      for (final e in (m['shapes'] as List? ?? const [])) {
+        if (e is! Map) continue;
+        draws.add(_PptxDrawShape(
+          id: nextId(),
+          kind: '${e['kind'] ?? 'rect'}',
+          offX: (e['x'] as num?)?.toInt() ?? 0,
+          offY: (e['y'] as num?)?.toInt() ?? 0,
+          extCx: (e['cx'] as num?)?.toInt() ?? 600000,
+          extCy: (e['cy'] as num?)?.toInt() ?? 600000,
+          fillColor: (e['fill'] as num?)?.toInt(),
+          lineColor: (e['line'] as num?)?.toInt() ?? 0x1E88E5,
+          lineWidthPt100: (e['lw'] as num?)?.toInt() ?? 200,
+        ));
+      }
+      final texts = <_PptxTextShape>[];
+      for (final e in (m['texts'] as List? ?? const [])) {
+        if (e is! Map) continue;
+        texts.add(_PptxTextShape(
+          id: nextId(),
+          text: '${e['text'] ?? ''}',
+          offX: (e['x'] as num?)?.toInt() ?? 0,
+          offY: (e['y'] as num?)?.toInt() ?? 0,
+          extCx: (e['cx'] as num?)?.toInt() ?? 1800000,
+          extCy: (e['cy'] as num?)?.toInt() ?? 450000,
+          fontSize: (e['sz'] as num?)?.toInt(),
+          fontColor: (e['color'] as num?)?.toInt(),
+          fontFamily: e['font'] as String?,
+          anchor: e['anchor'] as String?,
+          cellFillColor: (e['cellFill'] as num?)?.toInt(),
+          cellLineColor: (e['cellLine'] as num?)?.toInt(),
+          isNew: true,
+        ));
+      }
+      return _PptxMaster(
+        id: '${m['id'] ?? DateTime.now().microsecondsSinceEpoch}',
+        name: '${m['name'] ?? 'マスター'}',
+        bgColor: (m['bg'] as num?)?.toInt(),
+        drawShapes: draws,
+        textShapes: texts,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
 }
 
 /// 「表を挿入」 のテンプレート 1 種 (= ユーザー要望: 表のテンプレートを
@@ -182470,40 +184134,320 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
   Offset? _marqueeStart;
   Offset? _marqueeEnd;
 
-  /// スライドマスターとして登録されたスライド番号 (0 始まり、 null = 無し)。
-  /// (= ユーザー要望: 本家パワポの様に、 編集時には触ることができない
-  /// スライドマスターを登録できるように)。 ファイルごとに prefs へ保存。
-  int? _masterSlideIndex;
+  /// 登録済みのスライドマスター (= ユーザー要望: 複数登録して呼び出せる
+  /// ように)。 ファイルごとに prefs へ JSON 保存する。
+  List<_PptxMaster> _masters = [];
+
+  /// いま適用しているマスターの id (null = 適用なし)。
+  String? _activeMasterId;
+
+  _PptxMaster? get _activeMaster {
+    final id = _activeMasterId;
+    if (id == null) return null;
+    for (final m in _masters) {
+      if (m.id == id) return m;
+    }
+    return null;
+  }
 
   String get _masterPrefKey =>
+      'pptxMasters_${_currentFilePath.hashCode.toRadixString(16)}';
+
+  /// 旧仕様 (スライド番号を 1 つだけ覚える) のキー。 引き継ぎに使う。
+  String get _legacyMasterPrefKey =>
       'pptxMaster_${_currentFilePath.hashCode.toRadixString(16)}';
+
+  String get _activeMasterPrefKey =>
+      'pptxActiveMaster_${_currentFilePath.hashCode.toRadixString(16)}';
 
   Future<void> _loadMasterPref() async {
     try {
       final sp = await SharedPreferences.getInstance();
-      final v = sp.getInt(_masterPrefKey);
-      if (mounted && v != null) setState(() => _masterSlideIndex = v);
+      final raw = sp.getString(_masterPrefKey);
+      final list = <_PptxMaster>[];
+      if (raw != null && raw.isNotEmpty) {
+        final decoded = jsonDecode(raw);
+        if (decoded is List) {
+          for (final e in decoded) {
+            if (e is Map) {
+              final m =
+                  _PptxMaster.fromJson(e.cast<String, dynamic>(), _nextShapeId);
+              if (m != null) list.add(m);
+            }
+          }
+        }
+      }
+      var active = sp.getString(_activeMasterPrefKey);
+      // ── 旧仕様からの引き継ぎ (= 前の版で 1 枚だけ登録していた場合) ──
+      if (list.isEmpty) {
+        final legacy = sp.getInt(_legacyMasterPrefKey);
+        if (legacy != null && legacy >= 0 && legacy < _slides.length) {
+          final m = _captureMasterFrom(legacy, 'マスター 1');
+          list.add(m);
+          active = m.id;
+          await sp.remove(_legacyMasterPrefKey);
+        }
+      }
+      if (!mounted) return;
+      setState(() {
+        _masters = list;
+        _activeMasterId = list.any((m) => m.id == active) ? active : null;
+      });
+      await _saveMasterPref();
     } catch (_) {}
   }
 
-  Future<void> _toggleMasterHere() async {
-    final cur = _currentIndex;
-    setState(() {
-      _masterSlideIndex = (_masterSlideIndex == cur) ? null : cur;
-      // 焼き込みを反映させるため保存対象にする。
-      if (_slides.isNotEmpty) _slides[cur].dirty = true;
-    });
+  Future<void> _saveMasterPref() async {
     try {
       final sp = await SharedPreferences.getInstance();
-      if (_masterSlideIndex == null) {
-        await sp.remove(_masterPrefKey);
+      await sp.setString(
+          _masterPrefKey, jsonEncode([for (final m in _masters) m.toJson()]));
+      final a = _activeMasterId;
+      if (a == null) {
+        await sp.remove(_activeMasterPrefKey);
       } else {
-        await sp.setInt(_masterPrefKey, _masterSlideIndex!);
+        await sp.setString(_activeMasterPrefKey, a);
       }
     } catch (_) {}
-    _showSnack(_masterSlideIndex == null
-        ? 'スライドマスターを解除しました (保存で反映)'
-        : '✓ このスライドをマスターに登録しました\n他のスライドの背景に表示され、編集では触れません (保存で反映)');
+  }
+
+  /// [index] 番のスライドの見た目をマスターとして控える。
+  _PptxMaster _captureMasterFrom(int index, String name) {
+    final sl = _slides[index];
+    return _PptxMaster(
+      id: '${DateTime.now().microsecondsSinceEpoch}',
+      name: name,
+      bgColor: sl.bgColor,
+      drawShapes: [
+        for (final d in sl.drawShapes)
+          _PptxDrawShape(
+            id: _nextShapeId(),
+            kind: d.kind,
+            offX: d.offX,
+            offY: d.offY,
+            extCx: d.extCx,
+            extCy: d.extCy,
+            fillColor: d.fillColor,
+            lineColor: d.lineColor,
+            lineWidthPt100: d.lineWidthPt100,
+          ),
+      ],
+      textShapes: [for (final t in sl.textShapes) t.deepCopy()],
+    );
+  }
+
+  /// 今のスライドを新しいマスターとして登録する (= ユーザー要望: 複数登録)。
+  Future<void> _registerMasterHere() async {
+    if (_slides.isEmpty) return;
+    final name = await _promptMasterName('マスター ${_masters.length + 1}');
+    if (name == null || !mounted) return;
+    final m = _captureMasterFrom(_currentIndex, name);
+    setState(() {
+      _masters.add(m);
+      _activeMasterId = m.id; // 登録したらそのまま適用する。
+      for (final sl in _slides) {
+        sl.dirty = true;
+      }
+    });
+    await _saveMasterPref();
+    _showSnack('✓ 「$name」 をマスターに登録して適用しました (保存で反映)');
+  }
+
+  /// マスター名を聞く小さな入力欄。 取り消しなら null。
+  Future<String?> _promptMasterName(String initial) async {
+    final ctrl = TextEditingController(text: initial);
+    final v = await showDialog<String>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E2E),
+        title: const Text('マスターの名前',
+            style: TextStyle(color: Colors.white, fontSize: 15)),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          style: const TextStyle(color: Colors.white, fontSize: 13),
+          decoration: const InputDecoration(
+            hintText: '例: 表紙 / 本文',
+            hintStyle: TextStyle(color: Colors.white24, fontSize: 12),
+          ),
+          onSubmitted: (t) => Navigator.pop(dctx, t.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx),
+            child:
+                const Text('キャンセル', style: TextStyle(color: Colors.white54)),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dctx, ctrl.text.trim()),
+            child: const Text('決定'),
+          ),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    if (v == null) return null;
+    return v.isEmpty ? initial : v;
+  }
+
+  /// 登録済みマスターの一覧 (= ユーザー要望: 呼び出せるように)。
+  /// 適用 / 解除 / 名前変更 / 削除 と、 今のスライドの新規登録ができる。
+  Future<void> _showMasterMenu(BuildContext anchor) async {
+    await _showDialogNearAnchor<void>(
+      anchor,
+      width: 320,
+      estHeight: 380,
+      builder: (ctx) => StatefulBuilder(builder: (sctx, setD) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E1E2E),
+          title: const Text('スライドマスター',
+              style: TextStyle(color: Colors.white, fontSize: 15)),
+          content: SizedBox(
+            width: 300,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (_masters.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 10),
+                    child: Text('まだ登録がありません',
+                        style: TextStyle(color: Colors.white54, fontSize: 12)),
+                  )
+                else
+                  Flexible(
+                    child: SingleChildScrollView(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          for (final m in List.of(_masters))
+                            _masterRow(m, setD),
+                        ],
+                      ),
+                    ),
+                  ),
+                const SizedBox(height: 8),
+                const Divider(height: 1, color: Colors.white12),
+                const SizedBox(height: 8),
+                TextButton.icon(
+                  onPressed: () async {
+                    Navigator.pop(ctx);
+                    await _registerMasterHere();
+                  },
+                  icon: const Icon(Icons.add_rounded, size: 17),
+                  label: const Text('今のスライドを登録'),
+                  style: TextButton.styleFrom(
+                      foregroundColor: const Color(0xFF6C63FF)),
+                ),
+                if (_activeMasterId != null)
+                  TextButton.icon(
+                    onPressed: () async {
+                      setState(() {
+                        _activeMasterId = null;
+                        for (final sl in _slides) {
+                          sl.dirty = true;
+                        }
+                      });
+                      setD(() {});
+                      await _saveMasterPref();
+                      _showSnack('マスターの適用を解除しました (保存で反映)');
+                    },
+                    icon: const Icon(Icons.layers_clear_rounded, size: 17),
+                    label: const Text('適用を解除'),
+                    style:
+                        TextButton.styleFrom(foregroundColor: Colors.white60),
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child:
+                  const Text('閉じる', style: TextStyle(color: Colors.white54)),
+            ),
+          ],
+        );
+      }),
+    );
+  }
+
+  /// マスター一覧の 1 行 (適用 / 名前変更 / 削除)。
+  Widget _masterRow(_PptxMaster m, void Function(void Function()) setD) {
+    final on = m.id == _activeMasterId;
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: () async {
+        // タップで「呼び出す」 = そのマスターを適用する (= ユーザー要望)。
+        setState(() {
+          _activeMasterId = m.id;
+          for (final sl in _slides) {
+            sl.dirty = true;
+          }
+        });
+        setD(() {});
+        await _saveMasterPref();
+        _showSnack('✓ 「${m.name}」 を適用しました (保存で反映)');
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        decoration: BoxDecoration(
+          color: on
+              ? const Color(0xFF6C63FF).withValues(alpha: 0.18)
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(children: [
+          Icon(on ? Icons.check_circle_rounded : Icons.circle_outlined,
+              size: 16, color: on ? const Color(0xFF6C63FF) : Colors.white38),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              m.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: Colors.white, fontSize: 13),
+            ),
+          ),
+          Text('${m.drawShapes.length + m.textShapes.length}',
+              style: const TextStyle(color: Colors.white30, fontSize: 10.5)),
+          IconButton(
+            tooltip: '名前を変える',
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+            icon: const Icon(Icons.edit_outlined,
+                size: 14, color: Colors.white54),
+            onPressed: () async {
+              final name = await _promptMasterName(m.name);
+              if (name == null) return;
+              setState(() => m.name = name);
+              setD(() {});
+              await _saveMasterPref();
+            },
+          ),
+          IconButton(
+            tooltip: '削除',
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+            icon: const Icon(Icons.delete_outline_rounded,
+                size: 15, color: Color(0xFFE57373)),
+            onPressed: () async {
+              setState(() {
+                _masters.removeWhere((x) => x.id == m.id);
+                if (_activeMasterId == m.id) {
+                  _activeMasterId = null;
+                  for (final sl in _slides) {
+                    sl.dirty = true;
+                  }
+                }
+              });
+              setD(() {});
+              await _saveMasterPref();
+            },
+          ),
+        ]),
+      ),
+    );
   }
 
   /// 選択中の図形 / テキスト枠のレイヤーを前面 / 背面へ (= ユーザー要望)。
@@ -182527,6 +184471,81 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
       }
     });
   }
+
+  /// スライドの何もない所を右クリックした時のメニュー (= ユーザー要望:
+  /// テキスト入力ボックスやファイルの添付などの項目を出して欲しい)。
+  Future<void> _showSlideCanvasMenu(Offset globalPos) async {
+    if (_slides.isEmpty || !mounted) return;
+    if (_editingShapeId != null) _exitShapeEditMode();
+    final overlay =
+        Overlay.of(context).context.findRenderObject() as RenderBox?;
+    final size = overlay?.size ?? MediaQuery.sizeOf(context);
+    final picked = await showMenu<String>(
+      context: context,
+      color: const Color(0xFF1E1E2E),
+      position: RelativeRect.fromLTRB(
+        globalPos.dx,
+        globalPos.dy,
+        math.max(0.0, size.width - globalPos.dx),
+        math.max(0.0, size.height - globalPos.dy),
+      ),
+      items: [
+        _slideMenuItem('text', Icons.add_box_outlined, 'テキストボックスを追加',
+            const Color(0xFF43B97F)),
+        _slideMenuItem('table', Icons.table_chart_rounded, '表を挿入',
+            const Color(0xFF4FC3F7)),
+        _slideMenuItem('shape', Icons.category_rounded, '図形を挿入',
+            const Color(0xFFAB47BC)),
+        _slideMenuItem('image', Icons.add_photo_alternate_outlined,
+            'ファイル添付 (画像を埋め込み)', const Color(0xFFEC407A)),
+        const PopupMenuDivider(),
+        _slideMenuItem('slide', Icons.note_add_outlined, 'スライドを追加',
+            const Color(0xFFE65100)),
+        _slideMenuItem('master', Icons.push_pin_rounded, 'スライドマスター',
+            const Color(0xFF6C63FF)),
+        _slideMenuItem(
+            'layers', Icons.layers_rounded, 'レイヤー', const Color(0xFF80CBC4)),
+      ],
+    );
+    if (picked == null || !mounted) return;
+    switch (picked) {
+      case 'text':
+        _addNewTextShape();
+        break;
+      case 'table':
+        _insertTable();
+        break;
+      case 'shape':
+        // 既定の四角。 色や太さは挿入後にツールバーから変えられる。
+        _addDrawShape('rect');
+        break;
+      case 'image':
+        await _attachImageFile();
+        break;
+      case 'slide':
+        _addNewSlide();
+        break;
+      case 'master':
+        await _showMasterMenu(context);
+        break;
+      case 'layers':
+        await _showLayersDialog(context);
+        break;
+    }
+  }
+
+  PopupMenuItem<String> _slideMenuItem(
+          String value, IconData icon, String label, Color color) =>
+      PopupMenuItem<String>(
+        value: value,
+        height: 38,
+        child: Row(children: [
+          Icon(icon, size: 17, color: color),
+          const SizedBox(width: 10),
+          Text(label,
+              style: const TextStyle(color: Colors.white, fontSize: 13)),
+        ]),
+      );
 
   /// レイヤー一覧ダイアログ (= ユーザー要望: マスター登録ボタンがレイヤーの
   /// 設定ボタンみたいに見える → マスターは別アイコンにして、 レイヤーも
@@ -186329,9 +188348,8 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
           final stripped = layoutXml.replaceAll(
               RegExp(r'<!--HN_MASTER_START-->[\s\S]*?<!--HN_MASTER_END-->'),
               '');
-          if (_masterSlideIndex != null &&
-              _masterSlideIndex! < _slides.length) {
-            final ms = _slides[_masterSlideIndex!];
+          final ms = _activeMaster;
+          if (ms != null) {
             final buf = StringBuffer('<!--HN_MASTER_START-->');
             for (final ds in ms.drawShapes) {
               buf.write(_buildDrawShapeSpXml(ds));
@@ -187643,23 +189661,23 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                         //    アイコンはピン (= ユーザー要望: 画像貼り付けや
                         //    レイヤー設定に見えるアイコンを避ける。
                         //    「このスライドを固定 (登録)」 の意)。 ──
-                        IconButton(
-                          tooltip: _masterSlideIndex == null
-                              ? 'このスライドをマスターに登録'
-                              : (_masterSlideIndex == _currentIndex
-                                  ? 'マスター登録中 (押すと解除)'
-                                  : 'マスターを解除'),
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(
-                              minWidth: 30, minHeight: 30),
-                          icon: Icon(Icons.push_pin_rounded,
-                              size: 19,
-                              color: _masterSlideIndex != null
-                                  ? const Color(0xFF6C63FF)
-                                  : const Color(0xFF9E9E9E)),
-                          onPressed: _slides.isEmpty
-                              ? null
-                              : () => unawaited(_toggleMasterHere()),
+                        Builder(
+                          builder: (bctx) => IconButton(
+                            tooltip: _activeMaster == null
+                                ? 'スライドマスター (登録 / 呼び出し)'
+                                : 'スライドマスター: ${_activeMaster!.name}',
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                                minWidth: 30, minHeight: 30),
+                            icon: Icon(Icons.push_pin_rounded,
+                                size: 19,
+                                color: _activeMasterId != null
+                                    ? const Color(0xFF6C63FF)
+                                    : const Color(0xFF9E9E9E)),
+                            onPressed: _slides.isEmpty
+                                ? null
+                                : () => unawaited(_showMasterMenu(bctx)),
+                          ),
                         ),
                         // ── レイヤー一覧 (= ユーザー要望: レイヤーも設定
                         //    できるボタンを新設)。 現在のスライドの要素の
@@ -188195,6 +190213,13 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                             _selectedTableGroupId = null;
                           });
                         },
+                        // ── 何もない所を右クリック (= ユーザー要望:
+                        //    テキスト入力ボックスやファイルの添付などの
+                        //    項目を出して欲しい) ──
+                        onSecondaryTapUp: (d) => unawaited(
+                            _showSlideCanvasMenu(d.globalPosition)),
+                        onLongPressStart: (d) => unawaited(
+                            _showSlideCanvasMenu(d.globalPosition)),
                         // ── 空白部分のドラッグで範囲選択 (= ユーザー要望:
                         //    まとめて選択して削除できるように)。 ──
                         onPanStart: (d) {
@@ -188285,20 +190310,22 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                               // ── スライドマスター (= ユーザー要望: 編集
                               //    時には触れない共通背景)。 マスター登録
                               //    スライドの内容を最背面に敷く。 ──
-                              if (_masterSlideIndex != null &&
-                                  _masterSlideIndex != _currentIndex &&
-                                  _masterSlideIndex! < _slides.length)
+                              if (_activeMaster != null)
                                 Positioned.fill(
                                   child: IgnorePointer(
                                     child: Stack(children: [
+                                      if (_activeMaster!.bgColor != null)
+                                        Positioned.fill(
+                                          child: ColoredBox(
+                                              color: Color(0xFF000000 |
+                                                  _activeMaster!.bgColor!)),
+                                        ),
                                       for (final mds
-                                          in _slides[_masterSlideIndex!]
-                                              .drawShapes)
+                                          in _activeMaster!.drawShapes)
                                         _buildCanvasDrawShape(
                                             mds, canvasW, canvasH),
                                       for (final mts
-                                          in _slides[_masterSlideIndex!]
-                                              .textShapes)
+                                          in _activeMaster!.textShapes)
                                         _buildCanvasShape(
                                             mts, canvasW, canvasH, dark),
                                     ]),
@@ -191452,8 +193479,30 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
       child: ListView.builder(
         controller: _thumbScroll,
         scrollDirection: Axis.horizontal,
-        itemCount: _slides.length,
+        // 末尾に「+」 を 1 つ足す (= ユーザー要望: スライド一覧の右端の +
+        // で新しいスライドを追加できるように)。
+        itemCount: _slides.length + 1,
         itemBuilder: (_, i) {
+          if (i == _slides.length) {
+            return InkWell(
+              onTap: _addNewSlide,
+              child: Container(
+                width: 64,
+                margin: const EdgeInsets.symmetric(horizontal: 4),
+                decoration: BoxDecoration(
+                  color: dark
+                      ? Colors.white.withValues(alpha: 0.04)
+                      : Colors.black.withValues(alpha: 0.03),
+                  border: Border.all(
+                      color: dark ? Colors.white24 : Colors.black26),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                alignment: Alignment.center,
+                child: Icon(Icons.add_rounded,
+                    size: 22, color: fg.withValues(alpha: 0.7)),
+              ),
+            );
+          }
           final s = _slides[i];
           final active = i == _currentIndex;
           return InkWell(
@@ -191904,6 +193953,17 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
     return l.endsWith('.md') || l.endsWith('.markdown');
   }
 
+  /// HTML ファイルか (= ユーザー要望: html もマークダウンみたいに編集して
+  /// プレビュー画面を表示できるように)。 プレビューは書いた HTML を
+  /// そのまま WebView で表示する。
+  bool get _isHtmlFile {
+    final l = _currentFileName.toLowerCase();
+    return l.endsWith('.html') || l.endsWith('.htm');
+  }
+
+  /// プレビュー (編集⇔表示の切り替え / 左右分割) を出せるファイルか。
+  bool get _isPreviewableFile => _isMarkdownFile || _isHtmlFile;
+
   /// Markdown プレビューモード (編集ビューと切り替え)。
   bool _mdPreview = false;
 
@@ -192200,7 +194260,14 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
     if (!_mdSplitView) return;
     _mdSplitRenderDebounce?.cancel();
     _mdSplitRenderDebounce = Timer(const Duration(milliseconds: 600), () {
-      if (!mounted || !_mdSplitView || !_mdWinReady) return;
+      if (!mounted || !_mdSplitView) return;
+      // HTML は書いた物がそのままページなので、 読み込み直す
+      // (Markdown のような「本文だけ差し替える」 入口が無いため)。
+      if (_isHtmlFile) {
+        unawaited(_renderMdPreview());
+        return;
+      }
+      if (!_mdWinReady) return;
       try {
         final js = 'window.__mmUpdate(${jsonEncode(_previewSourceText())});';
         _mdWin?.executeScript(js);
@@ -192224,6 +194291,43 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
 
   Future<void> _renderMdPreview() async {
     if (!mounted || (!_mdPreview && !_mdSplitView)) return;
+    // ── HTML ファイルは書いた内容をそのまま表示する (= ユーザー要望) ──
+    //    デスクトップは元ファイルの隣に控えを書いて file:// で開く
+    //    (画像や css の相対パスがそのまま効くように)。
+    if (_isHtmlFile) {
+      final src = _previewSourceText();
+      try {
+        if (!kIsWeb &&
+            (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+          String? fileUrl;
+          try {
+            final orig = File(_currentFilePath);
+            final dir = orig.parent.path;
+            final tmp = File('$dir${Platform.pathSeparator}'
+                '.hn_preview_${_currentFileName.hashCode.toRadixString(16)}.html');
+            await tmp.writeAsString(src, flush: true);
+            fileUrl = Uri.file(tmp.path).toString();
+          } catch (_) {}
+          if (!mounted || (!_mdPreview && !_mdSplitView)) return;
+          if (_mdWinReady) {
+            if (fileUrl != null) {
+              await _mdWin?.loadUrl(fileUrl);
+            } else {
+              await _mdWin?.loadStringContent(src);
+            }
+          }
+        } else {
+          final uri =
+              Uri.dataFromString(src, mimeType: 'text/html', encoding: utf8)
+                  .toString();
+          await _mdIaw?.loadUrl(
+              urlRequest: iaw.URLRequest(url: iaw.WebUri(uri)));
+        }
+      } catch (e) {
+        debugPrint('HTML プレビューの描画に失敗: $e');
+      }
+      return;
+    }
     final html = _markdownPreviewHtml(_lines.join('\n'), widget.isDarkMode);
     try {
       if (!kIsWeb &&
@@ -193542,7 +195646,7 @@ $currentText
           ),
         ),
       );
-    } else if (_mdSplitView && _isMarkdownFile) {
+    } else if (_mdSplitView && _isPreviewableFile) {
       // 編集×プレビューの左右分割 (= ユーザー要望: 発展案)。
       body = Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -193552,8 +195656,9 @@ $currentText
           Expanded(child: _buildMdPreviewBody()),
         ],
       );
-    } else if (_mdPreview && _isMarkdownFile) {
-      // Markdown プレビュー (= ユーザー要望: Mermaid 記法も描画)。
+    } else if (_mdPreview && _isPreviewableFile) {
+      // Markdown / HTML プレビュー (= ユーザー要望: Mermaid 記法も描画。
+      //   HTML は書いた物をそのまま表示)。
       body = _buildMdPreviewBody();
     } else if (_mathPreview && _mathCapable) {
       body = _buildMathPreview(dark, fg);
@@ -193824,9 +195929,9 @@ $currentText
                 }
               },
             ),
-          // ── Markdown プレビュー切替 (.md のみ。 Mermaid 記法も描画) ──
-          // (= ユーザー要望: マークダウン形式を開いた時のプレビュー機能)。
-          if (_isMarkdownFile)
+          // ── プレビュー切替 (.md は Mermaid 記法も描画、 .html は書いた
+          //    ページをそのまま表示 = ユーザー要望) ──
+          if (_isPreviewableFile)
             IconButton(
               tooltip: context.read<MindMapProvider>().t('md.togglePreview'),
               icon: Icon(
@@ -193842,7 +195947,7 @@ $currentText
               },
             ),
           // ── 編集×プレビューの左右分割 (= ユーザー要望: 発展案) ──
-          if (_isMarkdownFile && _isDesktopEditor)
+          if (_isPreviewableFile && _isDesktopEditor)
             IconButton(
               tooltip: context.read<MindMapProvider>().t('md.splitView'),
               icon: Icon(
@@ -198907,6 +201012,27 @@ class _OfficeFileTemplate {
       case 'md':
         // Markdown (= ユーザー要望: 右クリックから md も生成できるように)。
         return Uint8List.fromList(utf8.encode(''));
+      case 'html':
+      case 'htm':
+        // HTML (= ユーザー要望: マークダウンみたいに編集してプレビューを
+        //   出せるように)。 空だと真っ白で分かりにくいので最小の骨組みを
+        //   入れておく。
+        return Uint8List.fromList(utf8.encode(
+            '<!DOCTYPE html>\n'
+            '<html lang="ja">\n'
+            '<head>\n'
+            '  <meta charset="utf-8">\n'
+            '  <meta name="viewport" content="width=device-width, initial-scale=1">\n'
+            '  <title>ページ</title>\n'
+            '  <style>\n'
+            '    body { font-family: sans-serif; margin: 24px; line-height: 1.7; }\n'
+            '  </style>\n'
+            '</head>\n'
+            '<body>\n'
+            '  <h1>見出し</h1>\n'
+            '  <p>ここに本文を書きます。</p>\n'
+            '</body>\n'
+            '</html>\n'));
       case 'csv':
         return Uint8List.fromList(utf8.encode(''));
       case 'docx':

@@ -77,6 +77,9 @@ class MainActivity : FlutterActivity() {
         private const val DOWNLOADS_CHANNEL = "app/downloads"
         // ホーム画面ショートカット用 (= マップごとにアプリ風アイコンを作る)
         private const val SHORTCUT_CHANNEL = "app/shortcuts"
+        // 画面録画 (= ユーザー要望: モバイル版でも画面録画に対応)
+        private const val SCREENREC_CHANNEL = "app/screenrec"
+        private const val REQ_SCREEN_REC = 8931
         private const val EXTRA_PAGE_ID = "mindmap_page_id"
         // ボタン (カスタム項目) を一発で呼び出すショートカット用
         private const val EXTRA_COMMAND_ID = "mindmap_command_id"
@@ -290,6 +293,110 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+
+        // ── 画面録画 (= ユーザー要望: モバイル版でも画面録画したい) ──
+        // Windows は ffmpeg、 Android は OS の MediaProjection で録る。
+        // 録画の実体は ScreenRecService (foregroundServiceType=mediaProjection)。
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SCREENREC_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "isRecording" -> result.success(ScreenRecService.isRecording)
+                    "start" -> {
+                        if (ScreenRecService.isRecording) {
+                            result.success(ScreenRecService.currentPath)
+                        } else if (screenRecPending != null) {
+                            result.error("busy", "録画の許可を待っています", null)
+                        } else {
+                            screenRecPath = call.argument<String>("path")
+                            screenRecWithAudio =
+                                call.argument<Boolean>("withAudio") ?: false
+                            screenRecPending = result
+                            requestScreenRecPermission()
+                        }
+                    }
+                    "stop" -> {
+                        val path = ScreenRecService.currentPath
+                        val svc = Intent(this, ScreenRecService::class.java)
+                        svc.action = ScreenRecService.ACTION_STOP
+                        try {
+                            startService(svc)
+                        } catch (t: Throwable) {
+                            // サービスが既に死んでいる場合は何もしなくてよい。
+                        }
+                        result.success(path)
+                    }
+                    "lastError" -> result.success(ScreenRecService.lastError)
+                    else -> result.notImplemented()
+                }
+            }
+    }
+
+    /// 画面録画: 許可ダイアログの結果を待っている Dart 側の呼び出し。
+    private var screenRecPending: MethodChannel.Result? = null
+    private var screenRecPath: String? = null
+    private var screenRecWithAudio = false
+
+    /// MediaProjection の許可を求める (OS の確認ダイアログが出る)。
+    private fun requestScreenRecPermission() {
+        try {
+            val mgr = getSystemService(Context.MEDIA_PROJECTION_SERVICE)
+                as android.media.projection.MediaProjectionManager
+            startActivityForResult(mgr.createScreenCaptureIntent(), REQ_SCREEN_REC)
+        } catch (t: Throwable) {
+            screenRecPending?.error("unsupported", "画面録画に対応していません", null)
+            screenRecPending = null
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode == REQ_SCREEN_REC) {
+            val pending = screenRecPending
+            screenRecPending = null
+            val path = screenRecPath
+            if (resultCode != RESULT_OK || data == null || path == null) {
+                pending?.success(null) // 取り消し
+                return
+            }
+            try {
+                // 録画サイズ = 画面の実サイズ。 エンコーダが 16 の倍数を好むので
+                // 偶数に丸める (奇数だと端末によっては prepare で落ちる)。
+                val metrics = resources.displayMetrics
+                val w = (metrics.widthPixels / 2) * 2
+                val h = (metrics.heightPixels / 2) * 2
+                val svc = Intent(this, ScreenRecService::class.java).apply {
+                    action = ScreenRecService.ACTION_START
+                    putExtra(ScreenRecService.EXTRA_RESULT_CODE, resultCode)
+                    putExtra(ScreenRecService.EXTRA_RESULT_DATA, data)
+                    putExtra(ScreenRecService.EXTRA_PATH, path)
+                    putExtra(ScreenRecService.EXTRA_WIDTH, w)
+                    putExtra(ScreenRecService.EXTRA_HEIGHT, h)
+                    putExtra(ScreenRecService.EXTRA_DPI, metrics.densityDpi)
+                    putExtra(ScreenRecService.EXTRA_WITH_AUDIO, screenRecWithAudio)
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(svc)
+                } else {
+                    startService(svc)
+                }
+                // サービスが projection を作るまで少し待ってから結果を返す
+                // (失敗していれば lastError が入るので Dart 側が拾える)。
+                android.os.Handler(mainLooper).postDelayed({
+                    if (ScreenRecService.isRecording) {
+                        pending?.success(path)
+                    } else {
+                        pending?.error(
+                            "failed",
+                            ScreenRecService.lastError ?: "録画を開始できませんでした",
+                            null,
+                        )
+                    }
+                }, 700)
+            } catch (t: Throwable) {
+                pending?.error("failed", t.message ?: "録画を開始できませんでした", null)
+            }
+            return
+        }
+        super.onActivityResult(requestCode, resultCode, data)
     }
 
     /// プラグインをリフレクションで安全に (Throwable まで握って) 事前登録する。

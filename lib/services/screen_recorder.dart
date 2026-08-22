@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'screen_capture.dart' as scap;
@@ -13,10 +14,21 @@ import 'screen_capture.dart' as scap;
 ///   ビデオエディターのボタンからも、 ヘッダーのカスタムボタンからも
 ///   同じ 1 つを操るために、 画面の外に置いてある。
 ///
-/// Windows のみ。 ffmpeg の gdigrab で画面を取り込む。
+/// Windows は ffmpeg の gdigrab で画面を取り込む。
+/// Android は OS の MediaProjection (ネイティブの ScreenRecService) で録る
+/// (= ユーザー要望: モバイル版でも画面録画に対応)。
 class ScreenRecorder extends ChangeNotifier {
   ScreenRecorder._();
   static final ScreenRecorder instance = ScreenRecorder._();
+
+  /// Android のネイティブ録画との通信口 (MainActivity 側と対)。
+  static const MethodChannel _androidCh = MethodChannel('app/screenrec');
+
+  /// この環境で画面録画ができるか (= ボタンを出してよいか)。
+  static bool get supported => Platform.isWindows || Platform.isAndroid;
+
+  /// Android のネイティブ録画で撮っている最中か。
+  bool _androidRecording = false;
 
   Process? _proc;
   String? _dest;
@@ -26,7 +38,7 @@ class ScreenRecorder extends ChangeNotifier {
   /// ffmpeg が吐いたエラー (失敗した時に何が起きたか出すため)。
   final StringBuffer _err = StringBuffer();
 
-  bool get recording => _proc != null;
+  bool get recording => _proc != null || _androidRecording;
   int get seconds => _sec;
   String? get destPath => _dest;
 
@@ -88,6 +100,73 @@ class ScreenRecorder extends ChangeNotifier {
   ///
   /// [region] を渡すとその範囲だけを録る (画面の物理ピクセル座標)。
   /// null なら画面全体。
+  /// Android の画面録画を始める (= OS の MediaProjection)。
+  ///
+  /// OS の確認ダイアログが出るので、 利用者が拒否した時は
+  /// [ScreenRecException] を投げる。 範囲指定は Android では扱えないため
+  /// 常に画面全体を録る。
+  Future<String> startAndroid({bool withAudio = false}) async {
+    if (recording) return _dest!;
+    final dir = await recordingsDir();
+    final dest = '${dir.path}${Platform.pathSeparator}'
+        'screen_${DateTime.now().millisecondsSinceEpoch}.mp4';
+    String? got;
+    try {
+      got = await _androidCh.invokeMethod<String>('start', {
+        'path': dest,
+        'withAudio': withAudio,
+      });
+    } on PlatformException catch (e) {
+      throw ScreenRecException(e.message ?? '録画を開始できませんでした');
+    } catch (e) {
+      throw ScreenRecException('$e');
+    }
+    if (got == null) {
+      // 利用者が OS のダイアログで «キャンセル» した。
+      throw ScreenRecException('録画の許可が下りませんでした');
+    }
+    _androidRecording = true;
+    _dest = got;
+    _sec = 0;
+    _timer?.cancel();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      _sec++;
+      notifyListeners();
+    });
+    notifyListeners();
+    return got;
+  }
+
+  /// Android の録画を止めて、 出来たファイルのパスを返す。
+  Future<String> _stopAndroid() async {
+    final dest = _dest;
+    _androidRecording = false;
+    _timer?.cancel();
+    _timer = null;
+    _dest = null;
+    notifyListeners();
+    String? path;
+    try {
+      path = await _androidCh.invokeMethod<String>('stop');
+    } catch (_) {}
+    final out = path ?? dest;
+    if (out == null) throw ScreenRecException('録画していません');
+    // MediaRecorder がファイルを閉じ切るまで少し待つ。
+    for (var i = 0; i < 20; i++) {
+      try {
+        final f = File(out);
+        if (await f.exists() && await f.length() > 20000) return out;
+      } catch (_) {}
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    }
+    String? why;
+    try {
+      why = await _androidCh.invokeMethod<String>('lastError');
+    } catch (_) {}
+    throw ScreenRecException(
+        (why == null || why.isEmpty) ? '録画ファイルが作られませんでした' : why);
+  }
+
   Future<String> start(String ffmpegPath, {ScreenRecRegion? region}) async {
     if (recording) return _dest!;
     final dir = await recordingsDir();
@@ -209,6 +288,7 @@ class ScreenRecorder extends ChangeNotifier {
   /// 録画を止めて、 出来たファイルのパスを返す。
   /// 失敗した (ファイルが出来ていない) 時は [ScreenRecException] を投げる。
   Future<String> stop() async {
+    if (_androidRecording) return _stopAndroid();
     _gen++; // 遅れて届く「取り直し」 を無効にする。
     final proc = _proc;
     final dest = _dest;

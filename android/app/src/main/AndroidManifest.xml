@@ -8,6 +8,10 @@
     <!-- audio_service が要求する Foreground Service 権限 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
+    <!-- ── 画面録画 (= ユーザー要望: モバイル版でも画面録画に対応) ──
+         MediaProjection は Android 14+ で型 mediaProjection の
+         フォアグラウンドサービスが必須。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"/>
     <!-- Doze モード除外申請 -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
     <!-- Android 13+ で常駐通知に必要 -->
@@ -168,6 +172,15 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="floating_memo_overlay"/>
         </service>
+
+        <!-- ── 画面録画 (= ユーザー要望) ── -->
+        <!-- MediaProjection + MediaRecorder の実体。 Android 10 以降は
+             projection を作る前にこのサービスをフォアグラウンド化する
+             必要がある (14 以降は型指定も必須)。 -->
+        <service
+            android:name=".ScreenRecService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection"/>
 
         <meta-data
             android:name="flutterEmbedding"

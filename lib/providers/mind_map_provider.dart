@@ -15510,6 +15510,19 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Adicionar aba',
       'ru': 'Добавить вкладку',
     },
+    // 開いているタブを消すボタン (= ユーザー要望: モバイルは右クリックが
+    // 無いのでボタンから消せるように)。
+    'md.tabDelete': {
+      'ja': 'タブを削除',
+      'en': 'Delete tab',
+      'zh': '删除标签',
+      'ko': '탭 삭제',
+      'es': 'Eliminar pestaña',
+      'fr': 'Supprimer l\'onglet',
+      'de': 'Tab löschen',
+      'pt': 'Excluir aba',
+      'ru': 'Удалить вкладку',
+    },
     'md.tabRename': {
       'ja': 'タブの名前を変える',
       'en': 'Rename tab',
