@@ -676,6 +676,8 @@ class _NodeWidgetState extends State<NodeWidget> {
     }
     final isImageAttach = attachExt == 'jpg' ||
         attachExt == 'jpeg' ||
+        // .jpe も JPEG (= 手元のファイルで見かける綴り)。
+        attachExt == 'jpe' ||
         attachExt == 'png' ||
         attachExt == 'gif' ||
         attachExt == 'webp' ||
@@ -1678,7 +1680,9 @@ class _NodeWidgetState extends State<NodeWidget> {
                                 ? SizedBox(
                                     width: nw,
                                     height: attachH,
-                                    child: ClipRRect(
+                                    child: Stack(children: [
+                                      Positioned.fill(
+                                        child: ClipRRect(
                                       // 後ろに linkBar が来るときは下隅を四角に。
                                       borderRadius: BorderRadius.vertical(
                                         bottom: hasLinkBar
@@ -1732,6 +1736,48 @@ class _NodeWidgetState extends State<NodeWidget> {
                                               ),
                                       ),
                                     ),
+                                      ),
+                                      // ── ファイル名を下に重ねる
+                                      //    (= ユーザー要望: 画像を埋め込んだ
+                                      //    時にファイル名が見えるように)。
+                                      //    重ねるだけなので枠の高さは変わらない。
+                                      if ((node.attachmentName ?? '')
+                                              .trim()
+                                              .isNotEmpty &&
+                                          attachH >= 46)
+                                        Positioned(
+                                          left: 0,
+                                          right: 0,
+                                          bottom: 0,
+                                          child: ClipRRect(
+                                            borderRadius:
+                                                BorderRadius.vertical(
+                                              bottom: hasLinkBar
+                                                  ? Radius.zero
+                                                  : const Radius.circular(18),
+                                            ),
+                                            child: Container(
+                                              padding: const EdgeInsets
+                                                  .symmetric(
+                                                  horizontal: 8, vertical: 3),
+                                              color: Colors.black
+                                                  .withValues(alpha: 0.45),
+                                              child: Text(
+                                                node.attachmentName!,
+                                                maxLines: 1,
+                                                overflow:
+                                                    TextOverflow.ellipsis,
+                                                textAlign: TextAlign.center,
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: 10,
+                                                  fontWeight: FontWeight.w600,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                    ]),
                                   )
                                 : Container(
                                     width: nw,

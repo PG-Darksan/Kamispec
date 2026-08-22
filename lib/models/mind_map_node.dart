@@ -1092,6 +1092,8 @@ class MindMapNode {
       final ext = dot >= 0 ? p.substring(dot + 1).toLowerCase() : '';
       if (ext == 'jpg' ||
           ext == 'jpeg' ||
+          // .jpe も JPEG (= node_widget 側の判定と合わせる)。
+          ext == 'jpe' ||
           ext == 'png' ||
           ext == 'gif' ||
           ext == 'webp' ||

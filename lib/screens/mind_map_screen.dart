@@ -78489,7 +78489,16 @@ class _MindMapScreenState extends State<MindMapScreen>
                   // ローカルに既にあるかどうかの表示
                   ConstrainedBox(
                     constraints: const BoxConstraints(maxHeight: 300),
-                    child: ListView.builder(
+                    child: Builder(builder: (_) {
+                      // 一番新しい日時を先に出しておく (= ユーザー要望:
+                      // 全部に色が付いていると分かりにくいので、 最新だけ)。
+                      DateTime? newest;
+                      for (final p in cloudPages!) {
+                        final d = provider.cloudPageUpdatedAt(p.id);
+                        if (d == null) continue;
+                        if (newest == null || d.isAfter(newest)) newest = d;
+                      }
+                      return ListView.builder(
                       shrinkWrap: true,
                       itemCount: cloudPages!.length,
                       itemBuilder: (_, i) {
@@ -78520,12 +78529,19 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     provider.cloudPageUpdatedAt(page.id)!;
                                 String two(int n) =>
                                     n.toString().padLeft(2, '0');
+                                // 最新だけ水色。 他は控えめな灰色にする。
+                                final isNewest =
+                                    newest != null && !d.isBefore(newest!);
                                 return Text(
                                     '${d.month}/${d.day} ${two(d.hour)}:${two(d.minute)}',
-                                    style: const TextStyle(
-                                        color: Color(0xFF4FC3F7),
+                                    style: TextStyle(
+                                        color: isNewest
+                                            ? const Color(0xFF4FC3F7)
+                                            : Colors.white38,
                                         fontSize: 10,
-                                        fontWeight: FontWeight.w600));
+                                        fontWeight: isNewest
+                                            ? FontWeight.w600
+                                            : FontWeight.w400));
                               }),
                             ],
                           ]),
@@ -78563,7 +78579,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                           }),
                         );
                       },
-                    ),
+                    );
+                    }),
                   ),
                   Row(mainAxisAlignment: MainAxisAlignment.end, children: [
                     TextButton(
