@@ -390,21 +390,11 @@ class _NodeWidgetState extends State<NodeWidget> {
           child: lines.isEmpty
               // ── 中身が無い時は「空」 と出す (= ユーザー要望: 真っ白
               //    だけだと味がない)。 ──
+              // 中身が無い時は白紙の真ん中にアイコンだけ (= ユーザー要望:
+              // 「空」 の文字は出さない)。
               ? Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(icon,
-                          size: 18, color: Colors.black.withValues(alpha: 0.18)),
-                      const SizedBox(height: 3),
-                      Text('空',
-                          style: TextStyle(
-                            color: Colors.black.withValues(alpha: 0.28),
-                            fontSize: 10,
-                            fontWeight: FontWeight.w700,
-                          )),
-                    ],
-                  ),
+                  child: Icon(icon,
+                      size: 26, color: Colors.black.withValues(alpha: 0.16)),
                 )
               : Column(
                   crossAxisAlignment: CrossAxisAlignment.start,

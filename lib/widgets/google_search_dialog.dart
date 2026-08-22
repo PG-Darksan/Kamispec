@@ -197,6 +197,10 @@ class GoogleSearchDialog {
     ///   - ヘッダーに「全画面表示」 ボタンを表示 (= 押すと compactMode で
     ///     開き直し、 現在の URL / クエリを引き継ぐ)
     bool minimalMode = false,
+
+    /// 開いた時に自動操作パネルを出す (= ユーザー要望: 「自動化」 を
+    /// カスタムボタンとしても使えるように)。
+    bool openAutomation = false,
   }) async {
     if (minimalMode) {
       // ミニマル = メモ欄なし、 縦長の小さなダイアログ (= スマホ画面風)。
@@ -294,6 +298,7 @@ class GoogleSearchDialog {
                   onFloatRequest: onFloatRequest,
                   onCreateBookmarkButton: onCreateBookmarkButton,
                   compactMode: true,
+                  openAutomation: openAutomation,
                 ),
               ),
             ),
@@ -329,6 +334,7 @@ class GoogleSearchDialog {
           onMoveToSplitPanel: onMoveToSplitPanel,
                   onFloatRequest: onFloatRequest,
           onCreateBookmarkButton: onCreateBookmarkButton,
+          openAutomation: openAutomation,
         ),
         transitionsBuilder: (_, animation, __, child) {
           return FadeTransition(opacity: animation, child: child);
@@ -1087,6 +1093,9 @@ class _GoogleSearchPage extends StatefulWidget {
   /// タブバー・追加タブ操作を出したくない場合に true。
   final bool hideAppBar;
 
+  /// 開いた時に自動操作パネルを出すか (= ユーザー要望: 自動化のボタン)。
+  final bool openAutomation;
+
   const _GoogleSearchPage({
     super.key,
     required this.initialQuery,
@@ -1100,6 +1109,7 @@ class _GoogleSearchPage extends StatefulWidget {
     this.onCreateBookmarkButton,
     this.compactMode = false,
     this.minimalMode = false,
+    this.openAutomation = false,
     this.onExpandToCompact,
     this.onRequestClose,
     this.windowWidth,
@@ -1111,6 +1121,8 @@ class _GoogleSearchPage extends StatefulWidget {
 }
 
 class _GoogleSearchPageState extends State<_GoogleSearchPage> {
+  // (openAutomation は initState で _autoPanelOpen に反映する)
+
   bool get _isDesktop =>
       !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
 
@@ -2117,6 +2129,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   void initState() {
     super.initState();
     _searchCtrl.text = widget.initialQuery;
+    // 自動操作パネルを開いた状態で出す (= ユーザー要望: 「自動化」 の
+    // カスタムボタンから直接開けるように)。
+    if (widget.openAutomation) _autoPanelOpen = true;
 
     // 同意 Cookie を仕込んでから検索 WebView をロードする (Android のみ)。
     //   ★ タイムアウト保険: 万一ハングしても 1.5 秒で WebView を作る

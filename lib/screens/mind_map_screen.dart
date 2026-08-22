@@ -1730,6 +1730,11 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// 図形の挿入モードに入る前に選んでいた種類 (次に開いた時の初期値)。
   MapDecorationKind _lastShapeKind = MapDecorationKind.line;
+
+  /// 図形パレットを出しているか (= ユーザー要望: 図形を作って別の設定画面が
+  /// 出ても、 × を押すまでパレットは閉じない)。 種類の選択 (=
+  /// `_drawingDecorationKind`) とは別に持つ。
+  bool _shapePaletteOpen = false;
   Offset? _drawingDecorationStart;
   Offset? _drawingDecorationEnd;
   String? _selectedDecorationId;
@@ -1744,11 +1749,18 @@ class _MindMapScreenState extends State<MindMapScreen>
   // 図形の挿入用パレット (色)。
   static const List<int> _shapePalette = [
     0xF44336, // 赤
+    0xE91E63, // ピンク
     0xFF9800, // オレンジ
     0xFFEB3B, // 黄
+    0xCDDC39, // 黄緑
     0x4CAF50, // 緑
+    0x009688, // 青緑
+    0x00BCD4, // シアン
     0x2196F3, // 青
+    0x3F51B5, // 藍
     0x9C27B0, // 紫
+    0x795548, // 茶
+    0x9E9E9E, // 灰
     0x000000, // 黒
     0xFFFFFF, // 白
   ];
@@ -2155,6 +2167,8 @@ class _MindMapScreenState extends State<MindMapScreen>
   bool get _rangeSelectMode => _rangeSelectModeRaw;
   set _rangeSelectMode(bool v) {
     _rangeSelectModeRaw = v;
+    // 範囲選択に入ったら図形パレットも閉じる (= 同時には使えない)。
+    if (v) _shapePaletteOpen = false;
     if (v && _drawingDecorationKindRaw != null) {
       _drawingDecorationKindRaw = null;
       _drawingDecorationStart = null;
@@ -11662,6 +11676,10 @@ class _MindMapScreenState extends State<MindMapScreen>
 
     /// フローティング時の表示位置 (= ノード付近に出すための画面座標)。
     Offset? floatingAnchor,
+
+    /// 自動操作パネルを開いた状態で出す (= ユーザー要望: 「自動化」 を
+    /// カスタムボタンとしても置けるように)。
+    bool openAutomation = false,
   }) async {
     // ── Android: 透明オーバーレイ (compact/minimal/floating) は背後の WebView
     //   プラットフォームビューにタッチを奪われ、 検索画面が操作できない (= ユーザー
@@ -11777,6 +11795,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       initialUrl: initialUrl,
       compactMode: compactMode,
       minimalMode: minimalMode,
+      openAutomation: openAutomation,
       onOpenWeb: (url) {
         _showWebDialog(ctx, url, initialTitle: 'Google');
       },
@@ -37066,6 +37085,15 @@ class _MindMapScreenState extends State<MindMapScreen>
       'color': Color(0xFF26A69A),
     },
     {
+      // 自動化 (= ユーザー要望: Google 検索のヘッダーにある自動化を
+      //   カスタムボタンとしても置けるように)。 押すと検索画面を
+      //   自動操作パネル付きで開く。
+      'id': 'webAutomation',
+      'labelKey': 'auto.title',
+      'icon': Icons.play_circle_outline_rounded,
+      'color': Color(0xFF80CBC4),
+    },
+    {
       // ファイルを作成 (= ユーザー要望: モバイルはキャンバス右クリックが
       //   使えず「ファイルを生成」 に辿り着けないので、 ボタンとして出す)。
       //   押すと形式と名前を聞いて、 画面の中央にファイルノードを作る。
@@ -37288,6 +37316,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       'icon': Icons.language_rounded,
       'commandIds': <String>[
         'googleSearch',
+        // 自動化 (= ユーザー要望)。
+        'webAutomation',
         // 'sharePageLan' (LAN 共有) は廃止 (= ユーザー要望)。
         'openGmail',
         'openYoutube',
@@ -39705,6 +39735,11 @@ class _MindMapScreenState extends State<MindMapScreen>
       case 'googleSearch':
         _openGoogleSearchDialog(context, provider);
         break;
+      case 'webAutomation':
+        // 自動化 (= ユーザー要望: Google 検索のヘッダーにある自動化を
+        //   カスタムボタンからも)。 パネルを開いた状態で立ち上げる。
+        _openGoogleSearchDialog(context, provider, openAutomation: true);
+        break;
       // 'sharePageLan' (LAN 共有) は廃止 (= ユーザー要望)。 配置済みでも
       //   何も起きない。
       case 'openClaude':
@@ -40114,10 +40149,15 @@ class _MindMapScreenState extends State<MindMapScreen>
         icon: const _FlowShapeIcon('circle')
       ),
     ];
+    // ── 図形の挿入と同じ「パレット」 の形にする (= ユーザー要望: 端子も
+    //    パレットから選んで色なども設定できるように)。
+    //    色は下の段のスウォッチで選び、 × を押すまで開いたままにする。 ──
+    var termColor = _shapeColorRgb;
     showDialog<void>(
       context: context,
-      barrierColor: Colors.black54,
-      builder: (dialogContext) => Dialog(
+      barrierColor: Colors.black38,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setP) => Dialog(
         backgroundColor: const Color(0xFF1E1E28),
         insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -40129,15 +40169,40 @@ class _MindMapScreenState extends State<MindMapScreen>
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(provider.t('flow.addTerminal'),
-                    style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 16,
-                        fontWeight: FontWeight.w700)),
-                const SizedBox(height: 6),
+                Row(children: [
+                  Expanded(
+                    child: Text(provider.t('flow.addTerminal'),
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700)),
+                  ),
+                  IconButton(
+                    tooltip: provider.t('btn.close'),
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.close_rounded,
+                        color: Colors.white70, size: 20),
+                    onPressed: () => Navigator.pop(dialogContext),
+                  ),
+                ]),
+                const SizedBox(height: 2),
                 Text(provider.t('flow.addTerminalDesc'),
                     style: const TextStyle(color: Colors.white54, fontSize: 12)),
-                const SizedBox(height: 14),
+                const SizedBox(height: 10),
+                // ── 色 (= ユーザー要望: 色なども設定できるように) ──
+                Center(
+                  child: Wrap(
+                    alignment: WrapAlignment.center,
+                    spacing: 2,
+                    runSpacing: 4,
+                    children: [
+                      for (final c in _shapePalette)
+                        _shapeColorSwatch(c, termColor == c,
+                            () => setP(() => termColor = c)),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
                 Center(
                   child: Wrap(
                     alignment: WrapAlignment.center,
@@ -40148,15 +40213,13 @@ class _MindMapScreenState extends State<MindMapScreen>
                         InkWell(
                           borderRadius: BorderRadius.circular(10),
                           onTap: () {
-                            Navigator.pop(dialogContext);
+                            // パレットは開いたまま (= ユーザー要望: × を
+                            // 押すまで閉じない)。 続けて何個でも置ける。
                             final node = provider.addNodeAtCenterReturning(
                                 canvasPosition - const Offset(80, 21));
                             provider.updateNodeShape(node.id, shape.id);
-                            if (provider.promptForTitleOnNodeCreate) {
-                              _startInlineTitleEdit(context, node,
-                                  deleteWhenEmpty: true,
-                                  allowDelimiterExpansion: true);
-                            }
+                            provider.updateNodeColor(
+                                node.id, Color(0xFF000000 | termColor));
                           },
                           child: Container(
                             width: 112,
@@ -40192,6 +40255,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           ),
         ),
       ),
+      ),
     );
   }
 
@@ -40224,8 +40288,11 @@ class _MindMapScreenState extends State<MindMapScreen>
       return;
     }
     setState(() {
-      // setter が範囲選択モードを閉じてくれる (= 同時には使えない)。
-      _drawingDecorationKind = _lastShapeKind;
+      // ── パレットは出すが、 どの図形も選ばれていない状態から始める
+      //    (= ユーザー要望: 図形を選ぶまでどれも選択されていない状態に)。
+      //    種類が null の間はドラッグしても何も描かない。 ──
+      _shapePaletteOpen = true;
+      _drawingDecorationKind = null;
       _drawingDecorationStart = null;
       _drawingDecorationEnd = null;
       _selectedDecorationId = null;
@@ -40233,12 +40300,11 @@ class _MindMapScreenState extends State<MindMapScreen>
       _polylineCursor = null;
     });
     // 使い方の案内 (モードは × / Esc まで続く)。
-    final hint = _lastShapeKind == MapDecorationKind.polyline
-        ? provider.t('shape.polylineHint')
-        : provider.t('shape.dragHint');
     _appSnack(
       context,
-      SnackBar(content: Text(hint), duration: const Duration(seconds: 3)),
+      SnackBar(
+          content: Text(provider.t('shape.pickerTitle')),
+          duration: const Duration(seconds: 2)),
     );
   }
 
@@ -40569,12 +40635,15 @@ class _MindMapScreenState extends State<MindMapScreen>
       _polylineCommit();
       return;
     }
-    if (_drawingDecorationKind == null &&
+    if (!_shapePaletteOpen &&
+        _drawingDecorationKind == null &&
         _drawingDecorationStart == null &&
         _drawingDecorationEnd == null) {
       return;
     }
     setState(() {
+      // × / Esc の時だけパレットごと閉じる (= ユーザー要望)。
+      _shapePaletteOpen = false;
       _drawingDecorationKind = null;
       _drawingDecorationStart = null;
       _drawingDecorationEnd = null;
@@ -52352,11 +52421,12 @@ class _MindMapScreenState extends State<MindMapScreen>
                               // ── 図形挿入モードのツールバー ──
                               // 種類切替 + 色 + 太さ + × (終了) を上部中央に固定表示。
                               // モードは図形を描いても解除されず、 × か Esc で終了する。
-                              if (_drawingDecorationKind != null)
+                              if (_shapePaletteOpen)
                                 _buildShapeInsertToolbar(provider),
                               // ── 図形選択時のツールバー ──
                               // 作成済み図形を選択中: 色 / 太さ / 種類の編集 + 削除。
-                              if (_drawingDecorationKind == null &&
+                              // パレットを出している間は重ねない。
+                              if (!_shapePaletteOpen &&
                                   _selectedDecorationId != null)
                                 _buildShapeSelectionToolbar(provider),
                               // 基準位置設定モード中のバナー
@@ -67106,17 +67176,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                 return Container(
                   width: canvasW,
                   height: canvasH,
-                  // 通常マップではスクロール可能範囲を外枠で示す。ギャラリーは
-                  // 内容ぴったりの可変キャンバスに外側ハンドルも重なるため、枠が
-                  // 左右非対称に見える。ギャラリーでは装飾枠を描かない。
-                  decoration: isShelf
-                      ? null
-                      : BoxDecoration(
-                          border: Border.all(
-                            color: Colors.white.withValues(alpha: 0.35),
-                            width: 2.0,
-                          ),
-                        ),
+                  // ── スクロール可能範囲の外枠は描かない (= ユーザー要望:
+                  //    新規マップで左端に線が出るのが気になる)。
+                  //    範囲はスクロールバーで分かるので枠は不要。 ──
+                  decoration: null,
                   child: Stack(
                     key: _canvasKey,
                     clipBehavior: Clip.none,
