@@ -307,6 +307,19 @@ class _NodeWidgetState extends State<NodeWidget> {
         color = const Color(0xFFD24726); // PowerPoint オレンジ
         icon = Icons.slideshow_rounded;
         break;
+      // ── HTML / CSS (= ユーザー要望: html も中身をサムネイルで) ──
+      case 'html':
+      case 'htm':
+        color = const Color(0xFFE44D26); // HTML5 オレンジ
+        icon = Icons.code_rounded;
+        break;
+      case 'css':
+      case 'scss':
+      case 'sass':
+      case 'less':
+        color = const Color(0xFF264DE4); // CSS ブルー
+        icon = Icons.css_rounded;
+        break;
       default: // txt / md
         color = const Color(0xFF455A64);
         icon = Icons.notes_rounded;
@@ -331,93 +344,65 @@ class _NodeWidgetState extends State<NodeWidget> {
           bottom: squareBottom ? Radius.zero : const Radius.circular(18),
         ),
       ),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          if (canPreview)
-            Expanded(
-              child: FutureBuilder<List<String>>(
-                future: DocPreview.load(path, ext),
-                builder: (ctx, snap) {
-                  final lines = snap.data ?? const <String>[];
-                  if (lines.isEmpty) {
-                    return Center(
-                      child: Icon(icon,
-                          size: 34,
-                          color: Colors.white.withValues(alpha: 0.95)),
-                    );
-                  }
-                  return Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 6, vertical: 5),
-                    decoration: BoxDecoration(
-                      // 白い紙の上に文字が乗っているように見せる。
-                      color: Colors.white.withValues(alpha: 0.92),
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: ClipRect(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          for (final l in lines)
-                            Text(l,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  color: Color(0xFF212121),
-                                  fontSize: 7.5,
-                                  height: 1.45,
-                                )),
-                        ],
-                      ),
-                    ),
-                  );
-                },
-              ),
-            )
-          else
-            Icon(icon,
-                size: compact ? 24 : 34,
-                color: Colors.white.withValues(alpha: 0.95)),
-          SizedBox(height: compact ? 3 : 6),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 1.5),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.18),
-              borderRadius: BorderRadius.circular(999),
-              border: Border.all(color: Colors.white.withValues(alpha: 0.55)),
+      // ── 中身だけを大きく出す (= ユーザー要望: 拡張子やファイル名は
+      //    ノードの実体側に出ているので、 表紙は中身の表示に使う) ──
+      padding: const EdgeInsets.all(6),
+      child: canPreview
+          ? _docPaper(path!, ext, icon)
+          : Center(
+              child: Icon(icon,
+                  size: compact ? 24 : 34,
+                  color: Colors.white.withValues(alpha: 0.95)),
             ),
-            child: Text(
-              ext.toUpperCase(),
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 9,
-                fontWeight: FontWeight.w800,
-                letterSpacing: 0.8,
-              ),
-            ),
-          ),
-          SizedBox(height: compact ? 3 : 6),
-          Flexible(
-            child: Text(
-              name,
-              maxLines: compact ? 2 : 3,
-              overflow: TextOverflow.ellipsis,
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: Colors.white.withValues(alpha: 0.92),
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                height: 1.25,
-              ),
-            ),
-          ),
-        ],
-      ),
     );
   }
+
+  /// 表紙に敷く「白い紙」。 一度読んだ中身は控えから即座に描くので、
+  /// タイルを動かしても点滅しない (= ユーザー報告)。
+  Widget _docPaper(String path, String ext, IconData icon) {
+    final cached = DocPreview.cachedFor(path);
+    if (cached != null) return _paperOf(cached, icon);
+    return FutureBuilder<List<String>>(
+      future: DocPreview.load(path, ext),
+      builder: (ctx, snap) {
+        // まだ読めていない間はアイコン。 読み終われば紙にする。
+        if (snap.connectionState != ConnectionState.done) {
+          return Center(
+            child: Icon(icon,
+                size: 34, color: Colors.white.withValues(alpha: 0.95)),
+          );
+        }
+        return _paperOf(snap.data ?? const <String>[], icon);
+      },
+    );
+  }
+
+  /// 白い紙 + 中身の先頭。 中身が空でも白紙のまま出す (= ユーザー要望)。
+  Widget _paperOf(List<String> lines, IconData icon) => Container(
+        width: double.infinity,
+        height: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.94),
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: ClipRect(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              for (final l in lines)
+                Text(l,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Color(0xFF212121),
+                      fontSize: 7.5,
+                      height: 1.45,
+                    )),
+            ],
+          ),
+        ),
+      );
 
   /// ギャラリーのリンク専用ノードを「ブックマークカード」 として本体いっぱいに
   /// 描画する (= ユーザー要望: ギャラリーにリンクを貼ると空の実体部分が大き
@@ -780,6 +765,8 @@ class _NodeWidgetState extends State<NodeWidget> {
     //   いまは中身の文字を読んで表紙に出せるので、 常に表紙カードを使う。
     const docCoverExts = {
       'docx', 'doc', 'xlsx', 'xls', 'csv', 'txt', 'md', //
+      // HTML / CSS も中身の見える表紙にする (= ユーザー要望)。
+      'html', 'htm', 'css', 'scss', 'sass', 'less', //
     };
     const thumbnailableExts = {'pptx', 'ppt'};
     final bool isDocCoverAttach = hasAttachment &&

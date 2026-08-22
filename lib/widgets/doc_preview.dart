@@ -27,10 +27,20 @@ class DocPreview {
   static final Map<String, List<String>> _cache = {};
   static final Map<String, Future<List<String>>> _inFlight = {};
 
+  /// パスだけで引ける控え (= ユーザー報告: タイルを動かすたびにサムネイルが
+  /// 点滅する)。 毎フレーム新しい Future を作ると FutureBuilder が待機状態に
+  /// 戻ってしまうため、 一度読めた中身はここから即座に返して描き直す。
+  static final Map<String, List<String>> _byPath = {};
+
+  /// 既に読んである中身 (無ければ null)。 ファイルは触らないので軽い。
+  static List<String>? cachedFor(String path) => _byPath[path];
+
   /// 中身を取り出せる拡張子か。
   static bool supports(String ext) => const {
         'txt', 'md', 'markdown', 'csv', 'tsv', 'json', 'log',
         'xml', 'yml', 'yaml', 'html', 'htm', //
+        // CSS は HTML と一緒に使うので同じ扱いにする (= ユーザー要望)。
+        'css', 'scss', 'sass', 'less', //
         'dart', 'py', 'js', 'ts', 'java', 'kt', 'c', 'cpp', 'h', 'cs', 'go',
         'rb', 'rs', 'swift', 'sh', 'sql', //
         'xlsx', 'docx', 'pptx',
@@ -51,12 +61,16 @@ class DocPreview {
       return Future.value(const []);
     }
     final hit = _cache[key];
-    if (hit != null) return Future.value(hit);
+    if (hit != null) {
+      _byPath[path] = hit;
+      return Future.value(hit);
+    }
     final running = _inFlight[key];
     if (running != null) return running;
 
     final future = _read(path, e).then((lines) {
       _cache[key] = lines;
+      _byPath[path] = lines;
       _inFlight.remove(key);
       // 覚えすぎないように、 古い物から捨てる。
       if (_cache.length > 200) {

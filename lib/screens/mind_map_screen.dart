@@ -30749,12 +30749,12 @@ class _MindMapScreenState extends State<MindMapScreen>
                           'Markdown',
                           const Color(0xFF6C63FF)
                         ),
-                        // HTML (= ユーザー要望: マークダウンみたいに編集
-                        //   してプレビューを出せるように)。
+                        // HTML & CSS (= ユーザー要望: css は html と
+                        //   一緒に使うので、 選ぶと両方できる)。
                         (
                           'html',
                           Icons.code_rounded,
-                          'HTML',
+                          'HTML & CSS',
                           const Color(0xFFFF7043)
                         ),
                         (
@@ -30922,6 +30922,36 @@ class _MindMapScreenState extends State<MindMapScreen>
       // ── 形式別にテンプレートを書き出し ──
       final bytes = _OfficeFileTemplate.buildEmpty(type);
       await File(destPath).writeAsBytes(bytes, flush: true);
+      // ── HTML は同じ名前の CSS も置く (= ユーザー要望: css は html と
+      //    一緒に使うので「HTML & CSS」 として作る)。 html 側から
+      //    <link> で読んでいるので、 css を編集すれば見た目が変わる。 ──
+      if (type == 'html') {
+        try {
+          final cssName =
+              '${fileName.substring(0, fileName.lastIndexOf('.'))}.css';
+          final cssPath = '${attachDir.path}/$cssName';
+          // html 側の <link> を実際の css 名に直す。
+          final htmlFile = File(destPath);
+          final htmlText = await htmlFile.readAsString();
+          await htmlFile.writeAsString(
+              htmlText.replaceFirst('href="style.css"',
+                  'href="${Uri.encodeComponent(cssName)}"'),
+              flush: true);
+          if (!await File(cssPath).exists()) {
+            await File(cssPath).writeAsString(
+                '/* $cssName — このファイルで見た目を整えます */\n'
+                'body {\n'
+                '  font-family: sans-serif;\n'
+                '  margin: 24px;\n'
+                '  line-height: 1.7;\n'
+                '}\n'
+                'h1 {\n'
+                '  color: #2b579a;\n'
+                '}\n',
+                flush: true);
+          }
+        } catch (_) {}
+      }
 
       // ── 子ノードは作らず、 押されたノード自身をファイル化する ──
       //   (= ユーザー要望: 「子要素でなく、 そのノードがファイル化するように」)。
@@ -56070,7 +56100,11 @@ class _MindMapScreenState extends State<MindMapScreen>
     // (= ユーザー報告: 全選択で図形をまとめて削除できない)。
     final hasRangeSelection =
         _rangeSelectedIds.isNotEmpty || _rangeSelectedDecorationIds.isNotEmpty;
-    final showMobileHeaderTray = !_isDesktop;
+    // ── モバイルでマークダウンを開いている間は、 ヘッダーのボタン列を
+    //    出さない (= ユーザー要望: 表示領域が限られているので、 その場所は
+    //    マークダウン側の AI アシスタント等の道具に譲る)。 ──
+    final showMobileHeaderTray =
+        !_isDesktop && provider.currentPage.pageType != 'markdown';
 
     return AppBar(
       backgroundColor: provider.headerColor,
@@ -107091,7 +107125,9 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
       builder: (dctx) {
         if (at == null) return builder(dctx);
         final screen = MediaQuery.of(dctx).size;
-        const w = 480.0;
+        // 画面より広いと右端が切れる (= ユーザー報告: モバイルで
+        // 「ネットに公開する」 の右端が切れる) ので、 幅を縮める。
+        final w = math.min(480.0, screen.width - 24.0);
         const h = 380.0;
         final left = (at.dx - w / 2)
             .clamp(12.0, math.max(12.0, screen.width - w - 12))
@@ -107133,12 +107169,20 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
   /// プレビューを出すか (本文だけの時は出さない)。
   bool get _preview => _viewMode != 'editor';
 
+  /// 画面が狭い時 (= モバイル) は「並べる」 を使わない
+  /// (= ユーザー要望: 上下分割だと表示領域が狭まり過ぎる)。
+  bool get _narrowScreen =>
+      !_isDesktopPlatform || MediaQuery.sizeOf(context).width < 720;
+
   /// 表示の仕方を順に切り替える (並べる → プレビューだけ → 本文だけ)。
+  /// 狭い画面では「プレビューだけ ⇄ 本文だけ」 の 2 つを行き来する。
   void _cycleViewMode() {
     setState(() {
-      _viewMode = _viewMode == 'split'
-          ? 'preview'
-          : (_viewMode == 'preview' ? 'editor' : 'split');
+      _viewMode = _narrowScreen
+          ? (_viewMode == 'editor' ? 'preview' : 'editor')
+          : (_viewMode == 'split'
+              ? 'preview'
+              : (_viewMode == 'preview' ? 'editor' : 'split'));
     });
     if (_preview) _render();
     // ignore: discarded_futures
@@ -107149,9 +107193,11 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
   /// 表示の仕方ボタンは「押したら次に何になるか」 を出す (= ユーザー要望:
   /// 今の状態ではなく、 次のモードが分かるように)。
   /// 循環: 並べる → プレビューだけ → 本文だけ → 並べる。
-  String get _nextViewMode => _viewMode == 'split'
-      ? 'preview'
-      : (_viewMode == 'preview' ? 'editor' : 'split');
+  String get _nextViewMode => _narrowScreen
+      ? (_viewMode == 'editor' ? 'preview' : 'editor')
+      : (_viewMode == 'split'
+          ? 'preview'
+          : (_viewMode == 'preview' ? 'editor' : 'split'));
 
   IconData get _viewModeIcon => _nextViewMode == 'split'
       ? Icons.vertical_split_rounded
@@ -109469,8 +109515,27 @@ $body''';
           child: ListView.builder(
         controller: _tabScroll,
         scrollDirection: Axis.horizontal,
-        itemCount: _tabs.length,
+        // 末尾に「+」 を 1 つ足す (= ユーザー要望: タブの追加ボタンは
+        // 一番右端のタブの右側に置く)。
+        itemCount: _tabs.length + 1,
         itemBuilder: (_, i) {
+          if (i == _tabs.length) {
+            return Tooltip(
+              message: provider.t('md.tabAdd'),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(8),
+                onTap: _addTab,
+                child: Container(
+                  margin:
+                      const EdgeInsets.symmetric(horizontal: 2, vertical: 3),
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  alignment: Alignment.center,
+                  child: const Icon(Icons.add_rounded,
+                      size: 16, color: Colors.white54),
+                ),
+              ),
+            );
+          }
           // ドラッグで好きな位置へ動かせる (= ユーザー要望: 左へ / 右へ
           //   のメニューではなく、 掴んで並べ替える)。
           return DragTarget<int>(
@@ -109753,8 +109818,11 @@ $body''';
               _buildSideMemoPanel(provider),
             Expanded(
               child: !_preview
+              // 狭い画面は「並べる」 を使わない (= ユーザー要望: 上下分割
+              // だと表示領域が狭まり過ぎる)。 前の設定が残っていても、
+              // ここでプレビューだけに寄せる。
               ? editor
-              : _viewMode == 'preview'
+              : (_viewMode == 'preview' || narrow)
                   // プレビューだけ (= ユーザー要望)。
                   ? ColoredBox(
                       color: provider.isDarkMode
@@ -110221,8 +110289,8 @@ $body''';
       SharedPreferences.getInstance()
           .then((sp) => sp.setBool(_kMdHeaderHiddenKey, true));
     });
-    // タブ追加ボタン (= ユーザー要望: AI ボタンの左に置く)。
-    final addTabBtn = _btn(Icons.add_rounded, provider.t('md.tabAdd'), _addTab);
+    // (タブ追加ボタンはタブ列の末尾に移した = ユーザー要望: 一番右端の
+    //  タブの右側に置く)
     // タブ削除ボタン (= ユーザー要望: モバイルは右クリックが無いので、
     // 開いているタブをボタンから消せるように)。 消しても Ctrl+Z で戻せる。
     final delTabBtn = _btn(
@@ -110238,7 +110306,7 @@ $body''';
                 flex: 5,
                 child: _buildTabStrip(provider),
               ),
-            if (_tabBarVisible) addTabBtn,
+            // (タブ追加の + はタブ列の末尾に入れた = ユーザー要望)
             if (_tabBarVisible) delTabBtn,
             const SizedBox(width: 6),
             aiBtn,
@@ -110361,16 +110429,12 @@ $body''';
       //    (= ユーザー要望)。 タブ追加 (+) はその左に置く (= ユーザー要望)。
       //    他のボタン列の流れから外し、 Stack でヘッダー全幅の中央に重ねる。 ──
       final rowChildren = children
-          .where((w) =>
-              !identical(w, aiBtn) &&
-              !identical(w, addTabBtn) &&
-              !identical(w, delTabBtn))
+          .where((w) => !identical(w, aiBtn) && !identical(w, delTabBtn))
           .toList();
       return Stack(children: [
         Row(children: rowChildren),
         Center(
           child: Row(mainAxisSize: MainAxisSize.min, children: [
-            if (_tabBarVisible) addTabBtn,
             if (_tabBarVisible) delTabBtn,
             const SizedBox(width: 4),
             aiBtn,
@@ -110397,7 +110461,6 @@ $body''';
               child: _buildTabStrip(provider),
             ),
           ),
-        if (_tabBarVisible) addTabBtn,
         if (_tabBarVisible) delTabBtn,
         Expanded(
           child: SingleChildScrollView(
@@ -112497,7 +112560,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
         if (at == null) return builder(dctx);
         final screen = MediaQuery.of(dctx).size;
         // 窓のおおよその大きさ。 画面からはみ出さないように寄せる。
-        const w = 420.0;
+        // 幅は画面に収まるところまで縮める (= モバイルで右端が切れないよう)。
+        final w = math.min(420.0, screen.width - 24.0);
         const h = 360.0;
         final left = (at.dx - w / 2)
             .clamp(12.0, math.max(12.0, screen.width - w - 12))
@@ -194464,23 +194528,36 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
       try {
         if (!kIsWeb &&
             (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+          // ── 元ファイルの隣に控えを書いて file:// で開く。
+          //    (画像や css の相対パスをそのまま効かせるため) ──
+          //    書けない場所なら一時フォルダーへ、 それも駄目なら
+          //    中身を直接流し込む (= ユーザー報告: プレビューが出ない)。
           String? fileUrl;
-          try {
-            final orig = File(_currentFilePath);
-            final dir = orig.parent.path;
-            final tmp = File('$dir${Platform.pathSeparator}'
-                '.hn_preview_${_currentFileName.hashCode.toRadixString(16)}.html');
-            await tmp.writeAsString(src, flush: true);
-            fileUrl = Uri.file(tmp.path).toString();
-          } catch (_) {}
+          final tmpName =
+              '.hn_preview_${_currentFileName.hashCode.toRadixString(16)}.html';
+          for (final dir in <String>[
+            File(_currentFilePath).parent.path,
+            Directory.systemTemp.path,
+          ]) {
+            try {
+              final tmp = File('$dir${Platform.pathSeparator}$tmpName');
+              await tmp.writeAsString(src, flush: true);
+              fileUrl = Uri.file(tmp.path).toString();
+              break;
+            } catch (_) {}
+          }
           if (!mounted || (!_mdPreview && !_mdSplitView)) return;
-          if (_mdWinReady) {
-            if (fileUrl != null) {
-              await _mdWin?.loadUrl(fileUrl);
-            } else {
-              await _mdWin?.loadStringContent(src);
+          if (!_mdWinReady || _mdWin == null) return;
+          var shown = false;
+          if (fileUrl != null) {
+            try {
+              await _mdWin!.loadUrl(fileUrl);
+              shown = true;
+            } catch (e) {
+              debugPrint('HTML プレビュー: file:// で開けませんでした: $e');
             }
           }
+          if (!shown) await _mdWin!.loadStringContent(src);
         } else {
           final uri =
               Uri.dataFromString(src, mimeType: 'text/html', encoding: utf8)
@@ -194553,11 +194630,14 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
       }
       return wv_win.Webview(_mdWin!);
     }
-    final uri = Uri.dataFromString(
-            _markdownPreviewHtml(_lines.join('\n'), widget.isDarkMode),
-            mimeType: 'text/html',
-            encoding: utf8)
-        .toString();
+    // HTML ファイルは書いた物をそのまま表示する (= ユーザー報告: html の
+    // プレビューが出ない。 markdown として組み直していたのが原因)。
+    final src = _isHtmlFile
+        ? _lines.join('\n')
+        : _markdownPreviewHtml(_lines.join('\n'), widget.isDarkMode);
+    final uri =
+        Uri.dataFromString(src, mimeType: 'text/html', encoding: utf8)
+            .toString();
     return iaw.InAppWebView(
       initialUrlRequest: iaw.URLRequest(url: iaw.WebUri(uri)),
       onWebViewCreated: (c) => _mdIaw = c,
@@ -196096,45 +196176,7 @@ $currentText
                 }
               },
             ),
-          // ── ダウンロード (= ユーザー要望: テキストにもダウンロード
-          //    ボタンを作って PDF に変換できるように) ──
-          PopupMenuButton<String>(
-            tooltip: context.read<MindMapProvider>().t('fsv.download'),
-            icon: Icon(Icons.download_rounded, color: fg),
-            color: dark ? const Color(0xFF22222E) : Colors.white,
-            onSelected: (v) async {
-              if (v == 'same') {
-                await _downloadTextCopy();
-              } else if (v == 'pdf') {
-                await _downloadTextAsPdf();
-              }
-            },
-            itemBuilder: (_) => [
-              PopupMenuItem(
-                value: 'same',
-                child: Row(children: [
-                  Icon(_languageIcon(_language),
-                      size: 16, color: _languageColor(_language)),
-                  const SizedBox(width: 8),
-                  Text('このまま保存',
-                      style: TextStyle(color: fg, fontSize: 13)),
-                ]),
-              ),
-              PopupMenuItem(
-                value: 'pdf',
-                child: Row(children: [
-                  const Icon(Icons.picture_as_pdf_outlined,
-                      size: 16, color: Color(0xFFFF6B6B)),
-                  const SizedBox(width: 8),
-                  Text(
-                      _isPreviewableFile
-                          ? 'PDF に変換 (プレビューの内容)'
-                          : 'PDF に変換',
-                      style: TextStyle(color: fg, fontSize: 13)),
-                ]),
-              ),
-            ],
-          ),
+          // (ダウンロードは保存ボタンの右に移した = ユーザー要望)
           // ── プレビュー切替 (.md は Mermaid 記法も描画、 .html は書いた
           //    ページをそのまま表示 = ユーザー要望) ──
           if (_isPreviewableFile)
@@ -196213,18 +196255,50 @@ $currentText
           ),
           // (「AI で書き換える」 ボタンは廃止 = ユーザー要望: 右パネルの
           //  AI編集と同じ機能のため。 AI編集は AI パネルから使う)
-          const SizedBox(width: 6),
-          TextButton.icon(
+          // ── 保存はまわりに合わせてアイコンだけ (= ユーザー要望)。
+          //    ホバーの案内は「上書き保存」。 ──
+          IconButton(
+            tooltip: '上書き保存',
+            icon: const Icon(Icons.save_rounded, color: Color(0xFF6C63FF)),
             onPressed: _save,
-            icon: const Icon(Icons.save_rounded, size: 18),
-            label: Text(context.read<MindMapProvider>().t('btn.save')),
-            style: TextButton.styleFrom(
-              foregroundColor: Colors.white,
-              backgroundColor: const Color(0xFF6C63FF),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-            ),
           ),
-          const SizedBox(width: 6),
+          // ── ダウンロード (= ユーザー要望: 保存ボタンの右に置く) ──
+          PopupMenuButton<String>(
+            tooltip: context.read<MindMapProvider>().t('fsv.download'),
+            icon: Icon(Icons.download_rounded, color: fg),
+            color: dark ? const Color(0xFF22222E) : Colors.white,
+            onSelected: (v) async {
+              if (v == 'same') {
+                await _downloadTextCopy();
+              } else if (v == 'pdf') {
+                await _downloadTextAsPdf();
+              }
+            },
+            itemBuilder: (_) => [
+              PopupMenuItem(
+                value: 'same',
+                child: Row(children: [
+                  Icon(_languageIcon(_language),
+                      size: 16, color: _languageColor(_language)),
+                  const SizedBox(width: 8),
+                  Text('このまま保存', style: TextStyle(color: fg, fontSize: 13)),
+                ]),
+              ),
+              PopupMenuItem(
+                value: 'pdf',
+                child: Row(children: [
+                  const Icon(Icons.picture_as_pdf_outlined,
+                      size: 16, color: Color(0xFFFF6B6B)),
+                  const SizedBox(width: 8),
+                  Text(
+                      _isPreviewableFile
+                          ? 'PDF に変換 (プレビューの内容)'
+                          : 'PDF に変換',
+                      style: TextStyle(color: fg, fontSize: 13)),
+                ]),
+              ),
+            ],
+          ),
           IconButton(
             tooltip: context.read<MindMapProvider>().t('pptx.openExternal'),
             icon: Icon(Icons.open_in_new_rounded, color: fg),
@@ -201478,6 +201552,8 @@ class _OfficeFileTemplate {
             '  <meta charset="utf-8">\n'
             '  <meta name="viewport" content="width=device-width, initial-scale=1">\n'
             '  <title>ページ</title>\n'
+            // 同じ名前の .css を読む (= ユーザー要望: HTML & CSS)。
+            '  <link rel="stylesheet" href="style.css">\n'
             '  <style>\n'
             '    body { font-family: sans-serif; margin: 24px; line-height: 1.7; }\n'
             '  </style>\n'
