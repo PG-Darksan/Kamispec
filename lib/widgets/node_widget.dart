@@ -387,20 +387,39 @@ class _NodeWidgetState extends State<NodeWidget> {
           borderRadius: BorderRadius.circular(4),
         ),
         child: ClipRect(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              for (final l in lines)
-                Text(l,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Color(0xFF212121),
-                      fontSize: 7.5,
-                      height: 1.45,
-                    )),
-            ],
-          ),
+          child: lines.isEmpty
+              // ── 中身が無い時は「空」 と出す (= ユーザー要望: 真っ白
+              //    だけだと味がない)。 ──
+              ? Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(icon,
+                          size: 18, color: Colors.black.withValues(alpha: 0.18)),
+                      const SizedBox(height: 3),
+                      Text('空',
+                          style: TextStyle(
+                            color: Colors.black.withValues(alpha: 0.28),
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                          )),
+                    ],
+                  ),
+                )
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    for (final l in lines)
+                      Text(l,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Color(0xFF212121),
+                            fontSize: 7.5,
+                            height: 1.45,
+                          )),
+                  ],
+                ),
         ),
       );
 

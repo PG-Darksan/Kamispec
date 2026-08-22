@@ -9189,12 +9189,20 @@ class _MindMapScreenState extends State<MindMapScreen>
       // 背景は薄く (近くに出るので画面全体を暗くしすぎない)。
       barrierColor: Colors.black.withValues(alpha: anchor == null ? 0.5 : 0.2),
       builder: (sctx) {
+        // ── 画面に収まる大きさにする (= ユーザー報告: モバイルで下部ボタンを
+        //    長押しすると設定が画面の上の方に出てしまう)。 実際の高さが
+        //    見積もりより大きいと、 置き場所の計算がずれて遠くへ飛ぶので、
+        //    ここで上限を決めて中を縦スクロールにする。 ──
+        final scr = MediaQuery.sizeOf(sctx);
+        final menuW = math.min(380.0, scr.width - 24.0);
+        final menuH = math.min(360.0, math.max(200.0, scr.height * 0.5));
         final menu = Material(
         color: const Color(0xFF1E1E2E),
         elevation: 12,
         borderRadius: BorderRadius.circular(14),
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 380),
+          constraints: BoxConstraints(maxWidth: menuW, maxHeight: menuH),
+          child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -9458,6 +9466,7 @@ class _MindMapScreenState extends State<MindMapScreen>
               const SizedBox(height: 8),
             ],
           ),
+          ),
         ),
       );
         if (anchor == null) return Dialog(child: menu);
@@ -9465,7 +9474,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         //   画面からはみ出さないように寄せ、 バー (ヘッダー / 左右 / 下) とも
         //   重ならないように逃がす (= ユーザー要望: 近くに出す時はバーと
         //   被らないように)。 menuH は 3 項目 + 余白のおよその高さ。
-        return _positionNearAnchor(sctx, anchor, menu, const Size(380, 290));
+        return _positionNearAnchor(sctx, anchor, menu, Size(menuW, menuH));
       },
     );
   }
@@ -10310,12 +10319,28 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 存在しないので使わない)。
   Future<void> _removeButtonFromLayout(String commandId) async {
     final provider = context.read<MindMapProvider>();
+    // ── 置いてある所すべてから外す (= ユーザー要望: 長押しで「外す」)。
+    //    旧: ヘッダーと下バーだけを見ていたので、 下バーの 2〜4 段目や
+    //    ギャラリーのヘッダーに置いたボタンは外せなかった。 ──
     if (provider.customHeaderButtons.contains(commandId)) {
       await provider.removeHeaderButton(commandId);
     }
     if (provider.customBottomButtons.contains(commandId)) {
       await provider.removeBottomButton(commandId);
     }
+    if (provider.customBottomTopButtons.contains(commandId)) {
+      await provider.removeBottomTopButton(commandId);
+    }
+    if (provider.customBottomThirdButtons.contains(commandId)) {
+      await provider.removeBottomThirdButton(commandId);
+    }
+    if (provider.customBottomFourthButtons.contains(commandId)) {
+      await provider.removeBottomFourthButton(commandId);
+    }
+    if (provider.galleryHeaderButtons.contains(commandId)) {
+      await provider.removeGalleryHeaderButton(commandId);
+    }
+    if (mounted) setState(() {});
   }
 
   /// 新規ブックマークボタンを作成 (= キャッシュ + 永続化 + ヘッダー配置)。
@@ -43158,6 +43183,47 @@ class _MindMapScreenState extends State<MindMapScreen>
                           },
                         ),
                       ]),
+                      // ── ポモドーロタイマーを置くか (= ユーザー要望:
+                      //    配置するかの設定項目) ──
+                      Row(children: [
+                        const Icon(Icons.timer_rounded,
+                            color: Colors.white60, size: 18),
+                        const SizedBox(width: 8),
+                        const Expanded(
+                          child: Text('ポモドーロタイマーを置く',
+                              style: TextStyle(
+                                  color: Colors.white, fontSize: 13)),
+                        ),
+                        Switch(
+                          value: provider.focusLockShowPomodoro,
+                          activeColor: const Color(0xFFFF6B6B),
+                          onChanged: (v) {
+                            // ignore: discarded_futures
+                            provider.setFocusLockShowPomodoro(v);
+                            setS(() {});
+                          },
+                        ),
+                      ]),
+                      // ── アラームを置くか (= ユーザー要望) ──
+                      Row(children: [
+                        const Icon(Icons.alarm_rounded,
+                            color: Colors.white60, size: 18),
+                        const SizedBox(width: 8),
+                        const Expanded(
+                          child: Text('アラームを置く',
+                              style: TextStyle(
+                                  color: Colors.white, fontSize: 13)),
+                        ),
+                        Switch(
+                          value: provider.focusLockShowAlarm,
+                          activeColor: const Color(0xFFFFB347),
+                          onChanged: (v) {
+                            // ignore: discarded_futures
+                            provider.setFocusLockShowAlarm(v);
+                            setS(() {});
+                          },
+                        ),
+                      ]),
                       // ── 自然音をロック画面から聞けるようにするか
                       //    (= ユーザー要望の設定項目) ──
                       Row(children: [
@@ -54696,6 +54762,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (Platform.isAndroid) {
       try {
         await rec.startAndroid();
+        _startRecBridge();
         if (!mounted) return;
         _screenRecSnack(
             provider.t('ve.screenRecStarted'), const Color(0xFF43B97F));
@@ -54736,6 +54803,64 @@ class _MindMapScreenState extends State<MindMapScreen>
       _screenRecSnack('$e', const Color(0xFFE57373));
     }
     if (mounted) setState(() {});
+  }
+
+  // ─── モバイル: 録画を外の窓 (オーバーレイ) で操れるようにする橋 ───
+  //     (= ユーザー要望: モバイル版の録画ボタンを外に出せない)
+  //     オーバーレイは別エンジンなので直接は触れない。 1 秒ごとに
+  //     prefs へ「録画中か / 何秒たったか」 を書き、 向こうが置いた
+  //     「止めて」 の合図を拾う。
+  static const String _kRecStateBridgeKey = 'floating_rec_state_v1';
+  static const String _kRecStopBridgeKey = 'floating_rec_stop_v1';
+  Timer? _recBridgeTimer;
+
+  void _startRecBridge() {
+    if (_isDesktop) return;
+    _recBridgeTimer?.cancel();
+    _recBridgeTimer =
+        Timer.periodic(const Duration(seconds: 1), (_) async {
+      final rec = ScreenRecorder.instance;
+      try {
+        final sp = await SharedPreferences.getInstance();
+        await sp.setString(
+            _kRecStateBridgeKey, '${rec.recording ? 1 : 0}|${rec.seconds}');
+        await sp.reload();
+        if (sp.getBool(_kRecStopBridgeKey) == true) {
+          await sp.setBool(_kRecStopBridgeKey, false);
+          if (rec.recording && mounted) {
+            await _recBarStop(context.read<MindMapProvider>());
+          }
+        }
+      } catch (_) {}
+      if (!rec.recording) _stopRecBridge();
+    });
+  }
+
+  void _stopRecBridge() {
+    _recBridgeTimer?.cancel();
+    _recBridgeTimer = null;
+    unawaited(() async {
+      try {
+        final sp = await SharedPreferences.getInstance();
+        await sp.setString(_kRecStateBridgeKey, '0|0');
+      } catch (_) {}
+    }());
+  }
+
+  /// 録画の操作をアプリの外の窓へ出す (Android)。
+  Future<void> _popOutRecToOverlay(MindMapProvider provider) async {
+    if (kIsWeb || !Platform.isAndroid) {
+      _screenRecSnack(provider.t('popOut.desktopOnly'),
+          const Color(0xFFFFB347));
+      return;
+    }
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setString('floating_overlay_mode_v1', 'rec');
+    } catch (_) {}
+    await _toggleFloatingMemoOverlay(provider, forceOpen: true);
+    _startRecBridge();
+    if (mounted) setState(() => _recBarOpen = false);
   }
 
   void _screenRecSnack(String msg, Color color) {
@@ -54836,6 +54961,12 @@ class _MindMapScreenState extends State<MindMapScreen>
       await sp.setBool(_kRecPreviewKey, v);
     } catch (_) {}
     _pushScreenRecState();
+    // ── 何が変わったか出す (= ユーザー報告: 押しても反応しないように
+    //    見える)。 実際は「撮り終わった後にプレビューを出すか」 の
+    //    切り替えで、 その場では何も起きないため分かりにくかった。 ──
+    _screenRecSnack(
+        v ? '撮り終わったらプレビューを出します' : '撮り終わってもプレビューは出しません',
+        v ? const Color(0xFF43B97F) : const Color(0xFF616184));
   }
 
   /// 保存先フォルダーを選ぶ。
@@ -54929,7 +55060,22 @@ class _MindMapScreenState extends State<MindMapScreen>
                     color: const Color(0xFFE53935),
                     onTap: () => unawaited(_recBarStop(provider)),
                   ),
-                  if (_recStopHotkey.isNotEmpty) ...[
+                  // キーボードのショートカットはモバイルでは押せないので
+                  // 出さない (= ユーザー要望)。
+                  // 録画中も外へ出せるようにする (= ユーザー要望)。
+                  const SizedBox(width: 4),
+                  IconButton(
+                    tooltip: provider.t('ve.recPopOut'),
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints(minWidth: 30, minHeight: 30),
+                    icon: const Icon(Icons.open_in_new_rounded,
+                        size: 16, color: Color(0xFF9575CD)),
+                    onPressed: () => unawaited(_isDesktop
+                        ? openScreenRecWindow()
+                        : _popOutRecToOverlay(provider)),
+                  ),
+                  if (_isDesktop && _recStopHotkey.isNotEmpty) ...[
                     const SizedBox(width: 6),
                     Text(_recStopHotkey.toUpperCase(),
                         style: const TextStyle(
@@ -54956,22 +55102,25 @@ class _MindMapScreenState extends State<MindMapScreen>
                     color: const Color(0xFF9575CD),
                     onTap: () => unawaited(_recBarStart(provider)),
                   ),
-                  // ── アプリの外の窓へ出す / 保存先を選ぶ ──
-                  //    どちらもデスクトップの別窓・フォルダー選択が前提で、
-                  //    モバイルでは押しても何も起きなかったので出さない
-                  //    (= ユーザー報告: 外部に出すボタンが反応しない)。
-                  //    Android の保存先はアプリ専用フォルダー固定。
+                  // ── アプリの外へ出す ──
+                  //    デスクトップは別ウィンドウ、 Android は他のアプリの
+                  //    上に出せるオーバーレイ (= ユーザー要望: モバイルでも
+                  //    録画ボタンを外に出せるように)。
+                  const SizedBox(width: 2),
+                  IconButton(
+                    tooltip: provider.t('ve.recPopOut'),
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints(minWidth: 30, minHeight: 30),
+                    icon: const Icon(Icons.open_in_new_rounded,
+                        size: 16, color: Color(0xFF9575CD)),
+                    onPressed: () => unawaited(_isDesktop
+                        ? openScreenRecWindow()
+                        : _popOutRecToOverlay(provider)),
+                  ),
+                  // ── 保存先を選ぶのはデスクトップだけ (Android はアプリ
+                  //    専用フォルダー固定)。 ──
                   if (_isDesktop) ...[
-                    const SizedBox(width: 2),
-                    IconButton(
-                      tooltip: provider.t('ve.recPopOut'),
-                      padding: EdgeInsets.zero,
-                      constraints:
-                          const BoxConstraints(minWidth: 30, minHeight: 30),
-                      icon: const Icon(Icons.open_in_new_rounded,
-                          size: 16, color: Color(0xFF9575CD)),
-                      onPressed: () => unawaited(openScreenRecWindow()),
-                    ),
                     const SizedBox(width: 2),
                     IconButton(
                       tooltip: _recSaveDir.isEmpty
@@ -55127,6 +55276,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (Platform.isAndroid) {
       try {
         await ScreenRecorder.instance.startAndroid();
+        // 外の窓へ状態を流し始める (= ユーザー要望: 外に出した窓で止める)。
+        _startRecBridge();
         if (mounted) setState(() => _recLastSaved = null);
       } catch (e) {
         if (mounted) _screenRecSnack('$e', const Color(0xFFE57373));
@@ -154798,6 +154949,79 @@ class _LockYoutubePicker extends StatelessWidget {
   }
 }
 
+/// ロック画面より前で時刻を選ぶための入れ物 (= ユーザー要望: 集中ロックの
+/// アラーム設定がロック画面の下に出てしまう)。
+///
+/// showTimePicker は Navigator を使うため、 root オーバーレイに直接乗せた
+/// ロック画面の下に描かれてしまう。 ここでは自前の Navigator を挟んで、
+/// ロック画面の「上」 に置いた領域の中でピッカーを開く。
+class _LockFrontTimePicker extends StatefulWidget {
+  final TimeOfDay initial;
+  final void Function(TimeOfDay?) onDone;
+
+  const _LockFrontTimePicker({required this.initial, required this.onDone});
+
+  @override
+  State<_LockFrontTimePicker> createState() => _LockFrontTimePickerState();
+}
+
+class _LockFrontTimePickerState extends State<_LockFrontTimePicker> {
+  @override
+  Widget build(BuildContext context) {
+    final size = MediaQuery.sizeOf(context);
+    return SizedBox(
+      width: size.width,
+      height: size.height,
+      child: Navigator(
+        onGenerateRoute: (_) => MaterialPageRoute<void>(
+          builder: (navCtx) => _LockFrontTimePickerLauncher(
+            initial: widget.initial,
+            onDone: widget.onDone,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LockFrontTimePickerLauncher extends StatefulWidget {
+  final TimeOfDay initial;
+  final void Function(TimeOfDay?) onDone;
+
+  const _LockFrontTimePickerLauncher(
+      {required this.initial, required this.onDone});
+
+  @override
+  State<_LockFrontTimePickerLauncher> createState() =>
+      _LockFrontTimePickerLauncherState();
+}
+
+class _LockFrontTimePickerLauncherState
+    extends State<_LockFrontTimePickerLauncher> {
+  bool _opened = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (_opened) return;
+      _opened = true;
+      TimeOfDay? picked;
+      try {
+        picked = await showTimePicker(
+          context: context,
+          initialTime: widget.initial,
+        );
+      } catch (_) {}
+      widget.onDone(picked);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      const ColoredBox(color: Color(0x66000000));
+}
+
 class _FocusLockOverlay extends StatefulWidget {
   final Duration duration;
   final bool taskMode;
@@ -155020,6 +155244,47 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
     // 明示確認を求める。チェックだけで一瞬にロックを閉じない。
     if (widget.provider.areAllFocusLockTasksCompleted) {
       await _requestFocusTaskUnlockConfirmation();
+    }
+  }
+
+  /// タスクを全部消して 0 件になった時に、 ロックを解除するか聞く
+  /// (= ユーザー要望)。 「続ける」 を選べばロックはそのまま。
+  Future<void> _confirmUnlockAfterAllTasksRemoved() async {
+    if (_finished ||
+        !mounted ||
+        !widget.taskMode ||
+        widget.provider.focusLockTasks.isNotEmpty ||
+        _taskUnlockConfirmationOpen) {
+      return;
+    }
+    setState(() => _taskUnlockConfirmationOpen = true);
+    final confirmed = await _showLockFrontDialog<bool>(
+      (dialogContext, close) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: const Text('やることが無くなりました',
+            style: TextStyle(color: Colors.white, fontSize: 16)),
+        content: const Text('登録したやることが 0 件になりました。\nロックを解除しますか?',
+            style: TextStyle(color: Colors.white70)),
+        actions: [
+          TextButton(
+            onPressed: () => close(false),
+            child: const Text('続ける'),
+          ),
+          FilledButton(
+            onPressed: () => close(true),
+            child: Text(widget.provider.t('focusLock.taskUnlockConfirmAction')),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    setState(() => _taskUnlockConfirmationOpen = false);
+    // 待っている間にタスクが増えていたら解除しない。
+    if (confirmed == true && widget.provider.focusLockTasks.isEmpty) {
+      _finished = true;
+      _tick?.cancel();
+      HapticFeedback.heavyImpact();
+      widget.onClose();
     }
   }
 
@@ -156938,7 +157203,13 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
                         color: Colors.white38, size: 16),
                     onPressed: () async {
                       await p.removeFocusLockTask(task.id);
-                      if (mounted) setState(() {});
+                      if (!mounted) return;
+                      setState(() {});
+                      // 最後の 1 件を消して空になったら、 解除するか聞く
+                      // (= ユーザー要望: 完了ではなく削除で 0 件になった時)。
+                      if (p.focusLockTasks.isEmpty) {
+                        await _confirmUnlockAfterAllTasksRemoved();
+                      }
                     },
                   ),
                 ]);
@@ -157241,10 +157512,15 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
                         const TextStyle(color: Colors.white70, fontSize: 12)),
                 onPressed: () async {
                   final now = DateTime.now();
-                  final picked = await showTimePicker(
-                    context: context,
-                    initialTime: TimeOfDay.fromDateTime(
-                        now.add(const Duration(minutes: 30))),
+                  // ── ロック画面は root オーバーレイに直接乗せているので、
+                  //    普通の showTimePicker はその「下」 に出てしまう
+                  //    (= ユーザー報告)。 前面に出す入れ物の中で開く。 ──
+                  final picked = await _showLockFrontDialog<TimeOfDay>(
+                    (dctx, close) => _LockFrontTimePicker(
+                      initial: TimeOfDay.fromDateTime(
+                          now.add(const Duration(minutes: 30))),
+                      onDone: close,
+                    ),
                   );
                   if (picked == null || !mounted) return;
                   _scheduleLockAlarm(DateTime(now.year, now.month, now.day,
@@ -157827,20 +158103,22 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
                     else
                       _buildLockAmbientButton(),
                   const SizedBox(height: 10),
-                  // ── ポモドーロタイマー (= ユーザー要望: ロック画面内に
-                  //    埋め込み。ボタンで開閉する) ──
-                  _buildLockPomodoroButton(),
-                  if (_lockPomodoroOpen) ...[
+                  // ── ポモドーロタイマー / アラーム ──
+                  //    置くかどうかは設定で選べる (= ユーザー要望: 配置
+                  //    するかの設定項目)。
+                  if (p.focusLockShowPomodoro) ...[
+                    _buildLockPomodoroButton(),
+                    if (_lockPomodoroOpen) ...[
+                      const SizedBox(height: 10),
+                      _buildLockPomodoroPanel(),
+                    ],
                     const SizedBox(height: 10),
-                    _buildLockPomodoroPanel(),
                   ],
-                  const SizedBox(height: 10),
-                  // ── アラーム (= ユーザー要望: 画面ロック機能の中にも
-                  //    アラームを設定できるように) ──
-                  if (_lockAlarmOpen)
-                    _buildLockAlarmPanel()
-                  else
-                    _buildLockAlarmButton(),
+                  if (p.focusLockShowAlarm)
+                    if (_lockAlarmOpen)
+                      _buildLockAlarmPanel()
+                    else
+                      _buildLockAlarmButton(),
                   // ── 通信系操作 (電話/SMS/Wi-Fi/テザリング) は非表示
                   //    (= ユーザー要望: 集中ロック画面に 4 項目を出さない) ──
                   const SizedBox(height: 20),

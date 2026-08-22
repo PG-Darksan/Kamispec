@@ -56965,6 +56965,9 @@ class MindMapProvider extends ChangeNotifier {
     // 既定は「関連動画を表示する」 (= ユーザー要望: 隠すのは OFF)。
     _hideEmbedRelated = prefs.getBool('hideEmbedRelated') ?? false;
     _focusLockHideUnlockBtn = prefs.getBool('focusLockHideUnlockBtn') ?? false;
+    // 集中ロック画面に置くか (= ユーザー要望: 配置するかの設定項目)。
+    _focusLockShowPomodoro = prefs.getBool('focusLockShowPomodoro') ?? true;
+    _focusLockShowAlarm = prefs.getBool('focusLockShowAlarm') ?? true;
     // 未設定なら ToDo タスクベース (= ユーザー要望)。
     _focusLockMode = prefs.getString('focusLockMode') ?? 'tasks';
     if (!{'timer', 'tasks'}.contains(_focusLockMode)) {
@@ -59167,6 +59170,31 @@ class MindMapProvider extends ChangeNotifier {
     try {
       final prefs = await _prefsWithRetry();
       await prefs.setBool('focusLockHideUnlockBtn', v);
+    } catch (_) {}
+    notifyListeners();
+  }
+
+  /// 集中ロック画面にポモドーロタイマーを置くか (= ユーザー要望: 配置するかの
+  /// 設定項目)。 既定は置く (今までの見た目のまま)。
+  bool _focusLockShowPomodoro = true;
+  bool get focusLockShowPomodoro => _focusLockShowPomodoro;
+  Future<void> setFocusLockShowPomodoro(bool v) async {
+    _focusLockShowPomodoro = v;
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.setBool('focusLockShowPomodoro', v);
+    } catch (_) {}
+    notifyListeners();
+  }
+
+  /// 集中ロック画面にアラームを置くか (= ユーザー要望)。 既定は置く。
+  bool _focusLockShowAlarm = true;
+  bool get focusLockShowAlarm => _focusLockShowAlarm;
+  Future<void> setFocusLockShowAlarm(bool v) async {
+    _focusLockShowAlarm = v;
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.setBool('focusLockShowAlarm', v);
     } catch (_) {}
     notifyListeners();
   }

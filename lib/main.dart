@@ -414,6 +414,94 @@ class _FloatingMemoOverlayState extends State<FloatingMemoOverlay> {
   static const String kModeKey = 'floating_overlay_mode_v1';
   String _mode = 'memo';
 
+  /// ── 画面録画の受け渡し (= ユーザー要望: モバイルでも録画ボタンを
+  ///    アプリの外に出せるように) ──
+  ///    本体が 1 秒ごとに「録画中か / 何秒たったか」 を prefs に書き、
+  ///    ここで読む。 停止は逆に prefs へ合図を置いて本体に止めてもらう
+  ///    (オーバーレイは別エンジンなので直接は触れない)。
+  static const String kRecStateKey = 'floating_rec_state_v1';
+  static const String kRecStopKey = 'floating_rec_stop_v1';
+  bool _recRecording = false;
+  int _recSeconds = 0;
+  Timer? _recPoll;
+
+  String get _recLabel {
+    final m = (_recSeconds ~/ 60).toString().padLeft(2, '0');
+    final s = (_recSeconds % 60).toString().padLeft(2, '0');
+    return '$m:$s';
+  }
+
+  void _stopRecPoll() {
+    _recPoll?.cancel();
+    _recPoll = null;
+  }
+
+  void _startRecPoll() {
+    _recPoll?.cancel();
+    _recPoll = Timer.periodic(const Duration(seconds: 1), (_) async {
+      if (!mounted || _mode != 'rec') return;
+      try {
+        final sp = await SharedPreferences.getInstance();
+        await sp.reload();
+        final raw = sp.getString(kRecStateKey) ?? '';
+        final parts = raw.split('|');
+        final rec = parts.isNotEmpty && parts[0] == '1';
+        final sec = parts.length > 1 ? (int.tryParse(parts[1]) ?? 0) : 0;
+        if (mounted && (rec != _recRecording || sec != _recSeconds)) {
+          setState(() {
+            _recRecording = rec;
+            _recSeconds = sec;
+          });
+        }
+      } catch (_) {}
+    });
+  }
+
+  /// 本体に「止めて」 と伝える。
+  Future<void> _askStopRecording() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setBool(kRecStopKey, true);
+    } catch (_) {}
+    if (mounted) setState(() => _recRecording = false);
+  }
+
+  /// 録画モードの中身 (= 経過時間と停止だけの小さな画面)。
+  Widget _buildRecBody() => Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+              Icon(Icons.fiber_manual_record_rounded,
+                  size: 14,
+                  color: _recRecording
+                      ? const Color(0xFFE53935)
+                      : Colors.white24),
+              const SizedBox(width: 8),
+              Text(_recRecording ? _recLabel : '--:--',
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 22,
+                      fontWeight: FontWeight.w700,
+                      fontFeatures: [FontFeature.tabularFigures()])),
+            ]),
+            const SizedBox(height: 10),
+            if (_recRecording)
+              FilledButton.icon(
+                style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFFE53935)),
+                icon: const Icon(Icons.stop_rounded, size: 18),
+                label: Text(FloatL10n.t('rec.stop')),
+                onPressed: () => unawaited(_askStopRecording()),
+              )
+            else
+              Text(FloatL10n.t('rec.notRecording'),
+                  style:
+                      const TextStyle(color: Colors.white38, fontSize: 12)),
+          ],
+        ),
+      );
+
   // ── AI モードの状態 ──
   final TextEditingController _aiCtrl = TextEditingController();
   String _aiAnswer = '';
@@ -796,6 +884,7 @@ class _FloatingMemoOverlayState extends State<FloatingMemoOverlay> {
       _ctrl.text = sp.getString(kFloatingMemoPrefsKey) ?? '';
       // 保存済みのウィンドウサイズを復元 (= ユーザー要望: 大きさ変更)。
       _mode = sp.getString(kModeKey) ?? 'memo';
+      if (_mode == 'rec') _startRecPoll();
       _inputEnabled = sp.getBool(kInputKey) ?? true;
       // 本体アプリが書き残した実画面サイズ (dp)。
       final sc = sp.getString(kScreenKey) ?? '';
@@ -832,6 +921,7 @@ class _FloatingMemoOverlayState extends State<FloatingMemoOverlay> {
 
   @override
   void dispose() {
+    _stopRecPoll();
     _saveDebounce?.cancel();
     // 閉じる直前の内容も確実に保存する。
     SharedPreferences.getInstance()
@@ -992,7 +1082,9 @@ class _FloatingMemoOverlayState extends State<FloatingMemoOverlay> {
                           width: 20,
                           height: 20,
                           child: CircularProgressIndicator(strokeWidth: 2)))
-                  : (_mode == 'ai' ? _buildAiBody() : _buildMemoBody()),
+                  : (_mode == 'rec'
+                      ? _buildRecBody()
+                      : (_mode == 'ai' ? _buildAiBody() : _buildMemoBody())),
             ),
           ),
           ]),
@@ -1223,6 +1315,19 @@ class FloatL10n {
 
   static const Map<String, Map<String, String>> _table = {
     // ── 外に出した AI アシスタントの窓 (= ユーザー要望) ──
+    // ── 画面録画をアプリの外に出した時の文言 (= ユーザー要望)。
+    //    'rec.stop' は既にあるのでそちらを使う。 ──
+    'rec.notRecording': {
+      'ja': '録画していません',
+      'en': 'Not recording',
+      'zh': '未在录制',
+      'ko': '녹화 중이 아닙니다',
+      'es': 'No se esta grabando',
+      'fr': 'Pas d enregistrement',
+      'de': 'Keine Aufnahme',
+      'pt': 'Nao esta gravando',
+      'ru': 'Запись не идёт',
+    },
     'assist.title': {
       'ja': 'AI アシスタント',
       'en': 'AI assistant',
