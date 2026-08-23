@@ -9526,6 +9526,40 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Mover (rolar)',
       'ru': 'Перемещение (прокрутка)',
     },
+    // ── 消しゴム / チェック / 上書き保存 (= ユーザー要望) ──
+    'pdfdraw.eraser': {
+      'ja': '消しゴム (保存前の線を消す)',
+      'en': 'Eraser (removes unsaved strokes)',
+      'zh': '橡皮擦 (擦除未保存的笔迹)',
+      'ko': '지우개 (저장 전 선 지우기)',
+      'es': 'Borrador (trazos sin guardar)',
+      'fr': 'Gomme (traits non enregistrés)',
+      'de': 'Radierer (ungespeicherte Striche)',
+      'pt': 'Borracha (traços não salvos)',
+      'ru': 'Ластик (несохранённые линии)',
+    },
+    'pdfdraw.check': {
+      'ja': 'チェック (✓) を置く',
+      'en': 'Place a check mark',
+      'zh': '放置对勾',
+      'ko': '체크 표시 넣기',
+      'es': 'Colocar una marca de verificación',
+      'fr': 'Placer une coche',
+      'de': 'Häkchen setzen',
+      'pt': 'Colocar uma marca de seleção',
+      'ru': 'Поставить галочку',
+    },
+    'pdfdraw.save': {
+      'ja': '上書き保存 (描いたものを PDF に焼き込む)',
+      'en': 'Save into the PDF',
+      'zh': '覆盖保存到 PDF',
+      'ko': 'PDF에 덮어쓰기 저장',
+      'es': 'Guardar en el PDF',
+      'fr': 'Enregistrer dans le PDF',
+      'de': 'In das PDF speichern',
+      'pt': 'Salvar no PDF',
+      'ru': 'Сохранить в PDF',
+    },
     'pdfdraw.pen': {
       'ja': '手書きペン',
       'en': 'Pen',
@@ -9591,6 +9625,28 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Linienstärke',
       'pt': 'Espessura da linha',
       'ru': 'Толщина линии',
+    },
+    'pdfdraw.penWidth': {
+      'ja': 'ペンの太さ',
+      'en': 'Pen width',
+      'zh': '画笔粗细',
+      'ko': '펜 굵기',
+      'es': 'Grosor del lápiz',
+      'fr': 'Épaisseur du stylo',
+      'de': 'Stiftstärke',
+      'pt': 'Espessura da caneta',
+      'ru': 'Толщина пера',
+    },
+    'pdfdraw.eraserSize': {
+      'ja': '消しゴムの大きさ',
+      'en': 'Eraser size',
+      'zh': '橡皮擦大小',
+      'ko': '지우개 크기',
+      'es': 'Tamaño del borrador',
+      'fr': 'Taille de la gomme',
+      'de': 'Radiergröße',
+      'pt': 'Tamanho da borracha',
+      'ru': 'Размер ластика',
     },
     'pdfdraw.undo': {
       'ja': '一つ戻す',
@@ -61849,7 +61905,7 @@ class MindMapProvider extends ChangeNotifier {
   /// デフォルトは `pro` (= 開発者モードに入った瞬間に Pro として扱われる)。
   /// `_developerMode == false` の時は無視され、`_proSubscribed` /
   /// `hasActiveCoupon` で実際の状態を判定する。
-  SubscriptionPlan _devImpersonatePlan = SubscriptionPlan.pro;
+  SubscriptionPlan _devImpersonatePlan = SubscriptionPlan.dev;
   SubscriptionPlan get devImpersonatePlan => _devImpersonatePlan;
 
   /// 開発者モードでの演じるプランを変更し、SharedPreferences に永続化する。
@@ -62061,14 +62117,16 @@ class MindMapProvider extends ChangeNotifier {
         _appliedCouponCode != null) {
       await _clearCoupon();
     }
-    // 開発者モードの演じプラン復元
+    // 開発者モードの演じプラン復元。
+    // 何も選んでいない時は Dev (= 全機能 + 代行の枠) にしておく
+    // (= ユーザー要望: 開発者自身はクーポンを発行しなくても色々できるように)。
     final planStr = prefs.getString('dev_impersonate_plan');
-    if (planStr != null) {
-      _devImpersonatePlan = SubscriptionPlan.values.firstWhere(
-        (p) => p.name == planStr,
-        orElse: () => SubscriptionPlan.pro,
-      );
-    }
+    _devImpersonatePlan = planStr == null
+        ? SubscriptionPlan.dev
+        : SubscriptionPlan.values.firstWhere(
+            (p) => p.name == planStr,
+            orElse: () => SubscriptionPlan.dev,
+          );
     // 月次容量カウンタ復元 (月またぎなら自動で 0 リセット)
     _billingMonthYm = prefs.getString('billingMonthYm') ?? '';
     _monthlyUploadBytes = prefs.getInt('monthlyUploadBytes') ?? 0;
@@ -64555,7 +64613,16 @@ class MindMapProvider extends ChangeNotifier {
     if (_devSelfGrantTried) return;
     _devSelfGrantTried = true;
     if (!_developerMode) return;
+    // 控えを読み終わる前に判定すると、 付与済みでも「まだ」 と見えてしまい、
+    // 開発者モードに入るたびに新しいコードを作ってしまう
+    // (= ユーザー報告: Dev ライセンスが増える)。 先に読み終える。
+    await _loadServerGrantedPlan();
     if (_serverGrantedPlan == 'dev') return; // 既に付与済み
+    if (_purchasedPlan == SubscriptionPlan.dev) {
+      // 既に Dev の権利を持っている = 作る必要が無い。
+      await _setServerGrantedPlan('dev');
+      return;
+    }
     final base = relayApiBase;
     if (base.isEmpty) return;
     try {
@@ -87165,10 +87232,27 @@ $example
     if (found == null) return;
     final page = found.$1;
     final node = found.$2;
+    final oldThumb = node.attachmentThumbPath ?? '';
     page.nodes[id] = node.copyWith(
       attachmentThumbPath: thumbPath,
       attachmentAspectRatio: aspectRatio > 0 ? aspectRatio : null,
     );
+    // ── 差し替えで見捨てられた古い絵を消す ──
+    //    サムネイルは作り直す度に別名で作られる (= 画面が古い絵のまま
+    //    にならないように)。 溜まり続けないよう、 どのノードからも
+    //    参照されなくなった物だけを消す。
+    if (oldThumb.isNotEmpty &&
+        oldThumb != thumbPath &&
+        oldThumb.contains('thumb_')) {
+      final stillUsed = _pages.any((p) =>
+          p.nodes.values.any((n) => (n.attachmentThumbPath ?? '') == oldThumb));
+      if (!stillUsed) {
+        try {
+          final f = File(oldThumb);
+          if (f.existsSync()) f.deleteSync();
+        } catch (_) {}
+      }
+    }
     // ギャラリーページではサムネ確定で本来比が入るので、 統一比を再計算して再タイル。
     if (identical(page, currentPage)) _autoArrangeIfBookshelf();
     _saveToStorage();

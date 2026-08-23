@@ -756,6 +756,31 @@ class NodeConnection {
 }
 
 class MindMapNode {
+  /// 中身が見える「表紙カード」 を出す添付の拡張子。
+  /// node_widget.dart の docCoverExts / thumbnailableExts と揃えること。
+  static const Set<String> coverCardExts = {
+    'docx', 'doc', 'xlsx', 'xls', 'csv', 'txt', 'md', //
+    'html', 'htm', 'css', 'scss', 'sass', 'less', //
+    'pptx', 'ppt', //
+  };
+
+  /// 添付の表紙 (PDF / pptx の 1 枚目サムネイル、 docx 等の表紙カード) を
+  /// 出す高さ。 visualHeight と node_widget.dart の attachH で共用する
+  /// (= ずれるとノードの当たり判定や接続点が描画とずれる)。
+  ///
+  /// ★ A4 の PDF のような「元ページそのままの縦長比率」 (幅/高さ < 1) は
+  ///   使わず、 他のファイルと同じ 幅 × 0.72 の横長カードに切り揃える
+  ///   (= ユーザー要望:「PDF だけサムネイルの大きさがおかしい、 同じ大きさに
+  ///   なるようにして」)。 描画は BoxFit.cover + 上端そろえなので、 ページの
+  ///   上の方 (= 表題のある所) が見える。
+  ///   ギャラリー整列が決めた横長寄りの比率 (= タイルを同寸に揃えるための
+  ///   指定) はそのまま尊重する。
+  static double coverThumbHeight(double width, double? aspectRatio) {
+    final ar = aspectRatio;
+    if (ar != null && ar >= 1.0) return width / ar;
+    return width * 0.72;
+  }
+
   final String id;
   String title;
   Offset position;
@@ -1112,20 +1137,13 @@ class MindMapNode {
         } else {
           h += width * 0.6; // 未取得時のフォールバック
         }
-      } else if ((attachmentThumbPath ?? '').isNotEmpty) {
-        // PDF / pptx 等のサムネイル (= ユーザー要望: 表紙をサムネイル表示) は
-        //   画像と同じく attachmentAspectRatio で高さを決める (node_widget の
-        //   attachH と一致させること)。
-        final ar = attachmentAspectRatio;
-        h += (ar != null && ar > 0) ? width / ar : width * 0.6;
-      } else if (const {
-        'docx', 'doc', 'xlsx', 'xls', 'csv', 'txt', 'md', 'pptx', 'ppt', //
-      }.contains(ext)) {
-        // Office / テキスト添付の「表紙カード」 (= ユーザー要望: docx や
-        //   xlsx, txt 等も表紙が見えるように)。 node_widget の
-        //   isDocCoverAttach / attachH と必ず一致させること。
-        final ar = attachmentAspectRatio;
-        h += (ar != null && ar > 0) ? width / ar : width * 0.72;
+      } else if ((attachmentThumbPath ?? '').isNotEmpty ||
+          coverCardExts.contains(ext)) {
+        // PDF / pptx のサムネイルも、 docx や txt 等の「表紙カード」 も、
+        //   同じ高さ (= coverThumbHeight) で出す。 種類ごとに大きさが変わって
+        //   いたのを揃えた (= ユーザー要望:「PDF だけサムネイルの大きさが
+        //   おかしい」)。 node_widget の attachH と必ず一致させること。
+        h += coverThumbHeight(width, attachmentAspectRatio);
       } else {
         h += 36.0; // PDFアイコンバー
       }

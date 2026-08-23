@@ -821,22 +821,19 @@ class _NodeWidgetState extends State<NodeWidget> {
         (docCoverExts.contains(attachExt) ||
             (!hasThumb && thumbnailableExts.contains(attachExt)));
     final double attachH = hasAttachment
-        ? ((isImageAttach || hasThumb)
-            // 添付画像 / サムネイルにアスペクト比 (= width / height) が指定
-            // されていれば、 ノード幅を使って本来の比率で高さを決める。
-            // 未指定なら「ノード幅 × 0.6」 で固定の縮小表示。
+        ? (isImageAttach
+            // 添付画像はアスペクト比 (= width / height) が分かっていれば
+            // 本来の比率で、 未指定なら「ノード幅 × 0.6」 で出す。
             ? (node.attachmentAspectRatio != null &&
                     node.attachmentAspectRatio! > 0
                 ? (nw / node.attachmentAspectRatio!)
                 : nw * 0.6)
-            : isDocCoverAttach
-                // 表紙カード: ギャラリー整列の統一比があればそれに従い、
-                // 無ければ幅 × 0.72 の横長カード。
-                // mind_map_node.dart の visualHeight と必ず一致させること。
-                ? (node.attachmentAspectRatio != null &&
-                        node.attachmentAspectRatio! > 0
-                    ? (nw / node.attachmentAspectRatio!)
-                    : nw * 0.72)
+            : (hasThumb || isDocCoverAttach)
+                // PDF / pptx のサムネイルも docx 等の表紙カードも同じ高さ。
+                // (= ユーザー要望:「PDF だけサムネイルの大きさがおかしい」)。
+                // mind_map_node.dart の visualHeight と共通の計算を使う
+                // (= ずれるとノードの当たり判定や接続点が描画とずれる)。
+                ? MindMapNode.coverThumbHeight(nw, node.attachmentAspectRatio)
                 : 36.0)
         : 0;
 
