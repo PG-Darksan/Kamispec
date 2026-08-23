@@ -14,6 +14,70 @@ import 'package:flutter/foundation.dart';
 ///   3. zip を開く形式 (xlsx / docx / pptx) はアイソレートへ逃がす
 ///
 /// 表示は数行あれば足りるので、 先頭の一部だけを返す。
+/// サムネイル用に控えた「スライド 1 枚」 (= ユーザー要望: 文字の配置まで
+/// 1 枚目と同じに)。 座標は EMU。
+class SlidePreview {
+  final int width;
+  final int height;
+  final int? bg;
+  final List<SlideBox> boxes;
+  const SlidePreview(
+      {required this.width,
+      required this.height,
+      this.bg,
+      required this.boxes});
+
+  static SlidePreview? fromJsonString(String raw) {
+    try {
+      final m = jsonDecode(raw);
+      if (m is! Map) return null;
+      return SlidePreview(
+        width: (m['w'] as num?)?.toInt() ?? 12192000,
+        height: (m['h'] as num?)?.toInt() ?? 6858000,
+        bg: (m['bg'] as num?)?.toInt(),
+        boxes: [
+          for (final b in (m['b'] as List? ?? const []))
+            if (b is Map)
+              SlideBox(
+                x: (b['x'] as num?)?.toInt() ?? 0,
+                y: (b['y'] as num?)?.toInt() ?? 0,
+                w: (b['w'] as num?)?.toInt() ?? 0,
+                h: (b['h'] as num?)?.toInt() ?? 0,
+                text: b['t'] as String?,
+                fill: (b['f'] as num?)?.toInt(),
+                color: (b['c'] as num?)?.toInt(),
+                sizeHundredths: (b['s'] as num?)?.toInt(),
+              ),
+        ],
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+/// スライドの中の 1 要素 (文字の枠 か 塗りの図形)。
+class SlideBox {
+  final int x;
+  final int y;
+  final int w;
+  final int h;
+  final String? text;
+  final int? fill;
+  final int? color;
+  final int? sizeHundredths;
+  const SlideBox({
+    required this.x,
+    required this.y,
+    required this.w,
+    required this.h,
+    this.text,
+    this.fill,
+    this.color,
+    this.sizeHundredths,
+  });
+}
+
 class DocPreview {
   /// これより大きいファイルは、 タイルの表示のために読むには重すぎる。
   static const int _maxBytes = 8 * 1024 * 1024;
@@ -34,6 +98,51 @@ class DocPreview {
 
   /// 既に読んである中身 (無ければ null)。 ファイルは触らないので軽い。
   static List<String>? cachedFor(String path) => _byPath[path];
+
+  /// pptx の 1 枚目から拾った配色 (= ユーザー要望: 表紙のデザインが
+  /// サムネイルに出るように)。 背景色と文字色 (どちらも RGB 24bit)。
+  static final Map<String, ({int? bg, int? fg})> _styleByPath = {};
+
+  /// [path] の配色 (無ければ null)。
+  static ({int? bg, int? fg})? styleFor(String path) => _styleByPath[path];
+
+  /// pptx の 1 枚目の中身を「置き場所つき」 で控えたもの
+  /// (= ユーザー要望: サムネイルの文字の配置まで 1 枚目と同じに)。
+  static final Map<String, SlidePreview> _slideByPath = {};
+
+  /// [path] の 1 枚目 (無ければ null)。
+  static SlidePreview? slideFor(String path) => _slideByPath[path];
+
+  /// 中身の先頭に潜ませる配色の目印 (アイソレートからの受け渡し用)。
+  static const String _styleMark = '\u0000hnstyle:';
+
+  /// スライドの中身を渡すための目印。
+  static const String _slideMark = '\u0000hnslide:';
+
+  /// 目印の行を取り除いて、 1 枚目の中身として控える。
+  static List<String> _extractSlide(String path, List<String> lines) {
+    if (lines.isEmpty || !lines.first.startsWith(_slideMark)) return lines;
+    try {
+      final sp = SlidePreview.fromJsonString(
+          lines.first.substring(_slideMark.length));
+      if (sp != null) _slideByPath[path] = sp;
+    } catch (_) {}
+    return lines.sublist(1);
+  }
+
+  /// 目印の行を取り除いて、 配色として控える。
+  static List<String> _extractStyle(String path, List<String> lines) {
+    if (lines.isEmpty || !lines.first.startsWith(_styleMark)) return lines;
+    final body = lines.first.substring(_styleMark.length);
+    int? parse(String v) =>
+        v.length == 6 ? int.tryParse(v, radix: 16) : null;
+    final parts = body.split('|');
+    _styleByPath[path] = (
+      bg: parts.isNotEmpty ? parse(parts[0]) : null,
+      fg: parts.length > 1 ? parse(parts[1]) : null,
+    );
+    return lines.sublist(1);
+  }
 
   /// 中身を取り出せる拡張子か。
   static bool supports(String ext) => const {
@@ -68,7 +177,8 @@ class DocPreview {
     final running = _inFlight[key];
     if (running != null) return running;
 
-    final future = _read(path, e).then((lines) {
+    final future = _read(path, e).then((raw) {
+      final lines = _extractStyle(path, _extractSlide(path, raw));
       _cache[key] = lines;
       _byPath[path] = lines;
       _inFlight.remove(key);
@@ -133,15 +243,126 @@ class DocPreview {
                   RegExp(r'ppt/slides/slide\d+\.xml$').hasMatch(f.name))
               .toList()
             ..sort((a, b) => a.name.compareTo(b.name));
-          for (final s in slides.take(3)) {
-            buf.writeln(_stripXml(utf8.decode(s.content as List<int>,
-                    allowMalformed: true),
-                blockTags: const ['</a:p>']));
+          String firstXml = '';
+          // 1 枚目だけを出す (= ユーザー要望: サムネイルに 2 枚目以降の
+          // 内容まで混ざらないように)。
+          for (final s in slides.take(1)) {
+            final xml =
+                utf8.decode(s.content as List<int>, allowMalformed: true);
+            if (firstXml.isEmpty) firstXml = xml;
+            buf.writeln(_stripXml(xml, blockTags: const ['</a:p>']));
           }
-          return _toLines(buf.toString());
+          final lines = _toLines(buf.toString());
+          // ── 1 枚目の配色と中身 (= ユーザー要望: 文字の配置まで同じに) ──
+          final style = _pptxFirstSlideColors(firstXml);
+          final slide = _pptxFirstSlideLayout(zip, firstXml);
+          return [
+            if (slide != null) slide,
+            if (style != null) style,
+            ...lines,
+          ];
       }
     } catch (_) {}
     return const [];
+  }
+
+  /// 1 枚目のスライドの背景色と文字色を拾う。 見つからなければ null。
+  ///
+  /// 背景は `<p:bg>` の中の単色、 文字色は最初の `<a:rPr>` の中の単色。
+  /// どちらも無い (= テーマ色任せ) ファイルは、 従来どおり白い紙にする。
+  static String? _pptxFirstSlideColors(String xml) {
+    if (xml.isEmpty) return null;
+    String? bg;
+    final bgBlock = RegExp(r'<p:bg>[\s\S]*?</p:bg>').firstMatch(xml);
+    if (bgBlock != null) {
+      final m = RegExp(r'<a:srgbClr val="([0-9A-Fa-f]{6})"')
+          .firstMatch(bgBlock.group(0)!);
+      bg = m?.group(1)?.toUpperCase();
+    }
+    String? fg;
+    final rpr = RegExp(r'<a:rPr\b[\s\S]*?</a:rPr>').firstMatch(xml);
+    if (rpr != null) {
+      final m = RegExp(r'<a:srgbClr val="([0-9A-Fa-f]{6})"')
+          .firstMatch(rpr.group(0)!);
+      fg = m?.group(1)?.toUpperCase();
+    }
+    if (bg == null && fg == null) return null;
+    return '$_styleMark${bg ?? ''}|${fg ?? ''}';
+  }
+
+  /// 1 枚目のスライドを「置き場所つき」 で読む。
+  ///
+  /// `<p:sp>` の `<a:off>/<a:ext>` (EMU) と中の文字、 塗り色を拾って、
+  /// 縮小表示で並べ直せるだけの情報にする。 読めなければ null。
+  static String? _pptxFirstSlideLayout(Archive zip, String xml) {
+    if (xml.isEmpty) return null;
+    // スライドの大きさ (presentation.xml)。 取れなければ 16:9 の既定値。
+    var slideW = 12192000;
+    var slideH = 6858000;
+    final presXml = _fileText(zip, 'ppt/presentation.xml');
+    final szm = RegExp(r'<p:sldSz\s+cx="(\d+)"\s+cy="(\d+)"')
+        .firstMatch(presXml);
+    if (szm != null) {
+      slideW = int.tryParse(szm.group(1)!) ?? slideW;
+      slideH = int.tryParse(szm.group(2)!) ?? slideH;
+    }
+    int? hex(String? v) => (v != null && v.length == 6)
+        ? int.tryParse(v, radix: 16)
+        : null;
+
+    int? bg;
+    final bgBlock = RegExp(r'<p:bg>[\s\S]*?</p:bg>').firstMatch(xml);
+    if (bgBlock != null) {
+      bg = hex(RegExp(r'<a:srgbClr val="([0-9A-Fa-f]{6})"')
+          .firstMatch(bgBlock.group(0)!)
+          ?.group(1)
+          ?.toUpperCase());
+    }
+
+    final boxes = <Map<String, dynamic>>[];
+    for (final m
+        in RegExp(r'<p:sp\b[\s\S]*?</p:sp>').allMatches(xml)) {
+      final sp = m.group(0)!;
+      final off = RegExp(r'<a:off x="(-?\d+)" y="(-?\d+)"').firstMatch(sp);
+      final ext = RegExp(r'<a:ext cx="(\d+)" cy="(\d+)"').firstMatch(sp);
+      if (off == null || ext == null) continue;
+      final texts = [
+        for (final t in RegExp(r'<a:t[^>]*>([^<]*)</a:t>').allMatches(sp))
+          t.group(1) ?? ''
+      ].join();
+      final fillM = RegExp(
+              r'<a:solidFill>\s*<a:srgbClr val="([0-9A-Fa-f]{6})"')
+          .firstMatch(sp);
+      final szM = RegExp(r'<a:(?:rPr|defRPr)[^>]*sz="(\d+)"').firstMatch(sp);
+      // 文字色は <a:rPr> の中の塗り。
+      int? textColor;
+      final rpr = RegExp(r'<a:rPr\b[\s\S]*?</a:rPr>').firstMatch(sp);
+      if (rpr != null) {
+        textColor = hex(RegExp(r'<a:srgbClr val="([0-9A-Fa-f]{6})"')
+            .firstMatch(rpr.group(0)!)
+            ?.group(1)
+            ?.toUpperCase());
+      }
+      final hasText = texts.trim().isNotEmpty;
+      boxes.add({
+        'x': int.parse(off.group(1)!),
+        'y': int.parse(off.group(2)!),
+        'w': int.parse(ext.group(1)!),
+        'h': int.parse(ext.group(2)!),
+        if (hasText) 't': texts.trim(),
+        if (!hasText && fillM != null) 'f': hex(fillM.group(1)!.toUpperCase()),
+        if (hasText && textColor != null) 'c': textColor,
+        if (hasText && szM != null) 's': int.parse(szM.group(1)!),
+      });
+      if (boxes.length >= 24) break;
+    }
+    if (boxes.isEmpty && bg == null) return null;
+    return '$_slideMark${jsonEncode({
+          'w': slideW,
+          'h': slideH,
+          if (bg != null) 'bg': bg,
+          'b': boxes,
+        })}';
   }
 
   /// xlsx は「共有文字列 + 先頭シート」 を読んで、 表の形のまま返す。

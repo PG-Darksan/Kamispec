@@ -7088,14 +7088,14 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Текст',
     },
     'file.wordDoc': {
-      'ja': 'Word ドキュメント',
-      'en': 'Word document',
-      'zh': 'Word 文档',
-      'ko': 'Word 문서',
-      'es': 'Documento de Word',
-      'fr': 'Document Word',
-      'de': 'Word-Dokument',
-      'pt': 'Documento do Word',
+      'ja': 'Word',
+      'en': 'Word',
+      'zh': 'Word',
+      'ko': 'Word',
+      'es': 'Word',
+      'fr': 'Word',
+      'de': 'Word',
+      'pt': 'Word',
       'ru': 'Документ Word',
     },
     'file.name': {
@@ -13331,16 +13331,17 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Criar pasta / mover notas',
       'ru': 'Создать папку / переместить заметки',
     },
+    // = ユーザー要望: 「ここに置く」 ではなく 「メモを置く」。
     'pmemo.placeHere': {
-      'ja': 'ここに置く (位置を選択)',
-      'en': 'Place here (choose position)',
-      'zh': '放在这里（选择位置）',
-      'ko': '여기에 두기 (위치 선택)',
-      'es': 'Colocar aquí (elegir posición)',
-      'fr': 'Placer ici (choisir la position)',
-      'de': 'Hier platzieren (Position wählen)',
-      'pt': 'Colocar aqui (escolher posição)',
-      'ru': 'Поместить сюда (выбрать позицию)',
+      'ja': 'メモを置く',
+      'en': 'Place a memo',
+      'zh': '放置备忘',
+      'ko': '메모 두기',
+      'es': 'Colocar una nota',
+      'fr': 'Placer une note',
+      'de': 'Notiz platzieren',
+      'pt': 'Colocar uma nota',
+      'ru': 'Поместить заметку',
     },
     'pmemo.swapAi': {
       'ja': 'AI 欄と左右を入れ替え',
@@ -45095,13 +45096,13 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Добавить задачу…',
     },
     'todo.empty': {
-      'ja': 'まだ何もありません。上の欄からやることを追加できます。',
-      'en': 'Nothing yet. Add a to-do in the box above.',
-      'zh': '还没有内容。可在上方输入框添加待办。',
-      'ko': '아직 없습니다. 위 입력란에서 추가할 수 있습니다.',
-      'es': 'Nada todavía. Añade una tarea en el cuadro de arriba.',
-      'fr': 'Rien pour l\'instant. Ajoutez une tâche dans le champ ci-dessus.',
-      'de': 'Noch nichts. Füge oben eine Aufgabe hinzu.',
+      'ja': 'まだ何も登録されていません',
+      'en': 'Nothing yet',
+      'zh': '还没有内容',
+      'ko': '아직 없습니다',
+      'es': 'Nada todavía',
+      'fr': 'Rien pour l\'instant',
+      'de': 'Noch nichts',
       'pt': 'Nada ainda. Adicione uma tarefa no campo acima.',
       'ru': 'Пока пусто. Добавьте задачу в поле выше.',
     },
@@ -50818,24 +50819,27 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Abre grande, com o painel de notas ao lado.',
       'ru': 'Открывается крупно, вместе с панелью заметок.',
     },
+    // = ユーザー要望: 「開く場所」 だと「アプリの中に埋め込むかどうか」 と
+    //   混同するので、 ウィンドウの話だと分かる言い方にする。
     'openTarget.title': {
-      'ja': 'PDF などを開く場所', 'en': 'Where to open PDFs and files',
-      'zh': 'PDF 等文件的打开位置', 'ko': 'PDF 등을 여는 위치',
-      'es': 'Donde abrir PDF y archivos',
-      'fr': 'Ou ouvrir les PDF et fichiers',
-      'de': 'Wo PDFs und Dateien geoeffnet werden',
-      'pt': 'Onde abrir PDFs e arquivos',
-      'ru': 'Где открывать PDF и файлы',
+      'ja': 'PDF などを開くウィンドウ',
+      'en': 'Which window to open PDFs in',
+      'zh': '用哪个窗口打开 PDF 等文件', 'ko': 'PDF 등을 여는 창',
+      'es': 'En que ventana abrir los PDF',
+      'fr': 'Dans quelle fenetre ouvrir les PDF',
+      'de': 'In welchem Fenster PDFs geoeffnet werden',
+      'pt': 'Em qual janela abrir os PDFs',
+      'ru': 'В каком окне открывать PDF',
     },
     'openTarget.same': {
-      'ja': '今の画面で開く', 'en': 'In the current window',
+      'ja': '今のウィンドウで開く', 'en': 'In the current window',
       'zh': '在当前窗口打开', 'ko': '현재 화면에서 열기',
       'es': 'En la ventana actual', 'fr': 'Dans la fenetre actuelle',
       'de': 'Im aktuellen Fenster', 'pt': 'Na janela atual',
       'ru': 'В текущем окне',
     },
     'openTarget.sameDesc': {
-      'ja': '同じアプリの中で開きます（従来どおり）',
+      'ja': '今使っているウィンドウの中で開きます（従来どおり）',
       'en': 'Opens inside the app you are already using',
       'zh': '在当前应用内打开（与以往相同）',
       'ko': '지금 쓰고 있는 앱 안에서 엽니다 (기존과 동일)',
@@ -83584,6 +83588,78 @@ $cleanQ
   ///   - 2 列目以降 … 数値 (系列)。 数値に読めない列は飛ばす
   ///   - 1 行目が文字だけなら見出しとして凡例に使う
   /// 数値が 1 つも無ければ null を返す (呼び出し側で案内を出す)。
+  /// セルの範囲から棒グラフの画像を作って、 その保存先を返す
+  /// (= ユーザー要望: 作ったグラフをまず xlsx の編集画面に置きたい)。
+  /// ノードは作らない。 数値が無い等で作れなければ null。
+  Future<String?> renderChartPngFromCells(
+    List<List<String>> cells, {
+    String title = '',
+    double? yMin,
+    double? yMax,
+    double? yStep,
+    bool showLegend = true,
+  }) async {
+    final r = await _buildChartPng(cells, title,
+        yMin: yMin, yMax: yMax, yStep: yStep, showLegend: showLegend);
+    return r;
+  }
+
+  /// グラフ画像を作ってファイルに書き、 その場所を返す (共通処理)。
+  Future<String?> _buildChartPng(List<List<String>> cells, String title,
+      {double? yMin,
+      double? yMax,
+      double? yStep,
+      bool showLegend = true}) async {
+    if (cells.isEmpty) return null;
+    final cols = cells.fold<int>(0, (m, r) => math.max(m, r.length));
+    if (cols < 2) return null;
+
+    double? num0(String s) {
+      final t = s.trim().replaceAll(',', '').replaceAll('%', '');
+      if (t.isEmpty) return null;
+      return double.tryParse(t);
+    }
+
+    final first = cells.first;
+    final headerIsText = first.skip(1).every((c) => num0(c) == null);
+    final header = headerIsText ? first : const <String>[];
+    final body = headerIsText ? cells.skip(1).toList() : cells;
+    if (body.isEmpty) return null;
+
+    final seriesCols = <int>[];
+    for (var c = 1; c < cols; c++) {
+      final any = body.any((r) => c < r.length && num0(r[c]) != null);
+      if (any) seriesCols.add(c);
+    }
+    if (seriesCols.isEmpty) return null;
+
+    final labels = [
+      for (final r in body) r.isEmpty ? '' : r.first.trim(),
+    ];
+    final series = <List<double>>[
+      for (final c in seriesCols)
+        [
+          for (final r in body) (c < r.length ? num0(r[c]) : null) ?? 0.0,
+        ]
+    ];
+    final names = [
+      for (var i = 0; i < seriesCols.length; i++)
+        seriesCols[i] < header.length
+            ? header[seriesCols[i]].trim()
+            : '系列${i + 1}',
+    ];
+    final bytes = await _renderBarChartPng(labels, series, names, title,
+        yMin: yMin, yMax: yMax, yStep: yStep, showLegend: showLegend);
+    if (bytes == null) return null;
+    final dir = await getApplicationSupportDirectory();
+    final chartDir = Directory('${dir.path}${Platform.pathSeparator}charts');
+    if (!await chartDir.exists()) await chartDir.create(recursive: true);
+    final path = '${chartDir.path}${Platform.pathSeparator}'
+        'chart_${DateTime.now().millisecondsSinceEpoch}.png';
+    await File(path).writeAsBytes(bytes, flush: true);
+    return path;
+  }
+
   Future<MindMapNode?> addChartNodeFromCells(
     List<List<String>> cells, {
     String title = '',
@@ -83664,8 +83740,13 @@ $cleanQ
     List<String> labels,
     List<List<double>> series,
     List<String> names,
-    String title,
-  ) async {
+    String title, {
+    // ── 軸まわりの指定 (= ユーザー要望)。 null は自動。 ──
+    double? yMin,
+    double? yMax,
+    double? yStep,
+    bool showLegend = true,
+  }) async {
     if (labels.isEmpty || series.isEmpty) return null;
     const w = 960.0;
     const h = 720.0;
@@ -83689,6 +83770,8 @@ $cleanQ
       }
     }
     if (maxV <= 0) maxV = 1;
+    // 指定があればそれを使う (= ユーザー要望: 最大値を決められる)。
+    if (yMax != null && yMax > 0) maxV = yMax;
     // 目盛りはきりの良い値に切り上げる。
     final step = math.pow(10, (math.log(maxV) / math.ln10).floor()).toDouble();
     final top = (maxV / step).ceil() * step;
@@ -83722,11 +83805,16 @@ $cleanQ
     final axis = Paint()
       ..color = const Color(0xFFCFD8DC)
       ..strokeWidth = 1;
-    const ticks = 5;
+    // 下限 (= ユーザー要望: 最小値も決められる)。
+    final base = (yMin != null && yMin < top) ? yMin : 0.0;
+    // 目盛りの本数は「間隔」 指定があればそこから決める。
+    final ticks = (yStep != null && yStep > 0)
+        ? ((top - base) / yStep).round().clamp(1, 20)
+        : 5;
     for (var i = 0; i <= ticks; i++) {
       final y = padT + (h - padT - padB) * (1 - i / ticks);
       canvas.drawLine(Offset(padL, y), Offset(w - padR, y), axis);
-      final v = top * i / ticks;
+      final v = base + (top - base) * i / ticks;
       // 整数はそのまま、 端数がある時だけ小数 1 桁で出す。
       final label =
           (v - v.roundToDouble()).abs() < 0.005 ? v.round().toString() : v.toStringAsFixed(1);
@@ -83742,7 +83830,9 @@ $cleanQ
       final gx = padL + groupW * g;
       for (var s = 0; s < series.length; s++) {
         final v = g < series[s].length ? series[s][g] : 0.0;
-        final bh = plotH * (v / top);
+        // 下限を切ってある時は、 その分だけ差し引いた高さで描く。
+        final span = (top - base) <= 0 ? 1.0 : (top - base);
+        final bh = (plotH * ((v - base) / span)).clamp(0.0, plotH);
         final rect = Rect.fromLTWH(
           gx + groupW * 0.14 + barW * s,
           padT + plotH - bh,
@@ -83760,8 +83850,8 @@ $cleanQ
           size: 17, center: true);
     }
 
-    // 凡例。
-    if (series.length > 1) {
+    // 凡例 (= ユーザー要望: 出す / 出さないを選べる)。
+    if (showLegend && series.length > 1) {
       var lx = padL;
       for (var s = 0; s < series.length; s++) {
         canvas.drawRect(Rect.fromLTWH(lx, h - 44, 18, 18),
@@ -86781,6 +86871,25 @@ $example
       shelfPerRow: srcs.first.shelfPerRow,
       shelfRows: srcs.first.shelfRows,
     );
+    // ── 背景 (= ユーザー要望: 統合マップを作った時もテンプレートから
+    //    ランダムに選ばれるように)。 元のページが背景を持っていれば
+    //    それを引き継ぎ、 無ければ新規ページと同じ選び方をする。 ──
+    if (mergedType == 'normal' || mergedType == 'bookshelf') {
+      final inherited = srcs
+          .map((p) => (p.backgroundImagePath ?? '').trim())
+          .firstWhere((v) => v.isNotEmpty, orElse: () => '');
+      if (inherited.isNotEmpty) {
+        merged.backgroundImagePath = inherited;
+        merged.backgroundOpacityPercent = srcs
+            .firstWhere((p) => (p.backgroundImagePath ?? '').trim().isNotEmpty)
+            .backgroundOpacityPercent;
+      } else {
+        final id = kBgTemplateIdsForNewPage[
+            math.Random().nextInt(kBgTemplateIdsForNewPage.length)];
+        merged.backgroundImagePath = 'builtin-map-background:$id';
+        merged.backgroundOpacityPercent = 100;
+      }
+    }
 
     final idMap = <String, String>{};
     double cursorY = 0;

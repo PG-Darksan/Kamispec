@@ -9,6 +9,7 @@
 //   走らせられる。
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform, Process, ProcessResult;
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -40,7 +41,51 @@ enum WebAutoKind {
   open,
   loop,
   click,
-  scrollTo
+  scrollTo,
+  // ── ここから外向けの操作 (= ユーザー要望: アプリの外のブラウザ操作や
+  //    ターミナル操作)。 どちらもパソコン版だけ。 ──
+  /// 既定のブラウザ (アプリの外) でページを開く。
+  openExternal,
+
+  /// パソコンのコマンドを実行する。 実行の可否は設定 (使わない / 毎回
+  /// 確認 / 全部任せる) に従う。
+  command,
+}
+
+/// コマンド実行の許可の仕方 (= ユーザー要望: 許可を求める・全部任せる)。
+///
+/// 既定は [off] (使わない)。 危ない操作なので、 ユーザーが自分で
+/// 「毎回確認」 か「全部任せる」 に切り替えるまでは一切動かさない。
+enum AutoCommandPolicy { off, ask, always }
+
+/// 明らかに壊しにいくコマンドは、 設定に関わらず断る。
+///
+/// AI にフローを組ませることもできる以上、 「全部任せる」 にしていても
+/// 取り返しの付かない操作だけは通さない (= 安全側の線引き)。
+bool isDangerousCommand(String raw) {
+  final c = raw.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
+  const patterns = [
+    'format ',
+    'del /s',
+    'del /f /s',
+    'rd /s',
+    'rmdir /s',
+    'rm -rf /',
+    'rm -fr /',
+    'mkfs',
+    'diskpart',
+    'vssadmin delete',
+    'wmic shadowcopy delete',
+    'reg delete',
+    'shutdown',
+    'bcdedit',
+    'cipher /w',
+    ':(){:|:&};:',
+  ];
+  for (final p in patterns) {
+    if (c.contains(p)) return true;
+  }
+  return false;
 }
 
 class WebAutoStep {
@@ -284,10 +329,16 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
     // 前に使った指示 (= ユーザー要望: 呼び出せるように)。
     // ignore: discarded_futures
     _loadAiPrompts();
+    // 外向けの設定 (時刻で実行 / コマンドの許可) を読む (= ユーザー要望)。
+    // ignore: discarded_futures
+    _loadCmdPolicy();
+    // ignore: discarded_futures
+    _loadSchedule();
   }
 
   @override
   void dispose() {
+    _schedTimer?.cancel();
     _aiCtrl.dispose();
     super.dispose();
   }
@@ -619,7 +670,12 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
 
 ルール:
 - kind は open / click / scrollTo / scroll / wait / shot / type / tap /
-  hold / swipe / loop のみ。
+  hold / swipe / loop / openExternal / command のみ。
+- openExternal は「アプリの外の既定ブラウザで開く」。 アプリの中で見れば
+  済む時は open を使い、 外で開いてと明示された時だけ openExternal。
+- command は「パソコンのコマンドを実行」。 **ユーザーがコマンドの実行を
+  はっきり頼んだ時だけ** 使う。 消す・初期化する・電源を切るなどの
+  取り返しの付かない操作は書かないこと。
 - **押す操作は必ず click を使い、 text に画面に見えている文字をそのまま
   書く** (例: {"kind":"click","text":"Windows 版"})。 tap は座標が要るので
   基本的に使わない。 下の「今の画面」 に出ている文字から選ぶこと。
@@ -1031,6 +1087,32 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
                 milliseconds: s.durationMs <= 0 ? 1200 : s.durationMs));
           }
           break;
+        case WebAutoKind.openExternal:
+          // ── アプリの外の既定ブラウザで開く (= ユーザー要望) ──
+          {
+            var u = s.text.trim();
+            if (u.isEmpty) break;
+            if (!u.startsWith('http://') &&
+                !u.startsWith('https://') &&
+                !u.startsWith('file:')) {
+              u = 'https://$u';
+            }
+            await _openInOsBrowser(u);
+            await Future.delayed(
+                Duration(milliseconds: s.durationMs <= 0 ? 1500 : s.durationMs));
+          }
+          break;
+        case WebAutoKind.command:
+          // ── パソコンのコマンドを実行 (= ユーザー要望) ──
+          //    許可の設定に従う。 断られたらフローごと止める。
+          {
+            final ok = await _runCommandStep(s);
+            if (!ok) {
+              _cancel = true;
+              return;
+            }
+          }
+          break;
         case WebAutoKind.wait:
           await Future.delayed(Duration(milliseconds: s.durationMs));
           break;
@@ -1047,6 +1129,230 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
           break;
       }
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  //  アプリの外の操作 (= ユーザー要望: 外のブラウザ操作 / ターミナル操作)
+  //
+  //  コマンド実行は取り返しが付かないことがあるので、
+  //    ・既定は「使わない」 (何も起きない)
+  //    ・「毎回確認」 なら実行のたびに中身を見せて許可を取る
+  //    ・「全部任せる」 でも、 明らかに壊しにいくコマンドだけは断る
+  //  という三段構えにしている。
+  // ═══════════════════════════════════════════════════════════════
+  static const String _kPolicyPrefsKey = 'automationCommandPolicy';
+
+  AutoCommandPolicy _cmdPolicy = AutoCommandPolicy.off;
+
+  /// パソコン版か (外の操作はパソコンだけ)。
+  static bool get _isDesktopHost =>
+      Platform.isWindows || Platform.isMacOS || Platform.isLinux;
+
+  Future<void> _loadCmdPolicy() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final v = sp.getString(_kPolicyPrefsKey) ?? 'off';
+      if (!mounted) return;
+      setState(() {
+        _cmdPolicy = AutoCommandPolicy.values.firstWhere(
+          (e) => e.name == v,
+          orElse: () => AutoCommandPolicy.off,
+        );
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _saveCmdPolicy() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setString(_kPolicyPrefsKey, _cmdPolicy.name);
+    } catch (_) {}
+  }
+
+  /// 既定のブラウザでページを開く。
+  Future<void> _openInOsBrowser(String url) async {
+    if (!_isDesktopHost) return;
+    try {
+      if (Platform.isWindows) {
+        await Process.run('cmd', ['/c', 'start', '', url]);
+      } else if (Platform.isMacOS) {
+        await Process.run('open', [url]);
+      } else {
+        await Process.run('xdg-open', [url]);
+      }
+    } catch (e) {
+      if (mounted) setState(() => _status = 'ブラウザを開けませんでした: $e');
+    }
+  }
+
+  /// コマンドを 1 つ実行する。 実行した (もしくは黙って飛ばした) なら true、
+  /// ユーザーが断った / 危ないので止めた なら false。
+  Future<bool> _runCommandStep(WebAutoStep s) async {
+    final cmd = s.text.trim();
+    if (cmd.isEmpty) return true;
+    if (!_isDesktopHost) {
+      if (mounted) setState(() => _status = 'コマンド実行はパソコン版だけです');
+      return false;
+    }
+    if (_cmdPolicy == AutoCommandPolicy.off) {
+      if (mounted) {
+        setState(() => _status = 'コマンド実行は「使わない」 設定です (上の設定で変えられます)');
+      }
+      return false;
+    }
+    if (isDangerousCommand(cmd)) {
+      if (mounted) {
+        setState(() => _status = '危ないコマンドなので実行しませんでした: $cmd');
+      }
+      return false;
+    }
+    if (_cmdPolicy == AutoCommandPolicy.ask) {
+      final ok = await _confirmCommand(cmd);
+      if (ok != true) {
+        if (mounted) setState(() => _status = 'コマンドの実行を取りやめました');
+        return false;
+      }
+    }
+    try {
+      if (mounted) setState(() => _status = '実行中: $cmd');
+      final ProcessResult r = await (Platform.isWindows
+              ? Process.run('cmd', ['/c', cmd], runInShell: false)
+              : Process.run('/bin/sh', ['-c', cmd]))
+          .timeout(Duration(
+              milliseconds: s.durationMs <= 0 ? 60000 : s.durationMs));
+      final out = '${r.stdout}'.trim();
+      final err = '${r.stderr}'.trim();
+      _cmdLog.add('\$ $cmd');
+      if (out.isNotEmpty) _cmdLog.add(out.length > 2000 ? out.substring(0, 2000) : out);
+      if (err.isNotEmpty) _cmdLog.add(err.length > 1000 ? err.substring(0, 1000) : err);
+      while (_cmdLog.length > 60) {
+        _cmdLog.removeAt(0);
+      }
+      if (mounted) {
+        setState(() => _status = r.exitCode == 0
+            ? '実行しました (終了コード 0)'
+            : '終了コード ${r.exitCode}: ${err.isEmpty ? out : err}');
+      }
+      return true;
+    } catch (e) {
+      if (mounted) setState(() => _status = 'コマンドに失敗: $e');
+      return false;
+    }
+  }
+
+  /// 実行したコマンドと結果の控え (= 何をしたか後から見えるように)。
+  final List<String> _cmdLog = [];
+
+  Future<bool?> _confirmCommand(String cmd) {
+    return showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Row(children: const [
+          Icon(Icons.terminal_rounded, color: Color(0xFFFFB347), size: 20),
+          SizedBox(width: 8),
+          Text('このコマンドを実行しますか？',
+              style: TextStyle(color: Colors.white, fontSize: 15)),
+        ]),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.35),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: SelectableText(cmd,
+                style: const TextStyle(
+                    color: Color(0xFF9CDCFE),
+                    fontSize: 12.5,
+                    fontFamily: 'monospace')),
+          ),
+          const SizedBox(height: 10),
+          const Text('パソコンの中で実行されます。 心当たりのない内容なら実行しないでください。',
+              style: TextStyle(color: Colors.white54, fontSize: 11.5)),
+        ]),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, false),
+            child: const Text('実行しない',
+                style: TextStyle(color: Colors.white54)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFFFB347),
+                foregroundColor: Colors.black),
+            onPressed: () => Navigator.pop(dctx, true),
+            child: const Text('実行する'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ─── 時刻で実行 (= ユーザー要望: 何時何分になったらこの動作) ─────────
+  static const String _kSchedPrefsKey = 'automationSchedule_v1';
+  bool _schedOn = false;
+  int _schedHour = 9;
+  int _schedMin = 0;
+  bool _schedDaily = true;
+  Timer? _schedTimer;
+
+  /// 同じ分の中で二重に走らせないための控え。
+  String _lastFiredKey = '';
+
+  Future<void> _loadSchedule() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final raw = sp.getString(_kSchedPrefsKey);
+      if (raw == null || raw.isEmpty) return;
+      final m = jsonDecode(raw);
+      if (m is! Map || !mounted) return;
+      setState(() {
+        _schedOn = m['on'] == true;
+        _schedHour = (m['h'] as num?)?.toInt().clamp(0, 23) ?? 9;
+        _schedMin = (m['m'] as num?)?.toInt().clamp(0, 59) ?? 0;
+        _schedDaily = m['daily'] != false;
+      });
+      _restartScheduleTimer();
+    } catch (_) {}
+  }
+
+  Future<void> _saveSchedule() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setString(
+          _kSchedPrefsKey,
+          jsonEncode({
+            'on': _schedOn,
+            'h': _schedHour,
+            'm': _schedMin,
+            'daily': _schedDaily,
+          }));
+    } catch (_) {}
+  }
+
+  void _restartScheduleTimer() {
+    _schedTimer?.cancel();
+    if (!_schedOn) return;
+    // 20 秒ごとに時刻を見て、 指定の分に入ったら 1 回だけ走らせる。
+    _schedTimer = Timer.periodic(const Duration(seconds: 20), (_) {
+      if (!mounted || _running) return;
+      final now = DateTime.now();
+      if (now.hour != _schedHour || now.minute != _schedMin) return;
+      final key = '${now.year}-${now.month}-${now.day} $_schedHour:$_schedMin';
+      if (_lastFiredKey == key) return;
+      _lastFiredKey = key;
+      final provider = context.read<MindMapProvider>();
+      unawaited(_run(provider).then((_) {
+        if (!_schedDaily && mounted) {
+          setState(() => _schedOn = false);
+          _schedTimer?.cancel();
+          unawaited(_saveSchedule());
+        }
+      }));
+    });
   }
 
   /// この 1 ステップだけを試しに動かす (= ユーザー要望: スワイプ等が
@@ -1236,6 +1542,10 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
         return p.t('auto.kindClick');
       case WebAutoKind.scrollTo:
         return p.t('auto.kindScrollTo');
+      case WebAutoKind.openExternal:
+        return '外のブラウザで開く';
+      case WebAutoKind.command:
+        return 'コマンド実行';
     }
   }
 
@@ -1257,6 +1567,10 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
         return Icons.keyboard_rounded;
       case WebAutoKind.open:
         return Icons.link_rounded;
+      case WebAutoKind.openExternal:
+        return Icons.open_in_new_rounded;
+      case WebAutoKind.command:
+        return Icons.terminal_rounded;
       case WebAutoKind.loop:
         return Icons.repeat_rounded;
       case WebAutoKind.click:
@@ -1293,6 +1607,184 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
             _save();
           }
         },
+      ),
+    );
+  }
+
+  /// 「時刻で実行」 と「コマンドの許可」 の行 (= ユーザー要望)。
+  ///
+  /// どちらもパソコン版だけ。 コマンドは既定で「使わない」 にしてあり、
+  /// ユーザーが自分で切り替えるまでは動かない。
+  Widget _buildOutsideRow(MindMapProvider provider) {
+    if (!_isDesktopHost) return const SizedBox.shrink();
+    String two(int v) => v.toString().padLeft(2, '0');
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 0, 8, 6),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.04),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.white12),
+        ),
+        child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // ── 時刻で実行 ──
+              Row(children: [
+                const Icon(Icons.schedule_rounded,
+                    size: 15, color: Color(0xFF80CBC4)),
+                const SizedBox(width: 6),
+                const Text('時刻で実行',
+                    style: TextStyle(color: Colors.white70, fontSize: 11.5)),
+                const SizedBox(width: 8),
+                OutlinedButton(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white,
+                    side: const BorderSide(color: Colors.white24),
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    minimumSize: const Size(0, 26),
+                  ),
+                  onPressed: () async {
+                    final t = await showTimePicker(
+                      context: context,
+                      initialTime:
+                          TimeOfDay(hour: _schedHour, minute: _schedMin),
+                    );
+                    if (t == null || !mounted) return;
+                    setState(() {
+                      _schedHour = t.hour;
+                      _schedMin = t.minute;
+                    });
+                    await _saveSchedule();
+                    _restartScheduleTimer();
+                  },
+                  child: Text('${two(_schedHour)}:${two(_schedMin)}',
+                      style: const TextStyle(fontSize: 12)),
+                ),
+                const SizedBox(width: 6),
+                Switch(
+                  value: _schedOn,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  onChanged: (v) async {
+                    setState(() => _schedOn = v);
+                    await _saveSchedule();
+                    _restartScheduleTimer();
+                  },
+                ),
+                const SizedBox(width: 2),
+                InkWell(
+                  onTap: () async {
+                    setState(() => _schedDaily = !_schedDaily);
+                    await _saveSchedule();
+                  },
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(
+                        _schedDaily
+                            ? Icons.check_box_rounded
+                            : Icons.check_box_outline_blank_rounded,
+                        size: 15,
+                        color: _schedDaily
+                            ? const Color(0xFF80CBC4)
+                            : Colors.white38),
+                    const SizedBox(width: 3),
+                    const Text('毎日',
+                        style:
+                            TextStyle(color: Colors.white60, fontSize: 11)),
+                  ]),
+                ),
+              ]),
+              const Padding(
+                padding: EdgeInsets.only(left: 21, bottom: 4),
+                child: Text('この画面を開いている間に、 その時刻になったら手順を動かします。',
+                    style: TextStyle(color: Colors.white38, fontSize: 10)),
+              ),
+              const Divider(height: 8, color: Colors.white12),
+              // ── コマンドの許可 ──
+              Row(children: [
+                const Icon(Icons.terminal_rounded,
+                    size: 15, color: Color(0xFFFFB347)),
+                const SizedBox(width: 6),
+                const Text('コマンド実行',
+                    style: TextStyle(color: Colors.white70, fontSize: 11.5)),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Wrap(spacing: 6, runSpacing: 4, children: [
+                    for (final (v, label) in const [
+                      (AutoCommandPolicy.off, '使わない'),
+                      (AutoCommandPolicy.ask, '毎回確認'),
+                      (AutoCommandPolicy.always, '全部任せる'),
+                    ])
+                      ChoiceChip(
+                        label: Text(label,
+                            style: const TextStyle(fontSize: 11)),
+                        selected: _cmdPolicy == v,
+                        visualDensity: VisualDensity.compact,
+                        onSelected: (_) async {
+                          setState(() => _cmdPolicy = v);
+                          await _saveCmdPolicy();
+                        },
+                      ),
+                  ]),
+                ),
+                if (_cmdLog.isNotEmpty)
+                  IconButton(
+                    tooltip: '実行したコマンドの記録',
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.receipt_long_rounded,
+                        size: 16, color: Colors.white54),
+                    onPressed: _showCmdLog,
+                  ),
+              ]),
+              Padding(
+                padding: const EdgeInsets.only(left: 21, top: 2),
+                child: Text(
+                    _cmdPolicy == AutoCommandPolicy.off
+                        ? 'いまは実行しません。 手順に入っていても飛ばします。'
+                        : (_cmdPolicy == AutoCommandPolicy.ask
+                            ? '実行のたびに中身を見せて確認します。'
+                            : '確認なしで実行します。 壊す恐れのある操作だけは断ります。'),
+                    style:
+                        const TextStyle(color: Colors.white38, fontSize: 10)),
+              ),
+            ]),
+      ),
+    );
+  }
+
+  /// 実行したコマンドの記録を見せる。
+  void _showCmdLog() {
+    showDialog<void>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: const Text('実行したコマンド',
+            style: TextStyle(color: Colors.white, fontSize: 15)),
+        content: SizedBox(
+          width: 460,
+          child: SingleChildScrollView(
+            child: SelectableText(_cmdLog.join('\n'),
+                style: const TextStyle(
+                    color: Color(0xFFB3E5FC),
+                    fontSize: 11.5,
+                    fontFamily: 'monospace')),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              setState(_cmdLog.clear);
+              Navigator.pop(dctx);
+            },
+            child: const Text('記録を消す',
+                style: TextStyle(color: Color(0xFFE57373))),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dctx),
+            child: const Text('閉じる',
+                style: TextStyle(color: Colors.white54)),
+          ),
+        ],
       ),
     );
   }
@@ -1581,6 +2073,73 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
               _numField(provider.t('auto.openWait'), s.durationMs, (v) {
                 s.durationMs = v.clamp(0, 60000);
               }, width: 96),
+            ],
+            // ── 外のブラウザで開く (= ユーザー要望) ──
+            if (s.kind == WebAutoKind.openExternal) ...[
+              SizedBox(
+                width: 300,
+                child: TextFormField(
+                  initialValue: s.text,
+                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                  decoration: InputDecoration(
+                    isDense: true,
+                    labelText: '開くページ',
+                    labelStyle:
+                        const TextStyle(color: Colors.white54, fontSize: 10),
+                    hintText: 'https://example.com/',
+                    hintStyle:
+                        const TextStyle(color: Colors.white24, fontSize: 10),
+                    filled: true,
+                    fillColor: Colors.white.withValues(alpha: 0.06),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(6),
+                        borderSide: BorderSide.none),
+                  ),
+                  onChanged: (v) {
+                    s.text = v.trim();
+                    _save();
+                  },
+                ),
+              ),
+              _numField('待ち(ms)', s.durationMs, (v) {
+                s.durationMs = v.clamp(0, 60000);
+              }, width: 92),
+            ],
+            // ── コマンド実行 (= ユーザー要望: ターミナル操作) ──
+            if (s.kind == WebAutoKind.command) ...[
+              SizedBox(
+                width: 320,
+                child: TextFormField(
+                  initialValue: s.text,
+                  style: const TextStyle(
+                      color: Color(0xFF9CDCFE),
+                      fontSize: 12,
+                      fontFamily: 'monospace'),
+                  decoration: InputDecoration(
+                    isDense: true,
+                    labelText: 'コマンド',
+                    labelStyle:
+                        const TextStyle(color: Colors.white54, fontSize: 10),
+                    hintText: Platform.isWindows
+                        ? 'echo hello   (cmd で実行)'
+                        : 'echo hello   (sh で実行)',
+                    hintStyle:
+                        const TextStyle(color: Colors.white24, fontSize: 10),
+                    filled: true,
+                    fillColor: Colors.black.withValues(alpha: 0.30),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(6),
+                        borderSide: BorderSide.none),
+                  ),
+                  onChanged: (v) {
+                    s.text = v;
+                    _save();
+                  },
+                ),
+              ),
+              _numField('打ち切り(ms)', s.durationMs, (v) {
+                s.durationMs = v.clamp(1000, 600000);
+              }, width: 108),
             ],
             // ── 要素を押す (= ユーザー報告: 座標だと切り替えられない) ──
             if (s.kind == WebAutoKind.click) ...[
@@ -2108,6 +2667,7 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
             child: Text(provider.t('auto.hint'),
                 style: const TextStyle(color: Colors.white38, fontSize: 10.5)),
           ),
+          _buildOutsideRow(provider),
           // ── AI でフローを作る入力欄 (= ユーザー要望: 画面中央のダイアログ
           //    ではなく、 自動操作の設定画面の上に出す) ──
           if (_aiFormOpen)

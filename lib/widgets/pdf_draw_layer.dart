@@ -568,7 +568,8 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
           spacing: 2,
           runSpacing: 2,
           children: [
-            toolBtn(PdfDrawTool.hand, Icons.pan_tool_alt_rounded, 'pdfdraw.hand'),
+            // 「移動 (スクロール)」 は外した (= ユーザー要望: 使い所が
+            //   無い)。 表示の上下移動はマウスのホイールでできる。
             toolBtn(PdfDrawTool.pen, Icons.gesture_rounded, 'pdfdraw.pen'),
             toolBtn(PdfDrawTool.line, Icons.horizontal_rule_rounded, 'pdfdraw.line'),
             toolBtn(PdfDrawTool.arrow, Icons.north_east_rounded, 'pdfdraw.arrow'),

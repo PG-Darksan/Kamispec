@@ -201,7 +201,37 @@ class GoogleSearchDialog {
     /// 開いた時に自動操作パネルを出す (= ユーザー要望: 「自動化」 を
     /// カスタムボタンとしても使えるように)。
     bool openAutomation = false,
+
+    /// 自動操作の窓だけを出す (= ユーザー要望: 後ろに Google 検索の画面を
+    /// 出さない)。 ページを開くまでは中身を透明にしておき、 手順が
+    /// ページを開いた時にだけブラウザが姿を見せる。
+    bool automationOnly = false,
   }) async {
+    // ── 自動操作だけ: 透明な入れ物に載せて、 浮いている窓だけを見せる ──
+    if (automationOnly) {
+      await showDialog<void>(
+        context: context,
+        barrierColor: Colors.transparent,
+        barrierDismissible: false,
+        builder: (dctx) => Dialog(
+          insetPadding: EdgeInsets.zero,
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          child: _GoogleSearchPage(
+            initialQuery: '',
+            initialMemo: '',
+            customTitle: customTitle,
+            onAddNode: onAddNode,
+            onMoveToSplitPanel: onMoveToSplitPanel,
+            onFloatRequest: onFloatRequest,
+            onCreateBookmarkButton: onCreateBookmarkButton,
+            openAutomation: true,
+            automationOnly: true,
+          ),
+        ),
+      );
+      return;
+    }
     if (minimalMode) {
       // ミニマル = メモ欄なし、 縦長の小さなダイアログ (= スマホ画面風)。
       // 中身は同じ _GoogleSearchPage を使うが、 サイズと minimalMode フラグ
@@ -1093,6 +1123,9 @@ class _GoogleSearchPage extends StatefulWidget {
   /// タブバー・追加タブ操作を出したくない場合に true。
   final bool hideAppBar;
 
+  /// 自動操作の窓だけを見せるか (= ユーザー要望)。
+  final bool automationOnly;
+
   /// 開いた時に自動操作パネルを出すか (= ユーザー要望: 自動化のボタン)。
   final bool openAutomation;
 
@@ -1110,6 +1143,7 @@ class _GoogleSearchPage extends StatefulWidget {
     this.compactMode = false,
     this.minimalMode = false,
     this.openAutomation = false,
+    this.automationOnly = false,
     this.onExpandToCompact,
     this.onRequestClose,
     this.windowWidth,
@@ -1160,6 +1194,14 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   /// ヘッダーを非表示にするボタン)。 隠すと本文だけになり、 左上の小さな
   /// 目のボタンで戻せる。
   bool _gsHeaderHidden = false;
+
+  /// ブラウザ側を見せない状態か (= 自動操作だけを出していて、 まだページを
+  /// 開いていない間)。 ページを開いたら false になり、 普通に表示される。
+  bool get _browserHidden =>
+      widget.automationOnly &&
+      (_currentUrl.isEmpty ||
+          _currentUrl == 'about:blank' ||
+          _currentUrl.startsWith('about:'));
 
   /// ヘッダーを隠している間、 上端にカーソルが乗っているか
   /// (= ユーザー要望: 隠したら、 ホバーするまで戻すボタンも出さない)。
@@ -2191,6 +2233,11 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       _currentUrl = widget.initialUrl!;
     } else if (widget.initialQuery.isNotEmpty) {
       _currentUrl = _buildSearchUrl(widget.initialQuery);
+    } else if (widget.openAutomation) {
+      // 自動操作のボタンから開いた時は白紙で始める (= ユーザー要望:
+      // 後ろで Google 検索まで立ち上がらないように)。 行き先は
+      // 自動操作の手順か、 上のアドレス欄から指定する。
+      _currentUrl = 'about:blank';
     } else {
       _currentUrl = 'https://www.google.com/';
     }
@@ -5000,7 +5047,15 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                           const BoxConstraints(minWidth: 26, minHeight: 26),
                       icon: const Icon(Icons.close_rounded,
                           size: 16, color: Colors.white54),
-                      onPressed: () => setState(() => _autoPanelOpen = false),
+                      onPressed: () {
+                        // 自動操作だけを出している時は、 窓を閉じる =
+                        // 画面ごと閉じる (= ユーザー要望)。
+                        if (widget.automationOnly) {
+                          _closeSelf();
+                          return;
+                        }
+                        setState(() => _autoPanelOpen = false);
+                      },
                     ),
                   ],
                 ]),
@@ -6615,9 +6670,11 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         child: Focus(
           autofocus: true,
           child: Scaffold(
-            backgroundColor: const Color(0xFF121212),
+            backgroundColor: _browserHidden
+                ? Colors.transparent
+                : const Color(0xFF121212),
             // ヘッダーを隠している間は AppBar ごと出さない (= ユーザー要望)。
-            appBar: (widget.hideAppBar || _gsHeaderHidden)
+            appBar: (widget.hideAppBar || _gsHeaderHidden || _browserHidden)
                 ? null
                 : AppBar(
                     backgroundColor: const Color(0xFF1A1A1A),
@@ -7047,8 +7104,17 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                     ],
                   ),
             body: Stack(children: [
+              // ── 自動操作だけを出している間は、 ブラウザ側を見えなくする
+              //    (= ユーザー要望: 後ろに Google 検索を出さない)。
+              //    消してしまうと手順が動かせないので、 場所は取ったまま
+              //    透明にして触れなくするだけ。 手順がページを開いた時点で
+              //    元どおり姿を見せる。 ──
               Positioned.fill(
-                child: useHorizontal
+                child: Opacity(
+                  opacity: _browserHidden ? 0.0 : 1.0,
+                  child: IgnorePointer(
+                    ignoring: _browserHidden,
+                    child: useHorizontal
                 ? Row(
                     children: [
                       // ── 左パネル (既定=メモ、 入れ替え時=AI) ──
@@ -7077,6 +7143,8 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                         _buildMobileAiPanel(provider),
                     ],
                   ),
+                  ),
+                ),
               ),
               // ── 自動操作はフローティング窓で出す (= ユーザー要望: 欄を
               //    設けるとスクショできる範囲が狭まるため)。 キャプチャ中は
@@ -7117,10 +7185,11 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                       }
                     },
                     child: Align(
-                      alignment: Alignment.topRight,
+                      // 上部中央に置く (= ユーザー要望: 他の画面と合わせる)。
+                      alignment: Alignment.topCenter,
                       child: (_gsHeaderHover || !_gsHoverCapable)
                           ? Padding(
-                              padding: const EdgeInsets.only(right: 6, top: 6),
+                              padding: const EdgeInsets.only(top: 6),
                               child: Material(
                                 color: Colors.black.withValues(alpha: 0.55),
                                 shape: const CircleBorder(),

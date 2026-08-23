@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -361,7 +362,7 @@ class _NodeWidgetState extends State<NodeWidget> {
   /// タイルを動かしても点滅しない (= ユーザー報告)。
   Widget _docPaper(String path, String ext, IconData icon) {
     final cached = DocPreview.cachedFor(path);
-    if (cached != null) return _paperOf(cached, icon);
+    if (cached != null) return _paperOf(cached, icon, path);
     return FutureBuilder<List<String>>(
       future: DocPreview.load(path, ext),
       builder: (ctx, snap) {
@@ -372,18 +373,44 @@ class _NodeWidgetState extends State<NodeWidget> {
                 size: 34, color: Colors.white.withValues(alpha: 0.95)),
           );
         }
-        return _paperOf(snap.data ?? const <String>[], icon);
+        return _paperOf(snap.data ?? const <String>[], icon, path);
       },
     );
   }
 
-  /// 白い紙 + 中身の先頭。 中身が空でも白紙のまま出す (= ユーザー要望)。
-  Widget _paperOf(List<String> lines, IconData icon) => Container(
+  /// 紙 + 中身の先頭。 中身が空でも紙のまま出す (= ユーザー要望)。
+  ///
+  /// pptx は 1 枚目の配色を拾ってあれば、 その色で塗る (= ユーザー要望:
+  /// 表紙のデザインがサムネイルに出るように)。
+  Widget _paperOf(List<String> lines, IconData icon, [String? path]) {
+    // pptx は 1 枚目の置き場所ごと控えてあれば、 そのまま縮小して描く
+    // (= ユーザー要望: 文字の配置まで 1 枚目と同じに)。
+    final slide = path == null ? null : DocPreview.slideFor(path);
+    if (slide != null && slide.boxes.isNotEmpty) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(4),
+        child: AspectRatio(
+          aspectRatio: slide.width / slide.height,
+          child: CustomPaint(
+            painter: _SlideThumbPainter(slide),
+            child: const SizedBox.expand(),
+          ),
+        ),
+      );
+    }
+    final style = path == null ? null : DocPreview.styleFor(path);
+    final paper = style?.bg != null
+        ? Color(0xFF000000 | style!.bg!)
+        : Colors.white.withValues(alpha: 0.94);
+    final ink = style?.fg != null
+        ? Color(0xFF000000 | style!.fg!)
+        : const Color(0xFF212121);
+    return Container(
         width: double.infinity,
         height: double.infinity,
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
         decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.94),
+          color: paper,
           borderRadius: BorderRadius.circular(4),
         ),
         child: ClipRect(
@@ -394,7 +421,8 @@ class _NodeWidgetState extends State<NodeWidget> {
               // 「空」 の文字は出さない)。
               ? Center(
                   child: Icon(icon,
-                      size: 26, color: Colors.black.withValues(alpha: 0.16)),
+                      size: 26,
+                      color: ink.withValues(alpha: 0.16)),
                 )
               : Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -403,8 +431,8 @@ class _NodeWidgetState extends State<NodeWidget> {
                       Text(l,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Color(0xFF212121),
+                          style: TextStyle(
+                            color: ink,
                             fontSize: 7.5,
                             height: 1.45,
                           )),
@@ -412,6 +440,7 @@ class _NodeWidgetState extends State<NodeWidget> {
                 ),
         ),
       );
+  }
 
   /// ギャラリーのリンク専用ノードを「ブックマークカード」 として本体いっぱいに
   /// 描画する (= ユーザー要望: ギャラリーにリンクを貼ると空の実体部分が大き
@@ -685,6 +714,13 @@ class _NodeWidgetState extends State<NodeWidget> {
     // 添付サムネイル (PDF / pptx 等の 1 枚目) があるか (= ユーザー要望:
     //   ドロップした PDF / pptx の表紙をサムネイル表示)。
     final hasThumb = (node.attachmentThumbPath ?? '').isNotEmpty;
+    // ── 見出しに出す文字 (= ユーザー要望: 画像のファイル名も、 周りの
+    //    ノードと同じように実体 (見出し) の方に入れる)。
+    //    タイトルが空の添付ノードだけ、 ファイル名で代用する。
+    //    1 行で収まるので visualHeight (= 既定の高さ) の中に入る。 ──
+    final String headerTitle = node.title.trim().isNotEmpty
+        ? node.title
+        : ((node.attachmentName ?? '').trim());
     // ノードに表示する画像パス: 画像添付はそのパス、 PDF/pptx はサムネイル。
     final String attachImgPath = isImageAttach
         ? (node.attachmentPath ?? '')
@@ -1146,7 +1182,7 @@ class _NodeWidgetState extends State<NodeWidget> {
                               children: [
                                 Container(
                                   width: nw,
-                                  padding: node.title.isEmpty
+                                  padding: headerTitle.isEmpty
                                       ? EdgeInsets.zero
                                       : const EdgeInsets.only(
                                           top: 4,
@@ -1166,10 +1202,10 @@ class _NodeWidgetState extends State<NodeWidget> {
                                               alpha: 0.45),
                                         ),
                                       ),
-                                      if (node.title.isNotEmpty) ...[
+                                      if (headerTitle.isNotEmpty) ...[
                                         const SizedBox(height: 2),
                                         Text(
-                                          node.title,
+                                          headerTitle,
                                           textAlign: TextAlign.center,
                                           maxLines: 3,
                                           overflow: TextOverflow.ellipsis,
@@ -1737,46 +1773,8 @@ class _NodeWidgetState extends State<NodeWidget> {
                                       ),
                                     ),
                                       ),
-                                      // ── ファイル名を下に重ねる
-                                      //    (= ユーザー要望: 画像を埋め込んだ
-                                      //    時にファイル名が見えるように)。
-                                      //    重ねるだけなので枠の高さは変わらない。
-                                      if ((node.attachmentName ?? '')
-                                              .trim()
-                                              .isNotEmpty &&
-                                          attachH >= 46)
-                                        Positioned(
-                                          left: 0,
-                                          right: 0,
-                                          bottom: 0,
-                                          child: ClipRRect(
-                                            borderRadius:
-                                                BorderRadius.vertical(
-                                              bottom: hasLinkBar
-                                                  ? Radius.zero
-                                                  : const Radius.circular(18),
-                                            ),
-                                            child: Container(
-                                              padding: const EdgeInsets
-                                                  .symmetric(
-                                                  horizontal: 8, vertical: 3),
-                                              color: Colors.black
-                                                  .withValues(alpha: 0.45),
-                                              child: Text(
-                                                node.attachmentName!,
-                                                maxLines: 1,
-                                                overflow:
-                                                    TextOverflow.ellipsis,
-                                                textAlign: TextAlign.center,
-                                                style: const TextStyle(
-                                                  color: Colors.white,
-                                                  fontSize: 10,
-                                                  fontWeight: FontWeight.w600,
-                                                ),
-                                              ),
-                                            ),
-                                          ),
-                                        ),
+                                      // (ファイル名は上のタイトル欄に出す
+                                      //  = ユーザー要望: 周りのノードと揃える)
                                     ]),
                                   )
                                 : Container(
@@ -3254,4 +3252,70 @@ class _NodeTableInlineWidgetState extends State<_NodeTableInlineWidget> {
       ),
     );
   }
+}
+
+/// pptx の 1 枚目をサムネイルに縮小して描く (= ユーザー要望:
+/// 文字の配置まで 1 枚目と同じに)。
+class _SlideThumbPainter extends CustomPainter {
+  final SlidePreview slide;
+  const _SlideThumbPainter(this.slide);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final sx = size.width / slide.width;
+    final sy = size.height / slide.height;
+    // 下地。
+    canvas.drawRect(
+        Offset.zero & size,
+        Paint()
+          ..color = slide.bg != null
+              ? Color(0xFF000000 | slide.bg!)
+              : Colors.white);
+    for (final b in slide.boxes) {
+      final rect =
+          Rect.fromLTWH(b.x * sx, b.y * sy, b.w * sx, b.h * sy);
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      // 文字が無い枠は塗りの図形 (帯やブロック) として描く。
+      if (b.text == null || b.text!.isEmpty) {
+        if (b.fill != null) {
+          canvas.drawRect(rect, Paint()..color = Color(0xFF000000 | b.fill!));
+        }
+        continue;
+      }
+      // 文字。 スライド上の文字サイズを、 そのまま縮尺に掛ける。
+      final ptSize = (b.sizeHundredths ?? 1800) / 100.0;
+      // 1pt = 12700 EMU。 スライド幅に対する比で縮める。
+      final px = math.max(3.0, ptSize * 12700 * sx);
+      final tp = TextPainter(
+        text: TextSpan(
+          text: b.text,
+          style: TextStyle(
+            color: b.color != null
+                ? Color(0xFF000000 | b.color!)
+                : (slide.bg != null && _isDark(slide.bg!)
+                    ? Colors.white
+                    : const Color(0xFF212121)),
+            fontSize: px,
+            height: 1.2,
+            fontWeight: px > 9 ? FontWeight.w700 : FontWeight.w400,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+        maxLines: 6,
+        ellipsis: '…',
+      )..layout(maxWidth: math.max(4.0, rect.width));
+      tp.paint(canvas, Offset(rect.left, rect.top));
+    }
+  }
+
+  static bool _isDark(int rgb) {
+    final r = (rgb >> 16) & 0xFF;
+    final g = (rgb >> 8) & 0xFF;
+    final b = rgb & 0xFF;
+    return (0.299 * r + 0.587 * g + 0.114 * b) < 128;
+  }
+
+  @override
+  bool shouldRepaint(covariant _SlideThumbPainter old) =>
+      !identical(old.slide, slide);
 }
