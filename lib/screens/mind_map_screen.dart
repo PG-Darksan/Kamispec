@@ -1751,8 +1751,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     0xF44336, // 赤
     0xE91E63, // ピンク
     0xFF9800, // オレンジ
-    0xFFEB3B, // 黄
-    0xCDDC39, // 黄緑
+    // 黄 (0xFFEB3B) / 黄緑 (0xCDDC39) は外した (= ユーザー要望: 黄色は
+    // 背景色にすると読みにくいので出さない)。
     0x4CAF50, // 緑
     0x009688, // 青緑
     0x00BCD4, // シアン
@@ -3529,9 +3529,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                       autofocus: true,
                       style: const TextStyle(
                           color: Color(0xFFC81414),
-                          // 焼き込む大きさ (50pt) に近い見た目にする
-                          // (= ユーザー要望: 既定 50)。
-                          fontSize: 36,
+                          // 焼き込む大きさ (25pt) に近い見た目にする
+                          // (= ユーザー要望: 既定 25)。
+                          fontSize: 22,
                           height: 1.2),
                       cursorColor: const Color(0xFFE57373),
                       decoration: InputDecoration(
@@ -112060,7 +112060,7 @@ class _PdfInkWriter {
   /// [pagePos] はビューアの onTap が渡すページ座標 (pt、 左上原点)。
   static Future<bool> writeText(
       String path, int pageNumber, Offset pagePos, String text,
-      {double fontSize = 50}) async {
+      {double fontSize = 25}) async {
     try {
       await _ensureFont();
       final bytes = await File(path).readAsBytes();
@@ -112106,8 +112106,9 @@ class _PdfInkWriter {
       // 大きさで線の太さも一緒に変える (= ユーザー要望: 大きさを決められる)。
       // 描き込みパレットの ✓ と同じ形・同じ数字になるように合わせてある。
       final k = (size <= 0 ? 10.0 : size) / 2.5;
-      final pen = sfpdf.PdfPen(sfpdf.PdfColor(200, 20, 20),
-          width: size <= 0 ? 10.0 : size);
+      // 線の太さは大きさと切り離して 2.5 固定 (= ユーザー要望: チェックの
+      // 太さも 2.5)。 大きい ✓ でも線は細いままになる。
+      final pen = sfpdf.PdfPen(sfpdf.PdfColor(200, 20, 20), width: 2.5);
       final x = pagePos.dx, y = pagePos.dy;
       page.graphics.drawLine(
           pen, Offset(x - 6 * k, y), Offset(x - 1.5 * k, y + 5.5 * k));
@@ -145097,7 +145098,8 @@ class _BulkEditSheetState extends State<_BulkEditSheet> {
     Color(0xFF4FC3F7),
     Color(0xFFBA68C8),
     Color(0xFF90CAF9),
-    Color(0xFFE6EE9C),
+    // 旧 0xFFE6EE9C (薄い黄緑) は外した (= ユーザー要望: 黄色は出さない)。
+    Color(0xFFA5D6A7),
     Color(0xFFFFAB91),
     Color(0xFF80CBC4),
     Color(0xFFF48FB1),

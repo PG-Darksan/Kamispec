@@ -71,13 +71,22 @@ Future<bool> burnPdfStrokes(Map<String, Object?> msg) async {
   try {
     final path = msg['path'] as String;
     final backup = msg['backup'] as String?;
+    // 焼き込みの土台。 指定があればそこを読んで [path] へ書き出す
+    // (= 保存済みの線をもう一度動かせるようにするため、 毎回同じ土台から
+    //  やり直す)。 無ければ従来どおり書き込み先そのものを読む。
+    final base = msg['base'] as String?;
     final raw = (msg['strokes'] as List).cast<Map<String, Object?>>();
     // 日本語を書ける書体 (assets/fonts の NotoSansJP)。 呼ぶ側が読んで渡す
     // (= 別 isolate では rootBundle を使えないため)。 無ければ英数字だけの
     // 標準書体で書く。
     final fontBytes = msg['font'] as List<int>?;
     final f = File(path);
-    final bytes = await f.readAsBytes();
+    var src = f;
+    if (base != null) {
+      final b = File(base);
+      if (b.existsSync()) src = b;
+    }
+    final bytes = await src.readAsBytes();
     // ── 一度だけバックアップ (描き込みは元に戻せないため) ──
     if (backup != null) {
       try {
@@ -105,7 +114,7 @@ Future<bool> burnPdfStrokes(Map<String, Object?> msg) async {
       if (tool == PdfDrawTool.text) {
         final body = '${m['text'] ?? ''}';
         if (body.isEmpty) continue;
-        final fs = (m['fontSize'] as num?)?.toDouble() ?? 50.0;
+        final fs = (m['fontSize'] as num?)?.toDouble() ?? 25.0;
         sfpdf.PdfFont font;
         if (fontBytes != null && fontBytes.isNotEmpty) {
           font = sfpdf.PdfTrueTypeFont(fontBytes, fs);
@@ -200,7 +209,7 @@ class PdfDrawStroke {
     required this.color,
     required this.width,
     this.text,
-    this.fontSize = 50,
+    this.fontSize = 25,
   });
 
   /// 一部だけ差し替えた複製。
@@ -291,13 +300,61 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
 
   PdfDrawTool _tool = PdfDrawTool.pen;
   Color _color = const Color(0xFFE53935);
-  double _width = 7.5;
+  double _width = 2.5;
 
   final List<PdfDrawStroke> _strokes = [];
   PdfDrawStroke? _current;
   _PageGeom? _currentGeom;
   int? _activePointer;
   bool _saving = false;
+  /// このセッションを始めた時点の PDF の控え (= 焼き込みの土台)。
+  ///
+  /// 保存した後も線を動かせるようにするため、 保存のたびに
+  /// 「土台 + 今の線」 を書き出す。 これが無いと、 保存済みの線を動かして
+  /// もう一度保存した時に、 前に焼き込んだ線がそのまま残って二重になる。
+  ///
+  /// セッション単位で取るので、 描き込みを始める前に他の機能 (蛍光ペンや
+  /// 分割ペインの文字・チェック) が書き込んだ内容は土台に入っており、
+  /// 焼き直しても消えない。
+  String? _sessionBasePath;
+
+  /// 前回の保存から線が変わったか (dispose 時の無駄な焼き込みを避ける)。
+  bool _dirtySinceCommit = false;
+
+  /// 土台をまだ取っていなければ取る。 取れなければ null (= 従来動作)。
+  Future<String?> _ensureSessionBase(String path) async {
+    final cur = _sessionBasePath;
+    if (cur != null) {
+      try {
+        if (File(cur).existsSync()) return cur;
+      } catch (_) {}
+    }
+    try {
+      final dir = await getApplicationSupportDirectory();
+      final sep = Platform.pathSeparator;
+      final bdir = Directory('${dir.path}${sep}pdf_draw_session');
+      if (!bdir.existsSync()) bdir.createSync(recursive: true);
+      final p =
+          '${bdir.path}$sep${path.hashCode.toRadixString(16)}_base.pdf';
+      await File(path).copy(p);
+      _sessionBasePath = p;
+      return p;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 土台を片付ける (別の PDF に移った時 / 画面を閉じた時)。
+  void _dropSessionBase() {
+    final p = _sessionBasePath;
+    _sessionBasePath = null;
+    if (p == null) return;
+    try {
+      final f = File(p);
+      if (f.existsSync()) f.deleteSync();
+    } catch (_) {}
+  }
+
   bool _committed = false;
 
   /// ハンドツールやホイールでスクロールした時にも描画位置を追従させる
@@ -378,6 +435,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   final List<List<PdfDrawStroke>> _redo = [];
 
   void _pushUndo() {
+    _dirtySinceCommit = true;
     _undo.add(List<PdfDrawStroke>.from(_strokes));
     if (_undo.length > _kUndoMax) _undo.removeAt(0);
     // 新しい操作をしたら「やり直す」 先は無くなる。
@@ -386,6 +444,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
 
   void _undoOnce() {
     if (_undo.isEmpty) return;
+    _dirtySinceCommit = true;
     final prev = _undo.removeLast();
     setState(() {
       // 戻す前の状態を「やり直す」 側へ積む。
@@ -402,6 +461,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   /// やり直す (= 戻したものをもう一度当てる)。
   void _redoOnce() {
     if (_redo.isEmpty) return;
+    _dirtySinceCommit = true;
     final next = _redo.removeLast();
     setState(() {
       // やり直す前の状態は「戻す」 側へ積み直す (_pushUndo は _redo を
@@ -541,6 +601,9 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   bool _onKey(KeyEvent e) {
     if (!widget.active || widget.filePath == null) return false;
     if (e is! KeyDownEvent) return false;
+    // 大きさの数値を打ち込んでいる間は、 Delete / Backspace を図形の削除に
+    // 使わない (= 数字を消せなくなるため)。
+    if (_sizeFocus.hasFocus) return false;
     // ── 文字を打ち込んでいる間は、 箱の方にキーを渡す ──
     //    (Esc だけはここで受けて打ち込みをやめる)
     if (_textPage != null) {
@@ -599,11 +662,17 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     if (old.filePath != widget.filePath && _strokes.isNotEmpty) {
       final oldPath = old.filePath;
       final pending = List<PdfDrawStroke>.from(_strokes);
+      final base = _sessionBasePath;
       _strokes.clear();
       _selected = null;
       _undo.clear();
       _redo.clear();
-      if (oldPath != null) unawaited(writeStrokesToPdf(oldPath, pending));
+      if (oldPath != null && _dirtySinceCommit) {
+        unawaited(writeStrokesToPdf(oldPath, pending, basePath: base));
+      }
+      _dirtySinceCommit = false;
+      // 土台は PDF ごとなので、 移ったら捨てる。
+      _dropSessionBase();
     }
     _syncTimer();
   }
@@ -612,6 +681,8 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   void initState() {
     super.initState();
     HardwareKeyboard.instance.addHandler(_onKey);
+    // 大きさの数値欄を今の道具の値で埋めておく。
+    _seedSizeField();
     _syncTimer();
   }
 
@@ -631,6 +702,8 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   @override
   void dispose() {
     HardwareKeyboard.instance.removeHandler(_onKey);
+    _sizeCtrl.dispose();
+    _sizeFocus.dispose();
     _textCtrl.dispose();
     _textFocus.dispose();
     // ヘッダーに出していた道具箱を片付ける。
@@ -641,12 +714,18 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     _repaintTimer?.cancel();
     // 閉じられた時も未保存分を書き込む (リロード通知は出来ないが、 次に
     // 開いた時には反映されている)。
-    if (_strokes.isNotEmpty && !_saving && !_committed) {
+    if (_strokes.isNotEmpty && !_saving && _dirtySinceCommit) {
       final path = widget.filePath;
       final pending = List<PdfDrawStroke>.from(_strokes);
+      final base = _sessionBasePath;
       if (path != null) {
-        unawaited(writeStrokesToPdf(path, pending));
+        unawaited(writeStrokesToPdf(path, pending, basePath: base)
+            .whenComplete(_dropSessionBase));
+      } else {
+        _dropSessionBase();
       }
+    } else {
+      _dropSessionBase();
     }
     super.dispose();
   }
@@ -1020,12 +1099,18 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   }
 
   /// 文字の大きさ (pt)。 置いた文字に使う (= ユーザー要望: テキスト入力)。
-  /// 既定は 50pt (= ユーザー要望)。 道具箱のスライダーで変えられる。
-  double _fontSize = 50;
+  /// 既定は 25pt (= ユーザー要望)。 道具箱のスライダー、 または隣の欄に
+  /// 数値を打ち込んでも変えられる。
+  double _fontSize = 25;
 
   /// チェック (✓) の大きさ。 既定 10 (= ユーザー要望)。 ペンの太さとは
   /// 別に持つ (太さを 10 にするとペンの線まで極太になってしまうため)。
   double _checkSize = 10;
+
+  /// チェックの線の太さ (pt)。 大きさとは別で、 常にこの太さで描く
+  /// (= ユーザー要望: チェックの太さも 2.5)。 大きさを変えても線の太さは
+  /// 変わらないので、 大きい ✓ でも細い線のままになる。
+  static const double _kCheckStrokeWidth = 2.5;
 
   /// 打ち込み中の文字の場所 (ページ番号 / ページ座標 pt)。
   /// null なら打ち込んでいない。 = ユーザー要望: 窓を出すのではなく、
@@ -1034,6 +1119,70 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   Offset? _textAt;
   final TextEditingController _textCtrl = TextEditingController();
   final FocusNode _textFocus = FocusNode();
+
+  /// 道具箱の「大きさ」 欄。 スライダーだけでなく数値でも指定できる
+  /// (= ユーザー要望: 数値で指定することもできるように)。
+  final TextEditingController _sizeCtrl = TextEditingController();
+  final FocusNode _sizeFocus = FocusNode();
+
+  /// 今選んでいる道具の大きさ。
+  double get _activeToolSize {
+    switch (_tool) {
+      case PdfDrawTool.text:
+        return _fontSize;
+      case PdfDrawTool.check:
+        return _checkSize;
+      case PdfDrawTool.eraser:
+        return _eraserSize;
+      default:
+        return _width;
+    }
+  }
+
+  /// 今選んでいる道具の大きさの下限 / 上限。
+  (double, double) get _activeToolSizeRange {
+    switch (_tool) {
+      case PdfDrawTool.text:
+        return (6.0, 96.0);
+      case PdfDrawTool.check:
+        return (1.0, 20.0);
+      case PdfDrawTool.eraser:
+        return (4.0, 120.0);
+      default:
+        return (0.5, 16.0);
+    }
+  }
+
+  /// 数値欄の表示を今の値に合わせる。 build の中では呼ばない
+  /// (build 中に controller を書き換えると setState 中の setState になる)。
+  void _seedSizeField() {
+    final v = _activeToolSize;
+    final t = v < 10 ? v.toStringAsFixed(1) : v.toStringAsFixed(0);
+    if (_sizeCtrl.text != t) _sizeCtrl.text = t;
+  }
+
+  /// 数値欄に打ち込まれた値を今の道具へ入れる。
+  void _applySizeField(String raw) {
+    final parsed = double.tryParse(raw.trim());
+    if (parsed == null) return;
+    final (lo, hi) = _activeToolSizeRange;
+    final v = parsed.clamp(lo, hi).toDouble();
+    setState(() {
+      switch (_tool) {
+        case PdfDrawTool.text:
+          _fontSize = v;
+          break;
+        case PdfDrawTool.check:
+          _checkSize = v;
+          break;
+        case PdfDrawTool.eraser:
+          _eraserSize = v;
+          break;
+        default:
+          _width = v;
+      }
+    });
+  }
 
   /// 押した所に文字の箱を出す。 既に打ち込み中なら先に確定する。
   void _beginTextAt(int pageNumber, Offset at) {
@@ -1173,7 +1322,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
         at + Offset(9 * k, -8 * k),
       ],
       color: _color,
-      width: _checkSize,
+      width: _kCheckStrokeWidth,
     );
   }
 
@@ -1196,13 +1345,21 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   Future<void> _commit({bool exitAfter = true}) async {
     final path = widget.filePath;
     if (_saving) return;
-    if (path == null || _strokes.isEmpty) {
+    // 線が 0 本でも、 このセッションで一度でも焼き込んでいるなら書き直す。
+    //   そうしないと「保存済みの線を全部消して保存」 が効かず、 消したはず
+    //   の線が PDF に残ってしまう (= ユーザー要望: 保存した後も消せるように)。
+    final canRestoreBase = _sessionBasePath != null && _dirtySinceCommit;
+    if (path == null || (_strokes.isEmpty && !canRestoreBase)) {
       if (exitAfter) widget.onExit();
       return;
     }
     setState(() => _saving = true);
     final pending = List<PdfDrawStroke>.from(_strokes);
-    final ok = await writeStrokesToPdf(path, pending);
+    // 毎回「セッションを始めた時点の PDF + 今の線」 を書き出す。 これで
+    // 何度保存しても線が二重にならないので、 保存した後も動かせる
+    // (= ユーザー要望: 保存した後も消したり動かしたりできるように)。
+    final base = await _ensureSessionBase(path);
+    final ok = await writeStrokesToPdf(path, pending, basePath: base);
     if (!mounted) {
       _saving = false;
       _committed = ok;
@@ -1212,13 +1369,14 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       _saving = false;
       if (ok) {
         _committed = true;
-        _strokes.clear();
+        // ★ 線は消さない。 保存した後もそのまま選んで動かせるようにする。
+        //   もう一度保存すれば土台から焼き直されるので二重にならない。
+        _dirtySinceCommit = false;
       }
     });
     if (ok) {
       widget.onSaved();
       if (exitAfter) widget.onExit();
-      _committed = false; // 次のセッションに備えてリセット
     } else {
       final messenger = ScaffoldMessenger.maybeOf(context);
       messenger?.showSnackBar(SnackBar(
@@ -1236,8 +1394,23 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   ///   固まる (= ユーザー報告: 「閉じるとフリーズする」)。 ビューアを閉じる
   ///   時の自動保存もここを通るため、 必ず逃がしておく。
   static Future<bool> writeStrokesToPdf(
-      String path, List<PdfDrawStroke> strokes) async {
-    if (strokes.isEmpty) return true;
+      String path, List<PdfDrawStroke> strokes,
+      {String? basePath}) async {
+    if (strokes.isEmpty) {
+      // 全部消された時は土台に戻す (= 焼き込み済みの線を取り除く)。
+      if (basePath == null) return true;
+      try {
+        final b = File(basePath);
+        if (!b.existsSync()) return true;
+        await b.copy(path);
+        pdfDrawBurnedNotifier.value =
+            '$path ${DateTime.now().microsecondsSinceEpoch}';
+        return true;
+      } catch (e) {
+        debugPrint('PDF 土台への戻し失敗: $e');
+        return false;
+      }
+    }
     // バックアップ先はプラグイン (path_provider) 経由なので UI isolate 側で
     // 先に解決してから渡す (別 isolate ではプラグインを呼べない)。
     // ── 文字を置いている時は日本語の書体を読んでおく ──
@@ -1263,6 +1436,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     final msg = <String, Object?>{
       'path': path,
       'backup': backupPath,
+      'base': basePath,
       'strokes': [
         for (final st in strokes)
           <String, Object?>{
@@ -1421,8 +1595,11 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
         child: InkWell(
           // 選んでいる道具をもう一度押すと解除する (= ユーザー要望)。
           // 解除すると素通し (hand) になり、 PDF の操作に戻る。
-          onTap: () => setState(
-              () => _tool = _tool == t ? PdfDrawTool.hand : t),
+          onTap: () {
+            setState(() => _tool = _tool == t ? PdfDrawTool.hand : t);
+            // 道具ごとに大きさが違うので、 数値欄も入れ替える。
+            _seedSizeField();
+          },
           borderRadius: BorderRadius.circular(6),
           child: Container(
             width: 30,
@@ -1543,9 +1720,12 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
           ),
           const SizedBox(width: 6),
           // 見本 (実際の形と大きさ)。
-          SizedBox(
-            width: 26,
-            height: 26,
+          //   チェックは見出しと同じ ✓ になって同じ絵が 2 つ並ぶので出さない
+          //   (= ユーザー要望: 左 1 つだけでいい)。
+          if (!checkTool)
+            SizedBox(
+              width: 26,
+              height: 26,
             child: Center(
               child: textTool
                   // 文字の見本 (枠に収まる範囲で実際の大きさに近づける)。
@@ -1554,10 +1734,6 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
                           color: _color,
                           height: 1.0,
                           fontSize: (v * 0.7).clamp(8.0, 24.0).toDouble()))
-                  : checkTool
-                      ? Icon(Icons.check_rounded,
-                          color: _color,
-                          size: (v * 1.4).clamp(8.0, 26.0).toDouble())
                   : eraser
                   ? Container(
                       width: dia,
@@ -1576,9 +1752,9 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
                         borderRadius: BorderRadius.circular(8),
                         border: Border.all(color: Colors.white24, width: 0.5),
                       ),
-                    ),
+                      ),
+              ),
             ),
-          ),
           SizedBox(
             width: 104,
             child: SliderTheme(
@@ -1601,31 +1777,54 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
                 divisions: (eraser || textTool)
                     ? (maxV - minV).round()
                     : ((maxV - minV) * 2).round(),
-                onChanged: (nv) => setState(() {
-                  if (textTool) {
-                    _fontSize = nv;
-                  } else if (checkTool) {
-                    _checkSize = nv;
-                  } else if (eraser) {
-                    _eraserSize = nv;
-                  } else {
-                    _width = nv;
-                  }
-                }),
+                onChanged: (nv) {
+                  setState(() {
+                    if (textTool) {
+                      _fontSize = nv;
+                    } else if (checkTool) {
+                      _checkSize = nv;
+                    } else if (eraser) {
+                      _eraserSize = nv;
+                    } else {
+                      _width = nv;
+                    }
+                  });
+                  _seedSizeField();
+                },
               ),
             ),
           ),
           const SizedBox(width: 2),
+          // 数値でも指定できる (= ユーザー要望)。 打ち込んだらその場で効く。
           SizedBox(
-            width: 32,
-            child: Text(
-              v < 10 ? v.toStringAsFixed(1) : v.toStringAsFixed(0),
+            width: 40,
+            height: 26,
+            child: TextField(
+              controller: _sizeCtrl,
+              focusNode: _sizeFocus,
               textAlign: TextAlign.right,
+              keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true),
               style: TextStyle(
                   color: accent,
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
                   fontFeatures: const [FontFeature.tabularFigures()]),
+              cursorColor: accent,
+              decoration: const InputDecoration(
+                isDense: true,
+                border: InputBorder.none,
+                contentPadding: EdgeInsets.symmetric(vertical: 4),
+              ),
+              onChanged: _applySizeField,
+              onSubmitted: (t) {
+                _applySizeField(t);
+                _seedSizeField();
+              },
+              onTapOutside: (_) {
+                _sizeFocus.unfocus();
+                _seedSizeField();
+              },
             ),
           ),
         ]),

@@ -633,8 +633,12 @@ class _NodeWidgetState extends State<NodeWidget> {
       if (widget.isShelf && (node.pdfMemos?.isNotEmpty ?? false)) {
         return const Color(0xFFFFE0B2);
       }
+      // 黄色〜黄緑は明るさの下限を 0.45 まで下げて拾う (= ユーザー要望:
+      // 黄色は出さない)。 琥珀色 (0xFFFFC107 相当、 明るさ 0.51) も
+      // これで拾えるようになる。 オレンジ (色相 35 付近) は対象外なので
+      // そのままオレンジで出る。
       final hsl = HSLColor.fromColor(node.color);
-      if (hsl.hue >= 40 && hsl.hue <= 70 && hsl.lightness > 0.55) {
+      if (hsl.hue >= 40 && hsl.hue <= 70 && hsl.lightness > 0.45) {
         return const Color(0xFF263238);
       }
       return node.color;
