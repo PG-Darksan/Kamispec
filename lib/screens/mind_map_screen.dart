@@ -9164,6 +9164,47 @@ class _MindMapScreenState extends State<MindMapScreen>
     return Rect.fromLTRB(0, btn.top, screen.width, screen.height);
   }
 
+  /// ボタンが載っているバー (帯) を、 先祖を辿って実際に測る。
+  ///
+  /// ★ 端からの距離で推定する `_inferBarRect` は、 下バーの一番左 (右) の
+  ///   ボタンのように「角に近いボタン」 で横バーを縦バーと取り違える
+  ///   (左端まで 16px / 下端まで 50px なら「左バー」 と判定されてしまう)。
+  ///   すると設定メニューがバーの真横 = 画面の上の方へ飛ばされ、 ヘッダーの
+  ///   辺りに出てしまっていた (= ユーザー報告: 下部ボタンを長押しした時の
+  ///   設定項目がヘッダーの所に出る)。 実物を測れば取り違えない。
+  Rect? _barRectOfButton(BuildContext? ctx, Rect btn, Size screen) {
+    if (ctx == null) return null;
+    Rect? found;
+    try {
+      ctx.visitAncestorElements((el) {
+        final ro = el.renderObject;
+        if (ro is RenderBox && ro.hasSize && ro.attached) {
+          final Rect r;
+          try {
+            r = ro.localToGlobal(Offset.zero) & ro.size;
+          } catch (_) {
+            return true;
+          }
+          // 画面まるごと (= 背景や Stack) まで来たら打ち切る。
+          if (r.width >= screen.width * 0.95 &&
+              r.height >= screen.height * 0.9) {
+            return false;
+          }
+          final bool wide = r.width >= screen.width * 0.55 &&
+              r.height <= screen.height * 0.45;
+          final bool tall = r.height >= screen.height * 0.45 &&
+              r.width <= screen.width * 0.4;
+          if ((wide || tall) && r.contains(btn.center)) {
+            found = r;
+            return false;
+          }
+        }
+        return true;
+      });
+    } catch (_) {}
+    return found;
+  }
+
   /// 押されたカスタムボタンの位置と、 そのバーの帯を控える。
   /// [btnCtx] はボタン自身の BuildContext (取れなければ押下点で代用)。
   void _rememberCustomButtonPress(Offset pos, BuildContext? btnCtx) {
@@ -9171,7 +9212,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     final screen = MediaQuery.sizeOf(btnCtx ?? context);
     final btn = _rectOfContext(btnCtx) ??
         Rect.fromCenter(center: pos, width: 44, height: 44);
-    _lastCustomButtonBarRect = _inferBarRect(btn, screen);
+    // 先祖から実測 → 取れない時だけ端からの距離で推定する。
+    _lastCustomButtonBarRect =
+        _barRectOfButton(btnCtx, btn, screen) ?? _inferBarRect(btn, screen);
   }
 
   /// カスタムボタンの設定系ダイアログを、 押したボタンの近くに出すための
@@ -9194,10 +9237,24 @@ class _MindMapScreenState extends State<MindMapScreen>
       {Rect? avoid, bool useLastBar = true}) {
     if (anchor == null) return Center(child: child);
     final screen = MediaQuery.sizeOf(ctx);
-    final double maxLeft = (screen.width - size.width - 8.0).clamp(8.0, 1e5);
-    final double maxTop = (screen.height - size.height - 8.0).clamp(8.0, 1e5);
     final bar = avoid ?? (useLastBar ? _lastCustomButtonBarRect : null);
     final bool sideBar = bar != null && !bar.isEmpty && bar.height > bar.width;
+    // ── バーの外に置ける高さまで縮める (= ユーザー要望: 押したボタンの
+    //    周囲に出す)。 縮めないと画面に入りきらず、 clamp で画面の上端 =
+    //    ヘッダーの辺りまで飛ばされてしまう。 中身は縦にスクロールできる。 ──
+    double boxH = size.height;
+    if (bar != null && !bar.isEmpty && !sideBar) {
+      final double above = bar.top - 16;
+      final double below = screen.height - bar.bottom - 16;
+      final double room = above > below ? above : below;
+      if (room > 160 && boxH > room) boxH = room;
+    }
+    if (boxH > screen.height - 16) boxH = screen.height - 16;
+    size = Size(size.width, boxH);
+    child = ConstrainedBox(
+        constraints: BoxConstraints(maxHeight: boxH), child: child);
+    final double maxLeft = (screen.width - size.width - 8.0).clamp(8.0, 1e5);
+    final double maxTop = (screen.height - size.height - 8.0).clamp(8.0, 1e5);
 
     double left;
     double top;
@@ -10202,9 +10259,47 @@ class _MindMapScreenState extends State<MindMapScreen>
       );
     }
 
-    // ── 全カスタムボタン共通の 4 項目メニュー (中央ダイアログ) ──
-    // ユーザー要望: 「全てのカスタムボタンは長押しで [差し替え/色変更/初期配置
-    //   に戻す/並び替え] の 4 つを、 画面下ではなく中央に表示」。
+    // ── このボタンが置かれているバーから外す (= ユーザー要望: 下部ボタンを
+    //    差し替えるだけでなく空にもできるように) ──
+    //    押した場所のバーだけを対象にする。 そのバーに無ければ (= 想定外の
+    //    経路) 置いてある所すべてから外す。
+    Future<void> removeFromThisBar() async {
+      if (isFooter && isBottomCustomRow && bottomCustomRow == 3 &&
+          provider.customBottomThirdButtons.contains(commandId)) {
+        await provider.removeBottomThirdButton(commandId);
+        return;
+      }
+      if (isFooter && isBottomCustomRow && bottomCustomRow == 4 &&
+          provider.customBottomFourthButtons.contains(commandId)) {
+        await provider.removeBottomFourthButton(commandId);
+        return;
+      }
+      if (isFooter &&
+          isBottomCustomRow &&
+          provider.customBottomButtons.contains(commandId)) {
+        await provider.removeBottomButton(commandId);
+        return;
+      }
+      if (isFooter &&
+          !isBottomCustomRow &&
+          provider.customBottomTopButtons.contains(commandId)) {
+        await provider.removeBottomTopButton(commandId);
+        return;
+      }
+      if (!isFooter && provider.customHeaderButtons.contains(commandId)) {
+        await provider.removeHeaderButton(commandId);
+        return;
+      }
+      await _removeButtonFromLayout(commandId);
+    }
+
+    // お気に入り / ブックマークは「登録そのものを消す」 ので別扱い。
+    final bool isSavedItem =
+        commandId.startsWith('bookmark:') || commandId.startsWith('customPage');
+
+    // ── 全カスタムボタン共通のメニュー ──
+    // ユーザー要望: 「全てのカスタムボタンは長押しで [差し替え/色変更/
+    //   並び替え/削除]」。
     // ★ 押したボタンの近くに出す (= ユーザー要望: 設定項目はボタンの近くに)。
     final anchor = _customButtonAnchor();
     await showDialog<void>(
@@ -10226,7 +10321,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             children: [
               // 対象ボタンの表示
               Padding(
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
                 child: Row(children: [
                   Container(
                     width: 32,
@@ -10252,6 +10347,13 @@ class _MindMapScreenState extends State<MindMapScreen>
                 ]),
               ),
               const Divider(color: Colors.white12, height: 1),
+              // ★ 置き場所が狭い時は縮められる (= 押したボタンの近くに
+              //   収めるため)。 入りきらない分は縦にスクロールする。
+              Flexible(
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
               // ── 説明 (= ユーザー要望: 何をするボタンなのか読めるように) ──
               //    ここで全文が読めるので押しても何も起きない。
               ListTile(
@@ -10325,41 +10427,48 @@ class _MindMapScreenState extends State<MindMapScreen>
                   _showLockToast(provider.t('reorderHeader.hint'));
                 },
               ),
-              // ⑤ 削除 (お気に入り / ブックマークボタンのみ)
-              // = ユーザー要望: お気に入り登録したボタンは長押しで削除を出す。
-              if (commandId.startsWith('bookmark:') ||
-                  commandId.startsWith('customPage')) ...[
-                const Divider(color: Colors.white12, height: 1),
-                tile(
-                  icon: Icons.delete_outline_rounded,
-                  iconColor: const Color(0xFFE57373),
-                  title: context.read<MindMapProvider>().t('btn.delete'),
-                  subtitle: context.read<MindMapProvider>().t('fav.deleteDesc'),
-                  onTap: () async {
-                    Navigator.of(sctx).pop();
-                    if (commandId.startsWith('bookmark:')) {
-                      await _removeBookmarkButton(commandId);
-                    } else {
-                      final slot = int.tryParse(
-                              commandId.substring('customPage'.length)) ??
-                          0;
-                      if (slot >= 1) await _deleteCustomPage(slot - 1);
-                    }
-                    if (mounted) {
-                      _showLockToast(context
-                          .read<MindMapProvider>()
-                          .t('toast.deletedItem')
-                          .replaceFirst('{label}', label));
-                    }
-                  },
-                ),
-              ],
+              // ⑤ 削除 (= ユーザー要望: 下部ボタンを空にできるように、
+              //    長押しの項目に削除を出す)。 お気に入り / ブックマークは
+              //    登録そのものを消し、 それ以外はそのバーから外す。
+              const Divider(color: Colors.white12, height: 1),
+              tile(
+                icon: Icons.delete_outline_rounded,
+                iconColor: const Color(0xFFE57373),
+                title: context.read<MindMapProvider>().t('btn.delete'),
+                subtitle: context.read<MindMapProvider>().t(
+                    isSavedItem ? 'fav.deleteDesc' : 'fav.removeFromBarDesc'),
+                onTap: () async {
+                  Navigator.of(sctx).pop();
+                  if (commandId.startsWith('bookmark:')) {
+                    await _removeBookmarkButton(commandId);
+                  } else if (commandId.startsWith('customPage')) {
+                    final slot =
+                        int.tryParse(commandId.substring('customPage'.length)) ??
+                            0;
+                    if (slot >= 1) await _deleteCustomPage(slot - 1);
+                  } else {
+                    await removeFromThisBar();
+                  }
+                  if (mounted) {
+                    _showLockToast(context
+                        .read<MindMapProvider>()
+                        .t('toast.deletedItem')
+                        .replaceFirst('{label}', label));
+                  }
+                },
+              ),
               const SizedBox(height: 8),
+                    ],
+                  ),
+                ),
+              ),
             ],
           ),
         ),
         ),
-        const Size(360, 420),
+        // 高さの見積り (説明 + 差し替え + 色変更 + 並び替え + 削除)。
+        // 入らない時は _positionNearAnchor が縮めてスクロールさせる。
+        const Size(340, 400),
       ),
     );
   }
@@ -24179,7 +24288,13 @@ class _MindMapScreenState extends State<MindMapScreen>
     // 4 つは画面下部のボタンバーに既にデフォルト搭載されているため、
     // この空き領域メニューに同じ項目を出すと冗長 + ボタン領域が狭くなる。
     // → モバイル時はこの 4 項目をスキップする (デスクトップでは従来通り表示)。
-    final List<Widget> items = [
+    // 「マップを分割表示」 を押した時に、 その下へ割り方 (上下 / 左右 /
+    // 4 分割) を差し込むか (= ユーザー要望: 右クリックではなく左クリックで、
+    // 元の項目を出したまま 2〜4 分割の設定が出てくるように)。
+    bool splitExpanded = false;
+    // 割り方を「右に」 出すため、 項目そのものの位置を測る鍵 (= ユーザー要望)。
+    final GlobalKey splitItemKey = GlobalKey();
+    List<Widget> buildItems(bool splitExpanded, VoidCallback toggleSplit) => [
       // ── ギャラリー: 背景画像の設定 (= ユーザー要望: ギャラリー背景を
       //    右クリックすることで背景画像の設定項目が出るように) ──
       if (provider.currentPage.pageType == 'bookshelf')
@@ -24234,6 +24349,27 @@ class _MindMapScreenState extends State<MindMapScreen>
             _showMapBackgroundDialog(context, provider);
           },
         ),
+      // ── 画面分割 (= ユーザー要望) ──
+      //    分割していない時: 押すと右側に割り方 (上下 / 左右 / 4 分割) が出る。
+      //    分割している時  : 押すと分割を解除するだけ (割り方は出さない)。
+      _CtxMenuItem(
+        key: splitItemKey,
+        icon: _mapSplitOpen
+            ? Icons.close_fullscreen_rounded
+            : Icons.splitscreen_rounded,
+        label: provider.t(_mapSplitOpen ? 'cmd.closeSplit' : 'hdr.mapSplit'),
+        color: const Color(0xFF4FC3F7),
+        expanded: _mapSplitOpen ? null : splitExpanded,
+        expandRight: true,
+        onTap: _mapSplitOpen
+            ? () {
+                _removeOverlay();
+                // 右クリックした場所のペインのページを残して解除する
+                // (= ユーザー要望: 左上のページに移ってしまうのを直す)。
+                _closeMapSplitKeeping(_splitSlotAtGlobal(globalPos));
+              }
+            : toggleSplit,
+      ),
       _CtxMenuItem(
         icon: Icons.content_cut_rounded,
         label: provider.t('hdr.cutMode'),
@@ -24414,6 +24550,9 @@ class _MindMapScreenState extends State<MindMapScreen>
       ),
     ];
 
+    // 高さの見積りは「割り方を開いた状態」 で取る (= 開いても入りきるように)。
+    final items = buildItems(true, () {});
+
     // 各項目の推定高さ (MenuItem=46, Toggle=44, Divider=1)
     double estH = 0;
     for (final w in items) {
@@ -24442,49 +24581,139 @@ class _MindMapScreenState extends State<MindMapScreen>
         sh - (useTwoCol ? estH / 2 + 16 : estH + 16).clamp(100.0, maxAvail));
 
     _overlayEntry = OverlayEntry(
-      builder: (_) => Stack(children: [
-        Positioned.fill(
-          child: GestureDetector(
-            onTap: _removeOverlay,
-            onSecondaryTap: _removeOverlay,
-            behavior: HitTestBehavior.translucent,
-            child: const SizedBox.expand(),
-          ),
-        ),
-        Positioned(
-          left: left,
-          top: top,
-          child: Material(
-            color: Colors.transparent,
-            child: Container(
-              width: menuW,
-              constraints: BoxConstraints(maxHeight: maxAvail),
-              decoration: BoxDecoration(
-                color: const Color(0xFF1E1E32),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.6),
-                    blurRadius: 20,
-                    offset: const Offset(0, 6),
-                  ),
-                ],
-              ),
-              child: useTwoCol
-                  ? SingleChildScrollView(
-                      child: _buildTwoColMenu(items),
-                    )
-                  : Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: items,
-                    ),
+      builder: (_) => StatefulBuilder(builder: (_, setMenuState) {
+        final list = buildItems(splitExpanded,
+            () => setMenuState(() => splitExpanded = !splitExpanded));
+        return Stack(children: [
+          Positioned.fill(
+            child: GestureDetector(
+              onTap: _removeOverlay,
+              onSecondaryTap: _removeOverlay,
+              behavior: HitTestBehavior.translucent,
+              child: const SizedBox.expand(),
             ),
           ),
-        ),
-      ]),
+          Positioned(
+            left: left,
+            top: top,
+            child: Material(
+              color: Colors.transparent,
+              child: Container(
+                width: menuW,
+                constraints: BoxConstraints(maxHeight: maxAvail),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1E1E32),
+                  borderRadius: BorderRadius.circular(12),
+                  border:
+                      Border.all(color: Colors.white.withValues(alpha: 0.12)),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.6),
+                      blurRadius: 20,
+                      offset: const Offset(0, 6),
+                    ),
+                  ],
+                ),
+                child: useTwoCol
+                    ? SingleChildScrollView(child: _buildTwoColMenu(list))
+                    : SingleChildScrollView(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: list,
+                        ),
+                      ),
+              ),
+            ),
+          ),
+          // ── 割り方は「右に」 出す (= ユーザー要望) ──
+          //    項目そのものの位置を測って、 その右隣に並べる。
+          if (splitExpanded && !_mapSplitOpen)
+            _buildSplitLayoutFlyout(provider, splitItemKey, sw, sh),
+        ]);
+      }),
     );
     Overlay.of(context, rootOverlay: true).insert(_overlayEntry!);
+  }
+
+  /// 右クリックメニューの「マップを分割表示」 の右隣に出す、 割り方の板
+  /// (= ユーザー要望: 開くと右に項目が出るように)。
+  /// [itemKey] は分割項目そのもの。 その画面座標を測って隣に並べる。
+  Widget _buildSplitLayoutFlyout(
+      MindMapProvider provider, GlobalKey itemKey, double sw, double sh) {
+    final box = itemKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return const SizedBox.shrink();
+    final Offset at;
+    try {
+      at = box.localToGlobal(Offset.zero);
+    } catch (_) {
+      return const SizedBox.shrink();
+    }
+    const double w = 190.0;
+    final rows = <Widget>[
+      _CtxSplitOption(
+        icon: Icons.horizontal_split_rounded,
+        label: provider.t('map.splitModeTopBottom'),
+        checked: _mapSplitOpen && !_mapSplitQuad && _mapSplitStacked,
+        onTap: () {
+          _removeOverlay();
+          // ignore: discarded_futures
+          _applyMapSplitMode(panes: 2, stacked: true);
+        },
+      ),
+      _CtxSplitOption(
+        icon: Icons.vertical_split_rounded,
+        label: provider.t('map.splitModeLeftRight'),
+        checked: _mapSplitOpen && !_mapSplitQuad && !_mapSplitStacked,
+        onTap: () {
+          _removeOverlay();
+          // ignore: discarded_futures
+          _applyMapSplitMode(panes: 2, stacked: false);
+        },
+      ),
+      // モバイルは画面が小さいので 4 分割は出さない
+      // (= _buildMapSplitModeButtons と同じ扱い)。
+      if (_isDesktop)
+        _CtxSplitOption(
+          icon: Icons.grid_view_rounded,
+          label: provider.t('map.splitQuad'),
+          checked: _mapSplitOpen && _mapSplitQuad,
+          onTap: () {
+            _removeOverlay();
+            // ignore: discarded_futures
+            _applyMapSplitMode(panes: 4, stacked: false);
+          },
+        ),
+    ];
+    final double h = rows.length * 36.0 + 10;
+    // 右に置けなければ左へ回す (= 画面の端でも見えるように)。
+    double left = at.dx + box.size.width + 6;
+    if (left + w > sw - 8) left = at.dx - w - 6;
+    left = left.clamp(8.0, (sw - w - 8).clamp(8.0, sw));
+    final double top = (at.dy - 4).clamp(8.0, (sh - h - 8).clamp(8.0, sh));
+    return Positioned(
+      left: left,
+      top: top,
+      child: Material(
+        color: Colors.transparent,
+        child: Container(
+          width: w,
+          padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 4),
+          decoration: BoxDecoration(
+            color: const Color(0xFF23233A),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.6),
+                blurRadius: 18,
+                offset: const Offset(0, 5),
+              ),
+            ],
+          ),
+          child: Column(mainAxisSize: MainAxisSize.min, children: rows),
+        ),
+      ),
+    );
   }
 
   /// ─── マップの背景画像設定ダイアログ ─────────────────────────────────
@@ -38394,7 +38623,8 @@ class _MindMapScreenState extends State<MindMapScreen>
             _showCustomPageContextMenu(context, provider, commandId),
         onLongPress: _isDesktop
             ? () => _showCustomPageContextMenu(context, provider, commandId)
-            : () => _showUnifiedMobileButtonMenu(context, commandId),
+            : () =>
+                _showUnifiedMobileButtonMenu(context, commandId, isFooter: false),
         child: wrapped,
       );
     } else if (commandId.startsWith('bookmark:') && !_reorderHeaderMode) {
@@ -38405,7 +38635,8 @@ class _MindMapScreenState extends State<MindMapScreen>
             _showBookmarkButtonContextMenu(context, commandId),
         onLongPress: _isDesktop
             ? () => _showBookmarkButtonContextMenu(context, commandId)
-            : () => _showUnifiedMobileButtonMenu(context, commandId),
+            : () =>
+                _showUnifiedMobileButtonMenu(context, commandId, isFooter: false),
         child: wrapped,
       );
     } else if (!_reorderHeaderMode) {
@@ -38424,7 +38655,8 @@ class _MindMapScreenState extends State<MindMapScreen>
             ? () => _appExitLockLongPressUnlock()
             : commandId == 'openAi'
                 ? () => _showBrowserAiSwitchMenu()
-                : () => _showUnifiedMobileButtonMenu(context, commandId),
+                : () => _showUnifiedMobileButtonMenu(context, commandId,
+                    isFooter: false),
         child: wrapped,
       );
     }
@@ -40609,10 +40841,12 @@ class _MindMapScreenState extends State<MindMapScreen>
         if (_isDesktop) break;
         setState(() {
           _bottomBarOpen = !_bottomBarOpen;
-          // 表示に戻す時は畳んだ状態も解除する (= ユーザー要望: 消すのは
-          // このボタンだけ、 収納ボタンは畳むだけ、 という住み分け)。
+          // 表示に戻す時は畳んだ状態も解除する (= ユーザー要望: 完全に
+          // 消すのはこのボタン、 バーの横の収納ボタンは畳むだけ、 という
+          // 住み分け)。
           if (_bottomBarOpen) _bottomBarCollapsed = false;
-          _bottomToolbarExpandedNotifier.value = _bottomBarOpen;
+          _bottomToolbarExpandedNotifier.value =
+              _bottomBarOpen && !_bottomBarCollapsed;
         });
         break;
       case 'closeSplit':
@@ -50091,8 +50325,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                             if (_splitMode == 'pdf')
                               PopupMenuButton<String>(
                                 tooltip: provider.t('split.openAiLeft'),
+                                // 色は隣のボタンと揃える (= ユーザー要望:
+                                // AI アイコンだけ色が付いていて目立つ)。
                                 icon: const Icon(Icons.smart_toy_rounded,
-                                    color: Color(0xFF4FC3F7), size: 18),
+                                    color: Colors.white60, size: 18),
                                 padding: EdgeInsets.zero,
                                 color: const Color(0xFF1E1E32),
                                 onSelected: _openAiInLeftPanel,
@@ -53913,18 +54149,13 @@ class _MindMapScreenState extends State<MindMapScreen>
                       ),
                     ),
                     GestureDetector(
-                      // ── モバイルは「非表示」 にする (= ユーザー要望:
-                      //    収納/展開ではなく表示/非表示の切り替えに)。
-                      //    画面下端の帯をタップ / 上スワイプで戻せる。
-                      //    デスクトップは従来どおり畳むだけ。 ──
+                      // ── バーの横のボタンは「収納 (畳む)」 (= ユーザー要望:
+                      //    非表示ではなく収納にして、 もう一度押したら開く)。
+                      //    完全に消すのはヘッダーの非表示ボタン
+                      //    (toggleBottomBar) の役目。 ──
                       onTap: () {
                         setState(() {
-                          if (_isDesktop) {
-                            _bottomBarCollapsed = true;
-                          } else {
-                            _bottomBarOpen = false;
-                            _bottomBarCollapsed = false;
-                          }
+                          _bottomBarCollapsed = true;
                           _bottomToolbarExpandedNotifier.value = false;
                         });
                       },
@@ -53938,26 +54169,17 @@ class _MindMapScreenState extends State<MindMapScreen>
                           border: Border.all(
                               color: Colors.white.withValues(alpha: 0.1)),
                         ),
-                        child: Icon(
-                            _isDesktop
-                                ? Icons.chevron_right_rounded
-                                : Icons.visibility_off_rounded,
-                            color: Colors.white30,
-                            size: 14),
+                        child: const Icon(Icons.chevron_right_rounded,
+                            color: Colors.white30, size: 14),
                       ),
                     ),
                   ],
                 )
-              // 閉じた状態: 小さな開くボタンのみ。
-              // ── モバイルで「非表示」 にした時は開くボタンも出さない。
-              //    画面下端の透明な帯をタップ / 上スワイプすると戻せるので
-              //    操作不能にはならない。 ──
-              // ── 畳んだ状態のつまみ (モバイル) ──
-              //    モバイルは「収納」 を廃止したのでこの状態には入らないが、
-              //    途中の状態が残っていた時のために、 押したら「非表示」 に
-              //    揃える (= ユーザー要望: 1 つに集約されたボタンを押すと
-              //    展開ではなく非表示になるように)。
-              : (!_isDesktop && _bottomBarCollapsed)
+              // ── 畳んだ状態のつまみ ──
+              //    押すとバーが開き直す (= ユーザー要望: 収納した後に
+              //    もう一度押すと開かれるように)。 完全に消えている
+              //    (_bottomBarOpen == false) 時は画面下端の帯で戻す。
+              : (_bottomBarOpen && _bottomBarCollapsed)
                   ? Align(
                       alignment: Alignment.bottomRight,
                       child: Padding(
@@ -53965,24 +54187,31 @@ class _MindMapScreenState extends State<MindMapScreen>
                         child: GestureDetector(
                           onTap: () {
                             setState(() {
-                              _bottomBarOpen = false;
                               _bottomBarCollapsed = false;
-                              _bottomToolbarExpandedNotifier.value = false;
+                              _bottomToolbarExpandedNotifier.value = true;
                             });
                           },
+                          // 上スワイプでも開く (= 片手で戻しやすいように)。
+                          onVerticalDragEnd: (d) {
+                            if ((d.primaryVelocity ?? 0) < -80) {
+                              setState(() {
+                                _bottomBarCollapsed = false;
+                                _bottomToolbarExpandedNotifier.value = true;
+                              });
+                            }
+                          },
                           child: Container(
-                            width: 34,
-                            height: 22,
+                            width: 42,
+                            height: 24,
                             decoration: BoxDecoration(
                               color: const Color(0xFF1A1A2E)
                                   .withValues(alpha: 0.9),
-                              borderRadius: BorderRadius.circular(6),
+                              borderRadius: BorderRadius.circular(8),
                               border: Border.all(
-                                  color:
-                                      Colors.white.withValues(alpha: 0.12)),
+                                  color: Colors.white.withValues(alpha: 0.12)),
                             ),
-                            child: const Icon(Icons.visibility_off_rounded,
-                                color: Colors.white54, size: 15),
+                            child: const Icon(Icons.chevron_left_rounded,
+                                color: Colors.white70, size: 17),
                           ),
                         ),
                       ),
@@ -55119,25 +55348,25 @@ class _MindMapScreenState extends State<MindMapScreen>
           !_isRetiredCustomCommand(id) &&
           !_hideCommandForCurrentLocale(id, provider));
       if (noneAnywhere) {
-        return InkWell(
-          borderRadius: BorderRadius.circular(14),
-          onTap: () => _showHeaderCustomizeSheet(context, provider),
-          child: Container(
-            height: 36,
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.06),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: Colors.white24),
+        // ★ 文言は出さず + ボタンだけにする (= ユーザー要望: シンプルな
+        //   作りに)。 何のボタンかは載せた時に分かるので、 案内は不要。
+        return Tooltip(
+          message: provider.t('header.emptyBarHint'),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(18),
+            onTap: () => _showHeaderCustomizeSheet(context, provider),
+            child: Container(
+              width: 36,
+              height: 36,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.06),
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white24),
+              ),
+              child: const Icon(Icons.add_rounded,
+                  color: Colors.white54, size: 20),
             ),
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              const Icon(Icons.add_circle_outline_rounded,
-                  color: Colors.white54, size: 16),
-              const SizedBox(width: 6),
-              Text(provider.t('header.emptyBarHint'),
-                  style:
-                      const TextStyle(color: Colors.white54, fontSize: 12)),
-            ]),
           ),
         );
       }
@@ -63372,6 +63601,33 @@ class _MindMapScreenState extends State<MindMapScreen>
       // モバイルは 4 分割にしない (= ユーザー要望: 画面が小さいので不要)。
       _mapSplitQuad = _mapSplitOpen && _mapSplitQuadPref && _isDesktop;
     });
+  }
+
+  /// [globalPos] が入っている分割セルの番号。 どのセルでもなければ null。
+  /// (= ユーザー要望: 右クリックしたウィンドウのページを残して解除したい)
+  int? _splitSlotAtGlobal(Offset globalPos) {
+    if (!_mapSplitOpen) return null;
+    for (final k in _visibleSplitSlots()) {
+      if (_splitCellGlobalRect(k).contains(globalPos)) return k;
+    }
+    return null;
+  }
+
+  /// 分割を解除する時に、 そのセルに出ていたページへ切り替えてから閉じる。
+  /// (= ユーザー要望: 解除すると左上のページに移ってしまうが、 右クリック
+  ///  したウィンドウのページに移ってほしい)
+  void _closeMapSplitKeeping(int? slot) {
+    if (!_mapSplitOpen) return;
+    if (slot != null && slot != _mapSplitEditorSlot) {
+      // 編集セル以外を指していたら、 そのセルに出ているページへ移る。
+      final pid = _mapSplitCells[slot];
+      if (pid != null && pid.isNotEmpty) {
+        final provider = context.read<MindMapProvider>();
+        final idx = provider.pages.indexWhere((p) => p.id == pid);
+        if (idx >= 0) provider.switchPage(idx);
+      }
+    }
+    _closeMapSplit();
   }
 
   /// 画面分割を解除して 1 画面に戻す。 埋め込んでいた Web / ツールも一緒に
@@ -91269,11 +91525,22 @@ class _CtxMenuItem extends StatefulWidget {
   final String label;
   final Color color;
   final VoidCallback onTap;
+
+  /// 押すと細かい設定が出る項目か。 null なら普通の項目。
+  /// true = 開いている / false = 閉じている (= ユーザー要望: 「画面分割」 を
+  /// 左クリックすると、 元の項目を出したまま割り方が出てくるように)。
+  final bool? expanded;
+
+  /// 設定を「右に」 出す項目か (= ユーザー要望)。 印を ＞ にする。
+  final bool expandRight;
   const _CtxMenuItem({
+    super.key,
     required this.icon,
     required this.label,
     required this.color,
     required this.onTap,
+    this.expanded,
+    this.expandRight = false,
   });
   @override
   State<_CtxMenuItem> createState() => _CtxMenuItemState();
@@ -91314,6 +91581,79 @@ class _CtxMenuItemState extends State<_CtxMenuItem> {
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(color: Colors.white, fontSize: 11)),
             ),
+            // 「押すと設定が出る」 印 (右に出す時は ＞)。
+            if (widget.expanded != null)
+              Icon(
+                  widget.expandRight
+                      ? Icons.chevron_right_rounded
+                      : (widget.expanded!
+                          ? Icons.expand_less_rounded
+                          : Icons.expand_more_rounded),
+                  size: 16,
+                  color: widget.expanded!
+                      ? const Color(0xFF4FC3F7)
+                      : Colors.white.withValues(alpha: 0.5)),
+          ]),
+        ),
+      ),
+    );
+  }
+}
+
+/// 右クリックメニューの「画面分割」 にぶら下がる割り方の行
+/// (= ユーザー要望: 左クリックで元の項目を出したまま 2〜4 分割の設定が
+/// 出てくるように)。 一段下げて出し、 今の割り方にはチェックを付ける。
+class _CtxSplitOption extends StatefulWidget {
+  final IconData icon;
+  final String label;
+  final bool checked;
+  final VoidCallback onTap;
+  const _CtxSplitOption({
+    required this.icon,
+    required this.label,
+    required this.checked,
+    required this.onTap,
+  });
+  @override
+  State<_CtxSplitOption> createState() => _CtxSplitOptionState();
+}
+
+class _CtxSplitOptionState extends State<_CtxSplitOption> {
+  bool _hovered = false;
+  @override
+  Widget build(BuildContext context) {
+    const accent = Color(0xFF4FC3F7);
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 80),
+          padding: const EdgeInsets.fromLTRB(26, 7, 8, 7),
+          decoration: BoxDecoration(
+            color: _hovered
+                ? accent.withValues(alpha: 0.15)
+                : Colors.white.withValues(alpha: 0.04),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Row(children: [
+            Icon(widget.icon,
+                size: 15,
+                color: widget.checked ? accent : Colors.white70),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(widget.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      color: widget.checked ? accent : Colors.white,
+                      fontSize: 11,
+                      fontWeight:
+                          widget.checked ? FontWeight.w700 : FontWeight.w400)),
+            ),
+            if (widget.checked)
+              const Icon(Icons.check_rounded, size: 14, color: accent),
           ]),
         ),
       ),
@@ -165467,6 +165807,18 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                 style: const TextStyle(color: Colors.white, fontSize: 13)),
           ]),
         ),
+        // ── 図形・線を描き込む (= ユーザー要望: 本文中の右クリックからも
+        //    描き込みを始められるように) ──
+        PopupMenuItem<String>(
+          value: 'drawShapes',
+          child: Row(children: [
+            Icon(_pdfDrawActive ? Icons.draw_rounded : Icons.draw_outlined,
+                color: const Color(0xFF5FD3B2), size: 18),
+            const SizedBox(width: 8),
+            Text(provider.t('pdf.drawShapes'),
+                style: const TextStyle(color: Colors.white, fontSize: 13)),
+          ]),
+        ),
       ],
     );
     if (!mounted || selected == null) return;
@@ -165489,7 +165841,10 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
           ),
         );
         break;
-
+      case 'drawShapes':
+        // 描き込みモードの ON/OFF (= ヘッダーのボタンと同じ働き)。
+        _togglePdfDrawMode();
+        break;
     }
   }
 
@@ -169090,13 +169445,8 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
               _pdfPanMode ? '現在：ドラッグで移動（タップで文字選択に）'
                   : '現在：文字選択（タップでドラッグ移動に）',
               const Color(0xFFB39DDB)),
-        // ── 図形・線の描き込み (= ユーザー要望) ──
-        if (widget.isPdf && _pdfFilePath != null)
-          _pdfMenuItem(
-              'drawShapes',
-              _pdfDrawActive ? Icons.draw_rounded : Icons.draw_outlined,
-              context.read<MindMapProvider>().t('pdf.drawShapes'),
-              const Color(0xFF5FD3B2)),
+        // ── 「図形・線を描き込む」 は設定から外した (= ユーザー要望:
+        //    設定項目が多過ぎる。 同じボタンがヘッダーに常設されている)。 ──
         if (widget.isPdf)
           _pdfMenuItem(
               'fitPage',
@@ -169139,40 +169489,56 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
           _pdfMenuItem('reload', Icons.refresh, '再読み込み', Colors.white70),
         _pdfMenuItem(
             'openExternal', Icons.open_in_new, '外部で開く', Colors.white70),
-        if (widget.isPdf && _pdfFilePath != null)
-          _pdfMenuItem('download', Icons.download_rounded, 'ダウンロード',
-              const Color(0xFF4FC3F7)),
-        if (widget.isPdf && widget.onGenerateQuiz != null)
-          _pdfMenuItem('quiz', Icons.style_rounded, 'AI でフラッシュカードを作成',
-              const Color(0xFF43B97F)),
-        if (widget.onMoveToSplitPanel != null) ...[
-          _pdfMenuItem(
-              'splitLeft',
-              _splitPanelIcon(
-                  (Platform.isAndroid || Platform.isIOS)
-                      ? _SplitIconFill.top
-                      : _SplitIconFill.left,
-                  color: const Color(0xFFFF6B6B),
-                  size: 18),
-              (Platform.isAndroid || Platform.isIOS) ? '上に分割' : '左に分割',
-              const Color(0xFFFF6B6B)),
-          _pdfMenuItem(
-              'splitRight',
-              _splitPanelIcon(
-                  (Platform.isAndroid || Platform.isIOS)
-                      ? _SplitIconFill.bottom
-                      : _SplitIconFill.right,
-                  color: const Color(0xFF2196F3),
-                  size: 18),
-              (Platform.isAndroid || Platform.isIOS) ? '下に分割' : '右に分割',
-              const Color(0xFF2196F3)),
-        ],
+        // 「ダウンロード」 「左/右に分割」 は設定から外してヘッダーに並べた
+        // (= ユーザー要望)。
         // ── 別の PDF に切り替え (= ユーザー要望: 項目の一番下に配置) ──
         if (widget.isPdf)
           _pdfMenuItem('switchPdf', Icons.file_open_rounded, '別の PDF に切り替え',
               const Color(0xFF4FC3F7)),
       ],
     );
+  }
+
+
+  /// 描き込みの道具箱をヘッダーの下に出すための受け口
+  /// (= ユーザー要望: PDF の上部が道具箱と被って描けないので、 ヘッダーの所へ)。
+  /// 描き込みモードの間だけ中身が入る。
+  final ValueNotifier<Widget?> _pdfDrawToolbar = ValueNotifier<Widget?>(null);
+
+  /// ヘッダーの下に出す道具箱の帯 (モードの間だけ出る)。
+  Widget _buildPdfDrawToolbarBar() {
+    return ValueListenableBuilder<Widget?>(
+      valueListenable: _pdfDrawToolbar,
+      builder: (_, w, __) {
+        if (w == null) return const SizedBox.shrink();
+        return Container(
+          width: double.infinity,
+          color: const Color(0xFF17172A),
+          padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 6),
+          // 真ん中に置く (= ユーザー要望)。 幅が足りない時だけ横に流して
+          // 全部触れるようにする。
+          child: LayoutBuilder(
+            builder: (_, cons) => SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(minWidth: cons.maxWidth),
+                child: Center(child: w),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// 開いているファイルを画面分割の左 / 右のペインへ移す
+  /// (= ユーザー要望: ヘッダーに左右分割ボタンを置く。 右分割を押すと
+  ///  2 分割の右半分がこのファイルになる)。
+  void _moveToSplitPane({required bool left}) {
+    final u =
+        widget.isPdf && _pdfFilePath != null ? _pdfFilePath! : widget.url;
+    widget.onMoveToSplitPanel?.call(u, isLeftPanel: left);
+    Navigator.of(context).pop();
   }
 
   /// 開いているファイル (PDF 等) をユーザーが選んだ場所に保存する
@@ -169889,6 +170255,7 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                             filePath: _pdfFilePath,
                             controller: _pdfViewerCtrl,
                             tr: context.read<MindMapProvider>().t,
+                            toolbarSink: _pdfDrawToolbar,
                             onExit: () {
                               if (mounted) {
                                 setState(() => _pdfDrawActive = false);
@@ -170911,10 +171278,13 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
       autofocus: true,
       onKeyEvent: (node, event) {
         if (event is! KeyDownEvent) return KeyEventResult.ignored;
-        // ── Esc で閉じない設定 (= ユーザー要望: 開いた画面が Esc で
-        //    閉じるのを止めたい)。 消費して既定の dismiss へ流さない。 ──
+        // ── Esc で閉じない (= ユーザー要望: Esc でファイルを閉じる機能は
+        //    無効化して、 描き込み中は「選ぶ」 への切り替えに使う)。
+        //    PDF は設定に関わらず常に閉じない。 それ以外は従来どおり設定に従う。
+        //    消費して既定の dismiss へ流さない。 ──
         if (event.logicalKey == LogicalKeyboardKey.escape &&
-            !context.read<MindMapProvider>().closeViewerWithEsc) {
+            (widget.isPdf ||
+                !context.read<MindMapProvider>().closeViewerWithEsc)) {
           return KeyEventResult.handled;
         }
         final isCtrl = HardwareKeyboard.instance.isControlPressed ||
@@ -171100,6 +171470,36 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                                 size: 20),
                             onPressed: _togglePdfDrawMode,
                           ),
+                        // ── ダウンロード / 左・右に分割 (= ユーザー要望:
+                        //    設定の奥ではなくヘッダーに並べる) ──
+                        if (widget.isPdf && _pdfFilePath != null)
+                          IconButton(
+                            tooltip: context
+                                .read<MindMapProvider>()
+                                .t('fsv.download'),
+                            icon: const Icon(Icons.download_rounded,
+                                color: Color(0xFF4FC3F7), size: 20),
+                            onPressed: () =>
+                                unawaited(_downloadCurrentFile()),
+                          ),
+                        if (widget.onMoveToSplitPanel != null) ...[
+                          IconButton(
+                            tooltip: context
+                                .read<MindMapProvider>()
+                                .t('openStyle.splitLeft'),
+                            icon: _splitPanelIcon(_SplitIconFill.left,
+                                color: const Color(0xFFFF6B6B), size: 19),
+                            onPressed: () => _moveToSplitPane(left: true),
+                          ),
+                          IconButton(
+                            tooltip: context
+                                .read<MindMapProvider>()
+                                .t('openStyle.splitRight'),
+                            icon: _splitPanelIcon(_SplitIconFill.right,
+                                color: const Color(0xFF2196F3), size: 19),
+                            onPressed: () => _moveToSplitPane(left: false),
+                          ),
+                        ],
                         _buildPdfSettingsMenu(hasMemoPanel),
                         IconButton(
                           tooltip:
@@ -171113,6 +171513,9 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                   ),
                   // ── 検索バー (PDF / URL 両方、 トグル開閉) ──
                   if (_searchBarOpen) _buildSearchBar(),
+                  // ── 描き込みの道具箱 (= ユーザー要望: PDF の上に被らない
+                  //    ようヘッダーの下に出す。 モードの時だけ) ──
+                  _buildPdfDrawToolbarBar(),
                   // ── 本体 ──
                   Expanded(
                     child: Builder(builder: (_) {
@@ -171272,6 +171675,35 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
 
   /// PDF 図形・線 描き込みモード (= ユーザー要望)。
   bool _pdfDrawActive = false;
+
+  /// 描き込みの道具箱をヘッダーの下に出すための受け口
+  /// (= ユーザー要望: PDF の上部が道具箱と被って描けない)。
+  final ValueNotifier<Widget?> _pdfDrawToolbar = ValueNotifier<Widget?>(null);
+
+  /// ヘッダーの下に出す道具箱の帯 (モードの間だけ出る)。
+  Widget _buildPdfDrawToolbarBar() {
+    return ValueListenableBuilder<Widget?>(
+      valueListenable: _pdfDrawToolbar,
+      builder: (_, w, __) {
+        if (w == null) return const SizedBox.shrink();
+        return Container(
+          width: double.infinity,
+          color: const Color(0xFF17172A),
+          padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 6),
+          // 真ん中に置く (= ユーザー要望)。
+          child: LayoutBuilder(
+            builder: (_, cons) => SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(minWidth: cons.maxWidth),
+                child: Center(child: w),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
 
   /// PDF への描き込み (ペン / 直線 / 矢印 / 四角 / 楕円) の ON/OFF。
   /// ヘッダーの常設ボタンと設定メニューの両方から呼ぶ。
@@ -172586,13 +173018,8 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
                   ? '現在：横めくり（タップで縦めくりに）'
                   : '現在：縦めくり（タップで横めくりに）',
               const Color(0xFF4FC3F7)),
-        // ── 図形・線の描き込み (= ユーザー要望) ──
-        if (widget.isPdf && _pdfFilePath != null)
-          _pdfMenuItem(
-              'drawShapes',
-              _pdfDrawActive ? Icons.draw_rounded : Icons.draw_outlined,
-              context.read<MindMapProvider>().t('pdf.drawShapes'),
-              const Color(0xFF5FD3B2)),
+        // ── 「図形・線を描き込む」 は設定から外した (= ユーザー要望:
+        //    設定項目が多過ぎる。 同じボタンがヘッダーに常設されている)。 ──
         if (widget.isPdf)
           _pdfMenuItem(
               'fitPage',
@@ -172632,9 +173059,7 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
         if (widget.isPdf && _pdfFilePath != null)
           _pdfMenuItem('download', Icons.download_rounded, 'ダウンロード',
               const Color(0xFF4FC3F7)),
-        if (widget.isPdf && widget.onGenerateQuiz != null)
-          _pdfMenuItem('quiz', Icons.style_rounded, 'AI でフラッシュカードを作成',
-              const Color(0xFF43B97F)),
+        // 「AI でフラッシュカードを作成」 は設定から外した (= ユーザー要望)。
         if (widget.onMoveToSplitPanel != null) ...[
           // AI チャット (= ユーザー要望: モバイルでも AI チャットを使えるように)
           _pdfMenuItem('aiChat', Icons.smart_toy_rounded, 'AI チャットを開く',
@@ -173568,6 +173993,7 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
                           filePath: _pdfFilePath,
                           controller: _pdfViewerCtrl,
                           tr: context.read<MindMapProvider>().t,
+                          toolbarSink: _pdfDrawToolbar,
                           onExit: () {
                             if (mounted) {
                               setState(() => _pdfDrawActive = false);
@@ -174043,13 +174469,19 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
                   ),
                 _buildPdfSettingsMenu(showMemoBtn),
               ],
-              // 検索バーは AppBar の bottom に差し込む (PDF/URL 両対応)
+              // 検索バー / 描き込みの道具箱は AppBar の bottom に差し込む
+              // (= ユーザー要望: 道具箱が PDF の上に被らないように)。
               bottom: _searchBarOpen
                   ? PreferredSize(
                       preferredSize: const Size.fromHeight(40),
                       child: _buildSearchBar(),
                     )
-                  : null,
+                  : (_pdfDrawActive
+                      ? PreferredSize(
+                          preferredSize: const Size.fromHeight(76),
+                          child: _buildPdfDrawToolbarBar(),
+                        )
+                      : null),
             ),
             body: _buildWebViewBody(provider),
           );
@@ -182030,6 +182462,14 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
     }
   }
 
+  /// 図やグラフ・表をファイルに保存できる形式か。
+  ///
+  /// csv / tsv は文字だけのファイルなので、 図やグラフを置いても保存すると
+  /// 消えてしまう (= _save の csv 分岐はセルの文字しか書き出さない)。
+  /// そのため csv / tsv では図・グラフ・表を作る入口を出さない
+  /// (= ユーザー要望: 保存できないなら機能ごと外して)。
+  bool get _canHoldObjects => _kind == _SpreadsheetKind.xlsx;
+
   List<List<String>> get _rows => _sheets[_activeSheet] ?? const [];
   int get _rowCount => _rows.length;
   int get _colCount => _rows.isEmpty ? 0 : _rows.first.length;
@@ -183041,18 +183481,14 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
       _beginEdit(_selRow, _selCol);
       return KeyEventResult.handled;
     }
+    // ── Delete   = 選んでいるセルを全部消す (範囲選択ならその範囲すべて)
+    //    Backspace = 今いる 1 セルだけ消す (範囲を選んでいても)
+    //    (= ユーザー要望: Del は範囲まるごと、 Backspace は今のセルだけ)
     if (event.logicalKey == LogicalKeyboardKey.delete ||
         event.logicalKey == LogicalKeyboardKey.backspace) {
-      if (_rowCount > 0 &&
-          _colCount > 0 &&
-          _selRow < _rowCount &&
-          _selCol < _colCount) {
-        if (_rows[_selRow][_selCol].isNotEmpty) {
-          _pushUndo();
-          _rows[_selRow][_selCol] = '';
-          setState(() => _dirty = true);
-        }
-      }
+      final wholeRange =
+          event.logicalKey == LogicalKeyboardKey.delete && _hasRange;
+      _clearCells(wholeRange: wholeRange);
       return KeyEventResult.handled;
     }
     // ── Excel ライク: 印刷可能な文字キーで直接編集モードに入る ──
@@ -183080,6 +183516,33 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
       }
     }
     return KeyEventResult.ignored;
+  }
+
+  /// 選んでいるセルの中身を消す。
+  /// [wholeRange] が true なら範囲すべて、 false なら今いる 1 セルだけ
+  /// (= ユーザー要望: Delete は範囲まるごと / Backspace は 1 セルだけ)。
+  void _clearCells({required bool wholeRange}) {
+    if (_rowCount <= 0 || _colCount <= 0) return;
+    final sel = wholeRange
+        ? _range
+        : (r1: _selRow, c1: _selCol, r2: _selRow, c2: _selCol);
+    var changed = false;
+    for (var r = sel.r1; r <= sel.r2; r++) {
+      if (r < 0 || r >= _rowCount) continue;
+      for (var c = sel.c1; c <= sel.c2; c++) {
+        if (c < 0 || c >= _colCount) continue;
+        if (_rows[r][c].isEmpty) continue;
+        if (!changed) {
+          _pushUndo();
+          changed = true;
+        }
+        _rows[r][c] = '';
+      }
+    }
+    if (!changed) return;
+    // 数式の計算結果も作り直す (= 消したセルを参照している式に効く)。
+    _invalidateFormulaCache();
+    setState(() => _dirty = true);
   }
 
   void _ensureSelVisible() {
@@ -183543,14 +184006,16 @@ $csvText
             Container(
               margin: const EdgeInsets.only(left: 8),
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              // ★ 白いヘッダーの上では黄色の文字が読めないので、 塗り潰した
+              //   帯に白抜きの文字にする (= ユーザー要望: 未保存の文字が
+              //   黄色で見にくい)。 暗い配色でも同じように読める。
               decoration: BoxDecoration(
-                color: Colors.amber.withValues(alpha: 0.2),
+                color: const Color(0xFFD84315),
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: Colors.amber, width: 1),
               ),
               child: Text(context.read<MindMapProvider>().t('doc.unsaved'),
-                  style: TextStyle(
-                      color: Colors.amber,
+                  style: const TextStyle(
+                      color: Colors.white,
                       fontSize: 11,
                       fontWeight: FontWeight.w700)),
             ),
@@ -183643,26 +184108,31 @@ $csvText
           // ── 選んだ範囲を表 / グラフにする (= ユーザー要望: 端の小さな
           //    ボタンだと気付かないので、 ヘッダーに出す)。 範囲を選んで
           //    いない間は押せない見た目にする。 ──
-          IconButton(
-            tooltip: _hasRange
-                ? '選んだ範囲を表にする'
-                : '表にする (先にセルの範囲を選んでください)',
-            icon: Icon(Icons.table_view_rounded,
-                color: _hasRange
-                    ? const Color(0xFF26C6DA)
-                    : const Color(0xFF26C6DA).withValues(alpha: 0.3)),
-            onPressed: _hasRange ? _rangeToTable : null,
-          ),
-          IconButton(
-            tooltip: _hasRange
-                ? '選んだ範囲をグラフにする'
-                : 'グラフにする (先にセルの範囲を選んでください)',
-            icon: Icon(Icons.bar_chart_rounded,
-                color: _hasRange
-                    ? const Color(0xFF7CB342)
-                    : const Color(0xFF7CB342).withValues(alpha: 0.3)),
-            onPressed: _hasRange ? () => unawaited(_rangeToChart()) : null,
-          ),
+          // ★ csv / tsv では出さない (= ユーザー要望: csv は文字だけの
+          //   ファイルなので、 作った図や表を保存できない。 保存すると
+          //   黙って消えるので、 機能ごと出さないようにする)。
+          if (_canHoldObjects) ...[
+            IconButton(
+              tooltip: _hasRange
+                  ? '選んだ範囲を表にする'
+                  : '表にする (先にセルの範囲を選んでください)',
+              icon: Icon(Icons.table_view_rounded,
+                  color: _hasRange
+                      ? const Color(0xFF26C6DA)
+                      : const Color(0xFF26C6DA).withValues(alpha: 0.3)),
+              onPressed: _hasRange ? _rangeToTable : null,
+            ),
+            IconButton(
+              tooltip: _hasRange
+                  ? '選んだ範囲をグラフにする'
+                  : 'グラフにする (先にセルの範囲を選んでください)',
+              icon: Icon(Icons.bar_chart_rounded,
+                  color: _hasRange
+                      ? const Color(0xFF7CB342)
+                      : const Color(0xFF7CB342).withValues(alpha: 0.3)),
+              onPressed: _hasRange ? () => unawaited(_rangeToChart()) : null,
+            ),
+          ],
           if (_kind == _SpreadsheetKind.xlsx) ...[
             IconButton(
               tooltip: 'CSV ファイルの取り込み',
@@ -183746,6 +184216,30 @@ $csvText
               ),
             ],
           ),
+          // ── 左 / 右に分割 (= ユーザー要望: xlsx にも分割ボタンを置いて、
+          //    右分割を押したら 2 分割の右半分がこの表になるように) ──
+          //    分割ペインの中で開いている時 (onSplitOpen == null) は出さない。
+          if (widget.onSplitOpen != null) ...[
+            IconButton(
+              tooltip: context.read<MindMapProvider>().t('openStyle.splitLeft'),
+              icon: _splitPanelIcon(_SplitIconFill.left,
+                  color: const Color(0xFFFF6B6B), size: 19),
+              // ★ onSplitOpen の実装側がビューアを閉じるので、 ここでは
+              //   閉じない (二重に pop すると後ろの画面まで閉じてしまう)。
+              onPressed: () => widget.onSplitOpen!(
+                  _currentFilePath, _currentFileName,
+                  isLeftPanel: true),
+            ),
+            IconButton(
+              tooltip:
+                  context.read<MindMapProvider>().t('openStyle.splitRight'),
+              icon: _splitPanelIcon(_SplitIconFill.right,
+                  color: const Color(0xFF2196F3), size: 19),
+              onPressed: () => widget.onSplitOpen!(
+                  _currentFilePath, _currentFileName,
+                  isLeftPanel: false),
+            ),
+          ],
           // ── 使える関数の一覧 (= ユーザー要望: 端に置く) ──
           IconButton(
             tooltip: '使える関数一覧',
@@ -183870,22 +184364,26 @@ $csvText
                       color: fg.withValues(alpha: 0.55), fontSize: 11)),
             );
           }),
-          _sheetRangeButton(
-            icon: Icons.table_chart_rounded,
-            color: const Color(0xFF26C6DA),
-            label: context.read<MindMapProvider>().t('sheet.rangeToTable'),
-            onTap: _rangeToTable,
-          ),
-          const SizedBox(width: 4),
-          _sheetRangeButton(
-            icon: Icons.bar_chart_rounded,
-            color: const Color(0xFF9CCC65),
-            label: context.read<MindMapProvider>().t('sheet.rangeToChart'),
-            onTap: () {
-              // ignore: discarded_futures
-              _rangeToChart();
-            },
-          ),
+          // csv / tsv は図や表をファイルに保存できないので出さない
+          // (= ユーザー要望: 保存できないなら機能ごと外して)。
+          if (_canHoldObjects) ...[
+            _sheetRangeButton(
+              icon: Icons.table_chart_rounded,
+              color: const Color(0xFF26C6DA),
+              label: context.read<MindMapProvider>().t('sheet.rangeToTable'),
+              onTap: _rangeToTable,
+            ),
+            const SizedBox(width: 4),
+            _sheetRangeButton(
+              icon: Icons.bar_chart_rounded,
+              color: const Color(0xFF9CCC65),
+              label: context.read<MindMapProvider>().t('sheet.rangeToChart'),
+              onTap: () {
+                // ignore: discarded_futures
+                _rangeToChart();
+              },
+            ),
+          ],
         ],
         const SizedBox(width: 8),
       ]),
@@ -184530,6 +185028,10 @@ $csvText
               focusNode: editing ? _editFocus : null,
               inRange: _hasRange && _inRange(r, c),
               onTap: () {
+                // ★ キー操作の受け口に焦点を戻す (= ユーザー報告: Delete /
+                //   Backspace / F2 が効かない)。 ツールバーや数式バーを触ると
+                //   焦点が外れたままになり、 _onKeyEvent にキーが届かない。
+                if (!_keyFocus.hasFocus) _keyFocus.requestFocus();
                 // Shift + クリックで範囲選択 (= ユーザー要望: 範囲を選んで
                 //   図や表にできるように)。 ふつうのクリックは 1 セル選択。
                 final shift = HardwareKeyboard.instance.isShiftPressed;
@@ -184556,6 +185058,7 @@ $csvText
               // ── ドラッグで範囲選択 (= ユーザー要望) ──
               //    押した所を起点にして、 なぞったセルまでを範囲にする。
               onPointerDown: () {
+                if (!_keyFocus.hasFocus) _keyFocus.requestFocus();
                 if (_editingRow != null) return;
                 _dragSelecting = true;
                 _dragAnchorRow = r;
@@ -190785,17 +191288,24 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
     );
   }
 
+  /// 続けて置いた図形をずらすための番号 (= ユーザー要望: パレットを出した
+  /// まま複数連続で置けるように)。 同じ場所に積み上がると掴めないので、
+  /// 置くたびに少しずつ右下へずらす。
+  int _shapeInsSeq = 0;
+
   void _addDrawShape(String kind) {
     if (_slides.isEmpty) return;
     _pushHistory();
     final slide = _slides[_currentIndex];
     final isLine = kind == 'line' || kind == 'arrow';
+    // 置くたびに右下へずらす (6 個で一巡して元の位置に戻る)。
+    final step = (_shapeInsSeq++ % 6) * 260000;
     // パレットの設定 (色 / 塗りか中空か / 太さ) を反映 (= ユーザー要望)。
     final s = _PptxDrawShape(
       id: _nextShapeId(),
       kind: kind,
-      offX: 2160000,
-      offY: 1800000,
+      offX: 2160000 + step,
+      offY: 1800000 + step,
       extCx: isLine ? 3600000 : 2880000,
       extCy: isLine ? 1440000 : 1800000,
       fillColor: (isLine || !_shapeInsFilled) ? null : _shapeInsLineColor,
@@ -193369,6 +193879,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                           padding: EdgeInsets.zero,
                           icon: const Icon(Icons.category_rounded,
                               size: 19, color: Color(0xFFAB47BC)),
+                          // 図形は押した所で直接置く (パレットは開いたまま)。
                           onSelected: _addDrawShape,
                           // ── パレット形式 (= ユーザー要望: 縦のメニューでは
                           //    なく、 一覧から自由に選べるように) ──
@@ -193405,8 +193916,12 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                                         InkWell(
                                           borderRadius:
                                               BorderRadius.circular(6),
-                                          onTap: () =>
-                                              Navigator.pop(ictx, k),
+                                          // ★ 閉じずにその場で置く (= ユーザー
+                                          //   要望: パレットを出したまま複数
+                                          //   連続で置けるように)。 置いた図形は
+                                          //   少しずつずらして重ならないように
+                                          //   する。 外を押すとパレットが閉じる。
+                                          onTap: () => _addDrawShape(k),
                                           child: Container(
                                             width: 34,
                                             height: 30,
@@ -194524,6 +195039,10 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
 
     void select() {
       if (_editingShapeId != null) _exitShapeEditMode();
+      // ★ キー操作の受け口に焦点を戻す (= ユーザー報告: 図形を選んでも
+      //   Backspace / Delete で消せない)。 ツールバーやサムネイルを触ると
+      //   焦点が外れ、 _onKeyEvent にキーが届かなくなる。
+      if (!_keyFocus.hasFocus) _keyFocus.requestFocus();
       setState(() {
         _selectedDrawShapeId = s.id;
         _selectedShapeId = null;
@@ -194531,31 +195050,47 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
       });
     }
 
+    // ★ ハンドルは図形の外側に出るので、 その分だけ枠を広げる。
+    //   Stack は「自分の大きさの外」 にある子を hit-test しないため、
+    //   広げないと回転ハンドルを掴めない (= ユーザー報告: 図形が回せない)。
+    //   本体 (押す / 動かす所) は広げた枠の内側に元の大きさで置く。
+    const double pad = _kPptxHandlePad;
     return Positioned(
-      left: left,
-      top: top,
-      width: w,
-      height: h,
+      left: left - pad,
+      top: top - pad,
+      width: w + pad * 2,
+      height: h + pad * 2,
       child: Transform.rotate(
         // 回転 (= ユーザー要望)。 中心を軸に回す。
         angle: s.rotationDeg * math.pi / 180.0,
-        child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: select,
-        onPanStart: (_) => select(),
-        onPanUpdate: (d) {
-          setState(() {
-            s.offX = math.max(
-                0, s.offX + (d.delta.dx * sw / canvasW).round());
-            s.offY = math.max(
-                0, s.offY + (d.delta.dy * sh / canvasH).round());
-            _slides[_currentIndex].dirty = true;
-          });
-        },
         child: Stack(clipBehavior: Clip.none, children: [
-          Positioned.fill(child: visual),
+          Positioned(
+            left: pad,
+            top: pad,
+            width: w,
+            height: h,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: select,
+              onPanStart: (_) => select(),
+              onPanUpdate: (d) {
+                setState(() {
+                  s.offX = math.max(
+                      0, s.offX + (d.delta.dx * sw / canvasW).round());
+                  s.offY = math.max(
+                      0, s.offY + (d.delta.dy * sh / canvasH).round());
+                  _slides[_currentIndex].dirty = true;
+                });
+              },
+              child: visual,
+            ),
+          ),
           if (selected) ...[
-            Positioned.fill(
+            Positioned(
+              left: pad,
+              top: pad,
+              width: w,
+              height: h,
               child: IgnorePointer(
                 child: Container(
                   decoration: BoxDecoration(
@@ -194571,8 +195106,8 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
               //    近くの図形のアンカーにスナップする。 ──
               // 始点 (= 左上)
               Positioned(
-                left: -7,
-                top: -7,
+                left: pad - 7,
+                top: pad - 7,
                 child: GestureDetector(
                   behavior: HitTestBehavior.opaque,
                   onPanStart: (_) =>
@@ -194605,8 +195140,8 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
               ),
               // 終点 (= 右下)
               Positioned(
-                right: -7,
-                bottom: -7,
+                right: pad - 7,
+                bottom: pad - 7,
                 child: GestureDetector(
                   behavior: HitTestBehavior.opaque,
                   onPanStart: (_) =>
@@ -194649,10 +195184,10 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                 (-1, 0), (1, 0), (0, -1), (0, 1), // 四辺の中央
               ])
                 Positioned(
-                  left: hx < 0 ? -7 : (hx == 0 ? 0 : null),
-                  right: hx > 0 ? -7 : (hx == 0 ? 0 : null),
-                  top: hy < 0 ? -7 : (hy == 0 ? 0 : null),
-                  bottom: hy > 0 ? -7 : (hy == 0 ? 0 : null),
+                  left: hx < 0 ? pad - 7 : (hx == 0 ? pad : null),
+                  right: hx > 0 ? pad - 7 : (hx == 0 ? pad : null),
+                  top: hy < 0 ? pad - 7 : (hy == 0 ? pad : null),
+                  bottom: hy > 0 ? pad - 7 : (hy == 0 ? pad : null),
                   child: Center(
                     widthFactor: hx == 0 ? null : 1,
                     heightFactor: hy == 0 ? null : 1,
@@ -194697,9 +195232,9 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
               // ── 回転ハンドル (= ユーザー要望: 図形の回転) ──
               //    図形の上に出る丸を掴んで回す。 Shift で 15 度刻み。
               Positioned(
-                left: 0,
-                right: 0,
-                top: -30,
+                left: pad,
+                right: pad,
+                top: pad - 30,
                 child: Center(
                   widthFactor: 1,
                   heightFactor: 1,
@@ -194750,7 +195285,6 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
           ],
         ]),
       ),
-      ),
     );
   }
 
@@ -194759,6 +195293,12 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
 
   /// 図形の最小サイズ (EMU)。
   static const int _kMinShapeEmu = 120000;
+
+  /// 図形の外に出るハンドル (回転 / 大きさ変更) のはみ出し分 (px)。
+  /// Stack は自分の大きさの外にある子を hit-test しないので、 この分だけ
+  /// 図形の枠を広げてハンドルを内側に収める (= ユーザー報告: 回転ハンドルが
+  /// 見えているのに掴めない)。 回転ハンドルは上に 30px 出るので余裕を持たせる。
+  static const double _kPptxHandlePad = 34.0;
 
   /// 図形の大きさを変える (= ユーザー要望: 縦横比は自由、 Shift で維持)。
   ///
@@ -200132,14 +200672,16 @@ $currentText
             Container(
               margin: const EdgeInsets.only(left: 8),
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              // ★ 白いヘッダーの上では黄色の文字が読めないので、 塗り潰した
+              //   帯に白抜きの文字にする (= ユーザー要望: 未保存の文字が
+              //   黄色で見にくい)。 暗い配色でも同じように読める。
               decoration: BoxDecoration(
-                color: Colors.amber.withValues(alpha: 0.2),
+                color: const Color(0xFFD84315),
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: Colors.amber, width: 1),
               ),
               child: Text(context.read<MindMapProvider>().t('doc.unsaved'),
-                  style: TextStyle(
-                      color: Colors.amber,
+                  style: const TextStyle(
+                      color: Colors.white,
                       fontSize: 11,
                       fontWeight: FontWeight.w700)),
             ),
@@ -209953,14 +210495,16 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
             Container(
               margin: const EdgeInsets.only(left: 8),
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              // ★ 白いヘッダーの上では黄色の文字が読めないので、 塗り潰した
+              //   帯に白抜きの文字にする (= ユーザー要望: 未保存の文字が
+              //   黄色で見にくい)。 暗い配色でも同じように読める。
               decoration: BoxDecoration(
-                color: Colors.amber.withValues(alpha: 0.2),
+                color: const Color(0xFFD84315),
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: Colors.amber, width: 1),
               ),
               child: Text(context.read<MindMapProvider>().t('doc.unsaved'),
-                  style: TextStyle(
-                      color: Colors.amber,
+                  style: const TextStyle(
+                      color: Colors.white,
                       fontSize: 11,
                       fontWeight: FontWeight.w700)),
             ),

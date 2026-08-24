@@ -23,8 +23,10 @@ import 'dart:math' as math;
 import 'dart:ui' show FontFeature;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart' as sfpdf;
 import 'package:syncfusion_flutter_pdfviewer/pdfviewer.dart' as sf_pdf;
@@ -43,6 +45,15 @@ enum PdfDrawTool {
 
   /// チェック (✓) を置く (= ユーザー要望: 簡単に出せるように)。
   check,
+
+  /// 置いた図形を選んで、 動かす / 消す (= ユーザー要望: PDF の置いた図形を
+  /// 選択して操作できるモード)。 まだ保存していない図形が対象
+  /// (保存済みは PDF に焼き付いているので触れない)。
+  select,
+
+  /// 文字を置く (= ユーザー要望: テキスト入力を行う機能)。 押した所に
+  /// 打ち込んだ文字を置く。 保存すると PDF の本文として焼き込まれる。
+  text,
 }
 
 /// 描き込みを PDF へ焼き込み終えた事を知らせる (値は「パス + 時刻」)。
@@ -61,6 +72,10 @@ Future<bool> burnPdfStrokes(Map<String, Object?> msg) async {
     final path = msg['path'] as String;
     final backup = msg['backup'] as String?;
     final raw = (msg['strokes'] as List).cast<Map<String, Object?>>();
+    // 日本語を書ける書体 (assets/fonts の NotoSansJP)。 呼ぶ側が読んで渡す
+    // (= 別 isolate では rootBundle を使えないため)。 無ければ英数字だけの
+    // 標準書体で書く。
+    final fontBytes = msg['font'] as List<int>?;
     final f = File(path);
     final bytes = await f.readAsBytes();
     // ── 一度だけバックアップ (描き込みは元に戻せないため) ──
@@ -86,6 +101,26 @@ Future<bool> burnPdfStrokes(Map<String, Object?> msg) async {
       final width = (m['width'] as num).toDouble();
       final page = doc.pages[pageNumber - 1];
       final g = page.graphics;
+      // ── 文字 (= ユーザー要望: テキスト入力) ──
+      if (tool == PdfDrawTool.text) {
+        final body = '${m['text'] ?? ''}';
+        if (body.isEmpty) continue;
+        final fs = (m['fontSize'] as num?)?.toDouble() ?? 14.0;
+        sfpdf.PdfFont font;
+        if (fontBytes != null && fontBytes.isNotEmpty) {
+          font = sfpdf.PdfTrueTypeFont(fontBytes, fs);
+        } else {
+          font = sfpdf.PdfStandardFont(sfpdf.PdfFontFamily.helvetica, fs);
+        }
+        g.drawString(
+          body,
+          font,
+          brush: sfpdf.PdfSolidBrush(sfpdf.PdfColor(
+              (argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF)),
+          bounds: Rect.fromLTWH(points.first.dx, points.first.dy, 0, 0),
+        );
+        continue;
+      }
       final pen = sfpdf.PdfPen(
         sfpdf.PdfColor((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF),
         width: width,
@@ -127,8 +162,10 @@ Future<bool> burnPdfStrokes(Map<String, Object?> msg) async {
         case PdfDrawTool.hand:
         case PdfDrawTool.eraser:
         case PdfDrawTool.check:
-          // 消しゴムは線を残さない。 チェックはペンの線として積むので、
-          // ここへは来ない。
+        case PdfDrawTool.select:
+        case PdfDrawTool.text:
+          // 消しゴムと選択は線を残さない。 チェックはペンの線として積み、
+          // 文字は上で書き終えているので、 ここへは来ない。
           break;
       }
     }
@@ -150,12 +187,20 @@ class PdfDrawStroke {
   final Color color;
   final double width; // 線の太さ (pt)
 
+  /// 置いた文字 (tool == text の時だけ)。
+  final String? text;
+
+  /// 文字の大きさ (pt)。
+  final double fontSize;
+
   PdfDrawStroke({
     required this.pageNumber,
     required this.tool,
     required this.points,
     required this.color,
     required this.width,
+    this.text,
+    this.fontSize = 14,
   });
 }
 
@@ -191,6 +236,14 @@ class PdfDrawLayer extends StatefulWidget {
   /// ファイル保存に成功した後に呼ぶ (= ホストは reload tick を進める)。
   final VoidCallback onSaved;
 
+  /// 道具箱 (ツールバー) をホスト側 (= ヘッダーの下) に出すための受け口。
+  ///
+  /// 渡すと、 ここへ道具箱の Widget を流し込み、 PDF の上には重ねない
+  /// (= ユーザー要望: PDF の上部が道具箱と被って描けない)。 描き込みモードを
+  /// 抜けた時と片付けの時は null を流す。 渡さなければ従来どおり PDF の上端に
+  /// 重ねて出す (= 分割ペインのように置き場所が無い所)。
+  final ValueNotifier<Widget?>? toolbarSink;
+
   const PdfDrawLayer({
     super.key,
     required this.child,
@@ -200,6 +253,7 @@ class PdfDrawLayer extends StatefulWidget {
     required this.onExit,
     required this.onSaved,
     this.controller,
+    this.toolbarSink,
   });
 
   @override
@@ -225,12 +279,24 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   /// ための軽い再描画タイマー (モード ON の間だけ)。
   Timer? _repaintTimer;
 
+  /// 色 (= ユーザー要望: カラーバリエーションをもっと増やして)。
+  /// 上段 = よく使う濃い色 / 下段 = 明るい色・中間色・無彩色。
   static const List<Color> _palette = [
     Color(0xFFE53935), // 赤
+    Color(0xFFD81B60), // 紅
     Color(0xFFFB8C00), // 橙
+    Color(0xFFFDD835), // 黄
     Color(0xFF43A047), // 緑
+    Color(0xFF00897B), // 青緑
     Color(0xFF1E88E5), // 青
+    Color(0xFF3949AB), // 藍
     Color(0xFF8E24AA), // 紫
+    Color(0xFF6D4C41), // 茶
+    Color(0xFFFF80AB), // 桃
+    Color(0xFFFFAB40), // 山吹
+    Color(0xFF9CCC65), // 黄緑
+    Color(0xFF4DD0E1), // 水
+    Color(0xFF757575), // 灰
     Color(0xFF000000), // 黒
   ];
 
@@ -242,13 +308,240 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   /// 範囲をそのままの大きさで見せる。
   Offset? _cursorGlobal;
 
+  /// 選んでいる図形 (_strokes の位置)。 null なら未選択。
+  int? _selected;
+
+  /// 色の一覧を広げているか (= ユーザー要望: 色が並び過ぎて気になるので、
+  /// 普段は「今の色 + 展開ボタン」 だけにする)。
+  bool _colorsOpen = false;
+
+  /// 選んだ図形をドラッグしている間の、 直前のページ座標。
+  Offset? _dragPrev;
+
+  /// 掴んでいる四隅の番号 (0=左上 1=右上 2=左下 3=右下)。 null なら
+  /// 「動かす」。 = ユーザー要望: 選択モードで大きさや縦横比も変えられるように。
+  int? _resizeCorner;
+
+  /// 拡大縮小の支点 (掴んだ角の対角) と、 掴んだ時の図形 / 枠。
+  Offset? _resizeAnchor;
+  PdfDrawStroke? _resizeOrig;
+  Rect? _resizeOrigBox;
+
+  /// 図形の大きさを固定して置くか (= ユーザー要望: 楕円や四角は毎回同じ
+  /// 大きさで出てきた方が嬉しい時がある)。 ON の間は、 押した所に
+  /// [_lastShapeSize] の大きさで置く (ドラッグ不要)。
+  bool _fixedSize = false;
+
+  /// 最後に自由に描いた図形の大きさ (ページ pt)。 固定モードはこれを使う
+  /// ので、 好きな大きさで 1 つ描いてから ON にすれば、 その大きさで揃う。
+  Size _lastShapeSize = const Size(120, 80);
+
+  /// 大きさを固定して置ける (= 始点と終点で決まる) 図形か。
+  static bool _isSpanTool(PdfDrawTool t) =>
+      t == PdfDrawTool.rect ||
+      t == PdfDrawTool.ellipse ||
+      t == PdfDrawTool.line ||
+      t == PdfDrawTool.arrow;
+
+  /// 取り消し (Ctrl+Z) 用の控え。 図形を足す / 消す / 動かす の前に積む
+  /// (= ユーザー要望: ctrl+z で挿入した図形を取り消せるように)。
+  final List<List<PdfDrawStroke>> _undo = [];
+  static const int _kUndoMax = 60;
+
+  void _pushUndo() {
+    _undo.add(List<PdfDrawStroke>.from(_strokes));
+    if (_undo.length > _kUndoMax) _undo.removeAt(0);
+  }
+
+  void _undoOnce() {
+    if (_undo.isEmpty) return;
+    final prev = _undo.removeLast();
+    setState(() {
+      _strokes
+        ..clear()
+        ..addAll(prev);
+      _selected = null;
+      _current = null;
+    });
+  }
+
+  /// [pt] (ページ座標 pt) にある図形を探す。 後から描いた物を優先する。
+  int? _hitStrokeAt(int pageNumber, Offset pt) {
+    for (var i = _strokes.length - 1; i >= 0; i--) {
+      final st = _strokes[i];
+      if (st.pageNumber != pageNumber) continue;
+      final tol = (st.width * 1.5).clamp(6.0, 24.0).toDouble();
+      if (st.tool == PdfDrawTool.rect ||
+          st.tool == PdfDrawTool.ellipse ||
+          st.tool == PdfDrawTool.text) {
+        // 四角 / 楕円は枠の中も掴めるようにする (= 選びやすさ優先)。
+        final r = Rect.fromPoints(st.points.first, st.points.last)
+            .inflate(tol);
+        if (r.contains(pt)) return i;
+        continue;
+      }
+      for (var k = 0; k + 1 < st.points.length; k++) {
+        if (_distToSegment(pt, st.points[k], st.points[k + 1]) <= tol) {
+          return i;
+        }
+      }
+    }
+    return null;
+  }
+
+  static double _distToSegment(Offset p, Offset a, Offset b) {
+    final ab = b - a;
+    final len2 = ab.dx * ab.dx + ab.dy * ab.dy;
+    if (len2 <= 0) return (p - a).distance;
+    final t =
+        (((p - a).dx * ab.dx + (p - a).dy * ab.dy) / len2).clamp(0.0, 1.0);
+    return (a + Offset(ab.dx * t, ab.dy * t) - p).distance;
+  }
+
+  /// 図形を囲む枠 (ページ座標 pt)。 画面の見た目 (= 8px ぶん広げた枠) と
+  /// 合わせるため、 [padPx] を掛けた分だけ広げる。
+  static Rect _strokeBox(PdfDrawStroke st, {double pad = 0}) {
+    var r = Rect.fromPoints(st.points.first, st.points.first);
+    for (final q in st.points) {
+      r = r.expandToInclude(Rect.fromPoints(q, q));
+    }
+    return pad == 0 ? r : r.inflate(pad);
+  }
+
+  /// 枠の四隅 (0=左上 1=右上 2=左下 3=右下)。
+  static List<Offset> _boxCorners(Rect r) =>
+      [r.topLeft, r.topRight, r.bottomLeft, r.bottomRight];
+
+  /// 選んでいる図形を [d] だけずらす。
+  void _moveSelected(Offset d) {
+    final i = _selected;
+    if (i == null || i < 0 || i >= _strokes.length) return;
+    final st = _strokes[i];
+    _strokes[i] = PdfDrawStroke(
+      pageNumber: st.pageNumber,
+      tool: st.tool,
+      points: [for (final q in st.points) q + d],
+      color: st.color,
+      width: st.width,
+    );
+  }
+
+  /// 掴んだ角を [pt] まで動かして、 選んでいる図形を伸び縮みさせる。
+  /// Shift を押している間は縦横比を保つ (= 形を崩さずに大きさだけ変える)。
+  void _resizeSelectedTo(Offset pt) {
+    final i = _selected;
+    final orig = _resizeOrig;
+    final anchor = _resizeAnchor;
+    final box = _resizeOrigBox;
+    if (i == null || orig == null || anchor == null || box == null) return;
+    if (i < 0 || i >= _strokes.length) return;
+    final w0 = box.width;
+    final h0 = box.height;
+    // 支点から掴んだ角までの元の長さ (0 だと割れないので下限を置く)。
+    final dx0 = (w0.abs() < 1e-3 ? 1e-3 : w0) * (anchor.dx <= box.left ? 1 : -1);
+    final dy0 = (h0.abs() < 1e-3 ? 1e-3 : h0) * (anchor.dy <= box.top ? 1 : -1);
+    var sx = (pt.dx - anchor.dx) / dx0;
+    var sy = (pt.dy - anchor.dy) / dy0;
+    // 潰れ切らないように下限を置く (反転はできる)。
+    double clampScale(double v) {
+      if (v.isNaN || v.isInfinite) return 1.0;
+      if (v.abs() < 0.05) return v < 0 ? -0.05 : 0.05;
+      return v.clamp(-20.0, 20.0).toDouble();
+    }
+
+    sx = clampScale(sx);
+    sy = clampScale(sy);
+    if (HardwareKeyboard.instance.isShiftPressed) {
+      final k = math.max(sx.abs(), sy.abs());
+      sx = k * (sx < 0 ? -1 : 1);
+      sy = k * (sy < 0 ? -1 : 1);
+    }
+    _strokes[i] = PdfDrawStroke(
+      pageNumber: orig.pageNumber,
+      tool: orig.tool,
+      points: [
+        for (final q in orig.points)
+          Offset(anchor.dx + (q.dx - anchor.dx) * sx,
+              anchor.dy + (q.dy - anchor.dy) * sy),
+      ],
+      color: orig.color,
+      width: orig.width,
+      text: orig.text,
+      // 文字は枠と一緒に大きさも変える (= 引っ張った分だけ大きくなる)。
+      fontSize: orig.tool == PdfDrawTool.text
+          ? (orig.fontSize * ((sx.abs() + sy.abs()) / 2)).clamp(4.0, 400.0)
+          : orig.fontSize,
+    );
+  }
+
+  /// 選んでいる図形を消す。
+  void _deleteSelected() {
+    final i = _selected;
+    if (i == null || i < 0 || i >= _strokes.length) return;
+    _pushUndo();
+    setState(() {
+      _strokes.removeAt(i);
+      _selected = null;
+    });
+  }
+
+  /// 描き込み中のキー操作 (= ユーザー要望: Ctrl+Z で取り消し)。
+  bool _onKey(KeyEvent e) {
+    if (!widget.active || widget.filePath == null) return false;
+    if (e is! KeyDownEvent) return false;
+    // ── 文字を打ち込んでいる間は、 箱の方にキーを渡す ──
+    //    (Esc だけはここで受けて打ち込みをやめる)
+    if (_textPage != null) {
+      if (e.logicalKey == LogicalKeyboardKey.escape) {
+        _cancelText();
+        return true;
+      }
+      return false;
+    }
+    final ctrl = HardwareKeyboard.instance.isControlPressed ||
+        HardwareKeyboard.instance.isMetaPressed;
+    if (ctrl && e.logicalKey == LogicalKeyboardKey.keyZ) {
+      _undoOnce();
+      return true;
+    }
+    if (_selected != null &&
+        (e.logicalKey == LogicalKeyboardKey.delete ||
+            e.logicalKey == LogicalKeyboardKey.backspace)) {
+      _deleteSelected();
+      return true;
+    }
+    // ── Esc: ファイルは閉じない。 選んでいれば解除、 道具を使って
+    //    いれば「選ぶ」 に戻す (= ユーザー要望) ──
+    if (e.logicalKey == LogicalKeyboardKey.escape) {
+      setState(() {
+        if (_selected != null) {
+          _selected = null;
+        } else if (_tool != PdfDrawTool.select) {
+          _tool = PdfDrawTool.select;
+        }
+      });
+      return true;
+    }
+    return false;
+  }
+
   @override
   void didUpdateWidget(covariant PdfDrawLayer old) {
     super.didUpdateWidget(old);
-    if (old.active && !widget.active) {
-      // ホスト側がモードを閉じた → 未保存の描画は自動で保存する
-      // (= 描いたものが黙って消えないように)。
-      unawaited(_commit(exitAfter: false));
+    // ★ モードを閉じただけでは焼き込まない (= ユーザー要望: パレットを
+    //   閉じる度に保存されると、 消したい線や図形を消せなくなる)。
+    //   描いたものは「まだ保存していない線」 のまま持ち続け、 PDF へ
+    //   焼き込むのは ✓ / 保存ボタンを押した時と、 ビューアを閉じた時 (dispose)
+    //   だけにする。 閉じている間も線は薄く見えたままにする (build 参照)。
+    // ── 別の PDF に切り替わった時だけは、 元のファイルへ書き戻す ──
+    //    (そのまま持ち越すと、 関係の無い PDF に焼き込まれてしまう)
+    if (old.filePath != widget.filePath && _strokes.isNotEmpty) {
+      final oldPath = old.filePath;
+      final pending = List<PdfDrawStroke>.from(_strokes);
+      _strokes.clear();
+      _selected = null;
+      _undo.clear();
+      if (oldPath != null) unawaited(writeStrokesToPdf(oldPath, pending));
     }
     _syncTimer();
   }
@@ -256,6 +549,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   @override
   void initState() {
     super.initState();
+    HardwareKeyboard.instance.addHandler(_onKey);
     _syncTimer();
   }
 
@@ -274,6 +568,14 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
 
   @override
   void dispose() {
+    HardwareKeyboard.instance.removeHandler(_onKey);
+    _textCtrl.dispose();
+    _textFocus.dispose();
+    // ヘッダーに出していた道具箱を片付ける。
+    final sink = widget.toolbarSink;
+    if (sink != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => sink.value = null);
+    }
     _repaintTimer?.cancel();
     // 閉じられた時も未保存分を書き込む (リロード通知は出来ないが、 次に
     // 開いた時には反映されている)。
@@ -373,13 +675,79 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     final (geom, pt) = hit;
     _activePointer = e.pointer;
     _currentGeom = geom;
+    // ── 選ぶ: 押した所の図形を掴む (= ユーザー要望: 置いた図形を選択して
+    //    操作できるモード)。 そのままドラッグで動かせる。 ──
+    if (_tool == PdfDrawTool.select) {
+      // ── まず「選んでいる図形の四隅」 を掴んでいないか見る ──
+      //    (= ユーザー要望: 動かすだけでなく大きさや縦横比も変えられるように)
+      final sel = _selected;
+      if (sel != null && sel >= 0 && sel < _strokes.length) {
+        final st = _strokes[sel];
+        if (st.pageNumber == geom.pageNumber) {
+          final box = _strokeBox(st, pad: 8 * geom.heightPercentage);
+          final tol = 12 * geom.heightPercentage;
+          final corners = _boxCorners(box);
+          for (var i = 0; i < corners.length; i++) {
+            if ((corners[i] - pt).distance <= tol) {
+              _pushUndo();
+              setState(() {
+                _resizeCorner = i;
+                // 掴んだ角の対角を支点にする。
+                _resizeAnchor = corners[3 - i];
+                _resizeOrig = st;
+                _resizeOrigBox = box;
+              });
+              return;
+            }
+          }
+        }
+      }
+      final hit = _hitStrokeAt(geom.pageNumber, pt);
+      setState(() {
+        _selected = hit;
+        _dragPrev = hit == null ? null : pt;
+        _resizeCorner = null;
+      });
+      if (hit != null) _pushUndo(); // 動かす前の位置を控える
+      return;
+    }
+    // ── 大きさを固定して置く (= ユーザー要望) ──
+    //    押した所を左上にして、 覚えている大きさでそのまま置く。
+    if (_fixedSize && _isSpanTool(_tool)) {
+      _pushUndo();
+      // ★ 押した所が真ん中に来るように置く (= ユーザー要望: カーソルが
+      //   中心となるように)。
+      final half =
+          Offset(_lastShapeSize.width / 2, _lastShapeSize.height / 2);
+      setState(() {
+        _strokes.add(PdfDrawStroke(
+          pageNumber: geom.pageNumber,
+          tool: _tool,
+          points: [pt - half, pt + half],
+          color: _color,
+          width: _width,
+        ));
+      });
+      _activePointer = null;
+      _currentGeom = null;
+      return;
+    }
+    // ── 文字を置く (= ユーザー要望: 押した所にそのまま書き込める箱) ──
+    if (_tool == PdfDrawTool.text) {
+      _activePointer = null;
+      _currentGeom = null;
+      _beginTextAt(geom.pageNumber, pt);
+      return;
+    }
     // ── 消しゴム: なぞった所の線を消す (= ユーザー要望) ──
     if (_tool == PdfDrawTool.eraser) {
+      _pushUndo();
       _eraseAt(geom.pageNumber, pt);
       return;
     }
     // ── チェック: 押した所に ✓ を置く (= ユーザー要望) ──
     if (_tool == PdfDrawTool.check) {
+      _pushUndo();
       setState(() {
         _strokes.add(_checkStroke(geom.pageNumber, pt));
       });
@@ -403,6 +771,28 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     if (e.pointer != _activePointer) return;
     final geom = _currentGeom;
     if (geom == null) return;
+    // 選んだ図形をドラッグで動かす。
+    if (_tool == PdfDrawTool.select) {
+      if (_selected == null) return;
+      if (_resizeCorner == null && _dragPrev == null) return;
+      try {
+        final local = geom.box.globalToLocal(e.position);
+        final pt = Offset(
+              local.dx.clamp(0.0, geom.contentSize.width),
+              local.dy.clamp(0.0, geom.contentSize.height),
+            ) *
+            geom.heightPercentage;
+        if (_resizeCorner != null) {
+          setState(() => _resizeSelectedTo(pt));
+        } else {
+          setState(() {
+            _moveSelected(pt - _dragPrev!);
+            _dragPrev = pt;
+          });
+        }
+      } catch (_) {}
+      return;
+    }
     // 消しゴムはなぞり続けている間ずっと消す。
     if (_tool == PdfDrawTool.eraser) {
       try {
@@ -434,7 +824,24 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
         // 細かすぎる点は間引く (pt 換算でおよそ 0.7pt 以上動いた時だけ)。
         if ((pt - cur.points.last).distance >= 0.7) cur.points.add(pt);
       } else {
-        cur.points[cur.points.length - 1] = pt;
+        // ── Shift を押している間はまっすぐ引く (= ユーザー要望: 直線は
+        //    0 / 90 / 180 / 270 度だけ)。 四角と楕円は正方形 / 真円にする。 ──
+        var end = pt;
+        if (HardwareKeyboard.instance.isShiftPressed) {
+          final a = cur.points.first;
+          final d = end - a;
+          if (cur.tool == PdfDrawTool.line || cur.tool == PdfDrawTool.arrow) {
+            end = d.dx.abs() >= d.dy.abs()
+                ? Offset(end.dx, a.dy)
+                : Offset(a.dx, end.dy);
+          } else if (cur.tool == PdfDrawTool.rect ||
+              cur.tool == PdfDrawTool.ellipse) {
+            final side = math.max(d.dx.abs(), d.dy.abs());
+            end = a +
+                Offset(side * (d.dx < 0 ? -1 : 1), side * (d.dy < 0 ? -1 : 1));
+          }
+        }
+        cur.points[cur.points.length - 1] = end;
       }
     });
   }
@@ -445,6 +852,16 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     if (e.pointer != _activePointer) return;
     _activePointer = null;
     _currentGeom = null;
+    _dragPrev = null;
+    if (_resizeCorner != null) {
+      setState(() {
+        _resizeCorner = null;
+        _resizeAnchor = null;
+        _resizeOrig = null;
+        _resizeOrigBox = null;
+      });
+      return;
+    }
     final cur = _current;
     if (cur == null) return;
     setState(() {
@@ -452,7 +869,16 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       // 動きがほぼ無い図形はゴミになるので捨てる (ペンの点は残す)。
       final span = (cur.points.last - cur.points.first).distance;
       if (cur.tool == PdfDrawTool.pen || span >= 1.0) {
+        _pushUndo();
         _strokes.add(cur);
+        // 次に「大きさを固定」 で置く時のために、 今の大きさを覚える
+        // (= ユーザー要望: 好きな大きさで 1 つ描いてから固定すれば揃う)。
+        if (_isSpanTool(cur.tool)) {
+          final d = cur.points.last - cur.points.first;
+          if (d.dx.abs() >= 2 || d.dy.abs() >= 2) {
+            _lastShapeSize = Size(d.dx, d.dy);
+          }
+        }
       }
     });
   }
@@ -531,7 +957,142 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     if (mounted) setState(() {});
   }
 
-  /// チェック (✓) 1 個ぶんの線 (= ユーザー要望: 簡単に出せるように)。
+  /// 文字の大きさ (pt)。 置いた文字に使う (= ユーザー要望: テキスト入力)。
+  double _fontSize = 14;
+
+  /// 打ち込み中の文字の場所 (ページ番号 / ページ座標 pt)。
+  /// null なら打ち込んでいない。 = ユーザー要望: 窓を出すのではなく、
+  /// 押した所にそのまま文字を書き込める箱を出す (PowerPoint と同じ感覚)。
+  int? _textPage;
+  Offset? _textAt;
+  final TextEditingController _textCtrl = TextEditingController();
+  final FocusNode _textFocus = FocusNode();
+
+  /// 押した所に文字の箱を出す。 既に打ち込み中なら先に確定する。
+  void _beginTextAt(int pageNumber, Offset at) {
+    if (_textPage != null) _commitText();
+    setState(() {
+      _textPage = pageNumber;
+      _textAt = at;
+      _textCtrl.text = '';
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _textFocus.requestFocus();
+    });
+  }
+
+  /// 打ち込んだ文字を確定して線として積む。 空なら捨てる。
+  void _commitText() {
+    final page = _textPage;
+    final at = _textAt;
+    final body = _textCtrl.text;
+    if (page == null || at == null) return;
+    setState(() {
+      _textPage = null;
+      _textAt = null;
+      _textCtrl.text = '';
+    });
+    if (body.trim().isEmpty) return;
+    // 置いた文字の大きさを測って、 選ぶ / 消す / 大きさを変える の対象にする。
+    final tp = TextPainter(
+      text: TextSpan(
+          text: body, style: TextStyle(fontSize: _fontSize, height: 1.2)),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    _pushUndo();
+    setState(() {
+      _strokes.add(PdfDrawStroke(
+        pageNumber: page,
+        tool: PdfDrawTool.text,
+        points: [at, at + Offset(tp.width, tp.height)],
+        color: _color,
+        width: _width,
+        text: body,
+        fontSize: _fontSize,
+      ));
+    });
+  }
+
+  /// 打ち込みをやめる (= 何も置かない)。
+  void _cancelText() {
+    if (_textPage == null) return;
+    setState(() {
+      _textPage = null;
+      _textAt = null;
+      _textCtrl.text = '';
+    });
+  }
+
+  /// ページ座標 (pt) → オーバーレイ上の位置 (px)。 見つからなければ null。
+  (Offset, double)? _pageToOverlay(int pageNumber, Offset pagePt) {
+    final overlay =
+        _overlayKey.currentContext?.findRenderObject() as RenderBox?;
+    if (overlay == null || !overlay.attached) return null;
+    for (final g in _collectPageGeoms()) {
+      if (g.pageNumber != pageNumber) continue;
+      try {
+        final local = pagePt / g.heightPercentage;
+        final o = overlay.globalToLocal(g.box.localToGlobal(local));
+        final a = g.box.localToGlobal(Offset.zero);
+        final b = g.box.localToGlobal(const Offset(0, 10));
+        final px = ((b - a).distance / 10.0) / g.heightPercentage;
+        return (o, px);
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  /// 打ち込み中の文字の箱 (= 押した所にそのまま出る)。
+  Widget _buildTextBox() {
+    final page = _textPage;
+    final at = _textAt;
+    if (page == null || at == null) return const SizedBox.shrink();
+    final hit = _pageToOverlay(page, at);
+    if (hit == null) return const SizedBox.shrink();
+    final (pos, px) = hit;
+    final fs = (_fontSize * px).clamp(6.0, 200.0).toDouble();
+    return Positioned(
+      left: pos.dx,
+      top: pos.dy,
+      child: Material(
+        color: Colors.transparent,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+              minWidth: 120, maxWidth: math.max(160.0, 520.0 * px)),
+          child: Container(
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.86),
+              border: Border.all(color: const Color(0xFF6C63FF), width: 1.4),
+              borderRadius: BorderRadius.circular(3),
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+            child: IntrinsicWidth(
+              child: TextField(
+                controller: _textCtrl,
+                focusNode: _textFocus,
+                autofocus: true,
+                maxLines: null,
+                style: TextStyle(
+                    color: _color, fontSize: fs, height: 1.2),
+                cursorColor: const Color(0xFF6C63FF),
+                cursorHeight: fs,
+                decoration: const InputDecoration(
+                  isDense: true,
+                  border: InputBorder.none,
+                  contentPadding: EdgeInsets.zero,
+                ),
+                // 打ち終わりは外を押すか ✓。 Enter は改行として使う。
+                onTapOutside: (_) => _commitText(),
+                onEditingComplete: _commitText,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// チェック (✓) 1 個ぶんの線  /// チェック (✓) 1 個ぶんの線 (= ユーザー要望: 簡単に出せるように)。
   /// 太さに合わせて大きさも変える。
   PdfDrawStroke _checkStroke(int pageNumber, Offset at) {
     final k = (_width / 2.5).clamp(0.6, 6.0);
@@ -611,6 +1172,18 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     if (strokes.isEmpty) return true;
     // バックアップ先はプラグイン (path_provider) 経由なので UI isolate 側で
     // 先に解決してから渡す (別 isolate ではプラグインを呼べない)。
+    // ── 文字を置いている時は日本語の書体を読んでおく ──
+    //    (別 isolate では rootBundle を使えないので、 ここで読んで渡す)
+    List<int>? fontBytes;
+    if (strokes.any((e) => e.tool == PdfDrawTool.text)) {
+      try {
+        final data =
+            await rootBundle.load('assets/fonts/NotoSansJP-Regular.ttf');
+        fontBytes = data.buffer.asUint8List();
+      } catch (_) {
+        fontBytes = null; // 無ければ英数字だけの標準書体になる
+      }
+    }
     String? backupPath;
     try {
       final dir = await getApplicationSupportDirectory();
@@ -629,11 +1202,14 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
             'tool': st.tool.index,
             'color': st.color.toARGB32(),
             'width': st.width,
+            'text': st.text,
+            'fontSize': st.fontSize,
             'pts': <double>[
               for (final pt in st.points) ...[pt.dx, pt.dy]
             ],
           },
       ],
+      'font': fontBytes,
     };
     bool ok;
     try {
@@ -660,8 +1236,39 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   @override
   Widget build(BuildContext context) {
     final child = KeyedSubtree(key: _childKey, child: widget.child);
-    if (!widget.active || widget.filePath == null) return child;
+    if (!widget.active || widget.filePath == null) {
+      _publishToolbar(null);
+      // ── 描き込みモードを閉じている間も、 まだ焼き込んでいない線は
+      //    そのまま見せる (= ユーザー要望: 閉じても保存しない代わりに、
+      //    描いたものが消えたように見えないようにする)。 触れはしない。 ──
+      if (_strokes.isEmpty) return child;
+      return Stack(children: [
+        Positioned.fill(child: child),
+        Positioned.fill(
+          child: IgnorePointer(
+            child: ClipRect(
+              child: CustomPaint(
+                key: _overlayKey,
+                painter: _PdfDrawPainter(
+                  strokes: _strokes,
+                  current: null,
+                  eraserCursor: null,
+                  eraserSize: _eraserSize,
+                  selected: null,
+                  geomsGetter: _collectPageGeoms,
+                  overlayBoxGetter: () => _overlayKey.currentContext
+                      ?.findRenderObject() as RenderBox?,
+                ),
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        ),
+      ]);
+    }
     final passThrough = _tool == PdfDrawTool.hand;
+    final toolbar = _buildToolbar(context);
+    if (widget.toolbarSink != null) _publishToolbar(toolbar);
     return Stack(children: [
       Positioned.fill(child: child),
       // ── 描画オーバーレイ ──
@@ -681,7 +1288,9 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
               // 消しゴム中は自前の丸だけを出す (= 大きさがそのまま見える)。
               cursor: _tool == PdfDrawTool.eraser
                   ? SystemMouseCursors.none
-                  : SystemMouseCursors.precise,
+                  : _tool == PdfDrawTool.select
+                      ? SystemMouseCursors.click
+                      : SystemMouseCursors.precise,
               onExit: (_) => _trackCursor(null),
               child: ClipRect(
                 child: CustomPaint(
@@ -691,6 +1300,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
                     eraserCursor:
                         _tool == PdfDrawTool.eraser ? _cursorGlobal : null,
                     eraserSize: _eraserSize,
+                    selected: _tool == PdfDrawTool.select ? _selected : null,
                     geomsGetter: _collectPageGeoms,
                     overlayBoxGetter: () => _overlayKey.currentContext
                         ?.findRenderObject() as RenderBox?,
@@ -702,17 +1312,34 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
           ),
         ),
       ),
-      // ── ツールバー ──
-      Positioned(
-        top: 6,
-        left: 6,
-        right: 6,
-        child: Align(
-          alignment: Alignment.topCenter,
-          child: _buildToolbar(context),
+      // ── 打ち込み中の文字の箱 (= ユーザー要望: 押した所にそのまま書ける) ──
+      if (_textPage != null) _buildTextBox(),
+      // ── 道具箱 ──
+      //    ホスト側に置き場所 (toolbarSink) があればそちらに出すので、
+      //    ここでは重ねない (= ユーザー要望: PDF の上部と被って描けない)。
+      if (widget.toolbarSink == null)
+        Positioned(
+          top: 6,
+          left: 6,
+          right: 6,
+          child: Align(
+            alignment: Alignment.topCenter,
+            child: toolbar,
+          ),
         ),
-      ),
     ]);
+  }
+
+  /// 道具箱をホスト側の受け口へ流す。 build 中に他の Widget を書き換える
+  /// ことになるので、 フレームが終わってから渡す。
+  void _publishToolbar(Widget? w) {
+    final sink = widget.toolbarSink;
+    if (sink == null) return;
+    if (identical(sink.value, w)) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted && w != null) return;
+      sink.value = w;
+    });
   }
 
   Widget _buildToolbar(BuildContext context) {
@@ -724,7 +1351,10 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       return Tooltip(
         message: widget.tr(tipKey),
         child: InkWell(
-          onTap: () => setState(() => _tool = t),
+          // 選んでいる道具をもう一度押すと解除する (= ユーザー要望)。
+          // 解除すると素通し (hand) になり、 PDF の操作に戻る。
+          onTap: () => setState(
+              () => _tool = _tool == t ? PdfDrawTool.hand : t),
           borderRadius: BorderRadius.circular(6),
           child: Container(
             width: 30,
@@ -745,7 +1375,11 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     Widget colorBtn(Color c) {
       final on = _color.toARGB32() == c.toARGB32();
       return InkWell(
-        onTap: () => setState(() => _color = c),
+        onTap: () => setState(() {
+          _color = c;
+          // 選んだら畳む (= 広がったままだと道具箱が長くなる)。
+          _colorsOpen = false;
+        }),
         borderRadius: BorderRadius.circular(10),
         child: Container(
           width: 22,
@@ -774,7 +1408,9 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       final eraser = _tool == PdfDrawTool.eraser;
       final double cur = eraser ? _eraserSize : _width;
       final double minV = eraser ? 4.0 : 0.5;
-      final double maxV = eraser ? 40.0 : 16.0;
+      // 消しゴムは大きく取れるようにする (= ユーザー要望: 最大値をもう少し
+      // 大きく)。 ページの上に出る丸で実際の大きさが分かる。
+      final double maxV = eraser ? 120.0 : 16.0;
       final double v = cur.clamp(minV, maxV).toDouble();
       final Color accent =
           eraser ? const Color(0xFF9FE7FF) : const Color(0xFFB9B4FF);
@@ -844,8 +1480,10 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
                 value: v,
                 min: minV,
                 max: maxV,
-                // 0.5 刻み (= 細かく選べるように)。
-                divisions: ((maxV - minV) * 2).round(),
+                // ペンは 0.5 刻み / 消しゴムは 1 刻み (= 幅が広いので)。
+                divisions: eraser
+                    ? (maxV - minV).round()
+                    : ((maxV - minV) * 2).round(),
                 onChanged: (nv) => setState(() {
                   if (eraser) {
                     _eraserSize = nv;
@@ -906,6 +1544,11 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
           children: [
             // 「移動 (スクロール)」 は外した (= ユーザー要望: 使い所が
             //   無い)。 表示の上下移動はマウスのホイールでできる。
+            // ── 置いた図形を選んで動かす / 消す (= ユーザー要望) ──
+            toolBtn(PdfDrawTool.select, Icons.near_me_outlined,
+                'pdfdraw.select'),
+            // 文字を置く (= ユーザー要望: 図形を選択と手書きペンの間に)。
+            toolBtn(PdfDrawTool.text, Icons.title_rounded, 'pdfdraw.text'),
             toolBtn(PdfDrawTool.pen, Icons.gesture_rounded, 'pdfdraw.pen'),
             // 消しゴム / チェック (= ユーザー要望)。
             toolBtn(PdfDrawTool.eraser, null, 'pdfdraw.eraser'),
@@ -914,26 +1557,91 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
             toolBtn(PdfDrawTool.arrow, Icons.north_east_rounded, 'pdfdraw.arrow'),
             toolBtn(PdfDrawTool.rect, Icons.crop_square_rounded, 'pdfdraw.rect'),
             toolBtn(PdfDrawTool.ellipse, Icons.circle_outlined, 'pdfdraw.ellipse'),
+            // ── 大きさを固定して置く (= ユーザー要望: 四角や楕円は毎回同じ
+            //    大きさで出てきた方が嬉しい時がある)。 ON の間は押した所へ
+            //    「最後に描いた大きさ」 でそのまま置く。 ──
+            if (_isSpanTool(_tool))
+              Tooltip(
+                message: '${widget.tr('pdfdraw.fixedSize')}'
+                    ' (${_lastShapeSize.width.abs().round()}'
+                    '×${_lastShapeSize.height.abs().round()})',
+                child: InkWell(
+                  onTap: () => setState(() => _fixedSize = !_fixedSize),
+                  borderRadius: BorderRadius.circular(6),
+                  child: Container(
+                    width: 30,
+                    height: 30,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: _fixedSize
+                          ? const Color(0xFF6C63FF)
+                          : Colors.transparent,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Icon(
+                        _fixedSize
+                            ? Icons.photo_size_select_small_rounded
+                            : Icons.photo_size_select_large_rounded,
+                        size: 17,
+                        color: _fixedSize ? Colors.white : Colors.white70),
+                  ),
+                ),
+              ),
             Container(
                 width: 1,
                 height: 20,
                 margin: const EdgeInsets.symmetric(horizontal: 4),
                 color: Colors.white24),
-            for (final c in _palette) colorBtn(c),
+            // ── 色: 普段は「今の色」 と展開ボタンだけ (= ユーザー要望) ──
+            colorBtn(_color),
+            InkWell(
+              onTap: () => setState(() => _colorsOpen = !_colorsOpen),
+              borderRadius: BorderRadius.circular(6),
+              child: Tooltip(
+                message: widget.tr('pdfdraw.moreColors'),
+                child: SizedBox(
+                  width: 22,
+                  height: 26,
+                  child: Icon(
+                      _colorsOpen
+                          ? Icons.chevron_left_rounded
+                          : Icons.chevron_right_rounded,
+                      size: 18,
+                      color: Colors.white70),
+                ),
+              ),
+            ),
+            if (_colorsOpen)
+              for (final c in _palette)
+                if (c.toARGB32() != _color.toARGB32()) colorBtn(c),
             Container(
                 width: 1,
                 height: 20,
                 margin: const EdgeInsets.symmetric(horizontal: 4),
                 color: Colors.white24),
-            sizeControl(),
+            if (_tool != PdfDrawTool.select) sizeControl(),
+            // 選んでいる図形を消す (= 選択モードの時だけ出す)。
+            if (_tool == PdfDrawTool.select)
+              actBtn(
+                  Icons.delete_forever_rounded,
+                  'pdfdraw.deleteSelected',
+                  _selected == null || _saving ? null : _deleteSelected,
+                  color: const Color(0xFFFF8A80)),
+            // 一つ戻す (Ctrl+Z も同じ働き = ユーザー要望)。
             actBtn(Icons.undo_rounded, 'pdfdraw.undo',
+                _undo.isEmpty || _saving ? null : _undoOnce),
+            actBtn(
+                Icons.delete_outline_rounded,
+                'pdfdraw.clear',
                 _strokes.isEmpty || _saving
                     ? null
-                    : () => setState(() => _strokes.removeLast())),
-            actBtn(Icons.delete_outline_rounded, 'pdfdraw.clear',
-                _strokes.isEmpty || _saving
-                    ? null
-                    : () => setState(_strokes.clear)),
+                    : () {
+                        _pushUndo();
+                        setState(() {
+                          _strokes.clear();
+                          _selected = null;
+                        });
+                      }),
             // ── 上書き保存 (= ユーザー要望)。 描いたものを PDF に
             //    焼き込むが、 描き込みモードは続けたまま。 ──
             actBtn(
@@ -972,6 +1680,9 @@ class _PdfDrawPainter extends CustomPainter {
 
   /// 消しゴムの大きさ (pt)。
   final double eraserSize;
+
+  /// 選んでいる図形 (strokes の位置)。 null なら囲みを出さない。
+  final int? selected;
   final List<_PageGeom> Function() geomsGetter;
   final RenderBox? Function() overlayBoxGetter;
 
@@ -980,6 +1691,7 @@ class _PdfDrawPainter extends CustomPainter {
     required this.current,
     required this.eraserCursor,
     required this.eraserSize,
+    required this.selected,
     required this.geomsGetter,
     required this.overlayBoxGetter,
   });
@@ -1021,6 +1733,23 @@ class _PdfDrawPainter extends CustomPainter {
 
       final p1 = toOverlay(s.points.first);
       final p2 = toOverlay(s.points.last);
+      // ── 置いた文字 (= ユーザー要望: テキスト入力) ──
+      if (s.tool == PdfDrawTool.text) {
+        final body = s.text ?? '';
+        if (body.isEmpty) return;
+        final tp = TextPainter(
+          text: TextSpan(
+            text: body,
+            style: TextStyle(
+                color: s.color,
+                fontSize: (s.fontSize * pxScale).clamp(2.0, 800.0),
+                height: 1.2),
+          ),
+          textDirection: TextDirection.ltr,
+        )..layout();
+        tp.paint(canvas, p1);
+        return;
+      }
       switch (s.tool) {
         case PdfDrawTool.pen:
           final path = Path()..moveTo(p1.dx, p1.dy);
@@ -1061,7 +1790,8 @@ class _PdfDrawPainter extends CustomPainter {
         case PdfDrawTool.hand:
         case PdfDrawTool.eraser:
         case PdfDrawTool.check:
-
+        case PdfDrawTool.select:
+        case PdfDrawTool.text:
           break;
       }
     }
@@ -1071,6 +1801,47 @@ class _PdfDrawPainter extends CustomPainter {
     }
     final cur = current;
     if (cur != null) draw(cur);
+
+    // ── 選んでいる図形を囲う (= ユーザー要望: 選択して操作できるモード) ──
+    final sel = selected;
+    if (sel != null && sel >= 0 && sel < strokes.length) {
+      final st = strokes[sel];
+      final g = byPage[st.pageNumber];
+      if (g != null && st.points.isNotEmpty) {
+        Offset toOverlay(Offset pagePt) => overlay
+            .globalToLocal(g.box.localToGlobal(pagePt / g.heightPercentage));
+        var r = Rect.fromPoints(toOverlay(st.points.first),
+            toOverlay(st.points.first));
+        for (final q in st.points) {
+          final o = toOverlay(q);
+          r = r.expandToInclude(Rect.fromPoints(o, o));
+        }
+        r = r.inflate(8);
+        canvas.drawRRect(
+            RRect.fromRectAndRadius(r, const Radius.circular(6)),
+            Paint()
+              ..color = const Color(0x224FC3F7)
+              ..style = PaintingStyle.fill);
+        canvas.drawRRect(
+            RRect.fromRectAndRadius(r, const Radius.circular(6)),
+            Paint()
+              ..color = const Color(0xFF4FC3F7)
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1.6);
+        // 四隅の掴み (= ここを引っ張ると大きさ / 縦横比を変えられる)。
+        for (final c in [r.topLeft, r.topRight, r.bottomLeft, r.bottomRight]) {
+          canvas.drawCircle(c, 5.5, Paint()..color = Colors.white);
+          canvas.drawCircle(
+              c,
+              5.5,
+              Paint()
+                ..color = const Color(0xFF1565C0)
+                ..style = PaintingStyle.stroke
+                ..strokeWidth = 1.6);
+          canvas.drawCircle(c, 2.4, Paint()..color = const Color(0xFF4FC3F7));
+        }
+      }
+    }
 
     // ── 消しゴムの「消える範囲」 をそのままの大きさで出す ──
     //    (= ユーザー要望: 太さが分からない)。 ページの拡大率に合わせるので、
