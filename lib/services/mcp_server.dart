@@ -208,6 +208,37 @@ class McpServer {
         {'pageId': {'type': 'string'}},
         ['pageId']),
     _tool(
+        'delete_page',
+        'Delete a page permanently. Use this when the user explicitly asks to '
+        'delete/remove a page. Cannot delete the last remaining page. '
+        'Call list_pages first to get the pageId.',
+        {'pageId': {'type': 'string'}},
+        ['pageId']),
+    _tool(
+        'set_page_type',
+        'Change an existing page to another type without losing its nodes. '
+        'type: "normal" (mind map), "bookshelf" (gallery), "paint" (free '
+        'note), "document" (notepad), "videoEditor", "aiStudio". '
+        'Use this when the user asks to convert/turn a page into another kind.',
+        {
+          'pageId': {'type': 'string'},
+          'type': {'type': 'string'},
+        },
+        ['pageId', 'type']),
+    _tool(
+        'set_header_buttons',
+        'Put buttons on the app header bar. ids are command ids from '
+        'list_app_commands. replace=true swaps the whole row, false (default) '
+        'appends. Use this when the user asks to place buttons in the header.',
+        {
+          'ids': {
+            'type': 'array',
+            'items': {'type': 'string'},
+          },
+          'replace': {'type': 'boolean'},
+        },
+        ['ids']),
+    _tool(
         'create_page',
         'Create a new page. type: "normal" (mind map), "bookshelf" (gallery), '
         '"paint" (free note - also the place to write documents) or '
@@ -695,6 +726,33 @@ class McpServer {
       case 'read_page':
         final json = _provider.mcpReadPage(a['pageId'] as String? ?? '');
         return json == null ? _err('page not found') : _ok(json);
+      case 'delete_page':
+        {
+          final id = a['pageId'] as String? ?? '';
+          final ok = await _provider.mcpDeletePage(id);
+          return ok
+              ? _ok('deleted: $id')
+              : _err('could not delete "$id" (unknown pageId, or it is the '
+                  'last remaining page). Call list_pages for valid ids.');
+        }
+      case 'set_page_type':
+        {
+          final id = a['pageId'] as String? ?? '';
+          final type = a['type'] as String? ?? '';
+          final ok = await _provider.mcpSetPageType(id, type);
+          return ok
+              ? _ok('page $id is now "$type"')
+              : _err('could not change "$id" to "$type". Valid types: '
+                  'normal, bookshelf, paint, document, videoEditor, aiStudio.');
+        }
+      case 'set_header_buttons':
+        {
+          final raw = (a['ids'] as List?) ?? const [];
+          final ids = raw.map((e) => '$e').toList();
+          final placed = await _provider.mcpSetHeaderButtons(ids,
+              replace: a['replace'] == true);
+          return _ok({'header': placed});
+        }
       case 'create_page':
         final id = _provider.mcpCreatePage(
             type: a['type'] as String? ?? 'normal',
@@ -1099,13 +1157,20 @@ class McpServer {
         {
           final id = a['id'] as String? ?? '';
           final ok = _provider.mcpRunCommand(id);
-          return ok
-              ? _ok('launched: $id')
-              : _err('cannot launch "$id". Either the id is wrong (call '
-                  'list_app_commands for valid ids), or it is a feature '
-                  'that only the user may start themselves (sharing over '
-                  'the local network, cloud sync, and the app/focus locks). '
-                  'For those, tell the user to press the button.');
+          if (ok) return _ok('launched: $id');
+          // ★ 「知らない id」 と「利用者しか始められない機能」 を区別する。
+          //   以前はどちらも同じ文面だったため、 存在しない id を投げた時にも
+          //   「利用者が押してください」 と答えてしまい、 出来るはずの事まで
+          //   断るようになっていた (= ユーザー報告)。
+          if (_provider.mcpIsBlockedCommand(id)) {
+            return _err('"$id" is a feature only the user can start '
+                '(cloud sync, and the app/focus locks). Tell the user to '
+                'press the button themselves.');
+          }
+          return _err('unknown command id "$id". Call list_app_commands for '
+              'the valid ids. Note: deleting a page is delete_page, changing '
+              'a page kind is set_page_type, and putting buttons on the '
+              'header is set_header_buttons - those are tools, not commands.');
         }
       case 'list_app_docs':
         return _ok(_provider.mcpListAppDocs());

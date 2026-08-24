@@ -61691,6 +61691,21 @@ class MindMapProvider extends ChangeNotifier {
   Future<void> _billingPersistence = Future<void>.value();
   Future<void>? _proStateLoadFuture;
 
+  /// プラン + 開発者モードの復元が終わるまでの待ち合わせ。
+  /// 起動直後に AI を呼ぶと、 まだ free / 非開発者のままで判定されてしまい、
+  /// 開発者なのに決済画面が出ていた (= ユーザー報告)。
+  Future<void>? _planReadyFuture;
+
+  /// プランの復元を待つ。 何かの理由で終わらなくても AI を止めないよう、
+  /// 待つのは最大 6 秒まで。
+  Future<void> awaitPlanReady() async {
+    final f = _planReadyFuture ?? _proStateLoadFuture;
+    if (f == null) return;
+    try {
+      await f.timeout(const Duration(seconds: 6));
+    } catch (_) {}
+  }
+
   /// RevenueCat 連携サービス。onPlanChanged で購入結果を provider に反映する。
   /// env.json から public キー等を注入 (シークレットは持たせない)。
   late final BillingService _billing = BillingService(
@@ -65176,6 +65191,9 @@ class MindMapProvider extends ChangeNotifier {
       List<AiInputImage>? images}) async {
     // ★ 常に代行サーバー経由 (= ユーザー要望: こちらが用意したキーのみ)。
     //   残高が無い / 中継先が応答しない時は、 その理由を投げて画面に出す。
+    // 起動直後はプラン / 開発者モードの復元が終わっていないことがあるので、
+    // 判定の前に待つ (= ユーザー報告: 開発者モードなのに決済画面が出る)。
+    await awaitPlanReady();
     if (canUseAiRelay) return askAiViaRelay(prompt, images: images);
     if (relayApiBase.isEmpty || _relayAvailable != true) {
       throw Exception(t('relay.notConfigured'));
@@ -65390,6 +65408,8 @@ Art direction:
     //   用意したキーのみ)。 ここだけ各社へ直接投げていたため、 BYOK を
     //   やめた後は 「APIキーが設定されていません」 で PDF 要約・用語解説・
     //   クイズなど構造化を使う機能が丸ごと動かなくなっていた。
+    // 起動直後のプラン復元待ち (= 開発者モードなのに決済画面が出るのを防ぐ)。
+    await awaitPlanReady();
     if (canUseAiRelay) {
       return askAiViaRelay(prompt, maxTokens: maxTokens);
     }
@@ -69089,10 +69109,11 @@ $cleanQ
     _proStateLoadFuture = _loadProState().catchError(
       (Object e, StackTrace st) => debugPrint('プラン状態の復元に失敗 (起動は続行): $e\n$st'),
     );
-    unawaited(_proStateLoadFuture!
+    _planReadyFuture = _proStateLoadFuture!
         .then((_) => _loadDeveloperModeState())
         .catchError((Object e, StackTrace st) =>
-            debugPrint('開発者モードの復元に失敗 (起動は続行): $e\n$st')));
+            debugPrint('開発者モードの復元に失敗 (起動は続行): $e\n$st'));
+    unawaited(_planReadyFuture!);
     _loadJoinedGroups();
     _loadColorSettings();
     loadDisplayName();
@@ -77083,6 +77104,76 @@ $cleanQ
     }
     return b.applyEdits(edits);
   }
+
+  /// ページを削除する (= ユーザー要望: 明示的に頼んだら消せるように)。
+  /// 見つからなければ false。 最後の 1 枚は消さない (アプリが空になるため)。
+  Future<bool> mcpDeletePage(String pageId) async {
+    final i = _pages.indexWhere((p) => p.id == pageId);
+    if (i < 0) return false;
+    if (_pages.length <= 1) return false;
+    deletePage(i);
+    return true;
+  }
+
+  /// ページの種類を変える (= ユーザー要望: 形式を変更できるように)。
+  ///
+  /// 中身 (ノード等) はそのまま残す。 ギャラリー / お絵かき等の本体は
+  /// ページ JSON の外 (prefs) にあるので、 切り替えても消えない
+  /// (戻せばまた出てくる)。
+  static const Set<String> kMcpPageTypes = {
+    'normal',
+    'bookshelf',
+    'paint',
+    'document',
+    'videoEditor',
+    'aiStudio',
+  };
+
+  Future<bool> mcpSetPageType(String pageId, String type) async {
+    if (!kMcpPageTypes.contains(type)) return false;
+    final i = _pages.indexWhere((p) => p.id == pageId);
+    if (i < 0) return false;
+    if (_pages[i].pageType == type) return true;
+    _pages[i].pageType = type;
+    _pages[i].lastModifiedAt = DateTime.now();
+    notifyListeners();
+    await _saveToStorage();
+    return true;
+  }
+
+  /// ヘッダーに並べるボタンを設定する (= ユーザー要望: ヘッダーにボタンを
+  /// 配置してと頼んでも「できません」 と言われる)。
+  ///
+  /// [ids] は list_app_commands が返すコマンド id。 知らない id は捨てる。
+  /// [replace] が false なら今の並びの後ろに足す (重複は足さない)。
+  /// 戻り値は実際に並んだ id の一覧。
+  Future<List<String>> mcpSetHeaderButtons(List<String> ids,
+      {bool replace = false}) async {
+    final known = _mcpCommands.map((c) => c['id']).whereType<String>().toSet();
+    final wanted = <String>[];
+    for (final id in ids) {
+      if (!known.contains(id)) continue;
+      if (wanted.contains(id)) continue;
+      wanted.add(id);
+    }
+    if (replace) {
+      _customHeaderButtons
+        ..clear()
+        ..addAll(wanted);
+    } else {
+      for (final id in wanted) {
+        if (!_customHeaderButtons.contains(id)) _customHeaderButtons.add(id);
+      }
+    }
+    final prefs = await _prefsWithRetry();
+    await prefs.setString(
+        'customHeaderButtons', jsonEncode(_customHeaderButtons));
+    notifyListeners();
+    return List<String>.from(_customHeaderButtons);
+  }
+
+  /// その id が「利用者しか始められない」 ものか (= 断り文句を正確にする)。
+  bool mcpIsBlockedCommand(String id) => _mcpBlockedCommands.contains(id);
 
   List<Map<String, dynamic>> mcpListPages() => [
         for (final p in _pages)

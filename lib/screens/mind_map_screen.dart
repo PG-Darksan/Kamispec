@@ -191450,16 +191450,23 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
     _pushHistory();
     final slide = _slides[_currentIndex];
     final isLine = kind == 'line' || kind == 'arrow';
-    // 置くたびに右下へずらす (6 個で一巡して元の位置に戻る)。
-    final step = (_shapeInsSeq++ % 6) * 260000;
+    // 置くたびに右下へずらす。 12 個で一巡 (6 個だと 7 個目が 1 個目に重なる)。
+    final step = (_shapeInsSeq++ % 12) * 200000;
+    final cx = isLine ? 3600000 : 2880000;
+    final cy = isLine ? 1440000 : 1800000;
+    // ★ スライドの真ん中に置く (= ユーザー要望: 図形が置きにくい)。
+    //   以前は 2160000/1800000 の決め打ちで、 16:9 のスライドだと必ず
+    //   左に寄った所に出ていた。
+    final baseX = ((_slideWidthEmu - cx) / 2).round();
+    final baseY = ((_slideHeightEmu - cy) / 2).round();
     // パレットの設定 (色 / 塗りか中空か / 太さ) を反映 (= ユーザー要望)。
     final s = _PptxDrawShape(
       id: _nextShapeId(),
       kind: kind,
-      offX: 2160000 + step,
-      offY: 1800000 + step,
-      extCx: isLine ? 3600000 : 2880000,
-      extCy: isLine ? 1440000 : 1800000,
+      offX: (baseX + step).clamp(0, math.max(0, _slideWidthEmu - cx)),
+      offY: (baseY + step).clamp(0, math.max(0, _slideHeightEmu - cy)),
+      extCx: cx,
+      extCy: cy,
       fillColor: (isLine || !_shapeInsFilled) ? null : _shapeInsLineColor,
       lineColor: _shapeInsLineColor,
       lineWidthPt100: (_shapeInsLineWidthPt * 100).round(),
@@ -195224,13 +195231,20 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
               onTap: select,
-              onPanStart: (_) => select(),
+              onPanStart: (_) {
+                select();
+                // ★ 動かす前に控える (= 以前は積んでいなかったので、 動かした
+                //   後の Ctrl+Z が「置いた事」 まで取り消して図形が消えた)。
+                _pushHistory();
+              },
               onPanUpdate: (d) {
                 setState(() {
-                  s.offX = math.max(
-                      0, s.offX + (d.delta.dx * sw / canvasW).round());
-                  s.offY = math.max(
-                      0, s.offY + (d.delta.dy * sh / canvasH).round());
+                  // ★ スライドの外へは出さない (= 以前は右下が無制限で、
+                  //   引っ張り過ぎると見えない所へ行って戻せなかった)。
+                  s.offX = (s.offX + (d.delta.dx * sw / canvasW).round())
+                      .clamp(0, math.max(0, _slideWidthEmu - s.extCx));
+                  s.offY = (s.offY + (d.delta.dy * sh / canvasH).round())
+                      .clamp(0, math.max(0, _slideHeightEmu - s.extCy));
                   _slides[_currentIndex].dirty = true;
                 });
               },
@@ -206295,7 +206309,14 @@ class _OfficeFileTemplate {
       case 'docx':
         return _buildDocx(paragraphs: paragraphs, title: title);
       case 'pptx':
-        return _buildPptx(slides: slides);
+        // ★ AI に頼んで作る pptx も、 スライド生成と同じ「配色つき」 の作りに
+        //   する (= ユーザー要望: テキストだけでなくお洒落に)。 以前はここだけ
+        //   白地に黒文字の素の版 (_buildPptx) を使っていたので、 同じ内容でも
+        //   見栄えがはっきり劣っていた。
+        return buildPptxFromSlides([
+          for (final sl in (slides ?? const <({String title, List<String> bullets})>[]))
+            (title: sl.title, bullets: sl.bullets, image: null),
+        ]);
       case 'pdf':
         return _buildPdf(title: title, paragraphs: paragraphs, rows: rows);
       default:
