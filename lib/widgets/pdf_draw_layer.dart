@@ -18,6 +18,7 @@
 // dynamic アクセスに依存するため、 syncfusion のバージョン更新時は要確認
 // (= _addHighlightForSelection と同じ「version-drift via dynamic」 方針)。
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' show FontFeature;
@@ -321,6 +322,9 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   /// 前回の保存から線が変わったか (dispose 時の無駄な焼き込みを避ける)。
   bool _dirtySinceCommit = false;
 
+  /// 復元処理の最中か (二重に走らせない)。
+  bool _restoring = false;
+
   /// 土台をまだ取っていなければ取る。 取れなければ null (= 従来動作)。
   Future<String?> _ensureSessionBase(String path) async {
     final cur = _sessionBasePath;
@@ -344,15 +348,148 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     }
   }
 
-  /// 土台を片付ける (別の PDF に移った時 / 画面を閉じた時)。
+  /// 土台の置き場所を忘れる。
+  ///
+  /// ★ ファイルは消さない。 次に開いた時に「土台 + 線の一覧」 から復元して、
+  ///   焼き込み済みの線も消しゴムで消せるようにするため
+  ///   (= ユーザー要望: 保存して開き直すと消しゴムが効かない)。
   void _dropSessionBase() {
-    final p = _sessionBasePath;
     _sessionBasePath = null;
-    if (p == null) return;
+  }
+
+  /// 線の一覧の置き場所 (土台と同じフォルダー)。
+  Future<String?> _strokesJsonPath(String path) async {
     try {
-      final f = File(p);
-      if (f.existsSync()) f.deleteSync();
+      final dir = await getApplicationSupportDirectory();
+      final sep = Platform.pathSeparator;
+      final bdir = Directory('${dir.path}${sep}pdf_draw_session');
+      if (!bdir.existsSync()) bdir.createSync(recursive: true);
+      return '${bdir.path}$sep${path.hashCode.toRadixString(16)}'
+          '_strokes.json';
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Map<String, Object?> _strokeToJson(PdfDrawStroke st) =>
+      <String, Object?>{
+        'page': st.pageNumber,
+        'tool': st.tool.index,
+        'color': st.color.toARGB32(),
+        'width': st.width,
+        'text': st.text,
+        'fontSize': st.fontSize,
+        'pts': <double>[
+          for (final p in st.points) ...[p.dx, p.dy]
+        ],
+      };
+
+  static PdfDrawStroke? _strokeFromJson(Map<String, Object?> m) {
+    try {
+      final flat = (m['pts'] as List).cast<num>();
+      if (flat.length < 4) return null;
+      return PdfDrawStroke(
+        pageNumber: (m['page'] as num).toInt(),
+        tool: PdfDrawTool.values[
+            (m['tool'] as num).toInt().clamp(0, PdfDrawTool.values.length - 1)],
+        points: [
+          for (var i = 0; i + 1 < flat.length; i += 2)
+            Offset(flat[i].toDouble(), flat[i + 1].toDouble()),
+        ],
+        color: Color((m['color'] as num).toInt()),
+        width: (m['width'] as num).toDouble(),
+        text: m['text'] as String?,
+        fontSize: (m['fontSize'] as num?)?.toDouble() ?? 25.0,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 焼き込みの後に「線の一覧 + 出来上がったファイルの大きさ」 を控える。
+  /// 線が 0 本なら控えを消す (= 描き込みが無い状態に戻ったため)。
+  Future<void> _persistStrokes(String path, List<PdfDrawStroke> strokes) async {
+    final jp = await _strokesJsonPath(path);
+    if (jp == null) return;
+    try {
+      final f = File(jp);
+      if (strokes.isEmpty) {
+        if (f.existsSync()) f.deleteSync();
+        return;
+      }
+      var outLen = 0;
+      try {
+        outLen = File(path).lengthSync();
+      } catch (_) {}
+      await f.writeAsString(jsonEncode(<String, Object?>{
+        'out': outLen,
+        'strokes': [for (final st in strokes) _strokeToJson(st)],
+      }));
     } catch (_) {}
+  }
+
+  /// 描き込みモードに入った時に、 前回焼き込んだ線を「動かせる図形」 として
+  /// 復元する (= ユーザー要望: 開き直しても消しゴムで消せるように)。
+  ///
+  /// PDF は土台に戻す。 そうしないと、 焼き込み済みの絵と復元した図形が
+  /// 二重に見えてしまう。 戻した分は必ず焼き直すので `_dirtySinceCommit`
+  /// を立てておく。
+  Future<void> _restorePersistedStrokes() async {
+    final path = widget.filePath;
+    if (path == null) return;
+    if (_strokes.isNotEmpty || _restoring) return;
+    _restoring = true;
+    try {
+      final jp = await _strokesJsonPath(path);
+      if (jp == null) return;
+      final jf = File(jp);
+      if (!jf.existsSync()) return;
+      final basePath =
+          '${jp.substring(0, jp.length - '_strokes.json'.length)}_base.pdf';
+      final bf = File(basePath);
+      if (!bf.existsSync()) return;
+      final raw = jsonDecode(await jf.readAsString());
+      if (raw is! Map) return;
+      final outLen = (raw['out'] as num?)?.toInt() ?? -1;
+      final curLen = File(path).lengthSync();
+      final baseLen = bf.lengthSync();
+      // 他の機能 (蛍光ペン等) が書き換えていたら手を出さない。
+      //   curLen == baseLen は「前回モードを開いたまま落ちた」 時の形。
+      if (curLen != outLen && curLen != baseLen) {
+        try {
+          jf.deleteSync();
+        } catch (_) {}
+        return;
+      }
+      final list = (raw['strokes'] as List?) ?? const [];
+      final restored = <PdfDrawStroke>[];
+      for (final e in list) {
+        if (e is Map) {
+          final st = _strokeFromJson(e.cast<String, Object?>());
+          if (st != null) restored.add(st);
+        }
+      }
+      if (restored.isEmpty) return;
+      // PDF を土台に戻してから、 線を図形として載せ直す。
+      if (curLen != baseLen) await bf.copy(path);
+      if (!mounted) return;
+      setState(() {
+        _strokes
+          ..clear()
+          ..addAll(restored);
+        _sel.clear();
+        _undo.clear();
+        _redo.clear();
+        _sessionBasePath = basePath;
+        _dirtySinceCommit = true;
+      });
+      // ビューアを読み直して、 焼き込み済みの絵を消した状態にする。
+      widget.onSaved();
+    } catch (_) {
+      // 失敗しても描き込みは続けられる (従来どおりの動きになるだけ)。
+    } finally {
+      _restoring = false;
+    }
   }
 
   bool _committed = false;
@@ -391,7 +528,22 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   Offset? _cursorGlobal;
 
   /// 選んでいる図形 (_strokes の位置)。 null なら未選択。
-  int? _selected;
+  /// 選んでいる図形 (_strokes の位置)。 複数選べる
+  /// (= ユーザー要望: 範囲選択と Ctrl での複数選択)。
+  final Set<int> _sel = <int>{};
+
+  /// 1 つだけ選んでいる時のその位置。 四隅の掴み (大きさ変更) は 1 つの
+  /// 時だけ出す。
+  int? get _soleSelected => _sel.length == 1 ? _sel.first : null;
+
+  /// 範囲選択の始点 / 終点 (ページ座標 pt) とページ番号。
+  /// null なら範囲選択していない。
+  Offset? _rangeStart;
+  Offset? _rangeEnd;
+  int? _rangePage;
+
+  /// 範囲選択を始めた時点の選択 (Ctrl 併用で足し込むため)。
+  Set<int> _rangeBase = <int>{};
 
   /// 色の一覧を広げているか (= ユーザー要望: 色が並び過ぎて気になるので、
   /// 普段は「今の色 + 展開ボタン」 だけにする)。
@@ -453,7 +605,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       _strokes
         ..clear()
         ..addAll(prev);
-      _selected = null;
+      _sel.clear();
       _current = null;
     });
   }
@@ -471,9 +623,27 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       _strokes
         ..clear()
         ..addAll(next);
-      _selected = null;
+      _sel.clear();
       _current = null;
     });
+  }
+
+  /// 範囲選択の四角に触れている図形を選ぶ。
+  void _applyRangeSelection() {
+    final a = _rangeStart;
+    final b = _rangeEnd;
+    final page = _rangePage;
+    if (a == null || b == null || page == null) return;
+    final r = Rect.fromPoints(a, b);
+    _sel
+      ..clear()
+      ..addAll(_rangeBase);
+    for (var i = 0; i < _strokes.length; i++) {
+      final st = _strokes[i];
+      if (st.pageNumber != page) continue;
+      if (st.points.isEmpty) continue;
+      if (r.overlaps(_strokeBox(st))) _sel.add(i);
+    }
   }
 
   /// [pt] (ページ座標 pt) にある図形を探す。 後から描いた物を優先する。
@@ -531,17 +701,17 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   ///   なって消える)。 大きさを変える方 (_resizeSelectedTo) は渡していたので
   ///   ドラッグの時だけ起きていた。
   void _moveSelected(Offset d) {
-    final i = _selected;
-    if (i == null || i < 0 || i >= _strokes.length) return;
-    final st = _strokes[i];
-    _strokes[i] =
-        st.copyWith(points: [for (final q in st.points) q + d]);
+    for (final i in _sel) {
+      if (i < 0 || i >= _strokes.length) continue;
+      final st = _strokes[i];
+      _strokes[i] = st.copyWith(points: [for (final q in st.points) q + d]);
+    }
   }
 
   /// 掴んだ角を [pt] まで動かして、 選んでいる図形を伸び縮みさせる。
   /// Shift を押している間は縦横比を保つ (= 形を崩さずに大きさだけ変える)。
   void _resizeSelectedTo(Offset pt) {
-    final i = _selected;
+    final i = _soleSelected;
     final orig = _resizeOrig;
     final anchor = _resizeAnchor;
     final box = _resizeOrigBox;
@@ -588,12 +758,15 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
 
   /// 選んでいる図形を消す。
   void _deleteSelected() {
-    final i = _selected;
-    if (i == null || i < 0 || i >= _strokes.length) return;
+    if (_sel.isEmpty) return;
     _pushUndo();
     setState(() {
-      _strokes.removeAt(i);
-      _selected = null;
+      // 後ろから消す (前から消すと位置がずれる)。
+      final idx = _sel.toList()..sort((a, b) => b.compareTo(a));
+      for (final i in idx) {
+        if (i >= 0 && i < _strokes.length) _strokes.removeAt(i);
+      }
+      _sel.clear();
     });
   }
 
@@ -628,18 +801,27 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       _redoOnce();
       return true;
     }
-    if (_selected != null &&
+    if (_sel.isNotEmpty &&
         (e.logicalKey == LogicalKeyboardKey.delete ||
             e.logicalKey == LogicalKeyboardKey.backspace)) {
       _deleteSelected();
+      return true;
+    }
+    // Ctrl+A: 今のページに関係なく、 置いてある図形を全部選ぶ。
+    if (ctrl && e.logicalKey == LogicalKeyboardKey.keyA) {
+      setState(() {
+        _sel
+          ..clear()
+          ..addAll(List<int>.generate(_strokes.length, (i) => i));
+      });
       return true;
     }
     // ── Esc: ファイルは閉じない。 選んでいれば解除、 道具を使って
     //    いれば「選ぶ」 に戻す (= ユーザー要望) ──
     if (e.logicalKey == LogicalKeyboardKey.escape) {
       setState(() {
-        if (_selected != null) {
-          _selected = null;
+        if (_sel.isNotEmpty) {
+          _sel.clear();
         } else if (_tool != PdfDrawTool.select) {
           _tool = PdfDrawTool.select;
         }
@@ -664,11 +846,12 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       final pending = List<PdfDrawStroke>.from(_strokes);
       final base = _sessionBasePath;
       _strokes.clear();
-      _selected = null;
+      _sel.clear();
       _undo.clear();
       _redo.clear();
       if (oldPath != null && _dirtySinceCommit) {
-        unawaited(writeStrokesToPdf(oldPath, pending, basePath: base));
+        unawaited(writeStrokesToPdf(oldPath, pending, basePath: base)
+            .then((_) => _persistStrokes(oldPath, pending)));
       }
       _dirtySinceCommit = false;
       // 土台は PDF ごとなので、 移ったら捨てる。
@@ -687,6 +870,11 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   }
 
   void _syncTimer() {
+    // 描き込みモードに入ったら、 前回焼き込んだ線を復元する
+    // (= ユーザー要望: 保存して開き直しても消しゴムで消せるように)。
+    if (widget.active && widget.filePath != null && _strokes.isEmpty) {
+      unawaited(_restorePersistedStrokes());
+    }
     if (widget.active && _repaintTimer == null) {
       _repaintTimer = Timer.periodic(const Duration(milliseconds: 120), (_) {
         if (mounted && (_strokes.isNotEmpty || _current != null)) {
@@ -720,6 +908,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       final base = _sessionBasePath;
       if (path != null) {
         unawaited(writeStrokesToPdf(path, pending, basePath: base)
+            .then((_) => _persistStrokes(path, pending))
             .whenComplete(_dropSessionBase));
       } else {
         _dropSessionBase();
@@ -821,7 +1010,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     if (_tool == PdfDrawTool.select) {
       // ── まず「選んでいる図形の四隅」 を掴んでいないか見る ──
       //    (= ユーザー要望: 動かすだけでなく大きさや縦横比も変えられるように)
-      final sel = _selected;
+      final sel = _soleSelected;
       if (sel != null && sel >= 0 && sel < _strokes.length) {
         final st = _strokes[sel];
         if (st.pageNumber == geom.pageNumber) {
@@ -843,13 +1032,39 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
           }
         }
       }
+      final multi = HardwareKeyboard.instance.isControlPressed ||
+          HardwareKeyboard.instance.isMetaPressed ||
+          HardwareKeyboard.instance.isShiftPressed;
       final hit = _hitStrokeAt(geom.pageNumber, pt);
+      if (hit == null) {
+        // 何も無い所を押したら範囲選択を始める (= ユーザー要望)。
+        setState(() {
+          _rangePage = geom.pageNumber;
+          _rangeStart = pt;
+          _rangeEnd = pt;
+          _rangeBase = multi ? Set<int>.from(_sel) : <int>{};
+          if (!multi) _sel.clear();
+          _dragPrev = null;
+          _resizeCorner = null;
+        });
+        return;
+      }
       setState(() {
-        _selected = hit;
-        _dragPrev = hit == null ? null : pt;
+        if (multi) {
+          // Ctrl (Shift) 併用は足し引き (= ユーザー要望: 複数選択)。
+          if (!_sel.remove(hit)) _sel.add(hit);
+        } else if (!_sel.contains(hit)) {
+          // 選んでいない図形を押したら、 それだけを選ぶ。
+          _sel
+            ..clear()
+            ..add(hit);
+        }
+        // 既に選んである図形を押した時は選択を保ったまま掴む
+        // (= まとめて動かせるように)。
+        _dragPrev = _sel.contains(hit) ? pt : null;
         _resizeCorner = null;
       });
-      if (hit != null) _pushUndo(); // 動かす前の位置を控える
+      if (_sel.contains(hit)) _pushUndo(); // 動かす前の位置を控える
       return;
     }
     // ── 大きさを固定して置く (= ユーザー要望) ──
@@ -914,7 +1129,23 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     if (geom == null) return;
     // 選んだ図形をドラッグで動かす。
     if (_tool == PdfDrawTool.select) {
-      if (_selected == null) return;
+      // 範囲選択の途中。
+      if (_rangeStart != null) {
+        try {
+          final local = geom.box.globalToLocal(e.position);
+          final pt = Offset(
+                local.dx.clamp(0.0, geom.contentSize.width),
+                local.dy.clamp(0.0, geom.contentSize.height),
+              ) *
+              geom.heightPercentage;
+          setState(() {
+            _rangeEnd = pt;
+            _applyRangeSelection();
+          });
+        } catch (_) {}
+        return;
+      }
+      if (_sel.isEmpty) return;
       if (_resizeCorner == null && _dragPrev == null) return;
       try {
         final local = geom.box.globalToLocal(e.position);
@@ -994,6 +1225,16 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     _activePointer = null;
     _currentGeom = null;
     _dragPrev = null;
+    if (_rangeStart != null) {
+      setState(() {
+        _applyRangeSelection();
+        _rangeStart = null;
+        _rangeEnd = null;
+        _rangePage = null;
+        _rangeBase = <int>{};
+      });
+      return;
+    }
     if (_resizeCorner != null) {
       setState(() {
         _resizeCorner = null;
@@ -1103,9 +1344,9 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   /// 数値を打ち込んでも変えられる。
   double _fontSize = 25;
 
-  /// チェック (✓) の大きさ。 既定 10 (= ユーザー要望)。 ペンの太さとは
-  /// 別に持つ (太さを 10 にするとペンの線まで極太になってしまうため)。
-  double _checkSize = 10;
+  /// チェック (✓) の大きさ。 既定 2.5 (= ユーザー要望)。 ペンの太さとは
+  /// 別に持つ (太さを変えるとペンの線まで一緒に変わってしまうため)。
+  double _checkSize = 2.5;
 
   /// チェックの線の太さ (pt)。 大きさとは別で、 常にこの太さで描く
   /// (= ユーザー要望: チェックの太さも 2.5)。 大きさを変えても線の太さは
@@ -1375,6 +1616,8 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       }
     });
     if (ok) {
+      // 次に開いた時も消しゴムで消せるように、 線の一覧を控える。
+      await _persistStrokes(path, pending);
       widget.onSaved();
       if (exitAfter) widget.onExit();
     } else {
@@ -1496,7 +1739,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
                   current: null,
                   eraserCursor: null,
                   eraserSize: _eraserSize,
-                  selected: null,
+                  selected: const <int>{},
                   geomsGetter: _collectPageGeoms,
                   overlayBoxGetter: () => _overlayKey.currentContext
                       ?.findRenderObject() as RenderBox?,
@@ -1542,7 +1785,12 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
                     eraserCursor:
                         _tool == PdfDrawTool.eraser ? _cursorGlobal : null,
                     eraserSize: _eraserSize,
-                    selected: _tool == PdfDrawTool.select ? _selected : null,
+                    selected:
+                        _tool == PdfDrawTool.select ? _sel : const <int>{},
+                    rangeRect: (_rangeStart != null && _rangeEnd != null)
+                        ? Rect.fromPoints(_rangeStart!, _rangeEnd!)
+                        : null,
+                    rangePage: _rangePage,
                     geomsGetter: _collectPageGeoms,
                     overlayBoxGetter: () => _overlayKey.currentContext
                         ?.findRenderObject() as RenderBox?,
@@ -1721,20 +1969,14 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
           const SizedBox(width: 6),
           // 見本 (実際の形と大きさ)。
           //   チェックは見出しと同じ ✓ になって同じ絵が 2 つ並ぶので出さない
-          //   (= ユーザー要望: 左 1 つだけでいい)。
-          if (!checkTool)
+          //   (= ユーザー要望: 左 1 つだけでいい)。 文字の「あ」 も要らない
+          //   と言われたので出さない。
+          if (!checkTool && !textTool)
             SizedBox(
               width: 26,
               height: 26,
             child: Center(
-              child: textTool
-                  // 文字の見本 (枠に収まる範囲で実際の大きさに近づける)。
-                  ? Text('あ',
-                      style: TextStyle(
-                          color: _color,
-                          height: 1.0,
-                          fontSize: (v * 0.7).clamp(8.0, 24.0).toDouble()))
-                  : eraser
+              child: eraser
                   ? Container(
                       width: dia,
                       height: dia,
@@ -1945,7 +2187,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
               actBtn(
                   Icons.delete_forever_rounded,
                   'pdfdraw.deleteSelected',
-                  _selected == null || _saving ? null : _deleteSelected,
+                  _sel.isEmpty || _saving ? null : _deleteSelected,
                   color: const Color(0xFFFF8A80)),
             // 一つ戻す (Ctrl+Z も同じ働き = ユーザー要望)。
             actBtn(Icons.undo_rounded, 'pdfdraw.undo',
@@ -1963,7 +2205,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
                         _pushUndo();
                         setState(() {
                           _strokes.clear();
-                          _selected = null;
+                          _sel.clear();
                         });
                       }),
             // ── 保存は「保存して終了」 の 1 つに纏めた (= ユーザー要望:
@@ -1999,8 +2241,12 @@ class _PdfDrawPainter extends CustomPainter {
   /// 消しゴムの大きさ (pt)。
   final double eraserSize;
 
-  /// 選んでいる図形 (strokes の位置)。 null なら囲みを出さない。
-  final int? selected;
+  /// 選んでいる図形 (strokes の位置)。 空なら囲みを出さない。
+  final Set<int> selected;
+
+  /// 範囲選択中の四角 (ページ座標 pt) とそのページ。 null なら出さない。
+  final Rect? rangeRect;
+  final int? rangePage;
   final List<_PageGeom> Function() geomsGetter;
   final RenderBox? Function() overlayBoxGetter;
 
@@ -2010,6 +2256,8 @@ class _PdfDrawPainter extends CustomPainter {
     required this.eraserCursor,
     required this.eraserSize,
     required this.selected,
+    this.rangeRect,
+    this.rangePage,
     required this.geomsGetter,
     required this.overlayBoxGetter,
   });
@@ -2121,8 +2369,9 @@ class _PdfDrawPainter extends CustomPainter {
     if (cur != null) draw(cur);
 
     // ── 選んでいる図形を囲う (= ユーザー要望: 選択して操作できるモード) ──
-    final sel = selected;
-    if (sel != null && sel >= 0 && sel < strokes.length) {
+    //    複数選んでいる時は全部囲む。 四隅の掴みは 1 つの時だけ出す。
+    for (final sel in selected) {
+      if (sel < 0 || sel >= strokes.length) continue;
       final st = strokes[sel];
       final g = byPage[st.pageNumber];
       if (g != null && st.points.isNotEmpty) {
@@ -2147,7 +2396,10 @@ class _PdfDrawPainter extends CustomPainter {
               ..style = PaintingStyle.stroke
               ..strokeWidth = 1.6);
         // 四隅の掴み (= ここを引っ張ると大きさ / 縦横比を変えられる)。
-        for (final c in [r.topLeft, r.topRight, r.bottomLeft, r.bottomRight]) {
+        //   複数選んでいる時は出さない (まとめての変形はしないため)。
+        for (final c in selected.length == 1
+            ? [r.topLeft, r.topRight, r.bottomLeft, r.bottomRight]
+            : const <Offset>[]) {
           canvas.drawCircle(c, 5.5, Paint()..color = Colors.white);
           canvas.drawCircle(
               c,
@@ -2158,6 +2410,29 @@ class _PdfDrawPainter extends CustomPainter {
                 ..strokeWidth = 1.6);
           canvas.drawCircle(c, 2.4, Paint()..color = const Color(0xFF4FC3F7));
         }
+      }
+    }
+
+    // ── 範囲選択の四角 (= ユーザー要望) ──
+    final rr = rangeRect;
+    final rp = rangePage;
+    if (rr != null && rp != null) {
+      final g = byPage[rp];
+      if (g != null) {
+        Offset toOverlay(Offset pagePt) => overlay
+            .globalToLocal(g.box.localToGlobal(pagePt / g.heightPercentage));
+        final r = Rect.fromPoints(toOverlay(rr.topLeft), toOverlay(rr.bottomRight));
+        canvas.drawRect(
+            r,
+            Paint()
+              ..color = const Color(0x1A6C63FF)
+              ..style = PaintingStyle.fill);
+        canvas.drawRect(
+            r,
+            Paint()
+              ..color = const Color(0xFF6C63FF)
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1.2);
       }
     }
 
