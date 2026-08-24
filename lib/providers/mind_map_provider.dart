@@ -4262,6 +4262,17 @@ class MindMapProvider extends ChangeNotifier {
   //    画面が Esc で閉じてしまうのを止めたい) ──
   //    既定は OFF (= ユーザー要望: Esc を押すたびに確認が積み上がって
   //    画面が暗くなるのを防ぐ)。 使いたい人は動作設定で ON にできる。
+  /// フローティングの窓を同じ物でも複数開けるようにするか
+  /// (= ユーザー要望: 既定は 1 つだけ。 増やしたい人だけ入れる)。
+  bool _allowMultipleFloatingWindows = false;
+  bool get allowMultipleFloatingWindows => _allowMultipleFloatingWindows;
+  Future<void> setAllowMultipleFloatingWindows(bool v) async {
+    _allowMultipleFloatingWindows = v;
+    final prefs = await _prefsWithRetry();
+    await prefs.setBool('allowMultipleFloatingWindows', v);
+    notifyListeners();
+  }
+
   bool _closeViewerWithEsc = false;
   bool get closeViewerWithEsc => _closeViewerWithEsc;
   Future<void> setCloseViewerWithEsc(bool v) async {
@@ -51192,6 +51203,35 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Аккаунт разработчика не распознан. Проверьте, что UID этого '
           'устройства указан в ADMIN_UIDS на сервере.',
     },
+    'menu.allowMultiFloat': {
+      'ja': 'フローティングを複数開けるようにする',
+      'en': 'Allow multiple floating windows',
+      'zh': '允许打开多个浮动窗口',
+      'ko': '플로팅 창을 여러 개 열 수 있게',
+      'es': 'Permitir varias ventanas flotantes',
+      'fr': 'Autoriser plusieurs fenetres flottantes',
+      'de': 'Mehrere schwebende Fenster zulassen',
+      'pt': 'Permitir varias janelas flutuantes',
+      'ru': 'Разрешить несколько плавающих окон',
+    },
+    'help.allowMultiFloat': {
+      'ja': '切っていると、 同じ物は 1 つだけ開き、 もう一度押すと前面に出ます。'
+          '入れると押すたびに新しい窓が増えます。',
+      'en': 'Off: the same panel opens once and comes to the front when tapped '
+          'again. On: every tap opens another window.',
+      'zh': '关闭时同一面板只开一个，再次点击会置于最前；开启后每次点击都会新开窗口。',
+      'ko': '끄면 같은 창은 하나만 열리고 다시 누르면 앞으로 나옵니다. 켜면 누를 때마다 새 창이 열립니다.',
+      'es': 'Desactivado: el mismo panel se abre una vez y pasa al frente. '
+          'Activado: cada toque abre otra ventana.',
+      'fr': 'Desactive : le meme panneau ne s ouvre qu une fois et revient au '
+          'premier plan. Active : chaque appui ouvre une nouvelle fenetre.',
+      'de': 'Aus: dasselbe Fenster oeffnet sich einmal und kommt nach vorn. '
+          'An: jeder Tipp oeffnet ein weiteres Fenster.',
+      'pt': 'Desligado: o mesmo painel abre uma vez e vem para a frente. '
+          'Ligado: cada toque abre outra janela.',
+      'ru': 'Выкл: одна панель открывается один раз и выходит на передний план. '
+          'Вкл: каждое нажатие открывает новое окно.',
+    },
     'credit.insufficient': {
       'ja': '使えるトークンが足りません。チャージすると続けられます。',
       'en': 'You are out of tokens. Top up to keep going.',
@@ -75035,6 +75075,8 @@ $cleanQ
     _snapEnabled = prefs.getBool('snapEnabled') ?? true;
     // Esc で閲覧画面を閉じるか (= ユーザー要望: 誤爆を止められるように)。
     _closeViewerWithEsc = prefs.getBool('closeViewerWithEsc') ?? false;
+    _allowMultipleFloatingWindows =
+        prefs.getBool('allowMultipleFloatingWindows') ?? false;
     // 「アプリで開く」 を別アプリで開くか (= ユーザー要望)。
     _openWithNewInstance = prefs.getBool('openWithNewInstance') ?? false;
     // メモ欄一括折りたたみ (デフォルト false = 従来通り全文表示)
@@ -77165,15 +77207,44 @@ $cleanQ
         if (!_customHeaderButtons.contains(id)) _customHeaderButtons.add(id);
       }
     }
+    // ★ 置き場所を「上 (ヘッダー)」 に決め打つ (= ユーザー報告: ヘッダーにと
+    //   頼んだのに下部バーに出る)。 PC 版はボタンごとに上下左右へ分けられ、
+    //   指定の無いボタンは _desktopHeaderButtonPlacement (一括設定) を継承
+    //   する。 バーを下に移していると、 足したボタンも全部下へ行っていた。
+    for (final id in wanted) {
+      _desktopHeaderButtonPlacementById[id] = 'top';
+    }
+    _desktopHeaderEnabledDockPlacements.add('top');
+    // 上のバーを畳んだままだと足しても見えないので開けておく。
+    _desktopHeaderDockCollapsedByPlacement['top'] = false;
     final prefs = await _prefsWithRetry();
-    await prefs.setString(
-        'customHeaderButtons', jsonEncode(_customHeaderButtons));
+    await Future.wait([
+      prefs.setString('customHeaderButtons', jsonEncode(_customHeaderButtons)),
+      prefs.setString('desktopHeaderButtonPlacementById',
+          jsonEncode(_desktopHeaderButtonPlacementById)),
+      prefs.setString('desktopHeaderEnabledDockPlacements',
+          jsonEncode(_desktopHeaderEnabledDockPlacements.toList())),
+      prefs.setString('desktopHeaderDockCollapsedByPlacement',
+          jsonEncode(_desktopHeaderDockCollapsedByPlacement)),
+    ]);
     notifyListeners();
     return List<String>.from(_customHeaderButtons);
   }
 
   /// その id が「利用者しか始められない」 ものか (= 断り文句を正確にする)。
   bool mcpIsBlockedCommand(String id) => _mcpBlockedCommands.contains(id);
+
+  /// AI アシスタントの会話履歴を消す担当 (画面側が登録する)。
+  void Function()? _mcpChatClearer;
+  void registerMcpChatClearer(void Function() f) => _mcpChatClearer = f;
+
+  /// 会話履歴を消す (= ユーザー要望: 「チャット履歴を clear にして」)。
+  bool mcpClearChat() {
+    final f = _mcpChatClearer;
+    if (f == null) return false;
+    f();
+    return true;
+  }
 
   List<Map<String, dynamic>> mcpListPages() => [
         for (final p in _pages)

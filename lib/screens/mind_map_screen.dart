@@ -47357,8 +47357,19 @@ class _MindMapScreenState extends State<MindMapScreen>
             shape:
                 RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
             title: Row(children: [
-              const Icon(Icons.account_balance_wallet_rounded,
-                  color: Color(0xFF66BB6A), size: 20),
+              // ★ プラン画面のバッジと同じ作りに揃えた (= ユーザー要望:
+              //   決済画面のアイコンを新しく)。 緑の財布はこの画面だけ浮いて
+              //   いて、 サブスク画面と別のアプリのように見えていた。
+              Container(
+                padding: const EdgeInsets.all(6),
+                decoration: const BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: LinearGradient(
+                      colors: [Color(0xFF6C63FF), Color(0xFF4FC3F7)]),
+                ),
+                child:
+                    const Icon(Icons.bolt_rounded, color: Colors.white, size: 15),
+              ),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(provider.t('credit.title'),
@@ -47539,8 +47550,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                               color: Colors.white, fontSize: 13)),
                       const Spacer(),
                       IconButton(
-                        icon: const Icon(Icons.remove_circle_outline_rounded,
-                            color: Colors.white54, size: 20),
+                        icon: Icon(Icons.remove_circle_rounded,
+                            color: packs > 1
+                                ? const Color(0xFF6C63FF)
+                                : Colors.white24,
+                            size: 22),
                         onPressed:
                             packs <= 1 ? null : () => setD(() => packs--),
                       ),
@@ -47550,8 +47564,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                               fontSize: 17,
                               fontWeight: FontWeight.w700)),
                       IconButton(
-                        icon: const Icon(Icons.add_circle_outline_rounded,
-                            color: Colors.white54, size: 20),
+                        icon: Icon(Icons.add_circle_rounded,
+                            color: packs < 20
+                                ? const Color(0xFF6C63FF)
+                                : Colors.white24,
+                            size: 22),
                         onPressed:
                             packs >= 20 ? null : () => setD(() => packs++),
                       ),
@@ -47565,8 +47582,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                       height: 42,
                       child: ElevatedButton.icon(
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF66BB6A),
+                          backgroundColor: const Color(0xFF6C63FF),
                           foregroundColor: Colors.white,
+                          elevation: 3,
+                          shadowColor:
+                              const Color(0xFF6C63FF).withValues(alpha: 0.4),
                         ),
                         icon: busy
                             ? const SizedBox(
@@ -47574,7 +47594,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 height: 16,
                                 child: CircularProgressIndicator(
                                     strokeWidth: 2, color: Colors.white))
-                            : const Icon(Icons.open_in_new_rounded, size: 18),
+                            : const Icon(Icons.credit_card_rounded, size: 18),
                         label: Text(provider.t('credit.charge')),
                         onPressed: busy
                             ? null
@@ -56901,6 +56921,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       (id) => _executeHeaderCommand(id, provider),
     );
     provider.registerMcpFileBuilder(_buildMcpFile);
+    provider.registerMcpChatClearer(
+        () => _McpChatSession.instance.clearHistory());
   }
 
   /// AI アシスタントを閉じている間だけ出す、 小さな「処理中 / 停止」 の札。
@@ -64592,10 +64614,16 @@ class _MindMapScreenState extends State<MindMapScreen>
     );
   }
 
+  /// 開いているフローティング窓 (合言葉 -> 実体)。 同じ合言葉の窓は
+  /// 1 つだけにして、 2 回目からは前面に出し直す (= ユーザー要望: タップの
+  /// たびに窓が増える)。 「複数開けるようにする」 を入れている時は増やす。
+  final Map<String, OverlayEntry> _floatingPanelSingletons = {};
+
   void _showFloatingPanelWindow(WidgetBuilder builder,
       {double width = 760,
       double height = 560,
       String? memoryKey,
+      String? singletonKey,
       String? popOutUrl,
       ValueGetter<String>? popOutUrlBuilder,
       bool aiSwitchable = false,
@@ -64605,11 +64633,32 @@ class _MindMapScreenState extends State<MindMapScreen>
       // 最初に出す位置と大きさ (= マップ分割中は分割セルを覆う形で開く)。
       Rect? initialRect,
       VoidCallback? onClosed}) {
+    // ★ 同じ窓が既に開いていれば、 増やさずに前面へ出し直す。
+    final allowMulti =
+        context.read<MindMapProvider>().allowMultipleFloatingWindows;
+    if (singletonKey != null && !allowMulti) {
+      final open = _floatingPanelSingletons[singletonKey];
+      if (open != null) {
+        if (_floatingVideoEntries.contains(open)) {
+          // 一度外して入れ直すと一番上に来る (中身と位置はそのまま)。
+          try {
+            open.remove();
+            Overlay.of(context, rootOverlay: true).insert(open);
+          } catch (_) {}
+          return;
+        }
+        _floatingPanelSingletons.remove(singletonKey);
+      }
+    }
     late OverlayEntry entry;
     void closeSelf() {
       if (_floatingVideoEntries.contains(entry)) {
         entry.remove();
         _floatingVideoEntries.remove(entry);
+        if (singletonKey != null &&
+            identical(_floatingPanelSingletons[singletonKey], entry)) {
+          _floatingPanelSingletons.remove(singletonKey);
+        }
         onClosed?.call();
       }
     }
@@ -64637,6 +64686,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       ),
     );
     _floatingVideoEntries.add(entry);
+    if (singletonKey != null) _floatingPanelSingletons[singletonKey] = entry;
     Overlay.of(context, rootOverlay: true).insert(entry);
   }
 
@@ -65609,6 +65659,24 @@ class _MindMapScreenState extends State<MindMapScreen>
               value: !provider.hideEmbedRelated,
               onChanged: (v) {
                 provider.setHideEmbedRelated(!v);
+                setS(() {});
+              },
+            ),
+
+            // ── トグル: フローティングを複数開けるようにする ──
+            //   既定は 1 つだけ (= ユーザー要望: タップのたびに窓が増える)。
+            _settingsToggleTile(
+              icon: provider.allowMultipleFloatingWindows
+                  ? Icons.filter_none_rounded
+                  : Icons.crop_square_rounded,
+              color: provider.allowMultipleFloatingWindows
+                  ? const Color(0xFF4FC3F7)
+                  : Colors.white54,
+              title: provider.t('menu.allowMultiFloat'),
+              helpKey: 'help.allowMultiFloat',
+              value: provider.allowMultipleFloatingWindows,
+              onChanged: (v) {
+                provider.setAllowMultipleFloatingWindows(v);
                 setS(() {});
               },
             ),
@@ -87403,15 +87471,32 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// ショートカット一覧を、 設定した開き方 (全画面 / フローティング /
   /// 分割ペイン) で開く (= ユーザー要望)。
-  void _openShortcutsList(BuildContext ctx) {
+  Future<void> _openShortcutsList(BuildContext ctx) async {
     if (!_isDesktop) {
       _showShortcutsDialog(ctx);
       return;
     }
     final provider = context.read<MindMapProvider>();
+    // 開き方の設定は起動直後まだ読み込めていない事があるので待つ
+    // (= 待たないと、 押すのが早いと既定の「全画面」 になってしまう)。
+    try {
+      await _commandOpenStylesReady;
+    } catch (_) {}
+    if (!mounted) return;
     final style = _openStyleOf('shortcuts');
-    // 分割中なら、 空いているペインの中に全画面で入れる。
-    if (_mapSplitOpen && (style == 'splitRight' || style == 'splitLeft')) {
+    if (style == 'splitRight' || style == 'splitLeft') {
+      // ★ まだ分割していなければ、 ここで分割してから入れる
+      //   (= ユーザー報告: 右分割を選んでいるのに画面の真ん中に出る)。
+      //   以前は「分割中なら」 という条件だったので、 分割していない時は
+      //   黙って真ん中のダイアログに落ちていた。
+      if (!_mapSplitOpen) {
+        await _applyMapSplitMode(panes: 2, stacked: false);
+        if (!mounted) return;
+      }
+      if (!_mapSplitOpen) {
+        _showShortcutsDialog(ctx);
+        return;
+      }
       final slot = style == 'splitLeft' ? 0 : _primaryViewerSlot();
       if (_mapSplitCellTool[slot] == 'shortcuts') {
         setState(() => _mapSplitCellTool.remove(slot));
@@ -87426,6 +87511,8 @@ class _MindMapScreenState extends State<MindMapScreen>
         width: 520,
         height: 640,
         memoryKey: 'shortcuts',
+        // 押すたびに窓が増えないようにする (= ユーザー要望)。
+        singletonKey: 'shortcuts',
       );
       return;
     }
@@ -109133,7 +109220,9 @@ graph TD
     // でよい (アプリ内プレビューのようにローカルの控えを使う必要は無い)。
     return _markdownPreviewHtml(md, widget.provider.isDarkMode,
         tocLabel: widget.provider.t('md.toc'),
-        showDownload: true,
+        // ★ 見る側にダウンロードボタンは出さない (= ユーザー要望: 邪魔だし、
+        //   受け取っても普通は開く用意が無い)。
+        showDownload: false,
         tabs: allTabs && _tabs.length > 1
             ? [for (final t in _tabs) (name: t.name, md: t.text)]
             : null);
@@ -219316,6 +219405,21 @@ class _McpChatSession extends ChangeNotifier {
 
   void add(_McpChatMsg m) {
     _msgs.add(m);
+    notifyListeners();
+  }
+
+  /// 会話の履歴を消す (= ユーザー要望: 「チャット履歴を clear にして」)。
+  ///
+  /// 走っている最中に頼まれた時は、 今のお願いだけ残して前を消す。
+  /// そうしないと、 返事を書いている途中で足元の文脈が消えてしまう。
+  void clearHistory() {
+    if (_busy && _msgs.isNotEmpty) {
+      final lastUser = _msgs.lastIndexWhere((m) => m.role == 'user');
+      if (lastUser > 0) _msgs.removeRange(0, lastUser);
+    } else {
+      _msgs.clear();
+    }
+    _touchedPageIds.clear();
     notifyListeners();
   }
 

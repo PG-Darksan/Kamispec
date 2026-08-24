@@ -2901,6 +2901,72 @@ Future<void> _registerWindowsOpenWith() async {
   }
 }
 
+/// スタートメニューに残った「古い場所を指すショートカット」 を消す。
+///
+/// Windows はアプリの見た目 (スタート / タスクバー / 通知のアイコン) を
+/// AppUserModelID の付いた .lnk 経由で解決する。 local_notifier が使う
+/// WinToast は、 既存の .lnk を **AppUserModelID しか見ない** ので、
+/// リンク先の exe が消えていても「そのままで良い」 と判断してしまう。
+/// その結果、 アプリのフォルダーを消して別の場所へ入れ直すと、
+/// リンクは壊れたまま残り、 アイコンが既定の白い物になる。
+///
+/// ここで消しておけば、 直後の `localNotifier.setup` が今の場所で作り直す。
+///
+/// リンク先の判定は .lnk の中身から今の exe のフォルダー名を探す方式。
+/// 見つけられなかった時は「古い」 と見なして消すが、 消しても作り直されるので
+/// 実害は無い (作り直しの方が確実に正しい)。
+void _cleanStaleStartMenuShortcuts() {
+  if (!Platform.isWindows) return;
+  try {
+    final appData = Platform.environment['APPDATA'];
+    if (appData == null || appData.isEmpty) return;
+    final dir = Directory(
+        '$appData\\Microsoft\\Windows\\Start Menu\\Programs');
+    if (!dir.existsSync()) return;
+    final exe = Platform.resolvedExecutable;
+    final exeBytesAscii = exe.toLowerCase().codeUnits;
+    // 昔の名前で作られた物も片付ける (改名の度に残っていた)。
+    const names = <String>[
+      'HisatorNotebook',
+      'HistorNotebook',
+      'HistorNote',
+      'Kamispec',
+      'Kamispe',
+      'mindmap_app',
+    ];
+    for (final n in names) {
+      final f = File('${dir.path}\\$n.lnk');
+      if (!f.existsSync()) continue;
+      var keep = false;
+      try {
+        final raw = f.readAsBytesSync();
+        // .lnk は同じ文字列を ANSI と UTF-16LE の両方で持つことがあるので
+        // 両方で探す。
+        final ascii = String.fromCharCodes(raw).toLowerCase();
+        if (ascii.contains(exe.toLowerCase())) keep = true;
+        if (!keep) {
+          final sb = StringBuffer();
+          for (var i = 0; i + 1 < raw.length; i += 2) {
+            sb.writeCharCode(raw[i] | (raw[i + 1] << 8));
+          }
+          if (sb.toString().toLowerCase().contains(exe.toLowerCase())) {
+            keep = true;
+          }
+        }
+      } catch (_) {}
+      if (keep) continue;
+      try {
+        f.deleteSync();
+        debugPrint('古いショートカットを片付けた: ${f.path}');
+      } catch (_) {}
+    }
+    // ignore: unused_local_variable
+    final _ = exeBytesAscii;
+  } catch (e) {
+    debugPrint('ショートカットの片付けに失敗 (起動は続行): $e');
+  }
+}
+
 void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
   // ── アプリの外に出す Web 窓として起動された場合 (= ユーザー要望:
@@ -3191,6 +3257,9 @@ void main(List<String> args) async {
     //   実害はない。
     unawaited(() async {
       try {
+        // ★ 先に、 古い場所を指したままのショートカットを片付ける
+        //   (= ユーザー報告: フォルダーを消して入れ直すとアイコンが壊れる)。
+        _cleanStaleStartMenuShortcuts();
         await localNotifier.setup(
           appName: 'HisatorNotebook',
           shortcutPolicy: ShortcutPolicy.requireCreate,

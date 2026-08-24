@@ -226,6 +226,11 @@ class McpServer {
         },
         ['pageId', 'type']),
     _tool(
+        'clear_chat_history',
+        'Clear this AI assistant conversation history. Use it when the user '
+        'asks to clear/reset the chat. The current request stays.',
+        {}),
+    _tool(
         'set_header_buttons',
         'Put buttons on the app header bar. ids are command ids from '
         'list_app_commands. replace=true swaps the whole row, false (default) '
@@ -745,6 +750,10 @@ class McpServer {
               : _err('could not change "$id" to "$type". Valid types: '
                   'normal, bookshelf, paint, document, videoEditor, aiStudio.');
         }
+      case 'clear_chat_history':
+        return _provider.mcpClearChat()
+            ? _ok('chat history cleared')
+            : _err('the chat view is not available right now');
       case 'set_header_buttons':
         {
           final raw = (a['ids'] as List?) ?? const [];
