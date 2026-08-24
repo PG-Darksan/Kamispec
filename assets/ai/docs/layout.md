@@ -29,9 +29,28 @@ flowchart TD
     C["C. 文字を編集した時<br/>updateNodeTitle → _computeAutoSizeForText<br/>→ _resolveOverlapsAround"] --> C1["(【6】)"]
     D["D. 枝が増減した時<br/>reflowSiblingSubtrees / makeRoomForRect<br/>/ _compactSiblingsAfterDelete"] --> D1["(【3】【4】)"]
     E["E. 全体整列した時<br/>autoLayoutTree"] --> E1["(【7】)"]
+    F["F. AI / MCP が置いた時<br/>mcpAddNode"] --> F1["基準位置にそのまま置く (【0-F】)"]
 ```
 
 A〜D は「局所的に最小限だけ動かす」。E だけが全ノードを並べ直す。
+
+### 【0-F】AI / MCP ツールで作った時 — **重なり回避は一切しない**
+
+`mcpAddNode` は座標を渡されなければ `mcpReferenceFor(pageId)`
+(そのページの基準位置。既定 10000,10000) に**そのまま置くだけ**で、
+空き場所探しも押しのけも重なり判定も行わない。座標なしで n 個作れば
+**n 個が完全に重なる**。
+
+散らすのは `tidy_page` (`mcpTidyPage` → `autoLayoutTree` +
+`_alignMiddleChildren` + `_spreadLooseNodes`) を呼んだ時だけ。
+アプリ内の AI アシスタントは応答の最後に自動で呼ぶが (`_tidyTouched`、
+対象は add_node / add_image_node / add_table_node / connect_nodes を
+使ったページのみ)、外部の MCP クライアントは自分で呼ぶ必要がある。
+`add_node` の戻り値に `note` が付いていたら、それが合図。
+
+なお `mcpAddTableNode` / `mcpAddFileNode` は挙動が違う:
+表は座標省略時に `_spreadLooseNodes` を呼び、ファイルのタイルは
+既にあるノードの下へずらして置く。
 
 > ★ 同じ「重なり回避」でも A〜E で使う関数・定数・当たり判定が違う。
 > ここを混同すると「直したのに直らない」になる。まず【1】を読むこと。

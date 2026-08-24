@@ -318,3 +318,22 @@ flowchart TD
 | 413 | `t('ai.imageTooLarge')` |
 | 404 | `_relayAvailable = false` にして以後この経路を使わない |
 | 200 | credit / monthly / usage を取り込み、`recordAppKeyUsage` でローカルの累計トークン表示にも足す |
+
+---
+
+## 【9-B】画像生成の料金 — トークンではなく 1 枚いくら
+
+背景の描き起こし (`generate_page_background`) や AI スタジオの画像は、
+文章の生成と違って**トークン課金ではない**。1 枚あたりの定額で、
+プロンプトの長さでは変わらない。
+
+| | |
+|---|---|
+| 原価 | `IMAGE_MODELS['gemini-2.5-flash-image']` = **0.039 USD / 枚** |
+| 請求 | 原価 × (1 + `MARKUP` 0.20) = **約 0.047 USD / 枚** |
+| 確保 (`/reserve`) と精算 (`/settle`) | どちらも同額 (ぶれない) |
+
+出典: `worker/billing-worker.js` の `IMAGE_MODELS` (:2271) と `MARKUP` (:2053)。
+
+> ★ 「全ページの背景を統一して」 のような指示は**ページ数ぶん**課金される。
+> 実行する前に枚数と概算を伝えること。

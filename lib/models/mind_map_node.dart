@@ -1028,8 +1028,15 @@ class MindMapNode {
           hasJapanese ? effectiveTitleFont * 0.95 : effectiveTitleFont * 0.55;
       final charsPerLine = (textWidth / avgCharWidth).floor().clamp(1, 100);
       // タイトル必要行数: テキスト長 / 1行の文字数。 最大は height で許容できる行数まで。
-      final titleLines =
-          (title.length / charsPerLine).ceil().clamp(1, maxLines);
+      // ★ 明示的な改行 (\n) ごとに分けて数える。 下のメモ側と同じ理由で、
+      //   全長÷折り返し幅だけだと「第一章\nはじめに」 のような短い 2 行が
+      //   1 行と見積もられ、 自動整列の間隔・当たり判定・接続点の位置が
+      //   実際より小さくなって隣と重なる (= 動作確認で判明)。
+      var titleRawLines = 0;
+      for (final seg in title.split('\n')) {
+        titleRawLines += seg.isEmpty ? 1 : (seg.length / charsPerLine).ceil();
+      }
+      final titleLines = titleRawLines.clamp(1, maxLines);
       if (titleLines > 1) {
         final titleTotalH = titleLines * (effectiveTitleFont * 1.2) + 16;
         if (titleTotalH > height) {

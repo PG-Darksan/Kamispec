@@ -4149,6 +4149,42 @@ class MindMapProvider extends ChangeNotifier {
   DateTime? _undoCoalesceAt;
   static const Duration _kUndoCoalesceWindow = Duration(milliseconds: 900);
 
+  /// 「今開いているページ」 以外にも履歴を積める形 (= AI / MCP 用)。
+  ///
+  /// `_pushUndo` は `currentPage` を控えるので、 裏のページを書き換える
+  /// MCP の操作では使えない (別のページのスナップショットが積まれてしまう)。
+  /// [coalesceKey] を渡すと、 短い間に続いた同じ種類の編集を 1 つにまとめる
+  /// (まとめて消した分が Ctrl+Z 一回で戻る)。
+  void _pushUndoForPage(String pageId, {String? coalesceKey}) {
+    final page = mcpPageById(pageId);
+    if (page == null) return;
+    if (coalesceKey != null) {
+      final now = DateTime.now();
+      final last = _undoCoalesceAt;
+      if (_undoCoalesceKey == coalesceKey &&
+          last != null &&
+          now.difference(last) < _kUndoCoalesceWindow) {
+        _undoCoalesceAt = now;
+        return;
+      }
+      _undoCoalesceKey = coalesceKey;
+      _undoCoalesceAt = now;
+    } else {
+      _undoCoalesceKey = null;
+      _undoCoalesceAt = null;
+    }
+    if (_undoBatchDepth > 0) return;
+    _undoStacks.putIfAbsent(pageId, () => []);
+    _redoStacks.putIfAbsent(pageId, () => []);
+    final groups = _namedGroups[pageId] ?? {};
+    _undoStacks[pageId]!.add(_PageSnapshot.from(page, groups));
+    if (_undoStacks[pageId]!.length > _maxHistory) {
+      _undoStacks[pageId]!.removeAt(0);
+    }
+    _redoStacks[pageId]!.clear();
+    _pageLastEditedAt[pageId] = DateTime.now();
+  }
+
   void _pushUndo({String? coalesceKey}) {
     if (coalesceKey != null) {
       final now = DateTime.now();
@@ -34405,6 +34441,139 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Excluir',
       'ru': 'Удалить',
     },
+    // ── ごみ箱 (消したページの控え) = ユーザー要望 ──
+    'trash.menu': {
+      'ja': 'ごみ箱',
+      'en': 'Trash',
+      'zh': '回收站',
+      'ko': '휴지통',
+      'es': 'Papelera',
+      'fr': 'Corbeille',
+      'de': 'Papierkorb',
+      'pt': 'Lixeira',
+      'ru': 'Корзина',
+    },
+    'trash.title': {
+      'ja': 'ごみ箱（消したページの控え）',
+      'en': 'Trash (copies of deleted pages)',
+      'zh': '回收站（已删除页面的备份）',
+      'ko': '휴지통 (삭제한 페이지 사본)',
+      'es': 'Papelera (copias de páginas eliminadas)',
+      'fr': 'Corbeille (copies des pages supprimées)',
+      'de': 'Papierkorb (Kopien gelöschter Seiten)',
+      'pt': 'Lixeira (cópias de páginas excluídas)',
+      'ru': 'Корзина (копии удалённых страниц)',
+    },
+    'trash.note': {
+      'ja': 'ページを消した時に、その直前の状態を控えています。1 か月を過ぎた分と、30 件を超えた古い分は自動で消えます。',
+      'en': 'A copy is kept each time a page is deleted. Copies older than a month, and anything past the newest 30, are removed automatically.',
+      'zh': '每次删除页面时都会保留删除前的备份。超过一个月的备份，以及最新 30 份以外的备份会自动删除。',
+      'ko': '페이지를 삭제할 때마다 직전 상태를 보관합니다. 한 달이 지난 것과 최신 30개를 넘는 것은 자동으로 삭제됩니다.',
+      'es': 'Se guarda una copia cada vez que se elimina una página. Las copias de más de un mes y las que superan las 30 más recientes se borran solas.',
+      'fr': 'Une copie est conservée à chaque suppression de page. Les copies de plus d’un mois et celles au-delà des 30 plus récentes sont supprimées automatiquement.',
+      'de': 'Bei jedem Löschen einer Seite wird eine Kopie behalten. Kopien, die älter als ein Monat sind, und alles jenseits der neuesten 30 werden automatisch entfernt.',
+      'pt': 'Uma cópia é guardada sempre que uma página é excluída. Cópias com mais de um mês e as que passam das 30 mais recentes são removidas automaticamente.',
+      'ru': 'При каждом удалении страницы сохраняется копия. Копии старше месяца и всё, что за пределами последних 30, удаляются автоматически.',
+    },
+    'trash.empty': {
+      'ja': 'ごみ箱は空です',
+      'en': 'The trash is empty',
+      'zh': '回收站是空的',
+      'ko': '휴지통이 비어 있습니다',
+      'es': 'La papelera está vacía',
+      'fr': 'La corbeille est vide',
+      'de': 'Der Papierkorb ist leer',
+      'pt': 'A lixeira está vazia',
+      'ru': 'Корзина пуста',
+    },
+    'trash.pages': {
+      'ja': '{n} ページ',
+      'en': '{n} pages',
+      'zh': '{n} 个页面',
+      'ko': '{n} 페이지',
+      'es': '{n} páginas',
+      'fr': '{n} pages',
+      'de': '{n} Seiten',
+      'pt': '{n} páginas',
+      'ru': '{n} страниц',
+    },
+    'trash.restoreHint': {
+      'ja': '「復元」は、今あるページはそのままで、無くなっているページだけを戻します。',
+      'en': 'Restore keeps the pages you have now and brings back only the missing ones.',
+      'zh': '“恢复”会保留现有页面，只找回缺失的页面。',
+      'ko': '‘복원’은 지금 있는 페이지는 그대로 두고, 없어진 페이지만 되돌립니다.',
+      'es': 'Restaurar conserva las páginas actuales y solo recupera las que faltan.',
+      'fr': '« Restaurer » conserve les pages actuelles et ne ramène que celles qui manquent.',
+      'de': '„Wiederherstellen“ behält die vorhandenen Seiten und holt nur die fehlenden zurück.',
+      'pt': '“Restaurar” mantém as páginas atuais e traz de volta apenas as que faltam.',
+      'ru': '«Восстановить» сохраняет текущие страницы и возвращает только недостающие.',
+    },
+    'trash.restoreNone': {
+      'ja': 'この控えの中に、戻せるページはありませんでした（どれも今あります）',
+      'en': 'Nothing to bring back from this copy - you already have every page in it',
+      'zh': '这份备份里没有可恢复的页面（都已存在）',
+      'ko': '이 사본에서 되돌릴 페이지가 없습니다 (모두 이미 있습니다)',
+      'es': 'No hay nada que recuperar de esta copia: ya tienes todas sus páginas',
+      'fr': 'Rien à récupérer dans cette copie : vous avez déjà toutes ses pages',
+      'de': 'Aus dieser Kopie gibt es nichts zurückzuholen - alle Seiten sind schon da',
+      'pt': 'Nada a recuperar desta cópia: você já tem todas as páginas dela',
+      'ru': 'Из этой копии нечего возвращать — все её страницы уже есть',
+    },
+    'trash.deleteOne': {
+      'ja': '完全に削除',
+      'en': 'Delete permanently',
+      'zh': '彻底删除',
+      'ko': '완전히 삭제',
+      'es': 'Eliminar definitivamente',
+      'fr': 'Supprimer définitivement',
+      'de': 'Endgültig löschen',
+      'pt': 'Excluir permanentemente',
+      'ru': 'Удалить навсегда',
+    },
+    'trash.emptyAll': {
+      'ja': '全部空にする',
+      'en': 'Empty the trash',
+      'zh': '清空回收站',
+      'ko': '휴지통 비우기',
+      'es': 'Vaciar la papelera',
+      'fr': 'Vider la corbeille',
+      'de': 'Papierkorb leeren',
+      'pt': 'Esvaziar a lixeira',
+      'ru': 'Очистить корзину',
+    },
+    'trash.confirmEmpty': {
+      'ja': '控え {n} 件をすべて完全に削除します。もう戻せません。',
+      'en': 'All {n} copies will be deleted permanently. This cannot be undone.',
+      'zh': '将彻底删除全部 {n} 份备份，无法恢复。',
+      'ko': '사본 {n}개를 모두 완전히 삭제합니다. 되돌릴 수 없습니다.',
+      'es': 'Se eliminarán definitivamente las {n} copias. No se puede deshacer.',
+      'fr': 'Les {n} copies seront supprimées définitivement. Action irréversible.',
+      'de': 'Alle {n} Kopien werden endgültig gelöscht. Das lässt sich nicht rückgängig machen.',
+      'pt': 'As {n} cópias serão excluídas permanentemente. Não há como desfazer.',
+      'ru': 'Все копии ({n}) будут удалены навсегда. Это необратимо.',
+    },
+    'trash.deleted': {
+      'ja': '完全に削除しました',
+      'en': 'Deleted permanently',
+      'zh': '已彻底删除',
+      'ko': '완전히 삭제했습니다',
+      'es': 'Eliminado definitivamente',
+      'fr': 'Supprimé définitivement',
+      'de': 'Endgültig gelöscht',
+      'pt': 'Excluído permanentemente',
+      'ru': 'Удалено навсегда',
+    },
+    'trash.emptied': {
+      'ja': 'ごみ箱を空にしました（{n} 件）',
+      'en': 'Trash emptied ({n} copies)',
+      'zh': '已清空回收站（{n} 份）',
+      'ko': '휴지통을 비웠습니다 ({n}개)',
+      'es': 'Papelera vaciada ({n} copias)',
+      'fr': 'Corbeille vidée ({n} copies)',
+      'de': 'Papierkorb geleert ({n} Kopien)',
+      'pt': 'Lixeira esvaziada ({n} cópias)',
+      'ru': 'Корзина очищена ({n})',
+    },
     'common.cancel': {
       'ja': 'キャンセル',
       'en': 'Cancel',
@@ -39889,10 +40058,27 @@ class MindMapProvider extends ChangeNotifier {
       'en': 'No backups yet. One is created whenever a save removes pages.',
     },
     'backup.pagesUnit': {'ja': 'ページ', 'en': 'pages'},
-    'backup.restore': {'ja': '復元', 'en': 'Restore'},
+    'backup.restore': {
+      'ja': '復元',
+      'en': 'Restore',
+      'zh': '恢复',
+      'ko': '복원',
+      'es': 'Restaurar',
+      'fr': 'Restaurer',
+      'de': 'Wiederherstellen',
+      'pt': 'Restaurar',
+      'ru': 'Восстановить',
+    },
     'backup.restored': {
       'ja': '{n} ページを復元しました',
       'en': 'Restored {n} page(s)',
+      'zh': '已恢复 {n} 个页面',
+      'ko': '{n} 페이지를 복원했습니다',
+      'es': 'Se restauraron {n} páginas',
+      'fr': '{n} page(s) restaurée(s)',
+      'de': '{n} Seite(n) wiederhergestellt',
+      'pt': '{n} página(s) restaurada(s)',
+      'ru': 'Восстановлено страниц: {n}',
     },
     'mcp.localOnly': {
       'ja': 'このアプリの中だけで動作中（外部からは接続できません）',
@@ -69137,6 +69323,9 @@ $cleanQ
     //   完了させる (= ユーザー報告の再発防止: 言語ピッカーが出ない / 英語固定 /
     //   下部ボタンが空)。 他のロードがハングしても起動フローが進む。
     _loadEssentialUiState();
+    // 期限切れの控えを片付ける (= ユーザー要望: 1 か月で自動的に消す)。
+    // ページを消さない限り書き込みが起きないので、 起動時にも回す。
+    unawaited(prunePageBackups());
     unawaited(_loadGoogleSession());
     // 分析用の属性 (国 / 言語 / 年齢 / 性別) を読み直す (= ユーザー要望)。
     unawaited(_loadAnalyticsProfile());
@@ -74594,7 +74783,8 @@ $cleanQ
   /// 保存でページ数が減る時だけ、 直前の状態を控える (最大 30 世代)。
   ///
   /// 1 ページ消しただけでも残すので、 誤って消した直後でも戻せる。
-  /// 内容が同じ連続バックアップは作らない。
+  /// 増えた時・中身を書き換えただけの時は控えない (減った時だけが対象)。
+  /// 期限で消える仕組みは無く、 新しい 30 個を超えた分だけが捨てられる。
   Future<void> _backupPagesIfShrinking(
     SharedPreferences prefs,
     _PageStorageSnapshot next,
@@ -74615,41 +74805,117 @@ $cleanQ
       final f = File('${dir.path}${Platform.pathSeparator}'
           'pages_${before.order.length}p_$stamp.json');
       await f.writeAsString(beforeRaw, flush: true);
-      // 古い世代を捨てる (新しい 30 個だけ残す)。
-      final files = (await dir.list().toList())
-          .whereType<File>()
-          .where((e) => e.path.endsWith('.json'))
-          .toList()
-        ..sort((a, b) => b.path.compareTo(a.path));
-      for (final old in files.skip(30)) {
-        try {
-          await old.delete();
-        } catch (_) {}
-      }
+      await prunePageBackups();
       debugPrint('page backup saved: ${f.path}');
     } catch (e) {
       debugPrint('page backup failed: $e');
     }
   }
 
+  /// 控えを置いておく期間と本数 (= ユーザー要望: 1 か月で自動的に消す)。
+  static const Duration _kPageBackupMaxAge = Duration(days: 31);
+  static const int _kPageBackupMaxCount = 30;
+
+  /// 古い控えを片付ける。 1 か月を過ぎた物と、 30 件を超えた古い分。
+  ///
+  /// ★ 以前はファイル名で並べて 30 件に切っていたため、 名前
+  ///   (pages_<枚数>p_<日時>) の**枚数の文字**が日付より先に効き、
+  ///   「9 枚の古い控え」 が残って「5 枚の今日の控え」 が消えていた
+  ///   (= 動作確認で判明)。 並べ替えは必ず書き込み時刻で行う。
+  Future<int> prunePageBackups() async {
+    if (kIsWeb) return 0;
+    try {
+      final dir = await pageBackupDir();
+      final files = await _backupFilesNewestFirst(dir);
+      final now = DateTime.now();
+      var removed = 0;
+      for (var i = 0; i < files.length; i++) {
+        final e = files[i];
+        final expired = now.difference(e.at) > _kPageBackupMaxAge;
+        final overflow = i >= _kPageBackupMaxCount;
+        if (!expired && !overflow) continue;
+        try {
+          await e.file.delete();
+          removed++;
+        } catch (_) {}
+      }
+      return removed;
+    } catch (e) {
+      debugPrint('prunePageBackups failed: $e');
+      return 0;
+    }
+  }
+
+  /// ごみ箱から 1 件を完全に消す (= ユーザー要望)。 戻せない。
+  Future<bool> deletePageBackup(String path) async {
+    if (kIsWeb) return false;
+    try {
+      final dir = await pageBackupDir();
+      // 控えのフォルダの中のファイルしか消さない (思わぬ物を消さないため)。
+      final f = File(path);
+      if (!f.path.startsWith(dir.path) || !f.path.endsWith('.json')) {
+        return false;
+      }
+      if (!await f.exists()) return false;
+      await f.delete();
+      return true;
+    } catch (e) {
+      debugPrint('deletePageBackup failed: $e');
+      return false;
+    }
+  }
+
+  /// ごみ箱を空にする。 消せた件数を返す。
+  Future<int> emptyPageBackups() async {
+    if (kIsWeb) return 0;
+    try {
+      final dir = await pageBackupDir();
+      var removed = 0;
+      for (final e in await _backupFilesNewestFirst(dir)) {
+        try {
+          await e.file.delete();
+          removed++;
+        } catch (_) {}
+      }
+      return removed;
+    } catch (e) {
+      debugPrint('emptyPageBackups failed: $e');
+      return 0;
+    }
+  }
+
+  /// 控えのファイルを「書き込みが新しい順」 に並べて返す。
+  ///
+  /// 名前 (pages_<枚数>p_<日時>) で並べると枚数の文字が先に効いてしまうので、
+  /// 捨てる時も一覧に出す時もこちらを通す。
+  Future<List<({File file, DateTime at})>> _backupFilesNewestFirst(
+      Directory dir) async {
+    final out = <({File file, DateTime at})>[];
+    for (final e in await dir.list().toList()) {
+      if (e is! File || !e.path.endsWith('.json')) continue;
+      try {
+        out.add((file: e, at: (await e.stat()).modified));
+      } catch (_) {}
+    }
+    out.sort((a, b) => b.at.compareTo(a.at));
+    return out;
+  }
+
   /// バックアップ一覧 (新しい順)。 画面から選んで戻すのに使う。
   Future<List<Map<String, dynamic>>> listPageBackups() async {
     try {
       final dir = await pageBackupDir();
-      final files = (await dir.list().toList())
-          .whereType<File>()
-          .where((e) => e.path.endsWith('.json'))
-          .toList()
-        ..sort((a, b) => b.path.compareTo(a.path));
+      final files = await _backupFilesNewestFirst(dir);
       final out = <Map<String, dynamic>>[];
-      for (final f in files) {
+      for (final e in files) {
+        final f = e.file;
         try {
           final snap = _decodeCoordinatedPageStorage(await f.readAsString());
           if (snap == null) continue;
           out.add({
             'path': f.path,
             'pages': snap.order.length,
-            'at': (await f.stat()).modified,
+            'at': e.at,
             'names': [
               for (final id in snap.order.take(6))
                 (() {
@@ -76827,11 +77093,24 @@ $cleanQ
   }
 
   /// 今の会話の中身だけ消す (会話そのものは残す)。
-  Future<void> clearMcpChatHistory() async {
+  /// 会話の控え (prefs) を消す。 [keep] を渡すと、 その分だけ残す。
+  ///
+  /// ★ 「履歴を消して」 と頼まれた時、 画面の中の会話だけを消して控えは
+  ///   そのままにしていたため、 開き直したり別のセッションから戻ると
+  ///   消したはずの会話が出てきていた (= 動作確認で判明)。 今頼まれている
+  ///   用件だけは残したいので、 残す分を渡せる形にする。
+  Future<void> clearMcpChatHistory(
+      {List<Map<String, dynamic>>? keep}) async {
     final s = _currentSession;
     if (s == null) return;
-    s['msgs'] = <Map<String, dynamic>>[];
-    s['title'] = '';
+    final rows = keep ?? <Map<String, dynamic>>[];
+    s['msgs'] = rows;
+    // 残す会話があるなら、 一覧に出す題名もそこから付け直す。
+    final firstUser = rows.firstWhere((e) => e['role'] == 'user',
+        orElse: () => const <String, dynamic>{});
+    final ft = '${firstUser['text'] ?? ''}'.trim();
+    s['title'] =
+        ft.isEmpty ? '' : (ft.length > 24 ? '${ft.substring(0, 24)}…' : ft);
     await _saveMcpSessions();
     notifyListeners();
   }
@@ -77079,7 +77358,10 @@ $cleanQ
       page.backgroundSaturationPercent = saturationPercent.clamp(0, 200);
     }
     if (brightnessPercent != null) {
-      page.backgroundBrightnessPercent = brightnessPercent.clamp(20, 200);
+      // ★ 保存し直すと 50..150 に丸められる (fromJson / :71075 と同じ範囲)。
+      //   ここだけ 20..200 を許すと、 設定できたように見えて再読み込みで
+      //   値が変わる (= 動作確認で判明)。 保存側に合わせる。
+      page.backgroundBrightnessPercent = brightnessPercent.clamp(50, 150);
     }
     page.lastModifiedAt = DateTime.now();
     notifyListeners();
@@ -77213,14 +77495,43 @@ $cleanQ
     return b.applyEdits(edits);
   }
 
+  /// 直近に MCP から消したページの時刻 (暴走の歯止め用)。
+  final List<DateTime> _mcpRecentPageDeletes = [];
+
+  /// ひと続きの作業で MCP から消してよいページ数と、 その「ひと続き」の幅。
+  /// = ユーザー報告: 「このページ消して」 と頼んだのに、 一覧を上から順に
+  ///   消していって最後の 1 枚しか残らなかった。 説明文だけでは事故を
+  ///   防ぎきれないので、 消し過ぎそのものを止める。
+  static const int _kMcpDeleteBurstLimit = 2;
+  static const Duration _kMcpDeleteBurstWindow = Duration(seconds: 90);
+
+  /// 歯止めを外す。 利用者から新しい指示が来た時 (= 改めて頼まれた時) だけ。
+  void mcpResetDeleteBrake() => _mcpRecentPageDeletes.clear();
+
   /// ページを削除する (= ユーザー要望: 明示的に頼んだら消せるように)。
-  /// 見つからなければ false。 最後の 1 枚は消さない (アプリが空になるため)。
-  Future<bool> mcpDeletePage(String pageId) async {
+  /// 最後の 1 枚は消さない (アプリが空になるため)。
+  /// 成功なら null、 失敗ならその理由 (AI にそのまま渡す文面) を返す。
+  Future<String?> mcpDeletePage(String pageId) async {
     final i = _pages.indexWhere((p) => p.id == pageId);
-    if (i < 0) return false;
-    if (_pages.length <= 1) return false;
+    if (i < 0) {
+      return 'no page has the id "$pageId". Call list_pages and use an id '
+          'from it (ids are not guessable). Do not try other ids.';
+    }
+    if (_pages.length <= 1) {
+      return 'cannot delete "$pageId": it is the last remaining page.';
+    }
+    final now = DateTime.now();
+    _mcpRecentPageDeletes
+        .removeWhere((t) => now.difference(t) > _kMcpDeleteBurstWindow);
+    if (_mcpRecentPageDeletes.length >= _kMcpDeleteBurstLimit) {
+      return 'refused: ${_mcpRecentPageDeletes.length} pages were already '
+          'deleted moments ago, so this looks like deleting more than was '
+          'asked. Stop deleting, tell the user exactly which pages are gone, '
+          'and let them confirm before any further deletion.';
+    }
+    _mcpRecentPageDeletes.add(now);
     deletePage(i);
-    return true;
+    return null;
   }
 
   /// ページの種類を変える (= ユーザー要望: 形式を変更できるように)。
@@ -77228,13 +77539,16 @@ $cleanQ
   /// 中身 (ノード等) はそのまま残す。 ギャラリー / お絵かき等の本体は
   /// ページ JSON の外 (prefs) にあるので、 切り替えても消えない
   /// (戻せばまた出てくる)。
+  /// ★ 'aiStudio' は外した (= 動作確認で判明: 画面側にこの種別の分岐が
+  ///   無く、 変換しても中身は普通のマップのまま = 使えないページが残る)。
+  ///   代わりに実在する 'markdown' を入れてある。
   static const Set<String> kMcpPageTypes = {
     'normal',
     'bookshelf',
     'paint',
     'document',
+    'markdown',
     'videoEditor',
-    'aiStudio',
   };
 
   Future<bool> mcpSetPageType(String pageId, String type) async {
@@ -77254,13 +77568,24 @@ $cleanQ
   ///
   /// [ids] は list_app_commands が返すコマンド id。 知らない id は捨てる。
   /// [replace] が false なら今の並びの後ろに足す (重複は足さない)。
-  /// 戻り値は実際に並んだ id の一覧。
-  Future<List<String>> mcpSetHeaderButtons(List<String> ids,
+  ///
+  /// 戻り値は {'header': 並んだ id, 'ignored': 無い id, 'blocked': 利用者しか
+  /// 始められない機能の id}。 ★ 以前は並んだ一覧しか返しておらず、 存在
+  /// しない機能を頼まれた時に AI が「付けました」 と嘘をついていた
+  /// (= ユーザー報告)。 捨てた理由まで返して、 正直に答えられるようにする。
+  Future<Map<String, List<String>>> mcpSetHeaderButtons(List<String> ids,
       {bool replace = false}) async {
     final known = _mcpCommands.map((c) => c['id']).whereType<String>().toSet();
     final wanted = <String>[];
+    final ignored = <String>[];
+    final blocked = <String>[];
     for (final id in ids) {
-      if (!known.contains(id)) continue;
+      if (!known.contains(id)) {
+        // 「押すのは自分でやるから置いといて」 と言われても、 起動できない
+        //   機能を並べても押せないので、 これも置かない。
+        (_mcpBlockedCommands.contains(id) ? blocked : ignored).add(id);
+        continue;
+      }
       if (wanted.contains(id)) continue;
       wanted.add(id);
     }
@@ -77294,7 +77619,11 @@ $cleanQ
           jsonEncode(_desktopHeaderDockCollapsedByPlacement)),
     ]);
     notifyListeners();
-    return List<String>.from(_customHeaderButtons);
+    return {
+      'header': List<String>.from(_customHeaderButtons),
+      'ignored': ignored,
+      'blocked': blocked,
+    };
   }
 
   /// その id が「利用者しか始められない」 ものか (= 断り文句を正確にする)。
@@ -77312,6 +77641,8 @@ $cleanQ
     return true;
   }
 
+  /// ページ一覧。 `lastModified` は**最終更新**で、 作成日ではない
+  /// (= 同名ページの「古いほう」 は、 これだけでは決められない)。
   List<Map<String, dynamic>> mcpListPages() => [
         for (final p in _pages)
           {
@@ -77320,6 +77651,7 @@ $cleanQ
             'type': p.pageType,
             'nodeCount': p.nodes.length,
             'isCurrent': p.id == currentPage.id,
+            'lastModified': p.lastModifiedAt.toIso8601String(),
           }
       ];
 
@@ -77327,10 +77659,11 @@ $cleanQ
       mcpPageById(pageId)?.toJson();
 
   String? mcpCreatePage({required String type, String? name}) {
-    // 'document' は入れない。 アプリの新規作成メニューにも無い種別で、
-    //   MCP だけが作れると利用者が扱えないページが残ってしまう
-    //   (文章を書きたい時は 'paint' = フリーノートの文書モードを使う)。
-    const known = {'bookshelf', 'paint', 'videoEditor'};
+    // 作れる種別は画面が描き分けられる物だけ (= 動作確認で判明: 知らない
+    //   種別を作らせると、 見た目は普通のマップなのに種別だけ違う、 誰にも
+    //   直せないページが残る)。 知らない種別は 'normal' に倒し、 何を作った
+    //   かは呼び出し側が pageType を見て確かめる。
+    const known = {'bookshelf', 'paint', 'videoEditor', 'document', 'markdown'};
     final t = known.contains(type) ? type : 'normal';
     if (!canCreatePageType(t)) return null;
     switch (t) {
@@ -77345,6 +77678,9 @@ $cleanQ
         break;
       case 'document':
         addDocumentPage(name: name);
+        break;
+      case 'markdown':
+        addMarkdownPage(name: name);
         break;
       default:
         addPage(name: name);
@@ -77823,10 +78159,19 @@ $cleanQ
     }
     if (page == null) return null;
     final name = _baseName(filePath);
+    // ★ 基準位置そのままだと、 既に物が置いてあるページでは中心のノードに
+    //   重なる (= 動作確認で判明)。 既にある物の下へずらして置く。
+    //   ページ全体は動かさない (利用者が組んだ配置を崩さないため)。
+    //   逃がし先のページに置く時は、 そのページの基準位置を使う。
+    var spot = mcpReferenceFor(page.id);
+    for (final nd in page.nodes.values) {
+      spot = Offset(
+          spot.dx, math.max(spot.dy, nd.position.dy + nd.visualHeight + 40));
+    }
     final node = MindMapNode(
       id: _uuid.v4(),
       title: title ?? name,
-      position: mcpReferenceFor(pageId),
+      position: spot,
       color: _childColor(),
     );
     node.contentType = NodeContentType.attachment;
@@ -77850,6 +78195,11 @@ $cleanQ
     bool headerRow = true,
     double? x,
     double? y,
+    // ★ 表の上に出す説明書き。 作る時に一緒に渡す (= 動作確認で判明:
+    //   後から updateNodeCaption を呼ぶ形だと、 あの関数は「今開いている
+    //   ページ」 しか見ないので、 別のページに表を足した時は黙って
+    //   捨てられていた)。
+    String? caption,
   }) {
     final page = mcpPageById(pageId);
     if (page == null || rows.isEmpty) return null;
@@ -77871,6 +78221,7 @@ $cleanQ
       width: (table.totalWidth + 28.0).clamp(80.0, 2000.0).toDouble(),
       height: 14.0,
       color: _childColor(),
+      caption: (caption ?? '').trim().isEmpty ? null : caption!.trim(),
     );
     page.nodes[node.id] = node;
     // 位置の指定が無い時は、 既にある物と重ならない所へ逃がす。
@@ -77893,7 +78244,10 @@ $cleanQ
   }) {
     final page = mcpPageById(pageId);
     if (page == null) return false;
-    final node = page.nodes[_resolveNodeIdIn(page, nodeKey) ?? nodeKey];
+    // 書き換えも部分一致では選ばない (= 消す時と同じ理由。 こちらは
+    //   取り消しも積んでいないので、 別ノードを潰すと戻せない)。
+    final node =
+        page.nodes[_resolveNodeIdIn(page, nodeKey, fuzzy: false) ?? nodeKey];
     if (node == null) return false;
     if (title != null) node.title = title;
     if (memo != null) {
@@ -77909,17 +78263,26 @@ $cleanQ
   }
 
   /// [nodeKey] は id でも題名でもよい (= update_node と同じ)。
-  bool mcpDeleteNode(String pageId, String nodeKey) {
+  ///
+  /// 消せたら**消したノードの題名**を返す (null = 消せなかった)。
+  /// 何を消したかを返さないと、 AI が「消しました」 としか言えず、
+  /// 別のノードを消していても気付けない。
+  String? mcpDeleteNode(String pageId, String nodeKey) {
     final page = mcpPageById(pageId);
-    if (page == null) return false;
-    final nodeId = _resolveNodeIdIn(page, nodeKey) ?? nodeKey;
-    if (!page.nodes.containsKey(nodeId)) return false;
-    page.nodes.remove(nodeId);
+    if (page == null) return null;
+    // 部分一致は使わない (無い物は無いと答える)。
+    final nodeId = _resolveNodeIdIn(page, nodeKey, fuzzy: false) ?? nodeKey;
+    if (!page.nodes.containsKey(nodeId)) return null;
+    // ★ 消す前に控える (= 「テスト」 を含むノードを消して、 と頼んだら
+    //   関係ないノードまで巻き込まれた時に戻せるように)。 AI の削除だけは
+    //   取り消せる形にしておく。 画面の Ctrl+Z (元に戻す) で戻る。
+    _pushUndoForPage(pageId, coalesceKey: 'mcpDeleteNode:$pageId');
+    final removed = page.nodes.remove(nodeId);
     page.connections
         .removeWhere((c) => c.fromId == nodeId || c.toId == nodeId);
     _saveToStorage();
     notifyListeners();
-    return true;
+    return removed?.title ?? '';
   }
 
   /// ノードを「id でも題名でも」 引けるようにする。
@@ -77936,7 +78299,14 @@ $cleanQ
     return _resolveNodeIdIn(page, key);
   }
 
-  String? _resolveNodeIdIn(MindMapPage page, String key) {
+  /// [fuzzy] \u3092 false \u306b\u3059\u308b\u3068\u90e8\u5206\u4e00\u81f4\u3092\u4f7f\u308f\u306a\u3044\u3002
+  ///
+  /// \u2605 \u6d88\u3059 / \u66f8\u304d\u63db\u3048\u308b\u7d4c\u8def\u3067\u306f\u5fc5\u305a false \u306b\u3059\u308b (= \u52d5\u4f5c\u78ba\u8a8d\u3067\u5224\u660e:
+  ///   \u300c\u79cb\u5206\u306e\u65e5\u300d \u3068\u3044\u3046\u30ce\u30fc\u30c9\u3092\u6d88\u3057\u3066\u3001 \u3068\u983c\u307e\u308c\u305f\u6642\u306b\u3001 \u90e8\u5206\u4e00\u81f4\u3067
+  ///   \u300c\u79cb\u300d \u306e\u30ce\u30fc\u30c9\u304c\u9078\u3070\u308c\u3066\u6d88\u3048\u3066\u3044\u305f\u3002 \u7121\u3044\u7269\u306f\u300c\u7121\u3044\u300d \u3068\u7b54\u3048\u308b\u306e\u304c
+  ///   \u6b63\u3057\u304f\u3001 \u8fd1\u3044\u540d\u524d\u306e\u5225\u30ce\u30fc\u30c9\u3092\u6d88\u3059\u306e\u306f\u4e8b\u6545)\u3002 \u7dda\u3092\u5f15\u304f\u6642\u3060\u3051\u306f
+  ///   \u591a\u5c11\u3086\u308b\u304f\u5f15\u3051\u305f\u65b9\u304c\u826f\u3044\u306e\u3067\u65e2\u5b9a\u306e\u307e\u307e\u3002
+  String? _resolveNodeIdIn(MindMapPage page, String key, {bool fuzzy = true}) {
     final k = key.trim();
     if (k.isEmpty) return null;
     if (page.nodes.containsKey(k)) return k;
@@ -77950,6 +78320,7 @@ $cleanQ
     for (final e in page.nodes.entries) {
       if (norm(e.value.title) == nk) return e.key;
     }
+    if (!fuzzy) return null;
     for (final e in page.nodes.entries) {
       final t = norm(e.value.title);
       if (t.isNotEmpty && (t.contains(nk) || nk.contains(t))) return e.key;

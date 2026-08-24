@@ -56921,8 +56921,22 @@ class _MindMapScreenState extends State<MindMapScreen>
       (id) => _executeHeaderCommand(id, provider),
     );
     provider.registerMcpFileBuilder(_buildMcpFile);
-    provider.registerMcpChatClearer(
-        () => _McpChatSession.instance.clearHistory());
+    // 画面の中の会話だけでなく、 prefs の控えも消す (= 動作確認で判明:
+    //   控えが残っていたので、 開き直すと消したはずの会話が戻っていた)。
+    //   今頼まれている用件は残す仕様なので、 残った分を控えにも書き戻す。
+    provider.registerMcpChatClearer(() {
+      final s = _McpChatSession.instance;
+      s.clearHistory();
+      unawaited(provider.clearMcpChatHistory(keep: [
+        for (final m in s.msgs)
+          if (m.role == 'user' || m.role == 'ai')
+            {
+              'role': m.role,
+              'text': m.text,
+              'at': DateTime.now().millisecondsSinceEpoch,
+            }
+      ]));
+    });
   }
 
   /// AI アシスタントを閉じている間だけ出す、 小さな「処理中 / 停止」 の札。
@@ -57912,6 +57926,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                           context, provider, provider.currentPageIndex);
                     }
                     if (v == 'delete') _confirmDeletePage(context, provider);
+                    if (v == 'trash') {
+                      // ignore: discarded_futures
+                      _showPageTrashDialog(context, provider);
+                    }
                     if (v == 'addPage') _addPageDialog(context, provider);
                     if (v == 'openWeatherFromMenu') {
                       // 日付+時刻+天気 サマリー項目をタップ → 時差 / 天気の地点を
@@ -58020,9 +58038,20 @@ class _MindMapScreenState extends State<MindMapScreen>
                           Text(provider.t('menu.delete'),
                               style: const TextStyle(color: Colors.redAccent)),
                         ])),
-                    // バックアップ復元のメニューは廃止 (= ユーザー要望)。
-                    //   自動バックアップ自体は残しているので、 必要になれば
-                    //   page_backups フォルダから戻せる。
+                    // ── ごみ箱 (= ユーザー要望) ──
+                    // ページを消した時の控え (page_backups) を見て、 待たずに
+                    //   完全に削除できる。 1 か月を過ぎた分は自動で消える。
+                    // (バックアップ復元の窓口は以前ユーザー要望で外したので、
+                    //   ここでも出していない)
+                    PopupMenuItem(
+                        value: 'trash',
+                        child: Row(children: [
+                          const Icon(Icons.delete_sweep_rounded,
+                              color: Colors.white54, size: 18),
+                          const SizedBox(width: 8),
+                          Text(provider.t('trash.menu'),
+                              style: const TextStyle(color: Colors.white)),
+                        ])),
                     // AI チャット (MCP) はヘッダー右上 (画面分割の隣) に
                     //   常設したので、 メニューからは外した (= ユーザー要望)。
                     if (!_isDesktop) ...[
@@ -80408,6 +80437,195 @@ class _MindMapScreenState extends State<MindMapScreen>
                 style: const TextStyle(color: Colors.white60)),
           ),
         ],
+      ),
+    );
+  }
+
+  /// ごみ箱 — 消したページの控えを、戻す / 完全に削除する (= ユーザー要望)。
+  ///
+  /// 控えは `page_backups` に貯まる。 1 か月を過ぎた分と 30 件を超えた分は
+  /// アプリが勝手に片付けるが、 それを待たずに捨てるための入口でもある。
+  /// 復元は `restorePagesFromBackup` (今あるページには触らず、 無くなって
+  /// いるページだけ足す) を呼ぶ。
+  Future<void> _showPageTrashDialog(
+      BuildContext context, MindMapProvider provider) async {
+    var list = await provider.listPageBackups();
+    if (!mounted) return;
+    String two(int v) => v < 10 ? '0$v' : '$v';
+    await showDialog<void>(
+      context: context,
+      builder: (dctx) => StatefulBuilder(
+        builder: (dctx, setD) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          title: Row(children: [
+            const Icon(Icons.delete_outline_rounded,
+                color: Color(0xFFFF8A80), size: 20),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(provider.t('trash.title'),
+                  style: const TextStyle(color: Colors.white, fontSize: 15)),
+            ),
+          ]),
+          content: SizedBox(
+            width: 460,
+            child: list.isEmpty
+                ? Text(provider.t('trash.empty'),
+                    style:
+                        const TextStyle(color: Colors.white60, fontSize: 12))
+                : Column(mainAxisSize: MainAxisSize.min, children: [
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                          '${provider.t('trash.note')}\n'
+                          '${provider.t('trash.restoreHint')}',
+                          style: const TextStyle(
+                              color: Colors.white54,
+                              fontSize: 11,
+                              height: 1.5)),
+                    ),
+                    const SizedBox(height: 8),
+                    Flexible(
+                      child: ListView.builder(
+                        shrinkWrap: true,
+                        itemCount: list.length,
+                        itemBuilder: (_, i) {
+                          final b = list[i];
+                          final at = b['at'] as DateTime;
+                          final names = (b['names'] as List)
+                              .map((e) => '$e')
+                              .where((e) => e.isNotEmpty);
+                          final when = '${at.month}/${at.day} '
+                              '${two(at.hour)}:${two(at.minute)}';
+                          return ListTile(
+                            dense: true,
+                            leading: const Icon(Icons.folder_zip_outlined,
+                                color: Color(0xFF9E9E9E), size: 18),
+                            title: Text(
+                              '$when  ―  ${provider.t('trash.pages').replaceFirst('{n}', '${b['pages']}')}',
+                              style: const TextStyle(
+                                  color: Colors.white, fontSize: 12.5),
+                            ),
+                            subtitle: Text(names.join(' / '),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                    color: Colors.white38, fontSize: 10.5)),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                // 戻す = 今あるページはそのままで、無くなって
+                                //   いるページだけ足す (= ユーザー要望)。
+                                IconButton(
+                                  tooltip: provider.t('backup.restore'),
+                                  icon: const Icon(Icons.restore_rounded,
+                                      color: Color(0xFF43B97F), size: 18),
+                                  onPressed: () async {
+                                    final n = await provider
+                                        .restorePagesFromBackup('${b['path']}');
+                                    if (!dctx.mounted) return;
+                                    // 戻せた時だけ閉じて、 戻ったページを
+                                    //   すぐ見られるようにする。
+                                    if (n > 0) Navigator.of(dctx).pop();
+                                    if (!mounted) return;
+                                    _appSnack(
+                                      context,
+                                      SnackBar(
+                                        content: Text(n > 0
+                                            ? provider
+                                                .t('backup.restored')
+                                                .replaceFirst('{n}', '$n')
+                                            : provider.t('trash.restoreNone')),
+                                        backgroundColor: n > 0
+                                            ? const Color(0xFF43B97F)
+                                            : const Color(0xFF9E9E9E),
+                                      ),
+                                    );
+                                  },
+                                ),
+                                IconButton(
+                                  tooltip: provider.t('trash.deleteOne'),
+                                  icon: const Icon(
+                                      Icons.delete_forever_rounded,
+                                      color: Color(0xFFFF8A80),
+                                      size: 18),
+                                  onPressed: () async {
+                                    final ok = await provider
+                                        .deletePageBackup('${b['path']}');
+                                    if (!ok) return;
+                                    final next =
+                                        await provider.listPageBackups();
+                                    if (!dctx.mounted) return;
+                                    setD(() => list = next);
+                                    if (!mounted) return;
+                                    _appSnack(
+                                        context,
+                                        SnackBar(
+                                            content: Text(
+                                                provider.t('trash.deleted'))));
+                                  },
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ]),
+          ),
+          actions: [
+            if (list.isNotEmpty)
+              TextButton(
+                onPressed: () async {
+                  final n = list.length;
+                  final yes = await showDialog<bool>(
+                    context: dctx,
+                    builder: (cctx) => AlertDialog(
+                      backgroundColor: const Color(0xFF1E1E32),
+                      content: Text(
+                        provider
+                            .t('trash.confirmEmpty')
+                            .replaceFirst('{n}', '$n'),
+                        style: const TextStyle(color: Colors.white),
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.of(cctx).pop(false),
+                          child: Text(provider.t('common.cancel'),
+                              style: const TextStyle(color: Colors.white60)),
+                        ),
+                        TextButton(
+                          onPressed: () => Navigator.of(cctx).pop(true),
+                          child: Text(provider.t('trash.emptyAll'),
+                              style:
+                                  const TextStyle(color: Color(0xFFFF8A80))),
+                        ),
+                      ],
+                    ),
+                  );
+                  if (yes != true) return;
+                  final removed = await provider.emptyPageBackups();
+                  if (!dctx.mounted) return;
+                  setD(() => list = const []);
+                  if (!mounted) return;
+                  _appSnack(
+                    context,
+                    SnackBar(
+                      content: Text(provider
+                          .t('trash.emptied')
+                          .replaceFirst('{n}', '$removed')),
+                    ),
+                  );
+                },
+                child: Text(provider.t('trash.emptyAll'),
+                    style: const TextStyle(color: Color(0xFFFF8A80))),
+              ),
+            TextButton(
+              onPressed: () => Navigator.of(dctx).pop(),
+              child: Text(provider.t('btn.close'),
+                  style: const TextStyle(color: Colors.white60)),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -219531,6 +219749,10 @@ class _McpChatSession extends ChangeNotifier {
     if (_busy || _provider == null) return;
     _busy = true;
     _cancel = false;
+    // ページ削除の歯止めは「ひと続きの作業」 単位で掛ける。 新しい指示が
+    // 来た = 利用者が改めて頼んだという事なので、 ここで外す
+    // (消し過ぎを止めた後、 利用者が「はい消して」 と答えた時に続けられる)。
+    provider.mcpResetDeleteBrake();
     var stopped = false;
     step = 0;
     _msgs.add(_McpChatMsg('user', shown, raw: raw));
@@ -219577,8 +219799,20 @@ class _McpChatSession extends ChangeNotifier {
         final name = call['tool'] as String;
         final args =
             (call['args'] as Map?)?.cast<String, dynamic>() ?? const {};
+        // ★ 並べ直すのは「ノードを増やした」 ページだけ (= 動作確認で判明:
+        //   pageId を含むツール全部を対象にしていたため、 「このノードを
+        //   x=-5000 へ動かして」 と頼まれてその通り動かしても、 応答の
+        //   最後に自動整列が走って元の位置に戻っていた)。
+        const kTidyAfter = {
+          'add_node',
+          'add_image_node',
+          'add_table_node',
+          'connect_nodes',
+        };
         final touched = '${args['pageId'] ?? ''}'.trim();
-        if (touched.isNotEmpty) _touchedPageIds.add(touched);
+        if (touched.isNotEmpty && kTidyAfter.contains(name)) {
+          _touchedPageIds.add(touched);
+        }
         add(_McpChatMsg('tool', _toolLabel(name, args), raw: ''));
         Map<String, dynamic> result;
         try {
@@ -219609,8 +219843,11 @@ class _McpChatSession extends ChangeNotifier {
             ok
                 ? '  ${provider.t('mcp.done')}'
                 : '  ${provider.t('mcp.failed')}: $resText',
-            raw: '$name → '
-                '${resText.length > 1200 ? '${resText.substring(0, 1200)}…' : resText}'));
+            // ★ 読むための道具は切らない (= 動作確認で判明: 1200 文字で
+            //   一律に切っていたため、 read_page は connections まで届かず
+            //   「本当に繋がったか確かめて」 に答えられず、 read_app_doc は
+            //   説明書の冒頭しか読めずに記憶で答えていた)。
+            raw: '$name → ${_capToolResult(name, resText)}'));
       }
       if (_cancel) {
         stopped = true;
@@ -219683,7 +219920,8 @@ class _McpChatSession extends ChangeNotifier {
             '・create_page で新しいページを作り、 その pageId を以降に使います。\n'
             '・種類は内容に合わせて選びます '
             '(考えを広げる = normal、 一覧・カード = bookshelf、 '
-            '文章 = paint、 動画 = videoEditor)。\n'
+            '文章 = document (便箋型メモ帳)、 絵や自由な書き込み = paint、 '
+            '動画 = videoEditor)。\n'
             '・normal なら主題ノードを 1 つ作り、 子を add_node の nodes に '
             'まとめて渡して parentIndex でつなぎます。\n'
             '・作り終えたら read_page で中身を確かめてから、 何を作ったかを普通の文章で伝えます。\n\n'
@@ -219757,7 +219995,51 @@ class _McpChatSession extends ChangeNotifier {
         '★「フラッシュカードを開いて」「無音カメラを起動して」 のように '
         'アプリの機能を使いたい指示には、 ページを作らず '
         'run_app_command でその機能を開いてください '
-        '(id が分からなければ先に list_app_commands)。\n'
+        '(id が分からなければ先に list_app_commands)。 '
+        '起動を頼まれたら、 確認を挟まずそのまま開いてください。\n'
+        // ── どのページの話かを取り違えない (= ユーザー報告: 「このページ
+        //    消して」 と頼んだのに、 一覧を上から順に消していき最後の 1 枚
+        //    しか残らなかった) ──
+        '★「このページ」「今開いているページ」 は、 list_pages の '
+        'isCurrent が true の 1 枚を指します。 名前から当てずっぽうで '
+        '選ばず、 消す前・種類を変える前に list_pages で確かめてください。 '
+        'pageId や nodeId は list_pages / read_page が返した物だけを使い、 '
+        'それらしい id を自分で組み立てないでください。\n'
+        '★ 消す・入れ替える範囲は頼まれた分だけにしてください。 '
+        '1 枚と言われたら 1 枚です。 delete_page が失敗しても別の id で '
+        '試し直したり、 一覧を順に消していったりしないでください。\n'
+        // ── 確認の要る / 要らないの線引き (= 過剰な確認も、 勝手な削除も
+        //    どちらも困る) ──
+        '★ 対象が 1 つに決まる頼まれ方 (「『メモ2』消して」 等) なら、 '
+        '確認を重ねずそのまま実行してください。 逆に、 同じ名前のページが '
+        '複数ある・「いらなそうなの見繕って」 のように対象が決まらない時は、 '
+        '候補を挙げて了解を得るまで消さないでください。 '
+        'ノードを題名の一部で消す時も、 当てはまった題名を全部挙げてから '
+        '消してください (関係ない物まで巻き込みます)。 '
+        '同じ文の中で取り消された指示 (「やっぱりいい」) は実行せず、 '
+        '中止した事をはっきり答えてください。\n'
+        '★ 消したページを戻す道具はありません。 アプリ側で直前に消した '
+        '1 枚だけ Ctrl+Z (元に戻す) で復元できます。 それ以前の物は '
+        '戻せないので、 無い機能をでっち上げないでください。\n'
+        '★ ページの種類を変えてもノードは消えません。 '
+        'delete_page と create_page で作り直さないでください。 '
+        'フリーノートや便箋の中身もページ本体とは別に保存されているので、 '
+        '種類を戻せばまた出てきます '
+        '(クラウド同期が運ぶのはフリーノートの中身だけです)。\n'
+        // ── 利用者本人しか始められない事 (= 勝手に実行しない / 嘘をつかない)
+        '★ クラウド同期・アプリロック・集中ロックは利用者本人しか '
+        '始められません。 頼まれたら理由を添えて断り、 自分で押す手順を '
+        '案内してください (「掛けました」 と答えない)。 '
+        'プラン変更や購入を代行する手段はありません '
+        '(subscriptionManager で管理画面を開く案内までです)。 '
+        'LAN 共有は廃止された機能で、 共有 URL を作る手段もないので '
+        'URL をでっち上げないでください。\n'
+        '★ ボタンを置けるのはヘッダー (上のバー) だけです。 '
+        '「下のバーに移して」 と頼まれたら、 移せない事を伝えて '
+        'ボタン設定画面の手順を案内してください。 '
+        'set_header_buttons の戻り値の ignored (そんな機能は無い) と '
+        'blocked (利用者しか使えない) に入った id は置かれていないので、 '
+        '付けたと答えないでください。\n'
         '★「Excel で作って」「スライドにして」「PDF にして」 のように '
         'ファイルが欲しい指示には create_document_file を使ってください。 '
         '表は rows、 文章は paragraphs、 スライドは slides に入れます。 '
@@ -219780,8 +220062,12 @@ class _McpChatSession extends ChangeNotifier {
         'bookshelf (ギャラリー) = add_gallery_item (add_node は使わない。 '
         '座標も渡さない。 棚に自動で並びます)、 '
         'paint (フリーノート) = add_paint_text、 '
-        'document (文書) = append_document_text (段落ごとに呼ぶ)、 '
+        'document (便箋型メモ帳) = append_document_text (段落ごとに呼ぶ)、 '
+        'markdown (Markdown / 図) = append_document_text、 '
         'videoEditor (動画エディター) = add_video_editor_item。 '
+        'ページの種類はこの 6 つだけです。 一覧に無い種類 (例:「AI '
+        'スタジオのページ」) を頼まれたら、 近い種類で黙って代用せず、 '
+        '無い事を伝えてから近い手段を勧めてください。 '
         '※ Web 検索の手段は持っていないので、 事実はあなたの知識から答え、 '
         '不確かな点はその旨を明記してください。'
         '(アプリの表示言語: ${provider.appLanguage})';
@@ -219812,6 +220098,24 @@ class _McpChatSession extends ChangeNotifier {
       }
     }
     return b.toString();
+  }
+
+  /// ツールの戻り値を AI に渡す時の長さの上限。
+  ///
+  /// 書き込み系は「出来た / 出来なかった」 が分かれば十分なので短くて良いが、
+  /// **読むための道具**を途中で切ると、 AI は中身を見ないまま答える事に
+  /// なる (= 動作確認で判明: 5 ノードのページでも read_page の JSON は
+  /// 3000 文字を超え、 1200 文字では connections まで届かない)。
+  static String _capToolResult(String name, String text) {
+    const caps = {
+      'read_app_doc': 20000,
+      'read_page': 8000,
+      'text_file_read': 8000,
+      'list_pages': 4000,
+      'list_app_commands': 4000,
+    };
+    final cap = caps[name] ?? 1200;
+    return text.length > cap ? '${text.substring(0, cap)}…' : text;
   }
 
   String _toolLabel(String name, Map<String, dynamic> args) {

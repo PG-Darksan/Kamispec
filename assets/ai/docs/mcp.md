@@ -121,9 +121,29 @@ flowchart TD
 
 | ツール | 説明 |
 |---|---|
-| `list_pages` | 全ページ (id, name, type, ノード数) |
+| `list_pages` | 全ページ (id, name, type, ノード数, `isCurrent`, `lastModified`)<br/>★ `isCurrent: true` が利用者の見ているページ。「このページ」は必ずこれ 1 枚<br/>★ `lastModified` は**最終更新**で作成日ではない (同名ページの「古いほう」は決められない) |
 | `read_page` | 1 ページを完全な JSON で (nodes / connections / decorations) |
-| `create_page` | 新規ページ。type = `normal` / `bookshelf` / `paint` / `videoEditor`<br/>★ `document` 型は作れない。文章を書きたい時は `paint` を作って `append_document_text` |
+| `create_page` | 新規ページ。type = `normal` / `bookshelf` / `paint` / `document` / `markdown` / `videoEditor`<br/>戻り値 `{pageId, type}` の `type` が実際に出来た種類 (知らない type は `normal` に倒れる) |
+| `delete_page` | ページを完全に削除。最後の 1 枚は消せない<br/>★ 短い間に 2 枚を超えて消そうとすると拒否される (暴走の歯止め。【8】参照)<br/>★ 戻す道具は無い。アプリ側の Ctrl+Z (`undoLastDeletedPage`) で**直前の 1 枚だけ**復元できる |
+| `set_page_type` | 中身を残したまま種類を変える (`create_page` と同じ 6 種類)<br/>★ `markdown` ページの本文を書けるツールは無い (作る・変えるだけ)。中身まで欲しい時は `create_document_file` の `md` |
+| `set_header_buttons` | ヘッダーにボタンを並べる。`replace: true` で総入れ替え<br/>戻り値 `{header, ignored, blocked}`。`ignored` = 存在しない id、`blocked` = 利用者しか使えない機能 (どちらも置かれていない) |
+| `clear_chat_history` | AI アシスタントの会話履歴を消す (実行中の依頼は残る)。全消去のみで部分削除は不可 |
+| `tidy_page` | マインドマップを自動整列で並べ直す (`mcpTidyPage`)。normal ページ限定・Ctrl+Z で戻せる |
+
+> ★ **戻り値で確かめる道具**: `read_page` は先頭に `nodeCount` / `connectionCount` を返す。
+> `add_node` は `nodeIds` / `unlinked` / `note` (重なっているので tidy_page を呼べ)、
+> `update_node` は書き換えた `nodeId` と `title`、`connect_nodes` は `fromId` / `toId`、
+> `delete_node` は**消した題名**、`set_page_background` は実際に入った値を返す。
+> 頼んだ値ではなく、返ってきた値を報告する。
+
+> ★ **題名で指せるが、あいまい一致はしない**: 消す (`delete_node`) と
+> 書き換える (`update_node`) は id か**完全一致の題名**のみ (大小文字と空白は無視)。
+> 部分一致で近い別ノードを巻き込む事故があったため。線を引く `connect_nodes` だけは
+> 従来どおり部分一致も使う。
+
+> ★ **`add_image_node` にだけ一括形が無い**。画像は 1 枚ずつ呼ぶ。
+
+> ★ **動画のタイムラインは追加専用**。置いた後を変える道具は無い。
 
 ### マインドマップ (normal)
 
@@ -320,6 +340,18 @@ flowchart TD
 - 許可しても合言葉 (32 文字) を知らないと 401。合言葉は起動ごとに再生成。
 - `run_app_command` は、利用者本人しか始めてはいけない機能
   (LAN 共有 / クラウド同期 / アプリロック / 集中ロック) を実行できない。
+  `set_header_buttons` でも同じ id は置けず、戻り値の `blocked` に入る。
+- **ページの消し過ぎを止める歯止め** (`mcpDeletePage`)。90 秒のあいだに
+  MCP から消せるのは 2 枚まで。3 枚目からは「頼まれた以上に消している」
+  として拒否し、利用者に確認するよう促す。
+  = 「このページ消して」の 1 件で一覧を上から順に消していった事故の再発防止。
+  説明文 (`isCurrent` / 範囲の指示) だけでは事故を防ぎきれないため、
+  実行側にも線を引いてある。
+- **AI が消したノードは Ctrl+Z で戻せる**。`mcpDeleteNode` は
+  `_pushUndoForPage(pageId, coalesceKey:…)` で履歴を積む
+  (`_pushUndo` は `currentPage` を控えるので、裏のページを触る MCP では使えない)。
+  まとめ消しは 900ms の合流窓で 1 スナップショットにまとまり、Ctrl+Z 一回で全部戻る。
+  = 「『テスト』が入ってるノード消して」で関係ない物まで巻き込んだ時の逃げ道。
 - `mcpPageById(pageId)` は `pageId` が空文字の時「今開いているページ」にフォールバックする。
   AI が `create_page` の戻りを取り違えて空を渡し、「作成しました」とだけ言って
   何も起きない事故を防ぐため。

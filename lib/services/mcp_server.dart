@@ -200,41 +200,104 @@ class McpServer {
 
   /// ツール定義 (アプリ内 AI チャットからも共用するため公開)。
   static final List<Map<String, dynamic>> toolDefs = [
+    // ★ isCurrent を必ず説明に書く (= ユーザー報告: 「このページ消して」 で
+    //   全ページを消しにいった)。 どれが「今のページ」 かを知る手立てが
+    //   説明に無いと、 AI は当てずっぽうで全部に手を出す。
     _tool('list_pages',
-        'List all pages (id, name, type: normal/bookshelf/paint/..., node count).', {}),
+        'List all pages (id, name, type: normal/bookshelf/paint/..., node '
+        'count, isCurrent, lastModified). isCurrent is true for the one page '
+        'the user is looking at right now: "this page" / "the page I am on" '
+        'always means that one - never guess from the name, and never act on '
+        'other pages. lastModified is the last EDIT time, NOT the creation '
+        'time, so it cannot decide which of two same-named pages is "the old '
+        'one" - show the times and let the user pick.',
+        {}),
     _tool(
         'read_page',
-        'Read one page as full JSON (nodes, connections, decorations).',
+        'Read one page. Returns nodeCount and connectionCount FIRST (they '
+        'survive even if the rest is long), then the full page JSON (nodes, '
+        'connections, decorations). Use it to check what really got made '
+        'before you report it.',
         {'pageId': {'type': 'string'}},
         ['pageId']),
     _tool(
         'delete_page',
         'Delete a page permanently. Use this when the user explicitly asks to '
         'delete/remove a page. Cannot delete the last remaining page. '
-        'Call list_pages first to get the pageId.',
+        'Call list_pages first and use a real pageId from it - never make up '
+        'an id. SCOPE: delete only the pages the user actually named. '
+        '"this page" is the single page with isCurrent:true - delete that one '
+        'and stop. Do NOT walk down the page list deleting one after another, '
+        'and do not retry with another id when a delete fails. '
+        'When the page is named clearly, just delete it - do not ask again. '
+        'When it is NOT clear which page (two pages share a name, or the user '
+        'says "the ones I do not need"), list the candidates and get an OK '
+        'first. There is no restore tool: only the single most recently '
+        'deleted page can be brought back, and only by the user pressing '
+        'Ctrl+Z (undo) in the app.',
         {'pageId': {'type': 'string'}},
         ['pageId']),
     _tool(
         'set_page_type',
         'Change an existing page to another type without losing its nodes. '
         'type: "normal" (mind map), "bookshelf" (gallery), "paint" (free '
-        'note), "document" (notepad), "videoEditor", "aiStudio". '
-        'Use this when the user asks to convert/turn a page into another kind.',
+        'note), "document" (notepad), "markdown" (markdown + mermaid), '
+        '"videoEditor". Use this when the user asks to convert/turn a page '
+        'into another kind - the nodes stay, so never rebuild the page with '
+        'delete_page + create_page. What a free note / notepad / markdown / '
+        'video page holds is stored beside the page rather than inside it, so '
+        'it survives a round trip too (switch the kind back and it is there '
+        'again). The one exception: cloud sync only carries a free-note '
+        '("paint") body, so a page converted away from "paint" does not take '
+        'that drawing to another device. '
+        'Converting a note page ("paint" / "document" / "markdown") to '
+        '"normal" does NOT turn its text into nodes: the text is kept aside '
+        'and simply stops being displayed, so the mind map looks empty. No '
+        'tool can read a note body back (read_page returns nodes / '
+        'connections / decorations only), so ask the user for the headings - '
+        'or use text already in this conversation - and create the nodes '
+        'yourself with add_node. '
+        'These six are the only page kinds the app has; if the user names '
+        'something else, say so instead of picking the closest one.',
         {
           'pageId': {'type': 'string'},
-          'type': {'type': 'string'},
+          'type': {
+            'type': 'string',
+            'enum': [
+              'normal',
+              'bookshelf',
+              'paint',
+              'document',
+              'markdown',
+              'videoEditor'
+            ]
+          },
         },
         ['pageId', 'type']),
     _tool(
         'clear_chat_history',
         'Clear this AI assistant conversation history. Use it when the user '
-        'asks to clear/reset the chat. The current request stays.',
+        'asks to clear/reset the chat. The current request stays. '
+        'It is ALL or nothing - single messages or "just the last exchange" '
+        'cannot be removed, so say that and ask before wiping everything. '
+        'Once cleared the earlier turns are gone for good, including from '
+        'your own context: do not claim to remember what was in them.',
         {}),
     _tool(
         'set_header_buttons',
         'Put buttons on the app header bar. ids are command ids from '
         'list_app_commands. replace=true swaps the whole row, false (default) '
-        'appends. Use this when the user asks to place buttons in the header.',
+        'appends. Use this when the user asks to place buttons in the header. '
+        'replace=true OVERWRITES the previous row permanently - there is no '
+        'undo and no way to read it back afterwards, so call this once with '
+        'ids:[] first (that changes nothing and returns the current row) '
+        'and show the user what is there before you replace it. '
+        'Returns {header, ignored, blocked}: "ignored" are ids that do not '
+        'exist and "blocked" are user-only features (cloud sync, app lock, '
+        'focus lock) - neither was placed, so say so plainly instead of '
+        'reporting them as added. This tool can only fill the HEADER; it '
+        'cannot move buttons to the bottom bar. If the user wants them at the '
+        'bottom, tell them to do it in the button-customize screen.',
         {
           'ids': {
             'type': 'array',
@@ -246,14 +309,22 @@ class McpServer {
     _tool(
         'create_page',
         'Create a new page. type: "normal" (mind map), "bookshelf" (gallery), '
-        '"paint" (free note - also the place to write documents) or '
-        '"videoEditor" (video timeline). Returns the new pageId. '
-        'There is no "document" type to create: to write prose, make a '
-        '"paint" page and use append_document_text on it.',
+        '"paint" (free note), "document" (notepad - write prose with '
+        'append_document_text), "markdown" (markdown + mermaid) or '
+        '"videoEditor" (video timeline). Returns {pageId, type}: type is what '
+        'was really created. An unknown type falls back to "normal", so check '
+        'the returned type before telling the user what you made.',
         {
           'type': {
             'type': 'string',
-            'enum': ['normal', 'bookshelf', 'paint', 'videoEditor']
+            'enum': [
+              'normal',
+              'bookshelf',
+              'paint',
+              'document',
+              'markdown',
+              'videoEditor'
+            ]
           },
           'name': {'type': 'string'},
         },
@@ -265,15 +336,30 @@ class McpServer {
         'and every node is created in ONE call. "parentIndex" is the 0-based '
         'index of an earlier node in the same array and also draws the '
         'connection, so a whole map (centre + children) is one call. '
-        'Coordinates are optional and normally unnecessary - the page is '
-        'tidied into a tree afterwards. Returns nodeIds in the same order. '
+        'An entry may also be a bare title string. '
+        'Nodes created without x/y all land on the SAME spot, so call '
+        'tidy_page on this pageId once you have finished adding, or they stay '
+        'stacked. Returns nodeIds in the same order. '
         'ALWAYS put links in "url", never as bare text inside "memo": a node '
         'with "url" becomes a real clickable link, and a YouTube WATCH url '
         '(https://www.youtube.com/watch?v=VIDEOID or https://youtu.be/VIDEOID) '
         'becomes an embedded video node with a thumbnail that plays in the '
         'app. Search urls (/results?search_query=...) are NOT videos, so give '
         'the actual watch url when you know the video. "memo" and "url" can '
-        'be used together on the same node.',
+        'be used together on the same node. '
+        '"title" is a SHORT LABEL, not a body: a new node is 160x40 px and '
+        'draws its title on about two lines, ellipsising the rest, so put '
+        'anything longer than a short phrase in "memo" - the node grows to '
+        'fit a long memo, but never to fit a long title. A "\\n" inside '
+        '"title" is kept and really does become a second line. '
+        '"color" is a 32-bit ARGB integer 0xAARRGGBB (e.g. 0xFF4CAF50 for '
+        'green); a 6-digit RGB value like 0xFF0000 is treated as opaque, and '
+        'a value outside 0..0xFFFFFFFF is ignored so the default colour is '
+        'used. Calling this with an empty "nodes" array, or with no title / '
+        'memo / url at all, is an error - it never creates a placeholder. '
+        '"parentId" may be an existing node\'s id OR its exact title. Any '
+        'entry whose parent could not be linked comes back in "unlinked" - '
+        'link those with connect_nodes and never report them as connected.',
         {
           'pageId': {'type': 'string'},
           'nodes': {
@@ -285,6 +371,8 @@ class McpServer {
                 'memo': {'type': 'string'},
                 'url': {'type': 'string'},
                 'color': {'type': 'integer'},
+                'x': {'type': 'number'},
+                'y': {'type': 'number'},
                 'parentIndex': {'type': 'integer'},
                 'parentId': {'type': 'string'},
               },
@@ -303,7 +391,12 @@ class McpServer {
         'Update a node title / memo / position. "node" accepts EITHER the '
         'node id OR its current TITLE (e.g. {"node":"春","title":"春（はる）"}) '
         '- using the title means you do not have to look up ids. '
-        '("nodeId" is accepted as an alias.)',
+        '("nodeId" is accepted as an alias.) "title" is a short label: long '
+        'text is ellipsised to about two lines on the canvas, so put long '
+        'text in "memo". A blank / whitespace-only title is accepted, but the '
+        'node can then only be addressed by its id. x/y may be negative. '
+        'This tool cannot change a node colour - a "color" argument here is '
+        'ignored.',
         {
           'pageId': {'type': 'string'},
           'node': {'type': 'string'},
@@ -317,8 +410,17 @@ class McpServer {
     _tool(
         'delete_node',
         'Delete a node (and its connections) from a page. "node" accepts '
-        'EITHER the node id OR its TITLE. To remove several at once pass '
-        '"nodes" (array of ids or titles).',
+        'EITHER the node id OR its EXACT title (case and spacing are ignored, '
+        'but an approximate title is REJECTED, never guessed). To remove '
+        'several at once pass "nodes" (array of ids or titles) in ONE call. '
+        'One entry deletes ONE node: a title resolves to the FIRST node '
+        'carrying it, so when several nodes share a title call read_page and '
+        'pass every matching "id" as its own entry. The result lists the '
+        'TITLES actually removed - report those, not what you meant to '
+        'remove. When the user names a partial match ("the nodes with TEST in '
+        'the title"), read_page first, list the exact titles you matched, and '
+        'get an OK before deleting - a partial match usually catches nodes '
+        'they did not mean.',
         {
           'pageId': {'type': 'string'},
           'node': {'type': 'string'},
@@ -329,13 +431,32 @@ class McpServer {
           },
         },
         ['pageId']),
+    // ★ 並べ直しはアプリ側にあったのに道具として出していなかったため、
+    //   「マップがぐちゃぐちゃ」 と頼まれても断るしかなかった (= 動作確認)。
+    _tool(
+        'tidy_page',
+        'Re-arrange a mind map page into a tidy tree - the same automatic '
+        'layout the app applies after AI edits. Use it when the user says the '
+        'map is messy / overlapping / wants it lined up. Nodes keep their '
+        'titles and connections; only positions change, and the user can put '
+        'it back with Ctrl+Z. Works on "normal" pages only.',
+        {
+          'pageId': {'type': 'string'},
+        },
+        ['pageId']),
     _tool(
         'generate_page_background',
         'Draw a NEW background image with AI and set it as the page '
         'background. This is the preferred way to change a background: '
         'describe the picture you want in "prompt" (English works best, be '
         'concrete about subject, colours and mood) and an image is generated '
-        'and applied. Costs one image generation from the prepaid credit. '
+        'and applied. Costs a flat ~0.047 USD of prepaid credit per picture, '
+        'whatever the prompt length - one charge PER PAGE, so "give every '
+        'page the same background" costs that much times the number of '
+        'pages. Because it costs money, do '
+        'not run it on a vague request ("make the background nice"): settle '
+        'which page, what kind of picture, and whether a built-in template '
+        '(free, via set_page_background) would do, then generate. '
         'Optionally set opacityPercent (0-100, default 70) and '
         'fit (cover/contain/tile, default cover).',
         {
@@ -351,15 +472,20 @@ class McpServer {
     _tool(
         'set_page_background',
         'Set the page background from an existing picture, or remove it. '
-        'Prefer generate_page_background when the user just describes the '
-        'look they want. Use "imagePath" for an absolute path to an image '
-        'file already on this device, "clear": true to remove the background, '
+        '"Remove / get rid of / I do not like this background" means '
+        '"clear": true - run it straight away, do not ask again and do not '
+        'generate a replacement (disliking a background is not a request for '
+        'a new one). Prefer generate_page_background only when the user '
+        'describes a look they DO want. Use "imagePath" for an absolute path '
+        'to an image file already on this device, "clear": true to remove, '
         'or "template" for one of the built-in ones (wood, chalkboard, ocean, '
         'sakura, fireworks, castle, aurora, nightSky, galaxy, rain, nature, '
         'blueprint, midnight, sage, sunset). '
         'Optionally adjust opacityPercent (0-100), fit (cover/contain/tile) '
         'and the tone (hueDegrees -180..180, saturationPercent 0-200, '
-        'brightnessPercent 20-200).',
+        'brightnessPercent 50-150). A value outside its range is clamped, not '
+        'rejected - the result echoes back what was actually applied, so '
+        'report those numbers rather than the ones you asked for.',
         {
           'pageId': {'type': 'string'},
           'template': {'type': 'string'},
@@ -384,7 +510,7 @@ class McpServer {
         'TITLE exactly as shown on the map (e.g. {"from":"春","to":"夏",'
         '"label":"次の季節へ"}). Using titles is recommended - you do not '
         'need to look up ids. ("fromId"/"toId" are accepted as aliases.) '
-        'Connecting the same pair twice just updates the label.',
+        'Connecting the same pair twice just updates the label. A title match is not unique: when two nodes on a page share a title the FIRST one (creation order, NOT screen position) is used, and if no title matches exactly a partial match may pick a longer title. So when titles repeat, or the user names a node by position ("the lower one"), call read_page first and pass the node id - read_page gives x/y, and a larger y is lower on the canvas. The result echoes fromId/toId: check them.',
         {
           'pageId': {'type': 'string'},
           'connections': {
@@ -409,7 +535,13 @@ class McpServer {
         ['pageId']),
     _tool(
         'add_image_node',
-        'Add an image node to a page. Provide the image either as base64 (imageBase64 + fileName like "chart.png") or as an absolute local file path (imagePath). Returns nodeId.',
+        'Add ONE image node to a page. Provide the image either as base64 '
+        '(imageBase64 + fileName like "chart.png") or as an absolute local '
+        'file path (imagePath). Returns nodeId. '
+        'This is the ONE tool with no batch form: for several images call it '
+        'once per image. An invented array argument is ignored, so passing '
+        'three paths in one call would attach only one and still look like a '
+        'success.',
         {
           'pageId': {'type': 'string'},
           'imageBase64': {'type': 'string'},
@@ -425,7 +557,9 @@ class McpServer {
         'Add a table (grid) node to a page. Use this to present researched '
         'facts, comparisons or figures as a table. "rows" is an array of '
         'arrays of strings; the first row is treated as the header by '
-        'default. Returns nodeId.',
+        'default - pass headerRow:false for a table with no header. Optional '
+        '"title" is written as a caption line above the table, not as the '
+        'node title. Returns nodeId.',
         {
           'pageId': {'type': 'string'},
           'rows': {
@@ -469,7 +603,9 @@ class McpServer {
         'lines are stacked top-to-bottom automatically. size is the font '
         'size in points, color is ARGB int (e.g. 0xFF000000). '
         'IMPORTANT: to write several lines, pass them ALL AT ONCE in '
-        '"texts" (array of strings) in a SINGLE call.',
+        '"texts" (array of strings) in a SINGLE call. Blank or whitespace-only '
+        'strings are discarded - empty lines cannot be written with this '
+        'tool.',
         {
           'pageId': {'type': 'string'},
           'texts': {
@@ -482,14 +618,16 @@ class McpServer {
           'size': {'type': 'number'},
           'color': {'type': 'integer'},
         },
-        ['pageId', 'text']),
+        ['pageId']),
     _tool(
         'append_document_text',
         'Append text to the end of a free note used as a notepad '
         '(pageType "paint", or an existing "document" page). '
         'Plain text only (no markup). '
         'IMPORTANT: to write several paragraphs, pass them ALL AT ONCE in '
-        '"texts" (array of strings) in a SINGLE call.',
+        '"texts" (array of strings) in a SINGLE call. Blank or whitespace-only '
+        'strings are discarded - empty lines cannot be written with this '
+        'tool.',
         {
           'pageId': {'type': 'string'},
           'texts': {
@@ -503,12 +641,21 @@ class McpServer {
         'add_video_editor_item',
         'Add items to the timeline of a VIDEO EDITOR page (pageType '
         '"videoEditor"). kind: "text" (caption; requires text), "video" or '
-        '"image" (requires an absolute local path). startMs defaults to the '
-        'end of that layer, durationMs defaults to 4000. layer 0 is the '
-        'back-most; captions usually go on layer 1. '
+        '"image" (requires an absolute local path). startMs and durationMs '
+        'are whole MILLISECONDS (1.5 seconds = 1500, not 1.5). startMs '
+        'defaults to the end of that layer and is IGNORED when "texts" is '
+        'used; durationMs defaults to 4000. layer 0 is the '
+        'back-most and the timeline has only 6 lanes (0-5); captions usually '
+        'go on layer 1. '
         'IMPORTANT: to add several captions, pass them ALL AT ONCE in '
         '"texts" (array of strings) in a SINGLE call - do not call this '
-        'tool once per caption. Returns itemId(s).',
+        'tool once per caption. Returns itemId(s). '
+        'This tool can only ADD. There is no tool to move, re-layer, re-time, '
+        're-word or delete an item already on the timeline, and read_page '
+        'cannot show the timeline (it lives outside the page JSON). If the '
+        'user asks to change something already placed, say so and tell them '
+        'to click the block in the video editor - do NOT add a second copy on '
+        'another layer and call it moved.',
         {
           'pageId': {'type': 'string'},
           'texts': {
@@ -583,13 +730,20 @@ class McpServer {
         'List the app features that can be launched (flashcards, silent '
         'camera, calendar, QR reader, timer, and so on). Returns id + label '
         'pairs. Call this first when the user asks to open or start a '
-        'feature you are not sure about.',
+        'feature you are not sure about. The list is the whole truth: cloud '
+        'sync, the app lock and the focus lock are deliberately missing '
+        'because only the user may start them, and anything else not in the '
+        'list simply does not exist.',
         {}),
     _tool(
         'run_app_command',
         'Launch one app feature by its id (see list_app_commands). Example '
         'ids: "flashcards" (flash cards), "silentCamera" (silent camera), '
-        '"calendar", "qrReader". The feature opens on screen for the user.',
+        '"calendar", "qrReader". The feature opens on screen for the user. '
+        'Just run it when asked - do not ask for confirmation first. '
+        'This only OPENS features; it never edits data: deleting a page is '
+        'delete_page, changing a page kind is set_page_type, and header '
+        'buttons are set_header_buttons.',
         {
           'id': {'type': 'string'},
         },
@@ -610,7 +764,10 @@ class McpServer {
         '"mcp" (MCP tools and the agent loop), '
         '"features" (startup, saving, cloud sync, notifications, shortcuts), '
         '"layout" (how nodes are placed, pushed aside and auto-arranged), '
-        '"qa" (bug checklist). The text is Markdown with Mermaid diagrams.',
+        '"qa" (a developer pre-release checklist of defects seen in the PAST '
+        'and how to re-check them - NOT a list of bugs open today; do not '
+        'present it to the user as current known issues). '
+        'The text is Markdown with Mermaid diagrams.',
         {
           'name': {'type': 'string'},
         },
@@ -628,7 +785,10 @@ class McpServer {
         'text_file_read',
         'Read the text file currently open in the app text editor as '
         'numbered lines. Optionally pass startLine/endLine (1-based, '
-        'inclusive) to read only part of a long file.',
+        'inclusive) to read only part of a long file. Out-of-range or reversed '
+        'values are clamped to the file, so check the returned lineCount / '
+        'startLine / endLine (and "note") before quoting the result, and '
+        'tell the user when the lines they asked for do not exist.',
         {
           'startLine': {'type': 'integer'},
           'endLine': {'type': 'integer'},
@@ -720,6 +880,36 @@ class McpServer {
     return out;
   }
 
+  /// 色の指定を 32bit ARGB に直す。 読めない値は null (= 既定色に倒す)。
+  ///
+  /// ★ 素通しだと事故になる (= 動作確認で判明):
+  ///   ・`Color(int)` は各成分を 8bit に切り落とすので、 範囲外の値
+  ///     (999999999999) が誰も頼んでいない色になっていた。
+  ///   ・「赤 = 0xFF0000」 のような 6 桁 RGB は α=0 と解釈され、
+  ///     ノードが透明で見えなくなっていた。 6 桁は不透明に直す。
+  ///   ・文字列 ('#FF0000' や '"16711680"') は `as num?` が例外を投げ、
+  ///     AI には意味の分からない型エラーだけが返っていた。
+  static int? _argbOf(Object? v) {
+    final int? n = v is num
+        ? v.toInt()
+        : (v is String
+            ? int.tryParse(v.trim().replaceFirst('#', '0x'))
+            : null);
+    if (n == null) return null;
+    if (n >= 0 && n <= 0xFFFFFF) return n | 0xFF000000; // 6 桁 RGB は不透明に
+    if (n >= 0 && n <= 0xFFFFFFFF) return n;
+    return null; // 範囲外は既定色
+  }
+
+  /// 数の引数を読む。 文字列で来ても受ける。
+  ///
+  /// ★ `as num?` の素通しだと、 AI が "12" のように文字列で書いた時に
+  ///   型エラーで落ちる。 20 個まとめて置く途中で落ちると、 作った分の
+  ///   id すら返せない (= 動作確認で判明)。
+  static double? _numOf(Object? v) => v is num
+      ? v.toDouble()
+      : (v is String ? double.tryParse(v.trim()) : null);
+
   /// ツール実行 (HTTP 経由と、 アプリ内 AI チャット [MCP チャット] の両方
   /// から呼ばれる)。
   Future<Map<String, dynamic>> callTool(
@@ -729,26 +919,44 @@ class McpServer {
       case 'list_pages':
         return _ok(_provider.mcpListPages());
       case 'read_page':
-        final json = _provider.mcpReadPage(a['pageId'] as String? ?? '');
-        return json == null ? _err('page not found') : _ok(json);
+        {
+          final pid = a['pageId'] as String? ?? '';
+          final json = _provider.mcpReadPage(pid);
+          if (json == null) {
+            return _err('no page has the id "$pid" - call list_pages.');
+          }
+          // ★ 件数を先頭に置く (= 動作確認で判明: ページの JSON は 5 ノード
+          //   でも 3000 文字を超えるので、 長い時に途中で切られると
+          //   connections まで届かない。 数だけでも必ず届くようにする)。
+          final page = _provider.mcpPageById(pid);
+          return _ok({
+            'nodeCount': page?.nodes.length ?? 0,
+            'connectionCount': page?.connections.length ?? 0,
+            ...json,
+          });
+        }
       case 'delete_page':
         {
           final id = a['pageId'] as String? ?? '';
-          final ok = await _provider.mcpDeletePage(id);
-          return ok
-              ? _ok('deleted: $id')
-              : _err('could not delete "$id" (unknown pageId, or it is the '
-                  'last remaining page). Call list_pages for valid ids.');
+          final reason = await _provider.mcpDeletePage(id);
+          return reason == null ? _ok('deleted: $id') : _err(reason);
         }
       case 'set_page_type':
         {
           final id = a['pageId'] as String? ?? '';
           final type = a['type'] as String? ?? '';
           final ok = await _provider.mcpSetPageType(id, type);
-          return ok
-              ? _ok('page $id is now "$type"')
-              : _err('could not change "$id" to "$type". Valid types: '
-                  'normal, bookshelf, paint, document, videoEditor, aiStudio.');
+          if (ok) return _ok('page $id is now "$type"');
+          // 知らない id と知らない種別を区別する (= 前は id が違っても
+          //   「その種類はありません」 と返り、 原因を取り違えていた)。
+          if (_provider.mcpPageById(id) == null) {
+            return _err('no page has the id "$id" - call list_pages and use '
+                'an id from it.');
+          }
+          return _err('"$type" is not a page kind. The app has only these: '
+              'normal, bookshelf, paint, document, markdown, videoEditor. If '
+              'the user asked for something else, tell them it does not exist '
+              '- do not substitute.');
         }
       case 'clear_chat_history':
         return _provider.mcpClearChat()
@@ -758,75 +966,156 @@ class McpServer {
         {
           final raw = (a['ids'] as List?) ?? const [];
           final ids = raw.map((e) => '$e').toList();
-          final placed = await _provider.mcpSetHeaderButtons(ids,
+          // ★ 「置けなかった id」 を返す (= ユーザー報告: 存在しない機能を
+          //   頼まれた時に、 付けたと嘘をつく)。 黙って捨てると AI からは
+          //   成功と区別が付かない。
+          final r = await _provider.mcpSetHeaderButtons(ids,
               replace: a['replace'] == true);
-          return _ok({'header': placed});
+          return _ok(r);
         }
       case 'create_page':
         final id = _provider.mcpCreatePage(
             type: a['type'] as String? ?? 'normal',
             name: a['name'] as String?);
+        // 実際に出来た種類を返す (= ユーザー報告: 知らない種類を頼まれると
+        //   黙って normal を作り、 頼まれた通りに作ったと答えてしまう)。
         return id == null
-            ? _err('could not create page (plan limit?)')
-            : _ok({'pageId': id});
+            ? _err('could not create a "${a['type'] ?? 'normal'}" page: a '
+                'free note ("paint") page needs Pro, and the free plan caps '
+                'how many pages of each kind there can be. Tell the user - '
+                'do not retry with a different type.')
+            : _ok({
+                'pageId': id,
+                'type': _provider.mcpPageById(id)?.pageType ?? 'normal',
+              });
       case 'add_node':
         {
           final pageId = a['pageId'] as String? ?? '';
           // 1 件ずつ呼ぶ形だけだと AI が途中で取りこぼす (4 個頼んで 1 個しか
           // 置かれなかった)。 まとめて置ける形も持たせる。
+          // ★ 棚 (ギャラリー) に add_node は使えない (= 動作確認で判明:
+          //   種別を見ていないので、 棚のページにも普通のノードが出来て
+          //   しまい、 棚に並ばず線も描かれない物が残っていた)。
+          final target = _provider.mcpPageById(pageId);
+          if (target != null && target.pageType == 'bookshelf') {
+            return _err('"$pageId" is a gallery (bookshelf) page: use '
+                'add_gallery_item (its "texts" array) instead. A gallery has '
+                'no parent/child lines, so if the user wants them connected, '
+                'offer to convert the page with set_page_type "normal".');
+          }
           final batch = a['nodes'];
+          // ★ 空配列で呼ばれた時に何も作らない (= 動作確認で判明: 「0 個
+          //   追加して」 で空配列を投げると 1 件用の道に落ちて、 無題の
+          //   ノードが 1 個出来たうえに成功として返っていた)。
+          if (batch is List && batch.isEmpty) {
+            return _err('"nodes" was an empty array - nothing was added. '
+                'If there is nothing to add, do not call add_node at all.');
+          }
           if (batch is List && batch.isNotEmpty) {
             final ids = <String>[];
+            // 入力の並びと 1 対 1 で対応させる控え。 ★ 使えない要素を飛ばすと
+            //   ids がずれ、 以降の parentIndex が 1 つ手前のノードに繋がって
+            //   いた (= 動作確認で判明)。
+            final slots = <String>[];
             final failed = <String>[];
+            // 親に繋げなかった物 (= 繋がっていないのに「親子で作った」 と
+            //   報告してしまうのを防ぐ)。
+            final unlinked = <String>[];
             for (final e in batch) {
-              if (e is! Map) continue;
-              final m = e.cast<String, dynamic>();
+              final Map<String, dynamic> m;
+              if (e is Map) {
+                m = e.cast<String, dynamic>();
+              } else {
+                // 題名だけを並べた形 (["春","夏"]) も受ける。 同じファイルの
+                //   add_gallery_item / add_paint_text の texts と揃えた。
+                final s = '${e ?? ''}'.trim();
+                if (s.isEmpty) {
+                  slots.add('');
+                  continue;
+                }
+                m = <String, dynamic>{'title': s};
+              }
+              // 中身の無い要素で無題ノードを作らない。
+              if (!m.containsKey('title') &&
+                  !m.containsKey('memo') &&
+                  !m.containsKey('url')) {
+                slots.add('');
+                continue;
+              }
               final id = _provider.mcpAddNode(
                 pageId,
                 title: '${m['title'] ?? ''}',
-                x: (m['x'] as num?)?.toDouble(),
-                y: (m['y'] as num?)?.toDouble(),
-                memo: m['memo'] as String?,
-                url: m['url'] as String?,
-                colorValue: (m['color'] as num?)?.toInt(),
+                x: _numOf(m['x']),
+                y: _numOf(m['y']),
+                // 文字列以外が来ても途中で例外にしない (= 200 個の途中で
+                //   落ちると、 作った分の一覧すら返せなくなる)。
+                memo: m['memo'] == null ? null : '${m['memo']}',
+                url: m['url'] == null ? null : '${m['url']}',
+                colorValue: _argbOf(m['color']),
               );
               if (id == null) {
                 failed.add('${m['title'] ?? ''}');
+                slots.add('');
                 continue;
               }
               ids.add(id);
+              slots.add(id);
               // 親が指定されていればその場で繋ぐ。 parentIndex はこの呼び出しの
               // 中で先に作ったノードの番号 (0 始まり)。
               var parent = '${m['parentId'] ?? ''}'.trim();
-              final pi = (m['parentIndex'] as num?)?.toInt();
-              if (parent.isEmpty &&
-                  pi != null &&
-                  pi >= 0 &&
-                  pi < ids.length - 1) {
-                parent = ids[pi];
+              final pi = _numOf(m['parentIndex'])?.toInt();
+              if (parent.isEmpty && pi != null) {
+                if (pi >= 0 && pi < slots.length - 1 && slots[pi].isNotEmpty) {
+                  parent = slots[pi];
+                } else {
+                  // 前に作った物を指していない parentIndex は使えない。
+                  unlinked.add('${m['title'] ?? ''}');
+                }
               }
-              if (parent.isNotEmpty) {
-                _provider.mcpConnectNodes(pageId, parent, id);
+              if (parent.isNotEmpty &&
+                  !_provider.mcpConnectNodes(pageId, parent, id)) {
+                unlinked.add('${m['title'] ?? ''}');
               }
             }
-            if (ids.isEmpty) return _err('page not found');
-            // id と題名を組で返す (= 続けて connect_nodes を呼ぶ時に、
-            //   どの id がどのノードか迷わないように)。
+            if (ids.isEmpty) {
+              return _err(_provider.mcpPageById(pageId) == null
+                  ? 'page not found: "$pageId"'
+                  : 'nothing was added: every entry in "nodes" was unusable. '
+                      'Each entry needs at least a "title".');
+            }
+            // 座標を渡さないと全部同じ場所に重なる。 アプリ内の AI は最後に
+            //   自動で並べ直すが、 外部の MCP クライアントは自分で
+            //   tidy_page を呼ばないと重なったまま (= 動作確認で判明)。
+            final placed =
+                batch.any((e) => e is Map && (e['x'] != null || e['y'] != null));
             return _ok({
+              // id と題名を組で返す (= 続けて connect_nodes を呼ぶ時に、
+              //   どの id がどのノードか迷わないように)。
               'nodes': _provider.mcpNodeIndex(pageId).where(
                   (e) => ids.contains(e['id'])).toList(),
               'nodeIds': ids,
               if (failed.isNotEmpty) 'failed': failed,
+              if (unlinked.isNotEmpty) 'unlinked': unlinked,
+              if (!placed && ids.length > 1)
+                'note': 'all ${ids.length} nodes were placed on the same spot; '
+                    'call tidy_page on this pageId to lay them out.',
             });
+          }
+          // 題名も memo も url も無い呼び出しでは何も作らない。
+          if (!a.containsKey('title') &&
+              !a.containsKey('memo') &&
+              !a.containsKey('url')) {
+            return _err('nothing to add: pass "nodes" (an array) or at least '
+                'a "title". No node was created.');
           }
           final id = _provider.mcpAddNode(
             pageId,
-            title: a['title'] as String? ?? '',
+            title: '${a['title'] ?? ''}',
             x: numOf('x'),
             y: numOf('y'),
-            memo: a['memo'] as String?,
-            url: a['url'] as String?,
-            colorValue: (a['color'] as num?)?.toInt(),
+            memo: a['memo'] == null ? null : '${a['memo']}',
+            url: a['url'] == null ? null : '${a['url']}',
+            colorValue: _argbOf(a['color']),
           );
           return id == null ? _err('page not found') : _ok({'nodeId': id});
         }
@@ -843,11 +1132,22 @@ class McpServer {
             x: numOf('x'),
             y: numOf('y'),
           );
-          return ok
-              ? _ok('updated')
-              : _err('no node "$key" on that page. Available nodes (use the '
-                  '"title" value as "node"): '
-                  '${jsonEncode(_provider.mcpNodeIndex(pageId))}');
+          if (!ok) {
+            return _err('no node "$key" on that page. Available nodes (use '
+                'the "title" value as "node"): '
+                '${jsonEncode(_provider.mcpNodeIndex(pageId))}');
+          }
+          // どのノードを書き換えたかを返す (= 題名で指した時に、 思った物と
+          //   違うノードを直していないか AI が確かめられるように)。
+          final rid = _provider.mcpResolveNodeId(pageId, key);
+          final hit = _provider.mcpNodeIndex(pageId).firstWhere(
+              (e) => e['id'] == rid,
+              orElse: () => const <String, String>{});
+          return _ok({
+            'updated': true,
+            if (rid != null) 'nodeId': rid,
+            if (hit['title'] != null) 'title': hit['title'],
+          });
         }
       case 'delete_node':
         {
@@ -855,28 +1155,31 @@ class McpServer {
           // まとめて消せる形も持たせる (= 1 件ずつだと AI が取りこぼす)。
           final batch = a['nodes'];
           if (batch is List && batch.isNotEmpty) {
-            var done = 0;
+            // 何を消したかを題名で返す (= 数だけだと、 頼まれた物と違う
+            //   ノードが消えていても AI が気付けない)。
+            final removed = <String>[];
             final missed = <String>[];
             for (final e in batch) {
               final k = '${e ?? ''}'.trim();
-              if (_provider.mcpDeleteNode(pageId, k)) {
-                done++;
-              } else {
+              final title = _provider.mcpDeleteNode(pageId, k);
+              if (title == null) {
                 missed.add(k);
+              } else {
+                removed.add(title);
               }
             }
-            return done == 0
+            return removed.isEmpty
                 ? _err('none of $missed were found. Available nodes: '
                     '${jsonEncode(_provider.mcpNodeIndex(pageId))}')
                 : _ok({
-                    'deleted': done,
+                    'deleted': removed,
                     if (missed.isNotEmpty) 'failed': missed,
                   });
           }
           final key = '${a['node'] ?? a['nodeId'] ?? ''}'.trim();
-          final ok = _provider.mcpDeleteNode(pageId, key);
-          return ok
-              ? _ok('deleted')
+          final removedTitle = _provider.mcpDeleteNode(pageId, key);
+          return removedTitle != null
+              ? _ok({'deleted': removedTitle})
               : _err('no node "$key" on that page. Available nodes (use the '
                   '"title" value as "node"): '
                   '${jsonEncode(_provider.mcpNodeIndex(pageId))}');
@@ -895,10 +1198,45 @@ class McpServer {
             return _err('$e');
           }
         }
+      case 'tidy_page':
+        {
+          final pageId = a['pageId'] as String? ?? '';
+          final page = _provider.mcpPageById(pageId);
+          if (page == null) {
+            return _err('no page has the id "$pageId" - call list_pages.');
+          }
+          final type = page.pageType ?? 'normal';
+          if (type != 'normal') {
+            return _err('tidy_page only works on a mind map page; "$pageId" '
+                'is a "$type" page, which arranges itself.');
+          }
+          if (page.nodes.length < 2) {
+            return _err('nothing to tidy: "$pageId" has '
+                '${page.nodes.length} node(s).');
+          }
+          _provider.mcpTidyPage(pageId);
+          return _ok('tidied ${page.nodes.length} nodes on $pageId');
+        }
       case 'set_page_background':
         {
+          final bgPageId = a['pageId'] as String? ?? '';
+          // ★ 無いファイルを渡された時に、 まとめ書きの文面 (「ページが
+          //   見つからない…」) が返って原因を取り違えていた
+          //   (= 動作確認で判明)。 clear / template が先に効くので、
+          //   それらが無い時だけ実在を見る (provider と同じ優先順位)。
+          if (_provider.mcpPageById(bgPageId) == null) {
+            return _err('no page has the id "$bgPageId" - call list_pages.');
+          }
+          final bgTpl = (a['template'] as String? ?? '').trim();
+          final bgImg = (a['imagePath'] as String? ?? '').trim();
+          if (a['clear'] != true &&
+              bgTpl.isEmpty &&
+              bgImg.isNotEmpty &&
+              !File(bgImg).existsSync()) {
+            return _err('background image file not found: $bgImg');
+          }
           final ok = await _provider.mcpSetPageBackground(
-            a['pageId'] as String? ?? '',
+            bgPageId,
             template: a['template'] as String?,
             imagePath: a['imagePath'] as String?,
             clear: a['clear'] == true,
@@ -908,10 +1246,25 @@ class McpServer {
             saturationPercent: (a['saturationPercent'] as num?)?.toInt(),
             brightnessPercent: (a['brightnessPercent'] as num?)?.toInt(),
           );
-          return ok
-              ? _ok('background updated')
-              : _err('page not found, or no valid background was given '
-                  '(use template / imagePath / clear)');
+          if (!ok) {
+            return _err('page not found, or no valid background was given '
+                '(use template / imagePath / clear)');
+          }
+          // ★ 範囲外の値は黙って丸められるので、 入った値をそのまま返す
+          //   (= 動作確認で判明: 150% と頼まれて 100% になったのに、
+          //   AI には「更新しました」 としか返らず 150% と報告できてしまう)。
+          final bgPage = _provider.mcpPageById(bgPageId);
+          return _ok({
+            'updated': true,
+            if (bgPage != null) ...{
+              'background': bgPage.backgroundImagePath,
+              'opacityPercent': bgPage.backgroundOpacityPercent,
+              'fit': bgPage.backgroundFit,
+              'hueDegrees': bgPage.backgroundHueDegrees,
+              'saturationPercent': bgPage.backgroundSaturationPercent,
+              'brightnessPercent': bgPage.backgroundBrightnessPercent,
+            },
+          });
         }
       case 'connect_nodes':
         {
@@ -957,7 +1310,13 @@ class McpServer {
           final ok = _provider.mcpConnectNodes(pageId, f, t,
               label: a['label'] as String?);
           return ok
-              ? _ok('connected')
+              // 実際に繋いだ id を返す (= 同じ題名のノードが 2 つある時に、
+              //   思った方に繋がったか AI が確かめられるように)。
+              ? _ok({
+                  'connected': 1,
+                  'fromId': _provider.mcpResolveNodeId(pageId, f),
+                  'toId': _provider.mcpResolveNodeId(pageId, t),
+                })
               : _err('could not connect "$f" -> "$t". '
                   'Available nodes on this page (use the "title" value as '
                   '"from"/"to"): ${jsonEncode(_provider.mcpNodeIndex(pageId))}');
@@ -983,17 +1342,27 @@ class McpServer {
             headerRow: a['headerRow'] as bool? ?? true,
             x: numOf('x'),
             y: numOf('y'),
+            // 見出しは表の上に出す説明書き。 作る時に渡す (後から付ける形は
+            //   別ページだと効かなかった)。
+            caption: a['title'] as String?,
           );
           if (id == null) return _err('page not found or rows empty: $pageId');
-          // 見出しを付けたい場合は、 表の上に説明書きとして載せる。
-          final title = (a['title'] as String? ?? '').trim();
-          if (title.isNotEmpty) _provider.updateNodeCaption(id, title);
           return _ok({'nodeId': id, 'rows': rows.length});
         }
       case 'add_image_node':
         final pageId = a['pageId'] as String? ?? '';
-        String? path = a['imagePath'] as String?;
-        final b64 = a['imageBase64'] as String?;
+        // ★ この道具だけ「まとめて」 の形が無い (= 動作確認で判明: 他の
+        //   道具は全部 texts / nodes でまとめられるので、 AI は配列を
+        //   渡しがち。 素通しだと型エラーで落ち、 意味の分からない
+        //   メッセージだけが返っていた)。
+        final rawPath = a['imagePath'];
+        final rawB64 = a['imageBase64'];
+        if (rawPath is List || rawB64 is List) {
+          return _err('add_image_node takes ONE image - there is no array '
+              'form. Call it once per image.');
+        }
+        String? path = rawPath as String?;
+        final b64 = rawB64 as String?;
         if (path == null && b64 != null && b64.isNotEmpty) {
           // base64 をアプリ書類フォルダへ保存してから添付ノード化する。
           try {
@@ -1061,6 +1430,20 @@ class McpServer {
           final lines = many.isNotEmpty
               ? many
               : [if ((a['text'] as String? ?? '').isNotEmpty) a['text'] as String];
+          // text も texts も無い呼び出しは「空白だから捨てた」 ではない。
+          if (lines.isEmpty) {
+            return _err('add_paint_text needs text: put every line in '
+                '"texts" (array of strings), or send a single "text".');
+          }
+          // ★ 空白だけの行は捨てられる仕様なので、 先に区別して返す
+          //   (= 動作確認で判明: 「空白だけの行を 3 行」 と頼まれた時、
+          //   ページ種別の間違いと同じ文面が返り、 AI が「フリーノートでは
+          //   ありません」 と誤った理由を伝えていた)。
+          if (lines.every((l) => l.trim().isEmpty)) {
+            return _err('nothing was written: blank / whitespace-only text is '
+                'discarded - this app cannot insert empty lines. Tell the '
+                'user instead of retrying.');
+          }
           var wrote = 0;
           for (final line in lines) {
             final ok = await _provider.mcpAddPaintText(
@@ -1070,7 +1453,11 @@ class McpServer {
               x: many.isNotEmpty ? null : numOf('x'),
               y: many.isNotEmpty ? null : numOf('y'),
               size: numOf('size'),
-              colorValue: (a['color'] as num?)?.toInt(),
+              // ★ add_node と同じ正し方を通す (= 動作確認で判明: 「赤」 の
+              //   つもりの 0xFF0000 は α=0 で透明になり、 文字が見えない
+              //   まま成功と返っていた。 色名の文字列は型エラーで落ちて
+              //   いた)。
+              colorValue: _argbOf(a['color']),
             );
             if (ok) wrote++;
           }
@@ -1087,19 +1474,45 @@ class McpServer {
           final paras = many.isNotEmpty
               ? many
               : [if ((a['text'] as String? ?? '').isNotEmpty) a['text'] as String];
+          // 空白だけの段落は捨てられる (add_paint_text と同じ理由)。
+          if (paras.every((p) => p.trim().isEmpty)) {
+            return _err('nothing was appended: blank / whitespace-only text '
+                'is discarded - this app cannot insert empty lines. Tell the '
+                'user instead of retrying.');
+          }
           var wrote = 0;
           for (final para in paras) {
             if (await _provider.mcpAppendDocumentText(pageId, para)) wrote++;
           }
           return wrote > 0
               ? _ok({'appended': wrote})
-              : _err('not a note page, or text empty: $pageId '
-                  '- append_document_text works on pages whose type is '
-                  '"paint" (free note) or "document"');
+              : _err('could not append to "$pageId": append_document_text '
+                  'works only on pages whose type is '
+                  '"paint" (free note) or "document" (notepad). A "markdown" '
+                  'page body cannot be written by any tool: create the text '
+                  'as a .md file with create_document_file instead.');
         }
       case 'add_video_editor_item':
         {
           final pageId = a['pageId'] as String? ?? '';
+          // ★ 1.5 秒のつもりで 1.5 を渡されると、 黙って 1 ミリ秒に切り捨てて
+          //   成功と返していた (= 動作確認で判明)。 単位の取り違えは丸めずに
+          //   突き返す。
+          for (final k in const ['durationMs', 'startMs']) {
+            final v = a[k] as num?;
+            if (v == null) continue;
+            if (v % 1 != 0 || (k == 'durationMs' && v <= 0)) {
+              return _err('$k must be a whole number of MILLISECONDS '
+                  '(1.5 seconds = 1500, not 1.5)');
+            }
+          }
+          // レーンは 6 本しか無い。 範囲外は丸めずに突き返す (単位と同じ
+          //   考え方。 丸めると戻り値で伝えられない)。
+          final lay = a['layer'] as num?;
+          if (lay != null && (lay % 1 != 0 || lay < 0 || lay > 5)) {
+            return _err('layer must be a whole number from 0 to 5 '
+                '(0 = back-most); the timeline has only 6 lanes.');
+          }
           // まとめて字幕を置ける形 (= 1 件ずつだと AI が取りこぼす)。
           final batch = a['texts'];
           if (batch is List && batch.isNotEmpty) {
@@ -1141,19 +1554,56 @@ class McpServer {
         }
       case 'create_document_file':
         try {
+          final kind = (a['kind'] as String? ?? '').toLowerCase();
+          final slides = _slidesOf(a['slides']);
+          // ★ 中身の無い pptx を黙って作らない (= 動作確認で判明: slides を
+          //   読めない形で渡すと、 表紙だけの空スライドが出来て成功が返る)。
+          if (kind == 'pptx' && slides.isEmpty) {
+            return _err('pptx needs "slides": '
+                '[{"title":"…","bullets":["…"]}] - nothing was created.');
+          }
+          final reqId = a['pageId'] as String? ?? '';
           final path = await _provider.mcpCreateFile({
-            'pageId': a['pageId'] as String? ?? '',
-            'kind': (a['kind'] as String? ?? '').toLowerCase(),
+            'pageId': reqId,
+            'kind': kind,
             'fileName': a['fileName'] as String? ?? '',
             'title': a['title'] as String? ?? '',
             'paragraphs': _stringList(a['paragraphs']),
             'rows': _rowsOf(a['rows']),
-            'slides': _slidesOf(a['slides']),
+            'slides': slides,
           });
-          return path == null
-              ? _err('could not create the file (unsupported kind, or the '
-                  'page was not found)')
-              : _ok({'path': path});
+          if (path == null) {
+            return _err('could not create the file (unsupported kind, or the '
+                'page was not found)');
+          }
+          // ★ 貼れたかどうかを見て返す (= 動作確認で判明: フリーノートの
+          //   ページを渡すとタイルを置く場所が無く、 ファイルはどこにも
+          //   貼られないのに成功と返っていた。 別のページへ逃げる事もある)。
+          final reqPage = _provider.mcpPageById(reqId);
+          bool holds(dynamic p) =>
+              p != null && p.nodes.values.any((n) => n.attachmentPath == path);
+          if (holds(reqPage)) {
+            return _ok({'path': path, 'attachedToPageId': reqPage!.id});
+          }
+          String? hostId;
+          for (final p in _provider.pages) {
+            if (holds(p)) {
+              hostId = p.id;
+              break;
+            }
+          }
+          return _ok({
+            'path': path,
+            if (hostId != null) 'attachedToPageId': hostId,
+            'note': hostId == null
+                ? 'The file WAS saved at this path but is NOT pinned to any '
+                    'page: a "${reqPage?.pageType ?? 'unknown'}" page cannot '
+                    'hold a file tile. Tell the user the path, or ask for a '
+                    'mind map ("normal") or gallery ("bookshelf") page.'
+                : 'The requested page cannot hold a file tile, so it was '
+                    'pinned to page $hostId instead - say so rather than '
+                    'claiming it is on the page that was asked for.',
+          });
         } catch (e, st) {
           // 理由が分からないと直せないので、 画面にもログにも残す。
           // ignore: avoid_print
