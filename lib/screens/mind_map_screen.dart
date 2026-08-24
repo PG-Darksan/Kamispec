@@ -3333,25 +3333,29 @@ class _MindMapScreenState extends State<MindMapScreen>
   String _splitLeftPdfAnnotMode = 'none';
   bool _pdfWriteBusy = false;
 
-  /// チェック (✓) の大きさの倍率 (= ユーザー要望: 設定した大きさで出せる)。
-  /// prefs 'pdfCheckScale'。
-  double _pdfCheckScale = 1.0;
+  /// チェック (✓) の大きさ (= ユーザー要望: 既定は 10)。
+  ///
+  /// 旧版は「倍率」 (既定 1.0 / prefs 'pdfCheckScale') だったが、 描き込み
+  /// パレット側の数字と揃えるため「大きさ」 に改めた (10 = 旧 4 倍相当)。
+  /// 単位が変わったので prefs の鍵も変える (古い倍率をそのまま読むと
+  /// 極端に小さくなってしまうため)。
+  double _pdfCheckSize = 10.0;
 
   Future<void> _loadPdfCheckScale() async {
     try {
       final sp = await SharedPreferences.getInstance();
-      final v = sp.getDouble('pdfCheckScale');
+      final v = sp.getDouble('pdfCheckSize');
       if (v != null && mounted) {
-        setState(() => _pdfCheckScale = v.clamp(0.5, 6.0));
+        setState(() => _pdfCheckSize = v.clamp(1.0, 20.0));
       }
     } catch (_) {}
   }
 
   Future<void> _setPdfCheckScale(double v) async {
-    setState(() => _pdfCheckScale = v.clamp(0.5, 6.0));
+    setState(() => _pdfCheckSize = v.clamp(1.0, 20.0));
     try {
       final sp = await SharedPreferences.getInstance();
-      await sp.setDouble('pdfCheckScale', _pdfCheckScale);
+      await sp.setDouble('pdfCheckSize', _pdfCheckSize);
     } catch (_) {}
   }
 
@@ -3365,23 +3369,25 @@ class _MindMapScreenState extends State<MindMapScreen>
       position: RelativeRect.fromRect(
           globalPos & const Size(1, 1), Offset.zero & box.size),
       items: [
+        // 数字はパレットのスライダーと同じ「大きさ」 (既定 10)。
         for (final (v, label) in const [
-          (0.7, '小さめ'),
-          (1.0, 'ふつう'),
-          (1.6, '大きめ'),
-          (2.4, 'とても大きい'),
-          (3.5, '特大'),
+          (2.5, '小さめ'),
+          (5.0, 'ふつう'),
+          (10.0, '大きめ (既定)'),
+          (14.0, 'とても大きい'),
+          (20.0, '特大'),
         ])
           PopupMenuItem<double>(
             value: v,
             height: 34,
             child: Row(children: [
               Icon(Icons.check_rounded,
-                  size: 12 + v * 5, color: const Color(0xFFE57373)),
+                  size: (10 + v * 1.1).clamp(10.0, 28.0).toDouble(),
+                  color: const Color(0xFFE57373)),
               const SizedBox(width: 10),
-              Text(label,
+              Text('$label  (${v.toStringAsFixed(0)})',
                   style: TextStyle(
-                      color: (_pdfCheckScale - v).abs() < 0.01
+                      color: (_pdfCheckSize - v).abs() < 0.01
                           ? const Color(0xFF6C63FF)
                           : Colors.white,
                       fontSize: 12.5)),
@@ -3420,7 +3426,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       ok = await _PdfInkWriter.writeText(path, pageNo, pos, text!.trim());
     } else {
       ok = await _PdfInkWriter.writeCheck(path, pageNo, pos,
-          scale: _pdfCheckScale);
+          size: _pdfCheckSize);
     }
     _pdfWriteBusy = false;
     if (!mounted) return;
@@ -3523,7 +3529,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                       autofocus: true,
                       style: const TextStyle(
                           color: Color(0xFFC81414),
-                          fontSize: 15,
+                          // 焼き込む大きさ (24pt) に近い見た目にする
+                          // (= ユーザー要望: 文字が小さすぎる)。
+                          fontSize: 24,
                           height: 1.2),
                       cursorColor: const Color(0xFFE57373),
                       decoration: InputDecoration(
@@ -3627,7 +3635,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             'check',
             Icons.check_rounded,
             '${provider.t('pdf.writeCheck')} '
-                '(大きさ: ${_pdfCheckScale.toStringAsFixed(1)}倍 / '
+                '(大きさ: ${_pdfCheckSize.toStringAsFixed(0)} / '
                 '右クリックで変更)'),
       ),
       drawBtn,
@@ -23624,7 +23632,11 @@ class _MindMapScreenState extends State<MindMapScreen>
       {bool isLocalFile = false,
       String? nodeId,
       double initialRate = 1.0,
-      bool? useRootNavigator}) async {
+      bool? useRootNavigator,
+      // どの分割セルへ入れるか (= ユーザー要望: ビューアの左分割 / 右分割で
+      // 押した側のセルへ、 アプリのビューアのまま移す)。 null なら従来通り
+      // 編集セル。
+      int? embedSlot}) async {
     _gViewerOpenSw = Stopwatch()..start();
     _viewerMark('tap');
     // 表示用 URL を組み立てる。 ローカルパスは file:// に変換。
@@ -23764,14 +23776,37 @@ class _MindMapScreenState extends State<MindMapScreen>
               // 画面分割パネルへ引き継ぎ (= ビューア閉じて MindMapScreen
               // の右側パネルで開く)
               onMoveToSplitPanel: (currentUrl, {bool isLeftPanel = false}) {
+                // 拡張子はクエリ (?) と位置指定 (#page=3) を外して見る。
+                var probe = currentUrl.toLowerCase();
+                final qi = probe.indexOf('?');
+                if (qi >= 0) probe = probe.substring(0, qi);
+                final hi = probe.indexOf('#');
+                if (hi >= 0) probe = probe.substring(0, hi);
+                final isPdf = probe.endsWith('.pdf');
                 // マップ分割中は分割セルへ埋め込む (= ユーザー要望)。
                 if (_canEmbedIntoMapSplit()) {
+                  // ★ PDF をそのまま _embedUrlIntoSplitSide へ渡すと Web セル
+                  //   (= ブラウザ内蔵の PDF 表示) になり、 描き込みも文字入れも
+                  //   できなくなっていた (= ユーザー報告: 「再度画面分割を行うと
+                  //   ブラウザ版で開かれてしまう」)。 アプリのビューアのまま、
+                  //   押した側のセルへ入れ直す。
+                  if (isPdf) {
+                    // ignore: discarded_futures
+                    _showInAppViewer(
+                      context,
+                      currentUrl,
+                      isLocalFile: !currentUrl.startsWith('http://') &&
+                          !currentUrl.startsWith('https://'),
+                      nodeId: nodeId,
+                      embedSlot: _mapSplitSideSlot(left: isLeftPanel),
+                    );
+                    return;
+                  }
                   _embedUrlIntoSplitSide(currentUrl, left: isLeftPanel);
                   return;
                 }
                 // ユーザー要望: 「右分割と左分割を同時に表示できる」
                 //   ようにするため、 反対側パネルは触らない。
-                final isPdf = currentUrl.toLowerCase().endsWith('.pdf');
                 if (isLeftPanel) {
                   // 全画面へ戻す時にメモ欄を復活させるため元ノードを保持
                   // (= ユーザー要望)。
@@ -23812,8 +23847,10 @@ class _MindMapScreenState extends State<MindMapScreen>
         // 分割セルの中にそのまま組み込む (= ユーザー要望: PDF などが
         //   その画面に埋め込まれた状態で開くように。 浮遊窓のヘッダーと
         //   ビューアのヘッダーが二重に並ぶのも無くなる)。
-        _embedViewerIntoMapSplitCell((_) => ColoredBox(
-            color: const Color(0xFF1A1A24), child: viewerContent));
+        _embedViewerIntoMapSplitCell(
+            (_) => ColoredBox(
+                color: const Color(0xFF1A1A24), child: viewerContent),
+            slot: embedSlot);
         return;
       }
       await showDialog<void>(
@@ -47243,6 +47280,27 @@ class _MindMapScreenState extends State<MindMapScreen>
   bool _creditShortDialogOpen = false;
   void _onCreditShort() {
     if (!mounted || _creditShortDialogOpen) return;
+    // ── 開発者 / Dev 枠は決済画面へ飛ばさない (= ユーザー要望: 開発者モード
+    //    なのに決済画面に遷移してしまう)。 ここへ来たという事は Worker が
+    //    本人を Dev と認めなかった時なので、 何が起きたかだけ伝える。 ──
+    final devProvider = context.read<MindMapProvider>();
+    if (devProvider.developerMode || devProvider.isDevPlan) {
+      final now = DateTime.now();
+      final last = _creditShortShownAt;
+      if (last != null && now.difference(last) < const Duration(seconds: 20)) {
+        return;
+      }
+      _creditShortShownAt = now;
+      _appSnack(
+        context,
+        SnackBar(
+          content: Text(devProvider.t('credit.devNotRecognized')),
+          backgroundColor: const Color(0xFFE57373),
+          duration: const Duration(seconds: 6),
+        ),
+      );
+      return;
+    }
     final now = DateTime.now();
     final last = _creditShortShownAt;
     if (last != null && now.difference(last) < const Duration(seconds: 20)) {
@@ -63748,7 +63806,14 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// (= 今まで浮遊窓が覆っていた場所と同じ)。
   void _embedViewerIntoMapSplitCell(WidgetBuilder builder, {int? slot}) {
     final k = (slot ?? _mapSplitEditorSlot).clamp(0, 3);
-    setState(() => _mapSplitCellFile[k] = builder);
+    setState(() {
+      _mapSplitCellFile[k] = builder;
+      // 同じセルに Web / ツールが残っていると、 編集セルが移った時に
+      // 古いブラウザ表示が蘇ってしまう (= ユーザー報告の再発経路)。
+      _mapSplitCellWeb.remove(k);
+      _mapSplitCellWebCur.remove(k);
+      _mapSplitCellTool.remove(k);
+    });
   }
 
   /// 埋め込んだファイルビューアを閉じる (ビューアの × / 戻るで呼ばれる)。
@@ -64852,27 +64917,29 @@ class _MindMapScreenState extends State<MindMapScreen>
       }
     }
     if (!_canEmbedIntoMapSplit()) return;
-    // セルの位置 (画面座標) から左右 (縦積みなら上下) を判定する。
-    int pick() {
-      if (!_mapSplitQuad) {
-        if (_mapSplitStacked) return left ? 0 : 1; // 上 / 下
-        return left ? 0 : 1; // 左 / 右
-      }
-      // 4 分割: 左列 = 0,2 / 右列 = 1,3 (= ユーザー報告: 変な位置に
-      // 入ることがある)。 選び方を明確に:
-      //   1) 指定した列の「空いている」 非編集セル
-      //   2) 指定した列の非編集セル (上書き)
-      final col = left ? const [0, 2] : const [1, 3];
-      for (final k in col) {
-        if (k != _mapSplitEditorSlot && _mapSplitCellWeb[k] == null) return k;
-      }
-      for (final k in col) {
-        if (k != _mapSplitEditorSlot) return k;
-      }
-      return col.first;
-    }
+    _embedUrlIntoSlot(_mapSplitSideSlot(left: left), url);
+  }
 
-    _embedUrlIntoSlot(pick(), url);
+  /// 左分割 / 右分割で入れる先のセル番号。 セルの位置 (画面座標) から
+  /// 左右 (縦積みなら上下) を判定する。 分割を開く働きは持たない
+  /// (= ユーザー要望: PDF もこの選び方に合わせて同じ側へ入れたい)。
+  int _mapSplitSideSlot({required bool left}) {
+    if (!_mapSplitQuad) {
+      if (_mapSplitStacked) return left ? 0 : 1; // 上 / 下
+      return left ? 0 : 1; // 左 / 右
+    }
+    // 4 分割: 左列 = 0,2 / 右列 = 1,3 (= ユーザー報告: 変な位置に
+    // 入ることがある)。 選び方を明確に:
+    //   1) 指定した列の「空いている」 非編集セル
+    //   2) 指定した列の非編集セル (上書き)
+    final col = left ? const [0, 2] : const [1, 3];
+    for (final k in col) {
+      if (k != _mapSplitEditorSlot && _mapSplitCellWeb[k] == null) return k;
+    }
+    for (final k in col) {
+      if (k != _mapSplitEditorSlot) return k;
+    }
+    return col.first;
   }
 
   /// URL を空いている分割セル (編集セル以外) へ埋め込む。
@@ -111993,7 +112060,7 @@ class _PdfInkWriter {
   /// [pagePos] はビューアの onTap が渡すページ座標 (pt、 左上原点)。
   static Future<bool> writeText(
       String path, int pageNumber, Offset pagePos, String text,
-      {double fontSize = 12}) async {
+      {double fontSize = 24}) async {
     try {
       await _ensureFont();
       final bytes = await File(path).readAsBytes();
@@ -112027,7 +112094,7 @@ class _PdfInkWriter {
   /// フォントにチェックの文字が無くても崩れない。
   static Future<bool> writeCheck(
       String path, int pageNumber, Offset pagePos,
-      {double scale = 1.0}) async {
+      {double size = 10}) async {
     try {
       final bytes = await File(path).readAsBytes();
       final doc = sfpdf.PdfDocument(inputBytes: bytes);
@@ -112036,10 +112103,11 @@ class _PdfInkWriter {
         return false;
       }
       final page = doc.pages[pageNumber - 1];
-      // 倍率で線の太さも一緒に変える (= ユーザー要望: 大きさを決められる)。
-      final k = scale <= 0 ? 1.0 : scale;
-      final pen =
-          sfpdf.PdfPen(sfpdf.PdfColor(200, 20, 20), width: 2.2 * k);
+      // 大きさで線の太さも一緒に変える (= ユーザー要望: 大きさを決められる)。
+      // 描き込みパレットの ✓ と同じ形・同じ数字になるように合わせてある。
+      final k = (size <= 0 ? 10.0 : size) / 2.5;
+      final pen = sfpdf.PdfPen(sfpdf.PdfColor(200, 20, 20),
+          width: size <= 0 ? 10.0 : size);
       final x = pagePos.dx, y = pagePos.dy;
       page.graphics.drawLine(
           pen, Offset(x - 6 * k, y), Offset(x - 1.5 * k, y + 5.5 * k));

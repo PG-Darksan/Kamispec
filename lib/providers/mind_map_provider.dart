@@ -9681,6 +9681,39 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Excluir a forma selecionada (Delete)',
       'ru': 'Удалить выбранную фигуру (Delete)',
     },
+    'pdfdraw.textSize': {
+      'ja': '文字の大きさ',
+      'en': 'Text size',
+      'zh': '文字大小',
+      'ko': '문자 크기',
+      'es': 'Tamaño del texto',
+      'fr': 'Taille du texte',
+      'de': 'Textgröße',
+      'pt': 'Tamanho do texto',
+      'ru': 'Размер текста',
+    },
+    'pdfdraw.checkSize': {
+      'ja': 'チェックの大きさ',
+      'en': 'Check mark size',
+      'zh': '对勾大小',
+      'ko': '체크 크기',
+      'es': 'Tamaño de la marca',
+      'fr': 'Taille de la coche',
+      'de': 'Häkchengröße',
+      'pt': 'Tamanho da marca',
+      'ru': 'Размер галочки',
+    },
+    'pdfdraw.redo': {
+      'ja': 'やり直す',
+      'en': 'Redo',
+      'zh': '重做',
+      'ko': '다시 실행',
+      'es': 'Rehacer',
+      'fr': 'Rétablir',
+      'de': 'Wiederholen',
+      'pt': 'Refazer',
+      'ru': 'Вернуть',
+    },
     'pdfdraw.penWidth': {
       'ja': 'ペンの太さ',
       'en': 'Pen width',
@@ -51140,6 +51173,25 @@ class MindMapProvider extends ChangeNotifier {
     },
     // お金の話に読めないよう、 「トークンが足りない」 という言い方にする
     // (= ユーザー要望: 残高がありません、 だとお金目的に思われる)。
+    'credit.devNotRecognized': {
+      'ja': '開発者枠として認められませんでした。 サーバー側の ADMIN_UIDS に'
+          'この端末の UID が入っているか確認してください。',
+      'en': 'Not recognized as a developer account. Check that the UID of '
+          'this device is listed in ADMIN_UIDS on the server.',
+      'zh': '未被识别为开发者账户。请确认服务器的 ADMIN_UIDS 中包含此设备的 UID。',
+      'ko': '개발자 계정으로 인정되지 않았습니다. 서버의 ADMIN_UIDS에 이 기기의 '
+          'UID가 있는지 확인하세요.',
+      'es': 'No se reconoció como cuenta de desarrollador. Comprueba que el UID '
+          'de este dispositivo esté en ADMIN_UIDS del servidor.',
+      'fr': 'Compte développeur non reconnu. Vérifiez que le UID de cet '
+          'appareil figure dans ADMIN_UIDS sur le serveur.',
+      'de': 'Nicht als Entwicklerkonto erkannt. Prüfe, ob die UID dieses Geräts '
+          'in ADMIN_UIDS auf dem Server steht.',
+      'pt': 'Não reconhecido como conta de desenvolvedor. Verifique se o UID '
+          'deste dispositivo está em ADMIN_UIDS no servidor.',
+      'ru': 'Аккаунт разработчика не распознан. Проверьте, что UID этого '
+          'устройства указан в ADMIN_UIDS на сервере.',
+    },
     'credit.insufficient': {
       'ja': '使えるトークンが足りません。チャージすると続けられます。',
       'en': 'You are out of tokens. Top up to keep going.',
@@ -62133,9 +62185,15 @@ class MindMapProvider extends ChangeNotifier {
   ///   実際に引き換えたプランも見て、 演じるプランで塞がないようにする。
   ///   本当に Dev 枠かはサーバー (entitlement) が判定するので、 ここは
   ///   入口を開けるだけ。
+  ///   さらに、 開発者モードに入っている本人も入口を開ける (= ユーザー要望:
+  ///   「開発者モードなのに API を叩こうとするとトークンが足りませんと言われて
+  ///   決済画面に飛ばされる」)。 ここを開けても勝手に使えるわけではなく、
+  ///   Worker が ADMIN_UIDS / Dev 権利で本人と認めた時だけ引き落としが飛ぶ。
+  ///   認められなければ従来どおりサーバーが 402 で断る。
   bool get isDevPlan =>
       currentPlan == SubscriptionPlan.dev ||
-      _purchasedPlan == SubscriptionPlan.dev;
+      _purchasedPlan == SubscriptionPlan.dev ||
+      _developerMode;
 
   /// Pro / クーポン状態をローカルから復元。
   /// クーポンは期限切れなら自動クリア。

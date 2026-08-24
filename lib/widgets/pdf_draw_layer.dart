@@ -105,7 +105,7 @@ Future<bool> burnPdfStrokes(Map<String, Object?> msg) async {
       if (tool == PdfDrawTool.text) {
         final body = '${m['text'] ?? ''}';
         if (body.isEmpty) continue;
-        final fs = (m['fontSize'] as num?)?.toDouble() ?? 14.0;
+        final fs = (m['fontSize'] as num?)?.toDouble() ?? 28.0;
         sfpdf.PdfFont font;
         if (fontBytes != null && fontBytes.isNotEmpty) {
           font = sfpdf.PdfTrueTypeFont(fontBytes, fs);
@@ -200,7 +200,7 @@ class PdfDrawStroke {
     required this.color,
     required this.width,
     this.text,
-    this.fontSize = 14,
+    this.fontSize = 28,
   });
 }
 
@@ -348,18 +348,44 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   final List<List<PdfDrawStroke>> _undo = [];
   static const int _kUndoMax = 60;
 
+  /// やり直す (Ctrl+Y / Ctrl+Shift+Z) 用の控え (= ユーザー要望: 戻すはあるのに
+  /// やり直すが無かった)。 新しく描いた時点で捨てる (= 分岐した歴史は残さない)。
+  final List<List<PdfDrawStroke>> _redo = [];
+
   void _pushUndo() {
     _undo.add(List<PdfDrawStroke>.from(_strokes));
     if (_undo.length > _kUndoMax) _undo.removeAt(0);
+    // 新しい操作をしたら「やり直す」 先は無くなる。
+    _redo.clear();
   }
 
   void _undoOnce() {
     if (_undo.isEmpty) return;
     final prev = _undo.removeLast();
     setState(() {
+      // 戻す前の状態を「やり直す」 側へ積む。
+      _redo.add(List<PdfDrawStroke>.from(_strokes));
+      if (_redo.length > _kUndoMax) _redo.removeAt(0);
       _strokes
         ..clear()
         ..addAll(prev);
+      _selected = null;
+      _current = null;
+    });
+  }
+
+  /// やり直す (= 戻したものをもう一度当てる)。
+  void _redoOnce() {
+    if (_redo.isEmpty) return;
+    final next = _redo.removeLast();
+    setState(() {
+      // やり直す前の状態は「戻す」 側へ積み直す (_pushUndo は _redo を
+      // 消してしまうので使わない)。
+      _undo.add(List<PdfDrawStroke>.from(_strokes));
+      if (_undo.length > _kUndoMax) _undo.removeAt(0);
+      _strokes
+        ..clear()
+        ..addAll(next);
       _selected = null;
       _current = null;
     });
@@ -501,7 +527,16 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     final ctrl = HardwareKeyboard.instance.isControlPressed ||
         HardwareKeyboard.instance.isMetaPressed;
     if (ctrl && e.logicalKey == LogicalKeyboardKey.keyZ) {
-      _undoOnce();
+      // Ctrl+Shift+Z は「やり直す」 (= 一般的な割り当てに合わせる)。
+      if (HardwareKeyboard.instance.isShiftPressed) {
+        _redoOnce();
+      } else {
+        _undoOnce();
+      }
+      return true;
+    }
+    if (ctrl && e.logicalKey == LogicalKeyboardKey.keyY) {
+      _redoOnce();
       return true;
     }
     if (_selected != null &&
@@ -541,6 +576,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       _strokes.clear();
       _selected = null;
       _undo.clear();
+      _redo.clear();
       if (oldPath != null) unawaited(writeStrokesToPdf(oldPath, pending));
     }
     _syncTimer();
@@ -958,7 +994,13 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   }
 
   /// 文字の大きさ (pt)。 置いた文字に使う (= ユーザー要望: テキスト入力)。
-  double _fontSize = 14;
+  /// 既定は 28pt (= ユーザー要望: 14pt は本文と同じ大きさで、 書き込んだ
+  /// 文字が余りにも小さかった)。 道具箱のスライダーで変えられる。
+  double _fontSize = 28;
+
+  /// チェック (✓) の大きさ。 既定 10 (= ユーザー要望)。 ペンの太さとは
+  /// 別に持つ (太さを 10 にするとペンの線まで極太になってしまうため)。
+  double _checkSize = 10;
 
   /// 打ち込み中の文字の場所 (ページ番号 / ページ座標 pt)。
   /// null なら打ち込んでいない。 = ユーザー要望: 窓を出すのではなく、
@@ -1095,7 +1137,8 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   /// チェック (✓) 1 個ぶんの線  /// チェック (✓) 1 個ぶんの線 (= ユーザー要望: 簡単に出せるように)。
   /// 太さに合わせて大きさも変える。
   PdfDrawStroke _checkStroke(int pageNumber, Offset at) {
-    final k = (_width / 2.5).clamp(0.6, 6.0);
+    // 大きさはチェック専用の設定から出す (= ユーザー要望: 既定 10)。
+    final k = (_checkSize / 2.5).clamp(0.2, 8.0);
     return PdfDrawStroke(
       pageNumber: pageNumber,
       tool: PdfDrawTool.pen,
@@ -1105,7 +1148,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
         at + Offset(9 * k, -8 * k),
       ],
       color: _color,
-      width: _width,
+      width: _checkSize,
     );
   }
 
@@ -1406,14 +1449,40 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     /// ページの上にも同じ大きさの丸が出る (= _PdfDrawPainter)。
     Widget sizeControl() {
       final eraser = _tool == PdfDrawTool.eraser;
-      final double cur = eraser ? _eraserSize : _width;
-      final double minV = eraser ? 4.0 : 0.5;
+      // ── 道具ごとに「その道具の大きさ」 を出す (= ユーザー要望: 文字が
+      //    小さいのに変えられなかった。 チェックもペンの太さに引きずられて
+      //    いた)。 文字 = pt、 チェック = 大きさ、 ペン = 太さ。 ──
+      final textTool = _tool == PdfDrawTool.text;
+      final checkTool = _tool == PdfDrawTool.check;
+      final double cur = textTool
+          ? _fontSize
+          : checkTool
+              ? _checkSize
+              : eraser
+                  ? _eraserSize
+                  : _width;
+      final double minV = textTool
+          ? 6.0
+          : checkTool
+              ? 1.0
+              : eraser
+                  ? 4.0
+                  : 0.5;
       // 消しゴムは大きく取れるようにする (= ユーザー要望: 最大値をもう少し
       // 大きく)。 ページの上に出る丸で実際の大きさが分かる。
-      final double maxV = eraser ? 120.0 : 16.0;
+      final double maxV = textTool
+          ? 96.0
+          : checkTool
+              ? 20.0
+              : eraser
+                  ? 120.0
+                  : 16.0;
       final double v = cur.clamp(minV, maxV).toDouble();
-      final Color accent =
-          eraser ? const Color(0xFF9FE7FF) : const Color(0xFFB9B4FF);
+      final Color accent = eraser
+          ? const Color(0xFF9FE7FF)
+          : textTool
+              ? const Color(0xFFFFD8A8)
+              : const Color(0xFFB9B4FF);
       // 見本 (入りきらない大きさは枠いっぱいで頭打ち)。
       final double dia = (v * 0.75).clamp(4.0, 24.0).toDouble();
       final double lineH = (v * 1.2).clamp(1.5, 16.0).toDouble();
@@ -1429,11 +1498,23 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
         child: Row(mainAxisSize: MainAxisSize.min, children: [
           // 何の設定かを示す見出し (消しゴム / ペン)。
           Tooltip(
-            message: widget.tr(
-                eraser ? 'pdfdraw.eraserSize' : 'pdfdraw.penWidth'),
+            message: widget.tr(textTool
+                ? 'pdfdraw.textSize'
+                : checkTool
+                    ? 'pdfdraw.checkSize'
+                    : eraser
+                        ? 'pdfdraw.eraserSize'
+                        : 'pdfdraw.penWidth'),
             child: eraser
                 ? const _EraserGlyph(size: 16, color: Color(0xFF9FE7FF))
-                : Icon(Icons.brush_rounded, size: 15, color: accent),
+                : Icon(
+                    textTool
+                        ? Icons.format_size_rounded
+                        : checkTool
+                            ? Icons.check_rounded
+                            : Icons.brush_rounded,
+                    size: 15,
+                    color: accent),
           ),
           const SizedBox(width: 6),
           // 見本 (実際の形と大きさ)。
@@ -1441,7 +1522,18 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
             width: 26,
             height: 26,
             child: Center(
-              child: eraser
+              child: textTool
+                  // 文字の見本 (枠に収まる範囲で実際の大きさに近づける)。
+                  ? Text('あ',
+                      style: TextStyle(
+                          color: _color,
+                          height: 1.0,
+                          fontSize: (v * 0.7).clamp(8.0, 24.0).toDouble()))
+                  : checkTool
+                      ? Icon(Icons.check_rounded,
+                          color: _color,
+                          size: (v * 1.4).clamp(8.0, 26.0).toDouble())
+                  : eraser
                   ? Container(
                       width: dia,
                       height: dia,
@@ -1481,11 +1573,15 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
                 min: minV,
                 max: maxV,
                 // ペンは 0.5 刻み / 消しゴムは 1 刻み (= 幅が広いので)。
-                divisions: eraser
+                divisions: (eraser || textTool)
                     ? (maxV - minV).round()
                     : ((maxV - minV) * 2).round(),
                 onChanged: (nv) => setState(() {
-                  if (eraser) {
+                  if (textTool) {
+                    _fontSize = nv;
+                  } else if (checkTool) {
+                    _checkSize = nv;
+                  } else if (eraser) {
                     _eraserSize = nv;
                   } else {
                     _width = nv;
@@ -1630,6 +1726,10 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
             // 一つ戻す (Ctrl+Z も同じ働き = ユーザー要望)。
             actBtn(Icons.undo_rounded, 'pdfdraw.undo',
                 _undo.isEmpty || _saving ? null : _undoOnce),
+            // やり直す (Ctrl+Y / Ctrl+Shift+Z = ユーザー要望: 戻すはあるのに
+            // やり直すが無かった)。
+            actBtn(Icons.redo_rounded, 'pdfdraw.redo',
+                _redo.isEmpty || _saving ? null : _redoOnce),
             actBtn(
                 Icons.delete_outline_rounded,
                 'pdfdraw.clear',

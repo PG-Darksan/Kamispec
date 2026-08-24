@@ -688,15 +688,19 @@ async function handleEntitlement(url, env) {
       headers: JSON_HEADERS,
     });
   }
+  // ADMIN_UIDS 本人は権利情報がまだ無くても Dev 枠 (= 引き換え不要)。
+  const adminFallback = isAdminUid(env, uid)
+    ? { plan: 'dev', status: 'active', devAdmin: true }
+    : { plan: 'free' };
   const raw = await env.ENTITLEMENTS.get(uid);
   if (!raw) {
-    return new Response(JSON.stringify({ plan: 'free' }), { headers: JSON_HEADERS });
+    return new Response(JSON.stringify(adminFallback), { headers: JSON_HEADERS });
   }
   let data;
   try {
     data = JSON.parse(raw);
   } catch (_) {
-    return new Response(JSON.stringify({ plan: 'free' }), { headers: JSON_HEADERS });
+    return new Response(JSON.stringify(adminFallback), { headers: JSON_HEADERS });
   }
   // 期限切れは free に落とす (解約後の猶予は Stripe 側の期間終了で判断)。
   const now = Math.floor(Date.now() / 1000);
@@ -708,6 +712,13 @@ async function handleEntitlement(url, env) {
   if (data.plan === 'dev' && !isDevEntitlement(data)) {
     data.plan = 'free';
     data.status = 'expired';
+  }
+  // ADMIN_UIDS 本人は常に Dev 枠 (= コードの引き換え不要)。 アプリ側が
+  // 「決済を通さずに使える」 と判断できるよう、 ここでも dev を返す。
+  if (isAdminUid(env, uid)) {
+    data.plan = 'dev';
+    data.status = data.status === 'expired' ? 'active' : (data.status || 'active');
+    data.devAdmin = true;
   }
   return new Response(JSON.stringify(data), { headers: JSON_HEADERS });
 }
@@ -1008,6 +1019,17 @@ async function readDevCode(env, code) {
   } catch {
     return null;
   }
+}
+
+/// AI 代行を「決済を通さずに」 使える相手か。
+///
+/// Dev コードを引き換えた人 (= 権利情報が dev) に加えて、 ADMIN_UIDS 本人も
+/// そのまま通す (= ユーザー要望: 開発者モードなのにトークンが足りませんと
+/// 言われて決済画面に飛ばされる)。 開発者本人が自分のアプリを試すたびに
+/// 自分でコードを発行して引き換えるのは筋が悪い。
+async function isFreeAiUid(env, uid) {
+  if (isAdminUid(env, uid)) return true;
+  return isDevEntitlement(await readEntitlement(env, uid));
 }
 
 /// 権利情報が「今 Dev として有効か」。 期限切れは false。
@@ -2113,7 +2135,7 @@ async function handleAiGenerate(request, env) {
 
   // ── Dev 枠は残高を引かない (= 決済を通さずに AI を使える枠) ──
   //   使用量は普通に記録するので、 誰がどれだけ使ったかは後から分かる。
-  const devEnt = isDevEntitlement(await readEntitlement(env, uid));
+  const devEnt = await isFreeAiUid(env, uid);
 
   // ── 残高の確認 (= 前払いクレジット) ──
   //   1 回の応答がどれだけ長くなるかは事前に分からないので、
@@ -2270,7 +2292,7 @@ async function handleAiImage(request, env) {
   const billed = round6(cost * (1 + MARKUP));
 
   // Dev 枠は残高を引かない (テキストと同じ扱い)。
-  const devEnt = isDevEntitlement(await readEntitlement(env, uid));
+  const devEnt = await isFreeAiUid(env, uid);
 
   // 1 枚分を先に確保する (テキストと同じ理由)。
   const held = devEnt ? null : await creditOp(env, uid, '/reserve', { usd: billed });
