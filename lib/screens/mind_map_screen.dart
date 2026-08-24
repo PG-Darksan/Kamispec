@@ -219349,6 +219349,45 @@ class _FloatingMemoPaneState extends State<_FloatingMemoPane> {
     );
   }
 }
+/// 「順番待ち / 割り込み」 を選ぶ小さな札。
+class _McpQueueModeChip extends StatelessWidget {
+  const _McpQueueModeChip(
+      {required this.label, required this.on, required this.onTap});
+  final String label;
+  final bool on;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(6),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+          decoration: BoxDecoration(
+            color: on
+                ? const Color(0xFF6C63FF).withValues(alpha: 0.30)
+                : Colors.white.withValues(alpha: 0.06),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(
+                color: on ? const Color(0xFF6C63FF) : Colors.white24),
+          ),
+          child: Text(label,
+              style: TextStyle(
+                  color: on ? Colors.white : Colors.white54,
+                  fontSize: 11,
+                  fontWeight: on ? FontWeight.w600 : FontWeight.normal)),
+        ),
+      );
+}
+
+/// 処理中に投げられて、 順番を待っている指示。
+class _McpPending {
+  final String shown;
+  final String raw;
+  final List<AiInputImage>? images;
+  const _McpPending({required this.shown, required this.raw, this.images});
+}
+
 class _McpChatMsg {
   final String role; // 'user' | 'ai' | 'tool'
 
@@ -219397,6 +219436,58 @@ class _McpChatSession extends ChangeNotifier {
   /// この回の「お題」 (= 「AI で新規ページ作成」 から開いた時)。
   String? initialTask;
 
+  /// 処理中に投げられた、 まだ渡していない指示 (= ユーザー要望: 走っている
+  /// 間も次を打てるように)。 順番に処理する。
+  final List<_McpPending> _queued = [];
+  List<_McpPending> get queued => List<_McpPending>.unmodifiable(_queued);
+
+  /// 割り込みで足した指示の数 (画面の表示用)。
+  int _steeredCount = 0;
+  int get steeredCount => _steeredCount;
+
+  /// 指示を受け付ける。
+  ///
+  /// - 動いていなければそのまま始める。
+  /// - 動いていて [steer] が true なら **今の作業に割り込む**。 会話へ足すので、
+  ///   AI は次の手を考える時にその指示も読む (途中で方針を変えられる)。
+  /// - 動いていて [steer] が false なら **順番待ち**。 今の作業が終わってから
+  ///   自動で始める。
+  void submit({
+    required String shown,
+    required String raw,
+    List<AiInputImage>? images,
+    bool steer = false,
+  }) {
+    if (!_busy) {
+      unawaited(run(shown: shown, raw: raw, images: images));
+      return;
+    }
+    if (steer) {
+      // 走っているループは毎回 _msgs から文脈を作り直すので、 ここへ足せば
+      // 次の手から効く。
+      _msgs.add(_McpChatMsg('user', shown, raw: raw));
+      _steeredCount++;
+      notifyListeners();
+      unawaited(provider.appendMcpChat('user', shown));
+      return;
+    }
+    _queued.add(_McpPending(shown: shown, raw: raw, images: images));
+    notifyListeners();
+  }
+
+  /// 順番待ちを 1 件取り消す。
+  void cancelQueued(int index) {
+    if (index < 0 || index >= _queued.length) return;
+    _queued.removeAt(index);
+    notifyListeners();
+  }
+
+  void clearQueued() {
+    if (_queued.isEmpty) return;
+    _queued.clear();
+    notifyListeners();
+  }
+
   void bind(MindMapProvider p) {
     if (identical(_provider, p) && _tools != null) return;
     _provider = p;
@@ -219440,6 +219531,7 @@ class _McpChatSession extends ChangeNotifier {
     if (_busy || _provider == null) return;
     _busy = true;
     _cancel = false;
+    var stopped = false;
     step = 0;
     _msgs.add(_McpChatMsg('user', shown, raw: raw));
     notifyListeners();
@@ -219521,6 +219613,7 @@ class _McpChatSession extends ChangeNotifier {
                 '${resText.length > 1200 ? '${resText.substring(0, 1200)}…' : resText}'));
       }
       if (_cancel) {
+        stopped = true;
         // 止めた時も、 そこまでに作った物は並べ直しておく。
         _tidyTouched();
         add(_McpChatMsg('ai', provider.t('mcp.runStopped')));
@@ -219532,8 +219625,24 @@ class _McpChatSession extends ChangeNotifier {
       _busy = false;
       _cancel = false;
       step = 0;
+      _steeredCount = 0;
       notifyListeners();
       unawaited(provider.refreshCreditBalance());
+      // ★ 順番待ちがあれば続けて始める (= ユーザー要望: 終わった後に投げる)。
+      //   止められた時は待たせていた分も取り消す (続けたくないはずなので)。
+      if (stopped) {
+        _queued.clear();
+        notifyListeners();
+      } else if (_queued.isNotEmpty) {
+        final next = _queued.removeAt(0);
+        notifyListeners();
+        // 直接呼ぶと finally の中で走り始めてしまうので 1 拍置く。
+        Future<void>.microtask(() => run(
+              shown: next.shown,
+              raw: next.raw,
+              images: next.images,
+            ));
+      }
     }
   }
 
@@ -220610,10 +220719,15 @@ class _McpChatDialogState extends State<_McpChatDialog> {
       reply.contains('"tool"') &&
       (reply.contains('"args"') || reply.trimLeft().startsWith('{'));
 
+  /// 処理中に投げた時の扱い。 true = 割り込み (今の作業に口を挟む) /
+  /// false = 順番待ち (終わってから始める)。 = ユーザー要望。
+  bool _steerNext = false;
+
   Future<void> _send() async {
     final text = _input.text.trim();
     // 写真だけ送りたいこともある (= 「これ何？」 と撮っただけの時)。
-    if ((text.isEmpty && _images.isEmpty) || _busy) return;
+    // ★ 処理中でも受け付ける (順番待ち / 割り込み)。
+    if (text.isEmpty && _images.isEmpty) return;
     if (!provider.hasActiveAiKey) {
       // 打ってから気付くのではなく、 その場で設定を開く (= ユーザー要望)。
       _promptForAiKey();
@@ -220648,11 +220762,13 @@ class _McpChatDialogState extends State<_McpChatDialog> {
     _session.initialTask = widget.initialTask;
     // ★ await しない。 画面を閉じてもセッション側で走り続ける
     //   (= ユーザー要望: 処理中にチャット欄を閉じても中断しない)。
-    unawaited(_session.run(
+    // 動いていなければそのまま始まり、 動いていれば順番待ちか割り込みになる。
+    _session.submit(
       shown: shown,
       raw: '$text$attachNote$photoNote',
       images: photos.isEmpty ? null : photos,
-    ));
+      steer: _steerNext,
+    );
     _scrollToEnd();
   }
 
@@ -220891,6 +221007,62 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                   ),
           ),
           // 実行中の表示 + ストップ (= ユーザー要望: 途中で止められるように)。
+          // ── 処理中でも次を投げられる (= ユーザー要望: キュー / 割り込み) ──
+          if (_busy)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+              child: Row(children: [
+                Icon(Icons.playlist_add_rounded,
+                    size: 15,
+                    color: _steerNext
+                        ? Colors.white38
+                        : const Color(0xFF4FC3F7)),
+                const SizedBox(width: 6),
+                Text(provider.t('mcp.whenBusy'),
+                    style: const TextStyle(
+                        color: Colors.white54, fontSize: 11)),
+                const SizedBox(width: 8),
+                // 順番待ち / 割り込み の切り替え。
+                _McpQueueModeChip(
+                  label: provider.t('mcp.modeQueue'),
+                  on: !_steerNext,
+                  onTap: () => setState(() => _steerNext = false),
+                ),
+                const SizedBox(width: 4),
+                _McpQueueModeChip(
+                  label: provider.t('mcp.modeSteer'),
+                  on: _steerNext,
+                  onTap: () => setState(() => _steerNext = true),
+                ),
+                const Spacer(),
+                if (_session.queued.isNotEmpty)
+                  Tooltip(
+                    message: provider.t('mcp.queuedClear'),
+                    child: InkWell(
+                      onTap: () => setState(_session.clearQueued),
+                      borderRadius: BorderRadius.circular(6),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 2),
+                        child: Text(
+                            '${provider.t('mcp.queuedCount')
+                                .replaceFirst('{n}', '${_session.queued.length}')}  ×',
+                            style: const TextStyle(
+                                color: Color(0xFF4FC3F7), fontSize: 11)),
+                      ),
+                    ),
+                  ),
+                if (_session.steeredCount > 0)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 8),
+                    child: Text(
+                        provider.t('mcp.steeredCount').replaceFirst(
+                            '{n}', '${_session.steeredCount}'),
+                        style: const TextStyle(
+                            color: Color(0xFFFFB347), fontSize: 11)),
+                  ),
+              ]),
+            ),
           if (_busy)
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 10),
@@ -221045,7 +221217,8 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                   },
                   child: TextField(
                     controller: _input,
-                    enabled: !_busy,
+                    // 処理中でも打てる (= ユーザー要望)。
+                    enabled: true,
                     style:
                         const TextStyle(color: Colors.white, fontSize: 13),
                     decoration: InputDecoration(
@@ -221066,10 +221239,10 @@ class _McpChatDialogState extends State<_McpChatDialog> {
               const SizedBox(width: 6),
               IconButton(
                 icon: Icon(Icons.send_rounded,
-                    color: _busy
+                    color: false
                         ? Colors.white24
                         : const Color(0xFF43B97F)),
-                onPressed: _busy ? null : _send,
+                onPressed: _send,
               ),
             ]),
           ),
