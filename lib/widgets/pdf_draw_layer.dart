@@ -470,8 +470,23 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
         }
       }
       if (restored.isEmpty) return;
-      // PDF を土台に戻してから、 線を図形として載せ直す。
-      if (curLen != baseLen) await bf.copy(path);
+      // ★ ビューアが読み込み終わるまで待つ。
+      //   読み込んでいる最中にファイルを置き換えると、
+      //   「PDF を開けませんでした」 になる (= 実際に起きた)。
+      if (curLen != baseLen) {
+        for (var i = 0; i < 60; i++) {
+          if (!mounted) return;
+          var ready = false;
+          try {
+            ready = (widget.controller?.pageCount ?? 0) > 0;
+          } catch (_) {}
+          if (ready) break;
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+        }
+        if (!mounted) return;
+        // PDF を土台に戻してから、 線を図形として載せ直す。
+        await bf.copy(path);
+      }
       if (!mounted) return;
       setState(() {
         _strokes
@@ -834,6 +849,12 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   @override
   void didUpdateWidget(covariant PdfDrawLayer old) {
     super.didUpdateWidget(old);
+    // ── 描き込みモードに入った瞬間に、 前に焼き込んだ線を復元する ──
+    //    (= ユーザー報告: 開き直すと消しゴムが効かない)。 _syncTimer 頼みだと
+    //    呼ばれない時があったので、 切り替わりを直接見る。
+    if (widget.active && !old.active) {
+      unawaited(_restorePersistedStrokes());
+    }
     // ★ モードを閉じただけでは焼き込まない (= ユーザー要望: パレットを
     //   閉じる度に保存されると、 消したい線や図形を消せなくなる)。
     //   描いたものは「まだ保存していない線」 のまま持ち続け、 PDF へ

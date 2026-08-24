@@ -73043,6 +73043,13 @@ $cleanQ
 
   /// 共同編集を終了する (自分の参加者情報も消す)。
   Future<void> stopLiveSession() async {
+    // ★ 閉じる前に未送信分を送り切る (= 検証で判明: 直前の編集が最大 1.2 秒
+    //   ぶん相手に届かないまま消えていた)。 ページ切替でもここを通る。
+    if (_liveCode != null && liveCanEdit && !_disposed) {
+      try {
+        await _livePush();
+      } catch (_) {}
+    }
     _liveTimer?.cancel();
     _liveTimer = null;
     _livePresenceTimer?.cancel();
@@ -73132,7 +73139,12 @@ $cleanQ
       await _expireLiveSession();
       return;
     }
-    if (remoteRev <= _liveRev) return; // 変化なし
+    // ★ 「自分が知っている版と違えば読む」 にする。
+    //   以前は remoteRev <= _liveRev で弾いていたため、 相手の端末の時計が
+    //   進んでいると、 こちらの版がその未来の値になり、 それ以降は相手の
+    //   書き込み (より小さい rev) を一切読まなくなっていた
+    //   (= 編集が相手に伝わらない)。
+    if (remoteRev == _liveRev) return; // 変化なし
 
     final res = await http.get(
       Uri.parse(base),
@@ -73349,11 +73361,15 @@ $cleanQ
     if (masks.isEmpty) return;
 
     // 版はミリ秒時刻。 これが変わったら他の参加者が取りに来る。
-    final rev = DateTime.now().millisecondsSinceEpoch;
+    // ★ 版は必ず「今知っている版 + 1」 以上にする。 端末の時計をそのまま
+    //   使うと、 時計が遅れている人の書き込みが「古い版」 と見なされて
+    //   誰にも届かなくなる。
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final rev = now > _liveRev ? now : _liveRev + 1;
     fields['rev'] = {'integerValue': '$rev'};
     masks.add('rev');
-    // 最終活動時刻。 これが古くなったらセッションを畳む (= ユーザー要望)。
-    fields['lastActiveAt'] = {'integerValue': '$rev'};
+    // 最終活動時刻は時計そのまま (期限切れ判定に使うため)。
+    fields['lastActiveAt'] = {'integerValue': '$now'};
     masks.add('lastActiveAt');
     fields['title'] = {'stringValue': page.name};
     masks.add('title');
@@ -73415,6 +73431,10 @@ $cleanQ
   Future<void> _liveTouchActivity() async {
     final code = _liveCode;
     if (code == null || _idToken == null) return;
+    // ★ 閲覧のみの人は本文ドキュメントに触らない (= 検証で判明: 見ているだけ
+    //   の人が 3 秒ごとに書き込み続け、 セッションが永久に期限切れにならず、
+    //   read 課金も続いていた)。 生存確認は peers 側だけで足りる。
+    if (!liveCanEdit) return;
     try {
       await http.patch(
         Uri.parse('$_firestoreBaseUrl/published/$code/doc/main'
@@ -73597,6 +73617,23 @@ $cleanQ
     _crossInstanceTimer = null;
     _syncTimer?.cancel();
     _autoSyncDebounce?.cancel();
+    // ★ 共同編集のタイマーも止める (= 検証で判明: 止め忘れで、 閉じた人が
+    //   参加者一覧に残り、 その人が掴んでいたノードが 12 秒ロックされたまま
+    //   になっていた)。 参加者の札は消せるだけ消す。
+    _liveTimer?.cancel();
+    _liveTimer = null;
+    _livePresenceTimer?.cancel();
+    _livePresenceTimer = null;
+    final liveCode = _liveCode;
+    final liveCid = _liveClientId;
+    if (liveCode != null && liveCid.isNotEmpty && _idToken != null) {
+      try {
+        unawaited(http.delete(
+          Uri.parse('$_firestoreBaseUrl/published/$liveCode/peers/$liveCid'),
+          headers: {'Authorization': 'Bearer $_idToken'},
+        ));
+      } catch (_) {}
+    }
     _startupSafetyTimer?.cancel();
     _developerModeRestoreTimer?.cancel();
     _developerModeRestoreTimer = null;

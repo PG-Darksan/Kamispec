@@ -62171,13 +62171,17 @@ class _MindMapScreenState extends State<MindMapScreen>
         // ── Web に公開 (= ユーザー要望: サーバーに公開して皆で見られるように) ──
         _menuItem<_PageAction>(
             value: _PageAction.publish,
-            icon: provider.publishedUrlFor(page.id) != null
+            // ★ 共有済みかは publishedCodeFor で見る。 publishedUrlFor は
+            //   url が空でない時だけ返すが、 共同編集の登録は url を空で
+            //   書くので常に null になり、 共有中でも「未共有」 の見た目に
+            //   なっていた (= 検証で判明)。
+            icon: provider.publishedCodeFor(page.id) != null
                 ? Icons.public_rounded
                 : Icons.public_off_rounded,
-            iconColor: provider.publishedUrlFor(page.id) != null
+            iconColor: provider.publishedCodeFor(page.id) != null
                 ? const Color(0xFF43B97F)
                 : const Color(0xFF4FC3F7),
-            label: provider.t(provider.publishedUrlFor(page.id) != null
+            label: provider.t(provider.publishedCodeFor(page.id) != null
                 ? 'publish.menuPublished'
                 : 'publish.menu')),
         // ── マークダウンで編集 (= ユーザー要望: JSON でなく Markdown で書ける/
@@ -75568,7 +75572,11 @@ class _MindMapScreenState extends State<MindMapScreen>
             final code = await provider.registerLivePage(
                 pageId: page.id, title: page.name, permission: permission);
             if (wantLive) {
-              await provider.startLiveSession(pageId: page.id, code: code);
+              // 選んだ権限をそのまま自分にも適用する (= 検証で判明:
+              //   「閲覧のみ」 を選んでもホストだけ編集のままで、 設定が
+              //   効いているのか確かめようが無かった)。
+              await provider.startLiveSession(
+                  pageId: page.id, code: code, permission: permission);
             } else if (provider.liveActive &&
                 provider.livePageId == page.id) {
               await provider.stopLiveSession();
