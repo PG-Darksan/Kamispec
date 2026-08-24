@@ -3529,9 +3529,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                       autofocus: true,
                       style: const TextStyle(
                           color: Color(0xFFC81414),
-                          // 焼き込む大きさ (24pt) に近い見た目にする
-                          // (= ユーザー要望: 文字が小さすぎる)。
-                          fontSize: 24,
+                          // 焼き込む大きさ (50pt) に近い見た目にする
+                          // (= ユーザー要望: 既定 50)。
+                          fontSize: 36,
                           height: 1.2),
                       cursorColor: const Color(0xFFE57373),
                       decoration: InputDecoration(
@@ -112060,7 +112060,7 @@ class _PdfInkWriter {
   /// [pagePos] はビューアの onTap が渡すページ座標 (pt、 左上原点)。
   static Future<bool> writeText(
       String path, int pageNumber, Offset pagePos, String text,
-      {double fontSize = 24}) async {
+      {double fontSize = 50}) async {
     try {
       await _ensureFont();
       final bytes = await File(path).readAsBytes();

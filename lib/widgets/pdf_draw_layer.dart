@@ -105,7 +105,7 @@ Future<bool> burnPdfStrokes(Map<String, Object?> msg) async {
       if (tool == PdfDrawTool.text) {
         final body = '${m['text'] ?? ''}';
         if (body.isEmpty) continue;
-        final fs = (m['fontSize'] as num?)?.toDouble() ?? 28.0;
+        final fs = (m['fontSize'] as num?)?.toDouble() ?? 50.0;
         sfpdf.PdfFont font;
         if (fontBytes != null && fontBytes.isNotEmpty) {
           font = sfpdf.PdfTrueTypeFont(fontBytes, fs);
@@ -200,8 +200,33 @@ class PdfDrawStroke {
     required this.color,
     required this.width,
     this.text,
-    this.fontSize = 28,
+    this.fontSize = 50,
   });
+
+  /// 一部だけ差し替えた複製。
+  ///
+  /// ★ 作り直す時に項目を手で並べ直すと取りこぼす。 実際、 図形を動かす
+  ///   処理が `text` と `fontSize` を書き忘れていたため、 置いた文字を
+  ///   ドラッグすると中身が消えて透明になっていた (= ユーザー報告)。
+  ///   以後は必ずこれを通す。
+  PdfDrawStroke copyWith({
+    int? pageNumber,
+    PdfDrawTool? tool,
+    List<Offset>? points,
+    Color? color,
+    double? width,
+    String? text,
+    double? fontSize,
+  }) =>
+      PdfDrawStroke(
+        pageNumber: pageNumber ?? this.pageNumber,
+        tool: tool ?? this.tool,
+        points: points ?? this.points,
+        color: color ?? this.color,
+        width: width ?? this.width,
+        text: text ?? this.text,
+        fontSize: fontSize ?? this.fontSize,
+      );
 }
 
 /// ページ 1 枚分の画面上の配置情報。
@@ -266,7 +291,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
 
   PdfDrawTool _tool = PdfDrawTool.pen;
   Color _color = const Color(0xFFE53935);
-  double _width = 2.5;
+  double _width = 7.5;
 
   final List<PdfDrawStroke> _strokes = [];
   PdfDrawStroke? _current;
@@ -301,7 +326,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   ];
 
   /// 消しゴムの大きさ (pt)。 ペンとは別に持つ (= ユーザー要望)。
-  double _eraserSize = 14.0;
+  double _eraserSize = 40.0;
 
   /// 消しゴムの「今の大きさの丸」 をページの上に出すための位置 (グローバル
   /// 座標)。 = ユーザー要望: 消しゴムの太さが見て分からない。 実際に消える
@@ -439,17 +464,18 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       [r.topLeft, r.topRight, r.bottomLeft, r.bottomRight];
 
   /// 選んでいる図形を [d] だけずらす。
+  ///
+  /// ★ copyWith を使う。 以前はここで PdfDrawStroke を作り直しており、
+  ///   `text` / `fontSize` を渡し忘れていたため、 置いた文字をドラッグすると
+  ///   中身が消えて何も描かれなくなっていた (= ユーザー報告: 文字が透明に
+  ///   なって消える)。 大きさを変える方 (_resizeSelectedTo) は渡していたので
+  ///   ドラッグの時だけ起きていた。
   void _moveSelected(Offset d) {
     final i = _selected;
     if (i == null || i < 0 || i >= _strokes.length) return;
     final st = _strokes[i];
-    _strokes[i] = PdfDrawStroke(
-      pageNumber: st.pageNumber,
-      tool: st.tool,
-      points: [for (final q in st.points) q + d],
-      color: st.color,
-      width: st.width,
-    );
+    _strokes[i] =
+        st.copyWith(points: [for (final q in st.points) q + d]);
   }
 
   /// 掴んだ角を [pt] まで動かして、 選んでいる図形を伸び縮みさせる。
@@ -994,9 +1020,8 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   }
 
   /// 文字の大きさ (pt)。 置いた文字に使う (= ユーザー要望: テキスト入力)。
-  /// 既定は 28pt (= ユーザー要望: 14pt は本文と同じ大きさで、 書き込んだ
-  /// 文字が余りにも小さかった)。 道具箱のスライダーで変えられる。
-  double _fontSize = 28;
+  /// 既定は 50pt (= ユーザー要望)。 道具箱のスライダーで変えられる。
+  double _fontSize = 50;
 
   /// チェック (✓) の大きさ。 既定 10 (= ユーザー要望)。 ペンの太さとは
   /// 別に持つ (太さを 10 にするとペンの線まで極太になってしまうため)。
@@ -1742,15 +1767,9 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
                           _selected = null;
                         });
                       }),
-            // ── 上書き保存 (= ユーザー要望)。 描いたものを PDF に
-            //    焼き込むが、 描き込みモードは続けたまま。 ──
-            actBtn(
-                Icons.save_rounded,
-                'pdfdraw.save',
-                _strokes.isEmpty || _saving
-                    ? null
-                    : () => unawaited(_commit(exitAfter: false)),
-                color: const Color(0xFF5FD3B2)),
+            // ── 保存は「保存して終了」 の 1 つに纏めた (= ユーザー要望:
+            //    上書き保存と保存して終了は分けなくていい)。 焼き込んで
+            //    から描き込みモードを閉じる。 ──
             _saving
                 ? const SizedBox(
                     width: 30,
