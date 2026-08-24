@@ -3443,40 +3443,109 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
   }
 
+  /// 分割ペインの PDF で最後に押した所 (画面座標)。 文字の箱をここへ出す。
+  Offset? _splitPdfDownGlobal;
+
+  /// 押した所にそのまま書き込める文字の箱を出す (= ユーザー要望: 「文字を
+  /// 置く」 という項目や入力窓を出すのではなく、 パワーポイントと同じように
+  /// クリックした場所へテキストボックスが現れて、 そのまま書けるように)。
+  ///
+  /// 箱の外を押すと確定、 Esc で取り消し。 戻り値は書いた文字 (取り消し /
+  /// 空なら null)。 全画面ビューア側の PdfDrawLayer と同じ操作感に揃えてある。
   Future<String?> _promptPdfWriteText(MindMapProvider provider) {
+    final completer = Completer<String?>();
     final ctrl = TextEditingController();
-    return showDialog<String>(
-      context: context,
-      builder: (dctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E32),
-        title: Text(provider.t('pdf.writeTextTitle'),
-            style: const TextStyle(color: Colors.white, fontSize: 15)),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          style: const TextStyle(color: Colors.white),
-          decoration: InputDecoration(
-            hintText: provider.t('pdf.writeTextHint'),
-            hintStyle: const TextStyle(color: Colors.white38),
+    final focus = FocusNode();
+    final overlay = Overlay.of(context, rootOverlay: true);
+    final scr = MediaQuery.sizeOf(context);
+    final at = _splitPdfDownGlobal ??
+        Offset(scr.width / 2 - 110, scr.height / 2 - 20);
+    // 画面からはみ出さない位置へ寄せる。
+    final left =
+        at.dx.clamp(0.0, math.max(0.0, scr.width - 260.0)).toDouble();
+    final top =
+        at.dy.clamp(0.0, math.max(0.0, scr.height - 64.0)).toDouble();
+    late final OverlayEntry entry;
+    var done = false;
+    void finish(String? v) {
+      if (done) return;
+      done = true;
+      entry.remove();
+      // 取り外した直後の dispose はビルド中に当たることがあるので 1 枚待つ。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        ctrl.dispose();
+        focus.dispose();
+      });
+      completer.complete((v == null || v.trim().isEmpty) ? null : v);
+    }
+
+    entry = OverlayEntry(
+      builder: (_) => Stack(children: [
+        // 箱の外を押したら確定する (中身が空なら取り消し扱い)。
+        // opaque にして、 その押下が下の PDF まで抜けないようにする
+        // (抜けると同じ操作で次の箱が開いてしまう)。
+        Positioned.fill(
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => finish(ctrl.text),
           ),
-          onSubmitted: (v) => Navigator.pop(dctx, v),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dctx),
-            child: Text(provider.t('btn.cancel'),
-                style: const TextStyle(color: Colors.white54)),
+        Positioned(
+          left: left,
+          top: top,
+          child: Material(
+            color: Colors.transparent,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minWidth: 150, maxWidth: 420),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.92),
+                  border:
+                      Border.all(color: const Color(0xFFE57373), width: 1.4),
+                  borderRadius: BorderRadius.circular(3),
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                child: IntrinsicWidth(
+                  child: Focus(
+                    canRequestFocus: false,
+                    skipTraversal: true,
+                    onKeyEvent: (node, e) {
+                      if (e is! KeyDownEvent) return KeyEventResult.ignored;
+                      if (e.logicalKey == LogicalKeyboardKey.escape) {
+                        finish(null);
+                        return KeyEventResult.handled;
+                      }
+                      return KeyEventResult.ignored;
+                    },
+                    child: TextField(
+                      controller: ctrl,
+                      focusNode: focus,
+                      autofocus: true,
+                      style: const TextStyle(
+                          color: Color(0xFFC81414),
+                          fontSize: 15,
+                          height: 1.2),
+                      cursorColor: const Color(0xFFE57373),
+                      decoration: InputDecoration(
+                        isDense: true,
+                        border: InputBorder.none,
+                        hintText: provider.t('pdf.writeTextHint'),
+                        hintStyle:
+                            const TextStyle(color: Colors.black26, fontSize: 13),
+                      ),
+                      onSubmitted: finish,
+                    ),
+                  ),
+                ),
+              ),
+            ),
           ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFE57373),
-                foregroundColor: Colors.white),
-            onPressed: () => Navigator.pop(dctx, ctrl.text),
-            child: Text(provider.t('pdf.writeBtn')),
-          ),
-        ],
-      ),
+        ),
+      ]),
     );
+    overlay.insert(entry);
+    WidgetsBinding.instance.addPostFrameCallback((_) => focus.requestFocus());
+    return completer.future;
   }
 
   /// 書き込みモードの切替ボタン (ペインごとのページ操作列に置く)。
@@ -49670,6 +49739,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     color: Colors.white,
                                     child: Listener(
                                       behavior: HitTestBehavior.translucent,
+                                      // 押した所を覚えておく (= 文字の箱を
+                                      // そこへ出すため)。
+                                      onPointerDown: (e) =>
+                                          _splitPdfDownGlobal = e.position,
                                       onPointerSignal: _onSplitLeftPdfWheel,
                                       child: ExcludeFocus(
                                         child: sf_pdf.SfPdfViewer.file(
@@ -50691,7 +50764,8 @@ class _MindMapScreenState extends State<MindMapScreen>
           behavior: HitTestBehavior.translucent,
           // ── 右クリックメニューは廃止 (= ユーザー要望: 「ページを非表示」 等
           //    の項目は要らない)。 右クリックは PDF 側の既定動作に任せる。 ──
-          onPointerDown: (event) {},
+          //    押した所は覚えておく (= 文字の箱をそこへ出すため)。
+          onPointerDown: (event) => _splitPdfDownGlobal = event.position,
           // ── ページ移動時のオーバーレイは廃止 ──
           // ユーザー要望: 「今の右上にちょっとだけ出るページ番号表記は
           //   要らない」。 代わりに上部ヘッダーの入力欄に現在ページを
