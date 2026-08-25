@@ -10114,6 +10114,69 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///
   /// [rebuildRow] は行ごと build し直すための setState。 チップ自身の中で
   /// 状態を持つと「選ばれている印」 が動かないので、 行から渡してもらう。
+  /// AI アシスタントの開き方を選ぶメニュー (= ユーザー要望: ボタンを
+  /// 右クリックして 右分割 / 左分割 / フローティング などを指定する)。
+  Future<void> _showAiAssistantOpenStyleMenu(Offset globalPos) async {
+    final provider = context.read<MindMapProvider>();
+    try {
+      await _commandOpenStylesReady;
+    } catch (_) {}
+    if (!mounted) return;
+    final box = Overlay.of(context).context.findRenderObject() as RenderBox?;
+    if (box == null) return;
+    final cur = _openStyleOf('aiAssistant');
+    final picked = await showMenu<String>(
+      context: context,
+      color: const Color(0xFF1E1E2E),
+      position: RelativeRect.fromRect(
+          globalPos & const Size(1, 1), Offset.zero & box.size),
+      items: [
+        PopupMenuItem<String>(
+          enabled: false,
+          height: 30,
+          child: Text('AI アシスタントの開き方',
+              style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.5), fontSize: 11)),
+        ),
+        for (final st in _openStylesFor('aiAssistant'))
+          PopupMenuItem<String>(
+            value: st,
+            height: 36,
+            child: Row(children: [
+              Icon(
+                  st == 'floating'
+                      ? Icons.picture_in_picture_alt_rounded
+                      : (st == 'splitLeft'
+                          ? Icons.vertical_split_rounded
+                          : (st == 'splitRight'
+                              ? Icons.vertical_split_rounded
+                              : Icons.fullscreen_rounded)),
+                  size: 16,
+                  color: st == cur
+                      ? const Color(0xFF26C6DA)
+                      : Colors.white54),
+              const SizedBox(width: 8),
+              Text(_openStyleLabel(provider, st),
+                  style: TextStyle(
+                      color: st == cur ? const Color(0xFF26C6DA) : Colors.white,
+                      fontSize: 12.5)),
+              if (st == cur) ...[
+                const Spacer(),
+                const Icon(Icons.check_rounded,
+                    size: 15, color: Color(0xFF26C6DA)),
+              ],
+            ]),
+          ),
+      ],
+    );
+    if (picked == null || !mounted) return;
+    await _setCommandOpenStyle('aiAssistant', picked);
+    if (!mounted) return;
+    setState(() {});
+    // 選んだその場でその開き方で出す (= 押し直さなくてよいように)。
+    unawaited(_openMcpChat(provider));
+  }
+
   Widget _openStyleChip(String commandId, String style, String label,
       void Function(VoidCallback) rebuildRow) {
     final selected = _openStyleOf(commandId) == style;
@@ -57983,18 +58046,27 @@ class _MindMapScreenState extends State<MindMapScreen>
                 // ── AI チャット (MCP) ── (= ユーザー要望: 右上の画面分割の
                 //   隣に置く)。 メニューを開かずに 1 タップで出せる。
                 if (_isDesktop)
-                  IconButton(
-                    // 「AI に任せる」 が伝わるアイコンに (= ユーザー要望)。
-                    icon: Icon(Icons.auto_awesome_rounded,
-                        color: provider.mcpServerEnabled
-                            ? const Color(0xFF80CBC4)
-                            : Colors.white70,
-                        size: 20),
-                    tooltip: provider.t('mcp.chatTitle'),
-                    padding: EdgeInsets.zero,
-                    constraints:
-                        const BoxConstraints(minWidth: 36, minHeight: 36),
-                    onPressed: () => _openMcpChat(provider),
+                  // 右クリック (長押し) で開き方を選べる (= ユーザー要望:
+                  //   右分割 / 左分割 / フローティング / 全画面)。
+                  GestureDetector(
+                    onSecondaryTapDown: (d) => unawaited(
+                        _showAiAssistantOpenStyleMenu(d.globalPosition)),
+                    onLongPressStart: (d) => unawaited(
+                        _showAiAssistantOpenStyleMenu(d.globalPosition)),
+                    child: IconButton(
+                      // 「AI に任せる」 が伝わるアイコンに (= ユーザー要望)。
+                      icon: Icon(Icons.auto_awesome_rounded,
+                          color: provider.mcpServerEnabled
+                              ? const Color(0xFF80CBC4)
+                              : Colors.white70,
+                          size: 20),
+                      tooltip:
+                          '${provider.t('mcp.chatTitle')} (右クリックで開き方)',
+                      padding: EdgeInsets.zero,
+                      constraints:
+                          const BoxConstraints(minWidth: 36, minHeight: 36),
+                      onPressed: () => _openMcpChat(provider),
+                    ),
                   ),
                 PopupMenuButton<String>(
                   icon: const Icon(Icons.more_vert, color: Colors.white70),
@@ -221265,6 +221337,21 @@ class _McpChatDialogState extends State<_McpChatDialog> {
 
   Future<void> _send() async {
     final text = _input.text.trim();
+    // ── 「clear」 だけ打った時は、 その場で会話を消す (= ユーザー要望:
+    //    確認も「はい」 も「消しました」 も出さずにそのまま消える)。 ──
+    if (_images.isEmpty &&
+        _attachments.isEmpty &&
+        const {'clear', '/clear', 'クリア'}.contains(text.toLowerCase())) {
+      _input.clear();
+      _promptHistoryIndex = -1;
+      _promptDraft = '';
+      _session.bind(provider);
+      _session.clearHistory();
+      // 保存してある会話の記録も空にする (次に開いた時も消えたまま)。
+      unawaited(provider.clearMcpChatHistory());
+      if (mounted) setState(() {});
+      return;
+    }
     // 写真だけ送りたいこともある (= 「これ何？」 と撮っただけの時)。
     // ★ 処理中でも受け付ける (順番待ち / 割り込み)。
     if (text.isEmpty && _images.isEmpty) return;
