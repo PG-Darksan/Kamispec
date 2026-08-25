@@ -552,16 +552,16 @@ class _SplitPanelIconPainter extends CustomPainter {
 /// 分割ボタンのツールチップ文言 (ユーザー要望)。
 /// - モバイル: 左右ではなく「上分割 / 下分割」 と表示し、 Windows の
 ///   ショートカット (Ctrl+^ / Ctrl+\) は出さない。
-/// - デスクトップ: 従来通り「左画面分割 / 右画面分割」 (必要に応じてキー付き)。
-String _splitBtnTooltip(BuildContext context, bool left,
-    {bool showKey = true}) {
+/// - デスクトップ: 「左画面分割 / 右画面分割」。 既定のキー割り当ては
+///   外したので、 キーは併記しない (= ユーザー要望)。
+String _splitBtnTooltip(BuildContext context, bool left) {
   final desktop =
       !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
   final provider = context.read<MindMapProvider>();
   if (!desktop) return provider.t(left ? 've.splitUp' : 've.splitDown');
-  final base = provider.t(left ? 'tooltip.splitLeft' : 'tooltip.splitRight');
-  if (!showKey) return base;
-  return left ? '$base (Ctrl+^)' : '$base (Ctrl+\\)';
+  // 既定のキー割り当ては左右とも外したので、 案内も出さない
+  // (= ユーザー要望。 欲しい人はショートカット一覧で自分で決められる)。
+  return provider.t(left ? 'tooltip.splitLeft' : 'tooltip.splitRight');
 }
 
 /// リッチテキストのツールバーを「白アイコン・白文字」 でラップする
@@ -4175,7 +4175,13 @@ class _MindMapScreenState extends State<MindMapScreen>
         _splitPosition == _SplitPosition.bottom) {
       final dynamicMin = size.height * 0.25;
       final floor = isOfficeMode ? math.max(360.0, dynamicMin) : dynamicMin;
-      return _splitPanelWidth.clamp(floor, size.height * 0.95).toDouble();
+      // 上分割はヘッダーの下から始まるので、 その分だけ上限を下げる
+      // (= ヘッダーを避けた結果、 下側がはみ出すのを防ぐ)。
+      final headerBottom = _splitPosition == _SplitPosition.top
+          ? MediaQuery.of(context).padding.top + kToolbarHeight
+          : 0.0;
+      final ceil = math.max(floor, size.height * 0.95 - headerBottom);
+      return _splitPanelWidth.clamp(floor, ceil).toDouble();
     }
     final dynamicMin = size.width * 0.25;
     final floor = isOfficeMode ? math.max(580.0, dynamicMin) : dynamicMin;
@@ -9061,6 +9067,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     // ショートカット一覧の既定は今までどおり全画面のダイアログ
     //   (フローティング / 分割は選んだ人だけ = ユーザー要望)。
     if (commandId == 'shortcuts') return 'full';
+    // AI アシスタントの既定も今までどおり全画面のダイアログ。
+    //   (分割 / フローティングは選んだ人だけ = ユーザー要望)
+    if (commandId == 'aiAssistant') return 'full';
     // 道具ボタン (フラッシュカード等) の既定は浮遊窓 (= 今までの動き)。
     if (_floatableToolCommands.contains(commandId)) return 'floating';
     return _splitByDefaultCommands.contains(commandId) ? 'splitRight' : 'full';
@@ -9092,6 +9101,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     // メモ (= ユーザー要望: マップメモとフローティングメモの統合)。
     //   全画面 = マップのメモ画面、 フローティング = 浮かぶメモ窓。
     'mapMemo',
+    // AI アシスタント (= ユーザー要望: 画面自体を左右分割やフローティングで
+    //   出せるように)。 分割は「ペインの中に全画面」 で入る。
+    'aiAssistant',
   };
 
   /// 開き方を選べるボタンか (= URL を開くボタン + 上の道具ボタン)。
@@ -9102,7 +9114,7 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// そのボタンで選べる開き方の一覧。 道具ボタンは全画面とフローティングだけ。
   List<String> _openStylesFor(String commandId) {
     // ショートカット一覧は分割ペインの中にも入れられる (= ユーザー要望)。
-    if (commandId == 'shortcuts') {
+    if (commandId == 'shortcuts' || commandId == 'aiAssistant') {
       return const ['full', 'floating', 'splitLeft', 'splitRight'];
     }
     return _floatableToolCommands.contains(commandId)
@@ -14552,6 +14564,8 @@ class _MindMapScreenState extends State<MindMapScreen>
         const titleBarH = 44.0; // タイトルバーの高さ
         // ユーザーがドラッグでリサイズしたサイズ (null=ウィンドウに自動追従)。
         Size? userSize;
+        // 分割ペインに収めず窓いっぱいに広げるか (= ユーザー要望)。
+        bool fullWindow = false;
         return StatefulBuilder(builder: (dctx, setLocal) {
           // ── ウィンドウサイズに追従 (= ユーザー要望: 小窓で開いて最大化
           //    すると小さいままになる問題の修正) ──
@@ -14559,7 +14573,8 @@ class _MindMapScreenState extends State<MindMapScreen>
           // 再ビルドされる。userSize はそのウィンドウ内にクランプする。
           final mq = MediaQuery.of(dctx);
           // 分割中はアクティブ側ペインの領域だけを使う (= ユーザー要望)。
-          final paneIn = _activePaneDialogInsets();
+          // ただし「全画面」 を押している間はペインの枠を無視する。
+          final paneIn = fullWindow ? EdgeInsets.zero : _activePaneDialogInsets();
           final maxW = (mq.size.width - 24 - paneIn.horizontal)
               .clamp(320.0, 100000.0)
               .toDouble();
@@ -14609,6 +14624,17 @@ class _MindMapScreenState extends State<MindMapScreen>
                         focusMode: focusMode,
                         // フローティング化 (= ユーザー要望)
                         onFloatRequest: _floatSiteUrl,
+                        // ペインいっぱい ↔ 窓いっぱい の切替 (= ユーザー要望)。
+                        // 分割している時だけ出す。
+                        isFullWindow: fullWindow,
+                        onToggleFullWindow: _mapSplitOpen
+                            ? () => setLocal(() {
+                                  // ドラッグで決めた大きさはペインに合わせて
+                                  //   クランプされているので、 広げる時は捨てる。
+                                  userSize = null;
+                                  fullWindow = !fullWindow;
+                                })
+                            : null,
                         // 現在の URL を画面分割パネルに移動するコールバック
                         onMoveToSplitPanel: (currentUrl,
                             {bool isLeftPanel = false}) {
@@ -40355,6 +40381,20 @@ class _MindMapScreenState extends State<MindMapScreen>
     }());
   }
 
+  /// 押すたびに窓 / 画面が増えてしまう機能 (= 連打で積み上がる物)。
+  /// 開き終わるまで次を受け付けない。
+  static const Set<String> _kSingleFlightCommands = {
+    'qrReader',
+    'silentCamera',
+    'icCardBalance',
+    'openAi',
+    'webAutomation',
+    'createFile',
+  };
+
+  /// いま実行中の単発コマンド。
+  final Set<String> _runningSingleFlight = <String>{};
+
   void _executeHeaderCommand(String commandId, MindMapProvider provider) {
     // 使った順を覚えておく (= ユーザー要望: ショートカットの選択肢が
     //   最後に起動したものから順に上へ並ぶように)。
@@ -40375,6 +40415,21 @@ class _MindMapScreenState extends State<MindMapScreen>
       return;
     }
     if (_isRetiredCustomCommand(commandId)) return;
+    // ── 窓を開く機能は、 開き終わるまで二重に走らせない ──
+    // = ユーザー要望「QR コードを開く等、 押した度に window が立ち上がると
+    //   一杯になってしまうから、 立ち上がっているものが既にある時は
+    //   立ち上がらないようにして欲しい」。
+    //   これらは fire-and-forget で呼ばれていて再入の見張りが無く、 連打の
+    //   ぶんだけファイル選択窓やカメラ画面が積み上がっていた。
+    if (_kSingleFlightCommands.contains(commandId)) {
+      if (_runningSingleFlight.contains(commandId)) return;
+      _runningSingleFlight.add(commandId);
+      // 開いた物が閉じるまで押せないと不便なので、 開き終われば解放する。
+      // (窓そのものの重複は、 それぞれの機能側の singleton で防ぐ)
+      Future<void>.delayed(const Duration(milliseconds: 1200), () {
+        _runningSingleFlight.remove(commandId);
+      });
+    }
     // ── 開き方 (全画面 / 画面分割) が既定と違うなら、 ここで横取りする ──
     //    (= ユーザー要望: google 検索は全画面なのに Gmail は分割、 が変なので
     //    ボタンごとに選べるように)。 既定のままなら false が返り、 従来の
@@ -49958,24 +50013,37 @@ class _MindMapScreenState extends State<MindMapScreen>
     );
   }
 
-  /// 上分割パネルを「画面最上部 (ヘッダーの上)」 に被せるオーバーレイ。
-  /// Flex に入れず Scaffold の上の Stack に重ねることで、 ヘッダーを覆い
-  /// つつ上分割でき、 旧実装 (Flex 縦 + WebView) のフリーズも回避できる。
+  /// 上分割パネルを「ヘッダーのすぐ下」 に被せるオーバーレイ。
+  ///
+  /// Flex に入れず Scaffold の上の Stack に重ねる形は従来どおり
+  /// (旧実装の Flex 縦 + WebView はフリーズしたため)。 ただし以前は
+  /// `top: 0` でヘッダーごと覆っていて、 **ヘッダーのボタンが一切押せなく
+  /// なっていた** (= ユーザー報告: モバイルで上分割にするとヘッダー項目が
+  /// 開けない)。 Stack は後の子が当たり判定を取るうえ、 パネルの中身
+  /// (WebView / PDF) が不透明なのでタップを全部吸っていた。
+  /// AppBar のぶんだけ下げて重ならないようにする。
+  double _headerBottomInset(MindMapProvider provider) {
+    final showMobileHeaderTray =
+        !_isDesktop && provider.currentPage.pageType != 'markdown';
+    return MediaQuery.of(context).padding.top +
+        kToolbarHeight +
+        (showMobileHeaderTray && _mobileHeaderCustomOpen
+            ? _kHeaderCustomBarHeight
+            : 0.0);
+  }
+
   Widget _buildTopSplitOverlay(MindMapProvider provider) {
     return Positioned(
-      top: 0,
+      top: _headerBottomInset(provider),
       left: 0,
       right: 0,
-      // height は指定せず、 中身 (SafeArea + 高さ panelSize の SizedBox) に
-      //   任せる。 Positioned に height を入れると SafeArea のぶんだけ
-      //   オーバーフローするため。
+      // height は指定せず、 中身 (高さ panelSize の SizedBox) に任せる。
+      // ★ SafeArea は外した。 上端の余白は _headerBottomInset で足して
+      //   いるので、 残すと二重に下がる。
       child: Material(
         elevation: 12,
         color: const Color(0xFF13132A),
-        child: SafeArea(
-          bottom: false,
-          child: _buildSplitPanel(provider),
-        ),
+        child: _buildSplitPanel(provider),
       ),
     );
   }
@@ -57023,6 +57091,39 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
     _registerMcpHandlers(provider);
     if (!mounted) return;
+    // ── 「開き方」 が分割なら、 ペインの中に出す (= ユーザー要望: AI
+    //    アシスタントの画面自体を左右分割で出せるように) ──
+    // お題つき (新規ページ作成など) はダイアログのまま。 ペインは常設の
+    //   作業場所として使う想定なので、 その場限りの用件と混ぜない。
+    if (_isDesktop && !floatingPanel && initialTask == null) {
+      try {
+        await _commandOpenStylesReady;
+      } catch (_) {}
+      if (!mounted) return;
+      final style = _openStyleOf('aiAssistant');
+      if (style == 'splitLeft' || style == 'splitRight') {
+        if (!_mapSplitOpen) {
+          await _applyMapSplitMode(panes: 2, stacked: false);
+          if (!mounted) return;
+        }
+        if (_mapSplitOpen) {
+          final slot = style == 'splitLeft' ? 0 : _primaryViewerSlot();
+          if (_mapSplitCellTool[slot] == 'aiAssistant') {
+            setState(() {
+              _mapSplitCellTool.remove(slot);
+              _syncNarrowPaneRatio();
+            });
+          } else {
+            _embedToolIntoSlot(slot, 'aiAssistant');
+          }
+          return;
+        }
+      } else if (style == 'floating') {
+        // ignore: discarded_futures
+        _openMcpChat(provider, floatingPanel: true);
+        return;
+      }
+    }
     Widget chat(BuildContext _) => _McpChatDialog(
           provider: provider,
           onOpenAiSettings: () =>
@@ -63481,7 +63582,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     //    (= ユーザー要望)。 既に開いているボタンをもう一度押したら閉じる。 ──
     if (_isPaneEmbeddableTool(id)) {
       if (_mapSplitCellTool[slot] == id) {
-        setState(() => _mapSplitCellTool.remove(slot));
+        setState(() {
+          _mapSplitCellTool.remove(slot);
+          _syncNarrowPaneRatio();
+        });
       } else {
         _embedToolIntoSlot(slot, id);
       }
@@ -63830,6 +63934,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       _mapSplitCellWeb.clear();
       _mapSplitCellWebCur.clear();
       _mapSplitCellTool.clear();
+      _syncNarrowPaneRatio();
       _mapSplitCellFile.clear();
     });
   }
@@ -63868,6 +63973,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       _mapSplitCellWeb.remove(k);
       _mapSplitCellWebCur.remove(k);
       _mapSplitCellTool.remove(k);
+      _syncNarrowPaneRatio();
     });
   }
 
@@ -63888,7 +63994,43 @@ class _MindMapScreenState extends State<MindMapScreen>
   bool _isPaneEmbeddableTool(String id) =>
       id == 'calculator' ||
       // ショートカット一覧 (= ユーザー要望: 画面分割でも開けるように)。
-      id == 'shortcuts';
+      id == 'shortcuts' ||
+      // AI アシスタント (= ユーザー要望: 画面自体を左右分割で出せるように)。
+      id == 'aiAssistant';
+
+  /// 半分では広すぎる「細い」 ツール (= ユーザー要望: ショートカット一覧は
+  /// 半分だと大きすぎる)。 開いた時だけ境界を寄せて、 閉じたら元の幅に戻す。
+  static bool _isNarrowPaneTool(String? id) => id == 'shortcuts';
+
+  /// 細いツールを開く前の境界位置 (閉じた時に戻すため)。
+  double? _splitRatioBeforeNarrowTool;
+
+  /// 細いツールを入れたペインの幅の割合。
+  static const double _kNarrowPaneRatio = 0.22;
+
+  /// 細いツールの有無に合わせて境界を寄せる / 戻す。
+  ///
+  /// 共有の `_mapSplitRatioX` を書き換える形にしてあるので、 開いている間に
+  /// 境界をドラッグすればそのまま動かせる (派生値で上書きすると、 ドラッグ
+  /// しても何も起きない画面になってしまう)。
+  void _syncNarrowPaneRatio() {
+    if (_mapSplitQuad || _mapSplitStacked) return;
+    int? narrowSlot;
+    for (final k in const [0, 1]) {
+      if (_isNarrowPaneTool(_mapSplitCellTool[k])) {
+        narrowSlot = k;
+        break;
+      }
+    }
+    if (narrowSlot != null) {
+      _splitRatioBeforeNarrowTool ??= _mapSplitRatioX;
+      _mapSplitRatioX =
+          narrowSlot == 0 ? _kNarrowPaneRatio : 1 - _kNarrowPaneRatio;
+    } else if (_splitRatioBeforeNarrowTool != null) {
+      _mapSplitRatioX = _splitRatioBeforeNarrowTool!;
+      _splitRatioBeforeNarrowTool = null;
+    }
+  }
 
   /// ツールをペインに埋め込む。 Web セルと同じ扱いで、 編集セルが指定された
   /// 場合は編集ペインを空いているセルへ退避する。
@@ -63910,6 +64052,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       }
       _mapSplitCellWeb.remove(slot);
       _mapSplitCellTool[slot] = id;
+      _syncNarrowPaneRatio();
     });
   }
 
@@ -63917,7 +64060,10 @@ class _MindMapScreenState extends State<MindMapScreen>
   Widget _buildEmbeddedPaneTool(
       MindMapProvider provider, int slot, String id) {
     void close() {
-      setState(() => _mapSplitCellTool.remove(slot));
+      setState(() {
+        _mapSplitCellTool.remove(slot);
+        _syncNarrowPaneRatio();
+      });
     }
 
     switch (id) {
@@ -63932,6 +64078,26 @@ class _MindMapScreenState extends State<MindMapScreen>
       // ショートカット一覧 (= ユーザー要望: 画面分割でも開けるように)。
       case 'shortcuts':
         return _buildShortcutsPanel(provider, onClose: close);
+      // AI アシスタント (= ユーザー要望: 画面自体を左右分割で出せるように)。
+      // 会話とループは画面の外 (_McpChatSession) が持っているので、
+      // ペインに出し入れしても処理は途切れない。
+      case 'aiAssistant':
+        _registerMcpHandlers(provider);
+        return _McpChatDialog(
+          provider: provider,
+          paneMode: true,
+          onClosePane: close,
+          onOpenAiSettings: () =>
+              _showGeminiKeyDialog(context, provider, null, anyProvider: true),
+          extractFileText: _extractAttachmentTextForAi,
+          onOpenBrowserAi: (url) {
+            if (_openStyleOf('openAi') == 'floating' && _isDesktop) {
+              openExternalWebWindow(url, embeddable: true);
+              return;
+            }
+            _openUrlInSplitPanel(url);
+          },
+        );
       default:
         return const SizedBox.shrink();
     }
@@ -64505,6 +64671,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       // 同じセルにツールが入っていたら、 Web に置き換える (取り残し防止)。
       _mapSplitCellTool.remove(slot);
       _mapSplitCellWeb[slot] = url;
+      _syncNarrowPaneRatio();
     });
     // どのペインに入ったか分かるようにペイン名も出す (= ユーザー報告:
     // 変な位置に入る、 の切り分けにもなる)。
@@ -64750,7 +64917,10 @@ class _MindMapScreenState extends State<MindMapScreen>
             pos = Offset(b.left + p.dx + 16, b.top + p.dy + 16);
           }
         } catch (_) {}
-        final pid = await openExternalWebWindowPid(u, position: pos);
+        // ここは「もう一度押したら閉じる」 トグルなので、 共通の
+        //   1 つだけ制御は通さない (閉じた直後に開き直せなくなるため)。
+        final pid =
+            await openExternalWebWindowPid(u, position: pos, single: false);
         if (pid != null && mounted) _externalWebPids[key] = pid;
       }());
       return;
@@ -86886,7 +87056,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     {
       'id': 'toggleSplitScreen',
       'labelKey': 'tooltip.splitRight',
-      'defaultKey': 'Ctrl+\\'
+      // ★ 既定のキー割り当ては外した (= ユーザー要望: 「右画面分割の
+      //   ショートカットのキーとしての割り当ては削除して」)。 機能自体は
+      //   残るので、 欲しい人は一覧から自分で決められる (左分割と同じ扱い)。
+      'defaultKey': ''
     },
     // ── 左画面分割パネルの開閉 ──
     // ユーザー要望: 「ctrl+^ で左画面分割」。 ^ (caret) は ASCII 0x5e。
@@ -87155,7 +87328,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     {'id': 'editTitle'}, // F2
     {'id': 'historyBack'}, // Alt+←
     {'id': 'historyForward'}, // Alt+→
-    {'id': 'toggleSplitScreen'}, // Ctrl+\
+    // 右画面分割は既定キーを外したので重要キーからも下ろした
+    // (= ユーザー要望。 機能は残っていて、 一覧から自分で割り当てられる)。
     {'id': 'containerize'}, // Ctrl+G
     {'id': 'customizeHeader'}, // Ctrl+H
     {'id': 'cloudUpload'}, // Ctrl+S
@@ -87717,7 +87891,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       }
       final slot = style == 'splitLeft' ? 0 : _primaryViewerSlot();
       if (_mapSplitCellTool[slot] == 'shortcuts') {
-        setState(() => _mapSplitCellTool.remove(slot));
+        setState(() {
+          _mapSplitCellTool.remove(slot);
+          _syncNarrowPaneRatio();
+        });
       } else {
         _embedToolIntoSlot(slot, 'shortcuts');
       }
@@ -92726,6 +92903,12 @@ class _WindowsWebViewSheet extends StatefulWidget {
   /// 秒数へシークする (= ユーザー要望: PiP→全画面で先頭に戻るバグの修正)。
   /// 0 (デフォルト) なら何もしない。 1 回だけ適用する (手動シークを上書きしない)。
   final double initialPosition;
+
+  /// 分割ペインの中に開いている時、 窓いっぱいに広げるかどうか
+  /// (= ユーザー要望: 分割で開いた YouTube を全画面にするボタンが欲しい)。
+  /// [onToggleFullWindow] が null ならボタンを出さない (分割していない時)。
+  final bool isFullWindow;
+  final VoidCallback? onToggleFullWindow;
   const _WindowsWebViewSheet({
     required this.url,
     this.playlist = const [],
@@ -92739,6 +92922,8 @@ class _WindowsWebViewSheet extends StatefulWidget {
     this.forceHome = false,
     this.focusMode = true,
     this.initialPosition = 0.0,
+    this.isFullWindow = false,
+    this.onToggleFullWindow,
   });
   @override
   State<_WindowsWebViewSheet> createState() => _WindowsWebViewSheetState();
@@ -98928,6 +99113,25 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
                     widget.onFloatRequest!(handoff);
                     Navigator.pop(context);
                   },
+                ),
+              // ── 窓いっぱいに広げる / ペインに戻す (= ユーザー要望:
+              //    分割で開いた YouTube を全画面にするボタンが欲しい) ──
+              // 分割ペインの中に出ている時だけ。 WebView は作り直さないので
+              // 再生は止まらない (= 分割へ移す時のように頭から再生し直しに
+              // ならない)。
+              if (widget.onToggleFullWindow != null)
+                IconButton(
+                  icon: Icon(
+                      widget.isFullWindow
+                          ? Icons.close_fullscreen_rounded
+                          : Icons.open_in_full_rounded,
+                      color: const Color(0xFF9CCC65),
+                      size: 19),
+                  tooltip: context.read<MindMapProvider>().t(
+                      widget.isFullWindow
+                          ? 'common.exitFullscreen'
+                          : 'common.fullscreen'),
+                  onPressed: widget.onToggleFullWindow,
                 ),
               if (widget.onMoveToSplitPanel != null) ...[
                 // ── 左画面分割 (= 画面の左に開く) ──
@@ -107154,16 +107358,53 @@ bool openExternalWebWindow(String url,
 /// [openExternalWebWindow] の pid を返す版 (= 再押しで閉じるトグルのため)。
 /// [position] は大きさは前回のまま、 場所だけ指定して開く
 /// (= ユーザー要望: ボタンの近くに出す)。
+/// 用途 (キー) ごとに開いている「外の窓」 のプロセス番号。
+///
+/// = ユーザー要望「押した度に window が立ち上がると一杯になってしまう」。
+/// 同じ用途の窓が既に生きていれば、 新しく立ち上げずにそのままにする。
+/// キーを省略した時は URL のホスト単位で 1 つ。
+final Map<String, int> _externalWinPids = {};
+
+/// その番号のプロセスがまだ生きているか。
+///
+/// ★ `Process.killPid` を存在確認に使ってはいけない。 Windows では
+///   SIGTERM でも SIGKILL でも**本当に終了させてしまう**ので、 確認した
+///   つもりで窓を閉じることになる。 外から覗く方法で調べる。
+Future<bool> _externalWinAlive(int pid) async {
+  try {
+    if (Platform.isWindows) {
+      final r = await Process.run('tasklist', ['/FI', 'PID eq $pid', '/NH']);
+      return '${r.stdout}'.contains('$pid');
+    }
+    // POSIX の「シグナル 0」 = 届くかどうかだけ調べる。
+    final r = await Process.run('kill', ['-0', '$pid']);
+    return r.exitCode == 0;
+  } catch (_) {
+    return false;
+  }
+}
+
 Future<int?> openExternalWebWindowPid(String url,
     {bool pinned = false,
     String? title,
     Rect? frame,
     Offset? position,
-    bool embeddable = false}) async {
+    bool embeddable = false,
+    String? singleKey,
+    bool single = true}) async {
   final isDesktop =
       !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
   final u = url.trim();
   if (!isDesktop || u.isEmpty) return null;
+  // 同じ用途の窓が既に開いているなら、 もう 1 つ作らない。
+  final key = singleKey ?? (Uri.tryParse(u)?.host ?? u);
+  if (single) {
+    final old = _externalWinPids[key];
+    if (old != null) {
+      if (await _externalWinAlive(old)) return old;
+      _externalWinPids.remove(key);
+    }
+  }
   try {
     final proc = await Process.start(
       Platform.resolvedExecutable,
@@ -107185,6 +107426,7 @@ Future<int?> openExternalWebWindowPid(String url,
       ],
       mode: ProcessStartMode.detached,
     );
+    if (single) _externalWinPids[key] = proc.pid;
     return proc.pid;
   } catch (e) {
     debugPrint('外の窓を開けませんでした: $e');
@@ -219567,37 +219809,6 @@ class _FloatingMemoPaneState extends State<_FloatingMemoPane> {
     );
   }
 }
-/// 「順番待ち / 割り込み」 を選ぶ小さな札。
-class _McpQueueModeChip extends StatelessWidget {
-  const _McpQueueModeChip(
-      {required this.label, required this.on, required this.onTap});
-  final String label;
-  final bool on;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) => InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(6),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-          decoration: BoxDecoration(
-            color: on
-                ? const Color(0xFF6C63FF).withValues(alpha: 0.30)
-                : Colors.white.withValues(alpha: 0.06),
-            borderRadius: BorderRadius.circular(6),
-            border: Border.all(
-                color: on ? const Color(0xFF6C63FF) : Colors.white24),
-          ),
-          child: Text(label,
-              style: TextStyle(
-                  color: on ? Colors.white : Colors.white54,
-                  fontSize: 11,
-                  fontWeight: on ? FontWeight.w600 : FontWeight.normal)),
-        ),
-      );
-}
-
 /// 処理中に投げられて、 順番を待っている指示。
 class _McpPending {
   final String shown;
@@ -220219,6 +220430,12 @@ class _McpChatDialog extends StatefulWidget {
 
   /// 既に浮遊窓の中で開いているか (= その時は浮かせるボタンを出さない)。
   final bool floatingPanel;
+
+  /// 分割ペインの中に埋め込んで使うか (= ユーザー要望: AI アシスタントの
+  /// 画面自体を左右分割でも出せるように)。 true の時は Dialog で包まず、
+  /// ペインいっぱいに広げる。 [onClosePane] が閉じる口。
+  final bool paneMode;
+  final VoidCallback? onClosePane;
   const _McpChatDialog(
       {required this.provider,
       this.onOpenAiSettings,
@@ -220226,7 +220443,9 @@ class _McpChatDialog extends StatefulWidget {
       this.initialTask,
       this.onOpenBrowserAi,
       this.onFloatRequest,
-      this.floatingPanel = false});
+      this.floatingPanel = false,
+      this.paneMode = false,
+      this.onClosePane});
   @override
   State<_McpChatDialog> createState() => _McpChatDialogState();
 }
@@ -221024,8 +221243,11 @@ class _McpChatDialogState extends State<_McpChatDialog> {
       (reply.contains('"args"') || reply.trimLeft().startsWith('{'));
 
   /// 処理中に投げた時の扱い。 true = 割り込み (今の作業に口を挟む) /
-  /// false = 順番待ち (終わってから始める)。 = ユーザー要望。
-  bool _steerNext = false;
+  /// false = 順番待ち (終わってから始める)。
+  ///
+  /// ★ 設定 (歯車) の中へ移した (= ユーザー要望: 処理中の帯に切り替え札を
+  ///   出しっぱなしにしないで欲しい)。 覚えておく所は provider。
+  bool get _steerNext => widget.provider.mcpSteerNext;
 
   Future<void> _send() async {
     final text = _input.text.trim();
@@ -221079,11 +221301,21 @@ class _McpChatDialogState extends State<_McpChatDialog> {
   @override
   Widget build(BuildContext context) {
     // 外部公開をやめたので URL は使わない。
-    return Dialog(
-      backgroundColor: const Color(0xFF1A1A2E),
-      insetPadding: const EdgeInsets.all(24),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 560, maxHeight: 640),
+    // ペインに埋め込む時は Dialog で包まず、 与えられた場所いっぱいに広げる
+    // (= ユーザー要望: 左右分割でも出せるように)。
+    final pane = widget.paneMode;
+    Widget wrap(Widget child) => pane
+        ? Material(color: const Color(0xFF1A1A2E), child: child)
+        : Dialog(
+            backgroundColor: const Color(0xFF1A1A2E),
+            insetPadding: const EdgeInsets.all(24),
+            child: child,
+          );
+    return wrap(
+      ConstrainedBox(
+        constraints: BoxConstraints(
+            maxWidth: pane ? double.infinity : 560,
+            maxHeight: pane ? double.infinity : 640),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           // ── ヘッダー ──
           Padding(
@@ -221125,6 +221357,49 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                     size: 19),
                 onPressed: _editPreamble,
               ),
+              // 設定 (= ユーザー要望: 順番待ち / 割り込みはここで決める。
+              //   処理中の帯には出さない)。
+              PopupMenuButton<String>(
+                tooltip: provider.t('mcp.assistantSettings'),
+                color: const Color(0xFF23233A),
+                icon: const Icon(Icons.tune_rounded,
+                    color: Colors.white54, size: 19),
+                onSelected: (v) {
+                  if (v == 'queue') provider.setMcpSteerNext(false);
+                  if (v == 'steer') provider.setMcpSteerNext(true);
+                },
+                itemBuilder: (_) => [
+                  PopupMenuItem<String>(
+                    enabled: false,
+                    height: 30,
+                    child: Text(provider.t('mcp.whenBusy'),
+                        style: const TextStyle(
+                            color: Colors.white38, fontSize: 11)),
+                  ),
+                  for (final e in const [
+                    ['queue', 'mcp.modeQueue'],
+                    ['steer', 'mcp.modeSteer'],
+                  ])
+                    PopupMenuItem<String>(
+                      value: e[0],
+                      height: 36,
+                      child: Row(children: [
+                        Icon(
+                            (e[0] == 'steer') == provider.mcpSteerNext
+                                ? Icons.radio_button_checked_rounded
+                                : Icons.radio_button_off_rounded,
+                            size: 15,
+                            color: (e[0] == 'steer') == provider.mcpSteerNext
+                                ? const Color(0xFF4FC3F7)
+                                : Colors.white38),
+                        const SizedBox(width: 8),
+                        Text(provider.t(e[1]),
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 12.5)),
+                      ]),
+                    ),
+                ],
+              ),
               // 会話の一覧 (= ユーザー要望: セッションを分けて保存)。
               IconButton(
                 tooltip: provider.t('mcp.sessions'),
@@ -221161,7 +221436,11 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                 tooltip: provider.t('btn.close'),
                 icon:
                     const Icon(Icons.close_rounded, color: Colors.white70),
-                onPressed: () => Navigator.of(context).pop(),
+                // ペインの中では Navigator を閉じてはいけない
+                //   (アプリ本体が pop されてしまう)。
+                onPressed: () => widget.paneMode
+                    ? widget.onClosePane?.call()
+                    : Navigator.of(context).pop(),
               ),
             ]),
           ),
@@ -221312,32 +221591,13 @@ class _McpChatDialogState extends State<_McpChatDialog> {
           ),
           // 実行中の表示 + ストップ (= ユーザー要望: 途中で止められるように)。
           // ── 処理中でも次を投げられる (= ユーザー要望: キュー / 割り込み) ──
-          if (_busy)
+          // ★ 「順番待ち / 割り込み」 の切り替え札はここから外し、 設定
+          //   (歯車) の中へ移した (= ユーザー要望: 処理中に常時出さないで
+          //   欲しい)。 ここに残すのは待ち件数だけ。
+          if (_busy && (_session.queued.isNotEmpty || _session.steeredCount > 0))
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
               child: Row(children: [
-                Icon(Icons.playlist_add_rounded,
-                    size: 15,
-                    color: _steerNext
-                        ? Colors.white38
-                        : const Color(0xFF4FC3F7)),
-                const SizedBox(width: 6),
-                Text(provider.t('mcp.whenBusy'),
-                    style: const TextStyle(
-                        color: Colors.white54, fontSize: 11)),
-                const SizedBox(width: 8),
-                // 順番待ち / 割り込み の切り替え。
-                _McpQueueModeChip(
-                  label: provider.t('mcp.modeQueue'),
-                  on: !_steerNext,
-                  onTap: () => setState(() => _steerNext = false),
-                ),
-                const SizedBox(width: 4),
-                _McpQueueModeChip(
-                  label: provider.t('mcp.modeSteer'),
-                  on: _steerNext,
-                  onTap: () => setState(() => _steerNext = true),
-                ),
                 const Spacer(),
                 if (_session.queued.isNotEmpty)
                   Tooltip(

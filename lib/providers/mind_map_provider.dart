@@ -33238,7 +33238,7 @@ class MindMapProvider extends ChangeNotifier {
     },
     // 重要キー: Shift+ドラッグでの範囲選択 (「を即開始」 は削除済み)
     'impKeys.shiftDragRangeSelect': {
-      'ja': 'Shift+ドラッグで範囲選択',
+      'ja': 'Shift+Drag で範囲選択',
       'en': 'Shift+Drag for range selection',
       'zh': 'Shift+拖动 进行框选',
       'ko': 'Shift+드래그로 범위 선택',
@@ -33273,7 +33273,7 @@ class MindMapProvider extends ChangeNotifier {
     // ユーザー要望「ショートカットキーの重要キーと、 ドラッグって文字が
     //   多言語対応になっていない」 への対応。
     'shortcuts.shiftDragKey': {
-      'ja': 'Shift+ドラッグ',
+      'ja': 'Shift+Drag',
       'en': 'Shift+Drag',
       'zh': 'Shift+拖动',
       'ko': 'Shift+드래그',
@@ -51388,6 +51388,17 @@ class MindMapProvider extends ChangeNotifier {
           'deste dispositivo está em ADMIN_UIDS no servidor.',
       'ru': 'Аккаунт разработчика не распознан. Проверьте, что UID этого '
           'устройства указан в ADMIN_UIDS на сервере.',
+    },
+    'mcp.assistantSettings': {
+      'ja': 'アシスタントの設定',
+      'en': 'Assistant settings',
+      'zh': '助手设置',
+      'ko': '어시스턴트 설정',
+      'es': 'Ajustes del asistente',
+      'fr': "Réglages de l'assistant",
+      'de': 'Assistent-Einstellungen',
+      'pt': 'Configurações do assistente',
+      'ru': 'Настройки ассистента',
     },
     'mcp.whenBusy': {
       'ja': '処理中に送ったら',
@@ -76965,7 +76976,24 @@ $cleanQ
     try {
       final prefs = await _prefsWithRetry();
       _mcpModelBarHidden = prefs.getBool('mcp_model_bar_hidden_v1') ?? false;
+      _mcpSteerNext = prefs.getBool('mcp_steer_next_v1') ?? false;
       notifyListeners();
+    } catch (_) {}
+  }
+
+  /// 処理中に送った指示を「割り込み」 扱いにするか (false = 順番待ち)。
+  ///
+  /// = ユーザー要望「順番待ちにするか割り込みにするかは AI アシスタントの
+  ///   設定の所で決められるようにして、 処理中に常時出さないで欲しい」。
+  /// 以前は処理中の帯に切り替え札を出しっぱなしにしていた。
+  bool _mcpSteerNext = false;
+  bool get mcpSteerNext => _mcpSteerNext;
+  Future<void> setMcpSteerNext(bool v) async {
+    _mcpSteerNext = v;
+    notifyListeners();
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.setBool('mcp_steer_next_v1', v);
     } catch (_) {}
   }
 
