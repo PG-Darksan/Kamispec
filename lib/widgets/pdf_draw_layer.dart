@@ -40,8 +40,8 @@ enum PdfDrawTool {
   arrow,
   rect,
   ellipse,
-  /// なぞった所の描き込みを消す (= ユーザー要望)。 まだ保存していない線が
-  /// 対象。 保存済みの線は PDF に焼き付いているので消せない。
+  /// なぞった所の描き込みを消す (= ユーザー要望)。
+  /// 保存済みの線も消せる (消した直後に PDF を焼き直す)。
   eraser,
 
   /// チェック (✓) を置く (= ユーザー要望: 簡単に出せるように)。
@@ -325,6 +325,35 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   /// 復元処理の最中か (二重に走らせない)。
   bool _restoring = false;
 
+  /// 消した結果を PDF へ焼き直すための待ち時間つきの仕掛け。
+  ///
+  /// ★ 保存 (✓) を押した後の図形は**二重に存在する**。 PDF の中に焼き込まれ
+  ///   た絵 (ビューアが描く) と、 手元の線の一覧 (重ねて描く) の 2 つ。
+  ///   消しゴムは手元の一覧しか触らないので、 焼き込まれた方が画面に残り
+  ///   「消したのに消えない」 に見えていた (= ユーザー報告)。
+  ///   消した直後に焼き直して、 見えている絵と一覧を合わせる。
+  Timer? _reburnTimer;
+
+  void _scheduleReburn() {
+    // まだ一度も焼いていないなら、 画面に出ているのは重ねている絵だけ。
+    //   消せばその場で消えるので焼き直しは要らない。
+    if (_sessionBasePath == null || widget.filePath == null) return;
+    _reburnTimer?.cancel();
+    // 続けて消している間は待つ (1 本ごとに焼き直すと重い)。
+    _reburnTimer = Timer(const Duration(milliseconds: 700), () {
+      if (!mounted || _saving || !widget.active) return;
+      unawaited(_commit(exitAfter: false));
+    });
+  }
+
+  /// このファイルについて復元を試したか。
+  ///
+  /// ★ 「線が 0 本なら復元する」 だけだと、 最後の 1 つを消した瞬間に
+  ///   条件が成立して控えから読み直してしまう (= ユーザー報告: 消した図形が
+  ///   戻ってきて、 消す前の画面に飛ばされる)。 1 セッション 1 回に限る。
+  ///   別のファイルに切り替えた時は false に戻す。
+  bool _restoredOnce = false;
+
   /// 土台をまだ取っていなければ取る。 取れなければ null (= 従来動作)。
   Future<String?> _ensureSessionBase(String path) async {
     final cur = _sessionBasePath;
@@ -437,8 +466,10 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   Future<void> _restorePersistedStrokes() async {
     final path = widget.filePath;
     if (path == null) return;
-    if (_strokes.isNotEmpty || _restoring) return;
+    if (_strokes.isNotEmpty || _restoring || _restoredOnce) return;
     _restoring = true;
+    // このファイルについては、 成否にかかわらずもう読み直さない。
+    _restoredOnce = true;
     try {
       final jp = await _strokesJsonPath(path);
       if (jp == null) return;
@@ -782,7 +813,10 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
         if (i >= 0 && i < _strokes.length) _strokes.removeAt(i);
       }
       _sel.clear();
+      _dirtySinceCommit = true;
     });
+    // 焼き込み済みの図形を消した時は、 PDF 側も焼き直さないと画面に残る。
+    _scheduleReburn();
   }
 
   /// 描き込み中のキー操作 (= ユーザー要望: Ctrl+Z で取り消し)。
@@ -862,19 +896,28 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     //   だけにする。 閉じている間も線は薄く見えたままにする (build 参照)。
     // ── 別の PDF に切り替わった時だけは、 元のファイルへ書き戻す ──
     //    (そのまま持ち越すと、 関係の無い PDF に焼き込まれてしまう)
-    if (old.filePath != widget.filePath && _strokes.isNotEmpty) {
+    // ★ 片付けは「線があるかどうか」 に関係なく必ずやる (= 動作確認で判明:
+    //   線が 0 本のまま別の PDF に移ると、 土台 (_sessionBasePath) が前の
+    //   PDF を指したまま残り、 次の保存で**前の PDF の中身**が新しい方へ
+    //   書き込まれていた)。 書き戻しの方だけを条件付きにする。
+    if (old.filePath != widget.filePath) {
       final oldPath = old.filePath;
       final pending = List<PdfDrawStroke>.from(_strokes);
       final base = _sessionBasePath;
+      // 全部消した状態も「消した」 という結果なので書き戻す。
+      final hadBase = base != null;
       _strokes.clear();
       _sel.clear();
       _undo.clear();
       _redo.clear();
-      if (oldPath != null && _dirtySinceCommit) {
+      if (oldPath != null &&
+          _dirtySinceCommit &&
+          (pending.isNotEmpty || hadBase)) {
         unawaited(writeStrokesToPdf(oldPath, pending, basePath: base)
             .then((_) => _persistStrokes(oldPath, pending)));
       }
       _dirtySinceCommit = false;
+      _restoredOnce = false; // 別のファイルなので復元をやり直してよい
       // 土台は PDF ごとなので、 移ったら捨てる。
       _dropSessionBase();
     }
@@ -893,7 +936,17 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   void _syncTimer() {
     // 描き込みモードに入ったら、 前回焼き込んだ線を復元する
     // (= ユーザー要望: 保存して開き直しても消しゴムで消せるように)。
-    if (widget.active && widget.filePath != null && _strokes.isEmpty) {
+    //
+    // ★ 復元は 1 セッション 1 回だけ (= ユーザー報告: 消した図形が戻って
+    //   きて、 消す前の画面に飛ばされる)。 条件が「線が 0 本」 だけだった
+    //   ので、 最後の 1 つを消した (あるいは全消しした) 瞬間に条件が成立し、
+    //   次に親が再描画された時に消したはずの線を控えから読み直していた。
+    //   分割ペインの中では親 (_MindMapScreenState) の setState のたびに
+    //   再描画されるので、 ほぼ確実に起きる。
+    if (widget.active &&
+        widget.filePath != null &&
+        _strokes.isEmpty &&
+        !_restoredOnce) {
       unawaited(_restorePersistedStrokes());
     }
     if (widget.active && _repaintTimer == null) {
@@ -921,9 +974,15 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       WidgetsBinding.instance.addPostFrameCallback((_) => sink.value = null);
     }
     _repaintTimer?.cancel();
+    _reburnTimer?.cancel();
     // 閉じられた時も未保存分を書き込む (リロード通知は出来ないが、 次に
     // 開いた時には反映されている)。
-    if (_strokes.isNotEmpty && !_saving && _dirtySinceCommit) {
+    // ★ 線が 0 本でも、 このセッションで一度でも焼き込んでいるなら書き戻す
+    //   (= ユーザー報告: 全部消してから閉じると、 消したはずの線が PDF に
+    //   残ったままになる)。 保存ボタン (_commit) は既にそうしている。
+    if ((_strokes.isNotEmpty || _sessionBasePath != null) &&
+        !_saving &&
+        _dirtySinceCommit) {
       final path = widget.filePath;
       final pending = List<PdfDrawStroke>.from(_strokes);
       final base = _sessionBasePath;
@@ -1306,15 +1365,45 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
         if (st.points.length >= 2) {
           final a = st.points.first;
           final b = st.points.last;
-          final ab = b - a;
-          final len2 = ab.dx * ab.dx + ab.dy * ab.dy;
-          if (len2 > 0) {
-            final t = (((pt - a).dx * ab.dx + (pt - a).dy * ab.dy) / len2)
-                .clamp(0.0, 1.0);
-            final proj = a + Offset(ab.dx * t, ab.dy * t);
-            hit = (proj - pt).distance <= r;
-          } else {
-            hit = (a - pt).distance <= r;
+          // ★ 四角・楕円は「対角線」 ではなく**描かれている輪郭**で当てる
+          //   (= ユーザー報告: 図形が消せない)。 以前は始点→終点の線分だけを
+          //   見ていたので、 四角の枠をいくらこすっても当たらず、 真ん中の
+          //   何も無い所でだけ消えるという分かりにくい動きだった。
+          //   文字は箱の中どこでも当たる。
+          final box = Rect.fromPoints(a, b);
+          switch (st.tool) {
+            case PdfDrawTool.rect:
+              // 枠の 4 辺のどれかに近ければ当たり。
+              hit = box.inflate(r).contains(pt) &&
+                  !box.deflate(r).contains(pt);
+              break;
+            case PdfDrawTool.ellipse:
+              // 楕円の輪郭までの距離で見る (中は空なので当てない)。
+              final c = box.center;
+              final rx = math.max(box.width / 2, 0.01);
+              final ry = math.max(box.height / 2, 0.01);
+              final nx = (pt.dx - c.dx) / rx;
+              final ny = (pt.dy - c.dy) / ry;
+              final d = math.sqrt(nx * nx + ny * ny);
+              // 半径 1 の円に直してから、 消しゴムの太さぶんの幅を見る。
+              final tol = r / math.max(math.min(rx, ry), 0.01);
+              hit = (d - 1).abs() <= tol;
+              break;
+            case PdfDrawTool.text:
+              hit = box.inflate(r).contains(pt);
+              break;
+            default:
+              // 線 / 矢印 / チェックは今までどおり線分で当てる。
+              final ab = b - a;
+              final len2 = ab.dx * ab.dx + ab.dy * ab.dy;
+              if (len2 > 0) {
+                final t = (((pt - a).dx * ab.dx + (pt - a).dy * ab.dy) / len2)
+                    .clamp(0.0, 1.0);
+                final proj = a + Offset(ab.dx * t, ab.dy * t);
+                hit = (proj - pt).distance <= r;
+              } else {
+                hit = (a - pt).distance <= r;
+              }
           }
         }
         if (hit) {
@@ -1357,6 +1446,12 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     _strokes
       ..clear()
       ..addAll(next);
+    // ★ 選択は「並びの番号」 で持っているので、 消して並びが変わったら
+    //   捨てる (= 残しておくと、 次の Delete が別の図形を消してしまう)。
+    _sel.clear();
+    // 消した結果は必ず PDF へ焼き直す必要がある。
+    _dirtySinceCommit = true;
+    _scheduleReburn();
     if (mounted) setState(() {});
   }
 
@@ -2227,7 +2322,10 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
                         setState(() {
                           _strokes.clear();
                           _sel.clear();
+                          _dirtySinceCommit = true;
                         });
+                        // 焼き込み済みの分も消えるように焼き直す。
+                        _scheduleReburn();
                       }),
             // ── 保存は「保存して終了」 の 1 つに纏めた (= ユーザー要望:
             //    上書き保存と保存して終了は分けなくていい)。 焼き込んで

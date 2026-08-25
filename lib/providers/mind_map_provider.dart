@@ -33436,16 +33436,20 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Selecionar tudo',
       'ru': 'Выделить всё',
     },
+    // ★ 'cmd.containerize' と同じ「グループ化」 だったので見分けが付かな
+    //   かった (= ユーザー報告: ショートカット一覧のグループ化の違いが
+    //   分からない)。 何をまとめるのかを名前に入れる。
+    //   こちら (Ctrl+Shift+G) = 選んだノードを付箋 (名前付きの囲み) にする。
     'cmd.group': {
-      'ja': 'グループ化',
-      'en': 'Group',
-      'zh': '分组',
-      'ko': '그룹화',
-      'es': 'Agrupar',
-      'fr': 'Grouper',
-      'de': 'Gruppieren',
-      'pt': 'Agrupar',
-      'ru': 'Группировать',
+      'ja': 'ノードを付箋でまとめる',
+      'en': 'Group nodes (sticky note)',
+      'zh': '将节点归入便签组',
+      'ko': '노드를 메모 그룹으로 묶기',
+      'es': 'Agrupar nodos (nota)',
+      'fr': 'Grouper les nœuds (pense-bête)',
+      'de': 'Knoten als Notizgruppe',
+      'pt': 'Agrupar nós (nota)',
+      'ru': 'Сгруппировать узлы (заметка)',
     },
     // ── ギャラリー (= PDF/画像/動画を等間隔・同寸タイルで整列する機能) ──
     'cmd.bookshelf': {
@@ -34708,16 +34712,18 @@ class MindMapProvider extends ChangeNotifier {
     },
     // 中身は「選んだ要素を 1 つにまとめる」 操作なので、 名前も
     //   「グループ化」 にする (= ユーザー要望: zip にまとめると読めて紛らわしい)。
+    // こちら (Ctrl+G) = 選んだファイルを 1 つの zip にまとめる。
+    //   ドロワーで複数選択している時は、 ページをフォルダーへ入れる。
     'cmd.containerize': {
-      'ja': 'グループ化',
-      'en': 'Group',
-      'zh': '分组',
-      'ko': '그룹화',
-      'es': 'Agrupar',
-      'fr': 'Grouper',
-      'de': 'Gruppieren',
-      'pt': 'Agrupar',
-      'ru': 'Сгруппировать',
+      'ja': 'ファイルを 1 つにまとめる',
+      'en': 'Bundle files into one',
+      'zh': '将文件合并为一个',
+      'ko': '파일을 하나로 묶기',
+      'es': 'Agrupar archivos en uno',
+      'fr': 'Regrouper les fichiers en un',
+      'de': 'Dateien zu einer bündeln',
+      'pt': 'Agrupar arquivos em um',
+      'ru': 'Объединить файлы в один',
     },
     // ── 子要素を複数生成 / 共通親生成のショートカット ──
     'cmd.addChildren': {

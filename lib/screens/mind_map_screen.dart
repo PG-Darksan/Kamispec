@@ -87164,7 +87164,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     {
       'id': 'splitRightFullscreen',
       'labelKey': 'cmd.splitRightFullscreen',
-      'defaultKey': 'Ctrl+Shift+\\'
+      // ★ 既定のキー割り当ては外した (= ユーザー要望: 右画面分割と同じく、
+      //   全画面表示の方もキーとしては割り当てないで欲しい)。 機能は残る。
+      'defaultKey': ''
     },
     {
       'id': 'splitLeftFullscreen',
@@ -87326,10 +87328,9 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// グローバルに捕捉する固定キーも含め、一覧本体と実際の入力処理を揃える。
   static const List<Map<String, String?>> _importantKeysOrder = [
     {'id': 'editTitle'}, // F2
-    {'id': 'historyBack'}, // Alt+←
-    {'id': 'historyForward'}, // Alt+→
-    // 右画面分割は既定キーを外したので重要キーからも下ろした
-    // (= ユーザー要望。 機能は残っていて、 一覧から自分で割り当てられる)。
+    // 履歴を戻る / 進む (Alt+←/→) は重要キーから外した (= ユーザー要望)。
+    //   機能もキーも今までどおりで、 一覧の下の方には出る。
+    // 右画面分割 / 右分割を全画面表示 も既定キーを外したので下ろした。
     {'id': 'containerize'}, // Ctrl+G
     {'id': 'customizeHeader'}, // Ctrl+H
     {'id': 'cloudUpload'}, // Ctrl+S
@@ -87342,10 +87343,15 @@ class _MindMapScreenState extends State<MindMapScreen>
     {'id': 'addChildren'}, // Ctrl+Shift+A
     {'id': 'group'}, // Ctrl+Shift+G
     {'id': 'newNode'}, // Ctrl+Shift+N
-    {'id': 'newPage'}, // Ctrl+Shift+P
     {'id': 'syncDialog'}, // Ctrl+Shift+S
+    // ── ページを作る系 (= ユーザー要望: 新規マークダウンページの作成などを
+    //    重要キーとして載せて欲しい) ──
+    {'id': 'newPage'}, // Ctrl+Shift+P (マインドマップ)
+    {'id': 'newMarkdownPage'}, // Ctrl+Shift+M
+    {'id': 'newBookshelfPage'}, // Ctrl+Shift+O
+    {'id': 'newPaintPage'}, // Ctrl+Shift+X
+    {'id': 'newVideoEditorPage'}, // Ctrl+Shift+K
     // 旧 redoAlternate (Ctrl+Shift+Z) は廃止 (= ユーザー要望)。
-    {'id': 'splitRightFullscreen'}, // Ctrl+Shift+\
   ];
 
   /// 重要キーリストの各行を build する。
@@ -171316,8 +171322,16 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                                       // 既に同じページを開いているなら飛ばない。
                                       //   飛ぶと描き直しになり、 開いた直後に
                                       //   一瞬白くなって遅く見えていた。
+                                      // ★ ただし描き込みの焼き直しで**ビューアを
+                                      //   作り直した**時は別。 表示は 1 ページ目に
+                                      //   戻っているのに _currentPage は前の値の
+                                      //   ままなので、 この条件で弾かれて戻れず、
+                                      //   「消したら画面が飛ぶ」 に見えていた
+                                      //   (= ユーザー報告)。 焼き直し後は必ず戻す。
+                                      final afterReburn = _pdfDrawReloadTick > 0;
                                       if (lastPage != null &&
-                                          lastPage != _currentPage &&
+                                          (afterReburn ||
+                                              lastPage != _currentPage) &&
                                           lastPage >= 1 &&
                                           lastPage <= _pdfTotalPages) {
                                         // syncfusion の jumpToPage はロード直後では確実に動作
