@@ -364,11 +364,20 @@ class BillingService {
       if (oldProductIdentifier == null) {
         await Purchases.purchasePackage(pkg.raw);
       } else {
+        // ── 途中で上のプランへ変えた時の扱い (= ユーザー要望) ──
+        //   上げる時 (Pro → Max): その場で切り替わり、 **次のお支払い日までの
+        //     差額だけ**を頂く。 返金はしない。 お支払い日は変わらない。
+        //     (immediateAndChargeProratedPrice)
+        //   下げる時 (Max → Pro): 今払った分は使い切ってもらい、 次の
+        //     お支払い日から新しい値段になる。 返金はしない。 (deferred)
+        final upgrading = await _isUpgradeTo(pkg);
         await Purchases.purchasePackage(
           pkg.raw,
           googleProductChangeInfo: GoogleProductChangeInfo(
             oldProductIdentifier,
-            prorationMode: GoogleProrationMode.immediateWithTimeProration,
+            prorationMode: upgrading
+                ? GoogleProrationMode.immediateAndChargeProratedPrice
+                : GoogleProrationMode.deferred,
           ),
         );
       }
@@ -383,6 +392,37 @@ class BillingService {
       }
       debugPrint('BillingService.purchasePackage 失敗: $e');
       rethrow;
+    }
+  }
+
+  /// この購入が「差額だけのお支払い」 になるか (= 画面に出す説明用)。
+  ///
+  /// Google Play に今のサブスクがあり、 かつ上のプランへ変える時だけ true。
+  /// クーポン・開発者・Windows (Stripe) で Pro になっている人は Play に
+  /// サブスクが無く、 満額の新規購入になるので false を返す
+  /// (= そこで「差額だけ」 と案内すると嘘になる)。
+  Future<bool> willChargeProratedDifference(BillingPackage pkg) async {
+    if (!isNativeBilling || !_configured) return false;
+    if (await _googleOldProductIdentifierFor(pkg) == null) return false;
+    return _isUpgradeTo(pkg);
+  }
+
+  /// 今より上のプランへ変えようとしているか (= 値段の扱いを決めるため)。
+  ///
+  /// Max を買おうとしていて、 今 Pro なら「上げる」。 それ以外 (同じ or
+  /// 下げる) は false。 判定できない時は安全側で false (= 次回から適用)。
+  Future<bool> _isUpgradeTo(BillingPackage pkg) async {
+    if (!_configured) return false;
+    try {
+      final info = await Purchases.getCustomerInfo();
+      final active = info.entitlements.active;
+      final hasMax = active.containsKey(BillingPlanName.max);
+      final hasPro = active.containsKey(BillingPlanName.pro);
+      if (pkg.planName == BillingPlanName.max) return hasPro && !hasMax;
+      return false;
+    } catch (e) {
+      debugPrint('BillingService: upgrade 判定に失敗: $e');
+      return false;
     }
   }
 

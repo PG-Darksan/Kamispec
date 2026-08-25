@@ -1612,6 +1612,13 @@ class _BookmarkButton {
       );
 }
 
+/// URL の「# から後ろ」 を落として比べる (= DeepL のように打つたびに
+/// # が変わるサイトで、 画面を作り直さないため)。
+String _urlWithoutFragment(String u) {
+  final i = u.indexOf('#');
+  return i < 0 ? u : u.substring(0, i);
+}
+
 class _MindMapScreenState extends State<MindMapScreen>
     with WidgetsBindingObserver {
   final Map<String, TransformationController> _controllers = {};
@@ -2736,6 +2743,50 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///   ボタンを押すと ChatGPT の画面まで閉じてしまう問題があるから選択した
   ///   項目だけの ON/OFF が切り替わるようにして」 への対応で導入。
   ///
+  /// 画面分割のペインに置く Office / テキストのビューア本体。
+  ///
+  /// 左右どちらのペインからも同じ物を使う。 呼び出し側は
+  /// [_SplitCellEmbeddedPanel] で包むこと (ビューアが自分を閉じる時の
+  /// `Navigator.pop()` でアプリ本体の画面が消えてしまうのを防ぐため)。
+  Widget _buildSplitOfficeViewer(
+    BuildContext ctx, {
+    required String mode,
+    required String path,
+    required String fileName,
+  }) {
+    final isDark = ctx.watch<MindMapProvider>().isDarkMode;
+    switch (mode) {
+      case 'pptx':
+        return _PptxViewerDialog(
+          filePath: path,
+          fileName: fileName,
+          isDarkMode: isDark,
+        );
+      case 'docx':
+        return _DocxViewerDialog(
+          filePath: path,
+          fileName: fileName,
+          isDarkMode: isDark,
+        );
+      case 'txt':
+        // ── テキスト系ファイル (= ユーザー要望: txt も画面分割上で
+        //    開けるように)。 ペインは狭いのでメモ / AI パネルは自動で
+        //    開かない。 ──
+        return _TextEditorDialog(
+          filePath: path,
+          fileName: fileName,
+          isDarkMode: isDark,
+          compactHost: true,
+        );
+      default:
+        return _SpreadsheetEditorDialog(
+          filePath: path,
+          fileName: fileName,
+          isDarkMode: isDark,
+        );
+    }
+  }
+
   /// 既存の `_setSplitOpen(false)` は「画面分割全体を閉じる」 操作で、
   /// 左パネルも同時に閉じる仕様 (= 別の過去要望「画面分割が 2 つ出ている
   /// 状態で画面分割のカスタムボタンを押すと 2 つ目だけ ON/OFF が切り替わる
@@ -6770,6 +6821,67 @@ class _MindMapScreenState extends State<MindMapScreen>
     });
   }
 
+  /// 基準位置のボタンを右クリック / 長押しした時のメニュー
+  /// (= ユーザー要望: 押しただけの時は設定モードに入り、 移動や説明は
+  /// こちらへ)。
+  Future<void> _showRefMenuAt(
+      MindMapProvider provider, Offset globalPos) async {
+    if (!mounted) return;
+    final box = Overlay.of(context).context.findRenderObject() as RenderBox?;
+    if (box == null) return;
+    final picked = await showMenu<String>(
+      context: context,
+      color: const Color(0xFF1E1E32),
+      position: RelativeRect.fromRect(
+          globalPos & const Size(1, 1), Offset.zero & box.size),
+      items: [
+        PopupMenuItem<String>(
+          value: 'setRef',
+          height: 38,
+          child: Row(children: [
+            const Icon(Icons.add_location_alt_rounded,
+                color: Color(0xFF43B97F), size: 18),
+            const SizedBox(width: 8),
+            Text(provider.t('menu.setRef'),
+                style: const TextStyle(color: Colors.white, fontSize: 13)),
+          ]),
+        ),
+        PopupMenuItem<String>(
+          value: 'goRef',
+          height: 38,
+          child: Row(children: [
+            const Icon(Icons.my_location_rounded,
+                color: Colors.white54, size: 18),
+            const SizedBox(width: 8),
+            Text(provider.t('menu.goRef'),
+                style: const TextStyle(color: Colors.white, fontSize: 13)),
+          ]),
+        ),
+        const PopupMenuDivider(height: 8),
+        PopupMenuItem<String>(
+          value: 'refHelp',
+          height: 38,
+          child: Row(children: [
+            const Icon(Icons.help_outline_rounded,
+                color: Color(0xFF4FC3F7), size: 18),
+            const SizedBox(width: 8),
+            Text(provider.t('common.help'),
+                style: const TextStyle(color: Colors.white, fontSize: 13)),
+          ]),
+        ),
+      ],
+    );
+    if (picked == null || !mounted) return;
+    if (picked == 'goRef') {
+      _centerOnRoot();
+    } else if (picked == 'setRef') {
+      setState(() => _settingRefMode = true);
+      _showLockToast(provider.t('toast.refSet'));
+    } else if (picked == 'refHelp') {
+      _showReferencePositionHelp(provider);
+    }
+  }
+
   /// 基準位置の「設定」 と「移動」 を、 右クリック位置に出す 2 択メニュー
   /// (= ユーザー要望: 項目の所に出す)。
   void _showRefChooser(Offset position) {
@@ -9205,6 +9317,14 @@ class _MindMapScreenState extends State<MindMapScreen>
         _openFloatingWebUnified(url);
         break;
       default:
+        // ── YouTube は Google 検索の画面ではなく、 アプリの YouTube 画面で
+        //    開く (= ユーザー報告: PC のカスタムボタンから開くと Google 検索
+        //    の YouTube で開いてしまう)。 こちらはサムネイル付きの埋め込みや
+        //    再生速度に対応している。 ──
+        if (commandId == 'openYoutube') {
+          _openYoutubeBrowser(context, provider, forceHome: true);
+          break;
+        }
         _openGoogleSearchDialog(context, provider,
             initialUrl: url, customTitle: target[1]);
     }
@@ -15063,6 +15183,46 @@ class _MindMapScreenState extends State<MindMapScreen>
     );
   }
 
+  /// Pro から Max へ変える時のお金の扱いを伝える (= ユーザー要望)。
+  ///
+  /// 途中で上のプランへ変えても返金はせず、 いま払っている分は使い切り、
+  /// **次のお支払い日までの差額だけ**を頂く。 お支払い日は変わらない。
+  Future<bool?> _confirmUpgradeCharge(BuildContext ctx) {
+    final provider = ctx.read<MindMapProvider>();
+    return showDialog<bool>(
+      context: ctx,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Row(children: [
+          const Icon(Icons.workspace_premium_rounded,
+              color: Color(0xFFBA68C8), size: 20),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(provider.t('plan.upgradeTitle'),
+                style: const TextStyle(color: Colors.white, fontSize: 16)),
+          ),
+        ]),
+        content: Text(provider.t('plan.upgradeBody'),
+            style: const TextStyle(
+                color: Colors.white70, fontSize: 13, height: 1.5)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, false),
+            child: Text(provider.t('common.cancel'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFBA68C8),
+                foregroundColor: Colors.white),
+            onPressed: () => Navigator.pop(dctx, true),
+            child: Text(provider.t('plan.upgradeOk')),
+          ),
+        ],
+      ),
+    );
+  }
+
   /// アップグレード誘導ボタン (プラン・使用状況ダイアログ用)。
   Widget _buildUpgradeCta(MindMapProvider provider, String planName,
       {required VoidCallback onTap}) {
@@ -15369,6 +15529,21 @@ class _MindMapScreenState extends State<MindMapScreen>
                             pkg,
                             disabled: purchasing,
                             onTap: () async {
+                              // Pro から Max へ変える時は、 お金の扱いを
+                              // 先に伝える (= ユーザー要望: 返金はせず、
+                              // 次のお支払い日までの差額を頂く)。
+                              //
+                              // ※ 実際に差額だけの請求になるのは、 ストアに
+                              //   今のサブスクがある人だけ。 クーポン・
+                              //   開発者・Windows (Stripe) で Pro の人は
+                              //   満額の新規購入になるので案内を出さない。
+                              if (await provider.billing
+                                  .willChargeProratedDifference(pkg)) {
+                                if (!sheetCtx.mounted) return;
+                                final ok =
+                                    await _confirmUpgradeCharge(sheetCtx);
+                                if (ok != true) return;
+                              }
                               setSheet(() => purchasing = true);
                               try {
                                 final plan =
@@ -25428,6 +25603,26 @@ class _MindMapScreenState extends State<MindMapScreen>
             ),
           ),
           actions: [
+            // ── ファイルを読み込む (= ユーザー要望: 書き出しはできるのに
+            //    読み込みができない)。 今のメモに差し替え / 末尾に足す。 ──
+            TextButton.icon(
+              style: TextButton.styleFrom(foregroundColor: Colors.white70),
+              icon: const Icon(Icons.file_open_outlined, size: 16),
+              label: const Text('読み込む', style: TextStyle(fontSize: 12)),
+              onPressed: () async {
+                final loaded = await _pickTextFileForMemo(dctx);
+                if (loaded == null || !dctx.mounted) return;
+                final cur = textCtrl.text;
+                setD(() {
+                  textCtrl.text = loaded.mode == 'append' && cur.isNotEmpty
+                      ? '$cur\n\n${loaded.text}'
+                      : loaded.text;
+                  textCtrl.selection = TextSelection.collapsed(
+                      offset: textCtrl.text.length);
+                });
+                syncCurrentToItem();
+              },
+            ),
             // ── テキストで保存 (= ユーザー要望: メモを .txt に書き出す) ──
             //    右クリック / 長押しで保存場所の設定 (= ユーザー要望)。
             Builder(builder: (btnCtx) {
@@ -27222,6 +27417,65 @@ class _MindMapScreenState extends State<MindMapScreen>
         ],
       ),
     );
+  }
+
+  /// メモ / マークダウンへ読み込む文字を選ぶ (= ユーザー要望)。
+  /// 戻り値の mode は 'replace' か 'append'。 取り消したら null。
+  Future<({String text, String mode})?> _pickTextFileForMemo(
+      BuildContext ctx) async {
+    try {
+      final res = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const [
+          'txt', 'md', 'markdown', 'text', 'log', 'csv'
+        ],
+        withData: true,
+      );
+      if (res == null || res.files.isEmpty) return null;
+      final f = res.files.first;
+      String text;
+      if (f.bytes != null) {
+        text = utf8.decode(f.bytes!, allowMalformed: true);
+      } else if (f.path != null) {
+        text = await File(f.path!).readAsString();
+      } else {
+        return null;
+      }
+      if (!ctx.mounted) return null;
+      final mode = await showDialog<String>(
+        context: ctx,
+        builder: (dctx) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          title: Text('${f.name} を読み込みます',
+              style: const TextStyle(color: Colors.white, fontSize: 15)),
+          content: const Text('今の内容をどうしますか？',
+              style: TextStyle(color: Colors.white70, fontSize: 13)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dctx),
+              child:
+                  const Text('やめる', style: TextStyle(color: Colors.white54)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(dctx, 'append'),
+              child: const Text('末尾に足す'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF6C63FF),
+                  foregroundColor: Colors.white),
+              onPressed: () => Navigator.pop(dctx, 'replace'),
+              child: const Text('差し替える'),
+            ),
+          ],
+        ),
+      );
+      if (mode == null) return null;
+      return (text: text, mode: mode);
+    } catch (e) {
+      debugPrint('メモへの読み込みに失敗: $e');
+      return null;
+    }
   }
 
   /// メモをテキストで保存する時の置き場所 (= ユーザー要望: 保存場所を
@@ -38553,60 +38807,38 @@ class _MindMapScreenState extends State<MindMapScreen>
       );
     }
     // 基準位置の設定 / 移動 を 1 ボタンに纏める。
+    //
+    // ── 押したらすぐ「基準位置を決めるモード」 に入る (= ユーザー要望:
+    //    説明まで出るメニューは右クリック / 長押しの方へ)。 ──
     if (commandId == 'refMenu') {
-      return PopupMenuButton<String>(
-        tooltip: provider.t('hdr.refMenu'),
-        // 他のヘッダーボタンと同じ寸法にそろえる (= ユーザー報告)。
-        padding: EdgeInsets.zero,
-        constraints: const BoxConstraints.tightFor(
-            width: _kHeaderCustomButtonExtent - 4,
-            height: _kHeaderCustomButtonExtent - 4),
-        iconSize: 20,
-        icon: Icon(icon, color: defaultOnColor, size: 20),
-        color: const Color(0xFF1E1E32),
-        onSelected: (v) {
-          if (v == 'goRef') {
-            _centerOnRoot();
-          } else if (v == 'setRef') {
-            setState(() => _settingRefMode = true);
-            _showLockToast(provider.t('toast.refSet'));
-          } else if (v == 'refHelp') {
-            _showReferencePositionHelp(provider);
-          }
-        },
-        itemBuilder: (_) => [
-          PopupMenuItem<String>(
-            value: 'setRef',
-            child: Row(children: [
-              const Icon(Icons.add_location_alt_rounded,
-                  color: Color(0xFF43B97F), size: 18),
-              const SizedBox(width: 8),
-              Text(provider.t('menu.setRef'),
-                  style: const TextStyle(color: Colors.white)),
-            ]),
+      // ※ IconButton の tooltip は、 触る端末では自分で長押しを持って
+      //    行ってしまい、 こちらの長押しが動かなくなる。 そのため吹き出しは
+      //    外側で手動 (カーソルを乗せた時だけ) にする。
+      return Tooltip(
+        message: '${provider.t('hdr.refMenu')} (右クリック / 長押しで移動 / 説明)',
+        triggerMode: TooltipTriggerMode.manual,
+        child: GestureDetector(
+          onSecondaryTapDown: (d) =>
+              unawaited(_showRefMenuAt(provider, d.globalPosition)),
+          onLongPressStart: (d) =>
+              unawaited(_showRefMenuAt(provider, d.globalPosition)),
+          child: IconButton(
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints.tightFor(
+                width: _kHeaderCustomButtonExtent - 4,
+                height: _kHeaderCustomButtonExtent - 4),
+            iconSize: 20,
+            icon: Icon(icon,
+                color: _settingRefMode
+                    ? const Color(0xFF43B97F)
+                    : defaultOnColor,
+                size: 20),
+            onPressed: () {
+              setState(() => _settingRefMode = true);
+              _showLockToast(provider.t('toast.refSet'));
+            },
           ),
-          PopupMenuItem<String>(
-            value: 'goRef',
-            child: Row(children: [
-              const Icon(Icons.my_location_rounded,
-                  color: Colors.white54, size: 18),
-              const SizedBox(width: 8),
-              Text(provider.t('menu.goRef'),
-                  style: const TextStyle(color: Colors.white)),
-            ]),
-          ),
-          const PopupMenuDivider(height: 8),
-          PopupMenuItem<String>(
-            value: 'refHelp',
-            child: Row(children: [
-              const Icon(Icons.help_outline_rounded,
-                  color: Color(0xFF4FC3F7), size: 18),
-              const SizedBox(width: 8),
-              Text(provider.t('common.help'),
-                  style: const TextStyle(color: Colors.white)),
-            ]),
-          ),
-        ],
+        ),
       );
     }
     final labelKey = cmd['labelKey'] as String?;
@@ -49807,34 +50039,20 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 _splitLeftMode == 'xlsx' ||
                                 _splitLeftMode == 'txt') &&
                             _splitLeftLocalOfficePath != null
-                        ? (_splitLeftMode == 'pptx'
-                            ? _PptxViewerDialog(
-                                filePath: _splitLeftLocalOfficePath!,
-                                fileName: _splitLeftOfficeFileName,
-                                isDarkMode: provider.isDarkMode,
-                              )
-                            : _splitLeftMode == 'docx'
-                                ? _DocxViewerDialog(
-                                    filePath: _splitLeftLocalOfficePath!,
-                                    fileName: _splitLeftOfficeFileName,
-                                    isDarkMode: provider.isDarkMode,
-                                  )
-                                : _splitLeftMode == 'txt'
-                                    // ── テキスト系 (= ユーザー要望: txt も
-                                    //    画面分割上で開けるように) ──
-                                    ? _TextEditorDialog(
-                                        filePath: _splitLeftLocalOfficePath!,
-                                        fileName: _splitLeftOfficeFileName,
-                                        isDarkMode: provider.isDarkMode,
-                                        // ペインは狭いのでメモ / AI は
-                                        // 自動で開かない (= ユーザー要望)。
-                                        compactHost: true,
-                                      )
-                                    : _SpreadsheetEditorDialog(
-                                        filePath: _splitLeftLocalOfficePath!,
-                                        fileName: _splitLeftOfficeFileName,
-                                        isDarkMode: provider.isDarkMode,
-                                      ))
+                        // ── 右ペインと同じく、 閉じる時の pop がアプリ
+                        //    本体の画面を巻き添えにしないよう専用の
+                        //    Navigator を挟む ──
+                        ? _SplitCellEmbeddedPanel(
+                            key: ValueKey('splitLeftOffice:'
+                                '$_splitLeftMode:$_splitLeftLocalOfficePath'),
+                            onClose: _closeSplitLeftPanel,
+                            builder: (ctx) => _buildSplitOfficeViewer(
+                              ctx,
+                              mode: _splitLeftMode,
+                              path: _splitLeftLocalOfficePath!,
+                              fileName: _splitLeftOfficeFileName,
+                            ),
+                          )
                         : _splitLeftMode == 'web' &&
                                 _splitLeftCurrentUrl.isNotEmpty
                             ? Stack(
@@ -49846,6 +50064,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                                           _scrollSplitWebByWheel(e, left: true),
                                       child: Platform.isWindows
                                           ? _SplitWindowsWebView(
+                                              key: _splitWebKeyLeft,
                                               url: _splitLeftCurrentUrl,
                                               onControllerReady: (c) {
                                                 _splitLeftWinController = c;
@@ -49864,6 +50083,15 @@ class _MindMapScreenState extends State<MindMapScreen>
                                               onUrlChanged: (u) {
                                                 if (u != _splitLeftCurrentUrl &&
                                                     mounted) {
+                                                  // # から後ろだけの変化では
+                                                  // 画面を作り直さない
+                                                  // (= ユーザー報告: DeepL)。
+                                                  if (_urlWithoutFragment(u) ==
+                                                      _urlWithoutFragment(
+                                                          _splitLeftCurrentUrl)) {
+                                                    _splitLeftCurrentUrl = u;
+                                                    return;
+                                                  }
                                                   setState(() =>
                                                       _splitLeftCurrentUrl = u);
                                                   _scheduleSplitVideoProbe(
@@ -50869,37 +51097,20 @@ class _MindMapScreenState extends State<MindMapScreen>
             _splitMode == 'xlsx' ||
             _splitMode == 'txt') &&
         _splitLocalOfficePath != null) {
-      final isDark = context.watch<MindMapProvider>().isDarkMode;
-      if (_splitMode == 'pptx') {
-        return _PptxViewerDialog(
-          filePath: _splitLocalOfficePath!,
+      // ── ビューアは自分を閉じる時に `Navigator.of(context).pop()` を
+      //    呼ぶ。 ペインへ直に置くと、 その pop がアプリ本体の画面を
+      //    巻き添えにして真っ黒な画面が残ってしまう。 そこで分割セルと
+      //    同じく専用の Navigator を挟み、 閉じたらペインを畳む。 ──
+      return _SplitCellEmbeddedPanel(
+        key: ValueKey('splitOffice:$_splitMode:$_splitLocalOfficePath'),
+        onClose: _closeSplitRightPanelOnly,
+        builder: (ctx) => _buildSplitOfficeViewer(
+          ctx,
+          mode: _splitMode,
+          path: _splitLocalOfficePath!,
           fileName: _splitOfficeFileName,
-          isDarkMode: isDark,
-        );
-      } else if (_splitMode == 'docx') {
-        return _DocxViewerDialog(
-          filePath: _splitLocalOfficePath!,
-          fileName: _splitOfficeFileName,
-          isDarkMode: isDark,
-        );
-      } else if (_splitMode == 'txt') {
-        // ── テキスト系ファイル (= ユーザー要望: txt も画面分割上で
-        //    開けるように)。 他の Office ビューア同様、 通常 Widget なので
-        //    パネル内へ直接埋め込める。 ──
-        return _TextEditorDialog(
-          filePath: _splitLocalOfficePath!,
-          fileName: _splitOfficeFileName,
-          isDarkMode: isDark,
-          // ペインは狭いのでメモ / AI パネルは自動で開かない (= ユーザー要望)。
-          compactHost: true,
-        );
-      } else {
-        return _SpreadsheetEditorDialog(
-          filePath: _splitLocalOfficePath!,
-          fileName: _splitOfficeFileName,
-          isDarkMode: isDark,
-        );
-      }
+        ),
+      );
     }
     // ── PDF モード ──
     if (_splitMode == 'pdf') {
@@ -50993,6 +51204,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     Widget webViewWidget;
     if (Platform.isWindows) {
       webViewWidget = _SplitWindowsWebView(
+        key: _splitWebKeyRight,
         url: _splitCurrentUrl,
         onControllerReady: (c) {
           _splitWinController = c;
@@ -51005,6 +51217,14 @@ class _MindMapScreenState extends State<MindMapScreen>
         // ── 現在 URL を追跡 (= 全画面切り替えでセッション保持) ──
         onUrlChanged: (u) {
           if (u != _splitCurrentUrl && mounted) {
+            // # から後ろだけの変化 (= DeepL の入力等) では画面を作り直さない
+            // (= ユーザー報告: 何度も初期化中に戻る)。 控えだけ更新する。
+            if (_urlWithoutFragment(u) ==
+                _urlWithoutFragment(_splitCurrentUrl)) {
+              _splitCurrentUrl = u;
+              _persistSplitPanelLastUrl(u);
+              return;
+            }
             setState(() => _splitCurrentUrl = u);
             _persistSplitPanelLastUrl(u);
             _scheduleSplitVideoProbe(leftPanel: false);
@@ -63445,6 +63665,11 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 編集キャンバスが入っているセル番号。 ペインをタップするとその場で
   /// 編集側が移る (= ユーザー要望) ため可変。
   int _mapSplitEditorSlot = 0;
+
+  /// 分割ペインの Web ビューを作り直させないための固定の鍵
+  /// (= ユーザー報告: 何度も「初期化中」 に戻る)。
+  final GlobalKey _splitWebKeyRight = GlobalKey();
+  final GlobalKey _splitWebKeyLeft = GlobalKey();
 
   /// 分割ペインをアクティブ化した時刻 (epoch ms)。
   ///
@@ -93230,6 +93455,10 @@ class _WindowsWebViewSheetState extends State<_WindowsWebViewSheet> {
 
   /// セッション中のメモ履歴。
   final List<_VideoMemoEntry> _videoMemos = [];
+
+  /// 入力中のメモに貼り付けた画像 (= ユーザー要望: 動画メモで画像を
+  /// 貼り付けておけるように)。 メモを一覧へ足した時に一緒に持って行く。
+  String? _videoMemoDraftImage;
   late final Future<void> _videoMemoLoadFuture;
   // 旧 `_videoMemoIncludeTimestamp` トグルは廃止 (タイムスタンプフィールドの
   // 値の有無で時刻添付が決まるシンプルなロジックに変更)。
@@ -96330,94 +96559,39 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
   // チェックの ON/OFF で自動添付する方式に統一した。
 
   /// メモ入力欄で Ctrl+V を押した時、 クリップボードに画像があれば、 それを
-  /// 動画メモ (画像ノード) としてマップに貼り付ける (= ユーザー要望)。 画像が
-  /// 無ければ何もしない (= テキストは通常どおり入力欄に貼り付けられる)。
+  /// 入力中のメモに貼り付けておく (= ユーザー要望: 動画メモで画像を貼り
+  /// 付けておけるように)。 すぐマップへ送らず、 メモを一覧に足した時に
+  /// 一緒に付いて行く。 画像が無ければ何もしない (= テキストは通常どおり
+  /// 入力欄に貼り付けられる)。
   Future<void> _winPasteMemoImageIfAny() async {
-    try {
-      final clipboard = SystemClipboard.instance;
-      if (clipboard == null) return;
-      final reader = await clipboard.read();
-      const candidates = <(FileFormat, String)>[
-        (Formats.png, 'png'),
-        (Formats.jpeg, 'jpg'),
-        (Formats.gif, 'gif'),
-        (Formats.webp, 'webp'),
-        (Formats.bmp, 'bmp'),
-      ];
-      Uint8List? bytes;
-      String ext = 'png';
-      for (final (fmt, e) in candidates) {
-        if (reader.canProvide(fmt)) {
-          bytes = await _winReadClipboardImageBytes(reader, fmt);
-          if (bytes != null && bytes.isNotEmpty) {
-            ext = e;
-            break;
-          }
-        }
-      }
-      if (bytes == null || bytes.isEmpty) return; // 画像なし → テキスト貼り付けに任せる
-      final appDir = await getApplicationDocumentsDirectory();
-      final attachDir = Directory('${appDir.path}/attachments');
-      if (!await attachDir.exists()) await attachDir.create(recursive: true);
-      final fname = 'videomemo_${DateTime.now().millisecondsSinceEpoch}.$ext';
-      final destPath = '${attachDir.path}/$fname';
-      await File(destPath).writeAsBytes(bytes, flush: true);
-      if (!mounted) return;
-      final provider = context.read<MindMapProvider>();
-      final videoUrl = _winCurrentMemoSourceUrl();
-      final node = provider.addVideoMemoNode(
-        memoText: '',
-        videoUrl: videoUrl,
-        fallbackPosition: const Offset(9000, 9000),
-        attachmentPath: destPath,
-        attachmentName: fname,
-      );
-      if (!mounted) return;
-      _showInlineBanner(
-        node != null
-            ? provider.t('vmemo.imagePastedToMap')
-            : provider.t('vmemo.imagePasteFailed'),
-        color:
-            node != null ? const Color(0xFF43B97F) : const Color(0xFFE57373),
-      );
-    } catch (e) {
-      debugPrint('動画メモの画像貼り付け失敗: $e');
-    }
+    final saved = await grabImageForVideoMemo(allowPicker: false);
+    if (saved == null || !mounted) return;
+    setState(() => _videoMemoDraftImage = saved);
+    _showInlineBanner(
+        context.read<MindMapProvider>().t('vmemo.imageAttached'),
+        color: const Color(0xFF43B97F));
   }
 
-  /// super_clipboard から画像バイト列を取得する (= _MindMapScreenState 側の
-  /// 同等ヘルパーを、 この Windows 動画クラス用に複製したもの)。
-  Future<Uint8List?> _winReadClipboardImageBytes(
-      ClipboardReader reader, FileFormat format) async {
-    final completer = Completer<Uint8List?>();
-    try {
-      reader.getFile(format, (file) async {
-        try {
-          final chunks = <int>[];
-          await for (final chunk in file.getStream()) {
-            chunks.addAll(chunk);
-          }
-          if (!completer.isCompleted) {
-            completer.complete(Uint8List.fromList(chunks));
-          }
-        } catch (_) {
-          if (!completer.isCompleted) completer.complete(null);
-        }
-      }, onError: (_) {
-        if (!completer.isCompleted) completer.complete(null);
-      });
-    } catch (_) {
-      if (!completer.isCompleted) completer.complete(null);
-    }
-    return completer.future;
+  /// 画像ボタン: クリップボードに画像があればそれを、 無ければファイルを
+  /// 選んで入力中のメモに貼り付ける。
+  Future<void> _winAttachMemoImage() async {
+    final saved = await grabImageForVideoMemo();
+    if (saved == null || !mounted) return;
+    setState(() => _videoMemoDraftImage = saved);
+    _showInlineBanner(
+        context.read<MindMapProvider>().t('vmemo.imageAttached'),
+        color: const Color(0xFF43B97F));
   }
+
 
   /// マップに追加する処理 (Windows 版)。
   Future<void> _winSubmitVideoMemoToMap(
       {_VideoMemoEntry? existingEntry}) async {
     if (_videoMemoSubmitting) return;
     final text = (existingEntry?.text ?? _videoMemoController.text).trim();
-    if (text.isEmpty) {
+    // 画像だけのメモも送れる (= ユーザー要望: 画像を貼り付けておける)。
+    if (text.isEmpty &&
+        (existingEntry?.imagePath ?? _videoMemoDraftImage) == null) {
       _showInlineBanner(
           context.read<MindMapProvider>().t('vmemo.empty'),
           color: const Color(0xFFE57373));
@@ -96444,11 +96618,17 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
       }
       final headerLabel = ts != null ? '[${_winFormatTimestamp(ts)}]' : '';
 
+      // 貼り付けた画像もノードに付ける (= ユーザー要望)。
+      final imgPath = existingEntry?.imagePath ?? _videoMemoDraftImage;
       final node = provider.addVideoMemoNode(
         memoText: text,
         videoUrl: videoUrl,
         memoTitleHeader: headerLabel.isEmpty ? null : headerLabel,
         fallbackPosition: const Offset(9000, 9000),
+        attachmentPath: imgPath,
+        attachmentName: imgPath == null
+            ? null
+            : imgPath.split(Platform.pathSeparator).last.split('/').last,
       );
 
       if (!mounted) return;
@@ -96470,6 +96650,7 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
               id: DateTime.now().microsecondsSinceEpoch.toString(),
               text: text,
               timestampSec: ts,
+              imagePath: imgPath,
               addedToMap: true,
               sourceUrl: videoUrl.isEmpty ? null : videoUrl,
               sourceTitle: _winCurrentMemoSourceTitle(),
@@ -96479,6 +96660,7 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
             _videoMemos.removeLast();
           }
           _videoMemoController.clear();
+          _videoMemoDraftImage = null;
         }
       });
       // 永続化 (履歴一覧をセッション越しに保持)
@@ -96567,11 +96749,16 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
         final ts = entry.timestampSec;
         final headerLabel = ts != null ? '[${_winFormatTimestamp(ts)}]' : '';
         try {
+          final img = entry.imagePath;
           final node = provider.addVideoMemoNode(
             memoText: entry.text.trim(),
             videoUrl: videoUrl,
             memoTitleHeader: headerLabel.isEmpty ? null : headerLabel,
             fallbackPosition: const Offset(9000, 9000),
+            attachmentPath: img,
+            attachmentName: img == null
+                ? null
+                : img.split(Platform.pathSeparator).last.split('/').last,
           );
           if (node == null) {
             failed++;
@@ -96608,7 +96795,8 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
   /// この時点ではマップへ送らず、一覧の各項目からマップ / AI / Google検索を選ぶ。
   void _winSaveVideoMemoLocally() {
     final text = _videoMemoController.text.trim();
-    if (text.isEmpty) {
+    // 画像だけのメモも足せる (= ユーザー要望: 画像を貼り付けておける)。
+    if (text.isEmpty && _videoMemoDraftImage == null) {
       _showInlineBanner(
           context.read<MindMapProvider>().t('vmemo.empty'),
           color: const Color(0xFFE57373));
@@ -96630,6 +96818,7 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
           id: DateTime.now().microsecondsSinceEpoch.toString(),
           text: text,
           timestampSec: ts,
+          imagePath: _videoMemoDraftImage,
           addedToMap: false,
           sourceUrl: sourceUrl.isEmpty ? null : sourceUrl,
           sourceTitle: sourceTitle,
@@ -96639,6 +96828,7 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
         _videoMemos.removeLast();
       }
       _videoMemoController.clear();
+      _videoMemoDraftImage = null;
     });
     unawaited(_winPersistVideoMemos());
   }
@@ -96759,6 +96949,31 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
                 ),
               ),
             ),
+            // ── 貼り付けた画像 (= ユーザー要望: 動画メモで画像を貼り
+            //    付けておけるように)。 × で外せる。 ──
+            if (_videoMemoDraftImage != null) ...[
+              const SizedBox(height: 6),
+              Row(children: [
+                buildVideoMemoThumb(context, _videoMemoDraftImage!, size: 44),
+                Expanded(
+                  child: Text(
+                    provider.t('vmemo.imageAttached'),
+                    style: const TextStyle(
+                        color: Colors.white70, fontSize: 11),
+                  ),
+                ),
+                IconButton(
+                  tooltip: provider.t('btn.delete'),
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 26, minHeight: 26),
+                  icon: const Icon(Icons.close_rounded,
+                      color: Colors.white54, size: 15),
+                  onPressed: () =>
+                      setState(() => _videoMemoDraftImage = null),
+                ),
+              ]),
+            ],
             const SizedBox(height: 8),
             // ── タイムスタンプ指定行 (Windows 版) ──
             // ユーザー要望: 「常時表示は目障り」 → デフォルトは
@@ -96923,6 +97138,28 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
                         ),
                       ]),
                     ),
+                  ),
+                ),
+                // ── 画像を貼り付ける (= ユーザー要望: 動画メモで画像を
+                //    貼り付けておけるように)。 クリップボードに画像が
+                //    あればそれを、 無ければファイルを選ぶ。 ──
+                ElevatedButton.icon(
+                  onPressed: () => unawaited(_winAttachMemoImage()),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.white.withValues(alpha: 0.12),
+                    foregroundColor: Colors.white,
+                    side: const BorderSide(color: Colors.white38, width: 1.2),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    minimumSize: const Size(0, 32),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    elevation: 0,
+                  ),
+                  icon: const Icon(Icons.image_outlined, size: 16),
+                  label: Text(
+                    provider.t('vmemo.image'),
+                    style: const TextStyle(
+                        fontSize: 11, fontWeight: FontWeight.w700),
                   ),
                 ),
                 // 入力内容を独立した平文メモ項目として一覧へ追加する。
@@ -97185,6 +97422,9 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
                 ),
                 const SizedBox(width: 6),
               ],
+              // 貼り付けた画像 (押すと大きく見られる = ユーザー要望)。
+              if (entry.imagePath != null)
+                buildVideoMemoThumb(context, entry.imagePath!),
               Expanded(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -99665,6 +99905,136 @@ Future<String?> _showVideoMemoEditDialog(
   return t;
 }
 
+/// クリップボード / ファイル選択から画像を 1 枚取り込み、
+/// `attachments/` に保存して置き場所を返す (= ユーザー要望: 動画メモで
+/// 画像を貼り付けておけるように)。
+///
+/// まずクリップボードを見て、 画像が無ければファイル選択に回す
+/// ([allowPicker] が false の時は諦めて null)。 取り込めなければ null。
+Future<String?> grabImageForVideoMemo({bool allowPicker = true}) async {
+  Uint8List? bytes;
+  String ext = 'png';
+  try {
+    final clipboard = SystemClipboard.instance;
+    if (clipboard != null) {
+      final reader = await clipboard.read();
+      const candidates = <(FileFormat, String)>[
+        (Formats.png, 'png'),
+        (Formats.jpeg, 'jpg'),
+        (Formats.gif, 'gif'),
+        (Formats.webp, 'webp'),
+        (Formats.bmp, 'bmp'),
+      ];
+      for (final (fmt, e) in candidates) {
+        if (!reader.canProvide(fmt)) continue;
+        bytes = await _readClipboardImageBytesForMemo(reader, fmt);
+        if (bytes != null && bytes.isNotEmpty) {
+          ext = e;
+          break;
+        }
+      }
+    }
+  } catch (e) {
+    debugPrint('動画メモ: クリップボードの読み取りに失敗: $e');
+  }
+  try {
+    final appDir = await getApplicationDocumentsDirectory();
+    final attachDir = Directory('${appDir.path}/attachments');
+    if (!await attachDir.exists()) await attachDir.create(recursive: true);
+    final stamp = DateTime.now().millisecondsSinceEpoch;
+    if (bytes != null && bytes.isNotEmpty) {
+      final dest = '${attachDir.path}/videomemo_$stamp.$ext';
+      await File(dest).writeAsBytes(bytes, flush: true);
+      return dest;
+    }
+    if (!allowPicker) return null;
+    // ── クリップボードに画像が無い時はファイルから選ぶ ──
+    //    (Android は画面撮影の貼り付けが読めない端末があるため = 実績あり)
+    final res = await FilePicker.platform.pickFiles(type: FileType.image);
+    final src = res?.files.single.path;
+    if (src == null || src.isEmpty) return null;
+    final dot = src.lastIndexOf('.');
+    final e2 = dot >= 0 ? src.substring(dot + 1) : 'png';
+    final dest = '${attachDir.path}/videomemo_$stamp.$e2';
+    await File(src).copy(dest);
+    return dest;
+  } catch (e) {
+    debugPrint('動画メモ: 画像の取り込みに失敗: $e');
+    return null;
+  }
+}
+
+/// super_clipboard の getFile (コールバック式) を Future にする。
+Future<Uint8List?> _readClipboardImageBytesForMemo(
+    ClipboardReader reader, FileFormat format) async {
+  final completer = Completer<Uint8List?>();
+  try {
+    reader.getFile(format, (file) async {
+      try {
+        final chunks = <int>[];
+        await for (final chunk in file.getStream()) {
+          chunks.addAll(chunk);
+        }
+        if (!completer.isCompleted) {
+          completer.complete(Uint8List.fromList(chunks));
+        }
+      } catch (_) {
+        if (!completer.isCompleted) completer.complete(null);
+      }
+    }, onError: (_) {
+      if (!completer.isCompleted) completer.complete(null);
+    });
+  } catch (_) {
+    if (!completer.isCompleted) completer.complete(null);
+  }
+  return completer.future;
+}
+
+/// 動画メモに貼った画像を大きく見る。
+void showVideoMemoImage(BuildContext context, String path) {
+  showDialog<void>(
+    context: context,
+    barrierColor: Colors.black87,
+    builder: (dctx) => GestureDetector(
+      onTap: () => Navigator.pop(dctx),
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: InteractiveViewer(
+          maxScale: 6,
+          child: Center(child: Image.file(File(path), fit: BoxFit.contain)),
+        ),
+      ),
+    ),
+  );
+}
+
+/// 動画メモの一覧に出す画像の縮小表示。
+Widget buildVideoMemoThumb(BuildContext context, String path,
+    {double size = 34}) {
+  return Padding(
+    padding: const EdgeInsets.only(right: 6),
+    child: GestureDetector(
+      onTap: () => showVideoMemoImage(context, path),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(4),
+        child: Image.file(
+          File(path),
+          width: size,
+          height: size,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => Container(
+            width: size,
+            height: size,
+            color: Colors.white10,
+            child: const Icon(Icons.broken_image_outlined,
+                size: 14, color: Colors.white38),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
 /// PC / モバイル双方の `_videoMemos` に蓄えられ、
 /// マップ追加済みフラグ (`addedToMap`) でリスト UI の「追加済み」 表示を
 /// 切り替える。JSON 化して SharedPreferences にも保存できる。
@@ -99674,6 +100044,10 @@ class _VideoMemoEntry {
 
   /// メモ作成時の動画再生位置 (秒)。 null なら時刻未指定。
   double? timestampSec;
+
+  /// このメモに貼り付けた画像の場所 (= ユーザー要望: 動画メモで画像を
+  /// 貼り付けておけるように)。 貼っていなければ null。
+  String? imagePath;
 
   /// マップに追加済みなら true。 重複追加防止 + UI バッジ用。
   bool addedToMap;
@@ -99694,6 +100068,7 @@ class _VideoMemoEntry {
   _VideoMemoEntry({
     required this.text,
     this.timestampSec,
+    this.imagePath,
     this.addedToMap = false,
     this.sourceUrl,
     this.sourceTitle,
@@ -99706,6 +100081,7 @@ class _VideoMemoEntry {
         'id': id,
         'text': text,
         'timestampSec': timestampSec,
+        'imagePath': imagePath,
         'addedToMap': addedToMap,
         'sourceUrl': sourceUrl,
         'sourceTitle': sourceTitle,
@@ -99721,6 +100097,9 @@ class _VideoMemoEntry {
         text: (j['text'] ?? '').toString(),
         timestampSec: j['timestampSec'] is num
             ? (j['timestampSec'] as num).toDouble()
+            : null,
+        imagePath: (j['imagePath']?.toString().isNotEmpty ?? false)
+            ? j['imagePath'].toString()
             : null,
         addedToMap: j['addedToMap'] == true,
         sourceUrl: j['sourceUrl']?.toString(),
@@ -111631,6 +112010,77 @@ $body''';
     }
   }
 
+  /// 外のファイルを読み込む (= ユーザー要望: 書き出しはできるのに
+  /// 読み込みができない)。 今のタブへ「差し替え」 か「末尾に足す」 かを聞く。
+  Future<void> _importMd() async {
+    try {
+      final res = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const [
+          'md', 'markdown', 'txt', 'text', 'log', 'csv'
+        ],
+        withData: true,
+      );
+      if (res == null || res.files.isEmpty || !mounted) return;
+      final f = res.files.first;
+      String text;
+      if (f.bytes != null) {
+        text = utf8.decode(f.bytes!, allowMalformed: true);
+      } else if (f.path != null) {
+        text = await File(f.path!).readAsString();
+      } else {
+        return;
+      }
+      if (!mounted) return;
+      final mode = _ctrl.text.trim().isEmpty
+          ? 'replace'
+          : await showDialog<String>(
+              context: context,
+              builder: (dctx) => AlertDialog(
+                backgroundColor: const Color(0xFF1E1E32),
+                title: Text('${f.name} を読み込みます',
+                    style:
+                        const TextStyle(color: Colors.white, fontSize: 15)),
+                content: const Text('今の内容をどうしますか？',
+                    style: TextStyle(color: Colors.white70, fontSize: 13)),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(dctx),
+                    child: const Text('やめる',
+                        style: TextStyle(color: Colors.white54)),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.pop(dctx, 'append'),
+                    child: const Text('末尾に足す'),
+                  ),
+                  ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF6C63FF),
+                        foregroundColor: Colors.white),
+                    onPressed: () => Navigator.pop(dctx, 'replace'),
+                    child: const Text('差し替える'),
+                  ),
+                ],
+              ),
+            );
+      if (mode == null || !mounted) return;
+      setState(() {
+        _ctrl.text = mode == 'append'
+            ? '${_ctrl.text}\n\n$text'
+            : text;
+        _ctrl.selection =
+            TextSelection.collapsed(offset: _ctrl.text.length);
+      });
+      _onChanged();
+      if (!mounted) return;
+      _appSnackTop(context, '${f.name} を読み込みました',
+          const Color(0xFF43B97F));
+    } catch (e) {
+      if (!mounted) return;
+      _appSnackTop(context, '$e', const Color(0xFFE57373));
+    }
+  }
+
   /// タブの列 (= ユーザー要望: 1 ページに何個もタブを作れるように)。
   /// タブ (ページ名) の並び。 ヘッダーの 1 段に収めるため、 帯の装飾は
   /// 付けない (= ユーザー要望: 2 段に分けない)。
@@ -111716,9 +112166,31 @@ $body''';
         scrollDirection: Axis.horizontal,
         // 末尾に「+」 を 1 つ足す (= ユーザー要望: タブの追加ボタンは
         // 一番右端のタブの右側に置く)。
-        itemCount: _tabs.length + 1,
+        // 末尾に「×」 (今のタブを消す) と「+」 を並べる
+        // (= ユーザー要望: × は + の左側に置く)。
+        itemCount: _tabs.length + 2,
         itemBuilder: (_, i) {
           if (i == _tabs.length) {
+            // ── 今のタブを消す (+ のすぐ左) ──
+            final canDelete = _tabs.length > 1;
+            return Tooltip(
+              message: provider.t('md.tabDelete'),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(8),
+                onTap: canDelete ? () => unawaited(_deleteTab(_sel)) : null,
+                child: Container(
+                  margin:
+                      const EdgeInsets.symmetric(horizontal: 2, vertical: 3),
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  alignment: Alignment.center,
+                  child: Icon(Icons.close_rounded,
+                      size: 16,
+                      color: canDelete ? Colors.white54 : Colors.white24),
+                ),
+              ),
+            );
+          }
+          if (i == _tabs.length + 1) {
             return Tooltip(
               message: provider.t('md.tabAdd'),
               child: InkWell(
@@ -112492,10 +112964,7 @@ $body''';
     //  タブの右側に置く)
     // タブ削除ボタン (= ユーザー要望: モバイルは右クリックが無いので、
     // 開いているタブをボタンから消せるように)。 消しても Ctrl+Z で戻せる。
-    final delTabBtn = _btn(
-        Icons.close_rounded,
-        provider.t('md.tabDelete'),
-        _tabs.length <= 1 ? null : () => unawaited(_deleteTab(_sel)));
+    // (タブ削除の × はタブ列の中、 + の左に移した = ユーザー要望)
     final children = <Widget>[
             // (紫のノートのアイコンは削除 = ユーザー要望: 意味を成していない)
             // ── 開いているページ (タブ)。 添付ファイルでも使える
@@ -112505,8 +112974,8 @@ $body''';
                 flex: 5,
                 child: _buildTabStrip(provider),
               ),
-            // (タブ追加の + はタブ列の末尾に入れた = ユーザー要望)
-            if (_tabBarVisible) delTabBtn,
+            // (タブの追加 + と削除 × はタブ列の末尾に入れた = ユーザー要望:
+            //  × は + の左側)
             const SizedBox(width: 6),
             aiBtn,
             const Spacer(),
@@ -112617,8 +113086,12 @@ $body''';
                       ? 'pub.publish'
                       : 'pub.published'),
                   () => unawaited(_openPublishDialog())),
-            if (_isDesktopPlatform)
+            if (_isDesktopPlatform) ...[
+              // 外のファイルを読み込む (= ユーザー要望)。
+              _btn(Icons.file_open_outlined, 'ファイルを読み込む',
+                  () => unawaited(_importMd())),
               _btn(Icons.save_alt_rounded, provider.t('md.export'), _exportMd),
+            ],
             // ヘッダーを隠す (= ユーザー要望)。 隠すと上端の細い帯だけになり、
             //   そこにカーソルを乗せた時だけ「表示」 ボタンが出る。
             hideBtn,
@@ -112627,18 +113100,11 @@ $body''';
       // ── AI ボタンは編集 (黒) とプレビュー (白) の丁度中央に固定する
       //    (= ユーザー要望)。 タブ追加 (+) はその左に置く (= ユーザー要望)。
       //    他のボタン列の流れから外し、 Stack でヘッダー全幅の中央に重ねる。 ──
-      final rowChildren = children
-          .where((w) => !identical(w, aiBtn) && !identical(w, delTabBtn))
-          .toList();
+      final rowChildren =
+          children.where((w) => !identical(w, aiBtn)).toList();
       return Stack(children: [
         Row(children: rowChildren),
-        Center(
-          child: Row(mainAxisSize: MainAxisSize.min, children: [
-            if (_tabBarVisible) delTabBtn,
-            const SizedBox(width: 4),
-            aiBtn,
-          ]),
-        ),
+        Center(child: aiBtn),
       ]);
     }
     // ── モバイルも 1 段に並べる (= ユーザー要望: ヘッダーの項目は 1 列に)。
@@ -112660,7 +113126,6 @@ $body''';
               child: _buildTabStrip(provider),
             ),
           ),
-        if (_tabBarVisible) delTabBtn,
         Expanded(
           child: SingleChildScrollView(
             scrollDirection: Axis.horizontal,
@@ -131806,6 +132271,10 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
   /// 「追加済み」 マークが付くだけ。 削除しても既にマップ追加済みの
   /// ノードは消えない (マップ側の独立した実体になっている)。
   final List<_VideoMemoEntry> _videoMemos = [];
+
+  /// 入力中のメモに貼り付けた画像 (= ユーザー要望: 動画メモで画像を
+  /// 貼り付けておけるように)。 メモを一覧へ足した時に一緒に持って行く。
+  String? _videoMemoDraftImage;
   late final Future<void> _videoMemoLoadFuture;
   // 旧 `_videoMemoIncludeTimestamp` トグルは廃止 (タイムスタンプフィールドの
   // 値の有無で時刻添付が決まるシンプルなロジックに変更)。
@@ -134015,11 +134484,17 @@ v.addEventListener('play', function() {
       // 親動画ノードが見つからないときの fallback 位置はキャンバス中央付近。
       // フルスクリーンページからは TransformationController が見えないので
       // 固定値で OK (provider 側で 20000×20000 にクランプされる)。
+      // 貼り付けた画像もノードに付ける (= ユーザー要望)。
+      final imgPath = existingEntry.imagePath;
       final node = provider.addVideoMemoNode(
         memoText: text,
         videoUrl: videoUrl,
         memoTitleHeader: headerLabel.isEmpty ? null : headerLabel,
         fallbackPosition: const Offset(9000, 9000),
+        attachmentPath: imgPath,
+        attachmentName: imgPath == null
+            ? null
+            : imgPath.split(Platform.pathSeparator).last.split('/').last,
       );
 
       if (!mounted) return;
@@ -134117,11 +134592,16 @@ v.addEventListener('play', function() {
         final ts = entry.timestampSec;
         final headerLabel = ts != null ? '[${_formatTimestamp(ts)}]' : '';
         try {
+          final img = entry.imagePath;
           final node = provider.addVideoMemoNode(
             memoText: entry.text.trim(),
             videoUrl: videoUrl,
             memoTitleHeader: headerLabel.isEmpty ? null : headerLabel,
             fallbackPosition: const Offset(9000, 9000),
+            attachmentPath: img,
+            attachmentName: img == null
+                ? null
+                : img.split(Platform.pathSeparator).last.split('/').last,
           );
           if (node == null) {
             failed++;
@@ -134154,12 +134634,25 @@ v.addEventListener('play', function() {
     }
   }
 
+  /// 画像ボタン: クリップボードに画像があればそれを、 無ければファイルを
+  /// 選んで入力中のメモに貼り付ける (= ユーザー要望: 動画メモで画像を
+  /// 貼り付けておけるように)。
+  Future<void> _attachVideoMemoImage() async {
+    final saved = await grabImageForVideoMemo();
+    if (saved == null || !mounted) return;
+    setState(() => _videoMemoDraftImage = saved);
+    _showInlineBanner(
+        context.read<MindMapProvider>().t('vmemo.imageAttached'),
+        color: const Color(0xFF43B97F));
+  }
+
   /// 入力中のテキストを独立したメモ項目として追加する。
   /// この時点ではマップへ送らず、各項目のボタンからマップ / AI /
   /// Google 検索を選ぶ。
   void _saveVideoMemoLocally() {
     final text = _videoMemoController.text.trim();
-    if (text.isEmpty) {
+    // 画像だけのメモも足せる (= ユーザー要望)。
+    if (text.isEmpty && _videoMemoDraftImage == null) {
       _showInlineBanner(
           context.read<MindMapProvider>().t('vmemo.empty'),
           color: const Color(0xFFE57373));
@@ -134180,6 +134673,7 @@ v.addEventListener('play', function() {
           id: DateTime.now().microsecondsSinceEpoch.toString(),
           text: text,
           timestampSec: ts,
+          imagePath: _videoMemoDraftImage,
           addedToMap: false,
           sourceUrl: sourceUrl.isEmpty ? null : sourceUrl,
           sourceTitle: sourceTitle,
@@ -134189,6 +134683,7 @@ v.addEventListener('play', function() {
         _videoMemos.removeLast();
       }
       _videoMemoController.clear();
+      _videoMemoDraftImage = null;
     });
     // 永続化。旧 JSON は _VideoMemoEntry.fromJson で引き続き読める。
     unawaited(_persistVideoMemos());
@@ -134333,6 +134828,32 @@ v.addEventListener('play', function() {
                               ),
                             ),
                           ),
+                          // ── 貼り付けた画像 (= ユーザー要望) ──
+                          if (_videoMemoDraftImage != null) ...[
+                            const SizedBox(height: 6),
+                            Row(children: [
+                              buildVideoMemoThumb(
+                                  context, _videoMemoDraftImage!,
+                                  size: 44),
+                              Expanded(
+                                child: Text(
+                                  provider.t('vmemo.imageAttached'),
+                                  style: const TextStyle(
+                                      color: Colors.white70, fontSize: 11),
+                                ),
+                              ),
+                              IconButton(
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(
+                                    minWidth: 26, minHeight: 26),
+                                icon: const Icon(Icons.close_rounded,
+                                    color: Colors.white54, size: 15),
+                                tooltip: provider.t('btn.delete'),
+                                onPressed: () => setState(
+                                    () => _videoMemoDraftImage = null),
+                              ),
+                            ]),
+                          ],
                           const SizedBox(height: 8),
                           // ── 「再生位置を含める」 トグルボタン ──
                           // ユーザー要望: タイムスタンプはリアルタイム表示
@@ -134516,6 +135037,29 @@ v.addEventListener('play', function() {
                             spacing: 6,
                             runSpacing: 6,
                             children: [
+                              // ── 画像を貼り付ける (= ユーザー要望) ──
+                              ElevatedButton.icon(
+                                onPressed: () =>
+                                    unawaited(_attachVideoMemoImage()),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor:
+                                      Colors.white.withValues(alpha: 0.12),
+                                  foregroundColor: Colors.white,
+                                  side: const BorderSide(
+                                      color: Colors.white38, width: 1.2),
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 12, vertical: 6),
+                                  minimumSize: const Size(0, 32),
+                                  tapTargetSize:
+                                      MaterialTapTargetSize.shrinkWrap,
+                                ),
+                                icon: const Icon(Icons.image_outlined,
+                                    size: 16),
+                                label: Text(provider.t('vmemo.image'),
+                                    style: const TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w700)),
+                              ),
                               // 入力中の文章はまず独立したメモ項目へ追加する。
                               // マップ / AI / Google 検索は、追加後の各項目に
                               // 表示されるボタンから実行する。
@@ -136489,6 +137033,9 @@ v.addEventListener('play', function() {
                 ),
                 const SizedBox(width: 6),
               ],
+              // 貼り付けた画像 (押すと大きく見られる = ユーザー要望)。
+              if (entry.imagePath != null)
+                buildVideoMemoThumb(context, entry.imagePath!),
               Expanded(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -163594,6 +164141,32 @@ const String _kDefaultAvatarEmoji = '🙂';
   return (path, body);
 }
 
+/// いま押されている Esc から来た「閉じて」 か (= 設定が OFF なら無視する
+/// ための判定)。 ダイアログ枠は Esc を DismissIntent → maybePop に変えて
+/// 送ってくるので、 その瞬間はまだ Esc が押されたままになっている。
+bool _isEscClosePressed(BuildContext context) {
+  final fromEsc = HardwareKeyboard.instance.logicalKeysPressed
+      .contains(LogicalKeyboardKey.escape);
+  if (!fromEsc) return false;
+  try {
+    return !context.read<MindMapProvider>().closeViewerWithEsc;
+  } catch (_) {
+    return true;
+  }
+}
+
+/// この編集画面が「自分だけの画面」 として開かれているか。
+///
+/// 画面分割のペインの中に直接置かれている時は、 アプリ本体の画面と同じ
+/// 入れ物 (ルート) に乗っている。 そこで戻る操作を横取りすると、 Android
+/// の戻るボタンでアプリ本体の画面まで閉じてしまい、 真っ黒な画面が残る。
+/// 一番下の画面に乗っている時は横取りしない。
+bool _ownsCloseRoute(BuildContext context) {
+  final route = ModalRoute.of(context);
+  if (route == null) return false;
+  return !route.isFirst;
+}
+
 /// いまビューアで開いている PDF のパス (= 同じファイルを別の処理が
 /// 同時に触って落ちるのを避けるための控え。 ユーザー報告: 手書きを保存
 /// した直後にアプリが落ちる)。
@@ -184666,10 +185239,16 @@ $csvText
       body = _buildSheet(dark, fg);
     }
 
+    // 埋め込みで使われている時 (画面分割のペインの中など) は、 アプリ本体の
+    // 画面と入れ物を共有しているので横取りしない (= 横取りすると Android の
+    // 戻るでアプリ本体まで閉じてしまう)。
     return PopScope(
-      canPop: false,
+      canPop: !_ownsCloseRoute(context),
       onPopInvokedWithResult: (didPop, _) async {
         if (didPop) return;
+        // Esc で閉じない設定の時は、 Esc からの「閉じて」 は無視する
+        // (= ユーザー要望: 編集中に閉じられると厄介)。
+        if (_isEscClosePressed(context)) return;
         if (await _confirmDiscard()) {
           if (mounted) Navigator.of(context).pop();
         }
@@ -194433,8 +195012,11 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
     // (DismissIntent → maybePop) も止める (= ユーザー報告: 編集中なのに
     // Esc で勝手に閉じてしまう)。 Focus はフォーカスがどこにも無い時に
     // 素通りしてしまうため、 こちらが最後の砦になる。
+    // 埋め込みで使われている時 (画面分割のペインの中など) は、 アプリ本体の
+    // 画面と入れ物を共有しているので横取りしない (= 横取りすると Android の
+    // 戻るでアプリ本体まで閉じてしまう)。
     return PopScope(
-      canPop: false,
+      canPop: !_ownsCloseRoute(context),
       onPopInvokedWithResult: (didPop, _) {
         if (didPop || !mounted) return;
         _handlePptxCloseRequest();
@@ -201302,7 +201884,24 @@ $currentText
     } else {
       body = _buildEditor(dark, fg);
     }
-    return Focus(
+    // ── Esc で閉じないようにする (= ユーザー要望: 編集中に閉じられると
+    //    厄介)。 Focus はフォーカスがどこにも無い時に取りこぼすので、
+    //    ダイアログ枠からの「閉じて」 も PopScope で押さえる。 ──
+    // 埋め込みで使われている時 (画面分割のペインの中など) は、 アプリ本体の
+    // 画面と入れ物を共有しているので横取りしない (= 横取りすると Android の
+    // 戻るでアプリ本体まで閉じてしまう)。
+    return PopScope(
+      canPop: !_ownsCloseRoute(context),
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop || !mounted) return;
+        if (_isEscClosePressed(context)) return;
+        unawaited(() async {
+          if (await _confirmDiscard()) {
+            if (mounted) Navigator.of(context).pop();
+          }
+        }());
+      },
+      child: Focus(
       focusNode: _keyFocus,
       onKeyEvent: _onKey,
       child: Container(
@@ -201357,6 +201956,7 @@ $currentText
             _buildStatusBar(dark, fg),
           ],
         ),
+      ),
       ),
     );
   }
@@ -210839,7 +211439,18 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
     } else {
       body = _buildDocBody(dark, fg);
     }
-    return Focus(
+    // ── Esc で閉じないようにする (= ユーザー要望) ──
+    // 埋め込みで使われている時 (画面分割のペインの中など) は、 アプリ本体の
+    // 画面と入れ物を共有しているので横取りしない (= 横取りすると Android の
+    // 戻るでアプリ本体まで閉じてしまう)。
+    return PopScope(
+      canPop: !_ownsCloseRoute(context),
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop || !mounted) return;
+        if (_isEscClosePressed(context)) return;
+        unawaited(_tryCloseWithConfirm());
+      },
+      child: Focus(
       focusNode: _docxFocusNode,
       autofocus: true,
       onKeyEvent: _handleDocxKey,
@@ -210889,6 +211500,7 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
             ),
           ],
         ),
+      ),
       ),
     );
   }

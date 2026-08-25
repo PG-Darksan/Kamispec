@@ -61,6 +61,7 @@ import 'package:pdf/pdf.dart' as pdf;
 import 'package:pdf/widgets.dart' as pw;
 
 import '../providers/mind_map_provider.dart';
+import 'node_widget.dart' show NodeWidget;
 import '../utils/embedded_oauth_guard.dart';
 import '../utils/google_map_pinch_utils.dart';
 
@@ -4537,11 +4538,20 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       if (title.length > 50) title = '${title.substring(0, 50)}…';
       // ノードを生成。 座標はキャンバスの大体中央 (= 後で移動可能)。
       final newNode = provider.addNodeAtCenterReturning(const Offset(900, 900));
-      provider.updateNodeTitle(newNode.id, '🔗 $title');
-      // URL をノードのリンクとして保存 (= タップで再アクセス可能)
-      try {
-        provider.updateNodeLink(newNode.id, _currentUrl);
-      } catch (_) {/* updateNodeLink が無い古い provider 用フォールバック */}
+      // ── YouTube の動画ページは、 ただのリンクではなく「動画」 として
+      //    貼る (= ユーザー報告: ここから埋め込むと動画のサムネイルが
+      //    表示されない)。 リンク扱いのままだとサムネイルも再生も付かない。 ──
+      final videoId = NodeWidget.extractVideoId(_currentUrl);
+      if (videoId != null) {
+        provider.updateNodeTitle(newNode.id, '📺 $title');
+        provider.updateNodeYoutube(newNode.id, _currentUrl);
+      } else {
+        provider.updateNodeTitle(newNode.id, '🔗 $title');
+        // URL をノードのリンクとして保存 (= タップで再アクセス可能)
+        try {
+          provider.updateNodeLink(newNode.id, _currentUrl);
+        } catch (_) {/* updateNodeLink が無い古い provider 用フォールバック */}
+      }
       _showCaptureSnack(context.read<MindMapProvider>().t('gs.pageInfoAdded'), const Color(0xFF43B97F));
     } catch (e) {
       _showCaptureSnack(context.read<MindMapProvider>().t('gs.addFailed').replaceFirst('{e}', '$e'), const Color(0xFFE57373));
