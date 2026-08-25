@@ -40833,54 +40833,76 @@ class MindMapProvider extends ChangeNotifier {
     //   説明文を箇条書きで書いておいて欲しい」。
     'mcp.canDoBody': {
       'ja': '【できること】\n'
-          '● ページ一覧を見る … どんなマップがあるか調べます\n'
+          '● ページ一覧を見る … どんなページがあるか調べます\n'
           '● ページの中身を読む … ノード・つながり・図形をまとめて読み取ります\n'
-          '● 新しいページを作る … マインドマップ / ギャラリー / フリーノート / 動画編集\n'
-          '● ノードを置く … 見出しやメモ、リンク付きの項目を追加します\n'
-          '● ノードを書き換える … 文字やメモ、位置を変えます\n'
+          '● 新しいページを作る … マインドマップ / ギャラリー / フリーノート /\n'
+          '　　文書 / マークダウン / 動画編集\n'
+          '● ページを消す … 最後の 1 枚は消せません (Ctrl+Z で戻せます)\n'
+          '● ページの種類を変える … 中身を残したまま別の種類にします\n'
+          '● ノードを置く … 見出しやメモ、 リンク付きの項目を追加します\n'
+          '● ノードを書き換える … 題名・メモ・位置を変えます\n'
           '● ノードを消す … つながっていた線もまとめて消えます\n'
-          '● ノード同士をつなぐ … 親子や関係を線で表します（ラベルも付けられます）\n'
+          '● ノード同士をつなぐ … 親子や関係を線で表します (ラベルも付けられます)\n'
+          '● マップを整える … 重なった配置を自動で並べ直します\n'
           '● 画像を置く … 画像ファイルをノードとして貼り付けます\n'
           '● 表を置く … 比較や一覧を表のノードにします\n'
           '● 動画を埋め込む … YouTube のリンクをサムネイル付きで貼り付けます\n'
-          '● 背景を描く … AI で絵を描き起こしてページの背景にします\n'
-          '● ギャラリー / フリーノート / 動画編集に書き込みます\n'
-          '● ファイルを作る … Excel・Word・PowerPoint・PDF・CSV を作って貼り付けます\n'
-          '● アプリの機能を開く … フラッシュカード、無音カメラ、カレンダーなど\n'
+          '● 背景を選ぶ・外す … 用意された絵や端末の画像を背景にします\n'
+          '● 背景を描く … AI で絵を描き起こします (1 ページごとに残高から引かれます)\n'
+          '● ギャラリー / フリーノート / 文書 / 動画編集に書き込みます\n'
+          '● ファイルを作る … Excel・CSV・Word・PowerPoint・PDF・テキスト・\n'
+          '　　マークダウン を作ってページに貼り付けます\n'
+          '● アプリの機能を開く … フラッシュカード、 無音カメラ、 カレンダーなど\n'
+          '● ボタンの操作 … 取り消し (Ctrl+Z) やり直しなども頼めます\n'
+          '● ヘッダーにボタンを置く … 上のバーの並びを入れ替えます\n'
+          '● 会話の履歴を消す … この画面のやり取りをまとめて消します\n'
+          '● アプリの説明書を読む … 課金・同期・配置などの仕様を調べます\n'
           '● 開いている文書を編集する … テキストエディタの中身を読み書きします\n'
           '\n'
           '【できないこと】\n'
-          '○ Web 検索・サイトの閲覧 … 事実は AI の知識に基づきます\n'
-          '○ ページの削除・名前の変更・並べ替え、フォルダーの操作\n'
+          '○ Web を調べて読む … 検索の画面は開けますが、 中身は読めません\n'
+          '○ ページの名前の変更・並べ替え、 フォルダーの操作\n'
           '○ つないだ線だけを外す … 消せるのはノードごとです\n'
-          '○ 図形（装飾）の追加 … 読み取りはできます\n'
-          '○ ノードの色やリンクの後からの変更 … 置く時にだけ指定できます\n'
-          '○ 取り消し（Undo）\n'
-          '○ 端末の中のファイルを自由に読む … 開いている文書 1 本だけです\n'
-          '○ ほかの端末からの接続 … このパソコンの中（127.0.0.1）だけです\n'
+          '○ 図形 (装飾) の追加 … 読み取りはできます\n'
+          '○ 置いた後に色やリンクを変える … 色とリンクは置く時にだけ指定できます\n'
+          '○ 端末の中のファイルを自由に読む … 読めるのはテキストエディタで\n'
+          '　　開いている 1 本と、 アプリの説明書だけです\n'
+          '○ クラウド同期・LAN 共有・アプリロック・集中ロック …\n'
+          '　　利用者自身が押す決まりです\n'
+          '○ ほかのアプリ・ほかの端末からの操作 … このアプリの中の AI だけです\n'
           '\n'
-          '※ 位置は自動で整えるので、置き場所の指定は不要です。\n'
+          '※ 位置は自動で整えるので、 置き場所の指定は不要です。\n'
           ,
       'en': '[What it can do]\n'
-          'List pages / read a page (nodes, links, shapes)\n'
-          'Create a page: mind map / gallery / free note / video editor\n'
-          'Add, update, delete and connect nodes\n'
+          'List pages / read a page (nodes, connections, shapes)\n'
+          'Create a page: mind map / gallery / free note / notepad /\n'
+          '  markdown / video editor\n'
+          'Delete a page (not the last one; Ctrl+Z restores it)\n'
+          'Change a page to another type, keeping its contents\n'
+          'Add, update (title / memo / position), delete and connect nodes\n'
+          'Tidy a map - lay overlapping nodes out again\n'
           'Add image nodes, table nodes and YouTube video nodes\n'
-          'Generate a page background with AI\n'
-          'Write into gallery / free note / video editor pages\n'
-          'Create Excel, Word, PowerPoint, PDF or CSV files and pin them to a page\n'
+          'Set or clear a page background, or draw one with AI (costs credit)\n'
+          'Write into gallery / free note / notepad / video editor pages\n'
+          'Create Excel, CSV, Word, PowerPoint, PDF, text or markdown files\n'
+          '  and pin them to a page\n'
           'Open app features (flash cards, silent camera, calendar and so on)\n'
+          'Press buttons for you - undo (Ctrl+Z) and redo included\n'
+          'Put buttons on the header bar\n'
+          'Clear this conversation history\n'
+          'Read the built-in app documentation (billing, sync, layout...)\n'
           'Read and edit the document open in the text editor\n'
           '\n'
           '[What it cannot do]\n'
-          'Web search or browsing - answers come from the AI knowledge\n'
-          'Delete, rename or reorder pages, or manage folders\n'
+          'Search or read the web - it can open a search screen, not read it\n'
+          'Rename or reorder pages, or manage folders\n'
           'Remove a single connection - only whole nodes can be deleted\n'
           'Add shapes (decorations) - it can read them\n'
           'Change a node colour or link afterwards - only when created\n'
-          'Undo\n'
-          'Read arbitrary files - only the one open in the text editor\n'
-          'Connect from another device - this PC only (127.0.0.1)\n'
+          'Read arbitrary files - only the one open in the text editor and\n'
+          '  the built-in documentation\n'
+          'Cloud sync, LAN share, app lock and focus lock - you press those\n'
+          'Be driven from another app or device - only the AI inside this app\n'
           '\n'
           'Note: layout is automatic, no need to give positions.\n'
           ,
@@ -41005,13 +41027,13 @@ class MindMapProvider extends ChangeNotifier {
       'ja': 'MCP とは、AI がアプリを操作するための共通の窓口です。\n'
           'ここを起動すると「マップを読む・作る・ノードを足す」といった操作を AI に任せられます。\n'
           '・下のチャット欄に日本語で指示すれば、そのままこのアプリを編集できます。\n'
-          '・上に出ている URL を Claude Desktop などに登録すると、外部の AI からも同じ操作ができます。\n'
-          '接続は自分のパソコンの中だけ (127.0.0.1) で、外部には公開されません。',
+          '外部のアプリ (Claude Desktop など) からは操作できません。'
+          'この画面の AI だけが窓口を使えます。',
       'en': 'MCP is a common doorway that lets AI operate this app.\n'
           'Once started, you can have AI read maps, create pages and add nodes.\n'
           '- Type an instruction in the chat below to edit this app directly.\n'
-          '- Register the URL above in Claude Desktop etc. to let external AI do the same.\n'
-          'The connection stays on your own PC (127.0.0.1) and is not exposed to the internet.',
+          'External apps (Claude Desktop and the like) cannot drive it: '
+          'only the AI on this screen can use the doorway.',
     },
     // ブラウザで各社 AI を開くボタンと紛らわしいので、 こちらは
     //   「アプリを操作してくれる方」 と分かる名前にする (= ユーザー要望)。
@@ -62572,9 +62594,14 @@ class MindMapProvider extends ChangeNotifier {
   ///   決済画面に飛ばされる」)。 ここを開けても勝手に使えるわけではなく、
   ///   Worker が ADMIN_UIDS / Dev 権利で本人と認めた時だけ引き落としが飛ぶ。
   ///   認められなければ従来どおりサーバーが 402 で断る。
+  ///   さらに、 サーバーが本人を Dev と認めている間は、 引き換えた控えが
+  ///   無い端末・別のアカウントでも入口を開ける (= ユーザー要望: 端末や
+  ///   ユーザーに関わらず、 プランが Dev なら決済画面を通さずに叩ける)。
   bool get isDevPlan =>
       currentPlan == SubscriptionPlan.dev ||
       _purchasedPlan == SubscriptionPlan.dev ||
+      _serverGrantedPlan == 'dev' ||
+      _serverDevGranted ||
       _developerMode;
 
   /// Pro / クーポン状態をローカルから復元。
@@ -65078,6 +65105,46 @@ class MindMapProvider extends ChangeNotifier {
   /// サーバーが返した月間上限 (未取得時は 0)。
   double _aiMonthlyCapUsd = 0.0;
 
+  /// サーバー (代行 Worker) が「この人は Dev 枠」 と認めたか。
+  ///
+  /// = ユーザー要望「端末やユーザーに関わらず、 プランが Dev なら決済画面を
+  ///   通さずに API を叩けるように」。 以前は
+  ///   「引き換えた purchased_plan が dev」 か「開発者モードに入っている」
+  ///   端末でしか入口が開かず、 同じ人が別の端末・別のアカウントで入ると
+  ///   残高 0 として扱われ、 チャージ画面に飛ばされていた。
+  ///   本人かどうかを知っているのはサーバーだけなので、 起動時の
+  ///   `/ai/usage` の答え (dev: true) をそのまま正本として使う。
+  ///   控えは prefs に残す (圏外で立ち上げた直後も入口が開くように)。
+  bool _serverDevGranted = false;
+  bool get serverDevGranted => _serverDevGranted;
+  static const String _kServerDevGrantedKey = 'server_dev_granted';
+
+  Future<void> _loadServerDevGranted() async {
+    try {
+      final prefs = await _prefsWithRetry();
+      final v = prefs.getBool(_kServerDevGrantedKey) ?? false;
+      if (v != _serverDevGranted) {
+        _serverDevGranted = v;
+        notifyListeners();
+      }
+    } catch (_) {}
+  }
+
+  /// `/ai/usage` の答えから Dev 枠かどうかを取り込む。
+  void _applyServerDevFlag(dynamic body) {
+    if (body is! Map) return;
+    if (!body.containsKey('dev')) return; // 古いサーバーは触らない
+    final dev = body['dev'] == true;
+    if (dev == _serverDevGranted) return;
+    _serverDevGranted = dev;
+    notifyListeners();
+    // ignore: discarded_futures
+    _prefsWithRetry().then((prefs) {
+      // ignore: discarded_futures
+      prefs.setBool(_kServerDevGrantedKey, dev);
+    }).catchError((_) {});
+  }
+
   /// Dev 枠の月間上限。 サーバー値が届いていればそれ、 無ければ Worker の
   /// DEV_MONTHLY_CAP_USD と揃えた既定値。
   static const double _kDevMonthlyCapUsdFallback = 200.0;
@@ -65102,6 +65169,9 @@ class MindMapProvider extends ChangeNotifier {
       final j = jsonDecode(res.body);
       if (j is! Map) return;
       _aiMonthlyBilledUsd = (j['billedUsd'] as num?)?.toDouble() ?? 0.0;
+      // サーバーが Dev と認めたかを覚える (= 端末・アカウントを問わず
+      // 決済画面を通さずに使えるように)。
+      _applyServerDevFlag(j);
       // dev: true の応答なら capUsd は Dev 枠の値 (Worker 側を更新済み)。
       if (j['dev'] == true) {
         _aiMonthlyCapUsd = (j['capUsd'] as num?)?.toDouble() ?? 0.0;
@@ -65360,10 +65430,16 @@ class MindMapProvider extends ChangeNotifier {
       if (ok) {
         try {
           _relayUsage = jsonDecode(res.body) as Map<String, dynamic>;
+          // 起動時のこの 1 往復が、 どの端末・どのアカウントでも必ず通る道。
+          // ここでサーバーの「この人は Dev」 を受け取っておけば、 引き換えた
+          // 控えが無い端末でも入口が開く (= ユーザー要望)。
+          _applyServerDevFlag(_relayUsage);
         } catch (_) {}
         // 代行が使えるなら、 残高とモデル一覧も取っておく。
         unawaited(refreshCreditBalance());
         unawaited(refreshRelayModels());
+        // Dev 枠なら残りの月間枠も取っておく (表示用)。
+        if (isDevPlan) unawaited(refreshAiMonthlyUsage());
       }
     } catch (e) {
       debugPrint('代行エンドポイントの確認に失敗: $e');
@@ -69445,6 +69521,8 @@ $cleanQ
     _loadFlashcards();
     _loadVideoPositions();
     _loadMcpServerSetting();
+    // ignore: discarded_futures
+    _loadServerDevGranted();
     // ignore: discarded_futures
     loadFlashcardTopicPrompt();
     // ページ毎の作業レイヤー (= ユーザー要望: レイヤーを移動して配置する)。

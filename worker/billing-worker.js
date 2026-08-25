@@ -2435,7 +2435,14 @@ async function handleAiUsage(url, env, request) {
   const ym = url.searchParams.get('ym') || currentYm();
   const used = await readUsage(env, uid, ym);
   // Dev 権利者には Dev 枠の上限を返す (= ユーザー要望: 大元の残り表示)。
-  const devEnt = isDevEntitlement(await readEntitlement(env, uid));
+  //
+  // ★ ここは「決済を通さずに使えるか」 をアプリへ伝える唯一の窓口なので、
+  //   実際に課金を飛ばす判定 (isFreeAiUid = Dev 権利 or 管理者 uid) と
+  //   同じ物を返す。 以前は権利だけを見ていたため、 管理者本人の端末には
+  //   dev:false が返り、 アプリ側が残高 0 と受け取ってチャージ画面へ
+  //   飛ばしていた (= ユーザー要望: 端末やユーザーに関わらず Dev なら
+  //   決済画面を通さずに叩けるように)。
+  const devEnt = await isFreeAiUid(env, uid);
   return json({
     ym,
     markup: MARKUP,
