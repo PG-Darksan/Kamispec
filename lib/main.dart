@@ -2342,6 +2342,10 @@ Future<void> applyPreferredDisplayMode({required bool high}) async {
 /// Windows は起動引数でパスが渡ってくるので、 ここに貯めて画面側で処理する。
 final List<String> pendingOpenFilePaths = <String>[];
 
+/// アラームに起こされて立ち上がった時の、 そのアラームの id
+/// (= ユーザー要望: アプリを閉じていても鳴るように)。 画面側が拾って鳴らす。
+String? pendingAlarmId;
+
 /// 起動引数から「開くファイル」 を拾う。 オプション (先頭が -) と
 /// 実在しないパスは無視する。
 List<String> _openFilePathsFromArgs(List<String> args) {
@@ -3165,6 +3169,15 @@ void main(List<String> args) async {
     if (!args.contains('--new-window') &&
         await _forwardCommandToRunningInstance(shortcutCmd)) {
       exit(0);
+    }
+  }
+  // ── アラームに起こされた起動か (= ユーザー要望: アプリがオフの状態でも
+  //    設定されていたら起動するように)。 Windows のタスク スケジューラが
+  //    `--alarm=<id>` を付けてこのアプリを立ち上げる。 ──
+  for (final a in args) {
+    if (a.startsWith('--alarm=')) {
+      pendingAlarmId = a.substring('--alarm='.length).trim();
+      break;
     }
   }
   // ── 「プログラムから開く」 で渡されたファイル (= ユーザー要望) ──
@@ -6623,7 +6636,11 @@ class _FloatingWebWindowAppState extends State<_FloatingWebWindowApp>
     }
     try {
       final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString(_kSizeKey) ?? '';
+      // サイトごとに前回の大きさを覚える (= 縦長が合うサイトと、 横幅が
+      // 要るサイトが混ざっているため)。 無ければ今までの共通の控え。
+      final raw = (prefs.getString('${_kSizeKey}_$_sizeHost') ??
+              prefs.getString(_kSizeKey)) ??
+          '';
       final m = RegExp(r'^(\d+)x(\d+)$').firstMatch(raw);
       if (m != null) {
         // ② 前回の大きさ。
@@ -6632,15 +6649,56 @@ class _FloatingWebWindowAppState extends State<_FloatingWebWindowApp>
         await windowManager.setSize(Size(w, h));
         return;
       }
-      // ③ 既定は縦長 (高さは今までどおり、 横幅だけ絞る)。
+      // ③ 既定は縦長 (高さは今までどおり、 横幅だけ絞る)。 ただし、 横に
+      //    広げないと中身が切れるサイト (通販など) は広めに開く
+      //    (= ユーザー報告: Amazon が縦長で入り切らない)。
       final cur = await windowManager.getSize();
       final h = cur.height < 240 ? 720.0 : cur.height;
-      await windowManager.setSize(Size(_kDefaultFloatWebWidth, h));
+      await windowManager.setSize(
+          Size(_wantsWideWindow(widget.url) ? _kWideFloatWebWidth : _kDefaultFloatWebWidth, h));
     } catch (_) {}
+  }
+
+  /// 大きさを覚える時の相手 (サイト) の名前。
+  String get _sizeHost {
+    try {
+      final h = Uri.parse(widget.url).host.toLowerCase();
+      return h.isEmpty ? 'other' : h;
+    } catch (_) {
+      return 'other';
+    }
+  }
+
+  /// 横幅が要るサイトか (= ユーザー報告: Amazon を浮かせると縦長で画面が
+  /// 入り切れていない)。 通販や地図のように、 横に広げないと項目が折り重なる
+  /// サイトは最初から広めに開く。
+  static bool _wantsWideWindow(String url) {
+    final l = url.toLowerCase();
+    const wide = [
+      'amazon.',
+      'rakuten.',
+      'yahoo.co.jp',
+      'mercari.',
+      'ebay.',
+      'aliexpress.',
+      'google.com/maps',
+      'docs.google.com',
+      'drive.google.com',
+      'calendar.google.com',
+      'notion.so',
+      'github.com',
+    ];
+    for (final w in wide) {
+      if (l.contains(w)) return true;
+    }
+    return false;
   }
 
   /// 外に出した窓の既定の横幅 (= ユーザー要望: 既定が横に大きすぎる)。
   static const double _kDefaultFloatWebWidth = 480;
+
+  /// 横幅が要るサイトの既定の横幅 (= ユーザー報告: Amazon が入り切らない)。
+  static const double _kWideFloatWebWidth = 1000;
 
   Future<void> _init() async {
     try {
@@ -6954,8 +7012,11 @@ class _FloatingWebWindowAppState extends State<_FloatingWebWindowApp>
                     try {
                       final s = await windowManager.getSize();
                       final prefs = await SharedPreferences.getInstance();
-                      await prefs.setString(_kSizeKey,
-                          '${s.width.round()}x${s.height.round()}');
+                      final v = '${s.width.round()}x${s.height.round()}';
+                      // サイトごとに覚える (= 通販は横長、 AI は縦長、 と
+                      // サイトによって合う形が違うため)。 共通の控えも残す。
+                      await prefs.setString('${_kSizeKey}_$_sizeHost', v);
+                      await prefs.setString(_kSizeKey, v);
                     } catch (_) {}
                     // 別プロセスなので、 自分だけ終わればよい。
                     exit(0);
