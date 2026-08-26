@@ -13,7 +13,8 @@ import 'dart:io' show Platform, Process, ProcessResult;
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show HardwareKeyboard;
+import 'package:flutter/services.dart'
+    show HardwareKeyboard, KeyDownEvent, KeyEvent, LogicalKeyboardKey;
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -334,10 +335,14 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
     _loadCmdPolicy();
     // ignore: discarded_futures
     _loadSchedule();
+    // Esc / Ctrl+C を横取りして「止める」 に使う (= ユーザー要望:
+    // Esc で欄が閉じるのをやめ、 実行を止める側に割り当てる)。
+    HardwareKeyboard.instance.addHandler(_handleStopKey);
   }
 
   @override
   void dispose() {
+    HardwareKeyboard.instance.removeHandler(_handleStopKey);
     _schedTimer?.cancel();
     _aiCtrl.dispose();
     super.dispose();
@@ -1355,10 +1360,33 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
     });
   }
 
+  /// ブラウザ側が生きているか (= 手順を投げても意味がある状態か)。
+  ///
+  /// JS の答えを受け取れる口 (evalJs) があればそれで確かめる。 無ければ
+  /// 「分からない」 = true にして、 従来どおり動かしてみる。
+  Future<bool> _hasLivePage() async {
+    final eval = widget.evalJs;
+    if (eval == null) return true;
+    try {
+      final r = await eval('location.href')
+          .timeout(const Duration(seconds: 3), onTimeout: () => null);
+      final href = (r ?? '').replaceAll('"', '').trim();
+      if (href.isEmpty) return false;
+      if (href == 'about:blank' || href.startsWith('about:')) return false;
+      return true;
+    } catch (_) {
+      // 確かめられなかった時は止めない (誤検知で動かせなくなる方が困る)。
+      return true;
+    }
+  }
+
   /// この 1 ステップだけを試しに動かす (= ユーザー要望: スワイプ等が
   /// ちゃんと効くか項目単体で試したい)。 繰り返しブロックなら中身を 1 周。
   Future<void> _testStep(MindMapProvider provider, WebAutoStep step) async {
-    if (_running) return;
+    if (_running) {
+      setState(() => _status = provider.t('auto.alreadyRunning'));
+      return;
+    }
     setState(() {
       _running = true;
       _cancel = false;
@@ -1390,7 +1418,89 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
     setState(() => _cancel = true);
   }
 
+  /// AI に任せている途中の動きを止める。
+  void _stopAgent() {
+    if (!_agentBusy) return;
+    _agentStop = true;
+  }
+
+  // ── Esc / Ctrl+C で「止める」 (= ユーザー要望) ──────────────────────
+  //
+  // 以前は Esc がダイアログ枠に届いて**欄ごと閉じて**いた。 手順を組んで
+  // いる最中に閉じられると厄介なので、 この欄が出ている間は Esc を横取り
+  // して、 動いていれば止める・動いていなければ何もしない (閉じない)。
+  // Ctrl+C も同じ (実行中だけ横取りし、 止まっている時は普通の複写)。
+  bool _handleStopKey(KeyEvent e) {
+    if (!mounted) return false;
+    if (e is! KeyDownEvent) return false;
+    final keys = HardwareKeyboard.instance.logicalKeysPressed;
+    final ctrl = keys.contains(LogicalKeyboardKey.controlLeft) ||
+        keys.contains(LogicalKeyboardKey.controlRight);
+    if (e.logicalKey == LogicalKeyboardKey.escape) {
+      if (_running || _agentBusy) {
+        _requestStop();
+        _stopAgent();
+      }
+      return true; // 閉じさせない
+    }
+    if (ctrl && e.logicalKey == LogicalKeyboardKey.keyC) {
+      if (_running || _agentBusy) {
+        _requestStop();
+        _stopAgent();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// この手順を動かすのに、 先にページを開く必要があるか。
+  ///
+  /// = ユーザー報告「実行ボタンなど押しても効かない時がある」。
+  ///   タップ / スワイプ / スクロール等はブラウザに向けて送るので、
+  ///   ページを開いていないと**何も起きないまま終わる**。 黙って終わると
+  ///   壊れているように見えるので、 事前に知らせる。
+  bool _needsPageFirst() {
+    const needsPage = {
+      WebAutoKind.tap,
+      WebAutoKind.hold,
+      WebAutoKind.swipe,
+      WebAutoKind.scroll,
+      WebAutoKind.type,
+      WebAutoKind.shot,
+      WebAutoKind.click,
+      WebAutoKind.scrollTo,
+    };
+    // 手順のどこかで「リンクを開く」 があるなら、 その後は開いている。
+    for (final s in _steps) {
+      if (s.kind == WebAutoKind.open) return false;
+      if (s.kind == WebAutoKind.loop) {
+        for (final c in s.children) {
+          if (c.kind == WebAutoKind.open) return false;
+        }
+      }
+      if (needsPage.contains(s.kind)) return true;
+      if (s.kind == WebAutoKind.loop &&
+          s.children.any((c) => needsPage.contains(c.kind))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   Future<void> _run(MindMapProvider provider) async {
+    // ── 押しても何も起きない時に、 理由を出す (= ユーザー報告) ──
+    if (_running) {
+      setState(() => _status = provider.t('auto.alreadyRunning'));
+      return;
+    }
+    if (_steps.isEmpty) {
+      setState(() => _status = provider.t('auto.noSteps'));
+      return;
+    }
+    if (_needsPageFirst() && !await _hasLivePage()) {
+      setState(() => _status = provider.t('auto.openPageFirst'));
+      return;
+    }
     if (_running || _steps.isEmpty) return;
     setState(() {
       _running = true;
@@ -1694,10 +1804,24 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
                   ]),
                 ),
               ]),
-              const Padding(
-                padding: EdgeInsets.only(left: 21, bottom: 4),
-                child: Text('この画面を開いている間に、 その時刻になったら手順を動かします。',
-                    style: TextStyle(color: Colors.white38, fontSize: 10)),
+              // ★ オフの時に「動かします」 とだけ書いてあると、 切っていても
+              //   時刻で動くように読める (= ユーザー指摘)。 今どちらなのかを
+              //   最初に書く。
+              Padding(
+                padding: const EdgeInsets.only(left: 21, bottom: 4),
+                child: Text(
+                    _schedOn
+                        ? 'オン: この画面を開いている間、 '
+                            '${two(_schedHour)}:${two(_schedMin)} に'
+                            '${_schedDaily ? '毎日' : '1 回だけ'}手順を動かします。'
+                        : 'オフ: 時刻では動きません。 '
+                            '右のスイッチを入れると、 この画面を開いている間だけ'
+                            'その時刻に動きます。',
+                    style: TextStyle(
+                        color: _schedOn
+                            ? const Color(0xFF80CBC4)
+                            : Colors.white38,
+                        fontSize: 10)),
               ),
               const Divider(height: 8, color: Colors.white12),
               // ── コマンドの許可 ──

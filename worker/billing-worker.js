@@ -38,7 +38,7 @@ export default {
     }
 
     if (url.pathname === '/entitlement' && request.method === 'GET') {
-      return handleEntitlement(url, env);
+      return handleEntitlement(url, env, request);
     }
 
     // ── AI 代行実行 (= アプリ側のキーで実行して使用量を計上する) ──
@@ -681,26 +681,43 @@ async function handleSiteVisits(env, increment) {
 }
 
 // ─── アプリからの権利照会 ───────────────────────────────────────────────
-async function handleEntitlement(url, env) {
-  const uid = (url.searchParams.get('uid') || '').trim();
+/// 権利情報を返す。
+///
+/// ★ 以前は uid をクエリで受け取るだけで、 誰の分でも読めてしまった
+///   (プランだけでなく Stripe の subscriptionId / customerId まで漏れる)。
+///   本人確認 (Firebase ID トークン) が付いていればそれを最優先で使い、
+///   付いていない古いアプリのために uid だけの経路も残すが、 その時は
+///   **プランだけ**を返して他の項目は伏せる。
+async function handleEntitlement(url, env, request) {
+  const tokenUid = request ? await authUid(request, env) : null;
+  const queryUid = (url.searchParams.get('uid') || '').trim();
+  const uid = tokenUid || queryUid;
+  // 本人確認が無い (= 誰の分か確かめられない) 時は、 中身を伏せる。
+  const masked = !tokenUid || (queryUid && queryUid !== tokenUid);
   if (!uid) {
     return new Response(JSON.stringify({ plan: 'free', reason: 'no uid' }), {
       headers: JSON_HEADERS,
     });
   }
+  /// 伏せる時はプラン (と状態) だけにする。
+  const shrink = (obj) => (masked
+      ? { plan: obj.plan || 'free', status: obj.status || 'active' }
+      : obj);
   // ADMIN_UIDS 本人は権利情報がまだ無くても Dev 枠 (= 引き換え不要)。
   const adminFallback = isAdminUid(env, uid)
     ? { plan: 'dev', status: 'active', devAdmin: true }
     : { plan: 'free' };
   const raw = await env.ENTITLEMENTS.get(uid);
   if (!raw) {
-    return new Response(JSON.stringify(adminFallback), { headers: JSON_HEADERS });
+    return new Response(JSON.stringify(shrink(adminFallback)),
+        { headers: JSON_HEADERS });
   }
   let data;
   try {
     data = JSON.parse(raw);
   } catch (_) {
-    return new Response(JSON.stringify(adminFallback), { headers: JSON_HEADERS });
+    return new Response(JSON.stringify(shrink(adminFallback)),
+        { headers: JSON_HEADERS });
   }
   // 期限切れは free に落とす (解約後の猶予は Stripe 側の期間終了で判断)。
   const now = Math.floor(Date.now() / 1000);
@@ -720,7 +737,7 @@ async function handleEntitlement(url, env) {
     data.status = data.status === 'expired' ? 'active' : (data.status || 'active');
     data.devAdmin = true;
   }
-  return new Response(JSON.stringify(data), { headers: JSON_HEADERS });
+  return new Response(JSON.stringify(shrink(data)), { headers: JSON_HEADERS });
 }
 
 // ─── 本人確認 (Firebase ID トークン) ───────────────────────────────────
@@ -1276,7 +1293,9 @@ export class CreditAccount {
     if (op === '/settle') {
       const hold = Number(body.hold || 0);
       const actual = Number(body.actual || 0);
-      c.balanceUsd = round6(c.balanceUsd + hold - actual);
+      // ★ 0 を下回らないようにする。 仮押さえを通らない古い経路
+      //   (spendCredit) からも呼ばれるので、 ここで守っておく。
+      c.balanceUsd = Math.max(0, round6(c.balanceUsd + hold - actual));
       if (actual > 0) {
         c.totalSpentUsd = round6(c.totalSpentUsd + actual);
         c.ledger.push({ t: Date.now(), kind: 'spend', usd: round6(actual), note: body.note });
@@ -1314,7 +1333,7 @@ async function creditOp(env, uid, op, body) {
 //
 // 仕組み:
 //   ・ユーザーは最低 10 ドルを先に払う (Stripe Checkout)。
-//   ・AI を使うたびに「原価 × 1.1」 を残高から引く。
+//   ・AI を使うたびに「原価 × 1.2」 を残高から引く。
 //   ・残高が足りなくなったらアプリが再チャージを促す。
 //
 // なぜ前払いか:
@@ -2049,7 +2068,7 @@ async function callProvider(env, model, prompt, maxTokens, images, reasoning) {
   };
 }
 
-// 上乗せ率 (= 1 割増し)。 アプリ側 kUsageMarkupRate と揃えること。
+// 上乗せ率 (= 2 割増し)。 アプリ側 kUsageMarkupRate と揃えること。
 const MARKUP = 0.20;
 
 // 使い過ぎの保険。 1 か月あたりの請求上限 (USD)。 超えたら断る。
@@ -2137,6 +2156,18 @@ async function handleAiGenerate(request, env) {
   //   使用量は普通に記録するので、 誰がどれだけ使ったかは後から分かる。
   const devEnt = await isFreeAiUid(env, uid);
 
+  // ── 使い過ぎの保険 (月あたり) ──
+  //   ★ 必ず「仮押さえ」 より前に確かめる。 後ろに置くと、 上限で断る時に
+  //     確保したクレジットが戻らないまま消えてしまう (= 実際にあった不具合)。
+  //   Dev 枠は残高を引かない分、 暴走すると全額こちらの持ち出しになるので
+  //     上限は残すが枠を広げる。
+  const ym = currentYm();
+  const used = await readUsage(env, uid, ym);
+  const cap = devEnt ? DEV_MONTHLY_CAP_USD : MONTHLY_HARD_CAP_USD;
+  if (used.billedUsd >= cap) {
+    return json({ error: 'monthly cap reached', usage: used }, 429);
+  }
+
   // ── 残高の確認 (= 前払いクレジット) ──
   //   1 回の応答がどれだけ長くなるかは事前に分からないので、
   //   「最大出力まで使った場合の見積り」 を持っているかで判定する。
@@ -2182,16 +2213,6 @@ async function handleAiGenerate(request, env) {
         402
       );
     }
-  }
-
-  // 使い過ぎの保険 (月あたり)。 残高があっても、 ここで一旦止める。
-  // Dev 枠は残高を引かない分、 暴走すると全額こちらの持ち出しになるので
-  //   上限は残すが枠を広げる。
-  const ym = currentYm();
-  const used = await readUsage(env, uid, ym);
-  const cap = devEnt ? DEV_MONTHLY_CAP_USD : MONTHLY_HARD_CAP_USD;
-  if (used.billedUsd >= cap) {
-    return json({ error: 'monthly cap reached', usage: used }, 429);
   }
 
   const res = await callProvider(env, model, prompt, maxTokens, images, reasoning);
@@ -2294,6 +2315,14 @@ async function handleAiImage(request, env) {
   // Dev 枠は残高を引かない (テキストと同じ扱い)。
   const devEnt = await isFreeAiUid(env, uid);
 
+  // ── 使い過ぎの保険 (月あたり) ──
+  //   仮押さえより前に確かめる (後ろだと確保した分が戻らない)。
+  const ym = currentYm();
+  const used = await readUsage(env, uid, ym);
+  if (used.billedUsd >= (devEnt ? DEV_MONTHLY_CAP_USD : MONTHLY_HARD_CAP_USD)) {
+    return json({ error: 'monthly cap reached', usage: used }, 429);
+  }
+
   // 1 枚分を先に確保する (テキストと同じ理由)。
   const held = devEnt ? null : await creditOp(env, uid, '/reserve', { usd: billed });
   if (held && held.ok === false) {
@@ -2321,12 +2350,6 @@ async function handleAiImage(request, env) {
         402
       );
     }
-  }
-
-  const ym = currentYm();
-  const used = await readUsage(env, uid, ym);
-  if (used.billedUsd >= (devEnt ? DEV_MONTHLY_CAP_USD : MONTHLY_HARD_CAP_USD)) {
-    return json({ error: 'monthly cap reached', usage: used }, 429);
   }
 
   // 使えるモデルを順に試す (提供状況がキー / リージョンで変わるため)。

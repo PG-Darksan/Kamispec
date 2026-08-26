@@ -500,12 +500,18 @@ class BillingService {
   /// 戻り値が **null は「判定できなかった」** (未設定・圏外・サーバー障害)。
   /// free と区別できないと、 通信に失敗しただけで有料ユーザーを解約扱いに
   /// してしまうため、 呼び出し側は null の時は今の状態を変えないこと。
-  Future<String?> fetchPlanViaEntitlementApi({required String appUserId}) async {
+  /// [idToken] を渡せると、 サーバーが本人と確かめた上で答えられる
+  /// (= 本人確認が無い時は、 サーバーはプランだけを返して他は伏せる)。
+  Future<String?> fetchPlanViaEntitlementApi(
+      {required String appUserId, String? idToken}) async {
     if (entitlementApiBase.isEmpty || appUserId.isEmpty) return null;
     try {
       final uri = Uri.parse('$entitlementApiBase/entitlement'
           '?uid=${Uri.encodeComponent(appUserId)}');
-      final res = await http.get(uri).timeout(const Duration(seconds: 12));
+      final res = await http.get(uri, headers: {
+        if (idToken != null && idToken.isNotEmpty)
+          'Authorization': 'Bearer $idToken',
+      }).timeout(const Duration(seconds: 12));
       if (res.statusCode != 200) {
         debugPrint('entitlement API: ${res.statusCode} ${res.body}');
         return null;

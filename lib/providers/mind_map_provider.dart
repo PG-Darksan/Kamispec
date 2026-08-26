@@ -3497,7 +3497,13 @@ class MindMapProvider extends ChangeNotifier {
     final uid = _uid;
     if (uid == null || uid.isEmpty) return;
     try {
-      final plan = await _billing.fetchPlanViaEntitlementApi(appUserId: uid);
+      // 本人確認 (ID トークン) を添えて聞く。 添えないとサーバーは
+      // 中身を伏せてプランだけを返す (= 他人の情報が読めないように)。
+      try {
+        await _ensureFreshToken();
+      } catch (_) {}
+      final plan = await _billing.fetchPlanViaEntitlementApi(
+          appUserId: uid, idToken: _idToken);
       // null は「サーバーに聞けなかった」。 圏外や一時的な障害で解約扱いに
       // しないよう、 今の状態には手を触れない。
       if (plan == null) return;
@@ -5276,6 +5282,11 @@ class MindMapProvider extends ChangeNotifier {
   bool get hasActiveAiKey {
     // ★ AI はこちらが用意したキー (代行サーバー) のみ (= ユーザー要望)。
     //   残高があれば使える。 BYOK は廃止。
+    // ★ Dev 枠は残高が 0 でも使えるので、 疎通確認がまだ / 一度失敗した
+    //   だけの時に「キーがありません」 と閉じてしまわないようにする
+    //   (= ユーザー報告: Dev なのに AI が呼べない)。 実際に使えるかは
+    //   呼ぶ直前の ensureRelayReady とサーバーが決める。
+    if (relayApiBase.isNotEmpty && isDevPlan) return true;
     return canUseAiRelay;
     // ignore: dead_code
     if (canUseAiRelay) return true;
@@ -53611,18 +53622,18 @@ class MindMapProvider extends ChangeNotifier {
     },
     // ── Ctrl+1〜9 基準フォルダー機能 ──
     'folder.setShortcut': {
-      'ja': 'Ctrl+1〜9 の基準にする',
-      'en': 'Set as Ctrl+1-9 base',
-      'zh': '设为 Ctrl+1-9 基准',
-      'ko': 'Ctrl+1-9 기준으로 설정',
-      'es': 'Definir como base Ctrl+1-9',
-      'fr': 'Définir comme base Ctrl+1-9',
-      'de': 'Als Ctrl+1-9-Basis festlegen',
-      'pt': 'Definir como base Ctrl+1-9',
-      'ru': 'Сделать базой Ctrl+1-9',
+      'ja': 'Ctrl+1〜9 でこのフォルダーのページを開く',
+      'en': 'Open this folder’s pages with Ctrl+1-9',
+      'zh': '用 Ctrl+1-9 打开此文件夹的页面',
+      'ko': 'Ctrl+1-9로 이 폴더의 페이지를 열기',
+      'es': 'Abrir las páginas de esta carpeta con Ctrl+1-9',
+      'fr': 'Ouvrir les pages de ce dossier avec Ctrl+1-9',
+      'de': 'Seiten dieses Ordners mit Ctrl+1-9 öffnen',
+      'pt': 'Abrir as páginas desta pasta com Ctrl+1-9',
+      'ru': 'Открывать страницы этой папки по Ctrl+1-9',
     },
     'folder.unsetShortcut': {
-      'ja': 'Ctrl+1〜9 の基準を解除',
+      'ja': 'Ctrl+1〜9 を一覧のページに戻す',
       'en': 'Clear Ctrl+1-9 base',
       'zh': '清除 Ctrl+1-9 基准',
       'ko': 'Ctrl+1-9 기준 해제',
@@ -53633,7 +53644,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Убрать базу Ctrl+1-9',
     },
     'folder.shortcutSet': {
-      'ja': '「{name}」を Ctrl+1〜9 の基準にしました',
+      'ja': 'Ctrl+1〜9 で「{name}」の中のページを上から順に開きます',
       'en': 'Set "{name}" as Ctrl+1-9 base',
       'zh': '已将 "{name}" 设为 Ctrl+1-9 基准',
       'ko': '"{name}"를 Ctrl+1-9 기준으로 설정했습니다',
@@ -53656,15 +53667,37 @@ class MindMapProvider extends ChangeNotifier {
     },
     // ── ルート(フォルダー外のページ群)を Ctrl+1〜9 基準に設定するトグル ──
     'root.setShortcut': {
-      'ja': 'ルートを Ctrl+1〜9 の基準に',
-      'en': 'Set root as Ctrl+1-9 base',
-      'zh': '将根设为 Ctrl+1-9 基准',
-      'ko': '루트를 Ctrl+1-9 기준으로',
-      'es': 'Raíz como base de Ctrl+1-9',
-      'fr': 'Définir la racine comme base Ctrl+1-9',
-      'de': 'Root als Ctrl+1-9-Basis',
-      'pt': 'Raiz como base Ctrl+1-9',
-      'ru': 'Корень — база Ctrl+1-9',
+      'ja': 'Ctrl+1〜9 をこの一覧のページに戻す',
+      'en': 'Point Ctrl+1-9 back at this list',
+      'zh': '让 Ctrl+1-9 回到此列表的页面',
+      'ko': 'Ctrl+1-9를 이 목록의 페이지로 되돌리기',
+      'es': 'Devolver Ctrl+1-9 a esta lista',
+      'fr': 'Ramener Ctrl+1-9 sur cette liste',
+      'de': 'Ctrl+1-9 wieder auf diese Liste',
+      'pt': 'Voltar Ctrl+1-9 para esta lista',
+      'ru': 'Вернуть Ctrl+1-9 к этому списку',
+    },
+    'root.shortcutAlready': {
+      'ja': 'Ctrl+1〜9 は、いまこの一覧の上から順に開きます',
+      'en': 'Ctrl+1-9 already opens this list from the top',
+      'zh': 'Ctrl+1-9 现在就是从此列表顶部依次打开',
+      'ko': 'Ctrl+1-9는 지금 이 목록을 위에서부터 엽니다',
+      'es': 'Ctrl+1-9 ya abre esta lista desde arriba',
+      'fr': 'Ctrl+1-9 ouvre déjà cette liste de haut en bas',
+      'de': 'Ctrl+1-9 öffnet bereits diese Liste von oben',
+      'pt': 'Ctrl+1-9 já abre esta lista de cima',
+      'ru': 'Ctrl+1-9 уже открывает этот список сверху',
+    },
+    'root.shortcutFolderNow': {
+      'ja': 'いまは「{name}」の中のページが Ctrl+1〜9 です',
+      'en': 'Ctrl+1-9 currently opens pages in “{name}”',
+      'zh': '目前 Ctrl+1-9 打开的是「{name}」中的页面',
+      'ko': '지금은 “{name}” 안의 페이지가 Ctrl+1-9 입니다',
+      'es': 'Ahora Ctrl+1-9 abre las páginas de «{name}»',
+      'fr': 'Actuellement, Ctrl+1-9 ouvre les pages de « {name} »',
+      'de': 'Derzeit öffnet Ctrl+1-9 die Seiten in „{name}“',
+      'pt': 'No momento, Ctrl+1-9 abre as páginas de “{name}”',
+      'ru': 'Сейчас Ctrl+1-9 открывает страницы в «{name}»',
     },
     'root.unsetShortcut': {
       'ja': 'ルートの Ctrl+1〜9 基準を解除',
@@ -53678,8 +53711,8 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Убрать корень как базу Ctrl+1-9',
     },
     'root.shortcutSet': {
-      'ja': 'ルートのページが Ctrl+1〜9 の対象になりました',
-      'en': 'Root pages are now mapped to Ctrl+1-9',
+      'ja': 'Ctrl+1〜9 で、この一覧の上から順に開きます',
+      'en': 'Ctrl+1-9 now opens this list from the top',
       'zh': '根目录的页面已分配到 Ctrl+1-9',
       'ko': '루트 페이지가 Ctrl+1-9 대상이 됩니다',
       'es': 'Las páginas raíz están asignadas a Ctrl+1-9',
@@ -62494,9 +62527,12 @@ class MindMapProvider extends ChangeNotifier {
   static const String kMaxMonthlyPriceUsd = r'$19.99';
 
   /// プランごとの自動削除猶予期間。
-  ///   Free: アップロードから 3 日でファイル単位に削除
+  ///   Free: 7 日でファイル単位に削除
+  ///     ★ Firestore 側の `expiresAt` (= _savePageToFirestore が書く TTL) も
+  ///       7 日なので、 そちらと必ず同じ日数にしておく。 以前は 3 日で、
+  ///       添付だけが先に消えて本文だけが残る食い違いがあった。
   ///   Pro/Max: 契約終了から 30 日で全データ削除
-  static const Duration kFreeAutoDeleteGrace = Duration(days: 3);
+  static const Duration kFreeAutoDeleteGrace = Duration(days: 7);
   static const Duration kPaidAutoDeleteGrace = Duration(days: 30);
 
   /// 画面分割 (PDF/動画/Web/Office の分割表示) を無料プランで開ける回数の上限。
@@ -62644,6 +62680,10 @@ class MindMapProvider extends ChangeNotifier {
   SubscriptionPlan get couponPlan => _couponPlan;
 
   /// ─── 月次容量制限 (アップロード / ダウンロード) ────────────────────────
+  ///
+  /// ★ 実際の値は下の getter が正 (Free / Pro = 0、 Max = 25GB/100GB/100GB、
+  ///   Dev = 実質無制限)。 クラウド同期そのものが Max 限定なので、
+  ///   Free / Pro には枠を出さない。
   /// プランごとの月間上限:
   ///   free : アップロード 5 MB,   ダウンロード 20 MB
   ///   pro  : アップロード 5 GB,   ダウンロード 20 GB
@@ -65882,6 +65922,25 @@ class MindMapProvider extends ChangeNotifier {
     }
   }
 
+  /// 代行を使う直前の確認。 使えなさそうなら、 その場でもう一度確かめる。
+  ///
+  /// = ユーザー報告「Dev プランなのに、 決済を通さず AI を呼ぶ機能が
+  ///   働かない」。 起動時の 1 回きりの疎通確認 (`probeAiRelay`) が、
+  ///   まだトークンが用意できていない / 一時的に繋がらない等で失敗すると
+  ///   `_relayAvailable` が false のまま固定され、 以後ずっと
+  ///   「AI キーがありません」 になっていた (アプリ側だけで諦めていた)。
+  ///   呼ぶ直前にもう一度だけ確かめ直す。
+  Future<bool> ensureRelayReady() async {
+    if (relayApiBase.isEmpty) return false;
+    if (canUseAiRelay) return true;
+    // 一度きりの確認で失敗していただけかもしれないので、 その場で再確認。
+    await probeAiRelay(force: true);
+    if (canUseAiRelay) return true;
+    // 残高が 0 でも、 Dev 枠なら通す (引き落とすかはサーバーが決める)。
+    if (_relayAvailable == true && isDevPlan) return true;
+    return false;
+  }
+
   /// 今月の代行分の使用量 (Worker 集計)。 表示用。
   Map<String, dynamic>? _relayUsage;
   Map<String, dynamic>? get relayUsage => _relayUsage;
@@ -66072,12 +66131,16 @@ class MindMapProvider extends ChangeNotifier {
     // 起動直後はプラン / 開発者モードの復元が終わっていないことがあるので、
     // 判定の前に待つ (= ユーザー報告: 開発者モードなのに決済画面が出る)。
     await awaitPlanReady();
-    if (canUseAiRelay) return askAiViaRelay(prompt, images: images);
+    // 使えるか確かめ直してから諦める (= ユーザー報告: Dev なのに使えない)。
+    if (await ensureRelayReady()) {
+      return askAiViaRelay(prompt, images: images);
+    }
     if (relayApiBase.isEmpty || _relayAvailable != true) {
       throw Exception(t('relay.notConfigured'));
     }
     _notifyCreditShort();
-      throw Exception(t('credit.insufficient'));
+    throw Exception(t('credit.insufficient'));
+    // ignore: dead_code
     switch (_aiProvider) {
       case 'openai':
         return askOpenAi(prompt, maxTokensOverride: maxTokensOverride);
@@ -66288,14 +66351,15 @@ Art direction:
     //   クイズなど構造化を使う機能が丸ごと動かなくなっていた。
     // 起動直後のプラン復元待ち (= 開発者モードなのに決済画面が出るのを防ぐ)。
     await awaitPlanReady();
-    if (canUseAiRelay) {
+    // 使えるか確かめ直してから諦める (= ユーザー報告: Dev なのに使えない)。
+    if (await ensureRelayReady()) {
       return askAiViaRelay(prompt, maxTokens: maxTokens);
     }
     if (relayApiBase.isEmpty || _relayAvailable != true) {
       throw Exception(t('relay.notConfigured'));
     }
     _notifyCreditShort();
-      throw Exception(t('credit.insufficient'));
+    throw Exception(t('credit.insufficient'));
     // ignore: dead_code
     switch (_aiProvider) {
       case 'openai':
@@ -69301,6 +69365,26 @@ $cleanQ
             'ファイルを「説明」せず、その問題を直接解いて答えだけを返してください。\n'
             '・ファイルが単に参考資料の場合のみ、'
             'その情報を踏まえて以下の指示に答えてください。\n\n';
+    // ── 画像は「実体」 を渡す (= ユーザー報告: 【添付画像 #1: …png】 と
+    //    名前だけが渡っていて、 中身が届いていない) ──
+    //
+    //    代行サーバーは画像を base64 で受け取れる (4 枚 / 合計 6MB まで)。
+    //    以前はここから `_askAiWithBinaryDoc` へ行っていたが、 その関数は
+    //    代行が使える時に必ず例外を投げる作りなので、 毎回 catch に落ちて
+    //    **文字だけ**で問い合わせていた。 画像は素直に images で渡す。
+    if (isImage) {
+      final img = await buildAiImageFromFile(ap, name: fileName);
+      if (img != null) {
+        try {
+          return await askAi(attachmentHint + prompt, images: [img]);
+        } catch (e) {
+          debugPrint('AI: 画像付き問い合わせ失敗 → 文字だけで再試行: $e');
+          return askAi(prompt);
+        }
+      }
+      // 画像を読めなかった (大きすぎる等) → 文字だけで聞く。
+      return askAi(attachmentHint + prompt);
+    }
     try {
       return await _askAiWithBinaryDoc(
         filePath: ap,
@@ -69313,6 +69397,47 @@ $cleanQ
       // 何の回答も得られないのは避けたい)
       debugPrint('AI: 添付付き問い合わせ失敗 → テキストのみで再試行: $e');
       return askAi(prompt);
+    }
+  }
+
+  /// 画像ファイルを AI に渡せる形 (base64) にする。
+  ///
+  /// 代行サーバーの上限 (1 回 4 枚 / 合計 6MB) に収まらない物は null を返し、
+  /// 呼び出し側で「文字だけ」 に落とす。
+  static const int _kAiImageMaxBytes = 5 * 1024 * 1024;
+  Future<AiInputImage?> buildAiImageFromFile(String path,
+      {String? name}) async {
+    try {
+      final f = File(path);
+      if (!await f.exists()) return null;
+      final len = await f.length();
+      if (len <= 0 || len > _kAiImageMaxBytes) {
+        debugPrint('AI: 画像が大きすぎる / 空 ($len bytes) → 文字だけで送る');
+        return null;
+      }
+      final dot = path.lastIndexOf('.');
+      final ext = dot >= 0 ? path.substring(dot + 1).toLowerCase() : '';
+      const mimeByExt = <String, String>{
+        'png': 'image/png',
+        'jpg': 'image/jpeg',
+        'jpeg': 'image/jpeg',
+        'gif': 'image/gif',
+        'webp': 'image/webp',
+        'heic': 'image/heic',
+        'heif': 'image/heif',
+      };
+      final mime = mimeByExt[ext];
+      if (mime == null) return null;
+      final bytes = await f.readAsBytes();
+      if (bytes.isEmpty) return null;
+      return AiInputImage(
+        mime: mime,
+        base64: base64Encode(bytes),
+        name: name ?? path.split(RegExp(r'[/\\]')).last,
+      );
+    } catch (e) {
+      debugPrint('AI: 画像の読み込みに失敗: $e');
+      return null;
     }
   }
 
@@ -71752,7 +71877,8 @@ $cleanQ
 
   /// ファイルをFirebase Storageにアップロード（dart:io HttpClientでストリーミング送信）
   ///
-  /// プランごとの月間アップロード容量上限 (free 5MB / pro 5GB / max 25GB) を
+  /// プランごとの月間アップロード容量上限 (Max = 25GB。 Free / Pro は
+  /// クラウド同期そのものが使えないので 0) を
   /// 超過する場合は ``MapLimitException`` 系の `Exception` を投げて中断する
   /// (上位 UI 側でユーザー向けエラーメッセージを表示する責務)。
   Future<String?> uploadAttachmentToStorage(String localPath, String fileName,

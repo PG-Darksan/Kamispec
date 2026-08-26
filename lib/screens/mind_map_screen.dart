@@ -462,6 +462,36 @@ Color _pageIconColorOf(String? pageType) {
   }
 }
 
+/// ページ種別ごとの既定アイコン (= ページ一覧と同じ絵)。
+IconData pageTypeDefaultIcon(String? pageType, {bool active = false}) {
+  switch (pageType) {
+    case 'bookshelf':
+      return Icons.shelves;
+    case 'paint':
+      return Icons.brush_rounded;
+    case 'document':
+      return Icons.article_rounded;
+    case 'markdown':
+      return Icons.polyline_rounded;
+    case 'videoEditor':
+      return Icons.movie_creation_rounded;
+    default:
+      return active ? Icons.map : Icons.map_outlined;
+  }
+}
+
+/// ページ一覧と同じ見た目のアイコン (= ユーザー要望: 「別ページに送る」 でも
+/// 種類ごとの絵と色に揃える)。 個別に選んだアイコンがあればそれを使う。
+Widget pageListIcon(MindMapProvider provider, MindMapPage p,
+    {double size = 18, bool active = false}) {
+  final color = _pageIconColorOf(p.pageType);
+  return Icon(
+    pageIconFor(provider, p, pageTypeDefaultIcon(p.pageType, active: active)),
+    size: size,
+    color: active ? color : color.withValues(alpha: 0.75),
+  );
+}
+
 /// このページに出すアイコン。 個別指定 → 種類の指定 → 元からの既定 の順。
 IconData pageIconFor(MindMapProvider provider, MindMapPage p, IconData fallback) {
   final i = provider.pageIconIndexFor(p.id, p.pageType);
@@ -20299,19 +20329,57 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (title.isNotEmpty) _offerBulkAutofillSuggestions(nodeId);
   }
 
+  /// 書き込んでいる間の欄の大きさ (= ユーザー要望: ノードが小さいと
+  /// 書きづらいので、 書いている間はある程度大きくする)。
+  static const double _kInlineEditMinWidth = 280.0;
+  static const double _kInlineEditMinHeight = 96.0;
+  static const double _kInlineEditMaxHeight = 360.0;
+
   Widget _buildNodeInlineTextEditor(MindMapProvider provider) {
     final nodeId = _inlineNodeEditNodeId;
     if (nodeId == null) return const SizedBox.shrink();
     final node = provider.nodes[nodeId];
     if (node == null) return const SizedBox.shrink();
-    const editorInset = 8.0;
-    final editorW = math.max(80.0, node.width - editorInset * 2);
-    final editorH = math.max(44.0, node.visualHeight - editorInset * 2);
     final bg = provider.isDarkMode ? const Color(0xFF1E1E32) : Colors.white;
     final fg = provider.isDarkMode ? Colors.white : const Color(0xFF101018);
-    return Positioned(
-      left: node.position.dx + editorInset,
-      top: node.position.dy + editorInset,
+    final style = TextStyle(
+      color: fg,
+      fontSize: (node.titleFontSize ?? provider.defaultTitleFontSize)
+          .clamp(8.0, 28.0)
+          .toDouble(),
+      height: 1.25,
+      fontWeight: FontWeight.w700,
+    );
+    // 打つたびに測り直して、 文章の量に合わせて縦に伸ばす。
+    return ValueListenableBuilder<TextEditingValue>(
+      valueListenable: _inlineNodeEditCtrl,
+      builder: (context, value, _) {
+        const editorInset = 8.0;
+        // 小さいノードでも書きやすい幅を確保する。
+        final editorW = math.max(
+            _kInlineEditMinWidth, node.width - editorInset * 2);
+        final tp = TextPainter(
+          text: TextSpan(
+              text: value.text.isEmpty ? ' ' : value.text, style: style),
+          textDirection: TextDirection.ltr,
+          maxLines: null,
+        )..layout(maxWidth: math.max(40.0, editorW - 20));
+        final editorH = (tp.height + 28)
+            .clamp(
+              math.max(
+                  _kInlineEditMinHeight, node.visualHeight - editorInset * 2),
+              _kInlineEditMaxHeight,
+            )
+            .toDouble();
+        // ノードの中心に合わせて広げる (左上を軸にすると片側だけ伸びて
+        // 画面から出やすい)。
+        final left =
+            node.position.dx + (node.width - editorW) / 2;
+        final top =
+            node.position.dy + (node.visualHeight - editorH) / 2;
+        return Positioned(
+      left: left,
+      top: top,
       width: editorW,
       height: editorH,
       child: Material(
@@ -20347,18 +20415,11 @@ class _MindMapScreenState extends State<MindMapScreen>
             keyboardType: TextInputType.multiline,
             textInputAction: TextInputAction.newline,
             onTapOutside: (_) => _commitNodeInlineTextEdit(),
-            style: TextStyle(
-              color: fg,
-              fontSize: (node.titleFontSize ?? provider.defaultTitleFontSize)
-                  .clamp(8.0, 28.0)
-                  .toDouble(),
-              height: 1.25,
-              fontWeight: FontWeight.w700,
-            ),
+            style: style,
             decoration: InputDecoration(
               border: InputBorder.none,
               contentPadding:
-                  const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
               hintText: provider.t('inlineEdit.titleHint'),
               hintStyle: TextStyle(
                 color: fg.withValues(alpha: 0.38),
@@ -20368,6 +20429,8 @@ class _MindMapScreenState extends State<MindMapScreen>
           ),
         ),
       ),
+        );
+      },
     );
   }
 
@@ -36382,6 +36445,10 @@ class _MindMapScreenState extends State<MindMapScreen>
               ? 0.0
               : (inquiryUsed / inquiryLimit).clamp(0.0, 1.0);
 
+          // Max / Dev はこれ以上のプランが無いので、 変更タブを出さない
+          // (= ユーザー要望)。
+          final showPlanTab = !provider.isMaxUnlocked;
+
           return AlertDialog(
             backgroundColor: const Color(0xFF1E1E1E),
             shape:
@@ -36409,8 +36476,12 @@ class _MindMapScreenState extends State<MindMapScreen>
               //   「今の状況」 と「プランを変える」 の 2 つに分ける
               //   (= ユーザー要望)。
               child: DefaultTabController(
-                length: 2,
+                // ── Max / Dev の人には「プランを変える」 を出さない
+                //    (= ユーザー要望)。 これ以上のプランが無いので、
+                //    出しても行き先が無い。 ──
+                length: showPlanTab ? 2 : 1,
                 child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  if (showPlanTab)
                   Container(
                     decoration: BoxDecoration(
                       color: Colors.white.withValues(alpha: 0.04),
@@ -36434,7 +36505,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                       ],
                     ),
                   ),
-                  const SizedBox(height: 12),
+                  if (showPlanTab) const SizedBox(height: 12),
                   // 中身の高さに合わせて縮む (= ユーザー要望: 余白があるなら
                   //   伸ばして全部入れる / 逆に短い側で間延びさせない)。
                   ConstrainedBox(
@@ -36734,7 +36805,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                           ],
                         ),
                       ),
-                      // ── ② プランを変える ──
+                      // ── ② プランを変える (Max / Dev では出さない) ──
+                      if (showPlanTab)
                       SingleChildScrollView(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -61117,12 +61189,31 @@ class _MindMapScreenState extends State<MindMapScreen>
                 // (薄紫の塗り) を表示。タップで ON/OFF。
                 if (_isDesktop)
                   Builder(builder: (btnCtx) {
-                    final isRootShortcut = provider.shortcutFolderId ==
-                        MindMapProvider.shortcutRootSentinel;
+                    // ── いま Ctrl+1〜9 がどこを見ているか ──
+                    //
+                    // = ユーザー指摘「この盤面でボタンの ON/OFF を切り替えても
+                    //   意味がないのでは」。 そのとおりで、 基準が未設定 (null)
+                    //   でもルート指定 (sentinel) でも `pageForShortcutSlot` は
+                    //   同じ「一覧のページ」 を返す。 つまり ON/OFF は同じ動き
+                    //   だった。 そこで、
+                    //     ・一覧が対象の時 … 点灯したままにして、 押しても
+                    //       状態は変えず「いまこうなっています」 と伝えるだけ
+                    //     ・フォルダーが対象の時 … 押すと一覧に戻す (意味あり)
+                    //   にする。
+                    final baseId = provider.shortcutFolderId;
+                    final folder = (baseId != null &&
+                            baseId != MindMapProvider.shortcutRootSentinel)
+                        ? provider.folders
+                            .where((f) => f.id == baseId)
+                            .firstOrNull
+                        : null;
+                    // フォルダーが指定されていない = この一覧が対象。
+                    final isRootShortcut = folder == null;
                     return IconButton(
                       tooltip: isRootShortcut
-                          ? provider.t('root.unsetShortcut')
-                          : provider.t('root.setShortcut'),
+                          ? provider.t('root.shortcutAlready')
+                          : '${provider.t('root.setShortcut')}\n'
+                              '${provider.t('root.shortcutFolderNow').replaceFirst('{name}', folder.name)}',
                       padding: EdgeInsets.zero,
                       iconSize: 18,
                       constraints:
@@ -61148,19 +61239,30 @@ class _MindMapScreenState extends State<MindMapScreen>
                           ),
                       ]),
                       onPressed: () async {
-                        await provider.setShortcutFolder(isRootShortcut
-                            ? null
-                            : MindMapProvider.shortcutRootSentinel);
+                        // 既に一覧が対象なら、 状態は変えずに知らせるだけ
+                        // (押しても何も変わらないのに切り替わったように
+                        //  見えるのを止める = ユーザー指摘)。
+                        if (isRootShortcut) {
+                          _appSnack(
+                              context,
+                              SnackBar(
+                                backgroundColor: const Color(0xFF3A3A55),
+                                duration: const Duration(seconds: 3),
+                                content: Text(
+                                    provider.t('root.shortcutAlready'),
+                                    style:
+                                        const TextStyle(color: Colors.white)),
+                              ));
+                          return;
+                        }
+                        await provider.setShortcutFolder(null);
                         if (!mounted) return;
                         _appSnack(
                             context,
                             SnackBar(
                               backgroundColor: const Color(0xFF6C63FF),
                               duration: const Duration(seconds: 2),
-                              content: Text(
-                                  isRootShortcut
-                                      ? provider.t('root.shortcutCleared')
-                                      : provider.t('root.shortcutSet'),
+                              content: Text(provider.t('root.shortcutSet'),
                                   style: const TextStyle(color: Colors.white)),
                             ));
                       },
@@ -64769,6 +64871,8 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 何もしない。 ヘッダーの closeSplit コマンドと、 ページ名バッジの
   /// メニュー (= ユーザー要望: 分割画面を閉じる項目) から共用。
   void _closeMapSplit() {
+    // 分割が畳まれたら「道具のために開いた」 印も消す。
+    _toolOpenedSplit.clear();
     if (!_mapSplitOpen) return;
     setState(() {
       _mapSplitOpen = false;
@@ -64834,9 +64938,18 @@ class _MindMapScreenState extends State<MindMapScreen>
   final Map<int, String> _mapSplitCellTool = {};
 
   /// ペイン内に全画面で開けるツールか。
+  /// その道具を出すために画面分割を作ったか (道具の id → true)。
+  ///
+  /// = ユーザー要望「元々が全画面であったのなら全画面に戻して欲しい」。
+  /// 分割していない所から道具を開くと 2 分割にするので、 その道具を閉じた
+  /// 時は分割ごと畳んで元の全画面に戻す。 もともと分割していた時は、
+  /// 道具だけ外して分割はそのまま残す。
+  final Map<String, bool> _toolOpenedSplit = {};
+
   /// 道具 (メモ / ショートカット一覧など) を左右分割のペインに入れる。
   /// まだ分割していなければ 2 分割にしてから入れる。
   Future<void> _openToolInSplitPane(String id, bool left) async {
+    final wasSplit = _mapSplitOpen;
     if (!_mapSplitOpen) {
       await _applyMapSplitMode(panes: 2, stacked: false);
       if (!mounted) return;
@@ -64844,11 +64957,16 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (!_mapSplitOpen) return;
     final slot = left ? 0 : _primaryViewerSlot();
     if (_mapSplitCellTool[slot] == id) {
+      // もう一度押した = 閉じる。
+      final openedByUs = _toolOpenedSplit.remove(id) ?? false;
       setState(() {
         _mapSplitCellTool.remove(slot);
         _syncNarrowPaneRatio();
       });
+      // この道具のために分割したのなら、 全画面に戻す (= ユーザー要望)。
+      if (openedByUs) _closeMapSplit();
     } else {
+      if (!wasSplit) _toolOpenedSplit[id] = true;
       _embedToolIntoSlot(slot, id);
     }
   }
@@ -80538,18 +80656,14 @@ class _MindMapScreenState extends State<MindMapScreen>
                                           style: const TextStyle(
                                               color: Color(0xFFFFB74D),
                                               fontSize: 10))
-                                      : FutureBuilder<String>(
-                                          future: _drawerPageMetricText(
-                                              page, provider),
-                                          initialData:
-                                              _drawerPageMetricFallback(
-                                                  page, provider),
-                                          builder: (_, snap) => Text(
-                                              snap.data ?? '',
-                                              style: const TextStyle(
-                                                  color: Colors.white70,
-                                                  fontSize: 10)),
-                                        ),
+                                      // 数え直しても変わらなければ書き換え
+                                      // ない (= ユーザー要望: 目障り)。
+                                      : _DrawerMetricText(
+                                          page: page,
+                                          provider: provider,
+                                          style: const TextStyle(
+                                              color: Colors.white70,
+                                              fontSize: 10)),
                                   value: checked,
                                   onChanged: canSelect
                                       ? (v) => setD(() {
@@ -87498,8 +87612,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                   itemBuilder: (_, k) {
                     final i = otherIdx[k];
                     return ListTile(
-                      leading: const Icon(Icons.map_outlined,
-                          color: Colors.white54, size: 18),
+                      // ページ一覧と同じ絵・色に揃える (= ユーザー要望:
+                      // 種類に関係なく全部マインドマップの絵だった)。
+                      leading: pageListIcon(provider, pages[i]),
                       title: Text(pages[i].name,
                           style: const TextStyle(
                               color: Colors.white, fontSize: 14)),
@@ -87523,21 +87638,32 @@ class _MindMapScreenState extends State<MindMapScreen>
               ),
               const Divider(color: Colors.white12, height: 16),
               // ── 新規ページを作成して送る (= ユーザー要望) ──
-              ListTile(
-                leading: const Icon(Icons.add_circle_rounded,
-                    color: Color(0xFF43B97F), size: 18),
-                title: Text(provider.t('copyTo.newMap'),
-                    style: const TextStyle(
-                        color: Color(0xFF43B97F),
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600)),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10)),
-                onTap: () async {
-                  Navigator.pop(ctx);
-                  await _promptNewMapNameAndSendNode(nodeId);
-                },
-              ),
+              // ── 新しいページを作って送る。 種類も選べる (= ユーザー要望:
+              //    マインドマップしか作れなかった)。 ──
+              for (final t in const [
+                ('normal', 'drawer.newPage'),
+                ('bookshelf', 'drawer.newBookshelfPage'),
+                ('paint', 'drawer.newPaintPage'),
+                ('document', 'drawer.newDocumentPage'),
+                ('markdown', 'drawer.newMarkdownPage'),
+                ('videoEditor', 'drawer.newVideoEditorPage'),
+              ])
+                ListTile(
+                  dense: true,
+                  leading: Icon(pageTypeDefaultIcon(t.$1),
+                      color: _pageIconColorOf(t.$1), size: 18),
+                  title: Text(provider.t(t.$2),
+                      style: const TextStyle(
+                          color: Colors.white, fontSize: 13.5)),
+                  trailing: const Icon(Icons.add_circle_rounded,
+                      color: Color(0xFF43B97F), size: 16),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10)),
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    await _promptNewMapNameAndSendNode(nodeId, pageType: t.$1);
+                  },
+                ),
             ],
           ),
         ),
@@ -87552,8 +87678,10 @@ class _MindMapScreenState extends State<MindMapScreen>
   }
 
   /// 新規ページ名を入力 → ページ作成 → そのページへ単一ノードを送る
-  /// (= ユーザー要望: 他のページに送る時に新規ページを作れるように)。
-  Future<void> _promptNewMapNameAndSendNode(String nodeId) async {
+  /// (= ユーザー要望: 他のページに送る時に新規ページを作れるように。
+  /// 種類も選べる)。
+  Future<void> _promptNewMapNameAndSendNode(String nodeId,
+      {String pageType = 'normal'}) async {
     final provider = context.read<MindMapProvider>();
     final controller = TextEditingController(
       text: 'マップ ${provider.pages.length + 1}',
@@ -87601,12 +87729,31 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (name == null || name.isEmpty || !mounted) return;
 
     // 無料プランのページ上限はここでも守る。
-    if (!provider.canCreatePageType('normal')) {
+    if (!provider.canCreatePageType(pageType)) {
       _showPaywallDialog(provider);
       return;
     }
     final originalIndex = provider.currentPageIndex;
-    provider.addPage(name: name);
+    // 選んだ種類で作る (= ユーザー要望: マインドマップ以外も作れるように)。
+    switch (pageType) {
+      case 'bookshelf':
+        provider.addBookshelfPage(name: name);
+        break;
+      case 'paint':
+        provider.addPaintPage(name: name);
+        break;
+      case 'document':
+        provider.addDocumentPage(name: name);
+        break;
+      case 'markdown':
+        provider.addMarkdownPage(name: name);
+        break;
+      case 'videoEditor':
+        provider.addVideoEditorPage(name: name);
+        break;
+      default:
+        provider.addPage(name: name);
+    }
     final newIndex = provider.pages.length - 1;
     provider.switchPage(originalIndex);
     provider.moveNodesToPage({nodeId}, newIndex);
@@ -88914,15 +89061,9 @@ class _MindMapScreenState extends State<MindMapScreen>
         _showShortcutsDialog(ctx);
         return;
       }
-      final slot = style == 'splitLeft' ? 0 : _primaryViewerSlot();
-      if (_mapSplitCellTool[slot] == 'shortcuts') {
-        setState(() {
-          _mapSplitCellTool.remove(slot);
-          _syncNarrowPaneRatio();
-        });
-      } else {
-        _embedToolIntoSlot(slot, 'shortcuts');
-      }
+      // 閉じた時に元の全画面へ戻す扱いも含めて、 共通の入口に任せる
+      // (= ユーザー要望)。
+      await _openToolInSplitPane('shortcuts', style == 'splitLeft');
       return;
     }
     if (style == 'floating') {
@@ -141273,6 +141414,82 @@ class _ReorderDropZoneState extends State<_ReorderDropZone> {
   }
 }
 
+/// ページ一覧の「◯ 文字 / ◯ ノード」 の行。
+///
+/// = ユーザー要望「マークダウンの文字数カウントが、 ページを操作していない
+///   のに動くのが目障り。 文字数が変わらないなら動かないで」。
+///
+/// 以前は `FutureBuilder(future: _drawerPageMetricText(...))` を build の中で
+/// 直に作っていたため、 一覧が描き直されるたびに
+///   ① いったん初期値 (0 文字) に戻る → ② 数え終わって本当の数に飛ぶ
+/// という往復が見えていた。 ここでは**前に出した文字をそのまま出し続け**、
+/// 数え直した結果が変わった時だけ書き換える。
+class _DrawerMetricText extends StatefulWidget {
+  final dynamic page;
+  final MindMapProvider provider;
+  final TextStyle? style;
+  const _DrawerMetricText(
+      {required this.page, required this.provider, this.style});
+
+  @override
+  State<_DrawerMetricText> createState() => _DrawerMetricTextState();
+}
+
+class _DrawerMetricTextState extends State<_DrawerMetricText> {
+  /// ページ id → 最後に出した文字。 画面をまたいでも持ち越すので、
+  /// 一覧を開き直した時も数え終わるまで前の値を出せる。
+  static final Map<String, String> _cache = {};
+
+  String? _text;
+  bool _counting = false;
+
+  String get _pageId => (widget.page.id ?? '').toString();
+
+  @override
+  void initState() {
+    super.initState();
+    _text = _cache[_pageId];
+    unawaited(_recount());
+  }
+
+  @override
+  void didUpdateWidget(covariant _DrawerMetricText old) {
+    super.didUpdateWidget(old);
+    if ((old.page.id ?? '') != (widget.page.id ?? '')) {
+      _text = _cache[_pageId];
+    }
+    unawaited(_recount());
+  }
+
+  Future<void> _recount() async {
+    if (_counting) return; // 数えている最中に重ねない
+    _counting = true;
+    try {
+      final t = await _drawerPageMetricText(widget.page, widget.provider);
+      _cache[_pageId] = t;
+      // ★ 変わっていなければ setState しない (= 画面を動かさない)。
+      if (mounted && t != _text) setState(() => _text = t);
+    } catch (_) {
+      // 数えられなかった時は前の表示のまま (0 に戻さない)。
+    } finally {
+      _counting = false;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = _text ??
+        _drawerPageMetricFallback(widget.page, widget.provider);
+    return Text(
+      t,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: widget.style ??
+          const TextStyle(color: Colors.white30, fontSize: 10),
+    );
+  }
+}
+
 Future<String> _drawerPageMetricText(
     dynamic page, MindMapProvider provider) async {
   final type = (page.pageType ?? 'normal').toString();
@@ -141676,16 +141893,7 @@ class _DrawerTile extends StatelessWidget {
           children: [
             Row(children: [
               Flexible(
-                child: FutureBuilder<String>(
-                  future: _drawerPageMetricText(page, provider),
-                  initialData: _drawerPageMetricFallback(page, provider),
-                  builder: (_, snap) => Text(
-                    snap.data ?? _drawerPageMetricFallback(page, provider),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Colors.white30, fontSize: 10),
-                  ),
-                ),
+                child: _DrawerMetricText(page: page, provider: provider),
               ),
               if (sizeText != null) ...[
                 const Text(' · ',

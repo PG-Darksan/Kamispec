@@ -1200,6 +1200,13 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   /// 開いていない間)。 ページを開いたら false になり、 普通に表示される。
   bool get _browserHidden =>
       widget.automationOnly &&
+      // ★ 座標を指している間 / 記録している間は必ず見せる。
+      //   隠している間はブラウザ側が IgnorePointer で触れないので、
+      //   「位置」「終点」 を押しても指す場所が無く、 いつまでも決まらな
+      //   かった (= ユーザー報告: スワイプの始点・終点が設定できない)。
+      _pickPointCompleter == null &&
+      _pickRectCompleter == null &&
+      !_autoRecording &&
       (_currentUrl.isEmpty ||
           _currentUrl == 'about:blank' ||
           _currentUrl.startsWith('about:'));
@@ -4860,6 +4867,19 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     return c.future;
   }
 
+  /// 座標を指すのをやめる (= 欄に戻す)。
+  void _cancelPick() {
+    final p = _pickPointCompleter;
+    final r = _pickRectCompleter;
+    setState(() {
+      _pickPointCompleter = null;
+      _pickRectCompleter = null;
+      _pickRectFirst = null;
+    });
+    p?.complete(null);
+    r?.complete(null);
+  }
+
   void _handlePickTap(Offset local) {
     if (_pickPointCompleter != null) {
       final c = _pickPointCompleter!;
@@ -5201,20 +5221,38 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                 alignment: Alignment.topCenter,
                 child: Container(
                   margin: const EdgeInsets.only(top: 10),
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 12, vertical: 6),
+                  padding: const EdgeInsets.only(
+                      left: 12, right: 4, top: 4, bottom: 4),
                   decoration: BoxDecoration(
                     color: Colors.black87,
                     borderRadius: BorderRadius.circular(999),
                   ),
-                  child: Text(
-                    _pickRectCompleter != null
-                        ? (_pickRectFirst == null
-                            ? context.read<MindMapProvider>().t('auto.pickA')
-                            : context.read<MindMapProvider>().t('auto.pickB'))
-                        : context.read<MindMapProvider>().t('auto.pickTap'),
-                    style: const TextStyle(color: Colors.white, fontSize: 12),
-                  ),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    Text(
+                      _pickRectCompleter != null
+                          ? (_pickRectFirst == null
+                              ? context.read<MindMapProvider>().t('auto.pickA')
+                              : context.read<MindMapProvider>().t('auto.pickB'))
+                          : context.read<MindMapProvider>().t('auto.pickTap'),
+                      style: const TextStyle(color: Colors.white, fontSize: 12),
+                    ),
+                    const SizedBox(width: 8),
+                    // ── やめる (= 指すのを取り消して欄に戻る) ──
+                    //   指している間は自動操作の欄を引っ込めているので、
+                    //   ここに出口が無いと戻れなくなる。
+                    TextButton(
+                      style: TextButton.styleFrom(
+                        foregroundColor: Colors.white70,
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        minimumSize: const Size(0, 26),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      onPressed: _cancelPick,
+                      child: Text(
+                          context.read<MindMapProvider>().t('btn.cancel'),
+                          style: const TextStyle(fontSize: 11)),
+                    ),
+                  ]),
                 ),
               ),
             ),
@@ -7161,7 +7199,14 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
               //    写り込まないよう一時的に隠す。 ──
               // 実行中は窓自体を出さない (停止はヘッダーのボタンで行う
               // = ユーザー要望: 点滅しないように)。
-              if (_autoPanelOpen && !_autoPanelHiddenForShot && !_autoRunning)
+              // ★ 座標を指している間は、 窓が指したい場所を覆ってしまうので
+              //   一時的に引っ込める (= ユーザー報告: スワイプの始点・終点を
+              //   押しても座標が決まらない)。 指し終われば元に戻る。
+              if (_autoPanelOpen &&
+                  !_autoPanelHiddenForShot &&
+                  !_autoRunning &&
+                  _pickPointCompleter == null &&
+                  _pickRectCompleter == null)
                 _buildFloatingAutoPanel(provider),
               // AI 欄の浮遊窓 (= ユーザー要望)
               if (_aiPanelOpen && _aiPanelFloating)
