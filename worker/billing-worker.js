@@ -28,7 +28,7 @@ export default {
         headers: {
           'access-control-allow-origin': '*',
           'access-control-allow-methods': 'GET,POST,OPTIONS',
-          'access-control-allow-headers': 'content-type,stripe-signature,authorization',
+          'access-control-allow-headers': 'content-type,stripe-signature,authorization,x-dev-key',
         },
       });
     }
@@ -1012,6 +1012,19 @@ function isAdminUid(env, uid) {
     .split(/[\s,]+/)
     .filter(Boolean)
     .includes(uid);
+}
+
+/// Dev ビルドの合鍵 (x-dev-key ヘッダ)。 一致すれば uid の登録に関係なく
+/// Dev 枠として通す (= ユーザー要望: 端末やアカウント認証に関わらず
+/// Dev プランなら AI を呼べるように。 ADMIN_UIDS は端末が変わる・prefs の
+/// 保存先が変わる度に uid が生まれ変わって外れてしまう)。
+/// 鍵は `wrangler secret put DEV_RELAY_KEY` で設定し、 漏れたら同じ手順で
+/// 差し替えるだけで旧鍵は即失効する。 使用量は擬似 uid 'dev-key' に記録
+/// され、 DEV_MONTHLY_CAP_USD の月間上限はそのまま効く。
+function devKeyOk(request, env) {
+  const k = String(env.DEV_RELAY_KEY || '');
+  if (!k) return false;
+  return (request.headers.get('x-dev-key') || '') === k;
 }
 
 /// 紛らわしい文字 (O/0/I/1) を除いた 8 文字コード。 アプリ側と同じ字種。
@@ -2125,7 +2138,9 @@ async function handleAiGenerate(request, env) {
     return json({ error: 'invalid json' }, 400);
   }
   // ★ 本文の uid は信用しない。 トークンから取り出す。
-  const uid = await authUid(request, env);
+  //   Dev の合鍵持ちだけは、 トークンが無くても擬似 uid で通す。
+  const dk = devKeyOk(request, env);
+  const uid = (await authUid(request, env)) || (dk ? 'dev-key' : null);
   if (!uid) return unauthorized();
   const prompt = String(body.prompt || '');
   const model = body.model && priceFor(body.model) ? body.model : DEFAULT_MODEL;
@@ -2154,7 +2169,8 @@ async function handleAiGenerate(request, env) {
 
   // ── Dev 枠は残高を引かない (= 決済を通さずに AI を使える枠) ──
   //   使用量は普通に記録するので、 誰がどれだけ使ったかは後から分かる。
-  const devEnt = await isFreeAiUid(env, uid);
+  //   合鍵 (dk) は KV を見るまでもなく Dev 扱い。
+  const devEnt = dk || (await isFreeAiUid(env, uid));
 
   // ── 使い過ぎの保険 (月あたり) ──
   //   ★ 必ず「仮押さえ」 より前に確かめる。 後ろに置くと、 上限で断る時に
@@ -2302,7 +2318,8 @@ async function handleAiImage(request, env) {
   } catch {
     return json({ error: 'invalid json' }, 400);
   }
-  const uid = await authUid(request, env);
+  const dk = devKeyOk(request, env);
+  const uid = (await authUid(request, env)) || (dk ? 'dev-key' : null);
   if (!uid) return unauthorized();
   const prompt = String(body.prompt || '');
   if (!prompt) return json({ error: 'prompt is required' }, 400);
@@ -2312,8 +2329,8 @@ async function handleAiImage(request, env) {
   const cost = IMAGE_MODELS[wanted];
   const billed = round6(cost * (1 + MARKUP));
 
-  // Dev 枠は残高を引かない (テキストと同じ扱い)。
-  const devEnt = await isFreeAiUid(env, uid);
+  // Dev 枠は残高を引かない (テキストと同じ扱い)。 合鍵も同様。
+  const devEnt = dk || (await isFreeAiUid(env, uid));
 
   // ── 使い過ぎの保険 (月あたり) ──
   //   仮押さえより前に確かめる (後ろだと確保した分が戻らない)。
@@ -2453,7 +2470,8 @@ async function handleAiImage(request, env) {
 }
 
 async function handleAiUsage(url, env, request) {
-  const uid = await authUid(request, env);
+  const dk = devKeyOk(request, env);
+  const uid = (await authUid(request, env)) || (dk ? 'dev-key' : null);
   if (!uid) return unauthorized();
   const ym = url.searchParams.get('ym') || currentYm();
   const used = await readUsage(env, uid, ym);
@@ -2464,8 +2482,8 @@ async function handleAiUsage(url, env, request) {
   //   同じ物を返す。 以前は権利だけを見ていたため、 管理者本人の端末には
   //   dev:false が返り、 アプリ側が残高 0 と受け取ってチャージ画面へ
   //   飛ばしていた (= ユーザー要望: 端末やユーザーに関わらず Dev なら
-  //   決済画面を通さずに叩けるように)。
-  const devEnt = await isFreeAiUid(env, uid);
+  //   決済画面を通さずに叩けるように)。 合鍵 (x-dev-key) も同じ扱い。
+  const devEnt = dk || (await isFreeAiUid(env, uid));
   return json({
     ym,
     markup: MARKUP,

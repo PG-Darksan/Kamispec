@@ -65367,6 +65367,22 @@ class MindMapProvider extends ChangeNotifier {
       'ENTITLEMENT_API_BASE',
       defaultValue: '');
 
+  /// Dev ビルドの合鍵 (= ユーザー要望: 端末やアカウント認証に関わらず、
+  /// Dev プランなら AI を代行で呼べるように)。
+  ///
+  /// ADMIN_UIDS 方式は端末が変わる・prefs の保存先が変わる度に匿名 uid が
+  /// 生まれ変わって外れてしまうため、 uid に依らない合鍵を x-dev-key ヘッダで
+  /// 送る。 Worker 側 (`wrangler secret put DEV_RELAY_KEY`) と同じ値を
+  /// env.json の DEV_RELAY_KEY に入れてビルドすると有効になる。
+  /// 漏れた時は Worker 側の secret を差し替えれば旧鍵は即失効する。
+  static const String devRelayKey = String.fromEnvironment(
+      'DEV_RELAY_KEY',
+      defaultValue: '');
+
+  /// 合鍵つきの Dev ビルドとして代行を呼べる状態か。
+  /// (Dev でない利用者は同じバイナリでもヘッダを送らない)
+  bool get _devKeyActive => devRelayKey.isNotEmpty && isDevPlan;
+
   /// 代行の中継先が実際に応答するか。 null = 未確認。
   /// 接続先 URL が設定されていても、 Worker 側に代行エンドポイントが
   /// デプロイされていない事があるため、 確認できるまでは使わない
@@ -65430,6 +65446,8 @@ class MindMapProvider extends ChangeNotifier {
   Map<String, String> _relayHeaders({bool json = false}) => {
         if (json) 'content-type': 'application/json',
         if (_idToken != null) 'Authorization': 'Bearer $_idToken',
+        // Dev の合鍵。 トークンが無い / uid が未登録でも Dev 枠で通る。
+        if (_devKeyActive) 'x-dev-key': devRelayKey,
       };
 
   // ─── 書いた物をネットに公開する (= ユーザー要望: マークダウンの
@@ -65888,9 +65906,16 @@ class MindMapProvider extends ChangeNotifier {
     if (!force && _relayAvailable != null) return;
     final base = relayApiBase;
     if (base.isEmpty) return;
-    await _ensureFreshToken();
+    // 合鍵つきの Dev ビルドは、 サインインできない端末でも疎通確認まで進む
+    // (= ユーザー要望: 端末やアカウント認証に関わらず Dev なら呼べるように)。
+    final devKeyed = _devKeyActive;
+    try {
+      await _ensureFreshToken();
+    } catch (_) {
+      if (!devKeyed) rethrow;
+    }
     final uid = _uid;
-    if (uid == null || uid.isEmpty) return;
+    if ((uid == null || uid.isEmpty) && !devKeyed) return;
     try {
       final res = await http
           .get(Uri.parse('$base/ai/usage'), headers: _relayHeaders())
@@ -65952,15 +65977,24 @@ class MindMapProvider extends ChangeNotifier {
       {int? maxTokens, List<AiInputImage>? images}) async {
     final base = relayApiBase;
     if (base.isEmpty) throw Exception(t('relay.notConfigured'));
-    await _ensureFreshToken();
+    // 合鍵つきの Dev ビルドはサインイン不能でも通す (Worker が合鍵で認める)。
+    final devKeyed = _devKeyActive;
+    try {
+      await _ensureFreshToken();
+    } catch (_) {
+      if (!devKeyed) rethrow;
+    }
     final uid = _uid;
-    if (uid == null || uid.isEmpty) throw Exception(t('relay.needSignIn'));
+    if ((uid == null || uid.isEmpty) && !devKeyed) {
+      throw Exception(t('relay.needSignIn'));
+    }
     final res = await http
         .post(
           Uri.parse('$base/ai/generate'),
           headers: _relayHeaders(json: true),
           body: jsonEncode({
-            'uid': uid,
+            // ★ サーバーは本文の uid を信用しない (トークン / 合鍵から特定)。
+            'uid': uid ?? 'dev',
             // ★ 各社へ直接投げる経路 (askGemini 等) と同じように、 返答の言語
             //   指定を先頭に付ける。 代行経路だけこれが抜けていたため、
             //   日本語に設定していても英語で返ってきていた (= ユーザー報告)。
@@ -66050,15 +66084,23 @@ class MindMapProvider extends ChangeNotifier {
   Future<Uint8List> generateAiImageViaRelay(String prompt) async {
     final base = relayApiBase;
     if (base.isEmpty) throw Exception(t('relay.notConfigured'));
-    await _ensureFreshToken();
+    // 合鍵つきの Dev ビルドはサインイン不能でも通す (Worker が合鍵で認める)。
+    final devKeyed = _devKeyActive;
+    try {
+      await _ensureFreshToken();
+    } catch (_) {
+      if (!devKeyed) rethrow;
+    }
     final uid = _uid;
-    if (uid == null || uid.isEmpty) throw Exception(t('relay.needSignIn'));
+    if ((uid == null || uid.isEmpty) && !devKeyed) {
+      throw Exception(t('relay.needSignIn'));
+    }
     final res = await http
         .post(
           Uri.parse('$base/ai/image'),
           headers: _relayHeaders(json: true),
           body: jsonEncode({
-            'uid': uid,
+            'uid': uid ?? 'dev',
             'prompt': prompt,
             if (_imageGenModel != 'auto') 'model': _imageGenModel,
           }),

@@ -2380,6 +2380,11 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// ノート側で判定させる。
   void Function(List<String> paths, Offset globalPos)? _paintDropHandler;
 
+  /// フリーノート (paint) 表示中の矢印キーの受け口 (= ユーザー報告: 上下
+  /// カーソルでページが遷移してしまう → タブ列ホバー中だけ切替に使う)。
+  /// 戻り値 true = ノート側が消費した (マップ側のパン等はしない)。
+  bool Function(LogicalKeyboardKey key)? _paintArrowKeyHandler;
+
   // ロックトースト表示（画面中央上部）
   String? _lockToastMessage;
   Timer? _lockToastTimer;
@@ -3202,7 +3207,7 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// URL の一致判定は host (= ドメイン) ベース。 これにより、 ログイン後の
   /// `https://chatgpt.com/c/xxxxxx-xxxx` のようなサブパスに遷移していても
   /// 「同じ ChatGPT パネル」 と認識でき、 ボタン再押下で閉じられる。
-  void _toggleUrlInSplitPanel(String url) {
+  void _toggleUrlInSplitPanel(String url, {bool? isLeftPanel}) {
     // ヘッダーの AI/Web ボタンでパネルを開閉するときは、 予約済みのノード AI
     //   注入をキャンセルする (= ユーザー要望: AI ボタンで ChatGPT を開くと最後に
     //   開いた単語が勝手にプロンプト欄へ入力されるバグの修正)。 ノードの AI ボタン
@@ -3250,7 +3255,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       } catch (_) {/* context 無効時は既存値を維持 */}
     }
     // ── どちらにも該当しなければ通常通り開く ──
-    _openUrlInSplitPanel(url);
+    _openUrlInSplitPanel(url, isLeftPanel: isLeftPanel);
   }
 
   /// ヘッダーの ChatGPT / Gemini / Claude / DeepSeek / Grok ボタン等から
@@ -9349,11 +9354,14 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (url.isEmpty) return false;
     final provider = context.read<MindMapProvider>();
     switch (_openStyleOf(commandId)) {
+      // ── 分割で開く設定のボタンは「もう一度押すと閉じて全画面に戻る」 ──
+      //    (= ユーザー報告: 分割で開いた後にボタンを押し直しても全画面に
+      //    戻らない)。 既定経路と同じトグル (_toggleUrlInSplitPanel) を通す。
       case 'splitLeft':
-        _openUrlInSplitPanel(url, isLeftPanel: true);
+        _toggleUrlInSplitPanel(url, isLeftPanel: true);
         break;
       case 'splitRight':
-        _openUrlInSplitPanel(url, isLeftPanel: false);
+        _toggleUrlInSplitPanel(url, isLeftPanel: false);
         break;
       case 'floating':
         // ── YouTube はアプリの中の浮遊窓で開く (= ユーザー報告: YouTube が
@@ -41464,12 +41472,13 @@ class _MindMapScreenState extends State<MindMapScreen>
       case 'googleSearch':
         // ── 開き方を選べる (= ユーザー要望: 左右分割やフローティングでも) ──
         switch (_openStyleOf('googleSearch')) {
+          // もう一度押すと閉じて全画面に戻る (上の _openWebCommandStyled と同じ)。
           case 'splitLeft':
-            _openUrlInSplitPanel('https://www.google.com/',
+            _toggleUrlInSplitPanel('https://www.google.com/',
                 isLeftPanel: true);
             break;
           case 'splitRight':
-            _openUrlInSplitPanel('https://www.google.com/',
+            _toggleUrlInSplitPanel('https://www.google.com/',
                 isLeftPanel: false);
             break;
           case 'floating':
@@ -53494,6 +53503,20 @@ class _MindMapScreenState extends State<MindMapScreen>
               // マウスがパネル側 (= 非 PDF or 非分割) の時はマップ pan 抑止だけ
               if (_splitPanelHover && !_calendarMode) {
                 return;
+              }
+              // ── フリーノート / 文書ページ: 矢印キーはタブ列ホバー中の
+              //    ページ切替だけに使う (= ユーザー報告: 上下カーソルで
+              //    ページが遷移してしまう)。 ノート側が消費したらマップの
+              //    パンはしない。 ──
+              if (!_calendarMode &&
+                  _paintArrowKeyHandler != null &&
+                  (provider.currentPage.pageType == 'paint' ||
+                      provider.currentPage.pageType == 'document')) {
+                if (event is KeyDownEvent &&
+                    _paintArrowKeyHandler!(event.logicalKey)) {
+                  return;
+                }
+                if (event is! KeyDownEvent) return;
               }
               // カレンダーモード中は矢印キーで「選択中の日」を移動
               if (_calendarMode) {
@@ -83315,7 +83338,13 @@ class _MindMapScreenState extends State<MindMapScreen>
   void _handleArrowKey(LogicalKeyboardKey key, TransformationController ctrl) {
     // ── ギャラリーページでは矢印キーでのパンを無効化 (= ユーザー要望: 変な
     //    位置に飛ぶのを防ぐ。 ギャラリーはマウス/トラックパッドでスクロール) ──
-    if (context.read<MindMapProvider>().currentPage.pageType == 'bookshelf') {
+    final pageType = context.read<MindMapProvider>().currentPage.pageType;
+    if (pageType == 'bookshelf') {
+      return;
+    }
+    // フリーノート / 文書ページでも矢印キーでのパンはしない (= ユーザー報告:
+    // 上下カーソルでページが動いてしまう。 切替はタブ列ホバー中のみ)。
+    if (pageType == 'paint' || pageType == 'document') {
       return;
     }
     const double step = 80.0;
@@ -116250,6 +116279,11 @@ class _PaintPageViewState extends State<_PaintPageView> {
   /// スクロールバーを掴んで左右に動かせるように)。
   final ScrollController _pageTabScroll = ScrollController();
 
+  /// ページタブ列にマウスが乗っているか。 矢印キーでのページ切替は
+  /// この間だけ効かせる (= ユーザー報告: フリーノートで上下カーソルを
+  /// 押すとページが遷移してしまう)。
+  bool _pageTabsHovered = false;
+
   KeyEventResult _onPaintKey(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
@@ -116350,7 +116384,53 @@ class _PaintPageViewState extends State<_PaintPageView> {
       //   ページの裏に見えないノードが作られてしまうため。
       return KeyEventResult.handled;
     }
+    // ── 矢印キー: ページタブ列にマウスが乗っている時だけページ切替 ──
+    //   (= ユーザー報告: フリーノートで上下カーソルを押すとページが遷移して
+    //   しまう)。 ホバーしていない時は消費だけして、 背後 (マップ側のパンや
+    //   フォーカス移動によるスクロール) へ流さない。
+    if (k == LogicalKeyboardKey.arrowUp ||
+        k == LogicalKeyboardKey.arrowDown ||
+        k == LogicalKeyboardKey.arrowLeft ||
+        k == LogicalKeyboardKey.arrowRight) {
+      if (ctrl || HardwareKeyboard.instance.isAltPressed) {
+        return KeyEventResult.ignored;
+      }
+      // 分割パネル (PDF/Web) にマウスがある時はそちらのスクロールを優先。
+      final host = _paintHost;
+      if (host != null &&
+          (host._splitPanelHover || host._splitLeftPanelHover)) {
+        return KeyEventResult.ignored;
+      }
+      if (_pageTabsHovered && event is KeyDownEvent) {
+        final next = (k == LogicalKeyboardKey.arrowDown ||
+                k == LogicalKeyboardKey.arrowRight)
+            ? _sel + 1
+            : _sel - 1;
+        if (next >= 0 && next < _sheets.length) _selectPage(next);
+      }
+      return KeyEventResult.handled;
+    }
     return KeyEventResult.ignored;
+  }
+
+  /// マップ側のキー処理 (KeyboardListener) から呼ばれる矢印キーの受け口。
+  /// フォーカスがノート側に無い時でも、 タブホバー中のページ切替と
+  /// 「矢印キーを背後へ流さない」 を効かせる。 戻り値 true = 消費した。
+  bool _hostArrowKey(LogicalKeyboardKey k) {
+    if (_textEditPos != null) return false;
+    final host = _paintHost;
+    if (host != null &&
+        (host._splitPanelHover || host._splitLeftPanelHover)) {
+      return false;
+    }
+    if (_pageTabsHovered) {
+      final next =
+          (k == LogicalKeyboardKey.arrowDown || k == LogicalKeyboardKey.arrowRight)
+              ? _sel + 1
+              : _sel - 1;
+      if (next >= 0 && next < _sheets.length) _selectPage(next);
+    }
+    return true;
   }
 
   // ── ペイント内クリップボード (= ユーザー要望: Ctrl+C / Ctrl+V で図形・
@@ -118264,6 +118344,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
       if (!mounted) return;
       _paintHost = context.findAncestorStateOfType<_MindMapScreenState>();
       _paintHost?._paintDropHandler = _onPaintDropFiles;
+      _paintHost?._paintArrowKeyHandler = _hostArrowKey;
     });
   }
 
@@ -119186,6 +119267,9 @@ class _PaintPageViewState extends State<_PaintPageView> {
   void dispose() {
     if (_paintHost?._paintDropHandler == _onPaintDropFiles) {
       _paintHost?._paintDropHandler = null;
+    }
+    if (_paintHost?._paintArrowKeyHandler == _hostArrowKey) {
+      _paintHost?._paintArrowKeyHandler = null;
     }
     _noteSaveTimer?.cancel();
     final noteController = _noteController;
@@ -123774,7 +123858,12 @@ class _PaintPageViewState extends State<_PaintPageView> {
     const pageColor = Color(0x8AFFFFFF); // white54 相当
     // ── 1 行にまとめる (= ユーザー要望: Page の隣にノートブック切替ボタンを
     //    置き、 押すとノートブックの切替や新規追加もできる) ──
-    return SizedBox(
+    // MouseRegion: 矢印キーでのページ切替を「タブ列にマウスがある間だけ」
+    //   に絞るためのホバー検知 (見た目は変えないので setState しない)。
+    return MouseRegion(
+      onEnter: (_) => _pageTabsHovered = true,
+      onExit: (_) => _pageTabsHovered = false,
+      child: SizedBox(
       height: 48,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
@@ -123976,6 +124065,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
           ),
         ),
       ),
+      ),
     );
   }
 
@@ -124149,8 +124239,9 @@ class _PaintPageViewState extends State<_PaintPageView> {
                     onTap: _redo.isEmpty ? null : _redoAction),
               ])
             : const SizedBox.shrink();
-        final scroller = SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
+        // ── 窓が狭い時: マウスを乗せて左右に動かすだけでツールバーが
+        //    横スクロールする (= ユーザー報告: 消しゴムなどの項目に届かない)。
+        final scroller = _HoverScrollRow(
           child: ConstrainedBox(
             constraints: BoxConstraints(
                 minWidth: pinUndo ? 0.0 : cns.maxWidth),
@@ -125336,8 +125427,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
     return Padding(
       padding: const EdgeInsets.fromLTRB(10, 0, 10, 6),
       child: Center(
-          child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
+          child: _HoverScrollRow(
         child: Row(mainAxisSize: MainAxisSize.min, children: [
           for (final c in _palette) _colorDot(c),
           _customColorBtn(),
@@ -125665,8 +125755,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
     return Padding(
       padding: const EdgeInsets.fromLTRB(10, 0, 10, 6),
       child: Center(
-          child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
+          child: _HoverScrollRow(
         child: Row(mainAxisSize: MainAxisSize.min, children: [
           for (final c in _palette) _colorDot(c),
           _customColorBtn(),
@@ -125710,8 +125799,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
     return Padding(
       padding: const EdgeInsets.fromLTRB(10, 0, 10, 6),
       child: Center(
-          child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
+          child: _HoverScrollRow(
         child: Row(mainAxisSize: MainAxisSize.min, children: [
           for (final w in _eraserWidths) _widthDot(w, isEraser: true),
           // ── どのレイヤーを消すか (= ユーザー要望: 上に配置された
@@ -125842,8 +125930,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
     return Padding(
       padding: const EdgeInsets.fromLTRB(10, 0, 10, 6),
       child: Center(
-          child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
+          child: _HoverScrollRow(
         child: Row(mainAxisSize: MainAxisSize.min, children: [
           // ── 直線を左端に (= ユーザー要望: 一番よく使うので先頭に置く) ──
           //    直線 → 矢印 → 四角 → 楕円 → 三角 → ひし形 の順。
@@ -164822,6 +164909,55 @@ class _AlwaysDraggableScrollBehavior extends MaterialScrollBehavior {
         PointerDeviceKind.trackpad,
         PointerDeviceKind.invertedStylus,
       };
+}
+
+/// 横に収まらないツール列の包み (= ユーザー報告: 窓を小さくすると消しゴム
+/// などの項目に届かない)。 マウスを乗せて左右に動かすだけで、 カーソルの
+/// 位置に比例して列が横スクロールする (左端 = 先頭、 右端 = 末尾)。
+/// 収まっている時は何もしない。 タッチ / マウスのドラッグでも動かせる。
+class _HoverScrollRow extends StatefulWidget {
+  const _HoverScrollRow({required this.child});
+  final Widget child;
+  @override
+  State<_HoverScrollRow> createState() => _HoverScrollRowState();
+}
+
+class _HoverScrollRowState extends State<_HoverScrollRow> {
+  final ScrollController _ctrl = ScrollController();
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _onHover(PointerHoverEvent e) {
+    if (!_ctrl.hasClients) return;
+    final pos = _ctrl.position;
+    final max = pos.maxScrollExtent;
+    if (max <= 0) return; // 収まっている時は何もしない
+    // 端に少し遊びを置き、 端まで行き切れるようにする。
+    const edge = 24.0;
+    final w = pos.viewportDimension;
+    if (w <= edge * 2) return;
+    final t = ((e.localPosition.dx - edge) / (w - edge * 2)).clamp(0.0, 1.0);
+    _ctrl.jumpTo(max * t);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      onHover: _onHover,
+      child: ScrollConfiguration(
+        behavior: const _AlwaysDraggableScrollBehavior(),
+        child: SingleChildScrollView(
+          controller: _ctrl,
+          scrollDirection: Axis.horizontal,
+          child: widget.child,
+        ),
+      ),
+    );
+  }
 }
 
 // ─── バックグラウンド再生 (audio_service ベース) ────────────────────────────
