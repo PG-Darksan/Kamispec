@@ -1741,6 +1741,9 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               // ── 時刻で実行 ──
+              // ★ 切っているのに時刻 (9:00 など) が出ていると、 その時刻で
+              //   動くように見える (= ユーザー指摘)。 スイッチを先に置き、
+              //   時刻と「毎日」 は入れている間だけ出す。
               Row(children: [
                 const Icon(Icons.schedule_rounded,
                     size: 15, color: Color(0xFF80CBC4)),
@@ -1748,31 +1751,6 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
                 const Text('時刻で実行',
                     style: TextStyle(color: Colors.white70, fontSize: 11.5)),
                 const SizedBox(width: 8),
-                OutlinedButton(
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: Colors.white,
-                    side: const BorderSide(color: Colors.white24),
-                    padding: const EdgeInsets.symmetric(horizontal: 10),
-                    minimumSize: const Size(0, 26),
-                  ),
-                  onPressed: () async {
-                    final t = await showTimePicker(
-                      context: context,
-                      initialTime:
-                          TimeOfDay(hour: _schedHour, minute: _schedMin),
-                    );
-                    if (t == null || !mounted) return;
-                    setState(() {
-                      _schedHour = t.hour;
-                      _schedMin = t.minute;
-                    });
-                    await _saveSchedule();
-                    _restartScheduleTimer();
-                  },
-                  child: Text('${two(_schedHour)}:${two(_schedMin)}',
-                      style: const TextStyle(fontSize: 12)),
-                ),
-                const SizedBox(width: 6),
                 Switch(
                   value: _schedOn,
                   materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -1782,27 +1760,54 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
                     _restartScheduleTimer();
                   },
                 ),
-                const SizedBox(width: 2),
-                InkWell(
-                  onTap: () async {
-                    setState(() => _schedDaily = !_schedDaily);
-                    await _saveSchedule();
-                  },
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    Icon(
-                        _schedDaily
-                            ? Icons.check_box_rounded
-                            : Icons.check_box_outline_blank_rounded,
-                        size: 15,
-                        color: _schedDaily
-                            ? const Color(0xFF80CBC4)
-                            : Colors.white38),
-                    const SizedBox(width: 3),
-                    const Text('毎日',
-                        style:
-                            TextStyle(color: Colors.white60, fontSize: 11)),
-                  ]),
-                ),
+                if (_schedOn) ...[
+                  const SizedBox(width: 6),
+                  OutlinedButton(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.white,
+                      side: const BorderSide(color: Colors.white24),
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                      minimumSize: const Size(0, 26),
+                    ),
+                    onPressed: () async {
+                      final t = await showTimePicker(
+                        context: context,
+                        initialTime:
+                            TimeOfDay(hour: _schedHour, minute: _schedMin),
+                      );
+                      if (t == null || !mounted) return;
+                      setState(() {
+                        _schedHour = t.hour;
+                        _schedMin = t.minute;
+                      });
+                      await _saveSchedule();
+                      _restartScheduleTimer();
+                    },
+                    child: Text('${two(_schedHour)}:${two(_schedMin)}',
+                        style: const TextStyle(fontSize: 12)),
+                  ),
+                  const SizedBox(width: 2),
+                  InkWell(
+                    onTap: () async {
+                      setState(() => _schedDaily = !_schedDaily);
+                      await _saveSchedule();
+                    },
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      Icon(
+                          _schedDaily
+                              ? Icons.check_box_rounded
+                              : Icons.check_box_outline_blank_rounded,
+                          size: 15,
+                          color: _schedDaily
+                              ? const Color(0xFF80CBC4)
+                              : Colors.white38),
+                      const SizedBox(width: 3),
+                      const Text('毎日',
+                          style:
+                              TextStyle(color: Colors.white60, fontSize: 11)),
+                    ]),
+                  ),
+                ],
               ]),
               // ★ オフの時に「動かします」 とだけ書いてあると、 切っていても
               //   時刻で動くように読める (= ユーザー指摘)。 今どちらなのかを
@@ -1815,8 +1820,8 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
                             '${two(_schedHour)}:${two(_schedMin)} に'
                             '${_schedDaily ? '毎日' : '1 回だけ'}手順を動かします。'
                         : 'オフ: 時刻では動きません。 '
-                            '右のスイッチを入れると、 この画面を開いている間だけ'
-                            'その時刻に動きます。',
+                            'スイッチを入れると時刻を選べて、 '
+                            'この画面を開いている間だけその時刻に動きます。',
                     style: TextStyle(
                         color: _schedOn
                             ? const Color(0xFF80CBC4)

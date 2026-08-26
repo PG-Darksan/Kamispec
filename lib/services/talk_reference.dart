@@ -372,6 +372,87 @@ class TalkReference {
   static String _clip(String s, int max) =>
       s.length > max ? '${s.substring(0, max)}\n…(以下省略)' : s;
 
+  // ─────────────────── AI アシスタント用の公開口 ───────────────────
+  //
+  // = ユーザー要望: 「Web を調べて読む」 を出来るようにする。
+  //   面接練習で既に動いている取得部 (鍵不要・UA 必須) をそのまま使う。
+
+  /// URL を 1 本読んで、 本文だけのテキストにして返す (読めなければ null)。
+  static Future<String?> fetchPageText(String url, {int maxChars = 8000}) async {
+    final t = await _fetchPageText(url);
+    return t == null ? null : _clip(t, maxChars);
+  }
+
+  /// Web を検索して [{title, url}] を返す。
+  ///
+  /// まず DuckDuckGo の軽量版を読む (鍵不要)。 取れなければ Wikipedia の
+  /// 検索 API に落とす (こちらは必ず動くが、 百科事典の記事だけ)。
+  static Future<List<Map<String, String>>> searchWeb(String query,
+      {int limit = 8, String lang = 'ja'}) async {
+    final q = query.trim();
+    if (q.isEmpty) return const [];
+    final out = <Map<String, String>>[];
+    final seen = <String>{};
+    try {
+      final html = await _get(Uri.https('lite.duckduckgo.com', '/lite/', {
+        'q': q,
+      }));
+      if (html != null) {
+        // lite 版は素の <a href="...">題名</a> で結果を並べる。
+        final re = RegExp(r'<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)</a>',
+            caseSensitive: false);
+        for (final m in re.allMatches(html)) {
+          var href = m.group(1) ?? '';
+          if (href.contains('uddg=')) {
+            final u =
+                Uri.tryParse(href.startsWith('//') ? 'https:$href' : href);
+            final real = u?.queryParameters['uddg'];
+            if (real != null && real.isNotEmpty) href = real;
+          }
+          href = _unescapeHtml(href);
+          if (!href.startsWith('http')) continue;
+          final host = Uri.tryParse(href)?.host ?? '';
+          if (host.contains('duckduckgo.com')) continue;
+          if (!seen.add(href)) continue;
+          final title = _htmlToText(m.group(2) ?? '').trim();
+          out.add({'title': title.isEmpty ? href : _clip(title, 120), 'url': href});
+          if (out.length >= limit) break;
+        }
+      }
+    } catch (_) {/* 検索は best effort。 下の予備へ */}
+    if (out.isNotEmpty) return out;
+    // 予備: Wikipedia の検索 (鍵不要・必ず応答する)。
+    try {
+      final uri = Uri.https('$lang.wikipedia.org', '/w/api.php', {
+        'action': 'query',
+        'list': 'search',
+        'srsearch': q,
+        'srlimit': '$limit',
+        'format': 'json',
+        'formatversion': '2',
+      });
+      final body = await _get(uri);
+      if (body != null) {
+        final j = jsonDecode(body);
+        final query = j is Map ? j['query'] : null;
+        final hits = query is Map ? query['search'] : null;
+        if (hits is List) {
+          for (final h in hits) {
+            if (h is! Map) continue;
+            final t = '${h['title'] ?? ''}';
+            if (t.isEmpty) continue;
+            out.add({
+              'title': t,
+              'url': 'https://$lang.wikipedia.org/wiki/'
+                  '${Uri.encodeComponent(t.replaceAll(' ', '_'))}',
+            });
+          }
+        }
+      }
+    } catch (_) {}
+    return out;
+  }
+
   // ─────────────────── 手元の資料ファイル ───────────────────
 
   /// ユーザーが上げたファイルから本文テキストを取り出す。

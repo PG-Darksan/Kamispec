@@ -395,8 +395,13 @@ class McpServer {
         'text is ellipsised to about two lines on the canvas, so put long '
         'text in "memo". A blank / whitespace-only title is accepted, but the '
         'node can then only be addressed by its id. x/y may be negative. '
-        'This tool cannot change a node colour - a "color" argument here is '
-        'ignored.',
+        'This tool CAN also recolour a node and give it a link after it was '
+        'placed: "color" takes 32-bit ARGB (a 6-digit RGB value is made '
+        'opaque; out-of-range values are ignored), "url" makes the node a '
+        'clickable link - a YouTube watch url becomes an embedded video node '
+        'instead - and "clearUrl":true removes an existing link/video. The '
+        'result echoes back what was actually applied; report that, not what '
+        'you asked for.',
         {
           'pageId': {'type': 'string'},
           'node': {'type': 'string'},
@@ -405,6 +410,9 @@ class McpServer {
           'memo': {'type': 'string'},
           'x': {'type': 'number'},
           'y': {'type': 'number'},
+          'color': {'type': 'integer'},
+          'url': {'type': 'string'},
+          'clearUrl': {'type': 'boolean'},
         },
         ['pageId']),
     _tool(
@@ -828,6 +836,241 @@ class McpServer {
           },
         },
         ['edits']),
+    // ── ページ / フォルダーの整理 (= ユーザー要望: 出来ないと断っていた分) ──
+    _tool(
+        'rename_page',
+        'Rename a page. Pass "pageId" + "name", or "pages" (array of '
+        '{pageId, name}) to rename several in ONE call. A blank name is '
+        'rejected. The result lists what was actually renamed - report that.',
+        {
+          'pageId': {'type': 'string'},
+          'name': {'type': 'string'},
+          'pages': {
+            'type': 'array',
+            'items': {
+              'type': 'object',
+              'properties': {
+                'pageId': {'type': 'string'},
+                'name': {'type': 'string'},
+              },
+            },
+          },
+        }),
+    _tool(
+        'reorder_pages',
+        'Reorder the page list. Pass "pageIds" = the FULL order you want '
+        '(ids from list_pages). Pages you leave out keep their relative order '
+        'after the ones you listed, so a short prefix is enough to move a few '
+        'pages to the top. The result returns the resulting order.',
+        {
+          'pageIds': {
+            'type': 'array',
+            'items': {'type': 'string'}
+          },
+        },
+        ['pageIds']),
+    _tool(
+        'list_folders',
+        'List the folders that group pages, with how many pages each holds. '
+        'list_pages reports each page "folderId" (null = outside any folder).',
+        {}),
+    _tool(
+        'create_folder',
+        'Create a folder for grouping pages. Returns its id, which '
+        'move_page_to_folder takes. Folders are flat - they cannot nest.',
+        {
+          'name': {'type': 'string'},
+        }),
+    _tool('rename_folder', 'Rename a folder (ids come from list_folders).', {
+      'folderId': {'type': 'string'},
+      'name': {'type': 'string'},
+    }, [
+      'folderId',
+      'name'
+    ]),
+    _tool(
+        'delete_folder',
+        'Delete a folder. By default the pages inside are KEPT and simply '
+        'moved out of the folder. "deletePages":true deletes them too and '
+        'CANNOT be undone - only pass it when the user asked for exactly '
+        'that, and say so plainly in your reply.',
+        {
+          'folderId': {'type': 'string'},
+          'deletePages': {'type': 'boolean'},
+        },
+        ['folderId']),
+    _tool(
+        'move_page_to_folder',
+        'Put pages into a folder, or take them out. Pass "folderId" to move '
+        'in, or "toRoot":true to move out. Use "pageIds" (array) to move '
+        'several in ONE call. Unknown ids are reported in "failed" instead of '
+        'being silently ignored.',
+        {
+          'pageId': {'type': 'string'},
+          'pageIds': {
+            'type': 'array',
+            'items': {'type': 'string'}
+          },
+          'folderId': {'type': 'string'},
+          'toRoot': {'type': 'boolean'},
+        }),
+    // ── 線だけを消す ──
+    _tool(
+        'disconnect_nodes',
+        'Remove ONLY the line between two nodes - BOTH nodes stay. Direction '
+        'does not matter. "from"/"to" accept a node id OR its exact title '
+        '(an approximate title is rejected, never guessed). Pass '
+        '"connections" (array of {from, to}) to remove several in ONE call. '
+        'If the two were not connected the call reports that instead of a '
+        'false success. Undoable with Ctrl+Z.',
+        {
+          'pageId': {'type': 'string'},
+          'from': {'type': 'string'},
+          'to': {'type': 'string'},
+          'fromId': {'type': 'string'},
+          'toId': {'type': 'string'},
+          'connections': {
+            'type': 'array',
+            'items': {
+              'type': 'object',
+              'properties': {
+                'from': {'type': 'string'},
+                'to': {'type': 'string'},
+                'fromId': {'type': 'string'},
+                'toId': {'type': 'string'},
+              },
+            },
+          },
+        },
+        ['pageId']),
+    // ── 図形 (装飾) ──
+    _tool(
+        'add_decoration',
+        'Draw a shape on a mind map page (a decoration: frame, arrow, '
+        'underline...). PREFER "aroundNodes" (array of node ids or titles): '
+        'the shape is fitted around those nodes with a margin, so you never '
+        'have to invent coordinates. Only fall back to x1/y1/x2/y2 when the '
+        'user gave real coordinates. "layer" 1-3 draws under the nodes, 4-5 '
+        'above them (a filled shape on 4-5 hides the map). "color" is RGB '
+        '(the alpha byte is ignored). Pass "shapes" (array) to add several in '
+        'ONE call. Shapes carry no text unless you set "text". Undoable.',
+        {
+          'pageId': {'type': 'string'},
+          'kind': {
+            'type': 'string',
+            'enum': [
+              'line',
+              'arrow',
+              'rectangle',
+              'ellipse',
+              'wavyLine',
+              'filledRectangle',
+              'circle',
+              'hollowCircle',
+              'hollowTriangle',
+              'hollowDiamond',
+              'star',
+              'pentagon',
+              'hexagon',
+              'heart',
+              'cross',
+            ]
+          },
+          'aroundNodes': {
+            'type': 'array',
+            'items': {'type': 'string'}
+          },
+          'x1': {'type': 'number'},
+          'y1': {'type': 'number'},
+          'x2': {'type': 'number'},
+          'y2': {'type': 'number'},
+          'color': {'type': 'integer'},
+          'strokeWidth': {'type': 'number'},
+          'text': {'type': 'string'},
+          'filled': {'type': 'boolean'},
+          'layer': {'type': 'integer'},
+          'shapes': {
+            'type': 'array',
+            'items': {
+              'type': 'object',
+              'properties': {
+                'kind': {'type': 'string'},
+                'aroundNodes': {
+                  'type': 'array',
+                  'items': {'type': 'string'}
+                },
+                'x1': {'type': 'number'},
+                'y1': {'type': 'number'},
+                'x2': {'type': 'number'},
+                'y2': {'type': 'number'},
+                'color': {'type': 'integer'},
+                'strokeWidth': {'type': 'number'},
+                'text': {'type': 'string'},
+                'filled': {'type': 'boolean'},
+                'layer': {'type': 'integer'},
+              },
+            },
+          },
+        },
+        ['pageId']),
+    _tool(
+        'delete_decoration',
+        'Delete a shape. The ids come from read_page ("decorations").',
+        {
+          'pageId': {'type': 'string'},
+          'decorationId': {'type': 'string'},
+        },
+        ['pageId', 'decorationId']),
+    // ── 端末のファイルを読む (利用者の許可つき) ──
+    _tool(
+        'read_device_file',
+        'Read ONE file from this device (text, md, csv, json, html, pdf, '
+        'docx, pptx, xlsx). THE USER IS ASKED FIRST: a dialog shows the full '
+        'path and your "reason", and they allow or refuse it - so write a '
+        'short honest reason, and never read files the user did not bring up. '
+        'If the path is unknown or the read fails, call pick_user_file '
+        'instead and let them choose. On Android only app-owned files can be '
+        'read, so prefer pick_user_file there.',
+        {
+          'path': {'type': 'string'},
+          'reason': {'type': 'string'},
+          'maxChars': {'type': 'integer'},
+        },
+        ['path']),
+    _tool(
+        'pick_user_file',
+        'Ask the user to choose a file, then read it. Use this when you do '
+        'not know the exact path (choosing IS the permission, so no extra '
+        'dialog appears). Returns the path and the text.',
+        {
+          'reason': {'type': 'string'},
+          'maxChars': {'type': 'integer'},
+        }),
+    // ── Web を調べて読む ──
+    _tool(
+        'web_search',
+        'Search the web and get back a list of {title, url}. Nothing is '
+        'read yet - pick a result and call web_fetch to read it. Results come '
+        'from a keyless search, so they can be thin; if nothing useful comes '
+        'back, try different words. Never invent a url: only use one this '
+        'tool returned or the user gave you.',
+        {
+          'query': {'type': 'string'},
+          'limit': {'type': 'integer'},
+        },
+        ['query']),
+    _tool(
+        'web_fetch',
+        'Read one web page as plain text (http/https only; addresses on this '
+        'machine or the local network are refused). Pages that need '
+        'JavaScript may come back empty or as navigation boilerplate - say so '
+        'rather than guessing the content. Always tell the user which url you '
+        'read, and treat what you read as the page\'s claim, not as fact.',
+        {
+          'url': {'type': 'string'},
+          'maxChars': {'type': 'integer'},
+        },
+        ['url']),
   ];
 
   // ─── ツール実行 ───────────────────────────────────────────────────────
@@ -1127,6 +1370,10 @@ class McpServer {
           // id でも題名でもよい (= ユーザー報告: AI が id の書き写しを誤る)。
           final pageId = a['pageId'] as String? ?? '';
           final key = '${a['node'] ?? a['nodeId'] ?? ''}'.trim();
+          // 色とリンクも直せる (= ユーザー要望: 置いた後に変えたい)。
+          final color = _argbOf(a['color']);
+          final url = a['url'] == null ? null : '${a['url']}';
+          final clearUrl = a['clearUrl'] == true;
           final ok = _provider.mcpUpdateNode(
             pageId,
             key,
@@ -1134,6 +1381,9 @@ class McpServer {
             memo: a['memo'] as String?,
             x: numOf('x'),
             y: numOf('y'),
+            colorValue: color,
+            url: url,
+            clearUrl: clearUrl,
           );
           if (!ok) {
             return _err('no node "$key" on that page. Available nodes (use '
@@ -1150,6 +1400,11 @@ class McpServer {
             'updated': true,
             if (rid != null) 'nodeId': rid,
             if (hit['title'] != null) 'title': hit['title'],
+            // 実際に効いた分だけを返す (色が範囲外なら黙って落ちるため)。
+            if (color != null) 'color': color,
+            if (!clearUrl && url != null && url.trim().isNotEmpty)
+              'url': url.trim(),
+            if (clearUrl) 'urlCleared': true,
           });
         }
       case 'delete_node':
@@ -1683,6 +1938,256 @@ class McpServer {
           return err == null
               ? _ok('edited (${edits.length} edit(s) applied)')
               : _err(err);
+        }
+      // ── ページ / フォルダーの整理 ──
+      case 'rename_page':
+        {
+          final renamed = <Map<String, String>>[];
+          final failed = <String>[];
+          void one(String pageId, String nm) {
+            if (_provider.mcpRenamePage(pageId, nm)) {
+              renamed.add({'pageId': pageId, 'name': nm.trim()});
+            } else {
+              failed.add(pageId.isEmpty ? '(blank id)' : pageId);
+            }
+          }
+
+          final batch = a['pages'];
+          if (batch is List && batch.isNotEmpty) {
+            for (final e in batch) {
+              if (e is! Map) continue;
+              final m = e.cast<String, dynamic>();
+              one('${m['pageId'] ?? ''}'.trim(), '${m['name'] ?? ''}');
+            }
+          } else {
+            one('${a['pageId'] ?? ''}'.trim(), '${a['name'] ?? ''}');
+          }
+          if (renamed.isEmpty) {
+            return _err('could not rename ${failed.join(', ')} '
+                '(unknown page id, or a blank name). Pages: '
+                '${jsonEncode(_provider.mcpListPages())}');
+          }
+          return _ok({
+            'renamed': renamed,
+            if (failed.isNotEmpty) 'failed': failed,
+          });
+        }
+      case 'reorder_pages':
+        {
+          final ids = _stringList(a['pageIds']);
+          if (ids.isEmpty) return _err('pageIds must be a non-empty array');
+          final order = _provider.mcpReorderPages(ids);
+          return _ok({'order': order});
+        }
+      case 'list_folders':
+        return _ok(_provider.mcpListFolders());
+      case 'create_folder':
+        {
+          final id = _provider.mcpCreateFolder(a['name'] as String?);
+          final hit = _provider.mcpListFolders().firstWhere(
+              (e) => e['id'] == id,
+              orElse: () => const <String, dynamic>{});
+          return _ok({
+            'folderId': id,
+            if (hit['name'] != null) 'name': hit['name'],
+          });
+        }
+      case 'rename_folder':
+        {
+          final fid = '${a['folderId'] ?? ''}'.trim();
+          final ok = _provider.mcpRenameFolder(fid, '${a['name'] ?? ''}');
+          return ok
+              ? _ok({'folderId': fid, 'name': '${a['name']}'.trim()})
+              : _err('no folder "$fid" (or a blank name). Folders: '
+                  '${jsonEncode(_provider.mcpListFolders())}');
+        }
+      case 'delete_folder':
+        {
+          final fid = '${a['folderId'] ?? ''}'.trim();
+          final reason = _provider.mcpDeleteFolder(fid,
+              deletePages: a['deletePages'] == true);
+          return reason == null
+              ? _ok(a['deletePages'] == true
+                  ? 'deleted folder $fid and the pages inside it'
+                  : 'deleted folder $fid (the pages inside were kept)')
+              : _err(reason);
+        }
+      case 'move_page_to_folder':
+        {
+          final toRoot = a['toRoot'] == true;
+          final fid = '${a['folderId'] ?? ''}'.trim();
+          final target = toRoot || fid.isEmpty ? null : fid;
+          final ids = _stringList(a['pageIds']);
+          final list =
+              ids.isNotEmpty ? ids : [('${a['pageId'] ?? ''}').trim()];
+          var moved = 0;
+          final failed = <String>[];
+          for (final pid in list) {
+            if (pid.isEmpty) continue;
+            if (_provider.mcpMovePageToFolder(pid, target)) {
+              moved++;
+            } else {
+              failed.add(pid);
+            }
+          }
+          if (moved == 0) {
+            return _err('could not move ${failed.join(', ')} '
+                '(unknown page or folder id). Pages: '
+                '${jsonEncode(_provider.mcpListPages())} Folders: '
+                '${jsonEncode(_provider.mcpListFolders())}');
+          }
+          return _ok({
+            'moved': moved,
+            'folderId': target,
+            if (failed.isNotEmpty) 'failed': failed,
+          });
+        }
+      // ── 線だけを消す ──
+      case 'disconnect_nodes':
+        {
+          final pageId = a['pageId'] as String? ?? '';
+          String key(Map<String, dynamic> m, String a1, String a2) {
+            final v1 = '${m[a1] ?? ''}'.trim();
+            return v1.isNotEmpty ? v1 : '${m[a2] ?? ''}'.trim();
+          }
+
+          final batch = a['connections'];
+          final pairs = <List<String>>[];
+          if (batch is List && batch.isNotEmpty) {
+            for (final e in batch) {
+              if (e is! Map) continue;
+              final m = e.cast<String, dynamic>();
+              pairs.add([key(m, 'from', 'fromId'), key(m, 'to', 'toId')]);
+            }
+          } else {
+            pairs.add([key(a, 'from', 'fromId'), key(a, 'to', 'toId')]);
+          }
+          var done = 0;
+          final missed = <String>[];
+          for (final p in pairs) {
+            if (p[0].isEmpty || p[1].isEmpty) continue;
+            if (_provider.mcpDisconnectNodes(pageId, p[0], p[1])) {
+              done++;
+            } else {
+              missed.add('${p[0]} - ${p[1]}');
+            }
+          }
+          if (done == 0) {
+            return _err('no line was removed for ${missed.join(', ')} '
+                '(either the node was not found, or those two were not '
+                'connected). Nodes on this page: '
+                '${jsonEncode(_provider.mcpNodeIndex(pageId))}');
+          }
+          return _ok({
+            'disconnected': done,
+            if (missed.isNotEmpty) 'notConnected': missed,
+          });
+        }
+      // ── 図形 (装飾) ──
+      case 'add_decoration':
+        {
+          final pageId = a['pageId'] as String? ?? '';
+          String? addOne(Map<String, dynamic> m) => _provider.mcpAddDecoration(
+                pageId,
+                kind: '${m['kind'] ?? 'rectangle'}',
+                x1: _numOf(m['x1']),
+                y1: _numOf(m['y1']),
+                x2: _numOf(m['x2']),
+                y2: _numOf(m['y2']),
+                aroundNodeIds: _stringList(m['aroundNodes']),
+                // MapDecoration の色は 24 ビット (不透明度を持たない)。
+                colorRgb: _argbOf(m['color']) == null
+                    ? null
+                    : (_argbOf(m['color'])! & 0xFFFFFF),
+                strokeWidth: _numOf(m['strokeWidth']),
+                text: m['text'] as String?,
+                filled: m['filled'] == true ? true : null,
+                layer: (m['layer'] as num?)?.toInt(),
+              );
+
+          final batch = a['shapes'];
+          final made = <String>[];
+          final failed = <String>[];
+          if (batch is List && batch.isNotEmpty) {
+            for (final e in batch) {
+              if (e is! Map) continue;
+              final m = e.cast<String, dynamic>();
+              final id = addOne(m);
+              if (id != null) {
+                made.add(id);
+              } else {
+                failed.add('${m['kind'] ?? '?'}');
+              }
+            }
+          } else {
+            final id = addOne(a);
+            if (id != null) {
+              made.add(id);
+            } else {
+              failed.add('${a['kind'] ?? '?'}');
+            }
+          }
+          if (made.isEmpty) {
+            return _err('could not add ${failed.join(', ')} - the page was '
+                'not found, or that shape name does not exist (see the "kind" '
+                'list; "polyline" is not available here).');
+          }
+          return _ok({
+            'added': made.length,
+            'decorationIds': made,
+            if (failed.isNotEmpty) 'failed': failed,
+          });
+        }
+      case 'delete_decoration':
+        {
+          final pageId = a['pageId'] as String? ?? '';
+          final did = '${a['decorationId'] ?? ''}'.trim();
+          return _provider.mcpDeleteDecoration(pageId, did)
+              ? _ok('deleted decoration $did')
+              : _err('no decoration "$did" on that page '
+                  '(read_page lists them under "decorations")');
+        }
+      // ── 端末のファイル (利用者の許可つき) ──
+      case 'read_device_file':
+        {
+          final r = await _provider.mcpReadDeviceFile(
+            '${a['path'] ?? ''}',
+            reason: '${a['reason'] ?? ''}',
+            maxChars: (a['maxChars'] as num?)?.toInt() ?? 12000,
+          );
+          final err = r['error'];
+          return err == null ? _ok(r) : _err('$err');
+        }
+      case 'pick_user_file':
+        {
+          final r = await _provider.mcpPickAndReadFile(
+            reason: '${a['reason'] ?? ''}',
+            maxChars: (a['maxChars'] as num?)?.toInt() ?? 12000,
+          );
+          final err = r['error'];
+          return err == null ? _ok(r) : _err('$err');
+        }
+      // ── Web ──
+      case 'web_search':
+        {
+          final q = '${a['query'] ?? ''}'.trim();
+          if (q.isEmpty) return _err('query is required');
+          final hits = await _provider.mcpWebSearch(q,
+              limit: (a['limit'] as num?)?.toInt() ?? 8);
+          if (hits.isEmpty) {
+            return _err('no results for "$q". Try different words, or ask '
+                'the user for a url.');
+          }
+          return _ok({'query': q, 'results': hits});
+        }
+      case 'web_fetch':
+        {
+          final r = await _provider.mcpWebFetch(
+            '${a['url'] ?? ''}',
+            maxChars: (a['maxChars'] as num?)?.toInt() ?? 8000,
+          );
+          final err = r['error'];
+          return err == null ? _ok(r) : _err('$err');
         }
       default:
         return _err('unknown tool: $name');

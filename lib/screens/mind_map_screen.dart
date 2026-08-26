@@ -57924,6 +57924,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       (id) => _executeHeaderCommand(id, provider),
     );
     provider.registerMcpFileBuilder(_buildMcpFile);
+    // AI が端末のファイルを読む時は、 必ず本人に確かめる (= ユーザー要望:
+    //   許可を求める形にすれば読んで良い)。
+    provider.registerMcpFileReadConfirm(_confirmMcpFileRead);
+    provider.registerMcpFilePicker(_pickFileForMcp);
     // 画面の中の会話だけでなく、 prefs の控えも消す (= 動作確認で判明:
     //   控えが残っていたので、 開き直すと消したはずの会話が戻っていた)。
     //   今頼まれている用件は残す仕様なので、 残った分を控えにも書き戻す。
@@ -87104,6 +87108,126 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// カレンダー共有が OFF の時に確認ダイアログを出す。
   /// true: ユーザーが「有効化して続行」を選択、false: キャンセル
+  /// AI が端末のファイルを読む前の確認 (= ユーザー要望: 許可を求める形に
+  /// すれば読んで良い)。 読みたい理由と場所をそのまま見せて選んでもらう。
+  /// 「このフォルダーは以後許可」 を選ぶと、 この起動の間は聞かれない。
+  Future<bool> _confirmMcpFileRead(String path, String reason) async {
+    if (!mounted) return false;
+    final provider = context.read<MindMapProvider>();
+    final sep = Platform.pathSeparator;
+    final dir = path.contains(sep)
+        ? path.substring(0, path.lastIndexOf(sep))
+        : path;
+    var always = false;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => StatefulBuilder(
+        builder: (dctx, setLocal) => AlertDialog(
+          backgroundColor: const Color(0xFF2A2A3E),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          title: Row(children: [
+            const Icon(Icons.folder_open_rounded,
+                color: Color(0xFFFFB347), size: 22),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(provider.t('mcp.fileReadTitle'),
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700)),
+            ),
+          ]),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(provider.t('mcp.fileReadBody'),
+                  style: const TextStyle(color: Colors.white70, fontSize: 12)),
+            ),
+            const SizedBox(height: 10),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.black26,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: SelectableText(path,
+                  maxLines: 4,
+                  style: const TextStyle(
+                      color: Colors.white, fontSize: 11.5, height: 1.4)),
+            ),
+            if (reason.trim().isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text('${provider.t('mcp.fileReadReason')}: $reason',
+                    style: const TextStyle(
+                        color: Color(0xFF80CBC4), fontSize: 11.5)),
+              ),
+            ],
+            const SizedBox(height: 6),
+            InkWell(
+              onTap: () => setLocal(() => always = !always),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(
+                    always
+                        ? Icons.check_box_rounded
+                        : Icons.check_box_outline_blank_rounded,
+                    size: 18,
+                    color: always ? const Color(0xFF80CBC4) : Colors.white38),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(provider.t('mcp.fileReadAllowFolder'),
+                      style: const TextStyle(
+                          color: Colors.white60, fontSize: 11)),
+                ),
+              ]),
+            ),
+          ]),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dctx, false),
+              child: Text(provider.t('mcp.fileReadDeny'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+            ElevatedButton.icon(
+              icon: const Icon(Icons.check_rounded, size: 16),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF4FC3F7),
+                foregroundColor: Colors.white,
+              ),
+              onPressed: () => Navigator.pop(dctx, true),
+              label: Text(provider.t('mcp.fileReadAllow'),
+                  style: const TextStyle(fontWeight: FontWeight.w700)),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (ok == true && always) provider.mcpAllowReadDir(dir);
+    return ok == true;
+  }
+
+  /// AI に頼まれてファイルを選んでもらう (パスが分からない時)。
+  /// 選ぶ操作そのものが許可なので、 確認の窓は出さない。
+  Future<String?> _pickFileForMcp(String reason) async {
+    if (!mounted) return null;
+    try {
+      final res = await FilePicker.platform.pickFiles(
+        dialogTitle: reason.trim().isEmpty
+            ? context.read<MindMapProvider>().t('mcp.filePickTitle')
+            : reason.trim(),
+        allowMultiple: false,
+      );
+      final p = res?.files.single.path;
+      return (p == null || p.trim().isEmpty) ? null : p;
+    } catch (e) {
+      debugPrint('AI 用のファイル選択に失敗: $e');
+      return null;
+    }
+  }
+
   Future<bool> _confirmEnableCalendarSharing(MindMapProvider provider) async {
     if (!mounted) return false;
     final result = await showDialog<bool>(
@@ -222607,8 +222731,9 @@ class _McpChatSession extends ChangeNotifier {
         'ページの種類はこの 6 つだけです。 一覧に無い種類 (例:「AI '
         'スタジオのページ」) を頼まれたら、 近い種類で黙って代用せず、 '
         '無い事を伝えてから近い手段を勧めてください。 '
-        '※ Web 検索の手段は持っていないので、 事実はあなたの知識から答え、 '
-        '不確かな点はその旨を明記してください。'
+        '※ 調べ物は web_search で候補を出し、 web_fetch で中身を読んでから '
+        '答えてください (読んだ URL を必ず示す。 URL をでっち上げない)。 '
+        '調べずに答える時は、 不確かな点をその旨と一緒に書いてください。'
         '(アプリの表示言語: ${provider.appLanguage})';
   }
 
@@ -222652,6 +222777,12 @@ class _McpChatSession extends ChangeNotifier {
       'text_file_read': 8000,
       'list_pages': 4000,
       'list_app_commands': 4000,
+      // 読むための道具 (= ユーザー要望で足した分)。
+      'read_device_file': 8000,
+      'pick_user_file': 8000,
+      'web_fetch': 8000,
+      'web_search': 4000,
+      'list_folders': 2000,
     };
     final cap = caps[name] ?? 1200;
     return text.length > cap ? '${text.substring(0, cap)}…' : text;
@@ -222664,6 +222795,28 @@ class _McpChatSession extends ChangeNotifier {
         return provider.t('mcp.actListPages');
       case 'read_page':
         return provider.t('mcp.actReadPage');
+      case 'disconnect_nodes':
+        return provider.t('mcp.actDisconnect');
+      case 'rename_page':
+        return provider.t('mcp.actRenamePage');
+      case 'reorder_pages':
+        return provider.t('mcp.actReorderPages');
+      case 'list_folders':
+      case 'create_folder':
+      case 'rename_folder':
+      case 'delete_folder':
+      case 'move_page_to_folder':
+        return provider.t('mcp.actFolder');
+      case 'add_decoration':
+      case 'delete_decoration':
+        return provider.t('mcp.actShape');
+      case 'read_device_file':
+      case 'pick_user_file':
+        return provider.t('mcp.actReadFile');
+      case 'web_search':
+        return provider.t('mcp.actWebSearch');
+      case 'web_fetch':
+        return provider.t('mcp.actWebFetch');
       case 'create_page':
         return provider
             .t('mcp.actCreatePage')
@@ -222800,6 +222953,69 @@ class _McpChatDialogState extends State<_McpChatDialog> {
 
   /// 説明パネルを一時的に開いているか (ヘッダーの ⓘ で切り替え)。
   bool _showMcpInfo = false;
+
+  /// 「できること」 の専用欄を開いているか (= ユーザー要望: 説明は会話欄では
+  /// なく独自の欄に出す。 以前は会話の上で展開していて、 開くと画面から
+  /// はみ出していた)。 開いている間は会話の代わりにこの欄を出す。
+  bool _showCapabilityPanel = false;
+
+  /// 「できること」 の専用欄。 高さは Expanded で決まり、 中はスクロール
+  /// するので、 文章がどれだけ長くてもはみ出さない。
+  Widget _buildCapabilityPanel(MindMapProvider provider) {
+    return Column(children: [
+      // 見出し + 会話へ戻る。
+      Container(
+        padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
+        decoration: const BoxDecoration(
+          border: Border(bottom: BorderSide(color: Colors.white12)),
+        ),
+        child: Row(children: [
+          const Icon(Icons.menu_book_rounded,
+              color: Color(0xFF9CCC65), size: 16),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(provider.t('mcp.canDoTitle'),
+                style: const TextStyle(
+                    color: Color(0xFF9CCC65),
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700)),
+          ),
+          IconButton(
+            tooltip: provider.t('btn.close'),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+            icon: const Icon(Icons.close_rounded,
+                size: 17, color: Colors.white54),
+            onPressed: () => setState(() => _showCapabilityPanel = false),
+          ),
+        ]),
+      ),
+      Expanded(
+        child: Scrollbar(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 16),
+            child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(provider.t('mcp.explain'),
+                      style: const TextStyle(
+                          color: Colors.white70, fontSize: 11.5, height: 1.55)),
+                  const SizedBox(height: 8),
+                  Text(provider.t('mcp.priceInfo'),
+                      style: const TextStyle(
+                          color: Color(0xFF9CCC65),
+                          fontSize: 11,
+                          height: 1.5)),
+                  const Divider(height: 20, color: Colors.white12),
+                  SelectableText(provider.t('mcp.canDoBody'),
+                      style: const TextStyle(
+                          color: Colors.white70, fontSize: 11.5, height: 1.7)),
+                ]),
+          ),
+        ),
+      ),
+    ]);
+  }
 
   MindMapProvider get provider => widget.provider;
 
@@ -223682,13 +223898,22 @@ class _McpChatDialogState extends State<_McpChatDialog> {
               // 説明をもう一度見る (= ユーザー要望: ヘッダーに ⓘ で置く)。
               IconButton(
                 tooltip: provider.t('mcp.showInfo'),
-                icon: Icon(Icons.info_outline_rounded,
-                    color: _showMcpInfo || !provider.mcpInfoDismissed
+                icon: Icon(
+                    Icons.info_outline_rounded,
+                    color: _showMcpInfo ||
+                            _showCapabilityPanel ||
+                            !provider.mcpInfoDismissed
                         ? const Color(0xFF80CBC4)
                         : Colors.white38,
                     size: 18),
-                onPressed: () =>
-                    setState(() => _showMcpInfo = !_showMcpInfo),
+                // 説明の欄を開いている時は、 押したら会話へ戻る。
+                onPressed: () => setState(() {
+                  if (_showCapabilityPanel) {
+                    _showCapabilityPanel = false;
+                  } else {
+                    _showMcpInfo = !_showMcpInfo;
+                  }
+                }),
               ),
               // 前提条件 (= ユーザー要望: Markdown のように自分で書いて置ける)。
               IconButton(
@@ -223843,38 +224068,39 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                                 height: 1.5)),
                       ),
                       // できること一覧 (= ユーザー要望: 具体的に何ができるか)。
-                      Theme(
-                        data: Theme.of(context)
-                            .copyWith(dividerColor: Colors.transparent),
-                        child: ExpansionTile(
-                          tilePadding: EdgeInsets.zero,
-                          childrenPadding:
-                              const EdgeInsets.only(bottom: 4, right: 4),
-                          expandedCrossAxisAlignment:
-                              CrossAxisAlignment.start,
-                          iconColor: const Color(0xFF43B97F),
-                          collapsedIconColor: const Color(0xFF43B97F),
-                          title: Text(provider.t('mcp.canDoTitle'),
+                      //
+                      // ★ 以前はここで直に開いていた (ExpansionTile) ため、
+                      //   開くと 30 行を超える文が高さの決まった列に入り切らず
+                      //   はみ出していた (= ユーザー報告: オーバーフロー)。
+                      //   専用の欄 (_buildCapabilityPanel) を出して、 そちらで
+                      //   スクロールしながら読む形にする。
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: TextButton.icon(
+                          style: TextButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 4),
+                            minimumSize: const Size(0, 28),
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            foregroundColor: const Color(0xFF9CCC65),
+                          ),
+                          icon: const Icon(Icons.menu_book_rounded, size: 15),
+                          label: Text(provider.t('mcp.canDoTitle'),
                               style: const TextStyle(
-                                  color: Color(0xFF9CCC65),
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w700)),
-                          children: [
-                            Text(provider.t('mcp.canDoBody'),
-                                style: const TextStyle(
-                                    color: Colors.white60,
-                                    fontSize: 10.5,
-                                    height: 1.7)),
-                          ],
+                                  fontSize: 11, fontWeight: FontWeight.w700)),
+                          onPressed: () =>
+                              setState(() => _showCapabilityPanel = true),
                         ),
                       ),
                     ]),
               ),
             ]),
           ),
-          // ── メッセージ一覧 ──
+          // ── 説明の欄 / メッセージ一覧 ──
+          //    説明は会話に混ぜず、 専用の欄で出す (= ユーザー要望)。
           Expanded(
-            child: _msgs.isEmpty
+            child: _showCapabilityPanel
+                ? _buildCapabilityPanel(provider)
+                : _msgs.isEmpty
                 ? Center(
                     child: Padding(
                       padding: const EdgeInsets.all(24),

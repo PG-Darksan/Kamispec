@@ -18,6 +18,8 @@ import '../services/billing_service.dart';
 import '../services/google_auth.dart';
 import '../services/mcp_server.dart';
 import '../services/home_shortcut_service.dart';
+// AI に端末のファイル / Web を読ませる時の取り出し部 (= ユーザー要望)。
+import '../services/talk_reference.dart';
 
 /// カレンダーのイベント（1 日の予定）
 /// [startTime] / [endTime] は "HH:mm" 形式で、null なら終日イベント
@@ -41304,15 +41306,16 @@ class MindMapProvider extends ChangeNotifier {
           '● 会話の履歴を消す … この画面のやり取りをまとめて消します\n'
           '● アプリの説明書を読む … 課金・同期・配置などの仕様を調べます\n'
           '● 開いている文書を編集する … テキストエディタの中身を読み書きします\n'
+          '● ページの名前を変える・並べ替える\n'
+          '● フォルダーを作る・名前を変える・消す・ページを出し入れする\n'
+          '● つないだ線だけを消す … ノードは残したまま線だけ外します\n'
+          '● 図形 (装飾) を描く … 囲みや矢印、 下線などを足します\n'
+          '● 置いた後に色やリンクを変える … 後からでも色・リンクを直せます\n'
+          '● Web を調べて読む … 検索して、 選んだページの中身を読みます\n'
+          '● 端末の中のファイルを読む … 読む前に「読んでよいか」 を必ず\n'
+          '　　確かめます (テキスト・PDF・Word・Excel・PowerPoint など)\n'
           '\n'
           '【できないこと】\n'
-          '○ Web を調べて読む … 検索の画面は開けますが、 中身は読めません\n'
-          '○ ページの名前の変更・並べ替え、 フォルダーの操作\n'
-          '○ つないだ線だけを外す … 消せるのはノードごとです\n'
-          '○ 図形 (装飾) の追加 … 読み取りはできます\n'
-          '○ 置いた後に色やリンクを変える … 色とリンクは置く時にだけ指定できます\n'
-          '○ 端末の中のファイルを自由に読む … 読めるのはテキストエディタで\n'
-          '　　開いている 1 本と、 アプリの説明書だけです\n'
           '○ クラウド同期・LAN 共有・アプリロック・集中ロック …\n'
           '　　利用者自身が押す決まりです\n'
           '○ ほかのアプリ・ほかの端末からの操作 … このアプリの中の AI だけです\n'
@@ -41338,15 +41341,16 @@ class MindMapProvider extends ChangeNotifier {
           'Clear this conversation history\n'
           'Read the built-in app documentation (billing, sync, layout...)\n'
           'Read and edit the document open in the text editor\n'
+          'Rename and reorder pages\n'
+          'Create, rename and delete folders, and move pages in and out\n'
+          'Remove just a connection, leaving both nodes in place\n'
+          'Draw shapes (frames, arrows, underlines)\n'
+          'Change a node colour or link after it was placed\n'
+          'Search the web and read the page you pick\n'
+          'Read a file on this device - it always asks you first\n'
+          '  (text, PDF, Word, Excel, PowerPoint and so on)\n'
           '\n'
           '[What it cannot do]\n'
-          'Search or read the web - it can open a search screen, not read it\n'
-          'Rename or reorder pages, or manage folders\n'
-          'Remove a single connection - only whole nodes can be deleted\n'
-          'Add shapes (decorations) - it can read them\n'
-          'Change a node colour or link afterwards - only when created\n'
-          'Read arbitrary files - only the one open in the text editor and\n'
-          '  the built-in documentation\n'
           'Cloud sync, LAN share, app lock and focus lock - you press those\n'
           'Be driven from another app or device - only the AI inside this app\n'
           '\n'
@@ -41445,6 +41449,113 @@ class MindMapProvider extends ChangeNotifier {
       'ja': 'ノード同士をつなぐ', 'en': 'Connecting nodes', 'zh': '连接节点',
       'ko': '노드 연결', 'es': 'Conectando nodos', 'fr': 'Connexion des nœuds',
       'de': 'Knoten verbinden', 'pt': 'Conectando nós', 'ru': 'Соединение узлов',
+    },
+    'mcp.actDisconnect': {
+      'ja': '線を消す', 'en': 'Removing a line', 'zh': '删除连线',
+      'ko': '선 삭제', 'es': 'Quitando una línea',
+      'fr': "Suppression d'une ligne", 'de': 'Linie entfernen',
+      'pt': 'Removendo uma linha', 'ru': 'Удаление линии',
+    },
+    'mcp.actRenamePage': {
+      'ja': 'ページの名前を変える', 'en': 'Renaming a page', 'zh': '重命名页面',
+      'ko': '페이지 이름 변경', 'es': 'Renombrando una página',
+      'fr': "Renommage d'une page", 'de': 'Seite umbenennen',
+      'pt': 'Renomeando uma página', 'ru': 'Переименование страницы',
+    },
+    'mcp.actReorderPages': {
+      'ja': 'ページを並べ替える', 'en': 'Reordering pages', 'zh': '重新排列页面',
+      'ko': '페이지 정렬', 'es': 'Reordenando páginas',
+      'fr': 'Réorganisation des pages', 'de': 'Seiten neu ordnen',
+      'pt': 'Reordenando páginas', 'ru': 'Перестановка страниц',
+    },
+    'mcp.actFolder': {
+      'ja': 'フォルダーを整理する', 'en': 'Organising folders', 'zh': '整理文件夹',
+      'ko': '폴더 정리', 'es': 'Organizando carpetas',
+      'fr': 'Organisation des dossiers', 'de': 'Ordner verwalten',
+      'pt': 'Organizando pastas', 'ru': 'Работа с папками',
+    },
+    'mcp.actShape': {
+      'ja': '図形を描く', 'en': 'Drawing a shape', 'zh': '绘制图形',
+      'ko': '도형 그리기', 'es': 'Dibujando una forma',
+      'fr': "Dessin d'une forme", 'de': 'Form zeichnen',
+      'pt': 'Desenhando uma forma', 'ru': 'Рисование фигуры',
+    },
+    'mcp.actReadFile': {
+      'ja': '端末のファイルを読む', 'en': 'Reading a file', 'zh': '读取文件',
+      'ko': '파일 읽기', 'es': 'Leyendo un archivo',
+      'fr': "Lecture d'un fichier", 'de': 'Datei lesen',
+      'pt': 'Lendo um arquivo', 'ru': 'Чтение файла',
+    },
+    'mcp.actWebSearch': {
+      'ja': 'Web を調べる', 'en': 'Searching the web', 'zh': '搜索网页',
+      'ko': '웹 검색', 'es': 'Buscando en la web',
+      'fr': 'Recherche sur le web', 'de': 'Web durchsuchen',
+      'pt': 'Pesquisando na web', 'ru': 'Поиск в интернете',
+    },
+    'mcp.actWebFetch': {
+      'ja': 'Web ページを読む', 'en': 'Reading a web page', 'zh': '阅读网页',
+      'ko': '웹 페이지 읽기', 'es': 'Leyendo una página web',
+      'fr': "Lecture d'une page web", 'de': 'Webseite lesen',
+      'pt': 'Lendo uma página web', 'ru': 'Чтение веб-страницы',
+    },
+    'mcp.fileReadTitle': {
+      'ja': 'ファイルを読んでもよいですか',
+      'en': 'Allow reading this file?',
+      'zh': '允许读取此文件吗？',
+      'ko': '이 파일을 읽어도 될까요?',
+      'es': '¿Permitir leer este archivo?',
+      'fr': 'Autoriser la lecture de ce fichier ?',
+      'de': 'Diese Datei lesen dürfen?',
+      'pt': 'Permitir a leitura deste arquivo?',
+      'ru': 'Разрешить чтение этого файла?',
+    },
+    'mcp.fileReadBody': {
+      'ja': 'AI アシスタントが次のファイルを読もうとしています。',
+      'en': 'The AI assistant wants to read this file.',
+      'zh': 'AI 助手想要读取以下文件。',
+      'ko': 'AI 어시스턴트가 다음 파일을 읽으려고 합니다.',
+      'es': 'El asistente de IA quiere leer este archivo.',
+      'fr': "L'assistant IA veut lire ce fichier.",
+      'de': 'Der KI-Assistent möchte diese Datei lesen.',
+      'pt': 'O assistente de IA quer ler este arquivo.',
+      'ru': 'ИИ-ассистент хочет прочитать этот файл.',
+    },
+    'mcp.fileReadReason': {
+      'ja': '理由', 'en': 'Reason', 'zh': '理由', 'ko': '이유',
+      'es': 'Motivo', 'fr': 'Raison', 'de': 'Grund', 'pt': 'Motivo',
+      'ru': 'Причина',
+    },
+    'mcp.fileReadAllow': {
+      'ja': '許可する', 'en': 'Allow', 'zh': '允许', 'ko': '허용',
+      'es': 'Permitir', 'fr': 'Autoriser', 'de': 'Erlauben',
+      'pt': 'Permitir', 'ru': 'Разрешить',
+    },
+    'mcp.fileReadDeny': {
+      'ja': '断る', 'en': 'Refuse', 'zh': '拒绝', 'ko': '거절',
+      'es': 'Rechazar', 'fr': 'Refuser', 'de': 'Ablehnen',
+      'pt': 'Recusar', 'ru': 'Отказать',
+    },
+    'mcp.fileReadAllowFolder': {
+      'ja': 'このフォルダーは、 アプリを閉じるまで聞かない',
+      'en': 'Do not ask again for this folder until the app closes',
+      'zh': '在关闭应用前不再询问此文件夹',
+      'ko': '앱을 닫을 때까지 이 폴더는 묻지 않기',
+      'es': 'No volver a preguntar por esta carpeta hasta cerrar la app',
+      'fr': "Ne plus demander pour ce dossier jusqu'à la fermeture",
+      'de': 'Für diesen Ordner bis zum Schließen nicht mehr fragen',
+      'pt': 'Não perguntar sobre esta pasta até fechar o app',
+      'ru': 'Не спрашивать об этой папке до закрытия приложения',
+    },
+    'mcp.filePickTitle': {
+      'ja': 'AI に読ませるファイルを選ぶ',
+      'en': 'Choose a file for the AI to read',
+      'zh': '选择要让 AI 读取的文件',
+      'ko': 'AI가 읽을 파일 선택',
+      'es': 'Elige un archivo para que la IA lo lea',
+      'fr': "Choisir un fichier à lire par l'IA",
+      'de': 'Datei für die KI auswählen',
+      'pt': 'Escolha um arquivo para a IA ler',
+      'ru': 'Выберите файл для чтения ИИ',
     },
     'mcp.actAddImage': {
       'ja': '画像を置く', 'en': 'Adding an image', 'zh': '添加图片',
@@ -78240,6 +78351,170 @@ $cleanQ
   /// テキストエディタが開いた時に登録する。
   void mcpBindTextFile(McpTextFileBinding b) => _mcpTextFile = b;
 
+  // ─── AI に端末のファイルを読ませる (= ユーザー要望: 許可を求める形なら
+  //     OK) ────────────────────────────────────────────────────────────
+  //
+  // 読む前に必ず利用者へ確かめる。 画面が確認の窓を出す係を登録し、
+  // ここから呼ぶ (McpServer は画面を持たないため)。 一度許した物は
+  // この起動の間だけ覚える (毎回聞かれると使い物にならないため)。
+
+  Future<bool> Function(String path, String reason)? _mcpFileReadConfirm;
+  void registerMcpFileReadConfirm(
+      Future<bool> Function(String path, String reason) f) {
+    _mcpFileReadConfirm = f;
+  }
+
+  /// 「ファイルを選んでもらう」 係 (画面がファイル選択の窓を出す)。
+  /// 選ぶ操作そのものが許可なので、 こちらは確認の窓を出さない。
+  Future<String?> Function(String reason)? _mcpFilePicker;
+  void registerMcpFilePicker(Future<String?> Function(String reason) f) {
+    _mcpFilePicker = f;
+  }
+
+  /// この起動の間だけ覚えておく「許した物」。
+  final Set<String> _mcpAllowedReadFiles = {};
+  final Set<String> _mcpAllowedReadDirs = {};
+
+  /// 確認の窓で「このフォルダーは以後許可」 が選ばれた時に呼ぶ。
+  void mcpAllowReadDir(String dirPath) {
+    final d = dirPath.trim();
+    if (d.isNotEmpty) _mcpAllowedReadDirs.add(d);
+  }
+
+  bool _mcpPathAlreadyAllowed(String path) {
+    if (_mcpAllowedReadFiles.contains(path)) return true;
+    for (final d in _mcpAllowedReadDirs) {
+      if (path.startsWith(d)) return true;
+    }
+    return false;
+  }
+
+  /// 端末の中のファイルを 1 本読む (= ユーザー要望: 許可を求める形で)。
+  ///
+  /// 読めたら {path, fileName, chars, text}、 駄目なら {error: 理由}。
+  /// [reason] は「なぜ読みたいか」。 そのまま利用者に見せる。
+  Future<Map<String, dynamic>> mcpReadDeviceFile(String path,
+      {String reason = '', int maxChars = 12000}) async {
+    final raw = path.trim();
+    if (raw.isEmpty) return {'error': 'path is required'};
+    String full;
+    try {
+      full = File(raw).absolute.path;
+    } catch (_) {
+      full = raw;
+    }
+    try {
+      if (!await File(full).exists()) {
+        return {
+          'error': 'file not found: $full — ask the user for the exact path, '
+              'or call pick_user_file so they can choose it themselves.'
+        };
+      }
+    } catch (e) {
+      return {'error': 'cannot open $full ($e)'};
+    }
+    if (!_mcpPathAlreadyAllowed(full)) {
+      final ask = _mcpFileReadConfirm;
+      if (ask == null) {
+        return {
+          'error': 'reading files needs the user to allow it, and this window '
+              'cannot ask. Tell the user to try again in the main app window.'
+        };
+      }
+      bool ok;
+      try {
+        ok = await ask(full, reason.trim());
+      } catch (_) {
+        ok = false;
+      }
+      if (!ok) {
+        return {
+          'error': 'the user declined to share that file. Do not try again '
+              'with the same path; ask them what to do instead.'
+        };
+      }
+      _mcpAllowedReadFiles.add(full);
+    }
+    final text = await TalkReference.extractFileText(full, maxChars: maxChars);
+    if (text == null) {
+      return {
+        'error': 'could not read $full (unsupported type or unreadable). '
+            'Text, pdf, docx, pptx, xlsx and csv are supported.'
+      };
+    }
+    return {
+      'path': full,
+      'fileName': full.split(Platform.pathSeparator).last,
+      'chars': text.length,
+      'text': text,
+    };
+  }
+
+  /// 利用者にファイルを選んでもらって読む (パスが分からない時用)。
+  Future<Map<String, dynamic>> mcpPickAndReadFile(
+      {String reason = '', int maxChars = 12000}) async {
+    final pick = _mcpFilePicker;
+    if (pick == null) {
+      return {
+        'error': 'this window cannot open a file chooser. Tell the user to '
+            'try again in the main app window.'
+      };
+    }
+    String? path;
+    try {
+      path = await pick(reason.trim());
+    } catch (_) {
+      path = null;
+    }
+    if (path == null || path.trim().isEmpty) {
+      return {'error': 'the user did not choose a file.'};
+    }
+    // 選んでもらった物は、 その操作自体が許可なので確認を挟まない。
+    _mcpAllowedReadFiles.add(path);
+    return mcpReadDeviceFile(path, reason: reason, maxChars: maxChars);
+  }
+
+  // ─── AI に Web を調べさせる (= ユーザー要望) ────────────────────────
+  //   面接練習で動いている取得部 (鍵不要) をそのまま使う。
+
+  /// Web を検索して [{title, url}] を返す。
+  Future<List<Map<String, String>>> mcpWebSearch(String query,
+          {int limit = 8}) =>
+      TalkReference.searchWeb(query,
+          limit: limit, lang: _appLanguage == 'ja' ? 'ja' : 'en');
+
+  /// URL を 1 本読んで本文テキストにする。 危ない宛先は断る。
+  Future<Map<String, dynamic>> mcpWebFetch(String url,
+      {int maxChars = 8000}) async {
+    final u = Uri.tryParse(url.trim());
+    if (u == null || !(u.isScheme('http') || u.isScheme('https'))) {
+      return {'error': 'only http(s) URLs can be read'};
+    }
+    // 自分自身 (アプリの待ち受け) や家の中の機器を叩かせない。
+    final host = u.host.toLowerCase();
+    final blocked = host == 'localhost' ||
+        host == '::1' ||
+        host.endsWith('.local') ||
+        RegExp(r'^127\.').hasMatch(host) ||
+        RegExp(r'^10\.').hasMatch(host) ||
+        RegExp(r'^192\.168\.').hasMatch(host) ||
+        RegExp(r'^172\.(1[6-9]|2\d|3[01])\.').hasMatch(host) ||
+        RegExp(r'^169\.254\.').hasMatch(host);
+    if (blocked) {
+      return {'error': 'that address is on this machine or this local '
+          'network, so it cannot be fetched'};
+    }
+    final text = await TalkReference.fetchPageText(u.toString(),
+        maxChars: maxChars);
+    if (text == null || text.trim().isEmpty) {
+      return {
+        'error': 'could not read that page (it may need JavaScript, or it '
+            'refused the request). Try another result from web_search.'
+      };
+    }
+    return {'url': u.toString(), 'chars': text.length, 'text': text};
+  }
+
   /// テキストエディタが閉じた時に解除する (別のエディタが後から登録して
   /// いたら、 そちらは消さない)。
   void mcpUnbindTextFile(McpTextFileBinding b) {
@@ -78451,6 +78726,8 @@ $cleanQ
             'type': p.pageType,
             'nodeCount': p.nodes.length,
             'isCurrent': p.id == currentPage.id,
+            // どのフォルダーに入っているか (null = フォルダーの外)。
+            'folderId': p.folderId,
             'lastModified': p.lastModifiedAt.toIso8601String(),
           }
       ];
@@ -79041,6 +79318,13 @@ $cleanQ
     String? memo,
     double? x,
     double? y,
+    // ── 置いた後に色やリンクを変える (= ユーザー要望) ──
+    //    画面側の updateNodeColor / updateNodeLink は currentPage 決め打ち
+    //    なので使わない (裏のページを直すと別のページを壊す)。 mcpAddNode と
+    //    同じように、 ページを引いてから項目へ直に書く。
+    int? colorValue,
+    String? url,
+    bool clearUrl = false,
   }) {
     final page = mcpPageById(pageId);
     if (page == null) return false;
@@ -79049,6 +79333,10 @@ $cleanQ
     final node =
         page.nodes[_resolveNodeIdIn(page, nodeKey, fuzzy: false) ?? nodeKey];
     if (node == null) return false;
+    // 色・リンクの書き換えは戻せるようにしておく (= 見た目が変わる操作)。
+    if (colorValue != null || url != null || clearUrl) {
+      _pushUndoForPage(pageId, coalesceKey: 'mcpUpdateNode:$pageId');
+    }
     if (title != null) node.title = title;
     if (memo != null) {
       node.contentType = NodeContentType.memo;
@@ -79056,6 +79344,25 @@ $cleanQ
     }
     if (x != null || y != null) {
       node.position = Offset(x ?? node.position.dx, y ?? node.position.dy);
+    }
+    if (colorValue != null) node.color = Color(colorValue);
+    if (clearUrl) {
+      node.linkUrl = null;
+      node.youtubeUrl = null;
+      node.contentType = (node.memoText ?? '').isEmpty
+          ? NodeContentType.none
+          : NodeContentType.memo;
+    } else if (url != null && url.trim().isNotEmpty) {
+      final link = url.trim();
+      if (_isYoutubeVideoUrl(link)) {
+        node.youtubeUrl = link;
+        node.contentType = NodeContentType.youtube;
+      } else {
+        node.linkUrl = link;
+        if ((node.memoText ?? '').isEmpty) {
+          node.contentType = NodeContentType.link;
+        }
+      }
     }
     _saveToStorage();
     notifyListeners();
@@ -79168,6 +79475,239 @@ $cleanQ
     ));
     _saveToStorage();
     notifyListeners();
+    return true;
+  }
+
+  // ─── AI アシスタント用の追加ファサード (= ユーザー要望: 「できない事」 に
+  //     並んでいた操作を出来るようにする) ────────────────────────────────
+  //
+  // ★ どれも画面側の同名メソッド (disconnectNodes / addMapDecoration /
+  //   renameFolder …) を呼ばない。 あちらは currentPage 決め打ち + _pushUndo
+  //   (現在ページの控え) なので、 裏のページを指定すると別のページを壊す。
+  //   必ず mcpPageById でページを引き、 取り消しは _pushUndoForPage を使う。
+
+  /// 繋いだ線だけを消す (ノードは残す = ユーザー要望)。
+  /// 向きは問わない。 消せたら true、 そもそも繋がっていなければ false。
+  bool mcpDisconnectNodes(String pageId, String fromKey, String toKey) {
+    final page = mcpPageById(pageId);
+    if (page == null) return false;
+    // 消す操作なので部分一致は使わない (別の線を消さないため)。
+    final fromId = _resolveNodeIdIn(page, fromKey, fuzzy: false);
+    final toId = _resolveNodeIdIn(page, toKey, fuzzy: false);
+    if (fromId == null || toId == null) return false;
+    final before = page.connections.length;
+    _pushUndoForPage(pageId, coalesceKey: 'mcpDisconnect:$pageId');
+    page.connections.removeWhere((c) =>
+        (c.fromId == fromId && c.toId == toId) ||
+        (c.fromId == toId && c.toId == fromId));
+    if (page.connections.length == before) return false;
+    _saveToStorage();
+    notifyListeners();
+    return true;
+  }
+
+  /// 図形 (装飾) を足す (= ユーザー要望)。 出来た図形の id を返す。
+  ///
+  /// [kind] は MapDecorationKind の名前。 知らない名前は null を返して
+  /// 「その図形は無い」 と答えられるようにする (黙って直線にしない)。
+  /// [aroundNodeIds] を渡すと、 そのノードを囲む大きさに自動で合わせる
+  /// (= AI に座標を想像させないため)。
+  String? mcpAddDecoration(
+    String pageId, {
+    required String kind,
+    double? x1,
+    double? y1,
+    double? x2,
+    double? y2,
+    List<String>? aroundNodeIds,
+    int? colorRgb,
+    double? strokeWidth,
+    String? text,
+    bool? filled,
+    int? layer,
+  }) {
+    final page = mcpPageById(pageId);
+    if (page == null) return null;
+    MapDecorationKind? k;
+    for (final v in MapDecorationKind.values) {
+      if (v.name.toLowerCase() == kind.trim().toLowerCase()) k = v;
+    }
+    if (k == null) return null;
+    // 折れ線は通過点が要るので、 ここでは受け付けない。
+    if (k == MapDecorationKind.polyline) return null;
+    Offset? start;
+    Offset? end;
+    if (aroundNodeIds != null && aroundNodeIds.isNotEmpty) {
+      double? l, t, r, b;
+      for (final key in aroundNodeIds) {
+        final id = _resolveNodeIdIn(page, key);
+        final n = id == null ? null : page.nodes[id];
+        if (n == null) continue;
+        final nl = n.position.dx;
+        final nt = n.position.dy;
+        final nr = nl + n.width;
+        final nb = nt + n.visualHeight;
+        l = l == null ? nl : math.min(l, nl);
+        t = t == null ? nt : math.min(t, nt);
+        r = r == null ? nr : math.max(r, nr);
+        b = b == null ? nb : math.max(b, nb);
+      }
+      if (l != null && t != null && r != null && b != null) {
+        const m = 28.0; // 囲みの余白
+        start = Offset(l - m, t - m);
+        end = Offset(r + m, b + m);
+      }
+    }
+    if (start == null || end == null) {
+      if (x1 != null && y1 != null && x2 != null && y2 != null) {
+        start = Offset(x1, y1);
+        end = Offset(x2, y2);
+      } else {
+        // 座標も囲む相手も無い時は、 そのページの基準位置に既定の大きさで置く。
+        final ref = mcpReferenceFor(pageId);
+        start = ref;
+        end = ref + const Offset(240, 160);
+      }
+    }
+    final deco = MapDecoration(
+      id: 'deco_${DateTime.now().microsecondsSinceEpoch}',
+      kind: k,
+      start: start,
+      end: end,
+      // MapDecoration.colorRgb は 24 ビット (不透明度を持たない)。
+      colorRgb: (colorRgb ?? 0x222222) & 0xFFFFFF,
+      strokeWidth: strokeWidth ?? 2.5,
+      text: (text ?? '').trim(),
+      filled: filled ?? false,
+      layer: (layer ?? activeLayerOf(pageId)).clamp(1, 5),
+    );
+    _pushUndoForPage(pageId, coalesceKey: 'mcpDeco:$pageId');
+    page.decorations.add(deco);
+    page.lastModifiedAt = DateTime.now();
+    _saveToStorage();
+    notifyListeners();
+    _requestMcpFocus(pageId);
+    return deco.id;
+  }
+
+  /// 図形を消す。 read_page が返す decorations の id を指す。
+  bool mcpDeleteDecoration(String pageId, String decorationId) {
+    final page = mcpPageById(pageId);
+    if (page == null) return false;
+    final before = page.decorations.length;
+    _pushUndoForPage(pageId, coalesceKey: 'mcpDeco:$pageId');
+    page.decorations.removeWhere((d) => d.id == decorationId);
+    if (page.decorations.length == before) return false;
+    page.lastModifiedAt = DateTime.now();
+    _saveToStorage();
+    notifyListeners();
+    return true;
+  }
+
+  /// ページの名前を変える。 知らない id なら false。
+  bool mcpRenamePage(String pageId, String name) {
+    final n = name.trim();
+    if (n.isEmpty) return false;
+    final i = _pages.indexWhere((p) => p.id == pageId);
+    if (i < 0) return false;
+    renamePage(i, n);
+    return true;
+  }
+
+  /// ページを並べ替える。 [orderedPageIds] は「こう並べたい」 順。
+  /// 渡さなかったページは、 渡した分の後ろに元の順で残る。
+  /// 並べ替えた後の全ページ id を返す (AI が結果をそのまま報告できるように)。
+  List<String> mcpReorderPages(List<String> orderedPageIds) {
+    // 知っている id だけを、 重複を除いて拾う。
+    final wanted = <String>[];
+    for (final id in orderedPageIds) {
+      if (wanted.contains(id)) continue;
+      if (_pages.any((p) => p.id == id)) wanted.add(id);
+    }
+    if (wanted.isEmpty) return [for (final p in _pages) p.id];
+    // 現在ページを id で覚えておく (並べ替えで番号がずれるため)。
+    final currentId = _pages[_currentPageIndex.clamp(0, _pages.length - 1)].id;
+    final rest = [
+      for (final p in _pages)
+        if (!wanted.contains(p.id)) p
+    ];
+    final reordered = <MindMapPage>[
+      for (final id in wanted) _pages.firstWhere((p) => p.id == id),
+      ...rest,
+    ];
+    _pages
+      ..clear()
+      ..addAll(reordered);
+    final at = _pages.indexWhere((p) => p.id == currentId);
+    if (at >= 0) _currentPageIndex = at;
+    _saveToStorage();
+    notifyListeners();
+    return [for (final p in _pages) p.id];
+  }
+
+  /// フォルダー一覧 (中のページ数つき)。
+  List<Map<String, dynamic>> mcpListFolders() => [
+        for (final f in _folders)
+          {
+            'id': f.id,
+            'name': f.name,
+            'pageCount': _pages.where((p) => p.folderId == f.id).length,
+            if ((f.linkedDirPath ?? '').isNotEmpty)
+              'linkedDir': f.linkedDirPath,
+          }
+      ];
+
+  /// フォルダーを作る。 出来たフォルダーの id を返す。
+  String mcpCreateFolder([String? name]) {
+    final n = (name ?? '').trim();
+    return addFolder(name: n.isEmpty ? null : n);
+  }
+
+  /// フォルダーの名前を変える。 知らない id なら false
+  /// (renameFolder は黙って何もしないので、 ここで先に確かめる)。
+  bool mcpRenameFolder(String folderId, String name) {
+    final n = name.trim();
+    if (n.isEmpty) return false;
+    if (!_folders.any((f) => f.id == folderId)) return false;
+    renameFolder(folderId, n);
+    return true;
+  }
+
+  /// フォルダーを消す。 成功なら null、 駄目なら理由を返す。
+  ///
+  /// 既定 (deletePages=false) は中のページを残して、 フォルダーから出すだけ。
+  /// deletePages=true は中のページごと消える = **戻せない**ので、 ページ削除と
+  /// 同じ暴走止め (_mcpRecentPageDeletes) を通す。
+  String? mcpDeleteFolder(String folderId, {bool deletePages = false}) {
+    if (!_folders.any((f) => f.id == folderId)) return 'folder not found';
+    if (deletePages) {
+      final inside = _pages.where((p) => p.folderId == folderId).length;
+      if (inside > 0) {
+        final now = DateTime.now();
+        _mcpRecentPageDeletes
+            .removeWhere((t) => now.difference(t) > _kMcpDeleteBurstWindow);
+        if (_mcpRecentPageDeletes.length + inside > _kMcpDeleteBurstLimit) {
+          return 'too many page deletions at once; ask the user to confirm '
+              'and delete the pages one by one (or delete the folder without '
+              'deletePages)';
+        }
+        for (var i = 0; i < inside; i++) {
+          _mcpRecentPageDeletes.add(now);
+        }
+      }
+    }
+    deleteFolder(folderId, deletePages: deletePages);
+    return null;
+  }
+
+  /// ページをフォルダーへ入れる / 外へ出す ([folderId] が null なら外へ)。
+  /// movePageToFolder は知らない id で黙って何もしないので、 先に確かめる。
+  bool mcpMovePageToFolder(String pageId, String? folderId) {
+    if (!_pages.any((p) => p.id == pageId)) return false;
+    if (folderId != null && !_folders.any((f) => f.id == folderId)) {
+      return false;
+    }
+    movePageToFolder(pageId, folderId);
     return true;
   }
 
