@@ -55,6 +55,8 @@ import 'package:fvp/fvp.dart' as fvp;
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'providers/mind_map_provider.dart';
 import 'screens/mind_map_screen.dart';
+// 自動操作のフロー画面を外の窓 (別プロセス) で出すため (= ユーザー要望)。
+import 'widgets/google_search_dialog.dart' show GoogleSearchAutomationHost;
 import 'services/home_shortcut_service.dart';
 // 録画窓の中の範囲選び (デスクトップの写しを撮る) に使う。
 import 'services/screen_capture.dart' as scap;
@@ -3024,6 +3026,53 @@ void main(List<String> args) async {
           ? Offset(fx, fy)
           : null,
     ));
+    return;
+  }
+  // ── 自動操作のフロー画面だけを出す「外の窓」 として起動された場合
+  //    (= ユーザー要望: フローティングモードで自動操作のフローを外に
+  //    出せるように) ──
+  //    WebView を使うので multi_window のサブ窓ではなく別プロセスにする
+  //    (--floating-web と同じ理由)。 フローは prefs 経由で本体と共有される。
+  if (!kIsWeb && args.isNotEmpty && args.first == '--floating-auto') {
+    final pinned = args.contains('--floating-pin');
+    double? fx, fy, fw, fh;
+    for (final a in args) {
+      if (a.startsWith('--floating-x=')) {
+        fx = double.tryParse(a.substring('--floating-x='.length));
+      } else if (a.startsWith('--floating-y=')) {
+        fy = double.tryParse(a.substring('--floating-y='.length));
+      } else if (a.startsWith('--floating-w=')) {
+        fw = double.tryParse(a.substring('--floating-w='.length));
+      } else if (a.startsWith('--floating-h=')) {
+        fh = double.tryParse(a.substring('--floating-h='.length));
+      }
+    }
+    // 本体専用の常駐処理 (MCP の待ち受け再開など) はこの窓では立てない。
+    MindMapProvider.externalToolWindow = true;
+    final px = fx, py = fy;
+    try {
+      await windowManager.ensureInitialized();
+      final opts = WindowOptions(
+        size: Size(fw ?? 900, fh ?? 720),
+        center: px == null || py == null,
+        title: '自動操作',
+      );
+      unawaited(windowManager.waitUntilReadyToShow(opts, () async {
+        if (px != null && py != null) {
+          try {
+            await windowManager.setPosition(Offset(px, py));
+          } catch (_) {}
+        }
+        if (pinned) {
+          try {
+            await windowManager.setAlwaysOnTop(true);
+          } catch (_) {}
+        }
+        await windowManager.show();
+        await windowManager.focus();
+      }));
+    } catch (_) {}
+    runApp(const _AutomationWindowApp());
     return;
   }
   // ── メモだけを単独で立ち上げる (= ユーザー要望: フローティングメモの
@@ -6126,6 +6175,66 @@ class _AudienceWindowAppState extends State<_AudienceWindowApp> {
 /// フローティング AI 窓のダイアログ用 navigator (= サブ窓と同じ理由:
 /// State.context は自作 MaterialApp の外なので、 showDialog はこれを使う)。
 final GlobalKey<NavigatorState> _navKeyFloating = GlobalKey<NavigatorState>();
+
+/// 自動操作のフロー画面だけを出す「外の窓」 (= ユーザー要望)。
+/// 別プロセスなので WebView の後始末も本体に一切影響しない。
+class _AutomationWindowApp extends StatefulWidget {
+  const _AutomationWindowApp();
+
+  @override
+  State<_AutomationWindowApp> createState() => _AutomationWindowAppState();
+}
+
+class _AutomationWindowAppState extends State<_AutomationWindowApp>
+    with WindowListener {
+  @override
+  void initState() {
+    super.initState();
+    windowManager.addListener(this);
+  }
+
+  @override
+  void dispose() {
+    windowManager.removeListener(this);
+    super.dispose();
+  }
+
+  /// 即座に終わらせる。 exit() は WebView2 等の DLL の後始末を待って
+  /// 固まることがあるため、 本体の × と同じ TerminateProcess 方式
+  /// (設定は逐次保存済みなので失うものはない)。
+  static Never _forceKillSelf() {
+    try {
+      Process.killPid(pid);
+    } catch (_) {}
+    exit(0);
+  }
+
+  @override
+  void onWindowClose() {
+    _forceKillSelf();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ChangeNotifierProvider(
+      create: (_) => MindMapProvider(),
+      child: MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: ThemeData(
+          useMaterial3: true,
+          brightness: Brightness.dark,
+          scaffoldBackgroundColor: const Color(0xFF12121C),
+        ),
+        home: Scaffold(
+          backgroundColor: const Color(0xFF12121C),
+          body: GoogleSearchAutomationHost(
+            onRequestClose: _forceKillSelf,
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 class _FloatingWebWindowApp extends StatefulWidget {
   final String url;

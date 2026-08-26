@@ -77485,7 +77485,13 @@ $cleanQ
     notifyListeners();
   }
 
+  /// 外の道具窓 (別プロセス。 例: --floating-auto の自動操作窓) として
+  /// 動いているか。 true の時は本体専用の常駐処理 (MCP の待ち受け再開など)
+  /// を立てない (= 本体とのポートの取り合い防止)。
+  static bool externalToolWindow = false;
+
   Future<void> _loadMcpServerSetting() async {
+    if (externalToolWindow) return;
     if (kIsWeb || !(Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       return;
     }
@@ -77984,6 +77990,27 @@ $cleanQ
     // 表や画像のように線で繋がっていない物は木に含まれないので、
     //   別に並べ直して重なりを防ぐ (= ユーザー報告)。
     _spreadLooseNodes(page);
+    _requestMcpFocus(pageId);
+  }
+
+  /// ギャラリー (bookshelf) の整列 (= AI アシスタントの tidy_page 用)。
+  ///
+  /// 点在するセルを左上から行優先で隙間なく詰め直し、 セルから位置を
+  /// 再導出する (= ユーザー報告: ギャラリーの整列を頼んでも「必要ありません」
+  /// と言われて整列されない)。 mcpTidyPage には入れない — あちらは AI が
+  /// 触った全ページへ毎回自動で掛かるため、 ギャラリーの意図的な配置まで
+  /// 勝手に詰め直してしまう。 こちらは明示的に頼まれた時だけ呼ばれる。
+  void mcpTidyGallery(String pageId) {
+    final page = mcpPageById(pageId);
+    if (page == null || page.pageType != 'bookshelf') return;
+    if (page.nodes.isEmpty) return;
+    _pushUndo();
+    // cleanupWatchedBookshelfVideos と同じ手順 (実績のある並べ直し)。
+    repackShelfCellsRowMajor(page);
+    _arrangeAsBookshelfBody(page);
+    _saveShelfCells();
+    _saveToStorage();
+    notifyListeners();
     _requestMcpFocus(pageId);
   }
 

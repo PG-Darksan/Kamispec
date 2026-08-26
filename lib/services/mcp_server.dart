@@ -439,7 +439,10 @@ class McpServer {
         'layout the app applies after AI edits. Use it when the user says the '
         'map is messy / overlapping / wants it lined up. Nodes keep their '
         'titles and connections; only positions change, and the user can put '
-        'it back with Ctrl+Z. Works on "normal" pages only.',
+        'it back with Ctrl+Z. Also works on a "bookshelf" (gallery) page: '
+        'scattered tiles are packed into the grid from the top-left, keeping '
+        'their visual order — use it when gallery items are strewn about. '
+        'Other page types arrange themselves.',
         {
           'pageId': {'type': 'string'},
         },
@@ -1206,9 +1209,20 @@ class McpServer {
             return _err('no page has the id "$pageId" - call list_pages.');
           }
           final type = page.pageType ?? 'normal';
+          // ギャラリーは「セルを左上から詰め直す」 整列で応える
+          // (= ユーザー報告: 整列を頼むと「必要ありません」 と断られる)。
+          if (type == 'bookshelf') {
+            if (page.nodes.isEmpty) {
+              return _err('nothing to tidy: "$pageId" has 0 item(s).');
+            }
+            _provider.mcpTidyGallery(pageId);
+            return _ok('packed ${page.nodes.length} gallery item(s) into the '
+                'grid from the top-left on $pageId');
+          }
           if (type != 'normal') {
-            return _err('tidy_page only works on a mind map page; "$pageId" '
-                'is a "$type" page, which arranges itself.');
+            return _err('tidy_page only works on a mind map or gallery '
+                '(bookshelf) page; "$pageId" is a "$type" page, which '
+                'arranges itself.');
           }
           if (page.nodes.length < 2) {
             return _err('nothing to tidy: "$pageId" has '

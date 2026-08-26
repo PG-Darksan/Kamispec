@@ -214,10 +214,11 @@ class GoogleSearchDialog {
         context: context,
         barrierColor: Colors.transparent,
         barrierDismissible: false,
-        builder: (dctx) => Dialog(
-          insetPadding: EdgeInsets.zero,
-          backgroundColor: Colors.transparent,
-          elevation: 0,
+        // 本物の全画面にする (= ユーザー報告: 全画面のはずがフローティングの
+        // 様に開き、 透明な幕で他の場所が触れず、 バグの様に見える)。
+        // 他の道具 (_openToolDialog) と同じ不透明背景の Dialog.fullscreen。
+        builder: (dctx) => Dialog.fullscreen(
+          backgroundColor: const Color(0xFF12121C),
           child: _GoogleSearchPage(
             initialQuery: '',
             initialMemo: '',
@@ -1061,6 +1062,36 @@ class _FloatingSearchWindowState extends State<_FloatingSearchWindow> {
   }
 }
 
+/// 自動操作 (実行フロー) の画面を、 ダイアログ以外の場所 —— アプリ内の
+/// フローティング窓や外の別プロセス窓 —— に埋め込むための公開の入り口
+/// (= ユーザー要望: フローティングモードで自動操作のフローを外に出したい)。
+/// 中身は automationOnly の _GoogleSearchPage そのもの。
+class GoogleSearchAutomationHost extends StatelessWidget {
+  const GoogleSearchAutomationHost({super.key, required this.onRequestClose});
+
+  /// 「閉じる」 が押された時の処理。 Overlay / 別プロセス窓には pop すべき
+  /// route が無いので必須 (Navigator.pop の誤爆防止)。
+  final VoidCallback onRequestClose;
+
+  @override
+  Widget build(BuildContext context) {
+    // 窓の実寸を測って渡す (MediaQuery は本体画面の大きさを返すため)。
+    return LayoutBuilder(builder: (ctx, cns) {
+      return _GoogleSearchPage(
+        initialQuery: '',
+        initialMemo: '',
+        customTitle: null,
+        onAddNode: (title, memo, linkUrl) {},
+        openAutomation: true,
+        automationOnly: true,
+        onRequestClose: onRequestClose,
+        windowWidth: cns.maxWidth.isFinite ? cns.maxWidth : null,
+        windowHeight: cns.maxHeight.isFinite ? cns.maxHeight : null,
+      );
+    });
+  }
+}
+
 class _GoogleSearchPage extends StatefulWidget {
   final String initialQuery;
   final String initialMemo;
@@ -1120,6 +1151,10 @@ class _GoogleSearchPage extends StatefulWidget {
   /// null の時は画面幅 (MediaQuery) を使う。
   final double? windowWidth;
 
+  /// フローティング表示時の実ウィンドウ高さ (自動操作パネルの大きさ計算用)。
+  /// null の時は画面高さ (MediaQuery) を使う。
+  final double? windowHeight;
+
   /// ロック画面から開いたフローティングを全画面化した時など、上部の検索バー・
   /// タブバー・追加タブ操作を出したくない場合に true。
   final bool hideAppBar;
@@ -1148,6 +1183,7 @@ class _GoogleSearchPage extends StatefulWidget {
     this.onExpandToCompact,
     this.onRequestClose,
     this.windowWidth,
+    this.windowHeight,
     this.hideAppBar = false,
   });
 
@@ -4989,24 +5025,52 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
 
   /// フローティングの自動操作パネル。
   Widget _buildFloatingAutoPanel(MindMapProvider provider) {
-    final size = MediaQuery.of(context).size;
+    var size = MediaQuery.of(context).size;
+    // フローティング窓 / 外の窓の中では、 窓の実寸を基準にする
+    // (MediaQuery は本体画面の大きさを返すため)。
+    if (widget.windowWidth != null || widget.windowHeight != null) {
+      size = Size(
+          widget.windowWidth ?? size.width, widget.windowHeight ?? size.height);
+    }
     // 画面に合わせて大きめに (= ユーザー要望: 自動操作の画面をもう少し
     // 大きく)。 画面が狭い時ははみ出さないよう縮める。
     // ── モバイルでも収まる大きさにする (= ユーザー要望: オーバーフロー
     //    してしまうので人間が使いやすいサイズに)。 画面幅いっぱいまで許し、
     //    高さは操作の邪魔にならないよう画面の 6 割程度に抑える。 ──
     final narrow = size.width < 560;
+    // ── 専用画面 (automationOnly) は大きな全画面のフロー画面として使う
+    //    (= ユーザー要望: もっと大きな全画面のフローの画面に)。 ページを
+    //    開いていない間は中央、 ページを見ながらの時は右に寄せてページも
+    //    見えるようにする。 ──
+    final bigFlow = widget.automationOnly && !narrow;
     final w = narrow
         ? (size.width - 16).clamp(260.0, 460.0).toDouble()
-        : 460.0;
+        : bigFlow
+            ? (size.width * 0.52).clamp(460.0, 1000.0).toDouble()
+            : 460.0;
     final h = _autoPanelCollapsed
         ? 42.0
         : (narrow
             ? (size.height * 0.62).clamp(260.0, size.height - 120).toDouble()
-            : (size.height - 90).clamp(320.0, 720.0).toDouble());
+            : bigFlow
+                ? (size.height - 72).clamp(320.0, 99999.0).toDouble()
+                : (size.height - 90).clamp(320.0, 720.0).toDouble());
+    final double posLeft;
+    final double posTop;
+    if (bigFlow) {
+      posLeft = (_browserHidden ? (size.width - w) / 2 : size.width - w - 12)
+          .clamp(0.0, 99999.0)
+          .toDouble();
+      posTop = ((size.height - h) / 2).clamp(0.0, 36.0).toDouble();
+    } else {
+      posLeft =
+          _autoPanelPos.dx.clamp(0.0, (size.width - w).clamp(0.0, 99999.0));
+      posTop =
+          _autoPanelPos.dy.clamp(0.0, (size.height - h).clamp(0.0, 99999.0));
+    }
     return Positioned(
-      left: _autoPanelPos.dx.clamp(0.0, (size.width - w).clamp(0.0, 99999.0)),
-      top: _autoPanelPos.dy.clamp(0.0, (size.height - h).clamp(0.0, 99999.0)),
+      left: posLeft,
+      top: posTop,
       child: Material(
         color: Colors.transparent,
         child: Container(

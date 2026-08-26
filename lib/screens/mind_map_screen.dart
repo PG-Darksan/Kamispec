@@ -41491,11 +41491,25 @@ class _MindMapScreenState extends State<MindMapScreen>
       case 'webAutomation':
         // 自動化 (= ユーザー要望: カスタムボタンから押したら、 後ろに
         //   Google 検索を出さずに実行フローの窓だけが出るように)。
-        //   フローティングも選べる (= ユーザー要望)。
+        //   フローティングは本体を触れるままの浮遊窓で開き、 ヘッダーの
+        //   矢印で外の別プロセス窓にも出せる (= ユーザー要望)。 以前の
+        //   floating 指定は showFloating に自動操作のフラグが渡らず、
+        //   ただの Google 検索が開いてしまっていた。
+        if (_openStyleOf('webAutomation') == 'floating' && _isDesktop) {
+          _showFloatingPanelWindow(
+            (_) => GoogleSearchAutomationHost(
+              onRequestClose: () => _closeFloatingPanelByKey('webAutomation'),
+            ),
+            width: 560,
+            height: 760,
+            memoryKey: 'webAutomation',
+            popOutCustom: (frame, pinned) =>
+                openAutomationExternalWindow(frame: frame, pinned: pinned),
+          );
+          break;
+        }
         _openGoogleSearchDialog(context, provider,
-            openAutomation: true,
-            automationOnly: true,
-            floating: _openStyleOf('webAutomation') == 'floating');
+            openAutomation: true, automationOnly: true);
         break;
       // 'sharePageLan' (LAN 共有) は廃止 (= ユーザー要望)。 配置済みでも
       //   何も起きない。
@@ -58023,6 +58037,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       if (!mounted) return;
       final style = _openStyleOf('aiAssistant');
       if (style == 'splitLeft' || style == 'splitRight') {
+        final wasSplit = _mapSplitOpen;
         if (!_mapSplitOpen) {
           await _applyMapSplitMode(panes: 2, stacked: false);
           if (!mounted) return;
@@ -58030,11 +58045,16 @@ class _MindMapScreenState extends State<MindMapScreen>
         if (_mapSplitOpen) {
           final slot = style == 'splitLeft' ? 0 : _primaryViewerSlot();
           if (_mapSplitCellTool[slot] == 'aiAssistant') {
+            // もう一度押した = 閉じる。 この道具のために分割したのなら
+            // 全画面に戻す (= ユーザー報告: 押し直しても 2 画面のまま)。
+            final openedByUs = _toolOpenedSplit.remove('aiAssistant') ?? false;
             setState(() {
               _mapSplitCellTool.remove(slot);
               _syncNarrowPaneRatio();
             });
+            if (openedByUs) _closeMapSplit();
           } else {
+            if (!wasSplit) _toolOpenedSplit['aiAssistant'] = true;
             _embedToolIntoSlot(slot, 'aiAssistant');
           }
           return;
@@ -65829,6 +65849,20 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 1 つだけにして、 2 回目からは前面に出し直す (= ユーザー要望: タップの
   /// たびに窓が増える)。 「複数開けるようにする」 を入れている時は増やす。
   final Map<String, OverlayEntry> _floatingPanelSingletons = {};
+
+  /// 合言葉で開いたフローティング窓を「中身側の閉じるボタン」 から閉じる
+  /// ための受け口。 Overlay には pop すべき route が無いので、 中身が
+  /// Navigator.pop すると本体の画面が閉じてしまう — その誤爆防止。
+  void _closeFloatingPanelByKey(String key) {
+    final e = _floatingPanelSingletons.remove(key);
+    if (e == null) return;
+    if (_floatingVideoEntries.contains(e)) {
+      try {
+        e.remove();
+      } catch (_) {}
+      _floatingVideoEntries.remove(e);
+    }
+  }
 
   void _showFloatingPanelWindow(WidgetBuilder builder,
       {double width = 760,
@@ -89085,6 +89119,9 @@ class _MindMapScreenState extends State<MindMapScreen>
       if (!_mapSplitOpen) {
         await _applyMapSplitMode(panes: 2, stacked: false);
         if (!mounted) return;
+        // この道具のために分割を開いた印 (= ユーザー報告: もう一度押しても
+        // 2 画面のまま。 共通の閉じ処理がこの印を見て全画面へ戻す)。
+        if (_mapSplitOpen) _toolOpenedSplit['shortcuts'] = true;
       }
       if (!_mapSplitOpen) {
         _showShortcutsDialog(ctx);
@@ -108867,6 +108904,47 @@ Future<int?> openExternalWebWindowPid(String url,
   } catch (e) {
     debugPrint('外の窓を開けませんでした: $e');
     return null;
+  }
+}
+
+/// 自動操作のフロー画面を「外の窓」 (別プロセス) で開く (= ユーザー要望:
+/// フローティングモードで自動操作のフローを外に出せるように)。
+/// サブ窓 (multi_window) は WebView を作れないため、 --floating-web と同じ
+/// 別プロセス方式にする。 フロー自体は prefs を通じて本体と共有される。
+Future<bool> openAutomationExternalWindow(
+    {Rect? frame, bool pinned = false}) async {
+  final isDesktop =
+      !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
+  if (!isDesktop) return false;
+  const key = 'webAutomation:external';
+  final old = _externalWinPids[key];
+  if (old != null) {
+    if (await _externalWinAlive(old)) {
+      bringExternalWindowToFront(old);
+      return true;
+    }
+    _externalWinPids.remove(key);
+  }
+  try {
+    final proc = await Process.start(
+      Platform.resolvedExecutable,
+      [
+        '--floating-auto',
+        if (pinned) '--floating-pin',
+        if (frame != null) ...[
+          '--floating-x=${frame.left.round()}',
+          '--floating-y=${frame.top.round()}',
+          '--floating-w=${frame.width.round()}',
+          '--floating-h=${frame.height.round()}',
+        ],
+      ],
+      mode: ProcessStartMode.detached,
+    );
+    _externalWinPids[key] = proc.pid;
+    return true;
+  } catch (e) {
+    debugPrint('自動操作の外窓を開けませんでした: $e');
+    return false;
   }
 }
 
