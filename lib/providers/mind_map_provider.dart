@@ -42920,6 +42920,28 @@ class MindMapProvider extends ChangeNotifier {
     },
     // ★ 読み込みの入口は 1 つ (= ユーザー要望: 2 つあって違いが分からない)。
     //   .hnmap (添付ごと) も .json / .html (図だけ) もここから読める。
+    'doc.importGuideTitle': {
+      'ja': 'AI に作らせて取り込む',
+      'en': 'Have an AI make a file to import',
+      'zh': '让 AI 生成可导入的文件',
+      'ko': 'AI에게 가져올 파일을 만들게 하기',
+      'es': 'Pedir a una IA un archivo para importar',
+      'fr': "Faire créer un fichier à importer par l'IA",
+      'de': 'Eine KI eine importierbare Datei erstellen lassen',
+      'pt': 'Pedir a uma IA um arquivo para importar',
+      'ru': 'Попросить ИИ сделать файл для импорта',
+    },
+    'doc.importGuideHint': {
+      'ja': 'ブラウザの AI への頼み方',
+      'en': 'How to word the prompt',
+      'zh': '如何向浏览器 AI 提问',
+      'ko': '브라우저 AI에게 부탁하는 법',
+      'es': 'Cómo redactar la petición',
+      'fr': 'Comment formuler la demande',
+      'de': 'So formulieren Sie die Anfrage',
+      'pt': 'Como escrever o pedido',
+      'ru': 'Как сформулировать запрос',
+    },
     'export.bundleImport': {
       'ja': 'マップを読み込む',
       'en': 'Import a map',
@@ -77925,6 +77947,7 @@ $cleanQ
     'layout': 'assets/ai/docs/layout.md',
     'qa': 'assets/ai/docs/qa.md',
     'website': 'assets/ai/docs/website.md',
+    'import': 'assets/ai/docs/import.md',
   };
 
   static const Map<String, String> _kAppDocTitles = {
@@ -77934,6 +77957,7 @@ $cleanQ
     'layout': 'ノードの配置・押しのけ・自動整列',
     'qa': 'バグチェックリスト (過去の不具合と確認手順)',
     'website': '公開サイト hisator-notebook.com の作り',
+    'import': 'ブラウザの AI にマップの取り込みファイルを作らせる頼み方',
   };
 
   String _appAgentsGuide = '';

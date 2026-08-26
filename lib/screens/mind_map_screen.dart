@@ -9237,7 +9237,12 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (commandId == 'calendar' ||
         commandId == 'gantt' ||
         commandId == 'memberSchedule' ||
-        commandId == 'silentCamera') {
+        commandId == 'silentCamera' ||
+        // 計算機 / タイマー / アラームも既定は今までどおり
+        //   (= 選んだ人だけ分割 / フローティングになる)。
+        commandId == 'calculator' ||
+        commandId == 'stopwatch' ||
+        commandId == 'alarm') {
       return 'full';
     }
     // 道具ボタン (フラッシュカード等) の既定は浮遊窓 (= 今までの動き)。
@@ -9281,6 +9286,14 @@ class _MindMapScreenState extends State<MindMapScreen>
     'gantt',
     'memberSchedule',
     'silentCamera',
+    // 計算機 / タイマー / アラーム (= ユーザー要望: これらも左右分割や
+    //   フローティングで開けるように)。 既定は下の _openStyleOf で今までの
+    //   動き (全画面 / 外の窓) のままにしてある。
+    'calculator',
+    'stopwatch',
+    'alarm',
+    // 自動操作も左右分割で (= ユーザー要望)。
+    'webAutomation',
   };
 
   /// 開き方を選べるボタンか (= URL を開くボタン + 上の道具ボタン)。
@@ -9303,17 +9316,15 @@ class _MindMapScreenState extends State<MindMapScreen>
         // カレンダー / 予定表も左右分割で開ける (= ユーザー要望)。
         commandId == 'calendar' ||
         commandId == 'gantt' ||
-        commandId == 'memberSchedule') {
+        commandId == 'memberSchedule' ||
+        // 計算機 / タイマー / アラーム / 無音カメラ / 自動操作も分割で
+        //   開ける (= ユーザー要望)。
+        commandId == 'calculator' ||
+        commandId == 'stopwatch' ||
+        commandId == 'alarm' ||
+        commandId == 'silentCamera' ||
+        commandId == 'webAutomation') {
       return const ['full', 'floating', 'splitLeft', 'splitRight'];
-    }
-    // 無音カメラは分割ペインに入れない (カメラの絵は画面いっぱいで見たい)。
-    if (commandId == 'silentCamera') {
-      return const ['full', 'floating'];
-    }
-    // 自動化は手順の窓なので、 全画面か浮遊窓のどちらか (= 分割ペインに
-    // 入れると操作するブラウザと重なって使えない)。
-    if (commandId == 'webAutomation') {
-      return const ['full', 'floating'];
     }
     return _floatableToolCommands.contains(commandId)
         ? const ['full', 'floating']
@@ -31284,13 +31295,51 @@ class _MindMapScreenState extends State<MindMapScreen>
   }
 
   /// アラーム管理ダイアログ (= 一覧 / 追加 / ON-OFF / 削除)。
-  void _showAlarmsDialog() {
+  /// [hostContext] を渡すと、 その入れ物 (分割ペインの中の Navigator) に
+  /// 出す (= ユーザー要望: アラームも左右分割で開けるように)。
+  /// アプリの説明書を読む画面 (= ユーザー要望: ブラウザの AI にマップの
+  /// ファイルを作らせる時の頼み方をアプリの中に置いておきたい)。
+  Future<void> _showAppDocDialog(MindMapProvider provider, String name) async {
+    final text = await provider.mcpReadAppDoc(name, maxChars: 200000) ?? '';
+    if (!mounted) return;
+    _openToolDialog(
+      provider.t('doc.importGuideTitle'),
+      Icons.menu_book_rounded,
+      const Color(0xFF9CCC65),
+      SelectionArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: Text(text,
+              style: const TextStyle(
+                  color: Colors.white70, fontSize: 12.5, height: 1.7)),
+        ),
+      ),
+    );
+  }
+
+  void _showAlarmsDialog({BuildContext? hostContext}) {
     final provider = context.read<MindMapProvider>();
+    if (hostContext != null) {
+      unawaited(showDialog<void>(
+        context: hostContext,
+        builder: (dctx) => StatefulBuilder(
+            builder: (dctx, setD) => _buildAlarmsDialogBody(provider, setD)),
+      ));
+      return;
+    }
     // 画面中央ではなく、 押したボタンの近くに出す (= ユーザー要望)。
     unawaited(_showNearDialogMain<void>(
       width: 380,
       height: 420,
-      builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
+      builder: (dctx) => StatefulBuilder(
+          builder: (dctx, setD) => _buildAlarmsDialogBody(provider, setD)),
+    ));
+  }
+
+  /// アラーム画面の中身 (= 全画面でも分割ペインの中でも同じ物を出す)。
+  Widget _buildAlarmsDialogBody(
+      MindMapProvider provider, void Function(VoidCallback) setD) {
+    return Builder(builder: (dctx) {
         return AlertDialog(
           backgroundColor: const Color(0xFF1E1E32),
           title: Row(children: [
@@ -31522,8 +31571,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             ),
           ],
         );
-      }),
-    ));
+      });
   }
 
   // ─── 手動サブスクリプション管理 ──────────────────────────────────────────
@@ -41593,6 +41641,11 @@ class _MindMapScreenState extends State<MindMapScreen>
         //   矢印で外の別プロセス窓にも出せる (= ユーザー要望)。 以前の
         //   floating 指定は showFloating に自動操作のフラグが渡らず、
         //   ただの Google 検索が開いてしまっていた。
+        // 左右分割で開く (= ユーザー要望: 自動化も分割で立ち上げたい)。
+        if (_openStyleOf('webAutomation').startsWith('split')) {
+          unawaited(_openToolCommandStyled('webAutomation'));
+          break;
+        }
         if (_openStyleOf('webAutomation') == 'floating' && _isDesktop) {
           _showFloatingPanelWindow(
             (_) => GoogleSearchAutomationHost(
@@ -41720,6 +41773,11 @@ class _MindMapScreenState extends State<MindMapScreen>
         // ★ デスクトップは最初から「アプリの外の本物の窓」 で開く
         //   (= ユーザー要望: フローティングと外部モードの統合。 アプリ内に
         //   一度出してから外に出す二段構えをやめる)。
+        // 分割で開く設定なら、 ペインの中に出す (= ユーザー要望)。
+        if (_openStyleOf('calculator').startsWith('split')) {
+          unawaited(_openToolCommandStyled('calculator'));
+          break;
+        }
         if (_isDesktop) {
           unawaited(_openPopOutWindow(provider, kind: 'calc'));
         } else if (_sciCalcOverlay != null) {
@@ -41731,6 +41789,11 @@ class _MindMapScreenState extends State<MindMapScreen>
         }
         break;
       case 'stopwatch':
+        // 分割で開く設定なら、 ペインの中に出す (= ユーザー要望)。
+        if (_openStyleOf('stopwatch').startsWith('split')) {
+          unawaited(_openToolCommandStyled('stopwatch'));
+          break;
+        }
         // ★ デスクトップは最初から「アプリの外の本物の窓」 で開く
         //   (= ユーザー要望: タイマーも外に出せるように)。
         if (_isDesktop) {
@@ -41774,6 +41837,21 @@ class _MindMapScreenState extends State<MindMapScreen>
         }
         break;
       case 'alarm':
+        // 開き方を選んでいる時はそちら (= ユーザー要望: アラームも分割 /
+        //   フローティングで)。 既定は今までどおりダイアログ。
+        if (_openStyleOf('alarm') != 'full') {
+          unawaited(_openToolCommandStyled(
+            'alarm',
+            floating: (_) => _PaneDialogHost(
+              onClose: () => _closeFloatingPanelByKey('alarm'),
+              open: (hostCtx) async =>
+                  _showAlarmsDialog(hostContext: hostCtx),
+            ),
+            width: 420,
+            height: 520,
+          ));
+          break;
+        }
         // アラーム管理ダイアログ (= ユーザー要望: アラーム機能)。
         _showAlarmsDialog();
         break;
@@ -50718,9 +50796,13 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 minWidth: 28, minHeight: 28),
                             onPressed: () {
                               final url = _splitLeftUrlCtrl.text.trim();
+                              // ★ 閉じる前に場所を控える (閉じると 0 になる)。
+                              //   そのペインの上に浮かべる (= ユーザー要望)。
+                              final from =
+                                  _splitPanelLocalRect(left: true);
                               _closeSplitLeftPanel();
                               // 最初から外の本物の窓で開く (= ユーザー要望: 統合)。
-                              _openFloatingWebUnified(url);
+                              _openFloatingWebUnified(url, fromRect: from);
                             },
                           ),
                         IconButton(
@@ -51652,9 +51734,14 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     minWidth: 28, minHeight: 28),
                                 onPressed: () {
                                   final url = _splitUrlCtrl.text.trim();
+                                  // ★ 閉じる前に場所を控える (= ユーザー要望:
+                                  //   そのペインの所から浮かび上がるように)。
+                                  final from =
+                                      _splitPanelLocalRect(left: false);
                                   _toggleSplitPanel();
                                   // 最初から外の本物の窓で開く (= 統合)。
-                                  _openFloatingWebUnified(url);
+                                  _openFloatingWebUnified(url,
+                                      fromRect: from);
                                 },
                               ),
                             // 全画面表示に戻る
@@ -59363,16 +59450,60 @@ class _MindMapScreenState extends State<MindMapScreen>
       );
     }
 
+    // ── ドラッグで左右を入れ替えられる (= ユーザー要望) ──
+    //    掴んだ方を相手の上に落とすと入れ替わる。 並びは次回も残る。
+    Widget draggable(String id) {
+      final label = id == 'maps'
+          ? provider.t('drawer.maps')
+          : provider.t('drawer.todo');
+      final icon = id == 'maps' ? Icons.map_rounded : Icons.checklist_rounded;
+      final chipW = chip(label, icon, id);
+      return DragTarget<String>(
+        onWillAcceptWithDetails: (d) => d.data != id,
+        onAcceptWithDetails: (_) {
+          setState(() => _drawerTodoFirst = !_drawerTodoFirst);
+          unawaited(_persistDrawerTabOrder());
+        },
+        builder: (ctx, cand, __) => Opacity(
+          opacity: cand.isEmpty ? 1.0 : 0.55,
+          child: LongPressDraggable<String>(
+            data: id,
+            dragAnchorStrategy: pointerDragAnchorStrategy,
+            feedback: Material(
+              color: Colors.transparent,
+              child: Opacity(
+                opacity: 0.9,
+                child: SizedBox(width: 130, child: chipW),
+              ),
+            ),
+            childWhenDragging: Opacity(opacity: 0.35, child: chipW),
+            child: chipW,
+          ),
+        ),
+      );
+    }
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(10, 10, 10, 4),
       child: Row(children: [
-        chip(provider.t('drawer.maps'), Icons.map_rounded, 'maps'),
-        const SizedBox(width: 6),
         // タイムラインは廃止し、 ToDo のチェックリストに置き換えた
         // (= ユーザー要望)。
-        chip(provider.t('drawer.todo'), Icons.checklist_rounded, 'todo'),
+        draggable(_drawerTodoFirst ? 'todo' : 'maps'),
+        const SizedBox(width: 6),
+        draggable(_drawerTodoFirst ? 'maps' : 'todo'),
       ]),
     );
+  }
+
+  /// ページ一覧と ToDo の並び (= ユーザー要望: ドラッグで左右を入れ替え)。
+  /// true = ToDo が左。 prefs 'drawerTodoFirst'。
+  bool _drawerTodoFirst = false;
+
+  Future<void> _persistDrawerTabOrder() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('drawerTodoFirst', _drawerTodoFirst);
+    } catch (_) {}
   }
 
   /// タイムラインドロワー: 今日 (= 端末ローカル 0:00 以降) に作成/更新された
@@ -62652,6 +62783,13 @@ class _MindMapScreenState extends State<MindMapScreen>
             //   分かれていて違いが分からない)。 中で拡張子ごとに振り分ける。
             label: provider.t('export.bundleImport'),
             formatHint: '.hnmap / .json / .html'),
+        // ブラウザの AI に取り込みファイルを作らせる頼み方 (= ユーザー要望)。
+        _menuItem<_AddMenuAction>(
+            value: _AddMenuAction.importGuide,
+            icon: Icons.menu_book_rounded,
+            iconColor: const Color(0xFF9CCC65),
+            label: provider.t('doc.importGuideTitle'),
+            formatHint: provider.t('doc.importGuideHint')),
         _menuItem<_AddMenuAction>(
             value: _AddMenuAction.joinLive,
             icon: Icons.groups_rounded,
@@ -62715,6 +62853,9 @@ class _MindMapScreenState extends State<MindMapScreen>
         case _AddMenuAction.importBundle:
           // .json / .html を選ばれた時の案内に使うので context を渡す。
           _importPageBundle(provider, hostContext: ctx);
+          break;
+        case _AddMenuAction.importGuide:
+          unawaited(_showAppDocDialog(provider, 'import'));
           break;
         case _AddMenuAction.joinLive:
           _showJoinLiveDialog(provider);
@@ -64561,6 +64702,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       _mapSplitStacked = prefs.getBool('mapSplitStacked') ?? !_isDesktop;
       // 分割ペインのページ名を隠すか (= ユーザー要望)。
       _hidePaneHeaders = prefs.getBool('hidePaneHeaders') ?? false;
+      // ページ一覧 / ToDo の並び (= ユーザー要望: ドラッグで入れ替え)。
+      _drawerTodoFirst = prefs.getBool('drawerTodoFirst') ?? false;
       // Instagram を開く画面の設定 (= ユーザー要望)。
       _instagramLanding = prefs.getString('instagramLanding') ?? 'home';
       _instagramUsername = prefs.getString('instagramUsername') ?? '';
@@ -65199,7 +65342,13 @@ class _MindMapScreenState extends State<MindMapScreen>
       // カレンダー / 予定表 (= ユーザー要望: これらも分割で開けるように)。
       id == 'calendar' ||
       id == 'gantt' ||
-      id == 'memberSchedule';
+      id == 'memberSchedule' ||
+      // タイマー / アラーム / 無音カメラ / 自動操作 (= ユーザー要望:
+      //   これらも左右分割で開けるように)。
+      id == 'stopwatch' ||
+      id == 'alarm' ||
+      id == 'silentCamera' ||
+      id == 'webAutomation';
 
   /// 半分では広すぎる「細い」 ツール (= ユーザー要望: ショートカット一覧は
   /// 半分だと大きすぎる)。 開いた時だけ境界を寄せて、 閉じたら元の幅に戻す。
@@ -65281,6 +65430,43 @@ class _MindMapScreenState extends State<MindMapScreen>
       // ショートカット一覧 (= ユーザー要望: 画面分割でも開けるように)。
       case 'shortcuts':
         return _buildShortcutsPanel(provider, onClose: close);
+      // タイマー (= ユーザー要望: 左右分割でも開けるように)。
+      case 'stopwatch':
+        return _FloatingStopwatch(
+          key: ValueKey('pane_tool_${slot}_$id'),
+          provider: provider,
+          initialOffset: Offset.zero,
+          onClose: close,
+          embedded: true,
+        );
+      // アラーム。 画面はダイアログとして組んであるので、 ペインの中に
+      //   専用の入れ物 (Navigator) を立てて、 その中に出す (メモと同じ形)。
+      case 'alarm':
+        return _PaneDialogHost(
+          key: ValueKey('pane_tool_${slot}_$id'),
+          onClose: close,
+          open: (hostCtx) async => _showAlarmsDialog(hostContext: hostCtx),
+        );
+      // 無音カメラ。 撮れたら、 いつもの置き方でマップへ貼る。
+      case 'silentCamera':
+        return _PaneDialogHost(
+          key: ValueKey('pane_tool_${slot}_$id'),
+          onClose: close,
+          open: (hostCtx) async {
+            final p = await Navigator.of(hostCtx).push<String>(
+                MaterialPageRoute<String>(
+                    builder: (_) => const _SilentCameraPage()));
+            if (p != null && p.isNotEmpty) {
+              await _handleCapturedCameraPath(provider, p);
+            }
+          },
+        );
+      // 自動操作 (= ユーザー要望: 左右分割でも立ち上げられるように)。
+      case 'webAutomation':
+        return GoogleSearchAutomationHost(
+          key: ValueKey('pane_tool_${slot}_$id'),
+          onRequestClose: close,
+        );
       // カレンダー (= ユーザー要望: 分割でも開けるように)。
       case 'calendar':
         return _buildCalendarView(context, provider);
@@ -66014,6 +66200,36 @@ class _MindMapScreenState extends State<MindMapScreen>
     );
   }
 
+  /// 左右分割パネルの、 アプリ内 (Flutter ビュー) 座標での矩形。
+  ///
+  /// = ユーザー要望「分割で開いた物をフローティングにすると変な位置に出る。
+  ///   そのペインの所から出てほしい」。 浮かせる窓の初期位置に使う。
+  /// ★ パネルを閉じる前に呼ぶこと (閉じると大きさが 0 になる)。
+  Rect? _splitPanelLocalRect({required bool left}) {
+    final size = MediaQuery.of(context).size;
+    const top = kToolbarHeight;
+    final h = size.height - top;
+    if (left) {
+      if (!_splitLeftOpen) return null;
+      final w = _splitLeftPanelWidth
+          .clamp(size.width * 0.20, size.width * 0.90)
+          .toDouble();
+      return Rect.fromLTWH(0, top, w, h);
+    }
+    if (!_splitOpen) return null;
+    final eff = _splitPanelEffectiveSize(context);
+    switch (_splitPosition) {
+      case _SplitPosition.right:
+        return Rect.fromLTWH(size.width - eff, top, eff, h);
+      case _SplitPosition.left:
+        return Rect.fromLTWH(0, top, eff, h);
+      case _SplitPosition.top:
+        return Rect.fromLTWH(0, top, size.width, eff);
+      case _SplitPosition.bottom:
+        return Rect.fromLTWH(0, size.height - eff, size.width, eff);
+    }
+  }
+
   /// サイト (Instagram / Slack / Discord / YouTube 等) をアプリ内の
   /// ドラッグできる浮遊パネルで開く (= ユーザー要望: 各サイトボタンに
   /// フローティング機能を付ける)。 別ウィンドウでは WebView2 が動かない
@@ -66138,7 +66354,9 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 外部 Web 窓のプロセス (URL のホスト → pid)。 再押しで閉じるために覚える。
   final Map<String, int> _externalWebPids = {};
 
-  void _openFloatingWebUnified(String url) {
+  /// [fromRect] を渡すと、 その場所 (= 出てきた分割ペインの上) に出す
+  /// (= ユーザー要望: フローティングにした時に変な位置へ飛ばない)。
+  void _openFloatingWebUnified(String url, {Rect? fromRect}) {
     final u = url.trim();
     if (u.isEmpty) return;
     if (_isDesktop) {
@@ -66158,19 +66376,31 @@ class _MindMapScreenState extends State<MindMapScreen>
         if (closed) return;
       }
       unawaited(() async {
-        // 押したボタンの近くに出す (= ユーザー要望: 左上固定ではなく)。
+        // 出てきたペインの上に出す (= ユーザー要望: 分割からフローティングに
+        //   した時に変な位置へ飛ばない)。 ペインの場所が分からない時だけ、
+        //   今までどおり直近に押したボタンの近くに出す。
         Offset? pos;
+        Rect? frame;
         try {
           final b = await windowManager.getBounds();
-          final p = _lastCustomButtonPointerPos;
-          if (p != null) {
-            pos = Offset(b.left + p.dx + 16, b.top + p.dy + 16);
+          if (fromRect != null) {
+            frame = Rect.fromLTWH(
+              b.left + fromRect.left,
+              b.top + fromRect.top,
+              fromRect.width,
+              fromRect.height,
+            );
+          } else {
+            final p = _lastCustomButtonPointerPos;
+            if (p != null) {
+              pos = Offset(b.left + p.dx + 16, b.top + p.dy + 16);
+            }
           }
         } catch (_) {}
         // ここは「もう一度押したら閉じる」 トグルなので、 共通の
         //   1 つだけ制御は通さない (閉じた直後に開き直せなくなるため)。
-        final pid =
-            await openExternalWebWindowPid(u, position: pos, single: false);
+        final pid = await openExternalWebWindowPid(u,
+            position: pos, frame: frame, single: false);
         if (pid != null && mounted) _externalWebPids[key] = pid;
       }());
       return;
@@ -66183,6 +66413,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       memoryKey: 'web',
       popOutUrl: u,
       aiSwitchable: _isBrowserAiUrl(u),
+      // 出てきたペインの上に出す (= ユーザー要望)。
+      initialRect: fromRect,
     );
   }
 
@@ -73962,6 +74194,11 @@ class _MindMapScreenState extends State<MindMapScreen>
         }
         return;
       }
+    }
+    // 分割で開く設定なら、 ペインの中でカメラを出す (= ユーザー要望)。
+    if (_openStyleOf('silentCamera').startsWith('split') && _isDesktop) {
+      await _openToolCommandStyled('silentCamera');
+      return;
     }
     // 開き方が「フローティング」 なら、 浮かぶ窓の中でカメラを出す
     //   (= ユーザー要望: 無音カメラもフローティングで開けるように)。
@@ -142125,6 +142362,9 @@ enum _AddMenuAction {
 
   /// 画像・動画ごと書き出した .hnmap を読み込む (= ユーザー要望)
   importBundle,
+
+  /// ブラウザの AI に取り込みファイルを作らせる頼み方 (= ユーザー要望)。
+  importGuide,
   aiSummarize,
   aiExplain,
   aiFollowUp,
@@ -151159,11 +151399,17 @@ class _FloatingStopwatch extends StatefulWidget {
   final Offset initialOffset;
   final VoidCallback onClose;
   final bool hidden;
+
+  /// 分割ペインの中に埋め込んで表示するか (= ユーザー要望: タイマーも
+  /// 左右分割で開けるように)。 true の時は浮かせず、 ペインいっぱいに出す。
+  final bool embedded;
   const _FloatingStopwatch({
+    super.key,
     required this.provider,
     required this.initialOffset,
     required this.onClose,
     this.hidden = false,
+    this.embedded = false,
   });
   @override
   State<_FloatingStopwatch> createState() => _FloatingStopwatchState();
@@ -151496,13 +151742,7 @@ class _FloatingStopwatchState extends State<_FloatingStopwatch> {
     final clampedTop = _offset.dy.clamp(safeTop, maxTop);
     // ExcludeFocus: ボタンタップでメインキャンバスの FocusNode がフォーカスを
     // 失い、他のショートカット (Ctrl+S, Ctrl+Z 等) が効かなくなるバグを防ぐ。
-    return Positioned(
-      left: clampedLeft,
-      top: clampedTop,
-      // Offstage で裏に隠す (タイマー State は維持)。
-      child: Offstage(
-        offstage: widget.hidden,
-        child: ExcludeFocus(
+    final Widget inner = ExcludeFocus(
           child: Material(
             elevation: 12,
             borderRadius: BorderRadius.circular(14),
@@ -151668,9 +151908,23 @@ class _FloatingStopwatchState extends State<_FloatingStopwatch> {
               ), // Column
             ), // Container
           ), // Material
-        ), // ExcludeFocus
-      ), // Offstage
-    ); // Positioned
+    ); // ExcludeFocus
+    // ── 分割ペインへの埋め込み (= ユーザー要望: タイマーも左右分割で) ──
+    //    浮かせず、 ペインの大きさに合わせて出す。
+    if (widget.embedded) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(8),
+          child: FittedBox(fit: BoxFit.contain, child: inner),
+        ),
+      );
+    }
+    return Positioned(
+      left: clampedLeft,
+      top: clampedTop,
+      // Offstage で裏に隠す (タイマー State は維持)。
+      child: Offstage(offstage: widget.hidden, child: inner),
+    );
   }
 
   Widget _buildTabButton({
