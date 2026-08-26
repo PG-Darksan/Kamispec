@@ -58,6 +58,8 @@ import 'screens/mind_map_screen.dart';
 // 自動操作のフロー画面を外の窓 (別プロセス) で出すため (= ユーザー要望)。
 import 'widgets/google_search_dialog.dart' show GoogleSearchAutomationHost;
 import 'services/home_shortcut_service.dart';
+// メモへテキストファイルを読み込むための取り出し部 (= ユーザー要望)。
+import 'services/talk_reference.dart';
 // 録画窓の中の範囲選び (デスクトップの写しを撮る) に使う。
 import 'services/screen_capture.dart' as scap;
 // 録画窓の中のプレビュー再生 (デスクトップは fvp バックエンド)。
@@ -323,6 +325,28 @@ Future<void> saveFloatingMemoFooterHidden(bool hidden) async {
   try {
     final f = await _floatingMemoFooterFile();
     await f.writeAsString(hidden ? '1' : '0', flush: true);
+  } catch (_) {}
+}
+
+/// メモ一覧をタブで並べるか (= ユーザー要望)。 prefs ではなくファイルに置く
+/// のは、 本体とメモ窓が別々に prefs を抱えて潰し合うため (上の控えと同じ)。
+Future<File> _floatingMemoTabsFile() async {
+  final dir = await getApplicationSupportDirectory();
+  return File('${dir.path}${Platform.pathSeparator}floating_memo_tabs.txt');
+}
+
+Future<bool> loadFloatingMemoTabsMode() async {
+  try {
+    final f = await _floatingMemoTabsFile();
+    if (await f.exists()) return (await f.readAsString()).trim() == '1';
+  } catch (_) {}
+  return false;
+}
+
+Future<void> saveFloatingMemoTabsMode(bool on) async {
+  try {
+    final f = await _floatingMemoTabsFile();
+    await f.writeAsString(on ? '1' : '0', flush: true);
   } catch (_) {}
 }
 
@@ -1820,6 +1844,50 @@ class FloatL10n {
       'ja': 'メモ', 'en': 'Memo', 'zh': '备忘录', 'ko': '메모',
       'es': 'Nota', 'fr': 'Note', 'de': 'Notiz', 'pt': 'Nota',
       'ru': 'Заметка',
+    },
+    'memo.loadFile': {
+      'ja': 'テキストを読み込む', 'en': 'Load a text file',
+      'zh': '载入文本文件', 'ko': '텍스트 파일 불러오기',
+      'es': 'Cargar un archivo de texto', 'fr': 'Charger un fichier texte',
+      'de': 'Textdatei laden', 'pt': 'Carregar um arquivo de texto',
+      'ru': 'Загрузить текстовый файл',
+    },
+    'memo.openFolder': {
+      'ja': '場所を開く', 'en': 'Open folder', 'zh': '打开文件夹',
+      'ko': '폴더 열기', 'es': 'Abrir carpeta', 'fr': 'Ouvrir le dossier',
+      'de': 'Ordner öffnen', 'pt': 'Abrir pasta', 'ru': 'Открыть папку',
+    },
+    'memo.loadedAsNew': {
+      'ja': '新しいメモ「{name}」 として読み込みました',
+      'en': 'Loaded as a new memo "{name}"',
+      'zh': '已作为新备忘录「{name}」载入',
+      'ko': '새 메모 "{name}"(으)로 불러왔습니다',
+      'es': 'Cargado como una nota nueva "{name}"',
+      'fr': 'Chargé comme nouvelle note « {name} »',
+      'de': 'Als neue Notiz „{name}“ geladen',
+      'pt': 'Carregado como nova nota "{name}"',
+      'ru': 'Загружено как новая заметка «{name}»',
+    },
+    'memo.loadFileEmpty': {
+      'ja': '文字を取り出せませんでした', 'en': 'No text could be read',
+      'zh': '无法读取文字', 'ko': '글자를 읽지 못했습니다',
+      'es': 'No se pudo leer texto', 'fr': 'Aucun texte lisible',
+      'de': 'Kein Text lesbar', 'pt': 'Não foi possível ler o texto',
+      'ru': 'Не удалось прочитать текст',
+    },
+    'memo.tabsOn': {
+      'ja': 'タブで並べる', 'en': 'Show memos as tabs',
+      'zh': '以标签显示', 'ko': '탭으로 표시',
+      'es': 'Mostrar como pestañas', 'fr': 'Afficher en onglets',
+      'de': 'Als Tabs anzeigen', 'pt': 'Mostrar como abas',
+      'ru': 'Показать вкладками',
+    },
+    'memo.tabsOff': {
+      'ja': 'タブをやめる', 'en': 'Hide the tabs',
+      'zh': '隐藏标签', 'ko': '탭 숨기기',
+      'es': 'Ocultar las pestañas', 'fr': 'Masquer les onglets',
+      'de': 'Tabs ausblenden', 'pt': 'Ocultar as abas',
+      'ru': 'Скрыть вкладки',
     },
     'memo.newBook': {
       'ja': '新しいメモ', 'en': 'New memo', 'zh': '新建备忘录',
@@ -3743,6 +3811,10 @@ class _MemoWindowAppState extends State<_MemoWindowApp> with WindowListener {
   /// いつでも戻せる。 次に開いた時もこの状態で開く。
   bool _chromeHidden = false;
 
+  /// メモ一覧をタブで並べるか (= ユーザー要望: タブ表記で切り替えたい)。
+  /// 次に開いた時もこの状態で開く。
+  bool _tabsMode = false;
+
   /// メモの所を AI の画面に切り替えているか (= ユーザー要望: 新しい窓を
   /// 出さずにこの窓の中で AI を使いたい)。
   ///
@@ -3905,14 +3977,46 @@ class _MemoWindowAppState extends State<_MemoWindowApp> with WindowListener {
     final parsed = parseFloatingMemoBooks(raw);
     // 下のボタンを隠していたかを取り出す。
     final footerHidden = await loadFloatingMemoFooterHidden();
+    // メモ一覧をタブで並べる設定 (= ユーザー要望)。
+    final tabsMode = await loadFloatingMemoTabsMode();
     if (!mounted) return;
     setState(() {
       _books = parsed.books;
       _bookIndex = parsed.active;
       _free.text = _book.free;
       _chromeHidden = footerHidden;
+      _tabsMode = tabsMode;
       _loaded = true;
     });
+    _fitWindowToContent();
+  }
+
+  /// 新しいメモ帳を足す (メニューからもタブの「＋」 からも同じ動きにする)。
+  ///
+  /// ── 名前は聞かない (= ユーザー要望: 追加のたびに入力を求めない) ──
+  ///    「メモ 4」 のように順に付け、 変えたい人は後から「名前の変更」 で
+  ///    直す。 既にある番号は飛ばす。
+  void _createBook() {
+    var n = _books.length + 1;
+    final used = _books.map((b) => b.name).toSet();
+    var auto = '${FloatL10n.t('memo.bookPrefix')} $n';
+    while (used.contains(auto)) {
+      n++;
+      auto = '${FloatL10n.t('memo.bookPrefix')} $n';
+    }
+    _book.free = _free.text;
+    setState(() {
+      _books.add(FloatMemoBook.create(
+          auto,
+          // 今開いているメモと同じモードで始める (= ユーザー要望)。
+          mode: _book.mode));
+      _bookIndex = _books.length - 1;
+      _free.text = '';
+      _input.clear();
+    });
+    // ignore: discarded_futures
+    _persist();
+    // ignore: discarded_futures
     _fitWindowToContent();
   }
 
@@ -4011,30 +4115,7 @@ class _MemoWindowAppState extends State<_MemoWindowApp> with WindowListener {
       return;
     }
     if (chosen == 'new') {
-      // ── 名前は聞かない (= ユーザー要望: 追加のたびに入力を求めない) ──
-      //    「メモ 4」 のように順に付け、 変えたい人は後から
-      //    「名前の変更」 で直す。 既にある番号は飛ばす。
-      var n = _books.length + 1;
-      final used = _books.map((b) => b.name).toSet();
-      var auto = '${FloatL10n.t('memo.bookPrefix')} $n';
-      while (used.contains(auto)) {
-        n++;
-        auto = '${FloatL10n.t('memo.bookPrefix')} $n';
-      }
-      _book.free = _free.text;
-      setState(() {
-        _books.add(FloatMemoBook.create(
-            auto,
-            // 今開いているメモと同じモードで始める (= ユーザー要望)。
-            mode: _book.mode));
-        _bookIndex = _books.length - 1;
-        _free.text = '';
-        _input.clear();
-      });
-      // ignore: discarded_futures
-      _persist();
-      // ignore: discarded_futures
-      _fitWindowToContent();
+      _createBook();
       return;
     }
     if (chosen == 'rename') {
@@ -4109,7 +4190,10 @@ class _MemoWindowAppState extends State<_MemoWindowApp> with WindowListener {
     // 単独プロセスの時は利用者が決めた大きさを尊重する
     //   (= ユーザー要望: 最後に閉じた縦横で開いてほしい)。
     if (_webMode || widget.standalone) return;
-    const header = 34.0;
+    // タブ列を出している時はその分だけ高く見積もる (= 出していないと
+    // 一番下の行が切れる)。
+    final header = 34.0 +
+        ((!_webMode && !_aiMode && !_chromeHidden && _tabsMode) ? 28.0 : 0.0);
     // setSize は OS のタイトルバーと枠を含む外寸なので、 その分を足す。
     const chrome = 44.0;
     double contentH;
@@ -4149,6 +4233,80 @@ class _MemoWindowAppState extends State<_MemoWindowApp> with WindowListener {
   Future<void> _toggleChrome() async {
     setState(() => _chromeHidden = !_chromeHidden);
     await saveFloatingMemoFooterHidden(_chromeHidden);
+  }
+
+  /// メモ一覧をタブで並べる / やめる (= ユーザー要望)。
+  Future<void> _toggleTabsMode() async {
+    setState(() => _tabsMode = !_tabsMode);
+    await saveFloatingMemoTabsMode(_tabsMode);
+    await _fitWindowToContent();
+  }
+
+  /// メモのタブ列 (= ユーザー要望: 一覧をタブで切り替えられるモード)。
+  Widget _buildMemoTabStrip() {
+    return Container(
+      height: 28,
+      color: const Color(0xFF1A1A2A),
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
+        itemCount: _books.length + 1,
+        itemBuilder: (ctx, i) {
+          // 末尾は「新しいメモ」 のタブ。
+          if (i == _books.length) {
+            return Padding(
+              padding: const EdgeInsets.only(left: 2),
+              child: InkWell(
+                onTap: _createBook,
+                borderRadius: BorderRadius.circular(6),
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 8),
+                  child: Icon(Icons.add_rounded,
+                      size: 15, color: Colors.white54),
+                ),
+              ),
+            );
+          }
+          final sel = i == _bookIndex;
+          return Padding(
+            padding: const EdgeInsets.only(right: 3),
+            child: Builder(builder: (tabCtx) {
+              return InkWell(
+                onTap: () => _switchBook(i),
+                // 長押し / 右クリックで名前の変更・削除のメニュー。
+                onLongPress: () => _showBookMenu(tabCtx),
+                onSecondaryTap: () => _showBookMenu(tabCtx),
+                borderRadius: BorderRadius.circular(6),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 9),
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: sel
+                        ? const Color(0xFF43B97F).withValues(alpha: 0.22)
+                        : const Color(0xFF23233A),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(
+                        color: sel
+                            ? const Color(0xFF43B97F)
+                            : Colors.white12),
+                  ),
+                  child: Text(
+                    _books[i].name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: sel ? Colors.white : Colors.white60,
+                      fontSize: 11,
+                      fontWeight: sel ? FontWeight.w700 : FontWeight.w500,
+                    ),
+                  ),
+                ),
+              );
+            }),
+          );
+        },
+      ),
+    );
   }
 
   /// ブラウザ版 AI (ChatGPT 等) を **この窓の中で** 開く。
@@ -4429,16 +4587,44 @@ class _MemoWindowAppState extends State<_MemoWindowApp> with WindowListener {
         ]),
       );
 
-  void _snack(String msg, {Color color = const Color(0xFF43B97F)}) {
+  void _snack(String msg,
+      {Color color = const Color(0xFF43B97F), String? revealPath}) {
     if (!mounted) return;
     // ★ この State の context は MaterialApp の外なので、
     //   ScaffoldMessenger は中の context から取る。
     final ctx = _dlgCtx;
     if (ctx == null) return;
-    ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
+    final m = ScaffoldMessenger.of(ctx);
+    // ★ 続けて押した分を溜め込まない (= ユーザー報告: 何度か押すと画面が
+    //   埋まって操作できなくなる)。 前の知らせは消してから出す。
+    m.hideCurrentSnackBar();
+    m.showSnackBar(SnackBar(
       content: Text(msg, style: const TextStyle(fontSize: 12)),
       backgroundColor: color,
-      duration: const Duration(seconds: 2),
+      duration: Duration(seconds: revealPath == null ? 2 : 6),
+      action: revealPath == null
+          ? null
+          : SnackBarAction(
+              label: FloatL10n.t('memo.openFolder'),
+              textColor: Colors.white,
+              onPressed: () {
+                // 保存した所をエクスプローラーで開く (= ユーザー報告:
+                //   保存したと出るのに、 どこにあるか分からない)。
+                try {
+                  final dir = File(revealPath).parent.path;
+                  if (Platform.isWindows) {
+                    Process.start('explorer', [dir],
+                        mode: ProcessStartMode.detached);
+                  } else if (Platform.isMacOS) {
+                    Process.start('open', [dir],
+                        mode: ProcessStartMode.detached);
+                  } else {
+                    Process.start('xdg-open', [dir],
+                        mode: ProcessStartMode.detached);
+                  }
+                } catch (_) {}
+              },
+            ),
     ));
   }
 
@@ -4560,10 +4746,29 @@ class _MemoWindowAppState extends State<_MemoWindowApp> with WindowListener {
         if (mounted) _snack(FloatL10n.t('memo.saveDirDefault'));
         return;
       }
-      final dir = await FilePicker.platform.getDirectoryPath(
-        dialogTitle: FloatL10n.t('memo.saveDir'),
-        initialDirectory: _safeInitialDir(now),
-      );
+      // ★ この窓は「常に手前」 なので、 持ち主を指定しないとフォルダ選択が
+      //   窓の後ろに隠れ、 固まったように見える (= ユーザー報告)。
+      //   選んでいる間だけ手前固定を外し、 終わったら戻す。
+      final wasPinned = _pinned;
+      if (wasPinned) {
+        try {
+          await windowManager.setAlwaysOnTop(false);
+        } catch (_) {}
+      }
+      String? dir;
+      try {
+        dir = await FilePicker.platform.getDirectoryPath(
+          dialogTitle: FloatL10n.t('memo.saveDir'),
+          initialDirectory: _safeInitialDir(now),
+          lockParentWindow: true,
+        );
+      } finally {
+        if (wasPinned) {
+          try {
+            await windowManager.setAlwaysOnTop(true);
+          } catch (_) {}
+        }
+      }
       if (dir == null || dir.trim().isEmpty) return;
       await sp.setString(kMemoSaveDirKey, dir.trim());
       if (mounted) _snack('${FloatL10n.t('memo.saveDir')}: ${dir.trim()}');
@@ -4572,7 +4777,17 @@ class _MemoWindowAppState extends State<_MemoWindowApp> with WindowListener {
     }
   }
 
+  /// 保存の最中か (= ユーザー報告: 続けて押すと固まる)。 連打を捨てる。
+  bool _savingText = false;
+
   Future<void> _saveAsText() async {
+    if (_savingText) return;
+    _savingText = true;
+    // 入力欄に書いたまま Enter を押していない分も保存に含める
+    // (= ユーザー報告: 保存したのに中身が入っていない)。
+    if (_memoMode == 'list' && _input.text.trim().isNotEmpty) {
+      _commitInput();
+    }
     try {
       final buf = StringBuffer()
         ..writeln(_book.name)
@@ -4594,18 +4809,140 @@ class _MemoWindowAppState extends State<_MemoWindowApp> with WindowListener {
       final d = Directory(await _memoSaveDir());
       if (!await d.exists()) await d.create(recursive: true);
       final now = DateTime.now();
+      // ★ 秒まで入れる (= ユーザー報告: 何度押しても 1 個しか増えない)。
+      //   分までだと同じ分の間はいつも同じ名前になり、 上書きしていた。
       final stamp = '${now.year}${now.month.toString().padLeft(2, '0')}'
           '${now.day.toString().padLeft(2, '0')}_'
           '${now.hour.toString().padLeft(2, '0')}'
-          '${now.minute.toString().padLeft(2, '0')}';
+          '${now.minute.toString().padLeft(2, '0')}'
+          '${now.second.toString().padLeft(2, '0')}';
       var base = _book.name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
       if (base.isEmpty) base = 'memo';
-      final dest = '${d.path}/${base}_$stamp.txt';
+      var dest = '${d.path}/${base}_$stamp.txt';
+      // それでもぶつかる時は連番を足して、 既にある物を消さない。
+      var seq = 2;
+      while (await File(dest).exists()) {
+        dest = '${d.path}/${base}_${stamp}_$seq.txt';
+        seq++;
+      }
       await File(dest).writeAsString(buf.toString(), flush: true);
-      _snack(FloatL10n.t('memo.saved').replaceFirst('{path}', dest));
+      // 置き場所をその場で開けるようにする (= ユーザー報告: 保存したと
+      //   出るのに見つからない。 既定はドキュメントの memo_export)。
+      _snack(FloatL10n.t('memo.saved').replaceFirst('{path}', dest),
+          revealPath: dest);
+    } catch (e) {
+      _snack('$e', color: const Color(0xFFE57373));
+    } finally {
+      _savingText = false;
+    }
+  }
+
+  /// テキストファイルを読み込んで、 その続きから書けるようにする
+  /// (= ユーザー要望: 途中から書き足したい)。
+  ///
+  /// 自由記述では**カーソルの位置**へ差し込み、 箇条書きでは 1 行 1 件として
+  /// 先頭へ積む。 txt / md / csv のほか PDF・Word・Excel・PowerPoint も
+  /// 文字だけを取り出して読める。
+  Future<void> _loadFromTextFile() async {
+    try {
+      final res = await FilePicker.platform.pickFiles(
+        dialogTitle: FloatL10n.t('memo.loadFile'),
+        type: FileType.custom,
+        allowedExtensions: const [
+          'txt', 'md', 'markdown', 'csv', 'tsv', 'json', 'log',
+          'html', 'htm', 'xml', 'yaml', 'yml',
+          'pdf', 'docx', 'pptx', 'xlsx',
+        ],
+      );
+      final path = res?.files.single.path;
+      if (path == null || !mounted) return;
+      final text = await TalkReference.extractFileText(path, maxChars: 400000);
+      if (!mounted) return;
+      if (text == null || text.trim().isEmpty) {
+        _snack(FloatL10n.t('memo.loadFileEmpty'),
+            color: const Color(0xFFE57373));
+        return;
+      }
+      // 読み込んだ物は新しいメモとして作る (= ユーザー要望: 今のメモへ
+      // 混ぜず、 新規ページとして開きたい)。 名前はファイル名から取る。
+      final fileName = path.split(RegExp(r'[\\/]')).last;
+      final base = fileName.contains('.')
+          ? fileName.substring(0, fileName.lastIndexOf('.'))
+          : fileName;
+      _createBookFromText(base.trim().isEmpty ? fileName : base.trim(),
+          text.trimRight());
     } catch (e) {
       _snack('$e', color: const Color(0xFFE57373));
     }
+  }
+
+  /// 読み込んだ文字を**新しいメモ**として作って開く (= ユーザー要望)。
+  ///
+  /// 名前はファイル名。 同じ名前が既にある時は「(2)」 のように後ろに付ける。
+  /// 中身は自由記述として入れる (文章をそのまま続きから書けるように)。
+  void _createBookFromText(String name, String text) {
+    final used = _books.map((b) => b.name).toSet();
+    var title = name;
+    var n = 2;
+    while (used.contains(title)) {
+      title = '$name ($n)';
+      n++;
+    }
+    // 今書いている物を今の冊子へ移してから増やす。
+    _book.free = _free.text;
+    final book = FloatMemoBook.create(title, mode: 'free')..free = text;
+    setState(() {
+      _books.add(book);
+      _bookIndex = _books.length - 1;
+      _free.text = text;
+      _free.selection = TextSelection.collapsed(offset: text.length);
+      _input.clear();
+    });
+    // ignore: discarded_futures
+    _persist();
+    // ignore: discarded_futures
+    _fitWindowToContent();
+    _snack(FloatL10n.t('memo.loadedAsNew').replaceFirst('{name}', title));
+  }
+
+  /// 読み込んだ文字をメモへ入れる。
+  // ignore: unused_element
+  void _insertLoadedText(String text) {
+    if (_memoMode == 'free') {
+      final sel = _free.selection;
+      final cur = _free.text;
+      if (sel.isValid) {
+        // カーソルの所へ差し込む (= 途中から書き足せるように)。
+        final start = sel.start;
+        final end = sel.end;
+        final ins = (start > 0 && cur[start - 1] != '\n') ? '\n$text' : text;
+        _free.value = TextEditingValue(
+          text: cur.replaceRange(start, end, ins),
+          selection: TextSelection.collapsed(offset: start + ins.length),
+        );
+      } else {
+        final base = cur.trimRight();
+        _free.text = base.isEmpty ? text : '$base\n\n$text';
+        _free.selection =
+            TextSelection.collapsed(offset: _free.text.length);
+      }
+      setState(() {});
+    } else {
+      // 箇条書き: 1 行 1 件。 新しい物が上に来る並びに合わせて逆順で積む。
+      final lines = text
+          .split('\n')
+          .map((e) => e.trimRight())
+          .where((e) => e.trim().isNotEmpty)
+          .toList();
+      if (lines.isEmpty) return;
+      setState(() {
+        _items.insertAll(0, lines.reversed.map(FloatMemoItem.create));
+      });
+    }
+    // ignore: discarded_futures
+    _persist();
+    // ignore: discarded_futures
+    _fitWindowToContent();
   }
 
   void _removeItem(int i) {
@@ -5443,15 +5780,51 @@ class _MemoWindowAppState extends State<_MemoWindowApp> with WindowListener {
                       },
                     );
                   }),
+                // テキストファイルを読み込む (= ユーザー要望: 途中から
+                // 書き足したい)。 自由記述はカーソルの所へ差し込む。
+                if (!_webMode && !_aiMode && !_chromeHidden)
+                  IconButton(
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints(minWidth: 26, minHeight: 26),
+                    tooltip: FloatL10n.t('memo.loadFile'),
+                    icon: const Icon(Icons.upload_file_rounded,
+                        size: 15, color: Color(0xFF80CBC4)),
+                    onPressed: () {
+                      // ignore: discarded_futures
+                      _loadFromTextFile();
+                    },
+                  ),
+                // メモ一覧をタブで並べる / やめる (= ユーザー要望)。
+                if (!_webMode && !_aiMode && !_chromeHidden)
+                  IconButton(
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints(minWidth: 26, minHeight: 26),
+                    tooltip: FloatL10n.t(
+                        _tabsMode ? 'memo.tabsOff' : 'memo.tabsOn'),
+                    icon: Icon(
+                        _tabsMode
+                            ? Icons.tab_rounded
+                            : Icons.tab_unselected_rounded,
+                        size: 15,
+                        color: _tabsMode
+                            ? const Color(0xFF43B97F)
+                            : Colors.white54),
+                    onPressed: () {
+                      // ignore: discarded_futures
+                      _toggleTabsMode();
+                    },
+                  ),
                 // テキストで保存。 右クリックで保存場所の設定 (= ユーザー要望)。
                 if (!_webMode && !_aiMode && !_chromeHidden)
                   Builder(builder: (btnCtx) {
                     return GestureDetector(
+                      // ★ 長押しは付けない (= ユーザー報告: 何度か押すと
+                      //   固まる)。 長押しの判定が先に勝つと保存そのものが
+                      //   起きず、 代わりに保存場所の選択が開いていた。
+                      //   保存場所の設定は右クリックから。
                       onSecondaryTap: () {
-                        // ignore: discarded_futures
-                        _showSaveDirMenu(btnCtx);
-                      },
-                      onLongPress: () {
                         // ignore: discarded_futures
                         _showSaveDirMenu(btnCtx);
                       },
@@ -5578,6 +5951,9 @@ class _MemoWindowAppState extends State<_MemoWindowApp> with WindowListener {
             ),
           ),
           ),
+          // ── メモ一覧のタブ列 (= ユーザー要望: タブ表記で切り替えたい) ──
+          if (!_webMode && !_aiMode && !_chromeHidden && _tabsMode)
+            _buildMemoTabStrip(),
           // ── 入力欄 (上に配置。 Enter で書いた所の下に項目が増えていく
           //    = ユーザー要望)。 Shift+Enter で改行できる。 ──
           if (!_webMode && !_aiMode && _memoMode == 'list')

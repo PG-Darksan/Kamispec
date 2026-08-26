@@ -36,7 +36,16 @@
 
 import 'dart:async';
 import 'dart:convert' show base64Decode, jsonEncode, jsonDecode;
-import 'dart:io' show Platform, File, Directory, HttpClient, HttpHeaders;
+import 'dart:io'
+    show
+        Platform,
+        File,
+        Directory,
+        HttpClient,
+        HttpHeaders,
+        // メモに貼った画像 / PDF を既定のアプリで開くのに使う。
+        Process,
+        ProcessStartMode;
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -59,6 +68,8 @@ import 'package:url_launcher/url_launcher.dart';
 // 自動スクショ → PDF 化 (= ユーザー要望) に使用。
 import 'package:pdf/pdf.dart' as pdf;
 import 'package:pdf/widgets.dart' as pw;
+// ページ全体を 1 枚の縦長画像に繋げるのに使う (= ユーザー要望)。
+import 'package:image/image.dart' as img;
 
 import '../providers/mind_map_provider.dart';
 import 'node_widget.dart' show NodeWidget;
@@ -992,6 +1003,9 @@ class _FloatingSearchWindowState extends State<_FloatingSearchWindow> {
                       // ── ユーザー要望: 小さい検索窓のボタンが重なる対策 ──
                       // ウィンドウ幅を渡してツールバーを幅に応じて切り替える。
                       windowWidth: w,
+                      // 自動操作パネルの大きさを窓の実寸に合わせる
+                      // (渡さないと画面の高さを基準にして窓からはみ出す)。
+                      windowHeight: h,
                     ),
                   ),
                 ),
@@ -1630,7 +1644,27 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
 
   bool get _aiPanelIsDeepL => _aiPanelUrl.toLowerCase().contains('deepl.com');
 
-  String get _aiPanelHeaderLabel => _aiPanelIsDeepL ? 'DeepL' : 'AI';
+  /// 今ひらいている AI の名前 (= ユーザー要望: 見出しを「AI」 ではなく、
+  /// 開いている LLM の名前にしてほしい)。
+  ///
+  /// まず URL から見分ける (翻訳の DeepL は id を変えずに URL だけ変わる
+  /// ため)。 分からない時は直近に選んだ id の名前を使う。
+  String get _aiPanelHeaderLabel {
+    final u = _aiPanelUrl.toLowerCase();
+    if (u.contains('deepl.com')) return 'DeepL';
+    if (u.contains('chatgpt.com') || u.contains('openai.com')) {
+      return 'ChatGPT';
+    }
+    if (u.contains('gemini.google.com')) return 'Gemini';
+    if (u.contains('claude.ai')) return 'Claude';
+    if (u.contains('deepseek.com')) return 'DeepSeek';
+    if (u.contains('grok.com') || u.contains('x.ai')) return 'Grok';
+    if (u.contains('perplexity.ai')) return 'Perplexity';
+    for (final t in MindMapProvider.browserAiTargets) {
+      if (t['id'] == _aiDefaultId) return t['label'] ?? 'AI';
+    }
+    return 'AI';
+  }
 
   /// 直近に開いた AI の id (= メモを送るときの既定)。
   String _aiDefaultId = 'chatgpt';
@@ -1959,10 +1993,12 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   /// webview_windows.executeScript / iaw.evaluateJavascript はどちらも値を
   /// デコード済みで返すため、 そのまま文字列化すればよい。 失敗時は空文字。
   Future<String> _readVisibleSearchPageText() async {
+    // 先頭の 1 文字で「選んだ所 (S)」 か「ページ全体 (B)」 かを返す
+    // (= 選んだ所はそのまま渡し、 全体は要らない時に削れるようにする)。
     const js =
         "(function(){try{var s=(window.getSelection&&window.getSelection().toString())||'';"
-        "var t=(s&&s.trim())?s:((document.body&&document.body.innerText)||'');"
-        "return t;}catch(e){return '';}})()";
+        "return (s&&s.trim())?('S'+s):('B'+((document.body&&document.body.innerText)||''));"
+        "}catch(e){return '';}})()";
     try {
       if (_isDesktop) {
         final r = await _winCtrl?.executeScript(js);
@@ -1982,21 +2018,57 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   /// プロンプトと共に既存の _sendTextToAi に渡す (AI 欄が閉じていれば開いて入力欄
   /// へ自動入力。 送信はユーザーが Enter で行う)。
   Future<void> _shareSearchPageWithAi() async {
-    _showCaptureSnack(context.read<MindMapProvider>().t('gs.sharingPageWithAi'), const Color(0xFFFFC107));
+    _showCaptureSnack(context.read<MindMapProvider>().t('gs.sharingPageWithAi'),
+        const Color(0xFFFFC107));
     final raw = await _readVisibleSearchPageText();
-    var body = raw.trim();
-    if (body.isEmpty) {
-      _showCaptureSnack(context.read<MindMapProvider>().t('gs.pageTextFailed'), const Color(0xFFE57373));
+    // 先頭 1 文字が種類 (S = 選んだ所 / B = ページ全体)。
+    final isSelection = raw.isNotEmpty && raw[0] == 'S';
+    var body = (raw.isEmpty ? '' : raw.substring(1)).trim();
+
+    // ── 相手 (ブラウザ版 AI) が自分で開ける URL なら、 中身は渡さない ──
+    //    = ユーザー指摘「URL を渡してあるのに中の要素も全部渡す必要ある?」。
+    //    ただし次の場合は AI が開けないので、 今までどおり本文を渡す:
+    //      ・検索結果のページ (google.com/search など。 自動取得を弾かれる)
+    //      ・ローカルのファイル / 手元だけのアドレス (file:, about:, 家の中)
+    final u = _currentUrl.trim();
+    final lower = u.toLowerCase();
+    final host = Uri.tryParse(u)?.host.toLowerCase() ?? '';
+    final fetchable = (lower.startsWith('http://') ||
+            lower.startsWith('https://')) &&
+        !lower.contains('/search?') &&
+        !lower.contains('/search/') &&
+        host != 'localhost' &&
+        !RegExp(r'^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)')
+            .hasMatch(host) &&
+        !host.endsWith('.local');
+
+    if (body.isEmpty && !fetchable) {
+      _showCaptureSnack(
+          context.read<MindMapProvider>().t('gs.pageTextFailed'),
+          const Color(0xFFE57373));
       return;
     }
-    // 長すぎる本文は AI 入力欄に収まらず挿入も不安定になるため上限を設ける。
-    const int maxLen = 7000;
+
+    // 選んだ所はそのまま渡す (それが渡したい物なので)。
+    // 自分で開けるページは URL だけ + 念のため冒頭 500 文字。
+    // 開けないページは今までどおり本文 (上限 7000 文字)。
+    final int maxLen = isSelection
+        ? 7000
+        : fetchable
+            ? 500
+            : 7000;
     if (body.length > maxLen) {
       body = '${body.substring(0, maxLen)}\n…(以下省略)';
     }
-    final prompt = '次のWebページの内容について日本語で要約・説明してください。'
+    final head = '次のWebページの内容について日本語で要約・説明してください。'
         '続けて質問するので把握しておいてください。\n'
-        'タイトル: $_pageTitle\nURL: $_currentUrl\n\n----\n$body';
+        'タイトル: $_pageTitle\nURL: $_currentUrl';
+    final prompt = body.isEmpty
+        ? '$head\n\n(ページはこの URL を開いて読んでください)'
+        : fetchable && !isSelection
+            ? '$head\n\n----\n(冒頭だけ載せます。 足りなければ URL を開いて'
+                '読んでください)\n$body'
+            : '$head\n\n----\n$body';
     _sendTextToAi(prompt);
   }
 
@@ -2590,6 +2662,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     _memoCtrl.clear();
     _editingMemoId = null;
     _memoEditorOpen = false;
+    _memoAttachments.clear();
     setState(() {});
   }
 
@@ -2600,15 +2673,129 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       _editingMemoId = null;
       _memoEditorOpen = true;
       _memoExpanded = true;
+      _memoAttachments.clear();
     });
     _memoFocus.requestFocus();
+  }
+
+  // ── メモに貼る画像 / PDF (= ユーザー要望: メモにも画像や PDF を残したい) ──
+  //    置き場所はアプリの添付フォルダへ写しを取る (元を消しても残るように)。
+  final List<String> _memoAttachments = <String>[];
+
+  Future<void> _pickMemoAttachment() async {
+    final provider = context.read<MindMapProvider>();
+    try {
+      final res = await FilePicker.platform.pickFiles(
+        dialogTitle: provider.t('gs.memoAttach'),
+        type: FileType.custom,
+        allowedExtensions: const [
+          'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'pdf',
+        ],
+        allowMultiple: true,
+      );
+      if (res == null || !mounted) return;
+      final dir = await getApplicationDocumentsDirectory();
+      final attachDir = Directory('${dir.path}/attachments');
+      if (!await attachDir.exists()) await attachDir.create(recursive: true);
+      final added = <String>[];
+      for (final f in res.files) {
+        final src = f.path;
+        if (src == null || src.isEmpty) continue;
+        final name = src.split(RegExp(r'[\\/]')).last;
+        final dest =
+            '${attachDir.path}/memo_${DateTime.now().millisecondsSinceEpoch}_$name';
+        try {
+          await File(src).copy(dest);
+          added.add(dest);
+        } catch (_) {
+          added.add(src); // 写せない時は元の場所を指す。
+        }
+      }
+      if (!mounted || added.isEmpty) return;
+      setState(() => _memoAttachments.addAll(added));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('$e'),
+        backgroundColor: const Color(0xFFE57373),
+        duration: const Duration(seconds: 3),
+      ));
+    }
+  }
+
+  /// 貼った物を既定のアプリで開く。
+  Future<void> _openAttachmentFile(String path) async {
+    try {
+      if (Platform.isWindows) {
+        await Process.start('explorer', [path],
+            mode: ProcessStartMode.detached);
+      } else if (Platform.isMacOS) {
+        await Process.start('open', [path], mode: ProcessStartMode.detached);
+      } else if (Platform.isLinux) {
+        await Process.start('xdg-open', [path],
+            mode: ProcessStartMode.detached);
+      } else {
+        await launchUrl(Uri.file(path));
+      }
+    } catch (_) {}
+  }
+
+  /// 編集欄の下に出す「貼った物」 の一覧。
+  Widget _buildMemoAttachmentChips() {
+    if (_memoAttachments.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Wrap(
+        spacing: 6,
+        runSpacing: 4,
+        children: [
+          for (var i = 0; i < _memoAttachments.length; i++)
+            Builder(builder: (_) {
+              final p = _memoAttachments[i];
+              final name = p.split(RegExp(r'[\\/]')).last;
+              final isPdf = name.toLowerCase().endsWith('.pdf');
+              return InputChip(
+                backgroundColor: const Color(0xFF23233A),
+                side: const BorderSide(color: Color(0xFF3A3A55)),
+                avatar: isPdf
+                    ? const Icon(Icons.picture_as_pdf_rounded,
+                        size: 14, color: Color(0xFFE57373))
+                    : ClipRRect(
+                        borderRadius: BorderRadius.circular(3),
+                        child: Image.file(File(p),
+                            width: 18,
+                            height: 18,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => const Icon(
+                                Icons.image_rounded,
+                                size: 14,
+                                color: Color(0xFF80CBC4))),
+                      ),
+                label: Text(
+                  name.length > 22 ? '${name.substring(0, 22)}…' : name,
+                  style:
+                      const TextStyle(color: Colors.white70, fontSize: 10.5),
+                ),
+                // 押すと開いて中身を確かめられる。
+                onPressed: () => _openAttachmentFile(p),
+                onDeleted: () =>
+                    setState(() => _memoAttachments.removeAt(i)),
+                deleteIconColor: Colors.white38,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                visualDensity: VisualDensity.compact,
+              );
+            }),
+        ],
+      ),
+    );
   }
 
   /// 保存ボタン: 編集モードなら update、 新規なら add。
   /// 完了後は入力欄をクリアして「新規」 状態に戻る。
   Future<void> _saveMemo() async {
     final text = _memoCtrl.text.trim();
-    if (text.isEmpty) {
+    // 添付だけでも残せるようにする (= ユーザー要望: 画像や PDF を貼る)。
+    if (text.isEmpty && _memoAttachments.isEmpty) {
       final provider = context.read<MindMapProvider>();
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(provider.t('googleSearch.emptyWarn')),
@@ -2624,12 +2811,14 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         _editingMemoId!,
         text: text,
         snapshotUrl: snapshotUrl,
+        attachments: List<String>.from(_memoAttachments),
       );
     } else {
       await provider.addGoogleSearchMemo(GoogleSearchMemo(
         id: 'gs-${DateTime.now().millisecondsSinceEpoch}-${text.hashCode}',
         text: text,
         snapshotUrl: snapshotUrl,
+        attachments: List<String>.from(_memoAttachments),
       ));
     }
     // 保存できたのでドラフトはクリア (= 入力欄が空になる)
@@ -2654,6 +2843,10 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       _memoEditorOpen = true;
       _memoExpanded = true;
       _includeUrl = memo.snapshotUrl != null;
+      // 貼ってあった画像 / PDF も編集欄へ戻す。
+      _memoAttachments
+        ..clear()
+        ..addAll(memo.attachments);
     });
     _memoFocus.requestFocus();
   }
@@ -3045,6 +3238,10 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
               onPressed: () => _autoStop?.call(),
             ),
           ),
+        // ★ 自動操作の窓は 460px 幅あるので、 小さな浮遊窓には収まらない
+        //   (= ユーザー報告: フローティングだと欄が入り切らない)。
+        //   全画面で開いている時だけ出す。 浮遊窓からは「全画面表示」 を
+        //   押せばこのボタンが現れる。
         if (!widget.minimalMode)
           IconButton(
             // AI ボタンと同じ絵柄だと紛らわしいので別アイコンにする
@@ -4996,24 +5193,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         (area.height * dpr).round(),
       );
       if (png == null) return null;
-      // 実行ごとのフォルダへ保存する (未実行時はルート)。
-      final shotDir = _autoRunDir != null
-          ? Directory(_autoRunDir!)
-          : await automationShotsDir();
-      if (!await shotDir.exists()) await shotDir.create(recursive: true);
-      // ── 連番のシンプルなファイル名 (1.png, 2.png ...) にする
-      //    (= ユーザー要望: 画像名が長すぎる) ──
-      var next = 1;
-      try {
-        for (final f in shotDir.listSync().whereType<File>()) {
-          final name = f.path.split(Platform.pathSeparator).last;
-          final lower = name.toLowerCase();
-          if (!lower.endsWith('.png') && !lower.endsWith('.jpg')) continue;
-          final n = int.tryParse(name.substring(0, name.length - 4));
-          if (n != null && n >= next) next = n + 1;
-        }
-      } catch (_) {}
-      final path = '${shotDir.path}/$next.jpg';
+      final path = await _nextShotPath();
       await File(path).writeAsBytes(png, flush: true);
       return path;
     } catch (_) {
@@ -5023,8 +5203,180 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     }
   }
 
+  /// 次に保存するスクショの置き場所 (実行ごとのフォルダ + 連番)。
+  /// = ユーザー要望「画像名が長すぎる」 ので 1.jpg, 2.jpg … の形。
+  Future<String> _nextShotPath() async {
+    final shotDir = _autoRunDir != null
+        ? Directory(_autoRunDir!)
+        : await automationShotsDir();
+    if (!await shotDir.exists()) await shotDir.create(recursive: true);
+    var next = 1;
+    try {
+      for (final f in shotDir.listSync().whereType<File>()) {
+        final name = f.path.split(Platform.pathSeparator).last;
+        final lower = name.toLowerCase();
+        if (!lower.endsWith('.png') && !lower.endsWith('.jpg')) continue;
+        final n = int.tryParse(name.substring(0, name.length - 4));
+        if (n != null && n >= next) next = n + 1;
+      }
+    } catch (_) {}
+    return '${shotDir.path}/$next.jpg';
+  }
+
+  /// ページの上から下までを 1 枚の縦長画像にして保存する (= ユーザー要望)。
+  ///
+  /// WebView には「ページ全体を撮る」 口が無い (Windows の webview_windows は
+  /// 撮影 API 自体が無く、 モバイルの takeScreenshot も見えている分だけ) ので、
+  /// 1 画面ぶんずつ撮って縦に繋げる。 継ぎ目がずれないよう、 送った後に
+  /// **ページが実際に何 px 動いたか**を聞いてから貼る位置を決める。
+  Future<String?> _captureFullPageTall() async {
+    final ev = _autoEvalJs;
+    // 画面に固定されている帯 (ヘッダー等) は 2 枚目以降で隠す。
+    const hideFixedJs = '''
+(function(){var n=0,all=document.body?document.body.getElementsByTagName('*'):[];
+ for(var i=0;i<all.length&&n<600;i++){var cs=getComputedStyle(all[i]);
+  if(cs.position==='fixed'||cs.position==='sticky'){all[i].setAttribute('data-hnfs','1');n++;}}
+ var s=document.getElementById('__hnfs');
+ if(!s){s=document.createElement('style');s.id='__hnfs';document.documentElement.appendChild(s);}
+ s.textContent='[data-hnfs="1"]{visibility:hidden !important;}html{scroll-behavior:auto !important;}';
+ return String(n);})();''';
+    const unhideFixedJs = '''
+(function(){var s=document.getElementById('__hnfs');if(s)s.remove();
+ var m=document.querySelectorAll('[data-hnfs]');
+ for(var i=0;i<m.length;i++)m[i].removeAttribute('data-hnfs');return '1';})();''';
+
+    /// JS の戻り値から数値を取り出す (WebView2 は二重に囲って返す)。
+    int? numOf(String? raw, String key) {
+      if (raw == null) return null;
+      var s = raw.trim();
+      if (s.startsWith('"') && s.endsWith('"') && s.length > 1) {
+        try {
+          s = jsonDecode(s) as String;
+        } catch (_) {}
+      }
+      try {
+        final j = jsonDecode(s);
+        if (j is Map && j[key] is num) return (j[key] as num).round();
+      } catch (_) {}
+      return null;
+    }
+
+    if (mounted) {
+      setState(() => _autoPanelHiddenForShot = true);
+      await WidgetsBinding.instance.endOfFrame;
+      await Future.delayed(const Duration(milliseconds: 90));
+    }
+    try {
+      const metricsJs = '''
+(function(){var d=document.documentElement,b=document.body;
+ return JSON.stringify({
+  pageH: Math.max(d.scrollHeight, b?b.scrollHeight:0, d.offsetHeight),
+  viewH: Math.round(d.clientHeight||window.innerHeight),
+  y: Math.round(window.scrollY||d.scrollTop||0)});})();''';
+      final m0 = await ev(metricsJs);
+      final viewH = numOf(m0, 'viewH') ?? 0;
+      final startY = numOf(m0, 'y') ?? 0;
+      if (viewH <= 0) return null;
+
+      /// 1 画面ぶんの絵を撮る。
+      Future<img.Image?> grabSegment() async {
+        if (_isDesktop) {
+          final box =
+              _webAreaKey.currentContext?.findRenderObject() as RenderBox?;
+          if (box == null) return null;
+          final dpr = MediaQuery.of(context).devicePixelRatio;
+          final o = box.localToGlobal(Offset.zero);
+          final bytes = captureScreenRectJpg(
+            (o.dx * dpr).round(),
+            (o.dy * dpr).round(),
+            (box.size.width * dpr).round(),
+            (box.size.height * dpr).round(),
+          );
+          return bytes == null ? null : img.decodeJpg(bytes);
+        }
+        try {
+          final bytes = await _iawCtrl?.takeScreenshot();
+          return bytes == null ? null : img.decodeImage(bytes);
+        } catch (_) {
+          return null;
+        }
+      }
+
+      // ── 上端から順に撮って、 実際の送り量で貼っていく ──
+      const maxSegments = 30;
+      const maxTallPx = 12000;
+      const overlapCss = 2; // 端の丸め誤差を吸収する重ね幅
+      final segments = <img.Image>[];
+      final tops = <int>[]; // 画像の中での貼り位置 (px)
+      double pxPerCss = 1.0;
+      var prevY = -1;
+      var y = startY;
+      for (var i = 0; i < maxSegments; i++) {
+        final moved = await ev(
+            '(function(){window.scrollTo(0, $y);return String(Math.round('
+            'window.scrollY||document.documentElement.scrollTop||0));})();');
+        var actual = y;
+        if (moved != null) {
+          final t = moved.replaceAll('"', '').trim();
+          actual = int.tryParse(t) ?? y;
+        }
+        // ページが動かなくなったら終わり (一番下 or 動かせない)。
+        if (i > 0 && actual == prevY) break;
+        prevY = actual;
+        await Future.delayed(const Duration(milliseconds: 380));
+        final seg = await grabSegment();
+        if (seg == null) break;
+        if (i == 0) {
+          // 1 画面が画像で何 px になるかを実測で決める (拡大率に左右されない)。
+          pxPerCss = seg.height / viewH;
+          // 2 枚目からは固定ヘッダーを隠す (1 枚目は本来の見た目を残す)。
+          await ev(hideFixedJs);
+        }
+        final top = ((actual - startY) * pxPerCss).round();
+        if (top + seg.height > maxTallPx) {
+          segments.add(seg);
+          tops.add(top);
+          break;
+        }
+        segments.add(seg);
+        tops.add(top);
+        y = actual + viewH - overlapCss;
+      }
+      if (segments.isEmpty) return null;
+      if (segments.length == 1) {
+        final path = await _nextShotPath();
+        await File(path)
+            .writeAsBytes(img.encodeJpg(segments.first, quality: 85), flush: true);
+        return path;
+      }
+      final width = segments.first.width;
+      final totalH = tops.last + segments.last.height;
+      final canvas = img.Image(width: width, height: totalH, numChannels: 3);
+      for (var i = 0; i < segments.length; i++) {
+        img.compositeImage(canvas, segments[i],
+            dstY: tops[i], blend: img.BlendMode.direct);
+      }
+      final path = await _nextShotPath();
+      await File(path)
+          .writeAsBytes(img.encodeJpg(canvas, quality: 85), flush: true);
+      return path;
+    } catch (e) {
+      debugPrint('縦長スクショに失敗: $e');
+      return null;
+    } finally {
+      try {
+        await ev(unhideFixedJs);
+      } catch (_) {}
+      if (mounted) setState(() => _autoPanelHiddenForShot = false);
+    }
+  }
+
   /// フローティングの自動操作パネル。
-  Widget _buildFloatingAutoPanel(MindMapProvider provider) {
+  ///
+  /// [hidden] = 見えなくするだけ (木からは外さない)。 スクショの間に木から
+  /// 外すと State ごと捨てられ、 作りかけの手順が消えてしまうため。
+  Widget _buildFloatingAutoPanel(MindMapProvider provider,
+      {bool hidden = false}) {
     var size = MediaQuery.of(context).size;
     // フローティング窓 / 外の窓の中では、 窓の実寸を基準にする
     // (MediaQuery は本体画面の大きさを返すため)。
@@ -5071,7 +5423,10 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     return Positioned(
       left: posLeft,
       top: posTop,
-      child: Material(
+      // hidden の間は描かないだけ (木からは外さない = State を保つ)。
+      child: Offstage(
+        offstage: hidden,
+        child: Material(
         color: Colors.transparent,
         child: Container(
           width: w,
@@ -5166,6 +5521,8 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                     setState(() => _autoRecording = rec);
                   },
                   capture: _captureWebArea,
+                  // ページ全体を 1 枚の縦長画像に (= ユーザー要望)。
+                  captureFull: _captureFullPageTall,
                   pickPoint: _pickPointOnPage,
                   pickRect: _pickRectOnPage,
                   onClose: () => setState(() => _autoPanelOpen = false),
@@ -5191,6 +5548,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
               ),
           ]),
         ),
+      ),
       ),
     );
   }
@@ -5699,10 +6057,26 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
               ),
             ],
           ),
+          // 貼った画像 / PDF (= ユーザー要望)。
+          _buildMemoAttachmentChips(),
           const SizedBox(height: 6),
           // アクションボタン (横並び 2 つ)
           Row(
             children: [
+              // 画像 / PDF を貼る (= ユーザー要望)。
+              IconButton(
+                icon: const Icon(Icons.attach_file_rounded,
+                    color: Color(0xFF80CBC4), size: 19),
+                tooltip: provider.t('gs.memoAttach'),
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.all(8),
+                constraints: const BoxConstraints(),
+                onPressed: () {
+                  // ignore: discarded_futures
+                  _pickMemoAttachment();
+                },
+              ),
+              const SizedBox(width: 4),
               Expanded(
                 child: OutlinedButton.icon(
                   onPressed: _saveMemo,
@@ -5926,6 +6300,15 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                         fontSize: 10,
                       ),
                     ),
+                    // 貼ってある画像 / PDF の数 (= ユーザー要望)。
+                    if (memo.attachments.isNotEmpty) ...[
+                      const SizedBox(width: 6),
+                      const Icon(Icons.attach_file_rounded,
+                          size: 11, color: Color(0xFF80CBC4)),
+                      Text('${memo.attachments.length}',
+                          style: const TextStyle(
+                              color: Color(0xFF80CBC4), fontSize: 10)),
+                    ],
                     if (memo.snapshotUrl != null) ...[
                       const SizedBox(width: 6),
                       const Icon(Icons.link_rounded,
@@ -6041,8 +6424,12 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
               const Icon(Icons.smart_toy_rounded,
                   color: Color(0xFF4FC3F7), size: 18),
               const SizedBox(width: 6),
-              Expanded(
+              // 名前と切り替えボタンをくっつける (= ユーザー要望: 切り替えは
+              //   名前のすぐ右に)。 名前が長い時だけ縮める。
+              Flexible(
                 child: Text(_aiPanelHeaderLabel,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                         color: Colors.white,
                         fontSize: 13,
@@ -6053,9 +6440,13 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                 icon: const Icon(Icons.expand_more_rounded,
                     color: Colors.white70, size: 18),
                 color: const Color(0xFF1E1E32),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
                 onSelected: _openAiPanel,
                 itemBuilder: (_) => _aiMenuItems(),
               ),
+              // 名前 + 切り替えの右は空けて、 道具のボタンを右端へ寄せる。
+              const Spacer(),
               // ── 浮遊窓にする / 欄に戻す (= ユーザー要望) ──
               IconButton(
                 tooltip: provider.t(
@@ -7266,12 +7657,17 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
               // ★ 座標を指している間は、 窓が指したい場所を覆ってしまうので
               //   一時的に引っ込める (= ユーザー報告: スワイプの始点・終点を
               //   押しても座標が決まらない)。 指し終われば元に戻る。
+              // ★ スクショの間は「消す」 のではなく「見えなくする」 だけに
+              //   する (= ユーザー報告: エージェントに任せて動かすと、 途中で
+              //   止まってフローも残らない)。 木から外すとパネルの State が
+              //   捨てられ、 作りかけの手順が prefs から読み直されて消え、
+              //   エージェント側の !mounted で処理も終わっていた。
               if (_autoPanelOpen &&
-                  !_autoPanelHiddenForShot &&
                   !_autoRunning &&
                   _pickPointCompleter == null &&
                   _pickRectCompleter == null)
-                _buildFloatingAutoPanel(provider),
+                _buildFloatingAutoPanel(provider,
+                    hidden: _autoPanelHiddenForShot),
               // AI 欄の浮遊窓 (= ユーザー要望)
               if (_aiPanelOpen && _aiPanelFloating)
                 _buildFloatingAiPanel(provider),

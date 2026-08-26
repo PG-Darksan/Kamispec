@@ -51,6 +51,10 @@ enum WebAutoKind {
   /// パソコンのコマンドを実行する。 実行の可否は設定 (使わない / 毎回
   /// 確認 / 全部任せる) に従う。
   command,
+
+  /// ページの上から下までを 1 枚の縦長画像にする (= ユーザー要望)。
+  /// WebView には全面を撮る口が無いので、 1 画面ぶんずつ撮って縦に繋げる。
+  fullShot,
 }
 
 /// コマンド実行の許可の仕方 (= ユーザー要望: 許可を求める・全部任せる)。
@@ -201,6 +205,10 @@ class WebAutomationPanel extends StatefulWidget {
   /// WebView 全体。 座標は WebView 内のローカル論理座標。
   final Future<String?> Function(Rect? region) capture;
 
+  /// ページ全体 (上から下まで) を 1 枚の縦長画像として保存し、 パスを返す
+  /// (= ユーザー要望)。 渡されていなければ「全体を 1 枚」 の手順は何もしない。
+  final Future<String?> Function()? captureFull;
+
   /// ユーザーにページ上の 1 点をクリックしてもらい、 その座標を返す。
   final Future<Offset?> Function() pickPoint;
 
@@ -224,6 +232,7 @@ class WebAutomationPanel extends StatefulWidget {
     required this.pickPoint,
     required this.pickRect,
     required this.onClose,
+    this.captureFull,
     this.evalJs,
     this.onRunningChanged,
     this.onRecordingChanged,
@@ -322,6 +331,21 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
   String _status = '';
   bool _cancel = false;
 
+  // ── これ以上送れない (= 一番下に着いた) 時に、 残りの繰り返しを切り上げる
+  //    ための印 (= ユーザー報告: 最後に同じスクショが何枚も並ぶ) ──
+  //    _cancel と違い、 その繰り返しを抜けた所で消費して先へ進む。
+  bool _loopBreak = false;
+
+  /// 繰り返しの入れ子の深さ (0 = 繰り返しの外)。 0 の時は打ち切らない
+  /// (= 単発のスクショ / スクロールは今までどおり必ず動く)。
+  int _loopDepth = 0;
+
+  /// 直前のスクロールで読み取った送り位置 (px)。 読めない時は null。
+  int? _lastScrollPos;
+
+  /// 最後に撮った時の送り位置。 同じ所を続けて撮らないために使う。
+  int? _lastShotPos;
+
   @override
   void initState() {
     super.initState();
@@ -388,11 +412,108 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
     } catch (_) {}
   }
 
+  // ── 設定の窓は「押した所の近く」 に出す (= ユーザー要望: 画面の真ん中だと
+  //    ボタンから遠い)。 ヘッダーを押した位置を控えておく。 ──
+  Offset? _lastPointerPos;
+
+  /// 押した所の近くに出すダイアログ。 位置が分からない時は今までどおり中央。
+  Future<T?> _showNearDialog<T>(
+      {required WidgetBuilder builder, double maxWidth = 420.0}) {
+    final at = _lastPointerPos;
+    return showDialog<T>(
+      context: context,
+      builder: (dctx) {
+        if (at == null) return builder(dctx);
+        final screen = MediaQuery.of(dctx).size;
+        // 画面からはみ出さないように寄せる。
+        final w = math.min(maxWidth, screen.width - 24.0);
+        const h = 360.0;
+        final left = (at.dx - w / 2)
+            .clamp(12.0, math.max(12.0, screen.width - w - 12))
+            .toDouble();
+        // 押した所のすぐ下に出す。 下が足りなければ上へ。
+        var top = at.dy + 14;
+        if (top + h > screen.height - 12) {
+          top = math.max(12.0, at.dy - h - 14);
+        }
+        return Stack(children: [
+          Positioned(
+            left: left,
+            top: top,
+            width: w,
+            child: Material(
+              type: MaterialType.transparency,
+              child: MediaQuery.removeViewInsets(
+                context: dctx,
+                removeTop: true,
+                removeBottom: true,
+                child: Builder(builder: builder),
+              ),
+            ),
+          ),
+        ]);
+      },
+    );
+  }
+
+  /// 白紙から作り直す (= ユーザー要望: 新しいフローを作るボタンが無いので、
+  /// 作りたい時に既存の手順を書き換えることになってしまう)。
+  ///
+  /// 手順が残っている時は一度確かめる。 保存済みのフロー (📂) は消えない。
+  Future<void> _newFlow(MindMapProvider provider) async {
+    if (_steps.isNotEmpty) {
+      final ok = await _showNearDialog<bool>(
+        builder: (dctx) => AlertDialog(
+          backgroundColor: const Color(0xFF2A2A3E),
+          title: Text(provider.t('auto.flowNew'),
+              style: const TextStyle(color: Colors.white, fontSize: 15)),
+          content: Text(provider.t('auto.flowNewConfirm'),
+              style: const TextStyle(color: Colors.white70, fontSize: 12.5)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dctx, false),
+              child: Text(provider.t('common.cancel'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF8D86FF),
+                foregroundColor: Colors.white,
+              ),
+              onPressed: () => Navigator.pop(dctx, true),
+              child: Text(provider.t('auto.flowNew')),
+            ),
+          ],
+        ),
+      );
+      if (ok != true) return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _steps.clear();
+      _stepSel.clear();
+      _selAnchorList = null;
+      _selAnchorIndex = -1;
+      _status = provider.t('auto.flowNewDone');
+    });
+    await _save();
+  }
+
   /// 今の手順に名前を付けて保存する。
   Future<void> _saveFlowAs(MindMapProvider provider) async {
-    final ctrl = TextEditingController();
-    final name = await showDialog<String>(
-      context: context,
+    // ── 既定の名前を入れておく (= ユーザー要望: 毎回名前を考えるのが手間) ──
+    //    「フロー 1」 のように順に付け、 既にある名前は飛ばす。 全部を選んだ
+    //    状態で出すので、 別の名前にしたい人はそのまま打てば置き換わる。
+    final prefix = provider.t('auto.flowNamePrefix');
+    var n = _flows.length + 1;
+    var auto = '$prefix $n';
+    while (_flows.containsKey(auto)) {
+      n++;
+      auto = '$prefix $n';
+    }
+    final ctrl = TextEditingController(text: auto)
+      ..selection = TextSelection(baseOffset: 0, extentOffset: auto.length);
+    final name = await _showNearDialog<String>(
       builder: (dctx) => AlertDialog(
         backgroundColor: const Color(0xFF2A2A3E),
         title: Text(provider.t('auto.flowSaveTitle'),
@@ -445,8 +566,7 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
       return;
     }
     final names = _flows.keys.toList()..sort();
-    final sel = await showDialog<String>(
-      context: context,
+    final sel = await _showNearDialog<String>(
       builder: (dctx) => AlertDialog(
         backgroundColor: const Color(0xFF2A2A3E),
         title: Text(provider.t('auto.flowLoadTitle'),
@@ -511,9 +631,12 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
   //    AI に指示を出して手順を組み立てられるように) ──
   bool _aiBusy = false;
 
-  /// AI 入力欄を開いているか (= ユーザー要望: 画面中央のダイアログではなく
-  /// 自動操作の設定画面の上に出す)。
-  bool _aiFormOpen = false;
+  /// AI 入力欄を開いているか。
+  ///
+  /// = ユーザー要望「AI でフロー作成のボタンを押さなくても、 指示を書く欄が
+  ///   出ているように」。 既定で開いておき、 ヘッダーのボタンと「キャンセル」
+  ///   が畳む役になる。
+  bool _aiFormOpen = true;
   final TextEditingController _aiCtrl = TextEditingController();
 
   /// 前に使った指示 (= ユーザー要望: フロー作成に使ったプロンプトを覚えて
@@ -665,12 +788,12 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
  {"kind":"open","text":"https://example.com/","durationMs":2500},
  {"kind":"click","text":"Windows 版","durationMs":1200},
  {"kind":"scrollTo","scrollDir":"bottom","durationMs":1200},
- {"kind":"scroll","scrollDir":"down","count":3,"intervalMs":400},
+ {"kind":"scroll","scrollDir":"down","durationMs":0,"count":1,"intervalMs":600},
  {"kind":"wait","durationMs":1000},
  {"kind":"type","text":"入力する文字","selector":"","submit":true},
  {"kind":"shot","count":1},
  {"kind":"tap","x":0,"y":0,"count":1,"intervalMs":200},
- {"kind":"loop","count":5,"children":[{"kind":"scroll","scrollDir":"down","count":1},{"kind":"shot","count":1}]}
+ {"kind":"loop","count":8,"children":[{"kind":"scroll","scrollDir":"down","durationMs":0},{"kind":"wait","durationMs":400},{"kind":"shot","count":1}]}
 ]}
 
 ルール:
@@ -688,8 +811,16 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
   を使う。 一番上へ戻るのは "top"。 少しずつ送るのが scroll。
 - 「フッターを撮って」 の類は scrollTo(bottom) → wait → shot の 3 手順で足りる。
   スクロールの回数を当てにいかないこと。
-- 「上から下まで全部撮って」 の類だけ、 loop(children: scroll(down) + shot) を
-  count 8〜12 で使う。
+- **1 枚の縦長画像で欲しい**と言われたら {"kind":"fullShot"} を 1 つ置く
+  (ページの上から下まで自分で送りながら撮り、 1 枚に繋げる)。 open の
+  直後に置けば足りる。 scroll や loop と組み合わせない。
+- 「上から下まで全部撮って」 で**複数枚**が良い時は
+  loop(children: scroll(down, durationMs:0) → wait(400) → shot) を使い、
+  count は 【今の画面】 の pageH ÷ viewH を切り上げた数 + 1 にする
+  (分からなければ 10)。
+- **scroll の durationMs は「送る量(px)」。 0 = 1 画面ぶん** (少しだけ重ねて
+  送る)。 スクショと組み合わせる時は必ず 0 にすること。 px を決め打ちすると
+  同じ所ばかり写る。
 - open は「そのページを開く」。 text に URL、 durationMs に読み込み待ち (ms)。
 - scrollDir は down / up / right / left (scrollTo では bottom / top)。
 - steps は 30 個以内。''';
@@ -811,15 +942,23 @@ $snap'''}
   /// 途中で止めるための合図。
   bool _agentStop = false;
 
+  /// エージェントがやった事を手順として残すか (= ユーザー要望: 後でも使える
+  /// フローにするか、 その場かぎりで実行させるかを選べるように)。
+  /// 切っている時は、 走らせる前の手順を終わったら元に戻す。
+  bool _agentKeepSteps = true;
+
   /// 画面を見ながら、 1 手ずつ考えて実行する。
   ///
   /// 先に全部組み立てる「フロー作成」 と違い、 毎回いまの画面を見てから
   /// 次の 1 手を決めるので、 「フッターまで行けたか」「タブが切り替わったか」
   /// を確かめながら進められる。 やった手順はフローとして残るので、 後から
   /// 手直しして繰り返し実行できる。
-  Future<void> _runAgent(MindMapProvider provider, String request) async {
+  Future<void> _runAgent(MindMapProvider provider, String request,
+      {bool keepSteps = true}) async {
     final req = request.trim();
     if (req.isEmpty || !mounted || _agentBusy) return;
+    // その場かぎり (= 残さない) の時のために、 今の手順を控えておく。
+    final before = List<WebAutoStep>.from(_steps);
     setState(() {
       _agentBusy = true;
       _agentStop = false;
@@ -882,6 +1021,9 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
               .t('agent.step')
               .replaceFirst('{n}', '${turn + 1}');
         });
+        // ★ 実行する前に控える。 後回しにすると、 スクショ等で画面が
+        //   作り直された時にここまでの手順が消えてしまう。
+        await _save();
         for (final st in steps) {
           if (_agentStop) break;
           done.add('- ${st.kind.name}'
@@ -896,10 +1038,24 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
         setState(() => _status = '$e'.replaceFirst('Exception: ', ''));
       }
     } finally {
+      // その場かぎりで頼まれた時は、 走らせる前の手順に戻す
+      // (= ユーザー要望: 手元のフローを勝手に置き換えない)。
+      if (!keepSteps) {
+        _steps
+          ..clear()
+          ..addAll(before);
+        await _save();
+      }
       if (mounted) {
         setState(() {
           _agentBusy = false;
           _agentStop = false;
+          // 残した時は、 そのまま保存できる事を伝える。
+          if (keepSteps && _steps.isNotEmpty) {
+            _status = provider
+                .t('agent.kept')
+                .replaceFirst('{n}', '${_steps.length}');
+          }
         });
       }
     }
@@ -994,6 +1150,9 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
   Future<void> _runSteps(List<WebAutoStep> steps, String path) async {
     for (var i = 0; i < steps.length; i++) {
       if (_cancel) return;
+      // 一番下に着いた: この繰り返しの残り (待機やスクショ) は飛ばす
+      // (= ユーザー報告: 同じ場所のスクショが何枚も並ぶ)。
+      if (_loopBreak) return;
       final s = steps[i];
       final label = path.isEmpty ? '${i + 1}' : '$path-${i + 1}';
       if (mounted) {
@@ -1002,15 +1161,28 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
       switch (s.kind) {
         case WebAutoKind.loop:
           // 回数 0 = 停止するまで無限に回す (= while)。
-          if (s.count <= 0) {
-            while (!_cancel) {
-              await _runSteps(s.children, label);
+          //
+          // ★ 中で「これ以上送れない」 と分かったら、 残りの回数は回さない
+          //   (= ユーザー報告: 一番下に着いた後も撮り続けて同じ絵が並ぶ)。
+          //   印はこの繰り返しの中だけで使い、 抜ける時に消す。
+          _loopDepth++;
+          _loopBreak = false;
+          _lastShotPos = null;
+          try {
+            if (s.count <= 0) {
+              while (!_cancel && !_loopBreak) {
+                await _runSteps(s.children, label);
+              }
+            } else {
+              for (var c = 0; c < s.count; c++) {
+                if (_cancel) return;
+                await _runSteps(s.children, label);
+                if (_loopBreak) break;
+              }
             }
-          } else {
-            for (var c = 0; c < s.count; c++) {
-              if (_cancel) return;
-              await _runSteps(s.children, label);
-            }
+          } finally {
+            _loopDepth--;
+            _loopBreak = false;
           }
           break;
         case WebAutoKind.tap:
@@ -1031,19 +1203,51 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
           }
           break;
         case WebAutoKind.scroll:
-          // 方向に応じて縦横 / 正負を決める (= ユーザー要望)。
+          // 送る量 (px)。 **0 以下 = 「1 画面ぶん」**。
+          //   = ユーザー報告「上から下まで撮ったら、 送り幅と撮る間隔が
+          //     合わずに同じ所ばかり写る」。 決め打ちの px だと 1 画面より
+          //     ずっと短く、 大半が重なっていた。 実行時に window.innerHeight
+          //     を見て 1 割だけ重ねて送る (つなぎ目が切れないように)。
+          //   なめらか送り (smooth) は次の手順が始まっても動き続けて写真が
+          //     ぶれるので、 一気に送る (instant) に変える。
           final amount = s.durationMs;
-          final dx = s.scrollDir == 'right'
-              ? amount
-              : (s.scrollDir == 'left' ? -amount : 0);
-          final dy = s.scrollDir == 'down'
-              ? amount
-              : (s.scrollDir == 'up' ? -amount : 0);
+          final horiz = s.scrollDir == 'right' || s.scrollDir == 'left';
+          final neg = s.scrollDir == 'up' || s.scrollDir == 'left';
+          final expr = amount > 0
+              ? '${neg ? -amount : amount}'
+              : '${neg ? '-' : ''}Math.round(window.'
+                  '${horiz ? 'innerWidth' : 'innerHeight'}*0.9)';
+          final top = horiz ? '0' : expr;
+          final left = horiz ? expr : '0';
+          // ★ 送る前と後の位置を同じ 1 回の JS で読む。 動かなかったら
+          //   「もう端」 なので、 繰り返しの中なら残りを切り上げる
+          //   (= ユーザー報告: 最後に同じスクショが何枚も入る)。
+          final ev = widget.evalJs;
+          final axis = horiz ? 'scrollX' : 'scrollY';
+          final axisFallback = horiz ? 'scrollLeft' : 'scrollTop';
+          final scrollJs = '(function(){var d=document.documentElement;'
+              'var b=Math.round(window.$axis||d.$axisFallback||0);'
+              'window.scrollBy({top:$top,left:$left,behavior:"instant"});'
+              'var a=Math.round(window.$axis||d.$axisFallback||0);'
+              'return String(b)+","+String(a);})();';
           for (var c = 0; c < (s.count <= 0 ? 1 : s.count); c++) {
             if (_cancel) return;
-            await widget.exec(
-                'window.scrollBy({top:$dy,left:$dx,behavior:"smooth"});');
+            if (ev == null) {
+              // 位置を読めない時は今までどおり (打ち切りはしない)。
+              await widget.exec(scrollJs);
+            } else {
+              final raw = await ev(scrollJs);
+              final t = (raw ?? '').replaceAll('"', '').trim();
+              final p = t.split(',');
+              final before = p.length == 2 ? int.tryParse(p[0]) : null;
+              final after = p.length == 2 ? int.tryParse(p[1]) : null;
+              if (before != null && after != null) {
+                _lastScrollPos = after;
+                if (after == before && _loopDepth > 0) _loopBreak = true;
+              }
+            }
             await Future.delayed(_intervalOf(s));
+            if (_loopBreak) return;
           }
           break;
         case WebAutoKind.type:
@@ -1122,6 +1326,14 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
           await Future.delayed(Duration(milliseconds: s.durationMs));
           break;
         case WebAutoKind.shot:
+          // 同じ場所を続けて撮らない (= ユーザー報告: 一番下で同じ絵が並ぶ)。
+          //   繰り返しの外や、 位置が読めない時は今までどおり必ず撮る。
+          if (_loopDepth > 0 &&
+              _lastScrollPos != null &&
+              _lastScrollPos == _lastShotPos) {
+            break;
+          }
+          _lastShotPos = _lastScrollPos;
           final region = (s.x2 - s.x).abs() > 4 && (s.y2 - s.y).abs() > 4
               ? Rect.fromLTRB(s.x, s.y, s.x2, s.y2)
               : null;
@@ -1130,6 +1342,19 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
             final shot = await widget.capture(region);
             if (shot != null) _shots++;
             await Future.delayed(_intervalOf(s));
+          }
+          break;
+        case WebAutoKind.fullShot:
+          {
+            // ページの上から下までを 1 枚に繋げる (= ユーザー要望)。
+            final f = widget.captureFull;
+            if (f == null) break;
+            for (var c = 0; c < (s.count <= 0 ? 1 : s.count); c++) {
+              if (_cancel) return;
+              final shot = await f();
+              if (shot != null) _shots++;
+              await Future.delayed(_intervalOf(s));
+            }
           }
           break;
       }
@@ -1390,6 +1615,11 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
     setState(() {
       _running = true;
       _cancel = false;
+      // 打ち切りの印も毎回まっさらにする。
+      _loopBreak = false;
+      _loopDepth = 0;
+      _lastScrollPos = null;
+      _lastShotPos = null;
       _shots = 0;
       _lapLabel = provider.t('auto.testRunning');
       _status = provider.t('auto.testRunning');
@@ -1467,6 +1697,7 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
       WebAutoKind.scroll,
       WebAutoKind.type,
       WebAutoKind.shot,
+      WebAutoKind.fullShot,
       WebAutoKind.click,
       WebAutoKind.scrollTo,
     };
@@ -1505,6 +1736,11 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
     setState(() {
       _running = true;
       _cancel = false;
+      // 打ち切りの印も毎回まっさらにする。
+      _loopBreak = false;
+      _loopDepth = 0;
+      _lastScrollPos = null;
+      _lastShotPos = null;
       _shots = 0;
       _status = '';
     });
@@ -1642,6 +1878,8 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
         return p.t('auto.kindWait');
       case WebAutoKind.shot:
         return p.t('auto.kindShot');
+      case WebAutoKind.fullShot:
+        return p.t('auto.kindFullShot');
       case WebAutoKind.type:
         return p.t('auto.kindType');
       case WebAutoKind.open:
@@ -1673,6 +1911,8 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
         return Icons.hourglass_bottom_rounded;
       case WebAutoKind.shot:
         return Icons.photo_camera_rounded;
+      case WebAutoKind.fullShot:
+        return Icons.photo_size_select_actual_rounded;
       case WebAutoKind.type:
         return Icons.keyboard_rounded;
       case WebAutoKind.open:
@@ -1721,11 +1961,8 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
     );
   }
 
-  /// 「時刻で実行」 と「コマンドの許可」 の行 (= ユーザー要望)。
-  ///
-  /// どちらもパソコン版だけ。 コマンドは既定で「使わない」 にしてあり、
-  /// ユーザーが自分で切り替えるまでは動かない。
-  Widget _buildOutsideRow(MindMapProvider provider) {
+  /// 「時刻で実行」 の行 (= ユーザー要望: 一番下に置く)。 パソコン版だけ。
+  Widget _buildScheduleRow(MindMapProvider provider) {
     if (!_isDesktopHost) return const SizedBox.shrink();
     String two(int v) => v.toString().padLeft(2, '0');
     return Padding(
@@ -1828,7 +2065,28 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
                             : Colors.white38,
                         fontSize: 10)),
               ),
-              const Divider(height: 8, color: Colors.white12),
+            ]),
+      ),
+    );
+  }
+
+  /// 「コマンドの許可」 の行 (= ユーザー要望: AI の欄のすぐ下に置く)。
+  ///
+  /// パソコン版だけ。 既定は「使わない」 で、 自分で切り替えるまで動かない。
+  Widget _buildCommandRow(MindMapProvider provider) {
+    if (!_isDesktopHost) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 0, 8, 6),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.04),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.white12),
+        ),
+        child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
               // ── コマンドの許可 ──
               Row(children: [
                 const Icon(Icons.terminal_rounded,
@@ -1869,7 +2127,7 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
                 padding: const EdgeInsets.only(left: 21, top: 2),
                 child: Text(
                     _cmdPolicy == AutoCommandPolicy.off
-                        ? 'いまは実行しません。 手順に入っていても飛ばします。'
+                        ? '今は実行しません。 手順に入っていても飛ばします。'
                         : (_cmdPolicy == AutoCommandPolicy.ask
                             ? '実行のたびに中身を見せて確認します。'
                             : '確認なしで実行します。 壊す恐れのある操作だけは断ります。'),
@@ -1883,8 +2141,8 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
 
   /// 実行したコマンドの記録を見せる。
   void _showCmdLog() {
-    showDialog<void>(
-      context: context,
+    _showNearDialog<void>(
+      maxWidth: 470,
       builder: (dctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E32),
         title: const Text('実行したコマンド',
@@ -2596,7 +2854,11 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
                   style: const TextStyle(
                       color: Color(0xFFFFCDD2), fontSize: 10.5, height: 1.35)),
             ),
-          Container(
+          // 設定の窓を「押した所の近く」 に出すため、 位置を控える
+          // (= ユーザー要望: 保存の窓が画面中央に出る)。
+          Listener(
+            onPointerDown: (e) => _lastPointerPos = e.position,
+            child: Container(
             padding: const EdgeInsets.fromLTRB(10, 8, 4, 8),
             color: const Color(0xFF23233A),
             // ── 幅が狭い端末 (= モバイル) ではヘッダーのボタンが溢れるので、
@@ -2744,7 +3006,12 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
                                 valueColor: AlwaysStoppedAnimation(
                                     Color(0xFFBA68C8))),
                           )
-                        : const Icon(Icons.auto_awesome_rounded, size: 14),
+                        : Icon(
+                            // 常に出している欄の開閉ボタン (= ユーザー要望)。
+                            _aiFormOpen
+                                ? Icons.expand_less_rounded
+                                : Icons.auto_awesome_rounded,
+                            size: 14),
                     label: Text(provider.t('auto.aiBuild'),
                         style: const TextStyle(
                             fontSize: 11, fontWeight: FontWeight.w700)),
@@ -2752,6 +3019,17 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
                         ? null
                         : () => setState(() => _aiFormOpen = !_aiFormOpen),
                   ),
+                ),
+              // 新しいフローを作る (= ユーザー要望: 作り直したい時に、 今の
+              // 手順を消して白紙から始められるように)。 手順が残っている時は
+              // 確かめてから消す。
+              if (!_running)
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  tooltip: provider.t('auto.flowNew'),
+                  icon: const Icon(Icons.note_add_outlined,
+                      size: 16, color: Colors.white70),
+                  onPressed: () => _newFlow(provider),
                 ),
               // フローの保存 / 呼び出し (= ユーザー要望: フロー名を保存して
               // 呼び出せるように)
@@ -2791,14 +3069,9 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
             ]),
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
-            child: Text(provider.t('auto.hint'),
-                style: const TextStyle(color: Colors.white38, fontSize: 10.5)),
           ),
-          _buildOutsideRow(provider),
-          // ── AI でフローを作る入力欄 (= ユーザー要望: 画面中央のダイアログ
-          //    ではなく、 自動操作の設定画面の上に出す) ──
+          // ── AI でフローを作る入力欄 (= ユーザー要望: 一番上に置く。
+          //    コマンド実行はこのすぐ下、 時刻で実行は一番下) ──
           if (_aiFormOpen)
             Padding(
               padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
@@ -2813,9 +3086,11 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
                 child: Column(children: [
                   TextField(
                     controller: _aiCtrl,
-                    autofocus: true,
+                    // 常に出ているので、 勝手に文字入力へ移らない
+                    // (モバイルでキーボードが出っぱなしになるのを防ぐ)。
+                    autofocus: false,
                     maxLines: 3,
-                    minLines: 2,
+                    minLines: 1,
                     style:
                         const TextStyle(color: Colors.white, fontSize: 12.5),
                     decoration: InputDecoration(
@@ -2831,7 +3106,6 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
                     ),
                     onSubmitted: (v) {
                       _rememberAiPrompt(v);
-                      setState(() => _aiFormOpen = false);
                       _aiBuildFlowFrom(provider, v);
                     },
                   ),
@@ -2882,6 +3156,40 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
                       ),
                   ]),
                   const SizedBox(height: 6),
+                  // ── 「画面を見ながら実行」 の結果を手順として残すか
+                  //    (= ユーザー要望: 後でも使えるようにフローを作るか、
+                  //    その場かぎりで実行させるかを選べるように) ──
+                  InkWell(
+                    onTap: () =>
+                        setState(() => _agentKeepSteps = !_agentKeepSteps),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      Icon(
+                          _agentKeepSteps
+                              ? Icons.check_box_rounded
+                              : Icons.check_box_outline_blank_rounded,
+                          size: 15,
+                          color: _agentKeepSteps
+                              ? const Color(0xFF80CBC4)
+                              : Colors.white38),
+                      const SizedBox(width: 4),
+                      Text(provider.t('auto.agentKeep'),
+                          style: const TextStyle(
+                              color: Colors.white60, fontSize: 10.5)),
+                    ]),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.only(left: 19, top: 1),
+                    child: Text(
+                        provider.t(_agentKeepSteps
+                            ? 'auto.agentKeepOn'
+                            : 'auto.agentKeepOff'),
+                        style: TextStyle(
+                            color: _agentKeepSteps
+                                ? const Color(0xFF80CBC4)
+                                : Colors.white38,
+                            fontSize: 10)),
+                  ),
+                  const SizedBox(height: 6),
                   Row(mainAxisAlignment: MainAxisAlignment.end, children: [
                     TextButton(
                       style: TextButton.styleFrom(
@@ -2905,8 +3213,7 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
                       onPressed: () {
                         final v = _aiCtrl.text;
                         _rememberAiPrompt(v);
-                        setState(() => _aiFormOpen = false);
-                        _runAgent(provider, v);
+                        _runAgent(provider, v, keepSteps: _agentKeepSteps);
                       },
                     ),
                     const SizedBox(width: 6),
@@ -2921,7 +3228,6 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
                       onPressed: () {
                         final v = _aiCtrl.text;
                         _rememberAiPrompt(v);
-                        setState(() => _aiFormOpen = false);
                         _aiBuildFlowFrom(provider, v);
                       },
                     ),
@@ -2929,6 +3235,13 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
                 ]),
               ),
             ),
+          // コマンド実行 = AI の欄のすぐ下 (= ユーザー要望)。
+          _buildCommandRow(provider),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 4, 10, 4),
+            child: Text(provider.t('auto.hint'),
+                style: const TextStyle(color: Colors.white38, fontSize: 10.5)),
+          ),
           // ステップ追加ボタン
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -3002,6 +3315,8 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
               // 位置へ)。 ここには残さない。
             ]),
           ),
+          // 時刻で実行 = 一番下 (= ユーザー要望)。
+          _buildScheduleRow(provider),
         ],
       ),
     );

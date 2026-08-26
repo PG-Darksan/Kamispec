@@ -1550,17 +1550,24 @@ class GoogleSearchMemo {
   String? snapshotUrl;
   int updatedAtMs;
 
+  /// 貼り付けた画像や PDF の置き場所 (= ユーザー要望: メモにも画像や PDF を
+  /// 貼っておけるように)。 古い控えには無いので、 空で読み込む。
+  List<String> attachments;
+
   GoogleSearchMemo({
     required this.id,
     required this.text,
     this.snapshotUrl,
+    List<String>? attachments,
     int? updatedAtMs,
-  }) : updatedAtMs = updatedAtMs ?? DateTime.now().millisecondsSinceEpoch;
+  })  : attachments = attachments ?? <String>[],
+        updatedAtMs = updatedAtMs ?? DateTime.now().millisecondsSinceEpoch;
 
   Map<String, dynamic> toJson() => {
         'id': id,
         'text': text,
         if (snapshotUrl != null) 'snapshotUrl': snapshotUrl,
+        if (attachments.isNotEmpty) 'attachments': attachments,
         'updatedAtMs': updatedAtMs,
       };
 
@@ -1568,6 +1575,11 @@ class GoogleSearchMemo {
         id: j['id'] as String,
         text: j['text'] as String? ?? '',
         snapshotUrl: j['snapshotUrl'] as String?,
+        attachments: (j['attachments'] as List?)
+                ?.map((e) => '$e')
+                .where((e) => e.isNotEmpty)
+                .toList() ??
+            <String>[],
         updatedAtMs: j['updatedAtMs'] as int? ?? 0,
       );
 
@@ -4321,10 +4333,6 @@ class MindMapProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ── Esc で閉じるか (= ユーザー要望: Excel / Word / YouTube などで開いた
-  //    画面が Esc で閉じてしまうのを止めたい) ──
-  //    既定は OFF (= ユーザー要望: Esc を押すたびに確認が積み上がって
-  //    画面が暗くなるのを防ぐ)。 使いたい人は動作設定で ON にできる。
   /// フローティングの窓を同じ物でも複数開けるようにするか
   /// (= ユーザー要望: 既定は 1 つだけ。 増やしたい人だけ入れる)。
   bool _allowMultipleFloatingWindows = false;
@@ -4333,15 +4341,6 @@ class MindMapProvider extends ChangeNotifier {
     _allowMultipleFloatingWindows = v;
     final prefs = await _prefsWithRetry();
     await prefs.setBool('allowMultipleFloatingWindows', v);
-    notifyListeners();
-  }
-
-  bool _closeViewerWithEsc = false;
-  bool get closeViewerWithEsc => _closeViewerWithEsc;
-  Future<void> setCloseViewerWithEsc(bool v) async {
-    _closeViewerWithEsc = v;
-    final prefs = await _prefsWithRetry();
-    await prefs.setBool('closeViewerWithEsc', v);
     notifyListeners();
   }
 
@@ -7277,7 +7276,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Метка (необязательно)',
     },
     'alarm.repeatDaily': {
-      'ja': '毎日くり返す',
+      'ja': '毎日繰り返す',
       'en': 'Repeat daily',
       'zh': '每天重复',
       'ko': '매일 반복',
@@ -19422,7 +19421,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Предпросмотр недоступен (нужен WebView2)',
     },
     'md.sampleTitle': {
-      'ja': 'はじめての Markdown ページ', 'en': 'Your first Markdown page',
+      'ja': '初めての Markdown ページ', 'en': 'Your first Markdown page',
       'zh': '第一个 Markdown 页面', 'ko': '첫 Markdown 페이지',
       'es': 'Tu primera pagina Markdown', 'fr': 'Votre premiere page Markdown',
       'de': 'Deine erste Markdown-Seite', 'pt': 'Sua primeira pagina Markdown',
@@ -19477,6 +19476,28 @@ class MindMapProvider extends ChangeNotifier {
       'ja': '再読み込み', 'en': 'Reload', 'zh': '重新加载', 'ko': '새로고침',
       'es': 'Recargar', 'fr': 'Recharger', 'de': 'Neu laden',
       'pt': 'Recarregar', 'ru': 'Обновить',
+    },
+    'split.hidePaneName': {
+      'ja': '各画面のページ名を隠す',
+      'en': 'Hide the page name in each pane',
+      'zh': '隐藏各画面的页面名',
+      'ko': '각 화면의 페이지 이름 숨기기',
+      'es': 'Ocultar el nombre de página en cada panel',
+      'fr': 'Masquer le nom de page dans chaque volet',
+      'de': 'Seitennamen in jedem Bereich ausblenden',
+      'pt': 'Ocultar o nome da página em cada painel',
+      'ru': 'Скрыть имя страницы в каждой панели',
+    },
+    'split.showPaneName': {
+      'ja': '各画面のページ名を出す',
+      'en': 'Show the page name in each pane',
+      'zh': '显示各画面的页面名',
+      'ko': '각 화면의 페이지 이름 표시',
+      'es': 'Mostrar el nombre de página en cada panel',
+      'fr': 'Afficher le nom de page dans chaque volet',
+      'de': 'Seitennamen in jedem Bereich anzeigen',
+      'pt': 'Mostrar o nome da página em cada painel',
+      'ru': 'Показать имя страницы в каждой панели',
     },
     'split.forward': {
       'ja': '進む',
@@ -21701,6 +21722,17 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Falha no download: {e}',
       'ru': 'Ошибка загрузки: {e}',
     },
+    'gs.memoAttach': {
+      'ja': '画像 / PDF を貼る',
+      'en': 'Attach an image or PDF',
+      'zh': '附加图片或 PDF',
+      'ko': '이미지 / PDF 첨부',
+      'es': 'Adjuntar imagen o PDF',
+      'fr': 'Joindre une image ou un PDF',
+      'de': 'Bild oder PDF anhängen',
+      'pt': 'Anexar imagem ou PDF',
+      'ru': 'Прикрепить изображение или PDF',
+    },
     'gs.memoToDeepl': {
       'ja': 'このメモを DeepL に送る',
       'en': 'Send this memo to DeepL',
@@ -22174,6 +22206,72 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'z. B. , / | / ---',
       'pt': 'ex.: , / | / ---',
       'ru': 'напр. , / | / ---',
+    },
+    'ocr.title': {
+      'ja': '文字を読み取る',
+      'en': 'Read text from an image',
+      'zh': '识别图片文字',
+      'ko': '이미지에서 글자 읽기',
+      'es': 'Leer texto de una imagen',
+      'fr': "Lire le texte d'une image",
+      'de': 'Text aus einem Bild lesen',
+      'pt': 'Ler texto de uma imagem',
+      'ru': 'Распознать текст с изображения',
+    },
+    'ocr.noText': {
+      'ja': '文字は見つかりませんでした',
+      'en': 'No text was found',
+      'zh': '未找到文字',
+      'ko': '글자를 찾지 못했습니다',
+      'es': 'No se encontró texto',
+      'fr': 'Aucun texte trouvé',
+      'de': 'Kein Text gefunden',
+      'pt': 'Nenhum texto encontrado',
+      'ru': 'Текст не найден',
+    },
+    'ocr.toNode': {
+      'ja': 'ノードにする',
+      'en': 'Add as a node',
+      'zh': '添加为节点',
+      'ko': '노드로 추가',
+      'es': 'Añadir como nodo',
+      'fr': 'Ajouter comme nœud',
+      'de': 'Als Knoten hinzufügen',
+      'pt': 'Adicionar como nó',
+      'ru': 'Добавить как узел',
+    },
+    'ocr.addedNode': {
+      'ja': '読み取った文字をノードにしました',
+      'en': 'Added the text as a node',
+      'zh': '已将识别的文字添加为节点',
+      'ko': '읽은 글자를 노드로 추가했습니다',
+      'es': 'Se añadió el texto como nodo',
+      'fr': 'Texte ajouté comme nœud',
+      'de': 'Text als Knoten hinzugefügt',
+      'pt': 'Texto adicionado como nó',
+      'ru': 'Текст добавлен как узел',
+    },
+    'ocr.tooLarge': {
+      'ja': '画像が大きすぎます (5MB まで)',
+      'en': 'That image is too large (5MB max)',
+      'zh': '图片过大（最大 5MB）',
+      'ko': '이미지가 너무 큽니다 (최대 5MB)',
+      'es': 'La imagen es demasiado grande (máx. 5MB)',
+      'fr': "L'image est trop grande (5 Mo max)",
+      'de': 'Das Bild ist zu groß (max. 5 MB)',
+      'pt': 'A imagem é muito grande (máx. 5MB)',
+      'ru': 'Изображение слишком большое (до 5 МБ)',
+    },
+    'hdr.ocrSearch': {
+      'ja': '文字を読み取る',
+      'en': 'Read text (OCR)',
+      'zh': '识别文字',
+      'ko': '글자 읽기',
+      'es': 'Leer texto (OCR)',
+      'fr': 'Lire le texte (OCR)',
+      'de': 'Text lesen (OCR)',
+      'pt': 'Ler texto (OCR)',
+      'ru': 'Распознать текст',
     },
     'ocr.removed': {
       'ja': '画像OCR検索はAPIキー必須実装だったため削除しました',
@@ -26822,51 +26920,6 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Ao arrastar um nó, contornos suaves aparecem perto de outros nós mostrando onde ele pode encaixar. Soltando ali, ele se alinha e conecta automaticamente. Desligado, o nó fica onde você soltar, sem conexão automática.',
       'ru': 'При перетаскивании узла рядом с соседними узлами появляются бледные рамки-подсказки. Отпустите на такой рамке — узел выровняется и соединится автоматически. Выключено: узел останется там, где отпустили, без автосоединения.',
     },
-    'help.escClose': {
-      'ja': 'Excel / Word / PDF / YouTube などをアプリ内で開いた画面を、Esc キーで閉じるかどうかの設定です。'
-          'ON (既定) なら今までどおり Esc で閉じます。'
-          'OFF にすると Esc では閉じなくなり、右上の ✕ ボタンでだけ閉じられます。'
-          '編集中に指が当たって閉じてしまう事故を防ぎたい時に OFF にしてください。'
-          'なお、セルや文章の編集中の Esc は「編集をやめる」動作のままで、画面は閉じません。',
-      'en': 'Controls whether the Esc key closes viewers opened inside the app '
-          '(Excel, Word, PDF, YouTube and so on). ON (default) keeps the current '
-          'behaviour. OFF means Esc no longer closes them and only the ✕ button '
-          'does, which prevents accidentally losing the screen while editing. '
-          'Esc while editing a cell or a paragraph still just cancels that edit.',
-      'zh': '设置是否用 Esc 键关闭在应用内打开的画面（Excel / Word / PDF / YouTube 等）。'
-          '开启（默认）保持原有行为；关闭后 Esc 不再关闭画面，只能用右上角 ✕ 关闭，可避免编辑时误触关闭。'
-          '编辑单元格或段落时按 Esc 仍然只是取消编辑。',
-      'ko': 'Excel / Word / PDF / YouTube 등 앱 안에서 연 화면을 Esc 키로 닫을지 설정합니다. '
-          'ON(기본)이면 지금까지처럼 Esc로 닫히고, OFF면 Esc로 닫히지 않고 오른쪽 위 ✕ 로만 '
-          '닫을 수 있어 편집 중 실수로 닫히는 것을 막을 수 있습니다. 셀이나 문장을 편집 중일 때의 '
-          'Esc는 그대로 편집 취소입니다.',
-      'es': 'Define si la tecla Esc cierra los visores abiertos dentro de la app '
-          '(Excel, Word, PDF, YouTube…). Activado (por defecto) mantiene el '
-          'comportamiento actual; desactivado, Esc ya no cierra y solo lo hace el '
-          'botón ✕, evitando cierres accidentales mientras editas. Esc durante la '
-          'edición de una celda o un párrafo sigue solo cancelando esa edición.',
-      'fr': 'Détermine si la touche Échap ferme les visionneuses ouvertes dans '
-          'l application (Excel, Word, PDF, YouTube…). Activé (par défaut) : '
-          'comportement actuel. Désactivé : Échap ne ferme plus, seul le bouton ✕ '
-          'le fait, ce qui évite les fermetures accidentelles pendant l édition. '
-          'Échap pendant la saisie d une cellule ou d un paragraphe annule '
-          'seulement cette saisie.',
-      'de': 'Legt fest, ob die Esc-Taste in der App geöffnete Ansichten schließt '
-          '(Excel, Word, PDF, YouTube …). An (Standard): wie bisher. Aus: Esc '
-          'schließt nicht mehr, nur die ✕-Schaltfläche – so geht die Ansicht beim '
-          'Bearbeiten nicht versehentlich verloren. Esc beim Bearbeiten einer '
-          'Zelle oder eines Absatzes bricht weiterhin nur diese Eingabe ab.',
-      'pt': 'Define se a tecla Esc fecha os visualizadores abertos dentro do app '
-          '(Excel, Word, PDF, YouTube…). Ligado (padrão) mantém o comportamento '
-          'atual; desligado, o Esc não fecha mais e só o botão ✕ fecha, evitando '
-          'fechamentos acidentais durante a edição. O Esc ao editar uma célula ou '
-          'um parágrafo continua apenas cancelando a edição.',
-      'ru': 'Определяет, закрывает ли клавиша Esc окна просмотра внутри приложения '
-          '(Excel, Word, PDF, YouTube и другие). Включено (по умолчанию) — как '
-          'раньше. Выключено — Esc больше не закрывает, только кнопка ✕, что '
-          'исключает случайное закрытие при редактировании. Esc во время правки '
-          'ячейки или абзаца по-прежнему просто отменяет ввод.',
-    },
     'help.autofillSequence': {
       'ja': 'ノードに「第一章」のような連番のタイトルを入力すると、同じ親を持つ空の兄弟ノードに「第二章」「第三章」…を自動で提案する機能です。'
           '漢数字・算用数字・ローマ数字・ひらがな・カタカナに対応しています。'
@@ -27853,7 +27906,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Выбрать папку...',
     },
     'memo.saveDirDefault': {
-      'ja': '毎回たずねる (既定)',
+      'ja': '毎回尋ねる (既定)',
       'en': 'Ask every time (default)',
       'zh': '每次询问（默认）',
       'ko': '매번 묻기 (기본)',
@@ -32393,17 +32446,6 @@ class MindMapProvider extends ChangeNotifier {
     },
     // Esc で閲覧画面を閉じるか (= ユーザー要望: Excel / Word / YouTube などが
     // Esc で閉じてしまうのを止められるように)。
-    'menu.escClose': {
-      'ja': 'Esc キーで閲覧画面を閉じる',
-      'en': 'Close viewers with the Esc key',
-      'zh': '用 Esc 键关闭查看画面',
-      'ko': 'Esc 키로 열람 화면 닫기',
-      'es': 'Cerrar los visores con la tecla Esc',
-      'fr': 'Fermer les visionneuses avec la touche Échap',
-      'de': 'Ansichten mit Esc schließen',
-      'pt': 'Fechar os visualizadores com a tecla Esc',
-      'ru': 'Закрывать окна просмотра клавишей Esc',
-    },
     // ── 選択範囲を図/表にする (= ユーザー要望) ──
     'sheet.rangeToTable': {
       'ja': '表にする', 'en': 'To table', 'zh': '生成表格', 'ko': '표로 만들기',
@@ -35041,7 +35083,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Вс',
     },
     'alarm.repeatTitle': {
-      'ja': 'くり返し',
+      'ja': '繰り返し',
       'en': 'Repeat',
       'zh': '重复',
       'ko': '반복',
@@ -36938,7 +36980,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Чем выше, тем ближе к переднему плану (больше номер — ближе)',
     },
     'paint.layerFrontMost': {
-      'ja': 'いちばん手前',
+      'ja': '一番手前',
       'en': 'frontmost',
       'zh': '最前',
       'ko': '맨 앞',
@@ -36949,7 +36991,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'самый передний',
     },
     'paint.layerBackMost': {
-      'ja': 'いちばん奥',
+      'ja': '一番奥',
       'en': 'backmost',
       'zh': '最后',
       'ko': '맨 뒤',
@@ -38098,7 +38140,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Ярлыки недоступны на этом устройстве',
     },
     'common.search': {
-      'ja': 'さがす',
+      'ja': '探す',
       'en': 'Search',
       'zh': '搜索',
       'ko': '검색',
@@ -38283,7 +38325,7 @@ class MindMapProvider extends ChangeNotifier {
       'en': 'Opens a stopwatch.',
     },
     'cmdDesc.pomodoro': {
-      'ja': '作業と休憩を交互にくり返す集中タイマーです。時間が来ると知らせます。',
+      'ja': '作業と休憩を交互に繰り返す集中タイマーです。時間が来ると知らせます。',
       'en': 'A focus timer that alternates work and break periods and tells you when to switch.',
     },
     'cmdDesc.alarm': {
@@ -38796,6 +38838,17 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Aguardar',
       'ru': 'Ожидание',
     },
+    'auto.kindFullShot': {
+      'ja': '全体を 1 枚',
+      'en': 'Full-page shot',
+      'zh': '整页截图',
+      'ko': '전체 페이지 캡처',
+      'es': 'Captura de página completa',
+      'fr': 'Capture de page entière',
+      'de': 'Ganzseiten-Screenshot',
+      'pt': 'Captura da página inteira',
+      'ru': 'Скриншот всей страницы',
+    },
     'auto.kindShot': {
       'ja': 'スクショ',
       'en': 'Screenshot',
@@ -38940,6 +38993,50 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Instrucoes anteriores',
       'ru': 'Прошлые запросы',
     },
+    'auto.agentKeep': {
+      'ja': '手順として残す',
+      'en': 'Keep as a reusable flow',
+      'zh': '保留为可重复使用的流程',
+      'ko': '재사용할 수 있는 순서로 남기기',
+      'es': 'Guardar como flujo reutilizable',
+      'fr': 'Conserver comme flux reutilisable',
+      'de': 'Als wiederverwendbaren Ablauf behalten',
+      'pt': 'Manter como fluxo reutilizavel',
+      'ru': 'Сохранить как повторяемый сценарий',
+    },
+    'auto.agentKeepOn': {
+      'ja': 'やった操作を手順に残します。 後で実行ボタンから繰り返せます。',
+      'en': 'The actions are kept as steps, so you can replay them later.',
+      'zh': '会把执行过的操作保留为步骤，之后可以重复执行。',
+      'ko': '실행한 조작을 순서로 남겨 나중에 다시 실행할 수 있습니다.',
+      'es': 'Las acciones se guardan como pasos para repetirlas despues.',
+      'fr': 'Les actions sont conservees comme etapes, rejouables ensuite.',
+      'de': 'Die Aktionen bleiben als Schritte erhalten und sind wiederholbar.',
+      'pt': 'As acoes ficam como passos, para repetir depois.',
+      'ru': 'Действия сохранятся как шаги и их можно будет повторить.',
+    },
+    'auto.agentKeepOff': {
+      'ja': 'その場かぎりで動かします。 いまの手順は変わりません。',
+      'en': 'Runs once only. Your current steps are left untouched.',
+      'zh': '只执行一次，不会改动当前的步骤。',
+      'ko': '이번만 실행합니다. 지금의 순서는 그대로 둡니다.',
+      'es': 'Se ejecuta una sola vez; tus pasos actuales no cambian.',
+      'fr': 'Execution unique ; vos etapes actuelles restent inchangees.',
+      'de': 'Laeuft nur einmal; die vorhandenen Schritte bleiben unveraendert.',
+      'pt': 'Executa uma vez apenas; seus passos atuais nao mudam.',
+      'ru': 'Выполнится один раз; текущие шаги не изменятся.',
+    },
+    'agent.kept': {
+      'ja': '手順を {n} 件残しました。 保存の絵で名前を付けられます。',
+      'en': 'Kept {n} step(s). Use the save icon to name this flow.',
+      'zh': '已保留 {n} 个步骤。可用保存图标命名此流程。',
+      'ko': '{n}개의 순서를 남겼습니다. 저장 아이콘으로 이름을 붙일 수 있습니다.',
+      'es': 'Se guardaron {n} paso(s). Usa el icono de guardar para nombrarlo.',
+      'fr': '{n} etape(s) conservees. Nommez ce flux avec l\'icone de sauvegarde.',
+      'de': '{n} Schritt(e) behalten. Mit dem Speichersymbol benennen.',
+      'pt': '{n} passo(s) mantidos. Use o icone salvar para nomear o fluxo.',
+      'ru': 'Сохранено шагов: {n}. Назовите сценарий значком сохранения.',
+    },
     'auto.agentRun': {
       'ja': '画面を見ながら実行',
       'en': 'Run while watching',
@@ -39060,6 +39157,50 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Gespeicherten Ablauf öffnen',
       'pt': 'Abrir um fluxo salvo',
       'ru': 'Открыть сохранённый сценарий',
+    },
+    'auto.flowNew': {
+      'ja': '新しいフロー',
+      'en': 'New flow',
+      'zh': '新建流程',
+      'ko': '새 플로우',
+      'es': 'Flujo nuevo',
+      'fr': 'Nouveau flux',
+      'de': 'Neuer Ablauf',
+      'pt': 'Novo fluxo',
+      'ru': 'Новый сценарий',
+    },
+    'auto.flowNewConfirm': {
+      'ja': '今の手順を消して白紙から始めます。 保存したフローは消えません。',
+      'en': 'Clear the current steps and start over. Saved flows are kept.',
+      'zh': '清除当前步骤并重新开始。已保存的流程不会被删除。',
+      'ko': '지금의 순서를 지우고 처음부터 시작합니다. 저장한 플로우는 남습니다.',
+      'es': 'Borra los pasos actuales y empieza de nuevo. Los flujos guardados se conservan.',
+      'fr': 'Efface les étapes actuelles et recommence. Les flux enregistrés sont conservés.',
+      'de': 'Aktuelle Schritte löschen und neu beginnen. Gespeicherte Abläufe bleiben.',
+      'pt': 'Limpa os passos atuais e recomeça. Os fluxos salvos são mantidos.',
+      'ru': 'Очистить текущие шаги и начать заново. Сохранённые сценарии останутся.',
+    },
+    'auto.flowNewDone': {
+      'ja': '白紙にしました',
+      'en': 'Started a new flow',
+      'zh': '已新建流程',
+      'ko': '새 플로우를 시작했습니다',
+      'es': 'Se inició un flujo nuevo',
+      'fr': 'Nouveau flux démarré',
+      'de': 'Neuer Ablauf gestartet',
+      'pt': 'Novo fluxo iniciado',
+      'ru': 'Начат новый сценарий',
+    },
+    'auto.flowNamePrefix': {
+      'ja': 'フロー',
+      'en': 'Flow',
+      'zh': '流程',
+      'ko': '플로우',
+      'es': 'Flujo',
+      'fr': 'Flux',
+      'de': 'Ablauf',
+      'pt': 'Fluxo',
+      'ru': 'Сценарий',
     },
     'auto.flowNameHint': {
       'ja': '例: 記事をめくって撮影',
@@ -40661,7 +40802,7 @@ class MindMapProvider extends ChangeNotifier {
     // 100 万トークンがどれくらいかの目安 (= ユーザー要望: 馴染みが無いので)。
     'mcp.priceUnitNote': {
       'ja': '目安: 日本語 100 万トークン ≒ 文庫本 5〜7 冊分 '
-          '(約 60〜70 万文字)。ふつうの質問 1 回はおよそ 1,000〜3,000 トークン',
+          '(約 60〜70 万文字)。普通の質問 1 回はおよそ 1,000〜3,000 トークン',
       'en': 'Roughly: 1M tokens ≈ 750,000 English words. '
           'A typical question uses about 1,000-3,000 tokens',
       'zh': '参考：100 万 token ≈ 60-70 万汉字。一次普通提问约 1,000-3,000 token',
@@ -41083,7 +41224,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Постоянные указания',
     },
     'mcp.preambleHint': {
-      'ja': 'ここに書いたことは毎回いちばん先に AI へ渡され、 他の指示より'
+      'ja': 'ここに書いたことは毎回一番先に AI へ渡され、 他の指示より'
           '優先されます。 Markdown のように「- 」 で箇条書きにできます。',
       'en': 'Whatever you write here is sent to the AI first, every time, and '
           'takes priority over other instructions. You can use "- " bullets '
@@ -41318,7 +41459,7 @@ class MindMapProvider extends ChangeNotifier {
           '【できないこと】\n'
           '○ クラウド同期・LAN 共有・アプリロック・集中ロック …\n'
           '　　利用者自身が押す決まりです\n'
-          '○ ほかのアプリ・ほかの端末からの操作 … このアプリの中の AI だけです\n'
+          '○ 他のアプリ・他の端末からの操作 … このアプリの中の AI だけです\n'
           '\n'
           '※ 位置は自動で整えるので、 置き場所の指定は不要です。\n'
           ,
@@ -53279,6 +53420,17 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Перенести на страницу',
     },
     // 単一ノードの右クリックメニュー: 別ページへ移動 (= ユーザー要望)。
+    'ctx.sendToNewPage': {
+      'ja': '新規ページに送る',
+      'en': 'Send to a new page',
+      'zh': '发送到新页面',
+      'ko': '새 페이지로 보내기',
+      'es': 'Enviar a una página nueva',
+      'fr': 'Envoyer vers une nouvelle page',
+      'de': 'An eine neue Seite senden',
+      'pt': 'Enviar para uma nova página',
+      'ru': 'Отправить на новую страницу',
+    },
     'ctx.sendToPage': {
       'ja': '別ページに送る',
       'en': 'Send to another page',
@@ -53789,7 +53941,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Вернуть Ctrl+1-9 к этому списку',
     },
     'root.shortcutAlready': {
-      'ja': 'Ctrl+1〜9 は、いまこの一覧の上から順に開きます',
+      'ja': 'Ctrl+1〜9 は、今この一覧の上から順に開きます',
       'en': 'Ctrl+1-9 already opens this list from the top',
       'zh': 'Ctrl+1-9 现在就是从此列表顶部依次打开',
       'ko': 'Ctrl+1-9는 지금 이 목록을 위에서부터 엽니다',
@@ -53800,7 +53952,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Ctrl+1-9 уже открывает этот список сверху',
     },
     'root.shortcutFolderNow': {
-      'ja': 'いまは「{name}」の中のページが Ctrl+1〜9 です',
+      'ja': '今は「{name}」の中のページが Ctrl+1〜9 です',
       'en': 'Ctrl+1-9 currently opens pages in “{name}”',
       'zh': '目前 Ctrl+1-9 打开的是「{name}」中的页面',
       'ko': '지금은 “{name}” 안의 페이지가 Ctrl+1-9 입니다',
@@ -58754,7 +58906,8 @@ class MindMapProvider extends ChangeNotifier {
   ///   - 'ocrSearch': APIキー必須のAI OCR実装だったため廃止。
   static const Set<String> _removedButtonIds = {
     'weather',
-    'ocrSearch',
+    // 'ocrSearch' は復活 (= ユーザー要望: OCR で文字を読み取れるように)。
+    //   代行サーバー経由で画像を見られるようになり、 キー無しで動く。
     'openX',
     'openQiita',
     'openPaiza',
@@ -68119,18 +68272,27 @@ $cleanQ
     notifyListeners();
   }
 
-  /// 画像から文字を OCR 抽出する (= ユーザー要望: 画像の OCR 検索)。
-  /// ビジョン対応 AI (Gemini / Claude) に画像を渡し、 認識テキストのみを返す。
-  /// 翻訳・要約はさせず原文のまま返す。 AI キー未設定や通信失敗時は例外を投げる。
+  /// 画像から文字を読み取って文字だけを返す (= ユーザー要望: OCR)。
+  ///
+  /// 手書きでも印刷でも、 画像を見られる AI に渡して書き出してもらう。
+  /// 翻訳・要約はさせず、 見たままの順で原文のまま返す。
+  ///
+  /// ★ 以前は _askAiWithBinaryDoc を通していたが、 あちらは代行 (relay) が
+  ///   使える時に必ず例外を投げる作りなので、 代行だけになった今は必ず
+  ///   失敗していた (= 「APIキー必須」 と言われて機能ごと外されていた原因)。
+  ///   画像は askAi の images でそのまま渡せるので、 そちらを使う。
   Future<String> ocrImageToText(String filePath, String ext) async {
     final name = filePath.split(RegExp(r'[\\/]')).last;
-    final text = await _askAiWithBinaryDoc(
-      filePath: filePath,
-      fileName: name,
-      ext: ext,
-      prompt: 'この画像に写っている文字をすべて、 見たままの順序でそのまま書き出してください。'
-          ' 翻訳・要約・説明・前置き・記号装飾は一切付けず、 認識した文字だけを出力してください。'
-          ' 文字が無ければ何も出力しないでください。',
+    final image = await buildAiImageFromFile(filePath, name: name);
+    if (image == null) {
+      throw Exception(t('ocr.tooLarge'));
+    }
+    final text = await askAi(
+      'この画像に写っている文字をすべて、 見たままの順序でそのまま書き出して'
+      'ください。 手書きの文字も読み取ってください。 翻訳・要約・説明・前置き・'
+      '記号装飾は一切付けず、 読み取った文字だけを出力してください。'
+      ' 文字が無ければ何も出力しないでください。',
+      images: [image],
     );
     return text.trim();
   }
@@ -76272,8 +76434,6 @@ $cleanQ
     defaultTitleFontSize = prefs.getDouble('defaultTitleFontSize') ?? 15.0;
     defaultMemoFontSize = prefs.getDouble('defaultMemoFontSize') ?? 12.0;
     _snapEnabled = prefs.getBool('snapEnabled') ?? true;
-    // Esc で閲覧画面を閉じるか (= ユーザー要望: 誤爆を止められるように)。
-    _closeViewerWithEsc = prefs.getBool('closeViewerWithEsc') ?? false;
     _allowMultipleFloatingWindows =
         prefs.getBool('allowMultipleFloatingWindows') ?? false;
     // 「アプリで開く」 を別アプリで開くか (= ユーザー要望)。
@@ -81091,6 +81251,9 @@ $cleanQ
     //   ユーザーは「ぴったり接触に近いところまで近づけたい」 ので、 マージン
     //   は 2px だけにする (= 浮動小数点の誤差吸収用)。
     const double pad = 2.0;
+    // 畳んで見えていないノードは押しのけない (= ユーザー報告: 畳んだ親を
+    //   動かすと、 その場に残っている見えない子が押されて散らばる)。
+    final hiddenForPush = hiddenNodeIds;
     final movedIds = <String>{placedNodeId}; // 移動済みID（再処理防止）
     // 処理キュー: 押しのけ元のノードIDリスト
     final queue = <String>[placedNodeId];
@@ -81114,6 +81277,7 @@ $cleanQ
 
       for (final other in nodeMap.values.toList()) {
         if (movedIds.contains(other.id)) continue;
+        if (hiddenForPush.contains(other.id)) continue;
         // X方向で重なっていなければスキップ
         final otherRight = other.position.dx + other.width;
         if (srcLeft >= otherRight + pad || srcRight + pad <= other.position.dx)
@@ -81297,6 +81461,12 @@ $cleanQ
       if (n == null) continue;
       n.position = Offset(
           n.position.dx, (n.position.dy + dy).clamp(0.0, 20000.0 - n.visualHeight));
+      // 畳んでいる節の基準位置もずらす。 ここで置いていくと、 展開する時の
+      //   補正が二重に効いて子が飛ぶ (= 折りたたみ不具合の一因)。
+      final saved = _collapsedPositions[id];
+      if (saved != null) {
+        _collapsedPositions[id] = Offset(saved.dx, saved.dy + dy);
+      }
     }
   }
 
@@ -84777,7 +84947,10 @@ $cleanQ
     final node = currentPage.nodes[id];
     if (node == null) return;
     _pushUndo();
+    // 畳んでいる親なら、 隠れている子孫も同じだけ運ぶ (= ユーザー報告)。
+    final delta = position - node.position;
     currentPage.nodes[id] = node.copyWith(position: position);
+    _carryHiddenDescendants(id, delta);
     _saveToStorage();
     notifyListeners();
   }
@@ -88138,6 +88311,40 @@ $example
   // 折りたたみ時の親ノード位置を記録
   final Map<String, Offset> _collapsedPositions = {};
 
+  /// 折りたたみ中の親が動いた時、 画面から消えている子孫も同じだけ運ぶ。
+  ///
+  /// = ユーザー報告「子ノードを収納した後に親を動かしてから展開すると、
+  ///   子が元の場所に残り、 線が変な方向に折れ曲がる」。
+  ///   以前は展開する時にだけ差分で補正していたが、 その基準位置
+  ///   (_collapsedPositions) は覚えているだけで保存されないため、 一度
+  ///   アプリを閉じたり同期で読み直したりすると補正が効かなくなっていた。
+  ///   動かした時にその場で運べば、 保存される位置そのものが正しくなる。
+  /// [skip] は呼び出し側が既に動かした id (二重に動かさないため)。
+  void _carryHiddenDescendants(String id, Offset delta,
+      {Set<String> skip = const <String>{}}) {
+    if (delta.dx.abs() < 0.01 && delta.dy.abs() < 0.01) return;
+    final nodeMap = currentPage.nodes;
+    final node = nodeMap[id];
+    if (node == null || !node.collapsed) return;
+    for (final descId in getDescendants(id)) {
+      if (skip.contains(descId)) continue;
+      final d = nodeMap[descId];
+      if (d == null) continue;
+      nodeMap[descId] = d.copyWith(
+        position: Offset(
+          (d.position.dx + delta.dx).clamp(0.0, 20000.0 - d.width),
+          (d.position.dy + delta.dy).clamp(0.0, 20000.0 - d.height),
+        ),
+      );
+      // 入れ子で畳んでいる子の基準位置もずらす。
+      final inner = _collapsedPositions[descId];
+      if (inner != null) _collapsedPositions[descId] = inner + delta;
+    }
+    // 展開時の補正と二重に効かないよう、 記録した基準位置も同じだけずらす。
+    final saved = _collapsedPositions[id];
+    if (saved != null) _collapsedPositions[id] = saved + delta;
+  }
+
   void toggleNodeCollapsed(String id) {
     final node = currentPage.nodes[id];
     if (node == null) return;
@@ -88573,6 +88780,11 @@ $example
           (node.position.dy + delta.dy).clamp(0.0, 20000.0 - node.height),
         ),
       );
+    }
+    // 畳んでいる親を掴んだ時は、 隠れている子孫も一緒に運ぶ (= ユーザー報告)。
+    //   skip: ids … 選択の中に親と子孫が両方入っていても二重に動かさない。
+    for (final id in ids) {
+      _carryHiddenDescendants(id, delta, skip: ids);
     }
     _saveToStorage();
     notifyListeners();
@@ -89616,6 +89828,7 @@ $example
     String id, {
     String? text,
     Object? snapshotUrl = _gsmSentinel,
+    List<String>? attachments,
   }) async {
     final idx = _googleSearchMemos.indexWhere((m) => m.id == id);
     if (idx < 0) return;
@@ -89624,6 +89837,8 @@ $example
     if (snapshotUrl != _gsmSentinel) {
       m.snapshotUrl = snapshotUrl as String?;
     }
+    // 貼り付けた画像 / PDF (= ユーザー要望)。
+    if (attachments != null) m.attachments = List<String>.from(attachments);
     m.updatedAtMs = DateTime.now().millisecondsSinceEpoch;
     await _saveGoogleSearchMemos();
     notifyListeners();
