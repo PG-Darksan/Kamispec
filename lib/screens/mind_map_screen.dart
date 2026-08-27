@@ -2793,6 +2793,57 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 左右どちらのペインからも同じ物を使う。 呼び出し側は
   /// [_SplitCellEmbeddedPanel] で包むこと (ビューアが自分を閉じる時の
   /// `Navigator.pop()` でアプリ本体の画面が消えてしまうのを防ぐため)。
+  /// 分割パネルの中に出す Markdown 画面 (= ユーザー報告: 分割した画面に
+  /// 埋め込んで開くと全画面表示になる)。 ヘッダーの × でパネルを閉じる。
+  Widget _buildMarkdownFilePane(
+    BuildContext ctx, {
+    required String path,
+    required String fileName,
+  }) {
+    final provider = ctx.read<MindMapProvider>();
+    // メモや公開の控えをファイルごとに持てるよう、 パスから安定した
+    // 疑似ページ id を作る (_openAttachment の Markdown 経路と同じ規則)。
+    final keyBase = path.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+    final mdPageId =
+        'mdfile_${keyBase.length > 60 ? keyBase.substring(keyBase.length - 60) : keyBase}';
+    return Column(children: [
+      Container(
+        height: 40,
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        color: const Color(0xFF1A1A2E),
+        child: Row(children: [
+          const Icon(Icons.polyline_rounded,
+              size: 16, color: Color(0xFF5FD3B2)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(fileName,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600)),
+          ),
+          IconButton(
+            tooltip: provider.t('btn.close'),
+            icon: const Icon(Icons.close_rounded,
+                size: 18, color: Colors.white70),
+            onPressed: () => Navigator.of(ctx).pop(),
+          ),
+        ]),
+      ),
+      Expanded(
+        child: _MarkdownPageView(
+          provider: provider,
+          pageId: mdPageId,
+          filePath: path,
+          onOpenBrowserAi:
+              _isDesktop ? () => _openDesktopFloatingAi(provider) : null,
+        ),
+      ),
+    ]);
+  }
+
   Widget _buildSplitOfficeViewer(
     BuildContext ctx, {
     required String mode,
@@ -2823,6 +2874,10 @@ class _MindMapScreenState extends State<MindMapScreen>
           isDarkMode: isDark,
           compactHost: true,
         );
+      case 'md':
+        // ── Markdown (= ユーザー報告: 分割した画面に埋め込んで開くと
+        //    全画面になる)。 Markdown ページと同じ画面をペインの中に出す。 ──
+        return _buildMarkdownFilePane(ctx, path: path, fileName: fileName);
       default:
         return _SpreadsheetEditorDialog(
           filePath: path,
@@ -9222,6 +9277,10 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// このボタンの開き方。 設定が無ければ今までの動き。
   String _openStyleOf(String commandId) {
+    // ★ アラームは開き方を選べない (= ユーザー要望: 左右分割 /
+    //   フローティングを消して、 開き方の設定自体を出さない)。 昔に選んだ
+    //   設定が prefs に残っていても、 常に全画面のダイアログで開く。
+    if (commandId == 'alarm') return 'full';
     final v = _commandOpenStyle[commandId];
     if (v != null && _openStyles.contains(v)) return v;
     // 旧版の 'split' は「右に分割」 として読む (= 設定を引き継ぐ)。
@@ -9238,11 +9297,18 @@ class _MindMapScreenState extends State<MindMapScreen>
         commandId == 'gantt' ||
         commandId == 'memberSchedule' ||
         commandId == 'silentCamera' ||
-        // 計算機 / タイマー / アラームも既定は今までどおり
+        // 計算機 / タイマーも既定は今までどおり
         //   (= 選んだ人だけ分割 / フローティングになる)。
         commandId == 'calculator' ||
         commandId == 'stopwatch' ||
-        commandId == 'alarm') {
+        // ページ背景の既定も今までどおり全画面のダイアログ。
+        commandId == 'mapBackground' ||
+        // バグ報告・機能依頼の既定も今までどおり全画面のダイアログ
+        //   (= ユーザー要望: 分割 / フローティングは選んだ人だけ)。
+        commandId == 'inquiry' ||
+        // 面接練習の既定も今までどおり全画面のダイアログ
+        //   (= ユーザー要望: 分割 / フローティングは選んだ人だけ)。
+        _isTalkPracticeCommand(commandId)) {
       return 'full';
     }
     // 道具ボタン (フラッシュカード等) の既定は浮遊窓 (= 今までの動き)。
@@ -9263,6 +9329,23 @@ class _MindMapScreenState extends State<MindMapScreen>
         return provider.t('openStyle.full');
     }
   }
+
+  /// 面接練習系ボタンの id → `_AiTalkDialog` の種類。
+  ///
+  /// = ユーザー要望「面接練習のカスタムボタンにおいても左右分割やフロー
+  ///   ティングモードで開けるように」。 今の面接練習ボタンは 4 種類を
+  ///   まとめた `talkPractice` なので、 旧 4 ボタンとプレゼンも同じ扱いに
+  ///   しておく (どれも中身は同じ `_AiTalkDialog`)。
+  static const Map<String, String> _kTalkPracticeModes = {
+    'talkPractice': 'interview',
+    'interviewPractice': 'interview',
+    'rolePlayPractice': 'roleplay',
+    'examInterview': 'exam',
+    'presentation': 'presentation',
+  };
+
+  static bool _isTalkPracticeCommand(String id) =>
+      _kTalkPracticeModes.containsKey(id);
 
   /// URL は開かないが「全画面 / フローティング」 を選べる道具ボタン。
   ///
@@ -9286,12 +9369,25 @@ class _MindMapScreenState extends State<MindMapScreen>
     'gantt',
     'memberSchedule',
     'silentCamera',
-    // 計算機 / タイマー / アラーム (= ユーザー要望: これらも左右分割や
+    // 計算機 / タイマー (= ユーザー要望: これらも左右分割や
     //   フローティングで開けるように)。 既定は下の _openStyleOf で今までの
     //   動き (全画面 / 外の窓) のままにしてある。
+    // ★ アラームはここから外した (= ユーザー要望: 左右分割 /
+    //   フローティングを消して、 開き方の設定自体を出さない)。
     'calculator',
     'stopwatch',
-    'alarm',
+    // 面接練習 (= ユーザー要望: 面接練習のカスタムボタンにおいても左右分割や
+    //   フローティングモードで開けるように)。 4 種類をまとめた今のボタンと、
+    //   旧ボタン / プレゼンも同じ扱い。
+    'talkPractice',
+    'interviewPractice',
+    'rolePlayPractice',
+    'examInterview',
+    'presentation',
+    // ページ背景 (= ユーザー要望: マップ背景も左右分割で開けるように)。
+    'mapBackground',
+    // バグ報告・機能依頼 (= ユーザー要望: これも左右分割で開けるように)。
+    'inquiry',
     // 自動操作も左右分割で (= ユーザー要望)。
     'webAutomation',
   };
@@ -9317,12 +9413,20 @@ class _MindMapScreenState extends State<MindMapScreen>
         commandId == 'calendar' ||
         commandId == 'gantt' ||
         commandId == 'memberSchedule' ||
-        // 計算機 / タイマー / アラーム / 無音カメラ / 自動操作も分割で
-        //   開ける (= ユーザー要望)。
+        // 計算機 / タイマー / 無音カメラ / 自動操作も分割で
+        //   開ける (= ユーザー要望)。 アラームは対象外
+        //   (= ユーザー要望: アラームからは分割 / フローティングを消す)。
         commandId == 'calculator' ||
         commandId == 'stopwatch' ||
-        commandId == 'alarm' ||
         commandId == 'silentCamera' ||
+        // フラッシュカードも左右分割で開ける (= ユーザー要望)。
+        commandId == 'flashcards' ||
+        // ページ背景も左右分割で開ける (= ユーザー要望)。
+        commandId == 'mapBackground' ||
+        // バグ報告・機能依頼も左右分割で開ける (= ユーザー要望)。
+        commandId == 'inquiry' ||
+        // 面接練習も左右分割 / フローティングで開ける (= ユーザー要望)。
+        _isTalkPracticeCommand(commandId) ||
         commandId == 'webAutomation') {
       return const ['full', 'floating', 'splitLeft', 'splitRight'];
     }
@@ -24853,7 +24957,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           color: const Color(0xFF6C63FF),
           onTap: () {
             _removeOverlay();
-            _showMapBackgroundDialog(context, provider);
+            unawaited(_showMapBackgroundDialog(context, provider));
           },
         ),
       if (_isDesktop)
@@ -24895,7 +24999,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           color: const Color(0xFF6C63FF),
           onTap: () {
             _removeOverlay();
-            _showMapBackgroundDialog(context, provider);
+            unawaited(_showMapBackgroundDialog(context, provider));
           },
         ),
       // ── 画面分割 (= ユーザー要望) ──
@@ -26164,7 +26268,12 @@ class _MindMapScreenState extends State<MindMapScreen>
       //   = ユーザー要望「フラッシュカードもフローティングモード等で開ける
       //   ように」。 ボタンの右クリック →「開き方」 で選ぶ。
       //   null = 今までの動き (パソコンは浮遊窓、 スマホはダイアログ)。
-      bool? floating}) async {
+      bool? floating,
+      // ★ 分割ペインの中に出すか (= ユーザー報告: 左右分割にしてもアプリ
+      //   全体の中央に出てきてしまう)。 showDialog の既定は
+      //   useRootNavigator: true で、 ペインに立てた Navigator を飛び越えて
+      //   画面いっぱいの真ん中に出るため、 ペインの時だけ切り替える。
+      bool inPane = false}) async {
     final pageId = provider.currentPage.id;
     // まとめ操作 (削除・フォルダー移動) から使うので控えておく。
     pageIdOfFc = pageId;
@@ -26701,7 +26810,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                       icon: const Icon(Icons.create_new_folder_rounded,
                           color: Color(0xFF26C6DA), size: 20),
                       onPressed: () async {
-                        final name = await _askNewFlashcardFolder(dctx);
+                        final name =
+                            await _askNewFlashcardFolder(dctx, inPane: inPane);
                         if (name == null || name.trim().isEmpty) return;
                         setD(() {
                           sFolderNames.add(name.trim());
@@ -26897,7 +27007,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                               image: c.image,
                               imageSide: c.imageSide
                             ))
-                        .toList()),
+                        .toList(),
+                    inPane: inPane),
               ),
             // ── AI と会話しながらクイズ (= ユーザー要望) ──
             if (cards.isNotEmpty) const SizedBox(width: 6),
@@ -26911,6 +27022,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                 label: Text(provider.t('flash.aiChat')),
                 onPressed: () => showDialog<void>(
                   context: ctx,
+                  useRootNavigator: !inPane,
                   builder: (_) => _FlashcardChatDialog(
                       cards: cards
                           .map((c) =>
@@ -26973,7 +27085,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                     icon: const Icon(Icons.add_rounded, size: 18),
                     label: Text(provider.t('flash.addCard')),
                     onPressed: () async {
-                      await _editFlashcardDialog(dctx, pageId, null);
+                      await _editFlashcardDialog(dctx, pageId, null,
+                          inPane: inPane);
                       await reload();
                     },
                   ),
@@ -27080,7 +27193,8 @@ class _MindMapScreenState extends State<MindMapScreen>
               // ── フォルダー (テーマ) で絞り込む + まとめて操作 ──
               //    = ユーザー要望: テーマ毎にまとめられるように / Ctrl・Shift
               //      でまとめて選んで消せるように。
-              _buildFlashcardFilterBar(dctx, provider, cards, reload, setD),
+              _buildFlashcardFilterBar(dctx, provider, cards, reload, setD,
+                  inPane: inPane),
               const Divider(color: Colors.white12, height: 1),
               Expanded(
                 child: _fcVisible(cards).isEmpty
@@ -27179,7 +27293,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   // 絞り込み中は並びがずれるので、 元の位置を探す。
                                   final at = cards.indexOf(c);
                                   await _editFlashcardDialog(
-                                      dctx, pageId, at < 0 ? i : at);
+                                      dctx, pageId, at < 0 ? i : at,
+                                      inPane: inPane);
                                   await reload();
                                 },
                               ),
@@ -27241,13 +27356,17 @@ class _MindMapScreenState extends State<MindMapScreen>
       disposePaneCtrls();
       return;
     }
-    await showDialog<void>(context: ctx, builder: dlg);
+    await showDialog<void>(
+        context: ctx, useRootNavigator: !inPane, builder: dlg);
     disposePaneCtrls();
   }
 
   /// 1 枚のカードを追加/編集するダイアログ。 index==null なら新規。
   Future<void> _editFlashcardDialog(
-      BuildContext ctx, String pageId, int? index) async {
+      BuildContext ctx, String pageId, int? index,
+      {
+      // 分割ペインの中から開いた時は、 ペインの Navigator に載せる。
+      bool inPane = false}) async {
     final provider = context.read<MindMapProvider>();
     final existing = await _FlashcardStore.load(pageId);
     final cur = (index != null && index < existing.length)
@@ -27270,6 +27389,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (!ctx.mounted) return;
     await showDialog<void>(
       context: ctx,
+      useRootNavigator: !inPane,
       builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
         // = ユーザー要望: フラッシュカードに画像を貼り付け。 画像を選んで
         //   アプリ領域へコピーし、 パスを保持する。
@@ -27420,7 +27540,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                       icon: const Icon(Icons.create_new_folder_rounded,
                           color: Color(0xFF26C6DA)),
                       onPressed: () async {
-                        final name = await _askNewFlashcardFolder(dctx);
+                        final name =
+                            await _askNewFlashcardFolder(dctx, inPane: inPane);
                         if (name != null && name.trim().isNotEmpty) {
                           setD(() => selectedGroup = name.trim());
                         }
@@ -27568,11 +27689,15 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// 新しいフラッシュカードフォルダー (= グループ) 名を入力するダイアログ
   /// (= ユーザー要望: フォルダーを作成して選択)。
-  Future<String?> _askNewFlashcardFolder(BuildContext ctx) {
+  Future<String?> _askNewFlashcardFolder(BuildContext ctx,
+      {
+      // 分割ペインの中から開いた時は、 ペインの Navigator に載せる。
+      bool inPane = false}) {
     final provider = context.read<MindMapProvider>();
     final ctrl = TextEditingController();
     return showDialog<String>(
       context: ctx,
+      useRootNavigator: !inPane,
       builder: (dctx) => AlertDialog(
         backgroundColor: const Color(0xFF2A2A3E),
         title: Text(provider.t('flash.newFolder'),
@@ -28318,7 +28443,10 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// フォルダーの帯 + まとめ操作の帯。
   Widget _buildFlashcardFilterBar(BuildContext dctx, MindMapProvider provider,
       List<_FCard> cards, Future<void> Function() reload,
-      void Function(VoidCallback) refreshAll) {
+      void Function(VoidCallback) refreshAll,
+      {
+      // 分割ペインの中から開いた時は、 ペインの Navigator に載せる。
+      bool inPane = false}) {
     final folders = _fcFolders(cards);
     final visible = _fcVisible(cards);
     return StatefulBuilder(builder: (bctx, setBar) {
@@ -28403,7 +28531,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                     style: const TextStyle(fontSize: 12)),
                 onPressed: () async {
                   final picked = await _askFlashcardFolder(
-                      dctx, provider, _fcFolders(cards));
+                      dctx, provider, _fcFolders(cards),
+                      inPane: inPane);
                   if (picked == null) return;
                   final targets = [
                     for (final i in _fcSelected)
@@ -28464,10 +28593,14 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// フォルダー名を選ぶ / 作る。
   Future<String?> _askFlashcardFolder(BuildContext dctx,
-      MindMapProvider provider, List<String> folders) async {
+      MindMapProvider provider, List<String> folders,
+      {
+      // 分割ペインの中から開いた時は、 ペインの Navigator に載せる。
+      bool inPane = false}) async {
     final ctrl = TextEditingController();
     return showDialog<String>(
       context: dctx,
+      useRootNavigator: !inPane,
       builder: (c) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E32),
         title: Text(provider.t('flash.moveToFolder'),
@@ -28670,7 +28803,10 @@ class _MindMapScreenState extends State<MindMapScreen>
   void _showFlashcardStudy(
       BuildContext ctx,
       List<({String front, String back, String image, String imageSide})>
-          cardsIn) {
+          cardsIn,
+      {
+      // 分割ペインの中から開いた時は、 ペインの Navigator に載せる。
+      bool inPane = false}) {
     final provider = context.read<MindMapProvider>();
     if (cardsIn.isEmpty) return;
     final cards = List<
@@ -28695,6 +28831,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     bool mistakeFiled = false;
     showDialog<void>(
       context: ctx,
+      useRootNavigator: !inPane,
       barrierColor: Colors.black87,
       builder: (dctx) => StatefulBuilder(builder: (dctx, setS) {
         final card = cards[idx];
@@ -29402,14 +29539,24 @@ class _MindMapScreenState extends State<MindMapScreen>
     return ok == true;
   }
 
-  void _showMapBackgroundDialog(
-      BuildContext ctx, MindMapProvider provider) async {
+  /// ページ背景 (壁紙) の設定ダイアログ。
+  ///
+  /// ★ ペインの中 (`_PaneDialogHost`) からも開けるように、 閉じるまで待てる
+  ///   Future を返す形にしてある (= ユーザー要望: ページ背景も左右分割で)。
+  Future<void> _showMapBackgroundDialog(
+      BuildContext ctx, MindMapProvider provider,
+      {
+      // ★ 分割ペイン / 浮遊窓の中に出すか。 showDialog の既定は
+      //   useRootNavigator: true なので、 そのままだとアプリ全体の真ん中に
+      //   出てしまう (= フラッシュカードと同じ不具合)。
+      bool inPane = false}) async {
     var applyToAllPages = false;
     // テンプレート一覧のスクロールバー用 (= ユーザー要望: スクロールバーを
     // 入れて欲しい)。 ダイアログを閉じたら破棄する。
     final templateScroll = ScrollController();
-    showDialog<void>(
+    await showDialog<void>(
       context: ctx,
+      useRootNavigator: !inPane,
       builder: (dctx) {
         return StatefulBuilder(builder: (sctx, setD) {
           final page = provider.currentPage;
@@ -29635,6 +29782,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                         onPressed: () {
                           showDialog<void>(
                             context: sctx,
+                            useRootNavigator: !inPane,
                             builder: (_) => _BackgroundMakerDialog(
                               provider: provider,
                               onSaved: (path) async {
@@ -29738,7 +29886,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                               //    ので、 閉じた後の中身をそのまま使う。
                               if (mounted) {
                                 await showDialog<void>(
-                                  context: context,
+                                  // ペインの中から開いた時は、 ペインの
+                                  //   Navigator に載せる (= 画面全体の
+                                  //   真ん中に出さない)。
+                                  context: inPane ? sctx : context,
+                                  useRootNavigator: !inPane,
                                   barrierColor:
                                       Colors.black.withValues(alpha: 0.9),
                                   builder: (_) => _ImageEditorDialog(
@@ -30016,7 +30168,8 @@ class _MindMapScreenState extends State<MindMapScreen>
           );
         });
       },
-    ).then((_) => templateScroll.dispose());
+    );
+    templateScroll.dispose();
   }
 
   // ─── PC版：ノード右クリックメニュー ─────────────────────────────────────
@@ -32522,8 +32675,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       BuildContext ctx, MindMapProvider provider, String parentNodeId) async {
     final result = await _promptCreateFileTypeName(ctx, provider);
     if (result == null) return;
-    await _createAndAttachFile(
+    final destPath = await _createAndAttachFile(
         provider, parentNodeId, result['type']!, result['name']!);
+    // 選ばれた分割ペインで開く (= ユーザー要望)。
+    await _openCreatedFileInChosenPane(destPath, result['slot'], parentNodeId);
   }
 
   /// 右クリック位置に新規ファイル (txt / md / docx 等) のノードを作る
@@ -32539,8 +32694,10 @@ class _MindMapScreenState extends State<MindMapScreen>
         : provider.mcpAddNode(page.id,
             title: '', x: canvasPos.dx, y: canvasPos.dy);
     if (id == null) return;
-    await _createAndAttachFile(
+    final destPath = await _createAndAttachFile(
         provider, id, result['type']!, result['name']!);
+    // 選ばれた分割ペインで開く (= ユーザー要望)。
+    await _openCreatedFileInChosenPane(destPath, result['slot'], id);
   }
 
   /// ファイルの種類と名前を聞くダイアログ (種類パレット付き)。
@@ -32548,12 +32705,18 @@ class _MindMapScreenState extends State<MindMapScreen>
   Future<Map<String, String>?> _promptCreateFileTypeName(
       BuildContext ctx, MindMapProvider provider) async {
     String selectedType = 'docx'; // デフォルト
+    // ── 作ったファイルをどの分割ペインで開くか (= ユーザー要望: 画面分割
+    //    した状態でファイルを作成した時、 どの画面に埋め込むかを選べる) ──
+    //    null = 開かない (今までどおり。 ノードを作るだけ)。
+    int? openSlot;
+    final splitSlots = _mapSplitOpen ? _visibleSplitSlots() : const <int>[];
     final nameCtrl =
         TextEditingController(text: provider.t('file.defaultName'));
     // クリックした場所の近くに出す (= ユーザー要望: 画面中央ではなく)。
     final result = await _showNearDialogMain<Map<String, String>>(
       width: 480,
-      height: 430,
+      // 「開く場所」 の行が増える分だけ縦を伸ばす (= ユーザー要望)。
+      height: _mapSplitOpen ? 510 : 430,
       builder: (dctx) {
         return StatefulBuilder(builder: (sctx, setS) {
           return AlertDialog(
@@ -32727,6 +32890,54 @@ class _MindMapScreenState extends State<MindMapScreen>
                     ),
                     onChanged: (_) => setS(() {}),
                   ),
+                  // ── 開く場所 (= ユーザー要望: 画面分割中は、 作った
+                  //    ファイルをどの画面に埋め込むか選べるように)。
+                  //    分割していない時は出さない。 ──
+                  if (splitSlots.isNotEmpty) ...[
+                    const SizedBox(height: 16),
+                    Text(provider.t('file.openIn'),
+                        style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: [
+                        for (final entry in <(int?, String)>[
+                          (null, provider.t('file.openInNone')),
+                          for (final k in splitSlots)
+                            (k, _paneLabel(provider, k)),
+                        ])
+                          InkWell(
+                            borderRadius: BorderRadius.circular(8),
+                            onTap: () => setS(() => openSlot = entry.$1),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 7),
+                              decoration: BoxDecoration(
+                                color: openSlot == entry.$1
+                                    ? const Color(0xFF4FC3F7)
+                                    : const Color(0xFF1A1A24),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                    color: openSlot == entry.$1
+                                        ? const Color(0xFF4FC3F7)
+                                        : Colors.white24),
+                              ),
+                              child: Text(entry.$2,
+                                  style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                      color: openSlot == entry.$1
+                                          ? Colors.black
+                                          : Colors.white70)),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -32742,6 +32953,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                     : () => Navigator.of(dctx).pop({
                           'type': selectedType,
                           'name': nameCtrl.text.trim(),
+                          // 空 = 開かない。
+                          'slot': openSlot == null ? '' : '$openSlot',
                         }),
                 icon: const Icon(Icons.check_rounded, size: 16),
                 label: Text(provider.t('btn.create')),
@@ -32760,7 +32973,9 @@ class _MindMapScreenState extends State<MindMapScreen>
   }
 
   /// 実際にファイルを生成して、 押されたノード自身に添付する (= ファイル化)。
-  Future<void> _createAndAttachFile(MindMapProvider provider, String nodeId,
+  /// 生成したファイルのパスを返す (= 呼び出し側が、 選ばれた分割ペインで
+  /// そのまま開けるように)。 失敗した時は null。
+  Future<String?> _createAndAttachFile(MindMapProvider provider, String nodeId,
       String type, String baseName) async {
     try {
       // ── ファイル名の正規化 + 衝突回避 ──
@@ -32837,6 +33052,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           duration: const Duration(seconds: 3),
         ));
       }
+      return destPath;
     } catch (e, st) {
       debugPrint('ファイル作成エラー: $e\n$st');
       if (mounted) {
@@ -32847,6 +33063,21 @@ class _MindMapScreenState extends State<MindMapScreen>
         ));
       }
     }
+    return null;
+  }
+
+  /// 作ったファイルを、 ダイアログで選ばれた分割ペインで開く
+  /// (= ユーザー要望: どの画面に埋め込むかを選べるように)。
+  /// [slotText] が空なら何もしない (= 今までどおりノードを作るだけ)。
+  Future<void> _openCreatedFileInChosenPane(
+      String? destPath, String? slotText, String nodeId) async {
+    if (destPath == null || slotText == null || slotText.isEmpty) return;
+    final slot = int.tryParse(slotText);
+    if (slot == null || !mounted || !_mapSplitOpen) return;
+    // 次の埋め込み先を予約してから開く (_embedViewerIntoMapSplitCell が拾う)。
+    _pendingEmbedSlot = slot;
+    await _openAttachment(destPath, nodeId: nodeId);
+    _pendingEmbedSlot = null;
   }
 
   /// メニュー項目を2列に分割して表示
@@ -36160,10 +36391,20 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     }
                                   },
                                 ),
-                                // ── Instagram 設定エントリは廃止 ──
-                                // ユーザー要望「Instagram の機能はもう要らない」 に
-                                // 伴い、 設定シートからも Instagram 設定エントリを
-                                // 削除した。
+                                // ── 公式Instagram (= ユーザー要望: 問い合わせ
+                                //    画面の「公式Ig」 をここへ移し、 表記も
+                                //    「公式Instagram」 に直す) ──
+                                //    外のブラウザで開く。 設定は閉じない
+                                //    (アプリの外へ出るだけなので)。
+                                _settingsTile(
+                                  icon: Icons.photo_camera_rounded,
+                                  color: const Color(0xFFE1306C),
+                                  title: provider.t('inquiry.officialIg'),
+                                  onTap: () => unawaited(launchUrl(
+                                      Uri.parse(
+                                          'https://www.instagram.com/study_darksan'),
+                                      mode: LaunchMode.externalApplication)),
+                                ),
                               ],
                             ),
                           ),
@@ -41381,9 +41622,15 @@ class _MindMapScreenState extends State<MindMapScreen>
         if (_openStyleOf('calendar') != 'full') {
           unawaited(_openToolCommandStyled(
             'calendar',
-            floating: (_) => Material(
+            // ★ 浮遊窓は root Overlay に直接挿さっているので、 本体の
+            //   context で showDialog すると窓の「後ろ」 に出てしまう
+            //   (= ユーザー報告: タイムゾーンの設定がモーダルの後ろの
+            //   アプリ大元側に出てくる)。 浮遊窓は自前の Navigator を
+            //   持っているので、 このビルダーの context (= 窓の中) を渡し、
+            //   中の画面から開くダイアログが窓の上に出るようにする。
+            floating: (fctx) => Material(
               color: const Color(0xFF12121F),
-              child: _buildCalendarView(context, provider),
+              child: _buildCalendarView(fctx, provider),
             ),
             width: 780,
             height: 640,
@@ -41396,8 +41643,12 @@ class _MindMapScreenState extends State<MindMapScreen>
       case 'flashcards':
         // ユーザー要望: マインドマップから開くフラッシュカード画面を、
         //   ギャラリー等から開く画面 (_showFlashcardMode) に揃える。
-        // 開き方 (全画面 / フローティング) はボタンの右クリックで選べる
-        //   (= ユーザー要望: フラッシュカードもフローティングモード等で)。
+        // 開き方 (全画面 / フローティング / 左右分割) はボタンの右クリックで
+        //   選べる (= ユーザー要望: フラッシュカードも左右分割で開けるように)。
+        if (_openStyleOf('flashcards').startsWith('split')) {
+          unawaited(_openToolCommandStyled('flashcards'));
+          break;
+        }
         _showFlashcardMode(context, provider,
             floating: _openStyleOf('flashcards') == 'floating');
         break;
@@ -41469,37 +41720,54 @@ class _MindMapScreenState extends State<MindMapScreen>
               initialTab: commandId == 'memberSchedule' ? 1 : 0,
             ));
         break;
-      // ── AI 面接練習 / 営業ロープレ練習 (= ユーザー要望: 音声会話で練習) ──
-      case 'interviewPractice':
-        showDialog<void>(
-            context: context,
-            builder: (_) => const _AiTalkDialog(mode: 'interview'));
-        break;
-      case 'rolePlayPractice':
-        showDialog<void>(
-            context: context,
-            builder: (_) => const _AiTalkDialog(mode: 'roleplay'));
-        break;
-      // ── 受験面接の練習 (= ユーザー要望) ──
-      case 'examInterview':
-        showDialog<void>(
-            context: context,
-            builder: (_) => const _AiTalkDialog(mode: 'exam'));
-        break;
-      // 4 つをまとめた入口 (= ユーザー要望)。 開いた画面で種類を選ぶ。
+      // ── AI 面接練習 (就活 / 受験 / 資格 / 営業ロープレ / プレゼン) ──
+      //    4 つをまとめた 'talkPractice' が今のボタン。 旧 4 ボタンと
+      //    プレゼンも同じ画面を種類だけ変えて開く。
       case 'talkPractice':
-        showDialog<void>(
-            context: context,
-            builder: (_) => const _AiTalkDialog(mode: 'interview'));
-        break;
-      // プレゼンテーション (= ユーザー要望)。
+      case 'interviewPractice':
+      case 'rolePlayPractice':
+      case 'examInterview':
       case 'presentation':
-        showDialog<void>(
-            context: context,
-            builder: (_) => const _AiTalkDialog(mode: 'presentation'));
+        {
+          final talkMode = _kTalkPracticeModes[commandId] ?? 'interview';
+          // 開き方を選んでいる時はそちら (= ユーザー要望: 面接練習の
+          //   カスタムボタンにおいても左右分割やフローティングモードで)。
+          //   既定は今までどおり全画面のダイアログ。
+          if (_openStyleOf(commandId) != 'full') {
+            unawaited(_openToolCommandStyled(
+              commandId,
+              floating: (_) =>
+                  _AiTalkDialog(mode: talkMode, embedded: true),
+              width: 620,
+              height: 720,
+            ));
+            break;
+          }
+          showDialog<void>(
+              context: context,
+              builder: (_) => _AiTalkDialog(mode: talkMode));
+        }
         break;
       // バグ報告・機能依頼 (= ユーザー要望: カスタムボタンから開けるように)。
       case 'inquiry':
+        // 開き方を選んでいる時はそちら (= ユーザー要望: バグ報告・機能追加
+        //   依頼も左右分割で開けるように)。 既定は今までどおり全画面。
+        if (_openStyleOf('inquiry') != 'full') {
+          unawaited(_openToolCommandStyled(
+            'inquiry',
+            floating: (_) => _PaneDialogHost(
+              onClose: () => _closeFloatingPanelByKey('inquiry'),
+              open: (hostCtx) => showDialog<void>(
+                context: hostCtx,
+                useRootNavigator: false,
+                builder: (_) => _InquiryDialog(provider: provider),
+              ),
+            ),
+            width: 460,
+            height: 600,
+          ));
+          break;
+        }
         _showInquiryDialog(context, provider);
         break;
       // ── マップの画面分割 (= ユーザー要望: 別々のマップを左右
@@ -41837,22 +42105,9 @@ class _MindMapScreenState extends State<MindMapScreen>
         }
         break;
       case 'alarm':
-        // 開き方を選んでいる時はそちら (= ユーザー要望: アラームも分割 /
-        //   フローティングで)。 既定は今までどおりダイアログ。
-        if (_openStyleOf('alarm') != 'full') {
-          unawaited(_openToolCommandStyled(
-            'alarm',
-            floating: (_) => _PaneDialogHost(
-              onClose: () => _closeFloatingPanelByKey('alarm'),
-              open: (hostCtx) async =>
-                  _showAlarmsDialog(hostContext: hostCtx),
-            ),
-            width: 420,
-            height: 520,
-          ));
-          break;
-        }
         // アラーム管理ダイアログ (= ユーザー要望: アラーム機能)。
+        // ★ 開き方 (左右分割 / フローティング) は廃止し、 常に全画面の
+        //   ダイアログで開く (= ユーザー要望)。
         _showAlarmsDialog();
         break;
       case 'subscriptionManager':
@@ -41903,8 +42158,23 @@ class _MindMapScreenState extends State<MindMapScreen>
         _toggleAppExitLock();
         break;
       case 'mapBackground':
-        // マップ背景画像の設定ダイアログを開く (= ユーザー要望)。
-        _showMapBackgroundDialog(context, provider);
+        // ページ背景の設定ダイアログを開く (= ユーザー要望)。
+        // 開き方を選んでいる時はそちら (= ユーザー要望: ページ背景も
+        //   左右分割で開けるように)。 既定は今までどおり全画面。
+        if (_openStyleOf('mapBackground') != 'full') {
+          unawaited(_openToolCommandStyled(
+            'mapBackground',
+            floating: (_) => _PaneDialogHost(
+              onClose: () => _closeFloatingPanelByKey('mapBackground'),
+              open: (hostCtx) =>
+                  _showMapBackgroundDialog(hostCtx, provider, inPane: true),
+            ),
+            width: 560,
+            height: 700,
+          ));
+          break;
+        }
+        unawaited(_showMapBackgroundDialog(context, provider));
         break;
       // ── AI アシスタント (= ショートカットや外の窓から呼ばれる) ──
       //    ユーザー報告: ショートカットから開いた窓でアシスタントを押すと
@@ -41979,6 +42249,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       case 'flashcard':
         // フラッシュカード学習 (= ユーザー要望)。 旧 id なので開き方は
         //   新 id (flashcards) の設定に合わせる。
+        if (_openStyleOf('flashcards').startsWith('split')) {
+          unawaited(_openToolCommandStyled('flashcards'));
+          break;
+        }
         _showFlashcardMode(context, provider,
             floating: _openStyleOf('flashcards') == 'floating');
         break;
@@ -50849,6 +51123,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                     child: (_splitLeftMode == 'pptx' ||
                                 _splitLeftMode == 'docx' ||
                                 _splitLeftMode == 'xlsx' ||
+                                // Markdown も分割パネルで開く (= ユーザー要望)。
+                                _splitLeftMode == 'md' ||
                                 _splitLeftMode == 'txt') &&
                             _splitLeftLocalOfficePath != null
                         // ── 右ペインと同じく、 閉じる時の pop がアプリ
@@ -51912,6 +52188,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     if ((_splitMode == 'pptx' ||
             _splitMode == 'docx' ||
             _splitMode == 'xlsx' ||
+            // Markdown も分割パネルで開く (= ユーザー要望)。
+            _splitMode == 'md' ||
             _splitMode == 'txt') &&
         _splitLocalOfficePath != null) {
       // ── ビューアは自分を閉じる時に `Navigator.of(context).pop()` を
@@ -58235,16 +58513,13 @@ class _MindMapScreenState extends State<MindMapScreen>
           if (!mounted) return;
         }
         if (_mapSplitOpen) {
-          final slot = style == 'splitLeft' ? 0 : _primaryViewerSlot();
+          // 左は 0 / 右は 1 (= ユーザー報告: 左分割と右分割のボタンを
+          //   押すと両方が左半分に入ってしまう)。
+          final slot = _splitSlotFor(style == 'splitLeft');
           if (_mapSplitCellTool[slot] == 'aiAssistant') {
             // もう一度押した = 閉じる。 この道具のために分割したのなら
             // 全画面に戻す (= ユーザー報告: 押し直しても 2 画面のまま)。
-            final openedByUs = _toolOpenedSplit.remove('aiAssistant') ?? false;
-            setState(() {
-              _mapSplitCellTool.remove(slot);
-              _syncNarrowPaneRatio();
-            });
-            if (openedByUs) _closeMapSplit();
+            _closeEmbeddedPaneTool(slot, 'aiAssistant');
           } else {
             if (!wasSplit) _toolOpenedSplit['aiAssistant'] = true;
             _embedToolIntoSlot(slot, 'aiAssistant');
@@ -59413,38 +59688,46 @@ class _MindMapScreenState extends State<MindMapScreen>
   Widget _buildDrawerViewSwitcher() {
     final provider = context.watch<MindMapProvider>();
     final baseColor = provider.headerColor;
+    // ★ ここで Expanded を返してはいけない。 Expanded は Row / Column の
+    //   「直接の子」 でなければならず、 下の draggable() が DragTarget や
+    //   LongPressDraggable で包むと「Incorrect use of ParentDataWidget」 で
+    //   例外になり、 リリース版ではドロワー全体が灰色の板になる
+    //   (= ユーザー報告: サイドメニューの ToDo やページ一覧の UI が壊れる)。
+    //   幅を分ける Expanded は draggable() 側で、 Row の直接の子として付ける。
     Widget chip(String label, IconData icon, String mode) {
       final selected = _drawerView == mode;
-      return Expanded(
-        child: InkWell(
-          onTap: () => setState(() => _drawerView = mode),
-          borderRadius: BorderRadius.circular(6),
-          child: Container(
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            decoration: BoxDecoration(
-              color: selected
-                  ? baseColor.withValues(alpha: 0.58)
-                  : baseColor.withValues(alpha: 0.16),
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(
-                  color: selected
-                      ? Colors.white.withValues(alpha: 0.32)
-                      : baseColor.withValues(alpha: 0.34),
-                  width: 1),
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(icon,
-                    color: selected ? Colors.white : Colors.white54, size: 14),
-                const SizedBox(width: 6),
-                Text(label,
+      return InkWell(
+        onTap: () => setState(() => _drawerView = mode),
+        borderRadius: BorderRadius.circular(6),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          decoration: BoxDecoration(
+            color: selected
+                ? baseColor.withValues(alpha: 0.58)
+                : baseColor.withValues(alpha: 0.16),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(
+                color: selected
+                    ? Colors.white.withValues(alpha: 0.32)
+                    : baseColor.withValues(alpha: 0.34),
+                width: 1),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon,
+                  color: selected ? Colors.white : Colors.white54, size: 14),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                         color: selected ? Colors.white : Colors.white54,
                         fontSize: 12,
                         fontWeight: FontWeight.w600)),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       );
@@ -59458,26 +59741,29 @@ class _MindMapScreenState extends State<MindMapScreen>
           : provider.t('drawer.todo');
       final icon = id == 'maps' ? Icons.map_rounded : Icons.checklist_rounded;
       final chipW = chip(label, icon, id);
-      return DragTarget<String>(
-        onWillAcceptWithDetails: (d) => d.data != id,
-        onAcceptWithDetails: (_) {
-          setState(() => _drawerTodoFirst = !_drawerTodoFirst);
-          unawaited(_persistDrawerTabOrder());
-        },
-        builder: (ctx, cand, __) => Opacity(
-          opacity: cand.isEmpty ? 1.0 : 0.55,
-          child: LongPressDraggable<String>(
-            data: id,
-            dragAnchorStrategy: pointerDragAnchorStrategy,
-            feedback: Material(
-              color: Colors.transparent,
-              child: Opacity(
-                opacity: 0.9,
-                child: SizedBox(width: 130, child: chipW),
+      // Expanded は Row の直接の子として、 ここで付ける (上の注記参照)。
+      return Expanded(
+        child: DragTarget<String>(
+          onWillAcceptWithDetails: (d) => d.data != id,
+          onAcceptWithDetails: (_) {
+            setState(() => _drawerTodoFirst = !_drawerTodoFirst);
+            unawaited(_persistDrawerTabOrder());
+          },
+          builder: (ctx, cand, __) => Opacity(
+            opacity: cand.isEmpty ? 1.0 : 0.55,
+            child: LongPressDraggable<String>(
+              data: id,
+              dragAnchorStrategy: pointerDragAnchorStrategy,
+              feedback: Material(
+                color: Colors.transparent,
+                child: Opacity(
+                  opacity: 0.9,
+                  child: SizedBox(width: 130, child: chipW),
+                ),
               ),
+              childWhenDragging: Opacity(opacity: 0.35, child: chipW),
+              child: chipW,
             ),
-            childWhenDragging: Opacity(opacity: 0.35, child: chipW),
-            child: chipW,
           ),
         ),
       );
@@ -64859,10 +65145,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     //    (= ユーザー要望)。 既に開いているボタンをもう一度押したら閉じる。 ──
     if (_isPaneEmbeddableTool(id)) {
       if (_mapSplitCellTool[slot] == id) {
-        setState(() {
-          _mapSplitCellTool.remove(slot);
-          _syncNarrowPaneRatio();
-        });
+        _closeEmbeddedPaneTool(slot, id);
       } else {
         _embedToolIntoSlot(slot, id);
       }
@@ -65243,8 +65526,15 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// ファイルビューアを分割セルへ埋め込む。 開くセルは既定で編集セル
   /// (= 今まで浮遊窓が覆っていた場所と同じ)。
+  /// 次に開くファイルを入れる分割セル (= ユーザー要望: ファイルを作成した
+  /// 時に、 どの画面に埋め込むかを選べるように)。 1 回使ったら消える。
+  int? _pendingEmbedSlot;
+
   void _embedViewerIntoMapSplitCell(WidgetBuilder builder, {int? slot}) {
-    final k = (slot ?? _mapSplitEditorSlot).clamp(0, 3);
+    // 呼び出し側がセルを指定していなければ、 直前に選ばれたセルを使う。
+    final requested = slot ?? _pendingEmbedSlot;
+    _pendingEmbedSlot = null;
+    final k = (requested ?? _mapSplitEditorSlot).clamp(0, 3);
     setState(() {
       _mapSplitCellFile[k] = builder;
       // 同じセルに Web / ツールが残っていると、 編集セルが移った時に
@@ -65308,6 +65598,35 @@ class _MindMapScreenState extends State<MindMapScreen>
     return false;
   }
 
+  /// 「左に分割 / 右に分割」 が指す実際のセル番号。
+  ///
+  /// ★ = ユーザー報告「左分割で開くと設定したボタンと右分割で開くと設定した
+  ///   ボタンの 2 つを押すと、 何故か左半分の画面しか変わらない」。
+  ///   原因は右側を `_primaryViewerSlot()` (= 編集セル以外の最初のセル) で
+  ///   決めていたこと。 左に道具を入れると編集セルが右へ移るので、 次に
+  ///   押した「右に分割」 が左 (セル 0) を指してしまい、 左の道具を上書き
+  ///   していた。 左は 0、 右は 1 と素直に決める。
+  static int _splitSlotFor(bool left) => left ? 0 : 1;
+
+  /// ペインに埋め込んだ道具を閉じる。
+  ///
+  /// ★ = ユーザー要望「カスタムボタンから画面分割設定で開いた計算機や
+  ///   タイマーのモーダルを右上の × で閉じた時に、 元の画面分割前の画面に
+  ///   戻るようにして欲しい。 但し元々画面分割されていた状態で分割画面に
+  ///   カスタムボタンを配置して開いた場合には分割がそのままに」。
+  ///   その道具のために分割を作った時だけ `_toolOpenedSplit` に印が付くので、
+  ///   印があり、 かつ他に何も残っていない時だけ分割を畳む。
+  void _closeEmbeddedPaneTool(int slot, String id) {
+    final openedByUs = _toolOpenedSplit.remove(id) ?? false;
+    setState(() {
+      _mapSplitCellTool.remove(slot);
+      _syncNarrowPaneRatio();
+    });
+    if (openedByUs && _mapSplitCellTool.isEmpty && _mapSplitCellWeb.isEmpty) {
+      _closeMapSplit();
+    }
+  }
+
   Future<void> _openToolInSplitPane(String id, bool left) async {
     final wasSplit = _mapSplitOpen;
     if (!_mapSplitOpen) {
@@ -65315,16 +65634,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       if (!mounted) return;
     }
     if (!_mapSplitOpen) return;
-    final slot = left ? 0 : _primaryViewerSlot();
+    final slot = _splitSlotFor(left);
     if (_mapSplitCellTool[slot] == id) {
-      // もう一度押した = 閉じる。
-      final openedByUs = _toolOpenedSplit.remove(id) ?? false;
-      setState(() {
-        _mapSplitCellTool.remove(slot);
-        _syncNarrowPaneRatio();
-      });
-      // この道具のために分割したのなら、 全画面に戻す (= ユーザー要望)。
-      if (openedByUs) _closeMapSplit();
+      // もう一度押した = 閉じる (× で閉じた時と同じ扱い)。
+      _closeEmbeddedPaneTool(slot, id);
     } else {
       if (!wasSplit) _toolOpenedSplit[id] = true;
       _embedToolIntoSlot(slot, id);
@@ -65343,22 +65656,43 @@ class _MindMapScreenState extends State<MindMapScreen>
       id == 'calendar' ||
       id == 'gantt' ||
       id == 'memberSchedule' ||
-      // タイマー / アラーム / 無音カメラ / 自動操作 (= ユーザー要望:
-      //   これらも左右分割で開けるように)。
+      // タイマー / 無音カメラ / 自動操作 (= ユーザー要望:
+      //   これらも左右分割で開けるように)。 アラームは対象外
+      //   (= ユーザー要望: アラームからは分割 / フローティングを消す)。
       id == 'stopwatch' ||
-      id == 'alarm' ||
       id == 'silentCamera' ||
+      // フラッシュカード (= ユーザー要望: 左右分割でも開けるように)。
+      id == 'flashcards' ||
+      // ページ背景 (= ユーザー要望: 左右分割でも開けるように)。
+      id == 'mapBackground' ||
+      // バグ報告・機能依頼 (= ユーザー要望: 左右分割でも開けるように)。
+      id == 'inquiry' ||
+      // 面接練習 (= ユーザー要望: 左右分割でも開けるように)。
+      _isTalkPracticeCommand(id) ||
       id == 'webAutomation';
 
   /// 半分では広すぎる「細い」 ツール (= ユーザー要望: ショートカット一覧は
-  /// 半分だと大きすぎる)。 開いた時だけ境界を寄せて、 閉じたら元の幅に戻す。
-  static bool _isNarrowPaneTool(String? id) => id == 'shortcuts';
+  /// 半分だと大きすぎる / 計算機とタイマーは左右分割だと表示領域が大きすぎる
+  /// から横幅を小さくして欲しい)。 id → ペインの幅の割合。
+  /// 開いた時だけ境界を寄せて、 閉じたら元の幅に戻す。
+  static const Map<String, double> _kNarrowPaneRatios = {
+    'shortcuts': 0.22,
+    // 計算機 / タイマーは中身が小さいので、 半分だと間延びする。
+    'calculator': 0.24,
+    'stopwatch': 0.24,
+  };
+
+  static bool _isNarrowPaneTool(String? id) =>
+      id != null && _kNarrowPaneRatios.containsKey(id);
 
   /// 細いツールを開く前の境界位置 (閉じた時に戻すため)。
   double? _splitRatioBeforeNarrowTool;
 
   /// 細いツールを入れたペインの幅の割合。
   static const double _kNarrowPaneRatio = 0.22;
+
+  static double _narrowPaneRatioFor(String? id) =>
+      _kNarrowPaneRatios[id] ?? _kNarrowPaneRatio;
 
   /// 細いツールの有無に合わせて境界を寄せる / 戻す。
   ///
@@ -65367,17 +65701,18 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// しても何も起きない画面になってしまう)。
   void _syncNarrowPaneRatio() {
     if (_mapSplitQuad || _mapSplitStacked) return;
-    int? narrowSlot;
-    for (final k in const [0, 1]) {
-      if (_isNarrowPaneTool(_mapSplitCellTool[k])) {
-        narrowSlot = k;
-        break;
-      }
-    }
-    if (narrowSlot != null) {
+    final leftNarrow = _isNarrowPaneTool(_mapSplitCellTool[0]);
+    final rightNarrow = _isNarrowPaneTool(_mapSplitCellTool[1]);
+    if (leftNarrow || rightNarrow) {
       _splitRatioBeforeNarrowTool ??= _mapSplitRatioX;
-      _mapSplitRatioX =
-          narrowSlot == 0 ? _kNarrowPaneRatio : 1 - _kNarrowPaneRatio;
+      if (leftNarrow && rightNarrow) {
+        // 両側とも細い道具なら寄せる意味が無いので半分ずつ。
+        _mapSplitRatioX = 0.5;
+      } else if (leftNarrow) {
+        _mapSplitRatioX = _narrowPaneRatioFor(_mapSplitCellTool[0]);
+      } else {
+        _mapSplitRatioX = 1 - _narrowPaneRatioFor(_mapSplitCellTool[1]);
+      }
     } else if (_splitRatioBeforeNarrowTool != null) {
       _mapSplitRatioX = _splitRatioBeforeNarrowTool!;
       _splitRatioBeforeNarrowTool = null;
@@ -65389,18 +65724,21 @@ class _MindMapScreenState extends State<MindMapScreen>
   void _embedToolIntoSlot(int slot, String id) {
     setState(() {
       if (slot == _mapSplitEditorSlot) {
-        int other = _primaryViewerSlot();
+        // ★ 編集ペイン (マップ) は「空いているセル」 へだけ逃がす。
+        //   空きが無い時は動かさず、 道具をそのまま上に出す。
+        //   = ユーザー報告「左分割のボタンと右分割のボタンを押したら左半分
+        //   しか変わらない」。 以前はここで反対側のセルを問答無用で空に
+        //   していたため、 先に入れた道具が消えていた。
+        int? free;
         for (final s in _visibleSplitSlots()) {
           if (s != slot &&
               _mapSplitCellWeb[s] == null &&
               _mapSplitCellTool[s] == null) {
-            other = s;
+            free = s;
             break;
           }
         }
-        _mapSplitEditorSlot = other;
-        _mapSplitCellWeb.remove(other);
-        _mapSplitCellTool.remove(other);
+        if (free != null) _mapSplitEditorSlot = free;
       }
       _mapSplitCellWeb.remove(slot);
       _mapSplitCellTool[slot] = id;
@@ -65411,12 +65749,9 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 埋め込んだツールの Widget。 閉じるとセルは元 (ページ表示) に戻る。
   Widget _buildEmbeddedPaneTool(
       MindMapProvider provider, int slot, String id) {
-    void close() {
-      setState(() {
-        _mapSplitCellTool.remove(slot);
-        _syncNarrowPaneRatio();
-      });
-    }
+    // × で閉じた時。 この道具のために分割を作ったのなら、 分割ごと畳んで
+    //   元の全画面に戻す (= ユーザー要望)。
+    void close() => _closeEmbeddedPaneTool(slot, id);
 
     switch (id) {
       case 'calculator':
@@ -65439,13 +65774,50 @@ class _MindMapScreenState extends State<MindMapScreen>
           onClose: close,
           embedded: true,
         );
-      // アラーム。 画面はダイアログとして組んであるので、 ペインの中に
-      //   専用の入れ物 (Navigator) を立てて、 その中に出す (メモと同じ形)。
-      case 'alarm':
+      // 面接練習 (= ユーザー要望: 面接練習のカスタムボタンにおいても左右
+      //   分割を)。 画面自体をペインの大きさいっぱいに広げて出す
+      //   (embedded)。 4 種類をまとめたボタンも旧ボタンもここを通る。
+      case 'talkPractice':
+      case 'interviewPractice':
+      case 'rolePlayPractice':
+      case 'examInterview':
+      case 'presentation':
+        return _AiTalkDialog(
+          key: ValueKey('pane_tool_${slot}_$id'),
+          mode: _kTalkPracticeModes[id] ?? 'interview',
+          embedded: true,
+          onClose: close,
+        );
+      // フラッシュカード (= ユーザー要望: フラッシュカードも左右分割で)。
+      //   画面はダイアログとして組んであるので、 ペインの中に専用の
+      //   入れ物 (Navigator) を立てて、 その中に出す。
+      case 'flashcards':
         return _PaneDialogHost(
           key: ValueKey('pane_tool_${slot}_$id'),
           onClose: close,
-          open: (hostCtx) async => _showAlarmsDialog(hostContext: hostCtx),
+          open: (hostCtx) => _showFlashcardMode(hostCtx, provider,
+              floating: false, inPane: true),
+        );
+      // バグ報告・機能依頼 (= ユーザー要望: これも左右分割で)。 画面は
+      //   ダイアログとして組んであるので、 ペインの中に専用の入れ物
+      //   (Navigator) を立てて、 その中に出す。
+      case 'inquiry':
+        return _PaneDialogHost(
+          key: ValueKey('pane_tool_${slot}_$id'),
+          onClose: close,
+          open: (hostCtx) => showDialog<void>(
+            context: hostCtx,
+            useRootNavigator: false,
+            builder: (_) => _InquiryDialog(provider: provider),
+          ),
+        );
+      // ページ背景 (= ユーザー要望: マップ背景も左右分割で)。
+      case 'mapBackground':
+        return _PaneDialogHost(
+          key: ValueKey('pane_tool_${slot}_$id'),
+          onClose: close,
+          open: (hostCtx) =>
+              _showMapBackgroundDialog(hostCtx, provider, inPane: true),
         );
       // 無音カメラ。 撮れたら、 いつもの置き方でマップへ貼る。
       case 'silentCamera':
@@ -66068,15 +66440,19 @@ class _MindMapScreenState extends State<MindMapScreen>
   void _embedUrlIntoSlot(int slot, String url) {
     setState(() {
       if (slot == _mapSplitEditorSlot) {
-        int other = _primaryViewerSlot();
+        // ★ 編集ペイン (マップ) は「空いているセル」 へだけ逃がす。
+        //   空きが無ければ動かさず、 Web をそのまま上に出す (道具の時と
+        //   同じ / = 反対側のセルを巻き添えで空にしない)。
+        int? free;
         for (final s in _visibleSplitSlots()) {
-          if (s != slot && _mapSplitCellWeb[s] == null) {
-            other = s;
+          if (s != slot &&
+              _mapSplitCellWeb[s] == null &&
+              _mapSplitCellTool[s] == null) {
+            free = s;
             break;
           }
         }
-        _mapSplitEditorSlot = other;
-        _mapSplitCellWeb.remove(other);
+        if (free != null) _mapSplitEditorSlot = free;
       }
       // 同じセルにツールが入っていたら、 Web に置き換える (取り残し防止)。
       _mapSplitCellTool.remove(slot);
@@ -66805,9 +67181,15 @@ class _MindMapScreenState extends State<MindMapScreen>
     final flexTop = (_mapSplitRatioY * 1000).round().clamp(150, 850);
     final flexBottom = 1000 - flexTop;
     Widget cell(int k, {int flex = 1000}) {
-      final isEditor = k == _mapSplitEditorSlot;
-      final String? webUrl = isEditor ? null : _mapSplitCellWeb[k];
-      final String? toolId = isEditor ? null : _mapSplitCellTool[k];
+      // ★ 道具 / Web を入れたセルは、 そこが編集セルであってもそちらを
+      //   表示する (= ユーザー報告: 左分割と右分割のボタンを押しても左半分
+      //   しか変わらない)。 以前は編集セルには何も埋め込めなかったので、
+      //   2 分割では道具を 1 つしか置けなかった。 道具を閉じればそのセルは
+      //   また編集ペイン (マップ) に戻る。
+      final String? webUrl = _mapSplitCellWeb[k];
+      final String? toolId = _mapSplitCellTool[k];
+      final isEditor =
+          k == _mapSplitEditorSlot && webUrl == null && toolId == null;
       Widget inner;
       String label;
       if (isEditor) {
@@ -68252,12 +68634,24 @@ class _MindMapScreenState extends State<MindMapScreen>
       setState(() {
         _mapSplitEditorSlot = slot;
         _mapSplitCells[slot] = newId;
+        // そのセルに道具 / Web が入っていたら外す (= 埋め込みの方が優先
+        //   表示されるので、 残したままだと新ページが見えない)。
+        _mapSplitCellTool.remove(slot);
+        _mapSplitCellWeb.remove(slot);
+        _syncNarrowPaneRatio();
       });
     } else {
       // 非編集セルへの追加: 編集側を元のページへ戻し、 新ページはその
       //   セルにだけ表示する。
       provider.switchPage(keepIdx);
-      setState(() => _mapSplitCells[slot] = newId);
+      setState(() {
+        _mapSplitCells[slot] = newId;
+        // そのセルに道具 / Web が被さっていたら外す (= 残したままだと
+        //   新しいページが見えない)。
+        _mapSplitCellTool.remove(slot);
+        _mapSplitCellWeb.remove(slot);
+        _syncNarrowPaneRatio();
+      });
     }
   }
 
@@ -68843,6 +69237,14 @@ class _MindMapScreenState extends State<MindMapScreen>
         _mapSplitCells[oldSlot] = oldId;
         _mapSplitCells[tappedSlot] = pageId;
         _mapSplitEditorSlot = tappedSlot;
+        // ★ 編集セルが移った先に道具 / Web が埋まっていたら外す。
+        //   埋め込みの方を優先表示するようにしたので、 残したままだと
+        //   「今編集しているページがどのセルにも出ていない」 状態になる
+        //   (他のセルは currentPage を候補から外すため)。
+        _mapSplitCellTool.remove(tappedSlot);
+        _mapSplitCellWeb.remove(tappedSlot);
+        _mapSplitCellWebCur.remove(tappedSlot);
+        _syncNarrowPaneRatio();
       });
     }
     // ── 基準位置設定モードなら、 アクティブ化と同時にそのタップ位置を
@@ -70823,7 +71225,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             ),
             // ── 右端: グループ閲覧ユーザー切替 (Maxプラン限定) ──
             const Spacer(),
-            _buildCalendarViewerSwitcher(provider),
+            _buildCalendarViewerSwitcher(context, provider),
           ]),
           // 月ナビゲーション (高さを詰める)
           Row(children: [
@@ -71173,7 +71575,8 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 仕様：
   ///   * 「自分」「全員」「(メンバーごと)」の中から最大100名まで選択できる
   ///   * Pro 以上 + allowCalendarSharing=ON のメンバーのみ表示
-  Widget _buildCalendarViewerSwitcher(MindMapProvider provider) {
+  Widget _buildCalendarViewerSwitcher(
+      BuildContext ctx, MindMapProvider provider) {
     // カレンダーのグループ閲覧は Pro 以上で解禁 (旧仕様は Max 限定)。
     if (!provider.isMaxUnlocked) {
       return const SizedBox.shrink();
@@ -71204,7 +71607,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       color: Colors.transparent,
       child: InkWell(
         borderRadius: BorderRadius.circular(20),
-        onTap: () => _showCalendarViewerPicker(provider),
+        onTap: () => _showCalendarViewerPicker(ctx, provider),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
           decoration: BoxDecoration(
@@ -71245,11 +71648,16 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// グループ閲覧ユーザー選択ボトムシート。
   /// 「自分」「全員」 + 閲覧可能なメンバー一覧 (最大100件) を表示。
-  Future<void> _showCalendarViewerPicker(MindMapProvider provider) async {
+  /// [ctx] は「この画面が乗っている Navigator」 の context。 浮遊窓の中から
+  /// 開いた時に窓の後ろへ回らないよう、 呼び出し元から受け取る。
+  Future<void> _showCalendarViewerPicker(
+      BuildContext ctx, MindMapProvider provider) async {
     final members = provider.viewableCalendarMembers;
     final dark = provider.isDarkMode;
     await showModalBottomSheet<void>(
-      context: context,
+      // 浮遊窓の中から開いた時に窓の後ろへ回らないよう、 呼び出し元から
+      //   受け取った context (= その画面が乗っている Navigator) を使う。
+      context: ctx,
       backgroundColor: dark ? const Color(0xFF1B1B2A) : Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
@@ -76279,6 +76687,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       final mdPageId =
           'mdfile_${keyBase.length > 60 ? keyBase.substring(keyBase.length - 60) : keyBase}';
       final mdProvider = context.read<MindMapProvider>();
+      // ヘッダー + Markdown 画面。 閉じるボタンはこの画面が乗っている
+      //   Navigator を pop する (= 分割セルに埋めた時はセルの Navigator)。
       Widget mdScreen(BuildContext popCtx) => Column(children: [
             Container(
               height: 40,
@@ -76317,6 +76727,27 @@ class _MindMapScreenState extends State<MindMapScreen>
               ),
             ),
           ]);
+      // ── マップ分割中はそのセルの中に埋め込む ──
+      //    = ユーザー報告「画面分割した画面にマークダウンを埋め込んで開くと
+      //    全画面表示で開かれてしまう」。 表計算 / Word / PowerPoint /
+      //    テキストと同じ扱いにそろえる。 セルの中に専用の Navigator が
+      //    立つので、 ヘッダーの × はセルだけを閉じる。
+      if (_canEmbedIntoMapSplit() && presentationContext == null) {
+        _embedViewerIntoMapSplitCell((cellCtx) => ColoredBox(
+              color: const Color(0xFF10101A),
+              child: mdScreen(cellCtx),
+            ));
+        return;
+      }
+      // ── 左右の分割パネル (PDF / Web と同じ器) が開いていればそこへ ──
+      //    'md' モードは _buildSplitOfficeViewer が描く。
+      if ((_splitOpen || _splitLeftOpen) &&
+          inAppPref &&
+          presentationContext == null) {
+        _openOfficeInSplitPanel(path, fileName,
+            mode: 'md', isLeftPanel: _isDesktop ? null : false);
+        return;
+      }
       if (_isDesktop) {
         await showDialog<void>(
           context: viewerContext,
@@ -102664,7 +103095,16 @@ class _AiModelPickerState extends State<_AiModelPicker> {
 
 class _AiTalkDialog extends StatefulWidget {
   final String mode; // 'interview' | 'roleplay' | 'pickup'
-  const _AiTalkDialog({required this.mode});
+
+  /// 分割ペイン / 浮遊窓の中に埋め込んで出すか (= ユーザー要望: 面接練習にも
+  /// 左右分割とフローティングモードを)。 true の時はダイアログの枠と固定
+  /// サイズをやめて、 与えられた大きさいっぱいに広がる。
+  final bool embedded;
+
+  /// 埋め込み時の「閉じる」。 ダイアログとして開いた時は Navigator.pop。
+  final VoidCallback? onClose;
+  const _AiTalkDialog(
+      {super.key, required this.mode, this.embedded = false, this.onClose});
   @override
   State<_AiTalkDialog> createState() => _AiTalkDialogState();
 }
@@ -104003,20 +104443,33 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
         : _isPickup
             ? const Color(0xFFFF5C8A)
             : const Color(0xFF66BB6A);
-    return Dialog(
-      backgroundColor: const Color(0xFF1A1A2E),
-      insetPadding: isMobile ? EdgeInsets.zero : const EdgeInsets.all(24),
-      shape: isMobile
-          ? const RoundedRectangleBorder(borderRadius: BorderRadius.zero)
-          : RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: SizedBox(
-        width: isMobile ? double.infinity : 580,
-        // 設定の項目が増えて下が切れていたので、 画面に収まる範囲で
-        // 縦を伸ばす (= ユーザー要望: もう少し下に広げれば全部入る)。
-        height: isMobile
-            ? double.infinity
-            : math.min(920.0, MediaQuery.of(context).size.height - 80),
-        child: SafeArea(
+    // ── 分割ペイン / 浮遊窓に埋め込む時は、 ダイアログの枠と固定サイズを
+    //    やめて、 与えられた大きさいっぱいに広げる (= ユーザー要望: 面接練習
+    //    にも左右分割とフローティングモードを) ──
+    Widget frame(Widget body) => widget.embedded
+        ? Material(color: const Color(0xFF1A1A2E), child: body)
+        : Dialog(
+            backgroundColor: const Color(0xFF1A1A2E),
+            insetPadding:
+                isMobile ? EdgeInsets.zero : const EdgeInsets.all(24),
+            shape: isMobile
+                ? const RoundedRectangleBorder(
+                    borderRadius: BorderRadius.zero)
+                : RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16)),
+            child: SizedBox(
+              width: isMobile ? double.infinity : 580,
+              // 設定の項目が増えて下が切れていたので、 画面に収まる範囲で
+              // 縦を伸ばす (= ユーザー要望: もう少し下に広げれば全部入る)。
+              height: isMobile
+                  ? double.infinity
+                  : math.min(
+                      920.0, MediaQuery.of(context).size.height - 80),
+              child: body,
+            ),
+          );
+    return frame(
+        SafeArea(
           child: Column(children: [
             // ── ヘッダー ──
             Padding(
@@ -104066,7 +104519,9 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
                 ),
                 IconButton(
                   icon: const Icon(Icons.close, color: Colors.white54),
-                  onPressed: () => Navigator.pop(context),
+                  // 埋め込み (分割ペイン) の時は閉じる route が無いので、
+                  //   呼び出し側から渡された閉じ方を使う。
+                  onPressed: widget.onClose ?? () => Navigator.pop(context),
                 ),
               ]),
             ),
@@ -104093,7 +104548,6 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
                     _started ? _conversationView(accent) : _setupView(accent)),
           ]),
         ),
-      ),
     );
   }
 
@@ -104896,7 +105350,9 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
                     backgroundColor: accent, foregroundColor: Colors.black),
                 icon: const Icon(Icons.done_rounded, size: 18),
                 label: Text(context.read<MindMapProvider>().t('talk.end')),
-                onPressed: () => Navigator.pop(context),
+                // 埋め込み (分割ペイン) の時は閉じる route が無いので、
+                //   呼び出し側から渡された閉じ方を使う。
+                onPressed: widget.onClose ?? () => Navigator.pop(context),
               ),
             ),
           ]),
@@ -147490,34 +147946,9 @@ class _InquiryDialogState extends State<_InquiryDialog> {
                 ? _tabBtn(provider.t('inquiry.tabHistory'), 1,
                     icon: Icons.inbox_rounded, color: const Color(0xFFFFB347))
                 : _tabBtn(provider.t('inquiry.tabHistory'), 1),
-            const Spacer(),
-            // ── 開発者の Instagram (= ユーザー要望: リンクを貼っておく) ──
-            InkWell(
-              onTap: () => launchUrl(
-                  Uri.parse('https://www.instagram.com/study_darksan'),
-                  mode: LaunchMode.externalApplication),
-              borderRadius: BorderRadius.circular(20),
-              // 周りのボタンと同じ白字にする (= ユーザー要望: 1 つだけ
-              //   桃色で浮いていた)。 表記も「公式Ig」 に短くする。
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: Colors.white24),
-                ),
-                child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  const Icon(Icons.photo_camera_rounded,
-                      color: Colors.white70, size: 12),
-                  const SizedBox(width: 4),
-                  Text(provider.t('inquiry.officialIg'),
-                      style: const TextStyle(
-                          color: Colors.white70,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600)),
-                ]),
-              ),
-            ),
+            // ── 公式Instagram のリンクはここから設定画面へ移した
+            //    (= ユーザー要望: 機能追加ではなく、 右上の設定の
+            //    「開発者モード」 の下に項目として置く)。 ──
           ]),
           const SizedBox(height: 14),
           Expanded(
@@ -151371,7 +151802,10 @@ class _FloatingCalculatorState extends State<_FloatingCalculator> {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(8),
-          child: FittedBox(fit: BoxFit.contain, child: panel),
+          // ★ scaleDown = 入り切らない時だけ縮める (元の大きさより大きくは
+          //   しない)。 = ユーザー要望「左右分割で開いた時に表示領域が
+          //   大きすぎるから横幅を小さくして欲しい」。
+          child: FittedBox(fit: BoxFit.scaleDown, child: panel),
         ),
       );
     }
@@ -151915,7 +152349,9 @@ class _FloatingStopwatchState extends State<_FloatingStopwatch> {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(8),
-          child: FittedBox(fit: BoxFit.contain, child: inner),
+          // ★ scaleDown = 入り切らない時だけ縮める (= ユーザー要望:
+          //   左右分割のタイマーが大きすぎる)。
+          child: FittedBox(fit: BoxFit.scaleDown, child: inner),
         ),
       );
     }
@@ -190062,7 +190498,10 @@ class _PptxInkPainter extends CustomPainter {
     required this.emuPerPxY,
     required this.color,
     required this.width,
-  });
+    // 書いている最中の線を、 ウィジェットを作り直さずに描き直すための合図
+    // (= ユーザー報告: フリーハンドの反応性が悪い)。
+    Listenable? repaint,
+  }) : super(repaint: repaint);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -190083,6 +190522,44 @@ class _PptxInkPainter extends CustomPainter {
       path.lineTo(q.dx, q.dy);
     }
     canvas.drawPath(path, paint);
+  }
+
+  /// ★ 押した所が「線の近く」 かどうかで当たり判定をする。
+  ///
+  /// = ユーザー報告「フリーハンドで描いたものがオブジェクトとして選択でき
+  ///   ない場面がある」。 図形は外接する四角で当たり判定をしていたため、
+  ///   斜めの線は中身がほとんど透明なのに四角全体が「押せる所」 になり、
+  ///   後から描いた線の四角が前の線を覆って選べなくなっていた。
+  ///   線からの距離で判定すれば、 重なっていてもそれぞれ選べる。
+  @override
+  bool? hitTest(Offset position) {
+    if (points.isEmpty) return false;
+    // 指 / マウスでも掴めるように、 線の太さに少し余裕を足す。
+    final tol = math.max(8.0, width / 2 + 6.0);
+    Offset toLocal(Offset p) =>
+        Offset((p.dx - offXEmu) / emuPerPxX, (p.dy - offYEmu) / emuPerPxY);
+    if (points.length == 1) {
+      return (toLocal(points.first) - position).distance <= tol;
+    }
+    var prev = toLocal(points.first);
+    for (var i = 1; i < points.length; i++) {
+      final cur = toLocal(points[i]);
+      if (_distanceToSegment(position, prev, cur) <= tol) return true;
+      prev = cur;
+    }
+    return false;
+  }
+
+  /// 点 [p] と線分 [a]-[b] の距離。
+  static double _distanceToSegment(Offset p, Offset a, Offset b) {
+    final dx = b.dx - a.dx;
+    final dy = b.dy - a.dy;
+    final len2 = dx * dx + dy * dy;
+    if (len2 <= 0.0001) return (p - a).distance;
+    var t = ((p.dx - a.dx) * dx + (p.dy - a.dy) * dy) / len2;
+    if (t < 0) t = 0;
+    if (t > 1) t = 1;
+    return (p - Offset(a.dx + dx * t, a.dy + dy * t)).distance;
   }
 
   @override
@@ -190743,6 +191220,18 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
 
   /// 書いている最中の点 (キャンバスのローカル座標)。
   final List<Offset> _inkDraft = [];
+
+  /// ★ 書いている最中の線だけを描き直すための合図。
+  ///
+  /// = ユーザー報告「フリーハンドで描いた際の反応性が悪い」。 以前は点を
+  ///   足すたびに setState していたため、 スライド一覧・サムネイル・
+  ///   ツールバーまで含む編集画面全体が毎フレーム作り直されていた。
+  ///   この notifier を CustomPaint の repaint に渡し、 線の層だけを
+  ///   描き直す (= ウィジェットの作り直しゼロ) ようにする。
+  final ValueNotifier<int> _inkDraftTick = ValueNotifier<int>(0);
+
+  /// 今フリーハンドを引いている最中か (生の Listener が立てる)。
+  bool _inkDrawing = false;
 
   /// フリーハンドの色と太さ。
   int _inkColor = 0xE53935;
@@ -191800,6 +192289,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
     _notesCtrl?.dispose();
     _notesFocus?.dispose();
     _historyPushDebounce?.cancel();
+    _inkDraftTick.dispose();
     super.dispose();
   }
 
@@ -194293,6 +194783,8 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
   /// ユーザー要望: 「表を挿入したり (...) pptx の編集機能として付けて欲しい」。
   void _insertTable([BuildContext? anchor]) async {
     if (!mounted) return;
+    // 表を置く = 別のモードなので、 フリーハンドは解除する (= ユーザー要望)。
+    _exitInkMode();
     final rowsCtrl = TextEditingController(text: '3');
     final colsCtrl = TextEditingController(text: '3');
     // テンプレート選択 (= ユーザー要望: 表のテンプレートをもっと増やして
@@ -194996,8 +195488,225 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
   /// 置くたびに少しずつ右下へずらす。
   int _shapeInsSeq = 0;
 
+  /// フリーハンドを解除する。
+  ///
+  /// = ユーザー要望「選択モードや図形の挿入など別のモードに切り替えたら
+  ///   フリーハンドモードが解除されるように」。 モードは 1 つだけ立つ形に
+  ///   そろえる。 [keepRange] が true の時は範囲選択モードには触らない。
+  void _exitInkMode({bool keepRange = false}) {
+    if (!_inkMode && _inkDraft.isEmpty) {
+      if (!keepRange && _rangeSelectMode) {
+        setState(() => _rangeSelectMode = false);
+      }
+      return;
+    }
+    setState(() {
+      _inkMode = false;
+      _inkDrawing = false;
+      _inkDraft.clear();
+      if (!keepRange) _rangeSelectMode = false;
+    });
+    _inkDraftTick.value++;
+  }
+
+  /// 図形の挿入パレット (= ユーザー要望: マインドマップのような横長の
+  /// ダイアログ)。
+  ///
+  /// 押した図形はその場でスライドに置き、 パレットは開いたままにする
+  /// (= 続けて何個も置ける)。 色 / 塗りか中空か / 太さ もここで決める。
+  /// 以前は PopupMenuButton だったが、 メニューの最大幅 (392px) に阻まれて
+  /// 色が折り返し、 縦長で使いにくかった。
+  Future<void> _showShapeInsertPalette(BuildContext anchor) async {
+    // 図形の挿入 = 別のモードなので、 フリーハンドは解除する (= ユーザー要望)。
+    _exitInkMode();
+    const shapes = [
+      ('rect', Icons.crop_square_rounded),
+      ('roundRect', Icons.rounded_corner_rounded),
+      ('ellipse', Icons.circle_outlined),
+      ('line', Icons.horizontal_rule_rounded),
+      ('arrow', Icons.north_east_rounded),
+    ];
+    const colors = [
+      0xE53935, // 赤
+      0xD81B60, // 濃ピンク
+      0xF06292, // ピンク
+      0xFF5722, // 朱
+      0xFB8C00, // 橙
+      0xFFC107, // 山吹
+      0xFDD835, // 黄
+      0xC0CA33, // 黄緑
+      0x8BC34A, // 若草
+      0x43A047, // 緑
+      0x2E7D32, // 深緑
+      0x26A69A, // 青緑
+      0x00BCD4, // シアン
+      0x4FC3F7, // 水色
+      0x1E88E5, // 青
+      0x1565C0, // 濃青
+      0x3F51B5, // 藍
+      0x673AB7, // 菫
+      0x8E24AA, // 紫
+      0x795548, // 茶
+      0x9E9E9E, // 灰
+      0x455A64, // 濃灰
+      0x000000, // 黒
+      0xFFFFFF, // 白
+    ];
+    const accent = Color(0xFFAB47BC);
+    await _showDialogNearAnchor<void>(
+      anchor,
+      // 横長 (= ユーザー要望)。 色 24 個が 1 行に収まる幅。
+      width: 720,
+      estHeight: 150,
+      builder: (ctx) => StatefulBuilder(
+        builder: (pctx, setP) => Container(
+          padding: const EdgeInsets.fromLTRB(12, 10, 8, 12),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1E1E2E),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.white12),
+            boxShadow: const [
+              BoxShadow(
+                  color: Colors.black54,
+                  blurRadius: 18,
+                  offset: Offset(0, 6)),
+            ],
+          ),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            // ── 1 段目: 図形 + 塗り / 中空 + 太さ + 閉じる ──
+            Row(children: [
+              for (final (k, ic) in shapes)
+                Padding(
+                  padding: const EdgeInsets.only(right: 4),
+                  child: Tooltip(
+                    message: context
+                        .read<MindMapProvider>()
+                        .t('pptx.insertShape'),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(8),
+                      // 閉じずにその場で置く (= 続けて何個も置ける)。
+                      onTap: () => _addDrawShape(k),
+                      child: Container(
+                        width: 38,
+                        height: 34,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          color: Colors.white.withValues(alpha: 0.05),
+                          border: Border.all(
+                              color: accent.withValues(alpha: 0.45)),
+                        ),
+                        child: Icon(ic, size: 19, color: accent),
+                      ),
+                    ),
+                  ),
+                ),
+              const SizedBox(width: 10),
+              // ── 塗り / 中空 ──
+              for (final (filled, label) in const [
+                (true, '塗り'),
+                (false, '中空'),
+              ])
+                Padding(
+                  padding: const EdgeInsets.only(right: 4),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(8),
+                    onTap: () => setP(() => _shapeInsFilled = filled),
+                    child: Container(
+                      height: 34,
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: _shapeInsFilled == filled
+                            ? const Color(0xFF6C63FF)
+                            : Colors.white.withValues(alpha: 0.05),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                            color: _shapeInsFilled == filled
+                                ? const Color(0xFF6C63FF)
+                                : Colors.white24),
+                      ),
+                      child: Text(label,
+                          style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              color: _shapeInsFilled == filled
+                                  ? Colors.white
+                                  : Colors.white60)),
+                    ),
+                  ),
+                ),
+              const SizedBox(width: 10),
+              const Text('太さ',
+                  style: TextStyle(color: Colors.white60, fontSize: 12)),
+              SizedBox(
+                width: 170,
+                child: SliderTheme(
+                  data: SliderTheme.of(pctx).copyWith(
+                    trackHeight: 2,
+                    overlayShape:
+                        const RoundSliderOverlayShape(overlayRadius: 12),
+                  ),
+                  child: Slider(
+                    value: _shapeInsLineWidthPt.clamp(1.0, 8.0),
+                    min: 1,
+                    max: 8,
+                    divisions: 7,
+                    activeColor: accent,
+                    onChanged: (v) =>
+                        setP(() => _shapeInsLineWidthPt = v),
+                  ),
+                ),
+              ),
+              SizedBox(
+                width: 34,
+                child: Text('${_shapeInsLineWidthPt.round()}pt',
+                    style: const TextStyle(
+                        color: Colors.white70, fontSize: 12)),
+              ),
+              const Spacer(),
+              IconButton(
+                tooltip: context.read<MindMapProvider>().t('btn.close'),
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.close_rounded,
+                    color: Colors.white54, size: 18),
+                onPressed: () => Navigator.of(pctx).maybePop(),
+              ),
+            ]),
+            const SizedBox(height: 8),
+            // ── 2 段目: 色 (24 色を 1 行に = 横長にした利点) ──
+            Row(children: [
+              for (final c in colors)
+                Padding(
+                  padding: const EdgeInsets.only(right: 5),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(12),
+                    onTap: () => setP(() => _shapeInsLineColor = c),
+                    child: Container(
+                      width: 22,
+                      height: 22,
+                      decoration: BoxDecoration(
+                        color: Color(0xFF000000 | c),
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                            color: _shapeInsLineColor == c
+                                ? const Color(0xFF6C63FF)
+                                : Colors.white24,
+                            width: _shapeInsLineColor == c ? 2.5 : 1),
+                      ),
+                    ),
+                  ),
+                ),
+            ]),
+          ]),
+        ),
+      ),
+    );
+  }
+
   void _addDrawShape(String kind) {
     if (_slides.isEmpty) return;
+    // 図形を置く = 別のモードなので、 フリーハンドは解除する (= ユーザー要望)。
+    _exitInkMode();
     _pushHistory();
     final slide = _slides[_currentIndex];
     final isLine = kind == 'line' || kind == 'arrow';
@@ -196044,6 +196753,8 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
   }
 
   void _addNewTextShape() {
+    // 文字を置く = 別のモードなので、 フリーハンドは解除する (= ユーザー要望)。
+    _exitInkMode();
     if (_slides.isEmpty) return;
     // ── Undo 履歴に積む (= 新規追加前の状態) ──
     _pushHistory();
@@ -197550,8 +198261,20 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                                   : const Color(0xFF8E9AAF)),
                           onPressed: _slides.isEmpty
                               ? null
-                              : () => setState(() =>
-                                  _rangeSelectMode = !_rangeSelectMode),
+                              : () {
+                                  // 範囲選択に入ったらフリーハンドは解除
+                                  //   (= ユーザー要望: モードは 1 つだけ)。
+                                  final next = !_rangeSelectMode;
+                                  setState(() {
+                                    _rangeSelectMode = next;
+                                    if (next) {
+                                      _inkMode = false;
+                                      _inkDrawing = false;
+                                      _inkDraft.clear();
+                                    }
+                                  });
+                                  _inkDraftTick.value++;
+                                },
                         ),
                         // Builder でボタン自身の位置を取り、 表の挿入を
                         // ボタン付近に出す (= ユーザー要望)。
@@ -197570,211 +198293,26 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                                 : () => _insertTable(bctx),
                           ),
                         ),
-                        PopupMenuButton<String>(
-                          tooltip: context
-                              .read<MindMapProvider>()
-                              .t('pptx.insertShape'),
-                          padding: EdgeInsets.zero,
-                          icon: const Icon(Icons.category_rounded,
-                              size: 19, color: Color(0xFFAB47BC)),
-                          // 図形は押した所で直接置く (パレットは開いたまま)。
-                          onSelected: _addDrawShape,
-                          // ── パレット形式 (= ユーザー要望: 縦のメニューでは
-                          //    なく、 一覧から自由に選べるように) ──
-                          itemBuilder: (_) => [
-                            PopupMenuItem<String>(
-                              enabled: false,
-                              padding: const EdgeInsets.all(8),
-                              child: Builder(
-                                builder: (ictx) => StatefulBuilder(
-                                    builder: (pctx, setP) => SizedBox(
-                                  // ── 幅はポップアップメニューの最大幅
-                                  //    (392) に収まる値にする (= ユーザー
-                                  //    報告: 色選択が枠からはみ出す。 旧:
-                                  //    430 で右端の色が枠外に出ていた)。 ──
-                                  width: 352,
-                                  child: Column(
-                                      mainAxisSize: MainAxisSize.min,
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                    // ── 1 段目: 図形 (アイコンのみ)。
-                                    //    マインドマップの図形バー風
-                                    //    (= ユーザー要望: 横長・表記なし)。
-                                    Row(children: [
-                                      for (final (k, ic) in const [
-                                        ('rect', Icons.crop_square_rounded),
-                                        ('roundRect',
-                                            Icons.rounded_corner_rounded),
-                                        ('ellipse', Icons.circle_outlined),
-                                        ('line',
-                                            Icons.horizontal_rule_rounded),
-                                        ('arrow', Icons.north_east_rounded),
-                                      ])
-                                        InkWell(
-                                          borderRadius:
-                                              BorderRadius.circular(6),
-                                          // ★ 閉じずにその場で置く (= ユーザー
-                                          //   要望: パレットを出したまま複数
-                                          //   連続で置けるように)。 置いた図形は
-                                          //   少しずつずらして重ならないように
-                                          //   する。 外を押すとパレットが閉じる。
-                                          onTap: () => _addDrawShape(k),
-                                          child: Container(
-                                            width: 34,
-                                            height: 30,
-                                            margin: const EdgeInsets
-                                                .symmetric(horizontal: 1),
-                                            decoration: BoxDecoration(
-                                              borderRadius:
-                                                  BorderRadius.circular(6),
-                                              border: Border.all(
-                                                  color: const Color(
-                                                          0xFFAB47BC)
-                                                      .withValues(
-                                                          alpha: 0.4)),
-                                            ),
-                                            child: Icon(ic,
-                                                size: 18,
-                                                color: const Color(
-                                                    0xFFAB47BC)),
-                                          ),
-                                        ),
-                                    ]),
-                                    const SizedBox(height: 8),
-                                    // ── 2 段目: 色。 Wrap で折り返して
-                                    //    枠内に収め、 カラーバリエーション
-                                    //    を 24 色に増量 (= ユーザー要望)。
-                                    Wrap(
-                                      spacing: 6,
-                                      runSpacing: 6,
-                                      children: [
-                                        for (final c in const [
-                                          0xE53935, // 赤
-                                          0xD81B60, // 濃ピンク
-                                          0xF06292, // ピンク
-                                          0xFF5722, // 朱
-                                          0xFB8C00, // 橙
-                                          0xFFC107, // 山吹
-                                          0xFDD835, // 黄
-                                          0xC0CA33, // 黄緑
-                                          0x8BC34A, // 若草
-                                          0x43A047, // 緑
-                                          0x2E7D32, // 深緑
-                                          0x26A69A, // 青緑
-                                          0x00BCD4, // シアン
-                                          0x4FC3F7, // 水色
-                                          0x1E88E5, // 青
-                                          0x1565C0, // 濃青
-                                          0x3F51B5, // 藍
-                                          0x673AB7, // 菫
-                                          0x8E24AA, // 紫
-                                          0x795548, // 茶
-                                          0x9E9E9E, // 灰
-                                          0x455A64, // 濃灰
-                                          0x000000, // 黒
-                                          0xFFFFFF, // 白
-                                        ])
-                                          InkWell(
-                                            onTap: () => setP(() =>
-                                                _shapeInsLineColor = c),
-                                            child: Container(
-                                              width: 22,
-                                              height: 22,
-                                              decoration: BoxDecoration(
-                                                color:
-                                                    Color(0xFF000000 | c),
-                                                shape: BoxShape.circle,
-                                                border: Border.all(
-                                                    color:
-                                                        _shapeInsLineColor ==
-                                                                c
-                                                            ? const Color(
-                                                                0xFF6C63FF)
-                                                            : Colors
-                                                                .black26,
-                                                    width:
-                                                        _shapeInsLineColor ==
-                                                                c
-                                                            ? 2.5
-                                                            : 1),
-                                              ),
-                                            ),
-                                          ),
-                                      ],
-                                    ),
-                                    const SizedBox(height: 6),
-                                    // ── 3 段目: 塗り / 中空 + 太さ ──
-                                    Row(children: [
-                                      for (final (filled, label) in const [
-                                        (true, '塗り'),
-                                        (false, '中空'),
-                                      ])
-                                        Padding(
-                                          padding: const EdgeInsets.only(
-                                              right: 6),
-                                          child: InkWell(
-                                            borderRadius:
-                                                BorderRadius.circular(8),
-                                            onTap: () => setP(() =>
-                                                _shapeInsFilled = filled),
-                                            child: Container(
-                                              padding: const EdgeInsets
-                                                  .symmetric(
-                                                  horizontal: 10,
-                                                  vertical: 4),
-                                              decoration: BoxDecoration(
-                                                color: _shapeInsFilled ==
-                                                        filled
-                                                    ? const Color(
-                                                        0xFF6C63FF)
-                                                    : Colors.transparent,
-                                                borderRadius:
-                                                    BorderRadius.circular(
-                                                        8),
-                                                border: Border.all(
-                                                    color: _shapeInsFilled ==
-                                                            filled
-                                                        ? const Color(
-                                                            0xFF6C63FF)
-                                                        : Colors.black26),
-                                              ),
-                                              child: Text(label,
-                                                  style: TextStyle(
-                                                      fontSize: 11,
-                                                      color: _shapeInsFilled ==
-                                                              filled
-                                                          ? Colors.white
-                                                          : Colors
-                                                              .black87)),
-                                            ),
-                                          ),
-                                        ),
-                                      const SizedBox(width: 4),
-                                      const Text('太さ',
-                                          style:
-                                              TextStyle(fontSize: 11)),
-                                      Expanded(
-                                        child: Slider(
-                                          value: _shapeInsLineWidthPt
-                                              .clamp(1.0, 8.0),
-                                          min: 1,
-                                          max: 8,
-                                          divisions: 7,
-                                          onChanged: (v) => setP(() =>
-                                              _shapeInsLineWidthPt = v),
-                                        ),
-                                      ),
-                                      Text(
-                                          '${_shapeInsLineWidthPt.round()}pt',
-                                          style: const TextStyle(
-                                              fontSize: 11)),
-                                    ]),
-                                      ]),
-                                )),
-                              ),
-                            ),
-                          ],
+                        // ── 図形の挿入 (= ユーザー要望: マインドマップの
+                        //    ような横長のダイアログが出るように) ──
+                        //    ポップアップメニューは最大幅が狭く (392px)、
+                        //    色が折り返して縦長になっていたので、 ボタンの
+                        //    近くに出す横長のパレットに作り替えた。
+                        Builder(
+                          builder: (bctx) => IconButton(
+                            tooltip: context
+                                .read<MindMapProvider>()
+                                .t('pptx.insertShape'),
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                                minWidth: 30, minHeight: 30),
+                            icon: const Icon(Icons.category_rounded,
+                                size: 19, color: Color(0xFFAB47BC)),
+                            onPressed: _slides.isEmpty
+                                ? null
+                                : () =>
+                                    unawaited(_showShapeInsertPalette(bctx)),
+                          ),
                         ),
                         // (AI ボタンはヘッダー右側へ移動 = ユーザー要望:
                         //  word と同じ位置に AI ボタンが来るように)
@@ -198404,18 +198942,9 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                         // ── 空白部分のドラッグで範囲選択 (= ユーザー要望:
                         //    まとめて選択して削除できるように)。 ──
                         onPanStart: (d) {
-                          // ── フリーハンド (= ユーザー要望) ──
-                          if (_inkMode) {
-                            if (_editingShapeId != null) {
-                              _exitShapeEditMode();
-                            }
-                            setState(() {
-                              _inkDraft
-                                ..clear()
-                                ..add(d.localPosition);
-                            });
-                            return;
-                          }
+                          // ── フリーハンドは下の Listener が直接受ける
+                          //    (= 動かし始めの遊びを待たずに線が出るように)。
+                          if (_inkMode) return;
                           // Shift + ドラッグ、 または範囲選択モードの時だけ
                           // 範囲選択を始める (= ユーザー要望)。
                           if (!_rangeSelectMode &&
@@ -198435,16 +198964,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                           });
                         },
                         onPanUpdate: (d) {
-                          if (_inkMode) {
-                            if (_inkDraft.isEmpty) return;
-                            // 細かすぎる点は間引く (= 保存が重くならないように)。
-                            final last = _inkDraft.last;
-                            if ((d.localPosition - last).distance < 2.0) {
-                              return;
-                            }
-                            setState(() => _inkDraft.add(d.localPosition));
-                            return;
-                          }
+                          if (_inkMode) return; // Listener が受ける
                           if (_marqueeStart == null) return;
                           setState(() {
                             _marqueeEnd = d.localPosition;
@@ -198474,18 +198994,66 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                           });
                         },
                         onPanEnd: (_) {
-                          if (_inkMode) {
-                            _commitInkStroke(canvasW, canvasH);
-                            return;
-                          }
+                          if (_inkMode) return; // Listener が受ける
                           setState(() {
                             _marqueeStart = null;
                             _marqueeEnd = null;
                           });
                         },
-                        child: Container(
-                          width: canvasW,
-                          height: canvasH,
+                        // ── フリーハンドは生のポインタで受ける ──
+                        //    GestureDetector の pan は「少し動かすまで」 反応
+                        //    しない (slop) ので、 描き始めが遅れて感じられる
+                        //    (= ユーザー報告: 反応性が悪い)。 Listener なら
+                        //    押した瞬間から点を拾える。 点を足す時は
+                        //    setState せず、 線の層だけを描き直す。
+                        child: Listener(
+                          behavior: HitTestBehavior.deferToChild,
+                          onPointerDown: !_inkMode
+                              ? null
+                              : (e) {
+                                  if (_editingShapeId != null) {
+                                    _exitShapeEditMode();
+                                  }
+                                  _inkDrawing = true;
+                                  _inkDraft
+                                    ..clear()
+                                    ..add(e.localPosition);
+                                  _inkDraftTick.value++;
+                                },
+                          onPointerMove: !_inkMode
+                              ? null
+                              : (e) {
+                                  if (!_inkDrawing || _inkDraft.isEmpty) {
+                                    return;
+                                  }
+                                  // 細かすぎる点は間引く (= 保存が重く
+                                  //   ならないように)。 1.2px まで下げて
+                                  //   曲線をなめらかにする。
+                                  if ((e.localPosition - _inkDraft.last)
+                                          .distance <
+                                      1.2) {
+                                    return;
+                                  }
+                                  _inkDraft.add(e.localPosition);
+                                  _inkDraftTick.value++;
+                                },
+                          onPointerUp: !_inkMode
+                              ? null
+                              : (_) {
+                                  if (!_inkDrawing) return;
+                                  _inkDrawing = false;
+                                  _commitInkStroke(canvasW, canvasH);
+                                },
+                          onPointerCancel: !_inkMode
+                              ? null
+                              : (_) {
+                                  _inkDrawing = false;
+                                  _inkDraft.clear();
+                                  _inkDraftTick.value++;
+                                },
+                          child: Container(
+                            width: canvasW,
+                            height: canvasH,
                           decoration: BoxDecoration(
                             color: canvasBg,
                             border: Border.all(color: divider),
@@ -198611,7 +199179,11 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                                 _buildInlineFormatToolbar(canvasW, canvasH),
                               // ── 範囲選択の矩形 (= ユーザー要望) ──
                               // 書いている最中のフリーハンド (= ユーザー要望)。
-                              if (_inkDraft.length > 1)
+                              // ★ フリーハンド中は常に置いておき、 点が増えた
+                              //   ことは _inkDraftTick (repaint) で伝える。
+                              //   これで 1 点ごとの setState が要らなくなり、
+                              //   線が指に追いつく (= ユーザー報告: 反応性)。
+                              if (_inkMode)
                                 Positioned.fill(
                                   child: IgnorePointer(
                                     child: CustomPaint(
@@ -198623,6 +199195,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                                         emuPerPxY: 1,
                                         color: Color(0xFF000000 | _inkColor),
                                         width: math.max(1.0, _inkWidthPt),
+                                        repaint: _inkDraftTick,
                                       ),
                                     ),
                                   ),
@@ -198647,6 +199220,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                               // 「空のスライド」 のヒント表示は廃止
                               // (= ユーザー要望: 何も無い時は白紙のままに)。
                             ],
+                          ),
                           ),
                         ),
                       ),
@@ -198768,7 +199342,14 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
             width: w,
             height: h,
             child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
+              // ★ フリーハンドだけは「線の近く」 だけを押せる所にする
+              //   (= ユーザー報告: 描いた線がオブジェクトとして選択できない
+              //   場面がある)。 deferToChild にすると下の CustomPaint の
+              //   hitTest (線からの距離) が使われる。 他の図形は今までどおり
+              //   四角全体を押せる。
+              behavior: s.kind == 'ink'
+                  ? HitTestBehavior.deferToChild
+                  : HitTestBehavior.opaque,
               onTap: select,
               onPanStart: (_) {
                 select();
