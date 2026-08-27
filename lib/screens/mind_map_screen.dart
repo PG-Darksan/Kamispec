@@ -4770,28 +4770,46 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 「ファイルを作成」 「ページを追加」 は画面中央ではなく押した場所に)。
   /// `_lastGlobalPointerPos` (hover / down で常時更新) を基準に置き、
   /// 画面からはみ出す分は内側へ寄せる。 位置が取れない時は従来どおり中央。
+  /// [inPane] を false にすると、 分割中でも画面全体を基準にする
+  /// (= ドロワーなど、 ペインの外から開く物のため)。
   Future<T?> _showNearDialogMain<T>(
       {required WidgetBuilder builder,
       double width = 480,
-      double height = 400}) {
+      double height = 400,
+      bool inPane = true}) {
     final at = _lastGlobalPointerPos;
     return showDialog<T>(
       context: context,
       builder: (dctx) {
-        if (at == null) return builder(dctx);
-        final screen = MediaQuery.of(dctx).size;
-        final left = (at.dx - width / 2)
-            .clamp(12.0, math.max(12.0, screen.width - width - 12))
+        // ★ 分割中はアクティブ側ペインの中に収める (= ユーザー要望: 分割
+        //   していたら分割画面の中央に出るように)。 押した場所がペインの
+        //   外なら、 そのペインの真ん中に出す。
+        final screenSize = MediaQuery.of(dctx).size;
+        final bounds = inPane
+            ? _dialogBoundsRect()
+            : (Offset.zero & screenSize);
+        // 狭いペインでも入るように幅を詰める。
+        final w = math.min(width, math.max(240.0, bounds.width - 24));
+        final inside = at != null && bounds.contains(at);
+        final anchor = inside ? at : bounds.center;
+        final left = (anchor.dx - w / 2)
+            .clamp(bounds.left + 12,
+                math.max(bounds.left + 12, bounds.right - w - 12))
             .toDouble();
-        var top = at.dy + 14;
-        if (top + height > screen.height - 12) {
-          top = math.max(12.0, at.dy - height - 14);
+        var top = inside
+            ? anchor.dy + 14
+            : bounds.top + math.max(12.0, (bounds.height - height) / 2);
+        if (top + height > bounds.bottom - 12) {
+          top = math.max(
+              bounds.top + 12,
+              math.min(anchor.dy - height - 14,
+                  math.max(bounds.top + 12, bounds.bottom - height - 12)));
         }
         return Stack(children: [
           Positioned(
             left: left,
             top: top,
-            width: width,
+            width: w,
             child: Material(
               type: MaterialType.transparency,
               child: Builder(builder: builder),
@@ -14872,6 +14890,28 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// ペインの領域へ限定するための追加 inset (= ユーザー要望: 分割中は
   /// 全体の全画面ではなく分割した画面上での全画面に)。 分割していなければ
   /// EdgeInsets.zero。
+  /// ダイアログを収める領域。
+  ///
+  /// ★ = ユーザー要望「文字サイズ設定も画面分割していたら分割画面の中央に
+  ///   出るように」「端子を追加も画面分割していたらその画面内で開かれるように
+  ///   (現状は画面中央に出てくる)」。 分割中はアクティブ側ペインの矩形、
+  ///   分割していなければ画面全体を返す。 セルが小さすぎる時 (4 分割など) は
+  ///   ダイアログが入り切らないので画面全体に戻す。
+  Rect _dialogBoundsRect() {
+    final s = View.of(context).physicalSize / View.of(context).devicePixelRatio;
+    final full = Offset.zero & s;
+    if (!mounted) return full;
+    final t = context.read<MindMapProvider>().currentPage.pageType;
+    final split = _mapSplitOpen &&
+        t != 'paint' &&
+        t != 'document' &&
+        t != 'videoEditor';
+    if (!split) return full;
+    final r = _splitCellGlobalRect(_mapSplitEditorSlot);
+    if (r.width < 240 || r.height < 200) return full;
+    return r;
+  }
+
   EdgeInsets _activePaneDialogInsets() {
     final provider = context.read<MindMapProvider>();
     final t = provider.currentPage.pageType;
@@ -25302,27 +25342,32 @@ class _MindMapScreenState extends State<MindMapScreen>
       return const SizedBox.shrink();
     }
     const double w = 190.0;
+    // ★ よく使う割り方を一番上に置く (= ユーザー要望: パソコンでは上下より
+    //   左右 2 分割の方を使うので、 左右を一番上に)。 画面の狭いスマホは
+    //   上下に並べる方が自然なので、 そちらを上にする。
+    final leftRight = _CtxSplitOption(
+      icon: Icons.vertical_split_rounded,
+      label: provider.t('map.splitModeLeftRight'),
+      checked: _mapSplitOpen && !_mapSplitQuad && !_mapSplitStacked,
+      onTap: () {
+        _removeOverlay();
+        // ignore: discarded_futures
+        _applyMapSplitMode(panes: 2, stacked: false);
+      },
+    );
+    final topBottom = _CtxSplitOption(
+      icon: Icons.horizontal_split_rounded,
+      label: provider.t('map.splitModeTopBottom'),
+      checked: _mapSplitOpen && !_mapSplitQuad && _mapSplitStacked,
+      onTap: () {
+        _removeOverlay();
+        // ignore: discarded_futures
+        _applyMapSplitMode(panes: 2, stacked: true);
+      },
+    );
     final rows = <Widget>[
-      _CtxSplitOption(
-        icon: Icons.horizontal_split_rounded,
-        label: provider.t('map.splitModeTopBottom'),
-        checked: _mapSplitOpen && !_mapSplitQuad && _mapSplitStacked,
-        onTap: () {
-          _removeOverlay();
-          // ignore: discarded_futures
-          _applyMapSplitMode(panes: 2, stacked: true);
-        },
-      ),
-      _CtxSplitOption(
-        icon: Icons.vertical_split_rounded,
-        label: provider.t('map.splitModeLeftRight'),
-        checked: _mapSplitOpen && !_mapSplitQuad && !_mapSplitStacked,
-        onTap: () {
-          _removeOverlay();
-          // ignore: discarded_futures
-          _applyMapSplitMode(panes: 2, stacked: false);
-        },
-      ),
+      if (_isDesktop) leftRight else topBottom,
+      if (_isDesktop) topBottom else leftRight,
       // モバイルは画面が小さいので 4 分割は出さない
       // (= _buildMapSplitModeButtons と同じ扱い)。
       if (_isDesktop)
@@ -42381,115 +42426,107 @@ class _MindMapScreenState extends State<MindMapScreen>
         icon: const _FlowShapeIcon('circle')
       ),
     ];
-    // ── 図形の挿入と同じ「パレット」 の形にする (= ユーザー要望: 端子も
-    //    パレットから選んで色なども設定できるように)。
-    //    色は下の段のスウォッチで選び、 × を押すまで開いたままにする。 ──
+    // ── 図形の挿入 (パワーポイント) と同じ横長のパレットにする
+    //    (= ユーザー要望: 端子を追加も図形を挿入と同じ様にパレット形式で
+    //    タブが開かれるように)。 押した場所の近く、 画面分割中はその
+    //    ペインの中に出る (_showNearDialogMain 経由 = ユーザー要望:
+    //    現状だと画面分割していても画面中央に出てきている)。
+    //    × を押すまで開いたままなので、 続けて何個でも置ける。 ──
     var termColor = _shapeColorRgb;
-    showDialog<void>(
-      context: context,
-      barrierColor: Colors.black38,
+    const accent = Color(0xFF4DB6AC);
+    // ignore: discarded_futures
+    _showNearDialogMain<void>(
+      width: 620,
+      height: 170,
       builder: (dialogContext) => StatefulBuilder(
-        builder: (dialogContext, setP) => Dialog(
-        backgroundColor: const Color(0xFF1E1E28),
-        insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 540),
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(18, 16, 18, 20),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(children: [
-                  Expanded(
-                    child: Text(provider.t('flow.addTerminal'),
-                        style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 16,
-                            fontWeight: FontWeight.w700)),
-                  ),
-                  IconButton(
-                    tooltip: provider.t('btn.close'),
-                    visualDensity: VisualDensity.compact,
-                    icon: const Icon(Icons.close_rounded,
-                        color: Colors.white70, size: 20),
-                    onPressed: () => Navigator.pop(dialogContext),
-                  ),
-                ]),
-                const SizedBox(height: 2),
-                Text(provider.t('flow.addTerminalDesc'),
-                    style: const TextStyle(color: Colors.white54, fontSize: 12)),
-                const SizedBox(height: 10),
-                // ── 色 (= ユーザー要望: 色なども設定できるように) ──
-                Center(
-                  child: Wrap(
-                    alignment: WrapAlignment.center,
-                    spacing: 2,
-                    runSpacing: 4,
-                    children: [
-                      for (final c in _shapePalette)
-                        _shapeColorSwatch(c, termColor == c,
-                            () => setP(() => termColor = c)),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Center(
-                  child: Wrap(
-                    alignment: WrapAlignment.center,
-                    spacing: 10,
-                    runSpacing: 10,
-                    children: [
-                      for (final shape in shapes)
-                        InkWell(
-                          borderRadius: BorderRadius.circular(10),
-                          onTap: () {
-                            // パレットは開いたまま (= ユーザー要望: × を
-                            // 押すまで閉じない)。 続けて何個でも置ける。
-                            final node = provider.addNodeAtCenterReturning(
-                                canvasPosition - const Offset(80, 21));
-                            provider.updateNodeShape(node.id, shape.id);
-                            provider.updateNodeColor(
-                                node.id, Color(0xFF000000 | termColor));
-                          },
-                          child: Container(
-                            width: 112,
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 8, vertical: 12),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF4DB6AC)
-                                  .withValues(alpha: 0.12),
-                              borderRadius: BorderRadius.circular(10),
-                              border: Border.all(
-                                  color: const Color(0xFF4DB6AC)
-                                      .withValues(alpha: 0.45)),
-                            ),
-                            child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  SizedBox(
-                                      height: 30,
-                                      child: Center(child: shape.icon)),
-                                  const SizedBox(height: 7),
-                                  Text(shape.label,
-                                      textAlign: TextAlign.center,
-                                      style: const TextStyle(
-                                          color: Colors.white, fontSize: 12)),
-                                ]),
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
+        builder: (pctx, setP) => Container(
+          padding: const EdgeInsets.fromLTRB(12, 10, 8, 12),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1E1E2E),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.white12),
+            boxShadow: const [
+              BoxShadow(
+                  color: Colors.black54, blurRadius: 18, offset: Offset(0, 6)),
+            ],
           ),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            // ── 1 段目: 端子の形 (アイコンのみ / 名前は吹き出しで) + 閉じる ──
+            Row(children: [
+              Expanded(
+                child: Wrap(spacing: 4, runSpacing: 4, children: [
+                  for (final shape in shapes)
+                    Tooltip(
+                      message: shape.label,
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(8),
+                        onTap: () {
+                          // 同じ所に積み上がると掴めないので、 置くたびに
+                          //   少しずつ右下へずらす (= 図形の挿入と同じ)。
+                          final step = (_terminalInsSeq++ % 8) * 24.0;
+                          final node = provider.addNodeAtCenterReturning(
+                              canvasPosition -
+                                  const Offset(80, 21) +
+                                  Offset(step, step));
+                          provider.updateNodeShape(node.id, shape.id);
+                          provider.updateNodeColor(
+                              node.id, Color(0xFF000000 | termColor));
+                        },
+                        child: Container(
+                          width: 42,
+                          height: 34,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(8),
+                            color: Colors.white.withValues(alpha: 0.05),
+                            border: Border.all(
+                                color: accent.withValues(alpha: 0.45)),
+                          ),
+                          child: shape.icon,
+                        ),
+                      ),
+                    ),
+                ]),
+              ),
+              IconButton(
+                tooltip: provider.t('btn.close'),
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.close_rounded,
+                    color: Colors.white54, size: 18),
+                onPressed: () => Navigator.of(pctx).maybePop(),
+              ),
+            ]),
+            const SizedBox(height: 8),
+            // ── 2 段目: 色 (= ユーザー要望: 色なども設定できるように) ──
+            Row(children: [
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: Text(provider.t('flow.addTerminal'),
+                    style: const TextStyle(
+                        color: Colors.white38,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700)),
+              ),
+              Expanded(
+                child: Wrap(spacing: 2, runSpacing: 4, children: [
+                  for (final c in _shapePalette)
+                    _shapeColorSwatch(c, termColor == c, () {
+                      // 次に開いた時も同じ色から始める (= 選んだ色が残る)。
+                      _shapeColorRgb = c;
+                      setP(() => termColor = c);
+                    }),
+                ]),
+              ),
+            ]),
+          ]),
         ),
-      ),
       ),
     );
   }
+
+  /// 端子を続けて置いた時にずらすための番号 (= 同じ場所に積み上がると
+  /// 掴めないので、 置くたびに少しずつ右下へずらす)。
+  int _terminalInsSeq = 0;
 
   /// YouTubeを検索バーが見える状態で開く（5倍速再生が最初から効いた状態）
   /// 視聴中の動画/チャンネルを「マップに埋め込む」ボタンでマインドマップに追加可能
@@ -54236,6 +54273,12 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   }
                                   // 裁断モード: クリックで始点/終点を設定
                                   if (_cutMode) {
+                                    // ★ 分割中は、 編集している側のペインの
+                                    //   中を押した時だけ効かせる (= ユーザー
+                                    //   要望: 裁断モードも分割した画面の中で)。
+                                    if (!_pointerInEditorCell(e.position)) {
+                                      return;
+                                    }
                                     final canvasPos =
                                         _globalToCanvas(e.position, ctrl);
                                     _handleCutClick(canvasPos);
@@ -54454,7 +54497,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   }
                                   // 裁断モード: 始点が設定済みなら、プレビュー終点を更新
                                   if (_cutMode) {
-                                    if (_cutStartPoint != null) {
+                                    // 編集している側のペインの中だけ追従する。
+                                    if (_cutStartPoint != null &&
+                                        _pointerInEditorCell(e.position)) {
                                       final canvasPos =
                                           _globalToCanvas(e.position, ctrl);
                                       setState(
@@ -54982,88 +55027,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     ),
                                   ),
                                 ),
-                              // 裁断モード中のバナー + 画面外周の赤いボーダー
-                              if (_cutMode) ...[
-                                Positioned.fill(
-                                  child: IgnorePointer(
-                                    child: Container(
-                                      decoration: BoxDecoration(
-                                        border: Border.all(
-                                          color: const Color(0xFFFF6B6B)
-                                              .withValues(alpha: 0.75),
-                                          width: 3,
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                                Positioned(
-                                  top: 0,
-                                  left: 0,
-                                  right: 0,
-                                  child: SafeArea(
-                                    child: Center(
-                                      child: Container(
-                                        margin: const EdgeInsets.only(top: 8),
-                                        padding: const EdgeInsets.symmetric(
-                                            horizontal: 20, vertical: 10),
-                                        decoration: BoxDecoration(
-                                          color: const Color(0xFFFF6B6B)
-                                              .withValues(alpha: 0.92),
-                                          borderRadius:
-                                              BorderRadius.circular(12),
-                                          boxShadow: [
-                                            BoxShadow(
-                                              color: Colors.black
-                                                  .withValues(alpha: 0.4),
-                                              blurRadius: 12,
-                                            ),
-                                          ],
-                                        ),
-                                        child: Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              const Icon(
-                                                  Icons.content_cut_rounded,
-                                                  color: Colors.white,
-                                                  size: 18),
-                                              const SizedBox(width: 8),
-                                              Text(
-                                                  provider.t(_cutStartPoint ==
-                                                          null
-                                                      ? 'banner.cutPickStart'
-                                                      : 'banner.cutPickEnd'),
-                                                  style: const TextStyle(
-                                                      color: Colors.white,
-                                                      fontSize: 13,
-                                                      fontWeight:
-                                                          FontWeight.w600)),
-                                              const SizedBox(width: 12),
-                                              GestureDetector(
-                                                onTap: () {
-                                                  setState(
-                                                      () => _cutMode = false);
-                                                  _resetCutStroke();
-                                                },
-                                                child: Container(
-                                                  padding:
-                                                      const EdgeInsets.all(4),
-                                                  decoration: BoxDecoration(
-                                                    color: Colors.white
-                                                        .withValues(alpha: 0.2),
-                                                    shape: BoxShape.circle,
-                                                  ),
-                                                  child: const Icon(Icons.close,
-                                                      color: Colors.white,
-                                                      size: 14),
-                                                ),
-                                              ),
-                                            ]),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ],
+                              // 裁断モード中のバナー + 外周の赤いボーダー
+                              // (分割中はアクティブ側ペインの中だけに出す)。
+                              if (_cutMode) _buildCutModeOverlay(provider),
                               // 検索パネル
                               if (_searchVisible) _buildSearchPanel(provider),
                               // ドロップ中のオーバーレイ表示
@@ -80841,6 +80807,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     final picked = await _showNearDialogMain<int>(
       width: 300,
       height: 56.0 * items.length + 56,
+      // ドロワーから開くので、 分割ペインではなく押した場所 (ドロワーの上)
+      //   に出す (= ペインの中央に飛ばさない)。
+      inPane: false,
       builder: (dctx) => Container(
         decoration: BoxDecoration(
           color: const Color(0xFF1E1E32),
@@ -81061,8 +81030,13 @@ class _MindMapScreenState extends State<MindMapScreen>
   // ─── グローバル文字サイズ設定ダイアログ（PC版右クリック） ────────────────────
 
   void _showGlobalFontSizeDialog(BuildContext ctx, MindMapProvider provider) {
-    showDialog(
-      context: ctx,
+    // ★ 押した場所の近く / 分割中はそのペインの中に出す (= ユーザー要望:
+    //   文字サイズ設定も画面分割していたら分割画面の中央に出るように)。
+    //   右クリックの直後に開くので、 基準は右クリックした場所になる。
+    // ignore: discarded_futures
+    _showNearDialogMain<void>(
+      width: 460,
+      height: 360,
       builder: (dctx) => StatefulBuilder(
         builder: (sctx, setD) {
           double titleFs = provider.defaultTitleFontSize;
@@ -87681,6 +87655,103 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
     // 全置換後に再検索（結果は0件になるはず）
     _performSearch(_searchCtrl.text, provider);
+  }
+
+  /// 裁断モードの赤枠と案内バナー。
+  ///
+  /// ★ = ユーザー要望「裁断モードも画面分割していたらその画面内に出るように」。
+  /// この Stack は分割ペインをまとめて覆っているので、 分割中はアクティブ側
+  /// ペインの矩形へ寄せる (画面座標を Stack のローカル座標へ直してから置く)。
+  /// 矩形が取れない最初のフレームは、 今までどおり全体に出す。
+  Widget _buildCutModeOverlay(MindMapProvider provider) {
+    Rect? local;
+    if (_mapSplitOpen) {
+      final box =
+          _mapViewportKey.currentContext?.findRenderObject() as RenderBox?;
+      if (box != null && box.hasSize) {
+        try {
+          final g = _splitCellGlobalRect(_mapSplitEditorSlot);
+          if (g.width > 80 && g.height > 80) {
+            local = box.globalToLocal(g.topLeft) & g.size;
+          }
+        } catch (_) {}
+      }
+    }
+    Widget content(bool useSafeArea) => Stack(children: [
+          // 外周の赤い枠。
+          Positioned.fill(
+            child: IgnorePointer(
+              child: Container(
+                decoration: BoxDecoration(
+                  border: Border.all(
+                    color: const Color(0xFFFF6B6B).withValues(alpha: 0.75),
+                    width: 3,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          // 上の案内バナー。
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: SafeArea(
+              // ペインの中に出す時は、 ペインが既にヘッダーの下なので
+              //   上の安全域は足さない (= バナーが下がり過ぎないように)。
+              top: useSafeArea,
+              bottom: false,
+              child: Center(
+                child: Container(
+                  margin: const EdgeInsets.only(top: 8),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 20, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFF6B6B).withValues(alpha: 0.92),
+                    borderRadius: BorderRadius.circular(12),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.4),
+                        blurRadius: 12,
+                      ),
+                    ],
+                  ),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    const Icon(Icons.content_cut_rounded,
+                        color: Colors.white, size: 18),
+                    const SizedBox(width: 8),
+                    Text(
+                        provider.t(_cutStartPoint == null
+                            ? 'banner.cutPickStart'
+                            : 'banner.cutPickEnd'),
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600)),
+                    const SizedBox(width: 12),
+                    GestureDetector(
+                      onTap: () {
+                        setState(() => _cutMode = false);
+                        _resetCutStroke();
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.all(4),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.2),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(Icons.close,
+                            color: Colors.white, size: 14),
+                      ),
+                    ),
+                  ]),
+                ),
+              ),
+            ),
+          ),
+        ]);
+    if (local == null) return Positioned.fill(child: content(true));
+    return Positioned.fromRect(rect: local, child: content(false));
   }
 
   Widget _buildSearchPanel(MindMapProvider provider) {

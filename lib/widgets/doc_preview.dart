@@ -96,8 +96,49 @@ class DocPreview {
   /// 戻ってしまうため、 一度読めた中身はここから即座に返して描き直す。
   static final Map<String, List<String>> _byPath = {};
 
+  /// 読めなかったパスと、 その時刻 (ミリ秒)。
+  ///
+  /// ★ = ユーザー報告「指定されたパスが見つからない txt ファイルのサムネイルが
+  ///   画面を移動させる度にチカチカする」。 読めた時は [_byPath] に控えるので
+  ///   次からは即座に返せるが、 読めなかった時は何も控えていなかったため、
+  ///   毎フレーム新しい Future が作られ、 FutureBuilder が「待機」 に戻って
+  ///   仮の絵 → 白紙 → 仮の絵… と点滅していた。 読めなかった事も控える。
+  ///
+  /// ずっと覚えたままだとファイルを戻しても出てこないので、 一定時間が
+  /// 経ったら 1 度だけ読み直す。
+  static final Map<String, int> _missAt = {};
+
+  /// 読めなかった控えを捨てるまでの時間。
+  static const int _missTtlMs = 30 * 1000;
+
+  /// 読めなかった事を控えて、 空を返す。
+  static Future<List<String>> _miss(String path) {
+    _byPath[path] = const <String>[];
+    _missAt[path] = DateTime.now().millisecondsSinceEpoch;
+    return Future.value(const <String>[]);
+  }
+
   /// 既に読んである中身 (無ければ null)。 ファイルは触らないので軽い。
-  static List<String>? cachedFor(String path) => _byPath[path];
+  static List<String>? cachedFor(String path) {
+    final miss = _missAt[path];
+    if (miss != null &&
+        DateTime.now().millisecondsSinceEpoch - miss > _missTtlMs) {
+      // 時間が経ったので、 1 度だけ読み直させる (= ファイルを戻した時に
+      //   いつまでも白紙のままにならないように)。
+      _missAt.remove(path);
+      _byPath.remove(path);
+      return null;
+    }
+    return _byPath[path];
+  }
+
+  /// このパスの控えを捨てる (= ファイルを差し替えた時などに読み直させる)。
+  static void invalidate(String path) {
+    _byPath.remove(path);
+    _missAt.remove(path);
+    _styleByPath.remove(path);
+    _slideByPath.remove(path);
+  }
 
   /// pptx の 1 枚目から拾った配色 (= ユーザー要望: 表紙のデザインが
   /// サムネイルに出るように)。 背景色と文字色 (どちらも RGB 24bit)。
@@ -158,17 +199,23 @@ class DocPreview {
   /// [path] の中身の先頭を行の配列で返す。 読めなければ空。
   static Future<List<String>> load(String path, String ext) {
     final e = ext.toLowerCase();
-    if (!supports(e)) return Future.value(const []);
+    // ★ 読めない時も「読めなかった」 と控える (_miss)。 控えないと
+    //   cachedFor が毎回 null を返し、 描き直すたびに新しい Future が
+    //   作られて FutureBuilder が待機状態へ戻り、 タイルが点滅する
+    //   (= ユーザー報告: 無くなった txt のサムネイルがチカチカする)。
+    if (!supports(e)) return _miss(path);
     String key;
     try {
       final f = File(path);
-      if (!f.existsSync()) return Future.value(const []);
+      if (!f.existsSync()) return _miss(path);
       final st = f.statSync();
-      if (st.size > _maxBytes) return Future.value(const []);
+      if (st.size > _maxBytes) return _miss(path);
       key = '$path|${st.modified.millisecondsSinceEpoch}|${st.size}';
     } catch (_) {
-      return Future.value(const []);
+      return _miss(path);
     }
+    // ここまで来たら読めるファイルなので、 読めなかった控えは捨てる。
+    _missAt.remove(path);
     final hit = _cache[key];
     if (hit != null) {
       _byPath[path] = hit;
@@ -189,6 +236,9 @@ class DocPreview {
       return lines;
     }).catchError((_) {
       _inFlight.remove(key);
+      // 読み取りに失敗した事も控える (= 点滅を止める)。
+      _byPath[path] = const <String>[];
+      _missAt[path] = DateTime.now().millisecondsSinceEpoch;
       return const <String>[];
     });
     _inFlight[key] = future;
