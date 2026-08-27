@@ -2635,6 +2635,26 @@ class _MindMapScreenState extends State<MindMapScreen>
   bool _splitHeaderHidden = false;
   bool _splitLeftHeaderHidden = false;
 
+  /// 左パネル PDF の縦つまみ (スクロールバー) を今出しているか。
+  ///
+  /// ★ = ユーザー要望「PDF を画面分割にした時に上下のスクロールバーが常時
+  ///   表示されるのが気になる。 スクロールした時とカーソルがスクロールバー
+  ///   付近にホバーになった時だけ表示されるように」。
+  bool _splitLeftPdfBarVisible = false;
+  Timer? _splitLeftPdfBarTimer;
+
+  /// スクロール等の操作があった合図。 少し経つと自動で消える。
+  void _markSplitLeftPdfBar() {
+    if (!_splitLeftPdfBarVisible && mounted) {
+      setState(() => _splitLeftPdfBarVisible = true);
+    }
+    _splitLeftPdfBarTimer?.cancel();
+    _splitLeftPdfBarTimer = Timer(const Duration(milliseconds: 1200), () {
+      if (!mounted) return;
+      setState(() => _splitLeftPdfBarVisible = false);
+    });
+  }
+
   /// 左パネル URL 入力欄
   final TextEditingController _splitLeftUrlCtrl = TextEditingController();
 
@@ -3816,6 +3836,8 @@ class _MindMapScreenState extends State<MindMapScreen>
   void _onSplitLeftPdfWheel(PointerSignalEvent event) {
     if (event is! PointerScrollEvent) return;
     if (_splitLeftLocalPdfPath == null) return;
+    // スクロールしている間だけ縦つまみを出す (= ユーザー要望)。
+    _markSplitLeftPdfBar();
     _splitLeftWheelAccum += event.scrollDelta.dy;
     if (_splitLeftWheelAccum >= 80) {
       _splitLeftWheelAccum = 0;
@@ -6453,6 +6475,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     _floatingVideoEntries.clear();
     // 画面分割パネル PDF オーバーレイの Timer もキャンセル
     _splitPdfPageOverlayTimer?.cancel();
+    _splitLeftPdfBarTimer?.cancel();
     HardwareKeyboard.instance.removeHandler(_handleMainGlobalArrowKey);
     WidgetsBinding.instance.pointerRouter
         .removeGlobalRoute(_globalPointerForMapDrop);
@@ -51340,6 +51363,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                                               .PdfPageLayoutMode.continuous,
                                           scrollDirection: sf_pdf
                                               .PdfScrollDirection.vertical,
+                                          // ★ 右端の縦つまみは常時ではなく、
+                                          //   触っている間だけ出す (= ユーザー
+                                          //   要望: 常時表示が気になる)。
+                                          canShowScrollHead:
+                                              _splitLeftPdfBarVisible,
                                           enableDoubleTapZooming: true,
                                           maxZoomLevel: 8.0,
                                           onPageChanged: (details) {
@@ -60086,24 +60114,51 @@ class _MindMapScreenState extends State<MindMapScreen>
             padding: const EdgeInsets.fromLTRB(14, 8, 14, 4),
             child: Row(children: [
               Expanded(
-                child: TextField(
-                  controller: _todoInputCtrl,
-                  style: const TextStyle(color: Colors.white, fontSize: 13),
-                  decoration: InputDecoration(
-                    isDense: true,
-                    contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 10),
-                    hintText: provider.t('todo.addHint'),
-                    hintStyle:
-                        const TextStyle(color: Colors.white38, fontSize: 12),
-                    filled: true,
-                    fillColor: Colors.white.withValues(alpha: 0.06),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(10),
-                      borderSide: BorderSide.none,
+                // ★ Enter で確定 / Shift+Enter で改行 (= ユーザー要望)。
+                //   複数行を書けるようにした上で、 Shift 無しの Enter だけ
+                //   ここで横取りして確定にする (Shift 付きは素通りさせて
+                //   そのまま改行になる)。 Focus は TextField より内側なので、
+                //   標準の「改行を入れる」 処理より先に判定できる。
+                child: Focus(
+                  onKeyEvent: (node, event) {
+                    if (event is! KeyDownEvent) {
+                      return KeyEventResult.ignored;
+                    }
+                    final k = event.logicalKey;
+                    if (k != LogicalKeyboardKey.enter &&
+                        k != LogicalKeyboardKey.numpadEnter) {
+                      return KeyEventResult.ignored;
+                    }
+                    if (HardwareKeyboard.instance.isShiftPressed) {
+                      return KeyEventResult.ignored; // 改行
+                    }
+                    _addDrawerTodo();
+                    return KeyEventResult.handled; // 確定 (改行しない)
+                  },
+                  child: TextField(
+                    controller: _todoInputCtrl,
+                    // 改行できるように複数行にする。 高くなりすぎない範囲で
+                    //   入力に合わせて伸びる。
+                    minLines: 1,
+                    maxLines: 4,
+                    keyboardType: TextInputType.multiline,
+                    textInputAction: TextInputAction.newline,
+                    style: const TextStyle(color: Colors.white, fontSize: 13),
+                    decoration: InputDecoration(
+                      isDense: true,
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 10),
+                      hintText: provider.t('todo.addHint'),
+                      hintStyle:
+                          const TextStyle(color: Colors.white38, fontSize: 12),
+                      filled: true,
+                      fillColor: Colors.white.withValues(alpha: 0.06),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: BorderSide.none,
+                      ),
                     ),
                   ),
-                  onSubmitted: (_) => _addDrawerTodo(),
                 ),
               ),
               const SizedBox(width: 8),
@@ -169955,6 +170010,39 @@ class _InAppViewerDialog extends StatefulWidget {
 
 class _InAppViewerDialogState extends State<_InAppViewerDialog>
     with TickerProviderStateMixin {
+  /// タイトルバーを隠しているか (= ユーザー要望: 画面分割で開いた PDF の
+  /// ヘッダーを非表示にするボタン)。 隠すと細い帯だけが残り、 カーソルを
+  /// 乗せた時だけ戻すボタンが出る。
+  bool _viewerHeaderHidden = false;
+
+  /// PDF の縦つまみ (スクロールバー) を今出しているか。
+  ///
+  /// ★ = ユーザー要望「上下のスクロールバーが常時表示されるのが気になる。
+  ///   スクロールした時と、 カーソルがスクロールバー付近にホバーになった時
+  ///   だけ表示されるように」。
+  bool _pdfBarVisible = false;
+  Timer? _pdfBarTimer;
+
+  /// スクロール等の操作があった合図。 少し経つと自動で消える。
+  void _markPdfBar({bool hold = false}) {
+    if (!_pdfBarVisible && mounted) {
+      setState(() => _pdfBarVisible = true);
+    }
+    _pdfBarTimer?.cancel();
+    if (hold) return; // ホバー中は消さない
+    _pdfBarTimer = Timer(const Duration(milliseconds: 1200), () {
+      if (!mounted) return;
+      setState(() => _pdfBarVisible = false);
+    });
+  }
+
+  void _releasePdfBar() {
+    _pdfBarTimer?.cancel();
+    _pdfBarTimer = Timer(const Duration(milliseconds: 600), () {
+      if (!mounted) return;
+      setState(() => _pdfBarVisible = false);
+    });
+  }
   // ── 添付ノード ID ──
   // 「プログラムから開く」 で開いた時は最初 null で、 メモや AI を使った
   // 時点 (または「ページに追加」 ボタン) でマップにノードを作って埋まる
@@ -172603,6 +172691,7 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
 
   @override
   void dispose() {
+    _pdfBarTimer?.cancel();
     // 開いていた PDF の控えを外す (= 他の処理が触ってよくなる)。
     final op = _pdfFilePath;
     if (op != null) kOpenPdfPaths.remove(op);
@@ -174031,6 +174120,51 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
       snack('保存できるファイルがありません', const Color(0xFF2A2A3E));
       return;
     }
+    // ── 描き込みが未保存なら、 PDF へ反映するか聞く (= ユーザー要望:
+    //    保存を行わずにダウンロードボタンを押したら確認を出す) ──
+    //    焼き込みは元のファイルへの上書きなので、 「反映しない」 は
+    //    そのまま今のファイルを読むだけでよい。
+    if (pdfDrawHasUnsaved(src)) {
+      final tr = context.read<MindMapProvider>();
+      final ans = await showDialog<String>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dctx) => AlertDialog(
+          backgroundColor: const Color(0xFF22222E),
+          title: Text(tr.t('pdfdraw.applyBeforeDlTitle'),
+              style: const TextStyle(color: Colors.white, fontSize: 16)),
+          content: Text(tr.t('pdfdraw.applyBeforeDlBody'),
+              style: const TextStyle(color: Colors.white70, fontSize: 13)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dctx).pop('cancel'),
+              child: Text(tr.t('btn.cancel'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(dctx).pop('skip'),
+              child: Text(tr.t('pdfdraw.dlWithoutApply'),
+                  style: const TextStyle(color: Colors.white70)),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dctx).pop('apply'),
+              child: Text(tr.t('pdfdraw.applyAndDl')),
+            ),
+          ],
+        ),
+      );
+      if (!mounted) return;
+      if (ans == null || ans == 'cancel') return;
+      if (ans == 'apply') {
+        final ok = await pdfDrawCommitNow(src);
+        if (!mounted) return;
+        if (!ok) {
+          snack(context.read<MindMapProvider>().t('pdf.writeFailed'),
+              const Color(0xFFE53935));
+          return;
+        }
+      }
+    }
     var name = src.split(RegExp(r'[\\/]')).last;
     if (!name.toLowerCase().endsWith('.pdf')) name = '$name.pdf';
     try {
@@ -174762,12 +174896,28 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                             onPointerPanZoomUpdate: (e) =>
                                 _pdfPinchUpdate(e.scale),
                             onPointerSignal: (e) {
+                              // スクロール中だけ縦つまみを出す (= ユーザー
+                              //   要望: 常時表示が気になる)。
+                              _markPdfBar();
                               if (e is PointerScaleEvent) {
                                 _pdfPinchStart();
                                 _pdfPinchUpdate(e.scale);
                                 return;
                               }
                               _pdfWheelZoom(e);
+                            },
+                            // ── 右端の近くにカーソルが来た時も出す
+                            //    (= ユーザー要望: スクロールバー付近に
+                            //    ホバーした時)。 ──
+                            onPointerHover: (e) {
+                              final w = context.size?.width;
+                              if (w == null) return;
+                              if (e.localPosition.dx > w - 48) {
+                                _markPdfBar(hold: true);
+                              } else if (_pdfBarVisible &&
+                                  _pdfBarTimer == null) {
+                                _releasePdfBar();
+                              }
                             },
                             child: sf_pdf.SfPdfViewer.file(
                               _stablePdfFile(_pdfFilePath!),
@@ -174776,6 +174926,9 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                               key: ValueKey(
                                   '${_pdfFilePath}_draw$_pdfDrawReloadTick'),
                               controller: _pdfViewerCtrl,
+                              // ★ 右端の縦つまみは触っている間だけ出す
+                              //   (= ユーザー要望: 常時表示が気になる)。
+                              canShowScrollHead: _pdfBarVisible,
                               // ── ページレイアウト: continuous (Word ライクな縦連続流) ──
                               // ↑/↓ で sub-page スクロール (1/N ページずつ滑らかに移動) を可能にするため。
                               // 1 ページがビューポートに収まる視覚は FractionallySizedBox で表示幅を絞って
@@ -175817,6 +175970,16 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
               child: Column(
                 children: [
                   // ── タイトルバー ──
+                  // ★ 隠せる (= ユーザー要望: 画面分割で開いた PDF の
+                  //   ヘッダーを非表示にできるように)。 隠すと細い帯だけが
+                  //   残り、 カーソルを乗せた時だけ戻すボタンが出る
+                  //   (他の非表示ボタンと同じ動き)。
+                  if (_viewerHeaderHidden)
+                    _SplitPanelHiddenHeader(
+                      onShow: () =>
+                          setState(() => _viewerHeaderHidden = false),
+                    )
+                  else
                   Container(
                     height: 44,
                     color: const Color(0xFF252535),
@@ -175979,6 +176142,18 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                           ),
                         ],
                         _buildPdfSettingsMenu(hasMemoPanel),
+                        // ── ヘッダーを隠す (= ユーザー要望) ──
+                        IconButton(
+                          tooltip: context
+                              .read<MindMapProvider>()
+                              .t('split.hideHeader'),
+                          icon: const Icon(
+                              Icons.keyboard_double_arrow_up_rounded,
+                              color: Colors.white70,
+                              size: 20),
+                          onPressed: () =>
+                              setState(() => _viewerHeaderHidden = true),
+                        ),
                         IconButton(
                           tooltip:
                               context.read<MindMapProvider>().t('btn.close'),
@@ -177574,6 +177749,51 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
     if (src.isEmpty || !await File(src).exists()) {
       snack('保存できるファイルがありません', const Color(0xFF2A2A3E));
       return;
+    }
+    // ── 描き込みが未保存なら、 PDF へ反映するか聞く (= ユーザー要望:
+    //    保存を行わずにダウンロードボタンを押したら確認を出す) ──
+    //    焼き込みは元のファイルへの上書きなので、 「反映しない」 は
+    //    そのまま今のファイルを読むだけでよい。
+    if (pdfDrawHasUnsaved(src)) {
+      final tr = context.read<MindMapProvider>();
+      final ans = await showDialog<String>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dctx) => AlertDialog(
+          backgroundColor: const Color(0xFF22222E),
+          title: Text(tr.t('pdfdraw.applyBeforeDlTitle'),
+              style: const TextStyle(color: Colors.white, fontSize: 16)),
+          content: Text(tr.t('pdfdraw.applyBeforeDlBody'),
+              style: const TextStyle(color: Colors.white70, fontSize: 13)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dctx).pop('cancel'),
+              child: Text(tr.t('btn.cancel'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(dctx).pop('skip'),
+              child: Text(tr.t('pdfdraw.dlWithoutApply'),
+                  style: const TextStyle(color: Colors.white70)),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dctx).pop('apply'),
+              child: Text(tr.t('pdfdraw.applyAndDl')),
+            ),
+          ],
+        ),
+      );
+      if (!mounted) return;
+      if (ans == null || ans == 'cancel') return;
+      if (ans == 'apply') {
+        final ok = await pdfDrawCommitNow(src);
+        if (!mounted) return;
+        if (!ok) {
+          snack(context.read<MindMapProvider>().t('pdf.writeFailed'),
+              const Color(0xFFE53935));
+          return;
+        }
+      }
     }
     var name = src.split(RegExp(r'[\\/]')).last;
     if (!name.toLowerCase().endsWith('.pdf')) name = '$name.pdf';

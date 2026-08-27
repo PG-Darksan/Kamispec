@@ -29,6 +29,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart' as sfpdf;
 import 'package:syncfusion_flutter_pdfviewer/pdfviewer.dart' as sf_pdf;
 
@@ -63,6 +64,27 @@ enum PdfDrawTool {
 /// ホスト (マップ画面) はこれを見てノードのサムネイルを作り直す
 /// (= ユーザー報告: PDF に手書きしてもサムネイルが古いまま)。
 final ValueNotifier<String> pdfDrawBurnedNotifier = ValueNotifier<String>('');
+
+/// まだ PDF へ焼き込んでいない描き込みを持っているレイヤーの受け口
+/// (PDF のパス → 今すぐ焼き込む関数)。
+///
+/// = ユーザー要望「PDF に書き込んだのに保存を行わずにダウンロードボタンを
+///   押したら、 書いた内容を反映させますか？ のダイアログが出るように」。
+/// 未保存かどうかはレイヤーの中 (_dirtySinceCommit) にしか無かったので、
+/// ホスト (ビューア) から見えるようにここへ登録する。
+final Map<String, Future<bool> Function()> _pdfDrawPending =
+    <String, Future<bool> Function()>{};
+
+/// [path] にまだ PDF へ焼き込んでいない描き込みがあるか。
+bool pdfDrawHasUnsaved(String? path) =>
+    path != null && _pdfDrawPending.containsKey(path);
+
+/// [path] の未保存の描き込みを今すぐ焼き込む。 描き込みが無ければ true。
+Future<bool> pdfDrawCommitNow(String? path) async {
+  final f = path == null ? null : _pdfDrawPending[path];
+  if (f == null) return true;
+  return f();
+}
 
 /// 描き込みを PDF ファイル本体へ焼き込む (別 isolate 用のエントリ)。
 ///
@@ -320,7 +342,25 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   String? _sessionBasePath;
 
   /// 前回の保存から線が変わったか (dispose 時の無駄な焼き込みを避ける)。
-  bool _dirtySinceCommit = false;
+  ///
+  /// ★ 値が変わるたびに [_pdfDrawPending] へ出し入れして、 ホスト (ビューア)
+  ///   から「未保存の描き込みがあるか」 を見えるようにする
+  ///   (= ユーザー要望: 保存せずダウンロードした時に確認を出す)。
+  bool _dirtyRaw = false;
+  bool get _dirtySinceCommit => _dirtyRaw;
+  set _dirtySinceCommit(bool v) {
+    _dirtyRaw = v;
+    final p = widget.filePath;
+    if (p == null) return;
+    if (v) {
+      _pdfDrawPending[p] = () async {
+        await _commit(exitAfter: false);
+        return !_dirtyRaw; // 焼き込めたら dirty が下りる
+      };
+    } else {
+      _pdfDrawPending.remove(p);
+    }
+  }
 
   /// 復元処理の最中か (二重に走らせない)。
   bool _restoring = false;
@@ -688,8 +728,62 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       final st = _strokes[i];
       if (st.pageNumber != page) continue;
       if (st.points.isEmpty) continue;
+      // ★ 文字は置いた場所 1 点だけを持っているので、 外接する四角が
+      //   「面積ゼロ」 になり Rect.overlaps が必ず false を返していた
+      //   (= 範囲選択で文字だけ選べない)。 点が入っているかで見る。
+      if (st.tool == PdfDrawTool.text) {
+        if (r.contains(st.points.first)) _sel.add(i);
+        continue;
+      }
+      // ★ ペン / 直線 / 矢印は「外接する四角」 だと、 斜めの線の周りの
+      //   何も無い所を囲っただけで選ばれてしまう。 線そのものが枠に
+      //   掛かっているかで見る (= 重なっていてもそれぞれ選べる)。
+      if (st.tool == PdfDrawTool.pen ||
+          st.tool == PdfDrawTool.line ||
+          st.tool == PdfDrawTool.arrow ||
+          st.tool == PdfDrawTool.check) {
+        if (!r.overlaps(_strokeBox(st, pad: st.width))) continue;
+        var hit = false;
+        for (final p in st.points) {
+          if (r.contains(p)) {
+            hit = true;
+            break;
+          }
+        }
+        if (!hit) {
+          // 点が枠の外でも、 線分が枠を横切っていれば掛かっている。
+          for (var j = 1; j < st.points.length && !hit; j++) {
+            if (_segmentHitsRect(st.points[j - 1], st.points[j], r)) {
+              hit = true;
+            }
+          }
+        }
+        if (hit) _sel.add(i);
+        continue;
+      }
       if (r.overlaps(_strokeBox(st))) _sel.add(i);
     }
+  }
+
+  /// 線分 [a]-[b] が四角 [r] に掛かっているか (端が中でも、 横切りでも)。
+  static bool _segmentHitsRect(Offset a, Offset b, Rect r) {
+    if (r.contains(a) || r.contains(b)) return true;
+    bool cross(Offset p1, Offset p2, Offset p3, Offset p4) {
+      double d(Offset p, Offset q, Offset x) =>
+          (q.dx - p.dx) * (x.dy - p.dy) - (q.dy - p.dy) * (x.dx - p.dx);
+      final d1 = d(p3, p4, p1);
+      final d2 = d(p3, p4, p2);
+      final d3 = d(p1, p2, p3);
+      final d4 = d(p1, p2, p4);
+      return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+          ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+    }
+
+    final tl = r.topLeft, tr = r.topRight, br = r.bottomRight, bl = r.bottomLeft;
+    return cross(a, b, tl, tr) ||
+        cross(a, b, tr, br) ||
+        cross(a, b, br, bl) ||
+        cross(a, b, bl, tl);
   }
 
   /// [pt] (ページ座標 pt) にある図形を探す。 後から描いた物を優先する。
@@ -930,6 +1024,8 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     HardwareKeyboard.instance.addHandler(_onKey);
     // 大きさの数値欄を今の道具の値で埋めておく。
     _seedSizeField();
+    // 前に選んだ印 (✓ / ○ / × …) を読み直す (= ユーザー要望)。
+    unawaited(_loadCheckMark());
     _syncTimer();
   }
 
@@ -963,6 +1059,9 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
 
   @override
   void dispose() {
+    // 未保存の受け口を外す (= 閉じた後に「未保存あり」 と誤判定しない)。
+    final pendingPath = widget.filePath;
+    if (pendingPath != null) _pdfDrawPending.remove(pendingPath);
     HardwareKeyboard.instance.removeHandler(_onKey);
     _sizeCtrl.dispose();
     _sizeFocus.dispose();
@@ -1185,7 +1284,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     if (_tool == PdfDrawTool.check) {
       _pushUndo();
       setState(() {
-        _strokes.add(_checkStroke(geom.pageNumber, pt));
+        _strokes.addAll(_markStrokes(geom.pageNumber, pt));
       });
       _activePointer = null;
       _currentGeom = null;
@@ -1464,6 +1563,48 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   /// 別に持つ (太さを変えるとペンの線まで一緒に変わってしまうため)。
   double _checkSize = 2.5;
 
+  /// 置く印の種類 (= ユーザー要望: ✓ の所を ○ や × 等に切り替えられるように)。
+  /// 'check' | 'circle' | 'cross' | 'triangle' | 'square'。
+  /// 形は下の [_markStrokes] が線 (ペン) の並びとして作るので、 どの形でも
+  /// 既存の描画 / 焼き込み / 消しゴム / 選択がそのまま効く。
+  String _checkMark = 'check';
+  static const String _kCheckMarkPrefsKey = 'pdfDrawCheckMark';
+
+  /// 今選んでいる印のアイコン (道具ボタンに出す)。
+  IconData get _markIcon {
+    for (final m in kCheckMarks) {
+      if (m.id == _checkMark) return m.icon;
+    }
+    return Icons.check_rounded;
+  }
+
+  /// 選んだ印を覚えておく。
+  Future<void> _persistCheckMark() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setString(_kCheckMarkPrefsKey, _checkMark);
+    } catch (_) {}
+  }
+
+  Future<void> _loadCheckMark() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final v = sp.getString(_kCheckMarkPrefsKey);
+      if (v != null && mounted && kCheckMarks.any((m) => m.id == v)) {
+        setState(() => _checkMark = v);
+      }
+    } catch (_) {}
+  }
+
+  /// 選べる印の一覧 (id, 見た目のアイコン)。
+  static const List<({String id, IconData icon})> kCheckMarks = [
+    (id: 'check', icon: Icons.check_rounded),
+    (id: 'circle', icon: Icons.circle_outlined),
+    (id: 'cross', icon: Icons.close_rounded),
+    (id: 'triangle', icon: Icons.change_history_rounded),
+    (id: 'square', icon: Icons.crop_square_rounded),
+  ];
+
   /// チェックの線の太さ (pt)。 大きさとは別で、 常にこの太さで描く
   /// (= ユーザー要望: チェックの太さも 2.5)。 大きさを変えても線の太さは
   /// 変わらないので、 大きい ✓ でも細い線のままになる。
@@ -1667,20 +1808,74 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
 
   /// チェック (✓) 1 個ぶんの線  /// チェック (✓) 1 個ぶんの線 (= ユーザー要望: 簡単に出せるように)。
   /// 太さに合わせて大きさも変える。
-  PdfDrawStroke _checkStroke(int pageNumber, Offset at) {
-    // 大きさはチェック専用の設定から出す (= ユーザー要望: 既定 10)。
+  PdfDrawStroke _checkStroke(int pageNumber, Offset at) =>
+      _markStrokes(pageNumber, at).first;
+
+  /// 置く印 1 個ぶんの線。
+  ///
+  /// ★ = ユーザー要望「✓ の所を ○ や × 等に切り替えることも可能に」。
+  /// どの形も「点をつないだ線」 として作るので、 描画 / PDF への焼き込み /
+  /// 消しゴム / 範囲選択 は今までの仕組みがそのまま使える (× のように
+  /// 2 本に分かれる形だけ、 線を 2 本返す)。
+  List<PdfDrawStroke> _markStrokes(int pageNumber, Offset at) {
+    // 大きさは印専用の設定から出す (= ユーザー要望: 既定 10)。
     final k = (_checkSize / 2.5).clamp(0.2, 8.0);
-    return PdfDrawStroke(
-      pageNumber: pageNumber,
-      tool: PdfDrawTool.pen,
-      points: [
-        at + Offset(-7 * k, 0),
-        at + Offset(-2 * k, 6 * k),
-        at + Offset(9 * k, -8 * k),
-      ],
-      color: _color,
-      width: _kCheckStrokeWidth,
-    );
+    PdfDrawStroke line(List<Offset> pts) => PdfDrawStroke(
+          pageNumber: pageNumber,
+          tool: PdfDrawTool.pen,
+          points: pts,
+          color: _color,
+          width: _kCheckStrokeWidth,
+        );
+    switch (_checkMark) {
+      case 'circle':
+        // まるは多角形で近似する (線の仕組みのまま扱えるように)。
+        const int seg = 24;
+        final r = 8.0 * k;
+        return [
+          line([
+            for (var i = 0; i <= seg; i++)
+              at +
+                  Offset(r * math.cos(i * 2 * math.pi / seg),
+                      r * math.sin(i * 2 * math.pi / seg)),
+          ])
+        ];
+      case 'cross':
+        final r = 7.0 * k;
+        return [
+          line([at + Offset(-r, -r), at + Offset(r, r)]),
+          line([at + Offset(r, -r), at + Offset(-r, r)]),
+        ];
+      case 'triangle':
+        final r = 8.0 * k;
+        return [
+          line([
+            at + Offset(0, -r),
+            at + Offset(r * 0.87, r * 0.5),
+            at + Offset(-r * 0.87, r * 0.5),
+            at + Offset(0, -r),
+          ])
+        ];
+      case 'square':
+        final r = 7.0 * k;
+        return [
+          line([
+            at + Offset(-r, -r),
+            at + Offset(r, -r),
+            at + Offset(r, r),
+            at + Offset(-r, r),
+            at + Offset(-r, -r),
+          ])
+        ];
+      default: // 'check'
+        return [
+          line([
+            at + Offset(-7 * k, 0),
+            at + Offset(-2 * k, 6 * k),
+            at + Offset(9 * k, -8 * k),
+          ])
+        ];
+    }
   }
 
   void _onPointerSignal(PointerSignalEvent e) {
@@ -2230,7 +2425,43 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
             toolBtn(PdfDrawTool.pen, Icons.gesture_rounded, 'pdfdraw.pen'),
             // 消しゴム / チェック (= ユーザー要望)。
             toolBtn(PdfDrawTool.eraser, null, 'pdfdraw.eraser'),
-            toolBtn(PdfDrawTool.check, Icons.check_rounded, 'pdfdraw.check'),
+            toolBtn(PdfDrawTool.check, _markIcon, 'pdfdraw.check'),
+            // ── 置く印の種類 (= ユーザー要望: ✓ の所を ○ や × 等に
+            //    切り替えられるように)。 チェックの道具を選んでいる時だけ
+            //    出す。 ──
+            if (_tool == PdfDrawTool.check)
+              for (final m in kCheckMarks)
+                Tooltip(
+                  message: widget.tr('pdfdraw.check'),
+                  child: InkWell(
+                    onTap: () {
+                      setState(() => _checkMark = m.id);
+                      unawaited(_persistCheckMark());
+                    },
+                    borderRadius: BorderRadius.circular(6),
+                    child: Container(
+                      width: 28,
+                      height: 30,
+                      alignment: Alignment.center,
+                      margin: const EdgeInsets.symmetric(horizontal: 1),
+                      decoration: BoxDecoration(
+                        color: _checkMark == m.id
+                            ? const Color(0xFF6C63FF)
+                            : Colors.white.withValues(alpha: 0.06),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(
+                            color: _checkMark == m.id
+                                ? const Color(0xFF6C63FF)
+                                : Colors.white24),
+                      ),
+                      child: Icon(m.icon,
+                          size: 16,
+                          color: _checkMark == m.id
+                              ? Colors.white
+                              : Colors.white70),
+                    ),
+                  ),
+                ),
             toolBtn(PdfDrawTool.line, Icons.horizontal_rule_rounded, 'pdfdraw.line'),
             toolBtn(PdfDrawTool.arrow, Icons.north_east_rounded, 'pdfdraw.arrow'),
             toolBtn(PdfDrawTool.rect, Icons.crop_square_rounded, 'pdfdraw.rect'),
