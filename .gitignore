@@ -57,5 +57,10 @@ secrets.json
 *token*.txt
 
 # WACK (ストア審査の事前検査) の作業一式。証明書と 74MB の msix を含むので上げない。
-wack/
+# WACK の作業フォルダー。 スクリプトは tool/msix/ に置いて追跡する
+#   (= マシンを失うと手順が消えるため)。 ここには成果物と鍵だけ残す。
+wack/*.msix
+wack/*.pfx
+wack/wack_report.*
+wack/*.xml
 

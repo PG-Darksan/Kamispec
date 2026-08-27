@@ -1353,6 +1353,15 @@ String stripToolEchoFromReply(String reply) {
   return cleaned.isEmpty ? reply.trim() : cleaned;
 }
 
+/// Microsoft Store 提出用ビルドか。
+///
+/// ★ ストアの規約では、 ストア外から実行ファイルを取ってきて動かすことが
+///   できない。 そのため
+///     flutter build windows --release --dart-define=STORE_BUILD=true …
+///   で立てて、 ffmpeg の自動ダウンロードと汎用コマンド実行を落とす。
+///   zip 配布版 (既定) は今までどおり動く。
+const bool kStoreBuild = bool.fromEnvironment('STORE_BUILD');
+
 /// アプリが自動インストールした ffmpeg/ffprobe を置くフォルダー。
 Future<Directory> ffmpegInstallDir() async {
   final base = await getApplicationSupportDirectory();
@@ -1367,6 +1376,13 @@ Future<Directory> ffmpegInstallDir() async {
 /// 画面の外に置いてある。
 Future<String?> findFfmpegExe() async {
   if (Platform.isWindows) {
+    // ★ まずアプリ本体の隣を見る (= 同梱した時に使えるように)。 ストア版は
+    //   自動ダウンロードを落としてあるので、 同梱するならここに置く。
+    try {
+      final near = File('${File(Platform.resolvedExecutable).parent.path}'
+          '${Platform.pathSeparator}ffmpeg.exe');
+      if (await near.exists()) return near.path;
+    } catch (_) {}
     try {
       final dir = await ffmpegInstallDir();
       final p = '${dir.path}${Platform.pathSeparator}ffmpeg.exe';
@@ -10451,10 +10467,17 @@ class _MindMapScreenState extends State<MindMapScreen>
                       onChanged: (v) => setS(() => query = v),
                     ),
                     const SizedBox(height: 8),
-                    SizedBox(
-                      height: listH,
-                      child: Scrollbar(
-                        child: ListView.builder(
+                    // ★ 一覧は「余った高さ」 に合わせて縮める (= ユーザー報告:
+                    //   閉じるボタンが枠からはみ出す)。 高さを決め打ちに
+                    //   していたため、 見出し + 作成先 + 検索欄 + 一覧 +
+                    //   閉じる の合計が外枠 (_positionNearAnchor の
+                    //   ConstrainedBox) を超え、 下のボタンが外へ溢れていた。
+                    //   Flexible なら足りない分は一覧が縮んで収まる。
+                    Flexible(
+                      child: ConstrainedBox(
+                        constraints: BoxConstraints(maxHeight: listH),
+                        child: Scrollbar(
+                          child: ListView.builder(
                           itemCount: shown.length,
                           itemBuilder: (_, i) {
                             final c = shown[i];
@@ -10507,6 +10530,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                               },
                             );
                           },
+                          ),
                         ),
                       ),
                     ),
@@ -10522,7 +10546,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                 ),
               ),
             ),
-            Size(dlgW, listH + 170),
+            // 見出し + 作成先の行 + 検索欄 + 一覧 + 閉じる + 余白の合計。
+            //   少なすぎると外枠が中身より小さくなる (上の Flexible で
+            //   溢れはしないが、 一覧が不必要に縮む)。
+            Size(dlgW, listH + 210),
           );
         },
       ),
@@ -10630,13 +10657,141 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// アイコンを設定できるように)。 ボタンのアイコン設定 (アップロードした
   /// 画像 / 選んだ形・色) をそのまま使う。 Windows は .ico、 Android は PNG。
   Future<(String, Uint8List)?> _renderShortcutIconFiles(
-      String commandId, Map<String, dynamic> cmd) async {
+          String commandId, Map<String, dynamic> cmd) =>
+      _renderIconFiles(
+        saveName: commandId,
+        imagePath: _customIconImages[commandId],
+        icon: _resolveCustomIcon(
+            commandId, (cmd['icon'] as IconData?) ?? Icons.circle),
+        color: (cmd['color'] as Color?) ?? const Color(0xFF4FC3F7),
+      );
+
+  /// ショートカットのアイコンを選ばせる。
+  ///
+  /// ★ = ユーザー要望「ショートカットを作成する時にアイコンをユーザーが
+  ///   決められるように」。 戻り値は選んだアイコン (null = アプリのアイコンの
+  ///   まま)。 ダイアログを閉じた時は false を返して作成を中止する。
+  Future<(bool, IconData?)> _pickShortcutIcon(
+      MindMapProvider provider, MindMapPage page) async {
+    IconData? picked =
+        pageIconFor(provider, page, pageTypeDefaultIcon(page.pageType));
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => StatefulBuilder(
+        builder: (sctx, setD) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          title: Row(children: [
+            const Icon(Icons.rocket_launch_rounded,
+                color: Color(0xFF4FC3F7), size: 20),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(provider.t('shortcut.pickIconTitle'),
+                  style: const TextStyle(color: Colors.white, fontSize: 15)),
+            ),
+          ]),
+          content: SizedBox(
+            width: 380,
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              // アプリのアイコンのまま作る (= 従来の動き)。
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: () => setD(() => picked = null),
+                  icon: Icon(
+                      picked == null
+                          ? Icons.radio_button_checked_rounded
+                          : Icons.radio_button_unchecked_rounded,
+                      size: 16,
+                      color: picked == null
+                          ? const Color(0xFF4FC3F7)
+                          : Colors.white38),
+                  label: Text(provider.t('shortcut.useAppIcon'),
+                      style: TextStyle(
+                          fontSize: 12,
+                          color: picked == null
+                              ? Colors.white
+                              : Colors.white60)),
+                ),
+              ),
+              const Divider(color: Colors.white12, height: 12),
+              SizedBox(
+                height: 220,
+                child: GridView.builder(
+                  gridDelegate:
+                      const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 6,
+                          mainAxisSpacing: 6,
+                          crossAxisSpacing: 6),
+                  itemCount: kPageIconChoices.length,
+                  itemBuilder: (_, i) {
+                    final ic = kPageIconChoices[i];
+                    final sel = picked?.codePoint == ic.codePoint;
+                    return InkWell(
+                      borderRadius: BorderRadius.circular(8),
+                      onTap: () => setD(() => picked = ic),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: sel
+                              ? const Color(0xFF4FC3F7).withValues(alpha: 0.22)
+                              : Colors.white.withValues(alpha: 0.05),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                              color: sel
+                                  ? const Color(0xFF4FC3F7)
+                                  : Colors.white12),
+                        ),
+                        child: Icon(ic,
+                            size: 20,
+                            color: sel ? Colors.white : Colors.white70),
+                      ),
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(provider.t('shortcut.taskbarHint'),
+                    style: const TextStyle(
+                        color: Colors.white38, fontSize: 11, height: 1.4)),
+              ),
+            ]),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dctx, false),
+              child: Text(provider.t('btn.cancel'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dctx, true),
+              child: Text(provider.t('shortcut.create')),
+            ),
+          ],
+        ),
+      ),
+    );
+    return (ok == true, picked);
+  }
+
+  /// ショートカット用のアイコン画像を作る汎用版。
+  ///
+  /// [imagePath] があればその画像を、 無ければ [color] の角丸四角に [icon] を
+  /// 白抜きで描く。 Windows は .ico (256px の PNG 入り)、 Android は PNG を返す。
+  /// ※ .lnk のアイコンは .ico か exe/dll しか受け付けない。 PNG を渡すと
+  ///   アイコンが空白になる。
+  Future<(String, Uint8List)?> _renderIconFiles({
+    required String saveName,
+    IconData? icon,
+    Color? color,
+    String? imagePath,
+  }) async {
     try {
       const double size = 256;
       final recorder = ui.PictureRecorder();
       final canvas = Canvas(recorder);
       const rect = Rect.fromLTWH(0, 0, size, size);
-      final imgPath = _customIconImages[commandId];
+      final imgPath = imagePath;
       var drewImage = false;
       if (imgPath != null && imgPath.isNotEmpty) {
         final f = File(imgPath);
@@ -10654,18 +10809,16 @@ class _MindMapScreenState extends State<MindMapScreen>
         }
       }
       if (!drewImage) {
-        final color = (cmd['color'] as Color?) ?? const Color(0xFF4FC3F7);
         canvas.drawRRect(
             RRect.fromRectAndRadius(rect, const Radius.circular(52)),
-            Paint()..color = color);
+            Paint()..color = color ?? const Color(0xFF4FC3F7));
         // ★ 動的な IconData を作らないこと (= `IconData(codePoint, ...)`)。
         //   Flutter のビルドツールが「どのアイコンを使うか」 を静的に追えず、
         //   Android の release ビルドが
         //     "Avoid non-constant invocations of IconData"
         //   で落ちる。 候補表から codePoint で引く _resolveCustomIcon
         //   (= 描画側と同じ道具) に揃える。
-        final iconData = _resolveCustomIcon(
-            commandId, (cmd['icon'] as IconData?) ?? Icons.circle);
+        final iconData = icon ?? Icons.circle;
         final tp = TextPainter(
           text: TextSpan(
             text: String.fromCharCode(iconData.codePoint),
@@ -10699,8 +10852,9 @@ class _MindMapScreenState extends State<MindMapScreen>
       final folder =
           Directory('${dir.path}${Platform.pathSeparator}button_icons');
       if (!folder.existsSync()) folder.createSync(recursive: true);
-      final icoFile = File(
-          '${folder.path}${Platform.pathSeparator}shortcut_$commandId.ico');
+      final safe = saveName.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
+      final icoFile =
+          File('${folder.path}${Platform.pathSeparator}shortcut_$safe.ico');
       await icoFile.writeAsBytes(ico.toBytes());
       return (icoFile.path, png);
     } catch (_) {
@@ -62917,6 +63071,9 @@ class _MindMapScreenState extends State<MindMapScreen>
       key: ValueKey(page.id),
       index: i,
       page: page,
+      // ピン止めしているページは一目で分かるようにする (= ユーザー要望)。
+      isPinned: provider.isPageFavorite(page.id),
+      onTogglePin: () => provider.toggleFavoritePage(page.id),
       isActive: isActive,
       isAutoSync: provider.isPageAutoSync(page.id),
       sizeText: MindMapProvider.formatBytes(sizeBytes),
@@ -64082,12 +64239,14 @@ class _MindMapScreenState extends State<MindMapScreen>
               label: provider.t('page.delete')),
         // ── 区切り ──
         const PopupMenuDivider(),
-        // ── お気に入り (現在開いているページに対して) ──
+        // ── ピン止め (現在開いているページに対して) ──
+        //    ★ アイコンは画鋲にする (= ユーザー要望: 分かりやすく)。
+        //      中身はお気に入りの仕組みをそのまま使っている。
         _menuItem<_PageAction>(
             value: _PageAction.toggleFavorite,
             icon: provider.isPageFavorite(page.id)
-                ? Icons.star_rounded
-                : Icons.star_outline_rounded,
+                ? Icons.push_pin_rounded
+                : Icons.push_pin_outlined,
             iconColor: const Color(0xFFFFC107),
             label: provider.isPageFavorite(page.id)
                 ? provider.t('page.unpin')
@@ -64256,10 +64415,25 @@ class _MindMapScreenState extends State<MindMapScreen>
           () async {
             // ページのショートカットも同じ作成先を使う (= ユーザー要望)。
             await _loadShortcutDestDir();
+            if (!mounted) return;
+            // ★ アイコンを選ばせてから作る (= ユーザー要望)。
+            final (go, chosen) = await _pickShortcutIcon(provider, page);
+            if (!go || !mounted) return;
+            (String, Uint8List)? iconFiles;
+            if (chosen != null) {
+              iconFiles = await _renderIconFiles(
+                saveName: 'page_${page.id}',
+                icon: chosen,
+                color: _pageIconColorOf(page.pageType),
+              );
+              if (!mounted) return;
+            }
             final ok = await HomeShortcutService.pinMapShortcut(
                 pageId: page.id,
                 label: page.name,
-                destDir: _shortcutDestDir);
+                destDir: _shortcutDestDir,
+                iconPath: iconFiles?.$1,
+                iconPng: iconFiles?.$2);
             if (!mounted) return;
             final isWin = !kIsWeb && Platform.isWindows;
             _appSnack(
@@ -75068,7 +75242,62 @@ class _MindMapScreenState extends State<MindMapScreen>
   Future<void> _openOcrImageSearch() async {
     final path = await _pickImageForOcr();
     if (path == null || !mounted) return;
+    // ★ 読み取る前に AI を選ばせる (= ユーザー要望: 読み込んだ後で選ぶのは
+    //   良くない。 Gemini 以外でも使えるなら、 まず選んでから読み込む)。
+    if (!await _confirmOcrModel()) return;
     await _runOcrOn(path);
+  }
+
+  /// 読み取りに使う AI を選ぶ。 「読み取る」 を押したら true。
+  ///
+  /// モデルはアプリ共通の設定 (relayModel) なので、 ここで選び直すと
+  /// 他の AI 機能も同じモデルになる (フラッシュカード等と同じ扱い)。
+  Future<bool> _confirmOcrModel() async {
+    final provider = context.read<MindMapProvider>();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Row(children: [
+          const Icon(Icons.document_scanner_rounded,
+              color: Color(0xFF4FC3F7), size: 22),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(provider.t('ocr.pickModelTitle'),
+                style: const TextStyle(color: Colors.white, fontSize: 16)),
+          ),
+        ]),
+        content: SizedBox(
+          width: 380,
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(provider.t('ocr.pickModelBody'),
+                  style: const TextStyle(
+                      color: Colors.white60, fontSize: 12, height: 1.5)),
+            ),
+            const SizedBox(height: 14),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: _AiModelPicker(provider: provider),
+            ),
+          ]),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, false),
+            child: Text(provider.t('btn.cancel'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(dctx, true),
+            icon: const Icon(Icons.document_scanner_rounded, size: 16),
+            label: Text(provider.t('ocr.read')),
+          ),
+        ],
+      ),
+    );
+    return ok == true && mounted;
   }
 
   /// [path] の画像を読み取って結果を出す。
@@ -131622,7 +131851,10 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
         content: Text(widget.provider.t('video.ffmpegNotFoundBody'),
             style: const TextStyle(color: Colors.white70, fontSize: 13)),
         actions: [
-          if (Platform.isWindows)
+          // ★ ストア提出版では「自動インストール」 を出さない (= ストア外から
+          //   実行ファイルを取ってきて動かすことが禁じられているため)。
+          //   代わりに配布元の案内 (下の「入手方法」) だけ残す。
+          if (Platform.isWindows && !kStoreBuild)
             ElevatedButton.icon(
               style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFFFF7043),
@@ -131660,6 +131892,8 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
   /// (= GPL 配布の問題を回避)。
   Future<void> _installFfmpegWindows() async {
     if (!Platform.isWindows) return;
+    // ストア提出版では実行しない (ボタンも出していないが、 二重に塞ぐ)。
+    if (kStoreBuild) return;
     final progress = ValueNotifier<double>(0);
     final status = ValueNotifier<String>('ダウンロードを準備しています…');
     bool canceled = false;
@@ -143811,6 +144045,14 @@ class _DrawerTile extends StatelessWidget {
   /// drawer の複数選択モードでこのタイルが選択中かどうか
   final bool isMultiSelected;
 
+  /// ピン止めしているページか (= ユーザー要望: 分かりやすく)。
+  /// 一覧の先頭に寄せられるだけで見た目が変わらなかったので、 画鋲の印と
+  /// 枠の色で示す。
+  final bool isPinned;
+
+  /// 画鋲の印を押した時 (= その場でピン止めを外せる)。
+  final VoidCallback? onTogglePin;
+
   /// タイルの長押し時の追加コールバック (onMore とは別に複数選択トリガー用)
   /// null なら従来通り onMore が呼ばれる。
   final VoidCallback? onLongPress;
@@ -143851,6 +144093,8 @@ class _DrawerTile extends StatelessWidget {
       this.sizeText,
       this.shortcutLabel,
       this.isMultiSelected = false,
+      this.isPinned = false,
+      this.onTogglePin,
       this.onLongPress});
   @override
   Widget build(BuildContext context) {
@@ -143860,12 +144104,19 @@ class _DrawerTile extends StatelessWidget {
       margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
       decoration: BoxDecoration(
         // 複数選択中はシアン背景で目立たせる (active の紫より優先)
+        // 複数選択中はシアン背景で目立たせる (active の紫より優先)。
+        //   ピン止めは、 その 2 つに負ける弱い色付けにする (= 選択中や
+        //   編集中の方が大事なので、 それを消さない)。
         color: isMultiSelected
             ? const Color(0xFF00E5FF).withValues(alpha: 0.18)
             : (isActive
                 ? Color.alphaBlend(
                     Colors.white.withValues(alpha: 0.10), baseColor)
-                : baseColor.withValues(alpha: 0.16)),
+                : (isPinned
+                    ? Color.alphaBlend(
+                        const Color(0xFFFFC107).withValues(alpha: 0.10),
+                        baseColor.withValues(alpha: 0.16))
+                    : baseColor.withValues(alpha: 0.16))),
         borderRadius: BorderRadius.circular(10),
         border: isMultiSelected
             ? Border.all(
@@ -143873,7 +144124,10 @@ class _DrawerTile extends StatelessWidget {
                 width: 1.5)
             : (isActive
                 ? Border.all(color: Colors.white.withValues(alpha: 0.28))
-                : Border.all(color: baseColor.withValues(alpha: 0.22))),
+                : (isPinned
+                    ? Border.all(
+                        color: const Color(0xFFFFC107).withValues(alpha: 0.45))
+                    : Border.all(color: baseColor.withValues(alpha: 0.22)))),
       ),
       child: ListTile(
         dense: true,
@@ -143990,6 +144244,29 @@ class _DrawerTile extends StatelessWidget {
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
+            // ── ピン止めの印 (= ユーザー要望: ピン留めされているページも
+            //    分かりやすく)。 押すとその場でピン止めを外せる。 ──
+            if (isPinned)
+              Tooltip(
+                message: provider.t('page.unpin'),
+                child: GestureDetector(
+                  onTap: onTogglePin,
+                  child: Container(
+                    margin: const EdgeInsets.only(right: 2),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFC107).withValues(alpha: 0.18),
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(
+                          color:
+                              const Color(0xFFFFC107).withValues(alpha: 0.6)),
+                    ),
+                    child: const Icon(Icons.push_pin_rounded,
+                        size: 13, color: Color(0xFFFFC107)),
+                  ),
+                ),
+              ),
             // ── 共同編集中の印 (= ユーザー要望: どのページを共有中か
             //    一覧から分かるように)。 セッションを張っているページだけ。 ──
             if (provider.liveActive && provider.livePageId == page.id)

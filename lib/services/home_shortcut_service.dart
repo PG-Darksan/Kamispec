@@ -112,10 +112,16 @@ class HomeShortcutService {
 
   /// ホーム画面 (Android) / デスクトップ (Windows) にマップのショートカットを作成。
   /// 成功で true。
+  /// [iconPath] は Windows 用の .ico のパス、 [iconPng] は Android 用の PNG。
+  /// どちらも省略するとアプリ本体のアイコンになる (= 従来の動き)。
+  /// ★ = ユーザー要望「ショートカットを作成する時にアイコンをユーザーが
+  ///   決められるように」。
   static Future<bool> pinMapShortcut({
     required String pageId,
     required String label,
     String? destDir,
+    String? iconPath,
+    Uint8List? iconPng,
   }) async {
     if (kIsWeb) return false;
     try {
@@ -123,12 +129,13 @@ class HomeShortcutService {
         final ok = await _ch.invokeMethod<bool>('pinMapShortcut', {
           'pageId': pageId,
           'label': label,
+          'iconPng': iconPng,
         });
         return ok ?? false;
       }
       if (Platform.isWindows) {
         return _createWindowsShortcut('--page=$pageId', label,
-            destDir: destDir);
+            destDir: destDir, iconPath: iconPath);
       }
     } catch (_) {}
     return false;

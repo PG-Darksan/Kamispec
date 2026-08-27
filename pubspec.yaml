@@ -1,7 +1,11 @@
 name: mindmap_app
-description: HisatorNotebook - Mind Map App with notes and YouTube embedding
+description: >-
+  HisatorNotebook - mind maps, notes, PDF and documents in one workspace,
+  with optional generative AI assistance.
 publish_to: 'none'
-version: 1.0.0+34
+# ビルド番号 (b205 …) を正として揃える。 msix_version も同じ番号にする
+#   (= ストア用は 4 桁・末尾 0)。 リリースのたびに両方を上げること。
+version: 1.0.0+206
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -310,9 +314,23 @@ msix_config:
   publisher_display_name: Darksan
   identity_name: Darksan.Kamispec
   publisher: CN=BB5643C0-04E4-44B9-839E-09B54138A1D4
-  msix_version: 1.0.36.0
+  # ★ 提出のたびに必ず上げる。 Partner Center は同一以下のバージョンを弾く。
+  #   pubspec の version (1.0.0+206) と番号を合わせてある。
+  msix_version: 1.0.206.0
   logo_path: windows/runner/resources/msix_logo.png
-  capabilities: internetClient, microphone, removableStorage
+  # ★ capabilities は「実際に使う物だけ」 を宣言する。
+  #   - internetClient : クラウド同期 / AI / 決済
+  #   - microphone     : 音声入力 (speech to text)
+  #   - webcam         : 無音カメラ / QR 読み取り (camera_windows)
+  #     これが無いとパッケージ版では「設定 > プライバシー > カメラ」 に項目が
+  #     出ず、 例外も握られているため**落ちずに黙って動かない**。 zip 版では
+  #     動くので手元では再現しない。
+  #   - removableStorage は外した。 runFullTrust があるので通常のユーザー権限で
+  #     ファイルに触れており、 宣言しても何も足していなかった。
+  capabilities: internetClient, microphone, webcam
+  # ★ 日本語を主言語として宣言する。 無いと en-us だけになり、 ストアの
+  #   「対応言語」 が英語のみ表示になる。
+  languages: ja-jp, en-us
   output_name: HisatorNotebook
   store: true
   # 証明書を OS にインストールするか聞く対話プロンプトを出さない

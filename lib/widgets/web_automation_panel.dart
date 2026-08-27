@@ -67,6 +67,12 @@ enum AutoCommandPolicy { off, ask, always }
 ///
 /// AI にフローを組ませることもできる以上、 「全部任せる」 にしていても
 /// 取り返しの付かない操作だけは通さない (= 安全側の線引き)。
+/// Microsoft Store 提出用ビルドか (= 画面側と同じ dart-define)。
+///
+/// ★ 任意のコマンドを実行できる仕組みは、 ストアでは「コード実行」 と
+///   みなされる。 ストア版では実行も設定 UI も落とす。
+const bool kStoreBuild = bool.fromEnvironment('STORE_BUILD');
+
 bool isDangerousCommand(String raw) {
   final c = raw.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
   const patterns = [
@@ -1424,6 +1430,13 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
       if (mounted) setState(() => _status = 'コマンド実行はパソコン版だけです');
       return false;
     }
+    // ★ ストア提出版ではコマンド実行の仕組みごと使わない。
+    if (kStoreBuild) {
+      if (mounted) {
+        setState(() => _status = 'この版ではコマンド実行は使えません');
+      }
+      return false;
+    }
     if (_cmdPolicy == AutoCommandPolicy.off) {
       if (mounted) {
         setState(() => _status = 'コマンド実行は「使わない」 設定です (上の設定で変えられます)');
@@ -2075,6 +2088,9 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
   /// パソコン版だけ。 既定は「使わない」 で、 自分で切り替えるまで動かない。
   Widget _buildCommandRow(MindMapProvider provider) {
     if (!_isDesktopHost) return const SizedBox.shrink();
+    // ★ ストア提出版ではコマンド実行の設定ごと出さない (= 任意コマンドを
+    //   実行できる仕組みは「コード実行」 とみなされるため)。
+    if (kStoreBuild) return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.fromLTRB(8, 0, 8, 6),
       child: Container(
