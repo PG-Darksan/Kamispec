@@ -19500,6 +19500,18 @@ class MindMapProvider extends ChangeNotifier {
       'es': 'Recargar', 'fr': 'Recharger', 'de': 'Neu laden',
       'pt': 'Recarregar', 'ru': 'Обновить',
     },
+    // ── 分割パネル (PDF / Web) のヘッダーを隠す (= ユーザー要望) ──
+    'split.hideHeader': {
+      'ja': 'ヘッダーを隠す',
+      'en': 'Hide header',
+      'zh': '隐藏标题栏',
+      'ko': '헤더 숨기기',
+      'es': 'Ocultar encabezado',
+      'fr': 'Masquer l’en-tête',
+      'de': 'Kopfzeile ausblenden',
+      'pt': 'Ocultar cabeçalho',
+      'ru': 'Скрыть заголовок',
+    },
     'split.hidePaneName': {
       'ja': '各画面のページ名を隠す',
       'en': 'Hide the page name in each pane',
@@ -46254,6 +46266,30 @@ class MindMapProvider extends ChangeNotifier {
     },
     // 「サブテーマ」 は馴染みが無いので 「フォルダー」 と呼ぶ (= ユーザー要望)
     // ── ToDo (= ユーザー要望: タイムラインの代わりのチェックリスト) ──
+    // ── ページ一覧 / ToDo の左右入れ替え (= ユーザー要望) ──
+    // ── ドロワーから「どの分割画面で開くか」 を選ぶ (= ユーザー要望) ──
+    'drawer.openInPane': {
+      'ja': 'どの画面で開きますか',
+      'en': 'Open in which pane?',
+      'zh': '在哪个窗格中打开',
+      'ko': '어느 화면에서 열까요',
+      'es': '¿En qué panel abrir?',
+      'fr': 'Ouvrir dans quel volet ?',
+      'de': 'In welchem Bereich öffnen?',
+      'pt': 'Abrir em qual painel?',
+      'ru': 'В какой панели открыть?',
+    },
+    'drawer.swapTabs': {
+      'ja': '左右を入れ替える',
+      'en': 'Swap left/right',
+      'zh': '左右互换',
+      'ko': '좌우 바꾸기',
+      'es': 'Intercambiar izquierda/derecha',
+      'fr': 'Permuter gauche/droite',
+      'de': 'Links/rechts tauschen',
+      'pt': 'Trocar esquerda/direita',
+      'ru': 'Поменять местами',
+    },
     'drawer.todo': {
       'ja': 'ToDo',
       'en': 'To-do',

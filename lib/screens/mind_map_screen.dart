@@ -2629,6 +2629,12 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 左パネルのモード ('pdf' | 'web')
   String _splitLeftMode = 'pdf';
 
+  /// 分割パネルのヘッダーを隠しているか (= ユーザー要望: PDF 等のヘッダーを
+  /// 非表示にできるように)。 隠すと細い帯だけが残り、 カーソルを乗せた時
+  /// だけ「表示する」 の印が出る。 パネルを閉じると元に戻す。
+  bool _splitHeaderHidden = false;
+  bool _splitLeftHeaderHidden = false;
+
   /// 左パネル URL 入力欄
   final TextEditingController _splitLeftUrlCtrl = TextEditingController();
 
@@ -2897,6 +2903,8 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 残す。 `_setSplitOpen(false)` から左パネル close 部分だけを除いた版。
   void _closeSplitRightPanelOnly() {
     setState(() {
+      // 次に開いた時はヘッダーが出ている状態から始める。
+      _splitHeaderHidden = false;
       _splitOpen = false;
       _splitLocalOfficePath = null;
       _splitOfficeFileName = '';
@@ -2921,6 +2929,8 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   void _closeSplitLeftPanel() {
     setState(() {
+      // 次に開いた時はヘッダーが出ている状態から始める。
+      _splitLeftHeaderHidden = false;
       _splitLeftOpen = false;
       _splitLeftLocalPdfPath = null;
       _splitLeftCurrentUrl = '';
@@ -50909,6 +50919,13 @@ class _MindMapScreenState extends State<MindMapScreen>
                 // ── 上部バー ──
                 // mode に応じてアイコン・タイトル表示が変わる。
                 // 右クリックや「URL 入力」 ボタンで mode 切替可能。
+                if (_splitLeftHeaderHidden)
+                  // 隠している時は細い帯だけ (= ユーザー要望)。
+                  _SplitPanelHiddenHeader(
+                    onShow: () =>
+                        setState(() => _splitLeftHeaderHidden = false),
+                  )
+                else
                 Container(
                   height: 40,
                   padding: const EdgeInsets.symmetric(horizontal: 6),
@@ -51124,6 +51141,19 @@ class _MindMapScreenState extends State<MindMapScreen>
                           constraints:
                               const BoxConstraints(minWidth: 28, minHeight: 28),
                           onPressed: _openSplitLeftAsFullscreen,
+                        ),
+                        // ヘッダーを隠す (= ユーザー要望)。
+                        IconButton(
+                          icon: const Icon(
+                              Icons.keyboard_double_arrow_up_rounded,
+                              color: Colors.white70,
+                              size: 18),
+                          tooltip: provider.t('split.hideHeader'),
+                          padding: EdgeInsets.zero,
+                          constraints:
+                              const BoxConstraints(minWidth: 28, minHeight: 28),
+                          onPressed: () =>
+                              setState(() => _splitLeftHeaderHidden = true),
                         ),
                         IconButton(
                           icon: const Icon(Icons.close_rounded,
@@ -51849,6 +51879,14 @@ class _MindMapScreenState extends State<MindMapScreen>
                   // 旧仕様で右パネルだけ持っていた「位置切替 / 再読込 / URL バー
                   // 展開 / 検索アイコン / PDF 開く」 は、 統一性を優先して
                   // ヘッダーから外した (= 機能自体は他経路で代替できる)。
+                  if (_splitHeaderHidden)
+                    // 隠している時は細い帯だけ (= ユーザー要望: カーソルを
+                    //   乗せるまで表示ボタンを出さない)。
+                    _SplitPanelHiddenHeader(
+                      onShow: () =>
+                          setState(() => _splitHeaderHidden = false),
+                    )
+                  else
                   Container(
                     height: 40,
                     padding: const EdgeInsets.symmetric(horizontal: 6),
@@ -52066,6 +52104,19 @@ class _MindMapScreenState extends State<MindMapScreen>
                               constraints: const BoxConstraints(
                                   minWidth: 28, minHeight: 28),
                               onPressed: _splitReturnToFullscreen,
+                            ),
+                            // ヘッダーを隠す (= ユーザー要望)。
+                            IconButton(
+                              icon: const Icon(
+                                  Icons.keyboard_double_arrow_up_rounded,
+                                  color: Colors.white70,
+                                  size: 18),
+                              tooltip: provider.t('split.hideHeader'),
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                  minWidth: 28, minHeight: 28),
+                              onPressed: () =>
+                                  setState(() => _splitHeaderHidden = true),
                             ),
                             // 閉じる
                             IconButton(
@@ -59735,13 +59786,41 @@ class _MindMapScreenState extends State<MindMapScreen>
       );
     }
 
+    // ★ 入れ替えボタン (= ユーザー要望: ToDo とページ一覧の左右を入れ替え
+    //   られるように)。 長押しドラッグでも入れ替えられるが、 マウスでは
+    //   気付きにくいので、 押すだけで入れ替わるボタンを間に置く。
+    final swapBtn = Tooltip(
+      message: provider.t('drawer.swapTabs'),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(6),
+        onTap: () {
+          setState(() => _drawerTodoFirst = !_drawerTodoFirst);
+          unawaited(_persistDrawerTabOrder());
+        },
+        child: Container(
+          width: 26,
+          height: 30,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: baseColor.withValues(alpha: 0.16),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: baseColor.withValues(alpha: 0.34)),
+          ),
+          child: const Icon(Icons.swap_horiz_rounded,
+              size: 15, color: Colors.white54),
+        ),
+      ),
+    );
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(10, 10, 10, 4),
       child: Row(children: [
         // タイムラインは廃止し、 ToDo のチェックリストに置き換えた
         // (= ユーザー要望)。
         draggable(_drawerTodoFirst ? 'todo' : 'maps'),
-        const SizedBox(width: 6),
+        const SizedBox(width: 4),
+        swapBtn,
+        const SizedBox(width: 4),
         draggable(_drawerTodoFirst ? 'maps' : 'todo'),
       ]),
     );
@@ -62749,6 +62828,24 @@ class _MindMapScreenState extends State<MindMapScreen>
           });
         }
         _recordDrawerAnchor(provider, _DrawerFlatItemKind.page, page.id);
+        // ── 分割中は、 どの画面 (ペイン) で開くか選ばせる (= ユーザー要望:
+        //    左 / 右、 4 分割なら左上 / 右上 / 左下 / 右下 を指定できる)。
+        //    分割していなければ今までどおり。 ──
+        if (_mapSplitOpen && _splitEligiblePage(page)) {
+          // ignore: discarded_futures
+          () async {
+            final k =
+                await _pickSplitSlotForPage(provider, anchorKey.currentContext ?? context);
+            if (k == null || !mounted) return;
+            _scaffoldKey.currentState?.closeDrawer();
+            _openPageInSplitSlot(provider, page, k);
+            if (k == _mapSplitEditorSlot) {
+              WidgetsBinding.instance
+                  .addPostFrameCallback((_) => _centerOnRoot());
+            }
+          }();
+          return;
+        }
         _scaffoldKey.currentState?.closeDrawer();
         provider.switchPage(i);
         WidgetsBinding.instance.addPostFrameCallback((_) => _centerOnRoot());
@@ -65495,6 +65592,102 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 次に開くファイルを入れる分割セル (= ユーザー要望: ファイルを作成した
   /// 時に、 どの画面に埋め込むかを選べるように)。 1 回使ったら消える。
   int? _pendingEmbedSlot;
+
+  /// ドロワーで選んだページを、 どの分割画面 (ペイン) で開くか選ばせる。
+  ///
+  /// ★ = ユーザー要望「画面分割している状態であれば左、 右あるいは左上、
+  ///   右上、 左下、 右下をページ一覧から指定してそれぞれ変えられるように」。
+  /// 分割していない時や、 選ばずに閉じた時は null を返す。
+  Future<int?> _pickSplitSlotForPage(
+      MindMapProvider provider, BuildContext anchorCtx) async {
+    if (!_mapSplitOpen || !mounted) return null;
+    final slots = _visibleSplitSlots();
+    if (slots.length < 2) return null;
+    final box = anchorCtx.findRenderObject() as RenderBox?;
+    final overlay =
+        Overlay.of(context, rootOverlay: true).context.findRenderObject()
+            as RenderBox?;
+    RelativeRect pos;
+    if (box != null && box.hasSize && overlay != null) {
+      final at = box.localToGlobal(Offset.zero, ancestor: overlay);
+      pos = RelativeRect.fromLTRB(
+          at.dx + box.size.width * 0.5,
+          at.dy + box.size.height,
+          overlay.size.width - at.dx - box.size.width,
+          0);
+    } else {
+      final s = MediaQuery.of(context).size;
+      pos = RelativeRect.fromLTRB(s.width * 0.3, s.height * 0.3, 12, 12);
+    }
+    return showMenu<int>(
+      context: context,
+      color: const Color(0xFF1E1E32),
+      position: pos,
+      items: [
+        PopupMenuItem<int>(
+          enabled: false,
+          height: 30,
+          child: Text(provider.t('drawer.openInPane'),
+              style: const TextStyle(color: Colors.white38, fontSize: 11)),
+        ),
+        for (final k in slots)
+          PopupMenuItem<int>(
+            value: k,
+            height: 38,
+            child: Row(children: [
+              Icon(
+                  k == _mapSplitEditorSlot
+                      ? Icons.edit_rounded
+                      : Icons.visibility_rounded,
+                  size: 15,
+                  color: k == _mapSplitEditorSlot
+                      ? const Color(0xFF4FC3F7)
+                      : Colors.white38),
+              const SizedBox(width: 8),
+              Text(_paneLabel(provider, k),
+                  style: const TextStyle(color: Colors.white, fontSize: 13)),
+            ]),
+          ),
+      ],
+    );
+  }
+
+  /// ページ [page] を分割セル [slot] に出す。
+  ///
+  /// 編集セルを選んだ時、 またはそのページが今開いているページの時は編集側
+  /// ごと動かす (閲覧セルは currentPage を出せないため = _resolveSplitCellPage
+  /// が currentPage を候補から外す)。 それ以外は閲覧セルに出すだけ。
+  void _openPageInSplitSlot(
+      MindMapProvider provider, MindMapPage page, int slot) {
+    if (!_mapSplitOpen) return;
+    // 被さっている道具 / Web / ファイルを先にどける (= 残っているとページが
+    //   見えない)。
+    setState(() {
+      _mapSplitCellTool.remove(slot);
+      _mapSplitCellFile.remove(slot);
+      _mapSplitCellWeb.remove(slot);
+      _mapSplitCellWebCur.remove(slot);
+      _syncNarrowPaneRatio();
+    });
+    final isCurrent = provider.currentPage.id == page.id;
+    if (slot == _mapSplitEditorSlot) {
+      final i = provider.pages.indexOf(page);
+      if (i >= 0) provider.switchPage(i);
+      return;
+    }
+    if (isCurrent) {
+      // 今開いているページを別のペインへ = 編集側ごと移す。
+      setState(() {
+        final old = _mapSplitEditorSlot;
+        _mapSplitCells[old] = _mapSplitCells[slot];
+        _mapSplitCells[slot] = page.id;
+        _mapSplitEditorSlot = slot;
+        _syncNarrowPaneRatio();
+      });
+      return;
+    }
+    setState(() => _mapSplitCells[slot] = page.id);
+  }
 
   void _embedViewerIntoMapSplitCell(WidgetBuilder builder, {int? slot}) {
     // 呼び出し側がセルを指定していなければ、 直前に選ばれたセルを使う。
@@ -117813,6 +118006,35 @@ class _PaintPageViewState extends State<_PaintPageView> {
   /// 押すとページが遷移してしまう)。
   bool _pageTabsHovered = false;
 
+  /// ページタブ列の位置を測るための鍵。
+  final GlobalKey _pageTabsKey = GlobalKey();
+
+  /// タブ列に本当にカーソルが乗っているか。
+  ///
+  /// ★ = ユーザー報告「ページのヘッダーの所にカーソルがホバーでないのに、
+  ///   別のページにカーソル (矢印) 入力で飛んでしまう」。
+  ///   MouseRegion の onExit は、 ヘッダーを隠した / ダイアログや浮遊窓が
+  ///   被さった / 作り直された といった時に取りこぼされることがある。
+  ///   そうなると _pageTabsHovered が true のまま residue として残り、
+  ///   カーソルが別の場所にあっても矢印キーでページが切り替わってしまう。
+  ///   キーが押された瞬間に、 実際のカーソル位置とタブ列の矩形で確かめる。
+  bool _pointerOverPageTabs() {
+    if (!_pageTabsHovered) return false;
+    // ヘッダーを隠している時などはタブ列自体が無いので、 乗っていない扱い。
+    final box = _pageTabsKey.currentContext?.findRenderObject() as RenderBox?;
+    final at = _paintHost?._lastGlobalPointerPos;
+    if (box != null && box.hasSize && at != null) {
+      try {
+        if ((box.localToGlobal(Offset.zero) & box.size).contains(at)) {
+          return true;
+        }
+      } catch (_) {}
+    }
+    // 実際には乗っていない = 取りこぼした onExit をここで補う。
+    _pageTabsHovered = false;
+    return false;
+  }
+
   KeyEventResult _onPaintKey(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
@@ -117930,7 +118152,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
           (host._splitPanelHover || host._splitLeftPanelHover)) {
         return KeyEventResult.ignored;
       }
-      if (_pageTabsHovered && event is KeyDownEvent) {
+      if (event is KeyDownEvent && _pointerOverPageTabs()) {
         final next = (k == LogicalKeyboardKey.arrowDown ||
                 k == LogicalKeyboardKey.arrowRight)
             ? _sel + 1
@@ -117952,7 +118174,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
         (host._splitPanelHover || host._splitLeftPanelHover)) {
       return false;
     }
-    if (_pageTabsHovered) {
+    if (_pointerOverPageTabs()) {
       final next =
           (k == LogicalKeyboardKey.arrowDown || k == LogicalKeyboardKey.arrowRight)
               ? _sel + 1
@@ -125390,6 +125612,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
     // MouseRegion: 矢印キーでのページ切替を「タブ列にマウスがある間だけ」
     //   に絞るためのホバー検知 (見た目は変えないので setState しない)。
     return MouseRegion(
+      key: _pageTabsKey,
       onEnter: (_) => _pageTabsHovered = true,
       onExit: (_) => _pageTabsHovered = false,
       child: SizedBox(
@@ -151240,6 +151463,55 @@ double _collapsedFloatingWidth(bool isMobile) =>
 /// 浮遊する道具 (計算機・ストップウォッチ等) でヘッダーを隠している時に
 /// 残す細い帯 (= ユーザー要望: 他と同様、 カーソルを乗せた時だけ表示ボタンが
 /// 出るように)。 押すとヘッダーが戻る。
+/// 分割パネル (PDF / Web) でヘッダーを隠している時に残す細い帯。
+///
+/// = ユーザー要望「画面分割で開いた PDF のヘッダーを非表示にするボタンが
+///   欲しくて、 他の非表示ボタンと同様に、 非表示にしたらカーソルが
+///   ヘッダーにホバー状態になるまで表示ボタンが出てこないように」。
+/// Word / テキストの隠しヘッダーと同じ作り (角は丸めない)。
+class _SplitPanelHiddenHeader extends StatefulWidget {
+  final VoidCallback onShow;
+  const _SplitPanelHiddenHeader({required this.onShow});
+
+  @override
+  State<_SplitPanelHiddenHeader> createState() =>
+      _SplitPanelHiddenHeaderState();
+}
+
+class _SplitPanelHiddenHeaderState extends State<_SplitPanelHiddenHeader> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      onEnter: (_) {
+        if (!_hover) setState(() => _hover = true);
+      },
+      onExit: (_) {
+        if (_hover) setState(() => _hover = false);
+      },
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: widget.onShow,
+        child: Container(
+          height: 16,
+          decoration: const BoxDecoration(
+            color: Color(0xFF1A1A30),
+            border: Border(
+              bottom: BorderSide(color: Colors.white12, width: 1),
+            ),
+          ),
+          alignment: Alignment.center,
+          child: _hover
+              ? const Icon(Icons.keyboard_double_arrow_down_rounded,
+                  size: 14, color: Colors.white70)
+              : null,
+        ),
+      ),
+    );
+  }
+}
+
 class _FloatingToolHiddenHeader extends StatefulWidget {
   final VoidCallback onShow;
   final Color color;
@@ -188165,7 +188437,45 @@ $csvText
     );
   }
 
+  /// ヘッダーのボタン列を隠せる (= ユーザー要望: エクセルファイル等に
+  /// おいてもヘッダー項目を非表示にするボタンが欲しい)。 Word /
+  /// PowerPoint / テキストと同じ形にそろえる。
+  bool _headerVisible = true;
+  bool _headerBtnHover = false;
+
   Widget _buildHeader(bool dark, Color fg) {
+    // ── 隠している時はファイル名・アイコンごと全て隠して細い帯だけ残す。
+    //    カーソルを乗せた時だけ「表示する」 の印が出る (= ユーザー要望:
+    //    他の非表示ボタンと同じ動き)。 押すと戻る。 ──
+    if (!_headerVisible) {
+      return MouseRegion(
+        onEnter: (_) {
+          if (!_headerBtnHover) setState(() => _headerBtnHover = true);
+        },
+        onExit: (_) {
+          if (_headerBtnHover) setState(() => _headerBtnHover = false);
+        },
+        child: GestureDetector(
+          onTap: () => setState(() => _headerVisible = true),
+          behavior: HitTestBehavior.opaque,
+          child: Container(
+            height: 16,
+            decoration: BoxDecoration(
+              color: dark ? const Color(0xFF22222E) : const Color(0xFFE0E0DA),
+              border: Border(
+                bottom:
+                    BorderSide(color: dark ? Colors.white12 : Colors.black12),
+              ),
+            ),
+            alignment: Alignment.center,
+            child: _headerBtnHover
+                ? Icon(Icons.keyboard_double_arrow_down_rounded,
+                    size: 14, color: fg.withValues(alpha: 0.8))
+                : null,
+          ),
+        ),
+      );
+    }
     return Container(
       height: 52,
       padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -188456,6 +188766,13 @@ $csvText
             icon: const Icon(Icons.help_outline_rounded,
                 color: Color(0xFF82AAFF)),
             onPressed: () => unawaited(_showFormulaHelp()),
+          ),
+          // ── ヘッダーを隠す (= ユーザー要望: 閉じるボタンの隣) ──
+          IconButton(
+            tooltip: context.read<MindMapProvider>().t('text.hideHeader'),
+            icon: Icon(Icons.keyboard_double_arrow_up_rounded,
+                color: fg.withValues(alpha: 0.7)),
+            onPressed: () => setState(() => _headerVisible = false),
           ),
           // Builder で × ボタン自身の context を取り、 未保存確認をその
           // すぐ近くに出す (= ユーザー要望)。
