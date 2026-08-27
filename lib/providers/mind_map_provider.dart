@@ -19502,6 +19502,30 @@ class MindMapProvider extends ChangeNotifier {
     },
     // ── 分割パネル (PDF / Web) のヘッダーを隠す (= ユーザー要望) ──
     // ── 未保存の描き込みがある状態でダウンロードした時 (= ユーザー要望) ──
+    // ── 元のファイルへの上書き保存は断る (= ユーザー要望) ──
+    // ── OCR: モデルを選び直して読み取り直す (= ユーザー要望) ──
+    'ocr.reread': {
+      'ja': '読み取り直す',
+      'en': 'Read again',
+      'zh': '重新读取',
+      'ko': '다시 읽기',
+      'es': 'Leer de nuevo',
+      'fr': 'Relire',
+      'de': 'Erneut lesen',
+      'pt': 'Ler novamente',
+      'ru': 'Прочитать снова',
+    },
+    'save.sameAsSource': {
+      'ja': '元のファイルと同じ場所・同じ名前には保存できません。別の名前か別の場所を選んでください。',
+      'en': 'You cannot save over the original file. Choose a different name or folder.',
+      'zh': '无法覆盖原文件。请选择其他名称或位置。',
+      'ko': '원본 파일에 덮어쓸 수 없습니다. 다른 이름이나 위치를 선택하세요.',
+      'es': 'No se puede guardar sobre el archivo original. Elige otro nombre o carpeta.',
+      'fr': "Impossible d'écraser le fichier d'origine. Choisissez un autre nom ou dossier.",
+      'de': 'Die Originaldatei kann nicht überschrieben werden. Wählen Sie einen anderen Namen oder Ordner.',
+      'pt': 'Não é possível salvar sobre o arquivo original. Escolha outro nome ou pasta.',
+      'ru': 'Нельзя сохранить поверх исходного файла. Выберите другое имя или папку.',
+    },
     'pdfdraw.applyBeforeDlTitle': {
       'ja': '書いた内容を反映させますか？',
       'en': 'Include your drawings?',
@@ -33893,8 +33917,20 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Abrir YouTube e incorporar',
       'ru': 'Открыть YouTube и вставить',
     },
+    // ── F3: 要素の上に説明書きを書く (= ユーザー要望: 一覧にも載せる) ──
+    'cmd.nodeCaption': {
+      'ja': '要素の上に説明書きを書く',
+      'en': 'Write a note above the element',
+      'zh': '在元素上方写说明',
+      'ko': '요소 위에 설명 쓰기',
+      'es': 'Escribir una nota sobre el elemento',
+      'fr': 'Écrire une note au-dessus de l’élément',
+      'de': 'Notiz über dem Element schreiben',
+      'pt': 'Escrever uma nota acima do elemento',
+      'ru': 'Написать заметку над элементом',
+    },
     'cmd.newNode': {
-      'ja': '新規ノード作成（即タイトル編集）',
+      'ja': '新規ノード作成',
       'en': 'New node (inline title edit)',
       'zh': '新建节点（直接编辑标题）',
       'ko': '새 노드 (제목 즉시 편집)',
@@ -35338,11 +35374,10 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Calendário: mover o dia selecionado',
       'ru': 'Календарь: переместить выбранный день',
     },
-    // 中身は「選んだ要素を 1 つにまとめる」 操作なので、 名前も
-    //   「グループ化」 にする (= ユーザー要望: zip にまとめると読めて紛らわしい)。
-    // こちら (Ctrl+G) = 選んだファイルを 1 つの zip にまとめる。
-    //   ドロワーで複数選択している時は、 ページをフォルダーへ入れる。
-    'cmd.containerize': {
+    // ★ Ctrl+G = 選んだ要素を 1 つのノードにまとめて収納する「グループ化」
+    //   (= ユーザー要望)。 ドロワーで複数選択している時だけ、 ページを
+    //   フォルダーへ入れる従来の動きになる。
+    'cmd.bundleFiles': {
       'ja': 'ファイルを 1 つにまとめる',
       'en': 'Bundle files into one',
       'zh': '将文件合并为一个',
@@ -35352,6 +35387,17 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Dateien zu einer bündeln',
       'pt': 'Agrupar arquivos em um',
       'ru': 'Объединить файлы в один',
+    },
+    'cmd.containerize': {
+      'ja': 'グループ化 (1 つにまとめて収納)',
+      'en': 'Group into one node',
+      'zh': '合并为一个节点',
+      'ko': '하나의 노드로 묶기',
+      'es': 'Agrupar en un nodo',
+      'fr': 'Regrouper en un nœud',
+      'de': 'Zu einem Knoten gruppieren',
+      'pt': 'Agrupar em um nó',
+      'ru': 'Объединить в один узел',
     },
     // ── 子要素を複数生成 / 共通親生成のショートカット ──
     'cmd.addChildren': {

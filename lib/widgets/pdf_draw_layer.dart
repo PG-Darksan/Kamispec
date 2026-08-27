@@ -2425,7 +2425,12 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
             toolBtn(PdfDrawTool.pen, Icons.gesture_rounded, 'pdfdraw.pen'),
             // 消しゴム / チェック (= ユーザー要望)。
             toolBtn(PdfDrawTool.eraser, null, 'pdfdraw.eraser'),
-            toolBtn(PdfDrawTool.check, _markIcon, 'pdfdraw.check'),
+            // ★ チェックの道具を選んでいる間は、 下の「印の種類」 の並びが
+            //   そのまま道具ボタンの役割も果たす (= ユーザー報告: チェック
+            //   マークが 2 つ出てダブって見える)。 選んでいない時だけ、
+            //   今の印のアイコンで 1 つだけ出す。
+            if (_tool != PdfDrawTool.check)
+              toolBtn(PdfDrawTool.check, _markIcon, 'pdfdraw.check'),
             // ── 置く印の種類 (= ユーザー要望: ✓ の所を ○ や × 等に
             //    切り替えられるように)。 チェックの道具を選んでいる時だけ
             //    出す。 ──

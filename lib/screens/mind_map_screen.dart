@@ -5028,9 +5028,11 @@ class _MindMapScreenState extends State<MindMapScreen>
       }
     }
     // ── F3: 要素の上に説明書きを書く (= ユーザー要望) ──
+    //    ショートカット一覧の on/off とキー変更を効かせる (= F2 と同じ形)。
     if (_isDesktop &&
         event is KeyDownEvent &&
         event.logicalKey == LogicalKeyboardKey.f3 &&
+        _shortcutCommandMatches('nodeCaption', 'F3') &&
         !HardwareKeyboard.instance.isControlPressed &&
         !HardwareKeyboard.instance.isMetaPressed &&
         !HardwareKeyboard.instance.isShiftPressed &&
@@ -7420,6 +7422,37 @@ class _MindMapScreenState extends State<MindMapScreen>
   }
 
   /// 裁断モードを終了 or リセット時に呼ぶ
+  /// 裁断モードに入った時と同じページを見ているか。
+  ///
+  /// ★ 始点はページを問わない生のキャンバス座標なので、 別のページへ移った
+  ///   まま 2 点目を押すと、 関係の無い線を切ってしまう。 違うページに
+  ///   なっていたら次のフレームで裁断モードを切る (= ユーザー要望: 他の
+  ///   画面をアクティブにしたら解除)。
+  bool _cutGuardPage(MindMapProvider provider) {
+    final want = _cutModePageId;
+    if (want == null || want == provider.currentPage.id) return true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_cutMode) return;
+      if (_cutModePageId == provider.currentPage.id) return;
+      setState(_exitCutMode);
+    });
+    return false;
+  }
+
+  /// 裁断モードを完全に終了する (モード + 途中の始点 / プレビュー)。
+  /// 既に OFF なら何もしない。 setState の中から呼んでも安全。
+  void _exitCutMode() {
+    if (!_cutMode) return;
+    _cutMode = false;
+    _cutModePageId = null;
+    _resetCutStroke();
+  }
+
+  /// 裁断モードに入った時のページ (= 別のページへ移ったら解除するため)。
+  /// 始点はページを問わない生のキャンバス座標なので、 持ち越すと関係の無い
+  /// 線を切ってしまう。
+  String? _cutModePageId;
+
   void _resetCutStroke() {
     _cutStartPoint = null;
     _cutPreviewEnd = null;
@@ -7678,6 +7711,12 @@ class _MindMapScreenState extends State<MindMapScreen>
   Offset? _groupDragStartPos;
 
   /// [nodeId] が入っている付箋グループのお仲間 (自分は除く) を集める。
+  /// ★ = ユーザー要望「Ctrl+Shift+G を押してもエリアに名前が付くだけで、
+  ///   その中の要素をドラッグしてもその中の要素が同時に動かないように」。
+  ///   付箋 (エリア) は「名前を付けるだけ」 にしたので、 掴んだ要素だけが
+  ///   動く。 まとめて動かしたい時は今までどおり範囲選択してから掴む。
+  ///   (この関数はエリアごと動かす機能を足す時に再び使えるよう残してある)
+  // ignore: unused_element
   Set<String> _groupMatesOf(MindMapProvider provider, String nodeId) {
     final mates = <String>{};
     for (final members in provider.namedGroups.values) {
@@ -7701,11 +7740,11 @@ class _MindMapScreenState extends State<MindMapScreen>
     final node = provider.nodes[nodeId];
     if (node == null) return;
     final canvasPos = _globalToCanvas(globalPos, ctrl);
-    // ── 付箋グループのお仲間を一緒に動かす (= ユーザー要望) ──
-    //    範囲選択でまとめて掴んでいる時は、 そちらの動きに任せる。
-    final mates = _rangeSelectedIds.isEmpty
-        ? _groupMatesOf(provider, nodeId)
-        : <String>{};
+    // ★ 付箋 (エリア) は名前を付けるだけにした (= ユーザー要望: Ctrl+Shift+G
+    //   でエリアに名前が付くだけで、 中の要素をドラッグしても他の要素が
+    //   同時に動かないように)。 まとめて動かしたい時は、 今までどおり
+    //   範囲選択してから掴む (そちらは下の _rangeSelectedIds が担当)。
+    final mates = <String>{};
     setState(() {
       _moveModeNodeId = nodeId;
       _selectedConnections.clear();
@@ -25104,6 +25143,8 @@ class _MindMapScreenState extends State<MindMapScreen>
           _removeOverlay();
           setState(() {
             _cutMode = !_cutMode;
+            _cutModePageId =
+                _cutMode ? context.read<MindMapProvider>().currentPage.id : null;
             _cutStartPoint = null;
             _cutPreviewEnd = null;
           });
@@ -41648,6 +41689,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         // 裁断モード切替（Ctrl+Shift+V と同じ動作）
         setState(() {
           _cutMode = !_cutMode;
+          _cutModePageId = _cutMode ? provider.currentPage.id : null;
           _cutStartPoint = null;
           _cutPreviewEnd = null;
         });
@@ -41893,12 +41935,20 @@ class _MindMapScreenState extends State<MindMapScreen>
         }
         break;
       case 'containerize':
-        // Ctrl+G と同じ: 複数ファイルを選んで 1 つの zip フォルダーに
-        // まとめる (drawer 複数選択中はマップをフォルダーへ格納)。
+        // ★ Ctrl+G と同じグループ化 (= ユーザー要望: 選んだ要素を 1 つに
+        //   まとめて収納)。 drawer 複数選択中はマップをフォルダーへ格納。
         if (_drawerMultiSelectActive) {
           _groupSelectedDrawerPagesIntoFolder(context, provider);
         } else {
-          _createZipFolderFromFiles(context, provider);
+          _containerizeSelectedNodes(provider);
+        }
+        break;
+      case 'bundleFiles':
+        // 選んだファイルを 1 つの zip にまとめる (旧 Ctrl+G の動き)。
+        if (_drawerMultiSelectActive) {
+          _groupSelectedDrawerPagesIntoFolder(context, provider);
+        } else {
+          unawaited(_createZipFolderFromFiles(context, provider));
         }
         break;
       case 'addPage':
@@ -53662,6 +53712,12 @@ class _MindMapScreenState extends State<MindMapScreen>
                 _startInlineTitleEdit(context, node);
               }
             }
+          } else if (commandId == 'nodeCaption') {
+            // 要素の上に説明書きを書く (= F3。 キーを変えた時もここを通る)。
+            final capId = _nodeIdForDirectEdit(provider);
+            if (capId != null && provider.nodes.containsKey(capId)) {
+              _startCaptionEdit(capId);
+            }
           } else if (commandId == 'quickFlashcard') {
             // 素早く文字を入力してフラッシュカード登録 (= ユーザー要望)。
             //   ノードを選択中 (= 押しながら) なら、 そのタイトルを表面に入れた
@@ -53837,17 +53893,14 @@ class _MindMapScreenState extends State<MindMapScreen>
             // ユーザー要望: 「ctrl+\\で右画面分割、 ctrl+^で左画面分割」。
             _toggleSplitLeftPanel();
           } else if (commandId == 'containerize') {
-            // Ctrl+G: 文脈に応じて 2 つの動作:
-            //   1) drawer が開いていて複数マップ選択中
-            //      → 選択マップを新規サブフォルダーに格納 (従来どおり)
-            //   2) それ以外 (通常)
-            //      → 複数ファイルを選んで 1 つの zip フォルダーにまとめる
-            //        (ユーザー要望で「ノードを格納」 から差し替え。 ノードの
-            //         グループ化は Ctrl+Shift+G の `group` で従来どおり可能)
+            // ★ Ctrl+G: 選んだ要素を 1 つのノードにまとめて収納する
+            //   「グループ化」 (= ユーザー要望)。
+            //   ドロワーで複数マップを選んでいる時だけ、 従来どおり
+            //   ページを新規サブフォルダーへ格納する。
             if (_drawerMultiSelectActive) {
               _groupSelectedDrawerPagesIntoFolder(context, provider);
             } else {
-              _createZipFolderFromFiles(context, provider);
+              _containerizeSelectedNodes(provider);
             }
           } else if (commandId == 'addChildren') {
             // Ctrl+Shift+A: 即時で固定数の子ノードを生成 (ダイアログ無し)。
@@ -53934,6 +53987,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             // Ctrl+Shift+V: 裁断モードの切替
             setState(() {
               _cutMode = !_cutMode;
+              _cutModePageId = _cutMode ? provider.currentPage.id : null;
               _cutStartPoint = null;
               _cutPreviewEnd = null;
             });
@@ -55108,7 +55162,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 ),
                               // 裁断モード中のバナー + 外周の赤いボーダー
                               // (分割中はアクティブ側ペインの中だけに出す)。
-                              if (_cutMode) _buildCutModeOverlay(provider),
+                              if (_cutMode && _cutGuardPage(provider))
+                                _buildCutModeOverlay(provider),
                               // 検索パネル
                               if (_searchVisible) _buildSearchPanel(provider),
                               // ドロップ中のオーバーレイ表示
@@ -65032,7 +65087,22 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// 編集キャンバスが入っているセル番号。 ペインをタップするとその場で
   /// 編集側が移る (= ユーザー要望) ため可変。
-  int _mapSplitEditorSlot = 0;
+  int _mapSplitEditorSlotRaw = 0;
+  int get _mapSplitEditorSlot => _mapSplitEditorSlotRaw;
+
+  /// ★ 編集セル (アクティブなペイン) が移ったら裁断モードは必ず解除する
+  ///   (= ユーザー要望: 裁断モードの状態で他の画面をアクティブにしたら、
+  ///   裁断モードも移るのではなく解除される)。 始点は前の画面のキャンバス
+  ///   座標なので、 持ち越すと別のマップを誤って切ってしまう。
+  ///
+  /// 代入は 8 か所あり (ペインのタップ / 道具や Web の埋め込み / ドロワー
+  /// からのペイン指定 / 4→2 分割の畳み / ページ追加 / 分割の開閉)、
+  /// どれも setState の中なので、 ここで setState はしない。
+  set _mapSplitEditorSlot(int v) {
+    if (_mapSplitEditorSlotRaw == v) return;
+    _mapSplitEditorSlotRaw = v;
+    _exitCutMode();
+  }
 
   /// 分割ペインの Web ビューを作り直させないための固定の鍵
   /// (= ユーザー報告: 何度も「初期化中」 に戻る)。
@@ -74996,9 +75066,18 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 読み取って「コピー / ノートに書き出す」 が選べる形で出す。
   /// あわせて QR も読めていればリンクとして開ける (下の結果画面で案内)。
   Future<void> _openOcrImageSearch() async {
-    final provider = context.read<MindMapProvider>();
     final path = await _pickImageForOcr();
     if (path == null || !mounted) return;
+    await _runOcrOn(path);
+  }
+
+  /// [path] の画像を読み取って結果を出す。
+  ///
+  /// ★ 結果画面から「読み取り直す」 でここへ戻ってくる (= ユーザー要望:
+  ///   OCR を行う LLM モデルを指定できるように)。 モデルは結果画面の
+  ///   選択欄で切り替えられ、 押し直すと新しいモデルで読み直す。
+  Future<void> _runOcrOn(String path) async {
+    final provider = context.read<MindMapProvider>();
     showDialog<void>(
       context: context,
       barrierDismissible: false,
@@ -75034,7 +75113,8 @@ class _MindMapScreenState extends State<MindMapScreen>
           SnackBar(content: Text(provider.t('ocr.noText'))));
       return;
     }
-    _showOcrResultDialog(provider, (text ?? '').trim(), qr?.trim());
+    _showOcrResultDialog(provider, (text ?? '').trim(), qr?.trim(),
+        sourcePath: path);
   }
 
   /// OCR 用に画像ファイルを選ぶ (モバイルは撮影も選べる)。
@@ -75111,7 +75191,8 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// 読み取った文字の出し先 (コピー / ノードにする / QR はリンクで開く)。
   void _showOcrResultDialog(
-      MindMapProvider provider, String text, String? qr) {
+      MindMapProvider provider, String text, String? qr,
+      {String? sourcePath}) {
     final qrIsUrl =
         qr != null && (qr.startsWith('http://') || qr.startsWith('https://'));
     showDialog<void>(
@@ -75126,6 +75207,10 @@ class _MindMapScreenState extends State<MindMapScreen>
             child: Text(provider.t('ocr.title'),
                 style: const TextStyle(color: Colors.white, fontSize: 16)),
           ),
+          // ★ 読み取りに使う AI を選べる (= ユーザー要望: OCR を行う LLM
+          //   モデルを指定できるように)。 選び直したら下の「読み取り直す」
+          //   で同じ画像をもう一度読ませる。
+          _AiModelPicker(provider: provider),
         ]),
         content: SizedBox(
           width: 420,
@@ -75179,12 +75264,25 @@ class _MindMapScreenState extends State<MindMapScreen>
             child: Text(provider.t('btn.close'),
                 style: const TextStyle(color: Colors.white54)),
           ),
+          // 選び直した AI でもう一度読み取る (= ユーザー要望)。
+          if (sourcePath != null)
+            TextButton.icon(
+              icon: const Icon(Icons.refresh_rounded, size: 16),
+              onPressed: () {
+                Navigator.pop(dctx);
+                unawaited(_runOcrOn(sourcePath));
+              },
+              label: Text(provider.t('ocr.reread'),
+                  style: const TextStyle(fontSize: 12.5)),
+            ),
           if (text.isNotEmpty) ...[
             TextButton.icon(
               icon: const Icon(Icons.copy_rounded, size: 16),
               onPressed: () {
                 Clipboard.setData(ClipboardData(text: text));
-                Navigator.pop(dctx);
+                // ★ コピーしただけで閉じない (= ユーザー要望: コピーボタンを
+                //   押しても項目が落ちないように)。 続けて「ページに追加」
+                //   も押せる。
                 _appSnack(context,
                     SnackBar(content: Text(provider.t('qr.copied'))));
               },
@@ -75199,8 +75297,17 @@ class _MindMapScreenState extends State<MindMapScreen>
               icon: const Icon(Icons.add_box_rounded, size: 16),
               onPressed: () {
                 Navigator.pop(dctx);
-                // 読み取った文字をそのままノードにする。
-                provider.addMemoNodeToCurrentPage(text);
+                // ★ 今見えている所の真ん中に置く (= ユーザー要望: ページに
+                //   追加は見える場所に)。 以前はキャンバスの中心
+                //   (10000, 10000) 決め打ちで、 そこを見ていない限り
+                //   「追加したのに何も出ない」 ように見えていた。
+                final at = _globalToCanvas(
+                        _editorViewportCenter(provider, global: true),
+                        _ctrlFor(provider.currentPage.id)) -
+                    const Offset(80, 21);
+                final node = provider.addNodeAtCenterReturning(at);
+                provider.updateNodeTitle(node.id, _ocrNodeTitle(text));
+                provider.updateNodeMemo(node.id, text);
                 _appSnack(context,
                     SnackBar(content: Text(provider.t('ocr.addedNode'))));
               },
@@ -75212,6 +75319,16 @@ class _MindMapScreenState extends State<MindMapScreen>
         ],
       ),
     );
+  }
+
+  /// 読み取った文字から、 ノードの見出しに使う短い 1 行を作る。
+  static String _ocrNodeTitle(String text) {
+    final first = text
+        .split('\n')
+        .map((e) => e.trim())
+        .firstWhere((e) => e.isNotEmpty, orElse: () => '');
+    if (first.isEmpty) return 'OCR';
+    return first.length > 24 ? '${first.substring(0, 24)}…' : first;
   }
 
   /// QR 用に画像ファイルを選択 (= 全プラットフォーム共通)。
@@ -77328,7 +77445,32 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
   }
 
-  /// ─── Ctrl+G: 複数ファイルを 1 つの zip にまとめてノード化 ─────────────────
+  /// 選んだ要素を 1 つのノードにまとめて収納する (= ユーザー要望: Ctrl+G は
+  /// グループ化)。 まとめた後は、 その 1 つのノードを開くと中身が出る。
+  void _containerizeSelectedNodes(MindMapProvider provider) {
+    final ids = <String>[];
+    if (_rangeSelectedIds.isNotEmpty) {
+      ids.addAll(_rangeSelectedIds);
+    } else if (_actionNodeId != null) {
+      ids.add(_actionNodeId!);
+    }
+    // 2 つ以上ないと「まとめる」 意味が無い。
+    if (ids.length < 2) {
+      _showLockToast(provider.t('toast.needNodeSelection'));
+      return;
+    }
+    final coverId = provider.createContainerFromNodes(ids);
+    if (coverId == null) {
+      _showLockToast(provider.t('toast.needNodeSelection'));
+      return;
+    }
+    setState(() {
+      _rangeSelectedIds.clear();
+      _actionNodeId = coverId;
+    });
+  }
+
+  /// ─── 複数ファイルを 1 つの zip にまとめてノード化 ─────────────────
   /// FilePicker で複数ファイル (動画含む) を選び、 1 つの .zip にまとめて、
   /// その zip を添付ファイルとして持つノードを 1 個生成する。
   ///
@@ -88007,10 +88149,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     final current = count > 0 ? _searchResultIndex + 1 : 0;
     const panelColor = Color(0xFF1E1E2E);
     const borderColor = Colors.white12;
-    return Positioned(
-      top: 12,
-      right: 16,
-      child: Material(
+    final panel = Material(
         color: Colors.transparent,
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -88211,6 +88350,33 @@ class _MindMapScreenState extends State<MindMapScreen>
             ],
           ),
         ),
+      );
+    // ★ 検索欄も画面分割中はアクティブ側ペインの中に出す
+    //   (= ユーザー要望: 左側の画面で検索を掛けた時に画面全体の右上に
+    //   出てしまうのを、 その分割画面の中に)。 この Stack (_mapViewportKey)
+    //   は分割ペインをまとめて覆っているので、 画面座標のセル矩形を
+    //   Stack のローカル座標へ直してから置く。 矩形が取れない最初の
+    //   フレームは、 今までどおり画面の右上に出す。
+    Rect? local;
+    if (_mapSplitOpen) {
+      final box =
+          _mapViewportKey.currentContext?.findRenderObject() as RenderBox?;
+      if (box != null && box.hasSize) {
+        try {
+          final g = _splitCellGlobalRect(_mapSplitEditorSlot);
+          if (g.width > 260 && g.height > 120) {
+            local = box.globalToLocal(g.topLeft) & g.size;
+          }
+        } catch (_) {}
+      }
+    }
+    if (local == null) {
+      return Positioned(top: 12, right: 16, child: panel);
+    }
+    return Positioned.fromRect(
+      rect: local,
+      child: Stack(
+        children: [Positioned(top: 12, right: 16, child: panel)],
       ),
     );
   }
@@ -89692,6 +89858,9 @@ class _MindMapScreenState extends State<MindMapScreen>
       'labelKey': 'cmd.containerize',
       'defaultKey': 'Ctrl+G'
     },
+    // ファイルを 1 つの zip にまとめる。 Ctrl+G はグループ化に戻したので
+    //   (= ユーザー要望)、 こちらは既定キー無しの別コマンドとして残す。
+    {'id': 'bundleFiles', 'labelKey': 'cmd.bundleFiles', 'defaultKey': ''},
     // ギャラリーに整列 (= 選択 or ページ全体を同寸タイルで並べ直す)。既定キーなし
     // (空文字) = 実キー入力には決して一致しないため衝突しない。
     {'id': 'bookshelf', 'labelKey': 'cmd.bookshelf', 'defaultKey': ''},
@@ -89800,6 +89969,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       'defaultKey': 'Ctrl+D'
     },
     {'id': 'editTitle', 'labelKey': 'cmd.editTitle', 'defaultKey': 'F2'},
+    // 要素の上に説明書きを書く (= ユーザー要望: 一覧に F3 が無かった)。
+    {'id': 'nodeCaption', 'labelKey': 'cmd.nodeCaption', 'defaultKey': 'F3'},
     // 「素早く暗記カード登録」 のキー割り当ては廃止 (= ユーザー要望)。
     //   カード登録は、 ノードの予定登録ボタンを右クリック (長押し) すれば
     //   今までどおり開ける。
@@ -90217,6 +90388,7 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// グローバルに捕捉する固定キーも含め、一覧本体と実際の入力処理を揃える。
   static const List<Map<String, String?>> _importantKeysOrder = [
     {'id': 'editTitle'}, // F2
+    {'id': 'nodeCaption'}, // F3
     // 履歴を戻る / 進む (Alt+←/→) は重要キーから外した (= ユーザー要望)。
     //   機能もキーも今までどおりで、 一覧の下の方には出る。
     // 右画面分割 / 右分割を全画面表示 も既定キーを外したので下ろした。
@@ -174175,6 +174347,15 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
         bytes: bytes,
       );
       if (outPath == null) return; // キャンセル
+      // ★ 元のファイルと同じ場所・同じ名前は断る (= ユーザー要望: ややこしく
+      //   なるので)。 大文字小文字とパスの区切りを揃えて見比べる。
+      String norm(String p) =>
+          p.replaceAll('\\', '/').toLowerCase();
+      if (norm(outPath) == norm(src)) {
+        snack(context.read<MindMapProvider>().t('save.sameAsSource'),
+            const Color(0xFFE53935));
+        return;
+      }
       // デスクトップでは saveFile が bytes を書き込まない場合があるので保険。
       try {
         final out = File(outPath);
@@ -177805,6 +177986,14 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
         bytes: bytes,
       );
       if (outPath == null) return; // キャンセル
+      // ★ 元のファイルと同じ場所・同じ名前は断る (= ユーザー要望: ややこしく
+      //   なるので)。 大文字小文字とパスの区切りを揃えて見比べる。
+      String norm(String p) => p.replaceAll(r'\', '/').toLowerCase();
+      if (norm(outPath) == norm(src)) {
+        snack(context.read<MindMapProvider>().t('save.sameAsSource'),
+            const Color(0xFFE53935));
+        return;
+      }
       try {
         final out = File(outPath);
         if (!await out.exists() || (await out.length()) == 0) {
