@@ -41311,6 +41311,11 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Voltar à tela original',
       'ru': 'Вернуться к исходному виду',
     },
+    // 浮かせた窓を元の全画面で開き直すボタン。
+    'float.toFullscreen': {
+      'ja': '全画面に戻す',
+      'en': 'Back to full screen',
+    },
     'float.memoHint': {
       'ja': 'メモを書いて Enter で追加',
       'en': 'Write a memo and press Enter',
@@ -54946,6 +54951,11 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'PDF speichern',
       'pt': 'Salvar PDF',
       'ru': 'Сохранить PDF',
+    },
+    // 分割ペインのダウンロードで、 保存する物が無い時。
+    'save.noFile': {
+      'ja': '保存できるファイルがありません',
+      'en': 'There is no file to save',
     },
     'save.pptx': {
       'ja': '.pptx として保存',

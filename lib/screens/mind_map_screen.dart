@@ -3831,6 +3831,98 @@ class _MindMapScreenState extends State<MindMapScreen>
     ]);
   }
 
+  /// 分割ペインで開いている PDF を保存する (= ユーザー要望: 全画面
+  /// ビューアと同じダウンロードを分割画面にも)。
+  ///
+  /// 未保存の描き込みがあれば、 反映するか聞いてから保存先を聞く。
+  /// 反映 (焼き込み) は元のファイルを書き換えるので、 その後は
+  /// ビューアを読み直さないと古い見た目のままになる。
+  Future<void> _downloadSplitPdf({required bool left}) async {
+    final src = (left ? _splitLeftLocalPdfPath : _splitLocalPdfPath) ?? '';
+    final provider = context.read<MindMapProvider>();
+    void snack(String m, Color c) {
+      if (!mounted) return;
+      _appSnack(
+          context,
+          SnackBar(
+              content: Text(m),
+              backgroundColor: c,
+              duration: const Duration(seconds: 2)));
+    }
+
+    if (src.isEmpty || !await File(src).exists()) {
+      snack(provider.t('save.noFile'), const Color(0xFF2A2A3E));
+      return;
+    }
+    if (pdfDrawHasUnsaved(src)) {
+      final ans = await showDialog<String>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dctx) => AlertDialog(
+          backgroundColor: const Color(0xFF22222E),
+          title: Text(provider.t('pdfdraw.applyBeforeDlTitle'),
+              style: const TextStyle(color: Colors.white, fontSize: 16)),
+          content: Text(provider.t('pdfdraw.applyBeforeDlBody'),
+              style: const TextStyle(color: Colors.white70, fontSize: 13)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dctx).pop('cancel'),
+              child: Text(provider.t('btn.cancel'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(dctx).pop('skip'),
+              child: Text(provider.t('pdfdraw.dlWithoutApply'),
+                  style: const TextStyle(color: Colors.white70)),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dctx).pop('apply'),
+              child: Text(provider.t('pdfdraw.applyAndDl')),
+            ),
+          ],
+        ),
+      );
+      if (!mounted) return;
+      if (ans == null || ans == 'cancel') return;
+      if (ans == 'apply') {
+        final ok = await pdfDrawCommitNow(src);
+        if (!mounted) return;
+        if (!ok) {
+          snack(provider.t('pdf.writeFailed'), const Color(0xFFE53935));
+          return;
+        }
+        setState(() {
+          if (left) {
+            _splitLeftPdfReloadTick++;
+          } else {
+            _splitPdfReloadTick++;
+          }
+        });
+      }
+    }
+    var name = src.split(RegExp(r'[\\/]')).last;
+    if (!name.toLowerCase().endsWith('.pdf')) name = '$name.pdf';
+    try {
+      final bytes = await File(src).readAsBytes();
+      final outPath = await FilePicker.platform.saveFile(
+        dialogTitle: provider.t('save.pdf'),
+        fileName: name,
+        bytes: bytes,
+      );
+      if (outPath == null) return;
+      // デスクトップでは saveFile が bytes を書かないことがあるので保険。
+      try {
+        final out = File(outPath);
+        if (!await out.exists() || (await out.length()) == 0) {
+          await out.writeAsBytes(bytes);
+        }
+      } catch (_) {}
+      snack(provider.t('paint.saved'), const Color(0xFF43B97F));
+    } catch (_) {
+      snack(provider.t('paint.saveFailed'), const Color(0xFFE53935));
+    }
+  }
+
   /// 左パネル PDF 用のホイールイベント蓄積。
   /// 右パネルの `_wheelAccum` と同じ役割 (= デルタを溜めてしきい値超で動かす)
   /// だが、 こっちは「左パネル専用」 なので右と独立した状態を持つ。
@@ -9373,8 +9465,32 @@ class _MindMapScreenState extends State<MindMapScreen>
   final Map<String, String> _commandOpenStyle = {};
   static const String _kCommandOpenStyleKey = 'commandOpenStyle_v1';
 
+  /// 浮かせた窓から「全画面に戻す」 を押した直後だけ、 その道具の
+  /// 開き方を「全画面」 として読ませる印 (= ユーザー要望)。
+  String? _forceFullCommandId;
+
+  /// 浮かせて開いている道具を、 全画面で開き直す。
+  void _reopenCommandFullscreen(String commandId) {
+    final provider = context.read<MindMapProvider>();
+    _forceFullCommandId = commandId;
+    // 開き方の読み込み待ちで非同期に進む入口があるので、
+    //   印は少し経ったら外す (try/finally だと間に合わない)。
+    Future<void>.delayed(const Duration(seconds: 2), () {
+      if (_forceFullCommandId == commandId) _forceFullCommandId = null;
+    });
+    if (commandId == 'aiAssistant') {
+      // アシスタントはヘッダーの入口が必ずフローティングを開くので、
+      //   開き方を見る本体 (_openMcpChat) を直接呼ぶ。
+      unawaited(_openMcpChat(provider));
+      return;
+    }
+    _executeHeaderCommand(commandId, provider);
+  }
+
   /// このボタンの開き方。 設定が無ければ今までの動き。
   String _openStyleOf(String commandId) {
+    // 「全画面に戻す」 を押した直後だけ、 設定を無視して全画面で開く。
+    if (_forceFullCommandId == commandId) return 'full';
     // ★ アラームは開き方を選べない (= ユーザー要望: 左右分割 /
     //   フローティングを消して、 開き方の設定自体を出さない)。 昔に選んだ
     //   設定が prefs に残っていても、 常に全画面のダイアログで開く。
@@ -27613,6 +27729,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         width: 680,
         height: 720,
         memoryKey: 'flashcards',
+        onRestoreFull: () => _reopenCommandFullscreen('flashcards'),
         onClosed: () {
           if (!done.isCompleted) done.complete();
         },
@@ -36068,6 +36185,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       {bool expandBehavior = false}) {
     // ダイアログ寿命に紐づくスクロールコントローラ（1ダイアログ1つ）
     final scrollCtrl = ScrollController();
+    // スライドバーにカーソルが乗っているか (= ダイアログの寿命の局所状態)。
+    bool barHover = false;
     // Space キーでトグル開閉するためのフラグ管理。
     // showDialog は Future を返すので、dismissed されたタイミングで flag を
     // 戻す。以降の Space 押下でまた開くように。
@@ -36088,7 +36207,9 @@ class _MindMapScreenState extends State<MindMapScreen>
           // 以前は 480x640 固定 → 広めに
           final screen = MediaQuery.of(sctx).size;
           final maxW = screen.width.clamp(320.0, 640.0);
-          final maxH = (screen.height * 0.90).clamp(420.0, 900.0);
+          // 上限 900px をやめる (= ユーザー要望: 項目が入り切らない)。
+          //   0.90 倍が常に効くので、 画面が高いほど広く使える。
+          final maxH = (screen.height * 0.90).clamp(420.0, screen.height);
           final baseColor = provider.headerColor;
           final panelColor = Color.alphaBlend(
               baseColor.withValues(
@@ -36161,12 +36282,23 @@ class _MindMapScreenState extends State<MindMapScreen>
                       ]),
                       const SizedBox(height: 8),
                       Flexible(
-                        child: RawScrollbar(
+                        // ── スライドバーは動かした時とホバー中だけ出す
+                        //    (= ユーザー要望: 常時表示をやめる)。
+                        //    thumbVisibility: false でもスクロール中は自動で
+                        //    浮かび上がるので、 ホバー分だけここで足す。 ──
+                        child: MouseRegion(
+                          onEnter: (_) {
+                            if (!barHover) setS(() => barHover = true);
+                          },
+                          onExit: (_) {
+                            if (barHover) setS(() => barHover = false);
+                          },
+                          child: RawScrollbar(
                           controller: scrollCtrl,
                           thumbColor: Colors.white.withValues(alpha: 0.55),
                           thickness: 8,
                           radius: const Radius.circular(4),
-                          thumbVisibility: true,
+                          thumbVisibility: barHover,
                           padding: const EdgeInsets.only(
                               right: 2, top: 4, bottom: 4),
                           child: SingleChildScrollView(
@@ -36688,6 +36820,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                               ],
                             ),
                           ),
+                        ),
                         ),
                       ),
                     ],
@@ -42213,6 +42346,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             width: 560,
             height: 760,
             memoryKey: 'webAutomation',
+            onRestoreFull: () => _reopenCommandFullscreen('webAutomation'),
             popOutCustom: (frame, pinned) =>
                 openAutomationExternalWindow(frame: frame, pinned: pinned),
           );
@@ -51301,6 +51435,19 @@ class _MindMapScreenState extends State<MindMapScreen>
                         //    チェック) ──
                         if (pdfPath != null)
                           _pdfWriteModeButtons(left: true),
+                        // ── ダウンロード (= ユーザー要望: 分割で開いた PDF も
+                        //    全画面と同じように保存できるように) ──
+                        if (pdfPath != null)
+                          IconButton(
+                            icon: const Icon(Icons.download_rounded,
+                                color: Color(0xFF4FC3F7), size: 18),
+                            tooltip: provider.t('fsv.download'),
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                                minWidth: 28, minHeight: 28),
+                            onPressed: () =>
+                                unawaited(_downloadSplitPdf(left: true)),
+                          ),
                         // ── スマート左右移動ボタン (= 統合) ──
                         // ユーザー要望: 「図の 3 つの記号 1 つに纏めて、 右において
                         //   あったら左矢印で左側に移動、 左においてあったら右矢印で
@@ -52217,6 +52364,19 @@ class _MindMapScreenState extends State<MindMapScreen>
                           if (_splitMode == 'pdf' &&
                               _splitLocalPdfPath != null)
                             _pdfWriteModeButtons(left: false),
+                          // ── ダウンロード (= ユーザー要望) ──
+                          if (_splitMode == 'pdf' &&
+                              _splitLocalPdfPath != null)
+                            IconButton(
+                              icon: const Icon(Icons.download_rounded,
+                                  color: Color(0xFF4FC3F7), size: 18),
+                              tooltip: provider.t('fsv.download'),
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                  minWidth: 28, minHeight: 28),
+                              onPressed: () =>
+                                  unawaited(_downloadSplitPdf(left: false)),
+                            ),
                           // ── 操作ボタン ──
                           // モバイルは全ボタンを 1 つの ⋮ メニューに集約 (ユーザー要望)。
                           //   上分割/下分割もメニュー内に含める。 デスクトップは
@@ -58831,6 +58991,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         width: 520,
         height: 700,
         memoryKey: 'assistant',
+        onRestoreFull: () => _reopenCommandFullscreen('aiAssistant'),
         // アプリの外へ出す (= ユーザー要望)。 アシスタントは Web ページでは
         //   ないので、 別プロセスの Web 窓ではなくサブ窓に会話だけを映す。
         //   考える所 (_McpChatSession) は本体に残したまま動かす。
@@ -66060,7 +66221,11 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
     if (style == 'floating' && floating != null) {
       _showFloatingPanelWindow(floating,
-          width: width, height: height, memoryKey: id, singletonKey: id);
+          width: width,
+          height: height,
+          memoryKey: id,
+          singletonKey: id,
+          onRestoreFull: () => _reopenCommandFullscreen(id));
       return true;
     }
     return false;
@@ -67126,6 +67291,9 @@ class _MindMapScreenState extends State<MindMapScreen>
       Future<bool> Function(Rect frame, bool pinned)? popOutCustom,
       // 最初に出す位置と大きさ (= マップ分割中は分割セルを覆う形で開く)。
       Rect? initialRect,
+      // 全画面で開き直す入口 (= ユーザー要望: フローティングから
+      //   元の全画面に戻せるように)。 null ならボタンを出さない。
+      VoidCallback? onRestoreFull,
       VoidCallback? onClosed}) {
     // ★ 同じ窓が既に開いていれば、 増やさずに前面へ出し直す。
     //
@@ -67181,6 +67349,12 @@ class _MindMapScreenState extends State<MindMapScreen>
         onSwitchAi: aiSwitchable
             ? () => _switchFloatingAi(closeSelf, width, height, memoryKey)
             : null,
+        onRestoreFull: onRestoreFull == null
+            ? null
+            : () {
+                closeSelf();
+                onRestoreFull();
+              },
         popOutCustom: popOutCustom,
         initialRect: initialRect,
         onClose: closeSelf,
@@ -75098,6 +75272,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         width: 520,
         height: 640,
         memoryKey: 'silentCamera',
+        onRestoreFull: () => _reopenCommandFullscreen('silentCamera'),
         singletonKey: 'silentCamera',
       );
       return;
@@ -91244,6 +91419,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         width: 520,
         height: 640,
         memoryKey: 'shortcuts',
+        onRestoreFull: () => _reopenCommandFullscreen('shortcuts'),
         // 押すたびに窓が増えないようにする (= ユーザー要望)。
         singletonKey: 'shortcuts',
       );
@@ -223897,6 +224073,9 @@ class _FloatingPanelWindow extends StatefulWidget {
   /// 渡された場所・大きさで外の窓を開き、 開けたら true を返す。
   /// これがある窓は「ウェブページだけ」 の制限を受けない。
   final Future<bool> Function(Rect frame, bool pinned)? popOutCustom;
+
+  /// 全画面で開き直す入口 (= ユーザー要望)。 null ならボタンを出さない。
+  final VoidCallback? onRestoreFull;
   const _FloatingPanelWindow({
     required this.builder,
     required this.onClose,
@@ -223907,6 +224086,7 @@ class _FloatingPanelWindow extends StatefulWidget {
     this.popOutUrlBuilder,
     this.onSwitchAi,
     this.popOutCustom,
+    this.onRestoreFull,
     this.initialRect,
   });
 
@@ -224099,18 +224279,13 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
         }, color: const Color(0xFFFFB347)),
       // 前面にピン留め (= ユーザー要望)。 アプリの中の重ね描きは他のアプリの
       // 手前には出られないので、 外の本物の窓に変わって常に手前になる。
-      btn(Icons.push_pin_rounded, provider.t('float.pinToFront'), () {
-        final blocked = _blockedReason(provider);
-        if (blocked != null) {
-          final m = ScaffoldMessenger.maybeOf(ctx);
-          m?.hideCurrentSnackBar();
-          m?.showSnackBar(SnackBar(
-              content: Text(blocked),
-              duration: const Duration(seconds: 4)));
-          return;
-        }
-        unawaited(_popOutSelf(pinned: true));
-      }),
+      // ★ 外に出せない窓 (ショートカット一覧・電卓など) では出さない
+      //   (= ユーザー報告: 外に出せないのに前面に出すピンが付いている)。
+      //   引っ張って出そうとした時 (_handleDragRelease) は理由を出すまま。
+      if (_blockedReason(provider) == null)
+        btn(Icons.push_pin_rounded, provider.t('float.pinToFront'), () {
+          unawaited(_popOutSelf(pinned: true));
+        }),
     ];
   }
 
@@ -224249,6 +224424,21 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
                         icon: const Icon(Icons.auto_awesome_rounded,
                             color: Color(0xFFBA68C8), size: 15),
                         onPressed: widget.onSwitchAi,
+                      ),
+                    // ── 全画面に戻す (= ユーザー要望) ──
+                    //   _floatModeButtons はパソコン専用なので、 スマホでも
+                    //   戻せるように Row 直下に置く。
+                    if (widget.onRestoreFull != null)
+                      IconButton(
+                        tooltip: context
+                            .read<MindMapProvider>()
+                            .t('float.toFullscreen'),
+                        padding: EdgeInsets.zero,
+                        constraints:
+                            const BoxConstraints(minWidth: 28, minHeight: 28),
+                        icon: const Icon(Icons.fullscreen_rounded,
+                            color: Color(0xFF4FC3F7), size: 15),
+                        onPressed: widget.onRestoreFull,
                       ),
                     ..._floatModeButtons(context,
                         showAi: widget.onSwitchAi == null),

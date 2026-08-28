@@ -3128,13 +3128,11 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
                     }
                   },
                 ),
-              if (!_running)
-                IconButton(
-                  visualDensity: VisualDensity.compact,
-                  icon: const Icon(Icons.close_rounded,
-                      size: 17, color: Colors.white54),
-                  onPressed: widget.onClose,
-                ),
+              // ★ ここにあった閉じるボタンは廃止 (= ユーザー報告: スクショ管理の
+              //   隣の × を押すと進行不能になる / 閉じるボタンが 2 つある)。
+              //   自動操作だけを出している時、 このボタンはパネルを隠すだけなので
+              //   何も無い画面が残り、 ブラウザ側の戻すボタンも隠れていて手が無くなる。
+              //   外側のミニ窓ヘッダーの × が両モードで正しく閉じるので、 そちらだけにする。
             ]),
             ),
           ),
