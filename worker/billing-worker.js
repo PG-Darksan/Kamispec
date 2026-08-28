@@ -1938,6 +1938,10 @@ async function callProvider(env, model, prompt, maxTokens, images, reasoning) {
           model,
           messages: [{ role: 'user', content: userContent }],
           [field]: field === 'max_completion_tokens' ? roomy : maxTokens,
+          // ★ 送ったやり取りを OpenAI 側に保存させない (= ユーザー要望:
+          //   機密情報が外に漏れないように)。 API 経由は既定で学習に
+          //   使われないが、 保存 (stored completions) を明示的に切る。
+          store: false,
           ...(extra || {}),
         }),
       });

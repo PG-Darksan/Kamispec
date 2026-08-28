@@ -35,6 +35,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_quill/flutter_quill.dart'
     show FlutterQuillLocalizations;
 import 'package:provider/provider.dart';
+import 'package:screen_retriever/screen_retriever.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'widgets/calc_body.dart';
@@ -7110,6 +7111,33 @@ class _FloatingWebWindowAppState extends State<_FloatingWebWindowApp>
   /// 2. そうでなければ前回閉じた大きさ。
   /// 3. どちらも無ければ**縦長**の既定値 (= ユーザー要望: 既定の横幅が
   ///    大きすぎるので、 高さはそのままに横を絞って縦長に)。
+  /// 窓全体が画面 (作業領域) に収まるようにする。
+  ///
+  /// 大きさを決めて位置を移した後に呼ぶ。 入り切らなければ縮めてから
+  /// 左上へ寄せる。 画面の大きさが取れない環境では何もしない。
+  Future<void> _fitIntoDisplay() async {
+    try {
+      final d = await screenRetriever.getPrimaryDisplay();
+      final vis = d.visiblePosition ?? Offset.zero;
+      final area = d.visibleSize ?? d.size;
+      final b = await windowManager.getBounds();
+      var w = b.width;
+      var h = b.height;
+      if (w > area.width - 8) w = area.width - 8;
+      if (h > area.height - 8) h = area.height - 8;
+      var x = b.left;
+      var y = b.top;
+      if (x + w > vis.dx + area.width) x = vis.dx + area.width - w;
+      if (y + h > vis.dy + area.height) y = vis.dy + area.height - h;
+      if (x < vis.dx) x = vis.dx;
+      if (y < vis.dy) y = vis.dy;
+      if (w == b.width && h == b.height && x == b.left && y == b.top) {
+        return;
+      }
+      await windowManager.setBounds(Rect.fromLTWH(x, y, w, h));
+    } catch (_) {}
+  }
+
   Future<void> _restoreSize() async {
     // ① 掴んで出された時の枠をそのまま使う。
     final f = widget.initialFrame;
@@ -7182,8 +7210,10 @@ class _FloatingWebWindowAppState extends State<_FloatingWebWindowApp>
   /// 外に出した窓の既定の横幅 (= ユーザー要望: 既定が横に大きすぎる)。
   static const double _kDefaultFloatWebWidth = 480;
 
-  /// 横幅が要るサイトの既定の横幅 (= ユーザー報告: Amazon が入り切らない)。
-  static const double _kWideFloatWebWidth = 1000;
+  /// 横幅が要るサイトの既定の横幅。
+  /// ★ 1000 は大きすぎた (= ユーザー報告: Amazon の窓が大きすぎて
+  ///   はみ出す。 Kindle と同じ大きさで開いてほしい)。
+  static const double _kWideFloatWebWidth = 820;
 
   Future<void> _init() async {
     try {
@@ -7198,6 +7228,10 @@ class _FloatingWebWindowAppState extends State<_FloatingWebWindowApp>
           await windowManager.setPosition(p0);
         } catch (_) {}
       }
+      // ★ 最後に、 窓全体が画面に収まるように丸める
+      //   (= ユーザー報告: 画面下のボタンから開くとはみ出す)。
+      //   呼び出し側では窓の大きさが分からないので、 自分で直す。
+      await _fitIntoDisplay();
       if (_pinned) {
         try {
           await windowManager.setAlwaysOnTop(true);

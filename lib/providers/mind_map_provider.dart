@@ -5233,6 +5233,19 @@ class MindMapProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// ノードの横幅スライダーの上限 (= ユーザー要望: 上限値を
+  /// 押したら変えられるように)。 既定は今までどおり 400。
+  double _nodeWidthMax = 400;
+  double get nodeWidthMax => _nodeWidthMax;
+  Future<void> setNodeWidthMax(double v) async {
+    _nodeWidthMax = v.clamp(160.0, 2000.0);
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.setDouble('nodeWidthMax', _nodeWidthMax);
+    } catch (_) {}
+    notifyListeners();
+  }
+
   String _browserAiTarget = 'chatgpt';
   String get browserAiTarget => _browserAiTarget;
   Map<String, String> get browserAiTargetDef => browserAiTargets.firstWhere(
@@ -52798,6 +52811,15 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Удалить',
     },
     // ── ノードタップ時のスライダー群 (Image 2: _sizeRow) ──
+    // 横幅スライダーの上限を変える画面 (= ユーザー要望)。
+    'overlay.widthMaxTitle': {
+      'ja': '横幅の上限',
+      'en': 'Maximum width',
+    },
+    'overlay.widthMaxHint': {
+      'ja': '160 〜 2000 の間で指定します。',
+      'en': 'Between 160 and 2000.',
+    },
     'overlay.widthLabel': {
       'ja': '横幅',
       'en': 'Width',
@@ -58476,6 +58498,8 @@ class MindMapProvider extends ChangeNotifier {
     // ノードAIボタンの ブラウザAI ターゲット (ChatGPT/Gemini/…)
     _browserAiTarget = prefs.getString('browser_ai_target') ?? 'chatgpt';
     _nodeAiUseAssistant = prefs.getBool('nodeAiUseAssistant') ?? false;
+    _nodeWidthMax =
+        (prefs.getDouble('nodeWidthMax') ?? 400).clamp(160.0, 2000.0);
     // 念のため try/catch (= 起動フロー保護: ここで例外が出ても言語/初回起動/
     //   下部ボタンの読み込みが止まらないように)。
     try {

@@ -35778,6 +35778,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                       _aiModeChip(provider, dctx, t),
                   ],
                 ),
+                const SizedBox(height: 10),
+                // ★ 前提条件はブラウザの AI に渡す文章の先頭に付く指示なので、
+                //   ブラウザ側の枠の中に置く (= ユーザー要望)。
+                _aiPrereqTile(provider, dctx),
                 const SizedBox(height: 14),
                 const Divider(color: Colors.white12, height: 1),
                 const SizedBox(height: 12),
@@ -35800,40 +35804,6 @@ class _MindMapScreenState extends State<MindMapScreen>
                 // ★ 「子要素を生成」 と 「AI に質問して回答を取得」 は廃止
                 //   (= ユーザー要望: AI アシスタントで代用できる)。
                 //   送り先 ('gen' / 'ask') の処理は他の入口用に残してある。
-                // ── AI に渡す前提条件の設定 (= ユーザー要望: 要素の AI ボタンを
-                //    右クリックした時に前提条件プロンプトを設定できる項目) ──
-                //    ★ これはブラウザの AI に渡す文章の先頭に付く指示なので、
-                //    アシスタントを選んでいる間は出さない (= ユーザー要望:
-                //    前提条件はブラウザ版で呼ぶ側に置く)。
-                if (!provider.nodeAiUseAssistant)
-                InkWell(
-                  onTap: () => Navigator.pop(dctx, 'prereq'),
-                  borderRadius: BorderRadius.circular(10),
-                  child: Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 12),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFFFB347).withValues(alpha: 0.12),
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(
-                          color:
-                              const Color(0xFFFFB347).withValues(alpha: 0.5)),
-                    ),
-                    child: Row(children: [
-                      const Icon(Icons.rule_rounded,
-                          color: Color(0xFFFFB347), size: 18),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(provider.t('ai.prereqTitle'),
-                            style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600)),
-                      ),
-                    ]),
-                  ),
-                ),
               ],
             ),
           ),
@@ -35875,6 +35845,36 @@ class _MindMapScreenState extends State<MindMapScreen>
       }
     });
   }
+
+  /// AI に渡す前提条件のタイル (= ブラウザの AI に渡す文章の先頭に付く指示)。
+  ///
+  /// ★ ブラウザ側の機能なので、 ブラウザの AI を並べた枠の中に置く
+  ///   (= ユーザー要望: AI アシスタント側ではなく上の枠組みに入れて欲しい)。
+  Widget _aiPrereqTile(MindMapProvider provider, BuildContext dctx) => InkWell(
+        onTap: () => Navigator.pop(dctx, 'prereq'),
+        borderRadius: BorderRadius.circular(10),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            color: const Color(0xFFFFB347).withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(10),
+            border:
+                Border.all(color: const Color(0xFFFFB347).withValues(alpha: 0.5)),
+          ),
+          child: Row(children: [
+            const Icon(Icons.rule_rounded, color: Color(0xFFFFB347), size: 18),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(provider.t('ai.prereqTitle'),
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600)),
+            ),
+          ]),
+        ),
+      );
 
   /// 質問モードの AI 選択チップ。 選択中は強調表示。
   Widget _aiModeChip(
@@ -94659,10 +94659,15 @@ class _ActionOverlayState extends State<_ActionOverlay>
                           provider.t('overlay.widthLabel'),
                           _w,
                           80,
-                          400,
+                          provider.nodeWidthMax,
                           const Color(0xFF4FC3F7), (v) {
                         setState(() => _w = v);
                         widget.onSizeChanged(_w, _h);
+                      }, onMaxChanged: () async {
+                        final v = await _askNodeWidthMax(provider);
+                        if (v == null || !mounted) return;
+                        await provider.setNodeWidthMax(v);
+                        if (mounted) setState(() {});
                       }),
                       _sizeRow(
                           Icons.height_rounded,
@@ -94721,8 +94726,51 @@ class _ActionOverlayState extends State<_ActionOverlay>
     ]);
   }
 
+  /// 横幅の上限を聞く (= ユーザー要望: 上限値を押したら設定が開く)。
+  Future<double?> _askNodeWidthMax(MindMapProvider provider) async {
+    final ctrl =
+        TextEditingController(text: provider.nodeWidthMax.round().toString());
+    final v = await showDialog<double>(
+      context: context,
+      useRootNavigator: false,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF2A2A3E),
+        title: Text(provider.t('overlay.widthMaxTitle'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          keyboardType: TextInputType.number,
+          style: const TextStyle(color: Colors.white),
+          decoration: InputDecoration(
+            helperText: provider.t('overlay.widthMaxHint'),
+            helperStyle:
+                const TextStyle(color: Colors.white38, fontSize: 11),
+          ),
+          onSubmitted: (s) =>
+              Navigator.pop(dctx, double.tryParse(s.trim())),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx),
+            child: Text(provider.t('btn.cancel'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.pop(dctx, double.tryParse(ctrl.text.trim())),
+            child: Text(provider.t('btn.apply')),
+          ),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    return v;
+  }
+
   Widget _sizeRow(IconData icon, String label, double val, double min,
-      double max, Color color, ValueChanged<double> onChanged) {
+      double max, Color color, ValueChanged<double> onChanged,
+      {VoidCallback? onMaxChanged}) {
     return Row(children: [
       Icon(icon, color: Colors.white38, size: 14),
       const SizedBox(width: 2),
@@ -94736,10 +94784,28 @@ class _ActionOverlayState extends State<_ActionOverlay>
             inactiveTrackColor: Colors.white.withValues(alpha: 0.1),
             thumbColor: Colors.white,
             overlayShape: const RoundSliderOverlayShape(overlayRadius: 10)),
-        child: Slider(value: val, min: min, max: max, onChanged: onChanged),
+        child: Slider(
+            value: val.clamp(min, max), min: min, max: max,
+            onChanged: onChanged),
       )),
-      Text('${val.round()}',
-          style: const TextStyle(color: Colors.white38, fontSize: 10)),
+      // ★ 数字を押すと上限を変えられる (= ユーザー要望: ノードの横幅の
+      //   上限値をクリックしたら設定が開かれて変えられるように)。
+      if (onMaxChanged != null)
+        InkWell(
+          onTap: () => onMaxChanged(),
+          borderRadius: BorderRadius.circular(4),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 2),
+            child: Text('${val.round()}',
+                style: TextStyle(
+                    color: color, fontSize: 10,
+                    decoration: TextDecoration.underline,
+                    decorationColor: color)),
+          ),
+        )
+      else
+        Text('${val.round()}',
+            style: const TextStyle(color: Colors.white38, fontSize: 10)),
     ]);
   }
 }
