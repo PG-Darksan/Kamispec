@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 
 import '../providers/mind_map_provider.dart';
+import '../utils/build_flags.dart';
 
 /// アプリ内蔵の MCP サーバー (= ユーザー要望: アプリ内蔵型で MCP サーバーを
 /// 実装して Claude から指示を出してマップを編集できるように)。
@@ -241,8 +242,9 @@ class McpServer {
         'set_page_type',
         'Change an existing page to another type without losing its nodes. '
         'type: "normal" (mind map), "bookshelf" (gallery), "paint" (free '
-        'note), "document" (notepad), "markdown" (markdown + mermaid), '
-        '"videoEditor". Use this when the user asks to convert/turn a page '
+        'note), "document" (notepad), "markdown" (markdown + mermaid)' +
+        (kStoreBuild ? '. ' : ', "videoEditor". ') +
+        'Use this when the user asks to convert/turn a page '
         'into another kind - the nodes stay, so never rebuild the page with '
         'delete_page + create_page. What a free note / notepad / markdown / '
         'video page holds is stored beside the page rather than inside it, so '
@@ -257,7 +259,8 @@ class McpServer {
         'connections / decorations only), so ask the user for the headings - '
         'or use text already in this conversation - and create the nodes '
         'yourself with add_node. '
-        'These six are the only page kinds the app has; if the user names '
+        '${kStoreBuild ? 'These five' : 'These six'} are the only page '
+        'kinds the app has; if the user names '
         'something else, say so instead of picking the closest one.',
         {
           'pageId': {'type': 'string'},
@@ -269,7 +272,7 @@ class McpServer {
               'paint',
               'document',
               'markdown',
-              'videoEditor'
+              if (!kStoreBuild) 'videoEditor'
             ]
           },
         },
@@ -310,8 +313,9 @@ class McpServer {
         'create_page',
         'Create a new page. type: "normal" (mind map), "bookshelf" (gallery), '
         '"paint" (free note), "document" (notepad - write prose with '
-        'append_document_text), "markdown" (markdown + mermaid) or '
-        '"videoEditor" (video timeline). Returns {pageId, type}: type is what '
+        'append_document_text), "markdown" (markdown + mermaid)' +
+        (kStoreBuild ? '. ' : ' or "videoEditor" (video timeline). ') +
+        'Returns {pageId, type}: type is what '
         'was really created. An unknown type falls back to "normal", so check '
         'the returned type before telling the user what you made.',
         {
@@ -323,7 +327,7 @@ class McpServer {
               'paint',
               'document',
               'markdown',
-              'videoEditor'
+              if (!kStoreBuild) 'videoEditor'
             ]
           },
           'name': {'type': 'string'},
@@ -648,8 +652,11 @@ class McpServer {
           'text': {'type': 'string'},
         },
         ['pageId']),
-    _tool(
-        'add_video_editor_item',
+    // ★ ストア提出版では道具ごと出さない (アプリ内 AI チャットも
+    //   この toolDefs を共用している)。
+    if (!kStoreBuild)
+      _tool(
+          'add_video_editor_item',
         'Add items to the timeline of a VIDEO EDITOR page (pageType '
         '"videoEditor"). kind: "text" (caption; requires text), "video" or '
         '"image" (requires an absolute local path). startMs and durationMs '
@@ -1200,7 +1207,8 @@ class McpServer {
                 'an id from it.');
           }
           return _err('"$type" is not a page kind. The app has only these: '
-              'normal, bookshelf, paint, document, markdown, videoEditor. If '
+              'normal, bookshelf, paint, document, markdown'
+              '${kStoreBuild ? '' : ', videoEditor'}. If '
               'the user asked for something else, tell them it does not exist '
               '- do not substitute.');
         }
@@ -1763,6 +1771,10 @@ class McpServer {
         }
       case 'add_video_editor_item':
         {
+          // 道具一覧に出していなくても、 名前を直接送られればここに来る。
+          if (kStoreBuild) {
+            return _err('the video editor is not available in this build');
+          }
           final pageId = a['pageId'] as String? ?? '';
           // ★ 1.5 秒のつもりで 1.5 を渡されると、 黙って 1 ミリ秒に切り捨てて
           //   成功と返していた (= 動作確認で判明)。 単位の取り違えは丸めずに

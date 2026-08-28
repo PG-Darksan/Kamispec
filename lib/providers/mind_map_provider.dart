@@ -20,6 +20,7 @@ import '../services/mcp_server.dart';
 import '../services/home_shortcut_service.dart';
 // AI に端末のファイル / Web を読ませる時の取り出し部 (= ユーザー要望)。
 import '../services/talk_reference.dart';
+import '../utils/build_flags.dart';
 
 /// カレンダーのイベント（1 日の予定）
 /// [startTime] / [endTime] は "HH:mm" 形式で、null なら終日イベント
@@ -3792,6 +3793,13 @@ class MindMapProvider extends ChangeNotifier {
   /// 自分宛 + 自分が所属するグループ宛のメッセージを取得（新しい順）
   Future<List<Map<String, dynamic>>> fetchMyMessages({int limit = 50}) async {
     if (!_firebaseEnabled || _idToken == null || _uid == null) return [];
+    // ★ 受信箱は開発者だけが使える (= ユーザー要望)。
+    //   この経路は messages コレクションを 200 件まとめて取得し、 端末側で
+    //   宛先を絞る作り (Firestore REST は OR 条件を書けないため)。 つまり
+    //   他人宛のメッセージも一度は端末に届く。 一般の利用者には配らない。
+    //   ※ 現在この関数を呼ぶ生きた画面は無い (messaging_dialog.dart は
+    //     使われていない) が、 将来つないだ時に漏れないよう塞いでおく。
+    if (!_developerMode) return [];
     try {
       await _ensureFreshToken();
       // Firestore REST の structuredQuery で OR 条件は使えないため、
@@ -25570,6 +25578,12 @@ class MindMapProvider extends ChangeNotifier {
       'ru':
           'Для экспорта видео нужен ffmpeg.\n\nПри нажатии «Автоустановка» ffmpeg загружается и настраивается в папке приложения (около 165 МБ / только Windows).\nДля ручной установки добавьте ffmpeg в PATH или поместите его в C:\\ffmpeg\\bin\\ffmpeg.exe.',
     },
+    // ★ ストア提出版向けの文面。 自動インストールも
+    //   ビデオエディターも無いので、 手で入れる道だけを案内する。
+    'video.ffmpegNotFoundBodyStore': {
+      'ja': '画面録画には ffmpeg が必要です。\n\nffmpeg を PATH に通すか、 C:\\ffmpeg\\bin\\ffmpeg.exe に置いてください。',
+      'en': 'ffmpeg is required for screen recording.\n\nAdd ffmpeg to PATH, or place it at C:\\ffmpeg\\bin\\ffmpeg.exe.',
+    },
     'video.autoInstall': {
       'ja': '自動インストール',
       'en': 'Auto-install',
@@ -32111,6 +32125,42 @@ class MindMapProvider extends ChangeNotifier {
           'Você pode enviar até 10 consultas por dia. Tente novamente amanhã.',
       'ru': 'Можно отправить до 10 обращений в сутки. Попробуйте завтра.',
     },
+    // ── 規約類 (= ストア審査の必須項目) ──
+    //   本文はウェブサイト側に置き、 アプリからは外のブラウザで開く。
+    //   文面を直すのにアプリの再配布が要らないようにするため。
+    'menu.privacyPolicy': {
+      'ja': 'プライバシーポリシー',
+      'en': 'Privacy Policy',
+      'zh': '隐私政策',
+      'ko': '개인정보 처리방침',
+      'es': 'Politica de privacidad',
+      'fr': 'Politique de confidentialite',
+      'de': 'Datenschutzerklarung',
+      'pt': 'Politica de privacidade',
+      'ru': 'Политика конфиденциальности',
+    },
+    'menu.termsOfUse': {
+      'ja': '利用規約',
+      'en': 'Terms of Use',
+      'zh': '使用条款',
+      'ko': '이용약관',
+      'es': 'Terminos de uso',
+      'fr': 'Conditions d utilisation',
+      'de': 'Nutzungsbedingungen',
+      'pt': 'Termos de uso',
+      'ru': 'Условия использования',
+    },
+    'menu.tokutei': {
+      'ja': '特定商取引法に基づく表記',
+      'en': 'Commercial Transactions Act notice',
+      'zh': '基于特定商业交易法的标示',
+      'ko': '특정상거래법에 근거한 표기',
+      'es': 'Aviso legal de transacciones comerciales',
+      'fr': 'Mentions legales sur les transactions commerciales',
+      'de': 'Hinweis nach dem japanischen Handelsgesetz',
+      'pt': 'Aviso da Lei de Transacoes Comerciais',
+      'ru': 'Уведомление о коммерческих сделках',
+    },
     'inquiry.officialIg': {
       'ja': '公式Instagram',
       'en': 'Official Instagram',
@@ -33778,6 +33828,15 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Novo editor de vídeo',
       'ru': 'Новый видеоредактор',
       'fa': 'ویرایشگر ویدیو جدید',
+    },
+    // ★ ストア提出版で取り残された動画編集ページを開いた時の案内。
+    'page.videoEditorUnavailable': {
+      'ja': 'この版では動画編集を開けません',
+      'en': 'The video editor is not available in this edition',
+    },
+    'page.videoEditorUnavailableBody': {
+      'ja': 'ページと中身はそのまま残っています。\n配布版 (zip) で開けば、 今までどおり編集できます。',
+      'en': 'The page and its contents are kept.\nOpen it in the downloadable (zip) edition to keep editing.',
     },
     'label.beta': {
       'ja': 'β版',
@@ -63475,6 +63534,9 @@ class MindMapProvider extends ChangeNotifier {
   /// 無料プラン + Pro 未加入 + クーポン無効 の場合、既定で作成済みのページも
   /// 含め、同じ pageType は `kFreePageLimit` 枚までに制限する。
   bool canCreatePageType(String pageType) {
+    // ★ ストア提出版ではビデオエディターを丸ごと隠す (= ffmpeg.exe を
+    //   取りに行けないため)。 hasUnlimitedPages の前に置くこと。
+    if (kStoreBuild && pageType == 'videoEditor') return false;
     if (hasUnlimitedPages) return true;
     // ── モバイル無料版: 既定の 4 ページ (マップ / ギャラリー / フリーノート /
     //    ビデオ) が最初から用意され、 それ以外の新規作成は Pro 以上
@@ -70974,15 +71036,20 @@ $cleanQ
   Future<void> _loadAnalyticsProfile() async {
     try {
       final prefs = await _prefsWithRetry();
-      _analyticsGender = prefs.getString('analytics_gender') ?? '';
-      _analyticsBirthYear = prefs.getInt('analytics_birth_year') ?? 0;
-      _analyticsBirthMonth = prefs.getInt('analytics_birth_month') ?? 0;
-      _analyticsBirthDay = prefs.getInt('analytics_birth_day') ?? 0;
+      // 性別 / 生年は読み込まない (= 送らないので持つ意味が無い)。
+      //   古い控えはこの後の _clearLegacyAgeGender で消える。
+      _analyticsGender = '';
+      _analyticsBirthYear = 0;
+      _analyticsBirthMonth = 0;
+      _analyticsBirthDay = 0;
       _analyticsCountry = prefs.getString('analytics_country') ?? '';
       _analyticsLocale = prefs.getString('analytics_locale') ?? '';
       _analyticsSource = prefs.getString('analytics_source') ?? '';
       _analyticsUpdatedAtMs = prefs.getInt('analytics_updated_at') ?? 0;
     } catch (_) {}
+    // 古い版で保存された性別・生年月日の控えを端末から消す (= 送るのを
+    //   やめた項目なので、 端末にも残さない)。
+    await _clearLegacyAgeGender();
     // 端末の地域はいつでも取れるので、 未設定なら埋めておく。
     if (_analyticsCountry.isEmpty) {
       await _captureDeviceRegion();
@@ -70991,14 +71058,33 @@ $cleanQ
     notifyListeners();
   }
 
+  /// 古い版で保存された性別・生年月日の控えを端末から消す。
+  ///
+  /// ★ もう入力する画面が無く、 送信もやめた項目なので、 端末にも残さない。
+  ///   一度消せば以後は何もしない (キーが無くなるだけ)。
+  Future<void> _clearLegacyAgeGender() async {
+    try {
+      final prefs = await _prefsWithRetry();
+      for (final k in const [
+        'analytics_gender',
+        'analytics_birth_year',
+        'analytics_birth_month',
+        'analytics_birth_day',
+      ]) {
+        if (prefs.containsKey(k)) await prefs.remove(k);
+      }
+    } catch (_) {}
+    _analyticsGender = '';
+    _analyticsBirthYear = 0;
+    _analyticsBirthMonth = 0;
+    _analyticsBirthDay = 0;
+  }
+
   Future<void> _saveAnalyticsProfile() async {
     _analyticsUpdatedAtMs = DateTime.now().millisecondsSinceEpoch;
     try {
       final prefs = await _prefsWithRetry();
-      await prefs.setString('analytics_gender', _analyticsGender);
-      await prefs.setInt('analytics_birth_year', _analyticsBirthYear);
-      await prefs.setInt('analytics_birth_month', _analyticsBirthMonth);
-      await prefs.setInt('analytics_birth_day', _analyticsBirthDay);
+      // 性別 / 生年月日はもう持たない (上の _clearLegacyAgeGender を参照)。
       await prefs.setString('analytics_country', _analyticsCountry);
       await prefs.setString('analytics_locale', _analyticsLocale);
       await prefs.setString('analytics_source', _analyticsSource);
@@ -71165,9 +71251,12 @@ $cleanQ
         //    取れていない項目は空のまま送る (集計側で「不明」 として数える)。
         'country': {'stringValue': _analyticsCountry},
         'locale': {'stringValue': _analyticsLocale},
-        'gender': {'stringValue': _analyticsGender},
-        'birthYear': {'integerValue': '$_analyticsBirthYear'},
-        'ageYears': {'integerValue': '${analyticsAge ?? 0}'},
+        // ★ 性別 / 生年 / 年齢は送らない。
+        //   入力する画面はとうに無く、 常に空 (''・0) を書き込んでいるだけの
+        //   死んだ項目だった。 古い版で値が入った端末からは実際の値が送られ
+        //   続けるため、 送信をやめて端末に残った控えも消す
+        //   (_clearLegacyAgeGender)。 これでプライバシーポリシーに
+        //   「年齢・性別は取得しません」 と書ける。
         'profileSource': {'stringValue': _analyticsSource},
         'updatedAt': {'stringValue': DateTime.now().toUtc().toIso8601String()},
       };
@@ -73980,9 +74069,19 @@ $cleanQ
         DateTime.now().difference(_approxGeoAt!) < const Duration(hours: 24)) {
       return;
     }
+    // ★ 自前の Worker (https) から取る。
+    //
+    //   以前は ip-api.com を **平文 http** で叩いていた。 無料枠が https に
+    //   対応していないためだったが、 (a) 通信が暗号化されず (b) 第三者に
+    //   IP が渡る、 の 2 点が残る。
+    //   Cloudflare は受け取ったリクエストに位置情報 (request.cf) を付けて
+    //   くれるので、 自分の Worker が返せば両方まとめて解消できる。
+    //   代行 API の設定が無いビルドでは何もしない (位置は使わない)。
+    final base = relayApiBase;
+    if (base.isEmpty) return;
     try {
       final res = await http
-          .get(Uri.parse('http://ip-api.com/json/?fields=status,lat,lon'))
+          .get(Uri.parse('$base/geo'))
           .timeout(const Duration(seconds: 8));
       if (res.statusCode != 200) return;
       final j = jsonDecode(res.body) as Map<String, dynamic>;
@@ -76888,7 +76987,9 @@ $cleanQ
     if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
       _addDefaultPage(pageType: 'bookshelf', force: true);
       _addDefaultPage(pageType: 'paint', force: true);
-      _addDefaultPage(pageType: 'videoEditor', force: true);
+      // ★ ストア提出版にはビデオエディターが無いので既定ページも作らない
+      //   (今は Windows 専用の旗なのでモバイルでは従来どおり)。
+      if (!kStoreBuild) _addDefaultPage(pageType: 'videoEditor', force: true);
     }
   }
 
@@ -76913,7 +77014,12 @@ $cleanQ
       final prefs = await _prefsWithRetry();
       if (prefs.getBool('mobileDefaultPagesSeeded_v1') == true) return;
       var added = false;
-      for (final t in ['normal', 'bookshelf', 'paint', 'videoEditor']) {
+      for (final t in [
+        'normal',
+        'bookshelf',
+        'paint',
+        if (!kStoreBuild) 'videoEditor',
+      ]) {
         if (pageTypeCount(t) == 0) {
           _addDefaultPage(pageType: t, force: true);
           added = true;
@@ -77022,6 +77128,7 @@ $cleanQ
   /// pageType='videoEditor'。 クリップ/トリム情報はノードと独立に
   /// prefs (videoEditor_<pageId>) に保存する。
   void addVideoEditorPage({String? name, String? folderId}) {
+    if (kStoreBuild) return;
     final page = _addDefaultPage(
         name: name, folderId: folderId, pageType: 'videoEditor');
     if (page == null) return;
@@ -78194,11 +78301,40 @@ $cleanQ
   /// AI に毎回渡すアプリの説明書 (読み込み前は空)。
   String get appAgentsGuide => _appAgentsGuide;
 
+  /// ストア提出版では同梱の説明書からも動画編集を消す。
+  ///
+  /// 説明書はそのまま AI の前置きに入るので、 残しておくと
+  /// 「動画ページを作りましょうか」 と無い機能を勧めてしまう。
+  /// 内言及を先に直してから、 残った行を落とす (逆にすると
+  /// create_page の行ごと消えて説明が欠ける)。
+  static String _stripVideoEditorFromDoc(String md) {
+    if (!kStoreBuild) return md;
+    var s = md
+        .replaceAll('、\n   動画 = `videoEditor`。', '。')
+        .replaceAll(' / `videoEditor`', '')
+        .replaceAll('(paint / videoEditor は', '(paint は')
+        .replaceAll(
+            'フリーノート (paint) / 文書 (document) / 動画編集 (videoEditor) の',
+            'フリーノート (paint) / 文書 (document) の')
+        .replaceAll('・動画編集', '')
+        .replaceAll('この 6 種類', 'この 5 種類')
+        .replaceAll('同じ 6 種類', '同じ 5 種類');
+    // 表の行など、 ここまでで残った言及は行ごと落とす。
+    return s
+        .split('\n')
+        .where((l) =>
+            !l.contains('videoEditor') &&
+            !l.contains('add_video_editor_item') &&
+            !l.contains('動画編集'))
+        .join('\n');
+  }
+
   /// AGENTS.md を同梱アセットから読む (1 回だけ)。
   Future<String> loadAppAgentsGuide() async {
     if (_appAgentsGuide.isNotEmpty) return _appAgentsGuide;
     try {
-      _appAgentsGuide = await rootBundle.loadString('assets/ai/AGENTS.md');
+      _appAgentsGuide = _stripVideoEditorFromDoc(
+          await rootBundle.loadString('assets/ai/AGENTS.md'));
     } catch (e) {
       debugPrint('AGENTS.md の読み込みに失敗: $e');
       _appAgentsGuide = '';
@@ -78218,7 +78354,7 @@ $cleanQ
     final key = _kAppDocAssets[name.trim().toLowerCase()];
     if (key == null) return null;
     try {
-      final text = await rootBundle.loadString(key);
+      final text = _stripVideoEditorFromDoc(await rootBundle.loadString(key));
       if (text.length <= maxChars) return text;
       return '${text.substring(0, maxChars)}\n\n'
           '…(長いのでここまで。 全 ${text.length} 文字)';
@@ -79036,7 +79172,7 @@ $cleanQ
     'paint',
     'document',
     'markdown',
-    'videoEditor',
+    if (!kStoreBuild) 'videoEditor',
   };
 
   Future<bool> mcpSetPageType(String pageId, String type) async {
@@ -79153,6 +79289,9 @@ $cleanQ
     //   種別を作らせると、 見た目は普通のマップなのに種別だけ違う、 誰にも
     //   直せないページが残る)。 知らない種別は 'normal' に倒し、 何を作った
     //   かは呼び出し側が pageType を見て確かめる。
+    // ストア版は黙って normal に倒さず失敗を返す
+    //   (= 作っていないのに「作りました」 と言わせない)。
+    if (kStoreBuild && type == 'videoEditor') return null;
     const known = {'bookshelf', 'paint', 'videoEditor', 'document', 'markdown'};
     final t = known.contains(type) ? type : 'normal';
     if (!canCreatePageType(t)) return null;
@@ -79541,6 +79680,7 @@ $cleanQ
     double? fontSize,
     int? colorValue,
   }) async {
+    if (kStoreBuild) return null;
     final page = mcpPageById(pageId);
     if (page == null) return null;
     if (page.pageType != 'videoEditor') return null;

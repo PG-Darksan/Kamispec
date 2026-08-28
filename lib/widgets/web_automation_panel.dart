@@ -19,6 +19,7 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../providers/mind_map_provider.dart';
+import '../utils/build_flags.dart';
 import 'shot_manager_dialog.dart';
 
 /// 1 ステップの種類。
@@ -71,7 +72,6 @@ enum AutoCommandPolicy { off, ask, always }
 ///
 /// ★ 任意のコマンドを実行できる仕組みは、 ストアでは「コード実行」 と
 ///   みなされる。 ストア版では実行も設定 UI も落とす。
-const bool kStoreBuild = bool.fromEnvironment('STORE_BUILD');
 
 bool isDangerousCommand(String raw) {
   final c = raw.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
@@ -422,11 +422,27 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
   //    ボタンから遠い)。 ヘッダーを押した位置を控えておく。 ──
   Offset? _lastPointerPos;
 
+  /// 窓を二重に開かないための鍵。
+  ///
+  /// ★ = ユーザー報告: 「保存したフローを開く」 を連打すると、
+  ///   押した分だけポップアップが積み上がる。 このファイルの窓は
+  ///   全部この鍵を共有する。
+  bool _modalOpen = false;
+
   /// 押した所の近くに出すダイアログ。 位置が分からない時は今までどおり中央。
   Future<T?> _showNearDialog<T>(
-      {required WidgetBuilder builder, double maxWidth = 420.0}) {
+      {required WidgetBuilder builder, double maxWidth = 420.0}) async {
+    if (_modalOpen) return null;
+    _modalOpen = true;
     final at = _lastPointerPos;
-    return showDialog<T>(
+    try {
+      return await showDialog<T>(
+      // ★ 一番近い Navigator に出す (= ユーザー報告: 浮かせた窓から
+      //   開くと、 窓の裏のアプリ本体に出てしまう)。 浮遊窓は根っこの
+      //   Overlay に挿されているので、 既定の useRootNavigator: true だと
+      //   窓の下に隠れる。 他の開き方では一番近い = 根っこなので
+      //   今までどおり。
+      useRootNavigator: false,
       context: context,
       builder: (dctx) {
         if (at == null) return builder(dctx);
@@ -460,6 +476,9 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
         ]);
       },
     );
+    } finally {
+      _modalOpen = false;
+    }
   }
 
   /// 白紙から作り直す (= ユーザー要望: 新しいフローを作るボタンが無いので、
@@ -1488,6 +1507,8 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
 
   Future<bool?> _confirmCommand(String cmd) {
     return showDialog<bool>(
+      // 浮かせた窓の中でも見えるように一番近い Navigator へ。
+      useRootNavigator: false,
       context: context,
       barrierDismissible: false,
       builder: (dctx) => AlertDialog(
@@ -2858,8 +2879,31 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
     final provider = context.read<MindMapProvider>();
     return Container(
       color: const Color(0xFF1B1B2A),
-      child: Column(
+      // ★ 浮かせた窓は高さが決め打ち (既定 560x760) なので、 AI の欄や
+      //   コマンド実行・時刻で実行を出すと固定の行が縦を食い尽くし、
+      //   一番下の「時刻で実行」 まで届かなくなる (= ユーザー報告:
+      //   下までスクロールできない)。 伸び縮みするのは手順一覧だけなので、
+      //   そこが 0 になっても上下の行は入りきらない。
+      //   縦が足りない時は全体を巻物にして、 手順一覧には決まった
+      //   高さを渡す。 広い時 (全画面) は今までどおり。
+      child: LayoutBuilder(builder: (lctx, cons) {
+        final tight = cons.maxHeight.isFinite && cons.maxHeight < 760;
+        final stepsHeight =
+            (cons.maxHeight * 0.35).clamp(180.0, 320.0).toDouble();
+        final steps = _steps.isEmpty
+            ? Center(
+                child: Text(provider.t('auto.empty'),
+                    style: const TextStyle(
+                        color: Colors.white24, fontSize: 11)),
+              )
+            : ListView.builder(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                itemCount: _steps.length,
+                itemBuilder: (_, i) => _stepTile(provider, _steps, i),
+              );
+        final body = Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: tight ? MainAxisSize.min : MainAxisSize.max,
         children: [
           if (_recording)
             Container(
@@ -3073,7 +3117,16 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
                   tooltip: provider.t('shots.title'),
                   icon: const Icon(Icons.photo_library_rounded,
                       size: 17, color: Color(0xFF80CBC4)),
-                  onPressed: () => ShotManagerDialog.show(context),
+                  onPressed: () async {
+                    if (_modalOpen) return;
+                    _modalOpen = true;
+                    try {
+                      await ShotManagerDialog.show(context,
+                          useRootNavigator: false);
+                    } finally {
+                      _modalOpen = false;
+                    }
+                  },
                 ),
               if (!_running)
                 IconButton(
@@ -3299,19 +3352,10 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
               ]),
             ),
           const SizedBox(height: 8),
-          Expanded(
-            child: _steps.isEmpty
-                ? Center(
-                    child: Text(provider.t('auto.empty'),
-                        style: const TextStyle(
-                            color: Colors.white24, fontSize: 11)),
-                  )
-                : ListView.builder(
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                    itemCount: _steps.length,
-                    itemBuilder: (_, i) => _stepTile(provider, _steps, i),
-                  ),
-          ),
+          if (tight)
+            SizedBox(height: stepsHeight, child: steps)
+          else
+            Expanded(child: steps),
           const Divider(height: 1, color: Colors.white12),
           Padding(
             padding: const EdgeInsets.all(8),
@@ -3334,7 +3378,9 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
           // 時刻で実行 = 一番下 (= ユーザー要望)。
           _buildScheduleRow(provider),
         ],
-      ),
+        );
+        return tight ? SingleChildScrollView(child: body) : body;
+      }),
     );
   }
 }

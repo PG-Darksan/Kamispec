@@ -41,6 +41,7 @@ import '../services/ic_card_reader.dart';
 // 面接練習・ロールプレイの下調べ (Web + 手元の資料ファイル)。
 import '../services/talk_reference.dart';
 import '../utils/gantt_time_utils.dart';
+import '../utils/build_flags.dart';
 import '../utils/embedded_oauth_guard.dart';
 // メッセージ機能 (messaging_dialog.dart) はユーザー要望で廃止したため import 削除。
 import '../widgets/calc_body.dart';
@@ -1352,15 +1353,6 @@ String stripToolEchoFromReply(String reply) {
   final cleaned = lines.join('\n').trim();
   return cleaned.isEmpty ? reply.trim() : cleaned;
 }
-
-/// Microsoft Store 提出用ビルドか。
-///
-/// ★ ストアの規約では、 ストア外から実行ファイルを取ってきて動かすことが
-///   できない。 そのため
-///     flutter build windows --release --dart-define=STORE_BUILD=true …
-///   で立てて、 ffmpeg の自動ダウンロードと汎用コマンド実行を落とす。
-///   zip 配布版 (既定) は今までどおり動く。
-const bool kStoreBuild = bool.fromEnvironment('STORE_BUILD');
 
 /// アプリが自動インストールした ffmpeg/ffprobe を置くフォルダー。
 Future<Directory> ffmpegInstallDir() async {
@@ -31723,26 +31715,6 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// アラーム管理ダイアログ (= 一覧 / 追加 / ON-OFF / 削除)。
   /// [hostContext] を渡すと、 その入れ物 (分割ペインの中の Navigator) に
   /// 出す (= ユーザー要望: アラームも左右分割で開けるように)。
-  /// アプリの説明書を読む画面 (= ユーザー要望: ブラウザの AI にマップの
-  /// ファイルを作らせる時の頼み方をアプリの中に置いておきたい)。
-  Future<void> _showAppDocDialog(MindMapProvider provider, String name) async {
-    final text = await provider.mcpReadAppDoc(name, maxChars: 200000) ?? '';
-    if (!mounted) return;
-    _openToolDialog(
-      provider.t('doc.importGuideTitle'),
-      Icons.menu_book_rounded,
-      const Color(0xFF9CCC65),
-      SelectionArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(16),
-          child: Text(text,
-              style: const TextStyle(
-                  color: Colors.white70, fontSize: 12.5, height: 1.7)),
-        ),
-      ),
-    );
-  }
-
   void _showAlarmsDialog({BuildContext? hostContext}) {
     final provider = context.read<MindMapProvider>();
     if (hostContext != null) {
@@ -36678,6 +36650,41 @@ class _MindMapScreenState extends State<MindMapScreen>
                                           'https://www.instagram.com/study_darksan'),
                                       mode: LaunchMode.externalApplication)),
                                 ),
+                                // ── 規約類 ──
+                                //   ストア審査では「アプリの中からプライバシー
+                                //   ポリシーに辿り着けること」 を見られる。
+                                //   本文はウェブサイト側に置き、 ここからは外の
+                                //   ブラウザで開くだけにしてある (文面を直すのに
+                                //   アプリを出し直さずに済む)。
+                                for (final e in const [
+                                  (
+                                    Icons.privacy_tip_rounded,
+                                    Color(0xFF4DB6AC),
+                                    'menu.privacyPolicy',
+                                    'privacy.html',
+                                  ),
+                                  (
+                                    Icons.gavel_rounded,
+                                    Color(0xFF90A4AE),
+                                    'menu.termsOfUse',
+                                    'terms.html',
+                                  ),
+                                  (
+                                    Icons.receipt_long_rounded,
+                                    Color(0xFF90A4AE),
+                                    'menu.tokutei',
+                                    'tokutei.html',
+                                  ),
+                                ])
+                                  _settingsTile(
+                                    icon: e.$1,
+                                    color: e.$2,
+                                    title: provider.t(e.$3),
+                                    onTap: () => unawaited(launchUrl(
+                                        Uri.parse(
+                                            'https://hisator-notebook.com/${e.$4}'),
+                                        mode: LaunchMode.externalApplication)),
+                                  ),
                               ],
                             ),
                           ),
@@ -41957,7 +41964,9 @@ class _MindMapScreenState extends State<MindMapScreen>
         break;
       case 'newVideoEditorPage':
         // 新しいビデオエディターページを作成 (= ユーザー要望: ショートカット)。
-        _addVideoEditorPageDialog(context, provider);
+        // キー割り当ては保存されるので、 既に押さえてあるキーで
+        //   ストア版によみがえらないようにここでも止める。
+        if (!kStoreBuild) _addVideoEditorPageDialog(context, provider);
         break;
       // ── ガント/予定表は「カスタムボタン」 で開くツールに変更 (= ユーザー要望:
       //    ページ機能としてはなくす)。 全画面ダイアログとして開く。 データは
@@ -55146,11 +55155,15 @@ class _MindMapScreenState extends State<MindMapScreen>
                                             pageId: provider.currentPage.id)
                                         : provider.currentPage.pageType ==
                                                 'videoEditor'
-                                            ? _VideoEditorPageView(
-                                                key: ValueKey(
-                                                    'veditor_${provider.currentPage.id}_${provider.mcpContentTick}'),
-                                                provider: provider,
-                                                pageId: provider.currentPage.id)
+                                            ? (kStoreBuild
+                                                ? _buildVideoEditorUnavailable(
+                                                    provider)
+                                                : _VideoEditorPageView(
+                                                    key: ValueKey(
+                                                        'veditor_${provider.currentPage.id}_${provider.mcpContentTick}'),
+                                                    provider: provider,
+                                                    pageId: provider
+                                                        .currentPage.id))
                                             : _buildCanvas(
                                                 context, provider, ctrl),
                               ),
@@ -57689,9 +57702,14 @@ class _MindMapScreenState extends State<MindMapScreen>
         backgroundColor: const Color(0xFF1E1E32),
         title: Text(provider.t('video.ffmpegNotFound'),
             style: const TextStyle(color: Colors.white, fontSize: 15)),
+        // ★ ストア提出版は自動インストールもビデオエディターも無いので、
+        //   既定の文面 (165 MB の自動導入 + 「エディターを開け」) は完全な
+        //   行き止まりになる。 手で入れる道だけを案内する。
         content: Text(
-            '${provider.t('video.ffmpegNotFoundBody')}\n\n'
-            '${provider.t('ve.ffmpegFromEditor')}',
+            kStoreBuild
+                ? provider.t('video.ffmpegNotFoundBodyStore')
+                : '${provider.t('video.ffmpegNotFoundBody')}\n\n'
+                    '${provider.t('ve.ffmpegFromEditor')}',
             style: const TextStyle(color: Colors.white70, fontSize: 13)),
         actions: [
           TextButton(
@@ -63378,12 +63396,14 @@ class _MindMapScreenState extends State<MindMapScreen>
             shortcut: _getCommandShortcut('newPaintPage')),
         // ── 文章作成 (ドキュメント) ページ (= ユーザー要望: 罫線付きで Word の
         //    ような文章が書ける) ──
-        _menuItem<_AddMenuAction>(
-            value: _AddMenuAction.newVideoEditorPage,
-            icon: Icons.movie_creation_rounded,
-            iconColor: const Color(0xFFFF7043),
-            label: provider.t('drawer.newVideoEditorPage'),
-            shortcut: _getCommandShortcut('newVideoEditorPage')),
+        // ★ ストア提出版では出さない (= ffmpeg を取りに行けないため)。
+        if (!kStoreBuild)
+          _menuItem<_AddMenuAction>(
+              value: _AddMenuAction.newVideoEditorPage,
+              icon: Icons.movie_creation_rounded,
+              iconColor: const Color(0xFFFF7043),
+              label: provider.t('drawer.newVideoEditorPage'),
+              shortcut: _getCommandShortcut('newVideoEditorPage')),
         _menuItem<_AddMenuAction>(
             value: _AddMenuAction.newFolder,
             icon: Icons.create_new_folder_outlined,
@@ -63399,13 +63419,6 @@ class _MindMapScreenState extends State<MindMapScreen>
             //   分かれていて違いが分からない)。 中で拡張子ごとに振り分ける。
             label: provider.t('export.bundleImport'),
             formatHint: '.hnmap / .json / .html'),
-        // ブラウザの AI に取り込みファイルを作らせる頼み方 (= ユーザー要望)。
-        _menuItem<_AddMenuAction>(
-            value: _AddMenuAction.importGuide,
-            icon: Icons.menu_book_rounded,
-            iconColor: const Color(0xFF9CCC65),
-            label: provider.t('doc.importGuideTitle'),
-            formatHint: provider.t('doc.importGuideHint')),
         _menuItem<_AddMenuAction>(
             value: _AddMenuAction.joinLive,
             icon: Icons.groups_rounded,
@@ -63461,7 +63474,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           _addMarkdownPageDialog(ctx, provider);
           break;
         case _AddMenuAction.newVideoEditorPage:
-          _addVideoEditorPageDialog(ctx, provider);
+          if (!kStoreBuild) _addVideoEditorPageDialog(ctx, provider);
           break;
         case _AddMenuAction.newFolder:
           _addFolderDialog(ctx, provider);
@@ -63469,9 +63482,6 @@ class _MindMapScreenState extends State<MindMapScreen>
         case _AddMenuAction.importBundle:
           // .json / .html を選ばれた時の案内に使うので context を渡す。
           _importPageBundle(provider, hostContext: ctx);
-          break;
-        case _AddMenuAction.importGuide:
-          unawaited(_showAppDocDialog(provider, 'import'));
           break;
         case _AddMenuAction.joinLive:
           _showJoinLiveDialog(provider);
@@ -81416,12 +81426,15 @@ class _MindMapScreenState extends State<MindMapScreen>
         color: const Color(0xFF5FD3B2),
         create: () => _addMarkdownPageDialog(context, provider),
       ),
-      (
-        labelKey: 'drawer.newVideoEditorPage',
-        icon: Icons.movie_creation_rounded,
-        color: const Color(0xFFFF7043),
-        create: () => _addVideoEditorPageDialog(context, provider),
-      ),
+      // ★ ストア提出版では出さない。 高さ (56 * items.length) も
+      //   押した時の items[picked] も長さ基準なので、 抜くだけで整合する。
+      if (!kStoreBuild)
+        (
+          labelKey: 'drawer.newVideoEditorPage',
+          icon: Icons.movie_creation_rounded,
+          color: const Color(0xFFFF7043),
+          create: () => _addVideoEditorPageDialog(context, provider),
+        ),
     ];
     final picked = await _showNearDialogMain<int>(
       width: 300,
@@ -81526,6 +81539,9 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 作りは _addPaintPageDialog と同じだが provider.addVideoEditorPage を呼ぶ。
   void _addVideoEditorPageDialog(
       BuildContext context, MindMapProvider provider) {
+    // ★ canCreatePageType より前で戻る。 後ろにすると、 無いはずの
+    //   機能のために課金案内を出すことになる。
+    if (kStoreBuild) return;
     if (!provider.canCreatePageType('videoEditor')) {
       _showPaywallDialog(provider);
       return;
@@ -81533,6 +81549,29 @@ class _MindMapScreenState extends State<MindMapScreen>
     provider.addVideoEditorPage(
         name: null, folderId: _targetFolderForNewPage(provider));
   }
+
+  /// ストア提出版で動画編集ページを開いた時の案内。
+  ///
+  /// ページも中身 (prefs の videoEditor_<pageId>) も消さない。
+  /// 同期や .hnmap の取り込みで後から入ってくることもあるので、
+  /// 作成を塞ぐだけでは足りず、 ここの分岐が本命。
+  Widget _buildVideoEditorUnavailable(MindMapProvider provider) => Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            const Icon(Icons.movie_creation_outlined,
+                size: 40, color: Color(0xFFFF7043)),
+            const SizedBox(height: 12),
+            Text(provider.t('page.videoEditorUnavailable'),
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white, fontSize: 15)),
+            const SizedBox(height: 8),
+            Text(provider.t('page.videoEditorUnavailableBody'),
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white70, fontSize: 12.5)),
+          ]),
+        ),
+      );
 
   void _addBookshelfPageDialog(BuildContext context, MindMapProvider provider) {
     // = ユーザー要望: 名前を聞かず既定名で即作成。
@@ -89763,7 +89802,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                 ('paint', 'drawer.newPaintPage'),
                 ('document', 'drawer.newDocumentPage'),
                 ('markdown', 'drawer.newMarkdownPage'),
-                ('videoEditor', 'drawer.newVideoEditorPage'),
+                if (!kStoreBuild)
+                  ('videoEditor', 'drawer.newVideoEditorPage'),
               ])
                 ListTile(
                   dense: true,
@@ -89867,6 +89907,8 @@ class _MindMapScreenState extends State<MindMapScreen>
         provider.addMarkdownPage(name: name);
         break;
       case 'videoEditor':
+        // 作られなかったページへ moveNodesToPage しないように抜ける。
+        if (kStoreBuild) return;
         provider.addVideoEditorPage(name: name);
         break;
       default:
@@ -90149,11 +90191,14 @@ class _MindMapScreenState extends State<MindMapScreen>
       'defaultKey': 'Ctrl+Shift+M'
     },
     // 新しいビデオエディター (動画編集) ページを作成 (= ユーザー要望)。
-    {
-      'id': 'newVideoEditorPage',
-      'labelKey': 'drawer.newVideoEditorPage',
-      'defaultKey': 'Ctrl+Shift+K'
-    },
+    // ★ ストア提出版では登録ごと落とす。 これでショートカット編集画面、
+    //   カスタムボタンの割り当て先、 重要キー一覧の全部から消える。
+    if (!kStoreBuild)
+      {
+        'id': 'newVideoEditorPage',
+        'labelKey': 'drawer.newVideoEditorPage',
+        'defaultKey': 'Ctrl+Shift+K'
+      },
     // メンバー予定表 = 予定表ツールのメンバータブを直接開くショートカット
     //   (= ガントと統合済み)。
     {
@@ -90496,7 +90541,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     'newPaintPage',
     'newDocumentPage',
     'newMarkdownPage',
-    'newVideoEditorPage',
+    if (!kStoreBuild) 'newVideoEditorPage',
     'gantt',
     'memberSchedule',
     'mapMemo',
@@ -90640,7 +90685,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     {'id': 'newMarkdownPage'}, // Ctrl+Shift+M
     {'id': 'newBookshelfPage'}, // Ctrl+Shift+O
     {'id': 'newPaintPage'}, // Ctrl+Shift+X
-    {'id': 'newVideoEditorPage'}, // Ctrl+Shift+K
+    if (!kStoreBuild) {'id': 'newVideoEditorPage'}, // Ctrl+Shift+K
     // 旧 redoAlternate (Ctrl+Shift+Z) は廃止 (= ユーザー要望)。
   ];
 
@@ -131946,8 +131991,11 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
       final tmpDir = await getTemporaryDirectory();
       tmpZip = File(
           '${tmpDir.path}${Platform.pathSeparator}ffmpeg_dl_${DateTime.now().millisecondsSinceEpoch}.zip');
-      const url =
-          'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip';
+      // ★ ストア審査の確認で app.so を grep されるので、 実行しない
+      //   だけでなく文字列ごと消えるよう const の三項演算子にする。
+      const url = kStoreBuild
+          ? ''
+          : 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip';
       final req = http.Request('GET', Uri.parse(url));
       final resp = await httpClient.send(req);
       if (resp.statusCode != 200) {
@@ -143574,8 +143622,6 @@ enum _AddMenuAction {
   /// 画像・動画ごと書き出した .hnmap を読み込む (= ユーザー要望)
   importBundle,
 
-  /// ブラウザの AI に取り込みファイルを作らせる頼み方 (= ユーザー要望)。
-  importGuide,
   aiSummarize,
   aiExplain,
   aiFollowUp,
@@ -144105,18 +144151,14 @@ class _DrawerTile extends StatelessWidget {
       decoration: BoxDecoration(
         // 複数選択中はシアン背景で目立たせる (active の紫より優先)
         // 複数選択中はシアン背景で目立たせる (active の紫より優先)。
-        //   ピン止めは、 その 2 つに負ける弱い色付けにする (= 選択中や
-        //   編集中の方が大事なので、 それを消さない)。
+        //   ★ ピン止めはタイルの色を変えない (= ユーザー要望: 派手すぎる)。
+        //     印は右側の小さな画鋲だけにして、 一覧の見た目を乱さない。
         color: isMultiSelected
             ? const Color(0xFF00E5FF).withValues(alpha: 0.18)
             : (isActive
                 ? Color.alphaBlend(
                     Colors.white.withValues(alpha: 0.10), baseColor)
-                : (isPinned
-                    ? Color.alphaBlend(
-                        const Color(0xFFFFC107).withValues(alpha: 0.10),
-                        baseColor.withValues(alpha: 0.16))
-                    : baseColor.withValues(alpha: 0.16))),
+                : baseColor.withValues(alpha: 0.16)),
         borderRadius: BorderRadius.circular(10),
         border: isMultiSelected
             ? Border.all(
@@ -144124,10 +144166,7 @@ class _DrawerTile extends StatelessWidget {
                 width: 1.5)
             : (isActive
                 ? Border.all(color: Colors.white.withValues(alpha: 0.28))
-                : (isPinned
-                    ? Border.all(
-                        color: const Color(0xFFFFC107).withValues(alpha: 0.45))
-                    : Border.all(color: baseColor.withValues(alpha: 0.22)))),
+                : Border.all(color: baseColor.withValues(alpha: 0.22))),
       ),
       child: ListTile(
         dense: true,
@@ -144251,19 +144290,12 @@ class _DrawerTile extends StatelessWidget {
                 message: provider.t('page.unpin'),
                 child: GestureDetector(
                   onTap: onTogglePin,
-                  child: Container(
-                    margin: const EdgeInsets.only(right: 2),
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFFFC107).withValues(alpha: 0.18),
-                      borderRadius: BorderRadius.circular(999),
-                      border: Border.all(
-                          color:
-                              const Color(0xFFFFC107).withValues(alpha: 0.6)),
-                    ),
-                    child: const Icon(Icons.push_pin_rounded,
-                        size: 13, color: Color(0xFFFFC107)),
+                  child: const Padding(
+                    padding: EdgeInsets.only(right: 3),
+                    // 枠も背景も付けず、 小さな画鋲だけ (= ユーザー要望:
+                    //   もっと地味で、 色も変えない感じに)。
+                    child: Icon(Icons.push_pin_rounded,
+                        size: 13, color: Colors.white54),
                   ),
                 ),
               ),
@@ -174624,15 +174656,9 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
         bytes: bytes,
       );
       if (outPath == null) return; // キャンセル
-      // ★ 元のファイルと同じ場所・同じ名前は断る (= ユーザー要望: ややこしく
-      //   なるので)。 大文字小文字とパスの区切りを揃えて見比べる。
-      String norm(String p) =>
-          p.replaceAll('\\', '/').toLowerCase();
-      if (norm(outPath) == norm(src)) {
-        snack(context.read<MindMapProvider>().t('save.sameAsSource'),
-            const Color(0xFFE53935));
-        return;
-      }
+      // ★ 元のファイルと同じ場所・同じ名前でも保存できる (= ユーザー要望)。
+      //   その場合は元のファイルを上書きするので、 書き込んだ内容はその PDF
+      //   本体に焼き込まれ、 後から個別に消すことはできなくなる。
       // デスクトップでは saveFile が bytes を書き込まない場合があるので保険。
       try {
         final out = File(outPath);
@@ -178263,14 +178289,9 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
         bytes: bytes,
       );
       if (outPath == null) return; // キャンセル
-      // ★ 元のファイルと同じ場所・同じ名前は断る (= ユーザー要望: ややこしく
-      //   なるので)。 大文字小文字とパスの区切りを揃えて見比べる。
-      String norm(String p) => p.replaceAll(r'\', '/').toLowerCase();
-      if (norm(outPath) == norm(src)) {
-        snack(context.read<MindMapProvider>().t('save.sameAsSource'),
-            const Color(0xFFE53935));
-        return;
-      }
+      // ★ 元のファイルと同じ場所・同じ名前でも保存できる (= ユーザー要望)。
+      //   その場合は元のファイルを上書きするので、 書き込んだ内容はその PDF
+      //   本体に焼き込まれ、 後から個別に消すことはできなくなる。
       try {
         final out = File(outPath);
         if (!await out.exists() || (await out.length()) == 0) {
@@ -225025,8 +225046,8 @@ class _McpChatSession extends ChangeNotifier {
             '・create_page で新しいページを作り、 その pageId を以降に使います。\n'
             '・種類は内容に合わせて選びます '
             '(考えを広げる = normal、 一覧・カード = bookshelf、 '
-            '文章 = document (便箋型メモ帳)、 絵や自由な書き込み = paint、 '
-            '動画 = videoEditor)。\n'
+            '文章 = document (便箋型メモ帳)、 絵や自由な書き込み = paint'
+            '${kStoreBuild ? '' : '、 動画 = videoEditor'})。\n'
             '・normal なら主題ノードを 1 つ作り、 子を add_node の nodes に '
             'まとめて渡して parentIndex でつなぎます。\n'
             '・作り終えたら read_page で中身を確かめてから、 何を作ったかを普通の文章で伝えます。\n\n'
@@ -225168,9 +225189,9 @@ class _McpChatSession extends ChangeNotifier {
         '座標も渡さない。 棚に自動で並びます)、 '
         'paint (フリーノート) = add_paint_text、 '
         'document (便箋型メモ帳) = append_document_text (段落ごとに呼ぶ)、 '
-        'markdown (Markdown / 図) = append_document_text、 '
-        'videoEditor (動画エディター) = add_video_editor_item。 '
-        'ページの種類はこの 6 つだけです。 一覧に無い種類 (例:「AI '
+        'markdown (Markdown / 図) = append_document_text'
+        '${kStoreBuild ? '。 ' : '、 videoEditor (動画エディター) = add_video_editor_item。 '}'
+        'ページの種類はこの ${kStoreBuild ? '5' : '6'} つだけです。 一覧に無い種類 (例:「AI '
         'スタジオのページ」) を頼まれたら、 近い種類で黙って代用せず、 '
         '無い事を伝えてから近い手段を勧めてください。 '
         '※ 調べ物は web_search で候補を出し、 web_fetch で中身を読んでから '
@@ -225457,7 +225478,16 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                           fontSize: 11,
                           height: 1.5)),
                   const Divider(height: 20, color: Colors.white12),
-                  SelectableText(provider.t('mcp.canDoBody'),
+                  // ★ ストア提出版では動画編集の宣伝を落とす。 翻訳の
+                  //   const マップを触ると定数式の評価でこけるので、
+                  //   出す直前に抜く。
+                  SelectableText(
+                      kStoreBuild
+                          ? provider
+                              .t('mcp.canDoBody')
+                              .replaceAll(' / 動画編集', '')
+                              .replaceAll(' / video editor', '')
+                          : provider.t('mcp.canDoBody'),
                       style: const TextStyle(
                           color: Colors.white70, fontSize: 11.5, height: 1.7)),
                 ]),

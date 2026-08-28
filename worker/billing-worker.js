@@ -172,6 +172,29 @@ export default {
       if (request.method === 'POST') return handleSiteVisits(env, true);
     }
 
+    // ── おおよその現在地 (= アプリ内ブラウザの位置情報の差し替えに使う) ──
+    //   以前はアプリから ip-api.com を **平文 http** で叩いていた。 無料枠が
+    //   https に対応しておらず、 プライバシーポリシーに「通信は暗号化して
+    //   います」 と書けない状態だった。
+    //   Cloudflare は受け取ったリクエストに request.cf として位置を付けて
+    //   くれるので、 ここで返せば (a) https になり (b) 第三者への送信が
+    //   まるごと無くなる。 IP そのものは保存しない。
+    if (url.pathname === '/geo' && request.method === 'GET') {
+      const cf = request.cf || {};
+      const lat = parseFloat(cf.latitude);
+      const lon = parseFloat(cf.longitude);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+        return json({ status: 'fail' }, 200);
+      }
+      return json({
+        status: 'success',
+        lat,
+        lon,
+        country: cf.country || '',
+        city: cf.city || '',
+      });
+    }
+
     if (url.pathname === '/health') {
       return new Response(JSON.stringify({ ok: true }), { headers: JSON_HEADERS });
     }

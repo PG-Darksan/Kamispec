@@ -44,9 +44,17 @@ Future<Directory> newAutomationRunDir() async {
 class ShotManagerDialog extends StatefulWidget {
   const ShotManagerDialog({super.key});
 
-  static Future<void> show(BuildContext context) {
+  /// [useRootNavigator] を false にすると、 一番近い Navigator に出る。
+  ///
+  /// ★ 自動操作を「浮かせて」 開いている時はこれが要る
+  ///   (= ユーザー報告: スクショ管理が開けない)。 浮遊窓は
+  ///   根っこの Overlay に挿されているので、 根っこの Navigator に
+  ///   積んだ窓はその下に隠れてしまう。
+  static Future<void> show(BuildContext context,
+      {bool useRootNavigator = true}) {
     return showDialog<void>(
       context: context,
+      useRootNavigator: useRootNavigator,
       barrierColor: Colors.black87,
       builder: (_) => const ShotManagerDialog(),
     );

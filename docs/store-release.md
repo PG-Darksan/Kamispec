@@ -40,6 +40,14 @@ flutter build windows --release --dart-define-from-file=env.json --dart-define=S
 
 - ffmpeg の**自動ダウンロード**ボタン（ストア外から実行ファイルを取得して動かすのは禁止）
 - 自動操作の**コマンド実行**機能一式（任意コマンド実行は「コード実行」とみなされる）
+- **ビデオエディター（動画編集ページ）一式** — 書き出しに ffmpeg.exe が要るのに
+  ストア版では取りに行けないため。 作成の入口（ドロワーの＋ / 種類選び /
+  Ctrl+Shift+K / ノード右クリック）、 MCP の `add_video_editor_item` と
+  `create_page` / `set_page_type` の `videoEditor`、
+  AI に渡す説明書（AGENTS.md ほか）の記述まで落ちる。
+  既に作ってあるページは消さず、 開くと案内を出す（中身は prefs に残る）。
+  ※ 画面録画と AI 面接のコマ送りも ffmpeg を使うが、 こちらは残す。
+  ストア版では exe の隣 / PATH / `C:\ffmpeg\bin` のいずれかから見つける。
 
 zip 配布版では付けないでください。付けないのが既定の動作です。
 
