@@ -41319,6 +41319,11 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Mudar para IA flutuante',
       'ru': 'Переключить на плавающий ИИ',
     },
+    // 中身に自前のヘッダーがある浮遡窓の、 細い掴み帯の説明。
+    'float.slimDragHint': {
+      'ja': 'ドラッグで移動 / 画面の外へ放すと別の窓になります',
+      'en': 'Drag to move — drop it outside to make a separate window',
+    },
     'float.toMemo': {
       'ja': 'フローティングメモに切り替え',
       'en': 'Switch to floating memo',

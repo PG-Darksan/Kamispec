@@ -58993,7 +58993,9 @@ class _MindMapScreenState extends State<MindMapScreen>
               _showGeminiKeyDialog(context, provider, null, anyProvider: true),
           extractFileText: _extractAttachmentTextForAi,
           initialTask: initialTask,
-          floatingPanel: floatingPanel,
+          // 実際に浮遡窓の中で開く時だけ true (スマホなど showDialog に
+          // 落ちる時は今までどおりダイアログとして描く)。
+          floatingPanel: floatingPanel && _isDesktop,
           // ブラウザ版 AI を呼ぶ (= ユーザー要望: 右上のアシスタントからも)。
           //   「AI」 ボタンと同じ開き方の設定に従う。
           onOpenBrowserAi: (url) {
@@ -59014,6 +59016,10 @@ class _MindMapScreenState extends State<MindMapScreen>
         width: 520,
         height: 700,
         memoryKey: 'assistant',
+        // 会話画面が自前のヘッダーを持っているので、 外枠のヘッダーは
+        // 掴む所だけにする (= ユーザー報告: 枠が二重)。 メモ / ブラウザ AI /
+        // ピン / 閉じる のボタンもここでは出さない。
+        slimChrome: true,
         // 全画面では開かないので「全画面に戻す」 も出さない。
         // アプリの外へ出す (= ユーザー要望)。 アシスタントは Web ページでは
         //   ないので、 別プロセスの Web 窓ではなくサブ窓に会話だけを映す。
@@ -59057,7 +59063,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       'json': jsonEncode({
         'msgs': [
           for (final m in s.msgs)
-            {'role': m.role, 'text': m.text},
+            // 印はサブ窓には出さない (向こうはボタンを描けないので文字だけ)。
+            {'role': m.role, 'text': stripChoiceMarker(m.text)},
         ],
         'busy': s.busy,
         'canceling': s.canceling,
@@ -67312,6 +67319,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       String? popOutUrl,
       ValueGetter<String>? popOutUrlBuilder,
       bool aiSwitchable = false,
+      // 中身が自前のヘッダーを持つ窓は、 上の帯を細い掴み線だけにする。
+      bool slimChrome = false,
       // Web ページでない画面を外へ出すための差し替え口 (= ユーザー要望:
       //   AI アシスタントもアプリの外に出せるように)。
       Future<bool> Function(Rect frame, bool pinned)? popOutCustom,
@@ -67375,6 +67384,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         onSwitchAi: aiSwitchable
             ? () => _switchFloatingAi(closeSelf, width, height, memoryKey)
             : null,
+        slimChrome: slimChrome,
         onRestoreFull: onRestoreFull == null
             ? null
             : () {
@@ -103254,6 +103264,39 @@ Future<Uint8List?> _readClipboardImageBytesForMemo(
     if (!completer.isCompleted) completer.complete(null);
   }
   return completer.future;
+}
+
+/// 返事の最後の行に付く選択肢 `<<choices: A | B>>` を読み取る
+/// (= ユーザー要望: 選ばせたい時は押せるボタンにする)。
+/// 印が無ければ空。 印はこの 1 行だけで判断するので、 普通の文章が
+/// 勝手にボタンになることはない。
+final RegExp _kChoiceMarkerRe =
+    RegExp(r'^<<\s*choices\s*:(.+)>>$', caseSensitive: false);
+
+List<String> parseChoiceOptions(String text) {
+  final lines = text.trimRight().split('\n');
+  if (lines.isEmpty) return const [];
+  final m = _kChoiceMarkerRe.firstMatch(lines.last.trim());
+  if (m == null) return const [];
+  final items = m
+      .group(1)!
+      .split('|')
+      .map((s) => s.trim())
+      .where((s) => s.isNotEmpty && s.length <= 40)
+      .toList();
+  // 2〜6 個でなければ選択肢とみなさない (書き損じ・長い文の取り違え避け)。
+  if (items.length < 2 || items.length > 6) return const [];
+  return items;
+}
+
+/// 画面と外の窓には印を出さない (中身は AI に渡すためそのまま残す)。
+String stripChoiceMarker(String text) {
+  final lines = text.trimRight().split('\n');
+  if (lines.isNotEmpty && _kChoiceMarkerRe.hasMatch(lines.last.trim())) {
+    lines.removeLast();
+    return lines.join('\n').trimRight();
+  }
+  return text;
 }
 
 /// 動画メモに貼った画像を大きく見る。
@@ -224207,7 +224250,14 @@ class _FloatingPanelWindow extends StatefulWidget {
     this.popOutCustom,
     this.onRestoreFull,
     this.initialRect,
+    this.slimChrome = false,
   });
+
+  /// 中身が自前のヘッダーを持っている窓 (= AI アシスタント) では、
+  /// 枠が二重に見えないよう、 上の帯を「掴む所」 だけの細い線にする
+  /// (= ユーザー報告: 外枠と中の見出しが二段に重なって見える)。
+  /// ボタン (メモ / ブラウザ AI / ピン / 閉じる) もこの時は出さない。
+  final bool slimChrome;
 
   /// 最初に出す位置と大きさ (画面グローバル座標)。 マップ分割中に
   /// 「分割セルを覆う形」 で開くために使う (= ユーザー要望)。
@@ -224519,7 +224569,37 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
                 // 画面の外まで引っ張って放したら、 そのまま外の窓になる
                 // (= ユーザー要望: ボタンを押さなくても外に出るように)。
                 onPanEnd: (_) => unawaited(_handleDragRelease(screen)),
-                child: Container(
+                child: widget.slimChrome
+                    // 中身に自前のヘッダーがある窓では、 掴む所だけの
+                    // 細い帯にする (= ユーザー報告: 枠が二段に重なる)。
+                    // 掴んで動かす / 外へ放して外の窓にする、 は今まで
+                    // どおりこの GestureDetector が受け持つ。
+                    ? Container(
+                        height: 12,
+                        decoration: const BoxDecoration(
+                          color: Color(0xFF1A1A2E),
+                          borderRadius:
+                              BorderRadius.vertical(top: Radius.circular(11)),
+                        ),
+                        child: Tooltip(
+                          message: context
+                              .read<MindMapProvider>()
+                              .t('float.slimDragHint'),
+                          child: Center(
+                            child: Container(
+                              width: 36,
+                              height: 3,
+                              decoration: BoxDecoration(
+                                color: draggedOut
+                                    ? const Color(0xFF4FC3F7)
+                                    : Colors.white24,
+                                borderRadius: BorderRadius.circular(2),
+                              ),
+                            ),
+                          ),
+                        ),
+                      )
+                    : Container(
                   height: 30,
                   padding: const EdgeInsets.only(left: 10, right: 2),
                   decoration: const BoxDecoration(
@@ -225506,6 +225586,11 @@ class _McpChatSession extends ChangeNotifier {
         '※ 調べ物は web_search で候補を出し、 web_fetch で中身を読んでから '
         '答えてください (読んだ URL を必ず示す。 URL をでっち上げない)。 '
         '調べずに答える時は、 不確かな点をその旨と一緒に書いてください。'
+        '\n★ 利用者に 2〜6 個の中から選ばせたい時だけ、 返事の一番最後の行に '
+        '<<choices: 選択肢A | 選択肢B>> の形で選択肢だけを書いてください '
+        '(押せるボタンになります)。 1 つの選択肢は 40 文字以内。 '
+        '本文には同じ選択肢を並べないでください。 '
+        '選ばせる必要が無い返事には絶対に付けないでください。\n'
         '(アプリの表示言語: ${provider.appLanguage})';
   }
 
@@ -226312,6 +226397,53 @@ class _McpChatDialogState extends State<_McpChatDialog> {
     }
   }
 
+  /// 選択肢のボタンを押した時 (= ユーザー要望: 選ばせる質問はボタンで)。
+  /// `_send` と同じ守り (鍵の確認・bind・順番待ち) を通す。 入力欄には
+  /// 入れない (「クリア」 などの合言葉と衝突するため)。
+  void _sendChoice(String label) {
+    final text = label.trim();
+    if (text.isEmpty) return;
+    if (!provider.hasActiveAiKey) {
+      _promptForAiKey();
+      return;
+    }
+    _session.bind(provider);
+    _session.initialTask = widget.initialTask;
+    _session.submit(shown: text, raw: text, steer: _steerNext);
+    _scrollToEnd();
+  }
+
+  /// クリップボードの画像を添付に足す (= ユーザー要望: Ctrl+V で貼れるように)。
+  /// 読み取りは動画メモと同じ `_readClipboardImageBytesForMemo`、 置き場は
+  /// 写真ボタン・ファイル選択と同じ `_images` に揃える。
+  /// 画像が無ければ何もしない (文字の貼り付けは邪魔しない)。
+  Future<void> _pasteClipboardImage() async {
+    try {
+      final clipboard = SystemClipboard.instance;
+      if (clipboard == null) return;
+      final reader = await clipboard.read();
+      // bmp は AiInputImage.mimeForExt が JPEG 扱いにしてしまうので入れない。
+      const candidates = <(FileFormat, String)>[
+        (Formats.png, 'png'),
+        (Formats.jpeg, 'jpg'),
+        (Formats.gif, 'gif'),
+        (Formats.webp, 'webp'),
+      ];
+      for (final (fmt, ext) in candidates) {
+        if (!reader.canProvide(fmt)) continue;
+        final bytes = await _readClipboardImageBytesForMemo(reader, fmt);
+        if (bytes == null || bytes.isEmpty) continue;
+        if (!mounted) return;
+        setState(() => _images.add(AiInputImage(
+              mime: AiInputImage.mimeForExt(ext),
+              base64: base64Encode(bytes),
+              name: 'clipboard.$ext',
+            )));
+        return;
+      }
+    } catch (_) {}
+  }
+
   Future<void> _pickAttachment() async {
     try {
       final res = await FilePicker.platform.pickFiles(withData: false);
@@ -226652,7 +226784,9 @@ class _McpChatDialogState extends State<_McpChatDialog> {
     // 外部公開をやめたので URL は使わない。
     // ペインに埋め込む時は Dialog で包まず、 与えられた場所いっぱいに広げる
     // (= ユーザー要望: 左右分割でも出せるように)。
-    final pane = widget.paneMode;
+    // 浮遡窓の中でも Dialog で包まない (= ユーザー報告: 窓の中にもう一枚
+    // カードが浮いて、 枠が二重に見える)。 窓いっぱいに広げる。
+    final pane = widget.paneMode || widget.floatingPanel;
     Widget wrap(Widget child) => pane
         ? Material(color: const Color(0xFF1A1A2E), child: child)
         : Dialog(
@@ -226928,24 +227062,76 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                         );
                       }
                       final isUser = m.role == 'user';
+                      // 選択肢の印 (= ユーザー要望: 選ばせる質問はボタンで)。
+                      // 印は画面に出さず、 押せるボタンとして出し直す。
+                      final choices =
+                          isUser ? const <String>[] : parseChoiceOptions(m.text);
+                      // 押せるのは一番新しい問いかけだけ (後で自分が何か送った
+                      // 後の、 古いボタンは押せないようにする)。
+                      final showChoices = choices.isNotEmpty &&
+                          !_msgs.skip(i + 1).any((x) => x.role == 'user');
+                      final shownText =
+                          choices.isEmpty ? m.text : stripChoiceMarker(m.text);
                       return Align(
                         alignment: isUser
                             ? Alignment.centerRight
                             : Alignment.centerLeft,
-                        child: Container(
-                          margin: const EdgeInsets.symmetric(vertical: 4),
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 8),
+                        child: ConstrainedBox(
                           constraints: const BoxConstraints(maxWidth: 420),
-                          decoration: BoxDecoration(
-                            color: isUser
-                                ? const Color(0xFF6C63FF)
-                                : const Color(0xFF2A2A3E),
-                            borderRadius: BorderRadius.circular(12),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: isUser
+                                ? CrossAxisAlignment.end
+                                : CrossAxisAlignment.start,
+                            children: [
+                              Container(
+                                margin:
+                                    const EdgeInsets.symmetric(vertical: 4),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 8),
+                                decoration: BoxDecoration(
+                                  color: isUser
+                                      ? const Color(0xFF6C63FF)
+                                      : const Color(0xFF2A2A3E),
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: SelectableText(shownText,
+                                    style: const TextStyle(
+                                        color: Colors.white, fontSize: 13)),
+                              ),
+                              if (showChoices)
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 6),
+                                  child: Wrap(
+                                    spacing: 6,
+                                    runSpacing: 6,
+                                    children: [
+                                      for (final c in choices)
+                                        OutlinedButton(
+                                          style: OutlinedButton.styleFrom(
+                                            foregroundColor:
+                                                const Color(0xFF80CBC4),
+                                            side: const BorderSide(
+                                                color: Color(0xFF80CBC4)),
+                                            padding:
+                                                const EdgeInsets.symmetric(
+                                                    horizontal: 12,
+                                                    vertical: 4),
+                                            minimumSize: Size.zero,
+                                            tapTargetSize:
+                                                MaterialTapTargetSize
+                                                    .shrinkWrap,
+                                          ),
+                                          onPressed: () => _sendChoice(c),
+                                          child: Text(c,
+                                              style: const TextStyle(
+                                                  fontSize: 12)),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                            ],
                           ),
-                          child: SelectableText(m.text,
-                              style: const TextStyle(
-                                  color: Colors.white, fontSize: 13)),
                         ),
                       );
                     },
@@ -227141,6 +227327,16 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                       return _recallPrompt(1)
                           ? KeyEventResult.handled
                           : KeyEventResult.ignored;
+                    }
+                    // ── Ctrl+V (Mac は ⌘V) で画像も貼れる (= ユーザー要望) ──
+                    //    押した時だけ (KeyRepeatEvent は無視) 動かす。
+                    //    ignored を返すので、 文字の貼り付けは今までどおり。
+                    if (event is KeyDownEvent &&
+                        event.logicalKey == LogicalKeyboardKey.keyV &&
+                        (HardwareKeyboard.instance.isControlPressed ||
+                            HardwareKeyboard.instance.isMetaPressed)) {
+                      // ignore: discarded_futures
+                      _pasteClipboardImage();
                     }
                     return KeyEventResult.ignored;
                   },
