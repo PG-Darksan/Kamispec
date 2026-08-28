@@ -34330,6 +34330,13 @@ class _MindMapScreenState extends State<MindMapScreen>
     final provider = context.read<MindMapProvider>();
     final node = provider.nodes[nodeId];
     if (node == null) return;
+    // ★ 「AI アシスタント (API)」 を選んでいるなら、 ブラウザを開かず
+    //   アプリのアシスタントに渡す (= ユーザー要望)。
+    if (provider.nodeAiUseAssistant) {
+      unawaited(_openMcpChat(provider,
+          initialTask: 'node:${node.title.trim()}'));
+      return;
+    }
     // ── ノードの本文全体を AI に渡す (= ユーザー要望: リッチテキストで編集した
     //   要素も、 AI ボタンを押すとブラウザ版 AI にその内容を渡せるように) ──
     //   richText があればその全文 (タイトル+メモ統合)、 無ければ タイトル+メモ。
@@ -35681,6 +35688,12 @@ class _MindMapScreenState extends State<MindMapScreen>
                   spacing: 8,
                   runSpacing: 8,
                   children: [
+                    // ★ ブラウザではなくアプリの AI アシスタント (API) で
+                    //   受ける選択肢 (= ユーザー要望)。
+                    _aiModeChip(provider, dctx, const {
+                      'id': 'assistant',
+                      'label': 'AI アシスタント (API)',
+                    }),
                     for (final t in MindMapProvider.browserAiTargets)
                       _aiModeChip(provider, dctx, t),
                   ],
@@ -35749,6 +35762,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                 const SizedBox(height: 8),
                 // ── AI に渡す前提条件の設定 (= ユーザー要望: 要素の AI ボタンを
                 //    右クリックした時に前提条件プロンプトを設定できる項目) ──
+                //    ★ これはブラウザの AI に渡す文章の先頭に付く指示なので、
+                //    アシスタントを選んでいる間は出さない (= ユーザー要望:
+                //    前提条件はブラウザ版で呼ぶ側に置く)。
+                if (!provider.nodeAiUseAssistant)
                 InkWell(
                   onTap: () => Navigator.pop(dctx, 'prereq'),
                   borderRadius: BorderRadius.circular(10),
@@ -35803,10 +35820,17 @@ class _MindMapScreenState extends State<MindMapScreen>
           );
         }
       } else if (result.startsWith('q:')) {
-        // 質問モード: モデルを保存 (= 次回も同じモデル) してから開く。
-        await context
-            .read<MindMapProvider>()
-            .setBrowserAiTarget(result.substring(2));
+        final picked = result.substring(2);
+        final p = context.read<MindMapProvider>();
+        if (picked == 'assistant') {
+          // アプリの AI アシスタント (API) で受ける (= ユーザー要望)。
+          await p.setNodeAiUseAssistant(true);
+        } else {
+          // 質問モード: モデルを保存 (= 次回も同じモデル) してから開く。
+          await p.setNodeAiUseAssistant(false);
+          await p.setBrowserAiTarget(picked);
+        }
+        if (!mounted) return;
         _openBrowserAiForNode(nodeId);
       }
     });
@@ -35815,7 +35839,11 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 質問モードの AI 選択チップ。 選択中は強調表示。
   Widget _aiModeChip(
       MindMapProvider provider, BuildContext dctx, Map<String, String> t) {
-    final selected = t['id'] == provider.browserAiTarget;
+    // アシスタントを選んでいる間はブラウザ側の印を消す。
+    final isAssistant = t['id'] == 'assistant';
+    final selected = isAssistant
+        ? provider.nodeAiUseAssistant
+        : (!provider.nodeAiUseAssistant && t['id'] == provider.browserAiTarget);
     return InkWell(
       onTap: () => Navigator.pop(dctx, 'q:${t['id']}'),
       borderRadius: BorderRadius.circular(20),
@@ -188841,7 +188869,9 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
     }
     // ── セルのコピー / 切り取り / 貼り付け (= ユーザー要望) ──
     //    セルを編集中は普通の文字コピーに任せる。
-    if (ctrl && _editingRow == null) {
+    // カーソルがこの表の上に無い時は、 クリップボードのキーを
+    //   横取りしない (= ユーザー報告: 隣のペインへ貼り付けられない)。
+    if (ctrl && _editingRow == null && _sheetHovered) {
       if (event.logicalKey == LogicalKeyboardKey.keyC) {
         unawaited(_copyCells());
         return KeyEventResult.handled;
@@ -189340,7 +189370,10 @@ $csvText
           if (mounted) Navigator.of(context).pop();
         }
       },
-      child: Container(
+      child: MouseRegion(
+        onEnter: (_) => _sheetHovered = true,
+        onExit: (_) => _sheetHovered = false,
+        child: Container(
         color: bg,
         child: Stack(children: [
           Column(
@@ -189405,6 +189438,7 @@ $csvText
             ),
         ]),
       ),
+      ),
     );
   }
 
@@ -189413,6 +189447,16 @@ $csvText
   /// PowerPoint / テキストと同じ形にそろえる。
   bool _headerVisible = true;
   bool _headerBtnHover = false;
+
+  /// カーソルがこの表の上にあるか。
+  ///
+  /// ★ 右のペインに表を開いたまま左の画面へ Ctrl+V すると
+  ///   貼り付けられない (= ユーザー報告)。 この表は一度触ると
+  ///   前面のフォーカスを持ち続け、 Ctrl+C/X/V を無条件に飲むので、
+  ///   マップ側の貼り付けまで止まっていた。 しかも表の貼り付けは
+  ///   文字しか見ないので、 スクショはどこにも入らず無反応に見える。
+  ///   カーソルが乗っていない時は譲る。
+  bool _sheetHovered = false;
 
   Widget _buildHeader(bool dark, Color fg) {
     // ── 隠している時はファイル名・アイコンごと全て隠して細い帯だけ残す。

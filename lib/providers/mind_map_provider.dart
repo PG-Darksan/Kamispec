@@ -5203,11 +5203,8 @@ class MindMapProvider extends ChangeNotifier {
       'label': 'Gemini',
       'url': 'https://gemini.google.com/app?q={q}'
     },
-    {
-      'id': 'perplexity',
-      'label': 'Perplexity',
-      'url': 'https://www.perplexity.ai/search?q={q}'
-    },
+    // Perplexity は外した (= ユーザー要望: LLM 自体は他社のものを
+    //   使っているので、 他社製 AI なら他の選択肢で足りる)。
     {'id': 'claude', 'label': 'Claude', 'url': 'https://claude.ai/new?q={q}'},
     {'id': 'grok', 'label': 'Grok', 'url': 'https://grok.com/?q={q}'},
     // DeepSeek (= ユーザー要望: ノードAIボタンの「質問モード」 にも DeepSeek を
@@ -5223,6 +5220,19 @@ class MindMapProvider extends ChangeNotifier {
     // エントリがあったが、 AI チャット判定・分割パネル等では元々 id=='google'
     // を弾いていた (各所の `!= 'google'` ガードは無害な保険として残置)。
   ];
+  /// 要素の AI ボタンを「ブラウザの AI」 ではなく
+  /// 「AI アシスタント (API)」 で受けるか (= ユーザー要望)。
+  bool _nodeAiUseAssistant = false;
+  bool get nodeAiUseAssistant => _nodeAiUseAssistant;
+  Future<void> setNodeAiUseAssistant(bool v) async {
+    _nodeAiUseAssistant = v;
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.setBool('nodeAiUseAssistant', v);
+    } catch (_) {}
+    notifyListeners();
+  }
+
   String _browserAiTarget = 'chatgpt';
   String get browserAiTarget => _browserAiTarget;
   Map<String, String> get browserAiTargetDef => browserAiTargets.firstWhere(
@@ -39087,6 +39097,31 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Aguardar',
       'ru': 'Ожидание',
     },
+    // ── ファイルを渡す手順 (= ユーザー要望) ──
+    'auto.kindUpload': {
+      'ja': 'ファイルを渡す',
+      'en': 'Send a file',
+    },
+    'auto.uploadPickFolder': {
+      'ja': 'フォルダーを選ぶ',
+      'en': 'Choose a folder',
+    },
+    'auto.uploadFrom': {
+      'ja': '何番目から',
+      'en': 'From',
+    },
+    'auto.uploadTo': {
+      'ja': '何番目まで',
+      'en': 'To',
+    },
+    'auto.uploadNoFile': {
+      'ja': '渡せるファイルがありません',
+      'en': 'There is no file to send',
+    },
+    'auto.uploadSent': {
+      'ja': '{name} を渡しました ({n}/{total})',
+      'en': 'Sent {name} ({n}/{total})',
+    },
     'auto.kindFullShot': {
       'ja': '全体を 1 枚',
       'en': 'Full-page shot',
@@ -58411,6 +58446,7 @@ class MindMapProvider extends ChangeNotifier {
         prefs.getString('openrouter_base_url') ?? 'https://openrouter.ai/api/v1';
     // ノードAIボタンの ブラウザAI ターゲット (ChatGPT/Gemini/…)
     _browserAiTarget = prefs.getString('browser_ai_target') ?? 'chatgpt';
+    _nodeAiUseAssistant = prefs.getBool('nodeAiUseAssistant') ?? false;
     // 念のため try/catch (= 起動フロー保護: ここで例外が出ても言語/初回起動/
     //   下部ボタンの読み込みが止まらないように)。
     try {

@@ -9,9 +9,10 @@
 //   走らせられる。
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Platform, Process, ProcessResult;
+import 'dart:io' show Directory, File, Platform, Process, ProcessResult;
 import 'dart:math' as math;
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'
     show HardwareKeyboard, KeyDownEvent, KeyEvent, LogicalKeyboardKey;
@@ -56,6 +57,13 @@ enum WebAutoKind {
   /// ページの上から下までを 1 枚の縦長画像にする (= ユーザー要望)。
   /// WebView には全面を撮る口が無いので、 1 画面ぶんずつ撮って縦に繋げる。
   fullShot,
+
+  /// フォルダーの中のファイルをページの「ファイル選択」 に渡す
+  /// (= ユーザー要望: 自動化でファイルをアップロードしたい /
+  /// 繰り返しごとにここからここの範囲を順番に)。
+  /// text = フォルダー、 selector = 入れ先の要素、
+  /// x = 何番目から (1 始まり)、 y = 何番目まで (0 = 最後まで)。
+  upload,
 }
 
 /// コマンド実行の許可の仕方 (= ユーザー要望: 許可を求める・全部任せる)。
@@ -1172,6 +1180,83 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
   }
 
   /// ステップ列を順に実行する (繰り返しブロックは中身を再帰実行)。
+  /// 「何番目まで渡したか」 を手順ごとに覚えておく。
+  /// 繰り返しの中に置くと、 1 周ごとに次のファイルに進む。
+  final Map<WebAutoStep, int> _uploadCursor = {};
+
+  /// 指定されたフォルダーのファイルを名前順に並べ、 範囲で切る。
+  List<File> _uploadFilesOf(WebAutoStep s) {
+    final dirPath = s.text.trim();
+    if (dirPath.isEmpty) return const [];
+    try {
+      final dir = Directory(dirPath);
+      if (!dir.existsSync()) return const [];
+      final all = dir
+          .listSync()
+          .whereType<File>()
+          .toList()
+        ..sort((a, b) => a.path.toLowerCase().compareTo(b.path.toLowerCase()));
+      final from = s.x.round() <= 0 ? 1 : s.x.round();
+      final to = s.y.round() <= 0 ? all.length : s.y.round();
+      if (from > all.length) return const [];
+      return all.sublist(
+          from - 1, to > all.length ? all.length : (to < from ? from : to));
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// ページの <input type=file> にファイルを入れる。
+  ///
+  /// JS から input.files は普通代入できないが、 DataTransfer を経由すれば
+  /// 入れられる (Chromium 系の WebView なら Windows / Android とも動く)。
+  Future<void> _runUploadStep(WebAutoStep s) async {
+    final files = _uploadFilesOf(s);
+    if (files.isEmpty) {
+      if (mounted) {
+        setState(() => _status =
+            context.read<MindMapProvider>().t('auto.uploadNoFile'));
+      }
+      return;
+    }
+    // 繰り返しの中なら 1 周ごとに次へ。 範囲を使い切ったら繰り返しを抜ける。
+    final at = _uploadCursor[s] ?? 0;
+    if (at >= files.length) {
+      _loopBreak = true;
+      return;
+    }
+    _uploadCursor[s] = at + 1;
+    final f = files[at];
+    final name = f.path.split(RegExp(r'[\\/]')).last;
+    late final String b64;
+    try {
+      b64 = base64Encode(await f.readAsBytes());
+    } catch (_) {
+      return;
+    }
+    final sel = s.selector.trim();
+    final js = '(function(){'
+        'var el=${sel.isEmpty ? "document.querySelector('input[type=file]')" : 'document.querySelector(${jsonEncode(sel)})'};'
+        'if(!el)return;'
+        'var b=atob(${jsonEncode(b64)});'
+        'var a=new Uint8Array(b.length);'
+        'for(var i=0;i<b.length;i++)a[i]=b.charCodeAt(i);'
+        'var dt=new DataTransfer();'
+        'dt.items.add(new File([a],${jsonEncode(name)}));'
+        'el.files=dt.files;'
+        "el.dispatchEvent(new Event('change',{bubbles:true}));"
+        '})()';
+    await widget.exec(js);
+    if (mounted) {
+      setState(() => _status = context
+          .read<MindMapProvider>()
+          .t('auto.uploadSent')
+          .replaceFirst('{name}', name)
+          .replaceFirst('{n}', '${at + 1}')
+          .replaceFirst('{total}', '${files.length}'));
+    }
+  }
+
   Future<void> _runSteps(List<WebAutoStep> steps, String path) async {
     for (var i = 0; i < steps.length; i++) {
       if (_cancel) return;
@@ -1281,6 +1366,10 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
             await widget.exec(_typeJs(s));
             await Future.delayed(_intervalOf(s));
           }
+          break;
+        case WebAutoKind.upload:
+          await _runUploadStep(s);
+          await Future.delayed(_intervalOf(s));
           break;
         case WebAutoKind.open:
           // ── リンクを開く (= ユーザー要望: 「このページを開いて上から下まで
@@ -1732,6 +1821,7 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
       WebAutoKind.type,
       WebAutoKind.shot,
       WebAutoKind.fullShot,
+      WebAutoKind.upload,
       WebAutoKind.click,
       WebAutoKind.scrollTo,
     };
@@ -1783,6 +1873,7 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
       for (var lap = 0; lap < _loop; lap++) {
         if (_cancel) break;
         _lapLabel = '${lap + 1}/$_loop';
+        _uploadCursor.clear();
         await _runSteps(_steps, '');
       }
     } finally {
@@ -1914,6 +2005,8 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
         return p.t('auto.kindShot');
       case WebAutoKind.fullShot:
         return p.t('auto.kindFullShot');
+      case WebAutoKind.upload:
+        return p.t('auto.kindUpload');
       case WebAutoKind.type:
         return p.t('auto.kindType');
       case WebAutoKind.open:
@@ -1947,6 +2040,8 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
         return Icons.photo_camera_rounded;
       case WebAutoKind.fullShot:
         return Icons.photo_size_select_actual_rounded;
+      case WebAutoKind.upload:
+        return Icons.upload_file_rounded;
       case WebAutoKind.type:
         return Icons.keyboard_rounded;
       case WebAutoKind.open:
@@ -2771,6 +2866,38 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
                     ),
                   ),
               ]),
+            // ── ファイルを渡す (= ユーザー要望) ──
+            //    フォルダーを選んで、 何番目から何番目までを順番に渡す。
+            //    繰り返しの中に置くと 1 周ごとに次のファイルに進む。
+            if (s.kind == WebAutoKind.upload) ...[
+              OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFF4FC3F7),
+                  side: const BorderSide(color: Color(0xFF4FC3F7)),
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  minimumSize: const Size(0, 32),
+                ),
+                icon: const Icon(Icons.folder_open_rounded, size: 14),
+                label: Text(
+                    s.text.trim().isEmpty
+                        ? provider.t('auto.uploadPickFolder')
+                        : s.text.split(RegExp(r'[\\/]')).last,
+                    style: const TextStyle(fontSize: 10.5)),
+                onPressed: () async {
+                  final dir =
+                      await FilePicker.platform.getDirectoryPath();
+                  if (dir == null) return;
+                  setState(() => s.text = dir);
+                  _save();
+                },
+              ),
+              _numField(provider.t('auto.uploadFrom'), s.x.round(),
+                  (v) => s.x = v.clamp(1, 99999).toDouble(),
+                  width: 92),
+              _numField(provider.t('auto.uploadTo'), s.y.round(),
+                  (v) => s.y = v.clamp(0, 99999).toDouble(),
+                  width: 92),
+            ],
             // ページ全体を 1 枚にするかの切替え (旧「全体を 1 枚」)。
             if (s.kind == WebAutoKind.shot ||
                 s.kind == WebAutoKind.fullShot)
