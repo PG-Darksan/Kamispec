@@ -67352,8 +67352,9 @@ class _MindMapScreenState extends State<MindMapScreen>
             'float_site_${u}_${DateTime.now().millisecondsSinceEpoch}'),
         url: u,
       ),
-      width: 760,
-      height: 620,
+      // ★ 既定を小さく (= ユーザー報告: Google マップの窓が大きすぎる)。
+      width: 620,
+      height: 520,
       memoryKey: 'site',
       popOutUrl: u,
     );
@@ -67410,28 +67411,42 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (singletonKey != null && !allowMulti) {
       final open = _floatingPanelSingletons[singletonKey];
       if (open != null) {
-        if (_floatingVideoEntries.contains(open)) {
+        // ★ 生きている窓の時だけ前面に出し直す。
+        //   以前は、 閉じる途中で例外が出ると台帳に古い窓が残り、
+        //   次に押しても「前面に出す」 の方へ行って何も開かなかった
+        //   (= ユーザー報告: 閉じて再度立ち上げようとしても立ち上がらない)。
+        var revived = false;
+        if (open.mounted && _floatingVideoEntries.contains(open)) {
           // 一度外して入れ直すと一番上に来る (中身と位置はそのまま)。
           try {
             open.remove();
             Overlay.of(context, rootOverlay: true).insert(open);
+            revived = true;
           } catch (_) {}
-          return;
         }
+        if (revived) return;
+        // もう生きていない。 台帳から消して作り直す。
         _floatingPanelSingletons.remove(singletonKey);
+        _floatingVideoEntries.remove(open);
       }
     }
     late OverlayEntry entry;
+    // ★ 閉じる時は何が起きても台帳を空にする。 entry.remove() が
+    //   例外を投げると後の後始末が丸ごと飛び、 古い窓が残って
+    //   次から開けなくなっていた (= ユーザー報告)。
+    var closed = false;
     void closeSelf() {
-      if (_floatingVideoEntries.contains(entry)) {
+      if (closed) return;
+      closed = true;
+      try {
         entry.remove();
-        _floatingVideoEntries.remove(entry);
-        if (singletonKey != null &&
-            identical(_floatingPanelSingletons[singletonKey], entry)) {
-          _floatingPanelSingletons.remove(singletonKey);
-        }
-        onClosed?.call();
+      } catch (_) {}
+      _floatingVideoEntries.remove(entry);
+      if (singletonKey != null &&
+          identical(_floatingPanelSingletons[singletonKey], entry)) {
+        _floatingPanelSingletons.remove(singletonKey);
       }
+      onClosed?.call();
     }
 
     entry = OverlayEntry(
@@ -224370,6 +224385,36 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
   String? get _prefsKey =>
       widget.memoryKey == null ? null : 'floatWin_${widget.memoryKey}';
 
+  /// 窓全体が画面に収まるようにする (= ユーザー報告: 画面下の
+  /// ボタンから開くと下に大幅にはみ出した状態で開かれる)。
+  ///
+  /// 最初に出す時だけ。 後から手で外へ引っ張るのは今までどおり
+  /// (外に放すと別の窓になる仕組みを殺さないため)。
+  void _fitOnScreen() {
+    if (!mounted) return;
+    final screen = MediaQuery.of(context).size;
+    if (screen.width <= 0 || screen.height <= 0) return;
+    const margin = 12.0;
+    const topBar = kToolbarHeight;
+    final maxW = (screen.width - margin * 2).clamp(320.0, 100000.0);
+    final maxH =
+        (screen.height - topBar - margin * 2).clamp(240.0, 100000.0);
+    final w = _w > maxW ? maxW : _w;
+    final h = _h > maxH ? maxH : _h;
+    var x = _pos.dx;
+    var y = _pos.dy;
+    if (x + w > screen.width - margin) x = screen.width - margin - w;
+    if (y + h > screen.height - margin) y = screen.height - margin - h;
+    if (x < margin) x = margin;
+    if (y < topBar + margin) y = topBar + margin;
+    if (w == _w && h == _h && x == _pos.dx && y == _pos.dy) return;
+    setState(() {
+      _w = w;
+      _h = h;
+      _pos = Offset(x, y);
+    });
+  }
+
   Future<void> _restoreGeometry() async {
     // 分割セルを覆う指定 (initialRect) がある時は保存値で動かさない。
     if (widget.initialRect != null) return;
@@ -224391,6 +224436,8 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
         if (h != null && h >= 280) _h = h;
         if (x != null && y != null) _pos = Offset(x, y);
       });
+      // 覚えていた大きさ・位置が今の画面より大きいことがある。
+      _fitOnScreen();
     } catch (_) {}
   }
 
@@ -224433,7 +224480,10 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
     _floatingPopOutHandlers.add(_popOutHandler);
     unawaited(_restoreGeometry());
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || _pushed) return;
+      if (!mounted) return;
+      // ★ 覚えている大きさが無い窓も、 最初に一度画面に収める。
+      _fitOnScreen();
+      if (_pushed) return;
       _pushed = true;
       _navKey.currentState!
           .push(MaterialPageRoute(builder: widget.builder))
