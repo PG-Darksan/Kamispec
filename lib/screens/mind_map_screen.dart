@@ -112583,6 +112583,21 @@ const String _kMdEmbeddedMapJs = r"""
     return String(s == null ? '' : s)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
+  // 添付ファイルの種類ごとの目印 (= ユーザー要望: Excel なども見えるように)。
+  function fileGlyph(name) {
+    var e = String(name || '').toLowerCase();
+    var i = e.lastIndexOf('.');
+    e = i < 0 ? '' : e.substring(i + 1);
+    if (e === 'xlsx' || e === 'xls' || e === 'xlsm' || e === 'csv') return '📊';
+    if (e === 'docx' || e === 'doc' || e === 'rtf') return '📄';
+    if (e === 'pptx' || e === 'ppt') return '📽';
+    if (e === 'pdf') return '📕';
+    if (e === 'zip' || e === '7z' || e === 'rar' || e === 'hnmap') return '🗜';
+    if (e === 'mp4' || e === 'mov' || e === 'avi' || e === 'mkv') return '🎬';
+    if (e === 'mp3' || e === 'wav' || e === 'm4a' || e === 'flac') return '🎵';
+    if (e === 'md' || e === 'txt') return '📝';
+    return '📎';
+  }
 
   function build(slot, data) {
     var nodes = (data.nodes || []).filter(function (n) {
@@ -112594,17 +112609,20 @@ const String _kMdEmbeddedMapJs = r"""
       return;
     }
     var conns = (data.connections || []).filter(function (c) { return c; });
-    var byId = {}, i;
-    for (i = 0; i < nodes.length; i++) byId[nodes[i].id] = nodes[i];
+    var byId = {}, kids = {};
 
     // 親 → 子 の対応を作る (接続の向きをそのまま親子と見なす)。
-    var kids = {}, hasParent = {};
-    for (i = 0; i < conns.length; i++) {
-      var c = conns[i];
-      if (!byId[c.fromId] || !byId[c.toId]) continue;
-      (kids[c.fromId] = kids[c.fromId] || []).push(c.toId);
-      hasParent[c.toId] = true;
+    // 公開ページでは手元で足したり消したりするので、 作り直せるようにする。
+    function reindex() {
+      byId = {}; kids = {};
+      for (var i = 0; i < nodes.length; i++) byId[nodes[i].id] = nodes[i];
+      for (var j = 0; j < conns.length; j++) {
+        var c = conns[j];
+        if (!byId[c.fromId] || !byId[c.toId]) continue;
+        (kids[c.fromId] = kids[c.fromId] || []).push(c.toId);
+      }
     }
+    reindex();
 
     var collapsed = {};   // 閉じている要素
     function hidden() {
@@ -112718,9 +112736,12 @@ const String _kMdEmbeddedMapJs = r"""
         d.style.color = light ? '#15161c' : '#ffffff';
         var kn = (kids[nd.id] || []).length;
         var html = '';
+        // ── 右上は「開閉」 のボタン (= ユーザー要望: 編集ボタンの側を展開に)。
+        //    件数は出さない (= ユーザー要望)。 ──
         if (kn) {
-          html += '<span class="mmap-tog">' +
-            (collapsed[nd.id] ? '▸ ' + kn : '▾') + '</span>';
+          html += '<span class="mmap-tog" title="' +
+            (collapsed[nd.id] ? 'expand' : 'collapse') + '">' +
+            (collapsed[nd.id] ? '▸' : '▾') + '</span>';
         }
         // 画像 / 表紙 / 動画のサムネイル (= ユーザー報告: 出ない)。
         if (nd.img) {
@@ -112728,6 +112749,12 @@ const String _kMdEmbeddedMapJs = r"""
             '" onerror="this.style.display=\'none\'">';
         }
         html += '<div class="mmap-t">' + esc(nd.title) + '</div>';
+        // ── 表計算などの添付ファイル (= ユーザー要望: Excel などが
+        //    マークダウン側に出ていない) ──
+        if (nd.file) {
+          html += '<div class="mmap-f"><span class="mmap-fi">' +
+            fileGlyph(nd.file) + '</span>' + esc(nd.file) + '</div>';
+        }
         if (nd.memoText) {
           html += '<div class="mmap-m">' + esc(nd.memoText) + '</div>';
         }
@@ -112737,8 +112764,6 @@ const String _kMdEmbeddedMapJs = r"""
           html += '<span class="mmap-link" title="' + esc(url) +
             '">↗</span>';
         }
-        // 触って直す入口 (= ユーザー要望: マークダウン側から要素をいじる)。
-        html += '<span class="mmap-edit" title="edit">✎</span>';
         d.innerHTML = html;
         layer.appendChild(d);
       }
@@ -112746,12 +112771,52 @@ const String _kMdEmbeddedMapJs = r"""
 
     // ── ここから: 触って直す (= ユーザー要望: マークダウン側から
     //    埋め込んだマップの要素をいじれるように) ──
+    // アプリの中で見ている時だけ、 本体のマップに書き戻せる。
+    var canWriteBack = !!window.__mmPost;
+
     function send(action, nodeId, value) {
-      if (!window.__mmPost) return;
-      window.__mmPost({
-        type: 'mapEdit', action: action, pageId: data.id,
-        nodeId: nodeId, value: value == null ? '' : String(value)
-      });
+      var v = value == null ? '' : String(value);
+      if (canWriteBack) {
+        window.__mmPost({
+          type: 'mapEdit', action: action, pageId: data.id,
+          nodeId: nodeId, value: v
+        });
+        return;
+      }
+      // ── 公開ページ (ブラウザで見ている時) ──
+      //    直せるけれど、 それは**見ている人の画面の中だけ**。
+      //    元のファイルには一切書き戻さない (= ユーザー要望)。
+      //    読み込み直すと元に戻る。
+      applyLocal(action, nodeId, v);
+    }
+
+    function applyLocal(action, nodeId, v) {
+      var n = byId[nodeId];
+      if (action === 'title') {
+        if (!n) return;
+        n.title = v;
+      } else if (action === 'memo') {
+        if (!n) return;
+        n.memoText = v;
+      } else if (action === 'delete') {
+        nodes = nodes.filter(function (x) { return x.id !== nodeId; });
+        conns = conns.filter(function (c) {
+          return c.fromId !== nodeId && c.toId !== nodeId;
+        });
+        delete collapsed[nodeId];
+      } else if (action === 'addChild') {
+        if (!n || !v.trim()) return;
+        var nid = 'local_' + Date.now() + '_' + Math.floor(nodes.length);
+        nodes.push({
+          id: nid, title: v, x: n.x + (Number(n.width) || 140) + 80,
+          y: n.y + 70, width: 150, height: 44, color: n.color
+        });
+        conns.push({ fromId: nodeId, toId: nid });
+      } else {
+        return;
+      }
+      reindex();
+      draw();
     }
 
     function closeMenu() {
@@ -112813,7 +112878,9 @@ const String _kMdEmbeddedMapJs = r"""
         '<button type="button" data-m="title">見出しを直す</button>' +
         '<button type="button" data-m="memo">メモを直す</button>' +
         '<button type="button" data-m="child">子を足す</button>' +
-        '<button type="button" data-m="del" class="danger">削除</button>';
+        '<button type="button" data-m="del" class="danger">削除</button>' +
+        (canWriteBack ? ''
+          : '<div class="mmap-note">この画面の中だけで変わります</div>');
       box.appendChild(m);
       m.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
       m.addEventListener('click', function (ev) {
@@ -112894,13 +112961,15 @@ const String _kMdEmbeddedMapJs = r"""
       if (moved > 4) return;                       // 動かしただけ
       if (ev.target.closest && ev.target.closest('.mmap-menu')) return;
       closeMenu();
-      var ed = ev.target.closest ? ev.target.closest('.mmap-edit') : null;
-      if (ed) {
-        var host2 = ed.closest('.mmap-node');
-        var id2 = host2 && host2.getAttribute('data-id');
-        if (id2 && byId[id2]) {
-          ev.stopPropagation();
-          openMenu(host2, id2, byId[id2]);
+      // ── 右上の ▾ / ▸ が開閉 (= ユーザー要望: 編集ボタンの側を展開に) ──
+      var tg = ev.target.closest ? ev.target.closest('.mmap-tog') : null;
+      if (tg) {
+        var hostT = tg.closest('.mmap-node');
+        var idT = hostT && hostT.getAttribute('data-id');
+        ev.stopPropagation();
+        if (idT && (kids[idT] || []).length) {
+          collapsed[idT] = !collapsed[idT];
+          draw();
         }
         return;
       }
@@ -112908,18 +112977,24 @@ const String _kMdEmbeddedMapJs = r"""
       if (lk) {
         var host = lk.closest('.mmap-node');
         var u = host && host.getAttribute('data-url');
-        if (u && window.__mmPost) {
-          window.__mmPost({ type: 'mdOpenUrl', href: u });
+        if (u) {
+          if (window.__mmPost) {
+            window.__mmPost({ type: 'mdOpenUrl', href: u });
+          } else {
+            window.open(u, '_blank');
+          }
         }
         ev.stopPropagation();
         return;
       }
+      // ── 要素そのものを押したら編集メニュー
+      //    (= ユーザー要望: 展開側が要素編集に) ──
       var el = ev.target.closest ? ev.target.closest('.mmap-node') : null;
       if (!el) return;
       var id = el.getAttribute('data-id');
-      if (!id || !(kids[id] || []).length) return;
-      collapsed[id] = !collapsed[id];
-      draw();
+      if (!id || !byId[id]) return;
+      ev.stopPropagation();
+      openMenu(el, id, byId[id]);
     });
 
     // ── 右上のボタン ──
@@ -112974,6 +113049,121 @@ const String _kMdEmbeddedMapJs = r"""
 ///
 /// 返す形は `{フェンスに書かれた文字: {id, name, nodes, connections}}` の JSON。
 /// 見つからないフェンスは入れない (プレビュー側が「not found」 と出す)。
+/// 左右分割した時に、 画面の右端へ出す **1 本だけ** のスクロールバー
+/// (= ユーザー要望: 左右分割した時のスクロールバーは 1 つに纏めて欲しい)。
+///
+/// 編集欄とプレビューは行番号で連動しているので、 バーは編集欄側の
+/// ScrollController を動かすだけでよい。 掴んで動かす / 溝を押して飛ぶ、
+/// の両方に対応する。
+class _SplitScrollBar extends StatefulWidget {
+  final ScrollController controller;
+  final Color color;
+  const _SplitScrollBar({required this.controller, required this.color});
+
+  @override
+  State<_SplitScrollBar> createState() => _SplitScrollBarState();
+}
+
+class _SplitScrollBarState extends State<_SplitScrollBar> {
+  bool _hover = false;
+  bool _dragging = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_onScroll);
+  }
+
+  @override
+  void didUpdateWidget(covariant _SplitScrollBar old) {
+    super.didUpdateWidget(old);
+    if (old.controller != widget.controller) {
+      old.controller.removeListener(_onScroll);
+      widget.controller.addListener(_onScroll);
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_onScroll);
+    super.dispose();
+  }
+
+  void _onScroll() {
+    if (mounted) setState(() {});
+  }
+
+  void _jumpToFraction(double f, double trackH, double thumbH) {
+    final c = widget.controller;
+    if (!c.hasClients) return;
+    final max = c.position.maxScrollExtent;
+    if (max <= 0) return;
+    final usable = (trackH - thumbH).clamp(1.0, double.infinity);
+    c.jumpTo((f / usable * max).clamp(0.0, max));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const w = 12.0;
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: SizedBox(
+        width: w,
+        child: LayoutBuilder(builder: (ctx, cons) {
+          final c = widget.controller;
+          final trackH = cons.maxHeight;
+          if (!c.hasClients || trackH <= 0) {
+            return const SizedBox.shrink();
+          }
+          final max = c.position.maxScrollExtent;
+          final view = c.position.viewportDimension;
+          if (max <= 0 || view <= 0) return const SizedBox.shrink();
+          final total = max + view;
+          final thumbH = (view / total * trackH).clamp(28.0, trackH);
+          final top =
+              (c.offset / max * (trackH - thumbH)).clamp(0.0, trackH - thumbH);
+          final strong = _hover || _dragging;
+          return GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTapDown: (d) {
+              // 溝を押した所へ飛ぶ (つまみの真ん中がそこに来るように)。
+              _jumpToFraction(
+                  (d.localPosition.dy - thumbH / 2), trackH, thumbH);
+            },
+            onVerticalDragStart: (_) => setState(() => _dragging = true),
+            onVerticalDragEnd: (_) => setState(() => _dragging = false),
+            onVerticalDragCancel: () => setState(() => _dragging = false),
+            onVerticalDragUpdate: (d) {
+              _jumpToFraction(
+                  (d.localPosition.dy - thumbH / 2), trackH, thumbH);
+            },
+            child: Stack(children: [
+              Positioned.fill(
+                child: ColoredBox(
+                    color: widget.color.withValues(alpha: strong ? 0.10 : 0.05)),
+              ),
+              Positioned(
+                top: top,
+                left: strong ? 1.5 : 3,
+                right: strong ? 1.5 : 3,
+                height: thumbH,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color:
+                        widget.color.withValues(alpha: strong ? 0.72 : 0.42),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                ),
+              ),
+            ]),
+          );
+        }),
+      ),
+    );
+  }
+}
+
 /// 埋め込んだマップの要素を、 プレビューから直した内容で書き換える
 /// (= ユーザー要望: マークダウン側から埋め込んだマップの要素をいじりたい)。
 ///
@@ -113009,6 +113199,18 @@ bool applyEmbeddedMapEdit(MindMapProvider provider, Map<dynamic, dynamic> m) {
       return provider.mcpDeleteNode(pageId, nodeId) != null;
   }
   return false;
+}
+
+/// 埋め込みマップに出す添付ファイルの名前 (無ければ null)。
+/// 画像そのものはサムネイルで出るので、 名前は出さない。
+String? _embeddedMapFileName(MindMapNode n) {
+  final name = (n.attachmentName ?? '').trim();
+  final path = (n.attachmentPath ?? '').trim();
+  if (name.isEmpty && path.isEmpty) return null;
+  // 画像は絵で分かるので名前は省く (二重に出るとうるさい)。
+  if (path.isNotEmpty && NodeWidget.isImageUrl(path)) return null;
+  if (name.isNotEmpty) return name;
+  return path.split('/').last.split('\\').last;
 }
 
 /// 埋め込みマップに出す絵の場所 (無ければ null)。
@@ -113070,6 +113272,10 @@ String buildEmbeddedMapsJson(MindMapProvider provider, String md) {
             // プレビューは file:// で開いているので、 そのまま file:// の
             // 絵を読める。 YouTube は本家のサムネイル URL を使う。
             if (_embeddedMapThumb(n) != null) 'img': _embeddedMapThumb(n),
+            // 表計算などの添付ファイル名 (= ユーザー要望: Excel などが
+            // マークダウン側に出ていない)。 絵にできない物はここで見せる。
+            if (_embeddedMapFileName(n) != null)
+              'file': _embeddedMapFileName(n),
             if ((n.memoText ?? '').isNotEmpty) 'memoText': n.memoText,
             if ((n.linkUrl ?? '').isNotEmpty) 'linkUrl': n.linkUrl,
             if ((n.youtubeUrl ?? '').isNotEmpty) 'youtubeUrl': n.youtubeUrl,
@@ -113372,15 +113578,19 @@ String _markdownPreviewHtml(String md, bool dark,
     white-space:pre-wrap;word-break:break-word;
     display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;
     overflow:hidden;}
-  .mmap-tog{float:right;margin-left:6px;font-size:10px;font-weight:700;
-    opacity:.85;}
+  .mmap-tog{position:absolute;right:3px;top:1px;font-size:13px;
+    font-weight:700;line-height:1;padding:2px 4px;border-radius:5px;
+    background:rgba(0,0,0,.16);cursor:pointer;}
+  .mmap-tog:hover{background:rgba(0,0,0,.32);}
+  .mmap-f{margin-top:3px;font-size:11px;opacity:.9;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis;}
+  .mmap-fi{margin-right:4px;}
+  .mmap-note{padding:4px 10px 2px;font-size:10px;opacity:.6;
+    max-width:180px;white-space:normal;line-height:1.4;}
   .mmap-link{position:absolute;right:4px;bottom:2px;font-size:12px;
     opacity:.9;}
   .mmap-img{display:block;width:100%;max-height:120px;object-fit:cover;
     border-radius:6px;margin-bottom:4px;background:rgba(0,0,0,.18);}
-  .mmap-edit{position:absolute;right:4px;top:2px;font-size:11px;opacity:0;
-    transition:opacity .12s;}
-  .mmap-node:hover .mmap-edit{opacity:.85;}
   .mmap-menu{position:absolute;z-index:6;display:flex;flex-direction:column;
     gap:2px;padding:4px;border-radius:8px;background:$bg;color:$fg;
     border:1px solid $border;box-shadow:0 6px 18px rgba(0,0,0,.45);}
@@ -115806,6 +116016,12 @@ graph TD
         // ★ 見る側にダウンロードボタンは出さない (= ユーザー要望: 邪魔だし、
         //   受け取っても普通は開く用意が無い)。
         showDownload: false,
+        // ```map で埋め込んだマップは公開ページでも見られるようにする。
+        // 見る人は触って直せるが、 それはその画面の中だけの話で、
+        // こちらのファイルには一切書き戻らない (= ユーザー要望)。
+        // ブラウザには Flutter への通り道 (__mmPost) が無いので、
+        // 埋め込みマップ側が自動的に「手元だけ」 に切り替わる。
+        mapsJson: buildEmbeddedMapsJson(widget.provider, md),
         tabs: allTabs && _tabs.length > 1
             ? [for (final t in _tabs) (name: t.name, md: t.text)]
             : null);
@@ -118022,9 +118238,11 @@ $body''';
             cons.maxWidth.isFinite) {
           _editorWidth = cons.maxWidth;
         }
-        return Scrollbar(
-          controller: _editorScroll,
-          thumbVisibility: true,
+        // 編集欄そのもののバーは出さない。 右端に 1 本だけ置く
+        // (= ユーザー要望: スクロールバーは 1 つに纏める)。
+        return ScrollConfiguration(
+          behavior: ScrollConfiguration.of(lbCtx)
+              .copyWith(scrollbars: false),
           child: TextField(
             controller: _ctrl,
             scrollController: _editorScroll,
@@ -118258,6 +118476,14 @@ $body''';
                                         : Colors.white,
                                     child: preview)),
                           ],
+                          // ★ スクロールバーは画面の右端に 1 本だけ
+                          //   (= ユーザー要望)。 左右は行番号で連動して
+                          //   いるので、 これ 1 本で両方が動く。
+                          _SplitScrollBar(
+                              controller: _editorScroll,
+                              color: provider.isDarkMode
+                                  ? Colors.white
+                                  : const Color(0xFF16181D)),
                         ])),
             ),
             if (_isDesktopPlatform && _aiChatOpen)
@@ -208607,6 +208833,11 @@ $currentText
           Expanded(child: _buildEditor(dark, fg)),
           Container(width: 1, color: dark ? Colors.white12 : Colors.black12),
           Expanded(child: _buildMdPreviewBody()),
+          // ★ スクロールバーは画面の右端に 1 本だけ (= ユーザー要望)。
+          //   左右は行番号で連動しているので、 これ 1 本で両方が動く。
+          _SplitScrollBar(
+              controller: _scroll,
+              color: dark ? Colors.white : const Color(0xFF16181D)),
         ],
       );
     } else if (_mdPreview && _isPreviewableFile) {
@@ -210530,7 +210761,11 @@ $currentText
       onPointerCancel: (_) => _lineDragSelecting = false,
       child: Container(
       color: bg,
-      child: ListView.builder(
+      // 分割の時はバーを右端の 1 本にまとめるので、 ここには出さない。
+      child: ScrollConfiguration(
+        behavior: ScrollConfiguration.of(context)
+            .copyWith(scrollbars: !_mdSplitView),
+        child: ListView.builder(
         controller: _scroll,
         itemCount: _lines.length + 1, // 末尾の "新規行追加" 用
         itemBuilder: (ctx, i) {
@@ -210555,6 +210790,7 @@ $currentText
           }
           return _buildLine(i, dark, fg);
         },
+      ),
       ),
       ),
     );
