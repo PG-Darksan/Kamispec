@@ -112722,6 +112722,11 @@ const String _kMdEmbeddedMapJs = r"""
           html += '<span class="mmap-tog">' +
             (collapsed[nd.id] ? '▸ ' + kn : '▾') + '</span>';
         }
+        // 画像 / 表紙 / 動画のサムネイル (= ユーザー報告: 出ない)。
+        if (nd.img) {
+          html += '<img class="mmap-img" src="' + esc(nd.img) +
+            '" onerror="this.style.display=\'none\'">';
+        }
         html += '<div class="mmap-t">' + esc(nd.title) + '</div>';
         if (nd.memoText) {
           html += '<div class="mmap-m">' + esc(nd.memoText) + '</div>';
@@ -112732,9 +112737,100 @@ const String _kMdEmbeddedMapJs = r"""
           html += '<span class="mmap-link" title="' + esc(url) +
             '">↗</span>';
         }
+        // 触って直す入口 (= ユーザー要望: マークダウン側から要素をいじる)。
+        html += '<span class="mmap-edit" title="edit">✎</span>';
         d.innerHTML = html;
         layer.appendChild(d);
       }
+    }
+
+    // ── ここから: 触って直す (= ユーザー要望: マークダウン側から
+    //    埋め込んだマップの要素をいじれるように) ──
+    function send(action, nodeId, value) {
+      if (!window.__mmPost) return;
+      window.__mmPost({
+        type: 'mapEdit', action: action, pageId: data.id,
+        nodeId: nodeId, value: value == null ? '' : String(value)
+      });
+    }
+
+    function closeMenu() {
+      var old = box.querySelector('.mmap-menu');
+      if (old && old.parentNode) old.parentNode.removeChild(old);
+    }
+
+    /// その場で書き換える小さな入力欄を出す。
+    function editInline(el, nodeId, field, initial) {
+      closeMenu();
+      var r = el.getBoundingClientRect();
+      var br = box.getBoundingClientRect();
+      var wrap = document.createElement('div');
+      wrap.className = 'mmap-menu mmap-edit-pop';
+      wrap.style.left = Math.max(4, r.left - br.left) + 'px';
+      wrap.style.top = Math.max(4, r.top - br.top) + 'px';
+      wrap.style.width = Math.max(180, r.width) + 'px';
+      var multi = (field === 'memo');
+      wrap.innerHTML = multi
+        ? '<textarea rows="4"></textarea>'
+        : '<input type="text">';
+      var f = wrap.firstChild;
+      f.value = initial == null ? '' : String(initial);
+      box.appendChild(wrap);
+      f.focus();
+      f.select && f.select();
+      var done = false;
+      function commit(ok) {
+        if (done) return;
+        done = true;
+        var v = f.value;
+        closeMenu();
+        if (ok) { send(field, nodeId, v); }
+      }
+      f.addEventListener('keydown', function (ev) {
+        ev.stopPropagation();
+        if (ev.key === 'Escape') { commit(false); }
+        else if (ev.key === 'Enter' && (!multi || ev.ctrlKey)) {
+          ev.preventDefault(); commit(true);
+        }
+      });
+      f.addEventListener('blur', function () { commit(true); });
+      wrap.addEventListener('mousedown', function (ev) {
+        ev.stopPropagation();
+      });
+      wrap.addEventListener('click', function (ev) { ev.stopPropagation(); });
+    }
+
+    /// ✎ を押した時の小さなメニュー。
+    function openMenu(el, nodeId, node) {
+      closeMenu();
+      var r = el.getBoundingClientRect();
+      var br = box.getBoundingClientRect();
+      var m = document.createElement('div');
+      m.className = 'mmap-menu';
+      m.style.left = Math.max(4, r.left - br.left) + 'px';
+      m.style.top = Math.max(4, r.bottom - br.top + 4) + 'px';
+      m.innerHTML =
+        '<button type="button" data-m="title">見出しを直す</button>' +
+        '<button type="button" data-m="memo">メモを直す</button>' +
+        '<button type="button" data-m="child">子を足す</button>' +
+        '<button type="button" data-m="del" class="danger">削除</button>';
+      box.appendChild(m);
+      m.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+      m.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        var b = ev.target.closest ? ev.target.closest('button') : null;
+        if (!b) return;
+        var a = b.getAttribute('data-m');
+        if (a === 'title') editInline(el, nodeId, 'title', node.title);
+        else if (a === 'memo') {
+          editInline(el, nodeId, 'memo', node.memoText || '');
+        } else if (a === 'child') {
+          editInline(el, nodeId, 'addChild', '');
+        } else if (a === 'del') {
+          closeMenu();
+          send('delete', nodeId, '');
+        }
+      });
     }
 
     function fit() {
@@ -112785,8 +112881,29 @@ const String _kMdEmbeddedMapJs = r"""
     }, { passive: false });
 
     // ── 要素を押したら開閉 / リンクを開く ──
+    box.addEventListener('dblclick', function (ev) {
+      var el = ev.target.closest ? ev.target.closest('.mmap-node') : null;
+      if (!el) return;
+      var id = el.getAttribute('data-id');
+      if (!id || !byId[id]) return;
+      ev.stopPropagation();
+      editInline(el, id, 'title', byId[id].title);
+    });
+
     box.addEventListener('click', function (ev) {
       if (moved > 4) return;                       // 動かしただけ
+      if (ev.target.closest && ev.target.closest('.mmap-menu')) return;
+      closeMenu();
+      var ed = ev.target.closest ? ev.target.closest('.mmap-edit') : null;
+      if (ed) {
+        var host2 = ed.closest('.mmap-node');
+        var id2 = host2 && host2.getAttribute('data-id');
+        if (id2 && byId[id2]) {
+          ev.stopPropagation();
+          openMenu(host2, id2, byId[id2]);
+        }
+        return;
+      }
       var lk = ev.target.closest ? ev.target.closest('.mmap-link') : null;
       if (lk) {
         var host = lk.closest('.mmap-node');
@@ -112857,6 +112974,68 @@ const String _kMdEmbeddedMapJs = r"""
 ///
 /// 返す形は `{フェンスに書かれた文字: {id, name, nodes, connections}}` の JSON。
 /// 見つからないフェンスは入れない (プレビュー側が「not found」 と出す)。
+/// 埋め込んだマップの要素を、 プレビューから直した内容で書き換える
+/// (= ユーザー要望: マークダウン側から埋め込んだマップの要素をいじりたい)。
+///
+/// 直せたら true。 開いているページとは限らないので、 ページを指定して
+/// 直す `mcp*` 系だけを使う (currentPage 決め打ちの入口は裏のページを壊す)。
+bool applyEmbeddedMapEdit(MindMapProvider provider, Map<dynamic, dynamic> m) {
+  final pageId = '${m['pageId'] ?? ''}'.trim();
+  final nodeId = '${m['nodeId'] ?? ''}'.trim();
+  final action = '${m['action'] ?? ''}'.trim();
+  final value = '${m['value'] ?? ''}';
+  if (pageId.isEmpty || nodeId.isEmpty) return false;
+  switch (action) {
+    case 'title':
+      if (value.trim().isEmpty) return false;
+      return provider.mcpUpdateNode(pageId, nodeId, title: value.trim());
+    case 'memo':
+      return provider.mcpUpdateNode(pageId, nodeId, memo: value);
+    case 'addChild':
+      final title = value.trim();
+      if (title.isEmpty) return false;
+      final parent = provider.mcpPageById(pageId)?.nodes[nodeId];
+      // 親の少し右下に置いてから繋ぐ。
+      final id = provider.mcpAddNode(
+        pageId,
+        title: title,
+        x: parent == null ? null : parent.position.dx + parent.width + 80,
+        y: parent == null ? null : parent.position.dy + 70,
+      );
+      if (id == null) return false;
+      provider.mcpConnectNodes(pageId, nodeId, id);
+      return true;
+    case 'delete':
+      return provider.mcpDeleteNode(pageId, nodeId) != null;
+  }
+  return false;
+}
+
+/// 埋め込みマップに出す絵の場所 (無ければ null)。
+/// 画像の添付 → その画像、 PDF などの表紙 → その表紙、
+/// YouTube → 本家のサムネイル。
+String? _embeddedMapThumb(MindMapNode n) {
+  final thumb = n.attachmentThumbPath;
+  if (thumb != null && thumb.trim().isNotEmpty) {
+    try {
+      return Uri.file(thumb).toString();
+    } catch (_) {}
+  }
+  final ap = n.attachmentPath;
+  if (ap != null && ap.trim().isNotEmpty && NodeWidget.isImageUrl(ap)) {
+    if (ap.startsWith('http://') || ap.startsWith('https://')) return ap;
+    try {
+      return Uri.file(ap).toString();
+    } catch (_) {}
+  }
+  final yt = n.youtubeUrl;
+  if (yt != null && yt.trim().isNotEmpty) {
+    final v = NodeWidget.extractVideoId(yt);
+    if (v != null && v.isNotEmpty) return NodeWidget.thumbnailUrl(v);
+  }
+  return null;
+}
+
 String buildEmbeddedMapsJson(MindMapProvider provider, String md) {
   if (!md.contains('```map') && !md.contains('~~~map')) return '{}';
   final re = RegExp(r'^([`~]{3,})[ \t]*map[ \t]*\r?\n([\s\S]*?)^\1',
@@ -112887,6 +113066,10 @@ String buildEmbeddedMapsJson(MindMapProvider provider, String md) {
             'width': n.width,
             'height': n.height,
             'color': n.color.toARGB32(),
+            // 画像・書類の表紙・動画のサムネイル (= ユーザー報告: 出ない)。
+            // プレビューは file:// で開いているので、 そのまま file:// の
+            // 絵を読める。 YouTube は本家のサムネイル URL を使う。
+            if (_embeddedMapThumb(n) != null) 'img': _embeddedMapThumb(n),
             if ((n.memoText ?? '').isNotEmpty) 'memoText': n.memoText,
             if ((n.linkUrl ?? '').isNotEmpty) 'linkUrl': n.linkUrl,
             if ((n.youtubeUrl ?? '').isNotEmpty) 'youtubeUrl': n.youtubeUrl,
@@ -113095,9 +113278,11 @@ String _markdownPreviewHtml(String md, bool dark,
           'html::-webkit-scrollbar{width:0;height:0;}'
       : '';
   final syncJs = syncScroll ? _kMdScrollSyncJs : '';
-  // 埋め込みマップ。 使う所 (アプリ内のプレビュー) だけ仕込む。
-  final hasMaps = mapsJson.trim().isNotEmpty && mapsJson.trim() != '{}';
-  final mapsJs = hasMaps
+  // 埋め込みマップ。 アプリ内のプレビューなら中身が空でも仕込んでおく
+  // (後から ```map を書いた時に、 読み込み直さず描けるように)。
+  final wantMaps =
+      syncScroll || (mapsJson.trim().isNotEmpty && mapsJson.trim() != '{}');
+  final mapsJs = wantMaps
       ? '<script>window.__mmMaps = $mapsJson;</script>$_kMdEmbeddedMapJs'
       : '';
   return '''<!doctype html><html><head><meta charset="utf-8">
@@ -113191,6 +113376,24 @@ String _markdownPreviewHtml(String md, bool dark,
     opacity:.85;}
   .mmap-link{position:absolute;right:4px;bottom:2px;font-size:12px;
     opacity:.9;}
+  .mmap-img{display:block;width:100%;max-height:120px;object-fit:cover;
+    border-radius:6px;margin-bottom:4px;background:rgba(0,0,0,.18);}
+  .mmap-edit{position:absolute;right:4px;top:2px;font-size:11px;opacity:0;
+    transition:opacity .12s;}
+  .mmap-node:hover .mmap-edit{opacity:.85;}
+  .mmap-menu{position:absolute;z-index:6;display:flex;flex-direction:column;
+    gap:2px;padding:4px;border-radius:8px;background:$bg;color:$fg;
+    border:1px solid $border;box-shadow:0 6px 18px rgba(0,0,0,.45);}
+  .mmap-menu button{border:0;background:transparent;color:$fg;font-size:12px;
+    text-align:left;padding:5px 10px;border-radius:6px;cursor:pointer;
+    white-space:nowrap;}
+  .mmap-menu button:hover{background:$code;}
+  .mmap-menu button.danger{color:#EF9A9A;}
+  .mmap-edit-pop{padding:5px;}
+  .mmap-edit-pop input,.mmap-edit-pop textarea{width:100%;box-sizing:border-box;
+    font:inherit;font-size:12px;padding:5px 7px;border-radius:6px;
+    border:1px solid $accent;background:$code;color:$fg;resize:vertical;}
+  .mermaid-blank{display:none;}
   .mmap-ctl{position:absolute;right:8px;top:8px;display:flex;gap:4px;
     z-index:3;}
   .mmap-ctl button{width:26px;height:24px;border-radius:6px;cursor:pointer;
@@ -113562,6 +113765,19 @@ window.MathJax = {
   // ── 本体: マークダウン → HTML + mermaid + 目次 + ハイライト + 数式 ──
   // (window.__mmUpdate で分割プレビューからも再描画できる)
   function renderAll(src) {
+    // ── 前回の描画で残った mermaid の残骸を掃除する ──
+    //    図が文法エラーだと、 mermaid が body に作った仮の入れ物
+    //    (「爆弾」 の絵) がそのまま残る。 #out を書き換えても body 直下
+    //    なので消えず、 打つたびに増えていた (= ユーザー報告: 記法を
+    //    消してもエラーが出続ける / 画面を切り替えると消える)。
+    try {
+      var junk = document.querySelectorAll(
+        'body > div[id^=\"dmm\"], body > div[id^=\"dmermaid\"],' +
+        ' body > svg[id^=\"dmm\"], body > svg[id^=\"mm\"]');
+      for (var jq = 0; jq < junk.length; jq++) {
+        if (junk[jq].parentNode) junk[jq].parentNode.removeChild(junk[jq]);
+      }
+    } catch (e) {}
     // ── 元の文の行番号を覚えておく (= スクロール連動の目印) ──
     window.__mmSrcLines = String(src).split('\\n').length;
     var slotLine = {};   // 図スロット番号 → 元の文の行
@@ -113766,10 +113982,18 @@ window.MathJax = {
     }
     var idx = 0;
     function renderNext() {
+      // 中身が空のフェンスは描かない (= 書きかけの ```mermaid だけで
+      // 「Syntax error」 が出るのを止める)。
       if (idx >= slots.length) return;
       var el = slots[idx];
       idx++;
       var i = Number(el.getAttribute('data-i'));
+      if (!blocks[i] || !String(blocks[i]).trim()) {
+        el.className = 'mermaid-blank';
+        el.innerHTML = '';
+        renderNext();
+        return;
+      }
       try {
         mermaid.render('mm' + i + '_' + Date.now(), fixMermaid(blocks[i]))
           .then(function (r) {
@@ -115476,8 +115700,11 @@ graph TD
   /// 文章が追えなくなる (= 500ms ごとに全部読み直していた)。
   void _pushPreviewText() {
     if (!_preview) return;
-    _previewExec(
-        'if(window.__mmUpdate){window.__mmUpdate(${jsonEncode(_ctrl.text)});}');
+    // ★ マップの中身も一緒に渡す。 文だけ送っても ```map の中身が
+    //   古いままで、 書いた直後に出てこなかった (= ユーザー報告)。
+    final maps = buildEmbeddedMapsJson(widget.provider, _ctrl.text);
+    _previewExec('if(window.__mmUpdate){window.__mmMaps=$maps;'
+        'window.__mmUpdate(${jsonEncode(_ctrl.text)});}');
   }
 
   void _scheduleRender() {
@@ -116136,6 +116363,11 @@ graph TD
       if (type == 'mdCheck') {
         _applyPreviewCheck(
             (m['line'] as num?)?.toInt() ?? 0, m['checked'] == true);
+        return;
+      }
+      // ── 埋め込んだマップの要素を直した (= ユーザー要望) ──
+      if (type == 'mapEdit') {
+        if (applyEmbeddedMapEdit(widget.provider, m)) _pushPreviewText();
         return;
       }
       final href = '${m['href'] ?? ''}'.trim();
@@ -206608,16 +206840,20 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
       }
       if (type == 'mdReady') {
         // 読み込み中に打った分をここで追い付かせる。
-        try {
-          _mdWin?.executeScript(
-              'window.__mmUpdate(${jsonEncode(_previewSourceText())});');
-        } catch (_) {}
+        _pushMdPreviewText();
         return;
       }
       // ── プレビューでチェックを押した (= ユーザー要望) ──
       if (type == 'mdCheck') {
         _applyMdPreviewCheck(
             (m['line'] as num?)?.toInt() ?? 0, m['checked'] == true);
+        return;
+      }
+      // ── 埋め込んだマップの要素を直した (= ユーザー要望) ──
+      if (type == 'mapEdit') {
+        if (applyEmbeddedMapEdit(context.read<MindMapProvider>(), m)) {
+          _pushMdPreviewText();
+        }
         return;
       }
       final code = '${m['code'] ?? ''}'.trim();
@@ -206899,11 +207135,20 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
         return;
       }
       if (!_mdWinReady) return;
-      try {
-        final js = 'window.__mmUpdate(${jsonEncode(_previewSourceText())});';
-        _mdWin?.executeScript(js);
-      } catch (_) {}
+      _pushMdPreviewText();
     });
+  }
+
+  /// 本文と、 ```map で埋め込んだページの中身をまとめてプレビューへ渡す。
+  void _pushMdPreviewText() {
+    if (!_mdWinReady) return;
+    try {
+      final src = _previewSourceText();
+      final maps =
+          buildEmbeddedMapsJson(context.read<MindMapProvider>(), src);
+      _mdWin?.executeScript('if(window.__mmUpdate){window.__mmMaps=$maps;'
+          'window.__mmUpdate(${jsonEncode(src)});}');
+    } catch (_) {}
   }
 
   /// 編集側のスクロールにプレビューを追従させる (= スクロール同期)。
