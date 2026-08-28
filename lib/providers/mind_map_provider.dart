@@ -80600,6 +80600,14 @@ $cleanQ
     return true;
   }
 
+  /// ページの中身を直に触った後で、 保存と画面の更新だけを頼む。
+  /// (mcpUpdateNode に口が無い項目 = 説明書き などを書いた時に使う)
+  void mcpTouchPage(String pageId) {
+    if (mcpPageById(pageId) == null) return;
+    _saveToStorage();
+    notifyListeners();
+  }
+
   /// [nodeKey] は id でも題名でもよい (= update_node と同じ)。
   ///
   /// 消せたら**消したノードの題名**を返す (null = 消せなかった)。

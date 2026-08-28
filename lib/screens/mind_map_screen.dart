@@ -112654,11 +112654,23 @@ const String _kMdEmbeddedMapJs = r"""
       '<button type="button" data-a="out" title="-">&#8722;</button>' +
       '<button type="button" data-a="fit" title="fit">&#8634;</button>' +
       '<button type="button" data-a="all" title="expand all">&#9776;</button>' +
-      '<button type="button" data-a="open" title="open">&#9633;</button>' +
       '</div>' +
       '<div class="mmap-name">' + esc(data.name || '') + '</div>' +
       '</div>';
     var box = slot.querySelector('.mmap-box');
+    // ページの背景 (= ユーザー要望: 背景も考慮されて欲しい)。
+    if (data.bg && data.bg.url) {
+      var op = Number(data.bg.opacity);
+      if (!isFinite(op) || op <= 0) op = 100;
+      var fit = String(data.bg.fit || 'cover');
+      box.style.backgroundImage = 'url("' + data.bg.url + '")';
+      box.style.backgroundSize =
+        (fit === 'contain' ? 'contain' : (fit === 'fill' ? '100% 100%'
+          : (fit === 'tile' ? 'auto' : 'cover')));
+      box.style.backgroundRepeat = (fit === 'tile' ? 'repeat' : 'no-repeat');
+      box.style.backgroundPosition = 'center';
+      box.style.setProperty('--mmap-bg-a', String(op / 100));
+    }
     var stage = slot.querySelector('.mmap-stage');
     var svg = slot.querySelector('.mmap-lines');
     var layer = slot.querySelector('.mmap-nodes');
@@ -112700,6 +112712,24 @@ const String _kMdEmbeddedMapJs = r"""
       while (svg.firstChild) svg.removeChild(svg.firstChild);
       layer.innerHTML = '';
 
+      // 矢じり (tip 側へ向けた三角)。
+      function addHead(tipX, tipY, fromX, fromY, col) {
+        var dx = tipX - fromX, dy = tipY - fromY;
+        var len = Math.sqrt(dx * dx + dy * dy);
+        if (!len) return;
+        var ux = dx / len, uy = dy / len;
+        var h = 10, w2 = 5;
+        var bxp = tipX - ux * h, byp = tipY - uy * h;
+        var px = -uy * w2, py = ux * w2;
+        var tri = document.createElementNS(
+          'http://www.w3.org/2000/svg', 'polygon');
+        tri.setAttribute('points',
+          tipX + ',' + tipY + ' ' + (bxp + px) + ',' + (byp + py) + ' ' +
+          (bxp - px) + ',' + (byp - py));
+        tri.setAttribute('fill', col);
+        svg.appendChild(tri);
+      }
+
       for (var ci = 0; ci < conns.length; ci++) {
         var cc = conns[ci];
         var a = byId[cc.fromId], b = byId[cc.toId];
@@ -112710,14 +112740,52 @@ const String _kMdEmbeddedMapJs = r"""
         var by = b.y + nodeH(b) / 2 + offY;
         var path = document.createElementNS(
           'http://www.w3.org/2000/svg', 'path');
-        var mx = (ax + bx) / 2;
-        path.setAttribute('d',
-          'M' + ax + ',' + ay + ' C' + mx + ',' + ay + ' ' +
-          mx + ',' + by + ' ' + bx + ',' + by);
+        // ── 線の形 (= ユーザー要望: 直角かなども考慮) ──
+        //   elbow = 直角、 straight = 直線、 それ以外 = 曲線。
+        var st = String(cc.style || 'curve');
+        var d2;
+        if (st === 'elbow') {
+          var sp = Number(cc.split);
+          if (!isFinite(sp) || sp <= 0 || sp >= 1) sp = 0.5;
+          var kx = ax + (bx - ax) * sp;
+          d2 = 'M' + ax + ',' + ay + ' L' + kx + ',' + ay +
+            ' L' + kx + ',' + by + ' L' + bx + ',' + by;
+        } else if (st === 'straight') {
+          d2 = 'M' + ax + ',' + ay + ' L' + bx + ',' + by;
+        } else {
+          var mx = (ax + bx) / 2;
+          d2 = 'M' + ax + ',' + ay + ' C' + mx + ',' + ay + ' ' +
+            mx + ',' + by + ' ' + bx + ',' + by;
+        }
+        path.setAttribute('d', d2);
         path.setAttribute('fill', 'none');
-        path.setAttribute('stroke', '#8b95b5');
-        path.setAttribute('stroke-width', '2');
+        var lc = '#8b95b5';
+        if (cc.color != null) {
+          var q = argb(cc.color);
+          lc = 'rgb(' + q.r + ',' + q.g + ',' + q.b + ')';
+        }
+        path.setAttribute('stroke', lc);
+        var lw = Number(cc.w);
+        path.setAttribute('stroke-width',
+          String(isFinite(lw) && lw > 0 ? lw : 2));
+        path.setAttribute('stroke-linejoin', 'round');
+        path.setAttribute('stroke-linecap', 'round');
         svg.appendChild(path);
+        if (cc.arrow || cc.both) {
+          addHead(bx, by, ax, ay, lc);
+          if (cc.both) addHead(ax, ay, bx, by, lc);
+        }
+        if (cc.label) {
+          var tx = document.createElementNS(
+            'http://www.w3.org/2000/svg', 'text');
+          tx.setAttribute('x', String((ax + bx) / 2));
+          tx.setAttribute('y', String((ay + by) / 2 - 4));
+          tx.setAttribute('fill', lc);
+          tx.setAttribute('font-size', '11');
+          tx.setAttribute('text-anchor', 'middle');
+          tx.textContent = String(cc.label);
+          svg.appendChild(tx);
+        }
       }
 
       for (var vi = 0; vi < vis.length; vi++) {
@@ -112748,6 +112816,11 @@ const String _kMdEmbeddedMapJs = r"""
           html += '<img class="mmap-img" src="' + esc(nd.img) +
             '" onerror="this.style.display=\'none\'">';
         }
+        // 要素の上の説明書き (F3)。 押すと直せる。
+        if (nd.caption) {
+          html += '<div class="mmap-c" data-edit="caption">' +
+            esc(nd.caption) + '</div>';
+        }
         html += '<div class="mmap-t">' + esc(nd.title) + '</div>';
         // ── 表計算などの添付ファイル (= ユーザー要望: Excel などが
         //    マークダウン側に出ていない) ──
@@ -112755,8 +112828,10 @@ const String _kMdEmbeddedMapJs = r"""
           html += '<div class="mmap-f"><span class="mmap-fi">' +
             fileGlyph(nd.file) + '</span>' + esc(nd.file) + '</div>';
         }
+        // ★ 出ているメモを押したらその場で直せる (= ユーザー要望)。
         if (nd.memoText) {
-          html += '<div class="mmap-m">' + esc(nd.memoText) + '</div>';
+          html += '<div class="mmap-m" data-edit="memo" title="メモを直す">' +
+            esc(nd.memoText) + '</div>';
         }
         var url = nd.linkUrl || nd.youtubeUrl || '';
         if (url) {
@@ -112798,6 +112873,9 @@ const String _kMdEmbeddedMapJs = r"""
       } else if (action === 'memo') {
         if (!n) return;
         n.memoText = v;
+      } else if (action === 'caption') {
+        if (!n) return;
+        n.caption = v;
       } else if (action === 'delete') {
         nodes = nodes.filter(function (x) { return x.id !== nodeId; });
         conns = conns.filter(function (c) {
@@ -112865,6 +112943,56 @@ const String _kMdEmbeddedMapJs = r"""
       wrap.addEventListener('click', function (ev) { ev.stopPropagation(); });
     }
 
+    /// 見出しとメモをまとめて直す (= ユーザー要望: 統合して「要素を編集」)。
+    function editCombined(el, nodeId, node) {
+      closeMenu();
+      var r = el.getBoundingClientRect();
+      var br = box.getBoundingClientRect();
+      var wrap = document.createElement('div');
+      wrap.className = 'mmap-menu mmap-edit-pop';
+      wrap.style.left = Math.max(4, r.left - br.left) + 'px';
+      wrap.style.top = Math.max(4, r.top - br.top) + 'px';
+      wrap.style.width = Math.max(220, r.width) + 'px';
+      wrap.innerHTML =
+        '<div class="mmap-lbl">見出し</div><input type="text">' +
+        '<div class="mmap-lbl">メモ</div><textarea rows="4"></textarea>' +
+        '<div class="mmap-row">' +
+        '<button type="button" data-k="cancel">やめる</button>' +
+        '<button type="button" data-k="ok">決定</button></div>';
+      var ti = wrap.querySelector('input');
+      var mi = wrap.querySelector('textarea');
+      ti.value = node.title == null ? '' : String(node.title);
+      mi.value = node.memoText == null ? '' : String(node.memoText);
+      box.appendChild(wrap);
+      ti.focus();
+      ti.select && ti.select();
+      var done = false;
+      function finish(ok) {
+        if (done) return;
+        done = true;
+        var t = ti.value, mm = mi.value;
+        closeMenu();
+        if (!ok) return;
+        if (t !== (node.title || '')) send('title', nodeId, t);
+        if (mm !== (node.memoText || '')) send('memo', nodeId, mm);
+      }
+      wrap.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+      wrap.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var b = e.target.closest ? e.target.closest('button') : null;
+        if (!b) return;
+        finish(b.getAttribute('data-k') === 'ok');
+      });
+      wrap.addEventListener('keydown', function (e) {
+        e.stopPropagation();
+        if (e.key === 'Escape') finish(false);
+        else if (e.key === 'Enter' && (e.target === ti || e.ctrlKey)) {
+          e.preventDefault();
+          finish(true);
+        }
+      });
+    }
+
     /// ✎ を押した時の小さなメニュー。
     function openMenu(el, nodeId, node) {
       closeMenu();
@@ -112875,8 +113003,9 @@ const String _kMdEmbeddedMapJs = r"""
       m.style.left = Math.max(4, r.left - br.left) + 'px';
       m.style.top = Math.max(4, r.bottom - br.top + 4) + 'px';
       m.innerHTML =
-        '<button type="button" data-m="title">見出しを直す</button>' +
-        '<button type="button" data-m="memo">メモを直す</button>' +
+        '<button type="button" data-m="edit">要素を編集</button>' +
+        (node.openable && canWriteBack
+          ? '<button type="button" data-m="open">ファイルを開く</button>' : '') +
         '<button type="button" data-m="child">子を足す</button>' +
         '<button type="button" data-m="del" class="danger">削除</button>' +
         (canWriteBack ? ''
@@ -112888,9 +113017,14 @@ const String _kMdEmbeddedMapJs = r"""
         var b = ev.target.closest ? ev.target.closest('button') : null;
         if (!b) return;
         var a = b.getAttribute('data-m');
-        if (a === 'title') editInline(el, nodeId, 'title', node.title);
-        else if (a === 'memo') {
-          editInline(el, nodeId, 'memo', node.memoText || '');
+        if (a === 'edit') editCombined(el, nodeId, node);
+        else if (a === 'open') {
+          closeMenu();
+          if (window.__mmPost) {
+            window.__mmPost({
+              type: 'mapOpen', pageId: data.id, nodeId: nodeId
+            });
+          }
         } else if (a === 'child') {
           editInline(el, nodeId, 'addChild', '');
         } else if (a === 'del') {
@@ -112987,6 +113121,21 @@ const String _kMdEmbeddedMapJs = r"""
         ev.stopPropagation();
         return;
       }
+      // ── 出ているメモ / 説明書きを押したら、 その場で直せる
+      //    (= ユーザー要望: 表示されているメモをクリックしたら編集) ──
+      var ip = ev.target.closest ? ev.target.closest('[data-edit]') : null;
+      if (ip) {
+        var hostI = ip.closest('.mmap-node');
+        var idI = hostI && hostI.getAttribute('data-id');
+        if (idI && byId[idI]) {
+          ev.stopPropagation();
+          var fld = ip.getAttribute('data-edit');
+          editInline(hostI, idI, fld,
+            fld === 'memo' ? (byId[idI].memoText || '')
+              : (byId[idI].caption || ''));
+        }
+        return;
+      }
       // ── 要素そのものを押したら編集メニュー
       //    (= ユーザー要望: 展開側が要素編集に) ──
       var el = ev.target.closest ? ev.target.closest('.mmap-node') : null;
@@ -113007,13 +113156,13 @@ const String _kMdEmbeddedMapJs = r"""
       else if (a === 'out') { sc = Math.max(0.1, sc / 1.2); apply(); }
       else if (a === 'fit') { fit(); }
       else if (a === 'all') { collapsed = {}; draw(); setTimeout(fit, 0); }
-      else if (a === 'open') {
-        if (window.__mmPost && data.id) {
-          window.__mmPost({ type: 'mdLink', href: 'page:' + data.id });
-        }
-      }
     });
   }
+
+  // ★ この script は本文の script より後ろに置かれるので、 最初の描画には
+  //   間に合っていない。 読み込まれた時点で 1 回自分で描く
+  //   (= ユーザー報告: 公開しても何も表示されない)。
+  window.__mmRenderMapsReady = true;
 
   window.__mmRenderMaps = function () {
     MAPS = window.__mmMaps || MAPS || {};
@@ -113039,6 +113188,13 @@ const String _kMdEmbeddedMapJs = r"""
       }
     }
   };
+
+  // 読み込まれた直後に 1 回。 本文は既に組まれているのでスロットはある。
+  try { window.__mmRenderMaps(); } catch (e) {}
+  // 画像などで後から高さが変わる事があるので、 少し待ってもう一度だけ。
+  setTimeout(function () {
+    try { window.__mmRenderMaps(); } catch (e) {}
+  }, 60);
 })();
 </script>
 """;
@@ -113181,6 +113337,13 @@ bool applyEmbeddedMapEdit(MindMapProvider provider, Map<dynamic, dynamic> m) {
       return provider.mcpUpdateNode(pageId, nodeId, title: value.trim());
     case 'memo':
       return provider.mcpUpdateNode(pageId, nodeId, memo: value);
+    case 'caption':
+      // 要素の上の説明書き (F3)。 mcpUpdateNode には口が無いので直に書く。
+      final n = provider.mcpPageById(pageId)?.nodes[nodeId];
+      if (n == null) return false;
+      n.caption = value.trim().isEmpty ? null : value;
+      provider.mcpTouchPage(pageId);
+      return true;
     case 'addChild':
       final title = value.trim();
       if (title.isEmpty) return false;
@@ -113199,6 +113362,17 @@ bool applyEmbeddedMapEdit(MindMapProvider provider, Map<dynamic, dynamic> m) {
       return provider.mcpDeleteNode(pageId, nodeId) != null;
   }
   return false;
+}
+
+/// 埋め込みマップの要素が抱えている添付ファイルの場所 (無ければ null)。
+String? embeddedMapAttachmentPath(
+    MindMapProvider provider, Map<dynamic, dynamic> m) {
+  final pageId = '${m['pageId'] ?? ''}'.trim();
+  final nodeId = '${m['nodeId'] ?? ''}'.trim();
+  if (pageId.isEmpty || nodeId.isEmpty) return null;
+  final n = provider.mcpPageById(pageId)?.nodes[nodeId];
+  final path = (n?.attachmentPath ?? '').trim();
+  return path.isEmpty ? null : path;
 }
 
 /// 埋め込みマップに出す添付ファイルの名前 (無ければ null)。
@@ -113254,9 +113428,30 @@ String buildEmbeddedMapsJson(MindMapProvider provider, String md) {
     if (i < 0) i = pages.indexWhere((e) => e.id == key);
     if (i < 0) continue;
     final page = pages[i];
+    // ページの背景 (= ユーザー要望: アプリ内で開く時は背景も考慮されて欲しい)
+    Map<String, dynamic>? bg;
+    final bgPath = (page.backgroundImagePath ?? '').trim();
+    if (bgPath.isNotEmpty) {
+      String? url;
+      if (bgPath.startsWith('http://') || bgPath.startsWith('https://')) {
+        url = bgPath;
+      } else {
+        try {
+          url = Uri.file(bgPath).toString();
+        } catch (_) {}
+      }
+      if (url != null) {
+        bg = {
+          'url': url,
+          'opacity': page.backgroundOpacityPercent,
+          'fit': page.backgroundFit,
+        };
+      }
+    }
     result[key] = {
       'id': page.id,
       'name': page.name,
+      if (bg != null) 'bg': bg,
       // 描くのに要る所だけ (画像などは持たせない = 中身が重くなるため)。
       'nodes': [
         for (final n in page.nodes.values)
@@ -113276,6 +113471,11 @@ String buildEmbeddedMapsJson(MindMapProvider provider, String md) {
             // マークダウン側に出ていない)。 絵にできない物はここで見せる。
             if (_embeddedMapFileName(n) != null)
               'file': _embeddedMapFileName(n),
+            // 中を開けるように、 添付の在り処も渡す (= ユーザー要望)。
+            if ((n.attachmentPath ?? '').trim().isNotEmpty)
+              'openable': true,
+            // 要素の上の説明書き (F3)。
+            if ((n.caption ?? '').trim().isNotEmpty) 'caption': n.caption,
             if ((n.memoText ?? '').isNotEmpty) 'memoText': n.memoText,
             if ((n.linkUrl ?? '').isNotEmpty) 'linkUrl': n.linkUrl,
             if ((n.youtubeUrl ?? '').isNotEmpty) 'youtubeUrl': n.youtubeUrl,
@@ -113284,7 +113484,19 @@ String buildEmbeddedMapsJson(MindMapProvider provider, String md) {
           }
       ],
       'connections': [
-        for (final c in page.connections) {'fromId': c.fromId, 'toId': c.toId}
+        // 線の形もそのまま渡す (= ユーザー要望: リンクが直角かなども考慮)。
+        for (final c in page.connections)
+          {
+            'fromId': c.fromId,
+            'toId': c.toId,
+            if (c.lineStyle != null) 'style': c.lineStyle,
+            if (c.lineColorValue != null) 'color': c.lineColorValue,
+            'w': c.strokeWidth,
+            if (c.showArrow) 'arrow': true,
+            if (c.bidirectional) 'both': true,
+            if ((c.label ?? '').isNotEmpty) 'label': c.label,
+            'split': c.elbowSplitRatio,
+          }
       ],
     };
   }
@@ -113587,6 +113799,17 @@ String _markdownPreviewHtml(String md, bool dark,
   .mmap-fi{margin-right:4px;}
   .mmap-note{padding:4px 10px 2px;font-size:10px;opacity:.6;
     max-width:180px;white-space:normal;line-height:1.4;}
+  .mmap-c{font-size:10px;opacity:.9;margin-bottom:2px;
+    padding:1px 4px;border-radius:4px;background:rgba(0,0,0,.16);
+    display:inline-block;cursor:text;}
+  .mmap-m[data-edit]{cursor:text;border-radius:4px;}
+  .mmap-m[data-edit]:hover,.mmap-c:hover{background:rgba(0,0,0,.26);}
+  .mmap-lbl{font-size:10px;opacity:.65;margin:3px 2px 2px;}
+  .mmap-row{display:flex;justify-content:flex-end;gap:6px;margin-top:6px;}
+  .mmap-row button{padding:4px 12px;border-radius:6px;border:1px solid $border;
+    background:$code;color:$fg;font-size:12px;cursor:pointer;}
+  .mmap-row button[data-k="ok"]{background:$accent;border-color:$accent;
+    color:#fff;}
   .mmap-link{position:absolute;right:4px;bottom:2px;font-size:12px;
     opacity:.9;}
   .mmap-img{display:block;width:100%;max-height:120px;object-fit:cover;
@@ -116584,6 +116807,12 @@ graph TD
       // ── 埋め込んだマップの要素を直した (= ユーザー要望) ──
       if (type == 'mapEdit') {
         if (applyEmbeddedMapEdit(widget.provider, m)) _pushPreviewText();
+        return;
+      }
+      // ── 埋め込んだマップから添付ファイルを開く (= ユーザー要望) ──
+      if (type == 'mapOpen') {
+        final path = embeddedMapAttachmentPath(widget.provider, m);
+        if (path != null) unawaited(OpenFilex.open(path));
         return;
       }
       final href = '${m['href'] ?? ''}'.trim();
@@ -207080,6 +207309,13 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
         if (applyEmbeddedMapEdit(context.read<MindMapProvider>(), m)) {
           _pushMdPreviewText();
         }
+        return;
+      }
+      // ── 埋め込んだマップから添付ファイルを開く (= ユーザー要望) ──
+      if (type == 'mapOpen') {
+        final path =
+            embeddedMapAttachmentPath(context.read<MindMapProvider>(), m);
+        if (path != null) unawaited(OpenFilex.open(path));
         return;
       }
       final code = '${m['code'] ?? ''}'.trim();
