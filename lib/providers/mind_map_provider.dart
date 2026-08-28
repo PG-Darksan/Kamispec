@@ -35344,6 +35344,18 @@ class MindMapProvider extends ChangeNotifier {
     },
     // = ユーザー要望: PDF ビューアと同じく、 大きさと形を固定して
     //   クリックで連続して置けるように。
+    // = ユーザー要望: 図をマインドマップのページに転送できるように。
+    'map.addedToPage': {
+      'ja': '「{name}」 に追加しました',
+      'en': 'Added to "{name}"',
+      'zh': '已添加到「{name}」',
+      'ko': '"{name}"에 추가했습니다',
+      'es': 'Añadido a «{name}»',
+      'fr': 'Ajouté à « {name} »',
+      'de': 'Zu „{name}“ hinzugefügt',
+      'pt': 'Adicionado a "{name}"',
+      'ru': 'Добавлено в «{name}»',
+    },
     'shape.fixedSize': {
       // ★ 大きさも一緒に固定するので、 「形を固定」 だと引っ掛かる
       //   (= ユーザー指摘)。 何が固定されるかそのまま書く。

@@ -112654,6 +112654,14 @@ const String _kMdEmbeddedMapJs = r"""
       '<button type="button" data-a="out" title="-">&#8722;</button>' +
       '<button type="button" data-a="fit" title="fit">&#8634;</button>' +
       '<button type="button" data-a="all" title="expand all">&#9776;</button>' +
+      // マーメイドから起こした図は、 そのままページにできる (= ユーザー要望)。
+      ((data.mermaid && window.__mmPost)
+        ? '<button type="button" data-a="topage" class="wide"' +
+          ' title="ページに追加">&#43; ページに追加</button>'
+        : '') +
+      (data.mermaid
+        ? '<button type="button" data-a="mermaid" title="図で見る">&#9707;</button>'
+        : '') +
       '</div>' +
       '<div class="mmap-name">' + esc(data.name || '') + '</div>' +
       '</div>';
@@ -112676,6 +112684,7 @@ const String _kMdEmbeddedMapJs = r"""
     var layer = slot.querySelector('.mmap-nodes');
 
     var sc = 1, tx = 0, ty = 0;
+    var drawOffX = 0, drawOffY = 0;
     function apply() {
       stage.style.transform =
         'translate(' + tx + 'px,' + ty + 'px) scale(' + sc + ')';
@@ -112703,6 +112712,7 @@ const String _kMdEmbeddedMapJs = r"""
       }
       if (minX > maxX) { minX = 0; minY = 0; maxX = 400; maxY = 300; }
       var pad = 40, offX = pad - minX, offY = pad - minY;
+      drawOffX = offX; drawOffY = offY;
       var W = (maxX - minX) + pad * 2, H = (maxY - minY) + pad * 2;
       stage.style.width = W + 'px';
       stage.style.height = H + 'px';
@@ -112846,8 +112856,9 @@ const String _kMdEmbeddedMapJs = r"""
 
     // ── ここから: 触って直す (= ユーザー要望: マークダウン側から
     //    埋め込んだマップの要素をいじれるように) ──
-    // アプリの中で見ている時だけ、 本体のマップに書き戻せる。
-    var canWriteBack = !!window.__mmPost;
+    // アプリの中で見ていて、 かつ元になったページがある時だけ書き戻せる。
+    // マーメイドから起こした図は、 書き戻す先が無いので手元だけで直す。
+    var canWriteBack = !!window.__mmPost && !data.mermaid;
 
     function send(action, nodeId, value) {
       var v = value == null ? '' : String(value);
@@ -113034,6 +113045,18 @@ const String _kMdEmbeddedMapJs = r"""
       });
     }
 
+    /// 掴んで動かしている間の軽い描き直し。
+    /// 要素を作り直すと掴んでいる相手が消えてしまうので、 位置だけ直す。
+    function drawSoft() {
+      var els = layer.querySelectorAll('.mmap-node');
+      for (var i = 0; i < els.length; i++) {
+        var nd = byId[els[i].getAttribute('data-id')];
+        if (!nd) continue;
+        els[i].style.left = (nd.x + drawOffX) + 'px';
+        els[i].style.top = (nd.y + drawOffY) + 'px';
+      }
+    }
+
     function fit() {
       var bw = box.clientWidth - 16;
       var bh = box.clientHeight - 16;
@@ -113049,21 +113072,53 @@ const String _kMdEmbeddedMapJs = r"""
     setTimeout(fit, 0);
 
     // ── 掴んで動かす ──
-    var dragging = false, lx = 0, ly = 0, moved = 0;
+    //    要素の上から始めたらその要素を、 何もない所からなら全体を動かす
+    //    (= ユーザー要望: マインドマップ同様に要素を動かせるように)。
+    var dragging = false, lx = 0, ly = 0, moved = 0, dragNode = null;
     box.addEventListener('mousedown', function (ev) {
       if (ev.button !== 0) return;
-      dragging = true; moved = 0;
+      if (ev.target.closest && ev.target.closest('.mmap-menu')) return;
+      if (ev.target.closest && ev.target.closest('.mmap-ctl')) return;
+      moved = 0;
       lx = ev.clientX; ly = ev.clientY;
+      var el = ev.target.closest ? ev.target.closest('.mmap-node') : null;
+      var onTog = ev.target.closest && ev.target.closest('.mmap-tog');
+      if (el && !onTog) {
+        var id = el.getAttribute('data-id');
+        dragNode = byId[id] || null;
+        if (dragNode) {
+          dragging = true;
+          el.classList.add('moving');
+          ev.preventDefault();
+          return;
+        }
+      }
+      dragNode = null;
+      dragging = true;
       box.classList.add('grabbing');
     });
     window.addEventListener('mousemove', function (ev) {
       if (!dragging) return;
-      tx += ev.clientX - lx; ty += ev.clientY - ly;
-      moved += Math.abs(ev.clientX - lx) + Math.abs(ev.clientY - ly);
+      var dx = ev.clientX - lx, dy = ev.clientY - ly;
+      moved += Math.abs(dx) + Math.abs(dy);
       lx = ev.clientX; ly = ev.clientY;
-      apply();
+      if (dragNode) {
+        // 拡大率のぶんを割り戻してから動かす。
+        dragNode.x += dx / (sc || 1);
+        dragNode.y += dy / (sc || 1);
+        drawSoft();
+      } else {
+        tx += dx; ty += dy;
+        apply();
+      }
     });
     window.addEventListener('mouseup', function () {
+      if (dragNode) {
+        var el2 = layer.querySelector('.mmap-node.moving');
+        if (el2) el2.classList.remove('moving');
+        dragNode = null;
+        draw();          // 線を引き直す
+      }
       dragging = false;
       box.classList.remove('grabbing');
     });
@@ -113156,13 +113211,276 @@ const String _kMdEmbeddedMapJs = r"""
       else if (a === 'out') { sc = Math.max(0.1, sc / 1.2); apply(); }
       else if (a === 'fit') { fit(); }
       else if (a === 'all') { collapsed = {}; draw(); setTimeout(fit, 0); }
+      else if (a === 'topage') {
+        // 今の並び (掴んで動かした位置) のままページにする。
+        if (window.__mmPost) {
+          window.__mmPost({
+            type: 'mapToPage',
+            title: data.title || data.name || 'map',
+            nodes: nodes.map(function (x) {
+              return {
+                id: x.id, title: x.title || '', memo: x.memoText || '',
+                x: Math.round(x.x), y: Math.round(x.y),
+                color: x.color || null
+              };
+            }),
+            connections: conns.map(function (c) {
+              return { fromId: c.fromId, toId: c.toId,
+                       label: c.label || '' };
+            })
+          });
+        }
+      } else if (a === 'mermaid') {
+        // 元の図に戻す (= 変換で落ちる飾りを見たい時のため)。
+        if (window.mermaid && data.code) {
+          var back = slot;
+          mermaid.render('mmb' + Date.now(), data.code).then(function (r) {
+            back.className = 'mermaid';
+            back.innerHTML =
+              '<div class="mmwrap"><div class="mmpane">' + r.svg + '</div>' +
+              '<div class="mmctl"><button type="button" ' +
+              'data-back="1" title="マップで見る">&#9635;</button></div></div>';
+            var bb = back.querySelector('[data-back]');
+            if (bb) {
+              bb.addEventListener('click', function () {
+                back.removeAttribute('data-done');
+                build(back, data);
+              });
+            }
+          }).catch(function () {});
+        }
+      }
     });
   }
 
-  // ★ この script は本文の script より後ろに置かれるので、 最初の描画には
-  //   間に合っていない。 読み込まれた時点で 1 回自分で描く
-  //   (= ユーザー報告: 公開しても何も表示されない)。
-  window.__mmRenderMapsReady = true;
+  // ══ mermaid の記法を、 このアプリのマインドマップの形に変換する ══════
+  //
+  // = ユーザー要望: マーメイド記法を自分のアプリのマインドマップ形式に
+  //   変換して表示し、 押したり掴んだりして直せるように。
+  //
+  // 扱うのは節点と線で書く 3 つ (mindmap / flowchart / graph)。
+  // 順序図やガント等は形が違うので、 今までどおり mermaid に任せる。
+
+  var MMAP_COLORS = [
+    0xFF6C63FF, 0xFF43B97F, 0xFFFFB347, 0xFF4FC3F7, 0xFFBA68C8,
+    0xFFEF5350, 0xFF26A69A, 0xFFFF7043
+  ];
+
+  /// 「A[調査]」 のような書き方から、 見出しだけを取り出す。
+  function labelOf(raw) {
+    var t = String(raw == null ? '' : raw).trim();
+    // 装飾 (::icon(...) / :::class) は落とす。
+    t = t.replace(/::icon\([^)]*\)/g, '').replace(/:::[^\s]+/g, '').trim();
+    // 外側の括弧を、 内側から順に剥がす。
+    var pairs = [['((((', '))))'], ['(((', ')))'], ['((', '))'],
+                 ['[[', ']]'], ['[(', ')]'], ['{{', '}}'],
+                 ['[', ']'], ['(', ')'], ['{', '}'], ['>', ']']];
+    for (var k = 0; k < pairs.length; k++) {
+      var a = pairs[k][0], b = pairs[k][1];
+      if (t.length > a.length + b.length &&
+          t.substring(0, a.length) === a &&
+          t.substring(t.length - b.length) === b) {
+        t = t.substring(a.length, t.length - b.length).trim();
+        break;
+      }
+    }
+    // 引用符も外す。
+    if (t.length > 1 &&
+        ((t.charAt(0) === '"' && t.charAt(t.length - 1) === '"') ||
+         (t.charAt(0) === "'" && t.charAt(t.length - 1) === "'"))) {
+      t = t.substring(1, t.length - 1);
+    }
+    return t.replace(/<br\s*\/?>/gi, '\n').trim();
+  }
+
+  /// mindmap 記法 (字下げで親子を表す) を読む。
+  function parseMindmap(src) {
+    var lines = String(src).split('\n');
+    var nodes = [], conns = [], stack = [], n = 0;
+    for (var i = 0; i < lines.length; i++) {
+      var raw = lines[i];
+      if (!raw.trim()) continue;
+      if (/^\s*mindmap\s*$/i.test(raw)) continue;
+      if (/^\s*%%/.test(raw)) continue;
+      var indent = raw.length - raw.replace(/^\s*/, '').length;
+      var body = raw.trim();
+      // 「root((中心))」 のように id が前に付く場合は取り除く。
+      var m = body.match(/^([A-Za-z0-9_\-]+)\s*([\(\[\{>].*)$/);
+      var text = labelOf(m ? m[2] : body);
+      if (!text) continue;
+      var id = 'm' + (n++);
+      nodes.push({ id: id, title: text, indent: indent });
+      while (stack.length && stack[stack.length - 1].indent >= indent) {
+        stack.pop();
+      }
+      if (stack.length) {
+        conns.push({ fromId: stack[stack.length - 1].id, toId: id });
+      }
+      stack.push({ indent: indent, id: id });
+    }
+    return nodes.length ? { nodes: nodes, connections: conns, dir: 'LR' }
+                        : null;
+  }
+
+  /// flowchart / graph 記法 (A[x] --> B[y]) を読む。
+  function parseFlow(src) {
+    var lines = String(src).split('\n');
+    var dir = 'TD';
+    var byKey = {}, nodes = [], conns = [], n = 0;
+    function want(key, label) {
+      key = String(key).trim();
+      if (!key) return null;
+      if (!byKey[key]) {
+        byKey[key] = { id: 'f' + (n++), title: label || key };
+        nodes.push(byKey[key]);
+      } else if (label && byKey[key].title === key) {
+        byKey[key].title = label;
+      }
+      return byKey[key];
+    }
+    // 「A[調査]」 の 1 個ぶんを読む正規表現。
+    var one = '([A-Za-z0-9_\\-\\.]+)\\s*((?:\\(\\(|\\[\\[|\\[\\(|\\{\\{|' +
+              '[\\(\\[\\{>])[\\s\\S]*?(?:\\)\\)|\\]\\]|\\)\\]|\\}\\}|' +
+              '[\\)\\]\\}]))?';
+    var arrow = '\\s*(?:--|==|-\\.-|\\.-)[->ox=\\.\\-]*>?\\s*';
+    var edgeRe = new RegExp('^\\s*' + one + arrow +
+        '(?:\\|([^|]*)\\|\\s*)?' + one + '\\s*$');
+    var soloRe = new RegExp('^\\s*' + one + '\\s*$');
+    for (var i = 0; i < lines.length; i++) {
+      var L = lines[i];
+      if (!L.trim()) continue;
+      if (/^\s*%%/.test(L)) continue;
+      var h = L.match(/^\s*(?:flowchart|graph)\s+([A-Za-z]{2})\b/i);
+      if (h) { dir = h[1].toUpperCase(); continue; }
+      if (/^\s*(?:flowchart|graph)\b/i.test(L)) continue;
+      if (/^\s*(?:subgraph|end|style|classDef|class|click|linkStyle|direction)\b/i
+          .test(L)) {
+        continue;
+      }
+      // 1 行に複数の矢印が書ける (A --> B --> C) ので、 順に分ける。
+      var seg = L.split(/(?=(?:--|==|-\.)[->ox=\.\-]*>)/);
+      var handled = false;
+      var em = L.match(edgeRe);
+      if (em) {
+        var a = want(em[1], labelOf(em[2] || ''));
+        var b = want(em[4], labelOf(em[5] || ''));
+        if (a && b && a !== b) {
+          conns.push({
+            fromId: a.id, toId: b.id,
+            label: (em[3] || '').trim() || undefined,
+            arrow: /->|=>|>/.test(L)
+          });
+        }
+        handled = true;
+      }
+      if (!handled) {
+        var sm = L.match(soloRe);
+        if (sm && sm[2]) want(sm[1], labelOf(sm[2]));
+      }
+      if (seg.length > 900) break;   // 念のための保険
+    }
+    return nodes.length ? { nodes: nodes, connections: conns, dir: dir }
+                        : null;
+  }
+
+  /// 位置を決める (mermaid は座標を持たないので、 こちらで並べる)。
+  function layout(model) {
+    var nodes = model.nodes, conns = model.connections;
+    var byId = {}, kid = {}, hasIn = {};
+    var i;
+    for (i = 0; i < nodes.length; i++) byId[nodes[i].id] = nodes[i];
+    for (i = 0; i < conns.length; i++) {
+      var c = conns[i];
+      if (!byId[c.fromId] || !byId[c.toId]) continue;
+      (kid[c.fromId] = kid[c.fromId] || []).push(c.toId);
+      hasIn[c.toId] = true;
+    }
+    // 深さを決める (入ってくる線が無い物が根。 無ければ先頭)。
+    var roots = nodes.filter(function (x) { return !hasIn[x.id]; });
+    if (!roots.length) roots = [nodes[0]];
+    var depth = {}, order = [], seen = {};
+    var q = [];
+    for (i = 0; i < roots.length; i++) { depth[roots[i].id] = 0; q.push(roots[i].id); }
+    while (q.length) {
+      var id = q.shift();
+      if (seen[id]) continue;
+      seen[id] = 1; order.push(id);
+      var ks = kid[id] || [];
+      for (var j = 0; j < ks.length; j++) {
+        if (depth[ks[j]] == null || depth[ks[j]] < depth[id] + 1) {
+          depth[ks[j]] = depth[id] + 1;
+        }
+        if (!seen[ks[j]]) q.push(ks[j]);
+      }
+    }
+    for (i = 0; i < nodes.length; i++) {
+      if (depth[nodes[i].id] == null) depth[nodes[i].id] = 0;
+    }
+    // 同じ深さの中で順番に積む。
+    var W = 170, H = 52, GX = 90, GY = 26;
+    var rows = {};
+    for (i = 0; i < nodes.length; i++) {
+      var d = depth[nodes[i].id];
+      (rows[d] = rows[d] || []).push(nodes[i]);
+    }
+    var vertical = (model.dir === 'TD' || model.dir === 'TB' ||
+                    model.dir === 'BT');
+    var maxCount = 0;
+    for (var dd in rows) {
+      if (rows[dd].length > maxCount) maxCount = rows[dd].length;
+    }
+    for (var dk in rows) {
+      var arr = rows[dk], dnum = Number(dk);
+      var span = arr.length;
+      var off = (maxCount - span) / 2;
+      for (var t = 0; t < arr.length; t++) {
+        var nd = arr[t];
+        nd.width = W;
+        nd.height = H;
+        nd.color = MMAP_COLORS[dnum % MMAP_COLORS.length];
+        if (vertical) {
+          nd.x = 60 + (off + t) * (W + GX);
+          nd.y = 60 + dnum * (H + GY * 2);
+        } else {
+          nd.x = 60 + dnum * (W + GX);
+          nd.y = 60 + (off + t) * (H + GY);
+        }
+        delete nd.indent;
+      }
+    }
+    return model;
+  }
+
+  /// mermaid の中身を見て、 マップに変換できるなら変換して返す。
+  window.__mmMermaidToMap = function (code) {
+    var src = String(code == null ? '' : code);
+    var head = src.replace(/^\s+/, '').split('\n')[0].trim().toLowerCase();
+    var model = null;
+    try {
+      if (/^mindmap\b/.test(head)) model = parseMindmap(src);
+      else if (/^(flowchart|graph)\b/.test(head)) model = parseFlow(src);
+    } catch (e) { model = null; }
+    if (!model || !model.nodes.length) return null;
+    layout(model);
+    model.mermaid = true;      // 元がマーメイド = 書き戻す先が無い
+    model.code = src;
+    // 図の呼び名は、 いちばん元になっている要素の見出しを使う
+    // (「mindmap」 と出るより分かりやすく、 ページにした時の名前にもなる)。
+    var head0 = model.nodes[0] && model.nodes[0].title;
+    model.title = (head0 && String(head0).trim()) || '図';
+    model.name = model.title;
+    return model;
+  };
+
+  /// 変換したマップを、 その場 (mermaid のスロット) に描く。
+  window.__mmRenderMermaidMap = function (slot, model) {
+    try {
+      slot.removeAttribute('data-done');
+      build(slot, model);
+    } catch (e) {
+      slot.innerHTML = '<div class="mmap-empty">' + esc(String(e)) + '</div>';
+    }
+  };
 
   window.__mmRenderMaps = function () {
     MAPS = window.__mmMaps || MAPS || {};
@@ -113189,12 +113507,6 @@ const String _kMdEmbeddedMapJs = r"""
     }
   };
 
-  // 読み込まれた直後に 1 回。 本文は既に組まれているのでスロットはある。
-  try { window.__mmRenderMaps(); } catch (e) {}
-  // 画像などで後から高さが変わる事があるので、 少し待ってもう一度だけ。
-  setTimeout(function () {
-    try { window.__mmRenderMaps(); } catch (e) {}
-  }, 60);
 })();
 </script>
 """;
@@ -113362,6 +113674,55 @@ bool applyEmbeddedMapEdit(MindMapProvider provider, Map<dynamic, dynamic> m) {
       return provider.mcpDeleteNode(pageId, nodeId) != null;
   }
   return false;
+}
+
+/// マーメイドから起こした図を、 新しいマインドマップのページにする
+/// (= ユーザー要望: 図にページに追加ボタンを作って転送できるように)。
+///
+/// 掴んで動かした後の位置をそのまま使う。 出来たページ名を返す
+/// (作れなかったら null)。 ページは作るだけで、 表示は切り替えない
+/// (= 戻るのが面倒、 という指摘に合わせている)。
+String? mermaidMapToNewPage(
+    MindMapProvider provider, Map<dynamic, dynamic> m) {
+  final rawNodes = m['nodes'];
+  if (rawNodes is! List || rawNodes.isEmpty) return null;
+  var title = '${m['title'] ?? ''}'.trim();
+  if (title.isEmpty || title == 'mindmap' || title == 'graph') title = '図';
+  if (title.startsWith('flowchart')) title = '図';
+  final pageId = provider.mcpCreatePage(type: 'normal', name: title);
+  if (pageId == null) return null;
+  // 図の中の id → 出来たノードの id。
+  final idMap = <String, String>{};
+  for (final e in rawNodes) {
+    if (e is! Map) continue;
+    final t = '${e['title'] ?? ''}'.trim();
+    if (t.isEmpty) continue;
+    final memo = '${e['memo'] ?? ''}';
+    final cv = e['color'];
+    final made = provider.mcpAddNode(
+      pageId,
+      title: t,
+      x: (e['x'] as num?)?.toDouble(),
+      y: (e['y'] as num?)?.toDouble(),
+      memo: memo.trim().isEmpty ? null : memo,
+      colorValue: cv is num ? cv.toInt() : null,
+    );
+    if (made != null) idMap['${e['id']}'] = made;
+  }
+  final rawConns = m['connections'];
+  if (rawConns is List) {
+    for (final c in rawConns) {
+      if (c is! Map) continue;
+      final a = idMap['${c['fromId']}'];
+      final b = idMap['${c['toId']}'];
+      if (a == null || b == null) continue;
+      final label = '${c['label'] ?? ''}'.trim();
+      provider.mcpConnectNodes(pageId, a, b,
+          label: label.isEmpty ? null : label);
+    }
+  }
+  final page = provider.mcpPageById(pageId);
+  return page?.name ?? title;
 }
 
 /// 埋め込みマップの要素が抱えている添付ファイルの場所 (無ければ null)。
@@ -113832,6 +114193,10 @@ String _markdownPreviewHtml(String md, bool dark,
   .mmap-ctl button{width:26px;height:24px;border-radius:6px;cursor:pointer;
     border:1px solid $border;background:$bg;color:$fg;font-size:12px;
     line-height:1;padding:0;}
+  .mmap-ctl button.wide{width:auto;padding:0 9px;font-size:11px;
+    font-weight:700;background:$accent;border-color:$accent;color:#fff;}
+  .mmap-node.moving{opacity:.85;box-shadow:0 6px 18px rgba(0,0,0,.5);
+    cursor:grabbing;}
   .mmap-name{position:absolute;left:10px;bottom:6px;font-size:11px;
     opacity:.6;pointer-events:none;}
   .mmap-empty{padding:16px;font-size:12px;opacity:.7;border-radius:10px;
@@ -113874,6 +114239,7 @@ window.MathJax = {
 };
 </script>
 <script src="$mathjaxSrc"></script>
+$mapsJs
 <script>
 (function () {
   var out = document.getElementById('out');
@@ -114427,6 +114793,19 @@ window.MathJax = {
         renderNext();
         return;
       }
+      // ── 節点と線で書く図 (mindmap / flowchart / graph) は、 このアプリの
+      //    マインドマップに変換して描く (= ユーザー要望: 押したり掴んだり
+      //    できるように)。 変換できない図は今までどおり mermaid に任せる。 ──
+      try {
+        if (window.__mmMermaidToMap && window.__mmRenderMermaidMap) {
+          var conv = window.__mmMermaidToMap(blocks[i]);
+          if (conv) {
+            window.__mmRenderMermaidMap(el, conv);
+            renderNext();
+            return;
+          }
+        }
+      } catch (eConv) {}
       try {
         mermaid.render('mm' + i + '_' + Date.now(), fixMermaid(blocks[i]))
           .then(function (r) {
@@ -114562,7 +114941,7 @@ window.MathJax = {
     out.textContent = $src;
   }
 })();
-</script>$mapsJs$syncJs</body></html>''';
+</script>$syncJs</body></html>''';
 }
 
 /// マークダウンプレビューを file:// で開くための準備 (= ユーザー報告:
@@ -116813,6 +117192,19 @@ graph TD
       if (type == 'mapOpen') {
         final path = embeddedMapAttachmentPath(widget.provider, m);
         if (path != null) unawaited(OpenFilex.open(path));
+        return;
+      }
+      // ── 図をマインドマップのページにする (= ユーザー要望) ──
+      if (type == 'mapToPage') {
+        final name = mermaidMapToNewPage(widget.provider, m);
+        if (name != null && mounted) {
+          _appSnackTop(
+              context,
+              widget.provider
+                  .t('map.addedToPage')
+                  .replaceFirst('{name}', name),
+              const Color(0xFF43B97F));
+        }
         return;
       }
       final href = '${m['href'] ?? ''}'.trim();
@@ -207316,6 +207708,16 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
         final path =
             embeddedMapAttachmentPath(context.read<MindMapProvider>(), m);
         if (path != null) unawaited(OpenFilex.open(path));
+        return;
+      }
+      // ── 図をマインドマップのページにする (= ユーザー要望) ──
+      if (type == 'mapToPage') {
+        final provider = context.read<MindMapProvider>();
+        final name = mermaidMapToNewPage(provider, m);
+        if (name != null && mounted) {
+          _showSnackBar(
+              provider.t('map.addedToPage').replaceFirst('{name}', name));
+        }
         return;
       }
       final code = '${m['code'] ?? ''}'.trim();
