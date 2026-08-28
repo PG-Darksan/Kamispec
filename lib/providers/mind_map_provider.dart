@@ -167,6 +167,112 @@ class FocusLockTask {
       );
 }
 
+/// サイドメニューの ToDo 1 件。
+///
+/// 昔は画面側が `{'t':..., 'd':...}` の Map をそのまま prefs
+/// (`drawer_todos_v1`) に入れていたが、
+///   ・集中ロックの画面 (別ウィジェット) から選べるようにする
+///   ・通知の予約とカレンダーへの反映を結び付ける
+///   ・画像を貼り付けておける
+/// ために provider 側の型に引き上げた。 昔の形も `fromJson` が読める。
+class TodoItem {
+  final String id;
+  final String text;
+  final bool done;
+
+  /// 貼り付けておいた画像の保存先 (絶対パス)。
+  /// `<Documents>/attachments/todo_<ミリ秒>.<拡張子>` に置く。
+  final List<String> images;
+
+  /// 通知を予約した時刻 (epoch ミリ秒)。 null なら予約なし。
+  final int? remindAtMs;
+
+  /// 通知に合わせて作ったカレンダー予定の日付キー (YYYY-MM-DD)。
+  /// 予約を消す時に、 この日から該当の予定を探して消すために持つ。
+  final String? calendarDateKey;
+
+  const TodoItem({
+    required this.id,
+    required this.text,
+    this.done = false,
+    this.images = const <String>[],
+    this.remindAtMs,
+    this.calendarDateKey,
+  });
+
+  /// 通知の予約が「これから先」かどうか。
+  bool get hasFutureReminder =>
+      remindAtMs != null &&
+      remindAtMs! > DateTime.now().millisecondsSinceEpoch;
+
+  DateTime? get remindAt =>
+      remindAtMs == null ? null : DateTime.fromMillisecondsSinceEpoch(remindAtMs!);
+
+  /// 一覧や通知の見出しに使う 1 行 (長い本文は途中まで)。
+  String get headline {
+    final first = text.split('\n').first.trim();
+    if (first.isEmpty) return text.trim();
+    return first.length <= 60 ? first : '${first.substring(0, 60)}…';
+  }
+
+  static const Object _sentinel = Object();
+
+  TodoItem copyWith({
+    String? text,
+    bool? done,
+    List<String>? images,
+    Object? remindAtMs = _sentinel,
+    Object? calendarDateKey = _sentinel,
+  }) =>
+      TodoItem(
+        id: id,
+        text: text ?? this.text,
+        done: done ?? this.done,
+        images: images ?? this.images,
+        remindAtMs: identical(remindAtMs, _sentinel)
+            ? this.remindAtMs
+            : remindAtMs as int?,
+        calendarDateKey: identical(calendarDateKey, _sentinel)
+            ? this.calendarDateKey
+            : calendarDateKey as String?,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        // 昔の画面が読めるようキー名は 't' / 'd' のまま。
+        't': text,
+        'd': done,
+        if (images.isNotEmpty) 'img': images,
+        if (remindAtMs != null) 'at': remindAtMs,
+        if (calendarDateKey != null) 'ev': calendarDateKey,
+      };
+
+  factory TodoItem.fromJson(Map json) {
+    final rawId = '${json['id'] ?? ''}'.trim();
+    final imgs = <String>[];
+    final rawImg = json['img'];
+    if (rawImg is List) {
+      for (final e in rawImg) {
+        final path = '$e'.trim();
+        if (path.isNotEmpty) imgs.add(path);
+      }
+    }
+    final rawAt = json['at'];
+    return TodoItem(
+      id: rawId.isNotEmpty
+          ? rawId
+          : 'todo_${DateTime.now().microsecondsSinceEpoch}_${json.hashCode & 0xFFFF}',
+      text: '${json['t'] ?? ''}',
+      done: json['d'] == true,
+      images: imgs,
+      remindAtMs: rawAt is int ? rawAt : (rawAt is num ? rawAt.toInt() : null),
+      calendarDateKey: (json['ev'] as String?)?.trim().isNotEmpty == true
+          ? (json['ev'] as String).trim()
+          : null,
+    );
+  }
+}
+
 /// グループ内のメンバー情報（カレンダー共有用）。
 /// `downloadCalendarEventsFromCloud` がグループの /members から取得し、
 /// UI のユーザー切替セレクタに表示する。
@@ -35236,6 +35342,21 @@ class MindMapProvider extends ChangeNotifier {
       'es': 'Tamaño', 'fr': 'Taille', 'de': 'Größe', 'pt': 'Tamanho',
       'ru': 'Размер',
     },
+    // = ユーザー要望: PDF ビューアと同じく、 大きさと形を固定して
+    //   クリックで連続して置けるように。
+    'shape.fixedSize': {
+      // ★ 大きさも一緒に固定するので、 「形を固定」 だと引っ掛かる
+      //   (= ユーザー指摘)。 何が固定されるかそのまま書く。
+      'ja': '形と大きさを固定',
+      'en': 'Same shape & size',
+      'zh': '固定形状和大小',
+      'ko': '모양·크기 고정',
+      'es': 'Misma forma y tamaño',
+      'fr': 'Même forme et taille',
+      'de': 'Gleiche Form & Größe',
+      'pt': 'Mesma forma e tamanho',
+      'ru': 'Та же форма и размер',
+    },
     'shape.tapOrDragHint': {
       'ja': '押すとこの大きさで置きます / ドラッグすると好きな大きさで描けます',
       'en': 'Tap to drop this size / drag to draw any size',
@@ -46618,6 +46739,227 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Nada ainda. Adicione uma tarefa no campo acima.',
       'ru': 'Пока пусто. Добавьте задачу в поле выше.',
     },
+    // ── ToDo: 画像・通知・集中ロック連携 (= ユーザー要望) ──
+    'todo.attachImage': {
+      'ja': '画像を付ける',
+      'en': 'Attach an image',
+      'zh': '添加图片',
+      'ko': '이미지 첨부',
+      'es': 'Adjuntar imagen',
+      'fr': 'Joindre une image',
+      'de': 'Bild anhängen',
+      'pt': 'Anexar imagem',
+      'ru': 'Прикрепить изображение',
+    },
+    'todo.pasteImage': {
+      'ja': 'クリップボードから貼り付け',
+      'en': 'Paste from clipboard',
+      'zh': '从剪贴板粘贴',
+      'ko': '클립보드에서 붙여넣기',
+      'es': 'Pegar del portapapeles',
+      'fr': 'Coller depuis le presse-papiers',
+      'de': 'Aus Zwischenablage einfügen',
+      'pt': 'Colar da área de transferência',
+      'ru': 'Вставить из буфера обмена',
+    },
+    'todo.pickImage': {
+      'ja': 'ファイルから選ぶ',
+      'en': 'Choose a file',
+      'zh': '从文件选择',
+      'ko': '파일에서 선택',
+      'es': 'Elegir un archivo',
+      'fr': 'Choisir un fichier',
+      'de': 'Datei auswählen',
+      'pt': 'Escolher um arquivo',
+      'ru': 'Выбрать файл',
+    },
+    'todo.imageAdded': {
+      'ja': '画像を付けました',
+      'en': 'Image attached',
+      'zh': '已添加图片',
+      'ko': '이미지를 첨부했습니다',
+      'es': 'Imagen adjuntada',
+      'fr': 'Image jointe',
+      'de': 'Bild angehängt',
+      'pt': 'Imagem anexada',
+      'ru': 'Изображение прикреплено',
+    },
+    'todo.noClipboardImage': {
+      'ja': 'クリップボードに画像がありません',
+      'en': 'No image on the clipboard',
+      'zh': '剪贴板中没有图片',
+      'ko': '클립보드에 이미지가 없습니다',
+      'es': 'No hay imagen en el portapapeles',
+      'fr': 'Aucune image dans le presse-papiers',
+      'de': 'Kein Bild in der Zwischenablage',
+      'pt': 'Nenhuma imagem na área de transferência',
+      'ru': 'В буфере обмена нет изображения',
+    },
+    'todo.removeImage': {
+      'ja': 'この画像を外す',
+      'en': 'Remove this image',
+      'zh': '移除此图片',
+      'ko': '이 이미지 제거',
+      'es': 'Quitar esta imagen',
+      'fr': 'Retirer cette image',
+      'de': 'Dieses Bild entfernen',
+      'pt': 'Remover esta imagem',
+      'ru': 'Убрать это изображение',
+    },
+    'todo.remind': {
+      'ja': '通知を予約',
+      'en': 'Set a reminder',
+      'zh': '设置提醒',
+      'ko': '알림 예약',
+      'es': 'Programar aviso',
+      'fr': 'Programmer un rappel',
+      'de': 'Erinnerung setzen',
+      'pt': 'Definir lembrete',
+      'ru': 'Напоминание',
+    },
+    'todo.remindChange': {
+      'ja': '通知の時刻を変える',
+      'en': 'Change the reminder time',
+      'zh': '更改提醒时间',
+      'ko': '알림 시각 변경',
+      'es': 'Cambiar la hora del aviso',
+      'fr': 'Modifier l\'heure du rappel',
+      'de': 'Erinnerungszeit ändern',
+      'pt': 'Alterar a hora do lembrete',
+      'ru': 'Изменить время напоминания',
+    },
+    'todo.remindClear': {
+      'ja': '通知をやめる',
+      'en': 'Cancel the reminder',
+      'zh': '取消提醒',
+      'ko': '알림 취소',
+      'es': 'Cancelar el aviso',
+      'fr': 'Annuler le rappel',
+      'de': 'Erinnerung entfernen',
+      'pt': 'Cancelar o lembrete',
+      'ru': 'Отменить напоминание',
+    },
+    'todo.remindSet': {
+      'ja': '{time} に通知します。カレンダーにも入れました',
+      'en': 'Reminder set for {time}. Added to the calendar too.',
+      'zh': '将于 {time} 通知,并已加入日历',
+      'ko': '{time}에 알립니다. 캘린더에도 넣었습니다',
+      'es': 'Aviso para {time}. También se añadió al calendario.',
+      'fr': 'Rappel à {time}. Ajouté aussi au calendrier.',
+      'de': 'Erinnerung um {time}. Auch im Kalender eingetragen.',
+      'pt': 'Lembrete para {time}. Também adicionado ao calendário.',
+      'ru': 'Напомним в {time}. Добавлено и в календарь.',
+    },
+    'todo.remindCleared': {
+      'ja': '通知の予約をやめました',
+      'en': 'Reminder cancelled',
+      'zh': '已取消提醒',
+      'ko': '알림 예약을 취소했습니다',
+      'es': 'Aviso cancelado',
+      'fr': 'Rappel annulé',
+      'de': 'Erinnerung entfernt',
+      'pt': 'Lembrete cancelado',
+      'ru': 'Напоминание отменено',
+    },
+    'todo.remindPast': {
+      'ja': '過ぎた時刻には予約できません',
+      'en': "That time has already passed",
+      'zh': '不能预约已过去的时间',
+      'ko': '지난 시각에는 예약할 수 없습니다',
+      'es': 'Esa hora ya pasó',
+      'fr': 'Cette heure est déjà passée',
+      'de': 'Dieser Zeitpunkt liegt in der Vergangenheit',
+      'pt': 'Esse horário já passou',
+      'ru': 'Это время уже прошло',
+    },
+    'todo.pickDate': {
+      'ja': '通知する日付',
+      'en': 'Reminder date',
+      'zh': '提醒日期',
+      'ko': '알림 날짜',
+      'es': 'Fecha del aviso',
+      'fr': 'Date du rappel',
+      'de': 'Datum der Erinnerung',
+      'pt': 'Data do lembrete',
+      'ru': 'Дата напоминания',
+    },
+    'todo.pickTime': {
+      'ja': '通知する時刻',
+      'en': 'Reminder time',
+      'zh': '提醒时间',
+      'ko': '알림 시각',
+      'es': 'Hora del aviso',
+      'fr': 'Heure du rappel',
+      'de': 'Uhrzeit der Erinnerung',
+      'pt': 'Hora do lembrete',
+      'ru': 'Время напоминания',
+    },
+    'todo.calendarMemo': {
+      'ja': 'ToDo から登録した通知',
+      'en': 'Reminder created from a to-do',
+      'zh': '来自待办的提醒',
+      'ko': '할 일에서 등록한 알림',
+      'es': 'Aviso creado desde una tarea',
+      'fr': 'Rappel créé depuis une tâche',
+      'de': 'Erinnerung aus einer Aufgabe',
+      'pt': 'Lembrete criado a partir de uma tarefa',
+      'ru': 'Напоминание из задачи',
+    },
+    'todo.editTitle': {
+      'ja': 'ToDo を書き直す',
+      'en': 'Edit the to-do',
+      'zh': '修改待办',
+      'ko': '할 일 수정',
+      'es': 'Editar la tarea',
+      'fr': 'Modifier la tâche',
+      'de': 'Aufgabe bearbeiten',
+      'pt': 'Editar a tarefa',
+      'ru': 'Изменить задачу',
+    },
+    'focusLock.fromTodo': {
+      'ja': 'ToDo から選ぶ',
+      'en': 'Pick from to-dos',
+      'zh': '从待办中选择',
+      'ko': '할 일에서 선택',
+      'es': 'Elegir de las tareas',
+      'fr': 'Choisir parmi les tâches',
+      'de': 'Aus Aufgaben wählen',
+      'pt': 'Escolher das tarefas',
+      'ru': 'Выбрать из задач',
+    },
+    'focusLock.fromTodoTitle': {
+      'ja': '取り組む ToDo を選ぶ',
+      'en': 'Choose the to-dos to work on',
+      'zh': '选择要处理的待办',
+      'ko': '진행할 할 일 선택',
+      'es': 'Elige las tareas en las que trabajar',
+      'fr': 'Choisissez les tâches à traiter',
+      'de': 'Aufgaben zum Bearbeiten wählen',
+      'pt': 'Escolha as tarefas para trabalhar',
+      'ru': 'Выберите задачи для работы',
+    },
+    'focusLock.fromTodoEmpty': {
+      'ja': '未完了の ToDo がありません。サイドメニューの ToDo に追加してください',
+      'en': 'No open to-dos. Add some in the side menu first.',
+      'zh': '没有未完成的待办。请先在侧边栏添加',
+      'ko': '미완료 할 일이 없습니다. 사이드 메뉴에서 추가하세요',
+      'es': 'No hay tareas pendientes. Añade alguna en el menú lateral.',
+      'fr': 'Aucune tâche en cours. Ajoutez-en dans le menu latéral.',
+      'de': 'Keine offenen Aufgaben. Füge im Seitenmenü welche hinzu.',
+      'pt': 'Nenhuma tarefa em aberto. Adicione no menu lateral.',
+      'ru': 'Нет незавершённых задач. Добавьте их в боковом меню.',
+    },
+    'focusLock.fromTodoAdded': {
+      'ja': '{count} 件を集中タスクに入れました',
+      'en': 'Added {count} to the focus tasks',
+      'zh': '已加入 {count} 项专注任务',
+      'ko': '{count}건을 집중 작업에 넣었습니다',
+      'es': 'Se añadieron {count} a las tareas de enfoque',
+      'fr': '{count} ajoutée(s) aux tâches de concentration',
+      'de': '{count} zu den Fokusaufgaben hinzugefügt',
+      'pt': '{count} adicionadas às tarefas de foco',
+      'ru': 'Добавлено задач: {count}',
+    },
     'todo.clearDone': {
       'ja': '完了を削除',
       'en': 'Clear done',
@@ -54242,7 +54584,7 @@ class MindMapProvider extends ChangeNotifier {
     },
     // ── フォルダー ──
     'folder.newTitle': {
-      'ja': 'テーマ名',
+      'ja': 'フォルダー名',
       'en': 'Folder name',
       'zh': '文件夹名',
       'ko': '폴더 이름',
@@ -54451,7 +54793,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Изменить макс. скорость',
     },
     'folder.rename': {
-      'ja': 'テーマ名を変更',
+      'ja': 'フォルダー名を変更',
       'en': 'Rename folder',
       'zh': '重命名文件夹',
       'ko': '폴더 이름 변경',
@@ -60611,6 +60953,181 @@ class MindMapProvider extends ChangeNotifier {
     _focusLockTasks.insert(target, task);
     await _persistFocusLockTasks();
     notifyListeners();
+  }
+
+  // ─── サイドメニューの ToDo ─────────────────────────────────────────────
+  //
+  // 以前は画面 (_MindMapScreenState) が Map のリストで持っていたが、
+  // 集中ロックの画面から選べるようにするため provider に移した
+  // (= ユーザー要望: 集中ロックの所に入れた ToDo が選択肢で出るように)。
+  // prefs キーは従来どおり `drawer_todos_v1` で、 昔の
+  // `{'t':…, 'd':…}` だけの形もそのまま読める。
+  final List<TodoItem> _todos = <TodoItem>[];
+  bool _todosLoaded = false;
+  List<TodoItem> get todos => List<TodoItem>.unmodifiable(_todos);
+
+  /// 未完了の ToDo だけ (集中ロックの選択肢に出すのはこちら)。
+  List<TodoItem> get openTodos =>
+      List<TodoItem>.unmodifiable(_todos.where((e) => !e.done));
+
+  TodoItem? todoById(String id) {
+    for (final t in _todos) {
+      if (t.id == id) return t;
+    }
+    return null;
+  }
+
+  Future<void> _loadTodos() async {
+    if (_todosLoaded) return;
+    _todosLoaded = true;
+    try {
+      final prefs = await _prefsWithRetry();
+      final raw = prefs.getString('drawer_todos_v1');
+      if (raw == null || raw.isEmpty) return;
+      final arr = jsonDecode(raw);
+      if (arr is! List) return;
+      _todos
+        ..clear()
+        ..addAll([
+          for (final e in arr)
+            if (e is Map) TodoItem.fromJson(e)
+        ]);
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  /// 起動直後に画面から 1 回だけ呼ぶ (読み込み済みなら何もしない)。
+  Future<void> ensureTodosLoaded() => _loadTodos();
+
+  Future<void> _saveTodos() async {
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.setString(
+          'drawer_todos_v1', jsonEncode(_todos.map((e) => e.toJson()).toList()));
+    } catch (_) {}
+  }
+
+  /// 追加して、 出来上がった 1 件を返す (呼び出し側が id を使えるように)。
+  TodoItem? addTodo(String text) {
+    final t = text.trim();
+    if (t.isEmpty) return null;
+    final item = TodoItem(
+      id: 'todo_${DateTime.now().microsecondsSinceEpoch}',
+      text: t,
+    );
+    _todos.add(item);
+    // ignore: discarded_futures
+    _saveTodos();
+    notifyListeners();
+    return item;
+  }
+
+  void setTodoDone(String id, bool done) {
+    final i = _todos.indexWhere((e) => e.id == id);
+    if (i < 0 || _todos[i].done == done) return;
+    _todos[i] = _todos[i].copyWith(done: done);
+    // ignore: discarded_futures
+    _saveTodos();
+    notifyListeners();
+  }
+
+  void updateTodoText(String id, String text) {
+    final t = text.trim();
+    if (t.isEmpty) return;
+    final i = _todos.indexWhere((e) => e.id == id);
+    if (i < 0 || _todos[i].text == t) return;
+    _todos[i] = _todos[i].copyWith(text: t);
+    // ignore: discarded_futures
+    _saveTodos();
+    notifyListeners();
+  }
+
+  /// 消した 1 件を返す (通知の取り消しに使う)。
+  TodoItem? removeTodo(String id) {
+    final i = _todos.indexWhere((e) => e.id == id);
+    if (i < 0) return null;
+    final removed = _todos.removeAt(i);
+    // ignore: discarded_futures
+    _saveTodos();
+    notifyListeners();
+    return removed;
+  }
+
+  /// 済みをまとめて消す。 消した分を返す (通知の取り消しに使う)。
+  List<TodoItem> clearDoneTodos() {
+    final removed = _todos.where((e) => e.done).toList();
+    if (removed.isEmpty) return const <TodoItem>[];
+    _todos.removeWhere((e) => e.done);
+    // ignore: discarded_futures
+    _saveTodos();
+    notifyListeners();
+    return removed;
+  }
+
+  /// 並べ替え (ReorderableListView から)。
+  void reorderTodo(int oldIndex, int newIndex) {
+    if (oldIndex < 0 || oldIndex >= _todos.length) return;
+    var target = newIndex;
+    if (target > oldIndex) target -= 1;
+    target = target.clamp(0, _todos.length - 1);
+    if (target == oldIndex) return;
+    final item = _todos.removeAt(oldIndex);
+    _todos.insert(target, item);
+    // ignore: discarded_futures
+    _saveTodos();
+    notifyListeners();
+  }
+
+  void addTodoImage(String id, String path) {
+    final i = _todos.indexWhere((e) => e.id == id);
+    if (i < 0 || path.trim().isEmpty) return;
+    final list = List<String>.from(_todos[i].images);
+    if (list.contains(path)) return;
+    list.add(path);
+    _todos[i] = _todos[i].copyWith(images: list);
+    // ignore: discarded_futures
+    _saveTodos();
+    notifyListeners();
+  }
+
+  void removeTodoImage(String id, String path) {
+    final i = _todos.indexWhere((e) => e.id == id);
+    if (i < 0) return;
+    final list = List<String>.from(_todos[i].images)..remove(path);
+    _todos[i] = _todos[i].copyWith(images: list);
+    // ignore: discarded_futures
+    _saveTodos();
+    notifyListeners();
+  }
+
+  /// 通知の予約時刻を記録する (実際の予約は画面側が行う)。
+  /// [ms] が null なら予約なしに戻す。
+  void setTodoReminder(String id, int? ms, {String? calendarDateKey}) {
+    final i = _todos.indexWhere((e) => e.id == id);
+    if (i < 0) return;
+    _todos[i] = _todos[i]
+        .copyWith(remindAtMs: ms, calendarDateKey: ms == null ? null : calendarDateKey);
+    // ignore: discarded_futures
+    _saveTodos();
+    notifyListeners();
+  }
+
+  /// ToDo に紐づけて作ったカレンダー予定を見分けるための目印。
+  /// 予定のメモの末尾に入れておき、 予約を消す時にこれで探す。
+  static String todoCalendarMarker(String todoId) => '(ToDo: $todoId)';
+
+  /// ToDo の予約に対応するカレンダー予定を消す。
+  Future<void> removeTodoCalendarEvent(String todoId, String? dateKey) async {
+    if (dateKey == null || dateKey.isEmpty) return;
+    final marker = todoCalendarMarker(todoId);
+    final targets = _calendarEvents[dateKey]
+            ?.where((e) => (e.memo ?? '').contains(marker))
+            .map((e) => e.id)
+            .toList() ??
+        const <String>[];
+    for (final id in targets) {
+      await removeCalendarEvent(dateKey, id);
+    }
   }
 
   /// ロック画面で自然音パネルを使えるようにするか (= ユーザー要望:
@@ -70871,6 +71388,8 @@ $cleanQ
     _loadChannelQueues();
     _loadAutoSyncPageIds();
     _loadNamedGroups();
+    // ToDo (サイドメニュー / 集中ロックの選択肢)。
+    _loadTodos();
     // 課金 SDK の初期通知より先に、前回保存した状態を必ず読み終える。
     // 開発者モードも同じ SharedPreferences の演じプランに依存
     // するため、両方を並列起動せず必ずプラン復元の後に検証する。

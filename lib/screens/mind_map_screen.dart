@@ -1790,6 +1790,19 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///   固定して瞬時に出せるように」。 ドラッグすれば今までどおり好きな
   ///   大きさで描ける。
   double _shapeInsertSize = 120.0;
+
+  /// 大きさと形を固定して、 押すたびに同じ図形を置くか
+  /// (= ユーザー要望: PDF ビューアの図形挿入と同じように、 大きさや形を
+  /// 固定してクリックすると連続で出せるボタン)。
+  ///
+  /// ON の間は [_lastShapeDrawnSize] の縦横そのままで置くので、 横長の
+  /// 長方形や潰した楕円もそのまま並べられる。 OFF の時は今までどおり
+  /// 「大きさ」 スライダーの正方形で置く。
+  bool _shapeFixedSize = false;
+
+  /// 最後にドラッグで描いた図形の縦横 (キャンバス px)。 固定モードはこれを
+  /// 使うので、 好きな形で 1 つ描いてから固定を ON にすれば、 その形で揃う。
+  Size _lastShapeDrawnSize = const Size(120, 80);
   Offset? _drawingDecorationStart;
   Offset? _drawingDecorationEnd;
   String? _selectedDecorationId;
@@ -1965,6 +1978,85 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// drawer 上のフラットインデックス (0 始まり) を保持。
   /// drawer の表示順 (フォルダー → そのページ群 → ルートページ群) で連番。
   int? _drawerLastAnchorIndex;
+
+  // ── フォルダー名のその場編集 (= ユーザー要望: 新規フォルダーの名前は
+  //    画面中央のダイアログではなく、 ページ一覧に置かれるその位置で編集する) ──
+  /// 今その場編集しているフォルダー ID (null なら編集していない)
+  String? _renamingFolderId;
+  TextEditingController? _folderRenameCtrl;
+  FocusNode? _folderRenameFocus;
+  /// 編集中の行を画面内へスクロールさせるためのキー
+  GlobalKey? _renamingFolderKey;
+
+  /// フォルダー名のその場編集を始める。
+  /// [selectAll] が true なら既定名を全選択状態にして、 そのまま打ち直せる。
+  void _beginFolderRename(MindMapFolder folder, {bool selectAll = true}) {
+    _folderRenameFocus?.dispose();
+    _folderRenameCtrl?.dispose();
+    final ctrl = TextEditingController(text: folder.name);
+    if (selectAll) {
+      ctrl.selection =
+          TextSelection(baseOffset: 0, extentOffset: folder.name.length);
+    }
+    final focus = FocusNode();
+    // フォーカスが外れたら確定する (= ダイアログのように「決定」を押さなくてよい)
+    focus.addListener(() {
+      if (!focus.hasFocus) _commitFolderRename();
+    });
+    final rowKey = GlobalKey();
+    setState(() {
+      _renamingFolderId = folder.id;
+      _folderRenameCtrl = ctrl;
+      _folderRenameFocus = focus;
+      _renamingFolderKey = rowKey;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _renamingFolderId != folder.id) return;
+      focus.requestFocus();
+      // フォルダーが増えて一覧の外に出ていても、 編集欄が見えるところまで送る
+      final ctx = rowKey.currentContext;
+      if (ctx != null) {
+        // ignore: discarded_futures
+        Scrollable.ensureVisible(ctx,
+            duration: const Duration(milliseconds: 180),
+            alignment: 0.3);
+      }
+    });
+  }
+
+  /// その場編集を確定する (空欄なら元の名前のまま)
+  void _commitFolderRename() {
+    final id = _renamingFolderId;
+    final ctrl = _folderRenameCtrl;
+    if (id == null || ctrl == null) return;
+    final name = ctrl.text.trim();
+    _renamingFolderId = null;
+    if (name.isNotEmpty) {
+      // ignore: use_build_context_synchronously
+      context.read<MindMapProvider>().renameFolder(id, name);
+    }
+    _folderRenameCtrl = null;
+    _renamingFolderKey = null;
+    final focus = _folderRenameFocus;
+    _folderRenameFocus = null;
+    focus?.dispose();
+    ctrl.dispose();
+    if (mounted) setState(() {});
+  }
+
+  /// その場編集をやめる (名前は変えない)
+  void _cancelFolderRename() {
+    if (_renamingFolderId == null) return;
+    final ctrl = _folderRenameCtrl;
+    final focus = _folderRenameFocus;
+    _renamingFolderId = null;
+    _folderRenameCtrl = null;
+    _folderRenameFocus = null;
+    _renamingFolderKey = null;
+    focus?.dispose();
+    ctrl?.dispose();
+    if (mounted) setState(() {});
+  }
 
   /// ページとフォルダー、どちらかが選択されていれば複数選択モード扱い
   bool get _drawerMultiSelectActive =>
@@ -4774,6 +4866,14 @@ class _MindMapScreenState extends State<MindMapScreen>
       context.read<MindMapProvider>().openPageById(pageId);
     });
     WidgetsBinding.instance.addPostFrameCallback((_) => _centerOnRoot());
+    // ── ToDo に入れた通知の予約を入れ直す ──
+    // Android は OS 側 (zonedSchedule) に残るが、 Windows はプロセス内の
+    // タイマーなので、 立ち上げ直すたびに入れ直さないと鳴らない。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      // ignore: discarded_futures
+      _rearmTodoReminders(context.read<MindMapProvider>());
+    });
     // ── 集中ロックのスケジュール監視 (Android のみ) ──
     // 30 秒ごとに現在時刻が設定した時間枠に入ったかを確認し、 入っていれば
     // 全画面ロックを起動する。 起動直後にも一度チェックする。
@@ -4967,9 +5067,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     //   管理する `_drawerOpen` フラグを使う (= サブマップ化バグの修正)。
     final drawerOpen = _drawerOpen;
     if (drawerOpen) {
-      final screenW = MediaQuery.of(context).size.width;
-      // Flutter の Drawer 既定幅は 304 (狭い画面では画面幅に収める)。
-      final drawerW = screenW < 320 ? screenW - 8 : 304.0;
+      // ★ サイドメニューの実際の幅を使う。 決め打ちの 304 のままだと、
+      //   ページ一覧の右に ToDo を並べて広げた時、 メニューの右半分で
+      //   放したのに「キャンバスへ落とした」 扱いになって分割が開く。
+      final drawerW = _drawerWidthFor(context);
       if (globalPos.dx < drawerW) return;
     }
     // マップ領域外 (= 上部 AppBar) なら無視。
@@ -43087,7 +43188,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                       _buildShapeChoice(
                         dialogContext,
                         k,
-                        _shapeKindIcon(k),
+                        _ShapeKindIcon(k,
+                            size: 28,
+                            hollow: _shapeHollow,
+                            color: const Color(0xFF43B97F)),
                         _shapeKindLabel(provider, k),
                       ),
                   ],
@@ -43111,7 +43215,7 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// 図形ピッカーの 1 個分のアイテム (= アイコン + ラベル)。
   Widget _buildShapeChoice(BuildContext pickerContext, MapDecorationKind kind,
-      IconData icon, String label) {
+      Widget icon, String label) {
     return InkWell(
       onTap: () {
         Navigator.of(pickerContext).pop();
@@ -43161,7 +43265,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                   border: Border.all(
                       color: const Color(0xFF43B97F).withValues(alpha: 0.4)),
                 ),
-                child: Icon(icon, color: const Color(0xFF43B97F), size: 28),
+                child: Center(child: icon),
               ),
               const SizedBox(height: 6),
               SizedBox(
@@ -43296,19 +43400,41 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///
   /// 線・矢印・波線は横一直線、 それ以外は正方形の枠に収める (= 縦横比は
   /// 固定)。 ドラッグした時は今までどおり好きな形に描ける。
+  /// 直前に置いた場所と時刻。 押した操作が「タップ」 として届くか
+  /// 「ごく短いドラッグ」 として届くかは環境で変わるので両方から置ける
+  /// ようにしてあり、 二重に置かれないようここで弾く。
+  Offset? _lastShapePlacePos;
+  int _lastShapePlaceMs = 0;
+
   void _placeFixedSizeDecoration(Offset center) {
     final kind = _drawingDecorationKind;
     if (kind == null || kind == MapDecorationKind.polyline) return;
-    final half = _shapeInsertSize / 2;
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (_lastShapePlacePos != null &&
+        nowMs - _lastShapePlaceMs < 400 &&
+        (_lastShapePlacePos! - center).distance < 10) {
+      return;
+    }
+    _lastShapePlacePos = center;
+    _lastShapePlaceMs = nowMs;
     final bool lineLike = kind == MapDecorationKind.line ||
         kind == MapDecorationKind.arrow ||
         kind == MapDecorationKind.wavyLine;
+    // ── 大きさと形を固定して置く (= ユーザー要望) ──
+    //    ON なら「最後に描いた縦横」 のまま、 OFF ならスライダーの正方形。
+    //    どちらも押した所が真ん中に来る。
+    final double halfW = _shapeFixedSize
+        ? _lastShapeDrawnSize.width.abs() / 2
+        : _shapeInsertSize / 2;
+    final double halfH = _shapeFixedSize
+        ? _lastShapeDrawnSize.height.abs() / 2
+        : _shapeInsertSize / 2;
     final Offset start = lineLike
-        ? Offset(center.dx - half, center.dy)
-        : Offset(center.dx - half, center.dy - half);
+        ? Offset(center.dx - halfW, center.dy)
+        : Offset(center.dx - halfW, center.dy - halfH);
     final Offset end = lineLike
-        ? Offset(center.dx + half, center.dy)
-        : Offset(center.dx + half, center.dy + half);
+        ? Offset(center.dx + halfW, center.dy)
+        : Offset(center.dx + halfW, center.dy + halfH);
     final deco = MapDecoration(
       id: 'deco_${DateTime.now().microsecondsSinceEpoch}',
       kind: kind,
@@ -43359,10 +43485,35 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (_drawingDecorationKind == MapDecorationKind.polyline) return;
     final start = _drawingDecorationStart;
     final end = _drawingDecorationEnd;
+    // ── ほとんど動いていない = 「クリックしただけ」 ──
+    //
+    // ここが「6px 未満は捨てる」 だけだったので、 押しただけでは何も
+    // 置けなかった (= ユーザー報告: クリックで連続して出せるボタンが欲しい)。
+    // マウスのドラッグ判定は 1px と非常に狭く、 実際のクリックは
+    // タップではなく「ごく短いドラッグ」 として届くため、 決めた大きさで
+    // 置く処理はここからも呼ぶ必要がある。
+    if (start != null && (end == null || (end - start).distance < 6)) {
+      _placeFixedSizeDecoration(start);
+      setState(() {
+        _drawingDecorationStart = null;
+        _drawingDecorationEnd = null;
+      });
+      return;
+    }
     if (start != null && end != null && (end - start).distance >= 6) {
       final canAttach = _decorationCanAttachToNode(_drawingDecorationKind!);
       final startSnap = canAttach ? _nearestDecorationNodeAnchor(start) : null;
       final endSnap = canAttach ? _nearestDecorationNodeAnchor(end) : null;
+      // 次に「大きさと形を固定」 で置く時のために、 今の縦横を覚える
+      // (= ユーザー要望: 好きな形で 1 つ描いてから固定すれば揃う)。
+      final drawnW = (end.dx - start.dx).abs();
+      final drawnH = (end.dy - start.dy).abs();
+      if (drawnW >= 4 && drawnH >= 4) {
+        _lastShapeDrawnSize = Size(drawnW, drawnH);
+      } else if (drawnW >= 4) {
+        // 線は縦がほぼ 0 になるので、 長さだけ覚える。
+        _lastShapeDrawnSize = Size(drawnW, _lastShapeDrawnSize.height);
+      }
       // 6px 以上動いてれば確定 (= タップだけだと小さすぎるので破棄)
       final deco = MapDecoration(
         id: 'deco_${DateTime.now().microsecondsSinceEpoch}',
@@ -43805,41 +43956,6 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 既定は「塗る」。
   bool _shapeHollow = false;
 
-  IconData _shapeKindIcon(MapDecorationKind k) {
-    switch (k) {
-      case MapDecorationKind.polyline:
-        return Icons.timeline_rounded;
-      case MapDecorationKind.line:
-        return Icons.remove_rounded;
-      case MapDecorationKind.arrow:
-        return Icons.arrow_forward_rounded;
-      case MapDecorationKind.wavyLine:
-        return Icons.waves_rounded;
-      case MapDecorationKind.rectangle:
-      case MapDecorationKind.filledRectangle:
-        return Icons.square_rounded;
-      case MapDecorationKind.ellipse:
-        return Icons.egg_alt_rounded;
-      case MapDecorationKind.hollowCircle:
-      case MapDecorationKind.circle:
-        return Icons.circle_rounded;
-      case MapDecorationKind.hollowTriangle:
-        return Icons.change_history_rounded;
-      case MapDecorationKind.hollowDiamond:
-        return Icons.diamond_rounded;
-      case MapDecorationKind.star:
-        return Icons.star_rounded;
-      case MapDecorationKind.pentagon:
-        return Icons.pentagon_rounded;
-      case MapDecorationKind.hexagon:
-        return Icons.hexagon_rounded;
-      case MapDecorationKind.heart:
-        return Icons.favorite_rounded;
-      case MapDecorationKind.cross:
-        return Icons.add_rounded;
-    }
-  }
-
   String _shapeKindLabel(MindMapProvider p, MapDecorationKind k) {
     switch (k) {
       case MapDecorationKind.polyline:
@@ -43961,11 +44077,17 @@ class _MindMapScreenState extends State<MindMapScreen>
                                               ? const Color(0xFF43B97F)
                                               : Colors.white12),
                                     ),
-                                    child: Icon(_shapeKindIcon(k),
-                                        size: 20,
-                                        color: _drawingDecorationKind == k
-                                            ? const Color(0xFF7BE0AE)
-                                            : Colors.white70),
+                                    // ★ 置かれる図形と同じ見た目にする
+                                    //   (= ユーザー要望: 中塗りで置かれるなら
+                                    //   候補も中塗りで出す)。
+                                    child: Center(
+                                      child: _ShapeKindIcon(k,
+                                          size: 20,
+                                          hollow: _shapeHollow,
+                                          color: _drawingDecorationKind == k
+                                              ? const Color(0xFF7BE0AE)
+                                              : Colors.white70),
+                                    ),
                                   ),
                                 ),
                               ),
@@ -43996,10 +44118,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     : Colors.white12),
                           ),
                           child: Row(mainAxisSize: MainAxisSize.min, children: [
-                            Icon(
-                                _shapeHollow
-                                    ? Icons.circle_outlined
-                                    : Icons.circle_rounded,
+                            // ★ 「中空」 の札なのだから、 アイコンは常に
+                            //   中空 (輪郭だけ) にする (= ユーザー要望)。
+                            //   OFF の時に中が塗られていると、 どちらの
+                            //   状態を表しているのか分からなかった。
+                            Icon(Icons.circle_outlined,
                                 size: 18,
                                 color: _shapeHollow
                                     ? const Color(0xFF7BE0AE)
@@ -44010,6 +44133,55 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     fontSize: 11,
                                     fontWeight: FontWeight.w700,
                                     color: _shapeHollow
+                                        ? const Color(0xFF7BE0AE)
+                                        : Colors.white54)),
+                          ]),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    // ── 大きさと形を固定して連続で置く札 (= ユーザー要望:
+                    //    PDF ビューアの図形挿入と同じように、 大きさや形を
+                    //    固定してクリックすると連続で出せるボタン)。
+                    //    ON にすると、 最後にドラッグで描いた縦横のまま
+                    //    押した所へ次々置ける。 ──
+                    Tooltip(
+                      message: '${provider.t('shape.fixedSize')}\n'
+                          '${_lastShapeDrawnSize.width.round()}'
+                          '×${_lastShapeDrawnSize.height.round()}',
+                      child: InkWell(
+                        onTap: () =>
+                            setState(() => _shapeFixedSize = !_shapeFixedSize),
+                        borderRadius: BorderRadius.circular(8),
+                        child: Container(
+                          height: 36,
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          decoration: BoxDecoration(
+                            color: _shapeFixedSize
+                                ? const Color(0xFF43B97F)
+                                    .withValues(alpha: 0.3)
+                                : Colors.white.withValues(alpha: 0.05),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                                color: _shapeFixedSize
+                                    ? const Color(0xFF43B97F)
+                                    : Colors.white12),
+                          ),
+                          child: Row(mainAxisSize: MainAxisSize.min, children: [
+                            Icon(
+                                _shapeFixedSize
+                                    ? Icons.photo_size_select_small_rounded
+                                    : Icons.photo_size_select_large_rounded,
+                                size: 18,
+                                color: _shapeFixedSize
+                                    ? const Color(0xFF7BE0AE)
+                                    : Colors.white70),
+                            const SizedBox(width: 4),
+                            Text(provider.t('shape.fixedSize'),
+                                style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w700,
+                                    color: _shapeFixedSize
                                         ? const Color(0xFF7BE0AE)
                                         : Colors.white54)),
                           ]),
@@ -44058,34 +44230,42 @@ class _MindMapScreenState extends State<MindMapScreen>
                             color: Colors.white70, fontSize: 12)),
                     const SizedBox(width: 10),
                     // ── 押しただけで置く時の大きさ (= ユーザー要望) ──
-                    const Icon(Icons.photo_size_select_small_rounded,
-                        color: Colors.white54, size: 16),
-                    const SizedBox(width: 4),
-                    Text(provider.t('shape.size'),
-                        style: const TextStyle(
-                            color: Colors.white54, fontSize: 11)),
-                    SizedBox(
-                      width: 110,
-                      child: Slider(
-                        value: _shapeInsertSize.clamp(30.0, 400.0),
-                        min: 30,
-                        max: 400,
-                        activeColor: const Color(0xFF43B97F),
-                        onChanged: (v) => setState(() => _shapeInsertSize = v),
-                      ),
+                    //    「形を固定」 が ON の間は最後に描いた縦横を使うので、
+                    //    このスライダーは効かない (薄くして触れなくする)。
+                    Opacity(
+                      opacity: _shapeFixedSize ? 0.35 : 1.0,
+                      child: Row(mainAxisSize: MainAxisSize.min, children: [
+                        const Icon(Icons.photo_size_select_small_rounded,
+                            color: Colors.white54, size: 16),
+                        const SizedBox(width: 4),
+                        Text(provider.t('shape.size'),
+                            style: const TextStyle(
+                                color: Colors.white54, fontSize: 11)),
+                        SizedBox(
+                          width: 110,
+                          child: Slider(
+                            value: _shapeInsertSize.clamp(30.0, 400.0),
+                            min: 30,
+                            max: 400,
+                            activeColor: const Color(0xFF43B97F),
+                            onChanged: _shapeFixedSize
+                                ? null
+                                : (v) =>
+                                    setState(() => _shapeInsertSize = v),
+                          ),
+                        ),
+                        Text(
+                            _shapeFixedSize
+                                ? '${_lastShapeDrawnSize.width.round()}'
+                                    '×${_lastShapeDrawnSize.height.round()}'
+                                : '${_shapeInsertSize.round()}',
+                            style: const TextStyle(
+                                color: Colors.white70, fontSize: 12)),
+                      ]),
                     ),
-                    Text('${_shapeInsertSize.round()}',
-                        style: const TextStyle(
-                            color: Colors.white70, fontSize: 12)),
                   ],
                 ),
-                // 使い方 (押す = その大きさ / ドラッグ = 好きな大きさ)。
-                Padding(
-                  padding: const EdgeInsets.only(top: 2),
-                  child: Text(provider.t('shape.tapOrDragHint'),
-                      style: const TextStyle(
-                          color: Colors.white38, fontSize: 10)),
-                ),
+                // 使い方の説明文はうるさいので出さない (= ユーザー要望)。
               ],
             ),
           ),
@@ -44597,7 +44777,11 @@ class _MindMapScreenState extends State<MindMapScreen>
     );
   }
 
-  /// 選択中の装飾の 色 / 太さ / 種類 を編集するダイアログ。
+  /// 選択中の装飾の 種類 / 色 / 太さ / 中空 を編集する。
+  ///
+  /// 画面中央のダイアログではなく、 押した場所 (= 図形の上に出ている
+  /// 「編集」 ボタン) のすぐそばに、 要素をクリックした時と同じ形の
+  /// ポップアップとして出す (= ユーザー要望)。
   void _showDecorationEditDialog(MindMapProvider provider) {
     final id = _selectedDecorationId;
     if (id == null) return;
@@ -44612,106 +44796,182 @@ class _MindMapScreenState extends State<MindMapScreen>
     int color = deco.colorRgb;
     double width = deco.strokeWidth;
     MapDecorationKind kind = deco.kind;
-    showDialog<void>(
-      context: context,
+    bool filled = deco.isFilled;
+    // 変更は押したそばから絵に反映する (= その場で見比べられる)。
+    void apply() {
+      provider.updateMapDecoration(deco.copyWith(
+          kind: kind, colorRgb: color, strokeWidth: width, filled: filled));
+    }
+
+    // ignore: discarded_futures
+    _showNearDialogMain<void>(
+      width: 340,
+      height: 320,
       builder: (dctx) => StatefulBuilder(
-        builder: (sctx, setD) => AlertDialog(
-          backgroundColor: const Color(0xFF2A2A3E),
-          title: Text(provider.t('shape.editTitle'),
-              style: const TextStyle(color: Colors.white, fontSize: 15)),
-          content: SizedBox(
-            width: 320,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(provider.t('shape.kind'),
-                    style:
-                        const TextStyle(color: Colors.white60, fontSize: 12)),
-                const SizedBox(height: 6),
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: [
-                    for (final k in _shapeKindsOrder)
-                      InkWell(
-                        onTap: () => setD(() => kind = k),
-                        borderRadius: BorderRadius.circular(8),
-                        child: Container(
-                          width: 38,
-                          height: 38,
-                          decoration: BoxDecoration(
-                            color: kind == k
-                                ? const Color(0xFF4FC3F7)
-                                    .withValues(alpha: 0.25)
-                                : Colors.white.withValues(alpha: 0.05),
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(
-                                color: kind == k
-                                    ? const Color(0xFF4FC3F7)
-                                    : Colors.white12),
-                          ),
-                          child: Icon(_shapeKindIcon(k),
-                              size: 20,
+        builder: (sctx, setD) => Container(
+          decoration: BoxDecoration(
+            color: const Color(0xFF2A2A3E),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
+            boxShadow: [
+              BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.45),
+                  blurRadius: 16,
+                  offset: const Offset(0, 6)),
+            ],
+          ),
+          padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(children: [
+                Expanded(
+                  child: Text(provider.t('shape.editTitle'),
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700)),
+                ),
+                InkWell(
+                  onTap: () => Navigator.pop(dctx),
+                  borderRadius: BorderRadius.circular(14),
+                  child: const Padding(
+                    padding: EdgeInsets.all(4),
+                    child: Icon(Icons.close_rounded,
+                        color: Colors.white54, size: 18),
+                  ),
+                ),
+              ]),
+              const SizedBox(height: 8),
+              Text(provider.t('shape.kind'),
+                  style: const TextStyle(color: Colors.white60, fontSize: 12)),
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  for (final k in _shapeKindsOrder)
+                    InkWell(
+                      onTap: () => setD(() {
+                        kind = k;
+                        apply();
+                      }),
+                      borderRadius: BorderRadius.circular(8),
+                      child: Container(
+                        width: 34,
+                        height: 34,
+                        decoration: BoxDecoration(
+                          color: kind == k
+                              ? const Color(0xFF4FC3F7).withValues(alpha: 0.25)
+                              : Colors.white.withValues(alpha: 0.05),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                              color: kind == k
+                                  ? const Color(0xFF4FC3F7)
+                                  : Colors.white12),
+                        ),
+                        child: Center(
+                          child: _ShapeKindIcon(k,
+                              size: 18,
+                              hollow: !filled,
                               color: kind == k
                                   ? const Color(0xFF4FC3F7)
                                   : Colors.white70),
                         ),
                       ),
-                  ],
+                    ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              // ── 中空 / 中塗り の切り替え (= パレットと同じ札) ──
+              Row(children: [
+                InkWell(
+                  onTap: () => setD(() {
+                    filled = !filled;
+                    apply();
+                  }),
+                  borderRadius: BorderRadius.circular(8),
+                  child: Container(
+                    height: 30,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    decoration: BoxDecoration(
+                      color: !filled
+                          ? const Color(0xFF4FC3F7).withValues(alpha: 0.25)
+                          : Colors.white.withValues(alpha: 0.05),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                          color: !filled
+                              ? const Color(0xFF4FC3F7)
+                              : Colors.white12),
+                    ),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      Icon(
+                          !filled
+                              ? Icons.circle_outlined
+                              : Icons.circle_rounded,
+                          size: 16,
+                          color: !filled
+                              ? const Color(0xFF4FC3F7)
+                              : Colors.white70),
+                      const SizedBox(width: 4),
+                      Text(provider.t('shape.hollow'),
+                          style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              color: !filled
+                                  ? const Color(0xFF4FC3F7)
+                                  : Colors.white54)),
+                    ]),
+                  ),
                 ),
-                const SizedBox(height: 12),
-                Text(provider.t('cal.color'),
+              ]),
+              const SizedBox(height: 10),
+              Text(provider.t('cal.color'),
+                  style: const TextStyle(color: Colors.white60, fontSize: 12)),
+              const SizedBox(height: 6),
+              Wrap(
+                children: [
+                  for (final c in _shapePalette)
+                    _shapeColorSwatch(c, color == c, () {
+                      setD(() {
+                        color = c;
+                        apply();
+                      });
+                    }),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Row(children: [
+                Text(provider.t('shape.thickness'),
                     style:
                         const TextStyle(color: Colors.white60, fontSize: 12)),
-                const SizedBox(height: 6),
-                Wrap(
-                  children: [
-                    for (final c in _shapePalette)
-                      _shapeColorSwatch(
-                          c, color == c, () => setD(() => color = c)),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                Row(children: [
-                  Text(provider.t('shape.thickness'),
-                      style:
-                          const TextStyle(color: Colors.white60, fontSize: 12)),
-                  Expanded(
-                    child: Slider(
-                      value: width.clamp(1.0, 20.0),
-                      min: 1,
-                      max: 20,
-                      activeColor: const Color(0xFF4FC3F7),
-                      onChanged: (v) => setD(() => width = v),
-                    ),
+                Expanded(
+                  child: Slider(
+                    value: width.clamp(1.0, 20.0),
+                    min: 1,
+                    max: 20,
+                    activeColor: const Color(0xFF4FC3F7),
+                    onChanged: (v) => setD(() {
+                      width = v;
+                      apply();
+                    }),
                   ),
-                  Text('${width.round()}',
-                      style:
-                          const TextStyle(color: Colors.white70, fontSize: 12)),
-                ]),
-              ],
-            ),
+                ),
+                Text('${width.round()}',
+                    style:
+                        const TextStyle(color: Colors.white70, fontSize: 12)),
+              ]),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  onPressed: () => Navigator.pop(dctx),
+                  child: Text(provider.t('btn.close'),
+                      style: const TextStyle(color: Color(0xFF4FC3F7))),
+                ),
+              ),
+            ],
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dctx),
-              child: Text(provider.t('btn.cancel'),
-                  style: const TextStyle(color: Colors.white54)),
-            ),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF4FC3F7),
-                  foregroundColor: Color(0xFF10241F),),
-              onPressed: () {
-                provider.updateMapDecoration(deco.copyWith(
-                    kind: kind, colorRgb: color, strokeWidth: width));
-                Navigator.pop(dctx);
-              },
-              child: Text(provider.t('btn.save'),
-                  style: const TextStyle(color: Colors.white)),
-            ),
-          ],
         ),
       ),
     );
@@ -46438,6 +46698,34 @@ class _MindMapScreenState extends State<MindMapScreen>
     });
   }
 
+  /// ToDo を選ばせて集中タスクに取り込む。 取り込んだ件数を返す。
+  Future<int> _pickTodosIntoFocusTasks(MindMapProvider provider) async {
+    await provider.ensureTodosLoaded();
+    if (!mounted) return 0;
+    final picked = await showDialog<List<TodoItem>>(
+      context: context,
+      builder: (dctx) => _TodoPickBody(
+        provider: provider,
+        onDone: (v) => Navigator.pop(dctx, v),
+        onCancel: () => Navigator.pop(dctx),
+      ),
+    );
+    if (picked == null || picked.isEmpty) return 0;
+    for (final t in picked) {
+      await provider.addFocusLockTask(t.headline);
+    }
+    if (mounted) {
+      _appSnack(
+          context,
+          SnackBar(
+              backgroundColor: const Color(0xFF2E7D52),
+              content: Text(provider
+                  .t('focusLock.fromTodoAdded')
+                  .replaceAll('{count}', '${picked.length}'))));
+    }
+    return picked.length;
+  }
+
   Widget _buildFocusLockTaskEditor(
     MindMapProvider provider,
     TextEditingController taskCtrl,
@@ -46489,6 +46777,26 @@ class _MindMapScreenState extends State<MindMapScreen>
             onPressed: addTask,
           ),
         ]),
+        const SizedBox(height: 6),
+        // ── サイドメニューの ToDo から取り込む (= ユーザー要望) ──
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            style: TextButton.styleFrom(
+              foregroundColor: const Color(0xFF7FD8A0),
+              padding: const EdgeInsets.symmetric(horizontal: 6),
+              minimumSize: const Size(0, 32),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            icon: const Icon(Icons.checklist_rounded, size: 18),
+            label: Text(provider.t('focusLock.fromTodo'),
+                style: const TextStyle(fontSize: 12)),
+            onPressed: () async {
+              final added = await _pickTodosIntoFocusTasks(provider);
+              if (added > 0) setDialogState(() {});
+            },
+          ),
+        ),
         const SizedBox(height: 8),
         if (tasks.isEmpty)
           Text(provider.t('focusLock.noTasks'),
@@ -60351,7 +60659,7 @@ class _MindMapScreenState extends State<MindMapScreen>
   Future<void> _persistDrawerTabOrder() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool('drawerTodoFirst', _drawerTodoFirst);
+      await prefs.setBool('drawerTodoFirst_v2', _drawerTodoFirst);
     } catch (_) {}
   }
 
@@ -60512,247 +60820,884 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// その時刻に該当する予定 / 活動を配置する。
   // ─── ToDo チェックリスト (= ユーザー要望: タイムラインの代わりに) ───────
   //
-  // サイドメニューの 2 つ目のタブ。 やることを書き足して、 チェックで
-  // 済みにし、 ゴミ箱で消す。 prefs `drawer_todos_v1` に JSON で保存。
-  final List<Map<String, dynamic>> _drawerTodos = [];
+  // サイドメニューの ToDo。 やることを書き足して、 チェックで済みにし、
+  // ゴミ箱で消す。 中身は provider (`provider.todos`) が持ち、 prefs
+  // `drawer_todos_v1` に保存される。 集中ロックの画面からも同じ物を
+  // 参照できるように、 画面ローカルの List から provider へ移した
+  // (= ユーザー要望: 集中ロックの所に入れた ToDo が選択肢で出るように)。
   bool _drawerTodosLoaded = false;
   final TextEditingController _todoInputCtrl = TextEditingController();
 
-  Future<void> _loadDrawerTodos() async {
-    try {
-      final sp = await SharedPreferences.getInstance();
-      final raw = sp.getString('drawer_todos_v1');
-      if (raw == null || raw.isEmpty) return;
-      final arr = jsonDecode(raw);
-      if (arr is! List) return;
-      _drawerTodos
-        ..clear()
-        ..addAll([
-          for (final e in arr)
-            if (e is Map) {'t': '${e['t'] ?? ''}', 'd': e['d'] == true}
-        ]);
-      if (mounted) setState(() {});
-    } catch (_) {}
+  /// 入力欄に Ctrl+V で貼り付けた画像の置き場 (= ユーザー要望: ToDo の
+  /// 画像は入力欄に貼り付けられるように)。 「追加」 を押した時に、
+  /// 出来上がった ToDo へまとめて付ける。
+  final List<String> _todoPendingImages = <String>[];
+
+  /// サイドメニューの幅。 ページ一覧と ToDo は同時には開かないので
+  /// (= ユーザー要望)、 Flutter の既定と同じ 304。 狭い画面では画面に収める。
+  /// ★ `_handleMapPageDrop` の「ドロワーの上で放したか」 判定もこれを使う。
+  ///   決め打ちの数字を 2 か所に置くと必ずずれるため。
+  double _drawerWidthFor(BuildContext ctx) {
+    final screenW = MediaQuery.sizeOf(ctx).width;
+    return screenW < 320 ? math.max(200.0, screenW - 8.0) : 304.0;
   }
 
-  Future<void> _saveDrawerTodos() async {
-    try {
-      final sp = await SharedPreferences.getInstance();
-      await sp.setString('drawer_todos_v1', jsonEncode(_drawerTodos));
-    } catch (_) {}
+  /// ToDo の通知 ID (OS 通知の取り消しに使うので、 id から必ず同じ値に)。
+  int _todoNotifId(String todoId) => ('todo:$todoId').hashCode & 0x7FFFFFFF;
+
+  /// 起動時に、 予約済みで未来のものを OS / タイマーに入れ直す。
+  /// Android は OS 側に残るが、 Windows はプロセス内 Timer なので
+  /// 立ち上げ直すたびに入れ直さないと鳴らない。
+  Future<void> _rearmTodoReminders(MindMapProvider provider) async {
+    await provider.ensureTodosLoaded();
+    if (!mounted) return;
+    for (final t in provider.todos) {
+      if (t.done) continue;
+      final at = t.remindAt;
+      if (at == null || !at.isAfter(DateTime.now())) continue;
+      _scheduleAbsoluteNotification(
+        notifId: _todoNotifId(t.id),
+        title: t.headline,
+        body: t.text,
+        fireAt: at,
+      );
+    }
   }
 
-  void _addDrawerTodo() {
+  void _addDrawerTodo(MindMapProvider provider) {
     final t = _todoInputCtrl.text.trim();
-    if (t.isEmpty) return;
+    // 文字が空でも、 画像だけ貼って追加できるようにする。
+    if (t.isEmpty && _todoPendingImages.isEmpty) return;
+    final item = provider.addTodo(t.isEmpty ? '📷' : t);
+    if (item != null) {
+      for (final path in _todoPendingImages) {
+        provider.addTodoImage(item.id, path);
+      }
+    }
     setState(() {
-      _drawerTodos.add({'t': t, 'd': false});
       _todoInputCtrl.clear();
+      _todoPendingImages.clear();
     });
-    // ignore: discarded_futures
-    _saveDrawerTodos();
+  }
+
+  /// 入力欄で Ctrl+V を押した時の処理。
+  ///
+  /// クリップボードに画像があればそれを取り込み (= ユーザー要望)、
+  /// 画像でなければ今までどおり文字を貼り付ける。 どちらになるかは
+  /// 読んでみないと分からないので、 Ctrl+V はいったんこちらで受けて、
+  /// 文字の場合は自分でカーソル位置へ差し込む。
+  Future<void> _handleTodoInputPaste(MindMapProvider provider) async {
+    final path = await _grabClipboardImageToFile();
+    if (path != null) {
+      if (!mounted) return;
+      setState(() => _todoPendingImages.add(path));
+      return;
+    }
+    // 画像ではなかった → 文字の貼り付け。
+    try {
+      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      final text = data?.text;
+      if (text == null || text.isEmpty || !mounted) return;
+      final sel = _todoInputCtrl.selection;
+      final old = _todoInputCtrl.text;
+      if (sel.start < 0 || sel.end < 0) {
+        _todoInputCtrl.text = old + text;
+        _todoInputCtrl.selection =
+            TextSelection.collapsed(offset: _todoInputCtrl.text.length);
+      } else {
+        final next = old.replaceRange(sel.start, sel.end, text);
+        _todoInputCtrl.value = TextEditingValue(
+          text: next,
+          selection: TextSelection.collapsed(offset: sel.start + text.length),
+        );
+      }
+    } catch (e) {
+      debugPrint('ToDo 入力欄の貼り付けに失敗: $e');
+    }
+  }
+
+  /// クリップボードの画像を `<Documents>/attachments/todo_<ミリ秒>.<拡張子>`
+  /// に保存して、 そのパスを返す。 画像が無ければ null。
+  /// ノードへの貼り付けと同じ読み取り順 (Android はネイティブ優先)。
+  Future<String?> _grabClipboardImageToFile() async {
+    Uint8List? bytes;
+    String ext = 'png';
+    if (!kIsWeb && Platform.isAndroid) {
+      try {
+        final res = await _readAndroidClipboardImage();
+        if (res.bytes != null && res.bytes!.isNotEmpty) {
+          bytes = res.bytes;
+          ext = res.ext;
+        }
+      } catch (_) {}
+    }
+    if (bytes == null || bytes.isEmpty) {
+      try {
+        final clipboard = SystemClipboard.instance;
+        final reader = await clipboard?.read();
+        if (reader != null) {
+          const candidates = <(FileFormat, String)>[
+            (Formats.png, 'png'),
+            (Formats.jpeg, 'jpg'),
+            (Formats.gif, 'gif'),
+            (Formats.webp, 'webp'),
+            (Formats.bmp, 'bmp'),
+            (Formats.tiff, 'tiff'),
+          ];
+          for (final (fmt, e) in candidates) {
+            if (!reader.canProvide(fmt)) continue;
+            final b = await _readClipboardFileBytes(reader, fmt);
+            if (b != null && b.isNotEmpty) {
+              bytes = b;
+              ext = e;
+              break;
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('クリップボードの画像読み取りに失敗: $e');
+      }
+    }
+    if (bytes == null || bytes.isEmpty) return null;
+    return _saveTodoImageBytes(bytes, ext);
+  }
+
+  /// 画像のバイト列を ToDo 用の場所に保存してパスを返す。
+  /// そのままでは描けない形式 (HEIC など) は PNG に焼き直す。
+  Future<String?> _saveTodoImageBytes(Uint8List bytes, String ext) async {
+    const renderable = {'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'};
+    var storedBytes = bytes;
+    var safeExt = ext.isEmpty ? 'png' : ext.toLowerCase();
+    if (!renderable.contains(safeExt)) {
+      try {
+        final decoded = img.decodeImage(bytes);
+        if (decoded == null) return null;
+        storedBytes = Uint8List.fromList(img.encodePng(decoded));
+        safeExt = 'png';
+      } catch (e) {
+        debugPrint('ToDo の画像変換に失敗: $e');
+        return null;
+      }
+    }
+    try {
+      final appDir = await getApplicationDocumentsDirectory();
+      final attachDir = Directory('${appDir.path}/attachments');
+      if (!await attachDir.exists()) await attachDir.create(recursive: true);
+      final name = 'todo_${DateTime.now().millisecondsSinceEpoch}.$safeExt';
+      final destPath = '${attachDir.path}/$name';
+      await File(destPath).writeAsBytes(storedBytes, flush: true);
+      return destPath;
+    } catch (e) {
+      debugPrint('ToDo の画像保存に失敗: $e');
+      return null;
+    }
+  }
+
+  /// ToDo の予約を消す (OS 通知・タイマー・カレンダーの予定もまとめて)。
+  Future<void> _clearTodoReminder(
+      MindMapProvider provider, TodoItem item) async {
+    final notifId = _todoNotifId(item.id);
+    _pendingNotificationTimers.remove('notif:$notifId')?.cancel();
+    try {
+      await flutterLocalNotificationsPlugin.cancel(notifId);
+    } catch (_) {}
+    await provider.removeTodoCalendarEvent(item.id, item.calendarDateKey);
+    provider.setTodoReminder(item.id, null);
+  }
+
+  /// 日付 → 時刻の順に選ばせて、 通知を予約する。
+  /// 予約したものはカレンダーにも同じ時刻で入れる (= ユーザー要望)。
+  Future<void> _setTodoReminder(
+      BuildContext ctx, MindMapProvider provider, TodoItem item) async {
+    final now = DateTime.now();
+    final base = item.remindAt ?? now.add(const Duration(minutes: 30));
+    ThemeData pickerTheme() => ThemeData.dark().copyWith(
+          colorScheme: const ColorScheme.dark(
+            primary: Color(0xFF7FD8A0),
+            onPrimary: Colors.black,
+            surface: Color(0xFF22222E),
+          ),
+        );
+    final date = await showDatePicker(
+      context: ctx,
+      initialDate: base.isBefore(now) ? now : base,
+      firstDate: DateTime(now.year, now.month, now.day),
+      lastDate: DateTime(now.year + 3, now.month, now.day),
+      helpText: provider.t('todo.pickDate'),
+      builder: (_, child) => Theme(data: pickerTheme(), child: child!),
+    );
+    if (date == null || !ctx.mounted) return;
+    final time = await showTimePicker(
+      context: ctx,
+      initialTime: TimeOfDay.fromDateTime(base.isBefore(now) ? now : base),
+      helpText: provider.t('todo.pickTime'),
+      builder: (_, child) => MediaQuery(
+        data: MediaQuery.of(ctx).copyWith(alwaysUse24HourFormat: true),
+        child: Theme(data: pickerTheme(), child: child!),
+      ),
+    );
+    if (time == null || !mounted) return;
+    final fireAt =
+        DateTime(date.year, date.month, date.day, time.hour, time.minute);
+    if (!fireAt.isAfter(DateTime.now())) {
+      _appSnack(
+          context,
+          SnackBar(
+              backgroundColor: const Color(0xFFB3261E),
+              content: Text(provider.t('todo.remindPast'))));
+      return;
+    }
+    // 前の予約が残っていたら畳んでから入れ直す。
+    if (item.remindAtMs != null) {
+      await _clearTodoReminder(provider, item);
+    }
+    if (!mounted) return;
+    // ── 通知 ──
+    _scheduleAbsoluteNotification(
+      notifId: _todoNotifId(item.id),
+      title: item.headline,
+      body: item.text,
+      fireAt: fireAt,
+    );
+    // ── カレンダーにも入れる (= ユーザー要望) ──
+    final dateKey = '${fireAt.year}-'
+        '${fireAt.month.toString().padLeft(2, '0')}-'
+        '${fireAt.day.toString().padLeft(2, '0')}';
+    final startTime = '${fireAt.hour.toString().padLeft(2, '0')}:'
+        '${fireAt.minute.toString().padLeft(2, '0')}';
+    try {
+      await provider.addCalendarEvent(
+        dateKey,
+        item.headline,
+        // 末尾の目印で、 後から予約を消す時にこの予定を見つけられる。
+        memo: '${item.text}\n${provider.t('todo.calendarMemo')} '
+            '${MindMapProvider.todoCalendarMarker(item.id)}',
+        startTime: startTime,
+        colorArgb: const Color(0xFF7FD8A0).toARGB32(),
+      );
+    } catch (e) {
+      debugPrint('ToDo のカレンダー登録に失敗: $e');
+    }
+    provider.setTodoReminder(item.id, fireAt.millisecondsSinceEpoch,
+        calendarDateKey: dateKey);
+    if (!mounted) return;
+    _appSnack(
+        context,
+        SnackBar(
+            backgroundColor: const Color(0xFF2E7D52),
+            content: Text(provider
+                .t('todo.remindSet')
+                .replaceAll('{time}', '$dateKey $startTime'))));
+  }
+
+  /// クリップボード / ファイルから画像を取り込んで、 その ToDo に付ける。
+  /// 保存先はノードの画像貼り付けと同じ `<Documents>/attachments/`。
+  Future<void> _attachTodoImage(
+      MindMapProvider provider, TodoItem item, bool fromClipboard) async {
+    String? path;
+    if (fromClipboard) {
+      path = await _grabClipboardImageToFile();
+      if (path == null) {
+        if (!mounted) return;
+        _appSnack(
+            context,
+            SnackBar(
+                backgroundColor: const Color(0xFF3A3A55),
+                content: Text(provider.t('todo.noClipboardImage'))));
+        return;
+      }
+    } else {
+      try {
+        final result = await FilePicker.platform.pickFiles(
+          dialogTitle: provider.t('pick.image'),
+          type: FileType.image,
+          withData: true,
+        );
+        if (result == null || result.files.isEmpty) return;
+        final f = result.files.first;
+        var bytes = f.bytes;
+        if ((bytes == null || bytes.isEmpty) && (f.path ?? '').isNotEmpty) {
+          bytes = await File(f.path!).readAsBytes();
+        }
+        if (bytes == null || bytes.isEmpty) return;
+        path = await _saveTodoImageBytes(bytes, f.extension ?? 'png');
+      } catch (e) {
+        debugPrint('ToDo の画像選択に失敗: $e');
+        return;
+      }
+    }
+    if (path == null) return;
+    provider.addTodoImage(item.id, path);
+    if (!mounted) return;
+    _appSnack(
+        context,
+        SnackBar(
+            backgroundColor: const Color(0xFF2E7D52),
+            content: Text(provider.t('todo.imageAdded'))));
+  }
+
+  /// ToDo の本文を書き直す。
+  Future<void> _editTodoText(
+      BuildContext ctx, MindMapProvider provider, TodoItem item) async {
+    final ctrl = TextEditingController(text: item.text);
+    final result = await showDialog<String>(
+      context: ctx,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF2A2A3E),
+        title: Text(provider.t('todo.editTitle'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          minLines: 1,
+          maxLines: 6,
+          style: const TextStyle(color: Colors.white, fontSize: 13),
+          decoration: const InputDecoration(
+            enabledBorder: UnderlineInputBorder(
+                borderSide: BorderSide(color: Colors.white24)),
+            focusedBorder: UnderlineInputBorder(
+                borderSide: BorderSide(color: Color(0xFF7FD8A0))),
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dctx),
+              child: Text(provider.t('btn.cancel'),
+                  style: const TextStyle(color: Colors.white54))),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF7FD8A0),
+                foregroundColor: const Color(0xFF10241F)),
+            onPressed: () => Navigator.pop(dctx, ctrl.text),
+            child: Text(provider.t('btn.save')),
+          ),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    if (result != null) provider.updateTodoText(item.id, result);
   }
 
   Widget _buildTodoDrawer(BuildContext ctx, MindMapProvider provider) {
-    if (!_drawerTodosLoaded) {
-      _drawerTodosLoaded = true;
-      // ignore: discarded_futures
-      _loadDrawerTodos();
-    }
     final bg = Color.alphaBlend(
         provider.headerColor.withValues(alpha: 0.62), const Color(0xFF13132A));
-    final hasDone = _drawerTodos.any((e) => e['d'] == true);
     return Drawer(
+      width: _drawerWidthFor(ctx),
       backgroundColor: bg,
       child: SafeArea(
         child: Column(children: [
           _buildDrawerViewSwitcher(),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 10, 8, 0),
-            child: Row(children: [
-              const Icon(Icons.checklist_rounded,
-                  color: Color(0xFF7FD8A0), size: 18),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(provider.t('drawer.todo'),
-                    style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700)),
-              ),
-              // 済みの項目をまとめて消す。
-              if (hasDone)
-                TextButton(
-                  style: TextButton.styleFrom(
-                    visualDensity: VisualDensity.compact,
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                  ),
-                  onPressed: () {
-                    setState(() =>
-                        _drawerTodos.removeWhere((e) => e['d'] == true));
-                    // ignore: discarded_futures
-                    _saveDrawerTodos();
-                  },
-                  child: Text(provider.t('todo.clearDone'),
-                      style: const TextStyle(
-                          color: Colors.white54, fontSize: 11)),
-                ),
-            ]),
-          ),
-          // ── 追加欄 ──
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 8, 14, 4),
-            child: Row(children: [
-              Expanded(
-                // ★ Enter で確定 / Shift+Enter で改行 (= ユーザー要望)。
-                //   複数行を書けるようにした上で、 Shift 無しの Enter だけ
-                //   ここで横取りして確定にする (Shift 付きは素通りさせて
-                //   そのまま改行になる)。 Focus は TextField より内側なので、
-                //   標準の「改行を入れる」 処理より先に判定できる。
-                child: Focus(
-                  onKeyEvent: (node, event) {
-                    if (event is! KeyDownEvent) {
-                      return KeyEventResult.ignored;
-                    }
-                    final k = event.logicalKey;
-                    if (k != LogicalKeyboardKey.enter &&
-                        k != LogicalKeyboardKey.numpadEnter) {
-                      return KeyEventResult.ignored;
-                    }
-                    if (HardwareKeyboard.instance.isShiftPressed) {
-                      return KeyEventResult.ignored; // 改行
-                    }
-                    _addDrawerTodo();
-                    return KeyEventResult.handled; // 確定 (改行しない)
-                  },
-                  child: TextField(
-                    controller: _todoInputCtrl,
-                    // 改行できるように複数行にする。 高くなりすぎない範囲で
-                    //   入力に合わせて伸びる。
-                    minLines: 1,
-                    maxLines: 4,
-                    keyboardType: TextInputType.multiline,
-                    textInputAction: TextInputAction.newline,
-                    style: const TextStyle(color: Colors.white, fontSize: 13),
-                    decoration: InputDecoration(
-                      isDense: true,
-                      contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 10),
-                      hintText: provider.t('todo.addHint'),
-                      hintStyle:
-                          const TextStyle(color: Colors.white38, fontSize: 12),
-                      filled: true,
-                      fillColor: Colors.white.withValues(alpha: 0.06),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(10),
-                        borderSide: BorderSide.none,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              InkWell(
-                borderRadius: BorderRadius.circular(10),
-                onTap: _addDrawerTodo,
-                child: Container(
-                  width: 38,
-                  height: 38,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF7FD8A0).withValues(alpha: 0.18),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(
-                        color:
-                            const Color(0xFF7FD8A0).withValues(alpha: 0.6)),
-                  ),
-                  child: const Icon(Icons.add_rounded,
-                      color: Color(0xFF7FD8A0), size: 20),
-                ),
-              ),
-            ]),
-          ),
-          // ── 一覧 ──
-          Expanded(
-            child: _drawerTodos.isEmpty
-                ? Center(
-                    child: Padding(
-                      padding: const EdgeInsets.all(20),
-                      child: Text(provider.t('todo.empty'),
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                              color: Colors.white38,
-                              fontSize: 12,
-                              height: 1.6)),
-                    ),
-                  )
-                : ListView.builder(
-                    padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
-                    itemCount: _drawerTodos.length,
-                    itemBuilder: (_, i) {
-                      final item = _drawerTodos[i];
-                      final done = item['d'] == true;
-                      return Container(
-                        margin: const EdgeInsets.symmetric(vertical: 2),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.05),
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: Row(children: [
-                          // チェック (押すと済み ↔ 未了)。
-                          InkWell(
-                            borderRadius: BorderRadius.circular(10),
-                            onTap: () {
-                              setState(() => item['d'] = !done);
-                              // ignore: discarded_futures
-                              _saveDrawerTodos();
-                            },
-                            child: Padding(
-                              padding: const EdgeInsets.all(10),
-                              child: Icon(
-                                  done
-                                      ? Icons.check_box_rounded
-                                      : Icons
-                                          .check_box_outline_blank_rounded,
-                                  size: 20,
-                                  color: done
-                                      ? const Color(0xFF7FD8A0)
-                                      : Colors.white54),
-                            ),
-                          ),
-                          Expanded(
-                            child: Text(
-                              '${item['t']}',
-                              style: TextStyle(
-                                color:
-                                    done ? Colors.white38 : Colors.white,
-                                fontSize: 13,
-                                height: 1.4,
-                                decoration: done
-                                    ? TextDecoration.lineThrough
-                                    : null,
-                                decorationColor: Colors.white38,
-                              ),
-                            ),
-                          ),
-                          IconButton(
-                            visualDensity: VisualDensity.compact,
-                            icon: const Icon(Icons.close_rounded,
-                                size: 16, color: Colors.white38),
-                            onPressed: () {
-                              setState(() => _drawerTodos.removeAt(i));
-                              // ignore: discarded_futures
-                              _saveDrawerTodos();
-                            },
-                          ),
-                        ]),
-                      );
-                    },
-                  ),
-          ),
+          Expanded(child: _buildTodoPanel(ctx, provider)),
         ]),
       ),
     );
   }
+
+  /// ToDo の中身 (見出し + 追加欄 + 一覧)。 タブ切替でも、
+  /// ページ一覧の隣に並べる時でも、 同じ物を使う。
+  Widget _buildTodoPanel(BuildContext ctx, MindMapProvider provider) {
+    if (!_drawerTodosLoaded) {
+      _drawerTodosLoaded = true;
+      // ignore: discarded_futures
+      provider.ensureTodosLoaded();
+    }
+    final todos = provider.todos;
+    final hasDone = todos.any((e) => e.done);
+    return Column(children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(14, 10, 6, 0),
+        child: Row(children: [
+          const Icon(Icons.checklist_rounded,
+              color: Color(0xFF7FD8A0), size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(provider.t('drawer.todo'),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700)),
+          ),
+          // 済みの項目をまとめて消す。
+          if (hasDone)
+            TextButton(
+              style: TextButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+              ),
+              onPressed: () async {
+                final removed = provider.clearDoneTodos();
+                for (final t in removed) {
+                  if (t.remindAtMs != null) {
+                    await _clearTodoReminder(provider, t);
+                  }
+                }
+              },
+              child: Text(provider.t('todo.clearDone'),
+                  style:
+                      const TextStyle(color: Colors.white54, fontSize: 11)),
+            ),
+        ]),
+      ),
+      // ── 追加欄 ──
+      Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+        child: Row(children: [
+          Expanded(
+            // ★ Enter で確定 / Shift+Enter で改行 (= ユーザー要望)。
+            //   複数行を書けるようにした上で、 Shift 無しの Enter だけ
+            //   ここで横取りして確定にする (Shift 付きは素通りさせて
+            //   そのまま改行になる)。 Focus は TextField より内側なので、
+            //   標準の「改行を入れる」 処理より先に判定できる。
+            child: Focus(
+              onKeyEvent: (node, event) {
+                if (event is! KeyDownEvent) {
+                  return KeyEventResult.ignored;
+                }
+                final k = event.logicalKey;
+                // ── Ctrl+V: 画像なら取り込む、 文字ならそのまま貼る ──
+                //    (= ユーザー要望: ToDo の画像は入力欄に貼り付けたい)。
+                //    どちらかは読んでみないと分からないので、 いったん
+                //    こちらで受けて、 文字なら自分で差し込む。
+                if (k == LogicalKeyboardKey.keyV &&
+                    (HardwareKeyboard.instance.isControlPressed ||
+                        HardwareKeyboard.instance.isMetaPressed)) {
+                  // ignore: discarded_futures
+                  _handleTodoInputPaste(provider);
+                  return KeyEventResult.handled;
+                }
+                if (k != LogicalKeyboardKey.enter &&
+                    k != LogicalKeyboardKey.numpadEnter) {
+                  return KeyEventResult.ignored;
+                }
+                if (HardwareKeyboard.instance.isShiftPressed) {
+                  return KeyEventResult.ignored; // 改行
+                }
+                _addDrawerTodo(provider);
+                return KeyEventResult.handled; // 確定 (改行しない)
+              },
+              child: TextField(
+                controller: _todoInputCtrl,
+                // 改行できるように複数行にする。 高くなりすぎない範囲で
+                //   入力に合わせて伸びる。
+                minLines: 1,
+                maxLines: 4,
+                keyboardType: TextInputType.multiline,
+                textInputAction: TextInputAction.newline,
+                style: const TextStyle(color: Colors.white, fontSize: 13),
+                decoration: InputDecoration(
+                  isDense: true,
+                  contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 10),
+                  hintText: provider.t('todo.addHint'),
+                  hintStyle:
+                      const TextStyle(color: Colors.white38, fontSize: 12),
+                  filled: true,
+                  fillColor: Colors.white.withValues(alpha: 0.06),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          InkWell(
+            borderRadius: BorderRadius.circular(10),
+            onTap: () => _addDrawerTodo(provider),
+            child: Container(
+              width: 38,
+              height: 38,
+              decoration: BoxDecoration(
+                color: const Color(0xFF7FD8A0).withValues(alpha: 0.18),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                    color: const Color(0xFF7FD8A0).withValues(alpha: 0.6)),
+              ),
+              child: const Icon(Icons.add_rounded,
+                  color: Color(0xFF7FD8A0), size: 20),
+            ),
+          ),
+        ]),
+      ),
+      // ── 入力欄に貼り付けた画像 (追加するとこの ToDo に付く) ──
+      if (_todoPendingImages.isNotEmpty)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final path in _todoPendingImages)
+                  Stack(clipBehavior: Clip.none, children: [
+                    GestureDetector(
+                      onTap: () => showVideoMemoImage(context, path),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(6),
+                        child: Image.file(
+                          File(path),
+                          width: 46,
+                          height: 46,
+                          fit: BoxFit.cover,
+                          cacheWidth: 140,
+                          filterQuality: FilterQuality.low,
+                          errorBuilder: (_, __, ___) => Container(
+                            width: 46,
+                            height: 46,
+                            color: Colors.white10,
+                            child: const Icon(Icons.broken_image_outlined,
+                                size: 14, color: Colors.white38),
+                          ),
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      right: -6,
+                      top: -6,
+                      child: Tooltip(
+                        message: provider.t('todo.removeImage'),
+                        child: InkWell(
+                          onTap: () => setState(
+                              () => _todoPendingImages.remove(path)),
+                          child: Container(
+                            width: 18,
+                            height: 18,
+                            decoration: BoxDecoration(
+                              color: Colors.black87,
+                              shape: BoxShape.circle,
+                              border: Border.all(color: Colors.white24),
+                            ),
+                            child: const Icon(Icons.close_rounded,
+                                size: 11, color: Colors.white70),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ]),
+              ],
+            ),
+          ),
+        ),
+      // ── 一覧 ──
+      Expanded(
+        child: todos.isEmpty
+            ? Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Text(provider.t('todo.empty'),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                          color: Colors.white38, fontSize: 12, height: 1.6)),
+                ),
+              )
+            : ListView.builder(
+                padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
+                itemCount: todos.length,
+                itemBuilder: (_, i) =>
+                    _buildTodoTile(ctx, provider, todos[i]),
+              ),
+      ),
+    ]);
+  }
+
+  /// ToDo 1 件分の行。 チェック / 本文 / 画像 / 通知 / 削除。
+  Widget _buildTodoTile(
+      BuildContext ctx, MindMapProvider provider, TodoItem item) {
+    final done = item.done;
+    final remindAt = item.remindAt;
+    final reminderLive = item.hasFutureReminder;
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 2),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            // チェック (押すと済み ↔ 未了)。
+            InkWell(
+              borderRadius: BorderRadius.circular(10),
+              onTap: () => provider.setTodoDone(item.id, !done),
+              child: Padding(
+                padding: const EdgeInsets.all(10),
+                child: Icon(
+                    done
+                        ? Icons.check_box_rounded
+                        : Icons.check_box_outline_blank_rounded,
+                    size: 20,
+                    color:
+                        done ? const Color(0xFF7FD8A0) : Colors.white54),
+              ),
+            ),
+            Expanded(
+              // 二度押しで書き直せる (= 打ち間違いをそのまま直せるように)。
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onDoubleTap: () => _editTodoText(ctx, provider, item),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Text(
+                    item.text,
+                    style: TextStyle(
+                      color: done ? Colors.white38 : Colors.white,
+                      fontSize: 13,
+                      height: 1.4,
+                      decoration: done ? TextDecoration.lineThrough : null,
+                      decorationColor: Colors.white38,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            // ── 画像を付ける ──
+            Builder(builder: (btnCtx) {
+              return IconButton(
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints:
+                    const BoxConstraints(minWidth: 30, minHeight: 30),
+                tooltip: provider.t('todo.attachImage'),
+                icon: Icon(Icons.image_outlined,
+                    size: 16,
+                    color: item.images.isEmpty
+                        ? Colors.white38
+                        : const Color(0xFF7FD8A0)),
+                onPressed: () async {
+                  final box = btnCtx.findRenderObject();
+                  RelativeRect pos =
+                      const RelativeRect.fromLTRB(80, 120, 40, 0);
+                  final overlay = Overlay.of(btnCtx)
+                      .context
+                      .findRenderObject() as RenderBox?;
+                  if (box is RenderBox && box.attached && overlay != null) {
+                    final a = box.localToGlobal(Offset.zero,
+                        ancestor: overlay);
+                    final b = box.localToGlobal(
+                        box.size.bottomRight(Offset.zero),
+                        ancestor: overlay);
+                    pos = RelativeRect.fromRect(
+                        Rect.fromPoints(a, b), Offset.zero & overlay.size);
+                  }
+                  final choice = await showMenu<String>(
+                    context: btnCtx,
+                    position: pos,
+                    color: const Color(0xFF1E1E32),
+                    items: [
+                      PopupMenuItem(
+                          value: 'paste',
+                          child: Row(children: [
+                            const Icon(Icons.content_paste_rounded,
+                                size: 16, color: Color(0xFF7FD8A0)),
+                            const SizedBox(width: 8),
+                            Text(provider.t('todo.pasteImage'),
+                                style: const TextStyle(
+                                    color: Colors.white, fontSize: 12)),
+                          ])),
+                      PopupMenuItem(
+                          value: 'pick',
+                          child: Row(children: [
+                            const Icon(Icons.folder_open_rounded,
+                                size: 16, color: Color(0xFF4FC3F7)),
+                            const SizedBox(width: 8),
+                            Text(provider.t('todo.pickImage'),
+                                style: const TextStyle(
+                                    color: Colors.white, fontSize: 12)),
+                          ])),
+                    ],
+                  );
+                  if (choice == null) return;
+                  await _attachTodoImage(
+                      provider, item, choice == 'paste');
+                },
+              );
+            }),
+            // ── 通知の予約 ──
+            Builder(builder: (btnCtx) {
+              return IconButton(
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints:
+                    const BoxConstraints(minWidth: 30, minHeight: 30),
+                tooltip: remindAt == null
+                    ? provider.t('todo.remind')
+                    : '${provider.t('todo.remindChange')}\n'
+                        '${_fmtTodoRemind(remindAt)}',
+                icon: Icon(
+                    remindAt == null
+                        ? Icons.notifications_none_rounded
+                        : (reminderLive
+                            ? Icons.notifications_active_rounded
+                            : Icons.notifications_off_rounded),
+                    size: 16,
+                    color: remindAt == null
+                        ? Colors.white38
+                        : (reminderLive
+                            ? const Color(0xFFFFB347)
+                            : Colors.white30)),
+                onPressed: () async {
+                  if (remindAt == null) {
+                    await _setTodoReminder(ctx, provider, item);
+                    return;
+                  }
+                  final box = btnCtx.findRenderObject();
+                  RelativeRect pos =
+                      const RelativeRect.fromLTRB(80, 120, 40, 0);
+                  final overlay = Overlay.of(btnCtx)
+                      .context
+                      .findRenderObject() as RenderBox?;
+                  if (box is RenderBox && box.attached && overlay != null) {
+                    final a =
+                        box.localToGlobal(Offset.zero, ancestor: overlay);
+                    final b = box.localToGlobal(
+                        box.size.bottomRight(Offset.zero),
+                        ancestor: overlay);
+                    pos = RelativeRect.fromRect(
+                        Rect.fromPoints(a, b), Offset.zero & overlay.size);
+                  }
+                  final choice = await showMenu<String>(
+                    context: btnCtx,
+                    position: pos,
+                    color: const Color(0xFF1E1E32),
+                    items: [
+                      PopupMenuItem(
+                          value: 'change',
+                          child: Text(provider.t('todo.remindChange'),
+                              style: const TextStyle(
+                                  color: Colors.white, fontSize: 12))),
+                      PopupMenuItem(
+                          value: 'clear',
+                          child: Text(provider.t('todo.remindClear'),
+                              style: const TextStyle(
+                                  color: Color(0xFFEF9A9A), fontSize: 12))),
+                    ],
+                  );
+                  if (choice == 'change') {
+                    await _setTodoReminder(ctx, provider, item);
+                  } else if (choice == 'clear') {
+                    await _clearTodoReminder(provider, item);
+                    if (!mounted) return;
+                    _appSnack(
+                        context,
+                        SnackBar(
+                            backgroundColor: const Color(0xFF3A3A55),
+                            content:
+                                Text(provider.t('todo.remindCleared'))));
+                  }
+                },
+              );
+            }),
+            IconButton(
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+              icon: const Icon(Icons.close_rounded,
+                  size: 16, color: Colors.white38),
+              onPressed: () async {
+                if (item.remindAtMs != null) {
+                  await _clearTodoReminder(provider, item);
+                }
+                provider.removeTodo(item.id);
+              },
+            ),
+          ]),
+          // ── 予約した時刻の表示 ──
+          if (remindAt != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(40, 0, 10, 6),
+              child: Row(children: [
+                Icon(Icons.schedule_rounded,
+                    size: 12,
+                    color: reminderLive
+                        ? const Color(0xFFFFB347)
+                        : Colors.white24),
+                const SizedBox(width: 4),
+                Flexible(
+                  child: Text(_fmtTodoRemind(remindAt),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          color: reminderLive
+                              ? const Color(0xFFFFB347)
+                              : Colors.white30,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600)),
+                ),
+              ]),
+            ),
+          // ── 貼り付けた画像 ──
+          if (item.images.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(38, 0, 8, 8),
+              child: Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  for (final path in item.images)
+                    Stack(clipBehavior: Clip.none, children: [
+                      GestureDetector(
+                        onTap: () => showVideoMemoImage(context, path),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(6),
+                          child: Image.file(
+                            File(path),
+                            width: 52,
+                            height: 52,
+                            fit: BoxFit.cover,
+                            cacheWidth: 160,
+                            filterQuality: FilterQuality.low,
+                            errorBuilder: (_, __, ___) => Container(
+                              width: 52,
+                              height: 52,
+                              color: Colors.white10,
+                              child: const Icon(
+                                  Icons.broken_image_outlined,
+                                  size: 16,
+                                  color: Colors.white38),
+                            ),
+                          ),
+                        ),
+                      ),
+                      Positioned(
+                        right: -6,
+                        top: -6,
+                        child: Tooltip(
+                          message: provider.t('todo.removeImage'),
+                          child: InkWell(
+                            onTap: () =>
+                                provider.removeTodoImage(item.id, path),
+                            child: Container(
+                              width: 18,
+                              height: 18,
+                              decoration: BoxDecoration(
+                                color: Colors.black87,
+                                shape: BoxShape.circle,
+                                border:
+                                    Border.all(color: Colors.white24),
+                              ),
+                              child: const Icon(Icons.close_rounded,
+                                  size: 11, color: Colors.white70),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ]),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  String _fmtTodoRemind(DateTime d) =>
+      '${d.month}/${d.day} ${d.hour.toString().padLeft(2, '0')}:'
+      '${d.minute.toString().padLeft(2, '0')}';
 
   Widget _buildTimelineDrawer(BuildContext ctx, MindMapProvider provider) {
     final realNow = DateTime.now();
@@ -62283,12 +63228,15 @@ class _MindMapScreenState extends State<MindMapScreen>
   }
 
   Widget _buildDrawer(BuildContext context, MindMapProvider provider) {
-    // ── ToDo モードへの分岐 (= ユーザー要望: タイムラインを廃止して
-    //    ToDo のチェックリストに)。 昔の保存値 'timeline' も ToDo へ流す。 ──
+    // ── ToDo モードへの分岐 ──
+    // ページ一覧と ToDo は同時には開かない (= ユーザー要望)。 上のタブ
+    // (ページ一覧 | ToDo) でどちらか一方を出す。 昔の保存値 'timeline' も
+    // ToDo へ流す。
     if (_drawerView == 'todo' || _drawerView == 'timeline') {
       return _buildTodoDrawer(context, provider);
     }
     return Drawer(
+      width: _drawerWidthFor(context),
       backgroundColor: Color.alphaBlend(
           provider.headerColor.withValues(alpha: 0.62),
           const Color(0xFF13132A)),
@@ -62333,9 +63281,19 @@ class _MindMapScreenState extends State<MindMapScreen>
             }
             return KeyEventResult.ignored;
           },
-          child: Column(children: [
-            // ── マップ一覧 / タイムライン切替タブ (= ユーザー要望) ──
-            _buildDrawerViewSwitcher(),
+          child: _buildMapsPanel(context, provider, showSwitcher: true),
+        ), // Focus
+      ),
+    );
+  }
+
+  /// ページ一覧の中身。 単体で出す時は上に切替タブを付ける。
+  /// ToDo と並べて出す時は、 タブが要らないので付けない。
+  Widget _buildMapsPanel(BuildContext context, MindMapProvider provider,
+      {required bool showSwitcher}) {
+    return Column(children: [
+            // ── マップ一覧 / ToDo 切替タブ (狭い画面のときだけ) ──
+            if (showSwitcher) _buildDrawerViewSwitcher(),
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 16, 8, 8),
               child: Row(children: [
@@ -62400,24 +63358,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                       iconSize: 18,
                       constraints:
                           const BoxConstraints(minWidth: 32, minHeight: 32),
-                      icon: Stack(clipBehavior: Clip.none, children: [
-                        // ★ 青くせず、 隣の ＋ と同じ白にそろえる (= ユーザー要望)。
-                        const Icon(Icons.keyboard_command_key,
-                            color: Colors.white70, size: 16),
-                        if (isRootShortcut)
-                          Positioned(
-                            right: -2,
-                            top: -2,
-                            child: Container(
-                              width: 6,
-                              height: 6,
-                              decoration: const BoxDecoration(
-                                color: Color(0xFF6C63FF),
-                                shape: BoxShape.circle,
-                              ),
-                            ),
-                          ),
-                      ]),
+                      // ★ 青くせず、 隣の ＋ と同じ白にそろえる (= ユーザー要望)。
+                      //   右上の青い丸も出さない (= ユーザー要望: 気になる)。
+                      //   どこが対象かは押した時の説明で伝わる。
+                      icon: const Icon(Icons.keyboard_command_key,
+                          color: Colors.white70, size: 16),
                       onPressed: () async {
                         // 既に一覧が対象なら、 状態は変えずに知らせるだけ
                         // (押しても何も変わらないのに切り替わったように
@@ -62464,10 +63409,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             const Divider(color: Colors.white10, height: 1),
             Expanded(child: _buildDrawerBody(context, provider)),
             const SizedBox(height: 8),
-          ]),
-        ), // Focus
-      ),
-    );
+    ]);
   }
 
   /// Drawer の本体: フォルダー → そのページ → ルートページの順で表示
@@ -63171,6 +64113,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           onLongPress: () =>
               _showFolderContextMenu(context, provider, folder, moreBtnKey),
           child: Container(
+            key: _renamingFolderId == folder.id ? _renamingFolderKey : null,
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             decoration: BoxDecoration(
               color: hovering
@@ -63206,14 +64149,44 @@ class _MindMapScreenState extends State<MindMapScreen>
                 size: 16,
               ),
               const SizedBox(width: 8),
+              // ── 名前 (その場編集中は TextField に差し替える) ──
+              // 新規作成 / 名前変更のどちらも、 画面中央のダイアログではなく
+              // 一覧のこの位置でそのまま打ち替えられる (= ユーザー要望)。
               Expanded(
-                child: Text(folder.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600)),
+                child: (_renamingFolderId == folder.id &&
+                        _folderRenameCtrl != null)
+                    ? TextField(
+                        controller: _folderRenameCtrl,
+                        focusNode: _folderRenameFocus,
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600),
+                        cursorColor: const Color(0xFFFFB347),
+                        decoration: InputDecoration(
+                          isDense: true,
+                          contentPadding:
+                              const EdgeInsets.symmetric(vertical: 2),
+                          hintText: provider.t('folder.nameHint'),
+                          hintStyle: const TextStyle(
+                              color: Colors.white38, fontSize: 12),
+                          enabledBorder: const UnderlineInputBorder(
+                              borderSide:
+                                  BorderSide(color: Color(0x55FFB347))),
+                          focusedBorder: const UnderlineInputBorder(
+                              borderSide:
+                                  BorderSide(color: Color(0xFFFFB347))),
+                        ),
+                        onSubmitted: (_) => _commitFolderRename(),
+                        onTapOutside: (_) => _commitFolderRename(),
+                      )
+                    : Text(folder.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600)),
               ),
               // ── ディスク連動フォルダーのバッジ ──
               // linkedDirPath が設定されているフォルダーは、所属するページが
@@ -63772,50 +64745,28 @@ class _MindMapScreenState extends State<MindMapScreen>
     });
   }
 
-  /// フォルダー新規作成ダイアログ
+  /// 新規フォルダーを作る。
+  ///
+  /// 画面中央のダイアログは出さず、 ページ一覧に置かれるその位置で名前を
+  /// そのまま打てるようにする (= ユーザー要望)。 既定名は最初から全選択して
+  /// おくので、 打ち始めればそのまま置き換わる。
   void _addFolderDialog(BuildContext context, MindMapProvider provider) {
-    final ctrl = TextEditingController();
-    void doCreate(BuildContext ctx) {
-      final name = ctrl.text.trim();
-      Navigator.pop(ctx);
-      provider.addFolder(name: name.isEmpty ? null : name);
+    // ページ一覧 (drawer) が閉じていると編集欄が見えないので開いておく。
+    if (_scaffoldKey.currentState?.isDrawerOpen != true) {
+      setState(() => _drawerView = 'maps');
+      _scaffoldKey.currentState?.openDrawer();
+    } else if (_drawerView != 'maps') {
+      setState(() => _drawerView = 'maps');
     }
-
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF2A2A3E),
-        title: Text(provider.t('folder.newTitle'),
-            style: const TextStyle(color: Colors.white)),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          style: const TextStyle(color: Colors.white),
-          decoration: InputDecoration(
-            hintText: provider.t('folder.nameHint'),
-            hintStyle: const TextStyle(color: Colors.white38),
-            enabledBorder: const UnderlineInputBorder(
-                borderSide: BorderSide(color: Colors.white24)),
-            focusedBorder: const UnderlineInputBorder(
-                borderSide: BorderSide(color: Color(0xFFFFB347))),
-          ),
-          onSubmitted: (_) => doCreate(ctx),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: Text(provider.t('btn.cancel'),
-                  style: const TextStyle(color: Colors.white54))),
-          ElevatedButton(
-            onPressed: () => doCreate(ctx),
-            style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFFFB347),
-                foregroundColor: Color(0xFF10241F),),
-            child: Text(provider.t('folder.create')),
-          ),
-        ],
-      ),
-    );
+    final id = provider.addFolder();
+    final folder = provider.folders.firstWhere((e) => e.id == id,
+        orElse: () => MindMapFolder(id: '', name: ''));
+    if (folder.id.isEmpty) return;
+    // drawer が開ききってから編集欄にフォーカスを渡す。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _beginFolderRename(folder);
+    });
   }
 
   /// フォルダー長押しメニュー
@@ -63949,7 +64900,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       if (action == null || !mounted) return;
       switch (action) {
         case _FolderAction.rename:
-          _renameFolderDialog(ctx, provider, folder);
+          // ダイアログではなく一覧のその行で打ち替える (= ユーザー要望)
+          _beginFolderRename(folder);
           break;
         case _FolderAction.export:
           _exportFolderToJson(ctx, provider, folder);
@@ -64137,48 +65089,6 @@ class _MindMapScreenState extends State<MindMapScreen>
           content: Text(provider.t('drawer.bulkDeleted'),
               style: const TextStyle(color: Colors.white)),
         ));
-  }
-
-  /// フォルダー名変更ダイアログ
-  void _renameFolderDialog(
-      BuildContext context, MindMapProvider provider, MindMapFolder folder) {
-    final ctrl = TextEditingController(text: folder.name);
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF2A2A3E),
-        title: Text(provider.t('folder.rename'),
-            style: const TextStyle(color: Colors.white)),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          style: const TextStyle(color: Colors.white),
-          decoration: InputDecoration(
-            hintText: provider.t('folder.nameHint'),
-            hintStyle: const TextStyle(color: Colors.white38),
-          ),
-          onSubmitted: (_) {
-            final name = ctrl.text.trim();
-            if (name.isNotEmpty) provider.renameFolder(folder.id, name);
-            Navigator.pop(ctx);
-          },
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: Text(provider.t('btn.cancel'),
-                  style: const TextStyle(color: Colors.white54))),
-          ElevatedButton(
-            onPressed: () {
-              final name = ctrl.text.trim();
-              if (name.isNotEmpty) provider.renameFolder(folder.id, name);
-              Navigator.pop(ctx);
-            },
-            child: Text(provider.t('btn.ok')),
-          ),
-        ],
-      ),
-    );
   }
 
   /// フォルダー削除確認
@@ -65622,7 +66532,11 @@ class _MindMapScreenState extends State<MindMapScreen>
       // 分割ペインのページ名を隠すか (= ユーザー要望)。
       _hidePaneHeaders = prefs.getBool('hidePaneHeaders') ?? false;
       // ページ一覧 / ToDo の並び (= ユーザー要望: ドラッグで入れ替え)。
-      _drawerTodoFirst = prefs.getBool('drawerTodoFirst') ?? false;
+      // ★ キーを _v2 にした (= ユーザー要望: ToDo はページ一覧の右側に)。
+      //   昔の 'drawerTodoFirst' に「ToDo が左」 が残っている端末でも、
+      //   一度リセットされて ページ一覧 → ToDo の並びから始まる。
+      //   入れ替えたい人は今までどおり長押しドラッグで入れ替えられる。
+      _drawerTodoFirst = prefs.getBool('drawerTodoFirst_v2') ?? false;
       // Instagram を開く画面の設定 (= ユーザー要望)。
       _instagramLanding = prefs.getString('instagramLanding') ?? 'home';
       _instagramUsername = prefs.getString('instagramUsername') ?? '';
@@ -71574,6 +72488,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   end: _drawingDecorationEnd!,
                                   colorRgb: _shapeColorRgb,
                                   strokeWidth: _shapeStrokeWidth,
+                                  // ★ 置いた後と同じ塗りで見せる (= ユーザー
+                                  //   要望: 描いている間は中空なのに置くと
+                                  //   中塗りになるのを直す)。
+                                  filled: !_shapeHollow,
                                 ),
                               ],
                               selectedId: null,
@@ -110640,6 +111558,133 @@ Path _paintCrossPath(Rect rect) {
     ..lineTo(rect.left, y1)
     ..lineTo(x1, y1)
     ..close();
+}
+
+/// 図形パレット / 編集欄に出す「その図形そのもの」 のアイコン。
+///
+/// Material のアイコンは実際に置かれる図形と形が違うものがあり
+/// (♦ は宝石の形、 △ だけ中空)、 並びとして不揃いに見えていたので、
+/// 描画側とまったく同じ頂点計算で描き直す (= ユーザー要望)。
+/// [hollow] は「中空」 札の状態。 置かれる図形と同じ見た目にするため、
+/// パレット側からそのまま渡す。
+class _ShapeKindIcon extends StatelessWidget {
+  final MapDecorationKind kind;
+  final double size;
+  final Color color;
+  final bool hollow;
+  const _ShapeKindIcon(this.kind,
+      {required this.size, required this.color, this.hollow = false});
+
+  /// 線の仲間は「中空」 の概念が無いので Material のアイコンをそのまま使う。
+  static IconData? lineIconOf(MapDecorationKind k) {
+    switch (k) {
+      case MapDecorationKind.line:
+        return Icons.remove_rounded;
+      case MapDecorationKind.polyline:
+        return Icons.timeline_rounded;
+      case MapDecorationKind.arrow:
+        return Icons.arrow_forward_rounded;
+      case MapDecorationKind.wavyLine:
+        return Icons.waves_rounded;
+      default:
+        return null;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final li = lineIconOf(kind);
+    if (li != null) return Icon(li, size: size, color: color);
+    return SizedBox(
+      width: size,
+      height: size,
+      child: CustomPaint(painter: _ShapeKindIconPainter(kind, color, hollow)),
+    );
+  }
+}
+
+class _ShapeKindIconPainter extends CustomPainter {
+  final MapDecorationKind kind;
+  final Color color;
+  final bool hollow;
+  _ShapeKindIconPainter(this.kind, this.color, this.hollow);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final stroke = math.max(1.6, size.shortestSide * 0.11);
+    // 中空は線の芯が枠の内側に来るよう半分だけ詰める (はみ出し防止)。
+    final inset = hollow ? stroke / 2 + 0.5 : 0.5;
+    final rect = Rect.fromLTWH(
+        inset, inset, size.width - inset * 2, size.height - inset * 2);
+    final paint = Paint()
+      ..color = color
+      ..isAntiAlias = true
+      ..style = hollow ? PaintingStyle.stroke : PaintingStyle.fill
+      ..strokeWidth = stroke
+      ..strokeJoin = StrokeJoin.round
+      ..strokeCap = StrokeCap.round;
+    switch (kind) {
+      case MapDecorationKind.rectangle:
+      case MapDecorationKind.filledRectangle:
+        canvas.drawRRect(
+            RRect.fromRectAndRadius(
+                rect, Radius.circular(size.shortestSide * 0.14)),
+            paint);
+        break;
+      case MapDecorationKind.ellipse:
+        canvas.drawOval(rect, paint);
+        break;
+      case MapDecorationKind.circle:
+      case MapDecorationKind.hollowCircle:
+        canvas.drawCircle(rect.center, rect.shortestSide / 2, paint);
+        break;
+      case MapDecorationKind.hollowTriangle:
+        canvas.drawPath(
+            Path()
+              ..moveTo(rect.center.dx, rect.top)
+              ..lineTo(rect.left, rect.bottom)
+              ..lineTo(rect.right, rect.bottom)
+              ..close(),
+            paint);
+        break;
+      case MapDecorationKind.hollowDiamond:
+        canvas.drawPath(
+            Path()
+              ..moveTo(rect.center.dx, rect.top)
+              ..lineTo(rect.right, rect.center.dy)
+              ..lineTo(rect.center.dx, rect.bottom)
+              ..lineTo(rect.left, rect.center.dy)
+              ..close(),
+            paint);
+        break;
+      case MapDecorationKind.star:
+        canvas.drawPath(_paintStarPath(rect), paint);
+        break;
+      case MapDecorationKind.pentagon:
+        canvas.drawPath(_paintRegularPolygonPath(rect, 5), paint);
+        break;
+      case MapDecorationKind.hexagon:
+        canvas.drawPath(_paintRegularPolygonPath(rect, 6), paint);
+        break;
+      case MapDecorationKind.heart:
+        canvas.drawPath(_paintHeartPath(rect), paint);
+        break;
+      case MapDecorationKind.cross:
+        canvas.drawPath(_paintCrossPath(rect), paint);
+        break;
+      case MapDecorationKind.line:
+      case MapDecorationKind.polyline:
+      case MapDecorationKind.arrow:
+      case MapDecorationKind.wavyLine:
+        canvas.drawLine(Offset(rect.left, rect.center.dy),
+            Offset(rect.right, rect.center.dy), paint..style = PaintingStyle.stroke);
+        break;
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _ShapeKindIconPainter old) =>
+      old.kind != kind || old.color != color || old.hollow != hollow;
 }
 
 /// 図形の「面」 の Path (塗り領域計算・重なり塗りの共通ロジック)。
@@ -161656,6 +162701,111 @@ class _LockFrontTimePickerLauncherState
       const ColoredBox(color: Color(0x66000000));
 }
 
+/// 集中ロックのタスクに、 サイドメニューの ToDo を取り込むための選択画面
+/// (= ユーザー要望: 集中ロックの所に入れた ToDo が選択肢で出るように)。
+///
+/// ロック中はふつうの `showDialog` がロック画面の裏に隠れてしまうので、
+/// 呼び出し側が「閉じ方」 を渡せるようにしてある。 設定ダイアログからは
+/// `Navigator.pop`、 ロック画面からは `_showLockFrontDialog` の close。
+class _TodoPickBody extends StatefulWidget {
+  final MindMapProvider provider;
+  final void Function(List<TodoItem> picked) onDone;
+  final VoidCallback onCancel;
+  const _TodoPickBody({
+    required this.provider,
+    required this.onDone,
+    required this.onCancel,
+  });
+
+  @override
+  State<_TodoPickBody> createState() => _TodoPickBodyState();
+}
+
+class _TodoPickBodyState extends State<_TodoPickBody> {
+  final Set<String> _picked = <String>{};
+
+  @override
+  Widget build(BuildContext context) {
+    final p = widget.provider;
+    // 既に同じ名前で登録されているものは出さない (二重登録を防ぐ)。
+    final already =
+        p.focusLockTasks.map((t) => t.title.trim()).toSet();
+    final items = p.openTodos
+        .where((t) => !already.contains(t.headline.trim()))
+        .toList();
+    final screenW = MediaQuery.sizeOf(context).width;
+    return AlertDialog(
+      backgroundColor: const Color(0xFF1E1E32),
+      title: Text(p.t('focusLock.fromTodoTitle'),
+          style: const TextStyle(color: Colors.white, fontSize: 15)),
+      content: SizedBox(
+        width: math.min(380.0, screenW - 48),
+        child: items.isEmpty
+            ? Text(p.t('focusLock.fromTodoEmpty'),
+                style: const TextStyle(
+                    color: Colors.white54, fontSize: 12, height: 1.5))
+            : ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 340),
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: items.length,
+                  itemBuilder: (_, i) {
+                    final t = items[i];
+                    final on = _picked.contains(t.id);
+                    return CheckboxListTile(
+                      dense: true,
+                      visualDensity: VisualDensity.compact,
+                      controlAffinity: ListTileControlAffinity.leading,
+                      activeColor: const Color(0xFF43B97F),
+                      checkColor: Colors.white,
+                      value: on,
+                      onChanged: (v) => setState(() {
+                        if (v == true) {
+                          _picked.add(t.id);
+                        } else {
+                          _picked.remove(t.id);
+                        }
+                      }),
+                      title: Text(t.headline,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 13)),
+                      subtitle: t.remindAt == null
+                          ? null
+                          : Text(
+                              '${t.remindAt!.month}/${t.remindAt!.day} '
+                              '${t.remindAt!.hour.toString().padLeft(2, '0')}:'
+                              '${t.remindAt!.minute.toString().padLeft(2, '0')}',
+                              style: const TextStyle(
+                                  color: Color(0xFFFFB347), fontSize: 10)),
+                    );
+                  },
+                ),
+              ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: widget.onCancel,
+          child: Text(p.t('btn.cancel'),
+              style: const TextStyle(color: Colors.white54)),
+        ),
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFF43B97F),
+            foregroundColor: Colors.white,
+          ),
+          onPressed: _picked.isEmpty
+              ? null
+              : () => widget.onDone(
+                  items.where((t) => _picked.contains(t.id)).toList()),
+          child: Text(p.t('btn.add')),
+        ),
+      ],
+    );
+  }
+}
+
 class _FocusLockOverlay extends StatefulWidget {
   final Duration duration;
   final bool taskMode;
@@ -161969,6 +163119,38 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
     HapticFeedback.heavyImpact();
     _AudioAlarm.playAlarm(_AudioAlarm.prefKeyPomodoro);
     widget.onClose();
+  }
+
+  /// ロック画面から、 サイドメニューの ToDo を選んで集中タスクに入れる
+  /// (= ユーザー要望: 集中ロックの所に入れた ToDo が選択肢で出るように)。
+  ///
+  /// ロック画面は rootOverlay に載っているので、 ふつうの showDialog だと
+  /// 裏に隠れる。 必ず `_showLockFrontDialog` を通す。
+  Future<void> _pickTodosFromLock() async {
+    if (_finished || !widget.taskMode) return;
+    final p = widget.provider;
+    await p.ensureTodosLoaded();
+    if (!mounted) return;
+    final picked = await _showLockFrontDialog<List<TodoItem>>(
+      (ctx, close) => _TodoPickBody(
+        provider: p,
+        onDone: (v) => close(v),
+        onCancel: () => close(),
+      ),
+    );
+    if (picked == null || picked.isEmpty) return;
+    for (final t in picked) {
+      await p.addFocusLockTask(t.headline);
+    }
+    if (!mounted) return;
+    setState(() {});
+    _appSnack(
+        context,
+        SnackBar(
+            backgroundColor: const Color(0xFF2E7D52),
+            content: Text(p
+                .t('focusLock.fromTodoAdded')
+                .replaceAll('{count}', '${picked.length}'))));
   }
 
   /// ロック画面からタスクを追加する (= ユーザー要望: ロック中でも
@@ -163851,9 +165033,10 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
             ),
           const SizedBox(height: 4),
           // ── ロック中でもタスクを追加できる (= ユーザー要望) ──
-          Align(
-            alignment: Alignment.centerLeft,
-            child: TextButton.icon(
+          //    右隣は、 サイドメニューの ToDo から選んで入れる方 (= ユーザー
+          //    要望: 集中ロックの所に入れた ToDo が選択肢で出るように)。
+          Row(children: [
+            TextButton.icon(
               onPressed: _addFocusTaskFromLock,
               style: TextButton.styleFrom(
                 foregroundColor: const Color(0xFF43B97F),
@@ -163865,7 +165048,24 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
               label: Text(widget.provider.t('focusLock.addTask'),
                   style: const TextStyle(fontSize: 12)),
             ),
-          ),
+            const SizedBox(width: 4),
+            Flexible(
+              child: TextButton.icon(
+                onPressed: _pickTodosFromLock,
+                style: TextButton.styleFrom(
+                  foregroundColor: const Color(0xFF7FD8A0),
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  minimumSize: const Size(0, 32),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                icon: const Icon(Icons.checklist_rounded, size: 18),
+                label: Text(widget.provider.t('focusLock.fromTodo'),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 12)),
+              ),
+            ),
+          ]),
           const SizedBox(height: 2),
           Text(p.t('focusLock.taskUnlockHint'),
               textAlign: TextAlign.center,
