@@ -10983,6 +10983,19 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Ответ ИИ добавлен на карту',
     },
     // ブラウザの AI とは別枚で並べる見出し (= ユーザー要望)。
+    // 要素のそばに出す小さな指示欄 (= ユーザー要望)。
+    'ai.nodePromptHint': {
+      'ja': 'この要素についての指示… (Enter で送信)',
+      'en': 'What should I do with this? (Enter to send)',
+    },
+    'ai.nodePromptAbout': {
+      'ja': '次の要素についての指示です。',
+      'en': 'This instruction is about the following item.',
+    },
+    'ai.nodePromptSent': {
+      'ja': 'AI アシスタントに依頼しました',
+      'en': 'Sent to the AI assistant',
+    },
     'ai.inAppMode': {
       'ja': 'アプリの AI (API キー使用)',
       'en': 'In-app AI (uses your API key)',
@@ -49651,6 +49664,12 @@ class MindMapProvider extends ChangeNotifier {
     },
     // ── Web 自動操作の AI フロー作成 (= ユーザー要望: Google 検索の
     //    自動化のフロー作成で AI を使えるように) ──
+    // 手順として残さない時のボタンの文字 (= ユーザー報告: 「AIでフロー作成」 と
+    //   「手順として残す」 が同時にあるのが変)。 残さないなら「作成」 ではない。
+    'auto.aiRunOnce': {
+      'ja': 'AI で実行',
+      'en': 'Run with AI',
+    },
     'auto.aiBuild': {
       'ja': 'AIでフロー作成',
       'en': 'Build flow with AI',

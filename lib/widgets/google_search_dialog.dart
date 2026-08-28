@@ -1257,9 +1257,11 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       _pickPointCompleter == null &&
       _pickRectCompleter == null &&
       !_autoRecording &&
-      (_currentUrl.isEmpty ||
-          _currentUrl == 'about:blank' ||
-          _currentUrl.startsWith('about:'));
+      // ★ ページを開いた後も、 動かしていない間はブラウザを出さない
+      //   (= ユーザー要望: 枠の中に枠があるのが気になる、 フローを
+      //   実行する時だけブラウザモードに切り替わる形)。
+      //   座標を指す間・記録中・実行中は上の条件で見える。
+      !_autoRunning;
 
   /// ヘッダーを隠している間、 上端にカーソルが乗っているか
   /// (= ユーザー要望: 隠したら、 ホバーするまで戻すボタンも出さない)。

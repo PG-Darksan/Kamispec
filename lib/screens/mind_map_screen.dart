@@ -34325,6 +34325,90 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
   }
 
+  /// 要素のそばに出す小さな指示欄 (= ユーザー要望: プロンプト欄だけが
+  /// 要素にくっつく形で出て、 書いたら消えて内容が反映される)。
+  ///
+  /// 会話画面は開かない。 考える所 (_McpChatSession) は画面の外に
+  /// あるので、 欄を閉じても指示はそのまま走る。
+  Future<void> _showNodeAiPrompt(String nodeId) async {
+    if (!mounted) return;
+    final provider = context.read<MindMapProvider>();
+    final node = provider.nodes[nodeId];
+    if (node == null) return;
+    if (!provider.hasActiveAiKey) {
+      _showGeminiKeyDialog(context, provider,
+          () => unawaited(_showNodeAiPrompt(nodeId)),
+          anyProvider: true);
+      return;
+    }
+    final ctrl = TextEditingController();
+    final sent = await _showNearDialogMain<String>(
+      width: 380,
+      height: 96,
+      builder: (dctx) => Material(
+        color: Colors.transparent,
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(10, 8, 8, 8),
+          decoration: BoxDecoration(
+            color: const Color(0xFF23233A),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: const Color(0xFF80CBC4)),
+            boxShadow: const [
+              BoxShadow(color: Colors.black54, blurRadius: 18),
+            ],
+          ),
+          child: Row(children: [
+            const Icon(Icons.auto_awesome_rounded,
+                size: 16, color: Color(0xFF80CBC4)),
+            const SizedBox(width: 8),
+            Expanded(
+              child: TextField(
+                controller: ctrl,
+                autofocus: true,
+                style: const TextStyle(color: Colors.white, fontSize: 13),
+                decoration: InputDecoration(
+                  isDense: true,
+                  border: InputBorder.none,
+                  hintText: provider.t('ai.nodePromptHint'),
+                  hintStyle: const TextStyle(
+                      color: Colors.white38, fontSize: 12.5),
+                ),
+                onSubmitted: (v) => Navigator.pop(dctx, v),
+              ),
+            ),
+            IconButton(
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.send_rounded,
+                  size: 18, color: Color(0xFF80CBC4)),
+              onPressed: () => Navigator.pop(dctx, ctrl.text),
+            ),
+          ]),
+        ),
+      ),
+    );
+    ctrl.dispose();
+    final text = (sent ?? '').trim();
+    if (text.isEmpty || !mounted) return;
+    // 要素の中身を添えて渡す (何についての指示か分かるように)。
+    final title = node.title.trim();
+    final memo = (node.memoText ?? '').trim();
+    final about = memo.isEmpty ? title : '$title\n$memo';
+    final raw = about.isEmpty
+        ? text
+        : '${provider.t('ai.nodePromptAbout')}\n$about\n\n$text';
+    final session = _McpChatSession.instance;
+    session.bind(provider);
+    session.submit(shown: text, raw: raw);
+    _appSnack(
+        context,
+        SnackBar(
+          content: Text(provider.t('ai.nodePromptSent'),
+              style: const TextStyle(color: Colors.black87)),
+          backgroundColor: const Color(0xFF80CBC4),
+          duration: const Duration(seconds: 2),
+        ));
+  }
+
   Future<void> _openBrowserAiForNode(String nodeId) async {
     if (!mounted) return;
     final provider = context.read<MindMapProvider>();
@@ -34333,8 +34417,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     // ★ 「AI アシスタント (API)」 を選んでいるなら、 ブラウザを開かず
     //   アプリのアシスタントに渡す (= ユーザー要望)。
     if (provider.nodeAiUseAssistant) {
-      unawaited(_openMcpChat(provider,
-          initialTask: 'node:${node.title.trim()}'));
+      // 会話画面ごと開かず、 要素のそばに小さな入力欄だけ出す
+      //   (= ユーザー要望)。 書いて送ると欄は消え、 指示だけが走る。
+      unawaited(_showNodeAiPrompt(nodeId));
       return;
     }
     // ── ノードの本文全体を AI に渡す (= ユーザー要望: リッチテキストで編集した
@@ -69424,8 +69509,15 @@ class _MindMapScreenState extends State<MindMapScreen>
             ? const Color(0xFF0F0F1A)
             : const Color(0xFFD8D8D4),
         child: Center(
+          // ★ 明るい背景の時は黒字にする (= ユーザー報告: 白背景に
+          //   白文字で読めない)。 背景色をテーマで変えているのに、
+          //   文字色だけ白のままだった。
           child: Text(provider.t('map.splitNoOtherPage'),
-              style: const TextStyle(color: Colors.white38, fontSize: 12)),
+              style: TextStyle(
+                  color: provider.isDarkMode
+                      ? Colors.white38
+                      : Colors.black54,
+                  fontSize: 12)),
         ),
       );
     }

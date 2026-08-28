@@ -3230,13 +3230,35 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
                                 ? Icons.expand_less_rounded
                                 : Icons.auto_awesome_rounded,
                             size: 14),
-                    label: Text(provider.t('auto.aiBuild'),
+                    label: Text(provider.t(_agentKeepSteps ? 'auto.aiBuild' : 'auto.aiRunOnce'),
                         style: const TextStyle(
                             fontSize: 11, fontWeight: FontWeight.w700)),
                     onPressed: _aiBusy
                         ? null
                         : () => setState(() => _aiFormOpen = !_aiFormOpen),
                   ),
+                ),
+              // 撮ったスクショの管理 (= ユーザー要望: どこにあるか分かり
+              // にくい / PDF 前に編集・並べ替えしたい)
+              // ★ 浮かせた窓だと横に溢れて見えなくなっていた
+              //   (= ユーザー報告: スクショを管理するボタンがない)。
+              //   ファイル操作より先に置いて、 狭い幅でも残るようにした。
+              if (!_running)
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  tooltip: provider.t('shots.title'),
+                  icon: const Icon(Icons.photo_library_rounded,
+                      size: 17, color: Color(0xFF80CBC4)),
+                  onPressed: () async {
+                    if (_modalOpen) return;
+                    _modalOpen = true;
+                    try {
+                      await ShotManagerDialog.show(context,
+                          useRootNavigator: false);
+                    } finally {
+                      _modalOpen = false;
+                    }
+                  },
                 ),
               // 新しいフローを作る (= ユーザー要望: 作り直したい時に、 今の
               // 手順を消して白紙から始められるように)。 手順が残っている時は
@@ -3266,25 +3288,6 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
                   icon: const Icon(Icons.folder_open_rounded,
                       size: 16, color: Colors.white70),
                   onPressed: () => _showFlowMenu(provider),
-                ),
-              // 撮ったスクショの管理 (= ユーザー要望: どこにあるか分かり
-              // にくい / PDF 前に編集・並べ替えしたい)
-              if (!_running)
-                IconButton(
-                  visualDensity: VisualDensity.compact,
-                  tooltip: provider.t('shots.title'),
-                  icon: const Icon(Icons.photo_library_rounded,
-                      size: 17, color: Color(0xFF80CBC4)),
-                  onPressed: () async {
-                    if (_modalOpen) return;
-                    _modalOpen = true;
-                    try {
-                      await ShotManagerDialog.show(context,
-                          useRootNavigator: false);
-                    } finally {
-                      _modalOpen = false;
-                    }
-                  },
                 ),
               // ★ ここにあった閉じるボタンは廃止 (= ユーザー報告: スクショ管理の
               //   隣の × を押すと進行不能になる / 閉じるボタンが 2 つある)。
@@ -3448,7 +3451,7 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
                           foregroundColor: Colors.white,
                           visualDensity: VisualDensity.compact),
                       icon: const Icon(Icons.auto_awesome_rounded, size: 14),
-                      label: Text(provider.t('auto.aiBuild'),
+                      label: Text(provider.t(_agentKeepSteps ? 'auto.aiBuild' : 'auto.aiRunOnce'),
                           style: const TextStyle(fontSize: 11.5)),
                       onPressed: () {
                         final v = _aiCtrl.text;
