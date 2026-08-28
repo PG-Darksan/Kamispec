@@ -112553,6 +112553,490 @@ Future<bool> openAutomationExternalWindow(
 /// ネットに繋がらない時は、 素のテキストがそのまま出る。
 /// Markdown ページと、 .md ファイルを開くテキストエディタの両方で使う
 /// (= ユーザー要望: マークダウン形式を開いた時にもプレビュー機能)。
+/// 自分のマップを Markdown の中に埋め込んで、 その場で触れるようにする JS
+/// (= ユーザー要望: 子ノードを収納できたり、 図の要素をクリックして
+/// 色んなことができたら便利)。
+///
+/// 本文に
+/// ```map
+/// マップ 2
+/// ```
+/// と書くと、 そのページを実際の中身で描く。 掴んで動かす / 車輪で拡大 /
+/// 子を持つ要素を押して開閉 / 右上のボタンでそのページを開く、 ができる。
+const String _kMdEmbeddedMapJs = r"""
+<script>
+(function () {
+  var MAPS = window.__mmMaps || {};
+
+  function argb(v) {
+    v = Number(v) || 0xff6c63ff;
+    return { r: (v >> 16) & 255, g: (v >> 8) & 255, b: v & 255 };
+  }
+  function lum(c) {
+    function ch(x) {
+      x = x / 255;
+      return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
+    }
+    return 0.2126 * ch(c.r) + 0.7152 * ch(c.g) + 0.0722 * ch(c.b);
+  }
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function build(slot, data) {
+    var nodes = (data.nodes || []).filter(function (n) {
+      return !n.hiddenInContainer;      // 格納された要素は出さない
+    });
+    if (!nodes.length) {
+      slot.innerHTML = '<div class="mmap-empty">' + esc(data.name || '') +
+        ' : (empty)</div>';
+      return;
+    }
+    var conns = (data.connections || []).filter(function (c) { return c; });
+    var byId = {}, i;
+    for (i = 0; i < nodes.length; i++) byId[nodes[i].id] = nodes[i];
+
+    // 親 → 子 の対応を作る (接続の向きをそのまま親子と見なす)。
+    var kids = {}, hasParent = {};
+    for (i = 0; i < conns.length; i++) {
+      var c = conns[i];
+      if (!byId[c.fromId] || !byId[c.toId]) continue;
+      (kids[c.fromId] = kids[c.fromId] || []).push(c.toId);
+      hasParent[c.toId] = true;
+    }
+
+    var collapsed = {};   // 閉じている要素
+    function hidden() {
+      // 閉じた要素の下にぶら下がる物を集める (輪になっていても止まる)。
+      var out = {}, seen = {};
+      var stack = [];
+      for (var id in collapsed) {
+        if (!collapsed[id]) continue;
+        var ks = kids[id] || [];
+        for (var j = 0; j < ks.length; j++) stack.push(ks[j]);
+      }
+      while (stack.length) {
+        var cur = stack.pop();
+        if (seen[cur]) continue;
+        seen[cur] = 1; out[cur] = 1;
+        var kk = kids[cur] || [];
+        for (var m = 0; m < kk.length; m++) stack.push(kk[m]);
+      }
+      return out;
+    }
+
+    slot.className = 'mmap';
+    slot.innerHTML =
+      '<div class="mmap-box">' +
+      '<div class="mmap-stage"><svg class="mmap-lines"></svg>' +
+      '<div class="mmap-nodes"></div></div>' +
+      '<div class="mmap-ctl">' +
+      '<button type="button" data-a="in" title="+">+</button>' +
+      '<button type="button" data-a="out" title="-">&#8722;</button>' +
+      '<button type="button" data-a="fit" title="fit">&#8634;</button>' +
+      '<button type="button" data-a="all" title="expand all">&#9776;</button>' +
+      '<button type="button" data-a="open" title="open">&#9633;</button>' +
+      '</div>' +
+      '<div class="mmap-name">' + esc(data.name || '') + '</div>' +
+      '</div>';
+    var box = slot.querySelector('.mmap-box');
+    var stage = slot.querySelector('.mmap-stage');
+    var svg = slot.querySelector('.mmap-lines');
+    var layer = slot.querySelector('.mmap-nodes');
+
+    var sc = 1, tx = 0, ty = 0;
+    function apply() {
+      stage.style.transform =
+        'translate(' + tx + 'px,' + ty + 'px) scale(' + sc + ')';
+    }
+
+    function nodeH(n) {
+      var h = Number(n.height) || 42;
+      if (n.memoText) {
+        var ln = String(n.memoText).split('\n').length;
+        h += Math.min(4, ln) * 15 + 6;
+      }
+      return h;
+    }
+
+    function draw() {
+      var hid = hidden();
+      var vis = nodes.filter(function (n) { return !hid[n.id]; });
+      var minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
+      for (var k = 0; k < vis.length; k++) {
+        var n = vis[k], w = Number(n.width) || 140, h = nodeH(n);
+        if (n.x < minX) minX = n.x;
+        if (n.y < minY) minY = n.y;
+        if (n.x + w > maxX) maxX = n.x + w;
+        if (n.y + h > maxY) maxY = n.y + h;
+      }
+      if (minX > maxX) { minX = 0; minY = 0; maxX = 400; maxY = 300; }
+      var pad = 40, offX = pad - minX, offY = pad - minY;
+      var W = (maxX - minX) + pad * 2, H = (maxY - minY) + pad * 2;
+      stage.style.width = W + 'px';
+      stage.style.height = H + 'px';
+      svg.setAttribute('width', W);
+      svg.setAttribute('height', H);
+      svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+      while (svg.firstChild) svg.removeChild(svg.firstChild);
+      layer.innerHTML = '';
+
+      for (var ci = 0; ci < conns.length; ci++) {
+        var cc = conns[ci];
+        var a = byId[cc.fromId], b = byId[cc.toId];
+        if (!a || !b || hid[a.id] || hid[b.id]) continue;
+        var ax = a.x + (Number(a.width) || 140) / 2 + offX;
+        var ay = a.y + nodeH(a) / 2 + offY;
+        var bx = b.x + (Number(b.width) || 140) / 2 + offX;
+        var by = b.y + nodeH(b) / 2 + offY;
+        var path = document.createElementNS(
+          'http://www.w3.org/2000/svg', 'path');
+        var mx = (ax + bx) / 2;
+        path.setAttribute('d',
+          'M' + ax + ',' + ay + ' C' + mx + ',' + ay + ' ' +
+          mx + ',' + by + ' ' + bx + ',' + by);
+        path.setAttribute('fill', 'none');
+        path.setAttribute('stroke', '#8b95b5');
+        path.setAttribute('stroke-width', '2');
+        svg.appendChild(path);
+      }
+
+      for (var vi = 0; vi < vis.length; vi++) {
+        var nd = vis[vi];
+        var col = argb(nd.color);
+        var light = lum(col) > 0.55;
+        var d = document.createElement('div');
+        d.className = 'mmap-node';
+        d.setAttribute('data-id', nd.id);
+        d.style.left = (nd.x + offX) + 'px';
+        d.style.top = (nd.y + offY) + 'px';
+        d.style.width = ((Number(nd.width) || 140)) + 'px';
+        d.style.minHeight = ((Number(nd.height) || 42)) + 'px';
+        d.style.background =
+          'rgb(' + col.r + ',' + col.g + ',' + col.b + ')';
+        d.style.color = light ? '#15161c' : '#ffffff';
+        var kn = (kids[nd.id] || []).length;
+        var html = '';
+        if (kn) {
+          html += '<span class="mmap-tog">' +
+            (collapsed[nd.id] ? '▸ ' + kn : '▾') + '</span>';
+        }
+        html += '<div class="mmap-t">' + esc(nd.title) + '</div>';
+        if (nd.memoText) {
+          html += '<div class="mmap-m">' + esc(nd.memoText) + '</div>';
+        }
+        var url = nd.linkUrl || nd.youtubeUrl || '';
+        if (url) {
+          d.setAttribute('data-url', url);
+          html += '<span class="mmap-link" title="' + esc(url) +
+            '">↗</span>';
+        }
+        d.innerHTML = html;
+        layer.appendChild(d);
+      }
+    }
+
+    function fit() {
+      var bw = box.clientWidth - 16;
+      var bh = box.clientHeight - 16;
+      var sw = parseFloat(stage.style.width) || 1;
+      var sh = parseFloat(stage.style.height) || 1;
+      sc = Math.max(0.15, Math.min(1.4, Math.min(bw / sw, bh / sh)));
+      tx = (box.clientWidth - sw * sc) / 2;
+      ty = (box.clientHeight - sh * sc) / 2;
+      apply();
+    }
+
+    draw();
+    setTimeout(fit, 0);
+
+    // ── 掴んで動かす ──
+    var dragging = false, lx = 0, ly = 0, moved = 0;
+    box.addEventListener('mousedown', function (ev) {
+      if (ev.button !== 0) return;
+      dragging = true; moved = 0;
+      lx = ev.clientX; ly = ev.clientY;
+      box.classList.add('grabbing');
+    });
+    window.addEventListener('mousemove', function (ev) {
+      if (!dragging) return;
+      tx += ev.clientX - lx; ty += ev.clientY - ly;
+      moved += Math.abs(ev.clientX - lx) + Math.abs(ev.clientY - ly);
+      lx = ev.clientX; ly = ev.clientY;
+      apply();
+    });
+    window.addEventListener('mouseup', function () {
+      dragging = false;
+      box.classList.remove('grabbing');
+    });
+
+    // ── 車輪で拡大縮小 (押した所を中心に) ──
+    box.addEventListener('wheel', function (ev) {
+      ev.preventDefault();
+      var r = box.getBoundingClientRect();
+      var px = ev.clientX - r.left, py = ev.clientY - r.top;
+      var k = ev.deltaY < 0 ? 1.12 : 1 / 1.12;
+      var ns = Math.max(0.1, Math.min(4, sc * k));
+      tx = px - (px - tx) * (ns / sc);
+      ty = py - (py - ty) * (ns / sc);
+      sc = ns;
+      apply();
+    }, { passive: false });
+
+    // ── 要素を押したら開閉 / リンクを開く ──
+    box.addEventListener('click', function (ev) {
+      if (moved > 4) return;                       // 動かしただけ
+      var lk = ev.target.closest ? ev.target.closest('.mmap-link') : null;
+      if (lk) {
+        var host = lk.closest('.mmap-node');
+        var u = host && host.getAttribute('data-url');
+        if (u && window.__mmPost) {
+          window.__mmPost({ type: 'mdOpenUrl', href: u });
+        }
+        ev.stopPropagation();
+        return;
+      }
+      var el = ev.target.closest ? ev.target.closest('.mmap-node') : null;
+      if (!el) return;
+      var id = el.getAttribute('data-id');
+      if (!id || !(kids[id] || []).length) return;
+      collapsed[id] = !collapsed[id];
+      draw();
+    });
+
+    // ── 右上のボタン ──
+    box.querySelector('.mmap-ctl').addEventListener('click', function (ev) {
+      var b = ev.target.closest ? ev.target.closest('button') : null;
+      if (!b) return;
+      ev.stopPropagation();
+      var a = b.getAttribute('data-a');
+      if (a === 'in') { sc = Math.min(4, sc * 1.2); apply(); }
+      else if (a === 'out') { sc = Math.max(0.1, sc / 1.2); apply(); }
+      else if (a === 'fit') { fit(); }
+      else if (a === 'all') { collapsed = {}; draw(); setTimeout(fit, 0); }
+      else if (a === 'open') {
+        if (window.__mmPost && data.id) {
+          window.__mmPost({ type: 'mdLink', href: 'page:' + data.id });
+        }
+      }
+    });
+  }
+
+  window.__mmRenderMaps = function () {
+    MAPS = window.__mmMaps || MAPS || {};
+    var out = document.getElementById('out');
+    if (!out) return;
+    var slots = out.querySelectorAll('.map-slot');
+    for (var i = 0; i < slots.length; i++) {
+      var slot = slots[i];
+      if (slot.getAttribute('data-done')) continue;
+      slot.setAttribute('data-done', '1');
+      var key = slot.getAttribute('data-k') || '';
+      var data = MAPS[key];
+      if (!data) {
+        slot.className = 'mmap';
+        slot.innerHTML = '<div class="mmap-empty">map: ' + esc(key) +
+          ' &mdash; not found</div>';
+        continue;
+      }
+      try { build(slot, data); }
+      catch (e) {
+        slot.innerHTML = '<div class="mmap-empty">' + esc(String(e)) +
+          '</div>';
+      }
+    }
+  };
+})();
+</script>
+""";
+
+/// 本文の中の ```map フェンスを探して、 書かれたページ名 / ページ ID を
+/// 実際のページの中身に変換する (= ユーザー要望: 自分のマップを埋め込んで
+/// 表示したい)。
+///
+/// 返す形は `{フェンスに書かれた文字: {id, name, nodes, connections}}` の JSON。
+/// 見つからないフェンスは入れない (プレビュー側が「not found」 と出す)。
+String buildEmbeddedMapsJson(MindMapProvider provider, String md) {
+  if (!md.contains('```map') && !md.contains('~~~map')) return '{}';
+  final re = RegExp(r'^([`~]{3,})[ \t]*map[ \t]*\r?\n([\s\S]*?)^\1',
+      multiLine: true);
+  final result = <String, dynamic>{};
+  String norm(String x) =>
+      x.trim().toLowerCase().replaceAll(RegExp(r'[\s　]+'), '');
+  for (final m in re.allMatches(md)) {
+    final key = (m.group(2) ?? '').trim().split('\n').first.trim();
+    if (key.isEmpty || result.containsKey(key)) continue;
+    final pages = provider.pages;
+    var i = pages.indexWhere((e) => e.name.trim() == key);
+    if (i < 0) i = pages.indexWhere((e) => norm(e.name) == norm(key));
+    if (i < 0) i = pages.indexWhere((e) => e.id == key);
+    if (i < 0) continue;
+    final page = pages[i];
+    result[key] = {
+      'id': page.id,
+      'name': page.name,
+      // 描くのに要る所だけ (画像などは持たせない = 中身が重くなるため)。
+      'nodes': [
+        for (final n in page.nodes.values)
+          {
+            'id': n.id,
+            'title': n.title,
+            'x': n.position.dx,
+            'y': n.position.dy,
+            'width': n.width,
+            'height': n.height,
+            'color': n.color.toARGB32(),
+            if ((n.memoText ?? '').isNotEmpty) 'memoText': n.memoText,
+            if ((n.linkUrl ?? '').isNotEmpty) 'linkUrl': n.linkUrl,
+            if ((n.youtubeUrl ?? '').isNotEmpty) 'youtubeUrl': n.youtubeUrl,
+            if (n.hiddenInContainer != null)
+              'hiddenInContainer': n.hiddenInContainer,
+          }
+      ],
+      'connections': [
+        for (final c in page.connections) {'fromId': c.fromId, 'toId': c.toId}
+      ],
+    };
+  }
+  return jsonEncode(result);
+}
+
+/// markdown の 1 行のチェックを付け外しする (= ユーザー要望: プレビュー
+/// 画面からチェック項目にチェックを付けられるように)。
+/// チェック項目の行でなければ null を返す。
+String? _toggleMarkdownCheckLine(String line, bool checked) {
+  final m = RegExp(r'^(\s*[-*+]\s+\[)([ xX])(\])').firstMatch(line);
+  if (m == null) return null;
+  return line.replaceRange(
+      m.start, m.end, '${m.group(1)}${checked ? 'x' : ' '}${m.group(3)}');
+}
+
+/// 編集欄とプレビューのスクロールを揃えるための JS
+/// (= ユーザー要望: 半々で開く時はスクロールバーを 1 つにして同じ所を出す)。
+///
+/// 単純な「割合合わせ」 だと、 図が大きい所で盛大にずれる (mermaid の図は
+/// 元の文では 5 行でも、 描くと 600px になる)。 そこで **見出しと図の行番号**
+/// を目印として埋め込み、 目印の間だけ比例配分する。
+const String _kMdScrollSyncJs = r"""
+<script>
+(function () {
+  var docEl = document.documentElement;
+  var suppressUntil = 0;
+  var tick = 0;
+
+  function anchors() {
+    var out = document.getElementById('out');
+    if (!out) return [];
+    var els = out.querySelectorAll('[data-src-line]');
+    var res = [];
+    for (var i = 0; i < els.length; i++) {
+      var l = Number(els[i].getAttribute('data-src-line'));
+      if (!isFinite(l) || l <= 0) continue;
+      var r = els[i].getBoundingClientRect();
+      res.push([l, r.top + (window.pageYOffset || docEl.scrollTop || 0)]);
+    }
+    res.sort(function (a, b) { return a[0] - b[0]; });
+    // 先頭に「1 行目 = 一番上」 を必ず置く。
+    if (!res.length || res[0][0] > 1) res.unshift([1, 0]);
+    return res;
+  }
+
+  function maxY() {
+    return Math.max(0, docEl.scrollHeight - window.innerHeight);
+  }
+
+  window.__mmSuppressScroll = function (ms) {
+    suppressUntil = Date.now() + (ms || 300);
+  };
+
+  // 行番号 → その行が見える位置へ。
+  window.__mmScrollToLine = function (line) {
+    var a = anchors();
+    if (!a.length) return;
+    var my = maxY();
+    var total = window.__mmSrcLines || a[a.length - 1][0];
+    window.__mmSuppressScroll(320);
+    if (line <= a[0][0]) { window.scrollTo(0, 0); return; }
+    for (var i = 1; i < a.length; i++) {
+      if (a[i][0] > line) {
+        var p = a[i - 1], n = a[i];
+        var d = n[0] - p[0];
+        var t = d > 0 ? (line - p[0]) / d : 0;
+        window.scrollTo(0, Math.min(my, Math.max(0, p[1] + (n[1] - p[1]) * t)));
+        return;
+      }
+    }
+    // 最後の目印より下は、 残りの高さに比例配分する。
+    var last = a[a.length - 1];
+    var rest = total - last[0];
+    var t2 = rest > 0 ? (line - last[0]) / rest : 1;
+    t2 = Math.max(0, Math.min(1, t2));
+    window.scrollTo(0, Math.min(my, last[1] + (my - last[1]) * t2));
+  };
+
+  // 今見えている一番上が、 元の文の何行目か。
+  window.__mmLineAt = function () {
+    var y = window.pageYOffset || docEl.scrollTop || 0;
+    var a = anchors();
+    if (!a.length) return 1;
+    var total = window.__mmSrcLines || a[a.length - 1][0];
+    for (var i = 1; i < a.length; i++) {
+      if (a[i][1] > y) {
+        var p = a[i - 1], n = a[i];
+        var d = n[1] - p[1];
+        var t = d > 0 ? (y - p[1]) / d : 0;
+        return Math.round(p[0] + (n[0] - p[0]) * t);
+      }
+    }
+    var last = a[a.length - 1];
+    var my = maxY();
+    var t2 = my > last[1] ? (y - last[1]) / (my - last[1]) : 1;
+    t2 = Math.max(0, Math.min(1, t2));
+    return Math.round(last[0] + (total - last[0]) * t2);
+  };
+
+  // 中身の差し替え (__mmUpdate) が効くようになった事を知らせる。
+  // これを待たずに差し替えを送ると、 まだ関数が無くて何も起きず、
+  // プレビューが真っ白のままになる。
+  try {
+    if (window.__mmPost && window.__mmUpdate) {
+      window.__mmPost({ type: 'mdReady' });
+    }
+  } catch (e) {}
+
+  // チェック項目を押したら、 元の文の何行目かを返す (= ユーザー要望:
+  // プレビュー画面からチェックを付けられるように)。 見た目はもう
+  // 変わっているので、 Flutter 側は文だけ直して描き直さない。
+  document.addEventListener('change', function (ev) {
+    var t = ev.target;
+    if (!t || t.tagName !== 'INPUT' || t.type !== 'checkbox') return;
+    var l = Number(t.getAttribute('data-src-line'));
+    if (!isFinite(l) || l <= 0) return;
+    try {
+      if (window.__mmPost) {
+        window.__mmPost({ type: 'mdCheck', line: l, checked: !!t.checked });
+      }
+    } catch (e) {}
+  });
+
+  window.addEventListener('scroll', function () {
+    if (Date.now() < suppressUntil) return;   // こちらが動かした直後は返さない
+    if (tick) return;
+    tick = setTimeout(function () {
+      tick = 0;
+      if (Date.now() < suppressUntil) return;
+      try {
+        if (window.__mmPost) {
+          window.__mmPost({ type: 'mdScroll', line: window.__mmLineAt() });
+        }
+      } catch (e) {}
+    }, 90);
+  }, { passive: true });
+})();
+</script>
+""";
+
 String _markdownPreviewHtml(String md, bool dark,
     {String markedSrc = 'https://cdn.jsdelivr.net/npm/marked/marked.min.js',
     String mermaidSrc =
@@ -112570,7 +113054,15 @@ String _markdownPreviewHtml(String md, bool dark,
     // (= ユーザー要望: アプリの中と同じように分かれていてほしい)。
     List<({String name, String md})>? tabs,
     // 公開ページに「Markdown を保存」 を出すか (= ユーザー要望)。
-    bool showDownload = false}) {
+    bool showDownload = false,
+    // 編集欄と同じ所を出すためのスクロール連動を仕込むか
+    // (= ユーザー要望: 半々で開く時はスクロールバーを 1 つに)。
+    // ON の間はプレビュー側のスクロールバーを隠す (バーは編集欄の 1 本だけ)。
+    bool syncScroll = false,
+    // ```map フェンスに書かれたページの中身 (= ユーザー要望: 自分のマップを
+    // 埋め込んで、 その場で開閉したり押したりできるように)。
+    // 形は {フェンスに書かれた文字: {id, name, nodes, connections}}。
+    String mapsJson = '{}'}) {
   final fg = dark ? '#E8EAF2' : '#16181D';
   final bg = dark ? '#14141F' : '#FFFFFF';
   final code = dark ? '#1E1E2E' : '#F3F4F8';
@@ -112596,6 +113088,17 @@ String _markdownPreviewHtml(String md, bool dark,
   //   プレビューには出さない (file:// では意味が無いため)。
   final dlBtn = showDownload
       ? '<a id="mmdl" href="?dl=md" download>&#11015; Markdown</a>'
+      : '';
+  // 連動する時だけ、 プレビュー側のスクロールバーを消す (= バーは 1 本)。
+  final syncCss = syncScroll
+      ? 'html{scrollbar-width:none;}'
+          'html::-webkit-scrollbar{width:0;height:0;}'
+      : '';
+  final syncJs = syncScroll ? _kMdScrollSyncJs : '';
+  // 埋め込みマップ。 使う所 (アプリ内のプレビュー) だけ仕込む。
+  final hasMaps = mapsJson.trim().isNotEmpty && mapsJson.trim() != '{}';
+  final mapsJs = hasMaps
+      ? '<script>window.__mmMaps = $mapsJson;</script>$_kMdEmbeddedMapJs'
       : '';
   return '''<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -112668,6 +113171,36 @@ String _markdownPreviewHtml(String md, bool dark,
   #err{color:#E57373;font-size:12px;white-space:pre-wrap;}
   /* 目次が長い時は中でスクロールさせる (= ユーザー報告: 目次が長すぎる) */
   #mmtoc{max-height:44vh;overflow:auto;}
+  /* ── 埋め込んだマップ (= ユーザー要望) ── */
+  .mmap{margin:14px 0;}
+  .mmap-box{position:relative;height:420px;overflow:hidden;border-radius:10px;
+    border:1px solid $border;background:$code;cursor:grab;}
+  .mmap-box.grabbing{cursor:grabbing;}
+  .mmap-stage{position:absolute;left:0;top:0;transform-origin:0 0;}
+  .mmap-lines{position:absolute;left:0;top:0;pointer-events:none;}
+  .mmap-nodes{position:absolute;left:0;top:0;}
+  .mmap-node{position:absolute;border-radius:9px;padding:6px 9px;
+    box-sizing:border-box;box-shadow:0 2px 6px rgba(0,0,0,.28);
+    font-size:12px;line-height:1.35;cursor:pointer;overflow:hidden;}
+  .mmap-node .mmap-t{font-weight:700;white-space:pre-wrap;word-break:break-word;}
+  .mmap-node .mmap-m{margin-top:3px;font-size:11px;opacity:.82;
+    white-space:pre-wrap;word-break:break-word;
+    display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;
+    overflow:hidden;}
+  .mmap-tog{float:right;margin-left:6px;font-size:10px;font-weight:700;
+    opacity:.85;}
+  .mmap-link{position:absolute;right:4px;bottom:2px;font-size:12px;
+    opacity:.9;}
+  .mmap-ctl{position:absolute;right:8px;top:8px;display:flex;gap:4px;
+    z-index:3;}
+  .mmap-ctl button{width:26px;height:24px;border-radius:6px;cursor:pointer;
+    border:1px solid $border;background:$bg;color:$fg;font-size:12px;
+    line-height:1;padding:0;}
+  .mmap-name{position:absolute;left:10px;bottom:6px;font-size:11px;
+    opacity:.6;pointer-events:none;}
+  .mmap-empty{padding:16px;font-size:12px;opacity:.7;border-radius:10px;
+    border:1px dashed $border;}
+  $syncCss
   /* ── 公開ページのタブ (= ユーザー要望) ── */
   #mmtabs{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 16px;
           padding:0 0 10px;border-bottom:1px solid $border;}
@@ -112716,6 +113249,8 @@ window.MathJax = {
       window.flutter_inappwebview.callHandler('mmbridge', JSON.stringify(o));
     };
   }
+  // スクロール連動の script からも使えるようにしておく。
+  window.__mmPost = post;
   // 図の道具ボタン (AI / 保存 / マップへ) を出すか。
   var bridge = ($aiBridge && post) ? { postMessage: post } : null;
   // リンクを押した時の通知を出すか (= ユーザー要望)。
@@ -113027,6 +113562,13 @@ window.MathJax = {
   // ── 本体: マークダウン → HTML + mermaid + 目次 + ハイライト + 数式 ──
   // (window.__mmUpdate で分割プレビューからも再描画できる)
   function renderAll(src) {
+    // ── 元の文の行番号を覚えておく (= スクロール連動の目印) ──
+    window.__mmSrcLines = String(src).split('\\n').length;
+    var slotLine = {};   // 図スロット番号 → 元の文の行
+    var codeLine = {};   // コードスロット番号 → 元の文の行
+    function lineAtOffset(off) {
+      return String(src).slice(0, off).split('\\n').length;
+    }
     var blocks = [];
     function slotHtml(code) {
       blocks.push(String(code).trim());
@@ -113046,9 +113588,23 @@ window.MathJax = {
     //    marked の強調記法などに壊されない。
     var replaced = src.replace(
       /(`{3,}|~{3,})([^\\n]*)\\r?\\n([\\s\\S]*?)\\1/g,
-      function (m, fence, lang, body) {
+      function (m, fence, lang, body, off) {
         var l = String(lang).trim().toLowerCase();
-        if (l === 'mermaid' || (!l && kw.test(body))) return slotHtml(body);
+        var ln = lineAtOffset(off);
+        if (l === 'mermaid' || (!l && kw.test(body))) {
+          slotLine[blocks.length] = ln;
+          return slotHtml(body);
+        }
+        // ── 自分のマップを埋め込む (= ユーザー要望) ──
+        //    中に書いたページ名 / ページ ID を目印にする。
+        if (l === 'map') {
+          var mk = String(body).trim().split('\\n')[0].trim();
+          return '\\n\\n<div class="map-slot" data-src-line="' + ln +
+              '" data-k="' + mk.replace(/&/g, '&amp;')
+                  .replace(/"/g, '&quot;').replace(/</g, '&lt;') +
+              '"></div>\\n\\n';
+        }
+        codeLine[codeBlocks.length] = ln;
         codeBlocks.push({ lang: l, text: body });
         return '\\n\\n<div class="code-slot" data-i="' +
             (codeBlocks.length - 1) + '"></div>\\n\\n';
@@ -113081,6 +113637,8 @@ window.MathJax = {
       if (cb.lang) codeEl2.className = 'language-' + cb.lang;
       codeEl2.textContent = String(cb.text).replace(/\\n\$/, '');
       pre.appendChild(codeEl2);
+      var cln = codeLine[Number(cs2.getAttribute('data-i'))];
+      if (cln) pre.setAttribute('data-src-line', String(cln));
       cs2.parentNode.replaceChild(pre, cs2);
     }
     // ④ 数式を戻す (この後 MathJax が組版する)。
@@ -113092,6 +113650,65 @@ window.MathJax = {
       ms.textContent =
           mb.d ? ('\$\$' + mb.t + '\$\$') : ('\\\\(' + mb.t + '\\\\)');
     }
+    // ── スクロール連動の目印 (= ユーザー要望) ──
+    //   図スロットには取り出した時の行を、 見出しには元の文を数え直した
+    //   行を付ける。 これで図が大きくても編集欄とずれない。
+    try {
+      var msl = out.querySelectorAll('.mermaid-slot');
+      for (var si = 0; si < msl.length; si++) {
+        var sln = slotLine[Number(msl[si].getAttribute('data-i'))];
+        if (sln) msl[si].setAttribute('data-src-line', String(sln));
+      }
+      var hLines = [];
+      var srcLines = String(src).split('\\n');
+      var inFence = false, fenceCh = '';
+      for (var li = 0; li < srcLines.length; li++) {
+        var L = srcLines[li];
+        var mf = L.match(/^\\s{0,3}(`{3,}|~{3,})/);
+        if (mf) {
+          if (!inFence) { inFence = true; fenceCh = mf[1].charAt(0); }
+          else if (L.replace(/^\\s+/, '').charAt(0) === fenceCh) {
+            inFence = false;
+          }
+          continue;
+        }
+        if (inFence) continue;
+        if (/^\\s{0,3}#{1,6}\\s/.test(L)) hLines.push(li + 1);
+      }
+      var hs2 = out.querySelectorAll('h1,h2,h3,h4,h5,h6');
+      var hn = Math.min(hs2.length, hLines.length);
+      for (var hi = 0; hi < hn; hi++) {
+        hs2[hi].setAttribute('data-src-line', String(hLines[hi]));
+      }
+      // ── チェック項目 (- [ ] …) を押せるようにする (= ユーザー要望:
+      //    プレビュー画面からチェックを付けられるように) ──
+      //    marked が出す input は無効化されているので、 元の文の行を
+      //    覚えさせた上で有効に戻す。 押されたら行番号を Flutter へ返す。
+      var tLines = [];
+      inFence = false; fenceCh = '';
+      for (var ti = 0; ti < srcLines.length; ti++) {
+        var TL = srcLines[ti];
+        var tf = TL.match(/^\\s{0,3}(`{3,}|~{3,})/);
+        if (tf) {
+          if (!inFence) { inFence = true; fenceCh = tf[1].charAt(0); }
+          else if (TL.replace(/^\\s+/, '').charAt(0) === fenceCh) {
+            inFence = false;
+          }
+          continue;
+        }
+        if (inFence) continue;
+        if (/^\\s*[-*+]\\s+\\[[ xX]\\]/.test(TL)) tLines.push(ti + 1);
+      }
+      if (window.__mmRenderMaps) window.__mmRenderMaps();
+      var boxes = out.querySelectorAll('li input[type="checkbox"]');
+      var bn = Math.min(boxes.length, tLines.length);
+      for (var bi = 0; bi < bn; bi++) {
+        boxes[bi].disabled = false;
+        boxes[bi].removeAttribute('disabled');
+        boxes[bi].setAttribute('data-src-line', String(tLines[bi]));
+        boxes[bi].style.cursor = 'pointer';
+      }
+    } catch (e) {}
     // ── 目次 / シンタックスハイライト / 数式 (= ユーザー要望: 発展) ──
     buildToc();
     if (window.hljs) {
@@ -113288,7 +113905,7 @@ window.MathJax = {
     out.textContent = $src;
   }
 })();
-</script></body></html>''';
+</script>$mapsJs$syncJs</body></html>''';
 }
 
 /// マークダウンプレビューを file:// で開くための準備 (= ユーザー報告:
@@ -114251,6 +114868,24 @@ class _MarkdownPageView extends StatefulWidget {
 class _MarkdownPageViewState extends State<_MarkdownPageView> {
   final TextEditingController _ctrl = TextEditingController();
 
+  // ── 編集欄とプレビューのスクロールを揃える (= ユーザー要望: 半々で開く
+  //    時はスクロールバーを 1 つにして同じ所を出す) ──
+  //
+  // 割合合わせだと図の所で大きくずれるので、 **行番号** を渡してやり取りする。
+  // 編集欄側は「何行目が一番上か」 を TextPainter で測って持っておく。
+  final ScrollController _editorScroll = ScrollController();
+  /// 各行の先頭が編集欄の何 px 目から始まるか (折り返し込み)。
+  List<double> _lineTops = const <double>[];
+  /// _lineTops を測った時の本文と幅 (変わったら測り直す)。
+  String _lineTopsText = '\u0000';
+  double _lineTopsWidth = 0;
+  /// 編集欄の実際の幅 (LayoutBuilder で拾う)。
+  double _editorWidth = 0;
+  Timer? _scrollSyncThrottle;
+  /// こちらから動かした直後は、 返ってきた通知を無視する (往復防止)。
+  int _ignoreScrollUntilMs = 0;
+
+
   /// 添付ファイルを開いているか (= 保存先がファイル)。
   bool get _fileMode => widget.filePath != null;
 
@@ -114456,6 +115091,8 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
   @override
   void initState() {
     super.initState();
+    // 編集欄を動かしたらプレビューも同じ所へ (= ユーザー要望)。
+    _editorScroll.addListener(_onEditorScroll);
     _load();
     if (_isDesktopPlatform) _initWin();
   }
@@ -114478,6 +115115,8 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
       }).catchError((_) {});
     }
     _mdMsgSub?.cancel();
+    _scrollSyncThrottle?.cancel();
+    _editorScroll.dispose();
     _tabScroll.dispose();
     _ctrl.dispose();
     _sideMemoCtrl.dispose();
@@ -114706,16 +115345,163 @@ graph TD
   }
 
   /// 打鍵のたびに描き直すと重いので、 少し待ってからまとめて描く。
+  // ─── スクロールの連動 ────────────────────────────────────────────────
+
+  /// プレビュー (WebView) へ JS を流す。 端末で入口が違う。
+  void _previewExec(String js) {
+    try {
+      if (_isDesktopPlatform) {
+        if (_winReady) unawaited(_win?.executeScript(js) ?? Future.value());
+      } else {
+        unawaited(_iaw?.evaluateJavascript(source: js) ?? Future.value());
+      }
+    } catch (_) {}
+  }
+
+  /// 半々で開いていて、 連動させる場面か。
+  bool get _syncActive => _preview && _viewMode == 'split' && !_narrowScreen;
+
+  /// 各行の先頭が何 px 目に来るかを測り直す。
+  ///
+  /// 折り返しがあるので「行数 × 行の高さ」 では出せない。 編集欄と同じ
+  /// 字と幅で 1 回だけ組んで、 行頭の位置を拾っておく。
+  void _ensureLineTops() {
+    final text = _ctrl.text;
+    final width = _editorWidth - 28.0; // 左右の余白ぶん
+    if (width <= 0) return;
+    if (_lineTopsText == text && (_lineTopsWidth - width).abs() < 0.5) return;
+    final painter = TextPainter(
+      text: TextSpan(
+        text: text.isEmpty ? ' ' : text,
+        style: const TextStyle(
+            fontSize: 13, height: 1.6, fontFamily: 'Consolas'),
+      ),
+      textDirection: TextDirection.ltr,
+    );
+    try {
+      painter.layout(maxWidth: width);
+      final tops = <double>[0.0];
+      var idx = 0;
+      while (true) {
+        final nl = text.indexOf('\n', idx);
+        if (nl < 0) break;
+        idx = nl + 1;
+        tops.add(painter
+            .getOffsetForCaret(TextPosition(offset: idx), Rect.zero)
+            .dy);
+      }
+      _lineTops = tops;
+      _lineTopsText = text;
+      _lineTopsWidth = width;
+    } catch (_) {
+      _lineTops = const <double>[];
+    } finally {
+      painter.dispose();
+    }
+  }
+
+  /// 編集欄の今の位置 → 何行目 (1 始まり)。
+  int _lineAtEditorOffset(double offset) {
+    _ensureLineTops();
+    if (_lineTops.length < 2) return 1;
+    var lo = 0, hi = _lineTops.length - 1;
+    while (lo < hi) {
+      final mid = (lo + hi + 1) >> 1;
+      if (_lineTops[mid] <= offset) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return lo + 1;
+  }
+
+  /// 何行目 → 編集欄のその位置。
+  double _editorOffsetForLine(int line) {
+    _ensureLineTops();
+    if (_lineTops.isEmpty) return 0;
+    final i = (line - 1).clamp(0, _lineTops.length - 1);
+    return _lineTops[i];
+  }
+
+  /// 編集欄を動かしたらプレビューも同じ行へ。
+  void _onEditorScroll() {
+    if (!_syncActive || !mounted) return;
+    if (DateTime.now().millisecondsSinceEpoch < _ignoreScrollUntilMs) return;
+    if (_scrollSyncThrottle?.isActive == true) return;
+    _scrollSyncThrottle = Timer(const Duration(milliseconds: 80), () {});
+    if (!_editorScroll.hasClients) return;
+    final line = _lineAtEditorOffset(_editorScroll.offset);
+    _ignoreScrollUntilMs =
+        DateTime.now().millisecondsSinceEpoch + 350;
+    _previewExec(
+        'if(window.__mmScrollToLine){window.__mmScrollToLine($line);}');
+  }
+
+  /// プレビューを動かしたら編集欄も同じ行へ。
+  void _onPreviewScrolledToLine(int line) {
+    if (!_syncActive || !mounted || !_editorScroll.hasClients) return;
+    if (DateTime.now().millisecondsSinceEpoch < _ignoreScrollUntilMs) return;
+    final target = _editorOffsetForLine(line);
+    final max = _editorScroll.position.maxScrollExtent;
+    _ignoreScrollUntilMs = DateTime.now().millisecondsSinceEpoch + 350;
+    _editorScroll.jumpTo(target.clamp(0.0, max));
+  }
+
+  /// プレビューで押されたチェックを、 元の文に書き戻す
+  /// (= ユーザー要望: プレビュー画面からチェックを付けられるように)。
+  ///
+  /// プレビューの見た目はもう変わっているので、 ここでは描き直さない。
+  /// 描き直すと図が瞬いて、 スクロール位置も動いてしまう。
+  void _applyPreviewCheck(int line, bool checked) {
+    if (line <= 0) return;
+    final lines = _ctrl.text.split('\n');
+    if (line > lines.length) return;
+    final next = _toggleMarkdownCheckLine(lines[line - 1], checked);
+    if (next == null || next == lines[line - 1]) return;
+    lines[line - 1] = next;
+    final sel = _ctrl.selection;
+    _ctrl.text = lines.join('\n');
+    try {
+      _ctrl.selection = sel;
+    } catch (_) {}
+    _syncCurrentTab();
+    _saveDebounce?.cancel();
+    _saveDebounce = Timer(const Duration(milliseconds: 400), _saveNow);
+  }
+
+  /// 打っている間はページを読み込み直さず、 中身だけ差し替える。
+  ///
+  /// 読み込み直すとプレビューが毎回一番上へ戻ってしまい、 連動どころか
+  /// 文章が追えなくなる (= 500ms ごとに全部読み直していた)。
+  void _pushPreviewText() {
+    if (!_preview) return;
+    _previewExec(
+        'if(window.__mmUpdate){window.__mmUpdate(${jsonEncode(_ctrl.text)});}');
+  }
+
   void _scheduleRender() {
     if (!_preview) return;
     _renderDebounce?.cancel();
-    _renderDebounce = Timer(const Duration(milliseconds: 500), _render);
+    _renderDebounce = Timer(const Duration(milliseconds: 500), () {
+      // 一度読み込んだ後は中身の差し替えだけ (スクロール位置を保つ)。
+      if (_previewLoadedOnce) {
+        _pushPreviewText();
+      } else {
+        unawaited(_render());
+      }
+    });
   }
+
+  /// プレビューの HTML を一度でも読み込んだか。
+  bool _previewLoadedOnce = false;
 
   Future<void> _render() async {
     if (!mounted || !_preview) return;
+    // 読み込み直す間は差し替えを使わない (まだ関数が無いため)。
+    _previewLoadedOnce = false;
     final html = _markdownPreviewHtml(_ctrl.text, widget.provider.isDarkMode,
-        linkBridge: true);
+        linkBridge: true, syncScroll: true);
     try {
       if (_isDesktopPlatform) {
         // ── file:// で開く (= Mermaid 描画対応。 about:blank だと CDN の
@@ -114731,7 +115517,9 @@ graph TD
                 ? 'hljs-dark.css'
                 : 'hljs-light.css',
             mathjaxSrc: 'tex-svg.js',
-            tocLabel: widget.provider.t('md.toc'));
+            tocLabel: widget.provider.t('md.toc'),
+            syncScroll: true,
+            mapsJson: buildEmbeddedMapsJson(widget.provider, _ctrl.text));
         final fileUrl = await _prepareMarkdownPreviewFile(localHtml);
         if (!mounted || !_preview) return;
         if (fileUrl != null) {
@@ -115331,6 +116119,25 @@ graph TD
       if (m is String) m = jsonDecode(m);
       if (m is! Map) return;
       final type = '${m['type'] ?? ''}';
+      // ── プレビューの準備ができた (= ここから差し替えが効く) ──
+      if (type == 'mdReady') {
+        _previewLoadedOnce = true;
+        // 読み込み中に打った分があれば、 ここで一度だけ追い付かせる。
+        _pushPreviewText();
+        return;
+      }
+      // ── プレビュー側を動かした時の知らせ (= スクロール連動) ──
+      if (type == 'mdScroll') {
+        final line = (m['line'] as num?)?.toInt() ?? 1;
+        _onPreviewScrolledToLine(line);
+        return;
+      }
+      // ── プレビューでチェックを押した (= ユーザー要望) ──
+      if (type == 'mdCheck') {
+        _applyPreviewCheck(
+            (m['line'] as num?)?.toInt() ?? 0, m['checked'] == true);
+        return;
+      }
       final href = '${m['href'] ?? ''}'.trim();
       if (href.isEmpty) return;
       if (type == 'mdOpenUrl') {
@@ -116973,27 +117780,42 @@ $body''';
           child: CircularProgressIndicator(color: Color(0xFFBA68C8)));
     }
     final narrow = MediaQuery.of(context).size.width < 720;
+    // ★ 半々の時は、 スクロールバーをこちら 1 本だけにする
+    //   (プレビュー側は CSS で隠してある = ユーザー要望)。
+    //   幅は行の折り返しを測るのに使うので LayoutBuilder で拾っておく。
     final editorField = Container(
       color: const Color(0xFF14141F),
-      child: TextField(
-        controller: _ctrl,
-        maxLines: null,
-        expands: true,
-        textAlignVertical: TextAlignVertical.top,
-        style: const TextStyle(
-            color: Colors.white,
-            fontSize: 13,
-            height: 1.6,
-            fontFamily: 'Consolas'),
-        cursorColor: const Color(0xFFBA68C8),
-        decoration: InputDecoration(
-          contentPadding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-          border: InputBorder.none,
-          hintText: provider.t('mdPage.hint'),
-          hintStyle: const TextStyle(color: Colors.white30, fontSize: 12.5),
-        ),
-        onChanged: (_) => _onChanged(),
-      ),
+      child: LayoutBuilder(builder: (lbCtx, cons) {
+        if ((_editorWidth - cons.maxWidth).abs() > 0.5 &&
+            cons.maxWidth.isFinite) {
+          _editorWidth = cons.maxWidth;
+        }
+        return Scrollbar(
+          controller: _editorScroll,
+          thumbVisibility: true,
+          child: TextField(
+            controller: _ctrl,
+            scrollController: _editorScroll,
+            maxLines: null,
+            expands: true,
+            textAlignVertical: TextAlignVertical.top,
+            style: const TextStyle(
+                color: Colors.white,
+                fontSize: 13,
+                height: 1.6,
+                fontFamily: 'Consolas'),
+            cursorColor: const Color(0xFFBA68C8),
+            decoration: InputDecoration(
+              contentPadding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+              border: InputBorder.none,
+              hintText: provider.t('mdPage.hint'),
+              hintStyle:
+                  const TextStyle(color: Colors.white30, fontSize: 12.5),
+            ),
+            onChanged: (_) => _onChanged(),
+          ),
+        );
+      }),
     );
     // タブ列はヘッダー側 (全幅) へ移した (= ユーザー要望: 開いている
     //   ページをヘッダーに出す)。 ここは本文だけ。
@@ -205779,6 +206601,25 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
       if (m is String) m = jsonDecode(m);
       if (m is! Map) return;
       final type = '${m['type'] ?? ''}';
+      // ── スクロール連動 (= ユーザー要望: 同じ所が出るように) ──
+      if (type == 'mdScroll') {
+        _onMdPreviewScrolledToLine((m['line'] as num?)?.toInt() ?? 1);
+        return;
+      }
+      if (type == 'mdReady') {
+        // 読み込み中に打った分をここで追い付かせる。
+        try {
+          _mdWin?.executeScript(
+              'window.__mmUpdate(${jsonEncode(_previewSourceText())});');
+        } catch (_) {}
+        return;
+      }
+      // ── プレビューでチェックを押した (= ユーザー要望) ──
+      if (type == 'mdCheck') {
+        _applyMdPreviewCheck(
+            (m['line'] as num?)?.toInt() ?? 0, m['checked'] == true);
+        return;
+      }
       final code = '${m['code'] ?? ''}'.trim();
       switch (type) {
         case 'mermaidToAi':
@@ -206066,17 +206907,65 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
   }
 
   /// 編集側のスクロールにプレビューを追従させる (= スクロール同期)。
+  ///
+  /// 以前は「全体の何割か」 で合わせていたが、 図が大きい所で盛大にずれた
+  /// (mermaid の図は元の文では 5 行でも、 描くと 600px になる)。
+  /// **行番号** を渡して、 プレビュー側が見出しや図を目印に位置を出す
+  /// (= ユーザー要望: 同じ所が表示されるように)。
   void _syncSplitPreviewScroll() {
     if (!_mdSplitView || !_mdWinReady || !_scroll.hasClients) return;
+    if (DateTime.now().millisecondsSinceEpoch < _mdIgnoreScrollUntilMs) return;
     if (_mdScrollSyncThrottle?.isActive ?? false) return;
-    _mdScrollSyncThrottle = Timer(const Duration(milliseconds: 120), () {});
-    final max = _scroll.position.maxScrollExtent;
-    final frac = max <= 0 ? 0.0 : (_scroll.offset / max).clamp(0.0, 1.0);
+    _mdScrollSyncThrottle = Timer(const Duration(milliseconds: 80), () {});
+    final line = _mdLineAtEditorOffset(_scroll.offset);
+    _mdIgnoreScrollUntilMs = DateTime.now().millisecondsSinceEpoch + 350;
     try {
       _mdWin?.executeScript(
-          'window.scrollTo(0, (document.documentElement.scrollHeight - '
-          'window.innerHeight) * $frac);');
+          'if(window.__mmScrollToLine){window.__mmScrollToLine($line);}');
     } catch (_) {}
+  }
+
+  /// プレビューを動かした時、 編集欄も同じ行へ寄せる。
+  void _onMdPreviewScrolledToLine(int line) {
+    if (!_mdSplitView || !_scroll.hasClients || !mounted) return;
+    if (DateTime.now().millisecondsSinceEpoch < _mdIgnoreScrollUntilMs) return;
+    final target = _mdEditorOffsetForLine(line);
+    final max = _scroll.position.maxScrollExtent;
+    _mdIgnoreScrollUntilMs = DateTime.now().millisecondsSinceEpoch + 350;
+    _scroll.jumpTo(target.clamp(0.0, max));
+  }
+
+  /// 往復防止 (こちらから動かした直後は返事を無視する)。
+  int _mdIgnoreScrollUntilMs = 0;
+
+  /// プレビューで押されたチェックを、 本文に書き戻す
+  /// (= ユーザー要望: プレビュー画面からチェックを付けられるように)。
+  /// 見た目はもう変わっているので、 プレビューは描き直さない。
+  void _applyMdPreviewCheck(int line, bool checked) {
+    if (line <= 0 || line > _lines.length) return;
+    final next = _toggleMarkdownCheckLine(_lines[line - 1], checked);
+    if (next == null || next == _lines[line - 1]) return;
+    setState(() => _lines[line - 1] = next);
+    // 保存の目印だけ更新する (_markDirty はプレビューの描き直しも呼ぶので
+    // ここでは使わない)。
+    final h = _fullText.hashCode.toString();
+    final newDirty = h != _loadedHash;
+    if (newDirty != _dirty && mounted) setState(() => _dirty = newDirty);
+  }
+
+  // ── 行 ↔ 位置 ──
+  // この編集欄は 1 行 = 高さ `_lineHeight` の行を縦に並べているだけなので
+  // (ListView.builder、 折り返しなし)、 掛け算と割り算でぴったり出せる。
+
+  int _mdLineAtEditorOffset(double offset) {
+    if (_lineHeight <= 0) return 1;
+    final i = (offset / _lineHeight).floor();
+    return (i + 1).clamp(1, _lines.isEmpty ? 1 : _lines.length);
+  }
+
+  double _mdEditorOffsetForLine(int line) {
+    final i = (line - 1).clamp(0, _lines.isEmpty ? 0 : _lines.length - 1);
+    return i * _lineHeight;
   }
 
   Future<void> _renderMdPreview() async {
@@ -206158,7 +207047,11 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
             mathjaxSrc: 'tex-svg.js',
             tocLabel: context.read<MindMapProvider>().t('md.toc'),
             // 図の AI / コピーボタン (= ユーザー要望: 図の中身を AI に渡す)。
-            aiBridge: true);
+            aiBridge: true,
+            // 編集欄と同じ所を出す (= ユーザー要望: スクロールバーを 1 つに)。
+            syncScroll: true,
+            mapsJson: buildEmbeddedMapsJson(
+                context.read<MindMapProvider>(), _lines.join('\n')));
         final fileUrl = await _prepareMarkdownPreviewFile(localHtml);
         if (!mounted || (!_mdPreview && !_mdSplitView)) return;
         if (fileUrl != null) {
