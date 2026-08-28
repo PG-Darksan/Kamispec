@@ -36884,10 +36884,15 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     icon: e.$1,
                                     color: e.$2,
                                     title: provider.t(e.$3),
-                                    onTap: () => unawaited(launchUrl(
-                                        Uri.parse(
-                                            'https://hisator-notebook.com/${e.$4}'),
-                                        mode: LaunchMode.externalApplication)),
+                                    // ★ 外のブラウザではなくアプリの中で読める
+                                    //   ようにする (= ユーザー要望)。
+                                    onTap: () {
+                                      Navigator.pop(sctx);
+                                      _openGoogleSearchDialog(
+                                          context, provider,
+                                          initialUrl:
+                                              'https://hisator-notebook.com/${e.$4}');
+                                    },
                                   ),
                               ],
                             ),
@@ -60300,9 +60305,9 @@ class _MindMapScreenState extends State<MindMapScreen>
       );
     }
 
-    // ★ 入れ替えボタン (= ユーザー要望: ToDo とページ一覧の左右を入れ替え
-    //   られるように)。 長押しドラッグでも入れ替えられるが、 マウスでは
-    //   気付きにくいので、 押すだけで入れ替わるボタンを間に置く。
+    // ★ 入れ替えボタンは廃止 (= ユーザー要望: 入れ替えられなくていい)。
+    //   長押しドラッグでの入れ替えは残してある。
+    // ignore: unused_local_variable
     final swapBtn = Tooltip(
       message: provider.t('drawer.swapTabs'),
       child: InkWell(
@@ -60333,7 +60338,6 @@ class _MindMapScreenState extends State<MindMapScreen>
         // (= ユーザー要望)。
         draggable(_drawerTodoFirst ? 'todo' : 'maps'),
         const SizedBox(width: 4),
-        swapBtn,
         const SizedBox(width: 4),
         draggable(_drawerTodoFirst ? 'maps' : 'todo'),
       ]),
@@ -62397,11 +62401,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                       constraints:
                           const BoxConstraints(minWidth: 32, minHeight: 32),
                       icon: Stack(clipBehavior: Clip.none, children: [
-                        Icon(Icons.keyboard_command_key,
-                            color: isRootShortcut
-                                ? const Color(0xFF6C63FF)
-                                : Colors.white38,
-                            size: 16),
+                        // ★ 青くせず、 隣の ＋ と同じ白にそろえる (= ユーザー要望)。
+                        const Icon(Icons.keyboard_command_key,
+                            color: Colors.white70, size: 16),
                         if (isRootShortcut)
                           Positioned(
                             right: -2,
@@ -87379,34 +87381,8 @@ class _MindMapScreenState extends State<MindMapScreen>
 
                         const SizedBox(height: 20),
 
-                        // ── 利用者の属性 (= ユーザー要望: Google アカウントの
-                        //    年齢 / 性別 / 国を分析に使いたい) ──
-                        _devSection(provider.t('analytics.title'),
-                            Icons.insights_rounded, const Color(0xFFBA68C8)),
-                        const SizedBox(height: 8),
-                        SizedBox(
-                          width: double.infinity,
-                          child: ElevatedButton.icon(
-                            style: ElevatedButton.styleFrom(
-                                backgroundColor: const Color(0xFF241A2E),
-                                foregroundColor: Colors.white,
-                                side: const BorderSide(
-                                    color: Color(0xFFBA68C8), width: 1),
-                                padding:
-                                    const EdgeInsets.symmetric(vertical: 10)),
-                            icon: const Icon(Icons.insights_rounded,
-                                size: 16, color: Color(0xFFBA68C8)),
-                            label: Text(provider.t('analytics.title'),
-                                style:
-                                    const TextStyle(color: Color(0xFFBA68C8))),
-                            onPressed: () {
-                              Navigator.pop(dctx);
-                              _showAnalyticsProfileDialog(ctx, provider);
-                            },
-                          ),
-                        ),
-
-                        const SizedBox(height: 20),
+                        // ★ 「利用者の属性 (分析用)」 は廃止 (= ユーザー要望)。
+                        //   年齢・性別の送信自体も b207 で止めてある。
 
                         // ── 問い合わせ受信箱 ──
                         _devSection('問い合わせ受信箱', Icons.inbox_rounded,
@@ -224954,21 +224930,46 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
                 ),
               ),
             ]),
-            // ── 右下リサイズグリップ ──
+            // ── 大きさを変えるつまみは上の両角 ──
+            //    ★ 右下にあると送信ボタンと隔てなくて押し間違える
+            //      (= ユーザー報告)。 上の左右に移す。
+            //      上を掴むので、 伸ばすと上端も一緒に動く。
             Positioned(
-              right: 0,
-              bottom: 0,
+              left: 0,
+              top: 0,
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onPanUpdate: (d) => setState(() {
-                  _w = (_w + d.delta.dx).clamp(360.0, screen.width);
-                  _h = (_h + d.delta.dy).clamp(280.0, screen.height);
+                  final nw = (_w - d.delta.dx).clamp(360.0, screen.width);
+                  final nh = (_h - d.delta.dy).clamp(280.0, screen.height);
+                  _pos = Offset(_pos.dx + (_w - nw), _pos.dy + (_h - nh));
+                  _w = nw;
+                  _h = nh;
                   _scheduleSaveGeometry();
                 }),
                 child: const Padding(
                   padding: EdgeInsets.all(4),
-                  child: Icon(Icons.south_east_rounded,
-                      size: 14, color: Colors.white38),
+                  child: Icon(Icons.north_west_rounded,
+                      size: 13, color: Colors.white38),
+                ),
+              ),
+            ),
+            Positioned(
+              right: 0,
+              top: 0,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onPanUpdate: (d) => setState(() {
+                  final nh = (_h - d.delta.dy).clamp(280.0, screen.height);
+                  _pos = Offset(_pos.dx, _pos.dy + (_h - nh));
+                  _h = nh;
+                  _w = (_w + d.delta.dx).clamp(360.0, screen.width);
+                  _scheduleSaveGeometry();
+                }),
+                child: const Padding(
+                  padding: EdgeInsets.all(4),
+                  child: Icon(Icons.north_east_rounded,
+                      size: 13, color: Colors.white38),
                 ),
               ),
             ),

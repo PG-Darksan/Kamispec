@@ -7604,7 +7604,8 @@ class _FloatingWebWindowAppState extends State<_FloatingWebWindowApp>
                   ),
                 ),
                 // よく使う速度をすぐ選べるように (= 押すだけで切り替え)。
-                for (final r in const [1.0, 1.5, 2.0])
+                // ★ 1.0 / 2.0 / 4.0 にする (= ユーザー要望)。
+                for (final r in const [1.0, 2.0, 4.0])
                   TextButton(
                     style: TextButton.styleFrom(
                       padding: const EdgeInsets.symmetric(horizontal: 4),
