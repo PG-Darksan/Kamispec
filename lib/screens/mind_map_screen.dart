@@ -35688,78 +35688,32 @@ class _MindMapScreenState extends State<MindMapScreen>
                   spacing: 8,
                   runSpacing: 8,
                   children: [
-                    // ★ ブラウザではなくアプリの AI アシスタント (API) で
-                    //   受ける選択肢 (= ユーザー要望)。
-                    _aiModeChip(provider, dctx, const {
-                      'id': 'assistant',
-                      'label': 'AI アシスタント (API)',
-                    }),
                     for (final t in MindMapProvider.browserAiTargets)
                       _aiModeChip(provider, dctx, t),
                   ],
                 ),
-                const SizedBox(height: 16),
-                const Divider(color: Colors.white12, height: 1),
                 const SizedBox(height: 14),
-                InkWell(
-                  onTap: () => Navigator.pop(dctx, 'gen'),
-                  borderRadius: BorderRadius.circular(10),
-                  child: Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 12),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF43B97F).withValues(alpha: 0.15),
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(
-                          color:
-                              const Color(0xFF43B97F).withValues(alpha: 0.55)),
-                    ),
-                    child: Row(children: [
-                      const Icon(Icons.account_tree_rounded,
-                          color: Color(0xFF43B97F), size: 18),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(provider.t('ai.genChildrenApi'),
-                            style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600)),
-                      ),
-                    ]),
-                  ),
+                const Divider(color: Colors.white12, height: 1),
+                const SizedBox(height: 12),
+                // ★ アプリの AI アシスタントはブラウザの AI とは別物なので
+                //   並べない (= ユーザー要望)。
+                Text(provider.t('ai.inAppMode'),
+                    style: const TextStyle(
+                        color: Colors.white54,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700)),
+                const SizedBox(height: 10),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: _aiModeChip(provider, dctx, const {
+                    'id': 'assistant',
+                    'label': 'AI アシスタント',
+                  }),
                 ),
-                const SizedBox(height: 8),
-                // ── AI に質問して回答を取得 (= ユーザー要望: 答えをマップ/メモへ) ──
-                InkWell(
-                  onTap: () => Navigator.pop(dctx, 'ask'),
-                  borderRadius: BorderRadius.circular(10),
-                  child: Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 12),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF4FC3F7).withValues(alpha: 0.15),
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(
-                          color:
-                              const Color(0xFF4FC3F7).withValues(alpha: 0.55)),
-                    ),
-                    child: Row(children: [
-                      const Icon(Icons.quiz_rounded,
-                          color: Color(0xFF4FC3F7), size: 18),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(provider.t('ai.askGetAnswer'),
-                            style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600)),
-                      ),
-                    ]),
-                  ),
-                ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 14),
+                // ★ 「子要素を生成」 と 「AI に質問して回答を取得」 は廃止
+                //   (= ユーザー要望: AI アシスタントで代用できる)。
+                //   送り先 ('gen' / 'ask') の処理は他の入口用に残してある。
                 // ── AI に渡す前提条件の設定 (= ユーザー要望: 要素の AI ボタンを
                 //    右クリックした時に前提条件プロンプトを設定できる項目) ──
                 //    ★ これはブラウザの AI に渡す文章の先頭に付く指示なので、
@@ -224574,6 +224528,29 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
     widget.onClose();
   }
 
+  /// 中身 (会話画面のヘッダーなど) からも掴んで動かせるようにする
+  /// (= ユーザー報告: 上の細い帯だけだと掴みにくい)。
+  ///
+  /// 掴む所を増やすだけで、 位置の丸め方も 画面の外へ放したら外の窓になる所も
+  /// 上の帯と全く同じ道を通す。
+  void dragWindowBy(Offset delta) {
+    if (!mounted) return;
+    final screen = MediaQuery.of(context).size;
+    final maxLeft = math.max(0.0, screen.width - _w / 4);
+    final maxTop = math.max(0.0, screen.height - _h / 4);
+    final minLeft = -_w * 0.75;
+    final minTop = -_h * 0.75;
+    setState(() => _pos = Offset((_pos.dx + delta.dx).clamp(minLeft, maxLeft),
+        (_pos.dy + delta.dy).clamp(minTop, maxTop)));
+    _scheduleSaveGeometry();
+  }
+
+  /// 掴んでいた手を離した時 (画面の外なら外の窓になる)。
+  void dragWindowEnd() {
+    if (!mounted) return;
+    unawaited(_handleDragRelease(MediaQuery.of(context).size));
+  }
+
   @override
   Widget build(BuildContext context) {
     final screen = MediaQuery.of(context).size;
@@ -226036,12 +226013,27 @@ class _McpChatDialogState extends State<_McpChatDialog> {
 
   /// モデル名と残りトークンの行。 文字が気になる人は畳める (= ユーザー要望)。
   /// 畳んでも目のボタンだけは残るので、 いつでも戻せる。
+  /// モデル欄を隠している間、 そのあたりにカーソルがあるか。
+  bool _modelBarHover = false;
+
   Widget _buildModelBar() {
     final hidden = provider.mcpModelBarHidden;
-    return Padding(
+    return MouseRegion(
+      onEnter: (_) {
+        if (!_modelBarHover) setState(() => _modelBarHover = true);
+      },
+      onExit: (_) {
+        if (_modelBarHover) setState(() => _modelBarHover = false);
+      },
+      child: Padding(
       padding: const EdgeInsets.fromLTRB(8, 4, 10, 0),
       child: Row(children: [
-        IconButton(
+        // ★ 隠している間はこのボタンも消す。 カーソルを乗せた時だけ
+        //   浮かび上がる (= ユーザー要望: 他の非表示ボタンと同じ動き)。
+        AnimatedOpacity(
+          duration: const Duration(milliseconds: 120),
+          opacity: (!hidden || _modelBarHover) ? 1 : 0,
+          child: IconButton(
           tooltip:
               provider.t(hidden ? 'mcp.showModelBar' : 'mcp.hideModelBar'),
           padding: EdgeInsets.zero,
@@ -226053,6 +226045,7 @@ class _McpChatDialogState extends State<_McpChatDialog> {
               size: 15,
               color: Colors.white38),
           onPressed: () => provider.setMcpModelBarHidden(!hidden),
+        ),
         ),
         if (!hidden) ...[
           const SizedBox(width: 2),
@@ -226073,6 +226066,7 @@ class _McpChatDialogState extends State<_McpChatDialog> {
           ),
         ],
       ]),
+      ),
     );
   }
 
@@ -226488,6 +226482,28 @@ class _McpChatDialogState extends State<_McpChatDialog> {
     } catch (_) {}
   }
 
+  /// 添えた画像を大きく見る (= ユーザー要望: 押したら拡大)。
+  void _showAttachedImage(int index) {
+    if (index < 0 || index >= _images.length) return;
+    final bytes = base64Decode(_images[index].base64);
+    showDialog<void>(
+      context: context,
+      useRootNavigator: false,
+      barrierColor: Colors.black87,
+      builder: (dctx) => GestureDetector(
+        onTap: () => Navigator.of(dctx).pop(),
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: InteractiveViewer(
+            minScale: 0.5,
+            maxScale: 6,
+            child: Center(child: Image.memory(bytes)),
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _pickAttachment() async {
     try {
       final res = await FilePicker.platform.pickFiles(withData: false);
@@ -226851,12 +226867,24 @@ class _McpChatDialogState extends State<_McpChatDialog> {
               const Icon(Icons.auto_awesome_rounded,
                   size: 18, color: Color(0xFF80CBC4)),
               const SizedBox(width: 8),
+              // ★ 見出しの何も無い所を掴んでも窓を動かせる
+              //   (= ユーザー報告: 上の細い帯だけだと掴みにくい)。
+              //   浮遡窓の中に居る時だけ効く。
               Expanded(
-                child: Text(provider.t('mcp.chatTitle'),
-                    style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700)),
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onPanUpdate: (d) => context
+                      .findAncestorStateOfType<_FloatingPanelWindowState>()
+                      ?.dragWindowBy(d.delta),
+                  onPanEnd: (_) => context
+                      .findAncestorStateOfType<_FloatingPanelWindowState>()
+                      ?.dragWindowEnd(),
+                  child: Text(provider.t('mcp.chatTitle'),
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700)),
+                ),
               ),
               // (ブラウザ版 AI を開くボタンは削除 = ユーザー要望:
               //  AI アシスタントからはブラウザ版 AI を開けないように)
@@ -227288,13 +227316,21 @@ class _McpChatDialogState extends State<_McpChatDialog> {
           if (_images.isNotEmpty)
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
-              child: Wrap(
+              // ★ 左端から並べる (= ユーザー要望)。 幅を一杯に張らないと
+              //   親の Column に真ん中へ寄せられてしまう。
+              child: SizedBox(
+                width: double.infinity,
+                child: Wrap(
+                alignment: WrapAlignment.start,
                 spacing: 6,
                 runSpacing: 6,
                 children: [
                   for (var i = 0; i < _images.length; i++)
                     Stack(children: [
-                      ClipRRect(
+                      // 押すと大きく見れる (= ユーザー要望)。
+                      GestureDetector(
+                        onTap: () => _showAttachedImage(i),
+                        child: ClipRRect(
                         borderRadius: BorderRadius.circular(6),
                         child: Image.memory(
                           base64Decode(_images[i].base64),
@@ -227303,6 +227339,7 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                           fit: BoxFit.cover,
                           gaplessPlayback: true,
                         ),
+                      ),
                       ),
                       Positioned(
                         right: 0,
@@ -227323,6 +227360,7 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                       ),
                     ]),
                 ],
+              ),
               ),
             ),
           // ── 使うモデル と 残り (= ユーザー要望: モデル切替 / 残トークン。

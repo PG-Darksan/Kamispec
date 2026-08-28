@@ -10982,6 +10982,11 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Resposta da IA adicionada ao mapa',
       'ru': 'Ответ ИИ добавлен на карту',
     },
+    // ブラウザの AI とは別枚で並べる見出し (= ユーザー要望)。
+    'ai.inAppMode': {
+      'ja': 'アプリの AI (API キー使用)',
+      'en': 'In-app AI (uses your API key)',
+    },
     'ai.questionMode': {
       'ja': '質問モード（ブラウザの AI にタイトルを渡す）',
       'en': 'Question mode (pass the title to the browser AI)',
