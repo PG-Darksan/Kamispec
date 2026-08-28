@@ -7261,7 +7261,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       builder: (overlayCtx) {
         return Positioned(
           left: screenX - 70,
-          top: screenY - 56,
+          // ★ 要素のすぐ上に寄せる (= ユーザー報告: 上側に来過ぎ)。
+          top: screenY - 38,
           child: Material(
             color: Colors.transparent,
             child: Row(mainAxisSize: MainAxisSize.min, children: [
@@ -67500,18 +67501,26 @@ class _MindMapScreenState extends State<MindMapScreen>
       //   後ろに隠れているなら前面に出し直す (= ユーザー要望)。
       //   既に一番手前にあるなら、 今までどおり閉じる (トグル)。
       final key = Uri.tryParse(u)?.host ?? u;
-      final openPid = _externalWebPids[key];
-      if (openPid != null) {
-        final wasFront = bringExternalWindowToFront(openPid);
-        if (!wasFront) return; // 前面に出したので、ここで終わり
-        _externalWebPids.remove(key);
-        var closed = false;
-        try {
-          closed = Process.killPid(openPid);
-        } catch (_) {}
-        if (closed) return;
-      }
       unawaited(() async {
+        // ★ 覚えている窓が本当に生きているか先に確かめる。
+        //   利用者がその窓の × で閉じると台帳に pid だけ残り、
+        //   次に押しても「前面に出した」 扱いになって何も開かなかった
+        //   (= ユーザー報告: 閉じて再度押しても立ち上がらない)。
+        final openPid = _externalWebPids[key];
+        if (openPid != null) {
+          if (!await _externalWinAlive(openPid)) {
+            _externalWebPids.remove(key); // もう無い → 作り直す
+          } else {
+            final wasFront = bringExternalWindowToFront(openPid);
+            if (!wasFront) return; // 前面に出したので、ここで終わり
+            _externalWebPids.remove(key);
+            var closed = false;
+            try {
+              closed = Process.killPid(openPid);
+            } catch (_) {}
+            if (closed) return;
+          }
+        }
         // 出てきたペインの上に出す (= ユーザー要望: 分割からフローティングに
         //   した時に変な位置へ飛ばない)。 ペインの場所が分からない時だけ、
         //   今までどおり直近に押したボタンの近くに出す。
@@ -67529,7 +67538,19 @@ class _MindMapScreenState extends State<MindMapScreen>
           } else {
             final p = _lastCustomButtonPointerPos;
             if (p != null) {
-              pos = Offset(b.left + p.dx + 16, b.top + p.dy + 16);
+              // ★ 押した場所の近くに出すが、 画面からはみ出さない
+              //   (= ユーザー報告: 画面下のボタンから開くと下に大幅に
+              //   はみ出す)。 窓の大きさは向こうで決まるので、 余裕を
+              //   見た大きさで丸めておく。
+              const winW = 1000.0;
+              const winH = 760.0;
+              var x = b.left + p.dx + 16;
+              var y = b.top + p.dy + 16;
+              if (x + winW > b.right) x = b.right - winW;
+              if (y + winH > b.bottom) y = b.bottom - winH;
+              if (x < b.left) x = b.left;
+              if (y < b.top) y = b.top;
+              pos = Offset(x, y);
             }
           }
         } catch (_) {}
@@ -75550,11 +75571,12 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 読み取って「コピー / ノートに書き出す」 が選べる形で出す。
   /// あわせて QR も読めていればリンクとして開ける (下の結果画面で案内)。
   Future<void> _openOcrImageSearch() async {
+    // ★ いきなりファイル選択を開かない (= ユーザー要望)。
+    //   先に「どの AI で読み取りますか」 の画面を出し、 そこの
+    //   「ファイルを選択」 を押した時にはじめて選ばせる。
+    if (!await _confirmOcrModel()) return;
     final path = await _pickImageForOcr();
     if (path == null || !mounted) return;
-    // ★ 読み取る前に AI を選ばせる (= ユーザー要望: 読み込んだ後で選ぶのは
-    //   良くない。 Gemini 以外でも使えるなら、 まず選んでから読み込む)。
-    if (!await _confirmOcrModel()) return;
     await _runOcrOn(path);
   }
 
@@ -75601,8 +75623,8 @@ class _MindMapScreenState extends State<MindMapScreen>
           ),
           FilledButton.icon(
             onPressed: () => Navigator.pop(dctx, true),
-            icon: const Icon(Icons.document_scanner_rounded, size: 16),
-            label: Text(provider.t('ocr.read')),
+            icon: const Icon(Icons.image_outlined, size: 16),
+            label: Text(provider.t('ocr.pickFile')),
           ),
         ],
       ),
@@ -76018,6 +76040,13 @@ class _MindMapScreenState extends State<MindMapScreen>
           ]),
         ),
         actions: [
+          // ★ 閉じるを左端へ (= ユーザー報告: 閉じるが真ん中にあるのが
+          //   気になる。 コピーと閉じるを入れ替える)。
+          TextButton(
+            onPressed: () => Navigator.pop(dctx),
+            child: Text(provider.t('btn.close'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
           TextButton(
             onPressed: () {
               Clipboard.setData(ClipboardData(text: content));
@@ -76025,11 +76054,6 @@ class _MindMapScreenState extends State<MindMapScreen>
                   context, SnackBar(content: Text(provider.t('qr.copied'))));
             },
             child: Text(provider.t('btn.copy'),
-                style: const TextStyle(color: Colors.white54)),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(dctx),
-            child: Text(provider.t('btn.close'),
                 style: const TextStyle(color: Colors.white54)),
           ),
           ElevatedButton.icon(

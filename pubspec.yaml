@@ -5,7 +5,7 @@ description: >-
 publish_to: 'none'
 # ビルド番号 (b205 …) を正として揃える。 msix_version も同じ番号にする
 #   (= ストア用は 4 桁・末尾 0)。 リリースのたびに両方を上げること。
-version: 1.0.0+214
+version: 1.0.0+215
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -316,7 +316,7 @@ msix_config:
   publisher: CN=BB5643C0-04E4-44B9-839E-09B54138A1D4
   # ★ 提出のたびに必ず上げる。 Partner Center は同一以下のバージョンを弾く。
   #   pubspec の version (1.0.0+206) と番号を合わせてある。
-  msix_version: 1.0.214.0
+  msix_version: 1.0.215.0
   logo_path: windows/runner/resources/msix_logo.png
   # ★ capabilities は「実際に使う物だけ」 を宣言する。
   #   - internetClient : クラウド同期 / AI / 決済

@@ -19573,6 +19573,11 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'A IA escolhida lerá o texto da imagem. Você pode trocar e ler novamente depois.',
       'ru': 'Выбранный ИИ прочитает текст на изображении. Позже можно сменить и прочитать снова.',
     },
+    // 先に AI を選んでからファイルを選ぶ形にした (= ユーザー要望)。
+    'ocr.pickFile': {
+      'ja': 'ファイルを選択',
+      'en': 'Choose a file',
+    },
     'ocr.read': {
       'ja': '読み取る',
       'en': 'Read',
