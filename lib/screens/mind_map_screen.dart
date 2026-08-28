@@ -10692,7 +10692,9 @@ class _MindMapScreenState extends State<MindMapScreen>
               style: TextStyle(
                   color: Colors.white.withValues(alpha: 0.5), fontSize: 11)),
         ),
-        for (final st in _openStylesFor('aiAssistant'))
+        // 全画面は選べない (= ユーザー要望)。
+        for (final st in _openStylesFor('aiAssistant')
+            .where((s) => s != 'full' && s != 'fullscreen'))
           PopupMenuItem<String>(
             value: st,
             height: 36,
@@ -18234,9 +18236,11 @@ class _MindMapScreenState extends State<MindMapScreen>
         _appSnack(
             context,
             SnackBar(
-              content:
-                  Text(context.read<MindMapProvider>().t('submap.noOther')),
-              backgroundColor: Color(0xFFFFB347),
+              // ★ 背景が明るいので白文字だと読めない (= ユーザー報告)。
+              content: Text(
+                  context.read<MindMapProvider>().t('submap.noOther'),
+                  style: const TextStyle(color: Colors.black87)),
+              backgroundColor: const Color(0xFFFFB347),
             ));
       }
       return null;
@@ -38595,8 +38599,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                               final cur = _hcbPlacedFrac > 0
                                   ? _hcbPlacedFrac
                                   : (_isDesktop ? 0.26 : 0.32);
+                              // ★ 下げすぎると下の「追加できるボタン」 が欄の外へ
+                              //   押し出される (= ユーザー報告)。 半分までにして
+                              //   下半分は必ず残す。
                               _hcbPlacedFrac = (cur + d.delta.dy / maxH)
-                                  .clamp(0.12, 0.68)
+                                  .clamp(0.12, 0.50)
                                   .toDouble();
                             });
                           },
@@ -58932,6 +58939,22 @@ class _MindMapScreenState extends State<MindMapScreen>
     //    アシスタントの画面自体を左右分割で出せるように) ──
     // お題つき (新規ページ作成など) はダイアログのまま。 ペインは常設の
     //   作業場所として使う想定なので、 その場限りの用件と混ぜない。
+    // ★ 全画面ではマップを見ながら指示を出せないので、 アシスタントは
+    //   全画面で開かない (= ユーザー要望)。 パソコンで分割以外なら
+    //   必ず浮かせて開く。 (スマホは浮遡窓が無いので従来どおり)
+    if (_isDesktop && !floatingPanel) {
+      try {
+        await _commandOpenStylesReady;
+      } catch (_) {}
+      if (!mounted) return;
+      final st = _openStyleOf('aiAssistant');
+      if (st != 'splitLeft' && st != 'splitRight') {
+        // ignore: discarded_futures
+        _openMcpChat(provider,
+            initialTask: initialTask, floatingPanel: true);
+        return;
+      }
+    }
     if (_isDesktop && !floatingPanel && initialTask == null) {
       try {
         await _commandOpenStylesReady;
@@ -58991,7 +59014,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         width: 520,
         height: 700,
         memoryKey: 'assistant',
-        onRestoreFull: () => _reopenCommandFullscreen('aiAssistant'),
+        // 全画面では開かないので「全画面に戻す」 も出さない。
         // アプリの外へ出す (= ユーザー要望)。 アシスタントは Web ページでは
         //   ないので、 別プロセスの Web 窓ではなくサブ窓に会話だけを映す。
         //   考える所 (_McpChatSession) は本体に残したまま動かす。
@@ -66313,6 +66336,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     // 計算機 / タイマーは中身が小さいので、 半分だと間延びする。
     'calculator': 0.24,
     'stopwatch': 0.24,
+    // AI アシスタントは半分だと広すぎてマップが見えない
+    //   (= ユーザー要望: 左右分割の既定の横幅を小さく)。
+    'aiAssistant': 0.30,
   };
 
   static bool _isNarrowPaneTool(String? id) =>
@@ -83224,6 +83250,25 @@ class _MindMapScreenState extends State<MindMapScreen>
                       },
                     );
                     }),
+                  ),
+                  // ── 取り込み方 (= ユーザー報告: ローカルで消した要素が
+                  //    ダウンロードしても戻らない) ──
+                  //    既定は今までどおり、 ローカルの編集を残して合流する。
+                  //    入れるとクラウドの内容でそのまま置き換える。
+                  CheckboxListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    controlAffinity: ListTileControlAffinity.leading,
+                    activeColor: const Color(0xFFFFB74D),
+                    title: Text(provider.t('download.overwriteMode'),
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 12)),
+                    subtitle: Text(provider.t('download.overwriteModeHint'),
+                        style: const TextStyle(
+                            color: Colors.white54, fontSize: 10.5)),
+                    value: provider.cloudDownloadOverwrite,
+                    onChanged: (v) => setD(
+                        () => provider.cloudDownloadOverwrite = v == true),
                   ),
                   Row(mainAxisAlignment: MainAxisAlignment.end, children: [
                     TextButton(
@@ -189426,50 +189471,14 @@ $csvText
           // ── 画面分割で開く (左/右の 2 ボタン) ──
           // (左右の画面分割ボタンは廃止 = ユーザー要望: 分割表示中は
           //  ファイルが自動でペインに開くため不要になった)
-          // 数式表示トグル (= 結果表示 / 数式そのものを表示)
-          // OFF の時は amber 色で目立たせて「数式が計算されないバグ」 と
-          // 勘違いされないようにする。
-          if (!_showFormulaResults)
-            Container(
-              margin: const EdgeInsets.only(right: 6),
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: Colors.amber.withValues(alpha: 0.2),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: Colors.amber, width: 1),
-              ),
-              child: InkWell(
-                onTap: () {
-                  _commitEdit();
-                  _invalidateFormulaCache();
-                  setState(() => _showFormulaResults = true);
-                },
-                borderRadius: BorderRadius.circular(10),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.warning_amber_rounded,
-                        size: 14, color: Colors.amber),
-                    const SizedBox(width: 4),
-                    Text(context.read<MindMapProvider>().t('ss.formulaOff'),
-                        style: const TextStyle(
-                            color: Colors.amber,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w700)),
-                    const SizedBox(width: 4),
-                    Text(context.read<MindMapProvider>().t('ss.tapToOn'),
-                        style: const TextStyle(
-                            color: Colors.amber,
-                            fontSize: 10,
-                            fontWeight: FontWeight.w500)),
-                  ],
-                ),
-              ),
-            ),
+          // 数式表示トグル (= 結果表示 / 数式そのものを表示)。
+          // ★ 隣に出していた「数式OFF / タップでON」 の札は廃止
+          //   (= ユーザー要望: 見れば分かるので文字は要らない)。
+          //   状態はこのボタンの色 (amber) と斜線で分かる。
           IconButton(
             tooltip: _showFormulaResults
-                ? '数式の結果を表示中\n(タップで数式テキストを表示)'
-                : '数式テキストを表示中\n(タップで結果を表示)',
+                ? context.read<MindMapProvider>().t('ss.formulaTipOn')
+                : context.read<MindMapProvider>().t('ss.formulaTipOff'),
             icon: Stack(
               clipBehavior: Clip.none,
               alignment: Alignment.center,
@@ -217977,6 +217986,11 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
   /// ペンの太さ
   double _annotWidth = 3.0;
 
+  /// 色えらびを広げているか (= ユーザー要望: 既定は閉じておいて、
+  /// 押した時だけ広げる)。 12 色分で 約 318px 横に使うので、 道具の
+  /// ボタンが画面外に押し出されて「押せない」 原因にもなっていた。
+  bool _annotColorsOpen = false;
+
   /// 注釈の道具 (= ユーザー要望: PDF と同じく図形・線も置けるように)。
   /// 'pen' / 'line' / 'arrow' / 'rect' / 'ellipse' / 'check'
   String _annotTool = 'pen';
@@ -218227,6 +218241,33 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
     }
   }
 
+  /// 切り抜いた範囲で元の画像を置き換える (= ユーザー要望: 切り抜き
+  /// 箇所を確定させられるように)。 トリミングの「適用」 と同じ振る舞い。
+  Future<void> _applyCutout() async {
+    final provider = context.read<MindMapProvider>();
+    final bytes = await _renderLassoCutoutPng();
+    if (bytes == null) {
+      _showSnack(provider.t('imgCut.needLasso'));
+      return;
+    }
+    try {
+      // 壊す前に控えを取る (トリミングと同じ)。
+      await _backupOriginalIfNeeded();
+      await File(widget.filePath).writeAsBytes(bytes);
+      await _evictImageCache();
+      widget.onSaved?.call();
+      if (!mounted) return;
+      setState(() {
+        _mode = 'view';
+        _lassoPoints.clear();
+        _lassoClosed = false;
+      });
+      _showSnack(provider.t('imgCut.applied'));
+    } catch (e) {
+      _showSnack('${provider.t('imgCut.applyFailed')}: $e');
+    }
+  }
+
   /// なげなわ切り抜きを PNG ファイルとして保存する (Downloads / Documents)。
   Future<void> _saveLassoCutout() async {
     final provider = context.read<MindMapProvider>();
@@ -218268,27 +218309,38 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
     }
 
     return Positioned.fill(
-      child: GestureDetector(
+      // ★ 切り抜き枠を画像の外に出さない (= ユーザー要望)。
+      //   この重ねは表示中の画像ちょうどの大きさなので、
+      //   0..maxWidth / 0..maxHeight に丸めればそのまま画像の中に収まる。
+      //   丸めないと切り抜き結果にも透明の余白が入ってしまう。
+      child: LayoutBuilder(builder: (lctx, cons) {
+        Offset clampIn(Offset p) => Offset(
+              p.dx.clamp(0.0, cons.maxWidth),
+              p.dy.clamp(0.0, cons.maxHeight),
+            );
+        return GestureDetector(
         behavior: HitTestBehavior.opaque,
         onPanStart: (d) {
+          final p = clampIn(d.localPosition);
           setState(() {
             if (_cutoutRect) {
-              _cutoutRectStart = d.localPosition;
-              setRectPoints(d.localPosition, d.localPosition);
+              _cutoutRectStart = p;
+              setRectPoints(p, p);
             } else {
               _lassoPoints
                 ..clear()
-                ..add(d.localPosition);
+                ..add(p);
             }
             _lassoClosed = false;
           });
         },
         onPanUpdate: (d) {
+          final p = clampIn(d.localPosition);
           setState(() {
             if (_cutoutRect && _cutoutRectStart != null) {
-              setRectPoints(_cutoutRectStart!, d.localPosition);
+              setRectPoints(_cutoutRectStart!, p);
             } else {
-              _lassoPoints.add(d.localPosition);
+              _lassoPoints.add(p);
             }
           });
         },
@@ -218304,10 +218356,13 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
         },
         child: CustomPaint(
           painter: _LassoPainter(
-              points: _lassoPoints, closed: _lassoClosed),
+              points: _lassoPoints,
+              closed: _lassoClosed,
+              rectMode: _cutoutRect),
           size: Size.infinite,
         ),
-      ),
+        );
+      }),
     );
   }
 
@@ -218672,6 +218727,22 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
     final bool shapeMode = _annotTool != 'pen';
     return Positioned.fill(
       child: GestureDetector(
+        // ★ 押しただけ (ドラッグしていない) でも図形を置く
+        //   (= ユーザー報告: 押しても反応しない時がある)。
+        //   以前は 4px 未満の動きを黙って捨てていた。
+        onTapUp: (d) {
+          if (!shapeMode) return;
+          setState(() {
+            const half = 22.0;
+            _annotShapes.add(_ImgShape(
+              kind: _annotTool,
+              start: d.localPosition - const Offset(half, half),
+              end: d.localPosition + const Offset(half, half),
+              color: _annotColor,
+              width: _annotWidth,
+            ));
+          });
+        },
         onPanStart: (d) {
           setState(() {
             if (shapeMode) {
@@ -218966,6 +219037,15 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
                   _lassoClosed = false;
                 }),
               ),
+              // ★ 切り抜きを画像に確定する (= ユーザー要望)。
+              //   これまではコピーと別ファイル保存しか無かった。
+              TextButton.icon(
+                icon: const Icon(Icons.check_rounded,
+                    color: Color(0xFF43B97F), size: 18),
+                label: Text(context.read<MindMapProvider>().t('btn.apply'),
+                    style: const TextStyle(color: Color(0xFF43B97F))),
+                onPressed: _lassoClosed ? _applyCutout : null,
+              ),
               TextButton.icon(
                 icon: const Icon(Icons.copy_rounded,
                     color: Color(0xFF43B97F), size: 18),
@@ -219025,25 +219105,48 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
                       const Color(0xFF8D6E63), // 茶
                       Colors.white,
                       Colors.black,
-                    ].map((c) => GestureDetector(
-                          onTap: () => setState(() => _annotColor = c),
-                          child: Container(
-                            width: 22,
-                            height: 22,
-                            margin:
-                                const EdgeInsets.symmetric(horizontal: 2),
-                            decoration: BoxDecoration(
-                              color: c,
-                              shape: BoxShape.circle,
-                              border: Border.all(
-                                color: _annotColor == c
-                                    ? Colors.white
-                                    : Colors.white24,
-                                width: _annotColor == c ? 2 : 1,
+                    ]
+                        // 閉じている間は今の色だけ見せる。
+                        .where((c) =>
+                            _annotColorsOpen || _annotColor.toARGB32() == c.toARGB32())
+                        .map((c) => GestureDetector(
+                              onTap: () => setState(() {
+                                _annotColor = c;
+                                _annotColorsOpen = false;
+                              }),
+                              child: Container(
+                                width: 22,
+                                height: 22,
+                                margin:
+                                    const EdgeInsets.symmetric(horizontal: 2),
+                                decoration: BoxDecoration(
+                                  color: c,
+                                  shape: BoxShape.circle,
+                                  border: Border.all(
+                                    color: _annotColor == c
+                                        ? Colors.white
+                                        : Colors.white24,
+                                    width: _annotColor == c ? 2 : 1,
+                                  ),
+                                ),
                               ),
-                            ),
-                          ),
-                        )),
+                            )),
+                    // 開閉のボタン (PDF の描き込みパレットと同じ形)。
+                    InkWell(
+                      borderRadius: BorderRadius.circular(4),
+                      onTap: () => setState(
+                          () => _annotColorsOpen = !_annotColorsOpen),
+                      child: SizedBox(
+                        width: 22,
+                        height: 26,
+                        child: Icon(
+                            _annotColorsOpen
+                                ? Icons.chevron_left_rounded
+                                : Icons.chevron_right_rounded,
+                            size: 18,
+                            color: Colors.white70),
+                      ),
+                    ),
                     const SizedBox(width: 6),
                     // ── 道具えらび (= ユーザー要望: PDF と同じように図形・
                     //    線も入れられるように) ──
@@ -219305,7 +219408,11 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
                 // 注釈レイヤー (= 注釈モード時に描画 UI 重ねる)
                 if (isAnnotMode) _buildAnnotationOverlay(),
                 // 注釈モードじゃないが既存の注釈があるなら表示だけ
-                if (!isAnnotMode && _annotStrokes.isNotEmpty)
+                // ★ 図形も渡す (= ユーザー報告: 描いたのに消える)。
+                //   以前は shapes を渡していなかったので、 注釈モードを
+                //   抜けた瞬間に図形だけが見えなくなっていた。
+                if (!isAnnotMode &&
+                    (_annotStrokes.isNotEmpty || _annotShapes.isNotEmpty))
                   Positioned.fill(
                     child: IgnorePointer(
                       child: CustomPaint(
@@ -219314,6 +219421,7 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
                           current: const [],
                           color: _annotColor,
                           width: _annotWidth,
+                          shapes: _annotShapes,
                         ),
                       ),
                     ),
@@ -219539,12 +219647,17 @@ class _AnnotationPainter extends CustomPainter {
         canvas.drawOval(rect, paint);
         break;
       case 'check':
-        // 枠の中に収まるチェックマーク。
-        final w = rect.width, h = rect.height;
+        // ★ 枠の縦横比をそのまま使うと、 横に長く引いた時に
+        //   べしゃんこのぎざぎざ線になる (= ユーザー報告: ドラッグしながら
+        //   チェックを出すと変な形になる)。 短い方の辺に合わせた正方形を
+        //   枠の真ん中に置いて、 どう引いても同じ形にする。
+        final side = math.min(rect.width, rect.height);
+        final box =
+            Rect.fromCenter(center: rect.center, width: side, height: side);
         final path = Path()
-          ..moveTo(rect.left + w * 0.12, rect.top + h * 0.55)
-          ..lineTo(rect.left + w * 0.42, rect.top + h * 0.85)
-          ..lineTo(rect.left + w * 0.92, rect.top + h * 0.15);
+          ..moveTo(box.left + side * 0.12, box.top + side * 0.55)
+          ..lineTo(box.left + side * 0.42, box.top + side * 0.85)
+          ..lineTo(box.left + side * 0.92, box.top + side * 0.15);
         canvas.drawPath(path, paint);
         break;
       case 'arrow':
@@ -219587,15 +219700,12 @@ class _AnnotationPainter extends CustomPainter {
     if (d != null) _drawShape(canvas, d);
   }
 
+  // ★ 入れ物 (strokes / shapes) も中身 (_ImgShape) も同じ実体を書き換えて
+  //   使っているので、 == で比べると常に「同じ」 になり、 描き直しが
+  //   一度も起きない (= ユーザー報告: 図形の挑入ボタンを押しても
+  //   反応しない時がある)。 _LassoPainter と同じく毎回描き直す。
   @override
-  bool shouldRepaint(_AnnotationPainter old) {
-    return old.strokes != strokes ||
-        old.current != current ||
-        old.color != color ||
-        old.width != width ||
-        old.shapes != shapes ||
-        old.draft != draft;
-  }
+  bool shouldRepaint(_AnnotationPainter old) => true;
 }
 
 /// なげなわ切り抜き用 painter (= ユーザー要望: 画像から人物や物体を切り取る)。
@@ -219603,7 +219713,16 @@ class _AnnotationPainter extends CustomPainter {
 class _LassoPainter extends CustomPainter {
   final List<Offset> points;
   final bool closed;
-  _LassoPainter({required this.points, required this.closed});
+
+  /// 四角モードか (= 引いている途中でも閉じた四角として描く)。
+  ///
+  /// ★ 頂点は TL→TR→BR→BL の順なので、 path を閉じないと
+  ///   BL→TL = 左の縦線 だけが引かれない (= ユーザー報告:
+  ///   左側の縦線が表示されない)。 四角は最初から閉じている図なので
+  ///   指を離す前でも閉じて描いてよい。
+  final bool rectMode;
+  _LassoPainter(
+      {required this.points, required this.closed, this.rectMode = false});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -219612,7 +219731,7 @@ class _LassoPainter extends CustomPainter {
     for (int i = 1; i < points.length; i++) {
       path.lineTo(points[i].dx, points[i].dy);
     }
-    if (closed) {
+    if (closed || rectMode) {
       path.close();
       canvas.drawPath(
           path,

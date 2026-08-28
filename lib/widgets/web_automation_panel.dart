@@ -2216,7 +2216,9 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
   /// 追加できる種類のチップ列。 [into] に追加する。
   Widget _addChips(MindMapProvider provider, List<WebAutoStep> into) {
     return Wrap(spacing: 6, runSpacing: 6, children: [
-      for (final k in WebAutoKind.values)
+      // ★ 「全体を 1 枚」 は別項目にせず、 スクショの中の
+      //   「ページ全体」 切替えにまとめた (= ユーザー要望: 分かりにくい)。
+      for (final k in WebAutoKind.values.where((k) => k != WebAutoKind.fullShot))
         ActionChip(
           avatar: Icon(_kindIcon(k), size: 14, color: Colors.white70),
           label: Text(_kindLabel(provider, k),
@@ -2769,6 +2771,35 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
                     ),
                   ),
               ]),
+            // ページ全体を 1 枚にするかの切替え (旧「全体を 1 枚」)。
+            if (s.kind == WebAutoKind.shot ||
+                s.kind == WebAutoKind.fullShot)
+              OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: s.kind == WebAutoKind.fullShot
+                      ? const Color(0xFF80CBC4)
+                      : Colors.white54,
+                  side: BorderSide(
+                      color: s.kind == WebAutoKind.fullShot
+                          ? const Color(0xFF80CBC4)
+                          : Colors.white24),
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  minimumSize: const Size(0, 32),
+                ),
+                icon: Icon(
+                    s.kind == WebAutoKind.fullShot
+                        ? Icons.check_box_rounded
+                        : Icons.check_box_outline_blank_rounded,
+                    size: 14),
+                label: Text(provider.t('auto.kindFullShot'),
+                    style: const TextStyle(fontSize: 10.5)),
+                onPressed: () {
+                  setState(() => s.kind = s.kind == WebAutoKind.fullShot
+                      ? WebAutoKind.shot
+                      : WebAutoKind.fullShot);
+                  _save();
+                },
+              ),
             if (s.kind == WebAutoKind.shot)
               OutlinedButton.icon(
                 style: OutlinedButton.styleFrom(

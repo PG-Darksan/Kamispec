@@ -17811,6 +17811,16 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Fórmulas OFF',
       'ru': 'Формулы ВЫКЛ',
     },
+    // ★ 隣の札を廃止したので、 この吹き出しが唯一の説明になる。
+    //   以前は日本語を直書きしていて他の言語でも日本語のままだった。
+    'ss.formulaTipOn': {
+      'ja': '数式の結果を表示中\n(タップで数式テキストを表示)',
+      'en': 'Showing formula results\n(tap to show the formula text)',
+    },
+    'ss.formulaTipOff': {
+      'ja': '数式テキストを表示中\n(タップで結果を表示)',
+      'en': 'Showing formula text\n(tap to show the results)',
+    },
     'ss.tapToOn': {
       'ja': 'タップでON',
       'en': 'Tap to turn ON',
@@ -30488,9 +30498,20 @@ class MindMapProvider extends ChangeNotifier {
       'pt': '🔒 Outro usuário restringiu o reenvio deste mapa',
       'ru': '🔒 Другой пользователь ограничил повторную загрузку этой карты',
     },
+    // ★ 実態は 3-way マージ (ローカル優先) なので、 「上書き」 は嘘だった
+    //   (= ユーザー報告: 消した要素が戻らない)。 上書きは下の
+    //   切り替えを入れた時だけ。
+    'download.overwriteMode': {
+      'ja': 'クラウドの内容で上書きする',
+      'en': 'Replace with the cloud version',
+    },
+    'download.overwriteModeHint': {
+      'ja': '入れないと、 この端末での編集を残したまま合流します。',
+      'en': 'If unchecked, edits made on this device are kept and merged.',
+    },
     'download.overwriteSuffix': {
-      'ja': '（ローカルを上書き）',
-      'en': ' (overwrite local)',
+      'ja': '（ローカルにもあり）',
+      'en': ' (already on this device)',
       'zh': '（覆盖本地）',
       'ko': '（로컬 덮어쓰기）',
       'es': ' (sobrescribir local)',
@@ -37346,6 +37367,15 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Freihand ausschneiden',
       'pt': 'Recortar à mão livre',
       'ru': 'Вырезать от руки',
+    },
+    // 切り抜きを画像そのものに確定する時の知らせ。
+    'imgCut.applied': {
+      'ja': '切り抜きを画像に反映しました',
+      'en': 'The cutout was applied to the image',
+    },
+    'imgCut.applyFailed': {
+      'ja': '切り抜きの反映に失敗しました',
+      'en': 'Could not apply the cutout',
     },
     'imgCut.copy': {
       'ja': 'コピー',
@@ -73877,6 +73907,15 @@ $cleanQ
     return result;
   }
 
+  /// ダウンロードを「クラウドの内容で上書き」 にするか。
+  ///
+  /// ★ 既定 (false) は今までどおりの 3-way マージ。 これだと
+  ///   ローカルで消した要素は消したままになるので、 「ダウンロードを
+  ///   押してもサーバーの内容が反映されない」 と見える
+  ///   (= ユーザー報告)。 true にするとマージを飛ばして素の
+  ///   クラウドページをそのまま採用する。
+  bool cloudDownloadOverwrite = false;
+
   /// クラウド一覧の各ページのアップロード日時 (fetchCloudPageList が埋める)。
   final Map<String, DateTime> _cloudPageUpdatedAt = {};
   DateTime? cloudPageUpdatedAt(String pageId) => _cloudPageUpdatedAt[pageId];
@@ -73949,8 +73988,21 @@ $cleanQ
           _redoStacks[pageId]!.clear();
         }
       }
+      // ★ 一覧は「新しい順」 だが、 取り込む順番は「古い順」 にする
+      //   (= ユーザー報告: アップロードした時と違う並び順で
+      //   ダウンロードされる)。 まとめて上げた p1..pn は一覧では
+      //   pn..p1 で並ぶので、 そのまま取り込むと新規ページが
+      //   逆順で末尾に追加されてしまう。
       final selected =
-          cloudPages.where((p) => selectedIds.contains(p.id)).toList();
+          cloudPages.where((p) => selectedIds.contains(p.id)).toList()
+            ..sort((a, b) {
+              final ta = _cloudPageUpdatedAt[a.id];
+              final tb = _cloudPageUpdatedAt[b.id];
+              if (ta == null && tb == null) return 0;
+              if (ta == null) return 1;
+              if (tb == null) return -1;
+              return ta.compareTo(tb);
+            });
       _prepareCloudDownloadItems(selected);
       notifyListeners();
       for (int i = 0; i < selected.length; i++) {
@@ -73990,7 +74042,10 @@ $cleanQ
           final prefs = await _prefsWithRetry();
           baseJson = prefs.getString('page_synced_json_${page.id}');
         } catch (_) {}
-        final merged = _mergeLocalEditsIntoCloudPage(page, baseJson: baseJson);
+        // 上書きが選ばれているならマージしない。
+        final merged = cloudDownloadOverwrite
+            ? page
+            : _mergeLocalEditsIntoCloudPage(page, baseJson: baseJson);
         final localPage = _upsertDownloadedPage(merged);
         if (cloudJsonForBase != null) {
           await _storeSyncedBaseJson(page.id, cloudJsonForBase);
