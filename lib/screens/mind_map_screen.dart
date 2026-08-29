@@ -42527,6 +42527,9 @@ class _MindMapScreenState extends State<MindMapScreen>
             width: 560,
             height: 760,
             memoryKey: 'webAutomation',
+            // メモ / ブラウザ AI への切り替えは出さない
+            // (= ユーザー要望: 自動操作の窓には要らない)。
+            noModeSwitch: true,
             onRestoreFull: () => _reopenCommandFullscreen('webAutomation'),
             popOutCustom: (frame, pinned) =>
                 openAutomationExternalWindow(frame: frame, pinned: pinned),
@@ -68304,6 +68307,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       String? popOutUrl,
       ValueGetter<String>? popOutUrlBuilder,
       bool aiSwitchable = false,
+      // メモ / ブラウザ AI への切り替えボタンを出さないか。
+      bool noModeSwitch = false,
       // 中身が自前のヘッダーを持つ窓は、 上の帯を細い掴み線だけにする。
       bool slimChrome = false,
       // Web ページでない画面を外へ出すための差し替え口 (= ユーザー要望:
@@ -68384,6 +68389,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             ? () => _switchFloatingAi(closeSelf, width, height, memoryKey)
             : null,
         slimChrome: slimChrome,
+        noModeSwitch: noModeSwitch,
         onRestoreFull: onRestoreFull == null
             ? null
             : () {
@@ -112674,7 +112680,12 @@ const String _kMdEmbeddedMapJs = r"""
           ' data-tip="元のマーメイドの図に戻す">&#9707;</button>'
         : '') +
       '</div>' +
-      '<div class="mmap-name">' + esc(data.name || '') + '</div>' +
+      '<div class="mmap-name">' + esc(data.name || '') +
+      // マーメイドから起こした図は、 元の記法をその場で直せる。
+      (data.mermaid ? ' ・ ダブルクリックで記法を編集' : '') +
+      '</div>' +
+      // 下端をつまんで表示の高さを変える (= ユーザー要望)。
+      '<div class="mmap-resize"></div>' +
       '</div>';
     var box = slot.querySelector('.mmap-box');
     // ── ボタンに触れたら、 その場で説明を出す (= ユーザー要望) ──
@@ -112846,15 +112857,11 @@ const String _kMdEmbeddedMapJs = r"""
         d.style.background =
           'rgb(' + col.r + ',' + col.g + ',' + col.b + ')';
         d.style.color = light ? '#15161c' : '#ffffff';
-        var kn = (kids[nd.id] || []).length;
         var html = '';
-        // ── 右上は「開閉」 のボタン (= ユーザー要望: 編集ボタンの側を展開に)。
-        //    件数は出さない (= ユーザー要望)。 ──
-        if (kn) {
-          html += '<span class="mmap-tog" title="' +
-            (collapsed[nd.id] ? '下の要素を出す' : '下の要素を畳む') + '">' +
-            (collapsed[nd.id] ? '▸' : '▾') + '</span>';
-        }
+        // ── 右上の ▾ / ▸ は廃止 (= ユーザー要望: 項目としては出さず、
+        //    右クリックのメニューから畳む / 出すを選ぶ)。 畳んでいることだけは
+        //    縁を少し強めて知らせる。
+        if (collapsed[nd.id]) d.classList.add('folded');
         // 画像 / 表紙 / 動画のサムネイル (= ユーザー報告: 出ない)。
         if (nd.img) {
           html += '<img class="mmap-img" src="' + esc(nd.img) +
@@ -113038,6 +113045,64 @@ const String _kMdEmbeddedMapJs = r"""
       });
     }
 
+    /// ── マーメイドの元の記法をその場で直す (= ユーザー要望:
+    ///    埋め込んだマーメイド記法の中身を図からダブルクリックで編集) ──
+    ///    元の文の行が分かればアプリへ返して本文ごと書き換える。
+    ///    分からない (公開ページ) 時はこの画面の中だけ描き直す。
+    function editMermaidSource() {
+      closeMenu();
+      var wrap = document.createElement('div');
+      wrap.className = 'mmap-menu mmap-edit-pop mmap-code-pop';
+      wrap.style.left = '12px';
+      wrap.style.top = '12px';
+      wrap.style.width = Math.max(240, box.clientWidth - 24) + 'px';
+      wrap.innerHTML =
+        '<div class="mmap-lbl">マーメイド記法 (Ctrl+Enter で決定)</div>' +
+        '<textarea spellcheck="false"></textarea>' +
+        '<div class="mmap-row">' +
+        '<button type="button" data-k="cancel">やめる</button>' +
+        '<button type="button" data-k="ok">決定</button></div>';
+      var ta = wrap.querySelector('textarea');
+      ta.value = String(data.code || '');
+      ta.style.height = Math.max(140, box.clientHeight - 110) + 'px';
+      box.appendChild(wrap);
+      ta.focus();
+      var done = false;
+      function finish(ok) {
+        if (done) return;
+        done = true;
+        var v = ta.value;
+        closeMenu();
+        if (!ok || v === String(data.code || '')) return;
+        var line = Number(slot.getAttribute('data-src-line')) || 0;
+        if (window.__mmPost && line > 0) {
+          window.__mmPost({ type: 'mermaidEdit', line: line, code: v });
+          return;
+        }
+        var nm = window.__mmMermaidToMap ? window.__mmMermaidToMap(v) : null;
+        if (nm) {
+          slot.removeAttribute('data-done');
+          build(slot, nm);
+        }
+      }
+      wrap.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+      wrap.addEventListener('dblclick', function (e) { e.stopPropagation(); });
+      wrap.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var b = e.target.closest ? e.target.closest('button') : null;
+        if (!b) return;
+        finish(b.getAttribute('data-k') === 'ok');
+      });
+      wrap.addEventListener('keydown', function (e) {
+        e.stopPropagation();
+        if (e.key === 'Escape') finish(false);
+        else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault();
+          finish(true);
+        }
+      });
+    }
+
     /// ✎ を押した時の小さなメニュー。
     function openMenu(el, nodeId, node) {
       closeMenu();
@@ -113047,7 +113112,14 @@ const String _kMdEmbeddedMapJs = r"""
       m.className = 'mmap-menu';
       m.style.left = Math.max(4, r.left - br.left) + 'px';
       m.style.top = Math.max(4, r.bottom - br.top + 4) + 'px';
+      var kidN = (kids[nodeId] || []).length;
       m.innerHTML =
+        // ── 子の収納 / 展開はここから (= ユーザー要望) ──
+        (kidN
+          ? '<button type="button" data-m="fold">' +
+            (collapsed[nodeId] ? '下の要素を出す' : '下の要素を畳む') +
+            '</button>'
+          : '') +
         '<button type="button" data-m="edit">要素を編集</button>' +
         (node.openable && canWriteBack
           ? '<button type="button" data-m="open">ファイルを開く</button>' : '') +
@@ -113062,7 +113134,12 @@ const String _kMdEmbeddedMapJs = r"""
         var b = ev.target.closest ? ev.target.closest('button') : null;
         if (!b) return;
         var a = b.getAttribute('data-m');
-        if (a === 'edit') editCombined(el, nodeId, node);
+        if (a === 'fold') {
+          closeMenu();
+          collapsed[nodeId] = !collapsed[nodeId];
+          draw();
+        }
+        else if (a === 'edit') editCombined(el, nodeId, node);
         else if (a === 'open') {
           closeMenu();
           if (window.__mmPost) {
@@ -113109,15 +113186,26 @@ const String _kMdEmbeddedMapJs = r"""
     //    要素の上から始めたらその要素を、 何もない所からなら全体を動かす
     //    (= ユーザー要望: マインドマップ同様に要素を動かせるように)。
     var dragging = false, lx = 0, ly = 0, moved = 0, dragNode = null;
+    // 下端のつまみ (= ユーザー要望: 境界をドラッグして表示領域を変える)。
+    var resizing = false, rly = 0, rh = 0;
+    function resizeTo(clientY) {
+      var nh = Math.max(160, Math.min(2000, rh + (clientY - rly)));
+      box.style.height = nh + 'px';
+    }
     box.addEventListener('mousedown', function (ev) {
       if (ev.button !== 0) return;
       if (ev.target.closest && ev.target.closest('.mmap-menu')) return;
       if (ev.target.closest && ev.target.closest('.mmap-ctl')) return;
+      if (ev.target.closest && ev.target.closest('.mmap-resize')) {
+        resizing = true;
+        rly = ev.clientY; rh = box.clientHeight;
+        ev.preventDefault();
+        return;
+      }
       moved = 0;
       lx = ev.clientX; ly = ev.clientY;
       var el = ev.target.closest ? ev.target.closest('.mmap-node') : null;
-      var onTog = ev.target.closest && ev.target.closest('.mmap-tog');
-      if (el && !onTog) {
+      if (el) {
         var id = el.getAttribute('data-id');
         dragNode = byId[id] || null;
         if (dragNode) {
@@ -113132,6 +113220,7 @@ const String _kMdEmbeddedMapJs = r"""
       box.classList.add('grabbing');
     });
     window.addEventListener('mousemove', function (ev) {
+      if (resizing) { resizeTo(ev.clientY); return; }
       if (!dragging) return;
       var dx = ev.clientX - lx, dy = ev.clientY - ly;
       moved += Math.abs(dx) + Math.abs(dy);
@@ -113147,6 +113236,7 @@ const String _kMdEmbeddedMapJs = r"""
       }
     });
     window.addEventListener('mouseup', function () {
+      resizing = false;
       if (dragNode) {
         var el2 = layer.querySelector('.mmap-node.moving');
         if (el2) el2.classList.remove('moving');
@@ -113156,6 +113246,21 @@ const String _kMdEmbeddedMapJs = r"""
       dragging = false;
       box.classList.remove('grabbing');
     });
+
+    // 指でも下端をつまめる (= スマホでも表示領域を変えられるように)。
+    box.addEventListener('touchstart', function (ev) {
+      if (!ev.target.closest || !ev.target.closest('.mmap-resize')) return;
+      resizing = true;
+      rly = ev.touches[0].clientY; rh = box.clientHeight;
+      ev.preventDefault();
+    }, { passive: false });
+    box.addEventListener('touchmove', function (ev) {
+      if (!resizing || ev.touches.length !== 1) return;
+      resizeTo(ev.touches[0].clientY);
+      ev.preventDefault();
+    }, { passive: false });
+    box.addEventListener('touchend', function () { resizing = false; });
+    box.addEventListener('touchcancel', function () { resizing = false; });
 
     // ── 車輪で拡大縮小 (押した所を中心に) ──
     box.addEventListener('wheel', function (ev) {
@@ -113170,8 +113275,28 @@ const String _kMdEmbeddedMapJs = r"""
       apply();
     }, { passive: false });
 
+    // ── 右クリックで項目を出す (= ユーザー要望: 子の収納 / 展開は
+    //    右上ではなく右クリックのメニューから) ──
+    box.addEventListener('contextmenu', function (ev) {
+      var el = ev.target.closest ? ev.target.closest('.mmap-node') : null;
+      if (!el) return;
+      var id = el.getAttribute('data-id');
+      if (!id || !byId[id]) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      openMenu(el, id, byId[id]);
+    });
+
     // ── 要素を押したら開閉 / リンクを開く ──
     box.addEventListener('dblclick', function (ev) {
+      // マーメイドから起こした図は、 元の記法を直す
+      // (= ユーザー要望: 図からダブルクリックで中身を編集)。
+      if (data.mermaid) {
+        ev.stopPropagation();
+        ev.preventDefault();
+        editMermaidSource();
+        return;
+      }
       var el = ev.target.closest ? ev.target.closest('.mmap-node') : null;
       if (!el) return;
       var id = el.getAttribute('data-id');
@@ -113184,18 +113309,6 @@ const String _kMdEmbeddedMapJs = r"""
       if (moved > 4) return;                       // 動かしただけ
       if (ev.target.closest && ev.target.closest('.mmap-menu')) return;
       closeMenu();
-      // ── 右上の ▾ / ▸ が開閉 (= ユーザー要望: 編集ボタンの側を展開に) ──
-      var tg = ev.target.closest ? ev.target.closest('.mmap-tog') : null;
-      if (tg) {
-        var hostT = tg.closest('.mmap-node');
-        var idT = hostT && hostT.getAttribute('data-id');
-        ev.stopPropagation();
-        if (idT && (kids[idT] || []).length) {
-          collapsed[idT] = !collapsed[idT];
-          draw();
-        }
-        return;
-      }
       var lk = ev.target.closest ? ev.target.closest('.mmap-link') : null;
       if (lk) {
         var host = lk.closest('.mmap-node');
@@ -113280,18 +113393,23 @@ const String _kMdEmbeddedMapJs = r"""
         if (window.mermaid && data.code) {
           var back = slot;
           mermaid.render('mmb' + Date.now(), data.code).then(function (r) {
+            function toMap() {
+              back.removeAttribute('data-done');
+              build(back, data);
+            }
+            // ★ 図に戻した後も拡大率を変えられるようにする
+            //   (= ユーザー要望)。 本文側の図と同じ仕組みを使う。
+            if (window.__mmMermaidInteractive) {
+              window.__mmMermaidInteractive(back, r.svg, data.code, toMap);
+              return;
+            }
             back.className = 'mermaid';
             back.innerHTML =
               '<div class="mmwrap"><div class="mmpane">' + r.svg + '</div>' +
               '<div class="mmctl"><button type="button" ' +
               'data-back="1" title="マップで見る">&#9635;</button></div></div>';
             var bb = back.querySelector('[data-back]');
-            if (bb) {
-              bb.addEventListener('click', function () {
-                back.removeAttribute('data-done');
-                build(back, data);
-              });
-            }
+            if (bb) bb.addEventListener('click', toMap);
           }).catch(function () {});
         }
       }
@@ -113677,6 +113795,44 @@ class _SplitScrollBarState extends State<_SplitScrollBar> {
       ),
     );
   }
+}
+
+/// 本文の中の図のブロック (```mermaid や ```) の中身を差し替える
+/// (= ユーザー要望: 埋め込んだマーメイド記法の中身を図から直す)。
+///
+/// [line] は開きの ``` があった行 (1 始まり。 プレビューが
+/// data-src-line で覚えている値)。 その行がフェンスでなければ null。
+String? replaceFencedBlockAt(String src, int line, String code) {
+  if (line <= 0) return null;
+  final lines = src.split('\n');
+  if (line > lines.length) return null;
+  final om = RegExp(r'^\s{0,3}(`{3,}|~{3,})').firstMatch(lines[line - 1]);
+  if (om == null) return null;
+  final fence = om.group(1)!;
+  final ch = fence[0];
+  bool isClose(String l) {
+    final t = l.trim();
+    if (t.length < fence.length) return false;
+    for (var i = 0; i < t.length; i++) {
+      if (t[i] != ch) return false;
+    }
+    return true;
+  }
+
+  // 閉じが見つからない (書きかけ) 時は末尾までを中身と見なす。
+  var end = lines.length;
+  for (var i = line; i < lines.length; i++) {
+    if (isClose(lines[i])) {
+      end = i;
+      break;
+    }
+  }
+  final body = code.replaceAll('\r\n', '\n').replaceAll('\r', '\n').trimRight();
+  return <String>[
+    ...lines.sublist(0, line),
+    ...body.split('\n'),
+    ...lines.sublist(end),
+  ].join('\n');
 }
 
 /// 埋め込んだマップの要素を、 プレビューから直した内容で書き換える
@@ -114300,10 +114456,9 @@ String _markdownPreviewHtml(String md, bool dark,
     white-space:pre-wrap;word-break:break-word;
     display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;
     overflow:hidden;}
-  .mmap-tog{position:absolute;right:3px;top:1px;font-size:13px;
-    font-weight:700;line-height:1;padding:2px 4px;border-radius:5px;
-    background:rgba(0,0,0,.16);cursor:pointer;}
-  .mmap-tog:hover{background:rgba(0,0,0,.32);}
+  /* 畳んでいる要素は縁を強めて知らせる (▾ / ▸ のボタンは廃止) */
+  .mmap-node.folded{box-shadow:0 0 0 2px rgba(255,255,255,.45),
+    0 2px 6px rgba(0,0,0,.28);}
   .mmap-f{margin-top:3px;font-size:11px;opacity:.9;white-space:nowrap;
     overflow:hidden;text-overflow:ellipsis;}
   .mmap-fi{margin-right:4px;}
@@ -114351,6 +114506,17 @@ String _markdownPreviewHtml(String md, bool dark,
     pointer-events:none;box-shadow:0 3px 10px rgba(0,0,0,.35);}
   .mmap-name{position:absolute;left:10px;bottom:6px;font-size:11px;
     opacity:.6;pointer-events:none;}
+  /* 下端をつまんで表示領域を変える (= ユーザー要望) */
+  .mmap-resize{position:absolute;left:0;right:0;bottom:0;height:12px;
+    cursor:ns-resize;z-index:4;display:flex;align-items:center;
+    justify-content:center;touch-action:none;}
+  .mmap-resize::after{content:'';width:44px;height:4px;border-radius:2px;
+    background:$border;opacity:.9;}
+  .mmap-resize:hover::after{filter:brightness(1.4);}
+  /* マーメイド記法をその場で直す窓 */
+  .mmap-code-pop{max-width:calc(100% - 24px);}
+  .mmap-code-pop textarea{min-height:140px;line-height:1.5;font-size:11.5px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
   .mmap-empty{padding:16px;font-size:12px;opacity:.7;border-radius:10px;
     border:1px dashed $border;}
   $syncCss
@@ -114448,11 +114614,16 @@ $mapsJs
     } catch (e) { cb(null); }
   }
   // ── 図を「拡大縮小 + ドラッグ移動」 できる枠に入れる (= ユーザー要望) ──
-  function makeInteractive(slot, svg, code) {
+  function makeInteractive(slot, svg, code, onBack) {
     slot.className = 'mermaid';
     slot.innerHTML =
       '<div class="mmwrap"><div class="mmpane">' + svg + '</div>' +
       '<div class="mmctl">' +
+      // 変換した図から 「図で見る」 で来た時だけ、 戻る口を出す。
+      (onBack
+        ? '<button type="button" data-act="back" ' +
+          'title="マップで見る">&#8592;</button>'
+        : '') +
       (bridge
         ? '<button type="button" data-act="ai" title="AI">AI</button>' +
           '<button type="button" data-act="fix" title="AI fix">&#9998;</button>' +
@@ -114653,9 +114824,13 @@ $mapsJs
           }
         });
       }
+      else if (act === 'back') { if (onBack) onBack(); }
       else { userResized = false; fit(); }
     });
   }
+  // ★ 埋め込みマップ側からも使えるようにしておく
+  //   (= ユーザー要望: 元のマーメイド記法に切り替えた時も拡大率を変えられるように)。
+  window.__mmMermaidInteractive = makeInteractive;
   // ── 目次 (h1〜h3 から自動生成。 2 個未満なら出さない) ──
   // 見出しの頭に付いた絵文字や記号を目次では外す (= ユーザー要望:
   //   目次の先頭に変な絵文字が入る)。 本文の見出しはそのまま。
@@ -116636,6 +116811,24 @@ graph TD
     _editorScroll.jumpTo(target.clamp(0.0, max));
   }
 
+  /// 図から直したマーメイド記法を本文に戻す (= ユーザー要望)。
+  void _applyPreviewMermaid(int line, String code) {
+    final next = replaceFencedBlockAt(_ctrl.text, line, code);
+    if (next == null || next == _ctrl.text) return;
+    final sel = _ctrl.selection;
+    _ctrl.text = next;
+    try {
+      _ctrl.selection = TextSelection(
+        baseOffset: sel.baseOffset.clamp(0, next.length),
+        extentOffset: sel.extentOffset.clamp(0, next.length),
+      );
+    } catch (_) {}
+    _syncCurrentTab();
+    _saveDebounce?.cancel();
+    _saveDebounce = Timer(const Duration(milliseconds: 400), _saveNow);
+    _scheduleRender();
+  }
+
   /// プレビューで押されたチェックを、 元の文に書き戻す
   /// (= ユーザー要望: プレビュー画面からチェックを付けられるように)。
   ///
@@ -117338,6 +117531,13 @@ graph TD
       // ── 埋め込んだマップの要素を直した (= ユーザー要望) ──
       if (type == 'mapEdit') {
         if (applyEmbeddedMapEdit(widget.provider, m)) _pushPreviewText();
+        return;
+      }
+      // ── 図をダブルクリックして、 元のマーメイド記法を直した
+      //    (= ユーザー要望) ──
+      if (type == 'mermaidEdit') {
+        _applyPreviewMermaid(
+            (m['line'] as num?)?.toInt() ?? 0, '${m['code'] ?? ''}');
         return;
       }
       // ── 埋め込んだマップから添付ファイルを開く (= ユーザー要望) ──
@@ -207858,6 +208058,13 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
         }
         return;
       }
+      // ── 図をダブルクリックして、 元のマーメイド記法を直した
+      //    (= ユーザー要望) ──
+      if (type == 'mermaidEdit') {
+        _applyMdPreviewMermaid(
+            (m['line'] as num?)?.toInt() ?? 0, '${m['code'] ?? ''}');
+        return;
+      }
       // ── 埋め込んだマップから添付ファイルを開く (= ユーザー要望) ──
       if (type == 'mapOpen') {
         final path =
@@ -208204,6 +208411,20 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
 
   /// 往復防止 (こちらから動かした直後は返事を無視する)。
   int _mdIgnoreScrollUntilMs = 0;
+
+  /// 図から直したマーメイド記法を本文に戻す (= ユーザー要望)。
+  void _applyMdPreviewMermaid(int line, String code) {
+    final next = replaceFencedBlockAt(_fullText, line, code);
+    if (next == null || next == _fullText) return;
+    _pushUndo();
+    _lines
+      ..clear()
+      ..addAll(next.split('\n'));
+    if (_lines.isEmpty) _lines.add('');
+    setState(() {});
+    _markDirty();
+    _pushMdPreviewText();
+  }
 
   /// プレビューで押されたチェックを、 本文に書き戻す
   /// (= ユーザー要望: プレビュー画面からチェックを付けられるように)。
@@ -227792,7 +228013,12 @@ class _FloatingPanelWindow extends StatefulWidget {
     this.onRestoreFull,
     this.initialRect,
     this.slimChrome = false,
+    this.noModeSwitch = false,
   });
+
+  /// メモ / ブラウザ AI への切り替えボタンを出さないか
+  /// (= ユーザー要望: 自動操作の窓には要らない)。
+  final bool noModeSwitch;
 
   /// 中身が自前のヘッダーを持っている窓 (= AI アシスタント) では、
   /// 枠が二重に見えないよう、 上の帯を「掴む所」 だけの細い線にする
@@ -227979,7 +228205,8 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
 
   /// ヘッダーのモード切替 + ピン留めボタン群 (両方のフローティング窓で共通)。
   /// [showAi] が false の時は AI ボタンを出さない (= AI 窓自身には不要)。
-  List<Widget> _floatModeButtons(BuildContext ctx, {bool showAi = true}) {
+  List<Widget> _floatModeButtons(BuildContext ctx,
+      {bool showAi = true, bool showMemo = true}) {
     // 別の窓を作れないスマホ版では出さない (ピンも外出しもできないため)。
     if (kIsWeb ||
         !(Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
@@ -228015,7 +228242,7 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
         }, color: const Color(0xFFBA68C8)),
       // フローティングメモに切り替え (= ユーザー要望)。 保存先は外のメモ窓と
       // 同じなので、 どこで書いても同じメモ帳に積まれる。
-      if (_floatMode != 'memo')
+      if (showMemo && _floatMode != 'memo')
         btn(Icons.sticky_note_2_rounded, provider.t('float.toMemo'), () {
           setState(() {
             _memoStarted = true;
@@ -228239,7 +228466,9 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
                         onPressed: widget.onRestoreFull,
                       ),
                     ..._floatModeButtons(context,
-                        showAi: widget.onSwitchAi == null),
+                        showAi:
+                            !widget.noModeSwitch && widget.onSwitchAi == null,
+                        showMemo: !widget.noModeSwitch),
                     // ── 「外に出す」 ボタンは廃止 (= ユーザー要望: 右上に
                     //    ボタンを付けなくても、 外へ引っ張ったら外に出るように)。
                     //    代わりに、 画面の外まで引っ張っている間だけ

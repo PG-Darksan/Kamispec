@@ -39316,6 +39316,39 @@ class MindMapProvider extends ChangeNotifier {
       'ja': '何番目まで',
       'en': 'To',
     },
+    // ── ファイルを作る手順 (= ユーザー要望: 作ってそのまま渡せるように) ──
+    'auto.kindMakeFile': {
+      'ja': 'ファイルを作る',
+      'en': 'Make a file',
+    },
+    'auto.fileName': {
+      'ja': 'ファイル名',
+      'en': 'File name',
+    },
+    'auto.fileBody': {
+      'ja': '中身',
+      'en': 'Contents',
+    },
+    'auto.fileBodyHint': {
+      'ja': 'ここに書いた文字がそのまま中身になります',
+      'en': 'This text becomes the file contents',
+    },
+    'auto.madeFile': {
+      'ja': '{name} を作りました',
+      'en': 'Made {name}',
+    },
+    'auto.madeFileFailed': {
+      'ja': 'ファイルを作れませんでした: {e}',
+      'en': 'Could not make the file: {e}',
+    },
+    'auto.uploadMadeFiles': {
+      'ja': '作ったファイル (押すとフォルダーを選べます)',
+      'en': 'Files you made (tap to pick a folder)',
+    },
+    'auto.uploadClearFolder': {
+      'ja': 'フォルダーの指定を外す',
+      'en': 'Clear the folder',
+    },
     'auto.uploadNoFile': {
       'ja': '渡せるファイルがありません',
       'en': 'There is no file to send',

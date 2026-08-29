@@ -64,6 +64,12 @@ enum WebAutoKind {
   /// text = フォルダー、 selector = 入れ先の要素、
   /// x = 何番目から (1 始まり)、 y = 何番目まで (0 = 最後まで)。
   upload,
+
+  /// ファイルを 1 つ作る (= ユーザー要望: ファイルを作成して
+  /// アップロードしたりできるように)。
+  /// selector = ファイル名、 text = 中身。 保存先は automation_files/。
+  /// 直後の upload (フォルダー未指定) にそのまま渡せる。
+  makeFile,
 }
 
 /// コマンド実行の許可の仕方 (= ユーザー要望: 許可を求める・全部任せる)。
@@ -239,6 +245,10 @@ class WebAutomationPanel extends StatefulWidget {
   /// 組まなくても操作を覚えて再現できるように)。 ON の間、 ホストは
   /// WebView 上のタップを [WebAutomationPanelController.recordTap] へ流す。
   final void Function(bool recording)? onRecordingChanged;
+
+  /// 見出しの端に「閉じる」 を出すか (= ユーザー要望: 窓いっぱいに
+  /// 広げた時は、 外側の帯を出さずこの見出しだけにする)。
+  final bool showCloseButton;
   const WebAutomationPanel({
     super.key,
     required this.exec,
@@ -250,6 +260,7 @@ class WebAutomationPanel extends StatefulWidget {
     this.evalJs,
     this.onRunningChanged,
     this.onRecordingChanged,
+    this.showCloseButton = false,
   });
 
   @override
@@ -826,12 +837,20 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
  {"kind":"type","text":"入力する文字","selector":"","submit":true},
  {"kind":"shot","count":1},
  {"kind":"tap","x":0,"y":0,"count":1,"intervalMs":200},
+ {"kind":"makeFile","selector":"memo.txt","text":"ファイルの中身"},
+ {"kind":"upload","text":"","selector":"input[type=file]"},
  {"kind":"loop","count":8,"children":[{"kind":"scroll","scrollDir":"down","durationMs":0},{"kind":"wait","durationMs":400},{"kind":"shot","count":1}]}
 ]}
 
 ルール:
 - kind は open / click / scrollTo / scroll / wait / shot / type / tap /
-  hold / swipe / loop / openExternal / command のみ。
+  hold / swipe / loop / makeFile / upload / openExternal / command のみ。
+- **ファイルを作って渡す時は makeFile → upload の 2 手順**。
+  makeFile は selector にファイル名、 text に中身 (文字だけ)。
+  upload は text を空にしておけば、 直前に作ったファイルをそのまま
+  ページの「ファイル選択」 に入れる (selector は入れ先の要素。
+  分からなければ空でよい = 最初の input[type=file])。
+  フォルダーの中身を順に渡したい時だけ upload の text にフォルダーを書く。
 - openExternal は「アプリの外の既定ブラウザで開く」。 アプリの中で見れば
   済む時は open を使い、 外で開いてと明示された時だけ openExternal。
 - command は「パソコンのコマンドを実行」。 **ユーザーがコマンドの実行を
@@ -857,6 +876,15 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
 - open は「そのページを開く」。 text に URL、 durationMs に読み込み待ち (ms)。
 - scrollDir は down / up / right / left (scrollTo では bottom / top)。
 - steps は 30 個以内。''';
+
+  /// 欄を確定する (= ユーザー要望: Enter で AI のフロー作成が走る)。
+  void _submitAiPrompt(MindMapProvider provider) {
+    if (_aiBusy || _agentBusy || _running) return;
+    final v = _aiCtrl.text;
+    if (v.trim().isEmpty) return;
+    _rememberAiPrompt(v);
+    unawaited(_aiBuildFlowFrom(provider, v));
+  }
 
   /// 入力欄の中身で組み立てる。 呼ぶ前に欄は閉じる。
   Future<void> _aiBuildFlowFrom(MindMapProvider provider, String request) async {
@@ -996,6 +1024,8 @@ $snap'''}
       _agentBusy = true;
       _agentStop = false;
       _steps.clear();
+      // 前回作ったファイルは引き継がない (= 古い物を渡さない)。
+      _madeFiles.clear();
       _status = provider.t('agent.thinking');
     });
     final done = <String>[];
@@ -1184,10 +1214,48 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
   /// 繰り返しの中に置くと、 1 周ごとに次のファイルに進む。
   final Map<WebAutoStep, int> _uploadCursor = {};
 
+  /// この実行で作ったファイル (= 「ファイルを渡す」 でフォルダーを
+  /// 指定していない時はこちらを順に渡す)。
+  final List<File> _madeFiles = [];
+
+  /// ファイルを 1 つ作る (= ユーザー要望: ファイルを作成して
+  /// アップロードしたりできるように)。
+  Future<void> _runMakeFileStep(WebAutoStep s) async {
+    if (!mounted) return;
+    final provider = context.read<MindMapProvider>();
+    var name = s.selector.trim();
+    if (name.isEmpty) name = 'auto_file.txt';
+    name = name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+    if (!name.contains('.')) name = '$name.txt';
+    try {
+      final dir = await automationFilesDir();
+      final f = File('${dir.path}/$name');
+      await f.writeAsString(s.text, flush: true);
+      _madeFiles.removeWhere((e) => e.path == f.path);
+      _madeFiles.add(f);
+      if (!mounted) return;
+      setState(() => _status =
+          provider.t('auto.madeFile').replaceFirst('{name}', name));
+    } catch (e) {
+      if (!mounted) return;
+      setState(() =>
+          _status = provider.t('auto.madeFileFailed').replaceFirst('{e}', '$e'));
+    }
+  }
+
   /// 指定されたフォルダーのファイルを名前順に並べ、 範囲で切る。
+  /// フォルダー未指定なら、 この実行で作ったファイルを使う。
   List<File> _uploadFilesOf(WebAutoStep s) {
     final dirPath = s.text.trim();
-    if (dirPath.isEmpty) return const [];
+    if (dirPath.isEmpty) {
+      final made = _madeFiles.where((f) => f.existsSync()).toList();
+      if (made.isEmpty) return const [];
+      final f0 = s.x.round() <= 0 ? 1 : s.x.round();
+      final t0 = s.y.round() <= 0 ? made.length : s.y.round();
+      if (f0 > made.length) return const [];
+      return made.sublist(
+          f0 - 1, t0 > made.length ? made.length : (t0 < f0 ? f0 : t0));
+    }
     try {
       final dir = Directory(dirPath);
       if (!dir.existsSync()) return const [];
@@ -1369,6 +1437,10 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
           break;
         case WebAutoKind.upload:
           await _runUploadStep(s);
+          await Future.delayed(_intervalOf(s));
+          break;
+        case WebAutoKind.makeFile:
+          await _runMakeFileStep(s);
           await Future.delayed(_intervalOf(s));
           break;
         case WebAutoKind.open:
@@ -1867,6 +1939,8 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
       _lastShotPos = null;
       _shots = 0;
       _status = '';
+      // 前回の実行で作ったファイルは引き継がない。
+      _madeFiles.clear();
     });
     widget.onRunningChanged?.call(true, _requestStop);
     try {
@@ -2007,6 +2081,8 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
         return p.t('auto.kindFullShot');
       case WebAutoKind.upload:
         return p.t('auto.kindUpload');
+      case WebAutoKind.makeFile:
+        return p.t('auto.kindMakeFile');
       case WebAutoKind.type:
         return p.t('auto.kindType');
       case WebAutoKind.open:
@@ -2042,6 +2118,8 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
         return Icons.photo_size_select_actual_rounded;
       case WebAutoKind.upload:
         return Icons.upload_file_rounded;
+      case WebAutoKind.makeFile:
+        return Icons.note_add_rounded;
       case WebAutoKind.type:
         return Icons.keyboard_rounded;
       case WebAutoKind.open:
@@ -2880,7 +2958,7 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
                 icon: const Icon(Icons.folder_open_rounded, size: 14),
                 label: Text(
                     s.text.trim().isEmpty
-                        ? provider.t('auto.uploadPickFolder')
+                        ? provider.t('auto.uploadMadeFiles')
                         : s.text.split(RegExp(r'[\\/]')).last,
                     style: const TextStyle(fontSize: 10.5)),
                 onPressed: () async {
@@ -2891,12 +2969,79 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
                   _save();
                 },
               ),
+              // 選んだフォルダーを外して、 「作ったファイル」 に戻す。
+              if (s.text.trim().isNotEmpty)
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  tooltip: provider.t('auto.uploadClearFolder'),
+                  icon: const Icon(Icons.backspace_outlined,
+                      size: 14, color: Colors.white54),
+                  onPressed: () {
+                    setState(() => s.text = '');
+                    _save();
+                  },
+                ),
               _numField(provider.t('auto.uploadFrom'), s.x.round(),
                   (v) => s.x = v.clamp(1, 99999).toDouble(),
                   width: 92),
               _numField(provider.t('auto.uploadTo'), s.y.round(),
                   (v) => s.y = v.clamp(0, 99999).toDouble(),
                   width: 92),
+            ],
+            // ── ファイルを作る (= ユーザー要望: 作ってそのまま渡せるように) ──
+            if (s.kind == WebAutoKind.makeFile) ...[
+              SizedBox(
+                width: 170,
+                child: TextFormField(
+                  initialValue: s.selector,
+                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                  decoration: InputDecoration(
+                    isDense: true,
+                    labelText: provider.t('auto.fileName'),
+                    labelStyle:
+                        const TextStyle(color: Colors.white54, fontSize: 10),
+                    hintText: 'memo.txt',
+                    hintStyle:
+                        const TextStyle(color: Colors.white24, fontSize: 10),
+                    filled: true,
+                    fillColor: Colors.white.withValues(alpha: 0.06),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(6),
+                        borderSide: BorderSide.none),
+                  ),
+                  onChanged: (v) {
+                    s.selector = v.trim();
+                    _save();
+                  },
+                ),
+              ),
+              SizedBox(
+                width: 320,
+                child: TextFormField(
+                  initialValue: s.text,
+                  minLines: 1,
+                  maxLines: 4,
+                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                  decoration: InputDecoration(
+                    isDense: true,
+                    labelText: provider.t('auto.fileBody'),
+                    labelStyle:
+                        const TextStyle(color: Colors.white54, fontSize: 10),
+                    hintText: provider.t('auto.fileBodyHint'),
+                    hintStyle:
+                        const TextStyle(color: Colors.white24, fontSize: 10),
+                    filled: true,
+                    fillColor: Colors.white.withValues(alpha: 0.06),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(6),
+                        borderSide: BorderSide.none),
+                  ),
+                  onChanged: (v) {
+                    s.text = v;
+                    _save();
+                  },
+                ),
+              ),
             ],
             // ページ全体を 1 枚にするかの切替え (旧「全体を 1 枚」)。
             if (s.kind == WebAutoKind.shot ||
@@ -3082,7 +3227,9 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
             // ── 幅が狭い端末 (= モバイル) ではヘッダーのボタンが溢れるので、
             //    横スクロールできるようにする (= ユーザー要望: オーバーフロー
             //    してしまうので使いやすいサイズに)。 ──
-            child: SingleChildScrollView(
+            child: Row(children: [
+              Expanded(
+                child: SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               child: Row(mainAxisSize: MainAxisSize.min, children: [
               const Icon(Icons.play_circle_outline_rounded,
@@ -3289,13 +3436,25 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
                       size: 16, color: Colors.white70),
                   onPressed: () => _showFlowMenu(provider),
                 ),
-              // ★ ここにあった閉じるボタンは廃止 (= ユーザー報告: スクショ管理の
+              // ★ 閉じるはこの列には置かない (= ユーザー報告: スクショ管理の
               //   隣の × を押すと進行不能になる / 閉じるボタンが 2 つある)。
-              //   自動操作だけを出している時、 このボタンはパネルを隠すだけなので
-              //   何も無い画面が残り、 ブラウザ側の戻すボタンも隠れていて手が無くなる。
-              //   外側のミニ窓ヘッダーの × が両モードで正しく閉じるので、 そちらだけにする。
+              //   外側の帯がある間はそちらの × だけ、 帯を出さない時だけ
+              //   下の showCloseButton で 1 つだけ出す。
             ]),
-            ),
+              ),
+              ),
+              // ── 閉じる (= 窓いっぱいに広げている時だけ。 外側の帯が
+              //    無いのでここが唯一の閉じ口になる) ──
+              //    狭い画面でも必ず見えるよう、 横スクロールの外に置く。
+              if (widget.showCloseButton)
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  tooltip: provider.t('btn.close'),
+                  icon: const Icon(Icons.close_rounded,
+                      size: 17, color: Colors.white70),
+                  onPressed: widget.onClose,
+                ),
+            ]),
           ),
           ),
           // ── AI でフローを作る入力欄 (= ユーザー要望: 一番上に置く。
@@ -3312,30 +3471,45 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
                       color: const Color(0xFFBA68C8).withValues(alpha: 0.5)),
                 ),
                 child: Column(children: [
-                  TextField(
-                    controller: _aiCtrl,
-                    // 常に出ているので、 勝手に文字入力へ移らない
-                    // (モバイルでキーボードが出っぱなしになるのを防ぐ)。
-                    autofocus: false,
-                    maxLines: 3,
-                    minLines: 1,
-                    style:
-                        const TextStyle(color: Colors.white, fontSize: 12.5),
-                    decoration: InputDecoration(
-                      isDense: true,
-                      hintText: provider.t('auto.aiHint'),
-                      hintStyle: const TextStyle(
-                          color: Colors.white38, fontSize: 11),
-                      filled: true,
-                      fillColor: Colors.black.withValues(alpha: 0.25),
-                      border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(6),
-                          borderSide: BorderSide.none),
-                    ),
-                    onSubmitted: (v) {
-                      _rememberAiPrompt(v);
-                      _aiBuildFlowFrom(provider, v);
+                  // ── Enter で確定 = AI でフロー作成 (= ユーザー要望) ──
+                  //    改行を入れたい時は Shift+Enter。 複数行の欄はそのままだと
+                  //    Enter が改行になるので、 手前で捕まえる。
+                  Focus(
+                    onKeyEvent: (node, ev) {
+                      if (ev is! KeyDownEvent) return KeyEventResult.ignored;
+                      final k = ev.logicalKey;
+                      if (k != LogicalKeyboardKey.enter &&
+                          k != LogicalKeyboardKey.numpadEnter) {
+                        return KeyEventResult.ignored;
+                      }
+                      if (HardwareKeyboard.instance.isShiftPressed) {
+                        return KeyEventResult.ignored;
+                      }
+                      _submitAiPrompt(provider);
+                      return KeyEventResult.handled;
                     },
+                    child: TextField(
+                      controller: _aiCtrl,
+                      // 常に出ているので、 勝手に文字入力へ移らない
+                      // (モバイルでキーボードが出っぱなしになるのを防ぐ)。
+                      autofocus: false,
+                      maxLines: 3,
+                      minLines: 1,
+                      style:
+                          const TextStyle(color: Colors.white, fontSize: 12.5),
+                      decoration: InputDecoration(
+                        isDense: true,
+                        hintText: provider.t('auto.aiHint'),
+                        hintStyle: const TextStyle(
+                            color: Colors.white38, fontSize: 11),
+                        filled: true,
+                        fillColor: Colors.black.withValues(alpha: 0.25),
+                        border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(6),
+                            borderSide: BorderSide.none),
+                      ),
+                      onSubmitted: (_) => _submitAiPrompt(provider),
+                    ),
                   ),
                   const SizedBox(height: 6),
                   // ── 使うモデル + 前に使った指示 (= ユーザー要望) ──

@@ -28,6 +28,15 @@ Future<Directory> automationShotsDir() async {
   return dir;
 }
 
+/// 自動操作で作ったファイルの置き場 (= ユーザー要望: ファイルを作成して
+/// そのままアップロードできるように)。
+Future<Directory> automationFilesDir() async {
+  final base = await getApplicationDocumentsDirectory();
+  final dir = Directory('${base.path}/automation_files');
+  if (!await dir.exists()) await dir.create(recursive: true);
+  return dir;
+}
+
 /// フロー実行 1 回ぶんの保存先を作る (= ユーザー要望: 実行の度に別フォルダ)。
 /// 例: automation_shots/run_20260802_143012
 Future<Directory> newAutomationRunDir() async {

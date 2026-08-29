@@ -5394,27 +5394,41 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     final narrow = size.width < 560;
     // ── 専用画面 (automationOnly) は大きな全画面のフロー画面として使う
     //    (= ユーザー要望: もっと大きな全画面のフローの画面に)。 ページを
-    //    開いていない間は中央、 ページを見ながらの時は右に寄せてページも
-    //    見えるようにする。 ──
+    //    開いていない間は窓いっぱい、 ページを見ながらの時は右に寄せて
+    //    ページも見えるようにする。 ──
     final bigFlow = widget.automationOnly && !narrow;
-    final w = narrow
-        ? (size.width - 16).clamp(260.0, 460.0).toDouble()
-        : bigFlow
-            ? (size.width * 0.52).clamp(460.0, 1000.0).toDouble()
-            : 460.0;
-    final h = _autoPanelCollapsed
-        ? 42.0
-        : (narrow
-            ? (size.height * 0.62).clamp(260.0, size.height - 120).toDouble()
+    // ★ 後ろにブラウザを出していない間は、 窓いっぱいに広げる
+    //   (= ユーザー要望: フローティングで 「枠の中に枠」 になるのをやめる)。
+    //   自前の見出しも枠も出さず、 中の自動操作パネルだけを見せる。
+    final fillWindow = widget.automationOnly && _browserHidden;
+    // 畳むのは後ろを見せたい時だけ。 広げている間は畳まない
+    //   (畳むと何も残らないため)。
+    final collapsed = _autoPanelCollapsed && !fillWindow;
+    final w = fillWindow
+        ? size.width
+        : narrow
+            ? (size.width - 16).clamp(260.0, 460.0).toDouble()
             : bigFlow
-                ? (size.height - 72).clamp(320.0, 99999.0).toDouble()
-                : (size.height - 90).clamp(320.0, 720.0).toDouble());
+                ? (size.width * 0.52).clamp(460.0, 1000.0).toDouble()
+                : 460.0;
+    final h = collapsed
+        ? 42.0
+        : (fillWindow
+            ? size.height
+            : narrow
+                ? (size.height * 0.62)
+                    .clamp(260.0, size.height - 120)
+                    .toDouble()
+                : bigFlow
+                    ? (size.height - 72).clamp(320.0, 99999.0).toDouble()
+                    : (size.height - 90).clamp(320.0, 720.0).toDouble());
     final double posLeft;
     final double posTop;
-    if (bigFlow) {
-      posLeft = (_browserHidden ? (size.width - w) / 2 : size.width - w - 12)
-          .clamp(0.0, 99999.0)
-          .toDouble();
+    if (fillWindow) {
+      posLeft = 0;
+      posTop = 0;
+    } else if (bigFlow) {
+      posLeft = (size.width - w - 12).clamp(0.0, 99999.0).toDouble();
       posTop = ((size.height - h) / 2).clamp(0.0, 36.0).toDouble();
     } else {
       posLeft =
@@ -5435,16 +5449,20 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
           height: h,
           decoration: BoxDecoration(
             color: const Color(0xFF1B1B2A),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: Colors.white24),
-            boxShadow: const [
-              BoxShadow(color: Colors.black54, blurRadius: 18),
-            ],
+            // 広げている間は角も枠も影も付けない (= 枠の二重を避ける)。
+            borderRadius: fillWindow ? null : BorderRadius.circular(12),
+            border: fillWindow ? null : Border.all(color: Colors.white24),
+            boxShadow: fillWindow
+                ? null
+                : const [BoxShadow(color: Colors.black54, blurRadius: 18)],
           ),
-          clipBehavior: Clip.antiAlias,
+          clipBehavior: fillWindow ? Clip.none : Clip.antiAlias,
           child: Column(children: [
             // ドラッグ用ヘッダー
-            GestureDetector(
+            //   広げている間は出さない。 下の自動操作パネルに
+            //   同じ 「自動操作」 の見出しがあり、 二重になるため
+            //   (= ユーザー要望: 今の内枠だけでよい)。
+            if (!fillWindow) GestureDetector(
               behavior: HitTestBehavior.opaque,
               onPanUpdate: (d) => setState(() {
                 _autoPanelPos += d.delta;
@@ -5512,10 +5530,12 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                 ]),
               ),
             ),
-            if (!_autoPanelCollapsed)
+            if (!collapsed)
               Expanded(
                 child: WebAutomationPanel(
                   key: _autoPanelKey,
+                  // 外側の帯を出さない時は、 見出しの端に閉じるを出す。
+                  showCloseButton: fillWindow,
                   exec: _autoExecJs,
                   evalJs: _autoEvalJs,
                   onRecordingChanged: (rec) {
@@ -5527,7 +5547,14 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                   captureFull: _captureFullPageTall,
                   pickPoint: _pickPointOnPage,
                   pickRect: _pickRectOnPage,
-                  onClose: () => setState(() => _autoPanelOpen = false),
+                  onClose: () {
+                    // 自動操作だけを出している時は、 画面ごと閉じる。
+                    if (widget.automationOnly) {
+                      _closeSelf();
+                      return;
+                    }
+                    setState(() => _autoPanelOpen = false);
+                  },
                   onRunningChanged: (running, stop) async {
                     if (!mounted) return;
                     if (running) {
