@@ -6264,28 +6264,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                           color: Colors.white.withValues(alpha: 0.04),
                           borderRadius: BorderRadius.circular(10),
                         ),
-                        // ── スクロールバーを常時表示 + 白で視認性UP ──
-                        child: Theme(
-                          data: Theme.of(context).copyWith(
-                            scrollbarTheme: ScrollbarThemeData(
-                              thumbVisibility:
-                                  const WidgetStatePropertyAll(true),
-                              trackVisibility:
-                                  const WidgetStatePropertyAll(true),
-                              thickness: const WidgetStatePropertyAll(10.0),
-                              thumbColor: WidgetStatePropertyAll(
-                                  Colors.white.withValues(alpha: 0.85)),
-                              trackColor: WidgetStatePropertyAll(
-                                  Colors.white.withValues(alpha: 0.15)),
-                              trackBorderColor: WidgetStatePropertyAll(
-                                  Colors.white.withValues(alpha: 0.25)),
-                              radius: const Radius.circular(8),
-                            ),
-                          ),
-                          child: Scrollbar(
+                        // ── スクロールバーは常時表示しない
+                        //    (= ユーザー要望: 動かす時とホバー中だけ) ──
+                        child: Builder(
+                          builder: (context) => Scrollbar(
                             controller: scrollCtrl,
-                            thumbVisibility: true,
-                            trackVisibility: true,
                             child: SingleChildScrollView(
                               controller: scrollCtrl,
                               padding: const EdgeInsets.only(right: 14),
@@ -30168,7 +30151,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                         },
                         child: Scrollbar(
                         controller: templateScroll,
-                        thumbVisibility: true,
+                        // バーは常時表示しない (= ユーザー要望: 動かす時とホバー中だけ)。
+                        thumbVisibility: false,
                         child: ListView.separated(
                         controller: templateScroll,
                         padding: const EdgeInsets.only(bottom: 12),
@@ -38700,7 +38684,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                                       Colors.white.withValues(alpha: 0.55),
                                   thickness: 8,
                                   radius: const Radius.circular(4),
-                                  thumbVisibility: true,
+                                  // バーは常時表示しない (= ユーザー要望: 動かす時とホバー中だけ)。
+                                  thumbVisibility: false,
                                   padding: const EdgeInsets.only(
                                       right: 2, top: 4, bottom: 4),
                                   child: SingleChildScrollView(
@@ -49360,7 +49345,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                           ),
                           child: Scrollbar(
                             controller: scrollCtrl,
-                            thumbVisibility: true,
+                            // バーは常時表示しない (= ユーザー要望: 動かす時とホバー中だけ)。
+                            thumbVisibility: false,
                             child: SingleChildScrollView(
                               controller: scrollCtrl,
                               child: Column(
@@ -63438,8 +63424,9 @@ class _MindMapScreenState extends State<MindMapScreen>
           controller: _drawerListScrollCtrl,
           thumbColor: Colors.white.withValues(alpha: 0.85),
           // ホバー時は更に明るく強調
-          thumbVisibility: true,
-          trackVisibility: true,
+          // バーは常時表示しない (= ユーザー要望: 動かす時とホバー中だけ)。
+          thumbVisibility: false,
+          trackVisibility: false,
           trackColor: Colors.white.withValues(alpha: 0.12),
           trackBorderColor: Colors.white.withValues(alpha: 0.18),
           thickness: 9,
@@ -65392,21 +65379,11 @@ class _MindMapScreenState extends State<MindMapScreen>
             label: provider.t(provider.publishedCodeFor(page.id) != null
                 ? 'publish.menuPublished'
                 : 'publish.menu')),
-        // ── マークダウンで編集 (= ユーザー要望: JSON でなく Markdown で書ける/
-        //   模式図でプレビュー)。 通常マップのみ。 ──
-        if (page.pageType == 'normal')
-          _menuItem<_PageAction>(
-              value: _PageAction.markdown,
-              icon: Icons.notes_rounded,
-              iconColor: const Color(0xFF26C6DA),
-              label: provider.t('page.markdownEdit')),
-        // ── Markdown 書き出し (= ユーザー要望) ──
-        if (page.pageType == 'normal')
-          _menuItem<_PageAction>(
-              value: _PageAction.markdownExport,
-              icon: Icons.description_outlined,
-              iconColor: const Color(0xFF26C6DA),
-              label: provider.t('page.markdownExport')),
+        // ★ 「マークダウンで編集」 / 「Markdown で書き出し」 は項目から外した
+        //   (= ユーザー要望: マインドマップのやり取りは .hmap のような
+        //   拡張子で行うので、 Markdown の入口は要らない)。
+        //   仕組み自体 (_showMarkdownMindMapDialog / _exportPageToMarkdown) は
+        //   残してあるので、 戻す時はここに 2 項目戻すだけでよい。
         // ── 別マップへ全要素を移動してこのマップを削除 (= ユーザー要望) ──
         if (provider.pages.length > 1 &&
             MindMapProvider.isMergeablePageType(page.pageType))
@@ -83632,6 +83609,123 @@ class _MindMapScreenState extends State<MindMapScreen>
                   ),
                 ),
               ],
+              // ── 設定とキーの割り当ての持ち運び (= ユーザー要望) ──
+              //    AI の鍵は持ち出さないので、 端末ごとに入れ直す。
+              const SizedBox(height: 16),
+              const Divider(color: Colors.white12, height: 1),
+              const SizedBox(height: 12),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(provider.t('sync.settingsTitle'),
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w700)),
+              ),
+              const SizedBox(height: 4),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(provider.t('sync.settingsHint'),
+                    style: const TextStyle(
+                        color: Colors.white54, fontSize: 10.5, height: 1.4)),
+              ),
+              const SizedBox(height: 8),
+              Row(children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    icon: const Icon(Icons.cloud_upload_outlined,
+                        size: 16, color: Color(0xFF4FC3F7)),
+                    label: Text(provider.t('sync.settingsUpload'),
+                        style: const TextStyle(
+                            color: Color(0xFF4FC3F7), fontSize: 11.5)),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Color(0xFF4FC3F7)),
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                    ),
+                    onPressed: () async {
+                      final n = await provider.uploadSettingsToCloud();
+                      if (!dctx.mounted) return;
+                      _appSnack(
+                          context,
+                          SnackBar(
+                            content: Text(n < 0
+                                ? provider.t('sync.settingsFailed')
+                                : provider
+                                    .t('sync.settingsUploaded')
+                                    .replaceFirst('{n}', '$n')),
+                            backgroundColor: n < 0
+                                ? const Color(0xFFFF6B6B)
+                                : const Color(0xFF43B97F),
+                            duration: const Duration(seconds: 3),
+                          ));
+                      setD(() {});
+                    },
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    icon: const Icon(Icons.cloud_download_outlined,
+                        size: 16, color: Color(0xFF43B97F)),
+                    label: Text(provider.t('sync.settingsDownload'),
+                        style: const TextStyle(
+                            color: Color(0xFF43B97F), fontSize: 11.5)),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Color(0xFF43B97F)),
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                    ),
+                    onPressed: () async {
+                      // 上書きになるので、 一度だけ確かめる。
+                      final ok = await showDialog<bool>(
+                        context: dctx,
+                        builder: (c2) => AlertDialog(
+                          backgroundColor: const Color(0xFF2A2A3E),
+                          title: Text(provider.t('sync.settingsDownload'),
+                              style: const TextStyle(
+                                  color: Colors.white, fontSize: 14)),
+                          content: Text(
+                              provider.t('sync.settingsDownloadConfirm'),
+                              style: const TextStyle(
+                                  color: Colors.white70,
+                                  fontSize: 12,
+                                  height: 1.5)),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(c2, false),
+                              child: Text(provider.t('common.cancel'),
+                                  style: const TextStyle(
+                                      color: Colors.white54)),
+                            ),
+                            TextButton(
+                              onPressed: () => Navigator.pop(c2, true),
+                              child: Text(provider.t('btn.ok'),
+                                  style: const TextStyle(
+                                      color: Color(0xFF43B97F))),
+                            ),
+                          ],
+                        ),
+                      );
+                      if (ok != true) return;
+                      final n = await provider.downloadSettingsFromCloud();
+                      if (!dctx.mounted) return;
+                      _appSnack(
+                          context,
+                          SnackBar(
+                            content: Text(n < 0
+                                ? provider.t('sync.settingsFailed')
+                                : provider
+                                    .t('sync.settingsDownloaded')
+                                    .replaceFirst('{n}', '$n')),
+                            backgroundColor: n < 0
+                                ? const Color(0xFFFF6B6B)
+                                : const Color(0xFF43B97F),
+                            duration: const Duration(seconds: 4),
+                          ));
+                      setD(() {});
+                    },
+                  ),
+                ),
+              ]),
             ]),
           ),
           actions: [
@@ -92137,7 +92231,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                   thumbColor: Colors.white.withValues(alpha: 0.55),
                   thickness: 8,
                   radius: const Radius.circular(4),
-                  thumbVisibility: true,
+                  // バーは常時表示しない (= ユーザー要望: 動かす時とホバー中だけ)。
+                  thumbVisibility: false,
                   // スクロールバーの左右にパディングを設けて内容と被らないように
                   padding: const EdgeInsets.only(right: 2, top: 4, bottom: 4),
                   child: SingleChildScrollView(
@@ -112680,10 +112775,11 @@ const String _kMdEmbeddedMapJs = r"""
           ' data-tip="元のマーメイドの図に戻す">&#9707;</button>'
         : '') +
       '</div>' +
-      '<div class="mmap-name">' + esc(data.name || '') +
-      // マーメイドから起こした図は、 元の記法をその場で直せる。
-      (data.mermaid ? ' ・ ダブルクリックで記法を編集' : '') +
-      '</div>' +
+      // 図の名前は、 埋め込んだページの時だけ出す (= ユーザー要望:
+      // マーメイドから起こした図には要らない)。
+      (data.mermaid
+        ? ''
+        : '<div class="mmap-name">' + esc(data.name || '') + '</div>') +
       // 下端をつまんで表示の高さを変える (= ユーザー要望)。
       '<div class="mmap-resize"></div>' +
       '</div>';
@@ -112767,6 +112863,10 @@ const String _kMdEmbeddedMapJs = r"""
       while (svg.firstChild) svg.removeChild(svg.firstChild);
       layer.innerHTML = '';
 
+      // 線に書く文字は、 線を全部引き終わってから上に載せる
+      // (= 下の線に隠れないように)。
+      var labelJobs = [];
+
       // 矢じり (tip 側へ向けた三角)。
       function addHead(tipX, tipY, fromX, fromY, col) {
         var dx = tipX - fromX, dy = tipY - fromY;
@@ -112830,17 +112930,61 @@ const String _kMdEmbeddedMapJs = r"""
           addHead(bx, by, ax, ay, lc);
           if (cc.both) addHead(ax, ay, bx, by, lc);
         }
+        // ── 線に書いた文字 (= ユーザー報告: 入り切っていない) ──
+        //    改行で折り返し、 下地を敷いて線や要素に重なっても読めるようにする。
         if (cc.label) {
-          var tx = document.createElementNS(
-            'http://www.w3.org/2000/svg', 'text');
-          tx.setAttribute('x', String((ax + bx) / 2));
-          tx.setAttribute('y', String((ay + by) / 2 - 4));
-          tx.setAttribute('fill', lc);
-          tx.setAttribute('font-size', '11');
-          tx.setAttribute('text-anchor', 'middle');
-          tx.textContent = String(cc.label);
-          svg.appendChild(tx);
+          labelJobs.push({
+            text: String(cc.label), cx: (ax + bx) / 2, cy: (ay + by) / 2,
+            color: lc
+          });
         }
+      }
+
+      // ── 線に書いた文字を載せる (= ユーザー報告: 入り切っていない) ──
+      //    1 行ずつ tspan に分け、 実際の幅を測って下地の白枠を敷く。
+      for (var lj = 0; lj < labelJobs.length; lj++) {
+        var job = labelJobs[lj];
+        var rows = String(job.text).split('\n');
+        var fs = 11, lh = 13;
+        var g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        var bgr = document.createElementNS('http://www.w3.org/2000/svg',
+          'rect');
+        bgr.setAttribute('rx', '4');
+        bgr.setAttribute('fill', 'var(--mmap-label-bg, rgba(255,255,255,.88))');
+        g.appendChild(bgr);
+        var tEl = document.createElementNS('http://www.w3.org/2000/svg',
+          'text');
+        tEl.setAttribute('fill', job.color);
+        tEl.setAttribute('font-size', String(fs));
+        tEl.setAttribute('text-anchor', 'middle');
+        var top = job.cy - ((rows.length - 1) * lh) / 2 - 2;
+        for (var ri = 0; ri < rows.length; ri++) {
+          var sp = document.createElementNS('http://www.w3.org/2000/svg',
+            'tspan');
+          sp.setAttribute('x', String(job.cx));
+          sp.setAttribute('y', String(top + ri * lh));
+          sp.textContent = rows[ri];
+          tEl.appendChild(sp);
+        }
+        g.appendChild(tEl);
+        svg.appendChild(g);
+        // 実際に描いた大きさに下地を合わせる (測れない時は文字数から見積もる)。
+        var bb = null;
+        try { bb = tEl.getBBox(); } catch (eB) { bb = null; }
+        if (!bb || !bb.width) {
+          var wMax = 0;
+          for (var rj = 0; rj < rows.length; rj++) {
+            if (rows[rj].length > wMax) wMax = rows[rj].length;
+          }
+          bb = {
+            x: job.cx - wMax * fs * 0.5 / 2, y: top - fs,
+            width: wMax * fs * 0.5, height: rows.length * lh
+          };
+        }
+        bgr.setAttribute('x', String(bb.x - 4));
+        bgr.setAttribute('y', String(bb.y - 2));
+        bgr.setAttribute('width', String(bb.width + 8));
+        bgr.setAttribute('height', String(bb.height + 4));
       }
 
       for (var vi = 0; vi < vis.length; vi++) {
@@ -112898,11 +113042,48 @@ const String _kMdEmbeddedMapJs = r"""
     // ── ここから: 触って直す (= ユーザー要望: マークダウン側から
     //    埋め込んだマップの要素をいじれるように) ──
     // アプリの中で見ていて、 かつ元になったページがある時だけ書き戻せる。
-    // マーメイドから起こした図は、 書き戻す先が無いので手元だけで直す。
     var canWriteBack = !!window.__mmPost && !data.mermaid;
+    // ★ マーメイドから起こした図は、 元の記法そのものを書き換えて返す
+    //   (= ユーザー要望: 中身の要素を編集したらマークダウン側のコードも
+    //   書き換わるように。 コードは見せず、 要素を触るだけで直せる)。
+    var mermaidSrcLine = Number(slot.getAttribute('data-src-line')) || 0;
+    var canWriteMermaid =
+      !!window.__mmPost && !!data.mermaid && mermaidSrcLine > 0;
+
+    /// 直した内容を、 元のマーメイド記法に反映して送る。
+    /// 直せた時だけ true。 書き方が分からない時は false を返して、
+    /// 呼び出し側が手元だけの書き換えに落とす。
+    function sendMermaid(action, nodeId, v) {
+      var n = byId[nodeId];
+      if (!n) return false;
+      var code = String(data.code || '');
+      var next = null;
+      try {
+        if (data.kind === 'mindmap') {
+          if (action === 'title') next = mindSetLabel(code, n.srcLine, v);
+          else if (action === 'delete') {
+            next = mindDelete(code, n.srcLine, n.srcIndent);
+          } else if (action === 'addChild') {
+            next = mindAddChild(code, n.srcLine, n.srcIndent, v);
+          }
+        } else {
+          if (action === 'title') next = flowSetLabel(code, n.srcKey, v);
+          else if (action === 'delete') next = flowDelete(code, n.srcKey);
+          else if (action === 'addChild') {
+            next = flowAddChild(code, n.srcKey, v);
+          }
+        }
+      } catch (e) { next = null; }
+      if (next == null || next === code) return false;
+      window.__mmPost({
+        type: 'mermaidEdit', line: mermaidSrcLine, code: next
+      });
+      return true;
+    }
 
     function send(action, nodeId, value) {
       var v = value == null ? '' : String(value);
+      if (canWriteMermaid && sendMermaid(action, nodeId, v)) return;
       if (canWriteBack) {
         window.__mmPost({
           type: 'mapEdit', action: action, pageId: data.id,
@@ -113045,64 +113226,6 @@ const String _kMdEmbeddedMapJs = r"""
       });
     }
 
-    /// ── マーメイドの元の記法をその場で直す (= ユーザー要望:
-    ///    埋め込んだマーメイド記法の中身を図からダブルクリックで編集) ──
-    ///    元の文の行が分かればアプリへ返して本文ごと書き換える。
-    ///    分からない (公開ページ) 時はこの画面の中だけ描き直す。
-    function editMermaidSource() {
-      closeMenu();
-      var wrap = document.createElement('div');
-      wrap.className = 'mmap-menu mmap-edit-pop mmap-code-pop';
-      wrap.style.left = '12px';
-      wrap.style.top = '12px';
-      wrap.style.width = Math.max(240, box.clientWidth - 24) + 'px';
-      wrap.innerHTML =
-        '<div class="mmap-lbl">マーメイド記法 (Ctrl+Enter で決定)</div>' +
-        '<textarea spellcheck="false"></textarea>' +
-        '<div class="mmap-row">' +
-        '<button type="button" data-k="cancel">やめる</button>' +
-        '<button type="button" data-k="ok">決定</button></div>';
-      var ta = wrap.querySelector('textarea');
-      ta.value = String(data.code || '');
-      ta.style.height = Math.max(140, box.clientHeight - 110) + 'px';
-      box.appendChild(wrap);
-      ta.focus();
-      var done = false;
-      function finish(ok) {
-        if (done) return;
-        done = true;
-        var v = ta.value;
-        closeMenu();
-        if (!ok || v === String(data.code || '')) return;
-        var line = Number(slot.getAttribute('data-src-line')) || 0;
-        if (window.__mmPost && line > 0) {
-          window.__mmPost({ type: 'mermaidEdit', line: line, code: v });
-          return;
-        }
-        var nm = window.__mmMermaidToMap ? window.__mmMermaidToMap(v) : null;
-        if (nm) {
-          slot.removeAttribute('data-done');
-          build(slot, nm);
-        }
-      }
-      wrap.addEventListener('mousedown', function (e) { e.stopPropagation(); });
-      wrap.addEventListener('dblclick', function (e) { e.stopPropagation(); });
-      wrap.addEventListener('click', function (e) {
-        e.stopPropagation();
-        var b = e.target.closest ? e.target.closest('button') : null;
-        if (!b) return;
-        finish(b.getAttribute('data-k') === 'ok');
-      });
-      wrap.addEventListener('keydown', function (e) {
-        e.stopPropagation();
-        if (e.key === 'Escape') finish(false);
-        else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-          e.preventDefault();
-          finish(true);
-        }
-      });
-    }
-
     /// ✎ を押した時の小さなメニュー。
     function openMenu(el, nodeId, node) {
       closeMenu();
@@ -113124,9 +113247,7 @@ const String _kMdEmbeddedMapJs = r"""
         (node.openable && canWriteBack
           ? '<button type="button" data-m="open">ファイルを開く</button>' : '') +
         '<button type="button" data-m="child">子を足す</button>' +
-        '<button type="button" data-m="del" class="danger">削除</button>' +
-        (canWriteBack ? ''
-          : '<div class="mmap-note">この画面の中だけで変わります</div>');
+        '<button type="button" data-m="del" class="danger">削除</button>';
       box.appendChild(m);
       m.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
       m.addEventListener('click', function (ev) {
@@ -113139,7 +113260,11 @@ const String _kMdEmbeddedMapJs = r"""
           collapsed[nodeId] = !collapsed[nodeId];
           draw();
         }
-        else if (a === 'edit') editCombined(el, nodeId, node);
+        // マーメイドの図にはメモを書く場所が無いので、 見出しだけ直す。
+        else if (a === 'edit') {
+          if (data.mermaid) editInline(el, nodeId, 'title', node.title);
+          else editCombined(el, nodeId, node);
+        }
         else if (a === 'open') {
           closeMenu();
           if (window.__mmPost) {
@@ -113204,9 +113329,11 @@ const String _kMdEmbeddedMapJs = r"""
       }
       moved = 0;
       lx = ev.clientX; ly = ev.clientY;
+      try { box.focus({ preventScroll: true }); } catch (eF) {}
       var el = ev.target.closest ? ev.target.closest('.mmap-node') : null;
       if (el) {
         var id = el.getAttribute('data-id');
+        if (byId[id]) lastId = id;
         dragNode = byId[id] || null;
         if (dragNode) {
           dragging = true;
@@ -113287,20 +113414,35 @@ const String _kMdEmbeddedMapJs = r"""
       openMenu(el, id, byId[id]);
     });
 
-    // ── 要素を押したら開閉 / リンクを開く ──
+    // ── ダブルクリック (= ユーザー要望: そのまま中の要素を編集) ──
+    //    要素の上なら、 その要素の見出しをその場で直す。
+    //    ★ 記法のコードは出さない (= ユーザー要望: あくまでノーコードで)。
     box.addEventListener('dblclick', function (ev) {
-      // マーメイドから起こした図は、 元の記法を直す
-      // (= ユーザー要望: 図からダブルクリックで中身を編集)。
-      if (data.mermaid) {
-        ev.stopPropagation();
-        ev.preventDefault();
-        editMermaidSource();
-        return;
-      }
       var el = ev.target.closest ? ev.target.closest('.mmap-node') : null;
       if (!el) return;
       var id = el.getAttribute('data-id');
       if (!id || !byId[id]) return;
+      ev.stopPropagation();
+      ev.preventDefault();
+      editInline(el, id, 'title', byId[id].title);
+    });
+
+    // ── F2 でも、 指している要素の見出しをすぐ直せる (= ユーザー要望) ──
+    //    枠に焦点を当てておかないとキーが届かないので、 押した時に当てる。
+    box.setAttribute('tabindex', '0');
+    var hoverId = null, lastId = null;
+    box.addEventListener('mouseover', function (ev) {
+      var el = ev.target.closest ? ev.target.closest('.mmap-node') : null;
+      hoverId = el ? el.getAttribute('data-id') : null;
+    });
+    box.addEventListener('mouseleave', function () { hoverId = null; });
+    box.addEventListener('keydown', function (ev) {
+      if (ev.key !== 'F2') return;
+      var id = hoverId || lastId;
+      if (!id || !byId[id]) return;
+      var el = layer.querySelector('.mmap-node[data-id="' + id + '"]');
+      if (!el) return;
+      ev.preventDefault();
       ev.stopPropagation();
       editInline(el, id, 'title', byId[id].title);
     });
@@ -113429,6 +113571,174 @@ const String _kMdEmbeddedMapJs = r"""
     0xFFEF5350, 0xFF26A69A, 0xFFFF7043
   ];
 
+  // ══ 元のマーメイド記法を、 触った所だけ書き換える ════════════════════
+  //
+  // = ユーザー要望: 中身の要素を編集したら、 マークダウン側のコードも
+  //   書き換わるように。 コードは見せず、 要素を触るだけで直せる。
+  //
+  // 図全体を組み立て直すと style / subgraph / コメントが消えてしまうので、
+  // **触った所だけ**を差し替える。
+
+  /// ラベルに使えない記号があれば、 二重引用符で包む。
+  function mmLabel(t) {
+    var v = String(t == null ? '' : t).replace(/\r?\n/g, '<br/>');
+    v = v.replace(/"/g, '\u201d');          // 引用符は似た形の字に逃がす
+    if (/[\[\]\(\)\{\}\|;#<>]/.test(v.replace(/<br\/>/g, ''))) {
+      return '"' + v + '"';
+    }
+    return v;
+  }
+
+  /// 正規表現に埋める用に記号を殺す。
+  function mmRe(k) {
+    return String(k).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  /// ラベルの中身を消した見せかけの行 (目印だけを当てるため)。
+  /// 「A[調査A]」 の中の A を、 目印の A と間違えないようにする。
+  function mmStrip(L) {
+    return String(L)
+      .replace(/(\(\(|\[\[|\[\(|\{\{|[\(\[\{])[\s\S]*?(\)\)|\]\]|\)\]|\}\}|[\)\]\}])/g,
+        '$1$2')
+      .replace(/\|[^|]*\|/g, '||');
+  }
+
+  /// 図の組み立てに関わらない行 (コメント / 飾り) か。
+  function mmSkipLine(L) {
+    return /^\s*(?:%%|subgraph|end|style|classDef|class|click|linkStyle|direction)\b/
+      .test(L);
+  }
+
+  /// flowchart: 目印 [key] の見出しを差し替える。
+  function flowSetLabel(src, key, label) {
+    if (!key) return null;
+    var lines = String(src).split('\n');
+    var k = mmRe(key);
+    var shape = new RegExp('(\\b' + k + '\\s*)' +
+      '(\\(\\(|\\[\\[|\\[\\(|\\{\\{|[\\(\\[\\{>])' +
+      '([\\s\\S]*?)' +
+      '(\\)\\)|\\]\\]|\\)\\]|\\}\\}|[\\)\\]\\}])');
+    var i;
+    // ① 既に括弧付きで書かれている所があれば、 中身だけ入れ替える。
+    for (i = 0; i < lines.length; i++) {
+      if (mmSkipLine(lines[i])) continue;
+      if (!shape.test(lines[i])) continue;
+      lines[i] = lines[i].replace(shape, function (m, head, open, body, close) {
+        return head + open + mmLabel(label) + close;
+      });
+      return lines.join('\n');
+    }
+    // ② 括弧無し (A --> B) なら、 最初に出てきた所に [見出し] を付ける。
+    var bare = new RegExp('(^|[^A-Za-z0-9_\\-.])(' + k +
+      ')(?![A-Za-z0-9_\\-.\\[\\(\\{])');
+    for (i = 0; i < lines.length; i++) {
+      if (mmSkipLine(lines[i])) continue;
+      if (/^\s*(?:flowchart|graph)\b/i.test(lines[i])) continue;
+      if (!bare.test(mmStrip(lines[i]))) continue;
+      lines[i] = lines[i].replace(bare, function (m, pre, kk) {
+        return pre + kk + '[' + mmLabel(label) + ']';
+      });
+      return lines.join('\n');
+    }
+    return null;
+  }
+
+  /// flowchart: 目印 [key] に触れている行を落とす (= その要素を消す)。
+  function flowDelete(src, key) {
+    if (!key) return null;
+    var lines = String(src).split('\n');
+    var ref = new RegExp('(^|[^A-Za-z0-9_\\-.])' + mmRe(key) +
+      '(?![A-Za-z0-9_\\-.])');
+    var out = [], hit = false;
+    for (var i = 0; i < lines.length; i++) {
+      var L = lines[i];
+      if (/^\s*(?:flowchart|graph)\b/i.test(L) || mmSkipLine(L)) {
+        out.push(L);
+        continue;
+      }
+      if (ref.test(mmStrip(L))) { hit = true; continue; }
+      out.push(L);
+    }
+    return hit ? out.join('\n') : null;
+  }
+
+  /// flowchart: 目印 [key] の下に子を足す。
+  function flowAddChild(src, key, label) {
+    if (!key || !String(label).trim()) return null;
+    var lines = String(src).split('\n');
+    var stripped = lines.map(mmStrip).join('\n');
+    // まだ使われていない目印を作る。
+    var i = 1, nk = '';
+    for (; i < 999; i++) {
+      nk = 'n' + i;
+      if (!new RegExp('(^|[^A-Za-z0-9_\\-.])' + nk +
+          '(?![A-Za-z0-9_\\-.])').test(stripped)) {
+        break;
+      }
+    }
+    // 既にある行の字下げに合わせる。
+    var pad = '    ';
+    for (var j = 0; j < lines.length; j++) {
+      if (/^\s*(?:flowchart|graph)\b/i.test(lines[j])) continue;
+      var m = lines[j].match(/^([ \t]+)\S/);
+      if (m) { pad = m[1]; break; }
+    }
+    // 末尾の空行の手前に足す。
+    var at = lines.length;
+    while (at > 0 && !lines[at - 1].trim()) at--;
+    lines.splice(at, 0, pad + key + ' --> ' + nk + '[' + mmLabel(label) + ']');
+    return lines.join('\n');
+  }
+
+  /// mindmap: その行の見出しを差し替える (字下げと形はそのまま)。
+  function mindSetLabel(src, srcLine, label) {
+    var lines = String(src).split('\n');
+    if (!(srcLine >= 0 && srcLine < lines.length)) return null;
+    var raw = lines[srcLine];
+    var ind = raw.match(/^\s*/)[0];
+    var body = raw.replace(/^\s+/, '').replace(/\s+$/, '');
+    var txt = String(label).replace(/\r?\n/g, '<br/>');
+    var open = body.match(/^([A-Za-z0-9_\-]*)([\(\[\{>]+)/);
+    var close = body.match(/([\)\]\}]+)$/);
+    lines[srcLine] = (open && close)
+      ? ind + open[1] + open[2] + txt + close[1]
+      : ind + txt;
+    return lines.join('\n');
+  }
+
+  /// mindmap: その行と、 それより深い行 (= ぶら下がっている物) を落とす。
+  function mindDelete(src, srcLine, indent) {
+    var lines = String(src).split('\n');
+    if (!(srcLine >= 0 && srcLine < lines.length)) return null;
+    var i = srcLine + 1;
+    for (; i < lines.length; i++) {
+      if (!lines[i].trim()) continue;
+      var ind = lines[i].length - lines[i].replace(/^\s*/, '').length;
+      if (ind <= indent) break;
+    }
+    return lines.slice(0, srcLine).concat(lines.slice(i)).join('\n');
+  }
+
+  /// mindmap: その行の子として、 ぶら下がっている物の最後に足す。
+  function mindAddChild(src, srcLine, indent, label) {
+    if (!String(label).trim()) return null;
+    var lines = String(src).split('\n');
+    if (!(srcLine >= 0 && srcLine < lines.length)) return null;
+    var childIndent = -1;
+    var i = srcLine + 1;
+    for (; i < lines.length; i++) {
+      if (!lines[i].trim()) continue;
+      var ind = lines[i].length - lines[i].replace(/^\s*/, '').length;
+      if (ind <= indent) break;
+      if (childIndent < 0) childIndent = ind;   // 既にいる子に字下げを合わせる
+    }
+    if (childIndent < 0) childIndent = indent + 2;
+    var pad = '';
+    for (var k = 0; k < childIndent; k++) pad += ' ';
+    lines.splice(i, 0, pad + String(label).replace(/\r?\n/g, '<br/>'));
+    return lines.join('\n');
+  }
+
   /// 「A[調査]」 のような書き方から、 見出しだけを取り出す。
   function labelOf(raw) {
     var t = String(raw == null ? '' : raw).trim();
@@ -113472,7 +113782,11 @@ const String _kMdEmbeddedMapJs = r"""
       var text = labelOf(m ? m[2] : body);
       if (!text) continue;
       var id = 'm' + (n++);
-      nodes.push({ id: id, title: text, indent: indent });
+      // 元の記法へ書き戻すために、 何行目の何字下げかを覚えておく。
+      nodes.push({
+        id: id, title: text, indent: indent,
+        srcLine: i, srcIndent: indent
+      });
       while (stack.length && stack[stack.length - 1].indent >= indent) {
         stack.pop();
       }
@@ -113481,8 +113795,9 @@ const String _kMdEmbeddedMapJs = r"""
       }
       stack.push({ indent: indent, id: id });
     }
-    return nodes.length ? { nodes: nodes, connections: conns, dir: 'LR' }
-                        : null;
+    return nodes.length
+      ? { nodes: nodes, connections: conns, dir: 'LR', kind: 'mindmap' }
+      : null;
   }
 
   /// flowchart / graph 記法 (A[x] --> B[y]) を読む。
@@ -113494,7 +113809,8 @@ const String _kMdEmbeddedMapJs = r"""
       key = String(key).trim();
       if (!key) return null;
       if (!byKey[key]) {
-        byKey[key] = { id: 'f' + (n++), title: label || key };
+        // 元の記法へ書き戻すために、 元の目印 (A / B …) を覚えておく。
+        byKey[key] = { id: 'f' + (n++), title: label || key, srcKey: key };
         nodes.push(byKey[key]);
       } else if (label && byKey[key].title === key) {
         byKey[key].title = label;
@@ -113530,7 +113846,9 @@ const String _kMdEmbeddedMapJs = r"""
         if (a && b && a !== b) {
           conns.push({
             fromId: a.id, toId: b.id,
-            label: (em[3] || '').trim() || undefined,
+            // ★ 引用符や <br/> を外してから渡す (= ユーザー報告: 線の文字が
+            //   "…<br/>…" のまま出て入り切らない)。
+            label: labelOf(em[3] || '') || undefined,
             arrow: /->|=>|>/.test(L)
           });
         }
@@ -113542,8 +113860,9 @@ const String _kMdEmbeddedMapJs = r"""
       }
       if (seg.length > 900) break;   // 念のための保険
     }
-    return nodes.length ? { nodes: nodes, connections: conns, dir: dir }
-                        : null;
+    return nodes.length
+      ? { nodes: nodes, connections: conns, dir: dir, kind: 'flow' }
+      : null;
   }
 
   /// 位置を決める (mermaid は座標を持たないので、 こちらで並べる)。
@@ -113581,6 +113900,20 @@ const String _kMdEmbeddedMapJs = r"""
     }
     // 同じ深さの中で順番に積む。
     var W = 170, H = 52, GX = 90, GY = 26;
+    // ★ 線に文字を書く図は、 その文字が入るだけ列の間を広げる
+    //   (= ユーザー報告: リンクに書いた文字が入り切っていない)。
+    var longest = 0;
+    for (i = 0; i < conns.length; i++) {
+      var lt = conns[i].label;
+      if (!lt) continue;
+      var rows2 = String(lt).split('\n');
+      for (var r2 = 0; r2 < rows2.length; r2++) {
+        if (rows2[r2].length > longest) longest = rows2[r2].length;
+      }
+    }
+    if (longest > 0) {
+      GX = Math.max(GX, Math.min(320, Math.round(longest * 11 * 0.62) + 40));
+    }
     var rows = {};
     for (i = 0; i < nodes.length; i++) {
       var d = depth[nodes[i].id];
@@ -114329,7 +114662,10 @@ String _markdownPreviewHtml(String md, bool dark,
     // ```map フェンスに書かれたページの中身 (= ユーザー要望: 自分のマップを
     // 埋め込んで、 その場で開閉したり押したりできるように)。
     // 形は {フェンスに書かれた文字: {id, name, nodes, connections}}。
-    String mapsJson = '{}'}) {
+    String mapsJson = '{}',
+    // 車輪を 1 段回した時に動く量の倍率 (= ユーザー要望:
+    // マークダウンページのスクロール幅を微調整)。 1.0 = これまでどおり。
+    double scrollStep = 1.0}) {
   final fg = dark ? '#E8EAF2' : '#16181D';
   final bg = dark ? '#14141F' : '#FFFFFF';
   final code = dark ? '#1E1E2E' : '#F3F4F8';
@@ -114356,6 +114692,29 @@ String _markdownPreviewHtml(String md, bool dark,
   final dlBtn = showDownload
       ? '<a id="mmdl" href="?dl=md" download>&#11015; Markdown</a>'
       : '';
+  // 車輪の効き具合 (= ユーザー要望: スクロール幅の微調整)。
+  // 1.0 ならこれまでどおりなので、 何もしない。
+  final stepJs = (scrollStep - 1.0).abs() < 0.01
+      ? ''
+      : '''<script>
+(function () {
+  var K = $scrollStep;
+  window.addEventListener('wheel', function (ev) {
+    if (ev.ctrlKey) return;              // 拡大縮小は邪魔しない
+    var t = ev.target;
+    while (t && t !== document.body) {
+      // 図や表など、 中で独自に転がす所は触らない。
+      if (t.classList && (t.classList.contains('mmwrap') ||
+          t.classList.contains('mmap-box'))) {
+        return;
+      }
+      t = t.parentNode;
+    }
+    ev.preventDefault();
+    window.scrollBy(0, ev.deltaY * K);
+  }, { passive: false });
+})();
+</script>''';
   // 連動する時だけ、 プレビュー側のスクロールバーを消す (= バーは 1 本)。
   final syncCss = syncScroll
       ? 'html{scrollbar-width:none;}'
@@ -114436,6 +114795,21 @@ String _markdownPreviewHtml(String md, bool dark,
   #mmtoc a:hover{opacity:1;text-decoration:underline;}
   #mmtoc a.mmtoc-l2{padding-left:14px;}
   #mmtoc a.mmtoc-l3{padding-left:28px;}
+  /* ── スクロールバー (= ユーザー要望: 常時表示はやめて、 スクロールする時と
+     カーソルがホバー状態になった時だけ出す) ── */
+  ::-webkit-scrollbar{width:10px;height:10px;}
+  ::-webkit-scrollbar-track{background:transparent;}
+  ::-webkit-scrollbar-corner{background:transparent;}
+  ::-webkit-scrollbar-thumb{background:transparent;border-radius:8px;
+    border:2px solid transparent;background-clip:padding-box;
+    transition:background .18s;}
+  body:hover ::-webkit-scrollbar-thumb,
+  body:hover::-webkit-scrollbar-thumb,
+  body.mmscrolling ::-webkit-scrollbar-thumb,
+  body.mmscrolling::-webkit-scrollbar-thumb{
+    background:$border;background-clip:padding-box;}
+  ::-webkit-scrollbar-thumb:hover{background:$quote !important;
+    background-clip:padding-box;}
   mjx-container svg{overflow:visible;}
   #err{color:#E57373;font-size:12px;white-space:pre-wrap;}
   /* 目次が長い時は中でスクロールさせる (= ユーザー報告: 目次が長すぎる) */
@@ -114443,7 +114817,10 @@ String _markdownPreviewHtml(String md, bool dark,
   /* ── 埋め込んだマップ (= ユーザー要望) ── */
   .mmap{margin:14px 0;}
   .mmap-box{position:relative;height:420px;overflow:hidden;border-radius:10px;
-    border:1px solid $border;background:$code;cursor:grab;}
+    border:1px solid $border;background:$code;cursor:grab;
+    /* 線に書いた文字の下地 (= 線や要素に重なっても読めるように) */
+    --mmap-label-bg:$code;}
+  .mmap-box:focus{outline:none;}
   .mmap-box.grabbing{cursor:grabbing;}
   .mmap-stage{position:absolute;left:0;top:0;transform-origin:0 0;}
   .mmap-lines{position:absolute;left:0;top:0;pointer-events:none;}
@@ -114513,10 +114890,6 @@ String _markdownPreviewHtml(String md, bool dark,
   .mmap-resize::after{content:'';width:44px;height:4px;border-radius:2px;
     background:$border;opacity:.9;}
   .mmap-resize:hover::after{filter:brightness(1.4);}
-  /* マーメイド記法をその場で直す窓 */
-  .mmap-code-pop{max-width:calc(100% - 24px);}
-  .mmap-code-pop textarea{min-height:140px;line-height:1.5;font-size:11.5px;
-    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
   .mmap-empty{padding:16px;font-size:12px;opacity:.7;border-radius:10px;
     border:1px dashed $border;}
   $syncCss
@@ -115268,7 +115641,23 @@ $mapsJs
     out.textContent = $src;
   }
 })();
-</script>$syncJs</body></html>''';
+</script>
+<script>
+// スクロールしている間だけバーを見せる (= ユーザー要望)。
+// 止まってしばらくしたら、 また消す。 ホバー中は CSS 側で出している。
+(function () {
+  var t = null;
+  function mark() {
+    document.body.classList.add('mmscrolling');
+    if (t) clearTimeout(t);
+    t = setTimeout(function () {
+      document.body.classList.remove('mmscrolling');
+    }, 900);
+  }
+  window.addEventListener('scroll', mark, true);
+  window.addEventListener('wheel', mark, { passive: true });
+})();
+</script>$stepJs$syncJs</body></html>''';
 }
 
 /// マークダウンプレビューを file:// で開くための準備 (= ユーザー報告:
@@ -116885,7 +117274,9 @@ graph TD
     // 読み込み直す間は差し替えを使わない (まだ関数が無いため)。
     _previewLoadedOnce = false;
     final html = _markdownPreviewHtml(_ctrl.text, widget.provider.isDarkMode,
-        linkBridge: true, syncScroll: true);
+        linkBridge: true,
+        syncScroll: true,
+        scrollStep: widget.provider.mdScrollStep);
     try {
       if (_isDesktopPlatform) {
         // ── file:// で開く (= Mermaid 描画対応。 about:blank だと CDN の
@@ -116903,6 +117294,7 @@ graph TD
             mathjaxSrc: 'tex-svg.js',
             tocLabel: widget.provider.t('md.toc'),
             syncScroll: true,
+            scrollStep: widget.provider.mdScrollStep,
             mapsJson: buildEmbeddedMapsJson(widget.provider, _ctrl.text));
         final fileUrl = await _prepareMarkdownPreviewFile(localHtml);
         if (!mounted || !_preview) return;
@@ -119209,7 +119601,10 @@ $body''';
     //   幅は行の折り返しを測るのに使うので LayoutBuilder で拾っておく。
     final editorField = Container(
       color: const Color(0xFF14141F),
-      child: LayoutBuilder(builder: (lbCtx, cons) {
+      // 車輪の効き具合を設定に合わせる (= ユーザー要望: スクロール幅の微調整)。
+      child: Listener(
+        onPointerSignal: _applyMdScrollStep,
+        child: LayoutBuilder(builder: (lbCtx, cons) {
         if ((_editorWidth - cons.maxWidth).abs() > 0.5 &&
             cons.maxWidth.isFinite) {
           _editorWidth = cons.maxWidth;
@@ -119241,7 +119636,8 @@ $body''';
             onChanged: (_) => _onChanged(),
           ),
         );
-      }),
+        }),
+      ),
     );
     // タブ列はヘッダー側 (全幅) へ移した (= ユーザー要望: 開いている
     //   ページをヘッダーに出す)。 ここは本文だけ。
@@ -119841,6 +120237,90 @@ $body''';
     }
   }
 
+  /// スクロール幅を微調整する小さな窓 (= ユーザー要望: 大きいと感じる
+  /// ので細かく決められるように)。 100% がこれまでどおり。
+  Future<void> _showMdScrollStepDialog(MindMapProvider provider) async {
+    var v = provider.mdScrollStepPercent.toDouble();
+    await showDialog<void>(
+      context: context,
+      builder: (dctx) => StatefulBuilder(
+        builder: (dctx, setSt) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          title: Text(provider.t('md.scrollStep'),
+              style: const TextStyle(color: Colors.white, fontSize: 15)),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            Text(provider.t('md.scrollStepHint'),
+                style:
+                    const TextStyle(color: Colors.white54, fontSize: 11.5)),
+            const SizedBox(height: 10),
+            Row(children: [
+              const Icon(Icons.remove_rounded,
+                  size: 16, color: Colors.white38),
+              Expanded(
+                child: Slider(
+                  value: v,
+                  min: 20,
+                  max: 200,
+                  divisions: 36,
+                  label: '${v.round()}%',
+                  activeColor: const Color(0xFFBA68C8),
+                  onChanged: (x) => setSt(() => v = x),
+                  onChangeEnd: (x) =>
+                      unawaited(provider.setMdScrollStepPercent(x.round())),
+                ),
+              ),
+              const Icon(Icons.add_rounded, size: 16, color: Colors.white38),
+              SizedBox(
+                width: 46,
+                child: Text('${v.round()}%',
+                    textAlign: TextAlign.right,
+                    style: const TextStyle(
+                        color: Colors.white, fontSize: 12.5)),
+              ),
+            ]),
+          ]),
+          actions: [
+            TextButton(
+              onPressed: () {
+                setSt(() => v = 100);
+                unawaited(provider.setMdScrollStepPercent(100));
+              },
+              child: Text(provider.t('md.scrollStepReset'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(dctx),
+              child: Text(provider.t('btn.close'),
+                  style: const TextStyle(color: Color(0xFFBA68C8))),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted) return;
+    setState(() {});
+    // 値は HTML の中に埋め込んであるので、 作り直して入れ替える。
+    _previewLoadedOnce = false;
+    unawaited(_render());
+  }
+
+  /// 車輪を回した時の動く量を、 設定の割合に合わせる (= ユーザー要望)。
+  ///
+  /// 中の Scrollable が先に既定量ぶん動かすので、 ここでは**差分だけ**を
+  /// 足して帳尻を合わせる (同じフレームの中なので、 見た目は 1 回の移動)。
+  void _applyMdScrollStep(PointerSignalEvent e) {
+    if (e is! PointerScrollEvent) return;
+    final f = widget.provider.mdScrollStep;
+    if ((f - 1.0).abs() < 0.01) return;
+    if (!_editorScroll.hasClients) return;
+    final p = _editorScroll.position;
+    final extra = e.scrollDelta.dy * (f - 1.0);
+    if (extra == 0) return;
+    final next =
+        (p.pixels + extra).clamp(p.minScrollExtent, p.maxScrollExtent);
+    if (next != p.pixels) _editorScroll.jumpTo(next);
+  }
+
   Widget _mdHeaderRow(MindMapProvider provider, bool narrow,
       {double? paneWidth}) {
     // ── AI ボタン。 表記は「AI」 だけ (= ユーザー要望: 「AI に書いて
@@ -119992,6 +120472,9 @@ $body''';
             // (リンクを挿入するボタンは削除 = ユーザー要望: AI に指示して
             //  直してもらえば済むため)
             _btn(Icons.copy_rounded, provider.t('md.copy'), _copyAll),
+            // スクロール幅の微調整 (= ユーザー要望: 大きいと感じる)。
+            _btn(Icons.swap_vert_rounded, provider.t('md.scrollStep'),
+                () => _showMdScrollStepDialog(provider)),
             // ネットに公開する (= ユーザー要望: プレビュー画面をサーバーへ)。
             //   公開中はアイコンの形 (塗り) だけで表す。 色は白で統一。
             if (provider.canPublishHtmlPage)
@@ -129892,7 +130375,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
                   //    (= ユーザー要望: バーを掴んで左右に移動できるように)。 ──
                   child: RawScrollbar(
                     controller: _pageTabScroll,
-                    thumbVisibility: true,
+                    // バーは常時表示しない (= ユーザー要望: 動かす時とホバー中だけ)。
+                    thumbVisibility: false,
                     interactive: true,
                     thickness: 4,
                     radius: const Radius.circular(2),
@@ -170586,7 +171070,8 @@ class _FloatingWeatherState extends State<_FloatingWeather> {
                     behavior: const _AlwaysDraggableScrollBehavior(),
                     child: Scrollbar(
                       controller: _hourlyScrollCtrl,
-                      thumbVisibility: true,
+                      // バーは常時表示しない (= ユーザー要望: 動かす時とホバー中だけ)。
+                      thumbVisibility: false,
                       thickness: 4,
                       radius: const Radius.circular(2),
                       child: ListView.builder(
@@ -229707,7 +230192,8 @@ class _McpChatDialogState extends State<_McpChatDialog> {
       Expanded(
         child: Scrollbar(
           controller: _capScroll,
-          thumbVisibility: true,
+          // バーは常時表示しない (= ユーザー要望: 動かす時とホバー中だけ)。
+          thumbVisibility: false,
           interactive: true,
           child: SingleChildScrollView(
             controller: _capScroll,

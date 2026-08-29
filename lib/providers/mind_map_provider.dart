@@ -39317,6 +39317,56 @@ class MindMapProvider extends ChangeNotifier {
       'en': 'To',
     },
     // ── ファイルを作る手順 (= ユーザー要望: 作ってそのまま渡せるように) ──
+    // ── マークダウンページのスクロール幅 (= ユーザー要望) ──
+    // ── 設定とキーの割り当ての持ち運び (= ユーザー要望) ──
+    'sync.settingsTitle': {
+      'ja': '設定とキーの割り当て',
+      'en': 'Settings and key bindings',
+    },
+    'sync.settingsHint': {
+      'ja': 'バーの並び・キーの割り当て・各種の好みを、 同じアカウントの'
+            '端末で使い回せます。 AI の鍵と、 支払い・使用量は含みません。',
+      'en': 'Carry your toolbars, key bindings and preferences to your other '
+            'devices. AI keys, billing and usage are never included.',
+    },
+    'sync.settingsUpload': {
+      'ja': '上げる',
+      'en': 'Upload',
+    },
+    'sync.settingsDownload': {
+      'ja': '降ろす',
+      'en': 'Download',
+    },
+    'sync.settingsUploaded': {
+      'ja': '設定 {n} 件を上げました',
+      'en': 'Uploaded {n} settings',
+    },
+    'sync.settingsDownloaded': {
+      'ja': '設定 {n} 件を取り込みました (一部は開き直すと効きます)',
+      'en': 'Applied {n} settings (some need a restart)',
+    },
+    'sync.settingsDownloadConfirm': {
+      'ja': 'この端末の設定を、 クラウドに上げてある内容で上書きします。'
+            '\n\nAI の鍵はそのまま残ります。',
+      'en': "This overwrites this device's settings with what is stored in "
+          'the cloud.\n\nYour AI keys are left untouched.',
+    },
+    'sync.settingsFailed': {
+      'ja': '設定のやり取りに失敗しました',
+      'en': 'Could not sync the settings',
+    },
+    'md.scrollStep': {
+      'ja': 'スクロール幅',
+      'en': 'Scroll amount',
+    },
+    'md.scrollStepHint': {
+      'ja': '車輪を 1 段回した時に動く量です。 100% がこれまでどおり。',
+      'en': 'How far one wheel notch scrolls. 100% is the usual amount.',
+    },
+    'md.scrollStepReset': {
+      'ja': '100% に戻す',
+      'en': 'Back to 100%',
+    },
     'auto.kindMakeFile': {
       'ja': 'ファイルを作る',
       'en': 'Make a file',
@@ -58973,6 +59023,8 @@ class MindMapProvider extends ChangeNotifier {
     //   のユーザーの値はそのまま尊重する。
     _pdfArrowStepDivisor =
         (prefs.getInt('pdfArrowStepDivisor') ?? 10).clamp(1, 100);
+    _mdScrollStepPercent =
+        (prefs.getInt('mdScrollStepPercent') ?? 100).clamp(20, 200);
     _pdfScrollHorizontal = prefs.getBool('pdfScrollHorizontal') ?? false;
     _eventNotifyLeadMinutes =
         (prefs.getInt('eventNotifyLeadMinutes') ?? 15).clamp(0, 1440);
@@ -60169,6 +60221,26 @@ class MindMapProvider extends ChangeNotifier {
     try {
       final prefs = await _prefsWithRetry();
       await prefs.setBool('isDarkMode', dark);
+    } catch (_) {}
+    notifyListeners();
+  }
+
+  // ─── マークダウンページのスクロール幅 (= ユーザー要望: 大きいと感じる
+  //     ので微調整できるように) ───
+  /// 車輪を 1 段回した時に動く量 (%)。 100 = これまでどおり。
+  /// 小さくすると少しずつ、 大きくすると一気に動く。 範囲は 20〜200。
+  int _mdScrollStepPercent = 100;
+  int get mdScrollStepPercent => _mdScrollStepPercent;
+
+  /// 掛け算に使う倍率 (1.0 = これまでどおり)。
+  double get mdScrollStep => _mdScrollStepPercent / 100.0;
+  Future<void> setMdScrollStepPercent(int value) async {
+    final v = value.clamp(20, 200);
+    if (v == _mdScrollStepPercent) return;
+    _mdScrollStepPercent = v;
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.setInt('mdScrollStepPercent', v);
     } catch (_) {}
     notifyListeners();
   }
@@ -65243,6 +65315,268 @@ class MindMapProvider extends ChangeNotifier {
   /// /users/{uid} の非課金メタデータを更新する。
   /// `plan` は Stripe / RevenueCat / ライセンス用 Cloud Functions だけが書く
   /// サーバー正本であり、クライアント値で上書きしない。
+  // ═══ 設定とキーの割り当ての同期 (= ユーザー要望) ═══════════════════
+  //
+  // = ユーザー要望「設定やキーの割り当て、 AI の鍵以外は同期できるように
+  //   して欲しい」。 端末を変えても、 バーの並び・キーの割り当て・各種の
+  //   好みがそのまま移るようにする。
+  //
+  // ★ 持ち出す物は**この一覧に書いた物だけ**。 ページの中身や、 その端末
+  //   だけの状態 (窓の位置・最後に開いた頁・使用量) は入れない。
+  // ★ AI の鍵と、 身元 / 支払いに関わる物は絶対に入れない。 万一この一覧に
+  //   紛れても、 下の [_isSecretSettingKey] が最後の関所で弾く。
+  static const List<String> kSyncedSettingKeys = <String>[
+    // AI の作り方 (鍵は含めない)
+    'aiChildMax', 'aiChildMin', 'aiDepth', 'aiGrandchildMax',
+    'aiGrandchildMin', 'aiModelTier', 'aiProvider', 'anthropicModel',
+    'deepseek_model', 'grok_model', 'openaiModel', 'openrouter_model',
+    'openrouter_base_url', 'imageGenModel', 'relayModel', 'relayReasoning',
+    'browser_ai_prefix', 'browser_ai_target',
+    // 見た目
+    'appLanguage', 'isDarkMode', 'headerColor', 'highRefreshRate',
+    'hideMiniMap', 'hidePaneHeaders', 'defaultMemoFontSize',
+    'defaultTitleFontSize', 'colorMode', 'fixedColorIndex',
+    // ボタンの並び (バー)
+    'customHeaderButtons', 'customBottomButtons', 'customBottomThirdButtons',
+    'customBottomFourthButtons', 'customBottomTopButtons',
+    'customBottomTopButtonsSplit', 'galleryHeaderButtons',
+    'headerIconColors', 'headerIconColorsOff', 'paneHeaderButtons_v1',
+    'desktopHeaderButtonPlacement', 'desktopHeaderButtonPlacementById',
+    'desktopHeaderBarCollisionMode', 'desktopHeaderEnabledDockPlacements',
+    'desktopHeaderDockCollapsedByPlacement', 'bottomThirdRowEnabled',
+    'bottomFourthRowEnabled', 'lockScaleBottomSlot',
+    // ★ キーの割り当て (= ユーザー要望: これも同期する)
+    'custom_key_bindings', 'disabled_shortcuts',
+    // 要素とキャンバスの振る舞い
+    'snapEnabled', 'memoCollapsedGlobal', 'allowDuplicateVideoNodes',
+    'autofillSequenceEnabled', 'promptForTitleOnNodeCreate',
+    'openLinksInApp', 'pasteImageScalePercent', 'pasteImageOriginalSize',
+    'nodeWidthMax', 'nodeSplitDelimiter', 'nodeAiUseAssistant',
+    'nodeCalendarUseFlashcard', 'nodeEditUseRich', 'nodeLinkUseAttach',
+    'nodeSearchOpenMode', 'nodeSearchUseYoutube',
+    'suppressPageDeleteUndoPrompt', 'decoTextAnchorX', 'decoTextAnchorY',
+    // 線の既定
+    'connectionArrowHeadScale', 'connectionBidirectional',
+    'connectionElbowPointCount', 'connectionElbowSplitRatio',
+    'connectionLineColorValue', 'connectionLineStyle',
+    'connectionRelationshipType', 'connectionShowArrow',
+    'connectionStrokeWidth',
+    // PDF / マークダウン
+    'pdfArrowStepDivisor', 'pdfPageJumpCount', 'pdfAiPanelDefault',
+    'pdfFitPageDefault', 'pdfInitialViewMode', 'pdfScrollHorizontal',
+    'mdScrollStepPercent', 'textEditorAlignMode',
+    // 動画 / YouTube
+    'autoDeleteWatched', 'backgroundPlaybackEnabled', 'channelMode',
+    'chFilterExclude', 'chFilterInclude', 'includeShorts', 'minViewCount',
+    'unwatchedLimit', 'videoMaxRate', 'videoSeekSeconds',
+    'videoPanelSideBySide', 'splitVideoFillMode', 'webAudioBackground',
+    'askRefreshOnVideo', 'matchRefreshOnVideo', 'playlistLoadMoreInfo',
+    'pipScale', 'lastVideoPlaybackRate', 'quickAddChildrenCount',
+    'bookshelfAutoPlayNext', 'bookshelfReverseOrder',
+    // 声
+    'voiceDelimiter', 'voicePauseSeconds',
+    // 時計 / 予定
+    'clockOffsetMinutes', 'clockOffsetUserSet', 'eventNotifyLeadMinutes',
+    'calendarTzLabel', 'calendarTzOffset', 'calendarGroupSharingEnabled',
+    'timelineSleepStartMin', 'timelineSleepEndMin', 'drawerTodoFirst_v2',
+    // 集中モード
+    'focusLockHideSeconds', 'focusLockHideUnlockBtn', 'focusLockMode',
+    'focusLockScheduleEnabled', 'focusLockScheduleEndMin',
+    'focusLockScheduleStartMin', 'focusLockSchedules', 'focusLockShowAlarm',
+    'focusLockShowPomodoro', 'focusLockAllowContentAccess',
+    'focusLockAllowMemoAi', 'focusLockAllowMemoGoogle',
+    'focusLockAllowMemoYoutube', 'focusLockYoutubeKeywordGate',
+    'focusLockLastDurationSeconds', 'hideEmbedRelated',
+    // 画面ロック
+    'appLockButtonDurationSeconds', 'appLockButtonMode',
+    'appLockButtonScheduleEnabled', 'appLockButtonScheduleEndMin',
+    'appLockButtonScheduleStartMin', 'appLockDisableButtonUnlock',
+    'appLockLastDurationSeconds', 'lockAmbientEnabled',
+    // ポモドーロ
+    'pomodoro_cyclesUntilLong', 'pomodoro_longMin', 'pomodoro_shortMin',
+    'pomodoro_workMin',
+    // お絵かき / カメラ
+    'paintRenumberOnDelete', 'paintRotCw', 'paintRotStep', 'paintStabilize',
+    'paintStabilizeStrength', 'paintTableCols', 'paintTableRows',
+    'paintTableTheme', 'cameraSkipEdit', 'cameraUnmirror',
+    // ガント / 単語カード / その他
+    'gantt_notify_enabled', 'gantt_notify_hour', 'gantt_notify_min',
+    'fcAvoidExisting', 'fcFormat', 'fcIncludeRelated', 'fcPrompt',
+    'fcTxtLineCount', 'fcTxtStartLine', 'flashcardGenCount',
+    'quizAvoidDuplicates', 'allowMultipleFloatingWindows',
+    'openWithNewInstance', 'openTarget', 'mapSplitQuad', 'mapSplitRatioX',
+    'mapSplitRatioY', 'mapSplitStacked', 'instagramLanding',
+    'instagramUsername', 'weather_cityName', 'weather_lat', 'weather_lon',
+    'geofenceLat', 'geofenceLon', 'geofenceLockEnabled',
+    'geofenceLockMinutes', 'geofenceMode', 'geofenceRadiusKm',
+    'mcp_preamble_v1', 'mcp_model_bar_hidden_v1',
+  ];
+
+  /// 何があっても持ち出さない物 (鍵・身元・支払い・使用量)。
+  static bool _isSecretSettingKey(String k) {
+    final l = k.toLowerCase();
+    if (l.contains('api_key') ||
+        l.contains('apikey') ||
+        l.contains('token') ||
+        l.contains('secret') ||
+        l.contains('password')) {
+      return true;
+    }
+    const deny = <String>{
+      'firebase_uid', 'google_email', 'google_signed_in',
+      'google_avatar_path', 'displayName', 'displayNameSkipped',
+      'userAvatar', 'userAvatarImage', 'pro_subscribed', 'purchased_plan',
+      'subscription_ended_at_ms', 'dev_impersonate_plan', 'developer_mode',
+      'applied_coupon_code', 'coupon_discount_percent', 'coupon_expiry_ms',
+      'coupon_plan', 'totalInputTokens', 'totalOutputTokens', 'totalCostUsd',
+      'appKeyCostUsd', 'appKeyBilledUsd', 'billingMonthYm',
+      'monthlyUploadBytes', 'monthlyDownloadBytes', 'totalStorageBytes',
+      // 待ち受けを勝手に開けないよう、 MCP の口は同期しない。
+      'mcp_server_enabled', 'mcp_external_allowed',
+    };
+    return deny.contains(k);
+  }
+
+  /// 今の設定を、 持ち運べる形にまとめる。
+  ///
+  /// SharedPreferences は型がまちまちなので、 文字の一覧だけ包んで印を付ける
+  /// (JSON にすると List<String> と List<dynamic> の区別が付かないため)。
+  Future<Map<String, dynamic>> exportSettingsSnapshot() async {
+    final out = <String, dynamic>{};
+    try {
+      final prefs = await _prefsWithRetry();
+      for (final k in kSyncedSettingKeys) {
+        if (_isSecretSettingKey(k)) continue;
+        final v = prefs.get(k);
+        if (v == null) continue;
+        if (v is List) {
+          out[k] = {'_t': 'sl', 'v': v.map((e) => '$e').toList()};
+        } else if (v is bool || v is int || v is double || v is String) {
+          out[k] = v;
+        }
+      }
+    } catch (e) {
+      debugPrint('exportSettingsSnapshot error: $e');
+    }
+    return out;
+  }
+
+  /// 受け取った設定を書き戻す。 戻り値は書き込めた数。
+  ///
+  /// 一覧に無い物・鍵に見える物は無視する (相手が古い / 細工されていても
+  /// 余計な物を書き込まないため)。
+  Future<int> applySettingsSnapshot(Map<String, dynamic> m) async {
+    var n = 0;
+    try {
+      final prefs = await _prefsWithRetry();
+      for (final e in m.entries) {
+        final k = e.key;
+        if (!kSyncedSettingKeys.contains(k)) continue;
+        if (_isSecretSettingKey(k)) continue;
+        final v = e.value;
+        if (v is Map && v['_t'] == 'sl') {
+          final list = (v['v'] as List?) ?? const [];
+          await prefs.setStringList(k, list.map((x) => '$x').toList());
+        } else if (v is bool) {
+          await prefs.setBool(k, v);
+        } else if (v is int) {
+          await prefs.setInt(k, v);
+        } else if (v is double) {
+          await prefs.setDouble(k, v);
+        } else if (v is num) {
+          await prefs.setDouble(k, v.toDouble());
+        } else if (v is String) {
+          await prefs.setString(k, v);
+        } else {
+          continue;
+        }
+        n++;
+      }
+    } catch (e) {
+      debugPrint('applySettingsSnapshot error: $e');
+      return n;
+    }
+    // 読み直して、 その場で見た目に効く物は反映する。
+    // (バーの並びやキーの割り当てなど、 画面側が持っている物は開き直しで効く)
+    try {
+      await _loadGeminiApiKey();
+      await _loadFontSettings();
+      await _loadAiSettings();
+    } catch (_) {}
+    notifyListeners();
+    return n;
+  }
+
+  /// 設定をクラウド (users/{uid}) へ上げる。 上げた数を返す。 -1 は失敗。
+  Future<int> uploadSettingsToCloud() async {
+    if (!_firebaseEnabled) return -1;
+    try {
+      await _ensureFreshToken();
+      if (_idToken == null || _uid == null) return -1;
+      final snap = await exportSettingsSnapshot();
+      final body = jsonEncode({
+        'fields': {
+          'settingsJson': {'stringValue': jsonEncode(snap)},
+          'settingsAt': {
+            'stringValue': DateTime.now().toUtc().toIso8601String()
+          },
+        }
+      });
+      final res = await http.patch(
+        Uri.parse('$_firestoreBaseUrl/users/$_uid'
+            '?updateMask.fieldPaths=settingsJson'
+            '&updateMask.fieldPaths=settingsAt'),
+        headers: {
+          'Authorization': 'Bearer $_idToken',
+          'Content-Type': 'application/json',
+        },
+        body: body,
+      );
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        debugPrint('uploadSettingsToCloud: ${res.statusCode} ${res.body}');
+        return -1;
+      }
+      return snap.length;
+    } catch (e) {
+      debugPrint('uploadSettingsToCloud error: $e');
+      return -1;
+    }
+  }
+
+  /// クラウドに上げてある設定の日時 (無ければ null)。
+  DateTime? _cloudSettingsAt;
+  DateTime? get cloudSettingsAt => _cloudSettingsAt;
+
+  /// 設定をクラウドから降ろして書き戻す。 書き戻した数を返す。 -1 は失敗。
+  Future<int> downloadSettingsFromCloud() async {
+    if (!_firebaseEnabled) return -1;
+    try {
+      await _ensureFreshToken();
+      if (_idToken == null || _uid == null) return -1;
+      final res = await http.get(
+        Uri.parse('$_firestoreBaseUrl/users/$_uid'),
+        headers: {'Authorization': 'Bearer $_idToken'},
+      );
+      if (res.statusCode != 200) {
+        debugPrint('downloadSettingsFromCloud: ${res.statusCode}');
+        return -1;
+      }
+      final doc = jsonDecode(utf8.decode(res.bodyBytes));
+      final fields = (doc is Map ? doc['fields'] : null);
+      if (fields is! Map) return 0;
+      final at = fields['settingsAt']?['stringValue'] as String?;
+      _cloudSettingsAt = at == null ? null : DateTime.tryParse(at);
+      final raw = fields['settingsJson']?['stringValue'] as String?;
+      if (raw == null || raw.trim().isEmpty) return 0;
+      final m = jsonDecode(raw);
+      if (m is! Map) return 0;
+      return applySettingsSnapshot(Map<String, dynamic>.from(m));
+    } catch (e) {
+      debugPrint('downloadSettingsFromCloud error: $e');
+      return -1;
+    }
+  }
+
   Future<void> _syncPlanToUserDoc() async {
     if (!_firebaseEnabled || _idToken == null || _uid == null) return;
     try {

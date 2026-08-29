@@ -3586,16 +3586,12 @@ class MyApp extends StatelessWidget {
                 actionTextColor: Color(0xFFFFD54F),
                 disabledActionTextColor: Colors.white38,
               ),
-              // ── スクロールバー (スライドバー) を常時表示 + 白系で見やすく ──
-              // ダイアログ / シートは暗色背景なので、 白系のサムにすると
-              // 「スライドバーが見えない」 問題が解消する。 ユーザー要望対応。
-              scrollbarTheme: ScrollbarThemeData(
-                thumbVisibility: const WidgetStatePropertyAll(true),
-                thickness: const WidgetStatePropertyAll(6),
-                radius: const Radius.circular(8),
-                thumbColor:
-                    WidgetStatePropertyAll(Colors.white.withValues(alpha: 0.7)),
-              ),
+              // ── スクロールバー (= ユーザー要望: 常時表示はやめて、
+              //    スクロールする時とカーソルが乗った時だけ出す) ──
+              //    thumbVisibility を false にすると、 Flutter の既定どおり
+              //    動かしている間だけ出て、 止まると消える。 バーの上に
+              //    カーソルを乗せた時は resolveWith で出す。
+              scrollbarTheme: _autoHideScrollbarTheme(),
               // ── 時刻 / 日付の選択画面も暗色に揃える ──
               // アプリのダイアログ・引き出しは明るいテーマでも暗色で作って
               // あるため、 標準の時計ダイヤルと日付表だけが真っ白に浮いて
@@ -3626,14 +3622,8 @@ class MyApp extends StatelessWidget {
                 actionTextColor: Color(0xFFFFD54F),
                 disabledActionTextColor: Colors.white38,
               ),
-              // ── スクロールバー (スライドバー) を常時表示 + 白系で見やすく ──
-              scrollbarTheme: ScrollbarThemeData(
-                thumbVisibility: const WidgetStatePropertyAll(true),
-                thickness: const WidgetStatePropertyAll(6),
-                radius: const Radius.circular(8),
-                thumbColor:
-                    WidgetStatePropertyAll(Colors.white.withValues(alpha: 0.7)),
-              ),
+              // ── スクロールバー (= ユーザー要望: 常時表示はやめる) ──
+              scrollbarTheme: _autoHideScrollbarTheme(),
             ),
             home: const MindMapScreen(),
           );
@@ -3641,6 +3631,29 @@ class MyApp extends StatelessWidget {
       ),
     );
   }
+}
+
+/// スクロールバーの見た目 (= ユーザー要望: どこのバーも常時表示はやめて、
+/// スクロールする時とカーソルがホバー状態になった時だけ出す)。
+///
+/// `thumbVisibility` を false にすると Flutter の既定に戻り、 動かしている
+/// 間だけ出て、 止まると薄れて消える。 バーに乗せている間 / 掴んでいる間は
+/// resolveWith で出しっぱなしにし、 その時だけ少し太くして掴みやすくする。
+ScrollbarThemeData _autoHideScrollbarTheme() {
+  bool on(Set<WidgetState> st) =>
+      st.contains(WidgetState.hovered) || st.contains(WidgetState.dragged);
+  return ScrollbarThemeData(
+    thumbVisibility: WidgetStateProperty.resolveWith(on),
+    trackVisibility: WidgetStateProperty.resolveWith(on),
+    thickness: WidgetStateProperty.resolveWith((st) => on(st) ? 10.0 : 6.0),
+    radius: const Radius.circular(8),
+    thumbColor: WidgetStateProperty.resolveWith((st) =>
+        Colors.white.withValues(alpha: on(st) ? 0.85 : 0.55)),
+    trackColor: WidgetStateProperty.resolveWith((st) =>
+        on(st) ? Colors.white.withValues(alpha: 0.12) : Colors.transparent),
+    trackBorderColor:
+        const WidgetStatePropertyAll(Colors.transparent),
+  );
 }
 
 /// 発表者モードの「聴衆ウィンドウ」 (= 別ウィンドウ) のアプリ。
