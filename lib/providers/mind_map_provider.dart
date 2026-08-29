@@ -41958,6 +41958,19 @@ class MindMapProvider extends ChangeNotifier {
     //   (= ユーザー要望)。 名前も「ブラウザ版AI」 に変更。
     // ブラウザ版 AI とフローティング AI を統合したので、 名前は「AI」
     //   (= ユーザー要望)。 どの AI を開くか / どう開くかは右クリックで選ぶ。
+    // アプリを操作してくれる方の AI (= ブラウザで開く
+    //   'hdr.openAiBrowser' とは別物)。
+    'hdr.aiAssistant': {
+      'ja': 'AI アシスタント',
+      'en': 'AI assistant',
+      'zh': 'AI 助手',
+      'ko': 'AI 어시스턴트',
+      'es': 'Asistente de IA',
+      'fr': 'Assistant IA',
+      'de': 'KI-Assistent',
+      'pt': 'Assistente de IA',
+      'ru': 'AI-ассистент',
+    },
     'hdr.openAiBrowser': {
       'ja': 'AI', 'en': 'AI',
       'zh': 'AI', 'ko': 'AI',
@@ -48953,6 +48966,83 @@ class MindMapProvider extends ChangeNotifier {
     'account.cancelled': {
       'ja': 'ログインを中止しました。',
       'en': 'Sign-in was cancelled.',
+    },
+    // ── ログイン後にブラウザへ出す案内 (= ユーザー報告:
+    //    決済へ進む時も「閉じて戻れ」 と出るのに、 待っていると
+    //    料金プランの画面へ変わって房惑う) ──
+    'account.webDoneTitle': {
+      'ja': 'ログインできました',
+      'en': 'Signed in',
+      'zh': '登录成功',
+      'ko': '로그인되었습니다',
+      'es': 'Sesión iniciada',
+      'fr': 'Connexion réussie',
+      'de': 'Angemeldet',
+      'pt': 'Sessão iniciada',
+      'ru': 'Вход выполнен',
+    },
+    'account.webDoneBody': {
+      'ja': 'このタブを閉じて、 HisatorNotebook に戻ってください。',
+      'en': 'You can close this tab and return to HisatorNotebook.',
+      'zh': '可以关闭此标签页，返回 HisatorNotebook。',
+      'ko': '이 탭을 닫고 HisatorNotebook 으로 돌아가세요.',
+      'es': 'Puedes cerrar esta pestaña y volver a HisatorNotebook.',
+      'fr': 'Vous pouvez fermer cet onglet et revenir à HisatorNotebook.',
+      'de': 'Du kannst diesen Tab schließen und zu HisatorNotebook zurückkehren.',
+      'pt': 'Pode fechar esta aba e voltar ao HisatorNotebook.',
+      'ru': 'Можно закрыть эту вкладку и вернуться в HisatorNotebook.',
+    },
+    'account.webDoneCheckoutTitle': {
+      'ja': 'ログインできました',
+      'en': 'Signed in',
+      'zh': '登录成功',
+      'ko': '로그인되었습니다',
+      'es': 'Sesión iniciada',
+      'fr': 'Connexion réussie',
+      'de': 'Angemeldet',
+      'pt': 'Sessão iniciada',
+      'ru': 'Вход выполнен',
+    },
+    'account.webDoneCheckoutBody': {
+      'ja': 'このあとお支払いの画面へ移ります。'
+          'このタブを閉じずに、 そのまま少しお待ちください。',
+      'en': 'Taking you to the payment page. '
+          'Please keep this tab open and wait a moment.',
+      'zh': '即将转到付款页面。请不要关闭此标签页，稍候。',
+      'ko': '결제 화면으로 이동합니다. 이 탭을 닫지 말고 '
+          '잠시 기다려 주세요.',
+      'es': 'Te llevamos a la página de pago. '
+          'No cierres esta pestaña y espera un momento.',
+      'fr': 'Redirection vers la page de paiement. '
+          'Ne fermez pas cet onglet et patientez un instant.',
+      'de': 'Weiter zur Bezahlseite. '
+          'Bitte lass diesen Tab offen und warte einen Moment.',
+      'pt': 'A encaminhar para a página de pagamento. '
+          'Não feche esta aba e aguarde um momento.',
+      'ru': 'Переход к странице оплаты. '
+          'Не закрывайте эту вкладку и подождите.',
+    },
+    'account.webCancelTitle': {
+      'ja': 'ログインを中止しました',
+      'en': 'Sign-in cancelled',
+      'zh': '已取消登录',
+      'ko': '로그인을 취소했습니다',
+      'es': 'Inicio de sesión cancelado',
+      'fr': 'Connexion annulée',
+      'de': 'Anmeldung abgebrochen',
+      'pt': 'Início de sessão cancelado',
+      'ru': 'Вход отменён',
+    },
+    'account.webCancelBody': {
+      'ja': 'このタブを閉じて、 もう一度お試しください。',
+      'en': 'Close this tab and try again.',
+      'zh': '请关闭此标签页后重试。',
+      'ko': '이 탭을 닫고 다시 시도해 주세요.',
+      'es': 'Cierra esta pestaña e inténtalo de nuevo.',
+      'fr': 'Fermez cet onglet et réessayez.',
+      'de': 'Schließe diesen Tab und versuche es erneut.',
+      'pt': 'Feche esta aba e tente novamente.',
+      'ru': 'Закройте эту вкладку и попробуйте снова.',
     },
     'account.notConfigured': {
       'ja': 'この配布ではGoogleログインが設定されていません。',
@@ -59664,6 +59754,29 @@ class MindMapProvider extends ChangeNotifier {
       prefs.setString(
           'galleryHeaderButtons', jsonEncode(_galleryHeaderButtons));
     }
+    // ── AI アシスタントの入口を足す (= ユーザー要望: Android でも
+    //    アシスタントを使えるように) ──
+    //    既定を変えても、 すでに保存されている配置の方が優先される。
+    //    そのため、 一度だけ既存の配置にも差し込む。 自分で消した人が
+    //    また出てこないよう、 印を付けて二度はやらない。
+    if (prefs.getBool('mig_ai_assistant_button_v1') != true) {
+      if (!_customHeaderButtons.contains('aiAssistant')) {
+        final insertAt = _customHeaderButtons.contains('openAi')
+            ? _customHeaderButtons.indexOf('openAi')
+            : _customHeaderButtons.length;
+        _customHeaderButtons.insert(insertAt, 'aiAssistant');
+      }
+      if (!_galleryHeaderButtons.contains('aiAssistant')) {
+        final insertAt = _galleryHeaderButtons.contains('openAi')
+            ? _galleryHeaderButtons.indexOf('openAi')
+            : _galleryHeaderButtons.length;
+        _galleryHeaderButtons.insert(insertAt, 'aiAssistant');
+      }
+      prefs.setBool('mig_ai_assistant_button_v1', true);
+      prefs.setString('customHeaderButtons', jsonEncode(_customHeaderButtons));
+      prefs.setString(
+          'galleryHeaderButtons', jsonEncode(_galleryHeaderButtons));
+    }
     if (prefs.getBool('mig_share_page_lan_header_v1') != true) {
       void addShareButton(List<String> buttons) {
         if (buttons.contains('sharePageLan')) return;
@@ -60223,6 +60336,10 @@ class MindMapProvider extends ChangeNotifier {
     'selectAll',
     'rangeSelect',
     'mapMemo',
+    // AI アシスタント (= ユーザー要望: Android でも使えるように)。
+    //   これまで既定のバーに入っておらず、 パソコンのショートカットか
+    //   自分でボタンを足した人しか開けなかった。
+    'aiAssistant',
     'openYoutube',
     'openAi',
     'googleSearch',
@@ -72389,11 +72506,35 @@ $cleanQ
     return false;
   }
 
-  Future<String?> signInWithGoogle({VoidCallback? onWaiting}) async {
+  /// [forCheckout] true なら、 ログイン後にブラウザへ出す案内を
+  /// 「このあと決済画面に移るので待っていて」 に変える
+  /// (= ユーザー報告: 「閉じて戻れ」 と出るのに、 待っていると勝手に
+  ///  料金プランの画面へ変わって戸惑う)。
+  /// ログイン後にブラウザへ出す案内 (今の表示言語で組む)。
+  GoogleAuthResultText _googleAuthResultText({bool forCheckout = false}) =>
+      GoogleAuthResultText(
+        lang: _appLanguage,
+        okTitle: t(forCheckout
+            ? 'account.webDoneCheckoutTitle'
+            : 'account.webDoneTitle'),
+        okBody: t(forCheckout
+            ? 'account.webDoneCheckoutBody'
+            : 'account.webDoneBody'),
+        cancelTitle: t('account.webCancelTitle'),
+        cancelBody: t('account.webCancelBody'),
+      );
+
+  Future<String?> signInWithGoogle({
+    VoidCallback? onWaiting,
+    bool forCheckout = false,
+  }) async {
     if (!canUseGoogleSignIn) {
       throw Exception(t('account.notConfigured'));
     }
-    final signIn = await GoogleAuth.signIn(onWaiting: onWaiting);
+    final signIn = await GoogleAuth.signIn(
+      onWaiting: onWaiting,
+      resultText: _googleAuthResultText(forCheckout: forCheckout),
+    );
     if (signIn == null) return null;
     final googleIdToken = signIn.idToken;
 

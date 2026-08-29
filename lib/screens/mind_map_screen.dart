@@ -16011,7 +16011,11 @@ class _MindMapScreenState extends State<MindMapScreen>
       ),
     );
     if (go != true || !mounted) return false;
-    final who = await provider.signInWithGoogle();
+    // ★ このログインは「このあと決済へ進む」 ためのもの。 ブラウザに出す
+    //   案内も、 閉じて戻れではなく「決済画面へ移るので待っていて」 に
+    //   変える (= ユーザー報告: 戻れと書いてあるのに待っていると勝手に
+    //   料金プランの画面へ変わって戸惑う)。
+    final who = await provider.signInWithGoogle(forCheckout: true);
     if (!mounted) return false;
     if (who == null || !provider.googleSignedIn) {
       _appSnack(
@@ -39687,6 +39691,16 @@ class _MindMapScreenState extends State<MindMapScreen>
     //   同じ仕組み (provider.browserAiTarget) を共有する。 左タップで現在の
     //   AI を分割パネルで開き、 右クリック/長押しで切替メニューを出す
     //   (= _buildCustomHeaderButton 側で openAi を特別扱い)。 ──
+    // ── AI アシスタント (アプリを操作してくれる方) ──
+    //    = ユーザー要望「Android 側の AI アシスタントも使えるように」。
+    //    これまでこの表に無く、 バーに足すことすらできなかったので、
+    //    パソコンのショートカットからしか開けなかった。
+    {
+      'id': 'aiAssistant',
+      'labelKey': 'hdr.aiAssistant',
+      'icon': Icons.smart_toy_rounded,
+      'color': Color(0xFF80CBC4),
+    },
     {
       'id': 'openAi',
       // アプリを操作してくれる「AI (チャット型)」 と紛らわしかったので、
