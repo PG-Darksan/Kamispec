@@ -46,6 +46,12 @@ CREDIT_RETURN_URL = "https://hisator-notebook.com/thanks"
 SITE_VISITS_BASE = "0"
 # 本人確認 (ID トークン) の検証に使う。 公開情報なので vars で良い。
 FIREBASE_PROJECT_ID = "mindmap-b6115"
+# プラン変更 (/billing/change-plan) で差し替える先の価格。
+#   価格 ID は秘密ではない (決済ページにも出る) ので vars で良い。
+#   ここを書いておけば確実。 未設定でも、 価格 / 商品の metadata.plan から
+#   自動で探すが、 metadata を入れていないと見つからない。
+#   ★ Stripe で値段を作り直したらここも直すこと。
+PRICE_MAP = '{"pro_monthly":"price_1U4JnHAcfPdrtcLFgPpazFRr","pro_yearly":"price_1U4JnQAcfPdrtcLFHvKU0PH6","max_monthly":"price_1Taz1MAcfPdrtcLFWuNS2iVK","max_yearly":"price_1U3CBoAcfPdrtcLFGDzuV4va"}'
 
 # Stripe の従量課金メーターを使う場合だけ設定する (前払いクレジット方式では
 # 不要)。 空のままで問題ない。

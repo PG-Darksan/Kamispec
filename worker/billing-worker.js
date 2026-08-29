@@ -134,6 +134,18 @@ export default {
     if (url.pathname === '/billing/resume' && request.method === 'POST') {
       return handleSubscriptionCancel(request, env, false);
     }
+    // ── プランの変更 (= ユーザー要望: パソコンでも差額だけの請求に) ──
+    //    決済リンクは「新しい契約を作る」 ものなので、 契約中の人が押すと
+    //    2 本目が立ち上がって二重に引き落とされていた。 ここで今の契約の
+    //    中身を差し替える。
+    // 先に「いくら請求されるか」 だけを出す (課金はしない)。
+    if (url.pathname === '/billing/change-plan/preview' &&
+        request.method === 'POST') {
+      return handleChangePlan(request, env, true);
+    }
+    if (url.pathname === '/billing/change-plan' && request.method === 'POST') {
+      return handleChangePlan(request, env, false);
+    }
 
     // ── 迷惑な送信者を止める (= ユーザー要望: 開発者がスパムと判断した人は
     //    バグ報告を送れないようにする) ──
@@ -279,6 +291,184 @@ async function handleSubscriptionInfo(request, env) {
 /// 解約 (期間の終わりで停止) / 解約の取り消し。
 /// 即時解約にはしない。 支払い済みの期間は使えた方が親切で、 返金の
 /// 問い合わせも減るため (= Stripe の cancel_at_period_end)。
+/// プラン名と請求周期から、 Stripe の価格 ID を引く。
+///
+/// ① env.PRICE_MAP (JSON) を見る。 例:
+///    {"pro_monthly":"price_x","pro_yearly":"price_y",
+///     "max_monthly":"price_z","max_yearly":"price_w"}
+/// ② 無ければ、 有効な価格を並べて metadata.plan と請求周期で探す
+///    (価格か商品のどちらかに plan を書いてあれば当たる)。
+async function priceIdFor(env, plan, yearly) {
+  const key = plan + (yearly ? '_yearly' : '_monthly');
+  if (env.PRICE_MAP) {
+    try {
+      const map = JSON.parse(env.PRICE_MAP);
+      if (map[key]) return map[key];
+    } catch (_) {}
+  }
+  try {
+    const want = yearly ? 'year' : 'month';
+    const list = await stripeApiGet(
+      env,
+      'prices?active=true&limit=100&expand[]=data.product',
+    );
+    for (const p of (list && list.data) || []) {
+      if (!p.recurring || p.recurring.interval !== want) continue;
+      const m =
+        (p.metadata && p.metadata.plan) ||
+        (p.product && p.product.metadata && p.product.metadata.plan);
+      if (m === plan) return p.id;
+    }
+  } catch (_) {}
+  return null;
+}
+
+/// プランの上下を数で表す (大きいほど上)。
+function planRank(p) {
+  if (p === 'max') return 2;
+  if (p === 'pro') return 1;
+  return 0;
+}
+
+/// 契約中のプランを変える。
+///
+/// 上げる時 (Pro → Max): その場で切り替わり、 **残り期間の差額だけ**を
+///   すぐに請求する。 支払日は動かさない。 (Android の
+///   immediateAndChargeProratedPrice と同じ扱い)
+/// 下げる時 (Max → Pro): その場で切り替わり、 払い過ぎた分は次回以降の
+///   請求に充てる控えとして戻す。 その場での引き落としは無い。
+///
+/// ★ カードが通らなかった時はプランを変えない (error_if_incomplete)。
+///   変えてから失敗すると、 払っていないのに上位プランが使える状態や、
+///   支払い遅延あつかいの宙ぶらりんな契約が残ってしまうため。
+/// [preview] true なら、 請求される金額を出すだけで課金しない。
+///
+/// ★ 金額を見せずに保存済みのカードへ請求してはいけない
+///   (= ユーザー指摘: 「サイト内で押さずに勝手に課金させられる状態に
+///    なっていない?」)。 アプリは必ず preview で金額を出し、 利用者が
+///    その額を見て承知した上で本実行を呼ぶ。
+///
+/// 見積もりと本実行で額がずれないよう、 割り勘の基準時刻
+/// (proration_date) を見積もり側が返し、 本実行はそれをそのまま使う。
+/// Stripe は秒単位で日割りするため、 これが無いと数秒の差で額が動く。
+async function handleChangePlan(request, env, preview) {
+  const uid = await authUid(request, env);
+  if (!uid) return unauthorized();
+  if (!env.STRIPE_SECRET_KEY) {
+    return json({ error: 'stripe not configured' }, 503);
+  }
+
+  let body = {};
+  try {
+    body = await request.json();
+  } catch (_) {}
+  const plan = String(body.plan || '').toLowerCase();
+  const yearly = !!body.yearly;
+  if (plan !== 'pro' && plan !== 'max') {
+    return json({ error: 'bad plan' }, 400);
+  }
+
+  const ent = await readEntitlement(env, uid);
+  // Google Play の購入はストア側でしか変えられない。
+  if (ent && ent.store === 'play') {
+    return json({ error: 'managed by store' }, 409);
+  }
+  const current = await findSubscription(env, ent);
+  if (!current) return json({ error: 'no subscription' }, 404);
+  if (!['active', 'trialing', 'past_due'].includes(current.status)) {
+    return json({ error: 'subscription not active' }, 409);
+  }
+
+  const priceId = await priceIdFor(env, plan, yearly);
+  if (!priceId) return json({ error: 'price not found' }, 503);
+  // 割り勘の基準時刻。 見積もりでは今の時刻、 本実行では見積もりが
+  //   返した時刻をそのまま使う (額をずらさないため)。
+  const prorationDate =
+    Number(body.prorationDate) > 0
+      ? Math.floor(Number(body.prorationDate))
+      : Math.floor(Date.now() / 1000);
+
+  // 差し替える品目を取る (1 契約 1 品目の前提)。
+  const raw = await stripeApiGet(env, `subscriptions/${current.id}`);
+  const item = ((raw && raw.items && raw.items.data) || [])[0];
+  if (!item) return json({ error: 'no subscription item' }, 500);
+  if (item.price && item.price.id === priceId) {
+    return json({ error: 'same plan' }, 409);
+  }
+
+  // 今が月額で年額へ移る時も「上げる」 扱い (まとめて先に払うため)。
+  const curPlan = (ent && ent.plan) || current.planName || 'pro';
+  const curInterval = (item.price && item.price.recurring &&
+    item.price.recurring.interval) || 'month';
+  const up =
+    planRank(plan) > planRank(curPlan) ||
+    (planRank(plan) === planRank(curPlan) && yearly && curInterval === 'month');
+  const prorationBehavior = up ? 'always_invoice' : 'create_prorations';
+
+  // ── 見積もり: いくら請求されるかだけを出す (契約は変えない) ──
+  if (preview) {
+    const pv = await stripeApi(env, 'invoices/create_preview', {
+      customer: raw.customer,
+      subscription: current.id,
+      'subscription_details[items][0][id]': item.id,
+      'subscription_details[items][0][price]': priceId,
+      'subscription_details[proration_behavior]': prorationBehavior,
+      'subscription_details[proration_date]': String(prorationDate),
+    });
+    if (!pv || pv.error) {
+      const msg = (pv && pv.error && pv.error.message) || 'stripe error';
+      return json({ error: msg }, 502);
+    }
+    return json({
+      preview: true,
+      plan,
+      up,
+      // すぐに請求される額 (最小通貨単位。 マイナスは控えとして戻る分)。
+      amountDue: typeof pv.amount_due === 'number' ? pv.amount_due : null,
+      total: typeof pv.total === 'number' ? pv.total : null,
+      currency: (pv.currency || '').toUpperCase(),
+      prorationDate,
+      // 変更後の月額 / 年額そのもの (次回以降の請求額)。
+      nextAmount: null,
+    });
+  }
+
+  const updated = await stripeApi(env, `subscriptions/${current.id}`, {
+    proration_date: String(prorationDate),
+    'items[0][id]': item.id,
+    'items[0][price]': priceId,
+    // 上げる時はその場で差額を請求。 下げる時は控えとして戻すだけ。
+    proration_behavior: prorationBehavior,
+    // 支払日は動かさない (= Android と同じ)。
+    billing_cycle_anchor: 'unchanged',
+    // 払えなかったらプランを変えない。
+    payment_behavior: 'error_if_incomplete',
+    // 後から来る webhook がプランを取り違えないように控える。
+    'metadata[uid]': uid,
+    'metadata[plan]': plan,
+  });
+  if (!updated || updated.error) {
+    const msg = (updated && updated.error && updated.error.message) ||
+      'stripe error';
+    return json({ error: msg }, 502);
+  }
+
+  // 権利情報も今の内容に合わせる (次の照会でずれないように)。
+  await putEntitlement(env, uid, {
+    plan,
+    status: updated.status,
+    subscriptionId: updated.id,
+    customerId: updated.customer || (ent && ent.customerId) || null,
+    currentPeriodEnd: subPeriodEnd(updated),
+  });
+
+  return json({
+    plan,
+    prorated: up,
+    subscription: normalizeSubscription(updated),
+  });
+}
+
 async function handleSubscriptionCancel(request, env, cancel) {
   const uid = await authUid(request, env);
   if (!uid) return unauthorized();

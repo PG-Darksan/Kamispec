@@ -16031,10 +16031,199 @@ class _MindMapScreenState extends State<MindMapScreen>
     return true;
   }
 
+  /// すでに Stripe で契約している人が、 別のプランのボタンを押した時に
+  /// 「差額だけの変更」 を行う (= ユーザー要望: パソコンでも差額請求に)。
+  ///
+  /// 決済リンクは「新しい契約を作る」 ものなので、 そのまま開くと 2 本目が
+  /// 立ち上がって二重に引き落とされる。 契約中と分かっている時は
+  /// Worker 経由で今の契約の中身を差し替える。
+  ///
+  /// 変更を行ったら true。 契約が無い / ストア管理などで、 ふつうの購入に
+  /// 進むべき時は false を返す。
+  Future<bool> _tryChangeStripePlan(
+      MindMapProvider provider, String plan, bool yearly) async {
+    // Google Play の購入はストア側でしか変えられないので、 ここは通さない
+    //   (モバイルは purchasePackage 側が差額の扱いを持っている)。
+    if (BillingService.isNativeBilling) return false;
+    if (MindMapProvider.relayApiBase.isEmpty) return false;
+    if (!provider.googleSignedIn) return false;
+
+    // 今の契約を聞く。 聞けなければ、 いつもの購入に進む。
+    Map<String, dynamic> info;
+    try {
+      info = await provider.fetchSubscriptionInfo();
+    } catch (_) {
+      return false;
+    }
+    if (!mounted) return false;
+    final sub = info['subscription'];
+    if (info['store'] == 'play' || sub is! Map) return false;
+    final status = '${sub['status'] ?? ''}';
+    if (!['active', 'trialing', 'past_due'].contains(status)) return false;
+
+    // 同じ中身なら何もしない。
+    final curYearly = '${sub['interval'] ?? ''}' == 'year';
+    final curPlan = provider.purchasedPlan.name;
+    if (curPlan == plan && curYearly == yearly) {
+      _appSnack(
+        context,
+        SnackBar(
+          content: Text(provider.t('usage.currentPlan')),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+      return true;
+    }
+
+    // 上げるのか下げるのかで説明を変える。
+    int rank(String p) => p == 'max' ? 2 : (p == 'pro' ? 1 : 0);
+    final up = rank(plan) > rank(curPlan) ||
+        (rank(plan) == rank(curPlan) && yearly && !curYearly);
+    final label = plan == 'max' ? 'Max' : 'Pro';
+
+    // ★ いくら請求されるかを先に出す (= ユーザー指摘: 「サイト内で押さずに
+    //   勝手に課金させられる状態になっていない?」)。 保存済みのカードから
+    //   引き落とす以上、 額を見せずに実行してはいけない。 額が出せなければ
+    //   変更しない。
+    Map<String, dynamic> pv;
+    try {
+      pv = await provider.previewSubscriptionPlanChange(plan, yearly);
+    } catch (e) {
+      if (!mounted) return true;
+      _appSnack(
+        context,
+        SnackBar(
+          content: Text(provider.t('plan.changeAmountFailed')),
+          backgroundColor: const Color(0xFFE57373),
+          duration: const Duration(seconds: 6),
+        ),
+      );
+      return true;
+    }
+    if (!mounted) return true;
+    final due = pv['amountDue'];
+    final cur = '${pv['currency'] ?? 'USD'}';
+    final prorationDate =
+        pv['prorationDate'] is int ? pv['prorationDate'] as int : null;
+    // 上げる時は必ず額が要る。 取れなければ止める。
+    if (up && due is! num) {
+      _appSnack(
+        context,
+        SnackBar(
+          content: Text(provider.t('plan.changeAmountFailed')),
+          backgroundColor: const Color(0xFFE57373),
+          duration: const Duration(seconds: 6),
+        ),
+      );
+      return true;
+    }
+    final amountText =
+        due is num ? provider.formatMoneyMinor(due, cur) : '';
+
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Text(provider.t('plan.changeTitle'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+                provider
+                    .t(up ? 'plan.changeUpBody' : 'plan.changeDownBody')
+                    .replaceFirst('{plan}', label)
+                    .replaceFirst('{amount}', amountText),
+                style: const TextStyle(
+                    color: Colors.white70, fontSize: 13, height: 1.6)),
+            // 上げる時は金額をもう一度大きく出す (見落とさないように)。
+            if (up && amountText.isNotEmpty) ...[
+              const SizedBox(height: 14),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFC163).withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                      color: const Color(0xFFFFC163).withValues(alpha: 0.4)),
+                ),
+                child: Row(children: [
+                  const Icon(Icons.credit_card_rounded,
+                      color: Color(0xFFFFC163), size: 18),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(amountText,
+                        style: const TextStyle(
+                            color: Color(0xFFFFC163),
+                            fontSize: 20,
+                            fontWeight: FontWeight.w700)),
+                  ),
+                ]),
+              ),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, false),
+            child: Text(provider.t('common.cancel'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, true),
+            child: Text(
+                provider.t(up ? 'plan.changePayNow' : 'plan.changeDo'),
+                style: const TextStyle(color: Color(0xFF4FC3F7))),
+          ),
+        ],
+      ),
+    );
+    if (go != true || !mounted) return true;
+
+    try {
+      await provider.changeSubscriptionPlan(plan, yearly,
+          prorationDate: prorationDate);
+      if (!mounted) return true;
+      _appSnack(
+        context,
+        SnackBar(
+          content: Text(provider
+              .t('plan.changeDone')
+              .replaceFirst('{plan}', label)),
+          backgroundColor: const Color(0xFF43B97F),
+          duration: const Duration(seconds: 5),
+        ),
+      );
+      // ignore: discarded_futures
+      provider.syncEntitlementFromServer();
+    } catch (e) {
+      if (!mounted) return true;
+      _appSnack(
+        context,
+        SnackBar(
+          content: Text(provider
+              .t('plan.changeFailed')
+              .replaceFirst('{err}', '$e')),
+          backgroundColor: const Color(0xFFE57373),
+          duration: const Duration(seconds: 6),
+        ),
+      );
+    }
+    return true;
+  }
+
   Future<void> _startStripeCheckout(
       MindMapProvider provider, String plan, bool yearly) async {
     // ★ 先にログイン (= 端末をまたいでプランを持ち運べるように)。
     if (!await _ensureSignedInForPurchase(provider)) return;
+    if (!mounted) return;
+    // ★ すでに契約しているなら、 決済リンクを開かずに中身を差し替える
+    //   (= ユーザー要望: パソコンでも差額だけの請求に)。 そのまま開くと
+    //   契約が 2 本になって二重に引き落とされる。
+    if (await _tryChangeStripePlan(provider, plan, yearly)) return;
     if (!mounted) return;
     final uid = provider.currentUid ?? '';
     final ok = await provider.billing.openStripeCheckout(

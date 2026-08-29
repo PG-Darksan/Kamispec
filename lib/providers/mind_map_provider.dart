@@ -39449,6 +39449,126 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Entre com o Google primeiro',
       'ru': '\u0421\u043d\u0430\u0447\u0430\u043b\u0430 \u0432\u043e\u0439\u0434\u0438\u0442\u0435 \u0447\u0435\u0440\u0435\u0437 Google',
     },
+    // ── プランの変更 (= ユーザー要望: パソコンでも差額だけの
+    //    請求に) ──
+    'plan.changeTitle': {
+      'ja': 'プランを変更',
+      'en': 'Change plan',
+      'zh': '更改套餐',
+      'ko': '플랜 변경',
+      'es': 'Cambiar de plan',
+      'fr': "Changer d'offre",
+      'de': 'Tarif wechseln',
+      'pt': 'Mudar de plano',
+      'ru': 'Сменить тариф',
+    },
+    'plan.changeUpBody': {
+      'ja': '{plan} に変更します。\n\n'
+          '今すぐ {amount} が登録済みのカードに請求されます。'
+          '（残り期間の差額）\nお支払い日は変わりません。',
+      'en': 'Change to {plan}.\n\n'
+          '{amount} will be charged to your saved card right now '
+          '(the difference for the remaining period).\n'
+          'Your billing date stays the same.',
+      'zh': '更改为 {plan}。\n\n将立即从已保存的卡扣取 {amount}'
+          '（剩余时间的差额）。账单日不变。',
+      'ko': '{plan} 로 변경합니다.\n\n지금 등록된 카드로 {amount} 가 '
+          '청구됩니다 (남은 기간의 차액). 결제일은 그대로입니다.',
+      'es': 'Cambiar a {plan}.\n\nSe cobrar\u00e1n {amount} ahora mismo a tu tarjeta '
+          'guardada (la diferencia del periodo restante). La fecha de cobro '
+          'no cambia.',
+      'fr': 'Passer \u00e0 {plan}.\n\n{amount} seront pr\u00e9lev\u00e9s imm\u00e9diatement sur '
+          'votre carte enregistr\u00e9e (la diff\u00e9rence pour la p\u00e9riode restante). '
+          'La date de pr\u00e9l\u00e8vement ne change pas.',
+      'de': 'Auf {plan} wechseln.\n\n{amount} werden sofort von deiner '
+          'gespeicherten Karte abgebucht (die Differenz f\u00fcr die Restlaufzeit). '
+          'Dein Abrechnungstag bleibt.',
+      'pt': 'Mudar para {plan}.\n\n{amount} ser\u00e3o cobrados agora no seu cart\u00e3o '
+          'guardado (a diferen\u00e7a do per\u00edodo restante). A data de cobran\u00e7a '
+          'n\u00e3o muda.',
+      'ru': '\u041f\u0435\u0440\u0435\u0439\u0442\u0438 \u043d\u0430 {plan}.\n\n{amount} \u0431\u0443\u0434\u0435\u0442 \u0441\u043f\u0438\u0441\u0430\u043d\u043e \u0441 '
+          '\u0441\u043e\u0445\u0440\u0430\u043d\u0451\u043d\u043d\u043e\u0439 \u043a\u0430\u0440\u0442\u044b \u0441\u0435\u0439\u0447\u0430\u0441 (\u0440\u0430\u0437\u043d\u0438\u0446\u0430 \u0437\u0430 \u043e\u0441\u0442\u0430\u0432\u0448\u0438\u0439\u0441\u044f '
+          '\u0441\u0440\u043e\u043a). \u0414\u0435\u043d\u044c \u0441\u043f\u0438\u0441\u0430\u043d\u0438\u044f \u043d\u0435 \u043c\u0435\u043d\u044f\u0435\u0442\u0441\u044f.',
+    },
+    'plan.changeDownBody': {
+      'ja': '{plan} に変更します。\n\n'
+          '今すぐ切り替わり、 払い過ぎた分は次回以降のお支払いに充てます。'
+          'この場でのお支払いはありません。',
+      'en': 'Change to {plan}.\n\n'
+          'It switches now, and what you overpaid becomes credit toward '
+          'your next invoices. Nothing is charged today.',
+      'zh': '更改为 {plan}。\n\n立即生效，多付部分会抵扣下次账单。今天不会扣款。',
+      'ko': '{plan} 로 변경합니다.\n\n지금 바뀝니다. 더 낸 금액은 '
+          '다음 청구에 충당되며 오늘 결제되지 않습니다.',
+      'es': 'Cambiar a {plan}.\n\nEl cambio es inmediato y lo pagado de m\u00e1s '
+          'queda como cr\u00e9dito para las pr\u00f3ximas facturas. Hoy no se cobra nada.',
+      'fr': 'Passer \u00e0 {plan}.\n\nLe changement est imm\u00e9diat et le trop-per\u00e7u '
+          'devient un cr\u00e9dit sur vos prochaines factures. Rien n\'est pr\u00e9lev\u00e9 '
+          "aujourd'hui.",
+      'de': 'Auf {plan} wechseln.\n\nDer Wechsel gilt sofort, zu viel Gezahltes '
+          'wird als Guthaben auf die n\u00e4chsten Rechnungen angerechnet. Heute '
+          'wird nichts abgebucht.',
+      'pt': 'Mudar para {plan}.\n\nA troca \u00e9 imediata e o valor pago a mais '
+          'vira cr\u00e9dito para as pr\u00f3ximas faturas. Hoje n\u00e3o h\u00e1 cobran\u00e7a.',
+      'ru': '\u041f\u0435\u0440\u0435\u0439\u0442\u0438 \u043d\u0430 {plan}.\n\n\u041f\u0435\u0440\u0435\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u0435 \u0441\u0440\u0430\u0437\u0443, '
+          '\u043f\u0435\u0440\u0435\u043f\u043b\u0430\u0442\u0430 \u043f\u043e\u0439\u0434\u0451\u0442 \u0432 \u0441\u0447\u0451\u0442 \u0441\u043b\u0435\u0434\u0443\u044e\u0449\u0438\u0445 \u0441\u0447\u0435\u0442\u043e\u0432. '
+          '\u0421\u0435\u0433\u043e\u0434\u043d\u044f \u0441\u043f\u0438\u0441\u0430\u043d\u0438\u0439 \u043d\u0435\u0442.',
+    },
+    'plan.changeAmountFailed': {
+      'ja': '請求額を確かめられませんでした。 安全のため変更を中止します。',
+      'en': 'Could not confirm the amount, so the change was stopped for safety.',
+      'zh': '无法确认金额，为安全起见已停止更改。',
+      'ko': '청구 금액을 확인하지 못해 안전을 위해 변경을 중단했습니다.',
+      'es': 'No se pudo confirmar el importe, as\u00ed que se detuvo el cambio.',
+      'fr': "Le montant n'a pas pu \u00eatre confirm\u00e9, le changement a \u00e9t\u00e9 annul\u00e9.",
+      'de': 'Der Betrag konnte nicht best\u00e4tigt werden, der Wechsel wurde gestoppt.',
+      'pt': 'N\u00e3o foi poss\u00edvel confirmar o valor, por isso a troca foi interrompida.',
+      'ru': '\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u044c \u0441\u0443\u043c\u043c\u0443, \u0441\u043c\u0435\u043d\u0430 \u043e\u0442\u043c\u0435\u043d\u0435\u043d\u0430.',
+    },
+    'plan.changePayNow': {
+      'ja': 'この額を支払って変更',
+      'en': 'Pay this and change',
+      'zh': '支付此金额并更改',
+      'ko': '이 금액을 결제하고 변경',
+      'es': 'Pagar y cambiar',
+      'fr': 'Payer et changer',
+      'de': 'Zahlen und wechseln',
+      'pt': 'Pagar e mudar',
+      'ru': 'Оплатить и сменить',
+    },
+    'plan.changeDo': {
+      'ja': '変更する',
+      'en': 'Change',
+      'zh': '更改',
+      'ko': '변경',
+      'es': 'Cambiar',
+      'fr': 'Changer',
+      'de': 'Wechseln',
+      'pt': 'Mudar',
+      'ru': 'Сменить',
+    },
+    'plan.changeDone': {
+      'ja': '{plan} に変更しました。',
+      'en': 'Changed to {plan}.',
+      'zh': '已更改为 {plan}。',
+      'ko': '{plan} 로 변경했습니다.',
+      'es': 'Cambiado a {plan}.',
+      'fr': 'Chang\u00e9 pour {plan}.',
+      'de': 'Zu {plan} gewechselt.',
+      'pt': 'Alterado para {plan}.',
+      'ru': '\u0422\u0430\u0440\u0438\u0444 \u0438\u0437\u043c\u0435\u043d\u0451\u043d \u043d\u0430 {plan}.',
+    },
+    'plan.changeFailed': {
+      'ja': 'プランを変更できませんでした: {err}',
+      'en': 'Could not change plan: {err}',
+      'zh': '无法更改套餐: {err}',
+      'ko': '플랜을 변경하지 못했습니다: {err}',
+      'es': 'No se pudo cambiar de plan: {err}',
+      'fr': "Impossible de changer d'offre : {err}",
+      'de': 'Tarifwechsel nicht m\u00f6glich: {err}',
+      'pt': 'N\u00e3o foi poss\u00edvel mudar de plano: {err}',
+      'ru': '\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0441\u043c\u0435\u043d\u0438\u0442\u044c \u0442\u0430\u0440\u0438\u0444: {err}',
+    },
     'paywall.signInFirstBody': {
       'ja': 'お支払いには Google へのログインが必要です。'
             '同じアカウントのどの端末でも同じプランが使えます。',
@@ -67843,6 +67963,86 @@ class MindMapProvider extends ChangeNotifier {
     if (res.statusCode != 200) {
       throw Exception('${j['error'] ?? 'HTTP ${res.statusCode}'}');
     }
+    return j;
+  }
+
+  /// 契約中のプランを変える (= ユーザー要望: パソコンでも差額だけの請求に)。
+  ///
+  /// 決済リンクは「新しい契約を作る」 ものなので、 契約中の人が押すと
+  /// 2 本目が立ち上がって二重に引き落とされる。 こちらは Worker 経由で
+  /// 今の契約の中身を差し替えるので、 契約は 1 本のままになる。
+  ///
+  /// 上げる時は残り期間の差額だけをその場で請求し、 支払日は動かさない。
+  /// 下げる時は払い過ぎた分を次回以降に充てる控えとして戻す。
+  /// 戻り値は Worker の JSON (`plan`, `prorated`, `subscription`)。
+  /// プラン変更で「いくら請求されるか」 を先に出す (課金はしない)。
+  ///
+  /// ★ 金額を見せずに保存済みのカードへ請求してはいけない
+  ///   (= ユーザー指摘: 「サイト内で押さずに勝手に課金させられる状態に
+  ///    なっていない?」)。 必ずこれで金額を出し、 利用者が承知してから
+  ///   changeSubscriptionPlan を呼ぶこと。
+  ///
+  /// 戻り値の `prorationDate` をそのまま本実行に渡すと、 見せた額と
+  /// 請求される額がぴったり一致する (Stripe は秒単位で日割りするため)。
+  Future<Map<String, dynamic>> previewSubscriptionPlanChange(
+      String plan, bool yearly) async {
+    const base = relayApiBase;
+    if (base.isEmpty) throw Exception(t('relay.notConfigured'));
+    await _ensureFreshToken();
+    final res = await http
+        .post(
+          Uri.parse('$base/billing/change-plan/preview'),
+          headers: _relayHeaders(json: true),
+          body: jsonEncode({'plan': plan, 'yearly': yearly}),
+        )
+        .timeout(const Duration(seconds: 40));
+    final j = jsonDecode(res.body) as Map<String, dynamic>;
+    if (res.statusCode != 200) {
+      throw Exception('${j['error'] ?? 'HTTP ${res.statusCode}'}');
+    }
+    return j;
+  }
+
+  /// 金額を出す (最小通貨単位 → 表示用)。 JPY は小数を持たない。
+  String formatMoneyMinor(num minor, String currency) {
+    final cur = currency.toUpperCase();
+    const noDecimal = {'JPY', 'KRW', 'VND', 'CLP', 'ISK'};
+    if (noDecimal.contains(cur)) {
+      final v = minor.round().abs();
+      return '${minor < 0 ? '-' : ''}${cur == 'JPY' ? '¥' : ''}$v'
+          '${cur == 'JPY' ? '' : ' $cur'}';
+    }
+    final v = (minor.abs() / 100).toStringAsFixed(2);
+    final sign = minor < 0 ? '-' : '';
+    if (cur == 'USD') return '$sign\$$v';
+    return '$sign$v $cur';
+  }
+
+  /// 契約中のプランを実際に変える。
+  /// [prorationDate] は見積もりが返した値をそのまま渡す (額をずらさない)。
+  Future<Map<String, dynamic>> changeSubscriptionPlan(
+      String plan, bool yearly, {int? prorationDate}) async {
+    const base = relayApiBase;
+    if (base.isEmpty) throw Exception(t('relay.notConfigured'));
+    await _ensureFreshToken();
+    final res = await http
+        .post(
+          Uri.parse('$base/billing/change-plan'),
+          headers: _relayHeaders(json: true),
+          body: jsonEncode({
+            'plan': plan,
+            'yearly': yearly,
+            if (prorationDate != null) 'prorationDate': prorationDate,
+          }),
+        )
+        .timeout(const Duration(seconds: 40));
+    final j = jsonDecode(res.body) as Map<String, dynamic>;
+    if (res.statusCode != 200) {
+      throw Exception('${j['error'] ?? 'HTTP ${res.statusCode}'}');
+    }
+    // 変わった結果をすぐ画面に出す。
+    final p = j['plan'];
+    if (p is String && p.isNotEmpty) applyBillingPlanByName(p);
     return j;
   }
 

@@ -57,22 +57,25 @@ android {
     }
 
     defaultConfig {
-        // ⚠ 公開ブロッカー: com.example.* は Google Play にアップロード不可
-        //   (予約プレフィックス)。 自分の逆ドメインに変更すること。
-        //   変更後は Firebase コンソールにこの applicationId の Android アプリを
-        //   追加して google-services.json を差し替える必要がある
-        //   (google-services プラグインを使っているため。 もし Firebase を
-        //   REST + dart-define のみで使っていて native SDK 初期化が不要なら、
-        //   先頭の 'com.google.gms.google-services' プラグイン行を外す手もある)。
+        // Google Play が見るのはこの applicationId (上の namespace ではない)。
+        //   com.example.* は予約されていて上げられないが、 ここは独自ドメインに
+        //   してあるので公開できる。 変更する時は Firebase コンソールにこの
+        //   applicationId の Android アプリを追加して google-services.json を
+        //   差し替えること (google-services プラグインを使っているため)。
         applicationId "com.kamispec.app"
 
         // ── SDK バージョンを明示 ──
         // POST_NOTIFICATIONS を使うため targetSdk は 33 以上が必須。
-        // Play の最新要件に合わせて 34 を指定 (2025 の 35 要件に上げる際は
-        //   compileSdk >= 35 を満たすこと)。 minSdk は super_clipboard 等の
-        //   下限に合わせて 23 (Android 6.0)。
+        // ★ 2026/08/31 から、 Google Play は新規も更新も
+        //   Android 16 (API 36) を要求する (それ以前も API 35 が必要)。
+        //   flutter.targetSdkVersion は「その時点の最新の安定版」 なので、
+        //   直接数字を書かずにこちらを使って追従させる (今は 36)。
+        //   API 35 以降は端末いっぱいに描く挙動 (edge-to-edge) が強制になり、
+        //   ステータスバー / ナビゲーションバーの裏まで描かれる。 画面が
+        //   隠れていないか実機で確かめること。
+        //   minSdk は super_clipboard 等の下限に合わせて 23 (Android 6.0)。
         minSdkVersion flutter.minSdkVersion
-        targetSdk 34
+        targetSdk flutter.targetSdkVersion
 
         // ── バージョンは pubspec.yaml の version: を単一ソースに ──
         // 旧実装は versionCode 1 / versionName "1.0.0" をここに直書きして
