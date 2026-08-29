@@ -4730,6 +4730,16 @@ class _MindMapScreenState extends State<MindMapScreen>
     super.initState();
     _bottomToolbarExpandedNotifier.value = _bottomBarOpen;
     WidgetsBinding.instance.addObserver(this);
+    // ── 支払いが通ったら知らせる (= ユーザー要望) ──
+    _planWatcher = _onPlanMaybeActivated;
+    context.read<MindMapProvider>().addListener(_planWatcher!);
+    // ── 同時にログインしている台数を見る (= ユーザー要望) ──
+    //    読み込みが落ち着いてから 1 度だけ。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Future<void>.delayed(const Duration(seconds: 4), () {
+        if (mounted) unawaited(_checkDeviceLimit());
+      });
+    });
     // ── PDF への描き込みが焼き込まれたらサムネイルを作り直す ──
     //    (= ユーザー報告: PDF の上に手書きしてもサムネイルに反映されない)。
     //    ビューアを閉じた時の自動保存でも飛んでくるので、 画面側で受ける。
@@ -6614,6 +6624,13 @@ class _MindMapScreenState extends State<MindMapScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     pdfDrawBurnedNotifier.removeListener(_onPdfDrawBurned);
+    // 支払いの見張りを外す (= ユーザー要望で入れた知らせ)。
+    if (_planWatcher != null) {
+      try {
+        context.read<MindMapProvider>().removeListener(_planWatcher!);
+      } catch (_) {}
+      _planWatcher = null;
+    }
     if (_isDesktop) {
       try {
         openWithFilesTick.removeListener(_onOpenWithFilesArrived);
@@ -15952,8 +15969,69 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 完了後は Webhook を受けたサーバー側で権利を付ける設計。 サーバー未構築の
   /// 間は、 戻ってきたユーザーに状況を伝えるだけにする (勝手にプランを
   /// 上げると、 未決済でも Pro になってしまうため)。
+  /// 決済の前に Google アカウントへログインしてもらう。
+  ///
+  /// = ユーザー指摘「Google 垢にログインしていないのに決済完了して Pro に
+  ///   なれるのはおかしい。 ログインを求めてから決済する流れにして。
+  ///   そうしないと端末間でプランを共有できない」。
+  ///
+  /// ログインしていないと、 買った証しがその端末の「名無しの id」 に
+  /// 紐づいてしまい、 別の端末では Free のままになる。
+  /// 続けてよければ true。
+  Future<bool> _ensureSignedInForPurchase(MindMapProvider provider) async {
+    if (provider.googleSignedIn) return true;
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Row(children: [
+          const Icon(Icons.account_circle_rounded,
+              color: Color(0xFF4FC3F7), size: 22),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(provider.t('paywall.signInFirstTitle'),
+                style: const TextStyle(color: Colors.white, fontSize: 15)),
+          ),
+        ]),
+        content: Text(provider.t('paywall.signInFirstBody'),
+            style: const TextStyle(
+                color: Colors.white70, fontSize: 13, height: 1.6)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, false),
+            child: Text(provider.t('common.cancel'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, true),
+            child: Text(provider.t('paywall.signInAndBuy'),
+                style: const TextStyle(color: Color(0xFF4FC3F7))),
+          ),
+        ],
+      ),
+    );
+    if (go != true || !mounted) return false;
+    final who = await provider.signInWithGoogle();
+    if (!mounted) return false;
+    if (who == null || !provider.googleSignedIn) {
+      _appSnack(
+        context,
+        SnackBar(
+          content: Text(provider.t('paywall.signInNeeded')),
+          backgroundColor: const Color(0xFFE57373),
+          duration: const Duration(seconds: 4),
+        ),
+      );
+      return false;
+    }
+    return true;
+  }
+
   Future<void> _startStripeCheckout(
       MindMapProvider provider, String plan, bool yearly) async {
+    // ★ 先にログイン (= 端末をまたいでプランを持ち運べるように)。
+    if (!await _ensureSignedInForPurchase(provider)) return;
+    if (!mounted) return;
     final uid = provider.currentUid ?? '';
     final ok = await provider.billing.openStripeCheckout(
       planName: plan,
@@ -16214,6 +16292,13 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     await _confirmUpgradeCharge(sheetCtx);
                                 if (ok != true) return;
                               }
+                              // ★ こちらも先にログイン
+                              //   (= 端末間でプランを持ち運ぶため)。
+                              if (!await _ensureSignedInForPurchase(
+                                  provider)) {
+                                return;
+                              }
+                              if (!sheetCtx.mounted) return;
                               setSheet(() => purchasing = true);
                               try {
                                 final plan =
@@ -37293,6 +37378,11 @@ class _MindMapScreenState extends State<MindMapScreen>
           final isCoupon = provider.hasActiveCoupon;
           final unlimited = provider.hasUnlimitedPages;
           final plan = provider.currentPlan;
+          // ★ 実際にお金を払って契約している人か (= ユーザー要望: 解約や
+          //   契約状況の欄は、 Free / Dev / クーポンの人には要らない)。
+          //   クーポンと開発者モードは「契約」 ではないので入れない。
+          final hasContract =
+              provider.purchasedPlan != SubscriptionPlan.free && !isDev;
 
           String planLabel;
           Color planColor;
@@ -37514,6 +37604,82 @@ class _MindMapScreenState extends State<MindMapScreen>
                                       color: Colors.white54, fontSize: 11),
                                 ),
                               ],
+                              // ★ クーポンから入った時は、 自分で無料プランに
+                              //   戻れるようにする (= ユーザー要望)。 期限の
+                              //   無いクーポンだと、 これが無いと降りられない。
+                              const SizedBox(height: 8),
+                              SizedBox(
+                                width: double.infinity,
+                                child: OutlinedButton.icon(
+                                  icon: const Icon(Icons.logout_rounded,
+                                      size: 14, color: Color(0xFFFFB347)),
+                                  label: Text(
+                                      provider.t('usage.couponRemove'),
+                                      style: const TextStyle(
+                                          color: Color(0xFFFFB347),
+                                          fontSize: 11.5)),
+                                  style: OutlinedButton.styleFrom(
+                                    side: const BorderSide(
+                                        color: Color(0xFFFFB347)),
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 8),
+                                  ),
+                                  onPressed: () async {
+                                    final ok = await showDialog<bool>(
+                                      context: sctx,
+                                      builder: (cctx) => AlertDialog(
+                                        backgroundColor:
+                                            const Color(0xFF1E1E1E),
+                                        title: Text(
+                                            provider.t('usage.couponRemove'),
+                                            style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 15)),
+                                        content: Text(
+                                            provider.t(
+                                                'usage.couponRemoveConfirm'),
+                                            style: const TextStyle(
+                                                color: Colors.white70,
+                                                fontSize: 13,
+                                                height: 1.5)),
+                                        actions: [
+                                          TextButton(
+                                            onPressed: () =>
+                                                Navigator.pop(cctx, false),
+                                            child: Text(
+                                                provider.t('common.cancel'),
+                                                style: const TextStyle(
+                                                    color: Colors.white54)),
+                                          ),
+                                          TextButton(
+                                            onPressed: () =>
+                                                Navigator.pop(cctx, true),
+                                            child: Text(
+                                                provider.t('btn.ok'),
+                                                style: const TextStyle(
+                                                    color:
+                                                        Color(0xFFFFB347))),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                    if (ok != true) return;
+                                    await provider.removeCoupon();
+                                    if (!sctx.mounted) return;
+                                    setD(() {});
+                                    _appSnack(
+                                        context,
+                                        SnackBar(
+                                          content: Text(provider
+                                              .t('usage.couponRemoved')),
+                                          backgroundColor:
+                                              const Color(0xFF43B97F),
+                                          duration:
+                                              const Duration(seconds: 3),
+                                        ));
+                                  },
+                                ),
+                              ),
                             ]),
                       ),
                     ],
@@ -37522,8 +37688,12 @@ class _MindMapScreenState extends State<MindMapScreen>
                     //     から契約中のサブスクを表示して、 アプリから解約) ───
                     // Google ログイン中の uid で課金サーバーに照会し、 状態と
                     // 次回請求日を出して、 その場で解約 / 取り消しができる。
-                    const SizedBox(height: 10),
-                    _SubscriptionPanel(provider: provider),
+                    // ★ 契約している人にだけ出す (= ユーザー指摘: 「現在の
+                    //   プラン: 無料」 と 「契約中のプラン」 が並ぶのはおかしい)。
+                    if (hasContract) ...[
+                      const SizedBox(height: 10),
+                      _SubscriptionPanel(provider: provider),
+                    ],
 
                     // ─── サブスクリプションの管理・解約 (ストアのページ) ───
                     // 支払い方法の変更・返金の相談・Play の購入はストア側で。
@@ -37532,6 +37702,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                     //   解約できる (RevenueCat managementURL で直行)。
                     // Windows: Stripe のカスタマーポータル (購入時のメール
                     //   アドレスでログイン) で解約・カード変更ができる。
+                    // ★ 契約している人にだけ出す (= ユーザー要望: Free や Dev
+                    //   には解約する物が無いので要らない)。
+                    if (hasContract) ...[
                     const SizedBox(height: 10),
                     Container(
                       decoration: BoxDecoration(
@@ -37601,6 +37774,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                         ),
                       ),
                     ),
+                    ],
 
                     const SizedBox(height: 18),
 
@@ -37640,36 +37814,13 @@ class _MindMapScreenState extends State<MindMapScreen>
                           : const Color(0xFF4FC3F7),
                     ),
 
-                    const SizedBox(height: 14),
-                    // ─── クラウド同期は Max 限定 ───
-                    // Free / Pro では同期そのものが使えないので、 使用量の帯を
-                    //   出すと「少しは使える」 と誤解させる。 案内 1 行に置き換える
-                    //   (= ユーザー指摘: Free/Pro はアップロードできないはず)。
-                    if (!provider.isMaxUnlocked && !provider.isStorageUnlimited)
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 10),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFBA68C8).withValues(alpha: 0.12),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
-                              color: const Color(0xFFBA68C8)
-                                  .withValues(alpha: 0.4)),
-                        ),
-                        child: Row(children: [
-                          const Icon(Icons.cloud_off_rounded,
-                              size: 16, color: Color(0xFFBA68C8)),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(provider.t('cloud.maxOnly'),
-                                style: const TextStyle(
-                                    color: Colors.white70,
-                                    fontSize: 11.5,
-                                    height: 1.4)),
-                          ),
-                        ]),
-                      ),
+                    // ─── クラウド同期 ───
+                    // ★ クラウドの欄は Max の人にだけ出す (= ユーザー要望)。
+                    //   Free / Pro には案内も出さない。 下の使用量の帯も
+                    //   同じ条件なので、 非 Max では丸ごと何も出ない。
                     // ─── クラウド アップロード (今月) (= ユーザー要望: 使用量表示) ───
+                    if (provider.isMaxUnlocked || provider.isStorageUnlimited)
+                      const SizedBox(height: 14),
                     if (provider.isMaxUnlocked || provider.isStorageUnlimited)
                     _usageRow(
                       label: provider.t('cloud.uploadMonth'),
@@ -60512,6 +60663,200 @@ class _MindMapScreenState extends State<MindMapScreen>
           ),
         ),
       ],
+    );
+  }
+
+  // ─── 同時にログインできる台数 (= ユーザー要望) ─────────────────────
+
+  /// 起動時 / ログイン後に、 台数を見て必要なら窓を出す。
+  Future<void> _checkDeviceLimit() async {
+    final provider = context.read<MindMapProvider>();
+    if (!provider.googleSignedIn) return;
+    // この端末が他所から降ろされていないか先に見る。
+    final kicked = await provider.checkThisDeviceStillAllowed();
+    if (!mounted) return;
+    if (kicked) {
+      _appSnack(
+        context,
+        SnackBar(
+          content: Text(provider.t('dev.kicked')),
+          backgroundColor: const Color(0xFFE57373),
+          duration: const Duration(seconds: 6),
+        ),
+      );
+      return;
+    }
+    await provider.registerThisDevice();
+    if (!mounted) return;
+    if (provider.needsDeviceLogout) {
+      await _showDeviceLimitDialog();
+    }
+  }
+
+  /// どの端末を降ろすか選んでもらう。 選ぶまで閉じられない。
+  Future<void> _showDeviceLimitDialog() async {
+    final provider = context.read<MindMapProvider>();
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dctx) => StatefulBuilder(
+        builder: (dctx, setD) {
+          final list = provider.knownDevices;
+          return PopScope(
+            canPop: false,
+            child: AlertDialog(
+              backgroundColor: const Color(0xFF1E1E32),
+              title: Row(children: [
+                const Icon(Icons.devices_other_rounded,
+                    color: Color(0xFFFFB347), size: 22),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(provider.t('dev.tooManyTitle'),
+                      style:
+                          const TextStyle(color: Colors.white, fontSize: 15)),
+                ),
+              ]),
+              content: SizedBox(
+                width: 360,
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                        provider
+                            .t('dev.tooManyBody')
+                            .replaceFirst('{max}', '${MindMapProvider.kMaxDevices}')
+                            .replaceFirst('{n}', '${list.length}'),
+                        style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 12.5,
+                            height: 1.6)),
+                  ),
+                  const SizedBox(height: 12),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 280),
+                    child: ListView.separated(
+                      shrinkWrap: true,
+                      itemCount: list.length,
+                      separatorBuilder: (_, __) =>
+                          const Divider(height: 1, color: Colors.white12),
+                      itemBuilder: (_, i) {
+                        final d = list[i];
+                        final id = '${d['id'] ?? ''}';
+                        final me = id == provider.deviceId;
+                        final seen = '${d['lastSeen'] ?? ''}';
+                        return ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(
+                              me
+                                  ? Icons.smartphone_rounded
+                                  : Icons.devices_rounded,
+                              size: 18,
+                              color: me
+                                  ? const Color(0xFF43B97F)
+                                  : Colors.white54),
+                          title: Text(
+                              '${d['name'] ?? '?'}'
+                              '${me ? ' (${provider.t('dev.thisOne')})' : ''}',
+                              style: const TextStyle(
+                                  color: Colors.white, fontSize: 13)),
+                          subtitle: Text(
+                              seen.length >= 16
+                                  ? seen.substring(0, 16).replaceFirst('T', ' ')
+                                  : seen,
+                              style: const TextStyle(
+                                  color: Colors.white38, fontSize: 10.5)),
+                          trailing: TextButton(
+                            onPressed: () async {
+                              await provider.logoutDevice(id);
+                              if (!dctx.mounted) return;
+                              if (me) {
+                                Navigator.pop(dctx);
+                                return;
+                              }
+                              setD(() {});
+                              if (!provider.needsDeviceLogout &&
+                                  dctx.mounted) {
+                                Navigator.pop(dctx);
+                              }
+                            },
+                            child: Text(provider.t('dev.signOutThis'),
+                                style: const TextStyle(
+                                    color: Color(0xFFFF6B6B), fontSize: 12)),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ]),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  // ─── 支払いが通った時の知らせ (= ユーザー要望) ─────────────────────
+
+  /// provider を見張る係 (dispose で外す)。
+  VoidCallback? _planWatcher;
+
+  /// 有料プランが有効になっていたら、 1 回だけ知らせを出す。
+  void _onPlanMaybeActivated() {
+    if (!mounted) return;
+    final provider = context.read<MindMapProvider>();
+    final plan = provider.planJustActivated;
+    if (plan == null) return;
+    provider.clearPlanActivated();
+    // 描いている最中に窓を出せないので、 1 フレーム待つ。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _showPlanActivatedDialog(plan);
+    });
+  }
+
+  /// 「契約したプランが適用されました」 の窓。
+  Future<void> _showPlanActivatedDialog(SubscriptionPlan plan) async {
+    final provider = context.read<MindMapProvider>();
+    final name = plan == SubscriptionPlan.max ? 'Max' : 'Pro';
+    final color = plan == SubscriptionPlan.max
+        ? const Color(0xFFBA68C8)
+        : const Color(0xFF4FC3F7);
+    await showDialog<void>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Row(children: [
+          Icon(Icons.verified_rounded, color: color, size: 22),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+                provider
+                    .t('plan.activatedTitle')
+                    .replaceFirst('{plan}', name),
+                style: const TextStyle(color: Colors.white, fontSize: 15)),
+          ),
+        ]),
+        content: Text(
+            provider.t('plan.activatedBody').replaceFirst('{plan}', name),
+            style: const TextStyle(
+                color: Colors.white70, fontSize: 13, height: 1.5)),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(dctx);
+              _showUsageDialog(context, provider);
+            },
+            child: Text(provider.t('plan.activatedSeeUsage'),
+                style: TextStyle(color: color)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dctx),
+            child: Text(provider.t('btn.close'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+        ],
+      ),
     );
   }
 
@@ -88453,7 +88798,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     const EdgeInsets.symmetric(vertical: 10)),
                             icon: const Icon(Icons.logout_rounded,
                                 size: 16, color: Color(0xFFE57373)),
-                            label: Text(provider.t('dev.logout'),
+                            label: Text(provider.t('dev.signOutThis'),
                                 style: const TextStyle(
                                     color: Color(0xFFE57373),
                                     fontWeight: FontWeight.w700)),
@@ -136990,7 +137335,10 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
                 style: const TextStyle(fontSize: 12)),
           ),
           const SizedBox(width: 6),
-          Container(width: 1, height: 20, color: Colors.white12),
+          Container(
+              width: 1,
+              height: 20,
+              color: Colors.white12),
           const SizedBox(width: 2),
           // ── 元に戻す / やり直し (= ユーザー要望: Ctrl+Z / Ctrl+Y) ──
           //    キーが使えないモバイルでも押せるようボタンも置く。
@@ -137011,7 +137359,10 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
             onPressed: _veRedo.isEmpty ? null : _veRedoAction,
           ),
           const SizedBox(width: 2),
-          Container(width: 1, height: 20, color: Colors.white12),
+          Container(
+              width: 1,
+              height: 20,
+              color: Colors.white12),
           const SizedBox(width: 2),
           TextButton.icon(
             style: TextButton.styleFrom(
@@ -137023,7 +137374,10 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
                 style: const TextStyle(fontSize: 12)),
           ),
           const SizedBox(width: 6),
-          Container(width: 1, height: 20, color: Colors.white12),
+          Container(
+              width: 1,
+              height: 20,
+              color: Colors.white12),
           const SizedBox(width: 2),
           // ── プロジェクトファイルの保存 / 読み込み (= ユーザー要望) ──
           _addBtn(Icons.save_rounded, widget.provider.t('ve.projectShort'),
@@ -190022,6 +190376,159 @@ class _SplitWindowsWebViewState extends State<_SplitWindowsWebView> {
 /// セルの中身は今までどおり文字列のまま持ち、 見た目 (見出しの塗り / 縞 /
 /// 罫線) だけをこの範囲情報として重ねる。 保存時は excel の CellStyle に
 /// 変換して書き出すので、 本家 Excel で開いても同じ見た目になる。
+/// xlsx のセル 1 つぶんの飾り (= ユーザー要望: 背景色・文字色・文字の
+/// 大きさ・アンダーライン・太文字・斜体)。
+///
+/// null / false は「指定なし」。 指定なしの所は今までどおりの見た目で描き、
+/// 保存する時も書式を書かない (= 元のファイルの飾りを壊さない)。
+class _SsCellFmt {
+  int? bg; // 背景色 0xRRGGBB
+  int? fg; // 文字色 0xRRGGBB
+  double? size; // 文字の大きさ (pt)
+  bool bold;
+  bool italic;
+  bool underline;
+
+  /// 罫線 (= ユーザー要望: セルの外枠)。 null なら線なし。
+  _SsBorderSide? bLeft;
+  _SsBorderSide? bRight;
+  _SsBorderSide? bTop;
+  _SsBorderSide? bBottom;
+
+  _SsCellFmt({
+    this.bg,
+    this.fg,
+    this.size,
+    this.bold = false,
+    this.italic = false,
+    this.underline = false,
+    this.bLeft,
+    this.bRight,
+    this.bTop,
+    this.bBottom,
+  });
+
+  bool get hasBorder =>
+      bLeft != null || bRight != null || bTop != null || bBottom != null;
+
+  bool get isEmpty =>
+      bg == null &&
+      fg == null &&
+      size == null &&
+      !bold &&
+      !italic &&
+      !underline &&
+      !hasBorder;
+
+  _SsCellFmt copy() => _SsCellFmt(
+      bg: bg,
+      fg: fg,
+      size: size,
+      bold: bold,
+      italic: italic,
+      underline: underline,
+      bLeft: bLeft,
+      bRight: bRight,
+      bTop: bTop,
+      bBottom: bBottom);
+
+  Map<String, dynamic> toJson() => {
+        if (bg != null) 'bg': bg,
+        if (fg != null) 'fg': fg,
+        if (size != null) 'size': size,
+        if (bold) 'b': true,
+        if (italic) 'i': true,
+        if (underline) 'u': true,
+        if (bLeft != null) 'bl': bLeft!.toJson(),
+        if (bRight != null) 'br': bRight!.toJson(),
+        if (bTop != null) 'bt': bTop!.toJson(),
+        if (bBottom != null) 'bb': bBottom!.toJson(),
+      };
+
+  static _SsBorderSide? _side(Object? v) => v is Map
+      ? _SsBorderSide.fromJson(Map<String, dynamic>.from(v))
+      : null;
+
+  static _SsCellFmt fromJson(Map<String, dynamic> j) => _SsCellFmt(
+        bg: (j['bg'] as num?)?.toInt(),
+        fg: (j['fg'] as num?)?.toInt(),
+        size: (j['size'] as num?)?.toDouble(),
+        bold: j['b'] == true,
+        italic: j['i'] == true,
+        underline: j['u'] == true,
+        bLeft: _side(j['bl']),
+        bRight: _side(j['br']),
+        bTop: _side(j['bt']),
+        bBottom: _side(j['bb']),
+      );
+}
+
+/// セルの 1 辺の罫線 (= ユーザー要望: セルの外枠)。
+class _SsBorderSide {
+  /// thin / medium / thick / double / dashed / dotted / hair
+  final String style;
+
+  /// 0xRRGGBB。 null なら自動 (黒)。
+  final int? color;
+  const _SsBorderSide(this.style, [this.color]);
+
+  double get width {
+    switch (style) {
+      case 'hair':
+        return 0.5;
+      case 'medium':
+      case 'double':
+        return 2;
+      case 'thick':
+        return 3;
+      default:
+        return 1;
+    }
+  }
+
+  Map<String, dynamic> toJson() =>
+      {'s': style, if (color != null) 'c': color};
+
+  static _SsBorderSide fromJson(Map<String, dynamic> j) =>
+      _SsBorderSide('${j['s'] ?? 'thin'}', (j['c'] as num?)?.toInt());
+
+  @override
+  bool operator ==(Object o) =>
+      o is _SsBorderSide && o.style == style && o.color == color;
+  @override
+  int get hashCode => Object.hash(style, color);
+}
+
+/// 結合したセルの範囲 (行・列とも 0 始まり、 両端を含む)。
+/// = ユーザー要望: セルの結合。
+class _SsMerge {
+  final int r1;
+  final int c1;
+  final int r2;
+  final int c2;
+  const _SsMerge(this.r1, this.c1, this.r2, this.c2);
+
+  bool contains(int r, int c) => r >= r1 && r <= r2 && c >= c1 && c <= c2;
+
+  /// 左上のセルか (= 中身と文字を出す所)。
+  bool isAnchor(int r, int c) => r == r1 && c == c1;
+
+  bool get isSingle => r1 == r2 && c1 == c2;
+
+  /// 別の範囲と重なっているか (重なる結合は作らせない)。
+  bool overlaps(_SsMerge o) =>
+      r1 <= o.r2 && o.r1 <= r2 && c1 <= o.c2 && o.c1 <= c2;
+
+  Map<String, dynamic> toJson() => {'r1': r1, 'c1': c1, 'r2': r2, 'c2': c2};
+
+  static _SsMerge fromJson(Map<String, dynamic> j) => _SsMerge(
+        (j['r1'] as num?)?.toInt() ?? 0,
+        (j['c1'] as num?)?.toInt() ?? 0,
+        (j['r2'] as num?)?.toInt() ?? 0,
+        (j['c2'] as num?)?.toInt() ?? 0,
+      );
+}
+
 class _SsTable {
   int row;
   int col;
@@ -190161,6 +190668,10 @@ class _SheetSnapshot {
   Map<String, List<_SsTable>> tables = const {};
   Map<String, List<_SsImage>> images = const {};
 
+  /// セルの飾りと結合も控える (= ユーザー要望: Ctrl+Z で戻せるように)。
+  Map<String, Map<String, _SsCellFmt>> fmts = const {};
+  Map<String, List<_SsMerge>> merges = const {};
+
   final Map<String, List<List<String>>> sheets;
   final List<String> sheetNames;
   final String activeSheet;
@@ -190281,6 +190792,13 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
       for (final e in _sheetImages.entries)
         e.key: [for (final i in e.value) i.copy()],
     };
+    snap.fmts = {
+      for (final e in _sheetFmts.entries)
+        e.key: {for (final f in e.value.entries) f.key: f.value.copy()},
+    };
+    snap.merges = {
+      for (final e in _sheetMerges.entries) e.key: List<_SsMerge>.from(e.value),
+    };
     return snap;
   }
 
@@ -190308,6 +190826,18 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
         ..addAll({
           for (final e in s.images.entries)
             e.key: [for (final i in e.value) i.copy()],
+        });
+      _sheetFmts
+        ..clear()
+        ..addAll({
+          for (final e in s.fmts.entries)
+            e.key: {for (final f in e.value.entries) f.key: f.value.copy()},
+        });
+      _sheetMerges
+        ..clear()
+        ..addAll({
+          for (final e in s.merges.entries)
+            e.key: List<_SsMerge>.from(e.value),
         });
       _editingRow = null;
       _editingCol = null;
@@ -190368,6 +190898,9 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
     _stopDragAutoScroll();
     _vScroll.dispose();
     _hScroll.dispose();
+    _findCtrl.dispose();
+    _replaceCtrl.dispose();
+    _findFocus.dispose();
     super.dispose();
   }
 
@@ -190376,6 +190909,50 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
   final FocusNode _formulaFocus = FocusNode();
 
   // ── 範囲選択 (= ユーザー要望: セルの範囲を選んで図や表にできるように) ──
+  // ─── セルの飾りと結合 (= ユーザー要望) ─────────────────────────────
+  /// シート名 → 「行,列」 → 飾り。
+  final Map<String, Map<String, _SsCellFmt>> _sheetFmts = {};
+
+  /// シート名 → 結合した範囲の一覧。
+  final Map<String, List<_SsMerge>> _sheetMerges = {};
+
+  /// ★ 利用者がこの画面で**実際に直した**セル (シート名 → 「行,列」)。
+  ///
+  /// 触っていないセルの書式は、 読み込んだ物をそのまま書き出しに通す。
+  /// excel パッケージは、 ファイルから読んだブックの cellStyle を 1 つでも
+  /// 差し替えると番号がずれて**そのセルが別の見た目になる** (= 実測)。
+  /// なので、 直した所だけを後から自分で zip に書き込む。
+  final Map<String, Set<String>> _fmtDirty = {};
+
+  void _markFmtDirty(int r, int c) {
+    (_fmtDirty[_activeSheet] ??= <String>{}).add(_fmtKey(r, c));
+  }
+
+  static String _fmtKey(int r, int c) => '$r,$c';
+
+  Map<String, _SsCellFmt> get _fmts => _sheetFmts[_activeSheet] ??= {};
+  List<_SsMerge> get _merges => _sheetMerges[_activeSheet] ??= [];
+
+  /// [r],[c] の飾り (無ければ null)。
+  _SsCellFmt? _fmtAt(int r, int c) =>
+      _sheetFmts[_activeSheet]?[_fmtKey(r, c)];
+
+  /// [r],[c] を含む結合 (無ければ null)。
+  _SsMerge? _mergeAt(int r, int c) {
+    final list = _sheetMerges[_activeSheet];
+    if (list == null) return null;
+    for (final m in list) {
+      if (m.contains(r, c)) return m;
+    }
+    return null;
+  }
+
+  /// [r],[c] は結合に飲み込まれて描かないセルか (= 左上以外)。
+  bool _isMergedAway(int r, int c) {
+    final m = _mergeAt(r, c);
+    return m != null && !m.isAnchor(r, c);
+  }
+
   /// シートごとの表 (= ユーザー要望: 図や表の挿入)。 キーはシート名。
   final Map<String, List<_SsTable>> _sheetTables = {};
 
@@ -191105,9 +191682,16 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
       if (_kind == _SpreadsheetKind.xlsx) {
         // 前回置いた表 / 図を戻す (= ユーザー要望)。
         _restoreSheetExtras(bytes);
+        // ★ 他の道具が書いた xlsx は、 そのままだと excel パッケージが
+        //   落ちて書式ごと読めなくなる (= 実測: rels の絶対パス / 中身の
+        //   無い文字セル)。 先に読める形へ直す。
+        final normBytes = _sanitizeXlsxForParsing(bytes);
+        // 書式 (塗り・文字・罫線) は styles.xml から自分で読む
+        // (= パッケージはテーマ色・indexed 色・罫線・下線を落とすため)。
+        final styleMap = _readXlsxStyles(normBytes);
         xls.Excel? excel;
         try {
-          excel = xls.Excel.decodeBytes(bytes);
+          excel = xls.Excel.decodeBytes(normBytes);
         } catch (e) {
           // パッケージが読めないファイルは自前で読む (下の代替へ)。
           debugPrint('excel パッケージでの読み込みに失敗、 代替へ: $e');
@@ -191180,6 +191764,10 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
           // 実データ範囲のみ書き戻すので、 ファイル自体は膨らまない。
           _padSheetForDisplay(rows);
           _sheets[name] = rows;
+          // ── セルの飾りと結合を読む (= ユーザー要望) ──
+          if (table != null) {
+            _readSheetFormatting(name, table, styleMap[name]);
+          }
         }
         _activeSheet = _sheetNames.first;
       } else {
@@ -191825,6 +192413,751 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
     }
   }
 
+  // ═══ セルの飾りと結合 (= ユーザー要望: xlsx のセルの結合・背景色・
+  //     文字色・文字の大きさ・アンダーライン・太文字・斜体) ═════════════
+
+  // ═══ 他の道具が書いた xlsx を読むための下ごしらえ ═══════════════════
+  //
+  // = ユーザー要望「色付けしてセル結合を行った xlsx を作って、 正しく開ける
+  //   かテストして欲しい」 で見付かった 2 つの穴への対処。
+  //
+  // ① excel パッケージは xl/_rels/workbook.xml.rels の Target を
+  //    「xl/ から見た相対」 と決め打ちしている。 openpyxl などは
+  //    "/xl/worksheets/sheet1.xml" と**絶対**で書くので、 シートの場所が
+  //    見付からず null チェックで落ちる。 落ちると自前の代替の読み取りで値だけ
+  //    読む形に落ちてしまい、 色も結合も丸ごと失われる。 先に相対へ直す。
+  // ② excel パッケージの CellStyle は、 引数で渡した underline を
+  //    **代入し忘れている** (初期化子に _underline が無い)。 その結果
+  //    下線だけは読めも書けもしない。 読みは styles.xml を自分で見る、
+  //    書きは公開されている setter で入れる、 で回避する。
+
+  /// 読み込む前の下ごしらえ。 excel パッケージが落ちる書き方を直す。
+  ///
+  /// ① rels の Target が絶対パス ("/xl/worksheets/…") だとシートを見失う。
+  /// ② `<c r="C2" s="1" t="inlineStr"></c>` のように **中身の無い文字セル**
+  ///    (= 色や罫線だけ付けた空セル。 実際の表では珍しくない) があると
+  ///    `findAllElements('t').first` で落ち、 ブック全体が読めなくなる。
+  static Uint8List _sanitizeXlsxForParsing(Uint8List bytes) {
+    try {
+      final arc = ZipDecoder().decodeBytes(bytes);
+      var changed = false;
+      final out = Archive();
+      for (final f in arc.files) {
+        var data = List<int>.from(f.content as List<int>);
+        final name = f.name;
+        if (name == 'xl/_rels/workbook.xml.rels') {
+          final t = utf8.decode(data, allowMalformed: true);
+          final fixed = t.replaceAllMapped(RegExp(r'Target="([^"]*)"'), (m) {
+            var v = m.group(1)!;
+            if (v.startsWith('/')) v = v.substring(1);
+            if (v.startsWith('xl/')) v = v.substring(3);
+            return 'Target="$v"';
+          });
+          if (fixed != t) {
+            changed = true;
+            data = utf8.encode(fixed);
+          }
+        } else if (name.startsWith('xl/worksheets/') && name.endsWith('.xml')) {
+          final t = utf8.decode(data, allowMalformed: true);
+          // 中身の無い <c … t="…"> から t を外す (= ただの空セル扱いにする)。
+          final fixed = t.replaceAllMapped(
+              RegExp(r'<c\b[^>]*?/>|<c\b[^>]*?>[\s\S]*?</c>'), (m) {
+            final tag = m.group(0)!;
+            final ty = RegExp(r'\st="([^"]+)"').firstMatch(tag)?.group(1);
+            if (ty == null) return tag;
+            final needsIs = ty == 'inlineStr';
+            final hasIs = tag.contains('<is');
+            final hasV = tag.contains('<v');
+            final hasF = tag.contains('<f');
+            if (needsIs && !hasIs) {
+              return tag.replaceFirst(RegExp(r'\st="[^"]+"'), '');
+            }
+            if (!needsIs &&
+                (ty == 'b' || ty == 'str' || ty == 'e' || ty == 's') &&
+                !hasV &&
+                !hasF) {
+              return tag.replaceFirst(RegExp(r'\st="[^"]+"'), '');
+            }
+            return tag;
+          });
+          if (fixed != t) {
+            changed = true;
+            data = utf8.encode(fixed);
+          }
+        }
+        out.addFile(ArchiveFile(name, data.length, data));
+      }
+      if (!changed) return bytes;
+      final enc = ZipEncoder().encode(out);
+      if (enc == null) return bytes;
+      return Uint8List.fromList(enc);
+    } catch (e) {
+      debugPrint('xlsx の下ごしらえに失敗 (そのまま読みます): $e');
+      return bytes;
+    }
+  }
+
+  static String _xmlUnescape(String v) => v
+      .replaceAll('&lt;', '<')
+      .replaceAll('&gt;', '>')
+      .replaceAll('&quot;', '"')
+      .replaceAll('&apos;', "'")
+      .replaceAll('&amp;', '&');
+
+  /// Excel の昔からの 56 色 (indexed="…" で指されるもの)。
+  static const List<int> _kIndexedPalette = <int>[
+    0x000000, 0xFFFFFF, 0xFF0000, 0x00FF00, 0x0000FF, 0xFFFF00, 0xFF00FF,
+    0x00FFFF, 0x000000, 0xFFFFFF, 0xFF0000, 0x00FF00, 0x0000FF, 0xFFFF00,
+    0xFF00FF, 0x00FFFF, 0x800000, 0x008000, 0x000080, 0x808000, 0x800080,
+    0x008080, 0xC0C0C0, 0x808080, 0x9999FF, 0x993366, 0xFFFFCC, 0xCCFFFF,
+    0x660066, 0xFF8080, 0x0066CC, 0xCCCCFF, 0x000080, 0xFF00FF, 0xFFFF00,
+    0x00FFFF, 0x800080, 0x800000, 0x008080, 0x0000FF, 0x00CCFF, 0xCCFFFF,
+    0xCCFFCC, 0xFFFF99, 0x99CCFF, 0xFF99CC, 0xCC99FF, 0xFFCC99, 0x3366FF,
+    0x33CCCC, 0x99CC00, 0xFFCC00, 0xFF9900, 0xFF6600, 0x666699, 0x969696,
+    0x003366, 0x339966, 0x003300, 0x333300, 0x993300, 0x993366, 0x333399,
+    0x333333,
+  ];
+
+  /// テーマ色 + tint を実際の色にする。
+  static int _applyTint(int rgb, double tint) {
+    if (tint == 0) return rgb;
+    int ch(int v) {
+      final d = tint > 0
+          ? (v + (255 - v) * tint)
+          : (v * (1 + tint));
+      return d.round().clamp(0, 255);
+    }
+
+    return (ch((rgb >> 16) & 255) << 16) |
+        (ch((rgb >> 8) & 255) << 8) |
+        ch(rgb & 255);
+  }
+
+  /// `<fgColor …/>` などの色指定を 0xRRGGBB に直す。
+  static int? _colorFromXml(String tag, List<int> theme) {
+    final rgb = RegExp(r'rgb="([0-9A-Fa-f]{6,8})"').firstMatch(tag)?.group(1);
+    if (rgb != null) {
+      final h = rgb.length >= 8 ? rgb.substring(rgb.length - 6) : rgb;
+      return int.tryParse(h, radix: 16);
+    }
+    final th = RegExp(r'theme="(\d+)"').firstMatch(tag)?.group(1);
+    if (th != null) {
+      final i = int.tryParse(th) ?? 0;
+      if (i >= 0 && i < theme.length) {
+        final tint =
+            double.tryParse(RegExp(r'tint="([-\d.eE]+)"').firstMatch(tag)?.group(1) ??
+                    '0') ??
+                0;
+        return _applyTint(theme[i], tint);
+      }
+      return null;
+    }
+    final ix = RegExp(r'indexed="(\d+)"').firstMatch(tag)?.group(1);
+    if (ix != null) {
+      final i = int.tryParse(ix) ?? 0;
+      if (i >= 0 && i < _kIndexedPalette.length) return _kIndexedPalette[i];
+    }
+    return null;
+  }
+
+  /// テーマの色の並び (0=lt1, 1=dk1, 2=lt2, 3=dk2, 4..9=accent, 10,11=link)。
+  static List<int> _readThemeColors(String? themeXml) {
+    // 読めない時のための既定 (Office の標準テーマ)。
+    final def = <int>[
+      0xFFFFFF, 0x000000, 0xE7E6E6, 0x44546A, 0x4472C4, 0xED7D31,
+      0xA5A5A5, 0xFFC000, 0x5B9BD5, 0x70AD47, 0x0563C1, 0x954F72,
+    ];
+    if (themeXml == null) return def;
+    try {
+      final m = RegExp(r'<a:clrScheme[\s\S]*?</a:clrScheme>')
+          .firstMatch(themeXml);
+      if (m == null) return def;
+      final blk = m.group(0)!;
+      int? pick(String tag) {
+        final e = RegExp('<a:$tag>([\\s\\S]*?)</a:$tag>').firstMatch(blk);
+        if (e == null) return null;
+        final inner = e.group(1)!;
+        final sys = RegExp(r'lastClr="([0-9A-Fa-f]{6})"').firstMatch(inner);
+        if (sys != null) return int.tryParse(sys.group(1)!, radix: 16);
+        final srgb = RegExp(r'val="([0-9A-Fa-f]{6})"').firstMatch(inner);
+        if (srgb != null) return int.tryParse(srgb.group(1)!, radix: 16);
+        return null;
+      }
+
+      // ★ 並びは lt1, dk1, lt2, dk2 の順 (0 と 1、 2 と 3 が入れ替わる)。
+      final order = <String>[
+        'lt1', 'dk1', 'lt2', 'dk2', 'accent1', 'accent2', 'accent3',
+        'accent4', 'accent5', 'accent6', 'hlink', 'folHlink',
+      ];
+      final out = <int>[];
+      for (var i = 0; i < order.length; i++) {
+        out.add(pick(order[i]) ?? def[i]);
+      }
+      return out;
+    } catch (_) {
+      return def;
+    }
+  }
+
+  /// xlsx の書式を、 styles.xml から**自分で**全部読む。
+  ///
+  /// excel パッケージの書式読みは、 テーマ色・indexed 色・罫線・下線を
+  /// 落とすので当てにしない (= ユーザー報告: 背景色や外枠が読み取れない)。
+  /// 返すのは シート名 → 「行,列」 → 飾り。
+  static Map<String, Map<String, _SsCellFmt>> _readXlsxStyles(
+      Uint8List bytes) {
+    final out = <String, Map<String, _SsCellFmt>>{};
+    try {
+      final arc = ZipDecoder().decodeBytes(bytes);
+      String? read(String name) {
+        for (final f in arc.files) {
+          if (f.name == name) {
+            return utf8.decode(f.content as List<int>, allowMalformed: true);
+          }
+        }
+        return null;
+      }
+
+      final styles = read('xl/styles.xml');
+      if (styles == null) return out;
+      final theme = _readThemeColors(read('xl/theme/theme1.xml'));
+
+      List<String> items(String plural, String single) {
+        final m =
+            RegExp('<$plural[^>]*>([\\s\\S]*?)</$plural>').firstMatch(styles);
+        if (m == null) return <String>[];
+        final inner = m.group(1)!;
+        return [
+          for (final e in RegExp('<$single\\b[^>]*?/>|'
+                  '<$single\\b[^>]*?>[\\s\\S]*?</$single>')
+              .allMatches(inner))
+            e.group(0)!,
+        ];
+      }
+
+      final fonts = items('fonts', 'font');
+      final fills = items('fills', 'fill');
+      final borders = items('borders', 'border');
+      final xfs = items('cellXfs', 'xf');
+      if (xfs.isEmpty) return out;
+
+      // ── フォント ──
+      final fontFmt = <_SsCellFmt>[];
+      for (final f in fonts) {
+        final szTag = RegExp(r'<sz\b[^>]*/>').firstMatch(f)?.group(0);
+        final colTag = RegExp(r'<color\b[^>]*/>').firstMatch(f)?.group(0);
+        fontFmt.add(_SsCellFmt(
+          size: szTag == null
+              ? null
+              : double.tryParse(
+                  RegExp(r'val="([\d.]+)"').firstMatch(szTag)?.group(1) ?? ''),
+          fg: colTag == null ? null : _colorFromXml(colTag, theme),
+          bold: RegExp(r'<b\b[^>]*/>').hasMatch(f),
+          italic: RegExp(r'<i\b[^>]*/>').hasMatch(f),
+          underline: RegExp(r'<u\b[^>]*/?>').hasMatch(f),
+        ));
+      }
+
+      // ── 塗り ──
+      final fillColor = <int?>[];
+      for (final f in fills) {
+        if (!f.contains('patternType="solid"')) {
+          fillColor.add(null);
+          continue;
+        }
+        final fg = RegExp(r'<fgColor\b[^>]*/>').firstMatch(f)?.group(0);
+        fillColor.add(fg == null ? null : _colorFromXml(fg, theme));
+      }
+
+      // ── 罫線 ──
+      _SsBorderSide? sideOf(String border, String side) {
+        final m = RegExp('<$side\\b[^>]*?/>|<$side\\b[^>]*?>[\\s\\S]*?</$side>')
+            .firstMatch(border);
+        if (m == null) return null;
+        final tag = m.group(0)!;
+        final st = RegExp(r'style="([^"]+)"').firstMatch(tag)?.group(1);
+        if (st == null || st.isEmpty || st == 'none') return null;
+        final colTag = RegExp(r'<color\b[^>]*/>').firstMatch(tag)?.group(0);
+        return _SsBorderSide(
+            st, colTag == null ? null : _colorFromXml(colTag, theme));
+      }
+
+      final borderSides = <List<_SsBorderSide?>>[];
+      for (final b in borders) {
+        borderSides.add([
+          sideOf(b, 'left'),
+          sideOf(b, 'right'),
+          sideOf(b, 'top'),
+          sideOf(b, 'bottom'),
+        ]);
+      }
+
+      // ── xf → (font, fill, border) ──
+      final xfFont = <int>[];
+      final xfFill = <int>[];
+      final xfBorder = <int>[];
+      for (final x in xfs) {
+        int at(String k) =>
+            int.tryParse(RegExp('$k="(\\d+)"').firstMatch(x)?.group(1) ?? '0') ??
+            0;
+        xfFont.add(at('fontId'));
+        xfFill.add(at('fillId'));
+        xfBorder.add(at('borderId'));
+      }
+
+      // ── シート名 → xml の場所 ──
+      final wb = read('xl/workbook.xml') ?? '';
+      final rels = read('xl/_rels/workbook.xml.rels') ?? '';
+      final relTarget = <String, String>{};
+      for (final m in RegExp(r'<Relationship\b[^>]*>').allMatches(rels)) {
+        final t = m.group(0)!;
+        final id = RegExp(r'Id="([^"]+)"').firstMatch(t)?.group(1);
+        var tg = RegExp(r'Target="([^"]+)"').firstMatch(t)?.group(1);
+        if (id == null || tg == null) continue;
+        if (tg.startsWith('/')) tg = tg.substring(1);
+        if (tg.startsWith('xl/')) tg = tg.substring(3);
+        relTarget[id] = 'xl/$tg';
+      }
+
+      for (final m in RegExp(r'<sheet\b[^>]*?/?>').allMatches(wb)) {
+        final t = m.group(0)!;
+        final name = RegExp(r'name="([^"]*)"').firstMatch(t)?.group(1);
+        final rid = RegExp(r'r:id="([^"]+)"').firstMatch(t)?.group(1);
+        if (name == null || rid == null) continue;
+        final path = relTarget[rid];
+        if (path == null) continue;
+        final xml = read(path);
+        if (xml == null) continue;
+        final map = <String, _SsCellFmt>{};
+        for (final c in RegExp(r'<c\b[^>]*').allMatches(xml)) {
+          final ct = c.group(0)!;
+          final ref = RegExp(r'r="([A-Za-z]+\d+)"').firstMatch(ct)?.group(1);
+          final si = RegExp(r'\ss="(\d+)"').firstMatch(ct)?.group(1);
+          if (ref == null || si == null) continue;
+          final xi = int.tryParse(si);
+          if (xi == null || xi >= xfs.length) continue;
+          final rc = _parseA1(ref);
+          if (rc == null) continue;
+
+          final fi = xfFont[xi];
+          final base = fi < fontFmt.length ? fontFmt[fi] : null;
+          final f = _SsCellFmt(
+            size: base?.size,
+            fg: base?.fg,
+            bold: base?.bold ?? false,
+            italic: base?.italic ?? false,
+            underline: base?.underline ?? false,
+          );
+          // 黒い文字は「指定なし」 と同じ扱い (暗い画面で潰れるため)。
+          if (f.fg == 0x000000) f.fg = null;
+          final li = xfFill[xi];
+          if (li < fillColor.length) f.bg = fillColor[li];
+          final bi = xfBorder[xi];
+          if (bi < borderSides.length) {
+            f.bLeft = borderSides[bi][0];
+            f.bRight = borderSides[bi][1];
+            f.bTop = borderSides[bi][2];
+            f.bBottom = borderSides[bi][3];
+          }
+          if (!f.isEmpty) map[_fmtKey(rc.$1, rc.$2)] = f;
+        }
+        if (map.isNotEmpty) out[_xmlUnescape(name)] = map;
+      }
+    } catch (e) {
+      debugPrint('書式の読み取りに失敗: $e');
+    }
+    return out;
+  }
+
+  /// 開いた xlsx から、 セルの飾りと結合を読み取る。
+  ///
+  /// 飾りは [_readXlsxStyles] が styles.xml から読んだ物をそのまま使う。
+  /// 結合だけはパッケージの spannedItems を使う (こちらは正しく取れる)。
+  void _readSheetFormatting(String name, xls.Sheet table,
+      [Map<String, _SsCellFmt>? styles]) {
+    if (styles != null && styles.isNotEmpty) {
+      _sheetFmts[name] = {
+        for (final e in styles.entries) e.key: e.value.copy(),
+      };
+    }
+    final list = <_SsMerge>[];
+    for (final span in table.spannedItems) {
+      final m = _parseSpan(span);
+      if (m != null && !m.isSingle) list.add(m);
+    }
+    if (list.isNotEmpty) _sheetMerges[name] = list;
+  }
+
+  /// excel パッケージの色を 0xRRGGBB に直す。 指定なしなら null。
+  static int? _excelColorToRgb(xls.ExcelColor? c) {
+    if (c == null) return null;
+    final hex = c.colorHex;
+    if (hex.isEmpty || hex.toLowerCase() == 'none') return null;
+    // 'FFAABBCC' (ARGB) か 'AABBCC' (RGB)。
+    final h = hex.length >= 8 ? hex.substring(hex.length - 6) : hex;
+    final v = int.tryParse(h, radix: 16);
+    return v == null ? null : (v & 0xFFFFFF);
+  }
+
+  /// "A1:B2" を範囲に直す。 読めなければ null。
+  static _SsMerge? _parseSpan(String span) {
+    final parts = span.split(':');
+    if (parts.length != 2) return null;
+    final a = _parseA1(parts[0]);
+    final b = _parseA1(parts[1]);
+    if (a == null || b == null) return null;
+    return _SsMerge(
+      a.$1 < b.$1 ? a.$1 : b.$1,
+      a.$2 < b.$2 ? a.$2 : b.$2,
+      a.$1 > b.$1 ? a.$1 : b.$1,
+      a.$2 > b.$2 ? a.$2 : b.$2,
+    );
+  }
+
+  /// "B3" → (行 2, 列 1)。 0 始まり。
+  static (int, int)? _parseA1(String s) {
+    final m = RegExp(r'^\s*([A-Za-z]+)\s*(\d+)\s*$').firstMatch(s);
+    if (m == null) return null;
+    final letters = m.group(1)!.toUpperCase();
+    var col = 0;
+    for (var i = 0; i < letters.length; i++) {
+      col = col * 26 + (letters.codeUnitAt(i) - 64);
+    }
+    final row = int.tryParse(m.group(2)!);
+    if (row == null || row < 1 || col < 1) return null;
+    return (row - 1, col - 1);
+  }
+
+  /// 直した書式だけを、 出来上がった xlsx の zip に自分で書き込む。
+  ///
+  /// = excel パッケージの cellStyle 経由は、 ファイルから読んだブックだと
+  ///   番号がずれてセルの見た目が入れ替わる (= 実測)。 触らずに書き出した
+  ///   物へ、 ここで styles.xml とシートの s= を足す。
+  ///
+  /// 触っていないセルには一切手を入れないので、 元の飾りはそのまま残る。
+  Uint8List _writeCellFormatsIntoZip(Uint8List bytes) {
+    // 直した所が無ければ何もしない。
+    if (_fmtDirty.values.every((v) => v.isEmpty)) return bytes;
+    try {
+      final arc = ZipDecoder().decodeBytes(bytes);
+      final files = <String, List<int>>{};
+      for (final f in arc.files) {
+        files[f.name] = List<int>.from(f.content as List<int>);
+      }
+      String? text(String name) => files[name] == null
+          ? null
+          : utf8.decode(files[name]!, allowMalformed: true);
+
+      var styles = text('xl/styles.xml');
+      final wb = text('xl/workbook.xml');
+      final rels = text('xl/_rels/workbook.xml.rels');
+      if (styles == null || wb == null || rels == null) return bytes;
+
+      // ── シート名 → xml の場所 ──
+      final relTarget = <String, String>{};
+      for (final m in RegExp(r'<Relationship\b[^>]*>').allMatches(rels)) {
+        final t = m.group(0)!;
+        final id = RegExp(r'Id="([^"]+)"').firstMatch(t)?.group(1);
+        var tg = RegExp(r'Target="([^"]+)"').firstMatch(t)?.group(1);
+        if (id == null || tg == null) continue;
+        if (tg.startsWith('/')) tg = tg.substring(1);
+        if (tg.startsWith('xl/')) tg = tg.substring(3);
+        relTarget[id] = 'xl/$tg';
+      }
+      final sheetPath = <String, String>{};
+      for (final m in RegExp(r'<sheet\b[^>]*?/?>').allMatches(wb)) {
+        final t = m.group(0)!;
+        final name = RegExp(r'name="([^"]*)"').firstMatch(t)?.group(1);
+        final rid = RegExp(r'r:id="([^"]+)"').firstMatch(t)?.group(1);
+        if (name == null || rid == null) continue;
+        final p = relTarget[rid];
+        if (p != null) sheetPath[_xmlUnescape(name)] = p;
+      }
+
+      // ── styles.xml をばらす ──
+      List<String> block(String tag) {
+        final m = RegExp('<$tag[^>]*>([\\s\\S]*?)</$tag>').firstMatch(styles!);
+        if (m == null) return <String>[];
+        final inner = m.group(1)!;
+        final items = <String>[];
+        // <x .../> か <x ...>…</x> の並び
+        for (final e in RegExp(
+                '<${tag.substring(0, tag.length - 1)}\\b[^>]*?/>|'
+                '<${tag.substring(0, tag.length - 1)}\\b[^>]*?>[\\s\\S]*?'
+                '</${tag.substring(0, tag.length - 1)}>')
+            .allMatches(inner)) {
+          items.add(e.group(0)!);
+        }
+        return items;
+      }
+
+      final fonts = block('fonts');
+      final fills = block('fills');
+      final bordersList = block('borders');
+      final xfsM = RegExp(r'<cellXfs[^>]*>([\s\S]*?)</cellXfs>')
+          .firstMatch(styles);
+      if (fonts.isEmpty || xfsM == null) return bytes;
+      final xfs = <String>[];
+      for (final e in RegExp(r'<xf\b[^>]*?/>|<xf\b[^>]*?>[\s\S]*?</xf>')
+          .allMatches(xfsM.group(1)!)) {
+        xfs.add(e.group(0)!);
+      }
+      if (xfs.isEmpty) return bytes;
+
+      // ── 新しく足す分 ──
+      final newFonts = <String>[];
+      final newFills = <String>[];
+      final newBorders = <String>[];
+      final newXfs = <String>[];
+      final xfCache = <String, int>{};
+
+      int addFont(String xml) {
+        final at = fonts.indexOf(xml);
+        if (at >= 0) return at;
+        final at2 = newFonts.indexOf(xml);
+        if (at2 >= 0) return fonts.length + at2;
+        newFonts.add(xml);
+        return fonts.length + newFonts.length - 1;
+      }
+
+      int addFill(String xml) {
+        final at = fills.indexOf(xml);
+        if (at >= 0) return at;
+        final at2 = newFills.indexOf(xml);
+        if (at2 >= 0) return fills.length + at2;
+        newFills.add(xml);
+        return fills.length + newFills.length - 1;
+      }
+
+      int addBorder(String xml) {
+        final at = bordersList.indexOf(xml);
+        if (at >= 0) return at;
+        final at2 = newBorders.indexOf(xml);
+        if (at2 >= 0) return bordersList.length + at2;
+        newBorders.add(xml);
+        return bordersList.length + newBorders.length - 1;
+      }
+
+      int addXf(String xml) {
+        final at = xfCache[xml];
+        if (at != null) return at;
+        final at2 = newXfs.indexOf(xml);
+        if (at2 >= 0) return xfs.length + at2;
+        newXfs.add(xml);
+        final idx = xfs.length + newXfs.length - 1;
+        xfCache[xml] = idx;
+        return idx;
+      }
+
+      var touched = false;
+      for (final entry in _fmtDirty.entries) {
+        final name = entry.key;
+        if (entry.value.isEmpty) continue;
+        final path = sheetPath[name];
+        if (path == null) continue;
+        var xml = text(path);
+        if (xml == null) continue;
+        final fmts = _sheetFmts[name] ?? const <String, _SsCellFmt>{};
+
+        for (final key in entry.value) {
+          final parts = key.split(',');
+          if (parts.length != 2) continue;
+          final r = int.tryParse(parts[0]);
+          final c = int.tryParse(parts[1]);
+          if (r == null || c == null) continue;
+          final ref = '${_colLetters(c)}${r + 1}';
+          // そのセルの今の書き方を探す
+          final cellRe =
+              RegExp('<c\\b[^>]*\\br="$ref"[^>]*?(/>|>)');
+          final cm = cellRe.firstMatch(xml!);
+          if (cm == null) continue;
+          final cellTag = cm.group(0)!;
+          final baseS =
+              int.tryParse(RegExp(r'\ss="(\d+)"').firstMatch(cellTag)?.group(1) ??
+                      '0') ??
+                  0;
+          final baseXf = baseS < xfs.length ? xfs[baseS] : xfs[0];
+          final baseFontId = int.tryParse(
+                  RegExp(r'fontId="(\d+)"').firstMatch(baseXf)?.group(1) ??
+                      '0') ??
+              0;
+          final baseFont =
+              baseFontId < fonts.length ? fonts[baseFontId] : fonts[0];
+
+          final f = fmts[key];
+          final int fontId;
+          final int fillId;
+          final int borderId;
+          if (f == null || f.isEmpty) {
+            // 飾りを消した → 素の書式に戻す
+            fontId = 0;
+            fillId = 0;
+            borderId = 0;
+          } else {
+            fontId = addFont(_buildFontXml(baseFont, f));
+            fillId = f.bg == null ? 0 : addFill(_buildFillXml(f.bg!));
+            borderId = f.hasBorder ? addBorder(_buildBorderXml(f)) : 0;
+          }
+          // 元の xf を土台に、 フォント / 塗り / 罫線だけ差し替える
+          var xf = baseXf
+              .replaceAll(RegExp(r'\sfontId="\d+"'), '')
+              .replaceAll(RegExp(r'\sfillId="\d+"'), '')
+              .replaceAll(RegExp(r'\sborderId="\d+"'), '')
+              .replaceAll(RegExp(r'\sapplyFont="[^"]*"'), '')
+              .replaceAll(RegExp(r'\sapplyBorder="[^"]*"'), '')
+              .replaceAll(RegExp(r'\sapplyFill="[^"]*"'), '');
+          xf = xf.replaceFirst(
+              '<xf',
+              '<xf fontId="$fontId" fillId="$fillId" borderId="$borderId" '
+                  'applyFont="1" applyFill="1" applyBorder="1"');
+          final newS = addXf(xf);
+
+          // セルの s= を書き換える
+          final replaced = cellTag.contains(RegExp(r'\ss="\d+"'))
+              ? cellTag.replaceFirst(RegExp(r'\ss="\d+"'), ' s="$newS"')
+              : cellTag.replaceFirst('<c', '<c s="$newS"');
+          xml = xml.replaceRange(cm.start, cm.end, replaced);
+          touched = true;
+        }
+        files[path] = utf8.encode(xml!);
+      }
+
+      if (!touched) return bytes;
+
+      // ── styles.xml を組み直す ──
+      if (newFonts.isNotEmpty) {
+        styles = styles!.replaceFirst(
+            RegExp(r'<fonts[^>]*>'), '<fonts count="${fonts.length + newFonts.length}">');
+        styles = styles.replaceFirst('</fonts>', '${newFonts.join()}</fonts>');
+      }
+      if (newFills.isNotEmpty) {
+        styles = styles!.replaceFirst(
+            RegExp(r'<fills[^>]*>'), '<fills count="${fills.length + newFills.length}">');
+        styles = styles.replaceFirst('</fills>', '${newFills.join()}</fills>');
+      }
+      if (newBorders.isNotEmpty) {
+        styles = styles!.replaceFirst(RegExp(r'<borders[^>]*>'),
+            '<borders count="${bordersList.length + newBorders.length}">');
+        styles = styles.replaceFirst(
+            '</borders>', '${newBorders.join()}</borders>');
+      }
+      if (newXfs.isNotEmpty) {
+        styles = styles!.replaceFirst(RegExp(r'<cellXfs[^>]*>'),
+            '<cellXfs count="${xfs.length + newXfs.length}">');
+        styles = styles.replaceFirst('</cellXfs>', '${newXfs.join()}</cellXfs>');
+      }
+      files['xl/styles.xml'] = utf8.encode(styles!);
+
+      // ── 結び直す ──
+      final out = Archive();
+      for (final f in arc.files) {
+        final data = files[f.name] ?? (f.content as List<int>);
+        out.addFile(ArchiveFile(f.name, data.length, data));
+      }
+      final enc = ZipEncoder().encode(out);
+      if (enc == null) return bytes;
+      return Uint8List.fromList(enc);
+    } catch (e, st) {
+      debugPrint('書式の書き込みに失敗 (書式なしで保存します): $e\n$st');
+      return bytes;
+    }
+  }
+
+  /// 列番号 (0 始まり) → "A" / "AB"。
+  static String _colLetters(int c) {
+    var n = c + 1;
+    var out = '';
+    while (n > 0) {
+      final rem = (n - 1) % 26;
+      out = String.fromCharCode(65 + rem) + out;
+      n = (n - 1) ~/ 26;
+    }
+    return out;
+  }
+
+  /// 元のフォントを土台に、 指定された飾りだけを差し替えた <font> を作る。
+  static String _buildFontXml(String baseFont, _SsCellFmt f) {
+    // 中身を取り出す (<font ...>中身</font> か <font .../>)
+    final m = RegExp(r'^<font\b[^>]*>([\s\S]*)</font>$').firstMatch(baseFont);
+    var inner = m?.group(1) ?? '';
+    // 差し替える物は落とす
+    inner = inner
+        .replaceAll(RegExp(r'<sz\b[^>]*/>'), '')
+        .replaceAll(RegExp(r'<color\b[^>]*/>'), '')
+        .replaceAll(RegExp(r'<b\b[^>]*/>'), '')
+        .replaceAll(RegExp(r'<i\b[^>]*/>'), '')
+        .replaceAll(RegExp(r'<u\b[^>]*/>'), '');
+    final sb = StringBuffer('<font>');
+    sb.write(inner);
+    if (f.bold) sb.write('<b/>');
+    if (f.italic) sb.write('<i/>');
+    if (f.underline) sb.write('<u/>');
+    if (f.size != null) sb.write('<sz val="${f.size!.round()}"/>');
+    if (f.fg != null) sb.write('<color rgb="${_rgbToArgbHex(f.fg!)}"/>');
+    sb.write('</font>');
+    return sb.toString();
+  }
+
+  /// 罫線を <border> の形にする。
+  static String _buildBorderXml(_SsCellFmt f) {
+    String side(String name, _SsBorderSide? b) {
+      if (b == null) return '<$name/>';
+      final col = b.color == null
+          ? ''
+          : '<color rgb="${_rgbToArgbHex(b.color!)}"/>';
+      return '<$name style="${b.style}">$col</$name>';
+    }
+
+    return '<border>${side('left', f.bLeft)}${side('right', f.bRight)}'
+        '${side('top', f.bTop)}${side('bottom', f.bBottom)}<diagonal/></border>';
+  }
+
+  static String _buildFillXml(int bg) =>
+      '<fill><patternFill patternType="solid">'
+      '<fgColor rgb="${_rgbToArgbHex(bg)}"/><bgColor indexed="64"/>'
+      '</patternFill></fill>';
+
+  /// 飾りと結合を xlsx へ書き戻す。 保存の直前に呼ぶ。
+  void _applyCellFormatting(xls.Excel excel) {
+    // ★ 飾り (色・大きさ・太字・斜体・下線) は、 ここでは書かない。
+    //   excel パッケージは、 ファイルから読んだブックの cellStyle を 1 つでも
+    //   差し替えると番号がずれ、 そのセルが**別のフォント / 塗り**になる
+    //   (= 実測: 1 セル直しただけで黄色い塗りが消えて緑の 20pt になった)。
+    //   触らなければ書き出しは元のまま通るので、 飾りは encode の後に
+    //   [_writeCellFormatsIntoZip] で自分で zip へ書き込む。
+    for (final name in _sheetNames) {
+      final sheet = excel[name];
+      // ── 結合 ──
+      final merges = _sheetMerges[name];
+      if (merges != null) {
+        // 前に入っていた結合をいったん外してから引き直す
+        // (= 画面で外した結合をファイルにも反映するため)。
+        for (final span in List<String>.from(sheet.spannedItems)) {
+          try {
+            sheet.unMerge(span);
+          } catch (_) {}
+        }
+        for (final m in merges) {
+          if (m.isSingle) continue;
+          try {
+            sheet.merge(
+              xls.CellIndex.indexByColumnRow(
+                  columnIndex: m.c1, rowIndex: m.r1),
+              xls.CellIndex.indexByColumnRow(
+                  columnIndex: m.c2, rowIndex: m.r2),
+            );
+          } catch (e) {
+            debugPrint('結合の書き戻しに失敗 ($name): $e');
+          }
+        }
+      }
+    }
+  }
+
+  /// 0xRRGGBB → 'FFRRGGBB' (excel パッケージが欲しがる形)。
+  static String _rgbToArgbHex(int rgb) =>
+      'FF${(rgb & 0xFFFFFF).toRadixString(16).padLeft(6, '0').toUpperCase()}';
+
   Future<void> _save() async {
     try {
       final file = File(_currentFilePath);
@@ -191857,12 +193190,18 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
         // ── 表の見た目を CellStyle として焼き込む (= ユーザー要望:
         //    表の挿入。 本家 Excel で開いても同じ見た目になる) ──
         _applyTableStyles(excel);
+        // ── セルの飾りと結合 (= ユーザー要望) ──
+        //    表の飾りより後に当てて、 手で付けた色が勝つようにする。
+        _applyCellFormatting(excel);
         final bytes = excel.encode();
         if (bytes == null) throw Exception('XLSX エンコード失敗');
         // ── 貼った図を xlsx へ埋め込む (= ユーザー要望: 図の挿入)。
         //    excel パッケージは図を扱えないので、 出来た zip に
         //    xl/media + xl/drawings を足して結び直す。 ──
-        final withImages = _embedImagesIntoXlsx(Uint8List.fromList(bytes));
+        // ★ 飾りは encode の後に自分で書き込む (= パッケージ経由だと
+        //   番号がずれてセルの見た目が入れ替わるため)。
+        final withFmt = _writeCellFormatsIntoZip(Uint8List.fromList(bytes));
+        final withImages = _embedImagesIntoXlsx(withFmt);
         await file.writeAsBytes(withImages, flush: true);
       } else {
         final rows = _sheets[_activeSheet] ?? const [];
@@ -192935,6 +194274,11 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
       _save();
       return KeyEventResult.handled;
     }
+    // ── Ctrl+F で「探して置き換える」 (= ユーザー要望) ──
+    if (ctrl && event.logicalKey == LogicalKeyboardKey.keyF) {
+      if (!_findOpen) _toggleFindPanel();
+      return KeyEventResult.handled;
+    }
     // ── セルのコピー / 切り取り / 貼り付け (= ユーザー要望) ──
     //    セルを編集中は普通の文字コピーに任せる。
     // カーソルがこの表の上に無い時は、 クリップボードのキーを
@@ -193447,6 +194791,9 @@ $csvText
           Column(
             children: [
               _buildHeader(dark, fg),
+              // ── 書式バー (= ユーザー要望: 結合・背景色・文字色・
+              //    大きさ・下線・太字・斜体)。 xlsx の時だけ出す。 ──
+              if (_kind == _SpreadsheetKind.xlsx) _buildFormatBar(dark, fg),
               // ── 数式バー (= ユーザー要望: Excel と同じく上のバーに選択中の
               //    セルの内容・数式を表示 / 編集できるように)。 以前この位置に
               //    あったシートタブと紛らわしかった (「メモ」 と書かれた所) ──
@@ -193479,6 +194826,9 @@ $csvText
               _buildStatusBar(dark, fg),
             ],
           ),
+          // ── 探して置き換える (= ユーザー要望: 右上に出て、
+          //    × を押すまで居座る。 出したままセルも触れる) ──
+          if (_findOpen) _buildFindPanel(dark),
           // 画面内のお知らせ (全画面ダイアログなので SnackBar は使えない)。
           if (_sheetToastMsg != null)
             Positioned(
@@ -193525,6 +194875,838 @@ $csvText
   ///   文字しか見ないので、 スクショはどこにも入らず無反応に見える。
   ///   カーソルが乗っていない時は譲る。
   bool _sheetHovered = false;
+
+  // ═══ 文字の検索 & 置換 (= ユーザー要望) ═══════════════════════════════
+
+  /// 探す文字 / 置き換える文字 (窓を閉じても覚えておく)。
+  final TextEditingController _findCtrl = TextEditingController();
+  final TextEditingController _replaceCtrl = TextEditingController();
+
+  /// 大文字と小文字を区別するか。
+  bool _findMatchCase = false;
+
+  /// このシートだけ探すか (false なら全シート)。
+  bool _findThisSheetOnly = true;
+
+  bool _findHit(String cell, String needle) => _findMatchCase
+      ? cell.contains(needle)
+      : cell.toLowerCase().contains(needle.toLowerCase());
+
+  /// 次の 1 件へ移る。 見付かれば true。
+  bool _findNext() {
+    final needle = _findCtrl.text;
+    if (needle.isEmpty) return false;
+    final rows = _rows;
+    if (rows.isEmpty) return false;
+    // 今いる所の次から、 右 → 下 の順に一周する
+    // (続けて押しても同じ所で止まらないよう、 1 つ先から)。
+    final startR = _selRow;
+    final startC = _selCol + 1;
+    final total = rows.length;
+    for (var i = 0; i <= total; i++) {
+      final r = (startR + i) % total;
+      final cols = rows[r].length;
+      final from = (i == 0) ? startC : 0;
+      for (var c = from; c < cols; c++) {
+        if (_findHit(rows[r][c], needle)) {
+          setState(() {
+            _selRow = r;
+            _selCol = c;
+            _resetRangeAnchor();
+          });
+          _scrollToSelection();
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /// 見付けたセルが画面に入るよう送る。
+  void _scrollToSelection() {
+    if (_vScroll.hasClients) {
+      final y = _selRow * _cellHeight;
+      final vh = _vScroll.position.viewportDimension;
+      if (y < _vScroll.offset || y + _cellHeight > _vScroll.offset + vh) {
+        _vScroll.jumpTo((y - vh / 3)
+            .clamp(0.0, _vScroll.position.maxScrollExtent));
+      }
+    }
+    if (_hScroll.hasClients) {
+      final x = _selCol * _cellWidth;
+      final vw = _hScroll.position.viewportDimension;
+      if (x < _hScroll.offset || x + _cellWidth > _hScroll.offset + vw) {
+        _hScroll.jumpTo((x - vw / 3)
+            .clamp(0.0, _hScroll.position.maxScrollExtent));
+      }
+    }
+  }
+
+  /// 今のセルが当たっていれば置き換えてから、 次へ move する。
+  int _replaceOne() {
+    final needle = _findCtrl.text;
+    if (needle.isEmpty) return 0;
+    final rows = _rows;
+    if (_selRow >= rows.length || _selCol >= rows[_selRow].length) return 0;
+    final cur = rows[_selRow][_selCol];
+    if (!_findHit(cur, needle)) {
+      _findNext();
+      return 0;
+    }
+    _pushUndo();
+    setState(() {
+      rows[_selRow][_selCol] = _replaceIn(cur, needle, _replaceCtrl.text);
+      _dirty = true;
+      _invalidateFormulaCache();
+    });
+    _findNext();
+    return 1;
+  }
+
+  /// 全部まとめて置き換える。 置き換えた数を返す。
+  int _replaceAll() {
+    final needle = _findCtrl.text;
+    if (needle.isEmpty) return 0;
+    final names =
+        _findThisSheetOnly ? <String>[_activeSheet] : List<String>.from(_sheetNames);
+    var n = 0;
+    _pushUndo();
+    setState(() {
+      for (final name in names) {
+        final rows = _sheets[name];
+        if (rows == null) continue;
+        for (var r = 0; r < rows.length; r++) {
+          for (var c = 0; c < rows[r].length; c++) {
+            final cur = rows[r][c];
+            if (cur.isEmpty || !_findHit(cur, needle)) continue;
+            rows[r][c] = _replaceIn(cur, needle, _replaceCtrl.text);
+            n++;
+          }
+        }
+      }
+      if (n > 0) {
+        _dirty = true;
+        _invalidateFormulaCache();
+      }
+    });
+    return n;
+  }
+
+  /// 大文字小文字の区別を見ながら置き換える。
+  String _replaceIn(String src, String needle, String to) {
+    if (_findMatchCase) return src.replaceAll(needle, to);
+    final low = src.toLowerCase();
+    final ln = needle.toLowerCase();
+    final sb = StringBuffer();
+    var i = 0;
+    while (i < src.length) {
+      final at = low.indexOf(ln, i);
+      if (at < 0) {
+        sb.write(src.substring(i));
+        break;
+      }
+      sb.write(src.substring(i, at));
+      sb.write(to);
+      i = at + needle.length;
+    }
+    return sb.toString();
+  }
+
+  /// 探して置き換えのパネルを出しているか (= ユーザー要望: 右上に出て、
+  /// × を押すまで居座る。 出したままセルも触れる)。
+  bool _findOpen = false;
+
+  void _toggleFindPanel() {
+    setState(() => _findOpen = !_findOpen);
+    if (_findOpen) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _findFocus.requestFocus();
+      });
+    } else {
+      if (!_keyFocus.hasFocus) _keyFocus.requestFocus();
+    }
+  }
+
+  final FocusNode _findFocus = FocusNode();
+
+  /// 右上に浮かべる「探して置き換える」 (窓ではないので、 出したまま
+  /// セルを触ったり書式を変えたりできる)。
+  Widget _buildFindPanel(bool dark) {
+    final provider = context.read<MindMapProvider>();
+    final bg = dark ? const Color(0xFF22222E) : Colors.white;
+    final fg = dark ? Colors.white : const Color(0xFF16181D);
+    final line = dark ? Colors.white24 : Colors.black26;
+
+    InputDecoration deco(String label) => InputDecoration(
+          isDense: true,
+          labelText: label,
+          labelStyle: TextStyle(
+              color: fg.withValues(alpha: 0.55), fontSize: 10.5),
+          filled: true,
+          fillColor: fg.withValues(alpha: 0.06),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+          border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(6),
+              borderSide: BorderSide.none),
+        );
+
+    Widget chk(String label, bool on, VoidCallback onTap) => InkWell(
+          onTap: onTap,
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(
+                on
+                    ? Icons.check_box_rounded
+                    : Icons.check_box_outline_blank_rounded,
+                size: 15,
+                color: on
+                    ? const Color(0xFF80CBC4)
+                    : fg.withValues(alpha: 0.4)),
+            const SizedBox(width: 3),
+            Text(label,
+                style: TextStyle(
+                    color: fg.withValues(alpha: 0.7), fontSize: 10.5)),
+          ]),
+        );
+
+    return Positioned(
+      right: 12,
+      top: 10,
+      child: Material(
+        color: Colors.transparent,
+        child: Container(
+          width: 330,
+          padding: const EdgeInsets.fromLTRB(12, 8, 8, 10),
+          decoration: BoxDecoration(
+            color: bg,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: line),
+            boxShadow: const [
+              BoxShadow(color: Colors.black38, blurRadius: 14),
+            ],
+          ),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Row(children: [
+              Icon(Icons.find_replace_rounded,
+                  size: 16, color: fg.withValues(alpha: 0.75)),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(provider.t('ss.findReplace'),
+                    style: TextStyle(
+                        color: fg, fontSize: 12.5, fontWeight: FontWeight.w700)),
+              ),
+              InkWell(
+                borderRadius: BorderRadius.circular(6),
+                onTap: _toggleFindPanel,
+                child: Padding(
+                  padding: const EdgeInsets.all(3),
+                  child: Icon(Icons.close_rounded,
+                      size: 17, color: fg.withValues(alpha: 0.6)),
+                ),
+              ),
+            ]),
+            const SizedBox(height: 6),
+            TextField(
+              controller: _findCtrl,
+              focusNode: _findFocus,
+              style: TextStyle(color: fg, fontSize: 12.5),
+              decoration: deco(provider.t('ss.findWhat')),
+              onSubmitted: (_) {
+                if (!_findNext()) {
+                  _sheetToast(provider.t('ss.findNone'), error: true);
+                }
+              },
+            ),
+            const SizedBox(height: 6),
+            TextField(
+              controller: _replaceCtrl,
+              style: TextStyle(color: fg, fontSize: 12.5),
+              decoration: deco(provider.t('ss.replaceWith')),
+            ),
+            const SizedBox(height: 6),
+            Row(children: [
+              chk(provider.t('ss.matchCase'), _findMatchCase,
+                  () => setState(() => _findMatchCase = !_findMatchCase)),
+              const SizedBox(width: 10),
+              chk(provider.t('ss.thisSheetOnly'), _findThisSheetOnly,
+                  () =>
+                      setState(() => _findThisSheetOnly = !_findThisSheetOnly)),
+            ]),
+            const SizedBox(height: 4),
+            Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+              TextButton(
+                style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 8)),
+                onPressed: () {
+                  if (!_findNext()) {
+                    _sheetToast(provider.t('ss.findNone'), error: true);
+                  }
+                },
+                child: Text(provider.t('ss.findNext'),
+                    style: const TextStyle(
+                        color: Color(0xFF4FC3F7), fontSize: 11.5)),
+              ),
+              TextButton(
+                style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 8)),
+                onPressed: () => _replaceOne(),
+                child: Text(provider.t('ss.replace'),
+                    style: const TextStyle(
+                        color: Color(0xFFFFB347), fontSize: 11.5)),
+              ),
+              TextButton(
+                style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 8)),
+                onPressed: () {
+                  final n = _replaceAll();
+                  _sheetToast(provider
+                      .t('ss.replacedN')
+                      .replaceFirst('{n}', '$n'));
+                },
+                child: Text(provider.t('ss.replaceAll'),
+                    style: const TextStyle(
+                        color: Color(0xFF43B97F), fontSize: 11.5)),
+              ),
+            ]),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  // ═══ 書式バー (= ユーザー要望) ═══════════════════════════════════════
+
+  /// 色を選ぶ時に出す見本。 最後の 1 つは「無し」 (= 指定を消す)。
+  static const List<int> _kSsPalette = <int>[
+    0xFFFFFF, 0xF2F2F2, 0xD9D9D9, 0xA6A6A6, 0x595959, 0x000000, //
+    0xFFC7CE, 0xFFEB9C, 0xC6EFCE, 0xBDD7EE, 0xD9D2E9, 0xFCE4D6, //
+    0xFF0000, 0xFF9900, 0xFFD966, 0x70AD47, 0x2E75B6, 0x7030A0, //
+  ];
+
+  /// 今選んでいる所 (範囲が無ければ 1 セル)。
+  ({int r1, int c1, int r2, int c2}) get _fmtTarget => _hasRange
+      ? _range
+      : (r1: _selRow, c1: _selCol, r2: _selRow, c2: _selCol);
+
+  /// 選んでいる所すべてに飾りを当てる。
+  void _applyFmtToSelection(void Function(_SsCellFmt f) apply) {
+    _pushUndo();
+    final rg = _fmtTarget;
+    setState(() {
+      final map = _fmts;
+      for (var r = rg.r1; r <= rg.r2; r++) {
+        for (var c = rg.c1; c <= rg.c2; c++) {
+          final k = _fmtKey(r, c);
+          final f = (map[k] ?? _SsCellFmt()).copy();
+          apply(f);
+          if (f.isEmpty) {
+            map.remove(k);
+          } else {
+            map[k] = f;
+          }
+          _markFmtDirty(r, c);
+        }
+      }
+      _dirty = true;
+    });
+  }
+
+  /// 今引く罫線の太さと色 (書式バーで選ぶ)。
+  String _borderStyle = 'thin';
+  int? _borderColor;
+
+  /// 罫線のボタンで選ばれた物を当てる。
+  Future<void> _applyBorderPreset(String v) async {
+    final provider = context.read<MindMapProvider>();
+    if (v.startsWith('w:')) {
+      setState(() => _borderStyle = v.substring(2));
+      return;
+    }
+    if (v == 'color') {
+      final col = await _pickSsColor(provider.t('ss.borderColor'));
+      if (col == null) return;
+      setState(() => _borderColor = col < 0 ? null : col);
+      return;
+    }
+    final rg = _fmtTarget;
+    final side = _SsBorderSide(_borderStyle, _borderColor);
+    _pushUndo();
+    setState(() {
+      final map = _fmts;
+      for (var r = rg.r1; r <= rg.r2; r++) {
+        for (var c = rg.c1; c <= rg.c2; c++) {
+          final k = _fmtKey(r, c);
+          final f = (map[k] ?? _SsCellFmt()).copy();
+          switch (v) {
+            case 'none':
+              f.bLeft = null;
+              f.bRight = null;
+              f.bTop = null;
+              f.bBottom = null;
+              break;
+            case 'all':
+              f.bLeft = side;
+              f.bRight = side;
+              f.bTop = side;
+              f.bBottom = side;
+              break;
+            case 'outline':
+              // 選んだ範囲の外側だけに引く。
+              if (c == rg.c1) f.bLeft = side;
+              if (c == rg.c2) f.bRight = side;
+              if (r == rg.r1) f.bTop = side;
+              if (r == rg.r2) f.bBottom = side;
+              break;
+            case 'top':
+              f.bTop = side;
+              break;
+            case 'bottom':
+              f.bBottom = side;
+              break;
+            case 'left':
+              f.bLeft = side;
+              break;
+            case 'right':
+              f.bRight = side;
+              break;
+          }
+          if (f.isEmpty) {
+            map.remove(k);
+          } else {
+            map[k] = f;
+          }
+          (_fmtDirty[_activeSheet] ??= <String>{}).add(k);
+        }
+      }
+      _dirty = true;
+    });
+  }
+
+  /// 選んでいる所の飾りを全部消す。
+  void _clearFmtOnSelection() {
+    _pushUndo();
+    final rg = _fmtTarget;
+    setState(() {
+      final map = _fmts;
+      for (var r = rg.r1; r <= rg.r2; r++) {
+        for (var c = rg.c1; c <= rg.c2; c++) {
+          map.remove(_fmtKey(r, c));
+          _markFmtDirty(r, c);
+        }
+      }
+      _dirty = true;
+    });
+  }
+
+  /// 今のセルの飾り (見た目の ON/OFF を出すのに使う)。
+  _SsCellFmt get _curFmt => _fmtAt(_selRow, _selCol) ?? _SsCellFmt();
+
+  /// 選んだ範囲を 1 つのセルにする。
+  void _mergeSelection() {
+    final rg = _fmtTarget;
+    if (rg.r1 == rg.r2 && rg.c1 == rg.c2) {
+      _sheetToast(context.read<MindMapProvider>().t('ss.mergeNeedRange'),
+          error: true);
+      return;
+    }
+    _pushUndo();
+    setState(() {
+      final m = _SsMerge(rg.r1, rg.c1, rg.r2, rg.c2);
+      // 重なっている結合は先に外す (= 入れ子にはしない)。
+      _merges.removeWhere((o) => o.overlaps(m));
+      _merges.add(m);
+      // 左上以外の中身は消す (Excel と同じ振る舞い)。
+      for (var r = rg.r1; r <= rg.r2; r++) {
+        if (r >= _rows.length) break;
+        for (var c = rg.c1; c <= rg.c2; c++) {
+          if (r == rg.r1 && c == rg.c1) continue;
+          if (c < _rows[r].length) _rows[r][c] = '';
+        }
+      }
+      _selRow = rg.r1;
+      _selCol = rg.c1;
+      _rangeAnchorRow = null;
+      _rangeAnchorCol = null;
+      _dirty = true;
+      _invalidateFormulaCache();
+    });
+  }
+
+  /// 選んだ所に掛かっている結合を外す。
+  void _unmergeSelection() {
+    final rg = _fmtTarget;
+    final target = _SsMerge(rg.r1, rg.c1, rg.r2, rg.c2);
+    final list = _sheetMerges[_activeSheet];
+    if (list == null || !list.any((m) => m.overlaps(target))) {
+      _sheetToast(context.read<MindMapProvider>().t('ss.unmergeNone'),
+          error: true);
+      return;
+    }
+    _pushUndo();
+    setState(() {
+      list.removeWhere((m) => m.overlaps(target));
+      _dirty = true;
+    });
+  }
+
+  /// 色を選ぶ小さな窓。 選ばれた色 (0xRRGGBB) か、 「無し」 の -1 を返す。
+  Future<int?> _pickSsColor(String title) async {
+    final provider = context.read<MindMapProvider>();
+    return showDialog<int>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF22222E),
+        title: Text(title,
+            style: const TextStyle(color: Colors.white, fontSize: 14)),
+        content: SizedBox(
+          width: 260,
+          child: Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              for (final col in _kSsPalette)
+                InkWell(
+                  onTap: () => Navigator.pop(dctx, col),
+                  child: Container(
+                    width: 28,
+                    height: 28,
+                    decoration: BoxDecoration(
+                      color: Color(0xFF000000 | col),
+                      border: Border.all(color: Colors.white30),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                  ),
+                ),
+              // 「無し」 = 指定を消す
+              InkWell(
+                onTap: () => Navigator.pop(dctx, -1),
+                child: Container(
+                  height: 28,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: Colors.white30),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Center(
+                    child: Text(provider.t('ss.fmtNone'),
+                        style: const TextStyle(
+                            color: Colors.white70, fontSize: 12)),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx),
+            child: Text(provider.t('common.cancel'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 書式バーの小さなボタン。
+  ///
+  /// ★ 明るい配色では白い字が下地に溶けて見えなくなる (= ユーザー報告:
+  ///   ヘッダーバーが白飛びしている)。 色は必ず [dark] から決める。
+  Widget _fmtBtn(
+      {required IconData icon,
+      required String tip,
+      required VoidCallback onTap,
+      required bool dark,
+      bool active = false,
+      Color? tint}) {
+    final base = dark ? Colors.white70 : const Color(0xFF3A3A46);
+    final onColor = dark ? const Color(0xFFB3AFFF) : const Color(0xFF4A42C8);
+    return Padding(
+      padding: const EdgeInsets.only(right: 2),
+      child: Tooltip(
+        message: tip,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(6),
+          onTap: onTap,
+          child: Container(
+            width: 30,
+            height: 30,
+            decoration: BoxDecoration(
+              color: active
+                  ? const Color(0xFF6C63FF)
+                      .withValues(alpha: dark ? 0.28 : 0.18)
+                  : Colors.transparent,
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Icon(icon,
+                size: 17, color: tint ?? (active ? onColor : base)),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFormatBar(bool dark, Color fg) {
+    final provider = context.read<MindMapProvider>();
+    final cur = _curFmt;
+    return Container(
+      height: 40,
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      decoration: BoxDecoration(
+        color: dark ? const Color(0xFF1C1C28) : const Color(0xFFEFEFEA),
+        border: Border(
+          bottom: BorderSide(color: dark ? Colors.white12 : Colors.black12),
+        ),
+      ),
+      // 幅が狭くても溢れないよう、 横に転がせるようにする。
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(children: [
+          _fmtBtn(
+            icon: Icons.format_bold_rounded,
+            tip: provider.t('ss.bold'),
+            dark: dark,
+            active: cur.bold,
+            onTap: () {
+              final v = !cur.bold;
+              _applyFmtToSelection((f) => f.bold = v);
+            },
+          ),
+          _fmtBtn(
+            icon: Icons.format_italic_rounded,
+            tip: provider.t('ss.italic'),
+            dark: dark,
+            active: cur.italic,
+            onTap: () {
+              final v = !cur.italic;
+              _applyFmtToSelection((f) => f.italic = v);
+            },
+          ),
+          _fmtBtn(
+            icon: Icons.format_underlined_rounded,
+            tip: provider.t('ss.underline'),
+            dark: dark,
+            active: cur.underline,
+            onTap: () {
+              final v = !cur.underline;
+              _applyFmtToSelection((f) => f.underline = v);
+            },
+          ),
+          const SizedBox(width: 6),
+          // ── 文字の大きさ ──
+          Tooltip(
+            message: provider.t('ss.fontSize'),
+            child: PopupMenuButton<double>(
+              tooltip: '',
+              color: const Color(0xFF22222E),
+              onSelected: (v) => _applyFmtToSelection(
+                  (f) => f.size = v <= 0 ? null : v),
+              itemBuilder: (_) => [
+                for (final v in const [
+                  9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 16.0, 18.0, 20.0, 24.0,
+                  28.0, 36.0
+                ])
+                  PopupMenuItem<double>(
+                    value: v,
+                    height: 34,
+                    child: Text('${v.round()}',
+                        style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            fontWeight: (cur.size ?? 13) == v
+                                ? FontWeight.w700
+                                : FontWeight.w400)),
+                  ),
+                PopupMenuItem<double>(
+                  value: 0,
+                  height: 34,
+                  child: Text(provider.t('ss.fmtNone'),
+                      style: const TextStyle(
+                          color: Colors.white54, fontSize: 12.5)),
+                ),
+              ],
+              child: Container(
+                height: 30,
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                decoration: BoxDecoration(
+                  border: Border.all(
+                      color: dark ? Colors.white24 : Colors.black26),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(Icons.format_size_rounded,
+                      size: 15,
+                      color:
+                          dark ? Colors.white70 : const Color(0xFF3A3A46)),
+                  const SizedBox(width: 4),
+                  Text('${(cur.size ?? 13).round()}',
+                      style: TextStyle(
+                          color: dark
+                              ? Colors.white70
+                              : const Color(0xFF3A3A46),
+                          fontSize: 12)),
+                ]),
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          // ── 文字色 / 背景色 ──
+          _fmtBtn(
+            icon: Icons.format_color_text_rounded,
+            tip: provider.t('ss.fontColor'),
+            dark: dark,
+            tint: cur.fg == null ? null : Color(0xFF000000 | cur.fg!),
+            onTap: () async {
+              final v = await _pickSsColor(provider.t('ss.fontColor'));
+              if (v == null) return;
+              _applyFmtToSelection((f) => f.fg = v < 0 ? null : v);
+            },
+          ),
+          _fmtBtn(
+            icon: Icons.format_color_fill_rounded,
+            tip: provider.t('ss.fillColor'),
+            dark: dark,
+            tint: cur.bg == null ? null : Color(0xFF000000 | cur.bg!),
+            onTap: () async {
+              final v = await _pickSsColor(provider.t('ss.fillColor'));
+              if (v == null) return;
+              _applyFmtToSelection((f) => f.bg = v < 0 ? null : v);
+            },
+          ),
+          // ── 罫線 (= ユーザー要望: セルの外枠) ──
+          Tooltip(
+            message: provider.t('ss.border'),
+            child: PopupMenuButton<String>(
+              tooltip: '',
+              color: const Color(0xFF22222E),
+              onSelected: _applyBorderPreset,
+              itemBuilder: (_) => [
+                for (final e in const [
+                  ('outline', Icons.border_outer_rounded, 'ss.borderOutline'),
+                  ('all', Icons.border_all_rounded, 'ss.borderAll'),
+                  ('top', Icons.border_top_rounded, 'ss.borderTop'),
+                  ('bottom', Icons.border_bottom_rounded, 'ss.borderBottom'),
+                  ('left', Icons.border_left_rounded, 'ss.borderLeft'),
+                  ('right', Icons.border_right_rounded, 'ss.borderRight'),
+                  ('none', Icons.border_clear_rounded, 'ss.borderNone'),
+                ])
+                  PopupMenuItem<String>(
+                    value: e.$1,
+                    height: 36,
+                    child: Row(children: [
+                      Icon(e.$2, size: 16, color: Colors.white70),
+                      const SizedBox(width: 8),
+                      Text(provider.t(e.$3),
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 12.5)),
+                    ]),
+                  ),
+                const PopupMenuDivider(),
+                for (final w in const [
+                  ('thin', 'ss.borderThin'),
+                  ('medium', 'ss.borderMedium'),
+                  ('thick', 'ss.borderThick'),
+                ])
+                  PopupMenuItem<String>(
+                    value: 'w:${w.$1}',
+                    height: 32,
+                    child: Row(children: [
+                      Icon(
+                          _borderStyle == w.$1
+                              ? Icons.radio_button_checked_rounded
+                              : Icons.radio_button_unchecked_rounded,
+                          size: 14,
+                          color: const Color(0xFF80CBC4)),
+                      const SizedBox(width: 8),
+                      Text(provider.t(w.$2),
+                          style: const TextStyle(
+                              color: Colors.white70, fontSize: 12)),
+                    ]),
+                  ),
+                PopupMenuItem<String>(
+                  value: 'color',
+                  height: 32,
+                  child: Row(children: [
+                    Icon(Icons.circle,
+                        size: 13,
+                        color: _borderColor == null
+                            ? Colors.white54
+                            : Color(0xFF000000 | _borderColor!)),
+                    const SizedBox(width: 8),
+                    Text(provider.t('ss.borderColor'),
+                        style: const TextStyle(
+                            color: Colors.white70, fontSize: 12)),
+                  ]),
+                ),
+              ],
+              child: SizedBox(
+                width: 30,
+                height: 30,
+                child: Icon(Icons.border_outer_rounded,
+                    size: 17,
+                    color:
+                        dark ? Colors.white70 : const Color(0xFF3A3A46)),
+              ),
+            ),
+          ),
+          _fmtBtn(
+            icon: Icons.format_clear_rounded,
+            tip: provider.t('ss.fmtClear'),
+            dark: dark,
+            onTap: _clearFmtOnSelection,
+          ),
+          const SizedBox(width: 6),
+          Container(
+              width: 1,
+              height: 20,
+              color: dark ? Colors.white12 : Colors.black12),
+          const SizedBox(width: 6),
+          // ── 結合 ──
+          _fmtBtn(
+            icon: Icons.call_merge_rounded,
+            tip: provider.t('ss.merge'),
+            dark: dark,
+            onTap: _mergeSelection,
+          ),
+          _fmtBtn(
+            icon: Icons.call_split_rounded,
+            tip: provider.t('ss.unmerge'),
+            dark: dark,
+            onTap: _unmergeSelection,
+          ),
+          const SizedBox(width: 6),
+          Container(
+              width: 1,
+              height: 20,
+              color: dark ? Colors.white12 : Colors.black12),
+          const SizedBox(width: 6),
+          // ── 探して置き換える ──
+          _fmtBtn(
+            icon: Icons.find_replace_rounded,
+            tip: provider.t('ss.findReplace'),
+            dark: dark,
+            onTap: _toggleFindPanel,
+          ),
+          const SizedBox(width: 6),
+          Container(
+              width: 1,
+              height: 20,
+              color: dark ? Colors.white12 : Colors.black12),
+          const SizedBox(width: 6),
+          // ── ヘッダーを隠す (= ユーザー要望: この段に付けて欲しい) ──
+          _fmtBtn(
+            icon: Icons.keyboard_double_arrow_up_rounded,
+            tip: provider.t('text.hideHeader'),
+            dark: dark,
+            onTap: () => setState(() => _headerVisible = false),
+          ),
+        ]),
+      ),
+    );
+  }
 
   Widget _buildHeader(bool dark, Color fg) {
     // ── 隠している時はファイル名・アイコンごと全て隠して細い帯だけ残す。
@@ -193727,14 +195909,31 @@ $csvText
                 : () => setState(() => _aiChatPanelOpen = !_aiChatPanelOpen),
           ),
           const SizedBox(width: 6),
-          TextButton.icon(
-            onPressed: _save,
-            icon: const Icon(Icons.save_rounded, size: 18),
-            label: Text(context.read<MindMapProvider>().t('btn.save')),
-            style: TextButton.styleFrom(
-              foregroundColor: Colors.white,
-              backgroundColor: const Color(0xFF6C63FF),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          // ── 上書き保存 (= ユーザー要望: 「保存」 と 「ダウンロード」 の
+          //    違いが紛らわしいので、 こちらは 「上書き保存」 と名乗る。
+          //    直した所が無い時は押せないようにして、 押す意味が無いことを
+          //    見た目で分かるようにする) ──
+          Tooltip(
+            message: _dirty
+                ? context.read<MindMapProvider>().t('doc.overwriteSaveTip')
+                : context.read<MindMapProvider>().t('doc.noChanges'),
+            child: TextButton.icon(
+              onPressed: _dirty ? _save : null,
+              icon: const Icon(Icons.save_rounded, size: 18),
+              label:
+                  Text(context.read<MindMapProvider>().t('doc.overwriteSave')),
+              style: TextButton.styleFrom(
+                foregroundColor: Colors.white,
+                backgroundColor: const Color(0xFF6C63FF),
+                // ★ 明るい配色では白い字が下地に溶ける (= ユーザー報告:
+                //   白飛び)。 押せない時の色も明暗で変える。
+                disabledForegroundColor:
+                    dark ? Colors.white38 : const Color(0xFF9A9AA6),
+                disabledBackgroundColor:
+                    dark ? Colors.white12 : const Color(0xFFD2D2CC),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              ),
             ),
           ),
           const SizedBox(width: 6),
@@ -193759,7 +195958,8 @@ $csvText
                   const Icon(Icons.table_chart_outlined,
                       size: 16, color: Color(0xFF2E7D32)),
                   const SizedBox(width: 8),
-                  Text('このまま保存', style: TextStyle(color: fg, fontSize: 13)),
+                  Text('xlsx として保存',
+                      style: TextStyle(color: fg, fontSize: 13)),
                 ]),
               ),
               PopupMenuItem(
@@ -193768,7 +195968,7 @@ $csvText
                   const Icon(Icons.view_list_outlined,
                       size: 16, color: Color(0xFF7B1FA2)),
                   const SizedBox(width: 8),
-                  Text('CSV として保存 (今のシート)',
+                  Text('CSV として保存 (現在のシートのみ)',
                       style: TextStyle(color: fg, fontSize: 13)),
                 ]),
               ),
@@ -193814,13 +196014,16 @@ $csvText
                 color: Color(0xFF82AAFF)),
             onPressed: () => unawaited(_showFormulaHelp()),
           ),
-          // ── ヘッダーを隠す (= ユーザー要望: 閉じるボタンの隣) ──
-          IconButton(
-            tooltip: context.read<MindMapProvider>().t('text.hideHeader'),
-            icon: Icon(Icons.keyboard_double_arrow_up_rounded,
-                color: fg.withValues(alpha: 0.7)),
-            onPressed: () => setState(() => _headerVisible = false),
-          ),
+          // ★ 「ヘッダーを隠す」 は書式バーの端へ移した (= ユーザー要望:
+          //   白飛びしている段に付けて欲しい)。 xlsx 以外は書式バーが
+          //   出ないので、 その時だけここに残す。
+          if (_kind != _SpreadsheetKind.xlsx)
+            IconButton(
+              tooltip: context.read<MindMapProvider>().t('text.hideHeader'),
+              icon: Icon(Icons.keyboard_double_arrow_up_rounded,
+                  color: fg.withValues(alpha: 0.7)),
+              onPressed: () => setState(() => _headerVisible = false),
+            ),
           // Builder で × ボタン自身の context を取り、 未保存確認をその
           // すぐ近くに出す (= ユーザー要望)。
           Builder(
@@ -194535,8 +196738,18 @@ $csvText
             },
           ),
           ...List.generate(_colCount, (c) {
+            // ── 結合したセル (= ユーザー要望: セルの結合) ──
+            //    左端の 1 個を「結合した幅」 で描き、 飲み込まれた側は
+            //    幅 0 にする。 行の合計幅は変わらないので、 列はずれない。
+            final mg = _mergeAt(r, c);
+            if (mg != null && c != mg.c1) return const SizedBox.shrink();
+            final span = mg == null ? 1 : (mg.c2 - mg.c1 + 1);
+            // 結合の中では、 中身と文字は左上の行にだけ出す。
+            final isMergeBody = mg != null && r != mg.r1;
             final editing = _editingRow == r && _editingCol == c;
-            final selected = _selRow == r && _selCol == c;
+            final selected = mg != null
+                ? mg.contains(_selRow, _selCol)
+                : _selRow == r && _selCol == c;
             // 数式セルは編集中以外は評価結果を表示
             final cellValue = editing ? _rows[r][c] : _displayValue(r, c);
             // 元の値が = で始まり、表示モード ON の時は数式マーカー
@@ -194547,7 +196760,9 @@ $csvText
             final rg = _hasRange
                 ? _range
                 : (r1: _selRow, c1: _selCol, r2: _selRow, c2: _selCol);
-            final isFillHandleCell = r == rg.r2 && c == rg.c2;
+            // 結合の中では取っ手を出さない (= 引っ張る先が定まらないため)。
+            final isFillHandleCell =
+                r == rg.r2 && c == rg.c2 && mg == null;
             // ドラッグ中に「ここまで入りますよ」 と示す枠。
             final inFillPreview = _fillToRow != null &&
                 _fillToCol != null &&
@@ -194557,11 +196772,16 @@ $csvText
                 c <= math.max(rg.c2, _fillToCol!) &&
                 (r > rg.r2 || c > rg.c2);
             return _SsDataCell(
-              width: _cellWidth,
+              width: _cellWidth * span,
               height: _cellHeight,
-              value: cellValue,
-              isFormula: isFormula,
-              editing: editing,
+              // 結合の 2 行目から下は、 文字を出さない (= 1 つのセルに見せる)。
+              value: isMergeBody ? '' : cellValue,
+              isFormula: isFormula && !isMergeBody,
+              // 飾りは結合の左上の物を使う (= 範囲全部が同じ見た目になる)。
+              fmt: mg == null ? _fmtAt(r, c) : _fmtAt(mg.r1, mg.c1),
+              hideTopBorder: mg != null && r != mg.r1,
+              hideBottomBorder: mg != null && r != mg.r2,
+              editing: editing && !isMergeBody,
               selected: selected,
               dark: dark,
               // オートフィル (= ユーザー要望)。
@@ -194618,14 +196838,18 @@ $csvText
                   });
                   return;
                 }
+                // 結合したセルは、 常に左上を選んで編集する
+                // (= 中身は左上にしか無いため)。
+                final tr = mg?.r1 ?? r;
+                final tc = mg?.c1 ?? c;
                 if (selected && !_hasRange) {
-                  _beginEdit(r, c);
+                  _beginEdit(tr, tc);
                 } else {
                   _commitEdit();
                   setState(() {
                     _resetRangeAnchor();
-                    _selRow = r;
-                    _selCol = c;
+                    _selRow = tr;
+                    _selCol = tc;
                   });
                 }
               },
@@ -194880,6 +197104,15 @@ class _SsDataCell extends StatelessWidget {
   final int? tableLine;
   final int? tableHeaderFont;
 
+  /// 手で付けた飾り (= ユーザー要望: 背景色・文字色・大きさ・太字・
+  /// 斜体・下線)。 null なら今までどおりの見た目。
+  final _SsCellFmt? fmt;
+
+  /// 結合したセルの内側なので、 上 / 下の線を引かない
+  /// (= 1 つの大きなセルに見せるため)。
+  final bool hideTopBorder;
+  final bool hideBottomBorder;
+
   const _SsDataCell({
     required this.width,
     required this.height,
@@ -194902,11 +197135,32 @@ class _SsDataCell extends StatelessWidget {
     this.tableFill,
     this.tableLine,
     this.tableHeaderFont,
+    this.fmt,
+    this.hideTopBorder = false,
+    this.hideBottomBorder = false,
     this.showFillHandle = false,
     this.inFillPreview = false,
     this.onFillDrag,
     this.onFillEnd,
   });
+
+  /// 1 辺の線を決める。 手で引いた罫線が最優先、 次に結合の内側 (線なし)、
+  /// 無ければふつうの升目の線。
+  BorderSide _side(_SsBorderSide? b, bool hidden) {
+    if (b != null) {
+      // 色の指定が無い罫線は「自動」。 暗い画面では黒だと見えないので、
+      // 地の色に合わせて明るくする。
+      final col = b.color != null
+          ? Color(0xFF000000 | b.color!)
+          : (dark ? Colors.white70 : const Color(0xFF16181D));
+      return BorderSide(color: col, width: b.width);
+    }
+    if (hidden) return BorderSide.none;
+    final grid = selected
+        ? const Color(0xFF6C63FF)
+        : (dark ? Colors.white10 : Colors.black12);
+    return BorderSide(color: grid, width: selected ? 1.5 : 0.5);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -194921,13 +197175,18 @@ class _SsDataCell extends StatelessWidget {
                 ? (dark
                     ? const Color(0xFF3A3A55).withValues(alpha: 0.30)
                     : const Color(0xFFD0D8FF).withValues(alpha: 0.35))
-                // 表の塗り (= ユーザー要望: 表の挿入)。
-                : tableFill != null
-                    ? Color(0xFF000000 | tableFill!)
-                    : (dark ? const Color(0xFF1A1A24) : Colors.white);
-    final fg = tableHeaderFont != null
-        ? Color(0xFF000000 | tableHeaderFont!)
-        : (dark ? Colors.white : const Color(0xFF1A1A24));
+                // 手で付けた背景色 (= ユーザー要望) が最優先。
+                : fmt?.bg != null
+                    ? Color(0xFF000000 | fmt!.bg!)
+                    // 表の塗り (= ユーザー要望: 表の挿入)。
+                    : tableFill != null
+                        ? Color(0xFF000000 | tableFill!)
+                        : (dark ? const Color(0xFF1A1A24) : Colors.white);
+    final fg = fmt?.fg != null
+        ? Color(0xFF000000 | fmt!.fg!)
+        : tableHeaderFont != null
+            ? Color(0xFF000000 | tableHeaderFont!)
+            : (dark ? Colors.white : const Color(0xFF1A1A24));
     final borderColor = selected
         ? const Color(0xFF6C63FF)
         : tableLine != null
@@ -194954,7 +197213,18 @@ class _SsDataCell extends StatelessWidget {
               ? Border.all(
                   color: const Color(0xFF6C63FF).withValues(alpha: 0.7),
                   width: 1)
-              : Border.all(color: borderColor, width: selected ? 1.5 : 0.5),
+              // 手で引いた罫線 / 結合の内側 / ふつうの升目 の順で決める。
+              : (fmt?.hasBorder ?? false) ||
+                      hideTopBorder ||
+                      hideBottomBorder
+                  ? Border(
+                      left: _side(fmt?.bLeft, false),
+                      right: _side(fmt?.bRight, false),
+                      top: _side(fmt?.bTop, hideTopBorder),
+                      bottom: _side(fmt?.bBottom, hideBottomBorder),
+                    )
+                  : Border.all(
+                      color: borderColor, width: selected ? 1.5 : 0.5),
         ),
         padding: const EdgeInsets.symmetric(horizontal: 6),
         alignment: Alignment.centerLeft,
@@ -194978,7 +197248,7 @@ class _SsDataCell extends StatelessWidget {
                   controller: controller,
                   focusNode: focusNode,
                   autofocus: true,
-                  style: TextStyle(color: fg, fontSize: 13),
+                  style: TextStyle(color: fg, fontSize: fmt?.size ?? 13),
                   decoration: const InputDecoration(
                     border: InputBorder.none,
                     isDense: true,
@@ -194994,8 +197264,17 @@ class _SsDataCell extends StatelessWidget {
                           ? const Color(0xFF82AAFF)
                           : const Color(0xFF1565C0))
                       : fg,
-                  fontSize: 13,
-                  fontStyle: isFormula ? FontStyle.italic : FontStyle.normal,
+                  // 手で決めた大きさ / 太さ / 傾き / 下線 (= ユーザー要望)。
+                  fontSize: fmt?.size ?? 13,
+                  fontWeight:
+                      (fmt?.bold ?? false) ? FontWeight.w700 : FontWeight.w400,
+                  fontStyle: (fmt?.italic ?? false)
+                      ? FontStyle.italic
+                      : (isFormula ? FontStyle.italic : FontStyle.normal),
+                  decoration: (fmt?.underline ?? false)
+                      ? TextDecoration.underline
+                      : TextDecoration.none,
+                  decorationColor: fg,
                 ),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis),
@@ -210742,7 +213021,8 @@ $currentText
                   Icon(_languageIcon(_language),
                       size: 16, color: _languageColor(_language)),
                   const SizedBox(width: 8),
-                  Text('このまま保存', style: TextStyle(color: fg, fontSize: 13)),
+                  Text('この形式のまま保存',
+                      style: TextStyle(color: fg, fontSize: 13)),
                 ]),
               ),
               PopupMenuItem(

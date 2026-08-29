@@ -27129,29 +27129,33 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Memorandos de PDF / site / nó',
       'ru': 'Заметки PDF / сайтов / узлов',
     },
+    // ★ 中身は「アプリ内ブラウザの Cookie を消す」 だけで、 Google
+    //   アカウントからは抜けない。 「ログアウト」 だと Google から
+    //   抜けたい人が押してしまうので、 何をする物かをそのまま名前にする
+    //   (= ユーザー要望: 紛らわしくないように)。
     'menu.logout': {
-      'ja': 'ログアウト',
-      'en': 'Log out',
-      'zh': '退出登录',
-      'ko': '로그아웃',
-      'es': 'Cerrar sesión',
-      'fr': 'Déconnexion',
-      'de': 'Abmelden',
-      'pt': 'Sair',
-      'ru': 'Выйти',
-      'fa': 'خروج از حساب',
+      'ja': 'ブラウザの Cookie を消去',
+      'en': 'Clear browser cookies',
+      'zh': '清除浏览器 Cookie',
+      'ko': '브라우저 쿠키 삭제',
+      'es': 'Borrar cookies del navegador',
+      'fr': 'Effacer les cookies du navigateur',
+      'de': 'Browser-Cookies löschen',
+      'pt': 'Limpar cookies do navegador',
+      'ru': 'Очистить cookie браузера',
+      'fa': 'پاک کردن کوکی مرورگر',
     },
     'menu.logoutSub': {
-      'ja': 'Cookie を消去',
-      'en': 'Clear cookies',
-      'zh': '清除 Cookie',
-      'ko': '쿠키 삭제',
-      'es': 'Borrar cookies',
-      'fr': 'Effacer les cookies',
-      'de': 'Cookies löschen',
-      'pt': 'Limpar cookies',
-      'ru': 'Очистить cookie',
-      'fa': 'پاک کردن کوکی‌ها',
+      'ja': 'サイトのログイン状態を消します (Google はそのまま)',
+      'en': 'Signs you out of websites (not your Google account)',
+      'zh': '退出网站登录 (不影响 Google 账号)',
+      'ko': '웹사이트 로그인만 해제 (Google 계정은 유지)',
+      'es': 'Cierra sesión en sitios web (no en tu cuenta de Google)',
+      'fr': 'Vous déconnecte des sites (pas de votre compte Google)',
+      'de': 'Meldet dich von Webseiten ab (nicht vom Google-Konto)',
+      'pt': 'Sai dos sites (não da sua conta Google)',
+      'ru': 'Выход с сайтов (аккаунт Google остаётся)',
+      'fa': 'خروج از وب‌سایت‌ها',
     },
     'menu.logoutSwitchAccount': {
       'ja': 'ログアウト / 別アカウントでログイン',
@@ -39319,6 +39323,23 @@ class MindMapProvider extends ChangeNotifier {
     // ── ファイルを作る手順 (= ユーザー要望: 作ってそのまま渡せるように) ──
     // ── マークダウンページのスクロール幅 (= ユーザー要望) ──
     // ── 設定とキーの割り当ての持ち運び (= ユーザー要望) ──
+    // ── クーポンを外して無料プランに戻る (= ユーザー要望) ──
+    'usage.couponRemove': {
+      'ja': 'クーポンを外して無料プランに戻る',
+      'en': 'Remove the coupon and go back to Free',
+    },
+    'usage.couponRemoveConfirm': {
+      'ja': 'このクーポンを外して、 無料プランに戻ります。'
+            '\n\n同じコードがまだ生きていれば、 いつでも入れ直せます。'
+            '買っている定期購入には触れません。',
+      'en': 'This removes the coupon and puts you back on the free plan.'
+          '\n\nYou can enter the same code again while it is still valid. '
+          'Your paid subscription is not affected.',
+    },
+    'usage.couponRemoved': {
+      'ja': 'クーポンを外しました',
+      'en': 'Removed the coupon',
+    },
     'sync.settingsTitle': {
       'ja': '設定とキーの割り当て',
       'en': 'Settings and key bindings',
@@ -39354,6 +39375,197 @@ class MindMapProvider extends ChangeNotifier {
     'sync.settingsFailed': {
       'ja': '設定のやり取りに失敗しました',
       'en': 'Could not sync the settings',
+    },
+    // ── 表計算の書式 / 検索置換 (= ユーザー要望) ──
+    // ── 支払いが通った時の知らせ (= ユーザー要望) ──
+    // ── 決済の前にログイン (= ユーザー要望) ──
+    // ── 同時に使える台数 (= ユーザー要望) ──
+    'dev.tooManyTitle': {
+      'ja': 'ログイン中の端末が多すぎます',
+      'en': 'Too many devices signed in',
+      'zh': '登录的设备过多',
+      'ko': '로그인된 기기가 너무 많습니다',
+      'es': 'Demasiados dispositivos conectados',
+      'fr': 'Trop d\'appareils connect\u00e9s',
+      'de': 'Zu viele angemeldete Ger\u00e4te',
+      'pt': 'Muitos aparelhos conectados',
+      'ru': '\u0421\u043b\u0438\u0448\u043a\u043e\u043c \u043c\u043d\u043e\u0433\u043e \u0443\u0441\u0442\u0440\u043e\u0439\u0441\u0442\u0432',
+    },
+    'dev.tooManyBody': {
+      'ja': '同じアカウントで使えるのは {max} 台までです。'
+            '今は {n} 台でログインしています。'
+            '\nどれかを選んで降ろしてください。',
+      'en': 'You can use {max} devices on one account. '
+          '{n} are signed in now.\nPick one to sign out.',
+      'zh': '一个账号最多 {max} 台设备，目前有 {n} 台。'
+          '\n请选一台退出。',
+      'ko': '한 계정은 {max}대까지 쓸 수 있습니다. 지금 {n}대입니다.'
+          '\n하나를 골라 로그아웃해 주세요.',
+      'es': 'Puedes usar {max} dispositivos por cuenta. Ahora hay {n}.'
+          '\nElige uno para cerrar sesi\u00f3n.',
+      'fr': 'Vous pouvez utiliser {max} appareils par compte. Il y en a {n}.'
+          '\nChoisissez-en un \u00e0 d\u00e9connecter.',
+      'de': 'Pro Konto sind {max} Ger\u00e4te m\u00f6glich. Aktuell sind es {n}.'
+          '\nW\u00e4hle eins zum Abmelden.',
+      'pt': 'S\u00e3o {max} aparelhos por conta. Agora h\u00e1 {n}.'
+          '\nEscolha um para sair.',
+      'ru': '\u041d\u0430 \u0430\u043a\u043a\u0430\u0443\u043d\u0442 \u2014 {max} \u0443\u0441\u0442\u0440\u043e\u0439\u0441\u0442\u0432\u0430. \u0421\u0435\u0439\u0447\u0430\u0441 {n}.'
+          '\n\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u043e\u0434\u043d\u043e \u0434\u043b\u044f \u0432\u044b\u0445\u043e\u0434\u0430.',
+    },
+    'dev.signOutThis': {
+      'ja': '降ろす',
+      'en': 'Sign out',
+      'zh': '退出',
+      'ko': '로그아웃',
+      'es': 'Cerrar sesi\u00f3n',
+      'fr': 'D\u00e9connecter',
+      'de': 'Abmelden',
+      'pt': 'Sair',
+      'ru': '\u0412\u044b\u0439\u0442\u0438',
+    },
+    'dev.thisOne': {
+      'ja': 'この端末',
+      'en': 'this device',
+      'zh': '本机',
+      'ko': '이 기기',
+      'es': 'este',
+      'fr': 'cet appareil',
+      'de': 'dieses Ger\u00e4t',
+      'pt': 'este',
+      'ru': '\u044d\u0442\u043e \u0443\u0441\u0442\u0440\u043e\u0439\u0441\u0442\u0432\u043e',
+    },
+    'dev.kicked': {
+      'ja': '他の端末からこの端末が降ろされたので、 ログアウトしました',
+      'en': 'Another device signed this one out, so you have been logged out',
+    },
+    'paywall.signInFirstTitle': {
+      'ja': '先に Google でログインしてください',
+      'en': 'Sign in with Google first',
+      'zh': '请先用 Google 登录',
+      'ko': '먼저 Google로 로그인해 주세요',
+      'es': 'Inicia sesi\u00f3n con Google primero',
+      'fr': 'Connectez-vous d\'abord avec Google',
+      'de': 'Melde dich zuerst mit Google an',
+      'pt': 'Entre com o Google primeiro',
+      'ru': '\u0421\u043d\u0430\u0447\u0430\u043b\u0430 \u0432\u043e\u0439\u0434\u0438\u0442\u0435 \u0447\u0435\u0440\u0435\u0437 Google',
+    },
+    'paywall.signInFirstBody': {
+      'ja': 'お支払いには Google へのログインが必要です。'
+            '同じアカウントのどの端末でも同じプランが使えます。',
+      'en': 'Signing in with Google is required to buy. '
+          'Your plan then works on every device on that account.',
+      'zh': '购买需要登录 Google。登录后，同一账号的所有设备都可使用。',
+      'ko': '구매하려면 Google 로그인이 필요합니다. 같은 계정의 '
+          '모든 기기에서 쓸 수 있습니다.',
+      'es': 'Para comprar necesitas iniciar sesi\u00f3n con Google. '
+          'As\u00ed el plan funciona en todos tus dispositivos.',
+      'fr': 'La connexion Google est requise pour acheter. '
+          'L\'offre fonctionne alors sur tous vos appareils.',
+      'de': 'Zum Kauf ist die Google-Anmeldung n\u00f6tig. '
+          'Der Tarif gilt dann auf allen deinen Ger\u00e4ten.',
+      'pt': 'Para comprar \u00e9 preciso entrar com o Google. '
+          'O plano vale em todos os seus aparelhos.',
+      'ru': '\u0414\u043b\u044f \u043f\u043e\u043a\u0443\u043f\u043a\u0438 \u043d\u0443\u0436\u0435\u043d \u0432\u0445\u043e\u0434 \u0447\u0435\u0440\u0435\u0437 Google. '
+          '\u0422\u0430\u0440\u0438\u0444 \u0431\u0443\u0434\u0435\u0442 \u0440\u0430\u0431\u043e\u0442\u0430\u0442\u044c \u043d\u0430 \u0432\u0441\u0435\u0445 \u0443\u0441\u0442\u0440\u043e\u0439\u0441\u0442\u0432\u0430\u0445.',
+    },
+    'paywall.signInAndBuy': {
+      'ja': 'Google でログイン',
+      'en': 'Sign in with Google',
+      'zh': '登录并继续',
+      'ko': '로그인하고 계속',
+      'es': 'Iniciar sesi\u00f3n y seguir',
+      'fr': 'Se connecter et continuer',
+      'de': 'Anmelden und fortfahren',
+      'pt': 'Entrar e continuar',
+      'ru': '\u0412\u043e\u0439\u0442\u0438 \u0438 \u043f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u044c',
+    },
+    'paywall.signInNeeded': {
+      'ja': 'ログインできなかったので、 決済は見合わせました',
+      'en': 'Could not sign in, so the purchase was not started',
+    },
+    'plan.activatedTitle': {
+      'ja': '{plan} プランが適用されました',
+      'en': 'Your {plan} plan is now active',
+      'zh': '{plan} 套餐已生效',
+      'ko': '{plan} 요금제가 적용되었습니다',
+      'es': 'Tu plan {plan} ya est\u00e1 activo',
+      'fr': 'Votre offre {plan} est activ\u00e9e',
+      'de': 'Dein {plan}-Tarif ist jetzt aktiv',
+      'pt': 'Seu plano {plan} est\u00e1 ativo',
+      'ru': '\u0422\u0430\u0440\u0438\u0444 {plan} \u0430\u043a\u0442\u0438\u0432\u0438\u0440\u043e\u0432\u0430\u043d',
+    },
+    'plan.activatedBody': {
+      'ja': 'お支払いを確認しました。 {plan} の機能がすぐに使えます。',
+      'en': 'Your payment went through. All {plan} features are ready to use.',
+      'zh': '付款已完成，{plan} 的功能现在可以使用。',
+      'ko': '결제가 확인되었습니다. {plan} 기능을 바로 사용할 수 있습니다.',
+      'es': 'Hemos recibido tu pago. Ya puedes usar todo lo de {plan}.',
+      'fr': 'Votre paiement est confirm\u00e9. Toutes les fonctions {plan} sont disponibles.',
+      'de': 'Deine Zahlung ist eingegangen. Alle {plan}-Funktionen stehen bereit.',
+      'pt': 'Recebemos seu pagamento. Todos os recursos {plan} j\u00e1 est\u00e3o liberados.',
+      'ru': '\u041e\u043f\u043b\u0430\u0442\u0430 \u043f\u043e\u043b\u0443\u0447\u0435\u043d\u0430. \u0424\u0443\u043d\u043a\u0446\u0438\u0438 {plan} \u0443\u0436\u0435 \u0434\u043e\u0441\u0442\u0443\u043f\u043d\u044b.',
+    },
+    'plan.activatedSeeUsage': {
+      'ja': 'プランを見る',
+      'en': 'View plan',
+      'zh': '查看套餐',
+      'ko': '요금제 보기',
+      'es': 'Ver plan',
+      'fr': 'Voir l\'offre',
+      'de': 'Tarif ansehen',
+      'pt': 'Ver plano',
+      'ru': '\u041f\u043e\u0441\u043c\u043e\u0442\u0440\u0435\u0442\u044c \u0442\u0430\u0440\u0438\u0444',
+    },
+    'ss.bold': {'ja': '太字', 'en': 'Bold'},
+    'ss.italic': {'ja': '斜体', 'en': 'Italic'},
+    'ss.underline': {'ja': '下線', 'en': 'Underline'},
+    'ss.fontSize': {'ja': '文字の大きさ', 'en': 'Font size'},
+    'ss.fontColor': {'ja': '文字色', 'en': 'Text colour'},
+    'ss.fillColor': {'ja': '背景色', 'en': 'Fill colour'},
+    'ss.fmtNone': {'ja': '指定なし', 'en': 'None'},
+    // ── 罫線 (= ユーザー要望: セルの外枠) ──
+    'ss.border': {'ja': '罫線', 'en': 'Borders'},
+    'ss.borderOutline': {'ja': '外枠', 'en': 'Outline'},
+    'ss.borderAll': {'ja': '格子 (全ての線)', 'en': 'All borders'},
+    'ss.borderTop': {'ja': '上の線', 'en': 'Top'},
+    'ss.borderBottom': {'ja': '下の線', 'en': 'Bottom'},
+    'ss.borderLeft': {'ja': '左の線', 'en': 'Left'},
+    'ss.borderRight': {'ja': '右の線', 'en': 'Right'},
+    'ss.borderNone': {'ja': '線を消す', 'en': 'No border'},
+    'ss.borderThin': {'ja': '細い', 'en': 'Thin'},
+    'ss.borderMedium': {'ja': '普通', 'en': 'Medium'},
+    'ss.borderThick': {'ja': '太い', 'en': 'Thick'},
+    'ss.borderColor': {'ja': '線の色', 'en': 'Line colour'},
+    'ss.fmtClear': {'ja': '飾りを消す', 'en': 'Clear formatting'},
+    'ss.merge': {'ja': 'セルを結合', 'en': 'Merge cells'},
+    'ss.unmerge': {'ja': '結合を解除', 'en': 'Unmerge'},
+    'ss.mergeNeedRange': {
+      'ja': '結合する範囲を選んでください',
+      'en': 'Select a range to merge',
+    },
+    'ss.unmergeNone': {
+      'ja': 'ここには結合されたセルがありません',
+      'en': 'There are no merged cells here',
+    },
+    'ss.findReplace': {'ja': '探して置き換える', 'en': 'Find & replace'},
+    'ss.findWhat': {'ja': '探す文字', 'en': 'Find what'},
+    'ss.replaceWith': {'ja': '置き換える文字', 'en': 'Replace with'},
+    'ss.matchCase': {'ja': '大文字と小文字を区別', 'en': 'Match case'},
+    'ss.thisSheetOnly': {'ja': 'このシートだけ', 'en': 'This sheet only'},
+    'ss.findNext': {'ja': '次を探す', 'en': 'Find next'},
+    'ss.replace': {'ja': '置き換える', 'en': 'Replace'},
+    'ss.replaceAll': {'ja': 'すべて置き換える', 'en': 'Replace all'},
+    'ss.findNone': {'ja': '見付かりませんでした', 'en': 'Not found'},
+    'ss.replacedN': {'ja': '{n} か所置き換えました', 'en': 'Replaced {n}'},
+    // ── 上書き保存 (= ユーザー要望: ダウンロードと紛らわしい) ──
+    'doc.overwriteSave': {'ja': '上書き保存', 'en': 'Save (overwrite)'},
+    'doc.overwriteSaveTip': {
+      'ja': '今開いているファイルにそのまま上書きします (Ctrl+S)',
+      'en': 'Overwrites the file you have open (Ctrl+S)',
+    },
+    'doc.noChanges': {
+      'ja': '直した所がありません',
+      'en': 'Nothing has changed',
     },
     'md.scrollStep': {
       'ja': 'スクロール幅',
@@ -63992,6 +64204,16 @@ class MindMapProvider extends ChangeNotifier {
 
   /// billing_service からの文字列 ('free'/'pro'/'max') を受けるブリッジ。
   /// BillingService.onPlanChanged に渡している。
+  /// 支払いが通って有料プランになった直後だけ、 その種類が入る
+  /// (= ユーザー要望: アプリ側でも 「契約したプランが適用されました」 と
+  /// 出るように)。 画面が知らせを出したら [clearPlanActivated] で下ろす。
+  SubscriptionPlan? _planJustActivated;
+  SubscriptionPlan? get planJustActivated => _planJustActivated;
+
+  void clearPlanActivated() {
+    _planJustActivated = null;
+  }
+
   void applyBillingPlanByName(String name) {
     if (_disposed) return;
     final plan = SubscriptionPlan.values.firstWhere(
@@ -64008,6 +64230,10 @@ class MindMapProvider extends ChangeNotifier {
   Future<void> applyBillingPlan(SubscriptionPlan plan) async {
     final nextPro = plan != SubscriptionPlan.free;
     if (_purchasedPlan == plan && _proSubscribed == nextPro) return;
+    // ★ 無料 / 別のプランから有料に変わった時だけ知らせる
+    //   (= ユーザー要望: 支払いが済んだらアプリでも分かるように)。
+    //   起動直後の読み直しでは鳴らないよう、 実際に変わった時だけ。
+    if (nextPro && _purchasedPlan != plan) _planJustActivated = plan;
     _purchasedPlan = plan;
     _proSubscribed = nextPro;
     if (!nextPro) {
@@ -64537,6 +64763,25 @@ class MindMapProvider extends ChangeNotifier {
     await prefs.remove('coupon_expiry_ms');
     await prefs.remove('coupon_plan');
     notifyListeners();
+  }
+
+  /// クーポンを外して無料プランに戻す。
+  ///
+  /// = ユーザー要望「クーポンコード無期限からそのプランに入ると、 その
+  ///   Google アカウントにログインしている状態で Free に戻れないのでは。
+  ///   クーポンから入った場合は Free に戻れるようにして欲しい」。
+  ///
+  /// 期限の無いクーポンは [hasActiveCoupon] がずっと true のままなので、
+  /// [currentPlan] が常にクーポンのプランを返し、 自分では降りられなかった。
+  ///
+  /// 実際に買った定期購入 ([purchasedPlan]) には触らない。 消すのはクーポンの
+  /// 分だけなので、 買っている人はそのままのプランで残る。
+  Future<void> removeCoupon() async {
+    if (_appliedCouponCode == null) return;
+    await _clearCoupon();
+    // 控えの couponCode も空で書き直す (別の端末に残らないように)。
+    // ignore: discarded_futures
+    _syncPlanToUserDoc();
   }
 
   /// クーポンコードを適用する。
@@ -71976,6 +72221,174 @@ $cleanQ
 
   /// Google アカウントでログインし直す。 成功したらメールアドレスを返す。
   /// 利用者が途中でやめた場合は null。
+  // ═══ 同時にログインできる台数 (= ユーザー要望) ═══════════════════════
+  //
+  // = ユーザー要望「一度に 4 端末以上 同じアカウントでログインしている場合は、
+  //   どれかの端末からログアウトが求められるようにして欲しい」。
+  //
+  // 置き場は users/{uid} の devicesJson (新しいコレクションは規則で弾かれる
+  // ため、 既に書けている users/{uid} の欄に持たせる)。
+
+  /// 同時に使える台数。 これを超えると、 どれかを降ろしてもらう。
+  static const int kMaxDevices = 3;
+
+  /// この端末を見分ける印 (prefs に持つ。 消すまで変わらない)。
+  String? _loginDeviceId;
+
+  /// クラウドに載っている端末の一覧 (新しい順)。
+  List<Map<String, dynamic>> _knownDevices = const [];
+  List<Map<String, dynamic>> get knownDevices => _knownDevices;
+
+  /// 4 台以上になっていて、 どれかを降ろしてもらう必要があるか。
+  bool get needsDeviceLogout => _knownDevices.length > kMaxDevices;
+
+  String get deviceId => _loginDeviceId ?? '';
+
+  Future<String> _ensureDeviceId() async {
+    if (_loginDeviceId != null) return _loginDeviceId!;
+    final prefs = await _prefsWithRetry();
+    var id = prefs.getString('device_id_v1');
+    if (id == null || id.isEmpty) {
+      id = const Uuid().v4();
+      await prefs.setString('device_id_v1', id);
+    }
+    _loginDeviceId = id;
+    return id;
+  }
+
+  /// この端末に付ける名前 (どれを降ろすか選ぶ時の目印)。
+  String get _thisDeviceName {
+    if (kIsWeb) return 'Web';
+    if (Platform.isWindows) return 'Windows';
+    if (Platform.isAndroid) return 'Android';
+    if (Platform.isMacOS) return 'Mac';
+    if (Platform.isIOS) return 'iPhone / iPad';
+    if (Platform.isLinux) return 'Linux';
+    return 'この端末';
+  }
+
+  /// クラウドの端末一覧を読む。
+  Future<List<Map<String, dynamic>>> _fetchDevices() async {
+    if (!_firebaseEnabled) return const [];
+    await _ensureFreshToken();
+    if (_idToken == null || _uid == null) return const [];
+    final res = await http.get(
+      Uri.parse('$_firestoreBaseUrl/users/$_uid'),
+      headers: {'Authorization': 'Bearer $_idToken'},
+    );
+    if (res.statusCode != 200) return const [];
+    final doc = jsonDecode(utf8.decode(res.bodyBytes));
+    final fields = (doc is Map ? doc['fields'] : null);
+    if (fields is! Map) return const [];
+    final raw = fields['devicesJson']?['stringValue'] as String?;
+    if (raw == null || raw.trim().isEmpty) return const [];
+    final list = jsonDecode(raw);
+    if (list is! List) return const [];
+    return [
+      for (final e in list)
+        if (e is Map) Map<String, dynamic>.from(e),
+    ];
+  }
+
+  Future<void> _putDevices(List<Map<String, dynamic>> list) async {
+    if (!_firebaseEnabled) return;
+    await _ensureFreshToken();
+    if (_idToken == null || _uid == null) return;
+    await http.patch(
+      Uri.parse('$_firestoreBaseUrl/users/$_uid'
+          '?updateMask.fieldPaths=devicesJson'),
+      headers: {
+        'Authorization': 'Bearer $_idToken',
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode({
+        'fields': {
+          'devicesJson': {'stringValue': jsonEncode(list)},
+        }
+      }),
+    );
+  }
+
+  /// この端末を一覧に登録し、 台数を数え直す。
+  ///
+  /// Google でログインしている時だけ意味がある (名無しの id は端末ごとに
+  /// 別なので、 数えても仕方がない)。
+  Future<void> registerThisDevice() async {
+    if (!_googleSignedIn || !_firebaseEnabled) return;
+    try {
+      final id = await _ensureDeviceId();
+      final list = List<Map<String, dynamic>>.from(await _fetchDevices());
+      final now = DateTime.now().toUtc().toIso8601String();
+      final at = list.indexWhere((e) => '${e['id']}' == id);
+      if (at >= 0) {
+        list[at] = {...list[at], 'name': _thisDeviceName, 'lastSeen': now};
+      } else {
+        list.add({'id': id, 'name': _thisDeviceName, 'lastSeen': now});
+      }
+      // 新しい順に並べる (降ろす相手を選びやすいように)。
+      list.sort((a, b) =>
+          '${b['lastSeen']}'.compareTo('${a['lastSeen']}'));
+      _knownDevices = list;
+      await _putDevices(list);
+      notifyListeners();
+    } catch (e) {
+      debugPrint('端末の登録に失敗: $e');
+    }
+  }
+
+  /// 一覧を読み直す (画面を開いた時など)。
+  Future<void> refreshDevices() async {
+    if (!_googleSignedIn) return;
+    try {
+      final list = List<Map<String, dynamic>>.from(await _fetchDevices());
+      list.sort((a, b) => '${b['lastSeen']}'.compareTo('${a['lastSeen']}'));
+      _knownDevices = list;
+      notifyListeners();
+    } catch (e) {
+      debugPrint('端末一覧の読み込みに失敗: $e');
+    }
+  }
+
+  /// 選ばれた端末を一覧から外す (= その端末はログアウト扱いになる)。
+  ///
+  /// 自分自身を選んだ時は、 この端末のログアウトも行う。
+  Future<void> logoutDevice(String id) async {
+    try {
+      final list = List<Map<String, dynamic>>.from(_knownDevices)
+        ..removeWhere((e) => '${e['id']}' == id);
+      _knownDevices = list;
+      await _putDevices(list);
+      notifyListeners();
+      if (id == _loginDeviceId) {
+        await signOutGoogle();
+      }
+    } catch (e) {
+      debugPrint('端末のログアウトに失敗: $e');
+    }
+  }
+
+  /// この端末が一覧から外されていないか見る。 外されていたらログアウトする。
+  /// 戻り値は「外されていた」 かどうか。
+  Future<bool> checkThisDeviceStillAllowed() async {
+    if (!_googleSignedIn) return false;
+    try {
+      final id = await _ensureDeviceId();
+      final list = await _fetchDevices();
+      if (list.isEmpty) return false;
+      final still = list.any((e) => '${e['id']}' == id);
+      if (!still) {
+        await signOutGoogle();
+        return true;
+      }
+      _knownDevices = List<Map<String, dynamic>>.from(list)
+        ..sort((a, b) => '${b['lastSeen']}'.compareTo('${a['lastSeen']}'));
+      notifyListeners();
+    } catch (e) {
+      debugPrint('端末の確認に失敗: $e');
+    }
+    return false;
+  }
+
   Future<String?> signInWithGoogle({VoidCallback? onWaiting}) async {
     if (!canUseGoogleSignIn) {
       throw Exception(t('account.notConfigured'));
@@ -72053,6 +72466,8 @@ $cleanQ
     await pushAccountState();
     unawaited(probeAiRelay());
     unawaited(refreshCreditBalance());
+    // この端末を一覧に登録する (= 同時に使える台数の見張り)。
+    await registerThisDevice();
     return _googleEmail.isEmpty ? uid : _googleEmail;
   }
 
