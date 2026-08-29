@@ -112628,9 +112628,10 @@ const String _kMdEmbeddedMapJs = r"""
     function hidden() {
       // 閉じた要素の下にぶら下がる物を集める (輪になっていても止まる)。
       var out = {}, seen = {};
-      var stack = [];
+      var stack = [], origins = {};
       for (var id in collapsed) {
         if (!collapsed[id]) continue;
+        origins[id] = 1;
         var ks = kids[id] || [];
         for (var j = 0; j < ks.length; j++) stack.push(ks[j]);
       }
@@ -112641,6 +112642,15 @@ const String _kMdEmbeddedMapJs = r"""
         var kk = kids[cur] || [];
         for (var m = 0; m < kk.length; m++) stack.push(kk[m]);
       }
+      // ★ 畳んだ本人は必ず残す。 輪になっている図 (A→B→C→A) では、
+      //   子をたどるうちに自分へ戻ってきて自分まで隠れ、 何も残らなかった。
+      for (var o in origins) delete out[o];
+      // 念のため: 全部消えてしまう時は畳まない扱いにする。
+      var left = 0;
+      for (var t = 0; t < nodes.length; t++) {
+        if (!out[nodes[t].id]) { left++; break; }
+      }
+      if (!left) return {};
       return out;
     }
 
@@ -112650,22 +112660,46 @@ const String _kMdEmbeddedMapJs = r"""
       '<div class="mmap-stage"><svg class="mmap-lines"></svg>' +
       '<div class="mmap-nodes"></div></div>' +
       '<div class="mmap-ctl">' +
-      '<button type="button" data-a="in" title="+">+</button>' +
-      '<button type="button" data-a="out" title="-">&#8722;</button>' +
-      '<button type="button" data-a="fit" title="fit">&#8634;</button>' +
-      '<button type="button" data-a="all" title="expand all">&#9776;</button>' +
+      '<button type="button" data-a="in" data-tip="大きくする">+</button>' +
+      '<button type="button" data-a="out" data-tip="小さくする">&#8722;</button>' +
+      '<button type="button" data-a="fit" data-tip="画面に収める">&#8634;</button>' +
+      '<button type="button" data-a="all" data-tip="畳んだ所を全部開く">&#9776;</button>' +
       // マーメイドから起こした図は、 そのままページにできる (= ユーザー要望)。
       ((data.mermaid && window.__mmPost)
         ? '<button type="button" data-a="topage" class="wide"' +
-          ' title="ページに追加">&#43; ページに追加</button>'
+          ' data-tip="この図をマップのページに入れる">&#43; ページに追加</button>'
         : '') +
       (data.mermaid
-        ? '<button type="button" data-a="mermaid" title="図で見る">&#9707;</button>'
+        ? '<button type="button" data-a="mermaid"' +
+          ' data-tip="元のマーメイドの図に戻す">&#9707;</button>'
         : '') +
       '</div>' +
       '<div class="mmap-name">' + esc(data.name || '') + '</div>' +
       '</div>';
     var box = slot.querySelector('.mmap-box');
+    // ── ボタンに触れたら、 その場で説明を出す (= ユーザー要望) ──
+    //    OS 既定の吹き出しは 1 秒ほど待たされるので、 自前で即出す。
+    var tipEl = null;
+    function hideTip() {
+      if (tipEl && tipEl.parentNode) tipEl.parentNode.removeChild(tipEl);
+      tipEl = null;
+    }
+    function showTip(btn) {
+      var txt = btn.getAttribute('data-tip');
+      if (!txt) return;
+      hideTip();
+      tipEl = document.createElement('div');
+      tipEl.className = 'mmap-tip';
+      tipEl.textContent = txt;
+      box.appendChild(tipEl);
+      var br = box.getBoundingClientRect();
+      var r = btn.getBoundingClientRect();
+      var w = tipEl.offsetWidth;
+      var left = r.left - br.left + r.width / 2 - w / 2;
+      left = Math.max(4, Math.min(box.clientWidth - w - 4, left));
+      tipEl.style.left = left + 'px';
+      tipEl.style.top = (r.bottom - br.top + 6) + 'px';
+    }
     // ページの背景 (= ユーザー要望: 背景も考慮されて欲しい)。
     if (data.bg && data.bg.url) {
       var op = Number(data.bg.opacity);
@@ -112818,7 +112852,7 @@ const String _kMdEmbeddedMapJs = r"""
         //    件数は出さない (= ユーザー要望)。 ──
         if (kn) {
           html += '<span class="mmap-tog" title="' +
-            (collapsed[nd.id] ? 'expand' : 'collapse') + '">' +
+            (collapsed[nd.id] ? '下の要素を出す' : '下の要素を畳む') + '">' +
             (collapsed[nd.id] ? '▸' : '▾') + '</span>';
         }
         // 画像 / 表紙 / 動画のサムネイル (= ユーザー報告: 出ない)。
@@ -113202,7 +113236,18 @@ const String _kMdEmbeddedMapJs = r"""
     });
 
     // ── 右上のボタン ──
-    box.querySelector('.mmap-ctl').addEventListener('click', function (ev) {
+    var ctlEl = box.querySelector('.mmap-ctl');
+    ctlEl.addEventListener('mouseover', function (ev) {
+      var b = ev.target.closest ? ev.target.closest('button') : null;
+      if (b) showTip(b);
+    });
+    ctlEl.addEventListener('mouseout', function (ev) {
+      var b = ev.target.closest ? ev.target.closest('button') : null;
+      if (b) hideTip();
+    });
+    box.addEventListener('mouseleave', hideTip);
+    ctlEl.addEventListener('click', function (ev) {
+      hideTip();
       var b = ev.target.closest ? ev.target.closest('button') : null;
       if (!b) return;
       ev.stopPropagation();
@@ -113423,8 +113468,10 @@ const String _kMdEmbeddedMapJs = r"""
       var d = depth[nodes[i].id];
       (rows[d] = rows[d] || []).push(nodes[i]);
     }
-    var vertical = (model.dir === 'TD' || model.dir === 'TB' ||
-                    model.dir === 'BT');
+    // ★ 上から下ではなく、 左から右へ流す (= ユーザー要望)。
+    //   マインドマップは横に読む方が自然なので、 元の記法が TD でも
+    //   こちらの表示では左→右にそろえる。
+    var vertical = false;
     var maxCount = 0;
     for (var dd in rows) {
       if (rows[dd].length > maxCount) maxCount = rows[dd].length;
@@ -113676,22 +113723,61 @@ bool applyEmbeddedMapEdit(MindMapProvider provider, Map<dynamic, dynamic> m) {
   return false;
 }
 
-/// マーメイドから起こした図を、 新しいマインドマップのページにする
+/// マーメイドから起こした図を、 マインドマップのページに入れる
 /// (= ユーザー要望: 図にページに追加ボタンを作って転送できるように)。
 ///
-/// 掴んで動かした後の位置をそのまま使う。 出来たページ名を返す
-/// (作れなかったら null)。 ページは作るだけで、 表示は切り替えない
+/// [pageId] が null なら新しいページを作る。 掴んで動かした後の位置を
+/// そのまま使う。 入れた先のページ名を返す (できなければ null)。
+/// ページは作る / 足すだけで、 表示は切り替えない
 /// (= 戻るのが面倒、 という指摘に合わせている)。
-String? mermaidMapToNewPage(
-    MindMapProvider provider, Map<dynamic, dynamic> m) {
+String? mermaidMapToPage(MindMapProvider provider, Map<dynamic, dynamic> m,
+    {String? pageId}) {
   final rawNodes = m['nodes'];
   if (rawNodes is! List || rawNodes.isEmpty) return null;
   var title = '${m['title'] ?? ''}'.trim();
-  if (title.isEmpty || title == 'mindmap' || title == 'graph') title = '図';
-  if (title.startsWith('flowchart')) title = '図';
-  final pageId = provider.mcpCreatePage(type: 'normal', name: title);
-  if (pageId == null) return null;
-  // 図の中の id → 出来たノードの id。
+  if (title.isEmpty ||
+      title == 'mindmap' ||
+      title == 'graph' ||
+      title.startsWith('flowchart')) {
+    title = '図';
+  }
+  var targetId = pageId;
+  // ★ 新しいページは、 左と上に余白を空けた所へ置く (= ユーザー要望:
+  //   スクロールできる余地を残す)。 キャンバスは要素の外周で決まるので、
+  //   左上ぴったりに置くと左へスクロールできなくなる。
+  var baseX = 600.0, baseY = 400.0;
+  if (targetId == null) {
+    targetId = provider.mcpCreatePage(type: 'normal', name: title);
+    if (targetId == null) return null;
+  } else {
+    // 既にあるページに足す時は、 今ある要素とぶつからない所から始める。
+    final page = provider.mcpPageById(targetId);
+    if (page == null) return null;
+    if (page.nodes.isNotEmpty) {
+      var maxX = -1e9, minY = 1e9;
+      for (final n in page.nodes.values) {
+        final r = n.position.dx + n.width;
+        if (r > maxX) maxX = r;
+        if (n.position.dy < minY) minY = n.position.dy;
+      }
+      baseX = maxX + 220;
+      baseY = minY;
+    } else {
+      final ref = provider.mcpReferenceFor(targetId);
+      baseX = ref.dx;
+      baseY = ref.dy;
+    }
+  }
+  // 図の中でいちばん左上を原点にそろえてから、 baseX/baseY へ寄せる。
+  var ox = 1e9, oy = 1e9;
+  for (final e in rawNodes) {
+    if (e is! Map) continue;
+    final x = (e['x'] as num?)?.toDouble() ?? 0;
+    final y = (e['y'] as num?)?.toDouble() ?? 0;
+    if (x < ox) ox = x;
+    if (y < oy) oy = y;
+  }
+  if (ox > 1e8) { ox = 0; oy = 0; }
   final idMap = <String, String>{};
   for (final e in rawNodes) {
     if (e is! Map) continue;
@@ -113700,10 +113786,10 @@ String? mermaidMapToNewPage(
     final memo = '${e['memo'] ?? ''}';
     final cv = e['color'];
     final made = provider.mcpAddNode(
-      pageId,
+      targetId,
       title: t,
-      x: (e['x'] as num?)?.toDouble(),
-      y: (e['y'] as num?)?.toDouble(),
+      x: baseX + (((e['x'] as num?)?.toDouble() ?? 0) - ox),
+      y: baseY + (((e['y'] as num?)?.toDouble() ?? 0) - oy),
       memo: memo.trim().isEmpty ? null : memo,
       colorValue: cv is num ? cv.toInt() : null,
     );
@@ -113717,12 +113803,75 @@ String? mermaidMapToNewPage(
       final b = idMap['${c['toId']}'];
       if (a == null || b == null) continue;
       final label = '${c['label'] ?? ''}'.trim();
-      provider.mcpConnectNodes(pageId, a, b,
+      provider.mcpConnectNodes(targetId, a, b,
           label: label.isEmpty ? null : label);
     }
   }
-  final page = provider.mcpPageById(pageId);
-  return page?.name ?? title;
+  return provider.mcpPageById(targetId)?.name ?? title;
+}
+
+/// どのページに入れるか選ばせてから入れる (= ユーザー要望)。
+/// 入れた先のページ名を返す (やめたら null)。
+Future<String?> askAndPutMermaidMapIntoPage(BuildContext context,
+    MindMapProvider provider, Map<dynamic, dynamic> m) async {
+  final pages =
+      provider.pages.where((p) => p.pageType == 'normal').toList();
+  final chosen = await showDialog<String>(
+    context: context,
+    builder: (dctx) => AlertDialog(
+      backgroundColor: const Color(0xFF1E1E32),
+      title: Text(provider.t('map.pickTargetPage'),
+          style: const TextStyle(color: Colors.white, fontSize: 15)),
+      content: SizedBox(
+        width: math.min(380.0, MediaQuery.sizeOf(dctx).width - 48),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 360),
+          child: ListView(shrinkWrap: true, children: [
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.add_box_outlined,
+                  color: Color(0xFF43B97F), size: 20),
+              title: Text(provider.t('map.newPage'),
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700)),
+              onTap: () => Navigator.pop(dctx, '__new__'),
+            ),
+            if (pages.isNotEmpty) const Divider(color: Colors.white12),
+            for (final p in pages)
+              ListTile(
+                dense: true,
+                leading: const Icon(Icons.map_outlined,
+                    color: Colors.white54, size: 18),
+                title: Text(p.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style:
+                        const TextStyle(color: Colors.white, fontSize: 13)),
+                subtitle: Text(
+                    provider
+                        .t('map.nodeCount')
+                        .replaceFirst('{n}', '${p.nodes.length}'),
+                    style: const TextStyle(
+                        color: Colors.white38, fontSize: 11)),
+                onTap: () => Navigator.pop(dctx, p.id),
+              ),
+          ]),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dctx),
+          child: Text(provider.t('btn.cancel'),
+              style: const TextStyle(color: Colors.white54)),
+        ),
+      ],
+    ),
+  );
+  if (chosen == null) return null;
+  return mermaidMapToPage(provider, m,
+      pageId: chosen == '__new__' ? null : chosen);
 }
 
 /// 埋め込みマップの要素が抱えている添付ファイルの場所 (無ければ null)。
@@ -114197,6 +114346,9 @@ String _markdownPreviewHtml(String md, bool dark,
     font-weight:700;background:$accent;border-color:$accent;color:#fff;}
   .mmap-node.moving{opacity:.85;box-shadow:0 6px 18px rgba(0,0,0,.5);
     cursor:grabbing;}
+  .mmap-tip{position:absolute;z-index:8;padding:4px 9px;border-radius:6px;
+    background:$fg;color:$bg;font-size:11px;font-weight:600;white-space:nowrap;
+    pointer-events:none;box-shadow:0 3px 10px rgba(0,0,0,.35);}
   .mmap-name{position:absolute;left:10px;bottom:6px;font-size:11px;
     opacity:.6;pointer-events:none;}
   .mmap-empty{padding:16px;font-size:12px;opacity:.7;border-radius:10px;
@@ -117196,15 +117348,18 @@ graph TD
       }
       // ── 図をマインドマップのページにする (= ユーザー要望) ──
       if (type == 'mapToPage') {
-        final name = mermaidMapToNewPage(widget.provider, m);
-        if (name != null && mounted) {
-          _appSnackTop(
-              context,
-              widget.provider
-                  .t('map.addedToPage')
-                  .replaceFirst('{name}', name),
-              const Color(0xFF43B97F));
-        }
+        unawaited(() async {
+          final name = await askAndPutMermaidMapIntoPage(
+              context, widget.provider, m);
+          if (name != null && mounted) {
+            _appSnackTop(
+                context,
+                widget.provider
+                    .t('map.addedToPage')
+                    .replaceFirst('{name}', name),
+                const Color(0xFF43B97F));
+          }
+        }());
         return;
       }
       final href = '${m['href'] ?? ''}'.trim();
@@ -207713,11 +207868,14 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
       // ── 図をマインドマップのページにする (= ユーザー要望) ──
       if (type == 'mapToPage') {
         final provider = context.read<MindMapProvider>();
-        final name = mermaidMapToNewPage(provider, m);
-        if (name != null && mounted) {
-          _showSnackBar(
-              provider.t('map.addedToPage').replaceFirst('{name}', name));
-        }
+        unawaited(() async {
+          final name =
+              await askAndPutMermaidMapIntoPage(context, provider, m);
+          if (name != null && mounted) {
+            _showSnackBar(
+                provider.t('map.addedToPage').replaceFirst('{name}', name));
+          }
+        }());
         return;
       }
       final code = '${m['code'] ?? ''}'.trim();
