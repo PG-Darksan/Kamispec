@@ -1133,12 +1133,51 @@ class AiInputImage {
   /// 画面に出す名前 (送信内容には影響しない)。
   final String name;
 
+  /// 一覧に出すための小さい絵 (base64)。 動画の時はここに
+  /// サムネイルを入れる (= ユーザー報告: 送信前の欄にサムネイルが
+  /// 表示されていない)。 null なら [base64] をそのまま絵として扱う。
+  final String? previewBase64;
+
   const AiInputImage(
-      {required this.mime, required this.base64, this.name = ''});
+      {required this.mime,
+      required this.base64,
+      this.name = '',
+      this.previewBase64});
+
+  /// この中身が動画か (= 画像として送ってはいけない)。
+  bool get isVideo => mime.startsWith('video/');
+
+  /// 拡張子が動画か。
+  static bool isVideoExt(String ext) => const {
+        'mp4',
+        'mov',
+        'm4v',
+        'webm',
+        'avi',
+        'mkv',
+        '3gp',
+      }.contains(ext.toLowerCase());
 
   /// 拡張子から MIME を決める。 分からなければ JPEG 扱い。
+  ///
+  /// ★ 動画も返す (= ユーザー報告: カメラで撮った動画を渡すと
+  ///   画像データとして認識されてしまう)。 以前は image/* しか
+  ///   返さなかったため、 mp4 が image/jpeg として送られていた。
   static String mimeForExt(String ext) {
     switch (ext.toLowerCase()) {
+      case 'mp4':
+      case 'm4v':
+        return 'video/mp4';
+      case 'mov':
+        return 'video/quicktime';
+      case 'webm':
+        return 'video/webm';
+      case 'avi':
+        return 'video/x-msvideo';
+      case 'mkv':
+        return 'video/x-matroska';
+      case '3gp':
+        return 'video/3gpp';
       case 'png':
         return 'image/png';
       case 'webp':
@@ -1631,6 +1670,10 @@ class PdfHighlight {
 class LivePeer {
   /// 端末ごとに割り当てる ID (同じ人が別端末で入っても別参加者として扱う)。
   final String clientId;
+
+  /// この参加者の利用者 ID。 「指定した人だけ編集できる」 を判定するのに
+  /// 使う (= ユーザー要望: 共同編集者としてユーザーを指定したい)。
+  final String uid;
   final String name;
   final int colorRgb;
 
@@ -1640,6 +1683,7 @@ class LivePeer {
 
   const LivePeer({
     required this.clientId,
+    this.uid = '',
     required this.name,
     required this.colorRgb,
     required this.lastSeen,
@@ -43049,6 +43093,39 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Pode editar',
       'ru': 'Можно редактировать',
     },
+    'share.listedOnly': {
+      'ja': '指定した人だけ編集',
+      'en': 'Only chosen people can edit',
+      'zh': '仅指定的人可编辑',
+      'ko': '지정한 사람만 편집',
+      'es': 'Solo editan los elegidos',
+      'fr': 'Seules les personnes choisies modifient',
+      'de': 'Nur ausgewählte dürfen bearbeiten',
+      'pt': 'Só os escolhidos editam',
+      'ru': 'Редактируют только выбранные',
+    },
+    'share.pickEditors': {
+      'ja': '編集を許す人を選んでください (他の人は閲覧のみ)',
+      'en': 'Choose who may edit (everyone else is view-only)',
+      'zh': '选择可编辑的人（其余仅可查看）',
+      'ko': '편집을 허용할 사람을 골라 주세요 (나머지는 보기 전용)',
+      'es': 'Elige quién puede editar (el resto solo ve)',
+      'fr': 'Choisissez qui peut modifier (les autres consultent seulement)',
+      'de': 'Wähle, wer bearbeiten darf (alle anderen nur lesen)',
+      'pt': 'Escolha quem pode editar (os outros só veem)',
+      'ru': 'Выберите, кто может редактировать (остальные только смотрят)',
+    },
+    'share.noPeersYet': {
+      'ja': 'まだ誰も参加していません。 参加したらここで選べます。',
+      'en': 'Nobody has joined yet. You can choose once they do.',
+      'zh': '还没有人加入。加入后可在此选择。',
+      'ko': '아직 참여한 사람이 없습니다. 참여하면 여기서 고를 수 있습니다.',
+      'es': 'Aún no se ha unido nadie. Podrás elegir cuando lo hagan.',
+      'fr': "Personne n'a encore rejoint. Vous pourrez choisir ensuite.",
+      'de': 'Noch niemand dabei. Sobald jemand beitritt, kannst du wählen.',
+      'pt': 'Ainda ninguém entrou. Poderá escolher quando entrarem.',
+      'ru': 'Пока никто не присоединился. Выберете позже.',
+    },
     'share.viewOnly': {
       'ja': '閲覧のみ',
       'en': 'View only',
@@ -43335,6 +43412,28 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Если никто не подключается 3 часа, сессия завершается, а общие '
           'данные и ссылка удаляются с сервера. Ваша страница и локальные '
           'копии участников остаются.',
+    },
+    'live.closedByHost': {
+      'ja': '公開が中止されました。 共同編集を終了します。',
+      'en': 'Sharing was stopped. The live session has ended.',
+      'zh': '共享已停止，协同编辑结束。',
+      'ko': '공유가 중지되어 공동 편집을 종료합니다.',
+      'es': 'Se detuvo la publicaci\u00f3n. La sesi\u00f3n compartida ha terminado.',
+      'fr': 'Le partage a \u00e9t\u00e9 arr\u00eat\u00e9. La session collaborative est termin\u00e9e.',
+      'de': 'Die Freigabe wurde beendet. Die gemeinsame Sitzung ist vorbei.',
+      'pt': 'A partilha foi terminada. A sess\u00e3o colaborativa acabou.',
+      'ru': '\u041f\u0443\u0431\u043b\u0438\u043a\u0430\u0446\u0438\u044f \u043e\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u0430. \u0421\u043e\u0432\u043c\u0435\u0441\u0442\u043d\u0430\u044f \u0440\u0430\u0431\u043e\u0442\u0430 \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u0430.',
+    },
+    'live.hostOnly': {
+      'ja': '公開を中止できるのは、 公開した人だけです。',
+      'en': 'Only the person who shared it can stop the session.',
+      'zh': '只有发起共享的人可以停止。',
+      'ko': '공유를 시작한 사람만 중지할 수 있습니다.',
+      'es': 'Solo quien comparti\u00f3 puede detener la sesi\u00f3n.',
+      'fr': 'Seule la personne qui a partag\u00e9 peut arr\u00eater la session.',
+      'de': 'Nur wer geteilt hat, kann die Sitzung beenden.',
+      'pt': 'S\u00f3 quem partilhou pode terminar a sess\u00e3o.',
+      'ru': '\u041e\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c \u043c\u043e\u0436\u0435\u0442 \u0442\u043e\u043b\u044c\u043a\u043e \u0442\u043e\u0442, \u043a\u0442\u043e \u043d\u0430\u0447\u0430\u043b \u043f\u0443\u0431\u043b\u0438\u043a\u0430\u0446\u0438\u044e.',
     },
     'live.expired': {
       'ja': '誰も接続しない時間が続いたため、共有セッションを終了しました',
@@ -53345,6 +53444,17 @@ class MindMapProvider extends ChangeNotifier {
     'ai.imageTooLarge': {
       'ja': '画像が大き過ぎます。 枚数を減らすか、 小さい写真にしてください。',
       'en': 'The images are too large. Send fewer or smaller photos.',
+    },
+    'ai.videoAttached': {
+      'ja': '動画',
+      'en': 'Video',
+      'zh': '视频',
+      'ko': '동영상',
+      'es': 'Vídeo',
+      'fr': 'Vidéo',
+      'de': 'Video',
+      'pt': 'Vídeo',
+      'ru': 'Видео',
     },
     'ai.photoAttached': {
       'ja': '写真',
@@ -76231,6 +76341,97 @@ $cleanQ
   String get livePermission => _livePermission;
   bool get liveCanEdit => _livePermission != 'view';
 
+  // ── 共有の権限 (= ユーザー要望: 公開した人が選べるように) ──
+  //   'edit' … 合言葉を知っている人は誰でも編集できる
+  //   'list' … 公開した人が選んだ人だけ編集できる (他は閲覧のみ)
+  //   'view' … 公開した人以外は全員閲覧のみ
+  //
+  // ★ この判定はアプリの中だけのもの。 Firestore の規則が未設定なので、
+  //   アプリを介さず直接書き込まれると防げない。 規則を入れるまでは
+  //   「うっかり書き換えない」 ための仕切りと考えること。
+  static const String kLiveAccessAnyone = 'edit';
+  static const String kLiveAccessListed = 'list';
+  static const String kLiveAccessViewOnly = 'view';
+
+  String _liveAccess = kLiveAccessAnyone;
+  String get liveAccess => _liveAccess;
+
+  /// 編集を許す人の利用者 ID (access が 'list' の時だけ効く)。
+  final List<String> _liveEditors = [];
+  List<String> get liveEditors => List.unmodifiable(_liveEditors);
+
+  /// 公開した人の利用者 ID (この人は常に編集できる)。
+  String _liveHostUid = '';
+  String get liveHostUid => _liveHostUid;
+
+  /// 今の設定から、 自分が編集してよいかを決め直す。
+  void _applyLiveAccess() {
+    final me = _uid ?? '';
+    final can = _liveIsHost ||
+        (me.isNotEmpty && me == _liveHostUid) ||
+        switch (_liveAccess) {
+          kLiveAccessViewOnly => false,
+          kLiveAccessListed => me.isNotEmpty && _liveEditors.contains(me),
+          _ => true,
+        };
+    final next = can ? 'edit' : 'view';
+    if (next != _livePermission) {
+      _livePermission = next;
+      notifyListeners();
+    }
+  }
+
+  /// 権限を変える (= 公開した人だけ)。 共有の土台に書いて全員へ伝える。
+  Future<void> setLiveAccess(String mode, {List<String>? editors}) async {
+    if (!_liveIsHost) throw Exception(t('live.hostOnly'));
+    final code = _liveCode;
+    if (code == null) return;
+    _liveAccess = const [kLiveAccessAnyone, kLiveAccessListed,
+            kLiveAccessViewOnly]
+        .contains(mode)
+        ? mode
+        : kLiveAccessAnyone;
+    if (editors != null) {
+      _liveEditors
+        ..clear()
+        ..addAll(editors.where((e) => e.trim().isNotEmpty));
+    }
+    _applyLiveAccess();
+    notifyListeners();
+    await _livePushAccess();
+  }
+
+  /// 権限の設定を共有の土台へ書く。
+  Future<void> _livePushAccess() async {
+    final code = _liveCode;
+    if (code == null || _idToken == null) return;
+    try {
+      await http.patch(
+        Uri.parse('$_firestoreBaseUrl/published/$code/doc/main'
+            '?updateMask.fieldPaths=access'
+            '&updateMask.fieldPaths=editors'
+            '&updateMask.fieldPaths=hostUid'
+            '&updateMask.fieldPaths=rev'),
+        headers: {
+          'Authorization': 'Bearer $_idToken',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({
+          'fields': {
+            'access': {'stringValue': _liveAccess},
+            'editors': {'stringValue': jsonEncode(_liveEditors)},
+            'hostUid': {'stringValue': _liveHostUid},
+            'rev': {
+              'integerValue': '${DateTime.now().millisecondsSinceEpoch > _liveRev ? DateTime.now().millisecondsSinceEpoch : _liveRev + 1}'
+            },
+          }
+        }),
+      );
+    } catch (e) {
+      debugPrint('共同編集 権限の送信に失敗: $e');
+    }
+  }
+
   /// 共有コードで既存のセッションに参加する (= ユーザー要望: ブラウザの
   /// HTML ではなく、 アプリ内の普段どおりの画面で共同編集したい)。
   ///
@@ -76382,6 +76583,49 @@ $cleanQ
   /// **手元のページはそのまま残す**。 参加していた人のアプリにも各自の
   /// コピーが残るので、 中身が失われることはない。 再開したい時は改めて
   /// 共有し直す (新しい共有コードが発行される)。
+  /// 公開を中止する (= 公開した人だけ)。
+  ///
+  /// 参加している全員の画面でも終わるように、 共有の土台に「終わった」
+  /// 印を書いてから畳む。 参加者は次の見に行きで印に気付いて自分も
+  /// 終了する (= ユーザー要望: 中止したら全員に伝わるように)。
+  Future<void> closeLiveSessionForAll() async {
+    if (!_liveIsHost) {
+      throw Exception(t('live.hostOnly'));
+    }
+    final code = _liveCode;
+    final pageId = _livePageId;
+    if (code == null) return;
+    try {
+      await _ensureFreshToken();
+      await http.patch(
+        Uri.parse('$_firestoreBaseUrl/published/$code/doc/main'
+            '?updateMask.fieldPaths=closed'
+            '&updateMask.fieldPaths=rev'),
+        headers: {
+          'Authorization': 'Bearer $_idToken',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({
+          'fields': {
+            'closed': {'booleanValue': true},
+            // 版を進めて、 参加者が必ず見に来るようにする。
+            'rev': {
+              'integerValue':
+                  '${DateTime.now().millisecondsSinceEpoch > _liveRev ? DateTime.now().millisecondsSinceEpoch : _liveRev + 1}'
+            },
+          }
+        }),
+      );
+    } catch (_) {
+      // 印を書けなくても、 自分の側は畳む (下の unpublishPage で消える)。
+    }
+    await stopLiveSession();
+    if (pageId != null) {
+      await unpublishPage(pageId);
+    }
+    notifyListeners();
+  }
+
   Future<void> _expireLiveSession() async {
     final pageId = _livePageId;
     _liveLastError = t('live.expired');
@@ -76582,6 +76826,13 @@ $cleanQ
       'n_${nodeId.replaceAll(RegExp(r'[^A-Za-z0-9_]'), '_')}';
 
   /// 公開中のページでリアルタイム共同編集を開始する。
+  /// 自分がこの共有を始めた人 (= 公開者) か。
+  ///
+  /// ★ 中止できるのは公開した人だけ (= ユーザー要望)。 参加者が勝手に
+  ///   全員の共有を畳めてしまうと、 他の人の作業が突然終わってしまう。
+  bool _liveIsHost = false;
+  bool get liveIsHost => _liveIsHost;
+
   Future<void> startLiveSession({
     required String pageId,
     required String code,
@@ -76618,10 +76869,31 @@ $cleanQ
     _liveEditingNodeId = null;
     _liveLastError = null;
     _livePermission = permission == 'view' ? 'view' : 'edit';
+    // 土台を作る側 = 公開した人。 参加側は pushInitial: false で入る。
+    _liveIsHost = pushInitial;
+    if (_liveIsHost) {
+      // 公開した人は常に編集できる。 権限の初期値は「誰でも編集」。
+      _liveHostUid = _uid ?? '';
+      _liveAccess = permission == 'view'
+          ? kLiveAccessViewOnly
+          : kLiveAccessAnyone;
+      _liveEditors.clear();
+      _livePermission = 'edit';
+    } else {
+      // 参加側は、 土台に書かれている権限に従う (下の _livePull で読む)。
+      _liveHostUid = '';
+      _liveAccess = kLiveAccessAnyone;
+      _liveEditors.clear();
+    }
     // 最初に今のページ内容を丸ごと送って土台を作る (相手が居なくても安全)。
     // 参加側は送らない (= 相手の内容を自分のもので上書きしない)。
     if (pushInitial && liveCanEdit) await _livePush(force: true);
+    // 公開した人は、 権限の設定も土台へ書いておく。
+    if (_liveIsHost) await _livePushAccess();
     await _livePushPresence();
+    // 参加側は、 最初の 1 回を待たずに権限を読みに行く
+    //   (= 閲覧のみで招かれた人が、 一瞬でも書けてしまわないように)。
+    if (!_liveIsHost) await _livePullAccess();
     _liveTimer = Timer.periodic(_kLiveTick, (_) => _liveTick());
     _livePresenceTimer =
         Timer.periodic(_kLivePresenceTick, (_) => _livePresenceTick());
@@ -76645,6 +76917,10 @@ $cleanQ
     final cid = _liveClientId;
     _liveCode = null;
     _livePageId = null;
+    _liveIsHost = false;
+    _liveAccess = kLiveAccessAnyone;
+    _liveEditors.clear();
+    _liveHostUid = '';
     _liveEditingNodeId = null;
     _livePeers.clear();
     _liveLastPushed.clear();
@@ -76696,6 +76972,122 @@ $cleanQ
   }
 
   /// サーバー側の変更を取り込む。
+  /// 共有の土台から権限だけを読み直す。
+  /// 共同編集で配るファイルの置き場所。
+  static String _liveAttachPath(String code, String fileName) =>
+      'live/$code/$fileName';
+
+  /// この端末のファイルを共有の置き場へ上げて、 取りに行ける URL を返す。
+  ///
+  /// ★ 共同編集はノードの本文しか配っておらず、 添付は端末の中のパスしか
+  ///   持っていなかったため、 他の端末では「ファイルが無い」 状態になって
+  ///   いた (= ユーザー報告)。 上げた URL をノードに載せて配る。
+  Future<String?> _uploadLiveAttachment(String code, String localPath) async {
+    if (_idToken == null) return null;
+    try {
+      final file = File(localPath);
+      if (!await file.exists()) return null;
+      final len = await file.length();
+      if (len <= 0) return null;
+      // 使い過ぎを防ぐ (クラウドの他の機能と同じ扱い)。
+      if (!canUseUploadBytes(len)) return null;
+      final base = localPath.split(RegExp(r'[\\/]')).last;
+      final name = '${_uuid.v4().replaceAll('-', '').substring(0, 8)}_$base';
+      final encoded = Uri.encodeComponent(_liveAttachPath(code, name));
+      final res = await http.post(
+        Uri.parse('$_storageUploadUrl?uploadType=media&name=$encoded'),
+        headers: {
+          'Authorization': 'Bearer $_idToken',
+          'Content-Type': 'application/octet-stream',
+        },
+        body: await file.readAsBytes(),
+      );
+      if (res.statusCode < 200 || res.statusCode >= 300) return null;
+      recordUploadBytes(len);
+      String? token;
+      try {
+        token = (jsonDecode(res.body) as Map<String, dynamic>)['downloadTokens']
+            as String?;
+      } catch (_) {}
+      return (token != null && token.isNotEmpty)
+          ? '$_storageUploadUrl/$encoded?alt=media&token=$token'
+          : '$_storageUploadUrl/$encoded?alt=media';
+    } catch (e) {
+      debugPrint('共同編集 添付の送信に失敗: $e');
+      return null;
+    }
+  }
+
+  /// 配られた URL から、 この端末にファイルを落として来る。
+  /// 既に落としてあれば何もしない。 戻り値はこの端末での置き場所。
+  Future<String?> _downloadLiveAttachment(String url) async {
+    if (url.isEmpty) return null;
+    // 同じ URL を二度落とさない。
+    final known = _liveAttachLocal[url];
+    if (known != null && await File(known).exists()) return known;
+    try {
+      final dir = await getApplicationSupportDirectory();
+      final folder = Directory('${dir.path}/live_attachments');
+      if (!await folder.exists()) await folder.create(recursive: true);
+      // URL から名前を作る (同じ物は同じ名前になるように)。
+      final key = url.hashCode.toUnsigned(32).toRadixString(16);
+      var ext = '';
+      final m = RegExp(r'%2F[^?]*?_([^?%/]+)\.([A-Za-z0-9]{1,5})')
+          .firstMatch(url);
+      if (m != null) ext = '.${m.group(2)}';
+      final path = '${folder.path}/$key$ext';
+      final f = File(path);
+      if (await f.exists() && await f.length() > 0) {
+        _liveAttachLocal[url] = path;
+        return path;
+      }
+      final res = await http.get(Uri.parse(url));
+      if (res.statusCode != 200 || res.bodyBytes.isEmpty) return null;
+      await f.writeAsBytes(res.bodyBytes);
+      _liveAttachLocal[url] = path;
+      return path;
+    } catch (e) {
+      debugPrint('共同編集 添付の受け取りに失敗: $e');
+      return null;
+    }
+  }
+
+  /// 落とした添付の控え (URL → この端末での置き場所)。
+  final Map<String, String> _liveAttachLocal = {};
+
+  Future<void> _livePullAccess() async {
+    final code = _liveCode;
+    if (code == null || _idToken == null) return;
+    try {
+      final res = await http.get(
+        Uri.parse('$_firestoreBaseUrl/published/$code/doc/main'
+            '?mask.fieldPaths=access'
+            '&mask.fieldPaths=editors'
+            '&mask.fieldPaths=hostUid'),
+        headers: {'Authorization': 'Bearer $_idToken'},
+      );
+      if (res.statusCode != 200) return;
+      final j = jsonDecode(res.body) as Map<String, dynamic>;
+      final f = (j['fields'] as Map<String, dynamic>?) ?? {};
+      String str(String k) =>
+          ((f[k] as Map<String, dynamic>?)?['stringValue'] as String?) ?? '';
+      final acc = str('access');
+      if (acc.isNotEmpty) _liveAccess = acc;
+      final host = str('hostUid');
+      if (host.isNotEmpty) _liveHostUid = host;
+      final ed = str('editors');
+      if (ed.isNotEmpty) {
+        try {
+          final list = jsonDecode(ed) as List<dynamic>;
+          _liveEditors
+            ..clear()
+            ..addAll(list.map((e) => '$e'));
+        } catch (_) {}
+      }
+      _applyLiveAccess();
+    } catch (_) {}
+  }
+
   Future<void> _livePull() async {
     final code = _liveCode;
     final page = _livePage;
@@ -76703,21 +77095,33 @@ $cleanQ
     final base = '$_firestoreBaseUrl/published/$code/doc/main';
     // まず版だけを取りに行く (毎秒フルで取ると重いため)。
     final headRes = await http.get(
-      Uri.parse('$base?mask.fieldPaths=rev&mask.fieldPaths=lastActiveAt'),
+      Uri.parse('$base?mask.fieldPaths=rev&mask.fieldPaths=lastActiveAt'
+          '&mask.fieldPaths=closed'),
       headers: {'Authorization': 'Bearer $_idToken'},
     );
     if (headRes.statusCode == 404) return; // まだ土台が無い
     if (headRes.statusCode != 200) return;
     int remoteRev = -1;
     int lastActive = 0;
+    var closed = false;
     try {
       final j = jsonDecode(headRes.body) as Map<String, dynamic>;
       final f = j['fields'] as Map<String, dynamic>?;
+      closed =
+          (f?['closed'] as Map<String, dynamic>?)?['booleanValue'] == true;
       final v = (f?['rev'] as Map<String, dynamic>?)?['integerValue'];
       remoteRev = int.tryParse('$v') ?? -1;
       final a = (f?['lastActiveAt'] as Map<String, dynamic>?)?['integerValue'];
       lastActive = int.tryParse('$a') ?? 0;
     } catch (_) {}
+    // ── 公開した人が中止した (= ユーザー要望: 中止したら全員の画面でも
+    //    「公開中止されました」 と出して終わるように) ──
+    if (closed) {
+      _liveLastError = t('live.closedByHost');
+      await stopLiveSession();
+      notifyListeners();
+      return;
+    }
     // ── 誰も触らないまま時間が経ったセッションは畳む (= ユーザー要望) ──
     if (lastActive > 0 &&
         DateTime.now()
@@ -76732,6 +77136,9 @@ $cleanQ
     //   書き込み (より小さい rev) を一切読まなくなっていた
     //   (= 編集が相手に伝わらない)。
     if (remoteRev == _liveRev) return; // 変化なし
+    // 版が動いた = 権限が変わっているかもしれない。 参加側だけ読み直す
+    //   (= ユーザー要望: 途中で閲覧のみに変えられるように)。
+    if (!_liveIsHost) await _livePullAccess();
 
     final res = await http.get(
       Uri.parse(base),
@@ -76747,6 +77154,8 @@ $cleanQ
     }
 
     var changed = false;
+    // この回に落として来る必要がある添付 (ノード ID → URL)。
+    final pendingAttach = <MapEntry<String, String>>[];
     final seenFieldNames = <String>{};
     fields.forEach((key, value) {
       if (!key.startsWith('n_')) return;
@@ -76774,9 +77183,23 @@ $cleanQ
         }
       }
       try {
-        page.nodes[id] = MindMapNode.fromJson(nodeJson);
+        final n = MindMapNode.fromJson(nodeJson);
+        page.nodes[id] = n;
         _liveLastPushed[id] = raw;
         changed = true;
+        // ★ 配られた添付は、 この端末に落としてから見せる
+        //   (= ユーザー報告: 他人が上げたファイルが表示されない)。
+        //   絵の部品は端末のパスしか見ないので、 落とした場所を
+        //   attachmentPath に入れ直す。 重いので後回しにする。
+        final u = n.attachmentStorageUrl;
+        if (u != null && u.isNotEmpty) {
+          final local = _liveAttachLocal[u];
+          if (local == null) {
+            pendingAttach.add(MapEntry(id, u));
+          } else if (n.attachmentPath != local) {
+            n.attachmentPath = local;
+          }
+        }
       } catch (_) {}
     });
 
@@ -76835,6 +77258,28 @@ $cleanQ
       // ignore: discarded_futures
       _saveToStorageLocal();
       notifyListeners();
+    }
+    // ★ 配られた添付を落として来る (= ユーザー報告: 他人が上げた
+    //   ファイルが他の端末に表示されない)。
+    //   本文の取り込みを待たせないよう、 ここで別々に行う。
+    //   1 回に 3 件まで (回線を占領しないため。 残りは次の回で)。
+    if (pendingAttach.isNotEmpty) {
+      var done = 0;
+      for (final e in pendingAttach) {
+        if (done >= 3) break;
+        final local = await _downloadLiveAttachment(e.value);
+        if (local == null) continue;
+        final n = page.nodes[e.key];
+        if (n != null && n.attachmentPath != local) {
+          n.attachmentPath = local;
+          done++;
+        }
+      }
+      if (done > 0) {
+        // ignore: discarded_futures
+        _saveToStorageLocal();
+        notifyListeners();
+      }
     }
   }
 
@@ -76910,6 +77355,22 @@ $cleanQ
 
     final fields = <String, dynamic>{};
     final masks = <String>[];
+
+    // ★ 手元にしか無い添付を先に共有の置き場へ上げる (= ユーザー報告:
+    //   他の人が上げたファイルが自分の端末に出てこない)。 上げた URL を
+    //   ノードに載せておけば、 受け取った側が落として来られる。
+    for (final n in page.nodes.values.toList()) {
+      final p = n.attachmentPath;
+      if (p == null || p.isEmpty) continue;
+      if (p.startsWith('http')) continue; // 既に URL
+      if ((n.attachmentStorageUrl ?? '').isNotEmpty) continue; // 上げ済み
+      if (!force && isNodeLockedByOthers(n.id)) continue;
+      final url = await _uploadLiveAttachment(code, p);
+      if (url != null) {
+        n.attachmentStorageUrl = url;
+        _liveAttachLocal[url] = p; // 自分は元のファイルを使い続ける
+      }
+    }
 
     for (final entry in page.nodes.entries) {
       final id = entry.key;
@@ -76991,6 +77452,7 @@ $cleanQ
       await http.patch(
         Uri.parse('$_firestoreBaseUrl/published/$code/peers/$_liveClientId'
             '?updateMask.fieldPaths=name'
+            '&updateMask.fieldPaths=uid'
             '&updateMask.fieldPaths=color'
             '&updateMask.fieldPaths=lockNodeId'
             '&updateMask.fieldPaths=lastSeen'),
@@ -77001,6 +77463,7 @@ $cleanQ
         body: jsonEncode({
           'fields': {
             'name': {'stringValue': name},
+            'uid': {'stringValue': _uid ?? ''},
             'color': {'integerValue': '$_liveMyColorRgb'},
             'lockNodeId': {'stringValue': _liveEditingNodeId ?? ''},
             'lastSeen': {
@@ -77068,6 +77531,7 @@ $cleanQ
         final lock = str('lockNodeId');
         next.add(LivePeer(
           clientId: cid,
+          uid: str('uid'),
           name: str('name'),
           colorRgb: int.tryParse('$colorRaw') ?? kLivePeerColors.first,
           lockNodeId: lock.isEmpty ? null : lock,

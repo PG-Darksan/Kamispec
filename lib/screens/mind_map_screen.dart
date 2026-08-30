@@ -109,6 +109,8 @@ import 'dart:typed_data';
 // 使うのは _FullscreenVideoPageState の `_isMp4` 経路のみ。
 // YouTube 動画 (WebView 経由) は引き続き従来通り。
 import 'package:video_player/video_player.dart';
+// 動画のサムネイル作り (= カメラで撮った動画を送信前に見せる)。
+import 'package:video_thumbnail/video_thumbnail.dart' as vt;
 
 // ── 動画書き出し (Android/iOS) = ユーザー要望 ──
 // デスクトップは別途インストール済みの ffmpeg を Process で呼ぶが、 モバイルは
@@ -80466,6 +80468,14 @@ class _MindMapScreenState extends State<MindMapScreen>
     // 共有の権限とパスワード (= ユーザー要望: 共有する際はパスワードや権限を
     // 設定できるように)。
     String permission = provider.publishPermissionFor(page.id);
+    // 「指定した人だけ編集」 で選んだ相手 (= 利用者 ID)。
+    //   共同編集中なら今の設定を初期値にする。
+    final chosenEditors = <String>{...provider.liveEditors};
+    if (provider.liveActive &&
+        provider.livePageId == page.id &&
+        provider.liveAccess.isNotEmpty) {
+      permission = provider.liveAccess;
+    }
     await showDialog<void>(
       context: ctx,
       builder: (dctx) => StatefulBuilder(builder: (dctx2, setD) {
@@ -80490,7 +80500,14 @@ class _MindMapScreenState extends State<MindMapScreen>
               //   「閲覧のみ」 を選んでもホストだけ編集のままで、 設定が
               //   効いているのか確かめようが無かった)。
               await provider.startLiveSession(
-                  pageId: page.id, code: code, permission: permission);
+                  pageId: page.id,
+                  code: code,
+                  // 公開した人は常に編集できるので、 ここは
+                  //   「他の人にどう見せるか」 を渡す。
+                  permission: permission == 'view' ? 'view' : 'edit');
+              // 選んだ権限を全員へ伝える。
+              await provider.setLiveAccess(permission,
+                  editors: chosenEditors.toList());
             } else if (provider.liveActive &&
                 provider.livePageId == page.id) {
               await provider.stopLiveSession();
@@ -80508,6 +80525,14 @@ class _MindMapScreenState extends State<MindMapScreen>
           });
           try {
             if (provider.liveActive && provider.livePageId == page.id) {
+              // ★ 公開した人が中止した時は、 参加している全員の画面でも
+              //   終わるように印を書いてから畳む (= ユーザー要望)。
+              //   参加者側はこの経路に入らない (下でボタンを出さない)。
+              if (provider.liveIsHost) {
+                await provider.closeLiveSessionForAll();
+                if (dctx2.mounted) setD(() => busy = false);
+                return;
+              }
               await provider.stopLiveSession();
             }
             await provider.unpublishPage(page.id);
@@ -80610,12 +80635,15 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 fontWeight: FontWeight.w700)),
                       ]),
                       const SizedBox(height: 8),
-                      Row(children: [
+                      // 3 つ並ぶので、 狭い画面では折り返す。
+                      Wrap(runSpacing: 6, children: [
                         // ── 自前描画のトグル (= ユーザー報告: 共有権限の
                         //    チップが白飛びして読めない)。 ChoiceChip は
                         //    アプリのテーマ (ライト時) の色を拾って白地 +
                         //    白文字になっていたため、 色を固定する。 ──
-                        for (final p in const ['edit', 'view'])
+                        // ★ 3 択 (= ユーザー要望: 誰でも編集 / 指定した
+                        //   人だけ / 全員閲覧のみ)。
+                        for (final p in const ['edit', 'list', 'view'])
                           Padding(
                             padding: const EdgeInsets.only(right: 6),
                             child: Material(
@@ -80651,7 +80679,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                                         Text(
                                             provider.t(p == 'view'
                                                 ? 'share.viewOnly'
-                                                : 'share.canEdit'),
+                                                : p == 'list'
+                                                    ? 'share.listedOnly'
+                                                    : 'share.canEdit'),
                                             style: TextStyle(
                                                 color: permission == p
                                                     ? const Color(0xFFFFD08A)
@@ -80664,6 +80694,72 @@ class _MindMapScreenState extends State<MindMapScreen>
                             ),
                           ),
                       ]),
+                      // ── 「指定した人だけ編集」 の時に、 誰を許すかを選ぶ ──
+                      //    今つないでいる参加者から選ぶ形にする (利用者 ID を
+                      //    手で打たせない = ユーザー要望の現実的な形)。
+                      if (permission == 'list') ...[
+                        const SizedBox(height: 8),
+                        Text(provider.t('share.pickEditors'),
+                            style: const TextStyle(
+                                color: Colors.white60,
+                                fontSize: 10.5,
+                                height: 1.4)),
+                        const SizedBox(height: 4),
+                        if (provider.livePeers.isEmpty)
+                          Text(provider.t('share.noPeersYet'),
+                              style: const TextStyle(
+                                  color: Colors.white38, fontSize: 10.5))
+                        else
+                          for (final pe in provider.livePeers)
+                            if (pe.uid.isNotEmpty && pe.uid != provider.currentUid)
+                              InkWell(
+                                onTap: busy
+                                    ? null
+                                    : () => setD(() {
+                                          if (chosenEditors.contains(pe.uid)) {
+                                            chosenEditors.remove(pe.uid);
+                                          } else {
+                                            chosenEditors.add(pe.uid);
+                                          }
+                                        }),
+                                child: Padding(
+                                  padding:
+                                      const EdgeInsets.symmetric(vertical: 3),
+                                  child: Row(children: [
+                                    Icon(
+                                        chosenEditors.contains(pe.uid)
+                                            ? Icons.check_box_rounded
+                                            : Icons
+                                                .check_box_outline_blank_rounded,
+                                        size: 16,
+                                        color: chosenEditors.contains(pe.uid)
+                                            ? const Color(0xFFFFB347)
+                                            : Colors.white38),
+                                    const SizedBox(width: 6),
+                                    Container(
+                                      width: 10,
+                                      height: 10,
+                                      decoration: BoxDecoration(
+                                        color: Color(pe.colorRgb),
+                                        shape: BoxShape.circle,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Expanded(
+                                      child: Text(
+                                          pe.name.isEmpty
+                                              ? provider.t('live.anonymous')
+                                              : pe.name,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                              color: Colors.white70,
+                                              fontSize: 11.5)),
+                                    ),
+                                  ]),
+                                ),
+                              ),
+                      ],
                       // パスワード欄は廃止 (= ユーザー要望: 共有コード
                       //   そのものがパスワード代わり)。
                       const SizedBox(height: 6),
@@ -80824,7 +80920,13 @@ class _MindMapScreenState extends State<MindMapScreen>
             ),
           ),
           actions: [
-            if (isShared)
+            // ★ 中止できるのは公開した人だけ (= ユーザー要望)。 参加者に
+            //   出すと、 他の人の作業まで突然終わらせられてしまう。
+            //   共同編集をしていない (= ただの共有) 時は今までどおり出す。
+            if (isShared &&
+                (!provider.liveActive ||
+                    provider.livePageId != page.id ||
+                    provider.liveIsHost))
               TextButton(
                 onPressed: busy ? null : doUnpublish,
                 child: Text(provider.t('publish.stop'),
@@ -114556,6 +114658,12 @@ const String _kMdEmbeddedMapJs = r"""
     }
   };
 
+  // ★ 記法を書き換える道具を外へ出す (= ユーザー要望: 図を
+  //   ダブルクリックで要素を直せるように)。 図を描く側は別の
+  //   スクリプト塊にいるので、 window 経由でないと呼べない。
+  window.__mmFlowSetLabel = flowSetLabel;
+  window.__mmMindSetLabel = mindSetLabel;
+
 })();
 </script>
 """;
@@ -115336,6 +115444,10 @@ String _markdownPreviewHtml(String md, bool dark,
   .mmresize::after{content:'';width:44px;height:4px;border-radius:2px;
           background:$border;opacity:.9;}
   .mmresize:hover::after{filter:brightness(1.4);}
+  /* 図の上で直す入力欄 (= ダブルクリックで要素を編集)。 */
+  .mmedit{font:600 13px/1.3 inherit;padding:5px 8px;border-radius:6px;
+          border:2px solid #4FC3F7;background:#12121c;color:#fff;
+          box-shadow:0 4px 18px rgba(0,0,0,.45);outline:none;}
   /* ── 目次 (= ユーザー要望: プレビューの発展) ── */
   #mmtoc{background:$code;border:1px solid $border;border-radius:10px;
          padding:10px 14px;margin:0 0 16px;}
@@ -115616,6 +115728,106 @@ $mapsJs
       zoomAt(ev.clientX - rect.left, ev.clientY - rect.top,
           ev.deltaY < 0 ? 1.15 : 1 / 1.15);
     }, { passive: false });
+
+    // ── ダブルクリックで要素の文字を直す (= ユーザー要望) ──
+    //   図の上でそのまま書き換え、 元のマーメイド記法にも反映する。
+    //   記法の書き換えは別の塊にある道具を window 経由で借りる。
+    var srcLine = Number(slot.getAttribute('data-src-line')) || 0;
+    var canEditMermaid = !!window.__mmPost && srcLine > 0;
+
+    /// mermaid が付ける id から、 記法での目印を取り出す。
+    ///   例: 'flowchart-A-3' → 'A'
+    function nodeKeyOf(g) {
+      var id = g.getAttribute('id') || '';
+      var m = /^flowchart-(.+?)-\d+\$/.exec(id);
+      if (m) return m[1];
+      m = /^flowchart-(.+)\$/.exec(id);
+      return m ? m[1] : '';
+    }
+
+    /// この要素に今出ている文字。
+    function labelOfNode(g) {
+      var el = g.querySelector('.nodeLabel, .label, text');
+      return el ? (el.textContent || '').trim() : '';
+    }
+
+    /// 図の上に小さな入力欄を出して直してもらう。
+    function editNode(g) {
+      if (!canEditMermaid) return;
+      var before = labelOfNode(g);
+      var key = nodeKeyOf(g);
+      var r = g.getBoundingClientRect();
+      var wr = wrap.getBoundingClientRect();
+      var box = document.createElement('input');
+      box.type = 'text';
+      box.value = before;
+      box.className = 'mmedit';
+      box.style.position = 'absolute';
+      box.style.left = Math.max(4, r.left - wr.left) + 'px';
+      box.style.top = Math.max(4, r.top - wr.top) + 'px';
+      box.style.width = Math.max(90, r.width) + 'px';
+      box.style.zIndex = '40';
+      wrap.appendChild(box);
+      box.focus();
+      box.select();
+      var closed = false;
+      function done(ok) {
+        if (closed) return;
+        closed = true;
+        var v = box.value;
+        try { wrap.removeChild(box); } catch (e) {}
+        if (!ok) return;
+        v = String(v == null ? '' : v).trim();
+        if (!v || v === before) return;
+        var code = String(codeNow || '');
+        var next = null;
+        try {
+          if (/^\s*mindmap\b/m.test(code)) {
+            // mindmap は行で持っているので、 出ている文字で行を探す。
+            next = replaceFirstLabel(code, before, v);
+          } else if (key && window.__mmFlowSetLabel) {
+            next = window.__mmFlowSetLabel(code, key, v);
+          }
+          if (next == null) next = replaceFirstLabel(code, before, v);
+        } catch (e) { next = null; }
+        if (next == null || next === code) return;
+        codeNow = next;
+        window.__mmPost({ type: 'mermaidEdit', line: srcLine, code: next });
+      }
+      box.addEventListener('keydown', function (ev) {
+        ev.stopPropagation();
+        if (ev.key === 'Enter') { ev.preventDefault(); done(true); }
+        else if (ev.key === 'Escape') { ev.preventDefault(); done(false); }
+      });
+      box.addEventListener('blur', function () { done(true); });
+    }
+
+    /// 目印で探せない図 (mindmap など) 用の落とし所。
+    /// 今出ている文字と同じ所を 1 か所だけ入れ替える。
+    function replaceFirstLabel(src, before, after) {
+      if (!before) return null;
+      var lines = String(src).split('\n');
+      for (var i = 0; i < lines.length; i++) {
+        var at = lines[i].indexOf(before);
+        if (at < 0) continue;
+        lines[i] = lines[i].slice(0, at) + after +
+          lines[i].slice(at + before.length);
+        return lines.join('\n');
+      }
+      return null;
+    }
+
+    // 直した結果を覚えておく (続けて直せるように)。
+    var codeNow = code;
+
+    wrap.addEventListener('dblclick', function (ev) {
+      if (ev.target.closest('.mmctl')) return;
+      var g = ev.target.closest('g.node, g.mindmap-node, .node');
+      if (!g) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      editNode(g);
+    });
     var dragging = false, lx = 0, ly = 0;
     var resizing = false, rly = 0, rh = 0;
     wrap.addEventListener('mousedown', function (ev) {
@@ -233239,14 +233451,39 @@ class _McpChatDialogState extends State<_McpChatDialog> {
       );
       if (path == null || !mounted) return;
       final bytes = await File(path).readAsBytes();
+      // ★ 撮った物が動画のこともある (= ユーザー報告: カメラから動画を
+      //   渡すと画像データとして認識されてしまう)。 拡張子で見分けて、
+      //   動画は動画の MIME で送る。 一覧に出す絵はサムネイルを作る。
+      final ext = path.contains('.') ? path.split('.').last : 'jpg';
+      final isVideo = AiInputImage.isVideoExt(ext);
+      String? thumb;
+      if (isVideo) {
+        try {
+          final t = await vt.VideoThumbnail.thumbnailData(
+            video: path,
+            imageFormat: vt.ImageFormat.JPEG,
+            maxWidth: 160,
+            quality: 60,
+          );
+          if (t != null && t.isNotEmpty) thumb = base64Encode(t);
+        } catch (_) {
+          // サムネイルが作れなくても、 動画そのものは渡せる。
+        }
+      }
       try {
         await File(path).delete(); // 一時ファイルは残さない
       } catch (_) {}
       if (!mounted) return;
       setState(() => _images.add(AiInputImage(
-            mime: 'image/jpeg',
+            mime: isVideo
+                ? AiInputImage.mimeForExt(ext)
+                : 'image/jpeg',
             base64: base64Encode(bytes),
-            name: '${provider.t('ai.photoAttached')} ${_images.length + 1}',
+            previewBase64: thumb,
+            name: (isVideo
+                    ? provider.t('ai.videoAttached')
+                    : provider.t('ai.photoAttached')) +
+                ' ${_images.length + 1}',
           )));
     } catch (e) {
       if (!mounted) return;
@@ -234194,15 +234431,50 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                       GestureDetector(
                         onTap: () => _showAttachedImage(i),
                         child: ClipRRect(
-                        borderRadius: BorderRadius.circular(6),
-                        child: Image.memory(
-                          base64Decode(_images[i].base64),
-                          width: 56,
-                          height: 56,
-                          fit: BoxFit.cover,
-                          gaplessPlayback: true,
+                          borderRadius: BorderRadius.circular(6),
+                          // ★ 動画はそのままでは絵にならないので、
+                          //   作っておいたサムネイルを出す (= ユーザー報告:
+                          //   送信前の欄にサムネイルが表示されない)。
+                          //   サムネイルが作れなかった時はフィルムの印。
+                          child: Builder(builder: (_) {
+                            final img = _images[i];
+                            final raw = img.previewBase64 ??
+                                (img.isVideo ? null : img.base64);
+                            if (raw == null) {
+                              return Container(
+                                width: 56,
+                                height: 56,
+                                color: Colors.white10,
+                                child: const Icon(Icons.movie_rounded,
+                                    size: 22, color: Colors.white54),
+                              );
+                            }
+                            return Stack(
+                              alignment: Alignment.center,
+                              children: [
+                                Image.memory(
+                                  base64Decode(raw),
+                                  width: 56,
+                                  height: 56,
+                                  fit: BoxFit.cover,
+                                  gaplessPlayback: true,
+                                ),
+                                if (img.isVideo)
+                                  Container(
+                                    decoration: const BoxDecoration(
+                                      color: Colors.black54,
+                                      shape: BoxShape.circle,
+                                    ),
+                                    padding: const EdgeInsets.all(3),
+                                    child: const Icon(
+                                        Icons.play_arrow_rounded,
+                                        size: 16,
+                                        color: Colors.white),
+                                  ),
+                              ],
+                            );
+                          }),
                         ),
-                      ),
                       ),
                       Positioned(
                         right: 0,
