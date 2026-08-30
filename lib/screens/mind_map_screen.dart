@@ -42861,6 +42861,9 @@ class _MindMapScreenState extends State<MindMapScreen>
         if (_openStyleOf('webAutomation') == 'floating' && _isDesktop) {
           _showFloatingPanelWindow(
             (_) => GoogleSearchAutomationHost(
+              // 浮遊窓の帯にもう × があるので、 中では出さない
+              // (= ユーザー要望: × が 2 つあるのをどちらか一方だけに)。
+              hostHasCloseButton: true,
               onRequestClose: () => _closeFloatingPanelByKey('webAutomation'),
             ),
             width: 560,
@@ -232634,7 +232637,22 @@ class _McpChatDialogState extends State<_McpChatDialog> {
       !kIsWeb && (Platform.isAndroid || Platform.isIOS);
 
   /// 説明パネルを一時的に開いているか (ヘッダーの ⓘ で切り替え)。
+  ///
+  /// ★ 既定では開かない (= ユーザー要望: 最初に説明画面へ遷移させず、
+  ///   押した人だけが見られるように)。
   bool _showMcpInfo = false;
+
+  /// ヘッダーを詰めて描く幅か (= ユーザー報告: スマホで閉じるボタンが
+  /// はみ出す)。 アイコンが 6 個並ぶので、 既定の 48px 幅のままだと
+  /// 狭い画面に収まらない。
+  static bool _narrowHeader(BuildContext ctx) =>
+      MediaQuery.of(ctx).size.width < 520;
+
+  /// 狭い時だけ小さくするアイコンボタンの寸法。
+  static BoxConstraints? _hdrBtnConstraints(BuildContext ctx) =>
+      _narrowHeader(ctx)
+          ? const BoxConstraints(minWidth: 32, minHeight: 32)
+          : null;
 
   /// 「できること」 の専用欄を開いているか (= ユーザー要望: 説明は会話欄では
   /// なく独自の欄に出す。 以前は会話の上で展開していて、 開くと画面から
@@ -233663,11 +233681,12 @@ class _McpChatDialogState extends State<_McpChatDialog> {
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           // ── ヘッダー ──
           Padding(
-            padding: const EdgeInsets.fromLTRB(14, 10, 6, 4),
+            padding: EdgeInsets.fromLTRB(_narrowHeader(context) ? 10 : 14, 10,
+                _narrowHeader(context) ? 2 : 6, 4),
             child: Row(children: [
               const Icon(Icons.auto_awesome_rounded,
                   size: 18, color: Color(0xFF80CBC4)),
-              const SizedBox(width: 8),
+              SizedBox(width: _narrowHeader(context) ? 5 : 8),
               // ★ 見出しの何も無い所を掴んでも窓を動かせる
               //   (= ユーザー報告: 上の細い帯だけだと掴みにくい)。
               //   浮遡窓の中に居る時だけ効く。
@@ -233680,7 +233699,13 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                   onPanEnd: (_) => context
                       .findAncestorStateOfType<_FloatingPanelWindowState>()
                       ?.dragWindowEnd(),
+                  // ★ 1 行に収める (= ユーザー報告: スマホで見出しが
+                  //   縦書きになる)。 横幅が足りないと 1 文字ずつ折り返して
+                  //   縦に積まれてしまうので、 折り返しを止めて「…」 にする。
                   child: Text(provider.t('mcp.chatTitle'),
+                      maxLines: 1,
+                      softWrap: false,
+                      overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                           color: Colors.white,
                           fontSize: 14,
@@ -233694,6 +233719,11 @@ class _McpChatDialogState extends State<_McpChatDialog> {
               //    外に出す窓の仕組みは残してあるが、 ここからは開かない。 ──
               // 説明をもう一度見る (= ユーザー要望: ヘッダーに ⓘ で置く)。
               IconButton(
+                visualDensity: VisualDensity.compact,
+                constraints: _hdrBtnConstraints(context),
+                padding: _narrowHeader(context)
+                    ? EdgeInsets.zero
+                    : const EdgeInsets.all(8),
                 tooltip: provider.t('mcp.showInfo'),
                 icon: Icon(
                     Icons.info_outline_rounded,
@@ -233714,6 +233744,11 @@ class _McpChatDialogState extends State<_McpChatDialog> {
               ),
               // 前提条件 (= ユーザー要望: Markdown のように自分で書いて置ける)。
               IconButton(
+                visualDensity: VisualDensity.compact,
+                constraints: _hdrBtnConstraints(context),
+                padding: _narrowHeader(context)
+                    ? EdgeInsets.zero
+                    : const EdgeInsets.all(8),
                 tooltip: provider.t('mcp.preamble'),
                 icon: Icon(Icons.rule_rounded,
                     color: provider.mcpPreamble.trim().isEmpty
@@ -233725,6 +233760,8 @@ class _McpChatDialogState extends State<_McpChatDialog> {
               // 設定 (= ユーザー要望: 順番待ち / 割り込みはここで決める。
               //   処理中の帯には出さない)。
               PopupMenuButton<String>(
+                constraints: const BoxConstraints(minWidth: 200),
+                padding: EdgeInsets.zero,
                 tooltip: provider.t('mcp.assistantSettings'),
                 color: const Color(0xFF23233A),
                 icon: const Icon(Icons.tune_rounded,
@@ -233767,6 +233804,11 @@ class _McpChatDialogState extends State<_McpChatDialog> {
               ),
               // 会話の一覧 (= ユーザー要望: セッションを分けて保存)。
               IconButton(
+                visualDensity: VisualDensity.compact,
+                constraints: _hdrBtnConstraints(context),
+                padding: _narrowHeader(context)
+                    ? EdgeInsets.zero
+                    : const EdgeInsets.all(8),
                 tooltip: provider.t('mcp.sessions'),
                 icon: const Icon(Icons.forum_outlined,
                     color: Colors.white54, size: 19),
@@ -233774,6 +233816,11 @@ class _McpChatDialogState extends State<_McpChatDialog> {
               ),
               // 新しい会話を始める。
               IconButton(
+                visualDensity: VisualDensity.compact,
+                constraints: _hdrBtnConstraints(context),
+                padding: _narrowHeader(context)
+                    ? EdgeInsets.zero
+                    : const EdgeInsets.all(8),
                 tooltip: provider.t('mcp.newSession'),
                 icon: const Icon(Icons.add_comment_outlined,
                     color: Colors.white54, size: 19),
@@ -233788,6 +233835,11 @@ class _McpChatDialogState extends State<_McpChatDialog> {
               ),
               // 今の会話の中身を消す。
               IconButton(
+                visualDensity: VisualDensity.compact,
+                constraints: _hdrBtnConstraints(context),
+                padding: _narrowHeader(context)
+                    ? EdgeInsets.zero
+                    : const EdgeInsets.all(8),
                 tooltip: provider.t('mcp.clearHistory'),
                 icon: const Icon(Icons.delete_sweep_rounded,
                     color: Colors.white38, size: 19),
@@ -233798,6 +233850,11 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                 },
               ),
               IconButton(
+                visualDensity: VisualDensity.compact,
+                constraints: _hdrBtnConstraints(context),
+                padding: _narrowHeader(context)
+                    ? EdgeInsets.zero
+                    : const EdgeInsets.all(8),
                 tooltip: provider.t('btn.close'),
                 icon:
                     const Icon(Icons.close_rounded, color: Colors.white70),
@@ -233814,8 +233871,10 @@ class _McpChatDialogState extends State<_McpChatDialog> {
           //    ⓘ から見られるようにする) ──
           //    説明の欄を開いている間は出さない (= ユーザー要望: 表示領域が
           //    狭いので、 説明はその欄だけで大きく見せる)。
-          if (!_showCapabilityPanel &&
-              (!provider.mcpInfoDismissed || _showMcpInfo))
+          // ★ 既定では出さない (= ユーザー要望: 最初に説明画面へ遷移させず、
+          //   ヘッダーの ⓘ を押した人だけが見られるように)。 以前は
+          //   mcpInfoDismissed が false の間 (= 初回) は勝手に出ていた。
+          if (!_showCapabilityPanel && _showMcpInfo)
             Container(
             width: double.infinity,
             margin: const EdgeInsets.fromLTRB(12, 10, 12, 0),
@@ -234081,9 +234140,12 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                 ),
               ]),
             ),
-          // ── ここから下は「書く欄」。 説明の欄を出している間は隠す
-          //    (= ユーザー要望: 説明に切り替えた時はプロンプト欄を出さない) ──
-          if (!_showCapabilityPanel) ...[
+          // ── ここから下は「書く欄」。 説明を出している間は隠す
+          //    (= ユーザー要望: 説明の画面ではプロンプト欄を出さず、
+          //     説明文だけの画面にして欲しい) ──
+          //    「できること」 の欄だけでなく、 ヘッダーの ⓘ で出す説明も
+          //    同じ扱いにする。
+          if (!_showCapabilityPanel && !_showMcpInfo) ...[
           const Divider(height: 1, color: Colors.white12),
           // ── 添付したファイル (= ユーザー要望: 文書もチャットに投げたい) ──
           if (_attachments.isNotEmpty)

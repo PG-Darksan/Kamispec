@@ -379,6 +379,9 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
     // 前に使った指示 (= ユーザー要望: 呼び出せるように)。
     // ignore: discarded_futures
     _loadAiPrompts();
+    // 入力欄の下書きを戻す (= ユーザー要望: 戻ってきた時に空にしない)。
+    // ignore: discarded_futures
+    _restoreAiDraft();
     // 外向けの設定 (時刻で実行 / コマンドの許可) を読む (= ユーザー要望)。
     // ignore: discarded_futures
     _loadCmdPolicy();
@@ -682,6 +685,29 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
   ///   が畳む役になる。
   bool _aiFormOpen = true;
   final TextEditingController _aiCtrl = TextEditingController();
+
+  /// 入力欄の下書きを覚えておく鍵 (= ユーザー要望: 戻ってきた時に
+  /// プロンプト欄が空にならないように)。 画面の作り替えで State が
+  /// 作り直されても、 ここから戻せば消えない。
+  static const String _kAiDraftKey = 'webauto_ai_draft_v1';
+
+  /// 下書きを保存する (打つたびに呼ぶので、 失敗は握り潰す)。
+  void _saveAiDraft(String v) {
+    // ignore: discarded_futures
+    SharedPreferences.getInstance()
+        .then((sp) => sp.setString(_kAiDraftKey, v))
+        .catchError((_) => false);
+  }
+
+  Future<void> _restoreAiDraft() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final v = sp.getString(_kAiDraftKey) ?? '';
+      if (v.isNotEmpty && mounted && _aiCtrl.text.isEmpty) {
+        _aiCtrl.text = v;
+      }
+    } catch (_) {}
+  }
 
   /// 前に使った指示 (= ユーザー要望: フロー作成に使ったプロンプトを覚えて
   /// おいて呼び出せるように)。 prefs `autoAiPrompts` に古い順で持つ。
@@ -1008,6 +1034,17 @@ $snap'''}
   /// 切っている時は、 走らせる前の手順を終わったら元に戻す。
   bool _agentKeepSteps = true;
 
+  /// うまく進めなかった理由を画面に出す (= ユーザー報告: 何も作られない
+  /// まま戻ってきた)。 黙って抜けると、 何が起きたのか分からない。
+  void _agentFail(MindMapProvider provider, String key, String detail) {
+    if (!mounted) return;
+    final d = detail.trim();
+    final tail = d.isEmpty
+        ? ''
+        : ' / ${d.length > 160 ? '${d.substring(0, 160)}…' : d}';
+    setState(() => _status = provider.t(key) + tail);
+  }
+
   /// 画面を見ながら、 1 手ずつ考えて実行する。
   ///
   /// 先に全部組み立てる「フロー作成」 と違い、 毎回いまの画面を見てから
@@ -1028,6 +1065,10 @@ $snap'''}
       _madeFiles.clear();
       _status = provider.t('agent.thinking');
     });
+    // ★ 実行中だと伝える (= ユーザー要望: 画面を見ながら実行している
+    //   間はブラウザも見えるように)。 これを呼ばないと、 手順を並べて実行した
+    //   時だけブラウザが出て、 AI に任せて動かしている間は隠れたままだった。
+    widget.onRunningChanged?.call(true, _requestStop);
     final done = <String>[];
     try {
       // 手数の上限。 止まらなくなるのを防ぐ。
@@ -1048,34 +1089,68 @@ $_kFlowFormatRules
 
 【今の画面】 (url / title / 押せる物の文字 items / 見出し heads /
  scrollY と pageH で今どのあたりかが分かります)
+${snap.isEmpty ? '\n※ まだページを開いていません。 最初の 1 手は必ず'
+    ' {"kind":"open","text":"https://…"} にしてください。\n' : ''}
 ${snap.isEmpty ? '(画面の中身を読めませんでした)' : snap}
 
 【ここまでにやったこと】
 ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
 
 依頼: $req''';
-        final out = (await provider.askAi(prompt)).trim();
+        String out;
+        try {
+          out = (await provider.askAi(prompt)).trim();
+        } catch (err) {
+          // ★ 黙って止まらない (= ユーザー報告: 真っ白な画面になった後、
+          //   何も作られないまま戻ってきた)。 何が起きたのかを出す。
+          _agentFail(provider, 'agent.errAi', '$err');
+          break;
+        }
         if (_agentStop || !mounted) break;
+        if (out.isEmpty) {
+          // AI が空を返した。 推論に余裕が無いモデルで起きやすい。
+          _agentFail(provider, 'agent.errEmpty', '');
+          break;
+        }
         var body = out;
         final fence = RegExp(r'```[a-zA-Z]*\s*\n([\s\S]*?)\n?```');
         final fm = fence.firstMatch(body);
         if (fm != null) body = fm.group(1) ?? body;
         final s = body.indexOf('{');
         final e = body.lastIndexOf('}');
-        if (s < 0 || e <= s) break;
-        final m = jsonDecode(body.substring(s, e + 1));
-        if (m is! Map) break;
+        if (s < 0 || e <= s) {
+          _agentFail(provider, 'agent.errFormat', out);
+          break;
+        }
+        Object? m;
+        try {
+          m = jsonDecode(body.substring(s, e + 1));
+        } catch (_) {
+          _agentFail(provider, 'agent.errFormat', out);
+          break;
+        }
+        if (m is! Map) {
+          _agentFail(provider, 'agent.errFormat', out);
+          break;
+        }
         if (m['done'] == true) {
           if (mounted) setState(() => _status = provider.t('agent.done'));
           break;
         }
         final list = m['steps'];
-        if (list is! List || list.isEmpty) break;
+        if (list is! List || list.isEmpty) {
+          // 手順が空で done でも無い = 何もしないまま終わるところ。
+          _agentFail(provider, 'agent.errNoSteps', out);
+          break;
+        }
         final steps = <WebAutoStep>[
           for (final j in list)
             if (j is Map) WebAutoStep.fromJson(Map<String, dynamic>.from(j)),
         ];
-        if (steps.isEmpty) break;
+        if (steps.isEmpty) {
+          _agentFail(provider, 'agent.errNoSteps', out);
+          break;
+        }
         if (!mounted) return;
         // 実行した手順はフローに積んでいく (後で使い回せるように)。
         setState(() {
@@ -1109,6 +1184,8 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
           ..addAll(before);
         await _save();
       }
+      // ★ 終わったので元に戻す (ブラウザを隠す判断は受け側が持つ)。
+      widget.onRunningChanged?.call(false, _requestStop);
       if (mounted) {
         setState(() {
           _agentBusy = false;
@@ -3490,6 +3567,9 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
                     },
                     child: TextField(
                       controller: _aiCtrl,
+                      // 打つたびに下書きを残す (= ユーザー要望: 実行から
+                      // 戻ってきた時にプロンプト欄が空にならないように)。
+                      onChanged: _saveAiDraft,
                       // 常に出ているので、 勝手に文字入力へ移らない
                       // (モバイルでキーボードが出っぱなしになるのを防ぐ)。
                       autofocus: false,

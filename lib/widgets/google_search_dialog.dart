@@ -1081,11 +1081,20 @@ class _FloatingSearchWindowState extends State<_FloatingSearchWindow> {
 /// (= ユーザー要望: フローティングモードで自動操作のフローを外に出したい)。
 /// 中身は automationOnly の _GoogleSearchPage そのもの。
 class GoogleSearchAutomationHost extends StatelessWidget {
-  const GoogleSearchAutomationHost({super.key, required this.onRequestClose});
+  const GoogleSearchAutomationHost({
+    super.key,
+    required this.onRequestClose,
+    this.hostHasCloseButton = false,
+  });
 
   /// 「閉じる」 が押された時の処理。 Overlay / 別プロセス窓には pop すべき
   /// route が無いので必須 (Navigator.pop の誤爆防止)。
   final VoidCallback onRequestClose;
+
+  /// 包んでいる側 (浮遊窓の帯など) がすでに閉じるを持っているか。
+  /// true なら自分では出さない (= ユーザー要望: × が 2 つあるのを
+  /// どちらか一方だけに)。
+  final bool hostHasCloseButton;
 
   @override
   Widget build(BuildContext context) {
@@ -1098,6 +1107,7 @@ class GoogleSearchAutomationHost extends StatelessWidget {
         onAddNode: (title, memo, linkUrl) {},
         openAutomation: true,
         automationOnly: true,
+        hostHasCloseButton: hostHasCloseButton,
         onRequestClose: onRequestClose,
         windowWidth: cns.maxWidth.isFinite ? cns.maxWidth : null,
         windowHeight: cns.maxHeight.isFinite ? cns.maxHeight : null,
@@ -1176,6 +1186,9 @@ class _GoogleSearchPage extends StatefulWidget {
   /// 自動操作の窓だけを見せるか (= ユーザー要望)。
   final bool automationOnly;
 
+  /// 外側の帯がすでに閉じるを持っているか (= × の重複を避ける)。
+  final bool hostHasCloseButton;
+
   /// 開いた時に自動操作パネルを出すか (= ユーザー要望: 自動化のボタン)。
   final bool openAutomation;
 
@@ -1194,6 +1207,7 @@ class _GoogleSearchPage extends StatefulWidget {
     this.minimalMode = false,
     this.openAutomation = false,
     this.automationOnly = false,
+    this.hostHasCloseButton = false,
     this.onExpandToCompact,
     this.onRequestClose,
     this.windowWidth,
@@ -5535,7 +5549,11 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                 child: WebAutomationPanel(
                   key: _autoPanelKey,
                   // 外側の帯を出さない時は、 見出しの端に閉じるを出す。
-                  showCloseButton: fillWindow,
+                  // ただし、 包んでいる側 (浮遊窓の帯など) がもう閉じるを
+                  // 持っているなら出さない (= ユーザー要望: × が 2 つあるのを
+                  // どちらか一方だけに)。
+                  showCloseButton:
+                      fillWindow && !widget.hostHasCloseButton,
                   exec: _autoExecJs,
                   evalJs: _autoEvalJs,
                   onRecordingChanged: (rec) {
