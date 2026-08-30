@@ -106135,6 +106135,17 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
   /// 討論 (= ユーザー要望: ディベートの項目)。
   bool get _isDebate => _mode == 'debate';
 
+  /// 告白の練習 (= ユーザー要望)。
+  bool get _isConfess => _mode == 'confess';
+
+  /// 別れ話の練習 (= ユーザー要望)。
+  bool get _isBreakup => _mode == 'breakup';
+
+  /// 告白・別れ話のまとめ。 二つとも「相手 1 人との大事な話」
+  /// なので、 営業ロールプレイ向けの欄 (商談相手・アプローチ方法)
+  /// をそのまま使わず、 専用の文言に差し替える。
+  bool get _isRelation => _isConfess || _isBreakup;
+
   /// 資格・免許の面接 (= ユーザー要望: 医師国家試験のような資格の面接)。
   bool get _isLicense => _mode == 'license';
 
@@ -106188,6 +106199,17 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
       mode: 'debate',
       labelKey: 'hdr.debatePractice',
       icon: Icons.balance_rounded
+    ),
+    // ── 告白と別れ話 (= ユーザー要望) ──
+    (
+      mode: 'confess',
+      labelKey: 'hdr.confessPractice',
+      icon: Icons.favorite_rounded
+    ),
+    (
+      mode: 'breakup',
+      labelKey: 'hdr.breakupPractice',
+      icon: Icons.heart_broken_rounded
     ),
   ];
 
@@ -106670,6 +106692,41 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
           ' 人格を攻撃せず、 論点だけを相手にしてください。'
           ' 音声会話なので 1 回の発話は短め (2〜3 文) に。'
           '${topic.isEmpty ? ' お題がまだ決まっていないので、 まず何について討論するかを尋ねてください。' : ''}';
+    }
+    // ── 告白・別れ話 (= ユーザー要望) ──
+    if (_isRelation) {
+      final who = _pickupRandomAi
+          ? ' 相手の年齢・性格・今の気持ちは、 あなたが自然に'
+              ' 決めてください。 こちらに都合のよい相手にはせず、'
+              ' とまどいやめらいもそのまま出してください。'
+          : (_counterpartCtrl.text.trim().isNotEmpty
+              ? ' 相手の人物像:「${_counterpartCtrl.text.trim()}」。'
+                  ' この人になりきってください。'
+              : '');
+      final common = ' 音声会話なので 1 回の発話は短め (1〜3 文) に。'
+          ' 地の文や括弧書きの仕草は入れず、 その人の台詞だけを'
+          ' 返してください。 結論を急がず、 相手の言い分を聞いてから'
+          ' 反応してください。';
+      if (_isConfess) {
+        final rel = topic.isEmpty ? '(間柄はこれから決める)' : topic;
+        return 'あなたは、 ユーザーから告白される側の人です。'
+            ' ユーザーとの間柄:「$rel」。'
+            '$who'
+            ' 進め方: まずは普段のやり取りから始め、'
+            ' ユーザーが切り出したらその言い方に応じて自然に'
+            ' 反応してください。 答えは必ずしも OK でなくて構いません。'
+            ' 間を置いたり、 聞き返したり、 迷ったりしてください。'
+            '$common';
+      }
+      final reason = topic.isEmpty ? '(理由はこれから決める)' : topic;
+      return 'あなたは、 ユーザーから別れ話を切り出される側の'
+          '恋人 (または配偶者) です。'
+          ' ユーザー側の理由:「$reason」。'
+          '$who'
+          ' 進め方: すぐには受け入れず、 理由を聞いたり、'
+          ' 引き留めたり、 怒ったり、 黙ったりしてください。'
+          ' ただし、 相手を傷つける言葉や脅しは使わないでください。'
+          '$common';
     }
     // 営業ロープレ: 商談相手の人物像 + アプローチ方法 (= ユーザー要望)。
     final counterpart = _counterpartCtrl.text.trim();
@@ -107666,7 +107723,13 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
                         ? p.t('talk.interviewDescription')
                         : _isPickup
                             ? p.t('talk.pickupDescription')
-                            : p.t('talk.salesDescription'),
+                            : _isDebate
+                                ? p.t('talk.debateDescription')
+                                : _isConfess
+                                    ? p.t('talk.confessDescription')
+                                    : _isBreakup
+                                        ? p.t('talk.breakupDescription')
+                                        : p.t('talk.salesDescription'),
             style: const TextStyle(color: Colors.white60, fontSize: 12.5)),
         // ── プレゼンテーションの設定 (= ユーザー要望: 原稿や動画を渡すと
         //    AI が質疑を考えたり評価したりする) ──
@@ -107928,24 +107991,41 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
         // 資格面接は上に専用の欄を出しているので、 ここは出さない。
         if (!_isPickup && !_isExam && !_isLicense && !_isPresentation) ...[
           const SizedBox(height: 16),
+          // ★ 種類ごとに見出しを変える (= ユーザー要望: 討論の所は
+          //   売りたい製品じゃなくて議論したいテーマとかに替えて)。
           Text(
-              context
-                  .read<MindMapProvider>()
-                  .t(_isInterview ? 'talk.companyName' : 'talk.productName'),
+              context.read<MindMapProvider>().t(_isInterview
+                  ? 'talk.companyName'
+                  : _isDebate
+                      ? 'talk.debateTheme'
+                      : _isConfess
+                          ? 'talk.confessRelation'
+                          : _isBreakup
+                              ? 'talk.breakupReason'
+                              : 'talk.productName'),
               style: TextStyle(
                   color: accent, fontSize: 12, fontWeight: FontWeight.w700)),
           const SizedBox(height: 6),
           TextField(
             controller: _topicCtrl,
             style: const TextStyle(color: Colors.white),
-            decoration: _talkInputDeco(context
-                .read<MindMapProvider>()
-                .t(_isInterview ? 'talk.companyHint' : 'talk.productHint')),
+            minLines: _isRelation ? 2 : 1,
+            maxLines: _isRelation ? 3 : 1,
+            decoration: _talkInputDeco(
+                context.read<MindMapProvider>().t(_isInterview
+                    ? 'talk.companyHint'
+                    : _isDebate
+                        ? 'talk.debateThemeHint'
+                        : _isConfess
+                            ? 'talk.confessRelationHint'
+                            : _isBreakup
+                                ? 'talk.breakupReasonHint'
+                                : 'talk.productHint')),
           ),
         ],
         // 相手の設定を AI に任せる (= ユーザー要望: 対象となる相手の
         //   ステータスなどを LLM に適当に決めさせる)。
-        if (_isPickup || _isDebate) ...[
+        if (_isPickup || _isDebate || _isRelation) ...[
           const SizedBox(height: 12),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -107959,9 +108039,11 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                    context
-                        .read<MindMapProvider>()
-                        .t('talk.pickupRandomProfile'),
+                    // 討論・告白・別れ話に「場面」 は無いので、 相手の
+                    //   設定だけを指す言い方にする。
+                    context.read<MindMapProvider>().t(_isPickup
+                        ? 'talk.pickupRandomProfile'
+                        : 'talk.aiDecidesCounterpart'),
                     style:
                         const TextStyle(color: Colors.white, fontSize: 12.5)),
               ),
@@ -108115,7 +108197,12 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
           //   まとめて置く (= ユーザー要望) ため、 ここには出さない。
           if (!_isPickup) ...[
             const SizedBox(height: 16),
-            Text(context.read<MindMapProvider>().t('talk.clientProfile'),
+            Text(
+                context.read<MindMapProvider>().t(_isDebate
+                    ? 'talk.debateOpponent'
+                    : _isRelation
+                        ? 'talk.relationPartner'
+                        : 'talk.clientProfile'),
                 style: TextStyle(
                     color: accent, fontSize: 12, fontWeight: FontWeight.w700)),
             const SizedBox(height: 6),
@@ -108125,7 +108212,11 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
               minLines: 2,
               maxLines: 4,
               decoration: _talkInputDeco(
-                  context.read<MindMapProvider>().t('talk.counterpartHint')),
+                  context.read<MindMapProvider>().t(_isDebate
+                      ? 'talk.debateOpponentHint'
+                      : _isRelation
+                          ? 'talk.relationPartnerHint'
+                          : 'talk.counterpartHint')),
             ),
           ],
           if (_isPickup) ...[
@@ -108193,6 +108284,9 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
               ),
             ),
           ],
+          // ★ 討論・告白・別れ話には「アプローチ方法」 は要らない
+          //   (= ユーザー報告: 討論の所に営業用の欄が出ている)。
+          if (!_isDebate && !_isRelation) ...[
           const SizedBox(height: 16),
           Text(
               _isPickup
@@ -108232,6 +108326,7 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
                           () => setState(() => _approach = 'online'),
                           accent),
                     ]),
+          ],
           // ── 場面 + 人物像 を 1 つの任意項目として最下部に配置 (= ユーザー
           //    要望)。 AI ランダム設定 ON の時は不要なので隠す。 ──
           if (_isPickup && !_pickupRandomAi) ...[
@@ -108285,7 +108380,13 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
                                 ? p.t('talk.startInterview')
                                 : _isPickup
                                     ? p.t('talk.startPickup')
-                                    : p.t('talk.startSales'),
+                                    : _isDebate
+                                        ? p.t('talk.startDebate')
+                                        : _isConfess
+                                            ? p.t('talk.startConfess')
+                                            : _isBreakup
+                                                ? p.t('talk.startBreakup')
+                                                : p.t('talk.startSales'),
                 style: const TextStyle(fontWeight: FontWeight.w700)),
             onPressed: _gathering ? null : _startConversation,
           ),
@@ -231621,13 +231722,27 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
       if (!mounted) return;
       // ★ 覚えている大きさが無い窓も、 最初に一度画面に収める。
       _fitOnScreen();
-      if (_pushed) return;
-      _pushed = true;
-      _navKey.currentState!
-          .push(MaterialPageRoute(builder: widget.builder))
-          .then((_) {
-        if (mounted) widget.onClose();
-      });
+      _pushContent();
+    });
+  }
+
+  /// 中身を、 この窓の内側の Navigator へ積む。
+  ///
+  /// ★ 必ず「窓が実際に描かれた後」 に呼ぶこと。
+  ///   位置が決まるまで描かない作りにしたので、 最初の 1 枚の
+  ///   後でも _navKey の中身がまだ無いことがある。 以前はそこで
+  ///   `_navKey.currentState!` と書いていたため例外で飛び、 中身を
+  ///   積む処理ごと無くなって、 帯だけの真っ黒な窓になっていた
+  ///   (= ユーザー報告: AI アシスタント及び自動化の項目が
+  ///   起動しなくなっている)。
+  void _pushContent() {
+    if (_pushed || !mounted) return;
+    final nav = _navKey.currentState;
+    // まだ生まれていない。 次の描画の後に入り直す。
+    if (nav == null) return;
+    _pushed = true;
+    nav.push(MaterialPageRoute(builder: widget.builder)).then((_) {
+      if (mounted) widget.onClose();
     });
   }
 
@@ -231838,6 +231953,11 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
     //   立ち上がってから移動してくる)。 覚えていた位置は prefs から
     //   後から読むので、 先に描くと既定の場所に出てから飛ぶように見える。
     if (!_geomReady) return const SizedBox.shrink();
+    // 位置が決まって初めて Navigator が生まれるので、
+    //   中身を積むのはこの描画の後。
+    if (!_pushed) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _pushContent());
+    }
     final screen = MediaQuery.of(context).size;
     // ★ 端をまたいで外へ引っ張れるようにする (= ユーザー要望: 外へ出したら
     //   そのまま外の窓になるように)。 以前は画面の中へ抑え込んでいたので、
@@ -231968,13 +232088,19 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
                                   color: Color(0xFF4FC3F7), fontSize: 10)),
                         ]),
                       ),
-                    IconButton(
-                      padding: EdgeInsets.zero,
-                      constraints:
-                          const BoxConstraints(minWidth: 28, minHeight: 28),
-                      icon: const Icon(Icons.close_rounded,
-                          color: Colors.white54, size: 15),
-                      onPressed: widget.onClose,
+                    // ★ 閉じるは少し大きく、 右の角から離して置く
+                    //   (= ユーザー要望: 大きさ調整のつまみと近くて
+                    //   押しづらい)。 つまみの方も帯の下へ逃がしてある。
+                    Padding(
+                      padding: const EdgeInsets.only(right: 4),
+                      child: IconButton(
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(
+                            minWidth: 34, minHeight: 30),
+                        icon: const Icon(Icons.close_rounded,
+                            color: Colors.white70, size: 18),
+                        onPressed: widget.onClose,
+                      ),
                     ),
                   ]),
                 ),
@@ -232033,21 +232159,23 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
                 ),
               ),
             ),
+            // ★ 右のつまみだけ帯より下へ逃がす
+            //   (= ユーザー要望: × ボタンと大きさ調整の位置が
+            //   近くて押しづらい)。 左上は何も置いていないのでそのまま。
             Positioned(
               right: 0,
-              top: 0,
+              top: 36,
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onPanUpdate: (d) => setState(() {
-                  final nh = (_h - d.delta.dy).clamp(280.0, screen.height);
-                  _pos = Offset(_pos.dx, _pos.dy + (_h - nh));
-                  _h = nh;
-                  _w = (_w + d.delta.dx).clamp(360.0, screen.width);
+                  final nw = (_w + d.delta.dx).clamp(360.0, screen.width);
+                  _w = nw;
+                  _h = (_h + d.delta.dy).clamp(280.0, screen.height);
                   _scheduleSaveGeometry();
                 }),
                 child: const Padding(
-                  padding: EdgeInsets.all(4),
-                  child: Icon(Icons.north_east_rounded,
+                  padding: EdgeInsets.symmetric(horizontal: 5, vertical: 8),
+                  child: Icon(Icons.open_in_full_rounded,
                       size: 13, color: Colors.white38),
                 ),
               ),

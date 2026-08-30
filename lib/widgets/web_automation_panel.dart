@@ -16,6 +16,7 @@ import 'dart:typed_data' show Uint8List;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:flutter/services.dart'
     show
         Clipboard,
@@ -33,6 +34,8 @@ import '../providers/mind_map_provider.dart';
 // パソコンそのものを操作する (= ユーザー要望: PC 内のアプリを操作)。
 import '../services/cdp_browser.dart';
 import '../services/desktop_input.dart';
+import '../services/page_extract_js.dart';
+import '../services/page_scroll_js.dart';
 import '../services/screen_capture.dart' as scap;
 import '../utils/build_flags.dart';
 import 'shot_manager_dialog.dart';
@@ -126,8 +129,27 @@ enum WebAutoKind {
   /// アプリ内のブラウザではなく **外のブラウザ** に効く。
   ///   text     = どのブラウザか ('chrome' / 'edge' / 'brave' …。 空なら先頭)
   ///   selector = 最初に開く URL (空でもよい)
-  ///   count    = 1 にすると普段のプロファイル (ログイン済み) で開く
+  ///   submit   = true にすると、 アカウント専用のブラウザで開く
+  ///              (初回だけ人がログインすれば、 次からはログイン済み)
+  ///   scrollDir = どのアカウントか (呼び名。 空なら既定の 1 つ)
   openBrowser,
+
+  /// ページのダウンロードボタン / リンクを押して、 ファイルを保存する
+  /// (= ユーザー要望: スクショ以外のデータも取ってこられるように)。
+  ///   text     = 押す物の文字 (例「ダウンロード」)。 空なら selector を使う
+  ///   selector = 押す物の CSS。 http で始まる時はその URL を直に落とす
+  ///   durationMs = 待つ上限 (既定 60 秒)
+  download,
+
+  /// そのページのログとエラー (デバッグログ) を取る
+  /// (= ユーザー要望: エラーが起こっている画面のログを取りたい)。
+  ///   count = 0 で「集め始める」 だけ。 1 以上で「今まで集めた分を保存」
+  consoleLog,
+
+  /// ページの中身 (文字 / 表 / リンク / HTML) を取り出して保存する。
+  ///   text     = 何を取るか: 'text' / 'html' / 'table' / 'links'
+  ///   selector = 取り出す範囲の CSS (空ならページ全体)
+  extract,
 }
 
 /// コマンド実行の許可の仕方 (= ユーザー要望: 許可を求める・全部任せる)。
@@ -249,7 +271,11 @@ class WebAutoStep {
   static WebAutoStep fromJson(Map<String, dynamic> j) => WebAutoStep(
         kind: WebAutoKind.values.firstWhere(
           (e) => e.name == (j['kind'] as String? ?? 'tap'),
-          orElse: () => WebAutoKind.tap,
+          // ★ 知らない種類は「待つ」 に倒す (= 以前は tap に化けていた。
+          //   tap は座標 (0,0) を押すので、 新しい種類を含むフローを
+          //   古い版で開くと画面の左上を連打する手順に変わり、 しかも
+          //   保存し直されて元に戻らなかった)。 待機なら害が無い。
+          orElse: () => WebAutoKind.wait,
         ),
         x: (j['x'] as num?)?.toDouble() ?? 0,
         y: (j['y'] as num?)?.toDouble() ?? 0,
@@ -287,6 +313,13 @@ class WebAutomationPanel extends StatefulWidget {
   /// (= ユーザー要望)。 渡されていなければ「全体を 1 枚」 の手順は何もしない。
   final Future<String?> Function()? captureFull;
 
+  /// 出来上がった PNG をスクショ置き場に保存し、 保存先パスを返す。
+  ///
+  /// 外のブラウザ (CDP) で撮った絵はアプリの画面には映らないので、
+  /// [capture] の経路を通れない。 保存先の採番はホスト側が持っているため、
+  /// バイト列だけ渡して保存してもらう。
+  final Future<String?> Function(Uint8List png)? saveShotBytes;
+
   /// ユーザーにページ上の 1 点をクリックしてもらい、 その座標を返す。
   final Future<Offset?> Function() pickPoint;
 
@@ -298,6 +331,13 @@ class WebAutomationPanel extends StatefulWidget {
   /// 実行状態が変わった時に呼ばれる (running, 停止関数)。 親 (フローティング
   /// 窓) が実行中はヘッダーに停止ボタンだけを出すために使う (= ユーザー要望)。
   final void Function(bool running, VoidCallback stop)? onRunningChanged;
+
+  /// 1 回の実行が始まった合図 (保存先フォルダを分けるのに使う)。
+  ///
+  /// ★ [onRunningChanged] とは別にする。 あちらは「ブラウザを前に出すか」
+  ///   も兼ねていて、 見せない実行では呼ばれないため、 保存先を分ける処理も
+  ///   一緒に飛んでいた (= スクショが前回の実行のフォルダに混ざる)。
+  final Future<void> Function()? onRunStarted;
 
   /// 操作の記録モードの ON/OFF をホストへ伝える (= ユーザー要望: フローを
   /// 組まなくても操作を覚えて再現できるように)。 ON の間、 ホストは
@@ -315,6 +355,8 @@ class WebAutomationPanel extends StatefulWidget {
     required this.pickRect,
     required this.onClose,
     this.captureFull,
+    this.saveShotBytes,
+    this.onRunStarted,
     this.evalJs,
     this.onRunningChanged,
     this.onRecordingChanged,
@@ -445,6 +487,10 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
     _loadCmdPolicy();
     // ignore: discarded_futures
     _loadSchedule();
+    // 2 択 (見方 / フロー) の覚え書き (= ボタンを 1 つにまとめたので、
+    //   この 2 択が唯一の設定になった)。
+    // ignore: discarded_futures
+    _loadAgentOpts();
     // Esc / Ctrl+C を横取りして「止める」 に使う (= ユーザー要望:
     // Esc で欄が閉じるのをやめ、 実行を止める側に割り当てる)。
     HardwareKeyboard.instance.addHandler(_handleStopKey);
@@ -457,6 +503,8 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
   void dispose() {
     HardwareKeyboard.instance.removeHandler(_handleStopKey);
     automationRequestFromAssistant.removeListener(_onAssistantAutomation);
+    // 外のブラウザとのつながり (WebSocket) を残さない。
+    unawaited(_releaseCdp());
     _schedTimer?.cancel();
     _aiCtrl.dispose();
     super.dispose();
@@ -892,8 +940,10 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
   ///   あるかを知らないまま、 座標 0 のタップを並べていたこと。 押せる物の
   ///   文字を渡せば、 click で名指しできる。
   Future<String> _pageSnapshot() async {
-    final ev = widget.evalJs;
-    if (ev == null) return '';
+    // ★ _eval を通す (= 以前は widget.evalJs 直呼びで、 外のブラウザに
+    //   つないでいても **アプリの中のブラウザ**の中身を AI に見せていた。
+    //   AI から見ると外の Chrome は真っ白なので、 ページを読む手順を選べず、
+    //   画面を撮る類の手順へ逃げていた = ユーザー報告)。
     try {
       final js = '(function(){'
           'var out={url:location.href,title:document.title,'
@@ -923,7 +973,7 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
           '}'
           'return JSON.stringify(out);'
           '})();';
-      final r = await ev(js);
+      final r = await _eval(js);
       if (r == null) return '';
       // WebView によっては引用符で包まれて返る。
       var s = r.trim();
@@ -955,10 +1005,25 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
 ]}
 
 ルール:
-- kind は open / click / scrollTo / scroll / wait / shot / type / tap /
-  hold / swipe / loop / makeFile / upload / openExternal / command /
-  osActivate / osClick / osMove / osType / osKey / osScroll / osShot /
-  ask のみ。
+- kind は openBrowser / open / click / scrollTo / scroll / wait / shot /
+  fullShot / download / consoleLog / extract / type / tap / hold / swipe /
+  loop / makeFile / upload / openExternal / command / osActivate /
+  osClick / osMove / osType / osKey / osScroll / osShot / ask のみ。
+- **スクショ以外のデータも取れる**:
+    {"kind":"download","text":"ダウンロード"}     押して保存する
+    {"kind":"download","selector":"https://…/a.pdf"}  URL を直に保存
+    {"kind":"consoleLog","count":0}              ログを集め始める
+    {"kind":"consoleLog","count":1}              集めた分を保存する
+    {"kind":"extract","text":"text"}             本文を取り出して保存
+    {"kind":"extract","text":"table","selector":"table"}  表を CSV で保存
+    {"kind":"extract","text":"links"}            リンクの一覧を保存
+    {"kind":"extract","text":"html","selector":"#main"}   HTML を保存
+  「エラーが出ていないか見て」 と頼まれたら、 ページを開く**前**に
+  {"kind":"consoleLog","count":0} を置き、 操作の後に
+  {"kind":"consoleLog","count":1} を置いてください。
+- **shot は「今つないでいるページ」 のスクショ**。 openBrowser でつないで
+  いる間は**外のブラウザのそのページ**が撮れる。 「スクショを撮って」
+  「画面を撮って」 と言われたら、 原則これを使う。
 - **頼まれていない手順を足さないこと**。 依頼に書かれた事だけを並べる。
   「念のため画面を撮る」「とりあえずキーを押す」 は不要。
 - **中身が決まらない手順は出さないこと**。 osActivate は窓の題名、
@@ -977,14 +1042,33 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
   click / type / scrollTo / shot / 端まで送る はすべてその外のブラウザに
   効く**。 座標は要らない。 いつもどおり文字で要素を指せばよい。
     ・text  … chrome / edge / brave / vivaldi / opera (空なら入っている先頭)
-    ・count … 1 にすると**普段のプロファイル**で開く。 ログイン済みのまま
-      使えるので、 ログインが要る作業ではこちらにする
-      (Google は自動化されたブラウザでのサインインを拒むため)。
+    ・selector … 開く URL
+    ・submit … true にすると**そのアカウント専用のブラウザ**で開く。
+      ログインが要る作業の時だけ true にする。
+      書かなければ、 毎回まっさらなブラウザで開く。
+    ・scrollDir … どのアカウントか (画面に出ている呼び名。 例「浩靖」)。
+      依頼に「○○のアカウントで」「○○の垢で」 と書かれていたら、
+      その呼び名をここに入れて submit も true にすること。
+  ★ Chrome の決まりで、 **普段使っているブラウザのログインは
+    持ってこられない**。 アカウント専用のブラウザは初回だけ人が
+    ログインする必要がある (次からはログイン済みで開く)。 ログイン画面に
+    来たら {"kind":"ask","text":"ログインしてから続けてください"} を置く。
   ページを見せるだけで操作が要らないなら openExternal でよい。
-- **os で始まる手順は「パソコンそのもの」 を動かす** (アプリの外)。
-  画面に見えている物を直接押す・打つので、 使う前に必ず
-  {"kind":"osShot"} で画面を撮り、 何がどこにあるかを確かめること。
-    {"kind":"osActivate","text":"Chrome"}          窓を前に出す
+- **「chrome を立ち上げて ○○ のスクショを撮って」 は、 これで足りる**:
+    {"kind":"openBrowser","text":"chrome","selector":"https://…",
+     "durationMs":2500}
+    {"kind":"shot","count":1}
+  os で始まる手順も command も要らない。 窓を前に出す必要も無い。
+- **os で始まる手順は最後の手段**。 ブラウザの中で済むこと
+  (ページを開く / 押す / 文字を打つ / スクショ) は、 外のブラウザでも
+  **openBrowser + click / type / scrollTo / shot** でできる。 os 系は
+  ブラウザでは届かない物 (エクスプローラー、 OS のダイアログ、
+  ブラウザ以外のアプリ) にだけ使う。
+- **ページの見た目が欲しいだけの時に osShot / osActivate を使わないこと**。
+  アプリの窓まで写り込むうえ、 座標を測る必要も無い。
+- os で**押す・打つ手順 (osClick / osType / osKey)** を出す時だけ、
+  その直前に {"kind":"osShot"} を置いて座標を確かめること。
+    {"kind":"osActivate","text":"メモ帳"}          窓を前に出す
     {"kind":"osShot"}                              画面を撮る (座標を測る用)
     {"kind":"osClick","x":100,"y":200,"count":1}   画面のその点を押す
     {"kind":"osType","text":"打つ文字"}             今の入力欄に打つ
@@ -1025,6 +1109,58 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
 - open は「そのページを開く」。 text に URL、 durationMs に読み込み待ち (ms)。
 - scrollDir は down / up / right / left (scrollTo では bottom / top)。
 - steps は 30 個以内。''';
+
+  /// どのアカウントで開くかの選択 (= ユーザー要望:
+  /// アカウントを指定してログイン)。
+  ///
+  /// 普段の Chrome に入っている呼び名をそのまま並べる。 選んだ
+  /// アカウントごとに自動操作専用のブラウザを持つ。
+  Widget _acctPicker(MindMapProvider provider, WebAutoStep s) {
+    final kind = CdpBrowserKindName.fromText(s.text) ??
+        (CdpBrowser.installed().isNotEmpty
+            ? CdpBrowser.installed().first
+            : CdpBrowserKind.chrome);
+    final names = CdpBrowser.listProfiles(kind)
+        .map((p) => p.name)
+        .where((n) => n.trim().isNotEmpty)
+        .toList();
+    final cur = s.scrollDir.trim();
+    return SizedBox(
+      width: 170,
+      child: DropdownButtonFormField<String>(
+        initialValue: names.contains(cur) ? cur : '',
+        dropdownColor: const Color(0xFF23233A),
+        style: const TextStyle(color: Colors.white, fontSize: 12),
+        decoration: _fieldDeco(provider.t('auto.acctLabel')),
+        items: [
+          DropdownMenuItem(
+              value: '',
+              child: Text(provider.t('auto.acctDefault'),
+                  style: const TextStyle(fontSize: 12))),
+          for (final n in names)
+            DropdownMenuItem(
+                value: n,
+                child: Text(n, style: const TextStyle(fontSize: 12))),
+        ],
+        onChanged: (v) {
+          setState(() => s.scrollDir = v ?? '');
+          _save();
+        },
+      ),
+    );
+  }
+
+  /// 手順の小さな入力欄の見た目 (このファイルで何度も同じ形を書くため)。
+  InputDecoration _fieldDeco(String label) => InputDecoration(
+        isDense: true,
+        labelText: label,
+        labelStyle: const TextStyle(color: Colors.white54, fontSize: 10),
+        filled: true,
+        fillColor: Colors.white.withValues(alpha: 0.06),
+        border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(6),
+            borderSide: BorderSide.none),
+      );
 
   /// 手順を全部消す (= ユーザー要望: 一括削除してクリアにするボタン)。
   /// 押し間違いが痛いので一度だけ確かめる。
@@ -1085,13 +1221,84 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
     return words.any(r.contains);
   }
 
+  /// 依頼文に出てくるブラウザの名前 (無ければ null)。
+  ///
+  /// = ユーザー報告「CDP が実装できているのに、 スクショを指示していない
+  ///   のに『パソコンの画面を撮る』 が作られる」。 ブラウザの話なら
+  ///   OS 操作ではなく CDP (openBrowser) へ寄せるための判定。
+  static String? _browserNameIn(String request) {
+    final r = request.toLowerCase();
+    // ★ 名前だけで決めない (= 「オペラを見に行く予定」「エッジの効いた
+    //   デザイン」 のような、 ブラウザと関係ない文でブラウザを起動して
+    //   しまうため)。 ブラウザの話らしさが無ければ拾わない。
+    const context = [
+      'ブラウザ', 'browser', '立ち上げ', '起動', '開い', '開く',
+      'url', 'http', 'タブ', 'サイト', 'ページ', 'ログイン', '検索',
+    ];
+    final looksBrowser = context.any(r.contains);
+    // 英字の名前は前後が区切れている時だけ (= 語の一部に埋もれた
+    //   「edge」「opera」 を拾わない)。
+    bool word(String w) =>
+        RegExp(r'(^|[^a-z0-9])' + w + r'([^a-z0-9]|$)').hasMatch(r);
+    const latin = ['chrome', 'edge', 'brave', 'vivaldi', 'opera'];
+    for (final n in latin) {
+      if (word(n) && looksBrowser) return n;
+    }
+    // 片仮名は取り違えの少ない物だけ。
+    if (r.contains('クローム') || r.contains('グーグルクローム')) return 'chrome';
+    if (r.contains('エッジ') && looksBrowser) return 'edge';
+    // 名前は無いが「外のブラウザ」 とは言っている。
+    const generic = [
+      '外のブラウザ', '外部ブラウザ', '別のブラウザ', 'ブラウザアプリ',
+      'パソコンのブラウザ', 'pcのブラウザ', 'pc のブラウザ',
+    ];
+    if (generic.any(r.contains)) return '';
+    return null;
+  }
+
+  /// この依頼は「ブラウザの話」 か (= OS 操作ではなく CDP で足りるか)。
+  static bool _wantsPcBrowser(String request) =>
+      _browserNameIn(request) != null;
+
+  /// パソコンの画面そのものを撮ってほしいと言われているか。
+  /// (ページではなく、 デスクトップ全体の話をしている時だけ true)
+  static bool _wantsOsScreenshot(String request) {
+    final r = request.toLowerCase();
+    const words = [
+      'パソコンの画面', 'pcの画面', 'pc の画面', 'デスクトップの画面',
+      '画面全体', 'デスクトップ全体', '画面ごと',
+    ];
+    return words.any(r.contains);
+  }
+
   /// パソコンのアプリを操作する依頼の時だけ、 今どんな窓が開いているかと、
   /// 画面の大きさを AI に渡す (= ユーザー要望: 外部アプリを立ち上げて
   /// 操作しながら見せる)。 これが無いと、 AI は座標も窓の名前も分からず
   /// アプリの中のブラウザで済ませようとしてしまう。
   String _pcContext(String request) {
     if (!_wantsPcApp(request) || !_isDesktopHost) return '';
-    if (!DesktopInput.isSupported) return '';
+    // ★ ブラウザの話なら OS 操作の案内を出さない (= ユーザー報告:
+    //   スクショを指示していないのに「パソコンの画面を撮る」 が作られる)。
+    //   外のブラウザは CDP でページの中身がそのまま触れるので、
+    //   座標も画面キャプチャも要らない。
+    final browserPart = !_wantsPcBrowser(request)
+        ? ''
+        : (() {
+            final name = _browserNameIn(request);
+            return '''
+
+【外のブラウザ】 この依頼は**パソコンのブラウザ**の話です。
+アプリの中のブラウザで開く open は使わないでください。 かわりに
+{"kind":"openBrowser","text":"${name == null || name.isEmpty ? 'chrome' : name}","selector":"https://…"}
+で開けば、 そこから先の click / type / scrollTo / shot は**すべてその
+外のブラウザに効きます**。 座標も画面キャプチャも要りません。
+**ブラウザの中で済むこと**に os で始まる手順や command を使わないでください。
+''';
+          })();
+    // ★ ブラウザの話だからといって、 ここで打ち切らない
+    //   (= 「chrome で調べてメモ帳に貼って」 のような混ざった依頼で、
+    //   画面の大きさも窓の一覧も渡らなくなる)。
+    if (!DesktopInput.isSupported) return browserPart;
     try {
       final b = DesktopInput.screenBounds();
       final wins = DesktopInput.listWindows()
@@ -1099,18 +1306,18 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
           .where((t) => t.trim().isNotEmpty)
           .take(20)
           .toList();
-      return '''
+      return '''$browserPart
 
 【パソコンの画面】 これは**アプリの外**の話です。
 - 画面の大きさ: ${b.width} x ${b.height} (左上が 0,0)
 - いま開いている窓: ${wins.isEmpty ? '(取れませんでした)' : wins.join(' / ')}
-この依頼は**パソコンのアプリ**を動かすものです。 アプリの中のブラウザで
-開く open は使わないでください。 起動は {"kind":"command","text":"start chrome"}、
-窓を前に出すのは {"kind":"osActivate","text":"Chrome"}、
-押す前に必ず {"kind":"osShot"} で画面を撮って座標を確かめること。
+ブラウザ以外のアプリを動かす時は、 アプリの中のブラウザで開く
+open は使わないでください。 起動は {"kind":"command","text":"start notepad"}
+のように書き、 窓を前に出すのは {"kind":"osActivate","text":"メモ帳"}、
+押す・打つ前に {"kind":"osShot"} を置いて座標を確かめてください。
 ''';
     } catch (_) {
-      return '';
+      return browserPart;
     }
   }
 
@@ -1150,6 +1357,14 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
         case WebAutoKind.openExternal:
         case WebAutoKind.command:
           if (s.text.trim().isEmpty) return false;
+          return true;
+        case WebAutoKind.openBrowser:
+          // どのブラウザも URL も無いと、 空のタブが開くだけになる。
+          if (s.text.trim().isEmpty && s.selector.trim().isEmpty) return false;
+          return true;
+        case WebAutoKind.download:
+          // 押す物も URL も無いと、 何を落とすか決まらない。
+          if (s.text.trim().isEmpty && s.selector.trim().isEmpty) return false;
           return true;
         case WebAutoKind.makeFile:
           if (s.selector.trim().isEmpty) return false;
@@ -1192,13 +1407,100 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
     if (!_wantsPcApp(request)) return steps;
     if (!_isDesktopHost) return steps;
     var changed = false;
+    // ブラウザの話なら、 操作できる形 (openBrowser) で開く。
+    //   openExternal は「開くだけ」 で中身に触れないので、 続く
+    //   click / shot がアプリの中のブラウザへ飛んでしまっていた。
+    final browser = _browserNameIn(request);
+    final viaCdp = browser != null;
+    // ★ すでに外のブラウザへつないでいるなら、 open を
+    //   openBrowser には直さない。 直すとブラウザを立ち上げ直して
+    //   しまい、 1 手ずつ進める途中で毎回新しい窓が開く。
+    //   つながっている間の open は、 そのまま外のブラウザの
+    //   ページ移動になる (_exec が CDP へ送る)。
+    final cdpLive = _cdp != null && !_cdp!.isClosed;
+    // 「開いて見せるだけ」 なら openExternal のまま (= 普段のブラウザで
+    //   開いた方が、 ログインもお気に入りもそのままで都合がよい)。
+    //   後にページを触る手順が続く時だけ、 操作できる形で開き直す。
+    const needsControl = {
+      WebAutoKind.click,
+      WebAutoKind.type,
+      WebAutoKind.scroll,
+      WebAutoKind.scrollTo,
+      WebAutoKind.shot,
+      WebAutoKind.fullShot,
+      WebAutoKind.upload,
+      WebAutoKind.tap,
+      WebAutoKind.swipe,
+      WebAutoKind.hold,
+    };
+    bool anyControl(List<WebAutoStep> list) => list.any((s) =>
+        needsControl.contains(s.kind) ||
+        (s.kind == WebAutoKind.loop && anyControl(s.children)));
+    final willControl = anyControl(steps);
     final out = <WebAutoStep>[];
     for (final s in steps) {
-      if (s.kind == WebAutoKind.open) {
-        s.kind = WebAutoKind.openExternal;
+      if (s.kind == WebAutoKind.open || s.kind == WebAutoKind.openExternal) {
+        if (viaCdp &&
+            !cdpLive &&
+            (s.kind == WebAutoKind.open || willControl)) {
+          if (s.kind == WebAutoKind.open || s.selector.trim().isEmpty) {
+            s.selector = s.text.trim();
+          }
+          s.text = browser.isEmpty ? 'chrome' : browser;
+          // submit は種類ごとに意味が違う (type=Enter で送信 /
+          //   openBrowser=普段のプロファイル)。 持ち越すと、 意図せず
+          //   本物のプロファイルで開いてしまう。
+          s.submit = false;
+          s.kind = WebAutoKind.openBrowser;
+        } else if (s.kind == WebAutoKind.open && !cdpLive) {
+          // つないでいる間の open は、 そのまま外のブラウザのページ移動に
+          //   なる (_exec が CDP へ送る)。 ここで openExternal に直すと、
+          //   別の窓が開いて操作先とページがずれる。
+          s.kind = WebAutoKind.openExternal;
+        }
         changed = true;
       }
       out.add(s);
+    }
+    // ★ ブラウザで済む依頼なのに OS の画面を撮る / 窓を前に出す手順が
+    //   混ざっていたら落とす (= ユーザー報告: スクショと指示していない
+    //   のに「パソコンの画面を撮る」 が入る)。 本当に画面全体が欲しい
+    //   と言われている時だけ残す。
+    if (viaCdp && !_wantsOsScreenshot(request)) {
+      // この回の手順に openBrowser が無くても、 すでにつながって
+      //   いるなら同じ (= 1 手ずつ進める時は、 開くのは最初の回だけ)。
+      final hasBrowser =
+          cdpLive || out.any((s) => s.kind == WebAutoKind.openBrowser);
+      // ★ 押す・打つ手順が 1 つでも残るなら、 窓を前に出す手順
+      //   (osActivate) と座標を測る手順 (osShot) を落としてはいけない。
+      //   落とすと「どの窓に打つか」 が決まらないまま入力だけが走り、
+      //   前面のブラウザなど関係ない所へ文字が飛ぶ (= 点検で判明)。
+      const osPressKinds = {
+        WebAutoKind.osClick,
+        WebAutoKind.osMove,
+        WebAutoKind.osType,
+        WebAutoKind.osKey,
+        WebAutoKind.osScroll,
+      };
+      final hasOsPress = out.any((s) => osPressKinds.contains(s.kind));
+      if (hasBrowser && !hasOsPress) {
+        final kept = <WebAutoStep>[];
+        var dropped = false;
+        for (final s in out) {
+          if (s.kind == WebAutoKind.osShot ||
+              s.kind == WebAutoKind.osActivate) {
+            dropped = true;
+            continue;
+          }
+          kept.add(s);
+        }
+        if (dropped) {
+          changed = true;
+          out
+            ..clear()
+            ..addAll(kept);
+        }
+      }
     }
     if (changed && mounted) {
       // 直したことを黙って済ませない (何が起きたか分かるように)。
@@ -1218,10 +1520,17 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
     final v = _aiCtrl.text;
     if (v.trim().isEmpty) return;
     _rememberAiPrompt(v);
-    unawaited(_aiBuildFlowFrom(provider, v));
+    // ボタンと同じ経路にする (= 以前は Enter だけ「組み立てるだけ」 の
+    //   古い経路へ行っていた)。
+    unawaited(_runAgent(provider, v, keepSteps: _agentKeepSteps));
   }
 
   /// 入力欄の中身で組み立てる。 呼ぶ前に欄は閉じる。
+  ///
+  /// ★ 今は画面から呼んでいない (= ユーザー要望でボタンを実行 1 つに
+  ///   まとめ、 実行しながら手順も残る _runAgent に一本化した)。
+  ///   組み立てだけの動きが要る時にすぐ戻せるよう、 残してある。
+  // ignore: unused_element
   Future<void> _aiBuildFlowFrom(MindMapProvider provider, String request) async {
     final req = request.trim();
     if (req.isEmpty || !mounted) return;
@@ -1346,6 +1655,46 @@ $snap'''}
   /// 切っている時は、 走らせる前の手順を終わったら元に戻す。
   bool _agentKeepSteps = true;
 
+  /// 2 択 (見方 / フロー) の覚え書き。
+  ///
+  /// = ボタンを 1 つにまとめたことで、 この 2 択が唯一の設定になった。
+  ///   毎回既定に戻ると押し直す手間が増えるので、 覚えておく。
+  static const String _kAgentPrefsKey = 'webauto_agent_opts_v1';
+
+  /// もう人が触ったか (= 読み込みが遅れて選んだ側を上書き
+  /// しないように)。
+  bool _agentOptsTouched = false;
+
+  Future<void> _loadAgentOpts() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final raw = sp.getString(_kAgentPrefsKey);
+      if (raw == null || raw.isEmpty) return;
+      final m = jsonDecode(raw);
+      if (m is! Map) return;
+      final headless = m['headless'];
+      final keep = m['keep'];
+      // 待っている間に選ばれていたら、 そちらを優先する。
+      if (!mounted || _agentOptsTouched) return;
+      setState(() {
+        if (headless is bool) _agentHeadless = headless;
+        if (keep is bool) _agentKeepSteps = keep;
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _saveAgentOpts() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setString(
+          _kAgentPrefsKey,
+          jsonEncode({
+            'headless': _agentHeadless,
+            'keep': _agentKeepSteps,
+          }));
+    } catch (_) {}
+  }
+
   /// うまく進めなかった理由を画面に出す (= ユーザー報告: 何も作られない
   /// まま戻ってきた)。 黙って抜けると、 何が起きたのか分からない。
   void _agentFail(MindMapProvider provider, String key, String detail) {
@@ -1391,6 +1740,10 @@ $snap'''}
     final pcMode = _wantsPcApp(req);
     // 見せない選択 (= ユーザー要望: ヘッドレスか見ながらか) の時も出さない。
     final showBrowser = !pcMode && !_agentHeadless;
+    // ★ 保存先を分けるのは、 見せるかどうかとは別の話
+    //   (= 見せない実行だとフォルダが分かれず、 前回の実行の
+    //   スクショに混ざっていた)。
+    await widget.onRunStarted?.call();
     if (showBrowser) widget.onRunningChanged?.call(true, _requestStop);
     final done = <String>[];
     try {
@@ -1412,8 +1765,10 @@ $_kFlowFormatRules
 
 【今の画面】 (url / title / 押せる物の文字 items / 見出し heads /
  scrollY と pageH で今どのあたりかが分かります)
-${snap.isEmpty ? '\n※ まだページを開いていません。 最初の 1 手は必ず'
-    ' {"kind":"open","text":"https://…"} にしてください。\n' : ''}
+${snap.isEmpty ? (_wantsPcBrowser(req) ? '\n※ まだ何も開いていません。 最初の 1 手は必ず'
+    ' {"kind":"openBrowser","text":"ブラウザ名","selector":"https://…"}'
+    ' にしてください (外のブラウザの話なので open ではいけません)。\n' : '\n※ まだページを開いていません。 最初の 1 手は必ず'
+    ' {"kind":"open","text":"https://…"} にしてください。\n') : ''}
 ${snap.isEmpty ? '(画面の中身を読めませんでした)' : snap}
 
 【ここまでにやったこと】
@@ -1500,6 +1855,11 @@ ${_pcContext(req)}
         setState(() => _status = '$e'.replaceFirst('Exception: ', ''));
       }
     } finally {
+      // ★ 外のブラウザを使ったなら、 終わったらつながりを手放す。
+      //   つないだままだと、 次にアプリの中のページを操作するふつうの
+      //   フローを流しても目の前のページは動かず、 放置した外のブラウザ
+      //   の方が動いてしまう (= 点検で判明)。 窓自体は閉じない。
+      await _releaseCdp();
       // その場かぎりで頼まれた時は、 走らせる前の手順に戻す
       // (= ユーザー要望: 手元のフローを勝手に置き換えない)。
       if (!keepSteps) {
@@ -1817,7 +2177,10 @@ ${_pcContext(req)}
           // ★ 送る前と後の位置を同じ 1 回の JS で読む。 動かなかったら
           //   「もう端」 なので、 繰り返しの中なら残りを切り上げる
           //   (= ユーザー報告: 最後に同じスクショが何枚も入る)。
-          final ev = widget.evalJs;
+          // ★ _eval を使う (= 以前は widget.evalJs を直に掴んでいたため、
+          //   外のブラウザにつないでいてもスクロールの JS が
+          //   **アプリの中のブラウザ**へ飛んでいた
+          //   = ユーザー報告「一番下までスクロールしてと言っても動かない」)。
           final axis = horiz ? 'scrollX' : 'scrollY';
           final axisFallback = horiz ? 'scrollLeft' : 'scrollTop';
           final scrollJs = '(function(){var d=document.documentElement;'
@@ -1827,12 +2190,14 @@ ${_pcContext(req)}
               'return String(b)+","+String(a);})();';
           for (var c = 0; c < (s.count <= 0 ? 1 : s.count); c++) {
             if (_cancel) return;
-            if (ev == null) {
-              // 位置を読めない時は今までどおり (打ち切りはしない)。
+            final raw = await _eval(scrollJs);
+            // ★ 答えが返らないのは「送る口が無い」 時だけとは限らない
+            //   (ページ移動中の例外など)。 口がある時に撃ち直すと、
+            //   2 画面ぶん進んでしまい 1 画面撮り漏れる。
+            if (raw == null && !_hasJsChannel) {
               await _exec(scrollJs);
-            } else {
-              final raw = await ev(scrollJs);
-              final t = (raw ?? '').replaceAll('"', '').trim();
+            } else if (raw != null) {
+              final t = raw.replaceAll('"', '').trim();
               final p = t.split(',');
               final before = p.length == 2 ? int.tryParse(p[0]) : null;
               final after = p.length == 2 ? int.tryParse(p[1]) : null;
@@ -1888,15 +2253,43 @@ ${_pcContext(req)}
           break;
         case WebAutoKind.scrollTo:
           // ── 一番下 / 一番上まで送る (= フッターの撮影を確実にする) ──
+          //
+          // ★ 一発撃って終わりにしない (= ユーザー報告: 一番下まで
+          //   スクロールしてと言ってもスクロールされない)。 直した点は 4 つ:
+          //   ・なめらか送り (smooth) をやめる。 窓が裏に居るとアニメーションが
+          //     進まないまま次の手順へ行ってしまう。
+          //   ・document.body ではなく scrollingElement を見る。 作りによっては
+          //     body の高さが 0 で、 送り先が 0 になっていた。
+          //   ・本体が動かない時は、 中身がはみ出している内側の枠を送る。
+          //   ・下へ行くほど中身が増えるページがあるので、 位置が変わらなく
+          //     なるまで数回押し込む。
           {
             final toTop = s.scrollDir == 'top' || s.scrollDir == 'up';
-            await _exec(toTop
-                ? 'window.scrollTo({top:0,behavior:"smooth"});'
-                : 'window.scrollTo({top:document.body.scrollHeight,'
-                    'behavior:"smooth"});');
-            // 遅延読み込みの絵が出るまで少し待つ。
-            await Future.delayed(Duration(
-                milliseconds: s.durationMs <= 0 ? 1200 : s.durationMs));
+            final waitMs = s.durationMs <= 0 ? 700 : s.durationMs;
+            final js = scrollEndJs(toTop);
+            var lastY = -1;
+            var lastH = -1;
+            for (var i = 0; i < (toTop ? 2 : 8); i++) {
+              if (_cancel) return;
+              final raw = await _eval(js);
+              await Future.delayed(Duration(milliseconds: waitMs));
+              if (raw == null) {
+                // 位置を読めない相手でも、 送るだけは送る
+                //   (端まで送るのは何度やっても同じなので二度打ちは無害)。
+                if (!_hasJsChannel) await _exec(js);
+                break;
+              }
+              final p = raw.replaceAll('"', '').trim().split(',');
+              if (p.length != 2) break;
+              final y = int.tryParse(p[0]);
+              final h = int.tryParse(p[1]);
+              if (y == null || h == null) break;
+              _lastScrollPos = y;
+              // 位置も全体の高さも動かなくなったら、 そこが端。
+              if (y == lastY && h == lastH) break;
+              lastY = y;
+              lastH = h;
+            }
           }
           break;
         case WebAutoKind.openExternal:
@@ -1940,16 +2333,28 @@ ${_pcContext(req)}
           final region = (s.x2 - s.x).abs() > 4 && (s.y2 - s.y).abs() > 4
               ? Rect.fromLTRB(s.x, s.y, s.x2, s.y2)
               : null;
-          for (var c = 0; c < s.count; c++) {
+          for (var c = 0; c < (s.count <= 0 ? 1 : s.count); c++) {
             if (_cancel) return;
-            final shot = await widget.capture(region);
-            if (shot != null) _shots++;
+            // ★ 外のブラウザにつないでいる時は、 そちらのページを撮る
+            //   (= ユーザー報告: CDP が実装できているのに、 画面を撮る
+            //   手順ばかり作られる)。 以前はここが必ずアプリの中の
+            //   ブラウザを撮っていたので、 外の Chrome を開いていても
+            //   写るのは空っぽのアプリ内ブラウザだった。
+            final saved = await _captureHere(region);
+            if (saved) _shots++;
             await Future.delayed(_intervalOf(s));
           }
           break;
         case WebAutoKind.fullShot:
           {
             // ページの上から下までを 1 枚に繋げる (= ユーザー要望)。
+            // ★ 外のブラウザは CDP 側で「ページ全体」 を撮れる。
+            final cdp = _cdp;
+            if (cdp != null && !cdp.isClosed) {
+              // 外のブラウザは CDP に「ページ全体」 を撮る口がある。
+              if (await _captureHere(null, fullPage: true)) _shots++;
+              break;
+            }
             final f = widget.captureFull;
             if (f == null) break;
             for (var c = 0; c < (s.count <= 0 ? 1 : s.count); c++) {
@@ -1990,6 +2395,27 @@ ${_pcContext(req)}
         case WebAutoKind.osType:
         case WebAutoKind.osKey:
         case WebAutoKind.osScroll:
+        // ── ダウンロード (= ユーザー要望) ──
+        case WebAutoKind.download:
+          {
+            final ok = await _runDownloadStep(s);
+            if (!ok) {
+              _cancel = true;
+              return;
+            }
+            await Future.delayed(_intervalOf(s));
+          }
+          break;
+        // ── ページのログ・エラー (= ユーザー要望) ──
+        case WebAutoKind.consoleLog:
+          await _runConsoleStep(s);
+          await Future.delayed(_intervalOf(s));
+          break;
+        // ── ページの中身を取り出す (= ユーザー要望) ──
+        case WebAutoKind.extract:
+          await _runExtractStep(s);
+          await Future.delayed(_intervalOf(s));
+          break;
         case WebAutoKind.osShot:
           {
             final ok = await _runOsStep(s);
@@ -2243,6 +2669,10 @@ ${_pcContext(req)}
                 scap.captureScreenRectPng(b.x, b.y, b.width, b.height);
             if (png != null) {
               _osShots.add(png);
+              // 溜め込まない (1 枚が数 MB になる)。
+              while (_osShots.length > 4) {
+                _osShots.removeAt(0);
+              }
               _shots++;
             }
           }
@@ -2259,8 +2689,264 @@ ${_pcContext(req)}
     }
   }
 
+  // ═══════════════════════════════════════════════════════════════
+  //  スクショ以外のデータ (= ユーザー要望: ページからダウンロードしたり、
+  //  エラーが起こっている画面のデバッグログを取ったりできるように)
+  // ═══════════════════════════════════════════════════════════════
+
+  /// 取ってきた物の置き場 (ダウンロード / 取り出した中身 / ログ)。
+  Future<Directory> _dataDir() async {
+    final root = await automationFilesDir();
+    final d = Directory('${root.path}/data');
+    if (!await d.exists()) await d.create(recursive: true);
+    return d;
+  }
+
+  /// 同じ名前を上書きしない置き場所を作る。
+  Future<File> _newDataFile(String baseName) async {
+    final d = await _dataDir();
+    final dot = baseName.lastIndexOf('.');
+    final stem = dot > 0 ? baseName.substring(0, dot) : baseName;
+    final ext = dot > 0 ? baseName.substring(dot) : '';
+    var f = File('${d.path}/$baseName');
+    var n = 2;
+    while (await f.exists()) {
+      f = File('${d.path}/${stem}_$n$ext');
+      n++;
+    }
+    return f;
+  }
+
+  /// 取れた物を記録に残して、 画面にも出す。
+  void _noteData(MindMapProvider provider, String what, String path) {
+    _log('取得', '$what → $path');
+    if (!mounted) return;
+    setState(() => _status =
+        provider.t('auto.dataSaved').replaceFirst('{what}', what));
+  }
+
+  /// ── ダウンロード ──────────────────────────────────────────────
+  ///
+  /// 外のブラウザにつないでいる時は、 ブラウザに保存させて終わりを待つ。
+  /// つないでいない時は、 押す物の href を読み取って自分で取りに行く
+  /// (アプリ内ブラウザにはダウンロードの受け口が無いため)。
+  Future<bool> _runDownloadStep(WebAutoStep s) async {
+    final provider = context.read<MindMapProvider>();
+    final dir = await _dataDir();
+    final sel = s.selector.trim();
+    final label = s.text.trim();
+    final waitMs = s.durationMs <= 0 ? 60000 : s.durationMs;
+
+    // URL を直に指定された時は、 押さずにそのまま取りに行く。
+    final direct = sel.startsWith('http://') || sel.startsWith('https://')
+        ? sel
+        : (label.startsWith('http://') || label.startsWith('https://')
+            ? label
+            : '');
+
+    final c = _cdp;
+    final viaCdp = c != null && !c.isClosed;
+
+    if (viaCdp && direct.isEmpty) {
+      // ブラウザに保存させる。
+      final ok = await c.enableDownloads(dir.path);
+      if (!ok) {
+        _log('失敗', 'ダウンロードの受け入れを設定できませんでした');
+      }
+      final clicked = await _eval(_clickByJs(sel, label));
+      _log('実行', 'ダウンロード: 押しました ${label.isEmpty ? sel : label}'
+          '${clicked == null ? '' : ' ($clicked)'}');
+      final name = await c.waitForDownload(
+          timeout: Duration(milliseconds: waitMs));
+      if (name == null) {
+        _log('失敗', 'ダウンロードが終わりませんでした');
+        if (mounted) {
+          setState(() => _status = provider.t('auto.downloadFailed'));
+        }
+        return true; // 止めはしない (次の手順へ進む)
+      }
+      _madeFiles.add(File('${dir.path}/$name'));
+      _noteData(provider, name, '${dir.path}/$name');
+      return true;
+    }
+
+    // つないでいない時 / URL 直指定の時は、 自分で取りに行く。
+    var url = direct;
+    if (url.isEmpty) {
+      // 押す物の href を読み取る。
+      final raw = await _eval(hrefOfJs(sel, label));
+      url = (raw ?? '').replaceAll('"', '').trim();
+    }
+    if (url.isEmpty || url == 'null') {
+      _log('失敗', 'ダウンロード先が分かりませんでした');
+      if (mounted) {
+        setState(() => _status = provider.t('auto.downloadNoTarget'));
+      }
+      return true;
+    }
+    try {
+      final res = await http
+          .get(Uri.parse(url))
+          .timeout(Duration(milliseconds: waitMs));
+      if (res.statusCode >= 400) {
+        _log('失敗', 'ダウンロード: $url が ${res.statusCode} を返しました');
+        return true;
+      }
+      var name = Uri.parse(url).pathSegments.isEmpty
+          ? ''
+          : Uri.parse(url).pathSegments.last;
+      if (name.isEmpty || !name.contains('.')) name = 'download.bin';
+      final f = await _newDataFile(name);
+      await f.writeAsBytes(res.bodyBytes, flush: true);
+      _madeFiles.add(f);
+      _noteData(provider, name, f.path);
+    } catch (e) {
+      _log('失敗', 'ダウンロード: $e');
+    }
+    return true;
+  }
+
+  /// ── ページのログ・エラー ──────────────────────────────────────
+  ///
+  /// count が 0 なら「集め始める」 だけ。 1 以上なら「今までの分を保存」。
+  /// 外のブラウザは CDP のイベントで拾い、 アプリ内ブラウザは
+  /// console を横取りする仕掛けを入れて拾う。
+  Future<void> _runConsoleStep(WebAutoStep s) async {
+    final provider = context.read<MindMapProvider>();
+    final c = _cdp;
+    final viaCdp = c != null && !c.isClosed;
+    final start = s.count <= 0;
+
+    if (start) {
+      if (viaCdp) {
+        await c.startConsoleCapture();
+        c.clearConsole();
+      } else {
+        await _exec(consoleHookJs);
+      }
+      _log('実行', 'ログを集め始めました');
+      if (mounted) {
+        setState(() => _status = provider.t('auto.logStarted'));
+      }
+      return;
+    }
+
+    final lines = <String>[];
+    if (viaCdp) {
+      lines.addAll(c.consoleLines);
+    } else {
+      final raw = await _eval(
+          'JSON.stringify((window.__hnLogs||[]).slice(-400))');
+      try {
+        final j = jsonDecode(raw ?? '[]');
+        if (j is List) {
+          for (final e in j) {
+            lines.add('$e');
+          }
+        }
+      } catch (_) {}
+    }
+    if (lines.isEmpty) {
+      _log('取得', 'ログはありませんでした');
+      if (mounted) {
+        setState(() => _status = provider.t('auto.logEmpty'));
+      }
+      return;
+    }
+    final f = await _newDataFile('log.txt');
+    await f.writeAsString(lines.join('\n'), flush: true);
+    _madeFiles.add(f);
+    // 記録の窓でもそのまま読めるようにする。
+    for (final l in lines.take(60)) {
+      _log('ページ', l);
+    }
+    _noteData(provider, 'log.txt (${lines.length} 行)', f.path);
+  }
+
+  /// ── ページの中身を取り出す ────────────────────────────────────
+  Future<void> _runExtractStep(WebAutoStep s) async {
+    final provider = context.read<MindMapProvider>();
+    final what = s.text.trim().toLowerCase();
+    final sel = s.selector.trim();
+    final mode = ['text', 'html', 'table', 'links'].contains(what)
+        ? what
+        : 'text';
+    final raw = await _eval(extractJs(mode, sel));
+    var body = raw ?? '';
+    // WebView は JSON の文字列として返すことがある。
+    if (body.length >= 2 && body.startsWith('"') && body.endsWith('"')) {
+      try {
+        body = jsonDecode(body) as String;
+      } catch (_) {}
+    }
+    if (body.trim().isEmpty) {
+      _log('失敗', '取り出せる中身がありませんでした ($mode)');
+      if (mounted) {
+        setState(() => _status = provider.t('auto.extractEmpty'));
+      }
+      return;
+    }
+    final name = switch (mode) {
+      'html' => 'page.html',
+      'table' => 'table.csv',
+      'links' => 'links.txt',
+      _ => 'page.txt',
+    };
+    final f = await _newDataFile(name);
+    await f.writeAsString(body, flush: true);
+    _madeFiles.add(f);
+    _noteData(provider, name, f.path);
+  }
+
   /// パソコンの画面を撮った分 (AI に見せるために持っておく)。
   final List<Uint8List> _osShots = [];
+
+  /// 今操作している所を 1 枚撮って保存する。 撮れたら true。
+  ///
+  /// 外のブラウザにつないでいる時はそのページを、 つないでいない時は
+  /// 今までどおりアプリの中のブラウザを撮る。
+  Future<bool> _captureHere(Rect? region, {bool fullPage = false}) async {
+    final c = _cdp;
+    if (c != null && !c.isClosed) {
+      try {
+        final b64 = await c.screenshotBase64(
+          clip: region == null
+              ? null
+              : (
+                  x: region.left,
+                  y: region.top,
+                  w: region.width,
+                  h: region.height
+                ),
+          fullPage: fullPage,
+        );
+        if (b64 == null || b64.isEmpty) return false;
+        final png = base64Decode(b64);
+        final save = widget.saveShotBytes;
+        if (save != null) {
+          final path = await save(png);
+          if (path != null) return true;
+          // ★ 保存できなかったのに「撮れた」 と数えない (= 終わりに
+          //   「N 枚撮りました」 と出るのに 1 枚も残っていない、 という
+          //   食い違いを防ぐ)。
+          _log('失敗', 'CDP: スクショを保存できませんでした');
+          return false;
+        }
+        // 保存の口が無い時でも、 AI に見せる分だけは持っておく
+        //   (増えすぎないよう新しい方から数枚だけ)。
+        _osShots.add(png);
+        while (_osShots.length > 4) {
+          _osShots.removeAt(0);
+        }
+        return true;
+      } catch (e) {
+        _log('失敗', 'CDP: スクショが撮れませんでした ($e)');
+        return false;
+      }
+    }
+    final shot = await widget.capture(region);
+    return shot != null;
+  }
 
   /// コマンドを 1 つ実行する。 実行した (もしくは黙って飛ばした) なら true、
   /// ユーザーが断った / 危ないので止めた なら false。
@@ -2374,6 +3060,29 @@ ${_pcContext(req)}
     await widget.exec(js);
   }
 
+  /// 外のブラウザとのつながりを手放す。
+  ///
+  /// ★ つないだままにしてはいけない。 つないでいる間は JS もスクショも
+  ///   すべて外のブラウザへ行くので、 次にアプリの中のページを操作する
+  ///   ふつうのフローを流しても、 目の前のページは一切動かず、 放置した
+  ///   Chrome の方が動く (= 点検で判明)。 フローが終わったら切る。
+  Future<void> _releaseCdp() async {
+    final c = _cdp;
+    _cdp = null;
+    if (c == null) return;
+    try {
+      await c.dispose();
+    } catch (_) {}
+  }
+
+  // ★ 「この項目だけ試す」 (_testStep) では切らない。 外のブラウザを開く
+  //   手順を試してから、 次の手順を 1 つずつ試せるようにするため。
+  //   まとめて実行した時とパネルを閉じた時には切る。
+
+  /// JS を送れる口があるか (外のブラウザ、 またはアプリ内ブラウザ)。
+  bool get _hasJsChannel =>
+      (_cdp != null && !_cdp!.isClosed) || widget.evalJs != null;
+
   /// JS の答えを受け取る (つないでいる時は外のブラウザから)。
   Future<String?> _eval(String js) async {
     final c = _cdp;
@@ -2406,8 +3115,38 @@ ${_pcContext(req)}
         !url.startsWith('https://')) {
       url = 'https://$url';
     }
-    // count を 1 にすると、 普段のプロファイル (ログイン済み) で開く。
-    final ownProfile = s.count == 1;
+    // ★ submit で選ぶ (= 以前は count==1 を目印にしていたが、 count の
+    //   既定が 1 なので**必ず**普段のプロファイル側に落ちていた。 その結果
+    //   Chrome が本物の置き場で起動し、 プロファイルが複数あると
+    //   「Chrome はどなたが使用しますか？」 で止まっていた
+    //   = ユーザー報告)。 submit の既定は false なので、 既定は使い捨ての
+    //   プロファイル = 選択画面が出ない。
+    final ownProfile = s.submit;
+    // どのアカウントで開くか (呼び名)。 scrollDir を借りている。
+    final acct = ownProfile ? s.scrollDir.trim() : '';
+
+    // ★ もう同じ相手につないでいるなら、 開き直さずページを移すだけ。
+    //
+    //   = ユーザー報告「実行が終わっても Chrome のタブが複数回開く」。
+    //   1 手ずつ進めるやり方だと openBrowser が何度も出てくることがあり、
+    //   その度に起動し直していたので窓とタブが増え続けていた。
+    final live = _cdp;
+    if (live != null &&
+        !live.isClosed &&
+        live.kind == kind &&
+        live.profileDir == (acct.isEmpty ? live.profileDir : acct)) {
+      if (url.isNotEmpty) {
+        await live.navigate(url);
+      }
+      _log('実行', 'CDP: 開いている ${kind.label} をそのまま使います'
+          '${url.isEmpty ? '' : ' → $url'}');
+      if (mounted) {
+        setState(() => _status = provider
+            .t('auto.cdpConnected')
+            .replaceFirst('{name}', kind.label));
+      }
+      return true;
+    }
     try {
       await _cdp?.dispose();
       _log('実行', 'CDP: ${kind.label} を開いてつなぐ'
@@ -2417,9 +3156,33 @@ ${_pcContext(req)}
         kind: kind,
         url: url.isEmpty ? null : url,
         useOwnProfile: ownProfile,
+        profileHint: acct,
       );
       final cur = await _cdp!.current();
       _log('実行', 'CDP: つながりました  ${cur?.url ?? ''}');
+      // ★ 普段のプロファイルで開けなかった時は、 黙って進めない
+      //   (= ログイン済みのつもりで進めて、 すべてログイン壁で
+      //   空振りするのを防ぐ)。
+      if (_cdp!.needsFirstLogin) {
+        // ★ Chrome の決まりで、 普段のプロファイルのログインは
+        //   持ってこられない。 初回だけ人が入る必要がある事を伝える。
+        _log('注意',
+            'CDP: このアカウント専用のブラウザは初めてです。'
+            ' 開いた窓で 1 回だけログインしてください'
+            ' (次からはログイン済みで開きます)');
+        if (mounted) {
+          setState(() => _status = provider.t('auto.acctFirstLogin'));
+        }
+      } else if (_cdp!.downgradedFromOwnProfile) {
+        _log('注意',
+            'CDP: 普段のプロファイルでは操作口が開かなかったため、'
+            ' 使い捨てのプロファイルで開きました'
+            ' (ログインは引き継がれていません)');
+      } else if (_cdp!.openedAsGuest) {
+        _log('注意',
+            'CDP: ゲストモードで開きました'
+            ' (ログインは引き継がれていません)');
+      }
       if (mounted) {
         setState(() => _status = provider
             .t('auto.cdpConnected')
@@ -2581,15 +3344,34 @@ ${_pcContext(req)}
   }
 
   // ─── 時刻で実行 (= ユーザー要望: 何時何分になったらこの動作) ─────────
+  //
+  //   ★ 1 つの時刻しか選べなかったのを、 **複数の時刻**・**曜日**・
+  //     **日付**で指定できるようにした (= ユーザー要望)。
   static const String _kSchedPrefsKey = 'automationSchedule_v1';
   bool _schedOn = false;
-  int _schedHour = 9;
-  int _schedMin = 0;
-  bool _schedDaily = true;
+
+  /// 動かす時刻 (0 時からの分。 例 540 = 9:00)。 小さい順に持つ。
+  final List<int> _schedTimes = [];
+
+  /// 動かす曜日 (1=月 … 7=日)。 **空なら毎日**。
+  final Set<int> _schedDays = {};
+
+  /// 動かす日付 ('MM-DD' = 毎年その日 / 'YYYY-MM-DD' = その日だけ)。
+  /// **空なら日付では絞らない**。
+  final Set<String> _schedDates = {};
+
+  /// 繰り返すか。 切っていると、 1 回動いたら自動で止まる。
+  bool _schedRepeat = true;
   Timer? _schedTimer;
 
-  /// 同じ分の中で二重に走らせないための控え。
-  String _lastFiredKey = '';
+  /// 同じ時刻で二重に走らせないための控え ('2026-08-31 09:00')。
+  final Set<String> _firedKeys = {};
+
+  static String _two(int v) => v.toString().padLeft(2, '0');
+
+  /// 分を "09:00" の形に。
+  static String _hhmm(int minOfDay) =>
+      '${_two(minOfDay ~/ 60)}:${_two(minOfDay % 60)}';
 
   Future<void> _loadSchedule() async {
     try {
@@ -2600,9 +3382,40 @@ ${_pcContext(req)}
       if (m is! Map || !mounted) return;
       setState(() {
         _schedOn = m['on'] == true;
-        _schedHour = (m['h'] as num?)?.toInt().clamp(0, 23) ?? 9;
-        _schedMin = (m['m'] as num?)?.toInt().clamp(0, 59) ?? 0;
-        _schedDaily = m['daily'] != false;
+        _schedTimes.clear();
+        final t = m['times'];
+        if (t is List) {
+          for (final e in t) {
+            final v = (e as num?)?.toInt();
+            if (v != null && v >= 0 && v < 1440) _schedTimes.add(v);
+          }
+        } else {
+          // ★ 古い形 ({h, m}) からの読み替え。 1 つだけ入れる。
+          final h = (m['h'] as num?)?.toInt() ?? 9;
+          final mi = (m['m'] as num?)?.toInt() ?? 0;
+          _schedTimes.add((h.clamp(0, 23) * 60 + mi.clamp(0, 59)).toInt());
+        }
+        _schedTimes.sort();
+        _schedDays.clear();
+        final d = m['days'];
+        if (d is List) {
+          for (final e in d) {
+            final v = (e as num?)?.toInt();
+            if (v != null && v >= 1 && v <= 7) _schedDays.add(v);
+          }
+        }
+        _schedDates.clear();
+        final dd = m['dates'];
+        if (dd is List) {
+          for (final e in dd) {
+            final v = '$e'.trim();
+            if (v.isNotEmpty) _schedDates.add(v);
+          }
+        }
+        // 古い形の 'daily' も引き継ぐ。
+        _schedRepeat = m['repeat'] is bool
+            ? m['repeat'] as bool
+            : (m['daily'] != false);
       });
       _restartScheduleTimer();
     } catch (_) {}
@@ -2615,27 +3428,46 @@ ${_pcContext(req)}
           _kSchedPrefsKey,
           jsonEncode({
             'on': _schedOn,
-            'h': _schedHour,
-            'm': _schedMin,
-            'daily': _schedDaily,
+            'times': _schedTimes,
+            'days': _schedDays.toList()..sort(),
+            'dates': _schedDates.toList()..sort(),
+            'repeat': _schedRepeat,
           }));
     } catch (_) {}
   }
 
+  /// その日に動かす日か (曜日と日付のしぼり込み)。
+  bool _schedMatchesDay(DateTime now) {
+    if (_schedDays.isNotEmpty && !_schedDays.contains(now.weekday)) {
+      return false;
+    }
+    if (_schedDates.isEmpty) return true;
+    final md = '${_two(now.month)}-${_two(now.day)}';
+    final ymd = '${now.year}-$md';
+    return _schedDates.contains(md) || _schedDates.contains(ymd);
+  }
+
   void _restartScheduleTimer() {
     _schedTimer?.cancel();
-    if (!_schedOn) return;
-    // 20 秒ごとに時刻を見て、 指定の分に入ったら 1 回だけ走らせる。
+    if (!_schedOn || _schedTimes.isEmpty) return;
+    // 20 秒ごとに時計を見て、 指定の分に入ったら 1 回だけ走らせる。
     _schedTimer = Timer.periodic(const Duration(seconds: 20), (_) {
-      if (!mounted || _running) return;
+      if (!mounted || _running || _agentBusy) return;
       final now = DateTime.now();
-      if (now.hour != _schedHour || now.minute != _schedMin) return;
-      final key = '${now.year}-${now.month}-${now.day} $_schedHour:$_schedMin';
-      if (_lastFiredKey == key) return;
-      _lastFiredKey = key;
+      final nowMin = now.hour * 60 + now.minute;
+      if (!_schedTimes.contains(nowMin)) return;
+      if (!_schedMatchesDay(now)) return;
+      // ★ 時刻ごとに控える (= 1 日に何回も動かせるように)。
+      final key = '${now.year}-${_two(now.month)}-${_two(now.day)} '
+          '${_hhmm(nowMin)}';
+      if (_firedKeys.contains(key)) return;
+      _firedKeys.add(key);
+      // 溜め込まない (前日以前の分は捨てる)。
+      final today = '${now.year}-${_two(now.month)}-${_two(now.day)}';
+      _firedKeys.removeWhere((k) => !k.startsWith(today));
       final provider = context.read<MindMapProvider>();
       unawaited(_run(provider).then((_) {
-        if (!_schedDaily && mounted) {
+        if (!_schedRepeat && mounted) {
           setState(() => _schedOn = false);
           _schedTimer?.cancel();
           unawaited(_saveSchedule());
@@ -2649,6 +3481,9 @@ ${_pcContext(req)}
   /// JS の答えを受け取れる口 (evalJs) があればそれで確かめる。 無ければ
   /// 「分からない」 = true にして、 従来どおり動かしてみる。
   Future<bool> _hasLivePage() async {
+    // 外のブラウザにつないでいるなら、 そちらが生きているページ。
+    final c = _cdp;
+    if (c != null && !c.isClosed) return true;
     final eval = widget.evalJs;
     if (eval == null) return true;
     try {
@@ -2760,13 +3595,28 @@ ${_pcContext(req)}
       WebAutoKind.upload,
       WebAutoKind.click,
       WebAutoKind.scrollTo,
+      WebAutoKind.download,
+      WebAutoKind.consoleLog,
+      WebAutoKind.extract,
     };
     // 手順のどこかで「リンクを開く」 があるなら、 その後は開いている。
+    // ★ 外のブラウザで開く手順も同じ扱いにする (= これが抜けていたので、
+    //   「外のブラウザで開く → 一番下まで送る」 というフローが 1 手も
+    //   動かないまま「先にページを開いてください」 で終わっていた)。
     for (final s in _steps) {
-      if (s.kind == WebAutoKind.open) return false;
+      // openExternal は**外の既定ブラウザで開くだけ**で、 こちらから
+      //   触れるページにはならない。 数に入れると、 本当に何も開いて
+      //   いない時の案内が出なくなる。
+      if (s.kind == WebAutoKind.open ||
+          s.kind == WebAutoKind.openBrowser) {
+        return false;
+      }
       if (s.kind == WebAutoKind.loop) {
         for (final c in s.children) {
-          if (c.kind == WebAutoKind.open) return false;
+          if (c.kind == WebAutoKind.open ||
+              c.kind == WebAutoKind.openBrowser) {
+            return false;
+          }
         }
       }
       if (needsPage.contains(s.kind)) return true;
@@ -2815,6 +3665,8 @@ ${_pcContext(req)}
         await _runSteps(_steps, '');
       }
     } finally {
+      // 外のブラウザを使ったフローなら、 終わったらつながりを切る。
+      await _releaseCdp();
       if (mounted) {
         setState(() {
           _running = false;
@@ -2943,6 +3795,12 @@ ${_pcContext(req)}
         return p.t('auto.kindShot');
       case WebAutoKind.fullShot:
         return p.t('auto.kindFullShot');
+      case WebAutoKind.download:
+        return p.t('auto.kindDownload');
+      case WebAutoKind.consoleLog:
+        return p.t('auto.kindConsoleLog');
+      case WebAutoKind.extract:
+        return p.t('auto.kindExtract');
       case WebAutoKind.upload:
         return p.t('auto.kindUpload');
       case WebAutoKind.makeFile:
@@ -2999,6 +3857,12 @@ ${_pcContext(req)}
         return Icons.photo_camera_rounded;
       case WebAutoKind.fullShot:
         return Icons.photo_size_select_actual_rounded;
+      case WebAutoKind.download:
+        return Icons.download_rounded;
+      case WebAutoKind.consoleLog:
+        return Icons.terminal_rounded;
+      case WebAutoKind.extract:
+        return Icons.text_snippet_rounded;
       case WebAutoKind.upload:
         return Icons.upload_file_rounded;
       case WebAutoKind.makeFile:
@@ -3071,9 +3935,68 @@ ${_pcContext(req)}
   }
 
   /// 「時刻で実行」 の行 (= ユーザー要望: 一番下に置く)。 パソコン版だけ。
+  ///
+  /// ★ 1 つの時刻しか選べなかったのを、 複数の時刻・曜日・日付で
+  ///   指定できるようにした (= ユーザー要望)。
   Widget _buildScheduleRow(MindMapProvider provider) {
     if (!_isDesktopHost) return const SizedBox.shrink();
-    String two(int v) => v.toString().padLeft(2, '0');
+
+    Widget chip(String label, {VoidCallback? onDelete, VoidCallback? onTap}) =>
+        Material(
+          color: Colors.transparent,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(999),
+            onTap: onTap,
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(10, 4, 6, 4),
+              decoration: BoxDecoration(
+                color: const Color(0xFF2A2A44),
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(color: Colors.white24),
+              ),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Text(label,
+                    style:
+                        const TextStyle(color: Colors.white, fontSize: 11.5)),
+                if (onDelete != null) ...[
+                  const SizedBox(width: 4),
+                  InkWell(
+                    borderRadius: BorderRadius.circular(999),
+                    onTap: onDelete,
+                    child: const Icon(Icons.close_rounded,
+                        size: 13, color: Colors.white54),
+                  ),
+                ],
+              ]),
+            ),
+          ),
+        );
+
+    Widget addBtn(String label, IconData icon, VoidCallback onTap) =>
+        OutlinedButton.icon(
+          style: OutlinedButton.styleFrom(
+            foregroundColor: const Color(0xFF80CBC4),
+            side: const BorderSide(color: Color(0xFF80CBC4)),
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            minimumSize: const Size(0, 26),
+            visualDensity: VisualDensity.compact,
+          ),
+          icon: Icon(icon, size: 13),
+          label: Text(label, style: const TextStyle(fontSize: 11)),
+          onPressed: onTap,
+        );
+
+    // 曜日の並び (月曜はじまり)。
+    const dayKeys = [
+      (1, 'week.mon'),
+      (2, 'week.tue'),
+      (3, 'week.wed'),
+      (4, 'week.thu'),
+      (5, 'week.fri'),
+      (6, 'week.sat'),
+      (7, 'week.sun'),
+    ];
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(8, 0, 8, 6),
       child: Container(
@@ -3086,88 +4009,215 @@ ${_pcContext(req)}
         child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // ── 時刻で実行 ──
-              // ★ 切っているのに時刻 (9:00 など) が出ていると、 その時刻で
-              //   動くように見える (= ユーザー指摘)。 スイッチを先に置き、
-              //   時刻と「毎日」 は入れている間だけ出す。
+              // ── 入り口のスイッチ ──
+              // ★ 切っているのに時刻が出ていると、 その時刻で動くように
+              //   見える (= ユーザー指摘)。 中身は入れている間だけ出す。
               Row(children: [
                 const Icon(Icons.schedule_rounded,
                     size: 15, color: Color(0xFF80CBC4)),
                 const SizedBox(width: 6),
-                const Text('時刻で実行',
-                    style: TextStyle(color: Colors.white70, fontSize: 11.5)),
+                Text(provider.t('auto.schedTitle'),
+                    style: const TextStyle(
+                        color: Colors.white70, fontSize: 11.5)),
                 const SizedBox(width: 8),
                 Switch(
                   value: _schedOn,
                   materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                   onChanged: (v) async {
-                    setState(() => _schedOn = v);
+                    setState(() {
+                      _schedOn = v;
+                      // 初めて入れた時は 9:00 を 1 つ用意しておく。
+                      if (v && _schedTimes.isEmpty) _schedTimes.add(9 * 60);
+                    });
                     await _saveSchedule();
                     _restartScheduleTimer();
                   },
                 ),
                 if (_schedOn) ...[
-                  const SizedBox(width: 6),
-                  OutlinedButton(
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.white,
-                      side: const BorderSide(color: Colors.white24),
-                      padding: const EdgeInsets.symmetric(horizontal: 10),
-                      minimumSize: const Size(0, 26),
-                    ),
-                    onPressed: () async {
-                      final t = await showTimePicker(
-                        context: context,
-                        initialTime:
-                            TimeOfDay(hour: _schedHour, minute: _schedMin),
-                      );
-                      if (t == null || !mounted) return;
-                      setState(() {
-                        _schedHour = t.hour;
-                        _schedMin = t.minute;
-                      });
-                      await _saveSchedule();
-                      _restartScheduleTimer();
-                    },
-                    child: Text('${two(_schedHour)}:${two(_schedMin)}',
-                        style: const TextStyle(fontSize: 12)),
-                  ),
-                  const SizedBox(width: 2),
+                  const Spacer(),
                   InkWell(
                     onTap: () async {
-                      setState(() => _schedDaily = !_schedDaily);
+                      setState(() => _schedRepeat = !_schedRepeat);
                       await _saveSchedule();
                     },
                     child: Row(mainAxisSize: MainAxisSize.min, children: [
                       Icon(
-                          _schedDaily
+                          _schedRepeat
                               ? Icons.check_box_rounded
                               : Icons.check_box_outline_blank_rounded,
                           size: 15,
-                          color: _schedDaily
+                          color: _schedRepeat
                               ? const Color(0xFF80CBC4)
                               : Colors.white38),
                       const SizedBox(width: 3),
-                      const Text('毎日',
-                          style:
-                              TextStyle(color: Colors.white60, fontSize: 11)),
+                      Text(provider.t('auto.schedRepeat'),
+                          style: const TextStyle(
+                              color: Colors.white60, fontSize: 11)),
                     ]),
                   ),
                 ],
               ]),
+              if (_schedOn) ...[
+                const SizedBox(height: 6),
+                // ── 時刻 (いくつでも) ──
+                Text(provider.t('auto.schedTimes'),
+                    style: const TextStyle(
+                        color: Colors.white54, fontSize: 10)),
+                const SizedBox(height: 4),
+                Wrap(spacing: 6, runSpacing: 6, children: [
+                  for (final t in _schedTimes)
+                    chip(_hhmm(t), onDelete: () async {
+                      setState(() => _schedTimes.remove(t));
+                      await _saveSchedule();
+                      _restartScheduleTimer();
+                    }, onTap: () async {
+                      final picked = await showTimePicker(
+                        context: context,
+                        // ★ 根っこの Navigator を使わない。 この画面は
+                        //   Overlay に載っているので、 既定のままだと
+                        //   時刻の選択が自動化の枠の**下**に出る
+                        //   (= ユーザー報告)。
+                        useRootNavigator: false,
+                        initialTime:
+                            TimeOfDay(hour: t ~/ 60, minute: t % 60),
+                      );
+                      if (picked == null || !mounted) return;
+                      final v = picked.hour * 60 + picked.minute;
+                      setState(() {
+                        _schedTimes.remove(t);
+                        if (!_schedTimes.contains(v)) _schedTimes.add(v);
+                        _schedTimes.sort();
+                      });
+                      await _saveSchedule();
+                      _restartScheduleTimer();
+                    }),
+                  addBtn(provider.t('auto.schedAddTime'),
+                      Icons.add_alarm_rounded, () async {
+                    final picked = await showTimePicker(
+                      context: context,
+                      useRootNavigator: false,
+                      initialTime: const TimeOfDay(hour: 9, minute: 0),
+                    );
+                    if (picked == null || !mounted) return;
+                    final v = picked.hour * 60 + picked.minute;
+                    setState(() {
+                      if (!_schedTimes.contains(v)) _schedTimes.add(v);
+                      _schedTimes.sort();
+                    });
+                    await _saveSchedule();
+                    _restartScheduleTimer();
+                  }),
+                ]),
+                const SizedBox(height: 8),
+                // ── 曜日 (選ばなければ毎日) ──
+                Text(provider.t('auto.schedDays'),
+                    style: const TextStyle(
+                        color: Colors.white54, fontSize: 10)),
+                const SizedBox(height: 4),
+                Wrap(spacing: 4, runSpacing: 4, children: [
+                  for (final d in dayKeys)
+                    Material(
+                      color: Colors.transparent,
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(999),
+                        onTap: () async {
+                          setState(() {
+                            if (!_schedDays.add(d.$1)) {
+                              _schedDays.remove(d.$1);
+                            }
+                          });
+                          await _saveSchedule();
+                        },
+                        child: Container(
+                          width: 30,
+                          padding: const EdgeInsets.symmetric(vertical: 4),
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            color: _schedDays.contains(d.$1)
+                                ? const Color(0xFF80CBC4)
+                                    .withValues(alpha: 0.26)
+                                : const Color(0xFF2A2A44),
+                            borderRadius: BorderRadius.circular(999),
+                            border: Border.all(
+                                color: _schedDays.contains(d.$1)
+                                    ? const Color(0xFF80CBC4)
+                                    : Colors.white24),
+                          ),
+                          child: Text(provider.t(d.$2),
+                              style: TextStyle(
+                                  color: _schedDays.contains(d.$1)
+                                      ? Colors.white
+                                      : Colors.white54,
+                                  fontSize: 11)),
+                        ),
+                      ),
+                    ),
+                  if (_schedDays.isNotEmpty)
+                    TextButton(
+                      style: TextButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        foregroundColor: Colors.white38,
+                        minimumSize: const Size(0, 26),
+                      ),
+                      onPressed: () async {
+                        setState(_schedDays.clear);
+                        await _saveSchedule();
+                      },
+                      child: Text(provider.t('auto.schedEveryDay'),
+                          style: const TextStyle(fontSize: 10.5)),
+                    ),
+                ]),
+                const SizedBox(height: 8),
+                // ── 日付 (選ばなければ絞らない) ──
+                Text(provider.t('auto.schedDates'),
+                    style: const TextStyle(
+                        color: Colors.white54, fontSize: 10)),
+                const SizedBox(height: 4),
+                Wrap(spacing: 6, runSpacing: 6, children: [
+                  for (final d in _schedDates.toList()..sort())
+                    chip(d, onDelete: () async {
+                      setState(() => _schedDates.remove(d));
+                      await _saveSchedule();
+                    }),
+                  addBtn(provider.t('auto.schedAddDate'),
+                      Icons.event_rounded, () async {
+                    final now = DateTime.now();
+                    final picked = await showDatePicker(
+                      context: context,
+                      useRootNavigator: false,
+                      initialDate: now,
+                      firstDate: DateTime(now.year - 1),
+                      lastDate: DateTime(now.year + 5),
+                    );
+                    if (picked == null || !mounted) return;
+                    setState(() => _schedDates.add(
+                        '${picked.year}-${_two(picked.month)}'
+                        '-${_two(picked.day)}'));
+                    await _saveSchedule();
+                  }),
+                  if (_schedDates.isNotEmpty)
+                    TextButton(
+                      style: TextButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        foregroundColor: Colors.white38,
+                        minimumSize: const Size(0, 26),
+                      ),
+                      onPressed: () async {
+                        setState(_schedDates.clear);
+                        await _saveSchedule();
+                      },
+                      child: Text(provider.t('auto.schedAnyDate'),
+                          style: const TextStyle(fontSize: 10.5)),
+                    ),
+                ]),
+              ],
+              const SizedBox(height: 4),
               // ★ オフの時に「動かします」 とだけ書いてあると、 切っていても
               //   時刻で動くように読める (= ユーザー指摘)。 今どちらなのかを
               //   最初に書く。
               Padding(
-                padding: const EdgeInsets.only(left: 21, bottom: 4),
-                child: Text(
-                    _schedOn
-                        ? 'オン: この画面を開いている間、 '
-                            '${two(_schedHour)}:${two(_schedMin)} に'
-                            '${_schedDaily ? '毎日' : '1 回だけ'}手順を動かします。'
-                        : 'オフ: 時刻では動きません。 '
-                            'スイッチを入れると時刻を選べて、 '
-                            'この画面を開いている間だけその時刻に動きます。',
+                padding: const EdgeInsets.only(left: 21, bottom: 2),
+                child: Text(_schedSummary(provider),
                     style: TextStyle(
                         color: _schedOn
                             ? const Color(0xFF80CBC4)
@@ -3177,6 +4227,36 @@ ${_pcContext(req)}
             ]),
       ),
     );
+  }
+
+  /// 今の設定を 1 行で言い直す (何が起きるのかを読めるように)。
+  String _schedSummary(MindMapProvider provider) {
+    if (!_schedOn) return provider.t('auto.schedOffNote');
+    if (_schedTimes.isEmpty) return provider.t('auto.schedNoTime');
+    const names = [
+      'week.mon',
+      'week.tue',
+      'week.wed',
+      'week.thu',
+      'week.fri',
+      'week.sat',
+      'week.sun',
+    ];
+    final when = _schedDays.isEmpty
+        ? provider.t('auto.schedEveryDay')
+        : (_schedDays.toList()..sort())
+            .map((d) => provider.t(names[d - 1]))
+            .join('・');
+    final dates = _schedDates.isEmpty
+        ? ''
+        : ' / ${(_schedDates.toList()..sort()).join('・')}';
+    return provider
+        .t('auto.schedOnNote')
+        .replaceFirst('{when}', when)
+        .replaceFirst('{times}', _schedTimes.map(_hhmm).join('・'))
+        .replaceFirst('{dates}', dates)
+        .replaceFirst('{repeat}',
+            provider.t(_schedRepeat ? 'auto.schedRepeatOn' : 'auto.schedOnce'));
   }
 
   /// 「コマンドの許可」 の行 (= ユーザー要望: AI の欄のすぐ下に置く)。
@@ -3447,10 +4527,15 @@ ${_pcContext(req)}
                           ? 1000
                           : (k == WebAutoKind.open
                               ? 2000
-                              : (k == WebAutoKind.scrollTo ||
-                                      k == WebAutoKind.click
-                                  ? 1200
-                                  : 400))),
+                              // ダウンロードは終わるまで待つので長め。
+                              : (k == WebAutoKind.download
+                                  ? 60000
+                                  : (k == WebAutoKind.scrollTo ||
+                                          k == WebAutoKind.click
+                                      ? 1200
+                                      : 400)))),
+                  // 取り出す物の既定は本文。
+                  text: k == WebAutoKind.extract ? 'text' : '',
                   // 端まで送るのは既定で「一番下」 (フッター狙い)。
                   scrollDir:
                       k == WebAutoKind.scrollTo ? 'bottom' : 'down',
@@ -3868,6 +4953,224 @@ ${_pcContext(req)}
               _numField(provider.t('auto.openWait'), s.durationMs, (v) {
                 s.durationMs = v.clamp(0, 60000);
               }, width: 96),
+            ],
+            // ── ダウンロード (= ユーザー要望) ──
+            if (s.kind == WebAutoKind.download) ...[
+              SizedBox(
+                width: 170,
+                child: TextFormField(
+                  initialValue: s.text,
+                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                  decoration: _fieldDeco(provider.t('auto.dlLabel')),
+                  onChanged: (v) {
+                    s.text = v;
+                    _save();
+                  },
+                ),
+              ),
+              SizedBox(
+                width: 230,
+                child: TextFormField(
+                  initialValue: s.selector,
+                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                  decoration: _fieldDeco(provider.t('auto.dlTarget')),
+                  onChanged: (v) {
+                    s.selector = v.trim();
+                    _save();
+                  },
+                ),
+              ),
+            ],
+            // ── ページのログ (= ユーザー要望) ──
+            if (s.kind == WebAutoKind.consoleLog)
+              SizedBox(
+                width: 190,
+                child: DropdownButtonFormField<int>(
+                  initialValue: s.count <= 0 ? 0 : 1,
+                  dropdownColor: const Color(0xFF23233A),
+                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                  decoration: _fieldDeco(provider.t('auto.logMode')),
+                  items: [
+                    DropdownMenuItem(
+                        value: 0,
+                        child: Text(provider.t('auto.logModeStart'),
+                            style: const TextStyle(fontSize: 12))),
+                    DropdownMenuItem(
+                        value: 1,
+                        child: Text(provider.t('auto.logModeSave'),
+                            style: const TextStyle(fontSize: 12))),
+                  ],
+                  onChanged: (v) {
+                    setState(() => s.count = v ?? 0);
+                    _save();
+                  },
+                ),
+              ),
+            // ── 中身を取り出す (= ユーザー要望) ──
+            if (s.kind == WebAutoKind.extract) ...[
+              SizedBox(
+                width: 150,
+                child: DropdownButtonFormField<String>(
+                  initialValue: const ['text', 'html', 'table', 'links']
+                          .contains(s.text.trim().toLowerCase())
+                      ? s.text.trim().toLowerCase()
+                      : 'text',
+                  dropdownColor: const Color(0xFF23233A),
+                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                  decoration: _fieldDeco(provider.t('auto.extractWhat')),
+                  items: [
+                    for (final e in const [
+                      ('text', 'auto.extractText'),
+                      ('table', 'auto.extractTable'),
+                      ('links', 'auto.extractLinks'),
+                      ('html', 'auto.extractHtml'),
+                    ])
+                      DropdownMenuItem(
+                          value: e.$1,
+                          child: Text(provider.t(e.$2),
+                              style: const TextStyle(fontSize: 12))),
+                  ],
+                  onChanged: (v) {
+                    setState(() => s.text = v ?? 'text');
+                    _save();
+                  },
+                ),
+              ),
+              SizedBox(
+                width: 200,
+                child: TextFormField(
+                  initialValue: s.selector,
+                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                  decoration: _fieldDeco(provider.t('auto.extractWhere')),
+                  onChanged: (v) {
+                    s.selector = v.trim();
+                    _save();
+                  },
+                ),
+              ),
+            ],
+            // ── 外のブラウザを操作 ──
+            //    どのブラウザで / どの URL を / どのプロファイルで、 の
+            //    3 つを手で直せるようにする (= 以前は 1 つも直せず、
+            //    チップから足すと空のタブが開くだけの手順になっていた)。
+            if (s.kind == WebAutoKind.openBrowser) ...[
+              SizedBox(
+                width: 120,
+                child: DropdownButtonFormField<String>(
+                  initialValue: const [
+                    '',
+                    'chrome',
+                    'edge',
+                    'brave',
+                    'vivaldi',
+                    'opera'
+                  ].contains(s.text.trim().toLowerCase())
+                      ? s.text.trim().toLowerCase()
+                      : '',
+                  dropdownColor: const Color(0xFF23233A),
+                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                  decoration: InputDecoration(
+                    isDense: true,
+                    labelText: provider.t('auto.browserName'),
+                    labelStyle:
+                        const TextStyle(color: Colors.white54, fontSize: 10),
+                    filled: true,
+                    fillColor: Colors.white.withValues(alpha: 0.06),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(6),
+                        borderSide: BorderSide.none),
+                  ),
+                  items: [
+                    DropdownMenuItem(
+                        value: '',
+                        child: Text(provider.t('auto.browserAuto'),
+                            style: const TextStyle(fontSize: 12))),
+                    for (final k in const [
+                      'chrome',
+                      'edge',
+                      'brave',
+                      'vivaldi',
+                      'opera'
+                    ])
+                      DropdownMenuItem(
+                          value: k,
+                          child: Text(k, style: const TextStyle(fontSize: 12))),
+                  ],
+                  onChanged: (v) {
+                    setState(() => s.text = v ?? '');
+                    _save();
+                  },
+                ),
+              ),
+              SizedBox(
+                width: 240,
+                child: TextFormField(
+                  initialValue: s.selector,
+                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                  decoration: InputDecoration(
+                    isDense: true,
+                    labelText: provider.t('auto.openUrl'),
+                    labelStyle:
+                        const TextStyle(color: Colors.white54, fontSize: 10),
+                    filled: true,
+                    fillColor: Colors.white.withValues(alpha: 0.06),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(6),
+                        borderSide: BorderSide.none),
+                  ),
+                  onChanged: (v) {
+                    s.selector = v.trim();
+                    _save();
+                  },
+                ),
+              ),
+              // ── どのアカウントで開くか (= ユーザー要望) ──
+              //    普段の Chrome に入っている呼び名から選べる。
+              if (s.submit) _acctPicker(provider, s),
+            ],
+            // ── 普段のプロファイルで開くかどうか ──
+            //    以前は count==1 という隠れた目印で決めていて、 count の
+            //    既定が 1 なので**必ず**普段のプロファイル側に落ちていた
+            //    (= プロファイル選択画面で止まる原因)。 目に見える形にする。
+            if (s.kind == WebAutoKind.openBrowser) ...[
+              Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(999),
+                  onTap: () {
+                    setState(() => s.submit = !s.submit);
+                    _save();
+                  },
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                    decoration: BoxDecoration(
+                      color: s.submit
+                          ? const Color(0xFF43B97F).withValues(alpha: 0.26)
+                          : const Color(0xFF2A2A44),
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(
+                          color: s.submit
+                              ? const Color(0xFF43B97F)
+                              : Colors.white24),
+                    ),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      Icon(
+                          s.submit
+                              ? Icons.check_box_rounded
+                              : Icons.check_box_outline_blank_rounded,
+                          size: 13,
+                          color: s.submit
+                              ? const Color(0xFF8FE3BC)
+                              : Colors.white54),
+                      const SizedBox(width: 5),
+                      Text(provider.t('auto.ownProfile'),
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 10.5)),
+                    ]),
+                  ),
+                ),
+              ),
             ],
             // ── テキスト入力 (= ユーザー要望) ──
             if (s.kind == WebAutoKind.type) ...[
@@ -4442,7 +5745,11 @@ ${_pcContext(req)}
                 ),
               // ── AI でフロー作成 (= ユーザー要望: 指示を出すと AI が手順を
               //    組み立てる) ──
-              if (!_running && !_recording && !_agentBusy)
+              // ★ 実行中でも出しておく (= 押しても開いたり閉じたりする
+              //   だけで、 止める操作とは別物。 以前は実行中に消えるうえ
+              //   欄の中の「キャンセル」 も無くなったので、 走っている間
+              //   ずっと欄を畳めなかった)。
+              if (!_recording)
                 Padding(
                   padding: const EdgeInsets.only(right: 4),
                   child: OutlinedButton.icon(
@@ -4467,7 +5774,10 @@ ${_pcContext(req)}
                                 ? Icons.expand_less_rounded
                                 : Icons.auto_awesome_rounded,
                             size: 14),
-                    label: Text(provider.t(_agentKeepSteps ? 'auto.aiBuild' : 'auto.aiRunOnce'),
+                    // ★ これは「欄の開閉」 のボタンなので、 実行の文言を
+                    //   出さない (= 以前は「AIでフロー作成」 と出ていたが、
+                    //   押しても開いたり閉じたりするだけで紛らわしかった)。
+                    label: Text(provider.t('auto.aiSection'),
                         style: const TextStyle(
                             fontSize: 11, fontWeight: FontWeight.w700)),
                     onPressed: _aiBusy
@@ -4533,11 +5843,8 @@ ${_pcContext(req)}
             ]),
               ),
               ),
-              // ── 手順を全部消す (= ユーザー要望: 一括削除してクリアに) ──
-              //    ★ 横スクロールの外の右端に置く。 各手順の × が並ぶ列の
-              //      真上に来るので、 「消す物」 が縦にそろって分かりやすい
-              //      (= ユーザー要望: コマンド実行の × ボタンの上あたりに)。
-              //    間違って押しても困らないよう、 一度だけ確かめる。
+              // ★ 「手順を全部消す」 はここには置かない。 1 番目の手順の
+              //   すぐ上へ移した (= ユーザー要望)。
               // ── 動いた記録 / AI のメッセージ (= ユーザー要望: 開発の
               //    テストに使いたいのでデバッグの記録を見られるように) ──
               IconButton(
@@ -4550,14 +5857,6 @@ ${_pcContext(req)}
                         : const Color(0xFF80CBC4)),
                 onPressed: _showRunLog,
               ),
-              if (!_running && _steps.isNotEmpty)
-                IconButton(
-                  visualDensity: VisualDensity.compact,
-                  tooltip: provider.t('auto.clearAll'),
-                  icon: const Icon(Icons.delete_sweep_rounded,
-                      size: 17, color: Color(0xFFE57373)),
-                  onPressed: () => _clearAllSteps(provider),
-                ),
               // ── 閉じる (= 窓いっぱいに広げている時だけ。 外側の帯が
               //    無いのでここが唯一の閉じ口になる) ──
               //    狭い画面でも必ず見えるよう、 横スクロールの外に置く。
@@ -4679,65 +5978,69 @@ ${_pcContext(req)}
                   // ── 2 つの選び方を並べる (= ユーザー要望: 説明が諄いので、
                   //    「見ながら / 見せない」 と「フローを残す / 残さない」
                   //    の 2 択に置き換える) ──
-                  Wrap(spacing: 14, runSpacing: 6, children: [
-                    _twoWay(
+                  // ── 2 択は左揃え、 実行は同じ段の右端 (= ユーザー要望) ──
+                  //    幅が狭い時は 2 択の方だけが折り返る (Wrap を包む)。
+                  Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+                    Expanded(
+                        child:
+                            Wrap(spacing: 14, runSpacing: 6, children: [
+                      _twoWay(
                       provider.t('auto.optWatch'),
                       left: provider.t('auto.optWatchOn'),
                       right: provider.t('auto.optWatchOff'),
                       leftPicked: !_agentHeadless,
-                      onLeft: () => setState(() => _agentHeadless = false),
-                      onRight: () => setState(() => _agentHeadless = true),
+                      onLeft: () {
+                        _agentOptsTouched = true;
+                        setState(() => _agentHeadless = false);
+                        unawaited(_saveAgentOpts());
+                      },
+                      onRight: () {
+                        _agentOptsTouched = true;
+                        setState(() => _agentHeadless = true);
+                        unawaited(_saveAgentOpts());
+                      },
                     ),
                     _twoWay(
                       provider.t('auto.optKeep'),
                       left: provider.t('auto.optKeepOn'),
                       right: provider.t('auto.optKeepOff'),
                       leftPicked: _agentKeepSteps,
-                      onLeft: () => setState(() => _agentKeepSteps = true),
-                      onRight: () => setState(() => _agentKeepSteps = false),
-                    ),
-                  ]),
-                  const SizedBox(height: 8),
-                  Row(mainAxisAlignment: MainAxisAlignment.end, children: [
-                    TextButton(
-                      style: TextButton.styleFrom(
-                          visualDensity: VisualDensity.compact,
-                          foregroundColor: Colors.white54),
-                      onPressed: () => setState(() => _aiFormOpen = false),
-                      child: Text(provider.t('common.cancel'),
-                          style: const TextStyle(fontSize: 11.5)),
-                    ),
-                    const SizedBox(width: 6),
-                    // ── 画面を見ながら 1 手ずつ進める (= ユーザー要望:
-                    //    AI エージェントのように) ──
-                    OutlinedButton.icon(
-                      style: OutlinedButton.styleFrom(
-                          foregroundColor: const Color(0xFF80CBC4),
-                          side: const BorderSide(color: Color(0xFF80CBC4)),
-                          visualDensity: VisualDensity.compact),
-                      icon: const Icon(Icons.smart_toy_rounded, size: 14),
-                      label: Text(provider.t('auto.agentRun'),
-                          style: const TextStyle(fontSize: 11.5)),
-                      onPressed: () {
-                        final v = _aiCtrl.text;
-                        _rememberAiPrompt(v);
-                        _runAgent(provider, v, keepSteps: _agentKeepSteps);
+                      onLeft: () {
+                        _agentOptsTouched = true;
+                        setState(() => _agentKeepSteps = true);
+                        unawaited(_saveAgentOpts());
                       },
-                    ),
-                    const SizedBox(width: 6),
+                      onRight: () {
+                        _agentOptsTouched = true;
+                        setState(() => _agentKeepSteps = false);
+                        unawaited(_saveAgentOpts());
+                      },
+                      ),
+                    ])),
+                    const SizedBox(width: 8),
+                    // ── 投げるボタンは 1 つだけ (= ユーザー要望: 見方と
+                    //    フローの 2 択があるのだから、 ボタンで同じことを
+                    //    選ばせる必要は無い。 キャンセルも使い道が無い) ──
+                    //    畳みたい時は見出しの▼で畳める。
                     ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(
                           backgroundColor: const Color(0xFFBA68C8),
                           foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 18, vertical: 4),
                           visualDensity: VisualDensity.compact),
-                      icon: const Icon(Icons.auto_awesome_rounded, size: 14),
-                      label: Text(provider.t(_agentKeepSteps ? 'auto.aiBuild' : 'auto.aiRunOnce'),
-                          style: const TextStyle(fontSize: 11.5)),
-                      onPressed: () {
-                        final v = _aiCtrl.text;
-                        _rememberAiPrompt(v);
-                        _aiBuildFlowFrom(provider, v);
-                      },
+                      icon: const Icon(Icons.send_rounded, size: 14),
+                      label: Text(provider.t('auto.aiSend'),
+                          style: const TextStyle(fontSize: 12)),
+                      onPressed: (_aiBusy || _agentBusy || _running)
+                          ? null
+                          : () {
+                              final v = _aiCtrl.text;
+                              if (v.trim().isEmpty) return;
+                              _rememberAiPrompt(v);
+                              _runAgent(provider, v,
+                                  keepSteps: _agentKeepSteps);
+                            },
                     ),
                   ]),
                 ]),
@@ -4789,6 +6092,27 @@ ${_pcContext(req)}
                   onPressed: _deleteSelectedSteps,
                 ),
               ]),
+            ),
+          // ── 手順を全部消す (= ユーザー要望: 1 番目の手順のすぐ上に) ──
+          //    間違って押しても困らないよう、 一度だけ確かめる。
+          if (!_running && _steps.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 6, 8, 0),
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    foregroundColor: const Color(0xFFE57373),
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    minimumSize: const Size(0, 26),
+                  ),
+                  icon: const Icon(Icons.delete_sweep_rounded, size: 16),
+                  label: Text(provider.t('auto.clearAll'),
+                      style: const TextStyle(fontSize: 11)),
+                  onPressed: () => _clearAllSteps(provider),
+                ),
+              ),
             ),
           const SizedBox(height: 8),
           if (tight)

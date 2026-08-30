@@ -110,15 +110,18 @@ enum MouseButton { left, right, middle }
 
 // ── 窓の一覧を集める (EnumWindows の受け口は静的関数でないといけない) ──
 final List<DesktopWindow> _collected = [];
-late final _GetWindowTextWDart _getWindowTextForEnum;
-late final _IsWindowVisibleDart _isVisibleForEnum;
+// ★ late final にしない。 listWindows() は何度でも呼ばれるので、
+//   late final だと 2 回目の代入で例外になる
+//   (LateInitializationError: Field has already been initialized)。
+_GetWindowTextWDart? _getWindowTextForEnum;
+_IsWindowVisibleDart? _isVisibleForEnum;
 
 int _enumProc(int hWnd, int lParam) {
   try {
-    if (_isVisibleForEnum(hWnd) == 0) return 1;
+    if (_isVisibleForEnum?.call(hWnd) == 0) return 1;
     final buf = calloc<ffi.Uint16>(512).cast<Utf16>();
     try {
-      final n = _getWindowTextForEnum(hWnd, buf, 512);
+      final n = _getWindowTextForEnum?.call(hWnd, buf, 512) ?? 0;
       if (n > 0) {
         final t = buf.toDartString();
         if (t.trim().isNotEmpty) _collected.add(DesktopWindow(hWnd, t));

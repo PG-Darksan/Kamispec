@@ -5219,9 +5219,24 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     }
   }
 
+  /// 外のブラウザ (CDP) で撮った PNG を、 いつもの置き場に保存する。
+  ///
+  /// = ユーザー要望「CDP が実装できているのだから、 外のブラウザの
+  ///   ページをそのまま撮ってほしい」。 撮る所は自動操作の側にあるが、
+  ///   連番と実行ごとのフォルダはここが持っているので、 保存だけ引き受ける。
+  Future<String?> _saveShotBytes(Uint8List png) async {
+    try {
+      final path = await _nextShotPath(ext: 'png');
+      await File(path).writeAsBytes(png, flush: true);
+      return path;
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// 次に保存するスクショの置き場所 (実行ごとのフォルダ + 連番)。
   /// = ユーザー要望「画像名が長すぎる」 ので 1.jpg, 2.jpg … の形。
-  Future<String> _nextShotPath() async {
+  Future<String> _nextShotPath({String ext = 'jpg'}) async {
     final shotDir = _autoRunDir != null
         ? Directory(_autoRunDir!)
         : await automationShotsDir();
@@ -5236,7 +5251,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         if (n != null && n >= next) next = n + 1;
       }
     } catch (_) {}
-    return '${shotDir.path}/$next.jpg';
+    return '${shotDir.path}/$next.$ext';
   }
 
   /// ページの上から下までを 1 枚の縦長画像にして保存する (= ユーザー要望)。
@@ -5563,6 +5578,15 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                   capture: _captureWebArea,
                   // ページ全体を 1 枚の縦長画像に (= ユーザー要望)。
                   captureFull: _captureFullPageTall,
+                  // 外のブラウザ (CDP) で撮った絵の保存先 (= 採番はここが持つ)。
+                  saveShotBytes: _saveShotBytes,
+                  // 1 回の実行ごとに保存先を分ける (見せない実行でも)。
+                  onRunStarted: () async {
+                    try {
+                      final d = await newAutomationRunDir();
+                      _autoRunDir = d.path;
+                    } catch (_) {}
+                  },
                   pickPoint: _pickPointOnPage,
                   pickRect: _pickRectOnPage,
                   onClose: () {
