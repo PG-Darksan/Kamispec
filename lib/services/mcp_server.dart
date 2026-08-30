@@ -1,8 +1,11 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:path_provider/path_provider.dart';
 
+// 自動操作へ渡す合図 (= ユーザー要望: アシスタントから PC を操作)。
+import '../main.dart' show automationRequestFromAssistant;
 import '../providers/mind_map_provider.dart';
 import '../utils/build_flags.dart';
 
@@ -201,6 +204,29 @@ class McpServer {
 
   /// ツール定義 (アプリ内 AI チャットからも共用するため公開)。
   static final List<Map<String, dynamic>> toolDefs = [
+    // ── パソコンの操作は「自動操作」 に委ねる (= ユーザー要望: アシスタント
+    //    に chrome を起動させて何かやってと言ったら自律的に動くように) ──
+    //    ここで OS を直に叩かないのは、 許可の仕組みを 1 箇所に集めるため。
+    _tool(
+        'run_automation',
+        'Run a task on the PC itself (launch and drive real apps such as '
+        'Chrome, click, type, press keys) by handing the instruction to the '
+        'built-in Web/PC automation. Use this whenever the user asks to '
+        'start or operate an application outside this app. The automation '
+        'panel opens, the AI there plans the steps and runs them while the '
+        'user watches. It obeys the user\'s permission setting (off / ask '
+        'every time / allow all), so it may pause for confirmation or refuse. '
+        'Desktop only. Returns immediately after handing it over - watch the '
+        'panel for the result.',
+        {
+          'instruction': {
+            'type': 'string',
+            'description':
+                'What to do, in the user\'s own words. Example: "PC の Chrome '
+                'を起動して example.com を開いて".'
+          }
+        },
+        ['instruction']),
     // ★ isCurrent を必ず説明に書く (= ユーザー報告: 「このページ消して」 で
     //   全ページを消しにいった)。 どれが「今のページ」 かを知る手立てが
     //   説明に無いと、 AI は当てずっぽうで全部に手を出す。
@@ -1169,6 +1195,21 @@ class McpServer {
       String name, Map<String, dynamic> a) async {
     double? numOf(String key) => (a[key] as num?)?.toDouble();
     switch (name) {
+      // ── パソコンの操作は自動操作へ委ねる (= ユーザー要望) ──
+      case 'run_automation':
+        {
+          final text = (a['instruction'] as String? ?? '').trim();
+          if (text.isEmpty) return _err('instruction is required');
+          if (kIsWeb || !(Platform.isWindows || Platform.isMacOS ||
+              Platform.isLinux)) {
+            return _err('PC の操作はパソコン版だけです');
+          }
+          // 画面側 (自動操作パネル) がこの合図を拾って動かす。
+          automationRequestFromAssistant.value = text;
+          return _ok('自動操作に渡しました: $text\n'
+              '実行の様子と結果は自動操作の画面に出ます。 '
+              '利用者の許可設定によっては確認を求めるか、 断ることがあります。');
+        }
       case 'list_pages':
         return _ok(_provider.mcpListPages());
       case 'read_page':

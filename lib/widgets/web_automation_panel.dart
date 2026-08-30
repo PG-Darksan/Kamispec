@@ -17,12 +17,21 @@ import 'dart:typed_data' show Uint8List;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'
-    show HardwareKeyboard, KeyDownEvent, KeyEvent, LogicalKeyboardKey;
+    show
+        Clipboard,
+        ClipboardData,
+        HardwareKeyboard,
+        KeyDownEvent,
+        KeyEvent,
+        LogicalKeyboardKey;
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+// アシスタントからの依頼を受ける合図。
+import '../main.dart' show automationRequestFromAssistant;
 import '../providers/mind_map_provider.dart';
 // パソコンそのものを操作する (= ユーザー要望: PC 内のアプリを操作)。
+import '../services/cdp_browser.dart';
 import '../services/desktop_input.dart';
 import '../services/screen_capture.dart' as scap;
 import '../utils/build_flags.dart';
@@ -102,6 +111,23 @@ enum WebAutoKind {
 
   /// パソコンの画面を撮る (アプリの中ではなく画面全体)。
   osShot,
+
+  /// 利用者に聞いて、 選んでもらうまで待つ
+  /// (= ユーザー要望: Chrome のアカウント選択のような、 本人にしか
+  ///  決められない所で止まらず、 選んでもらってから先へ進む)。
+  ///   text     = 聞く内容 (例: 「どのアカウントでログインしますか?」)
+  ///   selector = 選択肢を「|」 で区切って並べる。 空なら「続ける」 だけ。
+  ask,
+
+  /// 外のブラウザ (Chrome / Edge / Brave …) を、 操作できる状態で
+  /// 開いてつなぐ (= ユーザー要望: PC 内のブラウザを操作)。
+  ///
+  /// これ以降の手順 (要素を押す / 文字を打つ / 端まで送る…) は、
+  /// アプリ内のブラウザではなく **外のブラウザ** に効く。
+  ///   text     = どのブラウザか ('chrome' / 'edge' / 'brave' …。 空なら先頭)
+  ///   selector = 最初に開く URL (空でもよい)
+  ///   count    = 1 にすると普段のプロファイル (ログイン済み) で開く
+  openBrowser,
 }
 
 /// コマンド実行の許可の仕方 (= ユーザー要望: 許可を求める・全部任せる)。
@@ -422,14 +448,42 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
     // Esc / Ctrl+C を横取りして「止める」 に使う (= ユーザー要望:
     // Esc で欄が閉じるのをやめ、 実行を止める側に割り当てる)。
     HardwareKeyboard.instance.addHandler(_handleStopKey);
+    // AI アシスタントからの依頼を受ける (= ユーザー要望: アシスタントに
+    //   chrome を起動させて何かやってと言ったら自律的に動くように)。
+    automationRequestFromAssistant.addListener(_onAssistantAutomation);
   }
 
   @override
   void dispose() {
     HardwareKeyboard.instance.removeHandler(_handleStopKey);
+    automationRequestFromAssistant.removeListener(_onAssistantAutomation);
     _schedTimer?.cancel();
     _aiCtrl.dispose();
     super.dispose();
+  }
+
+  /// AI アシスタントから「この指示で動かして」 と渡された。
+  ///
+  /// 入力欄に入れて「画面を見ながら実行」 を走らせる。 許可の判断は今まで
+  /// どおり自動操作側 (使わない / 毎回確認 / 全部任せる) が行う。
+  void _onAssistantAutomation() {
+    final v = automationRequestFromAssistant.value;
+    if (v == null || v.trim().isEmpty || !mounted) return;
+    // 同じ値で 2 回走らないよう、 受け取ったら消しておく。
+    automationRequestFromAssistant.value = null;
+    if (_running || _agentBusy || _aiBusy) {
+      _log('AI', 'アシスタントからの依頼は、 今の実行が終わるまで受けません');
+      return;
+    }
+    final provider = context.read<MindMapProvider>();
+    setState(() {
+      _aiCtrl.text = v.trim();
+      _aiFormOpen = true;
+    });
+    _saveAiDraft(_aiCtrl.text);
+    _log('AI', 'アシスタントからの依頼: ${v.trim()}');
+    // ignore: discarded_futures
+    _runAgent(provider, v.trim(), keepSteps: _agentKeepSteps);
   }
 
   Future<void> _load() async {
@@ -903,13 +957,30 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
 ルール:
 - kind は open / click / scrollTo / scroll / wait / shot / type / tap /
   hold / swipe / loop / makeFile / upload / openExternal / command /
-  osActivate / osClick / osMove / osType / osKey / osScroll / osShot のみ。
+  osActivate / osClick / osMove / osType / osKey / osScroll / osShot /
+  ask のみ。
+- **頼まれていない手順を足さないこと**。 依頼に書かれた事だけを並べる。
+  「念のため画面を撮る」「とりあえずキーを押す」 は不要。
+- **中身が決まらない手順は出さないこと**。 osActivate は窓の題名、
+  osKey はキー、 osClick は座標が必ず要る。 空のまま置かない
+  (空の手順は捨てられる)。
+- 本人にしか決められない所 (ログインするアカウントの選択、 二段階認証、
+  同意画面など) に来たら、 そこで止めずに
+  {"kind":"ask","text":"どのアカウントでログインしますか?"} を置く。
+  画面で選んでもらってから、 その次の手順へ進む。
+  選択肢を出せる時は selector に「A|B|C」 のように並べる。
 - **「パソコンの」「PC の」「Chrome で」「外のブラウザで」 と言われたら、
-  open を使ってはいけない**。 open は**アプリの中のブラウザ**で開くだけで、
-  パソコンのアプリは動かない。 その時は次のどちらかを使う:
-    ・ページを見せるだけでよい → {"kind":"openExternal","text":"https://…"}
-    ・そのアプリを操作したい   → {"kind":"command","text":"start chrome"}
-      のように起動してから、 os… の手順で操作する。
+  open を使ってはいけない**。 open は**アプリの中のブラウザ**で開くだけ。
+  その時は **openBrowser** を使う:
+    {"kind":"openBrowser","text":"chrome","selector":"https://example.com/"}
+  これで外のブラウザが「操作できる状態」 で開き、 **以降の
+  click / type / scrollTo / shot / 端まで送る はすべてその外のブラウザに
+  効く**。 座標は要らない。 いつもどおり文字で要素を指せばよい。
+    ・text  … chrome / edge / brave / vivaldi / opera (空なら入っている先頭)
+    ・count … 1 にすると**普段のプロファイル**で開く。 ログイン済みのまま
+      使えるので、 ログインが要る作業ではこちらにする
+      (Google は自動化されたブラウザでのサインインを拒むため)。
+  ページを見せるだけで操作が要らないなら openExternal でよい。
 - **os で始まる手順は「パソコンそのもの」 を動かす** (アプリの外)。
   画面に見えている物を直接押す・打つので、 使う前に必ず
   {"kind":"osShot"} で画面を撮り、 何がどこにあるかを確かめること。
@@ -1049,7 +1120,75 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
   /// ★ 説明文への追記だけでは軽いモデルが従わなかったため、 出てきた
   ///   手順そのものを直す (= ユーザー報告: PC 内の chrome を起動させてと
   ///   言っているのにアプリ内でブラウザを立ち上げてしまう)。
+  /// 中身が空で意味を成さない手順を落とす。
+  ///
+  /// ★ AI が「窓を前に出す (題名なし)」「キーを押す (キーなし)」 のような
+  ///   空の手順を並べてくることがある (= ユーザー報告: 指示していない事が
+  ///   フローに入る)。 実行しても何も起きないか、 関係ない所を触るので、
+  ///   ここで捨てる。 何を捨てたかは画面に出す。
+  List<WebAutoStep> _dropEmptySteps(List<WebAutoStep> steps) {
+    final dropped = <String>[];
+    bool keep(WebAutoStep s) {
+      switch (s.kind) {
+        case WebAutoKind.osActivate:
+          // 題名が無いとどの窓か決まらない。
+          if (s.text.trim().isEmpty) return false;
+          return true;
+        case WebAutoKind.osKey:
+          if (s.text.trim().isEmpty) return false;
+          return true;
+        case WebAutoKind.osType:
+        case WebAutoKind.type:
+          if (s.text.trim().isEmpty) return false;
+          return true;
+        case WebAutoKind.osClick:
+        case WebAutoKind.osMove:
+          // 座標が両方 0 = どこを押すか決まっていない。
+          if (s.x.abs() < 0.5 && s.y.abs() < 0.5) return false;
+          return true;
+        case WebAutoKind.open:
+        case WebAutoKind.openExternal:
+        case WebAutoKind.command:
+          if (s.text.trim().isEmpty) return false;
+          return true;
+        case WebAutoKind.makeFile:
+          if (s.selector.trim().isEmpty) return false;
+          return true;
+        case WebAutoKind.click:
+          if (s.text.trim().isEmpty && s.selector.trim().isEmpty) return false;
+          return true;
+        default:
+          return true;
+      }
+    }
+
+    final out = <WebAutoStep>[];
+    for (final s in steps) {
+      if (s.kind == WebAutoKind.loop) {
+        s.children
+          ..clear()
+          ..addAll(_dropEmptySteps(List<WebAutoStep>.from(s.children)));
+      }
+      if (keep(s)) {
+        out.add(s);
+      } else {
+        dropped.add(_kindLabel(context.read<MindMapProvider>(), s.kind));
+      }
+    }
+    if (dropped.isNotEmpty && mounted) {
+      Future.microtask(() {
+        if (!mounted) return;
+        setState(() => _status = context
+            .read<MindMapProvider>()
+            .t('auto.droppedEmpty')
+            .replaceFirst('{list}', dropped.toSet().join(' / ')));
+      });
+    }
+    return out;
+  }
+
   List<WebAutoStep> _coercePcIntent(String request, List<WebAutoStep> steps) {
+    steps = _dropEmptySteps(steps);
     if (!_wantsPcApp(request)) return steps;
     if (!_isDesktopHost) return steps;
     var changed = false;
@@ -1106,6 +1245,9 @@ $snap'''}
 
 依頼: $req''';
       final out = (await provider.askAi(prompt)).trim();
+      // AI の返事を残す (= ユーザー要望: 自動化の所でも AI からの
+      //   メッセージを見たい)。 何を考えたのかが後から追える。
+      _noteAiMessage(out);
       var body = out;
       final fence = RegExp(r'```[a-zA-Z]*\s*\n([\s\S]*?)\n?```');
       final fm = fence.firstMatch(body);
@@ -1212,6 +1354,9 @@ $snap'''}
     final tail = d.isEmpty
         ? ''
         : ' / ${d.length > 160 ? '${d.substring(0, 160)}…' : d}';
+    // 失敗は記録にも残す (= ユーザー要望: 開発のテストに使いたい)。
+    //   画面の 1 行と違い、 こちらは返事の全文を残す。
+    _log('失敗', provider.t(key) + (d.isEmpty ? '' : '\n    $d'));
     setState(() => _status = provider.t(key) + tail);
   }
 
@@ -1244,7 +1389,9 @@ $snap'''}
     //    立ち上げようとする)。 見せたいのは PC の本物のアプリの方なので、
     //    アプリ内ブラウザを前に出すとかえって隠してしまう。
     final pcMode = _wantsPcApp(req);
-    if (!pcMode) widget.onRunningChanged?.call(true, _requestStop);
+    // 見せない選択 (= ユーザー要望: ヘッドレスか見ながらか) の時も出さない。
+    final showBrowser = !pcMode && !_agentHeadless;
+    if (showBrowser) widget.onRunningChanged?.call(true, _requestStop);
     final done = <String>[];
     try {
       // 手数の上限。 止まらなくなるのを防ぐ。
@@ -1276,6 +1423,7 @@ ${_pcContext(req)}
         String out;
         try {
           out = (await provider.askAi(prompt)).trim();
+          _noteAiMessage(out);
         } catch (err) {
           // ★ 黙って止まらない (= ユーザー報告: 真っ白な画面になった後、
           //   何も作られないまま戻ってきた)。 何が起きたのかを出す。
@@ -1362,7 +1510,7 @@ ${_pcContext(req)}
       }
       // ★ 終わったので元に戻す (ブラウザを隠す判断は受け側が持つ)。
       //   出していない時は戻す必要も無い。
-      if (!pcMode) widget.onRunningChanged?.call(false, _requestStop);
+      if (showBrowser) widget.onRunningChanged?.call(false, _requestStop);
       if (mounted) {
         setState(() {
           _agentBusy = false;
@@ -1409,12 +1557,12 @@ ${_pcContext(req)}
   }
 
   Future<void> _tapAt(double x, double y) async {
-    await widget.exec(_pointerJs('pointerdown', x, y));
-    await widget.exec(_mouseJs('mousedown', x, y));
+    await _exec(_pointerJs('pointerdown', x, y));
+    await _exec(_mouseJs('mousedown', x, y));
     await Future.delayed(const Duration(milliseconds: 40));
-    await widget.exec(_pointerJs('pointerup', x, y, buttons: 0));
-    await widget.exec(_mouseJs('mouseup', x, y, buttons: 0));
-    await widget.exec(_mouseJs('click', x, y, buttons: 0));
+    await _exec(_pointerJs('pointerup', x, y, buttons: 0));
+    await _exec(_mouseJs('mouseup', x, y, buttons: 0));
+    await _exec(_mouseJs('click', x, y, buttons: 0));
     // 注: 以前はここで el.click() も呼んでいたが、 合成 click と二重に
     //     発火してリンクが 2 回開く等の症状が出ていた (= ユーザー報告:
     //     何故か 2 回繰り返される)。 実際のタップと同じく合成イベントの
@@ -1422,29 +1570,29 @@ ${_pcContext(req)}
   }
 
   Future<void> _holdAt(double x, double y, int ms) async {
-    await widget.exec(_pointerJs('pointerdown', x, y));
-    await widget.exec(_mouseJs('mousedown', x, y));
+    await _exec(_pointerJs('pointerdown', x, y));
+    await _exec(_mouseJs('mousedown', x, y));
     await Future.delayed(Duration(milliseconds: ms));
-    await widget.exec(_pointerJs('pointerup', x, y, buttons: 0));
-    await widget.exec(_mouseJs('mouseup', x, y, buttons: 0));
+    await _exec(_pointerJs('pointerup', x, y, buttons: 0));
+    await _exec(_mouseJs('mouseup', x, y, buttons: 0));
   }
 
   Future<void> _swipe(
       double x1, double y1, double x2, double y2, int ms) async {
     const frames = 12;
-    await widget.exec(_pointerJs('pointerdown', x1, y1));
-    await widget.exec(_mouseJs('mousedown', x1, y1));
+    await _exec(_pointerJs('pointerdown', x1, y1));
+    await _exec(_mouseJs('mousedown', x1, y1));
     for (var i = 1; i <= frames; i++) {
       if (_cancel) break;
       final t = i / frames;
       final x = x1 + (x2 - x1) * t;
       final y = y1 + (y2 - y1) * t;
-      await widget.exec(_pointerJs('pointermove', x, y));
-      await widget.exec(_mouseJs('mousemove', x, y));
+      await _exec(_pointerJs('pointermove', x, y));
+      await _exec(_mouseJs('mousemove', x, y));
       await Future.delayed(Duration(milliseconds: (ms / frames).round()));
     }
-    await widget.exec(_pointerJs('pointerup', x2, y2, buttons: 0));
-    await widget.exec(_mouseJs('mouseup', x2, y2, buttons: 0));
+    await _exec(_pointerJs('pointerup', x2, y2, buttons: 0));
+    await _exec(_mouseJs('mouseup', x2, y2, buttons: 0));
   }
 
   int _shots = 0;
@@ -1568,7 +1716,7 @@ ${_pcContext(req)}
         'el.files=dt.files;'
         "el.dispatchEvent(new Event('change',{bubbles:true}));"
         '})()';
-    await widget.exec(js);
+    await _exec(js);
     if (mounted) {
       setState(() => _status = context
           .read<MindMapProvider>()
@@ -1589,6 +1737,21 @@ ${_pcContext(req)}
       final label = path.isEmpty ? '${i + 1}' : '$path-${i + 1}';
       if (mounted) {
         setState(() => _status = '$_lapLabel · $label');
+      }
+      // ── 何をやったかを記録に残す (= ユーザー要望: 開発のテストに使う) ──
+      //    中身も一緒に残す (どの URL を開いたか等が後から分かるように)。
+      {
+        final p = context.read<MindMapProvider>();
+        final detail = [
+          if (s.text.trim().isNotEmpty)
+            's.text=${s.text.trim().length > 80 ? '${s.text.trim().substring(0, 80)}…' : s.text.trim()}',
+          if (s.selector.trim().isNotEmpty) 'sel=${s.selector.trim()}',
+          if (s.x != 0 || s.y != 0) 'xy=(${s.x.round()},${s.y.round()})',
+          if (s.count != 0) 'count=${s.count}',
+          if (s.durationMs != 0) 'ms=${s.durationMs}',
+        ].join(' ');
+        _log('実行', '$label ${_kindLabel(p, s.kind)}'
+            '${detail.isEmpty ? '' : '  $detail'}');
       }
       switch (s.kind) {
         case WebAutoKind.loop:
@@ -1666,7 +1829,7 @@ ${_pcContext(req)}
             if (_cancel) return;
             if (ev == null) {
               // 位置を読めない時は今までどおり (打ち切りはしない)。
-              await widget.exec(scrollJs);
+              await _exec(scrollJs);
             } else {
               final raw = await ev(scrollJs);
               final t = (raw ?? '').replaceAll('"', '').trim();
@@ -1685,7 +1848,7 @@ ${_pcContext(req)}
         case WebAutoKind.type:
           for (var c = 0; c < (s.count <= 0 ? 1 : s.count); c++) {
             if (_cancel) return;
-            await widget.exec(_typeJs(s));
+            await _exec(_typeJs(s));
             await Future.delayed(_intervalOf(s));
           }
           break;
@@ -1707,7 +1870,7 @@ ${_pcContext(req)}
             if (!u.startsWith('http://') && !u.startsWith('https://')) {
               u = 'https://$u';
             }
-            await widget.exec('location.href = ${jsonEncode(u)};');
+            await _exec('location.href = ${jsonEncode(u)};');
             // 読み込みを待つ。 durationMs を待ち時間として使う (既定 2 秒)。
             final waitMs = s.durationMs <= 0 ? 2000 : s.durationMs;
             await Future.delayed(Duration(milliseconds: waitMs));
@@ -1717,7 +1880,7 @@ ${_pcContext(req)}
           // ── 文字 / セレクタで要素を探して押す (= 座標に頼らない) ──
           for (var c = 0; c < (s.count <= 0 ? 1 : s.count); c++) {
             if (_cancel) return;
-            await widget.exec(_clickByJs(s.selector, s.text));
+            await _exec(_clickByJs(s.selector, s.text));
             // 押した先が別ページなら読み込みを待つ。
             await Future.delayed(Duration(
                 milliseconds: s.durationMs <= 0 ? 800 : s.durationMs));
@@ -1727,7 +1890,7 @@ ${_pcContext(req)}
           // ── 一番下 / 一番上まで送る (= フッターの撮影を確実にする) ──
           {
             final toTop = s.scrollDir == 'top' || s.scrollDir == 'up';
-            await widget.exec(toTop
+            await _exec(toTop
                 ? 'window.scrollTo({top:0,behavior:"smooth"});'
                 : 'window.scrollTo({top:document.body.scrollHeight,'
                     'behavior:"smooth"});');
@@ -1794,6 +1957,27 @@ ${_pcContext(req)}
               final shot = await f();
               if (shot != null) _shots++;
               await Future.delayed(_intervalOf(s));
+            }
+          }
+          break;
+        // ── 利用者に聞いて待つ (= ユーザー要望: Chrome のアカウント選択で
+        //    止まらず、 選んでもらってから先へ進む) ──
+        case WebAutoKind.openBrowser:
+          {
+            final ok = await _openExternalBrowser(s);
+            if (!ok) {
+              _cancel = true;
+              return;
+            }
+            await Future.delayed(_intervalOf(s));
+          }
+          break;
+        case WebAutoKind.ask:
+          {
+            final ok = await _runAskStep(s);
+            if (!ok) {
+              _cancel = true;
+              return;
             }
           }
           break;
@@ -1873,6 +2057,105 @@ ${_pcContext(req)}
       if (mounted) setState(() => _status = 'ブラウザを開けませんでした: $e');
     }
   }
+
+  /// 利用者に聞いて、 答えるまで待つ。
+  ///
+  /// ★ Chrome のアカウント選択のように、 本人にしか決められない所がある
+  ///   (= ユーザー要望: そこで終わらずに、 選んでもらってから先へ進む)。
+  ///   選択肢が無い時は「続ける」 だけを出し、 画面で操作し終えたら
+  ///   押してもらう形にする。
+  ///
+  /// 進めてよければ true、 やめるなら false。
+  Future<bool> _runAskStep(WebAutoStep s) async {
+    if (!mounted) return false;
+    final provider = context.read<MindMapProvider>();
+    final question = s.text.trim().isEmpty
+        ? provider.t('auto.askDefault')
+        : s.text.trim();
+    final choices = s.selector
+        .split('|')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
+    if (mounted) setState(() => _status = question);
+    final picked = await showDialog<String>(
+      context: context,
+      // 浮かぶ窓の中から出しても下に潜らないように。
+      useRootNavigator: false,
+      barrierDismissible: false,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Row(children: [
+          const Icon(Icons.help_outline_rounded,
+              color: Color(0xFF80CBC4), size: 20),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(provider.t('auto.kindAsk'),
+                style: const TextStyle(color: Colors.white, fontSize: 15)),
+          ),
+        ]),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(question,
+                style: const TextStyle(
+                    color: Colors.white70, fontSize: 13, height: 1.6)),
+            if (choices.isEmpty) ...[
+              const SizedBox(height: 10),
+              Text(provider.t('auto.askManualHint'),
+                  style: const TextStyle(
+                      color: Colors.white38, fontSize: 11, height: 1.5)),
+            ],
+            if (choices.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              for (final c in choices)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton(
+                      style: OutlinedButton.styleFrom(
+                          foregroundColor: const Color(0xFF80CBC4),
+                          side: const BorderSide(color: Color(0xFF80CBC4))),
+                      onPressed: () => Navigator.pop(dctx, c),
+                      child: Text(c,
+                          style: const TextStyle(fontSize: 12.5)),
+                    ),
+                  ),
+                ),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, null),
+            child: Text(provider.t('auto.askStop'),
+                style: const TextStyle(color: Color(0xFFE57373))),
+          ),
+          if (choices.isEmpty)
+            TextButton(
+              onPressed: () => Navigator.pop(dctx, ''),
+              child: Text(provider.t('auto.askContinue'),
+                  style: const TextStyle(color: Color(0xFF4FC3F7))),
+            ),
+        ],
+      ),
+    );
+    if (!mounted) return false;
+    if (picked == null) {
+      setState(() => _status = context
+          .read<MindMapProvider>()
+          .t('auto.askStopped'));
+      return false;
+    }
+    // 選ばれた答えは、 次に AI へ渡す時の手がかりとして覚えておく。
+    if (picked.isNotEmpty) _lastAskAnswer = picked;
+    return true;
+  }
+
+  /// 直近で利用者が選んだ答え (AI に「こう選ばれた」 と伝えるため)。
+  String? _lastAskAnswer;
 
   /// パソコンそのものへの操作を 1 つ行う (= ユーザー要望: アプリ内だけで
   /// なく PC 内のアプリを操作)。
@@ -2043,6 +2326,209 @@ ${_pcContext(req)}
 
   /// 実行したコマンドと結果の控え (= 何をしたか後から見えるように)。
   final List<String> _cmdLog = [];
+
+  /// 動いた記録 (= ユーザー要望: 開発のテストに使いたいので、 デバッグ用の
+  /// 記録を取れるように)。 手順の実行、 AI とのやり取り、 失敗の理由を
+  /// 時刻つきで並べる。 上限を決めて古い物から捨てる。
+  final List<String> _runLog = [];
+
+  /// AI が返してきた文章 (= ユーザー要望: 自動化の所でも AI からの
+  /// メッセージを見たい)。 手順だけでなく、 何を考えたのかを出す。
+  final List<String> _aiMessages = [];
+
+  static String _stamp() {
+    final n = DateTime.now();
+    String two(int v) => v.toString().padLeft(2, '0');
+    return '${two(n.hour)}:${two(n.minute)}:${two(n.second)}';
+  }
+
+  /// 記録を 1 行足す。 [tag] は '実行' / 'AI' / '失敗' など。
+  void _log(String tag, String text) {
+    final line = '[${_stamp()}] $tag  $text';
+    _runLog.add(line);
+    while (_runLog.length > 400) {
+      _runLog.removeAt(0);
+    }
+    // 画面に出ている時だけ描き直す (実行中に毎回 setState すると重い)。
+    if (mounted && _logPanelOpen) setState(() {});
+  }
+
+  /// 記録の欄を開いているか。
+  bool _logPanelOpen = false;
+
+  // ── 外のブラウザ (Chrome / Edge / Brave …) につないでいる時の相手 ──
+  //    = ユーザー要望「PC 内のブラウザを操作したい」。
+  //
+  //    ★ ここが繋がっている間、 手順の JS はアプリ内ブラウザではなく
+  //      **外のブラウザ**へ送られる。 文字で要素を探して押す仕掛けは
+  //      そのまま効くので、 座標も画像も要らない。
+  CdpBrowser? _cdp;
+
+  /// JS を送る (つないでいる時は外のブラウザへ)。
+  Future<void> _exec(String js) async {
+    final c = _cdp;
+    if (c != null && !c.isClosed) {
+      await c.evaluate(js);
+      return;
+    }
+    await widget.exec(js);
+  }
+
+  /// JS の答えを受け取る (つないでいる時は外のブラウザから)。
+  Future<String?> _eval(String js) async {
+    final c = _cdp;
+    if (c != null && !c.isClosed) return c.evaluate(js);
+    final ev = widget.evalJs;
+    if (ev == null) return null;
+    return ev(js);
+  }
+
+  /// 外のブラウザを開いてつなぐ。
+  Future<bool> _openExternalBrowser(WebAutoStep s) async {
+    final provider = context.read<MindMapProvider>();
+    if (!_isDesktopHost) {
+      setState(() => _status = provider.t('auto.osWindowsOnly'));
+      return false;
+    }
+    // どのブラウザか (text で指定。 空なら入っている物の先頭)。
+    final kind = CdpBrowserKindName.fromText(s.text) ??
+        (CdpBrowser.installed().isNotEmpty
+            ? CdpBrowser.installed().first
+            : null);
+    if (kind == null) {
+      setState(() => _status = provider.t('auto.cdpNoBrowser'));
+      return false;
+    }
+    // selector に URL を書ける (無ければ空のタブで開く)。
+    var url = s.selector.trim();
+    if (url.isNotEmpty &&
+        !url.startsWith('http://') &&
+        !url.startsWith('https://')) {
+      url = 'https://$url';
+    }
+    // count を 1 にすると、 普段のプロファイル (ログイン済み) で開く。
+    final ownProfile = s.count == 1;
+    try {
+      await _cdp?.dispose();
+      _log('実行', 'CDP: ${kind.label} を開いてつなぐ'
+          '${url.isEmpty ? '' : ' → $url'}'
+          '${ownProfile ? ' (普段のプロファイル)' : ''}');
+      _cdp = await CdpBrowser.launchAndConnect(
+        kind: kind,
+        url: url.isEmpty ? null : url,
+        useOwnProfile: ownProfile,
+      );
+      final cur = await _cdp!.current();
+      _log('実行', 'CDP: つながりました  ${cur?.url ?? ''}');
+      if (mounted) {
+        setState(() => _status = provider
+            .t('auto.cdpConnected')
+            .replaceFirst('{name}', kind.label));
+      }
+      return true;
+    } catch (e) {
+      _log('失敗', 'CDP: $e');
+      if (mounted) setState(() => _status = '$e');
+      return false;
+    }
+  }
+
+  /// 画面を見せずに動かすか (= ユーザー要望: 「ヘッドレスか見ながらか」)。
+  /// true なら実行中もブラウザを前に出さない。
+  bool _agentHeadless = false;
+
+  /// 2 択のちいさな切り替え (見出し + 左右のどちらか)。
+  Widget _twoWay(
+    String title, {
+    required String left,
+    required String right,
+    required bool leftPicked,
+    required VoidCallback onLeft,
+    required VoidCallback onRight,
+  }) {
+    Widget side(String label, bool picked, VoidCallback onTap) => InkWell(
+          borderRadius: BorderRadius.circular(999),
+          onTap: onTap,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+            decoration: BoxDecoration(
+              color: picked
+                  ? const Color(0xFF80CBC4).withValues(alpha: 0.22)
+                  : Colors.white.withValues(alpha: 0.05),
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(
+                  color:
+                      picked ? const Color(0xFF80CBC4) : Colors.white24),
+            ),
+            child: Text(label,
+                style: TextStyle(
+                    color: picked
+                        ? const Color(0xFF80CBC4)
+                        : Colors.white60,
+                    fontSize: 10.5,
+                    fontWeight:
+                        picked ? FontWeight.w700 : FontWeight.w400)),
+          ),
+        );
+    return Row(mainAxisSize: MainAxisSize.min, children: [
+      Text('$title  ',
+          style: const TextStyle(color: Colors.white38, fontSize: 10.5)),
+      side(left, leftPicked, onLeft),
+      const SizedBox(width: 4),
+      side(right, !leftPicked, onRight),
+    ]);
+  }
+
+  /// AI の返事を控える (= ユーザー要望: 自動化の所でも AI からの
+  /// メッセージを表示できるように)。
+  ///
+  /// JSON だけを返す作りなので、 そのままだと読みにくい。 手順以外に
+  /// 何か書いてあれば、 その部分を「ひとこと」 として拾う。
+  void _noteAiMessage(String raw) {
+    final t = raw.trim();
+    if (t.isEmpty) return;
+    // JSON の外側にある文章 (説明・言い訳・確認) だけを取り出す。
+    var note = t;
+    final s = t.indexOf('{');
+    final e = t.lastIndexOf('}');
+    if (s >= 0 && e > s) {
+      note = (t.substring(0, s) + t.substring(e + 1))
+          .replaceAll(RegExp(r'```[a-zA-Z]*'), '')
+          .trim();
+    }
+    // 手順だけの返事なら、 何手作ったかを短く残す。
+    if (note.isEmpty) {
+      note = _briefOfStepsJson(t);
+    }
+    if (note.isEmpty) return;
+    _aiMessages.add('[${_stamp()}] $note');
+    while (_aiMessages.length > 60) {
+      _aiMessages.removeAt(0);
+    }
+    _log('AI', note.length > 300 ? '${note.substring(0, 300)}…' : note);
+  }
+
+  /// 手順だけの返事を「〜を N 手」 の形に要約する。
+  String _briefOfStepsJson(String raw) {
+    try {
+      final s = raw.indexOf('{');
+      final e = raw.lastIndexOf('}');
+      if (s < 0 || e <= s) return '';
+      final m = jsonDecode(raw.substring(s, e + 1));
+      if (m is! Map) return '';
+      if (m['done'] == true) return '(完了と判断しました)';
+      final list = m['steps'];
+      if (list is! List) return '';
+      final kinds = <String>[];
+      for (final j in list) {
+        if (j is Map && j['kind'] != null) kinds.add('${j['kind']}');
+      }
+      if (kinds.isEmpty) return '';
+      return '${kinds.join(' → ')} (${kinds.length} 手)';
+    } catch (_) {
+      return '';
+    }
+  }
 
   Future<bool?> _confirmCommand(String cmd) {
     return showDialog<bool>(
@@ -2490,6 +2976,10 @@ ${_pcContext(req)}
         return p.t('auto.kindOsScroll');
       case WebAutoKind.osShot:
         return p.t('auto.kindOsShot');
+      case WebAutoKind.ask:
+        return p.t('auto.kindAsk');
+      case WebAutoKind.openBrowser:
+        return p.t('auto.kindOpenBrowser');
     }
   }
 
@@ -2542,6 +3032,10 @@ ${_pcContext(req)}
         return Icons.unfold_more_rounded;
       case WebAutoKind.osShot:
         return Icons.screenshot_monitor_rounded;
+      case WebAutoKind.ask:
+        return Icons.help_outline_rounded;
+      case WebAutoKind.openBrowser:
+        return Icons.travel_explore_rounded;
     }
   }
 
@@ -2809,6 +3303,127 @@ ${_pcContext(req)}
     );
   }
 
+  /// 動いた記録 (= ユーザー要望: 開発のテストに使いたいので、 デバッグ用の
+  /// 記録と AI からのメッセージを見られるように)。
+  void _showRunLog() {
+    final provider = context.read<MindMapProvider>();
+    _showNearDialog<void>(
+      maxWidth: 620,
+      builder: (dctx) => StatefulBuilder(builder: (dctx2, setL) {
+        var tab = 0; // 0 = 動いた記録、 1 = AI のメッセージ
+        return StatefulBuilder(builder: (_, setInner) {
+          Widget chip(int i, String label, int n) => Padding(
+                padding: const EdgeInsets.only(right: 6),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(999),
+                  onTap: () => setInner(() => tab = i),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 11, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: tab == i
+                          ? const Color(0xFF80CBC4).withValues(alpha: 0.22)
+                          : Colors.white.withValues(alpha: 0.06),
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(
+                          color: tab == i
+                              ? const Color(0xFF80CBC4)
+                              : Colors.white24),
+                    ),
+                    child: Text('$label ($n)',
+                        style: TextStyle(
+                            color: tab == i
+                                ? const Color(0xFF80CBC4)
+                                : Colors.white70,
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w700)),
+                  ),
+                ),
+              );
+          final body = tab == 0 ? _runLog : _aiMessages;
+          return AlertDialog(
+            backgroundColor: const Color(0xFF1E1E32),
+            title: Row(children: [
+              const Icon(Icons.bug_report_rounded,
+                  color: Color(0xFF80CBC4), size: 19),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(provider.t('auto.runLog'),
+                    style: const TextStyle(color: Colors.white, fontSize: 15)),
+              ),
+            ]),
+            content: SizedBox(
+              width: 600,
+              height: 380,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(children: [
+                    chip(0, provider.t('auto.runLogSteps'), _runLog.length),
+                    chip(1, provider.t('auto.runLogAi'), _aiMessages.length),
+                  ]),
+                  const SizedBox(height: 8),
+                  Expanded(
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.30),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.white12),
+                      ),
+                      child: SingleChildScrollView(
+                        reverse: true,
+                        child: SelectableText(
+                            body.isEmpty
+                                ? provider.t('auto.runLogEmpty')
+                                : body.join('\n'),
+                            style: TextStyle(
+                                color: body.isEmpty
+                                    ? Colors.white38
+                                    : const Color(0xFFB3E5FC),
+                                fontSize: 11.5,
+                                height: 1.5,
+                                fontFamily: 'monospace')),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () async {
+                  await Clipboard.setData(
+                      ClipboardData(text: body.join('\n')));
+                  if (dctx2.mounted) Navigator.pop(dctx2);
+                },
+                child: Text(provider.t('auto.runLogCopy'),
+                    style: const TextStyle(color: Color(0xFF4FC3F7))),
+              ),
+              TextButton(
+                onPressed: () {
+                  setState(() {
+                    _runLog.clear();
+                    _aiMessages.clear();
+                  });
+                  Navigator.pop(dctx2);
+                },
+                child: Text(provider.t('auto.runLogClear'),
+                    style: const TextStyle(color: Color(0xFFE57373))),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(dctx2),
+                child: Text(provider.t('btn.close'),
+                    style: const TextStyle(color: Colors.white54)),
+              ),
+            ],
+          );
+        });
+      }),
+    );
+  }
+
   /// 追加できる種類のチップ列。 [into] に追加する。
   Widget _addChips(MindMapProvider provider, List<WebAutoStep> into) {
     return Wrap(spacing: 6, runSpacing: 6, children: [
@@ -2946,6 +3561,24 @@ ${_pcContext(req)}
               ),
             ),
             const Spacer(),
+            // ── 畳む / 開く (= ユーザー要望: 手順が多くなってきたので) ──
+            IconButton(
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+              tooltip: provider.t(_collapsedSteps.contains(s)
+                  ? 'auto.stepExpand'
+                  : 'auto.stepCollapse'),
+              icon: Icon(
+                  _collapsedSteps.contains(s)
+                      ? Icons.unfold_more_rounded
+                      : Icons.unfold_less_rounded,
+                  size: 15,
+                  color: Colors.white38),
+              onPressed: () => setState(() {
+                if (!_collapsedSteps.remove(s)) _collapsedSteps.add(s);
+              }),
+            ),
             // この項目だけ試す (= ユーザー要望)
             IconButton(
               visualDensity: VisualDensity.compact,
@@ -3003,6 +3636,19 @@ ${_pcContext(req)}
               },
             ),
           ]),
+          // ── 中身の畳み方 (= ユーザー要望: 手順が多くなってきたので
+          //    折り畳めるように) ──
+          //    畳んでいる時は、 何が入っているかを 1 行で見せる。
+          if (_collapsedSteps.contains(s))
+            Padding(
+              padding: const EdgeInsets.only(left: 21, top: 2, bottom: 2),
+              child: Text(_stepSummary(s),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      color: Colors.white38, fontSize: 10.5)),
+            ),
+          if (!_collapsedSteps.contains(s)) ...[
           const SizedBox(height: 6),
           Wrap(spacing: 6, runSpacing: 6, children: [
             if (s.kind == WebAutoKind.tap ||
@@ -3595,9 +4241,30 @@ ${_pcContext(req)}
               ),
             ),
           ],
+          ], // ← 畳んでいない時だけ中身を出す
         ],
       ),
     );
+  }
+
+  /// 畳んでいる手順の集まり (= ユーザー要望: 手順が多くなってきたので
+  /// 折り畳めるように)。
+  final Set<WebAutoStep> _collapsedSteps = <WebAutoStep>{};
+
+  /// 畳んだ時に 1 行で見せる中身。
+  String _stepSummary(WebAutoStep s) {
+    final bits = <String>[
+      if (s.text.trim().isNotEmpty)
+        s.text.trim().length > 48
+            ? '${s.text.trim().substring(0, 48)}…'
+            : s.text.trim(),
+      if (s.selector.trim().isNotEmpty) s.selector.trim(),
+      if (s.x != 0 || s.y != 0) '(${s.x.round()},${s.y.round()})',
+      if (s.count != 0) '×${s.count}',
+      if (s.durationMs != 0) '${s.durationMs}ms',
+      if (s.kind == WebAutoKind.loop) '中に ${s.children.length} 手',
+    ];
+    return bits.isEmpty ? '—' : bits.join('  ');
   }
 
   @override
@@ -3871,6 +4538,18 @@ ${_pcContext(req)}
               //      真上に来るので、 「消す物」 が縦にそろって分かりやすい
               //      (= ユーザー要望: コマンド実行の × ボタンの上あたりに)。
               //    間違って押しても困らないよう、 一度だけ確かめる。
+              // ── 動いた記録 / AI のメッセージ (= ユーザー要望: 開発の
+              //    テストに使いたいのでデバッグの記録を見られるように) ──
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                tooltip: provider.t('auto.runLog'),
+                icon: Icon(Icons.bug_report_rounded,
+                    size: 17,
+                    color: (_runLog.isEmpty && _aiMessages.isEmpty)
+                        ? Colors.white38
+                        : const Color(0xFF80CBC4)),
+                onPressed: _showRunLog,
+              ),
               if (!_running && _steps.isNotEmpty)
                 IconButton(
                   visualDensity: VisualDensity.compact,
@@ -3996,41 +4675,29 @@ ${_pcContext(req)}
                         ),
                       ),
                   ]),
-                  const SizedBox(height: 6),
-                  // ── 「画面を見ながら実行」 の結果を手順として残すか
-                  //    (= ユーザー要望: 後でも使えるようにフローを作るか、
-                  //    その場かぎりで実行させるかを選べるように) ──
-                  InkWell(
-                    onTap: () =>
-                        setState(() => _agentKeepSteps = !_agentKeepSteps),
-                    child: Row(mainAxisSize: MainAxisSize.min, children: [
-                      Icon(
-                          _agentKeepSteps
-                              ? Icons.check_box_rounded
-                              : Icons.check_box_outline_blank_rounded,
-                          size: 15,
-                          color: _agentKeepSteps
-                              ? const Color(0xFF80CBC4)
-                              : Colors.white38),
-                      const SizedBox(width: 4),
-                      Text(provider.t('auto.agentKeep'),
-                          style: const TextStyle(
-                              color: Colors.white60, fontSize: 10.5)),
-                    ]),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.only(left: 19, top: 1),
-                    child: Text(
-                        provider.t(_agentKeepSteps
-                            ? 'auto.agentKeepOn'
-                            : 'auto.agentKeepOff'),
-                        style: TextStyle(
-                            color: _agentKeepSteps
-                                ? const Color(0xFF80CBC4)
-                                : Colors.white38,
-                            fontSize: 10)),
-                  ),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: 8),
+                  // ── 2 つの選び方を並べる (= ユーザー要望: 説明が諄いので、
+                  //    「見ながら / 見せない」 と「フローを残す / 残さない」
+                  //    の 2 択に置き換える) ──
+                  Wrap(spacing: 14, runSpacing: 6, children: [
+                    _twoWay(
+                      provider.t('auto.optWatch'),
+                      left: provider.t('auto.optWatchOn'),
+                      right: provider.t('auto.optWatchOff'),
+                      leftPicked: !_agentHeadless,
+                      onLeft: () => setState(() => _agentHeadless = false),
+                      onRight: () => setState(() => _agentHeadless = true),
+                    ),
+                    _twoWay(
+                      provider.t('auto.optKeep'),
+                      left: provider.t('auto.optKeepOn'),
+                      right: provider.t('auto.optKeepOff'),
+                      leftPicked: _agentKeepSteps,
+                      onLeft: () => setState(() => _agentKeepSteps = true),
+                      onRight: () => setState(() => _agentKeepSteps = false),
+                    ),
+                  ]),
+                  const SizedBox(height: 8),
                   Row(mainAxisAlignment: MainAxisAlignment.end, children: [
                     TextButton(
                       style: TextButton.styleFrom(

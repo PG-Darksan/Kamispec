@@ -18,7 +18,14 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
-import 'package:flutter/foundation.dart';
+
+/// ここは Flutter に依存させない (= dart run だけで確かめられる
+/// ように。 FFI の並びを間違えると「動くけれど違う所を押す」 という
+/// 一番たちの悪い壊れ方をするので、 実測できる形にしておく)。
+void _warn(String m) {
+  // ignore: avoid_print
+  print(m);
+}
 
 // ── Win32 の定数 ────────────────────────────────────────────────────────
 const int _kInputMouse = 0;
@@ -131,7 +138,6 @@ class DesktopInput {
   static bool enabled = false;
 
   static bool get isSupported {
-    if (kIsWeb) return false;
     try {
       return Platform.isWindows;
     } catch (_) {
@@ -199,7 +205,7 @@ class DesktopInput {
       final sent = _send(n, mem, _kInputSize);
       return sent == n;
     } catch (e) {
-      debugPrint('DesktopInput.send 失敗: $e');
+      _warn('DesktopInput.send 失敗: $e');
       return false;
     } finally {
       calloc.free(mem);
@@ -354,7 +360,7 @@ class DesktopInput {
       enumWindows(cb, 0);
       return List<DesktopWindow>.from(_collected);
     } catch (e) {
-      debugPrint('DesktopInput.listWindows 失敗: $e');
+      _warn('DesktopInput.listWindows 失敗: $e');
       return const [];
     }
   }
@@ -375,7 +381,7 @@ class DesktopInput {
       show(hit.first.handle, _kSwRestore);
       return fore(hit.first.handle) != 0;
     } catch (e) {
-      debugPrint('DesktopInput.activateWindow 失敗: $e');
+      _warn('DesktopInput.activateWindow 失敗: $e');
       return false;
     }
   }

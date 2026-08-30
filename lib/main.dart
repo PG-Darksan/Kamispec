@@ -2452,6 +2452,17 @@ final ValueNotifier<int> openWithFilesTick = ValueNotifier<int>(0);
 final ValueNotifier<String?> assistantRequestFromFloating =
     ValueNotifier<String?>(null);
 
+/// AI アシスタントから「自動操作をこの指示で動かして」 と頼まれた合図
+/// (= ユーザー要望: アシスタントに chrome を起動させて何かやってと言ったら
+/// 自律的に動くように)。
+///
+/// ★ わざと自動操作へ「委ねる」 形にしている。 アシスタントに OS 操作の
+///   道具を直に生やすと、 許可の仕組み (使わない / 毎回確認 / 全部任せる)
+///   がもう 1 本できてしまい、 そちらだけ素通りする穴になる。 守りは
+///   自動操作の 1 箇所に集めておく。
+final ValueNotifier<String?> automationRequestFromAssistant =
+    ValueNotifier<String?>(null);
+
 /// ショートカット起動でボタンの開き方が「フローティング」 の時に開く URL。
 /// 本体を立ち上げないために main 側で解決する (screen 側の対応表の写し)。
 String? _shortcutFloatingUrl(SharedPreferences prefs, String id) {

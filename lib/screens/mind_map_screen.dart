@@ -228,6 +228,9 @@ import '../main.dart'
         // フローティング AI 窓 (別プロセス) からの「AI アシスタントを開いて」
         // (= ユーザー要望)。
         assistantRequestFromFloating,
+        // AI アシスタントからの「自動操作をこの指示で動かして」
+        // (= ユーザー要望: アシスタントから PC を操作)。
+        automationRequestFromAssistant,
         // デスクトップのショートカットからの「このボタンを実行して」
         // (= ユーザー要望: ボタンを一発で呼び出すショートカット)。
         commandRequestFromShortcut,
@@ -4777,6 +4780,13 @@ class _MindMapScreenState extends State<MindMapScreen>
       // ── フローティング AI 窓 (別プロセス) からの「AI アシスタントを
       //    開いて」 を受ける (= ユーザー要望) ──
       assistantRequestFromFloating.addListener(_onAssistantRequested);
+      // ── アシスタントからの「自動操作を動かして」 を受ける ──
+      //    ★ 自動操作パネルが閉じていると、 あちらの listener が存在せず
+      //      合図が誰にも届かない (= ユーザー報告: アシスタントから頼んでも
+      //      ブラウザすら立ち上がらない)。 ここで先にパネルを開いてから
+      //      改めて合図を出し直す。
+      automationRequestFromAssistant
+          .addListener(_onAssistantAutomationRequested);
       // ── ショートカットからの「このボタンを実行して」 を受ける
       //    (= ユーザー要望: ボタンを一発で呼び出すショートカット) ──
       commandRequestFromShortcut.addListener(_onShortcutCommandRequested);
@@ -6637,6 +6647,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       try {
         openWithFilesTick.removeListener(_onOpenWithFilesArrived);
         assistantRequestFromFloating.removeListener(_onAssistantRequested);
+        automationRequestFromAssistant
+            .removeListener(_onAssistantAutomationRequested);
         commandRequestFromShortcut
             .removeListener(_onShortcutCommandRequested);
         serviceBadgeTick.removeListener(_onServiceBadgeChanged);
@@ -58336,6 +58348,38 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// ヘッダーの常設ボタンと ⋮ メニューの両方から呼ばれる。
   /// フローティング AI 窓から「AI アシスタントを開いて」 と頼まれた時
   /// (= ユーザー要望)。 本体で MCP チャットを開く。
+  /// アシスタントから「自動操作をこの指示で動かして」 と頼まれた。
+  ///
+  /// ★ 自動操作パネルが開いていないと、 あちらの listener が居ないので
+  ///   合図が消えてしまう (= ユーザー報告: ブラウザすら立ち上がらない)。
+  ///   ここでパネルを開き、 描かれてから合図を出し直す。
+  bool _repostingAutomation = false;
+  void _onAssistantAutomationRequested() {
+    if (_repostingAutomation) return; // 出し直しの分は素通り
+    final v = automationRequestFromAssistant.value;
+    if (v == null || v.trim().isEmpty || !mounted) return;
+    final provider = context.read<MindMapProvider>();
+    // 受け取ったら一度消す (パネル側と二重に走らないように)。
+    automationRequestFromAssistant.value = null;
+    // パネルを開く。 既に開いていても害は無い。
+    _executeHeaderCommand('webAutomation', provider);
+    // 描かれて listener が付くのを待ってから、 もう一度合図する。
+    var tries = 0;
+    void repost() {
+      if (!mounted) return;
+      tries++;
+      _repostingAutomation = true;
+      automationRequestFromAssistant.value = v;
+      _repostingAutomation = false;
+      // パネルが受け取ると null に戻る。 まだ残っていれば少し待って再送。
+      if (automationRequestFromAssistant.value != null && tries < 12) {
+        Future.delayed(const Duration(milliseconds: 400), repost);
+      }
+    }
+
+    Future.delayed(const Duration(milliseconds: 600), repost);
+  }
+
   void _onAssistantRequested() {
     final v = assistantRequestFromFloating.value;
     if (v == null || !mounted) return;
@@ -106088,6 +106132,9 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
   bool get _isInterview => _mode == 'interview';
   bool get _isPickup => _mode == 'pickup';
 
+  /// 討論 (= ユーザー要望: ディベートの項目)。
+  bool get _isDebate => _mode == 'debate';
+
   /// 資格・免許の面接 (= ユーザー要望: 医師国家試験のような資格の面接)。
   bool get _isLicense => _mode == 'license';
 
@@ -106096,7 +106143,9 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
   bool get _isPresentation => _mode == 'presentation';
 
   /// 種類を選び直せる画面か (会話練習だけは別物なので出さない)。
-  bool get _canSwitchMode => !_isPickup;
+  // 一覧に入れたので、 どの種類からでも切り替えられる
+  //   (= ユーザー要望: ナンパも面接の所から選べるように)。
+  bool get _canSwitchMode => true;
 
   /// 1 つのボタンにまとめた時に選べる種類 (= ユーザー要望)。
   static const List<({String mode, String labelKey, IconData icon})>
@@ -106125,6 +106174,20 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
       mode: 'presentation',
       labelKey: 'hdr.presentation',
       icon: Icons.co_present_rounded
+    ),
+    // ── 話しかける練習 (= ユーザー要望: ナンパの項目も) ──
+    //    もともと別口で開く形だったので一覧に無かった。 他と同じように
+    //    ここから選べるようにする。
+    (
+      mode: 'pickup',
+      labelKey: 'hdr.pickupPractice',
+      icon: Icons.forum_rounded
+    ),
+    // ── 討論 (= ユーザー要望: ディベートの項目も) ──
+    (
+      mode: 'debate',
+      labelKey: 'hdr.debatePractice',
+      icon: Icons.balance_rounded
     ),
   ];
 
@@ -106225,6 +106288,15 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
   final TextEditingController _pickupPlaceCtrl = TextEditingController();
   String _approach = 'inperson'; // inperson | phone | online
   bool _pickupRandomAi = false;
+
+  /// 討論でどちら側に立ってもらうか。
+  ///   'against' … ユーザーの逆側 (既定)
+  ///   'for'     … ユーザーと同じ側 (詰めの甘さを突いてもらう)
+  ///   'random'  … AI が決める
+  String _debateSide = 'against';
+
+  /// 討論の相手の手ごわさ。 'soft' / 'normal' / 'hard'
+  String _debateLevel = 'normal';
   int _pickupAgeMin = 20;
   int _pickupAgeMax = 35;
 
@@ -106561,6 +106633,43 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
           'ください。 音声会話なので 1 回の発話は短め (2〜3 文) にし、 応募者の'
           '回答に簡単な相づち/掘り下げをしてから次の質問へ進みます。 面接官'
           'として自然に振る舞ってください。';
+    }
+    // ── 討論 (= ユーザー要望: ディベートの項目) ──
+    if (_isDebate) {
+      final theme = topic.isEmpty ? '(お題はこれから決める)' : topic;
+      final sideRule = switch (_debateSide) {
+        'for' => ' あなたはユーザーと**同じ立場**に立ちますが、 論の詰めが'
+            '甘い所を容赦なく突いて、 主張を強くする手伝いをしてください。',
+        'random' => ' どちらの立場に立つかは、 あなたが決めてください。'
+            ' 最初の発言で、 どちら側に立つのかをはっきり述べてください。',
+        _ => ' あなたはユーザーの**反対の立場**に立ちます。',
+      };
+      final levelRule = switch (_debateLevel) {
+        'soft' => ' 相手は討論に慣れていません。 論点を 1 つずつ、'
+            ' 言葉をやわらかくして進めてください。',
+        'hard' => ' 手加減はしません。 前提の穴、 数字の裏付けの無さ、'
+            ' 論点のすり替えを見つけたら、 その場で指摘してください。',
+        _ => ' 相手の力量に合わせて、 妥当な強さで反論してください。',
+      };
+      // 相手の素性も AI に任せられる (= ユーザー要望)。
+      final whoRule = _pickupRandomAi
+          ? ' 討論相手としての立場・肩書き・背景 (例: その分野の研究者、'
+              ' 現場の実務家、 当事者、 記者 など) は、 あなたが自然に'
+              ' 決めてください。 最初の発言で、 誰として話すのかを一言'
+              ' 添えてください。'
+          : (_counterpartCtrl.text.trim().isNotEmpty
+              ? ' あなたの立場・背景:「${_counterpartCtrl.text.trim()}」。'
+                  ' この人物になりきってください。'
+              : '');
+      return 'あなたはユーザーと討論 (ディベート) をする相手です。'
+          ' お題:「$theme」。'
+          '$sideRule$levelRule$whoRule'
+          ' 進め方: 相手の主張をひとこと受け止めてから、'
+          ' **反論か問い返しを 1 つ**投げてください。'
+          ' 根拠のない断定はせず、 事実と意見を分けて話してください。'
+          ' 人格を攻撃せず、 論点だけを相手にしてください。'
+          ' 音声会話なので 1 回の発話は短め (2〜3 文) に。'
+          '${topic.isEmpty ? ' お題がまだ決まっていないので、 まず何について討論するかを尋ねてください。' : ''}';
     }
     // 営業ロープレ: 商談相手の人物像 + アプローチ方法 (= ユーザー要望)。
     final counterpart = _counterpartCtrl.text.trim();
@@ -107834,7 +107943,9 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
                 .t(_isInterview ? 'talk.companyHint' : 'talk.productHint')),
           ),
         ],
-        if (_isPickup) ...[
+        // 相手の設定を AI に任せる (= ユーザー要望: 対象となる相手の
+        //   ステータスなどを LLM に適当に決めさせる)。
+        if (_isPickup || _isDebate) ...[
           const SizedBox(height: 12),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -107862,6 +107973,47 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
             ]),
           ),
           const SizedBox(height: 16),
+        ],
+        // ── 討論の設定 (= ユーザー要望: ディベート) ──
+        if (_isDebate) ...[
+          Text(context.read<MindMapProvider>().t('talk.debateSide'),
+              style: TextStyle(
+                  color: accent, fontSize: 12, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 6),
+          Wrap(spacing: 6, runSpacing: 6, children: [
+            for (final e in const [
+              ('against', 'talk.debateSideAgainst'),
+              ('for', 'talk.debateSideFor'),
+              ('random', 'talk.debateSideRandom'),
+            ])
+              ChoiceChip(
+                label: Text(context.read<MindMapProvider>().t(e.$2),
+                    style: const TextStyle(fontSize: 11.5)),
+                selected: _debateSide == e.$1,
+                onSelected: (_) => setState(() => _debateSide = e.$1),
+              ),
+          ]),
+          const SizedBox(height: 14),
+          Text(context.read<MindMapProvider>().t('talk.debateLevel'),
+              style: TextStyle(
+                  color: accent, fontSize: 12, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 6),
+          Wrap(spacing: 6, runSpacing: 6, children: [
+            for (final e in const [
+              ('soft', 'talk.debateLevelSoft'),
+              ('normal', 'talk.debateLevelNormal'),
+              ('hard', 'talk.debateLevelHard'),
+            ])
+              ChoiceChip(
+                label: Text(context.read<MindMapProvider>().t(e.$2),
+                    style: const TextStyle(fontSize: 11.5)),
+                selected: _debateLevel == e.$1,
+                onSelected: (_) => setState(() => _debateLevel = e.$1),
+              ),
+          ]),
+          const SizedBox(height: 16),
+        ],
+        if (_isPickup) ...[
           Text(context.read<MindMapProvider>().t('talk.pickupPlace'),
               style: TextStyle(
                   color: accent, fontSize: 12, fontWeight: FontWeight.w700)),
@@ -231374,11 +231526,34 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
     });
   }
 
+  /// 位置と大きさが決まったか。
+  ///
+  /// ★ 覚えていた位置は prefs から**後から**読むので、 それまでに 1 枚
+  ///   描いてしまうと既定の左上に出てから動いて見える
+  ///   (= ユーザー報告: 一瞬だけ左上に立ち上がってから移動してくる)。
+  ///   決まるまでは描かない。
+  bool _geomReady = false;
+
+  void _markGeomReady() {
+    if (_geomReady) return;
+    if (!mounted) {
+      _geomReady = true;
+      return;
+    }
+    setState(() => _geomReady = true);
+  }
+
   Future<void> _restoreGeometry() async {
     // 分割セルを覆う指定 (initialRect) がある時は保存値で動かさない。
-    if (widget.initialRect != null) return;
+    if (widget.initialRect != null) {
+      _markGeomReady();
+      return;
+    }
     final key = _prefsKey;
-    if (key == null) return;
+    if (key == null) {
+      _markGeomReady();
+      return;
+    }
     try {
       final sp = await SharedPreferences.getInstance();
       final raw = sp.getString(key);
@@ -231397,7 +231572,11 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
       });
       // 覚えていた大きさ・位置が今の画面より大きいことがある。
       _fitOnScreen();
-    } catch (_) {}
+    } catch (_) {
+    } finally {
+      // 読めても読めなくても、 ここまで来たら描いてよい。
+      _markGeomReady();
+    }
   }
 
   /// この URL を、 アプリとは別のウィンドウ (別プロセス) で開く。
@@ -231655,6 +231834,10 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
 
   @override
   Widget build(BuildContext context) {
+    // ★ 位置が決まるまでは描かない (= ユーザー報告: 一瞬だけ左上に
+    //   立ち上がってから移動してくる)。 覚えていた位置は prefs から
+    //   後から読むので、 先に描くと既定の場所に出てから飛ぶように見える。
+    if (!_geomReady) return const SizedBox.shrink();
     final screen = MediaQuery.of(context).size;
     // ★ 端をまたいで外へ引っ張れるようにする (= ユーザー要望: 外へ出したら
     //   そのまま外の窓になるように)。 以前は画面の中へ抑え込んでいたので、
@@ -232946,6 +233129,20 @@ class _McpChatDialogState extends State<_McpChatDialog> {
   bool get _busy => _session.busy;
   final TextEditingController _input = TextEditingController();
   final ScrollController _scroll = ScrollController();
+
+  /// 送った指示の下に出すちいさなボタン (写す / 直す)。
+  /// = ユーザー要望「一度投げたプロンプトを後からコピーしたり修正したい」。
+  Widget _msgMiniBtn(IconData icon, String tip, VoidCallback onTap) => Tooltip(
+        message: tip,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(6),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(4),
+            child: Icon(icon, size: 13, color: Colors.white38),
+          ),
+        ),
+      );
 
   /// 「できること」 の欄のスクロール位置。 Scrollbar と
   /// SingleChildScrollView が同じ物を持たないと、 バーを掴んでも動かない。
@@ -234382,6 +234579,50 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                                     style: const TextStyle(
                                         color: Colors.white, fontSize: 13)),
                               ),
+                              // ── 送った指示を写す / 直して送り直す
+                              //    (= ユーザー要望: 一度投げたプロンプトを
+                              //     後からコピーしたり修正したい) ──
+                              if (isUser)
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 4),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      _msgMiniBtn(
+                                        Icons.copy_rounded,
+                                        provider.t('mcp.copyPrompt'),
+                                        () async {
+                                          await Clipboard.setData(
+                                              ClipboardData(text: m.text));
+                                          if (!mounted) return;
+                                          _appSnack(
+                                            context,
+                                            SnackBar(
+                                              content: Text(provider
+                                                  .t('mcp.copiedPrompt')),
+                                              duration: const Duration(
+                                                  seconds: 2),
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                      const SizedBox(width: 2),
+                                      _msgMiniBtn(
+                                        Icons.edit_rounded,
+                                        provider.t('mcp.editPrompt'),
+                                        () {
+                                          // 入力欄に戻して、 直してから
+                                          //   送り直せるようにする。
+                                          _input.text = m.text;
+                                          _input.selection =
+                                              TextSelection.collapsed(
+                                                  offset: m.text.length);
+                                          setState(() {});
+                                        },
+                                      ),
+                                    ],
+                                  ),
+                                ),
                               if (showChoices)
                                 Padding(
                                   padding: const EdgeInsets.only(bottom: 6),
