@@ -1275,6 +1275,32 @@ async function isFreeAiUid(env, uid) {
   return isDevEntitlement(await readEntitlement(env, uid));
 }
 
+/// クーポンで入った Dev の「上限まであとどれだけか」。
+///
+/// 管理者 uid (= 開発者モードから入った人) は制限しない
+/// (= ユーザー要望: 開発者モードから Dev を適用した時は料金制限なし)。
+/// 上限が 0 (無制限) の時も null を返す。
+async function devCapState(env, uid) {
+  if (isAdminUid(env, uid)) return null;
+  const ent = await readEntitlement(env, uid);
+  if (!isDevEntitlement(ent)) return null;
+  const capUsd = Number(ent.devCapUsd || 0);
+  if (capUsd <= 0) return null;
+  const spentUsd = Number(ent.devSpentUsd || 0);
+  return { capUsd, spentUsd, over: spentUsd >= capUsd };
+}
+
+/// Dev 枠で使った分を足す (上限のあるコードだけ)。
+async function addDevSpent(env, uid, usd) {
+  if (!(Number(usd) > 0)) return;
+  if (isAdminUid(env, uid)) return;
+  const ent = await readEntitlement(env, uid);
+  if (!isDevEntitlement(ent)) return;
+  if (!(Number(ent.devCapUsd || 0) > 0)) return;
+  const next = round6(Number(ent.devSpentUsd || 0) + Number(usd));
+  await putEntitlement(env, uid, { ...ent, devSpentUsd: next });
+}
+
 /// 権利情報が「今 Dev として有効か」。 期限切れは false。
 function isDevEntitlement(ent) {
   if (!ent || ent.plan !== 'dev') return false;
@@ -1300,6 +1326,10 @@ async function handleDevIssue(request, env) {
   const months = Math.max(0, Math.min(120, Math.round(Number(body.months || 0))));
   // コード自体が使えなくなる日 (秒)。 0 = 無期限。
   const expiresAt = Math.max(0, Math.round(Number(body.expiresAt || 0)));
+  // ★ このコードで使える AI の上限 (ドル)。 0 = 無制限
+  //   (= ユーザー要望: クーポンごとにトークンの使用料金上限をドルで設ける)。
+  //   引き換えた人ごとに数える (1 人あたりの上限)。
+  const capUsd = Math.max(0, Math.min(10000, Number(body.capUsd || 0)));
   const note = String(body.note || '').slice(0, 200);
   const code = makeDevCode();
   const rec = {
@@ -1308,6 +1338,7 @@ async function handleDevIssue(request, env) {
     maxUses,
     months,
     expiresAt,
+    capUsd,
     currentUses: 0,
     createdAt: Math.floor(Date.now() / 1000),
     createdBy: uid,
@@ -1385,10 +1416,19 @@ async function handleDevRedeem(request, env) {
     status: 'active',
     devCode: code,
     devExpiresAt,
+    // ★ このコードで使える上限 (ドル)。 0 = 無制限。
+    //   使った分は devSpentUsd に足していく (引き換え直しでは戻さない)。
+    devCapUsd: Number(rec.capUsd || 0),
+    devSpentUsd: Number(prev.devSpentUsd || 0),
     // Stripe 由来の期限判定 (readEntitlement) に巻き込まれないよう外す。
     currentPeriodEnd: null,
   });
-  return json({ ok: true, plan: 'dev', devExpiresAt });
+  return json({
+    ok: true,
+    plan: 'dev',
+    devExpiresAt,
+    devCapUsd: Number(rec.capUsd || 0),
+  });
 }
 
 /// Dev 枠を返上して、 本来のプランに戻す。
@@ -2400,6 +2440,20 @@ async function handleAiGenerate(request, env) {
   if (used.billedUsd >= cap) {
     return json({ error: 'monthly cap reached', usage: used }, 429);
   }
+  // ── クーポンごとの上限 (= ユーザー要望) ──
+  //   管理者 uid (開発者モードから入った人) は対象外 = 制限なし。
+  const devCap = await devCapState(env, uid);
+  if (devCap && devCap.over) {
+    return json(
+      {
+        error: 'dev cap reached',
+        detail: 'このコードで使える上限に達しました',
+        capUsd: devCap.capUsd,
+        spentUsd: devCap.spentUsd,
+      },
+      402
+    );
+  }
 
   // ── 残高の確認 (= 前払いクレジット) ──
   //   1 回の応答がどれだけ長くなるかは事前に分からないので、
@@ -2466,6 +2520,8 @@ async function handleAiGenerate(request, env) {
   let spent;
   if (devEnt) {
     // Dev 枠: 引き落とさない。 残高はそのまま返す (画面表示のため)。
+    //   ただしクーポンに上限がある時は、 使った分を足しておく。
+    await addDevSpent(env, uid, billed);
     spent = { ok: true, credit: await readCredit(env, uid) };
   } else if (reserved > 0) {
     const st = await creditOp(env, uid, '/settle', {

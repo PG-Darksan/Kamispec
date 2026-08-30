@@ -39743,6 +39743,201 @@ class MindMapProvider extends ChangeNotifier {
       'ja': '100% に戻す',
       'en': 'Back to 100%',
     },
+    // ── パソコンそのものの操作 (= ユーザー要望: アプリ内だけでなく
+    //    PC 内のアプリを操作したい) ──
+    // ── 手順の一括削除 (= ユーザー要望) ──
+    'auto.clearAll': {
+      'ja': '手順を全部消す',
+      'en': 'Clear all steps',
+      'zh': '清空所有步骤',
+      'ko': '모든 순서 지우기',
+      'es': 'Borrar todos los pasos',
+      'fr': 'Effacer toutes les \u00e9tapes',
+      'de': 'Alle Schritte l\u00f6schen',
+      'pt': 'Apagar todos os passos',
+      'ru': '\u041e\u0447\u0438\u0441\u0442\u0438\u0442\u044c \u0432\u0441\u0435 \u0448\u0430\u0433\u0438',
+    },
+    'auto.clearAllBody': {
+      'ja': '{n} 件の手順を全て消します。 この操作は戻せません。',
+      'en': 'This removes all {n} steps. It cannot be undone.',
+      'zh': '将删除全部 {n} 个步骤，且无法撤销。',
+      'ko': '{n} 개의 순서를 모두 지우며 되돌릴 수 없습니다.',
+      'es': 'Se borrar\u00e1n los {n} pasos. No se puede deshacer.',
+      'fr': 'Les {n} \u00e9tapes seront supprim\u00e9es. Action irr\u00e9versible.',
+      'de': 'Alle {n} Schritte werden gel\u00f6scht. Das l\u00e4sst sich nicht r\u00fcckg\u00e4ngig machen.',
+      'pt': 'Remove todos os {n} passos. N\u00e3o pode ser desfeito.',
+      'ru': '\u0411\u0443\u0434\u0443\u0442 \u0443\u0434\u0430\u043b\u0435\u043d\u044b \u0432\u0441\u0435 {n} \u0448\u0430\u0433\u043e\u0432. \u041e\u0442\u043c\u0435\u043d\u0438\u0442\u044c \u043d\u0435\u043b\u044c\u0437\u044f.',
+    },
+    'auto.clearAllDo': {
+      'ja': '全て消す',
+      'en': 'Clear all',
+      'zh': '全部清空',
+      'ko': '모두 지우기',
+      'es': 'Borrar todo',
+      'fr': 'Tout effacer',
+      'de': 'Alle l\u00f6schen',
+      'pt': 'Apagar tudo',
+      'ru': '\u041e\u0447\u0438\u0441\u0442\u0438\u0442\u044c \u0432\u0441\u0451',
+    },
+    'auto.clearedAll': {
+      'ja': '手順を全て消しました',
+      'en': 'All steps cleared',
+      'zh': '已清空所有步骤',
+      'ko': '모든 순서를 지웬습니다',
+      'es': 'Se borraron todos los pasos',
+      'fr': 'Toutes les \u00e9tapes ont \u00e9t\u00e9 effac\u00e9es',
+      'de': 'Alle Schritte gel\u00f6scht',
+      'pt': 'Todos os passos foram apagados',
+      'ru': '\u0412\u0441\u0435 \u0448\u0430\u0433\u0438 \u0443\u0434\u0430\u043b\u0435\u043d\u044b',
+    },
+    'auto.coercedToExternal': {
+      'ja': 'パソコンのアプリへの依頼だったので、 '
+          'アプリ内で開く手順を「外のブラウザで開く」 に直しました',
+      'en': 'This was about a PC app, so in-app opening was switched to '
+          'the outside browser',
+      'zh': '因为是电脑应用的请求，已改为用外部浏览器打开',
+      'ko': 'PC 앱에 대한 요청이라 앱 내 열기를 '
+          '외부 브라우저로 바꿨습니다',
+      'es': 'Como era una app del PC, se cambi\u00f3 a abrir en el navegador externo',
+      'fr': "Comme il s'agit d'une appli du PC, l'ouverture se fait dans le "
+          'navigateur externe',
+      'de': 'Da es um eine PC-App ging, wird nun im externen Browser ge\u00f6ffnet',
+      'pt': 'Como era uma app do PC, passou a abrir no navegador externo',
+      'ru': '\u0417\u0430\u043f\u0440\u043e\u0441 \u043a\u0430\u0441\u0430\u043b\u0441\u044f \u043f\u0440\u0438\u043b\u043e\u0436\u0435\u043d\u0438\u044f \u041f\u041a \u2014 '
+          '\u043e\u0442\u043a\u0440\u044b\u0442\u0438\u0435 \u043f\u0435\u0440\u0435\u043d\u0435\u0441\u0435\u043d\u043e \u0432\u043e \u0432\u043d\u0435\u0448\u043d\u0438\u0439 \u0431\u0440\u0430\u0443\u0437\u0435\u0440',
+    },
+    'auto.kindOsActivate': {
+      'ja': '窓を前に出す',
+      'en': 'Bring window to front',
+      'zh': '将窗口置于前台',
+      'ko': '창을 앞으로',
+      'es': 'Traer ventana al frente',
+      'fr': 'Mettre la fen\u00eatre au premier plan',
+      'de': 'Fenster nach vorn holen',
+      'pt': 'Trazer janela para a frente',
+      'ru': '\u041f\u043e\u043a\u0430\u0437\u0430\u0442\u044c \u043e\u043a\u043d\u043e',
+    },
+    'auto.kindOsClick': {
+      'ja': '画面を押す',
+      'en': 'Click on screen',
+      'zh': '点击屏幕',
+      'ko': '화면 클릭',
+      'es': 'Clic en la pantalla',
+      'fr': "Cliquer sur l'\u00e9cran",
+      'de': 'Auf den Bildschirm klicken',
+      'pt': 'Clicar no ecr\u00e3',
+      'ru': '\u041a\u043b\u0438\u043a \u043f\u043e \u044d\u043a\u0440\u0430\u043d\u0443',
+    },
+    'auto.kindOsMove': {
+      'ja': 'マウスを動かす',
+      'en': 'Move the mouse',
+      'zh': '移动鼠标',
+      'ko': '마우스 이동',
+      'es': 'Mover el rat\u00f3n',
+      'fr': 'D\u00e9placer la souris',
+      'de': 'Maus bewegen',
+      'pt': 'Mover o rato',
+      'ru': '\u041f\u0435\u0440\u0435\u043c\u0435\u0441\u0442\u0438\u0442\u044c \u043c\u044b\u0448\u044c',
+    },
+    'auto.kindOsType': {
+      'ja': 'パソコンに打つ',
+      'en': 'Type on the PC',
+      'zh': '在电脑上输入',
+      'ko': 'PC 에 입력',
+      'es': 'Escribir en el PC',
+      'fr': "Taper sur l'ordinateur",
+      'de': 'Am PC tippen',
+      'pt': 'Escrever no PC',
+      'ru': '\u0412\u0432\u043e\u0434 \u043d\u0430 \u043a\u043e\u043c\u043f\u044c\u044e\u0442\u0435\u0440\u0435',
+    },
+    'auto.kindOsKey': {
+      'ja': 'キーを押す',
+      'en': 'Press keys',
+      'zh': '按下按键',
+      'ko': '키 누르기',
+      'es': 'Pulsar teclas',
+      'fr': 'Appuyer sur des touches',
+      'de': 'Tasten dr\u00fccken',
+      'pt': 'Premir teclas',
+      'ru': '\u041d\u0430\u0436\u0430\u0442\u044c \u043a\u043b\u0430\u0432\u0438\u0448\u0438',
+    },
+    'auto.kindOsScroll': {
+      'ja': '画面を転がす',
+      'en': 'Scroll the screen',
+      'zh': '滚动屏幕',
+      'ko': '화면 스크롤',
+      'es': 'Desplazar la pantalla',
+      'fr': "Faire d\u00e9filer l'\u00e9cran",
+      'de': 'Bildschirm scrollen',
+      'pt': 'Deslocar o ecr\u00e3',
+      'ru': '\u041f\u0440\u043e\u043a\u0440\u0443\u0442\u0438\u0442\u044c \u044d\u043a\u0440\u0430\u043d',
+    },
+    'auto.kindOsShot': {
+      'ja': 'パソコンの画面を撮る',
+      'en': 'Capture the desktop',
+      'zh': '截取桌面',
+      'ko': '바탕 화면 캡처',
+      'es': 'Capturar el escritorio',
+      'fr': "Capturer l'\u00e9cran",
+      'de': 'Bildschirm aufnehmen',
+      'pt': 'Capturar o ambiente de trabalho',
+      'ru': '\u0421\u043d\u0438\u043c\u043e\u043a \u044d\u043a\u0440\u0430\u043d\u0430',
+    },
+    'auto.osWindowsOnly': {
+      'ja': 'パソコンの操作は Windows 版だけです',
+      'en': 'Controlling the PC works on Windows only',
+      'zh': '操作电脑仅限 Windows 版',
+      'ko': 'PC 조작은 Windows 에서만 됩니다',
+      'es': 'Controlar el PC solo funciona en Windows',
+      'fr': "Le contr\u00f4le du PC ne marche que sous Windows",
+      'de': 'Die PC-Steuerung geht nur unter Windows',
+      'pt': 'Controlar o PC s\u00f3 funciona no Windows',
+      'ru': '\u0423\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u0438\u0435 \u041f\u041a \u0442\u043e\u043b\u044c\u043a\u043e \u0432 Windows',
+    },
+    'auto.osStoreBuild': {
+      'ja': 'この版ではパソコンの操作は使えません',
+      'en': 'Controlling the PC is not available in this build',
+      'zh': '此版本不支持操作电脑',
+      'ko': '이 버전에서는 PC 조작을 쓸 수 없습니다',
+      'es': 'Esta versi\u00f3n no permite controlar el PC',
+      'fr': 'Cette version ne permet pas de contr\u00f4ler le PC',
+      'de': 'In dieser Version ist die PC-Steuerung nicht verf\u00fcgbar',
+      'pt': 'Esta vers\u00e3o n\u00e3o permite controlar o PC',
+      'ru': '\u0412 \u044d\u0442\u043e\u0439 \u0441\u0431\u043e\u0440\u043a\u0435 \u0443\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u0438\u0435 \u041f\u041a \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u043e',
+    },
+    'auto.osDisabled': {
+      'ja': 'パソコンの操作は「使わない」 設定です (上の設定で変えられます)',
+      'en': 'Controlling the PC is set to off (change it in the setting above)',
+      'zh': '操作电脑已设为“不使用”（可在上方设置修改）',
+      'ko': 'PC 조작이 「사용 안 함」 입니다 (위 설정에서 변경)',
+      'es': 'Controlar el PC est\u00e1 desactivado (c\u00e1mbialo arriba)',
+      'fr': 'Le contr\u00f4le du PC est d\u00e9sactiv\u00e9 (modifiable ci-dessus)',
+      'de': 'Die PC-Steuerung ist aus (oben \u00e4nderbar)',
+      'pt': 'Controlar o PC est\u00e1 desligado (altere acima)',
+      'ru': '\u0423\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u0438\u0435 \u041f\u041a \u0432\u044b\u043a\u043b\u044e\u0447\u0435\u043d\u043e (\u0438\u0437\u043c\u0435\u043d\u0438\u0442\u0435 \u0432\u044b\u0448\u0435)',
+    },
+    'auto.osCancelled': {
+      'ja': 'パソコンの操作を取りやめました',
+      'en': 'Cancelled controlling the PC',
+      'zh': '已取消操作电脑',
+      'ko': 'PC 조작을 취소했습니다',
+      'es': 'Se cancel\u00f3 el control del PC',
+      'fr': 'Contr\u00f4le du PC annul\u00e9',
+      'de': 'PC-Steuerung abgebrochen',
+      'pt': 'Controlo do PC cancelado',
+      'ru': '\u0423\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u0438\u0435 \u041f\u041a \u043e\u0442\u043c\u0435\u043d\u0435\u043d\u043e',
+    },
+    'auto.osNoWindow': {
+      'ja': '「{name}」 の窓が見つかりませんでした',
+      'en': 'Could not find a window called \u201c{name}\u201d',
+      'zh': '找不到名为“{name}”的窗口',
+      'ko': '「{name}」 창을 찾지 못했습니다',
+      'es': 'No se encontr\u00f3 una ventana llamada \u00ab{name}\u00bb',
+      'fr': "Fen\u00eatre \u00ab {name} \u00bb introuvable",
+      'de': 'Kein Fenster namens \u201e{name}\u201c gefunden',
+      'pt': 'N\u00e3o foi encontrada uma janela \u00ab{name}\u00bb',
+      'ru': '\u041e\u043a\u043d\u043e \u00ab{name}\u00bb \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e',
+    },
     'auto.kindMakeFile': {
       'ja': 'ファイルを作る',
       'en': 'Make a file',
@@ -49803,6 +49998,47 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Dev-Code erstellt: ',
       'pt': 'Código Dev emitido: ',
       'ru': 'Dev-код выпущен: ',
+    },
+    // ── Dev クーポンごとの使用上限 (= ユーザー要望) ──
+    'dev.coupon.capUsd': {
+      'ja': 'このコードで使える上限 (ドル)',
+      'en': 'Spending cap for this code (USD)',
+      'zh': '此代码的使用上限（美元）',
+      'ko': '이 코드의 사용 한도 (달러)',
+      'es': 'L\u00edmite de gasto de este c\u00f3digo (USD)',
+      'fr': 'Plafond de d\u00e9pense de ce code (USD)',
+      'de': 'Ausgabenlimit f\u00fcr diesen Code (USD)',
+      'pt': 'Limite de gasto deste c\u00f3digo (USD)',
+      'ru': '\u041b\u0438\u043c\u0438\u0442 \u0440\u0430\u0441\u0445\u043e\u0434\u043e\u0432 \u0434\u043b\u044f \u043a\u043e\u0434\u0430 (USD)',
+    },
+    'dev.coupon.capUsdHint': {
+      'ja': '引き換えた 1 人あたりの上限です。 空欄または 0 で無制限。\n'
+          '上限に達すると、 その人は AI を呼べなくなります。\n'
+          '★ 開発者モードから Dev を適用した本人は対象外 (常に制限なし)。',
+      'en': 'Per person who redeems it. Empty or 0 means no limit.\n'
+          'Once reached, that person can no longer call the AI.\n'
+          'Note: you yourself (developer mode) are never limited.',
+      'zh': '按每个兑换者计算。留空或 0 为不限。\n'
+          '达到上限后，该用户将无法调用 AI。\n'
+          '注：开发者模式本人不受限制。',
+      'ko': '교환한 사람 1인당 한도입니다. 비워 두거나 0 이면 무제한.\n'
+          '한도에 달하면 그 사람은 AI 를 쓸 수 없습니다.\n'
+          '※ 개발자 모드 본인은 제한되지 않습니다.',
+      'es': 'Por cada persona que lo canjea. Vac\u00edo o 0 = sin l\u00edmite.\n'
+          'Al alcanzarlo, esa persona ya no puede usar la IA.\n'
+          'Nota: t\u00fa (modo desarrollador) nunca tienes l\u00edmite.',
+      'fr': "Par personne qui l'utilise. Vide ou 0 = sans limite.\n"
+          'Une fois atteint, cette personne ne peut plus appeler l\'IA.\n'
+          'Note : vous-m\u00eame (mode d\u00e9veloppeur) n\u2019\u00eates jamais limit\u00e9.',
+      'de': 'Pro Person, die ihn einl\u00f6st. Leer oder 0 = kein Limit.\n'
+          'Ist es erreicht, kann diese Person die KI nicht mehr nutzen.\n'
+          'Hinweis: Du selbst (Entwicklermodus) bist nie limitiert.',
+      'pt': 'Por pessoa que o usa. Vazio ou 0 = sem limite.\n'
+          'Ao atingir, essa pessoa deixa de poder usar a IA.\n'
+          'Nota: voc\u00ea (modo programador) nunca tem limite.',
+      'ru': '\u041d\u0430 \u043a\u0430\u0436\u0434\u043e\u0433\u043e, \u043a\u0442\u043e \u0430\u043a\u0442\u0438\u0432\u0438\u0440\u0443\u0435\u0442. \u041f\u0443\u0441\u0442\u043e \u0438\u043b\u0438 0 \u2014 \u0431\u0435\u0437 \u043b\u0438\u043c\u0438\u0442\u0430.\n'
+          '\u041f\u043e\u0441\u043b\u0435 \u0434\u043e\u0441\u0442\u0438\u0436\u0435\u043d\u0438\u044f AI \u0431\u043e\u043b\u044c\u0448\u0435 \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d.\n'
+          '\u0412\u044b \u0441\u0430\u043c\u0438 (\u0440\u0435\u0436\u0438\u043c \u0440\u0430\u0437\u0440\u0430\u0431\u043e\u0442\u0447\u0438\u043a\u0430) \u043d\u0435 \u043e\u0433\u0440\u0430\u043d\u0438\u0447\u0435\u043d\u044b.',
     },
     'dev.coupon.maxUses': {
       'ja': '使える人数 (0 = 無制限)',
@@ -65649,11 +65885,16 @@ class MindMapProvider extends ChangeNotifier {
   /// [months] は引き換えた人が Dev でいられる月数 (0 = 無期限)。
   /// [maxUses] は何人まで引き換えられるか (0 = 無制限)。
   /// 戻り値: 生成されたコード。 失敗時は Exception。
+  /// [capUsd] はこのコードで使える AI の上限 (ドル)。 0 = 無制限
+  /// (= ユーザー要望: クーポンごとにトークンの使用料金上限を設ける)。
+  /// 引き換えた人 1 人あたりで数える。 開発者モードから入った本人
+  /// (管理者 uid) は対象外で、 いつでも制限なし。
   Future<String> createDevCode({
     int months = 0,
     int maxUses = 0,
     DateTime? expiresAt,
     String note = '',
+    double capUsd = 0,
   }) async {
     if (!_developerMode) {
       throw Exception('開発者モードが有効になっていません');
@@ -65670,6 +65911,7 @@ class MindMapProvider extends ChangeNotifier {
             'months': months,
             'maxUses': maxUses,
             'note': note,
+            if (capUsd > 0) 'capUsd': capUsd,
             if (expiresAt != null)
               'expiresAt': expiresAt.toUtc().millisecondsSinceEpoch ~/ 1000,
           }),
@@ -76419,7 +76661,15 @@ $cleanQ
         body: jsonEncode({
           'fields': {
             'access': {'stringValue': _liveAccess},
-            'editors': {'stringValue': jsonEncode(_liveEditors)},
+            // ★ 配列で持つ (= 規則側で hasAny で判定するため)。
+            //   文字列の JSON だと Firestore の規則から中身を見られない。
+            'editors': {
+              'arrayValue': {
+                'values': [
+                  for (final e in _liveEditors) {'stringValue': e},
+                ]
+              }
+            },
             'hostUid': {'stringValue': _liveHostUid},
             'rev': {
               'integerValue': '${DateTime.now().millisecondsSinceEpoch > _liveRev ? DateTime.now().millisecondsSinceEpoch : _liveRev + 1}'
@@ -76887,9 +77137,11 @@ $cleanQ
     }
     // 最初に今のページ内容を丸ごと送って土台を作る (相手が居なくても安全)。
     // 参加側は送らない (= 相手の内容を自分のもので上書きしない)。
-    if (pushInitial && liveCanEdit) await _livePush(force: true);
-    // 公開した人は、 権限の設定も土台へ書いておく。
+    // ★ 公開した人は、 本文より先に権限 (hostUid) を書く。
+    //   Firestore の規則が「作った時点で hostUid があること」 を見るので、
+    //   順番を逆にすると自分の土台を作れなくなる。
     if (_liveIsHost) await _livePushAccess();
+    if (pushInitial && liveCanEdit) await _livePush(force: true);
     await _livePushPresence();
     // 参加側は、 最初の 1 回を待たずに権限を読みに行く
     //   (= 閲覧のみで招かれた人が、 一瞬でも書けてしまわないように)。
@@ -77075,14 +77327,25 @@ $cleanQ
       if (acc.isNotEmpty) _liveAccess = acc;
       final host = str('hostUid');
       if (host.isNotEmpty) _liveHostUid = host;
-      final ed = str('editors');
-      if (ed.isNotEmpty) {
-        try {
-          final list = jsonDecode(ed) as List<dynamic>;
-          _liveEditors
-            ..clear()
-            ..addAll(list.map((e) => '$e'));
-        } catch (_) {}
+      // 配列で入っている (古い版の文字列 JSON も一応読む)。
+      final edRaw = f['editors'] as Map<String, dynamic>?;
+      final arr = (edRaw?['arrayValue'] as Map<String, dynamic>?)?['values'];
+      if (arr is List) {
+        _liveEditors
+          ..clear()
+          ..addAll(arr
+              .map((e) =>
+                  ((e as Map<String, dynamic>)['stringValue'] as String?) ?? '')
+              .where((e) => e.isNotEmpty));
+      } else {
+        final ed = str('editors');
+        if (ed.isNotEmpty) {
+          try {
+            _liveEditors
+              ..clear()
+              ..addAll((jsonDecode(ed) as List<dynamic>).map((e) => '$e'));
+          } catch (_) {}
+        }
       }
       _applyLiveAccess();
     } catch (_) {}
@@ -82388,6 +82651,12 @@ $cleanQ
       fromAnchor: AnchorDirection.east,
       toId: toId,
       toAnchor: AnchorDirection.west,
+      // ★ 右へ流れる曲線で結ぶ (= ユーザー報告: 右に配置しているのに
+      //   線が上下から伸びて違和感がある)。 既定の折れ線 (elbow) だと
+      //   「右 → 上下 → 右」 と縦の幹を通るため、 枝分かれが多いほど
+      //   上下に伸びて見える。 マインドマップとして自然な右向きの
+      //   曲線に固定する。 手で線種を変えればそちらが優先される。
+      lineStyle: 'curve',
       label: label,
     ));
     _saveToStorage();

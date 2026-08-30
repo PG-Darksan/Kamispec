@@ -3,8 +3,11 @@ rules_version = '2';
 // ============================================================================
 //  HisatorNotebook — Firestore セキュリティルール
 //
-//  いまの実装は「アクセス制限をすべてアプリ側 (Dart) で行う」形になっており、
-//  サーバー側には何の制限もありません。 つまり、
+//  この規則は本番に入っています (2026-08-30 実測: users/messages/groups の
+//  一覧はすべて 403、 自分の行と admin/settings だけ通る)。
+//
+//  もともとアプリ側 (Dart) だけで止めていた次のものを、 サーバー側でも
+//  止めています。
 //    ・他人の同期グループのページを読む / 書き換える
 //    ・他人の予定 (カレンダー) を読む
 //    ・クーポンの currentUses を書き換えて使い放題にする
@@ -146,10 +149,17 @@ service cloud.firestore {
     }
 
     // ── ページの共同編集 (公開コードで参加する仕組み) ───────────────
-    // 8 文字の公開コードを知っていることが参加の条件、 という設計なので、
-    // ログインしていれば読み書きできる形にしている。
-    // ※ コードは推測されにくい長さだが、 秘密ではない。 見せたくない資料を
-    //   共同編集に出さないよう、 アプリ側の説明で伝えること。
+    // 公開コードを知っていることが「参加できる」 条件。 そのうえで
+    // **書けるかどうか**は、 公開した人が決めた権限で決まる
+    // (= ユーザー要望: 誰でも編集 / 指定した人だけ / 全員閲覧のみ)。
+    //
+    // 以前はここが「ログイン済みなら誰でも読み書き」 だったため、
+    //   ・閲覧のみで招いた相手が、 アプリを介さず書き換えられる
+    //   ・参加者が勝手に共有を畳める
+    // という状態だった。 本文 (doc/main) に書いてある権限を見て判定する。
+    //
+    // ※ コードそのものは秘密ではない。 見せたくない資料を共同編集に出さない
+    //   よう、 アプリ側の説明で伝えること。
     match /published/{code} {
       allow read: if signedIn();
       allow create: if signedIn()
@@ -158,14 +168,58 @@ service cloud.firestore {
       allow update, delete: if signedIn()
                             && resource.data.ownerUid == request.auth.uid;
 
-      // 本文。 参加者が編集するのでログイン済みなら書ける。
+      // 本文 (共同編集の実体)。
       match /doc/{docId} {
-        allow read, write: if signedIn();
+        // 公開した人か (本文に書いてある hostUid で見る)。
+        function liveHost() {
+          return signedIn()
+                 && resource.data.get('hostUid', '') == request.auth.uid;
+        }
+        // 公開した人が決めた権限で、 自分が書いてよいか。
+        //   'edit' (既定) … 誰でも / 'list' … 選ばれた人だけ / 'view' … 誰も
+        function liveAccess() {
+          return resource.data.get('access', 'edit');
+        }
+        function liveCanEdit() {
+          return signedIn()
+                 && (liveAccess() == 'edit'
+                     || (liveAccess() == 'list'
+                         && resource.data.get('editors', [])
+                              .hasAny([request.auth.uid])));
+        }
+        // 公開した人しか触ってはいけない所。
+        //   access / editors … 権限そのもの
+        //   hostUid          … 誰が公開者か
+        //   closed           … 公開の中止 (全員の画面を終わらせる印)
+        function liveControlKeys() {
+          return ['access', 'editors', 'hostUid', 'closed'];
+        }
+
+        allow read: if signedIn();
+        // 土台を作れるのは、 自分を公開者として書く時だけ。
+        allow create: if signedIn()
+                      && request.resource.data.get('hostUid', '')
+                         == request.auth.uid;
+        allow update: if liveHost()
+                      || (liveCanEdit()
+                          && !request.resource.data.diff(resource.data)
+                                .affectedKeys().hasAny(liveControlKeys()));
+        allow delete: if liveHost();
       }
-      // 参加者の在席情報。 自分の行だけ。
+
+      // 参加者の在席情報 (名前・色・今つかんでいるノード)。
+      //   他人になりすませないよう、 作る / 直すのは自分の行だけ。
+      //   消すのは誰でも通す (離席した人の行を、 気付いた端末が掃除するため)。
       match /peers/{clientId} {
         allow read: if signedIn();
-        allow write: if signedIn();
+        allow create: if signedIn()
+                      && request.resource.data.get('uid', '')
+                         == request.auth.uid;
+        allow update: if signedIn()
+                      && resource.data.get('uid', '') == request.auth.uid
+                      && request.resource.data.get('uid', '')
+                         == request.auth.uid;
+        allow delete: if signedIn();
       }
     }
 

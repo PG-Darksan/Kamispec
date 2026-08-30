@@ -11,6 +11,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show Directory, File, Platform, Process, ProcessResult;
 import 'dart:math' as math;
+// パソコンの画面を撮った PNG を持っておくのに使う。
+import 'dart:typed_data' show Uint8List;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -20,6 +22,9 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../providers/mind_map_provider.dart';
+// パソコンそのものを操作する (= ユーザー要望: PC 内のアプリを操作)。
+import '../services/desktop_input.dart';
+import '../services/screen_capture.dart' as scap;
 import '../utils/build_flags.dart';
 import 'shot_manager_dialog.dart';
 
@@ -70,6 +75,33 @@ enum WebAutoKind {
   /// selector = ファイル名、 text = 中身。 保存先は automation_files/。
   /// 直後の upload (フォルダー未指定) にそのまま渡せる。
   makeFile,
+
+  // ── ここからは「パソコンそのもの」 を操作する
+  //    (= ユーザー要望: アプリ内だけでなく PC 内のアプリを操作したい)。
+  //    アプリの中のブラウザではなく、 Windows に直接マウス / キーボードの
+  //    信号を送る。 危ないので、 利用者が許した時だけ動く。 Windows 限定。 ──
+
+  /// 窓を前に出す。 text = 題名の一部 (例: 'Chrome')。
+  osActivate,
+
+  /// 画面のその場所を押す。 x / y = 画面の座標、 count = 押す回数、
+  /// selector = 'right' / 'middle' でボタンを変える。
+  osClick,
+
+  /// 画面のその場所へマウスを動かす (押さない)。
+  osMove,
+
+  /// 今選ばれている欄に文字を打つ。 text = 打つ内容。
+  osType,
+
+  /// キーを同時押しする。 text = 'ctrl+l' のように + でつなぐ。
+  osKey,
+
+  /// 画面を縦に転がす。 count = 回す量 (正で上、 負で下)。
+  osScroll,
+
+  /// パソコンの画面を撮る (アプリの中ではなく画面全体)。
+  osShot,
 }
 
 /// コマンド実行の許可の仕方 (= ユーザー要望: 許可を求める・全部任せる)。
@@ -870,7 +902,27 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
 
 ルール:
 - kind は open / click / scrollTo / scroll / wait / shot / type / tap /
-  hold / swipe / loop / makeFile / upload / openExternal / command のみ。
+  hold / swipe / loop / makeFile / upload / openExternal / command /
+  osActivate / osClick / osMove / osType / osKey / osScroll / osShot のみ。
+- **「パソコンの」「PC の」「Chrome で」「外のブラウザで」 と言われたら、
+  open を使ってはいけない**。 open は**アプリの中のブラウザ**で開くだけで、
+  パソコンのアプリは動かない。 その時は次のどちらかを使う:
+    ・ページを見せるだけでよい → {"kind":"openExternal","text":"https://…"}
+    ・そのアプリを操作したい   → {"kind":"command","text":"start chrome"}
+      のように起動してから、 os… の手順で操作する。
+- **os で始まる手順は「パソコンそのもの」 を動かす** (アプリの外)。
+  画面に見えている物を直接押す・打つので、 使う前に必ず
+  {"kind":"osShot"} で画面を撮り、 何がどこにあるかを確かめること。
+    {"kind":"osActivate","text":"Chrome"}          窓を前に出す
+    {"kind":"osShot"}                              画面を撮る (座標を測る用)
+    {"kind":"osClick","x":100,"y":200,"count":1}   画面のその点を押す
+    {"kind":"osType","text":"打つ文字"}             今の入力欄に打つ
+    {"kind":"osKey","text":"ctrl+l"}               同時押し (+ でつなぐ)
+    {"kind":"osScroll","count":-3}                 負で下、 正で上
+  x / y は**画面全体の座標**(左上が 0,0)。 ページの中の座標ではない。
+  座標が分からないまま osClick を書かないこと (関係ない所を押してしまう)。
+- **アップロードを試す時は、 投稿欄が実際にあるサイトを選ぶこと**。
+  example.com のような説明用のページには入力欄が無く、 何も起きない。
 - **ファイルを作って渡す時は makeFile → upload の 2 手順**。
   makeFile は selector にファイル名、 text に中身 (文字だけ)。
   upload は text を空にしておけば、 直前に作ったファイルをそのまま
@@ -902,6 +954,124 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
 - open は「そのページを開く」。 text に URL、 durationMs に読み込み待ち (ms)。
 - scrollDir は down / up / right / left (scrollTo では bottom / top)。
 - steps は 30 個以内。''';
+
+  /// 手順を全部消す (= ユーザー要望: 一括削除してクリアにするボタン)。
+  /// 押し間違いが痛いので一度だけ確かめる。
+  Future<void> _clearAllSteps(MindMapProvider provider) async {
+    if (_steps.isEmpty) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      // ★ 浮かぶ窓の中から出す時は、 根っこの Navigator を使わない
+      //   (= ユーザー報告: 確認が自動化の枠の下に出てしまう)。 根っこに
+      //   出すと、 Overlay に載っているこの窓の方が上に来て隠れる。
+      useRootNavigator: false,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Text(provider.t('auto.clearAll'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        content: Text(
+            provider
+                .t('auto.clearAllBody')
+                .replaceFirst('{n}', '${_steps.length}'),
+            style: const TextStyle(
+                color: Colors.white70, fontSize: 13, height: 1.6)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, false),
+            child: Text(provider.t('common.cancel'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, true),
+            child: Text(provider.t('auto.clearAllDo'),
+                style: const TextStyle(color: Color(0xFFE57373))),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    setState(() {
+      _steps.clear();
+      _status = provider.t('auto.clearedAll');
+    });
+    await _save();
+  }
+
+  /// 依頼が「パソコンのアプリを操作したい」 内容かどうか。
+  ///
+  /// 「PC 内の chrome を起動させて」 と頼んでいるのに、 AI が
+  /// アプリの中のブラウザで開く手順 (open) を出してくることがある
+  /// (= ユーザー報告)。 説明文で止めても軽いモデルは従わないので、
+  /// 依頼の言葉から機械的に判断して手順を直す。
+  static bool _wantsPcApp(String request) {
+    final r = request.toLowerCase();
+    const words = [
+      'pc内', 'pcの', 'pc の', 'パソコン', 'デスクトップ', '外のブラウザ',
+      '外部ブラウザ', '別のブラウザ', 'chrome', 'クローム', 'edge', 'エッジ',
+      'firefox', 'ファイアフォックス', 'ブラウザアプリ', 'アプリを起動',
+      '起動させて', '立ち上げて',
+    ];
+    return words.any(r.contains);
+  }
+
+  /// パソコンのアプリを操作する依頼の時だけ、 今どんな窓が開いているかと、
+  /// 画面の大きさを AI に渡す (= ユーザー要望: 外部アプリを立ち上げて
+  /// 操作しながら見せる)。 これが無いと、 AI は座標も窓の名前も分からず
+  /// アプリの中のブラウザで済ませようとしてしまう。
+  String _pcContext(String request) {
+    if (!_wantsPcApp(request) || !_isDesktopHost) return '';
+    if (!DesktopInput.isSupported) return '';
+    try {
+      final b = DesktopInput.screenBounds();
+      final wins = DesktopInput.listWindows()
+          .map((w) => w.title)
+          .where((t) => t.trim().isNotEmpty)
+          .take(20)
+          .toList();
+      return '''
+
+【パソコンの画面】 これは**アプリの外**の話です。
+- 画面の大きさ: ${b.width} x ${b.height} (左上が 0,0)
+- いま開いている窓: ${wins.isEmpty ? '(取れませんでした)' : wins.join(' / ')}
+この依頼は**パソコンのアプリ**を動かすものです。 アプリの中のブラウザで
+開く open は使わないでください。 起動は {"kind":"command","text":"start chrome"}、
+窓を前に出すのは {"kind":"osActivate","text":"Chrome"}、
+押す前に必ず {"kind":"osShot"} で画面を撮って座標を確かめること。
+''';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  /// パソコンのアプリを操作する依頼なのに、 アプリの中で開く手順に
+  /// なっている時は、 外のブラウザで開く手順に直す。
+  ///
+  /// ★ 説明文への追記だけでは軽いモデルが従わなかったため、 出てきた
+  ///   手順そのものを直す (= ユーザー報告: PC 内の chrome を起動させてと
+  ///   言っているのにアプリ内でブラウザを立ち上げてしまう)。
+  List<WebAutoStep> _coercePcIntent(String request, List<WebAutoStep> steps) {
+    if (!_wantsPcApp(request)) return steps;
+    if (!_isDesktopHost) return steps;
+    var changed = false;
+    final out = <WebAutoStep>[];
+    for (final s in steps) {
+      if (s.kind == WebAutoKind.open) {
+        s.kind = WebAutoKind.openExternal;
+        changed = true;
+      }
+      out.add(s);
+    }
+    if (changed && mounted) {
+      // 直したことを黙って済ませない (何が起きたか分かるように)。
+      Future.microtask(() {
+        if (mounted) {
+          setState(() => _status = context.read<MindMapProvider>()
+              .t('auto.coercedToExternal'));
+        }
+      });
+    }
+    return out;
+  }
 
   /// 欄を確定する (= ユーザー要望: Enter で AI のフロー作成が走る)。
   void _submitAiPrompt(MindMapProvider provider) {
@@ -948,10 +1118,10 @@ $snap'''}
       if (list is! List || list.isEmpty) {
         throw Exception(provider.t('aiflow.failed'));
       }
-      final steps = [
+      final steps = _coercePcIntent(req, [
         for (final j in list)
           if (j is Map) WebAutoStep.fromJson(Map<String, dynamic>.from(j)),
-      ];
+      ]);
       if (steps.isEmpty) throw Exception(provider.t('aiflow.failed'));
       if (!mounted) return;
       setState(() {
@@ -1068,7 +1238,13 @@ $snap'''}
     // ★ 実行中だと伝える (= ユーザー要望: 画面を見ながら実行している
     //   間はブラウザも見えるように)。 これを呼ばないと、 手順を並べて実行した
     //   時だけブラウザが出て、 AI に任せて動かしている間は隠れたままだった。
-    widget.onRunningChanged?.call(true, _requestStop);
+    //
+    // ★ ただし「パソコンのアプリを操作して」 という依頼の時は出さない
+    //   (= ユーザー報告: 画面を見ながら実行を押すとアプリ内部のブラウザを
+    //    立ち上げようとする)。 見せたいのは PC の本物のアプリの方なので、
+    //    アプリ内ブラウザを前に出すとかえって隠してしまう。
+    final pcMode = _wantsPcApp(req);
+    if (!pcMode) widget.onRunningChanged?.call(true, _requestStop);
     final done = <String>[];
     try {
       // 手数の上限。 止まらなくなるのを防ぐ。
@@ -1095,7 +1271,7 @@ ${snap.isEmpty ? '(画面の中身を読めませんでした)' : snap}
 
 【ここまでにやったこと】
 ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
-
+${_pcContext(req)}
 依頼: $req''';
         String out;
         try {
@@ -1143,10 +1319,10 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
           _agentFail(provider, 'agent.errNoSteps', out);
           break;
         }
-        final steps = <WebAutoStep>[
+        final steps = _coercePcIntent(req, <WebAutoStep>[
           for (final j in list)
             if (j is Map) WebAutoStep.fromJson(Map<String, dynamic>.from(j)),
-        ];
+        ]);
         if (steps.isEmpty) {
           _agentFail(provider, 'agent.errNoSteps', out);
           break;
@@ -1185,7 +1361,8 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
         await _save();
       }
       // ★ 終わったので元に戻す (ブラウザを隠す判断は受け側が持つ)。
-      widget.onRunningChanged?.call(false, _requestStop);
+      //   出していない時は戻す必要も無い。
+      if (!pcMode) widget.onRunningChanged?.call(false, _requestStop);
       if (mounted) {
         setState(() {
           _agentBusy = false;
@@ -1620,6 +1797,25 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
             }
           }
           break;
+        // ── パソコンそのものの操作 (= ユーザー要望: PC 内のアプリを操作) ──
+        //    アプリの中のブラウザではなく Windows に直接信号を送るので、
+        //    許可されていない時は何もせず、 その旨を出して止める。
+        case WebAutoKind.osActivate:
+        case WebAutoKind.osClick:
+        case WebAutoKind.osMove:
+        case WebAutoKind.osType:
+        case WebAutoKind.osKey:
+        case WebAutoKind.osScroll:
+        case WebAutoKind.osShot:
+          {
+            final ok = await _runOsStep(s);
+            if (!ok) {
+              _cancel = true;
+              return;
+            }
+            await Future.delayed(_intervalOf(s));
+          }
+          break;
       }
     }
   }
@@ -1677,6 +1873,111 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
       if (mounted) setState(() => _status = 'ブラウザを開けませんでした: $e');
     }
   }
+
+  /// パソコンそのものへの操作を 1 つ行う (= ユーザー要望: アプリ内だけで
+  /// なく PC 内のアプリを操作)。
+  ///
+  /// ★ 画面に見えている物を無差別に押せてしまうので、 コマンド実行と同じ
+  ///   設定 (使わない / 毎回確認 / 全部任せる) を流用して守る。 「使わない」
+  ///   の間は一切動かない。
+  Future<bool> _runOsStep(WebAutoStep s) async {
+    if (!_isDesktopHost || !DesktopInput.isSupported) {
+      if (mounted) {
+        setState(() => _status = context.read<MindMapProvider>().t('auto.osWindowsOnly'));
+      }
+      return false;
+    }
+    if (kStoreBuild) {
+      if (mounted) setState(() => _status = context.read<MindMapProvider>().t('auto.osStoreBuild'));
+      return false;
+    }
+    if (_cmdPolicy == AutoCommandPolicy.off) {
+      if (mounted) setState(() => _status = context.read<MindMapProvider>().t('auto.osDisabled'));
+      return false;
+    }
+    // 何をするのかを 1 行で説明して、 毎回確認の時はこれを見せる。
+    final what = switch (s.kind) {
+      WebAutoKind.osActivate => '${context.read<MindMapProvider>().t('auto.kindOsActivate')}: ${s.text}',
+      WebAutoKind.osClick => '${context.read<MindMapProvider>().t('auto.kindOsClick')}: '
+          '(${s.x.round()}, ${s.y.round()})',
+      WebAutoKind.osMove => '${context.read<MindMapProvider>().t('auto.kindOsMove')}: '
+          '(${s.x.round()}, ${s.y.round()})',
+      WebAutoKind.osType => '${context.read<MindMapProvider>().t('auto.kindOsType')}: ${s.text}',
+      WebAutoKind.osKey => '${context.read<MindMapProvider>().t('auto.kindOsKey')}: ${s.text}',
+      WebAutoKind.osScroll => '${context.read<MindMapProvider>().t('auto.kindOsScroll')}: ${s.count}',
+      _ => context.read<MindMapProvider>().t('auto.kindOsShot'),
+    };
+    if (_cmdPolicy == AutoCommandPolicy.ask) {
+      final ok = await _confirmCommand(what);
+      if (ok != true) {
+        if (mounted) setState(() => _status = context.read<MindMapProvider>().t('auto.osCancelled'));
+        return false;
+      }
+    }
+    // 許しが出ている間だけ動かす。 終わったらすぐ閉じる。
+    DesktopInput.enabled = true;
+    try {
+      switch (s.kind) {
+        case WebAutoKind.osActivate:
+          if (!DesktopInput.activateWindow(s.text)) {
+            if (mounted) {
+              setState(() => _status = context
+                  .read<MindMapProvider>()
+                  .t('auto.osNoWindow')
+                  .replaceFirst('{name}', s.text));
+            }
+            return false;
+          }
+          // 前に出てから落ち着くまで少し待つ。
+          await Future.delayed(const Duration(milliseconds: 400));
+          break;
+        case WebAutoKind.osClick:
+          DesktopInput.click(s.x.round(), s.y.round(),
+              button: switch (s.selector.trim().toLowerCase()) {
+                'right' => MouseButton.right,
+                'middle' => MouseButton.middle,
+                _ => MouseButton.left,
+              },
+              count: s.count <= 0 ? 1 : s.count);
+          break;
+        case WebAutoKind.osMove:
+          DesktopInput.moveTo(s.x.round(), s.y.round());
+          break;
+        case WebAutoKind.osType:
+          DesktopInput.typeText(s.text);
+          break;
+        case WebAutoKind.osKey:
+          DesktopInput.pressKeys(
+              s.text.split('+').map((e) => e.trim()).toList());
+          break;
+        case WebAutoKind.osScroll:
+          DesktopInput.scroll(s.count == 0 ? -3 : s.count);
+          break;
+        case WebAutoKind.osShot:
+          {
+            final b = DesktopInput.screenBounds();
+            final png =
+                scap.captureScreenRectPng(b.x, b.y, b.width, b.height);
+            if (png != null) {
+              _osShots.add(png);
+              _shots++;
+            }
+          }
+          break;
+        default:
+          break;
+      }
+      return true;
+    } catch (e) {
+      if (mounted) setState(() => _status = '$e');
+      return false;
+    } finally {
+      DesktopInput.enabled = false;
+    }
+  }
+
+  /// パソコンの画面を撮った分 (AI に見せるために持っておく)。
+  final List<Uint8List> _osShots = [];
 
   /// コマンドを 1 つ実行する。 実行した (もしくは黙って飛ばした) なら true、
   /// ユーザーが断った / 危ないので止めた なら false。
@@ -2174,6 +2475,21 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
         return '外のブラウザで開く';
       case WebAutoKind.command:
         return 'コマンド実行';
+      // ── パソコンそのものの操作 ──
+      case WebAutoKind.osActivate:
+        return p.t('auto.kindOsActivate');
+      case WebAutoKind.osClick:
+        return p.t('auto.kindOsClick');
+      case WebAutoKind.osMove:
+        return p.t('auto.kindOsMove');
+      case WebAutoKind.osType:
+        return p.t('auto.kindOsType');
+      case WebAutoKind.osKey:
+        return p.t('auto.kindOsKey');
+      case WebAutoKind.osScroll:
+        return p.t('auto.kindOsScroll');
+      case WebAutoKind.osShot:
+        return p.t('auto.kindOsShot');
     }
   }
 
@@ -2211,6 +2527,21 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
         return Icons.ads_click_rounded;
       case WebAutoKind.scrollTo:
         return Icons.vertical_align_bottom_rounded;
+      // ── パソコンそのものの操作 ──
+      case WebAutoKind.osActivate:
+        return Icons.desktop_windows_rounded;
+      case WebAutoKind.osClick:
+        return Icons.mouse_rounded;
+      case WebAutoKind.osMove:
+        return Icons.open_with_rounded;
+      case WebAutoKind.osType:
+        return Icons.keyboard_alt_rounded;
+      case WebAutoKind.osKey:
+        return Icons.keyboard_command_key_rounded;
+      case WebAutoKind.osScroll:
+        return Icons.unfold_more_rounded;
+      case WebAutoKind.osShot:
+        return Icons.screenshot_monitor_rounded;
     }
   }
 
@@ -2379,8 +2710,16 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
                 const Icon(Icons.terminal_rounded,
                     size: 15, color: Color(0xFFFFB347)),
                 const SizedBox(width: 6),
-                const Text('コマンド実行',
-                    style: TextStyle(color: Colors.white70, fontSize: 11.5)),
+                // ★ この設定は OS の操作 (os… の手順) にも効く
+                //   (= ユーザー要望: PC 内のアプリを操作)。 名前だけ
+                //   「コマンド実行」 のままだと、 マウスやキーボードまで
+                //   動くことに気付けないので、 まとめた言い方にする。
+                Text(
+                    DesktopInput.isSupported
+                        ? 'コマンド実行 / パソコンの操作'
+                        : 'コマンド実行',
+                    style: const TextStyle(
+                        color: Colors.white70, fontSize: 11.5)),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Wrap(spacing: 6, runSpacing: 4, children: [
@@ -2417,7 +2756,14 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
                         ? '今は実行しません。 手順に入っていても飛ばします。'
                         : (_cmdPolicy == AutoCommandPolicy.ask
                             ? '実行のたびに中身を見せて確認します。'
-                            : '確認なしで実行します。 壊す恐れのある操作だけは断ります。'),
+                            : '確認なしで実行します。 壊す恐れのある操作だけは断ります。') +
+                        // ★ 何が動くのかをはっきり書く (= マウスとキーボードを
+                        //   乗っ取る操作なので、 知らずに「全部任せる」 に
+                        //   しないように)。
+                        (DesktopInput.isSupported
+                            ? '\nパソコンの操作 (マウス・キーボード・窓) も'
+                                'この設定に従います。'
+                            : ''),
                     style:
                         const TextStyle(color: Colors.white38, fontSize: 10)),
               ),
@@ -3520,6 +3866,19 @@ ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
             ]),
               ),
               ),
+              // ── 手順を全部消す (= ユーザー要望: 一括削除してクリアに) ──
+              //    ★ 横スクロールの外の右端に置く。 各手順の × が並ぶ列の
+              //      真上に来るので、 「消す物」 が縦にそろって分かりやすい
+              //      (= ユーザー要望: コマンド実行の × ボタンの上あたりに)。
+              //    間違って押しても困らないよう、 一度だけ確かめる。
+              if (!_running && _steps.isNotEmpty)
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  tooltip: provider.t('auto.clearAll'),
+                  icon: const Icon(Icons.delete_sweep_rounded,
+                      size: 17, color: Color(0xFFE57373)),
+                  onPressed: () => _clearAllSteps(provider),
+                ),
               // ── 閉じる (= 窓いっぱいに広げている時だけ。 外側の帯が
               //    無いのでここが唯一の閉じ口になる) ──
               //    狭い画面でも必ず見えるよう、 横スクロールの外に置く。

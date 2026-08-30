@@ -7044,7 +7044,9 @@ class _MindMapScreenState extends State<MindMapScreen>
 
     // 全体図は動いている間だけ出す (= ユーザー要望)。 拡大縮小も含めて
     //   ここを通るので、 まとめてここで合図する。
-    _markMiniMapActivity();
+    //   ★ ここが「実際に画面が動いた」 唯一の合図。 × で消していても、
+    //     動き出したら戻す (= ユーザー要望)。
+    _markMiniMapActivity(byCanvasMove: true);
     // ギャラリー (本棚) のパンを内容範囲に制限 (= ユーザー要望)。
     _clampBookshelfPan(ctrl);
     // 今見ている場所を控える (MCP/AI の生成物をここに置くため)。
@@ -17046,6 +17048,9 @@ class _MindMapScreenState extends State<MindMapScreen>
             final maxUsesCtrl = TextEditingController(text: '0');
             final validMonthsCtrl = TextEditingController(text: '0');
             final noteCtrl = TextEditingController();
+            // Dev コードで使える AI の上限 (ドル)。 空 / 0 で無制限
+            //   (= ユーザー要望: クーポンごとに使用料金の上限を設ける)。
+            final devCapCtrl = TextEditingController();
             DateTime? expiry;
             bool busy = false;
             // クーポンが解放するプラン (Pro / Max) の選択。 既定は Pro。
@@ -17076,6 +17081,12 @@ class _MindMapScreenState extends State<MindMapScreen>
                               maxUses: maxUses,
                               expiresAt: expiry,
                               note: noteCtrl.text.trim(),
+                              // このコードで使える上限 (ドル)。 空 / 0 は無制限
+                              //   (= ユーザー要望)。
+                              capUsd: double.tryParse(
+                                      devCapCtrl.text.trim().replaceAll(
+                                          RegExp(r'[^0-9.]'), '')) ??
+                                  0,
                             )
                           : await provider.createCoupon(
                               discountPercent: discount.clamp(0, 100),
@@ -17427,6 +17438,49 @@ class _MindMapScreenState extends State<MindMapScreen>
                             Text(provider.t('dev.coupon.validMonthsHint'),
                                 style: const TextStyle(
                                     color: Colors.white38, fontSize: 10)),
+                            // ── Dev だけ: このコードで使える上限 (ドル) ──
+                            //    = ユーザー要望「Dev プランのクーポンを発行
+                            //      する時に、 そのクーポンでのトークンの
+                            //      使用料金上限をドル表記で設けたい」。
+                            //    開発者モードから入った本人 (管理者 uid) は
+                            //      対象外で、 いつでも制限なし。
+                            if (planChoice == SubscriptionPlan.dev) ...[
+                              const SizedBox(height: 12),
+                              Text(provider.t('dev.coupon.capUsd'),
+                                  style: const TextStyle(
+                                      color: Colors.white70, fontSize: 12)),
+                              const SizedBox(height: 4),
+                              TextField(
+                                controller: devCapCtrl,
+                                style: const TextStyle(
+                                    color: Colors.white, fontSize: 14),
+                                keyboardType:
+                                    const TextInputType.numberWithOptions(
+                                        decimal: true),
+                                decoration: InputDecoration(
+                                  prefixText: '\$ ',
+                                  prefixStyle: const TextStyle(
+                                      color: Colors.white54, fontSize: 14),
+                                  hintText: '0',
+                                  hintStyle: const TextStyle(
+                                      color: Colors.white24, fontSize: 14),
+                                  filled: true,
+                                  fillColor:
+                                      Colors.white.withValues(alpha: 0.05),
+                                  border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                      borderSide: BorderSide.none),
+                                  contentPadding: const EdgeInsets.symmetric(
+                                      horizontal: 12, vertical: 10),
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(provider.t('dev.coupon.capUsdHint'),
+                                  style: const TextStyle(
+                                      color: Colors.white38,
+                                      fontSize: 10,
+                                      height: 1.4)),
+                            ],
                             const SizedBox(height: 12),
                             Text(provider.t('dev.coupon.maxUses'),
                                 style: const TextStyle(
@@ -38681,6 +38735,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                       .where((c) => !hcbList().contains(c['id']))
                       .where(
                           (c) => !_isRetiredCustomCommand(c['id'] as String?))
+                      // パソコンでは右上に常設してあるボタンは候補に出さない
+                      //   (= ユーザー要望: 二重にあるのがおかしい)。
+                      .where(
+                          (c) => !_isDuplicateOnDesktop(c['id'] as String?))
                       // 統合済みの旧ボタン ('legacy') は新規追加候補に出さない
                       // (= ユーザー要望: メンバー予定表は予定表に合体)。
                       .where((c) => c['legacy'] != true)
@@ -39618,6 +39676,16 @@ class _MindMapScreenState extends State<MindMapScreen>
     'openGrok',
   };
 
+  /// パソコンでは、 AI アシスタントの入口は右上に常設してあるので、
+  /// カスタムボタンの一覧には出さない (= ユーザー要望: 二重にあるのが
+  /// おかしいので右上のボタンだけに)。
+  ///
+  /// ★ スマホには右上の常設ボタンが無い (あちらは `if (_isDesktop)` で
+  ///   囲われている) ので、 モバイルでは今までどおり一覧に出す。
+  ///   ここで一律に消すと、 Android からアシスタントを開けなくなる。
+  bool _isDuplicateOnDesktop(String? id) =>
+      _isDesktop && id == 'aiAssistant';
+
   static bool _isRetiredCustomCommand(String? id) =>
       id != null && _retiredCustomCommandIds.contains(id);
 
@@ -40469,6 +40537,9 @@ class _MindMapScreenState extends State<MindMapScreen>
       return null;
     }
     if (_isRetiredCustomCommand(commandId)) return null;
+    // パソコンでは右上の常設ボタンがあるので、 バーには描かない
+    //   (= ユーザー要望: 右上のボタンだけに)。
+    if (_isDuplicateOnDesktop(commandId)) return null;
     if (_hideCommandForCurrentLocale(commandId, provider)) return null;
     // ── 動的ブックマークボタン (bookmark:<hex>) の特別対応 ──
     // 既存の _headerCustomizableCommands は静的リストなので、 bookmark: は
@@ -60338,6 +60409,21 @@ class _MindMapScreenState extends State<MindMapScreen>
       actions: [
         // 注: 下部ボタンの格納はカスタムボタン (toggleBottomBar) として
         //   配置できるので、 ヘッダーには常設しない (= ユーザー要望)。
+        // ── AI アシスタント (= ユーザー要望: Android でもヘッダーの
+        //    カスタムボタンを開くボタンの左に常設して欲しい) ──
+        //    パソコンでは右上に別途あるので、 ここはモバイル側だけ。
+        if (showMobileHeaderTray && !_isDesktop)
+          IconButton(
+            icon: Icon(Icons.auto_awesome_rounded,
+                color: provider.mcpServerEnabled
+                    ? const Color(0xFF80CBC4)
+                    : Colors.white70,
+                size: 20),
+            tooltip: provider.t('mcp.chatTitle'),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+            onPressed: () => unawaited(_openMcpChat(provider)),
+          ),
         if (showMobileHeaderTray)
           IconButton(
             icon: Icon(
@@ -66533,9 +66619,22 @@ class _MindMapScreenState extends State<MindMapScreen>
   Timer? _miniMapHideTimer;
   bool _miniMapShowPending = false;
 
+  /// × で消したか (= ユーザー要望: × を押したら非表示にして、 画面が
+  /// 動き出したらまた出てくる形に)。 これが立っている間は、 カーソルの
+  /// 出入りでは戻さない。 実際に画面が動いた時だけ戻す。
+  bool _miniMapDismissed = false;
+
   /// 画面が動いた合図。 出してから少し経つと自動で消える。
-  void _markMiniMapActivity() {
+  ///
+  /// [byCanvasMove] 実際に画面が動いた時だけ true。 カーソルの出入りは
+  /// false のまま呼ぶ (× で消した後、 マウスが外れただけで戻らないように)。
+  void _markMiniMapActivity({bool byCanvasMove = false}) {
     if (!mounted) return;
+    if (byCanvasMove) {
+      _miniMapDismissed = false;
+    } else if (_miniMapDismissed) {
+      return; // 消したままにする
+    }
     _miniMapHideTimer?.cancel();
     if (!_miniMapActive && !_miniMapShowPending) {
       _miniMapShowPending = true;
@@ -71574,7 +71673,11 @@ class _MindMapScreenState extends State<MindMapScreen>
     //    読めないので避けない。
     //    さらにページのスクロールバー (幅 18 + 余白) ぶんも空ける
     //    (= ユーザー要望: 全体図とサイドバーの間にスクロールバーが来るように)。
-    double rightOff = 8;
+    // ★ 右端の縦スクロールバーと閉じるボタンが重なって押しにくかった
+    //   (= ユーザー報告)。 バーの通り道ぶんだけ内側へ寄せる。
+    //   バーは出たり消えたりするが、 位置が動くと落ち着かないので
+    //   パソコンでは常に空けておく。
+    double rightOff = _isDesktop ? 22 : 8;
     final double sideDockWidth = _anchoredSideDockWidth(provider, 'right');
     if (sideDockWidth > 0) {
       rightOff += sideDockWidth + 24;
@@ -71643,7 +71746,18 @@ class _MindMapScreenState extends State<MindMapScreen>
                   tooltip: provider.t('minimap.hide'),
                   icon: const Icon(Icons.close_rounded,
                       size: 13, color: Color(0xFF8FA6B4)),
-                  onPressed: _toggleMiniMap,
+                  // ★ 畳むのではなく、 その場で消す (= ユーザー要望: 畳んだ
+                  //   状態でも大きいので、 × を押したら非表示にして、 画面が
+                  //   動き出したらまた出てくる形に)。 動きの合図
+                  //   (_markMiniMapActivity) が来れば自動で戻る。
+                  onPressed: () {
+                    _miniMapHideTimer?.cancel();
+                    _miniMapHover = false;
+                    setState(() {
+                      _miniMapActive = false;
+                      _miniMapDismissed = true;
+                    });
+                  },
                 ),
               ]),
             ),
