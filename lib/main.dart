@@ -5618,6 +5618,30 @@ class _MemoWindowAppState extends State<_MemoWindowApp> with WindowListener {
               color: const Color(0xFF23233A),
               padding: const EdgeInsets.symmetric(horizontal: 6),
               child: Row(children: [
+                // ★ 「タブで並べる」 は一番左 (= ユーザー要望)。
+                //   Web / AI を出している間は条件で消えるので、
+                //   その時は左端が戻る矢印になる (隙間も残らない)。
+                // メモ一覧をタブで並べる / やめる (= ユーザー要望)。
+                if (!_webMode && !_aiMode && !_chromeHidden)
+                  IconButton(
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints(minWidth: 26, minHeight: 26),
+                    tooltip: FloatL10n.t(
+                        _tabsMode ? 'memo.tabsOff' : 'memo.tabsOn'),
+                    icon: Icon(
+                        _tabsMode
+                            ? Icons.tab_rounded
+                            : Icons.tab_unselected_rounded,
+                        size: 15,
+                        color: _tabsMode
+                            ? const Color(0xFF43B97F)
+                            : Colors.white54),
+                    onPressed: () {
+                      // ignore: discarded_futures
+                      _toggleTabsMode();
+                    },
+                  ),
                 // AI 表示中 / Web モード中はメモへ戻る矢印を出す。
                 if (_webMode || _aiMode)
                   IconButton(
@@ -5818,27 +5842,6 @@ class _MemoWindowAppState extends State<_MemoWindowApp> with WindowListener {
                     onPressed: () {
                       // ignore: discarded_futures
                       _loadFromTextFile();
-                    },
-                  ),
-                // メモ一覧をタブで並べる / やめる (= ユーザー要望)。
-                if (!_webMode && !_aiMode && !_chromeHidden)
-                  IconButton(
-                    padding: EdgeInsets.zero,
-                    constraints:
-                        const BoxConstraints(minWidth: 26, minHeight: 26),
-                    tooltip: FloatL10n.t(
-                        _tabsMode ? 'memo.tabsOff' : 'memo.tabsOn'),
-                    icon: Icon(
-                        _tabsMode
-                            ? Icons.tab_rounded
-                            : Icons.tab_unselected_rounded,
-                        size: 15,
-                        color: _tabsMode
-                            ? const Color(0xFF43B97F)
-                            : Colors.white54),
-                    onPressed: () {
-                      // ignore: discarded_futures
-                      _toggleTabsMode();
                     },
                   ),
                 // テキストで保存。 右クリックで保存場所の設定 (= ユーザー要望)。

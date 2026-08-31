@@ -74281,6 +74281,9 @@ $cleanQ
             : 'account.webDoneBody'),
         cancelTitle: t('account.webCancelTitle'),
         cancelBody: t('account.webCancelBody'),
+        // 決済へ進む時だけ、 このページは勝手に変わる。
+        //   それ以外は遷移しないので回るしるしを出さない。
+        waiting: forCheckout,
       );
 
   Future<String?> signInWithGoogle({

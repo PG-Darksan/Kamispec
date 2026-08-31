@@ -3911,19 +3911,8 @@ class _MindMapScreenState extends State<MindMapScreen>
 
     return Row(mainAxisSize: MainAxisSize.min, children: [
       b('text', Icons.text_fields_rounded, provider.t('pdf.writeText')),
-      // 右クリック / 長押しで大きさを選べる (= ユーザー要望)。
-      GestureDetector(
-        onSecondaryTapDown: (d) =>
-            unawaited(_showPdfCheckSizeMenu(d.globalPosition)),
-        onLongPressStart: (d) =>
-            unawaited(_showPdfCheckSizeMenu(d.globalPosition)),
-        child: b(
-            'check',
-            Icons.check_rounded,
-            '${provider.t('pdf.writeCheck')} '
-                '(大きさ: ${_pdfCheckSize.toStringAsFixed(0)} / '
-                '右クリックで変更)'),
-      ),
+      // ★ 「チェックを付ける」 はここには出さない (= ユーザー要望)。
+      //   「図形・線を描き込む」 の中に同じ物があり、 二重になっていた。
       drawBtn,
     ]);
   }
@@ -43085,9 +43074,10 @@ class _MindMapScreenState extends State<MindMapScreen>
         if (_isDesktop) {
           unawaited(_openPopOutWindow(provider, kind: 'calc'));
         } else if (_sciCalcOverlay != null) {
-          _sciCalcOverlay?.remove();
-          _sciCalcOverlay = null;
-          if (mounted) _keyboardFocusNode.requestFocus();
+        // ★ 開いているなら閉じずに前面へ出す (= ユーザー要望:
+        //   後ろに隠れている時に押したら前に出てきてほしい)。
+        //   閉じるのは、 その道具自身の × から。
+          _bringOverlayToFront(_sciCalcOverlay);
         } else {
           _showScientificCalculatorDialog(context, provider);
         }
@@ -43104,11 +43094,11 @@ class _MindMapScreenState extends State<MindMapScreen>
           unawaited(_openPopOutWindow(provider, kind: 'timer'));
           break;
         }
-        // 既に開いていれば閉じる (トグル)
+        // ★ 開いているなら閉じずに前面へ出す (= ユーザー要望:
+        //   後ろに隠れている時に押したら前に出てきてほしい)。
+        //   閉じるのは、 その道具自身の × から。
         if (_stopwatchOverlay != null) {
-          _stopwatchOverlay?.remove();
-          _stopwatchOverlay = null;
-          if (mounted) _keyboardFocusNode.requestFocus();
+          _bringOverlayToFront(_stopwatchOverlay);
         } else {
           _showStopwatchDialog(context, provider);
         }
@@ -43121,21 +43111,21 @@ class _MindMapScreenState extends State<MindMapScreen>
               kind: 'timer', extraArgs: {'tab': 'pomodoro'}));
           break;
         }
-        // 既に開いていれば閉じる (トグル)
+        // ★ 開いているなら閉じずに前面へ出す (= ユーザー要望:
+        //   後ろに隠れている時に押したら前に出てきてほしい)。
+        //   閉じるのは、 その道具自身の × から。
         if (_pomodoroOverlay != null) {
-          _pomodoroOverlay?.remove();
-          _pomodoroOverlay = null;
-          if (mounted) _keyboardFocusNode.requestFocus();
+          _bringOverlayToFront(_pomodoroOverlay);
         } else {
           _showPomodoroDialog(context, provider);
         }
         break;
       case 'weather':
-        // 既に開いていれば閉じる (トグル)
+        // ★ 開いているなら閉じずに前面へ出す (= ユーザー要望:
+        //   後ろに隠れている時に押したら前に出てきてほしい)。
+        //   閉じるのは、 その道具自身の × から。
         if (_weatherOverlay != null) {
-          _weatherOverlay?.remove();
-          _weatherOverlay = null;
-          if (mounted) _keyboardFocusNode.requestFocus();
+          _bringOverlayToFront(_weatherOverlay);
         } else {
           _showWeatherDialog(context, provider);
         }
@@ -46374,7 +46364,11 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// Overlay 上に浮かぶ非モーダル・ドラッグ移動可能なパネル。
   /// スタート/ストップ/リセット/ラップ機能付き。Timer.periodic で 50ms ごとに更新。
   void _showStopwatchDialog(BuildContext ctx, MindMapProvider provider) {
-    if (_stopwatchOverlay != null) return; // 既に開いていれば無視
+    // 既に開いているなら、 閉じずに前面へ出す (= ユーザー要望)。
+    if (_stopwatchOverlay != null) {
+      _bringOverlayToFront(_stopwatchOverlay);
+      return;
+    }
     final screen = MediaQuery.of(ctx).size;
     // 画面右寄り、上から 90px（計算機と重ならないようオフセット）
     final initialOffset = Offset(
@@ -46395,6 +46389,23 @@ class _MindMapScreenState extends State<MindMapScreen>
       ),
     );
     Overlay.of(ctx, rootOverlay: true).insert(_stopwatchOverlay!);
+  }
+
+  /// 開いている浮遊道具を、 積み直して一番手前に出す。
+  ///
+  /// = ユーザー要望「後ろに隠れている時に、 もう一度押したら前面に」。
+  /// Overlay は後から入れた物ほど手前に来るので、 いったん外して入れ直す。
+  /// 中身は GlobalKey で描かれているので、 作り直しにはならない
+  /// (入力中の文字や位置はそのまま)。
+  bool _bringOverlayToFront(OverlayEntry? e) {
+    if (e == null) return false;
+    try {
+      e.remove();
+      Overlay.of(context, rootOverlay: true).insert(e);
+    } catch (_) {
+      return false;
+    }
+    return true;
   }
 
   /// ─── 音声入力 (Speech-to-Text) ─────────────────────────────────────────
@@ -48938,7 +48949,11 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 作業 25 分 / 短い休憩 5 分 / 長い休憩 15 分 (デフォルト)。
   /// 4 サイクルごとに長い休憩。Timer.periodic で 1 秒ごとに残り時間を更新。
   void _showPomodoroDialog(BuildContext ctx, MindMapProvider provider) {
-    if (_pomodoroOverlay != null) return;
+    // 既に開いているなら、 閉じずに前面へ出す (= ユーザー要望)。
+    if (_pomodoroOverlay != null) {
+      _bringOverlayToFront(_pomodoroOverlay);
+      return;
+    }
     final screen = MediaQuery.of(ctx).size;
     final initialOffset = Offset(
       (screen.width - 280).clamp(20.0, screen.width - 20.0),
@@ -48965,7 +48980,11 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 都市名でジオコーディング → lat/lon 取得 → 天気予報取得の 2 段構え。
   /// 設定は SharedPreferences に保存（次回も同じ場所で表示）。
   void _showWeatherDialog(BuildContext ctx, MindMapProvider provider) {
-    if (_weatherOverlay != null) return;
+    // 既に開いているなら、 閉じずに前面へ出す (= ユーザー要望)。
+    if (_weatherOverlay != null) {
+      _bringOverlayToFront(_weatherOverlay);
+      return;
+    }
     final screen = MediaQuery.of(ctx).size;
     final initialOffset = Offset(
       (screen.width - 320).clamp(20.0, screen.width - 20.0),
@@ -49309,7 +49328,11 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// sin/cos/tan, log, ln, exp, sqrt, x², 括弧, π, e などに対応
   void _showScientificCalculatorDialog(
       BuildContext ctx, MindMapProvider provider) {
-    if (_sciCalcOverlay != null) return;
+    // 既に開いているなら、 閉じずに前面へ出す (= ユーザー要望)。
+    if (_sciCalcOverlay != null) {
+      _bringOverlayToFront(_sciCalcOverlay);
+      return;
+    }
     final screen = MediaQuery.of(ctx).size;
     final initialOffset = Offset(
       (screen.width - 360).clamp(20.0, screen.width - 20.0),
@@ -52258,8 +52281,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                         //    全画面と同じように保存できるように) ──
                         if (pdfPath != null)
                           IconButton(
+                            // 色は隣のボタンと揃える (= ユーザー要望:
+                            // ダウンロードだけ色が付いていて目立つ)。
                             icon: const Icon(Icons.download_rounded,
-                                color: Color(0xFF4FC3F7), size: 18),
+                                color: Colors.white70, size: 18),
                             tooltip: provider.t('fsv.download'),
                             padding: EdgeInsets.zero,
                             constraints: const BoxConstraints(
@@ -53187,8 +53212,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                           if (_splitMode == 'pdf' &&
                               _splitLocalPdfPath != null)
                             IconButton(
+                              // 色は隣のボタンと揃える (= ユーザー要望:
+                              // ダウンロードだけ色が付いていて目立つ)。
                               icon: const Icon(Icons.download_rounded,
-                                  color: Color(0xFF4FC3F7), size: 18),
+                                  color: Colors.white70, size: 18),
                               tooltip: provider.t('fsv.download'),
                               padding: EdgeInsets.zero,
                               constraints: const BoxConstraints(
@@ -68550,15 +68577,15 @@ class _MindMapScreenState extends State<MindMapScreen>
         alive = ids.contains(existingId);
       } catch (_) {}
       if (alive) {
-        if (forceOpen) {
-          try {
-            await WindowController.fromWindowId(existingId).show();
-          } catch (_) {}
-          return;
-        }
-        _popOutToolWinIds.remove(kind);
+        // ★ 生きている窓は閉じずに**前面へ出す**。
+        //
+        //   = ユーザー要望「フローティング項目が後ろに隠れている状態で
+        //   ボタンを再度押すと、 どこに行ったか分からなくなるから、
+        //   再度押されたら前面に出るように」。 以前はここで閉じていたので、
+        //   裏に回った窓を出したくて押すと、 見えない所で閉じるだけだった。
+        //   閉じたい時は、 その窓自身の × から閉じられる。
         try {
-          await WindowController.fromWindowId(existingId).close();
+          await WindowController.fromWindowId(existingId).show();
         } catch (_) {}
         return;
       }
@@ -68948,7 +68975,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       // ★ 既定を小さく (= ユーザー報告: Google マップの窓が大きすぎる)。
       width: 620,
       height: 520,
-      memoryKey: 'site',
+      // ★ サイトごとに分ける (= 以前は全サイトが 'site' を共有していて、
+      //   Instagram を開いた後に Slack を押すと Instagram が前に出るだけ
+      //   だった)。 覚えている大きさ・位置もサイトごとになる。
+      memoryKey: 'site_${Uri.tryParse(u)?.host ?? u}',
       popOutUrl: u,
     );
   }
@@ -69108,13 +69138,20 @@ class _MindMapScreenState extends State<MindMapScreen>
             _externalWebPids.remove(key); // もう無い → 作り直す
           } else {
             final wasFront = bringExternalWindowToFront(openPid);
-            if (!wasFront) return; // 前面に出したので、ここで終わり
-            _externalWebPids.remove(key);
-            var closed = false;
-            try {
-              closed = Process.killPid(openPid);
-            } catch (_) {}
-            if (closed) return;
+            // ★ null = 窓が見つからなかった。 その時は閉じずに、
+            //   台帳を空にして開き直す (= 以前は「既に前面」 と
+            //   取り違えてボタンが無反応になっていた)。
+            if (wasFront == false) return; // 前面に出したので終わり
+            if (wasFront == null) {
+              _externalWebPids.remove(key);
+            } else {
+              _externalWebPids.remove(key);
+              var closed = false;
+              try {
+                closed = Process.killPid(openPid);
+              } catch (_) {}
+              if (closed) return;
+            }
           }
         }
         // 出てきたペインの上に出す (= ユーザー要望: 分割からフローティングに
@@ -113528,8 +113565,10 @@ int _bringFrontEnumProc(int hwnd, int lParam) {
 ///   既に開いている窓が前面に出てくるように」。
 /// 戻り値は「その窓が既に一番手前だったか」。 手前だった時は、 呼び出し元が
 /// 今までどおり閉じる (トグル) 判断に使う。
-bool bringExternalWindowToFront(int pid) {
-  if (!Platform.isWindows) return false;
+/// 戻り値: true = 既に一番手前だった / false = 前面に出した /
+/// null = その窓が見つからなかった (Windows 以外もここ)。
+bool? bringExternalWindowToFront(int pid) {
+  if (!Platform.isWindows) return null;
   try {
     final user32 = ffi.DynamicLibrary.open('user32.dll');
     final enumWindows = user32.lookupFunction<
@@ -113555,7 +113594,10 @@ bool bringExternalWindowToFront(int pid) {
         ffi.Int32 Function(ffi.IntPtr, ffi.IntPtr)>(_bringFrontEnumProc, 1);
     enumWindows(cb, 0);
     final hwnd = _bringFrontFoundHwnd;
-    if (hwnd == 0) return false;
+    // ★ 見つからなかった時は「分からない」。 これを「既に前面だった」 と
+    //   取り違えると、 呼び出し側が『前に出したから何もしない』 と判断して
+    //   ボタンが無反応になる (= ユーザー報告)。
+    if (hwnd == 0) return null;
     final wasFront = getForeground() == hwnd && isIconic(hwnd) == 0;
     if (!wasFront) {
       if (isIconic(hwnd) != 0) showWindow(hwnd, 9); // SW_RESTORE
@@ -113564,7 +113606,7 @@ bool bringExternalWindowToFront(int pid) {
     return wasFront;
   } catch (e) {
     debugPrint('窓を前面に出せませんでした: $e');
-    return false;
+    return null;
   }
 }
 
@@ -113599,7 +113641,13 @@ Future<int?> openExternalWebWindowPid(String url,
   if (single) {
     final old = _externalWinPids[key];
     if (old != null) {
-      if (await _externalWinAlive(old)) return old;
+      if (await _externalWinAlive(old)) {
+        // ★ 前面に出す (= ユーザー報告: 後ろに隠れている時にボタンを
+        //   もう一度押しても何も起きず、 どこへ行ったか分からなくなる)。
+        //   以前はここで黙って番号を返すだけだった。
+        bringExternalWindowToFront(old);
+        return old;
+      }
       _externalWinPids.remove(key);
     }
   }

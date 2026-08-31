@@ -8,6 +8,9 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 
+import 'auth_result_page.dart';
+export 'auth_result_page.dart' show GoogleAuthResultText;
+
 /// Google アカウントでのログイン (= ユーザー要望: 同じ Google アカウントで
 /// ログインしている端末の間で、 有料プランやクラウド使用量を共有する)。
 ///
@@ -39,22 +42,6 @@ class GoogleSignInResult {
 /// 中身はアプリ側 (翻訳を持っている所) から渡す。 ここで文字を持つと
 /// 日本語決め打ちになり、 海外の利用者に読めないため
 /// (= ユーザー要望: 契約まわりは色々な言語で出す)。
-class GoogleAuthResultText {
-  /// `<html lang="...">` に入れる言語コード。
-  final String lang;
-  final String okTitle;
-  final String okBody;
-  final String cancelTitle;
-  final String cancelBody;
-  const GoogleAuthResultText({
-    this.lang = 'ja',
-    required this.okTitle,
-    required this.okBody,
-    required this.cancelTitle,
-    required this.cancelBody,
-  });
-}
-
 class GoogleAuth {
   GoogleAuth._();
 
@@ -162,7 +149,7 @@ class GoogleAuth {
         req.response
           ..statusCode = HttpStatus.ok
           ..headers.contentType = ContentType.html
-          ..write(_resultPage(ok, resultText));
+          ..write(buildAuthResultPage(ok, resultText));
         await req.response.close();
         if (!completer.isCompleted) {
           completer.complete(ok ? q['code'] : null);
@@ -211,41 +198,4 @@ class GoogleAuth {
   ///   「このタブを閉じて戻ってください」 と出るのに、 待っていると
   ///   勝手に料金プランの画面へ変わって戸惑う)。 決済へ進む時は
   ///   アプリ側から「このまま少しお待ちください」 の文言を渡す。
-  static String _resultPage(bool ok, GoogleAuthResultText? txt) {
-    final lang = txt?.lang ?? 'ja';
-    final title = ok
-        ? (txt?.okTitle ?? 'ログインできました')
-        : (txt?.cancelTitle ?? 'ログインを中止しました');
-    final body = ok
-        ? (txt?.okBody ?? 'このタブを閉じて、 HisatorNotebook に戻ってください。')
-        : (txt?.cancelBody ?? 'このタブを閉じて、 もう一度お試しください。');
-    String esc(String v) => v
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;');
-    // 成功時だけ、 待ってもらう合図として回るしるしを出す。
-    final spinner = ok
-        ? '<div class="dot"></div>'
-        : '';
-    return '''
-<!doctype html><html lang="${esc(lang)}"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${esc(title)}</title>
-<style>
- body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;
-      background:#12121c;color:#fff;display:flex;min-height:100vh;
-      align-items:center;justify-content:center;margin:0}
- .card{text-align:center;padding:40px 48px;background:#1e1e32;
-       border-radius:16px;box-shadow:0 8px 40px rgba(0,0,0,.4);
-       max-width:420px}
- h1{font-size:20px;margin:0 0 12px}
- p{font-size:14px;color:#b0b0c0;margin:0;line-height:1.7}
- .dot{width:26px;height:26px;margin:0 auto 18px;border-radius:50%;
-      border:3px solid rgba(255,255,255,.18);border-top-color:#4FC3F7;
-      animation:spin 900ms linear infinite}
- @keyframes spin{to{transform:rotate(360deg)}}
-</style></head><body>
-<div class="card">$spinner<h1>${esc(title)}</h1><p>${esc(body)}</p></div>
-</body></html>''';
-  }
 }
