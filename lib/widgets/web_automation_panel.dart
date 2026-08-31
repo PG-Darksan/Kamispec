@@ -131,7 +131,7 @@ enum WebAutoKind {
   ///   selector = 最初に開く URL (空でもよい)
   ///   submit   = true にすると、 アカウント専用のブラウザで開く
   ///              (初回だけ人がログインすれば、 次からはログイン済み)
-  ///   scrollDir = どのアカウントか (呼び名。 空なら既定の 1 つ)
+  ///   account  = どのアカウントか (呼び名。 空なら既定の 1 つ)
   openBrowser,
 
   /// ページのダウンロードボタン / リンクを押して、 ファイルを保存する
@@ -217,6 +217,14 @@ class WebAutoStep {
   /// 'down' | 'up' | 'right' | 'left'
   String scrollDir;
 
+  /// どのアカウント (ブラウザのプロファイル) で開くか。 openBrowser 用。
+  ///
+  /// ★ 以前は scrollDir を借りていたが、 手順を足した時の既定が 'down' な
+  ///   ので、 触っていないのに「down というアカウント」 になっていた
+  ///   (= ユーザー報告: アカウント名を指定しても、そのアカウントで
+  ///   開いてくれない)。 専用の入れ物にする。
+  String account;
+
   /// 入力する文字列 (kind == type)。
   String text;
 
@@ -244,6 +252,7 @@ class WebAutoStep {
     this.intervalMs = 200,
     this.intervalMaxMs = 0,
     this.scrollDir = 'down',
+    this.account = '',
     this.text = '',
     this.selector = '',
     this.submit = false,
@@ -261,6 +270,7 @@ class WebAutoStep {
         'intervalMs': intervalMs,
         'intervalMaxMs': intervalMaxMs,
         'scrollDir': scrollDir,
+        'account': account,
         'text': text,
         'selector': selector,
         'submit': submit,
@@ -286,6 +296,7 @@ class WebAutoStep {
         intervalMs: (j['intervalMs'] as num?)?.toInt() ?? 200,
         intervalMaxMs: (j['intervalMaxMs'] as num?)?.toInt() ?? 0,
         scrollDir: (j['scrollDir'] as String?) ?? 'down',
+        account: (j['account'] as String?) ?? '',
         text: (j['text'] as String?) ?? '',
         selector: (j['selector'] as String?) ?? '',
         submit: (j['submit'] as bool?) ?? false,
@@ -1046,7 +1057,7 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
     ・submit … true にすると**そのアカウント専用のブラウザ**で開く。
       ログインが要る作業の時だけ true にする。
       書かなければ、 毎回まっさらなブラウザで開く。
-    ・scrollDir … どのアカウントか (画面に出ている呼び名。 例「浩靖」)。
+    ・account … どのアカウントか (画面に出ている呼び名。 例「浩靖」)。
       依頼に「○○のアカウントで」「○○の垢で」 と書かれていたら、
       その呼び名をここに入れて submit も true にすること。
   ★ Chrome の決まりで、 **普段使っているブラウザのログインは
@@ -1124,7 +1135,7 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
         .map((p) => p.name)
         .where((n) => n.trim().isNotEmpty)
         .toList();
-    final cur = s.scrollDir.trim();
+    final cur = s.account.trim();
     return SizedBox(
       width: 170,
       child: DropdownButtonFormField<String>(
@@ -1143,7 +1154,7 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
                 child: Text(n, style: const TextStyle(fontSize: 12))),
         ],
         onChanged: (v) {
-          setState(() => s.scrollDir = v ?? '');
+          setState(() => s.account = v ?? '');
           _save();
         },
       ),
@@ -3122,8 +3133,8 @@ ${_pcContext(req)}
     //   = ユーザー報告)。 submit の既定は false なので、 既定は使い捨ての
     //   プロファイル = 選択画面が出ない。
     final ownProfile = s.submit;
-    // どのアカウントで開くか (呼び名)。 scrollDir を借りている。
-    final acct = ownProfile ? s.scrollDir.trim() : '';
+    // どのアカウントで開くか (呼び名)。
+    final acct = ownProfile ? s.account.trim() : '';
 
     // ★ もう同じ相手につないでいるなら、 開き直さずページを移すだけ。
     //
@@ -3165,14 +3176,42 @@ ${_pcContext(req)}
       //   空振りするのを防ぐ)。
       if (_cdp!.needsFirstLogin) {
         // ★ Chrome の決まりで、 普段のプロファイルのログインは
-        //   持ってこられない。 初回だけ人が入る必要がある事を伝える。
-        _log('注意',
-            'CDP: このアカウント専用のブラウザは初めてです。'
-            ' 開いた窓で 1 回だけログインしてください'
-            ' (次からはログイン済みで開きます)');
+        //   持ってこられない。 初回だけ人が入る必要がある。
+        //   ★ ただ「ログインしてください」 と言うだけでは、 どの
+        //     アカウントで入ればよいのか分からない (= ユーザー報告:
+        //     アカウント名を指定してもそのアカウントで開いてくれない)。
+        //     選んだアカウントを**あらかじめ選んだ状態**の画面へ連れて行く。
+        final mail = acct.isEmpty
+            ? ''
+            : CdpBrowser.accountEmailFor(kind, acct);
+        if (mail.isNotEmpty) {
+          // ★ continue に自分のページを渡さない。
+          //
+          //   = ユーザー報告の 400 エラーの正体。 Google の
+          //   continue は **Google のドメインしか受け付けない**。
+          //   実測: continue に hisator-notebook.com を渡すと 400、
+          //   外すと普通にログイン画面が出る。
+          //   ログイン後はこちらで目的のページへ戻す。
+          await _cdp!.navigate(
+              'https://accounts.google.com/AccountChooser'
+              '?Email=${Uri.encodeComponent(mail)}');
+          _log('注意',
+              'CDP: 「$acct」 ($mail) 専用のブラウザは初めてです。'
+              ' 開いた窓でこのアカウントに 1 回ログインしてください'
+              ' (次からはログイン済みで開きます)');
+        } else {
+          _log('注意',
+              'CDP: このアカウント専用のブラウザは初めてです。'
+              ' 開いた窓で 1 回だけログインしてください'
+              ' (次からはログイン済みで開きます)');
+        }
         if (mounted) {
           setState(() => _status = provider.t('auto.acctFirstLogin'));
         }
+        // ★ この回はここで止める。 ログイン画面のまま先の手順を
+        //   進めても、 目的のページではない所を操作するだけになる。
+        //   ログインしてからもう一度実行してもらう。
+        return false;
       } else if (_cdp!.downgradedFromOwnProfile) {
         _log('注意',
             'CDP: 普段のプロファイルでは操作口が開かなかったため、'

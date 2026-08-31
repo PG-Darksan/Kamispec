@@ -51581,15 +51581,15 @@ class MindMapProvider extends ChangeNotifier {
     },
     // 投げるボタン (= ユーザー要望: 2択があるのでボタンは 1 つ)
     'auto.aiSection': {
-      'ja': 'AI に頼む',
-      'en': 'Ask AI',
-      'zh': '交给 AI',
-      'ko': 'AI 에게 맡기기',
-      'es': 'Pedir a la IA',
-      'fr': 'Demander à l’IA',
-      'de': 'KI fragen',
-      'pt': 'Pedir à IA',
-      'ru': 'Попросить AI',
+      'ja': 'AI',
+      'en': 'AI',
+      'zh': 'AI',
+      'ko': 'AI',
+      'es': 'IA',
+      'fr': 'IA',
+      'de': 'KI',
+      'pt': 'IA',
+      'ru': 'AI',
     },
     'auto.ownProfile': {
       'ja': '普段のプロファイルで開く',
@@ -78751,6 +78751,24 @@ $cleanQ
     masks.add('lastActiveAt');
     fields['title'] = {'stringValue': page.name};
     masks.add('title');
+    // ★ 誰が公開したかを**本文と同じ書き込みに乗せる**。
+    //
+    //   = ユーザー報告「まとめて共有でエラー (HTTP 403)」。 土台がまだ
+    //   無いページへの書き込みは Firestore では「作成」 になり、 規則は
+    //   「作った時点で hostUid が自分であること」 を求める。 ここが
+    //   抜けていたので、 まとめて共有だけが弾かれていた
+    //   (1 ページずつの共有は、 先に権限を書いてから本文を送るので通る)。
+    final me = _uid ?? '';
+    fields['hostUid'] = {'stringValue': me};
+    masks.add('hostUid');
+    final acc = publishPermissionFor(pageId);
+    fields['access'] = {'stringValue': acc};
+    masks.add('access');
+    // 扱える人の一覧は空で始める (セッション中に公開者が足せる)。
+    fields['editors'] = {
+      'arrayValue': {'values': <dynamic>[]}
+    };
+    masks.add('editors');
 
     final query = masks.map((m) => 'updateMask.fieldPaths=$m').join('&');
     final res = await http.patch(

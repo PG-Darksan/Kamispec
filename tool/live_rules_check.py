@@ -78,6 +78,29 @@ def main():
         return '?' + '&'.join('updateMask.fieldPaths=' + x for x in f)
 
     try:
+        print('\n== まとめて共有 (本文と hostUid を一度に書く) ==')
+        # = ユーザー報告「まとめて共有でエラー (HTTP 403)」。
+        #   土台がまだ無いページへの書き込みは「作成」 になるので、
+        #   規則は hostUid が自分であることを求める。 本文だけ送ると弾かれる。
+        bulk = '%s/published/zzBULK%s/doc/main' % (base, code)
+        st = req(bulk + mask('n_a', 'connections', 'rev', 'title'), th,
+                 'PATCH',
+                 {'fields': {'n_a': S('{"id":"a"}'), 'connections': S('[]'),
+                             'rev': I(1), 'title': S('マップ 2')}})
+        check('hostUid を書かないと弾かれる (直す前の症状)', st == 403,
+              'HTTP %d' % st)
+        st = req(bulk + mask('n_a', 'connections', 'rev', 'title',
+                             'hostUid', 'access', 'editors'), th, 'PATCH',
+                 {'fields': {'n_a': S('{"id":"a"}'), 'connections': S('[]'),
+                             'rev': I(1), 'title': S('マップ 2'),
+                             'hostUid': S(uh), 'access': S('edit'),
+                             'editors': A([])}})
+        check('hostUid を一緒に書けば通る (直した形)', st == 200,
+              'HTTP %d' % st)
+        check('参加者がその中身を読める',
+              req(bulk, tm) == 200)
+        req(bulk, th, 'DELETE')
+
         print('\n== 公開者が土台を作る ==')
         st = req(doc + mask('hostUid', 'access', 'editors', 'rev'), th, 'PATCH',
                  {'fields': {'hostUid': S(uh), 'access': S('edit'),

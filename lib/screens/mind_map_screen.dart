@@ -68974,7 +68974,8 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   void _showFloatingPanelWindow(WidgetBuilder builder,
       {double width = 760,
-      double height = 560,
+      // 既定の縦幅 (= ユーザー要望: もう少し大きく)。
+      double height = 680,
       String? memoryKey,
       String? singletonKey,
       String? popOutUrl,
@@ -80132,6 +80133,15 @@ class _MindMapScreenState extends State<MindMapScreen>
         await provider.seedLiveDocForPage(page.id, code);
       } catch (e) {
         failed.add('${page.name}: $e');
+        // ★ 失敗したページを「共有中」 のままにしない。
+        //
+        //   = ユーザー報告「共有できていないのに共有中と出て、
+        //   共有番号も出るのにアクセスできない」。 コードだけ先に
+        //   登録され、 中身の書き込みだけが失敗していたので、
+        //   番号はあるのに中身が無い状態になっていた。
+        try {
+          await provider.unpublishPage(page.id);
+        } catch (_) {}
       }
       progress++;
       try {
@@ -231680,6 +231690,127 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
     }
   }
 
+  /// 上下左右の縁を掴んで大きさを変えるための、 見えない帯。
+  ///
+  /// = ユーザー要望「上下左右の境界をドラッグすることで枠の大きさを
+  ///   大きく出来るようにして欲しい」。 角のつまみだけだと、 縦だけ /
+  ///   横だけ伸ばしたい時に不便だった。
+  List<Widget> _edgeHandles(Size screen) {
+    const grab = 6.0; // 掴める帯の太さ
+    const minW = 360.0;
+    const minH = 280.0;
+
+    Widget band({
+      double? left,
+      double? top,
+      double? right,
+      double? bottom,
+      double? width,
+      double? height,
+      required SystemMouseCursor cursor,
+      required void Function(Offset d) onDrag,
+    }) =>
+        Positioned(
+          left: left,
+          top: top,
+          right: right,
+          bottom: bottom,
+          width: width,
+          height: height,
+          child: MouseRegion(
+            cursor: cursor,
+            child: GestureDetector(
+              // ★ translucent だと、 下の帯 (掴んで動かす所やボタン) にも
+              //   同時に届いてしまい、 どちらが勝つか毎回揺れる。 その結果
+              //   「× が中々押せない」「動かす時の反応が悪い」 になっていた
+              //   (= ユーザー報告)。 この細い帯は自分だけで受け取る。
+              behavior: HitTestBehavior.opaque,
+              onPanUpdate: (d) => setState(() {
+                onDrag(d.delta);
+                _scheduleSaveGeometry();
+              }),
+            ),
+          ),
+        );
+
+    return [
+      // 左の縁 (左へ引くと広がる = 左端も動く)
+      //   上端の 30px は「掴んで動かす帯」 なので避ける。
+      band(
+        left: 0,
+        top: 30,
+        bottom: grab,
+        width: grab,
+        cursor: SystemMouseCursors.resizeLeftRight,
+        onDrag: (d) {
+          final nw = (_w - d.dx).clamp(minW, screen.width);
+          _pos = Offset(_pos.dx + (_w - nw), _pos.dy);
+          _w = nw;
+        },
+      ),
+      // 右の縁
+      band(
+        right: 0,
+        top: 30,
+        bottom: grab,
+        width: grab,
+        cursor: SystemMouseCursors.resizeLeftRight,
+        onDrag: (d) => _w = (_w + d.dx).clamp(minW, screen.width),
+      ),
+      // 上の縁 (上へ引くと広がる = 上端も動く)
+      //   ★ 右側は帯のボタン (全画面 / ピン / 閉じる) が並ぶので避ける。
+      //     ここまで帯を伸ばすと × が押しにくくなる (= ユーザー報告)。
+      band(
+        top: 0,
+        left: 28,
+        right: 150,
+        height: grab,
+        cursor: SystemMouseCursors.resizeUpDown,
+        onDrag: (d) {
+          final nh = (_h - d.dy).clamp(minH, screen.height);
+          _pos = Offset(_pos.dx, _pos.dy + (_h - nh));
+          _h = nh;
+        },
+      ),
+      // 下の縁
+      band(
+        bottom: 0,
+        left: grab,
+        right: grab,
+        height: grab,
+        cursor: SystemMouseCursors.resizeUpDown,
+        onDrag: (d) => _h = (_h + d.dy).clamp(minH, screen.height),
+      ),
+      // 下の両角 (縦横を同時に)。
+      //   ★ 上の両角には帯を置かない。 目印付きのつまみが既にあり、
+      //     しかも閉じるボタンのすぐ隣なので、 押し間違いの元になる。
+      band(
+        left: 0,
+        bottom: 0,
+        width: grab,
+        height: grab,
+        cursor: SystemMouseCursors.resizeDownLeft,
+        onDrag: (d) {
+          final nw = (_w - d.dx).clamp(minW, screen.width);
+          _pos = Offset(_pos.dx + (_w - nw), _pos.dy);
+          _w = nw;
+          _h = (_h + d.dy).clamp(minH, screen.height);
+        },
+      ),
+      band(
+        right: 0,
+        bottom: 0,
+        width: grab,
+        height: grab,
+        cursor: SystemMouseCursors.resizeDownRight,
+        onDrag: (d) {
+          _w = (_w + d.dx).clamp(minW, screen.width);
+          _h = (_h + d.dy).clamp(minH, screen.height);
+        },
+      ),
+    ];
+  }
+
   /// この URL を、 アプリとは別のウィンドウ (別プロセス) で開く。
   ///
   /// 同じプロセスのサブ窓にすると、 その窓を閉じた時に本体側で WebView を
@@ -232135,6 +232266,10 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
                 ),
               ),
             ]),
+            // ── 上下左右の縁を掴んで大きさを変える (= ユーザー要望) ──
+            //    見た目には出さず、 縁から 6px の帯を掴めるようにする。
+            //    角のつまみ (下) は、 掴む場所が分かるよう目印として残す。
+            ..._edgeHandles(screen),
             // ── 大きさを変えるつまみは上の両角 ──
             //    ★ 右下にあると送信ボタンと隔てなくて押し間違える
             //      (= ユーザー報告)。 上の左右に移す。

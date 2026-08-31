@@ -2395,6 +2395,19 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     HardwareKeyboard.instance.addHandler(_globalKeyHandler);
   }
 
+  /// どこかの文字入力欄に書き込んでいる最中か。
+  ///
+  /// TextField の中身は EditableText が持っていて、 入力中はその
+  /// フォーカスが一番手前に来る。 それを見れば、 この画面が知らない
+  /// 入力欄でも「今は文字を打っている」 と分かる。
+  bool get _typingSomewhere {
+    final f = FocusManager.instance.primaryFocus;
+    final c = f?.context;
+    if (c == null) return false;
+    if (c.widget is EditableText) return true;
+    return c.findAncestorWidgetOfExactType<EditableText>() != null;
+  }
+
   /// アプリ全体のキーイベントハンドラ。
   ///
   /// 戻り値:
@@ -2410,6 +2423,13 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
 
     // TextField にフォーカスがある時は素通り
     if (_searchFocus.hasFocus || _memoFocus.hasFocus) return false;
+    // ★ 自分が知っている欄だけでは足りない。
+    //
+    //   = ユーザー報告「自動化のプロンプト欄で Ctrl+Z を押すと、 文字は
+    //   戻っているのに『取り消せる削除がありません』 と出る」。 この画面が
+    //   知らない入力欄 (自動化の欄など) にフォーカスがあっても素通りさせる。
+    //   文字の取り消しは、 その欄自身が受け持つ。
+    if (_typingSomewhere) return false;
 
     final ctrl = HardwareKeyboard.instance.isControlPressed ||
         HardwareKeyboard.instance.isMetaPressed;

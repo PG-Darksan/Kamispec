@@ -227,6 +227,10 @@ class CdpBrowser {
     // 置き場は必ず自分で用意した所にする (= 普段の置き場を指定すると
     //   操作口が開かず、 既に起動中の Chrome へタブだけ増やして終わる)。
     final dataDir = acctDir ?? _scratchProfileDir(kind, port);
+    // ★ 「初めて使うアカウントか」 は、 置き場がまだ無いかどうかで見る。
+    //   クッキーの大きさで見ると、 まっさらなプロファイルでも
+    //   入れ物だけで数十 KB になるので見分けられない。
+    final firstUse = acctDir != null && !Directory(acctDir).existsSync();
     final args = <String>[
       '--remote-debugging-port=$port',
       // 初回の案内や既定ブラウザの確認で止まらないように。
@@ -274,8 +278,7 @@ class CdpBrowser {
     b.profileDir = pickedProfile;
     // 「まだこのアカウント専用のブラウザでログインしていない」 かどうか。
     //   呼び出し側が、 その場合だけ案内を出せるようにする。
-    b.needsFirstLogin = acctDir != null &&
-        !accountLoggedInBefore(kind, pickedProfile);
+    b.needsFirstLogin = firstUse;
     // ★ それでも選択画面に居たら、 ゲストで開き直す (最後の砦)。
     //   会社の設定などで --profile-directory が効かない場合に効く。
     if (!wantGuest && await b.isAtProfilePicker()) {
@@ -462,6 +465,19 @@ class CdpBrowser {
       }
     }
     return null;
+  }
+
+  /// その呼び名のアカウントに紐づくメール (無ければ空)。
+  ///
+  /// 初回だけ人にログインしてもらう時、 どのアカウントで入るのかを
+  /// あらかじめ選んだ状態の画面へ連れて行くのに使う。
+  static String accountEmailFor(CdpBrowserKind kind, String label) {
+    final dir = profileDirFor(kind, label);
+    if (dir == null) return '';
+    for (final p in listProfiles(kind)) {
+      if (p.dir == dir) return p.account;
+    }
+    return '';
   }
 
   /// 入っているプロファイルの数 (選択画面が出るかどうかの目安)。
