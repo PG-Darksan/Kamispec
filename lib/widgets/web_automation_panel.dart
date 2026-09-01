@@ -152,6 +152,92 @@ enum WebAutoKind {
   extract,
 }
 
+/// この手順の中に、 インターネットが要る物があるか
+/// (= ユーザー要望: つながっていない時に案内を出すため)。
+/// 繰り返しの中身も見る。
+bool autoStepsNeedNetwork(List<WebAutoStep> steps) {
+  const net = {
+    WebAutoKind.open,
+    WebAutoKind.openExternal,
+    WebAutoKind.openBrowser,
+    WebAutoKind.download,
+  };
+  for (final st in steps) {
+    if (net.contains(st.kind)) return true;
+    if (st.children.isNotEmpty && autoStepsNeedNetwork(st.children)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/// 依頼文が「ログインして」 と頼んでいるか。
+///
+/// = ユーザー要望「プロンプトの中に『〜にログインして』 と含まれていたら
+///   最初にログインさせる。 明示しない場合はシークレットモードがいい」。
+///   ログインと明示していない時は、 まっさらなシークレット窓で開く
+///   (アカウントも使わず、 ログイン画面にも飛ばない)。
+bool requestWantsLogin(String request) {
+  final r = request.toLowerCase();
+  return request.contains('ログイン') ||
+      request.contains('サインイン') ||
+      request.contains('ログオン') ||
+      request.contains('サインオン') ||
+      r.contains('log in') ||
+      r.contains('login') ||
+      r.contains('logon') ||
+      r.contains('sign in') ||
+      r.contains('signin');
+}
+
+/// 依頼文の中のアカウントを見つける。
+///
+/// = ユーザー報告「chrome を ○○@gmail.com の垢で立ち上げて、 と頼んで
+///   いるのに『既定の 1 つ』 で開かれる」。 AI への指示文には書いてあるが、
+///   軽いモデルは埋め忘れるので、 こちらでも見つけて必ず入れる。
+///
+/// [knownNames] はブラウザに入っている呼び名 (「浩靖」 など)。 メールが
+/// 書いてあればそちらを優先し、 無ければ呼び名が文の中にあるかを見る。
+String accountFromRequest(String request, List<String> knownNames) {
+  final mail = RegExp(r'[\w.+-]+@[\w-]+\.[\w.-]+').firstMatch(request);
+  if (mail != null) return mail.group(0)!;
+  for (final n in knownNames) {
+    final t = n.trim();
+    // 1 文字の呼び名は、 たまたま文に混ざるので使わない。
+    if (t.length >= 2 && request.contains(t)) return t;
+  }
+  return '';
+}
+
+/// エージェントが前に進めているかの見張り。
+///
+/// = ユーザー報告「止まらずに同じフローをひたすら作り続ける」。
+///   画面が変わっていないのに次の一手も前と同じなら、 何度やっても
+///   結果は同じなので、 そこで打ち切る。 手数の上限 (12 回) だけだと、
+///   同じ手順が 12 回ぶん積み上がってしまう。
+class AgentProgressGuard {
+  String? _prevPlan;
+  String? _prevSnap;
+
+  /// 次の一手を受け取る。 進んでいれば true、 足踏みしていれば false。
+  bool advance(List<WebAutoStep> steps, String snapshot) {
+    final plan = planSignature(steps);
+    // 画面は長いので頭だけ見る (末尾は時計などで毎回変わることがある)。
+    final snap =
+        snapshot.length > 400 ? snapshot.substring(0, 400) : snapshot;
+    final same = plan == _prevPlan && snap == _prevSnap;
+    _prevPlan = plan;
+    _prevSnap = snap;
+    return !same;
+  }
+
+  /// 手順の中身を 1 本の文字列にする (同じ手かどうかの見分け用)。
+  static String planSignature(List<WebAutoStep> steps) => steps
+      .map((st) => '${st.kind.name}|${st.text}|${st.selector}|'
+          '${st.scrollDir}|${st.x}|${st.y}')
+      .join(';');
+}
+
 /// コマンド実行の許可の仕方 (= ユーザー要望: 許可を求める・全部任せる)。
 ///
 /// 既定は [off] (使わない)。 危ない操作なので、 ユーザーが自分で
@@ -502,6 +588,11 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
     //   この 2 択が唯一の設定になった)。
     // ignore: discarded_futures
     _loadAgentOpts();
+    // ネットの様子を見張る (= ユーザー要望: つながっていない時だけ、
+    //   一番上に分かり易く出す)。 判定そのものは短い間だけ使い回される。
+    unawaited(_checkNet());
+    _netTimer = Timer.periodic(
+        const Duration(seconds: 15), (_) => unawaited(_checkNet()));
     // Esc / Ctrl+C を横取りして「止める」 に使う (= ユーザー要望:
     // Esc で欄が閉じるのをやめ、 実行を止める側に割り当てる)。
     HardwareKeyboard.instance.addHandler(_handleStopKey);
@@ -517,6 +608,7 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
     // 外のブラウザとのつながり (WebSocket) を残さない。
     unawaited(_releaseCdp());
     _schedTimer?.cancel();
+    _netTimer?.cancel();
     _aiCtrl.dispose();
     super.dispose();
   }
@@ -829,6 +921,22 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
   ///   出ているように」。 既定で開いておき、 ヘッダーのボタンと「キャンセル」
   ///   が畳む役になる。
   bool _aiFormOpen = true;
+
+  /// コマンド実行の欄を開いているか (= ユーザー要望: 肝心のフローの
+  /// 表示領域が小さいので、 上の欄をたためるように)。
+  bool _cmdOpen = true;
+
+  /// 手順を足すボタンの一覧を開いているか (= ユーザー要望)。
+  bool _chipsOpen = true;
+
+  /// 時刻で実行の欄を開いているか (= ユーザー要望: ここもたためるように)。
+  /// たたんでいる間も、 入 / 切と要約の 1 行は見えたままにする。
+  bool _schedOpen = true;
+
+  /// 手順一覧の高さを人が決めた時の値 (= ユーザー要望: 境界をドラッグして
+  /// フローの表示領域を広げられるように)。 null = 自動 (畳み具合から計算)。
+  double? _stepsH;
+
   final TextEditingController _aiCtrl = TextEditingController();
 
   /// 入力欄の下書きを覚えておく鍵 (= ユーザー要望: 戻ってきた時に
@@ -1054,12 +1162,14 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
   効く**。 座標は要らない。 いつもどおり文字で要素を指せばよい。
     ・text  … chrome / edge / brave / vivaldi / opera (空なら入っている先頭)
     ・selector … 開く URL
-    ・submit … true にすると**そのアカウント専用のブラウザ**で開く。
-      ログインが要る作業の時だけ true にする。
-      書かなければ、 毎回まっさらなブラウザで開く。
-    ・account … どのアカウントか (画面に出ている呼び名。 例「浩靖」)。
-      依頼に「○○のアカウントで」「○○の垢で」 と書かれていたら、
-      その呼び名をここに入れて submit も true にすること。
+    ・**既定はシークレット (まっさらな窓)**。 ふつうは account も submit も
+      付けないでください。 その場合はシークレットで開き、 ログイン画面には
+      飛びません。
+    ・依頼に**はっきり「ログインして」「サインインして」**と書かれている
+      時だけ、 account にアカウントの呼び名 (画面に出ている名前。 例「浩靖」)
+      を入れ、 submit を true にしてください。 「○○の垢で」 とだけ書いて
+      あってもログインとは限らないので、 「ログイン」 の言葉が無ければ
+      シークレットのままにします。
   ★ Chrome の決まりで、 **普段使っているブラウザのログインは
     持ってこられない**。 アカウント専用のブラウザは初回だけ人が
     ログインする必要がある (次からはログイン済みで開く)。 ログイン画面に
@@ -1121,6 +1231,37 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
 - scrollDir は down / up / right / left (scrollTo では bottom / top)。
 - steps は 30 個以内。''';
 
+  /// 今どちらで開くか (シークレット / ○○でログイン) の目印。
+  ///
+  /// = ユーザー要望「ログインと明示しない時はシークレット」。 アカウントも
+  ///   印も無ければシークレット、 あればそのアカウントでログインして開く。
+  Widget _openModeBadge(MindMapProvider provider, WebAutoStep s) {
+    final login = s.submit || s.account.trim().isNotEmpty;
+    final acct = s.account.trim();
+    final text = login
+        ? (acct.isEmpty
+            ? provider.t('auto.openLogin')
+            : '${provider.t('auto.openLogin')}: $acct')
+        : provider.t('auto.openIncognito');
+    final color =
+        login ? const Color(0xFF43B97F) : const Color(0xFF9FA8DA);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withValues(alpha: 0.6)),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(login ? Icons.login_rounded : Icons.visibility_off_rounded,
+            size: 12, color: color),
+        const SizedBox(width: 4),
+        Text(text,
+            style: TextStyle(color: color, fontSize: 10, height: 1.1)),
+      ]),
+    );
+  }
+
   /// どのアカウントで開くかの選択 (= ユーザー要望:
   /// アカウントを指定してログイン)。
   ///
@@ -1136,6 +1277,10 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
         .where((n) => n.trim().isNotEmpty)
         .toList();
     final cur = s.account.trim();
+    // ★ 一覧はブラウザに入っている呼び名だけなので、 AI が書いたメール
+    //   などは選べず「既定の 1 つ」 に見えていた (= ユーザー報告)。
+    //   一覧に無い時は、 その値そのものを 1 行足して見せる。
+    if (cur.isNotEmpty && !names.contains(cur)) names.insert(0, cur);
     return SizedBox(
       width: 170,
       child: DropdownButtonFormField<String>(
@@ -1285,6 +1430,31 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
   /// パソコンのアプリを操作する依頼の時だけ、 今どんな窓が開いているかと、
   /// 画面の大きさを AI に渡す (= ユーザー要望: 外部アプリを立ち上げて
   /// 操作しながら見せる)。 これが無いと、 AI は座標も窓の名前も分からず
+  /// 入っているアカウントの呼び名を AI に見せる (= 呼び名が分からないと、
+  /// メールをそのまま書いてしまい、 一覧から選べない形になる)。
+  String _profileHint(String request) {
+    if (!_isDesktopHost) return '';
+    // ★ ログインと明示していない時は、 シークレットで開く。 アカウントの
+    //   呼び名は勧めない (= ユーザー要望: 明示しなければシークレット)。
+    if (!requestWantsLogin(request)) {
+      return 'ログインの指定が無いので、 account も submit も付けず、'
+          ' シークレットで開いてください。\n';
+    }
+    final out = <String>[];
+    for (final kind in CdpBrowser.installed()) {
+      for (final p in CdpBrowser.listProfiles(kind)) {
+        final n = p.name.trim();
+        if (n.isEmpty) continue;
+        out.add(p.account.trim().isEmpty ? n : '$n (${p.account.trim()})');
+      }
+      if (out.isNotEmpty) break;
+    }
+    if (out.isEmpty) return '';
+    return 'このパソコンに入っているアカウントの呼び名: ${out.join(' / ')}\n'
+        '依頼にアカウントが書いてあれば account にこの呼び名を入れ、'
+        ' submit も true にしてください。\n';
+  }
+
   /// アプリの中のブラウザで済ませようとしてしまう。
   String _pcContext(String request) {
     if (!_wantsPcApp(request) || !_isDesktopHost) return '';
@@ -1299,6 +1469,7 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
             return '''
 
 【外のブラウザ】 この依頼は**パソコンのブラウザ**の話です。
+${_profileHint(request)}
 アプリの中のブラウザで開く open は使わないでください。 かわりに
 {"kind":"openBrowser","text":"${name == null || name.isEmpty ? 'chrome' : name}","selector":"https://…"}
 で開けば、 そこから先の click / type / scrollTo / shot は**すべてその
@@ -1413,8 +1584,67 @@ open は使わないでください。 起動は {"kind":"command","text":"start
     return out;
   }
 
+  /// 依頼文の中のアカウント (メール、 またはブラウザに入っている呼び名)。
+  ///
+  /// = ユーザー報告「chrome を ○○@gmail.com の垢で立ち上げて、 と頼んで
+  ///   いるのに『既定の 1 つ』 で開かれる」。 AI への指示文には書いてある
+  ///   が、 軽いモデルは埋め忘れる。 こちらでも見つけて必ず入れる。
+  static String accountIn(String request) {
+    final names = <String>[];
+    if (_isDesktopHost) {
+      for (final kind in CdpBrowser.installed()) {
+        for (final p in CdpBrowser.listProfiles(kind)) {
+          if (p.name.trim().isNotEmpty) names.add(p.name.trim());
+          if (p.account.trim().isNotEmpty) names.add(p.account.trim());
+        }
+      }
+    }
+    return accountFromRequest(request, names);
+  }
+
+  /// 見つけたアカウントを、 外のブラウザを開く手順へ入れる。
+  /// 既に入っている物は触らない (AI が正しく埋めた時はそのまま)。
+  List<WebAutoStep> _applyAccountIntent(
+      String request, List<WebAutoStep> steps) {
+    // ★ ログインと明示していない時は、 シークレットで開く。 AI が勝手に
+    //   account / submit を付けていたら**外す** (= ユーザー要望: 明示
+    //   しなければシークレット。 軽いモデルが付けてしまう事があるため)。
+    if (!requestWantsLogin(request)) {
+      void strip(List<WebAutoStep> list) {
+        for (final st in list) {
+          if (st.kind == WebAutoKind.openBrowser) {
+            st.account = '';
+            st.submit = false;
+          }
+          if (st.children.isNotEmpty) strip(st.children);
+        }
+      }
+
+      strip(steps);
+      return steps;
+    }
+    final acct = accountIn(request);
+    if (acct.isEmpty) return steps;
+    void walk(List<WebAutoStep> list) {
+      for (final s in list) {
+        if (s.kind == WebAutoKind.openBrowser && s.account.trim().isEmpty) {
+          s.account = acct;
+          // そのアカウント専用のブラウザで開く (= ログインを保てる)。
+          s.submit = true;
+        }
+        if (s.children.isNotEmpty) walk(s.children);
+      }
+    }
+
+    walk(steps);
+    return steps;
+  }
+
   List<WebAutoStep> _coercePcIntent(String request, List<WebAutoStep> steps) {
     steps = _dropEmptySteps(steps);
+    // ★ アカウントの指定は、 パソコン操作の依頼かどうかに関わらず入れる
+    //   (= 下の早い戻りより前に置く)。
+    steps = _applyAccountIntent(request, steps);
     if (!_wantsPcApp(request)) return steps;
     if (!_isDesktopHost) return steps;
     var changed = false;
@@ -1459,10 +1689,18 @@ open は使わないでください。 起動は {"kind":"command","text":"start
           }
           s.text = browser.isEmpty ? 'chrome' : browser;
           // submit は種類ごとに意味が違う (type=Enter で送信 /
-          //   openBrowser=普段のプロファイル)。 持ち越すと、 意図せず
-          //   本物のプロファイルで開いてしまう。
+          //   openBrowser=そのアカウント専用で開く)。 持ち越さない。
           s.submit = false;
           s.kind = WebAutoKind.openBrowser;
+          // ★ 「ログインして」 と書いてある時だけ、 アカウントを入れる
+          //   (= それ以外はシークレットで開く)。
+          if (requestWantsLogin(request)) {
+            final acct = accountIn(request);
+            if (acct.isNotEmpty && s.account.trim().isEmpty) {
+              s.account = acct;
+              s.submit = true;
+            }
+          }
         } else if (s.kind == WebAutoKind.open && !cdpLive) {
           // つないでいる間の open は、 そのまま外のブラウザのページ移動に
           //   なる (_exec が CDP へ送る)。 ここで openExternal に直すと、
@@ -1685,11 +1923,22 @@ $snap'''}
       if (m is! Map) return;
       final headless = m['headless'];
       final keep = m['keep'];
+      // 欄の開き具合も覚えておく (= ユーザー要望: たためるように)。
+      final aiOpen = m['aiOpen'];
+      final cmdOpen = m['cmdOpen'];
+      final chipsOpen = m['chipsOpen'];
+      final schedOpen = m['schedOpen'];
+      final stepsH = m['stepsH'];
       // 待っている間に選ばれていたら、 そちらを優先する。
       if (!mounted || _agentOptsTouched) return;
       setState(() {
         if (headless is bool) _agentHeadless = headless;
         if (keep is bool) _agentKeepSteps = keep;
+        if (aiOpen is bool) _aiFormOpen = aiOpen;
+        if (cmdOpen is bool) _cmdOpen = cmdOpen;
+        if (chipsOpen is bool) _chipsOpen = chipsOpen;
+        if (schedOpen is bool) _schedOpen = schedOpen;
+        if (stepsH is num && stepsH > 0) _stepsH = stepsH.toDouble();
       });
     } catch (_) {}
   }
@@ -1702,6 +1951,11 @@ $snap'''}
           jsonEncode({
             'headless': _agentHeadless,
             'keep': _agentKeepSteps,
+            'aiOpen': _aiFormOpen,
+            'cmdOpen': _cmdOpen,
+            'chipsOpen': _chipsOpen,
+            'schedOpen': _schedOpen,
+            if (_stepsH != null) 'stepsH': _stepsH,
           }));
     } catch (_) {}
   }
@@ -1730,11 +1984,22 @@ $snap'''}
       {bool keepSteps = true}) async {
     final req = request.trim();
     if (req.isEmpty || !mounted || _agentBusy) return;
+    // ★ AI に聞くので、 まずネットを確かめる (= ユーザー要望: つながって
+    //   いない時は、 その旨を出してほしい)。
+    if (!await provider.hasInternet()) {
+      if (!mounted) return;
+      _agentFail(provider, 'net.offline', '');
+      return;
+    }
     // その場かぎり (= 残さない) の時のために、 今の手順を控えておく。
     final before = List<WebAutoStep>.from(_steps);
     setState(() {
       _agentBusy = true;
       _agentStop = false;
+      // ★ 前に止めた印を持ち越さない (= 一度止めると、 次からは 12 回
+      //   AI に聞くだけで何も実行されなくなっていた)。
+      _cancel = false;
+      _cdpLost = false;
       _steps.clear();
       // 前回作ったファイルは引き継がない (= 古い物を渡さない)。
       _madeFiles.clear();
@@ -1758,9 +2023,19 @@ $snap'''}
     if (showBrowser) widget.onRunningChanged?.call(true, _requestStop);
     final done = <String>[];
     try {
+      // ★ 「同じ画面で、 同じ手順」 を出し続けていないかを見張る
+      //   (= ユーザー報告: 止まらずに同じフローをひたすら作り続ける)。
+      //   手数の上限だけだと、 12 回ぶんの同じ手順が積み上がってしまう。
+      final guard = AgentProgressGuard();
+      String? prevPlan;
       // 手数の上限。 止まらなくなるのを防ぐ。
       for (var turn = 0; turn < 12; turn++) {
         if (_agentStop || !mounted) break;
+        // ★ ブラウザが閉じられていたら、 そこで終わり (= ユーザー要望)。
+        if (_cdpGone) {
+          _agentFail(provider, 'agent.errBrowserGone', '');
+          break;
+        }
         final snap = await _pageSnapshot();
         final prompt = '''
 あなたは Web ページを操作する担当です。 依頼を達成するために、
@@ -1784,6 +2059,13 @@ ${snap.isEmpty ? '(画面の中身を読めませんでした)' : snap}
 
 【ここまでにやったこと】
 ${done.isEmpty ? '(まだ何もしていません)' : done.join('\n')}
+${prevPlan == null ? '' : '''
+【直前に出した手順】 これと同じ物をもう一度出さないでください。
+$prevPlan
+同じ手を繰り返しても画面は変わりません。 効かなかったのなら、
+別のやり方 (別の文字で探す / 先に待つ / 端まで送る) に変えるか、
+これ以上やる事が無ければ {"done":true,"steps":[]} を返してください。
+'''}
 ${_pcContext(req)}
 依頼: $req''';
         String out;
@@ -1797,6 +2079,11 @@ ${_pcContext(req)}
           break;
         }
         if (_agentStop || !mounted) break;
+        // AI に聞いている間に閉じられた時も止める。
+        if (_cdpGone) {
+          _agentFail(provider, 'agent.errBrowserGone', '');
+          break;
+        }
         if (out.isEmpty) {
           // AI が空を返した。 推論に余裕が無いモデルで起きやすい。
           _agentFail(provider, 'agent.errEmpty', '');
@@ -1841,6 +2128,21 @@ ${_pcContext(req)}
           _agentFail(provider, 'agent.errNoSteps', out);
           break;
         }
+        // ★ 画面が変わっていないのに、 次の一手も同じ = 進んでいない。
+        //   ここで止めないと、 同じ手順が何度も積まれ続ける
+        //   (= ユーザー報告: 止まらずに同じフローを作り続ける)。
+        //   積む前に抜けるので、 フローには 1 回ぶんだけ残る。
+        if (!guard.advance(steps, snap)) {
+          _agentFail(provider, 'agent.errStuck', '');
+          break;
+        }
+        // 次の回で AI に見せる (= 同じ手を出さないように頼むため)。
+        prevPlan = AgentProgressGuard.planSignature(steps);
+        // 手順が増えすぎた時も止める (どこかで空回りしている)。
+        if (_steps.length >= 80) {
+          _agentFail(provider, 'agent.errStuck', '');
+          break;
+        }
         if (!mounted) return;
         // 実行した手順はフローに積んでいく (後で使い回せるように)。
         setState(() {
@@ -1860,6 +2162,12 @@ ${_pcContext(req)}
         }
         await _runSteps(steps, provider.t('agent.label'));
         await _save();
+        // ★ 手順の中で止まった時は、 次の回へ進まない (= これが無いと、
+        //   ブラウザを開けなかった後も 12 回ぶん AI に聞き続けていた)。
+        if (_cancel || _cdpGone) {
+          if (_cdpGone) _agentFail(provider, 'agent.errBrowserGone', '');
+          break;
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -2101,6 +2409,16 @@ ${_pcContext(req)}
   Future<void> _runSteps(List<WebAutoStep> steps, String path) async {
     for (var i = 0; i < steps.length; i++) {
       if (_cancel) return;
+      // ★ 外のブラウザが閉じられていたら、 そこで止める (= ユーザー要望)。
+      if (_cdpGone) {
+        _cancel = true;
+        _log('失敗', '外のブラウザが閉じられたので止めました');
+        if (mounted) {
+          setState(() => _status =
+              context.read<MindMapProvider>().t('agent.errBrowserGone'));
+        }
+        return;
+      }
       // 一番下に着いた: この繰り返しの残り (待機やスクショ) は飛ばす
       // (= ユーザー報告: 同じ場所のスクショが何枚も並ぶ)。
       if (_loopBreak) return;
@@ -2406,6 +2724,18 @@ ${_pcContext(req)}
         case WebAutoKind.osType:
         case WebAutoKind.osKey:
         case WebAutoKind.osScroll:
+          {
+            // ★ ここが下のダウンロードへ落ちていた (= 点検で判明)。
+            //   窓を前に出す・打つ・押すの手順が、 全部ダウンロードの
+            //   中身を走っていた。
+            final ok = await _runOsStep(s);
+            if (!ok) {
+              _cancel = true;
+              return;
+            }
+            await Future.delayed(_intervalOf(s));
+          }
+          break;
         // ── ダウンロード (= ユーザー要望) ──
         case WebAutoKind.download:
           {
@@ -2503,6 +2833,58 @@ ${_pcContext(req)}
   ///   押してもらう形にする。
   ///
   /// 進めてよければ true、 やめるなら false。
+  /// 人の作業が終わるまで待つ (押されるまで戻らない)。
+  ///
+  /// = ユーザー報告「chrome のプロファイルにログインするのが失敗する」。
+  ///   Google は自動操作の口を開けたブラウザではログインさせてくれない
+  ///   ので、 口を開けない窓で人にログインしてもらい、 終わったと
+  ///   押されてから開き直す。
+  Future<bool> _waitForHuman(String question) async {
+    if (!mounted) return false;
+    final provider = context.read<MindMapProvider>();
+    if (mounted) setState(() => _status = question);
+    final ok = await showDialog<bool>(
+      context: context,
+      // 浮かぶ窓の中から出しても下に潜らないように。
+      useRootNavigator: false,
+      barrierDismissible: false,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Row(children: [
+          const Icon(Icons.login_rounded, color: Color(0xFF80CBC4), size: 20),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(provider.t('auto.kindAsk'),
+                style: const TextStyle(color: Colors.white, fontSize: 15)),
+          ),
+        ]),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: SingleChildScrollView(
+            child: Text(question,
+                style: const TextStyle(
+                    color: Colors.white70, fontSize: 13, height: 1.6)),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, false),
+            child: Text(provider.t('auto.askStop'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF43B97F),
+                foregroundColor: Colors.white),
+            onPressed: () => Navigator.pop(dctx, true),
+            child: Text(provider.t('auto.askContinue')),
+          ),
+        ],
+      ),
+    );
+    return ok == true;
+  }
+
   Future<bool> _runAskStep(WebAutoStep s) async {
     if (!mounted) return false;
     final provider = context.read<MindMapProvider>();
@@ -2976,10 +3358,16 @@ ${_pcContext(req)}
       return false;
     }
     if (_cmdPolicy == AutoCommandPolicy.off) {
+      // ★ 設定の説明どおり「飛ばす」。 これまでは false を返していて、
+      //   呼び出し側が実行そのものを打ち切っていたので、 コマンドが 1 つ
+      //   混ざっているだけでフロー全体が動かなかった (= ユーザー報告:
+      //   作ったフローを実行しても何も起きない)。
+      final provider = context.read<MindMapProvider>();
+      _log('注意', provider.t('auto.cmdSkipped'));
       if (mounted) {
-        setState(() => _status = 'コマンド実行は「使わない」 設定です (上の設定で変えられます)');
+        setState(() => _status = provider.t('auto.cmdSkipped'));
       }
-      return false;
+      return true;
     }
     if (isDangerousCommand(cmd)) {
       if (mounted) {
@@ -3064,7 +3452,11 @@ ${_pcContext(req)}
   /// JS を送る (つないでいる時は外のブラウザへ)。
   Future<void> _exec(String js) async {
     final c = _cdp;
-    if (c != null && !c.isClosed) {
+    if (c != null) {
+      // ★ 外のブラウザにつないでいたのなら、 切れた時にアプリの中の
+      //   ブラウザへ黙って乗り換えない (= ユーザー報告: 閉じても動き
+      //   続ける)。 何もせずに戻り、 呼び出し側が止める。
+      if (c.isClosed) return;
       await c.evaluate(js);
       return;
     }
@@ -3080,6 +3472,8 @@ ${_pcContext(req)}
   Future<void> _releaseCdp() async {
     final c = _cdp;
     _cdp = null;
+    // こちらから切る時は「居なくなった」 扱いにしない。
+    _cdpLost = false;
     if (c == null) return;
     try {
       await c.dispose();
@@ -3090,6 +3484,18 @@ ${_pcContext(req)}
   //   手順を試してから、 次の手順を 1 つずつ試せるようにするため。
   //   まとめて実行した時とパネルを閉じた時には切る。
 
+  /// 外のブラウザが (こちらが頼んでいないのに) 居なくなったか。
+  ///
+  /// = ユーザー要望「立ち上がったブラウザを閉じても エージェントが
+  ///   止まってくれない。 指定していないのにブラウザが閉じるなどの
+  ///   動作が起こったらエージェントが停止するようにして欲しい」。
+  bool _cdpLost = false;
+
+  bool get _cdpGone {
+    final c = _cdp;
+    return _cdpLost || (c != null && c.isClosed);
+  }
+
   /// JS を送れる口があるか (外のブラウザ、 またはアプリ内ブラウザ)。
   bool get _hasJsChannel =>
       (_cdp != null && !_cdp!.isClosed) || widget.evalJs != null;
@@ -3097,10 +3503,89 @@ ${_pcContext(req)}
   /// JS の答えを受け取る (つないでいる時は外のブラウザから)。
   Future<String?> _eval(String js) async {
     final c = _cdp;
-    if (c != null && !c.isClosed) return c.evaluate(js);
+    if (c != null) {
+      // ★ つないでいた相手が居なくなったら、 アプリの中のブラウザの
+      //   中身を返さない (= それが「別の画面で動き続ける」 の正体)。
+      if (c.isClosed) return null;
+      return c.evaluate(js);
+    }
     final ev = widget.evalJs;
     if (ev == null) return null;
     return ev(js);
+  }
+
+  /// つないだ相手が居なくなったら止める、 の見張りを付ける。
+  ///
+  /// = ユーザー要望「ブラウザを閉じたらエージェントも止まってほしい」。
+  ///   別の相手に張り替えた後の知らせで止めないよう、 同じ物かを見る。
+  void _watchCdpClosed(MindMapProvider provider) {
+    final made = _cdp;
+    if (made == null) return;
+    _cdpLost = false;
+    unawaited(made.closed.then((why) {
+      if (!identical(_cdp, made)) return; // 張り替え / 意図した切断
+      _cdpLost = true;
+      _agentStop = true;
+      _cancel = true;
+      _log('失敗', 'CDP: $why');
+      if (mounted) {
+        setState(() => _status = provider.t('agent.errBrowserGone'));
+      }
+    }));
+  }
+
+  /// 初回だけ、 人にログインしてもらう。
+  ///
+  /// = ユーザー要望「ログインが要るなら、 最初からログイン画面へ」。
+  ///   Google は自動操作の口を開けたブラウザではログインさせてくれないので、
+  ///   口を開けない窓でログインしてもらい、 終わったら閉じて開き直す。
+  ///   戻り値 true = ログイン済みになった (呼び出し側は続けてよい)。
+  Future<bool> _firstLoginFlow(
+      CdpBrowserKind kind, String acct, MindMapProvider provider) async {
+    final mail = acct.isEmpty ? '' : CdpBrowser.accountEmailFor(kind, acct);
+    // 選んだアカウントをあらかじめ選んだ状態の画面へ (continue は付けない
+    //   = Google の continue は Google のドメインしか受け付けず 400)。
+    final loginUrl = mail.isEmpty
+        ? 'https://accounts.google.com/'
+        : 'https://accounts.google.com/AccountChooser'
+            '?Email=${Uri.encodeComponent(mail)}';
+    final dataDir =
+        CdpBrowser.accountDataDir(kind, acct.isEmpty ? 'default' : acct);
+    _log('注意',
+        'CDP: 「${acct.isEmpty ? '既定' : acct}」'
+        '${mail.isEmpty ? '' : ' ($mail)'} 専用のブラウザは初めてです。'
+        ' 自動操作の口を開けない窓でログインしてもらいます');
+    // 開いている口があれば閉じる (同じ置き場は 1 つしか開けない)。
+    await _releaseCdp();
+    await CdpBrowser.closeProcessesUsingDataDir(dataDir);
+    // 口を開けずに、 いきなりログイン画面で開く。
+    final opened = await CdpBrowser.launchForLogin(
+        kind: kind, dataDir: dataDir, url: loginUrl);
+    if (!opened) {
+      if (mounted) {
+        setState(() => _status = provider.t('auto.acctFirstLogin'));
+      }
+      return false;
+    }
+    // 人が終わるまで待つ。
+    final done = await _waitForHuman(provider
+        .t('auto.acctLoginWait')
+        .replaceFirst('{name}', mail.isEmpty ? acct : mail));
+    if (!done) {
+      if (mounted) setState(() => _status = provider.t('auto.stopped'));
+      return false;
+    }
+    // ログイン用の窓を閉じてから、 口を開けて開き直せるようにする。
+    final closed = await CdpBrowser.closeProcessesUsingDataDir(dataDir);
+    if (!closed) {
+      _log('失敗', provider.t('auto.acctLoginRetry'));
+      if (mounted) setState(() => _status = provider.t('auto.acctLoginRetry'));
+      return false;
+    }
+    // 済んだ印を置く (次からはこの流れを通らない)。
+    CdpBrowser.markLoginDone(dataDir);
+    _log('実行', 'CDP: ログインが済みました');
+    return true;
   }
 
   /// 外のブラウザを開いてつなぐ。
@@ -3132,9 +3617,31 @@ ${_pcContext(req)}
     //   「Chrome はどなたが使用しますか？」 で止まっていた
     //   = ユーザー報告)。 submit の既定は false なので、 既定は使い捨ての
     //   プロファイル = 選択画面が出ない。
-    final ownProfile = s.submit;
-    // どのアカウントで開くか (呼び名)。
-    final acct = ownProfile ? s.account.trim() : '';
+    // ★ アカウントが入っているなら、 印が付いていなくてもそれで開く
+    //   (= ユーザー報告: アカウントを指定しているのに使われない)。
+    //   印 (submit) は「そのアカウント専用のブラウザで開く」 の意味で、
+    //   普段のプロファイルを使う訳ではない。
+    final acct = s.account.trim();
+    final ownProfile = s.submit || acct.isNotEmpty;
+    // ★ アカウントもログインの指定も無い時は、 シークレットで開く
+    //   (= ユーザー要望: 明示しなければシークレット。 ログイン画面に
+    //   飛ばず、 まっさらな状態で開く)。
+    final incognito = !ownProfile;
+
+    // ★ ログインが要るのにまだ済んでいないなら、 **最初に**ログインする
+    //   (= ユーザー要望: ホームページに寄り道せず、 いきなりログイン画面へ)。
+    //   これまでは目的のページを開いてから「初回ログイン」 と気付いて
+    //   いたので、 一度ホームに飛んでからログイン窓に切り替わっていた。
+    if (ownProfile) {
+      final dataDir =
+          CdpBrowser.accountDataDir(kind, acct.isEmpty ? 'default' : acct);
+      if (!CdpBrowser.loginDoneFor(dataDir)) {
+        final ok = await _firstLoginFlow(kind, acct, provider);
+        if (!ok) return false;
+        // ここまで来たらログイン済み。 下のふつうの起動へ進み、
+        //   目的の URL でつなぐ。
+      }
+    }
 
     // ★ もう同じ相手につないでいるなら、 開き直さずページを移すだけ。
     //
@@ -3142,10 +3649,15 @@ ${_pcContext(req)}
     //   1 手ずつ進めるやり方だと openBrowser が何度も出てくることがあり、
     //   その度に起動し直していたので窓とタブが増え続けていた。
     final live = _cdp;
+    // ★ 使い回してよいのは「同じブラウザ・同じアカウント」 の時だけ。
+    //   以前は acct が空だと必ず一致と見なしていたので、 別のアカウントの
+    //   窓をそのまま使っていた (= ユーザー報告: 指定した垢で開かない)。
     if (live != null &&
         !live.isClosed &&
         live.kind == kind &&
-        live.profileDir == (acct.isEmpty ? live.profileDir : acct)) {
+        (acct.isEmpty
+            ? !live.attachedToExisting
+            : live.profileDir.toLowerCase() == acct.toLowerCase())) {
       if (url.isNotEmpty) {
         await live.navigate(url);
       }
@@ -3167,52 +3679,52 @@ ${_pcContext(req)}
         kind: kind,
         url: url.isEmpty ? null : url,
         useOwnProfile: ownProfile,
+        incognito: incognito,
         profileHint: acct,
       );
+      _watchCdpClosed(provider);
+      if (incognito) {
+        _log('実行', 'CDP: シークレットで開きました'
+            ' (ログインの指定が無いため)');
+      }
       final cur = await _cdp!.current();
       _log('実行', 'CDP: つながりました  ${cur?.url ?? ''}');
-      // ★ 普段のプロファイルで開けなかった時は、 黙って進めない
-      //   (= ログイン済みのつもりで進めて、 すべてログイン壁で
-      //   空振りするのを防ぐ)。
-      if (_cdp!.needsFirstLogin) {
-        // ★ Chrome の決まりで、 普段のプロファイルのログインは
-        //   持ってこられない。 初回だけ人が入る必要がある。
-        //   ★ ただ「ログインしてください」 と言うだけでは、 どの
-        //     アカウントで入ればよいのか分からない (= ユーザー報告:
-        //     アカウント名を指定してもそのアカウントで開いてくれない)。
-        //     選んだアカウントを**あらかじめ選んだ状態**の画面へ連れて行く。
-        final mail = acct.isEmpty
-            ? ''
-            : CdpBrowser.accountEmailFor(kind, acct);
-        if (mail.isNotEmpty) {
-          // ★ continue に自分のページを渡さない。
-          //
-          //   = ユーザー報告の 400 エラーの正体。 Google の
-          //   continue は **Google のドメインしか受け付けない**。
-          //   実測: continue に hisator-notebook.com を渡すと 400、
-          //   外すと普通にログイン画面が出る。
-          //   ログイン後はこちらで目的のページへ戻す。
-          await _cdp!.navigate(
-              'https://accounts.google.com/AccountChooser'
-              '?Email=${Uri.encodeComponent(mail)}');
-          _log('注意',
-              'CDP: 「$acct」 ($mail) 専用のブラウザは初めてです。'
-              ' 開いた窓でこのアカウントに 1 回ログインしてください'
-              ' (次からはログイン済みで開きます)');
-        } else {
-          _log('注意',
-              'CDP: このアカウント専用のブラウザは初めてです。'
-              ' 開いた窓で 1 回だけログインしてください'
-              ' (次からはログイン済みで開きます)');
-        }
+      // ★ 新しい窓を開かずに、 前から開いていた窓へつないだ時は、
+      //   その旨を出す (= ユーザー報告: 実行しても chrome が
+      //   立ち上がらない。 実際は裏の窓につないでいた)。
+      if (_cdp!.attachedToExisting) {
+        _log('注意',
+            'CDP: 開いていた ${kind.label} につなぎました (新しい窓は'
+            '開いていません)');
         if (mounted) {
-          setState(() => _status = provider.t('auto.acctFirstLogin'));
+          setState(() => _status = provider
+              .t('auto.cdpReused')
+              .replaceFirst('{name}', kind.label));
         }
-        // ★ この回はここで止める。 ログイン画面のまま先の手順を
-        //   進めても、 目的のページではない所を操作するだけになる。
-        //   ログインしてからもう一度実行してもらう。
-        return false;
-      } else if (_cdp!.downgradedFromOwnProfile) {
+      }
+      // 裏に回っている窓は見えないので、 前に出す。
+      unawaited(_cdp!.bringToFront());
+      // ★ 念のため: 起動後にまだ未ログインと分かった時は、 ここでも
+      //   ログインの流れに入る (ふつうは上で先に済ませてある)。
+      if (_cdp!.needsFirstLogin) {
+        await _releaseCdp();
+        final ok = await _firstLoginFlow(kind, acct, provider);
+        if (!ok) return false;
+        _cdp = await CdpBrowser.launchAndConnect(
+          kind: kind,
+          url: url.isEmpty ? null : url,
+          useOwnProfile: true,
+          profileHint: acct,
+        );
+        _watchCdpClosed(provider);
+        unawaited(_cdp!.bringToFront());
+        if (mounted) {
+          setState(() => _status = provider
+              .t('auto.cdpConnected')
+              .replaceFirst('{name}', kind.label));
+        }
+        return true;
+      } else if (_cdp!.downgradedFromOwnProfile) {      } else if (_cdp!.downgradedFromOwnProfile) {
         _log('注意',
             'CDP: 普段のプロファイルでは操作口が開かなかったため、'
             ' 使い捨てのプロファイルで開きました'
@@ -3403,6 +3915,20 @@ ${_pcContext(req)}
   bool _schedRepeat = true;
   Timer? _schedTimer;
 
+  /// ネットにつながっているか (= ユーザー要望: 下の方の地味な 1 行ではなく、
+  /// つながっていない時だけ一番上に分かり易く出す)。
+  bool _online = true;
+  Timer? _netTimer;
+
+  /// 今の様子を見る。 変わった時だけ描き直す。
+  Future<void> _checkNet() async {
+    if (!mounted) return;
+    final provider = context.read<MindMapProvider>();
+    final ok = await provider.hasInternet();
+    if (!mounted || ok == _online) return;
+    setState(() => _online = ok);
+  }
+
   /// 同じ時刻で二重に走らせないための控え ('2026-08-31 09:00')。
   final Set<String> _firedKeys = {};
 
@@ -3522,7 +4048,7 @@ ${_pcContext(req)}
   Future<bool> _hasLivePage() async {
     // 外のブラウザにつないでいるなら、 そちらが生きているページ。
     final c = _cdp;
-    if (c != null && !c.isClosed) return true;
+    if (c != null) return !c.isClosed;
     final eval = widget.evalJs;
     if (eval == null) return true;
     try {
@@ -3679,6 +4205,14 @@ ${_pcContext(req)}
     }
     if (_needsPageFirst() && !await _hasLivePage()) {
       setState(() => _status = provider.t('auto.openPageFirst'));
+      return;
+    }
+    // ★ ネットが要る手順が入っているなら、 先に確かめる (= ユーザー要望:
+    //   Wi-Fi につながっていない時は、 その旨を出してほしい)。
+    if (autoStepsNeedNetwork(_steps) && !await provider.hasInternet()) {
+      if (!mounted) return;
+      _log('失敗', provider.t('net.offline'));
+      setState(() => _status = provider.t('net.offline'));
       return;
     }
     if (_running || _steps.isEmpty) return;
@@ -4048,17 +4582,21 @@ ${_pcContext(req)}
         child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // ── 入り口のスイッチ ──
+              // ── 入り口のスイッチ (見出しを押すとたためる = ユーザー要望) ──
               // ★ 切っているのに時刻が出ていると、 その時刻で動くように
               //   見える (= ユーザー指摘)。 中身は入れている間だけ出す。
-              Row(children: [
-                const Icon(Icons.schedule_rounded,
-                    size: 15, color: Color(0xFF80CBC4)),
-                const SizedBox(width: 6),
-                Text(provider.t('auto.schedTitle'),
-                    style: const TextStyle(
-                        color: Colors.white70, fontSize: 11.5)),
-                const SizedBox(width: 8),
+              //   たたんでいても、 入 / 切と下の要約 1 行は見えたまま。
+              _sectionHead(
+                provider,
+                provider.t('auto.schedTitle'),
+                open: _schedOpen,
+                icon: Icons.schedule_rounded,
+                color: const Color(0xFF80CBC4),
+                onTap: () {
+                  setState(() => _schedOpen = !_schedOpen);
+                  unawaited(_saveAgentOpts());
+                },
+                trailing: [
                 Switch(
                   value: _schedOn,
                   materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -4072,8 +4610,11 @@ ${_pcContext(req)}
                     _restartScheduleTimer();
                   },
                 ),
-                if (_schedOn) ...[
-                  const Spacer(),
+                ],
+              ),
+              if (_schedOpen && _schedOn) ...[
+                Row(children: [
+                  const SizedBox(width: 21),
                   InkWell(
                     onTap: () async {
                       setState(() => _schedRepeat = !_schedRepeat);
@@ -4094,9 +4635,9 @@ ${_pcContext(req)}
                               color: Colors.white60, fontSize: 11)),
                     ]),
                   ),
-                ],
-              ]),
-              if (_schedOn) ...[
+                ]),
+              ],
+              if (_schedOpen && _schedOn) ...[
                 const SizedBox(height: 6),
                 // ── 時刻 (いくつでも) ──
                 Text(provider.t('auto.schedTimes'),
@@ -4318,22 +4859,40 @@ ${_pcContext(req)}
         child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // ── コマンドの許可 ──
+              // ── コマンドの許可 (見出しを押すとたためる = ユーザー要望) ──
+              // ★ この設定は OS の操作 (os… の手順) にも効くので、 名前は
+              //   「コマンド実行 / パソコンの操作」 とまとめて書く。
+              _sectionHead(
+                provider,
+                DesktopInput.isSupported
+                    ? provider.t('auto.cmdSection')
+                    : 'コマンド実行',
+                open: _cmdOpen,
+                icon: Icons.terminal_rounded,
+                color: const Color(0xFFFFB347),
+                onTap: () {
+                  setState(() => _cmdOpen = !_cmdOpen);
+                  unawaited(_saveAgentOpts());
+                },
+                trailing: [
+                  // たたんでいる間も、 今どの設定かは分かるようにする。
+                  if (!_cmdOpen)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 6),
+                      child: Text(
+                          _cmdPolicy == AutoCommandPolicy.off
+                              ? '使わない'
+                              : (_cmdPolicy == AutoCommandPolicy.ask
+                                  ? '毎回確認'
+                                  : '全部任せる'),
+                          style: const TextStyle(
+                              color: Colors.white38, fontSize: 10.5)),
+                    ),
+                ],
+              ),
+              if (_cmdOpen)
               Row(children: [
-                const Icon(Icons.terminal_rounded,
-                    size: 15, color: Color(0xFFFFB347)),
-                const SizedBox(width: 6),
-                // ★ この設定は OS の操作 (os… の手順) にも効く
-                //   (= ユーザー要望: PC 内のアプリを操作)。 名前だけ
-                //   「コマンド実行」 のままだと、 マウスやキーボードまで
-                //   動くことに気付けないので、 まとめた言い方にする。
-                Text(
-                    DesktopInput.isSupported
-                        ? 'コマンド実行 / パソコンの操作'
-                        : 'コマンド実行',
-                    style: const TextStyle(
-                        color: Colors.white70, fontSize: 11.5)),
-                const SizedBox(width: 8),
+                const SizedBox(width: 21),
                 Expanded(
                   child: Wrap(spacing: 6, runSpacing: 4, children: [
                     for (final (v, label) in const [
@@ -4362,6 +4921,7 @@ ${_pcContext(req)}
                     onPressed: _showCmdLog,
                   ),
               ]),
+              if (_cmdOpen)
               Padding(
                 padding: const EdgeInsets.only(left: 21, top: 2),
                 child: Text(
@@ -4544,6 +5104,51 @@ ${_pcContext(req)}
   }
 
   /// 追加できる種類のチップ列。 [into] に追加する。
+  /// たためる欄の見出し (= ユーザー要望: プロンプト欄・コマンド実行欄・
+  /// ボタンの一覧をたたんで、 フローの表示領域を広く使えるように)。
+  ///
+  /// 見出しのどこを押しても開閉する。 右端の▼が今の状態を表す。
+  Widget _sectionHead(
+    MindMapProvider provider,
+    String label, {
+    required bool open,
+    required VoidCallback onTap,
+    IconData? icon,
+    Color color = Colors.white70,
+    double fontSize = 11.5,
+    List<Widget> trailing = const [],
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(6),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Row(children: [
+          if (icon != null) ...[
+            Icon(icon, size: 15, color: color),
+            const SizedBox(width: 6),
+          ],
+          Expanded(
+            child: Text(label,
+                maxLines: open ? 2 : 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: color, fontSize: fontSize)),
+          ),
+          ...trailing,
+          Tooltip(
+            message: provider.t(open ? 'auto.collapse' : 'auto.expand'),
+            child: Icon(
+                open
+                    ? Icons.expand_less_rounded
+                    : Icons.expand_more_rounded,
+                size: 18,
+                color: Colors.white54),
+          ),
+        ]),
+      ),
+    );
+  }
+
   Widget _addChips(MindMapProvider provider, List<WebAutoStep> into) {
     return Wrap(spacing: 6, runSpacing: 6, children: [
       // ★ 「全体を 1 枚」 は別項目にせず、 スクショの中の
@@ -5165,7 +5770,10 @@ ${_pcContext(req)}
               ),
               // ── どのアカウントで開くか (= ユーザー要望) ──
               //    普段の Chrome に入っている呼び名から選べる。
-              if (s.submit) _acctPicker(provider, s),
+              // ★ 印 (submit) が付いていなくても出す。 隠していたせいで、
+              //   AI が入れたアカウントが画面から消えていた
+              //   (= ユーザー報告: 指定しているのに「既定の 1 つ」)。
+              _acctPicker(provider, s),
             ],
             // ── 普段のプロファイルで開くかどうか ──
             //    以前は count==1 という隠れた目印で決めていて、 count の
@@ -5210,6 +5818,9 @@ ${_pcContext(req)}
                   ),
                 ),
               ),
+              // ── 今どちらで開くか、 ひと目で分かるように
+              //    (= ユーザー要望: 明示しなければシークレット) ──
+              _openModeBadge(provider, s),
             ],
             // ── テキスト入力 (= ユーザー要望) ──
             if (s.kind == WebAutoKind.type) ...[
@@ -5623,8 +6234,25 @@ ${_pcContext(req)}
       //   高さを渡す。 広い時 (全画面) は今までどおり。
       child: LayoutBuilder(builder: (lctx, cons) {
         final tight = cons.maxHeight.isFinite && cons.maxHeight < 760;
-        final stepsHeight =
-            (cons.maxHeight * 0.35).clamp(180.0, 320.0).toDouble();
+        // ★ 上の欄をたたんだぶんだけ、 手順の一覧を広くする
+        //   (= ユーザー要望: 肝心のフローの表示領域が小さくて操作しづらい)。
+        final openCount = (_aiFormOpen ? 1 : 0) +
+            (_cmdOpen && _isDesktopHost && !kStoreBuild ? 1 : 0) +
+            (_chipsOpen ? 1 : 0);
+        final autoHeight = (cons.maxHeight * (0.62 - 0.09 * openCount))
+            .clamp(180.0, 560.0)
+            .toDouble();
+        // ★ 人が境界をドラッグして決めた高さがあれば、 そちらを使う
+        //   (= ユーザー要望: 表示領域がまだ小さいので自分で広げたい)。
+        //   窓より高くしてよい (足りない分は全体が巻物になる)。
+        final maxSteps =
+            cons.maxHeight.isFinite ? cons.maxHeight * 2.5 : 1600.0;
+        final stepsHeight = _stepsH == null
+            ? autoHeight
+            : _stepsH!.clamp(120.0, maxSteps).toDouble();
+        // 人が高さを決めた時は、 広い画面でも決めた高さで出す
+        //   (Expanded だと決めた高さが無視されるため)。
+        final fixedSteps = tight || _stepsH != null;
         final steps = _steps.isEmpty
             ? Center(
                 child: Text(provider.t('auto.empty'),
@@ -5638,8 +6266,37 @@ ${_pcContext(req)}
               );
         final body = Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
-        mainAxisSize: tight ? MainAxisSize.min : MainAxisSize.max,
+        mainAxisSize: fixedSteps ? MainAxisSize.min : MainAxisSize.max,
         children: [
+          // ── ネットにつながっていない時だけ、 一番上に出す
+          //    (= ユーザー要望: 下の方の 1 行では地味で気付けない) ──
+          if (!_online)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              color: const Color(0xFFB71C1C),
+              child: Row(children: [
+                const Icon(Icons.wifi_off_rounded, size: 16,
+                    color: Colors.white),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(provider.t('net.offline'),
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w700,
+                          height: 1.35)),
+                ),
+                // 待たずに調べ直せるように (= つなぎ直した直後)。
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  tooltip: provider.t('net.recheck'),
+                  icon: const Icon(Icons.refresh_rounded,
+                      size: 16, color: Colors.white),
+                  onPressed: () => unawaited(_checkNet()),
+                ),
+              ]),
+            ),
           if (_recording)
             Container(
               width: double.infinity,
@@ -5782,48 +6439,8 @@ ${_pcContext(req)}
                     }),
                   ),
                 ),
-              // ── AI でフロー作成 (= ユーザー要望: 指示を出すと AI が手順を
-              //    組み立てる) ──
-              // ★ 実行中でも出しておく (= 押しても開いたり閉じたりする
-              //   だけで、 止める操作とは別物。 以前は実行中に消えるうえ
-              //   欄の中の「キャンセル」 も無くなったので、 走っている間
-              //   ずっと欄を畳めなかった)。
-              if (!_recording)
-                Padding(
-                  padding: const EdgeInsets.only(right: 4),
-                  child: OutlinedButton.icon(
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: const Color(0xFFBA68C8),
-                      side: const BorderSide(color: Color(0xFFBA68C8)),
-                      padding: const EdgeInsets.symmetric(horizontal: 10),
-                      minimumSize: const Size(0, 28),
-                    ),
-                    icon: _aiBusy
-                        ? const SizedBox(
-                            width: 12,
-                            height: 12,
-                            child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                valueColor: AlwaysStoppedAnimation(
-                                    Color(0xFFBA68C8))),
-                          )
-                        : Icon(
-                            // 常に出している欄の開閉ボタン (= ユーザー要望)。
-                            _aiFormOpen
-                                ? Icons.expand_less_rounded
-                                : Icons.auto_awesome_rounded,
-                            size: 14),
-                    // ★ これは「欄の開閉」 のボタンなので、 実行の文言を
-                    //   出さない (= 以前は「AIでフロー作成」 と出ていたが、
-                    //   押しても開いたり閉じたりするだけで紛らわしかった)。
-                    label: Text(provider.t('auto.aiSection'),
-                        style: const TextStyle(
-                            fontSize: 11, fontWeight: FontWeight.w700)),
-                    onPressed: _aiBusy
-                        ? null
-                        : () => setState(() => _aiFormOpen = !_aiFormOpen),
-                  ),
-                ),
+              // ★ ヘッダーの AI ボタンは置かない (= ユーザー要望: 欄の
+              //   右上の▼で閉じたり開いたり出来るので、 ヘッダーには要らない)。
               // 撮ったスクショの管理 (= ユーザー要望: どこにあるか分かり
               // にくい / PDF 前に編集・並べ替えしたい)
               // ★ 浮かせた窓だと横に溢れて見えなくなっていた
@@ -5839,8 +6456,10 @@ ${_pcContext(req)}
                     if (_modalOpen) return;
                     _modalOpen = true;
                     try {
+                      // ★ 全画面で開く (= ユーザー要望: 浮かせた窓だと
+                      //   潰れて使えない)。
                       await ShotManagerDialog.show(context,
-                          useRootNavigator: false);
+                          useRootNavigator: false, fullscreen: true);
                     } finally {
                       _modalOpen = false;
                     }
@@ -5912,11 +6531,13 @@ ${_pcContext(req)}
           ),
           // ── AI でフローを作る入力欄 (= ユーザー要望: 一番上に置く。
           //    コマンド実行はこのすぐ下、 時刻で実行は一番下) ──
-          if (_aiFormOpen)
-            Padding(
+          // ── AI の欄。 見出しは常に出し、 中身だけたたむ
+          //    (= ユーザー要望: ヘッダーのボタンを外したので、 ここが
+          //    唯一の開け閉め口になる) ──
+          Padding(
               padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
               child: Container(
-                padding: const EdgeInsets.all(8),
+                padding: EdgeInsets.all(_aiFormOpen ? 8 : 4),
                 decoration: BoxDecoration(
                   color: const Color(0xFFBA68C8).withValues(alpha: 0.10),
                   borderRadius: BorderRadius.circular(8),
@@ -5924,6 +6545,36 @@ ${_pcContext(req)}
                       color: const Color(0xFFBA68C8).withValues(alpha: 0.5)),
                 ),
                 child: Column(children: [
+                  // ── 見出し。 押すとプロンプト欄ごとたためる
+                  //    (= ユーザー要望: フローの表示領域を広く使いたい) ──
+                  _sectionHead(
+                    provider,
+                    provider.t('auto.aiSection'),
+                    open: _aiFormOpen,
+                    icon: Icons.auto_awesome_rounded,
+                    color: const Color(0xFFBA68C8),
+                    onTap: () {
+                      setState(() => _aiFormOpen = !_aiFormOpen);
+                      unawaited(_saveAgentOpts());
+                    },
+                    trailing: [
+                      // 考えている間の目印 (ヘッダーから移した)。
+                      if (_aiBusy || _agentBusy)
+                        const Padding(
+                          padding: EdgeInsets.only(right: 6),
+                          child: SizedBox(
+                            width: 12,
+                            height: 12,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                valueColor: AlwaysStoppedAnimation(
+                                    Color(0xFFBA68C8))),
+                          ),
+                        ),
+                    ],
+                  ),
+                  if (_aiFormOpen) ...[
+                  const SizedBox(height: 4),
                   // ── Enter で確定 = AI でフロー作成 (= ユーザー要望) ──
                   //    改行を入れたい時は Shift+Enter。 複数行の欄はそのままだと
                   //    Enter が改行になるので、 手前で捕まえる。
@@ -6082,21 +6733,34 @@ ${_pcContext(req)}
                             },
                     ),
                   ]),
+                  ],
                 ]),
               ),
             ),
           // コマンド実行 = AI の欄のすぐ下 (= ユーザー要望)。
           _buildCommandRow(provider),
+          // ── 説明の行が、 そのままボタン一覧の見出し (= ユーザー要望:
+          //    「手順を並べて実行します」 の所をたためるように) ──
           Padding(
-            padding: const EdgeInsets.fromLTRB(10, 4, 10, 4),
-            child: Text(provider.t('auto.hint'),
-                style: const TextStyle(color: Colors.white38, fontSize: 10.5)),
+            padding: const EdgeInsets.fromLTRB(10, 2, 8, 2),
+            child: _sectionHead(
+              provider,
+              provider.t('auto.hint'),
+              open: _chipsOpen,
+              color: Colors.white38,
+              fontSize: 10.5,
+              onTap: () {
+                setState(() => _chipsOpen = !_chipsOpen);
+                unawaited(_saveAgentOpts());
+              },
+            ),
           ),
           // ステップ追加ボタン
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            child: _addChips(provider, _steps),
-          ),
+          if (_chipsOpen)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: _addChips(provider, _steps),
+            ),
           // ── まとめて消すバー (= ユーザー要望: Ctrl / Shift で複数選択) ──
           if (_stepSel.isNotEmpty)
             Padding(
@@ -6154,10 +6818,49 @@ ${_pcContext(req)}
               ),
             ),
           const SizedBox(height: 8),
-          if (tight)
+          if (fixedSteps)
             SizedBox(height: stepsHeight, child: steps)
           else
             Expanded(child: steps),
+          // ── 境界をドラッグして、 手順一覧の高さを変える
+          //    (= ユーザー要望)。 二度押しで自動の高さに戻る。 ──
+          //    ★ 巻物の中でも掴めるよう、 Listener で直に受け取る
+          //      (中の GestureDetector と取り合いにならない)。
+          MouseRegion(
+            cursor: SystemMouseCursors.resizeUpDown,
+            child: Listener(
+              behavior: HitTestBehavior.opaque,
+              onPointerMove: (e) {
+                final base = _stepsH ?? stepsHeight;
+                final next = (base + e.delta.dy).clamp(120.0, maxSteps);
+                if ((next - base).abs() < 0.5) return;
+                setState(() => _stepsH = next.toDouble());
+              },
+              onPointerUp: (_) => unawaited(_saveAgentOpts()),
+              child: GestureDetector(
+                onDoubleTap: () {
+                  setState(() => _stepsH = null);
+                  unawaited(_saveAgentOpts());
+                },
+                child: Container(
+                  height: 12,
+                  width: double.infinity,
+                  color: Colors.white.withValues(alpha: 0.04),
+                  alignment: Alignment.center,
+                  child: Container(
+                    width: 46,
+                    height: 3,
+                    decoration: BoxDecoration(
+                      color: _stepsH == null
+                          ? Colors.white24
+                          : const Color(0xFF80CBC4),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
           const Divider(height: 1, color: Colors.white12),
           Padding(
             padding: const EdgeInsets.all(8),
@@ -6181,7 +6884,9 @@ ${_pcContext(req)}
           _buildScheduleRow(provider),
         ],
         );
-        return tight ? SingleChildScrollView(child: body) : body;
+        // ★ 高さを決めた時も巻物にする (= 決めた高さが窓より高い時に
+        //   はみ出さないように)。
+        return fixedSteps ? SingleChildScrollView(child: body) : body;
       }),
     );
   }

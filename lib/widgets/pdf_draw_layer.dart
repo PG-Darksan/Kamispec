@@ -1285,6 +1285,10 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       _pushUndo();
       setState(() {
         _strokes.addAll(_markStrokes(geom.pageNumber, pt));
+        // 連番は、 置いたら次の番号へ (固定中はそのまま = ユーザー要望)。
+        if (_checkMark == 'number' && !_seqFixed && _seqNext < 999) {
+          _seqNext++;
+        }
       });
       _activePointer = null;
       _currentGeom = null;
@@ -1570,6 +1574,22 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   String _checkMark = 'check';
   static const String _kCheckMarkPrefsKey = 'pdfDrawCheckMark';
 
+  /// 印の一覧を広げているか (= ユーザー要望: カラーと同じく収納できるように)。
+  bool _checksOpen = false;
+
+  /// 連番 (①②③) の次に置く番号 (= 開始番号でもある)。 固定中は増やさない。
+  int _seqNext = 1;
+
+  /// 番号を固定するか (= ユーザー要望: ① を何個も置きたい時など)。
+  bool _seqFixed = false;
+
+  /// 番号の見た目。 ①〜⑳ は 1 文字で出せるので丸囲みを使い、 それ以外は
+  /// 「(21)」 のようにする (丸囲みは 20 までしか無いため)。
+  String _seqGlyph(int n) {
+    if (n >= 1 && n <= 20) return String.fromCharCode(0x2460 + (n - 1));
+    return '($n)';
+  }
+
   /// 今選んでいる印のアイコン (道具ボタンに出す)。
   IconData get _markIcon {
     for (final m in kCheckMarks) {
@@ -1603,6 +1623,8 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     (id: 'cross', icon: Icons.close_rounded),
     (id: 'triangle', icon: Icons.change_history_rounded),
     (id: 'square', icon: Icons.crop_square_rounded),
+    // 連番 (①②③…) = ユーザー要望。 押すたびに次の番号を置く。
+    (id: 'number', icon: Icons.looks_one_rounded),
   ];
 
   /// チェックの線の太さ (pt)。 大きさとは別で、 常にこの太さで描く
@@ -1641,9 +1663,10 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   (double, double) get _activeToolSizeRange {
     switch (_tool) {
       case PdfDrawTool.text:
-        return (6.0, 96.0);
+        return (6.0, 100.0);
       case PdfDrawTool.check:
-        return (1.0, 20.0);
+        // ★ 上限を 5 に (= ユーザー要望: 20 は大き過ぎ、 2.0 付近を細かく)。
+        return (1.0, 5.0);
       case PdfDrawTool.eraser:
         return (4.0, 120.0);
       default:
@@ -1828,6 +1851,23 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
           width: _kCheckStrokeWidth,
         );
     switch (_checkMark) {
+      case 'number':
+        // 数字は線では作れないので、 文字 (text) の描き込みとして置く。
+        //   既存の文字描画・PDF 焼き込みがそのまま使える。 大きさは印の
+        //   大きさ設定に連動させる。
+        final fs = (_checkSize * 8.0).clamp(12.0, 200.0);
+        return [
+          PdfDrawStroke(
+            pageNumber: pageNumber,
+            tool: PdfDrawTool.text,
+            // 押した所に中心が来るよう、 少し左上へずらして置く。
+            points: [at + Offset(-fs * 0.32, -fs * 0.62), at],
+            color: _color,
+            width: _kCheckStrokeWidth,
+            text: _seqGlyph(_seqNext),
+            fontSize: fs,
+          )
+        ];
       case 'circle':
         // まるは多角形で近似する (線の仕組みのまま扱えるように)。
         const int seg = 24;
@@ -2176,6 +2216,110 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       );
     }
 
+    // 印 (✓○×△□ / 連番) を選ぶボタン。 色と同じく、 選んだら畳む。
+    Widget markBtn(({String id, IconData icon}) m) {
+      final on = _checkMark == m.id;
+      return Tooltip(
+        message: m.id == 'number'
+            ? widget.tr('pdfdraw.number')
+            : widget.tr('pdfdraw.check'),
+        child: InkWell(
+          onTap: () {
+            setState(() {
+              _checkMark = m.id;
+              _checksOpen = false;
+            });
+            unawaited(_persistCheckMark());
+          },
+          borderRadius: BorderRadius.circular(6),
+          child: Container(
+            width: 28,
+            height: 30,
+            alignment: Alignment.center,
+            margin: const EdgeInsets.symmetric(horizontal: 1),
+            decoration: BoxDecoration(
+              color: on
+                  ? const Color(0xFF6C63FF)
+                  : Colors.white.withValues(alpha: 0.06),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(
+                  color: on ? const Color(0xFF6C63FF) : Colors.white24),
+            ),
+            child: Icon(m.icon,
+                size: 16, color: on ? Colors.white : Colors.white70),
+          ),
+        ),
+      );
+    }
+
+    // 連番の操作 (次の番号を上げ下げ + 固定)。 印が「連番」 の時だけ出す。
+    Widget seqStepBtn(IconData ic, String tip, VoidCallback onTap) => Tooltip(
+          message: widget.tr(tip),
+          child: InkWell(
+            onTap: onTap,
+            borderRadius: BorderRadius.circular(6),
+            child: SizedBox(
+                width: 24,
+                height: 28,
+                child: Icon(ic, size: 16, color: Colors.white70)),
+          ),
+        );
+    Widget seqControls() => Container(
+          margin: const EdgeInsets.symmetric(horizontal: 2),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.06),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            seqStepBtn(Icons.remove_rounded, 'pdfdraw.seqDown',
+                () => setState(() {
+                      if (_seqNext > 1) _seqNext--;
+                    })),
+            Tooltip(
+              message: widget.tr('pdfdraw.seqStart'),
+              child: Container(
+                width: 28,
+                alignment: Alignment.center,
+                child: Text(_seqGlyph(_seqNext),
+                    style: const TextStyle(color: Colors.white, fontSize: 16)),
+              ),
+            ),
+            seqStepBtn(Icons.add_rounded, 'pdfdraw.seqUp',
+                () => setState(() {
+                      if (_seqNext < 999) _seqNext++;
+                    })),
+            Container(
+                width: 1,
+                height: 18,
+                margin: const EdgeInsets.symmetric(horizontal: 2),
+                color: Colors.white24),
+            Tooltip(
+              message: widget.tr('pdfdraw.seqFix'),
+              child: InkWell(
+                onTap: () => setState(() => _seqFixed = !_seqFixed),
+                borderRadius: BorderRadius.circular(6),
+                child: Container(
+                  width: 26,
+                  height: 28,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: _seqFixed
+                        ? const Color(0xFF6C63FF)
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Icon(
+                      _seqFixed
+                          ? Icons.lock_rounded
+                          : Icons.lock_open_rounded,
+                      size: 15,
+                      color: _seqFixed ? Colors.white : Colors.white70),
+                ),
+              ),
+            ),
+          ]),
+        );
+
     Widget colorBtn(Color c) {
       final on = _color.toARGB32() == c.toARGB32();
       return InkWell(
@@ -2232,9 +2376,9 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       // 消しゴムは大きく取れるようにする (= ユーザー要望: 最大値をもう少し
       // 大きく)。 ページの上に出る丸で実際の大きさが分かる。
       final double maxV = textTool
-          ? 96.0
+          ? 100.0
           : checkTool
-              ? 20.0
+              ? 5.0
               : eraser
                   ? 120.0
                   : 16.0;
@@ -2329,7 +2473,10 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
                 // ペンは 0.5 刻み / 消しゴムは 1 刻み (= 幅が広いので)。
                 divisions: (eraser || textTool)
                     ? (maxV - minV).round()
-                    : ((maxV - minV) * 2).round(),
+                    // ★ チェックは 0.1 刻みで細かく (= ユーザー要望)。
+                    : checkTool
+                        ? ((maxV - minV) * 10).round()
+                        : ((maxV - minV) * 2).round(),
                 onChanged: (nv) {
                   setState(() {
                     if (textTool) {
@@ -2431,42 +2578,34 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
             //   今の印のアイコンで 1 つだけ出す。
             if (_tool != PdfDrawTool.check)
               toolBtn(PdfDrawTool.check, _markIcon, 'pdfdraw.check'),
-            // ── 置く印の種類 (= ユーザー要望: ✓ の所を ○ や × 等に
-            //    切り替えられるように)。 チェックの道具を選んでいる時だけ
-            //    出す。 ──
-            if (_tool == PdfDrawTool.check)
-              for (final m in kCheckMarks)
-                Tooltip(
-                  message: widget.tr('pdfdraw.check'),
-                  child: InkWell(
-                    onTap: () {
-                      setState(() => _checkMark = m.id);
-                      unawaited(_persistCheckMark());
-                    },
-                    borderRadius: BorderRadius.circular(6),
-                    child: Container(
-                      width: 28,
-                      height: 30,
-                      alignment: Alignment.center,
-                      margin: const EdgeInsets.symmetric(horizontal: 1),
-                      decoration: BoxDecoration(
-                        color: _checkMark == m.id
-                            ? const Color(0xFF6C63FF)
-                            : Colors.white.withValues(alpha: 0.06),
-                        borderRadius: BorderRadius.circular(6),
-                        border: Border.all(
-                            color: _checkMark == m.id
-                                ? const Color(0xFF6C63FF)
-                                : Colors.white24),
-                      ),
-                      child: Icon(m.icon,
-                          size: 16,
-                          color: _checkMark == m.id
-                              ? Colors.white
-                              : Colors.white70),
-                    ),
+            // ── 置く印の種類 (= ユーザー要望: ✓ の所を ○ や × 連番 等に)。
+            //    カラーと同じく、 普段は「今の印 + 展開ボタン」 だけにして
+            //    収納する (= ユーザー要望: ヘッダーが入り切らない対策)。 ──
+            if (_tool == PdfDrawTool.check) ...[
+              markBtn((id: _checkMark, icon: _markIcon)),
+              InkWell(
+                onTap: () => setState(() => _checksOpen = !_checksOpen),
+                borderRadius: BorderRadius.circular(6),
+                child: Tooltip(
+                  message: widget.tr('pdfdraw.moreMarks'),
+                  child: SizedBox(
+                    width: 22,
+                    height: 26,
+                    child: Icon(
+                        _checksOpen
+                            ? Icons.chevron_left_rounded
+                            : Icons.chevron_right_rounded,
+                        size: 18,
+                        color: Colors.white70),
                   ),
                 ),
+              ),
+              if (_checksOpen)
+                for (final m in kCheckMarks)
+                  if (m.id != _checkMark) markBtn(m),
+              // 連番の時だけ、 開始番号と固定の操作を出す。
+              if (_checkMark == 'number') seqControls(),
+            ],
             toolBtn(PdfDrawTool.line, Icons.horizontal_rule_rounded, 'pdfdraw.line'),
             toolBtn(PdfDrawTool.arrow, Icons.north_east_rounded, 'pdfdraw.arrow'),
             toolBtn(PdfDrawTool.rect, Icons.crop_square_rounded, 'pdfdraw.rect'),

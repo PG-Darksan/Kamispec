@@ -9930,6 +9930,72 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Escolher uma cor',
       'ru': 'Выбрать цвет',
     },
+    'pdfdraw.moreMarks': {
+      'ja': '印を選ぶ',
+      'en': 'Pick a mark',
+      'zh': '选择标记',
+      'ko': '표시 고르기',
+      'es': 'Elegir una marca',
+      'fr': 'Choisir un repère',
+      'de': 'Markierung wählen',
+      'pt': 'Escolher uma marca',
+      'ru': 'Выбрать метку',
+    },
+    'pdfdraw.number': {
+      'ja': '連番 (①②③)',
+      'en': 'Numbered (①②③)',
+      'zh': '连号 (①②③)',
+      'ko': '연번 (①②③)',
+      'es': 'Numeración (①②③)',
+      'fr': 'Numéros (①②③)',
+      'de': 'Nummern (①②③)',
+      'pt': 'Numeração (①②③)',
+      'ru': 'Нумерация (①②③)',
+    },
+    'pdfdraw.seqStart': {
+      'ja': '次に置く番号 (開始番号)',
+      'en': 'Next number (start)',
+      'zh': '下一个编号 (起始)',
+      'ko': '다음 번호 (시작)',
+      'es': 'Siguiente número (inicio)',
+      'fr': 'Prochain numéro (début)',
+      'de': 'Nächste Nummer (Start)',
+      'pt': 'Próximo número (início)',
+      'ru': 'Следующий номер (начало)',
+    },
+    'pdfdraw.seqUp': {
+      'ja': '番号を 1 増やす',
+      'en': 'Number +1',
+      'zh': '编号 +1',
+      'ko': '번호 +1',
+      'es': 'Número +1',
+      'fr': 'Numéro +1',
+      'de': 'Nummer +1',
+      'pt': 'Número +1',
+      'ru': 'Номер +1',
+    },
+    'pdfdraw.seqDown': {
+      'ja': '番号を 1 減らす',
+      'en': 'Number -1',
+      'zh': '编号 -1',
+      'ko': '번호 -1',
+      'es': 'Número -1',
+      'fr': 'Numéro -1',
+      'de': 'Nummer -1',
+      'pt': 'Número -1',
+      'ru': 'Номер -1',
+    },
+    'pdfdraw.seqFix': {
+      'ja': '番号を固定する (増やさない)',
+      'en': 'Fix the number (do not increment)',
+      'zh': '固定编号 (不递增)',
+      'ko': '번호 고정 (증가 안 함)',
+      'es': 'Fijar el número (no incrementar)',
+      'fr': 'Figer le numéro (pas d\'incrément)',
+      'de': 'Nummer fixieren (nicht hochzählen)',
+      'pt': 'Fixar o número (não incrementar)',
+      'ru': 'Зафиксировать номер (без увеличения)',
+    },
     'pdfdraw.fixedSize': {
       'ja': '大きさを固定して置く',
       'en': 'Place at a fixed size',
@@ -40818,6 +40884,256 @@ class MindMapProvider extends ChangeNotifier {
     },
     // ── 進めなかった理由 (= ユーザー報告: 何も作られないまま
     //    戻ってきた)。 黙って抜けると原因が分からない ──
+    // ── ネットにつながっていない時の案内 (= ユーザー要望) ──
+    'net.offline': {
+      'ja': 'インターネットにつながっていません。 Wi-Fi や通信の状態を'
+          '確かめてから、 もう一度お試しください',
+      'en': 'No internet connection. Check your Wi-Fi or mobile data, '
+          'then try again',
+      'zh': '未连接到互联网。请检查 Wi-Fi 或移动数据后重试',
+      'ko': '인터넷에 연결되어 있지 않습니다. Wi-Fi 나 통신 상태를 '
+          '확인한 뒤 다시 시도해 주세요',
+      'es': 'Sin conexión a internet. Comprueba tu Wi-Fi o tus datos '
+          'móviles e inténtalo de nuevo',
+      'fr': "Pas de connexion Internet. Vérifiez le Wi-Fi ou les données "
+          "mobiles, puis réessayez",
+      'de': 'Keine Internetverbindung. Prüfe WLAN oder mobile Daten und '
+          'versuche es erneut',
+      'pt': 'Sem ligação à Internet. Verifique o Wi-Fi ou os dados móveis '
+          'e tente novamente',
+      'ru': 'Нет подключения к интернету. Проверьте Wi-Fi или мобильную '
+          'сеть и повторите попытку',
+    },
+    // ── 同じ手順を繰り返して進まなくなった時 (= ユーザー報告) ──
+    // ── ブラウザが閉じられた (= ユーザー要望: 止まってほしい) ──
+    'agent.errBrowserGone': {
+      'ja': 'ブラウザが閉じられたので止めました',
+      'en': 'Stopped: the browser was closed',
+      'zh': '浏览器已关闭，已停止',
+      'ko': '브라우저가 닫혀서 멈췄습니다',
+      'es': 'Detenido: se cerró el navegador',
+      'fr': "Arrêté : le navigateur a été fermé",
+      'de': 'Gestoppt: Der Browser wurde geschlossen',
+      'pt': 'Parado: o navegador foi fechado',
+      'ru': 'Остановлено: браузер был закрыт',
+    },
+    // ── アカウントの初回ログイン (= ユーザー報告: ログインに失敗する) ──
+    'auto.openIncognito': {
+      'ja': 'シークレット',
+      'en': 'Incognito',
+      'zh': '无痕',
+      'ko': '시크릿',
+      'es': 'Incógnito',
+      'fr': 'Navigation privée',
+      'de': 'Inkognito',
+      'pt': 'Anónimo',
+      'ru': 'Инкогнито',
+    },
+    'auto.openLogin': {
+      'ja': 'ログイン',
+      'en': 'Sign in',
+      'zh': '登录',
+      'ko': '로그인',
+      'es': 'Iniciar sesión',
+      'fr': 'Connexion',
+      'de': 'Anmelden',
+      'pt': 'Iniciar sessão',
+      'ru': 'Вход',
+    },
+    'auto.acctLoginWait': {
+      'ja': '開いた窓で「{name}」 にログインしてください。\n'
+          '終わったら「続ける」 を押してください'
+          ' (押すとその窓は閉じ、 ログイン済みで開き直します)。\n'
+          '※ この窓は自動操作の口を開けていません。'
+          ' Google は自動操作中のブラウザではログインさせてくれないためです。',
+      'en': 'Sign in to "{name}" in the window that just opened.\n'
+          'Press Continue when you are done'
+          ' (the window closes and reopens already signed in).\n'
+          'Note: that window has no automation port - Google refuses to sign'
+          ' in inside an automated browser.',
+      'zh': '请在刚打开的窗口中登录「{name}」。\n'
+          '完成后按「继续」（该窗口会关闭并以已登录状态重新打开）。\n'
+          '注意：该窗口未开启自动操作端口，因为 Google 不允许在自动化浏览器中登录。',
+      'ko': '방금 열린 창에서 「{name}」 에 로그인해 주세요.\n'
+          '끝나면 「계속」 을 누르세요 (창이 닫히고 로그인된 상태로 다시 열립니다).\n'
+          '※ 이 창에는 자동 조작 포트가 없습니다. Google 이 자동화된'
+          ' 브라우저에서의 로그인을 거부하기 때문입니다.',
+      'es': 'Inicia sesión en «{name}» en la ventana que se acaba de abrir.\n'
+          'Pulsa Continuar cuando termines (la ventana se cierra y se vuelve'
+          ' a abrir con la sesión iniciada).\n'
+          'Nota: esa ventana no tiene puerto de automatización, porque Google'
+          ' no permite iniciar sesión en un navegador automatizado.',
+      'fr': "Connectez-vous à « {name} » dans la fenêtre qui vient de"
+          " s'ouvrir.\nAppuyez sur Continuer une fois terminé (la fenêtre se"
+          " ferme et se rouvre déjà connectée).\nNote : cette fenêtre n'a pas"
+          " de port d'automatisation, car Google refuse la connexion dans un"
+          " navigateur automatisé.",
+      'de': 'Melde dich im soeben geöffneten Fenster bei „{name}“ an.\n'
+          'Drücke Weiter, wenn du fertig bist (das Fenster schließt sich und'
+          ' öffnet sich angemeldet erneut).\n'
+          'Hinweis: Dieses Fenster hat keinen Automatisierungs-Port, denn'
+          ' Google lässt die Anmeldung in einem automatisierten Browser nicht'
+          ' zu.',
+      'pt': 'Inicie sessão em «{name}» na janela que acabou de abrir.\n'
+          'Carregue em Continuar quando terminar (a janela fecha e reabre já'
+          ' com sessão iniciada).\n'
+          'Nota: essa janela não tem porta de automação, porque a Google não'
+          ' permite iniciar sessão num navegador automatizado.',
+      'ru': 'Войдите в «{name}» в только что открытом окне.\n'
+          'Нажмите «Продолжить», когда закончите (окно закроется и'
+          ' откроется снова уже с выполненным входом).\n'
+          'Примечание: в этом окне нет порта автоматизации — Google не'
+          ' позволяет входить в аккаунт в автоматизированном браузере.',
+    },
+    'auto.acctLoginRetry': {
+      'ja': 'ログインした窓を閉じられませんでした。'
+          ' 手で閉じてから、 もう一度実行してください',
+      'en': 'Could not close the sign-in window. Close it by hand and run'
+          ' again',
+      'zh': '无法关闭登录窗口。请手动关闭后重新运行',
+      'ko': '로그인 창을 닫지 못했습니다. 직접 닫은 뒤 다시 실행해 주세요',
+      'es': 'No se pudo cerrar la ventana de inicio de sesión. Ciérrala a mano'
+          ' y vuelve a ejecutar',
+      'fr': "Impossible de fermer la fenêtre de connexion. Fermez-la à la main"
+          " puis relancez",
+      'de': 'Das Anmeldefenster ließ sich nicht schließen. Schließe es von'
+          ' Hand und starte erneut',
+      'pt': 'Não foi possível fechar a janela de início de sessão. Feche-a à'
+          ' mão e execute de novo',
+      'ru': 'Не удалось закрыть окно входа. Закройте его вручную и запустите'
+          ' снова',
+    },
+    'agent.errStuck': {
+      'ja': '同じ手順を繰り返していたので止めました。 依頼を分けるか、'
+          ' 別のモデルでお試しください',
+      'en': 'Stopped: the agent kept repeating the same steps. '
+          'Split the request or try another model',
+      'zh': '已停止：代理一直在重复相同的步骤。请拆分请求或换一个模型',
+      'ko': '같은 순서를 반복하여 멈췄습니다. 요청을 나누거나 다른 '
+          '모델로 시도해 보세요',
+      'es': 'Detenido: el agente repetía los mismos pasos. Divide la '
+          'petición o prueba con otro modelo',
+      'fr': "Arrêté : l'agent répétait les mêmes étapes. Divisez la "
+          "demande ou essayez un autre modèle",
+      'de': 'Gestoppt: Der Agent hat dieselben Schritte wiederholt. '
+          'Teile die Anfrage auf oder versuche ein anderes Modell',
+      'pt': 'Parado: o agente repetia os mesmos passos. Divida o pedido '
+          'ou tente outro modelo',
+      'ru': 'Остановлено: агент повторял одни и те же шаги. Разделите '
+          'запрос или попробуйте другую модель',
+    },
+    // ── 欄をたたむ / 広げる (= ユーザー要望: 手順の一覧を広く使いたい) ──
+    // ── 実行を断った時の案内 (= これまで鍵の文字がそのまま出ていた) ──
+    'net.recheck': {
+      'ja': '調べ直す',
+      'en': 'Check again',
+      'zh': '重新检查',
+      'ko': '다시 확인',
+      'es': 'Comprobar de nuevo',
+      'fr': 'Vérifier à nouveau',
+      'de': 'Erneut prüfen',
+      'pt': 'Verificar de novo',
+      'ru': 'Проверить снова',
+    },
+    'auto.alreadyRunning': {
+      'ja': 'いま動いています。 終わるまでお待ちください',
+      'en': 'Already running. Please wait until it finishes',
+      'zh': '正在运行中，请等待结束',
+      'ko': '지금 실행 중입니다. 끝날 때까지 기다려 주세요',
+      'es': 'Ya se está ejecutando. Espera a que termine',
+      'fr': "Déjà en cours. Attendez la fin",
+      'de': 'Läuft bereits. Bitte warte, bis es fertig ist',
+      'pt': 'Já está a correr. Aguarde até terminar',
+      'ru': 'Уже выполняется. Дождитесь завершения',
+    },
+    'auto.noSteps': {
+      'ja': '手順がありません。 上のボタンで足してください',
+      'en': 'No steps yet. Add one with the buttons above',
+      'zh': '还没有步骤。请用上面的按钮添加',
+      'ko': '순서가 없습니다. 위 버튼으로 추가하세요',
+      'es': 'No hay pasos. Añade uno con los botones de arriba',
+      'fr': "Aucune étape. Ajoutez-en une avec les boutons ci-dessus",
+      'de': 'Noch keine Schritte. Füge oben welche hinzu',
+      'pt': 'Ainda não há passos. Adicione com os botões acima',
+      'ru': 'Шагов пока нет. Добавьте их кнопками выше',
+    },
+    'auto.openPageFirst': {
+      'ja': '先にページを開いてください'
+          ' (「リンクを開く」 か「外のブラウザを操作」 を手順の頭に置きます)',
+      'en': 'Open a page first (put "Open link" or "Drive an external browser"'
+          ' at the top of the flow)',
+      'zh': '请先打开页面（把“打开链接”或“操作外部浏览器”放在流程最前面）',
+      'ko': '먼저 페이지를 여세요 (「링크 열기」 또는 「외부 브라우저 조작」 을'
+          ' 순서 맨 앞에 두세요)',
+      'es': 'Abre primero una página (pon «Abrir enlace» o «Controlar el'
+          ' navegador externo» al principio del flujo)',
+      'fr': "Ouvrez d'abord une page (placez « Ouvrir le lien » ou"
+          " « Piloter le navigateur externe » en tête du flux)",
+      'de': 'Öffne zuerst eine Seite (setze „Link öffnen“ oder „Externen'
+          ' Browser steuern“ an den Anfang)',
+      'pt': 'Abra primeiro uma página (coloque «Abrir ligação» ou «Controlar o'
+          ' navegador externo» no início do fluxo)',
+      'ru': 'Сначала откройте страницу (поставьте «Открыть ссылку» или'
+          ' «Управлять внешним браузером» в начало)',
+    },
+    // ── 外のブラウザで、 何が起きたのかを出す (= ユーザー報告:
+    //    フローを実行しても chrome が立ち上がらない) ──
+    'auto.cdpReused': {
+      'ja': '開いていた {name} につなぎました (新しい窓は開いていません)',
+      'en': 'Attached to the {name} window that was already open'
+          ' (no new window)',
+      'zh': '已连接到原本打开的 {name}（未新开窗口）',
+      'ko': '이미 열려 있던 {name} 에 연결했습니다 (새 창은 열지 않았습니다)',
+      'es': 'Conectado a la ventana de {name} ya abierta (sin ventana nueva)',
+      'fr': "Connecté à la fenêtre {name} déjà ouverte (pas de nouvelle)",
+      'de': 'Mit dem bereits offenen {name}-Fenster verbunden (kein neues)',
+      'pt': 'Ligado à janela do {name} já aberta (sem janela nova)',
+      'ru': 'Подключено к уже открытому окну {name} (новое не открывалось)',
+    },
+    'auto.cmdSkipped': {
+      'ja': 'コマンド実行は「使わない」 設定なので飛ばしました',
+      'en': 'Commands are set to "off", so this step was skipped',
+      'zh': '命令执行设置为“不使用”，已跳过该步骤',
+      'ko': '명령 실행이 「사용 안 함」 이라 건너뛰었습니다',
+      'es': 'Los comandos están en «no usar», así que se omitió este paso',
+      'fr': "Les commandes sont sur « ne pas utiliser » : étape ignorée",
+      'de': 'Befehle stehen auf „nicht verwenden“ – Schritt übersprungen',
+      'pt': 'Os comandos estão em «não usar», por isso o passo foi ignorado',
+      'ru': 'Команды отключены, шаг пропущен',
+    },
+    'auto.collapse': {
+      'ja': 'たたむ',
+      'en': 'Collapse',
+      'zh': '折叠',
+      'ko': '접기',
+      'es': 'Contraer',
+      'fr': 'Réduire',
+      'de': 'Einklappen',
+      'pt': 'Recolher',
+      'ru': 'Свернуть',
+    },
+    'auto.expand': {
+      'ja': '広げる',
+      'en': 'Expand',
+      'zh': '展开',
+      'ko': '펼치기',
+      'es': 'Expandir',
+      'fr': 'Développer',
+      'de': 'Ausklappen',
+      'pt': 'Expandir',
+      'ru': 'Развернуть',
+    },
+    'auto.cmdSection': {
+      'ja': 'コマンド実行 / パソコンの操作',
+      'en': 'Commands / PC control',
+      'zh': '执行命令 / 操作电脑',
+      'ko': '명령 실행 / PC 조작',
+      'es': 'Comandos / control del PC',
+      'fr': 'Commandes / contrôle du PC',
+      'de': 'Befehle / PC-Steuerung',
+      'pt': 'Comandos / controlo do PC',
+      'ru': 'Команды / управление ПК',
+    },
     'agent.errAi': {
       'ja': 'AI に聞けませんでした',
       'en': 'Could not reach the AI',
@@ -48126,6 +48442,17 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Abrir em qual painel?',
       'ru': 'В какой панели открыть?',
     },
+    'drawer.dissolveAndOpenFull': {
+      'ja': '分割を解除して全画面で開く',
+      'en': 'Dissolve split and open full-screen',
+      'zh': '取消分屏并全屏打开',
+      'ko': '분할을 해제하고 전체 화면으로 열기',
+      'es': 'Deshacer la división y abrir en pantalla completa',
+      'fr': 'Annuler le partage et ouvrir en plein écran',
+      'de': 'Teilung aufheben und im Vollbild öffnen',
+      'pt': 'Desfazer a divisão e abrir em ecrã inteiro',
+      'ru': 'Убрать разделение и открыть на весь экран',
+    },
     'drawer.swapTabs': {
       'ja': '左右を入れ替える',
       'en': 'Swap left/right',
@@ -51592,15 +51919,15 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'AI',
     },
     'auto.ownProfile': {
-      'ja': '普段のプロファイルで開く',
-      'en': 'Use my normal profile',
-      'zh': '使用平时的配置文件',
-      'ko': '평소 프로필로 열기',
-      'es': 'Usar mi perfil habitual',
-      'fr': 'Utiliser mon profil habituel',
-      'de': 'Mein normales Profil verwenden',
-      'pt': 'Usar o meu perfil habitual',
-      'ru': 'Открыть в обычном профиле',
+      'ja': 'このアカウント専用で開く',
+      'en': 'Open in this account\'s own browser',
+      'zh': '用该账号专用的浏览器打开',
+      'ko': '이 계정 전용으로 열기',
+      'es': 'Abrir en el navegador propio de esta cuenta',
+      'fr': "Ouvrir dans le navigateur dédié à ce compte",
+      'de': 'Im eigenen Browser dieses Kontos öffnen',
+      'pt': 'Abrir no navegador próprio desta conta',
+      'ru': 'Открыть в отдельном браузере этого аккаунта',
     },
     'auto.browserName': {
       'ja': 'ブラウザ',
@@ -69925,10 +70252,114 @@ class MindMapProvider extends ChangeNotifier {
     }
   }
 
+  // ─── ネットにつながっているか (= ユーザー要望: Wi-Fi につながって
+  //     いない状態で通信が要る操作をしたら、 その旨を出してほしい) ───
+  //
+  // 名前解決が通るかどうかで見る。 つながっていない時は、 待たされずに
+  // すぐ失敗するので、 押した直後に案内を出せる。
+  bool _netOnline = true;
+  DateTime? _netCheckedAt;
+
+  /// 最後に調べた時、 何を根拠にそう決めたか (画面と記録用)。
+  String _netReason = '';
+  String get lastNetReason => _netReason;
+
+  /// 直前に確かめた結果 (確かめていない時は true)。 画面の表示用。
+  bool get lastKnownOnline => _netOnline;
+
+  /// つながっているかを確かめる。 短い間は前の結果を使い回す
+  /// (通信のたびに名前解決をやり直すと、 その分だけ遅くなるため)。
+  ///
+  /// ★ 大事なのは**誤って「圏外」 と言わない**こと。 ここで嘘の圏外を
+  ///   返すと、 通信が要る操作が入口で断られてしまう (= 実測で、 機械が
+  ///   混んでいる時に名前解決が 2 秒に間に合わず、 つながっているのに
+  ///   「つながっていません」 と出て自動操作が動かなかった)。 そこで
+  ///   ・網の口が 1 つも無い時 = 確実な圏外 (Wi-Fi を切った状態)
+  ///   ・口はある時 = 名前解決を**同時に**投げて、 待ちも長めに取る
+  ///   の二段構えにした。
+  Future<bool> hasInternet(
+      {Duration timeout = const Duration(seconds: 5)}) async {
+    final now = DateTime.now();
+    final at = _netCheckedAt;
+    if (at != null) {
+      // つながっていた時は 15 秒、 切れていた時は 2 秒だけ使い回す
+      // (つなぎ直した直後に、 いつまでも「圏外」 と言わないように)。
+      final keep = _netOnline
+          ? const Duration(seconds: 15)
+          : const Duration(seconds: 2);
+      if (now.difference(at) < keep) return _netOnline;
+    }
+    final ok = await _probeNetwork(timeout);
+    final changed = _netOnline != ok;
+    _netOnline = ok;
+    _netCheckedAt = DateTime.now();
+    if (changed) notifyListeners();
+    return ok;
+  }
+
+  Future<bool> _probeNetwork(Duration timeout) async {
+    // ── 1. 網の口があるか (Wi-Fi を切っていれば、 ここで確実に分かる) ──
+    //    名前解決を待つ必要が無いので、 押した直後に案内を出せる。
+    try {
+      final ifs = await NetworkInterface.list(includeLoopback: false)
+          .timeout(const Duration(seconds: 2));
+      final usable = ifs.any((i) => i.addresses.any((a) =>
+          !a.isLoopback && !a.isLinkLocal && a.address != '0.0.0.0'));
+      if (!usable) {
+        _netReason = '網の口がありません (Wi-Fi / 有線が切れています)';
+        return false;
+      }
+    } catch (_) {
+      // 口の一覧が取れない端末もある。 その時は次の確かめに進む。
+    }
+    // ── 2. 名前解決を同時に投げる (どれか 1 つ通れば、 つながっている) ──
+    //    うちが実際に使う相手から並べる。 会社や学校の網では、 よその
+    //    名前だけ引けないことがあるため。
+    final hosts = <String>[
+      if (relayApiBase.isNotEmpty) (Uri.tryParse(relayApiBase)?.host ?? ''),
+      'firestore.googleapis.com',
+      'cloudflare.com',
+    ]..removeWhere((h) => h.isEmpty);
+    final results = await Future.wait(hosts.map((h) async {
+      try {
+        final r = await InternetAddress.lookup(h).timeout(timeout);
+        return r.isNotEmpty && r.first.rawAddress.isNotEmpty;
+      } catch (_) {
+        return false;
+      }
+    }));
+    if (results.any((v) => v)) {
+      _netReason = '';
+      return true;
+    }
+    // ── 3. 名前が 1 つも引けなくても、 実際に叩けることがある ──
+    //    (代理サーバー経由など)。 返事の中身は問わない。
+    try {
+      await http
+          .head(Uri.parse('https://www.gstatic.com/generate_204'))
+          .timeout(timeout + const Duration(seconds: 1));
+      _netReason = '';
+      return true;
+    } catch (_) {
+      _netReason = '名前解決も通信もできませんでした';
+      return false;
+    }
+  }
+
+  /// 通信が要る操作の入口で呼ぶ。 つながっていなければ、 何が起きたのかを
+  /// はっきり書いた例外を投げる (= ユーザー要望: エラーメッセージを出す)。
+  Future<void> ensureOnline() async {
+    if (await hasInternet()) return;
+    throw Exception(t('net.offline'));
+  }
+
   Future<String> askAi(String prompt,
       {int? maxTokensOverride,
       Duration? timeoutOverride,
       List<AiInputImage>? images}) async {
+    // ★ まず通信を確かめる (= ユーザー要望: Wi-Fi が切れている時は、
+    //   「代行サーバーが応答しない」 ではなく、 その旨を出す)。
+    await ensureOnline();
     // ★ 常に代行サーバー経由 (= ユーザー要望: こちらが用意したキーのみ)。
     //   残高が無い / 中継先が応答しない時は、 その理由を投げて画面に出す。
     // 起動直後はプラン / 開発者モードの復元が終わっていないことがあるので、
@@ -69971,6 +70402,8 @@ class MindMapProvider extends ChangeNotifier {
   Future<Uint8List> generateAiImage(String prompt) async {
     final p = prompt.trim();
     if (p.isEmpty) throw Exception(t('ai.needPrompt'));
+    // つながっていない時は、 その旨を出す (= ユーザー要望)。
+    await ensureOnline();
     // ★ 画像もアプリ側で用意したキー (代行サーバー) で動かす
     //   (= ユーザー要望: 利用者が自分でキーを用意しなくてよいように)。
     //   残高があれば代行、 無ければ自分のキー、 どちらも無ければ案内。
@@ -70145,6 +70578,9 @@ Art direction:
   ///
   /// [detailed] が true の時は更に大きいトークンを許可する (詳しい解説向け)。
   Future<String> askAiForJson(String prompt, {bool detailed = false}) async {
+    // ★ まず通信を確かめる (= ユーザー要望: つながっていない時は、
+    //   その旨を出す)。
+    await ensureOnline();
     // 表を含む要約は JSON が長くなる。 上限が足りないと途中で切れて
     //   「構造を取得できませんでした」 になるので、 表対応にあわせて広げた。
     final maxTokens = detailed ? 12288 : 6144;
@@ -74293,6 +74729,8 @@ $cleanQ
     if (!canUseGoogleSignIn) {
       throw Exception(t('account.notConfigured'));
     }
+    // つながっていない時は、 その旨を出す (= ユーザー要望)。
+    await ensureOnline();
     final signIn = await GoogleAuth.signIn(
       onWaiting: onWaiting,
       resultText: _googleAuthResultText(forCheckout: forCheckout),
@@ -74872,6 +75310,8 @@ $cleanQ
     if (!isMaxUnlocked) {
       throw Exception(t('paywall.maxRequiredCloudSync'));
     }
+    // つながっていない時は、 その旨を出す (= ユーザー要望)。
+    await ensureOnline();
     if (!_firebaseEnabled) {
       await _initFirebase(); // 1回リトライ
     }
@@ -74895,6 +75335,8 @@ $cleanQ
     if (!isMaxUnlocked) {
       throw Exception(t('paywall.maxRequiredCloudSync'));
     }
+    // つながっていない時は、 その旨を出す (= ユーザー要望)。
+    await ensureOnline();
     if (!_firebaseEnabled) {
       await _initFirebase(); // 1回リトライ
     }
@@ -76902,6 +77344,8 @@ $cleanQ
     if (!isMaxUnlocked) {
       throw Exception(t('paywall.maxRequiredCloudSync'));
     }
+    // つながっていない時は、 その旨を出す (= ユーザー要望)。
+    await ensureOnline();
     // ── 連打/二重実行ガード (= ユーザー要望: Ctrl+S を連打しても、 最初の
     //    アップロードが完了するまで以降を無視する) ──
     if (_isUploading || _isDownloading) {
@@ -77272,6 +77716,8 @@ $cleanQ
     if (!isMaxUnlocked) {
       throw Exception(t('paywall.maxRequiredCloudSync'));
     }
+    // つながっていない時は、 その旨を出す (= ユーザー要望)。
+    await ensureOnline();
     // ── 連打/二重実行ガード (= ユーザー要望: Ctrl+D を連打しても、 最初の
     //    ダウンロードが完了するまで以降を無視する) ──
     if (_isUploading || _isDownloading) {
@@ -77612,6 +78058,8 @@ $cleanQ
     required String title,
     required String html,
   }) async {
+    // つながっていない時は、 その旨を出す (= ユーザー要望)。
+    await ensureOnline();
     // ── 公開はストレージ費用が掛かるので Pro 以上に限定する ──
     // 1 ページの HTML はおおむね数十 KB〜数百 KB。 Storage の保管が
     // 1GB あたり月 $0.026、 配信が 1GB あたり $0.12 なので、 数百ページ
@@ -78253,6 +78701,8 @@ $cleanQ
     String permission = 'edit',
     bool pushInitial = true,
   }) async {
+    // つながっていない時は、 その旨を出す (= ユーザー要望)。
+    await ensureOnline();
     // ── リアルタイム共同編集は Max 限定 ──
     // 1.2 秒ごとの版チェック + 3 秒ごとの参加者取得で、 参加者 1 人あたり
     // 1 時間に約 4,200 回の読み取りになる。 Firestore の読み取りは

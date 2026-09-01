@@ -207,6 +207,12 @@ export default {
       });
     }
 
+    // ── Web の「お問い合わせ」 フォームを受ける (= ユーザー要望:
+    //    Cloudflare Worker で受けてアプリの受信箱に届くように) ──
+    if (url.pathname === '/contact' && request.method === 'POST') {
+      return handleContact(request, env);
+    }
+
     if (url.pathname === '/health') {
       return new Response(JSON.stringify({ ok: true }), { headers: JSON_HEADERS });
     }
@@ -2110,9 +2116,18 @@ async function callProvider(env, model, prompt, maxTokens, images, reasoning) {
                 ],
               },
             ],
-            ...(withThinking && budget !== null
-              ? { generationConfig: { thinkingConfig: { thinkingBudget: budget } } }
-              : {}),
+            // ★ 出力の総量に必ず上限を付ける (= 以前は無制限で、 予約
+            //   より多く返され得た = 運営の持ち出し)。 現行 Gemini は
+            //   maxOutputTokens が本文 + 思考の合計の上限なので、 本文ぶん
+            //   (maxTokens) に思考の余裕を足して渡す。 予約も同じ値なので、
+            //   実出力 (本文 + 思考) が予約を超えない。 余裕を持たせるので、
+            //   思考に押し出されて本文が空/切り詰めになることも防げる。
+            generationConfig: {
+              maxOutputTokens: maxTokens + GEMINI_THINK_HEADROOM,
+              ...(withThinking && budget !== null
+                ? { thinkingConfig: { thinkingBudget: budget } }
+                : {}),
+            },
           }),
         }
       );
@@ -2131,7 +2146,11 @@ async function callProvider(env, model, prompt, maxTokens, images, reasoning) {
         d?.candidates?.[0]?.content?.parts?.map((p) => p.text || '').join('') ??
         '',
       inTok: Number(um.promptTokenCount || 0),
-      outTok: Number(um.candidatesTokenCount || 0),
+      // ★ 思考トークン (thoughtsTokenCount) も出力として課金される。
+      //   以前は本文分 (candidates) だけ数えていたので過少請求だった。
+      outTok:
+        Number(um.candidatesTokenCount || 0) +
+        Number(um.thoughtsTokenCount || 0),
     };
   }
 
@@ -2244,28 +2263,34 @@ async function callProvider(env, model, prompt, maxTokens, images, reasoning) {
       const d2 = await r2.json();
       if (r2.ok) {
         const c2 = d2?.choices?.[0];
+        // ★ 課金は 2 回分を必ず合算する (= 返事が空でも 2 回目を実際に
+        //   呼んでトークンを消費している。 以前は本文が取れた時しか
+        //   足しておらず、 空のまま失敗すると 2 回目が無料になっていた)。
+        const u2 = d2?.usage ?? {};
+        u = {
+          prompt_tokens:
+            Number(u.prompt_tokens || 0) + Number(u2.prompt_tokens || 0),
+          completion_tokens:
+            Number(u.completion_tokens || 0) +
+            Number(u2.completion_tokens || 0),
+        };
         const t2 = pick(c2);
         if (t2.trim()) {
           text = t2;
           choice = c2;
-          // 課金は 2 回分を合算する (実際に 2 回呼んでいるので)。
-          const u2 = d2?.usage ?? {};
-          u = {
-            prompt_tokens:
-              Number(u.prompt_tokens || 0) + Number(u2.prompt_tokens || 0),
-            completion_tokens:
-              Number(u.completion_tokens || 0) +
-              Number(u2.completion_tokens || 0),
-          };
         }
       }
     }
 
     // それでも空なら、 黙って空の吹き出しを出さずに理由を返す。
+    //   ★ 実際に消費したトークンを返す (= 呼び出し側が失敗でも実費を
+    //   引けるように。 これが無いと空返答を繰り返して無料で焼けた)。
     if (!text.trim()) {
       return {
         ok: false,
         status: 502,
+        inTok: Number(u.prompt_tokens || 0),
+        outTok: Number(u.completion_tokens || 0),
         detail: {
           error: {
             message:
@@ -2341,6 +2366,13 @@ async function callProvider(env, model, prompt, maxTokens, images, reasoning) {
 // 上乗せ率 (= 2 割増し)。 アプリ側 kUsageMarkupRate と揃えること。
 const MARKUP = 0.20;
 
+// Gemini の思考 (thinking) 用の余裕。 現行 Gemini は maxOutputTokens が
+//   「本文 + 思考」 の総量の上限になるので、 本文ぶん (maxTokens) にこの
+//   余裕を足した値を上限として渡し、 予約もその値に一致させる。 こうすれば
+//   実出力が予約を超えず、 かつ本文が思考で押し出されて空/切り詰めになる
+//   のも防げる (どのモデルの思考上限もこの範囲に収まる)。
+const GEMINI_THINK_HEADROOM = 24576;
+
 // 使い過ぎの保険。 1 か月あたりの請求上限 (USD)。 超えたら断る。
 const MONTHLY_HARD_CAP_USD = 50;
 
@@ -2387,6 +2419,27 @@ async function readUsage(env, uid, ym) {
   }
 }
 
+/// その 1 回で**課金され得る最大の出力トークン数**。
+///
+/// = 予約 (worstCase) をこれに合わせておけば、 実額が予約を超えない
+///   (= 超えた分を運営が被る穴を塞ぐ)。 プロバイダごとに上流へ許す
+///   上限が違うので、 それに合わせる。
+function maxBillableOutTokens(provider, maxTokens, reasoning) {
+  if (provider === 'gemini') {
+    // 上流に渡す maxOutputTokens (= 本文 + 思考の総量上限) と一致させる。
+    //   実出力はこの総量を超えないので、 これを確保しておけば足りる
+    //   (思考の深さ low/medium/high/auto に関わらず安全)。
+    return maxTokens + GEMINI_THINK_HEADROOM;
+  }
+  if (provider === 'openai') {
+    // 上流には roomy を送り、 空返答時はもう 1 回呼ぶので最大 2 倍。
+    const roomy = Math.min(32000, Math.max(maxTokens, maxTokens * 4));
+    return roomy * 2;
+  }
+  // anthropic は max_tokens が固い上限。
+  return maxTokens;
+}
+
 async function handleAiGenerate(request, env) {
   let body;
   try {
@@ -2394,10 +2447,11 @@ async function handleAiGenerate(request, env) {
   } catch {
     return json({ error: 'invalid json' }, 400);
   }
-  // ★ 本文の uid は信用しない。 トークンから取り出す。
-  //   Dev の合鍵持ちだけは、 トークンが無くても擬似 uid で通す。
-  const dk = devKeyOk(request, env);
-  const uid = (await authUid(request, env)) || (dk ? 'dev-key' : null);
+  // ★ 本文の uid は信用しない。 Google が署名したトークンから取り出す。
+  //   ★ 合鍵 (x-dev-key) では通さない (= 合鍵はバイナリに焼かれており、
+  //   strings で抜けば誰でも無課金で叩けた穴だった)。 無料枠は、 サーバー
+  //   だけが知る uid (管理者 uid / 引き換え済み Dev 権利) でのみ与える。
+  const uid = await authUid(request, env);
   if (!uid) return unauthorized();
   const prompt = String(body.prompt || '');
   const model = body.model && priceFor(body.model) ? body.model : DEFAULT_MODEL;
@@ -2426,8 +2480,8 @@ async function handleAiGenerate(request, env) {
 
   // ── Dev 枠は残高を引かない (= 決済を通さずに AI を使える枠) ──
   //   使用量は普通に記録するので、 誰がどれだけ使ったかは後から分かる。
-  //   合鍵 (dk) は KV を見るまでもなく Dev 扱い。
-  const devEnt = dk || (await isFreeAiUid(env, uid));
+  //   ★ 無料枠はサーバー権威 (管理者 uid / 引き換え済み Dev 権利) のみ。
+  const devEnt = await isFreeAiUid(env, uid);
 
   // ── 使い過ぎの保険 (月あたり) ──
   //   ★ 必ず「仮押さえ」 より前に確かめる。 後ろに置くと、 上限で断る時に
@@ -2462,9 +2516,18 @@ async function handleAiGenerate(request, env) {
   //   画像は文字数に出ないので、 1 枚あたりの目安トークンで足しておく
   //   (Gemini の 1 枚 ≒ 258〜1500 トークン。 多めに見積もって取りこぼさない)。
   const imageTokens = images.length * IMAGE_INPUT_TOKENS_EST;
+  // ★ 入力は多めに見積る (予約は後で実額精算されるので、 多めでも最終
+  //   請求は実費のまま。 過少だと差額を運営が被る)。 1 文字 1 トークンに
+  //   1.3 倍 (CJK やまれに 1 文字超のため) と、 封筒 / 役割トークン・
+  //   空返答時の再送ぶんを見込んだ固定の上乗せを足す。
+  const inEstTokens =
+    Math.ceil((prompt.length + imageTokens) * 1.3) + 800;
+  // ★ 出力は「その回に課金され得る最大」 で確保する (プロバイダごとの
+  //   上流上限に合わせる)。 これで実額が予約を超えない。
+  const outCeilTokens = maxBillableOutTokens(spec.provider, maxTokens, reasoning);
   const worstCase = Math.max(
-    (((prompt.length / 3.5 + imageTokens) / 1e6) * spec.input +
-      (maxTokens / 1e6) * spec.output) *
+    ((inEstTokens / 1e6) * spec.input +
+      (outCeilTokens / 1e6) * spec.output) *
       (1 + MARKUP),
     0.001
   );
@@ -2504,8 +2567,38 @@ async function handleAiGenerate(request, env) {
 
   const res = await callProvider(env, model, prompt, maxTokens, images, reasoning);
   if (!res.ok) {
-    // 失敗したら確保した分をそのまま返す。
-    if (reserved > 0) {
+    // ★ 失敗でも、 上流を呼んで**実際に消費した分**は引く
+    //   (= 空返答の再試行などで焼けたトークンを無料にしない)。
+    //   消費が無い失敗 (鍵未設定・弾かれた等) は確保分をそのまま返す。
+    const failIn = Number(res.inTok || 0);
+    const failOut = Number(res.outTok || 0);
+    if (failIn > 0 || failOut > 0) {
+      const failCost =
+        (failIn / 1e6) * spec.input + (failOut / 1e6) * spec.output;
+      const failBilled = round6(failCost * (1 + MARKUP));
+      if (devEnt) {
+        await addDevSpent(env, uid, failBilled);
+      } else if (reserved > 0) {
+        await creditOp(env, uid, '/settle', {
+          hold: reserved,
+          actual: failBilled,
+          note: `${model}:${failIn}/${failOut}(fail)`,
+        });
+      } else {
+        await spendCredit(env, uid, failBilled, `${model}:fail`);
+      }
+      // 月上限にも数える (= これが無いと失敗ループで上限をすり抜けた)。
+      await env.ENTITLEMENTS.put(
+        usageKey(uid, ym),
+        JSON.stringify({
+          inputTokens: used.inputTokens + failIn,
+          outputTokens: used.outputTokens + failOut,
+          costUsd: round6(used.costUsd + failCost),
+          billedUsd: round6(used.billedUsd + failBilled),
+          updatedAt: new Date().toISOString(),
+        })
+      );
+    } else if (reserved > 0) {
       await creditOp(env, uid, '/settle', { hold: reserved, actual: 0 });
     }
     return json({ error: 'upstream error', detail: res.detail }, res.status || 502);
@@ -2591,8 +2684,7 @@ async function handleAiImage(request, env) {
   } catch {
     return json({ error: 'invalid json' }, 400);
   }
-  const dk = devKeyOk(request, env);
-  const uid = (await authUid(request, env)) || (dk ? 'dev-key' : null);
+  const uid = await authUid(request, env);
   if (!uid) return unauthorized();
   const prompt = String(body.prompt || '');
   if (!prompt) return json({ error: 'prompt is required' }, 400);
@@ -2602,8 +2694,8 @@ async function handleAiImage(request, env) {
   const cost = IMAGE_MODELS[wanted];
   const billed = round6(cost * (1 + MARKUP));
 
-  // Dev 枠は残高を引かない (テキストと同じ扱い)。 合鍵も同様。
-  const devEnt = dk || (await isFreeAiUid(env, uid));
+  // Dev 枠は残高を引かない (テキストと同じ扱い)。 無料枠はサーバー権威のみ。
+  const devEnt = await isFreeAiUid(env, uid);
 
   // ── 使い過ぎの保険 (月あたり) ──
   //   仮押さえより前に確かめる (後ろだと確保した分が戻らない)。
@@ -2743,8 +2835,7 @@ async function handleAiImage(request, env) {
 }
 
 async function handleAiUsage(url, env, request) {
-  const dk = devKeyOk(request, env);
-  const uid = (await authUid(request, env)) || (dk ? 'dev-key' : null);
+  const uid = await authUid(request, env);
   if (!uid) return unauthorized();
   const ym = url.searchParams.get('ym') || currentYm();
   const used = await readUsage(env, uid, ym);
@@ -2755,8 +2846,8 @@ async function handleAiUsage(url, env, request) {
   //   同じ物を返す。 以前は権利だけを見ていたため、 管理者本人の端末には
   //   dev:false が返り、 アプリ側が残高 0 と受け取ってチャージ画面へ
   //   飛ばしていた (= ユーザー要望: 端末やユーザーに関わらず Dev なら
-  //   決済画面を通さずに叩けるように)。 合鍵 (x-dev-key) も同じ扱い。
-  const devEnt = dk || (await isFreeAiUid(env, uid));
+  //   決済画面を通さずに叩けるように)。 無料枠はサーバー権威のみ。
+  const devEnt = await isFreeAiUid(env, uid);
   return json({
     ym,
     markup: MARKUP,
@@ -2778,6 +2869,174 @@ async function sha256Hex(text) {
 
 function json(obj, status = 200) {
   return new Response(JSON.stringify(obj), { status, headers: JSON_HEADERS });
+}
+
+// ─── Web お問い合わせフォームの受け口 ───────────────────────────────
+//
+// hisator-notebook.com の contact.html から送られてくる。 匿名の Firebase
+// ユーザー (1 つを使い回す) で認証し、 Firestore の inquiries/ に書き込む。
+// これでアプリ内の「お問い合わせ受信箱」 (管理者だけが一覧) に、 アプリ内
+// からの問い合わせと同じ場所に届く。
+//
+// ★ 迷惑対策: ハニーポット (_gotcha) が埋まっていたら黙って成功扱いで捨てる。
+//   IP あたりの数も 1 時間 8 件までに絞る。
+async function handleContact(request, env) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'invalid json' }, 400);
+  }
+  // ボットよけ (人には見えない欄。 埋まっていたら捨てるが、 見た目は成功)。
+  if (String(body._gotcha || '').trim() !== '') {
+    return json({ ok: true });
+  }
+  const name = String(body.name || '').trim().slice(0, 100);
+  const email = String(body.email || '').trim().slice(0, 200);
+  const category = String(body.category || '').trim();
+  const message = String(body.message || '').trim().slice(0, 5000);
+  if (!name || !email || !message) {
+    return json({ error: 'name, email and message are required' }, 400);
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return json({ error: 'invalid email' }, 400);
+  }
+
+  // ── 簡易レート制限 (IP あたり 1 時間 8 件) ──
+  try {
+    const ip = request.headers.get('cf-connecting-ip') || 'unknown';
+    const hour = Math.floor(Date.now() / 3600000);
+    const key = `contact_rl:${ip}:${hour}`;
+    const n = Number((await env.ENTITLEMENTS.get(key)) || '0');
+    if (n >= 8) {
+      return json({ error: 'too many requests, please try later' }, 429);
+    }
+    await env.ENTITLEMENTS.put(key, String(n + 1), { expirationTtl: 3700 });
+  } catch {
+    // KV が使えなくても送信自体は通す。
+  }
+
+  // ── 書き込み用の匿名トークンを用意 (1 つを使い回す) ──
+  const auth = await webInquiryAuth(env);
+  if (!auth) {
+    return json({ error: 'auth unavailable' }, 503);
+  }
+
+  const catLabel =
+    category === 'bug' ? 'バグ報告'
+      : category === 'request' ? '機能の要望'
+        : 'その他';
+  const composed =
+    `【${catLabel}】\n${message}\n\n` +
+    `── Web お問い合わせフォームより ──\n` +
+    `お名前: ${name}\nメール: ${email}`;
+  const now = new Date().toISOString();
+  const msgId = crypto.randomUUID();
+  const pid = env.FIREBASE_PROJECT_ID;
+  const url =
+    `https://firestore.googleapis.com/v1/projects/${pid}` +
+    `/databases/(default)/documents/inquiries?documentId=${msgId}`;
+  const fields = {
+    uid: { stringValue: auth.uid },
+    message: { stringValue: composed },
+    timestamp: { stringValue: now },
+    reply: { stringValue: '' },
+    replyTimestamp: { stringValue: '' },
+    status: { stringValue: 'open' },
+    // 受信箱で「Web からの問い合わせ」 と分かるように。
+    senderPlan: { stringValue: 'web' },
+    senderName: { stringValue: name },
+    // 返信・転送先として送り主のメールを刻んでおく。
+    forwardEmail: { stringValue: email },
+    source: { stringValue: 'web-contact' },
+  };
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${auth.idToken}`,
+      },
+      body: JSON.stringify({ fields }),
+    });
+    if (res.status === 200 || res.status === 201) {
+      return json({ ok: true });
+    }
+    const detail = await res.text().catch(() => '');
+    console.log('contact write failed', res.status, detail.slice(0, 300));
+    return json({ error: 'could not save inquiry' }, 502);
+  } catch (e) {
+    console.log('contact write error', String(e));
+    return json({ error: 'could not save inquiry' }, 502);
+  }
+}
+
+// Web お問い合わせ用の匿名 Firebase ユーザー (1 つを使い回す)。
+// KV に控えた refreshToken から新しい idToken を取り、 無ければ新規に作る。
+// 返り値: { idToken, uid } または null。
+async function webInquiryAuth(env) {
+  const apiKey = env.FIREBASE_API_KEY || env.FIREBASE_API_KEY_REST || '';
+  if (!apiKey) return null;
+  // 1) 控えた refreshToken で更新を試す。
+  try {
+    const raw = await env.ENTITLEMENTS.get('contact_anon');
+    if (raw) {
+      const saved = JSON.parse(raw);
+      if (saved && saved.refreshToken) {
+        const r = await fetch(
+          `https://securetoken.googleapis.com/v1/token?key=${apiKey}`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/x-www-form-urlencoded' },
+            body:
+              'grant_type=refresh_token&refresh_token=' +
+              encodeURIComponent(saved.refreshToken),
+          }
+        );
+        if (r.ok) {
+          const d = await r.json();
+          if (d.id_token && d.user_id) {
+            // refreshToken が新しくなることがあるので控え直す。
+            if (d.refresh_token && d.refresh_token !== saved.refreshToken) {
+              await env.ENTITLEMENTS.put(
+                'contact_anon',
+                JSON.stringify({
+                  uid: d.user_id,
+                  refreshToken: d.refresh_token,
+                })
+              );
+            }
+            return { idToken: d.id_token, uid: d.user_id };
+          }
+        }
+      }
+    }
+  } catch {
+    // 続けて新規作成へ。
+  }
+  // 2) 新しい匿名ユーザーを作る。
+  try {
+    const r = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ returnSecureToken: true }),
+      }
+    );
+    if (!r.ok) return null;
+    const d = await r.json();
+    if (!d.idToken || !d.localId) return null;
+    try {
+      await env.ENTITLEMENTS.put(
+        'contact_anon',
+        JSON.stringify({ uid: d.localId, refreshToken: d.refreshToken })
+      );
+    } catch {}
+    return { idToken: d.idToken, uid: d.localId };
+  } catch {
+    return null;
+  }
 }
 
 async function stripeApiGet(env, path) {

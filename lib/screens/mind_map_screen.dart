@@ -1723,6 +1723,18 @@ class _MindMapScreenState extends State<MindMapScreen>
   String? _actionNodeId;
   OverlayEntry? _overlayEntry;
 
+  /// マップ側で「今まさに編集/選択している」 か (= ユーザー要望: 分割で
+  /// 右の要素を編集中は、 アクティブでない左 PDF を矢印で動かさない)。
+  /// ノード選択・アクション対象・範囲選択のいずれかがあれば真。
+  bool get _mapHasActiveTarget {
+    if (_actionNodeId != null) return true;
+    if (_rangeSelectedIds.isNotEmpty) return true;
+    try {
+      if (context.read<MindMapProvider>().selectedNodeId != null) return true;
+    } catch (_) {}
+    return false;
+  }
+
   /// 現在出ているオーバーレイが「複数選択の一括操作バー」 かどうか。
   /// = ユーザー要望: 要素を削除しても範囲選択のボタンが他の箇所を押すまで
   ///   残り続けるので、 選択が空になったら同時に消すための判定に使う。
@@ -16020,7 +16032,23 @@ class _MindMapScreenState extends State<MindMapScreen>
     //   案内も、 閉じて戻れではなく「決済画面へ移るので待っていて」 に
     //   変える (= ユーザー報告: 戻れと書いてあるのに待っていると勝手に
     //   料金プランの画面へ変わって戸惑う)。
-    final who = await provider.signInWithGoogle(forCheckout: true);
+    String? who;
+    try {
+      who = await provider.signInWithGoogle(forCheckout: true);
+    } catch (e) {
+      // ★ つながっていない時など、 理由をそのまま出す (= ユーザー要望:
+      //   通信が要る操作をした時にエラーメッセージが出るように)。
+      if (!mounted) return false;
+      _appSnack(
+        context,
+        SnackBar(
+          content: Text('$e'.replaceFirst('Exception: ', '')),
+          backgroundColor: const Color(0xFFE57373),
+          duration: const Duration(seconds: 6),
+        ),
+      );
+      return false;
+    }
     if (!mounted) return false;
     if (who == null || !provider.googleSignedIn) {
       _appSnack(
@@ -20809,15 +20837,22 @@ class _MindMapScreenState extends State<MindMapScreen>
       );
     }
 
-    showDialog<void>(
-      context: context,
-      builder: (dctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E32),
-        contentPadding: const EdgeInsets.symmetric(vertical: 8),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        content: SizedBox(
-          width: 320,
-          child: Column(
+    // ★ 分割中は画面全体ではなく、 その分割ペインの中央に出す
+    //   (= ユーザー要望: ギャラリーを分割して + を押した時)。
+    _showNearDialogMain<void>(
+      width: 320,
+      height: 380,
+      builder: (dctx) => Container(
+        decoration: BoxDecoration(
+          color: const Color(0xFF1E1E32),
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: const [
+            BoxShadow(color: Colors.black54, blurRadius: 24, spreadRadius: 2),
+          ],
+        ),
+        clipBehavior: Clip.antiAlias,
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               item(
@@ -20898,7 +20933,6 @@ class _MindMapScreenState extends State<MindMapScreen>
               ),
             ],
           ),
-        ),
       ),
     );
   }
@@ -55229,6 +55263,9 @@ class _MindMapScreenState extends State<MindMapScreen>
               // アクティブパネル判定は `_splitLeftPanelHover` のみ参照する
               // ため、 「右の動きに合わせて左も」 のような連動は発生しない。
               if (_splitLeftPanelHover &&
+                  // ★ 右(マップ)側で要素を編集/選択している間は、 左 PDF を
+                  //   矢印で動かさない (= ユーザー要望: 非アクティブ側は静止)。
+                  !_mapHasActiveTarget &&
                   _splitLeftLocalPdfPath != null &&
                   !_calendarMode) {
                 try {
@@ -55270,7 +55307,11 @@ class _MindMapScreenState extends State<MindMapScreen>
               // ・PageUp/Down: ページ送り
               // ・左右キー: PDF の場合はページ送り (= 横スクロール無し前提)
               // マップ側 (=! _splitPanelHover) の時は従来通りマップ pan。
-              if (_splitPanelHover && _splitMode == 'pdf' && !_calendarMode) {
+              if (_splitPanelHover &&
+                  // ★ マップ側で編集/選択中は右 PDF も矢印で動かさない。
+                  !_mapHasActiveTarget &&
+                  _splitMode == 'pdf' &&
+                  !_calendarMode) {
                 try {
                   const scrollStep = 200.0;
                   final cur = _splitPdfController.scrollOffset;
@@ -65057,6 +65098,15 @@ class _MindMapScreenState extends State<MindMapScreen>
                 await _pickSplitSlotForPage(provider, anchorKey.currentContext ?? context);
             if (k == null || !mounted) return;
             _scaffoldKey.currentState?.closeDrawer();
+            // ★ 分割を解除して全画面で開く (= ユーザー要望)。
+            if (k == -1) {
+              final idx = provider.pages.indexWhere((p) => p.id == page.id);
+              _closeMapSplit();
+              if (idx >= 0) provider.switchPage(idx);
+              WidgetsBinding.instance
+                  .addPostFrameCallback((_) => _centerOnRoot());
+              return;
+            }
             _openPageInSplitSlot(provider, page, k);
             if (k == _mapSplitEditorSlot) {
               WidgetsBinding.instance
@@ -67816,6 +67866,19 @@ class _MindMapScreenState extends State<MindMapScreen>
           height: 30,
           child: Text(provider.t('drawer.openInPane'),
               style: const TextStyle(color: Colors.white38, fontSize: 11)),
+        ),
+        // ★ 分割を解除して全画面で開く (= ユーザー要望)。 -1 を目印にする
+        //   (スロットは 0..3 なので衝突しない)。
+        PopupMenuItem<int>(
+          value: -1,
+          height: 38,
+          child: Row(children: [
+            const Icon(Icons.close_fullscreen_rounded,
+                size: 15, color: Color(0xFFFFB74D)),
+            const SizedBox(width: 8),
+            Text(provider.t('drawer.dissolveAndOpenFull'),
+                style: const TextStyle(color: Colors.white, fontSize: 13)),
+          ]),
         ),
         for (final k in slots)
           PopupMenuItem<int>(
@@ -70813,7 +70876,8 @@ class _MindMapScreenState extends State<MindMapScreen>
             value: '__addPage__',
             child: Text('＋ ${provider.t('menu.addPage')}',
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Color(0xFF8C7CFF), fontSize: 13)),
+                // ★ 紫は地味なので明るい水色に (= ユーザー要望)。
+                style: const TextStyle(color: Color(0xFF4FC3F7), fontSize: 13)),
           ),
           PopupMenuItem(
             value: '__deletePage__',
@@ -187993,10 +188057,8 @@ class _PdfMemoPanelState extends State<_PdfMemoPanel> {
       BuildContext ctx, MindMapProvider provider, List<PdfMemo> memos) {
     return Row(
       children: [
-        // 「Memo」 の文字は出さない (= ユーザー報告: 幅が足りず 2 行に
-        //   折り返して見苦しい)。 アイコンだけにして横のボタンに場所を譲る。
-        Icon(Icons.sticky_note_2, color: const Color(0xFFFFC107), size: 18,
-            semanticLabel: context.read<MindMapProvider>().t('common.memoLabel')),
+        // ★ 左端の飾りのメモアイコンは出さない (= ユーザー要望: 押しても
+        //   意味が無いので消す)。 右のボタン群に場所を譲る。
         const Spacer(),
         // 選択モード突入ボタン (メモが 1 つもない時は非表示)
         if (memos.isNotEmpty)
@@ -188030,19 +188092,12 @@ class _PdfMemoPanelState extends State<_PdfMemoPanel> {
         IconButton(
           tooltip: provider.t('pdfMemo.tooltipFreeAdd'),
           icon: const Icon(Icons.note_add, color: Color(0xFFFFC107), size: 20),
-          onPressed: () async {
-            final created = await showDialog<PdfMemo?>(
-              context: ctx,
-              builder: (_) => const _PdfMemoEditDialog(freeMode: true),
-            );
-            if (created != null) {
-              provider.addPdfMemo(
-                widget.nodeId,
-                text: created.text,
-                pageNumber: created.pageNumber,
-                colorValue: created.colorValue,
-              );
-            }
+          onPressed: () {
+            // ★ 新規メモはダイアログではなく、 その場の欄で直接書けるように
+            //   (= ユーザー要望: 新規で追加する欄の辺りに直接書き込める)。
+            final created = provider.addPdfMemo(widget.nodeId, text: '');
+            setState(() {});
+            _beginInlineEdit(created);
           },
         ),
         // ── クリップボード貼り付け (画像 / テキスト) (= ユーザー要望:
@@ -191442,6 +191497,32 @@ class _SsTable {
 /// シートに貼った図 (= ユーザー要望: xlsx で図の挿入ができるように)。
 /// 位置はセル番号 + そこからのピクセル、 大きさはピクセルで持つ。
 /// 保存時に xlsx の drawing (xl/media + xl/drawings) として書き出す。
+/// Excel のセルの上に置かれた図形 (吹き出し・四角など)。 表示専用。
+class _SsShape {
+  final String kind; // prstGeom の種類 (rect / roundRect / ...callout など)
+  int row;
+  int col;
+  double width;
+  double height;
+  double dx;
+  double dy;
+  final String text;
+  final int? fillArgb;
+  final int? lineArgb;
+  _SsShape({
+    required this.kind,
+    required this.row,
+    required this.col,
+    required this.width,
+    required this.height,
+    this.dx = 0,
+    this.dy = 0,
+    this.text = '',
+    this.fillArgb,
+    this.lineArgb,
+  });
+}
+
 class _SsImage {
   final Uint8List bytes;
   final String ext;
@@ -191461,6 +191542,10 @@ class _SsImage {
   /// 元の範囲 (A1 形式) と、 作った時の指定を覚えておく。
   Map<String, dynamic>? chart;
 
+  /// 元の Excel ファイルに元から入っていた図か (= 保存時に再埋め込みしない。
+  /// 元ファイルの drawing/media は保存でそのまま残るので二重にしない)。
+  bool fromOriginal;
+
   _SsImage({
     required this.bytes,
     required this.ext,
@@ -191472,6 +191557,7 @@ class _SsImage {
     this.dx = 0,
     this.dy = 0,
     this.chart,
+    this.fromOriginal = false,
   });
 
   _SsImage copy() => _SsImage(
@@ -191804,6 +191890,10 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
 
   List<_SsTable> get _tables => _sheetTables[_activeSheet] ??= [];
   List<_SsImage> get _images => _sheetImages[_activeSheet] ??= [];
+
+  /// 元 Excel から読んだ図形 (表示専用)。
+  final Map<String, List<_SsShape>> _sheetShapes = {};
+  List<_SsShape> get _shapes => _sheetShapes[_activeSheet] ??= [];
 
   /// [r],[c] を含む表 (無ければ null)。 セルの色付けに使う。
   _SsTable? _tableAt(int r, int c) {
@@ -192471,6 +192561,7 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
       if (meta is! Map) return;
       _sheetTables.clear();
       _sheetImages.clear();
+      _sheetShapes.clear();
       final tables = meta['tables'];
       if (tables is Map) {
         tables.forEach((k, v) {
@@ -192525,6 +192616,9 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
       if (_kind == _SpreadsheetKind.xlsx) {
         // 前回置いた表 / 図を戻す (= ユーザー要望)。
         _restoreSheetExtras(bytes);
+        // ★ 元の Excel に入っている画像・図形 (吹き出し等) を読む
+        //   (= ユーザー要望: 埋め込んで開くと出ないので対応)。 表示専用。
+        _readSheetDrawings(bytes);
         // ★ 他の道具が書いた xlsx は、 そのままだと excel パッケージが
         //   落ちて書式ごと読めなくなる (= 実測: rels の絶対パス / 中身の
         //   無い文字セル)。 先に読める形へ直す。
@@ -193074,7 +193168,8 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
   /// 出来上がった xlsx の zip に、 貼った図を drawing として足す。
   /// 図が無ければ元のバイト列をそのまま返す。
   Uint8List _embedImagesIntoXlsx(Uint8List src) {
-    final hasImages = _sheetImages.values.any((v) => v.isNotEmpty);
+    final hasImages =
+        _sheetImages.values.any((v) => v.any((im) => !im.fromOriginal));
     final hasTables = _sheetTables.values.any((v) => v.isNotEmpty);
     if (!hasImages && !hasTables) return src;
     try {
@@ -193115,7 +193210,9 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
       final exts = <String>{};
 
       for (final entry in _sheetImages.entries) {
-        final imgs = entry.value;
+        // ★ 元ファイル由来の図は再埋め込みしない (元の drawing がそのまま
+        //   全コピーで残るため。 二重・取りこぼしを防ぐ)。
+        final imgs = entry.value.where((im) => !im.fromOriginal).toList();
         if (imgs.isEmpty) continue;
         final sheetPath = sheetFileOf[entry.key];
         if (sheetPath == null) continue;
@@ -197203,6 +197300,7 @@ $csvText
                         // ── 貼った図 (= ユーザー要望: 図の挿入)。
                         //    ドラッグで動かせる。 ✕ で消す。 ──
                         for (final im in _images) _buildSheetImage(im),
+                        for (final sh in _shapes) _buildSheetShape(sh),
                       ]),
                     ),
                   ),
@@ -197218,6 +197316,240 @@ $csvText
 
   /// シートに貼った図 1 個 (= ユーザー要望: 図の挿入)。
   /// 位置はセル番号から計算し、 ドラッグで動かす。 右下でサイズ変更。
+  /// 元 Excel の図形 (吹き出し等) を、 枠 + 文字の箱として重ねる (表示専用)。
+  Widget _buildSheetShape(_SsShape sh) {
+    final left = _rowHeaderWidth + sh.col * _cellWidth + sh.dx;
+    final top = _colHeaderHeight + sh.row * _cellHeight + sh.dy;
+    final fill = sh.fillArgb != null
+        ? Color(sh.fillArgb!).withValues(alpha: 0.28)
+        : const Color(0xFFFFF3C4).withValues(alpha: 0.55);
+    final line = sh.lineArgb != null
+        ? Color(sh.lineArgb!)
+        : const Color(0xFF8D6E00);
+    final rounded = sh.kind.toLowerCase().contains('round') ||
+        sh.kind.toLowerCase().contains('callout') ||
+        sh.kind.toLowerCase().contains('bubble') ||
+        sh.kind == 'ellipse';
+    return Positioned(
+      left: left,
+      top: top,
+      width: sh.width.clamp(12.0, 4000.0),
+      height: sh.height.clamp(12.0, 4000.0),
+      child: IgnorePointer(
+        child: Container(
+          alignment: Alignment.center,
+          padding: const EdgeInsets.all(4),
+          decoration: BoxDecoration(
+            color: fill,
+            border: Border.all(color: line, width: 1.2),
+            borderRadius:
+                BorderRadius.circular(sh.kind == 'ellipse' ? sh.height / 2 : (rounded ? 12 : 2)),
+          ),
+          child: sh.text.isEmpty
+              ? const SizedBox.shrink()
+              : Text(sh.text,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Color(0xFF1B1B2A), fontSize: 12),
+                  overflow: TextOverflow.clip),
+        ),
+      ),
+    );
+  }
+
+  /// 元 Excel の drawing (画像・図形) を zip から直接読む (表示専用)。
+  /// excel パッケージは drawing を一切見ないので、 標準の OOXML 構造
+  /// (xl/drawings/*.xml + media + rels) を自前で辿る。
+  void _readSheetDrawings(Uint8List bytes) {
+    try {
+      final archive = ZipDecoder().decodeBytes(bytes);
+      List<int>? findBytes(String name) {
+        for (final f in archive.files) {
+          if (f.name == name && f.isFile) return f.content as List<int>;
+        }
+        return null;
+      }
+      String? findText(String name) => _zipText(archive, name);
+
+      // シート名 → sheetN.xml のパス。
+      final relTarget = <String, String>{};
+      final relsXml = findText('xl/_rels/workbook.xml.rels');
+      if (relsXml != null) {
+        for (final r in RegExp(r'<Relationship\b[^>]*>').allMatches(relsXml)) {
+          final tag = r.group(0)!;
+          final id = RegExp(r'Id="([^"]+)"').firstMatch(tag)?.group(1);
+          final target = RegExp(r'Target="([^"]+)"').firstMatch(tag)?.group(1);
+          if (id != null && target != null) {
+            relTarget[id] = target.startsWith('/')
+                ? target.substring(1)
+                : (target.startsWith('xl/') ? target : 'xl/$target');
+          }
+        }
+      }
+      final wbXml = findText('xl/workbook.xml');
+      if (wbXml == null) return;
+      var i = 0;
+      for (final m in RegExp(r'<sheet\b[^>]*/?>').allMatches(wbXml)) {
+        final tag = m.group(0)!;
+        final name = _unescapeXml(
+            RegExp(r'name="([^"]*)"').firstMatch(tag)?.group(1) ?? '');
+        final rid = RegExp(r'r:id="([^"]+)"').firstMatch(tag)?.group(1);
+        i++;
+        final sheetPath = (rid != null ? relTarget[rid] : null) ??
+            'xl/worksheets/sheet$i.xml';
+        if (name.isEmpty) continue;
+        final sheetXml = findText(sheetPath);
+        if (sheetXml == null) continue;
+        final drId =
+            RegExp(r'<drawing\b[^>]*r:id="([^"]+)"').firstMatch(sheetXml)
+                ?.group(1);
+        if (drId == null) continue;
+        // sheetN.xml.rels から drawing のパスを引く。
+        final sheetFile = sheetPath.split('/').last;
+        final sheetDir =
+            sheetPath.substring(0, sheetPath.length - sheetFile.length);
+        final srXml = findText('${sheetDir}_rels/$sheetFile.rels');
+        if (srXml == null) continue;
+        final drRelTag =
+            RegExp('<Relationship[^>]*Id="$drId"[^>]*>').firstMatch(srXml)
+                ?.group(0);
+        if (drRelTag == null) continue;
+        var drTarget =
+            RegExp(r'Target="([^"]+)"').firstMatch(drRelTag)?.group(1) ?? '';
+        drTarget = _resolveRel(sheetDir, drTarget); // xl/drawings/drawingN.xml
+        final drXml = findText(drTarget);
+        if (drXml == null) continue;
+        // drawing の _rels (blip の r:embed → media)。
+        final drFile = drTarget.split('/').last;
+        final drDir = drTarget.substring(0, drTarget.length - drFile.length);
+        final drRels = findText('${drDir}_rels/$drFile.rels') ?? '';
+        final embedTarget = <String, String>{};
+        for (final r in RegExp(r'<Relationship\b[^>]*>').allMatches(drRels)) {
+          final tag = r.group(0)!;
+          final id = RegExp(r'Id="([^"]+)"').firstMatch(tag)?.group(1);
+          final t = RegExp(r'Target="([^"]+)"').firstMatch(tag)?.group(1);
+          if (id != null && t != null) embedTarget[id] = _resolveRel(drDir, t);
+        }
+
+        final imgs = _sheetImages[name] ??= [];
+        final shapes = _sheetShapes[name] ??= [];
+        for (final aM in RegExp(
+                r'<xdr:(oneCellAnchor|twoCellAnchor)\b.*?</xdr:\1>',
+                dotAll: true)
+            .allMatches(drXml)) {
+          final a = aM.group(0)!;
+          final from = _readAnchorPoint(a, 'from');
+          if (from == null) continue;
+          // 大きさ: oneCell は ext、 twoCell は to から概算。
+          double w = 160, h = 90;
+          final ext = RegExp(r'<xdr:ext\b[^>]*cx="(\d+)"[^>]*cy="(\d+)"')
+              .firstMatch(a);
+          if (ext != null) {
+            w = int.parse(ext.group(1)!) / 9525.0;
+            h = int.parse(ext.group(2)!) / 9525.0;
+          } else {
+            final to = _readAnchorPoint(a, 'to');
+            if (to != null) {
+              w = ((to.$1 - from.$1) * _cellWidth +
+                      (to.$3 - from.$3))
+                  .clamp(12.0, 4000.0);
+              h = ((to.$2 - from.$2) * _cellHeight +
+                      (to.$4 - from.$4))
+                  .clamp(12.0, 4000.0);
+            }
+          }
+          // 画像。
+          final blip = RegExp(r'<a:blip\b[^>]*r:embed="([^"]+)"').firstMatch(a);
+          if (blip != null) {
+            final media = embedTarget[blip.group(1)];
+            if (media != null) {
+              final ext2 = media.split('.').last.toLowerCase();
+              if (['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp']
+                  .contains(ext2)) {
+                final data = findBytes(media);
+                if (data != null) {
+                  imgs.add(_SsImage(
+                    bytes: Uint8List.fromList(data),
+                    ext: ext2,
+                    mediaName: media.split('/').last,
+                    row: from.$2,
+                    col: from.$1,
+                    width: w,
+                    height: h,
+                    dx: from.$3,
+                    dy: from.$4,
+                    fromOriginal: true,
+                  ));
+                }
+              }
+            }
+            continue;
+          }
+          // 図形 (sp)。 文字と種類だけ拾って箱で出す。
+          if (a.contains('<xdr:sp')) {
+            final prst =
+                RegExp(r'<a:prstGeom\b[^>]*prst="([^"]+)"').firstMatch(a)
+                    ?.group(1) ?? 'rect';
+            final tbuf = StringBuffer();
+            for (final t in RegExp(r'<a:t>(.*?)</a:t>', dotAll: true)
+                .allMatches(a)) {
+              tbuf.write(_unescapeXml(t.group(1) ?? ''));
+            }
+            shapes.add(_SsShape(
+              kind: prst,
+              row: from.$2,
+              col: from.$1,
+              width: w,
+              height: h,
+              dx: from.$3,
+              dy: from.$4,
+              text: tbuf.toString(),
+              fillArgb: _readShapeFill(a),
+            ));
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('xlsx の図の読み取りに失敗: $e');
+    }
+  }
+
+  /// rels の相対 Target を実パスへ (../media/x.png → xl/media/x.png)。
+  static String _resolveRel(String baseDir, String target) {
+    if (target.startsWith('/')) return target.substring(1);
+    var dir = baseDir;
+    var t = target;
+    while (t.startsWith('../')) {
+      t = t.substring(3);
+      final parts = dir.split('/').where((e) => e.isNotEmpty).toList();
+      if (parts.isNotEmpty) parts.removeLast();
+      dir = parts.isEmpty ? '' : '${parts.join('/')}/';
+    }
+    return '$dir$t';
+  }
+
+  /// アンカーの from/to を (col,row,colOffPx,rowOffPx) で返す。
+  static (int, int, double, double)? _readAnchorPoint(String a, String which) {
+    final m = RegExp('<xdr:$which\\b.*?</xdr:$which>', dotAll: true)
+        .firstMatch(a);
+    if (m == null) return null;
+    final body = m.group(0)!;
+    int rd(String tag) => int.tryParse(
+        RegExp('<xdr:$tag>(-?\\d+)</xdr:$tag>').firstMatch(body)?.group(1) ??
+            '0') ??
+        0;
+    return (rd('col'), rd('row'), rd('colOff') / 9525.0, rd('rowOff') / 9525.0);
+  }
+
+  /// 図形の塗り色 (a:solidFill の srgbClr) を ARGB で。 無ければ null。
+  static int? _readShapeFill(String a) {
+    final sp = RegExp(r'<xdr:spPr\b.*?</xdr:spPr>', dotAll: true).firstMatch(a);
+    final scope = sp?.group(0) ?? a;
+    final m = RegExp(r'<a:solidFill>\s*<a:srgbClr\b[^>]*val="([0-9A-Fa-f]{6})"')
+        .firstMatch(scope);
+    if (m == null) return null;
+    return int.parse('FF${m.group(1)}', radix: 16);
+  }
+
   Widget _buildSheetImage(_SsImage im) {
     final left = _rowHeaderWidth + im.col * _cellWidth + im.dx;
     final top = _colHeaderHeight + im.row * _cellHeight + im.dy;

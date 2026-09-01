@@ -77,6 +77,10 @@ class CdpBrowser {
   StreamSubscription<dynamic>? _sub;
   bool _closed = false;
 
+  /// つながりが切れた時に済む約束 (= ユーザー要望: ブラウザを閉じたら
+  /// エージェントを止める)。 中身は切れた理由。
+  final Completer<String> _gone = Completer<String>();
+
   /// この端末で見つかったブラウザの置き場所。
   static List<String> _candidatePaths(CdpBrowserKind kind) {
     final pf = Platform.environment['ProgramFiles'] ?? r'C:\Program Files';
@@ -140,6 +144,10 @@ class CdpBrowser {
   /// (= Google は自動化されたブラウザでのサインインを拒むため、 これが
   ///  現実的な回避になる)。 ただし同じブラウザが既に起動していると、
   /// プロファイルが使用中で口が開かないので、 その時は別の置き場を使う。
+  /// シークレット / InPrivate の旗 (ブラウザごとに名前が違う)。
+  static String _privateFlag(CdpBrowserKind kind) =>
+      kind == CdpBrowserKind.edge ? '--inprivate' : '--incognito';
+
   static Future<CdpBrowser> launchAndConnect({
     required CdpBrowserKind kind,
     String? url,
@@ -150,6 +158,10 @@ class CdpBrowser {
     // ゲストで開く (= ユーザー要望: 既定のプロファイルが無い時は、
     //   プロファイル選択画面で止まらずゲストモードで開いてほしい)。
     bool guest = false,
+    // シークレット (incognito) で開く (= ユーザー要望: ログインと明示
+    //   しない時は、 まっさらなシークレット窓で開く)。 プロファイルには
+    //   何も残らず、 ログイン画面にも飛ばない。
+    bool incognito = false,
     // どのアカウント (プロファイル) で開くか。 呼び名 / メール /
     //   'Profile 1' のいずれでもよい (= ユーザー要望: アカウントを指定)。
     String profileHint = '',
@@ -171,6 +183,21 @@ class CdpBrowser {
       throw Exception('${kind.label} の操作口を開けませんでした。\n'
           '${kind.label} をいったん完全に閉じてからもう一度お試しください。');
     }
+    // ★ アカウントを指定された時は、 開いている口があっても使い回さない。
+    //
+    //   = ユーザー報告「アカウントを指定しているのに、 そのアカウントで
+    //   開かない / そもそも窓が出てこない」。 この分かれ道は
+    //   useOwnProfile も profileHint も見ずにつないでしまうので、
+    //   前の実行で開いたままの窓 (別のアカウント) を裏で掴んで
+    //   終わっていた。 つなぎを手放しても窓は閉じない作りなので、
+    //   2 回目からは必ずここへ落ちていた。
+    final wantsAccount = useOwnProfile || profileHint.trim().isNotEmpty;
+    if (wantsAccount && !guest) {
+      // その口が空くまで、 別の口を順に探す (最大 3 つ)。
+      for (var i = 0; i < 3 && await _probe(port) != null; i++) {
+        port += 7;
+      }
+    }
     // 既にその口が開いていれば、 起動せずにつなぐ。
     if (await _probe(port) != null) {
       final b = await _connect(port, kind, timeout, wantUrl: url);
@@ -187,10 +214,14 @@ class CdpBrowser {
           url: url,
           port: port + 7,
           guest: true,
+          incognito: incognito,
           timeout: timeout,
           retry: retry + 1,
         );
       }
+      // ★ 新しい窓は開いていない = 前から開いていた窓を掴んだ。
+      //   呼び出し側が、 その旨を出したり前面に出したり出来るように。
+      b.attachedToExisting = true;
       return b;
     }
     // ★ 普段のプロファイルで開く時は、 どのプロファイルかを必ず名指しする。
@@ -227,10 +258,14 @@ class CdpBrowser {
     // 置き場は必ず自分で用意した所にする (= 普段の置き場を指定すると
     //   操作口が開かず、 既に起動中の Chrome へタブだけ増やして終わる)。
     final dataDir = acctDir ?? _scratchProfileDir(kind, port);
-    // ★ 「初めて使うアカウントか」 は、 置き場がまだ無いかどうかで見る。
-    //   クッキーの大きさで見ると、 まっさらなプロファイルでも
-    //   入れ物だけで数十 KB になるので見分けられない。
-    final firstUse = acctDir != null && !Directory(acctDir).existsSync();
+    // ★ 「まだログインしていないアカウントか」 は、 置き場の有無では
+    //   なく**済んだ印**で見る。
+    //
+    //   = ユーザー報告「chrome のプロファイルにログインするのが失敗する」。
+    //   置き場の有無で見ていた頃は、 Chrome が起動した時点で入れ物だけ
+    //   出来るので、 ログインしていなくても 2 回目からは「済んだ」 と
+    //   誤解していた。 印は、 人がログインを終えたと押した時にだけ書く。
+    final firstUse = acctDir != null && !loginDoneFor(acctDir);
     final args = <String>[
       '--remote-debugging-port=$port',
       // 初回の案内や既定ブラウザの確認で止まらないように。
@@ -238,6 +273,8 @@ class CdpBrowser {
       '--no-default-browser-check',
       // --guest と --profile-directory は排他 (両方渡すと片方が無視される)。
       if (wantGuest) '--guest',
+      // シークレット / InPrivate (= ユーザー要望: ログインしない時)。
+      if (incognito) _privateFlag(kind),
       '--user-data-dir=$dataDir',
       if (url != null && url.isNotEmpty) url,
     ];
@@ -281,7 +318,11 @@ class CdpBrowser {
     b.needsFirstLogin = firstUse;
     // ★ それでも選択画面に居たら、 ゲストで開き直す (最後の砦)。
     //   会社の設定などで --profile-directory が効かない場合に効く。
-    if (!wantGuest && await b.isAtProfilePicker()) {
+    // ★ アカウント専用の窓では、 この逃げ道を使わない。 ここで
+    //   closeQuietly() を呼ぶと、 ownWindow が立っているので**窓ごと**
+    //   閉じてしまい、 ログインしたばかりの窓まで消える。 ゲストで開き
+    //   直すとログインも引き継げない (= 点検で判明)。
+    if (!wantGuest && acctDir == null && await b.isAtProfilePicker()) {
       // ここで掴んでいるのはユーザー本来のブラウザなので、 窓ごとは
       //   閉じない (自分のタブだけ閉じる)。
       await b.closeQuietly();
@@ -301,8 +342,12 @@ class CdpBrowser {
     await _ensureUrl(b, url);
     // 片付けは**つないだ後**に、 今使っている置き場を除いて行う
     //   (先に消しにいくと、 起動中のブラウザの置き場を壊しうる)。
-    unawaited(cleanupScratchProfiles(
-        keep: {_scratchProfileDir(kind, port).split('\\').last}));
+    unawaited(cleanupScratchProfiles(keep: {
+      _scratchProfileDir(kind, port).split('\\').last,
+      // ★ 今使っているアカウントの置き場も残す (= 消すとログインが
+      //   失われ、 次に開いた時にまた人がログインする羽目になる)。
+      if (acctDir != null) acctDir.split('\\').last,
+    }));
     return b;
   }
 
@@ -480,6 +525,95 @@ class CdpBrowser {
     return '';
   }
 
+  /// そのアカウント専用の置き場で、 もうログインを済ませたか。
+  ///
+  /// 印を置くだけの簡単な作りにしている (クッキーの大きさで見ると、
+  /// まっさらな置き場でも数十 KB あるので見分けられない)。
+  static bool loginDoneFor(String dataDir) =>
+      File('$dataDir\\hisator_login_ok').existsSync();
+
+  /// ログインが済んだ印を置く。
+  static void markLoginDone(String dataDir) {
+    try {
+      Directory(dataDir).createSync(recursive: true);
+      File('$dataDir\\hisator_login_ok')
+          .writeAsStringSync(DateTime.now().toIso8601String());
+    } catch (_) {}
+  }
+
+  /// ログインだけのために、 **自動操作の口を開けずに**開く。
+  ///
+  /// ★ これが要るのは、 Google が「自動操作されているブラウザ」 での
+  ///   サインインを断るため (= ユーザー報告: ログインに失敗する)。
+  ///   --remote-debugging-port を付けずに、 同じ置き場で開けば、
+  ///   ふつうのブラウザとしてログインできる。 クッキーは置き場に残るので、
+  ///   その後で口を開けて開き直せばログイン済みで使える。
+  static Future<bool> launchForLogin({
+    required CdpBrowserKind kind,
+    required String dataDir,
+    String? url,
+  }) async {
+    final exe = findExe(kind);
+    if (exe == null) return false;
+    try {
+      await Process.start(
+          exe,
+          <String>[
+            '--no-first-run',
+            '--no-default-browser-check',
+            '--user-data-dir=$dataDir',
+            if (url != null && url.isNotEmpty) url,
+          ],
+          mode: ProcessStartMode.detached,
+          runInShell: false);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// その置き場を掴んでいるブラウザを閉じる (= 同じ置き場は 1 つしか
+  /// 開けないので、 口を開けて開き直す前に必ず閉じる)。
+  ///
+  /// 戻り値は、 閉じ切れたか。
+  static Future<bool> closeProcessesUsingDataDir(String dataDir) async {
+    if (!Platform.isWindows) return false;
+    // 置き場の名前で選んで止める (他のブラウザは触らない)。
+    final needle = dataDir.replaceAll("'", "''");
+    const ps = 'powershell';
+    Future<int> alive() async {
+      try {
+        final r = await Process.run(ps, [
+          '-NoProfile',
+          '-Command',
+          "@(Get-CimInstance Win32_Process | Where-Object { "
+              "\$_.CommandLine -and \$_.CommandLine -like '*$needle*' }).Count"
+        ]);
+        return int.tryParse('${r.stdout}'.trim()) ?? 0;
+      } catch (_) {
+        return 0;
+      }
+    }
+
+    if (await alive() == 0) return true;
+    try {
+      await Process.run(ps, [
+        '-NoProfile',
+        '-Command',
+        "Get-CimInstance Win32_Process | Where-Object { "
+            "\$_.CommandLine -and \$_.CommandLine -like '*$needle*' } | "
+            "ForEach-Object { Stop-Process -Id \$_.ProcessId -Force "
+            "-ErrorAction SilentlyContinue }"
+      ]);
+    } catch (_) {}
+    // 片付くまで少し待つ (置き場の鍵が外れるまで開き直せない)。
+    for (var i = 0; i < 20; i++) {
+      if (await alive() == 0) return true;
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+    }
+    return false;
+  }
+
   /// 入っているプロファイルの数 (選択画面が出るかどうかの目安)。
   /// 読めなければ 1 (= 今までどおり)。
   static int profileCount(CdpBrowserKind kind) {
@@ -515,6 +649,9 @@ class CdpBrowser {
         if (e is! Directory) continue;
         final name = e.path.split('\\').last;
         if (!name.startsWith('cdp_')) continue;
+        // ★ アカウント専用の置き場は消さない (= 消すとログインが失われ、
+        //   また人がログインする羽目になる)。 使い捨ての置き場だけ片付ける。
+        if (name.contains('_acct_')) continue;
         // 今まさに使っている置き場は消さない。
         if (keep.contains(name) || keep.contains(e.path)) continue;
         try {
@@ -731,6 +868,14 @@ class CdpBrowser {
 
   void _onEvent(String method, Map<String, dynamic> p) {
     switch (method) {
+      // ★ 窓を閉じた / 相手が居なくなった / 落ちた (= ユーザー要望:
+      //   ブラウザが閉じたらエージェントを止める)。 通信が切れるより
+      //   先にこの知らせが来ることがある。
+      case 'Inspector.detached':
+      case 'Target.detachedFromTarget':
+      case 'Target.targetCrashed':
+        _failAll('ブラウザが閉じられました');
+        break;
       // console.log / warn / error …
       case 'Runtime.consoleAPICalled':
         if (!_logCapturing) return;
@@ -843,6 +988,9 @@ class CdpBrowser {
 
   void _failAll(String why) {
     _closed = true;
+    // ★ 待っている人に知らせる (窓を閉じた / 落ちた / 切れた、 のどれでも
+    //   ここを通る)。
+    if (!_gone.isCompleted) _gone.complete(why);
     for (final c in _waiting.values) {
       if (!c.isCompleted) c.completeError(Exception(why));
     }
@@ -986,7 +1134,24 @@ class CdpBrowser {
   /// プロファイルのログインは持ってこられない)。
   bool needsFirstLogin = false;
 
+  /// 新しく起動したのではなく、 前から開いていた窓につないだか。
+  ///
+  /// = ユーザー報告「実行しても chrome が立ち上がらない」。 裏に回った
+  ///   窓につないでいると、 何も起きていないように見える。
+  bool attachedToExisting = false;
+
+  /// 掴んでいる窓を前に出す (裏に回っていると、 何も起きていないように
+  /// 見えるため)。 出来なくても困らないので、 失敗は握り潰す。
+  Future<void> bringToFront() async {
+    try {
+      await _send('Page.bringToFront', {});
+    } catch (_) {}
+  }
+
   bool get isClosed => _closed;
+
+  /// つながりが切れるまで待つ (切れた理由が返る)。
+  Future<String> get closed => _gone.future;
 
   Future<void> dispose() async {
     _closed = true;

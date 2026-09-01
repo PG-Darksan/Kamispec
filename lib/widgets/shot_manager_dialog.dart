@@ -8,6 +8,7 @@
 //   ・回転 (90° 単位) / 左右反転 / 余白トリミング (上下左右を % で切る)
 //   ・選んだ順で 1 つの PDF に書き出す
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -51,7 +52,11 @@ Future<Directory> newAutomationRunDir() async {
 }
 
 class ShotManagerDialog extends StatefulWidget {
-  const ShotManagerDialog({super.key});
+  const ShotManagerDialog({super.key, this.fullscreen = false});
+
+  /// 画面いっぱいで開くか (= ユーザー要望: 浮かせた自動操作の窓から
+  /// 開くと、 幅が 558px しかなく潰れて使えない)。
+  final bool fullscreen;
 
   /// [useRootNavigator] を false にすると、 一番近い Navigator に出る。
   ///
@@ -60,12 +65,12 @@ class ShotManagerDialog extends StatefulWidget {
   ///   根っこの Overlay に挿されているので、 根っこの Navigator に
   ///   積んだ窓はその下に隠れてしまう。
   static Future<void> show(BuildContext context,
-      {bool useRootNavigator = true}) {
+      {bool useRootNavigator = true, bool fullscreen = false}) {
     return showDialog<void>(
       context: context,
       useRootNavigator: useRootNavigator,
       barrierColor: Colors.black87,
-      builder: (_) => const ShotManagerDialog(),
+      builder: (_) => ShotManagerDialog(fullscreen: fullscreen),
     );
   }
 
@@ -1223,6 +1228,12 @@ class _ShotManagerDialogState extends State<ShotManagerDialog> {
     ]);
   }
 
+  /// 全画面の時は残りいっぱい、 そうでなければ決めた高さ。
+  Widget _sized({required double height, required Widget child}) =>
+      widget.fullscreen
+          ? Expanded(child: child)
+          : SizedBox(height: height, child: child);
+
   @override
   Widget build(BuildContext context) {
     final provider = context.read<MindMapProvider>();
@@ -1249,10 +1260,26 @@ class _ShotManagerDialogState extends State<ShotManagerDialog> {
           autofocus: true,
           child: Dialog(
       backgroundColor: const Color(0xFF1B1B2A),
-      insetPadding: const EdgeInsets.all(12),
+      // ★ 全画面の時は縁を取らない (= ユーザー要望: 浮かせた窓の中でも
+      //   その窓いっぱいに広げて使えるように)。
+      insetPadding: widget.fullscreen
+          ? EdgeInsets.zero
+          : const EdgeInsets.all(12),
+      shape: widget.fullscreen
+          ? const RoundedRectangleBorder(borderRadius: BorderRadius.zero)
+          : null,
       child: SizedBox(
-        width: MediaQuery.of(context).size.width - 40,
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
+        width: widget.fullscreen
+            ? MediaQuery.of(context).size.width
+            : MediaQuery.of(context).size.width - 40,
+        height: widget.fullscreen
+            ? MediaQuery.of(context).size.height
+            : null,
+        child: Column(
+            mainAxisSize: widget.fullscreen
+                ? MainAxisSize.max
+                : MainAxisSize.min,
+            children: [
           Container(
             padding: const EdgeInsets.fromLTRB(14, 10, 6, 10),
             decoration: const BoxDecoration(color: Color(0xFF23233A)),
@@ -1395,15 +1422,19 @@ class _ShotManagerDialogState extends State<ShotManagerDialog> {
                       const TextStyle(color: Colors.white24, fontSize: 10)),
             ),
           ),
-          SizedBox(
+          // ★ 全画面の時は残りをぜんぶ使う。 決め打ちの高さだと、
+          //   窓が小さい時に下がはみ出してしまう (= ユーザー要望)。
+          _sized(
             height: (MediaQuery.of(context).size.height - 250)
                 .clamp(360.0, 1200.0),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 // ── 一覧 (左) ──
+                //    狭い窓では一覧を細くして、 右の絵の場所を残す。
                 SizedBox(
-                  width: 430,
+                  width: math.min(
+                      430.0, MediaQuery.of(context).size.width * 0.45),
                   child: _paths.isEmpty
                       ? Center(
                           child: Text(provider.t('shots.empty'),
