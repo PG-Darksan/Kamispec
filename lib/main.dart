@@ -3160,8 +3160,27 @@ void main(List<String> args) async {
   //    本体とは別プロセスなので、 マップの画面は一切立ち上がらない。
   //    メモの中身は同じ保存先を読み書きするので、 本体で見ても同じもの。
   if (!kIsWeb && args.isNotEmpty && args.first == '--floating-memo') {
+    // --floating-x/y/w/h … 押したボタンの近くに出すための位置と大きさ
+    //   (= 本体から開いた時も、 今までと同じ場所に出す)。
+    double? fx, fy, fw, fh;
+    for (final a in args) {
+      if (a.startsWith('--floating-x=')) {
+        fx = double.tryParse(a.substring('--floating-x='.length));
+      } else if (a.startsWith('--floating-y=')) {
+        fy = double.tryParse(a.substring('--floating-y='.length));
+      } else if (a.startsWith('--floating-w=')) {
+        fw = double.tryParse(a.substring('--floating-w='.length));
+      } else if (a.startsWith('--floating-h=')) {
+        fh = double.tryParse(a.substring('--floating-h='.length));
+      }
+    }
     await FloatL10n.load();
-    runApp(const _MemoWindowApp(windowId: -1, args: {}));
+    runApp(_MemoWindowApp(
+      windowId: -1,
+      args: const {},
+      initialPosition: fx != null && fy != null ? Offset(fx, fy) : null,
+      initialSize: fw != null && fh != null ? Size(fw, fh) : null,
+    ));
     return;
   }
   // ── サブウィンドウ (発表者モードの「聴衆ウィンドウ」) として起動された場合 ──
@@ -3784,8 +3803,16 @@ class _MemoWindowApp extends StatefulWidget {
   /// AI からメモを開いた時、 フローティングメモと同じ画面が出るように)。
   /// true の時は窓の大きさ・常に手前・閉じるといった「窓の操作」 をしない。
   final bool embedded;
+
+  /// 単独プロセスで開く時の位置と大きさ (指定が無ければ真ん中)。
+  final Offset? initialPosition;
+  final Size? initialSize;
   const _MemoWindowApp(
-      {required this.windowId, required this.args, this.embedded = false});
+      {required this.windowId,
+      required this.args,
+      this.embedded = false,
+      this.initialPosition,
+      this.initialSize});
 
   /// 本体アプリの中のサブ窓ではなく、 自分だけで動いているか。
   /// 埋め込みの時は窓を持たないので false 扱い (窓の操作をしない)。
@@ -3944,8 +3971,17 @@ class _MemoWindowAppState extends State<_MemoWindowApp> with WindowListener {
           double.parse(m.group(2)!).clamp(240.0, 3000.0),
         );
       }
+      final want = widget.initialSize;
+      if (want != null && want.width >= 200 && want.height >= 120) size = want;
       await windowManager.setSize(size);
-      await windowManager.center();
+      // 開く場所の指定があればそこへ (= 本体から開いた時は
+      //   押したボタンの近く)。 無ければ今までどおり真ん中。
+      final at = widget.initialPosition;
+      if (at != null) {
+        await windowManager.setPosition(at);
+      } else {
+        await windowManager.center();
+      }
     } catch (_) {}
   }
 

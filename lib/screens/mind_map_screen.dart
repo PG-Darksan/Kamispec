@@ -31109,14 +31109,14 @@ class _MindMapScreenState extends State<MindMapScreen>
 
     final currentShape =
         node.shape == 'stadium' ? 'rounded' : (node.shape ?? 'rounded');
-    // \u2500\u2500 \u30ae\u30e3\u30e9\u30ea\u30fc (bookshelf) \u3067\u306f\u5f62\u72b6 / \u4f38\u3070\u305b\u308b\u65b9\u5411\u3092\u51fa\u3055\u306a\u3044
-    //    (= \u30e6\u30fc\u30b6\u30fc\u8981\u671b: \u30ae\u30e3\u30e9\u30ea\u30fc\u30da\u30fc\u30b8\u3067\u306f\u5f62\u72b6\u3084\u30ea\u30f3\u30af\u306e\u4f38\u3070\u3059\u65b9\u5411\u306e
-    //    \u8a2d\u5b9a\u9805\u76ee\u306f\u8868\u793a\u3057\u306a\u3044)\u3002 \u30bf\u30a4\u30eb\u8868\u793a\u306a\u306e\u3067\u3069\u3061\u3089\u3082\u610f\u5473\u3092\u6301\u305f\u306a\u3044\u3002
+    // ── ギャラリー (bookshelf) では形状 / 伸ばせる方向を出さない
+    //    (= ユーザー要望: ギャラリーページでは形状やリンクの伸ばす方向の
+    //    設定項目は表示しない)。 タイル表示なのでどちらも意味を持たない。
     final bool isGalleryPage = provider.currentPage.pageType == 'bookshelf';
     final List<Widget> items = [
-      // \u2500\u2500 \u5f62\u72b6 / \u4f38\u3070\u305b\u308b\u65b9\u5411: \u5de6\u53f3 2 \u30b0\u30eb\u30fc\u30d7 + \u4e2d\u592e\u4ed5\u5207\u308a \u2500\u2500
-      //    (= \u30e6\u30fc\u30b6\u30fc\u8981\u671b: \u3053\u306e\u4ed5\u5207\u308a\u3092\u4e0b\u306e 2 \u5217\u30e1\u30cb\u30e5\u30fc\u306e\u4ed5\u5207\u308a\u3068\u540c\u3058
-      //    \u4f4d\u7f6e (\u4e2d\u592e) \u306b\u63c3\u3048\u308b)\u3002
+      // ── 形状 / 伸ばせる方向: 左右 2 グループ + 中央仕切り ──
+      //    (= ユーザー要望: この仕切りを下の 2 列メニューの仕切りと同じ
+      //    位置 (中央) に揃える)。
       if (!isGalleryPage)
         _CtxButtonSection(
         title: '${provider.t('ctx.shapeSection')} / ${provider.t('ctx.cycleAnchor')}',
@@ -67861,25 +67861,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       color: const Color(0xFF1E1E32),
       position: pos,
       items: [
-        PopupMenuItem<int>(
-          enabled: false,
-          height: 30,
-          child: Text(provider.t('drawer.openInPane'),
-              style: const TextStyle(color: Colors.white38, fontSize: 11)),
-        ),
-        // ★ 分割を解除して全画面で開く (= ユーザー要望)。 -1 を目印にする
-        //   (スロットは 0..3 なので衝突しない)。
-        PopupMenuItem<int>(
-          value: -1,
-          height: 38,
-          child: Row(children: [
-            const Icon(Icons.close_fullscreen_rounded,
-                size: 15, color: Color(0xFFFFB74D)),
-            const SizedBox(width: 8),
-            Text(provider.t('drawer.dissolveAndOpenFull'),
-                style: const TextStyle(color: Colors.white, fontSize: 13)),
-          ]),
-        ),
+        // ★ 見出し (「どの画面で開きますか」) は出さない
+        //   (= ユーザー要望: 並んでいる項目を見れば分かるので不要)。
         for (final k in slots)
           PopupMenuItem<int>(
             value: k,
@@ -67898,6 +67881,19 @@ class _MindMapScreenState extends State<MindMapScreen>
                   style: const TextStyle(color: Colors.white, fontSize: 13)),
             ]),
           ),
+        // ★ 分割を解除して全画面で開く (= ユーザー要望: 一番下に)。
+        //   -1 を目印にする (スロットは 0..3 なので衝突しない)。
+        PopupMenuItem<int>(
+          value: -1,
+          height: 38,
+          child: Row(children: [
+            const Icon(Icons.close_fullscreen_rounded,
+                size: 15, color: Color(0xFFFFB74D)),
+            const SizedBox(width: 8),
+            Text(provider.t('drawer.dissolveAndOpenFull'),
+                style: const TextStyle(color: Colors.white, fontSize: 13)),
+          ]),
+        ),
       ],
     );
   }
@@ -68589,6 +68585,37 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 種類ごとの外部ツール窓の windowId (二重起動よけ)。
   final Map<String, int> _popOutToolWinIds = {};
 
+  /// メモを「アプリの外の窓」 (別プロセス) として開く。
+  ///
+  /// = ユーザー要望「大元のアプリを閉じてもメモは落ちないように」。
+  /// 既に開いていればもう 1 つ作らず、 その窓を前面へ出す。
+  Future<void> _openExternalMemoWindow(MindMapProvider provider) async {
+    // 押したボタンの近くに出す (= 今までのサブ窓と同じ場所)。
+    const size = Size(460, 560);
+    var origin = const Offset(160, 120);
+    try {
+      final b = await windowManager.getBounds();
+      final p = _lastCustomButtonPointerPos;
+      if (p != null) {
+        origin = Offset(
+          (b.left + p.dx + 16)
+              .clamp(b.left + 8, math.max(b.left + 8, b.right - size.width - 8)),
+          (b.top + p.dy + 16).clamp(
+              b.top + 8, math.max(b.top + 8, b.bottom - size.height - 8)),
+        );
+      }
+    } catch (_) {}
+    if (await openExternalMemoProcess(at: origin)) return;
+    if (!mounted) return;
+    _appSnack(
+      context,
+      SnackBar(
+        content: Text(provider.t('popOut.failed')),
+        backgroundColor: const Color(0xFFE57373),
+      ),
+    );
+  }
+
   Future<void> _openPopOutWindow(MindMapProvider provider,
       {required String kind,
       String? query,
@@ -68627,6 +68654,19 @@ class _MindMapScreenState extends State<MindMapScreen>
     //   開く。 マップを見ながら AI を使えるという目的は同じ。
     if (kind == 'ai') {
       _openDesktopFloatingAi(provider, query: query);
+      return;
+    }
+    // ── メモは「アプリの外の窓」 (別プロセス) で開く ──
+    //   = ユーザー要望「メモをフローティングモードで立ち上げた後に大元の
+    //   アプリを × ボタンで閉じるとメモ自体も落ちてしまっているから、
+    //   独立で動作して落ちないように」。
+    //   desktop_multi_window のサブ窓は本体と同じプロセスなので、 本体を
+    //   終わらせると道連れで消えていた。 外の窓 (Web / 自動操作) と同じく
+    //   自分自身をもう 1 つ立ち上げて、 メモだけの窓にする。
+    //   中身は同じ保存先を読み書きし、 AI や「マップに出す」は本体へ
+    //   HTTP で頒むので、 出来ることはこれまでと変わらない。
+    if (kind == 'memo') {
+      await _openExternalMemoWindow(provider);
       return;
     }
     // ── 同じ種類の窓が既に開いていたら閉じる (= ユーザー要望: ボタンを
@@ -113506,6 +113546,15 @@ Future<bool> openFloatingToolWindow({
       //   (上書きすると保存済みのメモが消えるので追記にする)
       await appendFloatingMemoItem(text);
     }
+    // ── メモは「アプリの外の窓」 (別プロセス) で開く ──
+    //    = ユーザー要望「大元のアプリを × で閉じてもメモは落ちないように」。
+    //    ここは動画の画面から出すメモの入口。 ボタンから出す方
+    //    (_openExternalMemoWindow) と同じ作りに揃える。
+    //    中身を渡された時は、 起動時に読ませたいので必ず新しく立ち上げる。
+    if (kind == 'memo') {
+      return openExternalMemoProcess(
+          forceNew: text != null && text.trim().isNotEmpty);
+    }
     final win = await DesktopMultiWindow.createWindow(jsonEncode(args));
     final size = kind == 'memo' ? const Size(460, 320) : const Size(520, 720);
     win
@@ -113674,6 +113723,21 @@ bool? bringExternalWindowToFront(int pid) {
   }
 }
 
+/// その番号のプロセスが、 このアプリ自身の実行ファイルかどうか。
+///
+/// 番号は使い回されるので、 控え (prefs) から読んだ番号はこれで確かめる。
+Future<bool> _isOwnExeProcess(int pid) async {
+  if (!Platform.isWindows) return false;
+  try {
+    final exe = Platform.resolvedExecutable.split(RegExp(r'[\\/]')).last;
+    final r = await Process.run('tasklist', ['/FI', 'PID eq $pid', '/NH']);
+    final out = '${r.stdout}'.toLowerCase();
+    return out.contains('$pid') && out.contains(exe.toLowerCase());
+  } catch (_) {
+    return false;
+  }
+}
+
 Future<bool> _externalWinAlive(int pid) async {
   try {
     if (Platform.isWindows) {
@@ -113684,6 +113748,67 @@ Future<bool> _externalWinAlive(int pid) async {
     final r = await Process.run('kill', ['-0', '$pid']);
     return r.exitCode == 0;
   } catch (_) {
+    return false;
+  }
+}
+
+/// メモの外窓のプロセス番号の控え先。
+const String kMemoExternalPidKey = 'floatingMemoExternalPid';
+
+/// メモを「アプリの外の窓」 (別プロセス) として立ち上げる。
+///
+/// = ユーザー要望「メモをフローティングモードで立ち上げた後に大元のアプリを
+///   × ボタンで閉じるとメモ自体も落ちてしまっているから、 独立で動作して
+///   落ちないように」。 サブ窓 (desktop_multi_window) は本体と同じプロセス
+///   なので道連れで消えていた。 別プロセスなら本体を閉じても残る。
+///
+/// [at] は開く場所。 [forceNew] が true の時は、 既に開いていても新しく
+/// 立ち上げる (= 中身を渡して開く時。 開いている窓には渡せないため)。
+Future<bool> openExternalMemoProcess({Offset? at, bool forceNew = false}) async {
+  final isDesktop =
+      !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
+  if (!isDesktop) return false;
+  const key = 'memo:external';
+  if (!forceNew) {
+    var old = _externalWinPids[key];
+    // 本体を開き直した直後は覚えていないので、 控えから読み直す
+    //   (= メモが 2 つ開いて同じ保存先を取り合うのを防ぐ)。
+    if (old == null) {
+      try {
+        final sp = await SharedPreferences.getInstance();
+        final p = sp.getInt(kMemoExternalPidKey);
+        if (p != null && p > 0 && await _isOwnExeProcess(p)) old = p;
+      } catch (_) {}
+    }
+    if (old != null) {
+      if (await _externalWinAlive(old)) {
+        _externalWinPids[key] = old;
+        bringExternalWindowToFront(old);
+        return true;
+      }
+      _externalWinPids.remove(key);
+    }
+  }
+  try {
+    final proc = await Process.start(
+      Platform.resolvedExecutable,
+      [
+        '--floating-memo',
+        if (at != null) ...[
+          '--floating-x=${at.dx.round()}',
+          '--floating-y=${at.dy.round()}',
+        ],
+      ],
+      mode: ProcessStartMode.detached,
+    );
+    _externalWinPids[key] = proc.pid;
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setInt(kMemoExternalPidKey, proc.pid);
+    } catch (_) {}
+    return true;
+  } catch (e) {
+    debugPrint('メモの外窓を開けませんでした: $e');
     return false;
   }
 }
@@ -116271,7 +116396,7 @@ $mapsJs
         var code = String(codeNow || '');
         var next = null;
         try {
-          if (/^\s*mindmap\b/m.test(code)) {
+          if (/^\\s*mindmap\\b/m.test(code)) {
             // mindmap は行で持っているので、 出ている文字で行を探す。
             next = replaceFirstLabel(code, before, v);
           } else if (key && window.__mmFlowSetLabel) {
@@ -116295,13 +116420,18 @@ $mapsJs
     /// 今出ている文字と同じ所を 1 か所だけ入れ替える。
     function replaceFirstLabel(src, before, after) {
       if (!before) return null;
-      var lines = String(src).split('\n');
+      // ★ ここは raw でない三重引用符の中なので、 JS へ改行のエスケープを
+      //   届けるにはバックスラッシュを 2 つ書く。 1 つだと Dart が本物の
+      //   改行に変えてしまい、 JS の文字列が途中で切れて構文エラーになり、
+      //   この <script> がまるごと捨てられてプレビューが真っ白になる
+      //   (= ユーザー報告: マークダウンがプレビュー表示に変換できていない)。
+      var lines = String(src).split('\\n');
       for (var i = 0; i < lines.length; i++) {
         var at = lines[i].indexOf(before);
         if (at < 0) continue;
         lines[i] = lines[i].slice(0, at) + after +
           lines[i].slice(at + before.length);
-        return lines.join('\n');
+        return lines.join('\\n');
       }
       return null;
     }
@@ -116463,7 +116593,7 @@ $mapsJs
     var t = String(text || '');
     // 絵文字・記号・異体字セレクタ・囲み文字を頭から落とす。
     t = t.replace(
-      /^(?:[\u2190-\u2BFF\u2600-\u27BF\uFE0E\uFE0F\u20E3\u3297\u3299]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|\uD83E[\uDC00-\uDFFF]|\s)+/,
+      /^(?:[\\u2190-\\u2BFF\\u2600-\\u27BF\\uFE0E\\uFE0F\\u20E3\\u3297\\u3299]|\\uD83C[\\uDC00-\\uDFFF]|\\uD83D[\\uDC00-\\uDFFF]|\\uD83E[\\uDC00-\\uDFFF]|\\s)+/,
       '');
     return t.trim() || String(text || '').trim();
   }
@@ -130539,7 +130669,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
     }
   }
 
-  /// \u7528\u7d19\u30b5\u30a4\u30ba\u3092\u6bb5\u968e\u7684\u306b\u9078\u3076\u3002
+  /// 用紙サイズを段階的に選ぶ。
   Future<void> _pickCanvasSize() async {
     final isJapanese = widget.provider.appLanguage == 'ja';
     final cat = await _simpleChoice(widget.provider.t('paint.paperType'), [
@@ -191506,9 +191636,38 @@ class _SsShape {
   double height;
   double dx;
   double dy;
-  final String text;
-  final int? fillArgb;
-  final int? lineArgb;
+
+  /// 中の文字 (= ユーザー要望: 吹き出しの中を触って編集できるように)。
+  String text;
+
+  /// 塗りの色 (null = 塗り無し = 透明)。
+  int? fillArgb;
+
+  /// 枠線の色 (null = 枠線無し)。
+  int? lineArgb;
+
+  /// 枠線の太さ (pt)。
+  double lineWidth;
+
+  /// 中の文字の色 (null = 既定)。
+  int? textArgb;
+
+  /// 中の文字の大きさ (pt、 null = 既定)。
+  double? fontSize;
+
+  /// 元の Excel ファイルに入っていた図形か。
+  /// 元からある図形は、 保存時に元の drawing を書き換える
+  /// (新しく作り直さない)。
+  final bool fromOriginal;
+
+  /// 元の drawing の場所と、 その中の何番目の anchor か
+  /// (= 保存時にこの anchor を書き換える)。
+  final String? originDrawing;
+  final int originAnchor;
+
+  /// 使う人が手を入れたか (= 保存時に元の drawing を書き換える)。
+  bool edited;
+
   _SsShape({
     required this.kind,
     required this.row,
@@ -191520,7 +191679,34 @@ class _SsShape {
     this.text = '',
     this.fillArgb,
     this.lineArgb,
+    this.lineWidth = 1.0,
+    this.textArgb,
+    this.fontSize,
+    this.fromOriginal = false,
+    this.originDrawing,
+    this.originAnchor = -1,
+    this.edited = false,
   });
+
+  _SsShape copy() => _SsShape(
+        kind: kind,
+        row: row,
+        col: col,
+        width: width,
+        height: height,
+        dx: dx,
+        dy: dy,
+        text: text,
+        fillArgb: fillArgb,
+        lineArgb: lineArgb,
+        lineWidth: lineWidth,
+        textArgb: textArgb,
+        fontSize: fontSize,
+        fromOriginal: fromOriginal,
+        originDrawing: originDrawing,
+        originAnchor: originAnchor,
+        edited: edited,
+      );
 }
 
 class _SsImage {
@@ -191571,6 +191757,10 @@ class _SsImage {
         chart: chart == null ? null : Map<String, dynamic>.from(chart!),
         width: width,
         height: height,
+        // ★ ここを渡し忘れていたため、 取り消し (Ctrl+Z) を 1 回でも使うと
+        //   元ファイルの図が「アプリで貼った図」 扱いになり、 保存のたびに
+        //   同じ図が二重に埋め込まれていた。
+        fromOriginal: fromOriginal,
       );
 
   /// 中身 (bytes) は xl/media 側に入るので、 ここでは置き場所だけ。
@@ -191596,6 +191786,9 @@ class _SheetSnapshot {
   /// ように)。 シート名 → その中身。
   Map<String, List<_SsTable>> tables = const {};
   Map<String, List<_SsImage>> images = const {};
+
+  /// 元 Excel の図形 (吹き出し等)。 文字や位置を戻せるように控える。
+  Map<String, List<_SsShape>> shapes = const {};
 
   /// セルの飾りと結合も控える (= ユーザー要望: Ctrl+Z で戻せるように)。
   Map<String, Map<String, _SsCellFmt>> fmts = const {};
@@ -191721,6 +191914,10 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
       for (final e in _sheetImages.entries)
         e.key: [for (final i in e.value) i.copy()],
     };
+    snap.shapes = {
+      for (final e in _sheetShapes.entries)
+        e.key: [for (final sh in e.value) sh.copy()],
+    };
     snap.fmts = {
       for (final e in _sheetFmts.entries)
         e.key: {for (final f in e.value.entries) f.key: f.value.copy()},
@@ -191756,6 +191953,14 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
           for (final e in s.images.entries)
             e.key: [for (final i in e.value) i.copy()],
         });
+      _sheetShapes
+        ..clear()
+        ..addAll({
+          for (final e in s.shapes.entries)
+            e.key: [for (final sh in e.value) sh.copy()],
+        });
+      // 中身を作り直したので、 選んでいた図形の指し先は捨てる。
+      _activeShape = null;
       _sheetFmts
         ..clear()
         ..addAll({
@@ -191894,6 +192099,10 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
   /// 元 Excel から読んだ図形 (表示専用)。
   final Map<String, List<_SsShape>> _sheetShapes = {};
   List<_SsShape> get _shapes => _sheetShapes[_activeSheet] ??= [];
+
+  /// 消した「元ファイルにあった図形」 ('drawing の場所|anchor 番号')。
+  /// 保存時にこの anchor を drawing から取り除く。
+  final Set<String> _removedOriginShapes = <String>{};
 
   /// [r],[c] を含む表 (無ければ null)。 セルの色付けに使う。
   _SsTable? _tableAt(int r, int c) {
@@ -192562,6 +192771,9 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
       _sheetTables.clear();
       _sheetImages.clear();
       _sheetShapes.clear();
+      // 別のファイルを開いたら、 消した図形の控えも捨てる。
+      _removedOriginShapes.clear();
+      _activeShape = null;
       final tables = meta['tables'];
       if (tables is Map) {
         tables.forEach((k, v) {
@@ -194142,7 +194354,10 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
         //   番号がずれてセルの見た目が入れ替わるため)。
         final withFmt = _writeCellFormatsIntoZip(Uint8List.fromList(bytes));
         final withImages = _embedImagesIntoXlsx(withFmt);
-        await file.writeAsBytes(withImages, flush: true);
+        // 元 Excel の図形 (吹き出し等) に手を入れていたら、 それも書き戻す
+        // (= ユーザー要望: 吹き出しの中を編集できるように)。
+        final withShapes = _applyShapeEditsToXlsx(withImages);
+        await file.writeAsBytes(withShapes, flush: true);
       } else {
         final rows = _sheets[_activeSheet] ?? const [];
         // CSV/TSV も実データ範囲のみ書き出し
@@ -197314,46 +197529,249 @@ $csvText
     );
   }
 
-  /// シートに貼った図 1 個 (= ユーザー要望: 図の挿入)。
-  /// 位置はセル番号から計算し、 ドラッグで動かす。 右下でサイズ変更。
-  /// 元 Excel の図形 (吹き出し等) を、 枠 + 文字の箱として重ねる (表示専用)。
+  /// 今選んでいる図形 (掛け目と掴みを出す相手)。
+  _SsShape? _activeShape;
+
+  /// 元 Excel の図形 (吹き出し等) を、 元と同じ塗り / 枠線 / 文字で重ねる。
+  ///
+  /// = ユーザー要望「吹き出しが透明化しており、 中の要素に触れて編集する
+  ///   ことができない」。 以前は IgnorePointer + 半透明で、 見るだけだった。
+  ///   今はドラッグで動かす / 右下の掴みで大きさを変える /
+  ///   二度押しで中の文字を書き換える / 押してメニュー、 ができる。
   Widget _buildSheetShape(_SsShape sh) {
     final left = _rowHeaderWidth + sh.col * _cellWidth + sh.dx;
     final top = _colHeaderHeight + sh.row * _cellHeight + sh.dy;
-    final fill = sh.fillArgb != null
-        ? Color(sh.fillArgb!).withValues(alpha: 0.28)
-        : const Color(0xFFFFF3C4).withValues(alpha: 0.55);
-    final line = sh.lineArgb != null
-        ? Color(sh.lineArgb!)
-        : const Color(0xFF8D6E00);
-    final rounded = sh.kind.toLowerCase().contains('round') ||
-        sh.kind.toLowerCase().contains('callout') ||
-        sh.kind.toLowerCase().contains('bubble') ||
-        sh.kind == 'ellipse';
+    final w = sh.width.clamp(12.0, 4000.0);
+    final h = sh.height.clamp(12.0, 4000.0);
+    final kind = sh.kind.toLowerCase();
+    final isEllipse = kind.contains('ellipse') ||
+        kind.contains('oval') ||
+        kind == 'circle' ||
+        kind.contains('cloud');
+    // ★ 丸めるのは本当に丸い形だけ (= 元の Excel と同じ見た目にするため。
+    //   以前は callout を全部丸めていたが、 wedgeRectCallout は四角い)。
+    final rounded = kind.contains('round');
+    final radius = isEllipse
+        ? BorderRadius.all(Radius.elliptical(w / 2, h / 2))
+        : BorderRadius.circular(rounded ? 10 : 2);
+    final active = identical(_activeShape, sh);
     return Positioned(
       left: left,
       top: top,
-      width: sh.width.clamp(12.0, 4000.0),
-      height: sh.height.clamp(12.0, 4000.0),
-      child: IgnorePointer(
-        child: Container(
-          alignment: Alignment.center,
-          padding: const EdgeInsets.all(4),
-          decoration: BoxDecoration(
-            color: fill,
-            border: Border.all(color: line, width: 1.2),
-            borderRadius:
-                BorderRadius.circular(sh.kind == 'ellipse' ? sh.height / 2 : (rounded ? 12 : 2)),
+      width: w,
+      height: h,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        // ドラッグで自由に動かす (図と同じやり方)。
+        onPanUpdate: (d) {
+          setState(() {
+            _activeShape = sh;
+            sh.dx += d.delta.dx;
+            sh.dy += d.delta.dy;
+            while (sh.dx >= _cellWidth && sh.col < _colCount - 1) {
+              sh.dx -= _cellWidth;
+              sh.col++;
+            }
+            while (sh.dx < 0 && sh.col > 0) {
+              sh.dx += _cellWidth;
+              sh.col--;
+            }
+            while (sh.dy >= _cellHeight && sh.row < _rowCount - 1) {
+              sh.dy -= _cellHeight;
+              sh.row++;
+            }
+            while (sh.dy < 0 && sh.row > 0) {
+              sh.dy += _cellHeight;
+              sh.row--;
+            }
+            if (sh.col <= 0 && sh.dx < 0) sh.dx = 0;
+            if (sh.row <= 0 && sh.dy < 0) sh.dy = 0;
+            sh.edited = true;
+            _dirty = true;
+          });
+        },
+        onTapUp: (d) {
+          setState(() => _activeShape = sh);
+          unawaited(_showSheetShapeMenu(sh, d.globalPosition));
+        },
+        // 二度押しですぐに中の文字を直せる。
+        onDoubleTap: () {
+          setState(() => _activeShape = sh);
+          unawaited(_editSheetShapeText(sh));
+        },
+        child: Stack(clipBehavior: Clip.none, children: [
+          Positioned.fill(
+            child: Container(
+              alignment: Alignment.center,
+              padding: const EdgeInsets.all(4),
+              decoration: BoxDecoration(
+                color:
+                    sh.fillArgb == null ? Colors.transparent : Color(sh.fillArgb!),
+                border: sh.lineArgb == null
+                    ? (active
+                        ? Border.all(
+                            color: const Color(0xFF4FC3F7).withValues(alpha: 0.7))
+                        : null)
+                    : Border.all(
+                        color: Color(sh.lineArgb!),
+                        width: sh.lineWidth.clamp(0.5, 8.0)),
+                borderRadius: radius,
+              ),
+              child: sh.text.isEmpty
+                  ? const SizedBox.shrink()
+                  : Text(sh.text,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                          color: Color(sh.textArgb ?? 0xFF1B1B2A),
+                          fontSize: sh.fontSize ?? 12),
+                      overflow: TextOverflow.clip),
+            ),
           ),
-          child: sh.text.isEmpty
-              ? const SizedBox.shrink()
-              : Text(sh.text,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: Color(0xFF1B1B2A), fontSize: 12),
-                  overflow: TextOverflow.clip),
-        ),
+          // 選んでいる間だけ、 右下に大きさを変える掴みを出す
+          // (= 常に出すと、 元から図形が多いシートでうるさいため)。
+          // ★ 枠の外 (-6) に置くと親の外へはみ出た分は押せないので、
+          //   枠の中に収める (= 確実に掴めるように)。
+          if (active)
+            Positioned(
+              right: 0,
+              bottom: 0,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onPanUpdate: (d) {
+                  setState(() {
+                    sh.width = math.max(20.0, sh.width + d.delta.dx);
+                    sh.height = math.max(16.0, sh.height + d.delta.dy);
+                    sh.edited = true;
+                    _dirty = true;
+                  });
+                },
+                child: Container(
+                  width: 13,
+                  height: 13,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF4FC3F7),
+                    borderRadius: BorderRadius.circular(3),
+                    border: Border.all(color: Colors.white, width: 1.2),
+                  ),
+                ),
+              ),
+            ),
+        ]),
       ),
     );
+  }
+
+  /// 図形を押した時のメニュー (文字を変える / 選択をやめる / 消す)。
+  Future<void> _showSheetShapeMenu(_SsShape sh, Offset globalPos) async {
+    final provider = context.read<MindMapProvider>();
+    final box = Overlay.of(context).context.findRenderObject() as RenderBox?;
+    if (box == null) return;
+    final sel = await showMenu<String>(
+      context: context,
+      color: const Color(0xFF1E1E2E),
+      position: RelativeRect.fromRect(
+          globalPos & const Size(1, 1), Offset.zero & box.size),
+      items: [
+        PopupMenuItem<String>(
+          value: 'text',
+          height: 36,
+          child: Row(children: [
+            const Icon(Icons.edit_note_rounded,
+                size: 15, color: Color(0xFF4FC3F7)),
+            const SizedBox(width: 8),
+            Text(provider.t('ssShape.editText'),
+                style: const TextStyle(color: Colors.white, fontSize: 12.5)),
+          ]),
+        ),
+        PopupMenuItem<String>(
+          value: 'unselect',
+          height: 36,
+          child: Row(children: [
+            const Icon(Icons.highlight_off_rounded,
+                size: 15, color: Colors.white54),
+            const SizedBox(width: 8),
+            Text(provider.t('ssShape.unselect'),
+                style: const TextStyle(color: Colors.white, fontSize: 12.5)),
+          ]),
+        ),
+        PopupMenuItem<String>(
+          value: 'delete',
+          height: 36,
+          child: Row(children: [
+            const Icon(Icons.delete_outline_rounded,
+                size: 15, color: Color(0xFFE57373)),
+            const SizedBox(width: 8),
+            Text(provider.t('common.delete'),
+                style: const TextStyle(
+                    color: Color(0xFFE57373), fontSize: 12.5)),
+          ]),
+        ),
+      ],
+    );
+    if (sel == null || !mounted) return;
+    if (sel == 'text') {
+      await _editSheetShapeText(sh);
+    } else if (sel == 'unselect') {
+      setState(() => _activeShape = null);
+    } else if (sel == 'delete') {
+      _pushUndo();
+      setState(() {
+        // 元ファイルにあった図形は、 保存時に drawing からも消す。
+        if (sh.fromOriginal && sh.originDrawing != null) {
+          _removedOriginShapes.add('${sh.originDrawing}|${sh.originAnchor}');
+        }
+        _shapes.remove(sh);
+        if (identical(_activeShape, sh)) _activeShape = null;
+        _dirty = true;
+      });
+    }
+  }
+
+  /// 図形の中の文字を書き換える。
+  Future<void> _editSheetShapeText(_SsShape sh) async {
+    final provider = context.read<MindMapProvider>();
+    final ctrl = TextEditingController(text: sh.text);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E2E),
+        title: Text(provider.t('ssShape.textTitle'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          maxLines: null,
+          style: const TextStyle(color: Colors.white, fontSize: 13),
+          decoration: const InputDecoration(
+            enabledBorder: UnderlineInputBorder(
+                borderSide: BorderSide(color: Colors.white24)),
+            focusedBorder: UnderlineInputBorder(
+                borderSide: BorderSide(color: Color(0xFF4FC3F7))),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c, false),
+            child: Text(provider.t('common.cancel'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(c, true),
+            child: Text(provider.t('common.done'),
+                style: const TextStyle(color: Color(0xFF4FC3F7))),
+          ),
+        ],
+      ),
+    );
+    final body = ctrl.text;
+    ctrl.dispose();
+    if (ok != true || !mounted || body == sh.text) return;
+    _pushUndo();
+    setState(() {
+      sh.text = body;
+      sh.edited = true;
+      _dirty = true;
+    });
   }
 
   /// 元 Excel の drawing (画像・図形) を zip から直接読む (表示専用)。
@@ -197369,6 +197787,8 @@ $csvText
         return null;
       }
       String? findText(String name) => _zipText(archive, name);
+      // テーマの色 (schemeClr を実際の色に直すため)。
+      final theme = _readDrawingThemeColors(findText('xl/theme/theme1.xml'));
 
       // シート名 → sheetN.xml のパス。
       final relTarget = <String, String>{};
@@ -197432,11 +197852,14 @@ $csvText
 
         final imgs = _sheetImages[name] ??= [];
         final shapes = _sheetShapes[name] ??= [];
+        // 何番目の anchor か (= 保存時にこの番号で書き換え先を探す)。
+        var anchorIndex = -1;
         for (final aM in RegExp(
                 r'<xdr:(oneCellAnchor|twoCellAnchor)\b.*?</xdr:\1>',
                 dotAll: true)
             .allMatches(drXml)) {
           final a = aM.group(0)!;
+          anchorIndex++;
           final from = _readAnchorPoint(a, 'from');
           if (from == null) continue;
           // 大きさ: oneCell は ext、 twoCell は to から概算。
@@ -197485,7 +197908,10 @@ $csvText
             continue;
           }
           // 図形 (sp)。 文字と種類だけ拾って箱で出す。
-          if (a.contains('<xdr:sp')) {
+          // ★ '<xdr:sp' だけで見ると <xdr:spPr> にも当たってしまい、
+          //   コネクタ (<xdr:cxnSp> = 直線・矢印) まで四角い箱として描いて
+          //   いた。 本物の図形 (<xdr:sp> / <xdr:sp ...>) だけを拾う。
+          if (a.contains('<xdr:sp>') || a.contains('<xdr:sp ')) {
             final prst =
                 RegExp(r'<a:prstGeom\b[^>]*prst="([^"]+)"').firstMatch(a)
                     ?.group(1) ?? 'rect';
@@ -197494,6 +197920,8 @@ $csvText
                 .allMatches(a)) {
               tbuf.write(_unescapeXml(t.group(1) ?? ''));
             }
+            final (lineArgb, lineW) = _readShapeLine(a, theme);
+            final (textArgb, textSz) = _readShapeTextStyle(a, theme);
             shapes.add(_SsShape(
               kind: prst,
               row: from.$2,
@@ -197503,13 +197931,179 @@ $csvText
               dx: from.$3,
               dy: from.$4,
               text: tbuf.toString(),
-              fillArgb: _readShapeFill(a),
+              fillArgb: _readShapeFill(a, theme),
+              lineArgb: lineArgb,
+              lineWidth: lineW,
+              textArgb: textArgb,
+              fontSize: textSz,
+              fromOriginal: true,
+              originDrawing: drTarget,
+              originAnchor: anchorIndex,
             ));
           }
         }
       }
     } catch (e) {
       debugPrint('xlsx の図の読み取りに失敗: $e');
+    }
+  }
+
+  /// XML の特殊文字を実体参照へ。
+  static String _escapeXmlText(String s) => s
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;');
+
+  /// 図形の文字を <a:t> の並びへ。 改行は <a:br/> で繋ぐ
+  /// (= <a:t> の中に生の改行を入れても Excel では 1 行に潰れるため)。
+  ///
+  /// 呼ぶ側は既にある `<a:t>...</a:t>` 1 個をこれで置き換える。 2 行目以降は
+  /// 走り (a:r) を閉じ直して繋ぐので、 元の `<a:r>` の中にそのまま収まる。
+  static String _shapeRunsXml(String text) {
+    final lines = text.split('\n');
+    final buf = StringBuffer('<a:t>${_escapeXmlText(lines.first)}</a:t>');
+    for (var i = 1; i < lines.length; i++) {
+      buf.write('</a:r><a:br/><a:r><a:rPr lang="ja-JP"/>'
+          '<a:t>${_escapeXmlText(lines[i])}</a:t>');
+    }
+    return buf.toString();
+  }
+
+  /// anchor 1 個を、 画面の図形 [sh] に合わせて書き換える。
+  String _rewriteShapeAnchor(String a, _SsShape sh) {
+    var out = a;
+    // ── 中の文字 ──  1 つ目に全文を入れ、 残りは空にする。
+    final ts = RegExp(r'<a:t>.*?</a:t>', dotAll: true).allMatches(out).toList();
+    if (ts.isNotEmpty) {
+      final buf = StringBuffer();
+      var prev = 0;
+      for (var i = 0; i < ts.length; i++) {
+        buf.write(out.substring(prev, ts[i].start));
+        buf.write(i == 0 ? _shapeRunsXml(sh.text) : '<a:t></a:t>');
+        prev = ts[i].end;
+      }
+      buf.write(out.substring(prev));
+      out = buf.toString();
+    } else if (sh.text.isNotEmpty) {
+      // 元は文字が入っていなかった → 段落に 1 つ足す。
+      final p = RegExp(r'</a:p>').firstMatch(out);
+      if (p != null) {
+        out = out.replaceRange(p.start, p.start,
+            '<a:r><a:rPr lang="ja-JP"/>${_shapeRunsXml(sh.text)}</a:r>');
+      }
+    }
+    // ── 置き場所と大きさ ──
+    String setPoint(
+        String src, String which, int col, int row, double offX, double offY) {
+      final m = RegExp('<xdr:$which\\b.*?</xdr:$which>', dotAll: true)
+          .firstMatch(src);
+      if (m == null) return src;
+      return src.replaceRange(
+          m.start,
+          m.end,
+          '<xdr:$which>'
+          '<xdr:col>${col < 0 ? 0 : col}</xdr:col>'
+          '<xdr:colOff>${(offX * 9525).round()}</xdr:colOff>'
+          '<xdr:row>${row < 0 ? 0 : row}</xdr:row>'
+          '<xdr:rowOff>${(offY * 9525).round()}</xdr:rowOff>'
+          '</xdr:$which>');
+    }
+
+    out = setPoint(out, 'from', sh.col, sh.row, sh.dx, sh.dy);
+    if (out.contains('<xdr:to')) {
+      // twoCellAnchor は右下の角も動かす (読む時と同じ目盛りで)。
+      final rightPx = sh.col * _cellWidth + sh.dx + sh.width;
+      final bottomPx = sh.row * _cellHeight + sh.dy + sh.height;
+      final toCol = (rightPx / _cellWidth).floor();
+      final toRow = (bottomPx / _cellHeight).floor();
+      out = setPoint(out, 'to', toCol, toRow, rightPx - toCol * _cellWidth,
+          bottomPx - toRow * _cellHeight);
+    }
+    // oneCellAnchor は ext (大きさ) を直接持つ。
+    out = out.replaceAllMapped(
+        RegExp(r'<xdr:ext\b[^>]*/>'),
+        (m) => '<xdr:ext cx="${(sh.width * 9525).round()}" '
+            'cy="${(sh.height * 9525).round()}"/>');
+    return out;
+  }
+
+  /// 元 Excel の図形に加えた変更 (文字 / 位置 / 大きさ / 削除) を、
+  /// 出来上がった xlsx の drawing xml へ書き戻す。
+  ///
+  /// excel パッケージは drawing を一切触らないので、 元の
+  /// xl/drawings/*.xml はそのままコピーされて残る。 手を入れた分を
+  /// ここで上書きしないと、 画面で直したのに保存すると元に戻ってしまう。
+  Uint8List _applyShapeEditsToXlsx(Uint8List src) {
+    final edits = <String, Map<int, _SsShape>>{};
+    for (final list in _sheetShapes.values) {
+      for (final sh in list) {
+        final path = sh.originDrawing;
+        if (!sh.edited ||
+            !sh.fromOriginal ||
+            path == null ||
+            sh.originAnchor < 0) {
+          continue;
+        }
+        (edits[path] ??= <int, _SsShape>{})[sh.originAnchor] = sh;
+      }
+    }
+    // 今も画面にある「元からの図形」。 取り消し (Ctrl+Z) で戻ってきた物を
+    // 消してしまわないよう、 消す一覧から外す。
+    final live = <String>{};
+    for (final list in _sheetShapes.values) {
+      for (final sh in list) {
+        if (sh.fromOriginal && sh.originDrawing != null) {
+          live.add('${sh.originDrawing}|${sh.originAnchor}');
+        }
+      }
+    }
+    final removed = <String, Set<int>>{};
+    for (final key in _removedOriginShapes) {
+      if (live.contains(key)) continue;
+      final i = key.lastIndexOf('|');
+      if (i <= 0) continue;
+      final idx = int.tryParse(key.substring(i + 1));
+      if (idx == null) continue;
+      (removed[key.substring(0, i)] ??= <int>{}).add(idx);
+    }
+    if (edits.isEmpty && removed.isEmpty) return src;
+    try {
+      final archive = ZipDecoder().decodeBytes(src);
+      final out = Archive();
+      for (final f in archive.files) {
+        if (!f.isFile) continue;
+        final byAnchor = edits[f.name] ?? const <int, _SsShape>{};
+        final drop = removed[f.name] ?? const <int>{};
+        if (byAnchor.isEmpty && drop.isEmpty) {
+          out.addFile(ArchiveFile(f.name, f.size, f.content as List<int>));
+          continue;
+        }
+        final xml = utf8.decode(f.content as List<int>, allowMalformed: true);
+        final buf = StringBuffer();
+        var prev = 0;
+        var idx = -1;
+        for (final m in RegExp(
+                r'<xdr:(oneCellAnchor|twoCellAnchor)\b.*?</xdr:\1>',
+                dotAll: true)
+            .allMatches(xml)) {
+          idx++;
+          final sh = byAnchor[idx];
+          final gone = drop.contains(idx);
+          if (sh == null && !gone) continue;
+          buf.write(xml.substring(prev, m.start));
+          if (!gone) buf.write(_rewriteShapeAnchor(m.group(0)!, sh!));
+          prev = m.end;
+        }
+        buf.write(xml.substring(prev));
+        final data = utf8.encode(buf.toString());
+        out.addFile(ArchiveFile(f.name, data.length, data));
+      }
+      final zipped = ZipEncoder().encode(out);
+      if (zipped == null) return src;
+      return Uint8List.fromList(zipped);
+    } catch (e) {
+      debugPrint('xlsx の図形の書き戻しに失敗: $e');
+      return src; // 図形が戻らないだけで、 表データは失わない。
     }
   }
 
@@ -197540,14 +198134,190 @@ $csvText
     return (rd('col'), rd('row'), rd('colOff') / 9525.0, rd('rowOff') / 9525.0);
   }
 
-  /// 図形の塗り色 (a:solidFill の srgbClr) を ARGB で。 無ければ null。
-  static int? _readShapeFill(String a) {
-    final sp = RegExp(r'<xdr:spPr\b.*?</xdr:spPr>', dotAll: true).firstMatch(a);
-    final scope = sp?.group(0) ?? a;
-    final m = RegExp(r'<a:solidFill>\s*<a:srgbClr\b[^>]*val="([0-9A-Fa-f]{6})"')
+  /// 名前で書かれた色 (prstClr) のうち、 よく使われる物。
+  static const Map<String, String> _kPrstColors = {
+    'white': 'FFFFFF',
+    'black': '000000',
+    'red': 'FF0000',
+    'green': '008000',
+    'blue': '0000FF',
+    'yellow': 'FFFF00',
+    'gray': '808080',
+    'grey': '808080',
+    'orange': 'FFA500',
+  };
+
+  /// テーマの色 (xl/theme/theme1.xml の clrScheme) を 名前 → RRGGBB で。
+  ///
+  /// ★ Excel の「白」は多くの場合 srgbClr ではなく schemeClr val="bg1"
+  ///   として入っている。 これを読めないと塗りを見失い、 枠線の色を
+  ///   塗りと取り違える (= ユーザー報告: 白背景・赤枠が赤背景になる)。
+  static Map<String, String> _readDrawingThemeColors(String? themeXml) {
+    final out = <String, String>{};
+    if (themeXml == null) return out;
+    final scheme = RegExp(r'<a:clrScheme\b.*?</a:clrScheme>', dotAll: true)
+        .firstMatch(themeXml);
+    if (scheme == null) return out;
+    for (final m in RegExp(
+            r'<a:(dk1|lt1|dk2|lt2|accent1|accent2|accent3|accent4|accent5|accent6|hlink|folHlink)\b[^>]*>(.*?)</a:\1>',
+            dotAll: true)
+        .allMatches(scheme.group(0)!)) {
+      final body = m.group(2) ?? '';
+      final v = RegExp(r'<a:srgbClr\b[^>]*val="([0-9A-Fa-f]{6})"')
+              .firstMatch(body)
+              ?.group(1) ??
+          RegExp(r'<a:sysClr\b[^>]*lastClr="([0-9A-Fa-f]{6})"')
+              .firstMatch(body)
+              ?.group(1);
+      if (v != null) out[m.group(1)!] = v.toUpperCase();
+    }
+    return out;
+  }
+
+  /// 明るく / 暗くする指定 (shade / tint / lumMod / lumOff) を反映する。
+  static int _applyClrMods(int rgb, String body) {
+    var r = (rgb >> 16) & 0xFF;
+    var g = (rgb >> 8) & 0xFF;
+    var b = rgb & 0xFF;
+    double? pct(String tag) {
+      final m = RegExp('<a:$tag\\b[^>]*val="(\\d+)"').firstMatch(body);
+      return m == null ? null : int.parse(m.group(1)!) / 100000.0;
+    }
+
+    final shade = pct('shade') ?? pct('lumMod');
+    if (shade != null && shade > 0 && shade < 1) {
+      r = (r * shade).round();
+      g = (g * shade).round();
+      b = (b * shade).round();
+    }
+    final tint = pct('tint') ?? pct('lumOff');
+    if (tint != null && tint > 0 && tint < 1) {
+      r = (r + (255 - r) * tint).round();
+      g = (g + (255 - g) * tint).round();
+      b = (b + (255 - b) * tint).round();
+    }
+    return (r.clamp(0, 255) << 16) | (g.clamp(0, 255) << 8) | b.clamp(0, 255);
+  }
+
+  /// 色を表す要素 (srgbClr / schemeClr / sysClr / prstClr) を ARGB へ。
+  static int? _readClrElement(String scope, Map<String, String> theme) {
+    final m = RegExp(
+            r'<a:(srgbClr|schemeClr|sysClr|prstClr)\b([^>]*?)(/>|>(.*?)</a:\1>)',
+            dotAll: true)
         .firstMatch(scope);
     if (m == null) return null;
-    return int.parse('FF${m.group(1)}', radix: 16);
+    final tag = m.group(1)!;
+    final attrs = m.group(2) ?? '';
+    final body = m.group(4) ?? '';
+    String? rgb;
+    if (tag == 'srgbClr') {
+      rgb = RegExp(r'val="([0-9A-Fa-f]{6})"').firstMatch(attrs)?.group(1);
+    } else if (tag == 'sysClr') {
+      rgb = RegExp(r'lastClr="([0-9A-Fa-f]{6})"').firstMatch(attrs)?.group(1);
+    } else if (tag == 'prstClr') {
+      final n =
+          (RegExp(r'val="([^"]+)"').firstMatch(attrs)?.group(1) ?? '')
+              .toLowerCase();
+      rgb = _kPrstColors[n];
+    } else {
+      var n = RegExp(r'val="([^"]+)"').firstMatch(attrs)?.group(1) ?? '';
+      // bg1 / tx1 等は lt1 / dk1 の言い換え。
+      const alias = {'bg1': 'lt1', 'tx1': 'dk1', 'bg2': 'lt2', 'tx2': 'dk2'};
+      n = alias[n] ?? n;
+      rgb = theme[n];
+      rgb ??= (n == 'lt1' || n == 'lt2')
+          ? 'FFFFFF'
+          : (n == 'dk1' || n == 'dk2')
+              ? '000000'
+              : null;
+    }
+    if (rgb == null) return null;
+    final v = _applyClrMods(int.parse(rgb, radix: 16), body);
+    var alpha = 255;
+    final al = RegExp(r'<a:alpha\b[^>]*val="(\d+)"').firstMatch(body);
+    if (al != null) {
+      alpha =
+          ((int.parse(al.group(1)!) / 100000.0) * 255).round().clamp(0, 255);
+    }
+    return (alpha << 24) | v;
+  }
+
+  /// 図形の <xdr:spPr> の中身 (無ければ全体)。
+  static String _shapeSpPr(String a) =>
+      RegExp(r'<xdr:spPr\b.*?</xdr:spPr>', dotAll: true)
+          .firstMatch(a)
+          ?.group(0) ??
+      a;
+
+  /// <a:ln> (枠線) の所を取り除いた文字列。
+  ///
+  /// ★ 枠線は spPr の**中**にあるので、 そのまま探すと「最初の色」が
+  ///   枠線の色になってしまう (= 白背景・赤枠が赤背景に見えた原因)。
+  static String _withoutLn(String s) => s
+      .replaceAll(RegExp(r'<a:ln\b[^>]*/>'), '')
+      .replaceAll(RegExp(r'<a:ln\b.*?</a:ln>', dotAll: true), '');
+
+  /// 図形の塗り色。 null = 塗り無し (透明)。
+  static int? _readShapeFill(String a, Map<String, String> theme) {
+    final spPr = _withoutLn(_shapeSpPr(a));
+    if (RegExp(r'<a:noFill\b').hasMatch(spPr)) return null;
+    final sf = RegExp(r'<a:solidFill\b.*?</a:solidFill>', dotAll: true)
+        .firstMatch(spPr);
+    if (sf != null) {
+      final c = _readClrElement(sf.group(0)!, theme);
+      if (c != null) return c;
+    }
+    // グラデーションは先頭の色で代用する。
+    final gf = RegExp(r'<a:gradFill\b.*?</a:gradFill>', dotAll: true)
+        .firstMatch(spPr);
+    if (gf != null) {
+      final c = _readClrElement(gf.group(0)!, theme);
+      if (c != null) return c;
+    }
+    // spPr に書いていなければ、 図形の様式 (xdr:style の fillRef) を見る。
+    final ref =
+        RegExp(r'<a:fillRef\b.*?</a:fillRef>', dotAll: true).firstMatch(a);
+    if (ref != null) return _readClrElement(ref.group(0)!, theme);
+    return null;
+  }
+
+  /// 図形の枠線 (色、 太さ pt)。 色 null = 枠線無し。
+  static (int?, double) _readShapeLine(String a, Map<String, String> theme) {
+    final spPr = _shapeSpPr(a);
+    var widthPt = 1.0;
+    final lnM = RegExp(r'<a:ln\b[^>]*(/>|>.*?</a:ln>)', dotAll: true)
+        .firstMatch(spPr);
+    if (lnM != null) {
+      final ln = lnM.group(0)!;
+      final w = RegExp(r'<a:ln\b[^>]*?\sw="(\d+)"').firstMatch(ln);
+      if (w != null) {
+        widthPt = (int.parse(w.group(1)!) / 12700.0).clamp(0.25, 12.0);
+      }
+      if (RegExp(r'<a:noFill\b').hasMatch(ln)) return (null, widthPt);
+      final c = _readClrElement(ln, theme);
+      if (c != null) return (c, widthPt);
+    }
+    final ref = RegExp(r'<a:lnRef\b.*?</a:lnRef>', dotAll: true).firstMatch(a);
+    if (ref != null) return (_readClrElement(ref.group(0)!, theme), widthPt);
+    return (null, widthPt);
+  }
+
+  /// 図形の中の文字の色と大きさ (最初の rPr / defRPr から)。
+  static (int?, double?) _readShapeTextStyle(
+      String a, Map<String, String> theme) {
+    final tb = RegExp(r'<xdr:txBody\b.*?</xdr:txBody>', dotAll: true)
+        .firstMatch(a);
+    if (tb == null) return (null, null);
+    final rPr = RegExp(r'<a:(rPr|defRPr)\b[^>]*(/>|>.*?</a:\1>)', dotAll: true)
+        .firstMatch(tb.group(0)!);
+    if (rPr == null) return (null, null);
+    final body = rPr.group(0)!;
+    double? sz;
+    final m = RegExp(r'\ssz="(\d+)"').firstMatch(body);
+    if (m != null) sz = (int.parse(m.group(1)!) / 100.0).clamp(4.0, 96.0);
+    final sf = RegExp(r'<a:solidFill\b.*?</a:solidFill>', dotAll: true)
+        .firstMatch(body);
+    return (sf == null ? null : _readClrElement(sf.group(0)!, theme), sz);
   }
 
   Widget _buildSheetImage(_SsImage im) {

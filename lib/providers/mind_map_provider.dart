@@ -10029,6 +10029,51 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Excluir a forma selecionada (Delete)',
       'ru': 'Удалить выбранную фигуру (Delete)',
     },
+    // ── 選んだ図形の端を揃える (= ユーザー要望) ──
+    'pdfdraw.alignLeft': {
+      'ja': '左端を揃える',
+      'en': 'Align left edges',
+      'zh': '左对齐',
+      'ko': '왼쪽 끝 맞춤',
+      'es': 'Alinear a la izquierda',
+      'fr': 'À gauche',
+      'de': 'Links ausrichten',
+      'pt': 'Alinhar à esquerda',
+      'ru': 'Выровнять по левому краю',
+    },
+    'pdfdraw.alignRight': {
+      'ja': '右端を揃える',
+      'en': 'Align right edges',
+      'zh': '右对齐',
+      'ko': '오른쪽 끝 맞춤',
+      'es': 'Alinear a la derecha',
+      'fr': 'À droite',
+      'de': 'Rechts ausrichten',
+      'pt': 'Alinhar à direita',
+      'ru': 'Выровнять по правому краю',
+    },
+    'pdfdraw.alignTop': {
+      'ja': '上端を揃える',
+      'en': 'Align top edges',
+      'zh': '顶端对齐',
+      'ko': '위쪽 끝 맞춤',
+      'es': 'Alinear arriba',
+      'fr': 'En haut',
+      'de': 'Oben ausrichten',
+      'pt': 'Alinhar acima',
+      'ru': 'Выровнять по верхнему краю',
+    },
+    'pdfdraw.alignBottom': {
+      'ja': '下端を揃える',
+      'en': 'Align bottom edges',
+      'zh': '底端对齐',
+      'ko': '아래쪽 끝 맞춤',
+      'es': 'Alinear abajo',
+      'fr': 'En bas',
+      'de': 'Unten ausrichten',
+      'pt': 'Alinhar abaixo',
+      'ru': 'Выровнять по нижнему краю',
+    },
     'pdfdraw.textSize': {
       'ja': '文字の大きさ',
       'en': 'Text size',
@@ -35336,6 +35381,40 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Nichts zum Rückgängig',
       'pt': 'Nada para desfazer',
       'ru': 'Нечего отменять',
+    },
+    // ── Excel の図形 (吹き出し) を触って編集する (= ユーザー要望) ──
+    'ssShape.editText': {
+      'ja': '図形の文字を変える',
+      'en': 'Edit shape text',
+      'zh': '修改图形文字',
+      'ko': '도형 문자 수정',
+      'es': 'Editar el texto de la forma',
+      'fr': 'Modifier le texte de la forme',
+      'de': 'Text der Form bearbeiten',
+      'pt': 'Editar o texto da forma',
+      'ru': 'Изменить текст фигуры',
+    },
+    'ssShape.unselect': {
+      'ja': '選択をやめる',
+      'en': 'Deselect',
+      'zh': '取消选择',
+      'ko': '선택 해제',
+      'es': 'Cancelar la selección',
+      'fr': 'Annuler la sélection',
+      'de': 'Auswahl aufheben',
+      'pt': 'Cancelar a seleção',
+      'ru': 'Снять выделение',
+    },
+    'ssShape.textTitle': {
+      'ja': '図形の文字',
+      'en': 'Shape text',
+      'zh': '图形文字',
+      'ko': '도형 문자',
+      'es': 'Texto de la forma',
+      'fr': 'Texte de la forme',
+      'de': 'Text der Form',
+      'pt': 'Texto da forma',
+      'ru': 'Текст фигуры',
     },
     'common.delete': {
       'ja': '削除',
@@ -84218,13 +84297,13 @@ $cleanQ
     return _resolveNodeIdIn(page, key);
   }
 
-  /// [fuzzy] \u3092 false \u306b\u3059\u308b\u3068\u90e8\u5206\u4e00\u81f4\u3092\u4f7f\u308f\u306a\u3044\u3002
+  /// [fuzzy] を false にすると部分一致を使わない。
   ///
-  /// \u2605 \u6d88\u3059 / \u66f8\u304d\u63db\u3048\u308b\u7d4c\u8def\u3067\u306f\u5fc5\u305a false \u306b\u3059\u308b (= \u52d5\u4f5c\u78ba\u8a8d\u3067\u5224\u660e:
-  ///   \u300c\u79cb\u5206\u306e\u65e5\u300d \u3068\u3044\u3046\u30ce\u30fc\u30c9\u3092\u6d88\u3057\u3066\u3001 \u3068\u983c\u307e\u308c\u305f\u6642\u306b\u3001 \u90e8\u5206\u4e00\u81f4\u3067
-  ///   \u300c\u79cb\u300d \u306e\u30ce\u30fc\u30c9\u304c\u9078\u3070\u308c\u3066\u6d88\u3048\u3066\u3044\u305f\u3002 \u7121\u3044\u7269\u306f\u300c\u7121\u3044\u300d \u3068\u7b54\u3048\u308b\u306e\u304c
-  ///   \u6b63\u3057\u304f\u3001 \u8fd1\u3044\u540d\u524d\u306e\u5225\u30ce\u30fc\u30c9\u3092\u6d88\u3059\u306e\u306f\u4e8b\u6545)\u3002 \u7dda\u3092\u5f15\u304f\u6642\u3060\u3051\u306f
-  ///   \u591a\u5c11\u3086\u308b\u304f\u5f15\u3051\u305f\u65b9\u304c\u826f\u3044\u306e\u3067\u65e2\u5b9a\u306e\u307e\u307e\u3002
+  /// ★ 消す / 書き換える経路では必ず false にする (= 動作確認で判明:
+  ///   「秋分の日」 というノードを消して、 と頼まれた時に、 部分一致で
+  ///   「秋」 のノードが選ばれて消えていた。 無い物は「無い」 と答えるのが
+  ///   正しく、 近い名前の別ノードを消すのは事故)。 線を引く時だけは
+  ///   多少ゆるく引けた方が良いので既定のまま。
   String? _resolveNodeIdIn(MindMapPage page, String key, {bool fuzzy = true}) {
     final k = key.trim();
     if (k.isEmpty) return null;
@@ -88784,8 +88863,8 @@ $cleanQ
   ///
   /// 例:
   ///   `'foo'` → `'foo'`
-  ///   `'foo\u200B'` → `'foo'`  (1 回分割した右側)
-  ///   `'foo\u200B\u200B'` → `'foo'`  (もう 1 回分割)
+  ///   `'foo​'` → `'foo'`  (1 回分割した右側)
+  ///   `'foo​​'` → `'foo'`  (もう 1 回分割)
   static String groupDisplayName(String internalName) =>
       internalName.replaceAll('\u200B', '');
 
@@ -88850,7 +88929,7 @@ $cleanQ
     String? newName;
     if (rightKept.length >= 2) {
       // groupName の表示名に ZWSP を 1 個ずつ追加して衝突回避。
-      // 例: groupName="foo" なら "foo\u200B"、それも在れば "foo\u200B\u200B"…
+      // 例: groupName="foo" なら "foo​"、それも在れば "foo​​"…
       newName = _uniqueGroupKey(groups, '$groupName\u200B');
       groups[newName] = Set.of(rightKept);
 

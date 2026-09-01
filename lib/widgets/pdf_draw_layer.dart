@@ -913,6 +913,163 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     _scheduleReburn();
   }
 
+  /// 四角 [a] と [b] が触れ合っているか (接しているだけでも true)。
+  ///
+  /// Rect.overlaps は「面積ゼロ」の四角 (← 置いた文字は 1 点しか
+  /// 持たない) を必ず false にするので、 自前で見る。
+  static bool _rectsTouch(Rect a, Rect b) =>
+      a.left <= b.right &&
+      b.left <= a.right &&
+      a.top <= b.bottom &&
+      b.top <= a.bottom;
+
+  /// 選んでいる図形の端を揃える (= ユーザー要望: チェック等の図形を
+  /// 複数範囲選択して、 左端 / 右端 / 上端 / 下端を揃えるボタン)。
+  ///
+  /// [edge] は 'left' / 'right' / 'top' / 'bottom'。 一番端にある物に合わせる。
+  ///
+  /// ★ 印 1 つが線 1 本とは限らない (× は 2 本、 手描きの絵は何本でも)。
+  ///   1 本ずつ揃えると × が崩れるので、 触れ合っている線どうしを
+  ///   1 つのかたまりと見なして、 かたまりごと動かす。
+  /// ★ 揃えるのは同じページの中だけ (別のページの図形とは揃えない)。
+  /// 揃える時の「かたまり」 分け。 ページ番号 → かたまりの一覧
+  /// (かたまり = (囲み, その中の _strokes の添字の並び))。
+  ///
+  /// ★ 印 1 つが線 1 本とは限らない (× は 2 本、 手描きの絵は何本でも)。
+  ///   1 本ずつ揃えると × が崩れるので、 触れ合っている線どうしを
+  ///   1 つのかたまりと見なす (union-find)。
+  /// ★ かたまりが 1 つしか無いページは、 揃える相手が居ないので入れない。
+  ///   返り値が空 = 押しても何も起きない、 という事なのでボタンの
+  ///   明るさ (活性) の判定にもこれを使う
+  ///   (= × を 1 個だけ選んだ時に、 押せるのに何も起きない状態を防ぐ)。
+  Map<int, List<(Rect, List<int>)>> _alignGroupsByPage() {
+    final out = <int, List<(Rect, List<int>)>>{};
+    final ids = _sel
+        .where((i) =>
+            i >= 0 && i < _strokes.length && _strokes[i].points.isNotEmpty)
+        .toList()
+      ..sort();
+    if (ids.length < 2) return out;
+    final byPage = <int, List<int>>{};
+    for (final i in ids) {
+      (byPage[_strokes[i].pageNumber] ??= <int>[]).add(i);
+    }
+    for (final page in byPage.entries) {
+      final pageIds = page.value;
+      if (pageIds.length < 2) continue;
+      final box = <int, Rect>{
+        for (final i in pageIds) i: _strokeBox(_strokes[i])
+      };
+      // ── 触れ合っている線を繋げてかたまりにする (union-find) ──
+      final parent = <int, int>{for (final i in pageIds) i: i};
+      int findRoot(int x) {
+        var r = x;
+        while (parent[r] != r) {
+          r = parent[r]!;
+        }
+        // 道順を短くしておく。
+        var c = x;
+        while (parent[c] != c) {
+          final n = parent[c]!;
+          parent[c] = r;
+          c = n;
+        }
+        return r;
+      }
+
+      for (var a = 0; a < pageIds.length; a++) {
+        for (var b = a + 1; b < pageIds.length; b++) {
+          if (!_rectsTouch(box[pageIds[a]]!, box[pageIds[b]]!)) continue;
+          final ra = findRoot(pageIds[a]);
+          final rb = findRoot(pageIds[b]);
+          if (ra != rb) parent[ra] = rb;
+        }
+      }
+      final members = <int, List<int>>{};
+      final groupBox = <int, Rect>{};
+      for (final i in pageIds) {
+        final r = findRoot(i);
+        (members[r] ??= <int>[]).add(i);
+        final g = groupBox[r];
+        groupBox[r] = g == null ? box[i]! : g.expandToInclude(box[i]!);
+      }
+      if (members.length < 2) continue;
+      out[page.key] = [
+        for (final e in members.entries) (groupBox[e.key]!, e.value),
+      ];
+    }
+    return out;
+  }
+
+  /// 端を揃えられる状態か (= ボタンを明るくしてよいか)。
+  bool get _canAlignSelected =>
+      _tool == PdfDrawTool.select &&
+      !_saving &&
+      _alignGroupsByPage().isNotEmpty;
+
+  void _alignSelected(String edge) {
+    final groups = _alignGroupsByPage();
+    if (groups.isEmpty) return;
+    final next = List<PdfDrawStroke>.from(_strokes);
+    var moved = false;
+    for (final pageGroups in groups.values) {
+      // ── 揃える先 (一番端にあるかたまりの端) ──
+      double? target;
+      for (final g in pageGroups) {
+        final r = g.$1;
+        final double v;
+        if (edge == 'left') {
+          v = r.left;
+        } else if (edge == 'right') {
+          v = r.right;
+        } else if (edge == 'top') {
+          v = r.top;
+        } else {
+          v = r.bottom;
+        }
+        if (target == null) {
+          target = v;
+        } else if (edge == 'left' || edge == 'top') {
+          if (v < target) target = v;
+        } else {
+          if (v > target) target = v;
+        }
+      }
+      final to = target;
+      if (to == null) continue;
+      for (final g in pageGroups) {
+        final r = g.$1;
+        final Offset d;
+        if (edge == 'left') {
+          d = Offset(to - r.left, 0);
+        } else if (edge == 'right') {
+          d = Offset(to - r.right, 0);
+        } else if (edge == 'top') {
+          d = Offset(0, to - r.top);
+        } else {
+          d = Offset(0, to - r.bottom);
+        }
+        if (d.dx.abs() < 0.01 && d.dy.abs() < 0.01) continue;
+        for (final i in g.$2) {
+          final st = next[i];
+          next[i] = st.copyWith(points: [for (final q in st.points) q + d]);
+        }
+        moved = true;
+      }
+    }
+    if (!moved) return;
+    // 控えを取ってから入れ替える (Ctrl+Z で戻せるように)。
+    _pushUndo();
+    setState(() {
+      _strokes
+        ..clear()
+        ..addAll(next);
+    });
+    // 焼き込み済みの図形を動かした時は、 PDF 側も焼き直さないと
+    // 元の場所に残ったままになる。
+    _scheduleReburn();
+  }
+
   /// 描き込み中のキー操作 (= ユーザー要望: Ctrl+Z で取り消し)。
   bool _onKey(KeyEvent e) {
     if (!widget.active || widget.filePath == null) return false;
@@ -2547,6 +2704,10 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       );
     }
 
+    // 端を揃えられるか (= かたまりが 2 つ以上あるページがあるか)。
+    // 毎ビルド数えるが、 選んでいる本数はふつう数十なので軽い。
+    final canAlign = _canAlignSelected;
+
     return Material(
       color: Colors.transparent,
       child: Container(
@@ -2673,6 +2834,27 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
                 margin: const EdgeInsets.symmetric(horizontal: 4),
                 color: Colors.white24),
             if (_tool != PdfDrawTool.select) sizeControl(),
+            // ── 選んだ図形の端を揃える (= ユーザー要望: チェック等の
+            //    図形を複数範囲選択して、 左端 / 右端 / 上端 / 下端を揃える) ──
+            //    2 つ以上選んでいる時だけ押せる。
+            if (_tool == PdfDrawTool.select) ...[
+              actBtn(
+                  Icons.align_horizontal_left_rounded,
+                  'pdfdraw.alignLeft',
+                  canAlign ? () => _alignSelected('left') : null),
+              actBtn(
+                  Icons.align_horizontal_right_rounded,
+                  'pdfdraw.alignRight',
+                  canAlign ? () => _alignSelected('right') : null),
+              actBtn(
+                  Icons.align_vertical_top_rounded,
+                  'pdfdraw.alignTop',
+                  canAlign ? () => _alignSelected('top') : null),
+              actBtn(
+                  Icons.align_vertical_bottom_rounded,
+                  'pdfdraw.alignBottom',
+                  canAlign ? () => _alignSelected('bottom') : null),
+            ],
             // 選んでいる図形を消す (= 選択モードの時だけ出す)。
             if (_tool == PdfDrawTool.select)
               actBtn(
