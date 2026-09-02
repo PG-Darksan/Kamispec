@@ -124444,7 +124444,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
           _selStrokeSet.add(_sheet.strokes.length - 1);
         } else if (it is _PaintImageItem) {
           _sheet.images
-              .add(_PaintImageItem(it.path, it.rect.shift(d), rot: it.rot)
+              .add(_PaintImageItem(it.path, it.rect.shift(d),
+                  rot: it.rot, g: it.g)
                 ..z = _nextPaintZ()
                 ..lyr = _activeLayer);
           _selImgSet.add(_sheet.images.length - 1);
@@ -125018,6 +125019,12 @@ class _PaintPageViewState extends State<_PaintPageView> {
     _selRanging = false;
     _selMoving = false;
     _selRotating = false;
+    _selRotatingImage = false;
+    _imgSelHandle = null;
+    _imgSelIndex = -1;
+    _imgSelOrig = null;
+    _imgSelBefore = null;
+    _imgSelChanged = false;
     _selectionMoveBeforeSnapshot = null;
     _selectionMoveChanged = false;
     _shapeResizeHandle = null;
@@ -125578,10 +125585,12 @@ class _PaintPageViewState extends State<_PaintPageView> {
       if (bounds != null && r.overlaps(bounds)) _selStrokeSet.add(i);
     }
     for (int i = 0; i < _sheet.images.length; i++) {
-      if (r.overlaps(_sheet.images[i].rect)) _selImgSet.add(i);
+      // 回した画像は、 回した後の外枠で重なりを見る (= 点検で判明)。
+      if (r.overlaps(_paintImageBounds(_sheet.images[i]))) _selImgSet.add(i);
     }
     for (int i = 0; i < _sheet.shapes.length; i++) {
-      final sr = Rect.fromPoints(_sheet.shapes[i].a, _sheet.shapes[i].b)
+      // 回した図形は、 回した後の外枠で重なりを見る (= 点検で判明)。
+      final sr = _paintShapeBounds(_sheet.shapes[i])
           .inflate(_sheet.shapes[i].width.clamp(2.0, 30.0) + 1);
       if (r.overlaps(sr)) _selShapeSet.add(i);
     }
@@ -125717,6 +125726,115 @@ class _PaintPageViewState extends State<_PaintPageView> {
   /// 回転ハンドルをドラッグ中か。
   bool _selRotating = false;
 
+  /// 回しているのが画像か (= 図形ではなく画像を選んでいる時)。
+  bool _selRotatingImage = false;
+
+  /// 画像の大きさ変え (選ぶ道具) の状態。
+  _PaintShapeResizeHandle? _imgSelHandle;
+  int _imgSelIndex = -1;
+  Rect? _imgSelOrig;
+  _PaintEraseSnapshot? _imgSelBefore;
+  bool _imgSelChanged = false;
+
+  /// 単一選択している画像 (無ければ -1)。
+  int get _singleSelImage =>
+      _selImgSet.length == 1 && _selShapeSet.isEmpty && _selTextSet.isEmpty &&
+              _selStrokeSet.isEmpty &&
+              _selImgSet.first >= 0 &&
+              _selImgSet.first < _sheet.images.length
+          ? _selImgSet.first
+          : -1;
+
+  /// 画像の回転つまみの位置 (painter と同じ式)。
+  Offset? _imageRotateHandlePos(double fit) {
+    final idx = _singleSelImage;
+    if (idx < 0) return null;
+    final it = _sheet.images[idx];
+    final c = it.rect.center;
+    final rad = it.rot * math.pi / 180.0;
+    final dist = it.rect.height.abs() / 2 + 26 / math.max(fit, 0.01);
+    return Offset(c.dx + dist * math.sin(rad), c.dy - dist * math.cos(rad));
+  }
+
+  /// 画像の四隅の掴み (回していない時だけ。 図形と同じ約束)。
+  ({int index, _PaintShapeResizeHandle handle})? _imageResizeHit(
+      Offset p, double fit) {
+    final idx = _singleSelImage;
+    if (idx < 0) return null;
+    final it = _sheet.images[idx];
+    if (it.rot != 0) return null;
+    final radius = 13.0 / math.max(fit, 0.01);
+    final r = it.rect;
+    final centers = {
+      _PaintShapeResizeHandle.topLeft: r.topLeft,
+      _PaintShapeResizeHandle.topRight: r.topRight,
+      _PaintShapeResizeHandle.bottomLeft: r.bottomLeft,
+      _PaintShapeResizeHandle.bottomRight: r.bottomRight,
+    };
+    _PaintShapeResizeHandle? best;
+    var bestD = double.infinity;
+    for (final e in centers.entries) {
+      final d = (p - e.value).distance;
+      if (d <= radius && d < bestD) {
+        best = e.key;
+        bestD = d;
+      }
+    }
+    return best == null ? null : (index: idx, handle: best);
+  }
+
+  /// 掴んだ角の反対側を固定して、 縦横の比を保ったまま大きさを変える。
+  void _updateImageResize(Offset p) {
+    final h = _imgSelHandle;
+    final orig = _imgSelOrig;
+    if (h == null || orig == null) return;
+    if (_imgSelIndex < 0 || _imgSelIndex >= _sheet.images.length) return;
+    final ar = orig.width > 0 ? orig.height / orig.width : 1.0;
+    final anchor = switch (h) {
+      _PaintShapeResizeHandle.topLeft => orig.bottomRight,
+      _PaintShapeResizeHandle.topRight => orig.bottomLeft,
+      _PaintShapeResizeHandle.bottomLeft => orig.topRight,
+      _ => orig.topLeft,
+    };
+    // ★ 反対の角を越えても裏返さない (= 点検で判明: 越えると鏡写しになって
+    //   紙の外へ滑り出す)。 越えた分は 0 として扱い、 最小の大きさで止める。
+    final right = h == _PaintShapeResizeHandle.topRight ||
+        h == _PaintShapeResizeHandle.bottomRight;
+    final down = h == _PaintShapeResizeHandle.bottomLeft ||
+        h == _PaintShapeResizeHandle.bottomRight;
+    final dx = math.max(0.0, right ? p.dx - anchor.dx : anchor.dx - p.dx);
+    final dy = math.max(0.0, down ? p.dy - anchor.dy : anchor.dy - p.dy);
+    // ★ 縦に引いても効くように、 縦横の大きい方に合わせる (= 点検で判明:
+    //   横の動きしか見ておらず、 縦長の画像を縦に引いても何も起きなかった)。
+    //   比は必ず保つ (最小でも崩さない)。
+    final minW = ar >= 1 ? 24.0 / ar : 24.0;
+    final w = math.max(minW, math.max(dx, ar > 0 ? dy / ar : dy));
+    final hh = w * ar;
+    final left = right ? anchor.dx : anchor.dx - w;
+    final top = down ? anchor.dy : anchor.dy - hh;
+    final next = Rect.fromLTWH(left, top, w, hh);
+    if (next == _sheet.images[_imgSelIndex].rect) return;
+    setState(() {
+      _sheet.images[_imgSelIndex].rect = next;
+      _imgSelChanged = true;
+      _dirty = true;
+    });
+  }
+
+  void _finishImageResize() {
+    final before = _imgSelBefore;
+    final changed = _imgSelChanged;
+    setState(() {
+      _imgSelHandle = null;
+      _imgSelIndex = -1;
+      _imgSelOrig = null;
+      _imgSelBefore = null;
+      _imgSelChanged = false;
+      if (changed && before != null) _pushPaintSnapshotEdit(before);
+    });
+    if (changed) _persist();
+  }
+
   /// 単一選択図形の回転ハンドル位置 (キャンバス座標)。 painter と同じ式。
   Offset? _shapeRotateHandlePos(double fit) {
     if (_selShapeSet.length != 1) return null;
@@ -125733,7 +125851,24 @@ class _PaintPageViewState extends State<_PaintPageView> {
   /// 回転ドラッグ中: ポインタと中心の角度をそのまま回転角にする
   /// (ハンドルが指に付いてくる)。 Shift で 15° スナップ。
   void _updateRotateDrag(Offset p) {
-    if (!_selRotating || _selShapeSet.length != 1) return;
+    if (!_selRotating) return;
+    // ── 画像を回す (= ユーザー報告: 画像は掴んでも回せなかった) ──
+    if (_selRotatingImage) {
+      final idx = _singleSelImage;
+      if (idx < 0) return;
+      final it = _sheet.images[idx];
+      final c = it.rect.center;
+      var deg = math.atan2(p.dx - c.dx, -(p.dy - c.dy)) * 180 / math.pi;
+      if (HardwareKeyboard.instance.isShiftPressed) {
+        deg = (deg / 15).round() * 15.0;
+      }
+      setState(() {
+        it.rot = deg.roundToDouble();
+        _dirty = true;
+      });
+      return;
+    }
+    if (_selShapeSet.length != 1) return;
     final idx = _selShapeSet.first;
     if (idx < 0 || idx >= _sheet.shapes.length) return;
     final s = _sheet.shapes[idx];
@@ -125750,10 +125885,36 @@ class _PaintPageViewState extends State<_PaintPageView> {
 
   void _onSelectPanStart(Offset p, double fit) {
     // 回転ハンドルはリサイズ/移動より優先で判定する。
+    // ── 画像の回転つまみ (= ユーザー報告: 画像だけ掴めなかった) ──
+    final imgRotPos = _imageRotateHandlePos(fit);
+    if (imgRotPos != null &&
+        (p - imgRotPos).distance <= 14 / math.max(fit, 0.01)) {
+      _selRotating = true;
+      _selRotatingImage = true;
+      _selMoving = false;
+      _selRanging = false;
+      _selectionMoveBeforeSnapshot = _makeEraseSnapshot();
+      return;
+    }
+    // ── 画像の四隅 (大きさを変える) ──
+    final imgResize = _imageResizeHit(p, fit);
+    if (imgResize != null) {
+      _imgSelHandle = imgResize.handle;
+      _imgSelIndex = imgResize.index;
+      _imgSelOrig = _sheet.images[imgResize.index].rect;
+      _imgSelBefore = _makeEraseSnapshot();
+      _imgSelChanged = false;
+      _selMoving = false;
+      _selRanging = false;
+      _selectionMoveBeforeSnapshot = null;
+      _selectionMoveChanged = false;
+      return;
+    }
     final rotPos = _shapeRotateHandlePos(fit);
     if (rotPos != null &&
         (p - rotPos).distance <= 14 / math.max(fit, 0.01)) {
       _selRotating = true;
+      _selRotatingImage = false;
       _selMoving = false;
       _selRanging = false;
       _selectionMoveBeforeSnapshot = _makeEraseSnapshot();
@@ -125833,6 +125994,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
     } else if (_selRotating) {
       // 回転ドラッグ (= ユーザー要望: 掴んで回転)。
       _updateRotateDrag(p);
+    } else if (_imgSelHandle != null) {
+      _updateImageResize(p);
     } else if (_shapeResizeHandle != null) {
       _updateShapeResize(p);
     } else if (_selRanging) {
@@ -125871,10 +126034,13 @@ class _PaintPageViewState extends State<_PaintPageView> {
       final before = _selectionMoveBeforeSnapshot;
       setState(() {
         _selRotating = false;
+        _selRotatingImage = false;
         if (before != null) _pushPaintSnapshotEdit(before);
         _selectionMoveBeforeSnapshot = null;
       });
       _persist();
+    } else if (_imgSelHandle != null) {
+      _finishImageResize();
     } else if (_shapeResizeHandle != null) {
       _finishShapeResize();
     } else if (_selRanging) {
@@ -126746,7 +126912,10 @@ class _PaintPageViewState extends State<_PaintPageView> {
       see(t.pos.dx, t.pos.dy);
     }
     for (final im in images) {
-      see(im.rect.left, im.rect.top);
+      // 回した画像は回した後の外枠で見る (= 差し込んだ時に紙の外へ
+      //   はみ出さないように)。
+      final ib = _paintImageBounds(im);
+      see(ib.left, ib.top);
     }
     if (!minX.isFinite || !minY.isFinite) {
       minX = 0;
@@ -126820,6 +126989,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
   /// そのままドラッグで動かせるようにする。
   void _insertTemplate(_PaintTemplate tpl) {
     if (tpl.items.isEmpty) return;
+    // 差し込む前の姿を控える (取り消しでまとめて戻すため)。
+    final beforeTemplate = _makeEraseSnapshot();
     // 毎回少しずらして重ならないようにする。
     final d = Offset(40.0 + (_templateInsertCount % 5) * 16.0,
         40.0 + (_templateInsertCount % 5) * 16.0);
@@ -126864,7 +127035,10 @@ class _PaintPageViewState extends State<_PaintPageView> {
             break;
         }
       }
-      _sheet.undo.add('template');
+      // ★ 'template' は _undo() が知らない合言葉で、 default に落ちて
+      //   **利用者の線を 1 本消して**いた (= 点検で判明)。 差し込みは
+      //   まとめて元に戻せる形 (スナップショット) で積む。
+      _pushPaintSnapshotEdit(beforeTemplate);
       _redo.clear();
       _dirty = true;
     });
@@ -126872,6 +127046,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
   }
 
   int _templateInsertCount = 0;
+
 
   Future<void> _deleteTemplate(int index) async {
     if (index < 0 || index >= _templates.length) return;
@@ -127154,7 +127329,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
     const double tol = 12.0;
     final sh = _sheet;
     for (final im in sh.images) {
-      if (im.rect.inflate(2).contains(p)) return false;
+      // 回した画像は、 回した分だけ戻してから中かどうか見る。
+      if (im.rect.inflate(2).contains(_paintImageLocal(im, p))) return false;
     }
     for (final t in sh.texts) {
       // 文字の外接矩形は概算 (1 文字 ≒ 文字サイズ、 高さ ≒ 1.3 倍)。
@@ -127500,6 +127676,53 @@ class _PaintPageViewState extends State<_PaintPageView> {
     return -1;
   }
 
+  /// 回した後の図形の外枠 (回していなければそのまま)。
+  static Rect _paintShapeBounds(_PaintShape sh) {
+    final r = Rect.fromPoints(sh.a, sh.b);
+    if (sh.rot == 0) return r;
+    final c = r.center;
+    final a = sh.rot * math.pi / 180;
+    final ca = math.cos(a), sa = math.sin(a);
+    var minX = double.infinity, minY = double.infinity;
+    var maxX = -double.infinity, maxY = -double.infinity;
+    for (final p in [r.topLeft, r.topRight, r.bottomLeft, r.bottomRight]) {
+      final v = p - c;
+      final x = c.dx + v.dx * ca - v.dy * sa;
+      final y = c.dy + v.dx * sa + v.dy * ca;
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+    return Rect.fromLTRB(minX, minY, maxX, maxY);
+  }
+
+  /// 回した後の、 画面上での外枠 (回していなければ rect そのもの)。
+  /// 範囲選択や整列など「どこを占めているか」 を見る所で使う。
+  static Rect _paintImageBounds(_PaintImageItem it) {
+    if (it.rot == 0) return it.rect;
+    final c = it.rect.center;
+    final a = it.rot * math.pi / 180;
+    final ca = math.cos(a), sa = math.sin(a);
+    var minX = double.infinity, minY = double.infinity;
+    var maxX = -double.infinity, maxY = -double.infinity;
+    for (final p in [
+      it.rect.topLeft,
+      it.rect.topRight,
+      it.rect.bottomLeft,
+      it.rect.bottomRight,
+    ]) {
+      final v = p - c;
+      final x = c.dx + v.dx * ca - v.dy * sa;
+      final y = c.dy + v.dx * sa + v.dy * ca;
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+    return Rect.fromLTRB(minX, minY, maxX, maxY);
+  }
+
   /// 回した画像の当たり判定用に、 点を「回す前」 の座標へ戻す。
   static Offset _paintImageLocal(_PaintImageItem it, Offset p) {
     if (it.rot == 0) return p;
@@ -127754,8 +127977,17 @@ class _PaintPageViewState extends State<_PaintPageView> {
           erasers: t.erasers.map(_cloneStroke).toList());
 
   _PaintShape _cloneShape(_PaintShape s) =>
+      // ★ 重なり順 (z)・グループ (g)・層 (lyr)・塗り分け (fg)・塗りの色も
+      //   写す。 落とすと、 取り消し (Ctrl+Z) のたびに紙の中の**全部の
+      //   図形**が一番後ろへ回り、 塗りの色も枠線の色に化けていた
+      //   (= 点検で判明。 画像と文字は直したが図形だけ残っていた)。
       _PaintShape(s.kind, s.a, s.b, s.color, s.width, s.fill,
+          lyr: s.lyr,
           fillAlpha: s.fillAlpha,
+          fillColor: s.fillColor,
+          z: s.z,
+          g: s.g,
+          fg: s.fg,
           glow: s.glow,
           rot: s.rot,
           erasers: s.erasers.map(_cloneStroke).toList());
@@ -127955,6 +128187,11 @@ class _PaintPageViewState extends State<_PaintPageView> {
       out.add(_PaintStroke(stroke.color, stroke.width, points,
           z: stroke.z,
           g: stroke.g,
+          // ★ 層と輝きも引き継ぐ。 落とすと、 上の層で描いた線が
+          //   消しゴムを当てた途端に一番下へ落ちて、 その層では
+          //   もう消せなくなっていた (= 点検で判明)。
+          lyr: stroke.lyr,
+          glow: stroke.glow,
           ps: stroke.ps,
           op: stroke.op,
           iv: stroke.iv));
@@ -127983,7 +128220,18 @@ class _PaintPageViewState extends State<_PaintPageView> {
 
   /// 消しゴムが [p] を通過した時、部分消去マスクの対象になる
   /// テキスト/図形を記録する。要素自体はリストから削除しない。
-  bool _eraseObjectsAtPoint(Offset p) {
+  /// 回した物の当たり判定用に、 点を「回す前」 の座標へ戻す。
+  static Offset _unrotateAround(Offset p, Offset c, double deg) {
+    if (deg == 0) return p;
+    final a = -deg * math.pi / 180;
+    final v = p - c;
+    return Offset(v.dx * math.cos(a) - v.dy * math.sin(a),
+            v.dx * math.sin(a) + v.dy * math.cos(a)) +
+        c;
+  }
+
+  bool _eraseObjectsAtPoint(Offset pRaw) {
+    final Offset p = pRaw;
     final double r = _eraserWidth / 2;
     bool touched = false;
     // テキスト: 消しゴム円がテキスト矩形に重なれば、このジェスチャーの
@@ -127995,7 +128243,9 @@ class _PaintPageViewState extends State<_PaintPageView> {
       final s = _measureText(t);
       final rect = Rect.fromLTWH(t.pos.dx, t.pos.dy,
           s.width < 24 ? 24 : s.width, s.height < 18 ? 18 : s.height);
-      if (rect.inflate(r).contains(p)) {
+      // ★ 回した文字は、 回した分だけ戻してから当てる (= 点検で判明:
+      //   見えている所を擦っても消せなかった)。
+      if (rect.inflate(r).contains(_unrotateAround(p, rect.center, t.rot))) {
         _eraserTouchedTexts.add(t);
         touched = true;
       }
@@ -128006,6 +128256,9 @@ class _PaintPageViewState extends State<_PaintPageView> {
       // 選んでいるレイヤー以外は対象にしない (= ユーザー要望)。
       if (sh.lyr != _activeLayer) continue;
       final tol = r + sh.width;
+      // ★ 回した図形も、 回した分だけ戻してから当てる (= 点検で判明)。
+      final p = _unrotateAround(
+          pRaw, Rect.fromPoints(sh.a, sh.b).center, sh.rot);
       bool hit;
       if (sh.kind == 2) {
         hit = _distToSegment(p, sh.a, sh.b) <= tol;
@@ -131780,6 +132033,11 @@ class _PaintPageViewState extends State<_PaintPageView> {
                                     showActiveUi ? _curShape : null,
                                     fit,
                                     _imageCache,
+                                    // 画像のつまみを出すかは、 掴む側と
+                                    //   同じ判定をそのまま渡す。
+                                    imageHandles: showActiveUi &&
+                                        isSelect &&
+                                        _singleSelImage >= 0,
                                     selImage: (showActiveUi && isImage)
                                         ? _selImage
                                         : -1,
@@ -134408,6 +134666,8 @@ class _PaintCanvasPainter extends CustomPainter {
   final _PaintShape? currentShape;
   final double scale;
   final Map<String, ui.Image> images;
+  /// 画像の回転つまみ / 四隅の掴みを出すか (= 掴む側と同じ判定を渡す)。
+  final bool imageHandles;
   final int selImage; // 選択中画像の index (枠表示用)。 -1 で非選択。
   final int selText; // 選択中テキストの index。 -1 で非選択。
   final int editingText; // インライン編集中の既存テキスト index (描画を抑止)。
@@ -134433,6 +134693,7 @@ class _PaintCanvasPainter extends CustomPainter {
   _PaintCanvasPainter(this.sheet, this.currentStroke, this.currentShape,
       this.scale, this.images,
       {this.selImage = -1,
+      this.imageHandles = false,
       this.editingText = -1,
       this.selText = -1,
       this.eraserCursor,
@@ -135308,7 +135569,64 @@ class _PaintCanvasPainter extends CustomPainter {
     }
     for (final i in selImgs) {
       if (i < sheet.images.length) {
-        canvas.drawRect(sheet.images[i].rect.inflate(2 / scale), selPaint);
+        // 回した画像は枠も同じだけ回して、 見た目と一致させる。
+        final it = sheet.images[i];
+        final r = it.rect.inflate(2 / scale);
+        if (it.rot != 0) {
+          canvas.save();
+          canvas.translate(r.center.dx, r.center.dy);
+          canvas.rotate(it.rot * math.pi / 180.0);
+          canvas.translate(-r.center.dx, -r.center.dy);
+          canvas.drawRect(r, selPaint);
+          canvas.restore();
+        } else {
+          canvas.drawRect(r, selPaint);
+        }
+      }
+    }
+    // ── 画像を 1 つだけ選んでいる時は、 回転つまみと四隅の掴みを出す
+    //    (= ユーザー報告: 挿入した画像を掴んで大きさを変えたり回したり
+    //    出来ない。 図形には付いていたのに画像には無かった) ──
+    //    ★ 出す / 出さないの判定は、 掴む側 (_singleSelImage) が決めた物を
+    //      そのまま受け取る。 ここで同じ条件を書き写すと、 painter に渡る
+    //      selTexts が「1 つだけ選んだ文字は空」 に加工済みなせいで食い違い、
+    //      **描かれているのに掴めないつまみ**が出ていた (= 点検で判明)。
+    if (imageHandles && selImgs.length == 1 &&
+        selImgs.first < sheet.images.length) {
+      final it = sheet.images[selImgs.first];
+      final r = it.rect;
+      final c = r.center;
+      final rad = it.rot * math.pi / 180.0;
+      final dist = r.height.abs() / 2 + 26 / scale;
+      final hp =
+          Offset(c.dx + dist * math.sin(rad), c.dy - dist * math.cos(rad));
+      canvas.drawLine(
+          c,
+          hp,
+          Paint()
+            ..color = selColor.withValues(alpha: 0.55)
+            ..strokeWidth = 1 / scale);
+      canvas.drawCircle(hp, 7 / scale, Paint()..color = Colors.white);
+      canvas.drawCircle(hp, 5.5 / scale, Paint()..color = selColor);
+      // 四隅の掴み (回していない時だけ。 図形と同じ約束)。
+      if (it.rot == 0) {
+        final half = 7 / scale;
+        for (final ct in [
+          r.topLeft,
+          r.topRight,
+          r.bottomLeft,
+          r.bottomRight,
+        ]) {
+          final hr =
+              Rect.fromCenter(center: ct, width: half * 2, height: half * 2);
+          canvas.drawRect(hr, Paint()..color = Colors.white);
+          canvas.drawRect(
+              hr,
+              Paint()
+                ..color = selColor
+                ..style = PaintingStyle.stroke
+                ..strokeWidth = 1.5 / scale);
+        }
       }
     }
     for (final i in selShapes) {

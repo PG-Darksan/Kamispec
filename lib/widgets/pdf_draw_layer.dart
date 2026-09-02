@@ -182,7 +182,9 @@ Future<bool> burnPdfStrokes(Map<String, Object?> msg) async {
           sfpdf.PdfColor(
               (argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF),
           width: width,
-          lineCap: sfpdf.PdfLineCap.square,
+          // ★ square は太さの半分だけ先へ伸びるので、 部分消しの隙間を
+          //   塞ぎ、 重なった所だけ濃くなる (= 点検で判明)。 flat にする。
+          lineCap: sfpdf.PdfLineCap.flat,
           lineJoin: sfpdf.PdfLineJoin.round,
         );
         final st = g.save();
@@ -1453,7 +1455,9 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     }
     // ── 大きさを固定して置く (= ユーザー要望) ──
     //    押した所を左上にして、 覚えている大きさでそのまま置く。
-    if (_fixedSize && _isSpanTool(_tool)) {
+    if (_fixedSize &&
+        _isSpanTool(_tool) &&
+        _tool != PdfDrawTool.markerLine) {
       _pushUndo();
       // ★ 押した所が真ん中に来るように置く (= ユーザー要望: カーソルが
       //   中心となるように)。
@@ -1665,7 +1669,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   /// (= ユーザー要望: 部分的に、 指定した太さで消せるように)。
   /// 直線や四角などの図形は形が崩れるので、 触れたら 1 個ごと消す。
   void _eraseAt(int pageNumber, Offset pt) {
-    final r = _eraserSize / 2;
+    final rBase = _eraserSize / 2;
     var changed = false;
     final next = <PdfDrawStroke>[];
     for (final st in _strokes) {
@@ -1673,6 +1677,9 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
         next.add(st);
         continue;
       }
+      // ★ 線そのものの太さも見る。 中心線だけで当てていたので、 太い
+      //   マーカーは見えている所を擦っても消えなかった (= 点検で判明)。
+      final r = rBase + st.width / 2;
       // ── 図形は丸ごと消す (フリーハンドのマーカーはペンと同じ扱い) ──
       if (st.tool != PdfDrawTool.pen && st.tool != PdfDrawTool.marker) {
         var hit = false;
@@ -2414,7 +2421,8 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   Widget _buildToolbar(BuildContext context) {
     // [ic] が null の時は消しゴムの絵を自前で描く (Material に消しゴムの
     // アイコンが無く、 魔法の杖 (auto_fix) では何のボタンか伝わらないため)。
-    Widget toolBtn(PdfDrawTool t, IconData? ic, String tipKey) {
+    Widget toolBtn(PdfDrawTool t, IconData? ic, String tipKey,
+        {Widget Function(Color fg)? glyph}) {
       final on = _tool == t;
       final fg = on ? Colors.white : Colors.white70;
       return Tooltip(
@@ -2436,9 +2444,11 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
               color: on ? const Color(0xFF6C63FF) : Colors.transparent,
               borderRadius: BorderRadius.circular(6),
             ),
-            child: ic == null
-                ? _EraserGlyph(size: 19, color: fg)
-                : Icon(ic, size: 18, color: fg),
+            child: glyph != null
+                ? glyph(fg)
+                : ic == null
+                    ? _EraserGlyph(size: 19, color: fg)
+                    : Icon(ic, size: 18, color: fg),
           ),
         ),
       );
@@ -2831,10 +2841,13 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
             ],
             // ── マーカー (蛍光ペン) (= ユーザー要望: フリーハンドでも
             //    直線でも引けるように) ──
+            //    ★ 直線の方はアイコンで見分けが付かないと使ってもらえない
+            //      (= ユーザー報告: バケツの絵だと「塗りつぶし」 に見えて
+            //      直線のマーカーだと気付けなかった)。 自前の絵にする。
             toolBtn(PdfDrawTool.marker, Icons.border_color_rounded,
                 'pdfdraw.marker'),
-            toolBtn(PdfDrawTool.markerLine, Icons.format_color_fill_rounded,
-                'pdfdraw.markerLine'),
+            toolBtn(PdfDrawTool.markerLine, null, 'pdfdraw.markerLine',
+                glyph: (fg) => _MarkerLineGlyph(size: 17, color: fg)),
             toolBtn(PdfDrawTool.line, Icons.horizontal_rule_rounded,
                 'pdfdraw.line'),
             toolBtn(PdfDrawTool.arrow, Icons.north_east_rounded, 'pdfdraw.arrow'),
@@ -2843,7 +2856,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
             // ── 大きさを固定して置く (= ユーザー要望: 四角や楕円は毎回同じ
             //    大きさで出てきた方が嬉しい時がある)。 ON の間は押した所へ
             //    「最後に描いた大きさ」 でそのまま置く。 ──
-            if (_isSpanTool(_tool))
+            if (_isSpanTool(_tool) && _tool != PdfDrawTool.markerLine)
               Tooltip(
                 message: '${widget.tr('pdfdraw.fixedSize')}'
                     ' (${_lastShapeSize.width.abs().round()}'
@@ -3044,8 +3057,8 @@ class _PdfDrawPainter extends CustomPainter {
         // マーカーは太いので上限を広げる (= ユーザー要望)。
         ..strokeWidth =
             (s.width * pxScale).clamp(0.6, marker ? 160.0 : 40.0)
-        // 蛍光ペンらしく角は四角く。
-        ..strokeCap = marker ? StrokeCap.square : StrokeCap.round
+        // 蛍光ペンらしく角は平ら (square だと太さの半分だけ先へ伸びる)。
+        ..strokeCap = marker ? StrokeCap.butt : StrokeCap.round
         ..strokeJoin = StrokeJoin.round;
 
       final p1 = toOverlay(s.points.first);
@@ -3239,6 +3252,54 @@ class _PdfDrawPainter extends CustomPainter {
   bool shouldRepaint(covariant _PdfDrawPainter old) => true;
 }
 
+
+/// 直線のマーカーの絵 (= ユーザー報告: バケツの絵では何の道具か分からない)。
+/// 文字の行の上を蛍光ペンで一直線に引いた形にする。
+class _MarkerLineGlyph extends StatelessWidget {
+  final double size;
+  final Color color;
+
+  const _MarkerLineGlyph({required this.size, required this.color});
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        width: size,
+        height: size,
+        child: CustomPaint(painter: _MarkerLineGlyphPainter(color)),
+      );
+}
+
+class _MarkerLineGlyphPainter extends CustomPainter {
+  final Color color;
+
+  _MarkerLineGlyphPainter(this.color);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = size.shortestSide;
+    // 下に「文字の行」 を 2 本、 その上に太い半透明の帯を 1 本。
+    // ★ 渡された色の濃さを掛け算で残す (置き換えると、 選んでいない時の
+    //   薄さが消えて、 この道具だけ明暗が変わらなかった = 点検で判明)。
+    final text = Paint()
+      ..color = color.withValues(alpha: color.a * 0.85)
+      ..strokeWidth = s * 0.10
+      ..strokeCap = StrokeCap.round;
+    canvas.drawLine(
+        Offset(s * 0.16, s * 0.72), Offset(s * 0.84, s * 0.72), text);
+    canvas.drawLine(
+        Offset(s * 0.16, s * 0.88), Offset(s * 0.62, s * 0.88), text);
+    final bar = Paint()
+      ..color = color.withValues(alpha: color.a * 0.45)
+      ..strokeWidth = s * 0.36
+      ..strokeCap = StrokeCap.square;
+    canvas.drawLine(
+        Offset(s * 0.10, s * 0.38), Offset(s * 0.90, s * 0.38), bar);
+  }
+
+  @override
+  bool shouldRepaint(covariant _MarkerLineGlyphPainter old) =>
+      old.color != color;
+}
 
 /// 消しゴムの絵 (Material に消しゴムのアイコンが無いので自前で描く)。
 /// 斜めに倒した本体 + 下側の濃い帯 で「消しゴム」 と分かる形にする。
