@@ -995,6 +995,15 @@ function b64urlToBytes(s) {
 
 /// 検証に通れば uid (sub) を返す。 だめなら null。
 async function verifyFirebaseIdToken(token, env) {
+  const payload = await verifyFirebaseIdTokenPayload(token, env);
+  return payload ? String(payload.sub) : null;
+}
+
+/// 検証に通ればトークンの中身 (payload) をそのまま返す。 だめなら null。
+///
+/// custom claim を読むために中身ごと返す版。 uid だけで良い所は
+/// 上の verifyFirebaseIdToken を使う。
+async function verifyFirebaseIdTokenPayload(token, env) {
   try {
     if (!token) return null;
     const projectId = env.FIREBASE_PROJECT_ID;
@@ -1029,7 +1038,7 @@ async function verifyFirebaseIdToken(token, env) {
       b64urlToBytes(parts[2]),
       new TextEncoder().encode(`${parts[0]}.${parts[1]}`)
     );
-    return ok ? String(payload.sub) : null;
+    return ok ? payload : null;
   } catch (e) {
     console.log('verifyFirebaseIdToken failed', String(e));
     return null;
@@ -1041,6 +1050,23 @@ async function authUid(request, env) {
   const h = request.headers.get('authorization') || '';
   if (!h.toLowerCase().startsWith('bearer ')) return null;
   return verifyFirebaseIdToken(h.slice(7).trim(), env);
+}
+
+/// 本人の uid と「開発者モードに入っているか」 をまとめて取り出す。
+///
+/// developer は Firebase の custom claim。 アプリの ⋮ メニューから
+/// 開発者パスワードを入れ、 Cloud Function (verifyDeveloperPassword) が
+/// 照合に成功した時だけ付く。 claim は Google が署名した ID トークンの
+/// 中にあるので、 アプリを書き換えても偽れない。
+/// = ユーザー要望「パスワードから開発者モードに入った場合は uid 関係なく
+///   API 使い放題にして欲しい」。 ADMIN_UIDS 方式は端末を変えたり保存先が
+///   変わる度に匿名 uid が生まれ変わって外れてしまうため。
+async function authIdentity(request, env) {
+  const h = request.headers.get('authorization') || '';
+  if (!h.toLowerCase().startsWith('bearer ')) return { uid: null, developer: false };
+  const payload = await verifyFirebaseIdTokenPayload(h.slice(7).trim(), env);
+  if (!payload) return { uid: null, developer: false };
+  return { uid: String(payload.sub), developer: payload.developer === true };
 }
 
 function unauthorized() {
@@ -1276,7 +1302,10 @@ async function readDevCode(env, code) {
 /// そのまま通す (= ユーザー要望: 開発者モードなのにトークンが足りませんと
 /// 言われて決済画面に飛ばされる)。 開発者本人が自分のアプリを試すたびに
 /// 自分でコードを発行して引き換えるのは筋が悪い。
-async function isFreeAiUid(env, uid) {
+async function isFreeAiUid(env, uid, developerClaim = false) {
+  // パスワードで開発者モードに入っている人 (= custom claim 付き) は、
+  // uid が ADMIN_UIDS に無くても Dev 枠。
+  if (developerClaim === true) return true;
   if (isAdminUid(env, uid)) return true;
   return isDevEntitlement(await readEntitlement(env, uid));
 }
@@ -1286,7 +1315,9 @@ async function isFreeAiUid(env, uid) {
 /// 管理者 uid (= 開発者モードから入った人) は制限しない
 /// (= ユーザー要望: 開発者モードから Dev を適用した時は料金制限なし)。
 /// 上限が 0 (無制限) の時も null を返す。
-async function devCapState(env, uid) {
+async function devCapState(env, uid, developerClaim = false) {
+  // 開発者モード本人はコード由来の上限を持たない。
+  if (developerClaim === true) return null;
   if (isAdminUid(env, uid)) return null;
   const ent = await readEntitlement(env, uid);
   if (!isDevEntitlement(ent)) return null;
@@ -1297,8 +1328,9 @@ async function devCapState(env, uid) {
 }
 
 /// Dev 枠で使った分を足す (上限のあるコードだけ)。
-async function addDevSpent(env, uid, usd) {
+async function addDevSpent(env, uid, usd, developerClaim = false) {
   if (!(Number(usd) > 0)) return;
+  if (developerClaim === true) return;
   if (isAdminUid(env, uid)) return;
   const ent = await readEntitlement(env, uid);
   if (!isDevEntitlement(ent)) return;
@@ -2450,8 +2482,11 @@ async function handleAiGenerate(request, env) {
   // ★ 本文の uid は信用しない。 Google が署名したトークンから取り出す。
   //   ★ 合鍵 (x-dev-key) では通さない (= 合鍵はバイナリに焼かれており、
   //   strings で抜けば誰でも無課金で叩けた穴だった)。 無料枠は、 サーバー
-  //   だけが知る uid (管理者 uid / 引き換え済み Dev 権利) でのみ与える。
-  const uid = await authUid(request, env);
+  //   だけが知る uid (管理者 uid / 引き換え済み Dev 権利) か、 開発者
+  //   パスワードで付いた custom claim {developer:true} でのみ与える。
+  //   claim は Google が署名したトークンの中身なので偽れず、 パスワードを
+  //   知らない人には付かない (= 合鍵と違って抜き出して使い回せない)。
+  const { uid, developer: devClaim } = await authIdentity(request, env);
   if (!uid) return unauthorized();
   const prompt = String(body.prompt || '');
   const model = body.model && priceFor(body.model) ? body.model : DEFAULT_MODEL;
@@ -2481,7 +2516,7 @@ async function handleAiGenerate(request, env) {
   // ── Dev 枠は残高を引かない (= 決済を通さずに AI を使える枠) ──
   //   使用量は普通に記録するので、 誰がどれだけ使ったかは後から分かる。
   //   ★ 無料枠はサーバー権威 (管理者 uid / 引き換え済み Dev 権利) のみ。
-  const devEnt = await isFreeAiUid(env, uid);
+  const devEnt = await isFreeAiUid(env, uid, devClaim);
 
   // ── 使い過ぎの保険 (月あたり) ──
   //   ★ 必ず「仮押さえ」 より前に確かめる。 後ろに置くと、 上限で断る時に
@@ -2496,7 +2531,7 @@ async function handleAiGenerate(request, env) {
   }
   // ── クーポンごとの上限 (= ユーザー要望) ──
   //   管理者 uid (開発者モードから入った人) は対象外 = 制限なし。
-  const devCap = await devCapState(env, uid);
+  const devCap = await devCapState(env, uid, devClaim);
   if (devCap && devCap.over) {
     return json(
       {
@@ -2577,7 +2612,7 @@ async function handleAiGenerate(request, env) {
         (failIn / 1e6) * spec.input + (failOut / 1e6) * spec.output;
       const failBilled = round6(failCost * (1 + MARKUP));
       if (devEnt) {
-        await addDevSpent(env, uid, failBilled);
+        await addDevSpent(env, uid, failBilled, devClaim);
       } else if (reserved > 0) {
         await creditOp(env, uid, '/settle', {
           hold: reserved,
@@ -2614,7 +2649,7 @@ async function handleAiGenerate(request, env) {
   if (devEnt) {
     // Dev 枠: 引き落とさない。 残高はそのまま返す (画面表示のため)。
     //   ただしクーポンに上限がある時は、 使った分を足しておく。
-    await addDevSpent(env, uid, billed);
+    await addDevSpent(env, uid, billed, devClaim);
     spent = { ok: true, credit: await readCredit(env, uid) };
   } else if (reserved > 0) {
     const st = await creditOp(env, uid, '/settle', {
@@ -2684,7 +2719,7 @@ async function handleAiImage(request, env) {
   } catch {
     return json({ error: 'invalid json' }, 400);
   }
-  const uid = await authUid(request, env);
+  const { uid, developer: devClaim } = await authIdentity(request, env);
   if (!uid) return unauthorized();
   const prompt = String(body.prompt || '');
   if (!prompt) return json({ error: 'prompt is required' }, 400);
@@ -2695,7 +2730,7 @@ async function handleAiImage(request, env) {
   const billed = round6(cost * (1 + MARKUP));
 
   // Dev 枠は残高を引かない (テキストと同じ扱い)。 無料枠はサーバー権威のみ。
-  const devEnt = await isFreeAiUid(env, uid);
+  const devEnt = await isFreeAiUid(env, uid, devClaim);
 
   // ── 使い過ぎの保険 (月あたり) ──
   //   仮押さえより前に確かめる (後ろだと確保した分が戻らない)。
@@ -2835,7 +2870,7 @@ async function handleAiImage(request, env) {
 }
 
 async function handleAiUsage(url, env, request) {
-  const uid = await authUid(request, env);
+  const { uid, developer: devClaim } = await authIdentity(request, env);
   if (!uid) return unauthorized();
   const ym = url.searchParams.get('ym') || currentYm();
   const used = await readUsage(env, uid, ym);
@@ -2847,7 +2882,7 @@ async function handleAiUsage(url, env, request) {
   //   dev:false が返り、 アプリ側が残高 0 と受け取ってチャージ画面へ
   //   飛ばしていた (= ユーザー要望: 端末やユーザーに関わらず Dev なら
   //   決済画面を通さずに叩けるように)。 無料枠はサーバー権威のみ。
-  const devEnt = await isFreeAiUid(env, uid);
+  const devEnt = await isFreeAiUid(env, uid, devClaim);
   return json({
     ym,
     markup: MARKUP,

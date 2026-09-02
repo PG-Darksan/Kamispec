@@ -232916,8 +232916,14 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
   ///   横だけ伸ばしたい時に不便だった。
   List<Widget> _edgeHandles(Size screen) {
     const grab = 6.0; // 掴める帯の太さ
+    // 角で掴める四角の一辺。 縁より広くしないと、 角は狙いにくい。
+    const corner = 16.0;
     const minW = 360.0;
     const minH = 280.0;
+    // つまみ (アイコン) を出さない窓では、 上の両角も帯にする
+    // (= ユーザー要望: つまみは邪魔だから消して、 境界を掴んで
+    //   大きさを変えられるように)。
+    final topCorners = widget.slimChrome;
 
     Widget band({
       double? left,
@@ -232957,7 +232963,7 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
       //   上端の「掴んで動かす帯」 (_headerH) は避ける。
       band(
         left: 0,
-        top: _headerH,
+        top: topCorners ? corner : _headerH,
         bottom: grab,
         width: grab,
         cursor: SystemMouseCursors.resizeLeftRight,
@@ -232970,7 +232976,7 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
       // 右の縁
       band(
         right: 0,
-        top: _headerH,
+        top: topCorners ? corner : _headerH,
         bottom: grab,
         width: grab,
         cursor: SystemMouseCursors.resizeLeftRight,
@@ -232981,9 +232987,11 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
       //     ここまで帯を伸ばすと × が押しにくくなる (= ユーザー報告)。
       band(
         top: 0,
-        left: 28,
-        // 細い帯の窓はボタンを並べないので、 右のつまみのぶんだけ空ける。
-        right: widget.slimChrome ? 30 : 150,
+        // 角の四角を残して、 その内側だけを上の縁にする。
+        left: topCorners ? corner : 28,
+        // ★ ふつうの帯は右側にボタン (全画面 / ピン / 閉じる) が並ぶので
+        //   大きく空ける。 つまみを出さない窓は角のぶんだけでよい。
+        right: topCorners ? corner : 150,
         height: _topGrab,
         cursor: SystemMouseCursors.resizeUpDown,
         onDrag: (d) {
@@ -233004,6 +233012,39 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
       // 下の両角 (縦横を同時に)。
       //   ★ 上の両角には帯を置かない。 目印付きのつまみが既にあり、
       //     しかも閉じるボタンのすぐ隣なので、 押し間違いの元になる。
+      // 上の両角。
+      //   ★ つまみ (アイコン) を出す窓には置かない。 ふつうの帯は右上に
+      //     閉じるボタンが来るので、 角を帯にすると押し間違える。
+      if (topCorners)
+        band(
+          left: 0,
+          top: 0,
+          width: corner,
+          height: corner,
+          cursor: SystemMouseCursors.resizeUpLeft,
+          onDrag: (d) {
+            final nw = (_w - d.dx).clamp(minW, screen.width);
+            final nh = (_h - d.dy).clamp(minH, screen.height);
+            _pos = Offset(_pos.dx + (_w - nw), _pos.dy + (_h - nh));
+            _w = nw;
+            _h = nh;
+          },
+        ),
+      if (topCorners)
+        band(
+          right: 0,
+          top: 0,
+          width: corner,
+          height: corner,
+          cursor: SystemMouseCursors.resizeUpRight,
+          onDrag: (d) {
+            final nh = (_h - d.dy).clamp(minH, screen.height);
+            _pos = Offset(_pos.dx, _pos.dy + (_h - nh));
+            _h = nh;
+            _w = (_w + d.dx).clamp(minW, screen.width);
+          },
+        ),
+      // 下の両角 (縦横を同時に)。
       band(
         left: 0,
         bottom: 0,
@@ -233017,6 +233058,8 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
           _h = (_h + d.dy).clamp(minH, screen.height);
         },
       ),
+      // ★ 右下だけは広げない。 中身の送信ボタンがすぐ隣に来る窓があり、
+      //   広げると押し間違える (= 過去のユーザー報告)。
       band(
         right: 0,
         bottom: 0,
@@ -233541,9 +233584,14 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
             //    ★ 右下にあると送信ボタンと隔てなくて押し間違える
             //      (= ユーザー報告)。 上の左右に移す。
             //      上を掴むので、 伸ばすと上端も一緒に動く。
+            //    ★ 細い帯の窓 (= AI アシスタント) には出さない
+            //      (= ユーザー要望: 邪魔だから消して、 境界を掴んで
+            //      大きさを変えられるように)。 かわりに上の両角を
+            //      見えない帯にしてある (_edgeHandles)。
+            if (!widget.slimChrome)
             Positioned(
-              left: widget.slimChrome ? 2 : 0,
-              top: widget.slimChrome ? 1 : 0,
+              left: 0,
+              top: 0,
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onPanUpdate: (d) => setState(() {
@@ -233554,11 +233602,9 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
                   _h = nh;
                   _scheduleSaveGeometry();
                 }),
-                child: Padding(
-                  padding: widget.slimChrome
-                      ? const EdgeInsets.symmetric(horizontal: 5, vertical: 4)
-                      : const EdgeInsets.all(4),
-                  child: const Icon(Icons.north_west_rounded,
+                child: const Padding(
+                  padding: EdgeInsets.all(4),
+                  child: Icon(Icons.north_west_rounded,
                       size: 13, color: Colors.white38),
                 ),
               ),
@@ -233570,9 +233616,10 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
             //   すぐ下が中身の自前ヘッダーなので、 下へ逃がすと**中身の
             //   閉じる × と重なってしまう** (= ユーザー報告: 閉じるボタンと
             //   大きさ調節ボタンが被る)。 その時は帯の中に納める。
+            if (!widget.slimChrome)
             Positioned(
-              right: widget.slimChrome ? 2 : 0,
-              top: widget.slimChrome ? 1 : 36,
+              right: 0,
+              top: 36,
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onPanUpdate: (d) => setState(() {
@@ -233581,11 +233628,9 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
                   _h = (_h + d.delta.dy).clamp(280.0, screen.height);
                   _scheduleSaveGeometry();
                 }),
-                child: Padding(
-                  padding: widget.slimChrome
-                      ? const EdgeInsets.symmetric(horizontal: 5, vertical: 4)
-                      : const EdgeInsets.symmetric(horizontal: 5, vertical: 8),
-                  child: const Icon(Icons.open_in_full_rounded,
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 5, vertical: 8),
+                  child: Icon(Icons.open_in_full_rounded,
                       size: 13, color: Colors.white38),
                 ),
               ),
