@@ -61807,8 +61807,12 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// 日付 → 時刻の順に選ばせて、 通知を予約する。
   /// 予約したものはカレンダーにも同じ時刻で入れる (= ユーザー要望)。
+  /// [anchor] は押した鈴のボタンの画面上の位置 (= ユーザー要望: 通知設定は
+  /// 画面の真ん中ではなく、 押した所のすぐ近くに出す)。 取れない時は
+  /// 今までどおり真ん中に出る。
   Future<void> _setTodoReminder(
-      BuildContext ctx, MindMapProvider provider, TodoItem item) async {
+      BuildContext ctx, MindMapProvider provider, TodoItem item,
+      {Rect? anchor}) async {
     final now = DateTime.now();
     final base = item.remindAt ?? now.add(const Duration(minutes: 30));
     ThemeData pickerTheme() => ThemeData.dark().copyWith(
@@ -61824,17 +61828,42 @@ class _MindMapScreenState extends State<MindMapScreen>
       firstDate: DateTime(now.year, now.month, now.day),
       lastDate: DateTime(now.year + 3, now.month, now.day),
       helpText: provider.t('todo.pickDate'),
-      builder: (_, child) => Theme(data: pickerTheme(), child: child!),
+      builder: (dctx, child) {
+        // ★ 中身が入る大きさを渡す (足りないと右側が切れて OK を押せない)。
+        //   画面が狭い時はそれに合わせる。
+        final sz = MediaQuery.sizeOf(dctx);
+        return _positionNearAnchor(
+          dctx,
+          anchor,
+          Theme(data: pickerTheme(), child: child!),
+          Size(math.min(560.0, sz.width - 16),
+              math.min(560.0, sz.height - 16)),
+          useLastBar: false,
+        );
+      },
     );
     if (date == null || !ctx.mounted) return;
     final time = await showTimePicker(
       context: ctx,
       initialTime: TimeOfDay.fromDateTime(base.isBefore(now) ? now : base),
       helpText: provider.t('todo.pickTime'),
-      builder: (_, child) => MediaQuery(
-        data: MediaQuery.of(ctx).copyWith(alwaysUse24HourFormat: true),
-        child: Theme(data: pickerTheme(), child: child!),
-      ),
+      builder: (dctx, child) {
+        // ★ 横向きの時刻ダイアログは 416px より狭く出来ない (Material の
+        //   決まり)。 余白を足した幅を渡さないと OK が画面の外へ出る
+        //   (= 点検で判明)。
+        final sz = MediaQuery.sizeOf(dctx);
+        return _positionNearAnchor(
+          dctx,
+          anchor,
+          MediaQuery(
+            data: MediaQuery.of(ctx).copyWith(alwaysUse24HourFormat: true),
+            child: Theme(data: pickerTheme(), child: child!),
+          ),
+          Size(math.min(520.0, sz.width - 16),
+              math.min(480.0, sz.height - 16)),
+          useLastBar: false,
+        );
+      },
     );
     if (time == null || !mounted) return;
     final fireAt =
@@ -62341,8 +62370,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                             ? const Color(0xFFFFB347)
                             : Colors.white30)),
                 onPressed: () async {
+                  // 押した鈴の位置 (= すぐ近くに出すため)。
+                  final bellRect = _rectOfContext(btnCtx);
                   if (remindAt == null) {
-                    await _setTodoReminder(ctx, provider, item);
+                    await _setTodoReminder(ctx, provider, item,
+                        anchor: bellRect);
                     return;
                   }
                   final box = btnCtx.findRenderObject();
@@ -62378,7 +62410,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                     ],
                   );
                   if (choice == 'change') {
-                    await _setTodoReminder(ctx, provider, item);
+                    await _setTodoReminder(ctx, provider, item,
+                        anchor: bellRect);
                   } else if (choice == 'clear') {
                     await _clearTodoReminder(provider, item);
                     if (!mounted) return;
@@ -114966,8 +114999,13 @@ const String _kMdEmbeddedMapJs = r"""
       } else if (a === 'mermaid') {
         // 元の図に戻す (= 変換で落ちる飾りを見たい時のため)。
         if (window.mermaid && data.code) {
+          // ★ 直し (引用符の補い) を通してから描く。 通さないと、 元の文が
+          //   そのままでは描けない図で「戻す」 が無反応になる (= 点検で判明)。
+          //   data はそのまま (マップへ戻る時は元の文を使う)。
+          var srcForDraw =
+              (window.__mmFixMermaid || function (x) { return x; })(data.code);
           var back = slot;
-          mermaid.render('mmb' + Date.now(), data.code).then(function (r) {
+          mermaid.render('mmb' + Date.now(), srcForDraw).then(function (r) {
             function toMap() {
               back.removeAttribute('data-done');
               build(back, data);
@@ -115655,11 +115693,18 @@ const String _kMdEmbeddedMapJs = r"""
   }
 
   /// mermaid の中身を見て、 マップに変換できるなら変換して返す。
-  window.__mmMermaidToMap = function (code) {
+  /// [auto] が false (既定) の時は、 mindmap 以外は変換しない。
+  /// 「マップで見る」 ボタンからは true で呼ばれ、 どの図でも読み替える。
+  window.__mmMermaidToMap = function (code, auto) {
     var src = String(code == null ? '' : code);
     var head = src.replace(/^\s+/, '').split('\n')[0].trim().toLowerCase();
     var model = null;
     try {
+      // ★ 自動で読み替えるのは mindmap だけ (= ユーザー要望: 円グラフは
+      //   円グラフのまま、 フローチャートはフローチャートのまま描く)。
+      //   mindmap だけは mermaid 自身が描けないので、 ここで受け持つ。
+      //   他の図も「マップで見る」 ボタンから手動で読み替えられる。
+      if (!auto && !/^mindmap\b/.test(head)) return null;
       if (/^mindmap\b/.test(head)) model = parseMindmap(src);
       else if (/^(flowchart|graph)\b/.test(head)) model = parseFlow(src);
       else if (/^sequencediagram\b/.test(head)) model = parseSequence(src);
@@ -115674,9 +115719,8 @@ const String _kMdEmbeddedMapJs = r"""
       } else if (/^timeline\b/.test(head)) {
         model = parseSectioned(src, 'timeline', '年表');
       }
-      // ★ ここまでで読めなかった図は、 受け皿が必ず何かに変換する
-      //   (= ユーザー要望: 全ての記法に対応。 mermaid の Syntax error を
-      //   出さない)。
+      // 読み方を用意していない図でも、 受け皿が字下げをそのまま親子にして
+      //   必ず何かに変換する (「マップで見る」 を押した時のため)。
       if (!model || !model.nodes || !model.nodes.length) {
         model = parseGeneric(src);
       }
@@ -116032,6 +116076,105 @@ String? mermaidMapToPage(MindMapProvider provider, Map<dynamic, dynamic> m,
 
 /// どのページに入れるか選ばせてから入れる (= ユーザー要望)。
 /// 入れた先のページ名を返す (やめたら null)。
+
+/// 図の絵 (PNG) を、 選んだマインドマップのページへ置く。
+///
+/// = ユーザー要望「円グラフは円グラフのまま、 フローチャートはフローチャートの
+///   まま、 自分のページに埋め込めるようにして欲しい」。 見た目を変えずに
+///   そのまま絵として入れる。 入れたページ名を返す (やめたら null)。
+Future<String?> askAndPutDiagramImageIntoPage(BuildContext context,
+    MindMapProvider provider, Map<dynamic, dynamic> m) async {
+  // PNG が無い (SVG しか作れなかった) 時は入れられない。
+  final png = '${m['png'] ?? ''}';
+  if (!png.startsWith('data:image/png;base64,')) return null;
+  Uint8List bytes;
+  try {
+    bytes = base64Decode(png.substring('data:image/png;base64,'.length));
+  } catch (_) {
+    return null;
+  }
+  final pages = provider.pages.where((p) => p.pageType == 'normal').toList();
+  final chosen = await showDialog<String>(
+    context: context,
+    builder: (dctx) => AlertDialog(
+      backgroundColor: const Color(0xFF1E1E32),
+      title: Text(provider.t('map.pickTargetPage'),
+          style: const TextStyle(color: Colors.white, fontSize: 15)),
+      content: SizedBox(
+        width: math.min(380.0, MediaQuery.sizeOf(dctx).width - 48),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 360),
+          child: ListView(shrinkWrap: true, children: [
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.add_box_outlined,
+                  color: Color(0xFF43B97F), size: 20),
+              title: Text(provider.t('map.newPage'),
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700)),
+              onTap: () => Navigator.pop(dctx, '__new__'),
+            ),
+            if (pages.isNotEmpty) const Divider(color: Colors.white12),
+            for (final pg in pages)
+              ListTile(
+                dense: true,
+                leading: const Icon(Icons.map_outlined,
+                    color: Colors.white54, size: 18),
+                title: Text(pg.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.white, fontSize: 13)),
+                onTap: () => Navigator.pop(dctx, pg.id),
+              ),
+          ]),
+        ),
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(dctx),
+            child: Text(provider.t('btn.cancel'),
+                style: const TextStyle(color: Colors.white54))),
+      ],
+    ),
+  );
+  if (chosen == null) return null;
+  try {
+    final appDir = await getApplicationDocumentsDirectory();
+    final dir = Directory('${appDir.path}/attachments');
+    if (!await dir.exists()) await dir.create(recursive: true);
+    final path =
+        '${dir.path}/diagram_${DateTime.now().millisecondsSinceEpoch}.png';
+    await File(path).writeAsBytes(bytes, flush: true);
+    var pageId = chosen;
+    if (pageId == '__new__') {
+      final made = provider.mcpCreatePage(type: 'normal', name: '図');
+      if (made == null) return null;
+      pageId = made;
+    }
+    // ★ 今ある物の右隣へ置く (指定しないと根っこの上に重なる = 点検で判明)。
+    final pg0 = provider.mcpPageById(pageId);
+    double? nx, ny;
+    if (pg0 != null && pg0.nodes.isNotEmpty) {
+      var maxX = -1e9, minY = 1e9;
+      for (final n in pg0.nodes.values) {
+        if (n.position.dx > maxX) maxX = n.position.dx;
+        if (n.position.dy < minY) minY = n.position.dy;
+      }
+      nx = maxX + 260;
+      ny = minY;
+    }
+    final id = provider.mcpAddImageNode(pageId,
+        filePath: path, title: '図', x: nx, y: ny);
+    if (id == null) return null;
+    final pg = provider.mcpPageById(pageId);
+    return pg?.name ?? '';
+  } catch (_) {
+    return null;
+  }
+}
+
 Future<String?> askAndPutMermaidMapIntoPage(BuildContext context,
     MindMapProvider provider, Map<dynamic, dynamic> m) async {
   final pages =
@@ -116506,6 +116649,8 @@ String _markdownPreviewHtml(String md, bool dark,
   .mmpane{position:absolute;left:0;top:0;transform-origin:0 0;cursor:grab;}
   .mmpane svg{display:block;max-width:none !important;}
   .mmctl{position:absolute;right:8px;top:8px;display:flex;gap:4px;z-index:5;}
+  .mmctl button.wide{width:auto;padding:0 9px;font-size:11px;
+       font-weight:700;}
   .mmctl button{min-width:28px;height:28px;border:1px solid $border;
           border-radius:6px;background:$code;color:$fg;font-size:13px;
           cursor:pointer;line-height:1;padding:0 6px;}
@@ -116693,7 +116838,11 @@ $mapsJs
     mermaid.initialize({
       startOnLoad: false,
       theme: '$theme',
-      securityLevel: 'loose'
+      securityLevel: 'loose',
+      // ★ 既定の HTML ラベルだと <foreignObject> になり、 PNG に書き出した
+      //   時に文字だけ消える (= 点検で判明)。 SVG の文字で描かせる。
+      htmlLabels: false,
+      flowchart: { htmlLabels: false }
     });
     mermaidInited = true;
   }
@@ -116737,8 +116886,18 @@ $mapsJs
         ? '<button type="button" data-act="ai" title="AI">AI</button>' +
           '<button type="button" data-act="fix" title="AI fix">&#9998;</button>' +
           '<button type="button" data-act="copy" title="copy">&#10697;</button>' +
-          '<button type="button" data-act="save" title="save PNG">&#8681;</button>' +
-          '<button type="button" data-act="map" title="to map">&#9635;</button>'
+          '<button type="button" data-act="save" title="save PNG">&#8681;</button>'
+        : '') +
+      // ── この図をそのまま自分のページへ入れる (= ユーザー要望) ──
+      //    図の見た目は変えずに、 マインドマップのページへ絵として置く。
+      (post
+        ? '<button type="button" data-act="topage" class="wide" ' +
+          'title="この図をページに入れる">+ ページに追加</button>'
+        : '') +
+      // ── マップとして見る (= 節点を掴んで動かせる形に読み替える) ──
+      (!onBack && window.__mmMermaidToMap && window.__mmRenderMermaidMap
+        ? '<button type="button" data-act="tomap" ' +
+          'title="マップで見る">&#9635;</button>'
         : '') +
       '<button type="button" data-act="in" title="zoom in">+</button>' +
       '<button type="button" data-act="out" title="zoom out">&#8722;</button>' +
@@ -117017,9 +117176,17 @@ $mapsJs
       else if (act === 'copy') {
         if (bridge) bridge.postMessage({ type: 'mermaidCopy', code: code });
       }
-      else if (act === 'save' || act === 'map') {
-        if (!bridge) return;
-        var kind = (act === 'save') ? 'mermaidSave' : 'mermaidToMap';
+      else if (act === 'tomap') {
+        // その図のまま描いていた物を、 掴んで動かせるマップに読み替える。
+        try {
+          var conv = window.__mmMermaidToMap(code, true);
+          if (conv) window.__mmRenderMermaidMap(slot, conv);
+        } catch (e) {}
+      }
+      else if (act === 'save' || act === 'topage') {
+        var sender = bridge || (post ? { postMessage: post } : null);
+        if (!sender) return;
+        var kind = (act === 'save') ? 'mermaidSave' : 'mermaidPngToPage';
         var rr = svgEl.getBoundingClientRect();
         var swN = Math.max(1, Math.round(rr.width / s));
         var shN = Math.max(1, Math.round(rr.height / s));
@@ -117032,9 +117199,9 @@ $mapsJs
         var svgText = new XMLSerializer().serializeToString(clone);
         exportPng(svgText, swN, shN, function (dataUrl) {
           if (dataUrl) {
-            bridge.postMessage({ type: kind, png: dataUrl });
+            sender.postMessage({ type: kind, png: dataUrl });
           } else {
-            bridge.postMessage({ type: kind, svg: svgText });
+            sender.postMessage({ type: kind, svg: svgText });
           }
         });
       }
@@ -117292,6 +117459,7 @@ $mapsJs
     //   必ず 2 つ重ねる。 1 つだと Dart に食われて壊れた正規表現になり、
     //   スクリプト全体が構文エラーで死んでプレビューが真っ白になる
     //   (= ユーザー報告: プレビューが白いまま。 node --check で特定)。
+    window.__mmFixMermaid = fixMermaid;
     function fixMermaid(src) {
       try {
         var text = String(src);
@@ -118462,7 +118630,10 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
   /// この画面が生まれた時の「MCP がこのページを書き換えた回数」。
   /// dispose の時に増えていたら = AI が書き換えて作り直された、 なので
   /// 手元の (古い) 本文は保存しない (フリーノート / 文書と同じ守り)。
-  late final int _mcpTickAtInit = widget.provider.mcpPageTick(widget.pageId);
+  /// ★ 必ず initState で入れる。 late final の遅延初期化だと
+  ///   **最初に読むのが dispose の中**になり、 その時の値が入るので
+  ///   「変わっていない」 と必ず判定されて守りが効かなかった。
+  int _mcpTickAtInit = 0;
   final TextEditingController _ctrl = TextEditingController();
 
   // ── 編集欄とプレビューのスクロールを揃える (= ユーザー要望: 半々で開く
@@ -118688,6 +118859,7 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
   @override
   void initState() {
     super.initState();
+    _mcpTickAtInit = widget.provider.mcpPageTick(widget.pageId);
     // 編集欄を動かしたらプレビューも同じ所へ (= ユーザー要望)。
     _editorScroll.addListener(_onEditorScroll);
     _load();
@@ -119794,6 +119966,22 @@ graph TD
         return;
       }
       // ── 図をマインドマップのページにする (= ユーザー要望) ──
+      // ── 図をそのまま (見た目を変えずに) ページへ入れる (= ユーザー要望) ──
+      if (type == 'mermaidPngToPage') {
+        unawaited(() async {
+          final name = await askAndPutDiagramImageIntoPage(
+              context, widget.provider, m);
+          if (name != null && mounted) {
+            _appSnackTop(
+                context,
+                widget.provider
+                    .t('map.addedToPage')
+                    .replaceFirst('{name}', name),
+                const Color(0xFF43B97F));
+          }
+        }());
+        return;
+      }
       if (type == 'mapToPage') {
         unawaited(() async {
           final name = await askAndPutMermaidMapIntoPage(
@@ -122703,7 +122891,10 @@ class _DocumentPageView extends StatefulWidget {
 class _DocumentPageViewState extends State<_DocumentPageView> {
   /// 作られた時点の MCP 書き込み回数。 dispose 時に増えていたら、
   /// 「AI が書いたので作り直された」 ということなので保存しない。
-  late final int _mcpTickAtInit = widget.provider.mcpContentTick;
+  /// ★ 必ず initState で入れる。 late final の遅延初期化だと
+  ///   **最初に読むのが dispose の中**になり、 その時の値が入るので
+  ///   「変わっていない」 と必ず判定されて守りが効かなかった。
+  int _mcpTickAtInit = 0;
 
   // ── 複数ページ対応 (= ユーザー要望: 文書は 2 ページ目以降も作れるように) ──
   // 1 文書 = 複数の「用紙ページ」。 各ページは独立した QuillController を持つ。
@@ -122877,6 +123068,7 @@ class _DocumentPageViewState extends State<_DocumentPageView> {
   @override
   void initState() {
     super.initState();
+    _mcpTickAtInit = widget.provider.mcpContentTick;
     _load();
     // 用紙の余白 (= ユーザー要望で設定できるようにした値) を読み直す。
     // ignore: discarded_futures
@@ -124473,7 +124665,10 @@ class _PaintPageView extends StatefulWidget {
 
 class _PaintPageViewState extends State<_PaintPageView> {
   /// 作られた時点の MCP 書き込み回数 (dispose の上書き防止に使う)。
-  late final int _mcpTickAtInit = widget.provider.mcpContentTick;
+  /// ★ 必ず initState で入れる。 late final の遅延初期化だと
+  ///   **最初に読むのが dispose の中**になり、 その時の値が入るので
+  ///   「変わっていない」 と必ず判定されて守りが効かなかった。
+  int _mcpTickAtInit = 0;
 
   // ── 設定の窓は「押した所の近く」 に出す (= ユーザー要望: 画面の真ん中だと
   //    押しにくい)。 道具の並びもキャンバスも同じ扱いにできるよう、 最後に
@@ -126821,6 +127016,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
   @override
   void initState() {
     super.initState();
+    _mcpTickAtInit = widget.provider.mcpContentTick;
     _load();
     _loadTextPresets();
     _loadTemplates();
@@ -127787,7 +127983,10 @@ class _PaintPageViewState extends State<_PaintPageView> {
     _shapeWidthCtrl.dispose();
     _shapeWidthRepeat?.cancel();
     _pageTabScroll.dispose();
-    if (_dirty) {
+    // ★ AI (MCP) が書き換えたせいで作り直された時は保存しない。 上の
+    //   メモ欄と同じ守り。 これが無いと、 描きかけの紙を持ったまま消える
+    //   画面が古い中身で上書きし、 AI の入れた背景が消えていた。
+    if (_dirty && widget.provider.mcpContentTick == _mcpTickAtInit) {
       _note.selectedPage = _sel;
       _PaintStore.save(widget.pageId, _notes, _noteSel);
     }
@@ -128044,6 +128243,75 @@ class _PaintPageViewState extends State<_PaintPageView> {
       if (it.rect.contains(_paintImageLocal(it, p))) return i;
     }
     return -1;
+  }
+
+  /// 選んでいる画像を切り抜く (= ユーザー要望)。
+  ///
+  /// ★ 元のファイルは触らず、 **写しを作ってから**切り抜く。 複製や貼り付けは
+  ///   同じファイルを指しているので (\_cloneImage)、 その場で上書きすると
+  ///   別のページの同じ画像まで一緒に切れてしまう。 写しにしておけば
+  ///   Ctrl+Z で元の見た目にも戻せる。
+  Future<void> _cropSelectedPaintImage() async {
+    final idx = _singleSelImage;
+    if (idx < 0) return;
+    final it = _sheet.images[idx];
+    final oldPath = it.path;
+    final oldImg = _imageCache[oldPath] ?? await _loadUiImage(oldPath);
+    if (oldImg == null || !mounted) return;
+    final dot = oldPath.lastIndexOf('.');
+    final base = dot < 0 ? oldPath : oldPath.substring(0, dot);
+    final ext = dot < 0 ? '.png' : oldPath.substring(dot);
+    final newPath = '${base}_crop${DateTime.now().microsecondsSinceEpoch}$ext';
+    try {
+      await File(oldPath).copy(newPath);
+    } catch (_) {
+      return;
+    }
+    var edited = false;
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.92),
+      builder: (_) => Dialog.fullscreen(
+        backgroundColor: const Color(0xFF1A1A24),
+        child: _ImageEditorDialog(
+          filePath: newPath,
+          // Windows でも区切りが '/' の事があるので両方で切る。
+          fileName: newPath.split(RegExp(r'[/\\]')).last,
+          initialMode: 'crop',
+          onSaved: () => edited = true,
+        ),
+      ),
+    );
+    if (!edited) {
+      try {
+        await File(newPath).delete();
+      } catch (_) {}
+      return;
+    }
+    final newImg = await _loadUiImage(newPath);
+    if (newImg == null || !mounted) return;
+    // ★ 画素数では縮尺を出さない。 切り抜きは「画面に出ている絵」 を撮り直す
+    //   作りなので、 出来上がりの画素数は元の画素数と関係が無く、 何も切って
+    //   いなくても絵が急に大きく / 小さくなっていた (= 点検で判明)。
+    //   横幅はそのまま、 縦だけ新しい形に合わせる。
+    final w = it.rect.width;
+    final h = newImg.width > 0
+        ? w * (newImg.height / newImg.width)
+        : it.rect.height;
+    final before = _makeEraseSnapshot();
+    setState(() {
+      _redo.clear();
+      _imageCache[newPath] = newImg;
+      it.path = newPath;
+      // 回した絵は中心を動かさない (左上を固定すると回る軸がずれて飛ぶ)。
+      it.rect = it.rot == 0
+          ? Rect.fromLTWH(it.rect.left, it.rect.top, w, h)
+          : Rect.fromCenter(center: it.rect.center, width: w, height: h);
+      _pushPaintSnapshotEdit(before);
+      _dirty = true;
+    });
+    _persist();
   }
 
   /// 回した後の図形の外枠 (回していなければそのまま)。
@@ -133898,6 +134166,13 @@ class _PaintPageViewState extends State<_PaintPageView> {
                   icon: Icons.copy_all_rounded,
                   tooltip: widget.provider.t('paint.duplicateMobile'),
                   onTap: _duplicatePaintSelection),
+            // ── 画像のトリミング (= ユーザー要望: フリーノートに埋め込んだ
+            //    画像を切り抜けるように)。 1 枚だけ選んでいる時に出す。 ──
+            if (_singleSelImage >= 0)
+              _toolBtn(
+                  icon: Icons.crop_rounded,
+                  tooltip: widget.provider.t('imgAnno.crop'),
+                  onTap: _cropSelectedPaintImage),
             // ── 範囲の部分コピー (= ユーザー要望: 画像や図形の一部を
             //    切り取ってコピー)。 直前のラバーバンド矩形を切り出す。 ──
             if (_lastRangeRect != null) ...[
@@ -135563,18 +135838,23 @@ class _PaintCanvasPainter extends CustomPainter {
     }
     // ── 用紙そのものの背景画像 (= ユーザー要望: PDF は白紙の上に重ねるので
     //    はなく画像自体が背景になるように) ──
-    //    用紙いっぱいに敷く。 用紙比と画像比は取り込み時に合わせてあるので、
-    //    そのまま引き伸ばして隙間なく収まる。
+    //    用紙いっぱいに敷く。
+    //    ★ 引き伸ばさず、 中央を切り取って敷く (= 取り込んだ画像は用紙比に
+    //      合わせてあるので今までどおりだが、 AI に描かせた絵など比の違う
+    //      画像を入れると潰れて見えていた)。
     final bgPath = sheet.bgImage;
     if (bgPath != null && bgPath.isNotEmpty) {
       final im = images[bgPath];
       if (im != null) {
-        canvas.drawImageRect(
-          im,
-          Rect.fromLTWH(0, 0, im.width.toDouble(), im.height.toDouble()),
-          Offset.zero & logicalSize,
-          Paint(),
-        );
+        final iw = im.width.toDouble(), ih = im.height.toDouble();
+        Rect src = Rect.fromLTWH(0, 0, iw, ih);
+        if (iw > 0 && ih > 0 && logicalSize.width > 0 &&
+            logicalSize.height > 0) {
+          final k = math.max(logicalSize.width / iw, logicalSize.height / ih);
+          final cw = logicalSize.width / k, ch = logicalSize.height / k;
+          src = Rect.fromLTWH((iw - cw) / 2, (ih - ch) / 2, cw, ch);
+        }
+        canvas.drawImageRect(im, src, Offset.zero & logicalSize, Paint());
       }
     }
     final ruleSpacing = sheet.ruleSpacing;
@@ -213732,6 +214012,28 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
         case 'mermaidToMap':
           unawaited(_sendDiagramToMap(m.cast<dynamic, dynamic>()));
           break;
+        // 図をそのまま (見た目を変えずに) 選んだページへ置く。
+        case 'mermaidPngToPage':
+          unawaited(() async {
+            final provider = context.read<MindMapProvider>();
+            final name = await askAndPutDiagramImageIntoPage(
+                context, provider, m.cast<dynamic, dynamic>());
+            if (name == null) {
+              // ★ 「やめる」 を押しただけで保存の窓を出さない
+              //   (= 点検で判明)。 絵に出来なかった時だけ促す。
+              final png = '${m['png'] ?? ''}';
+              if (!png.startsWith('data:image/png;base64,')) {
+                await _saveDiagramExport(m.cast<dynamic, dynamic>());
+              }
+              return;
+            }
+            if (mounted) {
+              _showSnackBar(provider
+                  .t('map.addedToPage')
+                  .replaceFirst('{name}', name));
+            }
+          }());
+          break;
       }
     } catch (_) {}
   }
@@ -227136,6 +227438,10 @@ class _ImageEditorDialog extends StatefulWidget {
   /// 「n / N」 表示用 (切替がある時だけ渡す)。
   final int? galleryIndex;
   final int? galleryCount;
+
+  /// 開いた直後のモード ('view' / 'crop' / 'annotate')。
+  /// = ユーザー要望: フリーノートの画像は、 押したらすぐトリミングに入る。
+  final String initialMode;
   const _ImageEditorDialog({
     super.key,
     required this.filePath,
@@ -227147,6 +227453,7 @@ class _ImageEditorDialog extends StatefulWidget {
     this.onSwipeNext,
     this.galleryIndex,
     this.galleryCount,
+    this.initialMode = 'view',
   });
   @override
   State<_ImageEditorDialog> createState() => _ImageEditorDialogState();
@@ -227157,7 +227464,7 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
   int _rotationDeg = 0;
 
   /// 現在のモード: 'view' (= 通常) / 'crop' (= トリミング) / 'annotate' (= 注釈)
-  String _mode = 'view';
+  late String _mode = widget.initialMode;
 
   /// RepaintBoundary 用キー (= トリミング/注釈時の画像キャプチャ用)
   final GlobalKey _captureKey = GlobalKey();
@@ -234301,23 +234608,27 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
                           borderRadius:
                               BorderRadius.vertical(top: Radius.circular(11)),
                         ),
-                        child: Tooltip(
-                          message: context
-                              .read<MindMapProvider>()
-                              .t('float.slimDragHint'),
-                          child: Center(
-                            child: Container(
-                              width: 64,
-                              height: 4,
-                              decoration: BoxDecoration(
-                                color: draggedOut
-                                    ? const Color(0xFF4FC3F7)
-                                    : Colors.white30,
-                                borderRadius: BorderRadius.circular(2),
+                        // ★ 掴む目印の横棒は出さない (= ユーザー要望:
+                        //   ヘッダーボタンの上の横棒線は要らない)。 帯そのものは
+                        //   残してあるので、 ここを掴めば今までどおり動かせる。
+                        //   外へ引っ張っている間だけ、 細い線で知らせる。
+                        child: draggedOut
+                            ? Center(
+                                child: Container(
+                                  width: 64,
+                                  height: 3,
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF4FC3F7),
+                                    borderRadius: BorderRadius.circular(2),
+                                  ),
+                                ),
+                              )
+                            : Tooltip(
+                                message: context
+                                    .read<MindMapProvider>()
+                                    .t('float.slimDragHint'),
+                                child: const SizedBox.expand(),
                               ),
-                            ),
-                          ),
-                        ),
                       ),
                 )
               else

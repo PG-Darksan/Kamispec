@@ -83458,6 +83458,19 @@ $cleanQ
   }) async {
     final page = mcpPageById(pageId);
     if (page == null) return false;
+    // ★ フリーノートは page.backgroundImagePath を読まない (= 何も起きない
+    //   のに成功と返していた)。 紙 (シート) の背景へ回す。
+    if (page.pageType == 'paint' || page.pageType == 'document') {
+      if (clear) return mcpSetPaintSheetBackground(page.id, '');
+      if (imagePath != null && imagePath.trim().isNotEmpty) {
+        final ip = imagePath.trim();
+        // 無いファイルを「入れました」 と返さない。
+        if (!File(ip).existsSync()) return false;
+        return mcpSetPaintSheetBackground(page.id, ip);
+      }
+      // 用意された絵柄 (テンプレ) は紙の背景には使えない。
+      return false;
+    }
     // ── 何を背景にするか ──
     if (clear) {
       page.backgroundImagePath = null;
@@ -83524,9 +83537,14 @@ $cleanQ
     if (page == null) throw Exception('page not found');
     final p = prompt.trim();
     if (p.isEmpty) throw Exception('prompt is required');
+    // フリーノートは縦長の紙なので、 形も合わせて頼む (= 横長で頼むと
+    //   紙に貼った時に潰れて見える)。
+    final toPaper =
+        page.pageType == 'paint' || page.pageType == 'document';
     // 背景として使う前提を足す。 文字が入ると読みにくくなるので入れさせない。
     final full = '$p\n\n'
-        'Wide 16:9 desktop wallpaper. No text, no letters, no watermark, '
+        '${toPaper ? 'Portrait A4 paper background (taller than wide).' : 'Wide 16:9 desktop wallpaper.'} '
+        'No text, no letters, no watermark, '
         'no logo. Keep the composition calm and low-contrast so that notes '
         'and lines drawn on top stay readable.';
     final bytes = await generateAiImageViaRelay(full);
@@ -83536,6 +83554,15 @@ $cleanQ
     if (!await bgDir.exists()) await bgDir.create(recursive: true);
     final path = '${bgDir.path}/bg_${DateTime.now().millisecondsSinceEpoch}.png';
     await File(path).writeAsBytes(bytes);
+    // ★ フリーノートは page.backgroundImagePath を読まない。 紙 (シート) の
+    //   背景へ入れる (= ユーザー報告: 描いたと言われるのに何も出ない)。
+    if (toPaper) {
+      final ok = await mcpSetPaintSheetBackground(page.id, path);
+      if (!ok) {
+        throw Exception('could not set the free-note paper background');
+      }
+      return path;
+    }
     page.backgroundImagePath = path;
     // 生成画像はそのまま出すと主張が強いので、 既定は少し薄くする。
     page.backgroundOpacityPercent = (opacityPercent ?? 70).clamp(0, 100);
@@ -84192,6 +84219,111 @@ $cleanQ
 
   /// フリーノート (paint) の今のシートに文字を書き込む。
   /// 保存形式は `{notes:[{pages:[{t:[…テキスト…]}]}]}`。 何も無ければ作る。
+  /// フリーノートの「今の紙」 の背景画像を差し替える。
+  ///
+  /// = ユーザー報告「AI アシスタントにフリーページへ絵を描いてと言ったのに
+  ///   どこにも生成されていない」。 生成そのものは出来ていたが、 書き込み先が
+  ///   `page.backgroundImagePath` (マインドマップ / 棚だけが読む所) だったので、
+  ///   フリーノートからは永久に見えなかった。 フリーノートは自分の紙の
+  ///   背景 (シートの 'bgi') を見るので、 そちらへ入れる。
+  /// [imagePath] が空なら背景を外す。
+  Future<bool> mcpSetPaintSheetBackground(
+      String pageId, String imagePath) async {
+    final page = mcpPageById(pageId);
+    if (page == null) return false;
+    if (page.pageType != 'paint' && page.pageType != 'document') return false;
+    try {
+      final prefs = await _prefsWithRetry();
+      final key = 'paint_${page.id}';
+      dynamic decoded;
+      final raw = prefs.getString(key);
+      if (raw != null && raw.trim().isNotEmpty) {
+        try {
+          decoded = jsonDecode(raw);
+        } catch (_) {}
+      }
+      // ★ 中身があるのに紙を見つけられなかった時は、 何もしない。
+      //   白紙で書き戻すと、 古い形で保存された絵が丸ごと消える
+      //   (= 点検で判明)。
+      if (decoded != null && _mcpPaintSheetOf(decoded).sheet.isEmpty) {
+        return false;
+      }
+      final sheet = _mcpPaintSheetOf(decoded);
+      decoded = sheet.doc;
+      if (imagePath.trim().isEmpty) {
+        sheet.sheet.remove('bgi');
+      } else {
+        sheet.sheet['bgi'] = imagePath;
+      }
+      await prefs.setString(key, jsonEncode(decoded));
+      _paintReloadTick++;
+      _mcpContentTick++;
+      notifyListeners();
+      _requestMcpFocus(page.id);
+      return true;
+    } catch (e) {
+      debugPrint('mcpSetPaintSheetBackground failed: $e');
+      return false;
+    }
+  }
+
+  /// 保存してあるフリーノートの中から「今開いている紙」 を取り出す。
+  /// 無ければ 1 枚作って、 入れ物ごと返す (書き戻す時は doc を保存する)。
+  ({dynamic doc, Map<dynamic, dynamic> sheet}) _mcpPaintSheetOf(
+      dynamic decoded) {
+    Map<dynamic, dynamic>? sheet;
+    if (decoded is Map) {
+      List? pages;
+      if (decoded['notes'] is List && (decoded['notes'] as List).isNotEmpty) {
+        final notes = decoded['notes'] as List;
+        var ni = (decoded['noteSel'] as num?)?.toInt() ?? 0;
+        if (ni < 0 || ni >= notes.length) ni = 0;
+        final note = notes[ni];
+        if (note is Map && note['pages'] is List) {
+          pages = note['pages'] as List;
+          var si = (note['sel'] as num?)?.toInt() ?? 0;
+          if (si < 0 || si >= pages.length) si = 0;
+          if (pages.isNotEmpty && pages[si] is Map) {
+            sheet = pages[si] as Map;
+          }
+        }
+      } else if (decoded['pages'] is List) {
+        pages = decoded['pages'] as List;
+      } else if (decoded['sheets'] is List) {
+        pages = decoded['sheets'] as List;
+      } else if (decoded['t'] is List || decoded['s'] is List) {
+        sheet = decoded;
+      }
+      if (sheet == null && pages != null && pages.isNotEmpty) {
+        var si = (decoded['sel'] as num?)?.toInt() ?? 0;
+        if (si < 0 || si >= pages.length) si = 0;
+        if (pages[si] is Map) sheet = pages[si] as Map;
+      }
+    }
+    if (sheet != null) return (doc: decoded, sheet: sheet);
+    // 中身があるのに見つけられなかった = 知らない形。 空を返して知らせる。
+    if (decoded != null) {
+      return (doc: decoded, sheet: <dynamic, dynamic>{});
+    }
+    final made = <String, dynamic>{
+      'n': 'Page 1',
+      'sz': 'a4p',
+      's': [],
+      't': [],
+      'sh': [],
+      'im': [],
+    };
+    return (
+      doc: {
+        'notes': [
+          {'n': 'Note 1', 'sel': 0, 'pages': [made]}
+        ],
+        'noteSel': 0,
+      },
+      sheet: made,
+    );
+  }
+
   Future<bool> mcpAddPaintText(
     String pageId,
     String text, {

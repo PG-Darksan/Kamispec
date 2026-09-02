@@ -491,7 +491,11 @@ class McpServer {
     _tool(
         'generate_page_background',
         'Draw a NEW background image with AI and set it as the page '
-        'background. This is the preferred way to change a background: '
+        'background. On a FREE NOTE / notepad page ("paint" / "document") the '
+        'picture becomes the paper background of the CURRENT SHEET - that is '
+        'the '
+        'right tool when the user says "draw a picture on this free note". '
+        'This is the preferred way to change a background: '
         'describe the picture you want in "prompt" (English works best, be '
         'concrete about subject, colours and mood) and an image is generated '
         'and applied. Costs a flat ~0.047 USD of prepaid credit per picture, '
