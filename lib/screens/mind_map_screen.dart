@@ -1151,7 +1151,13 @@ class _AutoHeightTabBarViewState extends State<_AutoHeightTabBarView> {
 /// プロバイダーごとに縦に並べ、 横に 3 列。 最後に考える深さを置く。
 /// 呼ぶ側は選び終わったら再描画するだけでよい。
 Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
-    {VoidCallback? onChanged}) async {
+    {VoidCallback? onChanged,
+    // ★ 浮遊窓 (root Overlay に挿した窓) の中から呼ぶ時は false。
+    //   既定 (true) だと根っこの Navigator に積まれるので、 窓の裏 =
+    //   アプリ本体側に出てしまう (= ユーザー報告: モデル切り替え画面が
+    //   AI アシスタントの浮遊窓の下に出る)。 false なら一番近い
+    //   Navigator = その窓自身になり、 窓の上に重なって出る。
+    bool useRootNavigator = true}) async {
   String label(String id) => id.replaceAll(RegExp(r'-\d{8}$'), '');
   final models = [
     for (final m in provider.relayModels)
@@ -1162,18 +1168,86 @@ Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
     ('openai', 'ChatGPT'),
     ('anthropic', 'Claude'),
   ];
+  // ★ 呼ばれた場所が浮遊窓の中なら、 頼まれなくても窓自身の Navigator に
+  //   出す。 モデル選びの入口はあちこちにあり (アシスタント / 面接練習 /
+  //   Markdown / PDF …)、 呼ぶ側それぞれに書かせると必ず付け忘れる。
+  final inFloatingWindow =
+      context.findAncestorStateOfType<_FloatingPanelWindowState>() != null;
   await showDialog<void>(
     context: context,
+    useRootNavigator: useRootNavigator && !inFloatingWindow,
     builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
       final cur = provider.relayModel;
+      // ★ 出す場所の幅に合わせる (= 浮遊窓の中は 520px ほどしかない)。
+      //   3 列を横に並べると入り切らないので、 狭い時は縦に積む。
+      const inset = 16.0;
+      final avail = MediaQuery.of(dctx).size.width - inset * 2;
+      final wide = avail >= 680;
+      final dialogW = wide ? 720.0 : math.max(240.0, avail);
+      // 1 社ぶんの列 (横並び / 縦積みの両方で使い回す)。
+      Widget groupCol((String, String) g) => Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Text(g.$2,
+                    style: const TextStyle(
+                        color: Color(0xFF80CBC4),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700)),
+              ),
+              for (final m in models.where((m) => '${m['provider']}' == g.$1))
+                InkWell(
+                  borderRadius: BorderRadius.circular(6),
+                  onTap: () async {
+                    await provider.setRelayModel('${m['id']}');
+                    setD(() {});
+                    onChanged?.call();
+                  },
+                  child: Padding(
+                    padding:
+                        const EdgeInsets.symmetric(vertical: 5, horizontal: 2),
+                    child: Row(children: [
+                      Icon(
+                          '${m['id']}' == cur
+                              ? Icons.radio_button_checked_rounded
+                              : Icons.radio_button_unchecked_rounded,
+                          size: 13,
+                          color: '${m['id']}' == cur
+                              ? const Color(0xFF80CBC4)
+                              : Colors.white24),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(label('${m['id']}'),
+                                  style: const TextStyle(
+                                      color: Colors.white, fontSize: 11.5)),
+                              Text(
+                                  '入 \$${m['billedInputPerMTok']} / '
+                                  '出 \$${m['billedOutputPerMTok']}',
+                                  style: const TextStyle(
+                                      color: Colors.white38, fontSize: 9.5)),
+                            ]),
+                      ),
+                    ]),
+                  ),
+                ),
+            ],
+          );
       return AlertDialog(
         backgroundColor: const Color(0xFF1E1E32),
+        // 狭い窓の中でも幅を使えるように、 既定の 40px より詰める。
+        insetPadding:
+            const EdgeInsets.symmetric(horizontal: inset, vertical: 20),
         // 中身が縦に溢れると下 (考える深さ) が切れるのでスクロールさせる。
         scrollable: true,
         title: Text(provider.t('mcp.chooseModel'),
             style: const TextStyle(color: Colors.white, fontSize: 15)),
         content: SizedBox(
-          width: 720,
+          width: dialogW,
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             if (models.isEmpty)
               Padding(
@@ -1182,67 +1256,10 @@ Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
                     style:
                         const TextStyle(color: Colors.white54, fontSize: 12.5)),
               )
-            else
+            else if (wide)
               Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 for (final g in groups) ...[
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 6),
-                          child: Text(g.$2,
-                              style: const TextStyle(
-                                  color: Color(0xFF80CBC4),
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w700)),
-                        ),
-                        for (final m
-                            in models.where((m) => '${m['provider']}' == g.$1))
-                          InkWell(
-                            borderRadius: BorderRadius.circular(6),
-                            onTap: () async {
-                              await provider.setRelayModel('${m['id']}');
-                              setD(() {});
-                              onChanged?.call();
-                            },
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                  vertical: 5, horizontal: 2),
-                              child: Row(children: [
-                                Icon(
-                                    '${m['id']}' == cur
-                                        ? Icons.radio_button_checked_rounded
-                                        : Icons.radio_button_unchecked_rounded,
-                                    size: 13,
-                                    color: '${m['id']}' == cur
-                                        ? const Color(0xFF80CBC4)
-                                        : Colors.white24),
-                                const SizedBox(width: 6),
-                                Expanded(
-                                  child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(label('${m['id']}'),
-                                            style: const TextStyle(
-                                                color: Colors.white,
-                                                fontSize: 11.5)),
-                                        Text(
-                                            '入 \$${m['billedInputPerMTok']} / '
-                                            '出 \$${m['billedOutputPerMTok']}',
-                                            style: const TextStyle(
-                                                color: Colors.white38,
-                                                fontSize: 9.5)),
-                                      ]),
-                                ),
-                              ]),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
+                  Expanded(child: groupCol(g)),
                   if (g != groups.last)
                     Container(
                         width: 1,
@@ -1250,7 +1267,19 @@ Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
                         color: Colors.white12,
                         margin: const EdgeInsets.symmetric(horizontal: 8)),
                 ],
-              ]),
+              ])
+            else
+              // 狭い時は 1 社ずつ縦に積む (= 浮遊窓の中)。
+              Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    for (final g in groups) ...[
+                      groupCol(g),
+                      if (g != groups.last)
+                        const Divider(color: Colors.white12, height: 18),
+                    ],
+                  ]),
             // ── 考える深さ ──
             const Divider(color: Colors.white12, height: 20),
             Align(
@@ -232757,6 +232786,19 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
   String? get _prefsKey =>
       widget.memoryKey == null ? null : 'floatWin_${widget.memoryKey}';
 
+  /// 上の帯 (掴んで動かす所) の高さ。
+  ///
+  /// ★ 中身が自前のヘッダーを持つ窓 (= AI アシスタント) は 12px しか
+  ///   無く、 しかもその上半分を「上の縁を掴んで縦に伸ばす帯」 が
+  ///   取っていたので、 実際に掴めるのは 6px しか無かった
+  ///   (= ユーザー報告: ドラッグしようとしても反応が悪い)。
+  ///   掴める高さを確保する。
+  double get _headerH => widget.slimChrome ? 24.0 : 30.0;
+
+  /// 上の縁を掴んで縦に伸ばす帯の太さ。 細い帯の窓では、 掴んで動かす所を
+  /// 食い過ぎないよう更に細くする。
+  double get _topGrab => widget.slimChrome ? 4.0 : 6.0;
+
   /// 窓全体が画面に収まるようにする (= ユーザー報告: 画面下の
   /// ボタンから開くと下に大幅にはみ出した状態で開かれる)。
   ///
@@ -232885,10 +232927,10 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
 
     return [
       // 左の縁 (左へ引くと広がる = 左端も動く)
-      //   上端の 30px は「掴んで動かす帯」 なので避ける。
+      //   上端の「掴んで動かす帯」 (_headerH) は避ける。
       band(
         left: 0,
-        top: 30,
+        top: _headerH,
         bottom: grab,
         width: grab,
         cursor: SystemMouseCursors.resizeLeftRight,
@@ -232901,7 +232943,7 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
       // 右の縁
       band(
         right: 0,
-        top: 30,
+        top: _headerH,
         bottom: grab,
         width: grab,
         cursor: SystemMouseCursors.resizeLeftRight,
@@ -232913,8 +232955,9 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
       band(
         top: 0,
         left: 28,
-        right: 150,
-        height: grab,
+        // 細い帯の窓はボタンを並べないので、 右のつまみのぶんだけ空ける。
+        right: widget.slimChrome ? 30 : 150,
+        height: _topGrab,
         cursor: SystemMouseCursors.resizeUpDown,
         onDrag: (d) {
           final nh = (_h - d.dy).clamp(minH, screen.height);
@@ -233282,7 +233325,7 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
                     // 掴んで動かす / 外へ放して外の窓にする、 は今まで
                     // どおりこの GestureDetector が受け持つ。
                     ? Container(
-                        height: 12,
+                        height: _headerH,
                         decoration: const BoxDecoration(
                           color: Color(0xFF1A1A2E),
                           borderRadius:
@@ -233294,12 +233337,12 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
                               .t('float.slimDragHint'),
                           child: Center(
                             child: Container(
-                              width: 36,
-                              height: 3,
+                              width: 64,
+                              height: 4,
                               decoration: BoxDecoration(
                                 color: draggedOut
                                     ? const Color(0xFF4FC3F7)
-                                    : Colors.white24,
+                                    : Colors.white30,
                                 borderRadius: BorderRadius.circular(2),
                               ),
                             ),
@@ -233425,8 +233468,8 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
             //      (= ユーザー報告)。 上の左右に移す。
             //      上を掴むので、 伸ばすと上端も一緒に動く。
             Positioned(
-              left: 0,
-              top: 0,
+              left: widget.slimChrome ? 2 : 0,
+              top: widget.slimChrome ? 1 : 0,
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onPanUpdate: (d) => setState(() {
@@ -233437,19 +233480,25 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
                   _h = nh;
                   _scheduleSaveGeometry();
                 }),
-                child: const Padding(
-                  padding: EdgeInsets.all(4),
-                  child: Icon(Icons.north_west_rounded,
+                child: Padding(
+                  padding: widget.slimChrome
+                      ? const EdgeInsets.symmetric(horizontal: 5, vertical: 4)
+                      : const EdgeInsets.all(4),
+                  child: const Icon(Icons.north_west_rounded,
                       size: 13, color: Colors.white38),
                 ),
               ),
             ),
-            // ★ 右のつまみだけ帯より下へ逃がす
-            //   (= ユーザー要望: × ボタンと大きさ調整の位置が
-            //   近くて押しづらい)。 左上は何も置いていないのでそのまま。
+            // ★ 右のつまみの置き場所。
+            //
+            //   ふつうの窓は帯にボタンが並ぶので、 帯より下へ逃がす。
+            //   細い帯の窓 (= AI アシスタント) は帯にボタンが無いかわりに、
+            //   すぐ下が中身の自前ヘッダーなので、 下へ逃がすと**中身の
+            //   閉じる × と重なってしまう** (= ユーザー報告: 閉じるボタンと
+            //   大きさ調節ボタンが被る)。 その時は帯の中に納める。
             Positioned(
-              right: 0,
-              top: 36,
+              right: widget.slimChrome ? 2 : 0,
+              top: widget.slimChrome ? 1 : 36,
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onPanUpdate: (d) => setState(() {
@@ -233458,9 +233507,11 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
                   _h = (_h + d.delta.dy).clamp(280.0, screen.height);
                   _scheduleSaveGeometry();
                 }),
-                child: const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 5, vertical: 8),
-                  child: Icon(Icons.open_in_full_rounded,
+                child: Padding(
+                  padding: widget.slimChrome
+                      ? const EdgeInsets.symmetric(horizontal: 5, vertical: 4)
+                      : const EdgeInsets.symmetric(horizontal: 5, vertical: 8),
+                  child: const Icon(Icons.open_in_full_rounded,
                       size: 13, color: Colors.white38),
                 ),
               ),
@@ -234584,6 +234635,39 @@ class _McpChatDialogState extends State<_McpChatDialog> {
   static bool _narrowHeader(BuildContext ctx) =>
       MediaQuery.of(ctx).size.width < 520;
 
+  /// 浮遡窓の中に居る時だけ、 渡した帯を掴んで窓を動かせるようにする
+  /// (= ユーザー報告: フローティング欄のドラッグの反応が悪い)。
+  ///
+  /// translucent なので、 ボタンの上ではボタンが先に受け取り、 何も無い所を
+  /// 掴んだ時だけ窓が動く。 動かし方 (画面の外へ放したら外の窓になる、 など)
+  /// は上の細い帯と全く同じ道を通す。
+  Widget _dragHeader(Widget child) {
+    if (!widget.floatingPanel) return child;
+    // ★ 掴む所は帯の**後ろ**に敷く。 ボタンを包んではいけない。
+    //
+    //   包んでしまうと、 押した時に「ボタンの押下」 と「掴んで動かす」 が
+    //   同じ土俵で競い、 マウスは 2px 動いただけで動かす方が勝つ
+    //   (Flutter の判定は木の深さではなく先に名乗り出た方が勝つ。
+    //   押す方は指を離すまで名乗り出ないので、 必ず負ける)。
+    //   その結果、 ほんの少し手がぶれただけでボタンが効かなくなる。
+    //   Stack の上に帯を置けば、 ボタンの上ではボタンだけが受け取り、
+    //   何も無い所を掴んだ時だけ下の板に届いて窓が動く。
+    return Stack(children: [
+      Positioned.fill(
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onPanUpdate: (d) => context
+              .findAncestorStateOfType<_FloatingPanelWindowState>()
+              ?.dragWindowBy(d.delta),
+          onPanEnd: (_) => context
+              .findAncestorStateOfType<_FloatingPanelWindowState>()
+              ?.dragWindowEnd(),
+        ),
+      ),
+      child,
+    ]);
+  }
+
   /// 狭い時だけ小さくするアイコンボタンの寸法。
   static BoxConstraints? _hdrBtnConstraints(BuildContext ctx) =>
       _narrowHeader(ctx)
@@ -234871,7 +234955,12 @@ class _McpChatDialogState extends State<_McpChatDialog> {
   /// 中身は共通の showAiModelDialog に寄せてある。
   Future<void> _showModelSheet(
       List models, List<(String, String)> groups) async {
-    await showAiModelDialog(context, provider, onChanged: () {
+    await showAiModelDialog(context, provider,
+        // ★ 浮遊窓の中では、 窓自身の Navigator に出す
+        //   (= ユーザー要望: モデル切り替え画面を AI アシスタントの
+        //   浮遊画面の上に出す)。 既定のままだと根っこの Navigator に
+        //   積まれ、 窓の裏 = アプリ本体側に隠れてしまう。
+        useRootNavigator: !widget.floatingPanel, onChanged: () {
       if (mounted) setState(() {});
     });
   }
@@ -234929,6 +235018,9 @@ class _McpChatDialogState extends State<_McpChatDialog> {
     final list = provider.mcpSessions.reversed.toList();
     await showDialog<void>(
       context: context,
+      // ★ 浮遊窓の中では窓自身の Navigator に出す。 既定 (根っこ) のままだと
+      //   窓の裏 = アプリ本体側に積まれて隠れる (= ユーザー報告)。
+      useRootNavigator: !widget.floatingPanel,
       builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
         // ── Ctrl / Shift でまとめて選んで消す (= ユーザー要望) ──
         //    Ctrl+クリック = 1 件ずつ足し引き、 Shift+クリック = 直前に触った
@@ -235111,6 +235203,9 @@ class _McpChatDialogState extends State<_McpChatDialog> {
     if (n <= 0) return false;
     final ok = await showDialog<bool>(
       context: context,
+      // ★ 浮遊窓の中では窓自身の Navigator に出す。 既定 (根っこ) のままだと
+      //   窓の裏 = アプリ本体側に積まれて隠れる (= ユーザー報告)。
+      useRootNavigator: !widget.floatingPanel,
       builder: (cctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E32),
         title: Text(provider.t('mcp.deleteConfirmTitle'),
@@ -235330,6 +235425,9 @@ class _McpChatDialogState extends State<_McpChatDialog> {
     final ctrl = TextEditingController(text: provider.mcpPreamble);
     await showDialog<void>(
       context: context,
+      // ★ 浮遊窓の中では窓自身の Navigator に出す。 既定 (根っこ) のままだと
+      //   窓の裏 = アプリ本体側に積まれて隠れる (= ユーザー報告)。
+      useRootNavigator: !widget.floatingPanel,
       builder: (dctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E32),
         title: Text(provider.t('mcp.preamble'),
@@ -235641,7 +235739,13 @@ class _McpChatDialogState extends State<_McpChatDialog> {
             maxHeight: pane ? double.infinity : 640),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           // ── ヘッダー ──
-          Padding(
+          //   ★ 帯まるごとを掴んで窓を動かせるようにする
+          //     (= ユーザー報告: フローティング欄をドラッグしようとしても
+          //     反応が悪い)。 見出しの文字の所だけだと、 幅が狭い時に
+          //     ほとんど掴む場所が残らなかった。 掴む板は帯の**後ろ**に
+          //     敷いてあるので、 ボタンの上ではボタンだけが受け取る。
+          _dragHeader(
+            Padding(
             padding: EdgeInsets.fromLTRB(_narrowHeader(context) ? 10 : 14, 10,
                 _narrowHeader(context) ? 2 : 6, 4),
             child: Row(children: [
@@ -235826,7 +235930,7 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                     : Navigator.of(context).pop(),
               ),
             ]),
-          ),
+          )),
           const Divider(height: 1, color: Colors.white12),
           // ── MCP の説明 (= ユーザー要望: 初回だけ出し、 閉じたらヘッダーの
           //    ⓘ から見られるようにする) ──
