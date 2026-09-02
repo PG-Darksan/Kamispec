@@ -6373,9 +6373,17 @@ ${_pcContext(req)}
             .toDouble();
         // ★ 人が境界をドラッグして決めた高さがあれば、 そちらを使う
         //   (= ユーザー要望: 表示領域がまだ小さいので自分で広げたい)。
-        //   窓より高くしてよい (足りない分は全体が巻物になる)。
-        final maxSteps =
-            cons.maxHeight.isFinite ? cons.maxHeight * 2.5 : 1600.0;
+        //
+        // ★ ただし窓の外へは広げさせない。
+        //   = ユーザー報告「下のコマンド実行あたりの境界をドラッグすると
+        //   外の枠を飛び越えてしまって戻せなくなる」。 以前は窓の 2.5 倍
+        //   まで許していたので、 掴んだ帯ごと下の行 (コマンド実行 /
+        //   時刻で実行) が画面の外へ押し出され、 掴み直せなくなっていた。
+        //   下に必ず 240px 残して、 帯と下の行が見えたままになるようにする
+        //   (保存済みの大きすぎる値も、 この上限で丸められる)。
+        final maxSteps = cons.maxHeight.isFinite
+            ? math.max(160.0, cons.maxHeight - 240.0)
+            : 560.0;
         final stepsHeight = _stepsH == null
             ? autoHeight
             : _stepsH!.clamp(120.0, maxSteps).toDouble();
@@ -6658,8 +6666,149 @@ ${_pcContext(req)}
             ]),
           ),
           ),
-          // ── AI でフローを作る入力欄 (= ユーザー要望: 一番上に置く。
-          //    コマンド実行はこのすぐ下、 時刻で実行は一番下) ──
+          // ── 説明の行が、 そのままボタン一覧の見出し (= ユーザー要望:
+          //    「手順を並べて実行します」 の所をたためるように) ──
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 2, 8, 2),
+            child: _sectionHead(
+              provider,
+              provider.t('auto.hint'),
+              open: _chipsOpen,
+              color: Colors.white38,
+              fontSize: 10.5,
+              onTap: () {
+                setState(() => _chipsOpen = !_chipsOpen);
+                unawaited(_saveAgentOpts());
+              },
+            ),
+          ),
+          // ステップ追加ボタン
+          if (_chipsOpen)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: _addChips(provider, _steps),
+            ),
+          // ── まとめて消すバー (= ユーザー要望: Ctrl / Shift で複数選択) ──
+          if (_stepSel.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 6, 8, 0),
+              child: Row(children: [
+                Text(
+                    provider
+                        .t('auto.selected')
+                        .replaceFirst('{n}', '${_stepSel.length}'),
+                    style: const TextStyle(
+                        color: Color(0xFF8D86FF), fontSize: 11.5)),
+                const Spacer(),
+                TextButton(
+                  style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      foregroundColor: Colors.white38),
+                  onPressed: () => setState(() {
+                    _stepSel.clear();
+                    _selAnchorList = null;
+                    _selAnchorIndex = -1;
+                  }),
+                  child: Text(provider.t('mcp.clearSelection'),
+                      style: const TextStyle(fontSize: 11)),
+                ),
+                TextButton.icon(
+                  style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      foregroundColor: const Color(0xFFFF8A80)),
+                  icon: const Icon(Icons.delete_sweep_rounded, size: 15),
+                  label: Text(provider.t('mcp.deleteSelected'),
+                      style: const TextStyle(fontSize: 11)),
+                  onPressed: _deleteSelectedSteps,
+                ),
+              ]),
+            ),
+          // ── 手順を全部消す (= ユーザー要望: 1 番目の手順のすぐ上に) ──
+          //    間違って押しても困らないよう、 一度だけ確かめる。
+          if (!_running && _steps.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 6, 8, 0),
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    foregroundColor: const Color(0xFFE57373),
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    minimumSize: const Size(0, 26),
+                  ),
+                  icon: const Icon(Icons.delete_sweep_rounded, size: 16),
+                  label: Text(provider.t('auto.clearAll'),
+                      style: const TextStyle(fontSize: 11)),
+                  onPressed: () => _clearAllSteps(provider),
+                ),
+              ),
+            ),
+          const SizedBox(height: 8),
+          if (fixedSteps)
+            SizedBox(height: stepsHeight, child: steps)
+          else
+            Expanded(child: steps),
+          // ── 境界をドラッグして、 手順一覧の高さを変える
+          //    (= ユーザー要望)。 二度押しで自動の高さに戻る。 ──
+          //    ★ 巻物の中でも掴めるよう、 Listener で直に受け取る
+          //      (中の GestureDetector と取り合いにならない)。
+          MouseRegion(
+            cursor: SystemMouseCursors.resizeUpDown,
+            child: Listener(
+              behavior: HitTestBehavior.opaque,
+              onPointerMove: (e) {
+                final base = _stepsH ?? stepsHeight;
+                final next = (base + e.delta.dy).clamp(120.0, maxSteps);
+                if ((next - base).abs() < 0.5) return;
+                setState(() => _stepsH = next.toDouble());
+              },
+              onPointerUp: (_) => unawaited(_saveAgentOpts()),
+              child: GestureDetector(
+                onDoubleTap: () {
+                  setState(() => _stepsH = null);
+                  unawaited(_saveAgentOpts());
+                },
+                child: Container(
+                  height: 12,
+                  width: double.infinity,
+                  color: Colors.white.withValues(alpha: 0.04),
+                  alignment: Alignment.center,
+                  child: Container(
+                    width: 46,
+                    height: 3,
+                    decoration: BoxDecoration(
+                      color: _stepsH == null
+                          ? Colors.white24
+                          : const Color(0xFF80CBC4),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const Divider(height: 1, color: Colors.white12),
+          Padding(
+            padding: const EdgeInsets.all(8),
+            // 全体の繰り返し回数の欄は廃止 (= ユーザー要望: 繰り返しは
+            //   繰り返しブロックの中で指定すればいいだけ)。 保存済みの値は
+            //   読み込むが、 常に 1 周として走る。
+            child: Row(children: [
+              Expanded(
+                child: Text(_status,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Colors.white54, fontSize: 10.5)),
+              ),
+              const SizedBox(width: 6),
+              // 実行 / 停止はヘッダーに集約した (= ユーザー要望: 押しやすい
+              // 位置へ)。 ここには残さない。
+            ]),
+          ),
+          // ── AI でフローを作る入力欄 (= ユーザー要望: コマンド実行の欄と並べて下に置く。
+          //    手順一覧を上に広く使えるように) ──
           // ── AI の欄。 見出しは常に出し、 中身だけたたむ
           //    (= ユーザー要望: ヘッダーのボタンを外したので、 ここが
           //    唯一の開け閉め口になる) ──
@@ -6866,150 +7015,8 @@ ${_pcContext(req)}
                 ]),
               ),
             ),
-          // ── 説明の行が、 そのままボタン一覧の見出し (= ユーザー要望:
-          //    「手順を並べて実行します」 の所をたためるように) ──
-          Padding(
-            padding: const EdgeInsets.fromLTRB(10, 2, 8, 2),
-            child: _sectionHead(
-              provider,
-              provider.t('auto.hint'),
-              open: _chipsOpen,
-              color: Colors.white38,
-              fontSize: 10.5,
-              onTap: () {
-                setState(() => _chipsOpen = !_chipsOpen);
-                unawaited(_saveAgentOpts());
-              },
-            ),
-          ),
-          // ステップ追加ボタン
-          if (_chipsOpen)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              child: _addChips(provider, _steps),
-            ),
-          // ── まとめて消すバー (= ユーザー要望: Ctrl / Shift で複数選択) ──
-          if (_stepSel.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(8, 6, 8, 0),
-              child: Row(children: [
-                Text(
-                    provider
-                        .t('auto.selected')
-                        .replaceFirst('{n}', '${_stepSel.length}'),
-                    style: const TextStyle(
-                        color: Color(0xFF8D86FF), fontSize: 11.5)),
-                const Spacer(),
-                TextButton(
-                  style: TextButton.styleFrom(
-                      visualDensity: VisualDensity.compact,
-                      foregroundColor: Colors.white38),
-                  onPressed: () => setState(() {
-                    _stepSel.clear();
-                    _selAnchorList = null;
-                    _selAnchorIndex = -1;
-                  }),
-                  child: Text(provider.t('mcp.clearSelection'),
-                      style: const TextStyle(fontSize: 11)),
-                ),
-                TextButton.icon(
-                  style: TextButton.styleFrom(
-                      visualDensity: VisualDensity.compact,
-                      foregroundColor: const Color(0xFFFF8A80)),
-                  icon: const Icon(Icons.delete_sweep_rounded, size: 15),
-                  label: Text(provider.t('mcp.deleteSelected'),
-                      style: const TextStyle(fontSize: 11)),
-                  onPressed: _deleteSelectedSteps,
-                ),
-              ]),
-            ),
-          // ── 手順を全部消す (= ユーザー要望: 1 番目の手順のすぐ上に) ──
-          //    間違って押しても困らないよう、 一度だけ確かめる。
-          if (!_running && _steps.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(8, 6, 8, 0),
-              child: Align(
-                alignment: Alignment.centerRight,
-                child: TextButton.icon(
-                  style: TextButton.styleFrom(
-                    visualDensity: VisualDensity.compact,
-                    foregroundColor: const Color(0xFFE57373),
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                    minimumSize: const Size(0, 26),
-                  ),
-                  icon: const Icon(Icons.delete_sweep_rounded, size: 16),
-                  label: Text(provider.t('auto.clearAll'),
-                      style: const TextStyle(fontSize: 11)),
-                  onPressed: () => _clearAllSteps(provider),
-                ),
-              ),
-            ),
-          const SizedBox(height: 8),
-          if (fixedSteps)
-            SizedBox(height: stepsHeight, child: steps)
-          else
-            Expanded(child: steps),
-          // ── 境界をドラッグして、 手順一覧の高さを変える
-          //    (= ユーザー要望)。 二度押しで自動の高さに戻る。 ──
-          //    ★ 巻物の中でも掴めるよう、 Listener で直に受け取る
-          //      (中の GestureDetector と取り合いにならない)。
-          MouseRegion(
-            cursor: SystemMouseCursors.resizeUpDown,
-            child: Listener(
-              behavior: HitTestBehavior.opaque,
-              onPointerMove: (e) {
-                final base = _stepsH ?? stepsHeight;
-                final next = (base + e.delta.dy).clamp(120.0, maxSteps);
-                if ((next - base).abs() < 0.5) return;
-                setState(() => _stepsH = next.toDouble());
-              },
-              onPointerUp: (_) => unawaited(_saveAgentOpts()),
-              child: GestureDetector(
-                onDoubleTap: () {
-                  setState(() => _stepsH = null);
-                  unawaited(_saveAgentOpts());
-                },
-                child: Container(
-                  height: 12,
-                  width: double.infinity,
-                  color: Colors.white.withValues(alpha: 0.04),
-                  alignment: Alignment.center,
-                  child: Container(
-                    width: 46,
-                    height: 3,
-                    decoration: BoxDecoration(
-                      color: _stepsH == null
-                          ? Colors.white24
-                          : const Color(0xFF80CBC4),
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-          const Divider(height: 1, color: Colors.white12),
-          Padding(
-            padding: const EdgeInsets.all(8),
-            // 全体の繰り返し回数の欄は廃止 (= ユーザー要望: 繰り返しは
-            //   繰り返しブロックの中で指定すればいいだけ)。 保存済みの値は
-            //   読み込むが、 常に 1 周として走る。
-            child: Row(children: [
-              Expanded(
-                child: Text(_status,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        color: Colors.white54, fontSize: 10.5)),
-              ),
-              const SizedBox(width: 6),
-              // 実行 / 停止はヘッダーに集約した (= ユーザー要望: 押しやすい
-              // 位置へ)。 ここには残さない。
-            ]),
-          ),
-          // ★ コマンド実行 / パソコンの操作 = 時刻で実行と並べて一番下
-          //   (= ユーザー要望)。 以前は AI の欄のすぐ下にあり、 肝心の
-          //   手順一覧が下に押し出されていた。
+          // ★ コマンド実行 / パソコンの操作 = AI の欄・時刻で実行と
+          //   並べて一番下 (= ユーザー要望)。 上は手順一覧のために空ける。
           _buildCommandRow(provider),
           // 時刻で実行 = 一番下 (= ユーザー要望)。
           _buildScheduleRow(provider),

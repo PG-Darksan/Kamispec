@@ -7212,11 +7212,12 @@ class _FloatingWebWindowAppState extends State<_FloatingWebWindowApp>
     }
     try {
       final prefs = await SharedPreferences.getInstance();
-      // サイトごとに前回の大きさを覚える (= 縦長が合うサイトと、 横幅が
-      // 要るサイトが混ざっているため)。 無ければ今までの共通の控え。
-      final raw = (prefs.getString('${_kSizeKey}_$_sizeHost') ??
-              prefs.getString(_kSizeKey)) ??
-          '';
+      // ★ 覚えているのは「そのサイトを最後に閉じた大きさ」 だけを使う。
+      //   以前は見つからない時に**別のサイトの**大きさ (共通の控え) へ
+      //   落ちていたので、 一度どこかで大きく広げると、 初めて開くサイトまで
+      //   その大きさで開いていた (= ユーザー報告: Google 検索の既定が
+      //   大きすぎる)。
+      final raw = prefs.getString('${_kSizeKey}_$_sizeHost') ?? '';
       final m = RegExp(r'^(\d+)x(\d+)$').firstMatch(raw);
       if (m != null) {
         // ② 前回の大きさ。
@@ -7225,13 +7226,24 @@ class _FloatingWebWindowAppState extends State<_FloatingWebWindowApp>
         await windowManager.setSize(Size(w, h));
         return;
       }
-      // ③ 既定は縦長 (高さは今までどおり、 横幅だけ絞る)。 ただし、 横に
-      //    広げないと中身が切れるサイト (通販など) は広めに開く
-      //    (= ユーザー報告: Amazon が縦長で入り切らない)。
-      final cur = await windowManager.getSize();
-      final h = cur.height < 240 ? 720.0 : cur.height;
-      await windowManager.setSize(
-          Size(_wantsWideWindow(widget.url) ? _kWideFloatWebWidth : _kDefaultFloatWebWidth, h));
+      // ③ 既定は小さめの縦長。 ただし、 横に広げないと中身が切れるサイト
+      //    (通販など) は広めに開く (= ユーザー報告: Amazon が縦長で
+      //    入り切らない)。
+      //    ★ 高さは「今の窓の高さ」 (起動直後は 720) を引き継がず、 決めた
+      //      値で開く (= ユーザー報告: 既定が大きすぎる)。 画面より高い
+      //      時だけ縮める。
+      var h = _kDefaultFloatWebHeight;
+      try {
+        final area = (await screenRetriever.getPrimaryDisplay()).visibleSize;
+        if (area != null && area.height > 240 && h > area.height - 60) {
+          h = area.height - 60;
+        }
+      } catch (_) {}
+      await windowManager.setSize(Size(
+          _wantsWideWindow(widget.url)
+              ? _kWideFloatWebWidth
+              : _kDefaultFloatWebWidth,
+          h));
     } catch (_) {}
   }
 
@@ -7272,6 +7284,10 @@ class _FloatingWebWindowAppState extends State<_FloatingWebWindowApp>
 
   /// 外に出した窓の既定の横幅 (= ユーザー要望: 既定が横に大きすぎる)。
   static const double _kDefaultFloatWebWidth = 480;
+
+  /// 外に出した窓の既定の高さ (= ユーザー要望: 既定が大きすぎる)。
+  /// 起動直後の窓の高さ (720) を引き継がず、 この値で開く。
+  static const double _kDefaultFloatWebHeight = 620;
 
   /// 横幅が要るサイトの既定の横幅。
   /// ★ 1000 は大きすぎた (= ユーザー報告: Amazon の窓が大きすぎて
