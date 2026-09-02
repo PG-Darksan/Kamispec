@@ -284,7 +284,8 @@ class McpServer {
         'tool can read a note body back (read_page returns nodes / '
         'connections / decorations only), so ask the user for the headings - '
         'or use text already in this conversation - and create the nodes '
-        'yourself with add_node. '
+        'yourself with add_node. A page turned into "markdown" can be '
+        'filled in with write_markdown. '
         '${kStoreBuild ? 'These five' : 'These six'} are the only page '
         'kinds the app has; if the user names '
         'something else, say so instead of picking the closest one.',
@@ -339,7 +340,9 @@ class McpServer {
         'create_page',
         'Create a new page. type: "normal" (mind map), "bookshelf" (gallery), '
         '"paint" (free note), "document" (notepad - write prose with '
-        'append_document_text), "markdown" (markdown + mermaid)' +
+        'append_document_text), "markdown" (markdown + mermaid - write the '
+        'body with write_markdown right after creating it, otherwise the '
+        'user just gets an empty page)' +
         (kStoreBuild ? '. ' : ' or "videoEditor" (video timeline). ') +
         'Returns {pageId, type}: type is what '
         'was really created. An unknown type falls back to "normal", so check '
@@ -660,6 +663,22 @@ class McpServer {
           'color': {'type': 'integer'},
         },
         ['pageId']),
+    _tool(
+        'write_markdown',
+        'Write the body of a MARKDOWN page (pageType "markdown"). This is '
+        'how you fill in a page made with create_page type:"markdown" - '
+        'append_document_text does NOT work on markdown pages. Pass the '
+        'WHOLE document in "text" in a SINGLE call (headings, lists, tables, '
+        'code fences and ```mermaid diagrams all render). By default the '
+        'text REPLACES the body; pass "append":true to add to the end of '
+        'what is already there. The page is opened and shown after writing, '
+        'so the user sees the result immediately.',
+        {
+          'pageId': {'type': 'string'},
+          'text': {'type': 'string'},
+          'append': {'type': 'boolean'},
+        },
+        ['pageId', 'text']),
     _tool(
         'append_document_text',
         'Append text to the end of a free note used as a notepad '
@@ -1785,6 +1804,35 @@ class McpServer {
                   '- add_paint_text only works on pages whose type is '
                   '"paint"');
         }
+      case 'write_markdown':
+        {
+          final pageId = a['pageId'] as String? ?? '';
+          final text = a['text'] as String? ?? '';
+          if (text.trim().isEmpty) {
+            return _err('"text" was empty - nothing was written. Write the '
+                'markdown you want the page to hold.');
+          }
+          final ok = await _provider.mcpWriteMarkdown(pageId, text,
+              append: a['append'] == true);
+          if (ok) return _ok({'pageId': pageId, 'written': text.length});
+          final page = _provider.mcpPageById(pageId);
+          if (page == null) {
+            return _err('no page has the id "$pageId" - call list_pages and '
+                'use an id from it, or make one with create_page '
+                'type:"markdown".');
+          }
+          if (page.pageType != 'markdown') {
+            return _err('"$pageId" is a "${page.pageType}" page, not a '
+                '"markdown" one. Either convert it with set_page_type '
+                '"markdown", or make a new page with create_page '
+                'type:"markdown" and write into that.');
+          }
+          // 種類は合っているのに書けなかった = 保存できなかった。
+          //   「markdown なのに markdown ではない」 と言わないこと。
+          return _err('"$pageId" is a markdown page but the write failed '
+              '(the app could not save it). Do not retry in a loop - tell '
+              'the user the page could not be saved.');
+        }
       case 'append_document_text':
         {
           final pageId = a['pageId'] as String? ?? '';
@@ -1806,9 +1854,8 @@ class McpServer {
               ? _ok({'appended': wrote})
               : _err('could not append to "$pageId": append_document_text '
                   'works only on pages whose type is '
-                  '"paint" (free note) or "document" (notepad). A "markdown" '
-                  'page body cannot be written by any tool: create the text '
-                  'as a .md file with create_document_file instead.');
+                  '"paint" (free note) or "document" (notepad). For a '
+                  '"markdown" page use write_markdown instead.');
         }
       case 'add_video_editor_item':
         {

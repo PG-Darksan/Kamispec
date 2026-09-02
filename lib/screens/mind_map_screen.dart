@@ -42977,7 +42977,21 @@ class _MindMapScreenState extends State<MindMapScreen>
                 isLeftPanel: false);
             break;
           case 'floating':
-            _openGoogleSearchDialog(context, provider, floating: true);
+            // ★ フローティングは「アプリの外の本物の窓」 で開く
+            //   (= ユーザー要望: いきなりアプリの外に出せる状態で
+            //   開かれるように)。 他の Web ボタン
+            //   (_openWebCommandStyled) と同じ道を通す。 窓は本体を
+            //   閉じても残り、 分割ペインの上に放せば埋め込める。
+            //   別の窓を作れないスマホだけ、 今までどおりアプリの中の
+            //   浮遊窓 (こちらもヘッダーの矢印で外に出せる)。
+            if (_isDesktop) {
+              // embeddable: 分割ペインの上に放すと、 そのペインへ
+              //   埋め込める (= 前の浮遊窓から外に出した時と同じ)。
+              _openFloatingWebUnified('https://www.google.com/',
+                  embeddable: true);
+            } else {
+              _openGoogleSearchDialog(context, provider, floating: true);
+            }
             break;
           default:
             _openGoogleSearchDialog(context, provider);
@@ -56205,8 +56219,15 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     : provider.currentPage.pageType ==
                                             'markdown'
                                         ? _MarkdownPageView(
+                                            // ★ MCP (AI) が**このページの**
+                                            //   本文を書いた時だけ読み直す。
+                                            //   全体の tick を使うと、 別の
+                                            //   ページへの書き込みでもここが
+                                            //   作り直され、 AI 欄の会話や
+                                            //   書きかけのメモが消える。
                                             key: ValueKey(
-                                                'md_${provider.currentPage.id}'),
+                                                'md_${provider.currentPage.id}'
+                                                '_${provider.mcpPageTick(provider.currentPage.id)}'),
                                             provider: provider,
                                             pageId: provider.currentPage.id,
                                             extractText:
@@ -69251,14 +69272,19 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// [fromRect] を渡すと、 その場所 (= 出てきた分割ペインの上) に出す
   /// (= ユーザー要望: フローティングにした時に変な位置へ飛ばない)。
-  void _openFloatingWebUnified(String url, {Rect? fromRect}) {
+  void _openFloatingWebUnified(String url,
+      {Rect? fromRect, bool embeddable = false}) {
     final u = url.trim();
     if (u.isEmpty) return;
     if (_isDesktop) {
       // ── もう一度押した時 ──
       //   後ろに隠れているなら前面に出し直す (= ユーザー要望)。
       //   既に一番手前にあるなら、 今までどおり閉じる (トグル)。
-      final key = Uri.tryParse(u)?.host ?? u;
+      // ★ 覚える鍵は URL まるごと。 ホストだけだと Google 検索
+      //   (www.google.com) と Google マップ (www.google.com/maps) が
+      //   同じ枠を取り合い、 片方のボタンがもう片方の窓を前に出したり
+      //   閉じたりしていた。
+      final key = u;
       unawaited(() async {
         // ★ 覚えている窓が本当に生きているか先に確かめる。
         //   利用者がその窓の × で閉じると台帳に pid だけ残り、
@@ -69322,7 +69348,10 @@ class _MindMapScreenState extends State<MindMapScreen>
         // ここは「もう一度押したら閉じる」 トグルなので、 共通の
         //   1 つだけ制御は通さない (閉じた直後に開き直せなくなるため)。
         final pid = await openExternalWebWindowPid(u,
-            position: pos, frame: frame, single: false);
+            position: pos,
+            frame: frame,
+            embeddable: embeddable,
+            single: false);
         if (pid != null && mounted) _externalWebPids[key] = pid;
       }());
       return;
@@ -69754,7 +69783,8 @@ class _MindMapScreenState extends State<MindMapScreen>
               //   ページ名は Markdown なのに中身が出ない)。
               : cur.pageType == 'markdown'
                   ? _MarkdownPageView(
-                      key: ValueKey('md_split_editor_${cur.id}'),
+                      key: ValueKey('md_split_editor_${cur.id}'
+                          '_${provider.mcpPageTick(cur.id)}'),
                       provider: provider,
                       pageId: cur.id,
                       extractText: _extractAttachmentTextForAi,
@@ -71341,7 +71371,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (page.pageType == 'markdown') {
       return ClipRect(
         child: _MarkdownPageView(
-          key: ValueKey('md_split_${page.id}'),
+          key: ValueKey('md_split_${page.id}'
+              '_${provider.mcpPageTick(page.id)}'),
           provider: provider,
           pageId: page.id,
           extractText: _extractAttachmentTextForAi,
@@ -118029,6 +118060,10 @@ class _MarkdownPageView extends StatefulWidget {
 }
 
 class _MarkdownPageViewState extends State<_MarkdownPageView> {
+  /// この画面が生まれた時の「MCP がこのページを書き換えた回数」。
+  /// dispose の時に増えていたら = AI が書き換えて作り直された、 なので
+  /// 手元の (古い) 本文は保存しない (フリーノート / 文書と同じ守り)。
+  late final int _mcpTickAtInit = widget.provider.mcpPageTick(widget.pageId);
   final TextEditingController _ctrl = TextEditingController();
 
   // ── 編集欄とプレビューのスクロールを揃える (= ユーザー要望: 半々で開く
@@ -118266,10 +118301,20 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
     _renderDebounce?.cancel();
     _sideMemoDebounce?.cancel();
     // 閉じる直前の内容も確実に保存する。
+    //
+    // ★ ただし「AI (MCP) が本文を書き換えたせいで作り直された」 時は
+    //   保存しない。 この画面が持っているのは書き換わる**前**の本文なので、
+    //   ここで書くと AI が書いた文章を消してしまう
+    //   (フリーノート / 文書の画面と同じ守り)。
+    //   (ファイルとして開いている時は AI が触らないので、 下のファイル
+    //   書き戻しはこの守りの外に置く。 _syncCurrentTab もそのため先に呼ぶ)
     _syncCurrentTab();
-    final blob = encodeMarkdownDoc(_tabs, _sel);
-    // ignore: discarded_futures
-    SharedPreferences.getInstance().then((sp) => sp.setString(_prefsKey, blob));
+    if (widget.provider.mcpPageTick(widget.pageId) == _mcpTickAtInit) {
+      final blob = encodeMarkdownDoc(_tabs, _sel);
+      // ignore: discarded_futures
+      SharedPreferences.getInstance()
+          .then((sp) => sp.setString(_prefsKey, blob));
+    }
     if (_fileMode && _tabs.isNotEmpty) {
       // ファイル = 1 枚目のタブ、 という約束で書き戻す。
       // ignore: discarded_futures
@@ -234494,7 +234539,8 @@ class _McpChatSession extends ChangeNotifier {
         '座標も渡さない。 棚に自動で並びます)、 '
         'paint (フリーノート) = add_paint_text、 '
         'document (便箋型メモ帳) = append_document_text (段落ごとに呼ぶ)、 '
-        'markdown (Markdown / 図) = append_document_text'
+        'markdown (Markdown / 図) = write_markdown (本文まるごとを 1 回で '
+        '渡す。 append_document_text は使えない)'
         '${kStoreBuild ? '。 ' : '、 videoEditor (動画エディター) = add_video_editor_item。 '}'
         'ページの種類はこの ${kStoreBuild ? '5' : '6'} つだけです。 一覧に無い種類 (例:「AI '
         'スタジオのページ」) を頼まれたら、 近い種類で黙って代用せず、 '
@@ -234633,6 +234679,8 @@ class _McpChatSession extends ChangeNotifier {
         return provider.t('mcp.actPaintText');
       case 'append_document_text':
         return provider.t('mcp.actDocText');
+      case 'write_markdown':
+        return provider.t('mcp.actWriteMarkdown');
       case 'add_video_editor_item':
         return provider.t('mcp.actVideoItem');
       case 'create_document_file':

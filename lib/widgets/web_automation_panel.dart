@@ -199,8 +199,19 @@ bool requestWantsLogin(String request) {
 /// [knownNames] はブラウザに入っている呼び名 (「浩靖」 など)。 メールが
 /// 書いてあればそちらを優先し、 無ければ呼び名が文の中にあるかを見る。
 String accountFromRequest(String request, List<String> knownNames) {
-  final mail = RegExp(r'[\w.+-]+@[\w-]+\.[\w.-]+').firstMatch(request);
-  if (mail != null) return mail.group(0)!;
+  // ★ 末尾は必ず英字 (= 本物のドメイン)。 これが無いと
+  //   `chart.js@4.4.0` のような版の指定まで拾ってしまう。
+  //   URL や git の宛先 (`…/x@y.com/…` `git@github.com:…`) も外す。
+  final mailRe = RegExp(r'[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[A-Za-z]{2,}');
+  for (final m in mailRe.allMatches(request)) {
+    final after = request.substring(m.end);
+    if (after.startsWith(':') || after.startsWith('/')) continue;
+    final before = request.substring(0, m.start);
+    final cut = before.lastIndexOf(RegExp(r'[\s　]'));
+    final token = before.substring(cut + 1);
+    if (token.contains('://') || token.contains('/')) continue;
+    return m.group(0)!;
+  }
   for (final n in knownNames) {
     final t = n.trim();
     // 1 文字の呼び名は、 たまたま文に混ざるので使わない。
@@ -232,10 +243,50 @@ class AgentProgressGuard {
   }
 
   /// 手順の中身を 1 本の文字列にする (同じ手かどうかの見分け用)。
-  static String planSignature(List<WebAutoStep> steps) => steps
-      .map((st) => '${st.kind.name}|${st.text}|${st.selector}|'
-          '${st.scrollDir}|${st.x}|${st.y}')
-      .join(';');
+  ///
+  /// ★ URL は末尾の / や大文字小文字だけの違いを無視する
+  ///   (= ユーザー報告: 同じ処理を二回行うフローが作られる。
+  ///   1 周目が "https://例.com"、 2 周目が "https://例.com/" だったため
+  ///   別物と見なされ、 そのまま積み増されていた)。
+  /// ★ 待ち時間・回数・アカウント・入れ子の中身も入れる。 入れないと
+  ///   「1 秒待つ」 と「30 秒待つ」、 中身の違う繰り返しが同じ物と見なされ、
+  ///   別の手順なのに足踏みと誤判定していた (= 点検で判明)。
+  static String planSignature(List<WebAutoStep> steps) =>
+      steps.map(_stepSignature).join(';');
+
+  /// 手順 1 つぶんの見分け用の文字。
+  ///
+  /// ★ 「開く」 系 (open / openExternal / openBrowser) は、 同じ URL なら
+  ///   同じ手として扱う。 途中でつなぎ方が変わると、 AI が出す物が
+  ///   open ↔ openBrowser で入れ替わり (_coercePcIntent)、 URL の入る場所も
+  ///   text ↔ selector で入れ替わるため、 そのままでは同じ手だと気付けない
+  ///   (= ユーザー報告: 同じ処理を二回行うフローが生成される)。
+  static String _stepSignature(WebAutoStep st) {
+    const navKinds = {
+      WebAutoKind.open,
+      WebAutoKind.openExternal,
+      WebAutoKind.openBrowser,
+    };
+    if (navKinds.contains(st.kind)) {
+      final url = st.selector.trim().isEmpty ? st.text : st.selector;
+      return 'nav|${normUrlish(url)}|${st.account}';
+    }
+    return '${st.kind.name}|${normUrlish(st.text)}|'
+        '${normUrlish(st.selector)}|${st.scrollDir}|${st.x}|${st.y}|'
+        '${st.durationMs}|${st.count}|${st.account}'
+        '${st.children.isEmpty ? '' : '[${planSignature(st.children)}]'}';
+  }
+
+  /// URL らしき文字を見比べやすい形にそろえる。 URL でなければそのまま。
+  static String normUrlish(String v) {
+    final t = v.trim();
+    if (!t.toLowerCase().startsWith('http')) return t;
+    var u = t.toLowerCase();
+    while (u.endsWith('/')) {
+      u = u.substring(0, u.length - 1);
+    }
+    return u;
+  }
 }
 
 /// コマンド実行の許可の仕方 (= ユーザー要望: 許可を求める・全部任せる)。
@@ -1434,9 +1485,11 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
   /// メールをそのまま書いてしまい、 一覧から選べない形になる)。
   String _profileHint(String request) {
     if (!_isDesktopHost) return '';
-    // ★ ログインと明示していない時は、 シークレットで開く。 アカウントの
-    //   呼び名は勧めない (= ユーザー要望: 明示しなければシークレット)。
-    if (!requestWantsLogin(request)) {
+    // ★ ログインの指定も垢の名指しも無い時は、 シークレットで開く。
+    //   アカウントの呼び名は勧めない (= ユーザー要望: 明示しなければ
+    //   シークレット)。 ここだけ古い判定のままだと、 後ろで account を
+    //   入れる依頼にも「シークレットで開け」 と指示してしまう。
+    if (!_wantsLogin(request)) {
       return 'ログインの指定が無いので、 account も submit も付けず、'
           ' シークレットで開いてください。\n';
     }
@@ -1602,14 +1655,56 @@ open は使わないでください。 起動は {"kind":"command","text":"start
     return accountFromRequest(request, names);
   }
 
+  /// 「その垢で」 と言っている言い回し。
+  static final RegExp _acctWordRe = RegExp(
+      r'垢|アカウント|プロファイル|プロフィール|account|profile',
+      caseSensitive: false);
+
+  /// この依頼はログインした状態で動かす物か。
+  ///
+  /// 「ログイン」 と書いてある時だけでなく、 **アカウントを名指しして
+  /// いる時**もそう扱う (= ユーザー報告: 「chrome を ○○@gmail.com の垢で
+  /// 立ち上げて」 と頼んでいるのに、 シークレット窓で開いてログイン画面が
+  /// 出てこない)。 垢を指定するのは、 その人として使いたいという事。
+  ///
+  /// ★ 「@ が入っている」 だけでは名指しにしない。 `chart.js@4.4.0` や
+  ///   `git@github.com` のような物、 ページの入力欄へ打ち込みたい宛先まで
+  ///   拾ってしまい、 関係の無い依頼をログイン画面で止めていた
+  ///   (= 点検で判明)。 次のどちらかの時だけ名指しと見る:
+  ///   ・「垢 / アカウント / プロファイル」 と一緒に書かれている
+  ///   ・このパソコンのブラウザに実際に入っているアカウントと一致する
+  bool _wantsLogin(String request) {
+    if (requestWantsLogin(request)) return true;
+    final acct = accountIn(request);
+    if (acct.isEmpty) return false;
+    if (_acctWordRe.hasMatch(request)) return true;
+    return _isKnownBrowserAccount(acct);
+  }
+
+  /// このパソコンのブラウザに入っているアカウント (呼び名 / メール) か。
+  static bool _isKnownBrowserAccount(String acct) {
+    if (!_isDesktopHost) return false;
+    final a = acct.trim().toLowerCase();
+    if (a.isEmpty) return false;
+    try {
+      for (final kind in CdpBrowser.installed()) {
+        for (final p in CdpBrowser.listProfiles(kind)) {
+          if (p.account.trim().toLowerCase() == a) return true;
+          if (p.name.trim().toLowerCase() == a) return true;
+        }
+      }
+    } catch (_) {}
+    return false;
+  }
+
   /// 見つけたアカウントを、 外のブラウザを開く手順へ入れる。
   /// 既に入っている物は触らない (AI が正しく埋めた時はそのまま)。
   List<WebAutoStep> _applyAccountIntent(
       String request, List<WebAutoStep> steps) {
-    // ★ ログインと明示していない時は、 シークレットで開く。 AI が勝手に
+    // ★ ログインも垢の指定も無い時は、 シークレットで開く。 AI が勝手に
     //   account / submit を付けていたら**外す** (= ユーザー要望: 明示
     //   しなければシークレット。 軽いモデルが付けてしまう事があるため)。
-    if (!requestWantsLogin(request)) {
+    if (!_wantsLogin(request)) {
       void strip(List<WebAutoStep> list) {
         for (final st in list) {
           if (st.kind == WebAutoKind.openBrowser) {
@@ -1692,9 +1787,9 @@ open は使わないでください。 起動は {"kind":"command","text":"start
           //   openBrowser=そのアカウント専用で開く)。 持ち越さない。
           s.submit = false;
           s.kind = WebAutoKind.openBrowser;
-          // ★ 「ログインして」 と書いてある時だけ、 アカウントを入れる
-          //   (= それ以外はシークレットで開く)。
-          if (requestWantsLogin(request)) {
+          // ★ ログインを頼まれた時 / 垢を名指しされた時だけ、 アカウントを
+          //   入れる (= それ以外はシークレットで開く)。
+          if (_wantsLogin(request)) {
             final acct = accountIn(request);
             if (acct.isNotEmpty && s.account.trim().isEmpty) {
               s.account = acct;
@@ -1980,6 +2075,23 @@ $snap'''}
   /// 次の 1 手を決めるので、 「フッターまで行けたか」「タブが切り替わったか」
   /// を確かめながら進められる。 やった手順はフローとして残るので、 後から
   /// 手直しして繰り返し実行できる。
+  /// 「ページを開いて見る」 だけの手順で出来ているか。
+  ///
+  /// = ユーザー報告「同じ処理を二回行うフローが生成されてしまう」。
+  ///   開く・端まで送るは何度やっても結果が同じなので、 直前の回と
+  ///   そっくり同じ物が出てきたら「やる事はもう無い」 と見てよい。
+  ///   待つ (wait) は入れない — 待ち直しには意味がある。
+  ///   繰り返し (loop) も入れない — 中で何をするか分からない。
+  static bool _navigationOnly(List<WebAutoStep> steps) {
+    const kinds = {
+      WebAutoKind.open,
+      WebAutoKind.openExternal,
+      WebAutoKind.openBrowser,
+      WebAutoKind.scrollTo,
+    };
+    return steps.isNotEmpty && steps.every((s) => kinds.contains(s.kind));
+  }
+
   Future<void> _runAgent(MindMapProvider provider, String request,
       {bool keepSteps = true}) async {
     final req = request.trim();
@@ -2027,6 +2139,8 @@ $snap'''}
       //   (= ユーザー報告: 止まらずに同じフローをひたすら作り続ける)。
       //   手数の上限だけだと、 12 回ぶんの同じ手順が積み上がってしまう。
       final guard = AgentProgressGuard();
+      // 直前の回に実行した手順 (同じ物を積み増さないため)。
+      String? lastRanSig;
       String? prevPlan;
       // 手数の上限。 止まらなくなるのを防ぐ。
       for (var turn = 0; turn < 12; turn++) {
@@ -2136,6 +2250,21 @@ ${_pcContext(req)}
           _agentFail(provider, 'agent.errStuck', '');
           break;
         }
+        // ★ 直前の回とそっくり同じ「開くだけ」 の手順を出してきたら、
+        //   もう積まない (= ユーザー報告: 同じ処理を二回行うフローが
+        //   生成される。 ページを開いて端まで送る、 をもう一度出していた)。
+        //
+        //   ・**直前の回**とだけ比べる。 一覧ページへ戻りながら 1 件ずつ
+        //     見て回るような使い方では、 間に押す・読むの回が挟まるので
+        //     切ってしまわない。
+        //   ・「開く / 端まで送る」 だけの回に限る。 待つ・押す・打つの
+        //     繰り返しには意味があるので通す。
+        final sig = AgentProgressGuard.planSignature(steps);
+        if (sig == lastRanSig && _navigationOnly(steps)) {
+          if (mounted) setState(() => _status = provider.t('agent.done'));
+          break;
+        }
+        lastRanSig = sig;
         // 次の回で AI に見せる (= 同じ手を出さないように頼むため)。
         prevPlan = AgentProgressGuard.planSignature(steps);
         // 手順が増えすぎた時も止める (どこかで空回りしている)。
@@ -6737,8 +6866,6 @@ ${_pcContext(req)}
                 ]),
               ),
             ),
-          // コマンド実行 = AI の欄のすぐ下 (= ユーザー要望)。
-          _buildCommandRow(provider),
           // ── 説明の行が、 そのままボタン一覧の見出し (= ユーザー要望:
           //    「手順を並べて実行します」 の所をたためるように) ──
           Padding(
@@ -6880,6 +7007,10 @@ ${_pcContext(req)}
               // 位置へ)。 ここには残さない。
             ]),
           ),
+          // ★ コマンド実行 / パソコンの操作 = 時刻で実行と並べて一番下
+          //   (= ユーザー要望)。 以前は AI の欄のすぐ下にあり、 肝心の
+          //   手順一覧が下に押し出されていた。
+          _buildCommandRow(provider),
           // 時刻で実行 = 一番下 (= ユーザー要望)。
           _buildScheduleRow(provider),
         ],

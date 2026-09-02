@@ -43455,6 +43455,17 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Escrevendo no documento',
       'ru': 'Запись в документ',
     },
+    'mcp.actWriteMarkdown': {
+      'ja': 'マークダウンの本文を書く',
+      'en': 'Writing the markdown page',
+      'zh': '写入 Markdown 正文',
+      'ko': '마크다운 본문 작성',
+      'es': 'Escribiendo la página markdown',
+      'fr': 'Écriture de la page markdown',
+      'de': 'Markdown-Seite schreiben',
+      'pt': 'Escrevendo a página markdown',
+      'ru': 'Запись страницы markdown',
+    },
     'mcp.actVideoItem': {
       'ja': '動画エディターに要素を追加',
       'en': 'Adding a timeline item',
@@ -43627,6 +43638,7 @@ class MindMapProvider extends ChangeNotifier {
           '● 背景を選ぶ・外す … 用意された絵や端末の画像を背景にします\n'
           '● 背景を描く … AI で絵を描き起こします (1 ページごとに残高から引かれます)\n'
           '● ギャラリー / フリーノート / 文書 / 動画編集に書き込みます\n'
+          '● マークダウンのページに本文を書きます (図 mermaid も描けます)\n'
           '● ファイルを作る … Excel・CSV・Word・PowerPoint・PDF・テキスト・\n'
           '　　マークダウン を作ってページに貼り付けます\n'
           '● アプリの機能を開く … フラッシュカード、 無音カメラ、 カレンダーなど\n'
@@ -43662,6 +43674,7 @@ class MindMapProvider extends ChangeNotifier {
           'Add image nodes, table nodes and YouTube video nodes\n'
           'Set or clear a page background, or draw one with AI (costs credit)\n'
           'Write into gallery / free note / notepad / video editor pages\n'
+          'Write the body of a markdown page (mermaid diagrams too)\n'
           'Create Excel, CSV, Word, PowerPoint, PDF, text or markdown files\n'
           '  and pin them to a page\n'
           'Open app features (flash cards, silent camera, calendar and so on)\n'
@@ -82694,6 +82707,19 @@ $cleanQ
     }
   }
 
+  /// ページごとの「MCP が中身を書き換えた回数」。
+  ///
+  /// 全体の [mcpContentTick] を ValueKey に混ぜると、 **関係の無いページ**
+  /// への書き込みでも開いている画面が作り直され、 その画面だけが持って
+  /// いる物 (AI 欄の会話・書きかけのメモ・カーソル位置) が消える。
+  /// そのページに当たった時だけ数える方を用意する。
+  final Map<String, int> _mcpPageTicks = {};
+  int mcpPageTick(String pageId) => _mcpPageTicks[pageId] ?? 0;
+  void _bumpPageTick(String pageId) {
+    if (pageId.trim().isEmpty) return;
+    _mcpPageTicks[pageId] = (_mcpPageTicks[pageId] ?? 0) + 1;
+  }
+
   /// prefs 側に中身を持つページ (フリーノート/文書/動画編集) を MCP が
   /// 書き換えた回数。 画面はこれを ValueKey に混ぜて読み直す
   /// (中身はページ JSON に乗らないので notifyListeners だけでは反映されない)。
@@ -83939,6 +83965,79 @@ $cleanQ
       return true;
     } catch (e) {
       debugPrint('mcpAddPaintText failed: $e');
+      return false;
+    }
+  }
+
+  /// マークダウンページの本文を書く。
+  ///
+  /// = ユーザー要望「何かについてまとめたマークダウンの新規ページを作って、
+  ///   と AI に頼んだら、 中身の入ったページとして開けるように」。
+  ///   これまで本文を書く道具が無く、 ページだけが空で出来ていた。
+  ///
+  /// 保存先は prefs `markdown_<pageId>`。 形は画面側と同じタブ束
+  /// `{v:2, sel:.., tabs:[{id,name,text}]}` (画面の decodeMarkdownDoc と対)。
+  /// [append] が true なら、 今見ているタブの末尾に足す。
+  Future<bool> mcpWriteMarkdown(String pageId, String text,
+      {bool append = false}) async {
+    final page = mcpPageById(pageId);
+    if (page == null) return false;
+    if (page.pageType != 'markdown') return false;
+    // ★ 鍵は見つかったページの id で作る。 mcpPageById は空の pageId を
+    //   「今開いているページ」 に読み替えるので、 引数のまま使うと
+    //   'markdown_' という誰も読まない場所へ書いて成功を返してしまう。
+    final id = page.id;
+    final body = text.trimRight();
+    if (body.trim().isEmpty && append) return false;
+    try {
+      final prefs = await _prefsWithRetry();
+      final key = 'markdown_$id';
+      final tabs = <Map<String, dynamic>>[];
+      var sel = 0;
+      final raw = prefs.getString(key);
+      if (raw != null && raw.trim().isNotEmpty) {
+        if (raw.trimLeft().startsWith('{')) {
+          try {
+            final j = jsonDecode(raw);
+            if (j is Map && j['tabs'] is List) {
+              for (final e in (j['tabs'] as List)) {
+                if (e is! Map) continue;
+                tabs.add({
+                  'id': '${e['id'] ?? ''}',
+                  'name': '${e['name'] ?? ''}',
+                  'text': '${e['text'] ?? ''}',
+                });
+              }
+              sel = (j['sel'] as num?)?.toInt() ?? 0;
+            }
+          } catch (_) {
+            // JSON に見えて違った → 旧い形 (素のテキスト) として扱う。
+          }
+        }
+        // 旧い形は「素のテキスト 1 枚」。
+        if (tabs.isEmpty) {
+          tabs.add({'id': 'md_legacy', 'name': '1', 'text': raw});
+        }
+      }
+      if (tabs.isEmpty) {
+        tabs.add({
+          'id': 'md${DateTime.now().microsecondsSinceEpoch}',
+          'name': '1',
+          'text': '',
+        });
+      }
+      if (sel < 0 || sel >= tabs.length) sel = 0;
+      final cur = '${tabs[sel]['text'] ?? ''}'.trimRight();
+      tabs[sel]['text'] =
+          append ? (cur.isEmpty ? body : '$cur\n\n$body') : body;
+      await prefs.setString(key, jsonEncode({'v': 2, 'sel': sel, 'tabs': tabs}));
+      _bumpPageTick(id);
+      _mcpContentTick++;
+      notifyListeners();
+      _requestMcpFocus(id);
+      return true;
+    } catch (e) {
+      debugPrint('mcpWriteMarkdown failed: $e');
       return false;
     }
   }

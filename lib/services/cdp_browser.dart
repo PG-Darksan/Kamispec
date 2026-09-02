@@ -242,16 +242,17 @@ class CdpBrowser {
     String? acctDir;
     var pickedProfile = '';
     if (useOwnProfile && !guest) {
-      // 呼び名 (「浩靖」 など) から、 そのアカウントを見分ける。
-      final hit = profileHint.trim().isEmpty
-          ? null
-          : listProfiles(kind).where((p) {
-              final d = profileDirFor(kind, profileHint);
-              return d != null && p.dir == d;
-            }).firstOrNull;
-      pickedProfile = hit?.name ?? (profileHint.trim().isEmpty
-          ? 'default'
-          : profileHint.trim());
+      // ★ 置き場の名前は「呼ばれた時の言い方 (profileHint) そのまま」 で
+      //   作る。
+      //
+      //   = 点検で判明: 以前はここで呼び名 (「浩靖」 など) に読み替えて
+      //   いたが、 呼び出し側 (自動操作の画面) は言われたまま
+      //   (「x@gmail.com」) で置き場を数えてログイン済みの印を書いていた。
+      //   その 2 つは別のフォルダになるので、 印を書いた場所と実際に開く
+      //   場所が食い違い、 **毎回ログインを求められる**うえに、 開いた窓を
+      //   使い回す判定 (profileDir と付き合わせる) も一生一致しなかった。
+      pickedProfile =
+          profileHint.trim().isEmpty ? 'default' : profileHint.trim();
       acctDir = accountDataDir(kind, pickedProfile);
     }
     final wantGuest = guest;

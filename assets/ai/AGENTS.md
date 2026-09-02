@@ -26,7 +26,7 @@ MindMapFolder (平坦。入れ子にならない)
 | `bookshelf` | ギャラリー (棚) | `add_gallery_item` ★ `add_node` は使わない。座標も渡さない |
 | `paint` | フリーノート (自由に書ける紙) | `add_paint_text` / `append_document_text` |
 | `document` | 便箋型メモ帳 (**文章はここ**) | `append_document_text` |
-| `markdown` | Markdown / 図 (Mermaid) | ★本文を書けるツールは無い。作る・変える事だけできる |
+| `markdown` | Markdown / 図 (Mermaid) | `write_markdown` (本文まるごと 1 回で書く) |
 | `videoEditor` | 動画タイムライン | `add_video_editor_item` |
 
 **この 6 種類がページの全てで、他の種類は無い。**「AI スタジオのページ」の
@@ -36,9 +36,11 @@ MindMapFolder (平坦。入れ子にならない)
 (種類を変えてもノードは残るので、作り直す必要は無い)。
 `create_page` の戻り値の `type` が**実際に出来た種類**なので、
 それを見てから何を作ったか答える。
-Markdown で**中身まで**書いてほしいと頼まれた時は、`markdown` ページ
-ではなく `create_document_file` の `md` でファイルとして作る
-(`markdown` ページの本文を書けるツールは無い)。
+Markdown で**中身まで**書いてほしいと頼まれた時は、`create_page` の
+`markdown` でページを作り、続けて `write_markdown` に**本文まるごと**を
+渡す。ページを作っただけで終わると空のページが開くだけになる。
+書き終えるとそのページが開いた状態になるので、開き方の案内は要らない。
+ファイルとして欲しいと言われた時だけ `create_document_file` の `md`。
 
 ## 守るべき作法
 
