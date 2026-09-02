@@ -230951,44 +230951,64 @@ class _FloatingWebWindowState extends State<_FloatingWebWindow> {
           child: Stack(children: [
             Column(children: [
               // ── ドラッグ可能なヘッダー (離した位置が分割セルなら埋め込み) ──
-              GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onPanUpdate: (d) {
-                  _dragGlobal = d.globalPosition;
-                  setState(() => _pos = Offset(
-                      (_pos.dx + d.delta.dx).clamp(minLeft, maxLeft),
-                      (_pos.dy + d.delta.dy).clamp(minTop, maxTop)));
-                },
-                onPanEnd: (_) {
-                  final g = _dragGlobal;
-                  _dragGlobal = null;
-                  // 画面の外まで引っ張って放したら、 そのまま外の窓にする
-                  // (= ユーザー要望)。 ペインへの埋め込みより優先する。
-                  if (_isDraggedOutside(screen)) {
-                    unawaited(_handleDragRelease(screen));
-                    return;
-                  }
-                  if (g == null || widget.onDragDrop == null) return;
-                  if (widget.onDragDrop!(g, _cur)) widget.onClose();
-                },
-                child: Container(
-                  height: 36,
-                  padding: const EdgeInsets.only(left: 10, right: 2),
-                  decoration: const BoxDecoration(
-                    color: Color(0xFF1A1A2E),
-                    borderRadius:
-                        BorderRadius.vertical(top: Radius.circular(11)),
+              //
+              // ★ 掴んで動かす板は帯の**後ろ**に敷く。 包むとボタン
+              //   (速度 / ペインへ送る / メモ / ピン / 閉じる) の押下を
+              //   奪ってしまう (理由は _FloatingPanelWindow と同じ)。
+              // ★ 見た目 (decoration) は Stack の**親**に置く。 前の層に
+              //   置くと自分で当たりを吸ってしまい、 後ろの板まで判定が
+              //   降りず掴んで動かせなくなる。
+              Container(
+                height: 36,
+                decoration: const BoxDecoration(
+                  color: Color(0xFF1A1A2E),
+                  borderRadius:
+                      BorderRadius.vertical(top: Radius.circular(11)),
+                ),
+                child: Stack(children: [
+                Positioned.fill(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onPanUpdate: (d) {
+                      _dragGlobal = d.globalPosition;
+                      setState(() => _pos = Offset(
+                          (_pos.dx + d.delta.dx).clamp(minLeft, maxLeft),
+                          (_pos.dy + d.delta.dy).clamp(minTop, maxTop)));
+                    },
+                    onPanEnd: (_) {
+                      final g = _dragGlobal;
+                      _dragGlobal = null;
+                      // 画面の外まで引っ張って放したら、 そのまま外の窓に
+                      // する (= ユーザー要望)。 埋め込みより優先する。
+                      if (_isDraggedOutside(screen)) {
+                        unawaited(_handleDragRelease(screen));
+                        return;
+                      }
+                      if (g == null || widget.onDragDrop == null) return;
+                      if (widget.onDragDrop!(g, _cur)) widget.onClose();
+                    },
                   ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.only(left: 10, right: 2),
                   child: Row(children: [
-                    const Icon(Icons.drag_indicator_rounded,
-                        color: Colors.white38, size: 16),
+                    // ★ 印も案内の文も当たりを吸わせない。 吸うと「掴んで
+                    //   動かす」 ための場所がそのまま掴めなくなる。
+                    const IgnorePointer(
+                      child: Icon(Icons.drag_indicator_rounded,
+                          color: Colors.white38, size: 16),
+                    ),
                     const SizedBox(width: 6),
                     Expanded(
-                      child: Text(
-                          context.read<MindMapProvider>().t('map.dragToEmbed'),
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                              color: Colors.white70, fontSize: 11)),
+                      child: IgnorePointer(
+                        child: Text(
+                            context
+                                .read<MindMapProvider>()
+                                .t('map.dragToEmbed'),
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                color: Colors.white70, fontSize: 11)),
+                      ),
                     ),
                     // ── 再生速度 (= ユーザー要望: フローティングでも速度を
                     //    変えられる速度バー)。 押すとスライダー行を開閉。 ──
@@ -231035,19 +231055,25 @@ class _FloatingWebWindowState extends State<_FloatingWebWindow> {
                     // ── 「外に出す」 ボタンは置かない (= ユーザー要望)。
                     //    外へ引っ張っている間だけ案内を出す。 ──
                     if (draggedOut)
-                      Padding(
-                        padding: const EdgeInsets.only(right: 4),
-                        child: Row(mainAxisSize: MainAxisSize.min, children: [
-                          const Icon(Icons.open_in_new_rounded,
-                              color: Color(0xFF4FC3F7), size: 13),
-                          const SizedBox(width: 4),
-                          Text(
-                              context
-                                  .read<MindMapProvider>()
-                                  .t('float.dropToPopOut'),
-                              style: const TextStyle(
-                                  color: Color(0xFF4FC3F7), fontSize: 10)),
-                        ]),
+                      IgnorePointer(
+                        child: Padding(
+                          padding: const EdgeInsets.only(right: 4),
+                          child:
+                              Row(mainAxisSize: MainAxisSize.min, children: [
+                            const Icon(Icons.open_in_new_rounded,
+                                color: Color(0xFF4FC3F7), size: 13),
+                            // ★ 狭い窓では印だけにする (はみ出し防止)。
+                            if (_w >= 520) ...[
+                              const SizedBox(width: 4),
+                              Text(
+                                  context
+                                      .read<MindMapProvider>()
+                                      .t('float.dropToPopOut'),
+                                  style: const TextStyle(
+                                      color: Color(0xFF4FC3F7), fontSize: 10)),
+                            ],
+                          ]),
+                        ),
                       ),
                     IconButton(
                       padding: EdgeInsets.zero,
@@ -231059,6 +231085,7 @@ class _FloatingWebWindowState extends State<_FloatingWebWindow> {
                     ),
                   ]),
                 ),
+              ]),
               ),
               // ── 速度バー (= ユーザー要望)。 0.25x〜最大倍率 (動作設定の
               //    動画最大倍率に従う) をスライダーで変える。 ──
@@ -233291,6 +233318,19 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
     final minLeft = -_w * 0.75;
     final minTop = -_h * 0.75;
     final draggedOut = _isDraggedOutside(screen);
+
+    void headerPanUpdate(DragUpdateDetails d) {
+      setState(() => _pos = Offset(
+          (_pos.dx + d.delta.dx).clamp(minLeft, maxLeft),
+          (_pos.dy + d.delta.dy).clamp(minTop, maxTop)));
+      _scheduleSaveGeometry();
+    }
+
+    // 画面の外まで引っ張って放したら、 そのまま外の窓になる
+    // (= ユーザー要望: ボタンを押さなくても外に出るように)。
+    void headerPanEnd(DragEndDetails _) =>
+        unawaited(_handleDragRelease(screen));
+
     return Positioned(
       left: _pos.dx.clamp(minLeft, maxLeft),
       top: _pos.dy.clamp(minTop, maxTop),
@@ -233308,23 +233348,26 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
           child: Stack(children: [
             Column(children: [
               // ── ドラッグ移動用ヘッダー ──
-              GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onPanUpdate: (d) {
-                  setState(() => _pos = Offset(
-                      (_pos.dx + d.delta.dx).clamp(minLeft, maxLeft),
-                      (_pos.dy + d.delta.dy).clamp(minTop, maxTop)));
-                  _scheduleSaveGeometry();
-                },
-                // 画面の外まで引っ張って放したら、 そのまま外の窓になる
-                // (= ユーザー要望: ボタンを押さなくても外に出るように)。
-                onPanEnd: (_) => unawaited(_handleDragRelease(screen)),
-                child: widget.slimChrome
-                    // 中身に自前のヘッダーがある窓では、 掴む所だけの
-                    // 細い帯にする (= ユーザー報告: 枠が二段に重なる)。
-                    // 掴んで動かす / 外へ放して外の窓にする、 は今まで
-                    // どおりこの GestureDetector が受け持つ。
-                    ? Container(
+              //
+              // ★ ふつうの帯にはボタン (AI 切替 / 全画面 / メモ / ピン /
+              //   閉じる) が並ぶ。 掴んで動かす板でそれを**包んではいけない**。
+              //   包むと「押す」 と「動かす」 が同じ土俵で競い、 マウスは
+              //   2px ぶれただけで動かす方が勝ってしまう (Flutter は木の
+              //   深さではなく先に名乗り出た方が勝ち、 押す方は指を離すまで
+              //   名乗り出ない)。 これが「× が中々押せない」 の正体。
+              //   そこで板は帯の**後ろ**に敷く。 ボタンの上ではボタンだけが
+              //   受け取り、 何も無い所は素通りして板に届く。
+              //
+              //   細い帯 (= AI アシスタント) にはボタンが無く、 かわりに
+              //   Tooltip が当たりを吸ってしまうので、 今までどおり包む。
+              if (widget.slimChrome)
+                // 中身に自前のヘッダーがある窓では、 掴む所だけの
+                // 細い帯にする (= ユーザー報告: 枠が二段に重なる)。
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onPanUpdate: headerPanUpdate,
+                  onPanEnd: headerPanEnd,
+                  child: Container(
                         height: _headerH,
                         decoration: const BoxDecoration(
                           color: Color(0xFF1A1A2E),
@@ -233348,18 +233391,41 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
                             ),
                           ),
                         ),
-                      )
-                    : Container(
+                      ),
+                )
+              else
+                // ★ 見た目 (decoration) は Stack の**親**に置く。
+                //   Container の decoration は自分自身が当たりを吸うので
+                //   (角丸の内側は全部 true)、 前の層に置くと後ろの板まで
+                //   判定が降りず、 掴んで動かせなくなる。
+                Container(
                   height: 30,
-                  padding: const EdgeInsets.only(left: 10, right: 2),
                   decoration: const BoxDecoration(
                     color: Color(0xFF1A1A2E),
                     borderRadius:
                         BorderRadius.vertical(top: Radius.circular(11)),
                   ),
+                  child: Stack(children: [
+                  // 掴んで動かす板 (帯の後ろ)。
+                  Positioned.fill(
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onPanUpdate: headerPanUpdate,
+                      onPanEnd: headerPanEnd,
+                    ),
+                  ),
+                  Padding(
+                  // ★ 左は 24 空ける。 左上には大きさ変更のつまみ (21px 角)
+                  //   が重なっており、 10 のままだと掴む目印がその下に隠れて
+                  //   「掴んだつもりが大きさが変わる」 ことになる。
+                  padding: const EdgeInsets.only(left: 24, right: 2),
                   child: Row(children: [
-                    const Icon(Icons.drag_indicator_rounded,
-                        color: Colors.white38, size: 15),
+                    // ★ 当たりを吸うと、 掴む目印そのものが掴めなくなる
+                    //   (印は文字と同じ描き方なので既定では吸ってしまう)。
+                    const IgnorePointer(
+                      child: Icon(Icons.drag_indicator_rounded,
+                          color: Colors.white38, size: 15),
+                    ),
                     const Spacer(),
                     // ── AI の切り替え (= ユーザー要望: フローティングに
                     //    切り替えた後もヘッダーからモデルを変えられるように) ──
@@ -233398,19 +233464,26 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
                     //    代わりに、 画面の外まで引っ張っている間だけ
                     //    「放すと外に出る」 と出して分かるようにする。 ──
                     if (draggedOut)
-                      Padding(
+                      IgnorePointer(
+                        child: Padding(
                         padding: const EdgeInsets.only(right: 6),
                         child: Row(mainAxisSize: MainAxisSize.min, children: [
                           const Icon(Icons.open_in_new_rounded,
                               color: Color(0xFF4FC3F7), size: 13),
-                          const SizedBox(width: 4),
-                          Text(
-                              context
-                                  .read<MindMapProvider>()
-                                  .t('float.dropToPopOut'),
-                              style: const TextStyle(
-                                  color: Color(0xFF4FC3F7), fontSize: 10)),
+                          // ★ 狭い窓では印だけにする。 帯にはボタンが並んで
+                          //   いるので、 ここに長い文を足すとはみ出して
+                          //   閉じるボタンが切れる。
+                          if (_w >= 520) ...[
+                            const SizedBox(width: 4),
+                            Text(
+                                context
+                                    .read<MindMapProvider>()
+                                    .t('float.dropToPopOut'),
+                                style: const TextStyle(
+                                    color: Color(0xFF4FC3F7), fontSize: 10)),
+                          ],
                         ]),
+                      ),
                       ),
                     // ★ 閉じるは少し大きく、 右の角から離して置く
                     //   (= ユーザー要望: 大きさ調整のつまみと近くて
@@ -233428,7 +233501,8 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
                     ),
                   ]),
                 ),
-              ),
+                ]),
+                ),
               Expanded(
                 child: ClipRRect(
                   borderRadius:
@@ -234638,9 +234712,9 @@ class _McpChatDialogState extends State<_McpChatDialog> {
   /// 浮遡窓の中に居る時だけ、 渡した帯を掴んで窓を動かせるようにする
   /// (= ユーザー報告: フローティング欄のドラッグの反応が悪い)。
   ///
-  /// translucent なので、 ボタンの上ではボタンが先に受け取り、 何も無い所を
-  /// 掴んだ時だけ窓が動く。 動かし方 (画面の外へ放したら外の窓になる、 など)
-  /// は上の細い帯と全く同じ道を通す。
+  /// 掴む板は帯の**後ろ**に敷く。 ボタンの上ではボタンだけが受け取り、
+  /// 何も無い所を掴んだ時だけ下の板に届いて窓が動く。 動かし方 (画面の外へ
+  /// 放したら外の窓になる、 など) は上の細い帯と全く同じ道を通す。
   Widget _dragHeader(Widget child) {
     if (!widget.floatingPanel) return child;
     // ★ 掴む所は帯の**後ろ**に敷く。 ボタンを包んではいけない。
@@ -235749,8 +235823,11 @@ class _McpChatDialogState extends State<_McpChatDialog> {
             padding: EdgeInsets.fromLTRB(_narrowHeader(context) ? 10 : 14, 10,
                 _narrowHeader(context) ? 2 : 6, 4),
             child: Row(children: [
-              const Icon(Icons.auto_awesome_rounded,
-                  size: 18, color: Color(0xFF80CBC4)),
+              // 印の上でも掴んで動かせるように、 当たりは後ろの板へ通す。
+              const IgnorePointer(
+                child: Icon(Icons.auto_awesome_rounded,
+                    size: 18, color: Color(0xFF80CBC4)),
+              ),
               SizedBox(width: _narrowHeader(context) ? 5 : 8),
               // ★ 見出しの何も無い所を掴んでも窓を動かせる
               //   (= ユーザー報告: 上の細い帯だけだと掴みにくい)。
