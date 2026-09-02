@@ -12835,6 +12835,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     /// true なら fullscreenDialog ではなく中央の Dialog として表示する。
     bool compactMode = false,
 
+    /// compactMode の時の大きさ (= ユーザー要望: 規約類は設定の枠と
+    /// 同じ大きさで開く)。 null なら画面の 9 割。
+    Size? dialogSize,
+
     /// ユーザー要望「ノードをタップして出てくる検索ボタンを押したらメモ欄
     /// なしの小さな縦長の検索画面が出てくるようにして」 への対応。
     /// true なら超コンパクトな縦長検索画面 (= メモ欄なし) で開く。
@@ -12969,6 +12973,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       customTitle: customTitle,
       initialUrl: initialUrl,
       compactMode: compactMode,
+      dialogSize: dialogSize,
       minimalMode: minimalMode,
       openAutomation: openAutomation,
       automationOnly: automationOnly,
@@ -37369,10 +37374,15 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     title: provider.t(e.$3),
                                     // ★ 外のブラウザではなくアプリの中で読める
                                     //   ようにする (= ユーザー要望)。
+                                    //   ★ 全画面ではなく「設定の枠と同じ
+                                    //     大きさ」 で開く (= ユーザー要望)。
                                     onTap: () {
                                       Navigator.pop(sctx);
                                       _openGoogleSearchDialog(
                                           context, provider,
+                                          compactMode: true,
+                                          dialogSize: Size(maxW, maxH),
+                                          customTitle: provider.t(e.$3),
                                           initialUrl:
                                               'https://hisator-notebook.com/${e.$4}');
                                     },
@@ -112697,9 +112707,16 @@ class _PaintText {
   /// 文字の種類 (フォントファミリー)。 '' = 既定 (= ユーザー要望)。
   String font;
 
-  /// 輝き (グロー)。 true なら同色のぼかしハローを文字の後ろに重ねる
-  /// (= ユーザー要望: 文字や線に輝きを付けられるように)。
+  /// 輝き (グロー)。 true なら同色のぼかしハローを文字の後ろに重ねる。
+  ///
+  /// ★ 付ける口 (ボタン) は廃止した (= ユーザー要望:「役割がイマイチ
+  ///   分からないから消して」)。 既に付いている物をそのまま出すために
+  ///   読み書きだけ残してある。
   bool glow;
+
+  /// 下線 / 取り消し線 (= ユーザー要望: 輝きの代わりに入れられるように)。
+  bool underline;
+  bool strike;
 
   /// ハイパーリンク URL ('' = 無し)。 URL 貼り付けで自動設定されるほか、
   /// 選択バーの「リンク」 ボタンで任意の文字列に URL を紐付けられる
@@ -112728,6 +112745,8 @@ class _PaintText {
       this.italic = false,
       this.font = '',
       this.glow = false,
+      this.underline = false,
+      this.strike = false,
       this.link = '',
       this.curve = 0,
       this.rot = 0,
@@ -112746,6 +112765,8 @@ class _PaintText {
         if (italic) 'i': true,
         if (font.isNotEmpty) 'ff': font,
         if (glow) 'gw': true,
+        if (underline) 'ul': true,
+        if (strike) 'sk': true,
         if (link.isNotEmpty) 'lk': link,
         if (curve != 0) 'cv': curve,
         if (rot != 0) 'rt': rot,
@@ -112766,6 +112787,8 @@ class _PaintText {
         italic: m['i'] == true,
         font: (m['ff'] ?? '').toString(),
         glow: m['gw'] == true,
+        underline: m['ul'] == true,
+        strike: m['sk'] == true,
         link: (m['lk'] ?? '').toString(),
         curve: ((m['cv'] as num?)?.toDouble() ?? 0).clamp(-1.0, 1.0),
         rot: (m['rt'] as num?)?.toDouble() ?? 0,
@@ -113233,6 +113256,10 @@ class _PaintImageItem {
   String path;
   Rect rect;
 
+  /// Z 軸回転 (度、 時計回り) (= ユーザー要望: 挿入した画像を回せるように)。
+  /// 中心まわりに回す。 当たり判定も同じだけ逆に回して見る。
+  double rot;
+
   /// レイヤー順 (大きいほど手前) と グループ id (0 = 未所属)。
   int z;
   int g;
@@ -113242,7 +113269,7 @@ class _PaintImageItem {
   /// 消しゴムを適用できるように)。 描く順 (前後関係) は従来どおり z が決める。
   int lyr;
   _PaintImageItem(this.path, this.rect,
-      {this.z = 0, this.g = 0, this.lyr = 0});
+      {this.z = 0, this.g = 0, this.lyr = 0, this.rot = 0});
 
   Map<String, dynamic> toJson() => {
         'p': path,
@@ -113250,6 +113277,7 @@ class _PaintImageItem {
         't': rect.top,
         'w': rect.width,
         'h': rect.height,
+        if (rot != 0) 'rt': rot,
         if (z != 0) 'z': z,
         if (g != 0) 'g': g,
         if (lyr != 0) 'ly': lyr,
@@ -113263,6 +113291,7 @@ class _PaintImageItem {
           (m['w'] as num?)?.toDouble() ?? 100,
           (m['h'] as num?)?.toDouble() ?? 100,
         ),
+        rot: (m['rt'] as num?)?.toDouble() ?? 0,
         z: (m['z'] as num?)?.toInt() ?? 0,
         g: (m['g'] as num?)?.toInt() ?? 0,
         lyr: (m['ly'] as num?)?.toInt() ?? 0,
@@ -124153,6 +124182,11 @@ class _PaintPageViewState extends State<_PaintPageView> {
   Offset _imgDragStart = Offset.zero;
   bool _imgResizing = false;
 
+  /// 回すつまみを掴んでいるか + 掴んだ時の角度 (= ユーザー要望: 挿入した
+  /// 画像を回せるように)。
+  bool _imgRotating = false;
+  double _imgRotOrig = 0;
+
   final Map<String, ui.Image> _imageCache = {};
   // Backspace/Del で選択画像を削除するためのフォーカス (= ユーザー要望)。
   final FocusNode _paintFocus = FocusNode();
@@ -124351,7 +124385,10 @@ class _PaintPageViewState extends State<_PaintPageView> {
   static const Offset _kPaintPasteShift = Offset(18, 18);
 
   _PaintImageItem _cloneImage(_PaintImageItem it) =>
-      _PaintImageItem(it.path, it.rect);
+      // ★ 回した角度も写す。 落とすと Ctrl+Z のたびに紙の中の全部の画像が
+      //   0 度に戻る (= 点検で判明)。 重なり順と層も同じ理由。
+      _PaintImageItem(it.path, it.rect,
+          rot: it.rot, z: it.z, g: it.g, lyr: it.lyr);
 
   /// 現在の選択内容をペイント内クリップボードへコピーする。
   /// コピーできた時 true (= キーイベントを消費する)。
@@ -124407,7 +124444,9 @@ class _PaintPageViewState extends State<_PaintPageView> {
           _selStrokeSet.add(_sheet.strokes.length - 1);
         } else if (it is _PaintImageItem) {
           _sheet.images
-              .add(_PaintImageItem(it.path, it.rect.shift(d))..z = _nextPaintZ()..lyr = _activeLayer);
+              .add(_PaintImageItem(it.path, it.rect.shift(d), rot: it.rot)
+                ..z = _nextPaintZ()
+                ..lyr = _activeLayer);
           _selImgSet.add(_sheet.images.length - 1);
         } else if (it is _PaintShape) {
           final c = _cloneShape(it);
@@ -124479,9 +124518,9 @@ class _PaintPageViewState extends State<_PaintPageView> {
 
   /// 輝き (グロー) トグル (= ユーザー要望: 文字や線に輝きを付けられるように)。
   /// ペン / 図形 / テキストの各ツールで個別に ON/OFF できる。
-  bool _penGlow = false;
-  bool _shapeGlow = false;
-  bool _textGlow = false;
+  /// 下線 / 取り消し線 (= ユーザー要望: 輝きの代わりに)。
+  bool _textUnderline = false;
+  bool _textStrike = false;
 
   /// 手振れ補正 (= ユーザー要望: 手振れ補正機能をフリーノートに搭載)。
   /// ON の間、 ペンの点列を指数移動平均で平滑化してガタつきを抑える。
@@ -125120,7 +125159,10 @@ class _PaintPageViewState extends State<_PaintPageView> {
       if (_paintStrokeHit(_sheet.strokes[i], p, fit)) return ('stroke', i);
     }
     for (int i = _sheet.images.length - 1; i >= 0; i--) {
-      if (_sheet.images[i].rect.contains(p)) return ('image', i);
+      // ★ 回した画像は、 見えている所で掴めないといけない
+      //   (= 点検で判明: 画像の道具と選ぶ道具で当たり所が食い違っていた)。
+      final it = _sheet.images[i];
+      if (it.rect.contains(_paintImageLocal(it, p))) return ('image', i);
     }
     return null;
   }
@@ -126023,7 +126065,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
       }
       for (final im in images) {
         dst.images.add(_PaintImageItem(im.path, im.rect.shift(d),
-            z: z++, g: im.g));
+            rot: im.rot, z: z++, g: im.g, lyr: im.lyr));
         dst.undo.add('image');
       }
       // ── 削除 (元ページ) ── index 降順で取り除く。
@@ -127298,14 +127340,13 @@ class _PaintPageViewState extends State<_PaintPageView> {
           ps: _penStyle,
           op: _penOpacity,
           iv: _penInterval,
-          glow: _penGlow,
         );
       });
     } else if (_tool == _PaintTool.shape) {
       setState(() {
         _curShape = _PaintShape(_shapeKind, p, p, _color.toARGB32(), _penWidth,
             _shapeFillColor != null,
-            fillColor: _shapeFillColor, glow: _shapeGlow);
+            fillColor: _shapeFillColor);
       });
     } else if (_tool == _PaintTool.fill) {
       // ── フリーハンドで囲った領域を塗る (= ユーザー要望)。 ドラッグで
@@ -127453,9 +127494,23 @@ class _PaintPageViewState extends State<_PaintPageView> {
   // Image selection and transform.
   int _imageAt(Offset p) {
     for (int i = _sheet.images.length - 1; i >= 0; i--) {
-      if (_sheet.images[i].rect.contains(p)) return i;
+      final it = _sheet.images[i];
+      if (it.rect.contains(_paintImageLocal(it, p))) return i;
     }
     return -1;
+  }
+
+  /// 回した画像の当たり判定用に、 点を「回す前」 の座標へ戻す。
+  static Offset _paintImageLocal(_PaintImageItem it, Offset p) {
+    if (it.rot == 0) return p;
+    final c = it.rect.center;
+    final a = -it.rot * math.pi / 180;
+    final v = p - c;
+    return Offset(
+          v.dx * math.cos(a) - v.dy * math.sin(a),
+          v.dx * math.sin(a) + v.dy * math.cos(a),
+        ) +
+        c;
   }
 
   void _onImageTap(Offset p) {
@@ -127471,14 +127526,28 @@ class _PaintPageViewState extends State<_PaintPageView> {
   void _onImagePanStart(Offset p, double fit) {
     final hr = 22 / fit; // 右下ハンドルの判定半径 (論理座標)
     if (_selImage >= 0 && _selImage < _sheet.images.length) {
-      final r = _sheet.images[_selImage].rect;
-      if ((p - r.bottomRight).distance <= hr) {
+      final it = _sheet.images[_selImage];
+      final r = it.rect;
+      // 回した画像は、 掴んだ点を「回す前」 に戻してから判定する。
+      final q = _paintImageLocal(it, p);
+      // ── 上の真ん中の丸を掴んだら回す (= ユーザー要望) ──
+      final knob = Offset(r.center.dx, r.top - 26 / fit);
+      if ((q - knob).distance <= hr) {
+        _imgRotating = true;
+        _imgRotOrig = it.rot;
+        _imgDragOrig = r;
+        _imgDragStart = p;
+        return;
+      }
+      if ((q - r.bottomRight).distance <= hr) {
+        _imgRotating = false;
         _imgResizing = true;
         _imgDragOrig = r;
         _imgDragStart = p;
         return;
       }
-      if (r.contains(p)) {
+      if (r.contains(q)) {
+        _imgRotating = false;
         _imgResizing = false;
         _imgDragOrig = r;
         _imgDragStart = p;
@@ -127488,6 +127557,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
     final idx = _imageAt(p);
     if (idx >= 0) {
       setState(() => _selImage = idx);
+      _imgRotating = false;
       _imgResizing = false;
       _imgDragOrig = _sheet.images[idx].rect;
       _imgDragStart = p;
@@ -127503,9 +127573,27 @@ class _PaintPageViewState extends State<_PaintPageView> {
     final orig = _imgDragOrig!;
     final delta = p - _imgDragStart;
     setState(() {
-      if (_imgResizing) {
+      if (_imgRotating) {
+        // 中心から見た角度の差だけ回す (= ユーザー要望)。
+        final c = orig.center;
+        final a0 = math.atan2(_imgDragStart.dy - c.dy, _imgDragStart.dx - c.dx);
+        final a1 = math.atan2(p.dy - c.dy, p.dx - c.dx);
+        var deg = _imgRotOrig + (a1 - a0) * 180 / math.pi;
+        // 15 度ごとに吸着 (ぴったり 90 度に合わせやすいように)。
+        final snapped = (deg / 15).roundToDouble() * 15;
+        if ((deg - snapped).abs() < 4) deg = snapped;
+        _sheet.images[_selImage].rot = deg % 360;
+      } else if (_imgResizing) {
         final ar = orig.width > 0 ? orig.height / orig.width : 1.0;
-        final newW = (orig.width + delta.dx).clamp(24.0, 100000.0);
+        // ★ 掴みは回した見た目の所に出ているので、 動かした量も回した分だけ
+        //   戻してから幅に足す (= 点検で判明: 回すと掴みが逆へ動いた)。
+        final rot = _sheet.images[_selImage].rot;
+        var dx = delta.dx;
+        if (rot != 0) {
+          final a = -rot * math.pi / 180;
+          dx = delta.dx * math.cos(a) - delta.dy * math.sin(a);
+        }
+        final newW = (orig.width + dx).clamp(24.0, 100000.0);
         _sheet.images[_selImage].rect =
             Rect.fromLTWH(orig.left, orig.top, newW, newW * ar);
       } else {
@@ -127518,6 +127606,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
   void _onImagePanEnd() {
     if (_imgDragOrig != null) {
       _imgDragOrig = null;
+      _imgRotating = false;
       _persist();
     }
   }
@@ -127651,6 +127740,12 @@ class _PaintPageViewState extends State<_PaintPageView> {
           italic: t.italic,
           font: t.font,
           glow: t.glow,
+          // ★ 下線 / 取り消し線もそのまま写す。 落とすと、 消しゴムの
+          //   取り消し (Ctrl+Z) や貼り付けで**紙の中の全部の文字**から
+          //   下線が消える (= 点検で判明)。
+          underline: t.underline,
+          strike: t.strike,
+          lyr: t.lyr,
           link: t.link,
           curve: t.curve,
           rot: t.rot,
@@ -128186,7 +128281,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
         _textBold = t.bold;
         _textItalic = t.italic;
         _textFont = t.font;
-        _textGlow = t.glow;
+        _textUnderline = t.underline;
+        _textStrike = t.strike;
         _textCurve = t.curve;
         // 文字色の濃さ (= ユーザー要望) は色のアルファとして保持されている。
         _textAlpha = Color(t.color).a.clamp(0.2, 1.0).toDouble();
@@ -128307,7 +128403,11 @@ class _PaintPageViewState extends State<_PaintPageView> {
             bold: _textBold,
             italic: _textItalic,
             font: _textFont,
-            glow: _textGlow,
+            underline: _textUnderline,
+            strike: _textStrike,
+            // ★ 輝きは編集前の値を引き継ぐ。 付ける口は廃止したので、
+            //   ここで落とすと二度と戻せない (= 点検で判明)。
+            glow: old.glow,
             curve: _textCurve,
             // 回転は編集前の値を引き継ぐ (回転は選択バーで変更する)。
             rot: old.rot,
@@ -128331,7 +128431,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
             bold: _textBold,
             italic: _textItalic,
             font: _textFont,
-            glow: _textGlow,
+            underline: _textUnderline,
+            strike: _textStrike,
             curve: _textCurve,
             // セル内で書いた文字は表と同じグループに入れて一緒に動かす
             // (= ユーザー要望)。
@@ -132639,6 +132740,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
     bool? bold,
     bool? italic,
     bool? glow,
+    bool? underline,
+    bool? strike,
     double? curve,
     double? rot,
     double? colorAlpha,
@@ -132665,6 +132768,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
         if (bold != null) t.bold = bold;
         if (italic != null) t.italic = italic;
         if (glow != null) t.glow = glow;
+        if (underline != null) t.underline = underline;
+        if (strike != null) t.strike = strike;
         if (curve != null) t.curve = curve.clamp(-1.0, 1.0).toDouble();
         if (rot != null) t.rot = rot;
       }
@@ -132771,7 +132876,9 @@ class _PaintPageViewState extends State<_PaintPageView> {
     final selTextSize = _commonTextValue<double>((t) => t.size) ?? _textSize;
     final selTextBold = _commonTextValue<bool>((t) => t.bold) ?? false;
     final selTextItalic = _commonTextValue<bool>((t) => t.italic) ?? false;
-    final selTextGlow = _commonTextValue<bool>((t) => t.glow) ?? false;
+    final selTextUnderline =
+        _commonTextValue<bool>((t) => t.underline) ?? false;
+    final selTextStrike = _commonTextValue<bool>((t) => t.strike) ?? false;
     // 選択中テキスト (1 個) のリンク (= ユーザー要望: 文字とリンクの連携)。
     final String selTextLink = _selTextSet.length == 1 &&
             _selTextSet.first < _sheet.texts.length
@@ -132960,11 +133067,21 @@ class _PaintPageViewState extends State<_PaintPageView> {
                   () => _applyTextStyleToSelection(bold: !selTextBold)),
               _textToggle(Icons.format_italic_rounded, selTextItalic,
                   () => _applyTextStyleToSelection(italic: !selTextItalic)),
-              // ── 輝き (グロー) (= ユーザー要望: 文字に輝きを付ける) ──
+              // ── 下線 / 取り消し線 (= ユーザー要望: 輝きの代わりに) ──
               Tooltip(
-                message: widget.provider.t('paint.glow'),
-                child: _textToggle(Icons.auto_awesome_rounded, selTextGlow,
-                    () => _applyTextStyleToSelection(glow: !selTextGlow)),
+                message: widget.provider.t('paint.underline'),
+                child: _textToggle(
+                    Icons.format_underlined_rounded,
+                    selTextUnderline,
+                    () => _applyTextStyleToSelection(
+                        underline: !selTextUnderline)),
+              ),
+              Tooltip(
+                message: widget.provider.t('paint.strike'),
+                child: _textToggle(
+                    Icons.format_strikethrough_rounded,
+                    selTextStrike,
+                    () => _applyTextStyleToSelection(strike: !selTextStrike)),
               ),
               // ── リンク設定 / 開く (= ユーザー要望: 文字とリンクの連携) ──
               if (_selTextSet.length == 1) ...[
@@ -133230,12 +133347,6 @@ class _PaintPageViewState extends State<_PaintPageView> {
             // ── ぼかしペン (= ユーザー要望: 描いたところをぼやけさせる) ──
             styleBtn('blur', Icons.blur_on_rounded, 'paint.penBlur'),
             const SizedBox(width: 4),
-            // ── 輝き (グロー) トグル (= ユーザー要望: 線に輝きを付ける) ──
-            Tooltip(
-              message: widget.provider.t('paint.glow'),
-              child: _textToggle(Icons.auto_awesome_rounded, _penGlow,
-                  () => setState(() => _penGlow = !_penGlow)),
-            ),
             // ── 手振れ補正 (= ユーザー要望) + 強度スライダー ──
             Tooltip(
               message: widget.provider.t('paint.stabilize'),
@@ -133353,11 +133464,18 @@ class _PaintPageViewState extends State<_PaintPageView> {
               () => setState(() => _textBold = !_textBold)),
           _textToggle(Icons.format_italic_rounded, _textItalic,
               () => setState(() => _textItalic = !_textItalic)),
-          // ── 輝き (グロー) トグル (= ユーザー要望: 文字に輝きを付ける) ──
+          // ── 下線 / 取り消し線 (= ユーザー要望: 輝きの代わりに) ──
           Tooltip(
-            message: widget.provider.t('paint.glow'),
-            child: _textToggle(Icons.auto_awesome_rounded, _textGlow,
-                () => setState(() => _textGlow = !_textGlow)),
+            message: widget.provider.t('paint.underline'),
+            child: _textToggle(
+                Icons.format_underlined_rounded,
+                _textUnderline,
+                () => setState(() => _textUnderline = !_textUnderline)),
+          ),
+          Tooltip(
+            message: widget.provider.t('paint.strike'),
+            child: _textToggle(Icons.format_strikethrough_rounded, _textStrike,
+                () => setState(() => _textStrike = !_textStrike)),
           ),
           const SizedBox(width: 6),
           // ── 文字の種類 (= ユーザー要望) ──
@@ -133597,6 +133715,12 @@ class _PaintPageViewState extends State<_PaintPageView> {
                 fontSize: _textSize * fit,
                 fontWeight: _textBold ? FontWeight.bold : FontWeight.w500,
                 fontStyle: _textItalic ? FontStyle.italic : FontStyle.normal,
+                // 下線 / 取り消し線も入力中から見える (= ユーザー要望)。
+                decoration: TextDecoration.combine([
+                  if (_textUnderline) TextDecoration.underline,
+                  if (_textStrike) TextDecoration.lineThrough,
+                ]),
+                decorationColor: _color,
                 // 入力中も選んだ文字の種類で表示する (= ユーザー要望)。
                 fontFamily: _textFont.isEmpty ? null : _textFont,
                 // 罫線シートでは行の高さを罫線間隔に合わせる (確定後の描画と
@@ -133869,12 +133993,6 @@ class _PaintPageViewState extends State<_PaintPageView> {
               widget.provider.t('shape.heart')),
           kindBtn(10, Icons.add_rounded, widget.provider.t('shape.cross')),
           const SizedBox(width: 4),
-          // ── 輝き (グロー) トグル (= ユーザー要望) ──
-          Tooltip(
-            message: widget.provider.t('paint.glow'),
-            child: _textToggle(Icons.auto_awesome_rounded, _shapeGlow,
-                () => setState(() => _shapeGlow = !_shapeGlow)),
-          ),
           // ── 枠線 / 塗りの色 (= ユーザー要望: 「塗り」 チェックと不透明度は
           //    廃止。 塗り色は既定で未選択 = 中空、 色を選ぶと中まで塗られ、
           //    右端のボタンで中空に戻せる) ──
@@ -134855,7 +134973,18 @@ class _PaintCanvasPainter extends CustomPainter {
         if (im == null) return;
         final src =
             Rect.fromLTWH(0, 0, im.width.toDouble(), im.height.toDouble());
-        canvas.drawImageRect(im, src, it.rect, Paint());
+        if (it.rot == 0) {
+          canvas.drawImageRect(im, src, it.rect, Paint());
+        } else {
+          // 中心まわりに回す (= ユーザー要望: 挿入した画像を回せるように)。
+          final c = it.rect.center;
+          canvas.save();
+          canvas.translate(c.dx, c.dy);
+          canvas.rotate(it.rot * math.pi / 180);
+          canvas.translate(-c.dx, -c.dy);
+          canvas.drawImageRect(im, src, it.rect, Paint());
+          canvas.restore();
+        }
       }));
     }
     for (int i = 0; i < sheet.strokes.length; i++) {
@@ -134912,8 +135041,12 @@ class _PaintCanvasPainter extends CustomPainter {
                       blurRadius: math.max(8.0, t.size * 0.70)),
                 ]
               : null,
-          // ── ハイパーリンク (= ユーザー要望) は下線で示す ──
-          decoration: t.link.isNotEmpty ? TextDecoration.underline : null,
+          // ── 下線 / 取り消し線 (= ユーザー要望) ──
+          //    ハイパーリンクは今までどおり下線で示す。
+          decoration: TextDecoration.combine([
+            if (t.underline || t.link.isNotEmpty) TextDecoration.underline,
+            if (t.strike) TextDecoration.lineThrough,
+          ]),
           decorationColor: Color(t.color),
           // 罫線シートでは行の高さを罫線間隔に合わせる (= ユーザー要望:
           // 文字が罫線と罫線の間に 1 行ずつ収まる)。 状態側の
@@ -135090,7 +135223,15 @@ class _PaintCanvasPainter extends CustomPainter {
 
     // ── 選択中画像の枠 + 右下リサイズハンドル (枠色はカスタマイズ可能) ──
     if (selImage >= 0 && selImage < sheet.images.length) {
-      final r = sheet.images[selImage].rect;
+      final it = sheet.images[selImage];
+      final r = it.rect;
+      canvas.save();
+      if (it.rot != 0) {
+        final c = r.center;
+        canvas.translate(c.dx, c.dy);
+        canvas.rotate(it.rot * math.pi / 180);
+        canvas.translate(-c.dx, -c.dy);
+      }
       canvas.drawRect(
           r,
           Paint()
@@ -135101,6 +135242,16 @@ class _PaintCanvasPainter extends CustomPainter {
       canvas.drawRect(
           Rect.fromCenter(center: r.bottomRight, width: hs * 2, height: hs * 2),
           Paint()..color = selColor);
+      // ── 上の真ん中の丸 = 回すつまみ (= ユーザー要望: 画像を回せるように) ──
+      final knob = Offset(r.center.dx, r.top - 26 / scale);
+      canvas.drawLine(
+          Offset(r.center.dx, r.top),
+          knob,
+          Paint()
+            ..color = selColor
+            ..strokeWidth = 1.5 / scale);
+      canvas.drawCircle(knob, 7 / scale, Paint()..color = selColor);
+      canvas.restore();
     }
     // ── 消しゴムカーソル枠 (= ユーザー要望: 白背景でも境界が分かるように) ──
     //   外側に濃いグレー、 内側に細い白の二重リングでどんな背景でも視認可。

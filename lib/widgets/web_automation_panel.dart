@@ -3473,16 +3473,17 @@ ${_pcContext(req)}
   /// コマンドを 1 つ実行する。 実行した (もしくは黙って飛ばした) なら true、
   /// ユーザーが断った / 危ないので止めた なら false。
   Future<bool> _runCommandStep(WebAutoStep s) async {
+    final provider = context.read<MindMapProvider>();
     final cmd = s.text.trim();
     if (cmd.isEmpty) return true;
     if (!_isDesktopHost) {
-      if (mounted) setState(() => _status = 'コマンド実行はパソコン版だけです');
+      if (mounted) setState(() => _status = provider.t('auto.cmdDesktopOnly'));
       return false;
     }
     // ★ ストア提出版ではコマンド実行の仕組みごと使わない。
     if (kStoreBuild) {
       if (mounted) {
-        setState(() => _status = 'この版ではコマンド実行は使えません');
+        setState(() => _status = provider.t('auto.cmdStoreBuild'));
       }
       return false;
     }
@@ -3491,7 +3492,6 @@ ${_pcContext(req)}
       //   呼び出し側が実行そのものを打ち切っていたので、 コマンドが 1 つ
       //   混ざっているだけでフロー全体が動かなかった (= ユーザー報告:
       //   作ったフローを実行しても何も起きない)。
-      final provider = context.read<MindMapProvider>();
       _log('注意', provider.t('auto.cmdSkipped'));
       if (mounted) {
         setState(() => _status = provider.t('auto.cmdSkipped'));
@@ -3500,19 +3500,26 @@ ${_pcContext(req)}
     }
     if (isDangerousCommand(cmd)) {
       if (mounted) {
-        setState(() => _status = '危ないコマンドなので実行しませんでした: $cmd');
+        setState(() => _status = provider
+            .t('auto.cmdDangerous')
+            .replaceFirst('{cmd}', cmd));
       }
       return false;
     }
     if (_cmdPolicy == AutoCommandPolicy.ask) {
       final ok = await _confirmCommand(cmd);
       if (ok != true) {
-        if (mounted) setState(() => _status = 'コマンドの実行を取りやめました');
+        if (mounted) {
+          setState(() => _status = provider.t('auto.cmdCancelled'));
+        }
         return false;
       }
     }
     try {
-      if (mounted) setState(() => _status = '実行中: $cmd');
+      if (mounted) {
+        setState(() => _status =
+            provider.t('auto.cmdRunning').replaceFirst('{cmd}', cmd));
+      }
       final ProcessResult r = await (Platform.isWindows
               ? Process.run('cmd', ['/c', cmd], runInShell: false)
               : Process.run('/bin/sh', ['-c', cmd]))
@@ -3528,12 +3535,18 @@ ${_pcContext(req)}
       }
       if (mounted) {
         setState(() => _status = r.exitCode == 0
-            ? '実行しました (終了コード 0)'
-            : '終了コード ${r.exitCode}: ${err.isEmpty ? out : err}');
+            ? provider.t('auto.cmdDone')
+            : provider
+                .t('auto.cmdExit')
+                .replaceFirst('{code}', '${r.exitCode}')
+                .replaceFirst('{msg}', err.isEmpty ? out : err));
       }
       return true;
     } catch (e) {
-      if (mounted) setState(() => _status = 'コマンドに失敗: $e');
+      if (mounted) {
+        setState(() => _status =
+            provider.t('auto.cmdFailed').replaceFirst('{msg}', '$e'));
+      }
       return false;
     }
   }
@@ -3974,6 +3987,7 @@ ${_pcContext(req)}
   }
 
   Future<bool?> _confirmCommand(String cmd) {
+    final provider = context.read<MindMapProvider>();
     return showDialog<bool>(
       // 浮かせた窓の中でも見えるように一番近い Navigator へ。
       useRootNavigator: false,
@@ -3981,11 +3995,14 @@ ${_pcContext(req)}
       barrierDismissible: false,
       builder: (dctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E32),
-        title: Row(children: const [
-          Icon(Icons.terminal_rounded, color: Color(0xFFFFB347), size: 20),
-          SizedBox(width: 8),
-          Text('このコマンドを実行しますか？',
-              style: TextStyle(color: Colors.white, fontSize: 15)),
+        title: Row(children: [
+          const Icon(Icons.terminal_rounded,
+              color: Color(0xFFFFB347), size: 20),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(provider.t('auto.cmdConfirmTitle'),
+                style: const TextStyle(color: Colors.white, fontSize: 15)),
+          ),
         ]),
         content: Column(mainAxisSize: MainAxisSize.min, children: [
           Container(
@@ -4002,21 +4019,21 @@ ${_pcContext(req)}
                     fontFamily: 'monospace')),
           ),
           const SizedBox(height: 10),
-          const Text('パソコンの中で実行されます。 心当たりのない内容なら実行しないでください。',
-              style: TextStyle(color: Colors.white54, fontSize: 11.5)),
+          Text(provider.t('auto.cmdConfirmBody'),
+              style: const TextStyle(color: Colors.white54, fontSize: 11.5)),
         ]),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dctx, false),
-            child: const Text('実行しない',
-                style: TextStyle(color: Colors.white54)),
+            child: Text(provider.t('auto.cmdConfirmNo'),
+                style: const TextStyle(color: Colors.white54)),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFFFFB347),
                 foregroundColor: Colors.black),
             onPressed: () => Navigator.pop(dctx, true),
-            child: const Text('実行する'),
+            child: Text(provider.t('auto.cmdConfirmYes')),
           ),
         ],
       ),
@@ -4995,7 +5012,7 @@ ${_pcContext(req)}
                 provider,
                 DesktopInput.isSupported
                     ? provider.t('auto.cmdSection')
-                    : 'コマンド実行',
+                    : provider.t('auto.cmdSectionPlain'),
                 open: _cmdOpen,
                 icon: Icons.terminal_rounded,
                 color: const Color(0xFFFFB347),
@@ -5009,11 +5026,11 @@ ${_pcContext(req)}
                     Padding(
                       padding: const EdgeInsets.only(right: 6),
                       child: Text(
-                          _cmdPolicy == AutoCommandPolicy.off
-                              ? '使わない'
+                          provider.t(_cmdPolicy == AutoCommandPolicy.off
+                              ? 'auto.cmdOff'
                               : (_cmdPolicy == AutoCommandPolicy.ask
-                                  ? '毎回確認'
-                                  : '全部任せる'),
+                                  ? 'auto.cmdAsk'
+                                  : 'auto.cmdAlways')),
                           style: const TextStyle(
                               color: Colors.white38, fontSize: 10.5)),
                     ),
@@ -5024,13 +5041,13 @@ ${_pcContext(req)}
                 const SizedBox(width: 21),
                 Expanded(
                   child: Wrap(spacing: 6, runSpacing: 4, children: [
-                    for (final (v, label) in const [
-                      (AutoCommandPolicy.off, '使わない'),
-                      (AutoCommandPolicy.ask, '毎回確認'),
-                      (AutoCommandPolicy.always, '全部任せる'),
+                    for (final (v, key) in const [
+                      (AutoCommandPolicy.off, 'auto.cmdOff'),
+                      (AutoCommandPolicy.ask, 'auto.cmdAsk'),
+                      (AutoCommandPolicy.always, 'auto.cmdAlways'),
                     ])
                       ChoiceChip(
-                        label: Text(label,
+                        label: Text(provider.t(key),
                             style: const TextStyle(fontSize: 11)),
                         selected: _cmdPolicy == v,
                         visualDensity: VisualDensity.compact,
@@ -5043,7 +5060,7 @@ ${_pcContext(req)}
                 ),
                 if (_cmdLog.isNotEmpty)
                   IconButton(
-                    tooltip: '実行したコマンドの記録',
+                    tooltip: provider.t('auto.cmdLogTip'),
                     visualDensity: VisualDensity.compact,
                     icon: const Icon(Icons.receipt_long_rounded,
                         size: 16, color: Colors.white54),
@@ -5054,17 +5071,16 @@ ${_pcContext(req)}
               Padding(
                 padding: const EdgeInsets.only(left: 21, top: 2),
                 child: Text(
-                    _cmdPolicy == AutoCommandPolicy.off
-                        ? '今は実行しません。 手順に入っていても飛ばします。'
-                        : (_cmdPolicy == AutoCommandPolicy.ask
-                            ? '実行のたびに中身を見せて確認します。'
-                            : '確認なしで実行します。 壊す恐れのある操作だけは断ります。') +
+                    provider.t(_cmdPolicy == AutoCommandPolicy.off
+                            ? 'auto.cmdDescOff'
+                            : (_cmdPolicy == AutoCommandPolicy.ask
+                                ? 'auto.cmdDescAsk'
+                                : 'auto.cmdDescAlways')) +
                         // ★ 何が動くのかをはっきり書く (= マウスとキーボードを
                         //   乗っ取る操作なので、 知らずに「全部任せる」 に
                         //   しないように)。
                         (DesktopInput.isSupported
-                            ? '\nパソコンの操作 (マウス・キーボード・窓) も'
-                                'この設定に従います。'
+                            ? provider.t('auto.cmdDescPc')
                             : ''),
                     style:
                         const TextStyle(color: Colors.white38, fontSize: 10)),
@@ -5080,8 +5096,9 @@ ${_pcContext(req)}
       maxWidth: 470,
       builder: (dctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E32),
-        title: const Text('実行したコマンド',
-            style: TextStyle(color: Colors.white, fontSize: 15)),
+        title: Text(
+            context.read<MindMapProvider>().t('auto.cmdLogTitle'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
         content: SizedBox(
           width: 460,
           child: SingleChildScrollView(
@@ -5098,13 +5115,13 @@ ${_pcContext(req)}
               setState(_cmdLog.clear);
               Navigator.pop(dctx);
             },
-            child: const Text('記録を消す',
-                style: TextStyle(color: Color(0xFFE57373))),
+            child: Text(context.read<MindMapProvider>().t('auto.cmdLogClear'),
+                style: const TextStyle(color: Color(0xFFE57373))),
           ),
           TextButton(
             onPressed: () => Navigator.pop(dctx),
-            child: const Text('閉じる',
-                style: TextStyle(color: Colors.white54)),
+            child: Text(context.read<MindMapProvider>().t('btn.close'),
+                style: const TextStyle(color: Colors.white54)),
           ),
         ],
       ),

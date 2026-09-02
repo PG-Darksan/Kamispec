@@ -196,6 +196,10 @@ class GoogleSearchDialog {
     /// 欲しい」 への対応。 「画面分割に切り替え」 ボタンも有効になる。
     bool compactMode = false,
 
+    /// コンパクトモードの大きさを指定する (= ユーザー要望: 規約類は
+    /// 設定の枠と同じ大きさで開く)。 null なら今までどおり画面の 9 割。
+    Size? dialogSize,
+
     /// ミニマルモード = メモ欄なしの「縦長の小さな検索画面」 (= スマホ風の
     /// ポップアップ)。
     ///
@@ -320,14 +324,16 @@ class GoogleSearchDialog {
         builder: (dctx) {
           final size = MediaQuery.of(dctx).size;
           return Dialog(
-            insetPadding: EdgeInsets.symmetric(
-              horizontal: size.width * 0.05,
-              vertical: size.height * 0.05,
-            ),
+            insetPadding: dialogSize == null
+                ? EdgeInsets.symmetric(
+                    horizontal: size.width * 0.05,
+                    vertical: size.height * 0.05,
+                  )
+                : const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
             backgroundColor: Colors.transparent,
             child: SizedBox(
-              width: size.width * 0.9,
-              height: size.height * 0.9,
+              width: dialogSize?.width ?? size.width * 0.9,
+              height: dialogSize?.height ?? size.height * 0.9,
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(12),
                 child: _GoogleSearchPage(
@@ -341,6 +347,11 @@ class GoogleSearchDialog {
                   onFloatRequest: onFloatRequest,
                   onCreateBookmarkButton: onCreateBookmarkButton,
                   compactMode: true,
+                  // ★ 大きさを決めた時は、 中の部品にもその大きさを教える。
+                  //   教えないと画面いっぱいの幅で組み立てて、 メモ欄と AI 欄を
+                  //   両方開いた時にはみ出す (= 点検で判明)。
+                  windowWidth: dialogSize?.width,
+                  windowHeight: dialogSize?.height,
                   openAutomation: openAutomation,
                 ),
               ),

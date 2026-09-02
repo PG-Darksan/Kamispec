@@ -56,7 +56,21 @@ enum PdfDrawTool {
   /// 文字を置く (= ユーザー要望: テキスト入力を行う機能)。 押した所に
   /// 打ち込んだ文字を置く。 保存すると PDF の本文として焼き込まれる。
   text,
+
+  /// マーカー (蛍光ペン) をフリーハンドで引く (= ユーザー要望)。
+  /// 半透明の太い線なので、 下の文字が透けて見える。
+  marker,
+
+  /// マーカーを直線で引く (= ユーザー要望: フリーハンドでも直線でも)。
+  markerLine,
 }
+
+/// マーカーの濃さ (= 下の文字が透ける半透明の度合い)。
+const double kPdfMarkerAlpha = 0.35;
+
+/// マーカーか (フリーハンド / 直線のどちらでも)。
+bool isPdfMarker(PdfDrawTool t) =>
+    t == PdfDrawTool.marker || t == PdfDrawTool.markerLine;
 
 /// 描き込みを PDF へ焼き込み終えた事を知らせる (値は「パス + 時刻」)。
 ///
@@ -161,6 +175,34 @@ Future<bool> burnPdfStrokes(Map<String, Object?> msg) async {
       );
       final p1 = points.first;
       final p2 = points.last;
+      // ── マーカー (蛍光ペン) は半透明で、 角は四角く引く (= ユーザー要望) ──
+      //    下の文字が透けるよう、 このひと筆だけ透明度を掛ける。
+      if (isPdfMarker(tool)) {
+        final mpen = sfpdf.PdfPen(
+          sfpdf.PdfColor(
+              (argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF),
+          width: width,
+          lineCap: sfpdf.PdfLineCap.square,
+          lineJoin: sfpdf.PdfLineJoin.round,
+        );
+        final st = g.save();
+        g.setTransparency(kPdfMarkerAlpha);
+        if (tool == PdfDrawTool.markerLine) {
+          g.drawLine(mpen, p1, p2);
+        } else {
+          // ★ 線分ごとに引いてはいけない。 PDF は 1 本ごとに下地へ
+          //   重ねるので、 半透明が重なるたびに濃くなり、 保存した途端に
+          //   透けない帯になる (= 点検で判明)。 ひと続きの道にして 1 回で
+          //   引く。
+          final path = sfpdf.PdfPath();
+          for (var i = 0; i + 1 < points.length; i++) {
+            path.addLine(points[i], points[i + 1]);
+          }
+          g.drawPath(path, pen: mpen);
+        }
+        g.restore(st);
+        continue;
+      }
       switch (tool) {
         case PdfDrawTool.pen:
           for (var i = 0; i + 1 < points.length; i++) {
@@ -196,8 +238,10 @@ Future<bool> burnPdfStrokes(Map<String, Object?> msg) async {
         case PdfDrawTool.check:
         case PdfDrawTool.select:
         case PdfDrawTool.text:
+        case PdfDrawTool.marker:
+        case PdfDrawTool.markerLine:
           // 消しゴムと選択は線を残さない。 チェックはペンの線として積み、
-          // 文字は上で書き終えているので、 ここへは来ない。
+          // 文字とマーカーは上で書き終えているので、 ここへは来ない。
           break;
       }
     }
@@ -661,7 +705,9 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       t == PdfDrawTool.rect ||
       t == PdfDrawTool.ellipse ||
       t == PdfDrawTool.line ||
-      t == PdfDrawTool.arrow;
+      t == PdfDrawTool.arrow ||
+      // マーカーの直線も、 始点と終点で決まる (= ユーザー要望)。
+      t == PdfDrawTool.markerLine;
 
   /// 取り消し (Ctrl+Z) 用の控え。 図形を足す / 消す / 動かす の前に積む
   /// (= ユーザー要望: ctrl+z で挿入した図形を取り消せるように)。
@@ -739,6 +785,8 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       //   何も無い所を囲っただけで選ばれてしまう。 線そのものが枠に
       //   掛かっているかで見る (= 重なっていてもそれぞれ選べる)。
       if (st.tool == PdfDrawTool.pen ||
+          st.tool == PdfDrawTool.marker ||
+          st.tool == PdfDrawTool.markerLine ||
           st.tool == PdfDrawTool.line ||
           st.tool == PdfDrawTool.arrow ||
           st.tool == PdfDrawTool.check) {
@@ -1417,7 +1465,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
           tool: _tool,
           points: [pt - half, pt + half],
           color: _color,
-          width: _width,
+          width: isPdfMarker(_tool) ? _markerSize : _width,
         ));
       });
       _activePointer = null;
@@ -1457,7 +1505,8 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
         tool: _tool,
         points: [pt, pt],
         color: _color,
-        width: _width,
+        // マーカーはペンとは別の太さを持つ (= ユーザー要望)。
+        width: isPdfMarker(_tool) ? _markerSize : _width,
       );
     });
   }
@@ -1532,7 +1581,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     }
     setState(() {
       final cur = _current!;
-      if (cur.tool == PdfDrawTool.pen) {
+      if (cur.tool == PdfDrawTool.pen || cur.tool == PdfDrawTool.marker) {
         // 細かすぎる点は間引く (pt 換算でおよそ 0.7pt 以上動いた時だけ)。
         if ((pt - cur.points.last).distance >= 0.7) cur.points.add(pt);
       } else {
@@ -1542,7 +1591,10 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
         if (HardwareKeyboard.instance.isShiftPressed) {
           final a = cur.points.first;
           final d = end - a;
-          if (cur.tool == PdfDrawTool.line || cur.tool == PdfDrawTool.arrow) {
+          if (cur.tool == PdfDrawTool.line ||
+              cur.tool == PdfDrawTool.arrow ||
+              // 直線のマーカーも Shift でまっすぐに (= 行を引く時に要る)。
+              cur.tool == PdfDrawTool.markerLine) {
             end = d.dx.abs() >= d.dy.abs()
                 ? Offset(end.dx, a.dy)
                 : Offset(a.dx, end.dy);
@@ -1590,7 +1642,9 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       _current = null;
       // 動きがほぼ無い図形はゴミになるので捨てる (ペンの点は残す)。
       final span = (cur.points.last - cur.points.first).distance;
-      if (cur.tool == PdfDrawTool.pen || span >= 1.0) {
+      if (cur.tool == PdfDrawTool.pen ||
+          cur.tool == PdfDrawTool.marker ||
+          span >= 1.0) {
         _pushUndo();
         _strokes.add(cur);
         // 次に「大きさを固定」 で置く時のために、 今の大きさを覚える
@@ -1619,8 +1673,8 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
         next.add(st);
         continue;
       }
-      // ── 図形は丸ごと消す ──
-      if (st.tool != PdfDrawTool.pen) {
+      // ── 図形は丸ごと消す (フリーハンドのマーカーはペンと同じ扱い) ──
+      if (st.tool != PdfDrawTool.pen && st.tool != PdfDrawTool.marker) {
         var hit = false;
         if (st.points.length >= 2) {
           final a = st.points.first;
@@ -1694,8 +1748,10 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       changed = true;
       for (final seg in keep) {
         next.add(PdfDrawStroke(
+          // ★ 元の道具のまま残す。 ペンに書き換えると、 半透明のマーカーが
+          //   不透明の太線に化けていた (= 点検で判明)。
           pageNumber: st.pageNumber,
-          tool: PdfDrawTool.pen,
+          tool: st.tool,
           points: seg,
           color: st.color,
           width: st.width,
@@ -1723,6 +1779,10 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   /// チェック (✓) の大きさ。 既定 2.5 (= ユーザー要望)。 ペンの太さとは
   /// 別に持つ (太さを変えるとペンの線まで一緒に変わってしまうため)。
   double _checkSize = 2.5;
+
+  /// マーカー (蛍光ペン) の太さ (pt)。 ペンとは別に覚える
+  /// (= ユーザー要望: 道具ごとに大きさを持つ)。
+  double _markerSize = 14.0;
 
   /// 置く印の種類 (= ユーザー要望: ✓ の所を ○ や × 等に切り替えられるように)。
   /// 'check' | 'circle' | 'cross' | 'triangle' | 'square'。
@@ -1811,6 +1871,9 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
         return _checkSize;
       case PdfDrawTool.eraser:
         return _eraserSize;
+      case PdfDrawTool.marker:
+      case PdfDrawTool.markerLine:
+        return _markerSize;
       default:
         return _width;
     }
@@ -1819,6 +1882,10 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   /// 今選んでいる道具の大きさの下限 / 上限。
   (double, double) get _activeToolSizeRange {
     switch (_tool) {
+      case PdfDrawTool.marker:
+      case PdfDrawTool.markerLine:
+        // 蛍光ペンは行を覆う太さが要る (= ユーザー要望)。
+        return (4.0, 40.0);
       case PdfDrawTool.text:
         return (6.0, 100.0);
       case PdfDrawTool.check:
@@ -1855,6 +1922,10 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
           break;
         case PdfDrawTool.eraser:
           _eraserSize = v;
+          break;
+        case PdfDrawTool.marker:
+        case PdfDrawTool.markerLine:
+          _markerSize = v;
           break;
         default:
           _width = v;
@@ -2516,35 +2587,20 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       //    いた)。 文字 = pt、 チェック = 大きさ、 ペン = 太さ。 ──
       final textTool = _tool == PdfDrawTool.text;
       final checkTool = _tool == PdfDrawTool.check;
-      final double cur = textTool
-          ? _fontSize
-          : checkTool
-              ? _checkSize
-              : eraser
-                  ? _eraserSize
-                  : _width;
-      final double minV = textTool
-          ? 6.0
-          : checkTool
-              ? 1.0
-              : eraser
-                  ? 4.0
-                  : 0.5;
-      // 消しゴムは大きく取れるようにする (= ユーザー要望: 最大値をもう少し
-      // 大きく)。 ページの上に出る丸で実際の大きさが分かる。
-      final double maxV = textTool
-          ? 100.0
-          : checkTool
-              ? 5.0
-              : eraser
-                  ? 120.0
-                  : 16.0;
+      // ★ 道具ごとの大きさは 1 か所 (_activeToolSize / _activeToolSizeRange)
+      //   で決める。 ここに同じ分岐を書き写していたので、 マーカーを足した
+      //   時にスライダーだけがペンの太さを触り続けていた (= 点検で判明)。
+      final marker = isPdfMarker(_tool);
+      final double cur = _activeToolSize;
+      final (minV, maxV) = _activeToolSizeRange;
       final double v = cur.clamp(minV, maxV).toDouble();
       final Color accent = eraser
           ? const Color(0xFF9FE7FF)
           : textTool
               ? const Color(0xFFFFD8A8)
-              : const Color(0xFFB9B4FF);
+              : marker
+                  ? const Color(0xFFFFE082)
+                  : const Color(0xFFB9B4FF);
       // 見本 (入りきらない大きさは枠いっぱいで頭打ち)。
       final double dia = (v * 0.75).clamp(4.0, 24.0).toDouble();
       final double lineH = (v * 1.2).clamp(1.5, 16.0).toDouble();
@@ -2566,7 +2622,9 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
                     ? 'pdfdraw.checkSize'
                     : eraser
                         ? 'pdfdraw.eraserSize'
-                        : 'pdfdraw.penWidth'),
+                        : marker
+                            ? 'pdfdraw.markerWidth'
+                            : 'pdfdraw.penWidth'),
             child: eraser
                 ? const _EraserGlyph(size: 16, color: Color(0xFF9FE7FF))
                 : Icon(
@@ -2574,7 +2632,9 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
                         ? Icons.format_size_rounded
                         : checkTool
                             ? Icons.check_rounded
-                            : Icons.brush_rounded,
+                            : marker
+                                ? Icons.border_color_rounded
+                                : Icons.brush_rounded,
                     size: 15,
                     color: accent),
           ),
@@ -2642,6 +2702,8 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
                       _checkSize = nv;
                     } else if (eraser) {
                       _eraserSize = nv;
+                    } else if (marker) {
+                      _markerSize = nv;
                     } else {
                       _width = nv;
                     }
@@ -2767,7 +2829,14 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
               // 連番の時だけ、 開始番号と固定の操作を出す。
               if (_checkMark == 'number') seqControls(),
             ],
-            toolBtn(PdfDrawTool.line, Icons.horizontal_rule_rounded, 'pdfdraw.line'),
+            // ── マーカー (蛍光ペン) (= ユーザー要望: フリーハンドでも
+            //    直線でも引けるように) ──
+            toolBtn(PdfDrawTool.marker, Icons.border_color_rounded,
+                'pdfdraw.marker'),
+            toolBtn(PdfDrawTool.markerLine, Icons.format_color_fill_rounded,
+                'pdfdraw.markerLine'),
+            toolBtn(PdfDrawTool.line, Icons.horizontal_rule_rounded,
+                'pdfdraw.line'),
             toolBtn(PdfDrawTool.arrow, Icons.north_east_rounded, 'pdfdraw.arrow'),
             toolBtn(PdfDrawTool.rect, Icons.crop_square_rounded, 'pdfdraw.rect'),
             toolBtn(PdfDrawTool.ellipse, Icons.circle_outlined, 'pdfdraw.ellipse'),
@@ -2966,11 +3035,17 @@ class _PdfDrawPainter extends CustomPainter {
       } catch (_) {
         pxScale = 1.0 / g.heightPercentage;
       }
+      final marker = isPdfMarker(s.tool);
       final paint = Paint()
-        ..color = s.color
+        ..color = marker
+            ? s.color.withValues(alpha: kPdfMarkerAlpha)
+            : s.color
         ..style = PaintingStyle.stroke
-        ..strokeWidth = (s.width * pxScale).clamp(0.6, 40.0)
-        ..strokeCap = StrokeCap.round
+        // マーカーは太いので上限を広げる (= ユーザー要望)。
+        ..strokeWidth =
+            (s.width * pxScale).clamp(0.6, marker ? 160.0 : 40.0)
+        // 蛍光ペンらしく角は四角く。
+        ..strokeCap = marker ? StrokeCap.square : StrokeCap.round
         ..strokeJoin = StrokeJoin.round;
 
       final p1 = toOverlay(s.points.first);
@@ -2993,6 +3068,10 @@ class _PdfDrawPainter extends CustomPainter {
         return;
       }
       switch (s.tool) {
+        case PdfDrawTool.markerLine:
+          canvas.drawLine(p1, p2, paint);
+          break;
+        case PdfDrawTool.marker:
         case PdfDrawTool.pen:
           final path = Path()..moveTo(p1.dx, p1.dy);
           for (var i = 1; i < s.points.length; i++) {
