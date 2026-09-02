@@ -80175,6 +80175,9 @@ class _MindMapScreenState extends State<MindMapScreen>
       String? mapJson;
       // version 2 (複数ページ) の zip 内パス → JSON 本文。
       final pageJsons = <String, String>{};
+      // ページ JSON に乗らない本文 (フリーノート / 文書 / マークダウン /
+      //   動画編集)。 取り込んだ後、 出来たページの id で書き戻す。
+      final bodyJsons = <String, String>{};
       Map<String, dynamic> manifest = const {};
       final extracted = <String, String>{}; // zip 内パス → 展開後の絶対パス
       for (final f in archive) {
@@ -80185,6 +80188,12 @@ class _MindMapScreenState extends State<MindMapScreen>
         }
         if (f.name.startsWith('maps/') && f.name.endsWith('.json')) {
           pageJsons[f.name] =
+              utf8.decode(f.content as List<int>, allowMalformed: true);
+          continue;
+        }
+        // ページ JSON に乗らない本文 (フリーノート等)。
+        if (f.name.startsWith('bodies/') && f.name.endsWith('.json')) {
+          bodyJsons[f.name] =
               utf8.decode(f.content as List<int>, allowMalformed: true);
           continue;
         }
@@ -80227,6 +80236,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       final assets = (manifest['assets'] as Map?) ?? const {};
       var replaced = 0;
       var importedPages = 0;
+      var restoredBodies = 0;
       for (var body in jsonList) {
         assets.forEach((orig, rel) {
           final dest = extracted['$rel'];
@@ -80243,10 +80253,29 @@ class _MindMapScreenState extends State<MindMapScreen>
         if (res['success'] != true) {
           throw Exception(res['message'] ?? '取り込みに失敗しました');
         }
+        // ── 本文 (フリーノート等) を、 出来たページの id で書き戻す ──
+        final made = provider.pages.isEmpty ? null : provider.pages.last;
+        final bodyRel = 'bodies/$importedPages.json';
+        final bodyRaw = bodyJsons[bodyRel];
+        if (made != null && bodyRaw != null) {
+          try {
+            final m = jsonDecode(bodyRaw);
+            if (m is Map) {
+              final sp = await SharedPreferences.getInstance();
+              for (final e in m.entries) {
+                final v = '${e.value}';
+                if (v.isEmpty) continue;
+                await sp.setString('${e.key}_${made.id}', v);
+              }
+              restoredBodies++;
+            }
+          } catch (_) {}
+        }
         importedPages++;
       }
       if (!mounted) return;
-      debugPrint('.hnmap 取り込み: $importedPages ページ');
+      debugPrint('.hnmap 取り込み: $importedPages ページ '
+          '(本文 $restoredBodies 件)');
       _appSnack(
         context,
         SnackBar(
@@ -80561,12 +80590,58 @@ class _MindMapScreenState extends State<MindMapScreen>
         addAsset(page.backgroundImagePath);
       }
 
+      // ── ページ JSON に乗らない本文 (フリーノート / 文書 / マークダウン /
+      //    動画編集) も一緒に入れる (= 未対応だった所: 書き出して読み込むと
+      //    中身が空のページになっていた)。 中身は prefs にある。 ──
+      final prefsForBundle = await SharedPreferences.getInstance();
+      String? bodyKeyFor(MindMapPage pg) {
+        switch (pg.pageType) {
+          case 'paint':
+          case 'document':
+            // フリーノートと文書は同じ入れ物を 2 つ使う。
+            return 'paint_${pg.id}';
+          case 'markdown':
+            return 'markdown_${pg.id}';
+          case 'videoEditor':
+            return 'videoEditor_${pg.id}';
+          default:
+            return null;
+        }
+      }
+
+      final bodyEntries = <Map<String, String>>[];
+      void addBody(int i, MindMapPage pg) {
+        final key = bodyKeyFor(pg);
+        if (key == null) return;
+        final vals = <String, String>{};
+        // フリーノート / 文書は、 絵の入れ物 (paint_) と文章の入れ物
+        //   (document_) の 2 つを使うので、 両方を拾う。
+        final keys = <String>[
+          key,
+          if (pg.pageType == 'paint' || pg.pageType == 'document')
+            'document_${pg.id}',
+        ];
+        for (final k in keys) {
+          final v = prefsForBundle.getString(k);
+          if (v == null || v.isEmpty) continue;
+          // 取り込む側が id を差し替えられるよう、 前半 (種類) だけを鍵にする。
+          vals[k.substring(0, k.length - pg.id.length - 1)] = v;
+        }
+        if (vals.isEmpty) return;
+        final rel = 'bodies/$i.json';
+        final blob = jsonEncode(vals);
+        archive.addFile(
+            ArchiveFile(rel, utf8.encode(blob).length, utf8.encode(blob)));
+        bodyEntries.add({'file': rel, 'type': pg.pageType, 'index': '$i'});
+      }
+
       final multi = pages.length > 1;
       final pageEntries = <Map<String, String>>[];
       if (!multi) {
         final jsonStr = provider.exportPageAsJson(pages.first.id);
         archive.addFile(ArchiveFile(
             'map.json', utf8.encode(jsonStr).length, utf8.encode(jsonStr)));
+        addBody(0, pages.first);
       } else {
         for (var i = 0; i < pages.length; i++) {
           final jsonStr = provider.exportPageAsJson(pages[i].id);
@@ -80574,6 +80649,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           archive.addFile(ArchiveFile(
               rel, utf8.encode(jsonStr).length, utf8.encode(jsonStr)));
           pageEntries.add({'file': rel, 'name': pages[i].name});
+          addBody(i, pages[i]);
         }
       }
       final manifest = jsonEncode({
@@ -80582,6 +80658,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         'exportedAt': DateTime.now().toIso8601String(),
         'pageName': pages.first.name,
         if (multi) 'pages': pageEntries,
+        if (bodyEntries.isNotEmpty) 'bodies': bodyEntries,
         // 元のパスから assets 内のどれになったかの対応表。 取り込み側は
         // これを見て添付を復元する。
         'assets': assetMap,
@@ -115305,6 +115382,278 @@ const String _kMdEmbeddedMapJs = r"""
     return model;
   }
 
+
+  // ══ 節点と線で書かない図も、 マインドマップの形に読み替える ═══════════
+  //
+  // = ユーザー要望「シーケンス図や円グラフなどマーメイド記法を自分のアプリの
+  //   マインドマップに変換して埋め込めるように。 全てに対応させて欲しい」。
+  //
+  // 図の種類ごとに「誰が居て」「何が繋がっているか」 を読み取り、 読み取れない
+  // 種類は最後の受け皿 (parseGeneric) が行の並びをそのまま親子にする。
+  // これで mermaid の描画に回る図は無くなり、 Syntax error も出なくなる。
+
+  /// 種類ごとの共通部品: 目印 → 節点。
+  function mmBag(prefix) {
+    var byKey = {}, nodes = [], n = 0;
+    return {
+      nodes: nodes,
+      want: function (key, label) {
+        var k = String(key == null ? '' : key).trim();
+        if (!k) return null;
+        if (!byKey[k]) {
+          byKey[k] = { id: prefix + (n++), title: label || k, srcKey: k };
+          nodes.push(byKey[k]);
+        } else if (label && byKey[k].title === k) {
+          byKey[k].title = label;
+        }
+        return byKey[k];
+      }
+    };
+  }
+
+  /// 図の題 (title 行) を探す。
+  function mmTitleOf(lines) {
+    for (var i = 0; i < lines.length; i++) {
+      // 「pie title 売上」 のように、 種類と同じ行に書く図もある。
+      var m = lines[i].match(/^\s*(?:[A-Za-z_-]+\s+)?title\s+(.+?)\s*$/i);
+      if (!m) continue;
+      var t = m[1].trim();
+      // 引用符は外す (図の名前として出すため)。
+      if (t.length > 1 &&
+          ((t.charAt(0) === '"' && t.charAt(t.length - 1) === '"') ||
+           (t.charAt(0) === "'" && t.charAt(t.length - 1) === "'"))) {
+        t = t.substring(1, t.length - 1).trim();
+      }
+      if (t) return t;
+    }
+    return '';
+  }
+
+  function mmSkip(L) {
+    return !L.trim() || /^\s*%%/.test(L);
+  }
+
+  /// sequenceDiagram: 登場人物を節点、 やり取りを線にする。
+  function parseSequence(src) {
+    var lines = String(src).split('\n');
+    var bag = mmBag('s'), conns = [];
+    var arrowRe =
+      /^\s*([^\s:>\-]+)\s*((?:-{1,2}>>?|-{1,2}\)|-{1,2}x|<<?-{1,2}>>?))\s*([^\s:]+)\s*:\s*(.*)$/;
+    for (var i = 0; i < lines.length; i++) {
+      var L = lines[i];
+      if (mmSkip(L) || /^\s*sequenceDiagram\b/i.test(L)) continue;
+      var pm = L.match(/^\s*(?:participant|actor)\s+(\S+)(?:\s+as\s+(.+))?\s*$/i);
+      if (pm) { bag.want(pm[1], (pm[2] || '').trim()); continue; }
+      var am = L.match(arrowRe);
+      if (am) {
+        var a = bag.want(am[1]);
+        var b = bag.want(am[3]);
+        if (a && b) {
+          conns.push({
+            fromId: a.id, toId: b.id,
+            label: String(am[4] || '').trim() || undefined,
+            arrow: true
+          });
+        }
+        continue;
+      }
+      var nm = L.match(/^\s*(?:Note|note)\s+(?:over|left of|right of)\s+([^:]+):\s*(.*)$/);
+      if (nm) {
+        var who = String(nm[1]).split(',')[0].trim();
+        var host = bag.want(who);
+        var note = bag.want('note' + i, String(nm[2] || '').trim() || 'メモ');
+        if (host && note) conns.push({ fromId: host.id, toId: note.id });
+      }
+    }
+    return bag.nodes.length
+      ? { nodes: bag.nodes, connections: conns, dir: 'LR', kind: 'seq' }
+      : null;
+  }
+
+  /// pie: 題を中心にして、 一切れずつを子にする。
+  function parsePie(src) {
+    var lines = String(src).split('\n');
+    var title = mmTitleOf(lines) || '円グラフ';
+    var nodes = [{ id: 'p0', title: title }], conns = [], n = 1;
+    for (var i = 0; i < lines.length; i++) {
+      var L = lines[i];
+      if (mmSkip(L) || /^\s*(?:pie|title)\b/i.test(L)) continue;
+      var m = L.match(/^\s*"([^"]*)"\s*:\s*([0-9.]+)\s*$/);
+      if (!m) m = L.match(/^\s*'([^']*)'\s*:\s*([0-9.]+)\s*$/);
+      if (!m) continue;
+      var id = 'p' + (n++);
+      nodes.push({ id: id, title: m[1] + '  ' + m[2] });
+      conns.push({ fromId: 'p0', toId: id });
+    }
+    return nodes.length > 1
+      ? { nodes: nodes, connections: conns, dir: 'LR', kind: 'pie' }
+      : null;
+  }
+
+  /// classDiagram: クラスを節点、 関係を線にする。
+  function parseClass(src) {
+    var lines = String(src).split('\n');
+    var bag = mmBag('c'), conns = [];
+    var relRe =
+      /^\s*(\S+)\s*(<\|--|--\|>|\*--|--\*|o--|--o|<--|-->|--|\.\.>|<\.\.|\.\.)\s*(\S+)\s*(?::\s*(.*))?$/;
+    for (var i = 0; i < lines.length; i++) {
+      var L = lines[i];
+      if (mmSkip(L) || /^\s*classDiagram(?:-v2)?\b/i.test(L)) continue;
+      if (/^\s*[}{]\s*$/.test(L)) continue;
+      var cm = L.match(/^\s*class\s+(\S+?)\s*[{:]?\s*$/i);
+      if (cm) { bag.want(cm[1]); continue; }
+      var rm = L.match(relRe);
+      if (rm) {
+        var a = bag.want(rm[1]), b = bag.want(rm[3]);
+        if (a && b) {
+          conns.push({
+            fromId: a.id, toId: b.id,
+            label: String(rm[4] || '').trim() || undefined,
+            arrow: true
+          });
+        }
+      }
+    }
+    return bag.nodes.length
+      ? { nodes: bag.nodes, connections: conns, dir: 'TD', kind: 'class' }
+      : null;
+  }
+
+  /// stateDiagram: 状態を節点、 遷移を線にする。
+  function parseState(src) {
+    var lines = String(src).split('\n');
+    var bag = mmBag('t'), conns = [];
+    for (var i = 0; i < lines.length; i++) {
+      var L = lines[i];
+      if (mmSkip(L) || /^\s*stateDiagram(?:-v2)?\b/i.test(L)) continue;
+      if (/^\s*(?:state|note|end|direction)\b/i.test(L)) {
+        var sm = L.match(/^\s*state\s+"([^"]*)"\s+as\s+(\S+)/i);
+        if (sm) bag.want(sm[2], sm[1]);
+        continue;
+      }
+      var m = L.match(/^\s*(\[\*\]|\S+)\s*-->\s*(\[\*\]|\S+)\s*(?::\s*(.*))?$/);
+      if (!m) continue;
+      var a = bag.want(m[1] === '[*]' ? '__start' + i : m[1],
+          m[1] === '[*]' ? '開始' : '');
+      var b = bag.want(m[2] === '[*]' ? '__end' + i : m[2],
+          m[2] === '[*]' ? '終了' : '');
+      if (a && b) {
+        conns.push({
+          fromId: a.id, toId: b.id,
+          label: String(m[3] || '').trim() || undefined,
+          arrow: true
+        });
+      }
+    }
+    return bag.nodes.length
+      ? { nodes: bag.nodes, connections: conns, dir: 'TD', kind: 'state' }
+      : null;
+  }
+
+  /// erDiagram: 実体を節点、 関係を線にする。
+  function parseEr(src) {
+    var lines = String(src).split('\n');
+    var bag = mmBag('e'), conns = [];
+    var depth = 0;
+    for (var i = 0; i < lines.length; i++) {
+      var L = lines[i];
+      if (mmSkip(L) || /^\s*erDiagram\b/i.test(L)) continue;
+      if (/\{\s*$/.test(L)) { depth++; }
+      if (/^\s*\}\s*$/.test(L)) { depth = Math.max(0, depth - 1); continue; }
+      if (depth > 0) continue;      // 属性の中は読まない
+      var m = L.match(/^\s*(\S+)\s+([|}o][|o{-][-.][-.][|o{][|o{])\s*(\S+)\s*(?::\s*(.*))?$/);
+      if (!m) {
+        m = L.match(/^\s*(\S+)\s+(\S*[-.]{2}\S*)\s+(\S+)\s*(?::\s*(.*))?$/);
+      }
+      if (!m) continue;
+      var a = bag.want(m[1]), b = bag.want(m[3]);
+      if (a && b) {
+        conns.push({
+          fromId: a.id, toId: b.id,
+          label: String(m[4] || '').trim().replace(/^"|"$/g, '') || undefined
+        });
+      }
+    }
+    return bag.nodes.length
+      ? { nodes: bag.nodes, connections: conns, dir: 'LR', kind: 'er' }
+      : null;
+  }
+
+  /// section で束ねる形の図 (gantt / journey / timeline / requirement 等)。
+  function parseSectioned(src, kindName, rootFallback) {
+    var lines = String(src).split('\n');
+    var title = mmTitleOf(lines) || rootFallback;
+    var nodes = [{ id: 'g0', title: title }], conns = [], n = 1;
+    var cur = 'g0';
+    for (var i = 0; i < lines.length; i++) {
+      var L = lines[i];
+      if (mmSkip(L)) continue;
+      if (/^\s*(?:gantt|journey|timeline|requirementDiagram|quadrantChart|C4Context|block-beta|sankey(?:-beta)?|xychart(?:-beta)?|gitGraph)\b/i
+          .test(L)) {
+        continue;
+      }
+      if (/^\s*(?:title|dateFormat|axisFormat|excludes|todayMarker|accTitle|accDescr)\b/i
+          .test(L)) {
+        continue;
+      }
+      var sm = L.match(/^\s*section\s+(.+?)\s*$/i);
+      if (sm) {
+        var sid = 'g' + (n++);
+        nodes.push({ id: sid, title: sm[1].trim() });
+        conns.push({ fromId: 'g0', toId: sid });
+        cur = sid;
+        continue;
+      }
+      // 「名前 : 中身」 は名前だけを見出しにする (日付や進捗は括弧で添える)。
+      var body = L.trim();
+      var parts = body.split(':');
+      var head = parts[0].trim();
+      var tail = parts.length > 1 ? parts.slice(1).join(':').trim() : '';
+      if (!head) continue;
+      var id = 'g' + (n++);
+      nodes.push({
+        id: id,
+        title: tail ? head + '\n' + tail : head
+      });
+      conns.push({ fromId: cur, toId: id });
+      if (nodes.length > 400) break;
+    }
+    return nodes.length > 1
+      ? { nodes: nodes, connections: conns, dir: 'LR', kind: kindName }
+      : null;
+  }
+
+  /// どの形にも当てはまらない図の受け皿。
+  ///
+  /// 字下げがあれば親子として、 無ければ 1 行ずつ子として読む。
+  /// ここまで来れば必ず何かに変換できるので、 mermaid の Syntax error は
+  /// もう出ない (= ユーザー要望: 全ての記法に対応)。
+  function parseGeneric(src) {
+    var lines = String(src).split('\n');
+    var head = (lines[0] || '').trim().split(/\s+/)[0] || '図';
+    var title = mmTitleOf(lines) || head;
+    var nodes = [{ id: 'x0', title: title }], conns = [], n = 1;
+    var stack = [{ indent: -1, id: 'x0' }];
+    for (var i = 0; i < lines.length; i++) {
+      var raw = lines[i];
+      if (mmSkip(raw)) continue;
+      if (i === 0) continue;                       // 種類の行
+      if (/^\s*title\b/i.test(raw)) continue;
+      var indent = raw.length - raw.replace(/^\s*/, '').length;
+      var body = raw.trim().replace(/^[-*]\s*/, '');
+      if (!body) continue;
+      var id = 'x' + (n++);
+      nodes.push({ id: id, title: body });
+      while (stack.length > 1 && stack[stack.length - 1].indent >= indent) {
+        stack.pop();
+      }
+      conns.push({ fromId: stack[stack.length - 1].id, toId: id });
+      stack.push({ indent: indent, id: id });
+      if (nodes.length > 400) break;
+    }
+    return { nodes: nodes, connections: conns, dir: 'LR', kind: 'other' };
+  }
+
   /// mermaid の中身を見て、 マップに変換できるなら変換して返す。
   window.__mmMermaidToMap = function (code) {
     var src = String(code == null ? '' : code);
@@ -115313,7 +115662,27 @@ const String _kMdEmbeddedMapJs = r"""
     try {
       if (/^mindmap\b/.test(head)) model = parseMindmap(src);
       else if (/^(flowchart|graph)\b/.test(head)) model = parseFlow(src);
-    } catch (e) { model = null; }
+      else if (/^sequencediagram\b/.test(head)) model = parseSequence(src);
+      else if (/^pie\b/.test(head)) model = parsePie(src);
+      else if (/^classdiagram/.test(head)) model = parseClass(src);
+      else if (/^statediagram/.test(head)) model = parseState(src);
+      else if (/^erdiagram\b/.test(head)) model = parseEr(src);
+      else if (/^gantt\b/.test(head)) {
+        model = parseSectioned(src, 'gantt', '工程表');
+      } else if (/^journey\b/.test(head)) {
+        model = parseSectioned(src, 'journey', '道のり');
+      } else if (/^timeline\b/.test(head)) {
+        model = parseSectioned(src, 'timeline', '年表');
+      }
+      // ★ ここまでで読めなかった図は、 受け皿が必ず何かに変換する
+      //   (= ユーザー要望: 全ての記法に対応。 mermaid の Syntax error を
+      //   出さない)。
+      if (!model || !model.nodes || !model.nodes.length) {
+        model = parseGeneric(src);
+      }
+    } catch (e) {
+      try { model = parseGeneric(src); } catch (e2) { model = null; }
+    }
     if (!model || !model.nodes.length) return null;
     layout(model);
     model.mermaid = true;      // 元がマーメイド = 書き戻す先が無い
@@ -116085,11 +116454,12 @@ String _markdownPreviewHtml(String md, bool dark,
   final syncJs = syncScroll ? _kMdScrollSyncJs : '';
   // 埋め込みマップ。 アプリ内のプレビューなら中身が空でも仕込んでおく
   // (後から ```map を書いた時に、 読み込み直さず描けるように)。
-  final wantMaps =
-      syncScroll || (mapsJson.trim().isNotEmpty && mapsJson.trim() != '{}');
-  final mapsJs = wantMaps
-      ? '<script>window.__mmMaps = $mapsJson;</script>$_kMdEmbeddedMapJs'
-      : '';
+  // ★ 常に入れる。 以前は「マップを埋め込む時だけ」 だったので、 テキスト
+  //   エディタのプレビューなどでは mermaid → マインドマップの変換
+  //   (__mmMermaidToMap) が居らず、 mindmap 記法がそのまま mermaid へ渡って
+  //   Syntax error になっていた (= ユーザー報告)。
+  final mapsJs =
+      '<script>window.__mmMaps = $mapsJson;</script>$_kMdEmbeddedMapJs';
   return '''<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="$hljsCss">

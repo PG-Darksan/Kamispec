@@ -271,6 +271,15 @@ class PdfDrawStroke {
   /// 文字の大きさ (pt)。
   final double fontSize;
 
+  /// PDF 本体へ焼き込み済みか。
+  ///
+  /// = ユーザー報告になり得た所 (点検で判明): 焼き込んだ後も重ね描きを
+  ///   続けるので、 **半透明のマーカーだけ 2 枚重なって濃くなる**
+  ///   (0.35 → 0.58)。 開き直すと元の濃さに戻るので、 同じ線が場面に
+  ///   よって違う濃さで見えていた。 焼き済みのマーカーは重ね描きを止める。
+  ///   動かす / 消すと copyWith で作り直されるので、 自然に false へ戻る。
+  bool burned = false;
+
   PdfDrawStroke({
     required this.pageNumber,
     required this.tool,
@@ -609,6 +618,11 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
         _strokes
           ..clear()
           ..addAll(restored);
+        // 控えから戻した線は、 既に PDF の中にある (= 焼き済み)。
+        //   半透明のマーカーが二重に濃くならないよう印を付ける。
+        for (final st in _strokes) {
+          st.burned = true;
+        }
         _sel.clear();
         _undo.clear();
         _redo.clear();
@@ -1585,7 +1599,21 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     }
     setState(() {
       final cur = _current!;
-      if (cur.tool == PdfDrawTool.pen || cur.tool == PdfDrawTool.marker) {
+      if (cur.tool == PdfDrawTool.marker &&
+          HardwareKeyboard.instance.isShiftPressed) {
+        // ★ Shift を押している間は、 まっすぐ (0 / 90 / 180 / 270 度) だけ
+        //   (= ユーザー要望)。 始めた所からの 2 点にし直す。
+        final a = cur.points.first;
+        final d = pt - a;
+        final end = d.dx.abs() >= d.dy.abs()
+            ? Offset(pt.dx, a.dy)
+            : Offset(a.dx, pt.dy);
+        cur.points
+          ..clear()
+          ..add(a)
+          ..add(end);
+      } else if (cur.tool == PdfDrawTool.pen ||
+          cur.tool == PdfDrawTool.marker) {
         // 細かすぎる点は間引く (pt 換算でおよそ 0.7pt 以上動いた時だけ)。
         if ((pt - cur.points.last).distance >= 0.7) cur.points.add(pt);
       } else {
@@ -2199,6 +2227,11 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
         // ★ 線は消さない。 保存した後もそのまま選んで動かせるようにする。
         //   もう一度保存すれば土台から焼き直されるので二重にならない。
         _dirtySinceCommit = false;
+        // 焼き込み済みの印。 半透明のマーカーはこれ以降、 重ね描きを
+        //   止める (PDF の中に既に入っているため)。
+        for (final st in _strokes) {
+          st.burned = true;
+        }
       }
     });
     if (ok) {
@@ -2558,10 +2591,17 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
           ]),
         );
 
-    Widget colorBtn(Color c) {
+    /// [current] なら「今の色」 の丸。 押すと色の一覧を開け閉めする
+    /// (= ユーザー報告: 色のアイコンに当たり判定が無く形骸化している。
+    ///   以前は同じ色をもう一度選ぶだけで、 何も起きなかった)。
+    Widget colorBtn(Color c, {bool current = false}) {
       final on = _color.toARGB32() == c.toARGB32();
       return InkWell(
         onTap: () => setState(() {
+          if (current) {
+            _colorsOpen = !_colorsOpen;
+            return;
+          }
           _color = c;
           // 選んだら畳む (= 広がったままだと道具箱が長くなる)。
           _colorsOpen = false;
@@ -2839,15 +2879,12 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
               // 連番の時だけ、 開始番号と固定の操作を出す。
               if (_checkMark == 'number') seqControls(),
             ],
-            // ── マーカー (蛍光ペン) (= ユーザー要望: フリーハンドでも
-            //    直線でも引けるように) ──
-            //    ★ 直線の方はアイコンで見分けが付かないと使ってもらえない
-            //      (= ユーザー報告: バケツの絵だと「塗りつぶし」 に見えて
-            //      直線のマーカーだと気付けなかった)。 自前の絵にする。
+            // ── マーカー (蛍光ペン) ──
+            //    ★ ボタンは 1 つだけ (= ユーザー要望: アイコンを分けない)。
+            //      Shift を押しながら引くと 0 / 90 / 180 / 270 度の
+            //      まっすぐな線になる。
             toolBtn(PdfDrawTool.marker, Icons.border_color_rounded,
                 'pdfdraw.marker'),
-            toolBtn(PdfDrawTool.markerLine, null, 'pdfdraw.markerLine',
-                glyph: (fg) => _MarkerLineGlyph(size: 17, color: fg)),
             toolBtn(PdfDrawTool.line, Icons.horizontal_rule_rounded,
                 'pdfdraw.line'),
             toolBtn(PdfDrawTool.arrow, Icons.north_east_rounded, 'pdfdraw.arrow'),
@@ -2889,7 +2926,11 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
                 margin: const EdgeInsets.symmetric(horizontal: 4),
                 color: Colors.white24),
             // ── 色: 普段は「今の色」 と展開ボタンだけ (= ユーザー要望) ──
-            colorBtn(_color),
+            //    今の色の丸を押しても一覧が開く (= ユーザー報告)。
+            Tooltip(
+              message: widget.tr('pdfdraw.moreColors'),
+              child: colorBtn(_color, current: true),
+            ),
             InkWell(
               onTap: () => setState(() => _colorsOpen = !_colorsOpen),
               borderRadius: BorderRadius.circular(6),
@@ -3049,6 +3090,9 @@ class _PdfDrawPainter extends CustomPainter {
         pxScale = 1.0 / g.heightPercentage;
       }
       final marker = isPdfMarker(s.tool);
+      // ★ 焼き込み済みの半透明マーカーは重ね描きしない (PDF の中に既に
+      //   入っており、 重ねると 0.35 → 0.58 と濃くなる = 点検で判明)。
+      if (marker && s.burned) return;
       final paint = Paint()
         ..color = marker
             ? s.color.withValues(alpha: kPdfMarkerAlpha)
