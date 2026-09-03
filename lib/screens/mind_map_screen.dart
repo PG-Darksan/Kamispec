@@ -37,6 +37,7 @@ import '../services/mcp_server.dart';
 import '../services/screen_capture.dart' as scap;
 import '../services/screen_recorder.dart';
 import '../services/rec_hotkey.dart';
+import '../services/cursor_wrap.dart';
 import '../services/ic_card_reader.dart';
 // 面接練習・ロールプレイの下調べ (Web + 手元の資料ファイル)。
 import '../services/talk_reference.dart';
@@ -80,6 +81,7 @@ import 'package:open_filex/open_filex.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 // Windows専用WebView
 import 'package:webview_windows/webview_windows.dart' as wv_win;
+import 'package:screen_retriever/screen_retriever.dart';
 // Linux 専用 WebView (CEF)。 Windows は wv_win、 モバイルは inappwebview のまま。
 //   Linux 枝でのみ参照。 Linux 専用プラグインなので Win/Android のビルドには
 //   ネイティブ影響なし (= 容量増えない)。
@@ -2806,6 +2808,83 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// 左パネル WebView コントローラ (= Mobile + その他プラットフォーム用)
   iaw.InAppWebViewController? _splitLeftIawController;
+
+
+  /// モニターが 2 枚以上つながっているか (Windows 専用の軽い問い合わせ)。
+  /// build の中から呼べるよう、 待たずに答えが出るものだけを使う。
+  bool get _hasSubMonitor {
+    if (kIsWeb || !Platform.isWindows) return false;
+    try {
+      return scap.monitorCount() > 1;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 主モニター以外の、 いちばん広いモニターの四角 (窓を置ける所)。
+  /// 見つからなければ null。
+  Future<Rect?> _subMonitorRect() async {
+    try {
+      final all = await screenRetriever.getAllDisplays();
+      final primary = await screenRetriever.getPrimaryDisplay();
+      Rect? best;
+      var bestScale = 1.0;
+      for (final d in all) {
+        final pos = d.visiblePosition ?? Offset.zero;
+        final size = d.visibleSize ?? d.size;
+        final pPos = primary.visiblePosition ?? Offset.zero;
+        // 主モニターと同じ場所にある物は除く (複製表示もここで外れる)。
+        if ((pos - pPos).distance < 1) continue;
+        final r = Rect.fromLTWH(pos.dx, pos.dy, size.width, size.height);
+        if (best == null || r.width * r.height > best.width * best.height) {
+          best = r;
+          bestScale = (d.scaleFactor ?? 1).toDouble();
+        }
+      }
+      if (best == null) return null;
+      // ★ 拡大率がモニターごとに違うと、 そのままでは行き先がずれる。
+      //   screen_retriever は「そのモニターの拡大率で割った値」 を返すが、
+      //   受け取る窓は開いた時点 (= 主モニター) の拡大率で置き直すため、
+      //   一度実寸へ直してから主モニターの拡大率で割っておく
+      //   (= 点検で判明: 150% + 100% の組み合わせで画面外へ出る)。
+      final ts = bestScale <= 0 ? 1.0 : bestScale;
+      final ps = (primary.scaleFactor ?? 1).toDouble();
+      final k = ts / (ps <= 0 ? 1.0 : ps);
+      final r = Rect.fromLTWH(best.left * k, best.top * k, best.width * k,
+          best.height * k);
+      // 端いっぱいだと掴みにくいので少し内側にする。
+      return Rect.fromLTWH(r.left + 8, r.top + 8, r.width - 16, r.height - 16);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 分割ペインで見ている Web を、 サブモニターの窓へ送る
+  /// (= ユーザー要望: サブモニターがつながっている時だけ出るボタン)。
+  Future<void> _sendSplitToSubMonitor({required bool left}) async {
+    final url = (left ? _splitLeftUrlCtrl.text : _splitUrlCtrl.text).trim();
+    if (url.isEmpty) return;
+    final rect = await _subMonitorRect();
+    if (!mounted) return;
+    if (rect == null) {
+      _appSnack(
+        context,
+        SnackBar(
+          content:
+              Text(context.read<MindMapProvider>().t('split.noSubMonitor')),
+          backgroundColor: const Color(0xFFB3261E),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+      return;
+    }
+    if (left) {
+      _closeSplitLeftPanel();
+    } else {
+      _toggleSplitPanel();
+    }
+    await openExternalWebWindowPid(url, frame: rect, single: false);
+  }
 
   /// 左パネル用の Windows webview_windows コントローラ。
   /// ユーザー要望: 「左側に移そうとすると真っ白な全画面になってフリーズ
@@ -52447,6 +52526,20 @@ class _MindMapScreenState extends State<MindMapScreen>
                               _openFloatingWebUnified(url, fromRect: from);
                             },
                           ),
+                        // ── サブモニターへ送る (= ユーザー要望) ──
+                        if (_isDesktop &&
+                            _splitLeftMode == 'web' &&
+                            _hasSubMonitor)
+                          IconButton(
+                            icon: const Icon(Icons.desktop_windows_rounded,
+                                color: Colors.white70, size: 18),
+                            tooltip: provider.t('split.toSubMonitor'),
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                                minWidth: 28, minHeight: 28),
+                            onPressed: () =>
+                                unawaited(_sendSplitToSubMonitor(left: true)),
+                          ),
                         IconButton(
                           icon: const Icon(Icons.fullscreen_rounded,
                               color: Colors.white70, size: 18),
@@ -53428,6 +53521,21 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   _openFloatingWebUnified(url,
                                       fromRect: from);
                                 },
+                              ),
+                            // ── サブモニターへ送る (= ユーザー要望: つながって
+                            //    いる時だけ出る) ──
+                            if (_splitMode == 'web' && _hasSubMonitor)
+                              IconButton(
+                                icon: const Icon(
+                                    Icons.desktop_windows_rounded,
+                                    color: Colors.white70,
+                                    size: 18),
+                                tooltip: provider.t('split.toSubMonitor'),
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(
+                                    minWidth: 28, minHeight: 28),
+                                onPressed: () => unawaited(
+                                    _sendSplitToSubMonitor(left: false)),
                               ),
                             // 全画面表示に戻る
                             IconButton(
@@ -70558,6 +70666,27 @@ class _MindMapScreenState extends State<MindMapScreen>
                 },
               ),
 
+            // ── トグル: 画面の両端をつないでマウスを回り込ませる
+            //    (Windows のみ。 = ユーザー要望: メインの右とサブの左しか
+            //     繋がっていなくて使いにくい) ──
+            if (!kIsWeb && Platform.isWindows)
+              _settingsToggleTile(
+                icon: provider.cursorWrapEnabled
+                    ? Icons.swap_horiz_rounded
+                    : Icons.compare_arrows_rounded,
+                color: provider.cursorWrapEnabled
+                    ? const Color(0xFF4FC3F7)
+                    : Colors.white54,
+                title: provider.t('cursorWrap.title'),
+                helpKey: 'cursorWrap.desc',
+                value: provider.cursorWrapEnabled,
+                onChanged: (v) {
+                  provider.setCursorWrapEnabled(v);
+                  CursorWrap.instance.apply(v);
+                  setS(() {});
+                },
+              ),
+
             // ── トグル: 視聴済み自動削除 ──
             _settingsToggleTile(
               icon: provider.autoDeleteWatched
@@ -79652,6 +79781,29 @@ class _MindMapScreenState extends State<MindMapScreen>
         ext == 'gif' ||
         ext == 'webp' ||
         ext == 'bmp';
+    // ── マーメイドの図を置いたノードは、 図として直す窓を開く
+    //    (= ユーザー要望: 円グラフは円グラフのまま置いて、 中身を直したい)。
+    //    ただの画像ではないので、 画像編集ではなく記法の編集を出す。 ──
+    if (isImage && isLocal && nodeId != null && provider != null) {
+      final src = (provider.currentPage.nodes[nodeId]?.diagramSource ?? '')
+          .trim();
+      if (src.isNotEmpty) {
+        await showDialog<bool>(
+          context: viewerContext,
+          useRootNavigator: useRootNavigator,
+          builder: (_) => _DiagramNodeEditorDialog(
+            pageId: provider.currentPage.id,
+            nodeId: nodeId,
+            initialCode: src,
+            imagePath: path,
+            dark: provider.isDarkMode,
+          ),
+        );
+        // 同じ場所へ描き直しているので、 覚えている絵を捨てさせる。
+        _notifyAttachmentEdited(nodeId);
+        return;
+      }
+    }
     if (isImage && isLocal) {
       _gViewerOpenSw = Stopwatch()..start();
       _viewerMark('image tap');
@@ -116096,6 +116248,130 @@ String? mermaidMapToPage(MindMapProvider provider, Map<dynamic, dynamic> m,
 /// どのページに入れるか選ばせてから入れる (= ユーザー要望)。
 /// 入れた先のページ名を返す (やめたら null)。
 
+
+/// 図をそのままの見た目で、 選んだマインドマップのページへ置く。
+///
+/// = ユーザー要望「円グラフやフローチャート等をマインド形式に変換せず、
+///   元々の状態でマインドマップに送れるように」。 絵 (PNG) を貼りつつ、
+///   元のマーメイド記法をノードに持たせるので、 置いた後に書き直して
+///   描き直せる。 入れたページ名を返す (やめたら null)。
+Future<String?> askAndPutDiagramImageIntoPage(BuildContext context,
+    MindMapProvider provider, Map<dynamic, dynamic> m) async {
+  // PNG が無い (SVG しか作れなかった) 時は入れられない。
+  final png = '${m['png'] ?? ''}';
+  if (!png.startsWith('data:image/png;base64,')) return null;
+  Uint8List bytes;
+  try {
+    bytes = base64Decode(png.substring('data:image/png;base64,'.length));
+  } catch (_) {
+    return null;
+  }
+  final code = '${m['code'] ?? ''}';
+  final pages = provider.pages.where((p) => p.pageType == 'normal').toList();
+  final chosen = await showDialog<String>(
+    context: context,
+    builder: (dctx) => AlertDialog(
+      backgroundColor: const Color(0xFF1E1E32),
+      title: Text(provider.t('map.pickTargetPage'),
+          style: const TextStyle(color: Colors.white, fontSize: 15)),
+      content: SizedBox(
+        width: math.min(380.0, MediaQuery.sizeOf(dctx).width - 48),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 360),
+          child: ListView(shrinkWrap: true, children: [
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.add_box_outlined,
+                  color: Color(0xFF43B97F), size: 20),
+              title: Text(provider.t('map.newPage'),
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700)),
+              onTap: () => Navigator.pop(dctx, '__new__'),
+            ),
+            if (pages.isNotEmpty) const Divider(color: Colors.white12),
+            for (final pg in pages)
+              ListTile(
+                dense: true,
+                leading: const Icon(Icons.map_outlined,
+                    color: Colors.white54, size: 18),
+                title: Text(pg.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.white, fontSize: 13)),
+                onTap: () => Navigator.pop(dctx, pg.id),
+              ),
+          ]),
+        ),
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(dctx),
+            child: Text(provider.t('btn.cancel'),
+                style: const TextStyle(color: Colors.white54))),
+      ],
+    ),
+  );
+  if (chosen == null) return null;
+  try {
+    final appDir = await getApplicationDocumentsDirectory();
+    final dir = Directory('${appDir.path}/attachments');
+    if (!await dir.exists()) await dir.create(recursive: true);
+    final path =
+        '${dir.path}/diagram_${DateTime.now().millisecondsSinceEpoch}.png';
+    await File(path).writeAsBytes(bytes, flush: true);
+    var pageId = chosen;
+    if (pageId == '__new__') {
+      final made = provider.mcpCreatePage(type: 'normal', name: '図');
+      if (made == null) return null;
+      pageId = made;
+    }
+    // ★ 今ある物の右隣へ置く (指定しないと根っこの上に重なる)。
+    final pg0 = provider.mcpPageById(pageId);
+    double? nx, ny;
+    if (pg0 != null && pg0.nodes.isNotEmpty) {
+      var maxX = -1e9, minY = 1e9;
+      for (final n in pg0.nodes.values) {
+        if (n.position.dx > maxX) maxX = n.position.dx;
+        if (n.position.dy < minY) minY = n.position.dy;
+      }
+      nx = maxX + 260;
+      ny = minY;
+    }
+    final id = provider.mcpAddImageNode(pageId,
+        filePath: path, title: diagramTitleOf(code), x: nx, y: ny);
+    if (id == null) return null;
+    // 元の記法を持たせる (後から書き直して描き直すため)。
+    if (code.trim().isNotEmpty) {
+      provider.setNodeDiagramSource(pageId, id, code);
+    }
+    final pg = provider.mcpPageById(pageId);
+    return pg?.name ?? '';
+  } catch (_) {
+    return null;
+  }
+}
+
+/// マーメイド記法の一行目から、 図の呼び名を決める。
+String diagramTitleOf(String code) {
+  final head =
+      code.trimLeft().split('\n').first.trim().toLowerCase();
+  if (head.startsWith('pie')) return '円グラフ';
+  if (head.startsWith('sequencediagram')) return '順序図';
+  if (head.startsWith('classdiagram')) return 'クラス図';
+  if (head.startsWith('statediagram')) return '状態図';
+  if (head.startsWith('erdiagram')) return 'ER図';
+  if (head.startsWith('gantt')) return '工程表';
+  if (head.startsWith('journey')) return '道のり';
+  if (head.startsWith('timeline')) return '年表';
+  if (head.startsWith('mindmap')) return 'マインドマップ';
+  if (head.startsWith('flowchart') || head.startsWith('graph')) {
+    return 'フローチャート';
+  }
+  return '図';
+}
+
 Future<String?> askAndPutMermaidMapIntoPage(BuildContext context,
     MindMapProvider provider, Map<dynamic, dynamic> m) async {
   final pages =
@@ -117104,33 +117380,16 @@ $mapsJs
           if (conv) window.__mmRenderMermaidMap(slot, conv);
         } catch (e) {}
       }
-      else if (act === 'topage') {
-        // ★ 絵として貼らない (= ユーザー要望: 入れた後に中の要素を直したい)。
-        //   図をこのアプリの節点とつながりに読み替えてから渡す。
-        var toPost = bridge || (post ? { postMessage: post } : null);
-        if (!toPost) return;
-        var cv = null;
-        try { cv = window.__mmMermaidToMap(code, true); } catch (e) {}
-        if (!cv || !cv.nodes || !cv.nodes.length) return;
-        toPost.postMessage({
-          type: 'mapToPage',
-          title: cv.title || cv.name || '',
-          nodes: cv.nodes.map(function (x) {
-            return {
-              id: x.id, title: x.title || '', memo: x.memoText || '',
-              x: Math.round(x.x || 0), y: Math.round(x.y || 0),
-              color: x.color || null
-            };
-          }),
-          connections: (cv.connections || []).map(function (c) {
-            return { fromId: c.fromId, toId: c.toId, label: c.label || '' };
-          })
-        });
-      }
-      else if (act === 'save') {
-        var sender = bridge;
+      else if (act === 'save' || act === 'topage') {
+        // ★ 図の形は変えない (= ユーザー要望: 円グラフは円グラフのまま、
+        //   フローチャートはフローチャートのままページに置きたい)。
+        //   見た目の絵をそのまま渡し、 併せて元の記法も渡す。 記法を持たせて
+        //   おくと、 置いた後にその場で書き直して描き直せる。
+        var sender = (act === 'save')
+            ? bridge
+            : (bridge || (post ? { postMessage: post } : null));
         if (!sender) return;
-        var kind = 'mermaidSave';
+        var kind = (act === 'save') ? 'mermaidSave' : 'mermaidToPage';
         var rr = svgEl.getBoundingClientRect();
         var swN = Math.max(1, Math.round(rr.width / s));
         var shN = Math.max(1, Math.round(rr.height / s));
@@ -117142,10 +117401,12 @@ $mapsJs
         clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
         var svgText = new XMLSerializer().serializeToString(clone);
         exportPng(svgText, swN, shN, function (dataUrl) {
+          // 直した後の記法を渡す (図の中で書き換えた分も残す)。
+          var srcNow = String(codeNow || code || '');
           if (dataUrl) {
-            sender.postMessage({ type: kind, png: dataUrl });
+            sender.postMessage({ type: kind, png: dataUrl, code: srcNow });
           } else {
-            sender.postMessage({ type: kind, svg: svgText });
+            sender.postMessage({ type: kind, svg: svgText, code: srcNow });
           }
         });
       }
@@ -117156,6 +117417,43 @@ $mapsJs
   // ★ 埋め込みマップ側からも使えるようにしておく
   //   (= ユーザー要望: 元のマーメイド記法に切り替えた時も拡大率を変えられるように)。
   window.__mmMermaidInteractive = makeInteractive;
+  // ── 図のノードを直す窓から呼ぶ: 最初の図を PNG にして返す ──
+  //    (= ユーザー要望: 置いた図を後から書き直して描き直せるように)
+  window.__mmExportFirstDiagram = function () {
+    var tok = window.__mmDiagramToken || 0;
+    function fail() {
+      post && post({ type: 'mermaidNodePng', png: '', token: tok });
+    }
+    try {
+      // ★ マーメイドの図だけを拾う。 ただの svg で拾うと、 「マップで見る」
+      //   で出した線の svg (.mmap-lines) を掴んでしまい、 図の絵がその線に
+      //   置き換わる (= 点検で判明)。
+      var slot = document.querySelector('.mermaid-slot');
+      var svgEl = slot ? slot.querySelector('svg:not(.mmap-lines)') : null;
+      if (!svgEl) svgEl = document.querySelector('.mermaid > svg');
+      if (svgEl && svgEl.classList &&
+          svgEl.classList.contains('mmap-lines')) {
+        svgEl = null;
+      }
+      if (!svgEl) { fail(); return; }
+      var rr = svgEl.getBoundingClientRect();
+      var w = Math.max(1, Math.round(rr.width));
+      var h = Math.max(1, Math.round(rr.height));
+      var clone = svgEl.cloneNode(true);
+      clone.setAttribute('width', w);
+      clone.setAttribute('height', h);
+      clone.style.maxWidth = ''; clone.style.width = ''; clone.style.height = '';
+      clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+      var svgText = new XMLSerializer().serializeToString(clone);
+      exportPng(svgText, w, h, function (dataUrl) {
+        post && post({
+          type: 'mermaidNodePng', png: dataUrl || '', token: tok
+        });
+      });
+    } catch (e) {
+      fail();
+    }
+  };
   // ── 目次 (h1〜h3 から自動生成。 2 個未満なら出さない) ──
   // 見出しの頭に付いた絵文字や記号を目次では外す (= ユーザー要望:
   //   目次の先頭に変な絵文字が入る)。 本文の見出しはそのまま。
@@ -118465,6 +118763,359 @@ class _MarkdownConfirmPreviewState extends State<_MarkdownConfirmPreview> {
             height: 22,
             child: CircularProgressIndicator(
                 strokeWidth: 2, color: Color(0xFFBA68C8))),
+      ),
+    );
+  }
+}
+
+
+/// 図のノードを、 図のまま直す窓 (= ユーザー要望: 円グラフは円グラフのまま
+/// ページに置いて、 後から中の値や項目を直せるように)。
+///
+/// 左に元のマーメイド記法、 右に描いた図。 「保存」 を押すと、 その場で描き
+/// 直した絵を **同じファイルに上書き** し、 記法もノードに持たせ直す。
+/// 同じ場所に書き直すので、 余分なファイルが増えず、 同期もそのまま効く。
+class _DiagramNodeEditorDialog extends StatefulWidget {
+  final String pageId;
+  final String nodeId;
+  final String initialCode;
+
+  /// 上書きする絵の場所 (ノードの添付そのもの)。
+  final String imagePath;
+  final bool dark;
+
+  const _DiagramNodeEditorDialog({
+    required this.pageId,
+    required this.nodeId,
+    required this.initialCode,
+    required this.imagePath,
+    required this.dark,
+  });
+
+  @override
+  State<_DiagramNodeEditorDialog> createState() =>
+      _DiagramNodeEditorDialogState();
+}
+
+class _DiagramNodeEditorDialogState extends State<_DiagramNodeEditorDialog> {
+  late final TextEditingController _ctrl =
+      TextEditingController(text: widget.initialCode);
+  wv_win.WebviewController? _win;
+  iaw.InAppWebViewController? _iaw;
+  bool _ready = false;
+  bool _saving = false;
+  String _shown = '';
+
+  /// 絵を受け取るための待ち合わせ (JS から一度だけ返ってくる)。
+  Completer<String>? _pngWait;
+
+  /// 今どの版を描いてもらっているか。 描き直しが間に合っていない画面から
+  /// 古い絵を受け取って保存してしまわないよう、 札を突き合わせる。
+  int _renderToken = 0;
+  int _wantToken = 0;
+
+  bool get _isDesktop =>
+      !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
+
+  String get _code => _ctrl.text.trim();
+
+  @override
+  void initState() {
+    super.initState();
+    _shown = widget.initialCode;
+    if (_isDesktop) unawaited(_initWin());
+  }
+
+  @override
+  void dispose() {
+    // 待ったままの保存が残っていると、 閉じた後に解決できず固まる。
+    if (_pngWait != null && !_pngWait!.isCompleted) _pngWait!.complete('');
+    _ctrl.dispose();
+    try {
+      _win?.dispose();
+    } catch (_) {}
+    super.dispose();
+  }
+
+  String _htmlFor(String code, int token) =>
+      '${_markdownPreviewHtml(
+        '```mermaid\n$code\n```',
+        widget.dark,
+        markedSrc: 'marked.min.js',
+        mermaidSrc: 'mermaid.min.js',
+        hljsSrc: 'highlight.min.js',
+        hljsCssSrc: widget.dark ? 'hljs-dark.css' : 'hljs-light.css',
+        mathjaxSrc: 'tex-svg.js',
+      )}'
+      // どの版を描いた画面か名乗らせる。
+      '<script>window.__mmDiagramToken=$token;</script>'
+      // この窓には「ページに追加」 の行き先が無いので出さない。
+      '<style>.mmctl button[data-act="topage"]{display:none}</style>';
+
+  Future<void> _initWin() async {
+    try {
+      final c = wv_win.WebviewController();
+      await c.initialize().timeout(const Duration(seconds: 12));
+      await c.setBackgroundColor(const Color(0xFF14141F));
+      c.webMessage.listen(_onMessage);
+      if (!mounted) {
+        await c.dispose();
+        return;
+      }
+      setState(() {
+        _win = c;
+        _ready = true;
+      });
+      await _render();
+    } catch (_) {
+      if (mounted) setState(() => _ready = false);
+    }
+  }
+
+  void _onMessage(dynamic raw) {
+    try {
+      final m = raw is String ? jsonDecode(raw) : raw;
+      if (m is! Map) return;
+      if ('${m['type'] ?? ''}' != 'mermaidNodePng') return;
+      // 古い画面からの返事は捨てる。
+      final tok = (m['token'] as num?)?.toInt() ?? 0;
+      if (tok != _wantToken) return;
+      final png = '${m['png'] ?? ''}';
+      if (_pngWait != null && !_pngWait!.isCompleted) _pngWait!.complete(png);
+    } catch (_) {}
+  }
+
+  /// 今の記法で描き直す。 描いた版の札を返す。
+  Future<int> _render() async {
+    final token = ++_renderToken;
+    final html = _htmlFor(_shown, token);
+    try {
+      // ★ mermaid などは同じ場所に置いたファイルから読む。 中身を直に流し
+      //   込むと相対の場所が無くなり、 何も描けない (= 点検で判明:
+      //   Android で真っ白のままだった)。
+      final url = await _prepareMarkdownPreviewFile(html,
+          fileName: 'diagram_node.html');
+      if (_isDesktop) {
+        final c = _win;
+        if (c == null) return token;
+        if (url != null) {
+          await c.loadUrl(url);
+        } else {
+          await c.loadStringContent(html);
+        }
+      } else {
+        if (url != null) {
+          await _iaw?.loadUrl(
+              urlRequest: iaw.URLRequest(url: iaw.WebUri(url)));
+        } else {
+          await _iaw?.loadData(
+              data: html, mimeType: 'text/html', encoding: 'utf-8');
+        }
+      }
+    } catch (_) {}
+    return token;
+  }
+
+  /// 図を描き直して、 元の絵の場所へ上書きする。
+  Future<void> _save() async {
+    if (_saving) return;
+    final code = _code;
+    if (code.isEmpty) return;
+    setState(() => _saving = true);
+    final provider = context.read<MindMapProvider>();
+    String? message;
+    try {
+      // ★ 必ず今の記法で描き直してから絵をもらう。 描き上がりを決め打ちの
+      //   待ち時間で当てにすると、 遅い時は古い絵を、 速い時は空を掴む
+      //   (= 点検で判明)。 札で突き合わせ、 出来るまで何度も尋ねる。
+      _shown = code;
+      _wantToken = await _render();
+      const js = 'window.__mmExportFirstDiagram && '
+          'window.__mmExportFirstDiagram();';
+      var png = '';
+      for (var i = 0; i < 10 && png.isEmpty; i++) {
+        if (!mounted) return;
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+        final wait = Completer<String>();
+        _pngWait = wait;
+        try {
+          if (_isDesktop) {
+            await _win?.executeScript(js);
+          } else {
+            await _iaw?.evaluateJavascript(source: js);
+          }
+        } catch (_) {}
+        png = await wait.future
+            .timeout(const Duration(milliseconds: 900), onTimeout: () => '');
+        _pngWait = null;
+      }
+      const head = 'data:image/png;base64,';
+      if (!png.startsWith(head)) {
+        message = provider.t('diagram.renderFailed');
+      } else {
+        final bytes = base64Decode(png.substring(head.length));
+        await File(widget.imagePath).writeAsBytes(bytes, flush: true);
+        provider.setNodeDiagramSource(widget.pageId, widget.nodeId, code);
+        // 絵の形が変わっていることがあるので、 縦横比も取り直す。
+        unawaited(provider.refreshImageAspectRatio(
+            widget.pageId, widget.nodeId, widget.imagePath));
+      }
+    } catch (_) {
+      message = provider.t('diagram.renderFailed');
+    }
+    if (!mounted) return;
+    setState(() => _saving = false);
+    if (message != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(message), backgroundColor: const Color(0xFFB3261E)));
+      return;
+    }
+    Navigator.pop(context, true);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final provider = context.read<MindMapProvider>();
+    final sz = MediaQuery.sizeOf(context);
+    final wide = sz.width >= 720;
+    final editor = Container(
+      color: const Color(0xFF14141F),
+      padding: const EdgeInsets.all(8),
+      child: TextField(
+        controller: _ctrl,
+        maxLines: null,
+        expands: true,
+        textAlignVertical: TextAlignVertical.top,
+        style: const TextStyle(
+            color: Colors.white70, fontSize: 12.5, fontFamily: 'Consolas'),
+        decoration: const InputDecoration(
+          border: InputBorder.none,
+          isDense: true,
+          hintText: 'pie title ...',
+          hintStyle: TextStyle(color: Colors.white24),
+        ),
+      ),
+    );
+    Widget preview;
+    if (_isDesktop) {
+      preview = (_ready && _win != null)
+          ? ColoredBox(
+              color: const Color(0xFF14141F), child: wv_win.Webview(_win!))
+          : const ColoredBox(
+              color: Color(0xFF14141F),
+              child: Center(
+                  child: SizedBox(
+                      width: 22,
+                      height: 22,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Color(0xFFBA68C8)))),
+            );
+    } else {
+      preview = iaw.InAppWebView(
+        initialSettings: iaw.InAppWebViewSettings(
+          javaScriptEnabled: true,
+          transparentBackground: true,
+          // 置いてあるファイル (mermaid など) を読ませる。
+          allowFileAccessFromFileURLs: true,
+          allowUniversalAccessFromFileURLs: true,
+        ),
+        onWebViewCreated: (c) {
+          _iaw = c;
+          c.addJavaScriptHandler(
+              handlerName: 'mmbridge',
+              callback: (args) {
+                if (args.isNotEmpty) _onMessage(args.first);
+                return null;
+              });
+          unawaited(_render());
+        },
+      );
+    }
+
+    return Dialog(
+      backgroundColor: const Color(0xFF1E1E32),
+      insetPadding: const EdgeInsets.all(24),
+      child: SizedBox(
+        width: math.min(980.0, sz.width - 48),
+        height: math.min(680.0, sz.height - 48),
+        child: Column(children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 12, 8, 6),
+            child: Row(children: [
+              const Icon(Icons.insert_chart_outlined,
+                  color: Color(0xFFBA68C8), size: 18),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(provider.t('diagram.editTitle'),
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700)),
+              ),
+              TextButton.icon(
+                onPressed: _saving
+                    ? null
+                    : () {
+                        setState(() => _shown = _code);
+                        unawaited(_render());
+                      },
+                icon: const Icon(Icons.refresh_rounded,
+                    size: 16, color: Colors.white70),
+                label: Text(provider.t('diagram.redraw'),
+                    style:
+                        const TextStyle(color: Colors.white70, fontSize: 12)),
+              ),
+              IconButton(
+                icon: const Icon(Icons.close_rounded,
+                    color: Colors.white54, size: 20),
+                onPressed: () => Navigator.pop(context),
+              ),
+            ]),
+          ),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              child: wide
+                  ? Row(children: [
+                      Expanded(child: editor),
+                      const SizedBox(width: 8),
+                      Expanded(flex: 2, child: preview),
+                    ])
+                  : Column(children: [
+                      Expanded(child: editor),
+                      const SizedBox(height: 8),
+                      Expanded(flex: 2, child: preview),
+                    ]),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
+            child: Row(children: [
+              Expanded(
+                child: Text(provider.t('diagram.editHint'),
+                    style:
+                        const TextStyle(color: Colors.white38, fontSize: 11)),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: Text(provider.t('btn.cancel'),
+                    style: const TextStyle(color: Colors.white54)),
+              ),
+              const SizedBox(width: 6),
+              FilledButton.icon(
+                onPressed: _saving ? null : _save,
+                icon: _saving
+                    ? const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white))
+                    : const Icon(Icons.check_rounded, size: 16),
+                label: Text(provider.t('btn.save')),
+              ),
+            ]),
+          ),
+        ]),
       ),
     );
   }
@@ -119922,6 +120573,22 @@ graph TD
       if (type == 'mapOpen') {
         final path = embeddedMapAttachmentPath(widget.provider, m);
         if (path != null) unawaited(OpenFilex.open(path));
+        return;
+      }
+      // ── 図をそのままの見た目でページへ入れる (= ユーザー要望) ──
+      if (type == 'mermaidToPage') {
+        unawaited(() async {
+          final name = await askAndPutDiagramImageIntoPage(
+              context, widget.provider, m);
+          if (name != null && mounted) {
+            _appSnackTop(
+                context,
+                widget.provider
+                    .t('map.addedToPage')
+                    .replaceFirst('{name}', name),
+                const Color(0xFF43B97F));
+          }
+        }());
         return;
       }
       // ── 図をマインドマップのページにする (= ユーザー要望) ──
@@ -213951,6 +214618,27 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
           break;
         case 'mermaidSave':
           unawaited(_saveDiagramExport(m.cast<dynamic, dynamic>()));
+          break;
+        // 図をそのままの見た目でページへ入れる (= ユーザー要望)。
+        case 'mermaidToPage':
+          unawaited(() async {
+            final provider = context.read<MindMapProvider>();
+            final name = await askAndPutDiagramImageIntoPage(
+                context, provider, m.cast<dynamic, dynamic>());
+            if (name == null) {
+              // 絵に出来なかった時だけ保存を促す。
+              final png = '${m['png'] ?? ''}';
+              if (!png.startsWith('data:image/png;base64,')) {
+                await _saveDiagramExport(m.cast<dynamic, dynamic>());
+              }
+              return;
+            }
+            if (mounted) {
+              _showSnackBar(provider
+                  .t('map.addedToPage')
+                  .replaceFirst('{name}', name));
+            }
+          }());
           break;
       }
     } catch (_) {}

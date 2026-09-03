@@ -15,6 +15,7 @@ import 'package:video_thumbnail/video_thumbnail.dart' as vt;
 import 'package:device_info_plus/device_info_plus.dart';
 import '../models/mind_map_node.dart';
 import '../services/billing_service.dart';
+import '../services/cursor_wrap.dart';
 import '../services/google_auth.dart';
 import '../services/mcp_server.dart';
 import '../services/home_shortcut_service.dart';
@@ -4507,6 +4508,18 @@ class MindMapProvider extends ChangeNotifier {
   //    別アプリを立ち上げるかの項目を設ける)。
   //    false (既定) = 起動済みの画面へ引き渡す / true = 毎回新しく立ち上げる。
   //    実際の引き渡し判定は main() (起動直後) が prefs を直接読む。
+  /// 画面の両端をつないで、 マウスを回り込ませるか (Windows のみ。
+  /// = ユーザー要望: メインの右とサブの左しか繋がっていなくて使いにくい)。
+  /// 実際に動かすのは `CursorWrap` (lib/services/cursor_wrap.dart)。
+  bool _cursorWrapEnabled = false;
+  bool get cursorWrapEnabled => _cursorWrapEnabled;
+  Future<void> setCursorWrapEnabled(bool v) async {
+    _cursorWrapEnabled = v;
+    final prefs = await _prefsWithRetry();
+    await prefs.setBool('cursorWrapEnabled', v);
+    notifyListeners();
+  }
+
   bool _openWithNewInstance = false;
   bool get openWithNewInstance => _openWithNewInstance;
   Future<void> setOpenWithNewInstance(bool v) async {
@@ -19494,6 +19507,87 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Abmelden / mit anderem Konto anmelden',
       'pt': 'Sair / entrar com outra conta',
       'ru': 'Выйти / войти под другим аккаунтом',
+    },
+    'split.noSubMonitor': {
+      'ja': 'サブモニターが見つかりません',
+      'en': 'No second monitor found',
+      'zh': '未找到副显示器',
+      'ko': '보조 모니터를 찾을 수 없습니다',
+      'es': 'No se encontro un segundo monitor',
+      'fr': 'Aucun second ecran trouve',
+      'de': 'Kein zweiter Monitor gefunden',
+      'pt': 'Nenhum segundo monitor encontrado',
+      'ru': 'Второй монитор не найден',
+    },
+    'split.toSubMonitor': {
+      'ja': 'サブモニターへ送る', 'en': 'Send to second monitor',
+      'zh': '发送到副显示器', 'ko': '보조 모니터로 보내기',
+      'es': 'Enviar al segundo monitor', 'fr': 'Envoyer au second écran',
+      'de': 'An zweiten Monitor senden', 'pt': 'Enviar para o segundo monitor',
+      'ru': 'Отправить на второй монитор',
+    },
+    'diagram.editTitle': {
+      'ja': '図を編集', 'en': 'Edit diagram',
+      'zh': '编辑图表', 'ko': '다이어그램 편집',
+      'es': 'Editar diagrama', 'fr': 'Modifier le diagramme',
+      'de': 'Diagramm bearbeiten', 'pt': 'Editar diagrama',
+      'ru': 'Изменить диаграмму',
+    },
+    'diagram.redraw': {
+      'ja': '描き直す', 'en': 'Redraw',
+      'zh': '重新绘制', 'ko': '다시 그리기',
+      'es': 'Redibujar', 'fr': 'Redessiner',
+      'de': 'Neu zeichnen', 'pt': 'Redesenhar',
+      'ru': 'Перерисовать',
+    },
+    'diagram.editHint': {
+      'ja': '保存すると、 この図をページ上で描き直します。',
+      'en': 'Saving redraws this diagram on the page.',
+      'zh': '保存后将在页面上重新绘制该图表。',
+      'ko': '저장하면 페이지의 다이어그램이 다시 그려집니다.',
+      'es': 'Al guardar se redibuja el diagrama en la página.',
+      'fr': "L'enregistrement redessine ce diagramme sur la page.",
+      'de': 'Beim Speichern wird das Diagramm auf der Seite neu gezeichnet.',
+      'pt': 'Salvar redesenha este diagrama na página.',
+      'ru': 'Сохранение перерисует диаграмму на странице.',
+    },
+    'diagram.renderFailed': {
+      'ja': '図を描き直せませんでした',
+      'en': 'Could not redraw the diagram',
+      'zh': '无法重新绘制图表',
+      'ko': '다이어그램을 다시 그릴 수 없습니다',
+      'es': 'No se pudo redibujar el diagrama',
+      'fr': 'Impossible de redessiner le diagramme',
+      'de': 'Diagramm konnte nicht neu gezeichnet werden',
+      'pt': 'Não foi possível redesenhar o diagrama',
+      'ru': 'Не удалось перерисовать диаграмму',
+    },
+    'cursorWrap.title': {
+      'ja': '画面の両端をつなぐ', 'en': 'Wrap cursor at screen edges',
+      'zh': '在屏幕两端环绕光标', 'ko': '화면 양 끝에서 커서 순환',
+      'es': 'Envolver el cursor en los bordes',
+      'fr': 'Boucler le curseur aux bords',
+      'de': 'Zeiger an den Rändern umbrechen',
+      'pt': 'Circular o cursor nas bordas',
+      'ru': 'Перенос курсора на краях экрана',
+    },
+    'cursorWrap.desc': {
+      'ja': 'モニターが2枚以上ある時、 端から出たマウスを反対の端へ出します。',
+      'en': 'With two or more monitors, the cursor leaving one outer edge '
+          'appears at the opposite outer edge.',
+      'zh': '当有两台以上显示器时，光标从一端离开会从另一端出现。',
+      'ko': '모니터가 두 대 이상일 때 한쪽 끝으로 나간 커서가 반대쪽 끝에 '
+          '나타납니다.',
+      'es': 'Con dos o más monitores, el cursor que sale por un borde '
+          'aparece en el borde opuesto.',
+      'fr': "Avec au moins deux écrans, le curseur qui sort d'un bord "
+          "réapparaît au bord opposé.",
+      'de': 'Bei zwei oder mehr Monitoren erscheint der Zeiger am '
+          'gegenüberliegenden Rand.',
+      'pt': 'Com dois ou mais monitores, o cursor que sai por uma borda '
+          'aparece na borda oposta.',
+      'ru': 'При двух и более мониторах курсор, ушедший за один край, '
+          'появляется у противоположного.',
     },
     'split.toFloating': {
       'ja': 'フローティングに切り替え', 'en': 'Switch to floating',
@@ -68183,7 +68277,8 @@ class MindMapProvider extends ChangeNotifier {
     'fcAvoidExisting', 'fcFormat', 'fcIncludeRelated', 'fcPrompt',
     'fcTxtLineCount', 'fcTxtStartLine', 'flashcardGenCount',
     'quizAvoidDuplicates', 'allowMultipleFloatingWindows',
-    'openWithNewInstance', 'openTarget', 'mapSplitQuad', 'mapSplitRatioX',
+    'openWithNewInstance', 'cursorWrapEnabled',
+    'openTarget', 'mapSplitQuad', 'mapSplitRatioX',
     'mapSplitRatioY', 'mapSplitStacked', 'instagramLanding',
     'instagramUsername', 'weather_cityName', 'weather_lat', 'weather_lon',
     'geofenceLat', 'geofenceLon', 'geofenceLockEnabled',
@@ -81450,6 +81545,9 @@ $cleanQ
         prefs.getBool('allowMultipleFloatingWindows') ?? false;
     // 「アプリで開く」 を別アプリで開くか (= ユーザー要望)。
     _openWithNewInstance = prefs.getBool('openWithNewInstance') ?? false;
+    _cursorWrapEnabled = prefs.getBool('cursorWrapEnabled') ?? false;
+    // 起動し直しても入ったままにする。
+    CursorWrap.instance.apply(_cursorWrapEnabled);
     // メモ欄一括折りたたみ (デフォルト false = 従来通り全文表示)
     _memoCollapsedGlobal = prefs.getBool('memoCollapsedGlobal') ?? false;
     // 動画ノードの重複生成許可フラグ (デフォルト false)
@@ -84142,6 +84240,12 @@ $cleanQ
 
   /// 画像ファイルの実寸からノードの縦横比と高さを整える。
   /// 失敗しても何もしない (= 従来どおりの見た目のまま)。
+  /// 絵を差し替えた後に、 縦横比を取り直す (= 図のノードを書き直した時に
+  /// 形が変わるため)。
+  Future<void> refreshImageAspectRatio(
+          String pageId, String nodeId, String filePath) =>
+      _applyImageAspectRatio(pageId, nodeId, filePath);
+
   Future<void> _applyImageAspectRatio(
       String pageId, String nodeId, String filePath) async {
     try {
@@ -93124,6 +93228,22 @@ $example
     notifyListeners();
   }
 
+  /// 図のノードに、 元のマーメイド記法を持たせる (= ユーザー要望: 円グラフは
+  /// 円グラフのまま置いて、 後から中身を直せるように)。
+  ///
+  /// 裏のページも直せるよう、 currentPage 決め打ちにはしない。
+  bool setNodeDiagramSource(String pageId, String nodeId, String? code) {
+    final page = mcpPageById(pageId);
+    final node = page?.nodes[nodeId];
+    if (page == null || node == null) return false;
+    page.nodes[nodeId] = node.copyWith(
+      diagramSource: (code ?? '').trim().isEmpty ? null : code,
+    );
+    _saveToStorage();
+    notifyListeners();
+    return true;
+  }
+
   /// ノードの形状を変更する (= ユーザー要望: フローチャートの基本記法に
   /// ブロックの形状を変えられるように)。
   /// [shape] は 'rounded' / 'rect' / 'diamond' / 'parallelogram'。
@@ -94214,6 +94334,11 @@ $example
         height: node.height,
         attachmentPath: node.attachmentPath,
         attachmentName: node.attachmentName,
+        // ★ 画像の縦横比と図の元の文も持って行く (無いと絵の高さが崩れ、
+        //   図を後から直せなくなる)。
+        attachmentThumbPath: node.attachmentThumbPath,
+        attachmentAspectRatio: node.attachmentAspectRatio,
+        diagramSource: node.diagramSource,
       );
       targetPage.nodes[newId] = newNode;
     }
@@ -94779,6 +94904,7 @@ $example
         attachmentName: node.attachmentName,
         attachmentThumbPath: node.attachmentThumbPath,
         attachmentAspectRatio: node.attachmentAspectRatio,
+        diagramSource: node.diagramSource,
       );
       newIds.add(newId);
     }

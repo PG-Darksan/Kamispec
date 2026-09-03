@@ -63,6 +63,7 @@ import 'services/home_shortcut_service.dart';
 import 'services/talk_reference.dart';
 // 録画窓の中の範囲選び (デスクトップの写しを撮る) に使う。
 import 'services/screen_capture.dart' as scap;
+import 'services/cursor_wrap.dart';
 // 録画窓の中のプレビュー再生 (デスクトップは fvp バックエンド)。
 import 'package:video_player/video_player.dart';
 // 録画窓が自分の窓の大きさを変える (GetWindowRect) のに使う。
@@ -3448,6 +3449,8 @@ void main(List<String> args) async {
     }());
   }
 
+  // 画面の両端をつなぐのは本体の窓だけ (サブ窓でも動かすと二重に飛ぶ)。
+  CursorWrap.allowed = true;
   runApp(const MyApp());
 }
 
@@ -7180,10 +7183,25 @@ class _FloatingWebWindowAppState extends State<_FloatingWebWindowApp>
   /// 左上へ寄せる。 画面の大きさが取れない環境では何もしない。
   Future<void> _fitIntoDisplay() async {
     try {
-      final d = await screenRetriever.getPrimaryDisplay();
+      final b = await windowManager.getBounds();
+      // ★ 「今その窓が乗っているモニター」 に対して丸める。 主モニター決め打ち
+      //   だと、 サブモニターへ送った窓を主モニターへ引き戻してしまう
+      //   (= ユーザー要望「サブモニターへ送る」 ボタンが効かなくなる)。
+      var d = await screenRetriever.getPrimaryDisplay();
+      try {
+        final c = b.center;
+        for (final e in await screenRetriever.getAllDisplays()) {
+          final pos = e.visiblePosition ?? Offset.zero;
+          final sz = e.visibleSize ?? e.size;
+          final r = Rect.fromLTWH(pos.dx, pos.dy, sz.width, sz.height);
+          if (r.contains(c)) {
+            d = e;
+            break;
+          }
+        }
+      } catch (_) {}
       final vis = d.visiblePosition ?? Offset.zero;
       final area = d.visibleSize ?? d.size;
-      final b = await windowManager.getBounds();
       var w = b.width;
       var h = b.height;
       if (w > area.width - 8) w = area.width - 8;

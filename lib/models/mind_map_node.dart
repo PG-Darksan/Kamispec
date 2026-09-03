@@ -913,6 +913,14 @@ class MindMapNode {
   /// ひし形は頂点、長方形系は辺の中央を基本にする。
   String? shape;
 
+  /// マーメイド記法で描いた図の元の文 (= ユーザー要望: 円グラフは円グラフの
+  /// まま、 フローチャートはフローチャートのままページに置きたい)。
+  ///
+  /// 見た目は `attachmentPath` の PNG をそのまま描くので、 描画の計算は
+  /// 画像の添付と全く同じ。 この文は「後から中身を直す」 ためだけに持つ
+  /// (画面には出さない)。 null なら普通の画像の添付。
+  String? diagramSource;
+
   MindMapNode({
     required this.id,
     required this.title,
@@ -948,6 +956,7 @@ class MindMapNode {
     this.clampHeight = false,
     this.layer = 3,
     this.shape,
+    this.diagramSource,
   }) : color = color ?? const Color(0xFF6C63FF);
 
   /// タイトルの表示可能な最大行数
@@ -1278,6 +1287,7 @@ class MindMapNode {
     bool? clampHeight,
     int? layer,
     Object? shape = _sentinel,
+    Object? diagramSource = _sentinel,
   }) {
     return MindMapNode(
       id: id,
@@ -1334,6 +1344,9 @@ class MindMapNode {
       richText: richText == _sentinel ? this.richText : richText as String?,
       clampHeight: clampHeight ?? this.clampHeight,
       shape: shape == _sentinel ? this.shape : shape as String?,
+      diagramSource: diagramSource == _sentinel
+          ? this.diagramSource
+          : diagramSource as String?,
       layer: (layer ?? this.layer).clamp(1, 5).toInt(),
     );
   }
@@ -1391,6 +1404,7 @@ class MindMapNode {
       if (layer != 3) 'layer': layer,
       // ノード形状 (フローチャート記法)。 既定 (null/'rounded') は出さない。
       if (shape != null && shape != 'rounded') 'shape': shape,
+      if ((diagramSource ?? '').isNotEmpty) 'diagramSource': diagramSource,
     };
   }
 
@@ -1451,6 +1465,7 @@ class MindMapNode {
       clampHeight: json['clampHeight'] as bool? ?? false,
       layer: ((json['layer'] as num?)?.toInt() ?? 3).clamp(1, 5).toInt(),
       shape: json['shape'] as String?,
+      diagramSource: json['diagramSource'] as String?,
     );
   }
 
