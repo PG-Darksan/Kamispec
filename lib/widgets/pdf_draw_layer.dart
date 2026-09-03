@@ -2532,6 +2532,8 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
             setState(() {
               _checkMark = m.id;
               _checksOpen = false;
+              // 種類を選んだら、 そのまま置ける道具に切り替える。
+              _tool = PdfDrawTool.check;
             });
             unawaited(_persistCheckMark());
           },
@@ -2885,11 +2887,12 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
             if (_tool != PdfDrawTool.check)
               toolBtn(PdfDrawTool.check, _markIcon, 'pdfdraw.check'),
             // ── 置く印の種類 (= ユーザー要望: ✓ の所を ○ や × 連番 等に)。
-            //    カラーと同じく、 普段は「今の印 + 展開ボタン」 だけにして
-            //    収納する (= ユーザー要望: ヘッダーが入り切らない対策)。 ──
-            if (_tool == PdfDrawTool.check) ...[
-              markBtn((id: _checkMark, icon: _markIcon)),
-              InkWell(
+            //    ★ 「チェックを置く」 を選んでいなくても種類を選べる
+            //      (= ユーザー報告: 押さないと選択肢が出てこないのは変)。
+            //      畳んである時は展開ボタンだけを出し、 そこから連番などを
+            //      直接選べる。 選ぶとチェックの道具に切り替わる。
+            if (_tool == PdfDrawTool.check) markBtn((id: _checkMark, icon: _markIcon)),
+            InkWell(
                 onTap: () => setState(() => _checksOpen = !_checksOpen),
                 borderRadius: BorderRadius.circular(6),
                 child: Tooltip(
@@ -2906,12 +2909,13 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
                   ),
                 ),
               ),
-              if (_checksOpen)
-                for (final m in kCheckMarks)
-                  if (m.id != _checkMark) markBtn(m),
-              // 連番の時だけ、 開始番号と固定の操作を出す。
-              if (_checkMark == 'number') seqControls(),
-            ],
+            if (_checksOpen)
+              for (final m in kCheckMarks)
+                if (!(_tool == PdfDrawTool.check && m.id == _checkMark))
+                  markBtn(m),
+            // 連番を選んでいる時だけ、 開始番号と固定の操作を出す。
+            if (_tool == PdfDrawTool.check && _checkMark == 'number')
+              seqControls(),
             // ── マーカー (蛍光ペン) ──
             //    ★ ボタンは 1 つだけ (= ユーザー要望: アイコンを分けない)。
             //      Shift を押しながら引くと 0 / 90 / 180 / 270 度の

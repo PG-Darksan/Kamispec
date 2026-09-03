@@ -120173,6 +120173,48 @@ class _DiagramNodeEditorDialogState extends State<_DiagramNodeEditorDialog> {
   }
 }
 
+
+/// スクロール幅のすべり台 (スクロール設定の中で使う)。
+class _MdScrollStepSlider extends StatefulWidget {
+  final MindMapProvider provider;
+
+  const _MdScrollStepSlider({required this.provider});
+
+  @override
+  State<_MdScrollStepSlider> createState() => _MdScrollStepSliderState();
+}
+
+class _MdScrollStepSliderState extends State<_MdScrollStepSlider> {
+  late double _v = widget.provider.mdScrollStepPercent.toDouble();
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(children: [
+      const Icon(Icons.remove_rounded, size: 16, color: Colors.white38),
+      Expanded(
+        child: Slider(
+          value: _v.clamp(20, 200),
+          min: 20,
+          max: 200,
+          divisions: 36,
+          label: '${_v.round()}%',
+          activeColor: const Color(0xFFBA68C8),
+          onChanged: (x) => setState(() => _v = x),
+          onChangeEnd: (x) => unawaited(
+              widget.provider.setMdScrollStepPercent(x.round())),
+        ),
+      ),
+      const Icon(Icons.add_rounded, size: 16, color: Colors.white38),
+      SizedBox(
+        width: 44,
+        child: Text('${_v.round()}%',
+            textAlign: TextAlign.right,
+            style: const TextStyle(color: Colors.white70, fontSize: 12)),
+      ),
+    ]);
+  }
+}
+
 /// Markdown の下書き置き場 (= ユーザー要望: 下書きはタブに埋め込まず、
 /// 下書きのまま保存して後から呼び出し、 直してから反映できるように)。
 /// prefs `markdown_drafts_<pageId>` に JSON で持つ。
@@ -124009,8 +124051,70 @@ $body''';
     }
   }
 
-  /// スクロール幅を微調整する小さな窓 (= ユーザー要望: 大きいと感じる
-  /// ので細かく決められるように)。 100% がこれまでどおり。
+  /// スクロールの設定 (= ユーザー要望: スクロールバーを別々にするかなどを
+  /// まとめて決められるように)。 幅の微調整もここに入れた。
+  Future<void> _showMdScrollSettings(MindMapProvider provider) async {
+    await _showNearDialog<void>(
+      builder: (dctx) => StatefulBuilder(
+        builder: (dctx, setD) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          title: Text(provider.t('md.scrollSettings'),
+              style: const TextStyle(color: Colors.white, fontSize: 15)),
+          content: SizedBox(
+            width: math.min(360.0, MediaQuery.sizeOf(dctx).width - 64),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              // ── 一体化 / 別々 ──
+              SwitchListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                activeColor: const Color(0xFFBA68C8),
+                title: Text(provider.t('md.scrollSync'),
+                    style: const TextStyle(
+                        color: Colors.white, fontSize: 13)),
+                subtitle: Text(
+                    provider.t(_scrollSyncOn
+                        ? 'md.scrollSyncOnHint'
+                        : 'md.scrollSyncOffHint'),
+                    style: const TextStyle(
+                        color: Colors.white38, fontSize: 11)),
+                value: _scrollSyncOn,
+                onChanged: (v) {
+                  unawaited(provider.setMdScrollSync(v));
+                  setD(() {});
+                  // 連動用の JS ごと入れ替わるので描き直す。
+                  Future<void>.delayed(
+                      const Duration(milliseconds: 30), () {
+                    if (mounted) unawaited(_render());
+                  });
+                },
+              ),
+              const Divider(color: Colors.white12),
+              // ── 幅の微調整 ──
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(provider.t('md.scrollStep'),
+                    style: const TextStyle(
+                        color: Colors.white, fontSize: 13)),
+              ),
+              Text(provider.t('md.scrollStepHint'),
+                  style:
+                      const TextStyle(color: Colors.white38, fontSize: 11)),
+              _MdScrollStepSlider(provider: provider),
+            ]),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dctx),
+              child: Text(provider.t('btn.close'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// スクロール幅を微調整する小さな窓 (今は設定の中から使う)。
   Future<void> _showMdScrollStepDialog(MindMapProvider provider) async {
     var v = provider.mdScrollStepPercent.toDouble();
     await showDialog<void>(
@@ -124161,25 +124265,10 @@ $body''';
                       : Icons.swap_horiz_rounded,
                   provider.t(narrow ? 'md.swapUpDown' : 'md.swapSides'),
                   _toggleSides),
-            // ── スクロールを一体化するか別々にするか (= ユーザー要望) ──
-            //    一体化: 行番号で連動し、 スクロールバーも 1 本。
-            //    別々: それぞれの欄が自分のスクロールバーで動く。
-            if (_viewMode == 'split')
-              _btn(
-                  _scrollSyncOn
-                      ? Icons.link_rounded
-                      : Icons.link_off_rounded,
-                  provider.t(_scrollSyncOn
-                      ? 'md.scrollSync'
-                      : 'md.scrollSeparate'),
-                  () {
-                    unawaited(provider.setMdScrollSync(!_scrollSyncOn));
-                    // 連動用の JS ごと入れ替わるので描き直す。
-                    Future<void>.delayed(const Duration(milliseconds: 30),
-                        () {
-                      if (mounted) unawaited(_render());
-                    });
-                  }),
+            // ── スクロールの設定 (= ユーザー要望: 入れ替えボタンの右隣に
+            //    置いて、 スクロールバーを別々にするかもここで選べるように)。
+            _btn(Icons.swap_vert_rounded, provider.t('md.scrollSettings'),
+                () => unawaited(_showMdScrollSettings(provider))),
             // 表示の仕方: 押したら次に何になるかを出す (= ユーザー要望)。
             _btn(_viewModeIcon, _viewModeLabel(provider), _cycleViewMode),
             // ── メモ / AI チャットのパネル (= ユーザー要望)。 画面が広い
@@ -124263,9 +124352,6 @@ $body''';
             // (リンクを挿入するボタンは削除 = ユーザー要望: AI に指示して
             //  直してもらえば済むため)
             _btn(Icons.copy_rounded, provider.t('md.copy'), _copyAll),
-            // スクロール幅の微調整 (= ユーザー要望: 大きいと感じる)。
-            _btn(Icons.swap_vert_rounded, provider.t('md.scrollStep'),
-                () => _showMdScrollStepDialog(provider)),
             // ネットに公開する (= ユーザー要望: プレビュー画面をサーバーへ)。
             //   公開中はアイコンの形 (塗り) だけで表す。 色は白で統一。
             if (provider.canPublishHtmlPage)
