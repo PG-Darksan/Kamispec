@@ -2859,11 +2859,19 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
   }
 
-  /// 分割ペインで見ている Web を、 サブモニターの窓へ送る
+  /// 分割ペインの中身を、 サブモニターの窓へ送る
   /// (= ユーザー要望: サブモニターがつながっている時だけ出るボタン)。
+  ///
+  /// Web はいつもの外窓で、 PDF や Office などのファイルは **もう一つの
+  /// 本体** を開いてそのモニターいっぱいに置く (ビューアを持つ外窓が
+  /// 無いため)。
   Future<void> _sendSplitToSubMonitor({required bool left}) async {
+    final mode = left ? _splitLeftMode : _splitMode;
     final url = (left ? _splitLeftUrlCtrl.text : _splitUrlCtrl.text).trim();
-    if (url.isEmpty) return;
+    final localPath = (mode == 'pdf'
+            ? (left ? _splitLeftLocalPdfPath : _splitLocalPdfPath)
+            : (left ? _splitLeftLocalOfficePath : _splitLocalOfficePath))
+        ?.trim();
     final rect = await _subMonitorRect();
     if (!mounted) return;
     if (rect == null) {
@@ -2878,12 +2886,32 @@ class _MindMapScreenState extends State<MindMapScreen>
       );
       return;
     }
+    if (mode != 'web' && localPath != null && localPath.isNotEmpty) {
+      try {
+        await Process.start(
+          Platform.resolvedExecutable,
+          [
+            '--new-window',
+            localPath,
+            '--win-x=${rect.left.round()}',
+            '--win-y=${rect.top.round()}',
+            '--win-w=${rect.width.round()}',
+            '--win-h=${rect.height.round()}',
+          ],
+          mode: ProcessStartMode.detached,
+        );
+      } catch (_) {
+        return;
+      }
+    } else {
+      if (url.isEmpty) return;
+      await openExternalWebWindowPid(url, frame: rect, single: false);
+    }
     if (left) {
       _closeSplitLeftPanel();
     } else {
       _toggleSplitPanel();
     }
-    await openExternalWebWindowPid(url, frame: rect, single: false);
   }
 
   /// 左パネル用の Windows webview_windows コントローラ。
@@ -21104,7 +21132,20 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (!_isDesktop && _isCanvasTextEditing) {
       _scheduleInlineEditorReveal();
     }
+    // ★ モニターを挿した / 抜いた時もここが呼ばれる。 描き直して
+    //   「サブモニターへ送る」 ボタンをその場で出し入れする
+    //   (= ユーザー報告: 接続してもボタンが出てこない)。
+    if (_isDesktop && !kIsWeb && Platform.isWindows) {
+      final n = _hasSubMonitor;
+      if (n != _hadSubMonitor) {
+        _hadSubMonitor = n;
+        if (mounted) setState(() {});
+      }
+    }
   }
+
+  /// 前回見た時のサブモニターの有無 (変わった時だけ描き直すため)。
+  bool _hadSubMonitor = false;
 
   String? get _activeCanvasEditNodeId =>
       _inlineNodeEditNodeId ??
@@ -52528,8 +52569,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                           ),
                         // ── サブモニターへ送る (= ユーザー要望) ──
                         if (_isDesktop &&
-                            _splitLeftMode == 'web' &&
-                            _hasSubMonitor)
+                            _hasSubMonitor &&
+                            (_splitLeftMode == 'web' ||
+                                _splitLeftLocalPdfPath != null ||
+                                _splitLeftLocalOfficePath != null))
                           IconButton(
                             icon: const Icon(Icons.desktop_windows_rounded,
                                 color: Colors.white70, size: 18),
@@ -53524,7 +53567,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                               ),
                             // ── サブモニターへ送る (= ユーザー要望: つながって
                             //    いる時だけ出る) ──
-                            if (_splitMode == 'web' && _hasSubMonitor)
+                            if (_hasSubMonitor &&
+                                (_splitMode == 'web' ||
+                                    _splitLocalPdfPath != null ||
+                                    _splitLocalOfficePath != null))
                               IconButton(
                                 icon: const Icon(
                                     Icons.desktop_windows_rounded,
@@ -193685,6 +193731,53 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
   final ScrollController _vScroll = ScrollController();
   final ScrollController _hScroll = ScrollController();
 
+  // ── 表示の拡大率 (= ユーザー要望: ピンチと頭のボタンで表を拡縮) ──
+  //    セルの幅や書式など「保存される値」 には触らない、 見た目だけの倍率。
+  double _ssZoom = 1.0;
+  double _ssPinchBase = 1.0;
+
+  /// 画面に触れている指の場所 (2 本でつまむ判定)。
+  final Map<int, Offset> _ssTouches = {};
+  double _ssPinchDist0 = 0;
+  bool _ssPinching = false;
+
+  void _ssSetZoom(double v) {
+    final z = v.clamp(0.5, 2.0).toDouble();
+    if ((z - _ssZoom).abs() < 0.001) return;
+    setState(() => _ssZoom = z);
+  }
+
+  void _ssTouchDown(PointerDownEvent e) {
+    if (e.kind != PointerDeviceKind.touch) return;
+    _ssTouches[e.pointer] = e.position;
+    if (_ssTouches.length == 2) {
+      final pts = _ssTouches.values.toList();
+      _ssPinchDist0 = (pts[0] - pts[1]).distance;
+      _ssPinchBase = _ssZoom;
+      // つまんでいる間は表を送らない (指の取り合いになるため)。
+      setState(() => _ssPinching = true);
+      _dragSelecting = false;
+      _stopDragAutoScroll();
+    }
+  }
+
+  void _ssTouchMove(PointerMoveEvent e) {
+    if (!_ssTouches.containsKey(e.pointer)) return;
+    _ssTouches[e.pointer] = e.position;
+    if (_ssTouches.length == 2 && _ssPinchDist0 > 10) {
+      final pts = _ssTouches.values.toList();
+      final d = (pts[0] - pts[1]).distance;
+      _ssSetZoom(_ssPinchBase * (d / _ssPinchDist0));
+    }
+  }
+
+  void _ssTouchEnd(int pointer) {
+    _ssTouches.remove(pointer);
+    if (_ssTouches.length < 2 && _ssPinching) {
+      setState(() => _ssPinching = false);
+    }
+  }
+
   static const double _cellWidth = 120.0;
   static const double _cellHeight = 32.0;
   static const double _rowHeaderWidth = 48.0;
@@ -197393,16 +197486,17 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
   }
 
   void _ensureSelVisible() {
-    final x = _selCol * _cellWidth;
-    final y = _selRow * _cellHeight;
+    // 表は _ssZoom 倍で描かれているので、 送り先も倍率を掛けて測る。
+    final x = _selCol * _cellWidth * _ssZoom;
+    final y = _selRow * _cellHeight * _ssZoom;
     if (_hScroll.hasClients) {
       final v = _hScroll.offset;
       final w = _hScroll.position.viewportDimension;
       if (x < v)
         _hScroll.jumpTo(x.clamp(0.0, _hScroll.position.maxScrollExtent));
-      if (x + _cellWidth > v + w) {
+      if (x + _cellWidth * _ssZoom > v + w) {
         _hScroll.jumpTo(
-            (x + _cellWidth - w).clamp(0.0, _hScroll.position.maxScrollExtent));
+            (x + _cellWidth * _ssZoom - w).clamp(0.0, _hScroll.position.maxScrollExtent));
       }
     }
     if (_vScroll.hasClients) {
@@ -197410,8 +197504,8 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
       final h = _vScroll.position.viewportDimension;
       if (y < v)
         _vScroll.jumpTo(y.clamp(0.0, _vScroll.position.maxScrollExtent));
-      if (y + _cellHeight > v + h) {
-        _vScroll.jumpTo((y + _cellHeight - h)
+      if (y + _cellHeight * _ssZoom > v + h) {
+        _vScroll.jumpTo((y + _cellHeight * _ssZoom - h)
             .clamp(0.0, _vScroll.position.maxScrollExtent));
       }
     }
@@ -197883,17 +197977,17 @@ $csvText
   /// 見付けたセルが画面に入るよう送る。
   void _scrollToSelection() {
     if (_vScroll.hasClients) {
-      final y = _selRow * _cellHeight;
+      final y = _selRow * _cellHeight * _ssZoom;
       final vh = _vScroll.position.viewportDimension;
-      if (y < _vScroll.offset || y + _cellHeight > _vScroll.offset + vh) {
+      if (y < _vScroll.offset || y + _cellHeight * _ssZoom > _vScroll.offset + vh) {
         _vScroll.jumpTo((y - vh / 3)
             .clamp(0.0, _vScroll.position.maxScrollExtent));
       }
     }
     if (_hScroll.hasClients) {
-      final x = _selCol * _cellWidth;
+      final x = _selCol * _cellWidth * _ssZoom;
       final vw = _hScroll.position.viewportDimension;
-      if (x < _hScroll.offset || x + _cellWidth > _hScroll.offset + vw) {
+      if (x < _hScroll.offset || x + _cellWidth * _ssZoom > _hScroll.offset + vw) {
         _hScroll.jumpTo((x - vw / 3)
             .clamp(0.0, _hScroll.position.maxScrollExtent));
       }
@@ -198965,6 +199059,34 @@ $csvText
                   isLeftPanel: false),
             ),
           ],
+          // ── 表示の拡大率 (= ユーザー要望: ボタンでも変えられるように) ──
+          IconButton(
+            tooltip: context.read<MindMapProvider>().t('cmd.zoomOut'),
+            icon: Icon(Icons.zoom_out_rounded,
+                color: fg.withValues(alpha: 0.75), size: 20),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+            onPressed: () => _ssSetZoom(_ssZoom - 0.1),
+          ),
+          InkWell(
+            // 押すと 100% に戻る。
+            onTap: () => _ssSetZoom(1.0),
+            borderRadius: BorderRadius.circular(6),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 8),
+              child: Text('${(_ssZoom * 100).round()}%',
+                  style: TextStyle(
+                      color: fg.withValues(alpha: 0.75), fontSize: 11)),
+            ),
+          ),
+          IconButton(
+            tooltip: context.read<MindMapProvider>().t('cmd.zoomIn'),
+            icon: Icon(Icons.zoom_in_rounded,
+                color: fg.withValues(alpha: 0.75), size: 20),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+            onPressed: () => _ssSetZoom(_ssZoom + 0.1),
+          ),
           // ── 使える関数の一覧 (= ユーザー要望: 端に置く) ──
           IconButton(
             tooltip: context.read<MindMapProvider>().t('tip.formulaHelp'),
@@ -199269,18 +199391,31 @@ $csvText
       //    ドラッグで範囲選択)。 セルの外で離しても確実に止まるよう、
       //    表全体で受ける。 ──
       child: Listener(
-        onPointerUp: (_) {
+        // 指 2 本のつまみで拡縮 (= ユーザー要望: ピンチイン / ピンチアウト)。
+        onPointerDown: _ssTouchDown,
+        onPointerUp: (e) {
+          _ssTouchEnd(e.pointer);
           _dragSelecting = false;
           _stopDragAutoScroll();
         },
-        onPointerCancel: (_) {
+        onPointerCancel: (e) {
+          _ssTouchEnd(e.pointer);
           _dragSelecting = false;
           _stopDragAutoScroll();
         },
         // なぞったまま端に来たら表を送る (= ユーザー要望)。
         onPointerMove: (e) {
+          _ssTouchMove(e);
+          if (_ssPinching) return;
           if (!_dragSelecting) return;
           _updateDragAutoScroll(e.position);
+        },
+        // ノートパソコンの触れる板のつまみでも拡縮。
+        onPointerPanZoomStart: (_) => _ssPinchBase = _ssZoom,
+        onPointerPanZoomUpdate: (e) {
+          if ((e.scale - 1.0).abs() > 0.001) {
+            _ssSetZoom(_ssPinchBase * e.scale);
+          }
         },
         child: LayoutBuilder(
         builder: (ctx, cons) {
@@ -199298,15 +199433,37 @@ $csvText
               child: SingleChildScrollView(
                 controller: _hScroll,
                 scrollDirection: Axis.horizontal,
+                physics: _ssPinching
+                    ? const NeverScrollableScrollPhysics()
+                    : null,
                 child: Scrollbar(
                   controller: _vScroll,
                   child: SingleChildScrollView(
                     controller: _vScroll,
                     scrollDirection: Axis.vertical,
+                    physics: _ssPinching
+                        ? const NeverScrollableScrollPhysics()
+                        : null,
+                    // ★ 拡大率は「描く時に掛ける」。 セル幅の定数や保存値には
+                    //   触れない。 外側の箱は倍率後の大きさで場所を取り、
+                    //   中身は等倍で組んでから Transform で拡縮する
+                    //   (当たり判定も Transform が合わせてくれる)。
                     child: SizedBox(
-                      width: tableW,
-                      height: tableH,
-                      child: Stack(children: [
+                      width: tableW * _ssZoom,
+                      height: tableH * _ssZoom,
+                      child: OverflowBox(
+                        alignment: Alignment.topLeft,
+                        minWidth: 0,
+                        minHeight: 0,
+                        maxWidth: double.infinity,
+                        maxHeight: double.infinity,
+                        child: Transform.scale(
+                          scale: _ssZoom,
+                          alignment: Alignment.topLeft,
+                          child: SizedBox(
+                            width: tableW,
+                            height: tableH,
+                            child: Stack(children: [
                         Column(
                           children: [
                             _buildColumnHeaderRow(dark, fg),
@@ -199319,7 +199476,10 @@ $csvText
                         //    ドラッグで動かせる。 ✕ で消す。 ──
                         for (final im in _images) _buildSheetImage(im),
                         for (final sh in _shapes) _buildSheetShape(sh),
-                      ]),
+                            ]),
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                 ),
@@ -199369,8 +199529,9 @@ $csvText
         onPanUpdate: (d) {
           setState(() {
             _activeShape = sh;
-            sh.dx += d.delta.dx;
-            sh.dy += d.delta.dy;
+            // 画面の距離 → 表の距離 (拡大中はそのまま足すと倍速で動く)。
+            sh.dx += d.delta.dx / _ssZoom;
+            sh.dy += d.delta.dy / _ssZoom;
             while (sh.dx >= _cellWidth && sh.col < _colCount - 1) {
               sh.dx -= _cellWidth;
               sh.col++;
@@ -199442,8 +199603,10 @@ $csvText
                 behavior: HitTestBehavior.opaque,
                 onPanUpdate: (d) {
                   setState(() {
-                    sh.width = math.max(20.0, sh.width + d.delta.dx);
-                    sh.height = math.max(16.0, sh.height + d.delta.dy);
+                    sh.width =
+                        math.max(20.0, sh.width + d.delta.dx / _ssZoom);
+                    sh.height =
+                        math.max(16.0, sh.height + d.delta.dy / _ssZoom);
                     sh.edited = true;
                     _dirty = true;
                   });
@@ -200138,8 +200301,9 @@ $csvText
         //    xlsx に書き出した時も同じ場所に来るようにする。 ──
         onPanUpdate: (d) {
           setState(() {
-            im.dx += d.delta.dx;
-            im.dy += d.delta.dy;
+            // 画面の距離 → 表の距離 (拡大率で割る)。
+            im.dx += d.delta.dx / _ssZoom;
+            im.dy += d.delta.dy / _ssZoom;
             while (im.dx >= _cellWidth && im.col < _colCount - 1) {
               im.dx -= _cellWidth;
               im.col++;
@@ -200179,8 +200343,10 @@ $csvText
               behavior: HitTestBehavior.opaque,
               onPanUpdate: (d) {
                 setState(() {
-                  im.width = math.max(40.0, im.width + d.delta.dx);
-                  im.height = math.max(30.0, im.height + d.delta.dy);
+                  im.width =
+                      math.max(40.0, im.width + d.delta.dx / _ssZoom);
+                  im.height =
+                      math.max(30.0, im.height + d.delta.dy / _ssZoom);
                   _dirty = true;
                 });
               },
@@ -200537,16 +200703,18 @@ $csvText
               inFillPreview: inFillPreview,
               onFillDrag: (delta) {
                 setState(() {
+                  // 画面の距離 → 表の距離 (拡大率で割る)。
+                  final dz = delta / _ssZoom;
                   final baseX = (rg.c2 + 1) * _cellWidth;
                   final baseY = (rg.r2 + 1) * _cellHeight;
                   final curX = (_fillToCol == null
                           ? baseX
                           : (_fillToCol! + 1) * _cellWidth) +
-                      delta.dx;
+                      dz.dx;
                   final curY = (_fillToRow == null
                           ? baseY
                           : (_fillToRow! + 1) * _cellHeight) +
-                      delta.dy;
+                      dz.dy;
                   _fillToCol = (curX / _cellWidth).round() - 1;
                   _fillToRow = (curY / _cellHeight).round() - 1;
                   if (_fillToCol! < rg.c2) _fillToCol = rg.c2;

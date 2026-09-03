@@ -19563,16 +19563,18 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Не удалось перерисовать диаграмму',
     },
     'cursorWrap.title': {
-      'ja': '画面の両端をつなぐ', 'en': 'Wrap cursor at screen edges',
-      'zh': '在屏幕两端环绕光标', 'ko': '화면 양 끝에서 커서 순환',
-      'es': 'Envolver el cursor en los bordes',
-      'fr': 'Boucler le curseur aux bords',
-      'de': 'Zeiger an den Rändern umbrechen',
-      'pt': 'Circular o cursor nas bordas',
-      'ru': 'Перенос курсора на краях экрана',
+      'ja': 'サブモニターに両サイドからアクセス',
+      'en': 'Reach the second monitor from both sides',
+      'zh': '从两侧进入副显示器', 'ko': '보조 모니터에 양쪽에서 접근',
+      'es': 'Acceder al segundo monitor por ambos lados',
+      'fr': "Accéder au second écran des deux côtés",
+      'de': 'Zweiten Monitor von beiden Seiten erreichen',
+      'pt': 'Acessar o segundo monitor pelos dois lados',
+      'ru': 'Доступ ко второму монитору с обеих сторон',
     },
     'cursorWrap.desc': {
-      'ja': 'モニターが2枚以上ある時、 端から出たマウスを反対の端へ出します。',
+      'ja': 'モニターが2枚以上ある時、 つながっていない側の端からもマウスが'
+          '隣のモニターへ抜けられるようにします (端から出ると反対の端に出ます)。',
       'en': 'With two or more monitors, the cursor leaving one outer edge '
           'appears at the opposite outer edge.',
       'zh': '当有两台以上显示器时，光标从一端离开会从另一端出现。',

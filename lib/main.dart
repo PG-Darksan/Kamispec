@@ -3385,11 +3385,29 @@ void main(List<String> args) async {
   // デスクトップ版のみ window_manager を初期化
   if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
     await windowManager.ensureInitialized();
+    // ── 「サブモニターへ送る」 から開かれた時は、 言われた場所に出す
+    //    (= ユーザー要望)。 --floating-x/y/w/h と同じ書き方の引数。 ──
+    double? winX, winY, winW, winH;
+    for (final a in args) {
+      if (a.startsWith('--win-x=')) winX = double.tryParse(a.substring(8));
+      if (a.startsWith('--win-y=')) winY = double.tryParse(a.substring(8));
+      if (a.startsWith('--win-w=')) winW = double.tryParse(a.substring(8));
+      if (a.startsWith('--win-h=')) winH = double.tryParse(a.substring(8));
+    }
+    final hasFrame = winX != null && winY != null;
     await windowManager.waitUntilReadyToShow(
-      const WindowOptions(
+      WindowOptions(
         title: 'HisatorNotebook',
+        size: (winW != null && winH != null) ? Size(winW, winH) : null,
+        // 置き場所を指定された時は真ん中寄せしない。
+        center: hasFrame ? false : null,
       ),
       () async {
+        if (hasFrame) {
+          try {
+            await windowManager.setPosition(Offset(winX!, winY!));
+          } catch (_) {}
+        }
         await windowManager.show();
         await windowManager.focus();
       },

@@ -38,12 +38,6 @@ class CursorWrap {
   /// 移した直後に、 また移してしまわないための待ち時間。
   DateTime _quietUntil = DateTime.fromMillisecondsSinceEpoch(0);
 
-  /// 端に着いてからどれだけ経ったか。 勢いよく振って端に当てただけで飛ぶと、
-  /// 閉じるボタンを押そうとした指が別のモニターへ持って行かれる。 少しの間
-  /// 端に留めてもらってから移す。
-  static const Duration _dwell = Duration(milliseconds: 250);
-  DateTime? _edgeSince;
-  String _edgeKind = '';
 
   bool get isRunning => _timer != null;
 
@@ -67,14 +61,12 @@ class CursorWrap {
 
   void start() {
     if (!isSupported || !allowed || !_enabled || _timer != null) return;
-    _timer = Timer.periodic(const Duration(milliseconds: 20), (_) => _tick());
+    _timer = Timer.periodic(const Duration(milliseconds: 15), (_) => _tick());
   }
 
   void stop() {
     _timer?.cancel();
     _timer = null;
-    _edgeSince = null;
-    _edgeKind = '';
   }
 
   int _metric(int index) {
@@ -127,11 +119,7 @@ class CursorWrap {
         ny = vy + 2;
         kind = 'B';
       }
-      if (nx == null || ny == null) {
-        _edgeSince = null;
-        _edgeKind = '';
-        return;
-      }
+      if (nx == null || ny == null) return;
 
       // ★ 向きは「仮想画面と主モニターの大きさ比べ」 では決められない。
       //   高さの違う 2 枚を横に並べただけで縦にも回り込んでしまい、 下端の
@@ -145,27 +133,14 @@ class CursorWrap {
       final apart = horizontal
           ? (to.$3 <= from.$1 || to.$1 >= from.$3)
           : (to.$4 <= from.$2 || to.$2 >= from.$4);
-      if (!apart) {
-        _edgeSince = null;
-        _edgeKind = '';
-        return;
-      }
+      if (!apart) return;
 
-      // 端に少し留まってから移す (振っただけで飛ばさない)。
-      final now = DateTime.now();
-      if (_edgeKind != kind || _edgeSince == null) {
-        _edgeKind = kind;
-        _edgeSince = now;
-        return;
-      }
-      if (now.difference(_edgeSince!) < _dwell) return;
-
-      // 行き先のモニターの内側へ収めてから移す。
+      // ★ 端に着いたら待たずにすぐ移す (= ユーザー報告: 一瞬止まるのが
+      //   気になる)。 行き先のモニターの内側へ収めてから移す。
       _setCursorPos(
           nx.clamp(to.$1 + 1, to.$3 - 2), ny.clamp(to.$2 + 1, to.$4 - 2));
-      _edgeSince = null;
-      _edgeKind = '';
-      _quietUntil = now.add(const Duration(milliseconds: 300));
+      _quietUntil =
+          DateTime.now().add(const Duration(milliseconds: 300));
     } catch (_) {
       // 何かおかしければ黙って止める (マウスを人質に取らない)。
       stop();
