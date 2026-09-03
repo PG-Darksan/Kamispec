@@ -116797,6 +116797,264 @@ const String _kMdEmbeddedMapJs = r"""
   };
 
   /// 変換したマップを、 その場 (mermaid のスロット) に描く。
+
+  /// 「自分のアプリ形式」 で図をそのまま描く (= ユーザー要望: 円グラフを
+  /// マインドマップの箱に変えず、 円グラフのまま・編集できる形で出す)。
+  ///
+  /// [data] は __mmChartData が返した物。 割合や作業の値はその場で直せて、
+  /// 「+ ページに追加」 はいま直した値をそのままページへ送る。
+  window.__mmRenderChartView = function (slot, data, code) {
+    var COLORS = ['#4FC3F7', '#9CCC65', '#FFB74D', '#E57373',
+                  '#BA68C8', '#4DB6AC', '#FFF176', '#90A4AE'];
+    var sc = 1;
+
+    function esc2(t) {
+      return String(t == null ? '' : t)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function ctlHtml() {
+      return '<div class="mmap-ctl">' +
+        '<button type="button" data-c="mermaid" ' +
+        'data-tip="元のマーメイドの図に戻す">&#9707;</button>' +
+        (window.__mmPost
+          ? '<button type="button" data-c="topage" class="wide" ' +
+            'data-tip="この図をページに入れる">&#43; ページに追加</button>'
+          : '') +
+        '<button type="button" data-c="in" data-tip="大きくする">+</button>' +
+        '<button type="button" data-c="out" data-tip="小さくする">&#8722;</button>' +
+        '<button type="button" data-c="fit" data-tip="元の大きさ">&#8634;</button>' +
+        // 並びを図のビューと揃えるための場所取り (見えないだけで幅は同じ)。
+        '<button type="button" style="visibility:hidden">&#9776;</button>' +
+        '</div>';
+    }
+
+    function pieSvg() {
+      var items = data.items || [];
+      var total = 0;
+      for (var i = 0; i < items.length; i++) {
+        var v = Number(items[i].value);
+        if (isFinite(v) && v > 0) total += v;
+      }
+      var R = 120, CX = 140, CY = 140;
+      var parts = [];
+      if (total <= 0) {
+        parts.push('<circle cx="' + CX + '" cy="' + CY + '" r="' + R +
+                   '" fill="#ccc"/>');
+      } else {
+        var ang = -Math.PI / 2;
+        for (var j = 0; j < items.length; j++) {
+          var val = Number(items[j].value);
+          if (!isFinite(val) || val <= 0) continue;
+          var sweep = val / total * Math.PI * 2;
+          var x1 = CX + R * Math.cos(ang), y1 = CY + R * Math.sin(ang);
+          var x2 = CX + R * Math.cos(ang + sweep);
+          var y2 = CY + R * Math.sin(ang + sweep);
+          var big = sweep > Math.PI ? 1 : 0;
+          var col = COLORS[j % COLORS.length];
+          parts.push('<path d="M' + CX + ',' + CY + ' L' + x1 + ',' + y1 +
+            ' A' + R + ',' + R + ' 0 ' + big + ',1 ' + x2 + ',' + y2 +
+            ' Z" fill="' + col + '" stroke="#fff" stroke-width="1.5"/>');
+          if (sweep > 0.35) {
+            var mid = ang + sweep / 2;
+            var tx = CX + R * 0.62 * Math.cos(mid);
+            var ty = CY + R * 0.62 * Math.sin(mid);
+            parts.push('<text x="' + tx + '" y="' + ty +
+              '" text-anchor="middle" dominant-baseline="middle" ' +
+              'font-size="13" font-weight="700" fill="#222">' +
+              Math.round(val / total * 100) + '%</text>');
+          }
+          ang += sweep;
+        }
+      }
+      return '<svg width="280" height="280" viewBox="0 0 280 280">' +
+        parts.join('') + '</svg>';
+    }
+
+    function ganttSvg() {
+      var tasks = data.tasks || [];
+      var lo = null, hi = null;
+      function d0(t) {
+        var m = String(t || '').match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+        return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+                 : null;
+      }
+      for (var i = 0; i < tasks.length; i++) {
+        var a = d0(tasks[i].start), b = d0(tasks[i].end);
+        if (a && (!lo || a < lo)) lo = a;
+        if (b && (!hi || b > hi)) hi = b;
+        if (a && (!hi || a > hi)) hi = a;
+        if (b && (!lo || b < lo)) lo = b;
+      }
+      var W = 520, NAME = 150, BAR = W - NAME - 10;
+      var days = (lo && hi)
+        ? Math.max(1, Math.round((hi - lo) / 86400000) + 1) : 1;
+      var rows = [], y = 22, last = '__none__';
+      var stC = { done: '#66BB6A', active: '#42A5F5', crit: '#EF5350' };
+      for (var k = 0; k < tasks.length; k++) {
+        var t = tasks[k];
+        if (t.section && t.section !== last) {
+          last = t.section;
+          rows.push('<text x="0" y="' + (y + 10) + '" font-size="12" ' +
+            'font-weight="700" fill="#444">' + esc2(t.section) + '</text>');
+          y += 18;
+        }
+        rows.push('<text x="0" y="' + (y + 13) + '" font-size="12" ' +
+          'fill="#333">' + esc2(t.label) + '</text>');
+        var sa = d0(t.start), sb = d0(t.end);
+        if (lo && sa) {
+          var x1 = NAME + (sa - lo) / 86400000 / days * BAR;
+          var x2 = NAME + (((sb || sa) - lo) / 86400000 + 1) / days * BAR;
+          rows.push('<rect x="' + x1 + '" y="' + (y + 3) + '" width="' +
+            Math.max(4, x2 - x1) + '" height="14" rx="3" fill="' +
+            (stC[t.status] || '#9FA8DA') + '"/>');
+        }
+        y += 22;
+      }
+      var head = '';
+      if (lo && hi) {
+        function fmt(d) { return (d.getMonth() + 1) + '/' + d.getDate(); }
+        head = '<text x="' + NAME + '" y="12" font-size="11" fill="#666">' +
+          fmt(lo) + '</text><text x="' + W + '" y="12" font-size="11" ' +
+          'fill="#666" text-anchor="end">' + fmt(hi) + '</text>' +
+          '<line x1="' + NAME + '" y1="17" x2="' + W + '" y2="17" ' +
+          'stroke="#ddd"/>';
+      }
+      return '<svg width="' + W + '" height="' + (y + 6) + '" viewBox="0 0 ' +
+        W + ' ' + (y + 6) + '">' + head + rows.join('') + '</svg>';
+    }
+
+    function legendHtml() {
+      var out = [];
+      if (data.type === 'gantt') {
+        var tasks = data.tasks || [];
+        for (var i = 0; i < tasks.length; i++) {
+          out.push('<div class="mmch-row" data-i="' + i + '">' +
+            '<span class="mmch-sw" style="background:' +
+            ({ done: '#66BB6A', active: '#42A5F5', crit: '#EF5350' }
+              [tasks[i].status] || '#9FA8DA') + '"></span>' +
+            '<span class="mmch-l" contenteditable="true">' +
+            esc2(tasks[i].label) + '</span>' +
+            '<span class="mmch-v" contenteditable="true">' +
+            esc2(tasks[i].start) + '</span>' +
+            '<span class="mmch-v" contenteditable="true">' +
+            esc2(tasks[i].end) + '</span>' +
+            '</div>');
+        }
+      } else {
+        var items = data.items || [];
+        for (var j = 0; j < items.length; j++) {
+          out.push('<div class="mmch-row" data-i="' + j + '">' +
+            '<span class="mmch-sw" style="background:' +
+            COLORS[j % COLORS.length] + '"></span>' +
+            '<span class="mmch-l" contenteditable="true">' +
+            esc2(items[j].label) + '</span>' +
+            '<span class="mmch-v" contenteditable="true">' +
+            esc2(items[j].value) + '</span>' +
+            '</div>');
+        }
+      }
+      return '<div class="mmch-legend">' + out.join('') +
+        '<div class="mmch-hint">数字や名前を押すと、 その場で直せます</div>' +
+        '</div>';
+    }
+
+    function draw() {
+      slot.className = 'mmap';
+      slot.innerHTML =
+        '<div class="mmap-box">' +
+        '<div class="mmch-stage"><div class="mmch-inner">' +
+        (data.type === 'gantt' ? ganttSvg() : pieSvg()) +
+        legendHtml() +
+        '</div></div>' + ctlHtml() +
+        (data.title
+          ? '<div class="mmap-name">' + esc2(data.title) + '</div>'
+          : '') +
+        '<div class="mmap-resize"></div></div>';
+      var inner = slot.querySelector('.mmch-inner');
+      if (inner) {
+        inner.style.transform = 'scale(' + sc + ')';
+        inner.style.transformOrigin = 'top left';
+      }
+      wire();
+    }
+
+    function readEdits() {
+      var rows = slot.querySelectorAll('.mmch-row');
+      for (var i = 0; i < rows.length; i++) {
+        var idx = Number(rows[i].getAttribute('data-i'));
+        var l = rows[i].querySelector('.mmch-l');
+        var vs = rows[i].querySelectorAll('.mmch-v');
+        if (data.type === 'gantt') {
+          if (!data.tasks[idx]) continue;
+          if (l) data.tasks[idx].label = l.textContent.trim();
+          if (vs[0]) data.tasks[idx].start = vs[0].textContent.trim();
+          if (vs[1]) data.tasks[idx].end = vs[1].textContent.trim();
+        } else {
+          if (!data.items[idx]) continue;
+          if (l) data.items[idx].label = l.textContent.trim();
+          if (vs[0]) {
+            var n = parseFloat(vs[0].textContent.trim());
+            if (isFinite(n)) data.items[idx].value = n;
+          }
+        }
+      }
+    }
+
+    function wire() {
+      var ctl = slot.querySelector('.mmap-ctl');
+      if (ctl) {
+        ctl.addEventListener('click', function (ev) {
+          var b = ev.target.closest ? ev.target.closest('button') : null;
+          if (!b) return;
+          ev.stopPropagation();
+          var c = b.getAttribute('data-c');
+          if (c === 'in') { sc = Math.min(3, sc * 1.15); draw(); }
+          else if (c === 'out') { sc = Math.max(0.4, sc / 1.15); draw(); }
+          else if (c === 'fit') { sc = 1; draw(); }
+          else if (c === 'mermaid') {
+            // 元のマーメイドの図に戻す。
+            if (window.mermaid && code) {
+              var fix = (window.__mmFixMermaid ||
+                  function (x) { return x; })(code);
+              mermaid.render('mmc' + Date.now(), fix).then(function (r) {
+                slot.className = 'mermaid-slot';
+                slot.removeAttribute('data-done');
+                window.__mmMermaidInteractive(slot, r.svg, code, function () {
+                  window.__mmRenderChartView(slot, data, code);
+                });
+              }).catch(function () {});
+            }
+          } else if (c === 'topage') {
+            readEdits();
+            if (window.__mmPost) {
+              window.__mmPost({
+                type: 'chartToPage',
+                chartType: data.type,
+                title: data.title || '',
+                items: data.items || [],
+                tasks: data.tasks || []
+              });
+            }
+          }
+        });
+      }
+      // 直したらその場で描き直す (割合が変わるため)。
+      var rows = slot.querySelectorAll('.mmch-l, .mmch-v');
+      for (var i = 0; i < rows.length; i++) {
+        rows[i].addEventListener('blur', function () {
+          readEdits();
+          draw();
+        });
+        rows[i].addEventListener('keydown', function (ev) {
+          if (ev.key === 'Enter') { ev.preventDefault(); this.blur(); }
+        });
+      }
+    }
+
+    draw();
+  };
+
   window.__mmRenderMermaidMap = function (slot, model) {
     try {
       slot.removeAttribute('data-done');
@@ -117966,6 +118224,20 @@ String _markdownPreviewHtml(String md, bool dark,
   .mmap-ctl button{width:26px;height:24px;border-radius:6px;cursor:pointer;
     border:1px solid $border;background:$bg;color:$fg;font-size:12px;
     line-height:1;padding:0;}
+  .mmch-stage{position:absolute;left:0;top:0;right:0;bottom:0;
+       overflow:auto;padding:14px;}
+  .mmch-inner{display:flex;gap:18px;align-items:flex-start;
+       flex-wrap:wrap;}
+  .mmch-legend{min-width:200px;}
+  .mmch-row{display:flex;align-items:center;gap:8px;margin:3px 0;
+       font-size:13px;}
+  .mmch-sw{width:12px;height:12px;border-radius:3px;flex:none;}
+  .mmch-l{min-width:90px;outline:none;border-bottom:1px dashed transparent;}
+  .mmch-v{min-width:52px;text-align:right;outline:none;
+       border-bottom:1px dashed transparent;}
+  .mmch-l:focus,.mmch-v:focus{border-bottom-color:#BA68C8;}
+  .mmch-l:hover,.mmch-v:hover{border-bottom-color:#bbb;cursor:text;}
+  .mmch-hint{margin-top:8px;font-size:11px;opacity:.55;}
   .mmap-ctl button.wide{width:auto;padding:0 9px;font-size:11px;
     font-weight:700;background:$accent;border-color:$accent;color:#fff;}
   .mmap-node.moving{opacity:.85;box-shadow:0 6px 18px rgba(0,0,0,.5);
@@ -118104,6 +118376,9 @@ $mapsJs
       '<button type="button" data-act="in" title="zoom in">+</button>' +
       '<button type="button" data-act="out" title="zoom out">&#8722;</button>' +
       '<button type="button" data-act="reset" title="reset">&#8634;</button>' +
+      // 並びをアプリ形式のビューと揃える場所取り (= ユーザー要望: 切り替え
+      //   てもボタンの位置がずれないように)。
+      '<button type="button" style="visibility:hidden">&#9776;</button>' +
       (bridge
         ? '<button type="button" data-act="ai" title="AI">AI</button>' +
           '<button type="button" data-act="fix" title="AI fix">&#9998;</button>' +
@@ -118385,9 +118660,21 @@ $mapsJs
         if (bridge) bridge.postMessage({ type: 'mermaidCopy', code: code });
       }
       else if (act === 'tomap') {
-        // その図のまま描いていた物を、 掴んで動かせるマップに読み替える。
+        // ★ 円グラフ / 工程表は、 アプリ形式でも図のまま描く
+        //   (= ユーザー要望: マインドマップの箱に変えない)。 値はその場で
+        //   直せて、 そのままページへ送れる。
         try {
-          var conv = window.__mmMermaidToMap(code, true);
+          if (window.__mmChartData && window.__mmRenderChartView) {
+            var cd = window.__mmChartData(codeNow || code);
+            if (cd) {
+              window.__mmRenderChartView(slot, cd, codeNow || code);
+              return;
+            }
+          }
+        } catch (e) {}
+        // 節点と線で表せる図は、 掴んで動かせるマップに読み替える。
+        try {
+          var conv = window.__mmMermaidToMap(codeNow || code, true);
           if (conv) window.__mmRenderMermaidMap(slot, conv);
         } catch (e) {}
       }
