@@ -984,11 +984,12 @@ class MindMapNode {
 
     if (d.isSeq) {
       var w = 0.0;
-      for (final a in d.actors) {
+      final used = d.usedActors;
+      for (final a in used) {
         final x = textW(a, 11, w: FontWeight.w700) + 26;
         if (x > w) w = x;
       }
-      return (w * math.max(1, d.actors.length) + 28).clamp(240.0, 1600.0);
+      return (w * math.max(1, used.length) + 28).clamp(240.0, 1600.0);
     }
     if (d.isGantt) {
       var name = 0.0;
@@ -1988,6 +1989,22 @@ class ChartData {
         messages = messages ?? <SeqMessage>[];
 
   bool isPerson(String name) => personActors.contains(name);
+
+  /// 実際にやり取りに出てくる相手だけ (= ユーザー要望: 名前を直した後に
+  /// 古い相手が列として残り、 位置関係が元と変わってしまう)。
+  List<String> get usedActors {
+    final out = <String>[];
+    bool used(String a) =>
+        messages.any((m) => m.from == a || m.to == a);
+    for (final a in actors) {
+      if (used(a) && !out.contains(a)) out.add(a);
+    }
+    for (final m in messages) {
+      if (m.from.isNotEmpty && !out.contains(m.from)) out.add(m.from);
+      if (m.to.isNotEmpty && !out.contains(m.to)) out.add(m.to);
+    }
+    return out;
+  }
 
   bool get isGantt => type == 'gantt';
   bool get isSeq => type == 'sequence';

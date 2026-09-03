@@ -3755,9 +3755,15 @@ class _NodeSeqPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     _paintChartPanel(canvas, size);
     const ink = Color(0xFF1F2430);
-    final actors = data.actors;
+    // 使われている相手だけ並べる (= 元と位置関係が変わらないように)。
+    final actors = data.usedActors;
     final msgs = data.messages;
     if (actors.isEmpty) return;
+
+    Color actorColor(String name) {
+      final i = actors.indexOf(name);
+      return kChartPalette[(i < 0 ? 0 : i) % kChartPalette.length];
+    }
 
     final hasPerson = data.personActors.isNotEmpty;
     final headH = hasPerson ? 62.0 : 34.0;
@@ -3785,7 +3791,7 @@ class _NodeSeqPainter extends CustomPainter {
         final pen = Paint()
           ..style = PaintingStyle.stroke
           ..strokeWidth = 1.6
-          ..color = const Color(0xFF7E57C2);
+          ..color = actorColor(actors[i]);
         canvas.drawCircle(Offset(cx, 12), 6, pen);
         canvas.drawLine(Offset(cx, 18), Offset(cx, 28), pen);
         canvas.drawLine(Offset(cx - 7, 22), Offset(cx + 7, 22), pen);
@@ -3795,13 +3801,14 @@ class _NodeSeqPainter extends CustomPainter {
       final box = RRect.fromRectAndRadius(
           Rect.fromCenter(center: Offset(cx, boxCy), width: bw, height: 24),
           const Radius.circular(6));
-      canvas.drawRRect(box, Paint()..color = const Color(0xFFD7D9F5));
+      canvas.drawRRect(box,
+          Paint()..color = actorColor(actors[i]).withValues(alpha: 0.32));
       canvas.drawRRect(
           box,
           Paint()
             ..style = PaintingStyle.stroke
-            ..strokeWidth = 1
-            ..color = const Color(0xFF8E93D6));
+            ..strokeWidth = 1.2
+            ..color = actorColor(actors[i]));
       final tp = TextPainter(
         text: TextSpan(
             text: actors[i],
@@ -3818,9 +3825,7 @@ class _NodeSeqPainter extends CustomPainter {
 
     // ── やり取り ──
     var y = headH + rowH * 0.5;
-    final arrow = Paint()
-      ..color = const Color(0xFF5C6BC0)
-      ..strokeWidth = 1.4;
+    final arrow = Paint()..strokeWidth = 1.6;
     for (final m in msgs) {
       if (y > size.height - 6) break;
       final x1 = xs[m.from], x2 = xs[m.to];
@@ -3828,6 +3833,7 @@ class _NodeSeqPainter extends CustomPainter {
         y += rowH;
         continue;
       }
+      arrow.color = actorColor(m.from);
       if (m.dashed) {
         // 点線 (返事)。
         const dash = 5.0;
@@ -3848,7 +3854,7 @@ class _NodeSeqPainter extends CustomPainter {
         ..lineTo(x2 - 7 * dir, y - 4)
         ..lineTo(x2 - 7 * dir, y + 4)
         ..close();
-      canvas.drawPath(path, Paint()..color = const Color(0xFF5C6BC0));
+      canvas.drawPath(path, Paint()..color = actorColor(m.from));
       if (m.text.isNotEmpty) {
         final tp = TextPainter(
           text: TextSpan(

@@ -19637,6 +19637,20 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Getrennt scrollen', 'pt': 'Rolar separadamente',
       'ru': 'Прокручивать отдельно',
     },
+    'ctx.switchPage': {
+      'ja': 'ページ切り替え', 'en': 'Switch page',
+      'zh': '切换页面', 'ko': '페이지 전환',
+      'es': 'Cambiar de pagina', 'fr': 'Changer de page',
+      'de': 'Seite wechseln', 'pt': 'Trocar de pagina',
+      'ru': 'Сменить страницу',
+    },
+    'ctx.switchPageHint': {
+      'ja': 'ページ名で絞り込む', 'en': 'Filter by page name',
+      'zh': '按页面名筛选', 'ko': '페이지 이름으로 좁히기',
+      'es': 'Filtrar por nombre', 'fr': 'Filtrer par nom',
+      'de': 'Nach Name filtern', 'pt': 'Filtrar por nome',
+      'ru': 'Фильтр по имени',
+    },
     'seq.editTitle': {
       'ja': '順序図を編集', 'en': 'Edit sequence diagram',
       'zh': '编辑时序图', 'ko': '시퀀스 다이어그램 편집',

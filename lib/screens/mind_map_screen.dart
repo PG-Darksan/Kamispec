@@ -25933,6 +25933,103 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   // ─── PC版：キャンバス右クリックメニュー ─────────────────────────────────
 
+  /// ページを手早く切り替える (= ユーザー要望: 右クリックの一番上から)。
+  /// 押した所の近くに出し、 選ぶとそのページへ移る。
+  Future<void> _showQuickPageSwitcher(MindMapProvider provider) async {
+    final ctrl = TextEditingController();
+    await _showNearDialogMain<void>(
+      width: 340,
+      height: 460,
+      builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
+        final q = ctrl.text.trim().toLowerCase();
+        final pages = [
+          for (var i = 0; i < provider.pages.length; i++)
+            if (q.isEmpty ||
+                provider.pages[i].name.toLowerCase().contains(q))
+              (i: i, p: provider.pages[i]),
+        ];
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          contentPadding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+          title: Text(provider.t('ctx.switchPage'),
+              style: const TextStyle(color: Colors.white, fontSize: 15)),
+          content: SizedBox(
+            width: math.min(320.0, MediaQuery.sizeOf(dctx).width - 48),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              TextField(
+                controller: ctrl,
+                autofocus: true,
+                style: const TextStyle(color: Colors.white, fontSize: 13),
+                decoration: InputDecoration(
+                  isDense: true,
+                  prefixIcon: const Icon(Icons.search_rounded,
+                      size: 18, color: Colors.white38),
+                  hintText: provider.t('ctx.switchPageHint'),
+                  hintStyle: const TextStyle(color: Colors.white24),
+                ),
+                onChanged: (_) => setD(() {}),
+              ),
+              const SizedBox(height: 6),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 330),
+                child: ListView(shrinkWrap: true, children: [
+                  for (final e in pages)
+                    ListTile(
+                      dense: true,
+                      selected: e.p.id == provider.currentPage.id,
+                      selectedTileColor: Colors.white10,
+                      leading: Icon(_pageTypeIcon(e.p.pageType),
+                          size: 18,
+                          color: e.p.id == provider.currentPage.id
+                              ? const Color(0xFFBA68C8)
+                              : Colors.white54),
+                      title: Text(e.p.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 13)),
+                      onTap: () {
+                        Navigator.pop(dctx);
+                        provider.switchPage(e.i);
+                      },
+                    ),
+                ]),
+              ),
+            ]),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dctx),
+              child: Text(provider.t('btn.close'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+          ],
+        );
+      }),
+    );
+    ctrl.dispose();
+  }
+
+  /// ページの種類ごとの目印。
+  IconData _pageTypeIcon(String type) {
+    switch (type) {
+      case 'bookshelf':
+        return Icons.photo_library_outlined;
+      case 'paint':
+        return Icons.brush_outlined;
+      case 'document':
+        return Icons.description_outlined;
+      case 'markdown':
+        return Icons.article_outlined;
+      case 'videoEditor':
+        return Icons.movie_outlined;
+      case 'aiStudio':
+        return Icons.auto_awesome_outlined;
+      default:
+        return Icons.map_outlined;
+    }
+  }
+
   void _showCanvasContextMenu(Offset globalPos, TransformationController ctrl,
       MindMapProvider provider) {
     _removeOverlay();
@@ -25952,6 +26049,17 @@ class _MindMapScreenState extends State<MindMapScreen>
     // 割り方を「右に」 出すため、 項目そのものの位置を測る鍵 (= ユーザー要望)。
     final GlobalKey splitItemKey = GlobalKey();
     List<Widget> buildItems(bool splitExpanded, VoidCallback toggleSplit) => [
+      // ── ページ切り替え (= ユーザー要望: 左上を押しに行くのが億劫なので、
+      //    何もない所の右クリックの一番上から移れるように) ──
+      _CtxMenuItem(
+        icon: Icons.swap_horiz_rounded,
+        label: provider.t('ctx.switchPage'),
+        color: const Color(0xFFBA68C8),
+        onTap: () {
+          _removeOverlay();
+          unawaited(_showQuickPageSwitcher(provider));
+        },
+      ),
       // ── ギャラリー: 背景画像の設定 (= ユーザー要望: ギャラリー背景を
       //    右クリックすることで背景画像の設定項目が出るように) ──
       if (provider.currentPage.pageType == 'bookshelf')
@@ -117153,8 +117261,42 @@ const String _kMdEmbeddedMapJs = r"""
         W + ' ' + (y + 6) + '">' + head + rows.join('') + '</svg>';
     }
 
+    /// 登場人物ごとの色 (= ユーザー要望: 凡例の色が全部同じで区別できない)。
+    function actorColor(name) {
+      var list = usedActors();
+      var i = list.indexOf(name);
+      return COLORS[(i < 0 ? 0 : i) % COLORS.length];
+    }
+
+    /// 実際にやり取りに出てくる相手だけを、 出てくる順に並べる。
+    /// (= ユーザー要望: 元と位置関係が変わり過ぎ。 名前を直した後に古い
+    ///   相手が列として残っていた)
+    function usedActors() {
+      var msgs = data.messages || [];
+      var seen = [];
+      // 宣言された順を優先しつつ、 使われている相手だけ残す。
+      var declared = data.actors || [];
+      for (var i = 0; i < declared.length; i++) {
+        for (var j = 0; j < msgs.length; j++) {
+          if (msgs[j].from === declared[i] || msgs[j].to === declared[i]) {
+            if (seen.indexOf(declared[i]) < 0) seen.push(declared[i]);
+            break;
+          }
+        }
+      }
+      for (var k = 0; k < msgs.length; k++) {
+        if (msgs[k].from && seen.indexOf(msgs[k].from) < 0) {
+          seen.push(msgs[k].from);
+        }
+        if (msgs[k].to && seen.indexOf(msgs[k].to) < 0) {
+          seen.push(msgs[k].to);
+        }
+      }
+      return seen;
+    }
+
     function seqSvg() {
-      var actors = data.actors || [];
+      var actors = usedActors();
       var msgs = data.messages || [];
       if (!actors.length) return '';
       var colW = Math.max(150, Math.min(260, 860 / actors.length));
@@ -117171,7 +117313,8 @@ const String _kMdEmbeddedMapJs = r"""
         var bw = Math.min(colW - 14, 210);
         // actor と書かれた相手は棒人間も描く (= ユーザー要望)。
         if (persons.indexOf(actors[i]) >= 0) {
-          parts.push('<g stroke="#7E57C2" stroke-width="1.8" fill="none">' +
+          parts.push('<g stroke="' + actorColor(actors[i]) +
+            '" stroke-width="1.8" fill="none">' +
             '<circle cx="' + cx + '" cy="10" r="6"/>' +
             '<line x1="' + cx + '" y1="16" x2="' + cx + '" y2="26"/>' +
             '<line x1="' + (cx - 7) + '" y1="20" x2="' + (cx + 7) +
@@ -117181,8 +117324,9 @@ const String _kMdEmbeddedMapJs = r"""
             '</g>');
         }
         parts.push('<rect x="' + (cx - bw / 2) + '" y="' + boxY +
-          '" width="' + bw + '" height="30" rx="6" fill="#D7D9F5" ' +
-          'stroke="#8E93D6"/>');
+          '" width="' + bw + '" height="30" rx="6" fill="' +
+          actorColor(actors[i]) + '" fill-opacity="0.35" stroke="' +
+          actorColor(actors[i]) + '"/>');
         parts.push('<text x="' + cx + '" y="' + (boxY + 15) +
           '" text-anchor="middle" dominant-baseline="middle" ' +
           'font-size="13" font-weight="700" fill="#1F2430">' +
@@ -117195,13 +117339,14 @@ const String _kMdEmbeddedMapJs = r"""
         var m = msgs[k];
         var x1 = xs[m.from], x2 = xs[m.to];
         if (x1 == null || x2 == null) { y += 40; continue; }
+        var mc = actorColor(m.from);
         parts.push('<line x1="' + x1 + '" y1="' + y + '" x2="' + x2 +
-          '" y2="' + y + '" stroke="#5C6BC0" stroke-width="1.5"' +
+          '" y2="' + y + '" stroke="' + mc + '" stroke-width="1.8"' +
           (m.dashed ? ' stroke-dasharray="5,4"' : '') + '/>');
         var dir = x2 >= x1 ? 1 : -1;
         parts.push('<path d="M' + x2 + ',' + y + ' L' + (x2 - 8 * dir) +
           ',' + (y - 4.5) + ' L' + (x2 - 8 * dir) + ',' + (y + 4.5) +
-          ' Z" fill="#5C6BC0"/>');
+          ' Z" fill="' + mc + '"/>');
         if (m.text) {
           parts.push('<text x="' + ((x1 + x2) / 2) + '" y="' + (y - 6) +
             '" text-anchor="middle" font-size="12" fill="#1F2430">' +
@@ -117218,8 +117363,10 @@ const String _kMdEmbeddedMapJs = r"""
       if (data.type === 'sequence') {
         var msgs = data.messages || [];
         for (var q = 0; q < msgs.length; q++) {
+          // 送り手ごとに色を変える (= ユーザー要望: 凡例の色が全部同じ)。
           out.push('<div class="mmch-row" data-i="' + q + '">' +
-            '<span class="mmch-sw" style="background:#5C6BC0"></span>' +
+            '<span class="mmch-sw" style="background:' +
+            actorColor(msgs[q].from) + '"></span>' +
             '<span class="mmch-v" contenteditable="true">' +
             esc2(msgs[q].from) + '</span>' +
             '<span style="opacity:.5">&#8594;</span>' +
@@ -117270,15 +117417,17 @@ const String _kMdEmbeddedMapJs = r"""
       slot.className = 'mmap mmch';
       slot.innerHTML =
         '<div class="mmap-box">' +
+        // ★ 題は上に大きく出す (= ユーザー要望: 小さくなり過ぎ / ガントで
+        //   消えていた)。 右側はボタンのぶん空けて重ならないようにする。
+        (data.title
+          ? '<div class="mmch-title">' + esc2(data.title) + '</div>'
+          : '') +
         '<div class="mmch-stage"><div class="mmch-inner">' +
         (data.type === 'sequence'
           ? seqSvg()
           : (data.type === 'gantt' ? ganttSvg() : pieSvg())) +
         legendHtml() +
         '</div></div>' + ctlHtml() +
-        (data.title
-          ? '<div class="mmap-name">' + esc2(data.title) + '</div>'
-          : '') +
         '<div class="mmap-resize"></div></div>';
       var inner = slot.querySelector('.mmch-inner');
       if (inner) {
@@ -117299,7 +117448,7 @@ const String _kMdEmbeddedMapJs = r"""
           if (vs[0]) data.messages[idx].from = vs[0].textContent.trim();
           if (vs[1]) data.messages[idx].to = vs[1].textContent.trim();
           if (l) data.messages[idx].text = l.textContent.trim();
-          // 登場人物の一覧を作り直す (名前を変えた時のため)。
+          // 登場人物の一覧を作り直す (名前を変えたら古い相手は消す)。
           var seen = [];
           for (var q2 = 0; q2 < data.messages.length; q2++) {
             var mm2 = data.messages[q2];
@@ -117307,6 +117456,15 @@ const String _kMdEmbeddedMapJs = r"""
             if (mm2.to && seen.indexOf(mm2.to) < 0) seen.push(mm2.to);
           }
           data.actors = seen;
+          if (data.persons) {
+            var np = [];
+            for (var q3 = 0; q3 < data.persons.length; q3++) {
+              if (seen.indexOf(data.persons[q3]) >= 0) {
+                np.push(data.persons[q3]);
+              }
+            }
+            data.persons = np;
+          }
           continue;
         }
         if (data.type === 'gantt') {
@@ -117358,7 +117516,9 @@ const String _kMdEmbeddedMapJs = r"""
                 title: data.title || '',
                 items: data.items || [],
                 tasks: data.tasks || [],
-                actors: data.actors || [],
+                actors: data.type === 'sequence'
+                  ? usedActors()
+                  : (data.actors || []),
                 persons: data.persons || [],
                 messages: data.messages || []
               });
@@ -118605,9 +118765,13 @@ String _markdownPreviewHtml(String md, bool dark,
     border:1px solid $border;background:$bg;color:$fg;font-size:12px;
     line-height:1;padding:0;}
   /* 図のビューは中身が入り切るように広くとる (= ユーザー要望) */
-  .mmap.mmch .mmap-box{height:520px;}
+  .mmap.mmch .mmap-box{height:540px;}
+  /* 題は上に大きく。 右はボタンのぶん空ける (= 重なり対策) */
+  .mmch-title{position:absolute;left:16px;top:10px;right:230px;
+       font-size:20px;font-weight:700;line-height:1.25;
+       white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .mmch-stage{position:absolute;left:0;top:0;right:0;bottom:0;
-       overflow:auto;padding:14px;}
+       overflow:auto;padding:48px 14px 14px;}
   .mmch-inner{display:flex;gap:18px;align-items:flex-start;
        flex-wrap:wrap;}
   .mmch-legend{min-width:200px;}
