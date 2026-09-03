@@ -115046,19 +115046,21 @@ const String _kMdEmbeddedMapJs = r"""
       '<div class="mmap-stage"><svg class="mmap-lines"></svg>' +
       '<div class="mmap-nodes"></div></div>' +
       '<div class="mmap-ctl">' +
-      '<button type="button" data-a="in" data-tip="大きくする">+</button>' +
-      '<button type="button" data-a="out" data-tip="小さくする">&#8722;</button>' +
-      '<button type="button" data-a="fit" data-tip="画面に収める">&#8634;</button>' +
-      '<button type="button" data-a="all" data-tip="畳んだ所を全部開く">&#9776;</button>' +
-      // マーメイドから起こした図は、 そのままページにできる (= ユーザー要望)。
-      ((data.mermaid && window.__mmPost)
-        ? '<button type="button" data-a="topage" class="wide"' +
-          ' data-tip="この図をマップのページに入れる">&#43; ページに追加</button>'
-        : '') +
+      // ★ 並びは「図で見る / マップで見る」 の切替を先頭に固定する
+      //   (= ユーザー要望: 押す度にボタンの場所が変わって押しづらい)。
+      //   どちらのビューでも 切替 → 追加 → + → − → ↺ の順で同じ場所に出す。
       (data.mermaid
         ? '<button type="button" data-a="mermaid"' +
           ' data-tip="元のマーメイドの図に戻す">&#9707;</button>'
         : '') +
+      ((data.mermaid && window.__mmPost)
+        ? '<button type="button" data-a="topage" class="wide"' +
+          ' data-tip="この図をマップのページに入れる">&#43; ページに追加</button>'
+        : '') +
+      '<button type="button" data-a="in" data-tip="大きくする">+</button>' +
+      '<button type="button" data-a="out" data-tip="小さくする">&#8722;</button>' +
+      '<button type="button" data-a="fit" data-tip="画面に収める">&#8634;</button>' +
+      '<button type="button" data-a="all" data-tip="畳んだ所を全部開く">&#9776;</button>' +
       '</div>' +
       // 図の名前は、 埋め込んだページの時だけ出す (= ユーザー要望:
       // マーメイドから起こした図には要らない)。
@@ -118086,31 +118088,28 @@ $mapsJs
     slot.innerHTML =
       '<div class="mmwrap"><div class="mmpane">' + svg + '</div>' +
       '<div class="mmctl">' +
-      // 変換した図から 「図で見る」 で来た時だけ、 戻る口を出す。
-      (onBack
-        ? '<button type="button" data-act="back" ' +
-          'title="マップで見る">&#8592;</button>'
+      // ★ 先頭は必ず「マップで見る」 の切替 (= ユーザー要望: 押す度に
+      //   場所が変わらないように)。 マップから戻ってきた時は data-act が
+      //   back になるだけで、 場所も見た目も同じ。
+      ((onBack || (window.__mmMermaidToMap && window.__mmRenderMermaidMap))
+        ? '<button type="button" data-act="' +
+          (onBack ? 'back' : 'tomap') + '" ' +
+          'title="マップで見る">&#9635;</button>'
         : '') +
+      // ── この図を自分のページへ入れる (= ユーザー要望) ──
+      (post
+        ? '<button type="button" data-act="topage" class="wide" ' +
+          'title="この図をページの要素として入れる">+ ページに追加</button>'
+        : '') +
+      '<button type="button" data-act="in" title="zoom in">+</button>' +
+      '<button type="button" data-act="out" title="zoom out">&#8722;</button>' +
+      '<button type="button" data-act="reset" title="reset">&#8634;</button>' +
       (bridge
         ? '<button type="button" data-act="ai" title="AI">AI</button>' +
           '<button type="button" data-act="fix" title="AI fix">&#9998;</button>' +
           '<button type="button" data-act="copy" title="copy">&#10697;</button>' +
           '<button type="button" data-act="save" title="save PNG">&#8681;</button>'
         : '') +
-      // ── この図を自分のページへ入れる (= ユーザー要望) ──
-      //    絵ではなく節点として入れるので、 入れた後に中身を直せる。
-      (post
-        ? '<button type="button" data-act="topage" class="wide" ' +
-          'title="この図をページの要素として入れる">+ ページに追加</button>'
-        : '') +
-      // ── マップとして見る (= 節点を掴んで動かせる形に読み替える) ──
-      (!onBack && window.__mmMermaidToMap && window.__mmRenderMermaidMap
-        ? '<button type="button" data-act="tomap" ' +
-          'title="マップで見る">&#9635;</button>'
-        : '') +
-      '<button type="button" data-act="in" title="zoom in">+</button>' +
-      '<button type="button" data-act="out" title="zoom out">&#8722;</button>' +
-      '<button type="button" data-act="reset" title="reset">&#8634;</button>' +
       '</div><div class="mmresize"></div></div>';
     var wrap = slot.querySelector('.mmwrap');
     var pane = slot.querySelector('.mmpane');
@@ -120177,8 +120176,9 @@ class _DiagramNodeEditorDialogState extends State<_DiagramNodeEditorDialog> {
 /// スクロール幅のすべり台 (スクロール設定の中で使う)。
 class _MdScrollStepSlider extends StatefulWidget {
   final MindMapProvider provider;
+  final VoidCallback? onChanged;
 
-  const _MdScrollStepSlider({required this.provider});
+  const _MdScrollStepSlider({required this.provider, this.onChanged});
 
   @override
   State<_MdScrollStepSlider> createState() => _MdScrollStepSliderState();
@@ -120200,8 +120200,11 @@ class _MdScrollStepSliderState extends State<_MdScrollStepSlider> {
           label: '${_v.round()}%',
           activeColor: const Color(0xFFBA68C8),
           onChanged: (x) => setState(() => _v = x),
-          onChangeEnd: (x) => unawaited(
-              widget.provider.setMdScrollStepPercent(x.round())),
+          onChangeEnd: (x) {
+            unawaited(widget.provider
+                .setMdScrollStepPercent(x.round())
+                .then((_) => widget.onChanged?.call()));
+          },
         ),
       ),
       const Icon(Icons.add_rounded, size: 16, color: Colors.white38),
@@ -124099,7 +124102,15 @@ $body''';
               Text(provider.t('md.scrollStepHint'),
                   style:
                       const TextStyle(color: Colors.white38, fontSize: 11)),
-              _MdScrollStepSlider(provider: provider),
+              _MdScrollStepSlider(
+                provider: provider,
+                // ★ 効き具合はプレビューの JS に焼き込まれているので、
+                //   変えたら描き直さないと反映されない (= ユーザー報告:
+                //   変えても変わっていない気がする)。
+                onChanged: () {
+                  if (mounted) unawaited(_render());
+                },
+              ),
             ]),
           ),
           actions: [
@@ -204031,6 +204042,17 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
   /// 勝手に範囲選択が始まらないようにするためのフラグ。
   bool _rangeSelectMode = false;
 
+  /// 囲った所を消して周りに馴染ませる (= ユーザー要望: 消しゴムマジック)。
+  bool _magicEraseMode = false;
+
+  /// 囲った所を AI で別の物に差し替える (= ユーザー要望)。
+  bool _aiReplaceMode = false;
+
+  /// 囲みの色 (モードで変える)。
+  Color get _marqueeColor => _magicEraseMode
+      ? const Color(0xFFE57373)
+      : (_aiReplaceMode ? const Color(0xFFAB47BC) : const Color(0xFF6C63FF));
+
   /// フリーハンドで書き込むモード (= ユーザー要望)。
   bool _inkMode = false;
 
@@ -207939,6 +207961,11 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
       for (final ds in s.drawShapes) {
         if (ds.id > maxId) maxId = ds.id;
       }
+      // ★ 差し込んだ画像も数に入れる (= 点検で判明: 入れていないと 2 枚目が
+      //   同じ番号になり、 保存時に 1 枚目の画像を指してしまう)。
+      for (final ni in s.newImages) {
+        if (ni.id > maxId) maxId = ni.id;
+      }
     }
     return maxId + 1;
   }
@@ -209478,6 +209505,298 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
 
   /// AI 書き換えの実行中か (二重押し防止)。
   bool _aiRewriting = false;
+
+
+  /// 画面上の四角を、 スライドの座標 (EMU) に直す。
+  ({int offX, int offY, int extCx, int extCy}) _rectToEmu(
+      Rect r, double canvasW, double canvasH) {
+    final sx = _slideWidthEmu / canvasW;
+    final sy = _slideHeightEmu / canvasH;
+    return (
+      offX: (r.left * sx).round().clamp(0, _slideWidthEmu),
+      offY: (r.top * sy).round().clamp(0, _slideHeightEmu),
+      extCx: math.max(12700, (r.width * sx).round()),
+      extCy: math.max(12700, (r.height * sy).round()),
+    );
+  }
+
+  /// 囲みの「すぐ外側」 の色を見て、 埋める色を決める
+  /// (= 消しゴムマジック: 白で塗ると背景が模様の時に穴が開いて見えるため)。
+  /// 取れなければスライドの背景色、 それも無ければ白。
+  Future<int> _patchColorAround(Rect r) async {
+    final fallback = _slides[_currentIndex].bgColor ?? 0xFFFFFF;
+    try {
+      final png = await _captureCanvasAsPngBytes();
+      if (png == null) return fallback;
+      final src = img.decodeImage(png);
+      if (src == null) return fallback;
+      // 撮る時に 2 倍にしているので、 座標も 2 倍。
+      const k = 2.0;
+      final x0 = (r.left * k).round();
+      final y0 = (r.top * k).round();
+      final x1 = (r.right * k).round();
+      final y1 = (r.bottom * k).round();
+      final rs = <int>[], gs = <int>[], bs = <int>[];
+      void take(int x, int y) {
+        if (x < 0 || y < 0 || x >= src.width || y >= src.height) return;
+        final px = src.getPixel(x, y);
+        rs.add(px.r.toInt());
+        gs.add(px.g.toInt());
+        bs.add(px.b.toInt());
+      }
+
+      // 囲みの外側 3px の輪を拾う。
+      const pad = 3;
+      for (var x = x0 - pad; x <= x1 + pad; x += 2) {
+        take(x, y0 - pad);
+        take(x, y1 + pad);
+      }
+      for (var y = y0 - pad; y <= y1 + pad; y += 2) {
+        take(x0 - pad, y);
+        take(x1 + pad, y);
+      }
+      if (rs.length < 6) return fallback;
+      int mid(List<int> v) {
+        v.sort();
+        return v[v.length ~/ 2];
+      }
+
+      return (mid(rs) << 16) | (mid(gs) << 8) | mid(bs);
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  /// 囲った所を消して、 周りの色で埋める (= ユーザー要望: 消しゴムマジック)。
+  Future<void> _magicEraseRegion(
+      Rect r, double canvasW, double canvasH) async {
+    if (_slides.isEmpty) return;
+    final fill = await _patchColorAround(r);
+    if (!mounted) return;
+    final slide = _slides[_currentIndex];
+    final emu = _rectToEmu(r, canvasW, canvasH);
+    Rect boxOf(int ox, int oy, int cx, int cy) => Rect.fromLTWH(
+        ox / _slideWidthEmu * canvasW,
+        oy / _slideHeightEmu * canvasH,
+        cx / _slideWidthEmu * canvasW,
+        cy / _slideHeightEmu * canvasH);
+    // ★ 「はみ出しているだけ」 の隣を巻き込まないよう、 すっぽり入っている
+    //   物だけ消す。 元の PPTX に元からある絵や飾りは消せないので、 その上
+    //   から同じ色の四角をかぶせて隠す。
+    bool inside(int ox, int oy, int cx, int cy) =>
+        r.contains(boxOf(ox, oy, cx, cy).topLeft) &&
+        r.contains(boxOf(ox, oy, cx, cy).bottomRight);
+    _pushHistory();
+    setState(() {
+      slide.textShapes
+          .removeWhere((t) => inside(t.offX, t.offY, t.extCx, t.extCy));
+      slide.drawShapes
+          .removeWhere((d) => inside(d.offX, d.offY, d.extCx, d.extCy));
+      slide.newImages
+          .removeWhere((n) => inside(n.offX, n.offY, n.extCx, n.extCy));
+      slide.drawShapes.add(_PptxDrawShape(
+        id: _nextShapeId(),
+        kind: 'rect',
+        offX: emu.offX,
+        offY: emu.offY,
+        extCx: emu.extCx,
+        extCy: emu.extCy,
+        fillColor: fill,
+        lineColor: fill,
+        lineWidthPt100: 0,
+      ));
+      slide.dirty = true;
+      _multiSel.clear();
+      _selectedShapeId = null;
+      _selectedDrawShapeId = null;
+      _selectedNewImageId = null;
+      _magicEraseMode = false;
+    });
+    _showSnack(context.read<MindMapProvider>().t('pptx.magicEraseDone'));
+  }
+
+  /// 囲った所を AI で別の物に差し替える (= ユーザー要望)。
+  /// 文字で書き換えるか、 絵を作って置くかを選べる。
+  Future<void> _aiReplaceRegion(
+      Rect r, double canvasW, double canvasH) async {
+    if (_slides.isEmpty) return;
+    final provider = context.read<MindMapProvider>();
+    if (!provider.hasActiveAiKey) {
+      setState(() => _aiReplaceMode = false);
+      _showSnack(provider.t('pptx.aiRewriteNoKey'));
+      return;
+    }
+    final ctrl = TextEditingController();
+    var asImage = true;
+    final order = await showDialog<String>(
+      context: context,
+      builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          title: Text(provider.t('pptx.aiReplace'),
+              style: const TextStyle(color: Colors.white, fontSize: 15)),
+          content: SizedBox(
+            width: math.min(430.0, MediaQuery.sizeOf(dctx).width - 64),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Row(children: [
+                Expanded(
+                  child: RadioListTile<bool>(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    value: true,
+                    groupValue: asImage,
+                    activeColor: const Color(0xFFAB47BC),
+                    title: Text(provider.t('pptx.aiReplaceImage'),
+                        style: const TextStyle(
+                            color: Colors.white70, fontSize: 12)),
+                    onChanged: (v) => setD(() => asImage = true),
+                  ),
+                ),
+                Expanded(
+                  child: RadioListTile<bool>(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    value: false,
+                    groupValue: asImage,
+                    activeColor: const Color(0xFFAB47BC),
+                    title: Text(provider.t('pptx.aiReplaceText'),
+                        style: const TextStyle(
+                            color: Colors.white70, fontSize: 12)),
+                    onChanged: (v) => setD(() => asImage = false),
+                  ),
+                ),
+              ]),
+              const SizedBox(height: 6),
+              TextField(
+                controller: ctrl,
+                autofocus: true,
+                maxLines: 3,
+                style: const TextStyle(color: Colors.white, fontSize: 13),
+                decoration: InputDecoration(
+                  hintText: provider.t('pptx.aiReplaceHint'),
+                  hintStyle: const TextStyle(color: Colors.white24),
+                  border: const OutlineInputBorder(),
+                ),
+                onSubmitted: (v) => Navigator.pop(dctx, v),
+              ),
+            ]),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(dctx),
+                child: Text(provider.t('btn.cancel'),
+                    style: const TextStyle(color: Colors.white54))),
+            FilledButton(
+                onPressed: () => Navigator.pop(dctx, ctrl.text),
+                child: Text(provider.t('pptx.aiReplaceRun'))),
+          ],
+        );
+      }),
+    );
+    final instruction = (order ?? '').trim();
+    ctrl.dispose();
+    if (instruction.isEmpty || !mounted) {
+      if (mounted) setState(() => _aiReplaceMode = false);
+      return;
+    }
+    setState(() {
+      _aiRewriting = true;
+      _aiReplaceMode = false;
+    });
+    final slide = _slides[_currentIndex];
+    final emu = _rectToEmu(r, canvasW, canvasH);
+    try {
+      if (asImage) {
+        final bytes = await provider.generateAiImage(instruction);
+        if (!mounted) return;
+        final fill = await _patchColorAround(r);
+        if (!mounted) return;
+        _pushHistory();
+        setState(() {
+          // 下を隠してから、 作った絵を同じ場所に置く。
+          slide.drawShapes.add(_PptxDrawShape(
+            id: _nextShapeId(),
+            kind: 'rect',
+            offX: emu.offX,
+            offY: emu.offY,
+            extCx: emu.extCx,
+            extCy: emu.extCy,
+            fillColor: fill,
+            lineColor: fill,
+            lineWidthPt100: 0,
+          ));
+          final id = _nextShapeId() + 1;
+          slide.newImages.add(_PptxNewImage(
+            id: id,
+            bytes: bytes,
+            ext: 'png',
+            mediaName:
+                'hnimg_${DateTime.now().millisecondsSinceEpoch}_$id.png',
+            offX: emu.offX,
+            offY: emu.offY,
+            extCx: emu.extCx,
+            extCy: emu.extCy,
+          ));
+          slide.dirty = true;
+          _selectedNewImageId = id;
+        });
+      } else {
+        // 囲みの中の文字を、 指示どおりに書き換える。
+        Rect boxOf(int ox, int oy, int cx, int cy) => Rect.fromLTWH(
+            ox / _slideWidthEmu * canvasW,
+            oy / _slideHeightEmu * canvasH,
+            cx / _slideWidthEmu * canvasW,
+            cy / _slideHeightEmu * canvasH);
+        final targets = [
+          for (final t in slide.textShapes)
+            if (r.overlaps(boxOf(t.offX, t.offY, t.extCx, t.extCy))) t,
+        ];
+        if (targets.isEmpty) {
+          _showSnack(provider.t('pptx.aiReplaceNoText'));
+          return;
+        }
+        final b = StringBuffer()
+          ..writeln('次の「テキスト一覧」 を指示に従って書き換えてください。')
+          ..writeln('出力は JSON だけ: {"texts": ["...", "..."]}')
+          ..writeln('- texts の要素数と順番は入力と同じにする。')
+          ..writeln('- 改行は \\n で表す。 説明文やフェンスは書かない。')
+          ..writeln('指示: $instruction')
+          ..writeln('テキスト一覧:');
+        for (var i = 0; i < targets.length; i++) {
+          b.writeln('${i + 1}: ${targets[i].text.replaceAll('\n', '\\n')}');
+        }
+        final raw = await provider.askAiForJson(b.toString());
+        final a0 = raw.indexOf('{');
+        final a1 = raw.lastIndexOf('}');
+        if (a0 < 0 || a1 <= a0) throw Exception('no json');
+        final decoded = jsonDecode(raw.substring(a0, a1 + 1));
+        final texts = (decoded is Map ? decoded['texts'] : null);
+        if (texts is! List || texts.isEmpty) throw Exception('no texts');
+        if (!mounted) return;
+        _pushHistory();
+        setState(() {
+          final n = math.min(texts.length, targets.length);
+          for (var i = 0; i < n; i++) {
+            final nt = '${texts[i]}'.replaceAll('\\n', '\n');
+            if (nt == targets[i].text) continue;
+            targets[i].text = nt;
+            targets[i].paragraphs = nt
+                .split('\n')
+                .map((line) => _PptxTextParagraph(
+                      runs: [_PptxTextRun(text: line)],
+                    ))
+                .toList();
+          }
+          slide.dirty = true;
+        });
+      }
+      if (mounted) _showSnack(provider.t('pptx.aiRewriteDone'));
+    } catch (e) {
+      if (mounted) _showSnack('AI: $e');
+    } finally {
+      if (mounted) setState(() => _aiRewriting = false);
+    }
+  }
 
   /// 囲った (選んだ) テキスト枠を、 指示どおりに AI で書き換える
   /// (= ユーザー要望: pptx で囲った所を AI に指示して書き変えたい)。
@@ -211210,6 +211529,69 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                                       _inkMode = false;
                                       _inkDrawing = false;
                                       _inkDraft.clear();
+                                      _magicEraseMode = false;
+                                      _aiReplaceMode = false;
+                                    }
+                                  });
+                                  _inkDraftTick.value++;
+                                },
+                        ),
+                        // ── 囲った所を消して周りに馴染ませる
+                        //    (= ユーザー要望: 消しゴムマジック) ──
+                        IconButton(
+                          tooltip: context
+                              .read<MindMapProvider>()
+                              .t('pptx.magicErase'),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                              minWidth: 30, minHeight: 30),
+                          icon: Icon(Icons.auto_fix_high_rounded,
+                              size: 19,
+                              color: _magicEraseMode
+                                  ? const Color(0xFFE57373)
+                                  : const Color(0xFF8E9AAF)),
+                          onPressed: _slides.isEmpty
+                              ? null
+                              : () {
+                                  final next = !_magicEraseMode;
+                                  setState(() {
+                                    _magicEraseMode = next;
+                                    if (next) {
+                                      _rangeSelectMode = false;
+                                      _aiReplaceMode = false;
+                                      _inkMode = false;
+                                      _inkDrawing = false;
+                                      _inkDraft.clear();
+                                    }
+                                  });
+                                  _inkDraftTick.value++;
+                                },
+                        ),
+                        // ── 囲った所を AI で別の物に変える (= ユーザー要望) ──
+                        IconButton(
+                          tooltip: context
+                              .read<MindMapProvider>()
+                              .t('pptx.aiReplace'),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                              minWidth: 30, minHeight: 30),
+                          icon: Icon(Icons.auto_awesome_motion_rounded,
+                              size: 19,
+                              color: _aiReplaceMode
+                                  ? const Color(0xFFAB47BC)
+                                  : const Color(0xFF8E9AAF)),
+                          onPressed: _slides.isEmpty
+                              ? null
+                              : () {
+                                  final next = !_aiReplaceMode;
+                                  setState(() {
+                                    _aiReplaceMode = next;
+                                    if (next) {
+                                      _rangeSelectMode = false;
+                                      _magicEraseMode = false;
+                                      _inkMode = false;
+                                      _inkDrawing = false;
+                                      _inkDraft.clear();
                                     }
                                   });
                                   _inkDraftTick.value++;
@@ -211906,6 +212288,8 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                           // Shift + ドラッグ、 または範囲選択モードの時だけ
                           // 範囲選択を始める (= ユーザー要望)。
                           if (!_rangeSelectMode &&
+                              !_magicEraseMode &&
+                              !_aiReplaceMode &&
                               !HardwareKeyboard.instance.isShiftPressed) {
                             return;
                           }
@@ -211953,10 +212337,22 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                         },
                         onPanEnd: (_) {
                           if (_inkMode) return; // Listener が受ける
+                          final a = _marqueeStart, b = _marqueeEnd;
+                          final erase = _magicEraseMode;
+                          final ai = _aiReplaceMode;
                           setState(() {
                             _marqueeStart = null;
                             _marqueeEnd = null;
                           });
+                          if (a == null || b == null) return;
+                          final r = Rect.fromPoints(a, b);
+                          // 小さすぎる囲みは押し間違いとして捨てる。
+                          if (r.width < 16 || r.height < 16) return;
+                          if (erase) {
+                            unawaited(_magicEraseRegion(r, canvasW, canvasH));
+                          } else if (ai) {
+                            unawaited(_aiReplaceRegion(r, canvasW, canvasH));
+                          }
                         },
                         // ── フリーハンドは生のポインタで受ける ──
                         //    GestureDetector の pan は「少し動かすまで」 反応
@@ -212166,11 +212562,10 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                                   child: IgnorePointer(
                                     child: Container(
                                       decoration: BoxDecoration(
-                                        color: const Color(0xFF6C63FF)
+                                        color: _marqueeColor
                                             .withValues(alpha: 0.12),
-                                        border: Border.all(
-                                            color:
-                                                const Color(0xFF6C63FF)),
+                                        border:
+                                            Border.all(color: _marqueeColor),
                                       ),
                                     ),
                                   ),

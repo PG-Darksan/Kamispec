@@ -2118,6 +2118,46 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   /// どの形も「点をつないだ線」 として作るので、 描画 / PDF への焼き込み /
   /// 消しゴム / 範囲選択 は今までの仕組みがそのまま使える (× のように
   /// 2 本に分かれる形だけ、 線を 2 本返す)。
+  /// 連番の始まりの数を打ち込んでもらう (= ユーザー要望)。
+  Future<void> _askSeqNumber() async {
+    final ctrl = TextEditingController(text: '$_seqNext');
+    final v = await showDialog<int>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Text(widget.tr('pdfdraw.seqStart'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          keyboardType: TextInputType.number,
+          style: const TextStyle(color: Colors.white, fontSize: 15),
+          decoration: const InputDecoration(
+            hintText: '1 〜 999',
+            hintStyle: TextStyle(color: Colors.white24),
+          ),
+          onSubmitted: (t) =>
+              Navigator.pop(dctx, int.tryParse(t.trim())),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx),
+            child: Text(widget.tr('btn.cancel'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.pop(dctx, int.tryParse(ctrl.text.trim())),
+            child: Text(widget.tr('btn.ok')),
+          ),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    if (v == null || !mounted) return;
+    setState(() => _seqNext = v.clamp(1, 999));
+  }
+
   List<PdfDrawStroke> _markStrokes(int pageNumber, Offset at) {
     // 大きさは印専用の設定から出す (= ユーザー要望: 既定 10)。
     final k = (_checkSize / 2.5).clamp(0.2, 8.0);
@@ -2570,6 +2610,14 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
                 child: Icon(ic, size: 16, color: Colors.white70)),
           ),
         );
+    // 道具のまとまりを分ける細い縦線。
+    Widget sepLine() => Container(
+          width: 1,
+          height: 20,
+          margin: const EdgeInsets.symmetric(horizontal: 5),
+          color: Colors.white24,
+        );
+
     Widget seqControls() => Container(
           margin: const EdgeInsets.symmetric(horizontal: 2),
           decoration: BoxDecoration(
@@ -2581,13 +2629,21 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
                 () => setState(() {
                       if (_seqNext > 1) _seqNext--;
                     })),
+            // ★ 数字は押して打ち込める (= ユーザー要望: 数値をユーザーが
+            //   入力できるように)。 見た目は今までどおり印の形で出す。
             Tooltip(
               message: widget.tr('pdfdraw.seqStart'),
-              child: Container(
-                width: 28,
-                alignment: Alignment.center,
-                child: Text(_seqGlyph(_seqNext),
-                    style: const TextStyle(color: Colors.white, fontSize: 16)),
+              child: InkWell(
+                onTap: () => unawaited(_askSeqNumber()),
+                borderRadius: BorderRadius.circular(6),
+                child: Container(
+                  width: 30,
+                  height: 28,
+                  alignment: Alignment.center,
+                  child: Text(_seqGlyph(_seqNext),
+                      style:
+                          const TextStyle(color: Colors.white, fontSize: 16)),
+                ),
               ),
             ),
             seqStepBtn(Icons.add_rounded, 'pdfdraw.seqUp',
@@ -2891,7 +2947,11 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
             //      (= ユーザー報告: 押さないと選択肢が出てこないのは変)。
             //      畳んである時は展開ボタンだけを出し、 そこから連番などを
             //      直接選べる。 選ぶとチェックの道具に切り替わる。
-            if (_tool == PdfDrawTool.check) markBtn((id: _checkMark, icon: _markIcon)),
+            // ★ 印のまとまりは区切り線ではさむ (= ユーザー要望: 「>」 が
+            //   他の図形と紛らわしい)。
+            sepLine(),
+            if (_tool == PdfDrawTool.check)
+              markBtn((id: _checkMark, icon: _markIcon)),
             InkWell(
                 onTap: () => setState(() => _checksOpen = !_checksOpen),
                 borderRadius: BorderRadius.circular(6),
@@ -2916,6 +2976,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
             // 連番を選んでいる時だけ、 開始番号と固定の操作を出す。
             if (_tool == PdfDrawTool.check && _checkMark == 'number')
               seqControls(),
+            sepLine(),
             // ── マーカー (蛍光ペン) ──
             //    ★ ボタンは 1 つだけ (= ユーザー要望: アイコンを分けない)。
             //      Shift を押しながら引くと 0 / 90 / 180 / 270 度の
