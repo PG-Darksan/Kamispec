@@ -4537,6 +4537,19 @@ class MindMapProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// マークダウンの編集欄とプレビューのスクロールを一体化するか
+  /// (= ユーザー要望: 一体化するか別々にするかを選べるように)。
+  /// true (既定) = 行番号で連動し、 スクロールバーも 1 本。
+  /// false = それぞれが自分のスクロールバーで別々に動く。
+  bool _mdScrollSync = true;
+  bool get mdScrollSync => _mdScrollSync;
+  Future<void> setMdScrollSync(bool v) async {
+    _mdScrollSync = v;
+    final prefs = await _prefsWithRetry();
+    await prefs.setBool('mdScrollSync', v);
+    notifyListeners();
+  }
+
   bool _openWithNewInstance = false;
   bool get openWithNewInstance => _openWithNewInstance;
   Future<void> setOpenWithNewInstance(bool v) async {
@@ -19578,6 +19591,43 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Diagramm konnte nicht neu gezeichnet werden',
       'pt': 'Não foi possível redesenhar o diagrama',
       'ru': 'Не удалось перерисовать диаграмму',
+    },
+    'md.scrollSync': {
+      'ja': 'スクロールを一体化',
+      'en': 'Link scrolling',
+      'zh': '联动滚动', 'ko': '스크롤 연동',
+      'es': 'Desplazamiento vinculado', 'fr': 'Defilement lie',
+      'de': 'Bildlauf verknupfen', 'pt': 'Rolagem vinculada',
+      'ru': 'Связать прокрутку',
+    },
+    'md.scrollSeparate': {
+      'ja': 'スクロールを別々に',
+      'en': 'Scroll separately',
+      'zh': '分别滚动', 'ko': '따로 스크롤',
+      'es': 'Desplazar por separado', 'fr': 'Defiler separement',
+      'de': 'Getrennt scrollen', 'pt': 'Rolar separadamente',
+      'ru': 'Прокручивать отдельно',
+    },
+    'gantt.editTitle': {
+      'ja': '工程表を編集', 'en': 'Edit Gantt chart',
+      'zh': '编辑甘特图', 'ko': '간트 차트 편집',
+      'es': 'Editar diagrama de Gantt', 'fr': 'Modifier le Gantt',
+      'de': 'Gantt-Diagramm bearbeiten', 'pt': 'Editar grafico de Gantt',
+      'ru': 'Изменить диаграмму Ганта',
+    },
+    'gantt.section': {
+      'ja': '区切り', 'en': 'Section',
+      'zh': '分组', 'ko': '구역',
+      'es': 'Seccion', 'fr': 'Section',
+      'de': 'Abschnitt', 'pt': 'Secao',
+      'ru': 'Раздел',
+    },
+    'gantt.statusTodo': {
+      'ja': 'これから', 'en': 'todo',
+      'zh': '待办', 'ko': '예정',
+      'es': 'pendiente', 'fr': 'a faire',
+      'de': 'offen', 'pt': 'a fazer',
+      'ru': 'предстоит',
     },
     'chart.editTitle': {
       'ja': '円グラフを編集', 'en': 'Edit pie chart',
@@ -68469,7 +68519,8 @@ class MindMapProvider extends ChangeNotifier {
     'fcAvoidExisting', 'fcFormat', 'fcIncludeRelated', 'fcPrompt',
     'fcTxtLineCount', 'fcTxtStartLine', 'flashcardGenCount',
     'quizAvoidDuplicates', 'allowMultipleFloatingWindows',
-    'openWithNewInstance', 'cursorWrapEnabled', 'cursorSizeMain',
+    'openWithNewInstance', 'cursorWrapEnabled', 'mdScrollSync',
+    'cursorSizeMain',
     'cursorSizeSub',
     'openTarget', 'mapSplitQuad', 'mapSplitRatioX',
     'mapSplitRatioY', 'mapSplitStacked', 'instagramLanding',
@@ -81739,6 +81790,7 @@ $cleanQ
     // 「アプリで開く」 を別アプリで開くか (= ユーザー要望)。
     _openWithNewInstance = prefs.getBool('openWithNewInstance') ?? false;
     _cursorWrapEnabled = prefs.getBool('cursorWrapEnabled') ?? false;
+    _mdScrollSync = prefs.getBool('mdScrollSync') ?? true;
     _cursorSizeMain = prefs.getInt('cursorSizeMain') ?? 0;
     _cursorSizeSub = prefs.getInt('cursorSizeSub') ?? 0;
     // 起動し直しても入ったままにする。
@@ -93447,19 +93499,29 @@ $example
   String? mcpAddChartNode(
     String pageId, {
     required String title,
-    required List<ChartSlice> items,
+    String type = 'pie',
+    List<ChartSlice> items = const [],
+    List<GanttTask> tasks = const [],
     double? x,
     double? y,
   }) {
     final page = mcpPageById(pageId);
-    if (page == null || items.isEmpty) return null;
+    if (page == null) return null;
+    final gantt = type == 'gantt';
+    if (gantt ? tasks.isEmpty : items.isEmpty) return null;
     final base = mcpReferenceFor(pageId);
     final node = MindMapNode(
       id: _uuid.v4(),
       title: title,
       position: Offset(x ?? base.dx, y ?? base.dy),
-      width: 240,
-      chartData: ChartData(items: items),
+      // 工程表は帯が横に伸びるので広めに置く。
+      width: gantt ? 420 : 240,
+      chartData: ChartData(
+        type: type,
+        title: title,
+        items: List<ChartSlice>.from(items),
+        tasks: List<GanttTask>.from(tasks),
+      ),
     );
     _pushUndoForPage(pageId);
     page.nodes[node.id] = node;

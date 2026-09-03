@@ -38608,6 +38608,205 @@ class _MindMapScreenState extends State<MindMapScreen>
     );
   }
 
+
+  /// 工程表ノードの中身を編集する (= ユーザー要望: 工程表も編集できる形で)。
+  Future<void> _editGanttNode(String nodeId, ChartData data) async {
+    final provider = context.read<MindMapProvider>();
+    final rows = [
+      for (final t in data.tasks)
+        (
+          label: TextEditingController(text: t.label),
+          section: TextEditingController(text: t.section),
+          start: TextEditingController(text: t.start),
+          end: TextEditingController(text: t.end),
+          status: t.status,
+        ),
+    ];
+    // 状態は行ごとに変わるので、 別の入れ物で持つ。
+    final statuses = [for (final t in data.tasks) t.status];
+    void disposeRows() {
+      for (final r in rows) {
+        r.label.dispose();
+        r.section.dispose();
+        r.start.dispose();
+        r.end.dispose();
+      }
+    }
+
+    const kStatuses = ['', 'done', 'active', 'crit'];
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          title: Text(provider.t('gantt.editTitle'),
+              style: const TextStyle(color: Colors.white, fontSize: 15)),
+          content: SizedBox(
+            width: math.min(660.0, MediaQuery.sizeOf(dctx).width - 64),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 460),
+              child: SingleChildScrollView(
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  for (var i = 0; i < rows.length; i++)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Row(children: [
+                        Container(
+                          width: 10,
+                          height: 26,
+                          margin: const EdgeInsets.only(right: 6),
+                          decoration: BoxDecoration(
+                            color: _ganttStatusColor(statuses[i]),
+                            borderRadius: BorderRadius.circular(3),
+                          ),
+                        ),
+                        Expanded(
+                          flex: 3,
+                          child: _ganttField(
+                              rows[i].label, provider.t('gantt.taskName')),
+                        ),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          flex: 2,
+                          child: _ganttField(
+                              rows[i].section, provider.t('gantt.section')),
+                        ),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          flex: 2,
+                          child: _ganttField(rows[i].start, '2024-05-01'),
+                        ),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          flex: 2,
+                          child: _ganttField(rows[i].end, '2024-05-05'),
+                        ),
+                        const SizedBox(width: 6),
+                        // 状態 (色) を回して選ぶ。
+                        InkWell(
+                          onTap: () => setD(() {
+                            final k = kStatuses.indexOf(statuses[i]);
+                            statuses[i] =
+                                kStatuses[(k + 1) % kStatuses.length];
+                          }),
+                          borderRadius: BorderRadius.circular(6),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 6),
+                            child: Text(
+                                statuses[i].isEmpty
+                                    ? provider.t('gantt.statusTodo')
+                                    : statuses[i],
+                                style: const TextStyle(
+                                    color: Colors.white70, fontSize: 11)),
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close_rounded,
+                              color: Colors.white38, size: 16),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                              minWidth: 26, minHeight: 26),
+                          onPressed: rows.length <= 1
+                              ? null
+                              : () => setD(() {
+                                    final r = rows.removeAt(i);
+                                    statuses.removeAt(i);
+                                    r.label.dispose();
+                                    r.section.dispose();
+                                    r.start.dispose();
+                                    r.end.dispose();
+                                  }),
+                        ),
+                      ]),
+                    ),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      onPressed: () => setD(() {
+                        rows.add((
+                          label: TextEditingController(),
+                          section: TextEditingController(
+                              text: rows.isEmpty
+                                  ? ''
+                                  : rows.last.section.text),
+                          start: TextEditingController(),
+                          end: TextEditingController(),
+                          status: '',
+                        ));
+                        statuses.add('');
+                      }),
+                      icon: const Icon(Icons.add_rounded,
+                          size: 16, color: Color(0xFF43B97F)),
+                      label: Text(provider.t('gantt.addTask'),
+                          style: const TextStyle(
+                              color: Color(0xFF43B97F), fontSize: 12)),
+                    ),
+                  ),
+                ]),
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dctx, false),
+              child: Text(provider.t('btn.cancel'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dctx, true),
+              child: Text(provider.t('btn.save')),
+            ),
+          ],
+        );
+      }),
+    );
+    if (ok == true) {
+      final tasks = <GanttTask>[];
+      for (var i = 0; i < rows.length; i++) {
+        final label = rows[i].label.text.trim();
+        if (label.isEmpty) continue;
+        tasks.add(GanttTask(
+          label: label,
+          section: rows[i].section.text.trim(),
+          start: rows[i].start.text.trim(),
+          end: rows[i].end.text.trim(),
+          status: statuses[i],
+        ));
+      }
+      if (tasks.isNotEmpty) {
+        provider.updateNodeChartData(
+            nodeId,
+            ChartData(
+                type: 'gantt', title: data.title, tasks: tasks));
+      }
+    }
+    disposeRows();
+  }
+
+  Widget _ganttField(TextEditingController c, String hint) => TextField(
+        controller: c,
+        style: const TextStyle(color: Colors.white, fontSize: 12),
+        decoration: InputDecoration(
+          isDense: true,
+          hintText: hint,
+          hintStyle: const TextStyle(color: Colors.white24, fontSize: 11),
+        ),
+      );
+
+  static Color _ganttStatusColor(String status) {
+    switch (status) {
+      case 'done':
+        return const Color(0xFF66BB6A);
+      case 'active':
+        return const Color(0xFF42A5F5);
+      case 'crit':
+        return const Color(0xFFEF5350);
+      default:
+        return const Color(0xFF9FA8DA);
+    }
+  }
+
   /// 音声の出力先を選ぶ (= ユーザー要望)。
   Future<void> _showAudioOutputDialog(MindMapProvider provider) async {
     var devices = await AudioOutput.listDevices();
@@ -38692,6 +38891,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     final node = provider.currentPage.nodes[nodeId];
     final data = node?.chartData;
     if (node == null || data == null) return;
+    if (data.isGantt) {
+      await _editGanttNode(nodeId, data);
+      return;
+    }
     final rows = [
       for (final e in data.items)
         (
@@ -49558,8 +49761,10 @@ class _MindMapScreenState extends State<MindMapScreen>
   void _showWeatherClockConfigDialog(
       BuildContext ctx, MindMapProvider provider) {
     final cityCtrl = TextEditingController();
-    showDialog<void>(
-      context: ctx,
+    // 画面中央ではなく、 押した所の近くに出す (= ユーザー要望)。
+    unawaited(_showNearDialogMain<void>(
+      width: 380,
+      height: 520,
       builder: (dctx) => StatefulBuilder(
         builder: (sctx, setD) {
           final offset = provider.clockOffsetMinutes;
@@ -49773,7 +49978,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           );
         },
       ),
-    );
+    ));
   }
 
   /// 現在保存されている天気の地点名 (なければ null)。
@@ -115592,6 +115797,22 @@ const String _kMdEmbeddedMapJs = r"""
       else if (a === 'fit') { fit(); }
       else if (a === 'all') { collapsed = {}; draw(); setTimeout(fit, 0); }
       else if (a === 'topage') {
+        // ★ 円グラフ / 工程表は、 マインドマップ形式ではなく図のまま送る
+        //   (= ユーザー要望)。 「マップで見る」 で開いていても同じ。
+        if (window.__mmPost && window.__mmChartData && data.code) {
+          var cd0 = null;
+          try { cd0 = window.__mmChartData(data.code); } catch (e) {}
+          if (cd0) {
+            window.__mmPost({
+              type: 'chartToPage',
+              chartType: cd0.type,
+              title: cd0.title || '',
+              items: cd0.items || [],
+              tasks: cd0.tasks || []
+            });
+            return;
+          }
+        }
         // 今の並び (掴んで動かした位置) のままページにする。
         if (window.__mmPost) {
           window.__mmPost({
@@ -116385,6 +116606,150 @@ const String _kMdEmbeddedMapJs = r"""
   /// mermaid の中身を見て、 マップに変換できるなら変換して返す。
   /// [auto] が false (既定) の時は、 mindmap 以外は変換しない。
   /// 「マップで見る」 ボタンからは true で呼ばれ、 どの図でも読み替える。
+
+  /// 図の記法から「そのまま置ける図のデータ」 を取り出す
+  /// (= ユーザー要望: マインドマップ形式に変換せず、 円グラフは円グラフ、
+  ///   工程表は工程表のまま、 編集できる形でページに置く)。
+  ///
+  /// 返り値: { type:'pie', title, items:[{label,value}] }
+  ///        { type:'gantt', title, tasks:[{label,section,start,end,status}] }
+  ///        読めない図なら null。
+  window.__mmChartData = function (code) {
+    var src = String(code == null ? '' : code);
+    var lines = src.split('\n');
+    var head = src.replace(/^\s+/, '').split('\n')[0].trim().toLowerCase();
+
+    function titleOf() {
+      for (var i = 0; i < lines.length; i++) {
+        var m = lines[i].match(
+            /^\s*(?:[A-Za-z_-]+\s+)?title\s+(.+?)\s*$/i);
+        if (!m) continue;
+        var t = m[1].trim();
+        if (t.length > 1 &&
+            ((t.charAt(0) === '"' && t.charAt(t.length - 1) === '"') ||
+             (t.charAt(0) === "'" && t.charAt(t.length - 1) === "'"))) {
+          t = t.substring(1, t.length - 1);
+        }
+        return t;
+      }
+      return '';
+    }
+
+    // ── 円グラフ ──
+    if (/^pie\b/.test(head)) {
+      var items = [];
+      for (var i = 0; i < lines.length; i++) {
+        var L = lines[i];
+        if (/^\s*(?:pie|title)\b/i.test(L)) continue;
+        var m = L.match(/^\s*"([^"]*)"\s*:\s*([0-9.]+)\s*$/) ||
+            L.match(/^\s*'([^']*)'\s*:\s*([0-9.]+)\s*$/) ||
+            L.match(/^\s*([^:\n"']+?)\s*:\s*([0-9.]+)\s*$/);
+        if (!m) continue;
+        items.push({ label: m[1].trim(), value: parseFloat(m[2]) });
+      }
+      return items.length
+        ? { type: 'pie', title: titleOf(), items: items }
+        : null;
+    }
+
+    // ── 工程表 (ガント) ──
+    if (/^gantt\b/.test(head)) {
+      var tasks = [];
+      var section = '';
+      var byId = {};
+      function ymd(d) {
+        function p2(n) { return (n < 10 ? '0' : '') + n; }
+        return d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' +
+            p2(d.getDate());
+      }
+      function parseDay(t) {
+        var m = String(t).match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+        if (!m) return null;
+        return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+      }
+      function addDays(d, n) {
+        var x = new Date(d.getTime());
+        x.setDate(x.getDate() + n);
+        return x;
+      }
+      function durDays(t) {
+        var m = String(t).match(/^(\d+(?:\.\d+)?)\s*([dwhm])$/i);
+        if (!m) return null;
+        var v = parseFloat(m[1]);
+        var u = m[2].toLowerCase();
+        if (u === 'w') return Math.round(v * 7);
+        if (u === 'd') return Math.round(v);
+        return 1;   // 時間 / 分は 1 日ぶんとして描く
+      }
+      for (var i = 0; i < lines.length; i++) {
+        var L = lines[i];
+        if (!L.trim()) continue;
+        if (/^\s*%%/.test(L)) continue;
+        if (/^\s*gantt\b/i.test(L)) continue;
+        if (/^\s*(?:title|dateFormat|axisFormat|excludes|todayMarker|tickInterval|weekday|inclusiveEndDates|accTitle|accDescr)\b/i
+            .test(L)) {
+          continue;
+        }
+        var sm = L.match(/^\s*section\s+(.+?)\s*$/i);
+        if (sm) { section = sm[1].trim(); continue; }
+        var ci = L.indexOf(':');
+        if (ci < 0) continue;
+        var label = L.slice(0, ci).trim();
+        if (!label) continue;
+        var rest = L.slice(ci + 1).trim();
+        var toks = rest.split(',');
+        var status = '', id = '', start = null, end = null, dur = null;
+        var afterOf = '';
+        for (var k = 0; k < toks.length; k++) {
+          var tk = toks[k].trim();
+          if (!tk) continue;
+          var low = tk.toLowerCase();
+          if (low === 'done' || low === 'active' || low === 'crit' ||
+              low === 'milestone') {
+            // crit > active > done の順で強い方を残す。
+            if (status !== 'crit') {
+              if (low === 'crit') status = 'crit';
+              else if (low === 'milestone') status = status || 'crit';
+              else if (status !== 'active') status = low;
+            }
+            continue;
+          }
+          var am = tk.match(/^after\s+(\S+)/i);
+          if (am) { afterOf = am[1]; continue; }
+          var d0 = parseDay(tk);
+          if (d0) {
+            if (!start) start = d0; else if (!end) end = d0;
+            continue;
+          }
+          var dd = durDays(tk);
+          if (dd != null) { dur = dd; continue; }
+          if (!id) id = tk;
+        }
+        if (!start && afterOf && byId[afterOf] && byId[afterOf].end) {
+          start = addDays(byId[afterOf].end, 1);
+        }
+        if (start && !end && dur != null) {
+          end = addDays(start, Math.max(1, dur) - 1);
+        }
+        if (start && !end) end = start;
+        var rec = {
+          label: label,
+          section: section,
+          start: start ? ymd(start) : '',
+          end: end ? ymd(end) : '',
+          status: status
+        };
+        if (id) byId[id] = { start: start, end: end };
+        tasks.push(rec);
+        if (tasks.length > 400) break;
+      }
+      return tasks.length
+        ? { type: 'gantt', title: titleOf(), tasks: tasks }
+        : null;
+    }
+    return null;
+  };
+
   window.__mmMermaidToMap = function (code, auto) {
     var src = String(code == null ? '' : code);
     var head = src.replace(/^\s+/, '').split('\n')[0].trim().toLowerCase();
@@ -116909,19 +117274,40 @@ String diagramTitleOf(String code) {
 /// (= ユーザー要望: 画像ではなく要素として転送)。
 Future<String?> askAndPutChartIntoPage(BuildContext context,
     MindMapProvider provider, Map<dynamic, dynamic> m) async {
-  final rawItems = m['items'];
-  if (rawItems is! List || rawItems.isEmpty) return null;
+  final kind = '${m['chartType'] ?? 'pie'}';
+  final isGantt = kind == 'gantt';
   final items = <ChartSlice>[];
-  for (final e in rawItems) {
-    if (e is! Map) continue;
-    final label = '${e['label'] ?? ''}'.trim();
-    final v = (e['value'] as num?)?.toDouble();
-    if (label.isEmpty || v == null || !v.isFinite) continue;
-    items.add(ChartSlice(label: label, value: v));
+  final tasks = <GanttTask>[];
+  if (isGantt) {
+    final raw = m['tasks'];
+    if (raw is! List || raw.isEmpty) return null;
+    for (final e in raw) {
+      if (e is! Map) continue;
+      final label = '${e['label'] ?? ''}'.trim();
+      if (label.isEmpty) continue;
+      tasks.add(GanttTask(
+        label: label,
+        section: '${e['section'] ?? ''}'.trim(),
+        start: '${e['start'] ?? ''}'.trim(),
+        end: '${e['end'] ?? ''}'.trim(),
+        status: '${e['status'] ?? ''}'.trim(),
+      ));
+    }
+    if (tasks.isEmpty) return null;
+  } else {
+    final rawItems = m['items'];
+    if (rawItems is! List || rawItems.isEmpty) return null;
+    for (final e in rawItems) {
+      if (e is! Map) continue;
+      final label = '${e['label'] ?? ''}'.trim();
+      final v = (e['value'] as num?)?.toDouble();
+      if (label.isEmpty || v == null || !v.isFinite) continue;
+      items.add(ChartSlice(label: label, value: v));
+    }
+    if (items.isEmpty) return null;
   }
-  if (items.isEmpty) return null;
   var title = '${m['title'] ?? ''}'.trim();
-  if (title.isEmpty) title = '円グラフ';
+  if (title.isEmpty) title = isGantt ? '工程表' : '円グラフ';
   final pages = provider.pages.where((p) => p.pageType == 'normal').toList();
   final chosen = await showDialog<String>(
     context: context,
@@ -116988,7 +117374,12 @@ Future<String?> askAndPutChartIntoPage(BuildContext context,
     ny = minY;
   }
   final id = provider.mcpAddChartNode(pageId,
-      title: title, items: items, x: nx, y: ny);
+      title: title,
+      type: kind,
+      items: items,
+      tasks: tasks,
+      x: nx,
+      y: ny);
   if (id == null) return null;
   return provider.mcpPageById(pageId)?.name ?? '';
 }
@@ -118008,28 +118399,20 @@ $mapsJs
         var toPost = bridge || (post ? { postMessage: post } : null);
         if (!toPost) return;
         var srcNow2 = String(codeNow || code || '');
-        var head2 =
-            srcNow2.replace(/^\\s+/, '').split('\\n')[0].trim().toLowerCase();
-        if (/^pie\\b/.test(head2)) {
-          var items2 = [];
-          var pl2 = srcNow2.split('\\n');
-          for (var pi2 = 0; pi2 < pl2.length; pi2++) {
-            var Lp2 = pl2[pi2];
-            if (/^\\s*(?:pie|title)\\b/i.test(Lp2)) continue;
-            var pm2 = Lp2.match(/^\\s*"([^"]*)"\\s*:\\s*([0-9.]+)\\s*\$/) ||
-                Lp2.match(/^\\s*'([^']*)'\\s*:\\s*([0-9.]+)\\s*\$/) ||
-                Lp2.match(/^\\s*([^:\\n"']+?)\\s*:\\s*([0-9.]+)\\s*\$/);
-            if (!pm2) continue;
-            items2.push(
-                { label: pm2[1].trim(), value: parseFloat(pm2[2]) });
+        // 円グラフ / 工程表は、 図のまま (編集できるデータで) 送る。
+        if (window.__mmChartData) {
+          var cd2 = null;
+          try { cd2 = window.__mmChartData(srcNow2); } catch (e) {}
+          if (cd2) {
+            toPost.postMessage({
+              type: 'chartToPage',
+              chartType: cd2.type,
+              title: cd2.title || '',
+              items: cd2.items || [],
+              tasks: cd2.tasks || []
+            });
+            return;
           }
-          if (!items2.length) return;
-          var pt2 = '';
-          var ptm2 = srcNow2.match(/^\\s*(?:pie\\s+)?title\\s+(.+)\$/mi);
-          if (ptm2) pt2 = ptm2[1].trim();
-          toPost.postMessage(
-              { type: 'chartToPage', title: pt2, items: items2 });
-          return;
         }
         var cv2 = null;
         try { cv2 = window.__mmMermaidToMap(srcNow2, true); } catch (e) {}
@@ -119978,6 +120361,50 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
   /// 並べる時、 プレビューを左に置くか (= ユーザー要望: 左にプレビュー、
   /// 右に編集画面もできるように)。 既定は本文が左。
   bool _previewLeft = false;
+
+  /// 編集欄とプレビューの幅の割合 (= ユーザー要望: 境界を掴んで変えられる)。
+  /// 0.15〜0.85 に収める。 動かし終わりに控える。
+  double _mdSplitRatio = 0.5;
+  static const String _kMdSplitRatioKey = 'mdSplitRatio';
+
+  int get _mdFlexEditor =>
+      (_mdSplitRatio * 1000).round().clamp(150, 850);
+  int get _mdFlexPreview => 1000 - _mdFlexEditor;
+
+  /// スクロールを一体化するか (= ユーザー要望: 一体化 / 別々 を選べる)。
+  bool get _scrollSyncOn => widget.provider.mdScrollSync;
+
+  /// 掴んで動かす境界。
+  Widget _mdSplitDivider() {
+    return MouseRegion(
+      cursor: SystemMouseCursors.resizeLeftRight,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onPanUpdate: (d) {
+          final box = context.findRenderObject() as RenderBox?;
+          final w = (box?.size.width ?? 0) > 0 ? box!.size.width : 1.0;
+          setState(() {
+            // 入れ替えている時は動かす向きが逆になる。
+            final dx = _previewLeft ? -d.delta.dx : d.delta.dx;
+            _mdSplitRatio = (_mdSplitRatio + dx / w).clamp(0.15, 0.85);
+          });
+        },
+        onPanEnd: (_) => unawaited(SharedPreferences.getInstance()
+            .then((sp) => sp.setDouble(_kMdSplitRatioKey, _mdSplitRatio))),
+        onDoubleTap: () {
+          setState(() => _mdSplitRatio = 0.5);
+          unawaited(SharedPreferences.getInstance()
+              .then((sp) => sp.setDouble(_kMdSplitRatioKey, 0.5)));
+        },
+        child: Container(
+          width: 8,
+          color: Colors.transparent,
+          alignment: Alignment.center,
+          child: Container(width: 1, color: Colors.white24),
+        ),
+      ),
+    );
+  }
   static const String _kMdPreviewLeftKey = 'markdownPreviewLeft';
 
   /// ヘッダー (ツールバー) を隠しているか (= ユーザー要望)。
@@ -120224,6 +120651,8 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
         final m = sp.getString(_kMdViewModeKey) ?? '';
         if (m == 'split' || m == 'preview' || m == 'editor') _viewMode = m;
         _previewLeft = sp.getBool(_kMdPreviewLeftKey) ?? false;
+        _mdSplitRatio =
+            (sp.getDouble(_kMdSplitRatioKey) ?? 0.5).clamp(0.15, 0.85);
         _headerHidden = sp.getBool(_kMdHeaderHiddenKey) ?? false;
         // 公開の控え (ファイルごとの pageId で持ち回る)。
         try {
@@ -120417,7 +120846,8 @@ graph TD
   }
 
   /// 半々で開いていて、 連動させる場面か。
-  bool get _syncActive => _preview && _viewMode == 'split' && !_narrowScreen;
+  bool get _syncActive =>
+      _scrollSyncOn && _preview && _viewMode == 'split' && !_narrowScreen;
 
   /// 各行の先頭が何 px 目に来るかを測り直す。
   ///
@@ -120581,7 +121011,7 @@ graph TD
     _previewLoadedOnce = false;
     final html = _markdownPreviewHtml(_ctrl.text, widget.provider.isDarkMode,
         linkBridge: true,
-        syncScroll: true,
+        syncScroll: _scrollSyncOn,
         scrollStep: widget.provider.mdScrollStep);
     try {
       if (_isDesktopPlatform) {
@@ -120599,7 +121029,7 @@ graph TD
                 : 'hljs-light.css',
             mathjaxSrc: 'tex-svg.js',
             tocLabel: widget.provider.t('md.toc'),
-            syncScroll: true,
+            syncScroll: _scrollSyncOn,
             scrollStep: widget.provider.mdScrollStep,
             mapsJson: buildEmbeddedMapsJson(widget.provider, _ctrl.text));
         final fileUrl = await _prepareMarkdownPreviewFile(localHtml);
@@ -123165,35 +123595,39 @@ $body''';
                     ])
                       : Row(children: [
                           // 左右の入れ替えに対応 (= ユーザー要望)。
+                          // 境界は掴んで動かせる (= ユーザー要望: 表示領域を
+                          //   変えられるように)。
                           if (_previewLeft) ...[
                             Expanded(
+                                flex: _mdFlexPreview,
                                 child: ColoredBox(
                                     color: provider.isDarkMode
                                         ? const Color(0xFF14141F)
                                         : Colors.white,
                                     child: preview)),
-                            const VerticalDivider(
-                                width: 1, color: Colors.white12),
-                            Expanded(child: editor),
+                            _mdSplitDivider(),
+                            Expanded(flex: _mdFlexEditor, child: editor),
                           ] else ...[
-                            Expanded(child: editor),
-                            const VerticalDivider(
-                                width: 1, color: Colors.white12),
+                            Expanded(flex: _mdFlexEditor, child: editor),
+                            _mdSplitDivider(),
                             Expanded(
+                                flex: _mdFlexPreview,
                                 child: ColoredBox(
                                     color: provider.isDarkMode
                                         ? const Color(0xFF14141F)
                                         : Colors.white,
                                     child: preview)),
                           ],
-                          // ★ スクロールバーは画面の右端に 1 本だけ
-                          //   (= ユーザー要望)。 左右は行番号で連動して
-                          //   いるので、 これ 1 本で両方が動く。
-                          _SplitScrollBar(
-                              controller: _editorScroll,
-                              color: provider.isDarkMode
-                                  ? Colors.white
-                                  : const Color(0xFF16181D)),
+                          // ★ 一体化している時だけ、 スクロールバーを 1 本
+                          //   だけ出す (= ユーザー要望: 一体化するか別々に
+                          //   するかを選べるように)。 別々の時は、 それぞれ
+                          //   の欄が自分のスクロールバーを持つ。
+                          if (_scrollSyncOn)
+                            _SplitScrollBar(
+                                controller: _editorScroll,
+                                color: provider.isDarkMode
+                                    ? Colors.white
+                                    : const Color(0xFF16181D)),
                         ])),
             ),
             if (_isDesktopPlatform && _aiChatOpen)
@@ -123727,6 +124161,25 @@ $body''';
                       : Icons.swap_horiz_rounded,
                   provider.t(narrow ? 'md.swapUpDown' : 'md.swapSides'),
                   _toggleSides),
+            // ── スクロールを一体化するか別々にするか (= ユーザー要望) ──
+            //    一体化: 行番号で連動し、 スクロールバーも 1 本。
+            //    別々: それぞれの欄が自分のスクロールバーで動く。
+            if (_viewMode == 'split')
+              _btn(
+                  _scrollSyncOn
+                      ? Icons.link_rounded
+                      : Icons.link_off_rounded,
+                  provider.t(_scrollSyncOn
+                      ? 'md.scrollSync'
+                      : 'md.scrollSeparate'),
+                  () {
+                    unawaited(provider.setMdScrollSync(!_scrollSyncOn));
+                    // 連動用の JS ごと入れ替わるので描き直す。
+                    Future<void>.delayed(const Duration(milliseconds: 30),
+                        () {
+                      if (mounted) unawaited(_render());
+                    });
+                  }),
             // 表示の仕方: 押したら次に何になるかを出す (= ユーザー要望)。
             _btn(_viewModeIcon, _viewModeLabel(provider), _cycleViewMode),
             // ── メモ / AI チャットのパネル (= ユーザー要望)。 画面が広い

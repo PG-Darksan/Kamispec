@@ -1242,10 +1242,15 @@ class _NodeWidgetState extends State<NodeWidget> {
                                                   .clamp(
                                                       40.0, double.infinity)
                                                   .toDouble())),
-                                      painter: _NodePiePainter(
-                                        data: node.chartData!,
-                                        textColor: titleTextColor,
-                                      ),
+                                      painter: node.chartData!.isGantt
+                                          ? _NodeGanttPainter(
+                                              data: node.chartData!,
+                                              textColor: titleTextColor,
+                                            )
+                                          : _NodePiePainter(
+                                              data: node.chartData!,
+                                              textColor: titleTextColor,
+                                            ),
                                     ),
                                   ),
                                 ),
@@ -3517,5 +3522,131 @@ class _NodePiePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _NodePiePainter old) =>
+      old.data != data || old.textColor != textColor;
+}
+
+/// 工程表 (ガントチャート) のノードの絵描き
+/// (= ユーザー要望: 工程表も画像ではなく編集できる要素として置きたい)。
+///
+/// 高さの式は [ChartData.renderHeight] と同じでなければならない
+/// (目盛り 18 + 区切りの見出し 16/個 + 帯 22/本 + 余白 6)。
+class _NodeGanttPainter extends CustomPainter {
+  final ChartData data;
+  final Color textColor;
+
+  _NodeGanttPainter({required this.data, required this.textColor});
+
+  /// 状態ごとの色。 済み = 緑、 進行中 = 青、 重要 = 赤、 これから = 灰青。
+  static Color colorOf(String status) {
+    switch (status) {
+      case 'done':
+        return const Color(0xFF66BB6A);
+      case 'active':
+        return const Color(0xFF42A5F5);
+      case 'crit':
+        return const Color(0xFFEF5350);
+      default:
+        return const Color(0xFF9FA8DA);
+    }
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final tasks = data.tasks;
+    if (tasks.isEmpty) return;
+    // ── 期間の幅を出す ──
+    DateTime? lo, hi;
+    for (final t in tasks) {
+      final a = t.startAt, b = t.endAt;
+      if (a != null && (lo == null || a.isBefore(lo))) lo = a;
+      if (b != null && (hi == null || b.isAfter(hi))) hi = b;
+      if (a != null && (hi == null || a.isAfter(hi))) hi = a;
+      if (b != null && (lo == null || b.isBefore(lo))) lo = b;
+    }
+    // 名前の欄はノード幅の 4 割 (最大 130)。
+    final nameW = (size.width * 0.4).clamp(60.0, 130.0).toDouble();
+    final barLeft = nameW + 4;
+    final barW = (size.width - barLeft).clamp(20.0, double.infinity).toDouble();
+    final totalDays = (lo != null && hi != null)
+        ? (hi.difference(lo).inDays + 1).clamp(1, 100000)
+        : 1;
+
+    double xOf(DateTime d) =>
+        barLeft + (d.difference(lo!).inDays / totalDays) * barW;
+
+    // ── 目盛り (始まりと終わりの日付) ──
+    var y = 0.0;
+    if (lo != null && hi != null) {
+      String fmt(DateTime d) =>
+          '${d.month}/${d.day}';
+      final tpA = TextPainter(
+        text: TextSpan(
+            text: fmt(lo),
+            style: TextStyle(
+                color: textColor.withValues(alpha: 0.6), fontSize: 9)),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      tpA.paint(canvas, Offset(barLeft, 2));
+      final tpB = TextPainter(
+        text: TextSpan(
+            text: fmt(hi),
+            style: TextStyle(
+                color: textColor.withValues(alpha: 0.6), fontSize: 9)),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      tpB.paint(canvas, Offset(size.width - tpB.width, 2));
+      // 下敷きの線。
+      final grid = Paint()
+        ..color = textColor.withValues(alpha: 0.12)
+        ..strokeWidth = 1;
+      canvas.drawLine(Offset(barLeft, 16), Offset(size.width, 16), grid);
+    }
+    y = 18;
+
+    var lastSection = '\u0000';
+    for (final t in tasks) {
+      // 区切りの見出し。
+      if (t.section.isNotEmpty && t.section != lastSection) {
+        lastSection = t.section;
+        final tp = TextPainter(
+          text: TextSpan(
+              text: t.section,
+              style: TextStyle(
+                  color: textColor.withValues(alpha: 0.85),
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700)),
+          textDirection: TextDirection.ltr,
+          maxLines: 1,
+          ellipsis: '…',
+        )..layout(maxWidth: size.width);
+        tp.paint(canvas, Offset(0, y + 2));
+        y += 16;
+      }
+      // 名前。
+      final tpN = TextPainter(
+        text: TextSpan(
+            text: t.label,
+            style: TextStyle(color: textColor, fontSize: 10)),
+        textDirection: TextDirection.ltr,
+        maxLines: 1,
+        ellipsis: '…',
+      )..layout(maxWidth: nameW);
+      tpN.paint(canvas, Offset(0, y + 5));
+      // 帯。
+      final a = t.startAt, b = t.endAt;
+      if (lo != null && hi != null && a != null) {
+        final x1 = xOf(a);
+        final x2 = b != null ? xOf(b.add(const Duration(days: 1))) : x1 + 6;
+        final w = (x2 - x1).clamp(4.0, double.infinity).toDouble();
+        final r = RRect.fromRectAndRadius(
+            Rect.fromLTWH(x1, y + 3, w, 14), const Radius.circular(3));
+        canvas.drawRRect(r, Paint()..color = colorOf(t.status));
+      }
+      y += 22;
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _NodeGanttPainter old) =>
       old.data != data || old.textColor != textColor;
 }

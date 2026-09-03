@@ -1415,7 +1415,8 @@ class MindMapNode {
       // 出さず、 既存マップとの後方互換を保つ。
       if (tableData != null) 'tableData': tableData!.toJson(),
       // 円グラフ。 普通のノードはキーを出さず後方互換を保つ。
-      if (chartData != null && chartData!.items.isNotEmpty)
+      if (chartData != null &&
+          (chartData!.items.isNotEmpty || chartData!.tasks.isNotEmpty))
         'chartData': chartData!.toJson(),
       // リッチテキスト本文 (Quill Delta JSON)。 null/空のときはキーを出さず
       // 既存マップとの後方互換を保つ。
@@ -1817,38 +1818,130 @@ class ChartSlice {
       );
 }
 
-/// 円グラフのノードが持つデータ (= ユーザー要望: 図を編集できる要素として)。
+/// 工程表 (ガントチャート) の 1 本の帯。
+class GanttTask {
+  String label;
+
+  /// 区切り (mermaid の section)。 空なら区切り無し。
+  String section;
+
+  /// 始まり / 終わり (YYYY-MM-DD)。 読めない時は空。
+  String start;
+  String end;
+
+  /// 状態。 'done' / 'active' / 'crit' / '' (これから)。
+  String status;
+
+  GanttTask({
+    required this.label,
+    this.section = '',
+    this.start = '',
+    this.end = '',
+    this.status = '',
+  });
+
+  DateTime? get startAt => DateTime.tryParse(start);
+  DateTime? get endAt => DateTime.tryParse(end);
+
+  Map<String, dynamic> toJson() => {
+        'l': label,
+        if (section.isNotEmpty) 's': section,
+        if (start.isNotEmpty) 'b': start,
+        if (end.isNotEmpty) 'e': end,
+        if (status.isNotEmpty) 'st': status,
+      };
+
+  factory GanttTask.fromJson(Map<String, dynamic> j) => GanttTask(
+        label: '${j['l'] ?? ''}',
+        section: '${j['s'] ?? ''}',
+        start: '${j['b'] ?? ''}',
+        end: '${j['e'] ?? ''}',
+        status: '${j['st'] ?? ''}',
+      );
+}
+
+/// 図のノードが持つデータ (= ユーザー要望: 図を編集できる要素として)。
+///
+/// [type] で中身が変わる。 'pie' は [items] (円グラフの一切れ)、
+/// 'gantt' は [tasks] (工程表の帯) を使う。 使わない側は空。
 class ChartData {
-  /// 図の種類。 今は 'pie' だけ (後で棒などを足せるように持っておく)。
+  /// 図の種類。 'pie' / 'gantt'。
   String type;
   List<ChartSlice> items;
+  List<GanttTask> tasks;
 
-  ChartData({this.type = 'pie', List<ChartSlice>? items})
-      : items = items ?? <ChartSlice>[];
+  /// 図の題 (工程表の上に出す。 空なら出さない)。
+  String title;
+
+  ChartData({
+    this.type = 'pie',
+    List<ChartSlice>? items,
+    List<GanttTask>? tasks,
+    this.title = '',
+  })  : items = items ?? <ChartSlice>[],
+        tasks = tasks ?? <GanttTask>[];
+
+  bool get isGantt => type == 'gantt';
+
+  /// 工程表で使う区切りの一覧 (出てきた順)。
+  List<String> get sections {
+    final out = <String>[];
+    for (final t in tasks) {
+      if (t.section.isNotEmpty && !out.contains(t.section)) out.add(t.section);
+    }
+    return out;
+  }
 
   /// 描画の高さ。 **モデル (visualHeight) と描画 (node_widget) の両方が
   /// これを使う** ことで、 当たり判定と見た目がずれない。
   double renderHeight(double innerWidth) {
+    if (isGantt) {
+      // 目盛り (18) + 帯 1 本 22 + 区切りの見出し 16。
+      final head = sections.length * 16.0;
+      return 18.0 + head + tasks.length * 22.0 + 6.0;
+    }
     final pieH = (innerWidth * 0.62).clamp(80.0, 260.0).toDouble();
     return pieH + 8.0 + items.length * 16.0;
   }
 
-  ChartData copy() => ChartData(type: type, items: [
-        for (final e in items)
-          ChartSlice(label: e.label, value: e.value, colorValue: e.colorValue),
-      ]);
+  ChartData copy() => ChartData(
+        type: type,
+        title: title,
+        items: [
+          for (final e in items)
+            ChartSlice(
+                label: e.label, value: e.value, colorValue: e.colorValue),
+        ],
+        tasks: [
+          for (final e in tasks)
+            GanttTask(
+                label: e.label,
+                section: e.section,
+                start: e.start,
+                end: e.end,
+                status: e.status),
+        ],
+      );
 
   Map<String, dynamic> toJson() => {
         'type': type,
-        'items': [for (final e in items) e.toJson()],
+        if (title.isNotEmpty) 'title': title,
+        if (items.isNotEmpty) 'items': [for (final e in items) e.toJson()],
+        if (tasks.isNotEmpty) 'tasks': [for (final e in tasks) e.toJson()],
       };
 
   factory ChartData.fromJson(Map<String, dynamic> j) => ChartData(
         type: '${j['type'] ?? 'pie'}',
+        title: '${j['title'] ?? ''}',
         items: [
           if (j['items'] is List)
             for (final e in j['items'] as List)
               if (e is Map) ChartSlice.fromJson(e.cast<String, dynamic>()),
+        ],
+        tasks: [
+          if (j['tasks'] is List)
+            for (final e in j['tasks'] as List)
+              if (e is Map) GanttTask.fromJson(e.cast<String, dynamic>()),
         ],
       );
 }
