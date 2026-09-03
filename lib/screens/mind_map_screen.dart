@@ -26030,6 +26030,85 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
   }
 
+  /// マップ以外のページ (フリーノート / 文書 / マークダウン / ビデオ
+  /// エディター) で、 何もない所を右クリックした時に出す小さなメニュー
+  /// (= ユーザー要望: これらのページでも右クリックからページを切り替え
+  ///   られるように)。 マップの右クリックメニューは項目が多いので、
+  /// ここでは「ページ切り替え」 だけを出す。
+  void _showPageSwitchContextMenu(
+      Offset globalPos, MindMapProvider provider) {
+    _removeOverlay();
+    final mq = MediaQuery.of(context);
+    final sw = mq.size.width;
+    final sh = mq.size.height;
+    const double menuW = 210.0;
+    const double menuH = 46.0;
+    final double left = globalPos.dx.clamp(8.0, sw - menuW - 8.0);
+    final double top = globalPos.dy
+        .clamp(mq.padding.top + 8, sh - mq.padding.bottom - menuH - 8);
+    _overlayEntry = OverlayEntry(
+      builder: (_) => Stack(children: [
+        Positioned.fill(
+          child: GestureDetector(
+            onTap: _removeOverlay,
+            onSecondaryTap: _removeOverlay,
+            behavior: HitTestBehavior.translucent,
+            child: const SizedBox.expand(),
+          ),
+        ),
+        Positioned(
+          left: left,
+          top: top,
+          child: Material(
+            color: Colors.transparent,
+            child: Container(
+              width: menuW,
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E1E32),
+                borderRadius: BorderRadius.circular(12),
+                border:
+                    Border.all(color: Colors.white.withValues(alpha: 0.12)),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.6),
+                    blurRadius: 20,
+                    offset: const Offset(0, 6),
+                  ),
+                ],
+              ),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                _CtxMenuItem(
+                  icon: Icons.swap_horiz_rounded,
+                  label: provider.t('ctx.switchPage'),
+                  color: const Color(0xFFBA68C8),
+                  onTap: () {
+                    _removeOverlay();
+                    unawaited(_showQuickPageSwitcher(provider));
+                  },
+                ),
+              ]),
+            ),
+          ),
+        ),
+      ]),
+    );
+    Overlay.of(context, rootOverlay: true).insert(_overlayEntry!);
+  }
+
+  /// マップ以外の専用ビューを包んで、 右クリックで上のメニューを出す
+  /// (= ユーザー要望)。 中の入力欄や部品が副ボタンを自分で処理する時は
+  /// そちらが優先される (深い方が勝つ) ので、 文字の右クリックメニュー等は
+  /// 今まで通り動く。
+  Widget _wrapPageSwitchContextMenu(
+      MindMapProvider provider, Widget child) {
+    if (!_isDesktop) return child;
+    return GestureDetector(
+      onSecondaryTapUp: (d) =>
+          _showPageSwitchContextMenu(d.globalPosition, provider),
+      child: child,
+    );
+  }
+
   void _showCanvasContextMenu(Offset globalPos, TransformationController ctrl,
       MindMapProvider provider) {
     _removeOverlay();
@@ -37585,7 +37664,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   title: provider.t('inquiry.officialIg'),
                                   onTap: () => unawaited(launchUrl(
                                       Uri.parse(
-                                          'https://www.instagram.com/study_darksan'),
+                                          'https://www.instagram.com/hisator_notebook'),
                                       mode: LaunchMode.externalApplication)),
                                 ),
                                 // ── 規約類 ──
@@ -57214,7 +57293,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                                         context, provider, ctrl)
                                     : provider.currentPage.pageType ==
                                             'markdown'
-                                        ? _MarkdownPageView(
+                                        // 右クリックでページを切り替えられる
+                                        //   ように包む (= ユーザー要望)。
+                                        ? _wrapPageSwitchContextMenu(
+                                            provider,
+                                            _MarkdownPageView(
                                             // ★ MCP (AI) が**このページの**
                                             //   本文を書いた時だけ読み直す。
                                             //   全体の tick を使うと、 別の
@@ -57236,27 +57319,31 @@ class _MindMapScreenState extends State<MindMapScreen>
                                             onOpenBrowserAi: _isDesktop
                                                 ? () => _openDesktopFloatingAi(
                                                     provider)
-                                                : null)
+                                                : null))
                                         : (provider.currentPage.pageType ==
                                                     'document' ||
                                                 provider.currentPage.pageType ==
                                                     'paint')
-                                        ? _PaintPageView(
+                                        ? _wrapPageSwitchContextMenu(
+                                            provider,
+                                            _PaintPageView(
                                             key: ValueKey(
                                                 'paint_note_${provider.currentPage.id}_${provider.mcpContentTick}'),
                                             provider: provider,
-                                            pageId: provider.currentPage.id)
+                                            pageId: provider.currentPage.id))
                                         : provider.currentPage.pageType ==
                                                 'videoEditor'
                                             ? (kStoreBuild
                                                 ? _buildVideoEditorUnavailable(
                                                     provider)
-                                                : _VideoEditorPageView(
+                                                : _wrapPageSwitchContextMenu(
+                                                    provider,
+                                                    _VideoEditorPageView(
                                                     key: ValueKey(
                                                         'veditor_${provider.currentPage.id}_${provider.mcpContentTick}'),
                                                     provider: provider,
                                                     pageId: provider
-                                                        .currentPage.id))
+                                                        .currentPage.id)))
                                             : _buildCanvas(
                                                 context, provider, ctrl),
                               ),
@@ -117295,6 +117382,72 @@ const String _kMdEmbeddedMapJs = r"""
       return seen;
     }
 
+    /// 図の中の相手の名前を、 やり取りごと纏めて書き換える
+    /// (= 図から名前を直した時に、 その相手の矢印が迷子にならないように)。
+    function renameActor(oldName, newName) {
+      var msgs = data.messages || [];
+      for (var i = 0; i < msgs.length; i++) {
+        if (msgs[i].from === oldName) msgs[i].from = newName;
+        if (msgs[i].to === oldName) msgs[i].to = newName;
+      }
+      if (data.actors) {
+        for (var j = 0; j < data.actors.length; j++) {
+          if (data.actors[j] === oldName) data.actors[j] = newName;
+        }
+      }
+      if (data.persons) {
+        for (var q = 0; q < data.persons.length; q++) {
+          if (data.persons[q] === oldName) data.persons[q] = newName;
+        }
+      }
+    }
+
+    /// 押した所へ小さな入力欄を出して、 その場で直す
+    /// (= ユーザー要望: 凡例だけでなく図からも直接クリックで編集)。
+    /// [apply] に直した文字を渡し、 終わったら描き直す。
+    function editChartInline(el, initial, apply) {
+      var box = slot.querySelector('.mmap-box');
+      if (!box) return;
+      var oldPop = box.querySelector('.mmch-pop');
+      if (oldPop && oldPop.parentNode) oldPop.parentNode.removeChild(oldPop);
+      var r = el.getBoundingClientRect();
+      var br = box.getBoundingClientRect();
+      var w = Math.max(160, Math.min(260, r.width));
+      var wrap = document.createElement('div');
+      wrap.className = 'mmap-menu mmap-edit-pop mmch-pop';
+      wrap.style.left = Math.max(4,
+        Math.min(br.width - w - 8, r.left - br.left)) + 'px';
+      wrap.style.top = Math.max(4,
+        Math.min(br.height - 46, r.top - br.top)) + 'px';
+      wrap.style.width = w + 'px';
+      wrap.innerHTML = '<input type="text">';
+      var f = wrap.firstChild;
+      f.value = initial == null ? '' : String(initial);
+      box.appendChild(wrap);
+      f.focus();
+      if (f.select) f.select();
+      var done = false;
+      function finish(ok) {
+        if (done) return;
+        done = true;
+        var v = f.value;
+        if (wrap.parentNode) wrap.parentNode.removeChild(wrap);
+        if (!ok) return;
+        apply(v);
+        draw();
+      }
+      f.addEventListener('keydown', function (ev) {
+        ev.stopPropagation();
+        if (ev.key === 'Escape') { finish(false); }
+        else if (ev.key === 'Enter') { ev.preventDefault(); finish(true); }
+      });
+      f.addEventListener('blur', function () { finish(true); });
+      wrap.addEventListener('mousedown', function (ev) {
+        ev.stopPropagation();
+      });
+      wrap.addEventListener('click', function (ev) { ev.stopPropagation(); });
+    }
+
     function seqSvg() {
       var actors = usedActors();
       var msgs = data.messages || [];
@@ -117323,14 +117476,17 @@ const String _kMdEmbeddedMapJs = r"""
             '<line x1="' + cx + '" y1="26" x2="' + (cx + 6) + '" y2="33"/>' +
             '</g>');
         }
-        parts.push('<rect x="' + (cx - bw / 2) + '" y="' + boxY +
+        // 箱と名前は 1 つの塊にして、 押したら名前を直せるようにする
+        // (= ユーザー要望: 凡例だけでなく図からも直接クリックで編集)。
+        parts.push('<g class="mmch-hit" data-ed="actor" data-ai="' + i +
+          '"><rect x="' + (cx - bw / 2) + '" y="' + boxY +
           '" width="' + bw + '" height="30" rx="6" fill="' +
           actorColor(actors[i]) + '" fill-opacity="0.35" stroke="' +
-          actorColor(actors[i]) + '"/>');
-        parts.push('<text x="' + cx + '" y="' + (boxY + 15) +
+          actorColor(actors[i]) + '"/>' +
+          '<text x="' + cx + '" y="' + (boxY + 15) +
           '" text-anchor="middle" dominant-baseline="middle" ' +
           'font-size="13" font-weight="700" fill="#1F2430">' +
-          esc2(actors[i]) + '</text>');
+          esc2(actors[i]) + '</text></g>');
         parts.push('<line x1="' + cx + '" y1="' + (boxY + 30) + '" x2="' +
           cx + '" y2="' + (H - 6) + '" stroke="#00000033"/>');
       }
@@ -117340,18 +117496,25 @@ const String _kMdEmbeddedMapJs = r"""
         var x1 = xs[m.from], x2 = xs[m.to];
         if (x1 == null || x2 == null) { y += 40; continue; }
         var mc = actorColor(m.from);
-        parts.push('<line x1="' + x1 + '" y1="' + y + '" x2="' + x2 +
+        // 矢印と言葉も 1 つの塊にして、 押したら言葉を直せるようにする。
+        // 細い線でも押しやすいよう、 見えない太い線を重ねておく。
+        var seg = '<g class="mmch-hit" data-ed="msg" data-mi="' + k + '">' +
+          '<line x1="' + x1 + '" y1="' + y + '" x2="' + x2 +
           '" y2="' + y + '" stroke="' + mc + '" stroke-width="1.8"' +
-          (m.dashed ? ' stroke-dasharray="5,4"' : '') + '/>');
+          (m.dashed ? ' stroke-dasharray="5,4"' : '') + '/>';
         var dir = x2 >= x1 ? 1 : -1;
-        parts.push('<path d="M' + x2 + ',' + y + ' L' + (x2 - 8 * dir) +
+        seg += '<path d="M' + x2 + ',' + y + ' L' + (x2 - 8 * dir) +
           ',' + (y - 4.5) + ' L' + (x2 - 8 * dir) + ',' + (y + 4.5) +
-          ' Z" fill="' + mc + '"/>');
+          ' Z" fill="' + mc + '"/>';
         if (m.text) {
-          parts.push('<text x="' + ((x1 + x2) / 2) + '" y="' + (y - 6) +
+          seg += '<text x="' + ((x1 + x2) / 2) + '" y="' + (y - 6) +
             '" text-anchor="middle" font-size="12" fill="#1F2430">' +
-            esc2(m.text) + '</text>');
+            esc2(m.text) + '</text>';
         }
+        seg += '<line x1="' + x1 + '" y1="' + (y - 9) + '" x2="' + x2 +
+          '" y2="' + (y - 9) + '" stroke="none" stroke-width="26" ' +
+          'pointer-events="stroke"/></g>';
+        parts.push(seg);
         y += 40;
       }
       return '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' +
@@ -117377,7 +117540,7 @@ const String _kMdEmbeddedMapJs = r"""
             '</div>');
         }
         return '<div class="mmch-legend">' + out.join('') +
-          '<div class="mmch-hint">やり取りの相手や言葉を押すと直せます</div>' +
+          '<div class="mmch-hint">図の中の相手や矢印を押しても直せます</div>' +
           '</div>';
       }
       if (data.type === 'gantt') {
@@ -117535,6 +117698,34 @@ const String _kMdEmbeddedMapJs = r"""
         });
         rows[i].addEventListener('keydown', function (ev) {
           if (ev.key === 'Enter') { ev.preventDefault(); this.blur(); }
+        });
+      }
+      // 図そのものを押しても直せるようにする (= ユーザー要望: 順序図の
+      //   要素は凡例だけでなく、 その上の図から直接クリックで編集)。
+      var svgEl = slot.querySelector('.mmch-inner svg');
+      if (svgEl && data.type === 'sequence') {
+        svgEl.addEventListener('click', function (ev) {
+          var g = (ev.target && ev.target.closest)
+            ? ev.target.closest('.mmch-hit') : null;
+          if (!g) return;
+          ev.stopPropagation();
+          var kind = g.getAttribute('data-ed');
+          if (kind === 'actor') {
+            var list = usedActors();
+            var oldName = list[Number(g.getAttribute('data-ai'))];
+            if (oldName == null) return;
+            editChartInline(g, oldName, function (v) {
+              var name = String(v).trim();
+              if (!name || name === oldName) return;
+              renameActor(oldName, name);
+            });
+          } else if (kind === 'msg') {
+            var mm = (data.messages || [])[Number(g.getAttribute('data-mi'))];
+            if (!mm) return;
+            editChartInline(g, mm.text || '', function (v) {
+              mm.text = String(v).trim();
+            });
+          }
         });
       }
     }
@@ -118766,8 +118957,10 @@ String _markdownPreviewHtml(String md, bool dark,
     line-height:1;padding:0;}
   /* 図のビューは中身が入り切るように広くとる (= ユーザー要望) */
   .mmap.mmch .mmap-box{height:540px;}
-  /* 題は上に大きく。 右はボタンのぶん空ける (= 重なり対策) */
-  .mmch-title{position:absolute;left:16px;top:10px;right:230px;
+  /* 題は図の上の中央に大きく (= ユーザー要望: 工程表の題を上中央へ)。
+     右はボタンのぶん空けて、 その残りの真ん中に置く (= 重なり対策) */
+  .mmch-title{position:absolute;left:14px;top:10px;right:236px;
+       text-align:center;
        font-size:20px;font-weight:700;line-height:1.25;
        white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .mmch-stage{position:absolute;left:0;top:0;right:0;bottom:0;
@@ -118785,6 +118978,10 @@ String _markdownPreviewHtml(String md, bool dark,
   .mmch-l:focus,.mmch-v:focus{border-bottom-color:#BA68C8;}
   .mmch-l:hover,.mmch-v:hover{border-bottom-color:#bbb;cursor:text;}
   .mmch-hint{margin-top:8px;font-size:11px;opacity:.55;}
+  /* 図の要素そのものを押して直せる (= ユーザー要望) */
+  .mmch-hit{cursor:pointer;}
+  .mmch-hit:hover{opacity:.72;}
+  .mmch-pop{z-index:7;}
   .mmap-ctl button.wide{width:auto;padding:0 9px;font-size:11px;
     font-weight:700;background:$accent;border-color:$accent;color:#fff;}
   .mmap-node.moving{opacity:.85;box-shadow:0 6px 18px rgba(0,0,0,.5);
