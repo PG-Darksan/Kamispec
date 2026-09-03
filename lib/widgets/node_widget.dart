@@ -3612,32 +3612,63 @@ class _NodeGanttPainter extends CustomPainter {
     double xOf(DateTime d) =>
         barL + (d.difference(lo!).inDays / days) * barW;
 
-    // ── 目盛り ──
+    // ── 目盛り (= ユーザー要望: 縦線をはっきり / 1 週間が分かるように) ──
     if (lo != null && hi != null) {
       String fmt(DateTime d) => '${d.month}/${d.day}';
-      final grid = Paint()
+      final weekLine = Paint()
+        ..color = const Color(0x40000000)
+        ..strokeWidth = 1.2;
+      final dayLine = Paint()
         ..color = const Color(0x14000000)
         ..strokeWidth = 1;
-      // 週ごとの縦線。
+      // 一週おきに薄い色を敷いて、 週の区切りを目で追えるようにする。
+      final band = Paint()..color = const Color(0x0A3F51B5);
+      var w = 0;
+      for (var i = 0; i < days; i += 7) {
+        if (w++ % 2 == 1) {
+          final x1 = barL + (i / days) * barW;
+          final x2 = barL + (math.min(i + 7, days) / days) * barW;
+          canvas.drawRect(
+              Rect.fromLTRB(x1, headH - 2, x2, size.height - 4), band);
+        }
+      }
       for (var i = 0; i <= days; i++) {
-        if (i % 7 != 0) continue;
         final x = barL + (i / days) * barW;
-        canvas.drawLine(Offset(x, headH - 4), Offset(x, size.height - 4), grid);
+        if (i % 7 == 0) {
+          canvas.drawLine(
+              Offset(x, headH - 14), Offset(x, size.height - 4), weekLine);
+          // 週の頭に日付を書く (入る時だけ)。
+          if (barW / (days / 7.0) > 34) {
+            final d = lo.add(Duration(days: i));
+            final tp = TextPainter(
+              text: TextSpan(
+                  text: fmt(d),
+                  style: const TextStyle(
+                      color: Color(0xAA000000),
+                      fontSize: 9.5,
+                      fontWeight: FontWeight.w600)),
+              textDirection: TextDirection.ltr,
+            )..layout();
+            if (x + tp.width < size.width - 4) {
+              tp.paint(canvas, Offset(x + 2, 3));
+            }
+          }
+        } else if (days <= 60 && barW / days > 6) {
+          canvas.drawLine(
+              Offset(x, headH - 2), Offset(x, size.height - 4), dayLine);
+        }
       }
-      for (final e in [(lo, barL, TextAlign.left), (hi, size.width - 8, TextAlign.right)]) {
-        final tp = TextPainter(
-          text: TextSpan(
-              text: fmt(e.$1),
-              style: const TextStyle(color: Color(0x99000000), fontSize: 10)),
-          textDirection: TextDirection.ltr,
-        )..layout();
-        tp.paint(
-            canvas,
-            Offset(e.$3 == TextAlign.right ? e.$2 - tp.width : e.$2.toDouble(),
-                4));
-      }
-      canvas.drawLine(Offset(barL, headH - 3),
-          Offset(size.width - 8, headH - 3), grid);
+      // 「1 週間」 の目安を左上に出す。
+      final wtp = TextPainter(
+        text: TextSpan(
+            text: '｜= 1週間',
+            style: const TextStyle(
+                color: Color(0x88000000), fontSize: 9.5)),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      wtp.paint(canvas, const Offset(4, 3));
+      canvas.drawLine(Offset(barL, headH - 2),
+          Offset(size.width - 8, headH - 2), weekLine);
     }
 
     var y = headH;
@@ -3728,7 +3759,8 @@ class _NodeSeqPainter extends CustomPainter {
     final msgs = data.messages;
     if (actors.isEmpty) return;
 
-    const headH = 34.0;
+    final hasPerson = data.personActors.isNotEmpty;
+    final headH = hasPerson ? 62.0 : 34.0;
     final rowH = ((size.height - headH - 10) / math.max(1, msgs.length))
         .clamp(20.0, 46.0)
         .toDouble();
@@ -3745,8 +3777,23 @@ class _NodeSeqPainter extends CustomPainter {
     for (var i = 0; i < actors.length; i++) {
       final cx = colW * (i + 0.5);
       final bw = (colW - 10).clamp(40.0, 200.0).toDouble();
+      final person = data.isPerson(actors[i]);
+      // ★ mermaid が actor と書いた相手は棒人間で描く
+      //   (= ユーザー要望: 元の図の人のアイコンも出してほしい)。
+      final boxCy = hasPerson ? 46.0 : 16.0;
+      if (person) {
+        final pen = Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.6
+          ..color = const Color(0xFF7E57C2);
+        canvas.drawCircle(Offset(cx, 12), 6, pen);
+        canvas.drawLine(Offset(cx, 18), Offset(cx, 28), pen);
+        canvas.drawLine(Offset(cx - 7, 22), Offset(cx + 7, 22), pen);
+        canvas.drawLine(Offset(cx, 28), Offset(cx - 6, 35), pen);
+        canvas.drawLine(Offset(cx, 28), Offset(cx + 6, 35), pen);
+      }
       final box = RRect.fromRectAndRadius(
-          Rect.fromCenter(center: Offset(cx, 16), width: bw, height: 24),
+          Rect.fromCenter(center: Offset(cx, boxCy), width: bw, height: 24),
           const Radius.circular(6));
       canvas.drawRRect(box, Paint()..color = const Color(0xFFD7D9F5));
       canvas.drawRRect(
@@ -3764,9 +3811,9 @@ class _NodeSeqPainter extends CustomPainter {
         maxLines: 1,
         ellipsis: '…',
       )..layout(maxWidth: bw - 6);
-      tp.paint(canvas, Offset(cx - tp.width / 2, 16 - tp.height / 2));
+      tp.paint(canvas, Offset(cx - tp.width / 2, boxCy - tp.height / 2));
       canvas.drawLine(
-          Offset(cx, 30), Offset(cx, size.height - 4), line);
+          Offset(cx, boxCy + 14), Offset(cx, size.height - 4), line);
     }
 
     // ── やり取り ──

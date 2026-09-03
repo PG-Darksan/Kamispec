@@ -38609,6 +38609,180 @@ class _MindMapScreenState extends State<MindMapScreen>
   }
 
 
+
+  /// 順序図のノードの中身を編集する (= ユーザー要望: シーケンス図なのに
+  /// 「円グラフを編集」 と出てしまう)。
+  Future<void> _editSeqNode(String nodeId, ChartData data) async {
+    final provider = context.read<MindMapProvider>();
+    final rows = [
+      for (final m in data.messages)
+        (
+          from: TextEditingController(text: m.from),
+          to: TextEditingController(text: m.to),
+          text: TextEditingController(text: m.text),
+          dashed: m.dashed,
+        ),
+    ];
+    final dashed = [for (final m in data.messages) m.dashed];
+    void disposeRows() {
+      for (final r in rows) {
+        r.from.dispose();
+        r.to.dispose();
+        r.text.dispose();
+      }
+    }
+
+    final ok = await _showNearDialogMain<bool>(
+      width: 680,
+      height: 460,
+      builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
+        Widget f(TextEditingController c, String hint) => TextField(
+              controller: c,
+              style: const TextStyle(color: Colors.white, fontSize: 12),
+              decoration: InputDecoration(
+                isDense: true,
+                hintText: hint,
+                hintStyle:
+                    const TextStyle(color: Colors.white24, fontSize: 11),
+              ),
+            );
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          title: Text(provider.t('seq.editTitle'),
+              style: const TextStyle(color: Colors.white, fontSize: 15)),
+          content: SizedBox(
+            width: math.min(640.0, MediaQuery.sizeOf(dctx).width - 64),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 420),
+              child: SingleChildScrollView(
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  for (var i = 0; i < rows.length; i++)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Row(children: [
+                        Expanded(
+                            flex: 2,
+                            child: f(rows[i].from, provider.t('seq.from'))),
+                        const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 6),
+                          child: Icon(Icons.arrow_forward_rounded,
+                              size: 14, color: Colors.white38),
+                        ),
+                        Expanded(
+                            flex: 2,
+                            child: f(rows[i].to, provider.t('seq.to'))),
+                        const SizedBox(width: 8),
+                        Expanded(
+                            flex: 3,
+                            child: f(rows[i].text, provider.t('seq.text'))),
+                        // 返事 (点線) の切り替え。
+                        Tooltip(
+                          message: provider.t('seq.reply'),
+                          child: InkWell(
+                            onTap: () =>
+                                setD(() => dashed[i] = !dashed[i]),
+                            borderRadius: BorderRadius.circular(6),
+                            child: Padding(
+                              padding: const EdgeInsets.all(6),
+                              child: Icon(
+                                  dashed[i]
+                                      ? Icons.more_horiz_rounded
+                                      : Icons.remove_rounded,
+                                  size: 16,
+                                  color: dashed[i]
+                                      ? const Color(0xFF7E57C2)
+                                      : Colors.white38),
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close_rounded,
+                              color: Colors.white38, size: 16),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                              minWidth: 26, minHeight: 26),
+                          onPressed: rows.length <= 1
+                              ? null
+                              : () => setD(() {
+                                    final r = rows.removeAt(i);
+                                    dashed.removeAt(i);
+                                    r.from.dispose();
+                                    r.to.dispose();
+                                    r.text.dispose();
+                                  }),
+                        ),
+                      ]),
+                    ),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      onPressed: () => setD(() {
+                        rows.add((
+                          from: TextEditingController(
+                              text: rows.isEmpty ? '' : rows.last.to.text),
+                          to: TextEditingController(),
+                          text: TextEditingController(),
+                          dashed: false,
+                        ));
+                        dashed.add(false);
+                      }),
+                      icon: const Icon(Icons.add_rounded,
+                          size: 16, color: Color(0xFF43B97F)),
+                      label: Text(provider.t('seq.addMsg'),
+                          style: const TextStyle(
+                              color: Color(0xFF43B97F), fontSize: 12)),
+                    ),
+                  ),
+                ]),
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dctx, false),
+              child: Text(provider.t('btn.cancel'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dctx, true),
+              child: Text(provider.t('btn.save')),
+            ),
+          ],
+        );
+      }),
+    );
+    if (ok == true) {
+      final msgs = <SeqMessage>[];
+      final actors = <String>[];
+      for (var i = 0; i < rows.length; i++) {
+        final f = rows[i].from.text.trim();
+        final t = rows[i].to.text.trim();
+        if (f.isEmpty || t.isEmpty) continue;
+        msgs.add(SeqMessage(
+            from: f, to: t, text: rows[i].text.text.trim(),
+            dashed: dashed[i]));
+        if (!actors.contains(f)) actors.add(f);
+        if (!actors.contains(t)) actors.add(t);
+      }
+      if (msgs.isNotEmpty) {
+        provider.updateNodeChartData(
+            nodeId,
+            ChartData(
+              type: 'sequence',
+              title: data.title,
+              actors: actors,
+              // 人として描く相手は、 残っている名前だけ引き継ぐ。
+              personActors: [
+                for (final a in data.personActors)
+                  if (actors.contains(a)) a,
+              ],
+              messages: msgs,
+            ));
+      }
+    }
+    disposeRows();
+  }
+
   /// 工程表ノードの中身を編集する (= ユーザー要望: 工程表も編集できる形で)。
   Future<void> _editGanttNode(String nodeId, ChartData data) async {
     final provider = context.read<MindMapProvider>();
@@ -38634,8 +38808,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
 
     const kStatuses = ['', 'done', 'active', 'crit'];
-    final ok = await showDialog<bool>(
-      context: context,
+    final ok = await _showNearDialogMain<bool>(
+      width: 680,
+      height: 480,
       builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
         return AlertDialog(
           backgroundColor: const Color(0xFF1E1E32),
@@ -38895,6 +39070,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       await _editGanttNode(nodeId, data);
       return;
     }
+    if (data.isSeq) {
+      await _editSeqNode(nodeId, data);
+      return;
+    }
     final rows = [
       for (final e in data.items)
         (
@@ -38912,8 +39091,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       }
     }
 
-    final ok = await showDialog<bool>(
-      context: context,
+    // 画面中央ではなく、 押した要素の近くに出す (= ユーザー要望)。
+    final ok = await _showNearDialogMain<bool>(
+      width: 430,
+      height: 420,
       builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
         return AlertDialog(
           backgroundColor: const Color(0xFF1E1E32),
@@ -115812,6 +115993,7 @@ const String _kMdEmbeddedMapJs = r"""
               items: cd0.items || [],
               tasks: cd0.tasks || [],
               actors: cd0.actors || [],
+              persons: cd0.persons || [],
               messages: cd0.messages || []
             });
             return;
@@ -116658,7 +116840,7 @@ const String _kMdEmbeddedMapJs = r"""
 
     // ── 順序図 (シーケンス図) ──
     if (/^sequencediagram\b/.test(head)) {
-      var actors = [], msgs = [];
+      var actors = [], msgs = [], persons = [];
       function wantActor(n) {
         var v = String(n || '').trim();
         if (!v) return '';
@@ -116672,8 +116854,16 @@ const String _kMdEmbeddedMapJs = r"""
         if (!SL.trim() || /^\s*%%/.test(SL)) continue;
         if (/^\s*sequencediagram\b/i.test(SL)) continue;
         var pm = SL.match(
-            /^\s*(?:participant|actor)\s+(\S+)(?:\s+as\s+(.+))?\s*$/i);
-        if (pm) { wantActor((pm[2] || pm[1]).trim()); continue; }
+            /^\s*(participant|actor)\s+(\S+)(?:\s+as\s+(.+))?\s*$/i);
+        if (pm) {
+          var nm = wantActor((pm[3] || pm[2]).trim());
+          // actor と書かれた相手は「人」 として描く (= ユーザー要望)。
+          if (nm && pm[1].toLowerCase() === 'actor' &&
+              persons.indexOf(nm) < 0) {
+            persons.push(nm);
+          }
+          continue;
+        }
         var am = SL.match(arrowRe);
         if (!am) continue;
         var f = wantActor(am[1]);
@@ -116689,7 +116879,7 @@ const String _kMdEmbeddedMapJs = r"""
       }
       return msgs.length
         ? { type: 'sequence', title: titleOf(), actors: actors,
-            messages: msgs }
+            persons: persons, messages: msgs }
         : null;
     }
 
@@ -116875,7 +117065,7 @@ const String _kMdEmbeddedMapJs = r"""
         var v = Number(items[i].value);
         if (isFinite(v) && v > 0) total += v;
       }
-      var R = 120, CX = 140, CY = 140;
+      var R = 175, CX = 195, CY = 195;
       var parts = [];
       if (total <= 0) {
         parts.push('<circle cx="' + CX + '" cy="' + CY + '" r="' + R +
@@ -116900,13 +117090,13 @@ const String _kMdEmbeddedMapJs = r"""
             var ty = CY + R * 0.62 * Math.sin(mid);
             parts.push('<text x="' + tx + '" y="' + ty +
               '" text-anchor="middle" dominant-baseline="middle" ' +
-              'font-size="13" font-weight="700" fill="#222">' +
+              'font-size="16" font-weight="700" fill="#222">' +
               Math.round(val / total * 100) + '%</text>');
           }
           ang += sweep;
         }
       }
-      return '<svg width="280" height="280" viewBox="0 0 280 280">' +
+      return '<svg width="390" height="390" viewBox="0 0 390 390">' +
         parts.join('') + '</svg>';
     }
 
@@ -116967,28 +117157,44 @@ const String _kMdEmbeddedMapJs = r"""
       var actors = data.actors || [];
       var msgs = data.messages || [];
       if (!actors.length) return '';
-      var colW = Math.max(120, Math.min(220, 620 / actors.length));
+      var colW = Math.max(150, Math.min(260, 860 / actors.length));
       var W = colW * actors.length;
-      var H = 44 + msgs.length * 34 + 12;
+      var headH = (data.persons && data.persons.length) ? 68 : 44;
+      var H = headH + msgs.length * 40 + 14;
       var xs = {};
       var parts = [];
+      var persons = data.persons || [];
+      var boxY = headH - 32;
       for (var i = 0; i < actors.length; i++) {
         var cx = colW * (i + 0.5);
         xs[actors[i]] = cx;
-        var bw = Math.min(colW - 12, 170);
-        parts.push('<rect x="' + (cx - bw / 2) + '" y="6" width="' + bw +
-          '" height="28" rx="6" fill="#D7D9F5" stroke="#8E93D6"/>');
-        parts.push('<text x="' + cx + '" y="20" text-anchor="middle" ' +
-          'dominant-baseline="middle" font-size="12" font-weight="700" ' +
-          'fill="#1F2430">' + esc2(actors[i]) + '</text>');
-        parts.push('<line x1="' + cx + '" y1="34" x2="' + cx + '" y2="' +
-          (H - 6) + '" stroke="#00000033"/>');
+        var bw = Math.min(colW - 14, 210);
+        // actor と書かれた相手は棒人間も描く (= ユーザー要望)。
+        if (persons.indexOf(actors[i]) >= 0) {
+          parts.push('<g stroke="#7E57C2" stroke-width="1.8" fill="none">' +
+            '<circle cx="' + cx + '" cy="10" r="6"/>' +
+            '<line x1="' + cx + '" y1="16" x2="' + cx + '" y2="26"/>' +
+            '<line x1="' + (cx - 7) + '" y1="20" x2="' + (cx + 7) +
+            '" y2="20"/>' +
+            '<line x1="' + cx + '" y1="26" x2="' + (cx - 6) + '" y2="33"/>' +
+            '<line x1="' + cx + '" y1="26" x2="' + (cx + 6) + '" y2="33"/>' +
+            '</g>');
+        }
+        parts.push('<rect x="' + (cx - bw / 2) + '" y="' + boxY +
+          '" width="' + bw + '" height="30" rx="6" fill="#D7D9F5" ' +
+          'stroke="#8E93D6"/>');
+        parts.push('<text x="' + cx + '" y="' + (boxY + 15) +
+          '" text-anchor="middle" dominant-baseline="middle" ' +
+          'font-size="13" font-weight="700" fill="#1F2430">' +
+          esc2(actors[i]) + '</text>');
+        parts.push('<line x1="' + cx + '" y1="' + (boxY + 30) + '" x2="' +
+          cx + '" y2="' + (H - 6) + '" stroke="#00000033"/>');
       }
-      var y = 56;
+      var y = headH + 18;
       for (var k = 0; k < msgs.length; k++) {
         var m = msgs[k];
         var x1 = xs[m.from], x2 = xs[m.to];
-        if (x1 == null || x2 == null) { y += 34; continue; }
+        if (x1 == null || x2 == null) { y += 40; continue; }
         parts.push('<line x1="' + x1 + '" y1="' + y + '" x2="' + x2 +
           '" y2="' + y + '" stroke="#5C6BC0" stroke-width="1.5"' +
           (m.dashed ? ' stroke-dasharray="5,4"' : '') + '/>');
@@ -116998,10 +117204,10 @@ const String _kMdEmbeddedMapJs = r"""
           ' Z" fill="#5C6BC0"/>');
         if (m.text) {
           parts.push('<text x="' + ((x1 + x2) / 2) + '" y="' + (y - 6) +
-            '" text-anchor="middle" font-size="11" fill="#1F2430">' +
+            '" text-anchor="middle" font-size="12" fill="#1F2430">' +
             esc2(m.text) + '</text>');
         }
-        y += 34;
+        y += 40;
       }
       return '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' +
         W + ' ' + H + '">' + parts.join('') + '</svg>';
@@ -117061,7 +117267,7 @@ const String _kMdEmbeddedMapJs = r"""
     }
 
     function draw() {
-      slot.className = 'mmap';
+      slot.className = 'mmap mmch';
       slot.innerHTML =
         '<div class="mmap-box">' +
         '<div class="mmch-stage"><div class="mmch-inner">' +
@@ -117153,6 +117359,7 @@ const String _kMdEmbeddedMapJs = r"""
                 items: data.items || [],
                 tasks: data.tasks || [],
                 actors: data.actors || [],
+                persons: data.persons || [],
                 messages: data.messages || []
               });
             }
@@ -117660,6 +117867,7 @@ Future<String?> askAndPutChartIntoPage(BuildContext context,
   final items = <ChartSlice>[];
   final tasks = <GanttTask>[];
   final actors = <String>[];
+  final persons = <String>[];
   final messages = <SeqMessage>[];
   if (isSeq) {
     final raw = m['messages'];
@@ -117688,6 +117896,13 @@ Future<String?> askAndPutChartIntoPage(BuildContext context,
       for (final mm in messages) {
         if (!actors.contains(mm.from)) actors.add(mm.from);
         if (!actors.contains(mm.to)) actors.add(mm.to);
+      }
+    }
+    final rawP = m['persons'];
+    if (rawP is List) {
+      for (final e in rawP) {
+        final v = '$e'.trim();
+        if (v.isNotEmpty) persons.add(v);
       }
     }
   } else if (isGantt) {
@@ -117801,6 +118016,7 @@ Future<String?> askAndPutChartIntoPage(BuildContext context,
       items: items,
       tasks: tasks,
       actors: actors,
+      persons: persons,
       messages: messages,
       x: nx,
       y: ny);
@@ -118388,15 +118604,18 @@ String _markdownPreviewHtml(String md, bool dark,
   .mmap-ctl button{width:26px;height:24px;border-radius:6px;cursor:pointer;
     border:1px solid $border;background:$bg;color:$fg;font-size:12px;
     line-height:1;padding:0;}
+  /* 図のビューは中身が入り切るように広くとる (= ユーザー要望) */
+  .mmap.mmch .mmap-box{height:520px;}
   .mmch-stage{position:absolute;left:0;top:0;right:0;bottom:0;
        overflow:auto;padding:14px;}
   .mmch-inner{display:flex;gap:18px;align-items:flex-start;
        flex-wrap:wrap;}
   .mmch-legend{min-width:200px;}
-  .mmch-row{display:flex;align-items:center;gap:8px;margin:3px 0;
-       font-size:13px;}
+  .mmch-row{display:flex;align-items:center;gap:8px;margin:4px 0;
+       font-size:14px;}
   .mmch-sw{width:12px;height:12px;border-radius:3px;flex:none;}
-  .mmch-l{min-width:90px;outline:none;border-bottom:1px dashed transparent;}
+  .mmch-l{min-width:120px;outline:none;
+       border-bottom:1px dashed transparent;}
   .mmch-v{min-width:52px;text-align:right;outline:none;
        border-bottom:1px dashed transparent;}
   .mmch-l:focus,.mmch-v:focus{border-bottom-color:#BA68C8;}
@@ -118861,6 +119080,7 @@ $mapsJs
               items: cd2.items || [],
               tasks: cd2.tasks || [],
               actors: cd2.actors || [],
+              persons: cd2.persons || [],
               messages: cd2.messages || []
             });
             return;

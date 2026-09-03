@@ -1,6 +1,7 @@
 // TextStyle 等は flutter/painting.dart から取り込み、 dart:ui からは
 // 上付き・下付き表示に必要な FontFeature だけを限定して取り込む。
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:ui' show FontFeature;
 import 'package:flutter/painting.dart';
 
@@ -966,6 +967,55 @@ class MindMapNode {
     this.diagramSource,
   }) : color = color ?? const Color(0xFF6C63FF);
 
+  /// 図の中身が全部入る、 いちばん小さい幅 (= ユーザー要望: 値が
+  /// 入り切らないので、 全て入る大きさを最小にしてほしい)。
+  /// 文字の実寸を測って決める。
+  double get chartMinWidth {
+    final d = chartData;
+    if (d == null) return 120;
+    double textW(String t, double fs, {FontWeight? w}) {
+      final tp = TextPainter(
+        text: TextSpan(
+            text: t, style: TextStyle(fontSize: fs, fontWeight: w)),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      return tp.width;
+    }
+
+    if (d.isSeq) {
+      var w = 0.0;
+      for (final a in d.actors) {
+        final x = textW(a, 11, w: FontWeight.w700) + 26;
+        if (x > w) w = x;
+      }
+      return (w * math.max(1, d.actors.length) + 28).clamp(240.0, 1600.0);
+    }
+    if (d.isGantt) {
+      var name = 0.0;
+      for (final t in d.tasks) {
+        final x = textW(t.label, 12);
+        if (x > name) name = x;
+        final y = textW(t.section, 12, w: FontWeight.w700);
+        if (y > name) name = y;
+      }
+      // 名前の欄は全体の 34% なので、 そこから逆算する。
+      return ((name + 16) / 0.34 + 28).clamp(300.0, 1600.0);
+    }
+    // 円グラフ: 凡例が入る幅 + 円の分。
+    var lg = 0.0;
+    final total = d.items.fold<double>(0, (a, e) => a + e.value);
+    for (final e in d.items) {
+      final v = e.value == e.value.roundToDouble()
+          ? e.value.round().toString()
+          : e.value.toStringAsFixed(1);
+      final pct = total > 0 ? '  ${(e.value / total * 100).round()}%' : '';
+      final x = textW('${e.label}  $v$pct', 12) + 34;
+      if (x > lg) lg = x;
+    }
+    // 左に円 (幅の半分) + 右に凡例、 なので凡例の 2 倍が要る。
+    return (lg * 2 + 28).clamp(240.0, 1600.0);
+  }
+
   /// 図のノードの、 図そのものを描く高さ (= 縦幅のつまみの値)。
   /// 小さすぎると何も見えないので下限だけ設ける。
   double get chartHeight => height.clamp(60.0, 4000.0).toDouble();
@@ -1913,6 +1963,10 @@ class ChartData {
   /// 順序図の登場人物 (出てくる順)。
   List<String> actors;
 
+  /// そのうち「人」 として描く相手 (mermaid の actor 宣言)。
+  /// = ユーザー要望: 元の図の人のアイコンも出してほしい。
+  List<String> personActors;
+
   /// 順序図のやり取り。
   List<SeqMessage> messages;
 
@@ -1924,12 +1978,16 @@ class ChartData {
     List<ChartSlice>? items,
     List<GanttTask>? tasks,
     List<String>? actors,
+    List<String>? personActors,
     List<SeqMessage>? messages,
     this.title = '',
   })  : items = items ?? <ChartSlice>[],
         tasks = tasks ?? <GanttTask>[],
         actors = actors ?? <String>[],
+        personActors = personActors ?? <String>[],
         messages = messages ?? <SeqMessage>[];
+
+  bool isPerson(String name) => personActors.contains(name);
 
   bool get isGantt => type == 'gantt';
   bool get isSeq => type == 'sequence';
@@ -1947,8 +2005,9 @@ class ChartData {
   /// これを使う** ことで、 当たり判定と見た目がずれない。
   double renderHeight(double innerWidth) {
     if (isSeq) {
-      // 見出し (36) + やり取り 1 本 34 + 余白。
-      return 44.0 + messages.length * 34.0 + 10.0;
+      // 見出し (人のアイコンがある時は高め) + やり取り 1 本 34 + 余白。
+      final headH = personActors.isEmpty ? 44.0 : 66.0;
+      return headH + messages.length * 34.0 + 10.0;
     }
     if (isGantt) {
       // 目盛り (18) + 帯 1 本 22 + 区切りの見出し 16。
@@ -1963,6 +2022,7 @@ class ChartData {
         type: type,
         title: title,
         actors: List<String>.from(actors),
+        personActors: List<String>.from(personActors),
         messages: [
           for (final m in messages)
             SeqMessage(
@@ -1990,6 +2050,7 @@ class ChartData {
         if (items.isNotEmpty) 'items': [for (final e in items) e.toJson()],
         if (tasks.isNotEmpty) 'tasks': [for (final e in tasks) e.toJson()],
         if (actors.isNotEmpty) 'actors': actors,
+        if (personActors.isNotEmpty) 'persons': personActors,
         if (messages.isNotEmpty)
           'msgs': [for (final e in messages) e.toJson()],
       };
@@ -2010,6 +2071,10 @@ class ChartData {
         actors: [
           if (j['actors'] is List)
             for (final e in j['actors'] as List) '$e',
+        ],
+        personActors: [
+          if (j['persons'] is List)
+            for (final e in j['persons'] as List) '$e',
         ],
         messages: [
           if (j['msgs'] is List)

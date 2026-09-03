@@ -19637,6 +19637,43 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Getrennt scrollen', 'pt': 'Rolar separadamente',
       'ru': 'Прокручивать отдельно',
     },
+    'seq.editTitle': {
+      'ja': '順序図を編集', 'en': 'Edit sequence diagram',
+      'zh': '编辑时序图', 'ko': '시퀀스 다이어그램 편집',
+      'es': 'Editar diagrama de secuencia',
+      'fr': 'Modifier le diagramme de sequence',
+      'de': 'Sequenzdiagramm bearbeiten',
+      'pt': 'Editar diagrama de sequencia',
+      'ru': 'Изменить диаграмму последовательности',
+    },
+    'seq.from': {
+      'ja': '送り手', 'en': 'From', 'zh': '发送方', 'ko': '보내는 쪽',
+      'es': 'De', 'fr': 'De', 'de': 'Von', 'pt': 'De', 'ru': 'От',
+    },
+    'seq.to': {
+      'ja': '受け手', 'en': 'To', 'zh': '接收方', 'ko': '받는 쪽',
+      'es': 'A', 'fr': 'A', 'de': 'An', 'pt': 'Para', 'ru': 'Кому',
+    },
+    'seq.text': {
+      'ja': 'やり取りの言葉', 'en': 'Message',
+      'zh': '消息', 'ko': '메시지',
+      'es': 'Mensaje', 'fr': 'Message', 'de': 'Nachricht',
+      'pt': 'Mensagem', 'ru': 'Сообщение',
+    },
+    'seq.reply': {
+      'ja': '返事 (点線) にする', 'en': 'Make it a reply (dashed)',
+      'zh': '设为回复(虚线)', 'ko': '응답(점선)으로',
+      'es': 'Marcar como respuesta', 'fr': 'Marquer comme reponse',
+      'de': 'Als Antwort (gestrichelt)', 'pt': 'Marcar como resposta',
+      'ru': 'Сделать ответом (пунктир)',
+    },
+    'seq.addMsg': {
+      'ja': 'やり取りを足す', 'en': 'Add message',
+      'zh': '添加消息', 'ko': '메시지 추가',
+      'es': 'Anadir mensaje', 'fr': 'Ajouter un message',
+      'de': 'Nachricht hinzufugen', 'pt': 'Adicionar mensagem',
+      'ru': 'Добавить сообщение',
+    },
     'gantt.editTitle': {
       'ja': '工程表を編集', 'en': 'Edit Gantt chart',
       'zh': '编辑甘特图', 'ko': '간트 차트 편집',
@@ -93597,6 +93634,7 @@ $example
     List<ChartSlice> items = const [],
     List<GanttTask> tasks = const [],
     List<String> actors = const [],
+    List<String> persons = const [],
     List<SeqMessage> messages = const [],
     double? x,
     double? y,
@@ -93623,11 +93661,14 @@ $example
         items: List<ChartSlice>.from(items),
         tasks: List<GanttTask>.from(tasks),
         actors: List<String>.from(actors),
+        personActors: List<String>.from(persons),
         messages: List<SeqMessage>.from(messages),
       ),
     );
-    // ★ 作った時点で「丁度良い高さ」 を入れておく。 これ以降は縦幅の
-    //   つまみでそのまま伸ばし縮みできる (= ユーザー要望)。
+    // ★ 中身が全部入る大きさを最小にする (= ユーザー要望: 値が入り切って
+    //   いない)。 そこから縦幅・横幅のつまみで自由に広げられる。
+    final minW = node.chartMinWidth;
+    if (minW > node.width) node.width = minW;
     node.height = node.chartData!
         .renderHeight((node.width - 28.0).clamp(40.0, 4000.0).toDouble());
     _pushUndoForPage(pageId);
@@ -93644,7 +93685,14 @@ $example
     final node = currentPage.nodes[nodeId];
     if (node == null) return;
     _pushUndo();
-    currentPage.nodes[nodeId] = node.copyWith(chartData: data.copy());
+    final next = node.copyWith(chartData: data.copy());
+    // 直した結果、 中身が入り切らなくなったら広げる (縮めはしない)。
+    final minW = next.chartMinWidth;
+    if (minW > next.width) next.width = minW;
+    final natural =
+        data.renderHeight((next.width - 28.0).clamp(40.0, 4000.0).toDouble());
+    if (natural > next.height) next.height = natural;
+    currentPage.nodes[nodeId] = next;
     _saveToStorage();
     notifyListeners();
   }
