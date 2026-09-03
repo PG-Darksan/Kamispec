@@ -4520,6 +4520,23 @@ class MindMapProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// マウスカーソルの大きさ (1〜15、 0 = アプリからは触らない)。
+  /// メインとサブモニターで別々に持てる (= ユーザー要望)。
+  int _cursorSizeMain = 0;
+  int get cursorSizeMain => _cursorSizeMain;
+  int _cursorSizeSub = 0;
+  int get cursorSizeSub => _cursorSizeSub;
+  Future<void> setCursorSizes({int? main, int? sub}) async {
+    if (main != null) _cursorSizeMain = main.clamp(0, 15);
+    if (sub != null) _cursorSizeSub = sub.clamp(0, 15);
+    final prefs = await _prefsWithRetry();
+    await prefs.setInt('cursorSizeMain', _cursorSizeMain);
+    await prefs.setInt('cursorSizeSub', _cursorSizeSub);
+    CursorWrap.instance
+        .applySizes(main: _cursorSizeMain, sub: _cursorSizeSub);
+    notifyListeners();
+  }
+
   bool _openWithNewInstance = false;
   bool get openWithNewInstance => _openWithNewInstance;
   Future<void> setOpenWithNewInstance(bool v) async {
@@ -19561,6 +19578,179 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Diagramm konnte nicht neu gezeichnet werden',
       'pt': 'Não foi possível redesenhar o diagrama',
       'ru': 'Не удалось перерисовать диаграмму',
+    },
+    'chart.editTitle': {
+      'ja': '円グラフを編集', 'en': 'Edit pie chart',
+      'zh': '编辑饼图', 'ko': '원그래프 편집',
+      'es': 'Editar grafico circular', 'fr': 'Modifier le camembert',
+      'de': 'Kreisdiagramm bearbeiten', 'pt': 'Editar grafico de pizza',
+      'ru': 'Изменить круговую диаграмму',
+    },
+    'chart.label': {
+      'ja': '項目', 'en': 'Label',
+      'zh': '项目', 'ko': '항목',
+      'es': 'Etiqueta', 'fr': 'Libelle',
+      'de': 'Beschriftung', 'pt': 'Rotulo',
+      'ru': 'Название',
+    },
+    'chart.value': {
+      'ja': '値', 'en': 'Value',
+      'zh': '数值', 'ko': '값',
+      'es': 'Valor', 'fr': 'Valeur',
+      'de': 'Wert', 'pt': 'Valor',
+      'ru': 'Значение',
+    },
+    'chart.addItem': {
+      'ja': '項目を足す', 'en': 'Add item',
+      'zh': '添加项目', 'ko': '항목 추가',
+      'es': 'Anadir elemento', 'fr': 'Ajouter un element',
+      'de': 'Eintrag hinzufugen', 'pt': 'Adicionar item',
+      'ru': 'Добавить элемент',
+    },
+    'pptx.aiRewrite': {
+      'ja': 'AI書換', 'en': 'AI rewrite',
+      'zh': 'AI改写', 'ko': 'AI 고쳐쓰기',
+      'es': 'Reescribir con IA', 'fr': 'Reecrire par IA',
+      'de': 'KI-Umschreiben', 'pt': 'Reescrever com IA',
+      'ru': 'ИИ-переписать',
+    },
+    'pptx.aiRewriteHint': {
+      'ja': '例: 敬語に直して / 半分の長さに要約して / 英語にして',
+      'en': 'e.g. Make it formal / Summarize to half / Translate to English',
+      'zh': '例：改为敬语 / 概括为一半长度 / 翻译成英语',
+      'ko': '예: 존댓말로 / 절반으로 요약 / 영어로',
+      'es': 'p. ej. Hazlo formal / Resume a la mitad',
+      'fr': 'p. ex. Rends-le formel / Resume de moitie',
+      'de': 'z. B. Formeller machen / Auf die Halfte kurzen',
+      'pt': 'ex.: Torne formal / Resuma pela metade',
+      'ru': 'напр.: сделай официально / сократи вдвое',
+    },
+    'pptx.aiRewriteRun': {
+      'ja': '書き換える', 'en': 'Rewrite',
+      'zh': '改写', 'ko': '고쳐쓰기',
+      'es': 'Reescribir', 'fr': 'Reecrire',
+      'de': 'Umschreiben', 'pt': 'Reescrever',
+      'ru': 'Переписать',
+    },
+    'pptx.aiRewriteCount': {
+      'ja': '選んだテキスト枠: {n} 個',
+      'en': 'Selected text boxes: {n}',
+      'zh': '已选文本框：{n}', 'ko': '선택한 텍스트 상자: {n}',
+      'es': 'Cuadros seleccionados: {n}',
+      'fr': 'Zones selectionnees : {n}',
+      'de': 'Ausgewahlte Textfelder: {n}',
+      'pt': 'Caixas selecionadas: {n}',
+      'ru': 'Выбрано текстовых полей: {n}',
+    },
+    'pptx.aiRewritePick': {
+      'ja': '書き換えたい所を囲ってから押してください',
+      'en': 'Select the text boxes to rewrite first',
+      'zh': '请先框选要改写的部分', 'ko': '고칠 부분을 먼저 선택하세요',
+      'es': 'Seleccione primero los cuadros a reescribir',
+      'fr': "Selectionnez d'abord les zones a reecrire",
+      'de': 'Zuerst die Textfelder auswahlen',
+      'pt': 'Selecione primeiro as caixas a reescrever',
+      'ru': 'Сначала выделите текст для переписывания',
+    },
+    'pptx.aiRewriteNoKey': {
+      'ja': 'AI の鍵が設定されていません',
+      'en': 'No AI key is set',
+      'zh': '未设置 AI 密钥', 'ko': 'AI 키가 설정되지 않았습니다',
+      'es': 'No hay clave de IA', 'fr': 'Aucune cle IA',
+      'de': 'Kein KI-Schlussel', 'pt': 'Sem chave de IA',
+      'ru': 'Ключ ИИ не задан',
+    },
+    'pptx.aiRewriteDone': {
+      'ja': '書き換えました',
+      'en': 'Rewritten',
+      'zh': '已改写', 'ko': '고쳐썼습니다',
+      'es': 'Reescrito', 'fr': 'Reecrit',
+      'de': 'Umgeschrieben', 'pt': 'Reescrito',
+      'ru': 'Переписано',
+    },
+    'audioOut.title': {
+      'ja': '音声の出力先', 'en': 'Audio output device',
+      'zh': '声音输出设备', 'ko': '소리 출력 장치',
+      'es': 'Dispositivo de salida de audio',
+      'fr': 'Peripherique de sortie audio',
+      'de': 'Audioausgabegerat', 'pt': 'Dispositivo de saida de audio',
+      'ru': 'Устройство вывода звука',
+    },
+    'audioOut.desc': {
+      'ja': 'Windows の既定の再生デバイスを切り替えます。 サブモニターの'
+          'スピーカー (HDMI) とメイン側をここで行き来できます。',
+      'en': 'Switches the default playback device, e.g. between the '
+          'second monitor speakers (HDMI) and the main output.',
+      'zh': '切换 Windows 默认播放设备，例如副显示器扬声器与主输出之间。',
+      'ko': 'Windows 기본 재생 장치를 전환합니다. 보조 모니터 스피커와 주 '
+          '출력을 오갈 수 있습니다.',
+      'es': 'Cambia el dispositivo de reproduccion predeterminado.',
+      'fr': 'Change le peripherique de lecture par defaut.',
+      'de': 'Wechselt das Standard-Wiedergabegerat.',
+      'pt': 'Alterna o dispositivo de reproducao padrao.',
+      'ru': 'Переключает устройство воспроизведения по умолчанию.',
+    },
+    'audioOut.none': {
+      'ja': '再生デバイスが見つかりません',
+      'en': 'No playback devices found',
+      'zh': '未找到播放设备', 'ko': '재생 장치를 찾을 수 없습니다',
+      'es': 'No se encontraron dispositivos',
+      'fr': 'Aucun peripherique trouve',
+      'de': 'Keine Wiedergabegerate gefunden',
+      'pt': 'Nenhum dispositivo encontrado',
+      'ru': 'Устройства воспроизведения не найдены',
+    },
+    'cursorSize.title': {
+      'ja': 'マウスカーソルの大きさ',
+      'en': 'Mouse cursor size',
+      'zh': '鼠标光标大小', 'ko': '마우스 커서 크기',
+      'es': 'Tamano del cursor', 'fr': 'Taille du curseur',
+      'de': 'Mauszeigergrosse', 'pt': 'Tamanho do cursor',
+      'ru': 'Размер курсора мыши',
+    },
+    'cursorSize.desc': {
+      'ja': 'Windows のポインターの大きさを変えます。 サブモニターに移った時'
+          'だけ別の大きさにもできます。',
+      'en': "Changes Windows' pointer size. A different size can be used "
+          'while on the second monitor.',
+      'zh': '更改 Windows 指针大小。移到副显示器时可使用不同的大小。',
+      'ko': 'Windows 포인터 크기를 바꿉니다. 보조 모니터에서는 다른 크기로 할 '
+          '수 있습니다.',
+      'es': 'Cambia el tamano del puntero de Windows. En el segundo monitor '
+          'puede usarse otro tamano.',
+      'fr': "Modifie la taille du pointeur Windows. Une autre taille peut "
+          "etre utilisee sur le second ecran.",
+      'de': 'Andert die Zeigergrosse von Windows. Auf dem zweiten Monitor '
+          'kann eine andere Grosse gelten.',
+      'pt': 'Altera o tamanho do ponteiro do Windows. No segundo monitor '
+          'pode valer outro tamanho.',
+      'ru': 'Меняет размер указателя Windows. На втором мониторе можно '
+          'использовать другой размер.',
+    },
+    'cursorSize.main': {
+      'ja': 'メインモニター', 'en': 'Main monitor',
+      'zh': '主显示器', 'ko': '주 모니터',
+      'es': 'Monitor principal', 'fr': 'Ecran principal',
+      'de': 'Hauptmonitor', 'pt': 'Monitor principal',
+      'ru': 'Основной монитор',
+    },
+    'cursorSize.subToggle': {
+      'ja': 'サブモニターでは別の大きさにする',
+      'en': 'Use a different size on the second monitor',
+      'zh': '在副显示器上使用不同大小',
+      'ko': '보조 모니터에서는 다른 크기 사용',
+      'es': 'Usar otro tamano en el segundo monitor',
+      'fr': 'Autre taille sur le second ecran',
+      'de': 'Andere Grosse auf dem zweiten Monitor',
+      'pt': 'Outro tamanho no segundo monitor',
+      'ru': 'Другой размер на втором мониторе',
+    },
+    'cursorSize.sub': {
+      'ja': 'サブモニター', 'en': 'Second monitor',
+      'zh': '副显示器', 'ko': '보조 모니터',
+      'es': 'Segundo monitor', 'fr': 'Second ecran',
+      'de': 'Zweiter Monitor', 'pt': 'Segundo monitor',
+      'ru': 'Второй монитор',
     },
     'cursorWrap.title': {
       'ja': 'サブモニターに両サイドからアクセス',
@@ -68279,7 +68469,8 @@ class MindMapProvider extends ChangeNotifier {
     'fcAvoidExisting', 'fcFormat', 'fcIncludeRelated', 'fcPrompt',
     'fcTxtLineCount', 'fcTxtStartLine', 'flashcardGenCount',
     'quizAvoidDuplicates', 'allowMultipleFloatingWindows',
-    'openWithNewInstance', 'cursorWrapEnabled',
+    'openWithNewInstance', 'cursorWrapEnabled', 'cursorSizeMain',
+    'cursorSizeSub',
     'openTarget', 'mapSplitQuad', 'mapSplitRatioX',
     'mapSplitRatioY', 'mapSplitStacked', 'instagramLanding',
     'instagramUsername', 'weather_cityName', 'weather_lat', 'weather_lon',
@@ -81548,7 +81739,11 @@ $cleanQ
     // 「アプリで開く」 を別アプリで開くか (= ユーザー要望)。
     _openWithNewInstance = prefs.getBool('openWithNewInstance') ?? false;
     _cursorWrapEnabled = prefs.getBool('cursorWrapEnabled') ?? false;
+    _cursorSizeMain = prefs.getInt('cursorSizeMain') ?? 0;
+    _cursorSizeSub = prefs.getInt('cursorSizeSub') ?? 0;
     // 起動し直しても入ったままにする。
+    CursorWrap.instance
+        .applySizes(main: _cursorSizeMain, sub: _cursorSizeSub);
     CursorWrap.instance.apply(_cursorWrapEnabled);
     // メモ欄一括折りたたみ (デフォルト false = 従来通り全文表示)
     _memoCollapsedGlobal = prefs.getBool('memoCollapsedGlobal') ?? false;
@@ -84150,15 +84345,22 @@ $cleanQ
     String? memo,
     String? url,
     int? colorValue,
+    // フローチャートのブロックの形 (= ユーザー要望: 図を形のまま変換)。
+    // updateNodeShape は currentPage 決め打ちなのでここで直接持たせる。
+    String? shape,
   }) {
     final page = mcpPageById(pageId);
     if (page == null) return null;
     final base = mcpReferenceFor(pageId);
+    final flowShape = shape != null && shape != 'rounded';
     final node = MindMapNode(
       id: _uuid.v4(),
       title: title,
       position: Offset(x ?? base.dx, y ?? base.dy),
       color: colorValue != null ? Color(colorValue) : _childColor(),
+      shape: flowShape ? shape : null,
+      anchorMode:
+          flowShape ? NodeAnchorMode.fourWay : NodeAnchorMode.twoWay,
     );
     // ── メモと URL は「どちらか」 ではなく両方受ける ──
     // = ユーザー報告「YouTube リンクを出してと頼んだら、 ハイパーリンクに
@@ -84998,7 +85200,12 @@ $cleanQ
   /// 図の読み替え (sequenceDiagram など) は同じ二人が何度もやり取りするので、
   /// 一本にまとめると最後のひと言しか残らない (= 点検で判明)。
   bool mcpConnectNodes(String pageId, String fromKey, String toKey,
-      {String? label, bool allowParallel = false}) {
+      {String? label,
+      bool allowParallel = false,
+      // 図の変換用: 矢じりの有無 / 双方向 / 縦の流れ (上→下)。
+      bool showArrow = true,
+      bool bidirectional = false,
+      bool vertical = false}) {
     final page = mcpPageById(pageId);
     if (page == null) return false;
     final fromId = _resolveNodeIdIn(page, fromKey);
@@ -85020,9 +85227,11 @@ $cleanQ
     }
     page.connections.add(NodeConnection(
       fromId: fromId,
-      fromAnchor: AnchorDirection.east,
+      fromAnchor: vertical ? AnchorDirection.south : AnchorDirection.east,
       toId: toId,
-      toAnchor: AnchorDirection.west,
+      toAnchor: vertical ? AnchorDirection.north : AnchorDirection.west,
+      showArrow: showArrow,
+      bidirectional: bidirectional,
       // ★ 右へ流れる曲線で結ぶ (= ユーザー報告: 右に配置しているのに
       //   線が上下から伸びて違和感がある)。 既定の折れ線 (elbow) だと
       //   「右 → 上下 → 右」 と縦の幹を通るため、 枝分かれが多いほど
@@ -93234,6 +93443,43 @@ $example
   /// 円グラフのまま置いて、 後から中身を直せるように)。
   ///
   /// 裏のページも直せるよう、 currentPage 決め打ちにはしない。
+  /// 円グラフのノードを置く (= ユーザー要望: 図を編集できる要素として)。
+  String? mcpAddChartNode(
+    String pageId, {
+    required String title,
+    required List<ChartSlice> items,
+    double? x,
+    double? y,
+  }) {
+    final page = mcpPageById(pageId);
+    if (page == null || items.isEmpty) return null;
+    final base = mcpReferenceFor(pageId);
+    final node = MindMapNode(
+      id: _uuid.v4(),
+      title: title,
+      position: Offset(x ?? base.dx, y ?? base.dy),
+      width: 240,
+      chartData: ChartData(items: items),
+    );
+    _pushUndoForPage(pageId);
+    page.nodes[node.id] = node;
+    _saveToStorage();
+    notifyListeners();
+    return node.id;
+  }
+
+  /// 円グラフの中身を書き換える (今開いているページのノード)。
+  /// ★ 取り消しの控えが道連れにならないよう、 同じ物をいじらず
+  ///   新しい ChartData に置き換える。
+  void updateNodeChartData(String nodeId, ChartData data) {
+    final node = currentPage.nodes[nodeId];
+    if (node == null) return;
+    _pushUndo();
+    currentPage.nodes[nodeId] = node.copyWith(chartData: data.copy());
+    _saveToStorage();
+    notifyListeners();
+  }
+
   bool setNodeDiagramSource(String pageId, String nodeId, String? code) {
     final page = mcpPageById(pageId);
     final node = page?.nodes[nodeId];
@@ -93251,7 +93497,12 @@ $example
   /// [shape] は 'rounded' / 'rect' / 'diamond' / 'parallelogram'。
   void updateNodeShape(String id, String shape) {
     final normalizedShape = shape == 'stadium' ? 'rounded' : shape;
-    const allowed = {'rounded', 'rect', 'diamond', 'parallelogram'};
+    // ★ node_widget が描ける形すべてを許す (= 点検で判明: 端子ブロックの
+    //   形選びが hexagon などを選んでも黙って無視されていた)。
+    const allowed = {
+      'rounded', 'rect', 'diamond', 'parallelogram',
+      'hexagon', 'document', 'cylinder', 'trapezoid', 'chevron', 'circle',
+    };
     if (!allowed.contains(normalizedShape)) return;
     final node = currentPage.nodes[id];
     if (node == null) return;
@@ -94341,6 +94592,7 @@ $example
         attachmentThumbPath: node.attachmentThumbPath,
         attachmentAspectRatio: node.attachmentAspectRatio,
         diagramSource: node.diagramSource,
+        chartData: node.chartData?.copy(),
       );
       targetPage.nodes[newId] = newNode;
     }
@@ -94907,6 +95159,7 @@ $example
         attachmentThumbPath: node.attachmentThumbPath,
         attachmentAspectRatio: node.attachmentAspectRatio,
         diagramSource: node.diagramSource,
+        chartData: node.chartData?.copy(),
       );
       newIds.add(newId);
     }

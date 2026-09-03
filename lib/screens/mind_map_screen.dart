@@ -38,6 +38,7 @@ import '../services/screen_capture.dart' as scap;
 import '../services/screen_recorder.dart';
 import '../services/rec_hotkey.dart';
 import '../services/cursor_wrap.dart';
+import '../services/audio_output.dart';
 import '../services/ic_card_reader.dart';
 // 面接練習・ロールプレイの下調べ (Web + 手元の資料ファイル)。
 import '../services/talk_reference.dart';
@@ -2710,7 +2711,17 @@ class _MindMapScreenState extends State<MindMapScreen>
   wv_win.WebviewController? _splitWinController;
   bool _splitWinInitialized = false;
   iaw.InAppWebViewController? _splitIawController;
-  String? _splitLocalPdfPath;
+  // ★ setter で kOpenPdfPaths と同期する (= 点検で判明: 分割ペインの PDF は
+  //   「開いている」 に数えられず、 焼き直し直後のサムネイル生成が同じ
+  //   ファイルを触ってネイティブ側ごと落ちる)。
+  String? _splitLocalPdfPathV;
+  String? get _splitLocalPdfPath => _splitLocalPdfPathV;
+  set _splitLocalPdfPath(String? v) {
+    final old = _splitLocalPdfPathV;
+    if (old != null && old != v) kOpenPdfPaths.remove(old);
+    _splitLocalPdfPathV = v;
+    if (v != null) kOpenPdfPaths.add(v);
+  }
 
   /// 画面分割パネル PDF 用の SfPdfViewer コントローラ。
   /// マウスがパネル側にあるとき、 メインの KeyboardListener から
@@ -2750,7 +2761,14 @@ class _MindMapScreenState extends State<MindMapScreen>
   // 新 PDF を左パネルに展開する。 これでマップを潰さずに左右に 2 つの PDF
   // を並べられる (= ただし狭くなるので必要に応じてマップは隠す)。
   bool _splitLeftOpen = false;
-  String? _splitLeftLocalPdfPath;
+  String? _splitLeftLocalPdfPathV;
+  String? get _splitLeftLocalPdfPath => _splitLeftLocalPdfPathV;
+  set _splitLeftLocalPdfPath(String? v) {
+    final old = _splitLeftLocalPdfPathV;
+    if (old != null && old != v) kOpenPdfPaths.remove(old);
+    _splitLeftLocalPdfPathV = v;
+    if (v != null) kOpenPdfPaths.add(v);
+  }
   int _splitLeftCurrentPage = 1;
   int _splitLeftTotalPages = 0;
 
@@ -38590,6 +38608,326 @@ class _MindMapScreenState extends State<MindMapScreen>
     );
   }
 
+  /// 音声の出力先を選ぶ (= ユーザー要望)。
+  Future<void> _showAudioOutputDialog(MindMapProvider provider) async {
+    var devices = await AudioOutput.listDevices();
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          title: Text(provider.t('audioOut.title'),
+              style: const TextStyle(color: Colors.white, fontSize: 15)),
+          content: SizedBox(
+            width: math.min(420.0, MediaQuery.sizeOf(dctx).width - 64),
+            child: devices.isEmpty
+                ? Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Text(provider.t('audioOut.none'),
+                        style: const TextStyle(
+                            color: Colors.white54, fontSize: 13)),
+                  )
+                : ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 380),
+                    child: ListView(shrinkWrap: true, children: [
+                      for (final d in devices)
+                        ListTile(
+                          dense: true,
+                          leading: Icon(
+                            d.isDefault
+                                ? Icons.volume_up_rounded
+                                : Icons.speaker_outlined,
+                            color: d.isDefault
+                                ? const Color(0xFF9CCC65)
+                                : Colors.white54,
+                            size: 20,
+                          ),
+                          title: Text(d.name,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                  color: d.isDefault
+                                      ? Colors.white
+                                      : Colors.white70,
+                                  fontSize: 13,
+                                  fontWeight: d.isDefault
+                                      ? FontWeight.w700
+                                      : FontWeight.w400)),
+                          trailing: d.isDefault
+                              ? const Icon(Icons.check_rounded,
+                                  color: Color(0xFF9CCC65), size: 18)
+                              : null,
+                          onTap: d.isDefault
+                              ? null
+                              : () async {
+                                  final ok =
+                                      await AudioOutput.setDefault(d.id);
+                                  if (ok) {
+                                    final next =
+                                        await AudioOutput.listDevices();
+                                    setD(() => devices = next);
+                                  }
+                                },
+                        ),
+                    ]),
+                  ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dctx),
+              child: Text(provider.t('btn.close'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+          ],
+        );
+      }),
+    );
+  }
+
+  /// 円グラフのノードの中身を編集する (= ユーザー要望: 図を要素として
+  /// 置いて、 後から値や項目を直せるように)。
+  Future<void> _editChartNode(String nodeId) async {
+    final provider = context.read<MindMapProvider>();
+    final node = provider.currentPage.nodes[nodeId];
+    final data = node?.chartData;
+    if (node == null || data == null) return;
+    final rows = [
+      for (final e in data.items)
+        (
+          label: TextEditingController(text: e.label),
+          value: TextEditingController(
+              text: e.value == e.value.roundToDouble()
+                  ? e.value.round().toString()
+                  : e.value.toString()),
+        ),
+    ];
+    void disposeRows() {
+      for (final r in rows) {
+        r.label.dispose();
+        r.value.dispose();
+      }
+    }
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          title: Text(provider.t('chart.editTitle'),
+              style: const TextStyle(color: Colors.white, fontSize: 15)),
+          content: SizedBox(
+            width: math.min(400.0, MediaQuery.sizeOf(dctx).width - 64),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 420),
+              child: SingleChildScrollView(
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  for (var i = 0; i < rows.length; i++)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: Row(children: [
+                        Container(
+                          width: 12,
+                          height: 12,
+                          margin: const EdgeInsets.only(right: 8),
+                          decoration: BoxDecoration(
+                            color: kChartPalette[i % kChartPalette.length],
+                            borderRadius: BorderRadius.circular(3),
+                          ),
+                        ),
+                        Expanded(
+                          flex: 3,
+                          child: TextField(
+                            controller: rows[i].label,
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 13),
+                            decoration: InputDecoration(
+                              isDense: true,
+                              hintText: provider.t('chart.label'),
+                              hintStyle:
+                                  const TextStyle(color: Colors.white24),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          flex: 2,
+                          child: TextField(
+                            controller: rows[i].value,
+                            keyboardType:
+                                const TextInputType.numberWithOptions(
+                                    decimal: true),
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 13),
+                            decoration: InputDecoration(
+                              isDense: true,
+                              hintText: provider.t('chart.value'),
+                              hintStyle:
+                                  const TextStyle(color: Colors.white24),
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close_rounded,
+                              color: Colors.white38, size: 16),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                              minWidth: 26, minHeight: 26),
+                          onPressed: rows.length <= 1
+                              ? null
+                              : () => setD(() {
+                                    final r = rows.removeAt(i);
+                                    r.label.dispose();
+                                    r.value.dispose();
+                                  }),
+                        ),
+                      ]),
+                    ),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      onPressed: () => setD(() {
+                        rows.add((
+                          label: TextEditingController(),
+                          value: TextEditingController(),
+                        ));
+                      }),
+                      icon: const Icon(Icons.add_rounded,
+                          size: 16, color: Color(0xFF43B97F)),
+                      label: Text(provider.t('chart.addItem'),
+                          style: const TextStyle(
+                              color: Color(0xFF43B97F), fontSize: 12)),
+                    ),
+                  ),
+                ]),
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dctx, false),
+              child: Text(provider.t('btn.cancel'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dctx, true),
+              child: Text(provider.t('btn.save')),
+            ),
+          ],
+        );
+      }),
+    );
+    if (ok == true) {
+      final items = <ChartSlice>[];
+      for (final r in rows) {
+        final label = r.label.text.trim();
+        final v = double.tryParse(r.value.text.trim());
+        if (label.isEmpty || v == null || !v.isFinite) continue;
+        items.add(ChartSlice(label: label, value: v));
+      }
+      if (items.isNotEmpty) {
+        provider.updateNodeChartData(nodeId, ChartData(items: items));
+      }
+    }
+    disposeRows();
+  }
+
+  /// マウスカーソルの大きさの設定 (= ユーザー要望)。
+  Future<void> _showCursorSizeDialog(MindMapProvider provider) async {
+    // 開く前の大きさを控える (やめた時にそのまま残さないため)。
+    final before = CursorWrap.readSystemCursorSize();
+    var mainV =
+        provider.cursorSizeMain > 0 ? provider.cursorSizeMain : before;
+    var subOn = provider.cursorSizeSub > 0;
+    var subV = provider.cursorSizeSub > 0 ? provider.cursorSizeSub : mainV;
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
+        Widget sliderRow(String label, int value, bool enabled,
+            ValueChanged<int> onChanged) {
+          return Row(children: [
+            SizedBox(
+              width: 120,
+              child: Text(label,
+                  style: TextStyle(
+                      color: enabled ? Colors.white70 : Colors.white24,
+                      fontSize: 13)),
+            ),
+            Expanded(
+              child: Slider(
+                value: value.toDouble(),
+                min: 1,
+                max: 15,
+                divisions: 14,
+                label: '$value',
+                onChanged:
+                    enabled ? (v) => onChanged(v.round()) : null,
+              ),
+            ),
+            SizedBox(
+              width: 28,
+              child: Text('$value',
+                  textAlign: TextAlign.right,
+                  style: TextStyle(
+                      color: enabled ? Colors.white : Colors.white24,
+                      fontSize: 13)),
+            ),
+          ]);
+        }
+
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          title: Text(provider.t('cursorSize.title'),
+              style: const TextStyle(color: Colors.white, fontSize: 15)),
+          content: SizedBox(
+            width: math.min(420.0, MediaQuery.sizeOf(dctx).width - 64),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              // 動かすとその場で反映される (見て確かめられるように)。
+              sliderRow(provider.t('cursorSize.main'), mainV, true, (v) {
+                setD(() => mainV = v);
+                CursorWrap.applyCursorSize(v);
+              }),
+              const SizedBox(height: 6),
+              SwitchListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                title: Text(provider.t('cursorSize.subToggle'),
+                    style: const TextStyle(
+                        color: Colors.white70, fontSize: 13)),
+                value: subOn,
+                activeColor: const Color(0xFF4FC3F7),
+                onChanged: (v) => setD(() => subOn = v),
+              ),
+              sliderRow(provider.t('cursorSize.sub'), subV, subOn,
+                  (v) => setD(() => subV = v)),
+            ]),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dctx),
+              child: Text(provider.t('btn.cancel'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+            FilledButton(
+              onPressed: () {
+                unawaited(provider.setCursorSizes(
+                    main: mainV, sub: subOn ? subV : 0));
+                Navigator.pop(dctx, true);
+              },
+              child: Text(provider.t('btn.save')),
+            ),
+          ],
+        );
+      }),
+    );
+    // ★ やめた時は開く前の大きさへ必ず戻す (= 点検で判明: 一度も保存して
+    //   いない人がお試しで動かすと、 そのままの大きさで残っていた)。
+    if (saved != true) {
+      CursorWrap.applyCursorSize(
+          provider.cursorSizeMain > 0 ? provider.cursorSizeMain : before);
+    }
+  }
+
   Widget _settingsToggleTile({
     required IconData icon,
     required Color color,
@@ -70712,6 +71050,76 @@ class _MindMapScreenState extends State<MindMapScreen>
                 },
               ),
 
+            // ── マウスカーソルの大きさ (Windows のみ。 = ユーザー要望:
+            //    アプリから設定 + サブモニターでは別の大きさに) ──
+            if (!kIsWeb && Platform.isWindows)
+              InkWell(
+                onTap: () => _showCursorSizeDialog(provider),
+                borderRadius: BorderRadius.circular(10),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 12),
+                  margin: const EdgeInsets.symmetric(vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Color.alphaBlend(
+                        provider.headerColor.withValues(alpha: 0.22),
+                        Colors.white.withValues(alpha: 0.04)),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                        color: provider.headerColor.withValues(alpha: 0.28)),
+                  ),
+                  child: Row(children: [
+                    const Icon(Icons.mouse_rounded,
+                        color: Color(0xFF4FC3F7), size: 20),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(provider.t('cursorSize.title'),
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 14)),
+                    ),
+                    _settingHelpButton(
+                        provider.t('cursorSize.title'), 'cursorSize.desc'),
+                    const Icon(Icons.chevron_right_rounded,
+                        color: Colors.white38, size: 20),
+                  ]),
+                ),
+              ),
+
+            // ── 音声の出力先 (Windows のみ。 = ユーザー要望: サブモニター
+            //    のスピーカーから出すかをアプリから選べるように) ──
+            if (!kIsWeb && Platform.isWindows)
+              InkWell(
+                onTap: () => _showAudioOutputDialog(provider),
+                borderRadius: BorderRadius.circular(10),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 12),
+                  margin: const EdgeInsets.symmetric(vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Color.alphaBlend(
+                        provider.headerColor.withValues(alpha: 0.22),
+                        Colors.white.withValues(alpha: 0.04)),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                        color: provider.headerColor.withValues(alpha: 0.28)),
+                  ),
+                  child: Row(children: [
+                    const Icon(Icons.volume_up_rounded,
+                        color: Color(0xFF9CCC65), size: 20),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(provider.t('audioOut.title'),
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 14)),
+                    ),
+                    _settingHelpButton(
+                        provider.t('audioOut.title'), 'audioOut.desc'),
+                    const Icon(Icons.chevron_right_rounded,
+                        color: Colors.white38, size: 20),
+                  ]),
+                ),
+              ),
+
             // ── トグル: 画面の両端をつないでマウスを回り込ませる
             //    (Windows のみ。 = ユーザー要望: メインの右とサブの左しか
             //     繋がっていなくて使いにくい) ──
@@ -73231,6 +73639,14 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     ? () {
                                         provider.selectNode(node.id);
                                         _openNodeLink(node);
+                                      }
+                                    : null,
+                                // 円グラフのノード: 押すと中身の編集
+                                // (= ユーザー要望)。
+                                onChartTap: node.chartData != null
+                                    ? () {
+                                        provider.selectNode(node.id);
+                                        unawaited(_editChartNode(node.id));
                                       }
                                     : null,
                                 onAttachmentTap:
@@ -115181,16 +115597,20 @@ const String _kMdEmbeddedMapJs = r"""
           window.__mmPost({
             type: 'mapToPage',
             title: data.title || data.name || 'map',
+            dir: data.dir || '',
+            kind: data.kind || '',
             nodes: nodes.map(function (x) {
               return {
                 id: x.id, title: x.title || '', memo: x.memoText || '',
                 x: Math.round(x.x), y: Math.round(x.y),
-                color: x.color || null
+                color: x.color || null, shape: x.shape || null
               };
             }),
             connections: conns.map(function (c) {
               return { fromId: c.fromId, toId: c.toId,
-                       label: c.label || '' };
+                       label: c.label || '',
+                       arrow: c.arrow === false ? false : true,
+                       bidir: c.bidir === true };
             })
           });
         }
@@ -115408,6 +115828,26 @@ const String _kMdEmbeddedMapJs = r"""
     return lines.join('\n');
   }
 
+  /// 「A[調査]」 の括弧から、 ブロックの形を出す (無ければ null)。
+  function shapeOf(raw) {
+    var t = String(raw == null ? '' : raw).trim();
+    if (!t) return null;
+    if (t.slice(0, 2) === '((') return 'circle';
+    if (t.slice(0, 2) === '{{') return 'hexagon';
+    if (t.slice(0, 2) === '[(') return 'cylinder';
+    if (t.slice(0, 2) === '[[') return 'rect';
+    if (t.charAt(0) === '{') return 'diamond';
+    if (t.charAt(0) === '[') {
+      var inner = t.slice(1, -1);
+      // [/入力/] や [\出力\] は平行四辺形の仲間。
+      if (/^[\/\\].*[\/\\]$/.test(inner)) return 'parallelogram';
+      return 'rect';
+    }
+    if (t.charAt(0) === '(') return 'rounded';
+    if (t.charAt(0) === '>') return 'rect';
+    return null;
+  }
+
   /// 「A[調査]」 のような書き方から、 見出しだけを取り出す。
   function labelOf(raw) {
     var t = String(raw == null ? '' : raw).trim();
@@ -115425,6 +115865,11 @@ const String _kMdEmbeddedMapJs = r"""
         t = t.substring(a.length, t.length - b.length).trim();
         break;
       }
+    }
+    // [/入力/] [\出力\] の斜線 (形の印) も落とす。 括弧剥がしは 1 枚で
+    // 止まるので、 その後にここで別途落とす。
+    if (t.length > 2 && /^[\/\\]/.test(t) && /[\/\\]$/.test(t)) {
+      t = t.substring(1, t.length - 1).trim();
     }
     // 引用符も外す。
     if (t.length > 1 &&
@@ -115474,7 +115919,7 @@ const String _kMdEmbeddedMapJs = r"""
     var lines = String(src).split('\n');
     var dir = 'TD';
     var byKey = {}, nodes = [], conns = [], n = 0;
-    function want(key, label) {
+    function want(key, label, shape) {
       key = String(key).trim();
       if (!key) return null;
       if (!byKey[key]) {
@@ -115484,13 +115929,17 @@ const String _kMdEmbeddedMapJs = r"""
       } else if (label && byKey[key].title === key) {
         byKey[key].title = label;
       }
+      // 形は分かった時に上書きする (最初に線の中で出た時は括弧が無い事も)。
+      if (shape && !byKey[key].shape) byKey[key].shape = shape;
       return byKey[key];
     }
     // 「A[調査]」 の 1 個ぶんを読む正規表現。
     var one = '([A-Za-z0-9_\\-\\.]+)\\s*((?:\\(\\(|\\[\\[|\\[\\(|\\{\\{|' +
               '[\\(\\[\\{>])[\\s\\S]*?(?:\\)\\)|\\]\\]|\\)\\]|\\}\\}|' +
               '[\\)\\]\\}]))?';
-    var arrow = '\\s*(?:--|==|-\\.-|\\.-)[->ox=\\.\\-]*>?\\s*';
+    // ★ 矢印そのものも捕まえる (向き・双方向を後で使う)。 <--> のような
+    //   左向きの頭も読めるようにする (今までは行ごと捨てられていた)。
+    var arrow = '\\s*(<?(?:--|==|-\\.-|\\.-)[->ox=\\.\\-]*>?)\\s*';
     var edgeRe = new RegExp('^\\s*' + one + arrow +
         '(?:\\|([^|]*)\\|\\s*)?' + one + '\\s*$');
     var soloRe = new RegExp('^\\s*' + one + '\\s*$');
@@ -115508,24 +115957,52 @@ const String _kMdEmbeddedMapJs = r"""
       // 1 行に複数の矢印が書ける (A --> B --> C) ので、 順に分ける。
       var seg = L.split(/(?=(?:--|==|-\.)[->ox=\.\-]*>)/);
       var handled = false;
-      var em = L.match(edgeRe);
+      // ★ 矢印が 2 本以上ある行は、 行まるごとの照合をしない。 括弧の読みが
+      //   欲張って「B] --> I[三」 を 1 個の見出しに飲み込むため
+      //   (= 点検で判明: A --> B --> C が壊れていた)。
+      var em = seg.length >= 3 ? null : L.match(edgeRe);
       if (em) {
-        var a = want(em[1], labelOf(em[2] || ''));
-        var b = want(em[4], labelOf(em[5] || ''));
+        var a = want(em[1], labelOf(em[2] || ''), shapeOf(em[2]));
+        var b = want(em[5], labelOf(em[6] || ''), shapeOf(em[6]));
         if (a && b && a !== b) {
+          var tok = em[3] || '';
           conns.push({
             fromId: a.id, toId: b.id,
             // ★ 引用符や <br/> を外してから渡す (= ユーザー報告: 線の文字が
             //   "…<br/>…" のまま出て入り切らない)。
-            label: labelOf(em[3] || '') || undefined,
-            arrow: /->|=>|>/.test(L)
+            label: labelOf(em[4] || '') || undefined,
+            arrow: /[>ox]/.test(tok),
+            bidir: tok.charAt(0) === '<' && /[>ox]$/.test(tok)
           });
         }
         handled = true;
       }
+      // ★ A --> B --> C のような数珠つなぎ (今までは行ごと落ちていた)。
+      if (!handled && seg.length > 1) {
+        var prev = seg[0];
+        var made = 0;
+        for (var si = 1; si < seg.length; si++) {
+          var em2 = (prev + seg[si]).match(edgeRe);
+          if (!em2) { prev = seg[si]; continue; }
+          var a2 = want(em2[1], labelOf(em2[2] || ''), shapeOf(em2[2]));
+          var b2 = want(em2[5], labelOf(em2[6] || ''), shapeOf(em2[6]));
+          if (a2 && b2 && a2 !== b2) {
+            var tok2 = em2[3] || '';
+            conns.push({
+              fromId: a2.id, toId: b2.id,
+              label: labelOf(em2[4] || '') || undefined,
+              arrow: /[>ox]/.test(tok2),
+              bidir: tok2.charAt(0) === '<' && /[>ox]$/.test(tok2)
+            });
+            made++;
+          }
+          prev = (em2[5] || '') + (em2[6] || '');
+        }
+        handled = made > 0;
+      }
       if (!handled) {
         var sm = L.match(soloRe);
-        if (sm && sm[2]) want(sm[1], labelOf(sm[2]));
+        if (sm && sm[2]) want(sm[1], labelOf(sm[2]), shapeOf(sm[2]));
       }
       if (seg.length > 900) break;   // 念のための保険
     }
@@ -115588,10 +116065,10 @@ const String _kMdEmbeddedMapJs = r"""
       var d = depth[nodes[i].id];
       (rows[d] = rows[d] || []).push(nodes[i]);
     }
-    // ★ 上から下ではなく、 左から右へ流す (= ユーザー要望)。
-    //   マインドマップは横に読む方が自然なので、 元の記法が TD でも
-    //   こちらの表示では左→右にそろえる。
-    var vertical = false;
+    // ★ マインドマップ等は左→右のまま。 流れ図だけは元の記法の向きに従う
+    //   (= ユーザー要望: フローチャートはフローチャートのまま)。
+    var vertical = model.kind === 'flow' &&
+        !/^(LR|RL)$/.test(String(model.dir || 'TD').toUpperCase());
     var maxCount = 0;
     for (var dd in rows) {
       if (rows[dd].length > maxCount) maxCount = rows[dd].length;
@@ -116211,6 +116688,11 @@ String? mermaidMapToPage(MindMapProvider provider, Map<dynamic, dynamic> m,
     {String? pageId}) {
   final rawNodes = m['nodes'];
   if (rawNodes is! List || rawNodes.isEmpty) return null;
+  // 流れ図は元の向き (TD なら上→下) のまま来る。 線のつなぎ口も合わせる。
+  final dirStr = '${m['dir'] ?? ''}'.toUpperCase();
+  final vertical = '${m['kind'] ?? ''}' == 'flow' &&
+      dirStr != 'LR' &&
+      dirStr != 'RL';
   var title = '${m['title'] ?? ''}'.trim();
   if (title.isEmpty ||
       title == 'mindmap' ||
@@ -116269,6 +116751,7 @@ String? mermaidMapToPage(MindMapProvider provider, Map<dynamic, dynamic> m,
       y: baseY + (((e['y'] as num?)?.toDouble() ?? 0) - oy),
       memo: memo.trim().isEmpty ? null : memo,
       colorValue: cv is num ? cv.toInt() : null,
+      shape: (e['shape'] is String) ? e['shape'] as String : null,
     );
     if (made != null) idMap['${e['id']}'] = made;
   }
@@ -116285,7 +116768,10 @@ String? mermaidMapToPage(MindMapProvider provider, Map<dynamic, dynamic> m,
       //   残らない)。 言葉の無い線は今までどおり一本にまとめる。
       provider.mcpConnectNodes(targetId, a, b,
           label: label.isEmpty ? null : label,
-          allowParallel: label.isNotEmpty);
+          allowParallel: label.isNotEmpty,
+          showArrow: c['arrow'] != false,
+          bidirectional: c['bidir'] == true,
+          vertical: vertical);
     }
   }
   return provider.mcpPageById(targetId)?.name ?? title;
@@ -116416,6 +116902,95 @@ String diagramTitleOf(String code) {
     return 'フローチャート';
   }
   return '図';
+}
+
+
+/// 円グラフを「編集できるノード」 として、 選んだページへ置く
+/// (= ユーザー要望: 画像ではなく要素として転送)。
+Future<String?> askAndPutChartIntoPage(BuildContext context,
+    MindMapProvider provider, Map<dynamic, dynamic> m) async {
+  final rawItems = m['items'];
+  if (rawItems is! List || rawItems.isEmpty) return null;
+  final items = <ChartSlice>[];
+  for (final e in rawItems) {
+    if (e is! Map) continue;
+    final label = '${e['label'] ?? ''}'.trim();
+    final v = (e['value'] as num?)?.toDouble();
+    if (label.isEmpty || v == null || !v.isFinite) continue;
+    items.add(ChartSlice(label: label, value: v));
+  }
+  if (items.isEmpty) return null;
+  var title = '${m['title'] ?? ''}'.trim();
+  if (title.isEmpty) title = '円グラフ';
+  final pages = provider.pages.where((p) => p.pageType == 'normal').toList();
+  final chosen = await showDialog<String>(
+    context: context,
+    builder: (dctx) => AlertDialog(
+      backgroundColor: const Color(0xFF1E1E32),
+      title: Text(provider.t('map.pickTargetPage'),
+          style: const TextStyle(color: Colors.white, fontSize: 15)),
+      content: SizedBox(
+        width: math.min(380.0, MediaQuery.sizeOf(dctx).width - 48),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 360),
+          child: ListView(shrinkWrap: true, children: [
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.add_box_outlined,
+                  color: Color(0xFF43B97F), size: 20),
+              title: Text(provider.t('map.newPage'),
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700)),
+              onTap: () => Navigator.pop(dctx, '__new__'),
+            ),
+            if (pages.isNotEmpty) const Divider(color: Colors.white12),
+            for (final pg in pages)
+              ListTile(
+                dense: true,
+                leading: const Icon(Icons.map_outlined,
+                    color: Colors.white54, size: 18),
+                title: Text(pg.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.white, fontSize: 13)),
+                onTap: () => Navigator.pop(dctx, pg.id),
+              ),
+          ]),
+        ),
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(dctx),
+            child: Text(provider.t('btn.cancel'),
+                style: const TextStyle(color: Colors.white54))),
+      ],
+    ),
+  );
+  if (chosen == null) return null;
+  var pageId = chosen;
+  if (pageId == '__new__') {
+    final made = provider.mcpCreatePage(type: 'normal', name: title);
+    if (made == null) return null;
+    pageId = made;
+  }
+  // 今ある物の右隣へ置く。
+  final pg0 = provider.mcpPageById(pageId);
+  double? nx, ny;
+  if (pg0 != null && pg0.nodes.isNotEmpty) {
+    var maxX = -1e9, minY = 1e9;
+    for (final n in pg0.nodes.values) {
+      if (n.position.dx > maxX) maxX = n.position.dx;
+      if (n.position.dy < minY) minY = n.position.dy;
+    }
+    nx = maxX + 260;
+    ny = minY;
+  }
+  final id = provider.mcpAddChartNode(pageId,
+      title: title, items: items, x: nx, y: ny);
+  if (id == null) return null;
+  return provider.mcpPageById(pageId)?.name ?? '';
 }
 
 Future<String?> askAndPutMermaidMapIntoPage(BuildContext context,
@@ -117426,16 +118001,64 @@ $mapsJs
           if (conv) window.__mmRenderMermaidMap(slot, conv);
         } catch (e) {}
       }
-      else if (act === 'save' || act === 'topage') {
-        // ★ 図の形は変えない (= ユーザー要望: 円グラフは円グラフのまま、
-        //   フローチャートはフローチャートのままページに置きたい)。
-        //   見た目の絵をそのまま渡し、 併せて元の記法も渡す。 記法を持たせて
-        //   おくと、 置いた後にその場で書き直して描き直せる。
-        var sender = (act === 'save')
-            ? bridge
-            : (bridge || (post ? { postMessage: post } : null));
+      else if (act === 'topage') {
+        // ★ 画像ではなく「編集できる要素」 として送る (= ユーザー要望)。
+        //   円グラフは値のデータのまま渡して円グラフのノードに、
+        //   流れ図はブロックの形を保ったノードと線になる。
+        var toPost = bridge || (post ? { postMessage: post } : null);
+        if (!toPost) return;
+        var srcNow2 = String(codeNow || code || '');
+        var head2 =
+            srcNow2.replace(/^\\s+/, '').split('\\n')[0].trim().toLowerCase();
+        if (/^pie\\b/.test(head2)) {
+          var items2 = [];
+          var pl2 = srcNow2.split('\\n');
+          for (var pi2 = 0; pi2 < pl2.length; pi2++) {
+            var Lp2 = pl2[pi2];
+            if (/^\\s*(?:pie|title)\\b/i.test(Lp2)) continue;
+            var pm2 = Lp2.match(/^\\s*"([^"]*)"\\s*:\\s*([0-9.]+)\\s*\$/) ||
+                Lp2.match(/^\\s*'([^']*)'\\s*:\\s*([0-9.]+)\\s*\$/) ||
+                Lp2.match(/^\\s*([^:\\n"']+?)\\s*:\\s*([0-9.]+)\\s*\$/);
+            if (!pm2) continue;
+            items2.push(
+                { label: pm2[1].trim(), value: parseFloat(pm2[2]) });
+          }
+          if (!items2.length) return;
+          var pt2 = '';
+          var ptm2 = srcNow2.match(/^\\s*(?:pie\\s+)?title\\s+(.+)\$/mi);
+          if (ptm2) pt2 = ptm2[1].trim();
+          toPost.postMessage(
+              { type: 'chartToPage', title: pt2, items: items2 });
+          return;
+        }
+        var cv2 = null;
+        try { cv2 = window.__mmMermaidToMap(srcNow2, true); } catch (e) {}
+        if (!cv2 || !cv2.nodes || !cv2.nodes.length) return;
+        toPost.postMessage({
+          type: 'mapToPage',
+          title: cv2.title || cv2.name || '',
+          dir: cv2.dir || '',
+          kind: cv2.kind || '',
+          nodes: cv2.nodes.map(function (x) {
+            return {
+              id: x.id, title: x.title || '', memo: x.memoText || '',
+              x: Math.round(x.x || 0), y: Math.round(x.y || 0),
+              color: x.color || null, shape: x.shape || null
+            };
+          }),
+          connections: (cv2.connections || []).map(function (c) {
+            return {
+              fromId: c.fromId, toId: c.toId, label: c.label || '',
+              arrow: c.arrow === false ? false : true,
+              bidir: c.bidir === true
+            };
+          })
+        });
+      }
+      else if (act === 'save') {
+        var sender = bridge;
         if (!sender) return;
-        var kind = (act === 'save') ? 'mermaidSave' : 'mermaidToPage';
+        var kind = 'mermaidSave';
         var rr = svgEl.getBoundingClientRect();
         var swN = Math.max(1, Math.round(rr.width / s));
         var shN = Math.max(1, Math.round(rr.height / s));
@@ -120621,7 +121244,23 @@ graph TD
         if (path != null) unawaited(OpenFilex.open(path));
         return;
       }
-      // ── 図をそのままの見た目でページへ入れる (= ユーザー要望) ──
+      // ── 円グラフを編集できるノードとしてページへ (= ユーザー要望) ──
+      if (type == 'chartToPage') {
+        unawaited(() async {
+          final name = await askAndPutChartIntoPage(
+              context, widget.provider, m);
+          if (name != null && mounted) {
+            _appSnackTop(
+                context,
+                widget.provider
+                    .t('map.addedToPage')
+                    .replaceFirst('{name}', name),
+                const Color(0xFF43B97F));
+          }
+        }());
+        return;
+      }
+      // ── 図をそのままの見た目でページへ入れる (昔置いた図のため) ──
       if (type == 'mermaidToPage') {
         unawaited(() async {
           final name = await askAndPutDiagramImageIntoPage(
@@ -182178,9 +182817,17 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
   /// 開いているファイルを画面分割の左 / 右のペインへ移す
   /// (= ユーザー要望: ヘッダーに左右分割ボタンを置く。 右分割を押すと
   ///  2 分割の右半分がこのファイルになる)。
-  void _moveToSplitPane({required bool left}) {
+  Future<void> _moveToSplitPane({required bool left}) async {
     final u =
         widget.isPdf && _pdfFilePath != null ? _pdfFilePath! : widget.url;
+    // ★ 描き込みが未保存のまま渡すと、 閉じる時の自動焼き込みと分割ペインの
+    //   読み込みが同じファイルを同時に触り、 ネイティブ側ごと固まる
+    //   (= ユーザー報告: 保存しないまま左右分割を押すとフリーズ)。
+    //   先に焼き込みを終わらせてから渡す。
+    if (widget.isPdf && pdfDrawHasUnsaved(_pdfFilePath)) {
+      await pdfDrawCommitNow(_pdfFilePath);
+      if (!mounted) return;
+    }
     widget.onMoveToSplitPanel?.call(u, isLeftPanel: left);
     Navigator.of(context).pop();
   }
@@ -208290,6 +208937,129 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
     setState(() => _aiChatPanelOpen = !_aiChatPanelOpen);
   }
 
+  /// AI 書き換えの実行中か (二重押し防止)。
+  bool _aiRewriting = false;
+
+  /// 囲った (選んだ) テキスト枠を、 指示どおりに AI で書き換える
+  /// (= ユーザー要望: pptx で囲った所を AI に指示して書き変えたい)。
+  Future<void> _aiRewriteSelection() async {
+    if (_aiRewriting || _slides.isEmpty) return;
+    final provider = context.read<MindMapProvider>();
+    if (!provider.hasActiveAiKey) {
+      _showSnack(provider.t('pptx.aiRewriteNoKey'));
+      return;
+    }
+    final slide = _slides[_currentIndex];
+    // 範囲選択 > 単独選択 の順で対象を決める。
+    final targets = <_PptxTextShape>[
+      for (final t in slide.textShapes)
+        if (_multiSel.contains(t.id) ||
+            (_multiSel.isEmpty && t.id == _selectedShapeId))
+          t,
+    ];
+    if (targets.isEmpty) {
+      _showSnack(provider.t('pptx.aiRewritePick'));
+      return;
+    }
+    final ctrl = TextEditingController();
+    final order = await showDialog<String>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Text(provider.t('pptx.aiRewrite'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        content: SizedBox(
+          width: math.min(420.0, MediaQuery.sizeOf(dctx).width - 64),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                  provider
+                      .t('pptx.aiRewriteCount')
+                      .replaceFirst('{n}', '${targets.length}'),
+                  style: const TextStyle(
+                      color: Colors.white54, fontSize: 12)),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: ctrl,
+              autofocus: true,
+              maxLines: 3,
+              style: const TextStyle(color: Colors.white, fontSize: 13),
+              decoration: InputDecoration(
+                hintText: provider.t('pptx.aiRewriteHint'),
+                hintStyle: const TextStyle(color: Colors.white24),
+                border: const OutlineInputBorder(),
+              ),
+              onSubmitted: (v) => Navigator.pop(dctx, v),
+            ),
+          ]),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dctx),
+              child: Text(provider.t('btn.cancel'),
+                  style: const TextStyle(color: Colors.white54))),
+          FilledButton(
+              onPressed: () => Navigator.pop(dctx, ctrl.text),
+              child: Text(provider.t('pptx.aiRewriteRun'))),
+        ],
+      ),
+    );
+    final instruction = (order ?? '').trim();
+    ctrl.dispose();
+    if (instruction.isEmpty || !mounted) return;
+
+    setState(() => _aiRewriting = true);
+    try {
+      final b = StringBuffer()
+        ..writeln('次の「テキスト一覧」 を指示に従って書き換えてください。')
+        ..writeln('出力は JSON だけ: {"texts": ["...", "..."]}')
+        ..writeln('- texts の要素数と順番は入力と同じにする。')
+        ..writeln('- 書き換えの必要が無い要素は入力のまま返す。')
+        ..writeln('- 改行は \\n で表す。 説明文やフェンスは書かない。')
+        ..writeln('指示: $instruction')
+        ..writeln('テキスト一覧:');
+      for (var i = 0; i < targets.length; i++) {
+        b.writeln(
+            '${i + 1}: ${targets[i].text.replaceAll('\n', '\\n')}');
+      }
+      final raw = await provider.askAiForJson(b.toString());
+      // フェンスや前後の説明を落として JSON 部分だけ読む。
+      var t = raw.trim();
+      final a0 = t.indexOf('{');
+      final a1 = t.lastIndexOf('}');
+      if (a0 < 0 || a1 <= a0) throw Exception('no json');
+      final decoded = jsonDecode(t.substring(a0, a1 + 1));
+      final texts = (decoded is Map ? decoded['texts'] : null);
+      if (texts is! List || texts.isEmpty) throw Exception('no texts');
+      if (!mounted) return;
+      _pushHistory();
+      setState(() {
+        final n = math.min(texts.length, targets.length);
+        for (var i = 0; i < n; i++) {
+          final nt = '${texts[i]}'.replaceAll('\\n', '\n');
+          if (nt == targets[i].text) continue;
+          targets[i].text = nt;
+          // 全文書き換えなのでラン構造は段落単位に作り直す
+          // (手で書き換えた時と同じ扱い)。
+          targets[i].paragraphs = nt
+              .split('\n')
+              .map((line) => _PptxTextParagraph(
+                    runs: [_PptxTextRun(text: line)],
+                  ))
+              .toList();
+        }
+        slide.dirty = true;
+      });
+      _showSnack(provider.t('pptx.aiRewriteDone'));
+    } catch (e) {
+      if (mounted) _showSnack('AI: $e');
+    } finally {
+      if (mounted) setState(() => _aiRewriting = false);
+    }
+  }
+
   // ─── テンプレート (= ユーザー要望: 一度作ったデザインを登録して
   //     呼び出せるように) ─────────────────────────────────────────────
   Future<Directory> _pptxTemplateDir() async {
@@ -210432,6 +211202,25 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             ),
           ),
+          // ── 囲った所を AI で書き換え (= ユーザー要望)。 ──
+          if (_multiSel.isNotEmpty || _selectedShapeId != null)
+            TextButton.icon(
+              onPressed: _aiRewriting ? null : _aiRewriteSelection,
+              icon: _aiRewriting
+                  ? const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white))
+                  : const Icon(Icons.edit_note_rounded, size: 16),
+              label: Text(context.read<MindMapProvider>().t('pptx.aiRewrite')),
+              style: TextButton.styleFrom(
+                foregroundColor: Colors.white,
+                backgroundColor: const Color(0xFF7E57C2),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              ),
+            ),
           // ── AI 補助 (= ユーザー要望: word と同じ位置に AI ボタン)。 ──
           TextButton.icon(
             onPressed: _openAiAssistForPptx,
@@ -214787,7 +215576,20 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
         case 'mermaidSave':
           unawaited(_saveDiagramExport(m.cast<dynamic, dynamic>()));
           break;
-        // 図をそのままの見た目でページへ入れる (= ユーザー要望)。
+        // 円グラフを編集できるノードとしてページへ (= ユーザー要望)。
+        case 'chartToPage':
+          unawaited(() async {
+            final provider = context.read<MindMapProvider>();
+            final name = await askAndPutChartIntoPage(
+                context, provider, m.cast<dynamic, dynamic>());
+            if (name != null && mounted) {
+              _showSnackBar(provider
+                  .t('map.addedToPage')
+                  .replaceFirst('{name}', name));
+            }
+          }());
+          break;
+        // 図をそのままの見た目でページへ入れる (昔置いた図のため)。
         case 'mermaidToPage':
           unawaited(() async {
             final provider = context.read<MindMapProvider>();

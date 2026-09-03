@@ -437,9 +437,16 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     // 続けて消している間は待つ (1 本ごとに焼き直すと重い)。
     _reburnTimer = Timer(const Duration(milliseconds: 700), () {
       if (!mounted || _saving || !widget.active) return;
-      unawaited(_commit(exitAfter: false));
+      // 土台を見せている間は、 ディスクだけ直してビューアは触らない。
+      unawaited(_commit(exitAfter: false, notifyHost: !_viewerShowsBase));
     });
   }
+
+  /// ビューアが「きれいな土台」 を映したままか。 復元 (開き直し) の後は
+  /// 線が全部重ね描きなので、 消しゴムの焼き直しでビューアを読み直させる
+  /// 必要が無い (= ユーザー報告: 消す度に画面更新が入って使い辛い)。
+  /// ✓ で焼き込んで読み直した時に false へ戻す。
+  bool _viewerShowsBase = false;
 
   /// このファイルについて復元を試したか。
   ///
@@ -631,6 +638,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       });
       // ビューアを読み直して、 焼き込み済みの絵を消した状態にする。
       widget.onSaved();
+      _viewerShowsBase = true;
     } catch (_) {
       // 失敗しても描き込みは続けられる (従来どおりの動きになるだけ)。
     } finally {
@@ -1021,8 +1029,15 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     for (final page in byPage.entries) {
       final pageIds = page.value;
       if (pageIds.length < 2) continue;
+      // ★ 線は点の列の「中心」 に太さ分を乗せて描かれるので、 端揃えの
+      //   枠には太さの半分を足す。 足さないと、 太さの違う図形どうしを
+      //   揃えた時に見た目の端がずれる (= ユーザー報告: チェックの左揃え)。
       final box = <int, Rect>{
-        for (final i in pageIds) i: _strokeBox(_strokes[i])
+        for (final i in pageIds)
+          i: _strokeBox(_strokes[i],
+              pad: _strokes[i].tool == PdfDrawTool.text
+                  ? 0
+                  : _strokes[i].width / 2)
       };
       // ── 触れ合っている線を繋げてかたまりにする (union-find) ──
       final parent = <int, int>{for (final i in pageIds) i: i};
@@ -2119,15 +2134,25 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
         //   既存の文字描画・PDF 焼き込みがそのまま使える。 大きさは印の
         //   大きさ設定に連動させる。
         final fs = (_checkSize * 8.0).clamp(12.0, 200.0);
+        // ★ 字の実寸を測って枠にする (文字の描き込みと同じ)。 目分量の
+        //   ずらしだと枠の右端が字の途中に来て、 右揃えや下揃えで
+        //   はみ出す (= ユーザー報告: 一部ずれる図形がある)。
+        final glyph = _seqGlyph(_seqNext);
+        final tp = TextPainter(
+          text: TextSpan(
+              text: glyph, style: TextStyle(fontSize: fs, height: 1.2)),
+          textDirection: TextDirection.ltr,
+        )..layout();
+        // 押した所に中心が来るように置く。
+        final origin = at - Offset(tp.width / 2, tp.height / 2);
         return [
           PdfDrawStroke(
             pageNumber: pageNumber,
             tool: PdfDrawTool.text,
-            // 押した所に中心が来るよう、 少し左上へずらして置く。
-            points: [at + Offset(-fs * 0.32, -fs * 0.62), at],
+            points: [origin, origin + Offset(tp.width, tp.height)],
             color: _color,
             width: _kCheckStrokeWidth,
-            text: _seqGlyph(_seqNext),
+            text: glyph,
             fontSize: fs,
           )
         ];
@@ -2197,7 +2222,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   }
 
   // ─── 保存 ───────────────────────────────────────────────────────────
-  Future<void> _commit({bool exitAfter = true}) async {
+  Future<void> _commit({bool exitAfter = true, bool notifyHost = true}) async {
     final path = widget.filePath;
     if (_saving) return;
     // 線が 0 本でも、 このセッションで一度でも焼き込んでいるなら書き直す。
@@ -2227,17 +2252,25 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
         // ★ 線は消さない。 保存した後もそのまま選んで動かせるようにする。
         //   もう一度保存すれば土台から焼き直されるので二重にならない。
         _dirtySinceCommit = false;
-        // 焼き込み済みの印。 半透明のマーカーはこれ以降、 重ね描きを
-        //   止める (PDF の中に既に入っているため)。
-        for (final st in _strokes) {
-          st.burned = true;
+        if (notifyHost) {
+          // 焼き込み済みの印。 半透明のマーカーはこれ以降、 重ね描きを
+          //   止める (PDF の中に既に入っているため)。
+          //   知らせない焼き直し (消しゴムの後始末) では付けない —
+          //   ビューアは土台のままなので、 印を付けるとマーカーが
+          //   画面から消えてしまう。
+          for (final st in _strokes) {
+            st.burned = true;
+          }
         }
       }
     });
     if (ok) {
       // 次に開いた時も消しゴムで消せるように、 線の一覧を控える。
       await _persistStrokes(path, pending);
-      widget.onSaved();
+      if (notifyHost) {
+        _viewerShowsBase = false;
+        widget.onSaved();
+      }
       if (exitAfter) widget.onExit();
     } else {
       final messenger = ScaffoldMessenger.maybeOf(context);

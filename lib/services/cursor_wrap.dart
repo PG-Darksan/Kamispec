@@ -6,7 +6,8 @@ import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart';
 import 'package:win32/win32.dart' as w32;
 
-/// 画面の両端をつないで、 マウスを回り込ませる (Windows 専用)。
+/// 画面の両端をつないでマウスを回り込ませ、 モニターごとにカーソルの
+/// 大きさを切り替える (Windows 専用)。
 ///
 /// = ユーザー要望「サブモニターが接続されている時、 メインの右とサブの左しか
 ///   繋がっていなくて使いにくい。 両端から行き来できるようにして欲しい」。
@@ -35,6 +36,100 @@ class CursorWrap {
   Timer? _timer;
   bool _enabled = false;
 
+  // ── カーソルの大きさ (= ユーザー要望: アプリから設定 / サブモニターでは
+  //    別の大きさに) ──
+  //    Windows の「マウス ポインターのサイズ」 (1〜15) をレジストリ +
+  //    SPI_SETCURSORS で書き換える。 15 = 最大 (256px)、 1 = 標準 (32px)。
+  /// メインモニターでの大きさ (0 = 触らない)。
+  int _sizeMain = 0;
+
+  /// サブモニターでの大きさ (0 = 切り替えない)。
+  int _sizeSub = 0;
+
+  /// 最後に適用した大きさ (無駄な書き込みをしないため)。
+  int _appliedSize = 0;
+
+  /// 前回カーソルが居たのが主モニターだったか。
+  bool? _wasOnPrimary;
+
+  /// 機能を使い始める前の Windows 設定 (メイン側の指定が無い時の戻し先)。
+  /// 自分で書き換えた後にレジストリを読むとサブの値が返ってしまうため、
+  /// 書き換える前に控えておく。
+  int _baselineSize = 0;
+
+  /// 今の Windows 設定の大きさ (1〜15、 読めなければ 1)。
+  static int readSystemCursorSize() {
+    if (!isSupported) return 1;
+    final data = calloc<Uint32>();
+    final cb = calloc<Uint32>()..value = 4;
+    final sub = 'Software\\Microsoft\\Accessibility'.toNativeUtf16();
+    final name = 'CursorSize'.toNativeUtf16();
+    try {
+      final r = w32.RegGetValue(w32.HKEY_CURRENT_USER, sub, name,
+          w32.RRF_RT_REG_DWORD, nullptr, data.cast(), cb);
+      if (r != 0) return 1;
+      final v = data.value;
+      return v < 1 ? 1 : (v > 15 ? 15 : v);
+    } catch (_) {
+      return 1;
+    } finally {
+      calloc.free(data);
+      calloc.free(cb);
+      calloc.free(sub);
+      calloc.free(name);
+    }
+  }
+
+  /// カーソルの大きさを今すぐ変える (1〜15)。
+  static bool applyCursorSize(int size) {
+    if (!isSupported) return false;
+    final n = size.clamp(1, 15);
+    try {
+      _writeDword('Software\\Microsoft\\Accessibility', 'CursorSize', n);
+      _writeDword(
+          'Control Panel\\Cursors', 'CursorBaseSize', 32 + (n - 1) * 16);
+      // 0x57 = SPI_SETCURSORS。 これでシステム全体に反映される。
+      w32.SystemParametersInfo(w32.SPI_SETCURSORS, 0, nullptr,
+          w32.SPIF_UPDATEINIFILE | w32.SPIF_SENDCHANGE);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static void _writeDword(String subKey, String name, int value) {
+    final subP = subKey.toNativeUtf16();
+    final nameP = name.toNativeUtf16();
+    final data = calloc<Uint32>()..value = value;
+    try {
+      w32.RegSetKeyValue(
+          w32.HKEY_CURRENT_USER, subP, nameP, w32.REG_DWORD, data.cast(), 4);
+    } finally {
+      calloc.free(subP);
+      calloc.free(nameP);
+      calloc.free(data);
+    }
+  }
+
+  /// モニターごとの大きさ設定を渡す (0 = その画面では触らない)。
+  void applySizes({required int main, required int sub}) {
+    _sizeMain = main.clamp(0, 15);
+    _sizeSub = sub.clamp(0, 15);
+    // まだ何も書き換えていない時だけ、 今の設定を戻し先として控える。
+    if (_appliedSize == 0 && _sizeSub > 0) {
+      _baselineSize = readSystemCursorSize();
+    }
+    _wasOnPrimary = null;
+    _appliedSize = 0;
+    // ★ メインの指定があるなら、 まずメインの大きさに合わせておく。
+    //   前回サブ用の大きさのまま終了していても (× は即終了なので戻せない)、
+    //   次の起動のここで元に戻る。 サブに居ればすぐ見回りが切り替える。
+    if (isSupported && allowed && _sizeMain > 0 && _sizeSub > 0) {
+      if (applyCursorSize(_sizeMain)) _appliedSize = _sizeMain;
+    }
+    _syncTimer();
+  }
+
   /// 移した直後に、 また移してしまわないための待ち時間。
   DateTime _quietUntil = DateTime.fromMillisecondsSinceEpoch(0);
 
@@ -52,16 +147,19 @@ class CursorWrap {
   /// 設定の入り切りをそのまま渡す。 使えない環境なら何もしない。
   void apply(bool enabled) {
     _enabled = enabled;
-    if (!isSupported || !allowed || !enabled) {
+    _syncTimer();
+  }
+
+  /// どちらかの機能が要る間だけ見回りを回す。
+  void _syncTimer() {
+    final want =
+        isSupported && allowed && (_enabled || _sizeSub > 0);
+    if (!want) {
       stop();
       return;
     }
-    start();
-  }
-
-  void start() {
-    if (!isSupported || !allowed || !_enabled || _timer != null) return;
-    _timer = Timer.periodic(const Duration(milliseconds: 15), (_) => _tick());
+    _timer ??=
+        Timer.periodic(const Duration(milliseconds: 15), (_) => _tick());
   }
 
   void stop() {
@@ -81,6 +179,9 @@ class CursorWrap {
   bool get hasMultipleMonitors => _metric(w32.SM_CMONITORS) > 1;
 
   void _tick() {
+    try {
+      _sizeTick();
+    } catch (_) {}
     if (!_enabled) return;
     if (DateTime.now().isBefore(_quietUntil)) return;
     try {
@@ -144,6 +245,57 @@ class CursorWrap {
     } catch (_) {
       // 何かおかしければ黙って止める (マウスを人質に取らない)。
       stop();
+    }
+  }
+
+  /// カーソルが主モニターとサブモニターを行き来したら、 大きさを合わせる。
+  void _sizeTick() {
+    if (_sizeSub <= 0) return;
+    if (!hasMultipleMonitors) {
+      // ★ サブ用の大きさを当てたまま 1 枚になったら (取り外し等)、
+      //   メイン側の大きさへ戻す (= 点検で判明: 大きいまま残っていた)。
+      if (_appliedSize != 0 && _appliedSize == _sizeSub) {
+        final back = _sizeMain > 0
+            ? _sizeMain
+            : (_baselineSize > 0 ? _baselineSize : 1);
+        if (back != _appliedSize) applyCursorSize(back);
+        _appliedSize = 0;
+        _wasOnPrimary = null;
+      }
+      return;
+    }
+    final pos = _cursorPos();
+    if (pos == null) return;
+    final onPrimary = _isOnPrimary(pos.$1, pos.$2);
+    if (onPrimary == null || onPrimary == _wasOnPrimary) return;
+    _wasOnPrimary = onPrimary;
+    // メイン側の指定が無ければ、 今の Windows 設定を「戻し先」 にする。
+    final want = onPrimary
+        ? (_sizeMain > 0
+            ? _sizeMain
+            : (_baselineSize > 0 ? _baselineSize : readSystemCursorSize()))
+        : _sizeSub;
+    if (want == _appliedSize) return;
+    if (applyCursorSize(want)) _appliedSize = want;
+  }
+
+  /// [x],[y] が主モニターの上か (分からなければ null)。
+  bool? _isOnPrimary(int x, int y) {
+    final pt = calloc<w32.POINT>();
+    final mi = calloc<w32.MONITORINFO>();
+    try {
+      pt.ref.x = x;
+      pt.ref.y = y;
+      final hm = w32.MonitorFromPoint(pt.ref, w32.MONITOR_DEFAULTTONEAREST);
+      if (hm == 0) return null;
+      mi.ref.cbSize = sizeOf<w32.MONITORINFO>();
+      if (w32.GetMonitorInfo(hm, mi) == 0) return null;
+      return (mi.ref.dwFlags & w32.MONITORINFOF_PRIMARY) != 0;
+    } catch (_) {
+      return null;
+    } finally {
+      calloc.free(pt);
+      calloc.free(mi);
     }
   }
 

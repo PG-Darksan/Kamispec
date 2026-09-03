@@ -884,6 +884,12 @@ class MindMapNode {
   /// で行い、 永続化は toJson/fromJson で対応。
   TableData? tableData;
 
+  /// 円グラフのデータ (= ユーザー要望: 図を画像ではなく編集できる要素として
+  /// マインドマップに置きたい)。 null = 普通のノード。
+  /// 描画は node_widget の `_NodePiePainter`、 高さは [ChartData.renderHeight]
+  /// を両側で使うことでずれない。
+  ChartData? chartData;
+
   /// ノードの「リッチテキスト」 本文 (Quill Delta の JSON 文字列)。
   /// null = 旧来の title / memo を別々に表示する従来挙動。
   /// 非 null の場合、 node_widget はこの内容を **統合リッチテキスト** として
@@ -952,6 +958,7 @@ class MindMapNode {
     this.pdfMemoFolders,
     this.attachmentAspectRatio,
     this.tableData,
+    this.chartData,
     this.richText,
     this.clampHeight = false,
     this.layer = 3,
@@ -1022,6 +1029,15 @@ class MindMapNode {
       final tableH = t.estimateTotalHeight(cellWidth: cellW, fontSize: fs);
       final titleBarH = estimateTableTitleBarHeight();
       return titleBarH + tableH + 14.0;
+    }
+    // ── 円グラフのノード ──
+    // 高さ = タイトルバー + 円と凡例 (renderHeight) + 下端 14px。
+    // node_widget 側と同じ式 (renderHeight を共用) なのでずれない。
+    if (chartData != null) {
+      final innerW = (width - 28.0).clamp(40.0, double.infinity).toDouble();
+      return estimateTableTitleBarHeight() +
+          chartData!.renderHeight(innerW) +
+          14.0;
     }
 
     double h = height;
@@ -1283,6 +1299,7 @@ class MindMapNode {
     Object? pdfMemoFolders = _sentinel,
     Object? attachmentAspectRatio = _sentinel,
     Object? tableData = _sentinel,
+    Object? chartData = _sentinel,
     Object? richText = _sentinel,
     bool? clampHeight,
     int? layer,
@@ -1341,6 +1358,8 @@ class MindMapNode {
           : attachmentAspectRatio as double?,
       tableData:
           tableData == _sentinel ? this.tableData : tableData as TableData?,
+      chartData:
+          chartData == _sentinel ? this.chartData : chartData as ChartData?,
       richText: richText == _sentinel ? this.richText : richText as String?,
       clampHeight: clampHeight ?? this.clampHeight,
       shape: shape == _sentinel ? this.shape : shape as String?,
@@ -1395,6 +1414,9 @@ class MindMapNode {
       // 表 (テーブル) データ。 通常ノードは tableData=null なのでキーを
       // 出さず、 既存マップとの後方互換を保つ。
       if (tableData != null) 'tableData': tableData!.toJson(),
+      // 円グラフ。 普通のノードはキーを出さず後方互換を保つ。
+      if (chartData != null && chartData!.items.isNotEmpty)
+        'chartData': chartData!.toJson(),
       // リッチテキスト本文 (Quill Delta JSON)。 null/空のときはキーを出さず
       // 既存マップとの後方互換を保つ。
       if (richText != null && richText!.isNotEmpty) 'richText': richText,
@@ -1460,6 +1482,10 @@ class MindMapNode {
       tableData: json['tableData'] is Map
           ? TableData.fromJson(
               (json['tableData'] as Map).cast<String, dynamic>())
+          : null,
+      chartData: json['chartData'] is Map
+          ? ChartData.fromJson(
+              (json['chartData'] as Map).cast<String, dynamic>())
           : null,
       richText: json['richText'] as String?,
       clampHeight: json['clampHeight'] as bool? ?? false,
@@ -1766,4 +1792,63 @@ class MindMapNode {
       return deltaJson;
     }
   }
+}
+
+/// 円グラフの一切れ。
+class ChartSlice {
+  String label;
+  double value;
+
+  /// 塗りの色 (null なら順番の色)。
+  int? colorValue;
+
+  ChartSlice({required this.label, required this.value, this.colorValue});
+
+  Map<String, dynamic> toJson() => {
+        'l': label,
+        'v': value,
+        if (colorValue != null) 'c': colorValue,
+      };
+
+  factory ChartSlice.fromJson(Map<String, dynamic> j) => ChartSlice(
+        label: '${j['l'] ?? ''}',
+        value: (j['v'] as num?)?.toDouble() ?? 0,
+        colorValue: (j['c'] as num?)?.toInt(),
+      );
+}
+
+/// 円グラフのノードが持つデータ (= ユーザー要望: 図を編集できる要素として)。
+class ChartData {
+  /// 図の種類。 今は 'pie' だけ (後で棒などを足せるように持っておく)。
+  String type;
+  List<ChartSlice> items;
+
+  ChartData({this.type = 'pie', List<ChartSlice>? items})
+      : items = items ?? <ChartSlice>[];
+
+  /// 描画の高さ。 **モデル (visualHeight) と描画 (node_widget) の両方が
+  /// これを使う** ことで、 当たり判定と見た目がずれない。
+  double renderHeight(double innerWidth) {
+    final pieH = (innerWidth * 0.62).clamp(80.0, 260.0).toDouble();
+    return pieH + 8.0 + items.length * 16.0;
+  }
+
+  ChartData copy() => ChartData(type: type, items: [
+        for (final e in items)
+          ChartSlice(label: e.label, value: e.value, colorValue: e.colorValue),
+      ]);
+
+  Map<String, dynamic> toJson() => {
+        'type': type,
+        'items': [for (final e in items) e.toJson()],
+      };
+
+  factory ChartData.fromJson(Map<String, dynamic> j) => ChartData(
+        type: '${j['type'] ?? 'pie'}',
+        items: [
+          if (j['items'] is List)
+            for (final e in j['items'] as List)
+              if (e is Map) ChartSlice.fromJson(e.cast<String, dynamic>()),
+        ],
+      );
 }

@@ -66,6 +66,9 @@ class NodeWidget extends StatefulWidget {
   /// 添付ファイルがタップされた時のコールバック
   final VoidCallback? onAttachmentTap;
 
+  /// 円グラフのノードが押された (編集を開く = ユーザー要望)。
+  final VoidCallback? onChartTap;
+
   /// サブマップ埋め込みピル (ノード内の白いリンクバー) がタップされた
   /// ときのコールバック。 ノード本体のタップとは独立しており、 ここを
   /// 押した時だけサブマップへ遷移する。
@@ -161,6 +164,7 @@ class NodeWidget extends StatefulWidget {
     this.onLongPressEnd,
     this.onThumbnailTap,
     this.onAttachmentTap,
+    this.onChartTap,
     this.onLinkedMapTap,
     this.onMemoTimestampTap,
     this.onRightClick,
@@ -966,6 +970,12 @@ class _NodeWidgetState extends State<NodeWidget> {
       final tableH = t.estimateTotalHeight(cellWidth: cellW, fontSize: fs);
       final titleBarH = node.estimateTableTitleBarHeight();
       totalH = titleBarH + tableH + 14.0;
+    } else if (node.chartData != null) {
+      // 円グラフ: モデルの renderHeight と同じ式 (共用) なのでずれない。
+      final innerW = (nw - 28.0).clamp(40.0, double.infinity).toDouble();
+      totalH = node.estimateTableTitleBarHeight() +
+          node.chartData!.renderHeight(innerW) +
+          14.0;
     } else {
       totalH = bodyH + thumbH + linkBarH + linkedMapBarH + attachH;
     }
@@ -1166,7 +1176,82 @@ class _NodeWidgetState extends State<NodeWidget> {
                               }
                             }
                           : null,
-                      child: node.tableData != null
+                      child: node.chartData != null
+                          // ── 円グラフのノード (= ユーザー要望) ──
+                          //   上はドラッグ帯 + タイトル (表ノードと同じ作り)。
+                          //   図を押すと編集が開く。
+                          ? Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Container(
+                                  width: nw,
+                                  padding: headerTitle.isEmpty
+                                      ? EdgeInsets.zero
+                                      : const EdgeInsets.only(
+                                          top: 4,
+                                          left: 14,
+                                          right: 14,
+                                          bottom: 4),
+                                  alignment: Alignment.topCenter,
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      SizedBox(
+                                        height: 14,
+                                        child: Icon(
+                                          Icons.drag_handle_rounded,
+                                          size: 10,
+                                          color: titleTextColor.withValues(
+                                              alpha: 0.45),
+                                        ),
+                                      ),
+                                      if (headerTitle.isNotEmpty) ...[
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          headerTitle,
+                                          textAlign: TextAlign.center,
+                                          maxLines: 3,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            color: titleTextColor,
+                                            fontSize:
+                                                (node.titleFontSize ?? 15.0)
+                                                    .clamp(8.0, 28.0)
+                                                    .toDouble(),
+                                            fontWeight: FontWeight.w700,
+                                            height: 1.2,
+                                          ),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
+                                ),
+                                Padding(
+                                  padding: const EdgeInsets.only(
+                                      left: 14, right: 14, bottom: 14),
+                                  child: GestureDetector(
+                                    behavior: HitTestBehavior.opaque,
+                                    onTap: () => widget.onChartTap?.call(),
+                                    child: CustomPaint(
+                                      size: Size(
+                                          (nw - 28.0)
+                                              .clamp(40.0, double.infinity)
+                                              .toDouble(),
+                                          node.chartData!.renderHeight(
+                                              (nw - 28.0)
+                                                  .clamp(
+                                                      40.0, double.infinity)
+                                                  .toDouble())),
+                                      painter: _NodePiePainter(
+                                        data: node.chartData!,
+                                        textColor: titleTextColor,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            )
+                          : node.tableData != null
                           // ── 表ノード: ドラッグハンドル帯 + 表を一括 wrap ──
                           // ・上端 14px: ノード色の細い帯 + 中央に ≡ アイコン
                           //   → ドラッグ用ヒットエリア
@@ -3319,4 +3404,118 @@ class _SlideThumbPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _SlideThumbPainter old) =>
       !identical(old.slide, slide);
+}
+
+/// 円グラフのノードの絵描き (= ユーザー要望: 図を要素として置く)。
+///
+/// 高さの式は [ChartData.renderHeight] と同じでなければならない
+/// (円 = 幅 x 0.62 を 80〜260 に収める、 凡例 = 1 行 16px)。
+/// 円グラフの順番の色 (編集ダイアログの色見本にも使う)。
+const List<Color> kChartPalette = [
+  Color(0xFF4FC3F7),
+  Color(0xFF9CCC65),
+  Color(0xFFFFB74D),
+  Color(0xFFE57373),
+  Color(0xFFBA68C8),
+  Color(0xFF4DB6AC),
+  Color(0xFFFFF176),
+  Color(0xFF90A4AE),
+];
+
+class _NodePiePainter extends CustomPainter {
+  final ChartData data;
+  final Color textColor;
+
+  _NodePiePainter({required this.data, required this.textColor});
+
+  static const List<Color> palette = kChartPalette;
+  
+
+  Color _colorOf(int i) {
+    final cv = data.items[i].colorValue;
+    return cv != null ? Color(cv) : palette[i % palette.length];
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final items = data.items;
+    if (items.isEmpty) return;
+    final pieH = (size.width * 0.62).clamp(80.0, 260.0).toDouble();
+    final total = items.fold<double>(
+        0, (a, e) => a + (e.value.isFinite && e.value > 0 ? e.value : 0));
+    final center = Offset(size.width / 2, pieH / 2);
+    final r = (pieH / 2 - 4).clamp(10.0, 1000.0).toDouble();
+    final rect = Rect.fromCircle(center: center, radius: r);
+    var start = -math.pi / 2;
+    final fill = Paint()..style = PaintingStyle.fill;
+    if (total <= 0) {
+      fill.color = textColor.withValues(alpha: 0.15);
+      canvas.drawCircle(center, r, fill);
+    } else {
+      for (var i = 0; i < items.length; i++) {
+        final v = items[i].value;
+        if (!v.isFinite || v <= 0) continue;
+        final sweep = v / total * math.pi * 2;
+        fill.color = _colorOf(i);
+        canvas.drawArc(rect, start, sweep, true, fill);
+        // 大きめの一切れには割合を書く。
+        if (sweep > math.pi * 2 * 0.06) {
+          final mid = start + sweep / 2;
+          final at = center +
+              Offset(math.cos(mid), math.sin(mid)) * (r * 0.62);
+          final pct = (v / total * 100).round();
+          final tp = TextPainter(
+            text: TextSpan(
+              text: '$pct%',
+              style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  shadows: [Shadow(color: Colors.black54, blurRadius: 2)]),
+            ),
+            textDirection: TextDirection.ltr,
+          )..layout();
+          tp.paint(canvas, at - Offset(tp.width / 2, tp.height / 2));
+        }
+        start += sweep;
+      }
+      // 縁取りで一切れの境目を出す。
+      final line = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1
+        ..color = Colors.white.withValues(alpha: 0.6);
+      canvas.drawCircle(center, r, line);
+    }
+    // ── 凡例 ──
+    var y = pieH + 8.0;
+    for (var i = 0; i < items.length; i++) {
+      final sw = Paint()..color = _colorOf(i);
+      canvas.drawRRect(
+          RRect.fromRectAndRadius(
+              Rect.fromLTWH(2, y + 3, 10, 10), const Radius.circular(2)),
+          sw);
+      final v = items[i].value;
+      final pct = total > 0 && v.isFinite && v > 0
+          ? ' (${(v / total * 100).round()}%)'
+          : '';
+      final vs = v == v.roundToDouble()
+          ? v.round().toString()
+          : v.toStringAsFixed(1);
+      final tp = TextPainter(
+        text: TextSpan(
+          text: '${items[i].label}  $vs$pct',
+          style: TextStyle(color: textColor, fontSize: 11),
+        ),
+        textDirection: TextDirection.ltr,
+        maxLines: 1,
+        ellipsis: '…',
+      )..layout(maxWidth: size.width - 18);
+      tp.paint(canvas, Offset(16, y));
+      y += 16.0;
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _NodePiePainter old) =>
+      old.data != data || old.textColor != textColor;
 }
