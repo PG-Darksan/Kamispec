@@ -971,11 +971,9 @@ class _NodeWidgetState extends State<NodeWidget> {
       final titleBarH = node.estimateTableTitleBarHeight();
       totalH = titleBarH + tableH + 14.0;
     } else if (node.chartData != null) {
-      // 円グラフ: モデルの renderHeight と同じ式 (共用) なのでずれない。
-      final innerW = (nw - 28.0).clamp(40.0, double.infinity).toDouble();
-      totalH = node.estimateTableTitleBarHeight() +
-          node.chartData!.renderHeight(innerW) +
-          14.0;
+      // 図: 高さはノードの height (= 縦幅のつまみ)。 モデルの visualHeight と
+      //   同じ式なのでずれない。
+      totalH = node.estimateTableTitleBarHeight() + node.chartHeight + 14.0;
     } else {
       totalH = bodyH + thumbH + linkBarH + linkedMapBarH + attachH;
     }
@@ -1237,20 +1235,19 @@ class _NodeWidgetState extends State<NodeWidget> {
                                           (nw - 28.0)
                                               .clamp(40.0, double.infinity)
                                               .toDouble(),
-                                          node.chartData!.renderHeight(
-                                              (nw - 28.0)
-                                                  .clamp(
-                                                      40.0, double.infinity)
-                                                  .toDouble())),
-                                      painter: node.chartData!.isGantt
-                                          ? _NodeGanttPainter(
-                                              data: node.chartData!,
-                                              textColor: titleTextColor,
-                                            )
-                                          : _NodePiePainter(
-                                              data: node.chartData!,
-                                              textColor: titleTextColor,
-                                            ),
+                                          node.chartHeight),
+                                      painter: node.chartData!.isSeq
+                                          ? _NodeSeqPainter(
+                                              data: node.chartData!)
+                                          : (node.chartData!.isGantt
+                                              ? _NodeGanttPainter(
+                                                  data: node.chartData!,
+                                                  textColor: titleTextColor,
+                                                )
+                                              : _NodePiePainter(
+                                                  data: node.chartData!,
+                                                  textColor: titleTextColor,
+                                                )),
                                     ),
                                   ),
                                 ),
@@ -3411,10 +3408,6 @@ class _SlideThumbPainter extends CustomPainter {
       !identical(old.slide, slide);
 }
 
-/// 円グラフのノードの絵描き (= ユーザー要望: 図を要素として置く)。
-///
-/// 高さの式は [ChartData.renderHeight] と同じでなければならない
-/// (円 = 幅 x 0.62 を 80〜260 に収める、 凡例 = 1 行 16px)。
 /// 円グラフの順番の色 (編集ダイアログの色見本にも使う)。
 const List<Color> kChartPalette = [
   Color(0xFF4FC3F7),
@@ -3427,6 +3420,25 @@ const List<Color> kChartPalette = [
   Color(0xFF90A4AE),
 ];
 
+/// 図のノードの下敷き (= ユーザー要望: ガントが見にくい / 色の濃い
+/// ノードの上でも読めるように)。 明るい紙を敷いてから図を描く。
+void _paintChartPanel(Canvas canvas, Size size) {
+  final r = RRect.fromRectAndRadius(
+      Rect.fromLTWH(0, 0, size.width, size.height),
+      const Radius.circular(8));
+  canvas.drawRRect(r, Paint()..color = const Color(0xFFFAFAFC));
+  canvas.drawRRect(
+      r,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1
+        ..color = const Color(0x22000000));
+}
+
+/// 円グラフのノードの絵描き (= ユーザー要望: 図を要素として置く)。
+///
+/// 幅が広い時は 左に円・右に凡例、 狭い時は 上に円・下に凡例。
+/// 高さはノードの縦幅にそのまま従う (= 大きくできる)。
 class _NodePiePainter extends CustomPainter {
   final ChartData data;
   final Color textColor;
@@ -3434,7 +3446,6 @@ class _NodePiePainter extends CustomPainter {
   _NodePiePainter({required this.data, required this.textColor});
 
   static const List<Color> palette = kChartPalette;
-  
 
   Color _colorOf(int i) {
     final cv = data.items[i].colorValue;
@@ -3443,18 +3454,30 @@ class _NodePiePainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    _paintChartPanel(canvas, size);
+    const ink = Color(0xFF1F2430);
     final items = data.items;
     if (items.isEmpty) return;
-    final pieH = (size.width * 0.62).clamp(80.0, 260.0).toDouble();
     final total = items.fold<double>(
         0, (a, e) => a + (e.value.isFinite && e.value > 0 ? e.value : 0));
-    final center = Offset(size.width / 2, pieH / 2);
-    final r = (pieH / 2 - 4).clamp(10.0, 1000.0).toDouble();
+
+    // 置き方を決める: 広ければ横並び。
+    final legendH = items.length * 18.0 + 6;
+    final wide = size.width >= 260 && size.height >= 90;
+    final pieBox = wide
+        ? Rect.fromLTWH(6, 6, size.width * 0.5 - 12, size.height - 12)
+        : Rect.fromLTWH(6, 6, size.width - 12,
+            (size.height - legendH - 10).clamp(40.0, double.infinity));
+    final d = math.min(pieBox.width, pieBox.height);
+    final center = Offset(pieBox.left + pieBox.width / 2,
+        pieBox.top + (wide ? pieBox.height / 2 : d / 2));
+    final r = (d / 2 - 2).clamp(8.0, 2000.0).toDouble();
     final rect = Rect.fromCircle(center: center, radius: r);
+
     var start = -math.pi / 2;
     final fill = Paint()..style = PaintingStyle.fill;
     if (total <= 0) {
-      fill.color = textColor.withValues(alpha: 0.15);
+      fill.color = const Color(0x22000000);
       canvas.drawCircle(center, r, fill);
     } else {
       for (var i = 0; i < items.length; i++) {
@@ -3463,20 +3486,21 @@ class _NodePiePainter extends CustomPainter {
         final sweep = v / total * math.pi * 2;
         fill.color = _colorOf(i);
         canvas.drawArc(rect, start, sweep, true, fill);
-        // 大きめの一切れには割合を書く。
-        if (sweep > math.pi * 2 * 0.06) {
+        if (sweep > math.pi * 2 * 0.05 && r > 26) {
           final mid = start + sweep / 2;
-          final at = center +
-              Offset(math.cos(mid), math.sin(mid)) * (r * 0.62);
+          final at =
+              center + Offset(math.cos(mid), math.sin(mid)) * (r * 0.62);
           final pct = (v / total * 100).round();
           final tp = TextPainter(
             text: TextSpan(
               text: '$pct%',
-              style: const TextStyle(
+              style: TextStyle(
                   color: Colors.white,
-                  fontSize: 10,
+                  fontSize: (r * 0.16).clamp(9.0, 18.0),
                   fontWeight: FontWeight.w700,
-                  shadows: [Shadow(color: Colors.black54, blurRadius: 2)]),
+                  shadows: const [
+                    Shadow(color: Colors.black45, blurRadius: 2)
+                  ]),
             ),
             textDirection: TextDirection.ltr,
           )..layout();
@@ -3484,39 +3508,46 @@ class _NodePiePainter extends CustomPainter {
         }
         start += sweep;
       }
-      // 縁取りで一切れの境目を出す。
-      final line = Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1
-        ..color = Colors.white.withValues(alpha: 0.6);
-      canvas.drawCircle(center, r, line);
+      canvas.drawCircle(
+          center,
+          r,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.5
+            ..color = Colors.white);
     }
+
     // ── 凡例 ──
-    var y = pieH + 8.0;
+    final lx = wide ? size.width * 0.5 + 2 : 8.0;
+    final lw = (wide ? size.width * 0.5 - 10 : size.width - 16)
+        .clamp(40.0, double.infinity)
+        .toDouble();
+    var y = wide
+        ? (size.height - items.length * 18.0).clamp(6.0, size.height) / 2
+        : center.dy + r + 8;
     for (var i = 0; i < items.length; i++) {
-      final sw = Paint()..color = _colorOf(i);
+      if (y > size.height - 10) break;
       canvas.drawRRect(
           RRect.fromRectAndRadius(
-              Rect.fromLTWH(2, y + 3, 10, 10), const Radius.circular(2)),
-          sw);
+              Rect.fromLTWH(lx, y + 4, 11, 11), const Radius.circular(3)),
+          Paint()..color = _colorOf(i));
       final v = items[i].value;
       final pct = total > 0 && v.isFinite && v > 0
-          ? ' (${(v / total * 100).round()}%)'
+          ? '  ${(v / total * 100).round()}%'
           : '';
-      final vs = v == v.roundToDouble()
-          ? v.round().toString()
-          : v.toStringAsFixed(1);
+      final vs =
+          v == v.roundToDouble() ? v.round().toString() : v.toStringAsFixed(1);
       final tp = TextPainter(
         text: TextSpan(
           text: '${items[i].label}  $vs$pct',
-          style: TextStyle(color: textColor, fontSize: 11),
+          style: const TextStyle(color: ink, fontSize: 12),
         ),
         textDirection: TextDirection.ltr,
         maxLines: 1,
         ellipsis: '…',
-      )..layout(maxWidth: size.width - 18);
-      tp.paint(canvas, Offset(16, y));
-      y += 16.0;
+      )..layout(maxWidth: lw - 18);
+      tp.paint(canvas, Offset(lx + 17, y + 2));
+      y += 18;
     }
   }
 
@@ -3526,127 +3557,267 @@ class _NodePiePainter extends CustomPainter {
 }
 
 /// 工程表 (ガントチャート) のノードの絵描き
-/// (= ユーザー要望: 工程表も画像ではなく編集できる要素として置きたい)。
+/// (= ユーザー要望: 見にくいので、 もっと見やすく)。
 ///
-/// 高さの式は [ChartData.renderHeight] と同じでなければならない
-/// (目盛り 18 + 区切りの見出し 16/個 + 帯 22/本 + 余白 6)。
+/// 明るい下敷き + 一行おきの薄い帯 + 期間の目盛りで読みやすくする。
+/// 行の高さはノードの縦幅に合わせて伸び縮みする。
 class _NodeGanttPainter extends CustomPainter {
   final ChartData data;
   final Color textColor;
 
   _NodeGanttPainter({required this.data, required this.textColor});
 
-  /// 状態ごとの色。 済み = 緑、 進行中 = 青、 重要 = 赤、 これから = 灰青。
   static Color colorOf(String status) {
     switch (status) {
       case 'done':
-        return const Color(0xFF66BB6A);
+        return const Color(0xFF43A047);
       case 'active':
-        return const Color(0xFF42A5F5);
+        return const Color(0xFF1E88E5);
       case 'crit':
-        return const Color(0xFFEF5350);
+        return const Color(0xFFE53935);
       default:
-        return const Color(0xFF9FA8DA);
+        return const Color(0xFF7986CB);
     }
   }
 
   @override
   void paint(Canvas canvas, Size size) {
+    _paintChartPanel(canvas, size);
+    const ink = Color(0xFF1F2430);
     final tasks = data.tasks;
     if (tasks.isEmpty) return;
-    // ── 期間の幅を出す ──
+
     DateTime? lo, hi;
     for (final t in tasks) {
       final a = t.startAt, b = t.endAt;
-      if (a != null && (lo == null || a.isBefore(lo))) lo = a;
-      if (b != null && (hi == null || b.isAfter(hi))) hi = b;
-      if (a != null && (hi == null || a.isAfter(hi))) hi = a;
-      if (b != null && (lo == null || b.isBefore(lo))) lo = b;
+      for (final d in [a, b]) {
+        if (d == null) continue;
+        if (lo == null || d.isBefore(lo)) lo = d;
+        if (hi == null || d.isAfter(hi)) hi = d;
+      }
     }
-    // 名前の欄はノード幅の 4 割 (最大 130)。
-    final nameW = (size.width * 0.4).clamp(60.0, 130.0).toDouble();
-    final barLeft = nameW + 4;
-    final barW = (size.width - barLeft).clamp(20.0, double.infinity).toDouble();
-    final totalDays = (lo != null && hi != null)
-        ? (hi.difference(lo).inDays + 1).clamp(1, 100000)
-        : 1;
+    // 見出しの行も 1 行として数え、 縦幅いっぱいに広げる。
+    final secCount = data.sections.length;
+    final lines = tasks.length + secCount;
+    const headH = 20.0;
+    final rowH =
+        ((size.height - headH - 8) / math.max(1, lines)).clamp(14.0, 34.0);
+    final fs = (rowH * 0.52).clamp(9.0, 14.0).toDouble();
+    final nameW = (size.width * 0.34).clamp(70.0, 190.0).toDouble();
+    final barL = nameW + 6;
+    final barW = (size.width - barL - 8).clamp(24.0, double.infinity);
+    final days =
+        (lo != null && hi != null) ? (hi.difference(lo).inDays + 1) : 1;
 
     double xOf(DateTime d) =>
-        barLeft + (d.difference(lo!).inDays / totalDays) * barW;
+        barL + (d.difference(lo!).inDays / days) * barW;
 
-    // ── 目盛り (始まりと終わりの日付) ──
-    var y = 0.0;
+    // ── 目盛り ──
     if (lo != null && hi != null) {
-      String fmt(DateTime d) =>
-          '${d.month}/${d.day}';
-      final tpA = TextPainter(
-        text: TextSpan(
-            text: fmt(lo),
-            style: TextStyle(
-                color: textColor.withValues(alpha: 0.6), fontSize: 9)),
-        textDirection: TextDirection.ltr,
-      )..layout();
-      tpA.paint(canvas, Offset(barLeft, 2));
-      final tpB = TextPainter(
-        text: TextSpan(
-            text: fmt(hi),
-            style: TextStyle(
-                color: textColor.withValues(alpha: 0.6), fontSize: 9)),
-        textDirection: TextDirection.ltr,
-      )..layout();
-      tpB.paint(canvas, Offset(size.width - tpB.width, 2));
-      // 下敷きの線。
+      String fmt(DateTime d) => '${d.month}/${d.day}';
       final grid = Paint()
-        ..color = textColor.withValues(alpha: 0.12)
+        ..color = const Color(0x14000000)
         ..strokeWidth = 1;
-      canvas.drawLine(Offset(barLeft, 16), Offset(size.width, 16), grid);
+      // 週ごとの縦線。
+      for (var i = 0; i <= days; i++) {
+        if (i % 7 != 0) continue;
+        final x = barL + (i / days) * barW;
+        canvas.drawLine(Offset(x, headH - 4), Offset(x, size.height - 4), grid);
+      }
+      for (final e in [(lo, barL, TextAlign.left), (hi, size.width - 8, TextAlign.right)]) {
+        final tp = TextPainter(
+          text: TextSpan(
+              text: fmt(e.$1),
+              style: const TextStyle(color: Color(0x99000000), fontSize: 10)),
+          textDirection: TextDirection.ltr,
+        )..layout();
+        tp.paint(
+            canvas,
+            Offset(e.$3 == TextAlign.right ? e.$2 - tp.width : e.$2.toDouble(),
+                4));
+      }
+      canvas.drawLine(Offset(barL, headH - 3),
+          Offset(size.width - 8, headH - 3), grid);
     }
-    y = 18;
 
-    var lastSection = '\u0000';
+    var y = headH;
+    var lastSection = '';
+    var stripe = 0;
     for (final t in tasks) {
-      // 区切りの見出し。
       if (t.section.isNotEmpty && t.section != lastSection) {
         lastSection = t.section;
+        canvas.drawRect(Rect.fromLTWH(2, y, size.width - 4, rowH),
+            Paint()..color = const Color(0x0D000000));
         final tp = TextPainter(
           text: TextSpan(
               text: t.section,
               style: TextStyle(
-                  color: textColor.withValues(alpha: 0.85),
-                  fontSize: 10,
-                  fontWeight: FontWeight.w700)),
+                  color: ink, fontSize: fs, fontWeight: FontWeight.w700)),
           textDirection: TextDirection.ltr,
           maxLines: 1,
           ellipsis: '…',
-        )..layout(maxWidth: size.width);
-        tp.paint(canvas, Offset(0, y + 2));
-        y += 16;
+        )..layout(maxWidth: size.width - 12);
+        tp.paint(canvas, Offset(6, y + (rowH - tp.height) / 2));
+        y += rowH;
       }
-      // 名前。
+      // 一行おきに薄い帯。
+      if (stripe++ % 2 == 1) {
+        canvas.drawRect(Rect.fromLTWH(2, y, size.width - 4, rowH),
+            Paint()..color = const Color(0x08000000));
+      }
       final tpN = TextPainter(
         text: TextSpan(
-            text: t.label,
-            style: TextStyle(color: textColor, fontSize: 10)),
+            text: t.label, style: TextStyle(color: ink, fontSize: fs)),
         textDirection: TextDirection.ltr,
         maxLines: 1,
         ellipsis: '…',
-      )..layout(maxWidth: nameW);
-      tpN.paint(canvas, Offset(0, y + 5));
-      // 帯。
+      )..layout(maxWidth: nameW - 8);
+      tpN.paint(canvas, Offset(6, y + (rowH - tpN.height) / 2));
+
       final a = t.startAt, b = t.endAt;
-      if (lo != null && hi != null && a != null) {
+      if (lo != null && a != null) {
         final x1 = xOf(a);
-        final x2 = b != null ? xOf(b.add(const Duration(days: 1))) : x1 + 6;
-        final w = (x2 - x1).clamp(4.0, double.infinity).toDouble();
-        final r = RRect.fromRectAndRadius(
-            Rect.fromLTWH(x1, y + 3, w, 14), const Radius.circular(3));
-        canvas.drawRRect(r, Paint()..color = colorOf(t.status));
+        final x2 = b != null ? xOf(b.add(const Duration(days: 1))) : x1 + 8;
+        final w = (x2 - x1).clamp(6.0, double.infinity).toDouble();
+        final barH = (rowH * 0.6).clamp(8.0, 20.0).toDouble();
+        final rr = RRect.fromRectAndRadius(
+            Rect.fromLTWH(x1, y + (rowH - barH) / 2, w, barH),
+            const Radius.circular(4));
+        canvas.drawRRect(rr, Paint()..color = colorOf(t.status));
+        // 帯の中に日数を書く (入る時だけ)。
+        if (b != null && w > 34 && barH >= 12) {
+          final dnum = b.difference(a).inDays + 1;
+          final tpD = TextPainter(
+            text: TextSpan(
+                text: '${dnum}日',
+                style: TextStyle(
+                    color: Colors.white,
+                    fontSize: (barH * 0.6).clamp(8.0, 12.0),
+                    fontWeight: FontWeight.w700)),
+            textDirection: TextDirection.ltr,
+          )..layout();
+          tpD.paint(
+              canvas,
+              Offset(x1 + (w - tpD.width) / 2,
+                  y + (rowH - tpD.height) / 2));
+        }
       }
-      y += 22;
+      y += rowH;
     }
   }
 
   @override
   bool shouldRepaint(covariant _NodeGanttPainter old) =>
       old.data != data || old.textColor != textColor;
+}
+
+/// 順序図 (シーケンス図) のノードの絵描き
+/// (= ユーザー要望: 円グラフと同じように、 図のまま置いて編集できるように)。
+///
+/// 上に登場人物の箱、 そこから下へ縦線 (生存線)、 やり取りは矢印で描く。
+class _NodeSeqPainter extends CustomPainter {
+  final ChartData data;
+
+  _NodeSeqPainter({required this.data});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    _paintChartPanel(canvas, size);
+    const ink = Color(0xFF1F2430);
+    final actors = data.actors;
+    final msgs = data.messages;
+    if (actors.isEmpty) return;
+
+    const headH = 34.0;
+    final rowH = ((size.height - headH - 10) / math.max(1, msgs.length))
+        .clamp(20.0, 46.0)
+        .toDouble();
+    final colW = size.width / actors.length;
+    final xs = <String, double>{};
+    for (var i = 0; i < actors.length; i++) {
+      xs[actors[i]] = colW * (i + 0.5);
+    }
+
+    // ── 登場人物の箱と生存線 ──
+    final line = Paint()
+      ..color = const Color(0x33000000)
+      ..strokeWidth = 1;
+    for (var i = 0; i < actors.length; i++) {
+      final cx = colW * (i + 0.5);
+      final bw = (colW - 10).clamp(40.0, 200.0).toDouble();
+      final box = RRect.fromRectAndRadius(
+          Rect.fromCenter(center: Offset(cx, 16), width: bw, height: 24),
+          const Radius.circular(6));
+      canvas.drawRRect(box, Paint()..color = const Color(0xFFD7D9F5));
+      canvas.drawRRect(
+          box,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1
+            ..color = const Color(0xFF8E93D6));
+      final tp = TextPainter(
+        text: TextSpan(
+            text: actors[i],
+            style: const TextStyle(
+                color: ink, fontSize: 11, fontWeight: FontWeight.w700)),
+        textDirection: TextDirection.ltr,
+        maxLines: 1,
+        ellipsis: '…',
+      )..layout(maxWidth: bw - 6);
+      tp.paint(canvas, Offset(cx - tp.width / 2, 16 - tp.height / 2));
+      canvas.drawLine(
+          Offset(cx, 30), Offset(cx, size.height - 4), line);
+    }
+
+    // ── やり取り ──
+    var y = headH + rowH * 0.5;
+    final arrow = Paint()
+      ..color = const Color(0xFF5C6BC0)
+      ..strokeWidth = 1.4;
+    for (final m in msgs) {
+      if (y > size.height - 6) break;
+      final x1 = xs[m.from], x2 = xs[m.to];
+      if (x1 == null || x2 == null) {
+        y += rowH;
+        continue;
+      }
+      if (m.dashed) {
+        // 点線 (返事)。
+        const dash = 5.0;
+        final dir = x2 >= x1 ? 1.0 : -1.0;
+        for (var x = x1; (x2 - x) * dir > 0; x += dash * 2 * dir) {
+          final xe = ((x + dash * dir) * dir < x2 * dir)
+              ? x + dash * dir
+              : x2;
+          canvas.drawLine(Offset(x, y), Offset(xe, y), arrow);
+        }
+      } else {
+        canvas.drawLine(Offset(x1, y), Offset(x2, y), arrow);
+      }
+      // 矢じり。
+      final dir = x2 >= x1 ? 1.0 : -1.0;
+      final path = Path()
+        ..moveTo(x2, y)
+        ..lineTo(x2 - 7 * dir, y - 4)
+        ..lineTo(x2 - 7 * dir, y + 4)
+        ..close();
+      canvas.drawPath(path, Paint()..color = const Color(0xFF5C6BC0));
+      if (m.text.isNotEmpty) {
+        final tp = TextPainter(
+          text: TextSpan(
+              text: m.text,
+              style: const TextStyle(color: ink, fontSize: 10.5)),
+          textDirection: TextDirection.ltr,
+          maxLines: 1,
+          ellipsis: '…',
+        )..layout(maxWidth: (x2 - x1).abs().clamp(40.0, 400.0));
+        tp.paint(canvas,
+            Offset((x1 + x2) / 2 - tp.width / 2, y - tp.height - 3));
+      }
+      y += rowH;
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _NodeSeqPainter old) => old.data != data;
 }

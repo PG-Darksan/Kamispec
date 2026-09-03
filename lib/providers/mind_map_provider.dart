@@ -93596,27 +93596,40 @@ $example
     String type = 'pie',
     List<ChartSlice> items = const [],
     List<GanttTask> tasks = const [],
+    List<String> actors = const [],
+    List<SeqMessage> messages = const [],
     double? x,
     double? y,
   }) {
     final page = mcpPageById(pageId);
     if (page == null) return null;
     final gantt = type == 'gantt';
-    if (gantt ? tasks.isEmpty : items.isEmpty) return null;
+    final seq = type == 'sequence';
+    if (seq
+        ? messages.isEmpty
+        : (gantt ? tasks.isEmpty : items.isEmpty)) {
+      return null;
+    }
     final base = mcpReferenceFor(pageId);
     final node = MindMapNode(
       id: _uuid.v4(),
       title: title,
       position: Offset(x ?? base.dx, y ?? base.dy),
-      // 工程表は帯が横に伸びるので広めに置く。
-      width: gantt ? 420 : 240,
+      // 工程表と順序図は横に伸びるので広めに置く。
+      width: (gantt || seq) ? 460 : 300,
       chartData: ChartData(
         type: type,
         title: title,
         items: List<ChartSlice>.from(items),
         tasks: List<GanttTask>.from(tasks),
+        actors: List<String>.from(actors),
+        messages: List<SeqMessage>.from(messages),
       ),
     );
+    // ★ 作った時点で「丁度良い高さ」 を入れておく。 これ以降は縦幅の
+    //   つまみでそのまま伸ばし縮みできる (= ユーザー要望)。
+    node.height = node.chartData!
+        .renderHeight((node.width - 28.0).clamp(40.0, 4000.0).toDouble());
     _pushUndoForPage(pageId);
     page.nodes[node.id] = node;
     _saveToStorage();

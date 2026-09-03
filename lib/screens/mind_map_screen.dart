@@ -115810,7 +115810,9 @@ const String _kMdEmbeddedMapJs = r"""
               chartType: cd0.type,
               title: cd0.title || '',
               items: cd0.items || [],
-              tasks: cd0.tasks || []
+              tasks: cd0.tasks || [],
+              actors: cd0.actors || [],
+              messages: cd0.messages || []
             });
             return;
           }
@@ -116654,6 +116656,43 @@ const String _kMdEmbeddedMapJs = r"""
         : null;
     }
 
+    // ── 順序図 (シーケンス図) ──
+    if (/^sequencediagram\b/.test(head)) {
+      var actors = [], msgs = [];
+      function wantActor(n) {
+        var v = String(n || '').trim();
+        if (!v) return '';
+        if (actors.indexOf(v) < 0) actors.push(v);
+        return v;
+      }
+      var arrowRe =
+        /^\s*([^\s:>\-]+)\s*((?:-{1,2}>>?|-{1,2}\)|-{1,2}x|<<?-{1,2}>>?))\s*([^\s:]+)\s*:\s*(.*)$/;
+      for (var si = 0; si < lines.length; si++) {
+        var SL = lines[si];
+        if (!SL.trim() || /^\s*%%/.test(SL)) continue;
+        if (/^\s*sequencediagram\b/i.test(SL)) continue;
+        var pm = SL.match(
+            /^\s*(?:participant|actor)\s+(\S+)(?:\s+as\s+(.+))?\s*$/i);
+        if (pm) { wantActor((pm[2] || pm[1]).trim()); continue; }
+        var am = SL.match(arrowRe);
+        if (!am) continue;
+        var f = wantActor(am[1]);
+        var t2 = wantActor(am[3]);
+        if (!f || !t2) continue;
+        msgs.push({
+          from: f, to: t2,
+          text: String(am[4] || '').trim(),
+          // 点線 (返事) は -- で始まる。
+          dashed: /^-{2}/.test(am[2]) && am[2].indexOf('--') === 0 &&
+                  /^--[->x)]/.test(am[2])
+        });
+      }
+      return msgs.length
+        ? { type: 'sequence', title: titleOf(), actors: actors,
+            messages: msgs }
+        : null;
+    }
+
     // ── 工程表 (ガント) ──
     if (/^gantt\b/.test(head)) {
       var tasks = [];
@@ -116924,8 +116963,70 @@ const String _kMdEmbeddedMapJs = r"""
         W + ' ' + (y + 6) + '">' + head + rows.join('') + '</svg>';
     }
 
+    function seqSvg() {
+      var actors = data.actors || [];
+      var msgs = data.messages || [];
+      if (!actors.length) return '';
+      var colW = Math.max(120, Math.min(220, 620 / actors.length));
+      var W = colW * actors.length;
+      var H = 44 + msgs.length * 34 + 12;
+      var xs = {};
+      var parts = [];
+      for (var i = 0; i < actors.length; i++) {
+        var cx = colW * (i + 0.5);
+        xs[actors[i]] = cx;
+        var bw = Math.min(colW - 12, 170);
+        parts.push('<rect x="' + (cx - bw / 2) + '" y="6" width="' + bw +
+          '" height="28" rx="6" fill="#D7D9F5" stroke="#8E93D6"/>');
+        parts.push('<text x="' + cx + '" y="20" text-anchor="middle" ' +
+          'dominant-baseline="middle" font-size="12" font-weight="700" ' +
+          'fill="#1F2430">' + esc2(actors[i]) + '</text>');
+        parts.push('<line x1="' + cx + '" y1="34" x2="' + cx + '" y2="' +
+          (H - 6) + '" stroke="#00000033"/>');
+      }
+      var y = 56;
+      for (var k = 0; k < msgs.length; k++) {
+        var m = msgs[k];
+        var x1 = xs[m.from], x2 = xs[m.to];
+        if (x1 == null || x2 == null) { y += 34; continue; }
+        parts.push('<line x1="' + x1 + '" y1="' + y + '" x2="' + x2 +
+          '" y2="' + y + '" stroke="#5C6BC0" stroke-width="1.5"' +
+          (m.dashed ? ' stroke-dasharray="5,4"' : '') + '/>');
+        var dir = x2 >= x1 ? 1 : -1;
+        parts.push('<path d="M' + x2 + ',' + y + ' L' + (x2 - 8 * dir) +
+          ',' + (y - 4.5) + ' L' + (x2 - 8 * dir) + ',' + (y + 4.5) +
+          ' Z" fill="#5C6BC0"/>');
+        if (m.text) {
+          parts.push('<text x="' + ((x1 + x2) / 2) + '" y="' + (y - 6) +
+            '" text-anchor="middle" font-size="11" fill="#1F2430">' +
+            esc2(m.text) + '</text>');
+        }
+        y += 34;
+      }
+      return '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' +
+        W + ' ' + H + '">' + parts.join('') + '</svg>';
+    }
+
     function legendHtml() {
       var out = [];
+      if (data.type === 'sequence') {
+        var msgs = data.messages || [];
+        for (var q = 0; q < msgs.length; q++) {
+          out.push('<div class="mmch-row" data-i="' + q + '">' +
+            '<span class="mmch-sw" style="background:#5C6BC0"></span>' +
+            '<span class="mmch-v" contenteditable="true">' +
+            esc2(msgs[q].from) + '</span>' +
+            '<span style="opacity:.5">&#8594;</span>' +
+            '<span class="mmch-v" contenteditable="true">' +
+            esc2(msgs[q].to) + '</span>' +
+            '<span class="mmch-l" contenteditable="true">' +
+            esc2(msgs[q].text) + '</span>' +
+            '</div>');
+        }
+        return '<div class="mmch-legend">' + out.join('') +
+          '<div class="mmch-hint">やり取りの相手や言葉を押すと直せます</div>' +
+          '</div>';
+      }
       if (data.type === 'gantt') {
         var tasks = data.tasks || [];
         for (var i = 0; i < tasks.length; i++) {
@@ -116964,7 +117065,9 @@ const String _kMdEmbeddedMapJs = r"""
       slot.innerHTML =
         '<div class="mmap-box">' +
         '<div class="mmch-stage"><div class="mmch-inner">' +
-        (data.type === 'gantt' ? ganttSvg() : pieSvg()) +
+        (data.type === 'sequence'
+          ? seqSvg()
+          : (data.type === 'gantt' ? ganttSvg() : pieSvg())) +
         legendHtml() +
         '</div></div>' + ctlHtml() +
         (data.title
@@ -116985,6 +117088,21 @@ const String _kMdEmbeddedMapJs = r"""
         var idx = Number(rows[i].getAttribute('data-i'));
         var l = rows[i].querySelector('.mmch-l');
         var vs = rows[i].querySelectorAll('.mmch-v');
+        if (data.type === 'sequence') {
+          if (!data.messages[idx]) continue;
+          if (vs[0]) data.messages[idx].from = vs[0].textContent.trim();
+          if (vs[1]) data.messages[idx].to = vs[1].textContent.trim();
+          if (l) data.messages[idx].text = l.textContent.trim();
+          // 登場人物の一覧を作り直す (名前を変えた時のため)。
+          var seen = [];
+          for (var q2 = 0; q2 < data.messages.length; q2++) {
+            var mm2 = data.messages[q2];
+            if (mm2.from && seen.indexOf(mm2.from) < 0) seen.push(mm2.from);
+            if (mm2.to && seen.indexOf(mm2.to) < 0) seen.push(mm2.to);
+          }
+          data.actors = seen;
+          continue;
+        }
         if (data.type === 'gantt') {
           if (!data.tasks[idx]) continue;
           if (l) data.tasks[idx].label = l.textContent.trim();
@@ -117033,7 +117151,9 @@ const String _kMdEmbeddedMapJs = r"""
                 chartType: data.type,
                 title: data.title || '',
                 items: data.items || [],
-                tasks: data.tasks || []
+                tasks: data.tasks || [],
+                actors: data.actors || [],
+                messages: data.messages || []
               });
             }
           }
@@ -117536,9 +117656,41 @@ Future<String?> askAndPutChartIntoPage(BuildContext context,
     MindMapProvider provider, Map<dynamic, dynamic> m) async {
   final kind = '${m['chartType'] ?? 'pie'}';
   final isGantt = kind == 'gantt';
+  final isSeq = kind == 'sequence';
   final items = <ChartSlice>[];
   final tasks = <GanttTask>[];
-  if (isGantt) {
+  final actors = <String>[];
+  final messages = <SeqMessage>[];
+  if (isSeq) {
+    final raw = m['messages'];
+    if (raw is! List || raw.isEmpty) return null;
+    for (final e in raw) {
+      if (e is! Map) continue;
+      final f = '${e['from'] ?? ''}'.trim();
+      final t = '${e['to'] ?? ''}'.trim();
+      if (f.isEmpty || t.isEmpty) continue;
+      messages.add(SeqMessage(
+        from: f,
+        to: t,
+        text: '${e['text'] ?? ''}'.trim(),
+        dashed: e['dashed'] == true,
+      ));
+    }
+    if (messages.isEmpty) return null;
+    final rawA = m['actors'];
+    if (rawA is List) {
+      for (final e in rawA) {
+        final v = '$e'.trim();
+        if (v.isNotEmpty) actors.add(v);
+      }
+    }
+    if (actors.isEmpty) {
+      for (final mm in messages) {
+        if (!actors.contains(mm.from)) actors.add(mm.from);
+        if (!actors.contains(mm.to)) actors.add(mm.to);
+      }
+    }
+  } else if (isGantt) {
     final raw = m['tasks'];
     if (raw is! List || raw.isEmpty) return null;
     for (final e in raw) {
@@ -117567,8 +117719,14 @@ Future<String?> askAndPutChartIntoPage(BuildContext context,
     if (items.isEmpty) return null;
   }
   var title = '${m['title'] ?? ''}'.trim();
-  if (title.isEmpty) title = isGantt ? '工程表' : '円グラフ';
-  final pages = provider.pages.where((p) => p.pageType == 'normal').toList();
+  if (title.isEmpty) {
+    title = isSeq ? '順序図' : (isGantt ? '工程表' : '円グラフ');
+  }
+  // ★ マインドマップに加えてギャラリー (本棚) にも置ける
+  //   (= ユーザー要望)。 どちらもノードを並べるページなので同じ物が使える。
+  final pages = provider.pages
+      .where((p) => p.pageType == 'normal' || p.pageType == 'bookshelf')
+      .toList();
   final chosen = await showDialog<String>(
     context: context,
     builder: (dctx) => AlertDialog(
@@ -117595,8 +117753,12 @@ Future<String?> askAndPutChartIntoPage(BuildContext context,
             for (final pg in pages)
               ListTile(
                 dense: true,
-                leading: const Icon(Icons.map_outlined,
-                    color: Colors.white54, size: 18),
+                leading: Icon(
+                    pg.pageType == 'bookshelf'
+                        ? Icons.photo_library_outlined
+                        : Icons.map_outlined,
+                    color: Colors.white54,
+                    size: 18),
                 title: Text(pg.name,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -117638,6 +117800,8 @@ Future<String?> askAndPutChartIntoPage(BuildContext context,
       type: kind,
       items: items,
       tasks: tasks,
+      actors: actors,
+      messages: messages,
       x: nx,
       y: ny);
   if (id == null) return null;
@@ -118695,7 +118859,9 @@ $mapsJs
               chartType: cd2.type,
               title: cd2.title || '',
               items: cd2.items || [],
-              tasks: cd2.tasks || []
+              tasks: cd2.tasks || [],
+              actors: cd2.actors || [],
+              messages: cd2.messages || []
             });
             return;
           }

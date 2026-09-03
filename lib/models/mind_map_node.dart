@@ -966,6 +966,10 @@ class MindMapNode {
     this.diagramSource,
   }) : color = color ?? const Color(0xFF6C63FF);
 
+  /// 図のノードの、 図そのものを描く高さ (= 縦幅のつまみの値)。
+  /// 小さすぎると何も見えないので下限だけ設ける。
+  double get chartHeight => height.clamp(60.0, 4000.0).toDouble();
+
   /// タイトルの表示可能な最大行数
   /// node.height が大きいほど多くの行を表示する。最低2行を保証。
   int get titleMaxLines {
@@ -1030,13 +1034,13 @@ class MindMapNode {
       final titleBarH = estimateTableTitleBarHeight();
       return titleBarH + tableH + 14.0;
     }
-    // ── 円グラフのノード ──
-    // 高さ = タイトルバー + 円と凡例 (renderHeight) + 下端 14px。
-    // node_widget 側と同じ式 (renderHeight を共用) なのでずれない。
+    // ── 図のノード (円グラフ / 工程表 など) ──
+    // ★ 高さは **ノードの height をそのまま** 使う (= ユーザー要望: 縦幅の
+    //   つまみが効かない)。 作る時に丁度良い高さを入れてあるので、 後から
+    //   つまみで自由に伸ばし縮みできる。
     if (chartData != null) {
-      final innerW = (width - 28.0).clamp(40.0, double.infinity).toDouble();
       return estimateTableTitleBarHeight() +
-          chartData!.renderHeight(innerW) +
+          chartHeight +
           14.0;
     }
 
@@ -1416,7 +1420,9 @@ class MindMapNode {
       if (tableData != null) 'tableData': tableData!.toJson(),
       // 円グラフ。 普通のノードはキーを出さず後方互換を保つ。
       if (chartData != null &&
-          (chartData!.items.isNotEmpty || chartData!.tasks.isNotEmpty))
+          (chartData!.items.isNotEmpty ||
+              chartData!.tasks.isNotEmpty ||
+              chartData!.messages.isNotEmpty))
         'chartData': chartData!.toJson(),
       // リッチテキスト本文 (Quill Delta JSON)。 null/空のときはキーを出さず
       // 既存マップとの後方互換を保つ。
@@ -1860,6 +1866,40 @@ class GanttTask {
       );
 }
 
+/// 順序図 (シーケンス図) の 1 本のやり取り。
+class SeqMessage {
+  /// 送り手 / 受け手 (登場人物の名前)。
+  String from;
+  String to;
+
+  /// 添える言葉。
+  String text;
+
+  /// 点線 (返事) か。
+  bool dashed;
+
+  SeqMessage({
+    required this.from,
+    required this.to,
+    this.text = '',
+    this.dashed = false,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'f': from,
+        't': to,
+        if (text.isNotEmpty) 'x': text,
+        if (dashed) 'd': true,
+      };
+
+  factory SeqMessage.fromJson(Map<String, dynamic> j) => SeqMessage(
+        from: '${j['f'] ?? ''}',
+        to: '${j['t'] ?? ''}',
+        text: '${j['x'] ?? ''}',
+        dashed: j['d'] == true,
+      );
+}
+
 /// 図のノードが持つデータ (= ユーザー要望: 図を編集できる要素として)。
 ///
 /// [type] で中身が変わる。 'pie' は [items] (円グラフの一切れ)、
@@ -1870,6 +1910,12 @@ class ChartData {
   List<ChartSlice> items;
   List<GanttTask> tasks;
 
+  /// 順序図の登場人物 (出てくる順)。
+  List<String> actors;
+
+  /// 順序図のやり取り。
+  List<SeqMessage> messages;
+
   /// 図の題 (工程表の上に出す。 空なら出さない)。
   String title;
 
@@ -1877,11 +1923,16 @@ class ChartData {
     this.type = 'pie',
     List<ChartSlice>? items,
     List<GanttTask>? tasks,
+    List<String>? actors,
+    List<SeqMessage>? messages,
     this.title = '',
   })  : items = items ?? <ChartSlice>[],
-        tasks = tasks ?? <GanttTask>[];
+        tasks = tasks ?? <GanttTask>[],
+        actors = actors ?? <String>[],
+        messages = messages ?? <SeqMessage>[];
 
   bool get isGantt => type == 'gantt';
+  bool get isSeq => type == 'sequence';
 
   /// 工程表で使う区切りの一覧 (出てきた順)。
   List<String> get sections {
@@ -1895,6 +1946,10 @@ class ChartData {
   /// 描画の高さ。 **モデル (visualHeight) と描画 (node_widget) の両方が
   /// これを使う** ことで、 当たり判定と見た目がずれない。
   double renderHeight(double innerWidth) {
+    if (isSeq) {
+      // 見出し (36) + やり取り 1 本 34 + 余白。
+      return 44.0 + messages.length * 34.0 + 10.0;
+    }
     if (isGantt) {
       // 目盛り (18) + 帯 1 本 22 + 区切りの見出し 16。
       final head = sections.length * 16.0;
@@ -1907,6 +1962,12 @@ class ChartData {
   ChartData copy() => ChartData(
         type: type,
         title: title,
+        actors: List<String>.from(actors),
+        messages: [
+          for (final m in messages)
+            SeqMessage(
+                from: m.from, to: m.to, text: m.text, dashed: m.dashed),
+        ],
         items: [
           for (final e in items)
             ChartSlice(
@@ -1928,6 +1989,9 @@ class ChartData {
         if (title.isNotEmpty) 'title': title,
         if (items.isNotEmpty) 'items': [for (final e in items) e.toJson()],
         if (tasks.isNotEmpty) 'tasks': [for (final e in tasks) e.toJson()],
+        if (actors.isNotEmpty) 'actors': actors,
+        if (messages.isNotEmpty)
+          'msgs': [for (final e in messages) e.toJson()],
       };
 
   factory ChartData.fromJson(Map<String, dynamic> j) => ChartData(
@@ -1942,6 +2006,15 @@ class ChartData {
           if (j['tasks'] is List)
             for (final e in j['tasks'] as List)
               if (e is Map) GanttTask.fromJson(e.cast<String, dynamic>()),
+        ],
+        actors: [
+          if (j['actors'] is List)
+            for (final e in j['actors'] as List) '$e',
+        ],
+        messages: [
+          if (j['msgs'] is List)
+            for (final e in j['msgs'] as List)
+              if (e is Map) SeqMessage.fromJson(e.cast<String, dynamic>()),
         ],
       );
 }
