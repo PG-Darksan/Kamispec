@@ -115475,6 +115475,9 @@ const String _kMdEmbeddedMapJs = r"""
   function parseSequence(src) {
     var lines = String(src).split('\n');
     var bag = mmBag('s'), conns = [];
+    // 同じ二人のやり取りは一本の線にまとめ、 言葉を行で重ねる。
+    // (別々の線にすると同じ所に重なって、 どれも読めなくなる)
+    var pairAt = {};
     var arrowRe =
       /^\s*([^\s:>\-]+)\s*((?:-{1,2}>>?|-{1,2}\)|-{1,2}x|<<?-{1,2}>>?))\s*([^\s:]+)\s*:\s*(.*)$/;
     for (var i = 0; i < lines.length; i++) {
@@ -115487,11 +115490,21 @@ const String _kMdEmbeddedMapJs = r"""
         var a = bag.want(am[1]);
         var b = bag.want(am[3]);
         if (a && b) {
-          conns.push({
-            fromId: a.id, toId: b.id,
-            label: String(am[4] || '').trim() || undefined,
-            arrow: true
-          });
+          var say = String(am[4] || '').trim();
+          var key = a.id + '>' + b.id;
+          if (pairAt[key] != null) {
+            // ★ 二度目からは同じ線に書き足す (= 点検で判明: まとめないと
+            //   最後のひと言しか残らず、 重ねて引くと読めなくなる)。
+            var had = conns[pairAt[key]];
+            if (say) had.label = had.label ? (had.label + '\n' + say) : say;
+          } else {
+            pairAt[key] = conns.length;
+            conns.push({
+              fromId: a.id, toId: b.id,
+              label: say || undefined,
+              arrow: true
+            });
+          }
         }
         continue;
       }
@@ -115518,6 +115531,8 @@ const String _kMdEmbeddedMapJs = r"""
       if (mmSkip(L) || /^\s*(?:pie|title)\b/i.test(L)) continue;
       var m = L.match(/^\s*"([^"]*)"\s*:\s*([0-9.]+)\s*$/);
       if (!m) m = L.match(/^\s*'([^']*)'\s*:\s*([0-9.]+)\s*$/);
+      // 引用符で囲まない書き方 (Windows : 55) も読む。
+      if (!m) m = L.match(/^\s*([^:\n"']+?)\s*:\s*([0-9.]+)\s*$/);
       if (!m) continue;
       var id = 'p' + (n++);
       nodes.push({ id: id, title: m[1] + '  ' + m[2] });
@@ -116067,8 +116082,12 @@ String? mermaidMapToPage(MindMapProvider provider, Map<dynamic, dynamic> m,
       final b = idMap['${c['toId']}'];
       if (a == null || b == null) continue;
       final label = '${c['label'] ?? ''}'.trim();
+      // ★ 言葉の付いた線は重ねて引く (= 点検で判明: sequenceDiagram は
+      //   同じ二人が何度もやり取りするので、 まとめると最後のひと言しか
+      //   残らない)。 言葉の無い線は今までどおり一本にまとめる。
       provider.mcpConnectNodes(targetId, a, b,
-          label: label.isEmpty ? null : label);
+          label: label.isEmpty ? null : label,
+          allowParallel: label.isNotEmpty);
     }
   }
   return provider.mcpPageById(targetId)?.name ?? title;
@@ -116076,104 +116095,6 @@ String? mermaidMapToPage(MindMapProvider provider, Map<dynamic, dynamic> m,
 
 /// どのページに入れるか選ばせてから入れる (= ユーザー要望)。
 /// 入れた先のページ名を返す (やめたら null)。
-
-/// 図の絵 (PNG) を、 選んだマインドマップのページへ置く。
-///
-/// = ユーザー要望「円グラフは円グラフのまま、 フローチャートはフローチャートの
-///   まま、 自分のページに埋め込めるようにして欲しい」。 見た目を変えずに
-///   そのまま絵として入れる。 入れたページ名を返す (やめたら null)。
-Future<String?> askAndPutDiagramImageIntoPage(BuildContext context,
-    MindMapProvider provider, Map<dynamic, dynamic> m) async {
-  // PNG が無い (SVG しか作れなかった) 時は入れられない。
-  final png = '${m['png'] ?? ''}';
-  if (!png.startsWith('data:image/png;base64,')) return null;
-  Uint8List bytes;
-  try {
-    bytes = base64Decode(png.substring('data:image/png;base64,'.length));
-  } catch (_) {
-    return null;
-  }
-  final pages = provider.pages.where((p) => p.pageType == 'normal').toList();
-  final chosen = await showDialog<String>(
-    context: context,
-    builder: (dctx) => AlertDialog(
-      backgroundColor: const Color(0xFF1E1E32),
-      title: Text(provider.t('map.pickTargetPage'),
-          style: const TextStyle(color: Colors.white, fontSize: 15)),
-      content: SizedBox(
-        width: math.min(380.0, MediaQuery.sizeOf(dctx).width - 48),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxHeight: 360),
-          child: ListView(shrinkWrap: true, children: [
-            ListTile(
-              dense: true,
-              leading: const Icon(Icons.add_box_outlined,
-                  color: Color(0xFF43B97F), size: 20),
-              title: Text(provider.t('map.newPage'),
-                  style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700)),
-              onTap: () => Navigator.pop(dctx, '__new__'),
-            ),
-            if (pages.isNotEmpty) const Divider(color: Colors.white12),
-            for (final pg in pages)
-              ListTile(
-                dense: true,
-                leading: const Icon(Icons.map_outlined,
-                    color: Colors.white54, size: 18),
-                title: Text(pg.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Colors.white, fontSize: 13)),
-                onTap: () => Navigator.pop(dctx, pg.id),
-              ),
-          ]),
-        ),
-      ),
-      actions: [
-        TextButton(
-            onPressed: () => Navigator.pop(dctx),
-            child: Text(provider.t('btn.cancel'),
-                style: const TextStyle(color: Colors.white54))),
-      ],
-    ),
-  );
-  if (chosen == null) return null;
-  try {
-    final appDir = await getApplicationDocumentsDirectory();
-    final dir = Directory('${appDir.path}/attachments');
-    if (!await dir.exists()) await dir.create(recursive: true);
-    final path =
-        '${dir.path}/diagram_${DateTime.now().millisecondsSinceEpoch}.png';
-    await File(path).writeAsBytes(bytes, flush: true);
-    var pageId = chosen;
-    if (pageId == '__new__') {
-      final made = provider.mcpCreatePage(type: 'normal', name: '図');
-      if (made == null) return null;
-      pageId = made;
-    }
-    // ★ 今ある物の右隣へ置く (指定しないと根っこの上に重なる = 点検で判明)。
-    final pg0 = provider.mcpPageById(pageId);
-    double? nx, ny;
-    if (pg0 != null && pg0.nodes.isNotEmpty) {
-      var maxX = -1e9, minY = 1e9;
-      for (final n in pg0.nodes.values) {
-        if (n.position.dx > maxX) maxX = n.position.dx;
-        if (n.position.dy < minY) minY = n.position.dy;
-      }
-      nx = maxX + 260;
-      ny = minY;
-    }
-    final id = provider.mcpAddImageNode(pageId,
-        filePath: path, title: '図', x: nx, y: ny);
-    if (id == null) return null;
-    final pg = provider.mcpPageById(pageId);
-    return pg?.name ?? '';
-  } catch (_) {
-    return null;
-  }
-}
 
 Future<String?> askAndPutMermaidMapIntoPage(BuildContext context,
     MindMapProvider provider, Map<dynamic, dynamic> m) async {
@@ -116888,11 +116809,11 @@ $mapsJs
           '<button type="button" data-act="copy" title="copy">&#10697;</button>' +
           '<button type="button" data-act="save" title="save PNG">&#8681;</button>'
         : '') +
-      // ── この図をそのまま自分のページへ入れる (= ユーザー要望) ──
-      //    図の見た目は変えずに、 マインドマップのページへ絵として置く。
+      // ── この図を自分のページへ入れる (= ユーザー要望) ──
+      //    絵ではなく節点として入れるので、 入れた後に中身を直せる。
       (post
         ? '<button type="button" data-act="topage" class="wide" ' +
-          'title="この図をページに入れる">+ ページに追加</button>'
+          'title="この図をページの要素として入れる">+ ページに追加</button>'
         : '') +
       // ── マップとして見る (= 節点を掴んで動かせる形に読み替える) ──
       (!onBack && window.__mmMermaidToMap && window.__mmRenderMermaidMap
@@ -117183,10 +117104,33 @@ $mapsJs
           if (conv) window.__mmRenderMermaidMap(slot, conv);
         } catch (e) {}
       }
-      else if (act === 'save' || act === 'topage') {
-        var sender = bridge || (post ? { postMessage: post } : null);
+      else if (act === 'topage') {
+        // ★ 絵として貼らない (= ユーザー要望: 入れた後に中の要素を直したい)。
+        //   図をこのアプリの節点とつながりに読み替えてから渡す。
+        var toPost = bridge || (post ? { postMessage: post } : null);
+        if (!toPost) return;
+        var cv = null;
+        try { cv = window.__mmMermaidToMap(code, true); } catch (e) {}
+        if (!cv || !cv.nodes || !cv.nodes.length) return;
+        toPost.postMessage({
+          type: 'mapToPage',
+          title: cv.title || cv.name || '',
+          nodes: cv.nodes.map(function (x) {
+            return {
+              id: x.id, title: x.title || '', memo: x.memoText || '',
+              x: Math.round(x.x || 0), y: Math.round(x.y || 0),
+              color: x.color || null
+            };
+          }),
+          connections: (cv.connections || []).map(function (c) {
+            return { fromId: c.fromId, toId: c.toId, label: c.label || '' };
+          })
+        });
+      }
+      else if (act === 'save') {
+        var sender = bridge;
         if (!sender) return;
-        var kind = (act === 'save') ? 'mermaidSave' : 'mermaidPngToPage';
+        var kind = 'mermaidSave';
         var rr = svgEl.getBoundingClientRect();
         var swN = Math.max(1, Math.round(rr.width / s));
         var shN = Math.max(1, Math.round(rr.height / s));
@@ -117466,6 +117410,21 @@ $mapsJs
         // 流れ図以外 (pie / sequence / gantt など) は [] の意味が違うので
         // 触らない。
         var head = text.replace(/^\\s+/, '').split(/\\s/)[0].toLowerCase();
+        // ★ 円グラフは値の名前を "" で囲まないと mermaid が読めず
+        //   「Lexer error」 になる (= 実際に出ていた)。 囲みを補う。
+        if (head === 'pie') {
+          return text.split('\\n').map(function (L) {
+            if (/^\\s*(?:pie|title)\\b/i.test(L)) return L;
+            // ★ 先頭の一文字に空白を含めない。 含めると (\\s*) が一つ
+            //   譲って、 既に "" で囲んである行まで二重に囲んでしまう
+            //   (= 点検で判明: 「"犬" : 386」 が 「"″犬″"」 になる)。
+            var mm =
+                L.match(/^(\\s*)([^\\s"'\\n:][^:\\n]*?)\\s*:\\s*([0-9.]+)\\s*\$/);
+            if (!mm) return L;
+            return mm[1] + '"' + mm[2].trim().replace(/"/g, '\\u2033') +
+                '" : ' + mm[3];
+          }).join('\\n');
+        }
         if (head !== 'graph' && head !== 'flowchart') return text;
         function quote(label) {
           return '"' + label.replace(/"/g, '″') + '"';
@@ -119966,22 +119925,6 @@ graph TD
         return;
       }
       // ── 図をマインドマップのページにする (= ユーザー要望) ──
-      // ── 図をそのまま (見た目を変えずに) ページへ入れる (= ユーザー要望) ──
-      if (type == 'mermaidPngToPage') {
-        unawaited(() async {
-          final name = await askAndPutDiagramImageIntoPage(
-              context, widget.provider, m);
-          if (name != null && mounted) {
-            _appSnackTop(
-                context,
-                widget.provider
-                    .t('map.addedToPage')
-                    .replaceFirst('{name}', name),
-                const Color(0xFF43B97F));
-          }
-        }());
-        return;
-      }
       if (type == 'mapToPage') {
         unawaited(() async {
           final name = await askAndPutMermaidMapIntoPage(
@@ -214009,31 +213952,6 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
         case 'mermaidSave':
           unawaited(_saveDiagramExport(m.cast<dynamic, dynamic>()));
           break;
-        case 'mermaidToMap':
-          unawaited(_sendDiagramToMap(m.cast<dynamic, dynamic>()));
-          break;
-        // 図をそのまま (見た目を変えずに) 選んだページへ置く。
-        case 'mermaidPngToPage':
-          unawaited(() async {
-            final provider = context.read<MindMapProvider>();
-            final name = await askAndPutDiagramImageIntoPage(
-                context, provider, m.cast<dynamic, dynamic>());
-            if (name == null) {
-              // ★ 「やめる」 を押しただけで保存の窓を出さない
-              //   (= 点検で判明)。 絵に出来なかった時だけ促す。
-              final png = '${m['png'] ?? ''}';
-              if (!png.startsWith('data:image/png;base64,')) {
-                await _saveDiagramExport(m.cast<dynamic, dynamic>());
-              }
-              return;
-            }
-            if (mounted) {
-              _showSnackBar(provider
-                  .t('map.addedToPage')
-                  .replaceFirst('{name}', name));
-            }
-          }());
-          break;
       }
     } catch (_) {}
   }
@@ -214078,39 +213996,6 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
             .read<MindMapProvider>()
             .t('md.diagramSaved')
             .replaceFirst('{path}', fixed));
-      }
-    } catch (e) {
-      _showSnackBar('$e');
-    }
-  }
-
-  /// 図を画像ノードとして今のページへ貼る (= ユーザー要望: 発展案)。
-  Future<void> _sendDiagramToMap(Map<dynamic, dynamic> m) async {
-    final data = _diagramBytesOf(m);
-    if (data == null) return;
-    final (bytes, ext) = data;
-    if (ext != 'png') {
-      // 画像ノードは PNG のみ対応 (SVG しか作れなかった時は保存を促す)。
-      await _saveDiagramExport(m);
-      return;
-    }
-    try {
-      final provider = context.read<MindMapProvider>();
-      final appDir = await getApplicationDocumentsDirectory();
-      final dir = Directory('${appDir.path}/attachments');
-      if (!await dir.exists()) await dir.create(recursive: true);
-      final path =
-          '${dir.path}/mermaid_${DateTime.now().millisecondsSinceEpoch}.png';
-      await File(path).writeAsBytes(bytes, flush: true);
-      final id = provider.mcpAddImageNode(provider.currentPage.id,
-          filePath: path, title: 'Mermaid');
-      if (mounted) {
-        _showSnackBar(id == null
-            ? context.read<MindMapProvider>().t('mcp.failed')
-            : context
-                .read<MindMapProvider>()
-                .t('md.sentToMap')
-                .replaceFirst('{page}', provider.currentPage.name));
       }
     } catch (e) {
       _showSnackBar('$e');

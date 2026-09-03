@@ -84888,8 +84888,11 @@ $cleanQ
   }
 
   /// [fromKey] / [toKey] は id でも題名でもよい。
+  /// [allowParallel] が true の時は、 同じ相手へ何本でも線を引く。
+  /// 図の読み替え (sequenceDiagram など) は同じ二人が何度もやり取りするので、
+  /// 一本にまとめると最後のひと言しか残らない (= 点検で判明)。
   bool mcpConnectNodes(String pageId, String fromKey, String toKey,
-      {String? label}) {
+      {String? label, bool allowParallel = false}) {
     final page = mcpPageById(pageId);
     if (page == null) return false;
     final fromId = _resolveNodeIdIn(page, fromKey);
@@ -84897,8 +84900,10 @@ $cleanQ
     if (fromId == null || toId == null || fromId == toId) return false;
     // 同じ組み合わせの線を二重に引かない (= AI が言い直して繰り返し呼ぶと
     //   線が重なって太く見えていた)。 既にあればラベルだけ書き換える。
-    final at = page.connections.indexWhere(
-        (c) => c.fromId == fromId && c.toId == toId);
+    final at = allowParallel
+        ? -1
+        : page.connections.indexWhere(
+            (c) => c.fromId == fromId && c.toId == toId);
     if (at >= 0) {
       if (label != null && label.trim().isNotEmpty) {
         page.connections[at] = page.connections[at].copyWith(label: label);
