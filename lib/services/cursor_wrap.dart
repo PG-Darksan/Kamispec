@@ -252,14 +252,13 @@ class CursorWrap {
   bool get hasMultipleMonitors => _metric(w32.SM_CMONITORS) > 1;
 
   void _tick() {
-    try {
-      // カーソルの大きさの切り替えは廃止 (= 実際に効かないため)。
-    } catch (_) {}
-    if (!_enabled) return;
+    // 図で行き先を決めていれば、 それだけで働く (= ユーザー要望: 「両サイド
+    //   からアクセス」 の入り切りは図から決めればよいので項目ごと削除)。
+    if (!_enabled && _edgeTargets.isEmpty) return;
     if (DateTime.now().isBefore(_quietUntil)) return;
     try {
       if (!hasMultipleMonitors) return;
-      // 何かを掴んで運んでいる最中は触らない。 ただし窓を掴んで**動かして**
+      // 何かを掴んで運んでいる最中は触らない。 ただし窓を掴んで動かして
       // いる時だけは通す (= ユーザー要望: カーソルは両端から出せるのに、
       // 掴んだ窓は出せない)。
       // ★ 調べるのはボタンが押されている時だけ。 押していない間まで毎回

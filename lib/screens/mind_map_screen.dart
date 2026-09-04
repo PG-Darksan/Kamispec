@@ -72011,21 +72011,9 @@ class _MindMapScreenState extends State<MindMapScreen>
       if (!kIsWeb && Platform.isWindows) ...[
         sectionLabel(provider.t('cursorWrap.edgeTitle')),
         _MonitorEdgeSettings(provider: provider),
-        SwitchListTile(
-          contentPadding: EdgeInsets.zero,
-          dense: true,
-          activeColor: const Color(0xFF4FC3F7),
-          title: Text(provider.t('cursorWrap.title'),
-              style: const TextStyle(color: Colors.white, fontSize: 13)),
-          subtitle: Text(provider.t('cursorWrap.desc'),
-              style: const TextStyle(color: Colors.white38, fontSize: 11)),
-          value: provider.cursorWrapEnabled,
-          onChanged: (v) {
-            provider.setCursorWrapEnabled(v);
-            CursorWrap.instance.apply(v);
-            setS(() {});
-          },
-        ),
+        // ── 「サブモニターに両サイドからアクセス」 のトグルは削除 ──
+        //    = ユーザー要望「上の図から設定すればいいから項目としては削除」。
+        //    図で行き先を決めた辺だけが働く。
       ],
 
       // ── 音声の出力先 ──
@@ -95952,39 +95940,67 @@ class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
     return n;
   }
 
-  Future<void> _pickEdgeTarget(
-      int monIndex, String edge, Map<String, int> cells) async {
+  Future<void> _pickEdgeTarget(int monIndex, String edge,
+      Map<String, int> cells, Offset at) async {
     final p = widget.provider;
     final choices = cells.values.where((v) => v != monIndex).toList()..sort();
     final key = '$monIndex:$edge';
+    // 画面の真ん中ではなく、 押した辺のすぐ近くに出す (= ユーザー要望)。
+    final scr = MediaQuery.sizeOf(context);
+    const w = 190.0;
+    final h = 70.0 + choices.length * 44.0;
+    final left =
+        (at.dx + 14).clamp(8.0, math.max(8.0, scr.width - w - 8)).toDouble();
+    final top = (at.dy - h / 2)
+        .clamp(8.0, math.max(8.0, scr.height - h - 8))
+        .toDouble();
     final picked = await showDialog<int>(
       context: context,
-      builder: (dctx) => SimpleDialog(
-        backgroundColor: const Color(0xFF1E1E32),
-        title: Text(p.t('cursorWrap.edgeGoesTo'),
-            style: const TextStyle(color: Colors.white, fontSize: 14)),
-        children: [
-          SimpleDialogOption(
-            onPressed: () => Navigator.pop(dctx, -999),
-            child: Text(p.t('cursorWrap.targetNone'),
-                style: TextStyle(
-                    color: _edges[key] == null
-                        ? const Color(0xFF4FC3F7)
-                        : Colors.white70,
-                    fontSize: 13)),
+      barrierColor: Colors.black26,
+      builder: (dctx) => Stack(children: [
+        Positioned(
+          left: left,
+          top: top,
+          width: w,
+          child: Material(
+            color: const Color(0xFF1E1E32),
+            borderRadius: BorderRadius.circular(12),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 12, 14, 4),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(p.t('cursorWrap.edgeGoesTo'),
+                      style: const TextStyle(
+                          color: Colors.white, fontSize: 13)),
+                ),
+              ),
+              ListTile(
+                dense: true,
+                title: Text(p.t('cursorWrap.targetNone'),
+                    style: TextStyle(
+                        color: _edges[key] == null
+                            ? const Color(0xFF4FC3F7)
+                            : Colors.white70,
+                        fontSize: 13)),
+                onTap: () => Navigator.pop(dctx, -999),
+              ),
+              for (final i in choices)
+                ListTile(
+                  dense: true,
+                  title: Text('${i + 1}',
+                      style: TextStyle(
+                          color: _edges[key] == i
+                              ? const Color(0xFF4FC3F7)
+                              : Colors.white70,
+                          fontSize: 13)),
+                  onTap: () => Navigator.pop(dctx, i),
+                ),
+              const SizedBox(height: 6),
+            ]),
           ),
-          for (final i in choices)
-            SimpleDialogOption(
-              onPressed: () => Navigator.pop(dctx, i),
-              child: Text('${i + 1}',
-                  style: TextStyle(
-                      color: _edges[key] == i
-                          ? const Color(0xFF4FC3F7)
-                          : Colors.white70,
-                      fontSize: 13)),
-            ),
-        ],
-      ),
+        ),
+      ]),
     );
     if (picked == null) return;
     setState(() {
@@ -96022,8 +96038,8 @@ class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
             });
             _save();
           },
-          onTapEdge: (mon, edge) =>
-              unawaited(_pickEdgeTarget(mon, edge, cells)),
+          onTapEdge: (mon, edge, at) =>
+              unawaited(_pickEdgeTarget(mon, edge, cells, at)),
         ),
       ),
       const SizedBox(height: 8),
@@ -96037,10 +96053,10 @@ class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
 /// (= ユーザー要望: 図を見ながら、 どの方向にどう繋ぐかを決められるように)。
 ///
 /// **升目の考え方**: 主モニターを (0,0) として、 右が +x / 下が +y。
-/// となり合った升目どうしは「そのまま歩いて行ける」 とみなすので、 その辺
+/// 隣り合った升目どうしは「そのまま歩いて行ける」 とみなすので、 その辺
 /// には何も設定しない。 右へ 2 枚続けて並べる、 のような繋ぎ方もできる。
 ///
-/// **設定するのは「繋がっていない辺」 だけ**。 空いている側の辺を押すと、
+/// 設定するのは「繋がっていない辺」 だけ。 空いている側の辺を押すと、
 /// その辺から抜けた時にどのモニターへ出るかを選べる。
 class _MonitorGridView extends StatelessWidget {
   /// 升目 ('x,y') → モニターの番号 (0 = 主)。
@@ -96055,8 +96071,9 @@ class _MonitorGridView extends StatelessWidget {
   /// 空いている升目を押した (置く / 外す)。
   final void Function(String cellKey) onTapCell;
 
-  /// 繋がっていない辺を押した (モニター番号, 辺)。
-  final void Function(int monIndex, String edge) onTapEdge;
+  /// 繋がっていない辺を押した (モニター番号, 辺, 押した場所)。
+  /// 場所は、 選ぶ窓をその近くに出すために使う (= ユーザー要望)。
+  final void Function(int monIndex, String edge, Offset at) onTapEdge;
 
   const _MonitorGridView({
     required this.cells,
@@ -96117,8 +96134,8 @@ class _MonitorGridView extends StatelessWidget {
         final linked = occupied(x + d.$1, y + d.$2);
         final target = edges['$index:$edge'];
         final horizontal = edge == 'T' || edge == 'B';
-        final w = horizontal ? double.infinity : 13.0;
-        final h = horizontal ? 13.0 : double.infinity;
+        final w = horizontal ? double.infinity : 18.0;
+        final h = horizontal ? 18.0 : double.infinity;
         if (linked) {
           return Container(
             width: w,
@@ -96129,8 +96146,15 @@ class _MonitorGridView extends StatelessWidget {
         final on = target != null;
         return Tooltip(
           message: provider.t('cursorWrap.edgeGoesTo'),
-          child: InkWell(
-            onTap: () => onTapEdge(index, edge),
+          child: Builder(builder: (bctx) {
+            return InkWell(
+            onTap: () {
+              final box = bctx.findRenderObject();
+              final at = (box is RenderBox && box.hasSize)
+                  ? box.localToGlobal(box.size.center(Offset.zero))
+                  : Offset.zero;
+              onTapEdge(index, edge, at);
+            },
             child: Container(
               width: w,
               height: h,
@@ -96142,12 +96166,13 @@ class _MonitorGridView extends StatelessWidget {
                   ? Text('${target + 1}',
                       style: const TextStyle(
                           color: Colors.black87,
-                          fontSize: 9,
+                          fontSize: 11,
                           fontWeight: FontWeight.w700))
                   : const Icon(Icons.more_horiz_rounded,
-                      size: 9, color: Colors.white38),
+                      size: 12, color: Colors.white38),
             ),
-          ),
+          );
+          }),
         );
       }
 
@@ -96155,8 +96180,8 @@ class _MonitorGridView extends StatelessWidget {
       final accent =
           index == 0 ? const Color(0xFF4FC3F7) : const Color(0xFF9CCC65);
       return SizedBox(
-        width: 96,
-        height: 62,
+        width: 140,
+        height: 92,
         child: Stack(children: [
           Positioned.fill(
             child: GestureDetector(
@@ -96165,7 +96190,7 @@ class _MonitorGridView extends StatelessWidget {
                   ? null
                   : () => onTapCell(cellKey(x, y)),
               child: Container(
-                margin: const EdgeInsets.all(13),
+                margin: const EdgeInsets.all(18),
                 decoration: BoxDecoration(
                   color: accent.withValues(alpha: real ? 0.22 : 0.08),
                   borderRadius: BorderRadius.circular(4),
@@ -96180,7 +96205,7 @@ class _MonitorGridView extends StatelessWidget {
                       Text('${index + 1}',
                           style: const TextStyle(
                               color: Colors.white,
-                              fontSize: 14,
+                              fontSize: 18,
                               fontWeight: FontWeight.w700)),
                       Text(
                           index == 0
@@ -96189,30 +96214,30 @@ class _MonitorGridView extends StatelessWidget {
                                   ? provider.t('cursorWrap.connected')
                                   : provider.t('cursorWrap.planned')),
                           style: const TextStyle(
-                              color: Colors.white54, fontSize: 8)),
+                              color: Colors.white54, fontSize: 10)),
                     ],
                   ),
                 ),
               ),
             ),
           ),
-          Positioned(left: 0, top: 13, bottom: 13, child: strip('L')),
-          Positioned(right: 0, top: 13, bottom: 13, child: strip('R')),
-          Positioned(left: 13, right: 13, top: 0, child: strip('T')),
-          Positioned(left: 13, right: 13, bottom: 0, child: strip('B')),
+          Positioned(left: 0, top: 18, bottom: 18, child: strip('L')),
+          Positioned(right: 0, top: 18, bottom: 18, child: strip('R')),
+          Positioned(left: 18, right: 18, top: 0, child: strip('T')),
+          Positioned(left: 18, right: 18, bottom: 0, child: strip('B')),
         ]),
       );
     }
 
     Widget emptyCell(int x, int y) {
       if (!placeable(x, y)) {
-        return const SizedBox(width: 96, height: 62);
+        return const SizedBox(width: 140, height: 92);
       }
       return SizedBox(
-        width: 96,
-        height: 62,
+        width: 140,
+        height: 92,
         child: Padding(
-          padding: const EdgeInsets.all(13),
+          padding: const EdgeInsets.all(18),
           child: InkWell(
             borderRadius: BorderRadius.circular(4),
             onTap: () => onTapCell(cellKey(x, y)),
@@ -96224,7 +96249,7 @@ class _MonitorGridView extends StatelessWidget {
               ),
               child: const Center(
                 child:
-                    Icon(Icons.add_rounded, size: 16, color: Colors.white24),
+                    Icon(Icons.add_rounded, size: 20, color: Colors.white38),
               ),
             ),
           ),
