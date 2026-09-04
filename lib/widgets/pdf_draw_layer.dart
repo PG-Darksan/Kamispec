@@ -671,6 +671,10 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     Color(0xFF4DD0E1), // 水
     Color(0xFF757575), // 灰
     Color(0xFF000000), // 黒
+    // 白 (= ユーザー要望: 白が無いのはおかしい)。 元の紙を塗り潰したり、
+    //   暗い紙・写真の上に書く時に使う。 一覧では下地が暗いので、 白い丸
+    //   そのものがちゃんと見える。
+    Color(0xFFFFFFFF), // 白
   ];
 
   /// 消しゴムの大きさ (pt)。 ペンとは別に持つ (= ユーザー要望)。

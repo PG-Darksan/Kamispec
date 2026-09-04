@@ -2809,6 +2809,22 @@ class _MindMapScreenState extends State<MindMapScreen>
   bool _splitLeftPdfBarVisible = false;
   Timer? _splitLeftPdfBarTimer;
 
+  /// 右パネルの分も同じ物を持つ (= ユーザー要望: 左右のスクロールの棒も
+  /// 縦のつまみも、 カーソルがそこに居る時だけ出す)。
+  bool _splitPdfBarVisible = false;
+  Timer? _splitPdfBarTimer;
+
+  void _markSplitPdfBar() {
+    if (!_splitPdfBarVisible && mounted) {
+      setState(() => _splitPdfBarVisible = true);
+    }
+    _splitPdfBarTimer?.cancel();
+    _splitPdfBarTimer = Timer(const Duration(milliseconds: 1200), () {
+      if (!mounted) return;
+      setState(() => _splitPdfBarVisible = false);
+    });
+  }
+
   /// スクロール等の操作があった合図。 少し経つと自動で消える。
   void _markSplitLeftPdfBar() {
     if (!_splitLeftPdfBarVisible && mounted) {
@@ -6848,6 +6864,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     // 画面分割パネル PDF オーバーレイの Timer もキャンセル
     _splitPdfPageOverlayTimer?.cancel();
     _splitLeftPdfBarTimer?.cancel();
+    _splitPdfBarTimer?.cancel();
     HardwareKeyboard.instance.removeHandler(_handleMainGlobalArrowKey);
     WidgetsBinding.instance.pointerRouter
         .removeGlobalRoute(_globalPointerForMapDrop);
@@ -37517,6 +37534,27 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     ),
                                   ),
 
+                                // ── ディスプレイ設定 (= ユーザー要望:
+                                //    サブモニターの端 / 音声の出力先 /
+                                //    マウスカーソルの大きさ などは動作設定
+                                //    ではなくここから) ──
+                                //    中身が OS ごとの機能なので、 出す物が
+                                //    無い環境では項目ごと出さない。
+                                //    デスクトップでもここから開ける
+                                //    (動作設定はヘッダー側にあるが、 こちらは
+                                //     並べ替えなしでも辿れるように)。
+                                if (_hasDisplaySettings)
+                                  _settingsTile(
+                                    icon: Icons.desktop_windows_rounded,
+                                    color: const Color(0xFF4FC3F7),
+                                    title:
+                                        provider.t('menu.displaySettings'),
+                                    onTap: () {
+                                      Navigator.of(sctx).pop();
+                                      _openDisplaySettings();
+                                    },
+                                  ),
+
                                 // ── 全メモ一覧 ──
                                 // マップ全体のメモをまとめて見るパネル。
                                 //   動作の切り替えではなく「中身を見る」 機能
@@ -40981,6 +41019,13 @@ class _MindMapScreenState extends State<MindMapScreen>
       'icon': Icons.settings_suggest_rounded,
       'color': Color(0xFF7FD8A0),
     },
+    // ディスプレイ設定 (= ユーザー要望: 動作設定とは別の項目にする)。
+    {
+      'id': 'openDisplaySettings',
+      'labelKey': 'menu.displaySettings',
+      'icon': Icons.desktop_windows_rounded,
+      'color': Color(0xFF4FC3F7),
+    },
     // ── 画面分割 (= ユーザー要望: モバイルはヘッダーが狭いので、 分割は
     //    カスタムボタンとして置けるようにする) ──
     {
@@ -43905,6 +43950,9 @@ class _MindMapScreenState extends State<MindMapScreen>
       case 'popOutAi':
         // ignore: discarded_futures
         _openPopOutWindow(provider, kind: 'ai');
+        break;
+      case 'openDisplaySettings':
+        _openDisplaySettings();
         break;
       case 'openBehaviorSettings':
         _openBehaviorSettings();
@@ -53693,6 +53741,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                                       onPointerDown: (e) =>
                                           _splitPdfDownGlobal = e.position,
                                       onPointerSignal: _onSplitLeftPdfWheel,
+                                      // カーソルが乗っている間も出す
+                                      //   (= ユーザー要望: ホバーの時だけ)。
+                                      onPointerHover: (_) =>
+                                          _markSplitLeftPdfBar(),
                                       child: ExcludeFocus(
                                         child: sf_pdf.SfPdfViewer.file(
                                           File(pdfPath),
@@ -53817,6 +53869,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                     // この左パネルは縦めくり + 続き表示で固定。
                     scrollDirection: sf_pdf.PdfScrollDirection.vertical,
                     layoutMode: sf_pdf.PdfPageLayoutMode.continuous,
+                    // 縦のつまみと同じ合図で出す (= ユーザー要望:
+                    //   カーソルがそこに居る時だけ)。
+                    visible: _splitLeftPdfBarVisible,
                   ),
               ],
             ),
@@ -54568,6 +54623,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                       // 画面の幅を渡す (= 動かせる量の計算が狂わないように)。
                       panelWidth: isVertical ? mq.size.width : panelSize,
                       accent: const Color(0xFF6C63FF),
+                      // 縦のつまみと同じ合図で出す (= ユーザー要望)。
+                      visible: _splitPdfBarVisible,
                       // 上下分割では横めくりになる。 その時この棒は
                       // 「ページ送り」 になってしまうので出さない。
                       scrollDirection: isVertical
@@ -54743,7 +54800,9 @@ class _MindMapScreenState extends State<MindMapScreen>
               // ── タップした場所へ書き込む (= ユーザー要望) ──
               onTap: (d) => unawaited(_handleSplitPdfTap(d, left: false)),
               enableTextSelection: false,
-              canShowScrollHead: false,
+              // 触っている間だけ縦のつまみを出す (= ユーザー要望:
+              //   常時は邪魔だが、 まったく出ないのも困る)。
+              canShowScrollHead: _splitPdfBarVisible,
               canShowPaginationDialog: true,
               scrollDirection: scrollDir,
               // ★ single モードに変更 ★
@@ -54760,7 +54819,9 @@ class _MindMapScreenState extends State<MindMapScreen>
               _splitCurrentUrl,
               controller: _splitPdfController,
               enableTextSelection: false,
-              canShowScrollHead: false,
+              // 触っている間だけ縦のつまみを出す (= ユーザー要望:
+              //   常時は邪魔だが、 まったく出ないのも困る)。
+              canShowScrollHead: _splitPdfBarVisible,
               canShowPaginationDialog: true,
               scrollDirection: scrollDir,
               pageLayoutMode: sf_pdf.PdfPageLayoutMode.continuous,
@@ -54792,7 +54853,12 @@ class _MindMapScreenState extends State<MindMapScreen>
           // ── 右クリックメニューは廃止 (= ユーザー要望: 「ページを非表示」 等
           //    の項目は要らない)。 右クリックは PDF 側の既定動作に任せる。 ──
           //    押した所は覚えておく (= 文字の箱をそこへ出すため)。
-          onPointerDown: (event) => _splitPdfDownGlobal = event.position,
+          onPointerDown: (event) {
+            _splitPdfDownGlobal = event.position;
+            _markSplitPdfBar();
+          },
+          onPointerHover: (_) => _markSplitPdfBar(),
+          onPointerSignal: (_) => _markSplitPdfBar(),
           // ── ページ移動時のオーバーレイは廃止 ──
           // ユーザー要望: 「今の右上にちょっとだけ出るページ番号表記は
           //   要らない」。 代わりに上部ヘッダーの入力欄に現在ページを
@@ -71360,11 +71426,23 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 項目を分けてまとめる)。
   /// 区切りの見出しに付ける目印。 2 列に並べ直す時に「どこで区切るか」 を
   /// 見分けるのに使う (= ユーザー要望: 動作設定を 2 列にして一目で見たい)。
-  static const ValueKey<String> _kBehaviorSectionKey =
-      ValueKey<String>('behaviorSection');
+  /// 見出しの目印。 **中の見出しごとに違う値**にする。
+  ///
+  /// 前は全部の見出しが同じ鍵だったので、 同じ親に同じ鍵の子が 2 つ並び、
+  /// デバッグ実行だと「Duplicate keys found」 で動作設定が開けなかった
+  /// (点検で判明)。 訳した文字ではなく**翻訳の鍵**で区別する
+  /// (訳が同じ言語でもぶつからないように)。
+  static const String _kBehaviorSectionKeyPrefix = 'behaviorSection:';
 
-  Widget _behaviorSectionLabel(String text) => KeyedSubtree(
-        key: _kBehaviorSectionKey,
+  /// [w] が見出しか (= 2 列に組み直す時の区切り)。
+  static bool _isBehaviorSectionLabel(Widget w) {
+    final k = w.key;
+    return k is ValueKey<String> &&
+        k.value.startsWith(_kBehaviorSectionKeyPrefix);
+  }
+
+  Widget _behaviorSectionLabel(String keyId, String text) => KeyedSubtree(
+        key: ValueKey<String>('$_kBehaviorSectionKeyPrefix$keyId'),
         child: Padding(
         padding: const EdgeInsets.fromLTRB(4, 14, 4, 6),
         child: Row(children: [
@@ -71415,7 +71493,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
 
     for (final w in flat) {
-      if (w.key == _kBehaviorSectionKey) {
+      if (_isBehaviorSectionLabel(w)) {
         flush();
         out.add(w);
       } else {
@@ -71434,7 +71512,8 @@ class _MindMapScreenState extends State<MindMapScreen>
   }) {
     return [
             // ── 切り替え (ON/OFF) の項目 ── (= ユーザー要望: ボタン式と分ける)
-            _behaviorSectionLabel(provider.t('settings.groupToggles')),
+            _behaviorSectionLabel(
+                'toggles', provider.t('settings.groupToggles')),
 
             // ── トグル: 配置候補 ──
             _settingsToggleTile(
@@ -71549,29 +71628,6 @@ class _MindMapScreenState extends State<MindMapScreen>
             ),
 
 
-            // ── トグル: 高リフレッシュレート (= ユーザー要望:
-            //    120Hz / 144Hz 等にも対応) ──
-            // Android のみ効く (Windows は OS 側が
-            //   モニターのレートで描画するため不要)。
-            if (!kIsWeb && Platform.isAndroid)
-              _settingsToggleTile(
-                icon: provider.highRefreshRate
-                    ? Icons.speed_rounded
-                    : Icons.speed_outlined,
-                color: provider.highRefreshRate
-                    ? const Color(0xFF7FD8A0)
-                    : Colors.white54,
-                title: provider.t('refresh.setting'),
-                helpKey: 'help.highRefreshRate',
-                value: provider.highRefreshRate,
-                onChanged: (v) async {
-                  await provider
-                      .setHighRefreshRate(v);
-                  await applyPreferredDisplayMode(
-                      high: v);
-                  setS(() {});
-                },
-              ),
 
 
             // ── トグル: 全体図 (ミニマップ) を出さない (= ユーザー要望) ──
@@ -71656,96 +71712,6 @@ class _MindMapScreenState extends State<MindMapScreen>
                 },
               ),
 
-            // ── マウスカーソルの大きさ (Windows のみ。 = ユーザー要望:
-            //    アプリから設定 + サブモニターでは別の大きさに) ──
-            if (!kIsWeb && Platform.isWindows)
-              InkWell(
-                onTap: () => _showCursorSizeDialog(provider),
-                borderRadius: BorderRadius.circular(10),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 12, vertical: 12),
-                  margin: const EdgeInsets.symmetric(vertical: 2),
-                  decoration: BoxDecoration(
-                    color: Color.alphaBlend(
-                        provider.headerColor.withValues(alpha: 0.22),
-                        Colors.white.withValues(alpha: 0.04)),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(
-                        color: provider.headerColor.withValues(alpha: 0.28)),
-                  ),
-                  child: Row(children: [
-                    const Icon(Icons.mouse_rounded,
-                        color: Color(0xFF4FC3F7), size: 20),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(provider.t('cursorSize.title'),
-                          style: const TextStyle(
-                              color: Colors.white, fontSize: 14)),
-                    ),
-                    _settingHelpButton(
-                        provider.t('cursorSize.title'), 'cursorSize.desc'),
-                    const Icon(Icons.chevron_right_rounded,
-                        color: Colors.white38, size: 20),
-                  ]),
-                ),
-              ),
-
-            // ── 音声の出力先 (Windows のみ。 = ユーザー要望: サブモニター
-            //    のスピーカーから出すかをアプリから選べるように) ──
-            if (!kIsWeb && Platform.isWindows)
-              InkWell(
-                onTap: () => _showAudioOutputDialog(provider),
-                borderRadius: BorderRadius.circular(10),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 12, vertical: 12),
-                  margin: const EdgeInsets.symmetric(vertical: 2),
-                  decoration: BoxDecoration(
-                    color: Color.alphaBlend(
-                        provider.headerColor.withValues(alpha: 0.22),
-                        Colors.white.withValues(alpha: 0.04)),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(
-                        color: provider.headerColor.withValues(alpha: 0.28)),
-                  ),
-                  child: Row(children: [
-                    const Icon(Icons.volume_up_rounded,
-                        color: Color(0xFF9CCC65), size: 20),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(provider.t('audioOut.title'),
-                          style: const TextStyle(
-                              color: Colors.white, fontSize: 14)),
-                    ),
-                    _settingHelpButton(
-                        provider.t('audioOut.title'), 'audioOut.desc'),
-                    const Icon(Icons.chevron_right_rounded,
-                        color: Colors.white38, size: 20),
-                  ]),
-                ),
-              ),
-
-            // ── トグル: 画面の両端をつないでマウスを回り込ませる
-            //    (Windows のみ。 = ユーザー要望: メインの右とサブの左しか
-            //     繋がっていなくて使いにくい) ──
-            if (!kIsWeb && Platform.isWindows)
-              _settingsToggleTile(
-                icon: provider.cursorWrapEnabled
-                    ? Icons.swap_horiz_rounded
-                    : Icons.compare_arrows_rounded,
-                color: provider.cursorWrapEnabled
-                    ? const Color(0xFF4FC3F7)
-                    : Colors.white54,
-                title: provider.t('cursorWrap.title'),
-                helpKey: 'cursorWrap.desc',
-                value: provider.cursorWrapEnabled,
-                onChanged: (v) {
-                  provider.setCursorWrapEnabled(v);
-                  CursorWrap.instance.apply(v);
-                  setS(() {});
-                },
-              ),
 
             // ── トグル: 視聴済み自動削除 ──
             _settingsToggleTile(
@@ -71772,7 +71738,8 @@ class _MindMapScreenState extends State<MindMapScreen>
 
 
             // ── 押して設定するボタン式の項目 ── (= ユーザー要望)
-            _behaviorSectionLabel(provider.t('settings.groupDialogs')),
+            _behaviorSectionLabel(
+                'dialogs', provider.t('settings.groupDialogs')),
             // ── どこで開くか (= ユーザー要望: 今の画面で開くか、 新しく
             //    アプリを立ち上げて開くかを選べるように) ──
             //    デスクトップ専用 (モバイルは常に今の画面)。
@@ -71948,6 +71915,209 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 「動作設定」 を開く (= ユーザー要望: 設定項目の中ではなくヘッダー右上の
   /// 画面分割ボタンの所から開く)。 デスクトップは専用ダイアログ、 モバイルは
   /// 従来どおり設定シートの該当セクションを展開して表示する。 Ctrl+J も同じ。
+  /// ディスプレイ設定の中身 (= ユーザー要望: サブモニターの端・音声の
+  /// 出力先・マウスカーソルの大きさなどは、 動作設定ではなく
+  /// 「ディスプレイ設定」 から触れるように)。
+  ///
+  /// 動作設定と同じ部品をそのまま使うので、 見た目と挙動は変わらない。
+  /// 中身が 1 つも無い環境 (Windows でも Android でもない) では、
+  /// 呼ぶ側が項目ごと出さない ([hasDisplaySettings])。
+  List<Widget> _displaySettingsChildren({
+    required MindMapProvider provider,
+    required BuildContext ctx,
+    required BuildContext sheetCtx,
+    required void Function(VoidCallback) setS,
+  }) {
+    return [
+            // ── トグル: 高リフレッシュレート (= ユーザー要望:
+            //    120Hz / 144Hz 等にも対応) ──
+            // Android のみ効く (Windows は OS 側が
+            //   モニターのレートで描画するため不要)。
+            if (!kIsWeb && Platform.isAndroid)
+              _settingsToggleTile(
+                icon: provider.highRefreshRate
+                    ? Icons.speed_rounded
+                    : Icons.speed_outlined,
+                color: provider.highRefreshRate
+                    ? const Color(0xFF7FD8A0)
+                    : Colors.white54,
+                title: provider.t('refresh.setting'),
+                helpKey: 'help.highRefreshRate',
+                value: provider.highRefreshRate,
+                onChanged: (v) async {
+                  await provider
+                      .setHighRefreshRate(v);
+                  await applyPreferredDisplayMode(
+                      high: v);
+                  setS(() {});
+                },
+              ),
+
+            // ── マウスカーソルの大きさ (Windows のみ。 = ユーザー要望:
+            //    アプリから設定 + サブモニターでは別の大きさに) ──
+            if (!kIsWeb && Platform.isWindows)
+              InkWell(
+                onTap: () => _showCursorSizeDialog(provider),
+                borderRadius: BorderRadius.circular(10),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 12),
+                  margin: const EdgeInsets.symmetric(vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Color.alphaBlend(
+                        provider.headerColor.withValues(alpha: 0.22),
+                        Colors.white.withValues(alpha: 0.04)),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                        color: provider.headerColor.withValues(alpha: 0.28)),
+                  ),
+                  child: Row(children: [
+                    const Icon(Icons.mouse_rounded,
+                        color: Color(0xFF4FC3F7), size: 20),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(provider.t('cursorSize.title'),
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 14)),
+                    ),
+                    _settingHelpButton(
+                        provider.t('cursorSize.title'), 'cursorSize.desc'),
+                    const Icon(Icons.chevron_right_rounded,
+                        color: Colors.white38, size: 20),
+                  ]),
+                ),
+              ),
+
+            // ── 音声の出力先 (Windows のみ。 = ユーザー要望: サブモニター
+            //    のスピーカーから出すかをアプリから選べるように) ──
+            if (!kIsWeb && Platform.isWindows)
+              InkWell(
+                onTap: () => _showAudioOutputDialog(provider),
+                borderRadius: BorderRadius.circular(10),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 12),
+                  margin: const EdgeInsets.symmetric(vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Color.alphaBlend(
+                        provider.headerColor.withValues(alpha: 0.22),
+                        Colors.white.withValues(alpha: 0.04)),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                        color: provider.headerColor.withValues(alpha: 0.28)),
+                  ),
+                  child: Row(children: [
+                    const Icon(Icons.volume_up_rounded,
+                        color: Color(0xFF9CCC65), size: 20),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(provider.t('audioOut.title'),
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 14)),
+                    ),
+                    _settingHelpButton(
+                        provider.t('audioOut.title'), 'audioOut.desc'),
+                    const Icon(Icons.chevron_right_rounded,
+                        color: Colors.white38, size: 20),
+                  ]),
+                ),
+              ),
+
+            // ── トグル: 画面の両端をつないでマウスを回り込ませる
+            //    (Windows のみ。 = ユーザー要望: メインの右とサブの左しか
+            //     繋がっていなくて使いにくい) ──
+            if (!kIsWeb && Platform.isWindows)
+              _settingsToggleTile(
+                icon: provider.cursorWrapEnabled
+                    ? Icons.swap_horiz_rounded
+                    : Icons.compare_arrows_rounded,
+                color: provider.cursorWrapEnabled
+                    ? const Color(0xFF4FC3F7)
+                    : Colors.white54,
+                title: provider.t('cursorWrap.title'),
+                helpKey: 'cursorWrap.desc',
+                value: provider.cursorWrapEnabled,
+                onChanged: (v) {
+                  provider.setCursorWrapEnabled(v);
+                  CursorWrap.instance.apply(v);
+                  setS(() {});
+                },
+              ),
+    ];
+  }
+
+  /// この端末に「ディスプレイ設定」 に出す物があるか。
+  /// 空の項目を出さないための判定 (= 中身は全部 OS ごとの機能なので、
+  /// 対象外の OS では項目そのものを出さない)。
+  bool get _hasDisplaySettings =>
+      !kIsWeb && (Platform.isWindows || Platform.isAndroid);
+
+  /// ディスプレイ設定のダイアログ (デスクトップ)。 動作設定と同じ作り。
+  void _openDisplaySettings() {
+    if (_displayDialogOpen) return;
+    _displayDialogOpen = true;
+    final screenCtx = context;
+    final provider = context.read<MindMapProvider>();
+    showDialog<void>(
+      context: context,
+      barrierColor: Colors.black54,
+      builder: (dctx) => StatefulBuilder(
+        builder: (bctx, setS) => Dialog(
+          backgroundColor: const Color(0xFF12121F),
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: BorderSide(color: Colors.white.withValues(alpha: 0.10))),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: math.min(720.0, MediaQuery.of(bctx).size.width - 64),
+              maxHeight: MediaQuery.of(bctx).size.height * 0.86,
+            ),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(18, 16, 8, 8),
+                child: Row(children: [
+                  const Icon(Icons.desktop_windows_rounded,
+                      color: Color(0xFF4FC3F7), size: 20),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(provider.t('menu.displaySettings'),
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700)),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close_rounded,
+                        color: Colors.white54, size: 20),
+                    onPressed: () => Navigator.of(dctx).pop(),
+                  ),
+                ]),
+              ),
+              const Divider(color: Colors.white12, height: 1),
+              Flexible(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(14, 10, 14, 16),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: _displaySettingsChildren(
+                      provider: provider,
+                      ctx: screenCtx,
+                      sheetCtx: dctx,
+                      setS: setS,
+                    ),
+                  ),
+                ),
+              ),
+            ]),
+          ),
+        ),
+      ),
+    ).whenComplete(() => _displayDialogOpen = false);
+  }
+
+  /// 二重に開かないための札。
+  bool _displayDialogOpen = false;
+
   void _openBehaviorSettings() {
     if (!mounted) return;
     if (!_isDesktop) {
@@ -95372,6 +95542,11 @@ class _SplitPdfHorizontalScrollBar extends StatefulWidget {
   /// 図の上に重ねて出すか (全画面のビューア用)。 true なら角を丸めて
   /// 半透明にし、 下に敷く時 (分割パネル) は今までどおりの帯にする。
   final bool floating;
+
+  /// いま出してよいか (= ユーザー要望: 左右のスクロールの棒は、 カーソルが
+  /// ホバーになった時だけ出す)。 縦のつまみと同じ合図で動かす。
+  /// ホバーの無いモバイルでは常に true を渡す。
+  final bool visible;
   const _SplitPdfHorizontalScrollBar({
     required this.controller,
     required this.panelWidth,
@@ -95379,6 +95554,7 @@ class _SplitPdfHorizontalScrollBar extends StatefulWidget {
     this.scrollDirection = sf_pdf.PdfScrollDirection.vertical,
     this.layoutMode = sf_pdf.PdfPageLayoutMode.continuous,
     this.floating = false,
+    this.visible = true,
   });
   @override
   State<_SplitPdfHorizontalScrollBar> createState() =>
@@ -95451,8 +95627,12 @@ class _SplitPdfHorizontalScrollBarState
 
   @override
   Widget build(BuildContext context) {
-    // zoom 1.0 以下 (= はみ出してない) ときはバー自体を表示しない
-    if (_zoomLevel <= 1.01 || !_usable || widget.panelWidth <= 0) {
+    // zoom 1.0 以下 (= はみ出してない) ときはバー自体を表示しない。
+    // カーソルがそこに居ない時も出さない (= ユーザー要望)。
+    if (_zoomLevel <= 1.01 ||
+        !_usable ||
+        widget.panelWidth <= 0 ||
+        !widget.visible) {
       return const SizedBox.shrink();
     }
     final maxX = _maxX;
@@ -180511,6 +180691,35 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
     });
   }
 
+  /// PDF の**横**の棒を今出しているか (= ユーザー要望: 左右のスクロールの
+  /// 棒も、 カーソルがホバーになった時だけ出す)。 縦のつまみと同じ考え方で、
+  /// 下端の近くにカーソルが来た時だけ出す。
+  bool _pdfHBarVisible = false;
+  Timer? _pdfHBarTimer;
+
+  void _markPdfHBar({bool hold = false}) {
+    if (!_pdfHBarVisible && mounted) {
+      setState(() => _pdfHBarVisible = true);
+    }
+    _pdfHBarTimer?.cancel();
+    if (hold) {
+      _pdfHBarTimer = null;
+      return; // ホバー中は消さない
+    }
+    _pdfHBarTimer = Timer(const Duration(milliseconds: 1200), () {
+      if (!mounted) return;
+      setState(() => _pdfHBarVisible = false);
+    });
+  }
+
+  void _releasePdfHBar() {
+    _pdfHBarTimer?.cancel();
+    _pdfHBarTimer = Timer(const Duration(milliseconds: 600), () {
+      if (!mounted) return;
+      setState(() => _pdfHBarVisible = false);
+    });
+  }
+
   void _releasePdfBar() {
     _pdfBarTimer?.cancel();
     _pdfBarTimer = Timer(const Duration(milliseconds: 600), () {
@@ -180903,7 +181112,10 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
   int _pdfTotalPages = 0;
 
   /// 左右キーの挙動: false = ページ移動 (既定) / true = 表示領域を横に移動 (パン)。
-  /// PDF 右クリックメニューから切り替える (ユーザー要望)。
+  ///
+  /// ★ 拡大している (倍率 > 1) 間は、 この旗が false でも自動でパンになる
+  ///   (= ユーザー要望: PDF を拡大した後に左右のキーで中をスクロールしたい)。
+  ///   等倍の時は今までどおりページ送り。
   bool _pdfArrowPanMode = false;
 
   /// 現在の PDF ズームレベル (全画面)。 拡大時に表示幅を広げて横スクロールを
@@ -181630,6 +181842,41 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
   /// ★ フリーズ対策 (= ユーザー報告): PDF(SfPdfViewer) と AI(WebView) を同時に
   ///   生成すると固まりやすいので、 AI は onDocumentLoaded 後に遅延して開く。
   bool _pendingAiAutoOpen = false;
+
+  // ── AI 欄 / メモ欄を「前に開いていたか」 で出し分ける (= ユーザー要望:
+  //    「AI やメモ欄は PDF を初回起動させた時のみ表示して、 それ以降は最後に
+  //    開かれている時だけ出てくるように」) ──
+  //    まだ一度も控えていない = 初回。 その時だけ今までどおり両方開く。
+  static const String _kPrefAiPanelOpen = 'pdfViewerAiPanelOpen_v1';
+  static const String _kPrefMemoPanelOpen = 'pdfViewerMemoPanelOpen_v1';
+
+  /// 前回閉じた時の状態。 null = まだ一度も開いた事がない (= 初回)。
+  bool? _prefAiPanelOpen;
+  bool? _prefMemoPanelOpen;
+
+  Future<void> _loadPanelOpenPrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (!mounted) return;
+      _prefAiPanelOpen = prefs.getBool(_kPrefAiPanelOpen);
+      _prefMemoPanelOpen = prefs.getBool(_kPrefMemoPanelOpen);
+      // 初回でなく、 前は閉じていたなら、 予約した自動オープンを取り消す。
+      if (_prefAiPanelOpen == false && _prefMemoPanelOpen == false) {
+        _pendingAiAutoOpen = false;
+      }
+    } catch (_) {}
+  }
+
+  /// 今の開閉を控える。 次に開いた時はこの通りに出す。
+  void _savePanelOpenPrefs() {
+    unawaited(() async {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool(_kPrefAiPanelOpen, _aiPanelOpen);
+        await prefs.setBool(_kPrefMemoPanelOpen, _memoPanelOpen);
+      } catch (_) {}
+    }());
+  }
 
   /// 開いている AI の URL (= ChatGPT 等)。
   String _aiPanelUrl = '';
@@ -183016,6 +183263,10 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
       _panelSlotsReserved = true;
     }
     _pdfFocusNode = FocusNode(debugLabel: 'pdf_viewer_dialog');
+    // 前回の AI 欄 / メモ欄の開閉を読み込む (= ユーザー要望: 初回だけ出して、
+    //   それ以降は最後に開かれていた時だけ)。 読み込みは自動オープンが走る
+    //   onDocumentLoaded より十分早く終わる。
+    unawaited(_loadPanelOpenPrefs());
     // ignore: discarded_futures
     _loadPdfPanMode();
     // メモ/AI パネルのトグルを WebView・PDF どちらでも効かせる
@@ -183192,6 +183443,10 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
   @override
   void dispose() {
     _pdfBarTimer?.cancel();
+    _pdfHBarTimer?.cancel();
+    // 今の AI 欄 / メモ欄の開閉を控える (= ユーザー要望: 次に開いた時は
+    //   最後に開かれていた通りに出す)。 PDF の時だけ覚える。
+    if (widget.isPdf && !widget.compactHost) _savePanelOpenPrefs();
     // 開いていた PDF の控えを外す (= 他の処理が触ってよくなる)。
     final op = _pdfFilePath;
     if (op != null) kOpenPdfPaths.remove(op);
@@ -183285,6 +183540,7 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
       if (isCtrlForPanel && event.logicalKey == LogicalKeyboardKey.keyM) {
         _suppressPdfPageChangeBriefly();
         setState(() => _memoPanelOpen = !_memoPanelOpen);
+        _savePanelOpenPrefs();
         return KeyEventResult.handled;
       }
       // AI チャット欄: Ctrl+I または F4 (= 同上、 ずらして F4 に)
@@ -183439,15 +183695,20 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
       return KeyEventResult.handled;
     }
     // ←/→: 既定では syncfusion 組み込みの 1 ページ送り (ignored で委譲)。
-    // パンモード (_pdfArrowPanMode) の時はページ送りせず、 表示領域を横方向に
-    // スクロールする (ユーザー要望: 拡大時に左右キーで横を見たい)。
+    // ★ 拡大している間は、 ページ送りではなく表示領域を横に動かす
+    //   (= ユーザー要望: PDF を拡大した後に左右のキーで中をスクロールしたい)。
+    //   等倍に戻せばまたページ送りになるので、 今までの操作は変わらない。
     if (key == LogicalKeyboardKey.arrowRight ||
         key == LogicalKeyboardKey.arrowLeft) {
       if (_spreadPageMode || _spreadFitPageMode) {
         _jumpSpreadPages(key == LogicalKeyboardKey.arrowRight ? 2 : -2);
         return KeyEventResult.handled;
       }
-      if (_pdfArrowPanMode) {
+      // 横めくり / 1 ページ表示では xOffset がページ送りに読み替えられる
+      //   ので、 そこでは今までどおりビューアに任せる。
+      final canPan = !_fitPageMode &&
+          !context.read<MindMapProvider>().pdfScrollHorizontal;
+      if (_pdfArrowPanMode || (canPan && _pdfZoomLevel > 1.01)) {
         try {
           final dir = key == LogicalKeyboardKey.arrowRight ? 1 : -1;
           final viewportW = MediaQuery.of(context).size.width;
@@ -183457,6 +183718,8 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
             xOffset: cur.dx + step * dir,
             yOffset: cur.dy,
           );
+          // 動かしたら横の棒も出す (= どこを見ているか分かるように)。
+          _markPdfHBar();
         } catch (_) {}
         return KeyEventResult.handled;
       }
@@ -183532,6 +183795,7 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
       if (event is KeyDownEvent && _nodeId != null) {
         _suppressPdfPageChangeBriefly();
         setState(() => _memoPanelOpen = !_memoPanelOpen);
+        _savePanelOpenPrefs();
         return KeyEventResult.handled;
       }
       return KeyEventResult.ignored;
@@ -183624,6 +183888,7 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
       if (isCtrlForPanel && event.logicalKey == LogicalKeyboardKey.keyM) {
         _suppressPdfPageChangeBriefly();
         setState(() => _memoPanelOpen = !_memoPanelOpen);
+        _savePanelOpenPrefs();
         return true;
       }
       if ((isCtrlForPanel && event.logicalKey == LogicalKeyboardKey.keyI) ||
@@ -185413,6 +185678,11 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                               // スクロール中だけ縦つまみを出す (= ユーザー
                               //   要望: 常時表示が気になる)。
                               _markPdfBar();
+                              // 横に振った時は横の棒も出す。
+                              if (e is PointerScrollEvent &&
+                                  e.scrollDelta.dx.abs() > 0.1) {
+                                _markPdfHBar();
+                              }
                               if (e is PointerScaleEvent) {
                                 _pdfPinchStart();
                                 _pdfPinchUpdate(e.scale);
@@ -185424,13 +185694,23 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                             //    (= ユーザー要望: スクロールバー付近に
                             //    ホバーした時)。 ──
                             onPointerHover: (e) {
-                              final w = context.size?.width;
-                              if (w == null) return;
+                              final sz = context.size;
+                              if (sz == null) return;
+                              final w = sz.width;
+                              final h = sz.height;
                               if (e.localPosition.dx > w - 48) {
                                 _markPdfBar(hold: true);
                               } else if (_pdfBarVisible &&
                                   _pdfBarTimer == null) {
                                 _releasePdfBar();
+                              }
+                              // ── 下端の近くなら横の棒を出す (= ユーザー
+                              //    要望: 左右の棒もホバーの時だけ) ──
+                              if (e.localPosition.dy > h - 56) {
+                                _markPdfHBar(hold: true);
+                              } else if (_pdfHBarVisible &&
+                                  _pdfHBarTimer == null) {
+                                _releasePdfHBar();
                               }
                             },
                             child: sf_pdf.SfPdfViewer.file(
@@ -185817,9 +186097,21 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                                         //   なので、 読み込み後に両方まとめて出す)。
                                         //   「プログラムから開く」 でもメモ欄を出す
                                         //   (= ユーザー要望)。
-                                        if (_nodeId != null ||
-                                            widget.onEnsureNode != null) {
+                                        // ★ ただし前に閉じていた欄は開かない
+                                        //   (= ユーザー要望: 初回だけ出して、 それ以降は
+                                        //    最後に開かれていた時だけ)。 控えが無い =
+                                        //    初回なので、 その時は今までどおり開く。
+                                        final wantMemo =
+                                            _prefMemoPanelOpen ?? true;
+                                        final wantAi = _prefAiPanelOpen ?? true;
+                                        if (wantMemo &&
+                                            (_nodeId != null ||
+                                                widget.onEnsureNode != null)) {
                                           setState(() => _memoPanelOpen = true);
+                                        }
+                                        if (!wantAi) {
+                                          _savePanelOpenPrefs();
+                                          return;
                                         }
                                         _openAiPanel(context
                                             .read<MindMapProvider>()
@@ -185886,6 +186178,8 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                       panelWidth: barConstraints.maxWidth,
                       accent: const Color(0xFF4FC3F7),
                       floating: true,
+                      // カーソルが下端に来た時だけ出す (= ユーザー要望)。
+                      visible: _pdfHBarVisible,
                       scrollDirection: (_fitPageMode ||
                               _spreadPageMode ||
                               _spreadFitPageMode ||
@@ -186583,6 +186877,7 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                               if (!_memoPanelOpen) await _ensureNode();
                               if (!mounted) return;
                               setState(() => _memoPanelOpen = !_memoPanelOpen);
+                              _savePanelOpenPrefs();
                             },
                           ),
                         // ── 生成 AI チャット欄を開く / 閉じる (トグル) ──

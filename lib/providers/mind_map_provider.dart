@@ -33383,6 +33383,20 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Restante: {n}/10 (reinicia a cada 3 h)',
       'ru': 'Осталось: {n}/10 (сброс каждые 3 ч)',
     },
+    // ディスプレイ設定 (= ユーザー要望: サブモニターの端・音声の出力先・
+    //   マウスカーソルの大きさなどは動作設定ではなくここから)。
+    'menu.displaySettings': {
+      'ja': 'ディスプレイ設定',
+      'en': 'Display settings',
+      'zh': '显示设置',
+      'ko': '디스플레이 설정',
+      'es': 'Ajustes de pantalla',
+      'fr': "Paramètres d'affichage",
+      'de': 'Anzeigeeinstellungen',
+      'pt': 'Configurações de exibição',
+      'ru': 'Настройки экрана',
+      'fa': 'تنظیمات نمایش',
+    },
     'menu.behaviorSettings': {
       'ja': '動作設定',
       'en': 'Behavior settings',
