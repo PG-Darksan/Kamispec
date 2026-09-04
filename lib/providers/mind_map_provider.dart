@@ -33669,12 +33669,14 @@ class MindMapProvider extends ChangeNotifier {
       'fa': 'مقصد این لبه',
     },
     'cursorWrap.gridHint': {
-      'ja': '空いている枠を押すとモニターを足せます (右へ続けて並べる事も'
-          'できます)。 隣り合った辺はそのまま行き来できるので設定は要りません。'
-          ' 繋がっていない辺を押すと、 そこから抜けた時の行き先を選べます。',
-      'en': 'Tap an empty slot to add a monitor (you can chain them to the '
-          'right). Adjacent edges already connect, so they need no setting. '
-          'Tap an unconnected edge to choose where it leads.',
+      'ja': '空いている枠を押すとモニターを足せます。 隣り合った辺はそのまま'
+          '行き来できるので設定は要りません。 繋がっていない辺を押すと、'
+          ' そこから抜けた時の行き先を選べます。 置いたモニターを選んで'
+          ' Delete か BackSpace で外せます。',
+      'en': 'Tap an empty slot to add a monitor. Adjacent edges already '
+          'connect, so they need no setting. Tap an unconnected edge to '
+          'choose where it leads. Select a monitor and press Delete or '
+          'Backspace to remove it.',
       'zh': '点击空位可添加显示器（也可向右连续排列）。相邻的边本来就能通行，'
           '无需设置。点击未连接的边可选择其去向。',
       'ko': '빈 칸을 누르면 모니터를 추가합니다(오른쪽으로 계속 늘릴 수도 '

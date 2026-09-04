@@ -696,6 +696,10 @@ class CursorWrap {
   /// 設定を渡す (= ユーザー要望: どの方向から行き来するかを選べるように)。
   void applyEdgeTargets(Map<String, int> v) {
     _edgeTargets = Map<String, int>.from(v);
+    // ★ 見回りを掛け直す。 これを忘れると、 設定した直後は何も起きず
+    //   「アプリを開き直すまで効かない」 状態になる (= 点検で判明)。
+    //   「両サイドからアクセス」 のトグルを消した今、 ここが唯一の入り口。
+    _syncTimer();
   }
 
   /// [x],[y] にいちばん近いモニターの四角 (left, top, right, bottom)。

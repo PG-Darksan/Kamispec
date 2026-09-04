@@ -39416,6 +39416,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                         InkWell(
                           borderRadius: BorderRadius.circular(4),
                           onTap: () async {
+                            while (colors.length <= i) {
+                              colors.add(null);
+                            }
                             final picked = await _pickChartColor(
                                 dctx,
                                 colors[i] ??
@@ -39431,7 +39434,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                             height: 18,
                             margin: const EdgeInsets.only(right: 8),
                             decoration: BoxDecoration(
-                              color: colors[i] ??
+                              color: (i < colors.length ? colors[i] : null) ??
                                   kChartPalette[i % kChartPalette.length],
                               borderRadius: BorderRadius.circular(4),
                               border:
@@ -39481,6 +39484,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                               ? null
                               : () => setD(() {
                                     final r = rows.removeAt(i);
+                                    // 色の控えも同じ場所を抜く (= 番号が
+                                    //   ずれて別の行の色になってしまう)。
+                                    if (i < colors.length) {
+                                      colors.removeAt(i);
+                                    }
                                     r.label.dispose();
                                     r.value.dispose();
                                   }),
@@ -39495,6 +39503,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                           label: TextEditingController(),
                           value: TextEditingController(),
                         ));
+                        // ★ 色の控えも必ず一緒に増やす。 忘れると次の
+                        //   組み立てで colors[i] が範囲外になり、 画面が
+                        //   灰色の箱になる (= ユーザー報告: 項目を足すと
+                        //   白飛びした画面が出る)。
+                        colors.add(null);
                       }),
                       icon: const Icon(Icons.add_rounded,
                           size: 16, color: Color(0xFF43B97F)),
@@ -72008,8 +72021,9 @@ class _MindMapScreenState extends State<MindMapScreen>
 
     return [
       // ── モニターの繋がり方 (いちばん上。 = ユーザー要望) ──
+      // 見出しは出さない (= ユーザー要望: 上に「行き来する方向」 は書かなくてよい)。
       if (!kIsWeb && Platform.isWindows) ...[
-        sectionLabel(provider.t('cursorWrap.edgeTitle')),
+        const SizedBox(height: 6),
         _MonitorEdgeSettings(provider: provider),
         // ── 「サブモニターに両サイドからアクセス」 のトグルは削除 ──
         //    = ユーザー要望「上の図から設定すればいいから項目としては削除」。
@@ -95877,29 +95891,92 @@ class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
       Map<String, int>.from(widget.provider.cursorWrapEdges);
   List<MonitorInfo> _mons = const [];
 
+  /// いま選ばれているモニターの番号 (null = 選んでいない)。
+  int? _selected;
+
+  final FocusNode _gridFocus = FocusNode(debugLabel: 'monitor_grid');
+
   @override
   void initState() {
     super.initState();
     _mons = CursorWrap.listMonitors();
   }
 
+  @override
+  void dispose() {
+    _gridFocus.dispose();
+    super.dispose();
+  }
+
+  /// 置いたモニターを外す。 抜けた番号は詰める
+  /// (= ユーザー要望: 2 番が無いのに 3 番が在るのはおかしい)。
+  void _removeSelected() {
+    final n = _selected;
+    // 実際に繋がっているモニターは外せない (番号が listMonitors の範囲内)。
+    if (n == null || n < _mons.length) return;
+    String? key;
+    _placement.forEach((k, v) {
+      if (v == n) key = k;
+    });
+    if (key == null) return;
+    setState(() {
+      _placement.remove(key);
+      _edges.removeWhere((k, v) => v == n || k.startsWith('$n:'));
+      // ── 抜けた番号より大きい物を 1 つずつ詰める ──
+      final shifted = <String, int>{};
+      _placement.forEach((k, v) {
+        shifted[k] = v > n ? v - 1 : v;
+      });
+      _placement
+        ..clear()
+        ..addAll(shifted);
+      final newEdges = <String, int>{};
+      _edges.forEach((k, v) {
+        final i = k.indexOf(':');
+        final v2 = v > n ? v - 1 : v;
+        if (i <= 0) {
+          // 昔の控え (辺だけの鍵)。 消さずに行き先だけ詰める。
+          newEdges[k] = v2;
+          return;
+        }
+        final mon = int.tryParse(k.substring(0, i));
+        if (mon == null) {
+          newEdges[k] = v2;
+          return;
+        }
+        final m2 = mon > n ? mon - 1 : mon;
+        newEdges['$m2:${k.substring(i + 1)}'] = v2;
+      });
+      _edges
+        ..clear()
+        ..addAll(newEdges);
+      _selected = null;
+    });
+    _save();
+  }
+
   /// 実際に繋がっているモニターを升目に置く。 主モニターは (0,0)。
   /// 主から見た向き 1 歩ぶんに置く (斜めは近い方の軸へ寄せる)。
   Map<String, int> _cells() {
-    final out = <String, int>{'0,0': 0};
-    MonitorInfo? primary;
-    for (final m in _mons) {
-      if (m.primary) primary = m;
-    }
-    primary ??= _mons.isNotEmpty ? _mons.first : null;
-    if (primary != null) {
-      // 主モニターは番号 0 として扱いたいので、 並べ替えた番号を作る。
-      final order = <MonitorInfo>[primary];
-      for (final m in _mons) {
-        if (m != primary) order.add(m);
+    // ★ 番号は **CursorWrap.listMonitors() の並び順そのまま** を使う。
+    //   ここで主モニターを 0 番に付け替えると、 実際に回り込みを動かす側
+    //   (listMonitors は左上から順に並べる) と番号が食い違い、 主モニターが
+    //   いちばん左でない配置では設定がまるごと効かなくなる (= 点検で判明)。
+    final out = <String, int>{};
+    var primaryIndex = -1;
+    for (var i = 0; i < _mons.length; i++) {
+      if (_mons[i].primary) {
+        primaryIndex = i;
+        break;
       }
-      for (var i = 1; i < order.length; i++) {
-        final m = order[i];
+    }
+    if (primaryIndex < 0 && _mons.isNotEmpty) primaryIndex = 0;
+    if (primaryIndex >= 0) {
+      final primary = _mons[primaryIndex];
+      out['0,0'] = primaryIndex;
+      for (var i = 0; i < _mons.length; i++) {
+        if (i == primaryIndex) continue;
+        final m = _mons[i];
         final dx = (m.left + m.right) / 2 - (primary.left + primary.right) / 2;
         final dy = (m.top + m.bottom) / 2 - (primary.top + primary.bottom) / 2;
         int x = 0, y = 0;
@@ -95918,6 +95995,9 @@ class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
         }
         out['$x,$y'] = i;
       }
+    } else {
+      // まだ 1 枚も拾えていない時は、 真ん中を 0 番として置く。
+      out['0,0'] = 0;
     }
     // 置く予定の分。
     for (final e in _placement.entries) {
@@ -96019,27 +96099,37 @@ class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
     final cells = _cells();
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Center(
-        child: _MonitorGridView(
-          cells: cells,
-          edges: _edges,
-          connectedCount: _mons.length,
-          onTapCell: (key) {
-            setState(() {
-              if (_placement.containsKey(key)) {
-                // 置いただけの物は外せる。 その辺の設定も片付ける。
-                final n = _placement.remove(key);
-                if (n != null) {
-                  _edges.removeWhere((k, v) =>
-                      v == n || k.startsWith('$n:'));
-                }
-              } else if (!cells.containsKey(key)) {
-                _placement[key] = _freeNumber(cells);
-              }
-            });
-            _save();
+        child: Focus(
+          focusNode: _gridFocus,
+          onKeyEvent: (node, e) {
+            if (e is! KeyDownEvent) return KeyEventResult.ignored;
+            if (e.logicalKey == LogicalKeyboardKey.delete ||
+                e.logicalKey == LogicalKeyboardKey.backspace) {
+              _removeSelected();
+              return KeyEventResult.handled;
+            }
+            return KeyEventResult.ignored;
           },
-          onTapEdge: (mon, edge, at) =>
-              unawaited(_pickEdgeTarget(mon, edge, cells, at)),
+          child: _MonitorGridView(
+            cells: cells,
+            edges: _edges,
+            connectedCount: _mons.length,
+            selected: _selected,
+            onSelect: (i) {
+              _gridFocus.requestFocus();
+              setState(() => _selected = _selected == i ? null : i);
+            },
+            onTapCell: (key) {
+              if (cells.containsKey(key)) return;
+              setState(() {
+                _placement[key] = _freeNumber(cells);
+                _selected = null;
+              });
+              _save();
+            },
+            onTapEdge: (mon, edge, at) =>
+                unawaited(_pickEdgeTarget(mon, edge, cells, at)),
+          ),
         ),
       ),
       const SizedBox(height: 8),
@@ -96068,8 +96158,16 @@ class _MonitorGridView extends StatelessWidget {
   /// 実際に繋がっているモニターの枚数 (番号がこれ未満なら実物)。
   final int connectedCount;
 
-  /// 空いている升目を押した (置く / 外す)。
+  /// 空いている升目を押した (置く)。
   final void Function(String cellKey) onTapCell;
+
+  /// いま選ばれているモニターの番号 (null = 選んでいない)。
+  /// 選んで Delete / BackSpace を押すと外せる (= ユーザー要望: 押しただけで
+  /// 消えるのはよくない)。
+  final int? selected;
+
+  /// 置いたモニターを押した (選ぶ)。
+  final void Function(int monIndex) onSelect;
 
   /// 繋がっていない辺を押した (モニター番号, 辺, 押した場所)。
   /// 場所は、 選ぶ窓をその近くに出すために使う (= ユーザー要望)。
@@ -96081,6 +96179,8 @@ class _MonitorGridView extends StatelessWidget {
     required this.connectedCount,
     required this.onTapCell,
     required this.onTapEdge,
+    required this.selected,
+    required this.onSelect,
   });
 
   static (int, int)? parseCell(String key) {
@@ -96177,26 +96277,29 @@ class _MonitorGridView extends StatelessWidget {
       }
 
       final real = index < connectedCount;
+      // 真ん中の升目に居る物を「主」 として示す (番号 0 とは限らない)。
+      final isPrimaryCell = x == 0 && y == 0;
       final accent =
-          index == 0 ? const Color(0xFF4FC3F7) : const Color(0xFF9CCC65);
+          isPrimaryCell ? const Color(0xFF4FC3F7) : const Color(0xFF9CCC65);
       return SizedBox(
         width: 140,
         height: 92,
         child: Stack(children: [
           Positioned.fill(
             child: GestureDetector(
-              // 置いただけのモニターは、 押すと外せる。
-              onTap: (index == 0 || real)
-                  ? null
-                  : () => onTapCell(cellKey(x, y)),
+              // 押すと選ぶだけ (外すのは Delete / BackSpace)。
+              onTap: () => onSelect(index),
               child: Container(
                 margin: const EdgeInsets.all(18),
                 decoration: BoxDecoration(
-                  color: accent.withValues(alpha: real ? 0.22 : 0.08),
+                  color: accent.withValues(
+                      alpha: selected == index ? 0.34 : (real ? 0.22 : 0.08)),
                   borderRadius: BorderRadius.circular(4),
                   border: Border.all(
-                      color: real ? accent : accent.withValues(alpha: 0.45),
-                      width: real ? 2 : 1),
+                      color: selected == index
+                          ? Colors.white
+                          : (real ? accent : accent.withValues(alpha: 0.45)),
+                      width: selected == index ? 2.5 : (real ? 2 : 1)),
                 ),
                 child: Center(
                   child: Column(
@@ -96208,7 +96311,7 @@ class _MonitorGridView extends StatelessWidget {
                               fontSize: 18,
                               fontWeight: FontWeight.w700)),
                       Text(
-                          index == 0
+                          isPrimaryCell
                               ? provider.t('cursorWrap.primary')
                               : (real
                                   ? provider.t('cursorWrap.connected')
