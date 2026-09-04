@@ -3220,13 +3220,10 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
             toolBtn(PdfDrawTool.pen, Icons.gesture_rounded, 'pdfdraw.pen'),
             // 消しゴム / チェック (= ユーザー要望)。
             toolBtn(PdfDrawTool.eraser, null, 'pdfdraw.eraser'),
-            // ★ チェックの道具を選んでいる間は、 下の「印の種類」 の並びが
-            //   そのまま道具ボタンの役割も果たす (= ユーザー報告: チェック
-            //   マークが 2 つ出てダブって見える)。 選んでいない時だけ、
-            //   今の印のアイコンで 1 つだけ出す。
-            if (_tool != PdfDrawTool.check)
-              toolBtn(PdfDrawTool.check, _markIcon,
-                  _markLabelKey(_checkMark)),
+            // ★ 印の道具ボタンは**いつでも**出す (= ユーザー要望: 消しゴムと
+            //   印を行き来するとボタンの位置が動くのが気になる)。 出したり
+            //   引っ込めたりしていたので、 その度に右側が丸ごとずれていた。
+            toolBtn(PdfDrawTool.check, _markIcon, _markLabelKey(_checkMark)),
             // ── 置く印の種類 (= ユーザー要望: ✓ の所を ○ や × 連番 等に)。
             //    ★ 「チェックを置く」 を選んでいなくても種類を選べる
             //      (= ユーザー報告: 押さないと選択肢が出てこないのは変)。
@@ -3235,8 +3232,8 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
             // ★ 印のまとまりは区切り線ではさむ (= ユーザー要望: 「>」 が
             //   他の図形と紛らわしい)。
             sepLine(),
-            if (_tool == PdfDrawTool.check)
-              markBtn((id: _checkMark, icon: _markIcon)),
+            // 今の印は左の道具ボタンに出ているので、 ここには重ねて出さない
+            //   (= ユーザー要望: 同じ物が 2 つ並ばないように)。
             InkWell(
                 onTap: () => setState(() => _checksOpen = !_checksOpen),
                 borderRadius: BorderRadius.circular(6),
@@ -3256,8 +3253,8 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
               ),
             if (_checksOpen)
               for (final m in kCheckMarks)
-                if (!(_tool == PdfDrawTool.check && m.id == _checkMark))
-                  markBtn(m),
+                // 今の印は左の道具ボタンが受け持つので、 並びからは外す。
+                if (m.id != _checkMark) markBtn(m),
             // 連番を選んでいる時だけ、 開始番号と固定の操作を出す。
             if (_tool == PdfDrawTool.check && _checkMark == 'number')
               seqControls(),

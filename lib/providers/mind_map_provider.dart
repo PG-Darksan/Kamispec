@@ -19881,6 +19881,55 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'offen', 'pt': 'a fazer',
       'ru': 'предстоит',
     },
+    // 合計の確認 (= ユーザー要望: 合計が 100 を超えられるのはおかしいので、
+    //   おかしな値になりそうなら知らせる)。
+    'chart.total': {
+      'ja': '合計', 'en': 'Total',
+      'zh': '合计', 'ko': '합계',
+      'es': 'Total', 'fr': 'Total',
+      'de': 'Summe', 'pt': 'Total',
+      'ru': 'Итого',
+    },
+    'chart.totalNot100': {
+      'ja': '合計が 100 になっていません。 割合はこの合計から計算されます。',
+      'en': 'The values do not add up to 100. Percentages are computed from '
+          'this total.',
+      'zh': '合计不是 100。百分比按此合计计算。',
+      'ko': '합계가 100이 아닙니다. 비율은 이 합계를 기준으로 계산됩니다.',
+      'es': 'La suma no da 100. Los porcentajes se calculan sobre este total.',
+      'fr': 'La somme ne fait pas 100. Les pourcentages sont calculés sur ce '
+          'total.',
+      'de': 'Die Summe ergibt nicht 100. Prozente werden aus dieser Summe '
+          'berechnet.',
+      'pt': 'A soma não dá 100. As porcentagens usam este total.',
+      'ru': 'Сумма не равна 100. Проценты считаются от этой суммы.',
+    },
+    'chart.fitTo100': {
+      'ja': '100 に揃える', 'en': 'Scale to 100',
+      'zh': '调整为 100', 'ko': '100에 맞추기',
+      'es': 'Ajustar a 100', 'fr': 'Ramener à 100',
+      'de': 'Auf 100 bringen', 'pt': 'Ajustar para 100',
+      'ru': 'Привести к 100',
+    },
+    'chart.badValue': {
+      'ja': '数として読めない値、 または 0 より小さい値があります。 '
+          'そのままだとその項目は消えます。',
+      'en': 'Some values are not numbers, or are below zero. Those rows will '
+          'be dropped.',
+      'zh': '有无法识别为数字或小于 0 的值，这些项将被丢弃。',
+      'ko': '숫자로 읽을 수 없거나 0보다 작은 값이 있습니다. 그 항목은 '
+          '사라집니다.',
+      'es': 'Hay valores no numéricos o menores que cero. Esas filas se '
+          'descartarán.',
+      'fr': 'Certaines valeurs ne sont pas des nombres ou sont négatives. '
+          'Ces lignes seront supprimées.',
+      'de': 'Einige Werte sind keine Zahlen oder kleiner als null. Diese '
+          'Zeilen entfallen.',
+      'pt': 'Há valores não numéricos ou menores que zero. Essas linhas serão '
+          'descartadas.',
+      'ru': 'Некоторые значения не числа или меньше нуля. Такие строки будут '
+          'отброшены.',
+    },
     'chart.sliceColor': {
       'ja': '色を選ぶ', 'en': 'Pick a colour',
       'zh': '选择颜色', 'ko': '색 고르기',

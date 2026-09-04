@@ -77,6 +77,31 @@ class AudioOutput {
     }
   }
 
+  /// 音を 1 つ鳴らして、 今の出力先と大きさを耳で確かめられるようにする
+  /// (= ユーザー要望: 音声出力を変えた時は音が出るようにして欲しい)。
+  ///
+  /// Windows の「システム通知」 の音を非同期で鳴らすだけ。 出す先は既定の
+  /// 再生デバイスなので、 切り替えた直後に鳴らせば、 どこから出るかが
+  /// そのまま分かる。
+  static void playTestSound() {
+    if (!isSupported) return;
+    try {
+      final winmm = DynamicLibrary.open('winmm.dll');
+      final playSound = winmm.lookupFunction<
+          Int32 Function(Pointer<Utf16>, IntPtr, Uint32),
+          int Function(Pointer<Utf16>, int, int)>('PlaySoundW');
+      final name = 'SystemAsterisk'.toNativeUtf16();
+      try {
+        // SND_ALIAS (0x00010000) | SND_ASYNC (0x1) | SND_NODEFAULT (0x2)
+        playSound(name, 0, 0x00010000 | 0x1 | 0x2);
+      } finally {
+        calloc.free(name);
+      }
+    } catch (e) {
+      debugPrint('確認の音を鳴らせませんでした: $e');
+    }
+  }
+
   /// 消音の入り切り。 読めなければ null。
   static Future<bool?> getMuted() async {
     if (!isSupported) return null;

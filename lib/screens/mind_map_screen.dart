@@ -39461,6 +39461,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                           flex: 2,
                           child: TextField(
                             controller: rows[i].value,
+                            // 打ち込むたびに合計を出し直す (= ユーザー要望)。
+                            onChanged: (_) => setD(() {}),
                             keyboardType:
                                 const TextInputType.numberWithOptions(
                                     decimal: true),
@@ -39495,6 +39497,84 @@ class _MindMapScreenState extends State<MindMapScreen>
                         ),
                       ]),
                     ),
+                  // ── 合計の確認 (= ユーザー要望: 合計が 100 を超えられる
+                  //    のはおかしいので、 おかしくなりそうなら知らせる) ──
+                  //    円グラフの割合は合計から出すので、 100 でなくても
+                  //    描けはする。 だから止めはせず、 今の合計を見せて
+                  //    100 でなければ添え書きを出す。
+                  Builder(builder: (_) {
+                    var total = 0.0;
+                    var bad = false;
+                    for (final r in rows) {
+                      final t = r.value.text.trim();
+                      if (t.isEmpty) continue;
+                      final n = double.tryParse(t);
+                      if (n == null || n < 0 || !n.isFinite) {
+                        bad = true;
+                        continue;
+                      }
+                      total += n;
+                    }
+                    final off = (total - 100).abs() > 0.001;
+                    final totalText = total == total.roundToDouble()
+                        ? total.round().toString()
+                        : total.toStringAsFixed(1);
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const SizedBox(height: 6),
+                        Row(children: [
+                          Text('${provider.t('chart.total')}: $totalText',
+                              style: TextStyle(
+                                  color: off
+                                      ? const Color(0xFFFFB347)
+                                      : const Color(0xFF43B97F),
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700)),
+                          const Spacer(),
+                          if (off && total > 0)
+                            TextButton(
+                              style: TextButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8),
+                                minimumSize: const Size(0, 28),
+                                tapTargetSize:
+                                    MaterialTapTargetSize.shrinkWrap,
+                              ),
+                              onPressed: () => setD(() {
+                                // 割合を保ったまま合計が 100 になるよう直す。
+                                for (final r in rows) {
+                                  final n =
+                                      double.tryParse(r.value.text.trim());
+                                  if (n == null || n < 0 || !n.isFinite) {
+                                    continue;
+                                  }
+                                  final v = n * 100 / total;
+                                  // 整数で表せるならそのまま、 端数が出る
+                                  //   なら小数第 1 位まで。
+                                  r.value.text =
+                                      (v - v.roundToDouble()).abs() < 0.05
+                                          ? v.round().toString()
+                                          : v.toStringAsFixed(1);
+                                }
+                              }),
+                              child: Text(provider.t('chart.fitTo100'),
+                                  style: const TextStyle(
+                                      color: Color(0xFF4FC3F7),
+                                      fontSize: 11)),
+                            ),
+                        ]),
+                        if (off)
+                          Text(provider.t('chart.totalNot100'),
+                              style: const TextStyle(
+                                  color: Colors.white38, fontSize: 10.5)),
+                        if (bad)
+                          Text(provider.t('chart.badValue'),
+                              style: const TextStyle(
+                                  color: Color(0xFFEF5350), fontSize: 10.5)),
+                      ],
+                    );
+                  }),
                   Align(
                     alignment: Alignment.centerLeft,
                     child: TextButton.icon(
@@ -95854,6 +95934,8 @@ class _AudioOutputInlineState extends State<_AudioOutputInline> {
           final next = !_muted;
           setState(() => _muted = next);
           await AudioOutput.setMuted(next);
+          // 消音を解いた時は鳴らして確かめられるように。
+          if (!next) AudioOutput.playTestSound();
         },
       ),
       Expanded(
@@ -95865,6 +95947,9 @@ class _AudioOutputInlineState extends State<_AudioOutputInline> {
             // つまみを動かしている間もその場で効かせる。
             unawaited(AudioOutput.setVolume(nv));
           },
+          // 離した時に一度だけ鳴らして、 大きさを耳で確かめられるように
+          //   (= ユーザー要望)。 動かしている間ずっと鳴らすと煩い。
+          onChangeEnd: (_) => AudioOutput.playTestSound(),
         ),
       ),
       SizedBox(
@@ -95924,7 +96009,12 @@ class _AudioOutputInlineState extends State<_AudioOutputInline> {
               ? null
               : () async {
                   final ok = await AudioOutput.setDefault(d.id);
-                  if (ok) await _load();
+                  if (ok) {
+                    await _load();
+                    // 切り替えた先から音を出して確かめられるように
+                    //   (= ユーザー要望)。
+                    AudioOutput.playTestSound();
+                  }
                 },
         ),
     ]);
