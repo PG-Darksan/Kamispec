@@ -95803,6 +95803,10 @@ class _AudioOutputInlineState extends State<_AudioOutputInline> {
   List<({String id, String name, bool isDefault})> _devices = const [];
   bool _loading = true;
 
+  /// 今の音量 (0.0〜1.0) と消音 (= ユーザー要望: 大きさも設定できるように)。
+  double? _volume;
+  bool _muted = false;
+
   @override
   void initState() {
     super.initState();
@@ -95812,14 +95816,64 @@ class _AudioOutputInlineState extends State<_AudioOutputInline> {
   Future<void> _load() async {
     try {
       final v = await AudioOutput.listDevices();
+      final vol = await AudioOutput.getVolume();
+      final mute = await AudioOutput.getMuted();
       if (!mounted) return;
       setState(() {
         _devices = v;
+        _volume = vol;
+        _muted = mute ?? false;
         _loading = false;
       });
     } catch (_) {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  /// 音量の 1 行 (つまみ + 消音)。 読めない環境では出さない。
+  Widget _volumeRow() {
+    final v = _volume;
+    if (v == null) return const SizedBox.shrink();
+    return Row(children: [
+      IconButton(
+        tooltip: widget.provider.t('audioOut.mute'),
+        visualDensity: VisualDensity.compact,
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+        icon: Icon(
+            _muted
+                ? Icons.volume_off_rounded
+                : (v < 0.01
+                    ? Icons.volume_mute_rounded
+                    : (v < 0.5
+                        ? Icons.volume_down_rounded
+                        : Icons.volume_up_rounded)),
+            size: 18,
+            color: _muted ? Colors.white38 : const Color(0xFF9CCC65)),
+        onPressed: () async {
+          final next = !_muted;
+          setState(() => _muted = next);
+          await AudioOutput.setMuted(next);
+        },
+      ),
+      Expanded(
+        child: Slider(
+          value: v.clamp(0.0, 1.0),
+          activeColor: const Color(0xFF9CCC65),
+          onChanged: (nv) {
+            setState(() => _volume = nv);
+            // つまみを動かしている間もその場で効かせる。
+            unawaited(AudioOutput.setVolume(nv));
+          },
+        ),
+      ),
+      SizedBox(
+        width: 34,
+        child: Text('${(v * 100).round()}%',
+            textAlign: TextAlign.right,
+            style: const TextStyle(color: Colors.white70, fontSize: 11)),
+      ),
+    ]);
   }
 
   @override
@@ -95834,13 +95888,17 @@ class _AudioOutputInlineState extends State<_AudioOutputInline> {
       );
     }
     if (_devices.isEmpty) {
-      return Padding(
-        padding: const EdgeInsets.all(8),
-        child: Text(widget.provider.t('audioOut.none'),
-            style: const TextStyle(color: Colors.white54, fontSize: 12)),
-      );
+      return Column(mainAxisSize: MainAxisSize.min, children: [
+        _volumeRow(),
+        Padding(
+          padding: const EdgeInsets.all(8),
+          child: Text(widget.provider.t('audioOut.none'),
+              style: const TextStyle(color: Colors.white54, fontSize: 12)),
+        ),
+      ]);
     }
     return Column(mainAxisSize: MainAxisSize.min, children: [
+      _volumeRow(),
       for (final d in _devices)
         ListTile(
           dense: true,
@@ -95906,6 +95964,51 @@ class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
   void dispose() {
     _gridFocus.dispose();
     super.dispose();
+  }
+
+  /// 右クリック (長押し) で出す小さな項目。 今は「外す」 だけ
+  /// (= ユーザー要望: 右クリックした時に削除の項目を出して欲しい)。
+  Future<void> _showMonitorMenu(int monIndex, Offset at) async {
+    final p = widget.provider;
+    // 実際に繋がっているモニターは外せないので、 その旨だけ出す。
+    final removable = monIndex >= _mons.length;
+    final scr = MediaQuery.sizeOf(context);
+    const w = 180.0;
+    const h = 64.0;
+    final left =
+        (at.dx + 8).clamp(8.0, math.max(8.0, scr.width - w - 8)).toDouble();
+    final top =
+        (at.dy + 8).clamp(8.0, math.max(8.0, scr.height - h - 8)).toDouble();
+    final ok = await showDialog<bool>(
+      context: context,
+      barrierColor: Colors.black26,
+      builder: (dctx) => Stack(children: [
+        Positioned(
+          left: left,
+          top: top,
+          width: w,
+          child: Material(
+            color: const Color(0xFF1E1E32),
+            borderRadius: BorderRadius.circular(10),
+            child: ListTile(
+              dense: true,
+              leading: Icon(Icons.delete_outline_rounded,
+                  size: 18,
+                  color: removable ? const Color(0xFFEF5350) : Colors.white24),
+              title: Text(
+                  removable
+                      ? p.t('cursorWrap.removeMonitor')
+                      : p.t('cursorWrap.cannotRemove'),
+                  style: TextStyle(
+                      color: removable ? Colors.white : Colors.white38,
+                      fontSize: 12.5)),
+              onTap: removable ? () => Navigator.pop(dctx, true) : null,
+            ),
+          ),
+        ),
+      ]),
+    );
+    if (ok == true) _removeSelected();
   }
 
   /// 置いたモニターを外す。 抜けた番号は詰める
@@ -96119,6 +96222,11 @@ class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
               _gridFocus.requestFocus();
               setState(() => _selected = _selected == i ? null : i);
             },
+            onSecondary: (i, at) {
+              _gridFocus.requestFocus();
+              setState(() => _selected = i);
+              unawaited(_showMonitorMenu(i, at));
+            },
             onTapCell: (key) {
               if (cells.containsKey(key)) return;
               setState(() {
@@ -96169,6 +96277,10 @@ class _MonitorGridView extends StatelessWidget {
   /// 置いたモニターを押した (選ぶ)。
   final void Function(int monIndex) onSelect;
 
+  /// 置いたモニターを右クリックした (番号, 押した場所)。
+  /// そこへ「外す」 の項目を出す (= ユーザー要望)。
+  final void Function(int monIndex, Offset at) onSecondary;
+
   /// 繋がっていない辺を押した (モニター番号, 辺, 押した場所)。
   /// 場所は、 選ぶ窓をその近くに出すために使う (= ユーザー要望)。
   final void Function(int monIndex, String edge, Offset at) onTapEdge;
@@ -96181,6 +96293,7 @@ class _MonitorGridView extends StatelessWidget {
     required this.onTapEdge,
     required this.selected,
     required this.onSelect,
+    required this.onSecondary,
   });
 
   static (int, int)? parseCell(String key) {
@@ -96287,8 +96400,13 @@ class _MonitorGridView extends StatelessWidget {
         child: Stack(children: [
           Positioned.fill(
             child: GestureDetector(
-              // 押すと選ぶだけ (外すのは Delete / BackSpace)。
+              // 押すと選ぶだけ (外すのは Delete / BackSpace か右クリック)。
               onTap: () => onSelect(index),
+              onSecondaryTapUp: (d) =>
+                  onSecondary(index, d.globalPosition),
+              // 長押しでも同じ物を出す (指で使う時のため)。
+              onLongPressStart: (d) =>
+                  onSecondary(index, d.globalPosition),
               child: Container(
                 margin: const EdgeInsets.all(18),
                 decoration: BoxDecoration(

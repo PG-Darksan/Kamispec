@@ -52,7 +52,169 @@ class AudioOutput {
       return false;
     }
   }
+
+  /// 今の音量 (0.0〜1.0)。 読めなければ null
+  /// (= ユーザー要望: 音声出力の大きさも設定できるように)。
+  static Future<double?> getVolume() async {
+    if (!isSupported) return null;
+    try {
+      return await Isolate.run(_getVolume)
+          .timeout(const Duration(seconds: 8), onTimeout: () => null);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 音量を変える (0.0〜1.0)。 変えられたら true。
+  static Future<bool> setVolume(double v) async {
+    if (!isSupported) return false;
+    final x = v.clamp(0.0, 1.0).toDouble();
+    try {
+      return await Isolate.run(() => _setVolume(x))
+          .timeout(const Duration(seconds: 8), onTimeout: () => false);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 消音の入り切り。 読めなければ null。
+  static Future<bool?> getMuted() async {
+    if (!isSupported) return null;
+    try {
+      return await Isolate.run(_getMuted)
+          .timeout(const Duration(seconds: 8), onTimeout: () => null);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<bool> setMuted(bool m) async {
+    if (!isSupported) return false;
+    try {
+      return await Isolate.run(() => _setMuted(m))
+          .timeout(const Duration(seconds: 8), onTimeout: () => false);
+    } catch (_) {
+      return false;
+    }
+  }
 }
+
+// ── 既定の再生デバイスの音量 (IAudioEndpointVolume) ────────────────
+//
+// win32 パッケージにこのインターフェイスの包みは無いので、 表 (vtable) の
+// 何番目かを自分で数えて呼ぶ。 並びは Windows SDK の endpointvolume.h の
+// 宣言順で、 IUnknown の 3 つ (QueryInterface / AddRef / Release) の後に
+//   3 RegisterControlChangeNotify   4 UnregisterControlChangeNotify
+//   5 GetChannelCount               6 SetMasterVolumeLevel
+//   7 SetMasterVolumeLevelScalar    8 GetMasterVolumeLevel
+//   9 GetMasterVolumeLevelScalar   10 SetChannelVolumeLevel
+//   ...                            14 SetMute   15 GetMute
+// と続く。
+//
+// ★ 番号を 1 つでも間違えると、 別の機械語を関数として呼んでプロセスごと
+//   落ちる。 触る時は必ず実機で読み書きして確かめること。
+const String _kIidAudioEndpointVolume =
+    '{5CDF2C82-841E-4546-9722-0CF74078229A}';
+
+const int _kSlotSetMasterScalar = 7;
+const int _kSlotGetMasterScalar = 9;
+const int _kSlotSetMute = 14;
+const int _kSlotGetMute = 15;
+
+/// 既定の再生デバイスの IAudioEndpointVolume を開いて [body] に渡す。
+/// 開けなければ [body] を呼ばずに null を返す。
+T? _withEndpointVolume<T>(T Function(Pointer<w32.COMObject> vol) body) {
+  final init = w32.CoInitializeEx(nullptr, w32.COINIT_APARTMENTTHREADED);
+  final needUninit = init == w32.S_OK || init == w32.S_FALSE;
+  w32.MMDeviceEnumerator? enumr;
+  final ppDev = calloc<w32.COMObject>();
+  final ppVol = calloc<w32.COMObject>();
+  final iid = w32.GUIDFromString(_kIidAudioEndpointVolume);
+  try {
+    enumr = w32.MMDeviceEnumerator.createInstance();
+    if (enumr.getDefaultAudioEndpoint(
+            w32.eRender, w32.eMultimedia, ppDev.cast()) !=
+        w32.S_OK) {
+      return null;
+    }
+    final dev = w32.IMMDevice(ppDev);
+    try {
+      if (dev.activate(iid, w32.CLSCTX_ALL, nullptr, ppVol.cast()) !=
+          w32.S_OK) {
+        return null;
+      }
+      if (ppVol.ref.isNull) return null;
+      return body(ppVol);
+    } finally {
+      // 中身を離してから入れ物を返す。
+      try {
+        if (!ppVol.ref.isNull) {
+          w32.IUnknown(ppVol).release();
+        }
+      } catch (_) {}
+      dev.release();
+    }
+  } catch (e) {
+    debugPrint('音量の取り出しに失敗: $e');
+    return null;
+  } finally {
+    calloc.free(iid);
+    calloc.free(ppVol);
+    calloc.free(ppDev);
+    try {
+      enumr?.release();
+    } catch (_) {}
+    if (needUninit) w32.CoUninitialize();
+  }
+}
+
+double? _getVolume() => _withEndpointVolume<double?>((vol) {
+      final p = calloc<Float>();
+      try {
+        final fn = (vol.ref.vtable + _kSlotGetMasterScalar)
+            .cast<Pointer<NativeFunction<Int32 Function(Pointer, Pointer<Float>)>>>()
+            .value
+            .asFunction<int Function(Pointer, Pointer<Float>)>();
+        if (fn(vol.ref.lpVtbl, p) != w32.S_OK) return null;
+        return p.value.toDouble();
+      } finally {
+        calloc.free(p);
+      }
+    });
+
+bool _setVolume(double v) =>
+    _withEndpointVolume<bool>((vol) {
+      final fn = (vol.ref.vtable + _kSlotSetMasterScalar)
+          .cast<Pointer<NativeFunction<Int32 Function(Pointer, Float, Pointer<w32.GUID>)>>>()
+          .value
+          .asFunction<int Function(Pointer, double, Pointer<w32.GUID>)>();
+      return fn(vol.ref.lpVtbl, v, nullptr) == w32.S_OK;
+    }) ??
+    false;
+
+bool? _getMuted() => _withEndpointVolume<bool?>((vol) {
+      final p = calloc<Int32>();
+      try {
+        final fn = (vol.ref.vtable + _kSlotGetMute)
+            .cast<Pointer<NativeFunction<Int32 Function(Pointer, Pointer<Int32>)>>>()
+            .value
+            .asFunction<int Function(Pointer, Pointer<Int32>)>();
+        if (fn(vol.ref.lpVtbl, p) != w32.S_OK) return null;
+        return p.value != 0;
+      } finally {
+        calloc.free(p);
+      }
+    });
+
+bool _setMuted(bool m) =>
+    _withEndpointVolume<bool>((vol) {
+      final fn = (vol.ref.vtable + _kSlotSetMute)
+          .cast<Pointer<NativeFunction<Int32 Function(Pointer, Int32, Pointer<w32.GUID>)>>>()
+          .value
+          .asFunction<int Function(Pointer, int, Pointer<w32.GUID>)>();
+      return fn(vol.ref.lpVtbl, m ? 1 : 0, nullptr) == w32.S_OK;
+    }) ??
+    false;
 
 List<({String id, String name, bool isDefault})> _listDevices() {
   final init = w32.CoInitializeEx(nullptr, w32.COINIT_APARTMENTTHREADED);

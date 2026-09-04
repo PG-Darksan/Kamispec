@@ -2149,6 +2149,24 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   }
 
   /// 選べる印の一覧 (id, 見た目のアイコン)。
+  /// 置く印ごとの言い方の鍵 (= ユーザー報告: 選んでいる図形と案内が違う)。
+  static String _markLabelKey(String id) {
+    switch (id) {
+      case 'circle':
+        return 'pdfdraw.markCircle';
+      case 'cross':
+        return 'pdfdraw.markCross';
+      case 'triangle':
+        return 'pdfdraw.markTriangle';
+      case 'square':
+        return 'pdfdraw.markSquare';
+      case 'number':
+        return 'pdfdraw.number';
+      default:
+        return 'pdfdraw.check';
+    }
+  }
+
   static const List<({String id, IconData icon})> kCheckMarks = [
     (id: 'check', icon: Icons.check_rounded),
     (id: 'circle', icon: Icons.circle_outlined),
@@ -2825,18 +2843,19 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       );
     }
 
-    // 印 (✓○×△□ / 連番) を選ぶボタン。 色と同じく、 選んだら畳む。
+    // 印 (✓○×△□ / 連番) を選ぶボタン。
+    // ★ 選んでも畳まない (= ユーザー要望: 選んだだけで図形の並びが閉じると
+    //   続けて選び直せない)。 畳むのは「>」 を押した時だけ。
     Widget markBtn(({String id, IconData icon}) m) {
       final on = _checkMark == m.id;
       return Tooltip(
-        message: m.id == 'number'
-            ? widget.tr('pdfdraw.number')
-            : widget.tr('pdfdraw.check'),
+        // その印に合った言い方にする (= ユーザー報告: ○ を選んでいるのに
+        //   「チェックを置く」 と出る)。
+        message: widget.tr(_markLabelKey(m.id)),
         child: InkWell(
           onTap: () {
             setState(() {
               _checkMark = m.id;
-              _checksOpen = false;
               // 種類を選んだら、 そのまま置ける道具に切り替える。
               _tool = PdfDrawTool.check;
             });
@@ -3206,7 +3225,8 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
             //   マークが 2 つ出てダブって見える)。 選んでいない時だけ、
             //   今の印のアイコンで 1 つだけ出す。
             if (_tool != PdfDrawTool.check)
-              toolBtn(PdfDrawTool.check, _markIcon, 'pdfdraw.check'),
+              toolBtn(PdfDrawTool.check, _markIcon,
+                  _markLabelKey(_checkMark)),
             // ── 置く印の種類 (= ユーザー要望: ✓ の所を ○ や × 連番 等に)。
             //    ★ 「チェックを置く」 を選んでいなくても種類を選べる
             //      (= ユーザー報告: 押さないと選択肢が出てこないのは変)。
