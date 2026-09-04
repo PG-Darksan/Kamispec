@@ -4546,6 +4546,38 @@ class MindMapProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// まだ繋いでいないサブモニターを「どの向きに置くつもりか」。
+  ///
+  /// = ユーザー要望: Windows 11 のディスプレイ設定のように、 図を見ながら
+  ///   どの方向に繋ぐかを決められるように。
+  /// キーは 'left'/'right'/'top'/'bottom'、 値はモニターの番号 (0 始まり。
+  /// 0 は主モニターなので、 実際に入るのは 1 以上)。
+  Map<String, int> _cursorWrapPlacement = const {};
+  Map<String, int> get cursorWrapPlacement => _cursorWrapPlacement;
+
+  Future<void> setCursorWrapPlacement(Map<String, int> v) async {
+    _cursorWrapPlacement = Map<String, int>.from(v);
+    final prefs = await _prefsWithRetry();
+    await prefs.setString(
+        'cursorWrapPlacement', jsonEncode(_cursorWrapPlacement));
+    notifyListeners();
+  }
+
+  void _loadCursorWrapPlacement(SharedPreferences prefs) {
+    try {
+      final raw = prefs.getString('cursorWrapPlacement');
+      if (raw == null || raw.isEmpty) return;
+      final m = jsonDecode(raw);
+      if (m is! Map) return;
+      final out = <String, int>{};
+      for (final k in const ['left', 'right', 'top', 'bottom']) {
+        final v = m[k];
+        if (v is num) out[k] = v.toInt();
+      }
+      _cursorWrapPlacement = out;
+    } catch (_) {}
+  }
+
   /// 控えから読み直す。 読めない時は今までどおり四方向とも「反対の端」。
   void _loadCursorWrapEdges(SharedPreferences prefs) {
     try {
@@ -19782,12 +19814,42 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Abschnitt', 'pt': 'Secao',
       'ru': 'Раздел',
     },
+    // 工程表の状態は 4 つとも同じ言葉づかいで出す (= ユーザー報告: これから
+    //   / Done / active / crit と日本語と英語が混ざっていて統一感がない)。
+    'gantt.statusDone': {
+      'ja': '済み', 'en': 'done',
+      'zh': '已完成', 'ko': '완료',
+      'es': 'hecho', 'fr': 'termine',
+      'de': 'fertig', 'pt': 'concluido',
+      'ru': 'готово',
+    },
+    'gantt.statusActive': {
+      'ja': '進行中', 'en': 'in progress',
+      'zh': '进行中', 'ko': '진행 중',
+      'es': 'en curso', 'fr': 'en cours',
+      'de': 'laufend', 'pt': 'em andamento',
+      'ru': 'в работе',
+    },
+    'gantt.statusCrit': {
+      'ja': '重要', 'en': 'critical',
+      'zh': '重要', 'ko': '중요',
+      'es': 'critico', 'fr': 'critique',
+      'de': 'kritisch', 'pt': 'critico',
+      'ru': 'важно',
+    },
     'gantt.statusTodo': {
       'ja': 'これから', 'en': 'todo',
       'zh': '待办', 'ko': '예정',
       'es': 'pendiente', 'fr': 'a faire',
       'de': 'offen', 'pt': 'a fazer',
       'ru': 'предстоит',
+    },
+    'chart.sliceColor': {
+      'ja': '色を選ぶ', 'en': 'Pick a colour',
+      'zh': '选择颜色', 'ko': '색 고르기',
+      'es': 'Elegir color', 'fr': 'Choisir une couleur',
+      'de': 'Farbe wählen', 'pt': 'Escolher cor',
+      'ru': 'Выбрать цвет',
     },
     'chart.editTitle': {
       'ja': '円グラフを編集', 'en': 'Edit pie chart',
@@ -33586,6 +33648,87 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Monitores encontrados: {n}',
       'ru': 'Найдено мониторов: {n}',
       'fa': 'نمایشگرهای یافت‌شده: {n}',
+    },
+    'cursorWrap.edgeGoesTo': {
+      'ja': 'この端から行く先',
+      'en': 'Where this edge leads',
+      'zh': '此边缘的去向',
+      'ko': '이 가장자리의 이동처',
+      'es': 'A dónde lleva este borde',
+      'fr': 'Où mène ce bord',
+      'de': 'Wohin dieser Rand führt',
+      'pt': 'Para onde leva esta borda',
+      'ru': 'Куда ведёт этот край',
+      'fa': 'مقصد این لبه',
+    },
+    'cursorWrap.arrangeHint2': {
+      'ja': '空いている枠を押すとサブモニターを置けます。 真ん中の箱の'
+          '**端**を押すと、 その端から行く先を選べます。',
+      'en': 'Tap an empty slot to place a monitor. Tap an EDGE of the centre '
+          'box to choose where that edge leads.',
+      'zh': '点击空位可放置显示器。点击中间方块的边缘可选择该边的去向。',
+      'ko': '빈 칸을 누르면 모니터를 놓습니다. 가운데 상자의 가장자리를 누르면 '
+          '그 가장자리의 이동처를 고릅니다.',
+      'es': 'Toca un hueco para colocar un monitor. Toca un BORDE del cuadro '
+          'central para elegir a dónde lleva.',
+      'fr': 'Touchez un emplacement vide pour placer un écran. Touchez un '
+          'BORD du cadre central pour choisir sa destination.',
+      'de': 'Freien Platz antippen, um einen Monitor zu setzen. Einen RAND '
+          'des mittleren Feldes antippen, um sein Ziel zu wählen.',
+      'pt': 'Toque em um espaço vazio para colocar um monitor. Toque em uma '
+          'BORDA do quadro central para escolher o destino.',
+      'ru': 'Нажмите пустое место, чтобы поставить монитор. Нажмите КРАЙ '
+          'центрального блока, чтобы выбрать, куда он ведёт.',
+      'fa': 'برای افزودن نمایشگر روی جای خالی بزنید. برای انتخاب مقصد، روی '
+          'لبه کادر میانی بزنید.',
+    },
+    'cursorWrap.connected': {
+      'ja': '接続中',
+      'en': 'connected',
+      'zh': '已连接',
+      'ko': '연결됨',
+      'es': 'conectado',
+      'fr': 'connecté',
+      'de': 'verbunden',
+      'pt': 'conectado',
+      'ru': 'подключён',
+      'fa': 'متصل',
+    },
+    'cursorWrap.planned': {
+      'ja': '置く予定',
+      'en': 'planned',
+      'zh': '计划中',
+      'ko': '예정',
+      'es': 'previsto',
+      'fr': 'prévu',
+      'de': 'geplant',
+      'pt': 'planejado',
+      'ru': 'запланирован',
+      'fa': 'برنامه‌ریزی‌شده',
+    },
+    'cursorWrap.arrangeHint': {
+      'ja': '空いている枠を押すとサブモニターを置けます。 もう一度押すと外します。',
+      'en': 'Tap an empty slot to place a sub-monitor; tap it again to remove.',
+      'zh': '点击空位放置副显示器，再次点击可移除。',
+      'ko': '빈 칸을 누르면 서브 모니터를 놓고, 다시 누르면 뺍니다.',
+      'es': 'Toca un hueco vacío para colocar un monitor; tócalo de nuevo para quitarlo.',
+      'fr': 'Touchez un emplacement vide pour placer un écran ; touchez-le à nouveau pour le retirer.',
+      'de': 'Tippen Sie auf einen freien Platz, um einen Monitor zu setzen; erneut tippen entfernt ihn.',
+      'pt': 'Toque em um espaço vazio para colocar um monitor; toque novamente para remover.',
+      'ru': 'Нажмите пустое место, чтобы поставить монитор; нажмите ещё раз, чтобы убрать.',
+      'fa': 'برای قرار دادن نمایشگر روی جای خالی بزنید؛ دوباره بزنید تا برداشته شود.',
+    },
+    'cursorWrap.applyArrangement': {
+      'ja': 'この置き方に合わせて端の行き先を決める',
+      'en': 'Set edge destinations from this arrangement',
+      'zh': '按此布局设置各边的去向',
+      'ko': '이 배치에 맞춰 가장자리 이동처를 정하기',
+      'es': 'Definir destinos de los bordes según esta disposición',
+      'fr': 'Définir les destinations des bords selon cette disposition',
+      'de': 'Randziele aus dieser Anordnung ableiten',
+      'pt': 'Definir destinos das bordas por esta disposição',
+      'ru': 'Задать назначения краёв по этой схеме',
+      'fa': 'تعیین مقصد لبه‌ها بر پایه این چیدمان',
     },
     'cursorWrap.notConnected': {
       'ja': '未接続',
@@ -69005,6 +69148,7 @@ class MindMapProvider extends ChangeNotifier {
     'fcTxtLineCount', 'fcTxtStartLine', 'flashcardGenCount',
     'quizAvoidDuplicates', 'allowMultipleFloatingWindows',
     'openWithNewInstance', 'cursorWrapEnabled', 'cursorWrapEdges',
+    'cursorWrapPlacement',
     'mdScrollSync',
     'cursorSizeMain',
     'cursorSizeSub',
@@ -82283,6 +82427,7 @@ $cleanQ
     CursorWrap.instance
         .applySizes(main: _cursorSizeMain, sub: _cursorSizeSub);
     _loadCursorWrapEdges(prefs);
+    _loadCursorWrapPlacement(prefs);
     CursorWrap.instance.applyEdgeTargets(_cursorWrapEdges);
     CursorWrap.instance.apply(_cursorWrapEnabled);
     // メモ欄一括折りたたみ (デフォルト false = 従来通り全文表示)

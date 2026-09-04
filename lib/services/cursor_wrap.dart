@@ -149,15 +149,19 @@ class CursorWrap {
     _sizeMain = main.clamp(0, 15);
     _sizeSub = sub.clamp(0, 15);
     // まだ何も書き換えていない時だけ、 今の設定を戻し先として控える。
-    if (_appliedSize == 0 && _sizeSub > 0) {
+    if (_appliedSize == 0 && _sizeMain > 0) {
       _baselineSize = readSystemCursorSize();
     }
     _wasOnPrimary = null;
     _appliedSize = 0;
-    // ★ メインの指定があるなら、 まずメインの大きさに合わせておく。
-    //   前回サブ用の大きさのまま終了していても (× は即終了なので戻せない)、
-    //   次の起動のここで元に戻る。 サブに居ればすぐ見回りが切り替える。
-    if (isSupported && allowed && _sizeMain > 0 && _sizeSub > 0) {
+    // ★ メインの指定があれば、 その場で当てる。
+    //
+    //   ここは前まで「サブの指定もある時だけ」 当てていた
+    //   (`_sizeMain > 0 && _sizeSub > 0`)。 そのせいで、 「サブモニターでは
+    //   別の大きさにする」 を切ったまま大きさだけ変えても**何も起きなかった**
+    //   (= ユーザー報告: マウスカーソルの大きさが変わらない)。
+    //   モニターごとの切り替えと、 今の大きさを当てる事は別の話なので分けた。
+    if (isSupported && allowed && _sizeMain > 0) {
       if (applyCursorSize(_sizeMain)) _appliedSize = _sizeMain;
     }
     _syncTimer();

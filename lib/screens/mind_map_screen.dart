@@ -39016,6 +39016,74 @@ class _MindMapScreenState extends State<MindMapScreen>
   }
 
   /// 工程表ノードの中身を編集する (= ユーザー要望: 工程表も編集できる形で)。
+  /// 円グラフの一切れの色を選ぶ (= ユーザー要望: 色を変えられるように)。
+  /// 「順番どおり」 を選ぶと、 透明を返して呼ぶ側で null に戻す。
+  Future<Color?> _pickChartColor(BuildContext ctx, Color current) async {
+    final provider = ctx.read<MindMapProvider>();
+    return showDialog<Color>(
+      context: ctx,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Text(provider.t('chart.sliceColor'),
+            style: const TextStyle(color: Colors.white, fontSize: 14)),
+        content: SizedBox(
+          width: 300,
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final c in kChartPalette)
+                InkWell(
+                  borderRadius: BorderRadius.circular(6),
+                  onTap: () => Navigator.pop(dctx, c),
+                  child: Container(
+                    width: 30,
+                    height: 30,
+                    decoration: BoxDecoration(
+                      color: c,
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(
+                          color: c.toARGB32() == current.toARGB32()
+                              ? Colors.white
+                              : Colors.white24,
+                          width: c.toARGB32() == current.toARGB32() ? 2.5 : 1),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, const Color(0x00000000)),
+            child: Text(provider.t('btn.reset'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dctx),
+            child: Text(provider.t('btn.cancel'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 工程表の状態の言い方 (= ユーザー報告: 日本語と英語が混ざっている)。
+  /// 空 = これから / done / active / crit の 4 つを、 全部その言語で出す。
+  String _ganttStatusLabel(MindMapProvider provider, String status) {
+    switch (status) {
+      case 'done':
+        return provider.t('gantt.statusDone');
+      case 'active':
+        return provider.t('gantt.statusActive');
+      case 'crit':
+        return provider.t('gantt.statusCrit');
+      default:
+        return provider.t('gantt.statusTodo');
+    }
+  }
+
   Future<void> _editGanttNode(String nodeId, ChartData data) async {
     final provider = context.read<MindMapProvider>();
     final rows = [
@@ -39100,10 +39168,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                           child: Padding(
                             padding: const EdgeInsets.symmetric(
                                 horizontal: 6, vertical: 6),
-                            child: Text(
-                                statuses[i].isEmpty
-                                    ? provider.t('gantt.statusTodo')
-                                    : statuses[i],
+                            child: Text(_ganttStatusLabel(provider, statuses[i]),
                                 style: const TextStyle(
                                     color: Colors.white70, fontSize: 11)),
                           ),
@@ -39316,6 +39381,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                   : e.value.toString()),
         ),
     ];
+    // 一切れごとの色 (null = 順番どおりの色)。 = ユーザー要望: 色を変えたい。
+    final colors = <Color?>[
+      for (final e in data.items)
+        e.colorValue == null ? null : Color(e.colorValue!),
+    ];
     void disposeRows() {
       for (final r in rows) {
         r.label.dispose();
@@ -39342,13 +39412,31 @@ class _MindMapScreenState extends State<MindMapScreen>
                     Padding(
                       padding: const EdgeInsets.only(bottom: 6),
                       child: Row(children: [
-                        Container(
-                          width: 12,
-                          height: 12,
-                          margin: const EdgeInsets.only(right: 8),
-                          decoration: BoxDecoration(
-                            color: kChartPalette[i % kChartPalette.length],
-                            borderRadius: BorderRadius.circular(3),
+                        // 色の四角を押すと色を変えられる (= ユーザー要望)。
+                        InkWell(
+                          borderRadius: BorderRadius.circular(4),
+                          onTap: () async {
+                            final picked = await _pickChartColor(
+                                dctx,
+                                colors[i] ??
+                                    kChartPalette[i % kChartPalette.length]);
+                            if (picked == null) return;
+                            setD(() => colors[i] =
+                                picked == const Color(0x00000000)
+                                    ? null
+                                    : picked);
+                          },
+                          child: Container(
+                            width: 18,
+                            height: 18,
+                            margin: const EdgeInsets.only(right: 8),
+                            decoration: BoxDecoration(
+                              color: colors[i] ??
+                                  kChartPalette[i % kChartPalette.length],
+                              borderRadius: BorderRadius.circular(4),
+                              border:
+                                  Border.all(color: Colors.white24, width: 1),
+                            ),
                           ),
                         ),
                         Expanded(
@@ -39435,11 +39523,16 @@ class _MindMapScreenState extends State<MindMapScreen>
     );
     if (ok == true) {
       final items = <ChartSlice>[];
-      for (final r in rows) {
+      for (var i = 0; i < rows.length; i++) {
+        final r = rows[i];
         final label = r.label.text.trim();
         final v = double.tryParse(r.value.text.trim());
         if (label.isEmpty || v == null || !v.isFinite) continue;
-        items.add(ChartSlice(label: label, value: v));
+        // 選んだ色も一緒に残す (= ユーザー要望)。
+        items.add(ChartSlice(
+            label: label,
+            value: v,
+            colorValue: i < colors.length ? colors[i]?.toARGB32() : null));
       }
       if (items.isNotEmpty) {
         provider.updateNodeChartData(nodeId, ChartData(items: items));
@@ -71975,136 +72068,142 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 動作設定と同じ部品をそのまま使うので、 見た目と挙動は変わらない。
   /// 中身が 1 つも無い環境 (Windows でも Android でもない) では、
   /// 呼ぶ側が項目ごと出さない ([hasDisplaySettings])。
+  /// ディスプレイ設定の中身 (= ユーザー要望: 一つずつ押して開くのが面倒
+  /// なので、 全部を一度に出す)。
+  ///
+  /// マウスカーソルの大きさ / 音声の出力先 / モニターの並べ方 を、 折り畳まず
+  /// そのまま並べる。 変えた事はその場で効く (「保存」 は要らない)。
   List<Widget> _displaySettingsChildren({
     required MindMapProvider provider,
     required BuildContext ctx,
     required BuildContext sheetCtx,
     required void Function(VoidCallback) setS,
   }) {
+    Widget sectionLabel(String text) => Padding(
+          padding: const EdgeInsets.fromLTRB(4, 14, 4, 6),
+          child: Row(children: [
+            Text(text,
+                style: const TextStyle(
+                    color: Colors.white38,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.6)),
+            const SizedBox(width: 8),
+            const Expanded(child: Divider(color: Colors.white12, height: 1)),
+          ]),
+        );
+
+    Widget sliderRow(String label, int value, bool enabled,
+        ValueChanged<int> onChanged) {
+      return Row(children: [
+        SizedBox(
+          width: 116,
+          child: Text(label,
+              style: TextStyle(
+                  color: enabled ? Colors.white : Colors.white30,
+                  fontSize: 13)),
+        ),
+        Expanded(
+          child: Slider(
+            value: value.toDouble().clamp(1, 15),
+            min: 1,
+            max: 15,
+            divisions: 14,
+            onChanged: enabled ? (v) => onChanged(v.round()) : null,
+          ),
+        ),
+        SizedBox(
+          width: 26,
+          child: Text('$value',
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                  color: enabled ? Colors.white70 : Colors.white24,
+                  fontSize: 12)),
+        ),
+      ]);
+    }
+
+    final subOn = provider.cursorSizeSub > 0;
+    final mainV = provider.cursorSizeMain > 0
+        ? provider.cursorSizeMain
+        : CursorWrap.readSystemCursorSize();
+
     return [
-            // ── トグル: 高リフレッシュレート (= ユーザー要望:
-            //    120Hz / 144Hz 等にも対応) ──
-            // Android のみ効く (Windows は OS 側が
-            //   モニターのレートで描画するため不要)。
-            if (!kIsWeb && Platform.isAndroid)
-              _settingsToggleTile(
-                icon: provider.highRefreshRate
-                    ? Icons.speed_rounded
-                    : Icons.speed_outlined,
-                color: provider.highRefreshRate
-                    ? const Color(0xFF7FD8A0)
-                    : Colors.white54,
-                title: provider.t('refresh.setting'),
-                helpKey: 'help.highRefreshRate',
-                value: provider.highRefreshRate,
-                onChanged: (v) async {
-                  await provider
-                      .setHighRefreshRate(v);
-                  await applyPreferredDisplayMode(
-                      high: v);
-                  setS(() {});
-                },
-              ),
+      // ── マウスカーソルの大きさ ──
+      if (!kIsWeb && Platform.isWindows) ...[
+        sectionLabel(provider.t('cursorSize.title')),
+        sliderRow(provider.t('cursorSize.main'), mainV, true, (v) {
+          unawaited(provider.setCursorSizes(main: v));
+          setS(() {});
+        }),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          dense: true,
+          activeColor: const Color(0xFF4FC3F7),
+          title: Text(provider.t('cursorSize.subToggle'),
+              style: const TextStyle(color: Colors.white, fontSize: 13)),
+          value: subOn,
+          onChanged: (v) {
+            unawaited(provider.setCursorSizes(sub: v ? mainV : 0));
+            setS(() {});
+          },
+        ),
+        sliderRow(
+            provider.t('cursorSize.sub'),
+            provider.cursorSizeSub > 0 ? provider.cursorSizeSub : mainV,
+            subOn, (v) {
+          unawaited(provider.setCursorSizes(sub: v));
+          setS(() {});
+        }),
+      ],
 
-            // ── マウスカーソルの大きさ (Windows のみ。 = ユーザー要望:
-            //    アプリから設定 + サブモニターでは別の大きさに) ──
-            if (!kIsWeb && Platform.isWindows)
-              InkWell(
-                onTap: () => _showCursorSizeDialog(provider),
-                borderRadius: BorderRadius.circular(10),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 12, vertical: 12),
-                  margin: const EdgeInsets.symmetric(vertical: 2),
-                  decoration: BoxDecoration(
-                    color: Color.alphaBlend(
-                        provider.headerColor.withValues(alpha: 0.22),
-                        Colors.white.withValues(alpha: 0.04)),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(
-                        color: provider.headerColor.withValues(alpha: 0.28)),
-                  ),
-                  child: Row(children: [
-                    const Icon(Icons.mouse_rounded,
-                        color: Color(0xFF4FC3F7), size: 20),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(provider.t('cursorSize.title'),
-                          style: const TextStyle(
-                              color: Colors.white, fontSize: 14)),
-                    ),
-                    _settingHelpButton(
-                        provider.t('cursorSize.title'), 'cursorSize.desc'),
-                    const Icon(Icons.chevron_right_rounded,
-                        color: Colors.white38, size: 20),
-                  ]),
-                ),
-              ),
+      // ── 音声の出力先 ──
+      if (!kIsWeb && Platform.isWindows) ...[
+        sectionLabel(provider.t('audioOut.title')),
+        _AudioOutputInline(provider: provider),
+      ],
 
-            // ── 音声の出力先 (Windows のみ。 = ユーザー要望: サブモニター
-            //    のスピーカーから出すかをアプリから選べるように) ──
-            if (!kIsWeb && Platform.isWindows)
-              InkWell(
-                onTap: () => _showAudioOutputDialog(provider),
-                borderRadius: BorderRadius.circular(10),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 12, vertical: 12),
-                  margin: const EdgeInsets.symmetric(vertical: 2),
-                  decoration: BoxDecoration(
-                    color: Color.alphaBlend(
-                        provider.headerColor.withValues(alpha: 0.22),
-                        Colors.white.withValues(alpha: 0.04)),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(
-                        color: provider.headerColor.withValues(alpha: 0.28)),
-                  ),
-                  child: Row(children: [
-                    const Icon(Icons.volume_up_rounded,
-                        color: Color(0xFF9CCC65), size: 20),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(provider.t('audioOut.title'),
-                          style: const TextStyle(
-                              color: Colors.white, fontSize: 14)),
-                    ),
-                    _settingHelpButton(
-                        provider.t('audioOut.title'), 'audioOut.desc'),
-                    const Icon(Icons.chevron_right_rounded,
-                        color: Colors.white38, size: 20),
-                  ]),
-                ),
-              ),
+      // ── モニターの並べ方と行き先 ──
+      if (!kIsWeb && Platform.isWindows) ...[
+        sectionLabel(provider.t('cursorWrap.edgeTitle')),
+        _MonitorEdgeSettings(provider: provider),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          dense: true,
+          activeColor: const Color(0xFF4FC3F7),
+          title: Text(provider.t('cursorWrap.title'),
+              style: const TextStyle(color: Colors.white, fontSize: 13)),
+          subtitle: Text(provider.t('cursorWrap.desc'),
+              style: const TextStyle(color: Colors.white38, fontSize: 11)),
+          value: provider.cursorWrapEnabled,
+          onChanged: (v) {
+            provider.setCursorWrapEnabled(v);
+            CursorWrap.instance.apply(v);
+            setS(() {});
+          },
+        ),
+      ],
 
-            // ── トグル: 画面の両端をつないでマウスを回り込ませる
-            //    (Windows のみ。 = ユーザー要望: メインの右とサブの左しか
-            //     繋がっていなくて使いにくい) ──
-            // ── 行き来する方向 (= ユーザー要望: 上下からも / 3 台目も) ──
-            if (!kIsWeb && Platform.isWindows)
-              _settingsTile(
-                icon: Icons.open_with_rounded,
-                color: const Color(0xFF4FC3F7),
-                title: provider.t('cursorWrap.edgeTitle'),
-                subtitle: provider.t('cursorWrap.edgeSubtitle'),
-                onTap: () => unawaited(_showCursorWrapEdgeDialog(provider)),
-              ),
-            if (!kIsWeb && Platform.isWindows)
-              _settingsToggleTile(
-                icon: provider.cursorWrapEnabled
-                    ? Icons.swap_horiz_rounded
-                    : Icons.compare_arrows_rounded,
-                color: provider.cursorWrapEnabled
-                    ? const Color(0xFF4FC3F7)
-                    : Colors.white54,
-                title: provider.t('cursorWrap.title'),
-                helpKey: 'cursorWrap.desc',
-                value: provider.cursorWrapEnabled,
-                onChanged: (v) {
-                  provider.setCursorWrapEnabled(v);
-                  CursorWrap.instance.apply(v);
-                  setS(() {});
-                },
-              ),
+      // ── 高リフレッシュレート (Android) ──
+      if (!kIsWeb && Platform.isAndroid) ...[
+        sectionLabel(provider.t('refresh.setting')),
+        _settingsToggleTile(
+          icon: provider.highRefreshRate
+              ? Icons.speed_rounded
+              : Icons.speed_outlined,
+          color: provider.highRefreshRate
+              ? const Color(0xFF7FD8A0)
+              : Colors.white54,
+          title: provider.t('refresh.setting'),
+          helpKey: 'help.highRefreshRate',
+          value: provider.highRefreshRate,
+          onChanged: (v) async {
+            await provider.setHighRefreshRate(v);
+            await applyPreferredDisplayMode(high: v);
+            setS(() {});
+          },
+        ),
+      ],
     ];
   }
 
@@ -72114,164 +72213,6 @@ class _MindMapScreenState extends State<MindMapScreen>
   bool get _hasDisplaySettings =>
       !kIsWeb && (Platform.isWindows || Platform.isAndroid);
 
-  /// モニターの間をどの方向から行き来するかを決める
-  /// (= ユーザー要望: どの方向からアクセスできるか調べて、 上下からも、
-  ///   3 台目のモニターの設定もできるように)。
-  ///
-  /// いま繋がっているモニターを調べて並びを見せ、 4 つの端それぞれに
-  ///   「何もしない / 反対の端へ回り込む / このモニターへ飛ぶ」
-  /// を選べるようにする。 OS が既に繋いでいる側は、 その旨を添えて
-  /// 「設定しなくてもそのまま行ける」 と分かるようにする。
-  Future<void> _showCursorWrapEdgeDialog(MindMapProvider provider) async {
-    final mons = CursorWrap.listMonitors();
-    final edges = Map<String, int>.from(provider.cursorWrapEdges);
-    // ★ 今つながっていないモニターも選べるようにしておく
-    //   (= ユーザー要望: サブモニターを付けた時の動作を、 付ける前に決めて
-    //    おきたい)。 3 枚ぶんまでは常に並べる。 設定した番号のモニターが
-    //    無い間は、 その端では何も起きない (繋いだ時から効く)。
-    final slotCount = math.max(3, mons.length);
-    const kinds = <(String, String)>[
-      ('L', 'cursorWrap.edgeLeft'),
-      ('R', 'cursorWrap.edgeRight'),
-      ('T', 'cursorWrap.edgeTop'),
-      ('B', 'cursorWrap.edgeBottom'),
-    ];
-    await showDialog<void>(
-      context: context,
-      builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
-        String targetLabel(int? v) {
-          if (v == null) return provider.t('cursorWrap.targetNone');
-          if (v < 0) return provider.t('cursorWrap.targetOpposite');
-          if (v >= mons.length) {
-            // まだ繋いでいないモニター。 繋いだ時から効く。
-            return '${v + 1}: ${provider.t('cursorWrap.notConnected')}';
-          }
-          final m = mons[v];
-          return '${v + 1}: ${m.sizeLabel}'
-              '${m.primary ? " (${provider.t('cursorWrap.primary')})" : ""}';
-        }
-
-        return AlertDialog(
-          backgroundColor: const Color(0xFF1E1E32),
-          title: Text(provider.t('cursorWrap.edgeTitle'),
-              style: const TextStyle(color: Colors.white, fontSize: 15)),
-          content: SizedBox(
-            width: math.min(460.0, MediaQuery.sizeOf(dctx).width - 64),
-            child: SingleChildScrollView(
-              child: Column(mainAxisSize: MainAxisSize.min, children: [
-                // ── 今の並び ──
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                      provider
-                          .t('cursorWrap.foundMonitors')
-                          .replaceFirst('{n}', '${mons.length}'),
-                      style: const TextStyle(
-                          color: Colors.white70, fontSize: 12)),
-                ),
-                const SizedBox(height: 6),
-                _MonitorLayoutView(monitors: mons),
-                const SizedBox(height: 14),
-                if (mons.length < 2)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 10),
-                    child: Text(provider.t('cursorWrap.preconfigure'),
-                        style: const TextStyle(
-                            color: Color(0xFFFFB347), fontSize: 12)),
-                  ),
-                // ── 端ごとの行き先 ──
-                for (final e in kinds)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 3),
-                    child: Row(children: [
-                      SizedBox(
-                        width: 92,
-                        child: Text(provider.t(e.$2),
-                            style: const TextStyle(
-                                color: Colors.white, fontSize: 13)),
-                      ),
-                      Expanded(
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(8),
-                          onTap: () async {
-                            final picked = await showDialog<int?>(
-                              context: dctx,
-                              builder: (pctx) => SimpleDialog(
-                                backgroundColor: const Color(0xFF1E1E32),
-                                title: Text(provider.t(e.$2),
-                                    style: const TextStyle(
-                                        color: Colors.white, fontSize: 14)),
-                                children: [
-                                  for (final v in <int?>[
-                                    null,
-                                    -1,
-                                    for (var i = 0; i < slotCount; i++) i,
-                                  ])
-                                    SimpleDialogOption(
-                                      onPressed: () =>
-                                          Navigator.pop(pctx, v ?? -999),
-                                      child: Text(targetLabel(v),
-                                          style: TextStyle(
-                                              color: (edges[e.$1] ?? -999) ==
-                                                      (v ?? -999)
-                                                  ? const Color(0xFF4FC3F7)
-                                                  : Colors.white70,
-                                              fontSize: 13)),
-                                    ),
-                                ],
-                              ),
-                            );
-                            if (picked == null) return;
-                            setD(() {
-                              if (picked == -999) {
-                                edges.remove(e.$1);
-                              } else {
-                                edges[e.$1] = picked;
-                              }
-                            });
-                          },
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 10, vertical: 8),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF15152A),
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(color: Colors.white12),
-                            ),
-                            child: Text(targetLabel(edges[e.$1]),
-                                style: const TextStyle(
-                                    color: Colors.white70, fontSize: 12.5)),
-                          ),
-                        ),
-                      ),
-                    ]),
-                  ),
-                const SizedBox(height: 10),
-                Text(provider.t('cursorWrap.edgeHint'),
-                    style: const TextStyle(
-                        color: Colors.white38, fontSize: 11)),
-              ]),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dctx),
-              child: Text(provider.t('btn.cancel'),
-                  style: const TextStyle(color: Colors.white54)),
-            ),
-            TextButton(
-              onPressed: () {
-                unawaited(provider.setCursorWrapEdges(edges));
-                Navigator.pop(dctx);
-              },
-              child: Text(provider.t('btn.save'),
-                  style: const TextStyle(color: Color(0xFF4FC3F7))),
-            ),
-          ],
-        );
-      }),
-    );
-  }
 
   /// ディスプレイ設定のダイアログ (デスクトップ)。 動作設定と同じ作り。
   void _openDisplaySettings() {
@@ -72279,19 +72220,44 @@ class _MindMapScreenState extends State<MindMapScreen>
     _displayDialogOpen = true;
     final screenCtx = context;
     final provider = context.read<MindMapProvider>();
+    // ★ 画面の真ん中ではなく、 押したボタンの近くに出す (= ユーザー要望)。
+    //   位置決めは他の設定窓と同じ仕組み (最後に押した場所を使う)。
+    final at = _lastGlobalPointerPos;
+    const dlgW = 560.0;
     showDialog<void>(
       context: context,
       barrierColor: Colors.black54,
       builder: (dctx) => StatefulBuilder(
-        builder: (bctx, setS) => Dialog(
+        builder: (bctx, setS) {
+          final scr = MediaQuery.of(bctx).size;
+          final w = math.min(dlgW, scr.width - 32);
+          final maxH = scr.height * 0.86;
+          final left = at == null
+              ? (scr.width - w) / 2
+              : (at.dx - w / 2)
+                  .clamp(12.0, math.max(12.0, scr.width - w - 12))
+                  .toDouble();
+          // ボタンのすぐ下に出す。 入り切らない時は上に逃がす。
+          final top = at == null
+              ? math.max(12.0, (scr.height - maxH) / 2)
+              : math.min(at.dy + 16, math.max(12.0, scr.height - 260))
+                  .toDouble();
+          return Stack(children: [
+            Positioned(
+              left: left,
+              top: top,
+              width: w,
+              child: Dialog(
+          insetPadding: EdgeInsets.zero,
+          alignment: Alignment.topLeft,
           backgroundColor: const Color(0xFF12121F),
           shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(16),
               side: BorderSide(color: Colors.white.withValues(alpha: 0.10))),
           child: ConstrainedBox(
             constraints: BoxConstraints(
-              maxWidth: math.min(720.0, MediaQuery.of(bctx).size.width - 64),
-              maxHeight: MediaQuery.of(bctx).size.height * 0.86,
+              maxWidth: w,
+              maxHeight: math.max(200.0, scr.height - top - 16),
             ),
             child: Column(mainAxisSize: MainAxisSize.min, children: [
               Padding(
@@ -72331,7 +72297,10 @@ class _MindMapScreenState extends State<MindMapScreen>
               ),
             ]),
           ),
-        ),
+              ),
+            ),
+          ]);
+        },
       ),
     ).whenComplete(() => _displayDialogOpen = false);
   }
@@ -95960,6 +95929,415 @@ class _SplitPdfHorizontalScrollBarState
   }
 }
 
+/// 音声の出力先を、 ディスプレイ設定の中にそのまま並べる
+/// (= ユーザー要望: 一つずつ押して開くのが面倒なので全部一度に出す)。
+class _AudioOutputInline extends StatefulWidget {
+  final MindMapProvider provider;
+  const _AudioOutputInline({required this.provider});
+
+  @override
+  State<_AudioOutputInline> createState() => _AudioOutputInlineState();
+}
+
+class _AudioOutputInlineState extends State<_AudioOutputInline> {
+  List<({String id, String name, bool isDefault})> _devices = const [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  Future<void> _load() async {
+    try {
+      final v = await AudioOutput.listDevices();
+      if (!mounted) return;
+      setState(() {
+        _devices = v;
+        _loading = false;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) {
+      return const Padding(
+        padding: EdgeInsets.all(10),
+        child: SizedBox(
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(strokeWidth: 2)),
+      );
+    }
+    if (_devices.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.all(8),
+        child: Text(widget.provider.t('audioOut.none'),
+            style: const TextStyle(color: Colors.white54, fontSize: 12)),
+      );
+    }
+    return Column(mainAxisSize: MainAxisSize.min, children: [
+      for (final d in _devices)
+        ListTile(
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(
+            d.isDefault ? Icons.volume_up_rounded : Icons.speaker_outlined,
+            color: d.isDefault ? const Color(0xFF9CCC65) : Colors.white54,
+            size: 18,
+          ),
+          title: Text(d.name,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                  color: d.isDefault ? Colors.white : Colors.white70,
+                  fontSize: 12.5,
+                  fontWeight:
+                      d.isDefault ? FontWeight.w700 : FontWeight.w400)),
+          trailing: d.isDefault
+              ? const Icon(Icons.check_rounded,
+                  color: Color(0xFF9CCC65), size: 16)
+              : null,
+          onTap: d.isDefault
+              ? null
+              : () async {
+                  final ok = await AudioOutput.setDefault(d.id);
+                  if (ok) await _load();
+                },
+        ),
+    ]);
+  }
+}
+
+/// モニターの並べ方と、 **画面の端を押して行き先を決める**設定
+/// (= ユーザー要望: ディスプレイのブロックの端を押してどこに遷移するか
+///   決められるように。 一つずつ「反対の端へ回り込む」 を選ぶのは面倒)。
+class _MonitorEdgeSettings extends StatefulWidget {
+  final MindMapProvider provider;
+  const _MonitorEdgeSettings({required this.provider});
+
+  @override
+  State<_MonitorEdgeSettings> createState() => _MonitorEdgeSettingsState();
+}
+
+class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
+  late Map<String, int> _placement =
+      Map<String, int>.from(widget.provider.cursorWrapPlacement);
+  late Map<String, int> _edges =
+      Map<String, int>.from(widget.provider.cursorWrapEdges);
+  List<MonitorInfo> _mons = const [];
+
+  /// 向き ('left' 等) と、 端の記号 ('L' 等) の対応。
+  static const _dirToEdge = {
+    'left': 'L',
+    'right': 'R',
+    'top': 'T',
+    'bottom': 'B',
+  };
+
+  @override
+  void initState() {
+    super.initState();
+    _mons = CursorWrap.listMonitors();
+  }
+
+  void _save() {
+    unawaited(widget.provider.setCursorWrapEdges(_edges));
+    unawaited(widget.provider.setCursorWrapPlacement(_placement));
+  }
+
+  /// 空いているモニター番号 (0 は主なので 1 以上)。
+  int _freeNumber() {
+    final used = <int>{
+      for (var i = 0; i < _mons.length; i++) i,
+      ..._placement.values,
+    };
+    var n = 1;
+    while (used.contains(n)) {
+      n++;
+    }
+    return n;
+  }
+
+  /// 端を押した時: 行き先を選ぶ。
+  Future<void> _pickEdgeTarget(String dir) async {
+    final p = widget.provider;
+    final edge = _dirToEdge[dir]!;
+    // 選べる行き先 = 主以外のモニター (実物 + 置く予定)。
+    final choices = <int>{
+      for (var i = 1; i < _mons.length; i++) i,
+      ..._placement.values,
+    }.toList()
+      ..sort();
+    final picked = await showDialog<int>(
+      context: context,
+      builder: (dctx) => SimpleDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Text(p.t('cursorWrap.edgeGoesTo'),
+            style: const TextStyle(color: Colors.white, fontSize: 14)),
+        children: [
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(dctx, -999),
+            child: Text(p.t('cursorWrap.targetNone'),
+                style: TextStyle(
+                    color: _edges[edge] == null
+                        ? const Color(0xFF4FC3F7)
+                        : Colors.white70,
+                    fontSize: 13)),
+          ),
+          for (final i in choices)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(dctx, i),
+              child: Text(
+                  '${i + 1}'
+                  '${i < _mons.length ? "" : " (${p.t('cursorWrap.planned')})"}',
+                  style: TextStyle(
+                      color: _edges[edge] == i
+                          ? const Color(0xFF4FC3F7)
+                          : Colors.white70,
+                      fontSize: 13)),
+            ),
+        ],
+      ),
+    );
+    if (picked == null) return;
+    setState(() {
+      if (picked == -999) {
+        _edges.remove(edge);
+      } else {
+        _edges[edge] = picked;
+      }
+    });
+    _save();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = widget.provider;
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Center(
+        child: _MonitorArrangeView(
+          monitors: _mons,
+          placement: _placement,
+          edges: _edges,
+          onTapDir: (dir) {
+            setState(() {
+              if (_placement.containsKey(dir)) {
+                _placement.remove(dir);
+              } else {
+                _placement[dir] = _freeNumber();
+              }
+            });
+            _save();
+          },
+          onTapEdge: (dir) => unawaited(_pickEdgeTarget(dir)),
+        ),
+      ),
+      const SizedBox(height: 8),
+      Text(p.t('cursorWrap.arrangeHint2'),
+          style: const TextStyle(color: Colors.white38, fontSize: 11)),
+    ]);
+  }
+}
+
+/// モニターの並べ方を、 Windows 11 のディスプレイ設定のように図で決める
+/// (= ユーザー要望: サブモニターの模式図を見ながら、 どの方向に繋ぐかを
+///   決められるように)。
+///
+/// 真ん中が主モニター。 上下左右の空いている枠を押すとサブモニターを置き、
+/// 置いた枠をもう一度押すと外す。 実際に繋がっているモニターは、 その向きに
+/// 「接続中」 として出す (外せない)。
+class _MonitorArrangeView extends StatelessWidget {
+  /// いま実際に繋がっているモニター (左上から順)。
+  final List<MonitorInfo> monitors;
+
+  /// まだ繋いでいないモニターの置き場所 (向き → モニターの番号)。
+  final Map<String, int> placement;
+
+  /// 押された時 (向き)。
+  final void Function(String dir) onTapDir;
+
+  /// 端ごとの行き先 ('L'/'R'/'T'/'B' → モニターの番号)。
+  final Map<String, int> edges;
+
+  /// 主モニターの**端**を押された時 (向き)。
+  final void Function(String dir) onTapEdge;
+  const _MonitorArrangeView({
+    required this.monitors,
+    required this.placement,
+    required this.onTapDir,
+    required this.edges,
+    required this.onTapEdge,
+  });
+
+  /// 実際に繋がっているモニターが、 主モニターから見てどの向きにあるか。
+  /// 主モニター自身は null。
+  static String? _realDir(MonitorInfo m, MonitorInfo primary) {
+    if (m == primary) return null;
+    final dx = (m.left + m.right) / 2 - (primary.left + primary.right) / 2;
+    final dy = (m.top + m.bottom) / 2 - (primary.top + primary.bottom) / 2;
+    if (dx.abs() >= dy.abs()) return dx < 0 ? 'left' : 'right';
+    return dy < 0 ? 'top' : 'bottom';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final provider = context.read<MindMapProvider>();
+    MonitorInfo? primary;
+    for (final m in monitors) {
+      if (m.primary) {
+        primary = m;
+        break;
+      }
+    }
+    primary ??= monitors.isNotEmpty ? monitors.first : null;
+
+    // 向き → (番号, 実際に繋がっているか)
+    final byDir = <String, (int, bool)>{};
+    if (primary != null) {
+      for (var i = 0; i < monitors.length; i++) {
+        final d = _realDir(monitors[i], primary);
+        if (d != null) byDir[d] = (i, true);
+      }
+    }
+    for (final e in placement.entries) {
+      byDir.putIfAbsent(e.key, () => (e.value, false));
+    }
+
+    /// 主モニターの箱。 4 つの端が押せて、 そこから先の行き先を決める
+    /// (= ユーザー要望: ブロックの端を押して遷移先を決める)。
+    Widget primaryBox() {
+      const dirs = <String, String>{
+        'left': 'L',
+        'right': 'R',
+        'top': 'T',
+        'bottom': 'B',
+      };
+      Widget strip(String dir) {
+        final target = edges[dirs[dir]];
+        final on = target != null;
+        final horizontal = dir == 'top' || dir == 'bottom';
+        return Tooltip(
+          message: on
+              ? '${provider.t('cursorWrap.edgeGoesTo')}: ${target + 1}'
+              : provider.t('cursorWrap.edgeGoesTo'),
+          child: InkWell(
+            onTap: () => onTapEdge(dir),
+            child: Container(
+              width: horizontal ? double.infinity : 12,
+              height: horizontal ? 12 : double.infinity,
+              color: on
+                  ? const Color(0xFF9CCC65).withValues(alpha: 0.75)
+                  : Colors.white.withValues(alpha: 0.10),
+              alignment: Alignment.center,
+              child: on
+                  ? Text('${target + 1}',
+                      style: const TextStyle(
+                          color: Colors.black87,
+                          fontSize: 9,
+                          fontWeight: FontWeight.w700))
+                  : const Icon(Icons.add_rounded,
+                      size: 9, color: Colors.white38),
+            ),
+          ),
+        );
+      }
+
+      return SizedBox(
+        width: 92,
+        height: 58,
+        child: Stack(children: [
+          Positioned.fill(child: _box('1', true, true, provider, null)),
+          Positioned(left: 0, top: 0, bottom: 0, child: strip('left')),
+          Positioned(right: 0, top: 0, bottom: 0, child: strip('right')),
+          Positioned(left: 12, right: 12, top: 0, child: strip('top')),
+          Positioned(left: 12, right: 12, bottom: 0, child: strip('bottom')),
+        ]),
+      );
+    }
+
+    Widget cell(String? dir) {
+      if (dir == null) {
+        // 真ん中 = 主モニター。
+        return primaryBox();
+      }
+      final v = byDir[dir];
+      return InkWell(
+        borderRadius: BorderRadius.circular(6),
+        onTap: (v != null && v.$2) ? null : () => onTapDir(dir),
+        child: v == null
+            ? _empty(provider)
+            : _box('${v.$1 + 1}', false, v.$2, provider, dir),
+      );
+    }
+
+    return Column(mainAxisSize: MainAxisSize.min, children: [
+      cell('top'),
+      const SizedBox(height: 4),
+      Row(mainAxisSize: MainAxisSize.min, children: [
+        cell('left'),
+        const SizedBox(width: 4),
+        cell(null),
+        const SizedBox(width: 4),
+        cell('right'),
+      ]),
+      const SizedBox(height: 4),
+      cell('bottom'),
+    ]);
+  }
+
+  static Widget _empty(MindMapProvider provider) => Container(
+        width: 92,
+        height: 58,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: Colors.white24, style: BorderStyle.solid),
+          color: Colors.white.withValues(alpha: 0.03),
+        ),
+        child: const Center(
+          child: Icon(Icons.add_rounded, size: 18, color: Colors.white24),
+        ),
+      );
+
+  static Widget _box(String label, bool isPrimary, bool connected,
+      MindMapProvider provider, String? dir) {
+    final accent =
+        isPrimary ? const Color(0xFF4FC3F7) : const Color(0xFF9CCC65);
+    return Container(
+      width: 92,
+      height: 58,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(
+            color: connected ? accent : accent.withValues(alpha: 0.45),
+            width: connected ? 2 : 1),
+        color: accent.withValues(alpha: connected ? 0.22 : 0.08),
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Text(label,
+              style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700)),
+          Text(
+              isPrimary
+                  ? provider.t('cursorWrap.primary')
+                  : (connected
+                      ? provider.t('cursorWrap.connected')
+                      : provider.t('cursorWrap.planned')),
+              style: const TextStyle(color: Colors.white54, fontSize: 9)),
+        ],
+      ),
+    );
+  }
+}
+
 /// つながっているモニターの並びを、 そのままの位置関係で小さく描く
 /// (= ユーザー要望: どの方向から行き来できるか調べて見せて欲しい)。
 ///
@@ -97930,6 +98308,8 @@ class _ActionOverlayState extends State<_ActionOverlay>
   @override
   void dispose() {
     _anim.dispose();
+    _maxCtrl.dispose();
+    _maxFocus.dispose();
     super.dispose();
   }
 
@@ -98676,46 +99056,40 @@ class _ActionOverlayState extends State<_ActionOverlay>
                     const SizedBox(height: 6),
                     // ノードサイズ
                     if (showSizeControls) ...[
-                      _sizeRow(
-                          Icons.swap_horiz_rounded,
-                          provider.t('overlay.widthLabel'),
-                          _w,
-                          80,
-                          provider.nodeWidthMax,
-                          const Color(0xFF4FC3F7), (v) {
-                        setState(() => _w = v);
-                        widget.onSizeChanged(_w, _h);
-                      }, onMaxChanged: (at) async {
-                        final v = await _askSizeMax(provider,
-                            at: at,
-                            titleKey: 'overlay.widthMaxTitle',
-                            hint: provider.t('overlay.widthMaxHint'),
-                            current: provider.nodeWidthMax);
-                        if (v == null || !mounted) return;
-                        await provider.setNodeWidthMax(v);
-                        if (mounted) setState(() {});
-                      }),
+                      if (_editingMaxFor == 'w')
+                        _maxEditRow(
+                            provider, 'w', const Color(0xFF4FC3F7))
+                      else
+                        _sizeRow(
+                            Icons.swap_horiz_rounded,
+                            provider.t('overlay.widthLabel'),
+                            _w,
+                            80,
+                            provider.nodeWidthMax,
+                            const Color(0xFF4FC3F7), (v) {
+                          setState(() => _w = v);
+                          widget.onSizeChanged(_w, _h);
+                        }, onMaxChanged: (at) {
+                          _beginEditMax('w', provider.nodeWidthMax);
+                        }),
                       // 縦も同じように上限を変えられるようにする
                       //   (= ユーザー要望: 縦軸も同様)。
-                      _sizeRow(
-                          Icons.height_rounded,
-                          provider.t('overlay.heightLabel'),
-                          _h,
-                          36,
-                          provider.nodeHeightMax,
-                          const Color(0xFF43B97F), (v) {
-                        setState(() => _h = v);
-                        widget.onSizeChanged(_w, _h);
-                      }, onMaxChanged: (at) async {
-                        final v = await _askSizeMax(provider,
-                            at: at,
-                            titleKey: 'overlay.heightMaxTitle',
-                            hint: provider.t('overlay.heightMaxHint'),
-                            current: provider.nodeHeightMax);
-                        if (v == null || !mounted) return;
-                        await provider.setNodeHeightMax(v);
-                        if (mounted) setState(() {});
-                      }),
+                      if (_editingMaxFor == 'h')
+                        _maxEditRow(
+                            provider, 'h', const Color(0xFF43B97F))
+                      else
+                        _sizeRow(
+                            Icons.height_rounded,
+                            provider.t('overlay.heightLabel'),
+                            _h,
+                            36,
+                            provider.nodeHeightMax,
+                            const Color(0xFF43B97F), (v) {
+                          setState(() => _h = v);
+                          widget.onSizeChanged(_w, _h);
+                        }, onMaxChanged: (at) {
+                          _beginEditMax('h', provider.nodeHeightMax);
+                        }),
                       // ── 今の大きさを「これから作る物の既定」 にする
                       //    (= ユーザー要望) ──
                       Align(
@@ -98793,11 +99167,96 @@ class _ActionOverlayState extends State<_ActionOverlay>
     ]);
   }
 
-  /// 上限を聞く小さな窓 (= ユーザー要望: 上限値を押したら設定が開く)。
+  /// いま上限を打ち込んでいる行 ('w' = 横 / 'h' = 縦)。 null なら普通の
+  /// スライダー。
   ///
-  /// ★ 画面の真ん中ではなく**押した所のすぐ近く**に出す (= ユーザー要望)。
-  ///   道具箱は要素のそばに出ているので、 真ん中に飛ぶと目線が大きく動く。
-  Future<double?> _askSizeMax(
+  /// ★ 別の窓を開くのをやめて、 **道具箱の中でそのまま打ち込む**ように
+  ///   した (= ユーザー報告: 上限を入力しようとすると大元の項目が消えて
+  ///   しまって適用できない)。 窓を開くと、 その裏で道具箱の方が畳まれて
+  ///   しまい、 決めた値の行き先が無くなっていた。
+  String? _editingMaxFor;
+  final TextEditingController _maxCtrl = TextEditingController();
+  final FocusNode _maxFocus = FocusNode();
+
+  void _beginEditMax(String which, double current) {
+    setState(() {
+      _editingMaxFor = which;
+      _maxCtrl.text = current.round().toString();
+      _maxCtrl.selection =
+          TextSelection(baseOffset: 0, extentOffset: _maxCtrl.text.length);
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _maxFocus.requestFocus();
+    });
+  }
+
+  Future<void> _commitEditMax(MindMapProvider provider) async {
+    final which = _editingMaxFor;
+    if (which == null) return;
+    final v = double.tryParse(_maxCtrl.text.trim());
+    setState(() => _editingMaxFor = null);
+    if (v == null) return;
+    if (which == 'w') {
+      await provider.setNodeWidthMax(v);
+    } else {
+      await provider.setNodeHeightMax(v);
+    }
+    if (mounted) setState(() {});
+  }
+
+  /// 上限を打ち込む 1 行 (道具箱の中にそのまま出す)。
+  Widget _maxEditRow(MindMapProvider provider, String which, Color color) {
+    return Row(children: [
+      Icon(which == 'w' ? Icons.swap_horiz_rounded : Icons.height_rounded,
+          color: Colors.white38, size: 14),
+      const SizedBox(width: 4),
+      Text(
+          provider.t(which == 'w'
+              ? 'overlay.widthMaxTitle'
+              : 'overlay.heightMaxTitle'),
+          style: const TextStyle(color: Colors.white54, fontSize: 10)),
+      const SizedBox(width: 6),
+      SizedBox(
+        width: 58,
+        height: 26,
+        child: TextField(
+          controller: _maxCtrl,
+          focusNode: _maxFocus,
+          keyboardType: TextInputType.number,
+          textAlign: TextAlign.center,
+          style: TextStyle(color: color, fontSize: 11),
+          decoration: const InputDecoration(
+            isDense: true,
+            contentPadding: EdgeInsets.symmetric(vertical: 4),
+            border: OutlineInputBorder(),
+          ),
+          onSubmitted: (_) => unawaited(_commitEditMax(provider)),
+        ),
+      ),
+      IconButton(
+        tooltip: provider.t('btn.apply'),
+        visualDensity: VisualDensity.compact,
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+        icon: Icon(Icons.check_rounded, size: 15, color: color),
+        onPressed: () => unawaited(_commitEditMax(provider)),
+      ),
+      IconButton(
+        tooltip: provider.t('btn.cancel'),
+        visualDensity: VisualDensity.compact,
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+        icon: const Icon(Icons.close_rounded,
+            size: 15, color: Colors.white38),
+        onPressed: () => setState(() => _editingMaxFor = null),
+      ),
+    ]);
+  }
+
+  /// (旧) 上限を聞く小さな窓。 今は使っていない。 その場で打ち込む形へ
+  /// 移したため (= ユーザー報告: 窓を開くと道具箱が消えてしまう)。
+  // ignore: unused_element
+  Future<double?> _askSizeMaxUnused(
     MindMapProvider provider, {
     required Offset at,
     required String titleKey,
