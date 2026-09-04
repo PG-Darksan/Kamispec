@@ -53066,6 +53066,11 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 自動でジャンプして UX を整える。
   /// 例: 1 ページ目が非表示 → 自動で 2 ページ目を初期表示。
   void _handleSplitPdfLoaded(sf_pdf.PdfDocumentLoadedDetails details) {
+    // 消しゴム等で焼き直した後、 元の拡大率と表示位置へ戻す
+    // (= ユーザー報告: 消した時に拡大率が元に戻ってしまう)。
+    // ページ復元 (この下の 200ms の jumpToPage) より後になるよう、
+    // 中で少し待ってから当てる。
+    _restoreSplitPdfView(left: false);
     // 総ページ数と初期ページ番号をセット (オーバーレイ表示で使用)
     final pageCount = details.document.pages.count;
     if (mounted) {
@@ -53670,6 +53675,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                                       }
                                     },
                                     onSaved: () {
+                                      // 読み直す前に今の見え方を控える
+                                      // (= ユーザー報告: 消しゴムで拡大率が
+                                      //  元に戻る)。
+                                      _keepSplitPdfView(left: true);
                                       if (mounted) {
                                         setState(
                                             () => _splitLeftPdfReloadTick++);
@@ -53728,6 +53737,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                                           },
                                           onDocumentLoaded: (details) {
                                             if (!mounted) return;
+                                            // 焼き直しの後に元の拡大率と
+                                            // 表示位置へ戻す (= ユーザー報告)。
+                                            _restoreSplitPdfView(left: true);
                                             setState(() {
                                               _splitLeftTotalPages =
                                                   details.document.pages.count;
@@ -53802,6 +53814,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                     controller: _splitLeftPdfController,
                     panelWidth: width,
                     accent: const Color(0xFFFF6B6B),
+                    // この左パネルは縦めくり + 続き表示で固定。
+                    scrollDirection: sf_pdf.PdfScrollDirection.vertical,
+                    layoutMode: sf_pdf.PdfPageLayoutMode.continuous,
                   ),
               ],
             ),
@@ -54549,8 +54564,16 @@ class _MindMapScreenState extends State<MindMapScreen>
                   if (_splitMode == 'pdf' && _splitCurrentUrl.isNotEmpty)
                     _SplitPdfHorizontalScrollBar(
                       controller: _splitPdfController,
-                      panelWidth: panelSize,
+                      // 上下分割の時 panelSize は「高さ」 なので、 幅は
+                      // 画面の幅を渡す (= 動かせる量の計算が狂わないように)。
+                      panelWidth: isVertical ? mq.size.width : panelSize,
                       accent: const Color(0xFF6C63FF),
+                      // 上下分割では横めくりになる。 その時この棒は
+                      // 「ページ送り」 になってしまうので出さない。
+                      scrollDirection: isVertical
+                          ? sf_pdf.PdfScrollDirection.horizontal
+                          : sf_pdf.PdfScrollDirection.vertical,
+                      layoutMode: sf_pdf.PdfPageLayoutMode.continuous,
                     ),
                 ],
               ),
@@ -54760,6 +54783,8 @@ class _MindMapScreenState extends State<MindMapScreen>
           if (mounted) setState(() => _splitPdfDrawActive = false);
         },
         onSaved: () {
+          // 読み直す前に今の見え方を控える (= ユーザー報告)。
+          _keepSplitPdfView(left: false);
           if (mounted) setState(() => _splitPdfReloadTick++);
         },
         child: Listener(
@@ -80935,7 +80960,52 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 描き込みを焼き込んだ PDF のサムネイルを作り直す。
   /// (= ユーザー報告: PDF の上に手書きしてもサムネイルが古いまま)。
   /// PdfDrawLayer からの通知は「パス + 時刻」 なので先頭のパスだけ見る。
+  /// 焼き直しの前の「見え方」 (= 拡大率と位置)。 分割パネルは左右で別々。
+  /// 消しゴムで焼き直した後に元の拡大率へ戻すために使う (= ユーザー報告)。
+  _PdfViewKeep? _splitLeftPdfViewKeep;
+  _PdfViewKeep? _splitPdfViewKeep;
+
+  /// 控える。 等倍で控える物が無い時は、 前に控えた物を消さない
+  /// (焼き直しが終わった後に呼ばれても取りこぼさないように)。
+  void _keepSplitPdfView({required bool left}) {
+    if (left) {
+      final k = _PdfViewKeep.capture(
+          _splitLeftLocalPdfPath, _splitLeftPdfController);
+      if (k != null) _splitLeftPdfViewKeep = k;
+    } else {
+      final k =
+          _PdfViewKeep.capture(_splitLocalPdfPath, _splitPdfController);
+      if (k != null) _splitPdfViewKeep = k;
+    }
+  }
+
+  /// 読み直しの後に戻す。 ページ復元 (200ms) より後になるよう少し待つ。
+  void _restoreSplitPdfView({required bool left}) {
+    final keep = left ? _splitLeftPdfViewKeep : _splitPdfViewKeep;
+    if (keep == null) return;
+    final path = left ? _splitLeftLocalPdfPath : _splitLocalPdfPath;
+    if (path == null || keep.path != path) return;
+    Future.delayed(const Duration(milliseconds: 320), () {
+      if (!mounted) return;
+      // 右パネルは maxZoomLevel を指定していないので、 ビューアの既定
+      // (3.0) が上限。 左パネルは 8.0 を指定している。
+      keep.apply(
+          left ? _splitLeftPdfController : _splitPdfController,
+          left ? 8.0 : 3.0);
+      if (left) {
+        _splitLeftPdfViewKeep = null;
+      } else {
+        _splitPdfViewKeep = null;
+      }
+    });
+  }
+
   void _onPdfDrawBurned() {
+    // ★ 焼き込みが起きた瞬間に見え方を控える (= ユーザー報告: 消しゴムで
+    //   拡大率が戻る)。 onSaved を通らない「静かな焼き直し」 もここに来る。
+    //   この時点ではまだ古いビューアが生きているので、 本当の拡大率が読める。
+    _keepSplitPdfView(left: true);
+    _keepSplitPdfView(left: false);
     final raw = pdfDrawBurnedNotifier.value;
     final sp = raw.lastIndexOf(' ');
     final path = sp > 0 ? raw.substring(0, sp) : raw;
@@ -95222,6 +95292,59 @@ class _MindMapScreenState extends State<MindMapScreen>
 // ─── インラインタイトル編集ダイアログ ─────────────────────────────────────────
 
 /// PDF パネル下に表示される水平スクロールバー widget。
+/// 焼き直しの前に控えておく「PDF の見え方」 (拡大率と表示位置)。
+///
+/// = ユーザー報告: 「消しゴムでオブジェクトを消した時に画面が更新されて
+///   拡大率が元に戻ってしまうことがある」。
+///
+/// **なぜ戻ってしまうのか**: 焼き込み済みの線は紙の中身そのものなので、
+/// 消しゴムで消すには PDF を書き直してビューアに読み直させるしかない。
+/// ところが SfPdfViewer は読み直すたびに拡大率を 1.0、 表示位置を左上へ
+/// 初期化する。 ページ番号だけは各画面が戻していたので、 「ページは合って
+/// いるのに拡大が戻る」 という見え方になっていた。
+///
+/// **いつ起きるか (「ことがある」 の正体)**: 一度でも ✓ (保存して終了) を
+/// 押した後だけ。 それまでは手元の一覧を触るだけで紙を書き直さないので、
+/// 読み直しも起きない。
+class _PdfViewKeep {
+  /// どの PDF の見え方か。 別の PDF を開いた時に昔の値を当てないよう、
+  /// 道筋も一緒に覚える。
+  final String path;
+  final double zoom;
+  final Offset offset;
+  const _PdfViewKeep(this.path, this.zoom, this.offset);
+
+  /// 今の見え方を控える。 等倍の時は控えない (戻す必要が無く、 余計な
+  /// jumpTo でかえって画面が動くため)。 控える物が無ければ null。
+  static _PdfViewKeep? capture(
+      String? path, sf_pdf.PdfViewerController? controller) {
+    if (path == null || path.isEmpty || controller == null) return null;
+    try {
+      final z = controller.zoomLevel;
+      if (z <= 1.01) return null;
+      return _PdfViewKeep(path, z, controller.scrollOffset);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 読み直しの後に戻す。
+  ///
+  /// ★ 拡大率を**先に**当ててから位置を当てる。 ビューアは位置を「その
+  ///   拡大率で行ける上限」 で丸めるので、 順番が逆だと行きたい所へ
+  ///   届かない。
+  /// ★ 呼ぶのは、 各画面が持っている「読み込み後のページ復元」
+  ///   (200ms 後の jumpToPage) より**後**。 先に戻すとページ復元に
+  ///   上書きされて元の木阿弥になる。
+  void apply(sf_pdf.PdfViewerController? controller, double maxZoom) {
+    if (controller == null) return;
+    try {
+      controller.zoomLevel = zoom.clamp(1.0, maxZoom).toDouble();
+      controller.jumpTo(xOffset: offset.dx, yOffset: offset.dy);
+    } catch (_) {}
+  }
+}
+
 /// SfPdfViewer の zoomLevel > 1.0 の時 (= PDF が拡大されてはみ出している)
 /// 時のみ active になり、 ドラッグで横スクロール (= scrollOffset.dx) を更新。
 ///
@@ -95230,15 +95353,32 @@ class _MindMapScreenState extends State<MindMapScreen>
 class _SplitPdfHorizontalScrollBar extends StatefulWidget {
   final sf_pdf.PdfViewerController controller;
 
-  /// パネルの可視幅 (= 横スクロール最大値の推定に使う)
+  /// ビューアの**実際の**見えている幅 (= 横に動かせる量の計算に使う)。
+  /// 親の幅ではなく、 縮尺の掛かった後の幅を渡すこと。
   final double panelWidth;
 
   /// アクセントカラー (= Slider のつまみとアクティブトラックの色)
   final Color accent;
+
+  /// 今のめくり方向。 **縦めくりの時だけ**出す (= 横めくりでは jumpTo の
+  /// xOffset が「文書全体のどこか」 を指す横スクロールになり、 動かすと
+  /// 別のページへ飛んでしまうため)。
+  final sf_pdf.PdfScrollDirection scrollDirection;
+
+  /// 今の並べ方。 **続き表示の時だけ**出す (= 1 ページ表示では xOffset が
+  /// ページ送りに読み替えられ、 動かすとページがめくれてしまうため)。
+  final sf_pdf.PdfPageLayoutMode layoutMode;
+
+  /// 図の上に重ねて出すか (全画面のビューア用)。 true なら角を丸めて
+  /// 半透明にし、 下に敷く時 (分割パネル) は今までどおりの帯にする。
+  final bool floating;
   const _SplitPdfHorizontalScrollBar({
     required this.controller,
     required this.panelWidth,
     required this.accent,
+    this.scrollDirection = sf_pdf.PdfScrollDirection.vertical,
+    this.layoutMode = sf_pdf.PdfPageLayoutMode.continuous,
+    this.floating = false,
   });
   @override
   State<_SplitPdfHorizontalScrollBar> createState() =>
@@ -95274,12 +95414,31 @@ class _SplitPdfHorizontalScrollBarState
     super.dispose();
   }
 
+  /// 横に動かせる量。
+  ///
+  /// ★ ここが今まで間違っていた。 以前は `幅 x (倍率 - 1)` としていたが、
+  ///   ビューア側が実際に許す横の量は `幅 - 幅 / 倍率` = `幅 x (1 - 1/倍率)`。
+  ///   倍率のぶんだけ大きく見積もっていたので、 2 倍では棒の上半分、
+  ///   8 倍では上 7/8 が「動かしても何も起きない死んだ範囲」 になり、
+  ///   「拡大しても左右に動かせない」 と感じる原因になっていた。
+  double get _maxX {
+    final z = _zoomLevel;
+    if (z <= 1.0) return 0.0;
+    return widget.panelWidth * (1.0 - 1.0 / z);
+  }
+
+  /// 縦めくり + 続き表示の時だけ、 この棒は「見えている所を横に動かす」
+  /// 意味になる。 それ以外では xOffset がページ送りに読み替えられるので
+  /// 出さない (= 動かすと勝手にページが飛ぶ)。
+  bool get _usable =>
+      widget.scrollDirection == sf_pdf.PdfScrollDirection.vertical &&
+      widget.layoutMode == sf_pdf.PdfPageLayoutMode.continuous;
+
   void _refreshState() {
     try {
       final z = widget.controller.zoomLevel;
       final offset = widget.controller.scrollOffset;
-      // panelWidth * (zoomLevel - 1.0) ≒ はみ出した分の幅
-      final maxX = widget.panelWidth * (z - 1.0).clamp(0.0, 10.0);
+      final maxX = z > 1.0 ? widget.panelWidth * (1.0 - 1.0 / z) : 0.0;
       final normalized = maxX > 0 ? (offset.dx / maxX).clamp(0.0, 1.0) : 0.0;
       if (z != _zoomLevel || (normalized - _normalizedX).abs() > 0.005) {
         setState(() {
@@ -95293,13 +95452,25 @@ class _SplitPdfHorizontalScrollBarState
   @override
   Widget build(BuildContext context) {
     // zoom 1.0 以下 (= はみ出してない) ときはバー自体を表示しない
-    if (_zoomLevel <= 1.01) {
+    if (_zoomLevel <= 1.01 || !_usable || widget.panelWidth <= 0) {
       return const SizedBox.shrink();
     }
-    final maxX = widget.panelWidth * (_zoomLevel - 1.0);
+    final maxX = _maxX;
     return Container(
       height: 28,
-      color: const Color(0xFF1A1A30),
+      margin: widget.floating
+          ? const EdgeInsets.fromLTRB(10, 0, 10, 8)
+          : EdgeInsets.zero,
+      decoration: BoxDecoration(
+        color: widget.floating
+            ? const Color(0xFF1A1A30).withValues(alpha: 0.88)
+            : const Color(0xFF1A1A30),
+        borderRadius:
+            widget.floating ? BorderRadius.circular(14) : BorderRadius.zero,
+        border: widget.floating
+            ? Border.all(color: Colors.white.withValues(alpha: 0.12))
+            : null,
+      ),
       padding: const EdgeInsets.symmetric(horizontal: 8),
       child: Row(children: [
         Icon(Icons.swap_horiz_rounded, color: widget.accent, size: 16),
@@ -181245,6 +181416,31 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
     );
   }
 
+
+  /// 焼き直しの前の「見え方」 (= 拡大率と表示位置)。 消しゴム等で PDF を
+  /// 書き直すとビューアが読み直され、 拡大率が 1.0 に戻ってしまうので、
+  /// ここに控えて読み込み後に戻す (= ユーザー報告)。
+  _PdfViewKeep? _pdfViewKeep;
+
+  /// 控える。 等倍で控える物が無い時は、 前に控えた物を消さない。
+  void _keepPdfView() {
+    final k = _PdfViewKeep.capture(_pdfFilePath, _pdfViewerCtrl);
+    if (k != null) _pdfViewKeep = k;
+  }
+
+  /// 読み込みの後に戻す。 この画面が持つ「最後のページへ戻す」 処理
+  /// (200ms 後の jumpToPage) より後になるよう、 少し待ってから当てる。
+  void _restorePdfView() {
+    final keep = _pdfViewKeep;
+    if (keep == null) return;
+    if (_pdfFilePath == null || keep.path != _pdfFilePath) return;
+    Future.delayed(const Duration(milliseconds: 320), () {
+      if (!mounted) return;
+      keep.apply(_pdfViewerCtrl, 8.0);
+      _pdfViewKeep = null;
+    });
+  }
+
   double _pdfLiveWidthFactor(BoxConstraints constraints) {
     if (!_fitPageMode) return 1.0;
     final width = constraints.maxWidth;
@@ -185185,6 +185381,9 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                               }
                             },
                             onSaved: () {
+                              // 読み直す前に今の見え方を控える (= ユーザー
+                              // 報告: 消しゴムで拡大率が元に戻る)。
+                              _keepPdfView();
                               if (mounted) {
                                 setState(() => _pdfDrawReloadTick++);
                               }
@@ -185477,6 +185676,9 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                               },
                               onDocumentLoaded: (details) {
                                 _viewerMark('onDocumentLoaded');
+                                // 焼き直しの後に元の拡大率と表示位置へ戻す (= ユーザー報告: 消しゴムで消すと拡大率が元に戻る)。
+                                // 中でページ復元より後になるまで待つ。
+                                _restorePdfView();
                                 WidgetsBinding.instance
                                     .addPostFrameCallback((_) {
                                   _viewerMark('first frame after load');
@@ -185661,6 +185863,38 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                     child: ReadAloudBar(
                       controller: _reader!,
                       onClose: _stopReadAloud,
+                    ),
+                  ),
+                ),
+              // ── 拡大した時に左右へ動かす棒 (= ユーザー要望: PDF 内を
+              //    拡大した時に左右方向にスクロールできない) ──
+              //    分割パネルには前からあったのに、 全画面のビューアには
+              //    無かった。 それが「拡大しても左右に動かせない」 の正体。
+              //    重ねて出す (下に敷くとビューアが縮み、 PDF メモの印の
+              //    座標が全部ずれるため)。
+              //    縦めくり + 続き表示の時だけ意味がある棒なので、 それ以外は
+              //    部品側で自分から消える。
+              if (_pdfFilePath != null && _pdfViewerCtrl != null)
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: (_readerVisible && _reader != null) ? 72 : 0,
+                  child: LayoutBuilder(
+                    builder: (barCtx, barConstraints) =>
+                        _SplitPdfHorizontalScrollBar(
+                      controller: _pdfViewerCtrl!,
+                      panelWidth: barConstraints.maxWidth,
+                      accent: const Color(0xFF4FC3F7),
+                      floating: true,
+                      scrollDirection: (_fitPageMode ||
+                              _spreadPageMode ||
+                              _spreadFitPageMode ||
+                              pdfHoriz)
+                          ? sf_pdf.PdfScrollDirection.horizontal
+                          : sf_pdf.PdfScrollDirection.vertical,
+                      layoutMode: _fitPageMode
+                          ? sf_pdf.PdfPageLayoutMode.single
+                          : sf_pdf.PdfPageLayoutMode.continuous,
                     ),
                   ),
                 ),
@@ -187238,6 +187472,31 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
         ),
       ),
     );
+  }
+
+
+  /// 焼き直しの前の「見え方」 (= 拡大率と表示位置)。 消しゴム等で PDF を
+  /// 書き直すとビューアが読み直され、 拡大率が 1.0 に戻ってしまうので、
+  /// ここに控えて読み込み後に戻す (= ユーザー報告)。
+  _PdfViewKeep? _pdfViewKeep;
+
+  /// 控える。 等倍で控える物が無い時は、 前に控えた物を消さない。
+  void _keepPdfView() {
+    final k = _PdfViewKeep.capture(_pdfFilePath, _pdfViewerCtrl);
+    if (k != null) _pdfViewKeep = k;
+  }
+
+  /// 読み込みの後に戻す。 この画面が持つ「最後のページへ戻す」 処理
+  /// (200ms 後の jumpToPage) より後になるよう、 少し待ってから当てる。
+  void _restorePdfView() {
+    final keep = _pdfViewKeep;
+    if (keep == null) return;
+    if (_pdfFilePath == null || keep.path != _pdfFilePath) return;
+    Future.delayed(const Duration(milliseconds: 320), () {
+      if (!mounted) return;
+      keep.apply(_pdfViewerCtrl, 8.0);
+      _pdfViewKeep = null;
+    });
   }
 
   double _pdfLiveWidthFactor(BoxConstraints constraints) {
@@ -189016,6 +189275,8 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
                             }
                           },
                           onSaved: () {
+                            // 読み直す前に今の見え方を控える (= ユーザー報告)。
+                            _keepPdfView();
                             if (mounted) {
                               setState(() => _pdfDrawReloadTick++);
                             }
@@ -189184,6 +189445,8 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
                             }
                           },
                           onDocumentLoaded: (details) {
+                            // 焼き直しの後に元の拡大率と表示位置へ戻す (= ユーザー報告: 消しゴムで消すと拡大率が元に戻る)。
+                            _restorePdfView();
                             if (mounted) {
                               setState(() {
                                 _pdfTotalPages = details.document.pages.count;
@@ -189286,6 +189549,31 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
                   child: ReadAloudBar(
                     controller: _reader!,
                     onClose: _stopReadAloud,
+                  ),
+                ),
+              ),
+            // ── 拡大した時に左右へ動かす棒 (= ユーザー要望) ──
+            //    デスクトップ版と同じ物。 片方だけ直すと画面によって
+            //    出たり出なかったりするので、 双子の両方に入れる。
+            if (_pdfFilePath != null && _pdfViewerCtrl != null)
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: (_readerVisible && _reader != null) ? 72 : 0,
+                child: LayoutBuilder(
+                  builder: (barCtx, barConstraints) =>
+                      _SplitPdfHorizontalScrollBar(
+                    controller: _pdfViewerCtrl!,
+                    panelWidth: barConstraints.maxWidth,
+                    accent: const Color(0xFF4FC3F7),
+                    floating: true,
+                    scrollDirection:
+                        (_fitPageMode || _spreadFitPageMode || pdfHoriz)
+                            ? sf_pdf.PdfScrollDirection.horizontal
+                            : sf_pdf.PdfScrollDirection.vertical,
+                    layoutMode: (_fitPageMode || _spreadFitPageMode)
+                        ? sf_pdf.PdfPageLayoutMode.single
+                        : sf_pdf.PdfPageLayoutMode.continuous,
                   ),
                 ),
               ),
@@ -195497,6 +195785,11 @@ class _SsCellFmt {
   bool italic;
   bool underline;
 
+  /// セルの中で文字を折り返すか (Excel の「折り返して全体を表示する」)。
+  /// = ユーザー報告: 「xlsx を読み込んだ時にセルの改行が反映されていない」。
+  /// 改行の文字そのものは前から読めていて、 落ちていたのはこの旗の方。
+  bool wrap;
+
   /// 罫線 (= ユーザー要望: セルの外枠)。 null なら線なし。
   _SsBorderSide? bLeft;
   _SsBorderSide? bRight;
@@ -195510,6 +195803,7 @@ class _SsCellFmt {
     this.bold = false,
     this.italic = false,
     this.underline = false,
+    this.wrap = false,
     this.bLeft,
     this.bRight,
     this.bTop,
@@ -195519,6 +195813,8 @@ class _SsCellFmt {
   bool get hasBorder =>
       bLeft != null || bRight != null || bTop != null || bBottom != null;
 
+  // ★ wrap を必ず入れること。 入れ忘れると「折り返すだけ」 のセルが
+  //   空扱いで捨てられ、 読み込んでも改行が出ない。
   bool get isEmpty =>
       bg == null &&
       fg == null &&
@@ -195526,6 +195822,7 @@ class _SsCellFmt {
       !bold &&
       !italic &&
       !underline &&
+      !wrap &&
       !hasBorder;
 
   _SsCellFmt copy() => _SsCellFmt(
@@ -195535,6 +195832,7 @@ class _SsCellFmt {
       bold: bold,
       italic: italic,
       underline: underline,
+      wrap: wrap,
       bLeft: bLeft,
       bRight: bRight,
       bTop: bTop,
@@ -195547,6 +195845,7 @@ class _SsCellFmt {
         if (bold) 'b': true,
         if (italic) 'i': true,
         if (underline) 'u': true,
+        if (wrap) 'w': true,
         if (bLeft != null) 'bl': bLeft!.toJson(),
         if (bRight != null) 'br': bRight!.toJson(),
         if (bTop != null) 'bt': bTop!.toJson(),
@@ -195564,6 +195863,7 @@ class _SsCellFmt {
         bold: j['b'] == true,
         italic: j['i'] == true,
         underline: j['u'] == true,
+        wrap: j['w'] == true,
         bLeft: _side(j['bl']),
         bRight: _side(j['br']),
         bTop: _side(j['bt']),
@@ -196010,7 +196310,48 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
   }
 
   static const double _cellWidth = 120.0;
-  static const double _cellHeight = 32.0;
+
+  /// 行の高さの基準 (1 行ぶん)。
+  static const double _cellHeightBase = 32.0;
+
+  /// このシートで一番多い「セル内の行数」 (1〜3)。
+  /// = ユーザー報告: 「xlsx を読み込んだ時にセルの改行が反映されていない」。
+  /// 折り返す指定のセルに改行が入っていたら、 そのぶん行を高くして中身が
+  /// 全部見えるようにする。
+  ///
+  /// ★ 行ごとにバラバラの高さにはしない。 図形・画像の置き場所や、 選んだ
+  ///   セルへのスクロールなど、 至る所で「行番号 x 行の高さ」 で位置を
+  ///   出しているので、 行ごとに変えると表の上の物が全部ずれてしまう。
+  ///   シート全体で揃えるなら、 その計算はそのまま使える。
+  int _wrapLines = 1;
+
+  double get _cellHeight => _cellHeightBase * _wrapLines;
+
+  /// いま開いているシートを見て、 行の高さを決め直す。
+  /// シートを開いた時 / 切り替えた時に呼ぶ。
+  void _recomputeWrapLines() {
+    var maxLines = 1;
+    try {
+      final fmts = _sheetFmts[_activeSheet];
+      if (fmts != null && fmts.isNotEmpty) {
+        final rows = _sheets[_activeSheet];
+        for (final e in fmts.entries) {
+          if (!e.value.wrap) continue;
+          final rc = _fmtKeyToRc(e.key);
+          if (rc == null || rows == null) continue;
+          if (rc.$1 >= rows.length || rc.$2 >= rows[rc.$1].length) continue;
+          final text = rows[rc.$1][rc.$2];
+          if (text.isEmpty || !text.contains('\n')) continue;
+          final n = '\n'.allMatches(text).length + 1;
+          if (n > maxLines) maxLines = n;
+        }
+      }
+    } catch (_) {}
+    final next = maxLines.clamp(1, 3);
+    if (next != _wrapLines) {
+      _wrapLines = next;
+    }
+  }
   static const double _rowHeaderWidth = 48.0;
   static const double _colHeaderHeight = 28.0;
 
@@ -196066,6 +196407,7 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
         ..clear()
         ..addAll(s.sheetNames);
       _activeSheet = s.activeSheet;
+      _recomputeWrapLines();
       _selRow = s.selRow;
       _selCol = s.selCol;
       _sheetTables
@@ -196177,6 +196519,179 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
   /// シート名 → 結合した範囲の一覧。
   final Map<String, List<_SsMerge>> _sheetMerges = {};
 
+  /// シート名 → オートフィルターの範囲 ("A1:D20" のような書き方のまま)。
+  ///
+  /// = ユーザー報告: 「xlsx を読み込んだ時にフィルター機能の設定が反映されて
+  ///   いない」。 excel パッケージはこの設定を読まないので、 開いて保存すると
+  ///   **設定ごと消えていた**。 ここに控えておき、
+  ///   [_writeAutoFiltersIntoZip] で保存の時に書き戻す。
+  final Map<String, String> _sheetAutoFilter = {};
+
+  /// [r] 行 [c] 列がオートフィルターの見出し行か (= ▼ を出す所)。
+  bool _isAutoFilterHeader(int r, int c) {
+    final ref = _sheetAutoFilter[_activeSheet];
+    if (ref == null) return false;
+    final range = _parseA1Range(ref);
+    if (range == null) return false;
+    return r == range.$1 && c >= range.$2 && c <= range.$4;
+  }
+
+  /// "A1:D20" → (先頭行, 先頭列, 末尾行, 末尾列)。 読めなければ null。
+  static (int, int, int, int)? _parseA1Range(String ref) {
+    final parts = ref.split(':');
+    if (parts.isEmpty) return null;
+    final a = _parseA1(parts[0].replaceAll(r'$', ''));
+    if (a == null) return null;
+    final b = parts.length > 1
+        ? _parseA1(parts[1].replaceAll(r'$', ''))
+        : a;
+    if (b == null) return null;
+    return (a.$1, a.$2, b.$1, b.$2);
+  }
+
+  /// xlsx の中の <autoFilter ref="..."/> をシートごとに拾う。
+  /// excel パッケージが読まないので、 zip から自分で読む
+  /// (このアプリが書式を自分で読んでいるのと同じやり方)。
+  static Map<String, String> _readXlsxAutoFilters(Uint8List bytes) {
+    final out = <String, String>{};
+    try {
+      final arc = ZipDecoder().decodeBytes(bytes);
+      final files = <String, List<int>>{};
+      for (final f in arc.files) {
+        files[f.name] = List<int>.from(f.content as List<int>);
+      }
+      String? read(String name) => files[name] == null
+          ? null
+          : utf8.decode(files[name]!, allowMalformed: true);
+      final wb = read('xl/workbook.xml') ?? '';
+      final rels = read('xl/_rels/workbook.xml.rels') ?? '';
+      final relTarget = <String, String>{};
+      for (final m in RegExp(r'<Relationship\b[^>]*>').allMatches(rels)) {
+        final t = m.group(0)!;
+        final id = RegExp(r'Id="([^"]+)"').firstMatch(t)?.group(1);
+        var tg = RegExp(r'Target="([^"]+)"').firstMatch(t)?.group(1);
+        if (id == null || tg == null) continue;
+        if (tg.startsWith('/')) tg = tg.substring(1);
+        if (tg.startsWith('xl/')) tg = tg.substring(3);
+        relTarget[id] = 'xl/$tg';
+      }
+      for (final m in RegExp(r'<sheet\b[^>]*?/?>').allMatches(wb)) {
+        final t = m.group(0)!;
+        final name = RegExp(r'name="([^"]*)"').firstMatch(t)?.group(1);
+        final rid = RegExp(r'r:id="([^"]+)"').firstMatch(t)?.group(1);
+        if (name == null || rid == null) continue;
+        final path = relTarget[rid];
+        if (path == null) continue;
+        final xml = read(path);
+        if (xml == null) continue;
+        final af = RegExp(r'<autoFilter\b[^>]*ref="([^"]+)"')
+            .firstMatch(xml)
+            ?.group(1);
+        if (af != null && af.isNotEmpty) out[_xmlUnescape(name)] = af;
+      }
+    } catch (e) {
+      debugPrint('オートフィルターの読み取りに失敗: $e');
+    }
+    return out;
+  }
+
+  /// 保存する時に <autoFilter> を書き戻す。
+  ///
+  /// excel パッケージはこの設定を読まないので、 そのまま書き出すと
+  /// 利用者が Excel で付けたフィルターが消えてしまう (= ユーザー報告)。
+  /// 元の場所へ戻すため、 入れる所は xlsx の決まった並び順に合わせて
+  /// 「</sheetData> より後、 mergeCells などより前」 に差し込む。
+  Uint8List _writeAutoFiltersIntoZip(Uint8List bytes) {
+    if (_sheetAutoFilter.isEmpty) return bytes;
+    try {
+      final arc = ZipDecoder().decodeBytes(bytes);
+      final files = <String, List<int>>{};
+      for (final f in arc.files) {
+        files[f.name] = List<int>.from(f.content as List<int>);
+      }
+      String? read(String name) => files[name] == null
+          ? null
+          : utf8.decode(files[name]!, allowMalformed: true);
+      final wb = read('xl/workbook.xml');
+      final rels = read('xl/_rels/workbook.xml.rels');
+      if (wb == null || rels == null) return bytes;
+      final relTarget = <String, String>{};
+      for (final m in RegExp(r'<Relationship\b[^>]*>').allMatches(rels)) {
+        final t = m.group(0)!;
+        final id = RegExp(r'Id="([^"]+)"').firstMatch(t)?.group(1);
+        var tg = RegExp(r'Target="([^"]+)"').firstMatch(t)?.group(1);
+        if (id == null || tg == null) continue;
+        if (tg.startsWith('/')) tg = tg.substring(1);
+        if (tg.startsWith('xl/')) tg = tg.substring(3);
+        relTarget[id] = 'xl/$tg';
+      }
+      final sheetPath = <String, String>{};
+      for (final m in RegExp(r'<sheet\b[^>]*?/?>').allMatches(wb)) {
+        final t = m.group(0)!;
+        final name = RegExp(r'name="([^"]*)"').firstMatch(t)?.group(1);
+        final rid = RegExp(r'r:id="([^"]+)"').firstMatch(t)?.group(1);
+        if (name == null || rid == null) continue;
+        final path = relTarget[rid];
+        if (path != null) sheetPath[_xmlUnescape(name)] = path;
+      }
+
+      var changed = false;
+      for (final e in _sheetAutoFilter.entries) {
+        final path = sheetPath[e.key];
+        if (path == null) continue;
+        var xml = read(path);
+        if (xml == null) continue;
+        // 既に在るなら触らない。
+        if (RegExp(r'<autoFilter\b').hasMatch(xml)) continue;
+        final tag = '<autoFilter ref="${_xmlEscapeAttr(e.value)}"/>';
+        // 入れてよい所を前から探す (どれも無ければ最後の閉じ札の前)。
+        var at = -1;
+        for (final marker in const [
+          '<mergeCells',
+          '<conditionalFormatting',
+          '<dataValidations',
+          '<hyperlinks',
+          '<printOptions',
+          '<pageMargins',
+          '<pageSetup',
+          '<drawing',
+          '</worksheet>',
+        ]) {
+          final i = xml.indexOf(marker);
+          if (i >= 0) {
+            at = i;
+            break;
+          }
+        }
+        if (at < 0) continue;
+        xml = xml.substring(0, at) + tag + xml.substring(at);
+        files[path] = utf8.encode(xml);
+        changed = true;
+      }
+      if (!changed) return bytes;
+
+      final outArc = Archive();
+      for (final entry in files.entries) {
+        outArc.addFile(
+            ArchiveFile(entry.key, entry.value.length, entry.value));
+      }
+      // encode は archive のバージョンによって List<int>? を返す。
+      final encoded = ZipEncoder().encode(outArc);
+      if (encoded == null || encoded.isEmpty) return bytes;
+      return Uint8List.fromList(encoded);
+    } catch (e) {
+      debugPrint('オートフィルターの書き戻しに失敗: $e');
+      return bytes;
+    }
+  }
+
+  /// 属性に入れる文字の逃がし。
+  static String _xmlEscapeAttr(String v) => v
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;');
+
   /// ★ 利用者がこの画面で**実際に直した**セル (シート名 → 「行,列」)。
   ///
   /// 触っていないセルの書式は、 読み込んだ物をそのまま書き出しに通す。
@@ -196190,6 +196705,16 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
   }
 
   static String _fmtKey(int r, int c) => '$r,$c';
+
+  /// _fmtKey の逆 (「行,列」 → (行, 列))。 読めなければ null。
+  static (int, int)? _fmtKeyToRc(String key) {
+    final i = key.indexOf(',');
+    if (i <= 0) return null;
+    final r = int.tryParse(key.substring(0, i));
+    final c = int.tryParse(key.substring(i + 1));
+    if (r == null || c == null) return null;
+    return (r, c);
+  }
 
   Map<String, _SsCellFmt> get _fmts => _sheetFmts[_activeSheet] ??= {};
   List<_SsMerge> get _merges => _sheetMerges[_activeSheet] ??= [];
@@ -196965,6 +197490,11 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
         // 書式 (塗り・文字・罫線) は styles.xml から自分で読む
         // (= パッケージはテーマ色・indexed 色・罫線・下線を落とすため)。
         final styleMap = _readXlsxStyles(normBytes);
+        // オートフィルターの範囲も拾っておく (= ユーザー報告: フィルターの
+        //   設定が反映されない)。 excel パッケージは読まないので自分で読む。
+        _sheetAutoFilter
+          ..clear()
+          ..addAll(_readXlsxAutoFilters(normBytes));
         xls.Excel? excel;
         try {
           excel = xls.Excel.decodeBytes(normBytes);
@@ -196984,6 +197514,7 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
             _sheets[e.key] = e.value;
           }
           _activeSheet = _sheetNames.first;
+          _recomputeWrapLines();
           if (!mounted) return;
           setState(() => _loading = false);
           return;
@@ -197046,6 +197577,7 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
           }
         }
         _activeSheet = _sheetNames.first;
+        _recomputeWrapLines();
       } else {
         String text;
         try {
@@ -197076,6 +197608,7 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
         _padSheetForDisplay(rows);
         _sheetNames = ['CSV'];
         _activeSheet = 'CSV';
+        _recomputeWrapLines();
         _sheets['CSV'] = rows;
       }
       if (mounted) setState(() => _loading = false);
@@ -197971,10 +198504,16 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
         ]);
       }
 
-      // ── xf → (font, fill, border) ──
+      // ── xf → (font, fill, border, 折り返し) ──
       final xfFont = <int>[];
       final xfFill = <int>[];
       final xfBorder = <int>[];
+      // セルの中で文字を折り返すか (= ユーザー報告: xlsx を読み込んだ時に
+      //   セルの改行が反映されていない)。 Excel は改行そのものを文字として
+      //   持ち、 「折り返して全体を表示する」 を <xf> の子の <alignment
+      //   wrapText="1"/> に書く。 ここを読んでいなかったので、 改行はデータに
+      //   在るのに 1 行に潰れて出ていた。
+      final xfWrap = <bool>[];
       for (final x in xfs) {
         int at(String k) =>
             int.tryParse(RegExp('$k="(\\d+)"').firstMatch(x)?.group(1) ?? '0') ??
@@ -197982,6 +198521,11 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
         xfFont.add(at('fontId'));
         xfFill.add(at('fillId'));
         xfBorder.add(at('borderId'));
+        final al = RegExp(r'<alignment\b[^>]*/?>').firstMatch(x)?.group(0);
+        final w = al == null
+            ? null
+            : RegExp(r'wrapText="([^"]+)"').firstMatch(al)?.group(1);
+        xfWrap.add(w == '1' || w?.toLowerCase() == 'true');
       }
 
       // ── シート名 → xml の場所 ──
@@ -198038,6 +198582,7 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
             f.bTop = borderSides[bi][2];
             f.bBottom = borderSides[bi][3];
           }
+          if (xi < xfWrap.length) f.wrap = xfWrap[xi];
           if (!f.isEmpty) map[_fmtKey(rc.$1, rc.$2)] = f;
         }
         if (map.isNotEmpty) out[_xmlUnescape(name)] = map;
@@ -198479,7 +199024,10 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
         //    xl/media + xl/drawings を足して結び直す。 ──
         // ★ 飾りは encode の後に自分で書き込む (= パッケージ経由だと
         //   番号がずれてセルの見た目が入れ替わるため)。
-        final withFmt = _writeCellFormatsIntoZip(Uint8List.fromList(bytes));
+        var withFmt = _writeCellFormatsIntoZip(Uint8List.fromList(bytes));
+        // オートフィルターを書き戻す (= ユーザー報告: 開いて保存すると
+        //   Excel で付けたフィルターが消えてしまう)。
+        withFmt = _writeAutoFiltersIntoZip(withFmt);
         final withImages = _embedImagesIntoXlsx(withFmt);
         // 元 Excel の図形 (吹き出し等) に手を入れていたら、 それも書き戻す
         // (= ユーザー要望: 吹き出しの中を編集できるように)。
@@ -199453,6 +200001,7 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
       _sheets[name] = rows;
       _sheetNames.add(name);
       _activeSheet = name;
+      _recomputeWrapLines();
       _selRow = 0;
       _selCol = 0;
       _rangeAnchorRow = null;
@@ -199488,6 +200037,7 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
           growable: true);
       _sheetNames.add(name);
       _activeSheet = name;
+      _recomputeWrapLines();
       _selRow = 0;
       _selCol = 0;
       _rangeAnchorRow = null;
@@ -201560,6 +202110,7 @@ $csvText
               _invalidateFormulaCache();
               setState(() {
                 _activeSheet = name;
+                _recomputeWrapLines();
                 _selRow = 0;
                 _selCol = 0;
               });
@@ -202926,6 +203477,8 @@ $csvText
               fmt: mg == null ? _fmtAt(r, c) : _fmtAt(mg.r1, mg.c1),
               hideTopBorder: mg != null && r != mg.r1,
               hideBottomBorder: mg != null && r != mg.r2,
+              // Excel で付いていたオートフィルターの見出し行に印を出す。
+              filterMark: _isAutoFilterHeader(r, c),
               editing: editing && !isMergeBody,
               selected: selected,
               dark: dark,
@@ -203260,6 +203813,11 @@ class _SsDataCell extends StatelessWidget {
   final bool hideTopBorder;
   final bool hideBottomBorder;
 
+  /// オートフィルターの見出し行のセルか (= 右端に ▼ の印を出す)。
+  /// ユーザーが Excel で付けたフィルターの範囲を、 開いた時に見て分かる
+  /// ようにするため (= ユーザー報告: フィルターの設定が反映されていない)。
+  final bool filterMark;
+
   const _SsDataCell({
     required this.width,
     required this.height,
@@ -203285,6 +203843,7 @@ class _SsDataCell extends StatelessWidget {
     this.fmt,
     this.hideTopBorder = false,
     this.hideBottomBorder = false,
+    this.filterMark = false,
     this.showFillHandle = false,
     this.inFillPreview = false,
     this.onFillDrag,
@@ -203395,6 +203954,18 @@ class _SsDataCell extends StatelessWidget {
                   controller: controller,
                   focusNode: focusNode,
                   autofocus: true,
+                  // 折り返すセルは複数行で編集できるようにする。 既定の
+                  //   TextField は 1 行なので、 改行の入ったセルを開くと
+                  //   改行が見えず、 打ち込むことも出来なかった。
+                  maxLines: (fmt?.wrap ?? false) ? null : 1,
+                  keyboardType: (fmt?.wrap ?? false)
+                      ? TextInputType.multiline
+                      : TextInputType.text,
+                  // 複数行の時、 Enter は改行として使いたいので確定に使わない
+                  //   (確定は Tab / Esc / 他のセルを押す、 で今までどおり)。
+                  textInputAction: (fmt?.wrap ?? false)
+                      ? TextInputAction.newline
+                      : TextInputAction.done,
                   style: TextStyle(color: fg, fontSize: fmt?.size ?? 13),
                   decoration: const InputDecoration(
                     border: InputBorder.none,
@@ -203423,12 +203994,32 @@ class _SsDataCell extends StatelessWidget {
                       : TextDecoration.none,
                   decorationColor: fg,
                 ),
-                maxLines: 1,
+                // ★ 折り返す指定のセルは 1 行で切らない (= ユーザー報告:
+                //   xlsx のセルの改行が反映されていない)。 改行の文字は前から
+                //   読めていたのに、 ここで 1 行に潰して … にしていた。
+                //   高さは行の高さぶんしか無いので、 入り切らない分は今まで
+                //   どおり … で切る (= 表が崩れないように)。
+                maxLines: (fmt?.wrap ?? false) ? null : 1,
+                softWrap: fmt?.wrap ?? false,
                 overflow: TextOverflow.ellipsis),
       ),
           ), // GestureDetector
           // ── オートフィルの取っ手 (= ユーザー要望) ──
           //    右下の小さな四角。 下 / 右へ引っ張ると連番やコピーで埋まる。
+          // ── オートフィルターの印 (= ユーザー報告: フィルターの設定が
+          //    反映されていない)。 Excel で付いていた範囲の見出し行に ▼ を
+          //    出して、 設定が読めている事が見て分かるようにする。 ──
+          if (filterMark && !editing)
+            Positioned(
+              right: 2,
+              top: 0,
+              bottom: 0,
+              child: Center(
+                child: Icon(Icons.arrow_drop_down_rounded,
+                    size: 16,
+                    color: dark ? Colors.white54 : Colors.black45),
+              ),
+            ),
           if (showFillHandle)
             Positioned(
               right: -3,

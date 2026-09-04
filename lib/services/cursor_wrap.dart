@@ -21,7 +21,10 @@ import 'package:win32/win32.dart' as w32;
 ///
 /// **やらない時**:
 ///   * モニターが 1 枚だけ (繋ぐ相手がいない)
-///   * ボタンを押している最中 (窓や物を運んでいる途中で飛ばすと壊れる)
+///   * ボタンを押している最中 (物を運んでいる途中で飛ばすと壊れる)。
+///     ただし **窓の題名帯を掴んで動かしている時だけは例外** で、 窓ごと
+///     回り込ませる (= ユーザー要望: カーソルは両端から出せるのに、 掴んだ
+///     窓は出せない)。 窓の大きさを変えている最中は形が壊れるのでやらない。
 ///   * 移した直後の 300ms (行ったり来たりを防ぐ)
 class CursorWrap {
   CursorWrap._();
@@ -133,6 +136,19 @@ class CursorWrap {
   /// 移した直後に、 また移してしまわないための待ち時間。
   DateTime _quietUntil = DateTime.fromMillisecondsSinceEpoch(0);
 
+  // ── 窓を掴んで運んでいる最中か (= ユーザー要望: 掴んだ窓も両端から) ──
+  //    Windows は題名帯を掴むと「移動の輪」 に入り、 GUI_INMOVESIZE が立つ。
+  //    輪の中では窓の位置が「今のカーソル - 掴んだ時のずれ」 で決まるので、
+  //    カーソルを反対の端へ移せば窓も付いて来る。
+  //    ただし GUI_INMOVESIZE は**大きさ変更**でも立つ。 そちらで飛ばすと形が
+  //    壊れるため、 掴んだ時の大きさと見比べて移動だけを通す。
+  /// いま輪に入っている窓 (0 = 入っていない)。
+  int _moveHwnd = 0;
+
+  /// その窓を掴んだ時の大きさ。 変わったら「大きさ変更」 と見なす。
+  int _moveW = 0;
+  int _moveH = 0;
+
 
   bool get isRunning => _timer != null;
 
@@ -186,8 +202,18 @@ class CursorWrap {
     if (DateTime.now().isBefore(_quietUntil)) return;
     try {
       if (!hasMultipleMonitors) return;
-      // 何かを掴んで運んでいる最中は触らない。
-      if (_anyMouseButtonDown()) return;
+      // 何かを掴んで運んでいる最中は触らない。 ただし窓を掴んで**動かして**
+      // いる時だけは通す (= ユーザー要望: カーソルは両端から出せるのに、
+      // 掴んだ窓は出せない)。
+      // ★ 調べるのはボタンが押されている時だけ。 押していない間まで毎回
+      //   (15ms ごと) OS に問い合わせると、 ただの無駄になる。
+      var movingWindow = 0;
+      if (_anyMouseButtonDown()) {
+        movingWindow = _movingWindowHandle();
+        if (movingWindow == 0) return;
+      } else {
+        _moveHwnd = 0;
+      }
 
       final vx = _metric(w32.SM_XVIRTUALSCREEN);
       final vy = _metric(w32.SM_YVIRTUALSCREEN);
@@ -238,8 +264,13 @@ class CursorWrap {
 
       // ★ 端に着いたら待たずにすぐ移す (= ユーザー報告: 一瞬止まるのが
       //   気になる)。 行き先のモニターの内側へ収めてから移す。
-      _setCursorPos(
-          nx.clamp(to.$1 + 1, to.$3 - 2), ny.clamp(to.$2 + 1, to.$4 - 2));
+      final tx = nx.clamp(to.$1 + 1, to.$3 - 2);
+      final ty = ny.clamp(to.$2 + 1, to.$4 - 2);
+      // 窓を掴んでいる時は、 窓も同じだけ先に運んでおく。 移動の輪が自分で
+      // カーソルに追従する場合は次の更新で上書きされるだけなので、 追従
+      // しない環境への保険になる (窓だけ置き去りにしない)。
+      if (movingWindow != 0) _moveWindowBy(movingWindow, tx - x, ty - y);
+      _setCursorPos(tx, ty);
       _quietUntil =
           DateTime.now().add(const Duration(milliseconds: 300));
     } catch (_) {
@@ -297,6 +328,84 @@ class CursorWrap {
       calloc.free(pt);
       calloc.free(mi);
     }
+  }
+
+  /// 掴んで**動かしている**窓のハンドル。 掴んでいない / 大きさを変えて
+  /// いる最中は 0 (= ユーザー要望: 掴んだ窓も両端から出せるように)。
+  int _movingWindowHandle() {
+    final gti = calloc<w32.GUITHREADINFO>();
+    try {
+      gti.ref.cbSize = sizeOf<w32.GUITHREADINFO>();
+      // 0 を渡すと今いちばん手前の窓の担当を見てくれる。
+      if (w32.GetGUIThreadInfo(0, gti) == 0 ||
+          (gti.ref.flags & w32.GUI_INMOVESIZE) == 0) {
+        _moveHwnd = 0;
+        return 0;
+      }
+      final hwnd = gti.ref.hwndMoveSize;
+      if (hwnd == 0) {
+        _moveHwnd = 0;
+        return 0;
+      }
+      final r = _windowRect(hwnd);
+      if (r == null) return 0;
+      final w = r.$3 - r.$1;
+      final h = r.$4 - r.$2;
+      if (hwnd != _moveHwnd) {
+        // 掴んだ直後。 大きさを覚えておく。
+        _moveHwnd = hwnd;
+        _moveW = w;
+        _moveH = h;
+        return hwnd;
+      }
+      // 大きさが変わっている = 移動ではなく大きさ変更。
+      if (w != _moveW || h != _moveH) return 0;
+      return hwnd;
+    } catch (_) {
+      _moveHwnd = 0;
+      return 0;
+    } finally {
+      calloc.free(gti);
+    }
+  }
+
+  /// 窓の四角 (left, top, right, bottom)。
+  (int, int, int, int)? _windowRect(int hwnd) {
+    final r = calloc<w32.RECT>();
+    try {
+      if (w32.GetWindowRect(hwnd, r) == 0) return null;
+      return (r.ref.left, r.ref.top, r.ref.right, r.ref.bottom);
+    } catch (_) {
+      return null;
+    } finally {
+      calloc.free(r);
+    }
+  }
+
+  /// 窓を [dx],[dy] だけ運ぶ (大きさと重なりの順は変えない)。
+  ///
+  /// ★ 必ず **非同期** (SWP_ASYNCWINDOWPOS) で頼む。 相手は「移動の輪」 の
+  ///   中にいる別プロセスの窓かもしれず、 同期で頼むと相手の返事を待って
+  ///   こちらの画面まで止まってしまう。 この関数の中で起きた不具合は
+  ///   ここで握り潰す (外側まで飛ぶと見回りごと止まり、 カーソルの大きさ
+  ///   切り替えまで道連れになる)。
+  void _moveWindowBy(int hwnd, int dx, int dy) {
+    try {
+      if (w32.IsWindow(hwnd) == 0) return;
+      final r = _windowRect(hwnd);
+      if (r == null) return;
+      w32.SetWindowPos(
+          hwnd,
+          0,
+          r.$1 + dx,
+          r.$2 + dy,
+          0,
+          0,
+          w32.SWP_NOSIZE |
+              w32.SWP_NOZORDER |
+              w32.SWP_NOACTIVATE |
+              w32.SWP_ASYNCWINDOWPOS);
+    } catch (_) {}
   }
 
   bool _anyMouseButtonDown() {
