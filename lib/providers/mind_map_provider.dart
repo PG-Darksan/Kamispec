@@ -7608,6 +7608,42 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Alarme',
       'ru': 'Будильник',
     },
+    // アラームの音と大きさ (= ユーザー要望: 音量の大きさなども設定できる
+    //   ようにして欲しい)。 タイマーと同じ選び方の画面を使う。
+    'alarm.soundTitle': {
+      'ja': 'アラームの音と大きさ',
+      'en': 'Alarm sound and volume',
+      'zh': '闹钟声音和音量',
+      'ko': '알람 소리와 음량',
+      'es': 'Sonido y volumen de la alarma',
+      'fr': 'Son et volume de l alarme',
+      'de': 'Weckton und Lautstaerke',
+      'pt': 'Som e volume do alarme',
+      'ru': 'Звук и громкость будильника',
+    },
+    // 無音カメラの上の帯を隠す / 出す (= ユーザー要望)。
+    'cam.hideHeader': {
+      'ja': '上の帯を隠す',
+      'en': 'Hide the top bar',
+      'zh': '隐藏顶部栏',
+      'ko': '위쪽 막대 숨기기',
+      'es': 'Ocultar la barra superior',
+      'fr': 'Masquer la barre du haut',
+      'de': 'Obere Leiste ausblenden',
+      'pt': 'Ocultar a barra superior',
+      'ru': 'Скрыть верхнюю панель',
+    },
+    'cam.showHeader': {
+      'ja': '上の帯を出す',
+      'en': 'Show the top bar',
+      'zh': '显示顶部栏',
+      'ko': '위쪽 막대 표시',
+      'es': 'Mostrar la barra superior',
+      'fr': 'Afficher la barre du haut',
+      'de': 'Obere Leiste einblenden',
+      'pt': 'Mostrar a barra superior',
+      'ru': 'Показать верхнюю панель',
+    },
     'alarm.empty': {
       'ja': 'アラームがありません。 「追加」 で作成できます。',
       'en': 'No alarms. Tap “Add” to create one.',

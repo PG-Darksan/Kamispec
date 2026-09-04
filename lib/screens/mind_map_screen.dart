@@ -32704,6 +32704,25 @@ class _MindMapScreenState extends State<MindMapScreen>
             const SizedBox(width: 8),
             Text(provider.t('alarm.title'),
                 style: const TextStyle(color: Colors.white, fontSize: 16)),
+            const Spacer(),
+            // 音と大きさ (= ユーザー要望: 音量の大きさなども設定できるように)。
+            //   鳴らす時に使う控え (node_notification) をそのまま編める
+            //   ようにする。 タイマーと同じ画面なので、 好きな音ファイルも
+            //   選べて、 その場で試聴できる。
+            IconButton(
+              tooltip: provider.t('alarm.soundTitle'),
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+              icon: const Icon(Icons.volume_up_rounded,
+                  color: Color(0xFFFFB347), size: 20),
+              onPressed: () => unawaited(_AlarmSoundPickerDialog.show(
+                dctx,
+                provider,
+                prefKey: 'node_notification',
+                title: provider.t('alarm.soundTitle'),
+              )),
+            ),
           ]),
           content: SizedBox(
             width: 340,
@@ -33673,8 +33692,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     // AI で作った解約リンクボタンを読み込んでから開く (初回のみ)。
     // ignore: discarded_futures
     _loadSubCustomLinks();
-    showDialog<void>(
-      context: context,
+    // 押したボタンの近くに出す (= ユーザー要望: 画面の中央ではなく)。
+    unawaited(_showNearDialogMain<void>(
+      width: 560,
+      height: 460,
       builder: (dialogContext) => StatefulBuilder(
         builder: (dialogContext, setDialog) => AlertDialog(
           backgroundColor: const Color(0xFF1E1E32),
@@ -33688,7 +33709,8 @@ class _MindMapScreenState extends State<MindMapScreen>
           //    では管理しづらい。 「有効なサブスク」 「登録したサブスク」 の
           //    欄と追加ボタンは出さず、 解約サイトへ飛べるだけの画面にする)。
           content: SizedBox(
-            width: 540,
+            // 窓 (560) から枠と余白を引いた幅に収める。
+            width: 490,
             child: SingleChildScrollView(
               child: _buildSubscriptionServiceLinks(dialogContext, setDialog),
             ),
@@ -33701,7 +33723,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           ],
         ),
       ),
-    );
+    ));
   }
 
   /// Windows の OS 通知 (local_notifier トースト) を表示する。
@@ -69554,7 +69576,10 @@ class _MindMapScreenState extends State<MindMapScreen>
 
     switch (id) {
       case 'calculator':
-        return _FloatingCalculator(
+        // ★ 左右分割でも**関数電卓**を出す (= ユーザー要望: 分割で計算機を
+        //   開く時も関数電卓として開かれるように)。 浮かせて開く時と同じ
+        //   中身になり、 開き方で見た目が変わらない。
+        return _FloatingScientificCalculator(
           key: ValueKey('pane_tool_${slot}_$id'),
           provider: provider,
           initialOffset: Offset.zero,
@@ -78947,8 +78972,10 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 他の AI 機能も同じモデルになる (フラッシュカード等と同じ扱い)。
   Future<bool> _confirmOcrModel() async {
     final provider = context.read<MindMapProvider>();
-    final ok = await showDialog<bool>(
-      context: context,
+    // 押したボタンの近くに出す (= ユーザー要望: 画面の中央ではなく)。
+    final ok = await _showNearDialogMain<bool>(
+      width: 440,
+      height: 300,
       builder: (dctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E32),
         title: Row(children: [
@@ -78961,7 +78988,8 @@ class _MindMapScreenState extends State<MindMapScreen>
           ),
         ]),
         content: SizedBox(
-          width: 380,
+          // 窓 (440) から枠と余白を引いた幅に収める。
+          width: 372,
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             Align(
               alignment: Alignment.centerLeft,
@@ -165250,12 +165278,19 @@ class _FloatingScientificCalculator extends StatefulWidget {
   /// 「アプリの外に出す」 (= ユーザー要望: 関数電卓にもフローティング機能)。
   /// null ならボタン非表示 (モバイル等)。
   final VoidCallback? onPopOut;
+
+  /// 分割ペインの中に埋め込んで出すか (= ユーザー要望: 左右分割で計算機を
+  /// 開く時も関数電卓として開く)。 true の時は浮かせず、 ドラッグ移動も
+  /// 画面外の丸めもしない。
+  final bool embedded;
   const _FloatingScientificCalculator({
+    super.key,
     required this.provider,
     required this.initialOffset,
     required this.onClose,
     this.hidden = false,
     this.onPopOut,
+    this.embedded = false,
   });
   @override
   State<_FloatingScientificCalculator> createState() =>
@@ -165297,13 +165332,30 @@ class _FloatingScientificCalculatorState
     // ExcludeFocus: ボタンタップでメインキャンバスの FocusNode がフォーカスを
     // 失い、他のショートカット (Ctrl+S 等) が効かなくなるバグを防ぐ。
     // 数字・演算子入力は CalcBody の HardwareKeyboard ハンドラが処理する。
-    return Positioned(
-      left: clampedLeft,
-      top: clampedTop,
-      // Offstage で裏に隠す (式・計算結果は維持される)。
-      child: Offstage(
-        offstage: widget.hidden,
-        child: ExcludeFocus(
+    //
+    // ★ 埋め込み (分割ペイン) の時は浮かせず、 ペインの大きさに合わせて出す
+    //   (= ユーザー要望: 左右分割でも関数電卓として開く)。 電卓 (四則) の
+    //   埋め込みと同じ形。
+    Widget place(Widget panel) {
+      if (widget.embedded) {
+        return Center(
+          child: Padding(
+            padding: const EdgeInsets.all(8),
+            // scaleDown = 入り切らない時だけ縮める (元より大きくはしない)。
+            child: FittedBox(fit: BoxFit.scaleDown, child: panel),
+          ),
+        );
+      }
+      return Positioned(
+        left: clampedLeft,
+        top: clampedTop,
+        // Offstage で裏に隠す (式・計算結果は維持される)。
+        child: Offstage(offstage: widget.hidden, child: panel),
+      );
+    }
+
+    return place(
+        ExcludeFocus(
           child: Material(
             elevation: 12,
             borderRadius: BorderRadius.circular(14),
@@ -165415,15 +165467,15 @@ class _FloatingScientificCalculatorState
                   // 折り畳み中も Offstage で生かしておき、 式・結果を維持する。
                   Offstage(
                     offstage: _collapsed,
-                    child: const CalcBody(),
+                    // 埋め込みは開きっぱなしなので、 物理キーは取らない
+                    // (= 別ペインでの入力を奪わないように)。
+                    child: CalcBody(enableKeyboard: !widget.embedded),
                   ),
                 ],
               ),
             ),
           ),
-        ),
-      ),
-    );
+        ));
   }
 }
 
@@ -167690,6 +167742,31 @@ class _SilentCameraPageState extends State<_SilentCameraPage>
   int _recSec = 0;
   Timer? _recTimer;
 
+  /// 上の帯 (閉じる・左右反転・すぐ埋め込む・ビデオ) を隠しているか
+  /// (= ユーザー要望: 無音カメラのヘッダー項目は非表示にできるように)。
+  /// 隠している間は右上に小さな出し直しボタンだけ残す。 次に開いた時も
+  /// 同じ状態で始まる (prefs に控える)。
+  static const String _kCamHeaderHiddenKey = 'silentCameraHeaderHidden';
+  bool _headerHidden = false;
+
+  Future<void> _loadHeaderHidden() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final v = prefs.getBool(_kCamHeaderHiddenKey) ?? false;
+      if (mounted && v != _headerHidden) setState(() => _headerHidden = v);
+    } catch (_) {}
+  }
+
+  void _setHeaderHidden(bool v) {
+    setState(() => _headerHidden = v);
+    unawaited(() async {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool(_kCamHeaderHiddenKey, v);
+      } catch (_) {}
+    }());
+  }
+
   String _camText(String key, [Object? err]) {
     final text = context.read<MindMapProvider>().t(key);
     return err == null ? text : text.replaceFirst('{err}', '$err');
@@ -167699,6 +167776,7 @@ class _SilentCameraPageState extends State<_SilentCameraPage>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    unawaited(_loadHeaderHidden());
     _init();
   }
 
@@ -167943,38 +168021,74 @@ class _SilentCameraPageState extends State<_SilentCameraPage>
         else
           const Center(child: CircularProgressIndicator(color: Colors.white)),
         // 上部: 閉じる + 設定 (= ユーザー要望: 左右反転 / 編集を飛ばす)
-        SafeArea(
-          child: Row(children: [
-            IconButton(
-              icon: const Icon(Icons.close, color: Colors.white, size: 28),
-              onPressed: () => Navigator.of(context).pop(),
+        //
+        // ★ 帯ごと隠せる (= ユーザー要望: 無音カメラのヘッダー項目は
+        //   非表示にできるように)。 隠している間は右上に小さな出し直し
+        //   ボタンだけ残すので、 映像を広く見られる。
+        if (_headerHidden)
+          SafeArea(
+            child: Align(
+              alignment: Alignment.topRight,
+              child: Padding(
+                padding: const EdgeInsets.only(top: 4, right: 6),
+                child: IconButton(
+                  tooltip: provider.t('cam.showHeader'),
+                  visualDensity: VisualDensity.compact,
+                  constraints:
+                      const BoxConstraints(minWidth: 30, minHeight: 30),
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(Icons.keyboard_double_arrow_down_rounded,
+                      color: Colors.white38, size: 20),
+                  onPressed: () => _setHeaderHidden(false),
+                ),
+              ),
             ),
-            const Spacer(),
-            _camToggle(
-              icon: Icons.flip_rounded,
-              on: provider.cameraUnmirror,
-              label: provider.t('cam.noMirror'),
-              onTap: () =>
-                  provider.setCameraUnmirror(!provider.cameraUnmirror),
-            ),
-            const SizedBox(width: 6),
-            _camToggle(
-              icon: Icons.bolt_rounded,
-              on: provider.cameraSkipEdit,
-              label: provider.t('cam.skipEdit'),
-              onTap: () => provider.setCameraSkipEdit(!provider.cameraSkipEdit),
-            ),
-            const SizedBox(width: 6),
-            // 写真 ⇔ ビデオ (= ユーザー要望: ビデオも撮れるように)。
-            _camToggle(
-              icon: Icons.videocam_rounded,
-              on: _videoMode,
-              label: provider.t('cam.videoMode'),
-              onTap: _toggleRecordingModeSafely,
-            ),
-            const SizedBox(width: 8),
-          ]),
-        ),
+          )
+        else
+          SafeArea(
+            child: Row(children: [
+              IconButton(
+                icon: const Icon(Icons.close, color: Colors.white, size: 28),
+                onPressed: () => Navigator.of(context).pop(),
+              ),
+              const Spacer(),
+              _camToggle(
+                icon: Icons.flip_rounded,
+                on: provider.cameraUnmirror,
+                label: provider.t('cam.noMirror'),
+                onTap: () =>
+                    provider.setCameraUnmirror(!provider.cameraUnmirror),
+              ),
+              const SizedBox(width: 6),
+              _camToggle(
+                icon: Icons.bolt_rounded,
+                on: provider.cameraSkipEdit,
+                label: provider.t('cam.skipEdit'),
+                onTap: () =>
+                    provider.setCameraSkipEdit(!provider.cameraSkipEdit),
+              ),
+              const SizedBox(width: 6),
+              // 写真 ⇔ ビデオ (= ユーザー要望: ビデオも撮れるように)。
+              _camToggle(
+                icon: Icons.videocam_rounded,
+                on: _videoMode,
+                label: provider.t('cam.videoMode'),
+                onTap: _toggleRecordingModeSafely,
+              ),
+              const SizedBox(width: 2),
+              // 帯を隠す。
+              IconButton(
+                tooltip: provider.t('cam.hideHeader'),
+                visualDensity: VisualDensity.compact,
+                constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+                padding: EdgeInsets.zero,
+                icon: const Icon(Icons.keyboard_double_arrow_up_rounded,
+                    color: Colors.white38, size: 20),
+                onPressed: () => _setHeaderHidden(true),
+              ),
+              const SizedBox(width: 6),
+            ]),
+          ),
         // 録画中の印 (= ユーザー要望: ビデオ撮影)。
         if (_recording)
           SafeArea(

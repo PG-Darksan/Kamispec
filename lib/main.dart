@@ -7176,8 +7176,24 @@ class _FloatingWebWindowAppState extends State<_FloatingWebWindowApp>
   static const String _kSizeKey = 'floatingAiWindowSize';
   Timer? _sizeSaveTimer;
 
+  /// 開いた直後の作り込みが済んだか。
+  ///
+  /// ★ 開く時にこちらから大きさを決める (前回の大きさ → 画面に収める) と、
+  ///   その一つ一つが「大きさが変わった」 知らせとして返ってくる。 それを
+  ///   そのまま控えていたので、 画面に収める為に縮めた大きさが次の既定に
+  ///   なり、 開くたびに少しずつ違う大きさになっていた
+  ///   (= ユーザー報告: Kindle を開く度に大きさが変わってしまう)。
+  ///   ここが true になるまでは控えない。
+  bool _sizeSettled = false;
+
+  /// 利用者が自分で窓の大きさを変えたか。 変えていない時は控えない
+  /// (= 開いた時の既定の大きさをそのまま保つ)。
+  bool _userResized = false;
+
   /// 今の窓の大きさを控える (連続で動く間は最後の 1 回だけ書く)。
   void _scheduleSaveSize() {
+    if (!_sizeSettled) return; // 開いた直後のこちら側の調整は数えない
+    _userResized = true;
     _sizeSaveTimer?.cancel();
     _sizeSaveTimer = Timer(const Duration(milliseconds: 600), () async {
       try {
@@ -7185,6 +7201,9 @@ class _FloatingWebWindowAppState extends State<_FloatingWebWindowApp>
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString(
             _kSizeKey, '${s.width.round()}x${s.height.round()}');
+        // サイトごとの控えも、 自分で変えた時だけ書き換える。
+        await prefs.setString('${_kSizeKey}_$_sizeHost',
+            '${s.width.round()}x${s.height.round()}');
       } catch (_) {}
     });
   }
@@ -7257,10 +7276,33 @@ class _FloatingWebWindowAppState extends State<_FloatingWebWindowApp>
       final m = RegExp(r'^(\d+)x(\d+)$').firstMatch(raw);
       if (m != null) {
         // ② 前回の大きさ。
-        final w = double.parse(m.group(1)!).clamp(320.0, 4000.0);
-        final h = double.parse(m.group(2)!).clamp(240.0, 3000.0);
-        await windowManager.setSize(Size(w, h));
-        return;
+        var w = double.parse(m.group(1)!).clamp(320.0, 4000.0);
+        var h = double.parse(m.group(2)!).clamp(240.0, 3000.0);
+        // ★ 画面に入り切る形に丸めてから使う (= ユーザー報告: 開く度に
+        //   大きさが変わる)。 以前はここで大きいまま開き、 後から画面に
+        //   合わせて縮め、 その縮んだ大きさを控えていたので、 開くたびに
+        //   じわじわ変わっていた。
+        var maxW = double.infinity;
+        var maxH = double.infinity;
+        try {
+          final area = (await screenRetriever.getPrimaryDisplay()).visibleSize;
+          if (area != null && area.width > 320 && area.height > 240) {
+            maxW = area.width - 8;
+            maxH = area.height - 60;
+          }
+        } catch (_) {}
+        // 画面いっぱいまで広げた控えは「その時だけの姿」 とみなして使わない
+        //   (= ユーザー要望: いつも同じ、 小さい方の大きさで開く)。
+        final nearFull = maxW.isFinite &&
+            maxH.isFinite &&
+            w >= maxW - 24 &&
+            h >= maxH - 24;
+        if (!nearFull) {
+          if (w > maxW) w = maxW;
+          if (h > maxH) h = maxH;
+          await windowManager.setSize(Size(w, h));
+          return;
+        }
       }
       // ③ 既定は小さめの縦長。 ただし、 横に広げないと中身が切れるサイト
       //    (通販など) は広めに開く (= ユーザー報告: Amazon が縦長で
@@ -7347,6 +7389,11 @@ class _FloatingWebWindowAppState extends State<_FloatingWebWindowApp>
       //   (= ユーザー報告: 画面下のボタンから開くとはみ出す)。
       //   呼び出し側では窓の大きさが分からないので、 自分で直す。
       await _fitIntoDisplay();
+      // ここまでのこちら側の調整は控えない。 少し置いてから受け付ける
+      //   (= 遅れて届く「大きさが変わった」 知らせを拾わないため)。
+      Future.delayed(const Duration(milliseconds: 900), () {
+        if (mounted) _sizeSettled = true;
+      });
       if (_pinned) {
         try {
           await windowManager.setAlwaysOnTop(true);
@@ -7642,16 +7689,22 @@ class _FloatingWebWindowAppState extends State<_FloatingWebWindowApp>
                   onPressed: () async {
                     // 閉じる直前の大きさを覚えておく (= ユーザー要望:
                     // 次回はこの大きさで開く)。
+                    // ★ ただし、 利用者が自分で大きさを変えた時だけ。
+                    //   触っていない窓の大きさを控えると、 画面に合わせて
+                    //   縮めた分が次の既定になり、 開くたびに大きさが
+                    //   変わっていた (= ユーザー報告)。
                     _sizeSaveTimer?.cancel();
-                    try {
-                      final s = await windowManager.getSize();
-                      final prefs = await SharedPreferences.getInstance();
-                      final v = '${s.width.round()}x${s.height.round()}';
-                      // サイトごとに覚える (= 通販は横長、 AI は縦長、 と
-                      // サイトによって合う形が違うため)。 共通の控えも残す。
-                      await prefs.setString('${_kSizeKey}_$_sizeHost', v);
-                      await prefs.setString(_kSizeKey, v);
-                    } catch (_) {}
+                    if (_userResized) {
+                      try {
+                        final s = await windowManager.getSize();
+                        final prefs = await SharedPreferences.getInstance();
+                        final v = '${s.width.round()}x${s.height.round()}';
+                        // サイトごとに覚える (= 通販は横長、 AI は縦長、 と
+                        // サイトによって合う形が違うため)。 共通の控えも残す。
+                        await prefs.setString('${_kSizeKey}_$_sizeHost', v);
+                        await prefs.setString(_kSizeKey, v);
+                      } catch (_) {}
+                    }
                     // 別プロセスなので、 自分だけ終わればよい。
                     exit(0);
                   },
