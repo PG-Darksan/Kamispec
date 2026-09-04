@@ -2814,6 +2814,11 @@ class _MindMapScreenState extends State<MindMapScreen>
   bool _splitPdfBarVisible = false;
   Timer? _splitPdfBarTimer;
 
+  /// 分割パネルの左右の棒に、 カーソルが乗っているか (= 乗っている間は
+  /// パネル側のホイール処理を止める)。
+  bool _splitLeftHBarHover = false;
+  bool _splitHBarHover = false;
+
   void _markSplitPdfBar() {
     if (!_splitPdfBarVisible && mounted) {
       setState(() => _splitPdfBarVisible = true);
@@ -4204,6 +4209,8 @@ class _MindMapScreenState extends State<MindMapScreen>
   void _onSplitLeftPdfWheel(PointerSignalEvent event) {
     if (event is! PointerScrollEvent) return;
     if (_splitLeftLocalPdfPath == null) return;
+    // 左右の棒の上で回している時は、 そちらに任せる (= ユーザー要望)。
+    if (_splitLeftHBarHover) return;
     // スクロールしている間だけ縦つまみを出す (= ユーザー要望)。
     _markSplitLeftPdfBar();
     _splitLeftWheelAccum += event.scrollDelta.dy;
@@ -53872,6 +53879,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                     // 縦のつまみと同じ合図で出す (= ユーザー要望:
                     //   カーソルがそこに居る時だけ)。
                     visible: _splitLeftPdfBarVisible,
+                    onHoverChanged: (v) {
+                      if (_splitLeftHBarHover == v) return;
+                      _splitLeftHBarHover = v;
+                      if (v) _markSplitLeftPdfBar();
+                    },
                   ),
               ],
             ),
@@ -54625,6 +54637,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                       accent: const Color(0xFF6C63FF),
                       // 縦のつまみと同じ合図で出す (= ユーザー要望)。
                       visible: _splitPdfBarVisible,
+                      onHoverChanged: (v) {
+                        if (_splitHBarHover == v) return;
+                        _splitHBarHover = v;
+                        if (v) _markSplitPdfBar();
+                      },
                       // 上下分割では横めくりになる。 その時この棒は
                       // 「ページ送り」 になってしまうので出さない。
                       scrollDirection: isVertical
@@ -95547,6 +95564,13 @@ class _SplitPdfHorizontalScrollBar extends StatefulWidget {
   /// ホバーになった時だけ出す)。 縦のつまみと同じ合図で動かす。
   /// ホバーの無いモバイルでは常に true を渡す。
   final bool visible;
+
+  /// カーソルがこの棒に乗った / 離れたの通知。
+  ///
+  /// 乗っている間は、 親 (PDF ビューア) 側のホイール処理を止めてもらう。
+  /// 止めないと、 棒の上で回した時に**紙も一緒に上下に動いて**しまう
+  /// (ホイールの合図は重なっている部品すべてに配られるため)。
+  final ValueChanged<bool>? onHoverChanged;
   const _SplitPdfHorizontalScrollBar({
     required this.controller,
     required this.panelWidth,
@@ -95555,6 +95579,7 @@ class _SplitPdfHorizontalScrollBar extends StatefulWidget {
     this.layoutMode = sf_pdf.PdfPageLayoutMode.continuous,
     this.floating = false,
     this.visible = true,
+    this.onHoverChanged,
   });
   @override
   State<_SplitPdfHorizontalScrollBar> createState() =>
@@ -95633,10 +95658,36 @@ class _SplitPdfHorizontalScrollBarState
         !_usable ||
         widget.panelWidth <= 0 ||
         !widget.visible) {
+      // 消えている間は「乗っていない」 に戻す (= 出たり消えたりする棒なので、
+      //   離れる通知が来ないまま消えることがある)。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) widget.onHoverChanged?.call(false);
+      });
       return const SizedBox.shrink();
     }
     final maxX = _maxX;
-    return Container(
+    // ── 棒の上でホイールを回したら左右に動かす (= ユーザー要望: カーソルが
+    //    左右スクロールバーの上にある時は、 上下のスクロールで左右に動く) ──
+    //    普通のマウスには横ホイールが無いので、 縦の回転を横移動に読み替える。
+    //    横に振れるマウス (dx) の分も一緒に見る。
+    return MouseRegion(
+      onEnter: (_) => widget.onHoverChanged?.call(true),
+      onExit: (_) => widget.onHoverChanged?.call(false),
+      child: Listener(
+      onPointerSignal: (e) {
+        if (e is! PointerScrollEvent) return;
+        final d = e.scrollDelta.dx.abs() > e.scrollDelta.dy.abs()
+            ? e.scrollDelta.dx
+            : e.scrollDelta.dy;
+        if (d == 0 || maxX <= 0) return;
+        try {
+          final cur = widget.controller.scrollOffset;
+          final next = (cur.dx + d).clamp(0.0, maxX);
+          widget.controller.jumpTo(xOffset: next, yOffset: cur.dy);
+          setState(() => _normalizedX = (next / maxX).clamp(0.0, 1.0));
+        } catch (_) {}
+      },
+      child: Container(
       height: 28,
       margin: widget.floating
           ? const EdgeInsets.fromLTRB(10, 0, 10, 8)
@@ -95694,6 +95745,8 @@ class _SplitPdfHorizontalScrollBarState
           ),
         ),
       ]),
+      ), // Container
+      ), // Listener
     );
   }
 }
@@ -180697,6 +180750,11 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
   bool _pdfHBarVisible = false;
   Timer? _pdfHBarTimer;
 
+  /// カーソルが左右の棒の上に乗っているか。
+  /// 乗っている間はビューア側のホイール処理を止める (= ユーザー要望: 棒の上
+  /// では上下のスクロールが左右移動になる。 止めないと紙も一緒に動く)。
+  bool _pdfHBarHover = false;
+
   void _markPdfHBar({bool hold = false}) {
     if (!_pdfHBarVisible && mounted) {
       setState(() => _pdfHBarVisible = true);
@@ -180818,6 +180876,22 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
   /// 移動)。 ON の間は文字選択の代わりにパンになる。 設定は次回も引き継ぐ。
   bool _pdfPanMode = false;
 
+  /// この道具を利用者が一度でも自分で切り替えたか。
+  ///
+  /// 一度も触っていないなら「拡大したら自動で掴んで動かす」 に任せる。
+  /// 一度でも触ったなら、 その選択をそのまま守る (= 拡大していても文字を
+  /// 選びたい人が、 自分で選択モードに戻せるように)。
+  bool _pdfPanUserSet = false;
+
+  /// いまドラッグで紙を掴んで動かせる状態か。
+  ///
+  /// 既定は「拡大している間だけ自動で掴んで動かす」 (= ユーザー要望: 拡大
+  /// した後にドラッグで自由に表示領域を動かしたい)。 等倍では今までどおり
+  /// 文字を選べる方が便利なので切り替えない。
+  /// 利用者が自分で切り替えた後は、 その選択を優先する。
+  bool get _pdfDragPanActive =>
+      _pdfPanUserSet ? _pdfPanMode : _pdfZoomLevel > 1.01;
+
   /// PDF 図形・線 描き込みモード (= ユーザー要望)。
   bool _pdfDrawActive = false;
 
@@ -180840,19 +180914,35 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
   int _pdfDrawReloadTick = 0;
   static const String _kPdfPanModeKey = 'pdfPanMode';
 
+  /// 「自分で切り替えた事がある」 の控え。 これが無い間は自動に任せる。
+  static const String _kPdfPanUserSetKey = 'pdfPanModeUserSet';
+
   Future<void> _loadPdfPanMode() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final v = prefs.getBool(_kPdfPanModeKey);
-      if (v != null && mounted) setState(() => _pdfPanMode = v);
+      final u = prefs.getBool(_kPdfPanUserSetKey) ?? false;
+      if (!mounted) return;
+      setState(() {
+        if (v != null) _pdfPanMode = v;
+        _pdfPanUserSet = u;
+      });
     } catch (_) {}
   }
 
   Future<void> _togglePdfPanMode() async {
-    setState(() => _pdfPanMode = !_pdfPanMode);
+    setState(() {
+      // ★ 反転させるのは「今**効いている**状態」。 旗そのものを反転すると、
+      //   拡大中 (自動でドラッグ移動) に押しても旗が true になるだけで
+      //   見た目が変わらず、 案内文と食い違う。
+      _pdfPanMode = !_pdfDragPanActive;
+      // ここから先はこの選択を守る (自動には戻さない)。
+      _pdfPanUserSet = true;
+    });
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool(_kPdfPanModeKey, _pdfPanMode);
+      await prefs.setBool(_kPdfPanUserSetKey, true);
     } catch (_) {}
     if (!mounted) return;
     final p = context.read<MindMapProvider>();
@@ -181861,8 +181951,11 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
       _prefAiPanelOpen = prefs.getBool(_kPrefAiPanelOpen);
       _prefMemoPanelOpen = prefs.getBool(_kPrefMemoPanelOpen);
       // 初回でなく、 前は閉じていたなら、 予約した自動オープンを取り消す。
+      // ★ その時は「場所取り」 も一緒に外す。 外し忘れると、 欄は出ないのに
+      //   両脇に空の帯だけ残り、 PDF が狭いまま開く (= ユーザー報告)。
       if (_prefAiPanelOpen == false && _prefMemoPanelOpen == false) {
         _pendingAiAutoOpen = false;
+        _releasePanelSlotReservation();
       }
     } catch (_) {}
   }
@@ -184769,8 +184862,13 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
         if (widget.isPdf)
           _pdfMenuItem(
               'panMode',
-              _pdfPanMode ? Icons.pan_tool_rounded : Icons.text_fields_rounded,
-              _pdfPanMode ? '現在：ドラッグで移動（タップで文字選択に）'
+              // 表示は「今どちらで効いているか」 に合わせる (= 拡大中は
+              //   自動でドラッグ移動になるため、 旗だけ見ると食い違う)。
+              _pdfDragPanActive
+                  ? Icons.pan_tool_rounded
+                  : Icons.text_fields_rounded,
+              _pdfDragPanActive
+                  ? '現在：ドラッグで移動（タップで文字選択に）'
                   : '現在：文字選択（タップでドラッグ移動に）',
               const Color(0xFFB39DDB)),
         // ── 「図形・線を描き込む」 は設定から外した (= ユーザー要望:
@@ -185675,6 +185773,13 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                             onPointerPanZoomUpdate: (e) =>
                                 _pdfPinchUpdate(e.scale),
                             onPointerSignal: (e) {
+                              // 左右の棒の上で回している時は、 そちらに任せる
+                              //   (= ユーザー要望: 棒の上では上下のスクロール
+                              //    が左右移動になる)。
+                              if (_pdfHBarHover) {
+                                _markPdfHBar(hold: true);
+                                return;
+                              }
                               // スクロール中だけ縦つまみを出す (= ユーザー
                               //   要望: 常時表示が気になる)。
                               _markPdfBar();
@@ -185745,11 +185850,15 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                               //  メニューも出るバージョンがある)。
                               // 副作用としてビューア空白部分のドラッグでパンができなくなるが、
                               // continuous モードでのスクロールはホイール / 矢印キーが主なので OK。
-                              enableTextSelection: !_pdfPanMode,
+                              enableTextSelection: !_pdfDragPanActive,
                               // ── ドラッグで表示領域を動かす (= ユーザー要望) ──
                               // pan にすると押しながらのドラッグで紙を掴んで
                               // 動かせる。 selection は文字を選ぶモード。
-                              interactionMode: _pdfPanMode
+                              // ★ 拡大している間は、 道具を切り替えなくても
+                              //   自動で「掴んで動かす」 になる (= ユーザー
+                              //   要望: PDF をドラッグして自由に表示領域を
+                              //   動かしたい)。 等倍に戻せば文字選択に戻る。
+                              interactionMode: _pdfDragPanActive
                                   ? sf_pdf.PdfInteractionMode.pan
                                   : sf_pdf.PdfInteractionMode.selection,
                               // ── リンクは自前のダイアログで開く (= ユーザー要望:
@@ -186110,6 +186219,12 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                                           setState(() => _memoPanelOpen = true);
                                         }
                                         if (!wantAi) {
+                                          // ★ AI 欄を開かない時も「場所取り」
+                                          //   は必ず外す (= ユーザー報告:
+                                          //   閉じたまま開くと、 欄は出ない
+                                          //   のに空の帯だけ残って PDF が
+                                          //   狭いままになる)。
+                                          _releasePanelSlotReservation();
                                           _savePanelOpenPrefs();
                                           return;
                                         }
@@ -186180,6 +186295,11 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                       floating: true,
                       // カーソルが下端に来た時だけ出す (= ユーザー要望)。
                       visible: _pdfHBarVisible,
+                      onHoverChanged: (v) {
+                        if (_pdfHBarHover == v) return;
+                        _pdfHBarHover = v;
+                        if (v) _markPdfHBar(hold: true);
+                      },
                       scrollDirection: (_fitPageMode ||
                               _spreadPageMode ||
                               _spreadFitPageMode ||
