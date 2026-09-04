@@ -72125,6 +72125,11 @@ class _MindMapScreenState extends State<MindMapScreen>
   Future<void> _showCursorWrapEdgeDialog(MindMapProvider provider) async {
     final mons = CursorWrap.listMonitors();
     final edges = Map<String, int>.from(provider.cursorWrapEdges);
+    // ★ 今つながっていないモニターも選べるようにしておく
+    //   (= ユーザー要望: サブモニターを付けた時の動作を、 付ける前に決めて
+    //    おきたい)。 3 枚ぶんまでは常に並べる。 設定した番号のモニターが
+    //    無い間は、 その端では何も起きない (繋いだ時から効く)。
+    final slotCount = math.max(3, mons.length);
     const kinds = <(String, String)>[
       ('L', 'cursorWrap.edgeLeft'),
       ('R', 'cursorWrap.edgeRight'),
@@ -72137,7 +72142,10 @@ class _MindMapScreenState extends State<MindMapScreen>
         String targetLabel(int? v) {
           if (v == null) return provider.t('cursorWrap.targetNone');
           if (v < 0) return provider.t('cursorWrap.targetOpposite');
-          if (v >= mons.length) return provider.t('cursorWrap.targetNone');
+          if (v >= mons.length) {
+            // まだ繋いでいないモニター。 繋いだ時から効く。
+            return '${v + 1}: ${provider.t('cursorWrap.notConnected')}';
+          }
           final m = mons[v];
           return '${v + 1}: ${m.sizeLabel}'
               '${m.primary ? " (${provider.t('cursorWrap.primary')})" : ""}';
@@ -72167,7 +72175,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                 if (mons.length < 2)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 10),
-                    child: Text(provider.t('cursorWrap.needTwo'),
+                    child: Text(provider.t('cursorWrap.preconfigure'),
                         style: const TextStyle(
                             color: Color(0xFFFFB347), fontSize: 12)),
                   ),
@@ -72197,7 +72205,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   for (final v in <int?>[
                                     null,
                                     -1,
-                                    for (var i = 0; i < mons.length; i++) i,
+                                    for (var i = 0; i < slotCount; i++) i,
                                   ])
                                     SimpleDialogOption(
                                       onPressed: () =>
@@ -98677,22 +98685,67 @@ class _ActionOverlayState extends State<_ActionOverlay>
                           const Color(0xFF4FC3F7), (v) {
                         setState(() => _w = v);
                         widget.onSizeChanged(_w, _h);
-                      }, onMaxChanged: () async {
-                        final v = await _askNodeWidthMax(provider);
+                      }, onMaxChanged: (at) async {
+                        final v = await _askSizeMax(provider,
+                            at: at,
+                            titleKey: 'overlay.widthMaxTitle',
+                            hint: provider.t('overlay.widthMaxHint'),
+                            current: provider.nodeWidthMax);
                         if (v == null || !mounted) return;
                         await provider.setNodeWidthMax(v);
                         if (mounted) setState(() {});
                       }),
+                      // 縦も同じように上限を変えられるようにする
+                      //   (= ユーザー要望: 縦軸も同様)。
                       _sizeRow(
                           Icons.height_rounded,
                           provider.t('overlay.heightLabel'),
                           _h,
                           36,
-                          200,
+                          provider.nodeHeightMax,
                           const Color(0xFF43B97F), (v) {
                         setState(() => _h = v);
                         widget.onSizeChanged(_w, _h);
+                      }, onMaxChanged: (at) async {
+                        final v = await _askSizeMax(provider,
+                            at: at,
+                            titleKey: 'overlay.heightMaxTitle',
+                            hint: provider.t('overlay.heightMaxHint'),
+                            current: provider.nodeHeightMax);
+                        if (v == null || !mounted) return;
+                        await provider.setNodeHeightMax(v);
+                        if (mounted) setState(() {});
                       }),
+                      // ── 今の大きさを「これから作る物の既定」 にする
+                      //    (= ユーザー要望) ──
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton.icon(
+                          style: TextButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 0),
+                            minimumSize: const Size(0, 24),
+                            tapTargetSize:
+                                MaterialTapTargetSize.shrinkWrap,
+                          ),
+                          onPressed: () async {
+                            await provider.setNodeDefaultSize(_w, _h);
+                            if (!mounted) return;
+                            _appSnack(
+                                context,
+                                SnackBar(
+                                    content: Text(provider
+                                        .t('overlay.sizeSavedAsDefault')),
+                                    duration:
+                                        const Duration(seconds: 2)));
+                          },
+                          icon: const Icon(Icons.push_pin_rounded,
+                              size: 12, color: Colors.white38),
+                          label: Text(provider.t('overlay.saveAsDefaultSize'),
+                              style: const TextStyle(
+                                  color: Colors.white38, fontSize: 10)),
+                        ),
+                      ),
                       const Divider(color: Colors.white10, height: 10),
                     ] else
                       const SizedBox(height: 6),
@@ -98740,43 +98793,81 @@ class _ActionOverlayState extends State<_ActionOverlay>
     ]);
   }
 
-  /// 横幅の上限を聞く (= ユーザー要望: 上限値を押したら設定が開く)。
-  Future<double?> _askNodeWidthMax(MindMapProvider provider) async {
-    final ctrl =
-        TextEditingController(text: provider.nodeWidthMax.round().toString());
+  /// 上限を聞く小さな窓 (= ユーザー要望: 上限値を押したら設定が開く)。
+  ///
+  /// ★ 画面の真ん中ではなく**押した所のすぐ近く**に出す (= ユーザー要望)。
+  ///   道具箱は要素のそばに出ているので、 真ん中に飛ぶと目線が大きく動く。
+  Future<double?> _askSizeMax(
+    MindMapProvider provider, {
+    required Offset at,
+    required String titleKey,
+    required String hint,
+    required double current,
+  }) async {
+    final ctrl = TextEditingController(text: current.round().toString());
+    const w = 250.0;
+    const h = 190.0;
+    final scr = MediaQuery.sizeOf(context);
+    final left = (at.dx - w / 2)
+        .clamp(8.0, math.max(8.0, scr.width - w - 8))
+        .toDouble();
+    final top = (at.dy - h - 10)
+        .clamp(8.0, math.max(8.0, scr.height - h - 8))
+        .toDouble();
     final v = await showDialog<double>(
       context: context,
       useRootNavigator: false,
-      builder: (dctx) => AlertDialog(
-        backgroundColor: const Color(0xFF2A2A3E),
-        title: Text(provider.t('overlay.widthMaxTitle'),
-            style: const TextStyle(color: Colors.white, fontSize: 15)),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          keyboardType: TextInputType.number,
-          style: const TextStyle(color: Colors.white),
-          decoration: InputDecoration(
-            helperText: provider.t('overlay.widthMaxHint'),
-            helperStyle:
-                const TextStyle(color: Colors.white38, fontSize: 11),
+      barrierColor: Colors.black26,
+      builder: (dctx) => Stack(children: [
+        Positioned(
+          left: left,
+          top: top,
+          width: w,
+          child: Material(
+            color: const Color(0xFF2A2A3E),
+            borderRadius: BorderRadius.circular(12),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(14, 12, 10, 6),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(provider.t(titleKey),
+                      style: const TextStyle(
+                          color: Colors.white, fontSize: 14)),
+                ),
+                TextField(
+                  controller: ctrl,
+                  autofocus: true,
+                  keyboardType: TextInputType.number,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: InputDecoration(
+                    isDense: true,
+                    helperText: hint,
+                    helperStyle: const TextStyle(
+                        color: Colors.white38, fontSize: 11),
+                  ),
+                  onSubmitted: (t) =>
+                      Navigator.pop(dctx, double.tryParse(t.trim())),
+                ),
+                Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(dctx),
+                    child: Text(provider.t('btn.cancel'),
+                        style: const TextStyle(
+                            color: Colors.white54, fontSize: 12)),
+                  ),
+                  FilledButton(
+                    onPressed: () =>
+                        Navigator.pop(dctx, double.tryParse(ctrl.text.trim())),
+                    child: Text(provider.t('btn.apply'),
+                        style: const TextStyle(fontSize: 12)),
+                  ),
+                ]),
+              ]),
+            ),
           ),
-          onSubmitted: (s) =>
-              Navigator.pop(dctx, double.tryParse(s.trim())),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dctx),
-            child: Text(provider.t('btn.cancel'),
-                style: const TextStyle(color: Colors.white54)),
-          ),
-          FilledButton(
-            onPressed: () =>
-                Navigator.pop(dctx, double.tryParse(ctrl.text.trim())),
-            child: Text(provider.t('btn.apply')),
-          ),
-        ],
-      ),
+      ]),
     );
     ctrl.dispose();
     return v;
@@ -98784,7 +98875,7 @@ class _ActionOverlayState extends State<_ActionOverlay>
 
   Widget _sizeRow(IconData icon, String label, double val, double min,
       double max, Color color, ValueChanged<double> onChanged,
-      {VoidCallback? onMaxChanged}) {
+      {void Function(Offset at)? onMaxChanged}) {
     return Row(children: [
       Icon(icon, color: Colors.white38, size: 14),
       const SizedBox(width: 2),
@@ -98805,18 +98896,28 @@ class _ActionOverlayState extends State<_ActionOverlay>
       // ★ 数字を押すと上限を変えられる (= ユーザー要望: ノードの横幅の
       //   上限値をクリックしたら設定が開かれて変えられるように)。
       if (onMaxChanged != null)
-        InkWell(
-          onTap: () => onMaxChanged(),
-          borderRadius: BorderRadius.circular(4),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 2),
-            child: Text('${val.round()}',
-                style: TextStyle(
-                    color: color, fontSize: 10,
-                    decoration: TextDecoration.underline,
-                    decorationColor: color)),
-          ),
-        )
+        Builder(builder: (bctx) {
+          return InkWell(
+            // 押した場所を渡す (= 上限の窓をその近くに出すため)。
+            onTap: () {
+              final box = bctx.findRenderObject();
+              final at = (box is RenderBox && box.hasSize)
+                  ? box.localToGlobal(box.size.center(Offset.zero))
+                  : Offset.zero;
+              onMaxChanged(at);
+            },
+            borderRadius: BorderRadius.circular(4),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 2),
+              child: Text('${val.round()}',
+                  style: TextStyle(
+                      color: color,
+                      fontSize: 10,
+                      decoration: TextDecoration.underline,
+                      decorationColor: color)),
+            ),
+          );
+        })
       else
         Text('${val.round()}',
             style: const TextStyle(color: Colors.white38, fontSize: 10)),

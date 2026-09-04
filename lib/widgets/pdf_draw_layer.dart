@@ -715,11 +715,20 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   /// 時だけ出す。
   int? get _soleSelected => _sel.length == 1 ? _sel.first : null;
 
-  /// 範囲選択の始点 / 終点 (ページ座標 pt) とページ番号。
-  /// null なら範囲選択していない。
+  /// 範囲選択の始点 (ページ座標 pt) と、 そのページ番号。
+  ///
+  /// 始点だけは**紙の上の位置**で持つ。 こうしておくと、 引っ張っている
+  /// 途中で紙が動いても始点がずれない。
   Offset? _rangeStart;
-  Offset? _rangeEnd;
   int? _rangePage;
+
+  /// 範囲選択の終点は**画面の座標**で持つ (= ユーザー要望: ページを跨いで
+  /// 範囲選択できるように)。
+  ///
+  /// 前はここもページ座標で、 しかも押し始めたページの中へ丸めていたので、
+  /// 隣のページまで枠を広げられなかった。 画面の座標なら、 どのページの
+  /// 上に来ても同じ 1 点として扱える。
+  Offset? _rangeEndGlobal;
 
   /// 範囲選択を始めた時点の選択 (Ctrl 併用で足し込むため)。
   Set<int> _rangeBase = <int>{};
@@ -810,18 +819,91 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   }
 
   /// 範囲選択の四角に触れている図形を選ぶ。
-  void _applyRangeSelection() {
+  /// 範囲選択の枠に掛かっている図形を選び直す。
+  ///
+  /// ページを跨いで選べるようにするため、 **枠の 2 点を画面の座標で持ち、
+  /// ページごとにその 2 点をそのページの紙の座標へ直して**判定する
+  /// (= ユーザー要望)。 図形の点を全部画面の座標へ直すより、 ページあたり
+  /// 2 回の変換で済むぶん軽い。
+  ///
+  /// [geoms] は今のページの並び。 呼ぶ側が既に持っているので受け取る
+  /// (この中で数え直すと、 指を動かすたびに要素の木を歩く事になる)。
+  void _applyRangeSelection(List<_PageGeom> geoms) {
     final a = _rangeStart;
-    final b = _rangeEnd;
+    final gEnd = _rangeEndGlobal;
     final page = _rangePage;
-    if (a == null || b == null || page == null) return;
-    final r = Rect.fromPoints(a, b);
+    if (a == null || gEnd == null || page == null) return;
+    _PageGeom? anchor;
+    for (final g in geoms) {
+      if (g.pageNumber == page) {
+        anchor = g;
+        break;
+      }
+    }
+    // 始点のページが見当たらない時は、 今の選択をそのままにしておく
+    //   (消してしまうと、 選んだ物が急に消えたように見える)。
+    if (anchor == null) return;
+    Offset anchorGlobal;
+    try {
+      anchorGlobal =
+          anchor.box.localToGlobal(a / anchor.heightPercentage);
+    } catch (_) {
+      return;
+    }
+    // 図形をページごとに束ねる (図形の無いページは見ない)。
+    final byPage = <int, List<int>>{};
+    for (var i = 0; i < _strokes.length; i++) {
+      if (_strokes[i].points.isEmpty) continue;
+      (byPage[_strokes[i].pageNumber] ??= <int>[]).add(i);
+    }
     _sel
       ..clear()
       ..addAll(_rangeBase);
-    for (var i = 0; i < _strokes.length; i++) {
+    for (final g in geoms) {
+      final idxs = byPage[g.pageNumber];
+      if (idxs == null) continue;
+      Rect r;
+      try {
+        // ★ わざと丸めない。 枠の角がページの外に出ている時は、 その向きは
+        //   「このページを端まで覆っている」 という意味になるため。
+        final pa = g.box.globalToLocal(anchorGlobal) * g.heightPercentage;
+        final pb = g.box.globalToLocal(gEnd) * g.heightPercentage;
+        r = Rect.fromPoints(pa, pb);
+      } catch (_) {
+        continue;
+      }
+      _selectInPage(r, idxs);
+    }
+  }
+
+  /// 今の範囲選択の枠を「重ねている板の座標」 で返す (無ければ null)。
+  ///
+  /// 始点は紙の座標なので、 そのページの変換で一度画面の座標へ出してから
+  /// 板の座標に直す。 終点は元から画面の座標。
+  Rect? _rangeOverlayRect() {
+    final a = _rangeStart;
+    final gEnd = _rangeEndGlobal;
+    final page = _rangePage;
+    if (a == null || gEnd == null || page == null) return null;
+    final overlay = _overlayKey.currentContext?.findRenderObject();
+    if (overlay is! RenderBox || !overlay.hasSize) return null;
+    for (final g in _collectPageGeoms()) {
+      if (g.pageNumber != page) continue;
+      try {
+        final aG = g.box.localToGlobal(a / g.heightPercentage);
+        return Rect.fromPoints(
+            overlay.globalToLocal(aG), overlay.globalToLocal(gEnd));
+      } catch (_) {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  /// [r] (そのページの紙の座標) に掛かっている図形を [_sel] に足す。
+  void _selectInPage(Rect r, List<int> idxs) {
+    for (final i in idxs) {
       final st = _strokes[i];
-      if (st.pageNumber != page) continue;
       if (st.points.isEmpty) continue;
       // ★ 文字は置いた場所 1 点だけを持っているので、 外接する四角が
       //   「面積ゼロ」 になり Rect.overlaps が必ず false を返していた
@@ -1557,32 +1639,18 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   void _updateRangeEndFromGlobal(Offset globalPos) {
     final page = _rangePage;
     if (page == null) return;
-    _PageGeom? geom;
-    for (final g in _collectPageGeoms()) {
-      if (g.pageNumber == page) {
-        geom = g;
-        break;
-      }
-    }
-    if (geom == null) {
-      // 送った先にそのページがもう無い (= 端まで来た)。 止めて今の形を残す。
+    final geoms = _collectPageGeoms();
+    final hasAnchor = geoms.any((g) => g.pageNumber == page);
+    if (!hasAnchor) {
+      // 送った先に始点のページがもう無い。 止めて今の形を残す。
       _stopAutoScroll();
       return;
     }
-    try {
-      final local = geom.box.globalToLocal(globalPos);
-      final pt = Offset(
-            local.dx.clamp(0.0, geom.contentSize.width),
-            local.dy.clamp(0.0, geom.contentSize.height),
-          ) *
-          geom.heightPercentage;
-      setState(() {
-        _rangeEnd = pt;
-        _applyRangeSelection();
-      });
-    } catch (_) {
-      _stopAutoScroll();
-    }
+    // 指は動いていないが紙が動いたので、 枠の判定だけやり直す。
+    setState(() {
+      _rangeEndGlobal = globalPos;
+      _applyRangeSelection(geoms);
+    });
   }
 
   /// カーソルの居場所をホストへ伝える (= 描き込み中でも端のホバーを
@@ -1653,7 +1721,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
         setState(() {
           _rangePage = geom.pageNumber;
           _rangeStart = pt;
-          _rangeEnd = pt;
+          _rangeEndGlobal = e.position;
           _rangeBase = multi ? Set<int>.from(_sel) : <int>{};
           if (!multi) _sel.clear();
           _dragPrev = null;
@@ -1750,18 +1818,13 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     if (_tool == PdfDrawTool.select) {
       // 範囲選択の途中。
       if (_rangeStart != null) {
-        try {
-          final local = geom.box.globalToLocal(e.position);
-          final pt = Offset(
-                local.dx.clamp(0.0, geom.contentSize.width),
-                local.dy.clamp(0.0, geom.contentSize.height),
-              ) *
-              geom.heightPercentage;
-          setState(() {
-            _rangeEnd = pt;
-            _applyRangeSelection();
-          });
-        } catch (_) {}
+        // ★ 押し始めたページの中へ丸めない (= ユーザー要望: ページを跨いで
+        //   範囲選択できるように)。 終点は画面の座標のまま持ち、 判定の中で
+        //   ページごとに紙の座標へ直す。
+        setState(() {
+          _rangeEndGlobal = e.position;
+          _applyRangeSelection(_collectPageGeoms());
+        });
         // 見えている枠の端まで引っ張ったら、 紙の方を送る
         //   (= ユーザー要望: 画面外に出る時に動きを追跡)。
         _updateAutoScroll(e.position);
@@ -1868,9 +1931,9 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     _dragPrev = null;
     if (_rangeStart != null) {
       setState(() {
-        _applyRangeSelection();
+        _applyRangeSelection(_collectPageGeoms());
         _rangeStart = null;
-        _rangeEnd = null;
+        _rangeEndGlobal = null;
         _rangePage = null;
         _rangeBase = <int>{};
       });
@@ -2684,10 +2747,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
                     eraserSize: _eraserSize,
                     selected:
                         _tool == PdfDrawTool.select ? _sel : const <int>{},
-                    rangeRect: (_rangeStart != null && _rangeEnd != null)
-                        ? Rect.fromPoints(_rangeStart!, _rangeEnd!)
-                        : null,
-                    rangePage: _rangePage,
+                    rangeOverlayRect: _rangeOverlayRect(),
                     geomsGetter: _collectPageGeoms,
                     overlayBoxGetter: () => _overlayKey.currentContext
                         ?.findRenderObject() as RenderBox?,
@@ -3347,8 +3407,12 @@ class _PdfDrawPainter extends CustomPainter {
   final Set<int> selected;
 
   /// 範囲選択中の四角 (ページ座標 pt) とそのページ。 null なら出さない。
-  final Rect? rangeRect;
-  final int? rangePage;
+  /// 範囲選択の枠 (**重ねている板の座標**)。
+  ///
+  /// 前はページの紙の座標 + ページ番号で受け取り、 そのページの変換で
+  /// 描いていたので、 ページを跨ぐと描けなかった。 板の座標で受け取れば
+  /// 何ページに掛かっていてもそのまま描ける (= ユーザー要望)。
+  final Rect? rangeOverlayRect;
   final List<_PageGeom> Function() geomsGetter;
   final RenderBox? Function() overlayBoxGetter;
 
@@ -3358,8 +3422,7 @@ class _PdfDrawPainter extends CustomPainter {
     required this.eraserCursor,
     required this.eraserSize,
     required this.selected,
-    this.rangeRect,
-    this.rangePage,
+    this.rangeOverlayRect,
     required this.geomsGetter,
     required this.overlayBoxGetter,
   });
@@ -3529,26 +3592,19 @@ class _PdfDrawPainter extends CustomPainter {
     }
 
     // ── 範囲選択の四角 (= ユーザー要望) ──
-    final rr = rangeRect;
-    final rp = rangePage;
-    if (rr != null && rp != null) {
-      final g = byPage[rp];
-      if (g != null) {
-        Offset toOverlay(Offset pagePt) => overlay
-            .globalToLocal(g.box.localToGlobal(pagePt / g.heightPercentage));
-        final r = Rect.fromPoints(toOverlay(rr.topLeft), toOverlay(rr.bottomRight));
-        canvas.drawRect(
-            r,
-            Paint()
-              ..color = const Color(0x1A6C63FF)
-              ..style = PaintingStyle.fill);
-        canvas.drawRect(
-            r,
-            Paint()
-              ..color = const Color(0xFF6C63FF)
-              ..style = PaintingStyle.stroke
-              ..strokeWidth = 1.2);
-      }
+    final r = rangeOverlayRect;
+    if (r != null) {
+      canvas.drawRect(
+          r,
+          Paint()
+            ..color = const Color(0x1A6C63FF)
+            ..style = PaintingStyle.fill);
+      canvas.drawRect(
+          r,
+          Paint()
+            ..color = const Color(0xFF6C63FF)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.2);
     }
 
     // ── 消しゴムの「消える範囲」 をそのままの大きさで出す ──

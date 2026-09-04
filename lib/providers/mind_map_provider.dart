@@ -5481,6 +5481,44 @@ class MindMapProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// ノードの縦幅スライダーの上限 (= ユーザー要望: 縦軸も同じように
+  /// 上限を変えられるように)。 既定は今までどおり 200。
+  double _nodeHeightMax = 200;
+  double get nodeHeightMax => _nodeHeightMax;
+  Future<void> setNodeHeightMax(double v) async {
+    _nodeHeightMax = v.clamp(36.0, 2000.0);
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.setDouble('nodeHeightMax', _nodeHeightMax);
+    } catch (_) {}
+    notifyListeners();
+  }
+
+  /// 新しく作るノードの大きさ (= ユーザー要望: 今の大きさを「これから作る
+  /// 物の既定」 として覚えられるように)。 0 なら今までどおりの既定
+  /// (160 x 40)。
+  double _nodeDefaultWidth = 0;
+  double _nodeDefaultHeight = 0;
+  double get nodeDefaultWidth => _nodeDefaultWidth;
+  double get nodeDefaultHeight => _nodeDefaultHeight;
+
+  /// 実際に使う既定値 (未設定なら今までの値)。
+  double get effectiveNewNodeWidth =>
+      _nodeDefaultWidth > 0 ? _nodeDefaultWidth : 160.0;
+  double get effectiveNewNodeHeight =>
+      _nodeDefaultHeight > 0 ? _nodeDefaultHeight : 40.0;
+
+  Future<void> setNodeDefaultSize(double w, double h) async {
+    _nodeDefaultWidth = w <= 0 ? 0 : w.clamp(80.0, 2000.0).toDouble();
+    _nodeDefaultHeight = h <= 0 ? 0 : h.clamp(36.0, 2000.0).toDouble();
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.setDouble('nodeDefaultWidth', _nodeDefaultWidth);
+      await prefs.setDouble('nodeDefaultHeight', _nodeDefaultHeight);
+    } catch (_) {}
+    notifyListeners();
+  }
+
   String _browserAiTarget = 'chatgpt';
   String get browserAiTarget => _browserAiTarget;
   Map<String, String> get browserAiTargetDef => browserAiTargets.firstWhere(
@@ -33549,6 +33587,39 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Найдено мониторов: {n}',
       'fa': 'نمایشگرهای یافت‌شده: {n}',
     },
+    'cursorWrap.notConnected': {
+      'ja': '未接続',
+      'en': 'not connected',
+      'zh': '未连接',
+      'ko': '미연결',
+      'es': 'no conectado',
+      'fr': 'non connecté',
+      'de': 'nicht verbunden',
+      'pt': 'não conectado',
+      'ru': 'не подключён',
+      'fa': 'متصل نیست',
+    },
+    'cursorWrap.preconfigure': {
+      'ja': '今は 1 台だけですが、 サブモニターを付けた時の動きをここで'
+          '決めておけます。',
+      'en': 'Only one monitor right now — you can still set up what happens '
+          'once you attach another.',
+      'zh': '目前只有一台显示器，但可以先设置接上另一台后的行为。',
+      'ko': '지금은 한 대뿐이지만, 모니터를 연결했을 때의 동작을 미리 정해 둘 '
+          '수 있습니다.',
+      'es': 'Ahora solo hay un monitor, pero puedes configurar qué pasará al '
+          'conectar otro.',
+      'fr': 'Un seul écran pour l’instant, mais vous pouvez déjà définir le '
+          'comportement une fois un autre branché.',
+      'de': 'Derzeit nur ein Monitor – Sie können trotzdem festlegen, was '
+          'nach dem Anschließen passieren soll.',
+      'pt': 'Apenas um monitor agora, mas você já pode definir o que '
+          'acontecerá ao conectar outro.',
+      'ru': 'Сейчас только один монитор, но поведение при подключении второго '
+          'можно настроить заранее.',
+      'fa': 'اکنون فقط یک نمایشگر است، اما می‌توانید رفتار پس از اتصال را '
+          'از قبل تنظیم کنید.',
+    },
     'cursorWrap.needTwo': {
       'ja': 'モニターが 1 台のときは働きません。',
       'en': 'Has no effect with a single monitor.',
@@ -56686,6 +56757,56 @@ class MindMapProvider extends ChangeNotifier {
     },
     // ── ノードタップ時のスライダー群 (Image 2: _sizeRow) ──
     // 横幅スライダーの上限を変える画面 (= ユーザー要望)。
+    // 縦幅の上限 + 既定の大きさ (= ユーザー要望: 縦軸も同様に / 既定として
+    //   保存できるように)。
+    'overlay.heightMaxTitle': {
+      'ja': '縦幅の上限',
+      'en': 'Maximum height',
+      'zh': '高度上限',
+      'ko': '높이 상한',
+      'es': 'Altura máxima',
+      'fr': 'Hauteur maximale',
+      'de': 'Maximale Höhe',
+      'pt': 'Altura máxima',
+      'ru': 'Максимальная высота',
+      'fa': 'بیشینه ارتفاع',
+    },
+    'overlay.heightMaxHint': {
+      'ja': '36 〜 2000 の間で指定します。',
+      'en': 'Enter a value between 36 and 2000.',
+      'zh': '请输入 36 到 2000 之间的值。',
+      'ko': '36 ~ 2000 사이로 지정합니다.',
+      'es': 'Introduce un valor entre 36 y 2000.',
+      'fr': 'Saisissez une valeur entre 36 et 2000.',
+      'de': 'Geben Sie einen Wert zwischen 36 und 2000 ein.',
+      'pt': 'Informe um valor entre 36 e 2000.',
+      'ru': 'Укажите значение от 36 до 2000.',
+      'fa': 'مقداری بین ۳۶ تا ۲۰۰۰ وارد کنید.',
+    },
+    'overlay.saveAsDefaultSize': {
+      'ja': 'この大きさを既定に',
+      'en': 'Use this size by default',
+      'zh': '将此大小设为默认',
+      'ko': '이 크기를 기본으로',
+      'es': 'Usar este tamaño por defecto',
+      'fr': 'Utiliser cette taille par défaut',
+      'de': 'Diese Größe als Standard',
+      'pt': 'Usar este tamanho por padrão',
+      'ru': 'Использовать этот размер по умолчанию',
+      'fa': 'این اندازه به‌عنوان پیش‌فرض',
+    },
+    'overlay.sizeSavedAsDefault': {
+      'ja': 'これから作る要素の大きさにしました。',
+      'en': 'New items will use this size.',
+      'zh': '新建元素将使用此大小。',
+      'ko': '앞으로 만드는 요소에 이 크기를 사용합니다.',
+      'es': 'Los elementos nuevos usarán este tamaño.',
+      'fr': 'Les nouveaux éléments utiliseront cette taille.',
+      'de': 'Neue Elemente verwenden diese Größe.',
+      'pt': 'Novos itens usarão este tamanho.',
+      'ru': 'Новые элементы будут этого размера.',
+      'fa': 'موارد جدید از این اندازه استفاده می‌کنند.',
+    },
     'overlay.widthMaxTitle': {
       'ja': '横幅の上限',
       'en': 'Maximum width',
@@ -62374,6 +62495,14 @@ class MindMapProvider extends ChangeNotifier {
     _nodeAiUseAssistant = prefs.getBool('nodeAiUseAssistant') ?? false;
     _nodeWidthMax =
         (prefs.getDouble('nodeWidthMax') ?? 400).clamp(160.0, 2000.0);
+    _nodeHeightMax =
+        (prefs.getDouble('nodeHeightMax') ?? 200).clamp(36.0, 2000.0);
+    _nodeDefaultWidth = (prefs.getDouble('nodeDefaultWidth') ?? 0)
+        .clamp(0.0, 2000.0)
+        .toDouble();
+    _nodeDefaultHeight = (prefs.getDouble('nodeDefaultHeight') ?? 0)
+        .clamp(0.0, 2000.0)
+        .toDouble();
     // 念のため try/catch (= 起動フロー保護: ここで例外が出ても言語/初回起動/
     //   下部ボタンの読み込みが止まらないように)。
     try {
@@ -68821,7 +68950,8 @@ class MindMapProvider extends ChangeNotifier {
     'snapEnabled', 'memoCollapsedGlobal', 'allowDuplicateVideoNodes',
     'autofillSequenceEnabled', 'promptForTitleOnNodeCreate',
     'openLinksInApp', 'pasteImageScalePercent', 'pasteImageOriginalSize',
-    'nodeWidthMax', 'nodeSplitDelimiter', 'nodeAiUseAssistant',
+    'nodeWidthMax', 'nodeHeightMax', 'nodeDefaultWidth', 'nodeDefaultHeight',
+    'nodeSplitDelimiter', 'nodeAiUseAssistant',
     'nodeCalendarUseFlashcard', 'nodeEditUseRich', 'nodeLinkUseAttach',
     'nodeSearchOpenMode', 'nodeSearchUseYoutube',
     'suppressPageDeleteUndoPrompt', 'decoTextAnchorX', 'decoTextAnchorY',
@@ -83405,8 +83535,10 @@ $cleanQ
 
   /// addNodeAtCenter と同じだが、生成した MindMapNode を返す
   MindMapNode addNodeAtCenterReturning(Offset position) {
-    const nodeW = 160.0;
-    const nodeH = 42.0;
+    // 既定の大きさ (= ユーザー要望: 今の大きさを「これから作る物の既定」
+    //   として覚えられるように)。 覚えていなければ今までどおり。
+    final nodeW = effectiveNewNodeWidth;
+    final nodeH = _nodeDefaultHeight > 0 ? _nodeDefaultHeight : 42.0;
     const gap = 24.0;
     const canvasW = 20000.0;
     const canvasH = 20000.0;
@@ -83435,6 +83567,8 @@ $cleanQ
       title: '',
       position: candidate,
       color: _childColor(),
+      width: nodeW,
+      height: nodeH,
       // 今いる作業レイヤーに置く (= ユーザー要望)。
       layer: activeLayer,
     );
@@ -93800,9 +93934,13 @@ $example
     // セットされている) は手動リサイズの許容範囲を広く取る:
     // 80〜1800 × 36〜1200 px。 通常ノードと同じ 80〜400 × 36〜200 だと、
     // 画像ノードを少しドラッグしただけで一気にサイズが縮んでしまう。
+    // ★ 上限は「スライダーの上限」 に合わせる (= ユーザー報告: 2000 と
+    //   設定しても実際には伸びない)。 ここが 400 / 200 で頭打ちにして
+    //   いたので、 スライダーだけ動いて中身が付いて来なかった。
+    //   画像ノードは元から広めなので、 その値と大きい方を採る。
     final isImageNode = node.attachmentAspectRatio != null;
-    final maxW = isImageNode ? 1800.0 : 400.0;
-    final maxH = isImageNode ? 1200.0 : 200.0;
+    final maxW = math.max(isImageNode ? 1800.0 : 400.0, _nodeWidthMax);
+    final maxH = math.max(isImageNode ? 1200.0 : 200.0, _nodeHeightMax);
     currentPage.nodes[id] = node.copyWith(
       width: width.clamp(80.0, maxW),
       height: height.clamp(36.0, maxH),
