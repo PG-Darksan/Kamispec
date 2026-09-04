@@ -39541,101 +39541,12 @@ class _MindMapScreenState extends State<MindMapScreen>
     disposeRows();
   }
 
-  /// マウスカーソルの大きさの設定 (= ユーザー要望)。
-  Future<void> _showCursorSizeDialog(MindMapProvider provider) async {
-    // 開く前の大きさを控える (やめた時にそのまま残さないため)。
-    final before = CursorWrap.readSystemCursorSize();
-    var mainV =
-        provider.cursorSizeMain > 0 ? provider.cursorSizeMain : before;
-    var subOn = provider.cursorSizeSub > 0;
-    var subV = provider.cursorSizeSub > 0 ? provider.cursorSizeSub : mainV;
-    final saved = await showDialog<bool>(
-      context: context,
-      builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
-        Widget sliderRow(String label, int value, bool enabled,
-            ValueChanged<int> onChanged) {
-          return Row(children: [
-            SizedBox(
-              width: 120,
-              child: Text(label,
-                  style: TextStyle(
-                      color: enabled ? Colors.white70 : Colors.white24,
-                      fontSize: 13)),
-            ),
-            Expanded(
-              child: Slider(
-                value: value.toDouble(),
-                min: 1,
-                max: 15,
-                divisions: 14,
-                label: '$value',
-                onChanged:
-                    enabled ? (v) => onChanged(v.round()) : null,
-              ),
-            ),
-            SizedBox(
-              width: 28,
-              child: Text('$value',
-                  textAlign: TextAlign.right,
-                  style: TextStyle(
-                      color: enabled ? Colors.white : Colors.white24,
-                      fontSize: 13)),
-            ),
-          ]);
-        }
-
-        return AlertDialog(
-          backgroundColor: const Color(0xFF1E1E32),
-          title: Text(provider.t('cursorSize.title'),
-              style: const TextStyle(color: Colors.white, fontSize: 15)),
-          content: SizedBox(
-            width: math.min(420.0, MediaQuery.sizeOf(dctx).width - 64),
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              // 動かすとその場で反映される (見て確かめられるように)。
-              sliderRow(provider.t('cursorSize.main'), mainV, true, (v) {
-                setD(() => mainV = v);
-                CursorWrap.applyCursorSize(v);
-              }),
-              const SizedBox(height: 6),
-              SwitchListTile(
-                dense: true,
-                contentPadding: EdgeInsets.zero,
-                title: Text(provider.t('cursorSize.subToggle'),
-                    style: const TextStyle(
-                        color: Colors.white70, fontSize: 13)),
-                value: subOn,
-                activeColor: const Color(0xFF4FC3F7),
-                onChanged: (v) => setD(() => subOn = v),
-              ),
-              sliderRow(provider.t('cursorSize.sub'), subV, subOn,
-                  (v) => setD(() => subV = v)),
-            ]),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dctx),
-              child: Text(provider.t('btn.cancel'),
-                  style: const TextStyle(color: Colors.white54)),
-            ),
-            FilledButton(
-              onPressed: () {
-                unawaited(provider.setCursorSizes(
-                    main: mainV, sub: subOn ? subV : 0));
-                Navigator.pop(dctx, true);
-              },
-              child: Text(provider.t('btn.save')),
-            ),
-          ],
-        );
-      }),
-    );
-    // ★ やめた時は開く前の大きさへ必ず戻す (= 点検で判明: 一度も保存して
-    //   いない人がお試しで動かすと、 そのままの大きさで残っていた)。
-    if (saved != true) {
-      CursorWrap.applyCursorSize(
-          provider.cursorSizeMain > 0 ? provider.cursorSizeMain : before);
-    }
-  }
+  // ── マウスカーソルの大きさの設定は削除 (= ユーザー要望:
+  //    「変えることができないのであれば項目自体消して」) ──
+  //    実測: レジストリは書けても実際のカーソルは 32px のままで、
+  //    SystemParametersInfo(SPI_SETCURSORS) も効かなかった。
+  //    書き換えた控えは起動時に既定へ戻している
+  //    (CursorWrap.resetCursorSizeToDefault)。
 
   Widget _settingsToggleTile({
     required IconData icon,
@@ -72073,6 +71984,8 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///
   /// マウスカーソルの大きさ / 音声の出力先 / モニターの並べ方 を、 折り畳まず
   /// そのまま並べる。 変えた事はその場で効く (「保存」 は要らない)。
+  /// ディスプレイ設定の中身 (= ユーザー要望: 一つずつ押して開くのが面倒
+  /// なので全部を一度に出す。 モニターの繋がり方の図はいちばん上)。
   List<Widget> _displaySettingsChildren({
     required MindMapProvider provider,
     required BuildContext ctx,
@@ -72093,77 +72006,8 @@ class _MindMapScreenState extends State<MindMapScreen>
           ]),
         );
 
-    Widget sliderRow(String label, int value, bool enabled,
-        ValueChanged<int> onChanged) {
-      return Row(children: [
-        SizedBox(
-          width: 116,
-          child: Text(label,
-              style: TextStyle(
-                  color: enabled ? Colors.white : Colors.white30,
-                  fontSize: 13)),
-        ),
-        Expanded(
-          child: Slider(
-            value: value.toDouble().clamp(1, 15),
-            min: 1,
-            max: 15,
-            divisions: 14,
-            onChanged: enabled ? (v) => onChanged(v.round()) : null,
-          ),
-        ),
-        SizedBox(
-          width: 26,
-          child: Text('$value',
-              textAlign: TextAlign.right,
-              style: TextStyle(
-                  color: enabled ? Colors.white70 : Colors.white24,
-                  fontSize: 12)),
-        ),
-      ]);
-    }
-
-    final subOn = provider.cursorSizeSub > 0;
-    final mainV = provider.cursorSizeMain > 0
-        ? provider.cursorSizeMain
-        : CursorWrap.readSystemCursorSize();
-
     return [
-      // ── マウスカーソルの大きさ ──
-      if (!kIsWeb && Platform.isWindows) ...[
-        sectionLabel(provider.t('cursorSize.title')),
-        sliderRow(provider.t('cursorSize.main'), mainV, true, (v) {
-          unawaited(provider.setCursorSizes(main: v));
-          setS(() {});
-        }),
-        SwitchListTile(
-          contentPadding: EdgeInsets.zero,
-          dense: true,
-          activeColor: const Color(0xFF4FC3F7),
-          title: Text(provider.t('cursorSize.subToggle'),
-              style: const TextStyle(color: Colors.white, fontSize: 13)),
-          value: subOn,
-          onChanged: (v) {
-            unawaited(provider.setCursorSizes(sub: v ? mainV : 0));
-            setS(() {});
-          },
-        ),
-        sliderRow(
-            provider.t('cursorSize.sub'),
-            provider.cursorSizeSub > 0 ? provider.cursorSizeSub : mainV,
-            subOn, (v) {
-          unawaited(provider.setCursorSizes(sub: v));
-          setS(() {});
-        }),
-      ],
-
-      // ── 音声の出力先 ──
-      if (!kIsWeb && Platform.isWindows) ...[
-        sectionLabel(provider.t('audioOut.title')),
-        _AudioOutputInline(provider: provider),
-      ],
-
-      // ── モニターの並べ方と行き先 ──
+      // ── モニターの繋がり方 (いちばん上。 = ユーザー要望) ──
       if (!kIsWeb && Platform.isWindows) ...[
         sectionLabel(provider.t('cursorWrap.edgeTitle')),
         _MonitorEdgeSettings(provider: provider),
@@ -72182,6 +72026,12 @@ class _MindMapScreenState extends State<MindMapScreen>
             setS(() {});
           },
         ),
+      ],
+
+      // ── 音声の出力先 ──
+      if (!kIsWeb && Platform.isWindows) ...[
+        sectionLabel(provider.t('audioOut.title')),
+        _AudioOutputInline(provider: provider),
       ],
 
       // ── 高リフレッシュレート (Android) ──
@@ -72204,6 +72054,14 @@ class _MindMapScreenState extends State<MindMapScreen>
           },
         ),
       ],
+
+      // ── マウスカーソルの大きさは削除 ──
+      //    = ユーザー要望「変えることができないのであれば項目自体消して」。
+      //    実測したところ、 レジストリ (Accessibility\CursorSize /
+      //    Cursors\CursorBaseSize) は書けても実際のカーソルは 32px のまま
+      //    だった。 SystemParametersInfo(SPI_SETCURSORS) も成功するのに
+      //    絵は変わらない (Windows 11 はサインインし直すまで読み直さない)。
+      //    書き換えた控えは起動時に既定へ戻している。
     ];
   }
 
@@ -96031,18 +95889,53 @@ class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
       Map<String, int>.from(widget.provider.cursorWrapEdges);
   List<MonitorInfo> _mons = const [];
 
-  /// 向き ('left' 等) と、 端の記号 ('L' 等) の対応。
-  static const _dirToEdge = {
-    'left': 'L',
-    'right': 'R',
-    'top': 'T',
-    'bottom': 'B',
-  };
-
   @override
   void initState() {
     super.initState();
     _mons = CursorWrap.listMonitors();
+  }
+
+  /// 実際に繋がっているモニターを升目に置く。 主モニターは (0,0)。
+  /// 主から見た向き 1 歩ぶんに置く (斜めは近い方の軸へ寄せる)。
+  Map<String, int> _cells() {
+    final out = <String, int>{'0,0': 0};
+    MonitorInfo? primary;
+    for (final m in _mons) {
+      if (m.primary) primary = m;
+    }
+    primary ??= _mons.isNotEmpty ? _mons.first : null;
+    if (primary != null) {
+      // 主モニターは番号 0 として扱いたいので、 並べ替えた番号を作る。
+      final order = <MonitorInfo>[primary];
+      for (final m in _mons) {
+        if (m != primary) order.add(m);
+      }
+      for (var i = 1; i < order.length; i++) {
+        final m = order[i];
+        final dx = (m.left + m.right) / 2 - (primary.left + primary.right) / 2;
+        final dy = (m.top + m.bottom) / 2 - (primary.top + primary.bottom) / 2;
+        int x = 0, y = 0;
+        if (dx.abs() >= dy.abs()) {
+          x = dx < 0 ? -1 : 1;
+        } else {
+          y = dy < 0 ? -1 : 1;
+        }
+        // 既に埋まっていたら、 同じ向きへもう 1 歩ずらす (右に 2 枚など)。
+        while (out.containsKey('$x,$y')) {
+          if (x != 0) {
+            x += x.sign;
+          } else {
+            y += y.sign;
+          }
+        }
+        out['$x,$y'] = i;
+      }
+    }
+    // 置く予定の分。
+    for (final e in _placement.entries) {
+      out.putIfAbsent(e.key, () => e.value);
+    }
+    return out;
   }
 
   void _save() {
@@ -96050,12 +95943,8 @@ class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
     unawaited(widget.provider.setCursorWrapPlacement(_placement));
   }
 
-  /// 空いているモニター番号 (0 は主なので 1 以上)。
-  int _freeNumber() {
-    final used = <int>{
-      for (var i = 0; i < _mons.length; i++) i,
-      ..._placement.values,
-    };
+  int _freeNumber(Map<String, int> cells) {
+    final used = cells.values.toSet();
     var n = 1;
     while (used.contains(n)) {
       n++;
@@ -96063,16 +95952,11 @@ class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
     return n;
   }
 
-  /// 端を押した時: 行き先を選ぶ。
-  Future<void> _pickEdgeTarget(String dir) async {
+  Future<void> _pickEdgeTarget(
+      int monIndex, String edge, Map<String, int> cells) async {
     final p = widget.provider;
-    final edge = _dirToEdge[dir]!;
-    // 選べる行き先 = 主以外のモニター (実物 + 置く予定)。
-    final choices = <int>{
-      for (var i = 1; i < _mons.length; i++) i,
-      ..._placement.values,
-    }.toList()
-      ..sort();
+    final choices = cells.values.where((v) => v != monIndex).toList()..sort();
+    final key = '$monIndex:$edge';
     final picked = await showDialog<int>(
       context: context,
       builder: (dctx) => SimpleDialog(
@@ -96084,7 +95968,7 @@ class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
             onPressed: () => Navigator.pop(dctx, -999),
             child: Text(p.t('cursorWrap.targetNone'),
                 style: TextStyle(
-                    color: _edges[edge] == null
+                    color: _edges[key] == null
                         ? const Color(0xFF4FC3F7)
                         : Colors.white70,
                     fontSize: 13)),
@@ -96092,11 +95976,9 @@ class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
           for (final i in choices)
             SimpleDialogOption(
               onPressed: () => Navigator.pop(dctx, i),
-              child: Text(
-                  '${i + 1}'
-                  '${i < _mons.length ? "" : " (${p.t('cursorWrap.planned')})"}',
+              child: Text('${i + 1}',
                   style: TextStyle(
-                      color: _edges[edge] == i
+                      color: _edges[key] == i
                           ? const Color(0xFF4FC3F7)
                           : Colors.white70,
                       fontSize: 13)),
@@ -96107,9 +95989,9 @@ class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
     if (picked == null) return;
     setState(() {
       if (picked == -999) {
-        _edges.remove(edge);
+        _edges.remove(key);
       } else {
-        _edges[edge] = picked;
+        _edges[key] = picked;
       }
     });
     _save();
@@ -96118,220 +96000,250 @@ class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
   @override
   Widget build(BuildContext context) {
     final p = widget.provider;
+    final cells = _cells();
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Center(
-        child: _MonitorArrangeView(
-          monitors: _mons,
-          placement: _placement,
+        child: _MonitorGridView(
+          cells: cells,
           edges: _edges,
-          onTapDir: (dir) {
+          connectedCount: _mons.length,
+          onTapCell: (key) {
             setState(() {
-              if (_placement.containsKey(dir)) {
-                _placement.remove(dir);
-              } else {
-                _placement[dir] = _freeNumber();
+              if (_placement.containsKey(key)) {
+                // 置いただけの物は外せる。 その辺の設定も片付ける。
+                final n = _placement.remove(key);
+                if (n != null) {
+                  _edges.removeWhere((k, v) =>
+                      v == n || k.startsWith('$n:'));
+                }
+              } else if (!cells.containsKey(key)) {
+                _placement[key] = _freeNumber(cells);
               }
             });
             _save();
           },
-          onTapEdge: (dir) => unawaited(_pickEdgeTarget(dir)),
+          onTapEdge: (mon, edge) =>
+              unawaited(_pickEdgeTarget(mon, edge, cells)),
         ),
       ),
       const SizedBox(height: 8),
-      Text(p.t('cursorWrap.arrangeHint2'),
+      Text(p.t('cursorWrap.gridHint'),
           style: const TextStyle(color: Colors.white38, fontSize: 11)),
     ]);
   }
 }
 
 /// モニターの並べ方を、 Windows 11 のディスプレイ設定のように図で決める
-/// (= ユーザー要望: サブモニターの模式図を見ながら、 どの方向に繋ぐかを
-///   決められるように)。
+/// (= ユーザー要望: 図を見ながら、 どの方向にどう繋ぐかを決められるように)。
 ///
-/// 真ん中が主モニター。 上下左右の空いている枠を押すとサブモニターを置き、
-/// 置いた枠をもう一度押すと外す。 実際に繋がっているモニターは、 その向きに
-/// 「接続中」 として出す (外せない)。
-class _MonitorArrangeView extends StatelessWidget {
-  /// いま実際に繋がっているモニター (左上から順)。
-  final List<MonitorInfo> monitors;
+/// **升目の考え方**: 主モニターを (0,0) として、 右が +x / 下が +y。
+/// となり合った升目どうしは「そのまま歩いて行ける」 とみなすので、 その辺
+/// には何も設定しない。 右へ 2 枚続けて並べる、 のような繋ぎ方もできる。
+///
+/// **設定するのは「繋がっていない辺」 だけ**。 空いている側の辺を押すと、
+/// その辺から抜けた時にどのモニターへ出るかを選べる。
+class _MonitorGridView extends StatelessWidget {
+  /// 升目 ('x,y') → モニターの番号 (0 = 主)。
+  final Map<String, int> cells;
 
-  /// まだ繋いでいないモニターの置き場所 (向き → モニターの番号)。
-  final Map<String, int> placement;
-
-  /// 押された時 (向き)。
-  final void Function(String dir) onTapDir;
-
-  /// 端ごとの行き先 ('L'/'R'/'T'/'B' → モニターの番号)。
+  /// 辺の行き先 ('番号:L' など → 行き先のモニター番号)。
   final Map<String, int> edges;
 
-  /// 主モニターの**端**を押された時 (向き)。
-  final void Function(String dir) onTapEdge;
-  const _MonitorArrangeView({
-    required this.monitors,
-    required this.placement,
-    required this.onTapDir,
+  /// 実際に繋がっているモニターの枚数 (番号がこれ未満なら実物)。
+  final int connectedCount;
+
+  /// 空いている升目を押した (置く / 外す)。
+  final void Function(String cellKey) onTapCell;
+
+  /// 繋がっていない辺を押した (モニター番号, 辺)。
+  final void Function(int monIndex, String edge) onTapEdge;
+
+  const _MonitorGridView({
+    required this.cells,
     required this.edges,
+    required this.connectedCount,
+    required this.onTapCell,
     required this.onTapEdge,
   });
 
-  /// 実際に繋がっているモニターが、 主モニターから見てどの向きにあるか。
-  /// 主モニター自身は null。
-  static String? _realDir(MonitorInfo m, MonitorInfo primary) {
-    if (m == primary) return null;
-    final dx = (m.left + m.right) / 2 - (primary.left + primary.right) / 2;
-    final dy = (m.top + m.bottom) / 2 - (primary.top + primary.bottom) / 2;
-    if (dx.abs() >= dy.abs()) return dx < 0 ? 'left' : 'right';
-    return dy < 0 ? 'top' : 'bottom';
+  static (int, int)? parseCell(String key) {
+    final i = key.indexOf(',');
+    if (i <= 0) return null;
+    final x = int.tryParse(key.substring(0, i));
+    final y = int.tryParse(key.substring(i + 1));
+    if (x == null || y == null) return null;
+    return (x, y);
   }
+
+  static String cellKey(int x, int y) => '$x,$y';
 
   @override
   Widget build(BuildContext context) {
     final provider = context.read<MindMapProvider>();
-    MonitorInfo? primary;
-    for (final m in monitors) {
-      if (m.primary) {
-        primary = m;
-        break;
-      }
+    var minX = 0, maxX = 0, minY = 0, maxY = 0;
+    for (final k in cells.keys) {
+      final c = parseCell(k);
+      if (c == null) continue;
+      if (c.$1 < minX) minX = c.$1;
+      if (c.$1 > maxX) maxX = c.$1;
+      if (c.$2 < minY) minY = c.$2;
+      if (c.$2 > maxY) maxY = c.$2;
     }
-    primary ??= monitors.isNotEmpty ? monitors.first : null;
+    // 置ける場所を出すため、 外側に 1 周ぶん余白を取る。
+    minX -= 1;
+    maxX += 1;
+    minY -= 1;
+    maxY += 1;
 
-    // 向き → (番号, 実際に繋がっているか)
-    final byDir = <String, (int, bool)>{};
-    if (primary != null) {
-      for (var i = 0; i < monitors.length; i++) {
-        final d = _realDir(monitors[i], primary);
-        if (d != null) byDir[d] = (i, true);
-      }
-    }
-    for (final e in placement.entries) {
-      byDir.putIfAbsent(e.key, () => (e.value, false));
-    }
+    bool occupied(int x, int y) => cells.containsKey(cellKey(x, y));
 
-    /// 主モニターの箱。 4 つの端が押せて、 そこから先の行き先を決める
-    /// (= ユーザー要望: ブロックの端を押して遷移先を決める)。
-    Widget primaryBox() {
-      const dirs = <String, String>{
-        'left': 'L',
-        'right': 'R',
-        'top': 'T',
-        'bottom': 'B',
+    /// その升目の隣に既にモニターが在るか (= そこへ置ける)。
+    bool placeable(int x, int y) =>
+        occupied(x - 1, y) ||
+        occupied(x + 1, y) ||
+        occupied(x, y - 1) ||
+        occupied(x, y + 1);
+
+    Widget monitorBox(int x, int y, int index) {
+      const dirs = <String, (int, int)>{
+        'L': (-1, 0),
+        'R': (1, 0),
+        'T': (0, -1),
+        'B': (0, 1),
       };
-      Widget strip(String dir) {
-        final target = edges[dirs[dir]];
+      Widget strip(String edge) {
+        final d = dirs[edge]!;
+        // となりにモニターが在る = そのまま行けるので設定しない。
+        final linked = occupied(x + d.$1, y + d.$2);
+        final target = edges['$index:$edge'];
+        final horizontal = edge == 'T' || edge == 'B';
+        final w = horizontal ? double.infinity : 13.0;
+        final h = horizontal ? 13.0 : double.infinity;
+        if (linked) {
+          return Container(
+            width: w,
+            height: h,
+            color: const Color(0xFF4FC3F7).withValues(alpha: 0.55),
+          );
+        }
         final on = target != null;
-        final horizontal = dir == 'top' || dir == 'bottom';
         return Tooltip(
-          message: on
-              ? '${provider.t('cursorWrap.edgeGoesTo')}: ${target + 1}'
-              : provider.t('cursorWrap.edgeGoesTo'),
+          message: provider.t('cursorWrap.edgeGoesTo'),
           child: InkWell(
-            onTap: () => onTapEdge(dir),
+            onTap: () => onTapEdge(index, edge),
             child: Container(
-              width: horizontal ? double.infinity : 12,
-              height: horizontal ? 12 : double.infinity,
-              color: on
-                  ? const Color(0xFF9CCC65).withValues(alpha: 0.75)
-                  : Colors.white.withValues(alpha: 0.10),
+              width: w,
+              height: h,
               alignment: Alignment.center,
+              color: on
+                  ? const Color(0xFF9CCC65).withValues(alpha: 0.8)
+                  : Colors.white.withValues(alpha: 0.10),
               child: on
                   ? Text('${target + 1}',
                       style: const TextStyle(
                           color: Colors.black87,
                           fontSize: 9,
                           fontWeight: FontWeight.w700))
-                  : const Icon(Icons.add_rounded,
+                  : const Icon(Icons.more_horiz_rounded,
                       size: 9, color: Colors.white38),
             ),
           ),
         );
       }
 
+      final real = index < connectedCount;
+      final accent =
+          index == 0 ? const Color(0xFF4FC3F7) : const Color(0xFF9CCC65);
       return SizedBox(
-        width: 92,
-        height: 58,
+        width: 96,
+        height: 62,
         child: Stack(children: [
-          Positioned.fill(child: _box('1', true, true, provider, null)),
-          Positioned(left: 0, top: 0, bottom: 0, child: strip('left')),
-          Positioned(right: 0, top: 0, bottom: 0, child: strip('right')),
-          Positioned(left: 12, right: 12, top: 0, child: strip('top')),
-          Positioned(left: 12, right: 12, bottom: 0, child: strip('bottom')),
+          Positioned.fill(
+            child: GestureDetector(
+              // 置いただけのモニターは、 押すと外せる。
+              onTap: (index == 0 || real)
+                  ? null
+                  : () => onTapCell(cellKey(x, y)),
+              child: Container(
+                margin: const EdgeInsets.all(13),
+                decoration: BoxDecoration(
+                  color: accent.withValues(alpha: real ? 0.22 : 0.08),
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(
+                      color: real ? accent : accent.withValues(alpha: 0.45),
+                      width: real ? 2 : 1),
+                ),
+                child: Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text('${index + 1}',
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w700)),
+                      Text(
+                          index == 0
+                              ? provider.t('cursorWrap.primary')
+                              : (real
+                                  ? provider.t('cursorWrap.connected')
+                                  : provider.t('cursorWrap.planned')),
+                          style: const TextStyle(
+                              color: Colors.white54, fontSize: 8)),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Positioned(left: 0, top: 13, bottom: 13, child: strip('L')),
+          Positioned(right: 0, top: 13, bottom: 13, child: strip('R')),
+          Positioned(left: 13, right: 13, top: 0, child: strip('T')),
+          Positioned(left: 13, right: 13, bottom: 0, child: strip('B')),
         ]),
       );
     }
 
-    Widget cell(String? dir) {
-      if (dir == null) {
-        // 真ん中 = 主モニター。
-        return primaryBox();
+    Widget emptyCell(int x, int y) {
+      if (!placeable(x, y)) {
+        return const SizedBox(width: 96, height: 62);
       }
-      final v = byDir[dir];
-      return InkWell(
-        borderRadius: BorderRadius.circular(6),
-        onTap: (v != null && v.$2) ? null : () => onTapDir(dir),
-        child: v == null
-            ? _empty(provider)
-            : _box('${v.$1 + 1}', false, v.$2, provider, dir),
+      return SizedBox(
+        width: 96,
+        height: 62,
+        child: Padding(
+          padding: const EdgeInsets.all(13),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(4),
+            onTap: () => onTapCell(cellKey(x, y)),
+            child: Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(color: Colors.white24),
+                color: Colors.white.withValues(alpha: 0.03),
+              ),
+              child: const Center(
+                child:
+                    Icon(Icons.add_rounded, size: 16, color: Colors.white24),
+              ),
+            ),
+          ),
+        ),
       );
     }
 
-    return Column(mainAxisSize: MainAxisSize.min, children: [
-      cell('top'),
-      const SizedBox(height: 4),
-      Row(mainAxisSize: MainAxisSize.min, children: [
-        cell('left'),
-        const SizedBox(width: 4),
-        cell(null),
-        const SizedBox(width: 4),
-        cell('right'),
-      ]),
-      const SizedBox(height: 4),
-      cell('bottom'),
-    ]);
-  }
-
-  static Widget _empty(MindMapProvider provider) => Container(
-        width: 92,
-        height: 58,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(6),
-          border: Border.all(color: Colors.white24, style: BorderStyle.solid),
-          color: Colors.white.withValues(alpha: 0.03),
-        ),
-        child: const Center(
-          child: Icon(Icons.add_rounded, size: 18, color: Colors.white24),
-        ),
-      );
-
-  static Widget _box(String label, bool isPrimary, bool connected,
-      MindMapProvider provider, String? dir) {
-    final accent =
-        isPrimary ? const Color(0xFF4FC3F7) : const Color(0xFF9CCC65);
-    return Container(
-      width: 92,
-      height: 58,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(
-            color: connected ? accent : accent.withValues(alpha: 0.45),
-            width: connected ? 2 : 1),
-        color: accent.withValues(alpha: connected ? 0.22 : 0.08),
-      ),
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
       child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Text(label,
-              style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 15,
-                  fontWeight: FontWeight.w700)),
-          Text(
-              isPrimary
-                  ? provider.t('cursorWrap.primary')
-                  : (connected
-                      ? provider.t('cursorWrap.connected')
-                      : provider.t('cursorWrap.planned')),
-              style: const TextStyle(color: Colors.white54, fontSize: 9)),
+          for (var y = minY; y <= maxY; y++)
+            Row(mainAxisSize: MainAxisSize.min, children: [
+              for (var x = minX; x <= maxX; x++)
+                cells[cellKey(x, y)] != null
+                    ? monitorBox(x, y, cells[cellKey(x, y)]!)
+                    : emptyCell(x, y),
+            ]),
         ],
       ),
     );

@@ -4530,12 +4530,9 @@ class MindMapProvider extends ChangeNotifier {
   ///   * -1 → 反対の端へ回り込む (今までの動き)
   ///   * 0 以上 → そのモニターへ飛ぶ (`CursorWrap.listMonitors()` の並び順)
   /// 入っていない辺では何もしない。
-  Map<String, int> _cursorWrapEdges = const {
-    'L': -1,
-    'R': -1,
-    'T': -1,
-    'B': -1,
-  };
+  /// 鍵は 'モニター番号:辺' ('0:L' など)。 入っていない辺は、 全体の
+  /// トグル (両サイドからアクセス) に任せる。
+  Map<String, int> _cursorWrapEdges = const {};
   Map<String, int> get cursorWrapEdges => _cursorWrapEdges;
 
   Future<void> setCursorWrapEdges(Map<String, int> v) async {
@@ -4550,8 +4547,9 @@ class MindMapProvider extends ChangeNotifier {
   ///
   /// = ユーザー要望: Windows 11 のディスプレイ設定のように、 図を見ながら
   ///   どの方向に繋ぐかを決められるように。
-  /// キーは 'left'/'right'/'top'/'bottom'、 値はモニターの番号 (0 始まり。
-  /// 0 は主モニターなので、 実際に入るのは 1 以上)。
+  /// 鍵は主モニターから見た升目 ('1,0' = 右どなり / '0,-1' = 真上)、
+  /// 値はモニターの番号 (0 始まり。 0 は主モニターなので 1 以上)。
+  /// 右へ 2 枚続けて並べる、 のような繋ぎ方もできる (= ユーザー要望)。
   Map<String, int> _cursorWrapPlacement = const {};
   Map<String, int> get cursorWrapPlacement => _cursorWrapPlacement;
 
@@ -4569,11 +4567,19 @@ class MindMapProvider extends ChangeNotifier {
       if (raw == null || raw.isEmpty) return;
       final m = jsonDecode(raw);
       if (m is! Map) return;
+      // 昔の控え (left/right/top/bottom) は升目に読み替える。
+      const legacy = {
+        'left': '-1,0',
+        'right': '1,0',
+        'top': '0,-1',
+        'bottom': '0,1',
+      };
       final out = <String, int>{};
-      for (final k in const ['left', 'right', 'top', 'bottom']) {
-        final v = m[k];
-        if (v is num) out[k] = v.toInt();
-      }
+      m.forEach((k, v) {
+        if (v is! num) return;
+        final key = legacy['$k'] ?? '$k';
+        out[key] = v.toInt();
+      });
       _cursorWrapPlacement = out;
     } catch (_) {}
   }
@@ -4586,10 +4592,11 @@ class MindMapProvider extends ChangeNotifier {
       final m = jsonDecode(raw);
       if (m is! Map) return;
       final out = <String, int>{};
-      for (final k in const ['L', 'R', 'T', 'B']) {
-        final v = m[k];
-        if (v is num) out[k] = v.toInt();
-      }
+      m.forEach((k, v) {
+        // 昔の控え (辺だけの鍵) と、 今の 'モニター番号:辺' の両方を読む。
+        // -1 は「反対の端へ回り込む」 の名残なので捨てる (全体のトグルへ)。
+        if (v is num && v.toInt() >= 0) out['$k'] = v.toInt();
+      });
       _cursorWrapEdges = out;
     } catch (_) {}
   }
@@ -4606,8 +4613,8 @@ class MindMapProvider extends ChangeNotifier {
     final prefs = await _prefsWithRetry();
     await prefs.setInt('cursorSizeMain', _cursorSizeMain);
     await prefs.setInt('cursorSizeSub', _cursorSizeSub);
-    CursorWrap.instance
-        .applySizes(main: _cursorSizeMain, sub: _cursorSizeSub);
+    // カーソルの大きさは廃止 (= 実際には効かないため。 ユーザー要望で
+    //   項目ごと削除)。 呼び出しは残っていても何もしない。
     notifyListeners();
   }
 
@@ -33660,6 +33667,36 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Para onde leva esta borda',
       'ru': 'Куда ведёт этот край',
       'fa': 'مقصد این لبه',
+    },
+    'cursorWrap.gridHint': {
+      'ja': '空いている枠を押すとモニターを足せます (右へ続けて並べる事も'
+          'できます)。 となり合った辺はそのまま行き来できるので設定は要りません。'
+          ' **繋がっていない辺**を押すと、 そこから抜けた時の行き先を選べます。',
+      'en': 'Tap an empty slot to add a monitor (you can chain them to the '
+          'right). Touching edges already connect, so they need no setting. '
+          'Tap an UNCONNECTED edge to choose where it leads.',
+      'zh': '点击空位可添加显示器（也可向右连续排列）。相邻的边本来就能通行，'
+          '无需设置。点击未连接的边可选择其去向。',
+      'ko': '빈 칸을 누르면 모니터를 추가합니다(오른쪽으로 계속 늘릴 수도 '
+          '있습니다). 맞닿은 가장자리는 그대로 오갈 수 있어 설정이 필요 '
+          '없습니다. 연결되지 않은 가장자리를 누르면 이동처를 고릅니다.',
+      'es': 'Toca un hueco para añadir un monitor (puedes encadenarlos a la '
+          'derecha). Los bordes contiguos ya conectan. Toca un borde SIN '
+          'conectar para elegir a dónde lleva.',
+      'fr': 'Touchez un emplacement vide pour ajouter un écran (vous pouvez '
+          'les enchaîner vers la droite). Les bords contigus se rejoignent '
+          'déjà. Touchez un bord NON relié pour choisir sa destination.',
+      'de': 'Freien Platz antippen, um einen Monitor hinzuzufügen (auch '
+          'mehrere nach rechts). Angrenzende Ränder verbinden bereits. '
+          'Einen NICHT verbundenen Rand antippen, um sein Ziel zu wählen.',
+      'pt': 'Toque em um espaço vazio para adicionar um monitor (dá para '
+          'encadear à direita). Bordas adjacentes já se conectam. Toque em '
+          'uma borda NÃO conectada para escolher o destino.',
+      'ru': 'Нажмите пустое место, чтобы добавить монитор (можно в ряд '
+          'вправо). Смежные края уже соединены. Нажмите НЕсоединённый край, '
+          'чтобы выбрать, куда он ведёт.',
+      'fa': 'برای افزودن نمایشگر روی جای خالی بزنید. لبه‌های مجاور از قبل '
+          'وصل‌اند؛ برای انتخاب مقصد روی لبه وصل‌نشده بزنید.',
     },
     'cursorWrap.arrangeHint2': {
       'ja': '空いている枠を押すとサブモニターを置けます。 真ん中の箱の'
@@ -82423,9 +82460,19 @@ $cleanQ
     _mdScrollSync = prefs.getBool('mdScrollSync') ?? true;
     _cursorSizeMain = prefs.getInt('cursorSizeMain') ?? 0;
     _cursorSizeSub = prefs.getInt('cursorSizeSub') ?? 0;
-    // 起動し直しても入ったままにする。
-    CursorWrap.instance
-        .applySizes(main: _cursorSizeMain, sub: _cursorSizeSub);
+    // ── カーソルの大きさは廃止 (= 実測で、 レジストリは書けても実際の
+    //    カーソルは変わらなかった。 ユーザー要望で項目ごと削除) ──
+    //    アプリが書き換えた控えをそのままにすると、 次のサインインで急に
+    //    大きなカーソルになってしまうので、 一度だけ既定へ戻す。
+    if (_cursorSizeMain > 0 || _cursorSizeSub > 0) {
+      CursorWrap.resetCursorSizeToDefault();
+      _cursorSizeMain = 0;
+      _cursorSizeSub = 0;
+      try {
+        await prefs.setInt('cursorSizeMain', 0);
+        await prefs.setInt('cursorSizeSub', 0);
+      } catch (_) {}
+    }
     _loadCursorWrapEdges(prefs);
     _loadCursorWrapPlacement(prefs);
     CursorWrap.instance.applyEdgeTargets(_cursorWrapEdges);

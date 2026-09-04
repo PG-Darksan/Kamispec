@@ -144,8 +144,31 @@ class CursorWrap {
     }
   }
 
+  /// カーソルの大きさを、 アプリが書き換えた分だけ Windows の既定へ戻す。
+  ///
+  /// = ユーザー要望「変えることができないのであれば項目自体消して」。
+  /// 実測すると、 レジストリ (Accessibility\CursorSize と
+  /// Cursors\CursorBaseSize) は書けても、 実際のカーソルの絵は 32px の
+  /// ままだった (SystemParametersInfo(SPI_SETCURSORS) は成功するのに
+  /// 反映されない。 Windows 11 はサインインし直すまで読み直さない)。
+  /// このまま控えを残すと、 次のサインインで急に大きなカーソルになって
+  /// しまうので、 機能を消すのと一緒に既定へ戻す。
+  static void resetCursorSizeToDefault() {
+    if (!isSupported) return;
+    try {
+      _writeDword('Software\\Microsoft\\Accessibility', 'CursorSize', 1);
+      _writeDword('Control Panel\\Cursors', 'CursorBaseSize', 32);
+      w32.SystemParametersInfo(w32.SPI_SETCURSORS, 0, nullptr, 0);
+    } catch (_) {}
+  }
+
   /// モニターごとの大きさ設定を渡す (0 = その画面では触らない)。
-  void applySizes({required int main, required int sub}) {
+  ///
+  /// ★ 中身は空にした。 上のとおり実際には効かないため
+  ///   (= ユーザー要望で項目ごと削除)。 呼び出し側を一度に消すと差分が
+  ///   大きくなるので、 受け口だけ残して何もしない。
+  // ignore: unused_element
+  void applySizesDisabled({required int main, required int sub}) {
     _sizeMain = main.clamp(0, 15);
     _sizeSub = sub.clamp(0, 15);
     // まだ何も書き換えていない時だけ、 今の設定を戻し先として控える。
@@ -203,7 +226,7 @@ class CursorWrap {
   /// どちらかの機能が要る間だけ見回りを回す。
   void _syncTimer() {
     final want =
-        isSupported && allowed && (_enabled || _sizeSub > 0);
+        isSupported && allowed && (_enabled || _edgeTargets.isNotEmpty);
     if (!want) {
       stop();
       return;
@@ -230,7 +253,7 @@ class CursorWrap {
 
   void _tick() {
     try {
-      _sizeTick();
+      // カーソルの大きさの切り替えは廃止 (= 実際に効かないため)。
     } catch (_) {}
     if (!_enabled) return;
     if (DateTime.now().isBefore(_quietUntil)) return;
@@ -295,11 +318,21 @@ class CursorWrap {
       //   (= そのまま歩いて行けるので、 飛ばすと邪魔になるだけ)。
       if (hereInfo != null && hasNeighbor(hereInfo, kind, mons)) return;
 
-      final target = _edgeTargets[kind];
-      if (target == null) return;
+      // どのモニターに居るか (一覧での番号)。
+      var hereIndex = -1;
+      for (var i = 0; i < mons.length; i++) {
+        if (mons[i] == hereInfo) {
+          hereIndex = i;
+          break;
+        }
+      }
+      final target = hereIndex < 0 ? null : _targetFor(hereIndex, kind);
+      // 行き先が決まっていない辺は、 全体のトグルが入っていれば昔どおり
+      //   「反対の端へ回り込む」。 入っていなければ何もしない。
+      if (target == null && !_enabled) return;
 
       int? nx, ny;
-      if (target >= 0) {
+      if (target != null && target >= 0) {
         // ── 指定したモニターへ飛ぶ (= ユーザー要望: 3 台目の設定なども) ──
         //    出た辺の反対側から入り、 直交方向の位置は割合で引き継ぐ。
         if (target >= mons.length) return;
@@ -325,8 +358,8 @@ class CursorWrap {
         return;
       }
 
-      // ── -1: 今までどおり「仮想画面の反対の端」 へ回り込む ──
-      //    こちらは仮想画面の外周に着いた時だけ。
+      // ── 行き先の指定が無い時 = 「仮想画面の反対の端」 へ回り込む ──
+      //    こちらは仮想画面の外周に着いた時だけ (= 昔からの動き)。
       if (kind == 'L') {
         if (x > vx) return;
         nx = vRight - 2;
@@ -641,11 +674,25 @@ class CursorWrap {
     return false;
   }
 
-  /// 辺ごとの行き先。 キーは 'L'/'R'/'T'/'B'。
-  ///   * 入っていない / null → その辺では何もしない
-  ///   * -1 → 反対の端へ回り込む (今までの動き)
+  /// 辺ごとの行き先。 キーは **'モニター番号:辺'** ('0:L' など)。
+  ///   * 入っていない → その辺では何もしない
+  ///     (ただし「両サイドからアクセス」 が入っていれば、 昔どおり反対の端へ
+  ///      回り込む。 = ユーザー要望: 端ごとに「反対の端へ回り込む」 を選ぶのは
+  ///      くどいので、 それは全体のトグルに任せる)
   ///   * 0 以上 → [listMonitors] の何番目のモニターへ飛ぶか
-  Map<String, int> _edgeTargets = const {'L': -1, 'R': -1, 'T': -1, 'B': -1};
+  Map<String, int> _edgeTargets = const {};
+
+  /// [monIndex] のモニターの [kind] 側の行き先 (無ければ null)。
+  int? _targetFor(int monIndex, String kind) {
+    final v = _edgeTargets['$monIndex:$kind'];
+    if (v != null) return v;
+    // 昔の控え (辺だけの鍵) は主モニターの物として読む。
+    if (monIndex == 0) {
+      final old = _edgeTargets[kind];
+      if (old != null && old >= 0) return old;
+    }
+    return null;
+  }
 
   /// 設定を渡す (= ユーザー要望: どの方向から行き来するかを選べるように)。
   void applyEdgeTargets(Map<String, int> v) {
