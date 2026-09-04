@@ -4517,7 +4517,49 @@ class MindMapProvider extends ChangeNotifier {
     _cursorWrapEnabled = v;
     final prefs = await _prefsWithRetry();
     await prefs.setBool('cursorWrapEnabled', v);
+    // ★ ここで道具にも渡す。 前は画面側でしか呼んでおらず、 他所から
+    //   設定を変えると次の起動まで効かなかった。
+    CursorWrap.instance.apply(v);
     notifyListeners();
+  }
+
+  /// 画面の端ごとの行き先 (= ユーザー要望: どの方向から行き来するか、
+  /// 3 台目のモニターも選べるように)。
+  ///
+  /// キーは 'L'/'R'/'T'/'B'。 値は
+  ///   * -1 → 反対の端へ回り込む (今までの動き)
+  ///   * 0 以上 → そのモニターへ飛ぶ (`CursorWrap.listMonitors()` の並び順)
+  /// 入っていない辺では何もしない。
+  Map<String, int> _cursorWrapEdges = const {
+    'L': -1,
+    'R': -1,
+    'T': -1,
+    'B': -1,
+  };
+  Map<String, int> get cursorWrapEdges => _cursorWrapEdges;
+
+  Future<void> setCursorWrapEdges(Map<String, int> v) async {
+    _cursorWrapEdges = Map<String, int>.from(v);
+    CursorWrap.instance.applyEdgeTargets(_cursorWrapEdges);
+    final prefs = await _prefsWithRetry();
+    await prefs.setString('cursorWrapEdges', jsonEncode(_cursorWrapEdges));
+    notifyListeners();
+  }
+
+  /// 控えから読み直す。 読めない時は今までどおり四方向とも「反対の端」。
+  void _loadCursorWrapEdges(SharedPreferences prefs) {
+    try {
+      final raw = prefs.getString('cursorWrapEdges');
+      if (raw == null || raw.isEmpty) return;
+      final m = jsonDecode(raw);
+      if (m is! Map) return;
+      final out = <String, int>{};
+      for (final k in const ['L', 'R', 'T', 'B']) {
+        final v = m[k];
+        if (v is num) out[k] = v.toInt();
+      }
+      _cursorWrapEdges = out;
+    } catch (_) {}
   }
 
   /// マウスカーソルの大きさ (1〜15、 0 = アプリからは触らない)。
@@ -33385,6 +33427,160 @@ class MindMapProvider extends ChangeNotifier {
     },
     // ディスプレイ設定 (= ユーザー要望: サブモニターの端・音声の出力先・
     //   マウスカーソルの大きさなどは動作設定ではなくここから)。
+    // ── モニターの間を行き来する方向 (= ユーザー要望: 上下からも、
+    //    3 台目のモニターの設定も) ──
+    'cursorWrap.edgeTitle': {
+      'ja': '行き来する方向',
+      'en': 'Crossing directions',
+      'zh': '跨屏方向',
+      'ko': '이동 방향',
+      'es': 'Direcciones de cruce',
+      'fr': 'Directions de passage',
+      'de': 'Übergangsrichtungen',
+      'pt': 'Direções de passagem',
+      'ru': 'Направления перехода',
+      'fa': 'جهت‌های عبور',
+    },
+    'cursorWrap.edgeSubtitle': {
+      'ja': '画面の端ごとに、 どのモニターへ行くかを選べます',
+      'en': 'Choose where each screen edge leads',
+      'zh': '为每个屏幕边缘选择去向',
+      'ko': '화면 가장자리마다 이동할 곳을 고릅니다',
+      'es': 'Elige a dónde lleva cada borde de la pantalla',
+      'fr': 'Choisissez où mène chaque bord de l’écran',
+      'de': 'Legen Sie fest, wohin jeder Bildschirmrand führt',
+      'pt': 'Escolha para onde leva cada borda da tela',
+      'ru': 'Выберите, куда ведёт каждый край экрана',
+      'fa': 'انتخاب مقصد هر لبه صفحه',
+    },
+    'cursorWrap.edgeLeft': {
+      'ja': '左の端から',
+      'en': 'From the left edge',
+      'zh': '从左边缘',
+      'ko': '왼쪽 가장자리에서',
+      'es': 'Desde el borde izquierdo',
+      'fr': 'Depuis le bord gauche',
+      'de': 'Vom linken Rand',
+      'pt': 'Da borda esquerda',
+      'ru': 'От левого края',
+      'fa': 'از لبه چپ',
+    },
+    'cursorWrap.edgeRight': {
+      'ja': '右の端から',
+      'en': 'From the right edge',
+      'zh': '从右边缘',
+      'ko': '오른쪽 가장자리에서',
+      'es': 'Desde el borde derecho',
+      'fr': 'Depuis le bord droit',
+      'de': 'Vom rechten Rand',
+      'pt': 'Da borda direita',
+      'ru': 'От правого края',
+      'fa': 'از لبه راست',
+    },
+    'cursorWrap.edgeTop': {
+      'ja': '上の端から',
+      'en': 'From the top edge',
+      'zh': '从上边缘',
+      'ko': '위쪽 가장자리에서',
+      'es': 'Desde el borde superior',
+      'fr': 'Depuis le bord supérieur',
+      'de': 'Vom oberen Rand',
+      'pt': 'Da borda superior',
+      'ru': 'От верхнего края',
+      'fa': 'از لبه بالا',
+    },
+    'cursorWrap.edgeBottom': {
+      'ja': '下の端から',
+      'en': 'From the bottom edge',
+      'zh': '从下边缘',
+      'ko': '아래쪽 가장자리에서',
+      'es': 'Desde el borde inferior',
+      'fr': 'Depuis le bord inférieur',
+      'de': 'Vom unteren Rand',
+      'pt': 'Da borda inferior',
+      'ru': 'От нижнего края',
+      'fa': 'از لبه پایین',
+    },
+    'cursorWrap.targetNone': {
+      'ja': '何もしない',
+      'en': 'Do nothing',
+      'zh': '不处理',
+      'ko': '아무것도 하지 않음',
+      'es': 'No hacer nada',
+      'fr': 'Ne rien faire',
+      'de': 'Nichts tun',
+      'pt': 'Não fazer nada',
+      'ru': 'Ничего не делать',
+      'fa': 'هیچ کاری نکن',
+    },
+    'cursorWrap.targetOpposite': {
+      'ja': '反対の端へ回り込む',
+      'en': 'Wrap to the opposite edge',
+      'zh': '绕到对面边缘',
+      'ko': '반대쪽 가장자리로 이동',
+      'es': 'Pasar al borde opuesto',
+      'fr': 'Passer au bord opposé',
+      'de': 'Zum gegenüberliegenden Rand',
+      'pt': 'Ir para a borda oposta',
+      'ru': 'Перейти к противоположному краю',
+      'fa': 'رفتن به لبه مقابل',
+    },
+    'cursorWrap.primary': {
+      'ja': '主',
+      'en': 'primary',
+      'zh': '主',
+      'ko': '주',
+      'es': 'principal',
+      'fr': 'principal',
+      'de': 'primär',
+      'pt': 'principal',
+      'ru': 'основной',
+      'fa': 'اصلی',
+    },
+    'cursorWrap.foundMonitors': {
+      'ja': 'つながっているモニター: {n} 台',
+      'en': 'Monitors found: {n}',
+      'zh': '检测到的显示器：{n} 台',
+      'ko': '연결된 모니터: {n}대',
+      'es': 'Monitores detectados: {n}',
+      'fr': 'Écrans détectés : {n}',
+      'de': 'Gefundene Monitore: {n}',
+      'pt': 'Monitores encontrados: {n}',
+      'ru': 'Найдено мониторов: {n}',
+      'fa': 'نمایشگرهای یافت‌شده: {n}',
+    },
+    'cursorWrap.needTwo': {
+      'ja': 'モニターが 1 台のときは働きません。',
+      'en': 'Has no effect with a single monitor.',
+      'zh': '只有一台显示器时不起作用。',
+      'ko': '모니터가 한 대일 때는 동작하지 않습니다.',
+      'es': 'No tiene efecto con un solo monitor.',
+      'fr': 'Sans effet avec un seul écran.',
+      'de': 'Ohne Wirkung bei nur einem Monitor.',
+      'pt': 'Sem efeito com apenas um monitor.',
+      'ru': 'Не работает с одним монитором.',
+      'fa': 'با یک نمایشگر اثری ندارد.',
+    },
+    'cursorWrap.edgeHint': {
+      'ja': 'Windows が既に隣とつないでいる端では、 設定しなくてもそのまま'
+          '行き来できます (その端では何もしません)。',
+      'en': 'Edges where Windows already joins two monitors keep working as '
+          'usual; nothing is applied there.',
+      'zh': 'Windows 已经连接的边缘照常通行，不会应用此设置。',
+      'ko': 'Windows가 이미 이어 놓은 가장자리는 그대로 이동할 수 있으며, '
+          '설정은 적용되지 않습니다.',
+      'es': 'Los bordes que Windows ya une siguen funcionando igual; ahí no '
+          'se aplica nada.',
+      'fr': 'Les bords que Windows relie déjà continuent de fonctionner ; '
+          'rien n’y est appliqué.',
+      'de': 'Ränder, die Windows bereits verbindet, funktionieren wie bisher; '
+          'dort wird nichts angewendet.',
+      'pt': 'As bordas que o Windows já une continuam funcionando; nada é '
+          'aplicado ali.',
+      'ru': 'Края, уже соединённые Windows, работают как обычно; там ничего '
+          'не применяется.',
+      'fa': 'لبه‌هایی که ویندوز از قبل به هم وصل کرده مثل قبل کار می‌کنند.',
+    },
     'menu.displaySettings': {
       'ja': 'ディスプレイ設定',
       'en': 'Display settings',
@@ -68678,7 +68874,8 @@ class MindMapProvider extends ChangeNotifier {
     'fcAvoidExisting', 'fcFormat', 'fcIncludeRelated', 'fcPrompt',
     'fcTxtLineCount', 'fcTxtStartLine', 'flashcardGenCount',
     'quizAvoidDuplicates', 'allowMultipleFloatingWindows',
-    'openWithNewInstance', 'cursorWrapEnabled', 'mdScrollSync',
+    'openWithNewInstance', 'cursorWrapEnabled', 'cursorWrapEdges',
+    'mdScrollSync',
     'cursorSizeMain',
     'cursorSizeSub',
     'openTarget', 'mapSplitQuad', 'mapSplitRatioX',
@@ -81955,6 +82152,8 @@ $cleanQ
     // 起動し直しても入ったままにする。
     CursorWrap.instance
         .applySizes(main: _cursorSizeMain, sub: _cursorSizeSub);
+    _loadCursorWrapEdges(prefs);
+    CursorWrap.instance.applyEdgeTargets(_cursorWrapEdges);
     CursorWrap.instance.apply(_cursorWrapEnabled);
     // メモ欄一括折りたたみ (デフォルト false = 従来通り全文表示)
     _memoCollapsedGlobal = prefs.getBool('memoCollapsedGlobal') ?? false;

@@ -26,6 +26,36 @@ import 'package:win32/win32.dart' as w32;
 ///     回り込ませる (= ユーザー要望: カーソルは両端から出せるのに、 掴んだ
 ///     窓は出せない)。 窓の大きさを変えている最中は形が壊れるのでやらない。
 ///   * 移した直後の 300ms (行ったり来たりを防ぐ)
+/// モニター 1 枚ぶんの情報 (画面の座標)。
+class MonitorInfo {
+  final int left;
+  final int top;
+  final int right;
+  final int bottom;
+
+  /// Windows の「主ディスプレイ」 か。
+  final bool primary;
+  const MonitorInfo(
+      this.left, this.top, this.right, this.bottom, this.primary);
+
+  int get width => right - left;
+  int get height => bottom - top;
+
+  /// 見分けが付くよう「幅x高さ」 で表す。
+  String get sizeLabel => '${width}x$height';
+
+  @override
+  bool operator ==(Object other) =>
+      other is MonitorInfo &&
+      other.left == left &&
+      other.top == top &&
+      other.right == right &&
+      other.bottom == bottom;
+
+  @override
+  int get hashCode => Object.hash(left, top, right, bottom);
+}
+
 class CursorWrap {
   CursorWrap._();
 
@@ -227,24 +257,88 @@ class CursorWrap {
       if (pos == null) return;
       final x = pos.$1, y = pos.$2;
 
-      int? nx, ny;
+      // ── まず「今いるモニターのどの端に着いたか」 を見る ──
+      //    仮想画面の端だけを見ていると、 高さの違うモニターを並べた時に
+      //    サブの上端が仮想画面の上端にならず、 上から行き来できなかった
+      //    (= ユーザー要望: 上下からもアクセスしたい)。
+      final here = _monitorRectAt(x, y);
+      if (here == null) return;
+      final mons = listMonitors();
+      MonitorInfo? hereInfo;
+      for (final m in mons) {
+        if (m.left == here.$1 &&
+            m.top == here.$2 &&
+            m.right == here.$3 &&
+            m.bottom == here.$4) {
+          hereInfo = m;
+          break;
+        }
+      }
+
       var kind = '';
-      if (x <= vx) {
+      if (x <= here.$1) {
+        kind = 'L';
+      } else if (x >= here.$3 - 1) {
+        kind = 'R';
+      } else if (y <= here.$2) {
+        kind = 'T';
+      } else if (y >= here.$4 - 1) {
+        kind = 'B';
+      }
+      if (kind.isEmpty) return;
+
+      // OS がその側で既に隣のモニターへ繋いでいるなら、 何もしない
+      //   (= そのまま歩いて行けるので、 飛ばすと邪魔になるだけ)。
+      if (hereInfo != null && hasNeighbor(hereInfo, kind, mons)) return;
+
+      final target = _edgeTargets[kind];
+      if (target == null) return;
+
+      int? nx, ny;
+      if (target >= 0) {
+        // ── 指定したモニターへ飛ぶ (= ユーザー要望: 3 台目の設定なども) ──
+        //    出た辺の反対側から入り、 直交方向の位置は割合で引き継ぐ。
+        if (target >= mons.length) return;
+        final to = mons[target];
+        double ratio(int v, int lo, int hi) =>
+            hi <= lo ? 0.5 : ((v - lo) / (hi - lo)).clamp(0.0, 1.0);
+        int lerp(double r, int lo, int hi) =>
+            (lo + (hi - lo) * r).round().clamp(lo + 1, hi - 2);
+        if (kind == 'L' || kind == 'R') {
+          final r = ratio(y, here.$2, here.$4);
+          nx = kind == 'L' ? to.right - 2 : to.left + 1;
+          ny = lerp(r, to.top, to.bottom);
+        } else {
+          final r = ratio(x, here.$1, here.$3);
+          ny = kind == 'T' ? to.bottom - 2 : to.top + 1;
+          nx = lerp(r, to.left, to.right);
+        }
+        if (nx == null || ny == null) return;
+        // 窓を掴んでいる時は窓も一緒に運ぶ (= 反対の端へ回り込む時と同じ)。
+        if (movingWindow != 0) _moveWindowBy(movingWindow, nx - x, ny - y);
+        _setCursorPos(nx, ny);
+        _quietUntil = DateTime.now().add(const Duration(milliseconds: 300));
+        return;
+      }
+
+      // ── -1: 今までどおり「仮想画面の反対の端」 へ回り込む ──
+      //    こちらは仮想画面の外周に着いた時だけ。
+      if (kind == 'L') {
+        if (x > vx) return;
         nx = vRight - 2;
         ny = y;
-        kind = 'L';
-      } else if (x >= vRight) {
+      } else if (kind == 'R') {
+        if (x < vRight) return;
         nx = vx + 2;
         ny = y;
-        kind = 'R';
-      } else if (y <= vy) {
+      } else if (kind == 'T') {
+        if (y > vy) return;
         nx = x;
         ny = vBottom - 2;
-        kind = 'T';
-      } else if (y >= vBottom) {
+      } else {
+        if (y < vBottom) return;
         nx = x;
         ny = vy + 2;
-        kind = 'B';
       }
       if (nx == null || ny == null) return;
 
@@ -438,6 +532,120 @@ class CursorWrap {
     try {
       w32.SetCursorPos(x, y);
     } catch (_) {}
+  }
+
+  /// 今つながっているモニターの一覧 (左上から順)。
+  ///
+  /// EnumDisplayMonitors は「関数を OS に渡す」 形なので、 ここでは仮想画面を
+  /// 粗く突いて (MonitorFromPoint) 見つかった四角を集める。 モニターはどれも
+  /// 十分大きいので、 200px 刻みで取りこぼす事はない。
+  static List<MonitorInfo> listMonitors() {
+    if (!isSupported) return const [];
+    final out = <MonitorInfo>[];
+    try {
+      final vx = _staticMetric(w32.SM_XVIRTUALSCREEN);
+      final vy = _staticMetric(w32.SM_YVIRTUALSCREEN);
+      final vw = _staticMetric(w32.SM_CXVIRTUALSCREEN);
+      final vh = _staticMetric(w32.SM_CYVIRTUALSCREEN);
+      if (vw <= 0 || vh <= 0) return const [];
+      const step = 200;
+      for (var y = vy + 1; y < vy + vh; y += step) {
+        for (var x = vx + 1; x < vx + vw; x += step) {
+          final m = _staticMonitorAt(x, y);
+          if (m != null && !out.contains(m)) out.add(m);
+        }
+      }
+      // 右端 / 下端も必ず見る (刻みで飛ばしてしまう事があるため)。
+      for (final pt in [
+        (vx + vw - 2, vy + 1),
+        (vx + 1, vy + vh - 2),
+        (vx + vw - 2, vy + vh - 2),
+      ]) {
+        final m = _staticMonitorAt(pt.$1, pt.$2);
+        if (m != null && !out.contains(m)) out.add(m);
+      }
+    } catch (_) {
+      return out;
+    }
+    out.sort((a, b) => a.left != b.left
+        ? a.left.compareTo(b.left)
+        : a.top.compareTo(b.top));
+    return out;
+  }
+
+  static int _staticMetric(int index) {
+    try {
+      return w32.GetSystemMetrics(index);
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  static MonitorInfo? _staticMonitorAt(int x, int y) {
+    final pt = calloc<w32.POINT>();
+    final mi = calloc<w32.MONITORINFO>();
+    try {
+      pt.ref.x = x;
+      pt.ref.y = y;
+      final hm = w32.MonitorFromPoint(pt.ref, w32.MONITOR_DEFAULTTONULL);
+      if (hm == 0) return null;
+      mi.ref.cbSize = sizeOf<w32.MONITORINFO>();
+      if (w32.GetMonitorInfo(hm, mi) == 0) return null;
+      final r = mi.ref.rcMonitor;
+      return MonitorInfo(r.left, r.top, r.right, r.bottom,
+          (mi.ref.dwFlags & w32.MONITORINFOF_PRIMARY) != 0);
+    } catch (_) {
+      return null;
+    } finally {
+      calloc.free(pt);
+      calloc.free(mi);
+    }
+  }
+
+  /// [m] の [kind] 側 ('L'/'R'/'T'/'B') に、 別のモニターが隣接しているか。
+  ///
+  /// = ユーザー要望「サブモニターに windows のカーソルからアクセスできる
+  ///   方向を調べて」。 隣がある側は OS がそのまま繋いでいるので、 こちらで
+  ///   回り込ませる必要はない (むしろ邪魔になる)。
+  static bool hasNeighbor(MonitorInfo m, String kind,
+      [List<MonitorInfo>? all]) {
+    final mons = all ?? listMonitors();
+    for (final o in mons) {
+      if (o == m) continue;
+      switch (kind) {
+        case 'L':
+          if (o.right == m.left && o.bottom > m.top && o.top < m.bottom) {
+            return true;
+          }
+          break;
+        case 'R':
+          if (o.left == m.right && o.bottom > m.top && o.top < m.bottom) {
+            return true;
+          }
+          break;
+        case 'T':
+          if (o.bottom == m.top && o.right > m.left && o.left < m.right) {
+            return true;
+          }
+          break;
+        default:
+          if (o.top == m.bottom && o.right > m.left && o.left < m.right) {
+            return true;
+          }
+      }
+    }
+    return false;
+  }
+
+  /// 辺ごとの行き先。 キーは 'L'/'R'/'T'/'B'。
+  ///   * 入っていない / null → その辺では何もしない
+  ///   * -1 → 反対の端へ回り込む (今までの動き)
+  ///   * 0 以上 → [listMonitors] の何番目のモニターへ飛ぶか
+  Map<String, int> _edgeTargets = const {'L': -1, 'R': -1, 'T': -1, 'B': -1};
+
+  /// 設定を渡す (= ユーザー要望: どの方向から行き来するかを選べるように)。
+  void applyEdgeTargets(Map<String, int> v) {
+    _edgeTargets = Map<String, int>.from(v);
   }
 
   /// [x],[y] にいちばん近いモニターの四角 (left, top, right, bottom)。

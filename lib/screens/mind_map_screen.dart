@@ -53729,6 +53729,12 @@ class _MindMapScreenState extends State<MindMapScreen>
                                             _splitLeftPdfDrawActive = false);
                                       }
                                     },
+                                    // 描き込み中でも棒を出せるように
+                                    //   (= ユーザー要望)。
+                                    onHoverInOverlay: (_, __) =>
+                                        _markSplitLeftPdfBar(),
+                                    // このパネルは続き表示で固定。
+                                    continuousLayout: true,
                                     onSaved: () {
                                       // 読み直す前に今の見え方を控える
                                       // (= ユーザー報告: 消しゴムで拡大率が
@@ -54860,6 +54866,10 @@ class _MindMapScreenState extends State<MindMapScreen>
         onExit: () {
           if (mounted) setState(() => _splitPdfDrawActive = false);
         },
+        // 描き込み中でも棒を出せるように (= ユーザー要望)。
+        onHoverInOverlay: (_, __) => _markSplitPdfBar(),
+        // このパネルは続き表示で固定。
+        continuousLayout: true,
         onSaved: () {
           // 読み直す前に今の見え方を控える (= ユーザー報告)。
           _keepSplitPdfView(left: false);
@@ -55410,6 +55420,12 @@ class _MindMapScreenState extends State<MindMapScreen>
     return Consumer<MindMapProvider>(builder: (context, provider, _) {
       // MCP / AI が作った物のあるページへ寄せる (= ユーザー要望)。
       _handleMcpFocus(provider);
+      // 分割に向かないページ (文書 / ビデオエディター) を開いていたら、
+      //   見た目だけでなく分割そのものを畳む (= ユーザー要望: 以後のページも
+      //   全画面で開くように)。
+      if (provider.pages.isNotEmpty) {
+        _closeSplitIfPageNotEligible(provider.currentPage);
+      }
       if (provider.pages.isEmpty) {
         return const Scaffold(
           backgroundColor: Color(0xFF0F0F1A),
@@ -66691,16 +66707,11 @@ class _MindMapScreenState extends State<MindMapScreen>
             label: provider.t('drawer.openFolder'),
             formatHint: provider.t('drawer.openFolderFormats')),
         const PopupMenuDivider(),
-        // ── AI で新規ページを作る (= ユーザー要望: + ボタンから AI に
-        //    ページを作ってもらえるように)。 呼ぶのは AI アシスタント
-        //    (MCP チャット) で、 「新しいページを作る」 という前提を
-        //    添えて開く。 ──
-        _menuItem<_AddMenuAction>(
-            value: _AddMenuAction.aiNewPage,
-            icon: Icons.auto_awesome_rounded,
-            iconColor: const Color(0xFFBA68C8),
-            label: provider.t('drawer.aiNewPage'),
-            formatHint: provider.t('drawer.aiNewPageHint')),
+        // ── 「AI で新規ページ作成」 はユーザー要望で削除 ──
+        //    押しても結局 AI アシスタントが開くだけで、 同じ事はその
+        //    ボタンからできるため。 呼び出しの本体
+        //    (_openMcpChat(initialTask: 'newPage')) と _AddMenuAction の
+        //    値は、 他所からの呼び出しのために残してある。
         // ── 「AIでファイルを要約」「AIで用語・概念を解説」 はユーザー要望で
         //    削除 (= AI アシスタントのボタンから同じことが呼べるため)。
         //    機能本体 (_summarizeFileToNewPage / _aiExplainConcept) と
@@ -70879,6 +70890,31 @@ class _MindMapScreenState extends State<MindMapScreen>
   bool _splitEligiblePage(MindMapPage p) =>
       p.pageType != 'document' && p.pageType != 'videoEditor';
 
+  /// 分割に向かないページ (文書 / ビデオエディター) を開いたら、 分割を
+  /// **本当に**畳む (= ユーザー報告: ビデオエディターへ行くと分割は消える
+  /// のに、 次にページを開こうとすると「どの画面で開くか」 と聞かれる)。
+  ///
+  /// 今までは絵だけ全画面に差し替えていて、 分割の旗 (_mapSplitOpen) は
+  /// 立ったままだった。 そのせいで、 見た目は分割していないのに分割中の
+  /// 振る舞いが残っていた。
+  ///
+  /// 組み立ての最中に状態を変えられないので、 一枚描き終えてから畳む。
+  void _closeSplitIfPageNotEligible(MindMapPage page) {
+    if (!_mapSplitOpen || _splitEligiblePage(page)) return;
+    if (_splitClosePending) return;
+    _splitClosePending = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _splitClosePending = false;
+      if (!mounted || !_mapSplitOpen) return;
+      final cur = context.read<MindMapProvider>().currentPage;
+      if (_splitEligiblePage(cur)) return;
+      _closeMapSplit();
+    });
+  }
+
+  /// 畳む予約が二重に走らないための札。
+  bool _splitClosePending = false;
+
   /// 表示中のセル番号一覧 (2 分割は 0,1 / 4 分割は 0..3)。
   List<int> _visibleSplitSlots() =>
       _mapSplitQuad ? const [0, 1, 2, 3] : const [0, 1];
@@ -72043,6 +72079,15 @@ class _MindMapScreenState extends State<MindMapScreen>
             // ── トグル: 画面の両端をつないでマウスを回り込ませる
             //    (Windows のみ。 = ユーザー要望: メインの右とサブの左しか
             //     繋がっていなくて使いにくい) ──
+            // ── 行き来する方向 (= ユーザー要望: 上下からも / 3 台目も) ──
+            if (!kIsWeb && Platform.isWindows)
+              _settingsTile(
+                icon: Icons.open_with_rounded,
+                color: const Color(0xFF4FC3F7),
+                title: provider.t('cursorWrap.edgeTitle'),
+                subtitle: provider.t('cursorWrap.edgeSubtitle'),
+                onTap: () => unawaited(_showCursorWrapEdgeDialog(provider)),
+              ),
             if (!kIsWeb && Platform.isWindows)
               _settingsToggleTile(
                 icon: provider.cursorWrapEnabled
@@ -72068,6 +72113,157 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 対象外の OS では項目そのものを出さない)。
   bool get _hasDisplaySettings =>
       !kIsWeb && (Platform.isWindows || Platform.isAndroid);
+
+  /// モニターの間をどの方向から行き来するかを決める
+  /// (= ユーザー要望: どの方向からアクセスできるか調べて、 上下からも、
+  ///   3 台目のモニターの設定もできるように)。
+  ///
+  /// いま繋がっているモニターを調べて並びを見せ、 4 つの端それぞれに
+  ///   「何もしない / 反対の端へ回り込む / このモニターへ飛ぶ」
+  /// を選べるようにする。 OS が既に繋いでいる側は、 その旨を添えて
+  /// 「設定しなくてもそのまま行ける」 と分かるようにする。
+  Future<void> _showCursorWrapEdgeDialog(MindMapProvider provider) async {
+    final mons = CursorWrap.listMonitors();
+    final edges = Map<String, int>.from(provider.cursorWrapEdges);
+    const kinds = <(String, String)>[
+      ('L', 'cursorWrap.edgeLeft'),
+      ('R', 'cursorWrap.edgeRight'),
+      ('T', 'cursorWrap.edgeTop'),
+      ('B', 'cursorWrap.edgeBottom'),
+    ];
+    await showDialog<void>(
+      context: context,
+      builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
+        String targetLabel(int? v) {
+          if (v == null) return provider.t('cursorWrap.targetNone');
+          if (v < 0) return provider.t('cursorWrap.targetOpposite');
+          if (v >= mons.length) return provider.t('cursorWrap.targetNone');
+          final m = mons[v];
+          return '${v + 1}: ${m.sizeLabel}'
+              '${m.primary ? " (${provider.t('cursorWrap.primary')})" : ""}';
+        }
+
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          title: Text(provider.t('cursorWrap.edgeTitle'),
+              style: const TextStyle(color: Colors.white, fontSize: 15)),
+          content: SizedBox(
+            width: math.min(460.0, MediaQuery.sizeOf(dctx).width - 64),
+            child: SingleChildScrollView(
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                // ── 今の並び ──
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                      provider
+                          .t('cursorWrap.foundMonitors')
+                          .replaceFirst('{n}', '${mons.length}'),
+                      style: const TextStyle(
+                          color: Colors.white70, fontSize: 12)),
+                ),
+                const SizedBox(height: 6),
+                _MonitorLayoutView(monitors: mons),
+                const SizedBox(height: 14),
+                if (mons.length < 2)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Text(provider.t('cursorWrap.needTwo'),
+                        style: const TextStyle(
+                            color: Color(0xFFFFB347), fontSize: 12)),
+                  ),
+                // ── 端ごとの行き先 ──
+                for (final e in kinds)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 3),
+                    child: Row(children: [
+                      SizedBox(
+                        width: 92,
+                        child: Text(provider.t(e.$2),
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 13)),
+                      ),
+                      Expanded(
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(8),
+                          onTap: () async {
+                            final picked = await showDialog<int?>(
+                              context: dctx,
+                              builder: (pctx) => SimpleDialog(
+                                backgroundColor: const Color(0xFF1E1E32),
+                                title: Text(provider.t(e.$2),
+                                    style: const TextStyle(
+                                        color: Colors.white, fontSize: 14)),
+                                children: [
+                                  for (final v in <int?>[
+                                    null,
+                                    -1,
+                                    for (var i = 0; i < mons.length; i++) i,
+                                  ])
+                                    SimpleDialogOption(
+                                      onPressed: () =>
+                                          Navigator.pop(pctx, v ?? -999),
+                                      child: Text(targetLabel(v),
+                                          style: TextStyle(
+                                              color: (edges[e.$1] ?? -999) ==
+                                                      (v ?? -999)
+                                                  ? const Color(0xFF4FC3F7)
+                                                  : Colors.white70,
+                                              fontSize: 13)),
+                                    ),
+                                ],
+                              ),
+                            );
+                            if (picked == null) return;
+                            setD(() {
+                              if (picked == -999) {
+                                edges.remove(e.$1);
+                              } else {
+                                edges[e.$1] = picked;
+                              }
+                            });
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF15152A),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.white12),
+                            ),
+                            child: Text(targetLabel(edges[e.$1]),
+                                style: const TextStyle(
+                                    color: Colors.white70, fontSize: 12.5)),
+                          ),
+                        ),
+                      ),
+                    ]),
+                  ),
+                const SizedBox(height: 10),
+                Text(provider.t('cursorWrap.edgeHint'),
+                    style: const TextStyle(
+                        color: Colors.white38, fontSize: 11)),
+              ]),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dctx),
+              child: Text(provider.t('btn.cancel'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+            TextButton(
+              onPressed: () {
+                unawaited(provider.setCursorWrapEdges(edges));
+                Navigator.pop(dctx);
+              },
+              child: Text(provider.t('btn.save'),
+                  style: const TextStyle(color: Color(0xFF4FC3F7))),
+            ),
+          ],
+        );
+      }),
+    );
+  }
 
   /// ディスプレイ設定のダイアログ (デスクトップ)。 動作設定と同じ作り。
   void _openDisplaySettings() {
@@ -95673,9 +95869,14 @@ class _SplitPdfHorizontalScrollBarState
     return MouseRegion(
       onEnter: (_) => widget.onHoverChanged?.call(true),
       onExit: (_) => widget.onHoverChanged?.call(false),
-      child: Listener(
-      onPointerSignal: (e) {
-        if (e is! PointerScrollEvent) return;
+        child: Listener(
+        // ★ 棒の帯そのものが指/カーソルを受け止める。 受け止めないと、
+        //   描き込みモード中に棒の上を押した時、 下の描き込みレイヤーへ
+        //   抜けて線を引いてしまう (= ユーザー要望: 書き込みモードでも
+        //   左右の棒を使いたい)。
+        behavior: HitTestBehavior.opaque,
+        onPointerSignal: (e) {
+          if (e is! PointerScrollEvent) return;
         final d = e.scrollDelta.dx.abs() > e.scrollDelta.dy.abs()
             ? e.scrollDelta.dx
             : e.scrollDelta.dy;
@@ -95748,6 +95949,83 @@ class _SplitPdfHorizontalScrollBarState
       ), // Container
       ), // Listener
     );
+  }
+}
+
+/// つながっているモニターの並びを、 そのままの位置関係で小さく描く
+/// (= ユーザー要望: どの方向から行き来できるか調べて見せて欲しい)。
+///
+/// 番号は設定で選ぶ時の番号と同じ。 主ディスプレイには印を付ける。
+class _MonitorLayoutView extends StatelessWidget {
+  final List<MonitorInfo> monitors;
+  const _MonitorLayoutView({required this.monitors});
+
+  @override
+  Widget build(BuildContext context) {
+    if (monitors.isEmpty) {
+      return const SizedBox(height: 8);
+    }
+    var minX = monitors.first.left;
+    var minY = monitors.first.top;
+    var maxX = monitors.first.right;
+    var maxY = monitors.first.bottom;
+    for (final m in monitors) {
+      if (m.left < minX) minX = m.left;
+      if (m.top < minY) minY = m.top;
+      if (m.right > maxX) maxX = m.right;
+      if (m.bottom > maxY) maxY = m.bottom;
+    }
+    final w = (maxX - minX).toDouble();
+    final h = (maxY - minY).toDouble();
+    if (w <= 0 || h <= 0) return const SizedBox(height: 8);
+    return LayoutBuilder(builder: (ctx, c) {
+      final avail = c.maxWidth;
+      // 高さは 120px までに収める。
+      final scale = math.min(avail / w, 120 / h);
+      final boxW = w * scale;
+      final boxH = h * scale;
+      return Container(
+        width: boxW,
+        height: boxH,
+        decoration: BoxDecoration(
+          color: const Color(0xFF15152A),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Stack(children: [
+          for (var i = 0; i < monitors.length; i++)
+            Positioned(
+              left: (monitors[i].left - minX) * scale,
+              top: (monitors[i].top - minY) * scale,
+              width: monitors[i].width * scale,
+              height: monitors[i].height * scale,
+              child: Container(
+                margin: const EdgeInsets.all(1),
+                decoration: BoxDecoration(
+                  color: monitors[i].primary
+                      ? const Color(0xFF4FC3F7).withValues(alpha: 0.28)
+                      : Colors.white.withValues(alpha: 0.10),
+                  border: Border.all(
+                      color: monitors[i].primary
+                          ? const Color(0xFF4FC3F7)
+                          : Colors.white30),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Center(
+                  child: Text(
+                    '${i + 1}',
+                    style: TextStyle(
+                        color: monitors[i].primary
+                            ? Colors.white
+                            : Colors.white70,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700),
+                  ),
+                ),
+              ),
+            ),
+        ]),
+      );
+    });
   }
 }
 
@@ -180755,6 +181033,28 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
   /// では上下のスクロールが左右移動になる。 止めないと紙も一緒に動く)。
   bool _pdfHBarHover = false;
 
+  /// 端の近くにカーソルが来たら、 縦のつまみ / 左右の棒を出す。
+  ///
+  /// 普段はビューアを包む Listener から呼ばれるが、 **描き込みモード中は
+  /// そこへイベントが届かない** (描き込みのオーバーレイが上を覆うため) ので、
+  /// PdfDrawLayer からも同じ判定を呼んでもらう
+  /// (= ユーザー要望: テキスト書き込みモードでも左右の棒を出したい)。
+  void _handlePdfEdgeHover(Offset local, Size size) {
+    final w = size.width;
+    final h = size.height;
+    if (w <= 0 || h <= 0) return;
+    if (local.dx > w - 48) {
+      _markPdfBar(hold: true);
+    } else if (_pdfBarVisible && _pdfBarTimer == null) {
+      _releasePdfBar();
+    }
+    if (local.dy > h - 56) {
+      _markPdfHBar(hold: true);
+    } else if (_pdfHBarVisible && _pdfHBarTimer == null) {
+      _releasePdfHBar();
+    }
+  }
+
   void _markPdfHBar({bool hold = false}) {
     if (!_pdfHBarVisible && mounted) {
       setState(() => _pdfHBarVisible = true);
@@ -185743,6 +186043,14 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                                 setState(() => _pdfDrawActive = false);
                               }
                             },
+                            // 描き込み中でも端のホバーを拾えるようにする
+                            //   (= ユーザー要望: テキスト書き込みモードでも
+                            //    左右のスクロールバーを出したい)。
+                            onHoverInOverlay: _handlePdfEdgeHover,
+                            // 1 ページ表示の時は紙送りを掛けない
+                            //   (ページが飛ぶため)。
+                            continuousLayout: liveLayoutMode ==
+                                sf_pdf.PdfPageLayoutMode.continuous,
                             onSaved: () {
                               // 読み直す前に今の見え方を控える (= ユーザー
                               // 報告: 消しゴムで拡大率が元に戻る)。
@@ -185801,22 +186109,7 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                             onPointerHover: (e) {
                               final sz = context.size;
                               if (sz == null) return;
-                              final w = sz.width;
-                              final h = sz.height;
-                              if (e.localPosition.dx > w - 48) {
-                                _markPdfBar(hold: true);
-                              } else if (_pdfBarVisible &&
-                                  _pdfBarTimer == null) {
-                                _releasePdfBar();
-                              }
-                              // ── 下端の近くなら横の棒を出す (= ユーザー
-                              //    要望: 左右の棒もホバーの時だけ) ──
-                              if (e.localPosition.dy > h - 56) {
-                                _markPdfHBar(hold: true);
-                              } else if (_pdfHBarVisible &&
-                                  _pdfHBarTimer == null) {
-                                _releasePdfHBar();
-                              }
+                              _handlePdfEdgeHover(e.localPosition, sz);
                             },
                             child: sf_pdf.SfPdfViewer.file(
                               _stablePdfFile(_pdfFilePath!),
@@ -189682,6 +189975,10 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
                           active: _pdfDrawActive && _pdfFilePath != null,
                           filePath: _pdfFilePath,
                           controller: _pdfViewerCtrl,
+                          // 1 ページ表示の時は範囲選択の紙送りを掛けない
+                          //   (ページが飛ぶため)。
+                          continuousLayout: liveLayoutMode ==
+                              sf_pdf.PdfPageLayoutMode.continuous,
                           tr: context.read<MindMapProvider>().t,
                           toolbarSink: _pdfDrawToolbar,
                           onExit: () {

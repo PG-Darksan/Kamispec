@@ -356,6 +356,25 @@ class PdfDrawLayer extends StatefulWidget {
   /// 重ねて出す (= 分割ペインのように置き場所が無い所)。
   final ValueNotifier<Widget?>? toolbarSink;
 
+  /// 描き込み中でも、 カーソルの居場所をホストへ伝える。
+  ///
+  /// 描き込みのオーバーレイは `HitTestBehavior.opaque` で child の上を丸ごと
+  /// 覆うので、 **描き込み中はホスト側の onPointerHover が一度も呼ばれない**。
+  /// そのせいで「カーソルが端に来た時だけ出す」 スクロールの棒が、 書き込み
+  /// モードでは出せなくなっていた (= ユーザー要望: テキスト書き込みモードでも
+  /// 左右のスクロールバーを出してスクロールしたい)。
+  ///
+  /// 渡す値はオーバーレイの中での位置と、 オーバーレイの大きさ。
+  final void Function(Offset localPosition, Size size)? onHoverInOverlay;
+
+  /// ビューアが「続き表示」 (連続スクロール) か。
+  ///
+  /// 範囲選択で端まで引っ張った時の自動スクロールは、 **続き表示の時だけ**
+  /// 動かす。 1 ページ表示では、 ビューア側が横の位置をページ送りに読み替え
+  /// たり、 縦に動かしただけで次のページへアニメーションで飛んだりするので、
+  /// 自動スクロールを掛けるとページが暴走する (点検で判明)。
+  final bool continuousLayout;
+
   const PdfDrawLayer({
     super.key,
     required this.child,
@@ -366,6 +385,8 @@ class PdfDrawLayer extends StatefulWidget {
     required this.onSaved,
     this.controller,
     this.toolbarSink,
+    this.onHoverInOverlay,
+    this.continuousLayout = true,
   });
 
   @override
@@ -1216,6 +1237,8 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
 
   @override
   void didUpdateWidget(covariant PdfDrawLayer old) {
+    // 別の PDF に差し替わったら、 走っている紙送りは止める。
+    if (old.filePath != widget.filePath || !widget.active) _stopAutoScroll();
     super.didUpdateWidget(old);
     // ── 描き込みモードに入った瞬間に、 前に焼き込んだ線を復元する ──
     //    (= ユーザー報告: 開き直すと消しゴムが効かない)。 _syncTimer 頼みだと
@@ -1270,6 +1293,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   }
 
   void _syncTimer() {
+    if (!widget.active) _stopAutoScroll();
     // 描き込みモードに入ったら、 前回焼き込んだ線を復元する
     // (= ユーザー要望: 保存して開き直しても消しゴムで消せるように)。
     //
@@ -1299,6 +1323,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
 
   @override
   void dispose() {
+    _stopAutoScroll();
     // 未保存の受け口を外す (= 閉じた後に「未保存あり」 と誤判定しない)。
     final pendingPath = widget.filePath;
     if (pendingPath != null) _pdfDrawPending.remove(pendingPath);
@@ -1404,6 +1429,174 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   }
 
   // ─── 入力処理 ───────────────────────────────────────────────────────
+  // ── 範囲選択で端まで引っ張った時に、 紙の方を送る (= ユーザー要望:
+  //    画面外に出る時に動きを追跡して欲しい) ──
+  //    見張るのは「見えている枠の内側 28px の帯」。 枠の外に出てからでは、
+  //    OS がマウスの動きを届けてくれなくなる事があり (窓の外) 、 指では
+  //    そもそも画面の外に出られないため。
+  static const double _kAutoScrollBand = 28.0;
+  static const Duration _kAutoScrollTick = Duration(milliseconds: 32);
+
+  /// 帯に入ってから動き出すまでの待ち。 下の方を少し選んだだけで
+  /// 走り出さないようにする。
+  static const Duration _kAutoScrollDelay = Duration(milliseconds: 150);
+
+  Timer? _autoScrollTimer;
+  DateTime? _autoScrollSince;
+
+  /// 最後に受け取った指/カーソルの位置 (画面座標)。 送った後に選択の端を
+  /// 計算し直すのに使う。
+  Offset? _autoScrollLastGlobal;
+
+  /// 直前に送った時のビューアの位置。 送っても変わらなければ、 もう端まで
+  /// 来ているので止める (= 走りっぱなしを防ぐ)。
+  Offset? _autoScrollPrevOffset;
+
+  /// 帯からどれだけはみ出しているか (右/下が正)。 帯の中でなければ 0。
+  Offset _autoScrollOvershoot(Offset local, Size size) {
+    var dx = 0.0;
+    var dy = 0.0;
+    if (local.dx > size.width - _kAutoScrollBand) {
+      dx = local.dx - (size.width - _kAutoScrollBand);
+    } else if (local.dx < _kAutoScrollBand) {
+      dx = local.dx - _kAutoScrollBand;
+    }
+    if (local.dy > size.height - _kAutoScrollBand) {
+      dy = local.dy - (size.height - _kAutoScrollBand);
+    } else if (local.dy < _kAutoScrollBand) {
+      dy = local.dy - _kAutoScrollBand;
+    }
+    return Offset(dx, dy);
+  }
+
+  void _stopAutoScroll() {
+    _autoScrollTimer?.cancel();
+    _autoScrollTimer = null;
+    _autoScrollSince = null;
+    _autoScrollPrevOffset = null;
+  }
+
+  /// 範囲選択の途中で呼ぶ。 端の帯に入っていれば動かし始め、 出れば止める。
+  void _updateAutoScroll(Offset globalPos) {
+    if (!widget.continuousLayout || widget.controller == null) return;
+    _autoScrollLastGlobal = globalPos;
+    final box = _overlayKey.currentContext?.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return;
+    final local = box.globalToLocal(globalPos);
+    final over = _autoScrollOvershoot(local, box.size);
+    if (over == Offset.zero) {
+      _stopAutoScroll();
+      return;
+    }
+    if (_autoScrollTimer != null) return;
+    _autoScrollSince = DateTime.now();
+    _autoScrollPrevOffset = null;
+    _autoScrollTimer = Timer.periodic(_kAutoScrollTick, (_) => _autoScrollTick());
+  }
+
+  void _autoScrollTick() {
+    // 引っ張るのをやめた / 描き込みを閉じた / 範囲選択でなくなった。
+    if (!mounted ||
+        !widget.active ||
+        _activePointer == null ||
+        _rangeStart == null ||
+        _tool != PdfDrawTool.select) {
+      _stopAutoScroll();
+      return;
+    }
+    final since = _autoScrollSince;
+    if (since != null && DateTime.now().difference(since) < _kAutoScrollDelay) {
+      return; // まだ待ち時間の中
+    }
+    final c = widget.controller;
+    final gp = _autoScrollLastGlobal;
+    final box = _overlayKey.currentContext?.findRenderObject();
+    if (c == null || gp == null || box is! RenderBox || !box.hasSize) {
+      _stopAutoScroll();
+      return;
+    }
+    final over = _autoScrollOvershoot(box.globalToLocal(gp), box.size);
+    if (over == Offset.zero) {
+      _stopAutoScroll();
+      return;
+    }
+    double step(double v) {
+      if (v == 0) return 0;
+      final a = (v.abs() / 4).clamp(3.0, 30.0);
+      return v < 0 ? -a : a;
+    }
+
+    var dx = step(over.dx);
+    var dy = step(over.dy);
+    // 前回まったく動かなかった向きは、 もう端まで来ている。
+    final before = c.scrollOffset;
+    final prev = _autoScrollPrevOffset;
+    if (prev != null) {
+      if ((before.dx - prev.dx).abs() < 0.5) dx = 0;
+      if ((before.dy - prev.dy).abs() < 0.5) dy = 0;
+    }
+    if (dx == 0 && dy == 0) {
+      _stopAutoScroll();
+      return;
+    }
+    try {
+      // ★ 縦横は必ず両方渡す。 片方だけだと 0 が入り、 ビューアが
+      //   「先頭へ戻れ」 と受け取ってページが飛ぶ。
+      c.jumpTo(xOffset: before.dx + dx, yOffset: before.dy + dy);
+    } catch (_) {
+      _stopAutoScroll();
+      return;
+    }
+    _autoScrollPrevOffset = before;
+    // 紙が動いた分、 選択の端を今のカーソル位置で計算し直す
+    //   (始点はページ座標なのでずれない)。
+    _updateRangeEndFromGlobal(gp);
+  }
+
+  /// 画面座標から範囲選択の端を決め直す。 対象ページが見えなくなったら止める。
+  void _updateRangeEndFromGlobal(Offset globalPos) {
+    final page = _rangePage;
+    if (page == null) return;
+    _PageGeom? geom;
+    for (final g in _collectPageGeoms()) {
+      if (g.pageNumber == page) {
+        geom = g;
+        break;
+      }
+    }
+    if (geom == null) {
+      // 送った先にそのページがもう無い (= 端まで来た)。 止めて今の形を残す。
+      _stopAutoScroll();
+      return;
+    }
+    try {
+      final local = geom.box.globalToLocal(globalPos);
+      final pt = Offset(
+            local.dx.clamp(0.0, geom.contentSize.width),
+            local.dy.clamp(0.0, geom.contentSize.height),
+          ) *
+          geom.heightPercentage;
+      setState(() {
+        _rangeEnd = pt;
+        _applyRangeSelection();
+      });
+    } catch (_) {
+      _stopAutoScroll();
+    }
+  }
+
+  /// カーソルの居場所をホストへ伝える (= 描き込み中でも端のホバーを
+  /// 拾えるように)。 オーバーレイの中の座標に直してから渡す。
+  void _reportHoverToHost(Offset globalPos) {
+    final cb = widget.onHoverInOverlay;
+    if (cb == null) return;
+    final box = _overlayKey.currentContext?.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return;
+    try {
+      cb(box.globalToLocal(globalPos), box.size);
+    } catch (_) {}
+  }
+
   /// 消しゴムの丸を指/カーソルに追従させる。
   void _trackCursor(Offset? globalPos) {
     if (_tool != PdfDrawTool.eraser) {
@@ -1569,6 +1762,9 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
             _applyRangeSelection();
           });
         } catch (_) {}
+        // 見えている枠の端まで引っ張ったら、 紙の方を送る
+        //   (= ユーザー要望: 画面外に出る時に動きを追跡)。
+        _updateAutoScroll(e.position);
         return;
       }
       if (_sel.isEmpty) return;
@@ -1662,6 +1858,8 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   }
 
   void _onPointerUp(PointerEvent e) {
+    // 引っ張るのをやめたら紙送りも止める。
+    _stopAutoScroll();
     // 指を離したら丸も消す (マウスは hover で出続ける)。
     if (e.kind != PointerDeviceKind.mouse) _trackCursor(null);
     if (e.pointer != _activePointer) return;
@@ -2464,7 +2662,10 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
             onPointerUp: _onPointerUp,
             onPointerCancel: _onPointerUp,
             onPointerSignal: _onPointerSignal,
-            onPointerHover: (e) => _trackCursor(e.position),
+            onPointerHover: (e) {
+              _trackCursor(e.position);
+              _reportHoverToHost(e.position);
+            },
             child: MouseRegion(
               // 消しゴム中は自前の丸だけを出す (= 大きさがそのまま見える)。
               cursor: _tool == PdfDrawTool.eraser
