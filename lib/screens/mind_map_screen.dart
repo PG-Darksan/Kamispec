@@ -37676,10 +37676,14 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 // 認証成功で開発者モード画面 (クーポン管理 / 問い合わせ
                                 // 受信箱 / プラン別ユーザー一覧 / 全データ管理) を開く。
                                 //
-                                // 表示条件: 常に表示する (= ユーザー報告: 言語が
-                                // 日本語でないと開発者モードに入れない)。 アクセスは
-                                // パスワード (activateDeveloperMode) で守られるので、
-                                // タイル自体は全言語で見せて問題ない。
+                                // 表示条件: 表示の言語が日本語の時か、 既に
+                                // 開発者モードに入っている時だけ出す
+                                // (= ユーザー要望: 英語などで使っている人には
+                                //  出さない)。 入った後に言語を変えた人が
+                                //  抜けられなくならないよう、 developerMode
+                                //  が立っている間は言語に関わらず出す。
+                                if (provider.appLanguage == 'ja' ||
+                                    provider.developerMode)
                                 _settingsTile(
                                   icon: Icons.developer_mode_rounded,
                                   color: const Color(0xFFBA68C8),
@@ -66803,7 +66807,8 @@ class _MindMapScreenState extends State<MindMapScreen>
             iconColor: const Color(0xFF4FC3F7),
             label: provider.t('drawer.openFolder'),
             formatHint: provider.t('drawer.openFolderFormats')),
-        const PopupMenuDivider(),
+        // ★ ここに区切り線を置かない (= ユーザー報告: 項目を消した後の線が
+        //   いちばん下に残っている)。 下に続く項目が無くなったため。
         // ── 「AI で新規ページ作成」 はユーザー要望で削除 ──
         //    押しても結局 AI アシスタントが開くだけで、 同じ事はその
         //    ボタンからできるため。 呼び出しの本体
@@ -91160,7 +91165,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     const EdgeInsets.symmetric(vertical: 10)),
                             icon: const Icon(Icons.logout_rounded,
                                 size: 16, color: Color(0xFFE57373)),
-                            label: Text(provider.t('dev.signOutThis'),
+                            label: Text(provider.t('dev.exitDeveloper'),
                                 style: const TextStyle(
                                     color: Color(0xFFE57373),
                                     fontWeight: FontWeight.w700)),
@@ -188081,9 +188086,10 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                         //   左右が逆なのが気になる)。
                         if (hasMemoPanel)
                           IconButton(
-                            tooltip: _memoPanelOpen
-                                ? 'メモパネルを閉じる (Ctrl+M)'
-                                : 'メモパネルを開く (Ctrl+M)',
+                            tooltip: context.read<MindMapProvider>().t(
+                                _memoPanelOpen
+                                    ? 'pdf.memoPanelClose'
+                                    : 'pdf.memoPanelOpen'),
                             icon: Icon(
                               _memoPanelOpen
                                   ? Icons.sticky_note_2

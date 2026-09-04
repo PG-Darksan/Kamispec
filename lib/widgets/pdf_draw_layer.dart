@@ -3055,8 +3055,10 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
                 : Icon(
                     textTool
                         ? Icons.format_size_rounded
+                        // ★ 今選んでいる印の絵にする (= ユーザー報告: ○ の
+                        //   印なのに大きさの所が ✓ のまま)。
                         : checkTool
-                            ? Icons.check_rounded
+                            ? _markIcon
                             : marker
                                 ? Icons.border_color_rounded
                                 : Icons.brush_rounded,
@@ -3068,11 +3070,15 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
           //   チェックは見出しと同じ ✓ になって同じ絵が 2 つ並ぶので出さない
           //   (= ユーザー要望: 左 1 つだけでいい)。 文字の「あ」 も要らない
           //   と言われたので出さない。
-          if (!checkTool && !textTool)
-            SizedBox(
+          // ★ 見本の場所は**いつでも**取る (= ユーザー要望: 消しゴムに
+          //   切り替えるとアイコンが 1 つ増えて、 右側の位置がずれる)。
+          //   出さない道具の時は中身だけ空にする。
+          SizedBox(
               width: 26,
               height: 26,
-            child: Center(
+            child: (checkTool || textTool)
+                ? const SizedBox.shrink()
+                : Center(
               child: eraser
                   ? Container(
                       width: dia,

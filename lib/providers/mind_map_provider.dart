@@ -41014,6 +41014,42 @@ class MindMapProvider extends ChangeNotifier {
       'ru': '\u041d\u0430 \u0430\u043a\u043a\u0430\u0443\u043d\u0442 \u2014 {max} \u0443\u0441\u0442\u0440\u043e\u0439\u0441\u0442\u0432\u0430. \u0421\u0435\u0439\u0447\u0430\u0441 {n}.'
           '\n\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u043e\u0434\u043d\u043e \u0434\u043b\u044f \u0432\u044b\u0445\u043e\u0434\u0430.',
     },
+    // 開発者モードを抜けるボタン (= ユーザー要望: 「降ろす」 は変なので
+    //   「ログアウト」 に)。 端末を降ろす一覧の方 (dev.signOutThis) とは別。
+    'dev.exitDeveloper': {
+      'ja': 'ログアウト',
+      'en': 'Log out',
+      'zh': '退出登录',
+      'ko': '로그아웃',
+      'es': 'Cerrar sesion',
+      'fr': 'Se deconnecter',
+      'de': 'Abmelden',
+      'pt': 'Sair',
+      'ru': 'Выйти',
+    },
+    // PDF のヘッダーのメモ欄ボタン (= ユーザー報告: 多言語対応していない)。
+    'pdf.memoPanelOpen': {
+      'ja': 'メモパネルを開く (Ctrl+M)',
+      'en': 'Open the memo panel (Ctrl+M)',
+      'zh': '打开备注面板 (Ctrl+M)',
+      'ko': '메모 패널 열기 (Ctrl+M)',
+      'es': 'Abrir el panel de notas (Ctrl+M)',
+      'fr': 'Ouvrir le panneau de notes (Ctrl+M)',
+      'de': 'Notizbereich oeffnen (Ctrl+M)',
+      'pt': 'Abrir o painel de notas (Ctrl+M)',
+      'ru': 'Открыть панель заметок (Ctrl+M)',
+    },
+    'pdf.memoPanelClose': {
+      'ja': 'メモパネルを閉じる (Ctrl+M)',
+      'en': 'Close the memo panel (Ctrl+M)',
+      'zh': '关闭备注面板 (Ctrl+M)',
+      'ko': '메모 패널 닫기 (Ctrl+M)',
+      'es': 'Cerrar el panel de notas (Ctrl+M)',
+      'fr': 'Fermer le panneau de notes (Ctrl+M)',
+      'de': 'Notizbereich schliessen (Ctrl+M)',
+      'pt': 'Fechar o painel de notas (Ctrl+M)',
+      'ru': 'Закрыть панель заметок (Ctrl+M)',
+    },
     'dev.signOutThis': {
       'ja': '降ろす',
       'en': 'Sign out',
