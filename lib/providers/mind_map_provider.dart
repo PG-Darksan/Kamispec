@@ -62933,16 +62933,17 @@ class MindMapProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// USDを日本円に概算変換（1 USD ≒ 170円で固定）
-  static double usdToJpy(double usd) => usd * 170.0;
-
-  /// 金額を整形（$0.0012 / ¥0.19 のように）
+  /// 金額を整形 ($0.0012 のように)。
+  ///
+  /// ★ 円への概算は出さない (= ユーザー要望)。 元は 1 ドル = 170 円の
+  ///   決め打ちで換算して併記していたが、 相場は動くので正しくないし、
+  ///   英語で使っている人にも円が出てしまっていた。 請求はもともと
+  ///   ドル (Stripe の値段) なので、 表示もドルだけに揃える。
   static String formatCost(double usd) {
-    final jpy = usdToJpy(usd);
     if (usd < 0.01) {
-      return '\$${usd.toStringAsFixed(4)} (約¥${jpy.toStringAsFixed(2)})';
+      return '\$${usd.toStringAsFixed(4)}';
     }
-    return '\$${usd.toStringAsFixed(3)} (約¥${jpy.toStringAsFixed(2)})';
+    return '\$${usd.toStringAsFixed(3)}';
   }
 
   Future<void> _loadAiSettings() async {

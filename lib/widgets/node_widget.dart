@@ -3580,6 +3580,11 @@ class _NodeGanttPainter extends CustomPainter {
     }
   }
 
+  /// その帯の色。 自分で色を決めていればそれ、 無ければ状態の色
+  /// (= ユーザー要望: ガントチャートの各項目の色を変えられるように)。
+  static Color colorFor(GanttTask t) =>
+      t.colorValue != null ? Color(t.colorValue!) : colorOf(t.status);
+
   @override
   void paint(Canvas canvas, Size size) {
     _paintChartPanel(canvas, size);
@@ -3714,7 +3719,7 @@ class _NodeGanttPainter extends CustomPainter {
         final rr = RRect.fromRectAndRadius(
             Rect.fromLTWH(x1, y + (rowH - barH) / 2, w, barH),
             const Radius.circular(4));
-        canvas.drawRRect(rr, Paint()..color = colorOf(t.status));
+        canvas.drawRRect(rr, Paint()..color = colorFor(t));
         // 帯の中に日数を書く (入る時だけ)。
         if (b != null && w > 34 && barH >= 12) {
           final dnum = b.difference(a).inDays + 1;

@@ -1889,12 +1889,18 @@ class GanttTask {
   /// 状態。 'done' / 'active' / 'crit' / '' (これから)。
   String status;
 
+  /// 帯の色 (null なら [status] で決まる既定の色)。
+  /// = ユーザー要望: 各項目の色を変えられるように。
+  /// 円グラフの一切れ ([ChartSlice.colorValue]) と同じ持ち方。
+  int? colorValue;
+
   GanttTask({
     required this.label,
     this.section = '',
     this.start = '',
     this.end = '',
     this.status = '',
+    this.colorValue,
   });
 
   DateTime? get startAt => DateTime.tryParse(start);
@@ -1906,6 +1912,7 @@ class GanttTask {
         if (start.isNotEmpty) 'b': start,
         if (end.isNotEmpty) 'e': end,
         if (status.isNotEmpty) 'st': status,
+        if (colorValue != null) 'c': colorValue,
       };
 
   factory GanttTask.fromJson(Map<String, dynamic> j) => GanttTask(
@@ -1914,6 +1921,7 @@ class GanttTask {
         start: '${j['b'] ?? ''}',
         end: '${j['e'] ?? ''}',
         status: '${j['st'] ?? ''}',
+        colorValue: (j['c'] as num?)?.toInt(),
       );
 }
 
@@ -2057,7 +2065,12 @@ class ChartData {
                 section: e.section,
                 start: e.start,
                 end: e.end,
-                status: e.status),
+                status: e.status,
+                // ★ 自分で決めた帯の色も写す。 ここを落とすと、
+                //   保存の道すじ (updateNodeChartData) で消える
+                //   (= 点検で判明: 円グラフの切れは写していたのに、
+                //    工程表だけ落ちていた)。
+                colorValue: e.colorValue),
         ],
       );
 

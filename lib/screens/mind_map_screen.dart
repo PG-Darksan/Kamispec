@@ -39237,6 +39237,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     ];
     // 状態は行ごとに変わるので、 別の入れ物で持つ。
     final statuses = [for (final t in data.tasks) t.status];
+    // 帯の色 (null = 状態の色のまま)。 = ユーザー要望: 各項目の色を
+    //   変えられるように。 円グラフの一切れと同じ選び方にする。
+    final colors = [for (final t in data.tasks) t.colorValue];
     void disposeRows() {
       for (final r in rows) {
         r.label.dispose();
@@ -39265,13 +39268,38 @@ class _MindMapScreenState extends State<MindMapScreen>
                     Padding(
                       padding: const EdgeInsets.only(bottom: 8),
                       child: Row(children: [
-                        Container(
-                          width: 10,
-                          height: 26,
-                          margin: const EdgeInsets.only(right: 6),
-                          decoration: BoxDecoration(
-                            color: _ganttStatusColor(statuses[i]),
+                        // 押すと色を選べる (= ユーザー要望)。 「元に戻す」 を
+                        //   選ぶと状態の色に戻る。
+                        Tooltip(
+                          message: provider.t('chart.sliceColor'),
+                          child: InkWell(
                             borderRadius: BorderRadius.circular(3),
+                            onTap: () async {
+                              final cur = colors[i] != null
+                                  ? Color(colors[i]!)
+                                  : _ganttStatusColor(statuses[i]);
+                              final picked =
+                                  await _pickChartColor(dctx, cur);
+                              if (picked == null) return;
+                              setD(() {
+                                colors[i] = picked.toARGB32() == 0
+                                    ? null
+                                    : picked.toARGB32();
+                              });
+                            },
+                            child: Container(
+                              width: 10,
+                              height: 26,
+                              margin: const EdgeInsets.only(right: 6),
+                              decoration: BoxDecoration(
+                                color: colors[i] != null
+                                    ? Color(colors[i]!)
+                                    : _ganttStatusColor(statuses[i]),
+                                borderRadius: BorderRadius.circular(3),
+                                border: Border.all(
+                                    color: Colors.white24, width: 0.5),
+                              ),
+                            ),
                           ),
                         ),
                         Expanded(
@@ -39323,6 +39351,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                               : () => setD(() {
                                     final r = rows.removeAt(i);
                                     statuses.removeAt(i);
+                                    colors.removeAt(i);
                                     r.label.dispose();
                                     r.section.dispose();
                                     r.start.dispose();
@@ -39346,6 +39375,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                           status: '',
                         ));
                         statuses.add('');
+                        colors.add(null);
                       }),
                       icon: const Icon(Icons.add_rounded,
                           size: 16, color: Color(0xFF43B97F)),
@@ -39383,6 +39413,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           start: rows[i].start.text.trim(),
           end: rows[i].end.text.trim(),
           status: statuses[i],
+          colorValue: colors[i],
         ));
       }
       if (tasks.isNotEmpty) {
@@ -51474,8 +51505,9 @@ class _MindMapScreenState extends State<MindMapScreen>
           final bal = provider.creditBalanceUsd;
           final pack = provider.creditPackUsd;
           final models = provider.relayModels;
-          String yen(double usd) =>
-              '約¥${MindMapProvider.usdToJpy(usd).toStringAsFixed(0)}';
+          // ★ 円への概算は出さない (= ユーザー要望: 1 ドル 170 円は
+          //   正しくないし、 英語表記でも円が出ていた)。 請求は元から
+          //   ドルなので、 表示もドルだけにする。
           return AlertDialog(
             backgroundColor: const Color(0xFF2A2A3E),
             shape:
@@ -51542,10 +51574,6 @@ class _MindMapScreenState extends State<MindMapScreen>
                                       color: Colors.white,
                                       fontSize: 24,
                                       fontWeight: FontWeight.w800)),
-                              const SizedBox(width: 8),
-                              Text(yen(bal),
-                                  style: const TextStyle(
-                                      color: Colors.white54, fontSize: 12)),
                               const Spacer(),
                               IconButton(
                                 tooltip: provider.t('credit.refresh'),
@@ -51697,10 +51725,6 @@ class _MindMapScreenState extends State<MindMapScreen>
                             packs >= 20 ? null : () => setD(() => packs++),
                       ),
                     ]),
-                    Text(yen(pack * packs),
-                        textAlign: TextAlign.right,
-                        style: const TextStyle(
-                            color: Colors.white38, fontSize: 11)),
                     const SizedBox(height: 12),
                     SizedBox(
                       height: 42,
@@ -165060,22 +165084,9 @@ class _FloatingStopwatchState extends State<_FloatingStopwatch> {
                                     fontSize: isMobile ? 11 : 13,
                                     fontWeight: FontWeight.w700)),
                           ),
-                          MouseRegion(
-                            cursor: SystemMouseCursors.click,
-                            child: GestureDetector(
-                              onTap: () =>
-                                  setState(() => _collapsed = !_collapsed),
-                              child: Padding(
-                                padding: EdgeInsets.all(isMobile ? 3 : 4),
-                                child: Icon(
-                                    _collapsed
-                                        ? Icons.expand_more_rounded
-                                        : Icons.expand_less_rounded,
-                                    color: Colors.white70,
-                                    size: isMobile ? 16 : 18),
-                              ),
-                            ),
-                          ),
+                          // ★ 折り畳みのボタンは外した (= ユーザー要望:
+                          //   左右分割では折り畳む必要が無い)。 代わりに
+                          //   下の「ヘッダーを隠す」 を使う。
                           // ── ヘッダーを隠す (= ユーザー要望: 他と同様、
                           //    隠した後はカーソルを乗せた時だけ表示ボタンが
                           //    出るように) ──
@@ -166040,8 +166051,15 @@ class _FloatingScientificCalculatorState
     extends State<_FloatingScientificCalculator> {
   late Offset _offset;
 
-  /// 折り畳み状態 (true ならヘッダーだけ表示)
+  /// 折り畳み状態 (true ならヘッダーだけ表示)。
+  /// ★ 折り畳みのボタンは外した (= ユーザー要望: 左右分割では要らない)。
+  ///   代わりにヘッダー自体を隠せるようにしてある ([_headerHidden])。
+  ///   この印は畳み幅の計算に残っているだけで、 今は常に false。
   bool _collapsed = false;
+
+  /// ヘッダーを隠しているか (= ユーザー要望: 折り畳みの代わり)。
+  /// 隠している時は細い帯だけ残り、 そこを押すと戻る。
+  bool _headerHidden = false;
 
   /// 関数電卓で出しているか (= ユーザー要望: 普通の電卓と関数電卓を
   /// ヘッダーから切り替えられるように)。 **既定は普通の電卓** (false)。
@@ -166147,6 +166165,13 @@ class _FloatingScientificCalculatorState
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   // ── ヘッダー ─────
+                  //    隠している時は細い帯だけ残す (= ユーザー要望)。
+                  if (_headerHidden)
+                    _FloatingToolHiddenHeader(
+                      color: const Color(0xFFFFB347),
+                      onShow: () => setState(() => _headerHidden = false),
+                    )
+                  else
                   GestureDetector(
                     behavior: HitTestBehavior.opaque,
                     onPanUpdate: (details) => setState(() {
@@ -166224,21 +166249,21 @@ class _FloatingScientificCalculatorState
                                 ),
                               ),
                             ),
-                          // 折り畳みボタン: 本体 (ディスプレイ + ボタン) を隠して
-                          // ヘッダーのみ残す。式や結果は state に維持される。
+                          // ── ヘッダーを隠す (= ユーザー要望: 折り畳みは
+                          //    要らないので、 代わりにヘッダーを非表示に
+                          //    できるボタンにする) ──
+                          //    隠した後は上の細い帯を押すと戻る。
                           MouseRegion(
                             cursor: SystemMouseCursors.click,
                             child: GestureDetector(
                               onTap: () =>
-                                  setState(() => _collapsed = !_collapsed),
-                              child: Padding(
-                                padding: const EdgeInsets.all(4),
+                                  setState(() => _headerHidden = true),
+                              child: const Padding(
+                                padding: EdgeInsets.all(4),
                                 child: Icon(
-                                    _collapsed
-                                        ? Icons.expand_more_rounded
-                                        : Icons.expand_less_rounded,
-                                    color: Colors.white70,
-                                    size: 18),
+                                    Icons.keyboard_double_arrow_up_rounded,
+                                    color: Colors.white54,
+                                    size: 16),
                               ),
                             ),
                           ),
@@ -240920,7 +240945,10 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
     // つまみ (アイコン) を出さない窓では、 上の両角も帯にする
     // (= ユーザー要望: つまみは邪魔だから消して、 境界を掴んで
     //   大きさを変えられるように)。
-    final topCorners = widget.slimChrome;
+    // ★ 上の両角も必ず掴めるようにする (= ユーザー要望: つまみのアイコンを
+    //   消したので、 上側も境界で変えられないと困る)。
+    //   以前は細い帯の窓 (AI アシスタント) だけ true にしていた。
+    const topCorners = true;
 
     Widget band({
       double? left,
@@ -241031,7 +241059,9 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
         band(
           right: 0,
           top: 0,
-          width: corner,
+          // ★ 右上は帯の閉じる × がすぐ隣に来るので、 端の細い分だけに
+          //   する (= 過去のユーザー報告: 閉じるボタンが押しにくい)。
+          width: 6,
           height: corner,
           cursor: SystemMouseCursors.resizeUpRight,
           onDrag: (d) {
@@ -241597,57 +241627,11 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
             //    ★ 右下にあると送信ボタンと隔てなくて押し間違える
             //      (= ユーザー報告)。 上の左右に移す。
             //      上を掴むので、 伸ばすと上端も一緒に動く。
-            //    ★ 細い帯の窓 (= AI アシスタント) には出さない
-            //      (= ユーザー要望: 邪魔だから消して、 境界を掴んで
-            //      大きさを変えられるように)。 かわりに上の両角を
-            //      見えない帯にしてある (_edgeHandles)。
-            if (!widget.slimChrome)
-            Positioned(
-              left: 0,
-              top: 0,
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onPanUpdate: (d) => setState(() {
-                  final nw = (_w - d.delta.dx).clamp(360.0, screen.width);
-                  final nh = (_h - d.delta.dy).clamp(280.0, screen.height);
-                  _pos = Offset(_pos.dx + (_w - nw), _pos.dy + (_h - nh));
-                  _w = nw;
-                  _h = nh;
-                  _scheduleSaveGeometry();
-                }),
-                child: const Padding(
-                  padding: EdgeInsets.all(4),
-                  child: Icon(Icons.north_west_rounded,
-                      size: 13, color: Colors.white38),
-                ),
-              ),
-            ),
-            // ★ 右のつまみの置き場所。
-            //
-            //   ふつうの窓は帯にボタンが並ぶので、 帯より下へ逃がす。
-            //   細い帯の窓 (= AI アシスタント) は帯にボタンが無いかわりに、
-            //   すぐ下が中身の自前ヘッダーなので、 下へ逃がすと**中身の
-            //   閉じる × と重なってしまう** (= ユーザー報告: 閉じるボタンと
-            //   大きさ調節ボタンが被る)。 その時は帯の中に納める。
-            if (!widget.slimChrome)
-            Positioned(
-              right: 0,
-              top: 36,
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onPanUpdate: (d) => setState(() {
-                  final nw = (_w + d.delta.dx).clamp(360.0, screen.width);
-                  _w = nw;
-                  _h = (_h + d.delta.dy).clamp(280.0, screen.height);
-                  _scheduleSaveGeometry();
-                }),
-                child: const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 5, vertical: 8),
-                  child: Icon(Icons.open_in_full_rounded,
-                      size: 13, color: Colors.white38),
-                ),
-              ),
-            ),
+            // ★ 大きさ調節のつまみ (左上の ↖ と右上の ⤢) は置かない
+            //   (= ユーザー要望: 要らないから消して、 出さなくても境界を
+            //   掴んで大きさを変えられるように)。
+            //   四辺と四隅は、 上の `_edgeHandles` が見えない帯で覆って
+            //   いるので、 窓のふちを掴めばそのまま大きさを変えられる。
           ]),
         ),
       ),
