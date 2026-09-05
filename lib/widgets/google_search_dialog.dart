@@ -222,6 +222,14 @@ class GoogleSearchDialog {
     /// 出さない)。 ページを開くまでは中身を透明にしておき、 手順が
     /// ページを開いた時にだけブラウザが姿を見せる。
     bool automationOnly = false,
+
+    /// 上のヘッダー (検索欄と道具の並び) を出さないで開く。
+    ///
+    /// = ユーザー要望: 設定から公式 Instagram や利用規約へ行く時は、
+    ///   ヘッダーの項目が出ないようにして欲しい。
+    ///   読むだけの画面なので、 検索欄もタブも要らない。
+    ///   代わりに右上へ小さな閉じるボタンだけ出す。
+    bool hideAppBar = false,
   }) async {
     // ── 自動操作だけ: 透明な入れ物に載せて、 浮いている窓だけを見せる ──
     if (automationOnly) {
@@ -353,6 +361,7 @@ class GoogleSearchDialog {
                   windowWidth: dialogSize?.width,
                   windowHeight: dialogSize?.height,
                   openAutomation: openAutomation,
+                  hideAppBar: hideAppBar,
                 ),
               ),
             ),
@@ -389,6 +398,7 @@ class GoogleSearchDialog {
                   onFloatRequest: onFloatRequest,
           onCreateBookmarkButton: onCreateBookmarkButton,
           openAutomation: openAutomation,
+          hideAppBar: hideAppBar,
         ),
         transitionsBuilder: (_, animation, __, child) {
           return FadeTransition(opacity: animation, child: child);
@@ -7783,6 +7793,28 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
               //   ボタンだけ残っていると隠した意味が薄い)。 上端の細い帯に
               //   カーソルが入った時だけ現れる。 触れる手段が無いスマホでは
               //   従来どおり常に出す (ホバーが無いため)。
+              // ★ ヘッダーを丸ごと出さない時は、 閉じる手段が無くなるので
+              //   右上に小さな × だけ置く (= 読むだけの画面用)。
+              if (widget.hideAppBar)
+                Positioned(
+                  right: 6,
+                  top: 6,
+                  child: Material(
+                    color: const Color(0xCC1A1A1A),
+                    shape: const CircleBorder(),
+                    child: IconButton(
+                      tooltip: MaterialLocalizations.of(context)
+                          .closeButtonTooltip,
+                      iconSize: 18,
+                      constraints:
+                          const BoxConstraints(minWidth: 34, minHeight: 34),
+                      padding: EdgeInsets.zero,
+                      icon: const Icon(Icons.close_rounded,
+                          color: Colors.white70),
+                      onPressed: _closeSelf,
+                    ),
+                  ),
+                ),
               if (_gsHeaderHidden && !widget.hideAppBar)
                 Positioned(
                   left: 0,

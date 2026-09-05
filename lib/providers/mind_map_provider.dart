@@ -14249,6 +14249,237 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Exibindo',
       'ru': 'Показывается',
     },
+    'pdf.menuReadDirH': {
+      'ja': '現在：横めくり（タップで縦めくりに）',
+      'en': 'Now: page across (tap for down)',
+      'zh': '当前：横向翻页（点击改为纵向）',
+      'ko': '현재: 가로 넘김 (탭하면 세로로)',
+      'es': 'Ahora: paso horizontal (toca para vertical)',
+      'fr': 'Actuel : defilement horizontal (touchez pour vertical)',
+      'de': 'Jetzt: seitwaerts blaettern (tippen fuer abwaerts)',
+      'pt': 'Agora: virada horizontal (toque para vertical)',
+      'ru': 'Сейчас: листание вбок (нажмите для вертикали)',
+    },
+    'pdf.menuReadDirV': {
+      'ja': '現在：縦めくり（タップで横めくりに）',
+      'en': 'Now: page down (tap for across)',
+      'zh': '当前：纵向翻页（点击改为横向）',
+      'ko': '현재: 세로 넘김 (탭하면 가로로)',
+      'es': 'Ahora: paso vertical (toca para horizontal)',
+      'fr': 'Actuel : defilement vertical (touchez pour horizontal)',
+      'de': 'Jetzt: abwaerts blaettern (tippen fuer seitwaerts)',
+      'pt': 'Agora: virada vertical (toque para horizontal)',
+      'ru': 'Сейчас: листание вниз (нажмите для горизонтали)',
+    },
+    'pdf.menuPanOn': {
+      'ja': '現在：ドラッグで移動（タップで文字選択に）',
+      'en': 'Now: drag to move (tap for text select)',
+      'zh': '当前：拖动移动（点击改为选择文字）',
+      'ko': '현재: 끌어서 이동 (탭하면 문자 선택)',
+      'es': 'Ahora: arrastrar para mover (toca para seleccionar texto)',
+      'fr': 'Actuel : glisser pour deplacer (touchez pour selectionner)',
+      'de': 'Jetzt: ziehen zum Bewegen (tippen fuer Textauswahl)',
+      'pt': 'Agora: arrastar para mover (toque para selecionar texto)',
+      'ru': 'Сейчас: перетаскивание (нажмите для выделения текста)',
+    },
+    'pdf.menuPanOff': {
+      'ja': '現在：文字選択（タップでドラッグ移動に）',
+      'en': 'Now: text select (tap for drag to move)',
+      'zh': '当前：选择文字（点击改为拖动移动）',
+      'ko': '현재: 문자 선택 (탭하면 끌어서 이동)',
+      'es': 'Ahora: seleccionar texto (toca para arrastrar)',
+      'fr': 'Actuel : selection de texte (touchez pour glisser)',
+      'de': 'Jetzt: Textauswahl (tippen zum Ziehen)',
+      'pt': 'Agora: selecionar texto (toque para arrastar)',
+      'ru': 'Сейчас: выделение текста (нажмите для перетаскивания)',
+    },
+    'pdf.menuFitPageOn': {
+      'ja': '通常表示に戻す',
+      'en': 'Back to normal view',
+      'zh': '返回普通显示',
+      'ko': '보통 보기로 돌아가기',
+      'es': 'Volver a la vista normal',
+      'fr': 'Revenir a l affichage normal',
+      'de': 'Zurueck zur normalen Ansicht',
+      'pt': 'Voltar a exibicao normal',
+      'ru': 'Вернуться к обычному виду',
+    },
+    'pdf.menuFitPageOff': {
+      'ja': '1ページ全体を表示',
+      'en': 'Fit the whole page',
+      'zh': '显示整页',
+      'ko': '한 페이지 전체 보기',
+      'es': 'Ver la pagina entera',
+      'fr': 'Afficher la page entiere',
+      'de': 'Ganze Seite anzeigen',
+      'pt': 'Ver a pagina inteira',
+      'ru': 'Показать страницу целиком',
+    },
+    'pdf.menuSpreadOn': {
+      'ja': '見開きモードを解除',
+      'en': 'Leave two-page mode',
+      'zh': '退出跨页模式',
+      'ko': '펼침 보기 끄기',
+      'es': 'Salir del modo de dos paginas',
+      'fr': 'Quitter le mode double page',
+      'de': 'Doppelseiten-Modus beenden',
+      'pt': 'Sair do modo de duas paginas',
+      'ru': 'Выйти из режима разворота',
+    },
+    'pdf.menuSpreadOff': {
+      'ja': '見開きモード',
+      'en': 'Two-page mode',
+      'zh': '跨页模式',
+      'ko': '펼침 보기',
+      'es': 'Modo de dos paginas',
+      'fr': 'Mode double page',
+      'de': 'Doppelseiten-Modus',
+      'pt': 'Modo de duas paginas',
+      'ru': 'Режим разворота',
+    },
+    'pdf.menuJumpPage': {
+      'ja': 'ページ番号を指定',
+      'en': 'Go to a page number',
+      'zh': '指定页码',
+      'ko': '페이지 번호 지정',
+      'es': 'Ir a un numero de pagina',
+      'fr': 'Aller a un numero de page',
+      'de': 'Zu einer Seitenzahl springen',
+      'pt': 'Ir para um numero de pagina',
+      'ru': 'Перейти к номеру страницы',
+    },
+    'pdf.menuPlaceMemoOn': {
+      'ja': 'メモ配置モードを解除 (M)',
+      'en': 'Leave memo placing (M)',
+      'zh': '退出放置备注 (M)',
+      'ko': '메모 놓기 끄기 (M)',
+      'es': 'Salir de colocar nota (M)',
+      'fr': 'Quitter le placement de note (M)',
+      'de': 'Notiz-Platzierung beenden (M)',
+      'pt': 'Sair de colocar nota (M)',
+      'ru': 'Выйти из режима заметок (M)',
+    },
+    'pdf.menuPlaceMemoOff': {
+      'ja': 'ここにメモを置く (M)',
+      'en': 'Put a memo here (M)',
+      'zh': '在此放置备注 (M)',
+      'ko': '여기에 메모 놓기 (M)',
+      'es': 'Poner una nota aqui (M)',
+      'fr': 'Placer une note ici (M)',
+      'de': 'Hier eine Notiz ablegen (M)',
+      'pt': 'Colocar uma nota aqui (M)',
+      'ru': 'Поместить заметку здесь (M)',
+    },
+    'pdf.menuDeepl': {
+      'ja': 'DeepL で翻訳 (側パネル)',
+      'en': 'Translate with DeepL (side panel)',
+      'zh': '用 DeepL 翻译（侧面板）',
+      'ko': 'DeepL로 번역 (측면 패널)',
+      'es': 'Traducir con DeepL (panel lateral)',
+      'fr': 'Traduire avec DeepL (panneau lateral)',
+      'de': 'Mit DeepL uebersetzen (Seitenbereich)',
+      'pt': 'Traduzir com DeepL (painel lateral)',
+      'ru': 'Перевести через DeepL (боковая панель)',
+    },
+    'pdf.menuSendToAi': {
+      'ja': 'PDFの内容をAIチャットへ',
+      'en': 'Send the PDF text to the AI chat',
+      'zh': '将 PDF 内容发送到 AI 聊天',
+      'ko': 'PDF 내용을 AI 채팅으로',
+      'es': 'Enviar el texto del PDF al chat de IA',
+      'fr': 'Envoyer le texte du PDF au chat IA',
+      'de': 'PDF-Text an den KI-Chat senden',
+      'pt': 'Enviar o texto do PDF para o chat de IA',
+      'ru': 'Отправить текст PDF в чат с ИИ',
+    },
+    'pdf.menuReadAloud': {
+      'ja': '音声で読み上げ（現在のページから）',
+      'en': 'Read aloud (from this page)',
+      'zh': '朗读（从当前页开始）',
+      'ko': '소리내어 읽기 (현재 페이지부터)',
+      'es': 'Leer en voz alta (desde esta pagina)',
+      'fr': 'Lire a voix haute (a partir de cette page)',
+      'de': 'Vorlesen (ab dieser Seite)',
+      'pt': 'Ler em voz alta (a partir desta pagina)',
+      'ru': 'Читать вслух (с этой страницы)',
+    },
+    'pdf.menuReload': {
+      'ja': '再読み込み',
+      'en': 'Reload',
+      'zh': '重新加载',
+      'ko': '다시 읽어들이기',
+      'es': 'Recargar',
+      'fr': 'Recharger',
+      'de': 'Neu laden',
+      'pt': 'Recarregar',
+      'ru': 'Обновить',
+    },
+    'pdf.menuOpenExternal': {
+      'ja': '外部で開く',
+      'en': 'Open outside the app',
+      'zh': '在外部打开',
+      'ko': '외부에서 열기',
+      'es': 'Abrir fuera de la app',
+      'fr': 'Ouvrir hors de l application',
+      'de': 'Ausserhalb der App oeffnen',
+      'pt': 'Abrir fora do app',
+      'ru': 'Открыть во внешнем приложении',
+    },
+    'pdf.menuSwitchPdf': {
+      'ja': '別の PDF に切り替え',
+      'en': 'Switch to another PDF',
+      'zh': '切换到其他 PDF',
+      'ko': '다른 PDF로 바꾸기',
+      'es': 'Cambiar a otro PDF',
+      'fr': 'Passer a un autre PDF',
+      'de': 'Zu einem anderen PDF wechseln',
+      'pt': 'Mudar para outro PDF',
+      'ru': 'Переключиться на другой PDF',
+    },
+    'pdf.menuOpenAiChat': {
+      'ja': 'AI チャットを開く',
+      'en': 'Open the AI chat',
+      'zh': '打开 AI 聊天',
+      'ko': 'AI 채팅 열기',
+      'es': 'Abrir el chat de IA',
+      'fr': 'Ouvrir le chat IA',
+      'de': 'KI-Chat oeffnen',
+      'pt': 'Abrir o chat de IA',
+      'ru': 'Открыть чат с ИИ',
+    },
+    'pdf.aiPanelClose': {
+      'ja': 'AI チャット欄を閉じる (Ctrl+I / F4)',
+      'en': 'Close the AI chat panel (Ctrl+I / F4)',
+      'zh': '关闭 AI 聊天栏 (Ctrl+I / F4)',
+      'ko': 'AI 채팅 패널 닫기 (Ctrl+I / F4)',
+      'es': 'Cerrar el panel de chat de IA (Ctrl+I / F4)',
+      'fr': 'Fermer le panneau de chat IA (Ctrl+I / F4)',
+      'de': 'KI-Chat-Bereich schliessen (Ctrl+I / F4)',
+      'pt': 'Fechar o painel de chat de IA (Ctrl+I / F4)',
+      'ru': 'Закрыть панель чата с ИИ (Ctrl+I / F4)',
+    },
+    'pdf.aiPanelOpen': {
+      'ja': 'AI チャット欄を開く (Ctrl+I / F4, 右クリックで切替)',
+      'en': 'Open the AI chat panel (Ctrl+I / F4, right-click to switch)',
+      'zh': '打开 AI 聊天栏 (Ctrl+I / F4，右键切换)',
+      'ko': 'AI 채팅 패널 열기 (Ctrl+I / F4, 우클릭으로 전환)',
+      'es': 'Abrir el panel de chat de IA (Ctrl+I / F4, clic derecho para cambiar)',
+      'fr': 'Ouvrir le panneau de chat IA (Ctrl+I / F4, clic droit pour changer)',
+      'de': 'KI-Chat-Bereich oeffnen (Ctrl+I / F4, Rechtsklick zum Wechseln)',
+      'pt': 'Abrir o painel de chat de IA (Ctrl+I / F4, clique direito para trocar)',
+      'ru': 'Открыть панель чата с ИИ (Ctrl+I / F4, правый клик для смены)',
+    },
+    'pdf.toolMemo': {
+      'ja': 'メモ',
+      'en': 'Memo',
+      'zh': '备注',
+      'ko': '메모',
+      'es': 'Nota',
+      'fr': 'Note',
+      'de': 'Notiz',
+      'pt': 'Nota',
+      'ru': 'Заметка',
+    },
     'pmemo.count': {
       'ja': 'メモ {n}',
       'en': 'Memos {n}',
@@ -68210,6 +68441,21 @@ class MindMapProvider extends ChangeNotifier {
     if (nextPro && _purchasedPlan != plan) _planJustActivated = plan;
     _purchasedPlan = plan;
     _proSubscribed = nextPro;
+    // ★ 開発者モード中でも、 実際に買ったプランは効かせる
+    //   (= ユーザー報告: 開発者モードの Free から Pro を買っても、
+    //   アプリに戻ると Free のままだった)。
+    //   currentPlan は開発者モードだと「演じるプラン」 しか見ないので、
+    //   買った物の方が上なら、 演じるプランをそこまで引き上げる。
+    //   引き上げるだけなので、 その後で下げて試す事は今までどおりできる。
+    if (_developerMode && plan.index > _devImpersonatePlan.index) {
+      _devImpersonatePlan = plan;
+      // ignore: discarded_futures
+      _prefsWithRetry().then((prefs) {
+        prefs.setString('dev_impersonate_plan', plan.name);
+      }).catchError((Object e) {
+        debugPrint('演じるプランの保存に失敗: $e');
+      });
+    }
     if (!nextPro) {
       // 解除された → 30 日後の自動削除起算点を保存
       _subscriptionEndedAt = DateTime.now().toUtc();
@@ -68493,6 +68739,11 @@ class MindMapProvider extends ChangeNotifier {
   }
 
   /// 現在のプラン種別 (UI 表示や機能切り分け用)。
+  ///
+  /// ★ 開発者モード時は `_devImpersonatePlan` (演じるプラン) を返す。
+  ///   実際に買ったプランはこれを覆い隠さない代わりに、 買った瞬間に
+  ///   [applyBillingPlan] が演じるプランを買った方へ引き上げる
+  ///   (= ユーザー報告: Dev の Free から Pro を買っても適用されない)。
   /// 開発者モード時は `_devImpersonatePlan` を返し、それ以外は実際の購入状態
   /// (proSubscribed → pro / クーポン → couponPlan / それ以外 → free) を返す。
   /// クーポンの種類 (Pro / Max) は `_couponPlan` で識別。

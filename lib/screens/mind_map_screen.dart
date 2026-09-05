@@ -13018,6 +13018,23 @@ class _MindMapScreenState extends State<MindMapScreen>
     ));
   }
 
+  /// 公式 Instagram をアプリの中の枠で開く (= ユーザー要望: 外のブラウザ
+  /// ではなくアプリの中で。 ヘッダーの項目は出さない)。
+  void _openOfficialInstagram(BuildContext ctx, MindMapProvider provider) {
+    final screen = MediaQuery.sizeOf(ctx);
+    final w = screen.width.clamp(320.0, 640.0).toDouble();
+    final h = screen.height.clamp(360.0, 900.0).toDouble();
+    _openGoogleSearchDialog(
+      ctx,
+      provider,
+      compactMode: true,
+      dialogSize: Size(w, h),
+      customTitle: provider.t('inquiry.officialIg'),
+      hideAppBar: true,
+      initialUrl: 'https://www.instagram.com/hisator_notebook',
+    );
+  }
+
   void _openGoogleSearchDialog(
     BuildContext ctx,
     MindMapProvider provider, {
@@ -13055,6 +13072,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     /// 自動操作の窓だけを出す (= ユーザー要望: 後ろに Google 検索を
     /// 出さない)。 手順がページを開いた時にだけブラウザが姿を見せる。
     bool automationOnly = false,
+
+    /// 上のヘッダー (検索欄と道具の並び) を出さない (= ユーザー要望:
+    /// 設定から公式 Instagram や利用規約へ行く時は出さない)。
+    bool hideAppBar = false,
   }) async {
     // ── Android: 透明オーバーレイ (compact/minimal/floating) は背後の WebView
     //   プラットフォームビューにタッチを奪われ、 検索画面が操作できない (= ユーザー
@@ -13065,6 +13086,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       compactMode = false;
       minimalMode = false;
     }
+    // ★ ヘッダーを出さない指定はスマホでもそのまま通す (= ユーザー要望:
+    //   設定から規約や公式 Instagram へ行く時はヘッダーを出さない)。
     // 共通コールバック (show / showFloating で使い回す)
     void handleAddNode(String title, String memo, String? linkUrl) {
       if (!mounted) return;
@@ -13173,6 +13196,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       minimalMode: minimalMode,
       openAutomation: openAutomation,
       automationOnly: automationOnly,
+      hideAppBar: hideAppBar,
       onOpenWeb: (url) {
         _showWebDialog(ctx, url, initialTitle: 'Google');
       },
@@ -37840,16 +37864,17 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 // ── 公式Instagram (= ユーザー要望: 問い合わせ
                                 //    画面の「公式Ig」 をここへ移し、 表記も
                                 //    「公式Instagram」 に直す) ──
-                                //    外のブラウザで開く。 設定は閉じない
-                                //    (アプリの外へ出るだけなので)。
+                                //    ★ 外のブラウザではなく**アプリの中の枠**で
+                                //      開く (= ユーザー要望)。 ヘッダーの項目は
+                                //      出さない (読むだけなので)。
                                 _settingsTile(
                                   icon: Icons.photo_camera_rounded,
                                   color: const Color(0xFFE1306C),
                                   title: provider.t('inquiry.officialIg'),
-                                  onTap: () => unawaited(launchUrl(
-                                      Uri.parse(
-                                          'https://www.instagram.com/hisator_notebook'),
-                                      mode: LaunchMode.externalApplication)),
+                                  onTap: () {
+                                    Navigator.pop(sctx);
+                                    _openOfficialInstagram(context, provider);
+                                  },
                                 ),
                                 // ── 規約類 ──
                                 //   ストア審査では「アプリの中からプライバシー
@@ -37892,6 +37917,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                                           compactMode: true,
                                           dialogSize: Size(maxW, maxH),
                                           customTitle: provider.t(e.$3),
+                                          // ヘッダーの項目は出さない
+                                          //   (= ユーザー要望: 読むだけの画面)。
+                                          hideAppBar: true,
                                           initialUrl:
                                               'https://hisator-notebook.com/${e.$4}');
                                     },
@@ -44191,7 +44219,10 @@ class _MindMapScreenState extends State<MindMapScreen>
               open: (hostCtx) => showDialog<void>(
                 context: hostCtx,
                 useRootNavigator: false,
-                builder: (_) => _InquiryDialog(provider: provider),
+                builder: (_) => _InquiryDialog(
+                    provider: provider,
+                    onOpenInstagram: () =>
+                        _openOfficialInstagram(context, provider)),
               ),
             ),
             width: 460,
@@ -69895,7 +69926,10 @@ class _MindMapScreenState extends State<MindMapScreen>
           open: (hostCtx) => showDialog<void>(
             context: hostCtx,
             useRootNavigator: false,
-            builder: (_) => _InquiryDialog(provider: provider),
+            builder: (_) => _InquiryDialog(
+                    provider: provider,
+                    onOpenInstagram: () =>
+                        _openOfficialInstagram(context, provider)),
           ),
         );
       // ページ背景 (= ユーザー要望: マップ背景も左右分割で)。
@@ -91068,7 +91102,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     unawaited(_showNearDialogMain<void>(
       width: 460,
       height: 620,
-      builder: (dctx) => _InquiryDialog(provider: provider),
+      builder: (dctx) => _InquiryDialog(
+                    provider: provider,
+                    onOpenInstagram: () =>
+                        _openOfficialInstagram(context, provider)),
     ));
   }
 
@@ -160427,8 +160464,11 @@ class _WindowsPlaylistExtractSheetState
 
 // ─── ユーザー向け問い合わせダイアログ ───────────────────────────────────────────
 class _InquiryDialog extends StatefulWidget {
+  /// Instagram をアプリの中の枠で開く差し込み口 (= ユーザー要望)。
+  /// null なら外のブラウザで開く (= 差し込み口を持たない呼び出し用)。
+  final VoidCallback? onOpenInstagram;
   final MindMapProvider provider;
-  const _InquiryDialog({required this.provider});
+  const _InquiryDialog({required this.provider, this.onOpenInstagram});
   @override
   State<_InquiryDialog> createState() => _InquiryDialogState();
 }
@@ -160942,9 +160982,18 @@ class _InquiryDialogState extends State<_InquiryDialog> {
           icon: const Icon(Icons.photo_camera_rounded, size: 16),
           label: Text(widget.provider.t('inquiry.viaInstagram'),
               style: const TextStyle(fontWeight: FontWeight.w700)),
-          onPressed: () => unawaited(launchUrl(
-              Uri.parse('https://www.instagram.com/hisator_notebook'),
-              mode: LaunchMode.externalApplication)),
+          // ★ アプリの中の枠で開く (= ユーザー要望)。 差し込み口が
+          //   無い時 (= 呼び出し側が渡していない) だけ外のブラウザ。
+          onPressed: () {
+            final open = widget.onOpenInstagram;
+            if (open != null) {
+              open();
+              return;
+            }
+            unawaited(launchUrl(
+                Uri.parse('https://www.instagram.com/hisator_notebook'),
+                mode: LaunchMode.externalApplication));
+          },
         ),
       ),
       Padding(
@@ -187108,8 +187157,8 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                   ? Icons.swap_horiz_rounded
                   : Icons.swap_vert_rounded,
               context.read<MindMapProvider>().pdfScrollHorizontal
-                  ? '現在：横めくり（タップで縦めくりに）'
-                  : '現在：縦めくり（タップで横めくりに）',
+                  ? context.read<MindMapProvider>().t('pdf.menuReadDirH')
+                  : context.read<MindMapProvider>().t('pdf.menuReadDirV'),
               const Color(0xFF4FC3F7)),
         // ── ドラッグで表示領域を移動 / 文字選択 の切替 (= ユーザー要望) ──
         if (widget.isPdf)
@@ -187121,8 +187170,8 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                   ? Icons.pan_tool_rounded
                   : Icons.text_fields_rounded,
               _pdfDragPanActive
-                  ? '現在：ドラッグで移動（タップで文字選択に）'
-                  : '現在：文字選択（タップでドラッグ移動に）',
+                  ? context.read<MindMapProvider>().t('pdf.menuPanOn')
+                  : context.read<MindMapProvider>().t('pdf.menuPanOff'),
               const Color(0xFFB39DDB)),
         // ── 「図形・線を描き込む」 は設定から外した (= ユーザー要望:
         //    設定項目が多過ぎる。 同じボタンがヘッダーに常設されている)。 ──
@@ -187132,7 +187181,9 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
               _fitPageMode
                   ? Icons.fit_screen_rounded
                   : Icons.fit_screen_outlined,
-              _fitPageMode ? '通常表示に戻す' : '1ページ全体を表示',
+              _fitPageMode
+                  ? context.read<MindMapProvider>().t('pdf.menuFitPageOn')
+                  : context.read<MindMapProvider>().t('pdf.menuFitPageOff'),
               const Color(0xFF80CBC4)),
         if (widget.isPdf)
           _pdfMenuItem(
@@ -187140,39 +187191,46 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
               _spreadFitPageMode
                   ? Icons.view_week_rounded
                   : Icons.view_week_outlined,
-              _spreadFitPageMode ? '見開きモードを解除' : '見開きモード',
+              _spreadFitPageMode
+                  ? context.read<MindMapProvider>().t('pdf.menuSpreadOn')
+                  : context.read<MindMapProvider>().t('pdf.menuSpreadOff'),
               const Color(0xFFFFB74D)),
         // ── ページ移動 (= ユーザー要望: 設定の中に入れる) ──
         if (widget.isPdf && _pdfTotalPages > 0) ...[
           _pdfMenuItem(
-              'jumpPage', Icons.numbers, 'ページ番号を指定', const Color(0xFF4FC3F7)),
+              'jumpPage', Icons.numbers, context.read<MindMapProvider>().t('pdf.menuJumpPage'),
+              const Color(0xFF4FC3F7)),
         ],
         // PDF内検索は廃止 (= ユーザー要望)。
         if (hasMemoPanel)
           _pdfMenuItem(
               'placeMemo',
               _placingMemo ? Icons.cancel : Icons.add_location_alt,
-              _placingMemo ? 'メモ配置モードを解除 (M)' : 'ここにメモを置く (M)',
+              _placingMemo
+                  ? context.read<MindMapProvider>().t('pdf.menuPlaceMemoOn')
+                  : context.read<MindMapProvider>().t('pdf.menuPlaceMemoOff'),
               const Color(0xFFFFC107)),
-        _pdfMenuItem('deepl', Icons.translate_rounded, 'DeepL で翻訳 (側パネル)',
+        _pdfMenuItem('deepl', Icons.translate_rounded, context.read<MindMapProvider>().t('pdf.menuDeepl'),
             const Color(0xFF4FC3F7)),
         // ── PDF の内容を AI チャットに渡す (= ユーザー要望) ──
         if (widget.isPdf && _pdfFilePath != null)
-          _pdfMenuItem('sendPdfToAi', Icons.smart_toy_rounded, 'PDFの内容をAIチャットへ',
+          _pdfMenuItem('sendPdfToAi', Icons.smart_toy_rounded, context.read<MindMapProvider>().t('pdf.menuSendToAi'),
               const Color(0xFFBA68C8)),
         // ── PDF を音声で読み上げ (= ユーザー要望) ──
         if (widget.isPdf && _pdfFilePath != null)
           _pdfMenuItem('readAloud', Icons.record_voice_over_rounded,
-              '音声で読み上げ（現在のページから）', const Color(0xFF4FC3F7)),
+              context.read<MindMapProvider>().t('pdf.menuReadAloud'), const Color(0xFF4FC3F7)),
         if (!widget.isPdf)
-          _pdfMenuItem('reload', Icons.refresh, '再読み込み', Colors.white70),
+          _pdfMenuItem('reload', Icons.refresh, context.read<MindMapProvider>().t('pdf.menuReload'),
+              Colors.white70),
         _pdfMenuItem(
-            'openExternal', Icons.open_in_new, '外部で開く', Colors.white70),
+            'openExternal', Icons.open_in_new,
+            context.read<MindMapProvider>().t('pdf.menuOpenExternal'), Colors.white70),
         // 「ダウンロード」 「左/右に分割」 は設定から外してヘッダーに並べた
         // (= ユーザー要望)。
         // ── 別の PDF に切り替え (= ユーザー要望: 項目の一番下に配置) ──
         if (widget.isPdf)
-          _pdfMenuItem('switchPdf', Icons.file_open_rounded, '別の PDF に切り替え',
+          _pdfMenuItem('switchPdf', Icons.file_open_rounded, context.read<MindMapProvider>().t('pdf.menuSwitchPdf'),
               const Color(0xFF4FC3F7)),
       ],
     );
@@ -188519,6 +188577,35 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                     ),
                   ),
                 ),
+              // ── 右端の縦つまみを、 触っている間だけ見せる ──
+              //    = ユーザー要望「縦のスクロールバーも、 スクロールした時か
+              //      カーソルが乗った時だけ出して欲しい」。
+              //
+              //    ★ syncfusion は **Windows では canShowScrollHead を無視**
+              //      して必ず出す (パッケージの中で
+              //      `if (kIsDesktop && enableScrollHead) canShowScrollHead
+              //       = true;` と上書きしている)。 だから渡す値だけでは
+              //      消せない。
+              //      つまみは右端に貼り付く幅 10px の柱なので、 出さない間は
+              //      そこだけを紙の下地と同じ色の板で覆って隠す。
+              //      板は指を通す (IgnorePointer) ので、 右端にカーソルを
+              //      寄せれば今までどおり出てくる。
+              //      色は syncfusion の下地と同じ物を使う (pdfviewer.dart の
+              //      Material 3 の既定)。
+              if (_pdfFilePath != null && !_pdfBarVisible)
+                Positioned(
+                  right: 0,
+                  top: 0,
+                  bottom: 0,
+                  width: 10,
+                  child: IgnorePointer(
+                    child: Container(
+                      color: Theme.of(context).brightness == Brightness.dark
+                          ? const Color(0xFF221F27)
+                          : const Color(0xFFA19CA5),
+                    ),
+                  ),
+                ),
               // ── 拡大した時に左右へ動かす棒 (= ユーザー要望: PDF 内を
               //    拡大した時に左右方向にスクロールできない) ──
               //    分割パネルには前からあったのに、 全画面のビューアには
@@ -189049,7 +189136,7 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                   )
                 : _floatingPdfToolButton(
                     icon: Icons.sticky_note_2_outlined,
-                    label: 'メモ',
+                    label: context.read<MindMapProvider>().t('pdf.toolMemo'),
                     color: const Color(0xFFFFC107),
                     onTap: () => setState(() => _memoPanelOpen = true),
                   ),
@@ -189257,8 +189344,8 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                               _showAiPickerMenu(d.globalPosition),
                           child: IconButton(
                             tooltip: _aiPanelOpen
-                                ? 'AI チャット欄を閉じる (Ctrl+I / F4)'
-                                : 'AI チャット欄を開く (Ctrl+I / F4, 右クリックで切替)',
+                                ? context.read<MindMapProvider>().t('pdf.aiPanelClose')
+                                : context.read<MindMapProvider>().t('pdf.aiPanelOpen'),
                             icon: Icon(
                                 _aiPanelOpen
                                     ? Icons.smart_toy_rounded
@@ -190904,8 +190991,8 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
                   ? Icons.swap_horiz_rounded
                   : Icons.swap_vert_rounded,
               context.read<MindMapProvider>().pdfScrollHorizontal
-                  ? '現在：横めくり（タップで縦めくりに）'
-                  : '現在：縦めくり（タップで横めくりに）',
+                  ? context.read<MindMapProvider>().t('pdf.menuReadDirH')
+                  : context.read<MindMapProvider>().t('pdf.menuReadDirV'),
               const Color(0xFF4FC3F7)),
         // ── 「図形・線を描き込む」 は設定から外した (= ユーザー要望:
         //    設定項目が多過ぎる。 同じボタンがヘッダーに常設されている)。 ──
@@ -190915,7 +191002,9 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
               _fitPageMode
                   ? Icons.fit_screen_rounded
                   : Icons.fit_screen_outlined,
-              _fitPageMode ? '通常表示に戻す' : '1ページ全体を表示',
+              _fitPageMode
+                  ? context.read<MindMapProvider>().t('pdf.menuFitPageOn')
+                  : context.read<MindMapProvider>().t('pdf.menuFitPageOff'),
               const Color(0xFF80CBC4)),
         if (widget.isPdf)
           _pdfMenuItem(
@@ -190923,12 +191012,15 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
               _spreadFitPageMode
                   ? Icons.view_week_rounded
                   : Icons.view_week_outlined,
-              _spreadFitPageMode ? '見開きモードを解除' : '見開きモード',
+              _spreadFitPageMode
+                  ? context.read<MindMapProvider>().t('pdf.menuSpreadOn')
+                  : context.read<MindMapProvider>().t('pdf.menuSpreadOff'),
               const Color(0xFFFFB74D)),
         // ── ページ移動 (= ユーザー要望: 設定の中に入れる) ──
         if (widget.isPdf && _pdfTotalPages > 0) ...[
           _pdfMenuItem(
-              'jumpPage', Icons.numbers, 'ページ番号を指定', const Color(0xFF4FC3F7)),
+              'jumpPage', Icons.numbers, context.read<MindMapProvider>().t('pdf.menuJumpPage'),
+              const Color(0xFF4FC3F7)),
         ],
         // PDF内検索は廃止 (= ユーザー要望)。
         if (hasMemoPanel)
@@ -190940,18 +191032,20 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
         // ── PDF を音声で読み上げ (= ユーザー要望) ──
         if (widget.isPdf && _pdfFilePath != null)
           _pdfMenuItem('readAloud', Icons.record_voice_over_rounded,
-              '音声で読み上げ（現在のページから）', const Color(0xFF4FC3F7)),
+              context.read<MindMapProvider>().t('pdf.menuReadAloud'), const Color(0xFF4FC3F7)),
         if (!widget.isPdf)
-          _pdfMenuItem('reload', Icons.refresh, '再読み込み', Colors.white70),
+          _pdfMenuItem('reload', Icons.refresh, context.read<MindMapProvider>().t('pdf.menuReload'),
+              Colors.white70),
         _pdfMenuItem(
-            'openExternal', Icons.open_in_new, '外部で開く', Colors.white70),
+            'openExternal', Icons.open_in_new,
+            context.read<MindMapProvider>().t('pdf.menuOpenExternal'), Colors.white70),
         if (widget.isPdf && _pdfFilePath != null)
           _pdfMenuItem('download', Icons.download_rounded, 'ダウンロード',
               const Color(0xFF4FC3F7)),
         // 「AI でフラッシュカードを作成」 は設定から外した (= ユーザー要望)。
         if (widget.onMoveToSplitPanel != null) ...[
           // AI チャット (= ユーザー要望: モバイルでも AI チャットを使えるように)
-          _pdfMenuItem('aiChat', Icons.smart_toy_rounded, 'AI チャットを開く',
+          _pdfMenuItem('aiChat', Icons.smart_toy_rounded, context.read<MindMapProvider>().t('pdf.menuOpenAiChat'),
               const Color(0xFFBA68C8)),
           _pdfMenuItem(
               'splitUp',
