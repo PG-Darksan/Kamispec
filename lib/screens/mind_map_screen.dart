@@ -16382,6 +16382,52 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// ログインしていないと、 買った証しがその端末の「名無しの id」 に
   /// 紐づいてしまい、 別の端末では Free のままになる。
   /// 続けてよければ true。
+  /// 購入して良いかを確かめる (ログイン + 二重契約の防止)。
+  ///
+  /// ★ = ユーザー要望「Free でログアウトされている状態で、 同等かそれ以上の
+  ///   プランを持つアカウントにログインして決済しようとしたら『既にこの
+  ///   プラン以上を契約されています』 と出るように」。
+  ///   ログインの直後は端末側の控えがまだ古いので、 端末ではなく**サーバー**に
+  ///   聞く。 聞けなかった時は止めない (圏外で買えなくなる方が困る)。
+  Future<bool> _ensurePurchaseAllowed(
+    MindMapProvider provider, {
+    required String plan,
+    required bool yearly,
+  }) async {
+    if (!await _ensureSignedInForPurchase(provider)) return false;
+    if (!mounted) return false;
+    int rank(String p) => p == 'max' ? 2 : (p == 'pro' ? 1 : 0);
+    Map<String, dynamic> info;
+    try {
+      info = await provider
+          .fetchSubscriptionInfo()
+          .timeout(const Duration(seconds: 8));
+    } catch (_) {
+      return true; // 聞けなかった → 今までどおり進む
+    }
+    if (!mounted) return false;
+    final serverPlan = '${info['plan'] ?? 'free'}';
+    final owned = rank(serverPlan);
+    final want = rank(plan);
+    if (owned == 0 || owned < want) return true; // まだ持っていない
+    if (owned == want) {
+      // 同じ段でも、 月額 ⇔ 年額の入れ替えは通す (= 変更の経路へ)。
+      final sub = info['subscription'];
+      final curYearly = sub is Map ? '${sub['interval'] ?? ''}' == 'year' : null;
+      if (curYearly != null && curYearly != yearly) return true;
+    }
+    _appSnack(
+      context,
+      SnackBar(
+        content: Text(provider.t('paywall.alreadyOnPlan')),
+        duration: const Duration(seconds: 4),
+      ),
+    );
+    // 端末側の控えも合わせておく (= 押しても何も起きないように見えるのを防ぐ)。
+    provider.applyBillingPlanByName(serverPlan);
+    return false;
+  }
+
   Future<bool> _ensureSignedInForPurchase(MindMapProvider provider) async {
     if (provider.googleSignedIn) return true;
     final go = await showDialog<bool>(
@@ -16726,8 +16772,11 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   Future<void> _startStripeCheckout(
       MindMapProvider provider, String plan, bool yearly) async {
-    // ★ 先にログイン (= 端末をまたいでプランを持ち運べるように)。
-    if (!await _ensureSignedInForPurchase(provider)) return;
+    // ★ 先にログイン (= 端末をまたいでプランを持ち運べるように) と、
+    //   既に同じか上のプランを持っていないかの確認。
+    if (!await _ensurePurchaseAllowed(provider, plan: plan, yearly: yearly)) {
+      return;
+    }
     if (!mounted) return;
     // ★ すでに契約しているなら、 決済リンクを開かずに中身を差し替える
     //   (= ユーザー要望: パソコンでも差額だけの請求に)。 そのまま開くと
@@ -16979,6 +17028,16 @@ class _MindMapScreenState extends State<MindMapScreen>
                             pkg,
                             disabled: purchasing,
                             onTap: () async {
+                              // ★ 先に「もう持っていないか」 を確かめる
+                              //   (= ユーザー要望: 既にこのプラン以上を
+                              //   契約している時は買わせない)。 差額の案内より
+                              //   前に出さないと、 持っているプランの請求額を
+                              //   見せてしまう。
+                              if (!await _ensurePurchaseAllowed(provider,
+                                  plan: pkg.planName, yearly: pkg.isYearly)) {
+                                return;
+                              }
+                              if (!sheetCtx.mounted) return;
                               // Pro から Max へ変える時は、 お金の扱いを
                               // 先に伝える (= ユーザー要望: 返金はせず、
                               // 次のお支払い日までの差額を頂く)。
@@ -16993,12 +17052,6 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 final ok =
                                     await _confirmUpgradeCharge(sheetCtx);
                                 if (ok != true) return;
-                              }
-                              // ★ こちらも先にログイン
-                              //   (= 端末間でプランを持ち運ぶため)。
-                              if (!await _ensureSignedInForPurchase(
-                                  provider)) {
-                                return;
                               }
                               if (!sheetCtx.mounted) return;
                               setSheet(() => purchasing = true);
@@ -38377,25 +38430,65 @@ class _MindMapScreenState extends State<MindMapScreen>
           borderRadius: BorderRadius.circular(10),
           border: Border.all(color: baseColor.withValues(alpha: 0.28)),
         ),
-        child: Row(children: [
-          Icon(icon, color: itemColor, size: 20),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(title,
-                style: const TextStyle(color: Colors.white, fontSize: 14)),
-          ),
-          if (subtitle != null && subtitle.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(right: 4),
-              child: Text(subtitle,
+        // ★ 説明文の置き方 (= ユーザー報告: スマホで「ブラウザの Cookie を
+        //   消去」 の行が 1 文字ずつ縦に潰れる)。
+        //   元の作りでは説明文が Row の非 flex な子だったため、 幅の制限を
+        //   受けずに好きなだけ取り、 題名の Expanded が数 px まで潰されていた。
+        //   ・狭い時 (スマホ) は題名の下に説明を置く 2 段組み
+        //   ・広い時 (パソコン) は今までどおり右端に置き、 題名 3 : 説明 2
+        child: LayoutBuilder(builder: (lctx, c) {
+          final hasSub = subtitle != null && subtitle.isNotEmpty;
+          final narrow = c.maxWidth < 360;
+          final titleText = Text(title,
+              style: const TextStyle(color: Colors.white, fontSize: 14));
+          final subText = hasSub
+              ? Text(subtitle,
+                  textAlign: narrow ? TextAlign.left : TextAlign.right,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                       color: itemColor,
                       fontSize: 12,
-                      fontWeight: FontWeight.w600)),
-            ),
-          const Icon(Icons.chevron_right_rounded,
-              color: Colors.white38, size: 18),
-        ]),
+                      fontWeight: FontWeight.w600))
+              : null;
+          if (narrow && subText != null) {
+            return Row(children: [
+              Icon(icon, color: itemColor, size: 20),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      titleText,
+                      const SizedBox(height: 2),
+                      subText,
+                    ]),
+              ),
+              const SizedBox(width: 4),
+              const Icon(Icons.chevron_right_rounded,
+                  color: Colors.white38, size: 18),
+            ]);
+          }
+          return Row(children: [
+            Icon(icon, color: itemColor, size: 20),
+            const SizedBox(width: 12),
+            Expanded(flex: 3, child: titleText),
+            // ★ Expanded (= 枠いっぱい) にしないと、 中身の幅で箱が決まって
+            //   行ごとに右端がずれる (= ユーザー指摘: 「日本語」 や 「—」 が
+            //   右端で揃っていなくて汚い)。
+            if (subText != null)
+              Expanded(
+                flex: 2,
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 4, left: 8),
+                  child: subText,
+                ),
+              ),
+            const Icon(Icons.chevron_right_rounded,
+                color: Colors.white38, size: 18),
+          ]);
+        }),
       ),
     );
   }
@@ -66041,11 +66134,14 @@ class _MindMapScreenState extends State<MindMapScreen>
                       .map((p) =>
                           _buildPageTile(context, provider, p, indent: 18)),
               ],
-              // フォルダー内のページを上位階層（現在の1階層モデルではルート）へ
-              // 戻すドロップ先。ルートページがまだ1件も無い場合でも表示する。
-              if (folders.isNotEmpty)
+              // フォルダー内のページを上位階層 (= フォルダーなし) へ戻す
+              // ドロップ先。
+              // ★ 常に出していると「フォルダーなし」 という帯がページ一覧に
+              //   居座って見た目が悪い (= ユーザー指摘)。 ページを掴んでいる
+              //   間だけ出す (置き場所が要るのはその時だけ)。
+              if (folders.isNotEmpty && _draggingMapPage)
                 _buildDrawerRootDropTarget(context, provider),
-              if (folders.isNotEmpty && rootPages.isNotEmpty)
+              if (folders.isNotEmpty && rootPages.isNotEmpty && _draggingMapPage)
                 const Divider(color: Colors.white10, height: 8),
               // ルート(フォルダー外)のページ
               ...rootPages.map((p) => _buildPageTile(context, provider, p)),
@@ -72587,7 +72683,49 @@ class _MindMapScreenState extends State<MindMapScreen>
       // 見出しは出さない (= ユーザー要望: 上に「行き来する方向」 は書かなくてよい)。
       if (!kIsWeb && Platform.isWindows) ...[
         const SizedBox(height: 6),
-        _MonitorEdgeSettings(provider: provider),
+        // ★ サブモニターの回り込み (ルーティング) は Pro 以上限定
+        //   (= ユーザー要望)。 プランが足りない時は図も常駐も触れないように
+        //   薄く出し、 押したら加入の案内を出す。
+        if (!provider.canUseMonitorRouting)
+          InkWell(
+            borderRadius: BorderRadius.circular(10),
+            onTap: () {
+              Navigator.of(sheetCtx).pop();
+              _showPaywallDialog(provider,
+                  bodyOverride: provider.t('paywall.proRequiredMonitor'));
+            },
+            child: Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: const Color(0xFF4FC3F7).withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                    color: const Color(0xFF4FC3F7).withValues(alpha: 0.3)),
+              ),
+              child: Row(children: [
+                const Icon(Icons.lock_outline_rounded,
+                    color: Color(0xFF4FC3F7), size: 16),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(provider.t('paywall.proRequiredMonitor'),
+                      style: const TextStyle(
+                          color: Color(0xFF4FC3F7),
+                          fontSize: 11,
+                          height: 1.4)),
+                ),
+                const Icon(Icons.chevron_right_rounded,
+                    color: Color(0xFF4FC3F7), size: 18),
+              ]),
+            ),
+          ),
+        IgnorePointer(
+          ignoring: !provider.canUseMonitorRouting,
+          child: Opacity(
+            opacity: provider.canUseMonitorRouting ? 1 : 0.4,
+            child: _MonitorEdgeSettings(provider: provider),
+          ),
+        ),
         // ── 「サブモニターに両サイドからアクセス」 のトグルは削除 ──
         //    = ユーザー要望「上の図から設定すればいいから項目としては削除」。
         //    図で行き先を決めた辺だけが働く。
@@ -72602,8 +72740,15 @@ class _MindMapScreenState extends State<MindMapScreen>
               : Colors.white54,
           title: provider.t('cursorWrap.daemon'),
           helpKey: 'cursorWrap.daemonHelp',
-          value: provider.cursorWrapDaemon,
+          value: provider.cursorWrapDaemon && provider.canUseMonitorRouting,
           onChanged: (v) async {
+            // Pro 以上限定 (= ユーザー要望)。 足りない時は加入の案内へ。
+            if (!provider.canUseMonitorRouting) {
+              Navigator.of(sheetCtx).pop();
+              _showPaywallDialog(provider,
+                  bodyOverride: provider.t('paywall.proRequiredMonitor'));
+              return;
+            }
             await provider.setCursorWrapDaemon(v);
             final ok = await _registerCursorWrapTask(v);
             if (v && ok) {
@@ -82914,6 +83059,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     final codeCtrl = TextEditingController();
     bool busy = false;
     String? error;
+    // ★ 画面の真ん中ではなく、 押したボタンの近くに出す (= ユーザー要望)。
+    //   位置は他の窓と同じ「最後に触った所」 を使う。
+    final at = _lastGlobalPointerPos;
     await showDialog<void>(
       context: context,
       builder: (dctx) => StatefulBuilder(builder: (dctx2, setD) {
@@ -82939,8 +83087,12 @@ class _MindMapScreenState extends State<MindMapScreen>
           }
         }
 
-        return AlertDialog(
+        final dlg = AlertDialog(
           backgroundColor: const Color(0xFF1E1E32),
+          // 近くに出す時は自前で位置を決めるので、 既定の余白は無くす。
+          insetPadding: at == null
+              ? const EdgeInsets.symmetric(horizontal: 40, vertical: 24)
+              : EdgeInsets.zero,
           shape:
               RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
           title: Row(children: [
@@ -83025,6 +83177,24 @@ class _MindMapScreenState extends State<MindMapScreen>
             ),
           ],
         );
+        if (at == null) return dlg;
+        // 押した所の近くへ置く。 画面からはみ出さないように留める。
+        final scr = MediaQuery.of(dctx2).size;
+        const w = 460.0;
+        final left = (at.dx - w / 2)
+            .clamp(12.0, math.max(12.0, scr.width - w - 12))
+            .toDouble();
+        final top = (at.dy + 16)
+            .clamp(12.0, math.max(12.0, scr.height - 320))
+            .toDouble();
+        return Stack(children: [
+          Positioned(
+            left: left,
+            top: top,
+            width: w,
+            child: Material(color: Colors.transparent, child: dlg),
+          ),
+        ]);
       }),
     );
   }

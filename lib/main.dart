@@ -3192,6 +3192,13 @@ Future<void> _runCursorWrapDaemon() async {
       if (!(prefs.getBool('cursorWrapDaemon') ?? false)) {
         exit(0);
       }
+      // ★ 回り込みは Pro 以上限定 (= ユーザー要望)。 本体がプランを見て
+      //   書いた印を読む。 プランが落ちたら常駐も畳む (別プロセスなので、
+      //   本体側の判定だけでは止められない)。 印が無い古い控えの時は、
+      //   本体が次に立ち上がった時に書かれるまで従来どおり動かす。
+      if (prefs.getBool('cursorWrapPlanOk') == false) {
+        exit(0);
+      }
       if (!force && raw == lastRaw && enabled == lastEnabled) return;
       lastRaw = raw;
       lastEnabled = enabled;

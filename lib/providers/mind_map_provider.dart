@@ -4563,7 +4563,10 @@ class MindMapProvider extends ChangeNotifier {
     await prefs.setBool('cursorWrapEnabled', v);
     // ★ ここで道具にも渡す。 前は画面側でしか呼んでおらず、 他所から
     //   設定を変えると次の起動まで効かなかった。
-    CursorWrap.instance.apply(v);
+    //   プランが足りない時は効かせない (= Pro 以上限定)。
+    CursorWrap.instance.apply(v && canUseMonitorRouting);
+    // ignore: discarded_futures
+    applyCursorWrapForPlan();
     notifyListeners();
   }
 
@@ -4595,7 +4598,8 @@ class MindMapProvider extends ChangeNotifier {
 
   Future<void> setCursorWrapEdges(Map<String, int> v) async {
     _cursorWrapEdges = Map<String, int>.from(v);
-    CursorWrap.instance.applyEdgeTargets(_cursorWrapEdges);
+    CursorWrap.instance.applyEdgeTargets(
+        canUseMonitorRouting ? _cursorWrapEdges : const {});
     final prefs = await _prefsWithRetry();
     await prefs.setString('cursorWrapEdges', jsonEncode(_cursorWrapEdges));
     notifyListeners();
@@ -46198,9 +46202,8 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Присоединиться к совместной работе',
     },
     'live.joinDesc': {
-      'ja': '共有コードを入れるだけで参加できます。そのページがアプリ内に'
-          '取り込まれ、いつもと同じ画面でみんなと一緒に編集できます。'
-          '閲覧も編集も Max プランを持っている人同士の機能です。',
+      'ja': '共有コードを入れると、そのページがアプリに取り込まれ、'
+          'みんなで一緒に編集できます。',
       'en': 'Enter a share code to pull the page into the app and edit it '
           'together with everyone on the usual screen.',
       'zh': '输入共享代码，即可将该页面导入应用，在平常的界面中与大家一起编辑。',
@@ -46581,10 +46584,8 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Совместное редактирование',
     },
     'live.desc': {
-      'ja': 'Max プランを持っている人同士が、サーバー越しにアプリの中で'
-          '同じページを一緒に編集できます。参加する人は共有コードを入れる'
-          'だけ。閲覧だけの参加にも Max プランが要ります。編集中の要素は'
-          '他の人からロックされ、誰が触っているかが表示されます。',
+      'ja': '同じページを、複数人が同時に編集できます。'
+          '編集中の要素は他の人からロックされ、誰が触っているかが分かります。',
       'en': 'When on, several people can edit the published page at the same '
           'time. Elements being edited are locked for everyone else and show '
           'who is working on them.',
@@ -46631,9 +46632,8 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Начнётся при публикации',
     },
     'live.autoEndNote': {
-      'ja': '誰も接続していない状態が 3 時間続くとセッションは自動で終了し、'
-          'サーバー上の共有データと共有リンクは削除されます。手元のページと、'
-          '参加した人それぞれの手元のページはそのまま残ります。',
+      'ja': '誰も接続しない状態が 3 時間続くと自動で終了し、'
+          'サーバー上の共有データは消えます。手元のページは残ります。',
       'en': 'If nobody is connected for 3 hours the session ends '
           'automatically and the shared data and link are deleted from the '
           'server. Your page and each participant local copy remain intact.',
@@ -47158,24 +47158,18 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Publicar na web requer o plano Pro ou superior',
       'ru': 'Публикация в вебе доступна с плана Pro и выше',
     },
+    // ★ 「参加する人も Max が要ります」 は同じ事を二度言っているので外した
+    //   (= ユーザー指摘: Max 同士と書いてあるなら要らない)。
     'live.maxOnlyNote': {
-      'ja': '共同編集は Max プランを持っている人同士の機能です。'
-          '参加する人も Max プランが要ります。',
-      'en': 'Collaboration works between Max plan holders. Everyone who joins '
-          'also needs the Max plan.',
-      'zh': '协作编辑面向 Max 方案用户，参加者也需要 Max 方案。',
-      'ko': '공동 편집은 Max 플랜 사용자끼리의 기능입니다. 참가자도 Max '
-          '플랜이 필요합니다.',
-      'es': 'La colaboracion es entre usuarios del plan Max. Quien se une '
-          'tambien necesita el plan Max.',
-      'fr': 'La collaboration fonctionne entre detenteurs du plan Max. Ceux '
-          'qui rejoignent ont aussi besoin du plan Max.',
-      'de': 'Die Zusammenarbeit funktioniert zwischen Max-Plan-Inhabern. Auch '
-          'wer beitritt, braucht den Max-Plan.',
-      'pt': 'A colaboracao e entre usuarios do plano Max. Quem entra tambem '
-          'precisa do plano Max.',
-      'ru': 'Совместное редактирование работает между владельцами плана Max. '
-          'Участникам тоже нужен план Max.',
+      'ja': '共同編集は Max プランを持っている人同士の機能です。',
+      'en': 'Collaboration works between Max plan holders.',
+      'zh': '协作编辑面向 Max 方案用户。',
+      'ko': '공동 편집은 Max 플랜 사용자끼리의 기능입니다.',
+      'es': 'La colaboracion es entre usuarios del plan Max.',
+      'fr': 'La collaboration fonctionne entre detenteurs du plan Max.',
+      'de': 'Die Zusammenarbeit funktioniert zwischen Max-Plan-Inhabern.',
+      'pt': 'A colaboracao e entre usuarios do plano Max.',
+      'ru': 'Совместное редактирование работает между владельцами плана Max.',
     },
     'paywall.maxRequiredLive': {
       'ja': 'リアルタイム共同編集は Max プラン限定の機能です',
@@ -47335,8 +47329,8 @@ class MindMapProvider extends ChangeNotifier {
     },
     // ブラウザ向けリンクは廃止 (= ユーザー要望: 共同編集はあくまでアプリ内)
     'publish.desc': {
-      'ja': '公開すると共有コードが発行され、コードを知っている人がアプリから'
-          '同じページに参加できます（ブラウザ向けのリンクは作りません）。',
+      'ja': '共有コードが発行され、コードを知っている人がアプリから'
+          '同じページに参加できます。',
       'en': 'Publishing issues a share code. Anyone with the code can join '
           'this page from the app (no browser link is created).',
       'zh': '发布后会生成共享码，知道该码的人可以在应用中加入此页面'
@@ -52022,6 +52016,30 @@ class MindMapProvider extends ChangeNotifier {
           'PDF やファイルを AI に読み込ませてマインドマップを自動生成する機能は Max プラン限定です。Max プランへの加入後にご利用ください。',
       'en':
           'Generating a mind map from a PDF/file with AI is exclusive to the Max plan. Please upgrade to Max to use it.',
+    },
+    // 既に同じか上のプランを契約しているアカウントで買おうとした時
+    //   (= ユーザー要望: 二重に契約させない)。
+    'paywall.alreadyOnPlan': {
+      'ja': '既にこのプラン以上を契約されています。',
+      'en': 'You already have this plan or higher.',
+      'zh': '您已订阅此方案或更高方案。',
+      'ko': '이미 이 플랜 이상을 구독 중입니다.',
+      'es': 'Ya tienes este plan o uno superior.',
+      'fr': 'Vous avez d\u00e9j\u00e0 ce plan ou un plan sup\u00e9rieur.',
+      'de': 'Sie haben diesen Plan oder h\u00f6her bereits.',
+      'pt': 'Voc\u00ea j\u00e1 tem este plano ou superior.',
+      'ru': 'У вас уже есть этот план или выше.',
+    },
+    'paywall.proRequiredMonitor': {
+      'ja': 'サブモニターの回り込み (ルーティング) は Pro 以上のプランでご利用いただけます。',
+      'en': 'Cursor routing between monitors is available on the Pro plan or above.',
+      'zh': '显示器之间的光标回绕功能需要 Pro 或更高方案。',
+      'ko': '모니터 간 커서 이동(라우팅)은 Pro 이상 플랜에서 사용할 수 있습니다.',
+      'es': 'El enrutado del cursor entre monitores requiere el plan Pro o superior.',
+      'fr': 'Le routage du curseur entre \u00e9crans n\u00e9cessite le plan Pro ou sup\u00e9rieur.',
+      'de': 'Das Cursor-Routing zwischen Monitoren erfordert den Pro-Plan oder h\u00f6her.',
+      'pt': 'O roteamento do cursor entre monitores requer o plano Pro ou superior.',
+      'ru': 'Переход курсора между мониторами доступен в плане Pro и выше.',
     },
     'paywall.proRequiredSplit': {
       'ja': '画面分割は無料プランで 2 回までご利用いただけます。3 回目以降は Pro 以上のプランへの加入が必要です。',
@@ -68642,6 +68660,9 @@ class MindMapProvider extends ChangeNotifier {
     } else {
       _subscriptionEndedAt = null;
     }
+    // プランで開け閉めする物 (サブモニターの回り込み) を当て直す。
+    // ignore: discarded_futures
+    applyCursorWrapForPlan();
     notifyListeners();
 
     // RevenueCat のキャッシュ通知と最新状態通知が短時間に連続することがある。
@@ -68983,6 +69004,32 @@ class MindMapProvider extends ChangeNotifier {
 
   /// Web の自動操作が使えるか (= ユーザー要望: Pro 以上限定)。
   bool get canUseWebAutomation => isProUnlocked;
+
+  /// サブモニターの回り込み (ルーティング) を使えるか。
+  /// = ユーザー要望「ディスプレイのサブモニターのルーティング機能も
+  ///   Pro プラン以上の限定機能に」。 設定そのものは残し、 プランが
+  ///   足りない間は効かせないだけにする (戻せば元の設定で復活する)。
+  bool get canUseMonitorRouting => isProUnlocked;
+
+  /// 今のプランに合わせて回り込みを効かせ直す。
+  ///
+  /// 別プロセスの常駐 (`--cursor-wrap`) は prefs しか見ないので、
+  /// 使ってよいかの印もここで書いておく。
+  Future<void> applyCursorWrapForPlan() async {
+    if (kIsWeb || !Platform.isWindows) return;
+    final ok = canUseMonitorRouting;
+    try {
+      // ★ 実際に効いているのは「辺ごとの行き先」 の方 (これが入っていると
+      //   全体のトグルが false でも回り込みは動く)。 プランが足りない時は
+      //   行き先も空にしないと、 閘が素通りになる。
+      CursorWrap.instance.applyEdgeTargets(ok ? _cursorWrapEdges : const {});
+      CursorWrap.instance.apply(_cursorWrapEnabled && ok);
+    } catch (_) {}
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.setBool('cursorWrapPlanOk', ok);
+    } catch (_) {}
+  }
 
 
   /// 通常ページを作成して良いか。既存呼び出し向けの後方互換アクセサ。
@@ -77319,7 +77366,102 @@ $cleanQ
   }
 
   /// ログアウトして、 この端末だけの匿名利用に戻す。
+  /// ログアウトの時に、 そのアカウントに紐づく物を全部下ろす。
+  ///
+  /// = ユーザー要望「ログアウトしてもユーザー名やアイコンが残り続ける仕様を
+  ///   やめて」「Dev プランのアカウントからログアウトしたのに Dev のまま」。
+  ///
+  /// ★ 必ず身元 (`_idToken` / `_uid`) を消す**前**に呼ぶこと。 サーバーへの
+  ///   返上 (開発者モードの取り消し・Dev 枠の返上) は本人の token が要る。
+  /// ★ 画面に出る物は控え (prefs) から読み直されるので、 変数を空にする
+  ///   だけでは足りない。 鍵そのものを消す / 上書きする。
+  Future<void> _resetAccountBoundStateOnSignOut() async {
+    // ① 開発者モードを畳む (Dev 枠の返上・再開タイマーの停止も中でやる)。
+    //    サーバー応答を待ち続けないよう、 短く区切る。
+    try {
+      await deactivateDeveloperMode().timeout(const Duration(seconds: 8));
+    } catch (e) {
+      debugPrint('ログアウト時の開発者モード解除に失敗: $e');
+    }
+
+    // ② プランの控えを free に戻す。
+    try {
+      await _setServerGrantedPlan(null);
+    } catch (_) {}
+    try {
+      await _setServerDevGranted(false);
+    } catch (_) {}
+    // ★ クーポンは消さない。 引き換えは端末ごとに 1 回きりで記録され、
+    //   一度消すと同じコードを入れ直せない (= 取り返しがつかない)。
+    //   クーポンはアカウントではなくこの端末に付いている物なので、
+    //   ログアウトしても持ち主は変わらない。
+    try {
+      await applyBillingPlan(SubscriptionPlan.free);
+      // 直列化された書き込みに追い越されないよう、 片付いてから触る。
+      await _billingPersistence;
+    } catch (_) {}
+
+    try {
+      final prefs = await _prefsWithRetry();
+      // ログアウトは解約ではないので、 30 日後の削除時計は止める。
+      _subscriptionEndedAt = null;
+      await prefs.remove('subscription_ended_at_ms');
+      await prefs.setBool('pro_subscribed', false);
+      await prefs.setString('purchased_plan', SubscriptionPlan.free.name);
+      // ★ 鍵を消すと「何も選んでいない = Dev」 に戻る作りなので、
+      //   消さずに free を書く。
+      _devImpersonatePlan = SubscriptionPlan.free;
+      await prefs.setString('dev_impersonate_plan', SubscriptionPlan.free.name);
+
+      // ③ 名前とアイコン。
+      _displayName = null;
+      await prefs.remove('displayName');
+      // 次に入る人には、 また名前を聞く。
+      _displayNameSkipped = false;
+      await prefs.setBool('displayNameSkipped', false);
+    } catch (_) {}
+
+    try {
+      await setUserAvatar(null);
+    } catch (_) {}
+    try {
+      await setUserAvatarImage(null);
+    } catch (_) {}
+
+    // ④ Google から落としてきた写真を消す。
+    //    置き場所は使い回しなので、 消すだけでなく画像の控えも捨てないと、
+    //    次の人の写真として前の人の絵が出続ける。
+    try {
+      final prefs = await _prefsWithRetry();
+      final gAvatar = _googleAvatarPath ?? prefs.getString('google_avatar_path');
+      _googleAvatarPath = null;
+      await prefs.remove('google_avatar_path');
+      if (gAvatar != null && gAvatar.isNotEmpty) {
+        final f = File(gAvatar);
+        try {
+          await FileImage(f).evict();
+        } catch (_) {}
+        try {
+          if (f.existsSync()) await f.delete();
+        } catch (_) {}
+      }
+    } catch (_) {}
+
+    // ⑤ プランで開け閉めする物を当て直す (サブモニターの回り込み等)。
+    try {
+      await applyCursorWrapForPlan();
+    } catch (_) {}
+    notifyListeners();
+  }
+
   Future<void> signOutGoogle() async {
+    // ★ 先に「その人の物」 を全部下ろしてから、 身元を消す (= ユーザー要望:
+    //   ログアウトしても名前・アイコン・プランが残り続ける仕様をやめる)。
+    //   順番が大事: 開発者モードの返上やサーバーへの取り消しは、 まだ
+    //   ID トークンが生きている間でないと別人 (新しい匿名 uid) に対して
+    //   投げてしまう。
+    await _resetAccountBoundStateOnSignOut();
+
     _googleSignedIn = false;
     _googleEmail = '';
     _idToken = null;
@@ -77331,15 +77473,6 @@ $cleanQ
       await prefs.remove('google_email');
       await prefs.remove('firebase_refresh_token');
       await prefs.remove('firebase_uid');
-      // Google のアイコンを使っていたなら外す (= 別人のアイコンが残らないよう)。
-      final gAvatar = _googleAvatarPath ?? prefs.getString('google_avatar_path');
-      if (gAvatar != null && gAvatar.isNotEmpty) {
-        if (_userAvatarImagePath == gAvatar) {
-          await setUserAvatarImage(null);
-        }
-        _googleAvatarPath = null;
-        await prefs.remove('google_avatar_path');
-      }
     } catch (_) {}
     notifyListeners();
     try {
@@ -77347,6 +77480,19 @@ $cleanQ
     } catch (e) {
       debugPrint('匿名に戻せませんでした: $e');
     }
+    // ★ 8 秒で待つのをやめた返上処理が、 この後から戻ってきて
+    //   プランを書き戻すことがある (Dev 枠の返上は成功すると元のプランを
+    //   当て直す)。 最後にもう一度 free に均しておく。
+    try {
+      await _setServerGrantedPlan(null);
+      await applyBillingPlan(SubscriptionPlan.free);
+      final prefs = await _prefsWithRetry();
+      _subscriptionEndedAt = null;
+      await prefs.remove('subscription_ended_at_ms');
+      await prefs.setBool('pro_subscribed', false);
+      await prefs.setString('purchased_plan', SubscriptionPlan.free.name);
+    } catch (_) {}
+    notifyListeners();
   }
 
   // ─── アカウントごとの状態 (プラン / 使用量) の共有 ──────────────────────
@@ -83371,8 +83517,11 @@ $cleanQ
     _loadCursorWrapEdges(prefs);
     _loadCursorWrapDaemon(prefs);
     _loadCursorWrapPlacement(prefs);
-    CursorWrap.instance.applyEdgeTargets(_cursorWrapEdges);
-    CursorWrap.instance.apply(_cursorWrapEnabled);
+    // プランの読み込みは別経路なので、 ここでは今分かっている範囲で当て、
+    //   プランが確定した時に applyBillingPlan からもう一度当て直す。
+    CursorWrap.instance.applyEdgeTargets(
+        canUseMonitorRouting ? _cursorWrapEdges : const {});
+    CursorWrap.instance.apply(_cursorWrapEnabled && canUseMonitorRouting);
     // メモ欄一括折りたたみ (デフォルト false = 従来通り全文表示)
     _memoCollapsedGlobal = prefs.getBool('memoCollapsedGlobal') ?? false;
     // 動画ノードの重複生成許可フラグ (デフォルト false)
