@@ -57397,6 +57397,56 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'На передний план по окончании',
     },
     // ── 関数電卓 ──
+    // 普通の電卓 / 関数電卓の切り替え (= ユーザー要望: ヘッダーから
+    //   切り替えられるように。 既定は普通の電卓)。
+    'calc.basicTitle': {
+      'ja': '電卓',
+      'en': 'Calculator',
+      'zh': '计算器',
+      'ko': '계산기',
+      'es': 'Calculadora',
+      'fr': 'Calculatrice',
+      'de': 'Rechner',
+      'pt': 'Calculadora',
+      'ru': 'Калькулятор',
+    },
+    'calc.toBasic': {
+      'ja': '普通の電卓に切り替える',
+      'en': 'Switch to the basic calculator',
+      'zh': '切换到普通计算器',
+      'ko': '일반 계산기로 전환',
+      'es': 'Cambiar a la calculadora basica',
+      'fr': 'Passer a la calculatrice simple',
+      'de': 'Zum einfachen Rechner wechseln',
+      'pt': 'Mudar para a calculadora simples',
+      'ru': 'Переключиться на обычный калькулятор',
+    },
+    'calc.toSci': {
+      'ja': '関数電卓に切り替える',
+      'en': 'Switch to the scientific calculator',
+      'zh': '切换到科学计算器',
+      'ko': '공학용 계산기로 전환',
+      'es': 'Cambiar a la calculadora cientifica',
+      'fr': 'Passer a la calculatrice scientifique',
+      'de': 'Zum wissenschaftlichen Rechner wechseln',
+      'pt': 'Mudar para a calculadora cientifica',
+      'ru': 'Переключиться на инженерный калькулятор',
+    },
+    // 繋がっているモニターは外せない、 と知らせる文
+    //   (= ユーザー要望: 接続されているサブモニター分の設定は削除できない
+    //    ようにして欲しい)。
+    'cursorWrap.connectedLocked': {
+      'ja': '繋がっているモニターは外せません。',
+      'en': 'A monitor that is actually connected cannot be removed.',
+      'zh': '已连接的显示器无法移除。',
+      'ko': '연결되어 있는 모니터는 제거할 수 없습니다.',
+      'es': 'No se puede quitar un monitor que esta conectado.',
+      'fr': 'Un ecran reellement connecte ne peut pas etre retire.',
+      'de': 'Ein tatsaechlich angeschlossener Monitor kann nicht entfernt '
+          'werden.',
+      'pt': 'Um monitor realmente conectado nao pode ser removido.',
+      'ru': 'Подключённый монитор нельзя удалить.',
+    },
     'calc.sciTitle': {
       'ja': '関数電卓',
       'en': 'Scientific calculator',

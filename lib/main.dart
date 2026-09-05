@@ -1623,6 +1623,33 @@ class FloatL10n {
       'es': 'Calculadora', 'fr': 'Calculatrice', 'de': 'Rechner',
       'pt': 'Calculadora', 'ru': 'Калькулятор',
     },
+    // 普通の電卓 / 関数電卓の切り替え (= ユーザー要望: ヘッダーから
+    //   切り替えられるように。 既定は普通の電卓)。
+    'calc.basicTitle': {
+      'ja': '電卓', 'en': 'Calculator', 'zh': '计算器', 'ko': '계산기',
+      'es': 'Calculadora', 'fr': 'Calculatrice', 'de': 'Rechner',
+      'pt': 'Calculadora', 'ru': 'Калькулятор',
+    },
+    'calc.toBasic': {
+      'ja': '普通の電卓に切り替える',
+      'en': 'Switch to the basic calculator',
+      'zh': '切换到普通计算器', 'ko': '일반 계산기로 전환',
+      'es': 'Cambiar a la calculadora basica',
+      'fr': 'Passer a la calculatrice simple',
+      'de': 'Zum einfachen Rechner wechseln',
+      'pt': 'Mudar para a calculadora simples',
+      'ru': 'Переключиться на обычный калькулятор',
+    },
+    'calc.toSci': {
+      'ja': '関数電卓に切り替える',
+      'en': 'Switch to the scientific calculator',
+      'zh': '切换到科学计算器', 'ko': '공학용 계산기로 전환',
+      'es': 'Cambiar a la calculadora cientifica',
+      'fr': 'Passer a la calculatrice scientifique',
+      'de': 'Zum wissenschaftlichen Rechner wechseln',
+      'pt': 'Mudar para a calculadora cientifica',
+      'ru': 'Переключиться на инженерный калькулятор',
+    },
     'float.openMemo': {
       'ja': 'フローティングメモを開く', 'en': 'Open the floating memo',
       'zh': '打开浮动便签', 'ko': '플로팅 메모 열기',
@@ -9230,8 +9257,46 @@ class _CalcWindowAppState extends State<_CalcWindowApp> {
   bool _pinned = true;
   Timer? _topTimer;
 
+  /// 関数電卓で出しているか (= ユーザー要望: 普通の電卓と関数電卓を
+  /// ヘッダーから切り替えられるように)。 **既定は普通の電卓** (false)。
+  ///
+  /// 本体で選んだ方を最初に出す。 ここで切り替えた時は、 本体に頼んで
+  /// 控えてもらう ([_persistCalcMode])。
+  bool _sci = false;
+
   /// 電卓の中身の実寸を測るための鍵 (= 窓の高さを中身に合わせる)。
   final GlobalKey _calcBodyKey = GlobalKey();
+
+  Future<void> _loadCalcMode() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final v = sp.getBool('calcScientificMode') ?? false;
+      if (mounted && v != _sci) {
+        setState(() => _sci = v);
+        WidgetsBinding.instance.addPostFrameCallback((_) => _fitToContent());
+      }
+    } catch (_) {}
+  }
+
+  /// 切り替えた事を控える (= 次に開いた時も同じ方で出るように)。
+  ///
+  /// ★ サブ窓 (本体と同じプロセスの別の入れ物) からは自分で書かず、 本体に
+  ///   頼む。 控えは入れ物ごとに写しを持っていて、 こちらから書くと本体の
+  ///   写しを丸ごと上書きして、 他の設定を巻き戻してしまう恐れがあるため。
+  ///   単独プロセス (ショートカットから直に開いた時) は頼む相手が居ないので
+  ///   自分で書く。
+  Future<void> _persistCalcMode(bool sci) async {
+    if (!widget.standalone) {
+      try {
+        await DesktopMultiWindow.invokeMethod(0, 'calcMode', sci);
+        return;
+      } catch (_) {}
+    }
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setBool('calcScientificMode', sci);
+    } catch (_) {}
+  }
 
   /// 窓の高さを中身にぴったり合わせる (= ユーザー報告: 外部モードで
   /// 下に謎のスペースが空く)。 決め打ちの高さをやめて、 描画後に実寸で直す。
@@ -9250,6 +9315,8 @@ class _CalcWindowAppState extends State<_CalcWindowApp> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => _fitToContent());
+    // ignore: discarded_futures
+    _loadCalcMode();
     // 他のアプリの上に出し続ける (メモ窓と同じ方式)。
     // ignore: discarded_futures
     _applyTop(true);
@@ -9283,6 +9350,12 @@ class _CalcWindowAppState extends State<_CalcWindowApp> {
 
   /// 閉じる: タイマーを止めてから本体へフォーカスを返して閉じる
   /// (= サブ窓の後始末教訓: タイマー停止漏れが本体巻き添えの原因になる)。
+  ///
+  /// ★ ヘッダーの ✕ を外したので、 今は呼び出す所が無い (= ユーザー要望:
+  ///   ✕ が 2 つあるので下の方は要らない)。 閉じるのは窓の枠の ✕ で、
+  ///   その時は入れ物ごと片付けられるので見回りも一緒に止まる。
+  ///   また ✕ を戻したくなった時のために残しておく。
+  // ignore: unused_element
   Future<void> _close() async {
     _topTimer?.cancel();
     _topTimer = null;
@@ -9325,21 +9398,47 @@ class _CalcWindowAppState extends State<_CalcWindowApp> {
               color: const Color(0xFF23233A),
               padding: const EdgeInsets.symmetric(horizontal: 8),
               child: Row(children: [
-                const Icon(Icons.calculate_rounded, color: acc, size: 16),
+                Icon(_sci ? Icons.science_rounded : Icons.calculate_rounded,
+                    color: acc, size: 16),
                 const SizedBox(width: 6),
                 Expanded(
-                  child: Text(FloatL10n.t('calc.title'),
+                  child: Text(
+                      FloatL10n.t(_sci ? 'calc.title' : 'calc.basicTitle'),
                       style: const TextStyle(
                           color: Colors.white,
                           fontSize: 12,
                           fontWeight: FontWeight.w700),
                       overflow: TextOverflow.ellipsis),
                 ),
+                // ── 普通の電卓 ⇔ 関数電卓 (= ユーザー要望: ヘッダーから
+                //    切り替えられるように) ──
+                IconButton(
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 28, minHeight: 28),
+                  tooltip: FloatL10n.t(_sci ? 'calc.toBasic' : 'calc.toSci'),
+                  icon: Icon(
+                      _sci
+                          ? Icons.calculate_rounded
+                          : Icons.functions_rounded,
+                      color: Colors.white70,
+                      size: 15),
+                  onPressed: () {
+                    final next = !_sci;
+                    setState(() => _sci = next);
+                    // ignore: discarded_futures
+                    _persistCalcMode(next);
+                    // 中身の高さが変わるので、 窓の高さも合わせ直す。
+                    WidgetsBinding.instance
+                        .addPostFrameCallback((_) => _fitToContent());
+                  },
+                ),
                 // 最前面固定の切替
                 IconButton(
                   padding: EdgeInsets.zero,
                   constraints:
                       const BoxConstraints(minWidth: 28, minHeight: 28),
+                  tooltip: FloatL10n.t('float.pin'),
                   icon: Icon(
                       _pinned
                           ? Icons.push_pin_rounded
@@ -9352,25 +9451,20 @@ class _CalcWindowAppState extends State<_CalcWindowApp> {
                     _applyTop(_pinned);
                   },
                 ),
-                IconButton(
-                  padding: EdgeInsets.zero,
-                  constraints:
-                      const BoxConstraints(minWidth: 28, minHeight: 28),
-                  icon: const Icon(Icons.close,
-                      color: Colors.white54, size: 16),
-                  onPressed: () {
-                    // ignore: discarded_futures
-                    _close();
-                  },
-                ),
+                // ── 閉じる (✕) は窓の枠にもあるので、 こちらには置かない ──
+                //    (= ユーザー要望: ✕ が 2 つあるので下の方は要らない)。
+                //    枠の ✕ で閉じると、 この窓の入れ物ごと片付けられるので、
+                //    ここの見回り (_topTimer) も一緒に止まる。
               ]),
             ),
           ),
-          // ── 本体 (アプリ内オーバーレイと共通の CalcBody) ──
+          // ── 本体 (アプリ内の浮かぶ窓と共通の部品) ──
+          //    普通の電卓と関数電卓を切り替える (= ユーザー要望)。
           Expanded(
             child: SingleChildScrollView(
               child: KeyedSubtree(
-                  key: _calcBodyKey, child: const CalcBody()),
+                  key: _calcBodyKey,
+                  child: _sci ? const CalcBody() : const BasicCalcBody()),
             ),
           ),
         ]),
@@ -9508,6 +9602,9 @@ class _TimerWindowAppState extends State<_TimerWindowApp> {
 
   /// 閉じる: タイマーを全部止めてから本体へフォーカスを返して閉じる
   /// (= サブ窓の後始末教訓: タイマー停止漏れが本体巻き添えの原因になる)。
+  /// ★ ヘッダーの ✕ を外したので、 今は呼び出す所が無い (= ユーザー要望:
+  ///   ✕ が 2 つあるので下の方は要らない)。 閉じるのは窓の枠の ✕ から。
+  // ignore: unused_element
   Future<void> _close() async {
     _tick?.cancel();
     _tick = null;
@@ -9615,17 +9712,8 @@ class _TimerWindowAppState extends State<_TimerWindowApp> {
                     _applyTop(_pinned);
                   },
                 ),
-                IconButton(
-                  padding: EdgeInsets.zero,
-                  constraints:
-                      const BoxConstraints(minWidth: 28, minHeight: 28),
-                  icon: const Icon(Icons.close,
-                      color: Colors.white54, size: 16),
-                  onPressed: () {
-                    // ignore: discarded_futures
-                    _close();
-                  },
-                ),
+                // ── 閉じる (✕) は窓の枠にもあるので、 こちらには置かない ──
+                //    (= ユーザー要望: ✕ が 2 つあるので下の方は要らない)。
               ]),
             ),
           ),

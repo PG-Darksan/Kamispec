@@ -5214,16 +5214,30 @@ class _MindMapScreenState extends State<MindMapScreen>
       context: context,
       builder: (dctx) {
         // ★ 分割中はアクティブ側ペインの中に収める (= ユーザー要望: 分割
-        //   していたら分割画面の中央に出るように)。 押した場所がペインの
-        //   外なら、 そのペインの真ん中に出す。
+        //   していたら分割画面の中央に出るように)。
         final screenSize = MediaQuery.of(dctx).size;
         final bounds = inPane
             ? _dialogBoundsRect()
             : (Offset.zero & screenSize);
         // 狭いペインでも入るように幅を詰める。
         final w = math.min(width, math.max(240.0, bounds.width - 24));
-        final inside = at != null && bounds.contains(at);
-        final anchor = inside ? at : bounds.center;
+        // ★ 押した場所がペインの外 (= 上のヘッダーの帯など) でも、 中央へ
+        //   逃がさずペインの中へ寄せた位置を基準にする
+        //   (= ユーザー報告: 分割している時にアラームを押すと、 ボタンの
+        //   近くではなく画面の中央に出てくる)。
+        //   ペインの矩形はヘッダー (kToolbarHeight) より下から始まるので、
+        //   ヘッダーのボタンは必ず「外」 になり、 以前はそこで中央に
+        //   飛んでいた。 押した所の真下に出るのが自然なので、 縦横とも
+        //   ペインの内側へ丸めてから使う。
+        final inside = at != null;
+        final anchor = at == null
+            ? bounds.center
+            : Offset(
+                at.dx.clamp(bounds.left + 12,
+                    math.max(bounds.left + 12, bounds.right - 12)),
+                at.dy.clamp(bounds.top + 12,
+                    math.max(bounds.top + 12, bounds.bottom - 12)),
+              );
         final left = (anchor.dx - w / 2)
             .clamp(bounds.left + 12,
                 math.max(bounds.left + 12, bounds.right - w - 12))
@@ -50622,8 +50636,11 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// ─── 高度な関数電卓（フローティング）(Ctrl+Shift+M) ─────────────────────
   /// sin/cos/tan, log, ln, exp, sqrt, x², 括弧, π, e などに対応
+  /// [forceSci] を true にすると、 前に選んだ方に関わらず**関数電卓**で
+  /// 開く (= 「関数電卓を開く」 の命令はそのまま関数電卓であるべきなので)。
   void _showScientificCalculatorDialog(
-      BuildContext ctx, MindMapProvider provider) {
+      BuildContext ctx, MindMapProvider provider,
+      {bool forceSci = false}) {
     // 既に開いているなら、 閉じずに前面へ出す (= ユーザー要望)。
     if (_sciCalcOverlay != null) {
       _bringOverlayToFront(_sciCalcOverlay);
@@ -50638,6 +50655,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       builder: (_) => _FloatingScientificCalculator(
         hidden: _shouldHideFloatingTools,
         provider: provider,
+        forceSci: forceSci,
         initialOffset: initialOffset,
         onClose: () {
           _sciCalcOverlay?.remove();
@@ -56413,7 +56431,10 @@ class _MindMapScreenState extends State<MindMapScreen>
               _sciCalcOverlay?.remove();
               _sciCalcOverlay = null;
             } else {
-              _showScientificCalculatorDialog(context, provider);
+              // ★ こちらは「関数電卓を開く」 命令なので、 前に選んだ方が
+              //   普通の電卓でも関数電卓で開く (= 名前どおりに動かす)。
+              _showScientificCalculatorDialog(context, provider,
+                  forceSci: true);
             }
           } else if (commandId == 'openStopwatch') {
             // Ctrl+T: ストップウォッチフローティングパネルをトグル（開閉）
@@ -69829,6 +69850,19 @@ class _MindMapScreenState extends State<MindMapScreen>
         // ignore: discarded_futures
         _openPopOutWindow(context.read<MindMapProvider>(),
             kind: 'ai', query: text);
+        break;
+      case 'calcMode':
+        // 外に出した電卓で「普通 ⇔ 関数」 を切り替えた (= ユーザー要望:
+        //   ヘッダーから切り替えられるように)。 控えるのは本体だけにする
+        //   (サブ窓は別の入れ物なので、 そこから書くと本体の控えを丸ごと
+        //   上書きしてしまう恐れがある)。
+        {
+          final sci = call.arguments == true;
+          try {
+            final prefs = await SharedPreferences.getInstance();
+            await prefs.setBool('calcScientificMode', sci);
+          } catch (_) {}
+        }
         break;
       case 'focusMain':
         // サブウィンドウを閉じた後、 フォーカスを本体へ戻す (= ユーザー
@@ -96081,10 +96115,86 @@ class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
   void initState() {
     super.initState();
     _mons = CursorWrap.listMonitors();
+    unawaited(_refreshMonitors());
+  }
+
+  /// 繋がっているモニターを調べ直す。
+  ///
+  /// ★ win32 の見回り ([CursorWrap.listMonitors]) だけに頼らない
+  ///   (= ユーザー要望: 繋がっているサブモニターの分は消せないように)。
+  ///   見回りが取りこぼすと「繋がっているのに予定の枠」 扱いになり、
+  ///   消せてしまう。 Flutter 側の一覧 (screen_retriever) の方が枚数が
+  ///   多い時は、 そちらで組み直す。 二つの座標系を混ぜないよう、
+  ///   使う時はどちらか一方の一覧をまるごと使う。
+  Future<void> _refreshMonitors() async {
+    var list = CursorWrap.listMonitors();
+    try {
+      final ds = await screenRetriever.getAllDisplays();
+      if (ds.length > list.length) {
+        Display? primary;
+        try {
+          primary = await screenRetriever.getPrimaryDisplay();
+        } catch (_) {}
+        final alt = <MonitorInfo>[];
+        for (final d in ds) {
+          final pos = d.visiblePosition ?? Offset.zero;
+          final size = d.visibleSize ?? d.size;
+          // ★ 見分けは**場所**で行う。 Display.id は Windows では空文字の
+          //   事があり、 id で比べると全部が主モニター扱いになる。
+          final isPrimary = primary != null &&
+              (d.visiblePosition ?? Offset.zero) ==
+                  (primary.visiblePosition ?? Offset.zero) &&
+              (d.visibleSize ?? d.size) == (primary.visibleSize ?? primary.size);
+          alt.add(MonitorInfo(
+            pos.dx.round(),
+            pos.dy.round(),
+            (pos.dx + size.width).round(),
+            (pos.dy + size.height).round(),
+            isPrimary,
+          ));
+        }
+        // listMonitors と同じ並び (左上から) に揃える。
+        alt.sort((a, b) =>
+            a.left != b.left ? a.left.compareTo(b.left) : a.top.compareTo(b.top));
+        list = alt;
+      }
+    } catch (_) {}
+    if (!mounted) return;
+    // 枚数だけでなく並び (位置) が変わった時も入れ直す。 枚数が同じまま
+    //   左右を入れ替えた時に、 図が古いままにならないように。
+    final same = list.length == _mons.length &&
+        () {
+          for (var i = 0; i < list.length; i++) {
+            if (list[i] != _mons[i] || list[i].primary != _mons[i].primary) {
+              return false;
+            }
+          }
+          return true;
+        }();
+    if (!same) setState(() => _mons = list);
+  }
+
+  /// その番号は実際に繋がっているモニターか (= 外せない)。
+  bool _isConnected(int n) => n >= 0 && n < _mons.length;
+
+  /// 「繋がっているので外せません」 を図の下に出しているか。
+  ///
+  /// ★ SnackBar ではなく、 その場に出す。 設定は重ねた画面 (シート) の
+  ///   中に出ているので、 SnackBar はその裏に隠れて見えない事がある。
+  bool _lockedHint = false;
+  Timer? _lockedHintTimer;
+
+  void _showLockedHint() {
+    setState(() => _lockedHint = true);
+    _lockedHintTimer?.cancel();
+    _lockedHintTimer = Timer(const Duration(milliseconds: 2600), () {
+      if (mounted) setState(() => _lockedHint = false);
+    });
   }
 
   @override
   void dispose() {
+    _lockedHintTimer?.cancel();
     _gridFocus.dispose();
     super.dispose();
   }
@@ -96094,7 +96204,10 @@ class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
   Future<void> _showMonitorMenu(int monIndex, Offset at) async {
     final p = widget.provider;
     // 実際に繋がっているモニターは外せないので、 その旨だけ出す。
-    final removable = monIndex >= _mons.length;
+    // ★ 出す直前に調べ直す (= 設定を開いた後に挿した / 抜いた時のため)。
+    await _refreshMonitors();
+    if (!mounted) return;
+    final removable = !_isConnected(monIndex);
     final scr = MediaQuery.sizeOf(context);
     const w = 180.0;
     const h = 64.0;
@@ -96138,8 +96251,13 @@ class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
   /// (= ユーザー要望: 2 番が無いのに 3 番が在るのはおかしい)。
   void _removeSelected() {
     final n = _selected;
-    // 実際に繋がっているモニターは外せない (番号が listMonitors の範囲内)。
-    if (n == null || n < _mons.length) return;
+    if (n == null) return;
+    // 実際に繋がっているモニターは外せない (= ユーザー要望)。
+    // 黙って何も起きないと壊れて見えるので、 理由を図の下に出す。
+    if (_isConnected(n)) {
+      _showLockedHint();
+      return;
+    }
     String? key;
     _placement.forEach((k, v) {
       if (v == n) key = k;
@@ -96226,7 +96344,15 @@ class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
       out['0,0'] = 0;
     }
     // 置く予定の分。
+    //
+    // ★ 実際に繋がっているモニターの番号を指す控えは、 本物を置いた升目と
+    //   別の所なら捨てる (= 繋ぐ前に「右どなりに置くつもり」 と決めた物が、
+    //   実際には左に繋がっていた時、 同じ番号の枠が 2 つ出てしまうため)。
+    //   本物と同じ升目を指す控えは、 そのまま重なるので害が無い。
+    final realCell = <int, String>{};
+    out.forEach((k, v) => realCell[v] = k);
     for (final e in _placement.entries) {
+      if (e.value < _mons.length && realCell[e.value] != e.key) continue;
       out.putIfAbsent(e.key, () => e.value);
     }
     return out;
@@ -96340,6 +96466,7 @@ class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
             cells: cells,
             edges: _edges,
             connectedCount: _mons.length,
+            // 繋がっている物は選んでも消せない (= ユーザー要望)。
             selected: _selected,
             onSelect: (i) {
               _gridFocus.requestFocus();
@@ -96366,6 +96493,21 @@ class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
       const SizedBox(height: 8),
       Text(p.t('cursorWrap.gridHint'),
           style: const TextStyle(color: Colors.white38, fontSize: 11)),
+      // 繋がっているモニターを外そうとした時の断り書き (= ユーザー要望)。
+      if (_lockedHint)
+        Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Row(children: [
+            const Icon(Icons.lock_outline_rounded,
+                size: 13, color: Color(0xFFFFB347)),
+            const SizedBox(width: 4),
+            Expanded(
+              child: Text(p.t('cursorWrap.connectedLocked'),
+                  style: const TextStyle(
+                      color: Color(0xFFFFB347), fontSize: 11)),
+            ),
+          ]),
+        ),
     ]);
   }
 }
@@ -165283,6 +165425,10 @@ class _FloatingScientificCalculator extends StatefulWidget {
   /// 開く時も関数電卓として開く)。 true の時は浮かせず、 ドラッグ移動も
   /// 画面外の丸めもしない。
   final bool embedded;
+
+  /// 前に選んだ方に関わらず**関数電卓**で開くか
+  /// (= 「関数電卓を開く」 の命令から呼ばれた時)。
+  final bool forceSci;
   const _FloatingScientificCalculator({
     super.key,
     required this.provider,
@@ -165291,6 +165437,7 @@ class _FloatingScientificCalculator extends StatefulWidget {
     this.hidden = false,
     this.onPopOut,
     this.embedded = false,
+    this.forceSci = false,
   });
   @override
   State<_FloatingScientificCalculator> createState() =>
@@ -165304,10 +165451,38 @@ class _FloatingScientificCalculatorState
   /// 折り畳み状態 (true ならヘッダーだけ表示)
   bool _collapsed = false;
 
+  /// 関数電卓で出しているか (= ユーザー要望: 普通の電卓と関数電卓を
+  /// ヘッダーから切り替えられるように)。 **既定は普通の電卓** (false)。
+  /// 切り替えた事は控えるので、 次に開いた時も同じ方で出る。
+  static const String _kCalcSciKey = 'calcScientificMode';
+  bool _sci = false;
+
+  Future<void> _loadCalcMode() async {
+    // 「関数電卓を開く」 から開いた時は控えを見ない (= 名前どおり関数電卓)。
+    if (widget.forceSci) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final v = prefs.getBool(_kCalcSciKey) ?? false;
+      if (mounted && v != _sci) setState(() => _sci = v);
+    } catch (_) {}
+  }
+
+  void _setCalcMode(bool sci) {
+    setState(() => _sci = sci);
+    unawaited(() async {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool(_kCalcSciKey, sci);
+      } catch (_) {}
+    }());
+  }
+
   @override
   void initState() {
     super.initState();
     _offset = widget.initialOffset;
+    _sci = widget.forceSci;
+    unawaited(_loadCalcMode());
   }
 
   @override
@@ -165405,15 +165580,43 @@ class _FloatingScientificCalculatorState
                           const Icon(Icons.drag_indicator_rounded,
                               color: Colors.white54, size: 16),
                           const SizedBox(width: 4),
-                          const Icon(Icons.science_rounded,
-                              color: Color(0xFFFFB347), size: 18),
+                          Icon(
+                              _sci
+                                  ? Icons.science_rounded
+                                  : Icons.calculate_rounded,
+                              color: const Color(0xFFFFB347),
+                              size: 18),
                           const SizedBox(width: 6),
                           Expanded(
-                            child: Text(widget.provider.t('calc.sciTitle'),
+                            child: Text(
+                                widget.provider.t(_sci
+                                    ? 'calc.sciTitle'
+                                    : 'calc.basicTitle'),
                                 style: const TextStyle(
                                     color: Colors.white,
                                     fontSize: 13,
                                     fontWeight: FontWeight.w700)),
+                          ),
+                          // ── 普通の電卓 ⇔ 関数電卓 (= ユーザー要望:
+                          //    ヘッダーから切り替えられるように) ──
+                          MouseRegion(
+                            cursor: SystemMouseCursors.click,
+                            child: Tooltip(
+                              message: widget.provider
+                                  .t(_sci ? 'calc.toBasic' : 'calc.toSci'),
+                              child: GestureDetector(
+                                onTap: () => _setCalcMode(!_sci),
+                                child: Padding(
+                                  padding: const EdgeInsets.all(4),
+                                  child: Icon(
+                                      _sci
+                                          ? Icons.calculate_rounded
+                                          : Icons.functions_rounded,
+                                      color: Colors.white70,
+                                      size: 17),
+                                ),
+                              ),
+                            ),
                           ),
                           // アプリの外に出す (= ユーザー要望: 関数電卓にも
                           // フローティング機能 = 別ウィンドウ化)。
@@ -165469,7 +165672,11 @@ class _FloatingScientificCalculatorState
                     offstage: _collapsed,
                     // 埋め込みは開きっぱなしなので、 物理キーは取らない
                     // (= 別ペインでの入力を奪わないように)。
-                    child: CalcBody(enableKeyboard: !widget.embedded),
+                    child: _sci
+                        ? CalcBody(enableKeyboard: !widget.embedded)
+                        : BasicCalcBody(
+                            enableKeyboard: !widget.embedded,
+                            compact: isMobile),
                   ),
                 ],
               ),
