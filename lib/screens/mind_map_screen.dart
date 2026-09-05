@@ -97034,6 +97034,12 @@ class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
   /// その番号は実際に繋がっているモニターか (= 外せない)。
   bool _isConnected(int n) => n >= 0 && n < _mons.length;
 
+  /// その番号は主モニター (メインモニター) か。
+  /// ★ 主モニターに「繋がっているので外せません」 は的外れ
+  ///   (= ユーザー報告)。 外せない理由が違うので、 文言も分ける。
+  bool _isPrimaryMonitor(int n) =>
+      n >= 0 && n < _mons.length && _mons[n].primary;
+
   /// 「繋がっているので外せません」 を図の下に出しているか。
   ///
   /// ★ SnackBar ではなく、 その場に出す。 設定は重ねた画面 (シート) の
@@ -97041,8 +97047,14 @@ class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
   bool _lockedHint = false;
   Timer? _lockedHintTimer;
 
-  void _showLockedHint() {
-    setState(() => _lockedHint = true);
+  /// 図の下に出す一言が、 主モニター向けの文かどうか。
+  bool _lockedHintPrimary = false;
+
+  void _showLockedHint({bool primary = false}) {
+    setState(() {
+      _lockedHint = true;
+      _lockedHintPrimary = primary;
+    });
     _lockedHintTimer?.cancel();
     _lockedHintTimer = Timer(const Duration(milliseconds: 2600), () {
       if (mounted) setState(() => _lockedHint = false);
@@ -97091,7 +97103,9 @@ class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
               title: Text(
                   removable
                       ? p.t('cursorWrap.removeMonitor')
-                      : p.t('cursorWrap.cannotRemove'),
+                      : p.t(_isPrimaryMonitor(monIndex)
+                          ? 'cursorWrap.cannotRemovePrimary'
+                          : 'cursorWrap.cannotRemove'),
                   style: TextStyle(
                       color: removable ? Colors.white : Colors.white38,
                       fontSize: 12.5)),
@@ -97112,7 +97126,7 @@ class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
     // 実際に繋がっているモニターは外せない (= ユーザー要望)。
     // 黙って何も起きないと壊れて見えるので、 理由を図の下に出す。
     if (_isConnected(n)) {
-      _showLockedHint();
+      _showLockedHint(primary: _isPrimaryMonitor(n));
       return;
     }
     String? key;
@@ -97359,7 +97373,10 @@ class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
                 size: 13, color: Color(0xFFFFB347)),
             const SizedBox(width: 4),
             Expanded(
-              child: Text(p.t('cursorWrap.connectedLocked'),
+              child: Text(
+                  p.t(_lockedHintPrimary
+                      ? 'cursorWrap.primaryLocked'
+                      : 'cursorWrap.connectedLocked'),
                   style: const TextStyle(
                       color: Color(0xFFFFB347), fontSize: 11)),
             ),
@@ -113557,22 +113574,24 @@ class _GanttStore {
   }
 }
 
-/// ガントチャート + メンバー予定表 を 1 つにまとめた「予定表」ツール
-/// (= ユーザー要望: メンバー予定表とガントチャートは合体させて予定表みたいな
-/// 名前のボタンにして)。
+/// ガントチャート + メンバー予定表 を**合体させた**「予定表」ツール
+/// (= ユーザー要望: 2 つを別々に並べるのではなく、 メンバー表とガント
+/// チャートを合体させた使いやすいものにして欲しい)。
 ///
-/// ★ 上下に並べて同時に出す (= ユーザー要望: 上に全体の予定、 下にメンバーの
-///   予定が出るみたいな感じに)。 以前はタブで片方だけ出していたが、 全体の
-///   工程を見ながら人の空きを埋める使い方ができなかった。
-///   ・境目を掴んで上下の高さを変えられる (割合は prefs に残る)
-///   ・上の見出しのボタンで、 どちらかだけを出す事もできる
-/// データは従来どおり別々の固定 ID ('global_gantt' / 'global_schedule') に
-/// 保存されるので、 既存の内容はそのまま引き継がれる。
+/// 中身は 1 枚の工程表 (`_GanttPageView`) で、 行が「人」 でまとまる。
+///   ・人の行 … その人の予定 (カレンダー) を帯で出す。 押すとその日の
+///     予定を見る / 足せる
+///   ・その下 … その人に割り当てた工程のバー (掴んで動かせる)
+///   ・最後に … どの人にも当てはまらない工程をまとめた「未割り当て」
+/// 上のボタンで「人ごと ⇄ 工程だけ」 を切り替えられる。
+///
+/// データは従来どおり固定 ID 'global_gantt' (工程) と、 カレンダー
+/// (予定) に分けて保存されるので、 前の中身はそのまま引き継がれる。
 class _SchedulePlannerView extends StatefulWidget {
   final MindMapProvider provider;
 
-  /// 開いた時にどちらを主役にするか: 0=ガントチャート / 1=メンバー予定表。
-  /// 片方を畳んでいた時に、 頼まれた側を出し直すのに使う。
+  /// 旧ボタン ('gantt' / 'memberSchedule') のどちらから来たか。
+  /// 1 = メンバー予定表 → 人ごとにまとめた表示で開く。
   final int initialTab;
   const _SchedulePlannerView(
       {super.key, required this.provider, this.initialTab = 0});
@@ -113581,246 +113600,29 @@ class _SchedulePlannerView extends StatefulWidget {
 }
 
 class _SchedulePlannerViewState extends State<_SchedulePlannerView> {
-  /// 上 (ガントチャート) を出すか / 下 (メンバー予定表) を出すか。
-  bool _showGantt = true;
-  bool _showMember = true;
-
-  /// 上が占める割合 (0.15〜0.85)。 境目を掴んで動かす。
-  double _topRatio = 0.55;
-
-  static const String _kShowGanttKey = 'plannerShowGantt_v1';
-  static const String _kShowMemberKey = 'plannerShowMember_v1';
-  static const String _kRatioKey = 'plannerTopRatio_v1';
-  static const double _kDividerH = 10;
-
   @override
   void initState() {
     super.initState();
-    unawaited(_loadLayout());
-  }
-
-  Future<void> _loadLayout() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final g = prefs.getBool(_kShowGanttKey) ?? true;
-      final m = prefs.getBool(_kShowMemberKey) ?? true;
-      final r = prefs.getDouble(_kRatioKey) ?? 0.55;
-      if (!mounted) return;
-      setState(() {
-        // 両方切のまま保存されていたら、 頼まれた側だけ出す。
-        _showGantt = (g || m) ? g : widget.initialTab == 0;
-        _showMember = (g || m) ? m : widget.initialTab == 1;
-        _topRatio = r.clamp(0.15, 0.85);
-      });
-      // 開く時に名指しされた側が畳まれていたら開き直す
-      // (= ヘッダーの「工程表」 「メンバー予定表」 どちらから来ても出る)。
-      if (widget.initialTab == 0 && !_showGantt) {
-        setState(() => _showGantt = true);
-        unawaited(_saveLayout());
-      } else if (widget.initialTab == 1 && !_showMember) {
-        setState(() => _showMember = true);
-        unawaited(_saveLayout());
-      }
-    } catch (_) {}
-  }
-
-  Future<void> _saveLayout() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool(_kShowGanttKey, _showGantt);
-      await prefs.setBool(_kShowMemberKey, _showMember);
-      await prefs.setDouble(_kRatioKey, _topRatio);
-    } catch (_) {}
-  }
-
-  /// 片方を出す / 畳む。 両方畳むことはできない (何も出なくなるため)。
-  void _toggle(bool gantt) {
-    setState(() {
-      if (gantt) {
-        if (_showGantt && !_showMember) return; // 最後の 1 つは畳ませない
-        _showGantt = !_showGantt;
-      } else {
-        if (_showMember && !_showGantt) return;
-        _showMember = !_showMember;
-      }
-    });
-    unawaited(_saveLayout());
-  }
-
-  /// 予定表の仕組み (同期のされ方) の説明 (= ユーザー要望)。
-  Future<void> _showPlannerHelp(BuildContext anchor) async {
-    final provider = widget.provider;
-    await showDialogNearWidget<void>(
-      anchor,
-      width: 440,
-      height: 420,
-      builder: (dctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E32),
-        title: Text(provider.t('planner.helpTitle'),
-            style: const TextStyle(color: Colors.white, fontSize: 15)),
-        content: SizedBox(
-          width: 440,
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                for (final e in [
-                  ('hdr.gantt', 'planner.helpGantt', const Color(0xFF4FC3F7)),
-                  (
-                    'hdr.memberSchedule',
-                    'planner.helpMember',
-                    const Color(0xFF66BB6A)
-                  ),
-                  ('planner.helpTabsTitle', 'planner.helpTabs',
-                      const Color(0xFFFFB347)),
-                ]) ...[
-                  Text(provider.t(e.$1),
-                      style: TextStyle(
-                          color: e.$3,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700)),
-                  const SizedBox(height: 4),
-                  Text(provider.t(e.$2),
-                      style: const TextStyle(
-                          color: Colors.white70, fontSize: 12, height: 1.6)),
-                  const SizedBox(height: 12),
-                ],
-              ],
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dctx),
-            child: Text(provider.t('btn.close'),
-                style: const TextStyle(color: Colors.white54)),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// 上下どちらを出すかの切替ボタン (旧タブの置き換え)。
-  Widget _sectionBtn(bool gantt, IconData icon, String label, Color color) {
-    final on = gantt ? _showGantt : _showMember;
-    return InkWell(
-      onTap: () => _toggle(gantt),
-      borderRadius: BorderRadius.circular(8),
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 10),
-        decoration: BoxDecoration(
-          color: on ? color.withValues(alpha: 0.18) : Colors.transparent,
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(
-            color: on ? color : Colors.white24,
-            width: on ? 1.4 : 1,
-          ),
-        ),
-        child: Row(mainAxisSize: MainAxisSize.min, children: [
-          Icon(on ? icon : Icons.visibility_off_rounded,
-              size: 15, color: on ? color : Colors.white38),
-          const SizedBox(width: 6),
-          Text(
-            label,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              color: on ? Colors.white : Colors.white54,
-              fontSize: 12,
-              fontWeight: on ? FontWeight.w700 : FontWeight.w500,
-            ),
-          ),
-        ]),
-      ),
-    );
-  }
-
-  /// 上下の境目。 掴んで動かすと高さの割合が変わる。
-  Widget _dividerBar(double fieldH) {
-    return MouseRegion(
-      cursor: SystemMouseCursors.resizeRow,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onVerticalDragUpdate: (d) {
-          if (fieldH <= 0) return;
-          setState(() =>
-              _topRatio = (_topRatio + d.delta.dy / fieldH).clamp(0.15, 0.85));
-        },
-        onVerticalDragEnd: (_) => unawaited(_saveLayout()),
-        child: SizedBox(
-          height: _kDividerH,
-          child: Center(
-            child: Container(
-              width: 46,
-              height: 3,
-              decoration: BoxDecoration(
-                color: Colors.white24,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
+    // 「メンバー予定表」 のボタンから来た時は、 人ごとの表示で開く。
+    if (widget.initialTab == 1) {
+      unawaited(() async {
+        try {
+          final sp = await SharedPreferences.getInstance();
+          await sp.setBool('ganttGroupByMember', true);
+        } catch (_) {}
+      }());
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final provider = widget.provider;
-    final gantt = _GanttPageView(
-        key: const ValueKey('planner_gantt'),
-        provider: provider,
-        pageId: 'global_gantt');
-    final member = _MemberSchedulePageView(
-        key: const ValueKey('planner_schedule'),
-        provider: provider,
-        pageId: 'global_schedule');
     return Container(
       color: const Color(0xFF12121C),
-      child: Column(children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(10, 8, 10, 6),
-          child: Row(children: [
-            // ★ 上=全体の予定 (工程表)、 下=メンバーの予定 の順に固定
-            //   (= ユーザー要望)。 ボタンは「出す / 畳む」 の切替。
-            _sectionBtn(true, Icons.view_timeline_rounded,
-                provider.t('hdr.gantt'), const Color(0xFF4FC3F7)),
-            const SizedBox(width: 8),
-            _sectionBtn(false, Icons.groups_rounded,
-                provider.t('hdr.memberSchedule'), const Color(0xFF66BB6A)),
-            const SizedBox(width: 4),
-            // ── 同期の仕組みの説明 (= ユーザー要望) ──
-            Builder(
-              builder: (bctx) => IconButton(
-                tooltip: provider.t('planner.helpTip'),
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                icon: const Icon(Icons.help_outline_rounded,
-                    color: Colors.white54, size: 18),
-                onPressed: () => unawaited(_showPlannerHelp(bctx)),
-              ),
-            ),
-          ]),
-        ),
-        const Divider(color: Colors.white12, height: 1),
-        Expanded(
-          child: !(_showGantt && _showMember)
-              // 片方だけの時は目一杯使う。
-              ? (_showGantt ? gantt : member)
-              : LayoutBuilder(builder: (_, cons) {
-                  final h = cons.maxHeight - _kDividerH;
-                  final topH = (h * _topRatio)
-                      .clamp(80.0, math.max(80.0, h - 80))
-                      .toDouble();
-                  return Column(children: [
-                    SizedBox(height: topH, child: gantt),
-                    _dividerBar(h),
-                    SizedBox(height: math.max(0.0, h - topH), child: member),
-                  ]);
-                }),
-        ),
-      ]),
+      child: _GanttPageView(
+        key: const ValueKey('planner_merged'),
+        provider: widget.provider,
+        pageId: 'global_gantt',
+      ),
     );
   }
 }
@@ -113981,6 +113783,7 @@ class _GanttPageViewState extends State<_GanttPageView> {
 
   @override
   void dispose() {
+    _collabTimer?.cancel();
     _nameEditCtrl.dispose();
     _ganttFocus.dispose();
     // 閉じる時点の予定で通知を組み直す (= 編集/追加/削除を反映)。
@@ -114219,11 +114022,14 @@ class _GanttPageViewState extends State<_GanttPageView> {
           widget.provider.t('gantt.defaultChart').replaceFirst('{n}', '1'),
     );
     final c12 = await _GanttStore.load12h();
-    // チャート一覧を隠していたか (= ユーザー要望)。
+    // チャート一覧を隠していたか / 人ごとにまとめるか (= ユーザー要望)。
     try {
       final sp = await SharedPreferences.getInstance();
       _chartTabsVisible = sp.getBool(_kChartTabsKey) ?? true;
+      _groupByMember = sp.getBool(_kGroupByMemberKey) ?? true;
     } catch (_) {}
+    // 人と、 その人の予定を読み込む (= 合体表示のため)。
+    unawaited(_loadMemberPrefs());
     final charts = data.charts;
     // = ユーザー要望: 各チャートは最初から 1 行分ある状態にする。
     for (var chartIndex = 0; chartIndex < charts.length; chartIndex++) {
@@ -114429,6 +114235,112 @@ class _GanttPageViewState extends State<_GanttPageView> {
       },
       anchorContext: anchor,
     );
+    if (!mounted || placed == null) return;
+    tell(provider.t('tool.putIntoPageDone').replaceFirst('{page}', placed),
+        const Color(0xFF43B97F));
+  }
+
+  /// 「ページに差し込む」。 合体表示のときは、 工程表として出すか
+  /// 「人 × 日付」 の表として出すかを選ばせる (= 昔のメンバー予定表の
+  /// 差し込みを失わないため)。 工程だけの並びなら今までどおり工程表。
+  Future<void> _putIntoPageMenu(BuildContext anchor) async {
+    if (!_groupByMember) return _putGanttIntoPage(anchor);
+    final pick = await showDialogNearWidget<String>(
+      anchor,
+      width: 300,
+      height: 190,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        contentPadding: const EdgeInsets.symmetric(vertical: 8),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          ListTile(
+            dense: true,
+            leading: const Icon(Icons.view_timeline_rounded,
+                color: Color(0xFF4FC3F7), size: 20),
+            title: Text(widget.provider.t('gantt.putAsChart'),
+                style: const TextStyle(color: Colors.white, fontSize: 13)),
+            onTap: () => Navigator.pop(dctx, 'chart'),
+          ),
+          ListTile(
+            dense: true,
+            leading: const Icon(Icons.table_chart_outlined,
+                color: Color(0xFF66BB6A), size: 20),
+            title: Text(widget.provider.t('gantt.putAsTable'),
+                style: const TextStyle(color: Colors.white, fontSize: 13)),
+            onTap: () => Navigator.pop(dctx, 'table'),
+          ),
+        ]),
+      ),
+    );
+    if (!mounted || pick == null) return;
+    if (pick == 'chart') {
+      await _putGanttIntoPage(anchor);
+    } else {
+      await _putScheduleIntoPage(anchor);
+    }
+  }
+
+  /// 今出ている「人 × 日付」 を、 編集できる表のノードとしてページへ置く。
+  /// 中身は「その人の予定」 と「その人に割り当てた工程」 の両方
+  /// (= 合体させたのだから、 出す表も両方入っていないと意味が無い)。
+  Future<void> _putScheduleIntoPage([BuildContext? anchor]) async {
+    final provider = widget.provider;
+    void tell(String msg, Color c) => showTopToast(context, msg, c);
+    final members = _members();
+    // 列は、 今出ている工程の幅 (最初の予定の日 〜 最後の予定の日)。
+    // 予定が無い時は今日から 7 日ぶん。
+    DateTime? minD, maxD;
+    for (final t in _tasks) {
+      final a = _d(t.startMs), b = _d(t.endMs);
+      if (minD == null || a.isBefore(minD)) minD = a;
+      if (maxD == null || b.isAfter(maxD)) maxD = b;
+    }
+    final now = DateTime.now();
+    var start = DateTime(
+        minD?.year ?? now.year, minD?.month ?? now.month, minD?.day ?? now.day);
+    final end = maxD == null
+        ? start.add(const Duration(days: 6))
+        : DateTime(maxD.year, maxD.month, maxD.day);
+    var days = end.difference(start).inDays + 1;
+    if (days < 1) days = 1;
+    if (days > 31) days = 31;
+
+    final header = <String>[''];
+    for (var i = 0; i < days; i++) {
+      final d = DateTime(start.year, start.month, start.day + i);
+      header.add('${d.month}/${d.day} (${_weekdayLabel(d.weekday)})');
+    }
+    final rows = <List<String>>[header];
+    var any = false;
+    for (final mem in members) {
+      final row = <String>[mem.name];
+      for (var i = 0; i < days; i++) {
+        final d = DateTime(start.year, start.month, start.day + i);
+        final cell = <String>[];
+        for (final e in _eventsFor(mem, _key(d))) {
+          cell.add(_eventLabel(e));
+        }
+        // その日にかかっている、 その人の工程。
+        final dayStart = d.millisecondsSinceEpoch;
+        final dayEnd =
+            DateTime(d.year, d.month, d.day + 1).millisecondsSinceEpoch;
+        for (final t in _tasks) {
+          if (!_isAssignedTo(t, mem.name)) continue;
+          if (t.endMs < dayStart || t.startMs >= dayEnd) continue;
+          cell.add('▶ ${t.name}');
+        }
+        if (cell.isNotEmpty) any = true;
+        row.add(cell.join('\n'));
+      }
+      rows.add(row);
+    }
+    if (!any) {
+      tell(provider.t('tool.putIntoPageEmpty'), const Color(0xFF455A64));
+      return;
+    }
+    final placed = await askAndPutTableIntoPage(
+        context, provider, provider.t('hdr.memberSchedule'), rows,
+        anchorContext: anchor);
     if (!mounted || placed == null) return;
     tell(provider.t('tool.putIntoPageDone').replaceFirst('{page}', placed),
         const Color(0xFF43B97F));
@@ -115806,6 +115718,875 @@ class _GanttPageViewState extends State<_GanttPageView> {
     await _saveCurrent();
   }
 
+
+  /// 工程 1 本ぶんの行。 合体表示でも工程だけの並びでも同じ物を使う。
+  Widget _ganttTaskRow(_GanttTask t, List<DateTime> cols) {
+    return SizedBox(
+      height: _rowH,
+      child: Row(children: [
+        SizedBox(
+          width: _nameW,
+          // クリックでタスク名をインライン編集 (= ユーザー
+          //   要望)。 編集中は TextField を表示する。
+          child: _editingNameId == t.id
+              ? Padding(
+                  padding:
+                      const EdgeInsets.symmetric(
+                          horizontal: 6),
+                  child: TextField(
+                    controller: _nameEditCtrl,
+                    autofocus: true,
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 13),
+                    decoration:
+                        const InputDecoration(
+                      isDense: true,
+                      contentPadding:
+                          EdgeInsets.symmetric(
+                              vertical: 6),
+                      border: UnderlineInputBorder(
+                          borderSide: BorderSide(
+                              color: Color(
+                                  0xFF4FC3F7))),
+                      enabledBorder:
+                          UnderlineInputBorder(
+                              borderSide: BorderSide(
+                                  color: Color(
+                                      0xFF4FC3F7))),
+                      focusedBorder:
+                          UnderlineInputBorder(
+                              borderSide: BorderSide(
+                                  color: Color(
+                                      0xFF4FC3F7))),
+                    ),
+                    onSubmitted: (_) =>
+                        _commitNameEdit(t),
+                    onTapOutside: (_) =>
+                        _commitNameEdit(t),
+                  ),
+                )
+              : GestureDetector(
+                  behavior:
+                      HitTestBehavior.opaque,
+                  onTap: () => _beginNameEdit(t),
+                  child: Padding(
+                    padding:
+                        const EdgeInsets.only(
+                            left: 8, right: 4),
+                    child: Column(
+                      mainAxisAlignment:
+                          MainAxisAlignment
+                              .center,
+                      crossAxisAlignment:
+                          CrossAxisAlignment
+                              .start,
+                      children: [
+                        Text(t.name,
+                            maxLines: 1,
+                            overflow: TextOverflow
+                                .ellipsis,
+                            style:
+                                const TextStyle(
+                                    color: Colors
+                                        .white,
+                                    fontSize:
+                                        13)),
+                        if (t.assignee
+                            .trim()
+                            .isNotEmpty)
+                          Row(
+                              mainAxisSize:
+                                  MainAxisSize
+                                      .min,
+                              children: [
+                                const Icon(
+                                    Icons
+                                        .person_rounded,
+                                    size: 10,
+                                    color: Color(
+                                        0xFF43B97F)),
+                                const SizedBox(
+                                    width: 2),
+                                Flexible(
+                                  child: Text(
+                                      t.assignee
+                                          .trim(),
+                                      maxLines: 1,
+                                      overflow:
+                                          TextOverflow
+                                              .ellipsis,
+                                      style: const TextStyle(
+                                          color: Color(
+                                              0xFF9BE7C4),
+                                          fontSize:
+                                              10)),
+                                ),
+                              ]),
+                      ],
+                    ),
+                  ),
+                ),
+        ),
+        Expanded(
+          child: Stack(
+            children:
+                _ganttBarSegments(t, cols),
+          ),
+        ),
+      ]),
+    );
+  }
+
+  // ── 合体表示 (= ユーザー要望: メンバー表とガントチャートを合体させた
+  //    使いやすいものに) ────────────────────────────────────────────
+  //    行を「人」でまとめ、 その人に割り当てた工程のバーを下にぶら下げ、
+  //    その人の予定 (カレンダー) を人の行に帯で重ねる。 これで「誰がいつ
+  //    何をするか」 と「誰がいつ塞がっているか」 が 1 枚で分かる。
+  //    切ると昔どおり工程だけの並びになる。
+  bool _groupByMember = true;
+  static const String _kGroupByMemberKey = 'ganttGroupByMember';
+
+  Future<void> _toggleGroupByMember() async {
+    setState(() => _groupByMember = !_groupByMember);
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setBool(_kGroupByMemberKey, _groupByMember);
+    } catch (_) {}
+  }
+
+  /// 担当者の名前が同じ人を指しているか (前後の空白は無視)。
+  bool _isAssignedTo(_GanttTask t, String memberName) =>
+      t.assignee.trim() == memberName.trim();
+
+  /// 合体表示の 1 行。
+  ///   'member'  = 人の見出し (その人の予定を帯で出す)
+  ///   'task'    = 工程のバー
+  ///   'addTask' = その人に工程を足す
+  ///   'addMember' = 人を足す
+  List<({String kind, ({String? uid, String name, bool isMe})? mem, _GanttTask? task})>
+      _plannerRows() {
+    final out = <({
+      String kind,
+      ({String? uid, String name, bool isMe})? mem,
+      _GanttTask? task
+    })>[];
+    if (!_groupByMember) {
+      for (final t in _tasks) {
+        out.add((kind: 'task', mem: null, task: t));
+      }
+      out.add((kind: 'addTask', mem: null, task: null));
+      return out;
+    }
+    final members = _members();
+    final claimed = <String>{};
+    for (final m in members) {
+      out.add((kind: 'member', mem: m, task: null));
+      for (final t in _tasks) {
+        if (!_isAssignedTo(t, m.name)) continue;
+        claimed.add(t.id);
+        out.add((kind: 'task', mem: m, task: t));
+      }
+      out.add((kind: 'addTask', mem: m, task: null));
+    }
+    // どの人にも当てはまらない工程 (担当者が空 / 一覧に居ない人) は
+    // 落とさずに最後へまとめる。
+    final rest = [for (final t in _tasks) if (!claimed.contains(t.id)) t];
+    final unassigned = (
+      uid: null as String?,
+      name: widget.provider.t('gantt.unassigned'),
+      isMe: false
+    );
+    out.add((kind: 'member', mem: unassigned, task: null));
+    for (final t in rest) {
+      out.add((kind: 'task', mem: unassigned, task: t));
+    }
+    out.add((kind: 'addTask', mem: unassigned, task: null));
+    out.add((kind: 'addMember', mem: null, task: null));
+    return out;
+  }
+
+  /// その人に割り当てた工程を 1 本足す (= 人の行の「+」)。
+  Future<void> _addTaskForMember(String assignee) async {
+    final before = _tasks.length;
+    await _addQuickTask();
+    if (!mounted || _tasks.length <= before) return;
+    final t = _tasks.last;
+    if (assignee.trim().isEmpty) return;
+    setState(() {
+      _tasks[_tasks.length - 1] = (
+        id: t.id,
+        name: t.name,
+        startMs: t.startMs,
+        endMs: t.endMs,
+        color: t.color,
+        assignee: assignee.trim(),
+      );
+    });
+    await _saveCurrent();
+  }
+
+  /// 人の行に重ねる「その人の予定」 の帯。 列の日付ごとに 1 つ。
+  List<Widget> _memberEventChips(
+      ({String? uid, String name, bool isMe}) mem, List<DateTime> cols) {
+    if (mem.uid == null && !mem.isMe) return const [];
+    final out = <Widget>[];
+    for (var i = 0; i < cols.length; i++) {
+      final d = cols[i];
+      final evs = _eventsFor(mem, _key(d));
+      if (evs.isEmpty) continue;
+      out.add(Positioned(
+        left: i * _colW + 2,
+        top: 6,
+        width: _colW - 4,
+        height: _rowH - 12,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () => _showDayEvents(mem, d),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+            decoration: BoxDecoration(
+              color: const Color(0xFF66BB6A).withValues(alpha: 0.22),
+              borderRadius: BorderRadius.circular(5),
+              border: Border.all(
+                  color: const Color(0xFF66BB6A).withValues(alpha: 0.6)),
+            ),
+            alignment: Alignment.centerLeft,
+            child: Text(
+              evs.map(_eventLabel).join(' / '),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                  color: Color(0xFFCDEFD9), fontSize: 10, height: 1.25),
+            ),
+          ),
+        ),
+      ));
+    }
+    return out;
+  }
+
+  /// 人の行の、 予定が無い所を押した時 (= その日に予定を足す / 見る)。
+  List<Widget> _memberEmptyCells(
+      ({String? uid, String name, bool isMe}) mem, List<DateTime> cols) {
+    if (mem.uid == null && !mem.isMe) return const [];
+    return [
+      for (var i = 0; i < cols.length; i++)
+        Positioned(
+          left: i * _colW,
+          top: 0,
+          width: _colW,
+          height: _rowH,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => _showDayEvents(mem, cols[i]),
+          ),
+        ),
+    ];
+  }
+
+  // ══ ここから下は「メンバー予定表」 から移してきた部分 ══════════════
+  //   (= ユーザー要望: 2 つ別々ではなく、 メンバー表とガントチャートを
+  //   合体させた 1 つの物にして欲しい)。 行を人でまとめ、 その人に割り
+  //   当てた工程のバーと、 その人の予定を同じ並びに出す。
+  //   旧 `_MemberSchedulePageView` は消したので、 直す所はここだけ。
+
+  /// 手で足したメンバー。 置き場は旧「メンバー予定表」 と同じなので、
+  /// 前に足した人はそのまま引き継がれる。
+  static const String _kMemberPrefsKey = 'memberSchedule_global_schedule';
+  final List<String> _manualMembers = [];
+  bool _syncing = false;
+
+  // ── 共同編集 (= ユーザー要望: 「同期」 ではなく共同編集の形に) ──
+  //    入の間は、 自分の予定を相手に出しつつ相手の予定を定期的に取り込む。
+  //    「自分の予定を共有」 の入切はこのボタンに畳んだ。 Max プラン限定。
+  //    サーバー側の置き場は、 誰も 1 週間書き込まなければ消える。
+  Timer? _collabTimer;
+  static const Duration _kCollabInterval = Duration(seconds: 20);
+
+  /// 共同編集が動いているか (= 共有が入 かつ グループに参加している)。
+  bool get _collabOn => _p.calendarGroupSharingEnabled;
+
+  MindMapProvider get _p => widget.provider;
+
+  /// 手で足したメンバーを読む。 旧「メンバー予定表」 が使っていた他の値
+  /// (表示先頭日 / 日数) は触らずに残す。
+  Future<void> _loadMemberPrefs() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final raw = sp.getString(_kMemberPrefsKey);
+      if (raw != null && raw.isNotEmpty) {
+        final m = jsonDecode(raw) as Map<String, dynamic>;
+        _manualMembers
+          ..clear()
+          ..addAll(((m['mm'] as List?) ?? const <dynamic>[])
+              .map((e) => '$e'.trim())
+              .where((e) => e.isNotEmpty));
+      }
+    } catch (_) {}
+    if (_p.currentGroupId != null) unawaited(_sync(silent: true));
+    _restartCollabTimer();
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _saveMemberPrefs() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final raw = sp.getString(_kMemberPrefsKey) ?? '';
+      final m = <String, dynamic>{};
+      if (raw.isNotEmpty) {
+        final d = jsonDecode(raw);
+        if (d is Map) m.addAll(d.cast<String, dynamic>());
+      }
+      m['mm'] = _manualMembers;
+      await sp.setString(_kMemberPrefsKey, jsonEncode(m));
+    } catch (_) {}
+  }
+
+  int? _manualMemberIndex(({String? uid, String name, bool isMe}) mem) {
+    final uid = mem.uid;
+    if (uid == null || !uid.startsWith('manual:')) return null;
+    final idx = int.tryParse(uid.substring('manual:'.length));
+    if (idx == null || idx < 0 || idx >= _manualMembers.length) return null;
+    return idx;
+  }
+
+  Future<String?> _promptMemberName({
+    required String title,
+    required String initial,
+    required String hint,
+  }) async {
+    final ctrl = TextEditingController(text: initial);
+    final result = await showDialog<String>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Text(title,
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          maxLength: 30,
+          textInputAction: TextInputAction.done,
+          style: const TextStyle(color: Colors.white),
+          decoration: InputDecoration(
+            hintText: hint,
+            hintStyle: const TextStyle(color: Colors.white38),
+            counterStyle: const TextStyle(color: Colors.white38),
+            filled: true,
+            fillColor: Colors.white.withValues(alpha: 0.06),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+          ),
+          onSubmitted: (_) {
+            final v = ctrl.text.trim();
+            if (v.isNotEmpty) Navigator.pop(dctx, v);
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx),
+            child: Text(context.read<MindMapProvider>().t('btn.cancel'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF66BB6A),
+                foregroundColor: Colors.black),
+            onPressed: () {
+              final v = ctrl.text.trim();
+              if (v.isEmpty) return;
+              Navigator.pop(dctx, v);
+            },
+            child: Text(context.read<MindMapProvider>().t('btn.save')),
+          ),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    return result;
+  }
+
+
+  Future<void> _editOwnName() async {
+    final current = _p.displayName.trim();
+    final name = await _promptMemberName(
+      title: _p.t('memberSchedule.editOwnName'),
+      initial: current.isEmpty ? _p.t('memberSchedule.me') : current,
+      hint: _p.t('memberSchedule.displayName'),
+    );
+    if (name == null) return;
+    await _p.setDisplayName(name);
+    if (mounted) setState(() {});
+  }
+
+
+  Future<void> _addManualMember() async {
+    final name = await _promptMemberName(
+      title: _p.t('memberSchedule.addMember'),
+      initial: '',
+      hint: _p.t('memberSchedule.memberName'),
+    );
+    if (name == null) return;
+    setState(() => _manualMembers.add(name));
+    _saveMemberPrefs();
+  }
+
+
+  Future<void> _editManualMember(int index) async {
+    if (index < 0 || index >= _manualMembers.length) return;
+    final ctrl = TextEditingController(text: _manualMembers[index]);
+    final result = await showDialog<String>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Text(_p.t('memberSchedule.editMember'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          maxLength: 30,
+          textInputAction: TextInputAction.done,
+          style: const TextStyle(color: Colors.white),
+          decoration: InputDecoration(
+            hintText: _p.t('memberSchedule.memberName'),
+            hintStyle: const TextStyle(color: Colors.white38),
+            counterStyle: const TextStyle(color: Colors.white38),
+            filled: true,
+            fillColor: Colors.white.withValues(alpha: 0.06),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+          ),
+          onSubmitted: (_) {
+            final v = ctrl.text.trim();
+            if (v.isNotEmpty) Navigator.pop(dctx, v);
+          },
+        ),
+        actions: [
+          TextButton.icon(
+            onPressed: () => Navigator.pop(dctx, '__delete__'),
+            icon: const Icon(Icons.delete_outline,
+                color: Color(0xFFE57373), size: 18),
+            label: Text(_p.t('btn.delete'),
+                style: const TextStyle(color: Color(0xFFE57373))),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dctx),
+            child: Text(context.read<MindMapProvider>().t('btn.cancel'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF66BB6A),
+                foregroundColor: Colors.black),
+            onPressed: () {
+              final v = ctrl.text.trim();
+              if (v.isEmpty) return;
+              Navigator.pop(dctx, v);
+            },
+            child: Text(context.read<MindMapProvider>().t('btn.save')),
+          ),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    if (result == null) return;
+    if (result == '__delete__') {
+      setState(() => _manualMembers.removeAt(index));
+    } else {
+      setState(() => _manualMembers[index] = result);
+    }
+    _saveMemberPrefs();
+  }
+
+  Widget _memberNameCell(
+      ({String? uid, String name, bool isMe}) mem, double height) {
+    final manualIndex = _manualMemberIndex(mem);
+    final canEdit = mem.isMe || manualIndex != null;
+    return GestureDetector(
+      onTap: !canEdit
+          ? null
+          : () {
+              if (mem.isMe) {
+                _editOwnName();
+              } else {
+                _editManualMember(manualIndex!);
+              }
+            },
+      child: Container(
+        width: _nameW,
+        height: height,
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+        decoration: BoxDecoration(
+            border: Border.all(color: Colors.white12),
+            color:
+                mem.isMe ? const Color(0xFF1F2A1F) : const Color(0xFF1A1A26)),
+        child: Row(children: [
+          Icon(
+              mem.isMe
+                  ? Icons.person
+                  : manualIndex != null
+                      ? Icons.person_add_alt_1_rounded
+                      : Icons.person_outline,
+              size: 14,
+              color: mem.isMe
+                  ? const Color(0xFF66BB6A)
+                  : manualIndex != null
+                      ? const Color(0xFF66BB6A)
+                      : Colors.white38),
+          const SizedBox(width: 4),
+          Expanded(
+            child: Text(mem.name,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600)),
+          ),
+          if (canEdit)
+            const Icon(Icons.edit_rounded, size: 12, color: Colors.white30),
+        ]),
+      ),
+    );
+  }
+
+  // ── 自分の予定を追加 (= タップで登録、 同期グループに共有) ──
+  Future<void> _addEvent(DateTime date) async {
+    final titleCtrl = TextEditingController();
+    final startCtrl = TextEditingController();
+    final endCtrl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Text(
+            context
+                .read<MindMapProvider>()
+                .t('cal.addEventOn')
+                .replaceFirst('{m}', '${date.month}')
+                .replaceFirst('{d}', '${date.day}'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(
+            controller: titleCtrl,
+            autofocus: true,
+            style: const TextStyle(color: Colors.white),
+            decoration: InputDecoration(
+                hintText: context.read<MindMapProvider>().t('cal.eventContent'),
+                hintStyle: const TextStyle(color: Colors.white38)),
+          ),
+          const SizedBox(height: 8),
+          Row(children: [
+            Expanded(
+              child: TextField(
+                controller: startCtrl,
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                    labelText:
+                        context.read<MindMapProvider>().t('cal.startOptional'),
+                    labelStyle: TextStyle(color: Colors.white54)),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: TextField(
+                controller: endCtrl,
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                    labelText:
+                        context.read<MindMapProvider>().t('cal.endOptional'),
+                    labelStyle: TextStyle(color: Colors.white54)),
+              ),
+            ),
+          ]),
+        ]),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dctx, false),
+              child: Text(context.read<MindMapProvider>().t('btn.cancel'),
+                  style: const TextStyle(color: Colors.white54))),
+          ElevatedButton(
+              onPressed: () => Navigator.pop(dctx, true),
+              child: Text(context.read<MindMapProvider>().t('btn.add'))),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final title = titleCtrl.text.trim();
+    if (title.isEmpty) return;
+    String? norm(String s) {
+      s = s.trim();
+      return s.isEmpty ? null : s;
+    }
+
+    await _p.addCalendarEvent(_key(date), title,
+        startTime: norm(startCtrl.text), endTime: norm(endCtrl.text));
+    // 同期グループに共有 (共有 ON の時)。
+    if (_p.currentGroupId != null && _p.calendarGroupSharingEnabled) {
+      _p.uploadCalendarEventsToCloud();
+    }
+    if (mounted) setState(() {});
+  }
+
+  // 他人の・自分の予定詳細を表示 (自分のものは削除可)。
+
+  Future<void> _showDayEvents(
+      ({String? uid, String name, bool isMe}) mem, DateTime date) async {
+    final dateKey = _key(date);
+    await showDialog<void>(
+      context: context,
+      builder: (dctx) => StatefulBuilder(
+        builder: (dctx, setLocal) {
+          final events = _eventsFor(mem, dateKey);
+          return AlertDialog(
+            backgroundColor: const Color(0xFF1E1E32),
+            title: Text('${mem.name} ・ ${date.month}/${date.day}',
+                style: const TextStyle(color: Colors.white, fontSize: 15)),
+            content: SizedBox(
+              width: 320,
+              child: events.isEmpty
+                  ? Text(context.read<MindMapProvider>().t('cal.noEvents'),
+                      style: TextStyle(color: Colors.white54))
+                  : Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        for (final e in events)
+                          ListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            title: Text(_eventLabel(e),
+                                style: const TextStyle(color: Colors.white)),
+                            subtitle: (e.memo ?? '').isEmpty
+                                ? null
+                                : Text(e.memo!,
+                                    style:
+                                        const TextStyle(color: Colors.white54)),
+                            trailing: mem.isMe && !e.isGoogleEvent
+                                ? IconButton(
+                                    icon: const Icon(Icons.delete_outline,
+                                        color: Color(0xFFE57373), size: 20),
+                                    onPressed: () async {
+                                      await _p.removeCalendarEvent(
+                                          dateKey, e.id);
+                                      if (_p.currentGroupId != null &&
+                                          _p.calendarGroupSharingEnabled) {
+                                        _p.uploadCalendarEventsToCloud();
+                                      }
+                                      setLocal(() {});
+                                      if (mounted) setState(() {});
+                                    },
+                                  )
+                                : null,
+                          ),
+                      ],
+                    ),
+            ),
+            actions: [
+              if (mem.isMe)
+                TextButton.icon(
+                  onPressed: () async {
+                    Navigator.pop(dctx);
+                    await _addEvent(date);
+                  },
+                  icon: const Icon(Icons.add, color: Color(0xFF66BB6A)),
+                  label: Text(context.read<MindMapProvider>().t('cal.addEvent'),
+                      style: TextStyle(color: Color(0xFF66BB6A))),
+                ),
+              TextButton(
+                  onPressed: () => Navigator.pop(dctx),
+                  child: Text(context.read<MindMapProvider>().t('btn.close'),
+                      style: TextStyle(color: Colors.white54))),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  List<CalendarEvent> _eventsFor(
+      ({String? uid, String name, bool isMe}) mem, String dateKey) {
+    if ((mem.uid ?? '').startsWith('manual:')) {
+      return const <CalendarEvent>[];
+    }
+    final all = _p.calendarEvents[dateKey] ?? const <CalendarEvent>[];
+    final myUid = _p.currentUid;
+    final out = all.where((e) {
+      if (mem.isMe) return e.ownerUid == null || e.ownerUid == myUid;
+      return mem.uid != null && e.ownerUid == mem.uid;
+    }).toList();
+    out.sort(
+        (a, b) => (a.startTime ?? '99:99').compareTo(b.startTime ?? '99:99'));
+    return out;
+  }
+
+  int? _startHour(CalendarEvent e) {
+    final t = e.startTime;
+    if (t == null || !t.contains(':')) return null;
+    return int.tryParse(t.split(':')[0]);
+  }
+
+  String _eventLabel(CalendarEvent e) =>
+      e.startTime != null ? '${e.startTime} ${e.title}' : e.title;
+
+
+  List<({String? uid, String name, bool isMe})> _members() {
+    final me = _p.displayName.trim();
+    final out = <({String? uid, String name, bool isMe})>[
+      (
+        uid: _p.currentUid,
+        name: me.isEmpty ? _p.t('memberSchedule.me') : me,
+        isMe: true
+      ),
+    ];
+    for (final m in _p.viewableCalendarMembers) {
+      out.add((
+        uid: m.uid,
+        name: m.displayName.trim().isEmpty
+            ? _p.t('memberSchedule.unnamed')
+            : m.displayName,
+        isMe: false,
+      ));
+    }
+    for (var i = 0; i < _manualMembers.length; i++) {
+      out.add((uid: 'manual:$i', name: _manualMembers[i], isMe: false));
+    }
+    return out;
+  }
+
+  // ── ある人の・ある日の予定を取り出す (owner で絞り込み) ──
+
+  void _restartCollabTimer() {
+    _collabTimer?.cancel();
+    _collabTimer = null;
+    if (!_collabOn || _p.currentGroupId == null || !_p.isMaxUnlocked) return;
+    _collabTimer = Timer.periodic(_kCollabInterval, (_) {
+      if (!mounted) return;
+      if (!_collabOn || _p.currentGroupId == null) {
+        _restartCollabTimer();
+        return;
+      }
+      unawaited(_sync(silent: true));
+    });
+  }
+
+  /// 共同編集のボタン。 入で緑、 切で枠だけ。 押すと入切が変わる。
+  Widget _buildCollabButton(bool inGroup) {
+    final on = inGroup && _collabOn;
+    return Padding(
+      padding: const EdgeInsets.only(left: 2),
+      child: on
+          ? ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF66BB6A),
+                  foregroundColor: Colors.black,
+                  visualDensity: VisualDensity.compact),
+              onPressed: _syncing ? null : _toggleCollab,
+              icon: _syncing
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.black))
+                  : const Icon(Icons.groups_rounded, size: 18),
+              label: Text(_p.t(_syncing
+                  ? 'memberSchedule.collabSyncing'
+                  : 'memberSchedule.collabOn')),
+            )
+          : OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFF66BB6A),
+                  side: const BorderSide(color: Color(0xFF66BB6A)),
+                  visualDensity: VisualDensity.compact),
+              onPressed: _syncing ? null : _toggleCollab,
+              icon: const Icon(Icons.groups_outlined, size: 18),
+              label: Text(_p.t('memberSchedule.collabOff')),
+            ),
+    );
+  }
+
+  /// 共同編集を入 / 切する。 Max プランとグループ参加が要る。
+  Future<void> _toggleCollab() async {
+    if (_collabOn) {
+      await _p.setCalendarGroupSharingEnabled(false);
+      _restartCollabTimer();
+      if (mounted) {
+        setState(() {});
+        _snack(_p.t('memberSchedule.collabStopped'), const Color(0xFF2A2A3E));
+      }
+      return;
+    }
+    // Max プランだけの特典 (= ユーザー要望)。
+    if (!_p.isMaxUnlocked) {
+      _snack(_p.t('paywall.maxRequiredCloudSync'), const Color(0xFFE53935));
+      return;
+    }
+    if (_p.currentGroupId == null) {
+      _snack(_p.t('memberSchedule.notInSyncGroup'), const Color(0xFF2A2A3E));
+      return;
+    }
+    await _p.setCalendarGroupSharingEnabled(true);
+    if (mounted) setState(() {});
+    await _sync();
+    _restartCollabTimer();
+    if (mounted) setState(() {});
+  }
+
+
+  Future<void> _sync({bool silent = false}) async {
+    if (_syncing) return;
+    if (_p.currentGroupId == null) {
+      if (!silent) {
+        _snack(_p.t('memberSchedule.notInSyncGroup'), const Color(0xFF2A2A3E));
+      }
+      return;
+    }
+    setState(() => _syncing = true);
+    try {
+      // 自分の予定をアップロードしてからメンバーの予定を取り込む。
+      if (_p.calendarGroupSharingEnabled) {
+        await _p.uploadCalendarEventsToCloud();
+      }
+      final dl = await _p.downloadCalendarEventsFromCloud();
+      if (mounted && !silent) {
+        _snack(
+            dl.success
+                ? _p.t('memberSchedule.syncUpdated')
+                : (dl.error ?? _p.t('memberSchedule.syncFailed')),
+            dl.success ? const Color(0xFF43B97F) : const Color(0xFFE53935));
+      }
+    } catch (e) {
+      if (mounted && !silent) {
+        _snack(_p.t('memberSchedule.syncFailed'), const Color(0xFFE53935));
+      }
+    } finally {
+      if (mounted) setState(() => _syncing = false);
+    }
+  }
+
+
+  void _snack(String msg, Color c) {
+    final m = ScaffoldMessenger.maybeOf(context);
+    m?.showSnackBar(SnackBar(
+        content: Text(msg),
+        backgroundColor: c,
+        duration: const Duration(seconds: 2)));
+  }
+
+  // ── 日付ユーティリティ ──
+  String _key(DateTime d) =>
+      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+  String _weekdayLabel(int wd) => _p.t(const [
+        '',
+        'memberSchedule.weekdayMon',
+        'memberSchedule.weekdayTue',
+        'memberSchedule.weekdayWed',
+        'memberSchedule.weekdayThu',
+        'memberSchedule.weekdayFri',
+        'memberSchedule.weekdaySat',
+        'memberSchedule.weekdaySun',
+      ][wd]);
+
+  // ── メンバー一覧 (自分 + 共有グループメンバー) ──
+
   @override
   Widget build(BuildContext context) {
     if (!_loaded) {
@@ -116011,7 +116792,7 @@ class _GanttPageViewState extends State<_GanttPageView> {
                       icon: const Icon(Icons.post_add_rounded,
                           size: 20, color: Colors.white70),
                       // 「どのページに入れますか」 は押したボタンの近くへ。
-                      onPressed: () => _putGanttIntoPage(bctx),
+                      onPressed: () => _putIntoPageMenu(bctx),
                     ),
                   ),
                   // ── 予定の通知設定 (= ユーザー要望: ガントの予定が通知される時刻を設定) ──
@@ -116032,6 +116813,41 @@ class _GanttPageViewState extends State<_GanttPageView> {
                       onPressed: () => _showGanttNotifySettings(bctx),
                     ),
                   ),
+                  // ── 合体表示の入切 (= ユーザー要望: メンバー表と
+                  //    ガントチャートを合体させた 1 つの物に) ──
+                  //    入 = 人ごとにまとめる / 切 = 工程だけ並べる。
+                  IconButton(
+                    tooltip: widget.provider.t(_groupByMember
+                        ? 'gantt.groupByTask'
+                        : 'gantt.groupByMember'),
+                    visualDensity: VisualDensity.compact,
+                    icon: Icon(
+                        _groupByMember
+                            ? Icons.groups_rounded
+                            : Icons.format_list_bulleted_rounded,
+                        size: 20,
+                        color: _groupByMember
+                            ? const Color(0xFF66BB6A)
+                            : Colors.white70),
+                    onPressed: _toggleGroupByMember,
+                  ),
+                  // ── 自分の名前を変える / 人を足す (= 合体表示のときだけ) ──
+                  if (_groupByMember) ...[
+                    IconButton(
+                      tooltip: widget.provider.t('memberSchedule.editOwnName'),
+                      visualDensity: VisualDensity.compact,
+                      icon: const Icon(Icons.badge_outlined,
+                          size: 20, color: Colors.white70),
+                      onPressed: _editOwnName,
+                    ),
+                    IconButton(
+                      tooltip: widget.provider.t('memberSchedule.addMember'),
+                      visualDensity: VisualDensity.compact,
+                      icon: const Icon(Icons.person_add_alt_1_rounded,
+                          size: 20, color: Colors.white70),
+                      onPressed: _addManualMember,
+                    ),
+                  ],
                   // ── チャート一覧の表示 / 非表示 (= ユーザー要望) ──
                   IconButton(
                     tooltip: widget.provider.t(_chartTabsVisible
@@ -116065,6 +116881,13 @@ class _GanttPageViewState extends State<_GanttPageView> {
                   ),
                   // ★ 「+ 追加」 は置かない (= ユーザー要望: 表の下の
                   //   「行を追加」 で足りるので要らない)。
+                  // ── 共同編集 (= ユーザー要望: 「同期」 ではなく共同編集の
+                  //    形に。 Max プランだけの特典)。 入の間は自分の予定を
+                  //    相手に出しつつ、 相手の予定を定期的に取り込む。 ──
+                  if (_groupByMember) ...[
+                    const SizedBox(width: 6),
+                    _buildCollabButton(widget.provider.currentGroupId != null),
+                  ],
                 ]),
               ),
               // ── チャート切替タブ (= ユーザー要望: チャートを複数作成) ──
@@ -116114,7 +116937,7 @@ class _GanttPageViewState extends State<_GanttPageView> {
                                 totalCols: totalCols,
                                 axisH: 28,
                                 rowH: _rowH,
-                                rowCount: _tasks.length + 1,
+                                rowCount: _plannerRows().length,
                                 boldCols: boldCols,
                                 blockedCols: blockedCols,
                               ),
@@ -116147,147 +116970,107 @@ class _GanttPageViewState extends State<_GanttPageView> {
                                       ),
                                     ),
                                 ]),
-                                for (final t in _tasks)
-                                  SizedBox(
-                                    height: _rowH,
-                                    child: Row(children: [
-                                      SizedBox(
-                                        width: _nameW,
-                                        // クリックでタスク名をインライン編集 (= ユーザー
-                                        //   要望)。 編集中は TextField を表示する。
-                                        child: _editingNameId == t.id
-                                            ? Padding(
-                                                padding:
-                                                    const EdgeInsets.symmetric(
-                                                        horizontal: 6),
-                                                child: TextField(
-                                                  controller: _nameEditCtrl,
-                                                  autofocus: true,
-                                                  style: const TextStyle(
-                                                      color: Colors.white,
-                                                      fontSize: 13),
-                                                  decoration:
-                                                      const InputDecoration(
-                                                    isDense: true,
-                                                    contentPadding:
-                                                        EdgeInsets.symmetric(
-                                                            vertical: 6),
-                                                    border: UnderlineInputBorder(
-                                                        borderSide: BorderSide(
-                                                            color: Color(
-                                                                0xFF4FC3F7))),
-                                                    enabledBorder:
-                                                        UnderlineInputBorder(
-                                                            borderSide: BorderSide(
-                                                                color: Color(
-                                                                    0xFF4FC3F7))),
-                                                    focusedBorder:
-                                                        UnderlineInputBorder(
-                                                            borderSide: BorderSide(
-                                                                color: Color(
-                                                                    0xFF4FC3F7))),
-                                                  ),
-                                                  onSubmitted: (_) =>
-                                                      _commitNameEdit(t),
-                                                  onTapOutside: (_) =>
-                                                      _commitNameEdit(t),
-                                                ),
-                                              )
-                                            : GestureDetector(
-                                                behavior:
-                                                    HitTestBehavior.opaque,
-                                                onTap: () => _beginNameEdit(t),
-                                                child: Padding(
-                                                  padding:
-                                                      const EdgeInsets.only(
-                                                          left: 8, right: 4),
-                                                  child: Column(
-                                                    mainAxisAlignment:
-                                                        MainAxisAlignment
-                                                            .center,
-                                                    crossAxisAlignment:
-                                                        CrossAxisAlignment
-                                                            .start,
-                                                    children: [
-                                                      Text(t.name,
+                                for (final row in _plannerRows())
+                                  if (row.kind == 'member')
+                                    // ── 人の見出し行。 右側にはその人の
+                                    //    予定を帯で出す (= 合体表示) ──
+                                    SizedBox(
+                                      height: _rowH,
+                                      child: Row(children: [
+                                        _memberNameCell(row.mem!, _rowH),
+                                        Expanded(
+                                          child: Stack(children: [
+                                            ..._memberEmptyCells(row.mem!, cols),
+                                            ..._memberEventChips(row.mem!, cols),
+                                          ]),
+                                        ),
+                                      ]),
+                                    )
+                                  else if (row.kind == 'addTask')
+                                    // ── その人に工程を足す行 ──
+                                    GestureDetector(
+                                      behavior: HitTestBehavior.opaque,
+                                      onTap: () =>
+                                          _addTaskForMember(row.mem?.name ?? ''),
+                                      child: SizedBox(
+                                        height: _rowH,
+                                        child: Row(children: [
+                                          SizedBox(
+                                            width: _nameW,
+                                            child: Padding(
+                                              padding: EdgeInsets.only(
+                                                  left: _groupByMember ? 22 : 8),
+                                              child: Row(
+                                                  mainAxisSize: MainAxisSize.min,
+                                                  children: [
+                                                    const Icon(
+                                                        Icons
+                                                            .add_circle_outline_rounded,
+                                                        size: 15,
+                                                        color: Color(0xFF4FC3F7)),
+                                                    const SizedBox(width: 5),
+                                                    Flexible(
+                                                      child: Text(
+                                                          widget.provider
+                                                              .t('gantt.addRow'),
                                                           maxLines: 1,
                                                           overflow: TextOverflow
                                                               .ellipsis,
-                                                          style:
-                                                              const TextStyle(
-                                                                  color: Colors
-                                                                      .white,
-                                                                  fontSize:
-                                                                      13)),
-                                                      if (t.assignee
-                                                          .trim()
-                                                          .isNotEmpty)
-                                                        Row(
-                                                            mainAxisSize:
-                                                                MainAxisSize
-                                                                    .min,
-                                                            children: [
-                                                              const Icon(
-                                                                  Icons
-                                                                      .person_rounded,
-                                                                  size: 10,
-                                                                  color: Color(
-                                                                      0xFF43B97F)),
-                                                              const SizedBox(
-                                                                  width: 2),
-                                                              Flexible(
-                                                                child: Text(
-                                                                    t.assignee
-                                                                        .trim(),
-                                                                    maxLines: 1,
-                                                                    overflow:
-                                                                        TextOverflow
-                                                                            .ellipsis,
-                                                                    style: const TextStyle(
-                                                                        color: Color(
-                                                                            0xFF9BE7C4),
-                                                                        fontSize:
-                                                                            10)),
-                                                              ),
-                                                            ]),
-                                                    ],
-                                                  ),
-                                                ),
-                                              ),
-                                      ),
-                                      Expanded(
-                                        child: Stack(
-                                          children:
-                                              _ganttBarSegments(t, cols),
-                                        ),
-                                      ),
-                                    ]),
-                                  ),
-                                // ── 「行を追加」 行 (= ユーザー要望: ガントチャート上を
-                                //    クリックして行・予定を追加) ──
-                                GestureDetector(
-                                  behavior: HitTestBehavior.opaque,
-                                  onTap: _addQuickTask,
-                                  child: Container(
-                                    height: _rowH,
-                                    alignment: Alignment.centerLeft,
-                                    padding: const EdgeInsets.only(left: 8),
-                                    child: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          const Icon(
-                                              Icons.add_circle_outline_rounded,
-                                              size: 16,
-                                              color: Color(0xFF4FC3F7)),
-                                          const SizedBox(width: 6),
-                                          Text(
-                                              widget.provider.t('gantt.addRow'),
-                                              style: const TextStyle(
-                                                  color: Colors.white54,
-                                                  fontSize: 12)),
+                                                          style: const TextStyle(
+                                                              color:
+                                                                  Colors.white38,
+                                                              fontSize: 11)),
+                                                    ),
+                                                  ]),
+                                            ),
+                                          ),
+                                          const Expanded(child: SizedBox()),
                                         ]),
-                                  ),
-                                ),
+                                      ),
+                                    )
+                                  else if (row.kind == 'addMember')
+                                    // ── 人を足す行 ──
+                                    GestureDetector(
+                                      behavior: HitTestBehavior.opaque,
+                                      onTap: _addManualMember,
+                                      child: SizedBox(
+                                        height: _rowH,
+                                        child: Row(children: [
+                                          SizedBox(
+                                            width: _nameW,
+                                            child: Padding(
+                                              padding:
+                                                  const EdgeInsets.only(left: 8),
+                                              child: Row(
+                                                  mainAxisSize: MainAxisSize.min,
+                                                  children: [
+                                                    const Icon(
+                                                        Icons
+                                                            .person_add_alt_1_rounded,
+                                                        size: 15,
+                                                        color: Color(0xFF66BB6A)),
+                                                    const SizedBox(width: 5),
+                                                    Flexible(
+                                                      child: Text(
+                                                          widget.provider.t(
+                                                              'memberSchedule.addMember'),
+                                                          maxLines: 1,
+                                                          overflow: TextOverflow
+                                                              .ellipsis,
+                                                          style: const TextStyle(
+                                                              color:
+                                                                  Colors.white38,
+                                                              fontSize: 11)),
+                                                    ),
+                                                  ]),
+                                            ),
+                                          ),
+                                          const Expanded(child: SizedBox()),
+                                        ]),
+                                      ),
+                                    )
+                                  else
+                                    _ganttTaskRow(row.task!, cols),
                               ]),
                           // ── 現在時刻インジケーター (= ユーザー要望) ──
                           if (nowX != null)
@@ -227017,1055 +227800,6 @@ class _PdfExporter {
 // (= タイムライン/カレンダーと同じデータ)。 日付をタップするとその日の
 // 時間単位ビュー (人×時間) に切り替わる。 予定の追加/共有は既存の
 // グループカレンダー機能 (Firebase) をそのまま使う。
-class _MemberSchedulePageView extends StatefulWidget {
-  final MindMapProvider provider;
-  final String pageId;
-  const _MemberSchedulePageView(
-      {super.key, required this.provider, required this.pageId});
-
-  @override
-  State<_MemberSchedulePageView> createState() =>
-      _MemberSchedulePageViewState();
-}
-
-class _MemberSchedulePageViewState extends State<_MemberSchedulePageView> {
-  int _startMs = 0; // 表示先頭日 (0:00)
-  int _days = 7; // 表示日数 (列数)
-  DateTime? _focusDay; // null=日グリッド / 設定時=その日の時間ビュー
-  bool _loaded = false;
-  bool _syncing = false;
-  final List<String> _manualMembers = [];
-
-  // ── 共同編集 (= ユーザー要望: 「同期」 ではなく共同編集の形に) ──
-  //    入の間は、 自分の予定を相手に出しつつ相手の予定を定期的に取り込む。
-  //    「自分の予定を共有」 の入切はこのボタンに畳んだ (= ユーザー要望)。
-  //    Max プランだけの特典。 サーバー側の置き場は、 誰も 1 週間書き込まな
-  //    ければ消える (書くたびに期限を 7 日先へ延ばす)。
-  Timer? _collabTimer;
-  static const Duration _kCollabInterval = Duration(seconds: 20);
-
-  /// 共同編集が動いているか (= 共有が入 かつ グループに参加している)。
-  bool get _collabOn => _p.calendarGroupSharingEnabled;
-
-  static const double _nameW = 116;
-  static const double _colW = 150;
-  static const double _rowH = 78;
-  static const double _headH = 30;
-
-  MindMapProvider get _p => widget.provider;
-
-  String _prefsKey() => 'memberSchedule_${widget.pageId}';
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  @override
-  void dispose() {
-    _collabTimer?.cancel();
-    super.dispose();
-  }
-
-  /// 共同編集の入切。 入の間だけ定期的に取り込む。
-  void _restartCollabTimer() {
-    _collabTimer?.cancel();
-    _collabTimer = null;
-    if (!_collabOn || _p.currentGroupId == null || !_p.isMaxUnlocked) return;
-    _collabTimer = Timer.periodic(_kCollabInterval, (_) {
-      if (!mounted) return;
-      if (!_collabOn || _p.currentGroupId == null) {
-        _restartCollabTimer();
-        return;
-      }
-      unawaited(_sync(silent: true));
-    });
-  }
-
-  /// 共同編集のボタン。 入で緑、 切で枠だけ。 押すと入切が変わる。
-  Widget _buildCollabButton(bool inGroup) {
-    final on = inGroup && _collabOn;
-    return Padding(
-      padding: const EdgeInsets.only(left: 2),
-      child: on
-          ? ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF66BB6A),
-                  foregroundColor: Colors.black,
-                  visualDensity: VisualDensity.compact),
-              onPressed: _syncing ? null : _toggleCollab,
-              icon: _syncing
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2, color: Colors.black))
-                  : const Icon(Icons.groups_rounded, size: 18),
-              label: Text(_p.t(_syncing
-                  ? 'memberSchedule.collabSyncing'
-                  : 'memberSchedule.collabOn')),
-            )
-          : OutlinedButton.icon(
-              style: OutlinedButton.styleFrom(
-                  foregroundColor: const Color(0xFF66BB6A),
-                  side: const BorderSide(color: Color(0xFF66BB6A)),
-                  visualDensity: VisualDensity.compact),
-              onPressed: _syncing ? null : _toggleCollab,
-              icon: const Icon(Icons.groups_outlined, size: 18),
-              label: Text(_p.t('memberSchedule.collabOff')),
-            ),
-    );
-  }
-
-  /// 共同編集を入 / 切する。 Max プランとグループ参加が要る。
-  Future<void> _toggleCollab() async {
-    if (_collabOn) {
-      await _p.setCalendarGroupSharingEnabled(false);
-      _restartCollabTimer();
-      if (mounted) {
-        setState(() {});
-        _snack(_p.t('memberSchedule.collabStopped'), const Color(0xFF2A2A3E));
-      }
-      return;
-    }
-    // Max プランだけの特典 (= ユーザー要望)。
-    if (!_p.isMaxUnlocked) {
-      _snack(_p.t('paywall.maxRequiredCloudSync'), const Color(0xFFE53935));
-      return;
-    }
-    if (_p.currentGroupId == null) {
-      _snack(_p.t('memberSchedule.notInSyncGroup'), const Color(0xFF2A2A3E));
-      return;
-    }
-    await _p.setCalendarGroupSharingEnabled(true);
-    if (mounted) setState(() {});
-    await _sync();
-    _restartCollabTimer();
-    if (mounted) setState(() {});
-  }
-
-  Future<void> _load() async {
-    try {
-      final sp = await SharedPreferences.getInstance();
-      final raw = sp.getString(_prefsKey());
-      if (raw != null && raw.isNotEmpty) {
-        final m = jsonDecode(raw) as Map<String, dynamic>;
-        _startMs = (m['ss'] as num?)?.toInt() ?? 0;
-        _days = (m['sd'] as num?)?.toInt() ?? 7;
-        _manualMembers
-          ..clear()
-          ..addAll(((m['mm'] as List?) ?? const <dynamic>[])
-              .map((e) => '$e'.trim())
-              .where((e) => e.isNotEmpty));
-      }
-    } catch (_) {}
-    if (_startMs == 0) {
-      final n = DateTime.now();
-      _startMs = DateTime(n.year, n.month, n.day).millisecondsSinceEpoch;
-    }
-    if (mounted) setState(() => _loaded = true);
-    // グループに参加していれば最新の共有予定を取り込む (= ユーザー要望:
-    //   同期グループの人の予定を見られるように)。
-    if (_p.currentGroupId != null) {
-      _sync(silent: true);
-    }
-    // 共同編集が入のままなら、 開いている間は定期的に取り込む。
-    _restartCollabTimer();
-  }
-
-  Future<void> _save() async {
-    try {
-      final sp = await SharedPreferences.getInstance();
-      await sp.setString(_prefsKey(),
-          jsonEncode({'ss': _startMs, 'sd': _days, 'mm': _manualMembers}));
-    } catch (_) {}
-  }
-
-  void _snack(String msg, Color c) {
-    final m = ScaffoldMessenger.maybeOf(context);
-    m?.showSnackBar(SnackBar(
-        content: Text(msg),
-        backgroundColor: c,
-        duration: const Duration(seconds: 2)));
-  }
-
-  // ── 日付ユーティリティ ──
-  String _key(DateTime d) =>
-      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
-  String _weekdayLabel(int wd) => _p.t(const [
-        '',
-        'memberSchedule.weekdayMon',
-        'memberSchedule.weekdayTue',
-        'memberSchedule.weekdayWed',
-        'memberSchedule.weekdayThu',
-        'memberSchedule.weekdayFri',
-        'memberSchedule.weekdaySat',
-        'memberSchedule.weekdaySun',
-      ][wd]);
-
-  // ── メンバー一覧 (自分 + 共有グループメンバー) ──
-  List<({String? uid, String name, bool isMe})> _members() {
-    final me = _p.displayName.trim();
-    final out = <({String? uid, String name, bool isMe})>[
-      (
-        uid: _p.currentUid,
-        name: me.isEmpty ? _p.t('memberSchedule.me') : me,
-        isMe: true
-      ),
-    ];
-    for (final m in _p.viewableCalendarMembers) {
-      out.add((
-        uid: m.uid,
-        name: m.displayName.trim().isEmpty
-            ? _p.t('memberSchedule.unnamed')
-            : m.displayName,
-        isMe: false,
-      ));
-    }
-    for (var i = 0; i < _manualMembers.length; i++) {
-      out.add((uid: 'manual:$i', name: _manualMembers[i], isMe: false));
-    }
-    return out;
-  }
-
-  // ── ある人の・ある日の予定を取り出す (owner で絞り込み) ──
-  List<CalendarEvent> _eventsFor(
-      ({String? uid, String name, bool isMe}) mem, String dateKey) {
-    if ((mem.uid ?? '').startsWith('manual:')) {
-      return const <CalendarEvent>[];
-    }
-    final all = _p.calendarEvents[dateKey] ?? const <CalendarEvent>[];
-    final myUid = _p.currentUid;
-    final out = all.where((e) {
-      if (mem.isMe) return e.ownerUid == null || e.ownerUid == myUid;
-      return mem.uid != null && e.ownerUid == mem.uid;
-    }).toList();
-    out.sort(
-        (a, b) => (a.startTime ?? '99:99').compareTo(b.startTime ?? '99:99'));
-    return out;
-  }
-
-  int? _startHour(CalendarEvent e) {
-    final t = e.startTime;
-    if (t == null || !t.contains(':')) return null;
-    return int.tryParse(t.split(':')[0]);
-  }
-
-  String _eventLabel(CalendarEvent e) =>
-      e.startTime != null ? '${e.startTime} ${e.title}' : e.title;
-
-  // ── 同期グループとの予定共有 (Firebase) ──
-  Future<void> _sync({bool silent = false}) async {
-    if (_syncing) return;
-    if (_p.currentGroupId == null) {
-      if (!silent) {
-        _snack(_p.t('memberSchedule.notInSyncGroup'), const Color(0xFF2A2A3E));
-      }
-      return;
-    }
-    setState(() => _syncing = true);
-    try {
-      // 自分の予定をアップロードしてからメンバーの予定を取り込む。
-      if (_p.calendarGroupSharingEnabled) {
-        await _p.uploadCalendarEventsToCloud();
-      }
-      final dl = await _p.downloadCalendarEventsFromCloud();
-      if (mounted && !silent) {
-        _snack(
-            dl.success
-                ? _p.t('memberSchedule.syncUpdated')
-                : (dl.error ?? _p.t('memberSchedule.syncFailed')),
-            dl.success ? const Color(0xFF43B97F) : const Color(0xFFE53935));
-      }
-    } catch (e) {
-      if (mounted && !silent) {
-        _snack(_p.t('memberSchedule.syncFailed'), const Color(0xFFE53935));
-      }
-    } finally {
-      if (mounted) setState(() => _syncing = false);
-    }
-  }
-
-  void _shift(int days) {
-    setState(() => _startMs += days * 86400000);
-    _save();
-  }
-
-  void _changeDays(int delta) {
-    setState(() => _days = (_days + delta).clamp(1, 31));
-    _save();
-  }
-
-  int? _manualMemberIndex(({String? uid, String name, bool isMe}) mem) {
-    final uid = mem.uid;
-    if (uid == null || !uid.startsWith('manual:')) return null;
-    final idx = int.tryParse(uid.substring('manual:'.length));
-    if (idx == null || idx < 0 || idx >= _manualMembers.length) return null;
-    return idx;
-  }
-
-  Future<String?> _promptMemberName({
-    required String title,
-    required String initial,
-    required String hint,
-  }) async {
-    final ctrl = TextEditingController(text: initial);
-    final result = await showDialog<String>(
-      context: context,
-      builder: (dctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E32),
-        title: Text(title,
-            style: const TextStyle(color: Colors.white, fontSize: 15)),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          maxLength: 30,
-          textInputAction: TextInputAction.done,
-          style: const TextStyle(color: Colors.white),
-          decoration: InputDecoration(
-            hintText: hint,
-            hintStyle: const TextStyle(color: Colors.white38),
-            counterStyle: const TextStyle(color: Colors.white38),
-            filled: true,
-            fillColor: Colors.white.withValues(alpha: 0.06),
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-          ),
-          onSubmitted: (_) {
-            final v = ctrl.text.trim();
-            if (v.isNotEmpty) Navigator.pop(dctx, v);
-          },
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dctx),
-            child: Text(context.read<MindMapProvider>().t('btn.cancel'),
-                style: const TextStyle(color: Colors.white54)),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF66BB6A),
-                foregroundColor: Colors.black),
-            onPressed: () {
-              final v = ctrl.text.trim();
-              if (v.isEmpty) return;
-              Navigator.pop(dctx, v);
-            },
-            child: Text(context.read<MindMapProvider>().t('btn.save')),
-          ),
-        ],
-      ),
-    );
-    ctrl.dispose();
-    return result;
-  }
-
-  Future<void> _editOwnName() async {
-    final current = _p.displayName.trim();
-    final name = await _promptMemberName(
-      title: _p.t('memberSchedule.editOwnName'),
-      initial: current.isEmpty ? _p.t('memberSchedule.me') : current,
-      hint: _p.t('memberSchedule.displayName'),
-    );
-    if (name == null) return;
-    await _p.setDisplayName(name);
-    if (mounted) setState(() {});
-  }
-
-  Future<void> _addManualMember() async {
-    final name = await _promptMemberName(
-      title: _p.t('memberSchedule.addMember'),
-      initial: '',
-      hint: _p.t('memberSchedule.memberName'),
-    );
-    if (name == null) return;
-    setState(() => _manualMembers.add(name));
-    _save();
-  }
-
-  Future<void> _editManualMember(int index) async {
-    if (index < 0 || index >= _manualMembers.length) return;
-    final ctrl = TextEditingController(text: _manualMembers[index]);
-    final result = await showDialog<String>(
-      context: context,
-      builder: (dctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E32),
-        title: Text(_p.t('memberSchedule.editMember'),
-            style: const TextStyle(color: Colors.white, fontSize: 15)),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          maxLength: 30,
-          textInputAction: TextInputAction.done,
-          style: const TextStyle(color: Colors.white),
-          decoration: InputDecoration(
-            hintText: _p.t('memberSchedule.memberName'),
-            hintStyle: const TextStyle(color: Colors.white38),
-            counterStyle: const TextStyle(color: Colors.white38),
-            filled: true,
-            fillColor: Colors.white.withValues(alpha: 0.06),
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-          ),
-          onSubmitted: (_) {
-            final v = ctrl.text.trim();
-            if (v.isNotEmpty) Navigator.pop(dctx, v);
-          },
-        ),
-        actions: [
-          TextButton.icon(
-            onPressed: () => Navigator.pop(dctx, '__delete__'),
-            icon: const Icon(Icons.delete_outline,
-                color: Color(0xFFE57373), size: 18),
-            label: Text(_p.t('btn.delete'),
-                style: const TextStyle(color: Color(0xFFE57373))),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(dctx),
-            child: Text(context.read<MindMapProvider>().t('btn.cancel'),
-                style: const TextStyle(color: Colors.white54)),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF66BB6A),
-                foregroundColor: Colors.black),
-            onPressed: () {
-              final v = ctrl.text.trim();
-              if (v.isEmpty) return;
-              Navigator.pop(dctx, v);
-            },
-            child: Text(context.read<MindMapProvider>().t('btn.save')),
-          ),
-        ],
-      ),
-    );
-    ctrl.dispose();
-    if (result == null) return;
-    if (result == '__delete__') {
-      setState(() => _manualMembers.removeAt(index));
-    } else {
-      setState(() => _manualMembers[index] = result);
-    }
-    _save();
-  }
-
-  /// 今出ている「人 × 日付」 の表を、 編集できる表のノードとしてページへ置く
-  /// (= ユーザー要望: メンバー予定表をマインドマップやギャラリーに埋め込む)。
-  ///
-  /// 1 行目が見出し (空欄 + 日付)、 2 行目からが人ごとの予定。
-  /// 1 つのマスに予定が複数ある時は改行で並べる。
-  Future<void> _putScheduleIntoPage([BuildContext? anchor]) async {
-    final members = _members();
-    final start = DateTime.fromMillisecondsSinceEpoch(_startMs);
-    final days = _days.clamp(1, 31);
-    // 見出し行。
-    final header = <String>[''];
-    for (var i = 0; i < days; i++) {
-      final d = DateTime(start.year, start.month, start.day + i);
-      header.add('${d.month}/${d.day} (${_weekdayLabel(d.weekday)})');
-    }
-    final rows = <List<String>>[header];
-    var any = false;
-    for (final mem in members) {
-      final row = <String>[mem.name];
-      for (var i = 0; i < days; i++) {
-        final d = DateTime(start.year, start.month, start.day + i);
-        final ev = _eventsFor(mem, _key(d));
-        if (ev.isNotEmpty) any = true;
-        row.add(ev.map(_eventLabel).join('\n'));
-      }
-      rows.add(row);
-    }
-    // 全画面のダイアログの中なので、 SnackBar ではなく上に出す。
-    void tell(String msg, Color c) => showTopToast(context, msg, c);
-
-    if (!any) {
-      tell(_p.t('tool.putIntoPageEmpty'), const Color(0xFF455A64));
-      return;
-    }
-    final placed = await askAndPutTableIntoPage(
-        context, _p, _p.t('hdr.memberSchedule'), rows,
-        anchorContext: anchor);
-    if (!mounted || placed == null) return;
-    tell(_p.t('tool.putIntoPageDone').replaceFirst('{page}', placed),
-        const Color(0xFF43B97F));
-  }
-
-  Widget _memberNameCell(
-      ({String? uid, String name, bool isMe}) mem, double height) {
-    final manualIndex = _manualMemberIndex(mem);
-    final canEdit = mem.isMe || manualIndex != null;
-    return GestureDetector(
-      onTap: !canEdit
-          ? null
-          : () {
-              if (mem.isMe) {
-                _editOwnName();
-              } else {
-                _editManualMember(manualIndex!);
-              }
-            },
-      child: Container(
-        width: _nameW,
-        height: height,
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-        decoration: BoxDecoration(
-            border: Border.all(color: Colors.white12),
-            color:
-                mem.isMe ? const Color(0xFF1F2A1F) : const Color(0xFF1A1A26)),
-        child: Row(children: [
-          Icon(
-              mem.isMe
-                  ? Icons.person
-                  : manualIndex != null
-                      ? Icons.person_add_alt_1_rounded
-                      : Icons.person_outline,
-              size: 14,
-              color: mem.isMe
-                  ? const Color(0xFF66BB6A)
-                  : manualIndex != null
-                      ? const Color(0xFF66BB6A)
-                      : Colors.white38),
-          const SizedBox(width: 4),
-          Expanded(
-            child: Text(mem.name,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600)),
-          ),
-          if (canEdit)
-            const Icon(Icons.edit_rounded, size: 12, color: Colors.white30),
-        ]),
-      ),
-    );
-  }
-
-  // ── 自分の予定を追加 (= タップで登録、 同期グループに共有) ──
-  Future<void> _addEvent(DateTime date) async {
-    final titleCtrl = TextEditingController();
-    final startCtrl = TextEditingController();
-    final endCtrl = TextEditingController();
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (dctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E32),
-        title: Text(
-            context
-                .read<MindMapProvider>()
-                .t('cal.addEventOn')
-                .replaceFirst('{m}', '${date.month}')
-                .replaceFirst('{d}', '${date.day}'),
-            style: const TextStyle(color: Colors.white, fontSize: 15)),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          TextField(
-            controller: titleCtrl,
-            autofocus: true,
-            style: const TextStyle(color: Colors.white),
-            decoration: InputDecoration(
-                hintText: context.read<MindMapProvider>().t('cal.eventContent'),
-                hintStyle: const TextStyle(color: Colors.white38)),
-          ),
-          const SizedBox(height: 8),
-          Row(children: [
-            Expanded(
-              child: TextField(
-                controller: startCtrl,
-                style: const TextStyle(color: Colors.white),
-                decoration: InputDecoration(
-                    labelText:
-                        context.read<MindMapProvider>().t('cal.startOptional'),
-                    labelStyle: TextStyle(color: Colors.white54)),
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: TextField(
-                controller: endCtrl,
-                style: const TextStyle(color: Colors.white),
-                decoration: InputDecoration(
-                    labelText:
-                        context.read<MindMapProvider>().t('cal.endOptional'),
-                    labelStyle: TextStyle(color: Colors.white54)),
-              ),
-            ),
-          ]),
-        ]),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(dctx, false),
-              child: Text(context.read<MindMapProvider>().t('btn.cancel'),
-                  style: const TextStyle(color: Colors.white54))),
-          ElevatedButton(
-              onPressed: () => Navigator.pop(dctx, true),
-              child: Text(context.read<MindMapProvider>().t('btn.add'))),
-        ],
-      ),
-    );
-    if (ok != true) return;
-    final title = titleCtrl.text.trim();
-    if (title.isEmpty) return;
-    String? norm(String s) {
-      s = s.trim();
-      return s.isEmpty ? null : s;
-    }
-
-    await _p.addCalendarEvent(_key(date), title,
-        startTime: norm(startCtrl.text), endTime: norm(endCtrl.text));
-    // 同期グループに共有 (共有 ON の時)。
-    if (_p.currentGroupId != null && _p.calendarGroupSharingEnabled) {
-      _p.uploadCalendarEventsToCloud();
-    }
-    if (mounted) setState(() {});
-  }
-
-  // 他人の・自分の予定詳細を表示 (自分のものは削除可)。
-  Future<void> _showDayEvents(
-      ({String? uid, String name, bool isMe}) mem, DateTime date) async {
-    final dateKey = _key(date);
-    await showDialog<void>(
-      context: context,
-      builder: (dctx) => StatefulBuilder(
-        builder: (dctx, setLocal) {
-          final events = _eventsFor(mem, dateKey);
-          return AlertDialog(
-            backgroundColor: const Color(0xFF1E1E32),
-            title: Text('${mem.name} ・ ${date.month}/${date.day}',
-                style: const TextStyle(color: Colors.white, fontSize: 15)),
-            content: SizedBox(
-              width: 320,
-              child: events.isEmpty
-                  ? Text(context.read<MindMapProvider>().t('cal.noEvents'),
-                      style: TextStyle(color: Colors.white54))
-                  : Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        for (final e in events)
-                          ListTile(
-                            dense: true,
-                            contentPadding: EdgeInsets.zero,
-                            title: Text(_eventLabel(e),
-                                style: const TextStyle(color: Colors.white)),
-                            subtitle: (e.memo ?? '').isEmpty
-                                ? null
-                                : Text(e.memo!,
-                                    style:
-                                        const TextStyle(color: Colors.white54)),
-                            trailing: mem.isMe && !e.isGoogleEvent
-                                ? IconButton(
-                                    icon: const Icon(Icons.delete_outline,
-                                        color: Color(0xFFE57373), size: 20),
-                                    onPressed: () async {
-                                      await _p.removeCalendarEvent(
-                                          dateKey, e.id);
-                                      if (_p.currentGroupId != null &&
-                                          _p.calendarGroupSharingEnabled) {
-                                        _p.uploadCalendarEventsToCloud();
-                                      }
-                                      setLocal(() {});
-                                      if (mounted) setState(() {});
-                                    },
-                                  )
-                                : null,
-                          ),
-                      ],
-                    ),
-            ),
-            actions: [
-              if (mem.isMe)
-                TextButton.icon(
-                  onPressed: () async {
-                    Navigator.pop(dctx);
-                    await _addEvent(date);
-                  },
-                  icon: const Icon(Icons.add, color: Color(0xFF66BB6A)),
-                  label: Text(context.read<MindMapProvider>().t('cal.addEvent'),
-                      style: TextStyle(color: Color(0xFF66BB6A))),
-                ),
-              TextButton(
-                  onPressed: () => Navigator.pop(dctx),
-                  child: Text(context.read<MindMapProvider>().t('btn.close'),
-                      style: TextStyle(color: Colors.white54))),
-            ],
-          );
-        },
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (!_loaded) {
-      return const Center(
-          child: CircularProgressIndicator(color: Color(0xFF66BB6A)));
-    }
-    if (_startMs == 0) {
-      final n = DateTime.now();
-      _startMs = DateTime(n.year, n.month, n.day).millisecondsSinceEpoch;
-    }
-    return Container(
-      color: const Color(0xFF12121C),
-      child: Column(children: [
-        _buildHeader(),
-        const Divider(color: Colors.white12, height: 1),
-        Expanded(
-          child: _focusDay == null ? _buildDayGrid() : _buildHourView(),
-        ),
-      ]),
-    );
-  }
-
-  Widget _buildHeader() {
-    final start = DateTime.fromMillisecondsSinceEpoch(_startMs);
-    final inGroup = _p.currentGroupId != null;
-    final isMobile = MediaQuery.of(context).size.width < 600;
-    final children = <Widget>[
-      if (!isMobile) ...[
-        const Icon(Icons.groups_rounded, color: Color(0xFF66BB6A)),
-        const SizedBox(width: 8),
-        Text(
-            _p.t(_focusDay == null
-                ? 'hdr.memberSchedule'
-                : 'memberSchedule.hourViewTitle'),
-            style: const TextStyle(
-                color: Colors.white,
-                fontSize: 16,
-                fontWeight: FontWeight.w700)),
-      ],
-      // ★ 右へ寄せない (= ユーザー要望: ヘッダーの項目を押しやすいように
-      //   左端に詰める)。 入り切らない時は横に流れる。
-      const SizedBox(width: 8),
-      IconButton(
-        tooltip: _p.t('memberSchedule.editOwnName'),
-        visualDensity: VisualDensity.compact,
-        icon:
-            const Icon(Icons.edit_rounded, color: Color(0xFF66BB6A), size: 20),
-        onPressed: _editOwnName,
-      ),
-      IconButton(
-        tooltip: _p.t('memberSchedule.addMember'),
-        visualDensity: VisualDensity.compact,
-        icon: const Icon(Icons.person_add_alt_1_rounded,
-            color: Color(0xFF66BB6A), size: 20),
-        onPressed: _addManualMember,
-      ),
-      if (_focusDay != null)
-        TextButton.icon(
-          onPressed: () => setState(() => _focusDay = null),
-          icon: const Icon(Icons.grid_view_rounded,
-              color: Colors.white70, size: 18),
-          label: Text(context.read<MindMapProvider>().t('cal.toDayView'),
-              style: const TextStyle(color: Colors.white70)),
-        )
-      else ...[
-        IconButton(
-            tooltip: context.read<MindMapProvider>().t('search.prev'),
-            visualDensity: VisualDensity.compact,
-            icon: const Icon(Icons.chevron_left_rounded, color: Colors.white70),
-            onPressed: () => _shift(-_days)),
-        Text('${start.month}/${start.day}〜',
-            style: const TextStyle(color: Colors.white70, fontSize: 12)),
-        IconButton(
-            tooltip: context.read<MindMapProvider>().t('search.next'),
-            visualDensity: VisualDensity.compact,
-            icon:
-                const Icon(Icons.chevron_right_rounded, color: Colors.white70),
-            onPressed: () => _shift(_days)),
-        const SizedBox(width: 6),
-        IconButton(
-            tooltip: context.read<MindMapProvider>().t('cal.daysMinus'),
-            visualDensity: VisualDensity.compact,
-            icon: const Icon(Icons.remove_circle_outline,
-                color: Colors.white54, size: 20),
-            onPressed: () => _changeDays(-1)),
-        Text(
-            context
-                .read<MindMapProvider>()
-                .t('cal.nDays')
-                .replaceFirst('{n}', '$_days'),
-            style: const TextStyle(color: Colors.white54, fontSize: 12)),
-        IconButton(
-            tooltip: context.read<MindMapProvider>().t('cal.daysPlus'),
-            visualDensity: VisualDensity.compact,
-            icon: const Icon(Icons.add_circle_outline,
-                color: Colors.white54, size: 20),
-            onPressed: () => _changeDays(1)),
-      ],
-      const SizedBox(width: 6),
-      // ── ページに出す (= ユーザー要望: メンバー予定表もマインドマップや
-      //    ギャラリーに埋め込めるように) ── 今出ている人 × 日付の表を、
-      //    そのまま「編集できる表のノード」 として置く。
-      Builder(
-        builder: (bctx) => IconButton(
-          tooltip: _p.t('tool.putIntoPage'),
-          visualDensity: VisualDensity.compact,
-          // ★ アプリの外に出す (open_in_new) と紛らわしいので、 「ページに
-          //    差し込む」 の意味の絵に変更 + 周りに合わせて白にする。
-          icon: const Icon(Icons.post_add_rounded,
-              size: 20, color: Colors.white70),
-          onPressed: () => _putScheduleIntoPage(bctx),
-        ),
-      ),
-      // ── 共同編集 (= ユーザー要望: 「同期」 ではなく共同編集の形に。
-      //    Max プランだけの特典) ──
-      //    入にすると自分の予定を相手に出し、 相手の予定を定期的に取り込む
-      //    (自分の予定を共有するボタンはこれに畳んだ)。
-      //    誰も 1 週間書き込まなかったグループの分はサーバーから消える。
-      _buildCollabButton(inGroup),
-    ];
-    // ★ 左端に詰める (= ユーザー要望)。 幅が足りない時は横に流す。
-    //   ★ Align で包むのが要 (= 包まないと、 親の Column が中央に寄せる。
-    //     横スクロールの箱は幅が緩いと中身の幅まで縮むため)。
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 10, 10, 6),
-        child: SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: Row(mainAxisSize: MainAxisSize.min, children: children),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildDayGrid() {
-    final start = DateTime.fromMillisecondsSinceEpoch(_startMs);
-    final days = _days.clamp(1, 31);
-    final dates = [for (int i = 0; i < days; i++) start.add(Duration(days: i))];
-    final members = _members();
-    final todayKey = _key(DateTime.now());
-
-    return SingleChildScrollView(
-      scrollDirection: Axis.vertical,
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // 日付ヘッダー行 (タップで時間ビュー)
-            Row(children: [
-              const SizedBox(width: _nameW, height: _headH),
-              for (final d in dates)
-                GestureDetector(
-                  onTap: () => setState(
-                      () => _focusDay = DateTime(d.year, d.month, d.day)),
-                  child: Container(
-                    width: _colW,
-                    height: _headH,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                        border: Border.all(color: Colors.white12),
-                        color: _key(d) == todayKey
-                            ? const Color(0x2266BB6A)
-                            : const Color(0xFF1A1A26)),
-                    child: Text(
-                        '${d.month}/${d.day} (${_weekdayLabel(d.weekday)})',
-                        style: const TextStyle(
-                            color: Colors.white70, fontSize: 11)),
-                  ),
-                ),
-            ]),
-            for (final mem in members)
-              Row(children: [
-                _memberNameCell(mem, _rowH),
-                for (final d in dates) _dayCell(mem, d, todayKey),
-              ]),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _dayCell(({String? uid, String name, bool isMe}) mem, DateTime d,
-      String todayKey) {
-    final events = _eventsFor(mem, _key(d));
-    return GestureDetector(
-      onTap: () {
-        if (events.isEmpty && mem.isMe) {
-          _addEvent(d);
-        } else {
-          _showDayEvents(mem, d);
-        }
-      },
-      child: Container(
-        width: _colW,
-        height: _rowH,
-        padding: const EdgeInsets.all(4),
-        decoration: BoxDecoration(
-          border: Border.all(color: Colors.white12),
-          color: _key(d) == todayKey
-              ? const Color(0x1466BB6A)
-              : Colors.transparent,
-        ),
-        child: events.isEmpty
-            ? (mem.isMe
-                ? const Center(
-                    child: Icon(Icons.add, size: 16, color: Colors.white24))
-                : const SizedBox.shrink())
-            : Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  for (final e in events.take(3))
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 2),
-                      child: Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 4, vertical: 1),
-                        decoration: BoxDecoration(
-                          color: Color(e.colorArgb ?? 0xFF42526E)
-                              .withValues(alpha: 0.85),
-                          borderRadius: BorderRadius.circular(3),
-                        ),
-                        child: Text(_eventLabel(e),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                                color: Colors.white, fontSize: 10)),
-                      ),
-                    ),
-                  if (events.length > 3)
-                    Text('+${events.length - 3}',
-                        style: const TextStyle(
-                            color: Colors.white38, fontSize: 9)),
-                ],
-              ),
-      ),
-    );
-  }
-
-  // ── その日の時間単位ビュー (人 × 時間) ──
-  Widget _buildHourView() {
-    final day = _focusDay!;
-    final dateKey = _key(day);
-    final members = _members();
-    const hourW = 58.0;
-    const allDayW = 96.0;
-    const rowH = 56.0;
-    const headH = 26.0;
-    final hours = [for (int h = 0; h < 24; h++) h];
-
-    Widget hourCell(({String? uid, String name, bool isMe}) mem, int h) {
-      final evs =
-          _eventsFor(mem, dateKey).where((e) => _startHour(e) == h).toList();
-      return Container(
-        width: hourW,
-        height: rowH,
-        padding: const EdgeInsets.all(2),
-        decoration: BoxDecoration(border: Border.all(color: Colors.white12)),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            for (final e in evs.take(2))
-              Container(
-                width: double.infinity,
-                margin: const EdgeInsets.only(bottom: 1),
-                padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 1),
-                decoration: BoxDecoration(
-                  color:
-                      Color(e.colorArgb ?? 0xFF42526E).withValues(alpha: 0.85),
-                  borderRadius: BorderRadius.circular(2),
-                ),
-                child: Text(e.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Colors.white, fontSize: 9)),
-              ),
-          ],
-        ),
-      );
-    }
-
-    Widget allDayCell(({String? uid, String name, bool isMe}) mem) {
-      final evs =
-          _eventsFor(mem, dateKey).where((e) => _startHour(e) == null).toList();
-      return Container(
-        width: allDayW,
-        height: rowH,
-        padding: const EdgeInsets.all(3),
-        decoration: BoxDecoration(
-            border: Border.all(color: Colors.white12),
-            color: const Color(0xFF15151F)),
-        child: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              for (final e in evs)
-                Text('• ${e.title}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style:
-                        const TextStyle(color: Colors.white70, fontSize: 10)),
-            ],
-          ),
-        ),
-      );
-    }
-
-    return SingleChildScrollView(
-      scrollDirection: Axis.vertical,
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(14, 8, 8, 4),
-          child: Text('${day.month}/${day.day} (${_weekdayLabel(day.weekday)})',
-              style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600)),
-        ),
-        SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // 時刻ヘッダー
-              Row(children: [
-                const SizedBox(width: _nameW, height: headH),
-                Container(
-                  width: allDayW,
-                  height: headH,
-                  alignment: Alignment.center,
-                  decoration:
-                      BoxDecoration(border: Border.all(color: Colors.white12)),
-                  child: Text(context.read<MindMapProvider>().t('cal.allDay'),
-                      style: TextStyle(color: Colors.white54, fontSize: 11)),
-                ),
-                for (final h in hours)
-                  Container(
-                    width: hourW,
-                    height: headH,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                        border: Border.all(color: Colors.white12),
-                        color: const Color(0xFF1A1A26)),
-                    child: Text(
-                        context
-                            .read<MindMapProvider>()
-                            .t('cal.nHour')
-                            .replaceFirst('{h}', '$h'),
-                        style: const TextStyle(
-                            color: Colors.white54, fontSize: 10)),
-                  ),
-              ]),
-              for (final mem in members)
-                Row(children: [
-                  _memberNameCell(mem, rowH),
-                  allDayCell(mem),
-                  for (final h in hours) hourCell(mem, h),
-                ]),
-            ],
-          ),
-        ),
-      ]),
-    );
-  }
-}
-
-// ── スライド生成: 編集可能なスライド下書き (= ユーザー要望: 生成テキストを
-//    編集可能にする / 画像も加える) ──
-// タイトル・各箇条書きを TextEditingController で保持して直接編集できる。
-// image はそのスライドの AI 生成挿絵 (任意)。
 class _SlideDraft {
   final TextEditingController title;
   final List<TextEditingController> bullets;

@@ -136,10 +136,20 @@ service cloud.firestore {
       // 予定表。 1 人 1 ドキュメント。 書けるのは自分の分だけ。
       match /calendar/{docId} {
         allow read: if isMember(gid);
-        allow write: if isMember(gid)
+        allow create, update: if isMember(gid)
                      && (docId == request.auth.uid
                          // 旧版が使っていた 1 枚だけの置き場 (読み取り互換)。
                          || docId == 'events');
+        // ★ 消せるのは「自分の分」 と「期限切れ」。
+        //   共同編集の置き場は書き込むたびに expiresAt が 7 日先へ延びる
+        //   ので、 誰も 1 週間書かなかった分だけがここに当たる
+        //   (= ユーザー要望: 期限切れは他人の分も消せるように)。
+        //   期限が生きている他人の分は今までどおり消せない。
+        allow delete: if isMember(gid)
+                      && (docId == request.auth.uid
+                          || docId == 'events'
+                          || (resource.data.keys().hasAny(['expiresAt'])
+                              && resource.data.expiresAt < request.time));
       }
 
       // 上に書いていない下位コレクションは触らせない。

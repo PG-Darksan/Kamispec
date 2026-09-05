@@ -2884,16 +2884,14 @@ class MindMapProvider extends ChangeNotifier {
                 // 'events' はレガシー単一doc → 後で処理
                 continue;
               }
-              // 自分以外は allowed に入っていないとスキップ
-              if (ownerId != myUid && !allowed.contains(ownerId)) continue;
-              // 自分のドキュメントは自分がOFFなら無視（すでに myLocal で復元済み）
-              if (ownerId == myUid && !_calendarGroupSharingEnabled) {
-                continue;
-              }
               final fields = doc['fields'] as Map<String, dynamic>? ?? {};
-              // ★ 1 週間だれも書き込まなかった置き場は無かった事にする
-              //   (= ユーザー要望)。 見つけたらサーバーからも消しに行く
-              //   (自分の分以外は規則で断られる事があるので、 失敗は無視)。
+              // ★ 1 週間だれも書き込まなかった置き場は無かった事にして、
+              //   サーバーからも消す (= ユーザー要望: 期限切れは他人の分も
+              //   消せるように)。 規則側でも「期限切れなら誰でも消せる」
+              //   ようにしてある。
+              //   ★ 読み込みの絞り込み (allowed / 共有 OFF) より**先**に
+              //     見る。 後ろに置くと、 共有していない人の置き場が
+              //     絞り込みで飛ばされて永久に残る。
               final expRaw = fields['expiresAt']?['timestampValue'];
               if (expRaw is String) {
                 final exp = DateTime.tryParse(expRaw);
@@ -2902,6 +2900,12 @@ class MindMapProvider extends ChangeNotifier {
                   _deleteExpiredCalendarDoc(gid, ownerId);
                   continue;
                 }
+              }
+              // 自分以外は allowed に入っていないとスキップ
+              if (ownerId != myUid && !allowed.contains(ownerId)) continue;
+              // 自分のドキュメントは自分がOFFなら無視（すでに myLocal で復元済み）
+              if (ownerId == myUid && !_calendarGroupSharingEnabled) {
+                continue;
               }
               final jsonStr = _firestoreStr(fields['json']);
               if (jsonStr == null || jsonStr.isEmpty) continue;
@@ -28527,6 +28531,61 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Mostrar tudo',
       'ru': 'Показать все',
     },
+    'gantt.unassigned': {
+      'ja': '未割り当て',
+      'en': 'Unassigned',
+      'zh': '未分配',
+      'ko': '미배정',
+      'es': 'Sin asignar',
+      'fr': 'Non attribué',
+      'de': 'Nicht zugewiesen',
+      'pt': 'Não atribuído',
+      'ru': 'Без исполнителя',
+    },
+    'gantt.groupByMember': {
+      'ja': '人ごとにまとめる',
+      'en': 'Group by person',
+      'zh': '按人员分组',
+      'ko': '사람별로 묶기',
+      'es': 'Agrupar por persona',
+      'fr': 'Regrouper par personne',
+      'de': 'Nach Person gruppieren',
+      'pt': 'Agrupar por pessoa',
+      'ru': 'Сгруппировать по людям',
+    },
+    'gantt.groupByTask': {
+      'ja': '工程だけ並べる',
+      'en': 'List tasks only',
+      'zh': '仅列出工序',
+      'ko': '공정만 나열',
+      'es': 'Mostrar solo las tareas',
+      'fr': 'Afficher seulement les tâches',
+      'de': 'Nur Vorgänge auflisten',
+      'pt': 'Listar apenas as tarefas',
+      'ru': 'Только задачи',
+    },
+    'gantt.putAsChart': {
+      'ja': '工程表として入れる',
+      'en': 'Insert as a Gantt chart',
+      'zh': '作为甘特图插入',
+      'ko': '공정표로 넣기',
+      'es': 'Insertar como diagrama de Gantt',
+      'fr': 'Insérer comme diagramme de Gantt',
+      'de': 'Als Gantt-Diagramm einfügen',
+      'pt': 'Inserir como gráfico de Gantt',
+      'ru': 'Вставить как диаграмму Ганта',
+    },
+    'gantt.putAsTable': {
+      'ja': '人 × 日付の表として入れる',
+      'en': 'Insert as a person × date table',
+      'zh': '作为人员 × 日期表插入',
+      'ko': '사람 × 날짜 표로 넣기',
+      'es': 'Insertar como tabla persona × fecha',
+      'fr': 'Insérer comme tableau personne × date',
+      'de': 'Als Tabelle Person × Datum einfügen',
+      'pt': 'Inserir como tabela pessoa × data',
+      'ru': 'Вставить как таблицу «человек × дата»',
+    },
     'gantt.hideChartTabs': {
       'ja': 'チャート一覧を隠す',
       'en': 'Hide the chart list',
@@ -34237,6 +34296,18 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Conectado — não é possível remover',
       'ru': 'Подключён — убрать нельзя',
       'fa': 'متصل است — قابل حذف نیست',
+    },
+    'cursorWrap.cannotRemovePrimary': {
+      'ja': 'メインモニターなので外せません',
+      'en': 'This is the main monitor — cannot remove',
+      'zh': '这是主显示器，无法移除',
+      'ko': '메인 모니터라서 뺄 수 없습니다',
+      'es': 'Es el monitor principal: no se puede quitar',
+      'fr': "C'est l'écran principal — impossible à retirer",
+      'de': 'Hauptmonitor – nicht entfernbar',
+      'pt': 'É o monitor principal — não é possível remover',
+      'ru': 'Это главный монитор — убрать нельзя',
+      'fa': 'نمایشگر اصلی است — قابل حذف نیست',
     },
     'cursorWrap.edgeGoesTo': {
       'ja': 'この端から行く先',
@@ -45252,19 +45323,19 @@ class MindMapProvider extends ChangeNotifier {
       'en': 'Built automatically from the group\'s shared calendar. Only members who turned calendar sharing ON appear here. To show your own column, turn the calendar sharing button ON (while it says your schedule is private, others cannot see it). Adding and editing events syncs to the cloud the same way as the calendar.',
     },
     'planner.helpTabsTitle': {
-      'ja': '上下の並び',
-      'en': 'The top and bottom halves',
-      'zh': '上下布局',
-      'ko': '위아래 배치',
-      'es': 'Mitades superior e inferior',
-      'fr': 'Moitiés haute et basse',
-      'de': 'Obere und untere Hälfte',
-      'pt': 'Metades superior e inferior',
-      'ru': 'Верхняя и нижняя части',
+      'ja': '行のまとめ方',
+      'en': 'How the rows are grouped',
+      'zh': '行的分组方式',
+      'ko': '행을 묶는 방법',
+      'es': 'Cómo se agrupan las filas',
+      'fr': 'Regroupement des lignes',
+      'de': 'Wie die Zeilen gruppiert sind',
+      'pt': 'Como as linhas são agrupadas',
+      'ru': 'Как сгруппированы строки',
     },
     'planner.helpTabs': {
-      'ja': '上に全体の予定 (工程表)、下にメンバーの予定が出ます。境目を掴むと高さを変えられ、上のボタンで片方だけにもできます。並びと高さは次回もそのままです。',
-      'en': 'The overall schedule (Gantt) sits on top and the member schedule below. Drag the divider to change their heights, or use the buttons above to show just one. The layout is remembered.',
+      'ja': '工程表とメンバー予定表は 1 枚に合体しています。行は人ごとにまとまり、人の行にはその人の予定が帯で出て、その下にその人に割り当てた工程のバーが並びます。どの人にも当てはまらない工程は最後の「未割り当て」に入ります。上のボタンで「工程だけ並べる」に切り替えられます。',
+      'en': 'The Gantt chart and the member schedule are one view. Rows are grouped by person: the person row shows their calendar as bands, and the tasks assigned to them line up underneath. Tasks that match nobody fall into "Unassigned" at the end. Use the button above to switch to a plain task list.',
     },
     'icon.shapeCircle': {
       'ja': '丸',
@@ -58194,6 +58265,17 @@ class MindMapProvider extends ChangeNotifier {
           'werden.',
       'pt': 'Um monitor realmente conectado nao pode ser removido.',
       'ru': 'Подключённый монитор нельзя удалить.',
+    },
+    'cursorWrap.primaryLocked': {
+      'ja': 'メインモニターは外せません。',
+      'en': 'The main monitor cannot be removed.',
+      'zh': '主显示器无法移除。',
+      'ko': '메인 모니터는 제거할 수 없습니다.',
+      'es': 'El monitor principal no se puede quitar.',
+      'fr': "L'écran principal ne peut pas être retiré.",
+      'de': 'Der Hauptmonitor kann nicht entfernt werden.',
+      'pt': 'O monitor principal não pode ser removido.',
+      'ru': 'Главный монитор нельзя удалить.',
     },
     'calc.sciTitle': {
       'ja': '関数電卓',
