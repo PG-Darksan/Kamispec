@@ -543,6 +543,72 @@ IconData pageIconFor(MindMapProvider provider, MindMapPage p, IconData fallback)
   return fallback;
 }
 
+/// 押したボタンのすぐ近くにダイアログを出す (= ユーザー要望: 画面の真ん中
+/// に出ると押した所から遠くて使いづらい)。
+///
+/// [anchorContext] は**押したボタン自身**の BuildContext (`Builder` で包んで
+/// 渡す)。 その矩形の真下に出し、 入り切らない時は上へ、 それも駄目なら
+/// ボタンを中心にして画面の内側へ寄せる。 位置が取れない時は今までどおり
+/// 画面中央に出す。
+///
+/// 画面いっぱいの道具 (工程表・予定表) の中から呼ぶための共通版。
+/// `_MindMapScreenState._showNearDialogMain` はマウス位置を基準にする本体側の
+/// 版で、 あちらは分割ペインの矩形も見る。
+Future<T?> showDialogNearWidget<T>(
+  BuildContext anchorContext, {
+  required WidgetBuilder builder,
+  double width = 420,
+  double height = 380,
+  bool useRootNavigator = true,
+}) {
+  Rect? anchor;
+  final ro = anchorContext.findRenderObject();
+  if (ro is RenderBox && ro.hasSize && ro.attached) {
+    final o = ro.localToGlobal(Offset.zero);
+    if (o.dx.isFinite && o.dy.isFinite) anchor = o & ro.size;
+  }
+  return showDialog<T>(
+    context: anchorContext,
+    useRootNavigator: useRootNavigator,
+    builder: (dctx) {
+      final at = anchor;
+      if (at == null) return builder(dctx);
+      final screen = MediaQuery.of(dctx).size;
+      final w = math.min(width, math.max(240.0, screen.width - 24));
+      final left = (at.center.dx - w / 2)
+          .clamp(12.0, math.max(12.0, screen.width - w - 12))
+          .toDouble();
+      var top = at.bottom + 8;
+      if (top + height > screen.height - 12) {
+        final above = at.top - height - 8;
+        top = above >= 12
+            ? above
+            : (at.center.dy - height / 2)
+                .clamp(12.0, math.max(12.0, screen.height - height - 12))
+                .toDouble();
+      }
+      // 入り切らない分は切り落とさず巻物にする。
+      final maxH = math.max(160.0, screen.height - top - 12);
+      return Stack(children: [
+        Positioned(
+          left: left,
+          top: top,
+          width: w,
+          child: Material(
+            type: MaterialType.transparency,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: maxH),
+              child: SingleChildScrollView(
+                child: Builder(builder: builder),
+              ),
+            ),
+          ),
+        ),
+      ]);
+    },
+  );
+}
+
 class MindMapScreen extends StatefulWidget {
   const MindMapScreen({super.key});
   @override
@@ -113493,13 +113559,20 @@ class _GanttStore {
 
 /// ガントチャート + メンバー予定表 を 1 つにまとめた「予定表」ツール
 /// (= ユーザー要望: メンバー予定表とガントチャートは合体させて予定表みたいな
-/// 名前のボタンにして)。 上部のタブでどちらを表示するか切り替える。
+/// 名前のボタンにして)。
+///
+/// ★ 上下に並べて同時に出す (= ユーザー要望: 上に全体の予定、 下にメンバーの
+///   予定が出るみたいな感じに)。 以前はタブで片方だけ出していたが、 全体の
+///   工程を見ながら人の空きを埋める使い方ができなかった。
+///   ・境目を掴んで上下の高さを変えられる (割合は prefs に残る)
+///   ・上の見出しのボタンで、 どちらかだけを出す事もできる
 /// データは従来どおり別々の固定 ID ('global_gantt' / 'global_schedule') に
 /// 保存されるので、 既存の内容はそのまま引き継がれる。
 class _SchedulePlannerView extends StatefulWidget {
   final MindMapProvider provider;
 
-  /// 初期表示タブ: 0=ガントチャート / 1=メンバー予定表。
+  /// 開いた時にどちらを主役にするか: 0=ガントチャート / 1=メンバー予定表。
+  /// 片方を畳んでいた時に、 頼まれた側を出し直すのに使う。
   final int initialTab;
   const _SchedulePlannerView(
       {super.key, required this.provider, this.initialTab = 0});
@@ -113508,40 +113581,79 @@ class _SchedulePlannerView extends StatefulWidget {
 }
 
 class _SchedulePlannerViewState extends State<_SchedulePlannerView> {
-  late int _tab = widget.initialTab.clamp(0, 1);
+  /// 上 (ガントチャート) を出すか / 下 (メンバー予定表) を出すか。
+  bool _showGantt = true;
+  bool _showMember = true;
 
-  /// タブの並び順 (= ユーザー要望: どちらを左に置くかドラッグ&ドロップで
-  /// 入れ替えられるように)。 prefs に残す。
-  List<int> _order = [0, 1];
-  static const String _kOrderKey = 'plannerTabOrder_v1';
+  /// 上が占める割合 (0.15〜0.85)。 境目を掴んで動かす。
+  double _topRatio = 0.55;
+
+  static const String _kShowGanttKey = 'plannerShowGantt_v1';
+  static const String _kShowMemberKey = 'plannerShowMember_v1';
+  static const String _kRatioKey = 'plannerTopRatio_v1';
+  static const double _kDividerH = 10;
 
   @override
   void initState() {
     super.initState();
-    unawaited(_loadOrder());
+    unawaited(_loadLayout());
   }
 
-  Future<void> _loadOrder() async {
+  Future<void> _loadLayout() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString(_kOrderKey) ?? '';
-      if (raw == '1,0' && mounted) setState(() => _order = [1, 0]);
+      final g = prefs.getBool(_kShowGanttKey) ?? true;
+      final m = prefs.getBool(_kShowMemberKey) ?? true;
+      final r = prefs.getDouble(_kRatioKey) ?? 0.55;
+      if (!mounted) return;
+      setState(() {
+        // 両方切のまま保存されていたら、 頼まれた側だけ出す。
+        _showGantt = (g || m) ? g : widget.initialTab == 0;
+        _showMember = (g || m) ? m : widget.initialTab == 1;
+        _topRatio = r.clamp(0.15, 0.85);
+      });
+      // 開く時に名指しされた側が畳まれていたら開き直す
+      // (= ヘッダーの「工程表」 「メンバー予定表」 どちらから来ても出る)。
+      if (widget.initialTab == 0 && !_showGantt) {
+        setState(() => _showGantt = true);
+        unawaited(_saveLayout());
+      } else if (widget.initialTab == 1 && !_showMember) {
+        setState(() => _showMember = true);
+        unawaited(_saveLayout());
+      }
     } catch (_) {}
   }
 
-  Future<void> _swapOrder() async {
-    setState(() => _order = [_order[1], _order[0]]);
+  Future<void> _saveLayout() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_kOrderKey, _order.join(','));
+      await prefs.setBool(_kShowGanttKey, _showGantt);
+      await prefs.setBool(_kShowMemberKey, _showMember);
+      await prefs.setDouble(_kRatioKey, _topRatio);
     } catch (_) {}
+  }
+
+  /// 片方を出す / 畳む。 両方畳むことはできない (何も出なくなるため)。
+  void _toggle(bool gantt) {
+    setState(() {
+      if (gantt) {
+        if (_showGantt && !_showMember) return; // 最後の 1 つは畳ませない
+        _showGantt = !_showGantt;
+      } else {
+        if (_showMember && !_showGantt) return;
+        _showMember = !_showMember;
+      }
+    });
+    unawaited(_saveLayout());
   }
 
   /// 予定表の仕組み (同期のされ方) の説明 (= ユーザー要望)。
-  Future<void> _showPlannerHelp() async {
+  Future<void> _showPlannerHelp(BuildContext anchor) async {
     final provider = widget.provider;
-    await showDialog<void>(
-      context: context,
+    await showDialogNearWidget<void>(
+      anchor,
+      width: 440,
+      height: 420,
       builder: (dctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E32),
         title: Text(provider.t('planner.helpTitle'),
@@ -113571,9 +113683,7 @@ class _SchedulePlannerViewState extends State<_SchedulePlannerView> {
                   const SizedBox(height: 4),
                   Text(provider.t(e.$2),
                       style: const TextStyle(
-                          color: Colors.white70,
-                          fontSize: 12,
-                          height: 1.6)),
+                          color: Colors.white70, fontSize: 12, height: 1.6)),
                   const SizedBox(height: 12),
                 ],
               ],
@@ -113591,121 +113701,124 @@ class _SchedulePlannerViewState extends State<_SchedulePlannerView> {
     );
   }
 
-  Widget _tabBtn(int index, IconData icon, String label, Color color) {
-    final on = _tab == index;
-    // ドラッグで左右を入れ替えられるようにする (= ユーザー要望)。
-    return Expanded(
-      child: DragTarget<int>(
-        onWillAcceptWithDetails: (d) => d.data != index,
-        onAcceptWithDetails: (_) => unawaited(_swapOrder()),
-        builder: (dctx, cand, _) => Draggable<int>(
-          data: index,
-          feedback: Material(
-            color: Colors.transparent,
-            child: SizedBox(
-                width: 240, child: _tabInner(index, icon, label, color)),
+  /// 上下どちらを出すかの切替ボタン (旧タブの置き換え)。
+  Widget _sectionBtn(bool gantt, IconData icon, String label, Color color) {
+    final on = gantt ? _showGantt : _showMember;
+    return InkWell(
+      onTap: () => _toggle(gantt),
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 10),
+        decoration: BoxDecoration(
+          color: on ? color.withValues(alpha: 0.18) : Colors.transparent,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: on ? color : Colors.white24,
+            width: on ? 1.4 : 1,
           ),
-          childWhenDragging:
-              Opacity(opacity: 0.35, child: _tabInner(index, icon, label, color)),
-          child: Container(
-            decoration: cand.isNotEmpty
-                ? BoxDecoration(
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: const Color(0xFFFFB347)),
-                  )
-                : null,
-            child: _tabInner(index, icon, label, color),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(on ? icon : Icons.visibility_off_rounded,
+              size: 15, color: on ? color : Colors.white38),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: on ? Colors.white : Colors.white54,
+              fontSize: 12,
+              fontWeight: on ? FontWeight.w700 : FontWeight.w500,
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+
+  /// 上下の境目。 掴んで動かすと高さの割合が変わる。
+  Widget _dividerBar(double fieldH) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.resizeRow,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onVerticalDragUpdate: (d) {
+          if (fieldH <= 0) return;
+          setState(() =>
+              _topRatio = (_topRatio + d.delta.dy / fieldH).clamp(0.15, 0.85));
+        },
+        onVerticalDragEnd: (_) => unawaited(_saveLayout()),
+        child: SizedBox(
+          height: _kDividerH,
+          child: Center(
+            child: Container(
+              width: 46,
+              height: 3,
+              decoration: BoxDecoration(
+                color: Colors.white24,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
           ),
         ),
       ),
     );
   }
 
-  Widget _tabInner(int index, IconData icon, String label, Color color) {
-    final on = _tab == index;
-    return InkWell(
-        onTap: () => setState(() => _tab = index),
-        borderRadius: BorderRadius.circular(8),
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 6),
-          decoration: BoxDecoration(
-            color: on ? color.withValues(alpha: 0.18) : Colors.transparent,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(
-              color: on ? color : Colors.white24,
-              width: on ? 1.4 : 1,
-            ),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(icon, size: 16, color: on ? color : Colors.white54),
-              const SizedBox(width: 6),
-              Flexible(
-                child: Text(
-                  label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: on ? Colors.white : Colors.white60,
-                    fontSize: 12,
-                    fontWeight: on ? FontWeight.w700 : FontWeight.w500,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final provider = widget.provider;
+    final gantt = _GanttPageView(
+        key: const ValueKey('planner_gantt'),
+        provider: provider,
+        pageId: 'global_gantt');
+    final member = _MemberSchedulePageView(
+        key: const ValueKey('planner_schedule'),
+        provider: provider,
+        pageId: 'global_schedule');
     return Container(
       color: const Color(0xFF12121C),
       child: Column(children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(10, 8, 10, 6),
           child: Row(children: [
-            // 並び順は _order に従う (= ドラッグで入れ替え可能)。
-            for (int i = 0; i < _order.length; i++) ...[
-              if (i > 0) const SizedBox(width: 8),
-              if (_order[i] == 0)
-                _tabBtn(0, Icons.view_timeline_rounded,
-                    provider.t('hdr.gantt'), const Color(0xFF4FC3F7))
-              else
-                _tabBtn(1, Icons.groups_rounded,
-                    provider.t('hdr.memberSchedule'),
-                    const Color(0xFF66BB6A)),
-            ],
+            // ★ 上=全体の予定 (工程表)、 下=メンバーの予定 の順に固定
+            //   (= ユーザー要望)。 ボタンは「出す / 畳む」 の切替。
+            _sectionBtn(true, Icons.view_timeline_rounded,
+                provider.t('hdr.gantt'), const Color(0xFF4FC3F7)),
+            const SizedBox(width: 8),
+            _sectionBtn(false, Icons.groups_rounded,
+                provider.t('hdr.memberSchedule'), const Color(0xFF66BB6A)),
             const SizedBox(width: 4),
             // ── 同期の仕組みの説明 (= ユーザー要望) ──
-            IconButton(
-              tooltip: provider.t('planner.helpTip'),
-              padding: EdgeInsets.zero,
-              constraints:
-                  const BoxConstraints(minWidth: 32, minHeight: 32),
-              icon: const Icon(Icons.help_outline_rounded,
-                  color: Colors.white54, size: 18),
-              onPressed: () => unawaited(_showPlannerHelp()),
+            Builder(
+              builder: (bctx) => IconButton(
+                tooltip: provider.t('planner.helpTip'),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                icon: const Icon(Icons.help_outline_rounded,
+                    color: Colors.white54, size: 18),
+                onPressed: () => unawaited(_showPlannerHelp(bctx)),
+              ),
             ),
           ]),
         ),
         const Divider(color: Colors.white12, height: 1),
-        // タブ切替のたびに作り直す (= 隠れたガント側が autofocus を奪ったり、
-        // 見えない側がキー入力を横取りするのを防ぐ)。 データは都度保存済み
-        // なので作り直しても内容は失われない。
         Expanded(
-          child: _tab == 0
-              ? _GanttPageView(
-                  key: const ValueKey('planner_gantt'),
-                  provider: provider,
-                  pageId: 'global_gantt')
-              : _MemberSchedulePageView(
-                  key: const ValueKey('planner_schedule'),
-                  provider: provider,
-                  pageId: 'global_schedule'),
+          child: !(_showGantt && _showMember)
+              // 片方だけの時は目一杯使う。
+              ? (_showGantt ? gantt : member)
+              : LayoutBuilder(builder: (_, cons) {
+                  final h = cons.maxHeight - _kDividerH;
+                  final topH = (h * _topRatio)
+                      .clamp(80.0, math.max(80.0, h - 80))
+                      .toDouble();
+                  return Column(children: [
+                    SizedBox(height: topH, child: gantt),
+                    _dividerBar(h),
+                    SizedBox(height: math.max(0.0, h - topH), child: member),
+                  ]);
+                }),
         ),
       ]),
     );
@@ -113743,6 +113856,32 @@ class _GanttPageViewState extends State<_GanttPageView> {
   final FocusNode _ganttFocus = FocusNode();
   // ── 表示単位 (= ユーザー要望: 日単位だけでなく時間単位のタスク表) ──
   //   'day' = 1 列 1 日、 'hour' = 1 列 1 時間。
+  /// チャート一覧 (タブの並び) を出しているか
+  /// (= ユーザー要望: 非表示にするボタンも欲しい)。 prefs に残す。
+  bool _chartTabsVisible = true;
+  static const String _kChartTabsKey = 'ganttChartTabsVisible';
+
+  Future<void> _toggleChartTabs() async {
+    setState(() => _chartTabsVisible = !_chartTabsVisible);
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setBool(_kChartTabsKey, _chartTabsVisible);
+    } catch (_) {}
+  }
+
+  /// 設定の窓は押したボタンの近くに出す (= ユーザー要望)。
+  /// [anchor] が無い時 (キー操作など) は今までどおり画面中央。
+  Future<T?> _ganttDialog<T>(BuildContext? anchor,
+      {required WidgetBuilder builder,
+      double width = 420,
+      double height = 380}) {
+    if (anchor != null && anchor.mounted) {
+      return showDialogNearWidget<T>(anchor,
+          builder: builder, width: width, height: height);
+    }
+    return showDialog<T>(context: context, builder: builder);
+  }
+
   String _unit = 'day';
   // ── 時間モードで表示する時間帯 (= ユーザー要望: 表示しない時間帯を設定)。
   //   [_showFromHour, _showToHour) の時間だけ列に出す。 0〜24 で全表示。
@@ -114080,6 +114219,11 @@ class _GanttPageViewState extends State<_GanttPageView> {
           widget.provider.t('gantt.defaultChart').replaceFirst('{n}', '1'),
     );
     final c12 = await _GanttStore.load12h();
+    // チャート一覧を隠していたか (= ユーザー要望)。
+    try {
+      final sp = await SharedPreferences.getInstance();
+      _chartTabsVisible = sp.getBool(_kChartTabsKey) ?? true;
+    } catch (_) {}
     final charts = data.charts;
     // = ユーザー要望: 各チャートは最初から 1 行分ある状態にする。
     for (var chartIndex = 0; chartIndex < charts.length; chartIndex++) {
@@ -114231,7 +114375,7 @@ class _GanttPageViewState extends State<_GanttPageView> {
   ///   ・色は「済み / 進行中 / これから」 に読み替える (今日を基準に)
   ///   ・担当者は名前の後ろに付ける
   /// 時間単位の表や休止の区間はノード側に置き場が無いので落ちる。
-  Future<void> _putGanttIntoPage() async {
+  Future<void> _putGanttIntoPage([BuildContext? anchor]) async {
     final provider = widget.provider;
     // 全画面のダイアログの中なので、 SnackBar ではなく上に出す。
     void tell(String msg, Color c) => showTopToast(context, msg, c);
@@ -114275,21 +114419,28 @@ class _GanttPageViewState extends State<_GanttPageView> {
             ? _charts[_selChart].name
             : '')
         .trim();
-    final placed = await askAndPutChartIntoPage(context, provider, {
-      'chartType': 'gantt',
-      'title': title.isEmpty ? provider.t('hdr.gantt') : title,
-      'tasks': tasks,
-    });
+    final placed = await askAndPutChartIntoPage(
+      context,
+      provider,
+      {
+        'chartType': 'gantt',
+        'title': title.isEmpty ? provider.t('hdr.gantt') : title,
+        'tasks': tasks,
+      },
+      anchorContext: anchor,
+    );
     if (!mounted || placed == null) return;
     tell(provider.t('tool.putIntoPageDone').replaceFirst('{page}', placed),
         const Color(0xFF43B97F));
   }
 
-  Future<void> _showGanttNotifySettings() async {
+  /// [anchor] は押したボタンの BuildContext。 その近くに出す (= ユーザー要望)。
+  Future<void> _showGanttNotifySettings([BuildContext? anchor]) async {
     bool enabled = _notifyEnabled;
     TimeOfDay time = TimeOfDay(hour: _notifyHour, minute: _notifyMinute);
-    final ok = await showDialog<bool>(
-      context: context,
+    final ok = await _ganttDialog<bool>(
+      anchor,
+      height: 320,
       builder: (dctx) => StatefulBuilder(
         builder: (dctx, setD) => AlertDialog(
           backgroundColor: const Color(0xFF1E1E32),
@@ -114667,7 +114818,7 @@ class _GanttPageViewState extends State<_GanttPageView> {
 
   /// 時間モードの表示範囲と、タスクを設定しない時間帯を編集する。
   /// 設定不可時間帯は列自体を消さず、重なったタスク部分だけ描画から除外する。
-  Future<void> _showHoursDialog() async {
+  Future<void> _showHoursDialog([BuildContext? anchor]) async {
     int from = _showFromHour, to = _showToHour;
     var blocked = List<GanttBlockedInterval>.from(_blockedIntervals);
 
@@ -114790,8 +114941,10 @@ class _GanttPageViewState extends State<_GanttPageView> {
       );
     }
 
-    final confirmed = await showDialog<bool>(
-      context: context,
+    final confirmed = await _ganttDialog<bool>(
+      anchor,
+      width: 460,
+      height: 460,
       builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
         Widget hourDropdown(int value, bool isFrom) {
           return DropdownButton<int>(
@@ -115121,6 +115274,9 @@ class _GanttPageViewState extends State<_GanttPageView> {
 
   // ── チャート切替タブ (= ユーザー要望: チャート自体を複数作成) ──
   Widget _buildChartTabs() {
+    // ★ 「チャートを追加」 は画面のいちばん右ではなく、 タブの並びのすぐ右に
+    //   置く (= ユーザー要望: 端まで遠くて押しづらい)。 タブと一緒に横へ
+    //   流れるので、 いくつ増えても最後のタブの隣にある。
     return SizedBox(
       height: 36,
       child: Row(children: [
@@ -115128,8 +115284,24 @@ class _GanttPageViewState extends State<_GanttPageView> {
           child: ListView.builder(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            itemCount: _charts.length,
+            itemCount: _charts.length + 1,
             itemBuilder: (_, i) {
+              if (i == _charts.length) {
+                return Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: IconButton(
+                    tooltip:
+                        context.read<MindMapProvider>().t('gantt.addChart'),
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints(minWidth: 32, minHeight: 28),
+                    icon: const Icon(Icons.add_box_rounded,
+                        color: Color(0xFF4FC3F7), size: 22),
+                    onPressed: _addChart,
+                  ),
+                );
+              }
               final sel = i == _selChart;
               return Padding(
                 padding: const EdgeInsets.only(right: 6),
@@ -115170,13 +115342,6 @@ class _GanttPageViewState extends State<_GanttPageView> {
               );
             },
           ),
-        ),
-        IconButton(
-          tooltip: context.read<MindMapProvider>().t('gantt.addChart'),
-          visualDensity: VisualDensity.compact,
-          icon: const Icon(Icons.add_box_rounded,
-              color: Color(0xFF4FC3F7), size: 22),
-          onPressed: _addChart,
         ),
       ]),
     );
@@ -115806,14 +115971,16 @@ class _GanttPageViewState extends State<_GanttPageView> {
                   ),
                   // ── 表示する時間帯の設定 (時間モードのみ) (= ユーザー要望) ──
                   if (_unit == 'hour')
-                    IconButton(
-                      tooltip: context
-                          .read<MindMapProvider>()
-                          .t('gantt.timeAndBlockedTitle'),
-                      visualDensity: VisualDensity.compact,
-                      icon: const Icon(Icons.schedule_rounded,
-                          size: 20, color: Colors.white70),
-                      onPressed: _showHoursDialog,
+                    Builder(
+                      builder: (bctx) => IconButton(
+                        tooltip: context
+                            .read<MindMapProvider>()
+                            .t('gantt.timeAndBlockedTitle'),
+                        visualDensity: VisualDensity.compact,
+                        icon: const Icon(Icons.schedule_rounded,
+                            size: 20, color: Colors.white70),
+                        onPressed: () => _showHoursDialog(bctx),
+                      ),
                     ),
                   // ── 12時間(AM/PM) / 24時間 表記の切替 (= ユーザー要望) ──
                   if (_unit == 'hour')
@@ -115834,31 +116001,52 @@ class _GanttPageViewState extends State<_GanttPageView> {
                   // ── ページに出す (= ユーザー要望: ガントチャートを
                   //    マインドマップやギャラリーに埋め込めるように) ──
                   //    今の表を「編集できる工程表のノード」 として置く。
-                  IconButton(
-                    tooltip: widget.provider.t('tool.putIntoPage'),
-                    visualDensity: VisualDensity.compact,
-                    // ★ アプリの外に出す (open_in_new) と紛らわしいので、
-                    //    「ページに差し込む」 の意味の絵に変更 + 周りに
-                    //    合わせて白にする (= ユーザー要望)。
-                    icon: const Icon(Icons.post_add_rounded,
-                        size: 20, color: Colors.white70),
-                    onPressed: _putGanttIntoPage,
+                  Builder(
+                    builder: (bctx) => IconButton(
+                      tooltip: widget.provider.t('tool.putIntoPage'),
+                      visualDensity: VisualDensity.compact,
+                      // ★ アプリの外に出す (open_in_new) と紛らわしいので、
+                      //    「ページに差し込む」 の意味の絵に変更 + 周りに
+                      //    合わせて白にする (= ユーザー要望)。
+                      icon: const Icon(Icons.post_add_rounded,
+                          size: 20, color: Colors.white70),
+                      // 「どのページに入れますか」 は押したボタンの近くへ。
+                      onPressed: () => _putGanttIntoPage(bctx),
+                    ),
                   ),
                   // ── 予定の通知設定 (= ユーザー要望: ガントの予定が通知される時刻を設定) ──
+                  Builder(
+                    builder: (bctx) => IconButton(
+                      tooltip: context
+                          .read<MindMapProvider>()
+                          .t('gantt.notifySettings'),
+                      visualDensity: VisualDensity.compact,
+                      icon: Icon(
+                          _notifyEnabled
+                              ? Icons.notifications_active_rounded
+                              : Icons.notifications_none_rounded,
+                          size: 20,
+                          color: _notifyEnabled
+                              ? const Color(0xFFFFB347)
+                              : Colors.white70),
+                      onPressed: () => _showGanttNotifySettings(bctx),
+                    ),
+                  ),
+                  // ── チャート一覧の表示 / 非表示 (= ユーザー要望) ──
                   IconButton(
-                    tooltip: context
-                        .read<MindMapProvider>()
-                        .t('gantt.notifySettings'),
+                    tooltip: widget.provider.t(_chartTabsVisible
+                        ? 'gantt.hideChartTabs'
+                        : 'gantt.showChartTabs'),
                     visualDensity: VisualDensity.compact,
                     icon: Icon(
-                        _notifyEnabled
-                            ? Icons.notifications_active_rounded
-                            : Icons.notifications_none_rounded,
+                        _chartTabsVisible
+                            ? Icons.tab_rounded
+                            : Icons.tab_unselected_rounded,
                         size: 20,
-                        color: _notifyEnabled
-                            ? const Color(0xFFFFB347)
+                        color: _chartTabsVisible
+                            ? const Color(0xFF4FC3F7)
                             : Colors.white70),
-                    onPressed: _showGanttNotifySettings,
+                    onPressed: _toggleChartTabs,
                   ),
                   // ── サイド編集メニューの開閉 (= ユーザー要望: 動画エディター風) ──
                   IconButton(
@@ -115875,20 +116063,13 @@ class _GanttPageViewState extends State<_GanttPageView> {
                     onPressed: () =>
                         setState(() => _sidePanelOpen = !_sidePanelOpen),
                   ),
-                  const SizedBox(width: 8),
-                  ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF4FC3F7),
-                        foregroundColor: Colors.black,
-                        visualDensity: VisualDensity.compact),
-                    onPressed: () => _editTask(null),
-                    icon: const Icon(Icons.add, size: 18),
-                    label: Text(widget.provider.t('btn.add')),
-                  ),
+                  // ★ 「+ 追加」 は置かない (= ユーザー要望: 表の下の
+                  //   「行を追加」 で足りるので要らない)。
                 ]),
               ),
               // ── チャート切替タブ (= ユーザー要望: チャートを複数作成) ──
-              _buildChartTabs(),
+              //    非表示にもできる (= ユーザー要望)。
+              if (_chartTabsVisible) _buildChartTabs(),
               const Divider(color: Colors.white12, height: 1),
               if (_tasks.isNotEmpty)
                 Padding(
@@ -120784,8 +120965,73 @@ String diagramTitleOf(String code) {
 
 /// 円グラフを「編集できるノード」 として、 選んだページへ置く
 /// (= ユーザー要望: 画像ではなく要素として転送)。
+/// 「どのページに入れますか」 の一覧。 図と表で同じ物を出すので 1 か所に
+/// まとめた。 [anchorContext] があれば、 押したボタンの近くに出す
+/// (= ユーザー要望: 画面の真ん中だと押した所から遠い)。
+Future<String?> _pickTargetPageDialog(
+    BuildContext context,
+    MindMapProvider provider,
+    List<MindMapPage> pages,
+    BuildContext? anchorContext) {
+  Widget build(BuildContext dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Text(provider.t('map.pickTargetPage'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        content: SizedBox(
+          width: math.min(380.0, MediaQuery.sizeOf(dctx).width - 48),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 360),
+            child: ListView(shrinkWrap: true, children: [
+              ListTile(
+                dense: true,
+                leading: const Icon(Icons.add_box_outlined,
+                    color: Color(0xFF43B97F), size: 20),
+                title: Text(provider.t('map.newPage'),
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700)),
+                onTap: () => Navigator.pop(dctx, '__new__'),
+              ),
+              if (pages.isNotEmpty) const Divider(color: Colors.white12),
+              for (final pg in pages)
+                ListTile(
+                  dense: true,
+                  leading: Icon(
+                      pg.pageType == 'bookshelf'
+                          ? Icons.photo_library_outlined
+                          : Icons.map_outlined,
+                      color: Colors.white54,
+                      size: 18),
+                  title: Text(pg.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style:
+                          const TextStyle(color: Colors.white, fontSize: 13)),
+                  onTap: () => Navigator.pop(dctx, pg.id),
+                ),
+            ]),
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dctx),
+              child: Text(provider.t('btn.cancel'),
+                  style: const TextStyle(color: Colors.white54))),
+        ],
+      );
+  if (anchorContext != null && anchorContext.mounted) {
+    return showDialogNearWidget<String>(anchorContext,
+        builder: build, width: 380, height: 420);
+  }
+  return showDialog<String>(context: context, builder: build);
+}
+
+/// [anchorContext] を渡すと、 押したボタンのすぐ近くに出す
+/// (= ユーザー要望: 「どのページに入れますか」 が画面中央だと遠い)。
 Future<String?> askAndPutChartIntoPage(BuildContext context,
-    MindMapProvider provider, Map<dynamic, dynamic> m) async {
+    MindMapProvider provider, Map<dynamic, dynamic> m,
+    {BuildContext? anchorContext}) async {
   final kind = '${m['chartType'] ?? 'pie'}';
   final isGantt = kind == 'gantt';
   final isSeq = kind == 'sequence';
@@ -120867,55 +121113,8 @@ Future<String?> askAndPutChartIntoPage(BuildContext context,
   final pages = provider.pages
       .where((p) => p.pageType == 'normal' || p.pageType == 'bookshelf')
       .toList();
-  final chosen = await showDialog<String>(
-    context: context,
-    builder: (dctx) => AlertDialog(
-      backgroundColor: const Color(0xFF1E1E32),
-      title: Text(provider.t('map.pickTargetPage'),
-          style: const TextStyle(color: Colors.white, fontSize: 15)),
-      content: SizedBox(
-        width: math.min(380.0, MediaQuery.sizeOf(dctx).width - 48),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxHeight: 360),
-          child: ListView(shrinkWrap: true, children: [
-            ListTile(
-              dense: true,
-              leading: const Icon(Icons.add_box_outlined,
-                  color: Color(0xFF43B97F), size: 20),
-              title: Text(provider.t('map.newPage'),
-                  style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700)),
-              onTap: () => Navigator.pop(dctx, '__new__'),
-            ),
-            if (pages.isNotEmpty) const Divider(color: Colors.white12),
-            for (final pg in pages)
-              ListTile(
-                dense: true,
-                leading: Icon(
-                    pg.pageType == 'bookshelf'
-                        ? Icons.photo_library_outlined
-                        : Icons.map_outlined,
-                    color: Colors.white54,
-                    size: 18),
-                title: Text(pg.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Colors.white, fontSize: 13)),
-                onTap: () => Navigator.pop(dctx, pg.id),
-              ),
-          ]),
-        ),
-      ),
-      actions: [
-        TextButton(
-            onPressed: () => Navigator.pop(dctx),
-            child: Text(provider.t('btn.cancel'),
-                style: const TextStyle(color: Colors.white54))),
-      ],
-    ),
-  );
+  final chosen =
+      await _pickTargetPageDialog(context, provider, pages, anchorContext);
   if (chosen == null) return null;
   var pageId = chosen;
   if (pageId == '__new__') {
@@ -120961,61 +121160,15 @@ Future<String?> askAndPutChartIntoPage(BuildContext context,
 ///
 /// [rows] の 1 行目が見出しになる。 置いたページの名前を返す (取り止め = null)。
 Future<String?> askAndPutTableIntoPage(BuildContext context,
-    MindMapProvider provider, String title, List<List<String>> rows) async {
+    MindMapProvider provider, String title, List<List<String>> rows,
+    {BuildContext? anchorContext}) async {
   if (rows.isEmpty) return null;
   // 図と同じく、 マインドマップとギャラリーのどちらにも置ける。
   final pages = provider.pages
       .where((p) => p.pageType == 'normal' || p.pageType == 'bookshelf')
       .toList();
-  final chosen = await showDialog<String>(
-    context: context,
-    builder: (dctx) => AlertDialog(
-      backgroundColor: const Color(0xFF1E1E32),
-      title: Text(provider.t('map.pickTargetPage'),
-          style: const TextStyle(color: Colors.white, fontSize: 15)),
-      content: SizedBox(
-        width: math.min(380.0, MediaQuery.sizeOf(dctx).width - 48),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxHeight: 360),
-          child: ListView(shrinkWrap: true, children: [
-            ListTile(
-              dense: true,
-              leading: const Icon(Icons.add_box_outlined,
-                  color: Color(0xFF43B97F), size: 20),
-              title: Text(provider.t('map.newPage'),
-                  style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700)),
-              onTap: () => Navigator.pop(dctx, '__new__'),
-            ),
-            if (pages.isNotEmpty) const Divider(color: Colors.white12),
-            for (final pg in pages)
-              ListTile(
-                dense: true,
-                leading: Icon(
-                    pg.pageType == 'bookshelf'
-                        ? Icons.photo_library_outlined
-                        : Icons.map_outlined,
-                    color: Colors.white54,
-                    size: 18),
-                title: Text(pg.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Colors.white, fontSize: 13)),
-                onTap: () => Navigator.pop(dctx, pg.id),
-              ),
-          ]),
-        ),
-      ),
-      actions: [
-        TextButton(
-            onPressed: () => Navigator.pop(dctx),
-            child: Text(provider.t('btn.cancel'),
-                style: const TextStyle(color: Colors.white54))),
-      ],
-    ),
-  );
+  final chosen =
+      await _pickTargetPageDialog(context, provider, pages, anchorContext);
   if (chosen == null) return null;
   var pageId = chosen;
   if (pageId == '__new__') {
@@ -226883,6 +227036,17 @@ class _MemberSchedulePageViewState extends State<_MemberSchedulePageView> {
   bool _syncing = false;
   final List<String> _manualMembers = [];
 
+  // ── 共同編集 (= ユーザー要望: 「同期」 ではなく共同編集の形に) ──
+  //    入の間は、 自分の予定を相手に出しつつ相手の予定を定期的に取り込む。
+  //    「自分の予定を共有」 の入切はこのボタンに畳んだ (= ユーザー要望)。
+  //    Max プランだけの特典。 サーバー側の置き場は、 誰も 1 週間書き込まな
+  //    ければ消える (書くたびに期限を 7 日先へ延ばす)。
+  Timer? _collabTimer;
+  static const Duration _kCollabInterval = Duration(seconds: 20);
+
+  /// 共同編集が動いているか (= 共有が入 かつ グループに参加している)。
+  bool get _collabOn => _p.calendarGroupSharingEnabled;
+
   static const double _nameW = 116;
   static const double _colW = 150;
   static const double _rowH = 78;
@@ -226896,6 +227060,89 @@ class _MemberSchedulePageViewState extends State<_MemberSchedulePageView> {
   void initState() {
     super.initState();
     _load();
+  }
+
+  @override
+  void dispose() {
+    _collabTimer?.cancel();
+    super.dispose();
+  }
+
+  /// 共同編集の入切。 入の間だけ定期的に取り込む。
+  void _restartCollabTimer() {
+    _collabTimer?.cancel();
+    _collabTimer = null;
+    if (!_collabOn || _p.currentGroupId == null || !_p.isMaxUnlocked) return;
+    _collabTimer = Timer.periodic(_kCollabInterval, (_) {
+      if (!mounted) return;
+      if (!_collabOn || _p.currentGroupId == null) {
+        _restartCollabTimer();
+        return;
+      }
+      unawaited(_sync(silent: true));
+    });
+  }
+
+  /// 共同編集のボタン。 入で緑、 切で枠だけ。 押すと入切が変わる。
+  Widget _buildCollabButton(bool inGroup) {
+    final on = inGroup && _collabOn;
+    return Padding(
+      padding: const EdgeInsets.only(left: 2),
+      child: on
+          ? ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF66BB6A),
+                  foregroundColor: Colors.black,
+                  visualDensity: VisualDensity.compact),
+              onPressed: _syncing ? null : _toggleCollab,
+              icon: _syncing
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.black))
+                  : const Icon(Icons.groups_rounded, size: 18),
+              label: Text(_p.t(_syncing
+                  ? 'memberSchedule.collabSyncing'
+                  : 'memberSchedule.collabOn')),
+            )
+          : OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFF66BB6A),
+                  side: const BorderSide(color: Color(0xFF66BB6A)),
+                  visualDensity: VisualDensity.compact),
+              onPressed: _syncing ? null : _toggleCollab,
+              icon: const Icon(Icons.groups_outlined, size: 18),
+              label: Text(_p.t('memberSchedule.collabOff')),
+            ),
+    );
+  }
+
+  /// 共同編集を入 / 切する。 Max プランとグループ参加が要る。
+  Future<void> _toggleCollab() async {
+    if (_collabOn) {
+      await _p.setCalendarGroupSharingEnabled(false);
+      _restartCollabTimer();
+      if (mounted) {
+        setState(() {});
+        _snack(_p.t('memberSchedule.collabStopped'), const Color(0xFF2A2A3E));
+      }
+      return;
+    }
+    // Max プランだけの特典 (= ユーザー要望)。
+    if (!_p.isMaxUnlocked) {
+      _snack(_p.t('paywall.maxRequiredCloudSync'), const Color(0xFFE53935));
+      return;
+    }
+    if (_p.currentGroupId == null) {
+      _snack(_p.t('memberSchedule.notInSyncGroup'), const Color(0xFF2A2A3E));
+      return;
+    }
+    await _p.setCalendarGroupSharingEnabled(true);
+    if (mounted) setState(() {});
+    await _sync();
+    _restartCollabTimer();
+    if (mounted) setState(() {});
   }
 
   Future<void> _load() async {
@@ -226923,6 +227170,8 @@ class _MemberSchedulePageViewState extends State<_MemberSchedulePageView> {
     if (_p.currentGroupId != null) {
       _sync(silent: true);
     }
+    // 共同編集が入のままなら、 開いている間は定期的に取り込む。
+    _restartCollabTimer();
   }
 
   Future<void> _save() async {
@@ -227204,7 +227453,7 @@ class _MemberSchedulePageViewState extends State<_MemberSchedulePageView> {
   ///
   /// 1 行目が見出し (空欄 + 日付)、 2 行目からが人ごとの予定。
   /// 1 つのマスに予定が複数ある時は改行で並べる。
-  Future<void> _putScheduleIntoPage() async {
+  Future<void> _putScheduleIntoPage([BuildContext? anchor]) async {
     final members = _members();
     final start = DateTime.fromMillisecondsSinceEpoch(_startMs);
     final days = _days.clamp(1, 31);
@@ -227234,7 +227483,8 @@ class _MemberSchedulePageViewState extends State<_MemberSchedulePageView> {
       return;
     }
     final placed = await askAndPutTableIntoPage(
-        context, _p, _p.t('hdr.memberSchedule'), rows);
+        context, _p, _p.t('hdr.memberSchedule'), rows,
+        anchorContext: anchor);
     if (!mounted || placed == null) return;
     tell(_p.t('tool.putIntoPageDone').replaceFirst('{page}', placed),
         const Color(0xFF43B97F));
@@ -227483,7 +227733,9 @@ class _MemberSchedulePageViewState extends State<_MemberSchedulePageView> {
                 fontSize: 16,
                 fontWeight: FontWeight.w700)),
       ],
-      if (!isMobile) const Spacer(),
+      // ★ 右へ寄せない (= ユーザー要望: ヘッダーの項目を押しやすいように
+      //   左端に詰める)。 入り切らない時は横に流れる。
+      const SizedBox(width: 8),
       IconButton(
         tooltip: _p.t('memberSchedule.editOwnName'),
         visualDensity: VisualDensity.compact,
@@ -227541,70 +227793,39 @@ class _MemberSchedulePageViewState extends State<_MemberSchedulePageView> {
             onPressed: () => _changeDays(1)),
       ],
       const SizedBox(width: 6),
-      // 共有 ON/OFF (= 同期グループに自分の予定を出すか)。
-      if (inGroup)
-        Tooltip(
-          message: _p.t(_p.calendarGroupSharingEnabled
-              ? 'memberSchedule.sharingOn'
-              : 'memberSchedule.sharingOff'),
-          child: IconButton(
-            visualDensity: VisualDensity.compact,
-            icon: Icon(
-                _p.calendarGroupSharingEnabled
-                    ? Icons.visibility
-                    : Icons.visibility_off,
-                color: _p.calendarGroupSharingEnabled
-                    ? const Color(0xFF66BB6A)
-                    : Colors.white38,
-                size: 20),
-            onPressed: () async {
-              await _p.setCalendarGroupSharingEnabled(
-                  !_p.calendarGroupSharingEnabled);
-              if (_p.calendarGroupSharingEnabled) {
-                _p.uploadCalendarEventsToCloud();
-              }
-              if (mounted) setState(() {});
-            },
-          ),
-        ),
       // ── ページに出す (= ユーザー要望: メンバー予定表もマインドマップや
       //    ギャラリーに埋め込めるように) ── 今出ている人 × 日付の表を、
       //    そのまま「編集できる表のノード」 として置く。
-      IconButton(
-        tooltip: _p.t('tool.putIntoPage'),
-        visualDensity: VisualDensity.compact,
-        // ★ アプリの外に出す (open_in_new) と紛らわしいので、 「ページに
-        //    差し込む」 の意味の絵に変更 + 周りに合わせて白にする。
-        icon: const Icon(Icons.post_add_rounded,
-            size: 20, color: Colors.white70),
-        onPressed: _putScheduleIntoPage,
+      Builder(
+        builder: (bctx) => IconButton(
+          tooltip: _p.t('tool.putIntoPage'),
+          visualDensity: VisualDensity.compact,
+          // ★ アプリの外に出す (open_in_new) と紛らわしいので、 「ページに
+          //    差し込む」 の意味の絵に変更 + 周りに合わせて白にする。
+          icon: const Icon(Icons.post_add_rounded,
+              size: 20, color: Colors.white70),
+          onPressed: () => _putScheduleIntoPage(bctx),
+        ),
       ),
-      // 同期 (= メンバーの予定を取り込む)。
-      ElevatedButton.icon(
-        style: ElevatedButton.styleFrom(
-            backgroundColor: const Color(0xFF66BB6A),
-            foregroundColor: Colors.black,
-            visualDensity: VisualDensity.compact),
-        onPressed: _syncing ? null : () => _sync(),
-        icon: _syncing
-            ? const SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(
-                    strokeWidth: 2, color: Colors.black))
-            : const Icon(Icons.sync_rounded, size: 18),
-        label: Text(
-            _p.t(_syncing ? 'memberSchedule.syncing' : 'memberSchedule.sync')),
-      ),
+      // ── 共同編集 (= ユーザー要望: 「同期」 ではなく共同編集の形に。
+      //    Max プランだけの特典) ──
+      //    入にすると自分の予定を相手に出し、 相手の予定を定期的に取り込む
+      //    (自分の予定を共有するボタンはこれに畳んだ)。
+      //    誰も 1 週間書き込まなかったグループの分はサーバーから消える。
+      _buildCollabButton(inGroup),
     ];
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 10, 10, 6),
-      child: isMobile
-          ? SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(mainAxisSize: MainAxisSize.min, children: children),
-            )
-          : Row(children: children),
+    // ★ 左端に詰める (= ユーザー要望)。 幅が足りない時は横に流す。
+    //   ★ Align で包むのが要 (= 包まないと、 親の Column が中央に寄せる。
+    //     横スクロールの箱は幅が緩いと中身の幅まで縮むため)。
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 10, 10, 6),
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(mainAxisSize: MainAxisSize.min, children: children),
+        ),
+      ),
     );
   }
 

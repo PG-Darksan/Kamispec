@@ -2633,10 +2633,16 @@ class MindMapProvider extends ChangeNotifier {
       final eventsJson = jsonEncode(myEvents);
 
       // per-user ドキュメントに書き込み
+      // ★ 共同編集の置き場は、 誰も書き込まないまま 1 週間経つと消える
+      //   (= ユーザー要望)。 書き込むたびに期限を 7 日先へ延ばす。
+      //   読み取り側は期限切れを無視し、 見つけたら消しに行く。
+      final nowUtc = DateTime.now().toUtc();
+      final expiresAt = nowUtc.add(kCalendarCollabTtl);
       final url = '$_firestoreBaseUrl/groups/$_syncGroupId/calendar/$myUid';
       final res = await http.patch(
         Uri.parse('$url?updateMask.fieldPaths=json'
             '&updateMask.fieldPaths=updatedAt'
+            '&updateMask.fieldPaths=expiresAt'
             '&updateMask.fieldPaths=ownerUid'
             '&updateMask.fieldPaths=ownerName'),
         headers: {
@@ -2649,7 +2655,10 @@ class MindMapProvider extends ChangeNotifier {
             'ownerUid': {'stringValue': myUid},
             'ownerName': {'stringValue': _displayName ?? t('msg.anonymous')},
             'updatedAt': {
-              'timestampValue': DateTime.now().toUtc().toIso8601String(),
+              'timestampValue': nowUtc.toIso8601String(),
+            },
+            'expiresAt': {
+              'timestampValue': expiresAt.toIso8601String(),
             },
           },
         }),
@@ -2700,6 +2709,18 @@ class MindMapProvider extends ChangeNotifier {
     } catch (e) {
       return (success: false, error: e.toString(), count: 0);
     }
+  }
+
+  /// 期限切れの予定表ドキュメントをサーバーから消す。
+  /// 規則で自分の分しか消せない事もあるので、 断られても黙って諦める。
+  Future<void> _deleteExpiredCalendarDoc(String gid, String ownerId) async {
+    if (_idToken == null || ownerId.isEmpty) return;
+    try {
+      await http.delete(
+        Uri.parse('$_firestoreBaseUrl/groups/$gid/calendar/$ownerId'),
+        headers: {'Authorization': 'Bearer $_idToken'},
+      );
+    } catch (_) {}
   }
 
   /// Firestore + Google Calendar からカレンダーイベントをダウンロード
@@ -2870,6 +2891,18 @@ class MindMapProvider extends ChangeNotifier {
                 continue;
               }
               final fields = doc['fields'] as Map<String, dynamic>? ?? {};
+              // ★ 1 週間だれも書き込まなかった置き場は無かった事にする
+              //   (= ユーザー要望)。 見つけたらサーバーからも消しに行く
+              //   (自分の分以外は規則で断られる事があるので、 失敗は無視)。
+              final expRaw = fields['expiresAt']?['timestampValue'];
+              if (expRaw is String) {
+                final exp = DateTime.tryParse(expRaw);
+                if (exp != null && exp.isBefore(DateTime.now().toUtc())) {
+                  // ignore: discarded_futures
+                  _deleteExpiredCalendarDoc(gid, ownerId);
+                  continue;
+                }
+              }
               final jsonStr = _firestoreStr(fields['json']);
               if (jsonStr == null || jsonStr.isEmpty) continue;
               final ownerName = _firestoreStr(fields['ownerName']) ??
@@ -28494,6 +28527,28 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Mostrar tudo',
       'ru': 'Показать все',
     },
+    'gantt.hideChartTabs': {
+      'ja': 'チャート一覧を隠す',
+      'en': 'Hide the chart list',
+      'zh': '隐藏图表列表',
+      'ko': '차트 목록 숨기기',
+      'es': 'Ocultar la lista de gráficos',
+      'fr': 'Masquer la liste des diagrammes',
+      'de': 'Diagrammliste ausblenden',
+      'pt': 'Ocultar a lista de gráficos',
+      'ru': 'Скрыть список диаграмм',
+    },
+    'gantt.showChartTabs': {
+      'ja': 'チャート一覧を出す',
+      'en': 'Show the chart list',
+      'zh': '显示图表列表',
+      'ko': '차트 목록 표시',
+      'es': 'Mostrar la lista de gráficos',
+      'fr': 'Afficher la liste des diagrammes',
+      'de': 'Diagrammliste einblenden',
+      'pt': 'Mostrar a lista de gráficos',
+      'ru': 'Показать список диаграмм',
+    },
     'gantt.addChart': {
       'ja': 'チャートを追加',
       'en': 'Add chart',
@@ -38638,6 +38693,50 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Sincronizar',
       'ru': 'Синхронизировать',
     },
+    'memberSchedule.collabOff': {
+      'ja': '共同編集',
+      'en': 'Co-edit',
+      'zh': '协同编辑',
+      'ko': '공동 편집',
+      'es': 'Coedición',
+      'fr': 'Coédition',
+      'de': 'Gemeinsam bearbeiten',
+      'pt': 'Coedição',
+      'ru': 'Совместное редактирование',
+    },
+    'memberSchedule.collabOn': {
+      'ja': '共同編集中',
+      'en': 'Co-editing',
+      'zh': '协同编辑中',
+      'ko': '공동 편집 중',
+      'es': 'Coeditando',
+      'fr': 'Coédition active',
+      'de': 'Gemeinsam bearbeiten (aktiv)',
+      'pt': 'Coeditando',
+      'ru': 'Идёт совместное редактирование',
+    },
+    'memberSchedule.collabSyncing': {
+      'ja': '取り込み中',
+      'en': 'Updating',
+      'zh': '正在更新',
+      'ko': '가져오는 중',
+      'es': 'Actualizando',
+      'fr': 'Mise à jour',
+      'de': 'Wird aktualisiert',
+      'pt': 'Atualizando',
+      'ru': 'Обновление',
+    },
+    'memberSchedule.collabStopped': {
+      'ja': '共同編集を止めました',
+      'en': 'Stopped co-editing',
+      'zh': '已停止协同编辑',
+      'ko': '공동 편집을 중지했습니다',
+      'es': 'Se detuvo la coedición',
+      'fr': 'Coédition arrêtée',
+      'de': 'Gemeinsames Bearbeiten beendet',
+      'pt': 'Coedição interrompida',
+      'ru': 'Совместное редактирование остановлено',
+    },
     'memberSchedule.weekdayMon': {
       'ja': '月',
       'en': 'Mon',
@@ -45153,19 +45252,19 @@ class MindMapProvider extends ChangeNotifier {
       'en': 'Built automatically from the group\'s shared calendar. Only members who turned calendar sharing ON appear here. To show your own column, turn the calendar sharing button ON (while it says your schedule is private, others cannot see it). Adding and editing events syncs to the cloud the same way as the calendar.',
     },
     'planner.helpTabsTitle': {
-      'ja': 'タブの並び替え',
-      'en': 'Reordering the tabs',
-      'zh': '标签排序',
-      'ko': '탭 순서 변경',
-      'es': 'Reordenar pestañas',
-      'fr': 'Réorganiser les onglets',
-      'de': 'Tabs umsortieren',
-      'pt': 'Reordenar abas',
-      'ru': 'Порядок вкладок',
+      'ja': '上下の並び',
+      'en': 'The top and bottom halves',
+      'zh': '上下布局',
+      'ko': '위아래 배치',
+      'es': 'Mitades superior e inferior',
+      'fr': 'Moitiés haute et basse',
+      'de': 'Obere und untere Hälfte',
+      'pt': 'Metades superior e inferior',
+      'ru': 'Верхняя и нижняя части',
     },
     'planner.helpTabs': {
-      'ja': '上の 2 つのタブはドラッグ＆ドロップで左右を入れ替えられます。並びは次回もそのままです。',
-      'en': 'Drag and drop the two tabs above to swap their order. The order is remembered.',
+      'ja': '上に全体の予定 (工程表)、下にメンバーの予定が出ます。境目を掴むと高さを変えられ、上のボタンで片方だけにもできます。並びと高さは次回もそのままです。',
+      'en': 'The overall schedule (Gantt) sits on top and the member schedule below. Drag the divider to change their heights, or use the buttons above to show just one. The layout is remembered.',
     },
     'icon.shapeCircle': {
       'ja': '丸',
@@ -68538,6 +68637,10 @@ class MindMapProvider extends ChangeNotifier {
   ///   Pro/Max: 契約終了から 30 日で全データ削除
   static const Duration kFreeAutoDeleteGrace = Duration(days: 7);
   static const Duration kPaidAutoDeleteGrace = Duration(days: 30);
+
+  /// 予定表の共同編集の置き場が残る期間 (= ユーザー要望: 1 週間だれも
+  /// 更新しなかったらサーバーから消える)。 書き込むたびに延びる。
+  static const Duration kCalendarCollabTtl = Duration(days: 7);
 
   /// 画面分割 (PDF/動画/Web/Office の分割表示) を無料プランで開ける回数の上限。
   /// 無料プランは 2 回まで分割を開けて、3 回目以降は Pro 以上のプランが必要。
