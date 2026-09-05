@@ -1153,6 +1153,14 @@ class _AutoHeightTabBarViewState extends State<_AutoHeightTabBarView> {
 ///
 /// プロバイダーごとに縦に並べ、 横に 3 列。 最後に考える深さを置く。
 /// 呼ぶ側は選び終わったら再描画するだけでよい。
+/// モデル選びで畳んでいる会社 (= ユーザー要望: 選択肢が多くて画面から
+/// はみ出す)。 開き直しても覚えておきたいので、 画面の外に置く。
+/// 空 = まだ触っていない (この時は「今使っている会社」 だけ開く)。
+final Set<String> _aiPickerCollapsed = <String>{};
+
+/// 一度でも自分で開け閉めしたか (= 既定の畳み方を上書きしたか)。
+bool _aiPickerCollapseTouched = false;
+
 Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
     {VoidCallback? onChanged,
     // ★ 浮遊窓 (root Overlay に挿した窓) の中から呼ぶ時は false。
@@ -1181,6 +1189,21 @@ Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
     useRootNavigator: useRootNavigator && !inFloatingWindow,
     builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
       final cur = provider.relayModel;
+      // ★ 既定では「今使っているモデルの会社」 だけ開いておく
+      //   (= ユーザー要望: 選択肢が多くてはみ出す)。 自分で開け閉めした
+      //   後は、 その状態をそのまま覚えておく。
+      if (!_aiPickerCollapseTouched) {
+        String curProvider = '';
+        for (final m in models) {
+          if ('${m['id']}' == cur) {
+            curProvider = '${m['provider']}';
+            break;
+          }
+        }
+        _aiPickerCollapsed
+          ..clear()
+          ..addAll(groups.map((g) => g.$1).where((id) => id != curProvider));
+      }
       // ★ 出す場所の幅に合わせる (= 浮遊窓の中は 520px ほどしかない)。
       //   3 列を横に並べると入り切らないので、 狭い時は縦に積む。
       const inset = 16.0;
@@ -1188,18 +1211,48 @@ Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
       final wide = avail >= 680;
       final dialogW = wide ? 720.0 : math.max(240.0, avail);
       // 1 社ぶんの列 (横並び / 縦積みの両方で使い回す)。
-      Widget groupCol((String, String) g) => Column(
+      Widget groupCol((String, String) g) {
+        final collapsed = _aiPickerCollapsed.contains(g.$1);
+        final count =
+            models.where((m) => '${m['provider']}' == g.$1).length;
+        return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: Text(g.$2,
-                    style: const TextStyle(
-                        color: Color(0xFF80CBC4),
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700)),
+              // 見出しを押すと、 その会社の分を畳む / 開く (= ユーザー要望)。
+              InkWell(
+                borderRadius: BorderRadius.circular(6),
+                onTap: () => setD(() {
+                  _aiPickerCollapseTouched = true;
+                  if (collapsed) {
+                    _aiPickerCollapsed.remove(g.$1);
+                  } else {
+                    _aiPickerCollapsed.add(g.$1);
+                  }
+                }),
+                child: Padding(
+                  padding: const EdgeInsets.only(bottom: 6, top: 2),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(
+                        collapsed
+                            ? Icons.chevron_right_rounded
+                            : Icons.expand_more_rounded,
+                        size: 16,
+                        color: const Color(0xFF80CBC4)),
+                    const SizedBox(width: 2),
+                    Text(g.$2,
+                        style: const TextStyle(
+                            color: Color(0xFF80CBC4),
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700)),
+                    const SizedBox(width: 6),
+                    Text('$count',
+                        style: const TextStyle(
+                            color: Colors.white38, fontSize: 10.5)),
+                  ]),
+                ),
               ),
+              if (!collapsed)
               for (final m in models.where((m) => '${m['provider']}' == g.$1))
                 InkWell(
                   borderRadius: BorderRadius.circular(6),
@@ -1240,6 +1293,7 @@ Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
                 ),
             ],
           );
+      }
       return AlertDialog(
         backgroundColor: const Color(0xFF1E1E32),
         // 狭い窓の中でも幅を使えるように、 既定の 40px より詰める。
@@ -1249,7 +1303,13 @@ Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
         scrollable: true,
         title: Text(provider.t('mcp.chooseModel'),
             style: const TextStyle(color: Colors.white, fontSize: 15)),
-        content: SizedBox(
+        content: ConstrainedBox(
+          // ★ 縦にもはみ出さないようにする (= ユーザー要望: フローティング
+          //   では画面から出てしまう)。 入り切らない分は巻物になる。
+          constraints: BoxConstraints(
+              maxHeight:
+                  math.max(220.0, MediaQuery.of(dctx).size.height - 180)),
+          child: SizedBox(
           width: dialogW,
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             if (models.isEmpty)
@@ -1325,7 +1385,7 @@ Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
                       color: Colors.white38, fontSize: 10.5, height: 1.4)),
             ),
           ]),
-        ),
+        )),
         actions: [
           Padding(
             padding: const EdgeInsets.only(right: 8, bottom: 4),

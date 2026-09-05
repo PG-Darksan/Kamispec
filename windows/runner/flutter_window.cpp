@@ -4,8 +4,9 @@
 
 #include "flutter/generated_plugin_registrant.h"
 
-FlutterWindow::FlutterWindow(const flutter::DartProject& project)
-    : project_(project) {}
+FlutterWindow::FlutterWindow(const flutter::DartProject& project,
+                             bool minimal)
+    : project_(project), minimal_(minimal) {}
 
 FlutterWindow::~FlutterWindow() {}
 
@@ -24,17 +25,26 @@ bool FlutterWindow::OnCreate() {
   if (!flutter_controller_->engine() || !flutter_controller_->view()) {
     return false;
   }
-  RegisterPlugins(flutter_controller_->engine());
+  // The cursor-wrap resident registers NOTHING. Everything it needs
+  // (SharedPreferences / path_provider) is a dart-only plugin, so it keeps
+  // working; ffmpeg, the media stack, speech, the WebView and the rest are
+  // never loaded into the background process.
+  if (!minimal_) {
+    RegisterPlugins(flutter_controller_->engine());
+  }
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
-  flutter_controller_->engine()->SetNextFrameCallback([&]() {
-    this->Show();
-  });
+  if (!minimal_) {
+    flutter_controller_->engine()->SetNextFrameCallback([&]() {
+      this->Show();
+    });
 
-  // Flutter can complete the first frame before the "show window" callback is
-  // registered. The following call ensures a frame is pending to ensure the
-  // window is shown. It is a no-op if the first frame hasn't completed yet.
-  flutter_controller_->ForceRedraw();
+    // Flutter can complete the first frame before the "show window" callback
+    // is registered. The following call ensures a frame is pending to ensure
+    // the window is shown. It is a no-op if the first frame hasn't completed
+    // yet.
+    flutter_controller_->ForceRedraw();
+  }
 
   return true;
 }

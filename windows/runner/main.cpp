@@ -27,6 +27,18 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   std::vector<std::string> command_line_arguments =
       GetCommandLineArguments();
 
+  // The cursor-wrap resident (--cursor-wrap) must stay as small as possible:
+  // no plugins, no window. See FlutterWindow's |minimal| flag.
+  // NOTE: the vector is moved into the project on the next line, so this
+  // check has to happen here.
+  bool minimal = false;
+  for (const auto& a : command_line_arguments) {
+    if (a == "--cursor-wrap") {
+      minimal = true;
+      break;
+    }
+  }
+
   project.set_dart_entrypoint_arguments(std::move(command_line_arguments));
 
   // Register plugins for desktop_multi_window sub-windows. Without this the
@@ -45,6 +57,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   // which broke the split browser, the docked Google search and the in-app
   // viewers for the rest of the session. Reproduced reliably by opening the
   // floating memo once, closing it, then opening the split browser.
+  // Sub-windows are never created by the resident, so skip this too.
+  if (!minimal)
   DesktopMultiWindowSetWindowCreatedCallback([](void *controller) {
     auto *flutter_view_controller =
         reinterpret_cast<flutter::FlutterViewController *>(controller);
@@ -61,9 +75,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
         engine->GetRegistrarForPlugin("FvpPluginCApi"));
   });
 
-  FlutterWindow window(project);
-  Win32Window::Point origin(10, 10);
-  Win32Window::Size size(1280, 720);
+  FlutterWindow window(project, minimal);
+  // The resident's window is 1x1 and parked far off-screen. It is never
+  // shown (FlutterWindow skips the show callback), so this is only a
+  // belt-and-braces measure in case something else calls ShowWindow.
+  Win32Window::Point origin(minimal ? -32000 : 10, minimal ? -32000 : 10);
+  Win32Window::Size size(minimal ? 1 : 1280, minimal ? 1 : 720);
   if (!window.Create(L"HisatorNotebook", origin, size)) {
     return EXIT_FAILURE;
   }

@@ -12,7 +12,14 @@
 class FlutterWindow : public Win32Window {
  public:
   // Creates a new FlutterWindow hosting a Flutter view running |project|.
-  explicit FlutterWindow(const flutter::DartProject& project);
+  //
+  // |minimal| = the cursor-wrap resident (--cursor-wrap). In that mode we do
+  // NOT register any plugin and never show the window, so the background
+  // process stays as small as possible (the user asked for the resident to
+  // stay light; the normal app loads ~20 plugins including ffmpeg and the
+  // media stack, which is far too much just to move the mouse pointer).
+  explicit FlutterWindow(const flutter::DartProject& project,
+                         bool minimal = false);
   virtual ~FlutterWindow();
 
  protected:
@@ -28,6 +35,9 @@ class FlutterWindow : public Win32Window {
 
   // The Flutter instance hosted by this window.
   std::unique_ptr<flutter::FlutterViewController> flutter_controller_;
+
+  // True for the cursor-wrap resident: no plugins, never shown.
+  bool minimal_ = false;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

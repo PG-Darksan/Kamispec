@@ -1881,7 +1881,12 @@ async function livePrices(env) {
       if (id.includes(':')) continue;
       const slash = id.indexOf('/');
       if (slash < 0) continue;
-      const vendor = id.slice(0, slash);
+      // ★ OpenRouter は、 別名 (…-latest) を `~google/…` のように
+      //   先頭に `~` を付けて出してくる。 そのままだと vendor が
+      //   `~google` になって引っかからず、 値段が取れないという
+      //   理由で gemini-pro-latest / gemini-flash-latest が一覧から
+      //   丸ごと落ちていた (= ユーザー報告: Pro が選べない)。
+      const vendor = id.slice(0, slash).replace(/^~/, '');
       const name = id.slice(slash + 1);
       const p = m.pricing || {};
       const input = Number(p.prompt) * 1e6;
