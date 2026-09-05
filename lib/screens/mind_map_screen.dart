@@ -453,6 +453,39 @@ const List<IconData> kPageIconChoices = <IconData>[
   Icons.flag_rounded,
 ];
 
+/// ページアイコンで選べる色 (= ユーザー要望: ページのアイコンの色も
+/// 変更できるように)。 保存するのは**この並びの番号**なので、 途中に
+/// 挿し込まず、 足す時は必ず末尾に足すこと (番号がずれる)。
+const List<Color> kPageIconColors = <Color>[
+  Color(0xFF8B84FF), // 紫 (マインドマップの既定)
+  Color(0xFF4FC3F7), // 水色
+  Color(0xFF5FD3B2), // 青緑
+  Color(0xFF43B97F), // 緑
+  Color(0xFF9CCC65), // 黄緑
+  Color(0xFFFFD54F), // 黄
+  Color(0xFFFFB347), // 橙
+  Color(0xFFFF7043), // 朱
+  Color(0xFFE57373), // 赤
+  Color(0xFFEC407A), // 桃
+  Color(0xFFBA68C8), // 藤
+  Color(0xFF90A4AE), // 灰
+];
+
+/// このページのアイコンに使う色。 利用者の指定 (個別 → 種類) が無ければ
+/// 種別ごとの既定色 (= 昔からの色)。
+Color pageIconColorFor(MindMapProvider provider, MindMapPage p) =>
+    pageIconColorOfType(provider, p.id, p.pageType);
+
+/// [pageIconColorFor] の中身 (ページ id と種別だけで引きたい時用)。
+Color pageIconColorOfType(
+    MindMapProvider provider, String pageId, String? pageType) {
+  final i = provider.pageIconColorIndexFor(pageId, pageType);
+  if (i != null && i >= 0 && i < kPageIconColors.length) {
+    return kPageIconColors[i];
+  }
+  return _pageIconColorOf(pageType);
+}
+
 /// ページ種別ごとの色 (利用者が選んだアイコンにもこの色を使う)。
 Color _pageIconColorOf(String? pageType) {
   switch (pageType) {
@@ -493,7 +526,7 @@ IconData pageTypeDefaultIcon(String? pageType, {bool active = false}) {
 /// 種類ごとの絵と色に揃える)。 個別に選んだアイコンがあればそれを使う。
 Widget pageListIcon(MindMapProvider provider, MindMapPage p,
     {double size = 18, bool active = false}) {
-  final color = _pageIconColorOf(p.pageType);
+  final color = pageIconColorFor(provider, p);
   return Icon(
     pageIconFor(provider, p, pageTypeDefaultIcon(p.pageType, active: active)),
     size: size,
@@ -1198,7 +1231,7 @@ Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
     //   AI アシスタントの浮遊窓の下に出る)。 false なら一番近い
     //   Navigator = その窓自身になり、 窓の上に重なって出る。
     bool useRootNavigator = true}) async {
-  String label(String id) => id.replaceAll(RegExp(r'-\d{8}$'), '');
+  String label(String id) => provider.relayModelLabel(id);
   final models = [
     for (final m in provider.relayModels)
       if (m is Map && m['available'] == true) m
@@ -7108,6 +7141,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     _timelineDrawerScrollCtrl?.dispose();
     _timelineDragAutoScrollTimer?.cancel();
     _todoInputCtrl.dispose();
+    _todoEditCtrl.dispose();
+    _todoEditFocus.dispose();
     for (final c in _controllers.values) {
       c.dispose();
     }
@@ -25372,8 +25407,9 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// ページ一覧などに出すアイコンと色。 利用者の指定があればそれを使う。
   static (IconData, Color) _pageKindIconOfWith(
       MindMapProvider provider, MindMapPage p) {
-    final (icon, color) = _pageKindIconOf(p);
-    return (pageIconFor(provider, p, icon), color);
+    final (icon, _) = _pageKindIconOf(p);
+    // 色も利用者の指定を優先する (= ユーザー要望: アイコンの色を変えられる)。
+    return (pageIconFor(provider, p, icon), pageIconColorFor(provider, p));
   }
 
   static (IconData, Color) _pageKindIconOf(MindMapPage p) {
@@ -63481,6 +63517,36 @@ class _MindMapScreenState extends State<MindMapScreen>
   bool _drawerTodosLoaded = false;
   final TextEditingController _todoInputCtrl = TextEditingController();
 
+  // ── 項目の書き直しは、 その場で書き込む (= ユーザー要望: 画面中央に
+  //    項目を出すのではなく、 直接要素に書き込めるように) ──
+  //    書き直し中の ToDo の id と、 その入力欄。 二度押し (デスクトップは
+  //    一度押し) で始まり、 Enter か外を押すと確定、 Esc で取り消す。
+  String? _editingTodoId;
+  final TextEditingController _todoEditCtrl = TextEditingController();
+  final FocusNode _todoEditFocus = FocusNode();
+
+  /// その場での書き直しを始める。
+  void _beginInlineTodoEdit(TodoItem item) {
+    setState(() {
+      _editingTodoId = item.id;
+      _todoEditCtrl.text = item.text;
+      _todoEditCtrl.selection =
+          TextSelection.collapsed(offset: _todoEditCtrl.text.length);
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _editingTodoId == item.id) _todoEditFocus.requestFocus();
+    });
+  }
+
+  /// 書き直しを終える。 [save] false で取り消し (Esc)。
+  void _endInlineTodoEdit(MindMapProvider provider, {bool save = true}) {
+    final id = _editingTodoId;
+    if (id == null) return;
+    final text = _todoEditCtrl.text;
+    setState(() => _editingTodoId = null);
+    if (save && text.trim().isNotEmpty) provider.updateTodoText(id, text);
+  }
+
   /// 入力欄に Ctrl+V で貼り付けた画像の置き場 (= ユーザー要望: ToDo の
   /// 画像は入力欄に貼り付けられるように)。 「追加」 を押した時に、
   /// 出来上がった ToDo へまとめて付ける。
@@ -63818,48 +63884,6 @@ class _MindMapScreenState extends State<MindMapScreen>
             content: Text(provider.t('todo.imageAdded'))));
   }
 
-  /// ToDo の本文を書き直す。
-  Future<void> _editTodoText(
-      BuildContext ctx, MindMapProvider provider, TodoItem item) async {
-    final ctrl = TextEditingController(text: item.text);
-    final result = await showDialog<String>(
-      context: ctx,
-      builder: (dctx) => AlertDialog(
-        backgroundColor: const Color(0xFF2A2A3E),
-        title: Text(provider.t('todo.editTitle'),
-            style: const TextStyle(color: Colors.white, fontSize: 15)),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          minLines: 1,
-          maxLines: 6,
-          style: const TextStyle(color: Colors.white, fontSize: 13),
-          decoration: const InputDecoration(
-            enabledBorder: UnderlineInputBorder(
-                borderSide: BorderSide(color: Colors.white24)),
-            focusedBorder: UnderlineInputBorder(
-                borderSide: BorderSide(color: Color(0xFF7FD8A0))),
-          ),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(dctx),
-              child: Text(provider.t('btn.cancel'),
-                  style: const TextStyle(color: Colors.white54))),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF7FD8A0),
-                foregroundColor: const Color(0xFF10241F)),
-            onPressed: () => Navigator.pop(dctx, ctrl.text),
-            child: Text(provider.t('btn.save')),
-          ),
-        ],
-      ),
-    );
-    ctrl.dispose();
-    if (result != null) provider.updateTodoText(item.id, result);
-  }
-
   Widget _buildTodoDrawer(BuildContext ctx, MindMapProvider provider) {
     final bg = Color.alphaBlend(
         provider.headerColor.withValues(alpha: 0.62), const Color(0xFF13132A));
@@ -64118,24 +64142,70 @@ class _MindMapScreenState extends State<MindMapScreen>
               ),
             ),
             Expanded(
-              // 二度押しで書き直せる (= 打ち間違いをそのまま直せるように)。
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onDoubleTap: () => _editTodoText(ctx, provider, item),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  child: Text(
-                    item.text,
-                    style: TextStyle(
-                      color: done ? Colors.white38 : Colors.white,
-                      fontSize: 13,
-                      height: 1.4,
-                      decoration: done ? TextDecoration.lineThrough : null,
-                      decorationColor: Colors.white38,
+              // ★ 書き直しはその場で (= ユーザー要望: 画面中央に項目を出す
+              //   のではなく、 直接要素に書き込めるように)。 押すと文字が
+              //   そのまま入力欄に変わる。 Enter で確定、 Esc で取り消し、
+              //   外を押しても確定する。
+              child: _editingTodoId == item.id
+                  ? Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 2),
+                      child: Focus(
+                        onKeyEvent: (_, e) {
+                          if (e is KeyDownEvent &&
+                              e.logicalKey == LogicalKeyboardKey.escape) {
+                            _endInlineTodoEdit(provider, save: false);
+                            return KeyEventResult.handled;
+                          }
+                          return KeyEventResult.ignored;
+                        },
+                        child: TextField(
+                          controller: _todoEditCtrl,
+                          focusNode: _todoEditFocus,
+                          minLines: 1,
+                          maxLines: 6,
+                          // 改行で確定 (複数行にしたい時は Shift+Enter)。
+                          textInputAction: TextInputAction.done,
+                          onSubmitted: (_) => _endInlineTodoEdit(provider),
+                          onTapOutside: (_) => _endInlineTodoEdit(provider),
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 13, height: 1.4),
+                          decoration: const InputDecoration(
+                            isDense: true,
+                            contentPadding:
+                                EdgeInsets.symmetric(vertical: 6),
+                            enabledBorder: UnderlineInputBorder(
+                                borderSide:
+                                    BorderSide(color: Colors.white24)),
+                            focusedBorder: UnderlineInputBorder(
+                                borderSide:
+                                    BorderSide(color: Color(0xFF7FD8A0))),
+                          ),
+                        ),
+                      ),
+                    )
+                  : GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      // マウスは一度押し、 指は二度押しで書き直しに入る
+                      // (指の一度押しで入ると、 一覧を送る操作と喧嘩する)。
+                      onTap: _isDesktop
+                          ? () => _beginInlineTodoEdit(item)
+                          : null,
+                      onDoubleTap: () => _beginInlineTodoEdit(item),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        child: Text(
+                          item.text,
+                          style: TextStyle(
+                            color: done ? Colors.white38 : Colors.white,
+                            fontSize: 13,
+                            height: 1.4,
+                            decoration:
+                                done ? TextDecoration.lineThrough : null,
+                            decorationColor: Colors.white38,
+                          ),
+                        ),
+                      ),
                     ),
-                  ),
-                ),
-              ),
             ),
             // ── 画像を付ける ──
             Builder(builder: (btnCtx) {
@@ -67843,15 +67913,20 @@ class _MindMapScreenState extends State<MindMapScreen>
     // 'one' = このページだけ / 'type' = 同じ種類すべて
     var scope = 'one';
     final type = page.pageType ?? 'normal';
-    final color = _pageIconColorOf(page.pageType);
     await showDialog<void>(
       context: ctx,
       builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
         final cur = provider.pageIconIndexFor(page.id, page.pageType);
+        // 選んでいる色を画面のあちこち (見出し・選択枠) に反映する
+        // (= ユーザー要望: アイコンの色も変えられるように)。
+        final curColor = provider.pageIconColorIndexFor(page.id, page.pageType);
+        final color = pageIconColorFor(provider, page);
         return AlertDialog(
           backgroundColor: const Color(0xFF1E1E32),
           shape:
               RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          // 色の並びを足したぶん縦に伸びるので、 狭い画面では巻物にする。
+          scrollable: true,
           title: Row(children: [
             Icon(Icons.emoji_symbols_rounded, color: color, size: 20),
             const SizedBox(width: 8),
@@ -67937,16 +68012,93 @@ class _MindMapScreenState extends State<MindMapScreen>
                   },
                 ),
               ),
+              // ── 色 (= ユーザー要望: ページのアイコンの色も変更できるように) ──
+              //    適用する範囲 (このページだけ / 同じ種類すべて) はアイコンと
+              //    同じ切替を使う。
+              const Divider(color: Colors.white12, height: 18),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(provider.t('page.iconColor'),
+                    style: const TextStyle(
+                        color: Color(0xFF80CBC4),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700)),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (var i = 0; i < kPageIconColors.length; i++)
+                    InkWell(
+                      borderRadius: BorderRadius.circular(999),
+                      onTap: () async {
+                        if (scope == 'type') {
+                          await provider.setPageTypeIconColor(type, i);
+                        } else {
+                          await provider.setPageIconColor(page.id, i);
+                        }
+                        setD(() {});
+                      },
+                      child: Container(
+                        width: 26,
+                        height: 26,
+                        decoration: BoxDecoration(
+                          color: kPageIconColors[i],
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                              color: curColor == i
+                                  ? Colors.white
+                                  : Colors.white24,
+                              width: curColor == i ? 2.4 : 1),
+                        ),
+                        child: curColor == i
+                            ? const Icon(Icons.check_rounded,
+                                size: 15, color: Colors.black87)
+                            : null,
+                      ),
+                    ),
+                  // 既定色に戻す。
+                  InkWell(
+                    borderRadius: BorderRadius.circular(999),
+                    onTap: () async {
+                      if (scope == 'type') {
+                        await provider.setPageTypeIconColor(type, null);
+                      } else {
+                        await provider.setPageIconColor(page.id, null);
+                      }
+                      setD(() {});
+                    },
+                    child: Container(
+                      width: 26,
+                      height: 26,
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.06),
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                            color: curColor == null
+                                ? Colors.white70
+                                : Colors.white24,
+                            width: curColor == null ? 2.0 : 1),
+                      ),
+                      child: const Icon(Icons.refresh_rounded,
+                          size: 14, color: Colors.white70),
+                    ),
+                  ),
+                ],
+              ),
             ]),
           ),
           actions: [
             TextButton(
               onPressed: () async {
-                // 元のアイコンに戻す。
+                // 元のアイコン (と色) に戻す。
                 if (scope == 'type') {
                   await provider.setPageTypeIcon(type, null);
+                  await provider.setPageTypeIconColor(type, null);
                 } else {
                   await provider.setPageIcon(page.id, null);
+                  await provider.setPageIconColor(page.id, null);
                 }
                 setD(() {});
               },
@@ -68290,7 +68442,7 @@ class _MindMapScreenState extends State<MindMapScreen>
               iconFiles = await _renderIconFiles(
                 saveName: 'page_${page.id}',
                 icon: chosen,
-                color: _pageIconColorOf(page.pageType),
+                color: pageIconColorFor(provider, page),
               );
               if (!mounted) return;
             }
@@ -70414,7 +70566,7 @@ class _MindMapScreenState extends State<MindMapScreen>
               await provider.refreshRelayModels();
             } catch (_) {}
           }
-          String label(String id) => id.replaceAll(RegExp(r'-\d{8}$'), '');
+          String label(String id) => provider.relayModelLabel(id);
           final models = <Map<String, String>>[
             for (final e in provider.relayModels)
               if (e is Map &&
@@ -109901,8 +110053,8 @@ class _AiModelPicker extends StatefulWidget {
 }
 
 class _AiModelPickerState extends State<_AiModelPicker> {
-  /// 表示名。 末尾の日付 (…-20251001) は分かりにくいので落とす。
-  String _label(String id) => id.replaceAll(RegExp(r'-\d{8}$'), '');
+  /// 表示名 (末尾の日付落とし + `latest` を実際の世代へ)。
+  String _label(String id) => widget.provider.relayModelLabel(id);
 
   @override
   Widget build(BuildContext context) {
@@ -115685,8 +115837,11 @@ class _GanttPageViewState extends State<_GanttPageView> {
                   IconButton(
                     tooltip: widget.provider.t('tool.putIntoPage'),
                     visualDensity: VisualDensity.compact,
-                    icon: const Icon(Icons.open_in_new_rounded,
-                        size: 20, color: Color(0xFF9CCC65)),
+                    // ★ アプリの外に出す (open_in_new) と紛らわしいので、
+                    //    「ページに差し込む」 の意味の絵に変更 + 周りに
+                    //    合わせて白にする (= ユーザー要望)。
+                    icon: const Icon(Icons.post_add_rounded,
+                        size: 20, color: Colors.white70),
                     onPressed: _putGanttIntoPage,
                   ),
                   // ── 予定の通知設定 (= ユーザー要望: ガントの予定が通知される時刻を設定) ──
@@ -125416,7 +125571,7 @@ graph TD
   /// 使うモデルのボタン (= ユーザー要望: どこでも同じ選び方にする)。
   /// 押すとプロバイダーごとに横に並んだ共通の画面が開く。
   Widget _buildMdModelPicker(MindMapProvider provider, void Function() refresh) {
-    String label(String id) => id.replaceAll(RegExp(r'-\d{8}$'), '');
+    String label(String id) => provider.relayModelLabel(id);
     return InkWell(
       borderRadius: BorderRadius.circular(10),
       onTap: () => showAiModelDialog(context, provider, onChanged: refresh),
@@ -156490,60 +156645,24 @@ class _DrawerTile extends StatelessWidget {
             //   ★ 利用者が選んだアイコンがあれば、 そちらを優先する
             //     (= ユーザー要望: ページごと / 種類ごとに変えられるように)。
             child: () {
-              final chosen = context
-                  .read<MindMapProvider>()
-                  .pageIconIndexFor(page.id, page.pageType);
+              final p = context.read<MindMapProvider>();
+              // ★ 色も利用者が選べる (= ユーザー要望: ページのアイコンの色も
+              //   変更できるように)。 指定が無ければ種別ごとの既定色。
+              //   選択中以外は薄く出す (これは昔からの見た目)。
+              final c = pageIconColorFor(p, page);
+              final col = isActive ? c : c.withValues(alpha: 0.6);
+              final chosen = p.pageIconIndexFor(page.id, page.pageType);
               if (chosen != null &&
                   chosen >= 0 &&
                   chosen < kPageIconChoices.length) {
-                final c = _pageIconColorOf(page.pageType);
-                return Icon(kPageIconChoices[chosen],
-                    size: 16,
-                    color: isActive ? c : c.withValues(alpha: 0.6));
+                return Icon(kPageIconChoices[chosen], size: 16, color: col);
               }
-              switch (page.pageType) {
-                case 'bookshelf':
-                  return Icon(Icons.shelves,
-                      size: 16,
-                      color: isActive
-                          ? const Color(0xFFFF7043)
-                          : const Color(0xFFFF7043).withValues(alpha: 0.6));
-                case 'paint':
-                  return Icon(Icons.brush_rounded,
-                      size: 16,
-                      color: isActive
-                          ? const Color(0xFFEC407A)
-                          : const Color(0xFFEC407A).withValues(alpha: 0.6));
-                case 'document':
-                  return Icon(Icons.article_rounded,
-                      size: 16,
-                      color: isActive
-                          ? const Color(0xFF4FC3F7)
-                          : const Color(0xFF4FC3F7).withValues(alpha: 0.6));
-                // Markdown ページ専用のアイコン (= ユーザー要望)。
-                case 'markdown':
-                  return Icon(Icons.polyline_rounded,
-                      size: 16,
-                      color: isActive
-                          ? const Color(0xFF5FD3B2)
-                          : const Color(0xFF5FD3B2).withValues(alpha: 0.6));
-                case 'videoEditor':
-                  return Icon(Icons.movie_creation_rounded,
-                      size: 16,
-                      color: isActive
-                          ? const Color(0xFFFF7043)
-                          : const Color(0xFFFF7043).withValues(alpha: 0.6));
-                default:
-                  // マインドマップだけ選択中以外が白 (= 無彩色) で、 他の種類と
-                  //   並んだ時に色が付いていないように見えていた
-                  //   (= ユーザー要望)。 他と同じく種別の色を薄くして出す。
-                  //   青系は文書と被るので、 アプリの基調色の紫を使う。
-                  return Icon(isActive ? Icons.map : Icons.map_outlined,
-                      size: 16,
-                      color: isActive
-                          ? const Color(0xFF8B84FF)
-                          : const Color(0xFF8B84FF).withValues(alpha: 0.6));
-              }
+              // マインドマップだけ選択中以外が白 (= 無彩色) で、 他の種類と
+              //   並んだ時に色が付いていないように見えていた
+              //   (= ユーザー要望)。 他と同じく種別の色を薄くして出す。
+              //   青系は文書と被るので、 アプリの基調色の紫を使う。
+              return Icon(pageTypeDefaultIcon(page.pageType, active: isActive),
+                  size: 16, color: col);
             }(),
           ),
         ),
@@ -224561,8 +224680,10 @@ $currentText
     }
   }
 
-  /// リレー (代行) モデル名の表示用ラベル。 末尾の日付は落とす。
-  String _relayModelLabel(String id) => id.replaceAll(RegExp(r'-\d{8}$'), '');
+  /// リレー (代行) モデル名の表示用ラベル。 末尾の日付は落とし、
+  /// `…-latest` は実際の世代 (gemini-3.8-flash 等) に置き換える。
+  String _relayModelLabel(String id) =>
+      context.read<MindMapProvider>().relayModelLabel(id);
 
   /// AI編集で使うモデルの切替 (= ユーザー要望: AI編集は API 呼び出しなので
   /// LLM の設定項目が要る)。 MCP チャットと同じ relayModel を共有する。
@@ -227452,8 +227573,10 @@ class _MemberSchedulePageViewState extends State<_MemberSchedulePageView> {
       IconButton(
         tooltip: _p.t('tool.putIntoPage'),
         visualDensity: VisualDensity.compact,
-        icon: const Icon(Icons.open_in_new_rounded,
-            size: 20, color: Color(0xFF9CCC65)),
+        // ★ アプリの外に出す (open_in_new) と紛らわしいので、 「ページに
+        //    差し込む」 の意味の絵に変更 + 周りに合わせて白にする。
+        icon: const Icon(Icons.post_add_rounded,
+            size: 20, color: Colors.white70),
         onPressed: _putScheduleIntoPage,
       ),
       // 同期 (= メンバーの予定を取り込む)。
@@ -241102,7 +241225,7 @@ class _AiModelReasoningRowState extends State<_AiModelReasoningRow> {
     final provider = context.read<MindMapProvider>();
     final dark = provider.isDarkMode;
     final fg = dark ? Colors.white : Colors.black87;
-    String label(String id) => id.replaceAll(RegExp(r'-\d{8}$'), '');
+    String label(String id) => provider.relayModelLabel(id);
 
     // ── 使うモデル + 考える深さ。 押すと共通のモデル選択画面が開く
     //    (= ユーザー要望: Gemini だけでなく ChatGPT / Claude も使える
@@ -243575,10 +243698,10 @@ class _McpChatDialogState extends State<_McpChatDialog> {
 
   /// 使うモデルを選ぶ (= ユーザー要望: モデルの種類を切り替えたい)。
   /// 一覧は代行サーバーが返す「実際に使えるモデル」 だけを出す。
-  /// 画面に出すモデル名。 末尾の日付 (…-20251001) は分かりにくいので落とす
+  /// 画面に出すモデル名。 末尾の日付 (…-20251001) は分かりにくいので落とし、
+  /// `…-latest` は実際の世代 (gemini-3.8-flash 等) に置き換える
   /// (= ユーザー要望)。 実際に送る id は元のまま。
-  String _modelLabel(String id) =>
-      id.replaceAll(RegExp(r'-\d{8}$'), '');
+  String _modelLabel(String id) => provider.relayModelLabel(id);
 
   /// モデル名と残りトークンの行。 文字が気になる人は畳める (= ユーザー要望)。
   /// 畳んでも目のボタンだけは残るので、 いつでも戻せる。

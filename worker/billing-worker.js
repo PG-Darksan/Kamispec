@@ -109,6 +109,15 @@ export default {
           if (seen.size > before) added++;
         }
       }
+      // ★ `…-latest` は中身の世代が分からない (= ユーザー要望: latest と
+      //   いう書き方より 3.8 のように番号で明記して欲しい)。 送る id は
+      //   別名のまま (Google が最新へ差し替えてくれる利点を残す)、
+      //   画面に出す名前 (label) だけ実体の番号付き id に置き換える。
+      for (const m of out) {
+        if (m.provider !== 'gemini') continue;
+        const resolved = resolveGeminiLatest(m.id, found.gemini || []);
+        if (resolved) m.label = resolved;
+      }
       return json({ markup: MARKUP, models: out });
     }
     if (url.pathname === '/credits/balance' && request.method === 'GET') {
@@ -2186,6 +2195,33 @@ function isCurrentModel(id, provider) {
     return /-latest$/.test(id) || /^gemini-[3-9]/.test(id);
   }
   return false;
+}
+
+/// `gemini-flash-latest` のような別名が、 今どの世代を指しているかを返す。
+///
+/// = ユーザー要望「Gemini のモデルは latest という書き方よりも 3.8 とか
+///   明記してくれた方が分かりやすい」。 Google の一覧に載っている番号付き
+///   (gemini-3.8-flash 等) のうち、 同じ系統で一番新しい物を選ぶ。
+/// 見つからなければ空文字 (= 呼ぶ側は別名のまま出す)。
+function resolveGeminiLatest(id, list) {
+  const m = /^gemini-(.+)-latest$/.exec(String(id));
+  if (!m) return '';
+  // 系統 (flash / pro / flash-lite) は英小文字とハイフンだけ。
+  // 想定外の文字が来たら諦める (正規表現に埋め込むので念のため)。
+  const family = m[1];
+  if (!/^[a-z0-9-]+$/.test(family)) return '';
+  const re = new RegExp('^gemini-([0-9.]+)-' + family + '$');
+  let best = '';
+  let bestGen = -1;
+  for (const c of list) {
+    const mm = re.exec(String(c));
+    if (!mm) continue;
+    const gen = parseFloat(mm[1]);
+    if (!isFinite(gen) || gen <= bestGen) continue;
+    bestGen = gen;
+    best = String(c);
+  }
+  return best;
 }
 
 /// 並べ替え用の世代番号 (大きいほど新しい)。

@@ -1046,7 +1046,7 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
   /// フロー作成で使うモデルを選ぶ (= ユーザー要望: ここでも設定したい)。
   /// AI アシスタント等と同じ設定 (relayModel) を共有する。
   Widget _buildAiModelPicker(MindMapProvider provider) {
-    String label(String id) => id.replaceAll(RegExp(r'-\d{8}$'), '');
+    String label(String id) => provider.relayModelLabel(id);
     final models = [
       for (final m in provider.relayModels)
         if (m is Map && m['available'] == true) m

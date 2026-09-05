@@ -72333,6 +72333,25 @@ class MindMapProvider extends ChangeNotifier {
     }
   }
 
+  /// 代行モデルの表示名 (= ユーザー要望: Gemini のモデルは `latest` と
+  /// 書かれても中身が分からないので、 3.8 のように番号で出して欲しい)。
+  ///
+  /// `…-latest` は Google が最新世代へ差し替えてくれる別名なので、 モデル
+  /// ID そのものは別名のまま使う (勝手に世代が上がるのが利点)。 出す時だけ
+  /// サーバーが教えてくれた実体 (例: gemini-3.8-flash) に置き換える。
+  /// 末尾の日付 (…-20251001) は分かりにくいので落とす。
+  String relayModelLabel(String id) {
+    var shown = id;
+    for (final m in _relayModels) {
+      if (m is Map && '${m['id']}' == id) {
+        final r = '${m['label'] ?? ''}'.trim();
+        if (r.isNotEmpty) shown = r;
+        break;
+      }
+    }
+    return shown.replaceAll(RegExp(r'-\d{8}$'), '');
+  }
+
   /// 代行で使うモデル ID (プロバイダーを問わず、 サーバーが対応するもの)。
   /// 既定は Gemini Flash。 設定で切り替えられる。
   String _relayModel = 'gemini-flash-latest';
