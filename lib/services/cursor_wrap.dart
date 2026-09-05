@@ -289,7 +289,7 @@ class CursorWrap {
       //    (= ユーザー要望: 上下からもアクセスしたい)。
       final here = _monitorRectAt(x, y);
       if (here == null) return;
-      final mons = listMonitors();
+      final mons = _cachedMonitors();
       MonitorInfo? hereInfo;
       for (final m in mons) {
         if (m.left == here.$1 &&
@@ -575,6 +575,38 @@ class CursorWrap {
   /// EnumDisplayMonitors は「関数を OS に渡す」 形なので、 ここでは仮想画面を
   /// 粗く突いて (MonitorFromPoint) 見つかった四角を集める。 モニターはどれも
   /// 十分大きいので、 200px 刻みで取りこぼす事はない。
+  /// 見回り (15ms ごと) 用の控え。
+  ///
+  /// [listMonitors] は仮想画面を 200px 刻みで舐めるので、 毎回呼ぶと
+  /// 常駐 (アプリを閉じていても効かせる時) で無駄に電気を食う。
+  /// 枚数と仮想画面の大きさが変わっていなければ 2 秒間は使い回す。
+  static List<MonitorInfo>? _monCache;
+  static int _monCacheAtMs = 0;
+  static int _monCacheSig = 0;
+
+  static List<MonitorInfo> _cachedMonitors() {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    // 枚数と仮想画面の大きさは軽く取れるので、 変わったら即作り直す。
+    final sig = Object.hash(
+      _staticMetric(w32.SM_CMONITORS),
+      _staticMetric(w32.SM_CXVIRTUALSCREEN),
+      _staticMetric(w32.SM_CYVIRTUALSCREEN),
+      _staticMetric(w32.SM_XVIRTUALSCREEN),
+      _staticMetric(w32.SM_YVIRTUALSCREEN),
+    );
+    final cache = _monCache;
+    if (cache != null &&
+        sig == _monCacheSig &&
+        now - _monCacheAtMs < 2000) {
+      return cache;
+    }
+    final fresh = listMonitors();
+    _monCache = fresh;
+    _monCacheAtMs = now;
+    _monCacheSig = sig;
+    return fresh;
+  }
+
   static List<MonitorInfo> listMonitors() {
     if (!isSupported) return const [];
     final out = <MonitorInfo>[];

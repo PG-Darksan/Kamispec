@@ -4929,6 +4929,27 @@ class _MindMapScreenState extends State<MindMapScreen>
     pdfDrawBurnedNotifier.addListener(_onPdfDrawBurned);
     // SnackBar をドロワーより手前に出すために共有する (= ユーザー要望)。
     appMainScaffoldKey = _scaffoldKey;
+    // ── 回り込みの常駐を登録し直す (= ユーザー要望: アプリを閉じていても
+    //    効かせる) ── 置き場所が変わっていると古い登録が空振りするので、
+    //    立ち上がるたびに入れ直す。 控えを読み終わるのを少し待つ。
+    if (_isDesktop) {
+      Future.delayed(const Duration(seconds: 6), () {
+        if (!mounted) return;
+        try {
+          if (context.read<MindMapProvider>().cursorWrapDaemon) {
+            // 置き場所が変わっていると空振りするので入れ直す。
+            unawaited(_registerCursorWrapTask(true));
+          }
+        } catch (_) {}
+      });
+    }
+    // 浮かぶ窓の AI ボタンから、 本体のアシスタントを呼べるようにする
+    //   (= ユーザー要望)。
+    openAssistantFromFloating = () {
+      if (!mounted) return;
+      unawaited(_openMcpChat(context.read<MindMapProvider>(),
+          floatingPanel: true));
+    };
     // ── 本体が起きていない間にフローティングメモから頼まれた「マップに
     //    追加」 を取り込む (= ユーザー要望)。 読み込みが済んでから。 ──
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -5251,6 +5272,11 @@ class _MindMapScreenState extends State<MindMapScreen>
               math.min(anchor.dy - height - 14,
                   math.max(bounds.top + 12, bounds.bottom - height - 12)));
         }
+        // ★ 入り切らない分は切り落とさず、 巻物にする (= 点検で判明:
+        //   分割中や背の低い窓では、 下の送信ボタンまで切れて押せなく
+        //   なっていた)。 中身への当て方は今までと同じ (縦は無制限) なので、
+        //   入り切る窓の見た目は変わらない。
+        final maxH = math.max(160.0, bounds.bottom - top - 12);
         return Stack(children: [
           Positioned(
             left: left,
@@ -5258,7 +5284,12 @@ class _MindMapScreenState extends State<MindMapScreen>
             width: w,
             child: Material(
               type: MaterialType.transparency,
-              child: Builder(builder: builder),
+              child: ConstrainedBox(
+                constraints: BoxConstraints(maxHeight: maxH),
+                child: SingleChildScrollView(
+                  child: Builder(builder: builder),
+                ),
+              ),
             ),
           ),
         ]);
@@ -6827,6 +6858,8 @@ class _MindMapScreenState extends State<MindMapScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    // 浮かぶ窓からの呼び出し口を外す (画面が無くなった後に呼ばれないように)。
+    openAssistantFromFloating = null;
     pdfDrawBurnedNotifier.removeListener(_onPdfDrawBurned);
     // 支払いの見張りを外す (= ユーザー要望で入れた知らせ)。
     if (_planWatcher != null) {
@@ -32605,6 +32638,72 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// Windows には Android のような目覚まし枠が無いので、 OS のタスクとして
   /// 「この時刻にアプリを起動する」 を登録しておく。 起動したアプリは
   /// `--alarm=<id>` を受け取って、 その場で鳴らす。
+  /// カーソルの回り込みだけを受け持つ常駐を、 Windows のサインイン時に
+  /// 立ち上がるよう登録する / 外す (= ユーザー要望: アプリを起動していない
+  /// 時でもサブモニターへ両端から行き来できるように)。
+  ///
+  /// ★ 置き場所は **自分のアカウントの「サインイン時に実行」**
+  ///   (HKCU\...\CurrentVersion\Run)。
+  ///   最初はアラームと同じ `schtasks` を使ったが、 タスクの ONLOGON は
+  ///   管理者権限が要り、 普通の利用者では必ず「アクセスが拒否されました」
+  ///   で登録できなかった (実機で確認)。 しかも失敗しても画面には
+  ///   出ないので、 入ったつもりで次の起動から効かない、 という形に
+  ///   なっていた。 HKCU なら権限は要らない。
+  ///
+  /// 戻り値: 入れられたか (false なら理由を画面に出す)。
+  Future<bool> _registerCursorWrapTask(bool on) async {
+    if (kIsWeb || !Platform.isWindows) return true;
+    const name = 'HisatorNotebook_CursorWrap';
+    const runKey =
+        r'HKCU\Software\Microsoft\Windows\CurrentVersion\Run';
+    try {
+      // 昔の入れ方 (タスク スケジューラ) が残っていたら片付ける。
+      await Process.run('schtasks', ['/delete', '/tn', name, '/f']);
+      if (!on) {
+        await Process.run('reg', ['delete', runKey, '/v', name, '/f']);
+        return true;
+      }
+      final exe = Platform.resolvedExecutable;
+      final r = await Process.run('reg', [
+        'add',
+        runKey,
+        '/v',
+        name,
+        '/t',
+        'REG_SZ',
+        '/d',
+        '"$exe" --cursor-wrap',
+        '/f',
+      ]);
+      if (r.exitCode != 0) {
+        debugPrint('回り込みの常駐登録に失敗: ${r.stderr}');
+        return false;
+      }
+      return true;
+    } catch (e) {
+      debugPrint('回り込みの常駐登録に失敗: $e');
+      return false;
+    }
+  }
+
+  /// 常駐を今すぐ立ち上げる / 終わらせる。
+  ///
+  /// 立ち上げ: 別プロセスとして起こす (本体を閉じても残る)。
+  /// 終わらせる: 控えを見て自分で終わるので、 ここでは何もしない
+  ///   (常駐は 3 秒ごとに控えを読み直し、 切られていたら自分で終わる)。
+  Future<void> _startCursorWrapDaemon() async {
+    if (kIsWeb || !Platform.isWindows) return;
+    try {
+      await Process.start(
+        Platform.resolvedExecutable,
+        ['--cursor-wrap'],
+        mode: ProcessStartMode.detached,
+      );
+    } catch (e) {
+      debugPrint('回り込みの常駐を起こせませんでした: $e');
+    }
+  }
+
   Future<void> _registerWindowsAlarmTask(_AlarmEntry a) async {
     if (kIsWeb || !Platform.isWindows) return;
     final name = 'HisatorNotebook_Alarm_${a.id}';
@@ -44453,7 +44552,27 @@ class _MindMapScreenState extends State<MindMapScreen>
         break;
       case 'screenRecord':
         // 画面録画 (= ユーザー要望: Windows+G のような操作パネルを出す)。
-        setState(() => _recBarOpen = !_recBarOpen);
+        setState(() {
+          final open = !_recBarOpen;
+          _recBarOpen = open;
+          // ★ 押したボタンの近くに出す (= ユーザー要望: 画面録画項目も
+          //   押したボタンの近くに)。 出す時だけ置き直すので、 掴んで
+          //   動かした場所は開いている間そのまま。
+          if (open) {
+            final at = _lastCustomButtonPointerPos ?? _lastGlobalPointerPos;
+            if (at != null) {
+              final media = MediaQuery.sizeOf(context);
+              _recBarPos = Offset(
+                (at.dx - 170)
+                    .clamp(8.0, math.max(8.0, media.width - 360))
+                    .toDouble(),
+                (at.dy + 18)
+                    .clamp(8.0, math.max(8.0, media.height - 96))
+                    .toDouble(),
+              );
+            }
+          }
+        });
         break;
       case 'createFile':
         // ファイルを作成 (= ユーザー要望: モバイルにもボタンを)。
@@ -60306,8 +60425,13 @@ class _MindMapScreenState extends State<MindMapScreen>
     final barMaxW = math.max(200.0, media.width - 16);
     final pos = _recBarPos ??
         Offset(math.max(0.0, (media.width - 360) / 2), 74);
+    // ★ 横の丸めは「バーの実際の幅」 で行う。 いちばん広く取れる幅
+    //   (barMaxW) で丸めると 0〜16px の間しか動けず、 押したボタンの
+    //   近くに出しても左端に貼り付いていた (= 点検で判明)。
+    //   ここでは実寸が分からないので、 だいたいの幅で見積もる。
+    final barW = math.min(barMaxW, 360.0);
     return Positioned(
-      left: pos.dx.clamp(0.0, math.max(0.0, media.width - barMaxW)),
+      left: pos.dx.clamp(0.0, math.max(0.0, media.width - barW)),
       top: pos.dy.clamp(0.0, math.max(0.0, media.height - 80)),
       child: AnimatedBuilder(
         animation: rec,
@@ -69226,6 +69350,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       _mapSplitCellWeb.clear();
       _mapSplitCellWebCur.clear();
       _mapSplitCellTool.clear();
+      // 「動かす」 の状態も下ろす (= 押したまま畳むと、 次に開いた時に
+      //   道具の上に見えない板が残って触れなくなるため)。
+      _paneToolMoving = null;
+      _paneToolOffset.clear();
       _syncNarrowPaneRatio();
       _mapSplitCellFile.clear();
     });
@@ -69459,6 +69587,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     final openedByUs = _toolOpenedSplit.remove(id) ?? false;
     setState(() {
       _mapSplitCellTool.remove(slot);
+      // 動かした位置と「動かす」 の状態も片付ける (= 次に開いた時は
+      //   また真ん中から始まるように)。
+      _paneToolOffset.remove('$slot:$id');
+      if (_paneToolMoving == '$slot:$id') _paneToolMoving = null;
       _syncNarrowPaneRatio();
     });
     if (openedByUs && _mapSplitCellTool.isEmpty && _mapSplitCellWeb.isEmpty) {
@@ -69585,6 +69717,92 @@ class _MindMapScreenState extends State<MindMapScreen>
       _mapSplitCellWeb.remove(slot);
       _mapSplitCellTool[slot] = id;
       _syncNarrowPaneRatio();
+    });
+  }
+
+  /// 分割ペインに埋め込んだ道具の、 真ん中からのずれ
+  /// (鍵は 'スロット:道具')。 = ユーザー要望: いつも真ん中だと打ちにくい。
+  final Map<String, Offset> _paneToolOffset = {};
+
+  /// いま「動かす」 を押している道具 (null = どれも動かさない)。
+  String? _paneToolMoving;
+
+  /// 埋め込んだ道具を、 ペインの中で縦横に動かせるようにして返す。
+  ///
+  /// ★ いつでも動かせると道具のボタンが押しにくいので、 右上の「動かす」
+  ///   を押している間だけ動く (= ユーザー要望)。 押していない間は今までと
+  ///   同じで、 道具のボタンがそのまま使える。
+  ///   動かしている間は薄く色を敷いて、 その板が指の動きを受け取る。
+  Widget _movablePaneTool(int slot, String id, Widget child) {
+    final key = '$slot:$id';
+    return LayoutBuilder(builder: (ctx, c) {
+      // 端まで出し切らないよう、 半分くらいまでに留める。
+      final maxDx = math.max(0.0, c.maxWidth * 0.45);
+      final maxDy = math.max(0.0, c.maxHeight * 0.45);
+      final raw = _paneToolOffset[key] ?? Offset.zero;
+      final off = Offset(
+        raw.dx.clamp(-maxDx, maxDx).toDouble(),
+        raw.dy.clamp(-maxDy, maxDy).toDouble(),
+      );
+      final moving = _paneToolMoving == key;
+      final provider = context.read<MindMapProvider>();
+      Widget iconBtn(IconData icon, String tip, VoidCallback onTap,
+              {Color? color}) =>
+          Tooltip(
+            message: tip,
+            child: InkWell(
+              onTap: onTap,
+              borderRadius: BorderRadius.circular(6),
+              child: Padding(
+                padding: const EdgeInsets.all(5),
+                child: Icon(icon, size: 15, color: color ?? Colors.white54),
+              ),
+            ),
+          );
+      return Stack(children: [
+        Positioned.fill(child: Transform.translate(offset: off, child: child)),
+        // 動かしている間だけ、 指の動きを受け取る板を上に敷く。
+        if (moving)
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onPanUpdate: (d) => setState(() {
+                _paneToolOffset[key] = off + d.delta;
+              }),
+              child: MouseRegion(
+                cursor: SystemMouseCursors.move,
+                child: Container(
+                  color: const Color(0xFFFFB347).withValues(alpha: 0.10),
+                ),
+              ),
+            ),
+          ),
+        Positioned(
+          top: 2,
+          right: 2,
+          child: Material(
+            color: const Color(0xCC1B1B2C),
+            borderRadius: BorderRadius.circular(8),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              if (off != Offset.zero)
+                iconBtn(Icons.filter_center_focus_rounded,
+                    provider.t('pane.resetToolPos'), () {
+                  setState(() => _paneToolOffset.remove(key));
+                }),
+              iconBtn(
+                moving
+                    ? Icons.check_rounded
+                    : Icons.open_with_rounded,
+                provider
+                    .t(moving ? 'pane.moveToolDone' : 'pane.moveTool'),
+                () => setState(
+                    () => _paneToolMoving = moving ? null : key),
+                color: moving ? const Color(0xFFFFB347) : Colors.white54,
+              ),
+            ]),
+          ),
+        ),
+      ]);
     });
   }
 
@@ -71248,7 +71466,15 @@ class _MindMapScreenState extends State<MindMapScreen>
         inner = ClipRect(
           child: Container(
             color: const Color(0xFF12121F),
-            child: _buildEmbeddedPaneTool(provider, k, toolId),
+            // 真ん中決め打ちをやめ、 縦横に動かせるようにする
+            //   (= ユーザー要望: 常に中央だと打ちにくい)。
+            // ★ ペインいっぱいに広がる道具 (予定表・アシスタント等) は
+            //   動かしても意味が無く、 ボタンが増えて邪魔なので、
+            //   真ん中に小さく出る物だけに付ける。
+            child: const {'calculator', 'stopwatch'}.contains(toolId)
+                ? _movablePaneTool(
+                    k, toolId, _buildEmbeddedPaneTool(provider, k, toolId))
+                : _buildEmbeddedPaneTool(provider, k, toolId),
           ),
         );
       } else {
@@ -72172,6 +72398,43 @@ class _MindMapScreenState extends State<MindMapScreen>
         // ── 「サブモニターに両サイドからアクセス」 のトグルは削除 ──
         //    = ユーザー要望「上の図から設定すればいいから項目としては削除」。
         //    図で行き先を決めた辺だけが働く。
+        // ── アプリを閉じていても効かせる (= ユーザー要望) ──
+        //    サインイン時に、 回り込みだけの小さな常駐を立ち上げる。
+        _settingsToggleTile(
+          icon: provider.cursorWrapDaemon
+              ? Icons.play_circle_fill_rounded
+              : Icons.play_circle_outline_rounded,
+          color: provider.cursorWrapDaemon
+              ? const Color(0xFF9CCC65)
+              : Colors.white54,
+          title: provider.t('cursorWrap.daemon'),
+          helpKey: 'cursorWrap.daemonHelp',
+          value: provider.cursorWrapDaemon,
+          onChanged: (v) async {
+            await provider.setCursorWrapDaemon(v);
+            final ok = await _registerCursorWrapTask(v);
+            if (v && ok) {
+              // すぐ効くように、 今この場でも立ち上げておく。
+              await _startCursorWrapDaemon();
+            }
+            if (v && !ok) {
+              // 入れられなかった時は黙って ON にしない (= 次の起動から
+              //   効かないのに、 入ったように見えるのを防ぐ)。
+              await provider.setCursorWrapDaemon(false);
+              if (ctx.mounted) {
+                _appSnack(
+                  ctx,
+                  SnackBar(
+                    content:
+                        Text(provider.t('cursorWrap.daemonFailed')),
+                    backgroundColor: const Color(0xFFE53935),
+                  ),
+                );
+              }
+            }
+            setS(() {});
+          },
+        ),
       ],
 
       // ── 音声の出力先 ──
@@ -72472,6 +72735,13 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// 分割レイアウトを [panes] / [stacked] のモードに切り替える。 既にその
   /// モードなら分割を閉じる (= トグル)。
+  /// 分割の組み替え時にも「動かす」 の状態を下ろす。
+  void _resetPaneToolMove() {
+    if (_paneToolMoving == null && _paneToolOffset.isEmpty) return;
+    _paneToolMoving = null;
+    _paneToolOffset.clear();
+  }
+
   Future<void> _applyMapSplitMode({
     required int panes,
     required bool stacked,
@@ -72487,6 +72757,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
     setState(() {
       _mapSplitQuad = quad;
+      // 組み替えたら「動かす」 の状態は下ろす (= 見えない板が残るのを防ぐ)。
+      _resetPaneToolMove();
       if (!quad) {
         _mapSplitStacked = stacked;
         // 4→2 に戻した時、 編集セルが下段なら上段へ寄せる。
@@ -90766,11 +91038,14 @@ class _MindMapScreenState extends State<MindMapScreen>
   // ─── 問い合わせフォーム ────────────────────────────────────────────────────
 
   /// ユーザー向け問い合わせダイアログ（送信＋返信確認）
+  ///
+  /// ★ 画面の中央ではなく、 押したボタンの近くに出す (= ユーザー要望)。
   void _showInquiryDialog(BuildContext ctx, MindMapProvider provider) {
-    showDialog(
-      context: ctx,
+    unawaited(_showNearDialogMain<void>(
+      width: 460,
+      height: 620,
       builder: (dctx) => _InquiryDialog(provider: provider),
-    );
+    ));
   }
 
   // ─── 開発者モード ──────────────────────────────────────────────────────────
@@ -113389,6 +113664,68 @@ class _GanttPageViewState extends State<_GanttPageView> {
   }
 
   /// 予定通知の設定ダイアログ (= ON/OFF + 通知時刻)。
+  /// 今のガントチャートを「編集できるノード」 としてページに置く
+  /// (= ユーザー要望: マインドマップやギャラリーに埋め込めるように)。
+  ///
+  /// 道具の予定 (_GanttTask) と、 ページに置く工程表 (GanttTask) は別の形。
+  ///   ・時刻は日付 (YYYY-MM-DD) に丸める (ノードの工程表は日単位のため)
+  ///   ・色は「済み / 進行中 / これから」 に読み替える (今日を基準に)
+  ///   ・担当者は名前の後ろに付ける
+  /// 時間単位の表や休止の区間はノード側に置き場が無いので落ちる。
+  Future<void> _putGanttIntoPage() async {
+    final provider = widget.provider;
+    // 全画面のダイアログの中なので、 SnackBar ではなく上に出す。
+    void tell(String msg, Color c) => showTopToast(context, msg, c);
+
+    if (_tasks.isEmpty) {
+      tell(provider.t('tool.putIntoPageEmpty'), const Color(0xFF455A64));
+      return;
+    }
+    String ymd(int ms) {
+      final d = DateTime.fromMillisecondsSinceEpoch(ms);
+      return '${d.year}-${d.month.toString().padLeft(2, '0')}-'
+          '${d.day.toString().padLeft(2, '0')}';
+    }
+
+    final nowDt = DateTime.now();
+    final now = nowDt.millisecondsSinceEpoch;
+    final todayStart =
+        DateTime(nowDt.year, nowDt.month, nowDt.day).millisecondsSinceEpoch;
+    final tasks = <Map<String, String>>[];
+    for (final t in _tasks) {
+      final name = t.name.trim();
+      if (name.isEmpty) continue;
+      final who = t.assignee.trim();
+      tasks.add({
+        'label': who.isEmpty ? name : '$name ($who)',
+        'section': '',
+        'start': ymd(t.startMs),
+        'end': ymd(t.endMs),
+        // 今日の分はまだ「済み」 にしない (= 今日終わる予定が、 置いた
+        //   途端に済み扱いになるのは変)。
+        'status': t.endMs < todayStart
+            ? 'done'
+            : (t.startMs <= now ? 'active' : ''),
+      });
+    }
+    if (tasks.isEmpty) {
+      tell(provider.t('tool.putIntoPageEmpty'), const Color(0xFF455A64));
+      return;
+    }
+    final title = (_selChart >= 0 && _selChart < _charts.length
+            ? _charts[_selChart].name
+            : '')
+        .trim();
+    final placed = await askAndPutChartIntoPage(context, provider, {
+      'chartType': 'gantt',
+      'title': title.isEmpty ? provider.t('hdr.gantt') : title,
+      'tasks': tasks,
+    });
+    if (!mounted || placed == null) return;
+    tell(provider.t('tool.putIntoPageDone').replaceFirst('{page}', placed),
+        const Color(0xFF43B97F));
+  }
+
   Future<void> _showGanttNotifySettings() async {
     bool enabled = _notifyEnabled;
     TimeOfDay time = TimeOfDay(hour: _notifyHour, minute: _notifyMinute);
@@ -114935,6 +115272,16 @@ class _GanttPageViewState extends State<_GanttPageView> {
                               : Colors.white70),
                       onPressed: _toggle12h,
                     ),
+                  // ── ページに出す (= ユーザー要望: ガントチャートを
+                  //    マインドマップやギャラリーに埋め込めるように) ──
+                  //    今の表を「編集できる工程表のノード」 として置く。
+                  IconButton(
+                    tooltip: widget.provider.t('tool.putIntoPage'),
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.open_in_new_rounded,
+                        size: 20, color: Color(0xFF9CCC65)),
+                    onPressed: _putGanttIntoPage,
+                  ),
                   // ── 予定の通知設定 (= ユーザー要望: ガントの予定が通知される時刻を設定) ──
                   IconButton(
                     tooltip: context
@@ -120011,7 +120358,14 @@ Future<String?> askAndPutChartIntoPage(BuildContext context,
   var pageId = chosen;
   if (pageId == '__new__') {
     final made = provider.mcpCreatePage(type: 'normal', name: title);
-    if (made == null) return null;
+    if (made == null) {
+      // 作れなかった (= 無料のページ数の上限など)。 黙って終わらない。
+      if (context.mounted) {
+        showTopToast(context, provider.t('map.cannotCreatePage'),
+            const Color(0xFFE53935));
+      }
+      return null;
+    }
     pageId = made;
   }
   // 今ある物の右隣へ置く。
@@ -120036,6 +120390,98 @@ Future<String?> askAndPutChartIntoPage(BuildContext context,
       messages: messages,
       x: nx,
       y: ny);
+  if (id == null) return null;
+  return provider.mcpPageById(pageId)?.name ?? '';
+}
+
+/// 表を「編集できるノード」 として、 選んだページへ置く
+/// (= ユーザー要望: メンバー予定表もマインドマップやギャラリーに置けるように)。
+///
+/// [rows] の 1 行目が見出しになる。 置いたページの名前を返す (取り止め = null)。
+Future<String?> askAndPutTableIntoPage(BuildContext context,
+    MindMapProvider provider, String title, List<List<String>> rows) async {
+  if (rows.isEmpty) return null;
+  // 図と同じく、 マインドマップとギャラリーのどちらにも置ける。
+  final pages = provider.pages
+      .where((p) => p.pageType == 'normal' || p.pageType == 'bookshelf')
+      .toList();
+  final chosen = await showDialog<String>(
+    context: context,
+    builder: (dctx) => AlertDialog(
+      backgroundColor: const Color(0xFF1E1E32),
+      title: Text(provider.t('map.pickTargetPage'),
+          style: const TextStyle(color: Colors.white, fontSize: 15)),
+      content: SizedBox(
+        width: math.min(380.0, MediaQuery.sizeOf(dctx).width - 48),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 360),
+          child: ListView(shrinkWrap: true, children: [
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.add_box_outlined,
+                  color: Color(0xFF43B97F), size: 20),
+              title: Text(provider.t('map.newPage'),
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700)),
+              onTap: () => Navigator.pop(dctx, '__new__'),
+            ),
+            if (pages.isNotEmpty) const Divider(color: Colors.white12),
+            for (final pg in pages)
+              ListTile(
+                dense: true,
+                leading: Icon(
+                    pg.pageType == 'bookshelf'
+                        ? Icons.photo_library_outlined
+                        : Icons.map_outlined,
+                    color: Colors.white54,
+                    size: 18),
+                title: Text(pg.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.white, fontSize: 13)),
+                onTap: () => Navigator.pop(dctx, pg.id),
+              ),
+          ]),
+        ),
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(dctx),
+            child: Text(provider.t('btn.cancel'),
+                style: const TextStyle(color: Colors.white54))),
+      ],
+    ),
+  );
+  if (chosen == null) return null;
+  var pageId = chosen;
+  if (pageId == '__new__') {
+    final made = provider.mcpCreatePage(type: 'normal', name: title);
+    if (made == null) {
+      // 作れなかった (= 無料のページ数の上限など)。 黙って終わらない。
+      if (context.mounted) {
+        showTopToast(context, provider.t('map.cannotCreatePage'),
+            const Color(0xFFE53935));
+      }
+      return null;
+    }
+    pageId = made;
+  }
+  // 今ある物の右隣へ置く (図の方と同じ)。
+  final pg0 = provider.mcpPageById(pageId);
+  double? nx, ny;
+  if (pg0 != null && pg0.nodes.isNotEmpty) {
+    var maxX = -1e9, minY = 1e9;
+    for (final n in pg0.nodes.values) {
+      if (n.position.dx > maxX) maxX = n.position.dx;
+      if (n.position.dy < minY) minY = n.position.dy;
+    }
+    nx = maxX + 260;
+    ny = minY;
+  }
+  final id = provider.mcpAddTableNode(pageId,
+      rows: rows, caption: title, x: nx, y: ny);
   if (id == null) return null;
   return provider.mcpPageById(pageId)?.name ?? '';
 }
@@ -147703,6 +148149,8 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
     // バックグラウンド再生継続 Timer も停止
     _bgPlayKeeper?.cancel();
     _bgPlayKeeper = null;
+    _advanceGuardTimer?.cancel();
+    _advanceGuardTimer = null;
     // ブラウズ URL 追従ポーリングも停止
     _browseUrlPollTimer?.cancel();
     _browseUrlPollTimer = null;
@@ -147850,6 +148298,8 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
           // YouTube は document.hidden / visibilityState を監視して、
           // hidden になると自動で pause する。これを常に visible と
           // 思わせることで、バックグラウンド遷移時の自動 pause を防ぐ。
+          // ★ 同じ細工を document-start でも入れてある
+          //   (_kBgPlaybackPatchJs)。 こちらは取りこぼしの保険。
           // 既に偽装済みかチェック (二重定義は throw する) して未偽装なら適用。
           if (!window.__MM_VISIBILITY_PATCHED__) {
             try {
@@ -148850,23 +149300,63 @@ v.addEventListener('play', function() {
   }
 
   /// 再生位置トラッカー: 3 秒ごとに currentTime を FlutterPosition ハンドラに送信
+  ///
+  /// ★ 「終わった」 の知らせは **一度きり** にする (= ユーザー報告:
+  ///   バックグラウンド再生が動画の切り替わりで不安定になる)。
+  ///   以前は 3 秒ごとの見回りで `v.ended` を見て、 終わっている間は
+  ///   何度でも送っていた。 次の動画の読み込みが 3 秒を超えると
+  ///   二度目が届き、 読み込み中のページを打ち切って更に次へ飛んでいた
+  ///   (= 一本飛ばし + 長い無音)。 今は要素ごとに印を付けて 1 回だけ送る。
+  ///   どの動画が終わったかも一緒に送り、 別の動画の記録に混ざらないよう
+  ///   にする。
   Future<void> _injectPositionTracker() async {
     await _c?.evaluateJavascript(source: '''
       (function(){
         if(window.__MM_PT__)return;window.__MM_PT__=true;
+        function vid(){
+          try{
+            var m = location.href.match(/[?&]v=([A-Za-z0-9_-]{6,})/);
+            return m ? m[1] : '';
+          }catch(e){ return ''; }
+        }
+        function sendEnded(v){
+          try{
+            if(!v || v.__MM_ENDED_SENT__) return;
+            v.__MM_ENDED_SENT__ = true;
+            if (window.flutter_inappwebview) {
+              window.flutter_inappwebview.callHandler('FlutterEnded', vid());
+            }
+          }catch(e){}
+        }
         setInterval(function(){
           try{var v=document.querySelector("video");
-            if(v&&v.currentTime>0){
+            if(!v) return;
+            // 要素が入れ替わったら (= 次の動画) 印を付け直す。
+            if(!v.__MM_ENDED_HOOKED__){
+              v.__MM_ENDED_HOOKED__ = true;
+              v.__MM_ENDED_SENT__ = false;
+              try{ v.addEventListener('ended', function(){ sendEnded(v); }); }catch(e){}
+            }
+            if(v.currentTime>0){
               if (window.flutter_inappwebview) {
-                window.flutter_inappwebview.callHandler('FlutterPosition', String(v.currentTime));
-                if(v.ended) window.flutter_inappwebview.callHandler('FlutterEnded', 'ended');
+                window.flutter_inappwebview.callHandler('FlutterPosition',
+                    v.currentTime + '|' + vid());
               }
             }
+            if(v.ended) sendEnded(v);
           }catch(e){}
         },3000);
       })();
     ''');
   }
+
+  /// 次の動画へ進んでいる最中か (= ユーザー報告: バックグラウンド再生が
+  /// 動画の切り替わりで不安定になる)。 読み込みが終わるまで、 重ねて
+  /// 進まないようにする。
+  bool _advancing = false;
+
+  /// 読み込みの知らせが届かなかった時に、 上の印を必ず下ろすための保険。
+  Timer? _advanceGuardTimer;
 
   /// 保存済みの再生位置があれば seek で復元
   /// 既にタイムスタンプジャンプを実行済みかのフラグ。
@@ -148904,21 +149394,34 @@ v.addEventListener('play', function() {
     //   5. 念の為 0.3/0.8/1.5/3 秒後にも再試行
     // どれかが効いたら DONE フラグを立てて、 それ以降の試行をスキップ
     // (= 成功後にユーザーが手動でシークしたのを上書きしない)。
+    // ★ 前の動画のために仕掛けた「この時間へ飛ばす」 が、 次の動画にも
+    //   効いてしまうのを止める (= ユーザー報告: バックグラウンド再生が
+    //   動画の切り替わりで不安定になる)。
+    //   同じページのまま次の動画へ進む (YouTube の中の移動) と、 前回の
+    //   仕掛け (loadedmetadata / canplay の待ち受けと見張り) がそのまま
+    //   残っていて、 新しい動画が始まった途端に**前の動画の時間**へ
+    //   飛ばしていた。 しかも切り替えるたびに見張りが増えて重くなる。
+    //   毎回「何回目の仕掛けか」 を数えて、 古い仕掛けは自分で黙る。
     await _c?.evaluateJavascript(source: '''
       (function(){
         if (window.__MM_SEEK_TARGET__ === $seekTo && window.__MM_SEEK_ACTIVE__) return;
         window.__MM_SEEK_TARGET__ = $seekTo;
         window.__MM_SEEK_ACTIVE__ = true;
         window.__MM_SEEK_DONE__ = false;
+        // 何回目の仕掛けか。 古い仕掛けはこれを見て黙る。
+        window.__MM_SEEK_GEN__ = (window.__MM_SEEK_GEN__ || 0) + 1;
+        var GEN = window.__MM_SEEK_GEN__;
         var TARGET = $seekTo;
         var attached = new WeakSet();
+        function stale(){ return window.__MM_SEEK_GEN__ !== GEN; }
         function applyOne(v){
-          if (window.__MM_SEEK_DONE__) return;
+          if (stale() || window.__MM_SEEK_DONE__) return;
           try {
             if (!v) return;
             v.currentTime = TARGET;
             // 0.3 秒後に成功確認: TARGET 付近にいれば DONE
             setTimeout(function(){
+              if (stale()) return;
               try {
                 if (v && Math.abs(v.currentTime - TARGET) < 2) {
                   window.__MM_SEEK_DONE__ = true;
@@ -148934,7 +149437,13 @@ v.addEventListener('play', function() {
           v.addEventListener('canplay', function(){ applyOne(v); }, false);
           applyOne(v);
         }
+        var obs = null;
         function scanAll(){
+          if (stale()) {
+            // 古くなったら見張りも畳む (切り替えるたびに増えないように)。
+            try { if (obs) { obs.disconnect(); obs = null; } } catch(e) {}
+            return;
+          }
           if (window.__MM_SEEK_DONE__) return;
           try {
             document.querySelectorAll('video').forEach(attach);
@@ -148942,12 +149451,26 @@ v.addEventListener('play', function() {
         }
         scanAll();
         try {
-          new MutationObserver(scanAll).observe(document, {childList:true, subtree:true});
+          obs = new MutationObserver(scanAll);
+          obs.observe(document, {childList:true, subtree:true});
+          // 前回の見張りが残っていれば畳む。
+          try {
+            if (window.__MM_SEEK_OBS__ && window.__MM_SEEK_OBS__ !== obs) {
+              window.__MM_SEEK_OBS__.disconnect();
+            }
+          } catch(e) {}
+          window.__MM_SEEK_OBS__ = obs;
         } catch(e) {}
         setTimeout(scanAll, 300);
         setTimeout(scanAll, 800);
         setTimeout(scanAll, 1500);
         setTimeout(scanAll, 3000);
+        // 5 秒経ったら、 この仕掛けは役目を終える (以後は手動シークを尊重)。
+        setTimeout(function(){
+          if (stale()) return;
+          try { if (obs) { obs.disconnect(); obs = null; } } catch(e) {}
+          window.__MM_SEEK_ACTIVE__ = false;
+        }, 5000);
       })();
     ''');
     if (hasInitialPos) {
@@ -152954,31 +153477,58 @@ v.addEventListener('play', function() {
                                   handlerName: 'FlutterPosition',
                                   callback: (args) {
                                     if (args.isEmpty) return;
-                                    final sec =
-                                        double.tryParse(args[0].toString());
-                                    if (sec != null &&
-                                        _currentVideoId != null &&
-                                        mounted) {
-                                      context
-                                          .read<MindMapProvider>()
-                                          .saveVideoPosition(
-                                              _currentVideoId!, sec);
-                                    }
+                                    // '秒|動画id' の形で届く (id が付くのは
+                                    //   切り替わりの最中に前の動画の時間を
+                                    //   次の動画の記録へ書かないため)。
+                                    final raw = args[0].toString();
+                                    final bar = raw.indexOf('|');
+                                    final sec = double.tryParse(
+                                        bar < 0 ? raw : raw.substring(0, bar));
+                                    final vid =
+                                        bar < 0 ? '' : raw.substring(bar + 1);
+                                    if (sec == null || !mounted) return;
+                                    final id = vid.isNotEmpty
+                                        ? vid
+                                        : (_currentVideoId ?? '');
+                                    if (id.isEmpty) return;
+                                    context
+                                        .read<MindMapProvider>()
+                                        .saveVideoPosition(id, sec);
                                   },
                                 );
                                 controller.addJavaScriptHandler(
                                   handlerName: 'FlutterEnded',
                                   callback: (args) {
-                                    if (_currentVideoId != null && mounted) {
+                                    // ★ 二重に進まないようにする (= ユーザー
+                                    //   報告: 切り替わりで不安定)。 次の動画の
+                                    //   読み込みが終わるまでは、 もう一度
+                                    //   「終わった」 が届いても無視する。
+                                    if (_advancing || !mounted) return;
+                                    final vid =
+                                        args.isEmpty ? '' : args[0].toString();
+                                    final id = (vid.isNotEmpty &&
+                                            vid != 'ended')
+                                        ? vid
+                                        : (_currentVideoId ?? '');
+                                    if (id.isNotEmpty) {
                                       context
                                           .read<MindMapProvider>()
-                                          .markVideoFullyWatched(
-                                              _currentVideoId!);
+                                          .markVideoFullyWatched(id);
                                     }
-                                    if (_playlistIndex < _playlist.length - 1 &&
-                                        mounted) {
+                                    if (_playlistIndex <
+                                        _playlist.length - 1) {
+                                      _advancing = true;
                                       _playlistIndex++;
-                                      _navigateTo(_playlist[_playlistIndex]);
+                                      unawaited(_navigateTo(
+                                          _playlist[_playlistIndex]));
+                                      // 読み込みが終われば onLoadStop で下ろす。
+                                      //   何かで届かない時のために、 少し置いて
+                                      //   必ず下ろす (= 進めなくならないように)。
+                                      _advanceGuardTimer?.cancel();
+                                      _advanceGuardTimer = Timer(
+                                          const Duration(seconds: 12), () {
+                                        _advancing = false;
+                                      });
                                     }
                                   },
                                 );
@@ -153095,6 +153645,16 @@ v.addEventListener('play', function() {
                                     //   コンテキストが作り直されて __MM_RATE__ が失われる
                                     //   ことがあるため、 watch へ遷移する度に必ず再注入する。
                                     _injectPlaybackRate();
+                                    // ★ 「終わった」 の見張りも入れ直す (= ユーザー報告:
+                                    //   バックグラウンド再生が切り替わりで不安定)。
+                                    //   SPA 遷移では onLoadStop が来ない事が多く、
+                                    //   ここで入れ直さないと次の動画で自動送りが
+                                    //   止まったままになる。 二重注入は中の印で防ぐ。
+                                    _injectPositionTracker();
+                                    // 切り替えが終わったので、 進行中の印も下ろす。
+                                    _advanceGuardTimer?.cancel();
+                                    _advanceGuardTimer = null;
+                                    _advancing = false;
                                     // 動画埋め込み再生 (focusMode:true) の時だけ、 周辺 UI
                                     //   (関連動画/コメント/ヘッダー等) を隠す CSS + 位置復元
                                     //   を行う。 ブラウズ (focusMode:false) では素の YouTube
@@ -153152,6 +153712,12 @@ v.addEventListener('play', function() {
                     })();
                   ''').catchError((_) {});
                                 final urlStr = url?.toString() ?? _currentUrl;
+                                // 次の動画への切り替えが終わった (= ユーザー
+                                //   報告: 切り替わりで不安定)。 重ねて進まない
+                                //   ための印を下ろす。
+                                _advanceGuardTimer?.cancel();
+                                _advanceGuardTimer = null;
+                                _advancing = false;
                                 if (mounted) {
                                   // ページ遷移ごとに URL を再解析する (検索→動画タップ→
                                   // 他動画へ、などで _isYoutube / _currentVideoId 等を追従)
@@ -160335,6 +160901,32 @@ class _InquiryDialogState extends State<_InquiryDialog> {
           // 残量 0 の時だけ送信不可。-1 (無制限) は OK。
           onPressed: (_sending || _remainingSends == 0) ? null : _submit,
         ),
+      ),
+      // ── Instagram から問い合わせる (= ユーザー要望: Ig 問い合わせみたいな
+      //    項目を作って自分の垢に繋がるように) ──
+      //    公式アカウントを外のブラウザ (またはアプリ) で開くだけ。 そこから
+      //    DM を送ってもらう。 送信回数の制限とは関係しない。
+      const SizedBox(height: 8),
+      SizedBox(
+        width: double.infinity,
+        child: OutlinedButton.icon(
+          style: OutlinedButton.styleFrom(
+            foregroundColor: const Color(0xFFE1306C),
+            side: const BorderSide(color: Color(0x66E1306C)),
+            padding: const EdgeInsets.symmetric(vertical: 10),
+          ),
+          icon: const Icon(Icons.photo_camera_rounded, size: 16),
+          label: Text(widget.provider.t('inquiry.viaInstagram'),
+              style: const TextStyle(fontWeight: FontWeight.w700)),
+          onPressed: () => unawaited(launchUrl(
+              Uri.parse('https://www.instagram.com/hisator_notebook'),
+              mode: LaunchMode.externalApplication)),
+        ),
+      ),
+      Padding(
+        padding: const EdgeInsets.only(top: 4),
+        child: Text(widget.provider.t('inquiry.viaInstagramHint'),
+            style: const TextStyle(color: Colors.white38, fontSize: 10.5)),
       ),
     ]);
   }
@@ -178953,6 +179545,7 @@ class _HoverScrollRowState extends State<_HoverScrollRow> {
 //     同期しない (= 当アプリは音源を持たない構造のため)。シンプル化。
 
 /// audio_service が要求する AudioHandler 実装 (ダミー無音版)。
+
 class _BackgroundAudioHandler extends BaseAudioHandler {
   /// ダミー無音 player。loop で再生し続ける。
   /// audio_service は最低でも 1 つの player が再生中であることを Service
@@ -180968,9 +181561,210 @@ EdgeInsets _snackBarFloatingMargin(BuildContext context) {
 
 int _appSnackGeneration = 0;
 
+/// 画面のいちばん上に、 短い知らせを出す (= 全画面のダイアログの中から
+/// 出す時のため)。
+///
+/// SnackBar は根っこの Scaffold の中に描かれるので、 全画面のダイアログ
+/// (ガントチャートなど) を開いている間はその**裏**に隠れて見えない
+/// (= 点検で判明)。 これは根っこの Overlay に直接差すので必ず見える。
+void showTopToast(BuildContext ctx, String message, Color color) {
+  final overlay = Overlay.maybeOf(ctx, rootOverlay: true);
+  if (overlay == null) return;
+  late OverlayEntry entry;
+  var removed = false;
+  void remove() {
+    if (removed) return;
+    removed = true;
+    try {
+      entry.remove();
+    } catch (_) {}
+  }
+
+  entry = OverlayEntry(
+    builder: (c) => Positioned(
+      left: 16,
+      right: 16,
+      bottom: 28 + MediaQuery.of(c).padding.bottom,
+      child: IgnorePointer(
+        child: Center(
+          child: Material(
+            color: color,
+            elevation: 8,
+            borderRadius: BorderRadius.circular(10),
+            child: Padding(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              child: Text(message,
+                  style: const TextStyle(color: Colors.white, fontSize: 13)),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+  overlay.insert(entry);
+  Timer(const Duration(milliseconds: 2400), remove);
+}
+
 /// メイン画面の Scaffold (ドロワーが開いているかを見るため)。
 /// _MindMapScreenState.initState が設定する。
 GlobalKey<ScaffoldState>? appMainScaffoldKey;
+
+/// 浮かぶ窓から本体の「AI アシスタント」 を呼ぶための入口
+/// (= ユーザー要望: フローティングの AI ボタンから、 開く AI を変えたり
+///  アシスタントを呼んだりできるように)。
+///
+/// 浮かぶ窓は根っこの Overlay に差し込まれていて、 本体の State を先祖に
+/// 辿れない。 Scaffold の鍵と同じやり方で、 本体が自分を登録しておく。
+/// _MindMapScreenState.initState が設定し、 dispose で外す。
+void Function()? openAssistantFromFloating;
+
+/// 浮かぶ窓の AI ボタン。 押すとその窓が AI に切り替わり、
+/// **右クリック / 長押し**でどの AI を開くかを選べる
+/// (= ユーザー要望: ChatGPT しか開けない)。
+class _FloatAiButton extends StatelessWidget {
+  /// 選んだ AI の id を渡して開く。 null なら今選ばれている AI。
+  final void Function(String? id) onOpen;
+  final String tooltip;
+  const _FloatAiButton({required this.onOpen, required this.tooltip});
+
+  Future<void> _menu(BuildContext ctx, Offset at) async {
+    final provider = ctx.read<MindMapProvider>();
+    final cur = provider.browserAiTarget;
+    // ★ 根っこの Overlay に自分で差す。 showMenu は根っこの Navigator に
+    //   載るので、 浮かぶ窓 (同じ Overlay の上の方に差してある) の**裏**に
+    //   隠れてしまい、 押しても何も出ないように見えていた (= 点検で判明)。
+    final overlay = Overlay.maybeOf(ctx, rootOverlay: true);
+    if (overlay == null) return;
+    final screen = MediaQuery.sizeOf(ctx);
+    const w = 230.0;
+    final rows = MindMapProvider.browserAiTargets.length + 2;
+    final h = 26.0 + rows * 36.0;
+    final left = (at.dx - w / 2)
+        .clamp(8.0, math.max(8.0, screen.width - w - 8))
+        .toDouble();
+    final top = (at.dy + 14)
+        .clamp(8.0, math.max(8.0, screen.height - h - 8))
+        .toDouble();
+    final done = Completer<String?>();
+    late OverlayEntry entry;
+    void close(String? v) {
+      if (done.isCompleted) return;
+      try {
+        entry.remove();
+      } catch (_) {}
+      done.complete(v);
+    }
+
+    Widget row({
+      required Widget icon,
+      required String label,
+      required VoidCallback onTap,
+    }) =>
+        InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+            child: Row(children: [
+              icon,
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style:
+                        const TextStyle(color: Colors.white, fontSize: 13)),
+              ),
+            ]),
+          ),
+        );
+
+    entry = OverlayEntry(
+      builder: (_) => Stack(children: [
+        Positioned.fill(
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => close(null),
+            child: const SizedBox.expand(),
+          ),
+        ),
+        Positioned(
+          left: left,
+          top: top,
+          width: w,
+          child: Material(
+            color: const Color(0xFF1E1E32),
+            elevation: 10,
+            borderRadius: BorderRadius.circular(10),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(provider.t('float.pickAi'),
+                      style: const TextStyle(
+                          color: Colors.white38, fontSize: 11)),
+                ),
+              ),
+              for (final t in MindMapProvider.browserAiTargets)
+                row(
+                  icon: Icon(
+                      t['id'] == cur
+                          ? Icons.radio_button_checked_rounded
+                          : Icons.radio_button_unchecked_rounded,
+                      size: 15,
+                      color: t['id'] == cur
+                          ? const Color(0xFFBA68C8)
+                          : Colors.white38),
+                  label: t['label'] ?? '',
+                  onTap: () => close(t['id']),
+                ),
+              const Divider(color: Colors.white12, height: 1),
+              row(
+                icon: const Icon(Icons.smart_toy_rounded,
+                    size: 15, color: Color(0xFF80CBC4)),
+                label: provider.t('float.aiAssistant'),
+                onTap: () => close('__assistant__'),
+              ),
+              const SizedBox(height: 6),
+            ]),
+          ),
+        ),
+      ]),
+    );
+    overlay.insert(entry);
+    final picked = await done.future;
+    if (picked == null) return;
+    if (picked == '__assistant__') {
+      // 本体の AI アシスタントを呼ぶ (登録されていない時は何もしない)。
+      openAssistantFromFloating?.call();
+      return;
+    }
+    onOpen(picked);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Listener(
+      onPointerDown: (e) {
+        if (e.buttons == kSecondaryMouseButton) {
+          unawaited(_menu(context, e.position));
+        }
+      },
+      // ★ 長押しは付けない。 この帯はパソコン版にしか出ない上、
+      //   長押しを付けるとゆっくり押しただけで選び方が開いてしまい、
+      //   AI に切り替えられなくなる (= 点検で判明)。 選び方は右クリック。
+      child: IconButton(
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+        tooltip: tooltip,
+        icon: const Icon(Icons.auto_awesome_rounded,
+            size: 15, color: Color(0xFFBA68C8)),
+        onPressed: () => onOpen(null),
+      ),
+    );
+  }
+}
 
 /// ドロワーより手前に出すメッセージの写し (= ユーザー要望: 下部の
 /// メッセージがサイドメニューの上に表示されるように)。
@@ -225648,6 +226442,47 @@ class _MemberSchedulePageViewState extends State<_MemberSchedulePageView> {
     _save();
   }
 
+  /// 今出ている「人 × 日付」 の表を、 編集できる表のノードとしてページへ置く
+  /// (= ユーザー要望: メンバー予定表をマインドマップやギャラリーに埋め込む)。
+  ///
+  /// 1 行目が見出し (空欄 + 日付)、 2 行目からが人ごとの予定。
+  /// 1 つのマスに予定が複数ある時は改行で並べる。
+  Future<void> _putScheduleIntoPage() async {
+    final members = _members();
+    final start = DateTime.fromMillisecondsSinceEpoch(_startMs);
+    final days = _days.clamp(1, 31);
+    // 見出し行。
+    final header = <String>[''];
+    for (var i = 0; i < days; i++) {
+      final d = DateTime(start.year, start.month, start.day + i);
+      header.add('${d.month}/${d.day} (${_weekdayLabel(d.weekday)})');
+    }
+    final rows = <List<String>>[header];
+    var any = false;
+    for (final mem in members) {
+      final row = <String>[mem.name];
+      for (var i = 0; i < days; i++) {
+        final d = DateTime(start.year, start.month, start.day + i);
+        final ev = _eventsFor(mem, _key(d));
+        if (ev.isNotEmpty) any = true;
+        row.add(ev.map(_eventLabel).join('\n'));
+      }
+      rows.add(row);
+    }
+    // 全画面のダイアログの中なので、 SnackBar ではなく上に出す。
+    void tell(String msg, Color c) => showTopToast(context, msg, c);
+
+    if (!any) {
+      tell(_p.t('tool.putIntoPageEmpty'), const Color(0xFF455A64));
+      return;
+    }
+    final placed = await askAndPutTableIntoPage(
+        context, _p, _p.t('hdr.memberSchedule'), rows);
+    if (!mounted || placed == null) return;
+    tell(_p.t('tool.putIntoPageDone').replaceFirst('{page}', placed),
+        const Color(0xFF43B97F));
+  }
+
   Widget _memberNameCell(
       ({String? uid, String name, bool isMe}) mem, double height) {
     final manualIndex = _manualMemberIndex(mem);
@@ -225975,6 +226810,16 @@ class _MemberSchedulePageViewState extends State<_MemberSchedulePageView> {
             },
           ),
         ),
+      // ── ページに出す (= ユーザー要望: メンバー予定表もマインドマップや
+      //    ギャラリーに埋め込めるように) ── 今出ている人 × 日付の表を、
+      //    そのまま「編集できる表のノード」 として置く。
+      IconButton(
+        tooltip: _p.t('tool.putIntoPage'),
+        visualDensity: VisualDensity.compact,
+        icon: const Icon(Icons.open_in_new_rounded,
+            size: 20, color: Color(0xFF9CCC65)),
+        onPressed: _putScheduleIntoPage,
+      ),
       // 同期 (= メンバーの予定を取り込む)。
       ElevatedButton.icon(
         style: ElevatedButton.styleFrom(
@@ -237962,15 +238807,27 @@ class _FloatingWebWindowState extends State<_FloatingWebWindow> {
             () => setState(() => _floatMode = 'main'),
             color: const Color(0xFF4FC3F7)),
       // フローティング AI に切り替え (= ユーザー要望)。
+      //   ★ 右クリック / 長押しで、 開く AI を選べる。 「AI アシスタント」
+      //     を選ぶと本体のアシスタントが立ち上がる (= ユーザー要望:
+      //     ChatGPT しか開けないので、 モデルを変えたりアシスタントを
+      //     呼んだりできるように)。
       if (showAi && _floatMode != 'ai')
-        btn(Icons.auto_awesome_rounded, provider.t('float.toAi'), () {
-          setState(() {
-            _floatAiUrl = (provider.browserAiTargetDef['url'] ?? '')
-                .replaceAll('{q}', '');
-            _aiStarted = true;
-            _floatMode = 'ai';
-          });
-        }, color: const Color(0xFFBA68C8)),
+        _FloatAiButton(
+          tooltip: provider.t('float.toAi'),
+          onOpen: (id) {
+            if (id != null) unawaited(provider.setBrowserAiTarget(id));
+            final def = id == null
+                ? provider.browserAiTargetDef
+                : MindMapProvider.browserAiTargets.firstWhere(
+                    (e) => e['id'] == id,
+                    orElse: () => MindMapProvider.browserAiTargets.first);
+            setState(() {
+              _floatAiUrl = (def['url'] ?? '').replaceAll('{q}', '');
+              _aiStarted = true;
+              _floatMode = 'ai';
+            });
+          },
+        ),
       // フローティングメモに切り替え (= ユーザー要望)。 保存先は外のメモ窓と
       // 同じなので、 どこで書いても同じメモ帳に積まれる。
       if (_floatMode != 'memo')
@@ -240356,15 +241213,27 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
             () => setState(() => _floatMode = 'main'),
             color: const Color(0xFF4FC3F7)),
       // フローティング AI に切り替え (= ユーザー要望)。
+      //   ★ 右クリック / 長押しで、 開く AI を選べる。 「AI アシスタント」
+      //     を選ぶと本体のアシスタントが立ち上がる (= ユーザー要望:
+      //     ChatGPT しか開けないので、 モデルを変えたりアシスタントを
+      //     呼んだりできるように)。
       if (showAi && _floatMode != 'ai')
-        btn(Icons.auto_awesome_rounded, provider.t('float.toAi'), () {
-          setState(() {
-            _floatAiUrl = (provider.browserAiTargetDef['url'] ?? '')
-                .replaceAll('{q}', '');
-            _aiStarted = true;
-            _floatMode = 'ai';
-          });
-        }, color: const Color(0xFFBA68C8)),
+        _FloatAiButton(
+          tooltip: provider.t('float.toAi'),
+          onOpen: (id) {
+            if (id != null) unawaited(provider.setBrowserAiTarget(id));
+            final def = id == null
+                ? provider.browserAiTargetDef
+                : MindMapProvider.browserAiTargets.firstWhere(
+                    (e) => e['id'] == id,
+                    orElse: () => MindMapProvider.browserAiTargets.first);
+            setState(() {
+              _floatAiUrl = (def['url'] ?? '').replaceAll('{q}', '');
+              _aiStarted = true;
+              _floatMode = 'ai';
+            });
+          },
+        ),
       // フローティングメモに切り替え (= ユーザー要望)。 保存先は外のメモ窓と
       // 同じなので、 どこで書いても同じメモ帳に積まれる。
       if (showMemo && _floatMode != 'memo')

@@ -2470,6 +2470,11 @@ List<String> _openFilePathsFromArgs(List<String> args) {
 const int _kOpenWithPort = 38641;
 const String _kOpenWithToken = 'HisatorNotebook-openwith-v1';
 
+/// カーソルの回り込みだけを受け持つ常駐が使うポート
+/// (= ユーザー要望: アプリを起動していない時でもサブモニターへ
+///  両端から行き来できるように)。 二重起動を防ぐためだけに使う。
+const int _kCursorWrapPort = 38642;
+
 /// 「アプリで開く」 で渡されたファイルが後から (= 起動済みの本体に) 届いた
 /// 合図。 画面側 (mind_map_screen) が listen して開く。
 final ValueNotifier<int> openWithFilesTick = ValueNotifier<int>(0);
@@ -2797,10 +2802,17 @@ Future<bool> _forwardOpenFilesToRunningInstance(List<String> paths) async {
 
 /// 本体側: ファイルの引き渡しを待ち受ける。 bind できなければ黙って諦める
 /// (= ポートが他で使われていても本体の機能には影響しない)。
-Future<void> _startOpenWithReceiver() async {
+/// 受け口を取れたか (= この窓が「本体」 か)。
+///
+/// ★ 回り込みを受け持ってよいのは、 受け口を取れた 1 つだけ
+///   (= 二重に飛ばして元の場所へ戻ってしまうのを防ぐ)。
+bool ownsOpenWithReceiver = false;
+
+Future<bool> _startOpenWithReceiver() async {
   try {
     final server =
         await HttpServer.bind(InternetAddress.loopbackIPv4, _kOpenWithPort);
+    ownsOpenWithReceiver = true;
     server.listen((req) async {
       try {
         if (req.method == 'POST' &&
@@ -2944,6 +2956,14 @@ Future<void> _startOpenWithReceiver() async {
           } catch (_) {}
           req.response.statusCode = 200;
           req.response.write(_kOpenWithToken);
+        } else if (req.uri.path == '/ping' &&
+            req.headers.value('x-hisator-token') == _kOpenWithToken) {
+          // ── 常駐からの生存確認 (= ユーザー要望: アプリを閉じていても
+          //    カーソルの回り込みを効かせる) ──
+          //    本体が動いている間は本体が回り込みを受け持つので、
+          //    常駐は返事が来たら自分の見回りを止める。 窓は動かさない。
+          req.response.statusCode = 200;
+          req.response.write(_kOpenWithToken);
         } else {
           req.response.statusCode = 404;
         }
@@ -2957,8 +2977,10 @@ Future<void> _startOpenWithReceiver() async {
         } catch (_) {}
       }
     });
+    return true;
   } catch (_) {
     // 既に別の本体が待ち受けている / ポートが使えない → 何もしない。
+    return false;
   }
 }
 
@@ -3081,8 +3103,141 @@ void _cleanStaleStartMenuShortcuts() {
   }
 }
 
+/// 常駐の二重起動を防ぐための受け口 (持っているだけ)。
+HttpServer? _cursorWrapGuardServer;
+
+/// 本体が動いているか (= 常駐が自分の見回りを止めてよいか)。
+Future<bool> _mainAppAlive() async {
+  final client = HttpClient();
+  client.connectionTimeout = const Duration(milliseconds: 400);
+  try {
+    final req = await client
+        .post('127.0.0.1', _kOpenWithPort, '/ping')
+        .timeout(const Duration(milliseconds: 700));
+    req.headers.set('x-hisator-token', _kOpenWithToken);
+    final res = await req.close().timeout(const Duration(milliseconds: 900));
+    final body = await res
+        .transform(utf8.decoder)
+        .join()
+        .timeout(const Duration(milliseconds: 600));
+    return res.statusCode == 200 && body.contains(_kOpenWithToken);
+  } catch (_) {
+    return false;
+  } finally {
+    try {
+      client.close(force: true);
+    } catch (_) {}
+  }
+}
+
+/// カーソルの回り込みだけを受け持つ常駐 (= ユーザー要望: アプリを起動して
+/// いない時でも、 サブモニターへ両端から行き来できるように)。
+///
+/// * 画面は出さない。 窓は画面の外へ追いやって隠す (Flutter は窓を 1 つ
+///   作るので、 見えない所へ置いてから隠す)。
+/// * 設定は控え (prefs) を直接読む。 本体の Provider は作らない
+///   (同期や自動保存まで動き出してしまうため)。
+/// * 本体が動いている間は本体に任せて、 自分の見回りは止める
+///   (二重に飛ばして元の場所に戻ってしまうのを防ぐ)。
+Future<void> _runCursorWrapDaemon() async {
+  if (kIsWeb || !Platform.isWindows) return;
+  // 二重起動を防ぐ (先客が居たら黙って終わる)。
+  //   ★ 受け口は捨てずに持っておく。 変数に残さないと、 後で片付けられて
+  //     port が空き、 2 つ目の常駐が立ち上がれてしまう。
+  try {
+    _cursorWrapGuardServer =
+        await HttpServer.bind(InternetAddress.loopbackIPv4, _kCursorWrapPort);
+    // 何も応えないが、 溜めっぱなしにしないよう受け流す。
+    _cursorWrapGuardServer!.listen((req) async {
+      try {
+        req.response.statusCode = 200;
+        req.response.write(_kOpenWithToken);
+        await req.response.close();
+      } catch (_) {}
+    });
+  } catch (_) {
+    exit(0);
+  }
+  // 窓を画面の外へ置いてから隠す (一瞬でも見えないように)。
+  try {
+    await windowManager.ensureInitialized();
+    await windowManager.setSkipTaskbar(true);
+    await windowManager.setBounds(const Rect.fromLTWH(-32000, -32000, 1, 1));
+    await windowManager.hide();
+  } catch (_) {}
+  // 出し直されても隠し続ける (最初のフレームで OS が出す事があるため)。
+  Timer.periodic(const Duration(milliseconds: 500), (t) async {
+    if (t.tick > 20) {
+      t.cancel();
+      return;
+    }
+    try {
+      if (await windowManager.isVisible()) await windowManager.hide();
+    } catch (_) {}
+  });
+
+  CursorWrap.allowed = true;
+  var lastRaw = '';
+  var lastEnabled = false;
+  var yielding = false;
+
+  Future<void> readSettings({bool force = false}) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      // 別のプロセス (本体) が書いた分を読み直す。
+      await prefs.reload();
+      final raw = prefs.getString('cursorWrapEdges') ?? '';
+      final enabled = prefs.getBool('cursorWrapEnabled') ?? false;
+      // 常駐そのものが切られたら終わる。
+      if (!(prefs.getBool('cursorWrapDaemon') ?? false)) {
+        exit(0);
+      }
+      if (!force && raw == lastRaw && enabled == lastEnabled) return;
+      lastRaw = raw;
+      lastEnabled = enabled;
+      final edges = <String, int>{};
+      if (raw.isNotEmpty) {
+        try {
+          final m = jsonDecode(raw);
+          if (m is Map) {
+            m.forEach((k, v) {
+              if (v is num && v.toInt() >= 0) edges['$k'] = v.toInt();
+            });
+          }
+        } catch (_) {}
+      }
+      CursorWrap.instance.applyEdgeTargets(edges);
+      CursorWrap.instance.apply(enabled);
+    } catch (_) {}
+  }
+
+  await readSettings(force: true);
+  // 設定の読み直し (本体で変えた分を拾う)。
+  Timer.periodic(const Duration(seconds: 3), (_) => readSettings());
+  // 本体が動いている間は譲る。
+  Timer.periodic(const Duration(seconds: 2), (_) async {
+    final alive = await _mainAppAlive();
+    if (alive == yielding) return;
+    yielding = alive;
+    if (alive) {
+      CursorWrap.instance.stop();
+    } else {
+      await readSettings(force: true);
+    }
+  });
+  // ここで戻らない (タイマーだけで生き続ける)。
+  await Completer<void>().future;
+}
+
 void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+  // ── カーソルの回り込みだけの常駐として起動された場合 ──
+  //    (= ユーザー要望: アプリを起動していない時でも効くように)。
+  //    runApp は呼ばない (画面は要らない)。
+  if (!kIsWeb && args.isNotEmpty && args.first == '--cursor-wrap') {
+    await _runCursorWrapDaemon();
+    return;
+  }
   // ── アプリの外に出す Web 窓として起動された場合 (= ユーザー要望:
   //    Google マップなどをフローティングメモのようにアプリの外へ出したい) ──
   //
@@ -3381,7 +3536,13 @@ void main(List<String> args) async {
   // 本体としてファイルの引き渡しを待ち受ける (Windows のみ)。
   if (!kIsWeb && Platform.isWindows) {
     // ignore: discarded_futures
-    _startOpenWithReceiver();
+    _startOpenWithReceiver().then((ok) {
+      // ★ 回り込みは、 受け口を取れた窓だけが受け持つ (= ユーザー要望で
+      //   「別ウィンドウで開く」 を使うと本体が 2 つになり、 両方が
+      //   カーソルを飛ばして元の場所へ戻ってしまうため)。
+      CursorWrap.allowed = ok;
+      if (!ok) CursorWrap.instance.stop();
+    });
   }
   // ignore: discarded_futures
   _registerWindowsOpenWith();
@@ -3495,7 +3656,16 @@ void main(List<String> args) async {
   }
 
   // 画面の両端をつなぐのは本体の窓だけ (サブ窓でも動かすと二重に飛ぶ)。
-  CursorWrap.allowed = true;
+  //   ★ Windows では、 受け口 (38641) を取れた窓だけに絞る
+  //     (= 点検で判明: 「別ウィンドウで開く」 で本体が 2 つになると、
+  //      両方がカーソルを飛ばして元の場所に戻ってしまう)。
+  //     取れたかは _startOpenWithReceiver の返事で決まるので、
+  //     ここでは立てない。 Windows 以外は今までどおり。
+  if (!kIsWeb && Platform.isWindows) {
+    CursorWrap.allowed = ownsOpenWithReceiver;
+  } else {
+    CursorWrap.allowed = true;
+  }
   runApp(const MyApp());
 }
 

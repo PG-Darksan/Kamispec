@@ -4532,6 +4532,20 @@ class MindMapProvider extends ChangeNotifier {
   /// 入っていない辺では何もしない。
   /// 鍵は 'モニター番号:辺' ('0:L' など)。 入っていない辺は、 全体の
   /// トグル (両サイドからアクセス) に任せる。
+  /// アプリを閉じていても回り込みを効かせるか (= ユーザー要望)。
+  ///
+  /// 実際に効かせるのは、 サインイン時に立ち上がる小さな常駐
+  /// (`<exe> --cursor-wrap`)。 登録 / 解除は画面側が行う
+  /// (Windows のタスクとして登録するため)。
+  bool _cursorWrapDaemon = false;
+  bool get cursorWrapDaemon => _cursorWrapDaemon;
+  Future<void> setCursorWrapDaemon(bool v) async {
+    _cursorWrapDaemon = v;
+    final prefs = await _prefsWithRetry();
+    await prefs.setBool('cursorWrapDaemon', v);
+    notifyListeners();
+  }
+
   Map<String, int> _cursorWrapEdges = const {};
   Map<String, int> get cursorWrapEdges => _cursorWrapEdges;
 
@@ -4585,6 +4599,10 @@ class MindMapProvider extends ChangeNotifier {
   }
 
   /// 控えから読み直す。 読めない時は今までどおり四方向とも「反対の端」。
+  void _loadCursorWrapDaemon(SharedPreferences prefs) {
+    _cursorWrapDaemon = prefs.getBool('cursorWrapDaemon') ?? false;
+  }
+
   void _loadCursorWrapEdges(SharedPreferences prefs) {
     try {
       final raw = prefs.getString('cursorWrapEdges');
@@ -33570,6 +33588,66 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Aviso da Lei de Transacoes Comerciais',
       'ru': 'Уведомление о коммерческих сделках',
     },
+    // Instagram から問い合わせる (= ユーザー要望: Ig 問い合わせみたいな
+    //   項目を作って自分の垢に繋がるように)。
+    'inquiry.viaInstagram': {
+      'ja': 'Instagram で問い合わせる',
+      'en': 'Ask on Instagram',
+      'zh': '通过 Instagram 咨询',
+      'ko': 'Instagram으로 문의하기',
+      'es': 'Consultar por Instagram',
+      'fr': 'Demander sur Instagram',
+      'de': 'Ueber Instagram fragen',
+      'pt': 'Perguntar no Instagram',
+      'ru': 'Написать в Instagram',
+    },
+    'inquiry.viaInstagramHint': {
+      'ja': '公式アカウントを開きます。 そのまま DM を送れます。',
+      'en': 'Opens the official account. You can send a DM from there.',
+      'zh': '将打开官方账号，可直接发送私信。',
+      'ko': '공식 계정을 엽니다. 그대로 DM을 보낼 수 있습니다.',
+      'es': 'Abre la cuenta oficial. Puedes enviar un DM desde alli.',
+      'fr': 'Ouvre le compte officiel. Vous pouvez y envoyer un message.',
+      'de': 'Oeffnet das offizielle Konto. Von dort kann eine DM gesendet '
+          'werden.',
+      'pt': 'Abre a conta oficial. Voce pode enviar uma DM de la.',
+      'ru': 'Откроет официальный аккаунт — оттуда можно написать в директ.',
+    },
+    // 分割ペインに埋め込んだ道具を動かす (= ユーザー要望: いつも真ん中だと
+    //   打ちにくい。 動かすボタンを押した時だけ動くように)。
+    'pane.moveTool': {
+      'ja': '動かす',
+      'en': 'Move',
+      'zh': '移动',
+      'ko': '이동',
+      'es': 'Mover',
+      'fr': 'Deplacer',
+      'de': 'Verschieben',
+      'pt': 'Mover',
+      'ru': 'Переместить',
+    },
+    'pane.moveToolDone': {
+      'ja': '動かし終える',
+      'en': 'Done moving',
+      'zh': '结束移动',
+      'ko': '이동 끝내기',
+      'es': 'Terminar de mover',
+      'fr': 'Terminer le deplacement',
+      'de': 'Verschieben beenden',
+      'pt': 'Terminar de mover',
+      'ru': 'Закончить перемещение',
+    },
+    'pane.resetToolPos': {
+      'ja': '真ん中に戻す',
+      'en': 'Back to the middle',
+      'zh': '回到中间',
+      'ko': '가운데로 되돌리기',
+      'es': 'Volver al centro',
+      'fr': 'Revenir au centre',
+      'de': 'Zurueck in die Mitte',
+      'pt': 'Voltar ao centro',
+      'ru': 'Вернуть в центр',
+    },
     'inquiry.officialIg': {
       'ja': '公式Instagram',
       'en': 'Official Instagram',
@@ -33818,6 +33896,63 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Para onde leva esta borda',
       'ru': 'Куда ведёт этот край',
       'fa': 'مقصد این لبه',
+    },
+    // アプリを閉じていても効かせる (= ユーザー要望)。
+    'cursorWrap.daemon': {
+      'ja': 'アプリを閉じていても効かせる',
+      'en': 'Keep working while the app is closed',
+      'zh': '关闭应用后也继续生效',
+      'ko': '앱을 닫아도 계속 작동',
+      'es': 'Seguir funcionando con la app cerrada',
+      'fr': 'Continuer meme quand l application est fermee',
+      'de': 'Auch bei geschlossener App aktiv',
+      'pt': 'Continuar funcionando com o app fechado',
+      'ru': 'Работать и при закрытом приложении',
+    },
+    'cursorWrap.daemonFailed': {
+      'ja': '常駐を登録できませんでした。 設定は元に戻しました。',
+      'en': 'Could not register the background helper. The setting was '
+          'reverted.',
+      'zh': '无法注册后台程序，设置已还原。',
+      'ko': '상주 프로그램을 등록하지 못했습니다. 설정을 되돌렸습니다.',
+      'es': 'No se pudo registrar el ayudante en segundo plano. Se revirtio '
+          'el ajuste.',
+      'fr': 'Impossible d enregistrer l assistant en arriere-plan. Le reglage '
+          'a ete retabli.',
+      'de': 'Der Hintergrunddienst konnte nicht registriert werden. Die '
+          'Einstellung wurde zurueckgesetzt.',
+      'pt': 'Nao foi possivel registrar o auxiliar em segundo plano. A '
+          'configuracao foi revertida.',
+      'ru': 'Не удалось зарегистрировать фоновый помощник. Настройка '
+          'возвращена.',
+    },
+    'cursorWrap.daemonHelp': {
+      'ja': 'Windows にサインインした時に、 回り込みだけを受け持つ小さな常駐を'
+          '立ち上げます。 画面には出ません。 アプリを開いている間はアプリが'
+          '受け持ちます。',
+      'en': 'Starts a tiny background helper at Windows sign-in that only '
+          'handles the cursor wrap. It shows no window. While the app itself '
+          'is open, the app handles it instead.',
+      'zh': '在登录 Windows 时启动一个只负责光标环绕的小型后台程序，不显示窗口。'
+          '应用打开时由应用负责。',
+      'ko': 'Windows에 로그인할 때 커서 넘김만 담당하는 작은 상주 프로그램을 '
+          '실행합니다. 창은 표시되지 않으며, 앱이 열려 있는 동안에는 앱이 '
+          '담당합니다.',
+      'es': 'Inicia un pequeno ayudante en segundo plano al iniciar sesion en '
+          'Windows que solo gestiona el salto del cursor. No muestra ventana. '
+          'Mientras la app esta abierta, la app se encarga.',
+      'fr': 'Lance un petit assistant en arriere-plan a l ouverture de session '
+          'Windows, qui ne gere que le passage du curseur. Aucune fenetre. '
+          'Quand l application est ouverte, c est elle qui s en charge.',
+      'de': 'Startet bei der Windows-Anmeldung einen kleinen Hintergrunddienst, '
+          'der nur den Cursor-Uebergang uebernimmt. Kein Fenster. Solange die '
+          'App offen ist, uebernimmt die App.',
+      'pt': 'Inicia um pequeno auxiliar em segundo plano no login do Windows '
+          'que cuida apenas da passagem do cursor. Nao mostra janela. Com o '
+          'app aberto, o app cuida disso.',
+      'ru': 'При входе в Windows запускает небольшой фоновый помощник, который '
+          'отвечает только за переход курсора. Окна нет. Пока приложение '
+          'открыто, этим занимается оно.',
     },
     'cursorWrap.gridHint': {
       'ja': '空いている枠を押すとモニターを足せます。 隣り合った辺はそのまま'
@@ -36975,6 +37110,17 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Zu „{name}“ hinzugefügt',
       'pt': 'Adicionado a "{name}"',
       'ru': 'Добавлено в «{name}»',
+    },
+    'map.cannotCreatePage': {
+      'ja': '新しいページを作れませんでした。',
+      'en': 'Could not create a new page.',
+      'zh': '无法创建新页面。',
+      'ko': '새 페이지를 만들 수 없었습니다.',
+      'es': 'No se pudo crear una pagina nueva.',
+      'fr': 'Impossible de creer une nouvelle page.',
+      'de': 'Es konnte keine neue Seite erstellt werden.',
+      'pt': 'Nao foi possivel criar uma nova pagina.',
+      'ru': 'Не удалось создать новую страницу.',
     },
     'map.pickTargetPage': {
       'ja': 'どのページに入れますか',
@@ -44673,6 +44819,66 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Vorne anheften (wird eigenes Fenster)',
       'pt': 'Fixar na frente (vira janela própria)',
       'ru': 'Закрепить поверх (станет отдельным окном)',
+    },
+    // 道具の中身をページに出す (= ユーザー要望: ガントチャートやメンバー
+    //   予定表をマインドマップやギャラリーに埋め込めるように)。
+    'tool.putIntoPage': {
+      'ja': 'ページに出す',
+      'en': 'Put on a page',
+      'zh': '放到页面上',
+      'ko': '페이지에 넣기',
+      'es': 'Poner en una pagina',
+      'fr': 'Placer sur une page',
+      'de': 'Auf eine Seite legen',
+      'pt': 'Colocar em uma pagina',
+      'ru': 'Поместить на страницу',
+    },
+    'tool.putIntoPageDone': {
+      'ja': '{page} に置きました',
+      'en': 'Placed on {page}',
+      'zh': '已放到 {page}',
+      'ko': '{page} 에 놓았습니다',
+      'es': 'Colocado en {page}',
+      'fr': 'Place sur {page}',
+      'de': 'Auf {page} abgelegt',
+      'pt': 'Colocado em {page}',
+      'ru': 'Помещено на «{page}»',
+    },
+    'tool.putIntoPageEmpty': {
+      'ja': '出せる中身がありません。',
+      'en': 'There is nothing to place yet.',
+      'zh': '还没有可放置的内容。',
+      'ko': '넣을 내용이 아직 없습니다.',
+      'es': 'Todavia no hay nada que colocar.',
+      'fr': 'Il n y a rien a placer pour le moment.',
+      'de': 'Es gibt noch nichts zum Ablegen.',
+      'pt': 'Ainda nao ha nada para colocar.',
+      'ru': 'Пока нечего размещать.',
+    },
+    // フローティングの AI ボタンを右クリックした時の選び方 (= ユーザー要望:
+    //   ChatGPT しか開けないので、 開く AI を変えたりアシスタントを呼んだり
+    //   できるように)。
+    'float.pickAi': {
+      'ja': 'どの AI を開きますか',
+      'en': 'Which AI do you want to open?',
+      'zh': '要打开哪个 AI？',
+      'ko': '어떤 AI를 열까요?',
+      'es': 'Que IA quieres abrir?',
+      'fr': 'Quelle IA voulez-vous ouvrir ?',
+      'de': 'Welche KI soll geoeffnet werden?',
+      'pt': 'Qual IA voce quer abrir?',
+      'ru': 'Какой ИИ открыть?',
+    },
+    'float.aiAssistant': {
+      'ja': 'AI アシスタント (アプリを操作)',
+      'en': 'AI assistant (operates the app)',
+      'zh': 'AI 助手（操作应用）',
+      'ko': 'AI 어시스턴트 (앱을 조작)',
+      'es': 'Asistente de IA (controla la app)',
+      'fr': 'Assistant IA (pilote l application)',
+      'de': 'KI-Assistent (bedient die App)',
+      'pt': 'Assistente de IA (opera o app)',
+      'ru': 'ИИ-ассистент (управляет приложением)',
     },
     'float.toAi': {
       'ja': 'フローティングAIに切り替え',
@@ -82713,6 +82919,7 @@ $cleanQ
       } catch (_) {}
     }
     _loadCursorWrapEdges(prefs);
+    _loadCursorWrapDaemon(prefs);
     _loadCursorWrapPlacement(prefs);
     CursorWrap.instance.applyEdgeTargets(_cursorWrapEdges);
     CursorWrap.instance.apply(_cursorWrapEnabled);
@@ -86017,6 +86224,7 @@ $cleanQ
       caption: (caption ?? '').trim().isEmpty ? null : caption!.trim(),
     );
     page.nodes[node.id] = node;
+    // ★ 表も棚のマスへ押し込めない (図と同じ理由。 = 点検で判明)。
     // 位置の指定が無い時は、 既にある物と重ならない所へ逃がす。
     if (x == null && y == null) _spreadLooseNodes(page);
     _saveToStorage();
@@ -94469,6 +94677,10 @@ $example
         .renderHeight((node.width - 28.0).clamp(40.0, 4000.0).toDouble());
     _pushUndoForPage(pageId);
     page.nodes[node.id] = node;
+    // ★ ギャラリー (本棚) でも、 棚のマスへ押し込めない。
+    //   棚の並べ直しは中身を 190px の札の大きさに揃えてしまい、 図が
+    //   自分の枠から食み出して壊れる (= 点検で判明)。 図は中身に合わせた
+    //   大きさのまま置く。
     _saveToStorage();
     notifyListeners();
     return node.id;
