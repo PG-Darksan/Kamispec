@@ -5395,10 +5395,21 @@ class _MindMapScreenState extends State<MindMapScreen>
             ? anchor.dy + 14
             : bounds.top + math.max(12.0, (bounds.height - height) / 2);
         if (top + height > bounds.bottom - 12) {
-          top = math.max(
-              bounds.top + 12,
-              math.min(anchor.dy - height - 14,
-                  math.max(bounds.top + 12, bounds.bottom - height - 12)));
+          // 下に入り切らない時は、 まず上へ出す。
+          final above = anchor.dy - height - 14;
+          if (above >= bounds.top + 12) {
+            top = above;
+          } else {
+            // 上にも下にも入らない (= 背の高い窓)。
+            // ★ 以前はここで画面のいちばん上に張り付いていたため、 設定から
+            //   開いたのにヘッダーのボタンの近くに出たように見えていた
+            //   (= ユーザー報告)。 押した所を中心に据えて、 画面内へ寄せる。
+            //   入り切らない分は下の maxH で巻物になる。
+            top = (anchor.dy - height / 2)
+                .clamp(bounds.top + 12,
+                    math.max(bounds.top + 12, bounds.bottom - height - 12))
+                .toDouble();
+          }
         }
         // ★ 入り切らない分は切り落とさず、 巻物にする (= 点検で判明:
         //   分割中や背の低い窓では、 下の送信ボタンまで切れて押せなく
@@ -110131,6 +110142,9 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
   ///   'random'  … AI が決める
   String _debateSide = 'against';
 
+  /// 討論のお題そのものを AI に決めさせるか (= ユーザー要望)。
+  bool _debateRandomTheme = false;
+
   /// 討論の相手の手ごわさ。 'soft' / 'normal' / 'hard'
   String _debateLevel = 'normal';
   int _pickupAgeMin = 20;
@@ -110472,13 +110486,21 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
     }
     // ── 討論 (= ユーザー要望: ディベートの項目) ──
     if (_isDebate) {
-      final theme = topic.isEmpty ? '(お題はこれから決める)' : topic;
+      final theme = _debateRandomTheme
+          ? '(お題はあなたが決める)'
+          : (topic.isEmpty ? '(お題はこれから決める)' : topic);
+      // 立場は「お題に賛成か反対か」 (= ユーザー指摘: 反対側 / 同じ側は
+      //   分かりにくい)。 ユーザーが同じ側に立った時も、 その立場のまま
+      //   論の甘い所を突く。
       final sideRule = switch (_debateSide) {
-        'for' => ' あなたはユーザーと**同じ立場**に立ちますが、 論の詰めが'
-            '甘い所を容赦なく突いて、 主張を強くする手伝いをしてください。',
+        'for' => ' あなたはこのお題に**賛成の立場**で話します。'
+            ' ユーザーが同じく賛成なら、 論の詰めが甘い所を容赦なく突いて、'
+            ' 主張を強くする手伝いをしてください。',
         'random' => ' どちらの立場に立つかは、 あなたが決めてください。'
             ' 最初の発言で、 どちら側に立つのかをはっきり述べてください。',
-        _ => ' あなたはユーザーの**反対の立場**に立ちます。',
+        _ => ' あなたはこのお題に**反対の立場**で話します。'
+            ' ユーザーも反対なら、 賛成側の言い分を持ち出して、'
+            ' 論の甘い所を突いてください。',
       };
       final levelRule = switch (_debateLevel) {
         'soft' => ' 相手は討論に慣れていません。 論点を 1 つずつ、'
@@ -110505,7 +110527,7 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
           ' 根拠のない断定はせず、 事実と意見を分けて話してください。'
           ' 人格を攻撃せず、 論点だけを相手にしてください。'
           ' 音声会話なので 1 回の発話は短め (2〜3 文) に。'
-          '${topic.isEmpty ? ' お題がまだ決まっていないので、 まず何について討論するかを尋ねてください。' : ''}';
+          '${_debateRandomTheme ? ' お題はあなたが選んでください。 意見が割れる身近な題材から 1 つ選び、 最初の発言でお題と自分の立場をはっきり述べてから始めてください。' : (topic.isEmpty ? ' お題がまだ決まっていないので、 まず何について討論するかを尋ねてください。' : '')}';
     }
     // ── 告白・別れ話 (= ユーザー要望) ──
     if (_isRelation) {
@@ -110532,11 +110554,16 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
             ' 間を置いたり、 聞き返したり、 迷ったりしてください。'
             '$common';
       }
-      final reason = topic.isEmpty ? '(理由はこれから決める)' : topic;
+      // ★ 別れたい理由は、 会話の中でユーザーが自分の言葉にしていく物
+      //   なので、 先に渡さない (= ユーザー要望)。 代わりに、 二人の間に
+      //   あった出来事を背景として渡す。
+      final history = topic.trim();
       return 'あなたは、 ユーザーから別れ話を切り出される側の'
           '恋人 (または配偶者) です。'
-          ' ユーザー側の理由:「$reason」。'
+          '${history.isNotEmpty ? ' 二人の間にこれまでにあった出来事:「$history」。 この背景を踏まえて反応してください。' : ''}'
           '$who'
+          ' 別れたい理由はユーザーの口から出てきます。 先回りして'
+          ' 決めつけず、 話を聞きながら少しずつ引き出してください。'
           ' 進め方: すぐには受け入れず、 理由を聞いたり、'
           ' 引き留めたり、 怒ったり、 黙ったりしてください。'
           ' ただし、 相手を傷つける言葉や脅しは使わないでください。'
@@ -111803,7 +111830,11 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
         // ナンパ練習では「場面＋人物像」 を 1 つの任意項目として最下部に
         //   まとめて置く (= ユーザー要望) ので、 ここでは出さない。
         // 資格面接は上に専用の欄を出しているので、 ここは出さない。
-        if (!_isPickup && !_isExam && !_isLicense && !_isPresentation) ...[
+        if (!_isPickup &&
+            !_isExam &&
+            !_isLicense &&
+            !_isPresentation &&
+            !(_isDebate && _debateRandomTheme)) ...[
           const SizedBox(height: 16),
           // ★ 種類ごとに見出しを変える (= ユーザー要望: 討論の所は
           //   売りたい製品じゃなくて議論したいテーマとかに替えて)。
@@ -111835,6 +111866,33 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
                             : _isBreakup
                                 ? 'talk.breakupReasonHint'
                                 : 'talk.productHint')),
+          ),
+        ],
+        // 討論のお題そのものも AI に決めさせる (= ユーザー要望)。
+        if (_isDebate) ...[
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.04),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.white12),
+            ),
+            child: Row(children: [
+              Icon(Icons.casino_rounded, color: accent, size: 18),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                    context.read<MindMapProvider>().t('talk.debateRandomTheme'),
+                    style:
+                        const TextStyle(color: Colors.white, fontSize: 12.5)),
+              ),
+              Switch(
+                value: _debateRandomTheme,
+                activeThumbColor: accent,
+                onChanged: (v) => setState(() => _debateRandomTheme = v),
+              ),
+            ]),
           ),
         ],
         // 相手の設定を AI に任せる (= ユーザー要望: 対象となる相手の
@@ -111877,10 +111935,11 @@ class _AiTalkDialogState extends State<_AiTalkDialog> {
                   color: accent, fontSize: 12, fontWeight: FontWeight.w700)),
           const SizedBox(height: 6),
           Wrap(spacing: 6, runSpacing: 6, children: [
+            // ★ 「AI に任せる」 は外した (= ユーザー指摘: 相手の設定を AI が
+            //   決める項目が別にあるので、 ここは賛否の 2 択でよい)。
             for (final e in const [
-              ('against', 'talk.debateSideAgainst'),
               ('for', 'talk.debateSideFor'),
-              ('random', 'talk.debateSideRandom'),
+              ('against', 'talk.debateSideAgainst'),
             ])
               ChoiceChip(
                 label: Text(context.read<MindMapProvider>().t(e.$2),
