@@ -1148,6 +1148,35 @@ class _AutoHeightTabBarViewState extends State<_AutoHeightTabBarView> {
   }
 }
 
+/// 分割ペインの中であることを、 ペインの中身から辿れるようにする印。
+///
+/// = ユーザー要望「モデルの選択画面は全体画面中央ではなく、 画面分割した
+///   画面の中央に出るように」。 ダイアログは根っこの Navigator に積まれる
+///   ので、 そのままだと画面全体の真ん中に出る。 出す時にこの印を辿って
+///   ペインの矩形を求め、 その中に収める。
+class _SplitPaneScope extends InheritedWidget {
+  const _SplitPaneScope({required super.child});
+
+  /// 呼び出し元が分割ペインの中なら、 そのペインの画面上の矩形。
+  /// 分割していない / まだ配置が済んでいない時は null。
+  static Rect? rectOf(BuildContext context) {
+    final el =
+        context.getElementForInheritedWidgetOfExactType<_SplitPaneScope>();
+    if (el == null) return null;
+    final box = el.findRenderObject();
+    if (box is! RenderBox || !box.hasSize || !box.attached) return null;
+    final o = box.localToGlobal(Offset.zero);
+    if (!o.dx.isFinite || !o.dy.isFinite) return null;
+    final r = o & box.size;
+    // 潰れている (幅か高さがほぼ 0) 時は使わない。
+    if (r.width < 120 || r.height < 120) return null;
+    return r;
+  }
+
+  @override
+  bool updateShouldNotify(_SplitPaneScope oldWidget) => false;
+}
+
 /// 使うモデルと「考える深さ」 を選ぶ画面 (= ユーザー要望: AI を使う所は
 /// どこでも同じ並び・同じ項目にする)。
 ///
@@ -1184,9 +1213,21 @@ Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
   //   Markdown / PDF …)、 呼ぶ側それぞれに書かせると必ず付け忘れる。
   final inFloatingWindow =
       context.findAncestorStateOfType<_FloatingPanelWindowState>() != null;
+  // ★ 分割ペインの中で開く時は、 画面全体ではなくそのペインの真ん中に出す
+  //   (= ユーザー要望)。 出し方は 2 通り:
+  //   ① ペインに専用の Navigator が立っている時 (_PaneDialogHost。
+  //      フラッシュカード等) は、 そこへ積めば自然にペインの中央になる。
+  //   ② 立っていない時 (アシスタント・面接練習等) は根っこに積むしかない
+  //      ので、 ペインの矩形の分だけ余白を足して中に閉じ込める。
+  final nestedNav = !inFloatingWindow &&
+      Navigator.maybeOf(context) != null &&
+      Navigator.maybeOf(context) != Navigator.maybeOf(context,
+          rootNavigator: true);
+  final bool useRoot = useRootNavigator && !inFloatingWindow && !nestedNav;
+  final Rect? paneRect = useRoot ? _SplitPaneScope.rectOf(context) : null;
   await showDialog<void>(
     context: context,
-    useRootNavigator: useRootNavigator && !inFloatingWindow,
+    useRootNavigator: useRoot,
     builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
       final cur = provider.relayModel;
       // ★ 既定では「今使っているモデルの会社」 だけ開いておく
@@ -1207,7 +1248,20 @@ Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
       // ★ 出す場所の幅に合わせる (= 浮遊窓の中は 520px ほどしかない)。
       //   3 列を横に並べると入り切らないので、 狭い時は縦に積む。
       const inset = 16.0;
-      final avail = MediaQuery.of(dctx).size.width - inset * 2;
+      final screenSize = MediaQuery.of(dctx).size;
+      // ★ 矩形は開く時に控えた物なので、 その後で窓の大きさが変わると
+      //   画面からはみ出す (= 余白の足し算が画面幅を超えて、 ダイアログが
+      //   数 px に潰れる)。 今の画面に収まらない時は普通の中央表示に戻す。
+      final Rect? pane = (paneRect == null ||
+              paneRect.right > screenSize.width + 1 ||
+              paneRect.bottom > screenSize.height + 1 ||
+              paneRect.width < 240 ||
+              paneRect.height < 200)
+          ? null
+          : paneRect;
+      // 分割ペインの中に出す時は、 ペインの大きさを「画面」 として扱う。
+      final Size fieldSize = pane?.size ?? screenSize;
+      final avail = fieldSize.width - inset * 2;
       final wide = avail >= 680;
       final dialogW = wide ? 720.0 : math.max(240.0, avail);
       // 1 社ぶんの列 (横並び / 縦積みの両方で使い回す)。
@@ -1297,8 +1351,16 @@ Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
       return AlertDialog(
         backgroundColor: const Color(0xFF1E1E32),
         // 狭い窓の中でも幅を使えるように、 既定の 40px より詰める。
-        insetPadding:
-            const EdgeInsets.symmetric(horizontal: inset, vertical: 20),
+        // 分割ペインの中から開いた時は、 ペインの外側の分も余白にして
+        // そのペインの真ん中に出す (= ユーザー要望)。
+        insetPadding: pane == null
+            ? const EdgeInsets.symmetric(horizontal: inset, vertical: 20)
+            : EdgeInsets.fromLTRB(
+                math.max(inset, pane.left + inset),
+                math.max(20.0, pane.top + 20),
+                math.max(inset, screenSize.width - pane.right + inset),
+                math.max(20.0, screenSize.height - pane.bottom + 20),
+              ),
         // 中身が縦に溢れると下 (考える深さ) が切れるのでスクロールさせる。
         scrollable: true,
         title: Text(provider.t('mcp.chooseModel'),
@@ -1306,9 +1368,15 @@ Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
         content: ConstrainedBox(
           // ★ 縦にもはみ出さないようにする (= ユーザー要望: フローティング
           //   では画面から出てしまう)。 入り切らない分は巻物になる。
+          // ★ ペインの中に出す時は上限を掛けない。 余白 (insetPadding) で
+          //   既にペインの中に収まっており、 その上で高さを縛ると
+          //   AlertDialog の巻物より内側で切られてしまい、 下にある
+          //   「考える深さ」 に永久に届かなくなる (= 上下分割や 4 分割で
+          //   ペインが低い時)。
           constraints: BoxConstraints(
-              maxHeight:
-                  math.max(220.0, MediaQuery.of(dctx).size.height - 180)),
+              maxHeight: pane != null
+                  ? double.infinity
+                  : math.max(220.0, screenSize.height - 180)),
           child: SizedBox(
           width: dialogW,
           child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -15971,12 +16039,17 @@ class _MindMapScreenState extends State<MindMapScreen>
             const Color(0xFF4FC3F7)),
         feat(provider.t('plan.proPages'), const Color(0xFF4FC3F7)),
         feat(provider.t('plan.proSplit'), const Color(0xFF4FC3F7)),
+        feat(provider.t('plan.proPaint'), const Color(0xFF4FC3F7)),
+        feat(provider.t('plan.proAutomation'), const Color(0xFF4FC3F7)),
         feat(provider.t('plan.proLocks'), const Color(0xFF4FC3F7)),
         const SizedBox(height: 6),
         header(Icons.diamond_rounded, provider.t('plan.maxHeader'),
             const Color(0xFFFFB347)),
         feat(provider.t('plan.maxCloud'), const Color(0xFFFFB347)),
-        feat(provider.t('plan.maxPdfAi'), const Color(0xFFFFB347)),
+        feat(provider.t('plan.maxLive'), const Color(0xFFFFB347)),
+        feat(provider.t('plan.maxPublish'), const Color(0xFFFFB347)),
+        feat(provider.t('plan.maxCalendar'), const Color(0xFFFFB347)),
+        feat(provider.t('plan.maxStorage'), const Color(0xFFFFB347)),
       ]),
     );
   }
@@ -16410,7 +16483,17 @@ class _MindMapScreenState extends State<MindMapScreen>
 
     // 同じ中身なら何もしない。
     final curYearly = '${sub['interval'] ?? ''}' == 'year';
-    final curPlan = provider.purchasedPlan.name;
+    // ★ 端末側の控えではなく、 サーバーが持っている今のプランを基準にする
+    //   (= ユーザー報告: 決済した直後は端末側がまだ free のままなので、
+    //    「もう Pro です」 と気付けないまま変更へ進み、 Stripe に
+    //    「同じプランです」 と断られて赤い帯が出ていた)。
+    final serverPlan = '${info['plan'] ?? ''}';
+    final knownServerPlan = serverPlan == 'pro' || serverPlan == 'max';
+    final curPlan = knownServerPlan ? serverPlan : provider.purchasedPlan.name;
+    if (knownServerPlan && serverPlan != provider.purchasedPlan.name) {
+      // 控えがずれていたら、 ここで合わせておく。
+      provider.applyBillingPlanByName(serverPlan);
+    }
     if (curPlan == plan && curYearly == yearly) {
       _appSnack(
         context,
@@ -16419,6 +16502,10 @@ class _MindMapScreenState extends State<MindMapScreen>
           duration: const Duration(seconds: 3),
         ),
       );
+      // 端末側の控えを最新にしておく (= 押した時に効いていないように
+      //   見えるのを防ぐ)。
+      // ignore: discarded_futures
+      provider.syncEntitlementFromServer();
       return true;
     }
 
@@ -16437,12 +16524,37 @@ class _MindMapScreenState extends State<MindMapScreen>
       pv = await provider.previewSubscriptionPlanChange(plan, yearly);
     } catch (e) {
       if (!mounted) return true;
+      // ★ 失敗の中身で扱いを分ける (= ユーザー報告: 決済した後に Pro の
+      //   ボタンを押すと「確かめられませんでした」 が出る)。
+      if (e is RelayApiException) {
+        // ① 既にそのプランで契約している → 変更ではなく、 控えを合わせる。
+        if (e.isSamePlan) {
+          // Stripe が「その価格で契約済み」 と言っている = こちらが正本。
+          // ★ ここでサーバーの控え (KV) を読み直してはいけない。 この枝に
+          //   来るのは KV が古い時なので、 読み直すと今直したプランを
+          //   古い値で上書きしてしまう (Max にしたのに Pro へ戻る)。
+          provider.applyBillingPlanByName(plan);
+          _appSnack(
+            context,
+            SnackBar(
+              content: Text(provider.t('usage.currentPlan')),
+              duration: const Duration(seconds: 4),
+            ),
+          );
+          return true;
+        }
+        // ② 契約が見つからない → ふつうの購入 (決済リンク) に進む。
+        if (e.isNoSubscription) return false;
+      }
+      // ③ それ以外は、 何が起きたのかをそのまま見せる (= 原因が分からず
+      //    同じ帯だけが出る状態を無くす)。
       _appSnack(
         context,
         SnackBar(
-          content: Text(provider.t('plan.changeAmountFailed')),
+          content:
+              Text('${provider.t('plan.changeAmountFailed')}\n$e'),
           backgroundColor: const Color(0xFFE57373),
-          duration: const Duration(seconds: 6),
+          duration: const Duration(seconds: 8),
         ),
       );
       return true;
@@ -16452,8 +16564,13 @@ class _MindMapScreenState extends State<MindMapScreen>
     final cur = '${pv['currency'] ?? 'USD'}';
     final prorationDate =
         pv['prorationDate'] is int ? pv['prorationDate'] as int : null;
+    // ★ 金額の見積もりだけが取れなかった時 (課金サーバーの鍵に請求書の
+    //   読み取り権限が無い等)。 プランの差し替え自体は通るので、 額は
+    //   出せないと断った上で進めてもらう (= ユーザー要望: Pro から Max へ
+    //   ちゃんと切り替えられるように。 重なっている期間は差額だけ)。
+    final amountUnknown = pv['previewUnavailable'] == true;
     // 上げる時は必ず額が要る。 取れなければ止める。
-    if (up && due is! num) {
+    if (up && due is! num && !amountUnknown) {
       _appSnack(
         context,
         SnackBar(
@@ -16467,6 +16584,31 @@ class _MindMapScreenState extends State<MindMapScreen>
     final amountText =
         due is num ? provider.formatMoneyMinor(due, cur) : '';
 
+    // 次の請求日から掛かる通常の料金 (= ユーザー要望: 次の決済日にまた
+    //   満額が引き落とされることも明記して欲しい)。 サーバーが額を返せた
+    //   時だけ出す。
+    var nextChargeText = '';
+    final nextAmount = pv['nextAmount'];
+    if (nextAmount is num) {
+      final nextCur = '${pv['nextCurrency'] ?? cur}';
+      final endSec = sub['currentPeriodEnd'];
+      var dateText = '';
+      if (endSec is num && endSec > 0) {
+        final d = DateTime.fromMillisecondsSinceEpoch(endSec.toInt() * 1000);
+        dateText = '${d.year}/${d.month.toString().padLeft(2, '0')}/'
+            '${d.day.toString().padLeft(2, '0')}';
+      }
+      if (dateText.isNotEmpty) {
+        nextChargeText = provider
+            .t(yearly
+                ? 'plan.changeNextChargeYearly'
+                : 'plan.changeNextChargeMonthly')
+            .replaceFirst('{date}', dateText)
+            .replaceFirst(
+                '{amount}', provider.formatMoneyMinor(nextAmount, nextCur));
+      }
+    }
+
     final go = await showDialog<bool>(
       context: context,
       builder: (dctx) => AlertDialog(
@@ -16479,7 +16621,9 @@ class _MindMapScreenState extends State<MindMapScreen>
           children: [
             Text(
                 provider
-                    .t(up ? 'plan.changeUpBody' : 'plan.changeDownBody')
+                    .t(amountUnknown
+                        ? 'plan.changeAmountUnknown'
+                        : (up ? 'plan.changeUpBody' : 'plan.changeDownBody'))
                     .replaceFirst('{plan}', label)
                     .replaceFirst('{amount}', amountText),
                 style: const TextStyle(
@@ -16511,6 +16655,21 @@ class _MindMapScreenState extends State<MindMapScreen>
                 ]),
               ),
             ],
+            // ★ 次の請求日からは通常の料金が掛かることも書く (= ユーザー
+            //   要望: 差額だけを見て「今後もこの額」 と誤解しないように)。
+            if (nextChargeText.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Icon(Icons.event_repeat_rounded,
+                    color: Colors.white38, size: 15),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(nextChargeText,
+                      style: const TextStyle(
+                          color: Colors.white54, fontSize: 12, height: 1.5)),
+                ),
+              ]),
+            ],
           ],
         ),
         actions: [
@@ -16522,7 +16681,10 @@ class _MindMapScreenState extends State<MindMapScreen>
           TextButton(
             onPressed: () => Navigator.pop(dctx, true),
             child: Text(
-                provider.t(up ? 'plan.changePayNow' : 'plan.changeDo'),
+                // 額を出せていない時は「この額を支払って変更」 とは書けない。
+                provider.t(up && !amountUnknown
+                    ? 'plan.changePayNow'
+                    : 'plan.changeDo'),
                 style: const TextStyle(color: Color(0xFF4FC3F7))),
           ),
         ],
@@ -38300,9 +38462,13 @@ class _MindMapScreenState extends State<MindMapScreen>
           final plan = provider.currentPlan;
           // ★ 実際にお金を払って契約している人か (= ユーザー要望: 解約や
           //   契約状況の欄は、 Free / Dev / クーポンの人には要らない)。
-          //   クーポンと開発者モードは「契約」 ではないので入れない。
+          //   クーポンと Dev 枠は「契約」 ではないので入れない。
+          //   ★ 開発者モードかどうかでは隠さない (= ユーザー報告: 決済して
+          //     Pro にしたのに、 開発者モードに入っていると解約する場所が
+          //     どこにも出てこなかった)。 見るのは実際に買ったプランだけ。
           final hasContract =
-              provider.purchasedPlan != SubscriptionPlan.free && !isDev;
+              provider.purchasedPlan != SubscriptionPlan.free &&
+                  provider.purchasedPlan != SubscriptionPlan.dev;
 
           String planLabel;
           Color planColor;
@@ -38355,8 +38521,11 @@ class _MindMapScreenState extends State<MindMapScreen>
           final upgradeToMax = plan == SubscriptionPlan.pro;
           final upgradeColor =
               upgradeToMax ? const Color(0xFFBA68C8) : const Color(0xFFFFB347);
+          // ★ Pro の人には「この機能は Max プラン限定です」 ではなく、
+          //   差額で請求されることを案内する (= ユーザー指摘: プランを選ぶ
+          //   画面に「この機能」 は無いので意味が通らない)。
           final upgradePrompt = upgradeToMax
-              ? provider.t('paywall.maxRequiredGeneric')
+              ? provider.t('usage.upgradeToMaxPrompt')
               : provider.t('usage.upgradePrompt');
 
           // ★ 画面に余白があるなら使い切る (= ユーザー要望: Max プランや
@@ -69465,10 +69634,6 @@ class _MindMapScreenState extends State<MindMapScreen>
       _mapSplitCellWeb.clear();
       _mapSplitCellWebCur.clear();
       _mapSplitCellTool.clear();
-      // 「動かす」 の状態も下ろす (= 押したまま畳むと、 次に開いた時に
-      //   道具の上に見えない板が残って触れなくなるため)。
-      _paneToolMoving = null;
-      _paneToolOffset.clear();
       _syncNarrowPaneRatio();
       _mapSplitCellFile.clear();
     });
@@ -69702,10 +69867,6 @@ class _MindMapScreenState extends State<MindMapScreen>
     final openedByUs = _toolOpenedSplit.remove(id) ?? false;
     setState(() {
       _mapSplitCellTool.remove(slot);
-      // 動かした位置と「動かす」 の状態も片付ける (= 次に開いた時は
-      //   また真ん中から始まるように)。
-      _paneToolOffset.remove('$slot:$id');
-      if (_paneToolMoving == '$slot:$id') _paneToolMoving = null;
       _syncNarrowPaneRatio();
     });
     if (openedByUs && _mapSplitCellTool.isEmpty && _mapSplitCellWeb.isEmpty) {
@@ -69832,92 +69993,6 @@ class _MindMapScreenState extends State<MindMapScreen>
       _mapSplitCellWeb.remove(slot);
       _mapSplitCellTool[slot] = id;
       _syncNarrowPaneRatio();
-    });
-  }
-
-  /// 分割ペインに埋め込んだ道具の、 真ん中からのずれ
-  /// (鍵は 'スロット:道具')。 = ユーザー要望: いつも真ん中だと打ちにくい。
-  final Map<String, Offset> _paneToolOffset = {};
-
-  /// いま「動かす」 を押している道具 (null = どれも動かさない)。
-  String? _paneToolMoving;
-
-  /// 埋め込んだ道具を、 ペインの中で縦横に動かせるようにして返す。
-  ///
-  /// ★ いつでも動かせると道具のボタンが押しにくいので、 右上の「動かす」
-  ///   を押している間だけ動く (= ユーザー要望)。 押していない間は今までと
-  ///   同じで、 道具のボタンがそのまま使える。
-  ///   動かしている間は薄く色を敷いて、 その板が指の動きを受け取る。
-  Widget _movablePaneTool(int slot, String id, Widget child) {
-    final key = '$slot:$id';
-    return LayoutBuilder(builder: (ctx, c) {
-      // 端まで出し切らないよう、 半分くらいまでに留める。
-      final maxDx = math.max(0.0, c.maxWidth * 0.45);
-      final maxDy = math.max(0.0, c.maxHeight * 0.45);
-      final raw = _paneToolOffset[key] ?? Offset.zero;
-      final off = Offset(
-        raw.dx.clamp(-maxDx, maxDx).toDouble(),
-        raw.dy.clamp(-maxDy, maxDy).toDouble(),
-      );
-      final moving = _paneToolMoving == key;
-      final provider = context.read<MindMapProvider>();
-      Widget iconBtn(IconData icon, String tip, VoidCallback onTap,
-              {Color? color}) =>
-          Tooltip(
-            message: tip,
-            child: InkWell(
-              onTap: onTap,
-              borderRadius: BorderRadius.circular(6),
-              child: Padding(
-                padding: const EdgeInsets.all(5),
-                child: Icon(icon, size: 15, color: color ?? Colors.white54),
-              ),
-            ),
-          );
-      return Stack(children: [
-        Positioned.fill(child: Transform.translate(offset: off, child: child)),
-        // 動かしている間だけ、 指の動きを受け取る板を上に敷く。
-        if (moving)
-          Positioned.fill(
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onPanUpdate: (d) => setState(() {
-                _paneToolOffset[key] = off + d.delta;
-              }),
-              child: MouseRegion(
-                cursor: SystemMouseCursors.move,
-                child: Container(
-                  color: const Color(0xFFFFB347).withValues(alpha: 0.10),
-                ),
-              ),
-            ),
-          ),
-        Positioned(
-          top: 2,
-          right: 2,
-          child: Material(
-            color: const Color(0xCC1B1B2C),
-            borderRadius: BorderRadius.circular(8),
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              if (off != Offset.zero)
-                iconBtn(Icons.filter_center_focus_rounded,
-                    provider.t('pane.resetToolPos'), () {
-                  setState(() => _paneToolOffset.remove(key));
-                }),
-              iconBtn(
-                moving
-                    ? Icons.check_rounded
-                    : Icons.open_with_rounded,
-                provider
-                    .t(moving ? 'pane.moveToolDone' : 'pane.moveTool'),
-                () => setState(
-                    () => _paneToolMoving = moving ? null : key),
-                color: moving ? const Color(0xFFFFB347) : Colors.white54,
-              ),
-            ]),
-          ),
-        ),
-      ]);
     });
   }
 
@@ -71584,15 +71659,13 @@ class _MindMapScreenState extends State<MindMapScreen>
         inner = ClipRect(
           child: Container(
             color: const Color(0xFF12121F),
-            // 真ん中決め打ちをやめ、 縦横に動かせるようにする
-            //   (= ユーザー要望: 常に中央だと打ちにくい)。
-            // ★ ペインいっぱいに広がる道具 (予定表・アシスタント等) は
-            //   動かしても意味が無く、 ボタンが増えて邪魔なので、
-            //   真ん中に小さく出る物だけに付ける。
-            child: const {'calculator', 'stopwatch'}.contains(toolId)
-                ? _movablePaneTool(
-                    k, toolId, _buildEmbeddedPaneTool(provider, k, toolId))
-                : _buildEmbeddedPaneTool(provider, k, toolId),
+            // 真ん中決め打ちをやめ、 縦横に動かせるようにしてある。
+            // ★ 「動かす」 ボタンを押してから動かす形はやめた
+            //   (= ユーザー要望: 普通にドラッグして移動できるように)。
+            //   計算機・タイマーは自分の頭の帯で動く (_EmbeddedToolBox)。
+            //   ペインいっぱいに広がる道具 (予定表・アシスタント等) は
+            //   動かしても意味が無いのでそのまま。
+            child: _buildEmbeddedPaneTool(provider, k, toolId),
           ),
         );
       } else {
@@ -71733,7 +71806,9 @@ class _MindMapScreenState extends State<MindMapScreen>
           ]),
         );
       }
-      return Expanded(flex: flex, child: cellStack);
+      // ★ この中から開くダイアログ (モデル選び等) を、 画面全体ではなく
+      //   このペインの真ん中に出すための印 (= ユーザー要望)。
+      return Expanded(flex: flex, child: _SplitPaneScope(child: cellStack));
     }
 
     if (!_mapSplitQuad) {
@@ -72853,13 +72928,6 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// 分割レイアウトを [panes] / [stacked] のモードに切り替える。 既にその
   /// モードなら分割を閉じる (= トグル)。
-  /// 分割の組み替え時にも「動かす」 の状態を下ろす。
-  void _resetPaneToolMove() {
-    if (_paneToolMoving == null && _paneToolOffset.isEmpty) return;
-    _paneToolMoving = null;
-    _paneToolOffset.clear();
-  }
-
   Future<void> _applyMapSplitMode({
     required int panes,
     required bool stacked,
@@ -72875,8 +72943,6 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
     setState(() {
       _mapSplitQuad = quad;
-      // 組み替えたら「動かす」 の状態は下ろす (= 見えない板が残るのを防ぐ)。
-      _resetPaneToolMove();
       if (!quad) {
         _mapSplitStacked = stacked;
         // 4→2 に戻した時、 編集セルが下段なら上段へ寄せる。
@@ -84064,14 +84130,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       return;
     }
 
-    // ── Max プラン限定ゲート ──
-    // PDF やファイルを AI に読み込ませてマインドマップを自動生成する機能は
-    //   Max プラン限定。未加入なら Max ペイウォールを出して中断する。
-    if (!provider.isMaxUnlocked) {
-      _showMaxRequiredDialog(provider,
-          body: provider.t('paywall.maxRequiredAiSummary'));
-      return;
-    }
+    // ★ Max 限定の閘は外した (= ユーザー指摘: PDF などから
+    //   ページを作るのは AI アシスタントの機能であって、 プランとは
+    //   関係がない)。 AI を呼ぶ以上、 鍵か残高が要るのは上の判定と
+    //   代行サーバー側で既に担保されている。
 
     // ファイル選択 (PDF/docx/pptx + テキスト系)
     FilePickerResult? result;
@@ -99097,19 +99159,11 @@ class _ActionOverlayState extends State<_ActionOverlay>
   late double _w, _h;
   late double _titleFs, _memoFs;
 
-  /// 10色パレット（provider.nodePaletteと同一順）
-  static const _colors = [
-    Color(0xFF6C63FF),
-    Color(0xFF43B97F),
-    Color(0xFFFF6B6B),
-    Color(0xFFFFB347),
-    Color(0xFF4FC3F7),
-    Color(0xFFBA68C8),
-    Color(0xFFE53935),
-    Color(0xFF00897B),
-    Color(0xFFF06292),
-    Color(0xFF78909C),
-  ];
+  /// ノードの色パレット。
+  /// ★ ここで並べ直すと設定画面 (色の設定) と食い違うので、 本体の
+  ///   `MindMapProvider.nodePalette` をそのまま使う (= ユーザー要望で色を
+  ///   増やした時に、 片方だけ増えて食い違うのを防ぐ)。
+  static const _colors = MindMapProvider.nodePalette;
 
   @override
   void initState() {
@@ -99841,8 +99895,11 @@ class _ActionOverlayState extends State<_ActionOverlay>
                   decoration: _barDeco(),
                   child: Column(mainAxisSize: MainAxisSize.min, children: [
                     // カラー
-                    Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
+                    // ★ 色を増やしたので 1 行では並び切らない。 入り切らない
+                    //   分は下の行へ折り返す (= ユーザー要望: 色をもっと)。
+                    Wrap(
+                        alignment: WrapAlignment.center,
+                        runSpacing: compact ? 3 : 4,
                         children: _colors.map((c) {
                           final on = c.value == widget.nodeColor.value;
                           return GestureDetector(
@@ -161056,11 +161113,8 @@ class _InquiryDialogState extends State<_InquiryDialog> {
           },
         ),
       ),
-      Padding(
-        padding: const EdgeInsets.only(top: 4),
-        child: Text(widget.provider.t('inquiry.viaInstagramHint'),
-            style: const TextStyle(color: Colors.white38, fontSize: 10.5)),
-      ),
+      // ★ ボタンの下の説明書き (「公式アカウントを開きます。 そのまま DM を
+      //   送れます。」) は外した (= ユーザー要望: 当たり前のことなので不要)。
     ]);
   }
 
@@ -161707,15 +161761,14 @@ class _BulkEditSheetState extends State<_BulkEditSheet> {
   int _aiProgress = 0;
   int _aiTotal = 0;
 
+  /// 一括変更で選べる色。
+  /// ★ ノード作成の色 (`MindMapProvider.nodePalette`) を丸ごと載せた上で、
+  ///   ここにしかない淡い色を後ろに足す (= ユーザー要望: 色の種類を増やす。
+  ///   作成時に選べる色が一括変更で選べないのはおかしいので揃える)。
+  ///   旧 0xFFE6EE9C (薄い黄緑) は外したまま (= 黄色は出さない)。
   static const _colorOptions = [
-    Color(0xFF6C63FF),
-    Color(0xFF43B97F),
-    Color(0xFFFF6B6B),
-    Color(0xFFFFB347),
-    Color(0xFF4FC3F7),
-    Color(0xFFBA68C8),
+    ...MindMapProvider.nodePalette,
     Color(0xFF90CAF9),
-    // 旧 0xFFE6EE9C (薄い黄緑) は外した (= ユーザー要望: 黄色は出さない)。
     Color(0xFFA5D6A7),
     Color(0xFFFFAB91),
     Color(0xFF80CBC4),
@@ -164049,6 +164102,162 @@ const double _kCollapsedFloatingWidthDesktop = 220.0;
 double _collapsedFloatingWidth(bool isMobile) =>
     isMobile ? _kCollapsedFloatingWidthMobile : _kCollapsedFloatingWidthDesktop;
 
+/// 分割ペインに埋め込んだ道具を「頭の帯をつかんで動かす」 ための橋渡し。
+///
+/// 道具 (計算機・タイマー) の頭の帯は道具自身が組み立てているので、 入れ物
+/// (`_EmbeddedToolBox`) 側からは触れない。 道具が持つこの器を入れ物に渡し、
+/// 入れ物が `onMove` を差し込む形で繋ぐ。 浮かせて出している時は誰も
+/// 差し込まないので `active` が false になり、 道具は今まで通り自分の
+/// `_offset` を動かす。
+class _PaneToolDragController {
+  void Function(Offset delta)? onMove;
+
+  /// 直前の指の位置 (画面座標)。 掴み直すたびに空にする。
+  Offset? _lastGlobal;
+
+  /// 分割ペインに埋め込まれていて、 入れ物が動かしてくれるか。
+  bool get active => onMove != null;
+
+  /// 掴み始め / 離した時。 ここを挟まないと、 次に掴んだ時に前回の位置との
+  /// 差が出て道具が飛ぶ。
+  void start() => _lastGlobal = null;
+  void end() => _lastGlobal = null;
+
+  /// ★ 受け取るのは「画面座標での指の位置」。
+  ///   `DragUpdateDetails.delta` は道具自身の座標系なので、 ペインに
+  ///   収まり切らず縮めて出している時 (FittedBox) は動く量がずれる。
+  ///   画面座標の差を取れば、 縮めていても指と同じだけ動く。
+  void update(Offset globalPos) {
+    final prev = _lastGlobal;
+    _lastGlobal = globalPos;
+    if (prev != null) onMove?.call(globalPos - prev);
+  }
+}
+
+/// 分割ペインに埋め込んだ道具 (計算機・関数電卓・タイマー) の入れ物。
+///
+/// ★ = ユーザー要望「画面分割した際の計算機等は普通にドラッグして移動
+///   できるように。 数値等のボタンが一部でも画面外に出ると使えなくなるから、
+///   端が画面外に出ない様に」。
+///   - 頭の帯をそのままつかんで動かせる (「動かす」 ボタンを押す手順は不要)
+///   - 端がペインの外へ出ないように留めるので、 ボタンが欠けない
+///   - 動かすまでは今まで通り真ん中に出す
+class _EmbeddedToolBox extends StatefulWidget {
+  final _PaneToolDragController controller;
+  final Widget child;
+  const _EmbeddedToolBox({required this.controller, required this.child});
+
+  @override
+  State<_EmbeddedToolBox> createState() => _EmbeddedToolBoxState();
+}
+
+class _EmbeddedToolBoxState extends State<_EmbeddedToolBox> {
+  /// ペインの中での左上位置 (null = まだ動かしていない → 真ん中)。
+  Offset? _pos;
+
+  /// 今のペインの大きさ (build のたびに控える)。
+  Size _pane = Size.zero;
+
+  /// 道具そのものの大きさを測るための鍵 (描かれてからでないと分からない)。
+  final GlobalKey _boxKey = GlobalKey();
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.onMove = _move;
+  }
+
+  @override
+  void didUpdateWidget(covariant _EmbeddedToolBox old) {
+    super.didUpdateWidget(old);
+    if (!identical(old.controller, widget.controller)) {
+      old.controller.onMove = null;
+      widget.controller.onMove = _move;
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.controller.onMove = null;
+    super.dispose();
+  }
+
+  Size get _toolSize {
+    final box = _boxKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return Size.zero;
+    return box.size;
+  }
+
+  /// 端がペインの外へ出ないように留める。 ペインより大きい道具は 0 に張り付く
+  /// (= 少なくとも左上は必ず見えている)。
+  Offset _clamp(Offset p, Size tool) => Offset(
+        p.dx.clamp(0.0, math.max(0.0, _pane.width - tool.width)),
+        p.dy.clamp(0.0, math.max(0.0, _pane.height - tool.height)),
+      );
+
+  Offset _centered(Size tool) => Offset(
+        math.max(0.0, (_pane.width - tool.width) / 2),
+        math.max(0.0, (_pane.height - tool.height) / 2),
+      );
+
+  void _move(Offset delta) {
+    final tool = _toolSize;
+    if (tool.isEmpty) return;
+    setState(() => _pos = _clamp((_pos ?? _centered(tool)) + delta, tool));
+  }
+
+  /// 描き終わった後に、 実測の大きさでもう一度留め直す。
+  ///
+  /// ★ build の中で読める大きさは「1 つ前のフレームの物」 なので、 道具の
+  ///   中身が伸びた時 (電卓の 普通 ⇔ 関数 切替、 タイマーのタブ切替、
+  ///   隠したヘッダーを戻した時など) は、 古い小さい寸法で留めてしまい、
+  ///   下のボタンがペインの外へはみ出したまま押せなくなる。 出来上がった
+  ///   フレームの寸法で測り直して、 はみ出していたら引き戻す。
+  void _reclampAfterLayout() {
+    if (!mounted) return;
+    final pos = _pos;
+    if (pos == null) return;
+    final tool = _toolSize;
+    if (tool.isEmpty) return;
+    final fixed = _clamp(pos, tool);
+    if ((fixed - pos).distanceSquared < 0.01) return;
+    setState(() => _pos = fixed);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(builder: (ctx, c) {
+      _pane = Size(c.maxWidth, c.maxHeight);
+      // 入り切らない時だけ縮める (元の大きさより大きくはしない)。
+      final tool = Padding(
+        padding: const EdgeInsets.all(8),
+        child: FittedBox(fit: BoxFit.scaleDown, child: widget.child),
+      );
+      final pos = _pos;
+      if (pos == null) {
+        return Center(child: KeyedSubtree(key: _boxKey, child: tool));
+      }
+      // 置いた後にペインが狭くなった時も、 はみ出さない所へ寄せ直す。
+      // (ここで使えるのは 1 つ前のフレームの寸法なので、 描き終わってから
+      //  実測でもう一度留め直す。)
+      final p = _clamp(pos, _toolSize);
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => _reclampAfterLayout());
+      return Stack(children: [
+        Positioned(
+          left: p.dx,
+          top: p.dy,
+          child: ConstrainedBox(
+            constraints:
+                BoxConstraints(maxWidth: c.maxWidth, maxHeight: c.maxHeight),
+            child: KeyedSubtree(key: _boxKey, child: tool),
+          ),
+        ),
+      ]);
+    });
+  }
+}
+
 /// フローティング計算機パネル（Ctrl+M で起動）
 /// - 画面の他所をタップしても閉じない（Overlay ベース）
 /// - ヘッダー部分をドラッグして位置を自由に動かせる
@@ -164178,6 +164387,9 @@ class _FloatingCalculator extends StatefulWidget {
 
 class _FloatingCalculatorState extends State<_FloatingCalculator> {
   late Offset _offset;
+
+  /// 分割ペインに埋め込んだ時、 頭の帯のドラッグを入れ物へ渡す器。
+  final _PaneToolDragController _paneDrag = _PaneToolDragController();
 
   /// ヘッダーを隠しているか (= ユーザー要望: 他と同様に隠せるように)。
   bool _headerHidden = false;
@@ -164517,7 +164729,15 @@ class _FloatingCalculatorState extends State<_FloatingCalculator> {
                   else
                   GestureDetector(
                     behavior: HitTestBehavior.opaque,
+                    onPanStart: (_) => _paneDrag.start(),
+                    onPanEnd: (_) => _paneDrag.end(),
                     onPanUpdate: (details) {
+                      // 分割ペインに埋め込んでいる時は、 入れ物の中で動かす
+                      // (= ユーザー要望: 分割でも普通にドラッグで移動)。
+                      if (_paneDrag.active) {
+                        _paneDrag.update(details.globalPosition);
+                        return;
+                      }
                       setState(() {
                         // _offset 自体をクランプして、画面外への蓄積を防ぐ。
                         // これにより、上端まで到達後さらに上へドラッグしても
@@ -164735,15 +164955,10 @@ class _FloatingCalculatorState extends State<_FloatingCalculator> {
     //    開いた時は、 浮かせずにそのペインいっぱいに開く) ──
     //    ペインの大きさに合わせて拡大する。 ドラッグ用の _offset は使わない。
     if (widget.embedded) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(8),
-          // ★ scaleDown = 入り切らない時だけ縮める (元の大きさより大きくは
-          //   しない)。 = ユーザー要望「左右分割で開いた時に表示領域が
-          //   大きすぎるから横幅を小さくして欲しい」。
-          child: FittedBox(fit: BoxFit.scaleDown, child: panel),
-        ),
-      );
+      // ★ scaleDown で入り切らない時だけ縮め (元の大きさより大きくはしない)、
+      //   頭の帯をつかんでペインの中を動かせるようにする。 端はペインの外へ
+      //   出ないので、 ボタンが欠けて押せなくなることは無い (= ユーザー要望)。
+      return _EmbeddedToolBox(controller: _paneDrag, child: panel);
     }
     // ── 裏に隠す処理 ──
     // Positioned 自体は Stack (= Overlay) の直接の子でなければならない
@@ -164790,6 +165005,9 @@ class _FloatingStopwatchState extends State<_FloatingStopwatch> {
   /// ヘッダーを隠しているか (= ユーザー要望: 他と同様に隠せるように)。
   bool _headerHidden = false;
   late Offset _offset;
+
+  /// 分割ペインに埋め込んだ時、 頭の帯のドラッグを入れ物へ渡す器。
+  final _PaneToolDragController _paneDrag = _PaneToolDragController();
 
   /// 0=ストップウォッチ, 1=タイマー
   int _tabIndex = 0;
@@ -165149,7 +165367,14 @@ class _FloatingStopwatchState extends State<_FloatingStopwatch> {
                   else
                   GestureDetector(
                     behavior: HitTestBehavior.opaque,
+                    onPanStart: (_) => _paneDrag.start(),
+                    onPanEnd: (_) => _paneDrag.end(),
                     onPanUpdate: (details) {
+                      // 分割ペインの中では入れ物の中で動かす (= ユーザー要望)。
+                      if (_paneDrag.active) {
+                        _paneDrag.update(details.globalPosition);
+                        return;
+                      }
                       setState(() {
                         // _offset 自体をクランプして、画面外への蓄積を防ぐ。
                         // 計算機と同様、上端到達後さらに上にドラッグした際の
@@ -165267,16 +165492,10 @@ class _FloatingStopwatchState extends State<_FloatingStopwatch> {
           ), // Material
     ); // ExcludeFocus
     // ── 分割ペインへの埋め込み (= ユーザー要望: タイマーも左右分割で) ──
-    //    浮かせず、 ペインの大きさに合わせて出す。
+    //    浮かせず、 ペインの大きさに合わせて出す。 頭の帯をつかめば、
+    //    ペインの中を普通に動かせる (端は外へ出ない)。
     if (widget.embedded) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(8),
-          // ★ scaleDown = 入り切らない時だけ縮める (= ユーザー要望:
-          //   左右分割のタイマーが大きすぎる)。
-          child: FittedBox(fit: BoxFit.scaleDown, child: inner),
-        ),
-      );
+      return _EmbeddedToolBox(controller: _paneDrag, child: inner);
     }
     return Positioned(
       left: clampedLeft,
@@ -166160,6 +166379,9 @@ class _FloatingScientificCalculatorState
     extends State<_FloatingScientificCalculator> {
   late Offset _offset;
 
+  /// 分割ペインに埋め込んだ時、 頭の帯のドラッグを入れ物へ渡す器。
+  final _PaneToolDragController _paneDrag = _PaneToolDragController();
+
   /// 折り畳み状態 (true ならヘッダーだけ表示)。
   /// ★ 折り畳みのボタンは外した (= ユーザー要望: 左右分割では要らない)。
   ///   代わりにヘッダー自体を隠せるようにしてある ([_headerHidden])。
@@ -166232,13 +166454,9 @@ class _FloatingScientificCalculatorState
     //   埋め込みと同じ形。
     Widget place(Widget panel) {
       if (widget.embedded) {
-        return Center(
-          child: Padding(
-            padding: const EdgeInsets.all(8),
-            // scaleDown = 入り切らない時だけ縮める (元より大きくはしない)。
-            child: FittedBox(fit: BoxFit.scaleDown, child: panel),
-          ),
-        );
+        // 頭の帯をつかんでペインの中を動かせる入れ物に入れる。 端はペインの
+        // 外へ出ないので、 ボタンが欠けない (= ユーザー要望)。
+        return _EmbeddedToolBox(controller: _paneDrag, child: panel);
       }
       return Positioned(
         left: clampedLeft,
@@ -166283,12 +166501,22 @@ class _FloatingScientificCalculatorState
                   else
                   GestureDetector(
                     behavior: HitTestBehavior.opaque,
-                    onPanUpdate: (details) => setState(() {
-                      _offset = Offset(
-                        (_offset.dx + details.delta.dx).clamp(0.0, maxLeft),
-                        (_offset.dy + details.delta.dy).clamp(safeTop, maxTop),
-                      );
-                    }),
+                    onPanStart: (_) => _paneDrag.start(),
+                    onPanEnd: (_) => _paneDrag.end(),
+                    onPanUpdate: (details) {
+                      // 分割ペインの中では入れ物の中で動かす (= ユーザー要望)。
+                      if (_paneDrag.active) {
+                        _paneDrag.update(details.globalPosition);
+                        return;
+                      }
+                      setState(() {
+                        _offset = Offset(
+                          (_offset.dx + details.delta.dx).clamp(0.0, maxLeft),
+                          (_offset.dy + details.delta.dy)
+                              .clamp(safeTop, maxTop),
+                        );
+                      });
+                    },
                     child: MouseRegion(
                       cursor: SystemMouseCursors.move,
                       child: Container(

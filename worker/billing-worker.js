@@ -78,19 +78,32 @@ export default {
         });
       };
       // 会社ごとに、 単価が確定している物を先に全部、 その後で
-      // 新しく見つかった物を新しい順に足す (合計 10 件まで)。
+      // 新しく見つかった物を新しい順に足す。
+      //
+      // ★ Gemini は「同じ物が二重に出る」 のをやめた (= ユーザー要望:
+      //   gemini-3.8-flash と gemini-flash-latest の違いが分からない)。
+      //   `…-latest` は Google が最新世代へ差し替えてくれる別名で、 今は
+      //   3.8-flash と中身も単価も同じ。 番号付きの flash / pro は出さず、
+      //   Flash (最新) / Pro (最新) / Flash-Lite の 3 つに絞る。
+      const geminiDup = /^gemini-[\d.]+-(flash|pro)$/;
       for (const prov of ['gemini', 'openai', 'anthropic']) {
         // 単価が確定している物は手で選んだ現行モデルなので無条件で載せる。
         for (const id of Object.keys(AI_MODELS)) {
           const p = priceFor(id);
-          if (p && p.provider === prov) push(id);
+          if (!p || p.provider !== prov) continue;
+          if (prov === 'gemini' && geminiDup.test(id)) continue;
+          push(id);
         }
         const list = (found[prov] || [])
           .filter((id) => isCurrentModel(id, prov))
+          .filter((id) => !(prov === 'gemini' && geminiDup.test(id)))
           .sort((a, b) => modelGeneration(b) - modelGeneration(a));
+        // Gemini は別名 2 本を既に載せているので、 見つかった物からは
+        // 性格が違う物 (Flash-Lite) を 1 つだけ足す。
+        const cap = prov === 'gemini' ? 1 : 3;
         let added = 0;
         for (const id of list) {
-          if (added >= 3) break;
+          if (added >= cap) break;
           const before = seen.size;
           push(id);
           if (seen.size > before) added++;
@@ -357,6 +370,18 @@ function planRank(p) {
 /// 見積もりと本実行で額がずれないよう、 割り勘の基準時刻
 /// (proration_date) を見積もり側が返し、 本実行はそれをそのまま使う。
 /// Stripe は秒単位で日割りするため、 これが無いと数秒の差で額が動く。
+/// Stripe の「このキーにはその権限が無い」 系の失敗か。
+/// 制限付きキー (rk_live_…) で権限を絞っていると、 読み取りだけが弾かれる
+/// ことがある。 その時は「サーバーの不調」 ではないので扱いを分ける。
+function isPermissionError(err) {
+  if (!err) return false;
+  const msg = String(err.message || '');
+  if (/permission/i.test(msg) && /key|required permissions/i.test(msg)) {
+    return true;
+  }
+  return err.code === 'api_key_insufficient_permissions';
+}
+
 async function handleChangePlan(request, env, preview) {
   const uid = await authUid(request, env);
   if (!uid) return unauthorized();
@@ -399,7 +424,10 @@ async function handleChangePlan(request, env, preview) {
   const item = ((raw && raw.items && raw.items.data) || [])[0];
   if (!item) return json({ error: 'no subscription item' }, 500);
   if (item.price && item.price.id === priceId) {
-    return json({ error: 'same plan' }, 409);
+    // 既にそのプランで契約している。 アプリ側は「今のプランです」 と出して
+    //   端末の控えを合わせる (= ユーザー報告: 決済した直後にプランのボタンを
+    //   押すと、 端末側がまだ free のままでここに来ていた)。
+    return json({ error: 'same plan', code: 'same_plan', plan }, 409);
   }
 
   // 今が月額で年額へ移る時も「上げる」 扱い (まとめて先に払うため)。
@@ -413,7 +441,21 @@ async function handleChangePlan(request, env, preview) {
 
   // ── 見積もり: いくら請求されるかだけを出す (契約は変えない) ──
   if (preview) {
-    const pv = await stripeApi(env, 'invoices/create_preview', {
+    // ★ 変更後、 次の請求日から掛かる「通常の料金」 も返す
+    //   (= ユーザー要望: 差額だけでなく、 次の決済日にまた満額が
+    //    引き落とされることも明記して欲しい)。
+    let nextAmount = null;
+    let nextCurrency = '';
+    let nextInterval = '';
+    try {
+      const np = await stripeApiGet(env, `prices/${priceId}`);
+      if (np && !np.error) {
+        if (typeof np.unit_amount === 'number') nextAmount = np.unit_amount;
+        nextCurrency = String(np.currency || '').toUpperCase();
+        nextInterval = String((np.recurring && np.recurring.interval) || '');
+      }
+    } catch (_) {}
+    let pv = await stripeApi(env, 'invoices/create_preview', {
       customer: raw.customer,
       subscription: current.id,
       'subscription_details[items][0][id]': item.id,
@@ -421,12 +463,55 @@ async function handleChangePlan(request, env, preview) {
       'subscription_details[proration_behavior]': prorationBehavior,
       'subscription_details[proration_date]': String(prorationDate),
     });
+    // ★ create_preview は新しい API 版にしか無い。 アカウントの既定の
+    //   API 版が古いと「Unrecognized request URL」 で落ち、 額が出せない
+    //   という理由だけで変更を止めてしまう (= ユーザー報告: 「請求額を
+    //   確かめられませんでした」)。 その時は昔からある upcoming で見積もる。
+    if (pv && pv.error &&
+        /unrecognized request url|invalid url|no such/i.test(
+          String(pv.error.message || '')
+        )) {
+      const q = new URLSearchParams({
+        customer: String(raw.customer || ''),
+        subscription: current.id,
+        'subscription_items[0][id]': item.id,
+        'subscription_items[0][price]': priceId,
+        subscription_proration_behavior: prorationBehavior,
+        subscription_proration_date: String(prorationDate),
+      }).toString();
+      pv = await stripeApiGet(env, `invoices/upcoming?${q}`);
+    }
+    // ★ 見積もりだけが「権限が足りない」 で落ちる事がある
+    //   (= ユーザー報告: Pro から Max に変えようとすると
+    //    「Permission denied … Enabling Invoices Read」 と出て変更できない)。
+    //   これは請求書を**読む**権限の話で、 プランの差し替え自体は通る。
+    //   額が出せないという理由だけで変更を止めない: 額は不明と伝え、
+    //   「重なっている期間は差し引かれ、 差額だけが請求される」 ことを
+    //   アプリ側で確かめてから進めてもらう。
+    //   (キーに invoice_read を足せば、 今まで通り金額が出る)
+    if (pv && pv.error && isPermissionError(pv.error)) {
+      return json({
+        preview: true,
+        previewUnavailable: true,
+        reason: String(pv.error.message || 'permission denied'),
+        plan,
+        up,
+        amountDue: null,
+        total: null,
+        currency: '',
+        prorationDate,
+        nextAmount,
+        nextCurrency,
+        nextInterval,
+      });
+    }
     if (!pv || pv.error) {
       const msg = (pv && pv.error && pv.error.message) || 'stripe error';
       return json({ error: msg }, 502);
     }
     return json({
       preview: true,
+      previewUnavailable: false,
       plan,
       up,
       // すぐに請求される額 (最小通貨単位。 マイナスは控えとして戻る分)。
@@ -435,7 +520,9 @@ async function handleChangePlan(request, env, preview) {
       currency: (pv.currency || '').toUpperCase(),
       prorationDate,
       // 変更後の月額 / 年額そのもの (次回以降の請求額)。
-      nextAmount: null,
+      nextAmount,
+      nextCurrency,
+      nextInterval,
     });
   }
 
@@ -717,9 +804,29 @@ function pubNotFound() {
 }
 
 /// 公開する。 本文 (html) と表題、 何日置くかを受け取る。
+/// Web への公開ができる人か (= Max プラン限定。 ユーザー要望)。
+/// Dev 枠と ADMIN_UIDS は検証のために通す。
+async function canPublishToWeb(env, uid) {
+  if (isAdminUid(env, uid)) return true;
+  let ent = null;
+  try {
+    ent = await readEntitlement(env, uid);
+  } catch (_) {
+    return false;
+  }
+  if (!ent) return false;
+  if (ent.plan === 'max' || ent.paidPlan === 'max') return true;
+  return isDevEntitlement(ent);
+}
+
 async function handlePubCreate(request, env, url) {
   const uid = await authUid(request, env);
   if (!uid) return unauthorized();
+  // ★ 公開は Max プラン限定。 アプリ側でも塞いでいるが、 直接叩かれても
+  //   通らないようにここでも確かめる (保管費用が掛かるため)。
+  if (!(await canPublishToWeb(env, uid))) {
+    return json({ error: 'max plan required', code: 'max_required' }, 403);
+  }
   let body;
   try {
     body = await request.json();
@@ -949,6 +1056,16 @@ async function handleEntitlement(url, env, request) {
     data.plan = 'free';
     data.status = 'expired';
   }
+  // ★ Dev で上書きする前に、 実際に買ってあるプランを控えておく
+  //   (= ユーザー報告: Dev 枠を持っている人が決済して Pro にすると、
+  //    アプリが Dev モードになってしまう)。 アプリはこれを見て
+  //    「AI は Dev 枠で無料、 機能は買った Pro」 と分けて扱う。
+  const paidPlan =
+    data.plan === 'pro' || data.plan === 'max'
+      ? data.plan
+      : data.paidPlan === 'pro' || data.paidPlan === 'max'
+        ? data.paidPlan
+        : 'free';
   // ADMIN_UIDS 本人は常に Dev 枠 (= コードの引き換え不要)。 アプリ側が
   // 「決済を通さずに使える」 と判断できるよう、 ここでも dev を返す。
   if (isAdminUid(env, uid)) {
@@ -956,6 +1073,7 @@ async function handleEntitlement(url, env, request) {
     data.status = data.status === 'expired' ? 'active' : (data.status || 'active');
     data.devAdmin = true;
   }
+  data.paidPlan = paidPlan;
   return new Response(JSON.stringify(shrink(data)), { headers: JSON_HEADERS });
 }
 
@@ -1186,7 +1304,28 @@ async function handleWebhook(request, env) {
 }
 
 async function putEntitlement(env, uid, data) {
-  const value = JSON.stringify({ ...data, updatedAt: new Date().toISOString() });
+  // ★ 「買ったプラン」 (paidPlan) は必ず持ち回る。
+  //   Dev 枠を引き換えると plan が 'dev' で塗り潰されるので、 plan だけを
+  //   見ていると課金済みの人まで free に見えてしまい、 アプリが
+  //   「Dev モード」 として扱ってしまう (= ユーザー報告)。
+  let prev = null;
+  if (data.plan !== 'pro' && data.plan !== 'max' && !data.paidPlan) {
+    try {
+      prev = await readEntitlement(env, uid);
+    } catch (_) {}
+  }
+  const paidPlan =
+    data.plan === 'pro' || data.plan === 'max'
+      ? data.plan
+      : data.paidPlan ||
+        (prev && (prev.paidPlan === 'pro' || prev.paidPlan === 'max')
+          ? prev.paidPlan
+          : 'free');
+  const value = JSON.stringify({
+    ...data,
+    paidPlan,
+    updatedAt: new Date().toISOString(),
+  });
   await env.ENTITLEMENTS.put(uid, value);
 }
 
@@ -1450,6 +1589,14 @@ async function handleDevRedeem(request, env) {
   const prev = (await readEntitlement(env, uid)) || {};
   await putEntitlement(env, uid, {
     ...prev,
+    // 買ってあるプランは Dev 枠で塗り潰さずに残す (= 課金済みの人が
+    //   Dev 枠を足しても、 プランは買った物のままに見えるように)。
+    paidPlan:
+      prev.plan === 'pro' || prev.plan === 'max'
+        ? prev.plan
+        : prev.paidPlan === 'pro' || prev.paidPlan === 'max'
+          ? prev.paidPlan
+          : 'free',
     plan: 'dev',
     status: 'active',
     devCode: code,
@@ -1865,7 +2012,10 @@ const AI_MODELS = {
 /// **価格が確認できたモデルだけ**を利用者に出す (= ユーザー要望: 推定では
 /// なく正確な単価にする。 取れない物は出さない)。
 async function livePrices(env) {
-  const KEY = 'model_prices_v1';
+  // ★ 鍵を v2 に上げてある。 価格表は 12 時間 KV に残るので、 取り込みを
+  //   直しても古い表が残っている間は反映されない (= gemini-pro-latest が
+  //   一覧に出ないまま)。 直した時は鍵を上げて取り直させる。
+  const KEY = 'model_prices_v2';
   try {
     const c = await env.ENTITLEMENTS.get(KEY, 'json');
     if (c && Date.now() - c.at < 12 * 60 * 60 * 1000) return c.map;

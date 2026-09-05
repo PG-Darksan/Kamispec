@@ -1227,6 +1227,37 @@ class _UploadRestrictedException implements Exception {
 /// 公開 API: `_UploadRestrictedException` の判定用ヘルパ。
 bool isUploadRestrictedError(Object e) => e is _UploadRestrictedException;
 
+/// 課金サーバー (Worker) が 200 以外を返した時の例外。
+///
+/// ★ 以前は `Exception('<本文>')` を投げていたので、 呼び出し側は
+///   「何が起きたのか」 を区別できず、 どんな失敗でも同じ赤い帯
+///   (「請求額を確かめられませんでした」) を出すしかなかった
+///   (= ユーザー報告: 決済した後に Pro のボタンを押すとこれが出る。
+///    実際には Stripe が「同じプランです」 と言っているだけだった)。
+///   状態コードと本文を持たせて、 呼び出し側で扱いを分けられるようにする。
+class RelayApiException implements Exception {
+  /// HTTP 状態コード (通信できなかった時は 0)。
+  final int status;
+
+  /// サーバーが返した `error` の本文。
+  final String message;
+
+  const RelayApiException(this.status, this.message);
+
+  /// 本文に指定の語が含まれるか (Worker は英語の短い語を返す)。
+  bool has(String needle) =>
+      message.toLowerCase().contains(needle.toLowerCase());
+
+  /// 既にそのプランで契約している。
+  bool get isSamePlan => status == 409 && has('same plan');
+
+  /// まだ契約が無い (= ふつうの購入に進めばよい)。
+  bool get isNoSubscription => status == 404 && has('no subscription');
+
+  @override
+  String toString() => message;
+}
+
 // ─── 連番オートフィル: 連番パターン認識 ─────────────────────────────────────
 //
 // 「第一章」→「第二章」、 「Chapter 1」→「Chapter 2」のように、
@@ -3668,11 +3699,24 @@ class MindMapProvider extends ChangeNotifier {
       try {
         await _ensureFreshToken();
       } catch (_) {}
-      final plan = await _billing.fetchPlanViaEntitlementApi(
+      final info = await _billing.fetchEntitlementInfo(
           appUserId: uid, idToken: _idToken);
       // null は「サーバーに聞けなかった」。 圏外や一時的な障害で解約扱いに
       // しないよう、 今の状態には手を触れない。
-      if (plan == null) return;
+      if (info == null) return;
+      var plan = info.plan;
+      // ★ Dev 枠は「AI を無料で呼べる印」 であって、 買ったプランではない。
+      //   実際に Pro / Max を買っている人は、 そちらを本当のプランとして
+      //   扱う (= ユーザー報告: 開発者モードで Free を演じている時に決済を
+      //   済ませると、 Dev モードに切り替わってしまう)。
+      if (plan == BillingPlanName.dev) {
+        // 入口 (AI 代行) は Dev のまま開けておく。
+        await _setServerDevGranted(true);
+        if (info.paidPlan == BillingPlanName.pro ||
+            info.paidPlan == BillingPlanName.max) {
+          plan = info.paidPlan;
+        }
+      }
       await _loadServerGrantedPlan();
       // サーバーが free を返した時に、 クーポンや開発者モードで得た権利まで
       // 消さないよう、 上げる方向 (free → pro/max) だけ即時反映する。
@@ -35151,14 +35195,12 @@ class MindMapProvider extends ChangeNotifier {
     },
     'sub.cancelConfirmBody': {
       'ja': '支払い済みの期間 ({date} まで) はそのまま使えます。 その後は無料プランに'
-          '戻り、 追加の請求は発生しません。 期限までなら解約を取り消せます。',
+          '戻り、 追加の請求は発生しません。',
       'en': 'You keep access until {date}, the end of the period you already paid '
-          'for. After that the plan returns to free and you are not billed again. '
-          'You can undo the cancellation until then.',
-      'zh': '您可继续使用至已付费周期结束（{date}）。之后将回到免费方案，不会再扣款。'
-          '在此之前可以撤销取消。',
+          'for. After that the plan returns to free and you are not billed again.',
+      'zh': '您可继续使用至已付费周期结束（{date}）。之后将回到免费方案，不会再扣款。',
       'ko': '이미 결제한 기간({date}까지)은 그대로 사용할 수 있습니다. 이후에는 무료 '
-          '요금제로 돌아가며 추가 청구는 없습니다. 그때까지는 해지를 취소할 수 있습니다.',
+          '요금제로 돌아가며 추가 청구는 없습니다.',
       'es': 'Conservas el acceso hasta {date}, el final del periodo ya pagado. '
           'Después el plan vuelve a ser gratuito y no se te cobra de nuevo. '
           'Puedes deshacer la cancelación hasta entonces.',
@@ -41565,6 +41607,101 @@ class MindMapProvider extends ChangeNotifier {
           '\u043f\u0435\u0440\u0435\u043f\u043b\u0430\u0442\u0430 \u043f\u043e\u0439\u0434\u0451\u0442 \u0432 \u0441\u0447\u0451\u0442 \u0441\u043b\u0435\u0434\u0443\u044e\u0449\u0438\u0445 \u0441\u0447\u0435\u0442\u043e\u0432. '
           '\u0421\u0435\u0433\u043e\u0434\u043d\u044f \u0441\u043f\u0438\u0441\u0430\u043d\u0438\u0439 \u043d\u0435\u0442.',
     },
+    // 金額の見積もりだけが取れなかった時 (= 課金サーバーの鍵に請求書の
+    //   読み取り権限が無い等)。 プランの差し替え自体は通るので、 差額だけが
+    //   請求されることを伝えた上で進めてもらう。
+    // 変更した後、 次の請求日から掛かる通常の料金 (= ユーザー要望:
+    //   差額だけでなく、 次の決済日にまた満額が引き落とされることも
+    //   はっきり書いておいて欲しい)。
+    'plan.changeNextChargeMonthly': {
+      'ja': '次回のお支払い日 ({date}) からは、 月額 {amount} が請求されます。',
+      'en': 'From your next billing date ({date}), {amount} is charged every month.',
+      'zh': '从下一个账单日 ({date}) 起，每月收取 {amount}。',
+      'ko': '다음 결제일 ({date}) 부터는 매월 {amount} 가 청구됩니다.',
+      'es': 'Desde tu pr\u00f3xima fecha de facturaci\u00f3n ({date}), se cobran '
+          '{amount} cada mes.',
+      'fr': '\u00c0 partir de votre prochaine \u00e9ch\u00e9ance ({date}), '
+          '{amount} sont factur\u00e9s chaque mois.',
+      'de': 'Ab dem n\u00e4chsten Abrechnungstag ({date}) werden monatlich '
+          '{amount} berechnet.',
+      'pt': 'A partir da pr\u00f3xima data de cobran\u00e7a ({date}), '
+          '{amount} s\u00e3o cobrados por m\u00eas.',
+      'ru': 'С ближайшей даты списания ({date}) будет списываться '
+          '{amount} в месяц.',
+    },
+    'plan.changeNextChargeYearly': {
+      'ja': '次回のお支払い日 ({date}) からは、 年額 {amount} が請求されます。',
+      'en': 'From your next billing date ({date}), {amount} is charged every year.',
+      'zh': '从下一个账单日 ({date}) 起，每年收取 {amount}。',
+      'ko': '다음 결제일 ({date}) 부터는 매년 {amount} 가 청구됩니다.',
+      'es': 'Desde tu pr\u00f3xima fecha de facturaci\u00f3n ({date}), se cobran '
+          '{amount} cada a\u00f1o.',
+      'fr': '\u00c0 partir de votre prochaine \u00e9ch\u00e9ance ({date}), '
+          '{amount} sont factur\u00e9s chaque ann\u00e9e.',
+      'de': 'Ab dem n\u00e4chsten Abrechnungstag ({date}) werden j\u00e4hrlich '
+          '{amount} berechnet.',
+      'pt': 'A partir da pr\u00f3xima data de cobran\u00e7a ({date}), '
+          '{amount} s\u00e3o cobrados por ano.',
+      'ru': 'С ближайшей даты списания ({date}) будет списываться '
+          '{amount} в год.',
+    },
+    // プランを変える画面の案内 (Pro の人向け)。
+    //   ★ 以前はここに「この機能は Max プラン限定です」 と出していたが、
+    //     プランを選ぶ画面に「この機能」 は無く、 意味が通らなかった
+    //     (= ユーザー指摘)。 差額で請求されることの案内に差し替える。
+    'usage.upgradeToMaxPrompt': {
+      'ja': 'Pro から Max への変更は、 重なっている期間ぶんを差し引いた'
+          '差額のみが請求されます。 お支払い日は変わりません。',
+      'en': 'Upgrading from Pro to Max only charges the difference for the '
+          'overlapping period. Your billing date stays the same.',
+      'zh': '从 Pro 升级到 Max 只按重叠期间的差额收费，账单日不变。',
+      'ko': 'Pro 에서 Max 로 변경하면 겹치는 기간의 차액만 청구되며 '
+          '결제일은 그대로입니다.',
+      'es': 'Pasar de Pro a Max solo cobra la diferencia del periodo que se '
+          'solapa. Tu fecha de facturaci\u00f3n no cambia.',
+      'fr': 'Passer de Pro \u00e0 Max ne facture que la diff\u00e9rence pour la '
+          'p\u00e9riode qui se chevauche. Votre date de facturation ne change pas.',
+      'de': 'Der Wechsel von Pro zu Max berechnet nur die Differenz f\u00fcr den '
+          '\u00fcberschneidenden Zeitraum. Ihr Abrechnungstag bleibt gleich.',
+      'pt': 'Mudar de Pro para Max cobra apenas a diferen\u00e7a do per\u00edodo '
+          'sobreposto. A data de cobran\u00e7a n\u00e3o muda.',
+      'ru': 'Переход с Pro на Max списывает только разницу за '
+          'пересекающийся период. День списания не меняется.',
+    },
+    'plan.changeAmountUnknown': {
+      'ja': '{plan} に変更します。\n\n'
+          '今すぐ請求される正確な額はここに出せませんでした。\n'
+          '重なっている期間ぶんは差し引かれ、 残り期間の差額だけが'
+          '登録済みのカードに請求されます。\nお支払い日は変わりません。',
+      'en': 'Change to {plan}.\n\n'
+          'We could not show the exact amount here. Only the difference '
+          'for the remaining period is charged to your saved card '
+          '(the overlapping period is credited).\n'
+          'Your billing date stays the same.',
+      'zh': '更改为 {plan}。\n\n无法在此显示确切金额。'
+          '重叠期间会被抵扣，只按剩余时间的差额扣款。账单日不变。',
+      'ko': '{plan} 로 변경합니다.\n\n정확한 금액을 여기에 '
+          '표시하지 못했습니다. 겹치는 기간은 차감되고 '
+          '남은 기간의 차액만 청구됩니다. 결제일은 그대로입니다.',
+      'es': 'Cambiar a {plan}.\n\nNo se pudo mostrar el importe exacto. '
+          'Solo se cobra la diferencia del periodo restante; el periodo '
+          'que se solapa se acredita. Tu fecha de facturaci\u00f3n no cambia.',
+      'fr': 'Passer \u00e0 {plan}.\n\nLe montant exact n\'a pas pu '
+          's\'afficher. Seule la diff\u00e9rence pour la p\u00e9riode restante '
+          'est factur\u00e9e, la p\u00e9riode qui se chevauche \u00e9tant '
+          'cr\u00e9dit\u00e9e. Votre date de facturation ne change pas.',
+      'de': 'Auf {plan} wechseln.\n\nDer genaue Betrag konnte hier '
+          'nicht angezeigt werden. Berechnet wird nur die Differenz f\u00fcr '
+          'den Rest des Zeitraums; die \u00dcberschneidung wird '
+          'gutgeschrieben. Ihr Abrechnungstag bleibt gleich.',
+      'pt': 'Mudar para {plan}.\n\nN\u00e3o foi poss\u00edvel mostrar o '
+          'valor exato. Cobramos apenas a diferen\u00e7a do per\u00edodo '
+          'restante; o per\u00edodo sobreposto vira cr\u00e9dito. '
+          'A data de cobran\u00e7a n\u00e3o muda.',
+      'ru': 'Перейти на {plan}.\n\nТочную сумму показать '
+          'не удалось. Спишется только разница за '
+          'оставшийся период. День списания не меняется.',
+    },
     'plan.changeAmountFailed': {
       'ja': '請求額を確かめられませんでした。 安全のため変更を中止します。',
       'en': 'Could not confirm the amount, so the change was stopped for safety.',
@@ -46061,9 +46198,9 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Присоединиться к совместной работе',
     },
     'live.joinDesc': {
-      'ja': '共有コードを入れるだけで参加できます（リンクは要りません）。'
-          'そのページがアプリ内に取り込まれ、いつもと同じ画面でみんなと'
-          '一緒に編集できます。Max プランを持っている人同士の機能です。',
+      'ja': '共有コードを入れるだけで参加できます。そのページがアプリ内に'
+          '取り込まれ、いつもと同じ画面でみんなと一緒に編集できます。'
+          '閲覧も編集も Max プランを持っている人同士の機能です。',
       'en': 'Enter a share code to pull the page into the app and edit it '
           'together with everyone on the usual screen.',
       'zh': '输入共享代码，即可将该页面导入应用，在平常的界面中与大家一起编辑。',
@@ -46446,8 +46583,8 @@ class MindMapProvider extends ChangeNotifier {
     'live.desc': {
       'ja': 'Max プランを持っている人同士が、サーバー越しにアプリの中で'
           '同じページを一緒に編集できます。参加する人は共有コードを入れる'
-          'だけ（リンクは要りません）。編集中の要素は他の人からロックされ、'
-          '誰が触っているかが表示されます。',
+          'だけ。閲覧だけの参加にも Max プランが要ります。編集中の要素は'
+          '他の人からロックされ、誰が触っているかが表示されます。',
       'en': 'When on, several people can edit the published page at the same '
           'time. Elements being edited are locked for everyone else and show '
           'who is working on them.',
@@ -51699,12 +51836,12 @@ class MindMapProvider extends ChangeNotifier {
       'fr': 'Pages illimitées, vue divisée, verrouillage de concentration, etc.',
     },
     'paywall.maxTagline': {
-      'ja': 'クラウド同期や PDF の AI 解析まで、すべての機能を上限なしで',
-      'en': 'Everything unlocked — cloud sync, PDF AI analysis and no limits',
-      'zh': '全部功能解锁 — 云同步、PDF AI 解析，无使用上限',
-      'ko': '클라우드 동기화와 PDF AI 분석까지 모든 기능을 제한 없이',
-      'es': 'Todo desbloqueado: sincronización en la nube, IA para PDF y sin límites',
-      'fr': 'Tout est débloqué : synchro cloud, IA pour PDF et aucune limite',
+      'ja': 'クラウド同期・共同編集・予定表の共有まで、共有まわりを全部',
+      'en': 'Cloud sync, live co-editing and shared calendars — all sharing unlocked',
+      'zh': '云同步、实时协作编辑、日程共享 — 共享功能全部解锁',
+      'ko': '클라우드 동기화·실시간 공동 편집·일정 공유까지 모두',
+      'es': 'Sincronización en la nube, edición en vivo y calendarios compartidos',
+      'fr': 'Synchro cloud, édition collaborative en direct et agendas partagés',
     },
     'paywall.includesPro': {
       'ja': 'Pro の全機能込み',
@@ -51922,17 +52059,55 @@ class MindMapProvider extends ChangeNotifier {
       'ja': '画面分割の無制限利用',
       'en': 'Unlimited split view',
     },
+    // ★ 集中ロック / 画面ロックはスマホ版だけの機能 (デスクトップでは
+    //   ボタンの候補にも出さない) ので、 その旨を添える (= ユーザー要望)。
     'plan.proLocks': {
-      'ja': '集中ロック・画面ロックの無制限利用',
-      'en': 'Unlimited focus lock & screen lock',
+      'ja': '集中ロック・画面ロックの無制限利用（スマホ版のみ）',
+      'en': 'Unlimited focus lock & screen lock (mobile only)',
+    },
+    // ★ 一覧は「実装で本当に閘が掛かっている機能」 に合わせてある
+    //   (= ユーザー指摘: PDF から AI でページを作るのは AI アシスタントの
+    //    機能で、 プランとは関係がない)。 変える時は、 その機能を
+    //    isMaxUnlocked / isProUnlocked で塞いでいるか確かめること。
+    'paywall.maxRequiredPublish': {
+      'ja': 'Web への公開は Max プラン限定です。 Max プランへの加入後にご利用ください。',
+      'en': 'Publishing to the web is exclusive to the Max plan. '
+          'Please upgrade to Max to use it.',
+      'zh': '发布到网页是 Max 套餐专属功能，请升级后使用。',
+      'ko': '웹 공개는 Max 플랜 전용입니다. Max 로 변경한 뒤 이용해 주세요.',
+      'es': 'Publicar en la web es exclusivo del plan Max.',
+      'fr': 'La publication sur le web est r\u00e9serv\u00e9e au plan Max.',
+      'de': 'Das Ver\u00f6ffentlichen im Web ist dem Max-Plan vorbehalten.',
+      'pt': 'Publicar na web \u00e9 exclusivo do plano Max.',
+      'ru': 'Публикация в интернете доступна только в плане Max.',
+    },
+    'plan.maxPublish': {
+      'ja': 'マークダウンを Web で公開（URL 共有）',
+      'en': 'Publish markdown to the web (shareable URL)',
     },
     'plan.maxCloud': {
-      'ja': 'クラウド同期・グループ共有',
-      'en': 'Cloud sync & group sharing',
+      'ja': 'クラウド同期・グループ共有（端末をまたいで持ち運び）',
+      'en': 'Cloud sync & group sharing across devices',
     },
-    'plan.maxPdfAi': {
-      'ja': 'PDF・ファイルから AI マインドマップ生成',
-      'en': 'Generate AI mind maps from PDF/files',
+    'plan.maxLive': {
+      'ja': 'リアルタイム共同編集（共有コードで同時に編集）',
+      'en': 'Realtime co-editing with a share code',
+    },
+    'plan.maxCalendar': {
+      'ja': '予定表のクラウド共有（メンバーの予定も閲覧）',
+      'en': 'Shared cloud calendar (see your members\' schedules)',
+    },
+    'plan.maxStorage': {
+      'ja': 'クラウド保管 100GB（月 25GB までアップロード）',
+      'en': '100GB cloud storage (up to 25GB uploaded per month)',
+    },
+    'plan.proPaint': {
+      'ja': 'フリーノート（お絵かき）の作成',
+      'en': 'Create free-note (drawing) pages',
+    },
+    'plan.proAutomation': {
+      'ja': 'Web ページの自動操作',
+      'en': 'Automate web pages',
     },
     'paywall.upgradeMax': {
       'ja': 'Max プランにアップグレード',
@@ -68447,7 +68622,12 @@ class MindMapProvider extends ChangeNotifier {
     //   currentPlan は開発者モードだと「演じるプラン」 しか見ないので、
     //   買った物の方が上なら、 演じるプランをそこまで引き上げる。
     //   引き上げるだけなので、 その後で下げて試す事は今までどおりできる。
-    if (_developerMode && plan.index > _devImpersonatePlan.index) {
+    //   ★ ただし Dev 枠 (= サーバーが与える AI 無料枠) では引き上げない。
+    //     これを許すと、 Free を演じてテストしている最中に権利を取り直した
+    //     だけで DEV に切り替わってしまう (= ユーザー報告)。
+    if (_developerMode &&
+        plan != SubscriptionPlan.dev &&
+        plan.index > _devImpersonatePlan.index) {
       _devImpersonatePlan = plan;
       // ignore: discarded_futures
       _prefsWithRetry().then((prefs) {
@@ -71596,6 +71776,9 @@ class MindMapProvider extends ChangeNotifier {
     String password = '',
     String? updateId,
   }) async {
+    // ★ Web への公開は Max プラン限定 (= ユーザー要望)。 サーバー側
+    //   (/pub/create) でも同じ判定をしているので、 ここを迂回しても通らない。
+    if (!isMaxUnlocked) throw Exception(t('paywall.maxRequiredPublish'));
     final base = relayApiBase;
     if (base.isEmpty) throw Exception(t('pub.notConfigured'));
     await _ensureFreshToken();
@@ -71749,15 +71932,20 @@ class MindMapProvider extends ChangeNotifier {
   void _applyServerDevFlag(dynamic body) {
     if (body is! Map) return;
     if (!body.containsKey('dev')) return; // 古いサーバーは触らない
-    final dev = body['dev'] == true;
+    // ignore: discarded_futures
+    _setServerDevGranted(body['dev'] == true);
+  }
+
+  /// Dev 枠かどうかを控える。 `/entitlement` が dev を返した時にも使う
+  /// (= プランは買った物に合わせるが、 AI の入口は開けておく)。
+  Future<void> _setServerDevGranted(bool dev) async {
     if (dev == _serverDevGranted) return;
     _serverDevGranted = dev;
     notifyListeners();
-    // ignore: discarded_futures
-    _prefsWithRetry().then((prefs) {
-      // ignore: discarded_futures
-      prefs.setBool(_kServerDevGrantedKey, dev);
-    }).catchError((_) {});
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.setBool(_kServerDevGrantedKey, dev);
+    } catch (_) {}
   }
 
   /// Dev 枠の月間上限。 サーバー値が届いていればそれ、 無ければ Worker の
@@ -71808,7 +71996,12 @@ class MindMapProvider extends ChangeNotifier {
     // 開発者モードに入るたびに新しいコードを作ってしまう
     // (= ユーザー報告: Dev ライセンスが増える)。 先に読み終える。
     await _loadServerGrantedPlan();
-    if (_serverGrantedPlan == 'dev') return; // 既に付与済み
+    await _loadServerDevGranted();
+    // ★ 実際に課金している人は控えが 'pro' / 'max' になる (Dev 枠は
+    //   `_serverDevGranted` の方で覚える)。 ここを控えだけで見ていると、
+    //   Dev 枠を持ったまま課金した人が起動のたびに新しい Dev コードを
+    //   発行し直し、 買ったプランが Dev で塗り潰されていた。
+    if (_serverGrantedPlan == 'dev' || _serverDevGranted) return; // 付与済み
     if (_purchasedPlan == SubscriptionPlan.dev) {
       // 既に Dev の権利を持っている = 作る必要が無い。
       await _setServerGrantedPlan('dev');
@@ -71998,7 +72191,11 @@ class MindMapProvider extends ChangeNotifier {
         .timeout(const Duration(seconds: 40));
     final j = jsonDecode(res.body) as Map<String, dynamic>;
     if (res.statusCode != 200) {
-      throw Exception('${j['error'] ?? 'HTTP ${res.statusCode}'}');
+      // ★ 呼び出し側で「同じプラン」 「契約が無い」 を見分けられるように
+      //   状態コードごと渡す (= ユーザー報告: 決済後にプランのボタンを
+      //   押すと、 中身に関わらず赤い帯が出ていた)。
+      throw RelayApiException(
+          res.statusCode, '${j['error'] ?? 'HTTP ${res.statusCode}'}');
     }
     return j;
   }
@@ -72038,7 +72235,8 @@ class MindMapProvider extends ChangeNotifier {
         .timeout(const Duration(seconds: 40));
     final j = jsonDecode(res.body) as Map<String, dynamic>;
     if (res.statusCode != 200) {
-      throw Exception('${j['error'] ?? 'HTTP ${res.statusCode}'}');
+      throw RelayApiException(
+          res.statusCode, '${j['error'] ?? 'HTTP ${res.statusCode}'}');
     }
     // 変わった結果をすぐ画面に出す。
     final p = j['plan'];
@@ -91607,7 +91805,11 @@ $cleanQ
     }
   }
 
-  /// ノード作成時に使用する10色パレット（順番に循環）
+  /// ノード作成時に使うパレット（順番に循環）。
+  ///
+  /// ★ 後から足す色は必ず**末尾**に並べる (= ユーザー要望: 色の種類を
+  ///   もっと増やして欲しい)。 巡回はこの並び順そのものなので、 途中に
+  ///   差し込むと今までと違う色で作られるようになってしまう。
   static const List<Color> nodePalette = [
     Color(0xFF6C63FF), // 紫
     Color(0xFF43B97F), // 緑
@@ -91619,6 +91821,20 @@ $cleanQ
     Color(0xFF00897B), // ティール
     Color(0xFFF06292), // ピンク（旧 黄: ダーク背景でもライト背景でも見やすい）
     Color(0xFF78909C), // グレー青
+    // ── ここから下が増やした分 ──
+    Color(0xFF7986CB), // 藍
+    Color(0xFF64B5F6), // 空色
+    Color(0xFF26C6DA), // 青緑
+    Color(0xFF9CCC65), // 黄緑
+    Color(0xFF2E7D32), // 深緑
+    // ★ 色相 40〜70 かつ明るさ 0.45 超の色は node_widget が真っ黒
+    //   (0xFF263238) に描き替えるので入れてはいけない。 山吹は色相を
+    //   36 まで落として、 描き替えの窓から外してある。
+    Color(0xFFC77800), // 山吹
+    Color(0xFFFF8A65), // 朱
+    Color(0xFFA1887F), // 茶
+    Color(0xFF9575CD), // 藤
+    Color(0xFF546E7A), // 鉄紺
   ];
 
   /// 新規ノード作成時のカラー挙動

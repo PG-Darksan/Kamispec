@@ -36,6 +36,18 @@ class BillingPlanName {
   static const String dev = 'dev';
 }
 
+/// `/entitlement` の答え。
+///
+/// [plan] はサーバーが「今この人に与えている枠」 (Dev 枠を含む)。
+/// [paidPlan] は決済で買ってあるプラン (`free` / `pro` / `max`)。
+/// Dev 枠は AI を無料で呼べる印なので、 機能の開放は [paidPlan] を優先する
+/// (= ユーザー報告: 決済して Pro にしたのに Dev モードになってしまう)。
+class EntitlementInfo {
+  final String plan;
+  final String paidPlan;
+  const EntitlementInfo({required this.plan, required this.paidPlan});
+}
+
 /// ユーザーが購入をキャンセルしたことを表す例外。
 /// UI 側はこれをキャッチして «静かに» 何もしなければよい。
 class BillingCancelledException implements Exception {
@@ -504,6 +516,16 @@ class BillingService {
   /// (= 本人確認が無い時は、 サーバーはプランだけを返して他は伏せる)。
   Future<String?> fetchPlanViaEntitlementApi(
       {required String appUserId, String? idToken}) async {
+    final info =
+        await fetchEntitlementInfo(appUserId: appUserId, idToken: idToken);
+    return info?.plan;
+  }
+
+  /// 上と同じ問い合わせだが、 Dev 枠に隠れている「実際に買ったプラン」 も
+  /// 一緒に返す (= ユーザー報告: Dev 枠を持っている人が決済して Pro に
+  /// 乗り換えると、 アプリが Dev モードになってしまう)。
+  Future<EntitlementInfo?> fetchEntitlementInfo(
+      {required String appUserId, String? idToken}) async {
     if (entitlementApiBase.isEmpty || appUserId.isEmpty) return null;
     try {
       final uri = Uri.parse('$entitlementApiBase/entitlement'
@@ -517,12 +539,21 @@ class BillingService {
         return null;
       }
       final data = jsonDecode(res.body) as Map<String, dynamic>;
-      final plan = (data['plan'] as String? ?? '').toLowerCase();
-      // Dev はサーバーだけが付与できる (アプリからは要求できない)。
-      if (plan == BillingPlanName.dev) return BillingPlanName.dev;
-      if (plan == BillingPlanName.max) return BillingPlanName.max;
-      if (plan == BillingPlanName.pro) return BillingPlanName.pro;
-      return BillingPlanName.free;
+      String norm(String? v) {
+        final p = (v ?? '').toLowerCase();
+        // Dev はサーバーだけが付与できる (アプリからは要求できない)。
+        if (p == BillingPlanName.dev) return BillingPlanName.dev;
+        if (p == BillingPlanName.max) return BillingPlanName.max;
+        if (p == BillingPlanName.pro) return BillingPlanName.pro;
+        return BillingPlanName.free;
+      }
+
+      final plan = norm(data['plan'] as String?);
+      // 古いサーバーは paidPlan を返さない。 その時は plan をそのまま使う。
+      final paid = data.containsKey('paidPlan')
+          ? norm(data['paidPlan'] as String?)
+          : (plan == BillingPlanName.dev ? BillingPlanName.free : plan);
+      return EntitlementInfo(plan: plan, paidPlan: paid);
     } catch (e) {
       debugPrint('BillingService.fetchPlanViaEntitlementApi 失敗: $e');
       return null;
