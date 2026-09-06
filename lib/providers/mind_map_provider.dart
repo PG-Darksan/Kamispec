@@ -34319,6 +34319,111 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Это главный монитор — убрать нельзя',
       'fa': 'نمایشگر اصلی است — قابل حذف نیست',
     },
+    'display.title': {
+      'ja': '画面の拡大率と壁紙',
+      'en': 'Display scale and wallpaper',
+      'zh': '显示缩放与壁纸',
+      'ko': '화면 배율과 배경',
+      'es': 'Escala de pantalla y fondo',
+      'fr': "Mise à l'échelle et fond d'écran",
+      'de': 'Skalierung und Hintergrundbild',
+      'pt': 'Escala da tela e papel de parede',
+      'ru': 'Масштаб экрана и обои',
+    },
+    'display.scale': {
+      'ja': '拡大率',
+      'en': 'Scale',
+      'zh': '缩放',
+      'ko': '배율',
+      'es': 'Escala',
+      'fr': 'Échelle',
+      'de': 'Skalierung',
+      'pt': 'Escala',
+      'ru': 'Масштаб',
+    },
+    'display.recommendedMark': {
+      'ja': '(推奨)',
+      'en': ' (rec.)',
+      'zh': '(推荐)',
+      'ko': '(권장)',
+      'es': ' (rec.)',
+      'fr': ' (rec.)',
+      'de': ' (empf.)',
+      'pt': ' (rec.)',
+      'ru': ' (реком.)',
+    },
+    'display.scaleDone': {
+      'ja': '拡大率を変えました。',
+      'en': 'Changed the scale.',
+      'zh': '已更改缩放。',
+      'ko': '배율을 변경했습니다.',
+      'es': 'Se cambió la escala.',
+      'fr': "L'échelle a été modifiée.",
+      'de': 'Skalierung geändert.',
+      'pt': 'A escala foi alterada.',
+      'ru': 'Масштаб изменён.',
+    },
+    'display.scaleFailed': {
+      'ja': '拡大率を変えられませんでした。',
+      'en': 'Could not change the scale.',
+      'zh': '无法更改缩放。',
+      'ko': '배율을 변경하지 못했습니다.',
+      'es': 'No se pudo cambiar la escala.',
+      'fr': "Impossible de modifier l'échelle.",
+      'de': 'Skalierung konnte nicht geändert werden.',
+      'pt': 'Não foi possível alterar a escala.',
+      'ru': 'Не удалось изменить масштаб.',
+    },
+    'display.wallpaper': {
+      'ja': '壁紙',
+      'en': 'Wallpaper',
+      'zh': '壁纸',
+      'ko': '배경 화면',
+      'es': 'Fondo de pantalla',
+      'fr': "Fond d'écran",
+      'de': 'Hintergrundbild',
+      'pt': 'Papel de parede',
+      'ru': 'Обои',
+    },
+    'display.pickImage': {
+      'ja': '画像を選ぶ',
+      'en': 'Choose an image',
+      'zh': '选择图片',
+      'ko': '이미지 선택',
+      'es': 'Elegir imagen',
+      'fr': 'Choisir une image',
+      'de': 'Bild auswählen',
+      'pt': 'Escolher imagem',
+      'ru': 'Выбрать изображение',
+    },
+    'display.wallDone': {
+      'ja': '壁紙を変えました。',
+      'en': 'Changed the wallpaper.',
+      'zh': '已更改壁纸。',
+      'ko': '배경 화면을 변경했습니다.',
+      'es': 'Se cambió el fondo de pantalla.',
+      'fr': "Le fond d'écran a été modifié.",
+      'de': 'Hintergrundbild geändert.',
+      'pt': 'O papel de parede foi alterado.',
+      'ru': 'Обои изменены.',
+    },
+    'display.wallFailed': {
+      'ja': '壁紙を変えられませんでした。',
+      'en': 'Could not change the wallpaper.',
+      'zh': '无法更改壁纸。',
+      'ko': '배경 화면을 변경하지 못했습니다.',
+      'es': 'No se pudo cambiar el fondo de pantalla.',
+      'fr': "Impossible de modifier le fond d'écran.",
+      'de': 'Hintergrundbild konnte nicht geändert werden.',
+      'pt': 'Não foi possível alterar o papel de parede.',
+      'ru': 'Не удалось изменить обои.',
+    },
+    'display.fitFill': {'ja': '埋める', 'en': 'Fill'},
+    'display.fitFit': {'ja': '合わせる', 'en': 'Fit'},
+    'display.fitStretch': {'ja': '引き伸ばす', 'en': 'Stretch'},
+    'display.fitCenter': {'ja': '中央', 'en': 'Center'},
+    'display.fitTile': {'ja': '並べる', 'en': 'Tile'},
+    'display.fitSpan': {'ja': 'またぐ', 'en': 'Span'},
     'cursorWrap.edgeGoesTo': {
       'ja': 'この端から行く先',
       'en': 'Where this edge leads',
@@ -52263,9 +52368,8 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Переход курсора между мониторами при закрытом приложении доступен в плане Pro и выше. Пока приложение открыто, он работает и на бесплатном плане.',
     },
     'paywall.proRequiredSplit': {
-      'ja': '画面分割は無料プランで 2 回までご利用いただけます。3 回目以降は Pro 以上のプランへの加入が必要です。',
-      'en':
-          'Split view is free up to 2 times. From the 3rd use onward, a Pro (or higher) plan is required.',
+      'ja': '画面分割はどのプランでも無制限にご利用いただけます。',
+      'en': 'Split view is unlimited on every plan.',
     },
     'paywall.proRequiredFocusLock': {
       'ja': '集中ロックは初回のみ無料でお試しいただけます。2 回目以降は Pro 以上のプランへの加入が必要です。',
@@ -69291,10 +69395,13 @@ class MindMapProvider extends ChangeNotifier {
     return r < 0 ? 0 : r;
   }
 
-  /// 画面分割を新規に開いて良いか。Pro 以上は常に true、
-  /// 無料プランは累積利用回数が上限未満なら true。
-  bool get canUseSplitView =>
-      isProUnlocked || _splitViewUseCount < kFreeSplitViewLimit;
+  /// 画面分割を新規に開いて良いか。
+  ///
+  /// ★ 無料プランでも無制限 (= ユーザー要望: 画面分割自体は Free プラン
+  ///   でも無制限にできるように)。 ページ数の上限は今までどおり。
+  ///   数え上げの仕組み (`splitViewUseCount` / `recordSplitViewUse`) は
+  ///   残してあるが、 開けるかどうかの判定には使わない。
+  bool get canUseSplitView => true;
 
   /// 画面分割を 1 回開いたことを記録 (無料枠を 1 消費)。Pro 以上では呼ばない。
   /// SharedPreferences に永続化する (fire-and-forget)。

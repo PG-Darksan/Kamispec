@@ -38,6 +38,7 @@ import '../services/screen_capture.dart' as scap;
 import '../services/screen_recorder.dart';
 import '../services/rec_hotkey.dart';
 import '../services/cursor_wrap.dart';
+import '../services/display_control.dart';
 import '../services/audio_output.dart';
 import '../services/ic_card_reader.dart';
 // 面接練習・ロールプレイの下調べ (Web + 手元の資料ファイル)。
@@ -2851,22 +2852,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     //   カウント対象。既に開いている状態での再オープン (パネル切替・入れ替え・
     //   履歴移動・復元) はカウントしない。3 回目以降は Pro ペイウォールを出し、
     //   分割は開かない。Pro/Max/クーポン/開発者モードは無制限。
-    if (v && !_splitOpen) {
-      final pv = context.read<MindMapProvider>();
-      if (!pv.isProUnlocked && !pv.canUseSplitView) {
-        // setState 内から呼ばれることがあるため showDialog は次フレームに回す。
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) {
-            _showPaywallDialog(pv,
-                bodyOverride: pv.t('paywall.proRequiredSplit'));
-          }
-        });
-        return; // _splitOpen は false のまま (開かない)
-      }
-      if (!pv.isProUnlocked) {
-        pv.recordSplitViewUse(); // 無料枠を 1 消費
-      }
-    }
+    // ★ 画面分割は無料プランでも無制限 (= ユーザー要望)。 以前はここで
+    //   無料 2 回までの見張りをしていたが、 撤廃した。 ページ数の上限は
+    //   今までどおり効いている。
     _splitOpen = v;
     // 画面分割を「閉じる」 操作時に左パネルも閉じる (= 同時に両方クリア)
     if (!v && _splitLeftOpen) {
@@ -5177,6 +5165,12 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
     // 浮かぶ窓の AI ボタンから、 本体のアシスタントを呼べるようにする
     //   (= ユーザー要望)。
+    // アプリの中で URL を開く入口を配る (= Markdown のリンクなど、
+    //   本体の画面の外から呼ばれる所のため)。
+    openUrlInAppFromAnywhere = (url, {bool newTab = false}) {
+      if (!mounted) return;
+      unawaited(_openUrlInAppViewer(url, newTab: newTab));
+    };
     openAssistantFromFloating = () {
       if (!mounted) return;
       unawaited(_openMcpChat(context.read<MindMapProvider>(),
@@ -7103,6 +7097,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     WidgetsBinding.instance.removeObserver(this);
     // 浮かぶ窓からの呼び出し口を外す (画面が無くなった後に呼ばれないように)。
     openAssistantFromFloating = null;
+    openUrlInAppFromAnywhere = null;
     pdfDrawBurnedNotifier.removeListener(_onPdfDrawBurned);
     // 支払いの見張りを外す (= ユーザー要望で入れた知らせ)。
     if (_planWatcher != null) {
@@ -16155,7 +16150,8 @@ class _MindMapScreenState extends State<MindMapScreen>
         header(Icons.workspace_premium_rounded, provider.t('plan.proHeader'),
             const Color(0xFF4FC3F7)),
         feat(provider.t('plan.proPages'), const Color(0xFF4FC3F7)),
-        feat(provider.t('plan.proSplit'), const Color(0xFF4FC3F7)),
+        // ★ 画面分割は無料でも無制限になったので、 Pro の売りから外した
+        //   (= ユーザー要望)。
         feat(provider.t('plan.proPaint'), const Color(0xFF4FC3F7)),
         feat(provider.t('plan.proAutomation'), const Color(0xFF4FC3F7)),
         feat(provider.t('plan.proLocks'), const Color(0xFF4FC3F7)),
@@ -44121,6 +44117,30 @@ class _MindMapScreenState extends State<MindMapScreen>
         ]),
       ),
     );
+  }
+
+  /// アプリの中で URL を開く (= ユーザー要望: Markdown のリンクも
+  /// アプリ内で開く)。
+  ///
+  /// [newTab] true (= Ctrl を押しながら押した時) は、 アプリ内ブラウザの
+  /// 新しいタブとして開く。 false なら今までの「アプリ内ビューア」。
+  Future<void> _openUrlInAppViewer(String url, {bool newTab = false}) async {
+    if (!mounted) return;
+    final provider = context.read<MindMapProvider>();
+    if (newTab) {
+      // 新しいタブ = アプリ内ブラウザ (タブを持っている方) で開く。
+      _openGoogleSearchDialog(context, provider, initialUrl: url);
+      return;
+    }
+    try {
+      await _showInAppViewer(context, url);
+    } catch (e) {
+      debugPrint('アプリ内で開けなかった: $e');
+      final uri = Uri.tryParse(url);
+      if (uri != null) {
+        unawaited(launchUrl(uri, mode: LaunchMode.externalApplication));
+      }
+    }
   }
 
   /// フローティングメモの表示/取り込みトグル (= ユーザー要望: モバイルで
@@ -72955,6 +72975,8 @@ class _MindMapScreenState extends State<MindMapScreen>
             ),
           ),
         _MonitorEdgeSettings(provider: provider),
+        // ── 画面の拡大率と壁紙 (= ユーザー要望) ──
+        _MonitorDisplaySettings(provider: provider),
         // ── 「サブモニターに両サイドからアクセス」 のトグルは削除 ──
         //    = ユーザー要望「上の図から設定すればいいから項目としては削除」。
         //    図で行き先を決めた辺だけが働く。
@@ -91942,8 +91964,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 // 実装に合わせた説明 (= ユーザー指摘で判明した
                                 //   食い違いの修正)。 クラウド同期は Max 限定、
                                 //   動画のダウンロードはリリース版では無効。
-                                'FREE: 各種類 1 ページ / 画面分割 2 回 / ロック 1 回\n'
-                                'PRO: ページ無制限 / 分割・ロック無制限 / Web の自動操作\n'
+                                'FREE: 各種類 1 ページ / 画面分割 無制限 / ロック 1 回\n'
+                                'PRO: ページ無制限 / ロック無制限 / Web の自動操作\n'
                                 'MAX: PRO の全機能 + クラウド同期・共有 + PDF の AI 要約',
                                 style: TextStyle(
                                     color: Colors.white38,
@@ -96979,6 +97001,251 @@ class _AudioOutputInlineState extends State<_AudioOutputInline> {
 /// モニターの並べ方と、 **画面の端を押して行き先を決める**設定
 /// (= ユーザー要望: ディスプレイのブロックの端を押してどこに遷移するか
 ///   決められるように。 一つずつ「反対の端へ回り込む」 を選ぶのは面倒)。
+/// 画面ごとの「拡大率」 と「壁紙」 (= ユーザー要望: ディスプレイ設定で
+/// メインモニター / サブモニターの拡大率を操作したい。 壁紙も設定できる
+/// ように)。 Windows だけ。
+///
+/// 並びは上の図と同じ「左上から順」。 拡大率は Windows が返した範囲の中
+/// だけを選ばせる (勝手な値は入れない)。
+class _MonitorDisplaySettings extends StatefulWidget {
+  final MindMapProvider provider;
+  const _MonitorDisplaySettings({required this.provider});
+  @override
+  State<_MonitorDisplaySettings> createState() =>
+      _MonitorDisplaySettingsState();
+}
+
+class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
+  List<MonitorScale> _scales = const [];
+  List<WallpaperMonitor> _walls = const [];
+  bool _busy = false;
+  String? _msg;
+  bool _msgError = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _reload();
+  }
+
+  void _reload() {
+    if (!DisplayControl.isSupported) return;
+    setState(() {
+      _scales = DisplayControl.listScales();
+      _walls = DisplayControl.listWallpaperMonitors();
+    });
+  }
+
+  void _tell(String text, {bool error = false}) {
+    setState(() {
+      _msg = text;
+      _msgError = error;
+    });
+  }
+
+  Future<void> _applyScale(MonitorScale mon, int percent) async {
+    setState(() => _busy = true);
+    final ok = DisplayControl.setScale(mon, percent);
+    if (!mounted) return;
+    setState(() => _busy = false);
+    _tell(
+        widget.provider.t(ok ? 'display.scaleDone' : 'display.scaleFailed'),
+        error: !ok);
+    _reload();
+  }
+
+  Future<void> _pickWallpaper(WallpaperMonitor? mon) async {
+    try {
+      final res = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['jpg', 'jpeg', 'png', 'bmp', 'webp'],
+      );
+      final path = res?.files.single.path;
+      if (path == null || path.isEmpty) return;
+      final ok = DisplayControl.setWallpaper(mon?.id, path);
+      if (!mounted) return;
+      _tell(
+          widget.provider
+              .t(ok ? 'display.wallDone' : 'display.wallFailed'),
+          error: !ok);
+      _reload();
+    } catch (e) {
+      if (mounted) _tell('$e', error: true);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!DisplayControl.isSupported) return const SizedBox.shrink();
+    final p = widget.provider;
+    // 拡大率が 1 つも取れない環境 (仮想画面など) では、 壁紙だけ出す。
+    if (_scales.isEmpty && _walls.isEmpty) return const SizedBox.shrink();
+    Widget label(String text) => Padding(
+          padding: const EdgeInsets.only(top: 10, bottom: 4),
+          child: Text(text,
+              style: const TextStyle(
+                  color: Colors.white38,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700)),
+        );
+
+    return Container(
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.fromLTRB(10, 6, 10, 10),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.04),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.white12),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Icon(Icons.tune_rounded, color: Color(0xFF4FC3F7), size: 16),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(p.t('display.title'),
+                style: const TextStyle(
+                    color: Color(0xFF4FC3F7),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700)),
+          ),
+          IconButton(
+            tooltip: p.t('btn.refresh'),
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+            icon: const Icon(Icons.refresh_rounded,
+                size: 16, color: Colors.white54),
+            onPressed: _busy ? null : _reload,
+          ),
+        ]),
+        // ── 拡大率 ──
+        if (_scales.isNotEmpty) ...[
+          label(p.t('display.scale')),
+          for (var i = 0; i < _scales.length; i++)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Row(children: [
+                SizedBox(
+                  width: 108,
+                  child: Text(
+                      '${i + 1}  ${_scales[i].width}×${_scales[i].height}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: Colors.white70, fontSize: 11.5)),
+                ),
+                Expanded(
+                  child: Wrap(spacing: 5, runSpacing: 5, children: [
+                    for (final v in _scales[i].choices)
+                      _pctChip(v, _scales[i], p),
+                  ]),
+                ),
+              ]),
+            ),
+        ],
+        // ── 壁紙 ──
+        label(p.t('display.wallpaper')),
+        for (var i = 0; i < _walls.length; i++)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: Row(children: [
+              SizedBox(
+                width: 108,
+                child: Text('${i + 1}  ${_walls[i].width}×${_walls[i].height}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Colors.white70, fontSize: 11.5)),
+              ),
+              Expanded(
+                child: Text(
+                    (_walls[i].currentPath ?? '').split(RegExp(r'[\\/]')).last,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Colors.white38, fontSize: 10.5)),
+              ),
+              TextButton(
+                onPressed:
+                    _busy ? null : () => unawaited(_pickWallpaper(_walls[i])),
+                style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 8)),
+                child: Text(p.t('display.pickImage'),
+                    style: const TextStyle(
+                        color: Color(0xFF4FC3F7), fontSize: 11.5)),
+              ),
+            ]),
+          ),
+        // 並べ方 (全画面共通)。
+        Wrap(spacing: 5, runSpacing: 5, children: [
+          for (final e in const [
+            (WallpaperFit.fill, 'display.fitFill'),
+            (WallpaperFit.fit, 'display.fitFit'),
+            (WallpaperFit.stretch, 'display.fitStretch'),
+            (WallpaperFit.center, 'display.fitCenter'),
+            (WallpaperFit.tile, 'display.fitTile'),
+            (WallpaperFit.span, 'display.fitSpan'),
+          ])
+            OutlinedButton(
+              style: OutlinedButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  foregroundColor: Colors.white70,
+                  side: const BorderSide(color: Colors.white24),
+                  padding: const EdgeInsets.symmetric(horizontal: 8)),
+              onPressed: _busy
+                  ? null
+                  : () {
+                      final ok = DisplayControl.setWallpaperFit(e.$1);
+                      _tell(
+                          p.t(ok
+                              ? 'display.wallDone'
+                              : 'display.wallFailed'),
+                          error: !ok);
+                    },
+              child: Text(p.t(e.$2),
+                  style: const TextStyle(fontSize: 11)),
+            ),
+        ]),
+        if (_msg != null) ...[
+          const SizedBox(height: 6),
+          Text(_msg!,
+              style: TextStyle(
+                  color: _msgError
+                      ? const Color(0xFFEF9A9A)
+                      : const Color(0xFF9CCC65),
+                  fontSize: 11)),
+        ],
+      ]),
+    );
+  }
+
+  Widget _pctChip(int v, MonitorScale mon, MindMapProvider p) {
+    final on = mon.current == v;
+    final rec = mon.recommended == v;
+    return InkWell(
+      borderRadius: BorderRadius.circular(6),
+      onTap: _busy || on ? null : () => unawaited(_applyScale(mon, v)),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: on
+              ? const Color(0xFF4FC3F7).withValues(alpha: 0.22)
+              : Colors.white.withValues(alpha: 0.05),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(
+              color: on ? const Color(0xFF4FC3F7) : Colors.white12),
+        ),
+        child: Text(rec ? '$v%${p.t('display.recommendedMark')}' : '$v%',
+            style: TextStyle(
+                color: on ? Colors.white : Colors.white60,
+                fontSize: 11,
+                fontWeight: on ? FontWeight.w700 : FontWeight.w400)),
+      ),
+    );
+  }
+}
+
 class _MonitorEdgeSettings extends StatefulWidget {
   final MindMapProvider provider;
   const _MonitorEdgeSettings({required this.provider});
@@ -119723,7 +119990,11 @@ const String _kMdEmbeddedMapJs = r"""
         var u = host && host.getAttribute('data-url');
         if (u) {
           if (window.__mmPost) {
-            window.__mmPost({ type: 'mdOpenUrl', href: u });
+            window.__mmPost({
+              type: 'mdOpenUrl',
+              href: u,
+              ctrl: !!(ev.ctrlKey || ev.metaKey)
+            });
           } else {
             window.open(u, '_blank');
           }
@@ -123607,7 +123878,11 @@ $mapsJs
     }
     if (/^https?:/i.test(href)) {
       ev.preventDefault();
-      if (linkPost) linkPost({ type: 'mdOpenUrl', href: href });
+      // Ctrl (Mac は Cmd) を押しながら / 中クリックなら新しいタブで開く。
+      var ctrlish = !!(ev.ctrlKey || ev.metaKey || ev.button === 1);
+      if (linkPost) {
+        linkPost({ type: 'mdOpenUrl', href: href, ctrl: ctrlish });
+      }
     }
   });
   // 分割プレビュー (編集しながら更新) 用の入口 (= ユーザー要望: 発展)。
@@ -126478,6 +126753,15 @@ graph TD
       final href = '${m['href'] ?? ''}'.trim();
       if (href.isEmpty) return;
       if (type == 'mdOpenUrl') {
+        // ★ 外のブラウザではなくアプリの中で開く (= ユーザー要望)。
+        //   Ctrl を押しながら押した時は新しいタブとして開く。
+        final open = openUrlInAppFromAnywhere;
+        final ctrl = m['ctrl'] == true;
+        if (open != null) {
+          open(href, newTab: ctrl);
+          return;
+        }
+        // 本体の画面が居ない時 (公開ページ等) だけ外のブラウザへ。
         final uri = Uri.tryParse(href);
         if (uri != null) {
           unawaited(launchUrl(uri, mode: LaunchMode.externalApplication));
@@ -183296,6 +183580,16 @@ GlobalKey<ScaffoldState>? appMainScaffoldKey;
 /// 辿れない。 Scaffold の鍵と同じやり方で、 本体が自分を登録しておく。
 /// _MindMapScreenState.initState が設定し、 dispose で外す。
 void Function()? openAssistantFromFloating;
+
+/// アプリの中で URL を開く入口 (本体の画面が起動時に差し込む)。
+///
+/// = ユーザー要望「マークダウンの URL を押した際もアプリ内で開くように。
+///   Ctrl を押しながら押したら新規タブとして開く」。
+/// Markdown のプレビューは本体の画面とは別のクラスなので、 本体側の
+/// アプリ内ビューアを直接は呼べない。 ここに関数を預けてもらう。
+/// [newTab] true = 今のビューアに足すのではなく、 別の枠 (新しいタブ)
+/// として開く。
+void Function(String url, {bool newTab})? openUrlInAppFromAnywhere;
 
 /// 浮かぶ窓の AI ボタン。 押すとその窓が AI に切り替わり、
 /// **右クリック / 長押し**でどの AI を開くかを選べる
