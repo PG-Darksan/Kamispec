@@ -97267,7 +97267,7 @@ class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
     // 画面の真ん中ではなく、 押した辺のすぐ近くに出す (= ユーザー要望)。
     final scr = MediaQuery.sizeOf(context);
     const w = 190.0;
-    final h = 70.0 + choices.length * 44.0;
+    final h = 30.0 + (choices.length + 1) * 44.0;
     final left =
         (at.dx + 14).clamp(8.0, math.max(8.0, scr.width - w - 8)).toDouble();
     final top = (at.dy - h / 2)
@@ -97285,18 +97285,13 @@ class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
             color: const Color(0xFF1E1E32),
             borderRadius: BorderRadius.circular(12),
             child: Column(mainAxisSize: MainAxisSize.min, children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(14, 12, 14, 4),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(p.t('cursorWrap.edgeGoesTo'),
-                      style: const TextStyle(
-                          color: Colors.white, fontSize: 13)),
-                ),
-              ),
+              // ★ 見出し (「この端から行く先」) は出さない
+              //   (= ユーザー報告: 選択肢と見間違える)。 「何もしない」 も
+              //   同じ理由で「-」 の 1 文字にして、 番号と並べて選ばせる。
+              const SizedBox(height: 6),
               ListTile(
                 dense: true,
-                title: Text(p.t('cursorWrap.targetNone'),
+                title: Text('-',
                     style: TextStyle(
                         color: _edges[key] == null
                             ? const Color(0xFF4FC3F7)
@@ -113885,6 +113880,44 @@ class _GanttPageViewState extends State<_GanttPageView> {
     _saveCurrent();
   }
 
+  /// その行 (工程) を消す。 バーを選んで Delete を押さなくても、 行の
+  /// 名前の右にある × で消せる (= ユーザー要望: 行の削除をしやすく)。
+  void _deleteTask(String id) {
+    setState(() {
+      _tasks.removeWhere((t) => t.id == id);
+      if (_selectedTaskId == id) _selectedTaskId = null;
+      if (_editingNameId == id) _editingNameId = null;
+    });
+    _saveCurrent();
+  }
+
+  /// 行の右端に出す削除ボタン。 マウスを乗せた行と、 選んでいる行だけ
+  /// はっきり出す (常に濃く出ていると、 名前より目立って邪魔なため)。
+  Widget _ganttRowDeleteButton(_GanttTask t) {
+    final on = _hoverRowId == t.id || _selectedTaskId == t.id;
+    return MouseRegion(
+      onEnter: (_) {
+        if (_hoverRowId != t.id) setState(() => _hoverRowId = t.id);
+      },
+      child: Tooltip(
+        message: widget.provider.t('gantt.deleteRow'),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(6),
+          onTap: () => _deleteTask(t.id),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: Icon(Icons.close_rounded,
+                size: 15,
+                color: on ? const Color(0xFFE57373) : Colors.white24),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// マウスが乗っている行 (削除ボタンをはっきり出すため)。
+  String? _hoverRowId;
+
   void _deleteSelectedTask() {
     final id = _selectedTaskId;
     if (id == null) return;
@@ -115402,7 +115435,6 @@ class _GanttPageViewState extends State<_GanttPageView> {
     final label = widget.provider
         .t(_unit == 'hour' ? 'gantt.durationHours' : 'gantt.durationDays')
         .replaceFirst('{n}', '$visibleUnits');
-    final assignee = t.assignee.trim();
     return Stack(children: [
       // 本体: タップで選択 / ダブルタップで編集、 水平ドラッグで移動。
       Positioned.fill(
@@ -115444,8 +115476,10 @@ class _GanttPageViewState extends State<_GanttPageView> {
             ),
             alignment: Alignment.center,
             padding: const EdgeInsets.symmetric(horizontal: handleW),
+            // ★ 担当者名は出さない (= ユーザー要望: 行が人でまとまって
+            //   いるので、 一つ一つに名前が付くのは諄い)。
             child: showLabel
-                ? Text(assignee.isEmpty ? label : '$label · $assignee',
+                ? Text(label,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
@@ -115737,14 +115771,23 @@ class _GanttPageViewState extends State<_GanttPageView> {
 
   /// 工程 1 本ぶんの行。 合体表示でも工程だけの並びでも同じ物を使う。
   Widget _ganttTaskRow(_GanttTask t, List<DateTime> cols) {
-    return SizedBox(
+    return MouseRegion(
+      onEnter: (_) {
+        if (_hoverRowId != t.id) setState(() => _hoverRowId = t.id);
+      },
+      onExit: (_) {
+        if (_hoverRowId == t.id) setState(() => _hoverRowId = null);
+      },
+      child: SizedBox(
       height: _rowH,
       child: Row(children: [
         SizedBox(
           width: _nameW,
-          // クリックでタスク名をインライン編集 (= ユーザー
-          //   要望)。 編集中は TextField を表示する。
-          child: _editingNameId == t.id
+          // ★ 削除ボタンは名前欄の**中**に置く (= 外に出すと表の 1 列目に
+          //   はみ出して、 日付のマス目の上に重なる)。
+          child: Row(children: [
+            Expanded(
+              child: _editingNameId == t.id
               ? Padding(
                   padding:
                       const EdgeInsets.symmetric(
@@ -115798,6 +115841,8 @@ class _GanttPageViewState extends State<_GanttPageView> {
                           CrossAxisAlignment
                               .start,
                       children: [
+                        // ★ 担当者名は出さない (= ユーザー要望: 行が人で
+                        //   まとまっているので、 一つ一つに付くのは諄い)。
                         Text(t.name,
                             maxLines: 1,
                             overflow: TextOverflow
@@ -115808,41 +115853,15 @@ class _GanttPageViewState extends State<_GanttPageView> {
                                         .white,
                                     fontSize:
                                         13)),
-                        if (t.assignee
-                            .trim()
-                            .isNotEmpty)
-                          Row(
-                              mainAxisSize:
-                                  MainAxisSize
-                                      .min,
-                              children: [
-                                const Icon(
-                                    Icons
-                                        .person_rounded,
-                                    size: 10,
-                                    color: Color(
-                                        0xFF43B97F)),
-                                const SizedBox(
-                                    width: 2),
-                                Flexible(
-                                  child: Text(
-                                      t.assignee
-                                          .trim(),
-                                      maxLines: 1,
-                                      overflow:
-                                          TextOverflow
-                                              .ellipsis,
-                                      style: const TextStyle(
-                                          color: Color(
-                                              0xFF9BE7C4),
-                                          fontSize:
-                                              10)),
-                                ),
-                              ]),
                       ],
                     ),
                   ),
                 ),
+            ),
+            // ── 行の削除 (= ユーザー要望: 行の削除をしやすく) ──
+            //    名前の右端に置く。 押すとその行だけ消える。
+            _ganttRowDeleteButton(t),
+          ]),
         ),
         Expanded(
           child: Stack(
@@ -115851,6 +115870,7 @@ class _GanttPageViewState extends State<_GanttPageView> {
           ),
         ),
       ]),
+      ),
     );
   }
 

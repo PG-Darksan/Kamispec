@@ -28530,6 +28530,17 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Mostrar tudo',
       'ru': 'Показать все',
     },
+    'gantt.deleteRow': {
+      'ja': 'この行を消す',
+      'en': 'Delete this row',
+      'zh': '删除此行',
+      'ko': '이 행 삭제',
+      'es': 'Eliminar esta fila',
+      'fr': 'Supprimer cette ligne',
+      'de': 'Diese Zeile löschen',
+      'pt': 'Excluir esta linha',
+      'ru': 'Удалить эту строку',
+    },
     'gantt.unassigned': {
       'ja': '未割り当て',
       'en': 'Unassigned',
