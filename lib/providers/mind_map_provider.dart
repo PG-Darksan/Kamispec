@@ -42044,6 +42044,57 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Já pago no plano anterior (vira crédito)',
       'ru': 'Уже оплачено по прежнему плану (станет балансом)',
     },
+    // 使い残しが今回の請求を全部まかなった時 (= 請求が 0 になる)。
+    //   ユーザー報告: 「0.00 が請求金額で出てくるのはおかしい」 —
+    //   実際は前のプランの使い残しで相殺されているので、 その事を書く。
+    'plan.changeCreditCovers': {
+      'ja': '前のプランの使い残しで相殺されるため、 今回のお支払いは '
+          'ありません。 重なっている期間は差額だけの負担になります。',
+      'en': 'The unused part of your previous plan covers this change, so '
+          'there is nothing to pay now. Over the overlapping period you only '
+          'pay the difference.',
+      'zh': '上一个套餐的未使用部分已抵扣，本次无需付款。重叠期间只需支付差额。',
+      'ko': '이전 플랜의 남은 분으로 상계되어 이번에는 결제가 없습니다. '
+          '겹치는 기간에는 차액만 부담합니다.',
+      'es': 'La parte no usada de tu plan anterior cubre este cambio, así que '
+          'no hay nada que pagar ahora. En el periodo que se solapa solo '
+          'pagas la diferencia.',
+      'fr': "La partie non utilisée de votre plan précédent couvre ce "
+          "changement : rien à payer maintenant. Sur la période qui se "
+          "chevauche, vous ne payez que la différence.",
+      'de': 'Der ungenutzte Teil des bisherigen Plans deckt diese Änderung ab, '
+          'daher fällt jetzt nichts an. Im überlappenden Zeitraum zahlen Sie '
+          'nur die Differenz.',
+      'pt': 'A parte não usada do plano anterior cobre esta mudança, então não '
+          'há nada a pagar agora. No período sobreposto você paga apenas a '
+          'diferença.',
+      'ru': 'Неиспользованная часть прежнего плана покрывает это изменение, '
+          'поэтому сейчас платить не нужно. За пересекающийся период вы '
+          'платите только разницу.',
+    },
+    // 控えがいくら残るか (= 次回以降の請求から自動で引かれる)。
+    'plan.changeCreditLeft': {
+      'ja': '使い残し {amount} が控えとして残り、 次回以降の請求から'
+          '自動で差し引かれます (無くなるまで追加のお支払いはありません)。',
+      'en': 'A credit of {amount} stays on your account and is applied to the '
+          'next invoices automatically (nothing extra to pay until it runs '
+          'out).',
+      'zh': '剩余 {amount} 将作为余额保留，并自动抵扣后续账单（用完前无需额外付款）。',
+      'ko': '남은 {amount} 는 잔액으로 남아 다음 청구부터 자동으로 차감됩니다 '
+          '(다 쓸 때까지 추가 결제는 없습니다).',
+      'es': 'Queda un saldo de {amount} que se aplica automáticamente a las '
+          'próximas facturas (no pagas nada más hasta que se agote).',
+      'fr': "Un avoir de {amount} reste sur votre compte et sera déduit "
+          "automatiquement des prochaines factures (rien à payer de plus "
+          "jusqu'à épuisement).",
+      'de': 'Ein Guthaben von {amount} bleibt auf dem Konto und wird '
+          'automatisch mit den nächsten Rechnungen verrechnet (bis dahin '
+          'fällt nichts Weiteres an).',
+      'pt': 'Um crédito de {amount} fica na conta e é aplicado automaticamente '
+          'nas próximas faturas (nada a pagar até acabar).',
+      'ru': 'Остаток {amount} сохраняется на счёте и автоматически вычитается '
+          'из следующих счетов (до его исчерпания доплачивать не нужно).',
+    },
     'plan.changeCreditNote': {
       'ja': '前のプランの使い残しは返金ではなく、 次回以降のお支払いに充てられます。',
       'en': 'Unused time on your previous plan is not refunded; it is applied '

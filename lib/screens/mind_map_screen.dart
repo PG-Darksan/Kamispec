@@ -16626,6 +16626,19 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///
   /// 変更を行ったら true。 契約が無い / ストア管理などで、 ふつうの購入に
   /// 進むべき時は false を返す。
+  /// 「今から 1 か月後 / 1 年後」。 月末の繰り上がりを起こさない
+  /// (= 1/31 の 1 か月後を 3/3 にしない。 Stripe は 2/28 に寄せる)。
+  static DateTime _addPeriod(DateTime from, bool yearly) {
+    final y = yearly ? from.year + 1 : from.year;
+    final m = yearly ? from.month : from.month + 1;
+    // 繰り上がりを自分で丸める。
+    final ny = m > 12 ? y + 1 : y;
+    final nm = m > 12 ? m - 12 : m;
+    // その月の最終日 (翌月 0 日 = 前月末)。
+    final lastDay = DateTime(ny, nm + 1, 0).day;
+    return DateTime(ny, nm, from.day > lastDay ? lastDay : from.day);
+  }
+
   Future<bool> _tryChangeStripePlan(
       MindMapProvider provider, String plan, bool yearly) async {
     // Google Play の購入はストア側でしか変えられないので、 ここは通さない
@@ -16766,8 +16779,18 @@ class _MindMapScreenState extends State<MindMapScreen>
       final endSec =
           anchorReset ? pv['nextPeriodEnd'] : sub['currentPeriodEnd'];
       var dateText = '';
-      if (endSec is num && endSec > 0) {
-        final d = DateTime.fromMillisecondsSinceEpoch(endSec.toInt() * 1000);
+      // ★ 引き直した時の「次の支払日」 が今日以前になっていたら、 自分で
+      //   出し直す (= ユーザー報告: 「次回のお支払い日 (今日) からは…」 と
+      //   出た)。 サーバーが請求書そのものの期間 (= 割り勘の窓 = ほぼ今) を
+      //   返してくる版があるため。 引き直した後は 今 + 1 か月 / 1 年。
+      final nowDt = DateTime.now();
+      var endMs = endSec is num ? endSec.toInt() * 1000 : 0;
+      if (anchorReset &&
+          endMs <= nowDt.add(const Duration(days: 1)).millisecondsSinceEpoch) {
+        endMs = _addPeriod(nowDt, yearly).millisecondsSinceEpoch;
+      }
+      if (endMs > 0) {
+        final d = DateTime.fromMillisecondsSinceEpoch(endMs);
         dateText = '${d.year}/${d.month.toString().padLeft(2, '0')}/'
             '${d.day.toString().padLeft(2, '0')}';
       }
@@ -16782,6 +16805,18 @@ class _MindMapScreenState extends State<MindMapScreen>
       }
     }
 
+    // ── 前のプランの使い残し (控え) がいくら残るか ──
+    //    サーバーが返してきた時だけ出す (古い版では出ない)。
+    var creditLeftText = '';
+    {
+      final left = pv['creditRemaining'];
+      if (left is num && left > 0) {
+        creditLeftText = provider
+            .t('plan.changeCreditLeft')
+            .replaceFirst('{amount}', provider.formatMoneyMinor(left, cur));
+      }
+    }
+
     // ── 期間の図 (= ユーザー要望: 期限が異なるサブスクに移る時、 掛かる
     //    期間を数学の範囲を表す図のように図解で) ──
     //    下の帯 = これから掛かる新しいプランの期間、
@@ -16792,10 +16827,15 @@ class _MindMapScreenState extends State<MindMapScreen>
       final newEndSec =
           anchorReset ? pv['nextPeriodEnd'] : sub['currentPeriodEnd'];
       final paidSec = sub['currentPeriodEnd'];
-      if (anchorReset && newEndSec is num && newEndSec > 0) {
+      if (anchorReset) {
         final now = DateTime.now();
-        final newEnd =
-            DateTime.fromMillisecondsSinceEpoch(newEndSec.toInt() * 1000);
+        // 上の説明と同じ理由で、 今日以前なら自分で出し直す。
+        var newEndMs = newEndSec is num ? newEndSec.toInt() * 1000 : 0;
+        if (newEndMs <=
+            now.add(const Duration(days: 1)).millisecondsSinceEpoch) {
+          newEndMs = _addPeriod(now, yearly).millisecondsSinceEpoch;
+        }
+        final newEnd = DateTime.fromMillisecondsSinceEpoch(newEndMs);
         DateTime? paidThrough;
         if (paidSec is num && paidSec > 0) {
           final d =
@@ -16844,6 +16884,37 @@ class _MindMapScreenState extends State<MindMapScreen>
             if (periodDiagram != null) ...[
               const SizedBox(height: 12),
               periodDiagram,
+            ],
+            // ★ 今回の請求が 0 になるのは「前のプランの使い残しで相殺
+            //   されている」 から (= ユーザー報告: 0.00 が出るのはおかしい)。
+            //   その理由と、 控えがいくら残るかを書く。
+            if (anchorReset && up && due is num && due <= 0) ...[
+              const SizedBox(height: 10),
+              Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Icon(Icons.savings_rounded,
+                    color: Color(0xFF43B97F), size: 15),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(provider.t('plan.changeCreditCovers'),
+                      style: const TextStyle(
+                          color: Color(0xFF9CCC65),
+                          fontSize: 12,
+                          height: 1.5)),
+                ),
+              ]),
+            ],
+            if (creditLeftText.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Icon(Icons.account_balance_wallet_rounded,
+                    color: Colors.white38, size: 15),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(creditLeftText,
+                      style: const TextStyle(
+                          color: Colors.white54, fontSize: 12, height: 1.5)),
+                ),
+              ]),
             ],
             // 使い残しがある時は、 それが控えとして次以降に充てられる事も
             // 添える (= 年額から月額へ移った人が「返金は?」 と迷わないよう)。
@@ -97296,8 +97367,12 @@ class _PlanPeriodPainter extends CustomPainter {
       final dot = Paint()..color = color;
       canvas.drawCircle(Offset(xa, y), 3.2, dot);
       canvas.drawCircle(Offset(xb, y), 3.2, dot);
+      // ★ 文字の幅は帯の長さで決めない (= ユーザー報告: 「Max（1…」 と
+      //   切れる)。 月額の帯は 1 年の目盛りの中では極端に短くなるので、
+      //   帯に収めようとすると必ず切れる。 上下で段が違うので、 図の
+      //   右端まで伸ばしても他の帯の文字とは重ならない。
       _text(canvas, label, Offset(xa + 6, y - 13), color,
-          maxW: (xb - xa - 8).clamp(40.0, 220.0));
+          maxW: math.max(60.0, size.width - (xa + 6) - 2));
     }
 
     if (hasPaid) {
@@ -161105,7 +161180,13 @@ class _SubscriptionPanelState extends State<_SubscriptionPanel> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = '$e'.replaceFirst('Exception: ', '');
+        // ★ ネットワークが繋がっていない時は、 生のエラー文
+        //   (ClientException with SocketFailed host lookup: …) ではなく
+        //   「つながっていません」 とだけ出す (= ユーザー要望: よく分からない
+        //   メッセージが出る)。
+        _error = _MindMapScreenState._isNetworkError(e)
+            ? _p.t('net.offline')
+            : '$e'.replaceFirst('Exception: ', '');
         _loading = false;
       });
     }
@@ -161198,7 +161279,10 @@ class _SubscriptionPanelState extends State<_SubscriptionPanel> {
       if (!mounted) return;
       setState(() {
         _busy = false;
-        _error = '$e'.replaceFirst('Exception: ', '');
+        // ネット未接続はそれだけを出す (= ユーザー要望)。
+        _error = _MindMapScreenState._isNetworkError(e)
+            ? _p.t('net.offline')
+            : '$e'.replaceFirst('Exception: ', '');
       });
     }
   }

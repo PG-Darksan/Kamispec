@@ -561,8 +561,14 @@ async function handleChangePlan(request, env, preview) {
       // 支払日が今に引き直されるか (= 年 ⇄ 月 で間隔が変わる時)。
       anchorReset: intervalChanged,
       // 引き直した時の次の請求日 (秒)。 今 + 1 か月 / 1 年。
-      nextPeriodEnd:
-        pv && typeof pv.period_end === 'number' ? pv.period_end : null,
+      nextPeriodEnd: nextPeriodEndOf(pv, priceId, yearly),
+      // 前のプランの使い残しが、 控えとしていくら残るか (最小通貨単位)。
+      //   請求書に載せ切れなかった分は顧客の残高に残り、 次回以降の
+      //   請求から自動で差し引かれる。 0 なら控えは残らない。
+      creditRemaining:
+        typeof pv.ending_balance === 'number' && pv.ending_balance < 0
+          ? -pv.ending_balance
+          : 0,
     });
   }
 
@@ -603,6 +609,39 @@ async function handleChangePlan(request, env, preview) {
     anchorReset: intervalChanged,
     subscription: normalizeSubscription(updated),
   });
+}
+
+/// 見積もりの請求書から「次の支払日」 を取り出す。
+///
+/// ★ 請求書そのものの `period_end` は使わない。 起点を今に引き直す時
+///   (年 ⇄ 月)、 その値は「割り勘の窓」 = ほぼ今を指すので、 アプリに
+///   そのまま渡すと「次回のお支払い日 = 今日」 と出てしまう
+///   (= ユーザー報告)。
+///   差し替え後の品目 (= 新しい値段) の行の期間の終わりが本当の支払日。
+///   行から取れない時は、 今から 1 か月 / 1 年 後を自分で出す。
+function nextPeriodEndOf(pv, priceId, yearly) {
+  let best = 0;
+  try {
+    const lines = (pv && pv.lines && pv.lines.data) || [];
+    for (const ln of lines) {
+      // 値段の置き場所は API の版で変わる (新しい版は pricing の下)。
+      const pid =
+        (ln.price && ln.price.id) ||
+        (ln.plan && ln.plan.id) ||
+        (ln.pricing &&
+          ln.pricing.price_details &&
+          ln.pricing.price_details.price) ||
+        '';
+      if (pid !== priceId) continue;
+      const e = ln.period && ln.period.end;
+      if (typeof e === 'number' && e > best) best = e;
+    }
+  } catch (_) {}
+  if (best > 0) return best;
+  const d = new Date();
+  if (yearly) d.setUTCFullYear(d.getUTCFullYear() + 1);
+  else d.setUTCMonth(d.getUTCMonth() + 1);
+  return Math.floor(d.getTime() / 1000);
 }
 
 async function handleSubscriptionCancel(request, env, cancel) {
