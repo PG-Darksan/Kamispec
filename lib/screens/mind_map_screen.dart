@@ -5171,6 +5171,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       if (!mounted) return;
       unawaited(_openUrlInAppViewer(url, newTab: newTab));
     };
+    unawaited(_loadMonitorNoticeHidden());
     openAssistantFromFloating = () {
       if (!mounted) return;
       unawaited(_openMcpChat(context.read<MindMapProvider>(),
@@ -16107,7 +16108,10 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 現状は SnackBar で「準備中」とだけ通知する。
   /// 有料プランで解禁される機能の一覧 (= ユーザー要望: Pro と Max で纏めて)。
   /// Pro / Max の両ペイウォールで共通利用する。
-  Widget _buildPlanFeatureSummary(MindMapProvider provider) {
+  /// [plans] で出す段を絞れる (= ユーザー要望: Max 限定の機能の案内で
+  /// Pro を勧めると、 買った後で「解禁されない」 と言われてしまう)。
+  Widget _buildPlanFeatureSummary(MindMapProvider provider,
+      {List<String> plans = const ['pro', 'max']}) {
     Widget feat(String text, Color c) => Padding(
           padding: const EdgeInsets.only(bottom: 3, left: 4),
           child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -16147,15 +16151,17 @@ class _MindMapScreenState extends State<MindMapScreen>
         border: Border.all(color: Colors.white12),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        header(Icons.workspace_premium_rounded, provider.t('plan.proHeader'),
-            const Color(0xFF4FC3F7)),
-        feat(provider.t('plan.proPages'), const Color(0xFF4FC3F7)),
-        // ★ 画面分割は無料でも無制限になったので、 Pro の売りから外した
-        //   (= ユーザー要望)。
-        feat(provider.t('plan.proPaint'), const Color(0xFF4FC3F7)),
-        feat(provider.t('plan.proAutomation'), const Color(0xFF4FC3F7)),
-        feat(provider.t('plan.proLocks'), const Color(0xFF4FC3F7)),
-        const SizedBox(height: 6),
+        if (plans.contains('pro')) ...[
+          header(Icons.workspace_premium_rounded, provider.t('plan.proHeader'),
+              const Color(0xFF4FC3F7)),
+          feat(provider.t('plan.proPages'), const Color(0xFF4FC3F7)),
+          // ★ 画面分割は無料でも無制限になったので、 Pro の売りから外した
+          //   (= ユーザー要望)。
+          feat(provider.t('plan.proPaint'), const Color(0xFF4FC3F7)),
+          feat(provider.t('plan.proAutomation'), const Color(0xFF4FC3F7)),
+          feat(provider.t('plan.proLocks'), const Color(0xFF4FC3F7)),
+          const SizedBox(height: 6),
+        ],
         header(Icons.diamond_rounded, provider.t('plan.maxHeader'),
             const Color(0xFFFFB347)),
         feat(provider.t('plan.maxCloud'), const Color(0xFFFFB347)),
@@ -44143,6 +44149,21 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
   }
 
+  /// ディスプレイ設定の上に出る案内を、 利用者が閉じたか
+  /// (= ユーザー要望: 閉じれるようにして)。 prefs に残す。
+  bool _monitorNoticeHidden = false;
+  static const String _kMonitorNoticeHiddenKey = 'monitorRoutingNoticeHidden';
+
+  Future<void> _loadMonitorNoticeHidden() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final v = sp.getBool(_kMonitorNoticeHiddenKey) ?? false;
+      if (mounted && v != _monitorNoticeHidden) {
+        setState(() => _monitorNoticeHidden = v);
+      }
+    } catch (_) {}
+  }
+
   /// フローティングメモの表示/取り込みトグル (= ユーザー要望: モバイルで
   /// メモ欄をフローティングさせて、 他のアプリの上に小さく表示して書ける
   /// ように)。
@@ -48090,9 +48111,17 @@ class _MindMapScreenState extends State<MindMapScreen>
                   style: const TextStyle(
                       color: Colors.white70, fontSize: 13, height: 1.5)),
               const SizedBox(height: 12),
-              // ── 有料プランで解禁される機能を Pro/Max で纏めて表示 (= ユーザー要望) ──
-              _buildPlanFeatureSummary(provider),
+              // ★ Max 限定の機能の案内なので、 Max だけを出す
+              //   (= ユーザー要望: Pro を勧めると、 買った後で「解禁され
+              //   ない」 と言われてしまう)。 Max は Pro の全機能を含む。
+              _buildPlanFeatureSummary(provider, plans: const ['max']),
               const SizedBox(height: 14),
+              if (_isDesktop && provider.billing.hasStripeLinks) ...[
+                _buildStripePlanCards(provider,
+                    plans: const ['max'],
+                    onTapBefore: () => Navigator.of(ctx).pop()),
+                const SizedBox(height: 10),
+              ],
               // クーポン入力ショートカット (既存の paywall と同じパターン)
               Container(
                 decoration: BoxDecoration(
@@ -72941,38 +72970,63 @@ class _MindMapScreenState extends State<MindMapScreen>
         //   Pro 以上が要るのは「アプリを閉じていても効かせる」 (常駐) だけ
         //   なので、 図はどのプランでも触れる。 案内はその下の常駐の
         //   トグルにだけ出す。
-        if (!provider.canUseMonitorRoutingDaemon)
-          InkWell(
-            borderRadius: BorderRadius.circular(10),
-            onTap: () {
-              Navigator.of(sheetCtx).pop();
-              _showPaywallDialog(provider,
-                  bodyOverride: provider.t('paywall.proRequiredMonitor'));
-            },
-            child: Container(
-              margin: const EdgeInsets.only(bottom: 8),
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: const Color(0xFF4FC3F7).withValues(alpha: 0.08),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(
-                    color: const Color(0xFF4FC3F7).withValues(alpha: 0.3)),
-              ),
-              child: Row(children: [
-                const Icon(Icons.lock_outline_rounded,
-                    color: Color(0xFF4FC3F7), size: 16),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(provider.t('paywall.proRequiredMonitor'),
-                      style: const TextStyle(
-                          color: Color(0xFF4FC3F7),
-                          fontSize: 11,
-                          height: 1.4)),
-                ),
-                const Icon(Icons.chevron_right_rounded,
-                    color: Color(0xFF4FC3F7), size: 18),
-              ]),
+        // ★ 一度読んだら閉じられる (= ユーザー要望)。 閉じた事は prefs に
+        //   残すので、 次に開いた時はもう出ない。
+        if (!provider.canUseMonitorRoutingDaemon && !_monitorNoticeHidden)
+          Container(
+            margin: const EdgeInsets.only(bottom: 8),
+            decoration: BoxDecoration(
+              color: const Color(0xFF4FC3F7).withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                  color: const Color(0xFF4FC3F7).withValues(alpha: 0.3)),
             ),
+            child: Row(children: [
+              Expanded(
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(10),
+                  onTap: () {
+                    Navigator.of(sheetCtx).pop();
+                    _showPaywallDialog(provider,
+                        bodyOverride: provider.t('paywall.proRequiredMonitor'));
+                  },
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(10, 10, 4, 10),
+                    child: Row(children: [
+                      const Icon(Icons.lock_outline_rounded,
+                          color: Color(0xFF4FC3F7), size: 16),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(provider.t('paywall.proRequiredMonitor'),
+                            style: const TextStyle(
+                                color: Color(0xFF4FC3F7),
+                                fontSize: 11,
+                                height: 1.4)),
+                      ),
+                      const Icon(Icons.chevron_right_rounded,
+                          color: Color(0xFF4FC3F7), size: 18),
+                    ]),
+                  ),
+                ),
+              ),
+              IconButton(
+                tooltip: provider.t('btn.close'),
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints:
+                    const BoxConstraints(minWidth: 30, minHeight: 30),
+                icon: const Icon(Icons.close_rounded,
+                    size: 15, color: Color(0xFF4FC3F7)),
+                onPressed: () async {
+                  setS(() => _monitorNoticeHidden = true);
+                  try {
+                    final sp = await SharedPreferences.getInstance();
+                    await sp.setBool(_kMonitorNoticeHiddenKey, true);
+                  } catch (_) {}
+                },
+              ),
+              const SizedBox(width: 2),
+            ]),
           ),
         _MonitorEdgeSettings(provider: provider),
         // ── 画面の拡大率と壁紙 (= ユーザー要望) ──
@@ -83611,26 +83665,30 @@ class _MindMapScreenState extends State<MindMapScreen>
                   //    (= ユーザー要望: この画面と一緒に Max プランの
                   //    サブスクへの勧誘が出るように) ──
                   const SizedBox(height: 10),
+                  // ★ ここは Max 限定の機能なので、 Pro は勧めない
+                  //   (= ユーザー要望: Pro を買った後で「解禁されない」 と
+                  //   言われてしまうため)。
                   if (_isDesktop && provider.billing.hasStripeLinks)
                     _buildStripePlanCards(provider,
+                        plans: const ['max'],
                         onTapBefore: () => Navigator.of(dctx2).pop())
                   else
-                    // 決済リンクが無い環境 (モバイル等) では、 いつもの
-                    // 加入の案内を開く入口だけ出す。
+                    // 決済リンクが無い環境 (モバイル等) では、 Max の案内を
+                    // 開く入口だけ出す。
                     SizedBox(
                       width: double.infinity,
                       child: ElevatedButton.icon(
                         style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFFFFB347),
-                            foregroundColor: Colors.black),
+                            backgroundColor: const Color(0xFFBA68C8),
+                            foregroundColor: Colors.white),
                         onPressed: () {
                           Navigator.of(dctx2).pop();
-                          _showPaywallDialog(provider,
-                              bodyOverride: provider.t('live.maxOnlyNote'));
+                          _showMaxRequiredDialog(provider,
+                              body: provider.t('live.maxOnlyNote'));
                         },
                         icon: const Icon(Icons.workspace_premium_rounded,
                             size: 16),
-                        label: Text(provider.t('paywall.seePlans')),
+                        label: Text(provider.t('paywall.upgradeMax')),
                       ),
                     ),
                 ],
@@ -97068,6 +97126,8 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
           widget.provider
               .t(ok ? 'display.wallDone' : 'display.wallFailed'),
           error: !ok);
+      // 見本を作り直す (同じ道に貼り替えた時も更新されるように)。
+      setState(() => _wallStamp++);
       _reload();
     } catch (e) {
       if (mounted) _tell('$e', error: true);
@@ -97126,13 +97186,25 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
               padding: const EdgeInsets.only(bottom: 6),
               child: Row(children: [
                 SizedBox(
-                  width: 108,
-                  child: Text(
-                      '${i + 1}  ${_scales[i].width}×${_scales[i].height}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          color: Colors.white70, fontSize: 11.5)),
+                  width: 118,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(_monLabel(i, _scales[i].left, _scales[i].top),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w700)),
+                      Text('${_scales[i].width}×${_scales[i].height}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              color: Colors.white38, fontSize: 10)),
+                    ],
+                  ),
                 ),
                 Expanded(
                   child: Wrap(spacing: 5, runSpacing: 5, children: [
@@ -97150,17 +97222,34 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
             padding: const EdgeInsets.only(bottom: 6),
             child: Row(children: [
               SizedBox(
-                width: 108,
-                child: Text('${i + 1}  ${_walls[i].width}×${_walls[i].height}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        color: Colors.white70, fontSize: 11.5)),
+                width: 118,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(_monLabel(i, _walls[i].left, _walls[i].top),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w700)),
+                    Text('${_walls[i].width}×${_walls[i].height}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            color: Colors.white38, fontSize: 10)),
+                  ],
+                ),
               ),
+              // ── 今貼っている絵の見本 (= ユーザー要望: 変えました だけ
+              //    でなく、 どうなったかが見えるように) ──
+              _wallPreview(_walls[i].currentPath),
+              const SizedBox(width: 8),
               Expanded(
                 child: Text(
                     (_walls[i].currentPath ?? '').split(RegExp(r'[\\/]')).last,
-                    maxLines: 1,
+                    maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                         color: Colors.white38, fontSize: 10.5)),
@@ -97219,6 +97308,52 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
       ]),
     );
   }
+
+  /// 画面の呼び名。 (0,0) にある物が主モニター。
+  String _monLabel(int i, int left, int top) {
+    final p = widget.provider;
+    return (left == 0 && top == 0)
+        ? '${i + 1}  ${p.t('display.primary')}'
+        : '${i + 1}  ${p.t('display.secondary')}';
+  }
+
+  /// 壁紙の見本。 読めない絵 (対応していない形式など) は枠だけ出す。
+  ///
+  /// ★ 貼り替えるたびに `key` を変える。 同じ道に貼り直した時、
+  ///   Flutter の絵の控えが効いて古い絵のままになるため。
+  Widget _wallPreview(String? path) {
+    const w = 64.0, h = 38.0;
+    Widget frame(Widget child) => Container(
+          width: w,
+          height: h,
+          clipBehavior: Clip.antiAlias,
+          decoration: BoxDecoration(
+            color: Colors.black26,
+            borderRadius: BorderRadius.circular(4),
+            border: Border.all(color: Colors.white24),
+          ),
+          child: child,
+        );
+    if (path == null || path.isEmpty) {
+      return frame(const Icon(Icons.image_not_supported_outlined,
+          size: 14, color: Colors.white24));
+    }
+    return frame(Image.file(
+      File(path),
+      key: ValueKey('$path#$_wallStamp'),
+      width: w,
+      height: h,
+      fit: BoxFit.cover,
+      gaplessPlayback: true,
+      errorBuilder: (_, __, ___) => const Icon(
+          Icons.broken_image_outlined,
+          size: 14,
+          color: Colors.white24),
+    ));
+  }
+
+  /// 見本を作り直させるための印 (同じ道に貼り替えた時のため)。
+  int _wallStamp = 0;
 
   Widget _pctChip(int v, MonitorScale mon, MindMapProvider p) {
     final on = mon.current == v;
