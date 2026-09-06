@@ -3103,6 +3103,185 @@ void _cleanStaleStartMenuShortcuts() {
   }
 }
 
+/// ルーティングだけの常駐が持つ窓の題名。
+///
+/// = ユーザー要望「ルーティング機能だけが裏で走っている時は、 タスク
+///   マネージャーのタスク名で分かるようにして欲しい」。 本体と同じ exe
+///   なので、 exe の説明では見分けが付かない。 窓の題名なら分かれる。
+const String kRoutingWindowTitle = 'HisatorNotebook (routing)';
+
+/// 常駐の窓に「(routing)」 の題名を付け、 画面の外に置いたまま持たせる。
+///
+/// * 題名 … タスクマネージャーはこれで並べるので、 本体と見分けが付く
+/// * WS_EX_TOOLWINDOW … Alt+Tab とタスクバーに出さない
+/// * SW_SHOWNOACTIVATE … 焦点を奪わずに窓を持たせる (窓を持っていないと
+///   タスクマネージャーが exe の説明で並べてしまい、 本体と見分けが
+///   付かない)
+///
+/// ★ window_manager の setTitle / setBounds は使えない。 この常駐は
+///   runApp を呼ばないので、 プラットフォームチャネルの返事が届かず
+///   何も起きない (実測: 題名は 'HisatorNotebook' のままだった)。
+///   なので、 窓を自分で探して win32 を直に叩く。
+void _markRoutingWindow() {
+  if (kIsWeb || !Platform.isWindows) return;
+  try {
+    final user32 = ffi.DynamicLibrary.open('user32.dll');
+    final kernel32 = ffi.DynamicLibrary.open('kernel32.dll');
+    final findWindowEx = user32.lookupFunction<
+        ffi.IntPtr Function(ffi.IntPtr, ffi.IntPtr, ffi.Pointer<pkgffi.Utf16>,
+            ffi.Pointer<pkgffi.Utf16>),
+        int Function(int, int, ffi.Pointer<pkgffi.Utf16>,
+            ffi.Pointer<pkgffi.Utf16>)>('FindWindowExW');
+    final getWindowThreadProcessId = user32.lookupFunction<
+        ffi.Uint32 Function(ffi.IntPtr, ffi.Pointer<ffi.Uint32>),
+        int Function(int, ffi.Pointer<ffi.Uint32>)>('GetWindowThreadProcessId');
+    final getCurrentProcessId = kernel32.lookupFunction<ffi.Uint32 Function(),
+        int Function()>('GetCurrentProcessId');
+    final setWindowText = user32.lookupFunction<
+        ffi.Int32 Function(ffi.IntPtr, ffi.Pointer<pkgffi.Utf16>),
+        int Function(int, ffi.Pointer<pkgffi.Utf16>)>('SetWindowTextW');
+    final getLong = user32.lookupFunction<
+        ffi.IntPtr Function(ffi.IntPtr, ffi.Int32),
+        int Function(int, int)>('GetWindowLongPtrW');
+    final setLong = user32.lookupFunction<
+        ffi.IntPtr Function(ffi.IntPtr, ffi.Int32, ffi.IntPtr),
+        int Function(int, int, int)>('SetWindowLongPtrW');
+    final setWindowPos = user32.lookupFunction<
+        ffi.Int32 Function(ffi.IntPtr, ffi.IntPtr, ffi.Int32, ffi.Int32,
+            ffi.Int32, ffi.Int32, ffi.Uint32),
+        int Function(int, int, int, int, int, int, int)>('SetWindowPos');
+    final showWindow = user32.lookupFunction<
+        ffi.Int32 Function(ffi.IntPtr, ffi.Int32),
+        int Function(int, int)>('ShowWindow');
+
+    final cls = 'FLUTTER_RUNNER_WIN32_WINDOW'.toNativeUtf16(
+        allocator: pkgffi.malloc);
+    final title = kRoutingWindowTitle.toNativeUtf16(allocator: pkgffi.malloc);
+    final pidOut = pkgffi.calloc<ffi.Uint32>();
+    try {
+      final me = getCurrentProcessId();
+      // 自分のプロセスが持つ Flutter の窓を探す (別の HisatorNotebook が
+      // 動いていても、 そちらは触らない)。
+      var hwnd = 0;
+      var guard = 0;
+      while (guard++ < 64) {
+        hwnd = findWindowEx(0, hwnd, cls, ffi.nullptr);
+        if (hwnd == 0) return;
+        getWindowThreadProcessId(hwnd, pidOut);
+        if (pidOut.value == me) break;
+      }
+      if (hwnd == 0) return;
+      setWindowText(hwnd, title);
+      // ★ 道具窓 (WS_EX_TOOLWINDOW) には**しない**。
+      //   タスクマネージャーは、 道具窓しか持たないプロセスを「バック
+      //   グラウンド プロセス」 扱いにして exe の説明 (= 本体と同じ
+      //   'HisatorNotebook') で並べてしまう。 それでは見分けが付かない
+      //   ので、 ふつうの窓のまま持たせて題名で並べてもらう。
+      //   代わりに、 タスクバーのボタンだけ COM で外す (下)。
+      const gwlExStyle = -20;
+      const wsExAppWindow = 0x00040000;
+      final ex = getLong(hwnd, gwlExStyle);
+      setLong(hwnd, gwlExStyle, ex & ~wsExAppWindow);
+      // 画面の外の 1x1 へ。 前面には出さない。
+      const swpNoZOrder = 0x0004;
+      const swpNoActivate = 0x0010;
+      setWindowPos(hwnd, 0, -32000, -32000, 1, 1, swpNoZOrder | swpNoActivate);
+      const swShowNoActivate = 4;
+      showWindow(hwnd, swShowNoActivate);
+      _hideFromTaskbar(hwnd);
+    } finally {
+      pkgffi.malloc.free(cls);
+      pkgffi.malloc.free(title);
+      pkgffi.calloc.free(pidOut);
+    }
+  } catch (_) {
+    // 古い Windows などで駄目でも、 回り込みそのものは動く。
+  }
+}
+
+/// タスクバーのボタンだけを外す (窓は持ったまま)。
+///
+/// window_manager の setSkipTaskbar が使えない (この常駐は runApp を
+/// 呼ばないので、 プラットフォームチャネルの返事が届かない) ため、
+/// 同じことをする COM (ITaskbarList::DeleteTab) を直に叩く。
+///
+/// 窓そのものは持たせ続ける。 道具窓にしてしまうと、 タスクマネージャーが
+/// 「バックグラウンド プロセス」 として exe の説明で並べてしまい、 本体と
+/// 見分けが付かなくなるため。
+void _hideFromTaskbar(int hwnd) {
+  if (kIsWeb || !Platform.isWindows || hwnd == 0) return;
+  final ole32 = ffi.DynamicLibrary.open('ole32.dll');
+  final coInitializeEx = ole32.lookupFunction<
+      ffi.Int32 Function(ffi.Pointer<ffi.Void>, ffi.Uint32),
+      int Function(ffi.Pointer<ffi.Void>, int)>('CoInitializeEx');
+  final coCreateInstance = ole32.lookupFunction<
+      ffi.Int32 Function(ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Void>,
+          ffi.Uint32, ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Pointer<ffi.Void>>),
+      int Function(ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Void>, int,
+          ffi.Pointer<ffi.Uint8>,
+          ffi.Pointer<ffi.Pointer<ffi.Void>>)>('CoCreateInstance');
+
+  /// GUID を 16 バイトに詰める (Data1/2/3 はリトルエンディアン、 Data4 は並び順)。
+  ffi.Pointer<ffi.Uint8> guid(int d1, int d2, int d3, List<int> d4) {
+    final g = pkgffi.calloc<ffi.Uint8>(16);
+    for (var i = 0; i < 4; i++) {
+      g[i] = (d1 >> (8 * i)) & 0xFF;
+    }
+    for (var i = 0; i < 2; i++) {
+      g[4 + i] = (d2 >> (8 * i)) & 0xFF;
+    }
+    for (var i = 0; i < 2; i++) {
+      g[6 + i] = (d3 >> (8 * i)) & 0xFF;
+    }
+    for (var i = 0; i < 8; i++) {
+      g[8 + i] = d4[i];
+    }
+    return g;
+  }
+
+  // CLSID_TaskbarList / IID_ITaskbarList
+  final clsid = guid(0x56FDF344, 0xFD6D, 0x11D0,
+      const [0x95, 0x8A, 0x00, 0x60, 0x97, 0xC9, 0xA0, 0x90]);
+  final iid = guid(0x56FDF342, 0xFD6D, 0x11D0,
+      const [0x95, 0x8A, 0x00, 0x60, 0x97, 0xC9, 0xA0, 0x90]);
+  final out = pkgffi.calloc<ffi.Pointer<ffi.Void>>();
+  try {
+    const coinitApartmentThreaded = 0x2;
+    coInitializeEx(ffi.nullptr, coinitApartmentThreaded);
+    const clsctxInprocServer = 0x1;
+    final hr =
+        coCreateInstance(clsid, ffi.nullptr, clsctxInprocServer, iid, out);
+    final obj = out.value;
+    if (hr != 0 || obj == ffi.nullptr) return;
+    // vtable: 0 QueryInterface / 1 AddRef / 2 Release / 3 HrInit /
+    //         4 AddTab / 5 DeleteTab
+    final vtable = obj.cast<ffi.Pointer<ffi.Pointer<ffi.Void>>>().value;
+    int call1(int slot, int arg) {
+      final fn = vtable[slot]
+          .cast<ffi.NativeFunction<ffi.Int32 Function(ffi.Pointer<ffi.Void>,
+              ffi.IntPtr)>>()
+          .asFunction<int Function(ffi.Pointer<ffi.Void>, int)>();
+      return fn(obj, arg);
+    }
+
+    final hrInit = vtable[3]
+        .cast<ffi.NativeFunction<ffi.Int32 Function(ffi.Pointer<ffi.Void>)>>()
+        .asFunction<int Function(ffi.Pointer<ffi.Void>)>();
+    hrInit(obj);
+    call1(5, hwnd); // DeleteTab
+    final release = vtable[2]
+        .cast<ffi.NativeFunction<ffi.Uint32 Function(ffi.Pointer<ffi.Void>)>>()
+        .asFunction<int Function(ffi.Pointer<ffi.Void>)>();
+    release(obj);
+  } catch (_) {
+    // 外せなくても回り込みそのものは動く。
+  } finally {
+    pkgffi.calloc.free(clsid);
+    pkgffi.calloc.free(iid);
+    pkgffi.calloc.free(out);
+  }
+}
+
 /// 常駐の二重起動を防ぐための受け口 (持っているだけ)。
 HttpServer? _cursorWrapGuardServer;
 
@@ -3158,22 +3337,24 @@ Future<void> _runCursorWrapDaemon() async {
   } catch (_) {
     exit(0);
   }
-  // 窓を画面の外へ置いてから隠す (一瞬でも見えないように)。
-  try {
-    await windowManager.ensureInitialized();
-    await windowManager.setSkipTaskbar(true);
-    await windowManager.setBounds(const Rect.fromLTWH(-32000, -32000, 1, 1));
-    await windowManager.hide();
-  } catch (_) {}
-  // 出し直されても隠し続ける (最初のフレームで OS が出す事があるため)。
-  Timer.periodic(const Duration(milliseconds: 500), (t) async {
+  // ★ タスクマネージャーで「ルーティングだけが裏で動いている」 と分かる
+  //   ようにする (= ユーザー要望)。
+  //
+  //   タスクマネージャーは、 窓を持っているプロセスは**窓の題名**で、
+  //   持っていないプロセスは exe の説明 (= どちらも "HisatorNotebook")
+  //   で並べる。 そこで、 この常駐だけは 1x1 の窓を画面の外に持たせて、
+  //   題名を "HisatorNotebook (routing)" にしておく。
+  //   窓は道具窓 (WS_EX_TOOLWINDOW) にするので、 Alt+Tab にもタスクバー
+  //   にも出ない。 画面の外なので目にも入らない。
+  _markRoutingWindow();
+  // 出し直されても、 題名と場所を当て直す (最初のフレームで OS が窓を
+  //   作り直す事があるため)。
+  Timer.periodic(const Duration(milliseconds: 500), (t) {
     if (t.tick > 20) {
       t.cancel();
       return;
     }
-    try {
-      if (await windowManager.isVisible()) await windowManager.hide();
-    } catch (_) {}
+    _markRoutingWindow();
   });
 
   CursorWrap.allowed = true;

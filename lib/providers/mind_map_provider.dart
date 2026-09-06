@@ -4600,8 +4600,8 @@ class MindMapProvider extends ChangeNotifier {
     await prefs.setBool('cursorWrapEnabled', v);
     // ★ ここで道具にも渡す。 前は画面側でしか呼んでおらず、 他所から
     //   設定を変えると次の起動まで効かなかった。
-    //   プランが足りない時は効かせない (= Pro 以上限定)。
-    CursorWrap.instance.apply(v && canUseMonitorRouting);
+    //   アプリを開いている間の回り込みは無料 (= ユーザー要望)。
+    CursorWrap.instance.apply(v);
     // ignore: discarded_futures
     applyCursorWrapForPlan();
     notifyListeners();
@@ -4635,8 +4635,7 @@ class MindMapProvider extends ChangeNotifier {
 
   Future<void> setCursorWrapEdges(Map<String, int> v) async {
     _cursorWrapEdges = Map<String, int>.from(v);
-    CursorWrap.instance.applyEdgeTargets(
-        canUseMonitorRouting ? _cursorWrapEdges : const {});
+    CursorWrap.instance.applyEdgeTargets(_cursorWrapEdges);
     final prefs = await _prefsWithRetry();
     await prefs.setString('cursorWrapEdges', jsonEncode(_cursorWrapEdges));
     notifyListeners();
@@ -52220,15 +52219,15 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'У вас уже есть этот план или выше.',
     },
     'paywall.proRequiredMonitor': {
-      'ja': 'サブモニターの回り込み (ルーティング) は Pro 以上のプランでご利用いただけます。',
-      'en': 'Cursor routing between monitors is available on the Pro plan or above.',
-      'zh': '显示器之间的光标回绕功能需要 Pro 或更高方案。',
-      'ko': '모니터 간 커서 이동(라우팅)은 Pro 이상 플랜에서 사용할 수 있습니다.',
-      'es': 'El enrutado del cursor entre monitores requiere el plan Pro o superior.',
-      'fr': 'Le routage du curseur entre \u00e9crans n\u00e9cessite le plan Pro ou sup\u00e9rieur.',
-      'de': 'Das Cursor-Routing zwischen Monitoren erfordert den Pro-Plan oder h\u00f6her.',
-      'pt': 'O roteamento do cursor entre monitores requer o plano Pro ou superior.',
-      'ru': 'Переход курсора между мониторами доступен в плане Pro и выше.',
+      'ja': 'アプリを閉じていてもサブモニターの回り込み (ルーティング) を効かせる機能は、 Pro 以上のプランでご利用いただけます。アプリを開いている間の回り込みは、 無料プランでもお使いいただけます。',
+      'en': 'Keeping cursor routing active while the app is closed is available on the Pro plan or above. Routing while the app is open works on the free plan.',
+      'zh': '在关闭应用后仍保持显示器之间的光标回绕，需要 Pro 或更高方案。应用开启期间的回绕在免费方案即可使用。',
+      'ko': '앱을 닫은 상태에서도 모니터 간 커서 이동(라우팅)을 유지하는 기능은 Pro 이상 플랜에서 사용할 수 있습니다. 앱을 열어 둔 동안의 이동은 무료 플랜에서도 사용할 수 있습니다.',
+      'es': 'Mantener el enrutado del cursor con la aplicación cerrada requiere el plan Pro o superior. Con la aplicación abierta funciona en el plan gratuito.',
+      'fr': "Conserver le routage du curseur lorsque l'application est fermée nécessite le plan Pro ou supérieur. Le routage fonctionne gratuitement tant que l'application est ouverte.",
+      'de': 'Das Cursor-Routing bei geschlossener App erfordert den Pro-Plan oder höher. Bei geöffneter App funktioniert es auch im kostenlosen Plan.',
+      'pt': 'Manter o roteamento do cursor com o aplicativo fechado requer o plano Pro ou superior. Com o aplicativo aberto, funciona no plano gratuito.',
+      'ru': 'Переход курсора между мониторами при закрытом приложении доступен в плане Pro и выше. Пока приложение открыто, он работает и на бесплатном плане.',
     },
     'paywall.proRequiredSplit': {
       'ja': '画面分割は無料プランで 2 回までご利用いただけます。3 回目以降は Pro 以上のプランへの加入が必要です。',
@@ -69209,11 +69208,17 @@ class MindMapProvider extends ChangeNotifier {
   /// Web の自動操作が使えるか (= ユーザー要望: Pro 以上限定)。
   bool get canUseWebAutomation => isProUnlocked;
 
-  /// サブモニターの回り込み (ルーティング) を使えるか。
-  /// = ユーザー要望「ディスプレイのサブモニターのルーティング機能も
-  ///   Pro プラン以上の限定機能に」。 設定そのものは残し、 プランが
-  ///   足りない間は効かせないだけにする (戻せば元の設定で復活する)。
-  bool get canUseMonitorRouting => isProUnlocked;
+  /// サブモニターの回り込み (ルーティング) を、 **アプリを開いている間**
+  /// 使えるか。
+  /// = ユーザー要望「アプリ起動時だけサブモニターへルーティングする機能は
+  ///   Free プランでも使えるように」。 開いている間だけなので無料。
+  bool get canUseMonitorRouting => true;
+
+  /// **アプリを閉じていても**回り込みを効かせられるか (= 常駐)。
+  /// = ユーザー要望「バックグラウンドでサブモニターへのルーティング機能を
+  ///   有効にすることを Pro プラン以上の機能に」。 設定そのものは残し、
+  ///   プランが足りない間は常駐を動かさないだけにする (戻せば復活する)。
+  bool get canUseMonitorRoutingDaemon => isProUnlocked;
 
   /// 今のプランに合わせて回り込みを効かせ直す。
   ///
@@ -69221,17 +69226,19 @@ class MindMapProvider extends ChangeNotifier {
   /// 使ってよいかの印もここで書いておく。
   Future<void> applyCursorWrapForPlan() async {
     if (kIsWeb || !Platform.isWindows) return;
-    final ok = canUseMonitorRouting;
     try {
-      // ★ 実際に効いているのは「辺ごとの行き先」 の方 (これが入っていると
-      //   全体のトグルが false でも回り込みは動く)。 プランが足りない時は
-      //   行き先も空にしないと、 閘が素通りになる。
-      CursorWrap.instance.applyEdgeTargets(ok ? _cursorWrapEdges : const {});
-      CursorWrap.instance.apply(_cursorWrapEnabled && ok);
+      // ★ アプリを開いている間の回り込みは無料 (= ユーザー要望)。
+      //   実際に効いているのは「辺ごとの行き先」 の方 (これが入っていると
+      //   全体のトグルが false でも回り込みは動く)。
+      CursorWrap.instance.applyEdgeTargets(_cursorWrapEdges);
+      CursorWrap.instance.apply(_cursorWrapEnabled);
     } catch (_) {}
     try {
+      // ★ 常駐 (アプリを閉じていても効かせる) だけが Pro 以上。
+      //   別プロセスなので prefs に印を書いて伝える。 プランが落ちたら
+      //   常駐は次の読み直しで自分から畳む。
       final prefs = await _prefsWithRetry();
-      await prefs.setBool('cursorWrapPlanOk', ok);
+      await prefs.setBool('cursorWrapPlanOk', canUseMonitorRoutingDaemon);
     } catch (_) {}
   }
 
@@ -83743,8 +83750,8 @@ $cleanQ
     // プランの読み込みは別経路なので、 ここでは今分かっている範囲で当て、
     //   プランが確定した時に applyBillingPlan からもう一度当て直す。
     CursorWrap.instance.applyEdgeTargets(
-        canUseMonitorRouting ? _cursorWrapEdges : const {});
-    CursorWrap.instance.apply(_cursorWrapEnabled && canUseMonitorRouting);
+        _cursorWrapEdges);
+    CursorWrap.instance.apply(_cursorWrapEnabled);
     // メモ欄一括折りたたみ (デフォルト false = 従来通り全文表示)
     _memoCollapsedGlobal = prefs.getBool('memoCollapsedGlobal') ?? false;
     // 動画ノードの重複生成許可フラグ (デフォルト false)

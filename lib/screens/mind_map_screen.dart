@@ -5163,9 +5163,14 @@ class _MindMapScreenState extends State<MindMapScreen>
       Future.delayed(const Duration(seconds: 6), () {
         if (!mounted) return;
         try {
-          if (context.read<MindMapProvider>().cursorWrapDaemon) {
+          final p = context.read<MindMapProvider>();
+          // ★ 常駐は Pro 以上限定 (= ユーザー要望)。 プランが落ちた後は
+          //   登録も外しておく (印だけだと、 次の起動でまた立ち上がる)。
+          if (p.cursorWrapDaemon && p.canUseMonitorRoutingDaemon) {
             // 置き場所が変わっていると空振りするので入れ直す。
             unawaited(_registerCursorWrapTask(true));
+          } else if (p.cursorWrapDaemon) {
+            unawaited(_registerCursorWrapTask(false));
           }
         } catch (_) {}
       });
@@ -72912,10 +72917,11 @@ class _MindMapScreenState extends State<MindMapScreen>
       // 見出しは出さない (= ユーザー要望: 上に「行き来する方向」 は書かなくてよい)。
       if (!kIsWeb && Platform.isWindows) ...[
         const SizedBox(height: 6),
-        // ★ サブモニターの回り込み (ルーティング) は Pro 以上限定
-        //   (= ユーザー要望)。 プランが足りない時は図も常駐も触れないように
-        //   薄く出し、 押したら加入の案内を出す。
-        if (!provider.canUseMonitorRouting)
+        // ★ アプリを開いている間の回り込みは無料 (= ユーザー要望)。
+        //   Pro 以上が要るのは「アプリを閉じていても効かせる」 (常駐) だけ
+        //   なので、 図はどのプランでも触れる。 案内はその下の常駐の
+        //   トグルにだけ出す。
+        if (!provider.canUseMonitorRoutingDaemon)
           InkWell(
             borderRadius: BorderRadius.circular(10),
             onTap: () {
@@ -72948,13 +72954,7 @@ class _MindMapScreenState extends State<MindMapScreen>
               ]),
             ),
           ),
-        IgnorePointer(
-          ignoring: !provider.canUseMonitorRouting,
-          child: Opacity(
-            opacity: provider.canUseMonitorRouting ? 1 : 0.4,
-            child: _MonitorEdgeSettings(provider: provider),
-          ),
-        ),
+        _MonitorEdgeSettings(provider: provider),
         // ── 「サブモニターに両サイドからアクセス」 のトグルは削除 ──
         //    = ユーザー要望「上の図から設定すればいいから項目としては削除」。
         //    図で行き先を決めた辺だけが働く。
@@ -72969,10 +72969,12 @@ class _MindMapScreenState extends State<MindMapScreen>
               : Colors.white54,
           title: provider.t('cursorWrap.daemon'),
           helpKey: 'cursorWrap.daemonHelp',
-          value: provider.cursorWrapDaemon && provider.canUseMonitorRouting,
+          value: provider.cursorWrapDaemon &&
+              provider.canUseMonitorRoutingDaemon,
           onChanged: (v) async {
-            // Pro 以上限定 (= ユーザー要望)。 足りない時は加入の案内へ。
-            if (!provider.canUseMonitorRouting) {
+            // ★ 常駐だけが Pro 以上限定 (= ユーザー要望)。 足りない時は
+            //   加入の案内へ。 アプリを開いている間の回り込みは無料。
+            if (!provider.canUseMonitorRoutingDaemon) {
               Navigator.of(sheetCtx).pop();
               _showPaywallDialog(provider,
                   bodyOverride: provider.t('paywall.proRequiredMonitor'));
@@ -97248,6 +97250,20 @@ class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
     final p = widget.provider;
     final choices = cells.values.where((v) => v != monIndex).toList()..sort();
     final key = '$monIndex:$edge';
+    // ★ 行き先の候補が 1 つしかない (= モニターが 2 枚) 時は、 選ばせても
+    //   意味が無いので、 その場で入切する (= ユーザー要望)。
+    if (choices.length == 1) {
+      final only = choices.first;
+      setState(() {
+        if (_edges[key] == only) {
+          _edges.remove(key);
+        } else {
+          _edges[key] = only;
+        }
+      });
+      _save();
+      return;
+    }
     // 画面の真ん中ではなく、 押した辺のすぐ近くに出す (= ユーザー要望)。
     final scr = MediaQuery.sizeOf(context);
     const w = 190.0;
