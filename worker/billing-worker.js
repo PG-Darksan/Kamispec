@@ -448,6 +448,19 @@ async function handleChangePlan(request, env, preview) {
     (planRank(plan) === planRank(curPlan) && yearly && curInterval === 'month');
   const prorationBehavior = up ? 'always_invoice' : 'create_prorations';
 
+  // ★ 年 ⇄ 月 のように**請求の間隔が変わる**時は、 起点を今に引き直す
+  //   (= ユーザー報告: 年額の Pro から月額の Max に変えると請求が $0.00 に
+  //   なり、 次の支払日が 1 年先のままだった)。
+  //
+  //   起点を据え置いたままだと、 期間の終わりが年額の更新日 (1 年先) の
+  //   ままになる。 そこへ月額の値段を当てるので、 「使っていない年額分の
+  //   戻し」 が「残り期間ぶんの月額」 を上回り、 請求は 0 円。 そのうえ
+  //   次の請求は 1 年後 — つまり Pro 年額の代金で Max を 1 年使えてしまう。
+  //   間隔が同じ時 (月→月 / 年→年) は今までどおり支払日を動かさない。
+  const newInterval = yearly ? 'year' : 'month';
+  const intervalChanged = newInterval !== curInterval;
+  const anchor = intervalChanged ? 'now' : 'unchanged';
+
   // ── 見積もり: いくら請求されるかだけを出す (契約は変えない) ──
   if (preview) {
     // ★ 変更後、 次の請求日から掛かる「通常の料金」 も返す
@@ -471,6 +484,8 @@ async function handleChangePlan(request, env, preview) {
       'subscription_details[items][0][price]': priceId,
       'subscription_details[proration_behavior]': prorationBehavior,
       'subscription_details[proration_date]': String(prorationDate),
+      // 本実行と同じ条件で見積もる (額がずれないように)。
+      'subscription_details[billing_cycle_anchor]': anchor,
     });
     // ★ create_preview は新しい API 版にしか無い。 アカウントの既定の
     //   API 版が古いと「Unrecognized request URL」 で落ち、 額が出せない
@@ -487,6 +502,7 @@ async function handleChangePlan(request, env, preview) {
         'subscription_items[0][price]': priceId,
         subscription_proration_behavior: prorationBehavior,
         subscription_proration_date: String(prorationDate),
+        subscription_billing_cycle_anchor: anchor,
       }).toString();
       pv = await stripeApiGet(env, `invoices/upcoming?${q}`);
     }
@@ -512,6 +528,7 @@ async function handleChangePlan(request, env, preview) {
         nextAmount,
         nextCurrency,
         nextInterval,
+        anchorReset: intervalChanged,
       });
     }
     if (!pv || pv.error) {
@@ -532,6 +549,11 @@ async function handleChangePlan(request, env, preview) {
       nextAmount,
       nextCurrency,
       nextInterval,
+      // 支払日が今に引き直されるか (= 年 ⇄ 月 で間隔が変わる時)。
+      anchorReset: intervalChanged,
+      // 引き直した時の次の請求日 (秒)。 今 + 1 か月 / 1 年。
+      nextPeriodEnd:
+        pv && typeof pv.period_end === 'number' ? pv.period_end : null,
     });
   }
 
@@ -541,8 +563,9 @@ async function handleChangePlan(request, env, preview) {
     'items[0][price]': priceId,
     // 上げる時はその場で差額を請求。 下げる時は控えとして戻すだけ。
     proration_behavior: prorationBehavior,
-    // 支払日は動かさない (= Android と同じ)。
-    billing_cycle_anchor: 'unchanged',
+    // 支払日は動かさない (= Android と同じ)。 ただし年 ⇄ 月 で間隔が
+    // 変わる時だけは今に引き直す (上の説明を参照)。
+    billing_cycle_anchor: anchor,
     // 払えなかったらプランを変えない。
     payment_behavior: 'error_if_incomplete',
     // 後から来る webhook がプランを取り違えないように控える。
@@ -567,6 +590,7 @@ async function handleChangePlan(request, env, preview) {
   return json({
     plan,
     prorated: up,
+    anchorReset: intervalChanged,
     subscription: normalizeSubscription(updated),
   });
 }

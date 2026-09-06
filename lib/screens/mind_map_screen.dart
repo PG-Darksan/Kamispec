@@ -7207,6 +7207,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     _drawerListScrollCtrl.dispose();
     _timelineDrawerScrollCtrl?.dispose();
     _timelineDragAutoScrollTimer?.cancel();
+    _purchasePollTimer?.cancel();
     _todoInputCtrl.dispose();
     _todoEditCtrl.dispose();
     _todoEditFocus.dispose();
@@ -16753,10 +16754,17 @@ class _MindMapScreenState extends State<MindMapScreen>
     //   満額が引き落とされることも明記して欲しい)。 サーバーが額を返せた
     //   時だけ出す。
     var nextChargeText = '';
+    // ★ 年 ⇄ 月 で請求の間隔が変わる時は、 支払日が今に引き直される
+    //   (= サーバーが anchorReset を返す)。 その時は「変わりません」 とは
+    //   書かず、 新しい支払日を出す。
+    final anchorReset = pv['anchorReset'] == true;
     final nextAmount = pv['nextAmount'];
     if (nextAmount is num) {
       final nextCur = '${pv['nextCurrency'] ?? cur}';
-      final endSec = sub['currentPeriodEnd'];
+      // 引き直す時はサーバーが返した新しい期間の終わり、 据え置く時は
+      // 今の契約の期間の終わり。
+      final endSec =
+          anchorReset ? pv['nextPeriodEnd'] : sub['currentPeriodEnd'];
       var dateText = '';
       if (endSec is num && endSec > 0) {
         final d = DateTime.fromMillisecondsSinceEpoch(endSec.toInt() * 1000);
@@ -16788,11 +16796,23 @@ class _MindMapScreenState extends State<MindMapScreen>
                 provider
                     .t(amountUnknown
                         ? 'plan.changeAmountUnknown'
-                        : (up ? 'plan.changeUpBody' : 'plan.changeDownBody'))
+                        : (up
+                            ? (anchorReset
+                                ? 'plan.changeUpBodyNewCycle'
+                                : 'plan.changeUpBody')
+                            : 'plan.changeDownBody'))
                     .replaceFirst('{plan}', label)
                     .replaceFirst('{amount}', amountText),
                 style: const TextStyle(
                     color: Colors.white70, fontSize: 13, height: 1.6)),
+            // 使い残しがある時は、 それが控えとして次以降に充てられる事も
+            // 添える (= 年額から月額へ移った人が「返金は?」 と迷わないよう)。
+            if (anchorReset) ...[
+              const SizedBox(height: 8),
+              Text(provider.t('plan.changeCreditNote'),
+                  style: const TextStyle(
+                      color: Colors.white38, fontSize: 11.5, height: 1.5)),
+            ],
             // 上げる時は金額をもう一度大きく出す (見落とさないように)。
             if (up && amountText.isNotEmpty) ...[
               const SizedBox(height: 14),
@@ -16889,6 +16909,38 @@ class _MindMapScreenState extends State<MindMapScreen>
     return true;
   }
 
+  /// 決済が反映されるまで、 開いたまま定期的に権利を取りに行く見張り。
+  Timer? _purchasePollTimer;
+
+  /// 見張りを始める。 プランが変わったら止まる。 変わらなくても
+  /// [limit] で必ず止まる (ブラウザを閉じて買わなかった時のため)。
+  void _startPurchasePolling(
+    MindMapProvider provider, {
+    Duration every = const Duration(seconds: 8),
+    Duration limit = const Duration(minutes: 20),
+  }) {
+    final startPlan = provider.purchasedPlan;
+    final until = DateTime.now().add(limit);
+    _purchasePollTimer?.cancel();
+    _purchasePollTimer = Timer.periodic(every, (t) {
+      if (!mounted) {
+        t.cancel();
+        _purchasePollTimer = null;
+        return;
+      }
+      final p = context.read<MindMapProvider>();
+      // 反映された / 時間切れ → 止める。
+      if (p.purchasedPlan != startPlan || DateTime.now().isAfter(until)) {
+        t.cancel();
+        _purchasePollTimer = null;
+        return;
+      }
+      unawaited(p.syncEntitlementFromServer());
+    });
+    // 最初の 1 回はすぐ。
+    unawaited(provider.syncEntitlementFromServer());
+  }
+
   Future<void> _startStripeCheckout(
       MindMapProvider provider, String plan, bool yearly) async {
     // ★ 先にログイン (= 端末をまたいでプランを持ち運べるように) と、
@@ -16910,14 +16962,13 @@ class _MindMapScreenState extends State<MindMapScreen>
     );
     if (!mounted) return;
     if (ok) {
-      // 決済完了までの猶予を見て何度か権利を取りに行く (Webhook 反映待ち)。
-      for (final sec in const [8, 20, 40, 70, 120]) {
-        Future.delayed(Duration(seconds: sec), () {
-          if (!mounted) return;
-          // ignore: discarded_futures
-          provider.syncEntitlementFromServer();
-        });
-      }
+      // 決済が済むまで見張る (= ユーザー報告: ブラウザで決済を終えても、
+      //   アプリの画面を一度隠してから出さないと「適用されました」 が
+      //   出ない)。 以前は 8〜120 秒の決め打ちで取りに行くだけだったので、
+      //   カード入力や 3D セキュアで 2 分を超えると取りこぼしていた。
+      //   その後は画面を出し直した時 (resumed) しか取りに行かないため、
+      //   隠して出すまで気付かなかった。
+      _startPurchasePolling(provider);
     }
     _appSnack(
       context,

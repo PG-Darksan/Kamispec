@@ -41943,6 +41943,58 @@ class MindMapProvider extends ChangeNotifier {
     // 変更した後、 次の請求日から掛かる通常の料金 (= ユーザー要望:
     //   差額だけでなく、 次の決済日にまた満額が引き落とされることも
     //   はっきり書いておいて欲しい)。
+    'plan.changeUpBodyNewCycle': {
+      'ja': '{plan} に変更します。\n\n'
+          '今すぐ {amount} が登録済みのカードに請求されます。'
+          '（残り期間の差額）\n'
+          'お支払いの周期が変わるため、 お支払い日は今日から数え直しになります。',
+      'en': 'Change to {plan}.\n\n'
+          '{amount} will be charged to your saved card right now '
+          '(the difference for the remaining period).\n'
+          'Because the billing interval changes, your billing date restarts '
+          'from today.',
+      'zh': '更改为 {plan}。\n\n现在将向已登记的银行卡收取 {amount}（剩余期间的差额）。\n'
+          '由于账单周期发生变化，账单日将从今天重新计算。',
+      'ko': '{plan} 으로 변경합니다.\n\n지금 등록된 카드로 {amount} 가 청구됩니다'
+          '(남은 기간의 차액).\n결제 주기가 바뀌므로 결제일은 오늘부터 다시 계산됩니다.',
+      'es': 'Cambiar a {plan}.\n\nSe cobrarán {amount} a tu tarjeta ahora '
+          '(la diferencia del periodo restante).\n'
+          'Como cambia el intervalo de facturación, tu fecha de cobro se '
+          'reinicia hoy.',
+      'fr': 'Passer à {plan}.\n\n{amount} sera débité maintenant '
+          '(différence pour la période restante).\n'
+          "L'intervalle de facturation changeant, votre date de prélèvement "
+          "repart d'aujourd'hui.",
+      'de': 'Auf {plan} wechseln.\n\n{amount} wird jetzt abgebucht '
+          '(Differenz für den restlichen Zeitraum).\n'
+          'Da sich das Abrechnungsintervall ändert, beginnt Ihr '
+          'Abrechnungsdatum ab heute neu.',
+      'pt': 'Alterar para {plan}.\n\n{amount} será cobrado no cartão agora '
+          '(a diferença do período restante).\n'
+          'Como o intervalo de cobrança muda, sua data de cobrança recomeça '
+          'hoje.',
+      'ru': 'Переход на {plan}.\n\nСейчас с карты спишется {amount} '
+          '(разница за оставшийся период).\n'
+          'Поскольку меняется период оплаты, дата списания отсчитывается '
+          'заново с сегодняшнего дня.',
+    },
+    'plan.changeCreditNote': {
+      'ja': '前のプランの使い残しは返金ではなく、 次回以降のお支払いに充てられます。',
+      'en': 'Unused time on your previous plan is not refunded; it is applied '
+          'to your upcoming charges.',
+      'zh': '上一方案的未使用部分不予退款，将抵扣后续账单。',
+      'ko': '이전 플랜의 남은 기간은 환불되지 않고 다음 결제에 충당됩니다.',
+      'es': 'El tiempo no usado del plan anterior no se reembolsa; se aplica a '
+          'tus próximos cobros.',
+      'fr': "Le temps non utilisé de l'ancien forfait n'est pas remboursé : il "
+          'est déduit de vos prochains prélèvements.',
+      'de': 'Nicht genutzte Zeit des bisherigen Plans wird nicht erstattet, '
+          'sondern mit künftigen Abbuchungen verrechnet.',
+      'pt': 'O tempo não usado do plano anterior não é reembolsado; é aplicado '
+          'às cobranças seguintes.',
+      'ru': 'Неиспользованное время прежнего плана не возвращается, а идёт в '
+          'счёт следующих списаний.',
+    },
     'plan.changeNextChargeMonthly': {
       'ja': '次回のお支払い日 ({date}) からは、 月額 {amount} が請求されます。',
       'en': 'From your next billing date ({date}), {amount} is charged every month.',
