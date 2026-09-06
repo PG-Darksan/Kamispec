@@ -16782,6 +16782,40 @@ class _MindMapScreenState extends State<MindMapScreen>
       }
     }
 
+    // ── 期間の図 (= ユーザー要望: 期限が異なるサブスクに移る時、 掛かる
+    //    期間を数学の範囲を表す図のように図解で) ──
+    //    下の帯 = これから掛かる新しいプランの期間、
+    //    上の帯 = 既に払ってある前のプランの期限まで。
+    //    支払日を引き直さない時 (= 期間が変わらない) は出さない。
+    Widget? periodDiagram;
+    {
+      final newEndSec =
+          anchorReset ? pv['nextPeriodEnd'] : sub['currentPeriodEnd'];
+      final paidSec = sub['currentPeriodEnd'];
+      if (anchorReset && newEndSec is num && newEndSec > 0) {
+        final now = DateTime.now();
+        final newEnd =
+            DateTime.fromMillisecondsSinceEpoch(newEndSec.toInt() * 1000);
+        DateTime? paidThrough;
+        if (paidSec is num && paidSec > 0) {
+          final d =
+              DateTime.fromMillisecondsSinceEpoch(paidSec.toInt() * 1000);
+          // 新しい期間より先まで払ってある時だけ、 上の帯を出す。
+          if (d.isAfter(newEnd.add(const Duration(days: 1)))) paidThrough = d;
+        }
+        periodDiagram = _PlanPeriodDiagram(
+          today: now,
+          newEnd: newEnd,
+          paidThrough: paidThrough,
+          newLabel: provider
+              .t(yearly ? 'plan.diagramNewYearly' : 'plan.diagramNewMonthly')
+              .replaceFirst('{plan}', label),
+          paidLabel: provider.t('plan.diagramPaid'),
+          todayLabel: provider.t('plan.diagramToday'),
+        );
+      }
+    }
+
     final go = await showDialog<bool>(
       context: context,
       builder: (dctx) => AlertDialog(
@@ -16805,6 +16839,12 @@ class _MindMapScreenState extends State<MindMapScreen>
                     .replaceFirst('{amount}', amountText),
                 style: const TextStyle(
                     color: Colors.white70, fontSize: 13, height: 1.6)),
+            // ── 期間の図 (= ユーザー要望: 期限が異なるサブスクに移る時、
+            //    掛かる期間を数直線の図で分かりやすく) ──
+            if (periodDiagram != null) ...[
+              const SizedBox(height: 12),
+              periodDiagram,
+            ],
             // 使い残しがある時は、 それが控えとして次以降に充てられる事も
             // 添える (= 年額から月額へ移った人が「返金は?」 と迷わないよう)。
             if (anchorReset) ...[
@@ -16891,8 +16931,9 @@ class _MindMapScreenState extends State<MindMapScreen>
           duration: const Duration(seconds: 5),
         ),
       );
-      // ignore: discarded_futures
-      provider.syncEntitlementFromServer();
+      // ★ 差し替えは即時に通るが、 権利情報の書き戻しは webhook 経由なので
+      //   少し遅れる。 反映されるまで見張る (= ユーザー要望: 適用までが長い)。
+      _startPurchasePolling(provider, limit: const Duration(minutes: 3));
     } catch (e) {
       if (!mounted) return true;
       _appSnack(
@@ -16916,7 +16957,9 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// [limit] で必ず止まる (ブラウザを閉じて買わなかった時のため)。
   void _startPurchasePolling(
     MindMapProvider provider, {
-    Duration every = const Duration(seconds: 8),
+    // ★ 3 秒ごと (= ユーザー要望: 適用までが長い)。 権利の照会は軽い
+    //   問い合わせ 1 本なので、 この間隔でも負担にならない。
+    Duration every = const Duration(seconds: 3),
     Duration limit = const Duration(minutes: 20),
   }) {
     final startPlan = provider.purchasedPlan;
@@ -97116,6 +97159,183 @@ class _AudioOutputInlineState extends State<_AudioOutputInline> {
 ///
 /// 並びは上の図と同じ「左上から順」。 拡大率は Windows が返した範囲の中
 /// だけを選ばせる (勝手な値は入れない)。
+/// プラン変更で「いつからいつまで」 がどう変わるかを、 数直線の図で出す
+/// (= ユーザー要望: 期限が異なるサブスクを契約する時に分かりやすくする為、
+/// 掛かる期間を数学の範囲を表す図のように図解で)。
+///
+/// 上の帯 … 既に払ってある期間 (前のプランの期限まで)
+/// 下の帯 … これから掛かる新しいプランの期間 (次の支払日まで)
+/// 重なっている所が「使い残し」 で、 返金ではなく次回以降に充てられる。
+class _PlanPeriodDiagram extends StatelessWidget {
+  final DateTime today;
+
+  /// 新しいプランの次の支払日。
+  final DateTime newEnd;
+
+  /// 前のプランで既に払ってある期限 (無い / 同じなら null)。
+  final DateTime? paidThrough;
+
+  final String newLabel;
+  final String paidLabel;
+  final String todayLabel;
+  const _PlanPeriodDiagram({
+    required this.today,
+    required this.newEnd,
+    required this.paidThrough,
+    required this.newLabel,
+    required this.paidLabel,
+    required this.todayLabel,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: paidThrough == null ? 74 : 96,
+      width: double.infinity,
+      child: CustomPaint(
+        painter: _PlanPeriodPainter(
+          today: today,
+          newEnd: newEnd,
+          paidThrough: paidThrough,
+          newLabel: newLabel,
+          paidLabel: paidLabel,
+          todayLabel: todayLabel,
+        ),
+      ),
+    );
+  }
+}
+
+class _PlanPeriodPainter extends CustomPainter {
+  final DateTime today;
+  final DateTime newEnd;
+  final DateTime? paidThrough;
+  final String newLabel;
+  final String paidLabel;
+  final String todayLabel;
+  _PlanPeriodPainter({
+    required this.today,
+    required this.newEnd,
+    required this.paidThrough,
+    required this.newLabel,
+    required this.paidLabel,
+    required this.todayLabel,
+  });
+
+  static const _accent = Color(0xFF43B97F); // 新しいプラン
+  static const _paid = Color(0xFF4FC3F7); // 既に払ってある分
+  static const _axis = Color(0x66FFFFFF);
+
+  void _text(Canvas c, String s, Offset at, Color color,
+      {double size = 9.5, bool center = false, double maxW = 120}) {
+    final tp = TextPainter(
+      text: TextSpan(
+          text: s, style: TextStyle(color: color, fontSize: size, height: 1.2)),
+      textDirection: TextDirection.ltr,
+      maxLines: 1,
+      ellipsis: '…',
+    )..layout(maxWidth: maxW);
+    tp.paint(c, center ? at.translate(-tp.width / 2, 0) : at);
+  }
+
+  String _ymd(DateTime d) =>
+      '${d.year}/${d.month.toString().padLeft(2, '0')}/'
+      '${d.day.toString().padLeft(2, '0')}';
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    const padL = 14.0, padR = 20.0;
+    final x0 = padL;
+    final x1 = size.width - padR;
+    if (x1 <= x0) return;
+
+    // 目盛りの範囲。 いちばん先の日付まで。
+    final t0 = today.millisecondsSinceEpoch.toDouble();
+    final ends = <double>[newEnd.millisecondsSinceEpoch.toDouble()];
+    if (paidThrough != null) {
+      ends.add(paidThrough!.millisecondsSinceEpoch.toDouble());
+    }
+    final tMax = ends.reduce((a, b) => a > b ? a : b);
+    final span = (tMax - t0).abs() < 1 ? 1.0 : (tMax - t0);
+    double xOf(DateTime d) {
+      final r = (d.millisecondsSinceEpoch - t0) / span;
+      return x0 + r.clamp(0.0, 1.0) * (x1 - x0);
+    }
+
+    final hasPaid = paidThrough != null;
+    // 帯の高さ。 上=既払い / 下=新しいプラン。
+    final yPaid = hasPaid ? 16.0 : 0.0;
+    final yNew = hasPaid ? 40.0 : 20.0;
+    final yAxis = hasPaid ? 64.0 : 44.0;
+
+    final line = Paint()
+      ..color = _axis
+      ..strokeWidth = 1.2;
+    // ── 数直線 (右向きの矢印) ──
+    canvas.drawLine(Offset(x0 - 4, yAxis), Offset(x1 + 10, yAxis), line);
+    final arrow = Path()
+      ..moveTo(x1 + 10, yAxis)
+      ..lineTo(x1 + 3, yAxis - 3.5)
+      ..lineTo(x1 + 3, yAxis + 3.5)
+      ..close();
+    canvas.drawPath(arrow, Paint()..color = _axis);
+
+    /// 1 本の範囲を描く。 端は「その日を含む」 ので塗り潰した丸。
+    void band(double y, double xa, double xb, Color color, String label) {
+      final p = Paint()
+        ..color = color
+        ..strokeWidth = 2.4
+        ..strokeCap = StrokeCap.round;
+      canvas.drawLine(Offset(xa, y), Offset(xb, y), p);
+      // 端の縦棒 (数学の図と同じく、 範囲の切れ目を示す)
+      final tick = Paint()
+        ..color = color
+        ..strokeWidth = 1.4;
+      canvas.drawLine(Offset(xa, y - 4), Offset(xa, yAxis), tick);
+      canvas.drawLine(Offset(xb, y - 4), Offset(xb, yAxis), tick);
+      final dot = Paint()..color = color;
+      canvas.drawCircle(Offset(xa, y), 3.2, dot);
+      canvas.drawCircle(Offset(xb, y), 3.2, dot);
+      _text(canvas, label, Offset(xa + 6, y - 13), color,
+          maxW: (xb - xa - 8).clamp(40.0, 220.0));
+    }
+
+    if (hasPaid) {
+      band(yPaid, xOf(today), xOf(paidThrough!), _paid, paidLabel);
+    }
+    band(yNew, xOf(today), xOf(newEnd), _accent, newLabel);
+
+    // ── 目盛りの日付 ──
+    _text(canvas, todayLabel, Offset(xOf(today), yAxis + 5), Colors.white70,
+        center: true, maxW: 90);
+    final xNew = xOf(newEnd);
+    final xToday = xOf(today);
+    // 今日の文字と重なる時は少し右へ逃がす。
+    _text(canvas, _ymd(newEnd),
+        Offset((xNew - xToday) < 46 ? xToday + 52 : xNew, yAxis + 5),
+        _accent,
+        center: true, maxW: 90);
+    if (hasPaid) {
+      final xPaid = xOf(paidThrough!);
+      if ((xPaid - xNew).abs() > 40) {
+        _text(canvas, _ymd(paidThrough!), Offset(xPaid, yAxis + 19), _paid,
+            center: true, maxW: 90);
+      } else {
+        _text(canvas, _ymd(paidThrough!), Offset(xPaid, yAxis + 19), _paid,
+            center: true, maxW: 90);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _PlanPeriodPainter old) =>
+      old.today != today ||
+      old.newEnd != newEnd ||
+      old.paidThrough != paidThrough ||
+      old.newLabel != newLabel ||
+      old.paidLabel != paidLabel;
+}
+
 class _MonitorDisplaySettings extends StatefulWidget {
   final MindMapProvider provider;
   const _MonitorDisplaySettings({required this.provider});
@@ -97131,10 +97351,120 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
   String? _msg;
   bool _msgError = false;
 
+  /// 畳んでいるか (= ユーザー要望: 拡大率や壁紙の項目は折りたためるように)。
+  bool _open = false;
+  static const String _kOpenKey = 'displaySettingsOpen';
+
+  /// まだ繋いでいない画面ぶんの予約
+  /// (= ユーザー要望: サブモニターが接続されていない時でも、 拡大率や
+  ///  壁紙を予め設定しておけるように)。
+  ///
+  /// 鍵は画面の番号 (上の配置図と同じ並び)。 その番号の画面が実際に
+  /// 繋がった時に当てに行く ([_applyPending])。
+  Map<int, int> _pendingScale = {};
+  Map<int, String> _pendingWall = {};
+  static const String _kPendingScaleKey = 'displayPendingScale';
+  static const String _kPendingWallKey = 'displayPendingWallpaper';
+
   @override
   void initState() {
     super.initState();
+    unawaited(_loadPrefs());
     _reload();
+  }
+
+  Future<void> _loadPrefs() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final open = sp.getBool(_kOpenKey) ?? false;
+      final ms = <int, int>{};
+      final mw = <int, String>{};
+      final rawS = sp.getString(_kPendingScaleKey) ?? '';
+      if (rawS.isNotEmpty) {
+        final m = jsonDecode(rawS);
+        if (m is Map) {
+          m.forEach((k, v) {
+            final i = int.tryParse('$k');
+            final n = v is int ? v : int.tryParse('$v');
+            if (i != null && n != null) ms[i] = n;
+          });
+        }
+      }
+      final rawW = sp.getString(_kPendingWallKey) ?? '';
+      if (rawW.isNotEmpty) {
+        final m = jsonDecode(rawW);
+        if (m is Map) {
+          m.forEach((k, v) {
+            final i = int.tryParse('$k');
+            if (i != null && '$v'.isNotEmpty) mw[i] = '$v';
+          });
+        }
+      }
+      if (!mounted) return;
+      setState(() {
+        _open = open;
+        _pendingScale = ms;
+        _pendingWall = mw;
+      });
+      _applyPending();
+    } catch (_) {}
+  }
+
+  Future<void> _savePending() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setString(_kPendingScaleKey,
+          jsonEncode(_pendingScale.map((k, v) => MapEntry('$k', v))));
+      await sp.setString(_kPendingWallKey,
+          jsonEncode(_pendingWall.map((k, v) => MapEntry('$k', v))));
+    } catch (_) {}
+  }
+
+  /// 予約のうち、 今つながっている画面のぶんを当てる。 当てた分は外す。
+  void _applyPending() {
+    if (_pendingScale.isEmpty && _pendingWall.isEmpty) return;
+    var changed = false;
+    for (final e in Map<int, int>.from(_pendingScale).entries) {
+      final i = e.key;
+      if (i < 0 || i >= _scales.length) continue;
+      final mon = _scales[i];
+      if (mon.current == e.value) {
+        _pendingScale.remove(i);
+        changed = true;
+        continue;
+      }
+      if (!mon.choices.contains(e.value)) continue;
+      if (DisplayControl.setScale(mon, e.value)) {
+        _pendingScale.remove(i);
+        changed = true;
+      }
+    }
+    for (final e in Map<int, String>.from(_pendingWall).entries) {
+      final i = e.key;
+      if (i < 0 || i >= _walls.length) continue;
+      if (DisplayControl.setWallpaper(_walls[i].id, e.value)) {
+        _pendingWall.remove(i);
+        changed = true;
+      }
+    }
+    if (!changed || !mounted) return;
+    unawaited(_savePending());
+    setState(() {
+      _scales = DisplayControl.listScales();
+      _walls = DisplayControl.listWallpaperMonitors();
+      _wallStamp++;
+    });
+  }
+
+  /// 出す行の数。 上の配置図に置いた数と、 実際に繋がっている数の多い方。
+  /// これで「まだ繋いでいない 2 番」 の行も出せる。
+  int get _slotCount {
+    var maxNo = 0;
+    for (final v in widget.provider.cursorWrapPlacement.values) {
+      if (v + 1 > maxNo) maxNo = v + 1;
+    }
+    final real = _scales.length > _walls.length ? _scales.length : _walls.length;
+    return maxNo > real ? maxNo : real;
   }
 
   void _reload() {
@@ -97143,6 +97473,8 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
       _scales = DisplayControl.listScales();
       _walls = DisplayControl.listWallpaperMonitors();
     });
+    // 繋ぎ直した直後なら、 予約していた設定をここで当てる。
+    _applyPending();
   }
 
   void _tell(String text, {bool error = false}) {
@@ -97163,7 +97495,9 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
     _reload();
   }
 
-  Future<void> _pickWallpaper(WallpaperMonitor? mon) async {
+  /// [slot] を渡すと、 まだ繋いでいない画面ぶんは控えるだけにする
+  /// (= ユーザー要望: 接続されていない時でも予め設定しておけるように)。
+  Future<void> _pickWallpaper(WallpaperMonitor? mon, {int? slot}) async {
     try {
       final res = await FilePicker.platform.pickFiles(
         type: FileType.custom,
@@ -97171,6 +97505,15 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
       );
       final path = res?.files.single.path;
       if (path == null || path.isEmpty) return;
+      if (mon == null && slot != null) {
+        setState(() {
+          _pendingWall[slot] = path;
+          _wallStamp++;
+        });
+        unawaited(_savePending());
+        _tell(widget.provider.t('display.savedForLater'));
+        return;
+      }
       final ok = DisplayControl.setWallpaper(mon?.id, path);
       if (!mounted) return;
       _tell(
@@ -97209,152 +97552,147 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
         border: Border.all(color: Colors.white12),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          const Icon(Icons.tune_rounded, color: Color(0xFF4FC3F7), size: 16),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Text(p.t('display.title'),
-                style: const TextStyle(
-                    color: Color(0xFF4FC3F7),
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700)),
+        // ★ 見出しを押すと畳む / 開く (= ユーザー要望)。 更新ボタンは
+        //   消した (開き直す時に読み直すので、 押す意味が無かった)。
+        InkWell(
+          borderRadius: BorderRadius.circular(6),
+          onTap: () async {
+            setState(() => _open = !_open);
+            if (_open) _reload();
+            try {
+              final sp = await SharedPreferences.getInstance();
+              await sp.setBool(_kOpenKey, _open);
+            } catch (_) {}
+          },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Row(children: [
+              const Icon(Icons.tune_rounded,
+                  color: Color(0xFF4FC3F7), size: 16),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(p.t('display.title'),
+                    style: const TextStyle(
+                        color: Color(0xFF4FC3F7),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700)),
+              ),
+              Icon(
+                  _open
+                      ? Icons.expand_less_rounded
+                      : Icons.expand_more_rounded,
+                  size: 18,
+                  color: const Color(0xFF4FC3F7)),
+            ]),
           ),
-          IconButton(
-            tooltip: p.t('btn.refresh'),
-            visualDensity: VisualDensity.compact,
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-            icon: const Icon(Icons.refresh_rounded,
-                size: 16, color: Colors.white54),
-            onPressed: _busy ? null : _reload,
-          ),
-        ]),
+        ),
+        if (!_open) const SizedBox.shrink(),
         // ── 拡大率 ──
-        if (_scales.isNotEmpty) ...[
+        if (_open) ...[
           label(p.t('display.scale')),
-          for (var i = 0; i < _scales.length; i++)
+          // ★ 繋いでいない画面ぶんの行も出す (= ユーザー要望: 予め設定して
+          //   おけるように)。 その行で選んだ値は控えておき、 実際に繋がった
+          //   時に当てる。
+          for (var i = 0; i < _slotCount; i++)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(width: 118, child: _slotName(i)),
+                  Expanded(
+                    child: Wrap(spacing: 5, runSpacing: 5, children: [
+                      if (i < _scales.length)
+                        for (final v in _scales[i].choices)
+                          _pctChip(v, _scales[i], p)
+                      else
+                        for (final v in DisplayControl.commonScales)
+                          _pendingPctChip(i, v),
+                    ]),
+                  ),
+                ],
+              ),
+            ),
+          // ── 壁紙 ──
+          label(p.t('display.wallpaper')),
+          for (var i = 0; i < _slotCount; i++)
             Padding(
               padding: const EdgeInsets.only(bottom: 6),
               child: Row(children: [
-                SizedBox(
-                  width: 118,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(_monLabel(i, _scales[i].left, _scales[i].top),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                              color: Colors.white70,
-                              fontSize: 11.5,
-                              fontWeight: FontWeight.w700)),
-                      Text('${_scales[i].width}×${_scales[i].height}',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                              color: Colors.white38, fontSize: 10)),
-                    ],
-                  ),
-                ),
+                SizedBox(width: 118, child: _slotName(i)),
+                // ── 今貼っている絵 (まだ繋いでいない画面は、 予約した絵)
+                //    の見本 (= ユーザー要望) ──
+                _wallPreview(i < _walls.length
+                    ? _walls[i].currentPath
+                    : _pendingWall[i]),
+                const SizedBox(width: 8),
                 Expanded(
-                  child: Wrap(spacing: 5, runSpacing: 5, children: [
-                    for (final v in _scales[i].choices)
-                      _pctChip(v, _scales[i], p),
-                  ]),
+                  child: Text(
+                      ((i < _walls.length
+                                  ? _walls[i].currentPath
+                                  : _pendingWall[i]) ??
+                              '')
+                          .split(RegExp(r'[\\/]'))
+                          .last,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: Colors.white38, fontSize: 10.5)),
+                ),
+                TextButton(
+                  onPressed: _busy
+                      ? null
+                      : () => unawaited(_pickWallpaper(
+                          i < _walls.length ? _walls[i] : null,
+                          slot: i)),
+                  style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(horizontal: 8)),
+                  child: Text(p.t('display.pickImage'),
+                      style: const TextStyle(
+                          color: Color(0xFF4FC3F7), fontSize: 11.5)),
                 ),
               ]),
             ),
-        ],
-        // ── 壁紙 ──
-        label(p.t('display.wallpaper')),
-        for (var i = 0; i < _walls.length; i++)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 6),
-            child: Row(children: [
-              SizedBox(
-                width: 118,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(_monLabel(i, _walls[i].left, _walls[i].top),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            color: Colors.white70,
-                            fontSize: 11.5,
-                            fontWeight: FontWeight.w700)),
-                    Text('${_walls[i].width}×${_walls[i].height}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            color: Colors.white38, fontSize: 10)),
-                  ],
-                ),
-              ),
-              // ── 今貼っている絵の見本 (= ユーザー要望: 変えました だけ
-              //    でなく、 どうなったかが見えるように) ──
-              _wallPreview(_walls[i].currentPath),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                    (_walls[i].currentPath ?? '').split(RegExp(r'[\\/]')).last,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        color: Colors.white38, fontSize: 10.5)),
-              ),
-              TextButton(
-                onPressed:
-                    _busy ? null : () => unawaited(_pickWallpaper(_walls[i])),
-                style: TextButton.styleFrom(
+          // 並べ方 (全画面共通)。
+          Wrap(spacing: 5, runSpacing: 5, children: [
+            for (final e in const [
+              (WallpaperFit.fill, 'display.fitFill'),
+              (WallpaperFit.fit, 'display.fitFit'),
+              (WallpaperFit.stretch, 'display.fitStretch'),
+              (WallpaperFit.center, 'display.fitCenter'),
+              (WallpaperFit.tile, 'display.fitTile'),
+              (WallpaperFit.span, 'display.fitSpan'),
+            ])
+              OutlinedButton(
+                style: OutlinedButton.styleFrom(
                     visualDensity: VisualDensity.compact,
+                    foregroundColor: Colors.white70,
+                    side: const BorderSide(color: Colors.white24),
                     padding: const EdgeInsets.symmetric(horizontal: 8)),
-                child: Text(p.t('display.pickImage'),
-                    style: const TextStyle(
-                        color: Color(0xFF4FC3F7), fontSize: 11.5)),
+                onPressed: _busy
+                    ? null
+                    : () {
+                        final ok = DisplayControl.setWallpaperFit(e.$1);
+                        _tell(
+                            p.t(ok
+                                ? 'display.wallDone'
+                                : 'display.wallFailed'),
+                            error: !ok);
+                      },
+                child:
+                    Text(p.t(e.$2), style: const TextStyle(fontSize: 11)),
               ),
-            ]),
-          ),
-        // 並べ方 (全画面共通)。
-        Wrap(spacing: 5, runSpacing: 5, children: [
-          for (final e in const [
-            (WallpaperFit.fill, 'display.fitFill'),
-            (WallpaperFit.fit, 'display.fitFit'),
-            (WallpaperFit.stretch, 'display.fitStretch'),
-            (WallpaperFit.center, 'display.fitCenter'),
-            (WallpaperFit.tile, 'display.fitTile'),
-            (WallpaperFit.span, 'display.fitSpan'),
-          ])
-            OutlinedButton(
-              style: OutlinedButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                  foregroundColor: Colors.white70,
-                  side: const BorderSide(color: Colors.white24),
-                  padding: const EdgeInsets.symmetric(horizontal: 8)),
-              onPressed: _busy
-                  ? null
-                  : () {
-                      final ok = DisplayControl.setWallpaperFit(e.$1);
-                      _tell(
-                          p.t(ok
-                              ? 'display.wallDone'
-                              : 'display.wallFailed'),
-                          error: !ok);
-                    },
-              child: Text(p.t(e.$2),
-                  style: const TextStyle(fontSize: 11)),
-            ),
-        ]),
-        if (_msg != null) ...[
-          const SizedBox(height: 6),
-          Text(_msg!,
-              style: TextStyle(
-                  color: _msgError
-                      ? const Color(0xFFEF9A9A)
-                      : const Color(0xFF9CCC65),
-                  fontSize: 11)),
+          ]),
+          if (_msg != null) ...[
+            const SizedBox(height: 6),
+            Text(_msg!,
+                style: TextStyle(
+                    color: _msgError
+                        ? const Color(0xFFEF9A9A)
+                        : const Color(0xFF9CCC65),
+                    fontSize: 11)),
+          ],
         ],
       ]),
     );
@@ -97366,6 +97704,80 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
     return (left == 0 && top == 0)
         ? '${i + 1}  ${p.t('display.primary')}'
         : '${i + 1}  ${p.t('display.secondary')}';
+  }
+
+  /// 行の左側 (番号 + 主/副 + 大きさ)。 繋いでいない画面は「未接続」。
+  Widget _slotName(int i) {
+    final p = widget.provider;
+    final real = i < _scales.length
+        ? (
+            name: _monLabel(i, _scales[i].left, _scales[i].top),
+            sub: '${_scales[i].width}×${_scales[i].height}'
+          )
+        : (i < _walls.length
+            ? (
+                name: _monLabel(i, _walls[i].left, _walls[i].top),
+                sub: '${_walls[i].width}×${_walls[i].height}'
+              )
+            : (
+                name: '${i + 1}  ${p.t('display.secondary')}',
+                sub: p.t('display.notConnected')
+              ));
+    final connected = i < _scales.length || i < _walls.length;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(real.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+                color: connected ? Colors.white70 : Colors.white38,
+                fontSize: 11.5,
+                fontWeight: FontWeight.w700)),
+        Text(real.sub,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+                color: connected ? Colors.white38 : const Color(0xFFFFB347),
+                fontSize: 10)),
+      ],
+    );
+  }
+
+  /// まだ繋いでいない画面ぶんの拡大率の選択肢。 押すと控えるだけ。
+  Widget _pendingPctChip(int slot, int v) {
+    final on = _pendingScale[slot] == v;
+    return InkWell(
+      borderRadius: BorderRadius.circular(6),
+      onTap: () {
+        setState(() {
+          if (on) {
+            _pendingScale.remove(slot);
+          } else {
+            _pendingScale[slot] = v;
+          }
+        });
+        unawaited(_savePending());
+        _tell(widget.provider.t('display.savedForLater'));
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: on
+              ? const Color(0xFFFFB347).withValues(alpha: 0.20)
+              : Colors.white.withValues(alpha: 0.05),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(
+              color: on ? const Color(0xFFFFB347) : Colors.white12),
+        ),
+        child: Text('$v%',
+            style: TextStyle(
+                color: on ? Colors.white : Colors.white38,
+                fontSize: 11,
+                fontWeight: on ? FontWeight.w700 : FontWeight.w400)),
+      ),
+    );
   }
 
   /// 壁紙の見本。 読めない絵 (対応していない形式など) は枠だけ出す。
@@ -242081,7 +242493,13 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
   ///   取っていたので、 実際に掴めるのは 6px しか無かった
   ///   (= ユーザー報告: ドラッグしようとしても反応が悪い)。
   ///   掴める高さを確保する。
-  double get _headerH => widget.slimChrome ? 24.0 : 30.0;
+  /// 上端の「掴んで動かす帯」 の高さ。
+  ///
+  /// ★ 中身が自前のヘッダーを持つ窓 (= AI アシスタント) では 0 にする
+  ///   (= ユーザー報告: 画面の上部に謎の余白がある)。 その窓の見出しの帯
+  ///   自体が既に `dragWindowBy` で窓を動かすので、 上に更に帯を敷くと
+  ///   何も無い band が挟まるだけだった。
+  double get _headerH => widget.slimChrome ? 0.0 : 30.0;
 
   /// 上の縁を掴んで縦に伸ばす帯の太さ。 細い帯の窓では、 掴んで動かす所を
   /// 食い過ぎないよう更に細くする。
@@ -242717,45 +243135,13 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
               //   そこで板は帯の**後ろ**に敷く。 ボタンの上ではボタンだけが
               //   受け取り、 何も無い所は素通りして板に届く。
               //
-              //   細い帯 (= AI アシスタント) にはボタンが無く、 かわりに
-              //   Tooltip が当たりを吸ってしまうので、 今までどおり包む。
+              // ★ 中身に自前のヘッダーを持つ窓 (= AI アシスタント) では、
+              //   上の帯そのものを出さない (= ユーザー報告: 画面の上部に
+              //   謎の余白がある)。 その窓の見出しの帯が既に
+              //   `dragWindowBy` で窓を動かすので、 ここに敷く物は無く、
+              //   高さぶんの空白だけが残っていた。
               if (widget.slimChrome)
-                // 中身に自前のヘッダーがある窓では、 掴む所だけの
-                // 細い帯にする (= ユーザー報告: 枠が二段に重なる)。
-                GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onPanUpdate: headerPanUpdate,
-                  onPanEnd: headerPanEnd,
-                  child: Container(
-                        height: _headerH,
-                        decoration: const BoxDecoration(
-                          color: Color(0xFF1A1A2E),
-                          borderRadius:
-                              BorderRadius.vertical(top: Radius.circular(11)),
-                        ),
-                        // ★ 掴む目印の横棒は出さない (= ユーザー要望:
-                        //   ヘッダーボタンの上の横棒線は要らない)。 帯そのものは
-                        //   残してあるので、 ここを掴めば今までどおり動かせる。
-                        //   外へ引っ張っている間だけ、 細い線で知らせる。
-                        child: draggedOut
-                            ? Center(
-                                child: Container(
-                                  width: 64,
-                                  height: 3,
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFF4FC3F7),
-                                    borderRadius: BorderRadius.circular(2),
-                                  ),
-                                ),
-                              )
-                            : Tooltip(
-                                message: context
-                                    .read<MindMapProvider>()
-                                    .t('float.slimDragHint'),
-                                child: const SizedBox.expand(),
-                              ),
-                      ),
-                )
+                const SizedBox.shrink()
               else
                 // ★ 見た目 (decoration) は Stack の**親**に置く。
                 //   Container の decoration は自分自身が当たりを吸うので
@@ -244291,8 +244677,10 @@ class _McpChatDialogState extends State<_McpChatDialog> {
           // Spacer (= Expanded) と併用すると余った幅を半分ずつ分け合って
           // しまい、 残量表示が途中で切れていた (= ユーザー報告)。
           // 余りは全部こちらへ渡す。
+          // ★ 足りない時はここには出さない (上の知らせで幅いっぱいに
+          //   出しているので、 二重になるうえ切れて読めない)。
           Expanded(
-            child: Text(_remainText(),
+            child: Text(_creditShort ? '' : _remainText(),
                 textAlign: TextAlign.right,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
@@ -244363,6 +244751,52 @@ class _McpChatDialogState extends State<_McpChatDialog> {
 
   /// 残高と、 今のモデルで「あと何トークン使えるか」 の目安。
   String _remainText() => aiRemainText(provider);
+
+  /// 使えるトークンが尽きているか。
+  bool get _creditShort =>
+      !provider.isDevPlan && provider.creditBalanceUsd <= 0;
+
+  /// トークンが足りない時の知らせ。 チャット欄のすぐ上に、 幅いっぱいで
+  /// 出す (= ユーザー要望: フローティングだとモデルの行では切れてしまう)。
+  Widget _buildCreditNotice() {
+    if (!_creditShort) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(10, 6, 10, 0),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(10, 7, 6, 7),
+        decoration: BoxDecoration(
+          color: const Color(0xFFFFB347).withValues(alpha: 0.10),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+              color: const Color(0xFFFFB347).withValues(alpha: 0.45)),
+        ),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+          const Icon(Icons.bolt_rounded, size: 15, color: Color(0xFFFFB347)),
+          const SizedBox(width: 7),
+          Expanded(
+            child: Text(provider.t('credit.insufficient'),
+                style: const TextStyle(
+                    color: Color(0xFFFFD9A0), fontSize: 11, height: 1.45)),
+          ),
+          if (widget.onOpenAiSettings != null)
+            TextButton(
+              style: TextButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                minimumSize: const Size(0, 28),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              onPressed: widget.onOpenAiSettings,
+              child: Text(provider.t('credit.charge'),
+                  style: const TextStyle(
+                      color: Color(0xFFFFB347),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700)),
+            ),
+        ]),
+      ),
+    );
+  }
 
   // ─── ↑ / ↓ で前に送った指示を呼び戻す (= ユーザー要望) ───────────────
   /// 今どこを見ているか。 -1 = 履歴を見ていない (書きかけの状態)。
@@ -245769,6 +246203,10 @@ class _McpChatDialogState extends State<_McpChatDialog> {
               ),
               ),
             ),
+          // ── トークンが足りない時の知らせ (= ユーザー要望: フローティング
+          //    でもチャット欄の上に出るように) ──
+          //    モデルの行に混ぜると幅が足りず「…」 で切れていた。
+          _buildCreditNotice(),
           // ── 使うモデル と 残り (= ユーザー要望: モデル切替 / 残トークン。
           //    文字が気になる時は目のボタンで畳める) ──
           _buildModelBar(),

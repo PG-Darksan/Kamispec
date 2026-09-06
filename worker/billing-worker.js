@@ -477,15 +477,21 @@ async function handleChangePlan(request, env, preview) {
         nextInterval = String((np.recurring && np.recurring.interval) || '');
       }
     } catch (_) {}
+    // ★ Stripe は `billing_cycle_anchor=now` と `proration_date` を
+    //   同時に受け付けない (= ユーザー報告のエラー: "You cannot specify
+    //   `proration_date` when `billing_cycle_anchor=now`")。 起点を今に
+    //   引き直す時は、 割り勘の基準も「今」 なので日付は渡さない。
     let pv = await stripeApi(env, 'invoices/create_preview', {
       customer: raw.customer,
       subscription: current.id,
       'subscription_details[items][0][id]': item.id,
       'subscription_details[items][0][price]': priceId,
       'subscription_details[proration_behavior]': prorationBehavior,
-      'subscription_details[proration_date]': String(prorationDate),
       // 本実行と同じ条件で見積もる (額がずれないように)。
       'subscription_details[billing_cycle_anchor]': anchor,
+      ...(intervalChanged
+        ? {}
+        : { 'subscription_details[proration_date]': String(prorationDate) }),
     });
     // ★ create_preview は新しい API 版にしか無い。 アカウントの既定の
     //   API 版が古いと「Unrecognized request URL」 で落ち、 額が出せない
@@ -501,8 +507,10 @@ async function handleChangePlan(request, env, preview) {
         'subscription_items[0][id]': item.id,
         'subscription_items[0][price]': priceId,
         subscription_proration_behavior: prorationBehavior,
-        subscription_proration_date: String(prorationDate),
         subscription_billing_cycle_anchor: anchor,
+        ...(intervalChanged
+          ? {}
+          : { subscription_proration_date: String(prorationDate) }),
       }).toString();
       pv = await stripeApiGet(env, `invoices/upcoming?${q}`);
     }
@@ -544,7 +552,8 @@ async function handleChangePlan(request, env, preview) {
       amountDue: typeof pv.amount_due === 'number' ? pv.amount_due : null,
       total: typeof pv.total === 'number' ? pv.total : null,
       currency: (pv.currency || '').toUpperCase(),
-      prorationDate,
+      // 起点を引き直す時は、 本実行でも日付を渡さない (Stripe が拒む)。
+      prorationDate: intervalChanged ? 0 : prorationDate,
       // 変更後の月額 / 年額そのもの (次回以降の請求額)。
       nextAmount,
       nextCurrency,
@@ -558,7 +567,8 @@ async function handleChangePlan(request, env, preview) {
   }
 
   const updated = await stripeApi(env, `subscriptions/${current.id}`, {
-    proration_date: String(prorationDate),
+    // 起点を引き直す時は proration_date を渡さない (上の説明を参照)。
+    ...(intervalChanged ? {} : { proration_date: String(prorationDate) }),
     'items[0][id]': item.id,
     'items[0][price]': priceId,
     // 上げる時はその場で差額を請求。 下げる時は控えとして戻すだけ。
