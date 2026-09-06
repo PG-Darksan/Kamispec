@@ -83589,6 +83589,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                 // (共有リンクの欄は削除 = ユーザー要望: 共同編集はあくまで
                 //  アプリ内の機能なので、 ブラウザで閲覧できるリンクは
                 //  出さない。 参加は下の共有コードで行う)
+                // ★ Max プランでない時は、 これらの設定そのものを出さない
+                //   (= ユーザー要望: Max でないのに共有権限の項目が出ている
+                //   のはおかしい)。 どちらも Max 限定の機能の設定なので、
+                //   使えない相手に見せても選ばせるだけ無駄になる。
+                if (provider.isMaxUnlocked) ...[
                 // ── 共有の権限 / パスワード (= ユーザー要望) ──
                 const SizedBox(height: 12),
                 Container(
@@ -83878,6 +83883,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                     ],
                   ),
                 ),
+                ],
                 if (error != null) ...[
                   const SizedBox(height: 10),
                   Text('${provider.t('publish.failed')}: $error',
@@ -92801,16 +92807,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                   Text(provider.t('account.explain'),
                       style: const TextStyle(
                           color: Colors.white70, fontSize: 12, height: 1.6)),
-                  // この配布に Google の認証情報が入っていない時は、 押しても
-                  //   進めないので先に伝える。
-                  if (!provider.canUseGoogleSignIn) ...[
-                    const SizedBox(height: 10),
-                    Text(provider.t('account.notConfigured'),
-                        style: const TextStyle(
-                            color: Color(0xFFFFB74D),
-                            fontSize: 11.5,
-                            height: 1.5)),
-                  ],
+                  // ★ 「この配布では〜」 の一言は出さない (= ユーザー要望)。
+                  //   鍵は入っているのに出ていた (匿名ログインの印を見て
+                  //   いたのが原因)。 本当に鍵が無い配布では、 押した時の
+                  //   失敗の知らせで伝わる。
                   const SizedBox(height: 14),
                   Container(
                     padding: const EdgeInsets.all(12),
@@ -239447,6 +239447,7 @@ class _FloatingWebWindowState extends State<_FloatingWebWindow> {
     // 本体が最小化されたら外の窓に変わって生き残る (= ユーザー要望)。
     _popOutHandler = () => _popOutSelf();
     _floatingPopOutHandlers.add(_popOutHandler);
+    unawaited(_loadHideAiMemo());
   }
 
   @override
@@ -239532,6 +239533,30 @@ class _FloatingWebWindowState extends State<_FloatingWebWindow> {
 
   /// ヘッダーのモード切替 + ピン留めボタン群 (両方のフローティング窓で共通)。
   /// [showAi] が false の時は AI ボタンを出さない (= AI 窓自身には不要)。
+  /// 外枠ヘッダーの AI / メモのボタンを畳んでいるか
+  /// (= ユーザー要望: 無音カメラなどの外枠ヘッダーの AI やメモも
+  /// 非表示にできるように)。 どの浮かぶ窓でも同じ設定を使い、 prefs に残す。
+  bool _hideAiMemoBtns = false;
+  static const String _kHideAiMemoKey = 'floatHideAiMemoButtons';
+
+  Future<void> _loadHideAiMemo() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final v = sp.getBool(_kHideAiMemoKey) ?? false;
+      if (mounted && v != _hideAiMemoBtns) {
+        setState(() => _hideAiMemoBtns = v);
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _toggleAiMemoBtns() async {
+    setState(() => _hideAiMemoBtns = !_hideAiMemoBtns);
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setBool(_kHideAiMemoKey, _hideAiMemoBtns);
+    } catch (_) {}
+  }
+
   List<Widget> _floatModeButtons(BuildContext ctx, {bool showAi = true}) {
     // 別の窓を作れないスマホ版では出さない (ピンも外出しもできないため)。
     if (kIsWeb ||
@@ -239561,7 +239586,8 @@ class _FloatingWebWindowState extends State<_FloatingWebWindow> {
       //     を選ぶと本体のアシスタントが立ち上がる (= ユーザー要望:
       //     ChatGPT しか開けないので、 モデルを変えたりアシスタントを
       //     呼んだりできるように)。
-      if (showAi && _floatMode != 'ai')
+      // ★ 畳んでいる時は出さない (= ユーザー要望)。
+      if (showAi && !_hideAiMemoBtns && _floatMode != 'ai')
         _FloatAiButton(
           tooltip: provider.t('float.toAi'),
           onOpen: (id) {
@@ -239580,13 +239606,25 @@ class _FloatingWebWindowState extends State<_FloatingWebWindow> {
         ),
       // フローティングメモに切り替え (= ユーザー要望)。 保存先は外のメモ窓と
       // 同じなので、 どこで書いても同じメモ帳に積まれる。
-      if (_floatMode != 'memo')
+      if (!_hideAiMemoBtns && _floatMode != 'memo')
         btn(Icons.sticky_note_2_rounded, provider.t('float.toMemo'), () {
           setState(() {
             _memoStarted = true;
             _floatMode = 'memo';
           });
         }, color: const Color(0xFFFFB347)),
+      // ── AI / メモのボタンを畳む・出す (= ユーザー要望: 無音カメラなどの
+      //    外枠ヘッダーの AI やメモも非表示にできるように) ──
+      //    元の画面を出している時だけ出す。 AI やメモを開いている最中に
+      //    畳めてしまうと、 戻る道が無くなるため。
+      if (_floatMode == 'main')
+        btn(
+            _hideAiMemoBtns
+                ? Icons.keyboard_double_arrow_left_rounded
+                : Icons.keyboard_double_arrow_right_rounded,
+            provider.t(
+                _hideAiMemoBtns ? 'float.showModeBtns' : 'float.hideModeBtns'),
+            () => unawaited(_toggleAiMemoBtns())),
       // 前面にピン留め (= ユーザー要望)。 アプリの中の重ね描きは他のアプリの
       // 手前には出られないので、 外の本物の窓に変わって常に手前になる。
       btn(Icons.push_pin_rounded, provider.t('float.pinToFront'), () {
@@ -241863,6 +241901,7 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
     // 本体が最小化されたら外の窓に変わって生き残る (= ユーザー要望)。
     _popOutHandler = () => _popOutSelf();
     _floatingPopOutHandlers.add(_popOutHandler);
+    unawaited(_loadHideAiMemo());
     unawaited(_restoreGeometry());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -241942,6 +241981,30 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
 
   /// ヘッダーのモード切替 + ピン留めボタン群 (両方のフローティング窓で共通)。
   /// [showAi] が false の時は AI ボタンを出さない (= AI 窓自身には不要)。
+  /// 外枠ヘッダーの AI / メモのボタンを畳んでいるか
+  /// (= ユーザー要望: 無音カメラなどの外枠ヘッダーの AI やメモも
+  /// 非表示にできるように)。 どの浮かぶ窓でも同じ設定を使い、 prefs に残す。
+  bool _hideAiMemoBtns = false;
+  static const String _kHideAiMemoKey = 'floatHideAiMemoButtons';
+
+  Future<void> _loadHideAiMemo() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final v = sp.getBool(_kHideAiMemoKey) ?? false;
+      if (mounted && v != _hideAiMemoBtns) {
+        setState(() => _hideAiMemoBtns = v);
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _toggleAiMemoBtns() async {
+    setState(() => _hideAiMemoBtns = !_hideAiMemoBtns);
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setBool(_kHideAiMemoKey, _hideAiMemoBtns);
+    } catch (_) {}
+  }
+
   List<Widget> _floatModeButtons(BuildContext ctx,
       {bool showAi = true, bool showMemo = true}) {
     // 別の窓を作れないスマホ版では出さない (ピンも外出しもできないため)。
@@ -241972,7 +242035,8 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
       //     を選ぶと本体のアシスタントが立ち上がる (= ユーザー要望:
       //     ChatGPT しか開けないので、 モデルを変えたりアシスタントを
       //     呼んだりできるように)。
-      if (showAi && _floatMode != 'ai')
+      // ★ 畳んでいる時は出さない (= ユーザー要望)。
+      if (showAi && !_hideAiMemoBtns && _floatMode != 'ai')
         _FloatAiButton(
           tooltip: provider.t('float.toAi'),
           onOpen: (id) {
@@ -241991,13 +242055,25 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
         ),
       // フローティングメモに切り替え (= ユーザー要望)。 保存先は外のメモ窓と
       // 同じなので、 どこで書いても同じメモ帳に積まれる。
-      if (showMemo && _floatMode != 'memo')
+      if (showMemo && !_hideAiMemoBtns && _floatMode != 'memo')
         btn(Icons.sticky_note_2_rounded, provider.t('float.toMemo'), () {
           setState(() {
             _memoStarted = true;
             _floatMode = 'memo';
           });
         }, color: const Color(0xFFFFB347)),
+      // ── AI / メモのボタンを畳む・出す (= ユーザー要望: 無音カメラなどの
+      //    外枠ヘッダーの AI やメモも非表示にできるように) ──
+      //    元の画面を出している時だけ出す。 AI やメモを開いている最中に
+      //    畳めてしまうと、 戻る道が無くなるため。
+      if (_floatMode == 'main')
+        btn(
+            _hideAiMemoBtns
+                ? Icons.keyboard_double_arrow_left_rounded
+                : Icons.keyboard_double_arrow_right_rounded,
+            provider.t(
+                _hideAiMemoBtns ? 'float.showModeBtns' : 'float.hideModeBtns'),
+            () => unawaited(_toggleAiMemoBtns())),
       // 前面にピン留め (= ユーザー要望)。 アプリの中の重ね描きは他のアプリの
       // 手前には出られないので、 外の本物の窓に変わって常に手前になる。
       // ★ 外に出せない窓 (ショートカット一覧・電卓など) では出さない

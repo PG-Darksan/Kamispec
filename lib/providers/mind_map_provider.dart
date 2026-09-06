@@ -45467,6 +45467,28 @@ class MindMapProvider extends ChangeNotifier {
       'ja': 'ドラッグで移動 / 画面の外へ放すと別の窓になります',
       'en': 'Drag to move — drop it outside to make a separate window',
     },
+    'float.hideModeBtns': {
+      'ja': 'AI とメモのボタンを隠す',
+      'en': 'Hide the AI and memo buttons',
+      'zh': '隐藏 AI 与备忘按钮',
+      'ko': 'AI · 메모 버튼 숨기기',
+      'es': 'Ocultar los botones de IA y notas',
+      'fr': 'Masquer les boutons IA et mémo',
+      'de': 'KI- und Notiz-Schaltflächen ausblenden',
+      'pt': 'Ocultar os botões de IA e nota',
+      'ru': 'Скрыть кнопки ИИ и заметки',
+    },
+    'float.showModeBtns': {
+      'ja': 'AI とメモのボタンを出す',
+      'en': 'Show the AI and memo buttons',
+      'zh': '显示 AI 与备忘按钮',
+      'ko': 'AI · 메모 버튼 표시',
+      'es': 'Mostrar los botones de IA y notas',
+      'fr': 'Afficher les boutons IA et mémo',
+      'de': 'KI- und Notiz-Schaltflächen einblenden',
+      'pt': 'Mostrar os botões de IA e nota',
+      'ru': 'Показать кнопки ИИ и заметки',
+    },
     'float.toMemo': {
       'ja': 'フローティングメモに切り替え',
       'en': 'Switch to floating memo',
@@ -77118,8 +77140,18 @@ $cleanQ
   String get googleEmail => _googleEmail;
 
   /// この端末で Google ログインを出せるか。
+  ///
+  /// ★ `_firebaseEnabled` は見ない (= ユーザー報告: アカウントの所から
+  ///   ログインできない)。 あれは「匿名ログインが済んだか」 の印で、
+  ///   起動直後やネットが遅い時はまだ false。 一方 Google ログインは
+  ///   ブラウザで許可をもらってから Identity Toolkit に引き換えるだけ
+  ///   なので、 匿名ログインが済んでいる必要が無い。 むしろ匿名で入れ
+  ///   なかった時ほど、 Google で入り直せる必要がある。
+  ///   要るのは「この配布に鍵が入っている事」 と「引き換え先の鍵」 だけ。
   bool get canUseGoogleSignIn =>
-      _firebaseEnabled && GoogleAuth.isConfigured && GoogleAuth.isSupported;
+      GoogleAuth.isConfigured &&
+      GoogleAuth.isSupported &&
+      _authApiKey.isNotEmpty;
 
   Future<void> _loadGoogleSession() async {
     try {
@@ -77368,6 +77400,10 @@ $cleanQ
     _idToken = idToken;
     _uid = uid;
     _idTokenExpiry = DateTime.now().add(Duration(seconds: expiresIn));
+    // ★ 引き換えが通った = 認証済み。 匿名ログインが済んでいなくても、
+    //   ここから先は雲の機能を使ってよい (= ユーザー報告: ログインできない)。
+    _firebaseEnabled = true;
+    _firebaseInitError = null;
     _googleSignedIn = true;
     _googleEmail = (data['email'] as String?) ?? '';
     // 表示名は Google の名前をそのまま使う (= ユーザー要望: 自分で
