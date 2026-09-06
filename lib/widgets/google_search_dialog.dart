@@ -1866,6 +1866,8 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       //    タブと同じ wheel-tamer を注入して直下のスクロール可能要素を動かす。
       try {
         await _aiWinCtrl.addScriptToExecuteOnDocumentCreated(_kGsWheelTameJs);
+        await _aiWinCtrl
+            .addScriptToExecuteOnDocumentCreated(_kGsAutoHideScrollbarJs);
       } catch (_) {}
       if (isSafeExternalServiceUrl(url)) {
         _aiWinLastSafeServiceUrl = url;
@@ -2593,6 +2595,12 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       // ホイール感度を下げる (= ユーザー要望: スクロールが速すぎる)。
       try {
         await ctrl.addScriptToExecuteOnDocumentCreated(_kGsWheelTameJs);
+      } catch (_) {}
+      // スクロールバーは、 動かした時とバーに触れた時だけ出す
+      // (= ユーザー要望: 常時表示をやめる)。
+      try {
+        await ctrl
+            .addScriptToExecuteOnDocumentCreated(_kGsAutoHideScrollbarJs);
       } catch (_) {}
       ctrl.webMessage.listen((msg) {
         if (!mounted) return;
@@ -5947,6 +5955,10 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                     "(function(){try{var bs=document.querySelectorAll('form button, button, input[type=\"submit\"]');for(var i=0;i<bs.length;i++){var t=((bs[i].textContent||'')+' '+(bs[i].getAttribute('aria-label')||'')).toLowerCase();if(t.indexOf('reject')>=0||t.indexOf('accept')>=0||t.indexOf('agree')>=0||t.indexOf('同意')>=0||t.indexOf('拒否')>=0||t.indexOf('すべて')>=0){bs[i].click();return;}}var f=document.querySelector('form[action*=\"consent\"]');if(f)f.submit();}catch(e){}})();");
           }
         }
+        // スクロールバーは、 動かした時とバーに触れた時だけ出す
+        // (= ユーザー要望)。 読み込みのたびに入れ直す (二重実行は先頭の
+        // 見張りで弾かれる)。
+        c.evaluateJavascript(source: _kGsAutoHideScrollbarJs);
         // ページ遷移後も選択中の再生速度を維持する。
         if (_searchVideoRate != 1.0) _applySearchVideoRate(_searchVideoRate);
         // 戻るジェスチャー判定用に「戻れるか」 を更新。
@@ -8161,6 +8173,63 @@ class _GsTab {
 /// 検索 WebView のホイール感度を下げる (= ユーザー要望: ノードから開いた
 /// Google 検索のマウスホイールが速すぎるので、 もう少し小さくする)。
 /// wheel を capture で横取りして preventDefault し、 縮小した量で手動スクロール。
+/// アプリの中で開いたページのスクロールバーを、 ふだんは消しておく
+/// (= ユーザー要望: 常時表示ではなく、 スクロールする時か、 スクロール
+/// バーにカーソルが乗った時だけ出す)。 公式 Instagram / プライバシー
+/// ポリシー / 利用規約 / 特定商取引法 の画面もこの枠で開いている。
+///
+/// ★ 素の文字列だと \n や \d が Dart 側で潰れるので raw 文字列で書く。
+const String _kGsAutoHideScrollbarJs = r'''
+(function(){
+  if (window.__mmAutoHideBar) return;
+  window.__mmAutoHideBar = true;
+  var CSS = ''
+    + '::-webkit-scrollbar{width:10px;height:10px;background:transparent}'
+    + '::-webkit-scrollbar-track{background:transparent}'
+    + '::-webkit-scrollbar-corner{background:transparent}'
+    + '::-webkit-scrollbar-thumb{background:transparent;border-radius:8px;'
+    + 'border:2px solid transparent;background-clip:content-box;'
+    + 'transition:background-color .25s ease}'
+    + 'html.__mmBarOn ::-webkit-scrollbar-thumb,'
+    + 'html.__mmBarOn::-webkit-scrollbar-thumb'
+    + '{background:rgba(140,140,140,.75);background-clip:content-box}';
+  function addCss(){
+    var head = document.head || document.documentElement;
+    if (!head || document.getElementById('__mmBarCss')) return;
+    var st = document.createElement('style');
+    st.id = '__mmBarCss';
+    st.textContent = CSS;
+    head.appendChild(st);
+  }
+  addCss();
+  document.addEventListener('DOMContentLoaded', addCss);
+  var timer = null;
+  function show(){
+    var el = document.documentElement;
+    if (!el) return;
+    el.classList.add('__mmBarOn');
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(function(){
+      try { el.classList.remove('__mmBarOn'); } catch(e){}
+    }, 1000);
+  }
+  // 動かしている間 (スクロール / ホイール / キー) は出す。
+  window.addEventListener('scroll', show, true);
+  window.addEventListener('wheel', show, {passive:true, capture:true});
+  window.addEventListener('keydown', function(e){
+    var k = e.key || '';
+    if (k === 'PageUp' || k === 'PageDown' || k === 'Home' || k === 'End'
+        || k === 'ArrowUp' || k === 'ArrowDown' || k === ' ') show();
+  }, true);
+  // バーの上 (右端 / 下端) にカーソルが来た時も出す。
+  window.addEventListener('mousemove', function(e){
+    var w = window.innerWidth || 0;
+    var h = window.innerHeight || 0;
+    if ((w - e.clientX) < 18 || (h - e.clientY) < 18) show();
+  }, {passive:true, capture:true});
+})();
+''';
+
 const String _kGsWheelTameJs = r'''
 (function(){
   if (window.__mmWheelTamed) return;

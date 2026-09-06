@@ -1397,6 +1397,17 @@ async function planFromSession(session, env) {
 //                      months, createdAt, createdBy, revoked }
 //   devredeem:<CODE>:<uid> = '1'  (同じ人が二重に使用回数を消費しない印)
 
+/// Dev コードを発行 / 一覧 / 取り消しできるか。
+///
+/// = ユーザー要望「Dev クーポンも、 パスワードから開発者モードに入ったら
+///   誰でも発行できるように」。 custom claim {developer:true} は
+///   Cloud Functions の verifyDeveloperPassword が、 Secret Manager の
+///   パスワードと照合できた時だけ付けるので、 自分では名乗れない。
+///   ADMIN_UIDS 本人は今までどおり (パスワードを入れ直さなくても通る)。
+function canIssueDevCodes(env, uid, developerClaim) {
+  return developerClaim === true || isAdminUid(env, uid);
+}
+
 /// 発行を許す uid かどうか。 ADMIN_UIDS は「,」 か空白区切り。
 function isAdminUid(env, uid) {
   const raw = String(env.ADMIN_UIDS || '').trim();
@@ -1496,10 +1507,10 @@ function isDevEntitlement(ent) {
 }
 
 async function handleDevIssue(request, env) {
-  const uid = await authUid(request, env);
+  const { uid, developer } = await authIdentity(request, env);
   if (!uid) return unauthorized();
-  if (!isAdminUid(env, uid)) {
-    return json({ error: 'forbidden', detail: 'not an admin uid' }, 403);
+  if (!canIssueDevCodes(env, uid, developer)) {
+    return json({ error: 'forbidden', detail: 'not a developer' }, 403);
   }
   let body;
   try {
@@ -1535,9 +1546,11 @@ async function handleDevIssue(request, env) {
 }
 
 async function handleDevCodes(request, env) {
-  const uid = await authUid(request, env);
+  const { uid, developer } = await authIdentity(request, env);
   if (!uid) return unauthorized();
-  if (!isAdminUid(env, uid)) return json({ error: 'forbidden' }, 403);
+  if (!canIssueDevCodes(env, uid, developer)) {
+    return json({ error: 'forbidden' }, 403);
+  }
   const list = await env.ENTITLEMENTS.list({ prefix: 'devcode:', limit: 200 });
   const out = [];
   for (const k of list.keys) {
@@ -1549,9 +1562,11 @@ async function handleDevCodes(request, env) {
 }
 
 async function handleDevRevoke(request, env) {
-  const uid = await authUid(request, env);
+  const { uid, developer } = await authIdentity(request, env);
   if (!uid) return unauthorized();
-  if (!isAdminUid(env, uid)) return json({ error: 'forbidden' }, 403);
+  if (!canIssueDevCodes(env, uid, developer)) {
+    return json({ error: 'forbidden' }, 403);
+  }
   let body;
   try {
     body = await request.json();

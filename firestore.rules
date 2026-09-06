@@ -60,9 +60,16 @@ service cloud.firestore {
     function kAdminUids() {
       return ['pkjWRiOBoOVm6qQfiXkDOrSa8O12'];
     }
+    // ★ パスワードで開発者モードに入った人も開発者として扱う
+    //   (= ユーザー要望: 問い合わせ一覧はパスワードから開発者モードに
+    //   入った人全員が見られるように)。
+    //   この印 (custom claim) を付けられるのは Cloud Functions の
+    //   verifyDeveloperPassword だけ (Secret Manager のパスワードと
+    //   照合し、 5 回まで) なので、 自分では名乗れない。
     function isAdmin() {
       return signedIn()
-          && (kAdminUids().hasAny([request.auth.uid])
+          && (request.auth.token.developer == true
+              || kAdminUids().hasAny([request.auth.uid])
               || exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
     }
     // その同期グループの参加者か。 参加時に members/{uid} を作るので、

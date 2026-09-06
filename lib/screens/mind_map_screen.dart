@@ -83585,6 +83585,32 @@ class _MindMapScreenState extends State<MindMapScreen>
                       ),
                     ]),
                   ),
+                  // ── そのまま加入できるように、 プランの案内をここに出す
+                  //    (= ユーザー要望: この画面と一緒に Max プランの
+                  //    サブスクへの勧誘が出るように) ──
+                  const SizedBox(height: 10),
+                  if (_isDesktop && provider.billing.hasStripeLinks)
+                    _buildStripePlanCards(provider,
+                        onTapBefore: () => Navigator.of(dctx2).pop())
+                  else
+                    // 決済リンクが無い環境 (モバイル等) では、 いつもの
+                    // 加入の案内を開く入口だけ出す。
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFFFFB347),
+                            foregroundColor: Colors.black),
+                        onPressed: () {
+                          Navigator.of(dctx2).pop();
+                          _showPaywallDialog(provider,
+                              bodyOverride: provider.t('live.maxOnlyNote'));
+                        },
+                        icon: const Icon(Icons.workspace_premium_rounded,
+                            size: 16),
+                        label: Text(provider.t('paywall.seePlans')),
+                      ),
+                    ),
                 ],
                 // (共有リンクの欄は削除 = ユーザー要望: 共同編集はあくまで
                 //  アプリ内の機能なので、 ブラウザで閲覧できるリンクは
@@ -83921,11 +83947,14 @@ class _MindMapScreenState extends State<MindMapScreen>
               child: Text(provider.t('btn.close'),
                   style: const TextStyle(color: Colors.white60)),
             ),
+            // ★ Max でない間は押せない (= ユーザー要望: できないなら
+            //   押せないように)。 押しても必ず失敗する物を押させない。
             ElevatedButton.icon(
               style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF43B97F),
                   foregroundColor: Colors.white),
-              onPressed: busy ? null : doPublish,
+              onPressed:
+                  (busy || !provider.isMaxUnlocked) ? null : doPublish,
               icon: Icon(
                   !isShared ? Icons.public_rounded : Icons.sync_rounded,
                   size: 16),
@@ -161944,38 +161973,6 @@ class _InquiryDialogState extends State<_InquiryDialog> {
     setState(() => _remainingSends = n);
   }
 
-  /// 開発者モードで設定された連絡先メールアドレス (admin/settings.inquiryEmail)
-  /// を mailto: で開いて、送信内容のコピーが届くようにする。
-  ///
-  /// クライアントから直接 SMTP 送信する手段は無いため、ユーザーの標準
-  /// メールアプリを起動して件名・本文を埋めた状態で開く。ユーザーが
-  /// 送信ボタンを押すと開発者宛にメールが届く。
-  ///
-  /// 失敗 (mailto: ハンドラ無し等) は無視。Firestore には既に保存済みなので
-  /// 受信ボックス経由でも開発者は内容を確認できる。
-  Future<void> _openMailtoForwardIfNeeded(
-      String message, String categoryLabel) async {
-    final email = widget.provider.inquiryEmail.trim();
-    if (email.isEmpty) return;
-    final senderName = widget.provider.displayName.trim();
-    final subject = '[${widget.provider.t('app.title')}] $categoryLabel'
-        '${senderName.isNotEmpty ? ' - $senderName' : ''}';
-    // mailto: で渡す URI はパーセントエンコードが必須。
-    // Uri コンストラクタの queryParameters は + 区切りになり改行が壊れるため、
-    // 自前で `Uri.encodeComponent` する。
-    final body = message;
-    final uri = Uri.parse(
-      'mailto:$email'
-      '?subject=${Uri.encodeComponent(subject)}'
-      '&body=${Uri.encodeComponent(body)}',
-    );
-    try {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    } catch (e) {
-      debugPrint('mailto 起動失敗 (無視): $e');
-    }
-  }
-
   @override
   void dispose() {
     _msgCtrl.dispose();
@@ -162035,11 +162032,10 @@ class _InquiryDialogState extends State<_InquiryDialog> {
         _sendError = null;
       });
       await _refreshRemaining();
-      // ── 開発者メールアドレスへ mailto: で転送 (best-effort) ──
-      // admin/settings.inquiryEmail が設定されている場合のみ起動する。
-      // 端末にメールクライアントが無い等の理由で失敗しても、Firestore へは
-      // 既に書き込み済みなので問題なくスルーする。
-      _openMailtoForwardIfNeeded(messageWithCategory, categoryLabel);
+      // ★ メールアプリ (mailto:) は開かない (= ユーザー要望: 送信のたびに
+      //   「この mailto リンクを開くアプリを選択します」 が出るのをやめて、
+      //   欄に送れた事を出すだけにする)。 中身は Firestore に入っており、
+      //   開発者は受信箱で読めるので、 メールへの転送は要らない。
     } catch (e) {
       if (!mounted) return;
       // displayName 未設定例外をキャッチした場合 (= レアケース、UI 側
