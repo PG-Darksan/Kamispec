@@ -66,6 +66,7 @@ import 'services/screen_capture.dart' as scap;
 import 'services/cursor_wrap.dart';
 import 'services/cursor_style.dart';
 import 'services/display_light.dart';
+import 'services/pc_settings.dart';
 import 'services/wheel_scroll_scale.dart';
 // 録画窓の中のプレビュー再生 (デスクトップは fvp バックエンド)。
 import 'package:video_player/video_player.dart';
@@ -3470,6 +3471,14 @@ void main(List<String> args) async {
   //     ここで読んだ値がそのまま engine の値)。
   WheelScrollScale.captureBaseline();
   WheelScrollBinding.ensureInitialized();
+  // ★ 「もっと速く」 (加速の曲線の引き伸ばし) を画面から外したので、 前の版で
+  //   伸ばしたままの人が**元に戻せなくなる**。 起動時に一度だけ戻す。
+  //   何もしていない人には触らない (読むだけで終わる)。
+  if (!kIsWeb && Platform.isWindows) {
+    try {
+      if (PcSettings.readPointerBoost() > 100) PcSettings.resetPointerBoost();
+    } catch (_) {}
+  }
   // ── カーソルの回り込みだけの常駐として起動された場合 ──
   //    (= ユーザー要望: アプリを起動していない時でも効くように)。
   //    runApp は呼ばない (画面は要らない)。

@@ -26927,8 +26927,40 @@ class _MindMapScreenState extends State<MindMapScreen>
     // 割り方を「右に」 出すため、 項目そのものの位置を測る鍵 (= ユーザー要望)。
     final GlobalKey splitItemKey = GlobalKey();
     List<Widget> buildItems(bool splitExpanded, VoidCallback toggleSplit) => [
-      // ── ページ切り替え (= ユーザー要望: 左上を押しに行くのが億劫なので、
-      //    何もない所の右クリックの一番上から移れるように) ──
+      // ── 上から ノードを追加 / 範囲選択 / ページ切り替え の順 ──
+      //    (= ユーザー要望)。 マインドマップでもギャラリーでも同じ並びに
+      //    なるように、 この 3 つを先頭で固める。 2 行目 (範囲選択) が
+      //    カーソルの高さに来るよう、 下の nodeGenAnchorOffset で位置を
+      //    合わせている。
+      //    モバイルは 「ノードを追加」「範囲選択」 を下のボタンバーに常設
+      //    しているのでここには出さない (その時は ページ切り替え が先頭)。
+      if (_isDesktop)
+        _CtxMenuItem(
+          icon: Icons.add_circle_rounded,
+          label: provider.t('ctx.addNode'),
+          color: const Color(0xFF6C63FF),
+          onTap: () {
+            _removeOverlay();
+            final canvasPos = _globalToCanvas(globalPos, ctrl);
+            _createNodeWithOptionalInlineTitleEdit(
+                provider, canvasPos - const Offset(80, 21));
+          },
+        ),
+      if (_isDesktop)
+        _CtxMenuItem(
+          icon: Icons.select_all_rounded,
+          label: provider.t('ctx.rangeSelect'),
+          color: const Color(0xFF4FC3F7),
+          onTap: () {
+            _removeOverlay();
+            setState(() {
+              _rangeSelectMode = true;
+              _rangeSelectedIds.clear();
+              _rangeSelectedDecorationIds.clear();
+            });
+          },
+        ),
+      // ── ページ切り替え (左上を押しに行かずにここから移れる) ──
       _CtxMenuItem(
         icon: Icons.swap_horiz_rounded,
         label: provider.t('ctx.switchPage'),
@@ -26948,32 +26980,6 @@ class _MindMapScreenState extends State<MindMapScreen>
           onTap: () {
             _removeOverlay();
             unawaited(_showMapBackgroundDialog(context, provider));
-          },
-        ),
-      if (_isDesktop)
-        _CtxMenuItem(
-          icon: Icons.select_all_rounded,
-          label: provider.t('ctx.rangeSelect'),
-          color: const Color(0xFF4FC3F7),
-          onTap: () {
-            _removeOverlay();
-            setState(() {
-              _rangeSelectMode = true;
-              _rangeSelectedIds.clear();
-              _rangeSelectedDecorationIds.clear();
-            });
-          },
-        ),
-      if (_isDesktop)
-        _CtxMenuItem(
-          icon: Icons.add_circle_rounded,
-          label: provider.t('ctx.addNode'),
-          color: const Color(0xFF6C63FF),
-          onTap: () {
-            _removeOverlay();
-            final canvasPos = _globalToCanvas(globalPos, ctrl);
-            _createNodeWithOptionalInlineTitleEdit(
-                provider, canvasPos - const Offset(80, 21));
           },
         ),
       // マップの背景画像設定 (= ユーザー要望: マップの背景画像を自由に
@@ -27198,7 +27204,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     // 高さの見積りは「割り方を開いた状態」 で取る (= 開いても入りきるように)。
     final items = buildItems(true, () {});
 
-    // 各項目の推定高さ (MenuItem=46, Toggle=44, Divider=1)
+    // 各項目の高さ。 MenuItem は **実測 42** (上下の余白 9 + 丸い印 24)。
+    //   前は 46 と決め打ちしていて、 2 行目をカーソルに合わせる時に 6px
+    //   ずれていた (= ユーザー要望「カーソルの高さに 2 行目が出てくるように」)。
+    const double kCtxItemH = 42.0;
     double estH = 0;
     for (final w in items) {
       if (w is Divider) {
@@ -27206,7 +27215,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       } else if (w is _CtxMenuToggle) {
         estH += 44;
       } else {
-        estH += 46;
+        estH += kCtxItemH;
       }
     }
     final maxAvail = sh - mq.padding.top - mq.padding.bottom - 32;
@@ -27214,13 +27223,13 @@ class _MindMapScreenState extends State<MindMapScreen>
 
     final double menuW = useTwoCol ? 420.0 : 210.0;
     double left = globalPos.dx.clamp(8.0, sw - menuW - 8.0);
-    // ── ノード生成ボタンをカーソルと同じ高さに合わせる ──
-    // デスクトップでは並びが 1番上=範囲選択 / 2番目=ノード生成 なので、
-    // メニュー上端を「範囲選択 1 項目分 + ノード生成の半分」だけ上にずらして、
-    // ノード生成ボタンの中央がカーソル位置に来るようにする。 2 カラム表示でも
-    // ノード生成は左カラム 2 行目に来るため、 同じオフセットで成立する。
+    // ── 2 行目がカーソルの高さに来るようにする (= ユーザー要望) ──
+    // デスクトップの並びは 1番目=ノードを追加 / 2番目=範囲選択 なので、
+    // メニュー上端を「1 項目分 + もう半分」 だけ上へずらすと、 2 行目の中央が
+    // カーソル位置に来る。 2 カラム表示でも 2 行目は左カラムに来るため、
+    // 同じずらし方で成立する。
     // モバイルはこの 2 項目を出さない (下部バーに常設) ため補正しない。
-    const double kCtxItemH = 46.0;
+    // 上端を「1 項目分 + もう半分」 上へ = 2 行目の中央がカーソルに来る。
     final double nodeGenAnchorOffset = _isDesktop ? kCtxItemH * 1.5 : 0.0;
     double top = (globalPos.dy - nodeGenAnchorOffset).clamp(mq.padding.top + 8,
         sh - (useTwoCol ? estH / 2 + 16 : estH + 16).clamp(100.0, maxAvail));
@@ -99881,130 +99890,6 @@ class _WheelTestBoxState extends State<_WheelTestBox> {
   }
 }
 
-/// ダブルクリックの速さを試す欄。
-///
-/// 今 Windows に入っている間隔 ([thresholdMs]) と、 実際に押した 2 回の
-/// 間隔を比べて、 ダブルクリックと見なされたかどうかを出す。
-class _DoubleClickTestBox extends StatefulWidget {
-  final int thresholdMs;
-  const _DoubleClickTestBox({super.key, required this.thresholdMs});
-
-  @override
-  State<_DoubleClickTestBox> createState() => _DoubleClickTestBoxState();
-}
-
-class _DoubleClickTestBoxState extends State<_DoubleClickTestBox> {
-  /// 前に押した時刻。
-  Stopwatch? _sinceLast;
-
-  /// 直前に測れた間隔 (ミリ秒)。 null = まだ 2 回押していない。
-  int? _gapMs;
-
-  void _tap() {
-    final sw = _sinceLast;
-    if (sw == null || sw.elapsedMilliseconds > 3000) {
-      // 1 回目 (または間が空きすぎたので測り直し)。
-      setState(() {
-        _gapMs = null;
-        _sinceLast = Stopwatch()..start();
-      });
-      return;
-    }
-    setState(() {
-      _gapMs = sw.elapsedMilliseconds;
-      _sinceLast = null;
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final p = context.read<MindMapProvider>();
-    final gap = _gapMs;
-    final ok = gap != null && gap <= widget.thresholdMs;
-    final color = gap == null
-        ? Colors.white24
-        : (ok ? const Color(0xFF9CCC65) : const Color(0xFFE57373));
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      InkWell(
-        borderRadius: BorderRadius.circular(8),
-        onTap: _tap,
-        child: Container(
-          width: double.infinity,
-          padding: const EdgeInsets.symmetric(vertical: 14),
-          decoration: BoxDecoration(
-            color: color.withValues(alpha: 0.12),
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: color.withValues(alpha: 0.7)),
-          ),
-          alignment: Alignment.center,
-          child: Text(
-            gap == null
-                ? (_sinceLast == null
-                    ? p.t('mouse.dblTestIdle')
-                    : p.t('mouse.dblTestOnce'))
-                : (ok
-                        ? p.t('mouse.dblTestOk')
-                        : p.t('mouse.dblTestNg'))
-                    .replaceAll('{n}', '$gap')
-                    .replaceAll('{lim}', '${widget.thresholdMs}'),
-            style: TextStyle(
-                color: gap == null ? Colors.white54 : Colors.white,
-                fontSize: 12,
-                fontWeight: FontWeight.w700),
-          ),
-        ),
-      ),
-      // ★ 上限までの帯 (= ユーザー指摘: 数字だけだと「速さ = 900ms」 と
-      //   読めてしまう)。 押した間隔が上限のどのあたりかを目で見せる。
-      if (gap != null) ...[
-        const SizedBox(height: 6),
-        LayoutBuilder(builder: (_, c) {
-          final lim = widget.thresholdMs <= 0 ? 1 : widget.thresholdMs;
-          final ratio = (gap / lim).clamp(0.0, 1.0);
-          return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Stack(children: [
-              Container(
-                height: 6,
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.07),
-                  borderRadius: BorderRadius.circular(3),
-                ),
-              ),
-              Container(
-                height: 6,
-                width: c.maxWidth * ratio,
-                decoration: BoxDecoration(
-                  color: color,
-                  borderRadius: BorderRadius.circular(3),
-                ),
-              ),
-            ]),
-            const SizedBox(height: 2),
-            Row(children: [
-              Text('0ms',
-                  style: const TextStyle(color: Colors.white24, fontSize: 9)),
-              const Spacer(),
-              Text('${widget.thresholdMs}ms',
-                  style: TextStyle(
-                      color: Colors.white38,
-                      fontSize: 9,
-                      fontWeight: FontWeight.w700)),
-            ]),
-          ]);
-        }),
-      ],
-      const SizedBox(height: 3),
-      Text(
-        p
-            .t('mouse.dblTestNote')
-            .replaceAll('{n}', '${widget.thresholdMs}'),
-        style: const TextStyle(
-            color: Colors.white30, fontSize: 10, height: 1.4),
-      ),
-    ]);
-  }
-}
-
 class _MouseTweakInline extends StatefulWidget {
   const _MouseTweakInline();
 
@@ -100019,14 +99904,12 @@ class _MouseTweakInlineState extends State<_MouseTweakInline> {
   /// (動かしている間ずっと書き込むと、 他のアプリにも変更が飛び続けて重い)。
   double? _speedDrag;
   double? _wheelDrag;
-  double? _dblDrag;
 
-  /// 加速の曲線をどれだけ引き伸ばしているか (100 = 何もしていない)。
-  int _boost = 100;
-  double? _boostDrag;
-
-  /// この画面で曲線を触ったか。 触った時だけ「サインインし直して」 を出す。
-  bool _boostTouched = false;
+  // ★ 「もっと速く」 (加速の曲線の引き伸ばし) と「ダブルクリックの間隔」 は
+  //   外した (= ユーザー要望「イマイチ効いてなさそうだから削除して」)。
+  //   曲線の方は**パソコンを再起動するまで効かない**上に、 効いたかどうかが
+  //   その場で分からず、 触った人が困るだけだった。 伸ばしたままの人が
+  //   戻せなくならないよう、 起動時に一度だけ元へ戻している (main.dart)。
 
   @override
   void initState() {
@@ -100041,7 +99924,6 @@ class _MouseTweakInlineState extends State<_MouseTweakInline> {
     WheelScrollScale.refreshFromOs();
     setState(() {
       _st = PcSettings.readMouse();
-      _boost = PcSettings.readPointerBoost();
     });
   }
 
@@ -100052,8 +99934,6 @@ class _MouseTweakInlineState extends State<_MouseTweakInline> {
     if (st == null) return const SizedBox.shrink();
     final speed = _speedDrag ?? st.speed.toDouble();
     final wheel = _wheelDrag ?? st.wheelLines.clamp(1, 30).toDouble();
-    final dbl = _dblDrag ?? st.doubleClickMs.clamp(100, 900).toDouble();
-    final boost = _boostDrag ?? _boost.toDouble();
     // 「20 が上限」 だけだと納得しにくいので、 今が標準の何倍かを添える。
     final speedNote = '${p.t('mouse.speedNote')}\n'
         '${p.t('mouse.speedFactor').replaceAll('{x}', PcSettings.mouseSpeedFactorLabel(speed.round()))}';
@@ -100084,66 +99964,6 @@ class _MouseTweakInlineState extends State<_MouseTweakInline> {
           _reload();
         },
       ),
-      // ── 20 でも足りない時 (= ユーザー要望「もっと早くできない?」) ──
-      // Windows の速さは 20 が上限 (標準の 3.5 倍) なので、 その先は
-      // 加速の曲線そのものを引き伸ばすしかない。 中身と注意点は
-      // lib/services/pc_settings.dart の [PcSettings.setPointerBoost]。
-      _pcRow(
-        p.t('mouse.boost'),
-        _pcSlider(
-          value: boost,
-          min: 100,
-          max: 300,
-          divisions: 20,
-          trailing: '${boost.round()}%',
-          onChanged: (v) => setState(() => _boostDrag = v),
-          onChangeEnd: (v) {
-            final pct = (v.round() ~/ 10) * 10;
-            setState(() {
-              _boostDrag = null;
-              _boostTouched = true;
-            });
-            final ok = PcSettings.setPointerBoost(pct);
-            // 曲線は「精度を高める」 が入っている時しか使われない。
-            // 伸ばしたのに何も起きない、 を防ぐ為ここで一緒に入れる。
-            // ※ 伸ばせなかった時は触らない (何も速くならないのに OS の
-            //   設定だけ変わってしまう為)。
-            if (ok && pct > 100 && !st.acceleration) {
-              PcSettings.setMouseAcceleration(true);
-            }
-            if (!ok && mounted) {
-              // 黙って何も起きないのが一番困る。
-              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                content: Text(p.t('mouse.boostFailed')),
-                backgroundColor: const Color(0xFFE53935),
-              ));
-            }
-            _reload();
-          },
-        ),
-        // ★ 既に伸ばしてある人にも案内を出す (= 前に 200% にしてサインイン
-        //   し直した後で開くと、 つまみは 200% なのに「サインインし直すまで
-        //   効かない / 切ればその場で戻せる」の一文が消えていた)。
-        note: (_boostTouched || _boost > 100)
-            ? '${p.t('mouse.boostNote')}\n${p.t('mouse.boostSignOut')}'
-            : p.t('mouse.boostNote'),
-      ),
-      Align(
-        alignment: Alignment.centerRight,
-        child: TextButton.icon(
-          onPressed: () {
-            setState(() {
-              _boostDrag = null;
-              _boostTouched = true;
-            });
-            PcSettings.resetPointerBoost();
-            _reload();
-          },
-          icon: const Icon(Icons.restart_alt_rounded, size: 16),
-          label: Text(p.t('mouse.boostReset')),
-          style: TextButton.styleFrom(foregroundColor: Colors.white60),
-        ),
-      ),
       _pcRow(
         p.t('mouse.wheelLines'),
         _pcSlider(
@@ -100169,28 +99989,6 @@ class _MouseTweakInlineState extends State<_MouseTweakInline> {
       _pcTestBox(
         p.t('mouse.wheelTest'),
         _WheelTestBox(key: ValueKey(st.wheelLines), osLines: st.wheelLines),
-      ),
-      _pcRow(
-        p.t('mouse.doubleClick'),
-        _pcSlider(
-          value: dbl,
-          min: 100,
-          max: 900,
-          divisions: 16,
-          trailing: '${dbl.round()}ms',
-          onChanged: (v) => setState(() => _dblDrag = v),
-          onChangeEnd: (v) {
-            setState(() => _dblDrag = null);
-            PcSettings.setDoubleClickTime(v.round());
-            _reload();
-          },
-        ),
-        note: p.t('mouse.doubleClickNote'),
-      ),
-      _pcTestBox(
-        p.t('mouse.dblTest'),
-        _DoubleClickTestBox(
-            key: ValueKey(st.doubleClickMs), thresholdMs: st.doubleClickMs),
       ),
     ]);
   }
@@ -100652,26 +100450,6 @@ class _MouseButtonBindingsState extends State<_MouseButtonBindings> {
   Widget build(BuildContext context) {
     final on = p.mouseRemapEnabled;
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      _pcToggle(
-        label: p.t('mouse.buttonsEnable'),
-        value: on,
-        note: p.t('mouse.buttonsWarn'),
-        onChanged: (v) async {
-          await p.setMouseRemapEnabled(v);
-          if (!mounted) return;
-          setState(() {});
-          // 立ち上げに失敗した時だけ知らせる (静かに効かないのが一番困る)。
-          await Future<void>.delayed(const Duration(milliseconds: 400));
-          if (!mounted) return;
-          if (v && p.mouseKeyBindings.isNotEmpty && p.mouseRemapFailed) {
-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text(p.t('mouse.hookFailed')),
-              backgroundColor: const Color(0xFFE53935),
-            ));
-          }
-        },
-      ),
-      const SizedBox(height: 2),
       // ★ ボタンの数はマウスによって違う。 決め打ちの一覧だけでなく、
       //   「押してもらって確かめる」 道も用意しておく。
       Align(
@@ -100782,6 +100560,29 @@ class _MouseButtonBindingsState extends State<_MouseButtonBindings> {
             ]),
           );
         }),
+      const SizedBox(height: 6),
+      // ★ スイッチは**一番下**に置く (= ユーザー要望: 上に付いていると
+      //   使いにくい)。 「どのボタンに何を割り当てるか決める → 最後に
+      //   効かせる」 という順に読める。
+      _pcToggle(
+        label: p.t('mouse.buttonsEnable'),
+        value: on,
+        note: p.t('mouse.buttonsWarn'),
+        onChanged: (v) async {
+          await p.setMouseRemapEnabled(v);
+          if (!mounted) return;
+          setState(() {});
+          // 立ち上げに失敗した時だけ知らせる (静かに効かないのが一番困る)。
+          await Future<void>.delayed(const Duration(milliseconds: 400));
+          if (!mounted) return;
+          if (v && p.mouseKeyBindings.isNotEmpty && p.mouseRemapFailed) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text(p.t('mouse.hookFailed')),
+              backgroundColor: const Color(0xFFE53935),
+            ));
+          }
+        },
+      ),
     ]);
   }
 }
@@ -100967,41 +100768,49 @@ class _ScreenSaverInlineState extends State<_ScreenSaverInline> {
                   color: Colors.white30, fontSize: 10, height: 1.35)),
         ),
       // ── 開始までの時間 ──
-      // ★ ここを `if (selected.isNotEmpty)` で囲ってはいけない。
-      //   「なし」 の時につまみごと消えていたのが、 まさに
-      //   = ユーザー要望「スクリーンセーバーが起動する時間設定ができる
-      //   ようにして欲しい」 の中身だった。 Windows は開始までの時間
-      //   (ScreenSaveTimeOut) を SCRNSAVE.EXE とは別に持っているので、
-      //   「なし」 のままでも先に決めておける。
-      _pcRow(
-        p.t('saver.wait'),
-        _pcSlider(
-          value: waitShown,
-          min: 1,
-          max: 60,
-          divisions: 59,
-          trailing:
-              p.t('time.minutes').replaceAll('{n}', '${waitShown.round()}'),
-          onChanged: (v) => setState(() => _waitDrag = v),
-          onChangeEnd: (v) {
-            final r = PcSettings.setScreenSaverTimeout(v.round() * 60);
-            _waitDrag = null;
-            _note = _resultNote(r);
+      // ★ 「なし」 の間は出さない (= ユーザー要望: 選ぶまでは効かないのに
+      //   数字だけ動くのは紛らわしい)。 Windows は時間を SCRNSAVE.EXE とは
+      //   別に持っているので先に決める事自体はできるが、 「決めたのに始まら
+      //   ない」 と受け取られるくらいなら、 選んでから出す方がよい。
+      if (selected.isNotEmpty) ...[
+        _pcRow(
+          p.t('saver.wait'),
+          _pcSlider(
+            value: waitShown,
+            min: 1,
+            max: 60,
+            divisions: 59,
+            trailing:
+                p.t('time.minutes').replaceAll('{n}', '${waitShown.round()}'),
+            onChanged: (v) => setState(() => _waitDrag = v),
+            onChangeEnd: (v) {
+              final r = PcSettings.setScreenSaverTimeout(v.round() * 60);
+              _waitDrag = null;
+              _note = _resultNote(r);
+              _reload();
+            },
+          ),
+          note: _note,
+        ),
+        _pcToggle(
+          label: p.t('saver.secure'),
+          value: st.secure,
+          note: _toggleNote,
+          onChanged: (v) {
+            final r = PcSettings.setScreenSaverSecure(v);
+            _toggleNote = _resultNote(r);
             _reload();
           },
         ),
-        note: _note ?? (selected.isEmpty ? p.t('saver.waitNoneNote') : null),
-      ),
-      _pcToggle(
-        label: p.t('saver.secure'),
-        value: st.secure,
-        note: _toggleNote,
-        onChanged: (v) {
-          final r = PcSettings.setScreenSaverSecure(v);
-          _toggleNote = _resultNote(r);
-          _reload();
-        },
-      ),
+      ],
+      // 「なし」 の時は、 何を選べばよいかだけ一言。
+      if (selected.isEmpty)
+        Padding(
+          padding: const EdgeInsets.only(left: 132, top: 2),
+          child: Text(p.t('saver.pickFirstNote'),
+              style: const TextStyle(
+                  color: Colors.white30, fontSize: 10, height: 1.35)),
+        ),
     ]);
   }
 }
