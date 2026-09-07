@@ -204993,9 +204993,20 @@ class _SsBorderSide {
 
   /// 0xRRGGBB。 null なら自動 (黒)。
   final int? color;
-  const _SsBorderSide(this.style, [this.color]);
 
-  double get width {
+  /// 画面に描く太さ (pt)。 null なら [style] から決める。
+  ///
+  /// ★ = ユーザー要望「枠線の太さを細かく数値で指定したい」。
+  ///   xlsx (SpreadsheetML) の罫線は **太さを数値では持てず**、
+  ///   hair / thin / medium / thick … という**決められた種類**しかない。
+  ///   そこで「画面で使う細かい太さ」 はここに覚えておき、 ファイルへは
+  ///   いちばん近い種類を書く ([styleForWidth])。 開き直すとその種類の
+  ///   目安の太さに丸まる、 という限界がある。
+  final double? pxWidth;
+  const _SsBorderSide(this.style, [this.color, this.pxWidth]);
+
+  /// 種類ごとの目安の太さ (pt)。
+  static double widthForStyle(String style) {
     switch (style) {
       case 'hair':
         return 0.5;
@@ -205009,17 +205020,33 @@ class _SsBorderSide {
     }
   }
 
-  Map<String, dynamic> toJson() =>
-      {'s': style, if (color != null) 'c': color};
+  /// 太さ [pt] にいちばん近い xlsx の種類。
+  static String styleForWidth(double pt) {
+    if (pt <= 0.7) return 'hair';
+    if (pt <= 1.5) return 'thin';
+    if (pt <= 2.5) return 'medium';
+    return 'thick';
+  }
 
-  static _SsBorderSide fromJson(Map<String, dynamic> j) =>
-      _SsBorderSide('${j['s'] ?? 'thin'}', (j['c'] as num?)?.toInt());
+  double get width => pxWidth ?? widthForStyle(style);
+
+  Map<String, dynamic> toJson() =>
+      {'s': style, if (color != null) 'c': color, if (pxWidth != null) 'w': pxWidth};
+
+  static _SsBorderSide fromJson(Map<String, dynamic> j) => _SsBorderSide(
+        '${j['s'] ?? 'thin'}',
+        (j['c'] as num?)?.toInt(),
+        (j['w'] as num?)?.toDouble(),
+      );
 
   @override
   bool operator ==(Object o) =>
-      o is _SsBorderSide && o.style == style && o.color == color;
+      o is _SsBorderSide &&
+      o.style == style &&
+      o.color == color &&
+      o.pxWidth == pxWidth;
   @override
-  int get hashCode => Object.hash(style, color);
+  int get hashCode => Object.hash(style, color, pxWidth);
 }
 
 /// 結合したセルの範囲 (行・列とも 0 始まり、 両端を含む)。
@@ -210570,15 +210597,135 @@ $csvText
     });
   }
 
+
+  /// 罫線の太さを数値で決める (= ユーザー要望)。
+  ///
+  /// xlsx の罫線は太さを数値では持てず、 hair / thin / medium / thick と
+  /// いった**決められた種類**しかない。 そこで画面には細かい数値で描き、
+  /// ファイルへはいちばん近い種類を書く。 その事もダイアログに書いておく。
+  Future<void> _showBorderWidthDialog() async {
+    final provider = context.read<MindMapProvider>();
+    var pt = _borderPt;
+    final ctrl = TextEditingController(text: pt.toStringAsFixed(2));
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => StatefulBuilder(
+        builder: (dctx, setD) {
+          void setPt(double v) {
+            final n = v.clamp(0.25, 6.0).toDouble();
+            setD(() {
+              pt = n;
+              ctrl.text = n.toStringAsFixed(2);
+              ctrl.selection =
+                  TextSelection.collapsed(offset: ctrl.text.length);
+            });
+          }
+
+          return AlertDialog(
+            backgroundColor: const Color(0xFF22222E),
+            title: Text(provider.t('ss.borderWidth'),
+                style: const TextStyle(color: Colors.white, fontSize: 15)),
+            content: SizedBox(
+              width: 320,
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                Row(children: [
+                  SizedBox(
+                    width: 82,
+                    child: TextField(
+                      controller: ctrl,
+                      style: const TextStyle(color: Colors.white),
+                      keyboardType:
+                          const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(
+                        isDense: true,
+                        suffixText: 'pt',
+                        suffixStyle: TextStyle(color: Colors.white38),
+                      ),
+                      onChanged: (t) {
+                        final v = double.tryParse(t.trim());
+                        if (v != null) setD(() => pt = v.clamp(0.25, 6.0));
+                      },
+                    ),
+                  ),
+                  Expanded(
+                    child: Slider(
+                      min: 0.25,
+                      max: 6,
+                      divisions: 23,
+                      value: pt.clamp(0.25, 6.0),
+                      onChanged: setPt,
+                    ),
+                  ),
+                ]),
+                const SizedBox(height: 6),
+                // 実際の太さの見本。
+                Container(
+                  height: 26,
+                  alignment: Alignment.center,
+                  child: Container(
+                    height: pt,
+                    color: Color(0xFF000000 | (_borderColor ?? 0xFFFFFF)),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    provider
+                        .t('ss.borderWidthNote')
+                        .replaceFirst('{name}',
+                            _SsBorderSide.styleForWidth(pt)),
+                    style: const TextStyle(
+                        color: Colors.white38, fontSize: 11, height: 1.4),
+                  ),
+                ),
+              ]),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dctx, false),
+                child: Text(provider.t('btn.cancel'),
+                    style: const TextStyle(color: Colors.white54)),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(dctx, true),
+                child: Text(provider.t('btn.ok'),
+                    style: const TextStyle(color: Color(0xFF6C63FF))),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    ctrl.dispose();
+    if (ok != true || !mounted) return;
+    setState(() {
+      _borderPt = pt;
+      _borderStyle = _SsBorderSide.styleForWidth(pt);
+    });
+  }
+
   /// 今引く罫線の太さと色 (書式バーで選ぶ)。
   String _borderStyle = 'thin';
   int? _borderColor;
+
+  /// 今引く罫線の太さ (pt)。 = ユーザー要望「細かく数値で指定したい」。
+  /// ファイルへは [_SsBorderSide.styleForWidth] でいちばん近い種類を書く。
+  double _borderPt = 1.0;
 
   /// 罫線のボタンで選ばれた物を当てる。
   Future<void> _applyBorderPreset(String v) async {
     final provider = context.read<MindMapProvider>();
     if (v.startsWith('w:')) {
-      setState(() => _borderStyle = v.substring(2));
+      final st = v.substring(2);
+      setState(() {
+        _borderStyle = st;
+        _borderPt = _SsBorderSide.widthForStyle(st);
+      });
+      return;
+    }
+    if (v == 'width') {
+      await _showBorderWidthDialog();
       return;
     }
     if (v == 'color') {
@@ -210588,7 +210735,7 @@ $csvText
       return;
     }
     final rg = _fmtTarget;
-    final side = _SsBorderSide(_borderStyle, _borderColor);
+    final side = _SsBorderSide(_borderStyle, _borderColor, _borderPt);
     _pushUndo();
     setState(() {
       final map = _fmts;
@@ -210678,20 +210825,192 @@ $csvText
     }
     if (!mounted) return;
     final p = context.read<MindMapProvider>();
+    final cur = _curFmt;
+
+    PopupMenuItem<String> row(String value, IconData icon, String label,
+            {bool checked = false, String? trailing}) =>
+        PopupMenuItem<String>(
+          value: value,
+          height: 34,
+          child: Row(children: [
+            Icon(icon,
+                size: 15,
+                color: checked ? const Color(0xFF80CBC4) : Colors.white70),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(label,
+                  style: TextStyle(
+                      color: checked ? const Color(0xFF80CBC4) : Colors.white,
+                      fontSize: 12.5,
+                      fontWeight:
+                          checked ? FontWeight.w700 : FontWeight.w400)),
+            ),
+            if (trailing != null)
+              Text(trailing,
+                  style: const TextStyle(color: Colors.white38, fontSize: 11)),
+          ]),
+        );
+
     final sel = await showMenu<String>(
       context: context,
+      color: const Color(0xFF22222E),
       position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx, pos.dy),
       items: [
-        PopupMenuItem(value: 'merge', child: Text(p.t('ss.merge'))),
-        PopupMenuItem(value: 'unmerge', child: Text(p.t('ss.unmerge'))),
+        // ── 文字 (= ユーザー要望: 右クリックから太字などを出す) ──
+        row('bold', Icons.format_bold_rounded, p.t('ss.bold'),
+            checked: cur.bold),
+        row('italic', Icons.format_italic_rounded, p.t('ss.italic'),
+            checked: cur.italic),
+        row('underline', Icons.format_underlined_rounded, p.t('ss.underline'),
+            checked: cur.underline),
+        const PopupMenuDivider(),
+        row('fg', Icons.format_color_text_rounded, p.t('ss.fontColor')),
+        row('bg', Icons.format_color_fill_rounded, p.t('ss.fillColor')),
+        row('size', Icons.format_size_rounded, p.t('ss.fontSize'),
+            trailing: cur.size == null
+                ? null
+                : '${cur.size!.toStringAsFixed(cur.size! % 1 == 0 ? 0 : 1)}pt'),
+        const PopupMenuDivider(),
+        // ── 罫線 ──
+        row('bwidth', Icons.straighten_rounded, p.t('ss.borderWidth'),
+            trailing: '${_borderPt.toStringAsFixed(2)}pt'),
+        row('bcolor', Icons.border_color_rounded, p.t('ss.borderColor')),
+        row('ball', Icons.border_all_rounded, p.t('ss.borderAll')),
+        row('boutline', Icons.border_outer_rounded, p.t('ss.borderOutline')),
+        row('bnone', Icons.border_clear_rounded, p.t('ss.borderNone')),
+        const PopupMenuDivider(),
+        row('merge', Icons.call_merge_rounded, p.t('ss.merge')),
+        row('unmerge', Icons.call_split_rounded, p.t('ss.unmerge')),
+        const PopupMenuDivider(),
+        row('clear', Icons.format_clear_rounded, p.t('ss.fmtClear')),
       ],
     );
-    if (!mounted) return;
-    if (sel == 'merge') {
-      _mergeSelection();
-    } else if (sel == 'unmerge') {
-      _unmergeSelection();
+    if (!mounted || sel == null) return;
+    switch (sel) {
+      case 'bold':
+        _applyFmtToSelection((f) => f.bold = !cur.bold);
+        break;
+      case 'italic':
+        _applyFmtToSelection((f) => f.italic = !cur.italic);
+        break;
+      case 'underline':
+        _applyFmtToSelection((f) => f.underline = !cur.underline);
+        break;
+      case 'fg':
+        final v = await _pickSsColor(p.t('ss.fontColor'));
+        if (v == null || !mounted) return;
+        _applyFmtToSelection((f) => f.fg = v < 0 ? null : v);
+        break;
+      case 'bg':
+        final v = await _pickSsColor(p.t('ss.fillColor'));
+        if (v == null || !mounted) return;
+        _applyFmtToSelection((f) => f.bg = v < 0 ? null : v);
+        break;
+      case 'size':
+        await _showFontSizeDialog();
+        break;
+      case 'bwidth':
+        await _showBorderWidthDialog();
+        break;
+      case 'bcolor':
+        final v = await _pickSsColor(p.t('ss.borderColor'));
+        if (v == null || !mounted) return;
+        setState(() => _borderColor = v < 0 ? null : v);
+        break;
+      case 'ball':
+        await _applyBorderPreset('all');
+        break;
+      case 'boutline':
+        await _applyBorderPreset('outline');
+        break;
+      case 'bnone':
+        await _applyBorderPreset('none');
+        break;
+      case 'merge':
+        _mergeSelection();
+        break;
+      case 'unmerge':
+        _unmergeSelection();
+        break;
+      case 'clear':
+        _clearFmtOnSelection();
+        break;
     }
+  }
+
+  /// 文字の大きさを数値で決める (= ユーザー要望: 右クリックから)。
+  Future<void> _showFontSizeDialog() async {
+    final provider = context.read<MindMapProvider>();
+    var pt = _curFmt.size ?? 11.0;
+    final ctrl = TextEditingController(
+        text: pt.toStringAsFixed(pt % 1 == 0 ? 0 : 1));
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => StatefulBuilder(
+        builder: (dctx, setD) => AlertDialog(
+          backgroundColor: const Color(0xFF22222E),
+          title: Text(provider.t('ss.fontSize'),
+              style: const TextStyle(color: Colors.white, fontSize: 15)),
+          content: SizedBox(
+            width: 320,
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Row(children: [
+                SizedBox(
+                  width: 82,
+                  child: TextField(
+                    controller: ctrl,
+                    style: const TextStyle(color: Colors.white),
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      suffixText: 'pt',
+                      suffixStyle: TextStyle(color: Colors.white38),
+                    ),
+                    onChanged: (t) {
+                      final v = double.tryParse(t.trim());
+                      if (v != null) setD(() => pt = v.clamp(4, 72));
+                    },
+                  ),
+                ),
+                Expanded(
+                  child: Slider(
+                    min: 4,
+                    max: 72,
+                    divisions: 68,
+                    value: pt.clamp(4, 72),
+                    onChanged: (v) => setD(() {
+                      pt = v;
+                      ctrl.text = v.toStringAsFixed(v % 1 == 0 ? 0 : 1);
+                      ctrl.selection =
+                          TextSelection.collapsed(offset: ctrl.text.length);
+                    }),
+                  ),
+                ),
+              ]),
+              const SizedBox(height: 8),
+              Text('あア Aa 123',
+                  style: TextStyle(color: Colors.white, fontSize: pt)),
+            ]),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dctx, false),
+              child: Text(provider.t('btn.cancel'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(dctx, true),
+              child: Text(provider.t('btn.ok'),
+                  style: const TextStyle(color: Color(0xFF6C63FF))),
+            ),
+          ],
+        ),
+      ),
+    );
+    ctrl.dispose();
+    if (ok != true || !mounted) return;
+    _applyFmtToSelection((f) => f.size = pt);
   }
 
   /// 選んだ範囲を 1 つのセルにする。
@@ -211018,6 +211337,21 @@ $csvText
                               color: Colors.white70, fontSize: 12)),
                     ]),
                   ),
+                // ★ 太さを数値で決める (= ユーザー要望)。
+                PopupMenuItem<String>(
+                  value: 'width',
+                  height: 32,
+                  child: Row(children: [
+                    const Icon(Icons.straighten_rounded,
+                        size: 14, color: Color(0xFF80CBC4)),
+                    const SizedBox(width: 8),
+                    Text(
+                        '${provider.t('ss.borderWidth')} '
+                        '(${_borderPt.toStringAsFixed(2)}pt)',
+                        style: const TextStyle(
+                            color: Colors.white70, fontSize: 12)),
+                  ]),
+                ),
                 PopupMenuItem<String>(
                   value: 'color',
                   height: 32,

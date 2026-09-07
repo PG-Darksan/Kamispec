@@ -11,9 +11,10 @@
 //     (= 対応していない) ので、 失敗を見て次へ落ちる作りにしてある。
 //  2. **WMI** (`root\WMI` の WmiMonitorBrightnessMethods)。 ノートの内蔵
 //     パネルの背面光。 実測で**管理者権限なしで動く** (0〜100 の 101 段階)。
-//     Dart から COM で WMI を叩くのは大掛かりなので、 窓を出さずに
-//     PowerShell を 1 回走らせる。 つまみを離した時しか呼ばないので、
-//     0.3 秒ほど掛かっても操作の邪魔にはならない。
+//     ★ b325 で **PowerShell を起こすのをやめ、 アプリの中から COM で
+//       直に叩く**ようにした (= ユーザー報告: セキュリティソフトに
+//       「悪意ある行動はブロックされました」 と止められる)。 画面を出さずに
+//       PowerShell を起こすのは、 どの製品でも真っ先に怪しまれる振る舞い。
 //  3. **ガンマ表** (`gdi32` の SetDeviceGammaRamp)。 背面光は動かないが、
 //     どの画面でも効く最後の手段。 ブルーライトカットもこれで行う。
 //
@@ -41,6 +42,7 @@ import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart';
+import 'package:win32/win32.dart' as w32;
 
 /// 明るさをどうやって変えるか。
 enum BrightnessRoute {
@@ -409,75 +411,313 @@ class DisplayLight {
 
   // ── WMI (ノートの内蔵パネルの本当の明るさ) ──────────────────────
   //
-  // Dart から COM で WMI を叩くのは大掛かりなので、 窓を出さずに
-  // PowerShell を 1 回走らせる。 つまみを離した時しか呼ばない。
+  // ★ b325: **PowerShell を起動するのをやめた** (= ユーザー報告:
+  //   「ディスプレイ設定を開こうとすると、 セキュリティソフトに
+  //    『悪意ある行動はブロックされました』 と止められる」)。
+  //
+  //   前は `powershell -WindowStyle Hidden -Command …` を走らせて WMI を
+  //   叩いていた。 **画面を出さずに PowerShell を起こす**のは、 どの
+  //   セキュリティ製品でも真っ先に怪しまれる振る舞い (いわゆる LOLBin の
+  //   悪用) なので、 止められて当然だった。 しかも設定を**開くだけ**で
+  //   走っていたので、 毎回引っ掛かる。
+  //
+  //   今はアプリの中から COM で WMI を直に叩く。 外のプロセスは 1 つも
+  //   起こさないので、 振る舞いとしては普通のデスクトップアプリと同じ。
+  //   明るさを触る道具はどれもこの作りになっている。
+  //
+  // ── COM の後始末の決まり (ここを間違えると落ちる) ──────────────
+  //   win32 の `COMObject` は **中身が「相手の入口 (lpVtbl)」 1 本だけ**の
+  //   入れ物で、 `Pointer<COMObject>` と `Pointer<Pointer<COMObject>>` は
+  //   同じ並びになっている。 つまり受け皿に使った領域を解放すると、
+  //   包んで返した相手ごと消える。
+  //   ★ 最初これをやって**その場で落ちた**。 受け皿は `release()` した
+  //     後にだけ解放すること ([_rel] に任せる)。
   static int? _wmiCached;
 
-  /// 分かっている範囲での答え。 **調べには行かない** (画面を作る所から
-  /// 呼ばれるので、 ここで PowerShell を待つと数百 ms 固まってしまう)。
+  /// 一度でも駄目だったら、 そのあとは触らない
+  /// (何度も試して怪しまれないようにするため)。
+  static bool _wmiGaveUp = false;
+
+  /// 分かっている範囲での答え。 **調べには行かない**。
   static bool _wmiAvailable() => _wmiOk ?? false;
 
   static Future<bool>? _wmiProbe;
 
   /// WMI で明るさを触れるかを 1 回だけ調べる。 **画面を出す前に呼ぶ**。
-  ///
-  /// ★ はじめ `Process.runSync` で調べていたが、 これは列挙のたびに
-  ///   UI を 0.3 秒ほど止める。 立ち上がりにも走るので、 待たない形にした。
   static Future<bool> ensureWmiProbed() {
     if (_wmiOk != null) return Future<bool>.value(_wmiOk);
     return _wmiProbe ??= () async {
-      try {
-        final r = await Process.run(
-          'powershell',
-          const [
-            '-NoProfile',
-            '-NonInteractive',
-            '-WindowStyle',
-            'Hidden',
-            '-Command',
-            r'(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness -ErrorAction Stop).CurrentBrightness',
-          ],
-          runInShell: false,
-        );
-        final txt = '${r.stdout}'.trim().split(RegExp(r'\s+')).firstWhere(
-              (e) => e.isNotEmpty,
-              orElse: () => '',
-            );
-        final v = int.tryParse(txt);
-        _wmiCached = v;
-        return _wmiOk = (r.exitCode == 0 && v != null);
-      } catch (e) {
-        debugPrint('WMI の明るさを読めません: $e');
-        return _wmiOk = false;
-      }
+      final v = _wmiReadBrightness();
+      _wmiCached = v;
+      return _wmiOk = v != null;
     }();
   }
 
-  static Future<bool> _wmiWrite(int percent) async {
+  /// COM の相手を手放して、 受け皿も解放する。
+  static void _rel(w32.IUnknown? o) {
+    if (o == null) return;
     try {
-      final v = percent.clamp(0, 100);
-      final r = await Process.run(
-        'powershell',
-        [
-          '-NoProfile',
-          '-NonInteractive',
-          '-WindowStyle',
-          'Hidden',
-          '-Command',
-          'Get-CimInstance -Namespace root/WMI -ClassName '
-              'WmiMonitorBrightnessMethods | Invoke-CimMethod '
-              '-MethodName WmiSetBrightness '
-              '-Arguments @{Timeout=1;Brightness=$v} | Out-Null',
-        ],
-        runInShell: false,
-      );
-      if (r.exitCode == 0) _wmiCached = v;
-      return r.exitCode == 0;
+      o.release();
+    } catch (_) {}
+    try {
+      calloc.free(o.ptr);
+    } catch (_) {}
+  }
+
+  /// `root\WMI` につないで [w32.IWbemServices] を返す。
+  /// 使い終わったら [_rel] に渡すこと。 だめなら null。
+  static w32.IWbemServices? _wmiConnect() {
+    if (_wmiGaveUp) return null;
+    try {
+      // すでに初期化されていれば S_FALSE / RPC_E_CHANGED_MODE が返るだけ。
+      w32.CoInitializeEx(nullptr, w32.COINIT_APARTMENTTHREADED);
+    } catch (_) {}
+    w32.IWbemLocator? locator;
+    try {
+      locator = w32.WbemLocator.createInstance();
+    } catch (e) {
+      debugPrint('WMI を使えません: $e');
+      _wmiGaveUp = true;
+      return null;
+    }
+    final svcPtr = calloc<w32.COMObject>();
+    final nsRaw = r'root\WMI'.toNativeUtf16();
+    final ns = w32.SysAllocString(nsRaw);
+    try {
+      final hr = locator.connectServer(
+          ns, nullptr, nullptr, nullptr, 0, nullptr, nullptr, svcPtr.cast());
+      if (w32.FAILED(hr)) {
+        debugPrint('WMI につなげません: 0x${hr.toRadixString(16)}');
+        calloc.free(svcPtr);
+        return null;
+      }
+      final svc = w32.IWbemServices(svcPtr);
+      // WMI は「なりすまし」 の設定をしないと、 呼び出しが弾かれる。
+      try {
+        // ★ 渡すのは「相手そのもの」 (= 受け皿に入っている入口)。
+        //   受け皿の場所をそのまま渡すと、 その場で落ちる (実測)。
+        w32.CoSetProxyBlanket(
+          svcPtr.ref.lpVtbl.cast(),
+          10, // RPC_C_AUTHN_WINNT
+          0, // RPC_C_AUTHZ_NONE
+          nullptr,
+          3, // RPC_C_AUTHN_LEVEL_CALL
+          3, // RPC_C_IMP_LEVEL_IMPERSONATE
+          nullptr,
+          0, // EOAC_NONE
+        );
+      } catch (_) {}
+      return svc;
+    } catch (e) {
+      debugPrint('WMI につなげません: $e');
+      calloc.free(svcPtr);
+      _wmiGaveUp = true;
+      return null;
+    } finally {
+      w32.SysFreeString(ns);
+      calloc.free(nsRaw);
+      _rel(locator);
+    }
+  }
+
+  /// WQL を投げて、 最初の 1 件を返す。 使い終わったら [_rel]。
+  ///
+  /// ★ 受け皿の解放は [_rel] に**一本化**する。 前は「使い終わったら
+  ///   自分でも解放」 という二重の後始末になっていて、 同じ場所を 2 回
+  ///   解放して落ちていた (flutter test が黙って死ぬ形で出た)。
+  static w32.IWbemClassObject? _wmiFirst(w32.IWbemServices svc, String wql) {
+    final langRaw = 'WQL'.toNativeUtf16();
+    final qRaw = wql.toNativeUtf16();
+    final lang = w32.SysAllocString(langRaw);
+    final q = w32.SysAllocString(qRaw);
+    final enumPtr = calloc<w32.COMObject>();
+    w32.IEnumWbemClassObject? en;
+    try {
+      // WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY = 0x30
+      final hr = svc.execQuery(lang, q, 0x30, nullptr, enumPtr.cast());
+      if (w32.FAILED(hr)) {
+        calloc.free(enumPtr);
+        return null;
+      }
+      // ここから先、 enumPtr の後始末は _rel(en) が持つ。
+      en = w32.IEnumWbemClassObject(enumPtr);
+      final objPtr = calloc<w32.COMObject>();
+      final got = calloc<Uint32>();
+      try {
+        final hr2 = en.next(5000, 1, objPtr.cast(), got);
+        if (w32.FAILED(hr2) || got.value == 0) {
+          calloc.free(objPtr);
+          return null;
+        }
+        return w32.IWbemClassObject(objPtr);
+      } finally {
+        calloc.free(got);
+      }
+    } catch (e) {
+      debugPrint('WMI の問い合わせに失敗: $e');
+      return null;
+    } finally {
+      w32.SysFreeString(lang);
+      w32.SysFreeString(q);
+      calloc.free(langRaw);
+      calloc.free(qRaw);
+      _rel(en);
+    }
+  }
+
+  /// 内蔵パネルの今の明るさ (%)。 取れなければ null。
+  static int? _wmiReadBrightness() {
+    if (!isSupported) return null;
+    final svc = _wmiConnect();
+    if (svc == null) return null;
+    w32.IWbemClassObject? obj;
+    try {
+      obj = _wmiFirst(svc, 'SELECT * FROM WmiMonitorBrightness');
+      if (obj == null) return null;
+      final v = calloc<w32.VARIANT>();
+      final name = 'CurrentBrightness'.toNativeUtf16();
+      try {
+        final hr = obj.get(name, 0, v, nullptr, nullptr);
+        if (w32.FAILED(hr)) return null;
+        // CurrentBrightness は uint8 (VT_UI1)。
+        final vt = v.ref.vt;
+        final val = vt == w32.VT_UI1
+            ? v.ref.bVal
+            : vt == w32.VT_I4
+                ? v.ref.lVal
+                : v.ref.bVal;
+        return val.clamp(0, 100);
+      } finally {
+        calloc.free(name);
+        calloc.free(v);
+      }
+    } catch (e) {
+      debugPrint('WMI の明るさを読めません: $e');
+      return null;
+    } finally {
+      _rel(obj);
+      _rel(svc);
+    }
+  }
+
+  /// 内蔵パネルの明るさを [percent] (%) にする。
+  static bool _wmiSetBrightness(int percent) {
+    if (!isSupported) return false;
+    final svc = _wmiConnect();
+    if (svc == null) return false;
+    w32.IWbemClassObject? inst;
+    w32.IWbemClassObject? cls;
+    w32.IWbemClassObject? inParams;
+    w32.IWbemClassObject? inInst;
+    try {
+      inst = _wmiFirst(svc, 'SELECT * FROM WmiMonitorBrightnessMethods');
+      if (inst == null) return false;
+
+      // 呼び出す相手の「道」 (__PATH) を取る。
+      String? objPath;
+      final pathV = calloc<w32.VARIANT>();
+      final pathName = '__PATH'.toNativeUtf16();
+      try {
+        if (!w32.FAILED(inst.get(pathName, 0, pathV, nullptr, nullptr))) {
+          final p = pathV.ref.bstrVal;
+          if (p != nullptr) objPath = p.toDartString();
+        }
+      } catch (_) {
+      } finally {
+        calloc.free(pathName);
+        calloc.free(pathV);
+      }
+      if (objPath == null || objPath.isEmpty) return false;
+
+      // 入れる値の形は、 クラスの定義から作る。
+      final clsPtr = calloc<w32.COMObject>();
+      final clsRaw = 'WmiMonitorBrightnessMethods'.toNativeUtf16();
+      final clsName = w32.SysAllocString(clsRaw);
+      try {
+        final hr = svc.getObject(clsName, 0, nullptr, clsPtr.cast(), nullptr);
+        if (w32.FAILED(hr)) {
+          calloc.free(clsPtr);
+          return false;
+        }
+        cls = w32.IWbemClassObject(clsPtr);
+      } finally {
+        w32.SysFreeString(clsName);
+        calloc.free(clsRaw);
+      }
+
+      final inPtr = calloc<w32.COMObject>();
+      final method = 'WmiSetBrightness'.toNativeUtf16();
+      try {
+        final hr = cls.getMethod(method, 0, inPtr.cast(), nullptr);
+        if (w32.FAILED(hr)) {
+          calloc.free(inPtr);
+          return false;
+        }
+        inParams = w32.IWbemClassObject(inPtr);
+      } finally {
+        calloc.free(method);
+      }
+
+      final instPtr = calloc<w32.COMObject>();
+      final hrSpawn = inParams.spawnInstance(0, instPtr.cast());
+      if (w32.FAILED(hrSpawn)) {
+        calloc.free(instPtr);
+        return false;
+      }
+      inInst = w32.IWbemClassObject(instPtr);
+
+      bool put(String name, int value) {
+        final v = calloc<w32.VARIANT>();
+        final n = name.toNativeUtf16();
+        try {
+          v.ref.vt = w32.VT_I4;
+          v.ref.lVal = value;
+          return !w32.FAILED(inInst!.put(n, 0, v, 0));
+        } finally {
+          calloc.free(n);
+          calloc.free(v);
+        }
+      }
+
+      // Timeout は「何秒かけて変えるか」。 0 で即座に。
+      if (!put('Timeout', 0)) return false;
+      if (!put('Brightness', percent.clamp(0, 100))) return false;
+
+      final pathRaw = objPath.toNativeUtf16();
+      final methodRaw = 'WmiSetBrightness'.toNativeUtf16();
+      final pathB = w32.SysAllocString(pathRaw);
+      final methodB = w32.SysAllocString(methodRaw);
+      try {
+        // 相手を渡す所は、 受け皿ではなく中の入口を渡す。
+        final hr = svc.execMethod(pathB, methodB, 0, nullptr,
+            inInst.ptr.ref.lpVtbl.cast(), nullptr, nullptr);
+        if (w32.FAILED(hr)) {
+          debugPrint('WMI で明るさを変えられません: 0x${hr.toRadixString(16)}');
+          return false;
+        }
+        _wmiCached = percent.clamp(0, 100);
+        return true;
+      } finally {
+        w32.SysFreeString(pathB);
+        w32.SysFreeString(methodB);
+        calloc.free(pathRaw);
+        calloc.free(methodRaw);
+      }
     } catch (e) {
       debugPrint('WMI で明るさを変えられません: $e');
       return false;
+    } finally {
+      _rel(inInst);
+      _rel(inParams);
+      _rel(cls);
+      _rel(inst);
+      _rel(svc);
     }
   }
+
+  static Future<bool> _wmiWrite(int percent) async =>
+      _wmiSetBrightness(percent);
+
 
   // ── 明るさを当てる (道は画面ごと) ───────────────────────────────
   /// [m] の明るさを [percent] (%) にする。

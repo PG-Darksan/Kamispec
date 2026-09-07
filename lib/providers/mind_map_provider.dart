@@ -43557,6 +43557,44 @@ class MindMapProvider extends ChangeNotifier {
     'ss.borderLeft': {'ja': '左の線', 'en': 'Left'},
     'ss.borderRight': {'ja': '右の線', 'en': 'Right'},
     'ss.borderNone': {'ja': '線を消す', 'en': 'No border'},
+    'ss.borderWidth': {
+      'ja': '太さを数値で',
+      'en': 'Exact thickness',
+      'zh': '按数值设定粗细',
+      'ko': '두께를 숫자로',
+      'es': 'Grosor exacto',
+      'fr': 'Épaisseur exacte',
+      'de': 'Genaue Stärke',
+      'pt': 'Espessura exata',
+      'ru': 'Точная толщина',
+    },
+    'ss.borderWidthNote': {
+      'ja': 'xlsx の罫線は太さを数値では持てず、 決められた種類しかありません。 '
+          '画面はこの太さで描き、 ファイルには「{name}」 として書き込みます '
+          '(開き直すとその種類の太さに丸まります)。',
+      'en': 'xlsx borders have no numeric width — only a few fixed kinds. The '
+          'screen uses this exact thickness and the file stores it as "{name}" '
+          '(reopening rounds it to that kind).',
+      'zh': 'xlsx 的边框没有数值粗细，只有几种固定类型。屏幕按此粗细绘制，文件中保存为「{name}」'
+          '（重新打开会取整为该类型）。',
+      'ko': 'xlsx 테두리는 숫자 두께를 가질 수 없고 정해진 종류만 있습니다. 화면은 이 두께로 '
+          '그리고 파일에는 "{name}" 으로 저장합니다 (다시 열면 그 종류로 반올림됩니다).',
+      'es': 'Los bordes de xlsx no tienen grosor numérico, solo unos tipos fijos. '
+          'La pantalla usa este grosor y el archivo lo guarda como «{name}» '
+          '(al reabrir se redondea a ese tipo).',
+      'fr': 'Les bordures xlsx n’ont pas d’épaisseur numérique, seulement '
+          'quelques types. L’écran utilise cette épaisseur et le fichier '
+          'l’enregistre comme « {name} » (à la réouverture, elle est arrondie).',
+      'de': 'xlsx-Rahmen haben keine numerische Stärke, nur feste Arten. Der '
+          'Bildschirm nutzt diese Stärke, die Datei speichert sie als „{name}“ '
+          '(beim erneuten Öffnen wird auf diese Art gerundet).',
+      'pt': 'As bordas do xlsx não têm espessura numérica, só alguns tipos fixos. '
+          'A tela usa esta espessura e o arquivo grava como "{name}" '
+          '(ao reabrir, arredonda para esse tipo).',
+      'ru': 'У рамок xlsx нет числовой толщины — только несколько видов. На '
+          'экране используется эта толщина, а в файл она пишется как «{name}» '
+          '(при повторном открытии округляется до этого вида).',
+    },
     'ss.borderThin': {'ja': '細い', 'en': 'Thin'},
     'ss.borderMedium': {'ja': '普通', 'en': 'Medium'},
     'ss.borderThick': {'ja': '太い', 'en': 'Thick'},
