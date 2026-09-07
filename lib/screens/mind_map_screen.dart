@@ -205289,6 +205289,11 @@ class _SheetSnapshot {
   Map<String, Map<String, _SsCellFmt>> fmts = const {};
   Map<String, List<_SsMerge>> merges = const {};
 
+  /// 列の幅と行の高さも控える (= ユーザー要望: 境目を掴んで変えた分も
+  /// Ctrl+Z で戻せるように)。
+  Map<String, Map<int, double>> colW = const {};
+  Map<String, Map<int, double>> rowH = const {};
+
   final Map<String, List<List<String>>> sheets;
   final List<String> sheetNames;
   final String activeSheet;
@@ -205434,12 +205439,16 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
   /// 折り返す指定のセルに改行が入っていたら、 そのぶん行を高くして中身が
   /// 全部見えるようにする。
   ///
-  /// ★ 行ごとにバラバラの高さにはしない。 図形・画像の置き場所や、 選んだ
-  ///   セルへのスクロールなど、 至る所で「行番号 x 行の高さ」 で位置を
-  ///   出しているので、 行ごとに変えると表の上の物が全部ずれてしまう。
-  ///   シート全体で揃えるなら、 その計算はそのまま使える。
+  /// ★ かつては「行ごとにバラバラの高さにはしない」 決まりだった。 図形・
+  ///   画像の置き場所や、 選んだセルへのスクロールなど、 至る所で
+  ///   「行番号 x 行の高さ」 で位置を出していたためである。
+  ///   b324 で**列ごとの幅 / 行ごとの高さ**を入れた (= ユーザー要望:
+  ///   境目を掴んで変えたい) ので、 その計算はすべて下の
+  ///   [_colX] / [_rowY] / [_colAtX] / [_rowAtY] に置き換えてある。
+  ///   ここは今も「何も指定が無い行の既定の高さ」 を決める役目。
   int _wrapLines = 1;
 
+  /// 何も指定が無い行の高さ (px)。
   double get _cellHeight => _cellHeightBase * _wrapLines;
 
   /// いま開いているシートを見て、 行の高さを決め直す。
@@ -205467,6 +205476,233 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
       _wrapLines = next;
     }
   }
+
+  // ── 列の幅 と 行の高さ (= ユーザー要望: 境目を掴んで変えられるように) ──
+  //
+  // シート名 → 列 / 行の番号 → px。 **入っていない列 / 行は既定のまま**。
+  // ★ List ではなく Map で持つ。 貼り付け・オートフィル・範囲を表にする、
+  //   の 3 つは行や列を黙って増やすので、 List だと長さ合わせが漏れる。
+  final Map<String, Map<int, double>> _sheetColW = {};
+  final Map<String, Map<int, double>> _sheetRowH = {};
+
+  Map<int, double> get _colWMap => _sheetColW[_activeSheet] ??= {};
+  Map<int, double> get _rowHMap => _sheetRowH[_activeSheet] ??= {};
+
+  /// 掴んで変えられる範囲 (px)。 0 にされて見失わないよう下限を置く。
+  static const double _kMinColW = 24.0;
+  static const double _kMaxColW = 900.0;
+  static const double _kMinRowH = 16.0;
+  static const double _kMaxRowH = 600.0;
+
+  /// 列 [c] の幅 (px)。
+  double _colW(int c) {
+    final v = _sheetColW[_activeSheet]?[c];
+    if (v == null) return _cellWidth;
+    return v.clamp(_kMinColW, _kMaxColW);
+  }
+
+  /// 行 [r] の高さ (px)。
+  double _rowH(int r) {
+    final v = _sheetRowH[_activeSheet]?[r];
+    if (v == null) return _cellHeight;
+    return v.clamp(_kMinRowH, _kMaxRowH);
+  }
+
+  // ── 足し上げの控え ──────────────────────────────────────────────
+  // 位置を出すたびに 0 から足すと、 行が多い表で毎フレーム重くなる。
+  // 累積和を 1 度だけ作って覚え、 幅 / 高さ / 行数 / 列数が変わったら捨てる。
+  List<double>? _colXCache;
+  List<double>? _rowYCache;
+
+  /// 控えを作った時のシート名。 ★ これが無いと、 列数がたまたま同じ別の
+  ///   シートへ切り替えた時に古い幅のまま描いてしまう。
+  String _metricsSheet = '';
+
+  void _invalidateGridMetrics() {
+    _colXCache = null;
+    _rowYCache = null;
+  }
+
+  /// シートが変わっていたら控えを丸ごと捨てる。
+  ///
+  /// ★ ここで「片方を作る時にもう片方を捨てる」 とやってはいけない。
+  ///   縦と横がお互いを捨て合って、 毎回作り直しになる (控えの意味が無くなる)。
+  void _syncMetricsSheet() {
+    if (_metricsSheet == _activeSheet) return;
+    _metricsSheet = _activeSheet;
+    _colXCache = null;
+    _rowYCache = null;
+  }
+
+  List<double> get _colXs {
+    _syncMetricsSheet();
+    final c = _colXCache;
+    if (c != null && c.length == _colCount + 1) return c;
+    final out = List<double>.filled(_colCount + 1, 0);
+    for (var i = 0; i < _colCount; i++) {
+      out[i + 1] = out[i] + _colW(i);
+    }
+    return _colXCache = out;
+  }
+
+  List<double> get _rowYs {
+    _syncMetricsSheet();
+    final c = _rowYCache;
+    if (c != null && c.length == _rowCount + 1) return c;
+    final out = List<double>.filled(_rowCount + 1, 0);
+    for (var i = 0; i < _rowCount; i++) {
+      out[i + 1] = out[i] + _rowH(i);
+    }
+    return _rowYCache = out;
+  }
+
+  /// 列 [c] の左端 (表の中の px。 拡大率は掛けない)。
+  /// 表からはみ出す番号は、 既定の幅で伸ばして返す。
+  double _colX(int c) {
+    final xs = _colXs;
+    if (c <= 0) return 0;
+    if (c < xs.length) return xs[c];
+    return xs.last + (c - _colCount) * _cellWidth;
+  }
+
+  /// 行 [r] の上端 (表の中の px)。
+  double _rowY(int r) {
+    final ys = _rowYs;
+    if (r <= 0) return 0;
+    if (r < ys.length) return ys[r];
+    return ys.last + (r - _rowCount) * _cellHeight;
+  }
+
+  /// 全部の列の幅の和。
+  double get _totalColW => _colXs.last;
+
+  /// 全部の行の高さの和。
+  double get _totalRowH => _rowYs.last;
+
+  /// 画素 [px] がどの列に入るか。
+  ///
+  /// [nearest] が false なら「その画素を含む列」 (= 昔の `~/` と同じ)、
+  /// true なら「境目のどちら側に近いか」 (= 昔の `.round()` と同じ)。
+  /// 昔の式の丸め方をそのまま残さないと、 図形の書き戻しやオートフィルの
+  /// 取っ手の効き方が変わってしまう。
+  int _colAtX(double px, {bool nearest = false}) {
+    final xs = _colXs;
+    if (px <= 0) return 0;
+    if (nearest) {
+      for (var i = 0; i < _colCount; i++) {
+        if (px < xs[i] + _colW(i) / 2) return i;
+      }
+      // 表の外は既定の幅で数える。
+      final over = px - xs.last;
+      return _colCount + ((over + _cellWidth / 2) / _cellWidth).floor();
+    }
+    for (var i = 0; i < _colCount; i++) {
+      if (px < xs[i + 1]) return i;
+    }
+    final over = px - xs.last;
+    return _colCount + (over / _cellWidth).floor();
+  }
+
+  /// 画素 [px] がどの行に入るか。 [nearest] の意味は [_colAtX] と同じ。
+  int _rowAtY(double px, {bool nearest = false}) {
+    final ys = _rowYs;
+    if (px <= 0) return 0;
+    if (nearest) {
+      for (var i = 0; i < _rowCount; i++) {
+        if (px < ys[i] + _rowH(i) / 2) return i;
+      }
+      final over = px - ys.last;
+      return _rowCount + ((over + _cellHeight / 2) / _cellHeight).floor();
+    }
+    for (var i = 0; i < _rowCount; i++) {
+      if (px < ys[i + 1]) return i;
+    }
+    final over = px - ys.last;
+    return _rowCount + (over / _cellHeight).floor();
+  }
+
+  /// 列 [c] の幅を [px] にする (掴んで動かしている間に呼ぶ)。
+  void _setColW(int c, double px) {
+    if (c < 0) return;
+    final v = px.clamp(_kMinColW, _kMaxColW).toDouble();
+    if ((_colW(c) - v).abs() < 0.5) return;
+    setState(() {
+      _colWMap[c] = v;
+      _invalidateGridMetrics();
+      _dirty = true;
+    });
+  }
+
+  /// 行 [r] の高さを [px] にする。
+  void _setRowH(int r, double px) {
+    if (r < 0) return;
+    final v = px.clamp(_kMinRowH, _kMaxRowH).toDouble();
+    if ((_rowH(r) - v).abs() < 0.5) return;
+    setState(() {
+      _rowHMap[r] = v;
+      _invalidateGridMetrics();
+      _dirty = true;
+    });
+  }
+
+  /// 列 [c] を中身に合わせる (= 境目の二度押し)。
+  void _autoFitColumn(int c) {
+    var w = 48.0;
+    final rows = _sheets[_activeSheet];
+    if (rows != null) {
+      for (var r = 0; r < rows.length; r++) {
+        if (c >= rows[r].length) continue;
+        final text = _displayValue(r, c);
+        if (text.isEmpty) continue;
+        final fmt = _fmtAt(r, c);
+        final tp = TextPainter(
+          text: TextSpan(
+            text: text,
+            style: TextStyle(
+                fontSize: fmt?.size ?? 12,
+                fontWeight:
+                    (fmt?.bold ?? false) ? FontWeight.bold : FontWeight.normal),
+          ),
+          maxLines: 1,
+          textDirection: TextDirection.ltr,
+        )..layout();
+        final need = tp.width + 16;
+        if (need > w) w = need;
+        if (w >= _kMaxColW) break;
+      }
+    }
+    _pushUndo();
+    _setColW(c, w);
+  }
+
+  /// 行 [r] を既定の高さへ戻す (= 境目の二度押し)。
+  void _autoFitRow(int r) {
+    _pushUndo();
+    setState(() {
+      _rowHMap.remove(r);
+      _invalidateGridMetrics();
+      _dirty = true;
+    });
+  }
+
+  /// 行 / 列を入れたり消したりした時に、 幅 / 高さの番号もずらす。
+  static void _shiftSizeKeys(Map<int, double>? m, int at, int delta) {
+    if (m == null || m.isEmpty) return;
+    final out = <int, double>{};
+    m.forEach((k, v) {
+      if (k < at) {
+        out[k] = v;
+      } else if (delta < 0 && k == at) {
+        // 消された本人は捨てる。
+      } else {
+        out[k + delta] = v;
+      }
+    });
+    m
+      ..clear()
+      ..addAll(out);
+  }
+
   static const double _rowHeaderWidth = 48.0;
   static const double _colHeaderHeight = 28.0;
 
@@ -205507,6 +205743,13 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
     };
     snap.merges = {
       for (final e in _sheetMerges.entries) e.key: List<_SsMerge>.from(e.value),
+    };
+    // 列の幅 / 行の高さ (= ユーザー要望で足した分)。
+    snap.colW = {
+      for (final e in _sheetColW.entries) e.key: Map<int, double>.from(e.value),
+    };
+    snap.rowH = {
+      for (final e in _sheetRowH.entries) e.key: Map<int, double>.from(e.value),
     };
     return snap;
   }
@@ -205557,6 +205800,17 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
           for (final e in s.merges.entries)
             e.key: List<_SsMerge>.from(e.value),
         });
+      _sheetColW
+        ..clear()
+        ..addAll({
+          for (final e in s.colW.entries) e.key: Map<int, double>.from(e.value),
+        });
+      _sheetRowH
+        ..clear()
+        ..addAll({
+          for (final e in s.rowH.entries) e.key: Map<int, double>.from(e.value),
+        });
+      _invalidateGridMetrics();
       _editingRow = null;
       _editingCol = null;
       _dirty = true;
@@ -205833,6 +206087,16 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
 
   Map<String, _SsCellFmt> get _fmts => _sheetFmts[_activeSheet] ??= {};
   List<_SsMerge> get _merges => _sheetMerges[_activeSheet] ??= [];
+
+  /// 結合を触ったシート (= 保存の時に xml を書き直す目印)。
+  ///
+  /// ★ excel パッケージの `unMerge` は、 そのシートの結合を**全部**外すと
+  ///   保存の時に `<mergeCells>` を書き直さない (save_file.dart の
+  ///   `_setMerge` が `_spanList.isNotEmpty` を条件にしているため)。
+  ///   つまり「最後の 1 つを外す」 とファイルに残ったままになる。
+  ///   これが「結合解除ができない」 の正体なので、 結合はパッケージ任せに
+  ///   せず、 保存の直前に自分で xml を書き直す。
+  final Set<String> _mergeDirty = {};
 
   /// [r],[c] の飾り (無ければ null)。
   _SsCellFmt? _fmtAt(int r, int c) =>
@@ -207725,7 +207989,44 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
       if (m != null && !m.isSingle) list.add(m);
     }
     if (list.isNotEmpty) _sheetMerges[name] = list;
+
+    // ── 列の幅 と 行の高さ (= ユーザー要望: 境目を掴んで変える) ──
+    //   excel パッケージは <cols> の width と <row ht> を読み書きできる
+    //   (parse.dart / save_file.dart で確認済み)。 飾り (cellStyle) と違って
+    //   壊れないので、 ここはパッケージの口をそのまま使う。
+    //   **指定のある列 / 行だけ**が入っている。 入っていない物はアプリの
+    //   既定 (120px / 32px) のままにする。
+    final cw = table.getColumnWidths;
+    if (cw.isNotEmpty) {
+      final m = <int, double>{};
+      cw.forEach((c, w) {
+        if (c < 0 || w <= 0) return;
+        m[c] = _xlsxWidthToPx(w).clamp(_kMinColW, _kMaxColW);
+      });
+      if (m.isNotEmpty) _sheetColW[name] = m;
+    }
+    final rh = table.getRowHeights;
+    if (rh.isNotEmpty) {
+      final m = <int, double>{};
+      rh.forEach((r, h) {
+        if (r < 0 || h <= 0) return;
+        m[r] = _xlsxHeightToPx(h).clamp(_kMinRowH, _kMaxRowH);
+      });
+      if (m.isNotEmpty) _sheetRowH[name] = m;
+    }
   }
+
+  // ── xlsx の寸法の単位 ────────────────────────────────────────────
+  //
+  // 列の幅は「標準の書体で数字 0 が何文字ぶん入るか」 という妙な単位。
+  // 既定の Calibri 11pt では 1 文字 ≒ 7px、 それに左右の余白 5px が付く。
+  //   px = width * 7 + 5   /   width = (px - 5) / 7
+  // 行の高さはポイント (1pt = 1/72 インチ)。 画面は 96dpi なので
+  //   px = pt * 96 / 72    /   pt = px * 72 / 96
+  static double _xlsxWidthToPx(double w) => w * 7 + 5;
+  static double _pxToXlsxWidth(double px) => (px - 5) / 7;
+  static double _xlsxHeightToPx(double pt) => pt * 4 / 3;
+  static double _pxToXlsxHeight(double px) => px * 3 / 4;
 
   /// excel パッケージの色を 0xRRGGBB に直す。 指定なしなら null。
   static int? _excelColorToRgb(xls.ExcelColor? c) {
@@ -207776,7 +208077,10 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
   /// 触っていないセルには一切手を入れないので、 元の飾りはそのまま残る。
   Uint8List _writeCellFormatsIntoZip(Uint8List bytes) {
     // 直した所が無ければ何もしない。
-    if (_fmtDirty.values.every((v) => v.isEmpty)) return bytes;
+    // 飾りも結合も触っていなければ何もしない。
+    if (_fmtDirty.values.every((v) => v.isEmpty) && _mergeDirty.isEmpty) {
+      return bytes;
+    }
     try {
       final arc = ZipDecoder().decodeBytes(bytes);
       final files = <String, List<int>>{};
@@ -207961,6 +208265,35 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
         files[path] = utf8.encode(xml!);
       }
 
+      // ── 結合を書き直す (= ユーザー報告: 結合解除が効かない) ──
+      //   パッケージ任せだと「最後の 1 つを外す」 が反映されないので、
+      //   触ったシートは <mergeCells> を丸ごと入れ替える。
+      for (final name in _mergeDirty) {
+        final path = sheetPath[name];
+        if (path == null) continue;
+        var xml = text(path);
+        if (xml == null) continue;
+        final list = (_sheetMerges[name] ?? const <_SsMerge>[])
+            .where((m) => !m.isSingle)
+            .toList();
+        // 元から入っている <mergeCells> は形が 2 通りある。 どちらも消す。
+        xml = xml
+            .replaceAll(
+                RegExp(r'<mergeCells[^>]*>[\s\S]*?</mergeCells>'), '')
+            .replaceAll(RegExp(r'<mergeCells[^>]*/>'), '');
+        if (list.isNotEmpty) {
+          final sb = StringBuffer('<mergeCells count="${list.length}">');
+          for (final m in list) {
+            sb.write('<mergeCell ref="${_colLetters(m.c1)}${m.r1 + 1}:'
+                '${_colLetters(m.c2)}${m.r2 + 1}"/>');
+          }
+          sb.write('</mergeCells>');
+          xml = _insertMergeCells(xml, sb.toString());
+        }
+        files[path] = utf8.encode(xml);
+        touched = true;
+      }
+
       if (!touched) return bytes;
 
       // ── styles.xml を組み直す ──
@@ -208000,6 +208333,45 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
       debugPrint('書式の書き込みに失敗 (書式なしで保存します): $e\n$st');
       return bytes;
     }
+  }
+
+  /// `<mergeCells>` を、 決まりどおりの場所へ差し込む。
+  ///
+  /// SpreadsheetML では `<mergeCells>` は `<sheetData>` より後、
+  /// `<phoneticPr>` や `<conditionalFormatting>`、 `<pageMargins>` より前に
+  /// 置く決まり。 そこで**後に来るはずの物のうち、 いちばん先に現れる物**の
+  /// 直前へ入れる。 見つからなければ `</worksheet>` の直前。
+  static String _insertMergeCells(String xml, String block) {
+    const after = [
+      '<phoneticPr',
+      '<conditionalFormatting',
+      '<dataValidations',
+      '<hyperlinks',
+      '<printOptions',
+      '<pageMargins',
+      '<pageSetup',
+      '<headerFooter',
+      '<rowBreaks',
+      '<colBreaks',
+      '<customProperties',
+      '<cellWatches',
+      '<ignoredErrors',
+      '<drawing',
+      '<legacyDrawing',
+      '<picture',
+      '<oleObjects',
+      '<controls',
+      '<tableParts',
+      '<extLst',
+    ];
+    var at = -1;
+    for (final tag in after) {
+      final i = xml.indexOf(tag);
+      if (i >= 0 && (at < 0 || i < at)) at = i;
+    }
+    if (at < 0) at = xml.lastIndexOf('</worksheet>');
+    if (at < 0) return xml + block;
+    return xml.substring(0, at) + block + xml.substring(at);
   }
 
   /// 列番号 (0 始まり) → "A" / "AB"。
@@ -208066,6 +208438,29 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
     //   [_writeCellFormatsIntoZip] で自分で zip へ書き込む。
     for (final name in _sheetNames) {
       final sheet = excel[name];
+      // ── 列の幅 と 行の高さ (= ユーザー要望) ──
+      //   指定のある物だけ書く。 触っていない列 / 行は元のまま
+      //   (= 何も書かなければ excel パッケージは <col> を出さない)。
+      final cw = _sheetColW[name];
+      if (cw != null) {
+        cw.forEach((c, px) {
+          try {
+            sheet.setColumnWidth(c, _pxToXlsxWidth(px));
+          } catch (e) {
+            debugPrint('列の幅の書き戻しに失敗 ($name/$c): $e');
+          }
+        });
+      }
+      final rh = _sheetRowH[name];
+      if (rh != null) {
+        rh.forEach((r, px) {
+          try {
+            sheet.setRowHeight(r, _pxToXlsxHeight(px));
+          } catch (e) {
+            debugPrint('行の高さの書き戻しに失敗 ($name/$r): $e');
+          }
+        });
+      }
       // ── 結合 ──
       final merges = _sheetMerges[name];
       if (merges != null) {
@@ -209166,6 +209561,10 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
     _pushUndo();
     final cols = _colCount.clamp(1, 1 << 30);
     _rows.insert(at, List.filled(cols, '', growable: true));
+    // ★ 行ごとの高さの番号も一緒にずらす (= ユーザー要望で足した機能)。
+    //   ずらさないと、 行を挿した所から下の高さが 1 行ぶん食い違う。
+    _shiftSizeKeys(_sheetRowH[_activeSheet], at, 1);
+    _invalidateGridMetrics();
     _invalidateFormulaCache();
     setState(() => _dirty = true);
   }
@@ -209178,8 +209577,10 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
       }
     } else {
       _rows.removeAt(at);
+      _shiftSizeKeys(_sheetRowH[_activeSheet], at, -1);
       if (_selRow >= _rowCount) _selRow = _rowCount - 1;
     }
+    _invalidateGridMetrics();
     _invalidateFormulaCache();
     setState(() => _dirty = true);
   }
@@ -209189,6 +209590,8 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
     for (final row in _rows) {
       row.insert(at, '');
     }
+    _shiftSizeKeys(_sheetColW[_activeSheet], at, 1);
+    _invalidateGridMetrics();
     _invalidateFormulaCache();
     setState(() => _dirty = true);
   }
@@ -209203,8 +209606,10 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
       for (final row in _rows) {
         row.removeAt(at);
       }
+      _shiftSizeKeys(_sheetColW[_activeSheet], at, -1);
       if (_selCol >= _colCount) _selCol = _colCount - 1;
     }
+    _invalidateGridMetrics();
     _invalidateFormulaCache();
     setState(() => _dirty = true);
   }
@@ -209383,16 +209788,17 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
 
   void _ensureSelVisible() {
     // 表は _ssZoom 倍で描かれているので、 送り先も倍率を掛けて測る。
-    final x = _selCol * _cellWidth * _ssZoom;
-    final y = _selRow * _cellHeight * _ssZoom;
+    final x = _colX(_selCol) * _ssZoom;
+    final y = _rowY(_selRow) * _ssZoom;
     if (_hScroll.hasClients) {
       final v = _hScroll.offset;
       final w = _hScroll.position.viewportDimension;
       if (x < v)
         _hScroll.jumpTo(x.clamp(0.0, _hScroll.position.maxScrollExtent));
-      if (x + _cellWidth * _ssZoom > v + w) {
+      if (x + _colW(_selCol) * _ssZoom > v + w) {
         _hScroll.jumpTo(
-            (x + _cellWidth * _ssZoom - w).clamp(0.0, _hScroll.position.maxScrollExtent));
+            (x + _colW(_selCol) * _ssZoom - w)
+                .clamp(0.0, _hScroll.position.maxScrollExtent));
       }
     }
     if (_vScroll.hasClients) {
@@ -209400,8 +209806,8 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
       final h = _vScroll.position.viewportDimension;
       if (y < v)
         _vScroll.jumpTo(y.clamp(0.0, _vScroll.position.maxScrollExtent));
-      if (y + _cellHeight * _ssZoom > v + h) {
-        _vScroll.jumpTo((y + _cellHeight * _ssZoom - h)
+      if (y + _rowH(_selRow) * _ssZoom > v + h) {
+        _vScroll.jumpTo((y + _rowH(_selRow) * _ssZoom - h)
             .clamp(0.0, _vScroll.position.maxScrollExtent));
       }
     }
@@ -209873,17 +210279,19 @@ $csvText
   /// 見付けたセルが画面に入るよう送る。
   void _scrollToSelection() {
     if (_vScroll.hasClients) {
-      final y = _selRow * _cellHeight * _ssZoom;
+      final y = _rowY(_selRow) * _ssZoom;
       final vh = _vScroll.position.viewportDimension;
-      if (y < _vScroll.offset || y + _cellHeight * _ssZoom > _vScroll.offset + vh) {
+      if (y < _vScroll.offset ||
+          y + _rowH(_selRow) * _ssZoom > _vScroll.offset + vh) {
         _vScroll.jumpTo((y - vh / 3)
             .clamp(0.0, _vScroll.position.maxScrollExtent));
       }
     }
     if (_hScroll.hasClients) {
-      final x = _selCol * _cellWidth * _ssZoom;
+      final x = _colX(_selCol) * _ssZoom;
       final vw = _hScroll.position.viewportDimension;
-      if (x < _hScroll.offset || x + _cellWidth * _ssZoom > _hScroll.offset + vw) {
+      if (x < _hScroll.offset ||
+          x + _colW(_selCol) * _ssZoom > _hScroll.offset + vw) {
         _hScroll.jumpTo((x - vw / 3)
             .clamp(0.0, _hScroll.position.maxScrollExtent));
       }
@@ -210252,6 +210660,40 @@ $csvText
   /// 今のセルの飾り (見た目の ON/OFF を出すのに使う)。
   _SsCellFmt get _curFmt => _fmtAt(_selRow, _selCol) ?? _SsCellFmt();
 
+  /// セルの右クリックで出すちいさなメニュー (= ユーザー要望)。
+  ///
+  /// 書式バーは狭い窓だと横に転がって隠れてしまうので、 いちばん使う
+  /// 「結合 / 結合解除」 はここからも出せるようにする。
+  Future<void> _showCellMenu(Offset pos, int r, int c) async {
+    if (_kind != _SpreadsheetKind.xlsx) return;
+    // 選んでいない所を右クリックしたら、 まずそこを選ぶ。
+    if (!_inRange(r, c) && !(r == _selRow && c == _selCol)) {
+      _commitEdit();
+      setState(() {
+        _selRow = r;
+        _selCol = c;
+        _rangeAnchorRow = null;
+        _rangeAnchorCol = null;
+      });
+    }
+    if (!mounted) return;
+    final p = context.read<MindMapProvider>();
+    final sel = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx, pos.dy),
+      items: [
+        PopupMenuItem(value: 'merge', child: Text(p.t('ss.merge'))),
+        PopupMenuItem(value: 'unmerge', child: Text(p.t('ss.unmerge'))),
+      ],
+    );
+    if (!mounted) return;
+    if (sel == 'merge') {
+      _mergeSelection();
+    } else if (sel == 'unmerge') {
+      _unmergeSelection();
+    }
+  }
+
   /// 選んだ範囲を 1 つのセルにする。
   void _mergeSelection() {
     final rg = _fmtTarget;
@@ -210278,6 +210720,7 @@ $csvText
       _selCol = rg.c1;
       _rangeAnchorRow = null;
       _rangeAnchorCol = null;
+      _mergeDirty.add(_activeSheet);
       _dirty = true;
       _invalidateFormulaCache();
     });
@@ -210296,6 +210739,7 @@ $csvText
     _pushUndo();
     setState(() {
       list.removeWhere((m) => m.overlaps(target));
+      _mergeDirty.add(_activeSheet);
       _dirty = true;
     });
   }
@@ -211316,9 +211760,9 @@ $csvText
         },
         child: LayoutBuilder(
         builder: (ctx, cons) {
-          final tableW = _rowHeaderWidth + _colCount * _cellWidth + _cellWidth;
+          final tableW = _rowHeaderWidth + _totalColW + _cellWidth;
           final tableH =
-              _colHeaderHeight + _rowCount * _cellHeight + _cellHeight;
+              _colHeaderHeight + _totalRowH + _cellHeight;
           // ── 左上配置 ──
           // SingleChildScrollView の child が viewport より小さいと、
           // 環境によっては中央寄せに見える事がある。 Align.topLeft で
@@ -211399,8 +211843,8 @@ $csvText
   ///   今はドラッグで動かす / 右下の掴みで大きさを変える /
   ///   二度押しで中の文字を書き換える / 押してメニュー、 ができる。
   Widget _buildSheetShape(_SsShape sh) {
-    final left = _rowHeaderWidth + sh.col * _cellWidth + sh.dx;
-    final top = _colHeaderHeight + sh.row * _cellHeight + sh.dy;
+    final left = _rowHeaderWidth + _colX(sh.col) + sh.dx;
+    final top = _colHeaderHeight + _rowY(sh.row) + sh.dy;
     final w = sh.width.clamp(12.0, 4000.0);
     final h = sh.height.clamp(12.0, 4000.0);
     final kind = sh.kind.toLowerCase();
@@ -211429,21 +211873,23 @@ $csvText
             // 画面の距離 → 表の距離 (拡大中はそのまま足すと倍速で動く)。
             sh.dx += d.delta.dx / _ssZoom;
             sh.dy += d.delta.dy / _ssZoom;
-            while (sh.dx >= _cellWidth && sh.col < _colCount - 1) {
-              sh.dx -= _cellWidth;
+            while (sh.dx >= _colW(sh.col) && sh.col < _colCount - 1) {
+              sh.dx -= _colW(sh.col);
               sh.col++;
             }
             while (sh.dx < 0 && sh.col > 0) {
-              sh.dx += _cellWidth;
+              // ★ 先に移ってから、 移った先の列の幅を足す
+              //   (順序を逆にすると 1 列ぶん幅を取り違える)。
               sh.col--;
+              sh.dx += _colW(sh.col);
             }
-            while (sh.dy >= _cellHeight && sh.row < _rowCount - 1) {
-              sh.dy -= _cellHeight;
+            while (sh.dy >= _rowH(sh.row) && sh.row < _rowCount - 1) {
+              sh.dy -= _rowH(sh.row);
               sh.row++;
             }
             while (sh.dy < 0 && sh.row > 0) {
-              sh.dy += _cellHeight;
               sh.row--;
+              sh.dy += _rowH(sh.row);
             }
             if (sh.col <= 0 && sh.dx < 0) sh.dx = 0;
             if (sh.row <= 0 && sh.dy < 0) sh.dy = 0;
@@ -211735,10 +212181,10 @@ $csvText
           } else {
             final to = _readAnchorPoint(a, 'to');
             if (to != null) {
-              w = ((to.$1 - from.$1) * _cellWidth +
+              w = ((_colX(to.$1) - _colX(from.$1)) +
                       (to.$3 - from.$3))
                   .clamp(12.0, 4000.0);
-              h = ((to.$2 - from.$2) * _cellHeight +
+              h = ((_rowY(to.$2) - _rowY(from.$2)) +
                       (to.$4 - from.$4))
                   .clamp(12.0, 4000.0);
             }
@@ -211875,12 +212321,12 @@ $csvText
     out = setPoint(out, 'from', sh.col, sh.row, sh.dx, sh.dy);
     if (out.contains('<xdr:to')) {
       // twoCellAnchor は右下の角も動かす (読む時と同じ目盛りで)。
-      final rightPx = sh.col * _cellWidth + sh.dx + sh.width;
-      final bottomPx = sh.row * _cellHeight + sh.dy + sh.height;
-      final toCol = (rightPx / _cellWidth).floor();
-      final toRow = (bottomPx / _cellHeight).floor();
-      out = setPoint(out, 'to', toCol, toRow, rightPx - toCol * _cellWidth,
-          bottomPx - toRow * _cellHeight);
+      final rightPx = _colX(sh.col) + sh.dx + sh.width;
+      final bottomPx = _rowY(sh.row) + sh.dy + sh.height;
+      final toCol = _colAtX(rightPx);
+      final toRow = _rowAtY(bottomPx);
+      out = setPoint(out, 'to', toCol, toRow, rightPx - _colX(toCol),
+          bottomPx - _rowY(toRow));
     }
     // oneCellAnchor は ext (大きさ) を直接持つ。
     out = out.replaceAllMapped(
@@ -212184,8 +212630,8 @@ $csvText
   }
 
   Widget _buildSheetImage(_SsImage im) {
-    final left = _rowHeaderWidth + im.col * _cellWidth + im.dx;
-    final top = _colHeaderHeight + im.row * _cellHeight + im.dy;
+    final left = _rowHeaderWidth + _colX(im.col) + im.dx;
+    final top = _colHeaderHeight + _rowY(im.row) + im.dy;
     return Positioned(
       left: left,
       top: top,
@@ -212201,21 +212647,21 @@ $csvText
             // 画面の距離 → 表の距離 (拡大率で割る)。
             im.dx += d.delta.dx / _ssZoom;
             im.dy += d.delta.dy / _ssZoom;
-            while (im.dx >= _cellWidth && im.col < _colCount - 1) {
-              im.dx -= _cellWidth;
+            while (im.dx >= _colW(im.col) && im.col < _colCount - 1) {
+              im.dx -= _colW(im.col);
               im.col++;
             }
             while (im.dx < 0 && im.col > 0) {
-              im.dx += _cellWidth;
               im.col--;
+              im.dx += _colW(im.col);
             }
-            while (im.dy >= _cellHeight && im.row < _rowCount - 1) {
-              im.dy -= _cellHeight;
+            while (im.dy >= _rowH(im.row) && im.row < _rowCount - 1) {
+              im.dy -= _rowH(im.row);
               im.row++;
             }
             while (im.dy < 0 && im.row > 0) {
-              im.dy += _cellHeight;
               im.row--;
+              im.dy += _rowH(im.row);
             }
             if (im.col <= 0 && im.dx < 0) im.dx = 0;
             if (im.row <= 0 && im.dy < 0) im.dy = 0;
@@ -212480,8 +212926,13 @@ $csvText
           ...List.generate(
             _colCount,
             (c) => _SsColumnHeaderCell(
-              width: _cellWidth,
+              width: _colW(c),
               height: _colHeaderHeight,
+              // ── 境目を掴んで幅を変える (= ユーザー要望) ──
+              //   差分は画面の px なので、 拡大率で割って表の px に直す。
+              onResizeStart: () => _pushUndo(),
+              onResizeDelta: (dx) => _setColW(c, _colW(c) + dx / _ssZoom),
+              onResizeReset: () => _autoFitColumn(c),
               label: _colLabel(c),
               selected: c == _selCol,
               dark: dark,
@@ -212525,13 +212976,17 @@ $csvText
 
   Widget _buildDataRow(int r, bool dark, Color fg) {
     return SizedBox(
-      height: _cellHeight,
+      height: _rowH(r),
       child: Row(
         children: [
           _SsRowHeaderCell(
             width: _rowHeaderWidth,
-            height: _cellHeight,
+            height: _rowH(r),
             index: r,
+            // ── 境目を掴んで高さを変える (= ユーザー要望) ──
+            onResizeStart: () => _pushUndo(),
+            onResizeDelta: (dy) => _setRowH(r, _rowH(r) + dy / _ssZoom),
+            onResizeReset: () => _autoFitRow(r),
             selected: r == _selRow,
             dark: dark,
             onTap: () {
@@ -212583,8 +213038,8 @@ $csvText
                 c <= math.max(rg.c2, _fillToCol!) &&
                 (r > rg.r2 || c > rg.c2);
             return _SsDataCell(
-              width: _cellWidth * span,
-              height: _cellHeight,
+              width: _colX(c + span) - _colX(c),
+              height: _rowH(r),
               // 結合の 2 行目から下は、 文字を出さない (= 1 つのセルに見せる)。
               value: isMergeBody ? '' : cellValue,
               isFormula: isFormula && !isMergeBody,
@@ -212604,18 +213059,20 @@ $csvText
                 setState(() {
                   // 画面の距離 → 表の距離 (拡大率で割る)。
                   final dz = delta / _ssZoom;
-                  final baseX = (rg.c2 + 1) * _cellWidth;
-                  final baseY = (rg.r2 + 1) * _cellHeight;
+                  final baseX = _colX(rg.c2 + 1);
+                  final baseY = _rowY(rg.r2 + 1);
                   final curX = (_fillToCol == null
                           ? baseX
-                          : (_fillToCol! + 1) * _cellWidth) +
+                          : _colX(_fillToCol! + 1)) +
                       dz.dx;
                   final curY = (_fillToRow == null
                           ? baseY
-                          : (_fillToRow! + 1) * _cellHeight) +
+                          : _rowY(_fillToRow! + 1)) +
                       dz.dy;
-                  _fillToCol = (curX / _cellWidth).round() - 1;
-                  _fillToRow = (curY / _cellHeight).round() - 1;
+                  // 昔の `.round() - 1` (= 境目の真ん中を越えたら次のセル)
+                  // と同じ効き方になるよう、 中心を基準に探す。
+                  _fillToCol = _colAtX(curX, nearest: true) - 1;
+                  _fillToRow = _rowAtY(curY, nearest: true) - 1;
                   if (_fillToCol! < rg.c2) _fillToCol = rg.c2;
                   if (_fillToRow! < rg.r2) _fillToRow = rg.r2;
                   // 伸ばせるのは 1 方向だけ (Excel と同じ)。
@@ -212633,6 +213090,7 @@ $csvText
               tableHeaderFont: (tbl != null && r == tbl.row)
                   ? tbl.headerFont
                   : null,
+              onContextMenu: (pos) => _showCellMenu(pos, r, c),
               controller: editing ? _editCtrl : null,
               focusNode: editing ? _editFocus : null,
               inRange: _hasRange && _inRange(r, c),
@@ -212713,7 +213171,7 @@ $csvText
               },
             );
           }),
-          Container(width: _cellWidth, height: _cellHeight),
+          Container(width: _cellWidth, height: _rowH(r)),
         ],
       ),
     );
@@ -212743,7 +213201,7 @@ $csvText
             ),
           ),
           Container(
-            width: _colCount * _cellWidth + _cellWidth,
+            width: _totalColW + _cellWidth,
             height: _cellHeight,
             decoration: BoxDecoration(
               color: dark ? const Color(0xFF1A1A24) : const Color(0xFFF5F5F0),
@@ -212903,6 +213361,9 @@ class _SsDataCell extends StatelessWidget {
   /// ボタンを押したままこのセルに入ってきた時 (= 範囲を伸ばす)。
   final VoidCallback? onPointerEnter;
 
+  /// 右クリック (= 結合 / 結合解除のちいさなメニューを出す)。
+  final void Function(Offset globalPos)? onContextMenu;
+
   /// オートフィルの取っ手を出すか (= 選択の右下のセル)。
   final bool showFillHandle;
 
@@ -212952,6 +213413,7 @@ class _SsDataCell extends StatelessWidget {
     this.focusNode,
     this.onPointerDown,
     this.onPointerEnter,
+    this.onContextMenu,
     this.tableFill,
     this.tableLine,
     this.tableHeaderFont,
@@ -213024,6 +213486,9 @@ class _SsDataCell extends StatelessWidget {
       behavior: HitTestBehavior.opaque,
       onTap: onTap,
       onDoubleTap: onDoubleTap,
+      onSecondaryTapDown: onContextMenu == null
+          ? null
+          : (d) => onContextMenu!.call(d.globalPosition),
       child: Container(
         width: width,
         height: height,
@@ -213163,6 +213628,57 @@ class _SsDataCell extends StatelessWidget {
   }
 }
 
+/// 見出しの境目に重ねる「掴み代」 (= ユーザー要望: 境目をドラッグして
+/// セルの大きさを変えたい)。
+///
+/// 見出しの右端 (列) / 下端 (行) に細く重ねる。 掴んでいる間はその場で
+/// 追従させる (線だけ出す作りより、 結果が見えて分かりやすいため)。
+/// 触っての操作でも掴めるよう、 当たり判定は見た目より広く取る。
+class _SsResizeGrip extends StatelessWidget {
+  /// true = 列の幅 (横に引く) / false = 行の高さ (縦に引く)。
+  final bool horizontal;
+  final double thickness;
+  final double length;
+  final VoidCallback? onStart;
+  final void Function(double delta)? onDelta;
+  final VoidCallback? onReset;
+
+  const _SsResizeGrip({
+    required this.horizontal,
+    required this.thickness,
+    required this.length,
+    this.onStart,
+    this.onDelta,
+    this.onReset,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final child = MouseRegion(
+      cursor: horizontal
+          ? SystemMouseCursors.resizeColumn
+          : SystemMouseCursors.resizeRow,
+      child: Container(
+        width: horizontal ? thickness : length,
+        height: horizontal ? length : thickness,
+        color: Colors.transparent,
+      ),
+    );
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      // 二度押しで「中身に合わせる」 / 既定へ戻す。
+      onDoubleTap: onReset,
+      onHorizontalDragStart: horizontal ? (_) => onStart?.call() : null,
+      onHorizontalDragUpdate:
+          horizontal ? (d) => onDelta?.call(d.delta.dx) : null,
+      onVerticalDragStart: horizontal ? null : (_) => onStart?.call(),
+      onVerticalDragUpdate:
+          horizontal ? null : (d) => onDelta?.call(d.delta.dy),
+      child: child,
+    );
+  }
+}
+
 class _SsColumnHeaderCell extends StatelessWidget {
   final double width;
   final double height;
@@ -213175,6 +213691,11 @@ class _SsColumnHeaderCell extends StatelessWidget {
   final VoidCallback onRemove;
   final VoidCallback onClear;
 
+  /// 右端の境目を掴んだ時 (= 幅を変える。 ユーザー要望)。
+  final VoidCallback? onResizeStart;
+  final void Function(double dx)? onResizeDelta;
+  final VoidCallback? onResizeReset;
+
   const _SsColumnHeaderCell({
     required this.width,
     required this.height,
@@ -213186,6 +213707,9 @@ class _SsColumnHeaderCell extends StatelessWidget {
     required this.onInsertRight,
     required this.onRemove,
     required this.onClear,
+    this.onResizeStart,
+    this.onResizeDelta,
+    this.onResizeReset,
   });
 
   @override
@@ -213194,25 +213718,49 @@ class _SsColumnHeaderCell extends StatelessWidget {
     final bg = selected
         ? const Color(0xFF6C63FF).withValues(alpha: 0.35)
         : (dark ? const Color(0xFF2A2A3E) : const Color(0xFFD0D0CA));
-    return GestureDetector(
-      onTap: onTap,
-      onSecondaryTapDown: (d) => _showMenu(context, d.globalPosition),
-      onLongPressStart: (d) => _showMenu(context, d.globalPosition),
-      child: Container(
-        width: width,
-        height: height,
-        decoration: BoxDecoration(
-          color: bg,
-          border: Border(
-            right: BorderSide(color: dark ? Colors.white10 : Colors.black12),
-            bottom: BorderSide(color: dark ? Colors.white10 : Colors.black12),
+    return SizedBox(
+      width: width,
+      height: height,
+      child: Stack(clipBehavior: Clip.none, children: [
+        GestureDetector(
+          onTap: onTap,
+          onSecondaryTapDown: (d) => _showMenu(context, d.globalPosition),
+          onLongPressStart: (d) => _showMenu(context, d.globalPosition),
+          child: Container(
+            width: width,
+            height: height,
+            decoration: BoxDecoration(
+              color: bg,
+              border: Border(
+                right:
+                    BorderSide(color: dark ? Colors.white10 : Colors.black12),
+                bottom:
+                    BorderSide(color: dark ? Colors.white10 : Colors.black12),
+              ),
+            ),
+            alignment: Alignment.center,
+            child: Text(label,
+                style: TextStyle(
+                    color: fg, fontSize: 11, fontWeight: FontWeight.w700)),
           ),
         ),
-        alignment: Alignment.center,
-        child: Text(label,
-            style: TextStyle(
-                color: fg, fontSize: 11, fontWeight: FontWeight.w700)),
-      ),
+        // ★ 右の境目。 **見出しの内側に**置く。 Stack から食み出した所は
+        //   絵は出ても指やマウスを受け取らないため (= 前に痛い目を見た)。
+        if (onResizeDelta != null)
+          Positioned(
+            right: 0,
+            top: 0,
+            bottom: 0,
+            child: _SsResizeGrip(
+              horizontal: true,
+              thickness: 8,
+              length: height,
+              onStart: onResizeStart,
+              onDelta: onResizeDelta,
+              onReset: onResizeReset,
+            ),
+          ),
+      ]),
     );
   }
 
@@ -213265,6 +213813,11 @@ class _SsRowHeaderCell extends StatelessWidget {
   final VoidCallback onRemove;
   final VoidCallback onClear;
 
+  /// 下端の境目を掴んだ時 (= 高さを変える。 ユーザー要望)。
+  final VoidCallback? onResizeStart;
+  final void Function(double dy)? onResizeDelta;
+  final VoidCallback? onResizeReset;
+
   const _SsRowHeaderCell({
     required this.width,
     required this.height,
@@ -213276,6 +213829,9 @@ class _SsRowHeaderCell extends StatelessWidget {
     required this.onInsertBelow,
     required this.onRemove,
     required this.onClear,
+    this.onResizeStart,
+    this.onResizeDelta,
+    this.onResizeReset,
   });
 
   @override
@@ -213284,25 +213840,49 @@ class _SsRowHeaderCell extends StatelessWidget {
     final bg = selected
         ? const Color(0xFF6C63FF).withValues(alpha: 0.35)
         : (dark ? const Color(0xFF2A2A3E) : const Color(0xFFD0D0CA));
-    return GestureDetector(
-      onTap: onTap,
-      onSecondaryTapDown: (d) => _showMenu(context, d.globalPosition),
-      onLongPressStart: (d) => _showMenu(context, d.globalPosition),
-      child: Container(
-        width: width,
-        height: height,
-        decoration: BoxDecoration(
-          color: bg,
-          border: Border(
-            right: BorderSide(color: dark ? Colors.white10 : Colors.black12),
-            bottom: BorderSide(color: dark ? Colors.white10 : Colors.black12),
+    return SizedBox(
+      width: width,
+      height: height,
+      child: Stack(clipBehavior: Clip.none, children: [
+        GestureDetector(
+          onTap: onTap,
+          onSecondaryTapDown: (d) => _showMenu(context, d.globalPosition),
+          onLongPressStart: (d) => _showMenu(context, d.globalPosition),
+          child: Container(
+            width: width,
+            height: height,
+            decoration: BoxDecoration(
+              color: bg,
+              border: Border(
+                right:
+                    BorderSide(color: dark ? Colors.white10 : Colors.black12),
+                bottom:
+                    BorderSide(color: dark ? Colors.white10 : Colors.black12),
+              ),
+            ),
+            alignment: Alignment.center,
+            child: Text('${index + 1}',
+                style: TextStyle(
+                    color: fg, fontSize: 11, fontWeight: FontWeight.w700)),
           ),
         ),
-        alignment: Alignment.center,
-        child: Text('${index + 1}',
-            style: TextStyle(
-                color: fg, fontSize: 11, fontWeight: FontWeight.w700)),
-      ),
+        // ★ 下の境目を掴んで高さを変える (= ユーザー要望)。
+        //   こちらも見出しの内側に置く (食み出すと受け取れないため)。
+        if (onResizeDelta != null)
+          Positioned(
+            bottom: 0,
+            left: 0,
+            right: 0,
+            child: _SsResizeGrip(
+              horizontal: false,
+              thickness: 6,
+              length: width,
+              onStart: onResizeStart,
+              onDelta: onResizeDelta,
+              onReset: onResizeReset,
+            ),
+          ),
+      ]),
     );
   }
 
