@@ -16,8 +16,7 @@
 //
 // ── どう直したか ─────────────────────────────────────────────────
 // 開く時に、 その印をページの中身へ**焼き込んだ控えを作り**、 ビューアには
-// そちらを見せる。 焼き込みには元の PDF が持っている見た目 (/AP の外観
-// ストリーム) をそのまま使うので、 他のアプリで見た時と同じ絵になる。
+// そちらを見せる。
 //
 //   ・**元のファイルは一切書き換えない**。 控えはアプリの作業場所に作る。
 //   ・メモやマーカー、 描き込みの控えは今までどおり**元の道**を鍵にする
@@ -26,14 +25,38 @@
 //     焼き込むと二重に濃くなってしまう)。
 //   ・リンクと入力欄 (Widget) も焼き込まない (押せなくなるため)。
 //
+// ── 位置がずれた話 (b322 → b323) ─────────────────────────────────
+// はじめは syncfusion の `PdfAnnotation.flatten()` に任せていたが、
+// **場所がずれて描かれた** (= ユーザー報告)。 原因は外観ストリームの置き方。
+//
+//   実物の PDF (fitz/PyMuPDF が付けた印) の外観は
+//     /BBox[33.6875 442.304 371.02085 501.63734]  /Matrix[1 0 0 1 0 0]
+//   のように **BBox が紙の絶対座標**で、 中身もその絶対座標で描いている。
+//   PDF の決まりでは 「BBox を Matrix で変換した枠を /Rect へ合わせる行列」
+//   を掛けてから描く (= この場合は何も動かさないのが正解)。 ところが
+//   syncfusion の `drawPdfTemplate` は **BBox が原点から始まる前提**で
+//   `translate(左, -(上 + 高さ))` を足すため、 絶対座標の中身が**二重に
+//   ずれる** (左端の箱なら右へ約 34pt)。
+//
+// そこで**外観ストリームは使わず、 注釈の持っている値から自分で描く**。
+//   `annotation.bounds` は「左上原点の紙座標」 で返り、
+//   `page.graphics.drawRectangle(bounds: ...)` はそこへ正確に描かれる
+//   (実測: /Rect[33.6875 442.304 371.02085 501.63734] の注釈が、
+//    焼き込み後の中身で `33.69 -320.41 337.33 -59.33 re` +
+//    `1 0 0 1 0 822.05 cm` = 元の /Rect と完全に一致)。
+// 線の色 (/C)、 中の色 (/IC)、 透け具合 (/CA)、 枠の太さ (/BS /W) を
+// そのまま使うので、 見た目もほぼ同じになる。
+//
 // ── 限界 ─────────────────────────────────────────────────────────
 // syncfusion_flutter_pdf が読み込んだ PDF から組み立て直せる注釈は
 // Link / Line / Circle / Square / Polygon / Widget / 文字マーカー / 付箋 だけ。
 // 手書き (Ink) や吹き出し (FreeText)、 スタンプ (Stamp) はそもそも物として
-// 出てこないので、 ここでも焼き込めない。 囲みの印はほぼ Square / Circle
+// 出てこないので、 ここでも描けない。 囲みの印はほぼ Square / Circle
 // なので、 今回の用途はこれで足りる。
+// 回転しているページ (/Rotate ≠ 0) は座標の当てが外れるので触らない。
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
@@ -54,6 +77,103 @@ class _Entry {
   const _Entry(this.out, this.mtimeMs, this.size, this.count);
 }
 
+/// 焼き込む対象か (= ビューアが自分では描かない印だけ)。
+///
+/// 文字マーカー / 付箋はビューアが描くので触らない (二重に濃くなる)。
+/// リンクと入力欄も触らない (押せなくなる)。
+bool _isMarkup(sfpdf.PdfAnnotation a) =>
+    a is sfpdf.PdfRectangleAnnotation ||
+    a is sfpdf.PdfEllipseAnnotation ||
+    a is sfpdf.PdfLineAnnotation ||
+    a is sfpdf.PdfPolygonAnnotation;
+
+/// PDF の座標 (左下原点) の点の並びを、 紙の左上原点へ直す。
+List<Offset> _toTopLeft(List<int> flat, double pageHeight) {
+  final out = <Offset>[];
+  for (var i = 0; i + 1 < flat.length; i += 2) {
+    out.add(Offset(flat[i].toDouble(), pageHeight - flat[i + 1].toDouble()));
+  }
+  return out;
+}
+
+/// 印を 1 つ、 ページの中身へ描く。 描けたら true。
+///
+/// ★ 外観ストリームは使わない (絶対座標の BBox を syncfusion が二重に
+///   ずらしてしまうため。 ファイル頭のコメント参照)。 注釈の持っている
+///   値から自分で描くので、 場所は `bounds` のとおり正確になる。
+bool _paintMarkup(sfpdf.PdfPage page, sfpdf.PdfAnnotation a) {
+  final g = page.graphics;
+  final h = page.size.height;
+  final state = g.save();
+  try {
+    final op = a.opacity;
+    if (op > 0 && op < 1) g.setTransparency(op);
+
+    if (a is sfpdf.PdfRectangleAnnotation) {
+      final bw = a.border.width;
+      final pen = a.color.isEmpty
+          ? null
+          : sfpdf.PdfPen(a.color, width: bw <= 0 ? 1.0 : bw);
+      final brush =
+          a.innerColor.isEmpty ? null : sfpdf.PdfSolidBrush(a.innerColor);
+      if (pen == null && brush == null) return false;
+      // 枠線は縁の真ん中に引かれるので、 太さの半分だけ内へ寄せる
+      // (= 元の見た目と同じ位置に来るように)。
+      final inset = bw <= 0 ? 0.0 : bw / 2;
+      var r = a.bounds;
+      if (r.width > inset * 2 && r.height > inset * 2) r = r.deflate(inset);
+      if (r.width <= 0 || r.height <= 0) return false;
+      g.drawRectangle(pen: pen, brush: brush, bounds: r);
+      return true;
+    }
+    if (a is sfpdf.PdfEllipseAnnotation) {
+      final bw = a.border.width;
+      final pen = a.color.isEmpty
+          ? null
+          : sfpdf.PdfPen(a.color, width: bw <= 0 ? 1.0 : bw);
+      final brush =
+          a.innerColor.isEmpty ? null : sfpdf.PdfSolidBrush(a.innerColor);
+      if (pen == null && brush == null) return false;
+      final inset = bw <= 0 ? 0.0 : bw / 2;
+      var r = a.bounds;
+      if (r.width > inset * 2 && r.height > inset * 2) r = r.deflate(inset);
+      if (r.width <= 0 || r.height <= 0) return false;
+      g.drawEllipse(r, pen: pen, brush: brush);
+      return true;
+    }
+    if (a is sfpdf.PdfLineAnnotation) {
+      if (a.color.isEmpty) return false;
+      final pts = _toTopLeft(a.linePoints, h);
+      if (pts.length < 2) return false;
+      final bw = a.border.width;
+      final pen = sfpdf.PdfPen(a.color, width: bw <= 0 ? 1.0 : bw);
+      for (var i = 0; i + 1 < pts.length; i++) {
+        g.drawLine(pen, pts[i], pts[i + 1]);
+      }
+      return true;
+    }
+    if (a is sfpdf.PdfPolygonAnnotation) {
+      final pts = _toTopLeft(a.polygonPoints, h);
+      if (pts.length < 3) return false;
+      final bw = a.border.width;
+      final pen = a.color.isEmpty
+          ? null
+          : sfpdf.PdfPen(a.color, width: bw <= 0 ? 1.0 : bw);
+      final brush =
+          a.innerColor.isEmpty ? null : sfpdf.PdfSolidBrush(a.innerColor);
+      if (pen == null && brush == null) return false;
+      g.drawPolygon(pts, pen: pen, brush: brush);
+      return true;
+    }
+    return false;
+  } catch (e) {
+    debugPrint('印を描けませんでした: $e');
+    return false;
+  } finally {
+    g.restore(state);
+  }
+}
+
 /// 別 isolate で走る本体。 [msg] は `{src, out}`。
 /// 戻りは `{count, error?}`。 count == 0 なら控えは作っていない。
 Future<Map<String, Object?>> flattenPdfMarkupWorker(
@@ -67,26 +187,27 @@ Future<Map<String, Object?>> flattenPdfMarkupWorker(
     var count = 0;
     for (var i = 0; i < doc.pages.count; i++) {
       final page = doc.pages[i];
+      // ★ 回っているページは座標の当てが外れるので触らない
+      //   (ずれた所に描くくらいなら、 描かない方がまし)。
+      if (page.rotation != sfpdf.PdfPageRotateAngle.rotateAngle0) continue;
       final anns = page.annotations;
+      // 描いてから消すので、 先に対象を集めてしまう
+      // (途中で消すと並びがずれる)。
+      final targets = <sfpdf.PdfAnnotation>[];
       for (var j = 0; j < anns.count; j++) {
-        final sfpdf.PdfAnnotation a;
         try {
-          a = anns[j];
-        } catch (_) {
-          continue;
-        }
-        // ★ 焼き込むのは「ビューアが自分では描かない印」 だけ。
-        //   文字マーカー / 付箋 (二重に濃くなる)、 リンク / 入力欄
-        //   (押せなくなる) は触らない。
-        if (a is sfpdf.PdfRectangleAnnotation ||
-            a is sfpdf.PdfEllipseAnnotation ||
-            a is sfpdf.PdfLineAnnotation ||
-            a is sfpdf.PdfPolygonAnnotation) {
-          try {
-            a.flatten();
-            count++;
-          } catch (_) {}
-        }
+          final a = anns[j];
+          if (_isMarkup(a)) targets.add(a);
+        } catch (_) {}
+      }
+      for (final a in targets) {
+        if (!_paintMarkup(page, a)) continue;
+        count++;
+        // 中身へ描いたので、 注釈そのものは外す (他のアプリで開いた時に
+        // 二重に見えないように)。 外せなくても実害は無い。
+        try {
+          anns.remove(a);
+        } catch (_) {}
       }
     }
     if (count == 0) {

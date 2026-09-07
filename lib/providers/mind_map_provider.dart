@@ -17,6 +17,7 @@ import '../models/mind_map_node.dart';
 import '../services/billing_service.dart';
 import '../services/cursor_wrap.dart';
 import '../services/cursor_style.dart';
+import '../services/display_light.dart';
 import '../services/google_auth.dart';
 import '../services/mcp_server.dart';
 import '../services/home_shortcut_service.dart';
@@ -5081,6 +5082,144 @@ class MindMapProvider extends ChangeNotifier {
     // 旧「1〜15 の段階 + レジストリ」 のやり方は効かなかったので、 今は
     //   下の cursorPixelSize (px 指定 + SetSystemCursor) を使う。
     notifyListeners();
+  }
+
+
+  // ── 画面の明るさ と ブルーライトカット (= ユーザー要望) ──────────
+  //
+  // 実際に触るのは `DisplayLight` (lib/services/display_light.dart)。
+  // 明るさは画面ごとに、 いちばん良い道 (外付け=DDC/CI / 内蔵=WMI /
+  // どちらも駄目ならガンマ表) を選んで当てる。
+  // ブルーライトカットはガンマ表しか道が無いので、 全部の画面に掛ける。
+  //
+  // ★ ガンマ表はアプリを閉じる時に必ず戻す (main.dart)。 OS の設定画面に
+  //   出てこないので、 暗いまま残ると戻し方が分からなくなるため。
+  //   落ちて戻せなかった時のために、 元の表を控えへ書き出しておく。
+
+  /// 画面ごとの明るさ (%)。 鍵は画面の番号 (左上から数えた並び)。
+  /// 入っていない画面は触らない。
+  Map<int, int> _displayBrightness = <int, int>{};
+  Map<int, int> get displayBrightness => _displayBrightness;
+
+  /// ブルーライトカットの強さ (0〜100)。 0 = 切。
+  int _blueLightPercent = 0;
+  int get blueLightPercent => _blueLightPercent;
+
+  static const String _kGammaBackupKey = 'displayGammaOriginals';
+
+  /// 今の設定を画面へ当てる (ガンマ表だけ。 背面光はここでは触らない)。
+  ///
+  /// 背面光 (DDC/CI・WMI) は OS 側に残る設定なので、 立ち上がりに
+  /// 当て直す必要が無い。 ガンマ表はアプリが閉じると戻すので、 こちらは
+  /// 毎回当て直す。
+  void applyDisplayLight() {
+    if (!DisplayLight.isSupported) return;
+    try {
+      final monitors = DisplayLight.list();
+      final warm = _blueLightPercent / 100.0;
+      for (var i = 0; i < monitors.length; i++) {
+        final m = monitors[i];
+        // 背面光を動かせない画面だけ、 明るさもガンマ表で作る。
+        final dim = m.route == BrightnessRoute.gamma
+            ? (_displayBrightness[i] ?? 100) / 100.0
+            : 1.0;
+        DisplayLight.applyGamma(m.gdiName, dim: dim, warm: warm);
+      }
+      // 落ちた時に戻せるよう、 元の表を控えへ。
+      // ignore: discarded_futures
+      _persistGammaBackup();
+    } catch (e) {
+      debugPrint('画面の明るさを当てられませんでした: $e');
+    }
+  }
+
+  Future<void> _persistGammaBackup() async {
+    try {
+      final prefs = await _prefsWithRetry();
+      final raw = DisplayLight.encodeOriginals();
+      if (raw.isEmpty) {
+        await prefs.remove(_kGammaBackupKey);
+      } else {
+        await prefs.setString(_kGammaBackupKey, raw);
+      }
+    } catch (_) {}
+  }
+
+  /// 画面 [slot] の明るさを [percent] (%) にする。
+  ///
+  /// 背面光を動かせる画面はそのまま当てる (OS 側に残る)。
+  /// 動かせない画面はガンマ表で見かけを暗くする (下限あり)。
+  Future<bool> setDisplayBrightness(int slot, int percent) async {
+    final v = percent.clamp(0, 100);
+    _displayBrightness = <int, int>{..._displayBrightness, slot: v};
+    final prefs = await _prefsWithRetry();
+    await prefs.setString(
+        'displayBrightness_v1',
+        jsonEncode(
+            _displayBrightness.map((k, val) => MapEntry('$k', val))));
+    notifyListeners();
+    if (!DisplayLight.isSupported) return false;
+    var ok = false;
+    try {
+      await DisplayLight.ensureWmiProbed();
+      final monitors = DisplayLight.list();
+      if (slot < monitors.length) {
+        final m = monitors[slot];
+        if (m.route == BrightnessRoute.gamma) {
+          applyDisplayLight();
+          ok = true;
+        } else {
+          ok = await DisplayLight.setBrightness(m, v);
+        }
+      }
+    } catch (e) {
+      debugPrint('明るさを変えられませんでした: $e');
+    }
+    return ok;
+  }
+
+  /// ブルーライトカットの強さ (0〜100)。 0 で切る。
+  Future<void> setBlueLightPercent(int percent) async {
+    _blueLightPercent = percent.clamp(0, 100);
+    final prefs = await _prefsWithRetry();
+    await prefs.setInt('blueLightPercent', _blueLightPercent);
+    applyDisplayLight();
+    notifyListeners();
+  }
+
+  void _loadDisplayLight(SharedPreferences prefs) {
+    if (!DisplayLight.isSupported) return;
+    try {
+      // ★ 前に落ちてガンマ表を戻せていなければ、 まずそれを書き戻す。
+      final left = prefs.getString(_kGammaBackupKey);
+      if (left != null && left.isNotEmpty) {
+        DisplayLight.restoreFromEncoded(left);
+        // ignore: discarded_futures
+        prefs.remove(_kGammaBackupKey);
+      }
+      final raw = prefs.getString('displayBrightness_v1');
+      if (raw != null && raw.isNotEmpty) {
+        final m = jsonDecode(raw);
+        if (m is Map) {
+          final out = <int, int>{};
+          m.forEach((k, v) {
+            final slot = int.tryParse('$k');
+            if (slot != null && v is num) out[slot] = v.toInt().clamp(0, 100);
+          });
+          _displayBrightness = out;
+        }
+      }
+      _blueLightPercent = (prefs.getInt('blueLightPercent') ?? 0).clamp(0, 100);
+      if (_blueLightPercent > 0 || _displayBrightness.isNotEmpty) {
+        // ★ WMI が使えるかを調べ終えてから当てる。 先に当てると、 内蔵
+        //   パネルを「背面光を動かせない画面」 と取り違えて、 ガンマ表で
+        //   二重に暗くしてしまう。 調べは待たない (立ち上がりを止めない)。
+        // ignore: discarded_futures
+        DisplayLight.ensureWmiProbed().then((_) => applyDisplayLight());
+      }
+    } catch (e) {
+      debugPrint('画面の明るさの控えを読めませんでした: $e');
+    }
   }
 
   // ── マウスカーソルの大きさと色 (= ユーザー要望) ────────────────────
@@ -34921,6 +35060,89 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Skalierung konnte nicht geändert werden.',
       'pt': 'Não foi possível alterar a escala.',
       'ru': 'Не удалось изменить масштаб.',
+    },
+    'display.brightness': {
+      'ja': '明るさ',
+      'en': 'Brightness',
+      'zh': '亮度',
+      'ko': '밝기',
+      'es': 'Brillo',
+      'fr': 'Luminosité',
+      'de': 'Helligkeit',
+      'pt': 'Brilho',
+      'ru': 'Яркость',
+    },
+    'display.brightnessSoftNote': {
+      'ja': '◌ が付いた画面は、 背面光を動かせないので見かけだけ暗くします '
+          '(Windows の決まりで 50% までです)。',
+      'en': 'Screens marked ◌ cannot dim their backlight, so they are only '
+          'darkened on screen — Windows limits this to 50%.',
+      'zh': '带 ◌ 的屏幕无法调节背光，只能在画面上变暗（Windows 限制为 50%）。',
+      'ko': '◌ 표시가 있는 화면은 백라이트를 조절할 수 없어 화면상으로만 어두워집니다 '
+          '(Windows 제한으로 50%까지).',
+      'es': 'Las pantallas marcadas con ◌ no pueden atenuar su retroiluminación; '
+          'solo se oscurecen en pantalla (Windows lo limita al 50%).',
+      'fr': 'Les écrans marqués ◌ ne peuvent pas baisser leur rétroéclairage : '
+          'ils sont seulement assombris à l’image (Windows limite à 50%).',
+      'de': 'Mit ◌ markierte Bildschirme können ihre Hintergrundbeleuchtung '
+          'nicht dimmen; sie werden nur im Bild abgedunkelt (Windows begrenzt '
+          'das auf 50%).',
+      'pt': 'Telas marcadas com ◌ não conseguem reduzir a luz de fundo; só '
+          'escurecem na imagem (o Windows limita a 50%).',
+      'ru': 'Экраны с пометкой ◌ не могут приглушить подсветку — они темнеют '
+          'только на изображении (Windows ограничивает это до 50%).',
+    },
+    'display.brightnessFailed': {
+      'ja': 'この画面の明るさは変えられませんでした。',
+      'en': 'The brightness of that screen could not be changed.',
+      'zh': '无法更改该屏幕的亮度。',
+      'ko': '이 화면의 밝기를 바꿀 수 없었습니다.',
+      'es': 'No se pudo cambiar el brillo de esa pantalla.',
+      'fr': 'Impossible de changer la luminosité de cet écran.',
+      'de': 'Die Helligkeit dieses Bildschirms ließ sich nicht ändern.',
+      'pt': 'Não foi possível alterar o brilho dessa tela.',
+      'ru': 'Не удалось изменить яркость этого экрана.',
+    },
+    'display.blueLight': {
+      'ja': 'ブルーライトカット',
+      'en': 'Blue light filter',
+      'zh': '蓝光过滤',
+      'ko': '블루라이트 차단',
+      'es': 'Filtro de luz azul',
+      'fr': 'Filtre de lumière bleue',
+      'de': 'Blaulichtfilter',
+      'pt': 'Filtro de luz azul',
+      'ru': 'Фильтр синего света',
+    },
+    'display.blueLightOff': {
+      'ja': '切',
+      'en': 'Off',
+      'zh': '关',
+      'ko': '끔',
+      'es': 'No',
+      'fr': 'Non',
+      'de': 'Aus',
+      'pt': 'Não',
+      'ru': 'Выкл.',
+    },
+    'display.blueLightNote': {
+      'ja': '青みを抑えて暖かい色にします。 全部の画面に掛かります。 '
+          'アプリを閉じると元に戻ります。',
+      'en': 'Cuts blue and warms the picture. It applies to every screen and '
+          'goes back to normal when you close the app.',
+      'zh': '减少蓝光，使画面偏暖。对所有屏幕生效，关闭应用后恢复原状。',
+      'ko': '푸른빛을 줄여 따뜻한 색으로 만듭니다. 모든 화면에 적용되며 앱을 닫으면 '
+          '원래대로 돌아갑니다.',
+      'es': 'Reduce el azul y da un tono cálido. Se aplica a todas las '
+          'pantallas y vuelve a la normalidad al cerrar la aplicación.',
+      'fr': 'Réduit le bleu et réchauffe l’image. S’applique à tous les écrans '
+          'et revient à la normale à la fermeture de l’application.',
+      'de': 'Senkt den Blauanteil und macht das Bild wärmer. Gilt für alle '
+          'Bildschirme und wird beim Schließen der App zurückgesetzt.',
+      'pt': 'Reduz o azul e deixa a imagem mais quente. Vale para todas as '
+          'telas e volta ao normal ao fechar o aplicativo.',
+      'ru': 'Убавляет синий и делает картинку теплее. Действует на все экраны '
+          'и возвращается к обычной при закрытии приложения.',
     },
     'display.wallpaper': {
       'ja': '壁紙',
@@ -72026,6 +72248,7 @@ class MindMapProvider extends ChangeNotifier {
     'cursorPixelSize',
     'cursorColorArgb',
     'cursorOutlineArgb',
+    'blueLightPercent',
     'cursorSizeV2',
     'cursorKeepAfterExit',
     'openTarget', 'mapSplitQuad', 'mapSplitRatioX',
@@ -86736,6 +86959,7 @@ $cleanQ
     }
     // ── カーソルの大きさと色 (= ユーザー要望) ──
     //   起動のたびに当て直す (差し替えはサインインし直すと消えるため)。
+    _loadDisplayLight(prefs);
     _cursorPixelSize = prefs.getInt('cursorPixelSize') ?? 0;
     // 昔の控えは「32 = 既定 (触らない)」 だったので読み替える。
     if (prefs.getBool('cursorSizeV2') != true && _cursorPixelSize <= 32) {

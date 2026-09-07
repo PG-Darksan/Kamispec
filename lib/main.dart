@@ -65,6 +65,7 @@ import 'services/talk_reference.dart';
 import 'services/screen_capture.dart' as scap;
 import 'services/cursor_wrap.dart';
 import 'services/cursor_style.dart';
+import 'services/display_light.dart';
 // 録画窓の中のプレビュー再生 (デスクトップは fvp バックエンド)。
 import 'package:video_player/video_player.dart';
 // 録画窓が自分の窓の大きさを変える (GetWindowRect) のに使う。
@@ -1262,6 +1263,13 @@ class _MainWindowCloser extends WindowListener {
     //     (= ユーザー要望。 Pro 以上限定で、 印は provider が立てる)。
     try {
       CursorStyleControl.restoreOnExit();
+    } catch (_) {}
+    // ★ 画面のガンマ表 (見かけの明るさ / ブルーライトカット) は**必ず**戻す
+    //   (= ユーザー要望で足した機能)。 背面光と違って OS の設定画面に出て
+    //   こないので、 暗いまま残ると戻し方が分からなくなる。
+    //   背面光 (DDC/CI・WMI) は OS 側の設定なのでそのまま残す。
+    try {
+      DisplayLight.restoreAllGamma();
     } catch (_) {}
     // ── 何があっても 1.5 秒後には必ずプロセスを終わらせる保険 ──
     //   (= ユーザー報告: × ボタンを押しても固まって閉じない)。

@@ -40,6 +40,7 @@ import '../services/rec_hotkey.dart';
 import '../services/cursor_wrap.dart';
 import '../services/cursor_style.dart';
 import '../services/display_control.dart';
+import '../services/display_light.dart';
 import '../services/audio_output.dart';
 import '../services/ic_card_reader.dart';
 // 面接練習・ロールプレイの下調べ (Web + 手元の資料ファイル)。
@@ -97999,6 +98000,16 @@ class _MonitorDisplaySettings extends StatefulWidget {
 class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
   List<MonitorScale> _scales = const [];
   List<WallpaperMonitor> _walls = const [];
+
+  /// 明るさを当てられる画面 (= ユーザー要望)。 左上から順。
+  List<LightMonitor> _lights = const [];
+
+  /// つまみを動かしている最中の値。 鍵は画面の番号。 指を離すまで
+  /// OS へは当てない (DDC/CI も WMI も 1 回が重いため)。
+  final Map<int, double> _brightDrag = <int, double>{};
+
+  /// ブルーライトカットのつまみを動かしている最中の値。
+  double? _blueDrag;
   bool _busy = false;
   String? _msg;
   bool _msgError = false;
@@ -98363,6 +98374,7 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
     unawaited(_savePending());
     setState(() {
       _scales = DisplayControl.listScales();
+      _lights = DisplayLight.list();
       _walls = DisplayControl.listWallpaperMonitors();
     });
   }
@@ -98380,8 +98392,14 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
 
   void _reload() {
     if (!DisplayControl.isSupported) return;
+    // ★ WMI が使えるかは PowerShell を 1 回走らせて調べる。 待たずに始めて、
+    //   分かった時点で一覧を作り直す (= 立ち上がりを止めないため)。
+    unawaited(DisplayLight.ensureWmiProbed().then((_) {
+      if (mounted) setState(() => _lights = DisplayLight.list());
+    }));
     setState(() {
       _scales = DisplayControl.listScales();
+      _lights = DisplayLight.list();
       _walls = DisplayControl.listWallpaperMonitors();
       // Windows の 個人用設定 で変えられている事があるので読み直す
       // (= 押した印が嘘にならないように)。
@@ -98529,6 +98547,39 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
                 ],
               ),
             ),
+          // ── 明るさ (= ユーザー要望) ──
+          //   画面ごとに、 いちばん良い道で当てる。 外付けは DDC/CI、
+          //   ノートの内蔵は WMI、 どちらも駄目な画面はガンマ表で
+          //   見かけだけ暗くする (この場合は 50% 止まり)。
+          if (_lights.isNotEmpty) label(p.t('display.brightness')),
+          for (var i = 0; i < _slotCount; i++)
+            if (i < _lights.length)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 2),
+                child: Row(children: [
+                  SizedBox(width: 118, child: _slotName(i)),
+                  Expanded(child: _brightnessSlider(i, p)),
+                ]),
+              ),
+          if (_lights.any((m) => !m.isRealBacklight))
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Text(p.t('display.brightnessSoftNote'),
+                  style: const TextStyle(
+                      color: Colors.white38, fontSize: 10, height: 1.35)),
+            ),
+          // ── ブルーライトカット (= ユーザー要望) ──
+          //   道はガンマ表しか無いので、 全部の画面へ同じだけ掛ける。
+          if (_lights.isNotEmpty) ...[
+            label(p.t('display.blueLight')),
+            _blueLightSlider(p),
+            Padding(
+              padding: const EdgeInsets.only(top: 2, bottom: 6),
+              child: Text(p.t('display.blueLightNote'),
+                  style: const TextStyle(
+                      color: Colors.white38, fontSize: 10, height: 1.35)),
+            ),
+          ],
           // ── 壁紙 ──
           label(p.t('display.wallpaper')),
           for (var i = 0; i < _slotCount; i++)
@@ -98740,6 +98791,120 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
     final merged = <int>{...mon.choices, ..._pendingScaleChoices}.toList()
       ..sort();
     return merged.isEmpty ? DisplayControl.commonScales : merged;
+  }
+
+
+  /// 画面 [slot] の明るさのつまみ (= ユーザー要望)。
+  ///
+  /// 指を離した時だけ当てる。 DDC/CI は I2C の往復、 WMI は PowerShell を
+  /// 1 回走らせるので、 動かしている間ずっと投げると固まってしまう。
+  Widget _brightnessSlider(int slot, MindMapProvider p) {
+    final m = _lights[slot];
+    final saved = p.displayBrightness[slot];
+    final live = _brightDrag[slot] ?? (saved ?? m.percent ?? 100).toDouble();
+    // ガンマ表で暗くする画面は 50% までしか下げられない (Windows の壁)。
+    final lo = m.isRealBacklight ? 0.0 : 50.0;
+    return Row(children: [
+      Expanded(
+        child: SliderTheme(
+          data: SliderTheme.of(context).copyWith(
+            trackHeight: 3,
+            activeTrackColor: const Color(0xFFFFB347),
+            inactiveTrackColor: Colors.white24,
+            thumbColor: const Color(0xFFFFB347),
+            overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+            thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+          ),
+          child: Slider(
+            min: lo,
+            max: 100,
+            divisions: ((100 - lo) / 5).round(),
+            value: live.clamp(lo, 100),
+            onChanged: _busy
+                ? null
+                : (v) => setState(() => _brightDrag[slot] = v),
+            onChangeEnd: (v) async {
+              final px = v.round();
+              setState(() => _brightDrag.remove(slot));
+              if (px == saved) return;
+              setState(() => _busy = true);
+              final ok = await p.setDisplayBrightness(slot, px);
+              if (!mounted) return;
+              setState(() {
+                _busy = false;
+                _lights = DisplayLight.list();
+              });
+              if (!ok) {
+                _tell(widget.provider.t('display.brightnessFailed'),
+                    error: true);
+              }
+            },
+          ),
+        ),
+      ),
+      SizedBox(
+        width: 40,
+        child: Text('${live.round()}%',
+            textAlign: TextAlign.right,
+            style: const TextStyle(color: Colors.white, fontSize: 11)),
+      ),
+      // 見かけだけの画面には印を付ける (= 背面光が動かない事を伝える)。
+      SizedBox(
+        width: 18,
+        child: m.isRealBacklight
+            ? null
+            : const Icon(Icons.blur_on_rounded,
+                size: 13, color: Colors.white38),
+      ),
+    ]);
+  }
+
+  /// ブルーライトカットのつまみ (= ユーザー要望)。 全部の画面へ掛ける。
+  Widget _blueLightSlider(MindMapProvider p) {
+    final live = _blueDrag ?? p.blueLightPercent.toDouble();
+    return Row(children: [
+      Icon(Icons.nightlight_round,
+          size: 15,
+          color: live > 0 ? const Color(0xFFFFB347) : Colors.white38),
+      Expanded(
+        child: SliderTheme(
+          data: SliderTheme.of(context).copyWith(
+            trackHeight: 3,
+            activeTrackColor: const Color(0xFFFFB347),
+            inactiveTrackColor: Colors.white24,
+            thumbColor: const Color(0xFFFFB347),
+            overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+            thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+          ),
+          child: Slider(
+            min: 0,
+            max: 100,
+            divisions: 20,
+            value: live.clamp(0, 100),
+            onChanged: (v) => setState(() => _blueDrag = v),
+            onChangeEnd: (v) async {
+              final px = v.round();
+              setState(() => _blueDrag = null);
+              if (px == p.blueLightPercent) return;
+              await p.setBlueLightPercent(px);
+              if (mounted) setState(() {});
+            },
+          ),
+        ),
+      ),
+      SizedBox(
+        width: 40,
+        child: Text(
+            live <= 0
+                ? widget.provider.t('display.blueLightOff')
+                : '${live.round()}%',
+            textAlign: TextAlign.right,
+            style: TextStyle(
+                color: live > 0 ? Colors.white : Colors.white38,
+                fontSize: 11)),
+      ),
+      const SizedBox(width: 18),
+    ]);
   }
 
   /// まだ繋いでいない画面ぶんに出す拡大率の選択肢。
@@ -99139,38 +99304,74 @@ class _CursorAppearanceInlineState extends State<_CursorAppearanceInline> {
   /// 絵を選んでいる最中か (二重に開かないように)。
   bool _busyImage = false;
 
-  /// 選べる色 (null = 元の色のまま)。
-  static const List<int?> _colors = [
-    null,
-    0xFFE53935, // 赤
-    0xFFFF7043, // 朱
-    0xFFFFD54F, // 黄
-    0xFF9CCC65, // 黄緑
-    0xFF43B97F, // 緑
-    0xFF4FC3F7, // 水色
-    0xFF8B84FF, // 紫
-    0xFFEC407A, // 桃
+  /// 大きさのつまみを動かしている最中の値 (px)。 null = 触っていない。
+  /// 指を離した時だけ OS へ当てるための控え (= 動かしている間ずっと
+  /// 差し替えると重い)。
+  double? _sizeDrag;
+
+  /// 選べる色。 本体にも外枠にも同じ並びを使う。
+  ///
+  /// ★ = ユーザー要望「色の種類をもっと増やして」「赤っぽい色が離れた所に
+  ///   あっておかしいので、 似ている色は固めて」。
+  ///   前は 赤・朱・黄・黄緑・緑・水色・紫・**桃**・黒 の順で、 赤に近い桃が
+  ///   紫の隣に離れていた。 今は **色の輪の順** (無彩色 → 赤 → 橙 → 黄 →
+  ///   緑 → 青 → 紫 → 茶) に並べ、 同じ系統の濃淡を隣どうしにしてある。
+  static const List<int> _paletteColors = [
+    // 無彩色
+    0xFFFFFFFF, // 白
+    0xFFBDBDBD, // 明るい灰
+    0xFF757575, // 灰
     0xFF000000, // 黒
+    // 赤系 (桃 → 紅 → 赤 → 濃い赤)
+    0xFFF8BBD0, // 桜
+    0xFFF06292, // 桃
+    0xFFEC407A, // 紅
+    0xFFE53935, // 赤
+    0xFFB71C1C, // 濃い赤
+    // 橙系
+    0xFFFF7043, // 朱
+    0xFFFB8C00, // 橙
+    0xFFFFB300, // 山吹
+    // 黄系
+    0xFFFFD54F, // 黄
+    0xFFFFF176, // 薄い黄
+    // 緑系
+    0xFFC5E1A5, // 若草
+    0xFF9CCC65, // 黄緑
+    0xFF43A047, // 緑
+    0xFF1B5E20, // 深緑
+    0xFF26A69A, // 青緑
+    // 青系
+    0xFF80DEEA, // 浅葱
+    0xFF4FC3F7, // 水色
+    0xFF1E88E5, // 青
+    0xFF283593, // 藍
+    // 紫系
+    0xFF9FA8DA, // 藤
+    0xFF8B84FF, // 紫
+    0xFF6A1B9A, // 濃い紫
+    0xFFD500F9, // 赤紫
+    // 茶系
+    0xFFD7CCC8, // 生成り
+    0xFF8D6E63, // 茶
+    0xFF4E342E, // 焦茶
   ];
 
-  /// 外枠に選べる色 (null = 元の黒のまま)。 本体と同じ並びに白を足す
-  /// (= 白い縁取りは暗い画面でよく見えるため)。
-  static const List<int?> _outlineColors = [
-    null,
-    0xFFFFFFFF, // 白
-    0xFFE53935, // 赤
-    0xFFFF7043, // 朱
-    0xFFFFD54F, // 黄
-    0xFF43B97F, // 緑
-    0xFF4FC3F7, // 水色
-    0xFF8B84FF, // 紫
-    0xFFEC407A, // 桃
-    0xFF000000, // 黒
-  ];
+  /// 本体に選べる色 (null = 元の白のまま)。
+  static const List<int?> _colors = [null, ..._paletteColors];
+
+  /// 外枠に選べる色 (null = 元の黒のまま)。
+  static const List<int?> _outlineColors = [null, ..._paletteColors];
+
+  /// Windows の既定の大きさ (px)。 立ち上がりに 1 回だけ測る。
+  /// ★ build のたびに `CursorStyleControl.defaultPixels` を呼ぶと、
+  ///   測れなかった時に毎フレーム FFI を叩いてしまう (= 反証で見つかった穴)。
+  int? _basePx;
 
   @override
   void initState() {
     super.initState();
+    _basePx = CursorStyleControl.defaultPixels;
     _loadOpen();
   }
 
@@ -99215,6 +99416,7 @@ class _CursorAppearanceInlineState extends State<_CursorAppearanceInline> {
         return;
       }
       await p.setCursorAppearance(imagePath: path);
+      if (mounted) setState(() {});
     } catch (e) {
       debugPrint('カーソルの絵を選べませんでした: $e');
     } finally {
@@ -99235,7 +99437,7 @@ class _CursorAppearanceInlineState extends State<_CursorAppearanceInline> {
     if (!CursorStyleControl.isSupported) return const SizedBox.shrink();
     final p = widget.provider;
     // 差し替える前に実測した「Windows の既定」 の px (= ユーザー要望)。
-    final base = CursorStyleControl.defaultPixels;
+    final base = _basePx;
     Widget label(String text) => Padding(
           padding: const EdgeInsets.only(top: 10, bottom: 4),
           child: Text(text,
@@ -99245,36 +99447,89 @@ class _CursorAppearanceInlineState extends State<_CursorAppearanceInline> {
                   fontWeight: FontWeight.w700)),
         );
 
-    Widget sizeChip(int px) {
-      final on = p.cursorPixelSize == px;
-      return InkWell(
-        borderRadius: BorderRadius.circular(6),
-        onTap: on ? null : () => unawaited(p.setCursorAppearance(sizePx: px)),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          decoration: BoxDecoration(
-            color: on
-                ? const Color(0xFF4FC3F7).withValues(alpha: 0.22)
-                : Colors.white.withValues(alpha: 0.05),
-            borderRadius: BorderRadius.circular(6),
-            border: Border.all(
-                color: on ? const Color(0xFF4FC3F7) : Colors.white12),
+    // ★ 大きさはスライドバーで決める (= ユーザー要望)。
+    //   指を離した時だけ OS へ当てる (差し替えは 13 本ぶんの FFI なので、
+    //   動かしている間ずっと当てると重い)。
+    final isDefaultSize = p.cursorPixelSize <= 0;
+    final liveSize = _sizeDrag ??
+        (isDefaultSize
+            ? (base ?? 32).toDouble()
+            : p.cursorPixelSize.toDouble());
+    Widget sizeSlider() {
+      return Row(children: [
+        // 「既定」 に戻す札。 何 px なのかを数値で添える
+        // (= ユーザー要望: 既定が何 px を指すのか分かりにくい)。
+        InkWell(
+          borderRadius: BorderRadius.circular(6),
+          onTap: isDefaultSize
+              ? null
+              : () async {
+                  setState(() => _sizeDrag = null);
+                  await p.setCursorAppearance(sizePx: 0);
+                  if (mounted) setState(() {});
+                },
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: isDefaultSize
+                  ? const Color(0xFF4FC3F7).withValues(alpha: 0.22)
+                  : Colors.white.withValues(alpha: 0.05),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(
+                  color: isDefaultSize
+                      ? const Color(0xFF4FC3F7)
+                      : Colors.white12),
+            ),
+            child: Text(
+                base == null
+                    ? p.t('cursorLook.sizeDefault')
+                    : '${p.t('cursorLook.sizeDefault')} (${base}px)',
+                style: TextStyle(
+                    color: isDefaultSize ? Colors.white : Colors.white60,
+                    fontSize: 11,
+                    fontWeight:
+                        isDefaultSize ? FontWeight.w700 : FontWeight.w400)),
           ),
-          child: Text(
-              px <= 0
-                  // ★ 既定が何 px なのか数値で出す (= ユーザー要望:
-                  //   既定が何 px を指すのか分かりにくい)。 画面の拡大率で
-                  //   変わるので、 差し替える前に実測した値を出す。
-                  ? (base == null
-                      ? p.t('cursorLook.sizeDefault')
-                      : '${p.t('cursorLook.sizeDefault')} (${base}px)')
-                  : '${px}px',
-              style: TextStyle(
-                  color: on ? Colors.white : Colors.white60,
-                  fontSize: 11,
-                  fontWeight: on ? FontWeight.w700 : FontWeight.w400)),
         ),
-      );
+        Expanded(
+          child: SliderTheme(
+            data: SliderTheme.of(context).copyWith(
+              trackHeight: 3,
+              activeTrackColor: const Color(0xFF4FC3F7),
+              inactiveTrackColor: Colors.white24,
+              thumbColor: const Color(0xFF4FC3F7),
+              overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+            ),
+            child: Slider(
+              min: CursorStyleControl.sizeMin.toDouble(),
+              max: CursorStyleControl.sizeMax.toDouble(),
+              divisions: CursorStyleControl.sizeMax - CursorStyleControl.sizeMin,
+              value: liveSize.clamp(CursorStyleControl.sizeMin.toDouble(),
+                  CursorStyleControl.sizeMax.toDouble()),
+              onChanged: (v) => setState(() => _sizeDrag = v),
+              onChangeEnd: (v) {
+                final px = v.round();
+                setState(() => _sizeDrag = null);
+                // 同じ値なら触らない (13 本の差し替えと控えの書き直しが
+                // 無駄に走るため)。
+                if (px == p.cursorPixelSize) return;
+                unawaited(p.setCursorAppearance(sizePx: px));
+              },
+            ),
+          ),
+        ),
+        SizedBox(
+          width: 44,
+          child: Text('${liveSize.round()}px',
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                  color: isDefaultSize ? Colors.white38 : Colors.white,
+                  fontSize: 11,
+                  fontWeight:
+                      isDefaultSize ? FontWeight.w400 : FontWeight.w700)),
+        ),
+      ]);
     }
 
     // [outline] が真なら外枠の色 (= ユーザー要望: 外枠の色も指定したい)。
@@ -99283,18 +99538,23 @@ class _CursorAppearanceInlineState extends State<_CursorAppearanceInline> {
           (outline ? p.cursorOutlineArgb : p.cursorColorArgb) == argb;
       return InkWell(
         borderRadius: BorderRadius.circular(6),
+        // ★ この小窓は provider を購読していないので、 当てた後に自分で
+        //   描き直さないと選ばれた枠が前の色に残る (= 反証で見つかった穴)。
         onTap: on
             ? null
-            : () => unawaited(outline
-                ? (argb == null
-                    ? p.setCursorAppearance(clearOutline: true)
-                    : p.setCursorAppearance(outlineArgb: argb))
-                : (argb == null
-                    ? p.setCursorAppearance(clearColor: true)
-                    : p.setCursorAppearance(argb: argb))),
+            : () async {
+                await (outline
+                    ? (argb == null
+                        ? p.setCursorAppearance(clearOutline: true)
+                        : p.setCursorAppearance(outlineArgb: argb))
+                    : (argb == null
+                        ? p.setCursorAppearance(clearColor: true)
+                        : p.setCursorAppearance(argb: argb)));
+                if (mounted) setState(() {});
+              },
         child: Container(
-          width: 26,
-          height: 26,
+          width: 23,
+          height: 23,
           decoration: BoxDecoration(
             color: argb == null ? Colors.transparent : Color(argb),
             borderRadius: BorderRadius.circular(6),
@@ -99303,9 +99563,9 @@ class _CursorAppearanceInlineState extends State<_CursorAppearanceInline> {
                 width: on ? 2 : 1),
           ),
           alignment: Alignment.center,
-          // 「元の色」 は斜線で表す。
+          // 「元のまま」 は斜線で表す。
           child: argb == null
-              ? const Icon(Icons.block_rounded, size: 14, color: Colors.white54)
+              ? const Icon(Icons.block_rounded, size: 13, color: Colors.white54)
               : null,
         ),
       );
@@ -99356,24 +99616,18 @@ class _CursorAppearanceInlineState extends State<_CursorAppearanceInline> {
               style: const TextStyle(
                   color: Colors.white38, fontSize: 10.5, height: 1.4)),
           label(p.t('cursorLook.size')),
+          sizeSlider(),
+          label(p.t('cursorLook.fill')),
           Wrap(
             spacing: 5,
             runSpacing: 5,
-            children: [
-              for (final px in CursorStyleControl.sizeChoices) sizeChip(px),
-            ],
-          ),
-          label(p.t('cursorLook.fill')),
-          Wrap(
-            spacing: 6,
-            runSpacing: 6,
             children: [for (final c in _colors) colorChip(c)],
           ),
           // ★ 外枠の色 (= ユーザー要望)。 前は縁取りが必ず黒だった。
           label(p.t('cursorLook.outline')),
           Wrap(
-            spacing: 6,
-            runSpacing: 6,
+            spacing: 5,
+            runSpacing: 5,
             children: [
               for (final c in _outlineColors) colorChip(c, outline: true)
             ],
@@ -99426,8 +99680,10 @@ class _CursorAppearanceInlineState extends State<_CursorAppearanceInline> {
             ),
             if (p.cursorImagePath.isNotEmpty)
               TextButton.icon(
-                onPressed: () =>
-                    unawaited(p.setCursorAppearance(clearImage: true)),
+                onPressed: () async {
+                  await p.setCursorAppearance(clearImage: true);
+                  if (mounted) setState(() {});
+                },
                 icon: const Icon(Icons.close_rounded, size: 15),
                 label: Text(p.t('cursorLook.imageClear'),
                     style: const TextStyle(fontSize: 11)),
@@ -99496,11 +99752,15 @@ class _CursorAppearanceInlineState extends State<_CursorAppearanceInline> {
           Align(
             alignment: Alignment.centerRight,
             child: TextButton.icon(
-              onPressed: () => unawaited(p.setCursorAppearance(
-                  sizePx: 0,
-                  clearColor: true,
-                  clearOutline: true,
-                  clearImage: true)),
+              onPressed: () async {
+                setState(() => _sizeDrag = null);
+                await p.setCursorAppearance(
+                    sizePx: 0,
+                    clearColor: true,
+                    clearOutline: true,
+                    clearImage: true);
+                if (mounted) setState(() {});
+              },
               icon: const Icon(Icons.restart_alt_rounded, size: 16),
               label: Text(p.t('cursorLook.reset')),
               style: TextButton.styleFrom(foregroundColor: Colors.white60),
