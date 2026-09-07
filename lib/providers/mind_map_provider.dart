@@ -5107,6 +5107,18 @@ class MindMapProvider extends ChangeNotifier {
         .apply(_mouseRemapEnabled ? _mouseKeyBindings : const []);
   }
 
+  /// 「押して検出」 を始める。 その間だけ割り当てを外し、 押されたボタンの
+  /// 番号を [onButton] に流す。 元のボタンは横取りしない。
+  Future<void> startMouseButtonDetect(
+          void Function(int button) onButton) async =>
+      MouseRemap.instance.startDetect(onButton);
+
+  /// 検出をやめて、 元の割り当てに戻す。
+  Future<void> stopMouseButtonDetect() async {
+    await MouseRemap.instance.stopDetect();
+    await _applyMouseRemap();
+  }
+
   void _loadMouseKeyBindings(SharedPreferences prefs) {
     _mouseRemapEnabled = prefs.getBool('mouseRemapEnabled') ?? false;
     try {
@@ -48643,6 +48655,61 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Quanto mais curto, mais juntos os cliques têm de estar.',
       'ru': 'Чем короче, тем быстрее нужно щелкнуть дважды.',
     },
+    'mouse.speedFactor': {
+      'ja': '今は標準 (10) の {x} 倍。 20 が Windows の上限。',
+      'en': 'Currently {x}x the default (10). 20 is the Windows maximum.',
+      'zh': '当前为默认值 (10) 的 {x} 倍。20 是 Windows 的上限。',
+      'ko': '현재 기본값 (10) 의 {x} 배입니다. 20 이 Windows 의 최대치입니다.',
+      'es': 'Ahora es {x}x el valor predeterminado (10). 20 es el máximo de Windows.',
+      'fr': 'Actuellement {x}x la valeur par défaut (10). 20 est le maximum de Windows.',
+      'de': 'Derzeit {x}x der Standardwert (10). 20 ist das Maximum von Windows.',
+      'pt': 'Atualmente {x}x o padrão (10). 20 é o máximo do Windows.',
+      'ru': 'Сейчас в {x} раза больше стандартного (10). 20 — максимум Windows.',
+    },
+    'mouse.boost': {
+      'ja': 'もっと速く (加速の伸び)',
+      'en': 'Go further (acceleration gain)',
+      'zh': '再快一些（加速增益）',
+      'ko': '더 빠르게 (가속 증폭)',
+      'es': 'Aún más rápido (ganancia de aceleración)',
+      'fr': 'Encore plus vite (gain d’accélération)',
+      'de': 'Noch schneller (Beschleunigungsverstärkung)',
+      'pt': 'Ainda mais rápido (ganho de aceleração)',
+      'ru': 'Ещё быстрее (усиление ускорения)',
+    },
+    'mouse.boostNote': {
+      'ja': '20 でも足りない時に、 Windows の加速の曲線そのものを引き伸ばす。 「ポインターの精度を高める」 が入っている時だけ効く。',
+      'en': 'When 20 still is not enough, this stretches the Windows acceleration curve itself. It only works while “Enhance pointer precision” is on.',
+      'zh': '当 20 仍不够时，直接拉伸 Windows 的加速曲线。仅在开启“提高指针精确度”时生效。',
+      'ko': '20 으로도 부족할 때 Windows 의 가속 곡선 자체를 늘립니다. “포인터 정확도 향상” 이 켜져 있을 때만 작동합니다.',
+      'es': 'Cuando 20 no basta, estira la propia curva de aceleración de Windows. Solo funciona con “Mejorar la precisión del puntero” activado.',
+      'fr': 'Quand 20 ne suffit pas, cela étire la courbe d’accélération de Windows. Ne fonctionne que si « Améliorer la précision du pointeur » est activé.',
+      'de': 'Wenn 20 nicht reicht, wird die Beschleunigungskurve von Windows selbst gestreckt. Wirkt nur bei aktivierter Zeigerbeschleunigung.',
+      'pt': 'Quando 20 não basta, estica a própria curva de aceleração do Windows. Só funciona com “Melhorar a precisão do ponteiro” ligado.',
+      'ru': 'Если 20 мало, растягивает саму кривую ускорения Windows. Работает только при включённой повышенной точности указателя.',
+    },
+    'mouse.boostSignOut': {
+      'ja': '★ これはサインインし直した時から効く。 速すぎたら 「ポインターの精度を高める」 を切れば、 その場で元の動きに戻る。',
+      'en': '★ Takes effect after you sign out and back in. If it turns out too fast, switch off “Enhance pointer precision” and the old feel returns at once.',
+      'zh': '★ 需要注销并重新登录后生效。若太快，关闭“提高指针精确度”即可立刻恢复原状。',
+      'ko': '★ 로그아웃 후 다시 로그인해야 적용됩니다. 너무 빠르면 “포인터 정확도 향상” 을 끄면 바로 원래대로 돌아갑니다.',
+      'es': '★ Se aplica al cerrar e iniciar sesión de nuevo. Si va demasiado rápido, desactiva “Mejorar la precisión del puntero” y vuelve al instante.',
+      'fr': '★ Prend effet après une déconnexion/reconnexion. Si c’est trop rapide, désactivez « Améliorer la précision du pointeur » pour revenir aussitôt.',
+      'de': '★ Wirkt erst nach dem Ab- und Anmelden. Falls es zu schnell ist, schalten Sie die Zeigerbeschleunigung aus — dann ist es sofort wieder wie vorher.',
+      'pt': '★ Só tem efeito depois de sair e entrar de novo. Se ficar rápido demais, desligue “Melhorar a precisão do ponteiro” e volta na hora.',
+      'ru': '★ Действует после выхода и повторного входа. Если получилось слишком быстро, выключите повышенную точность указателя — всё вернётся сразу.',
+    },
+    'mouse.boostReset': {
+      'ja': '元に戻す',
+      'en': 'Reset',
+      'zh': '恢复默认',
+      'ko': '되돌리기',
+      'es': 'Restablecer',
+      'fr': 'Réinitialiser',
+      'de': 'Zurücksetzen',
+      'pt': 'Redefinir',
+      'ru': 'Сбросить',
+    },
     'mouse.buttons': {
       'ja': 'ボタンへのキー割り当て',
       'en': 'Mouse button shortcuts',
@@ -48708,6 +48775,127 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Seitentaste (vorwärts)',
       'pt': 'Botão lateral (avançar)',
       'ru': 'Боковая (вперёд)',
+    },
+    'mouse.btnTiltLeft': {
+      'ja': 'ホイールを左に倒す',
+      'en': 'Wheel tilt left',
+      'zh': '滚轮左倾',
+      'ko': '휠 왼쪽 기울임',
+      'es': 'Rueda inclinada a la izquierda',
+      'fr': 'Molette inclinée à gauche',
+      'de': 'Rad nach links kippen',
+      'pt': 'Roda inclinada à esquerda',
+      'ru': 'Наклон колеса влево',
+    },
+    'mouse.btnTiltRight': {
+      'ja': 'ホイールを右に倒す',
+      'en': 'Wheel tilt right',
+      'zh': '滚轮右倾',
+      'ko': '휠 오른쪽 기울임',
+      'es': 'Rueda inclinada a la derecha',
+      'fr': 'Molette inclinée à droite',
+      'de': 'Rad nach rechts kippen',
+      'pt': 'Roda inclinada à direita',
+      'ru': 'Наклон колеса вправо',
+    },
+    'mouse.btnOther': {
+      'ja': 'ボタン {n}',
+      'en': 'Button {n}',
+      'zh': '按键 {n}',
+      'ko': '버튼 {n}',
+      'es': 'Botón {n}',
+      'fr': 'Bouton {n}',
+      'de': 'Taste {n}',
+      'pt': 'Botão {n}',
+      'ru': 'Кнопка {n}',
+    },
+    'mouse.detectStart': {
+      'ja': '押して検出',
+      'en': 'Press to detect',
+      'zh': '按下识别',
+      'ko': '눌러서 감지',
+      'es': 'Pulsa para detectar',
+      'fr': 'Appuyer pour détecter',
+      'de': 'Zum Erkennen drücken',
+      'pt': 'Prima para detetar',
+      'ru': 'Нажать для определения',
+    },
+    'mouse.detectHint': {
+      'ja': '割り当てたいボタンを押してください。',
+      'en': 'Press the button you want to assign.',
+      'zh': '请按下要分配的按键。',
+      'ko': '지정할 버튼을 누르세요.',
+      'es': 'Pulsa el botón que quieras asignar.',
+      'fr': 'Appuyez sur le bouton à attribuer.',
+      'de': 'Drücken Sie die gewünschte Taste.',
+      'pt': 'Prima o botão que quer atribuir.',
+      'ru': 'Нажмите нужную кнопку.',
+    },
+    'mouse.detected': {
+      'ja': '{b} (番号 {n})',
+      'en': '{b} (id {n})',
+      'zh': '{b}（编号 {n}）',
+      'ko': '{b} (번호 {n})',
+      'es': '{b} (n.º {n})',
+      'fr': '{b} (n° {n})',
+      'de': '{b} (Nr. {n})',
+      'pt': '{b} (n.º {n})',
+      'ru': '{b} (№ {n})',
+    },
+    'mouse.detectedKey': {
+      'ja': 'そのボタンは、 キーボードの「{k}」 として届いています。 Windows はマウスのボタンとして扱っていないので、 ここではなく普通のキーボードのショートカットとして設定してください。',
+      'en': 'That button arrives as the keyboard key “{k}”. Windows does not treat it as a mouse button, so assign it in the normal keyboard shortcuts instead.',
+      'zh': '该按键是以键盘按键「{k}」的形式送达的。Windows 并未将其视为鼠标按键，请改在普通键盘快捷键中设置。',
+      'ko': '그 버튼은 키보드 키 「{k}」로 전달됩니다. Windows가 마우스 버튼으로 다루지 않으므로 일반 키보드 단축키에서 지정하세요.',
+      'es': 'Ese botón llega como la tecla «{k}». Windows no lo trata como botón del ratón; asígnalo en los atajos de teclado normales.',
+      'fr': 'Ce bouton arrive comme la touche « {k} ». Windows ne le voit pas comme un bouton de souris ; attribuez-le dans les raccourcis clavier.',
+      'de': 'Diese Taste kommt als Tastaturtaste „{k}“ an. Windows behandelt sie nicht als Maustaste – belegen Sie sie in den normalen Tastenkürzeln.',
+      'pt': 'Esse botão chega como a tecla «{k}». O Windows não o trata como botão do rato; atribua-o nos atalhos de teclado normais.',
+      'ru': 'Эта кнопка приходит как клавиша «{k}». Windows не считает её кнопкой мыши — назначьте её в обычных сочетаниях клавиш.',
+    },
+    'mouse.detectNote': {
+      'ja': 'Windows がマウスのボタンとして扱えるのは 5 つまでです (左/ 右/ ホイール押し込み/ 横 2 つ)。 6 個目から先のボタンは、 マウス付属のソフトでキーボードのキーに割り当ててから使ってください。',
+      'en': 'Windows understands at most five mouse buttons (left, right, wheel, and two side buttons). For a sixth button and beyond, map it to a keyboard key in the mouse vendor’s software first.',
+      'zh': 'Windows 最多只识别 5 个鼠标按键（左、右、滚轮、两个侧键）。第 6 个及以后的按键，请先在鼠标厂商软件中映射为键盘按键。',
+      'ko': 'Windows는 마우스 버튼을 최대 5개까지만 인식합니다 (좌/우/휠/측면 2개). 6번째 이후 버튼은 마우스 제조사 소프트웨어에서 키보드 키로 지정한 뒤 사용하세요.',
+      'es': 'Windows solo reconoce cinco botones del ratón (izquierdo, derecho, rueda y dos laterales). A partir del sexto, asígnalo antes a una tecla en el software del fabricante.',
+      'fr': 'Windows ne reconnaît que cinq boutons de souris (gauche, droit, molette et deux latéraux). À partir du sixième, attribuez-le d’abord à une touche dans le logiciel du fabricant.',
+      'de': 'Windows kennt höchstens fünf Maustasten (links, rechts, Rad und zwei Seitentasten). Ab der sechsten Taste belegen Sie sie zuerst im Hersteller-Programm mit einer Tastaturtaste.',
+      'pt': 'O Windows só reconhece cinco botões do rato (esquerdo, direito, roda e dois laterais). A partir do sexto, atribua-o primeiro a uma tecla no software do fabricante.',
+      'ru': 'Windows распознаёт не более пяти кнопок мыши (левая, правая, колесо и две боковые). Шестую и далее сначала назначьте на клавишу в программе производителя.',
+    },
+    'mouse.detectUse': {
+      'ja': 'このボタンに割り当てる',
+      'en': 'Assign this button',
+      'zh': '分配到该按键',
+      'ko': '이 버튼에 지정',
+      'es': 'Asignar este botón',
+      'fr': 'Attribuer ce bouton',
+      'de': 'Diese Taste belegen',
+      'pt': 'Atribuir este botão',
+      'ru': 'Назначить эту кнопку',
+    },
+    'mouse.detectNeedsOn': {
+      'ja': '先にスイッチを入れてください',
+      'en': 'turn the switch on first',
+      'zh': '请先打开开关',
+      'ko': '먼저 스위치를 켜세요',
+      'es': 'activa primero el interruptor',
+      'fr': 'activez d’abord l’interrupteur',
+      'de': 'zuerst einschalten',
+      'pt': 'ative primeiro o interruptor',
+      'ru': 'сначала включите',
+    },
+    'mouse.boostFailed': {
+      'ja': '今の加速の曲線が読めなかったので、 伸ばすのはやめました (戻せなくなる為)。',
+      'en': 'Could not read the current acceleration curve, so nothing was changed (it could not be undone).',
+      'zh': '无法读取当前的加速曲线，因此未做更改（否则无法还原）。',
+      'ko': '현재 가속 곡선을 읽지 못해 변경하지 않았습니다 (되돌릴 수 없기 때문).',
+      'es': 'No se pudo leer la curva de aceleracion actual, asi que no se cambio nada (no seria reversible).',
+      'fr': 'Impossible de lire la courbe d’acceleration actuelle ; rien n’a ete modifie (ce ne serait pas reversible).',
+      'de': 'Die aktuelle Beschleunigungskurve konnte nicht gelesen werden, daher wurde nichts geandert.',
+      'pt': 'Nao foi possivel ler a curva de aceleracao atual, por isso nada foi alterado.',
+      'ru': 'Не удалось прочитать текущую кривую ускорения, поэтому ничего не изменено.',
     },
     'mouse.unassigned': {
       'ja': '割り当てなし',
@@ -48928,6 +49116,116 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'PC-Einstellungen',
       'pt': 'Configurações do PC',
       'ru': 'Настройки ПК',
+    },
+    'mouse.wheelTest': {
+      'ja': 'ホイールを試す',
+      'en': 'Test the wheel',
+      'zh': '测试滚轮',
+      'ko': '휠 테스트',
+      'es': 'Probar la rueda',
+      'fr': 'Tester la molette',
+      'de': 'Rad testen',
+      'pt': 'Testar a roda',
+      'ru': 'Проверить колесо',
+    },
+    'mouse.wheelTestHint': {
+      'ja': 'この枠の上でホイールを 1 段回してください。',
+      'en': 'Turn the wheel one notch over this box.',
+      'zh': '请在此框上滚动滚轮一格。',
+      'ko': '이 상자 위에서 휠을 한 칸 돌리세요.',
+      'es': 'Gira la rueda una muesca sobre este recuadro.',
+      'fr': 'Tournez la molette d’un cran au-dessus de ce cadre.',
+      'de': 'Drehen Sie das Rad über diesem Feld um eine Raste.',
+      'pt': 'Rode a roda um entalhe sobre esta caixa.',
+      'ru': 'Прокрутите колесо на один щелчок над этой рамкой.',
+    },
+    'mouse.wheelTestResult': {
+      'ja': '1 段で {app} 行ぶん動きました (Windows の今の設定は {os} 行)。',
+      'en': 'One notch moved {app} lines (Windows is currently set to {os}).',
+      'zh': '滚动一格移动了 {app} 行（Windows 当前设置为 {os} 行）。',
+      'ko': '한 칸에 {app}줄 이동했습니다 (Windows 현재 설정 {os}줄).',
+      'es': 'Una muesca movió {app} líneas (Windows está en {os}).',
+      'fr': 'Un cran a déplacé {app} lignes (Windows est réglé sur {os}).',
+      'de': 'Eine Raste bewegte {app} Zeilen (Windows steht auf {os}).',
+      'pt': 'Um entalhe moveu {app} linhas (o Windows está em {os}).',
+      'ru': 'Один щелчок сместил {app} строк (в Windows сейчас {os}).',
+    },
+    'mouse.wheelTestRestart': {
+      'ja': 'このアプリは起動した時の行数のまま動きます。 新しい行数はブラウザなど他のアプリではすぐ効いています。 このアプリにも効かせるには入れ直してください。',
+      'en': 'This app keeps the value it read at launch. Other apps (browsers etc.) already use the new value. Restart this app to apply it here too.',
+      'zh': '本应用沿用启动时读取的值。其他应用（如浏览器）已使用新值。重启本应用即可生效。',
+      'ko': '이 앱은 실행할 때 읽은 값을 계속 사용합니다. 브라우저 등 다른 앱에는 이미 적용되어 있습니다. 이 앱에도 적용하려면 다시 시작하세요.',
+      'es': 'Esta app conserva el valor leído al arrancar. Otras apps ya usan el nuevo valor. Reiníciala para aplicarlo aquí.',
+      'fr': 'Cette application garde la valeur lue au démarrage. Les autres applications utilisent déjà la nouvelle. Redémarrez-la pour l’appliquer ici.',
+      'de': 'Diese App behält den beim Start gelesenen Wert. Andere Apps nutzen den neuen bereits. Starten Sie sie neu.',
+      'pt': 'Esta aplicação mantém o valor lido no arranque. Outras apps já usam o novo. Reinicie-a para aplicar aqui.',
+      'ru': 'Приложение использует значение, прочитанное при запуске. В других программах новое значение уже действует. Перезапустите приложение.',
+    },
+    'mouse.dblTest': {
+      'ja': 'ダブルクリックを試す',
+      'en': 'Test double-click',
+      'zh': '测试双击',
+      'ko': '두 번 클릭 테스트',
+      'es': 'Probar el doble clic',
+      'fr': 'Tester le double-clic',
+      'de': 'Doppelklick testen',
+      'pt': 'Testar o duplo clique',
+      'ru': 'Проверить двойной щелчок',
+    },
+    'mouse.dblTestIdle': {
+      'ja': 'ここを 2 回続けて押してください',
+      'en': 'Click here twice in a row',
+      'zh': '请连续点击两次',
+      'ko': '여기를 두 번 연달아 누르세요',
+      'es': 'Haz clic aquí dos veces seguidas',
+      'fr': 'Cliquez ici deux fois de suite',
+      'de': 'Klicken Sie hier zweimal hintereinander',
+      'pt': 'Clique aqui duas vezes seguidas',
+      'ru': 'Щёлкните здесь дважды подряд',
+    },
+    'mouse.dblTestOnce': {
+      'ja': 'もう 1 回',
+      'en': 'Once more',
+      'zh': '再点一次',
+      'ko': '한 번 더',
+      'es': 'Una vez más',
+      'fr': 'Encore une fois',
+      'de': 'Noch einmal',
+      'pt': 'Mais uma vez',
+      'ru': 'Ещё раз',
+    },
+    'mouse.dblTestOk': {
+      'ja': '{n}ms — ダブルクリックになりました',
+      'en': '{n}ms — counted as a double-click',
+      'zh': '{n} 毫秒 — 已识别为双击',
+      'ko': '{n}ms — 두 번 클릭으로 인식되었습니다',
+      'es': '{n} ms — contado como doble clic',
+      'fr': '{n} ms — compté comme un double-clic',
+      'de': '{n} ms — als Doppelklick gewertet',
+      'pt': '{n} ms — contado como duplo clique',
+      'ru': '{n} мс — засчитано как двойной щелчок',
+    },
+    'mouse.dblTestNg': {
+      'ja': '{n}ms — 間が空きすぎて別々の 1 回ずつになりました',
+      'en': '{n}ms — too slow, counted as two separate clicks',
+      'zh': '{n} 毫秒 — 间隔太长，算作两次单击',
+      'ko': '{n}ms — 간격이 너무 길어 각각의 클릭으로 처리되었습니다',
+      'es': '{n} ms — demasiado lento, contado como dos clics',
+      'fr': '{n} ms — trop lent, compté comme deux clics',
+      'de': '{n} ms — zu langsam, als zwei Klicks gewertet',
+      'pt': '{n} ms — demasiado lento, contado como dois cliques',
+      'ru': '{n} мс — слишком медленно, засчитано как два щелчка',
+    },
+    'mouse.dblTestNote': {
+      'ja': '今の設定では {n}ms 以内なら 1 回のダブルクリックです。',
+      'en': 'With the current setting, {n}ms or less counts as one double-click.',
+      'zh': '按当前设置，{n} 毫秒以内算作一次双击。',
+      'ko': '현재 설정에서는 {n}ms 이내면 두 번 클릭입니다.',
+      'es': 'Con el ajuste actual, {n} ms o menos cuenta como doble clic.',
+      'fr': 'Avec le réglage actuel, {n} ms ou moins compte comme un double-clic.',
+      'de': 'Mit der aktuellen Einstellung gilt {n} ms oder weniger als Doppelklick.',
+      'pt': 'Com a definição atual, {n} ms ou menos conta como duplo clique.',
+      'ru': 'При текущей настройке {n} мс и меньше — двойной щелчок.',
     },
     'cursorLook.sizeDefault': {
       'ja': '既定',
@@ -90938,16 +91236,20 @@ $cleanQ
   // ファイルの組み立ては画面側の部品 (_OfficeFileTemplate) が持っているので、
   //   チャットを開く時に作る係を預かり、 ここから呼ぶ。
 
-  Future<String?> Function(Map<String, dynamic> spec)? _mcpFileBuilder;
+  Future<Map<String, dynamic>?> Function(Map<String, dynamic> spec)?
+      _mcpFileBuilder;
 
   void registerMcpFileBuilder(
-      Future<String?> Function(Map<String, dynamic> spec) builder) {
+      Future<Map<String, dynamic>?> Function(Map<String, dynamic> spec)
+          builder) {
     _mcpFileBuilder = builder;
   }
 
-  /// 文書ファイルを作って保存し、 出来たファイルのパスを返す。
+  /// 文書ファイルを作って保存し、 {path, fileName, replaced, nodeId} を返す。
   /// 画面側が用意されていなければ null。
-  Future<String?> mcpCreateFile(Map<String, dynamic> spec) async {
+  /// replaced が true なら、 新しく作らずに同じ名前のファイルの中身を
+  /// 入れ替えた (= ユーザー報告: 直してと頼んだのに 2 つ目が出来ていた)。
+  Future<Map<String, dynamic>?> mcpCreateFile(Map<String, dynamic> spec) async {
     final builder = _mcpFileBuilder;
     if (builder == null) return null;
     return builder(spec);
@@ -90980,6 +91282,20 @@ $cleanQ
     }
     if (page == null) return null;
     final name = _baseName(filePath);
+    // ★ 同じファイルが既に貼ってあるなら 2 枚目を作らない (= ユーザー報告:
+    //   「さっき作ったファイルの中身を 100 行にして」 と頼んだら、 中身は
+    //   入れ替わったのに新しいタイルがもう 1 枚増えていた)。
+    //   中身はもう書き換わっているので、 元のノードをそのまま使い回す。
+    for (final nd in page.nodes.values) {
+      if ((nd.attachmentPath ?? '') != filePath) continue;
+      if (title != null && title.trim().isNotEmpty) nd.title = title;
+      nd.contentType = NodeContentType.attachment;
+      nd.attachmentName = name;
+      _saveToStorage();
+      notifyListeners();
+      _requestMcpFocus(page.id);
+      return nd.id;
+    }
     // ★ 基準位置そのままだと、 既に物が置いてあるページでは中心のノードに
     //   重なる (= 動作確認で判明)。 既にある物の下へずらして置く。
     //   ページ全体は動かさない (利用者が組んだ配置を崩さないため)。
@@ -97232,6 +97548,12 @@ $cleanQ
     }
     return null;
   }
+
+  /// どのページに居ても要素を 1 つ引く (= 画面側から使う口)。
+  /// `nodes[id]` は今開いているページしか見ないので、 裏のページに貼った
+  /// 添付を触る時はこちらを使う (= ユーザー報告: 別のページに貼った
+  /// ファイルを直してもサムネイルが更新されない)。
+  MindMapNode? nodeAnywhere(String id) => _findPageAndNodeById(id)?.$2;
 
   void updateNodeYoutube(String id, String url) {
     // 全ページ走査: バルクダウンロード中にユーザーが別ページに移動しても

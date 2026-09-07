@@ -59,6 +59,7 @@ import '../widgets/google_search_dialog.dart';
 import '../widgets/paywall_hook.dart';
 import '../widgets/read_aloud.dart';
 import '../widgets/pdf_draw_layer.dart';
+import '../widgets/doc_preview.dart';
 // モバイル WebView: flutter_inappwebview (MIUI/HyperOS 対応)
 // webview_flutter は MIUI/HyperOS で Pigeon channel-error を起こして
 // loadRequest が失敗したため、全てのモバイル WebView 処理を iaw. に統一。
@@ -3410,6 +3411,11 @@ class _MindMapScreenState extends State<MindMapScreen>
     required String fileName,
   }) {
     final isDark = ctx.watch<MindMapProvider>().isDarkMode;
+    // ★ 分割ペインの中で保存した時も、 タイルに出している「中身のさわり」
+    //   (DocPreview) の控えを捨てる (= ユーザー報告: AI に 100 行書かせても
+    //   サムネイルが更新されない)。 ペインは要素 id を持たないので、
+    //   パスを渡して知らせる。
+    void notifySaved() => _notifyAttachmentEdited(null, filePath: path);
     switch (mode) {
       case 'pptx':
         return _PptxViewerDialog(
@@ -3422,6 +3428,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           filePath: path,
           fileName: fileName,
           isDarkMode: isDark,
+          onSaved: notifySaved,
         );
       case 'txt':
         // ── テキスト系ファイル (= ユーザー要望: txt も画面分割上で
@@ -3432,6 +3439,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           fileName: fileName,
           isDarkMode: isDark,
           compactHost: true,
+          onSaved: notifySaved,
         );
       case 'md':
         // ── Markdown (= ユーザー報告: 分割した画面に埋め込んで開くと
@@ -3442,6 +3450,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           filePath: path,
           fileName: fileName,
           isDarkMode: isDark,
+          onSaved: notifySaved,
         );
     }
   }
@@ -62530,8 +62539,12 @@ class _MindMapScreenState extends State<MindMapScreen>
   }
 
   /// AI (MCP) から頼まれた文書ファイルを作って保存し、 ページに貼る。
-  /// 出来たファイルのパスを返す。 失敗したら null。
-  Future<String?> _buildMcpFile(Map<String, dynamic> spec) async {
+  /// 戻り値は {path, fileName, replaced, nodeId}。 失敗したら null。
+  ///
+  /// ★ 同じ名前のファイルが既にそのページに貼ってあれば、 新しく作らずに
+  ///   そのファイルの中身を入れ替える (= ユーザー報告:「さっき作った
+  ///   ファイルの中身を 100 行にして」 で 2 つ目が出来てしまった)。
+  Future<Map<String, dynamic>?> _buildMcpFile(Map<String, dynamic> spec) async {
     try {
       final provider = context.read<MindMapProvider>();
       final kind = '${spec['kind'] ?? ''}'.toLowerCase();
@@ -62580,14 +62593,41 @@ class _MindMapScreenState extends State<MindMapScreen>
       final docs = await getApplicationDocumentsDirectory();
       final dir = Directory('${docs.path}/mcp_files');
       await dir.create(recursive: true);
+      // アプリ自身が作った物は、 読み返す時に許可の窓を出さない (= 毎回
+      //   聞かれると AI が中身を確かめられず、 新しく作り直してしまう)。
+      //   ※ この控えは起動している間だけ。
+      provider.mcpAllowReadDir(dir.path);
+      provider
+          .mcpAllowReadDir(dir.path.replaceAll('/', Platform.pathSeparator));
+      // ★ 書く場所は常にここ。 同じ名前で呼ばれれば同じ場所へ上書きになる
+      //   ので、 ファイルは増えない (増えていたのはタイルの方で、 そちらは
+      //   mcpAddFileNode が使い回すようにした)。
+      //   名前だけを頼りに他所のファイルを書き換えに行くのは**やらない**
+      //   (利用者が自分で貼った同名のファイルを壊しかねないため)。
       final file = File('${dir.path}/$name');
+      // 書く前に見ておく (書いた後だと必ず true になる)。
+      final replaced = await file.exists();
       await file.writeAsBytes(bytes, flush: true);
+      // ★ 同じ名前で書き直すとパスが変わらないので、 タイルに出している
+      //   「中身のさわり」 の控えが古いままになる (= ユーザー報告: AI に
+      //   100 行書かせてもギャラリーのサムネイルが更新されない)。
+      //   書いた直後に必ず捨てる。
+      DocPreview.invalidate(file.path);
+      FileImage(File(file.path)).evict();
 
-      // 作ったファイルはページに貼って、 そのまま開けるようにする。
+      // 作ったファイルはページに貼って、 そのまま開けるようにする
+      //   (同じパスのノードが既にあれば mcpAddFileNode が使い回すので、
+      //    タイルは増えない = ユーザー報告の「新規で新しいファイルが
+      //    作成されてしまった」 の本体)。
       final pageId = '${spec['pageId'] ?? ''}';
-      provider.mcpAddFileNode(pageId, file.path,
+      final nodeId = provider.mcpAddFileNode(pageId, file.path,
           title: title.isEmpty ? null : title);
-      return file.path;
+      return {
+        'path': file.path,
+        'fileName': name,
+        'replaced': replaced,
+        if (nodeId != null) 'nodeId': nodeId,
+      };
     } catch (e, st) {
       // 握りつぶすと「作れませんでした」 としか出ず原因が追えないので、
       //   理由をそのまま上へ返す (チャットに理由が出る)。
@@ -73484,8 +73524,10 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 「マウス設定」 タブの中身 (= ユーザー要望: PC設定を 2 タブに分ける)。
   ///
   /// マウスそのものの動き (速さ・加速・ホイール・ダブルクリック)、
-  /// ボタンへのキー割り当て、 見た目 (カーソル)、 そして画面をまたぐ時の
-  /// 動き (モニターの繋がり方) を、 ここに集めてある。
+  /// ボタンへのキー割り当て、 そして見た目 (カーソル)。
+  ///
+  /// モニターの繋がり方の図は**ディスプレイ設定タブ**へ置いてある
+  /// (= ユーザー要望「サブモニターはディスプレイ設定に含めるべきじゃない？」)。
   List<Widget> _mouseSettingsChildren({
     required MindMapProvider provider,
     required BuildContext ctx,
@@ -73521,123 +73563,14 @@ class _MindMapScreenState extends State<MindMapScreen>
               bodyOverride: provider.t('paywall.proRequiredCursorKeep'));
         },
       ),
-
-      // ── 画面をまたぐ時の動き (モニターの繋がり方) ──
-      _pcSectionLabel(provider.t('cursorWrap.section')),
-      // ★ アプリを開いている間の回り込みは無料 (= ユーザー要望)。
-      //   Pro 以上が要るのは「アプリを閉じていても効かせる」 (常駐) だけ
-      //   なので、 図はどのプランでも触れる。 案内はその下の常駐の
-      //   トグルにだけ出す。
-      // ★ 一度読んだら閉じられる (= ユーザー要望)。 閉じた事は prefs に
-      //   残すので、 次に開いた時はもう出ない。
-      if (!provider.canUseMonitorRoutingDaemon && !_monitorNoticeHidden)
-        Container(
-          margin: const EdgeInsets.only(bottom: 8),
-          decoration: BoxDecoration(
-            color: const Color(0xFF4FC3F7).withValues(alpha: 0.08),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(
-                color: const Color(0xFF4FC3F7).withValues(alpha: 0.3)),
-          ),
-          child: Row(children: [
-            Expanded(
-              child: InkWell(
-                borderRadius: BorderRadius.circular(10),
-                onTap: () {
-                  Navigator.of(sheetCtx).pop();
-                  _showPaywallDialog(provider,
-                      bodyOverride: provider.t('paywall.proRequiredMonitor'));
-                },
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(10, 10, 4, 10),
-                  child: Row(children: [
-                    const Icon(Icons.lock_outline_rounded,
-                        color: Color(0xFF4FC3F7), size: 16),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(provider.t('paywall.proRequiredMonitor'),
-                          style: const TextStyle(
-                              color: Color(0xFF4FC3F7),
-                              fontSize: 11,
-                              height: 1.4)),
-                    ),
-                    const Icon(Icons.chevron_right_rounded,
-                        color: Color(0xFF4FC3F7), size: 18),
-                  ]),
-                ),
-              ),
-            ),
-            IconButton(
-              tooltip: provider.t('btn.close'),
-              visualDensity: VisualDensity.compact,
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
-              icon: const Icon(Icons.close_rounded,
-                  size: 15, color: Color(0xFF4FC3F7)),
-              onPressed: () async {
-                setS(() => _monitorNoticeHidden = true);
-                try {
-                  final sp = await SharedPreferences.getInstance();
-                  await sp.setBool(_kMonitorNoticeHiddenKey, true);
-                } catch (_) {}
-              },
-            ),
-            const SizedBox(width: 2),
-          ]),
-        ),
-      _MonitorEdgeSettings(provider: provider),
-      // ── アプリを閉じていても効かせる (= ユーザー要望) ──
-      //    サインイン時に、 回り込みだけの小さな常駐を立ち上げる。
-      _settingsToggleTile(
-        icon: provider.cursorWrapDaemon
-            ? Icons.play_circle_fill_rounded
-            : Icons.play_circle_outline_rounded,
-        color: provider.cursorWrapDaemon
-            ? const Color(0xFF9CCC65)
-            : Colors.white54,
-        title: provider.t('cursorWrap.daemon'),
-        helpKey: 'cursorWrap.daemonHelp',
-        value: provider.cursorWrapDaemon && provider.canUseMonitorRoutingDaemon,
-        onChanged: (v) async {
-          // ★ 常駐だけが Pro 以上限定 (= ユーザー要望)。 足りない時は
-          //   加入の案内へ。 アプリを開いている間の回り込みは無料。
-          if (!provider.canUseMonitorRoutingDaemon) {
-            Navigator.of(sheetCtx).pop();
-            _showPaywallDialog(provider,
-                bodyOverride: provider.t('paywall.proRequiredMonitor'));
-            return;
-          }
-          await provider.setCursorWrapDaemon(v);
-          final ok = await _registerCursorWrapTask(v);
-          if (v && ok) {
-            // すぐ効くように、 今この場でも立ち上げておく。
-            await _startCursorWrapDaemon();
-          }
-          if (v && !ok) {
-            // 入れられなかった時は黙って ON にしない (= 次の起動から
-            //   効かないのに、 入ったように見えるのを防ぐ)。
-            await provider.setCursorWrapDaemon(false);
-            if (ctx.mounted) {
-              _appSnack(
-                ctx,
-                SnackBar(
-                  content: Text(provider.t('cursorWrap.daemonFailed')),
-                  backgroundColor: const Color(0xFFE53935),
-                ),
-              );
-            }
-          }
-          setS(() {});
-        },
-      ),
     ];
   }
 
   /// 「ディスプレイ設定」 タブの中身。
   ///
-  /// 画面そのものの話 (拡大率・壁紙・明るさ)、 スクリーンセーバー、
-  /// スリープと電源、 音声の出力先。
-  /// マウスまわりは隣のタブへ移した (= ユーザー要望「項目分けして」)。
+  /// モニターの繋がり方、 画面そのものの話 (拡大率・壁紙・明るさ)、
+  /// スクリーンセーバー、 スリープと電源、 音声の出力先。
+  /// マウスそのものの設定は隣のタブへ移した (= ユーザー要望「項目分けして」)。
   List<Widget> _displaySettingsChildren({
     required MindMapProvider provider,
     required BuildContext ctx,
@@ -73646,6 +73579,115 @@ class _MindMapScreenState extends State<MindMapScreen>
   }) {
     return [
       if (!kIsWeb && Platform.isWindows) ...[
+        // ── 画面をまたぐ時の動き (モニターの繋がり方) ──
+        _pcSectionLabel(provider.t('cursorWrap.section')),
+        // ★ アプリを開いている間の回り込みは無料 (= ユーザー要望)。
+        //   Pro 以上が要るのは「アプリを閉じていても効かせる」 (常駐) だけ
+        //   なので、 図はどのプランでも触れる。 案内はその下の常駐の
+        //   トグルにだけ出す。
+        // ★ 一度読んだら閉じられる (= ユーザー要望)。 閉じた事は prefs に
+        //   残すので、 次に開いた時はもう出ない。
+        if (!provider.canUseMonitorRoutingDaemon && !_monitorNoticeHidden)
+          Container(
+            margin: const EdgeInsets.only(bottom: 8),
+            decoration: BoxDecoration(
+              color: const Color(0xFF4FC3F7).withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                  color: const Color(0xFF4FC3F7).withValues(alpha: 0.3)),
+            ),
+            child: Row(children: [
+              Expanded(
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(10),
+                  onTap: () {
+                    Navigator.of(sheetCtx).pop();
+                    _showPaywallDialog(provider,
+                        bodyOverride: provider.t('paywall.proRequiredMonitor'));
+                  },
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(10, 10, 4, 10),
+                    child: Row(children: [
+                      const Icon(Icons.lock_outline_rounded,
+                          color: Color(0xFF4FC3F7), size: 16),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(provider.t('paywall.proRequiredMonitor'),
+                            style: const TextStyle(
+                                color: Color(0xFF4FC3F7),
+                                fontSize: 11,
+                                height: 1.4)),
+                      ),
+                      const Icon(Icons.chevron_right_rounded,
+                          color: Color(0xFF4FC3F7), size: 18),
+                    ]),
+                  ),
+                ),
+              ),
+              IconButton(
+                tooltip: provider.t('btn.close'),
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+                icon: const Icon(Icons.close_rounded,
+                    size: 15, color: Color(0xFF4FC3F7)),
+                onPressed: () async {
+                  setS(() => _monitorNoticeHidden = true);
+                  try {
+                    final sp = await SharedPreferences.getInstance();
+                    await sp.setBool(_kMonitorNoticeHiddenKey, true);
+                  } catch (_) {}
+                },
+              ),
+              const SizedBox(width: 2),
+            ]),
+          ),
+        _MonitorEdgeSettings(provider: provider),
+        // ── アプリを閉じていても効かせる (= ユーザー要望) ──
+        //    サインイン時に、 回り込みだけの小さな常駐を立ち上げる。
+        _settingsToggleTile(
+          icon: provider.cursorWrapDaemon
+              ? Icons.play_circle_fill_rounded
+              : Icons.play_circle_outline_rounded,
+          color: provider.cursorWrapDaemon
+              ? const Color(0xFF9CCC65)
+              : Colors.white54,
+          title: provider.t('cursorWrap.daemon'),
+          helpKey: 'cursorWrap.daemonHelp',
+          value: provider.cursorWrapDaemon && provider.canUseMonitorRoutingDaemon,
+          onChanged: (v) async {
+            // ★ 常駐だけが Pro 以上限定 (= ユーザー要望)。 足りない時は
+            //   加入の案内へ。 アプリを開いている間の回り込みは無料。
+            if (!provider.canUseMonitorRoutingDaemon) {
+              Navigator.of(sheetCtx).pop();
+              _showPaywallDialog(provider,
+                  bodyOverride: provider.t('paywall.proRequiredMonitor'));
+              return;
+            }
+            await provider.setCursorWrapDaemon(v);
+            final ok = await _registerCursorWrapTask(v);
+            if (v && ok) {
+              // すぐ効くように、 今この場でも立ち上げておく。
+              await _startCursorWrapDaemon();
+            }
+            if (v && !ok) {
+              // 入れられなかった時は黙って ON にしない (= 次の起動から
+              //   効かないのに、 入ったように見えるのを防ぐ)。
+              await provider.setCursorWrapDaemon(false);
+              if (ctx.mounted) {
+                _appSnack(
+                  ctx,
+                  SnackBar(
+                    content: Text(provider.t('cursorWrap.daemonFailed')),
+                    backgroundColor: const Color(0xFFE53935),
+                  ),
+                );
+              }
+            }
+            setS(() {});
+          },
+        ),
+
         // ── 画面の拡大率と壁紙・明るさ ──
         const SizedBox(height: 6),
         _MonitorDisplaySettings(provider: provider),
@@ -80123,6 +80165,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       final destPath = '${attachDir.path}/$name';
       try {
         await File(path).copy(destPath);
+        // 同じ名前のファイルを貼り直した時は中身だけが変わるので、
+        //   タイルの控えを捨てる (= サムネイルが前のファイルのまま)。
+        DocPreview.invalidate(destPath);
+        FileImage(File(destPath)).evict();
       } catch (_) {
         continue;
       }
@@ -82049,6 +82095,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
     final destPath = '${attachDir.path}/${file.name}';
     await File(file.path!).copy(destPath);
+    // 同じ名前で貼り直すとパスが変わらないので控えを捨てる。
+    DocPreview.invalidate(destPath);
+    FileImage(File(destPath)).evict();
 
     // 新しいノードを生成して添付
     final s = View.of(ctx).physicalSize / View.of(ctx).devicePixelRatio;
@@ -83020,25 +83069,54 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
   }
 
-  void _notifyAttachmentEdited(String? nodeId) {
-    if (nodeId == null) return;
+  /// 添付ファイルの中身が書き換わった時に呼ぶ。
+  /// [filePath] を渡すと、 ノードが引けない時 (「アプリで開く」 で開いた
+  /// ファイルなど) でも、 そのパスの控えだけは捨てられる。
+  void _notifyAttachmentEdited(String? nodeId, {String? filePath}) {
     final provider = context.read<MindMapProvider>();
-    final node = provider.nodes[nodeId];
-    if (node == null) return;
-    node.attachmentStorageUrl = null;
-    // ★ 編集後、同じパスのファイルが Flutter の imageCache に旧画像として
-    //   残り、マップ上のサムネイルが更新されない。明示的に破棄して
-    //   再デコードを促す (ユーザー要望: 編集がマップに即反映されない問題)。
-    final path = node.attachmentPath;
-    if (path != null && path.isNotEmpty && !path.startsWith('http')) {
+    // ★ 今開いているページだけでなく全ページから引く (= 分割ペインや
+    //   ギャラリーから裏のページの添付を直した時にも効くように)。
+    final node = nodeId == null ? null : provider.nodeAnywhere(nodeId);
+    final String? raw = filePath ?? node?.attachmentPath;
+    final String path =
+        (raw != null && raw.isNotEmpty && !raw.startsWith('http')) ? raw : '';
+    // ★ 捨てる物が何も無い時は、 今までどおり何もしない (= 元の
+    //   `if (nodeId == null) return;` の代わり)。 これが無いと、 要素に
+    //   紐づかないファイルを保存するたび絵の控えを丸ごと捨てて、
+    //   マップ中の絵を全部読み直す事になる。
+    if (path.isEmpty && node == null) return;
+    if (path.isNotEmpty) {
+      // ★ タイルに出している「中身のさわり」 (DocPreview) はパスだけを鍵に
+      //   控えてある。 中身を書き換えてもパスは変わらないので、 ここで
+      //   捨てないと古い文面が出続ける (= ユーザー報告: AI に 100 行
+      //   書かせてもサムネイルが更新されない)。
+      DocPreview.invalidate(path);
+      // ★ 編集後、同じパスのファイルが Flutter の imageCache に旧画像として
+      //   残り、マップ上のサムネイルが更新されない。明示的に破棄して
+      //   再デコードを促す (ユーザー要望: 編集がマップに即反映されない問題)。
       FileImage(File(path)).evict();
     }
     PaintingBinding.instance.imageCache.clear();
     PaintingBinding.instance.imageCache.clearLiveImages();
+    if (node == null) {
+      // ★ 要素が引けない時 (分割ペインで開いた等) は、 同じファイルを貼って
+      //   いる要素を全ページから探して同じ後始末をする (雲へ上げ直す印 +
+      //   1 枚目の絵の作り直し)。
+      for (final page in provider.pages) {
+        for (final n in page.nodes.values) {
+          if (!isSameFilePath(n.attachmentPath ?? '', path)) continue;
+          n.attachmentStorageUrl = null;
+          _generateEmbedAttachmentThumb(provider, n.id, path);
+        }
+      }
+      provider.notifyListeners();
+      return;
+    }
+    node.attachmentStorageUrl = null;
     provider.notifyListeners();
     // ── ノードのサムネイル (1 枚目の絵) も作り直す (= ユーザー報告:
     //    PDF に手書きしてもサムネイルが古いまま)。 ──
-    if (path != null && path.isNotEmpty && !path.startsWith('http')) {
+    if (path.isNotEmpty && nodeId != null) {
       _generateEmbedAttachmentThumb(provider, nodeId, path);
     }
     // 自動同期 ON の時、_uploadPageAttachments が
@@ -83079,6 +83157,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
     final destPath = '${attachDir.path}/${file.name}';
     await File(file.path!).copy(destPath);
+    // 同じ名前で貼り直すとパスが変わらないので控えを捨てる。
+    DocPreview.invalidate(destPath);
+    FileImage(File(destPath)).evict();
 
     final ext = file.name.split('.').last.toLowerCase();
     final isVideo = ext == 'mp4' || ext == 'mov' || ext == 'm4v';
@@ -99566,6 +99647,32 @@ Widget _pcSlider({
   ]);
 }
 
+/// 「試す」 欄の枠 (= ユーザー要望: 設定が効いているか確かめたい)。
+Widget _pcTestBox(String title, Widget child) {
+  return Container(
+    margin: const EdgeInsets.fromLTRB(132, 2, 0, 8),
+    padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+    decoration: BoxDecoration(
+      color: Colors.white.withValues(alpha: 0.03),
+      borderRadius: BorderRadius.circular(8),
+      border: Border.all(color: Colors.white10),
+    ),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        const Icon(Icons.science_outlined, size: 12, color: Colors.white38),
+        const SizedBox(width: 5),
+        Text(title,
+            style: const TextStyle(
+                color: Colors.white38,
+                fontSize: 10,
+                fontWeight: FontWeight.w700)),
+      ]),
+      const SizedBox(height: 6),
+      child,
+    ]),
+  );
+}
+
 /// 小さなトグル 1 行。
 Widget _pcToggle({
   required String label,
@@ -99627,6 +99734,218 @@ Widget _pcDropdown<T>({
 // ── マウスそのものの動き ───────────────────────────────────────────────
 
 /// ポインターの速さ / 加速 / ホイール / ダブルクリックの速さ。
+/// ホイールを 1 段回した時に、 実際にどれだけ動くかを試す欄。
+///
+/// ★ なぜ「ただ巻物を置くだけ」 では駄目か (実測して分かった事):
+///   Flutter の Windows 側は `SPI_GETWHEELSCROLLLINES` を**ちゃんと見て**
+///   いて、 1 段あたり `行数 x 100 / 3` の量を送ってくる
+///   (engine の flutter_window.cc `UpdateScrollOffsetMultiplier`)。
+///   ところが**窓を作る時に 1 回読むきり**で、 `WM_SETTINGCHANGE` で
+///   読み直す仕組みが無い。 つまり、 ここで行数を変えても**このアプリは
+///   入れ直すまで前の行数のまま**動く (ブラウザなど他のアプリにはすぐ効く)。
+///   だからこの欄では
+///     ・今 Windows に入っている値 (= すぐ他のアプリに効く値)
+///     ・このアプリが今使っている値 (= 送られてきた量から逆算した値)
+///   の**両方**を出す。 食い違っていたら、 その旨をはっきり書く。
+class _WheelTestBox extends StatefulWidget {
+  /// 今 Windows に入っている行数。
+  final int osLines;
+  const _WheelTestBox({super.key, required this.osLines});
+
+  @override
+  State<_WheelTestBox> createState() => _WheelTestBoxState();
+}
+
+class _WheelTestBoxState extends State<_WheelTestBox> {
+  final ScrollController _sc = ScrollController();
+
+  /// 最後の 1 段で送られてきた量 (画素)。 null = まだ回していない。
+  double? _lastDelta;
+
+  @override
+  void dispose() {
+    _sc.dispose();
+    super.dispose();
+  }
+
+  /// 送られてきた量から「何行ぶん」 かを逆算する。
+  ///
+  /// ★ 変換が 2 段あるので、 両方戻す (実物を読んで確かめた):
+  ///   1. Windows 側は 1 段につき 「行数 x 100 / 3」 を送る。 掛ける数は
+  ///      **整数**なので 1 行 = 33 のように切り捨てられる。
+  ///   2. Flutter はそれを **画面の拡大率で割ってから**配る。 150% の画面
+  ///      なら 1.5 で割られた後の値が届く。
+  ///   なので「拡大率を掛け戻してから 3/100」。 切り捨ての分は四捨五入で戻る。
+  int? _appLines(double dpr) {
+    final d = _lastDelta;
+    if (d == null || d == 0) return null;
+    final v = (d.abs() * dpr) * 3 / 100;
+    return v.round();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.read<MindMapProvider>();
+    final app = _appLines(View.of(context).devicePixelRatio);
+    // 「行」 の高さ。 1 行 = 20px で並べておくと、 何行進んだか目で分かる。
+    const rowH = 20.0;
+    final mismatch = app != null && app != widget.osLines;
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        Expanded(
+          child: Listener(
+            // ★ ここが肝。 Flutter の巻物に任せず、 送られてきた
+            //   PointerScrollEvent の量をそのまま読む。
+            onPointerSignal: (e) {
+              if (e is! PointerScrollEvent) return;
+              setState(() => _lastDelta = e.scrollDelta.dy);
+            },
+            child: Container(
+              height: rowH * 5,
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.25),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.white12),
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: ListView.builder(
+                controller: _sc,
+                itemExtent: rowH,
+                itemCount: 60,
+                padding: EdgeInsets.zero,
+                itemBuilder: (_, i) => Container(
+                  alignment: Alignment.centerLeft,
+                  padding: const EdgeInsets.only(left: 8),
+                  decoration: BoxDecoration(
+                    color: i.isEven
+                        ? Colors.white.withValues(alpha: 0.03)
+                        : Colors.transparent,
+                  ),
+                  child: Text('${i + 1}',
+                      style: const TextStyle(
+                          color: Colors.white38,
+                          fontSize: 11,
+                          fontFamily: 'monospace')),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ]),
+      const SizedBox(height: 4),
+      Text(
+        app == null
+            ? p.t('mouse.wheelTestHint')
+            : p
+                .t('mouse.wheelTestResult')
+                .replaceAll('{app}', '$app')
+                .replaceAll('{os}', '${widget.osLines}'),
+        style: TextStyle(
+            color: app == null ? Colors.white30 : Colors.white70,
+            fontSize: 10,
+            height: 1.4),
+      ),
+      if (mismatch)
+        Padding(
+          padding: const EdgeInsets.only(top: 2),
+          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Icon(Icons.info_outline_rounded,
+                size: 12, color: Color(0xFFFFB74D)),
+            const SizedBox(width: 4),
+            Expanded(
+              child: Text(p.t('mouse.wheelTestRestart'),
+                  style: const TextStyle(
+                      color: Color(0xFFFFB74D), fontSize: 10, height: 1.4)),
+            ),
+          ]),
+        ),
+    ]);
+  }
+}
+
+/// ダブルクリックの速さを試す欄。
+///
+/// 今 Windows に入っている間隔 ([thresholdMs]) と、 実際に押した 2 回の
+/// 間隔を比べて、 ダブルクリックと見なされたかどうかを出す。
+class _DoubleClickTestBox extends StatefulWidget {
+  final int thresholdMs;
+  const _DoubleClickTestBox({super.key, required this.thresholdMs});
+
+  @override
+  State<_DoubleClickTestBox> createState() => _DoubleClickTestBoxState();
+}
+
+class _DoubleClickTestBoxState extends State<_DoubleClickTestBox> {
+  /// 前に押した時刻。
+  Stopwatch? _sinceLast;
+
+  /// 直前に測れた間隔 (ミリ秒)。 null = まだ 2 回押していない。
+  int? _gapMs;
+
+  void _tap() {
+    final sw = _sinceLast;
+    if (sw == null || sw.elapsedMilliseconds > 3000) {
+      // 1 回目 (または間が空きすぎたので測り直し)。
+      setState(() {
+        _gapMs = null;
+        _sinceLast = Stopwatch()..start();
+      });
+      return;
+    }
+    setState(() {
+      _gapMs = sw.elapsedMilliseconds;
+      _sinceLast = null;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.read<MindMapProvider>();
+    final gap = _gapMs;
+    final ok = gap != null && gap <= widget.thresholdMs;
+    final color = gap == null
+        ? Colors.white24
+        : (ok ? const Color(0xFF9CCC65) : const Color(0xFFE57373));
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: _tap,
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(vertical: 14),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: color.withValues(alpha: 0.7)),
+          ),
+          alignment: Alignment.center,
+          child: Text(
+            gap == null
+                ? (_sinceLast == null
+                    ? p.t('mouse.dblTestIdle')
+                    : p.t('mouse.dblTestOnce'))
+                : (ok
+                    ? p.t('mouse.dblTestOk').replaceAll('{n}', '$gap')
+                    : p.t('mouse.dblTestNg').replaceAll('{n}', '$gap')),
+            style: TextStyle(
+                color: gap == null ? Colors.white54 : Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.w700),
+          ),
+        ),
+      ),
+      const SizedBox(height: 3),
+      Text(
+        p
+            .t('mouse.dblTestNote')
+            .replaceAll('{n}', '${widget.thresholdMs}'),
+        style: const TextStyle(
+            color: Colors.white30, fontSize: 10, height: 1.4),
+      ),
+    ]);
+  }
+}
+
 class _MouseTweakInline extends StatefulWidget {
   const _MouseTweakInline();
 
@@ -99643,6 +99962,13 @@ class _MouseTweakInlineState extends State<_MouseTweakInline> {
   double? _wheelDrag;
   double? _dblDrag;
 
+  /// 加速の曲線をどれだけ引き伸ばしているか (100 = 何もしていない)。
+  int _boost = 100;
+  double? _boostDrag;
+
+  /// この画面で曲線を触ったか。 触った時だけ「サインインし直して」 を出す。
+  bool _boostTouched = false;
+
   @override
   void initState() {
     super.initState();
@@ -99651,7 +99977,10 @@ class _MouseTweakInlineState extends State<_MouseTweakInline> {
 
   void _reload() {
     if (!PcSettings.isSupported) return;
-    setState(() => _st = PcSettings.readMouse());
+    setState(() {
+      _st = PcSettings.readMouse();
+      _boost = PcSettings.readPointerBoost();
+    });
   }
 
   @override
@@ -99662,6 +99991,10 @@ class _MouseTweakInlineState extends State<_MouseTweakInline> {
     final speed = _speedDrag ?? st.speed.toDouble();
     final wheel = _wheelDrag ?? st.wheelLines.clamp(1, 30).toDouble();
     final dbl = _dblDrag ?? st.doubleClickMs.clamp(100, 900).toDouble();
+    final boost = _boostDrag ?? _boost.toDouble();
+    // 「20 が上限」 だけだと納得しにくいので、 今が標準の何倍かを添える。
+    final speedNote = '${p.t('mouse.speedNote')}\n'
+        '${p.t('mouse.speedFactor').replaceAll('{x}', PcSettings.mouseSpeedFactorLabel(speed.round()))}';
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       _pcRow(
         p.t('mouse.speed'),
@@ -99678,7 +100011,7 @@ class _MouseTweakInlineState extends State<_MouseTweakInline> {
             _reload();
           },
         ),
-        note: p.t('mouse.speedNote'),
+        note: speedNote,
       ),
       _pcToggle(
         label: p.t('mouse.accel'),
@@ -99688,6 +100021,66 @@ class _MouseTweakInlineState extends State<_MouseTweakInline> {
           PcSettings.setMouseAcceleration(v);
           _reload();
         },
+      ),
+      // ── 20 でも足りない時 (= ユーザー要望「もっと早くできない?」) ──
+      // Windows の速さは 20 が上限 (標準の 3.5 倍) なので、 その先は
+      // 加速の曲線そのものを引き伸ばすしかない。 中身と注意点は
+      // lib/services/pc_settings.dart の [PcSettings.setPointerBoost]。
+      _pcRow(
+        p.t('mouse.boost'),
+        _pcSlider(
+          value: boost,
+          min: 100,
+          max: 300,
+          divisions: 20,
+          trailing: '${boost.round()}%',
+          onChanged: (v) => setState(() => _boostDrag = v),
+          onChangeEnd: (v) {
+            final pct = (v.round() ~/ 10) * 10;
+            setState(() {
+              _boostDrag = null;
+              _boostTouched = true;
+            });
+            final ok = PcSettings.setPointerBoost(pct);
+            // 曲線は「精度を高める」 が入っている時しか使われない。
+            // 伸ばしたのに何も起きない、 を防ぐ為ここで一緒に入れる。
+            // ※ 伸ばせなかった時は触らない (何も速くならないのに OS の
+            //   設定だけ変わってしまう為)。
+            if (ok && pct > 100 && !st.acceleration) {
+              PcSettings.setMouseAcceleration(true);
+            }
+            if (!ok && mounted) {
+              // 黙って何も起きないのが一番困る。
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                content: Text(p.t('mouse.boostFailed')),
+                backgroundColor: const Color(0xFFE53935),
+              ));
+            }
+            _reload();
+          },
+        ),
+        // ★ 既に伸ばしてある人にも案内を出す (= 前に 200% にしてサインイン
+        //   し直した後で開くと、 つまみは 200% なのに「サインインし直すまで
+        //   効かない / 切ればその場で戻せる」の一文が消えていた)。
+        note: (_boostTouched || _boost > 100)
+            ? '${p.t('mouse.boostNote')}\n${p.t('mouse.boostSignOut')}'
+            : p.t('mouse.boostNote'),
+      ),
+      Align(
+        alignment: Alignment.centerRight,
+        child: TextButton.icon(
+          onPressed: () {
+            setState(() {
+              _boostDrag = null;
+              _boostTouched = true;
+            });
+            PcSettings.resetPointerBoost();
+            _reload();
+          },
+          icon: const Icon(Icons.restart_alt_rounded, size: 16),
+          label: Text(p.t('mouse.boostReset')),
+          style: TextButton.styleFrom(foregroundColor: Colors.white60),
+        ),
       ),
       _pcRow(
         p.t('mouse.wheelLines'),
@@ -99705,6 +100098,11 @@ class _MouseTweakInlineState extends State<_MouseTweakInline> {
           },
         ),
       ),
+      // ── 試す欄 (= ユーザー要望: 設定されているのか確認できない) ──
+      _pcTestBox(
+        p.t('mouse.wheelTest'),
+        _WheelTestBox(key: ValueKey(st.wheelLines), osLines: st.wheelLines),
+      ),
       _pcRow(
         p.t('mouse.doubleClick'),
         _pcSlider(
@@ -99721,6 +100119,11 @@ class _MouseTweakInlineState extends State<_MouseTweakInline> {
           },
         ),
         note: p.t('mouse.doubleClickNote'),
+      ),
+      _pcTestBox(
+        p.t('mouse.dblTest'),
+        _DoubleClickTestBox(
+            key: ValueKey(st.doubleClickMs), thresholdMs: st.doubleClickMs),
       ),
     ]);
   }
@@ -99968,6 +100371,170 @@ Future<(int, int)?> _pickMouseKey(
   ).whenComplete(focus.dispose);
 }
 
+/// 「押して検出」。 割り当てたいマウスのボタンを実際に押してもらい、
+/// Windows がどのボタンとして届けたかを見せる窓。 戻り値はボタンの番号
+/// ([MouseButtonId] のどれか)。 取り消しなら null。
+///
+/// ★ 決め打ちの一覧にしていない理由 ── ボタンの数はマウスによって違う。
+///   ただし Windows がマウスのボタンとして扱えるのは 5 つまでで、 6 個目
+///   から先は OS に届く前に捨てられる。 そういうボタンはマウス付属のソフトで
+///   「キーボードのキー」 になっている事が多いので、 キーが押された時はその
+///   事を伝える (押しても何も起きないのが一番困る)。
+Future<int?> _detectMouseButton(BuildContext ctx, MindMapProvider p) async {
+  final focus = FocusNode(debugLabel: 'mouseButtonDetect');
+  int? found;
+  String? keyHint;
+  StateSetter? refresh;
+
+  await p.startMouseButtonDetect((btn) {
+    if (found != null) return; // 最初の 1 つで決める
+    found = btn;
+    try {
+      refresh?.call(() {});
+    } catch (_) {}
+  });
+  // 立ち上がったか少し待って確かめる。
+  await Future<void>.delayed(const Duration(milliseconds: 400));
+  final hookFailed = MouseRemap.instance.failed;
+  if (!ctx.mounted) {
+    await p.stopMouseButtonDetect();
+    focus.dispose();
+    return null;
+  }
+
+  String nameOf(int id) {
+    switch (id) {
+      case MouseButtonId.middle:
+        return p.t('mouse.btnMiddle');
+      case MouseButtonId.back:
+        return p.t('mouse.btnBack');
+      case MouseButtonId.forward:
+        return p.t('mouse.btnForward');
+      case MouseButtonId.tiltLeft:
+        return p.t('mouse.btnTiltLeft');
+      case MouseButtonId.tiltRight:
+        return p.t('mouse.btnTiltRight');
+      default:
+        return p.t('mouse.btnOther').replaceAll('{n}', '$id');
+    }
+  }
+
+  final picked = await showDialog<int>(
+    context: ctx,
+    // 検出中は横ボタンなども素通りするので、 うっかり閉じないようにする。
+    barrierDismissible: false,
+    builder: (dctx) => StatefulBuilder(builder: (dctx, setEd) {
+      refresh = setEd;
+      final f = found;
+      final k = keyHint;
+      return AlertDialog(
+        backgroundColor: const Color(0xFF2A2A3E),
+        title: Row(children: [
+          const Icon(Icons.touch_app_rounded,
+              color: Color(0xFF4FC3F7), size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(p.t('mouse.detectStart'),
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold)),
+          ),
+        ]),
+        content: SizedBox(
+          width: 300,
+          child: KeyboardListener(
+            focusNode: focus,
+            autofocus: true,
+            onKeyEvent: (event) {
+              if (event is! KeyDownEvent) return;
+              final lk = event.logicalKey;
+              // 修飾キー単体はボタンではないので見ない。
+              if (lk == LogicalKeyboardKey.controlLeft ||
+                  lk == LogicalKeyboardKey.controlRight ||
+                  lk == LogicalKeyboardKey.shiftLeft ||
+                  lk == LogicalKeyboardKey.shiftRight ||
+                  lk == LogicalKeyboardKey.altLeft ||
+                  lk == LogicalKeyboardKey.altRight ||
+                  lk == LogicalKeyboardKey.metaLeft ||
+                  lk == LogicalKeyboardKey.metaRight) {
+                return;
+              }
+              final v = _vkFromLogicalKey(lk);
+              setEd(() => keyHint = v > 0 ? _vkLabel(v) : lk.keyLabel);
+            },
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Container(
+                width: double.infinity,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.07),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                      color: (f != null
+                              ? const Color(0xFF4FC3F7)
+                              : Colors.white38)
+                          .withValues(alpha: 0.6),
+                      width: 1.5),
+                ),
+                alignment: Alignment.center,
+                child: Text(
+                  hookFailed
+                      ? p.t('mouse.hookFailed')
+                      : (f != null
+                          ? p
+                              .t('mouse.detected')
+                              .replaceAll('{n}', '$f')
+                              .replaceAll('{b}', nameOf(f))
+                          : p.t('mouse.detectHint')),
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: hookFailed
+                        ? const Color(0xFFEF9A9A)
+                        : (f != null ? Colors.white : Colors.white38),
+                    fontSize: f != null ? 15 : 12,
+                    fontWeight: f != null ? FontWeight.w700 : FontWeight.w400,
+                    height: 1.4,
+                  ),
+                ),
+              ),
+              if (k != null && f == null) ...[
+                const SizedBox(height: 10),
+                Text(p.t('mouse.detectedKey').replaceAll('{k}', k),
+                    style: const TextStyle(
+                        color: Color(0xFFFFCC80), fontSize: 11, height: 1.4)),
+              ],
+              const SizedBox(height: 10),
+              Text(p.t('mouse.detectNote'),
+                  style: const TextStyle(
+                      color: Colors.white30, fontSize: 10, height: 1.4)),
+            ]),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx),
+            child: Text(p.t('btn.cancel'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+          TextButton(
+            onPressed: f == null ? null : () => Navigator.pop(dctx, f),
+            child: Text(p.t('mouse.detectUse'),
+                style: TextStyle(
+                    color: f == null ? Colors.white24 : const Color(0xFF4FC3F7),
+                    fontWeight: FontWeight.w700)),
+          ),
+        ],
+      );
+    }),
+  );
+  refresh = null;
+  await p.stopMouseButtonDetect();
+  focus.dispose();
+  return picked;
+}
+
 /// マウスのボタンに割り当てたキーの一覧と、 効かせるかどうかのスイッチ。
 class _MouseButtonBindings extends StatefulWidget {
   final MindMapProvider provider;
@@ -99986,8 +100553,31 @@ class _MouseButtonBindingsState extends State<_MouseButtonBindings> {
         return p.t('mouse.btnMiddle');
       case MouseButtonId.back:
         return p.t('mouse.btnBack');
-      default:
+      case MouseButtonId.forward:
         return p.t('mouse.btnForward');
+      case MouseButtonId.tiltLeft:
+        return p.t('mouse.btnTiltLeft');
+      case MouseButtonId.tiltRight:
+        return p.t('mouse.btnTiltRight');
+      default:
+        return p.t('mouse.btnOther').replaceAll('{n}', '$id');
+    }
+  }
+
+  IconData _buttonIcon(int id) {
+    switch (id) {
+      case MouseButtonId.middle:
+        return Icons.mouse_rounded;
+      case MouseButtonId.back:
+        return Icons.arrow_back_rounded;
+      case MouseButtonId.forward:
+        return Icons.arrow_forward_rounded;
+      case MouseButtonId.tiltLeft:
+        return Icons.first_page_rounded;
+      case MouseButtonId.tiltRight:
+        return Icons.last_page_rounded;
+      default:
+        return Icons.radio_button_unchecked;
     }
   }
 
@@ -100014,7 +100604,45 @@ class _MouseButtonBindingsState extends State<_MouseButtonBindings> {
           }
         },
       ),
-      const SizedBox(height: 4),
+      const SizedBox(height: 2),
+      // ★ ボタンの数はマウスによって違う。 決め打ちの一覧だけでなく、
+      //   「押してもらって確かめる」 道も用意しておく。
+      Align(
+        alignment: Alignment.centerLeft,
+        child: TextButton.icon(
+          // ★ スイッチが切れている間は押せない。 検出も見張り (フック) を
+          //   立てるので、 「スイッチを入れた時だけ立ち上がる」 という
+          //   この機能の決まりを、 ここだけ破るわけにはいかない。
+          onPressed: !on
+              ? null
+              : () async {
+                  final id = await _detectMouseButton(context, p);
+                  if (id == null || !mounted) return;
+                  final r = await _pickMouseKey(context, p, _buttonName(id));
+                  if (r == null || !mounted) return;
+                  await p.setMouseKeyBinding(id, modifiers: r.$1, vk: r.$2);
+                  if (mounted) setState(() {});
+                },
+          icon: Icon(Icons.touch_app_rounded,
+              size: 15,
+              color: on ? const Color(0xFF4FC3F7) : Colors.white24),
+          label: Text(
+              on
+                  ? p.t('mouse.detectStart')
+                  : '${p.t('mouse.detectStart')} (${p.t('mouse.detectNeedsOn')})',
+              style: TextStyle(
+                  color: on ? const Color(0xFF4FC3F7) : Colors.white24,
+                  fontSize: 12)),
+          style: TextButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            minimumSize: const Size(0, 30),
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+        ),
+      ),
+      const SizedBox(height: 2),
+      // ※ 控えを読む所 (MouseKeyBinding.fromJson) が知らない番号を弾くので、
+      //   ここに出す行は必ず MouseButtonId.all と同じになる。
       for (final id in MouseButtonId.all)
         Builder(builder: (_) {
           MouseKeyBinding? bind;
@@ -100027,18 +100655,15 @@ class _MouseButtonBindingsState extends State<_MouseButtonBindings> {
           return Padding(
             padding: const EdgeInsets.symmetric(vertical: 3),
             child: Row(children: [
-              Icon(
-                  id == MouseButtonId.middle
-                      ? Icons.mouse_rounded
-                      : (id == MouseButtonId.back
-                          ? Icons.arrow_back_rounded
-                          : Icons.arrow_forward_rounded),
+              Icon(_buttonIcon(id),
                   size: 16,
                   color: bind == null ? Colors.white24 : const Color(0xFF4FC3F7)),
               const SizedBox(width: 8),
               SizedBox(
-                width: 110,
+                width: 132,
                 child: Text(_buttonName(id),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
                     style:
                         const TextStyle(color: Colors.white70, fontSize: 12)),
               ),
@@ -124573,6 +125198,13 @@ const String _kMdEmbeddedMapJs = r"""
       dragNode = null;
       dragging = true;
       box.classList.add('grabbing');
+      // ★ 図を掴んで動かす間、 ブラウザに「文字を選ぶ / 引きずって渡す」 を
+      //   始めさせない (= ユーザー報告: マーメイド記法の図をドラッグすると
+      //   ファイルをアップロードする画面になる)。 選ばれた文字は次のひと掴み
+      //   で OS のドラッグになり、 アプリ側の受け口が「ファイルが来た」 と
+      //   受け取って帯を出してしまう。 すぐ上の節点を掴む枝は既にこうして
+      //   いるので、 これで両方の枝が揃う。
+      ev.preventDefault();
     });
     window.addEventListener('mousemove', function (ev) {
       if (resizing) { resizeTo(ev.clientY); return; }
@@ -124999,6 +125631,40 @@ const String _kMdEmbeddedMapJs = r"""
     return lines.join('\n');
   }
 
+  /// 図の飾り (改行タグ・実体参照・囲みの引用符) を外して、 そのまま読める
+  /// 字にする (= ユーザー報告: 変換すると <br/> や &nbsp; が字のまま出る)。
+  /// [nl] に ' ' を渡すと、 1 行で描く所むけに改行を空白へ変える。
+  function mmText(raw, nl) {
+    var t = String(raw == null ? '' : raw);
+    t = t.replace(/<br\s*\/?>/gi, nl == null ? '\n' : nl);
+    // mermaid は # 記法でも実体を書ける (#quot; #35; など)。
+    t = t.replace(/&nbsp;|#nbsp;/gi, ' ')
+         .replace(/&quot;|#quot;/gi, '"')
+         .replace(/&apos;|#apos;/gi, "'")
+         .replace(/&lt;|#lt;/gi, '<')
+         .replace(/&gt;|#gt;/gi, '>')
+         .replace(/&#(\d+);|#(\d+);/g, function (s, a, b) {
+           var n = Number(a == null ? b : a);
+           // 制御文字は入れない (= 点検で発覚: `#7;` が題名の中に
+           //   ベル文字を埋め込み、 そのままページに保存されていた)。
+           return (n >= 32 && n < 0x10000) ? String.fromCharCode(n) : s;
+         })
+         // & は最後 (先に戻すと &amp;lt; が二重に開いてしまう)。
+         .replace(/&amp;|#amp;/gi, '&');
+    t = t.trim();
+    if (t.length > 1 &&
+        ((t.charAt(0) === '"' && t.charAt(t.length - 1) === '"') ||
+         (t.charAt(0) === "'" && t.charAt(t.length - 1) === "'"))) {
+      t = t.substring(1, t.length - 1).trim();
+    }
+    return t;
+  }
+
+  /// 1 行で描く所 (順序図の言葉・工程表の名前) 用。 改行は空白にまとめる。
+  function mmText1(raw) {
+    return mmText(raw, ' ').replace(/[ \t\r\n]+/g, ' ').trim();
+  }
+
   /// 「A[調査]」 の括弧から、 ブロックの形を出す (無ければ null)。
   function shapeOf(raw) {
     var t = String(raw == null ? '' : raw).trim();
@@ -125048,7 +125714,7 @@ const String _kMdEmbeddedMapJs = r"""
          (t.charAt(0) === "'" && t.charAt(t.length - 1) === "'"))) {
       t = t.substring(1, t.length - 1);
     }
-    return t.replace(/<br\s*\/?>/gi, '\n').trim();
+    return mmText(t, '\n');
   }
 
   /// mindmap 記法 (字下げで親子を表す) を読む。
@@ -125308,7 +125974,7 @@ const String _kMdEmbeddedMapJs = r"""
            (t.charAt(0) === "'" && t.charAt(t.length - 1) === "'"))) {
         t = t.substring(1, t.length - 1).trim();
       }
-      if (t) return t;
+      if (t) return mmText(t, ' ');
     }
     return '';
   }
@@ -125329,14 +125995,15 @@ const String _kMdEmbeddedMapJs = r"""
     for (var i = 0; i < lines.length; i++) {
       var L = lines[i];
       if (mmSkip(L) || /^\s*sequenceDiagram\b/i.test(L)) continue;
-      var pm = L.match(/^\s*(?:participant|actor)\s+(\S+)(?:\s+as\s+(.+))?\s*$/i);
-      if (pm) { bag.want(pm[1], (pm[2] || '').trim()); continue; }
+      var pm = L.match(
+        /^\s*(?:create\s+|destroy\s+)?(?:participant|actor)\s+(\S+)(?:\s+as\s+(.+))?\s*$/i);
+      if (pm) { bag.want(pm[1], mmText(pm[2] || '', '\n')); continue; }
       var am = L.match(arrowRe);
       if (am) {
         var a = bag.want(am[1]);
         var b = bag.want(am[3]);
         if (a && b) {
-          var say = String(am[4] || '').trim();
+          var say = mmText(am[4] || '', '\n');
           var key = a.id + '>' + b.id;
           if (pairAt[key] != null) {
             // ★ 二度目からは同じ線に書き足す (= 点検で判明: まとめないと
@@ -125358,7 +126025,7 @@ const String _kMdEmbeddedMapJs = r"""
       if (nm) {
         var who = String(nm[1]).split(',')[0].trim();
         var host = bag.want(who);
-        var note = bag.want('note' + i, String(nm[2] || '').trim() || 'メモ');
+        var note = bag.want('note' + i, mmText(nm[2] || '', '\n') || 'メモ');
         if (host && note) conns.push({ fromId: host.id, toId: note.id });
       }
     }
@@ -125381,7 +126048,7 @@ const String _kMdEmbeddedMapJs = r"""
       if (!m) m = L.match(/^\s*([^:\n"']+?)\s*:\s*([0-9.]+)\s*$/);
       if (!m) continue;
       var id = 'p' + (n++);
-      nodes.push({ id: id, title: m[1] + '  ' + m[2] });
+      nodes.push({ id: id, title: mmText(m[1], '\n') + '  ' + m[2] });
       conns.push({ fromId: 'p0', toId: id });
     }
     return nodes.length > 1
@@ -125407,7 +126074,7 @@ const String _kMdEmbeddedMapJs = r"""
         if (a && b) {
           conns.push({
             fromId: a.id, toId: b.id,
-            label: String(rm[4] || '').trim() || undefined,
+            label: mmText(rm[4] || '', '\n') || undefined,
             arrow: true
           });
         }
@@ -125427,7 +126094,9 @@ const String _kMdEmbeddedMapJs = r"""
       if (mmSkip(L) || /^\s*stateDiagram(?:-v2)?\b/i.test(L)) continue;
       if (/^\s*(?:state|note|end|direction)\b/i.test(L)) {
         var sm = L.match(/^\s*state\s+"([^"]*)"\s+as\s+(\S+)/i);
-        if (sm) bag.want(sm[2], sm[1]);
+        // 名前の側も飾りを外す (= 点検で発覚: `state "説明<br/>あり" as S1`
+        //   の <br/> が字のまま node の題名に残っていた)。
+        if (sm) bag.want(sm[2], mmText(sm[1], '\n'));
         continue;
       }
       var m = L.match(/^\s*(\[\*\]|\S+)\s*-->\s*(\[\*\]|\S+)\s*(?::\s*(.*))?$/);
@@ -125439,7 +126108,7 @@ const String _kMdEmbeddedMapJs = r"""
       if (a && b) {
         conns.push({
           fromId: a.id, toId: b.id,
-          label: String(m[3] || '').trim() || undefined,
+          label: mmText(m[3] || '', '\n') || undefined,
           arrow: true
         });
       }
@@ -125469,7 +126138,7 @@ const String _kMdEmbeddedMapJs = r"""
       if (a && b) {
         conns.push({
           fromId: a.id, toId: b.id,
-          label: String(m[4] || '').trim().replace(/^"|"$/g, '') || undefined
+          label: mmText(m[4] || '', '\n') || undefined
         });
       }
     }
@@ -125498,7 +126167,7 @@ const String _kMdEmbeddedMapJs = r"""
       var sm = L.match(/^\s*section\s+(.+?)\s*$/i);
       if (sm) {
         var sid = 'g' + (n++);
-        nodes.push({ id: sid, title: sm[1].trim() });
+        nodes.push({ id: sid, title: mmText(sm[1], '\n') });
         conns.push({ fromId: 'g0', toId: sid });
         cur = sid;
         continue;
@@ -125506,8 +126175,8 @@ const String _kMdEmbeddedMapJs = r"""
       // 「名前 : 中身」 は名前だけを見出しにする (日付や進捗は括弧で添える)。
       var body = L.trim();
       var parts = body.split(':');
-      var head = parts[0].trim();
-      var tail = parts.length > 1 ? parts.slice(1).join(':').trim() : '';
+      var head = mmText(parts[0], '\n');
+      var tail = parts.length > 1 ? mmText(parts.slice(1).join(':'), '\n') : '';
       if (!head) continue;
       var id = 'g' + (n++);
       nodes.push({
@@ -125539,7 +126208,7 @@ const String _kMdEmbeddedMapJs = r"""
       if (i === 0) continue;                       // 種類の行
       if (/^\s*title\b/i.test(raw)) continue;
       var indent = raw.length - raw.replace(/^\s*/, '').length;
-      var body = raw.trim().replace(/^[-*]\s*/, '');
+      var body = mmText(raw.trim().replace(/^[-*]\s*/, ''), '\n');
       if (!body) continue;
       var id = 'x' + (n++);
       nodes.push({ id: id, title: body });
@@ -125580,7 +126249,7 @@ const String _kMdEmbeddedMapJs = r"""
              (t.charAt(0) === "'" && t.charAt(t.length - 1) === "'"))) {
           t = t.substring(1, t.length - 1);
         }
-        return t;
+        return mmText(t, ' ');
       }
       return '';
     }
@@ -125595,7 +126264,7 @@ const String _kMdEmbeddedMapJs = r"""
             L.match(/^\s*'([^']*)'\s*:\s*([0-9.]+)\s*$/) ||
             L.match(/^\s*([^:\n"']+?)\s*:\s*([0-9.]+)\s*$/);
         if (!m) continue;
-        items.push({ label: m[1].trim(), value: parseFloat(m[2]) });
+        items.push({ label: mmText1(m[1]), value: parseFloat(m[2]) });
       }
       return items.length
         ? { type: 'pie', title: titleOf(), items: items }
@@ -125605,8 +126274,28 @@ const String _kMdEmbeddedMapJs = r"""
     // ── 順序図 (シーケンス図) ──
     if (/^sequencediagram\b/.test(head)) {
       var actors = [], msgs = [], persons = [];
+      // ★ 「participant H as 主催者」 の H → 主催者 の対応表
+      //   (= ユーザー報告: 変換すると H / FS / P と略号のまま出て雑になる)。
+      //   矢印の行は略号で書くので、 先に対応表を作ってから読む。
+      //   目印は '@' を付けて持つ (constructor などと衝突しないように)。
+      // `create participant X as Y` / `destroy ...` も同じ形で書ける
+      //   (mermaid 10.3 以降)。 頭の語を飲まないと別名のまま出る。
+      var partRe =
+        /^\s*(?:create\s+|destroy\s+)?(participant|actor)\s+(\S+)(?:\s+as\s+(.+))?\s*$/i;
+      var alias = {};
+      for (var ai = 0; ai < lines.length; ai++) {
+        var AL = lines[ai];
+        if (!AL.trim() || /^\s*%%/.test(AL)) continue;
+        var ad = AL.match(partRe);
+        if (!ad) continue;
+        var akey = String(ad[2] || '').trim();
+        var alab = mmText1(ad[3] == null ? '' : ad[3]) || mmText1(akey);
+        if (akey && alab) alias['@' + akey] = alab;
+      }
       function wantActor(n) {
-        var v = String(n || '').trim();
+        var raw = String(n == null ? '' : n).trim();
+        if (!raw) return '';
+        var v = alias['@' + raw] || mmText1(raw);
         if (!v) return '';
         if (actors.indexOf(v) < 0) actors.push(v);
         return v;
@@ -125617,10 +126306,11 @@ const String _kMdEmbeddedMapJs = r"""
         var SL = lines[si];
         if (!SL.trim() || /^\s*%%/.test(SL)) continue;
         if (/^\s*sequencediagram\b/i.test(SL)) continue;
-        var pm = SL.match(
-            /^\s*(participant|actor)\s+(\S+)(?:\s+as\s+(.+))?\s*$/i);
+        var pm = SL.match(partRe);
         if (pm) {
-          var nm = wantActor((pm[3] || pm[2]).trim());
+          // ★ 略号ではなく名前 (主催者) を登場人物にする。 矢印の略号も
+          //   同じ名前に直るので、 列が二重にならない。
+          var nm = wantActor(pm[2]);
           // actor と書かれた相手は「人」 として描く (= ユーザー要望)。
           if (nm && pm[1].toLowerCase() === 'actor' &&
               persons.indexOf(nm) < 0) {
@@ -125635,7 +126325,10 @@ const String _kMdEmbeddedMapJs = r"""
         if (!f || !t2) continue;
         msgs.push({
           from: f, to: t2,
-          text: String(am[4] || '').trim(),
+          // ★ <br/> や &nbsp; を字のまま出さない。 順序図の言葉は 1 行で
+          //   描く (node_widget.dart の _NodeSeqPainter が maxLines: 1)
+          //   ので、 改行は空白にまとめる。
+          text: mmText1(am[4] || ''),
           // 点線 (返事) は -- で始まる。
           dashed: /^-{2}/.test(am[2]) && am[2].indexOf('--') === 0 &&
                   /^--[->x)]/.test(am[2])
@@ -125686,10 +126379,10 @@ const String _kMdEmbeddedMapJs = r"""
           continue;
         }
         var sm = L.match(/^\s*section\s+(.+?)\s*$/i);
-        if (sm) { section = sm[1].trim(); continue; }
+        if (sm) { section = mmText1(sm[1]); continue; }
         var ci = L.indexOf(':');
         if (ci < 0) continue;
-        var label = L.slice(0, ci).trim();
+        var label = mmText1(L.slice(0, ci));
         if (!label) continue;
         var rest = L.slice(ci + 1).trim();
         var toks = rest.split(',');
@@ -127656,9 +128349,45 @@ String _markdownPreviewHtml(String md, bool dark,
         background:$accent;color:#fff;text-decoration:none;font-size:12.5px;
         box-shadow:0 2px 10px rgba(0,0,0,.35);}
   #mmdl:hover{opacity:.9;}
+  /* -- 図の上では、 ブラウザの「引きずって渡す」 を切る --
+     (= ユーザー報告: マーメイド記法の図をドラッグするとファイルを
+      アップロードする画面になる)
+     WebView の中で始まった drag はそのまま OS のドラッグになり、
+     アプリ側の DropTarget が「ファイルが来た」 と受け取ってしまう。 */
+  .mermaid, .mermaid-slot, .mmwrap, .mmap, .mmch, .map-slot,
+  .mermaid *, .mmwrap *, .mmap *, .mmch *, .map-slot *{
+    -webkit-user-drag:none;}
+  /* 図の上では文字を選ばせない。 選んだ文字はそのまま OS のドラッグの
+     持ち手になるので、 選べなければドラッグ自体が始まらない。
+     (掴んで動かす処理を持たない図表 = .mmch にはこれが唯一の守り) */
+  .mmap-box, .mmch-stage, .mmpane{
+    -webkit-user-select:none;user-select:none;}
+  /* ただし、 その場で直す入力欄だけは今までどおり選べる。 */
+  .mmap-box [contenteditable="true"], .mmap-box input, .mmap-box textarea,
+  .mmch-stage [contenteditable="true"], .mmwrap input, .mmwrap textarea{
+    -webkit-user-select:text;user-select:text;}
   @media print{#mmdl{display:none;}}
 </style></head><body>
 $dlBtn
+<script>
+(function () {
+  // 図の中から始まる「引きずって渡す」 を、 OS へ渡る前に止める。
+  //   ・dragstart はページの中で始まった drag だけに来る。
+  //     エクスプローラーからのファイル投下は dragenter/drop なので、
+  //     本物のファイル投下は今までどおり効く。
+  //   ・図は掴んで動かす物なので、 ここで止めても失う機能は無い。
+  var SEL = '.mermaid, .mermaid-slot, .mmwrap, .mmap, .mmch, .map-slot';
+  // その場で直す欄の中では、 今までどおり文字を掴めるようにしておく。
+  var EDIT = '[contenteditable="true"], input, textarea';
+  document.addEventListener('dragstart', function (ev) {
+    var t = ev.target;
+    var el = (t && t.nodeType === 1) ? t : (t && t.parentElement);
+    if (!el || !el.closest) return;
+    if (el.closest(EDIT)) return;
+    if (el.closest(SEL)) ev.preventDefault();
+  }, true);
+})();
+</script>
 <div id="mmtabs" style="display:none"></div>
 <div id="out"></div><div id="err"></div>
 <script src="$markedSrc"></script>
@@ -229810,6 +230539,15 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
   /// 換わらないよう、 検証は全件先に済ませる。
   String? _applyMcpEdits(List<Map<String, dynamic>> edits) {
     if (!mounted) return 'the text editor was closed';
+    // ★ 読み込みが終わっていない / 失敗している時に書き換えてはいけない。
+    //   下で自動保存するようにしたので、 中身が空のまま書き換えを通すと
+    //   **本物のファイルを空で上書き**してしまう。
+    if (_loading) {
+      return 'the file is still being loaded - try again in a moment';
+    }
+    if (_loadError != null) {
+      return 'the file could not be read ($_loadError) - it was not changed';
+    }
     if (edits.isEmpty) return 'edits is empty';
     _commitEdit();
     final hasSetAll = edits.any((e) => '${e['action']}' == 'set_all');
@@ -229889,6 +230627,13 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
     if (_lines.isEmpty) _lines.add('');
     setState(() {});
     _markDirty();
+    // ★ MCP からの編集はファイルへも書き出す (= ユーザー報告: AI に 100 行
+    //   書かせてもマップのタイルが変わらない)。 画面の中だけ書き換えて保存を
+    //   利用者任せにしていたため、 ディスクの中身は古いままだった。
+    //   _save() の中で widget.onSaved → _notifyAttachmentEdited が走り、
+    //   タイルの控えも捨てられる (分割ペインで開いた時も
+    //   _buildSplitOfficeViewer が onSaved を渡すようにした)。
+    unawaited(_save());
     return null;
   }
 
@@ -250137,7 +250882,11 @@ class _McpChatSession extends ChangeNotifier {
         '★「Excel で作って」「スライドにして」「PDF にして」 のように '
         'ファイルが欲しい指示には create_document_file を使ってください。 '
         '表は rows、 文章は paragraphs、 スライドは slides に入れます。 '
-        '出来たファイルはページに貼られ、 押せばアプリ内で開けます。\n'
+        '出来たファイルはページに貼られ、 押せばアプリ内で開けます。 '
+        '★ 作ったファイルを直す時も create_document_file です。 同じ pageId と '
+        '同じ fileName でもう一度呼べば中身が入れ替わり、 タイルは 1 枚の '
+        'ままです。 新しい名前で作り直さないでください。 まるごと書き直すので、 '
+        '渡さなかった中身は消えます。\n'
         '★ 同じツールを何度も呼ばないでください。 複数まとめて置けるツール '
         '(add_gallery_item / add_paint_text / append_document_text) は '
         'texts に全部入れて 1 回で呼びます。 '

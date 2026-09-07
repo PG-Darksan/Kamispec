@@ -177,13 +177,13 @@ flowchart TD
 
 | ツール | 説明 |
 |---|---|
-| `create_document_file` | 本物の文書ファイルを作って保存し、ページに貼る<br/>`kind` = xlsx / csv → `rows`<br/>docx / txt / md / pdf → `title` + `paragraphs` (pdf は `rows` も可)<br/>pptx → `slides:[{title, bullets:[…]}]`<br/>`pageId` は normal か bookshelf を渡すこと (paint / videoEditor はファイルタイルを持てない) |
+| `create_document_file` | 本物の文書ファイルを作って保存し、ページに貼る<br/>`kind` = xlsx / csv → `rows`<br/>docx / txt / md / pdf → `title` + `paragraphs` (pdf は `rows` も可)<br/>pptx → `slides:[{title, bullets:[…]}]`<br/>`pageId` は normal か bookshelf を渡すこと (paint / videoEditor はファイルタイルを持てない)<br/>★ **同じ `pageId` + 同じ `fileName` で呼ぶと上書き**。既にあるファイルの中身を入れ替え、タイルは増やさない (戻り値 `replaced: true`)。作った物を直す時はこれを使う<br/>★ 毎回まるごと書き直すので、渡さなかった中身は消える |
 
 ### 開いているテキストファイル
 
 | ツール | 説明 |
 |---|---|
-| `text_file_status` | アプリのテキストエディタで開いているファイル `{open, fileName, lineCount}` |
+| `text_file_status` | アプリのテキストエディタで開いているファイル `{open, fileName, lineCount}`<br/>★ `open: false` の時、ページに貼ってあるファイルはこの系統では触れない。`read_page` → `read_device_file` で読み、`create_document_file` (同じ `pageId` + 同じ `fileName`) で書き直す |
 | `text_file_read` | 行番号付きで読む (`startLine` / `endLine` で範囲指定可) |
 | `text_file_edit` | `edits` 配列で一括編集。`action` = replace / insert / delete / set_all。行番号は 1 始まり・**呼び出し前**の状態基準 (下から適用されるので前方の番号は崩れない) |
 

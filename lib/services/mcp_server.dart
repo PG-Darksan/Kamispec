@@ -747,6 +747,20 @@ class McpServer {
         'Create a real document FILE (Excel, CSV, Word, PowerPoint, PDF or '
         'plain text) with the given content, save it, and attach it to a '
         'page so the user can open it in the built-in viewer. '
+        'THIS IS ALSO HOW YOU EDIT A FILE YOU ALREADY MADE: calling it '
+        'again with a "fileName" you used before REWRITES that same file IN '
+        'PLACE and reuses its existing tile - no second file and no second '
+        'tile are created. So when the user says "make '
+        'the file you just made 100 lines" or "fix that file", call this '
+        'tool AGAIN with the SAME pageId and the SAME fileName. Never '
+        'invent a new name to avoid touching the old file, and never leave '
+        'the old one behind as a duplicate. '
+        'It always writes the WHOLE file, so pass the complete new content: '
+        'anything you leave out is gone. To see what is there now, get the '
+        'file from read_page (an attachment node has attachmentName and '
+        'attachmentPath) and read it with read_device_file on that '
+        'attachmentPath (files this tool created during this run are '
+        'pre-allowed; after a restart the user may be asked once). '
         'Choose "kind": '
         '"xlsx"/"csv" -> pass "rows" (array of arrays of strings; first row '
         'is the header). '
@@ -757,7 +771,9 @@ class McpServer {
         '{"title": "...", "bullets": ["...", "..."]}). '
         'Pass a pageId of a MIND MAP or GALLERY page so the file can be '
         'pinned there (free-note / video pages cannot hold file tiles). '
-        'Returns the saved file path.',
+        'Returns {path, replaced, attachedToPageId}. When "replaced" is '
+        'true the file that was already there was updated - say updated, '
+        'not created.',
         {
           'pageId': {'type': 'string'},
           'kind': {
@@ -843,10 +859,16 @@ class McpServer {
     //     中身を MCP / AI から編集できるように) ─────────────────────────
     _tool(
         'text_file_status',
-        'Check the text file currently open in the app text editor. '
+        'Check the text file currently open in the app TEXT EDITOR window. '
         'Returns {open, fileName, lineCount}. The other text_file_* tools '
-        'work on this file. If "open" is false, no text editor is open - '
-        'ask the user to open a text file first.',
+        'work ONLY on that one open file - they cannot touch a file that is '
+        'merely attached to a page. If "open" is false, nothing is open: do '
+        'NOT create a new file, and do NOT ask the user to open something '
+        'just so you can edit a document that is attached to a page. '
+        'Instead find it with read_page (attachmentName / attachmentPath), '
+        'read it with read_device_file on that attachmentPath, and rewrite '
+        'it with create_document_file using the SAME pageId and the SAME '
+        'fileName - that replaces it in place.',
         {}),
     _tool(
         'text_file_read',
@@ -855,7 +877,10 @@ class McpServer {
         'inclusive) to read only part of a long file. Out-of-range or reversed '
         'values are clamped to the file, so check the returned lineCount / '
         'startLine / endLine (and "note") before quoting the result, and '
-        'tell the user when the lines they asked for do not exist.',
+        'tell the user when the lines they asked for do not exist. '
+        'This reads ONLY the file open in the editor; to read a file '
+        'attached to a page use read_device_file with the attachmentPath '
+        'from read_page.',
         {
           'startLine': {'type': 'integer'},
           'endLine': {'type': 'integer'},
@@ -872,8 +897,13 @@ class McpServer {
         'contain newlines). "insert" inserts text before line start '
         '(start = lineCount+1 appends at the end). "delete" removes lines '
         'start..end. "set_all" replaces the whole file with text and must '
-        'be the only edit in the call. The change appears in the editor '
-        'immediately; the user saves the file themselves.',
+        'be the only edit in the call. The change appears in the editor AND '
+        'is written to the file straight away - do not tell the user to '
+        'press save. '
+        'This works ONLY on the file open in the editor. It cannot change a '
+        'file that is just attached to a page - rewrite that one with '
+        'create_document_file (same pageId + same fileName), which replaces '
+        'it in place instead of adding a copy.',
         {
           'edits': {
             'type': 'array',
@@ -1941,7 +1971,7 @@ class McpServer {
                 '[{"title":"…","bullets":["…"]}] - nothing was created.');
           }
           final reqId = a['pageId'] as String? ?? '';
-          final path = await _provider.mcpCreateFile({
+          final made = await _provider.mcpCreateFile({
             'pageId': reqId,
             'kind': kind,
             'fileName': a['fileName'] as String? ?? '',
@@ -1950,10 +1980,18 @@ class McpServer {
             'rows': _rowsOf(a['rows']),
             'slides': slides,
           });
+          final path = made?['path'] as String?;
           if (path == null) {
             return _err('could not create the file (unsupported kind, or the '
                 'page was not found)');
           }
+          // ★ 上書きした時に「新しく作りました」 と答えさせない (= ユーザー
+          //   報告: 直してと頼んだのに 2 つ目が出来たと言われた)。
+          final replaced = made?['replaced'] == true;
+          const replacedNote =
+              'The file that was already there was REWRITTEN IN PLACE (same '
+              'name, same tile - no second file and no second tile were '
+              'made). Tell the user the file was updated, not created.';
           // ★ 貼れたかどうかを見て返す (= 動作確認で判明: フリーノートの
           //   ページを渡すとタイルを置く場所が無く、 ファイルはどこにも
           //   貼られないのに成功と返っていた。 別のページへ逃げる事もある)。
@@ -1961,7 +1999,12 @@ class McpServer {
           bool holds(dynamic p) =>
               p != null && p.nodes.values.any((n) => n.attachmentPath == path);
           if (holds(reqPage)) {
-            return _ok({'path': path, 'attachedToPageId': reqPage!.id});
+            return _ok({
+              'path': path,
+              'attachedToPageId': reqPage!.id,
+              'replaced': replaced,
+              if (replaced) 'note': replacedNote,
+            });
           }
           String? hostId;
           for (final p in _provider.pages) {
@@ -1973,6 +2016,7 @@ class McpServer {
           return _ok({
             'path': path,
             if (hostId != null) 'attachedToPageId': hostId,
+            'replaced': replaced,
             'note': hostId == null
                 ? 'The file WAS saved at this path but is NOT pinned to any '
                     'page: a "${reqPage?.pageType ?? 'unknown'}" page cannot '

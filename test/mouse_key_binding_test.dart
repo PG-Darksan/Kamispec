@@ -18,10 +18,22 @@ void main() {
   });
 
   test('知らないボタンは受け付けない', () {
-    // 0 = 左、 4 以降 = 無い物。 どちらも割り当ててはいけない。
-    for (final bad in [0, 4, -1, 99]) {
+    // 0 と負の数 = 左右ボタンや出鱈目。 6 以降 = Windows に無い物
+    // (Windows が見分けられるのは 5 つまで + 横チルト 2 方向)。
+    for (final bad in [0, -1, 6, 99]) {
       expect(MouseKeyBinding.fromJson({'b': bad, 'm': 0, 'k': 0x41}), isNull,
           reason: 'button=$bad が通ってしまった');
+    }
+  });
+
+  test('割り当てられるのは 5 つだけ (左右は入っていない)', () {
+    // ★ 左右ボタンを入れてはいけない。 握り潰すとパソコンを操作できなく
+    //   なるため (mouse_remap.dart の頭の決まり)。
+    expect(MouseButtonId.all, [1, 2, 3, 4, 5]);
+    expect(MouseButtonId.all.length, 5);
+    for (final id in MouseButtonId.all) {
+      expect(MouseKeyBinding.fromJson({'b': id, 'k': 0x41}), isNotNull,
+          reason: 'button=$id が弾かれた');
     }
   });
 

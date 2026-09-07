@@ -42,6 +42,13 @@ Markdown で**中身まで**書いてほしいと頼まれた時は、`create_pa
 書き終えるとそのページが開いた状態になるので、開き方の案内は要らない。
 ファイルとして欲しいと言われた時だけ `create_document_file` の `md`。
 
+**作ったファイルを直す時も `create_document_file`**。同じ `pageId` と同じ
+`fileName` でもう一度呼べば、そのファイルの中身が入れ替わる (タイルも
+1 枚のまま)。「さっき作ったファイルを 100 行にして」と言われたら、
+新しい名前を付けて作り直さない。中身を確かめたい時は `read_page` の
+`attachmentPath` を `read_device_file` で読む (アプリが作ったファイルは
+許可を聞かれない)。毎回まるごと書き直すので、**書かなかった分は消える**。
+
 ## 守るべき作法
 
 1. **まとめて 1 回で呼ぶ**。`add_node` の `nodes`、`connect_nodes` の `connections`、
@@ -204,6 +211,10 @@ Markdown で**中身まで**書いてほしいと頼まれた時は、`create_pa
     (下の行から適用されるので、前方の行番号は崩れない)
   - `set_all` は単独で使う (他の edit と混ぜない)
 - 変更は画面に即反映される。**保存は利用者が行う** (Ctrl+Z で戻せる)。
+- **開いていない時は使えない**。`text_file_status` が `open: false` なら、
+  ページに貼ってあるファイルは `read_page` → `read_device_file` で読み、
+  `create_document_file` に**同じ `pageId` と同じ `fileName`** を渡して
+  書き直す。開いてもらうよう頼んだり、新しいファイルを作ったりしない。
 
 ## Mermaid の図
 

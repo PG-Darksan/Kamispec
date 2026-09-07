@@ -12,6 +12,7 @@
 // ── 何を触っているか ────────────────────────────────────────────────
 //  マウス感度        SystemParametersInfo(SPI_GET/SETMOUSESPEED)  1〜20
 //  ポインター精度    SystemParametersInfo(SPI_GET/SETMOUSE)       加速の有無
+//  ポインターの伸び  HKCU\Control Panel\Mouse\SmoothMouseYCurve   加速の曲線
 //  ホイールの行数    SystemParametersInfo(SPI_GET/SETWHEELSCROLLLINES)
 //  ダブルクリック    Get/SetDoubleClickTime()                     ミリ秒
 //  スクリーンセーバー SPI_GET/SET SCREENSAVEACTIVE / TIMEOUT / SECURE
@@ -304,6 +305,231 @@ class PcSettings {
     } finally {
       pkgffi.calloc.free(buf);
     }
+  }
+
+  // ── ポインターの伸び (加速の曲線) ────────────────────────────────
+  //
+  // 「20 でも遅い」 と言われた時の話 (= ユーザー要望「ポインターの速さって
+  // もっと早くできない?」)。 SPI_SETMOUSESPEED は 1〜20 が Windows の上限で、
+  // 20 は既に **標準 (10) の 3.5 倍**。 21 は無い。
+  //
+  // その先へ行く手は 1 つだけ ── **加速の曲線を書き換える**。
+  //
+  //   HKCU\Control Panel\Mouse\SmoothMouseYCurve  (REG_BINARY / 40 バイト)
+  //     折れ点 5 個 × 8 バイト。 各 8 バイトのうち **先頭 4 バイトだけ**が
+  //     意味を持ち、 リトルエンディアンの 16.16 固定小数 (= 実数 ×65536)。
+  //     残り 4 バイトは Windows が常に 0 を入れている。
+  //     X 側が「手を動かした速さ」、 Y 側が「その時ポインターが進む量」。
+  //     Y を丸ごと k 倍すれば、 どの速さでも k 倍進むようになる。
+  //
+  // ★ 必ず伝えないといけない事が 3 つある。
+  //   1. この曲線は 「ポインターの精度を高める」 が入っている時だけ使われる。
+  //   2. 書いても **サインインし直すまで効かない**。 Windows に読み直させる
+  //      口が公開されていない (SPI_SETMOUSE でも駄目)。
+  //   3. 逆に言うと、 速すぎた時は 「精度を高める」 を切れば **その場で**
+  //      元の動きに戻る (そちらは即座に効く)。 これが逃げ道になる。
+  //
+  // 元の 40 バイトは HKCU\Software\HisatorNotebook\Mouse に控えておき、
+  // 「元に戻す」 でそのまま書き戻す。 Windows の既定値は **画面の拡大率で
+  // 変わる**ので、 決め打ちの既定を書き戻してはいけない。
+
+  static const String _kMouseKey = r'Control Panel\Mouse';
+  static const String _kYCurveValue = 'SmoothMouseYCurve';
+  static const String _kOurKey = r'Software\HisatorNotebook\Mouse';
+  static const String _kYCurveOrig = 'SmoothMouseYCurveOrig';
+  static const String _kYCurveHad = 'SmoothMouseYCurveHad';
+  static const String _kBoostPercent = 'PointerBoostPercent';
+
+  /// 引き伸ばしを入れる前の「ポインターの精度を高める」 の入り切り。
+  /// 曲線はその札が入っていないと使われないのでこちらで入れる事になる。
+  /// 「戻す」 で元へ返せるように控えておく。
+  static const String _kAccelOrig = 'AccelWasOn';
+
+  /// 感度 1〜20 が「標準 (10) の何倍」 に当たるか。
+  ///
+  /// Windows の中の表。 設定アプリのつまみが触れるのは 1/2/4/6/8/10/12/
+  /// 14/16/18/20 の 11 段で、 そこの値ははっきりしている。 間の奇数は
+  /// 見出し用に前後の真ん中を置いてあるだけ (表示にしか使わない)。
+  static const List<double> _kSpeedFactor = <double>[
+    0.03125, 0.0625, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0, //
+    1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5,
+  ];
+
+  /// 感度 [speed] が標準の何倍か。 20 で 3.5 倍 (= Windows の上限)。
+  static double mouseSpeedFactor(int speed) =>
+      _kSpeedFactor[speed.clamp(1, 20) - 1];
+
+  /// 上を人に見せる形にした物 (「3.50」 のような)。
+  static String mouseSpeedFactorLabel(int speed) {
+    final f = mouseSpeedFactor(speed);
+    return f >= 1 ? f.toStringAsFixed(2) : f.toStringAsFixed(5);
+  }
+
+  // ★ 「既定の曲線」 を決め打ちで持つのはやめた。
+  //   Windows が書く既定は**画面の拡大率で変わる**ので、 96 DPI の値を
+  //   書き戻すと「戻した筈なのに前と違う」 になる。 出回っている「既定」 の
+  //   バイト列も 1 種類ではない。 今の曲線が読めない時は、 土台が無いという
+  //   事なので**引き伸ばしを行わない** (戻せない物は作らない)。
+
+  /// 40 バイトの曲線を [percent] % にする。
+  /// 8 バイトごとの先頭 4 バイトだけを掛ける (残りは触らない)。
+  static Uint8List _scaleCurve(Uint8List src, int percent) {
+    final out = Uint8List.fromList(src);
+    for (var i = 0; i + 8 <= out.length; i += 8) {
+      final v = out[i] |
+          (out[i + 1] << 8) |
+          (out[i + 2] << 16) |
+          (out[i + 3] << 24);
+      var n = (v * percent) ~/ 100;
+      if (n > 0xFFFFFFFF) n = 0xFFFFFFFF;
+      out[i] = n & 0xFF;
+      out[i + 1] = (n >> 8) & 0xFF;
+      out[i + 2] = (n >> 16) & 0xFF;
+      out[i + 3] = (n >> 24) & 0xFF;
+    }
+    return out;
+  }
+
+  /// 引き伸ばしの計算だけを取り出した口 (テスト用)。
+  /// レジストリには触らないので、 `flutter test` から安全に確かめられる。
+  static Uint8List debugScaleCurve(Uint8List src, int percent) =>
+      _scaleCurve(src, percent);
+
+  /// 今かけている伸び (100 = 何もしていない)。
+  static int readPointerBoost() {
+    if (!isSupported) return 100;
+    try {
+      final k = Registry.openPath(RegistryHive.currentUser,
+          path: _kOurKey, desiredAccessRights: AccessRights.readOnly);
+      final v = k.getIntValue(_kBoostPercent) ?? 100;
+      k.close();
+      return v.clamp(100, 300);
+    } catch (_) {
+      // 控えの入れ物がまだ無い = 何もしていない。
+      return 100;
+    }
+  }
+
+  /// 加速の曲線を [percent] % に引き伸ばす (100 = 元のまま、 300 が上限)。
+  ///
+  /// 何度動かしても **必ず控えを土台に**掛け直すので、 積み重なって
+  /// どんどん速くなる事は無い。
+  ///
+  /// ★ 効き始めるのは **サインインし直してから**。
+  static bool setPointerBoost(int percent) {
+    if (!isSupported) return false;
+    final pct = percent.clamp(100, 300);
+    if (pct == 100) return resetPointerBoost();
+    final root = _openCurrentUser();
+    if (root == null) return false;
+    try {
+      final ours = root.createKey(_kOurKey);
+      final mouse = Registry.openPath(RegistryHive.currentUser,
+          path: _kMouseKey, desiredAccessRights: AccessRights.allAccess);
+      try {
+        // 1) 初回だけ、 今の 40 バイトと「精度を高める」 の入り切りを控える。
+        var orig = ours.getBinaryValue(_kYCurveOrig);
+        if (orig == null || orig.length != 40) {
+          final cur = mouse.getBinaryValue(_kYCurveValue);
+          // ★ 今の曲線が読めない時は何もしない。 決め打ちの既定を書くと
+          //   元に戻せなくなる (既定は拡大率で違う)。
+          if (cur == null || cur.length != 40) return false;
+          orig = cur;
+          ours.createValue(RegistryValue.binary(_kYCurveOrig, orig));
+          ours.createValue(RegistryValue.int32(_kYCurveHad, 1));
+          // 曲線は「精度を高める」 が入っていないと使われない。 こちらで
+          //   入れる事になるので、 元の状態も控えて 戻せるようにする。
+          ours.createValue(RegistryValue.int32(
+              _kAccelOrig, readMouse().acceleration ? 1 : 0));
+        }
+        // 2) 控えを土台に掛け直す (何度動かしても積み重ならない)。
+        mouse.createValue(
+            RegistryValue.binary(_kYCurveValue, _scaleCurve(orig, pct)));
+        ours.createValue(RegistryValue.int32(_kBoostPercent, pct));
+        // 3) Windows に「設定を読み直せ」 と伝えておく。 曲線が読み直される
+        //   保証は無い (資料に無い) が、 ただで済むので押しておく。
+        _nudgeUserParams();
+        return true;
+      } finally {
+        mouse.close();
+        ours.close();
+      }
+    } catch (_) {
+      return false;
+    } finally {
+      root.close();
+    }
+  }
+
+  /// Windows の元の曲線に戻す。
+  ///
+  /// 控えがあればそれを書き戻し、 元々 値が無かったなら消して
+  /// Windows に任せる。 どちらもサインインし直した時から効く。
+  static bool resetPointerBoost() {
+    if (!isSupported) return false;
+    final root = _openCurrentUser();
+    if (root == null) return false;
+    try {
+      final ours = root.createKey(_kOurKey);
+      final mouse = Registry.openPath(RegistryHive.currentUser,
+          path: _kMouseKey, desiredAccessRights: AccessRights.allAccess);
+      try {
+        final orig = ours.getBinaryValue(_kYCurveOrig);
+        final had = (ours.getIntValue(_kYCurveHad) ?? 1) != 0;
+        if (orig != null && orig.length == 40) {
+          // 控えた物をそのまま書き戻す。
+          mouse.createValue(RegistryValue.binary(_kYCurveValue, orig));
+        } else if (orig == null && !had) {
+          // 元々 値が無かったと分かっている時だけ消す。
+          try {
+            mouse.deleteValue(_kYCurveValue);
+          } catch (_) {}
+        }
+        // ★ 控えが壊れている時 (40 バイトでない) は**何もしない**。
+        //   決め打ちの既定を書くのも消すのも、 利用者の設定を壊す側に倒れる。
+        // 一緒に入れた「精度を高める」 も元へ戻す。 曲線はサインインし直す
+        //   まで効かないので、 **その場で効く唯一の戻し**がこれ。
+        final accel = ours.getIntValue(_kAccelOrig);
+        if (accel != null) setMouseAcceleration(accel != 0);
+        for (final n in const [
+          _kYCurveOrig,
+          _kYCurveHad,
+          _kBoostPercent,
+          _kAccelOrig,
+        ]) {
+          try {
+            ours.deleteValue(n);
+          } catch (_) {}
+        }
+        _nudgeUserParams();
+        return true;
+      } finally {
+        mouse.close();
+        ours.close();
+      }
+    } catch (_) {
+      return false;
+    } finally {
+      root.close();
+    }
+  }
+
+  /// HKCU を開く (使い終わったら閉じる事。 毎回新しい鍵が返る)。
+  static RegistryKey? _openCurrentUser() {
+    try {
+      return Registry.currentUser;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 「利用者ごとの設定を読み直せ」 と Windows に伝える。
+  /// 曲線が読み直される保証は無いが、 害は無いので押しておく。
+  static void _nudgeUserParams() {
+    try {
+      _spi(0x002F /* SPI_UPDATEPERUSERSYSTEMPARAMETERS */, 0,
+          ffi.Pointer<ffi.Void>.fromAddress(0), _spifUpdateAndSend);
+    } catch (_) {}
   }
 
   /// ホイール 1 段で流れる行数 (1〜30)。

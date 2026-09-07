@@ -96,6 +96,32 @@ class DocPreview {
   /// 戻ってしまうため、 一度読めた中身はここから即座に返して描き直す。
   static final Map<String, List<String>> _byPath = {};
 
+  /// [_byPath] に控えた時のファイルの姿 (パス|更新時刻|大きさ)。
+  /// 今のファイルと違っていたら中身が書き換わったという事なので、 控えを
+  /// 捨てて読み直す (= ユーザー報告: AI にテキストファイルへ 100 行
+  /// 書かせても、 ギャラリーのサムネイルが古いまま更新されない)。
+  static final Map<String, String> _keyByPath = {};
+
+  /// 最後にファイルの姿を確かめた時刻 (ミリ秒)。 タイルは毎フレーム
+  /// 描き直されるので、 一定の間をおいてだけ確かめる (タイルの枚数だけ
+  /// 毎フレーム ディスクを触らないため)。
+  static final Map<String, int> _checkedAt = {};
+
+  /// 確かめ直す間隔 (ミリ秒)。
+  static const int _recheckMs = 1200;
+
+  /// 今のファイルの姿を表す鍵 (読めなければ null)。
+  static String? _statKey(String path) {
+    try {
+      final f = File(path);
+      if (!f.existsSync()) return null;
+      final st = f.statSync();
+      return '$path|${st.modified.millisecondsSinceEpoch}|${st.size}';
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// 読めなかったパスと、 その時刻 (ミリ秒)。
   ///
   /// ★ = ユーザー報告「指定されたパスが見つからない txt ファイルのサムネイルが
@@ -114,11 +140,21 @@ class DocPreview {
   /// 読めなかった事を控えて、 空を返す。
   static Future<List<String>> _miss(String path) {
     _byPath[path] = const <String>[];
+    _keyByPath.remove(path);
+    _checkedAt.remove(path);
     _missAt[path] = DateTime.now().millisecondsSinceEpoch;
     return Future.value(const <String>[]);
   }
 
-  /// 既に読んである中身 (無ければ null)。 ファイルは触らないので軽い。
+  /// 既に読んである中身 (無ければ null)。
+  ///
+  /// ★ 控えたあとに、 同じパスのままファイルの中身だけが書き換わる事がある
+  ///   (= ユーザー報告: AI にテキストファイルへ 100 行書かせてもサムネイルが
+  ///   更新されない)。 この控えはパスだけを鍵にしているので中身の変化に
+  ///   気付けない。 一定の間をおいてファイルの姿 (更新時刻と大きさ) を見に
+  ///   行き、 変わっていたら捨てて読み直させる。 [_recheckMs] より短い間隔
+  ///   では触らないので、 タイルが何十枚あっても毎フレームのディスク読みには
+  ///   ならない。
   static List<String>? cachedFor(String path) {
     final miss = _missAt[path];
     if (miss != null &&
@@ -129,15 +165,33 @@ class DocPreview {
       _byPath.remove(path);
       return null;
     }
-    return _byPath[path];
+    final hit = _byPath[path];
+    if (hit == null) return null;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (now - (_checkedAt[path] ?? 0) >= _recheckMs) {
+      _checkedAt[path] = now;
+      final known = _keyByPath[path];
+      final fresh = _statKey(path);
+      if (known != null && fresh != null && known != fresh) {
+        invalidate(path);
+        return null;
+      }
+    }
+    return hit;
   }
 
   /// このパスの控えを捨てる (= ファイルを差し替えた時などに読み直させる)。
   static void invalidate(String path) {
     _byPath.remove(path);
+    _keyByPath.remove(path);
+    _checkedAt.remove(path);
     _missAt.remove(path);
     _styleByPath.remove(path);
     _slideByPath.remove(path);
+    // ★ 更新時刻つきの控え ([_cache]) も一緒に捨てる。 同じミリ秒・同じ
+    //   大きさで書き換わると鍵が変わらず、 読み直しても古い中身を返して
+    //   しまうため (= 短い文章を続けて書かせた時に起きる)。
+    _cache.removeWhere((k, _) => k.startsWith('$path|'));
   }
 
   /// pptx の 1 枚目から拾った配色 (= ユーザー要望: 表紙のデザインが
@@ -219,6 +273,8 @@ class DocPreview {
     final hit = _cache[key];
     if (hit != null) {
       _byPath[path] = hit;
+      _keyByPath[path] = key;
+      _checkedAt[path] = DateTime.now().millisecondsSinceEpoch;
       return Future.value(hit);
     }
     final running = _inFlight[key];
@@ -228,6 +284,10 @@ class DocPreview {
       final lines = _extractStyle(path, _extractSlide(path, raw));
       _cache[key] = lines;
       _byPath[path] = lines;
+      // どの姿のファイルを控えたかを覚えておく (= cachedFor が中身の
+      //   書き換えに気付くための目印)。
+      _keyByPath[path] = key;
+      _checkedAt[path] = DateTime.now().millisecondsSinceEpoch;
       _inFlight.remove(key);
       // 覚えすぎないように、 古い物から捨てる。
       if (_cache.length > 200) {
@@ -238,6 +298,8 @@ class DocPreview {
       _inFlight.remove(key);
       // 読み取りに失敗した事も控える (= 点滅を止める)。
       _byPath[path] = const <String>[];
+      _keyByPath.remove(path);
+      _checkedAt.remove(path);
       _missAt[path] = DateTime.now().millisecondsSinceEpoch;
       return const <String>[];
     });
