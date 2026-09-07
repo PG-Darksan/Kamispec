@@ -40,6 +40,8 @@ import '../services/rec_hotkey.dart';
 import '../services/cursor_wrap.dart';
 import '../services/mouse_remap.dart';
 import '../services/pc_settings.dart';
+// ホイールの行数をその場で効かせる (= ユーザー要望)。
+import '../services/wheel_scroll_scale.dart';
 import '../services/cursor_style.dart';
 import '../services/display_control.dart';
 import '../services/display_light.dart';
@@ -73545,15 +73547,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       ];
     }
     return [
-      // ── マウスそのものの動き ──
-      _pcSectionLabel(provider.t('mouse.motion')),
-      const _MouseTweakInline(),
-
-      // ── ボタンへのキー割り当て ──
-      _pcSectionLabel(provider.t('mouse.buttons')),
-      _MouseButtonBindings(provider: provider),
-
-      // ── カーソルの見た目 ──
+      // ── カーソルの見た目 (= ユーザー要望: よく使うので一番上に) ──
       _pcSectionLabel(provider.t('cursorLook.title')),
       _CursorAppearanceInline(
         provider: provider,
@@ -73563,6 +73557,14 @@ class _MindMapScreenState extends State<MindMapScreen>
               bodyOverride: provider.t('paywall.proRequiredCursorKeep'));
         },
       ),
+
+      // ── マウスそのものの動き ──
+      _pcSectionLabel(provider.t('mouse.motion')),
+      const _MouseTweakInline(),
+
+      // ── ボタンへのキー割り当て ──
+      _pcSectionLabel(provider.t('mouse.buttons')),
+      _MouseButtonBindings(provider: provider),
     ];
   }
 
@@ -99845,6 +99847,22 @@ class _WheelTestBoxState extends State<_WheelTestBox> {
             fontSize: 10,
             height: 1.4),
       ),
+      // ★ 直った結果として警告が出なくなると、 今度は**無反応に見える**。
+      //   合っている時は、 合っている事をひと言出す。
+      if (!mismatch && app != null)
+        Padding(
+          padding: const EdgeInsets.only(top: 2),
+          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Icon(Icons.check_circle_outline_rounded,
+                size: 12, color: Color(0xFF9CCC65)),
+            const SizedBox(width: 4),
+            Expanded(
+              child: Text(p.t('mouse.wheelTestLive'),
+                  style: const TextStyle(
+                      color: Color(0xFF9CCC65), fontSize: 10, height: 1.4)),
+            ),
+          ]),
+        ),
       if (mismatch)
         Padding(
           padding: const EdgeInsets.only(top: 2),
@@ -99925,8 +99943,10 @@ class _DoubleClickTestBoxState extends State<_DoubleClickTestBox> {
                     ? p.t('mouse.dblTestIdle')
                     : p.t('mouse.dblTestOnce'))
                 : (ok
-                    ? p.t('mouse.dblTestOk').replaceAll('{n}', '$gap')
-                    : p.t('mouse.dblTestNg').replaceAll('{n}', '$gap')),
+                        ? p.t('mouse.dblTestOk')
+                        : p.t('mouse.dblTestNg'))
+                    .replaceAll('{n}', '$gap')
+                    .replaceAll('{lim}', '${widget.thresholdMs}'),
             style: TextStyle(
                 color: gap == null ? Colors.white54 : Colors.white,
                 fontSize: 12,
@@ -99934,6 +99954,45 @@ class _DoubleClickTestBoxState extends State<_DoubleClickTestBox> {
           ),
         ),
       ),
+      // ★ 上限までの帯 (= ユーザー指摘: 数字だけだと「速さ = 900ms」 と
+      //   読めてしまう)。 押した間隔が上限のどのあたりかを目で見せる。
+      if (gap != null) ...[
+        const SizedBox(height: 6),
+        LayoutBuilder(builder: (_, c) {
+          final lim = widget.thresholdMs <= 0 ? 1 : widget.thresholdMs;
+          final ratio = (gap / lim).clamp(0.0, 1.0);
+          return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Stack(children: [
+              Container(
+                height: 6,
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.07),
+                  borderRadius: BorderRadius.circular(3),
+                ),
+              ),
+              Container(
+                height: 6,
+                width: c.maxWidth * ratio,
+                decoration: BoxDecoration(
+                  color: color,
+                  borderRadius: BorderRadius.circular(3),
+                ),
+              ),
+            ]),
+            const SizedBox(height: 2),
+            Row(children: [
+              Text('0ms',
+                  style: const TextStyle(color: Colors.white24, fontSize: 9)),
+              const Spacer(),
+              Text('${widget.thresholdMs}ms',
+                  style: TextStyle(
+                      color: Colors.white38,
+                      fontSize: 9,
+                      fontWeight: FontWeight.w700)),
+            ]),
+          ]);
+        }),
+      ],
       const SizedBox(height: 3),
       Text(
         p
@@ -99977,6 +100036,9 @@ class _MouseTweakInlineState extends State<_MouseTweakInline> {
 
   void _reload() {
     if (!PcSettings.isSupported) return;
+    // Windows の設定アプリ側で変えられていた時も、 この欄を開いた時点で
+    //   追いつくようにしておく。
+    WheelScrollScale.refreshFromOs();
     setState(() {
       _st = PcSettings.readMouse();
       _boost = PcSettings.readPointerBoost();
@@ -100094,6 +100156,11 @@ class _MouseTweakInlineState extends State<_MouseTweakInline> {
           onChangeEnd: (v) {
             setState(() => _wheelDrag = null);
             PcSettings.setWheelScrollLines(v.round());
+            // ★ このアプリの中にも、 その場で効かせる (= ユーザー要望
+            //   「アプリ内でも変更後に効くようにできないの？」)。 Flutter は
+            //   起動時の行数のままなので、 差の分をこちらで掛け直す。
+            //   書けたかどうかを当てにせず、 OS から読み直して合わせる。
+            WheelScrollScale.refreshFromOs();
             _reload();
           },
         ),
@@ -100733,6 +100800,18 @@ class _ScreenSaverInlineState extends State<_ScreenSaverInline> {
   PcScreenSaverState? _st;
   double? _waitDrag;
 
+  /// 直前の書き込み / 起動の結果を一言で出す。
+  ///
+  /// ★ SnackBar ではなくその場の行に出す。 ここはダイアログの中なので、
+  ///   SnackBar は裏に隠れて気付かれない事がある。
+  String? _note;
+
+  /// 「復帰時にパスワードを求める」 の結果。
+  ///
+  /// ★ 行ごとに分けて持つ。 1 つにすると、 下のトグルで断られた話が上の
+  ///   つまみの下に出てしまい、 どれの話か分からなくなる。
+  String? _toggleNote;
+
   MindMapProvider get p => widget.provider;
 
   @override
@@ -100744,6 +100823,47 @@ class _ScreenSaverInlineState extends State<_ScreenSaverInline> {
   void _reload() {
     if (!PcSettings.isSupported) return;
     setState(() => _st = PcSettings.readScreenSaver());
+  }
+
+  String? _resultNote(PcWriteResult r) => r == PcWriteResult.ok
+      ? null
+      : (r == PcWriteResult.pending
+          ? p.t('saver.applyPending')
+          : p.t('saver.applyFailed'));
+
+  /// Windows に付いてくる物でない .scr を動かす時だけ、 一度確かめる。
+  Future<bool> _confirmIfThirdParty(String path) async {
+    if (PcSettings.isBuiltInScreenSaver(path)) return true;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Text(p.t('saver.previewConfirmTitle'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        content: Text('${p.t('saver.previewConfirmBody')}\n\n$path',
+            style: const TextStyle(color: Colors.white70, fontSize: 12)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: Text(p.t('common.cancel'))),
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: Text(p.t('saver.preview'))),
+        ],
+      ),
+    );
+    return ok == true;
+  }
+
+  /// ★ ここは**ボタンを押した時にしか通らない**。 勝手に動かさない事
+  ///   (経緯は lib/services/pc_settings.dart の頭)。
+  Future<void> _run(String path, {required bool config}) async {
+    if (!await _confirmIfThirdParty(path)) return;
+    final ok = config
+        ? await PcSettings.configureScreenSaver(path)
+        : await PcSettings.previewScreenSaver(path);
+    if (!mounted) return;
+    setState(() => _note = ok ? null : p.t('saver.launchFailed'));
   }
 
   @override
@@ -100766,6 +100886,23 @@ class _ScreenSaverInlineState extends State<_ScreenSaverInline> {
         : cur;
     final waitMin =
         _waitDrag ?? (st.timeoutSec <= 0 ? 10 : st.timeoutSec / 60.0);
+    // ★ つまみは 1〜60 分しか動かないので、 数字も同じ所で丸める。
+    //   丸めないと、 Windows 側が 60 分より長い時 (例: 7200 秒 = 120 分) に
+    //   「120分」 と出たまま親指だけ右端に張り付き、 一度触っただけで黙って
+    //   60 分に縮む。 この行は「なし」 の時も必ず出すようにしたので、
+    //   誰の目にも触れる。 食い違いを見せない。
+    //   ※ `final double` と書く事。 書かないと clamp が num に推論されて
+    //     _pcSlider(value: double) に渡せない。
+    final double waitShown = waitMin.clamp(1, 60);
+    final hasConfig =
+        selected.isNotEmpty && PcSettings.screenSaverHasConfig(selected);
+    const accent = Color(0xFF4FC3F7);
+    const dim = Colors.white24;
+    final btnStyle = TextButton.styleFrom(
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      minimumSize: const Size(0, 30),
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    );
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       _pcRow(
         p.t('saver.which'),
@@ -100777,38 +100914,94 @@ class _ScreenSaverInlineState extends State<_ScreenSaverInline> {
               DropdownMenuItem(value: c.path, child: Text(c.name)),
           ],
           onChanged: (v) {
-            PcSettings.setScreenSaverPath(v ?? '');
+            // ★ 「選ぶ」 も中で動かす札 (ScreenSaveActive) を書くので、
+            //   その結果も拾う。 拾わないと、 Windows に断られた時に何も
+            //   出ないまま「選んだのに始まらない」 になる。
+            final r = PcSettings.setScreenSaverPath(v ?? '');
+            _note = _resultNote(r);
+            _toggleNote = null;
             _reload();
           },
         ),
       ),
-      if (selected.isNotEmpty) ...[
-        _pcRow(
-          p.t('saver.wait'),
-          _pcSlider(
-            value: waitMin.clamp(1, 60),
-            min: 1,
-            max: 60,
-            divisions: 59,
-            trailing:
-                p.t('time.minutes').replaceAll('{n}', '${waitMin.round()}'),
-            onChanged: (v) => setState(() => _waitDrag = v),
-            onChangeEnd: (v) {
-              setState(() => _waitDrag = null);
-              PcSettings.setScreenSaverTimeout(v.round() * 60);
-              _reload();
-            },
+      // ── プレビュー / そのセーバー自身の設定 ──
+      //   = ユーザー要望「3Dテキストなどの項目のプレビュー画面も出して
+      //   欲しい」。 /s = 全画面で動かす (Windows の設定のプレビューと
+      //   同じ)。 /c = そのセーバーが持っている設定を開く。
+      Padding(
+        padding: const EdgeInsets.only(left: 132, top: 2),
+        // ★ Row ではなく Wrap。 この行は左に 132 の余白を取っているので、
+        //   窓が細いと 2 つのボタンが入り切らず黄黒の縞が出る (言葉の長い
+        //   言語で特に)。
+        child: Wrap(spacing: 4, runSpacing: 0, children: [
+          TextButton.icon(
+            onPressed:
+                selected.isEmpty ? null : () => _run(selected, config: false),
+            icon: Icon(Icons.play_circle_outline,
+                size: 16, color: selected.isEmpty ? dim : accent),
+            label: Text(p.t('saver.preview'),
+                style: TextStyle(
+                    fontSize: 12, color: selected.isEmpty ? dim : accent)),
+            style: btnStyle,
           ),
+          TextButton.icon(
+            onPressed: hasConfig ? () => _run(selected, config: true) : null,
+            icon: Icon(Icons.tune_rounded,
+                size: 16, color: hasConfig ? Colors.white70 : dim),
+            label: Text(p.t('saver.configure'),
+                style: TextStyle(
+                    fontSize: 12, color: hasConfig ? Colors.white70 : dim)),
+            style: btnStyle,
+          ),
+        ]),
+      ),
+      if (selected.isNotEmpty)
+        Padding(
+          padding: const EdgeInsets.only(left: 132, top: 2, bottom: 4),
+          child: Text(
+              hasConfig
+                  ? p.t('saver.previewNote')
+                  : '${p.t('saver.previewNote')}\n'
+                      '${p.t('saver.noConfigNote')}',
+              style: const TextStyle(
+                  color: Colors.white30, fontSize: 10, height: 1.35)),
         ),
-        _pcToggle(
-          label: p.t('saver.secure'),
-          value: st.secure,
-          onChanged: (v) {
-            PcSettings.setScreenSaverSecure(v);
+      // ── 開始までの時間 ──
+      // ★ ここを `if (selected.isNotEmpty)` で囲ってはいけない。
+      //   「なし」 の時につまみごと消えていたのが、 まさに
+      //   = ユーザー要望「スクリーンセーバーが起動する時間設定ができる
+      //   ようにして欲しい」 の中身だった。 Windows は開始までの時間
+      //   (ScreenSaveTimeOut) を SCRNSAVE.EXE とは別に持っているので、
+      //   「なし」 のままでも先に決めておける。
+      _pcRow(
+        p.t('saver.wait'),
+        _pcSlider(
+          value: waitShown,
+          min: 1,
+          max: 60,
+          divisions: 59,
+          trailing:
+              p.t('time.minutes').replaceAll('{n}', '${waitShown.round()}'),
+          onChanged: (v) => setState(() => _waitDrag = v),
+          onChangeEnd: (v) {
+            final r = PcSettings.setScreenSaverTimeout(v.round() * 60);
+            _waitDrag = null;
+            _note = _resultNote(r);
             _reload();
           },
         ),
-      ],
+        note: _note ?? (selected.isEmpty ? p.t('saver.waitNoneNote') : null),
+      ),
+      _pcToggle(
+        label: p.t('saver.secure'),
+        value: st.secure,
+        note: _toggleNote,
+        onChanged: (v) {
+          final r = PcSettings.setScreenSaverSecure(v);
+          _toggleNote = _resultNote(r);
+          _reload();
+        },
+      ),
     ]);
   }
 }

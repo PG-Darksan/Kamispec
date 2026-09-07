@@ -66,6 +66,7 @@ import 'services/screen_capture.dart' as scap;
 import 'services/cursor_wrap.dart';
 import 'services/cursor_style.dart';
 import 'services/display_light.dart';
+import 'services/wheel_scroll_scale.dart';
 // 録画窓の中のプレビュー再生 (デスクトップは fvp バックエンド)。
 import 'package:video_player/video_player.dart';
 // 録画窓が自分の窓の大きさを変える (GetWindowRect) のに使う。
@@ -3459,7 +3460,16 @@ Future<void> _runCursorWrapDaemon() async {
 }
 
 void main(List<String> args) async {
-  WidgetsFlutterBinding.ensureInitialized();
+  // ★ ふつうの WidgetsFlutterBinding ではなく、 ホイールの「1 段で何行」 を
+  //   掛け直す binding を使う (= ユーザー要望「アプリ内でも変更後に効くように」)。
+  //   Flutter は行数を窓を作る時に 1 回しか読まないので、 このアプリだけ
+  //   入れ直すまで前の行数のままだった。 仕組みは
+  //   lib/services/wheel_scroll_scale.dart に書いてある。
+  //   ★ 控えを先に取る。 engine が焼き込んだ行数を知る前に出来事が来ても
+  //     困らないようにする為 (窓は main() より前に作られているので、
+  //     ここで読んだ値がそのまま engine の値)。
+  WheelScrollScale.captureBaseline();
+  WheelScrollBinding.ensureInitialized();
   // ── カーソルの回り込みだけの常駐として起動された場合 ──
   //    (= ユーザー要望: アプリを起動していない時でも効くように)。
   //    runApp は呼ばない (画面は要らない)。

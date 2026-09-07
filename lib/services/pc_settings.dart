@@ -4,10 +4,20 @@
 // Windows 専用。 他の OS では [isSupported] が false を返し、 読み書きは
 // 黙って諦める (画面側は項目そのものを出さない)。
 //
-// ★ 外の道具は一切呼ばない。
+// ★ 外の道具は原則呼ばない。
 //   以前ディスプレイ設定が PowerShell を起動していて、 利用者の
 //   セキュリティソフトに「悪意ある行動」 として止められた
 //   ([[win32-com-and-os-settings]])。 ここは全部その場で Win32 を呼ぶ。
+//
+//   **唯一の例外がスクリーンセーバーのプレビュー / 設定**
+//   ([previewScreenSaver] / [configureScreenSaver])。 .scr は「絵を出す
+//   プログラム」 そのもので、 中から真似る事ができない。 Windows の
+//   「設定」 のプレビューと全く同じ事 (`その .scr /s`) をする。 上の件と
+//   違うのは次の 4 点で、 これは必ず守る:
+//     ・ボタンを押した時だけ。 設定を開いただけでは決して動かさない
+//     ・cmd.exe / powershell.exe を通さない (引数は配列でそのまま渡す)
+//     ・実在する .scr だけ。 %SystemRoot% の外は一度確かめてから
+//     ・隠して動かさない (全画面に出る)
 //
 // ── 何を触っているか ────────────────────────────────────────────────
 //  マウス感度        SystemParametersInfo(SPI_GET/SETMOUSESPEED)  1〜20
@@ -93,6 +103,32 @@ typedef _PowerSetActiveSchemeNative = ffi.Uint32 Function(
     ffi.IntPtr, ffi.Pointer<ffi.Uint8>);
 typedef _PowerSetActiveSchemeDart = int Function(int, ffi.Pointer<ffi.Uint8>);
 
+// ── .scr が自分で名乗っている名前 (version.dll) ─────────────────────
+typedef _VerInfoSizeNative = ffi.Uint32 Function(
+    ffi.Pointer<pkgffi.Utf16>, ffi.Pointer<ffi.Uint32>);
+typedef _VerInfoSizeDart = int Function(
+    ffi.Pointer<pkgffi.Utf16>, ffi.Pointer<ffi.Uint32>);
+
+typedef _VerInfoNative = ffi.Int32 Function(ffi.Pointer<pkgffi.Utf16>,
+    ffi.Uint32, ffi.Uint32, ffi.Pointer<ffi.Void>);
+typedef _VerInfoDart = int Function(
+    ffi.Pointer<pkgffi.Utf16>, int, int, ffi.Pointer<ffi.Void>);
+
+typedef _VerQueryNative = ffi.Int32 Function(
+    ffi.Pointer<ffi.Void>,
+    ffi.Pointer<pkgffi.Utf16>,
+    ffi.Pointer<ffi.Pointer<ffi.Void>>,
+    ffi.Pointer<ffi.Uint32>);
+typedef _VerQueryDart = int Function(
+    ffi.Pointer<ffi.Void>,
+    ffi.Pointer<pkgffi.Utf16>,
+    ffi.Pointer<ffi.Pointer<ffi.Void>>,
+    ffi.Pointer<ffi.Uint32>);
+
+/// 設定ダイアログ (/c) の親にする窓。
+typedef _GetForegroundWindowNative = ffi.IntPtr Function();
+typedef _GetForegroundWindowDart = int Function();
+
 /// 電源プランの中の場所を表す 16 バイトの札 (GUID)。
 ///
 /// 文字の並びから作れるようにしておく (Windows の資料に載っている形の
@@ -132,6 +168,13 @@ final Uint8List _kStandbyTimeout = _guid('29f6c1db-86da-48c5-9fdb-f2b67b1f44da')
 const String _kDesktopKey = r'Control Panel\Desktop';
 const String _kScrnSaveValue = 'SCRNSAVE.EXE';
 
+/// 同じ場所にある、 開始までの時間 / 動かすか / サインインを求めるか。
+/// どれも**文字**で入っている (実測: ScreenSaveTimeOut は REG_SZ の "60")。
+/// SCRNSAVE.EXE とは別々に持たれているので、 「なし」 のままでも書ける。
+const String _kTimeoutValue = 'ScreenSaveTimeOut';
+const String _kActiveValue = 'ScreenSaveActive';
+const String _kSecureValue = 'ScreenSaverIsSecure';
+
 /// マウスの今の状態。
 class PcMouseState {
   /// 感度 1〜20 (既定 10)。
@@ -152,6 +195,23 @@ class PcMouseState {
     required this.wheelLines,
     required this.doubleClickMs,
   });
+}
+
+/// 書き込みの結果。
+///
+/// Windows は画面まわりの都合で断る事がある (実測: 画面が省電力に入った
+/// 後などは SystemParametersInfo が ERROR_OPERATION_IN_PROGRESS = 329 を
+/// 返す)。 断られても控え (レジストリ) には書けるので、 「今は効かないが
+/// 覚えた」 を [pending] として区別し、 画面側で一言添える。
+enum PcWriteResult {
+  /// その場で効いた。
+  ok,
+
+  /// 控えには書けた。 サインインし直すと効く。
+  pending,
+
+  /// どちらも書けなかった。
+  failed,
 }
 
 /// スクリーンセーバーの今の状態。
@@ -217,6 +277,9 @@ class PcSettings {
   static ffi.DynamicLibrary? _powrproflib;
   static ffi.DynamicLibrary get _powrprof =>
       _powrproflib ??= ffi.DynamicLibrary.open('powrprof.dll');
+  static ffi.DynamicLibrary? _versionlib;
+  static ffi.DynamicLibrary get _version =>
+      _versionlib ??= ffi.DynamicLibrary.open('version.dll');
 
   static _SpiDart? _spiFn;
   static _SpiDart get _spi => _spiFn ??=
@@ -532,13 +595,32 @@ class PcSettings {
     } catch (_) {}
   }
 
+  /// ホイール 1 段で流れる行数だけを、 軽く読む。
+  /// -1 = 1 画面ぶん (WHEEL_PAGESCROLL)、 0 = 読めなかった。
+  ///
+  /// [readMouse] は感度・加速・ダブルクリックまで一度に読むので、 ホイールを
+  /// 回している最中に呼ぶには重い。 ここは SystemParametersInfo を 1 回だけ叩く。
+  static int readWheelScrollLines() {
+    if (!isSupported) return 0;
+    final buf = pkgffi.calloc<ffi.Int32>(1);
+    try {
+      if (_spi(_spiGetWheelScrollLines, 0, buf.cast(), 0) != 0) {
+        return buf[0];
+      }
+    } catch (_) {
+    } finally {
+      pkgffi.calloc.free(buf);
+    }
+    return 0;
+  }
+
   /// ホイール 1 段で流れる行数 (1〜30)。
   static bool setWheelScrollLines(int lines) {
     if (!isSupported) return false;
     final v = lines.clamp(1, 30);
     try {
-      return _spi(_spiSetWheelScrollLines, v, ffi.Pointer<ffi.Void>.fromAddress(0),
-              _spifUpdateAndSend) !=
+      return _spi(_spiSetWheelScrollLines, v,
+              ffi.Pointer<ffi.Void>.fromAddress(0), _spifUpdateAndSend) !=
           0;
     } catch (_) {
       return false;
@@ -560,17 +642,66 @@ class PcSettings {
 
   // ── スクリーンセーバー ────────────────────────────────────────────
 
-  /// Windows に付いてくる物の、 分かりやすい名前。
-  /// 一覧に無い物は、 ファイル名をそのまま出す。
+  /// Windows に付いてくる物の、 分かりやすい名前 (**控えの手立て**)。
+  ///
+  /// ふだんは .scr 自身が名乗っている名前 ([_fileDescription]) を使う。
+  /// ここはバージョン情報が壊れている / 入っていない時だけ使う。
+  ///
+  /// ★ 'mystify' はもともと「ブランク線」 と書いてあったが、 Windows が
+  ///   名乗っているのは「ライン アート」 だった (実測)。 直してある。
   static const Map<String, String> _kKnownSavers = {
     'bubbles': 'バブル',
-    'mystify': 'ブランク線',
+    'mystify': 'ライン アート',
     'ribbons': 'リボン',
     'photoscreensaver': '写真',
-    'ssText3d': '3D テキスト',
     'sstext3d': '3D テキスト',
     'scrnsave': 'ブランク (真っ暗)',
   };
+
+  /// 自分の設定 (/c) を持っていない、 Windows 内蔵の物。
+  ///
+  /// ★ 「設定を持っているか」 を確かめる決まった手立ては無い。 資源
+  ///   (RT_DIALOG 2003 = DLG_SCRNSAVECONFIGURE) を見る手を実機で試したが、
+  ///   持っていたのは写真だけ。 設定がある 3D テキストは持っておらず、
+  ///   設定の無いバブルと全く同じ並び (105/200/201) だった。 当てにならない。
+  ///   Windows 自身もこの 4 つを決め打ちで灰色にしているので、 同じにする。
+  ///   知らない物には設定ボタンを出して、 相手に任せる。
+  static const Set<String> _kSaversWithoutConfig = {
+    'bubbles',
+    'mystify',
+    'ribbons',
+    'scrnsave',
+  };
+
+  /// 一度読んだ .scr の一覧を覚えておく (バージョン情報を読むぶん少し重く、
+  /// アプリが動いている間に増減する物でもないため)。
+  static List<({String path, String name})>? _saverCache;
+
+  /// HKCU\Control Panel\Desktop の 1 つを読む。
+  static String? _readDesktopValue(String name) {
+    try {
+      final key = Registry.openPath(RegistryHive.currentUser,
+          path: _kDesktopKey, desiredAccessRights: AccessRights.readOnly);
+      final v = key.getValueAsString(name);
+      key.close();
+      return v?.trim();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// HKCU\Control Panel\Desktop の 1 つに文字で書く (Windows が使う形)。
+  static bool _writeDesktopValue(String name, String value) {
+    try {
+      final key = Registry.openPath(RegistryHive.currentUser,
+          path: _kDesktopKey, desiredAccessRights: AccessRights.allAccess);
+      key.createValue(RegistryValue.string(name, value));
+      key.close();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
 
   static PcScreenSaverState readScreenSaver() {
     if (!isSupported) {
@@ -601,13 +732,20 @@ class PcSettings {
     } finally {
       pkgffi.calloc.free(buf);
     }
-    var path = '';
-    try {
-      final key = Registry.openPath(RegistryHive.currentUser,
-          path: _kDesktopKey, desiredAccessRights: AccessRights.readOnly);
-      path = key.getValueAsString(_kScrnSaveValue)?.trim() ?? '';
-      key.close();
-    } catch (_) {}
+    // ★ 控え (レジストリ) の方を後から重ねる。
+    //   SystemParametersInfo は断る事がある (画面が省電力に入った後などは
+    //   ERROR_OPERATION_IN_PROGRESS = 329。 実機で再現した)。 その時は
+    //   控えにだけ書いてあるので、 ここで控えを見ないと
+    //   **動かしたつまみが元に戻る** = 「設定できない」 に逆戻りする。
+    //   うまく書けた時は SPIF_UPDATEINIFILE で両方同じ値になっているので、
+    //   どちらを見ても違いは出ない。
+    final regTimeout = int.tryParse(_readDesktopValue(_kTimeoutValue) ?? '');
+    if (regTimeout != null && regTimeout > 0) timeout = regTimeout;
+    final regActive = _readDesktopValue(_kActiveValue);
+    if (regActive != null && regActive.isNotEmpty) active = regActive != '0';
+    final regSecure = _readDesktopValue(_kSecureValue);
+    if (regSecure != null && regSecure.isNotEmpty) secure = regSecure != '0';
+    final path = _readDesktopValue(_kScrnSaveValue) ?? '';
     return PcScreenSaverState(
       active: active,
       timeoutSec: timeout,
@@ -617,9 +755,113 @@ class PcSettings {
     );
   }
 
+  /// .scr が自分で名乗っている名前 (バージョン情報の FileDescription)。
+  ///
+  /// Windows の「設定」 が出しているのと同じ文字で、 **OS の言葉で**
+  /// 入っている (実測: 日本語環境で「3D テキスト スクリーン セーバー」
+  /// 「ライン アート スクリーン セーバー」)。 手書きの対応表より正確。
+  static String? _fileDescription(String path) {
+    if (!isSupported) return null;
+    final pathP = path.toNativeUtf16(allocator: pkgffi.calloc);
+    final sizeHandle = pkgffi.calloc<ffi.Uint32>();
+    final outP = pkgffi.calloc<ffi.Pointer<ffi.Void>>();
+    final lenP = pkgffi.calloc<ffi.Uint32>();
+    ffi.Pointer<ffi.Uint8> block = ffi.nullptr;
+    ffi.Pointer<pkgffi.Utf16> transP = ffi.nullptr;
+    ffi.Pointer<pkgffi.Utf16> descP = ffi.nullptr;
+    try {
+      final sizeFn = _version
+          .lookupFunction<_VerInfoSizeNative, _VerInfoSizeDart>(
+              'GetFileVersionInfoSizeW');
+      final size = sizeFn(pathP, sizeHandle);
+      if (size == 0) return null;
+      block = pkgffi.calloc<ffi.Uint8>(size);
+      final getFn = _version
+          .lookupFunction<_VerInfoNative, _VerInfoDart>('GetFileVersionInfoW');
+      if (getFn(pathP, 0, size, block.cast()) == 0) return null;
+      final queryFn = _version
+          .lookupFunction<_VerQueryNative, _VerQueryDart>('VerQueryValueW');
+      // どの言葉で入っているかは、 ファイルが自分で名乗っている。
+      var lang = 0x0409; // 既定: 英語 (米国)
+      var page = 0x04B0; // 既定: Unicode
+      transP = r'\VarFileInfo\Translation'
+          .toNativeUtf16(allocator: pkgffi.calloc);
+      if (queryFn(block.cast(), transP, outP, lenP) != 0 &&
+          lenP.value >= 4 &&
+          outP.value != ffi.nullptr) {
+        final w = outP.value.cast<ffi.Uint16>();
+        lang = w[0];
+        page = w[1];
+      }
+      String hex4(int v) => v.toRadixString(16).padLeft(4, '0');
+      descP = '\\StringFileInfo\\${hex4(lang)}${hex4(page)}\\FileDescription'
+          .toNativeUtf16(allocator: pkgffi.calloc);
+      outP.value = ffi.nullptr;
+      lenP.value = 0;
+      if (queryFn(block.cast(), descP, outP, lenP) == 0 ||
+          lenP.value == 0 ||
+          outP.value == ffi.nullptr) {
+        return null;
+      }
+      final s = outP.value.cast<pkgffi.Utf16>().toDartString().trim();
+      return s.isEmpty ? null : s;
+    } catch (_) {
+      return null;
+    } finally {
+      pkgffi.calloc.free(pathP);
+      pkgffi.calloc.free(sizeHandle);
+      pkgffi.calloc.free(outP);
+      pkgffi.calloc.free(lenP);
+      if (block != ffi.nullptr) pkgffi.calloc.free(block);
+      if (transP != ffi.nullptr) pkgffi.calloc.free(transP);
+      if (descP != ffi.nullptr) pkgffi.calloc.free(descP);
+    }
+  }
+
+  /// 「バブル スクリーン セーバー」 → 「バブル」。
+  /// 知らない書き方はそのまま出す。
+  static String _trimSaverSuffix(String s) {
+    for (final suffix in const [
+      ' スクリーン セーバー',
+      ' スクリーンセーバー',
+      'スクリーン セーバー',
+      'スクリーンセーバー',
+      ' Screen Saver',
+      ' screen saver',
+      ' 屏幕保护程序',
+      '屏幕保护程序',
+      ' 화면 보호기',
+    ]) {
+      if (s.length > suffix.length && s.endsWith(suffix)) {
+        final t = s.substring(0, s.length - suffix.length).trim();
+        if (t.isNotEmpty) return t;
+      }
+    }
+    return s;
+  }
+
+  /// 表に出す名前。 ファイル自身が名乗っている名前 → 手書きの対応表 →
+  /// ファイル名、 の順。
+  static String screenSaverDisplayName(String path, {String? stem}) {
+    final base = path.split(RegExp(r'[\\/]')).last;
+    final s = stem ??
+        (base.toLowerCase().endsWith('.scr')
+            ? base.substring(0, base.length - 4)
+            : base);
+    // ★ 「ブランク」 だけは、 名乗っている名前より手書きの方が親切。
+    //   真っ暗な画面が出るので、 止まったと勘違いされやすい。
+    final known = _kKnownSavers[s.toLowerCase()];
+    if (s.toLowerCase() == 'scrnsave' && known != null) return known;
+    final desc = _fileDescription(path);
+    if (desc != null && desc.isNotEmpty) return _trimSaverSuffix(desc);
+    return known ?? s;
+  }
+
   /// この機械に入っている .scr を探す。
-  static List<({String path, String name})> listScreenSavers() {
+  static List<({String path, String name})> listScreenSavers(
+      {bool refresh = false}) {
     if (!isSupported) return const [];
+    if (!refresh && _saverCache != null) return _saverCache!;
     final seen = <String, ({String path, String name})>{};
     final root = Platform.environment['SystemRoot'] ?? r'C:\Windows';
     for (final dir in [
@@ -636,69 +878,167 @@ class PcSettings {
           final stem = base.substring(0, base.length - 4);
           final keyName = stem.toLowerCase();
           if (seen.containsKey(keyName)) continue;
-          seen[keyName] = (path: p, name: _kKnownSavers[keyName] ?? stem);
+          seen[keyName] =
+              (path: p, name: screenSaverDisplayName(p, stem: stem));
         }
       } catch (_) {}
     }
     final out = seen.values.toList()
       ..sort((a, b) => a.name.compareTo(b.name));
+    _saverCache = out;
     return out;
   }
 
+  /// Windows に付いてくる物か (= %SystemRoot% の下にあるか)。
+  static bool isBuiltInScreenSaver(String path) {
+    if (!isSupported || path.trim().isEmpty) return false;
+    final root = (Platform.environment['SystemRoot'] ?? r'C:\Windows')
+        .toLowerCase()
+        .replaceAll('/', '\\');
+    return path.toLowerCase().replaceAll('/', '\\').startsWith('$root\\');
+  }
+
+  /// そのスクリーンセーバーが自分の設定 (/c) を持っているか。
+  static bool screenSaverHasConfig(String path) {
+    if (path.trim().isEmpty) return false;
+    final base = path.split(RegExp(r'[\\/]')).last.toLowerCase();
+    final stem =
+        base.endsWith('.scr') ? base.substring(0, base.length - 4) : base;
+    return !_kSaversWithoutConfig.contains(stem);
+  }
+
   /// 動かすかどうか。
-  static bool setScreenSaverActive(bool on) {
-    if (!isSupported) return false;
+  static PcWriteResult setScreenSaverActive(bool on) {
+    if (!isSupported) return PcWriteResult.failed;
+    var live = false;
     try {
-      return _spi(_spiSetScreenSaveActive, on ? 1 : 0,
+      live = _spi(_spiSetScreenSaveActive, on ? 1 : 0,
               ffi.Pointer<ffi.Void>.fromAddress(0), _spifUpdateAndSend) !=
           0;
-    } catch (_) {
-      return false;
-    }
+    } catch (_) {}
+    if (live) return PcWriteResult.ok;
+    return _writeDesktopValue(_kActiveValue, on ? '1' : '0')
+        ? PcWriteResult.pending
+        : PcWriteResult.failed;
   }
 
   /// 何秒で始まるか (60〜7200)。
-  static bool setScreenSaverTimeout(int sec) {
-    if (!isSupported) return false;
+  ///
+  /// ★ 「なし」 を選んでいても書ける。 Windows は開始までの時間を
+  ///   SCRNSAVE.EXE とは**別に**持っているため (実測: SCRNSAVE.EXE が
+  ///   1 つも無いまま ScreenSaveTimeOut="60" が入っていた)。 ここを
+  ///   「セーバーを選んだ時だけ」 にしてはいけない
+  ///   (= ユーザー要望「起動する時間設定ができるようにして欲しい」)。
+  ///
+  /// ★ SystemParametersInfo は断る事がある。 画面が省電力に入った後などは
+  ///   ERROR_OPERATION_IN_PROGRESS (329) を返す (実機で再現)。 その時は
+  ///   控えにだけ書いて [PcWriteResult.pending] を返す。
+  static PcWriteResult setScreenSaverTimeout(int sec) {
+    if (!isSupported) return PcWriteResult.failed;
     final v = sec.clamp(60, 7200);
+    var live = false;
     try {
-      return _spi(_spiSetScreenSaveTimeout, v,
+      live = _spi(_spiSetScreenSaveTimeout, v,
               ffi.Pointer<ffi.Void>.fromAddress(0), _spifUpdateAndSend) !=
           0;
+    } catch (_) {}
+    if (live) return PcWriteResult.ok;
+    return _writeDesktopValue(_kTimeoutValue, '$v')
+        ? PcWriteResult.pending
+        : PcWriteResult.failed;
+  }
+
+  /// 戻る時にサインインを求めるか。
+  static PcWriteResult setScreenSaverSecure(bool on) {
+    if (!isSupported) return PcWriteResult.failed;
+    var live = false;
+    try {
+      live = _spi(_spiSetScreenSaveSecure, on ? 1 : 0,
+              ffi.Pointer<ffi.Void>.fromAddress(0), _spifUpdateAndSend) !=
+          0;
+    } catch (_) {}
+    if (live) return PcWriteResult.ok;
+    return _writeDesktopValue(_kSecureValue, on ? '1' : '0')
+        ? PcWriteResult.pending
+        : PcWriteResult.failed;
+  }
+
+  // ── プレビュー / そのセーバー自身の設定 ──────────────────────────
+
+  /// .scr を引数付きで起こす。
+  ///
+  /// ★ このファイルの決まり (外の道具を呼ばない) の**唯一の例外**。
+  ///   経緯と守るべき 4 点はファイル冒頭に書いてある。 ここでは
+  ///   ・cmd.exe / powershell.exe を通さない (引数は配列でそのまま渡す)
+  ///   ・.scr で、 実在する物だけ
+  ///   ・作業場所はその .scr のある所
+  ///   を守る。 呼び出し側が「ボタンを押した時だけ」 を守る事。
+  static Future<bool> _runScreenSaver(String path, List<String> args) async {
+    if (!isSupported) return false;
+    final p = path.trim();
+    if (p.isEmpty || !p.toLowerCase().endsWith('.scr')) return false;
+    final file = File(p);
+    if (!file.existsSync()) return false;
+    try {
+      await Process.start(
+        p,
+        args,
+        workingDirectory: file.parent.path,
+        runInShell: false,
+        mode: ProcessStartMode.detached,
+      );
+      return true;
     } catch (_) {
       return false;
     }
   }
 
-  /// 戻る時にサインインを求めるか。
-  static bool setScreenSaverSecure(bool on) {
-    if (!isSupported) return false;
+  /// プレビュー (= Windows の「設定」 にあるプレビューと同じ `/s`)。
+  ///
+  /// マウスを動かすかキーを押すと自分で終わる (DefScreenSaverProc が
+  /// WM_MOUSEMOVE / WM_KEYDOWN / クリックで畳む)。 後始末は要らない。
+  /// `/s` で出したプレビューは、 「復帰時にパスワードを求める」 が入って
+  /// いても**鍵は掛からない** (鍵を掛けるのは、 放置で始まった時の
+  /// winlogon 側の仕事)。
+  static Future<bool> previewScreenSaver(String path) =>
+      _runScreenSaver(path, const ['/s']);
+
+  /// そのスクリーンセーバー自身の設定を開く (`/c`)。
+  ///
+  /// Microsoft の資料 (KB 182383) は `/c` だけを載せていて、 その時は
+  /// 手前の窓が親になる。 Windows 自身は `/c:<窓の番号>` の形で呼ぶので、
+  /// 番号が取れる時はそちらを使う (どちらも受けるのが .scr の作法)。
+  static Future<bool> configureScreenSaver(String path) {
+    var arg = '/c';
     try {
-      return _spi(_spiSetScreenSaveSecure, on ? 1 : 0,
-              ffi.Pointer<ffi.Void>.fromAddress(0), _spifUpdateAndSend) !=
-          0;
-    } catch (_) {
-      return false;
-    }
+      final f = _user32.lookupFunction<_GetForegroundWindowNative,
+          _GetForegroundWindowDart>('GetForegroundWindow');
+      final h = f();
+      if (h > 0) arg = '/c:$h';
+    } catch (_) {}
+    return _runScreenSaver(path, [arg]);
   }
 
   /// どの .scr を使うか ([path] が空なら「なし」)。
   ///
   /// 控え (レジストリ) に書いてから、 動かす / 止めるを Win32 で伝える。
   /// 設定アプリと同じ手順なので、 あちらを開いても同じ物が選ばれている。
-  static bool setScreenSaverPath(String path) {
-    if (!isSupported) return false;
+  static PcWriteResult setScreenSaverPath(String path) {
+    if (!isSupported) return PcWriteResult.failed;
     try {
       final key = Registry.openPath(RegistryHive.currentUser,
           path: _kDesktopKey, desiredAccessRights: AccessRights.allAccess);
       key.createValue(RegistryValue.string(_kScrnSaveValue, path));
       key.close();
     } catch (_) {
-      return false;
+      return PcWriteResult.failed;
     }
     // 「なし」 にした時は動かす札も下ろす (そうしないと真っ暗な既定が動く)。
-    setScreenSaverActive(path.isNotEmpty);
-    return true;
+    //
+    // ★ ここの結果を捨ててはいけない。 Windows は画面まわりの都合で断る事が
+    //   ある (ERROR_OPERATION_IN_PROGRESS = 329)。 捨てると「選んだのに
+    //   始まらない、 理由も出ない」 になる。
+    return setScreenSaverActive(path.isNotEmpty);
   }
 
   // ── スリープ / 電源 ──────────────────────────────────────────────
