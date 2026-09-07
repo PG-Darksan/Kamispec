@@ -5170,6 +5170,14 @@ class MindMapProvider extends ChangeNotifier {
           ok = true;
         } else {
           ok = await DisplayLight.setBrightness(m, v);
+          if (!ok) {
+            // ★ 背面光が動かせなかった時は、 見かけだけの道へ落として
+            //   もう一度当てる (= つまみが何も効かないままにしない)。
+            //   セキュリティソフトに止められた時もここへ来る。
+            DisplayLight.demoteToGamma(m);
+            applyDisplayLight();
+            ok = true;
+          }
         }
       }
     } catch (e) {

@@ -98828,13 +98828,24 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
               setState(() => _brightDrag.remove(slot));
               if (px == saved) return;
               setState(() => _busy = true);
-              final ok = await p.setDisplayBrightness(slot, px);
-              if (!mounted) return;
-              setState(() {
-                _busy = false;
-                _lights = DisplayLight.list();
-              });
-              if (!ok) {
+              // ★ 何があっても _busy を必ず下ろす (= ユーザー報告:
+              //   明るさを変えようとするとフリーズする)。 途中で例外が
+              //   出ると _busy が立ちっぱなしになり、 拡大率や壁紙の
+              //   ボタンまで押せなくなって「固まった」 ように見える。
+              var ok = false;
+              try {
+                ok = await p.setDisplayBrightness(slot, px);
+              } catch (e) {
+                debugPrint('明るさを変えられませんでした: $e');
+              } finally {
+                if (mounted) {
+                  setState(() {
+                    _busy = false;
+                    _lights = DisplayLight.list();
+                  });
+                }
+              }
+              if (!ok && mounted) {
                 _tell(widget.provider.t('display.brightnessFailed'),
                     error: true);
               }
@@ -98886,7 +98897,12 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
               final px = v.round();
               setState(() => _blueDrag = null);
               if (px == p.blueLightPercent) return;
-              await p.setBlueLightPercent(px);
+              // ここも同じ理由で守る (例外で画面が固まらないように)。
+              try {
+                await p.setBlueLightPercent(px);
+              } catch (e) {
+                debugPrint('ブルーライトカットを当てられませんでした: $e');
+              }
               if (mounted) setState(() {});
             },
           ),

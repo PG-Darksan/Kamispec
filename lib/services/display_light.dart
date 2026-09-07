@@ -185,8 +185,25 @@ class DisplayLight {
   static final Map<String, BrightnessRoute> _routeCache =
       <String, BrightnessRoute>{};
 
+  /// DDC/CI の画面の、 いちばん最後に分かっていた明るさ (%)。 鍵は道と同じ。
+  static final Map<String, int> _ddcCache = <String, int>{};
+
+  /// [m] の道を「見かけだけ (ガンマ表)」 へ落とす。
+  ///
+  /// ★ 背面光を動かせるはずの画面で書き込みが通らなかった時に呼ぶ。
+  ///   セキュリティソフトに止められる・モニターが受け付けない、 といった
+  ///   時に**つまみが何も効かないまま**になるのを防ぐ。 落とした後は
+  ///   一覧に ◌ の印が付き、 50% までの範囲になる。
+  static void demoteToGamma(LightMonitor m) {
+    _routeCache['${m.gdiName}@${m.left},${m.top}'] = BrightnessRoute.gamma;
+    if (m.route == BrightnessRoute.wmi) _wmiGaveUp = true;
+  }
+
   /// 覚えている道を捨てる (画面を繋ぎ直した時などに呼ぶ)。
-  static void invalidateRoutes() => _routeCache.clear();
+  static void invalidateRoutes() {
+    _routeCache.clear();
+    _ddcCache.clear();
+  }
 
   // ── 画面の一覧 ─────────────────────────────────────────────────
   /// 今つながっている画面を、 左上から順に返す。
@@ -247,34 +264,22 @@ class DisplayLight {
         // ★ DDC/CI の問い合わせはモニターとの I2C 往復で、 対応している
         //   機種でも数十〜数百 ms 掛かる。 `list()` は設定を開くたび・
         //   当てるたびに呼ばれるので、 **画面ごとに 1 回だけ**調べて覚える。
+        // ★ ここでは**調べに行かない**。 覚えている物を返すだけ。
+        //   DDC/CI はモニターとの I2C 往復、 WMI は COM の往復で、
+        //   どちらも画面の糸で回すと止まる (= ユーザー報告: 明るさを
+        //   変えようとするとフリーズする)。 調べるのは [ensureProbed] が
+        //   別の糸でやり、 その結果をここの控えへ入れておく。
         final key = '$name@$left,$top';
-        BrightnessRoute route;
-        int? percent;
         final cached = _routeCache[key];
-        if (cached != null) {
-          route = cached;
-          percent = route == BrightnessRoute.wmi
-              ? _wmiCached
-              : route == BrightnessRoute.ddc
-                  ? _ddcRead(left, top)
-                  : null;
-        } else {
-          final ddc = _ddcRead(left, top);
-          if (ddc != null) {
-            route = BrightnessRoute.ddc;
-            percent = ddc;
-          } else if (primary && _wmiAvailable()) {
-            route = BrightnessRoute.wmi;
-            percent = _wmiCached;
-          } else {
-            route = BrightnessRoute.gamma;
-          }
-          // WMI を調べ終える前は gamma と出るので、 その答えは覚えない
-          // (調べ終わってから呼び直した時に wmi へ変わるようにする)。
-          if (!(route == BrightnessRoute.gamma && primary && _wmiOk == null)) {
-            _routeCache[key] = route;
-          }
-        }
+        final route = cached ??
+            (primary && _wmiAvailable()
+                ? BrightnessRoute.wmi
+                : BrightnessRoute.gamma);
+        final percent = route == BrightnessRoute.wmi
+            ? _wmiCached
+            : route == BrightnessRoute.ddc
+                ? _ddcCache[key]
+                : null;
 
         out.add(LightMonitor(
           gdiName: name,
@@ -356,7 +361,9 @@ class DisplayLight {
   }
 
   /// DDC/CI で今の明るさ (%) を読む。 使えなければ null。
-  static int? _ddcRead(int left, int top) {
+  ///
+  /// ★ I2C の往復なので、 呼ぶのは別の糸から ([displayLightWorker])。
+  static int? ddcReadHere(int left, int top) {
     final h = _ddcOpen(left, top);
     if (h == null) return null;
     final mn = calloc<Uint32>(), cur = calloc<Uint32>(), mx = calloc<Uint32>();
@@ -381,7 +388,10 @@ class DisplayLight {
   }
 
   /// DDC/CI で明るさ (%) を当てる。
-  static bool _ddcWrite(int left, int top, int percent) {
+  ///
+  /// ★ モニターとの I2C の往復は数十〜数百 ms 掛かる (機種によっては秒)。
+  ///   画面の糸で回すと止まるので、 呼ぶのは別の糸から。
+  static bool ddcWriteHere(int left, int top, int percent) {
     final h = _ddcOpen(left, top);
     if (h == null) return false;
     final mn = calloc<Uint32>(), cur = calloc<Uint32>(), mx = calloc<Uint32>();
@@ -444,13 +454,67 @@ class DisplayLight {
   static Future<bool>? _wmiProbe;
 
   /// WMI で明るさを触れるかを 1 回だけ調べる。 **画面を出す前に呼ぶ**。
-  static Future<bool> ensureWmiProbed() {
+  static Future<bool> ensureWmiProbed() => ensureProbed();
+
+  /// 画面ごとの「どの道で明るさを変えるか」 を、 **別の糸で 1 回だけ**調べる。
+  ///
+  /// ★ DDC/CI (I2C の往復) と WMI (COM の往復) をここでまとめて済ませ、
+  ///   結果を控えへ入れる。 [list] はその控えを読むだけになるので、
+  ///   画面の糸が止まらない。
+  static Future<bool> ensureProbed() {
     if (_wmiOk != null) return Future<bool>.value(_wmiOk);
     return _wmiProbe ??= () async {
-      final v = _wmiReadBrightness();
+      // 画面の並びだけは軽いのでこちらで作る (EnumDisplayDevices だけ)。
+      final mons = <Map<String, Object?>>[];
+      try {
+        for (final m in list()) {
+          mons.add(<String, Object?>{
+            'gdi': m.gdiName,
+            'left': m.left,
+            'top': m.top,
+            'primary': m.primary,
+          });
+        }
+      } catch (_) {}
+      final r = await _run(<String, Object?>{'op': 'probe', 'mons': mons});
+      final v = (r['wmi'] as num?)?.toInt();
       _wmiCached = v;
+      final ddc = r['ddc'];
+      if (ddc is Map) {
+        ddc.forEach((k, val) {
+          if (val is! num) return;
+          _ddcCache['$k'] = val.toInt().clamp(0, 100);
+          _routeCache['$k'] = BrightnessRoute.ddc;
+        });
+      }
+      // DDC/CI が効かない画面のうち、 主モニターだけは WMI を当てにする。
+      for (final m in mons) {
+        final key = '${m['gdi']}@${m['left']},${m['top']}';
+        if (_routeCache.containsKey(key)) continue;
+        _routeCache[key] = (m['primary'] == true && v != null)
+            ? BrightnessRoute.wmi
+            : BrightnessRoute.gamma;
+      }
       return _wmiOk = v != null;
     }();
+  }
+
+  /// 別の糸へ仕事を渡す。 返事が来なければ時間で打ち切る。
+  ///
+  /// ★ 打ち切っても画面は止まらない (待つのをやめるだけ)。 相手が
+  ///   固まったままでも、 二度と触らないよう [_wmiGaveUp] を立てる。
+  static Future<Map<String, Object?>> _run(Map<String, Object?> msg) async {
+    try {
+      return await compute(displayLightWorker, msg)
+          .timeout(const Duration(seconds: 6));
+    } on TimeoutException {
+      debugPrint('明るさの仕事が返ってきません (${msg['op']})');
+      _wmiGaveUp = true;
+      return <String, Object?>{'ok': false};
+    } catch (e) {
+      debugPrint('明るさの仕事を渡せません: $e');
+      return <String, Object?>{'ok': false};
+    }
   }
 
   /// COM の相手を手放して、 受け皿も解放する。
@@ -566,7 +630,10 @@ class DisplayLight {
   }
 
   /// 内蔵パネルの今の明るさ (%)。 取れなければ null。
-  static int? _wmiReadBrightness() {
+  ///
+  /// ★ **この糸の上でそのまま COM を回す**。 画面の糸から直に呼ぶと
+  ///   固まるので、 呼ぶのは [displayLightWorker] (別の糸) から。
+  static int? wmiReadBrightnessHere() {
     if (!isSupported) return null;
     final svc = _wmiConnect();
     if (svc == null) return null;
@@ -601,7 +668,9 @@ class DisplayLight {
   }
 
   /// 内蔵パネルの明るさを [percent] (%) にする。
-  static bool _wmiSetBrightness(int percent) {
+  ///
+  /// ★ [wmiReadBrightnessHere] と同じで、 呼ぶのは別の糸から。
+  static bool wmiSetBrightnessHere(int percent) {
     if (!isSupported) return false;
     final svc = _wmiConnect();
     if (svc == null) return false;
@@ -715,8 +784,11 @@ class DisplayLight {
     }
   }
 
-  static Future<bool> _wmiWrite(int percent) async =>
-      _wmiSetBrightness(percent);
+  static Future<bool> _wmiWrite(int percent) async {
+    final r = await _run(<String, Object?>{'op': 'wmiWrite', 'v': percent});
+    if (r['ok'] == true) _wmiCached = percent.clamp(0, 100);
+    return r['ok'] == true;
+  }
 
 
   // ── 明るさを当てる (道は画面ごと) ───────────────────────────────
@@ -729,7 +801,17 @@ class DisplayLight {
     if (!isSupported) return false;
     switch (m.route) {
       case BrightnessRoute.ddc:
-        return _ddcWrite(m.left, m.top, percent);
+        final r = await _run(<String, Object?>{
+          'op': 'ddcWrite',
+          'left': m.left,
+          'top': m.top,
+          'v': percent,
+        });
+        if (r['ok'] == true) {
+          _ddcCache['${m.gdiName}@${m.left},${m.top}'] =
+              percent.clamp(0, 100);
+        }
+        return r['ok'] == true;
       case BrightnessRoute.wmi:
         return _wmiWrite(percent);
       case BrightnessRoute.gamma:
@@ -879,4 +961,71 @@ class DisplayLight {
       debugPrint('前回のガンマを戻せませんでした: $e');
     }
   }
+}
+
+
+// ── 明るさの読み書きを、 画面とは別の糸 (isolate) で走らせる ──────────
+//
+// ★ = ユーザー報告「ディスプレイ設定を開いて明るさを変えようとすると
+//   フリーズする」。
+//
+// 原因は **COM を画面の糸 (UI スレッド) で回していたこと**。
+// Flutter の窓の糸は STA (apartment threaded) で立ち上がっている。 そこから
+// WMI のような**別プロセスにいる相手**を呼ぶと、 呼び出しは窓の便り
+// (メッセージ) を配りながら行き来する決まりになっている。 ところが Dart から
+// FFI で同期に呼んでいる間は便りを配れないので、 **返事を待ったまま固まる**。
+// (セキュリティソフトが間に入って足止めすると、 なお長く固まる。)
+//
+// `dart run` や `flutter test` で動いていたのは、 そちらの糸が STA では
+// ないため。 実際のアプリだけで起きる、 たちの悪い違いだった。
+//
+// そこで **COM を触る仕事は必ず別の糸へ渡す**。 別の糸なら MTA として
+// 立ち上げられるので便りの配達が要らず、 何より**画面が止まらない**。
+// 返事が来なくても [DisplayLight] 側で時間を区切ってある。
+Future<Map<String, Object?>> displayLightWorker(Map<String, Object?> msg) async {
+  if (!Platform.isWindows) return <String, Object?>{'ok': false};
+  try {
+    // この糸は自分で立ち上げる。 MTA なら便りの配達が要らない。
+    w32.CoInitializeEx(nullptr, w32.COINIT_MULTITHREADED);
+  } catch (_) {}
+  final op = '${msg['op']}';
+  try {
+    switch (op) {
+      case 'wmiRead':
+        final v = DisplayLight.wmiReadBrightnessHere();
+        return <String, Object?>{'ok': v != null, 'value': v};
+      case 'probe':
+        // DDC/CI と WMI を、 この糸でまとめて調べる。
+        final ddc = <String, int>{};
+        final mons = (msg['mons'] as List?) ?? const [];
+        for (final raw in mons) {
+          if (raw is! Map) continue;
+          final left = (raw['left'] as num?)?.toInt() ?? 0;
+          final top = (raw['top'] as num?)?.toInt() ?? 0;
+          try {
+            final p = DisplayLight.ddcReadHere(left, top);
+            if (p != null) ddc['${raw['gdi']}@$left,$top'] = p;
+          } catch (_) {}
+        }
+        final w = DisplayLight.wmiReadBrightnessHere();
+        return <String, Object?>{'ok': true, 'wmi': w, 'ddc': ddc};
+      case 'wmiWrite':
+        final v = (msg['v'] as num?)?.toInt() ?? 0;
+        return <String, Object?>{
+          'ok': DisplayLight.wmiSetBrightnessHere(v),
+          'value': v,
+        };
+      case 'ddcWrite':
+        final v = (msg['v'] as num?)?.toInt() ?? 0;
+        final left = (msg['left'] as num?)?.toInt() ?? 0;
+        final top = (msg['top'] as num?)?.toInt() ?? 0;
+        return <String, Object?>{
+          'ok': DisplayLight.ddcWriteHere(left, top, v),
+          'value': v,
+        };
+    }
+  } catch (e) {
+    debugPrint('明るさの仕事に失敗 ($op): $e');
+  }
+  return <String, Object?>{'ok': false};
 }
