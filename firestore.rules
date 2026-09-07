@@ -207,9 +207,14 @@ service cloud.firestore {
         // 公開した人しか触ってはいけない所。
         //   access / editors … 権限そのもの
         //   hostUid          … 誰が公開者か
-        //   closed           … 公開の中止 (全員の画面を終わらせる印)
+        //
+        // ★ closed (公開の中止) はここから外した
+        //   (= ユーザー要望: 編集できる人も公開を中止できるように)。
+        //   閲覧だけの人は liveCanEdit() が false なので、 今までどおり
+        //   中止できない。 公開の登録そのもの (published/{code}) を消せる
+        //   のは、 引き続き公開した人だけ。
         function liveControlKeys() {
-          return ['access', 'editors', 'hostUid', 'closed'];
+          return ['access', 'editors', 'hostUid'];
         }
 
         allow read: if signedIn();
@@ -222,6 +227,32 @@ service cloud.firestore {
                           && !request.resource.data.diff(resource.data)
                                 .affectedKeys().hasAny(liveControlKeys()));
         allow delete: if liveHost();
+      }
+
+      // 本文の実体 (フリーノート / マークダウンの中身)。
+      //
+      // ★ = ユーザー報告「共有中のフリーノートの中身が共有されていない」。
+      //   これらのページの中身はページの JSON に入っていないので、 本文とは
+      //   別の書類で運ぶ。 重い (絵や長文) ので、 1.2 秒ごとに丸ごと読む
+      //   doc/main とは分けてある。
+      //
+      // 書ける人は doc/main と同じ判定にする。 ここには権限そのものを
+      // 置かないので、 隣の doc/main を読んで決める。
+      match /body/{bodyId} {
+        function liveMain() {
+          return get(/databases/$(database)/documents/published/$(code)/doc/main)
+                 .data;
+        }
+        function bodyCanEdit() {
+          return signedIn()
+                 && (liveMain().get('hostUid', '') == request.auth.uid
+                     || liveMain().get('access', 'edit') == 'edit'
+                     || (liveMain().get('access', 'edit') == 'list'
+                         && liveMain().get('editors', [])
+                              .hasAny([request.auth.uid])));
+        }
+        allow read: if signedIn();
+        allow write: if bodyCanEdit();
       }
 
       // 参加者の在席情報 (名前・色・今つかんでいるノード)。

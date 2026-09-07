@@ -391,6 +391,132 @@ function isPermissionError(err) {
   return err.code === 'api_key_insufficient_permissions';
 }
 
+/// ─── 年額 → 月額 の乗り換え: 残り分を「毎月の割引」 に変える ──────────
+///
+/// ★ = ユーザー要望「Pro 年額から Max 月額への切り替えなら、 Max 月額から
+///   割引率が適用された Pro 月額分を引いた分が請求されるようにして欲しい。
+///   翌月からも同様に」。
+///
+/// Stripe の既定 (proration) は、 使っていない年額分を**まとめて**控えに
+/// して次の請求から順に食い潰す。 そのため初月と数か月は $0.00 になり、
+/// ある月から急に満額になる。 これは「差額を毎月払う」 とは別物。
+///
+/// そこで、 年額を 12 で割った額 (= 割引後の月額) を `amount_off` にした
+/// **毎月効く割引**を作って貼り、 割り勘 (proration) は切る。 こうすると
+/// 毎月 「新しい月額 − 前のプランの月額」 だけが請求され、 残りの月数が
+/// 尽きると自動で満額に戻る (Stripe が期限で外してくれる)。
+///
+/// 残りの値打ち (最小通貨単位) と、 何か月ぶんに割るか。
+function carryPlanFor(item, sub, newUnitAmount) {
+  const price = (item && item.price) || null;
+  const annual = price && typeof price.unit_amount === 'number'
+    ? price.unit_amount
+    : 0;
+  const currency = String((price && price.currency) || 'usd').toLowerCase();
+  if (annual <= 0) return null;
+  let monthly = Math.round(annual / 12);
+  if (monthly <= 0) return null;
+  // 新しい料金以上には割り引かない (はみ出した分は Stripe では消えるため)。
+  if (typeof newUnitAmount === 'number' && newUnitAmount > 0) {
+    monthly = Math.min(monthly, newUnitAmount - 1);
+  }
+  if (monthly <= 0) return null;
+  const ps = Number((item && item.current_period_start) ||
+    (sub && sub.current_period_start) || 0);
+  const pe = Number((item && item.current_period_end) ||
+    (sub && sub.current_period_end) || 0);
+  const now = Math.floor(Date.now() / 1000);
+  let remaining = annual;
+  if (pe > 0 && ps > 0 && pe > ps) {
+    remaining = Math.round(annual * Math.max(0, pe - now) / (pe - ps));
+  }
+  if (remaining <= 0) return null;
+  // 端数は切り上げ (最後の月だけ数十円多く引く程度。 こちらが損を被る側)。
+  const months = Math.max(1, Math.ceil(remaining / monthly));
+  // ★ 12 か月で引き切れない時は、 この形にしてはいけない。
+  //   毎月の割引は最長でも 12 回ぶんしか掛けられないので、 残りを
+  //   切り捨てる事になり、 前払いした分が消えてしまう
+  //   (例: Max 年額 → Pro 月額)。 その時は今までどおり Stripe の控えに
+  //   任せる (満額が控えとして戻るので、 1 円も失われない)。
+  if (months > 12) return null;
+  return { monthly, months, currency, remaining, annual, periodEnd: pe };
+}
+
+/// 割引そのものを作る (同じ中身なら使い回すので、 数個しか増えない)。
+async function ensureCarryCoupon(env, carry) {
+  const id = `hn_carry_${carry.currency}_${carry.monthly}_${carry.months}`;
+  const got = await stripeApiGet(env, `coupons/${encodeURIComponent(id)}`);
+  if (got && !got.error && got.id) return id;
+  const made = await stripeApi(env, 'coupons', {
+    id,
+    amount_off: String(carry.monthly),
+    currency: carry.currency,
+    duration: 'repeating',
+    duration_in_months: String(carry.months),
+    name: 'Carryover from previous plan',
+    'metadata[kind]': 'carryover',
+  });
+  if (made && made.error) {
+    // 競り合って同時に作った時は、 出来ている方を使う。
+    if (String(made.error.code || '') === 'resource_already_exists') return id;
+    return null;
+  }
+  return made && made.id ? made.id : null;
+}
+
+/// 今ついている「残り分」 の割引を読む (expand[]=discounts で取った物)。
+function readCarryDiscount(sub) {
+  const list = (sub && sub.discounts) || (sub && sub.discount ? [sub.discount] : []);
+  for (const d of Array.isArray(list) ? list : []) {
+    const c = d && (d.coupon || null);
+    if (c && c.metadata && c.metadata.kind === 'carryover') {
+      return {
+        id: String(c.id || ''),
+        monthly: Number(c.amount_off || 0),
+        months: Number(c.duration_in_months || 0),
+        currency: String(c.currency || 'usd').toLowerCase(),
+        start: Number(d.start || 0),
+      };
+    }
+  }
+  return null;
+}
+
+/// まだ使っていない残り分 (最小通貨単位)。
+function carryRemainingOf(carry, nowSec) {
+  if (!carry || !carry.monthly || !carry.months) return 0;
+  const start = carry.start > 0 ? carry.start : nowSec;
+  // 1 か月 = 30.44 日で数える (請求書の枚数と 1 枚ずれても被害は小さい)。
+  const used = Math.floor(Math.max(0, nowSec - start) / 2629800);
+  return Math.max(0, (carry.months - used) * carry.monthly);
+}
+
+/// 残り分を顧客の控えに戻す (割引を外す時・解約された時)。
+/// 控えに入れておけば、 次に契約した時の請求から自動で差し引かれる。
+async function refundCarryToBalance(env, customerId, amount, currency) {
+  if (!customerId || !(amount > 0)) return false;
+  const r = await stripeApi(
+    env, `customers/${customerId}/balance_transactions`, {
+      // マイナス = 顧客の貸方 (次の請求から引かれる)。
+      amount: String(-Math.round(amount)),
+      currency: String(currency || 'usd').toLowerCase(),
+      description: 'Carryover from previous plan',
+      'metadata[kind]': 'carryover_refund',
+    });
+  if (r && !r.error) return true;
+  // ★ 戻せなかった = 前払い分がそのままだと消える。 黙って落とさず、
+  //   後から手当てできるように控えを残す (鍵の権限不足など)。
+  const why = (r && r.error && (r.error.code || r.error.message)) || 'unknown';
+  console.log('carry refund failed', customerId, amount, currency, why);
+  try {
+    await env.ENTITLEMENTS.put(
+      `carryowed:${customerId}:${Date.now()}`,
+      JSON.stringify({ amount, currency, why, at: Date.now() }),
+      { expirationTtl: 60 * 60 * 24 * 400 });
+  } catch (_) {}
+  return false;
+}
+
 async function handleChangePlan(request, env, preview) {
   const uid = await authUid(request, env);
   if (!uid) return unauthorized();
@@ -429,7 +555,9 @@ async function handleChangePlan(request, env, preview) {
       : Math.floor(Date.now() / 1000);
 
   // 差し替える品目を取る (1 契約 1 品目の前提)。
-  const raw = await stripeApiGet(env, `subscriptions/${current.id}`);
+  // 割引も一緒に読む (前回の乗り換えで貼った「残り分」 を見るため)。
+  const raw = await stripeApiGet(
+    env, `subscriptions/${current.id}?expand[]=discounts`);
   const item = ((raw && raw.items && raw.items.data) || [])[0];
   if (!item) return json({ error: 'no subscription item' }, 500);
   if (item.price && item.price.id === priceId) {
@@ -461,6 +589,57 @@ async function handleChangePlan(request, env, preview) {
   const intervalChanged = newInterval !== curInterval;
   const anchor = intervalChanged ? 'now' : 'unchanged';
 
+  // ── 年額 → 月額: 残り分を「毎月の割引」 にする (上の説明を参照) ──
+  const newPrice = await stripeApiGet(env, `prices/${priceId}`);
+  const newUnitAmount =
+    newPrice && typeof newPrice.unit_amount === 'number'
+      ? newPrice.unit_amount
+      : null;
+  const nowSec = Math.floor(Date.now() / 1000);
+  // 前の乗り換えで貼った割引が残っていれば、 その残りを引き継ぐ。
+  const prevCarry = readCarryDiscount(raw);
+  const prevRemaining = carryRemainingOf(prevCarry, nowSec);
+  let carry = null;
+  if (!yearly && curInterval === 'year') {
+    carry = carryPlanFor(item, raw, newUnitAmount);
+  } else if (!yearly && prevCarry && prevRemaining > 0) {
+    // 月額 → 月額 の乗り換え。 残り分はそのまま次のプランへ持ち越す。
+    let monthly = prevCarry.monthly;
+    if (newUnitAmount && newUnitAmount > 0) {
+      monthly = Math.min(monthly, newUnitAmount - 1);
+    }
+    const need = monthly > 0 ? Math.ceil(prevRemaining / monthly) : 0;
+    if (monthly > 0 && need >= 1 && need <= 12) {
+      carry = {
+        monthly,
+        months: need,
+        currency: prevCarry.currency,
+        remaining: prevRemaining,
+        annual: 0,
+        periodEnd: 0,
+      };
+    }
+  }
+  let carryCoupon = null;
+  const carryWanted = !!carry;
+  if (carry) {
+    carryCoupon = await ensureCarryCoupon(env, carry);
+    if (!carryCoupon) carry = null; // 作れなければ今までどおりに落とす
+  }
+  const useCarry = !!(carry && carryCoupon);
+  // 「毎月引く形にしたかったのに、 割引を作れなかった」 = 鍵の権限不足など。
+  // 黙って昔の形に落ちると気付けないので、 印を返す。
+  const carryBlocked = carryWanted && !useCarry;
+  // 残り分を毎月引く時は、 まとめて控えにする割り勘は使わない
+  // (両方効かせると二重に得をしてしまう)。
+  const effProration = useCarry ? 'none' : prorationBehavior;
+  let carryEndsAt = 0;
+  if (useCarry) {
+    const d = new Date(nowSec * 1000);
+    d.setUTCMonth(d.getUTCMonth() + carry.months);
+    carryEndsAt = Math.floor(d.getTime() / 1000);
+  }
+
   // ── 見積もり: いくら請求されるかだけを出す (契約は変えない) ──
   if (preview) {
     // ★ 変更後、 次の請求日から掛かる「通常の料金」 も返す
@@ -486,9 +665,11 @@ async function handleChangePlan(request, env, preview) {
       subscription: current.id,
       'subscription_details[items][0][id]': item.id,
       'subscription_details[items][0][price]': priceId,
-      'subscription_details[proration_behavior]': prorationBehavior,
+      'subscription_details[proration_behavior]': effProration,
       // 本実行と同じ条件で見積もる (額がずれないように)。
       'subscription_details[billing_cycle_anchor]': anchor,
+      // 「残り分」 の割引も乗せて見積もる (乗せないと満額に見える)。
+      ...(useCarry ? { 'discounts[0][coupon]': carryCoupon } : {}),
       ...(intervalChanged
         ? {}
         : { 'subscription_details[proration_date]': String(prorationDate) }),
@@ -506,8 +687,9 @@ async function handleChangePlan(request, env, preview) {
         subscription: current.id,
         'subscription_items[0][id]': item.id,
         'subscription_items[0][price]': priceId,
-        subscription_proration_behavior: prorationBehavior,
+        subscription_proration_behavior: effProration,
         subscription_billing_cycle_anchor: anchor,
+        ...(useCarry ? { 'discounts[0][coupon]': carryCoupon } : {}),
         ...(intervalChanged
           ? {}
           : { subscription_proration_date: String(prorationDate) }),
@@ -537,6 +719,10 @@ async function handleChangePlan(request, env, preview) {
         nextCurrency,
         nextInterval,
         anchorReset: intervalChanged,
+        carryMonthly: useCarry ? carry.monthly : 0,
+        carryMonths: useCarry ? carry.months : 0,
+        carryEndsAt,
+        carryBlocked,
       });
     }
     if (!pv || pv.error) {
@@ -569,7 +755,37 @@ async function handleChangePlan(request, env, preview) {
         typeof pv.ending_balance === 'number' && pv.ending_balance < 0
           ? -pv.ending_balance
           : 0,
+      // ── 前のプランの残り分を毎月引く時の中身 (0 なら今までどおり) ──
+      // carryMonthly: 毎月引く額、 carryMonths: 何か月引くか、
+      // carryEndsAt: 満額に戻る日 (秒)。
+      carryMonthly: useCarry ? carry.monthly : 0,
+      carryMonths: useCarry ? carry.months : 0,
+      carryEndsAt,
+      carryBlocked,
     });
+  }
+
+  // 「残り分」 の割引が付いていたのに、 今回それを引き継がない乗り換え
+  // (= 年額へ戻る等) では、 残っている値打ちを顧客の控えに戻してから外す。
+  // そうしないと、 前払いした分が黙って消える。
+  if (prevCarry && prevRemaining > 0 && !useCarry) {
+    await refundCarryToBalance(
+      env, raw.customer, prevRemaining, prevCarry.currency);
+  }
+
+  // ★ 割引は**先に**貼る。 プランの差し替えと同じ 1 回の要求に混ぜると、
+  //   その要求が作る請求書に割引が乗る保証が無く、 初回だけ満額 (= 割引前)
+  //   を請求してしまう恐れがある。 割引だけの変更は請求書を作らないので、
+  //   先に貼っておけば必ず次の請求書 (= この後の差し替えが作る物) に乗る。
+  if (useCarry) {
+    const dres = await stripeApi(env, `subscriptions/${current.id}`, {
+      'discounts[0][coupon]': carryCoupon,
+      proration_behavior: 'none',
+    });
+    if (!dres || dres.error) {
+      const msg = (dres && dres.error && dres.error.message) || 'stripe error';
+      return json({ error: msg }, 502);
+    }
   }
 
   const updated = await stripeApi(env, `subscriptions/${current.id}`, {
@@ -578,17 +794,38 @@ async function handleChangePlan(request, env, preview) {
     'items[0][id]': item.id,
     'items[0][price]': priceId,
     // 上げる時はその場で差額を請求。 下げる時は控えとして戻すだけ。
-    proration_behavior: prorationBehavior,
+    // 残り分を毎月引く時は割り勘そのものを切る (二重取りにしない)。
+    proration_behavior: effProration,
     // 支払日は動かさない (= Android と同じ)。 ただし年 ⇄ 月 で間隔が
     // 変わる時だけは今に引き直す (上の説明を参照)。
     billing_cycle_anchor: anchor,
+    // 割引は上で貼ってあるので、 ここでは触らない (項目を渡さない =
+    // そのまま)。 引き継がない時だけ、 空文字で全部外す。
+    ...(useCarry ? {} : prevCarry ? { discounts: '' } : {}),
     // 払えなかったらプランを変えない。
     payment_behavior: 'error_if_incomplete',
     // 後から来る webhook がプランを取り違えないように控える。
     'metadata[uid]': uid,
     'metadata[plan]': plan,
+    // 解約された時に残りを戻せるよう、 中身を控える。
+    'metadata[carry_monthly]': useCarry ? String(carry.monthly) : '',
+    'metadata[carry_months]': useCarry ? String(carry.months) : '',
+    'metadata[carry_currency]': useCarry ? carry.currency : '',
+    'metadata[carry_start]': useCarry ? String(nowSec) : '',
   });
   if (!updated || updated.error) {
+    // 差し替えに失敗した = プランは前のまま。 先に貼った割引だけが残ると
+    // 前のプランが不当に安くなるので、 外してから返す。
+    if (useCarry) {
+      await stripeApi(env, `subscriptions/${current.id}`, {
+        // 元々付いていた割引があれば、 それを貼り直す (前払い分を
+        // 失わせない)。 無ければ外すだけ。
+        ...(prevCarry && prevCarry.id
+            ? { 'discounts[0][coupon]': prevCarry.id }
+            : { discounts: '' }),
+        proration_behavior: 'none',
+      });
+    }
     const msg = (updated && updated.error && updated.error.message) ||
       'stripe error';
     return json({ error: msg }, 502);
@@ -607,6 +844,10 @@ async function handleChangePlan(request, env, preview) {
     plan,
     prorated: up,
     anchorReset: intervalChanged,
+    carryMonthly: useCarry ? carry.monthly : 0,
+    carryMonths: useCarry ? carry.months : 0,
+    carryEndsAt,
+    carryBlocked,
     subscription: normalizeSubscription(updated),
   });
 }
@@ -1361,6 +1602,33 @@ async function handleWebhook(request, env) {
       }
       case 'customer.subscription.deleted': {
         const sub = event.data.object;
+        // ★ 前のプランの残り分を毎月引いている途中で解約された時は、
+        //   まだ使っていない分を顧客の控えに戻す。 割り勘を切っている以上、
+        //   ここで戻さないと前払いした値打ちが黙って消えてしまう。
+        try {
+          const md = sub.metadata || {};
+          const monthly = Number(md.carry_monthly || 0);
+          const months = Number(md.carry_months || 0);
+          const start = Number(md.carry_start || 0);
+          // 二度戻さない印は KV に置く (解約済みのサブスクには metadata を
+          // 書き足せないので、 webhook が再送されても効くように)。
+          const doneKey = `carryrefund:${sub.id}`;
+          const already = await env.ENTITLEMENTS.get(doneKey);
+          if (monthly > 0 && months > 0 && !already) {
+            const left = carryRemainingOf(
+              { monthly, months, start, currency: md.carry_currency || 'usd' },
+              Math.floor(Date.now() / 1000));
+            if (left > 0) {
+              await env.ENTITLEMENTS.put(doneKey, String(left),
+                { expirationTtl: 60 * 60 * 24 * 400 });
+              const ok = await refundCarryToBalance(
+                env, sub.customer, left, md.carry_currency || 'usd');
+              if (!ok) await env.ENTITLEMENTS.delete(doneKey);
+            }
+          }
+        } catch (e) {
+          console.log('carry refund failed', String(e));
+        }
         const uid = (sub.metadata && sub.metadata.uid) ||
           (await env.ENTITLEMENTS.get(`sub:${sub.id}`));
         if (uid) {

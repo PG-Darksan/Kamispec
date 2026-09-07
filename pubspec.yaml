@@ -5,7 +5,7 @@ description: >-
 publish_to: 'none'
 # ビルド番号 (b205 …) を正として揃える。 msix_version も同じ番号にする
 #   (= ストア用は 4 桁・末尾 0)。 リリースのたびに両方を上げること。
-version: 1.0.0+312
+version: 1.0.0+320
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -362,6 +362,9 @@ flutter:
   #    で日本語が □ にならず正しく描画される。 ──
   assets:
     - assets/fonts/NotoSansJP-Regular.ttf
+    # 見本の壁紙 (= ユーザー要望: テンプレートとして選べるように)。
+    #   ディスプレイ設定の「壁紙」 から 1 押しで貼れる。
+    - assets/wallpapers/Desktop.jpg
     # 交通系IC 駅コード→駅名 変換テーブル (= ユーザー要望: 駅コードを駅名表示)。
     #   ファイルが空でも可 (未登録は駅コード表示にフォールバック)。
     - assets/transit/station_codes.csv

@@ -2571,6 +2571,12 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         }
       }
       if (!ok) throw initErr ?? Exception('WebView init failed');
+      // ★ WebView2 の既定の背景は白。 下で入れる CSS がスクロールバーの
+      //   溝を透明にしているので、 そのままだと右端に白い柱が残り続ける
+      //   (= ユーザー報告: スクロールバーの後ろの白い所が消えない)。
+      try {
+        await ctrl.setBackgroundColor(const Color(0xFF14141F));
+      } catch (_) {}
       // ポップアップ / 新規ウィンドウは現在の WebView 内で開く (広告から戻れる)。
       try {
         await ctrl
@@ -8183,26 +8189,51 @@ const String _kGsAutoHideScrollbarJs = r'''
 (function(){
   if (window.__mmAutoHideBar) return;
   window.__mmAutoHideBar = true;
-  var CSS = ''
-    + '::-webkit-scrollbar{width:10px;height:10px;background:transparent}'
-    + '::-webkit-scrollbar-track{background:transparent}'
-    + '::-webkit-scrollbar-corner{background:transparent}'
+  // ★ 溝 (track) を「透明」 にすると、 その下にある WebView の地の色が
+  //   そのまま出る。 WebView2 の地は白なので、 暗いページでも右端に白い
+  //   柱が残り続ける (= ユーザー報告)。 ページ自身の背景色で塗って隠す。
+  function pageBg(){
+    try {
+      var b = getComputedStyle(document.documentElement).backgroundColor;
+      if (!b || b === 'transparent' || b === 'rgba(0, 0, 0, 0)') {
+        b = document.body
+            ? getComputedStyle(document.body).backgroundColor : '';
+      }
+      if (!b || b === 'transparent' || b === 'rgba(0, 0, 0, 0)') return '';
+      return b;
+    } catch(e){ return ''; }
+  }
+  function buildCss(){
+    var bg = pageBg();
+    var track = bg ? bg : 'transparent';
+    return ''
+    + '::-webkit-scrollbar{width:10px;height:10px;background:' + track + '}'
+    + '::-webkit-scrollbar-track{background:' + track + '}'
+    + '::-webkit-scrollbar-corner{background:' + track + '}'
     + '::-webkit-scrollbar-thumb{background:transparent;border-radius:8px;'
     + 'border:2px solid transparent;background-clip:content-box;'
     + 'transition:background-color .25s ease}'
     + 'html.__mmBarOn ::-webkit-scrollbar-thumb,'
     + 'html.__mmBarOn::-webkit-scrollbar-thumb'
     + '{background:rgba(140,140,140,.75);background-clip:content-box}';
+  }
   function addCss(){
     var head = document.head || document.documentElement;
-    if (!head || document.getElementById('__mmBarCss')) return;
-    var st = document.createElement('style');
-    st.id = '__mmBarCss';
-    st.textContent = CSS;
-    head.appendChild(st);
+    if (!head) return;
+    var st = document.getElementById('__mmBarCss');
+    if (!st) {
+      st = document.createElement('style');
+      st.id = '__mmBarCss';
+      head.appendChild(st);
+    }
+    st.textContent = buildCss();
   }
   addCss();
   document.addEventListener('DOMContentLoaded', addCss);
+  // ページの色が後から決まる (テーマの切り替え等) 事があるので、 少し
+  // 経ってからもう一度塗り直す。
+  setTimeout(addCss, 600);
+  setTimeout(addCss, 2500);
   var timer = null;
   function show(){
     var el = document.documentElement;

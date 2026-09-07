@@ -1342,6 +1342,29 @@ class FloatL10n {
   }
 
   static const Map<String, Map<String, String>> _table = {
+    // ── 外の窓を 全画面 ⇄ 元の大きさ に切り替える (= ユーザー要望) ──
+    'float.toFullscreen': {
+      'ja': '全画面にする',
+      'en': 'Make fullscreen',
+      'zh': '全屏显示',
+      'ko': '전체 화면으로',
+      'es': 'Pantalla completa',
+      'fr': 'Plein écran',
+      'de': 'Vollbild',
+      'pt': 'Tela cheia',
+      'ru': 'Во весь экран',
+    },
+    'float.toFloating': {
+      'ja': 'フローティングに戻す',
+      'en': 'Back to floating',
+      'zh': '返回浮动窗口',
+      'ko': '플로팅으로 되돌리기',
+      'es': 'Volver a flotante',
+      'fr': 'Revenir en fenêtre flottante',
+      'de': 'Zurück zum schwebenden Fenster',
+      'pt': 'Voltar para flutuante',
+      'ru': 'Вернуть плавающее окно',
+    },
     // ── 外に出した AI アシスタントの窓 (= ユーザー要望) ──
     // ── 画面録画をアプリの外に出した時の文言 (= ユーザー要望)。
     //    'rec.stop' は既にあるのでそちらを使う。 ──
@@ -7824,6 +7847,24 @@ class _FloatingWebWindowAppState extends State<_FloatingWebWindowApp>
     });
   }
 
+  /// 画面いっぱいに広げているか (= 全画面 ⇄ フローティングの切り替え用)。
+  bool _maximized = false;
+
+  Future<void> _toggleMaximized() async {
+    try {
+      final now = await windowManager.isMaximized();
+      if (now) {
+        await windowManager.unmaximize();
+      } else {
+        await windowManager.maximize();
+      }
+      if (!mounted) return;
+      setState(() => _maximized = !now);
+    } catch (e) {
+      debugPrint('全画面の切り替えに失敗: $e');
+    }
+  }
+
   Future<void> _togglePin() async {
     final next = !_pinned;
     setState(() => _pinned = next);
@@ -8054,6 +8095,26 @@ class _FloatingWebWindowAppState extends State<_FloatingWebWindowApp>
                     // ignore: discarded_futures
                     _ctrl.reload();
                   },
+                ),
+                // ── 全画面 ⇄ 元の大きさ (= ユーザー要望: 全画面にした後、
+                //    もう一度フローティングに戻すボタンが欲しい) ──
+                //    この窓は独立した窓なので、 画面いっぱいに広げる /
+                //    元の大きさに戻す をここで切り替える。
+                IconButton(
+                  tooltip: FloatL10n.t(
+                      _maximized ? 'float.toFloating' : 'float.toFullscreen'),
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 28, minHeight: 28),
+                  icon: Icon(
+                      _maximized
+                          ? Icons.fullscreen_exit_rounded
+                          : Icons.fullscreen_rounded,
+                      size: 16,
+                      color: _maximized
+                          ? const Color(0xFF4FC3F7)
+                          : Colors.white38),
+                  onPressed: () => unawaited(_toggleMaximized()),
                 ),
                 // ── ヘッダーを隠す (= ユーザー要望) ──
                 IconButton(

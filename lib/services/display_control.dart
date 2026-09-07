@@ -105,7 +105,11 @@ class DisplayControl {
   /// まだ繋いでいない画面ぶんに出す、 よく使う拡大率
   /// (= ユーザー要望: 繋いでいない時でも予め決めておけるように)。
   /// 本物が繋がれば、 その画面が返す本当の選択肢に差し替わる。
-  static const List<int> commonScales = [100, 125, 150, 175, 200, 225, 250];
+  ///
+  /// ★ 225% / 250% までは出さない (= ユーザー要望: サブモニターだけ 250% まで
+  ///   選べるのはおかしい)。 今ある画面が返す選択肢が使えない時の予備なので、
+  ///   ふつうの画面が出す範囲に揃えておく。
+  static const List<int> commonScales = [100, 125, 150, 175, 200];
 
   // ── user32 の入口 ──────────────────────────────────────────────
   static ffi.DynamicLibrary get _user32 =>
@@ -505,6 +509,38 @@ class DisplayControl {
     }
   }
 
+  /// 今の並べ方を読む。 読めなければ null。
+  /// (= ユーザー要望: 壁紙の見本を「実際にどう貼られるか」 に合わせる。
+  ///  そのために、 今 Windows が使っている並べ方を知る必要がある)。
+  static WallpaperFit? getWallpaperFit() {
+    if (!isSupported) return null;
+    final obj = _createWallpaper();
+    if (obj == ffi.nullptr) return null;
+    final out = pkgffi.calloc<ffi.Int32>();
+    try {
+      // 11: GetPosition(DESKTOP_WALLPAPER_POSITION*)
+      final getPos = _vtable(obj)[11]
+          .cast<
+              ffi.NativeFunction<
+                  ffi.Int32 Function(
+                      ffi.Pointer<ffi.Void>, ffi.Pointer<ffi.Int32>)>>()
+          .asFunction<
+              int Function(ffi.Pointer<ffi.Void>, ffi.Pointer<ffi.Int32>)>();
+      if (getPos(obj, out) != 0) return null;
+      final v = out.value;
+      for (final f in WallpaperFit.values) {
+        if (f.value == v) return f;
+      }
+      return null;
+    } catch (e) {
+      debugPrint('壁紙の並べ方の取得に失敗: $e');
+      return null;
+    } finally {
+      pkgffi.calloc.free(out);
+      _release(obj);
+    }
+  }
+
   /// 並べ方だけを変える。
   static bool setWallpaperFit(WallpaperFit fit) {
     if (!isSupported) return false;
@@ -516,7 +552,11 @@ class DisplayControl {
               ffi.NativeFunction<
                   ffi.Int32 Function(ffi.Pointer<ffi.Void>, ffi.Int32)>>()
           .asFunction<int Function(ffi.Pointer<ffi.Void>, int)>();
-      return setPos(obj, fit.value) == 0;
+      // ★ SetPosition は「もうその並べ方です」 の時に S_FALSE (=1) を返す。
+      //   0 だけを成功と見なすと、 今選ばれている物を押しただけで
+      //   「変えられませんでした」 と赤字が出る (= 実害のある誤報)。
+      final hr = setPos(obj, fit.value);
+      return hr >= 0;
     } catch (e) {
       debugPrint('壁紙の並べ方の設定に失敗: $e');
       return false;

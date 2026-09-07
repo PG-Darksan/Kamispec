@@ -1711,7 +1711,15 @@ class LivePeer {
 
   /// この参加者が今編集している (= ロックしている) ノード ID。
   final String? lockNodeId;
+
+  /// 最後に在席を知らせた時刻。 ★ サーバーの updateTime から
+  /// **この端末の時計に引き直した値** (= 時計のずれで「離席」 と
+  /// 誤判定しないため。 詳しくは _livePullPeers)。
   final DateTime lastSeen;
+
+  /// 相手が選んでいるアイコン (絵文字 1 文字。 '' = 未設定)
+  /// (= ユーザー要望: 共同編集の相手にもアイコンが伝わるように)。
+  final String avatar;
 
   const LivePeer({
     required this.clientId,
@@ -1720,11 +1728,50 @@ class LivePeer {
     required this.colorRgb,
     required this.lastSeen,
     this.lockNodeId,
+    this.avatar = '',
   });
 
   /// 一定時間ハートビートが来なければ「離席」 とみなす (= ロックも外れる)。
   bool get isStale =>
       DateTime.now().difference(lastSeen) > const Duration(seconds: 12);
+
+  /// 長く来ていない = サーバーの札も片付けてよい (離席の 2 倍以上)。
+  bool get isLongGone =>
+      DateTime.now().difference(lastSeen) > const Duration(seconds: 30);
+}
+
+/// 共同編集で「誰が足したか」 を数秒だけ出すための印
+/// (= ユーザー要望: 要素が追加されたら枠と名前を出して、 誰が行ったか
+/// 分かるように)。
+class LiveAddMark {
+  final String name;
+  final int colorRgb;
+  final String avatar;
+  final DateTime expiresAt;
+  const LiveAddMark({
+    required this.name,
+    required this.colorRgb,
+    required this.avatar,
+    required this.expiresAt,
+  });
+  bool get isExpired => DateTime.now().isAfter(expiresAt);
+}
+
+/// 本文 (フリーノート / マークダウン) を最後に送ってきた人。
+/// フリーノート側で「誰が描き足したか」 を出すのに使う。
+class LiveBodyAuthor {
+  final String clientId;
+  final String name;
+  final int colorRgb;
+  final String avatar;
+  final int at;
+  const LiveBodyAuthor({
+    required this.clientId,
+    required this.name,
+    required this.colorRgb,
+    required this.avatar,
+    required this.at,
+  });
 }
 
 class GoogleSearchMemo {
@@ -1929,6 +1976,13 @@ class MindMapProvider extends ChangeNotifier {
       pageType != 'videoEditor' &&
       pageType != 'document' &&
       pageType != 'aiStudio';
+
+  /// リアルタイム共同編集できるページ種別か (= ユーザー要望: 動画編集
+  /// ページでは共同編集できないように、 項目自体を出さない)。
+  /// 動画編集の中身 (タイムライン) は prefs にしか無く、 共同編集の
+  /// 経路では運べない。 入口を全部ここで揃える。
+  static bool isLiveSharablePageType(String pageType) =>
+      pageType != 'videoEditor';
 
   final List<MindMapPage> _pages = [];
 
@@ -3574,6 +3628,297 @@ class MindMapProvider extends ChangeNotifier {
     }
   }
 
+  // ─── フリーノートの本文を要素単位で合わせる (共同編集用) ─────────────
+  //
+  // ★ = ユーザー報告「フリーノートを共同編集すると、 書いた内容が相手に
+  //   反映されない / 書き始めると参加から外れてデータが食い違う」。
+  //   以前は本文 (JSON 丸ごと) を「後から書いた人が勝ち」 で置き換えて
+  //   いたので、 両方が描くと片方の線が必ず消えていた。
+  //
+  // ノードの共同編集と同じく、 **線 / 文字 / 図形 / 画像 1 つずつ** に
+  // ID を持たせ、 前回の共通の版 (base) を基準に 3 つを合わせる
+  // (クラウド同期の 3-way マージと同じ考え方):
+  //   ・相手が足した物は取り込む / 自分が足した物は残す
+  //   ・相手が消した物は消す (ただし自分が触った物は残す)
+  //   ・同じ物を両方が変えた時は自分を優先 (次の送信で相手に届く)
+  //
+  // ID は画面側 (_PaintStroke 等) が付ける。 古い控えには無いので、 無い時は
+  // **中身から決まる ID** を使う (同じ中身ならどの端末でも同じ ID になる)。
+  // 画像の 'p' (端末のパス) は端末ごとに違うので、 中身の比較からは外す。
+
+  /// 中身から決まる ID (id が無い古い要素用)。 画面側の fromJson と
+  /// ここ (生の JSON) の両方から同じ関数を使う。
+  static String paintItemFallbackId(Map item) {
+    final canon = jsonEncode(_paintCanonical(item));
+    // 32 bit の FNV-1a を種を変えて 2 回 (64 bit の演算は Web で使えない)。
+    int h1 = 0x811C9DC5, h2 = 0x050C5D1F;
+    for (final unit in canon.codeUnits) {
+      h1 = ((h1 ^ unit) * 0x01000193) & 0xFFFFFFFF;
+      h2 = ((h2 ^ unit) * 0x01000193) & 0xFFFFFFFF;
+    }
+    return 'h${h1.toRadixString(36)}${h2.toRadixString(36)}';
+  }
+
+  /// 比較用に正規化する: 鍵を並べ替え、 端末ごとに違う物
+  /// (id / 画像のパス / 置き場の URL / 表示中の番号) を外す。
+  static dynamic _paintCanonical(dynamic node) {
+    if (node is Map) {
+      final keys = node.keys.map((k) => '$k').toList()..sort();
+      final out = <String, dynamic>{};
+      for (final k in keys) {
+        if (k == 'id' || k == 'lu' || k == 'cf' || k == 'noteSel' ||
+            k == 'sel' || k == 'v') {
+          continue;
+        }
+        // ★ 画像の置き場 ('p' / 'bgi') は端末ごとに違うので、 比較から外す
+        //   (= 検証で判明: 受け取った側は URL から作った別の名前で保存する
+        //   ので、 名前だけ残すやり方では「中身が違う」 と誤判定し、 両方が
+        //   相手へ送り返し続ける無限往復になっていた)。 どの要素かは 'id'、
+        //   同じ画像かは 'lu' で分かるので、 道そのものは要らない。
+        //
+        //   ★★ 'p' は**線の通り道 (点の並び) にも使われている**ので、
+        //   文字列の時だけ外す (= 検算で判明: まとめて外したら、 相手が
+        //   線を動かしても「変わっていない」 と見なして届かなくなった)。
+        if (k == 'bgi' || k == 'bgiLu') continue;
+        final v = node[k];
+        if (k == 'p' && v is String) continue; // 画像の道
+        out[k] = _paintCanonical(v);
+      }
+      return out;
+    }
+    if (node is List) return node.map(_paintCanonical).toList();
+    if (node is double && node == node.roundToDouble()) {
+      // 1.0 と 1 を同じに扱う (端末や版で書き方が揺れる)。
+      return node.toInt();
+    }
+    return node;
+  }
+
+  /// 本文が「見た目として」 同じか (端末ごとの差は無視する)。
+  static bool paintBodiesEqual(String a, String b) {
+    if (a == b) return true;
+    if (a.isEmpty || b.isEmpty) return false;
+    try {
+      return jsonEncode(_paintCanonical(jsonDecode(a))) ==
+          jsonEncode(_paintCanonical(jsonDecode(b)));
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static String _paintIdOf(Map item, int index, String kind) {
+    final id = item['id'];
+    if (id is String && id.isNotEmpty) return id;
+    // ノート / 紙は中身が増えるたびに変わるので、 位置で決める。
+    if (kind == 'note') return 'nt$index';
+    if (kind == 'sheet') return 'sh$index';
+    return paintItemFallbackId(item);
+  }
+
+  /// 紙の「中身以外」 (名前 / 大きさ / 罫線 / 用紙の色 / 背景) の比較用。
+  /// 背景画像は端末ごとに道が違うので、 共有の置き場の URL ('bgiLu') が
+  /// あればそれで、 無ければ「敷いてあるか」 だけで比べる。
+  static String _paintSheetScalarSig(Map m) {
+    final out = <String, dynamic>{};
+    for (final k in const ['n', 'sz', 'cw', 'ch', 'rule', 'bg']) {
+      if (m.containsKey(k)) out[k] = _paintCanonical(m[k]);
+    }
+    final bgUrl = (m['bgiLu'] ?? '').toString();
+    if (bgUrl.isNotEmpty) {
+      out['bgi'] = bgUrl;
+    } else if ((m['bgi'] ?? '').toString().isNotEmpty) {
+      out['bgi'] = '*';
+    }
+    return jsonEncode(out);
+  }
+
+  /// 要素の一覧を 3-way で合わせる。 [sig] は「同じ中身か」 を決める文字列、
+  /// [child] は両方が変えていた時に中を合わせる (ノート / 紙用)。
+  /// [remoteSawBase] = 相手の本文が、 こちらの基準を踏まえて書かれた物か。
+  /// false の時は「相手に無い = 消された」 と判断しない (= すれ違い)。
+  static List<Map> _paintMergeList(
+    List? base,
+    List? local,
+    List? remote,
+    String kind, {
+    required String Function(Map) sig,
+    Map Function(Map? b, Map l, Map r)? child,
+    bool remoteSawBase = true,
+  }) {
+    Map<String, Map> index(List? list) {
+      final out = <String, Map>{};
+      if (list == null) return out;
+      var i = 0;
+      for (final e in list) {
+        if (e is Map) out[_paintIdOf(e, i, kind)] = e;
+        i++;
+      }
+      return out;
+    }
+
+    final b = index(base);
+    final l = index(local);
+    final r = index(remote);
+    final out = <Map>[];
+    final seen = <String>{};
+
+    Map withId(Map m, String id) {
+      if (m['id'] == id) return m;
+      final c = Map<String, dynamic>.from(m.cast<String, dynamic>());
+      c['id'] = id;
+      return c;
+    }
+
+    // 相手の並び順を土台にする (相手が足した物は相手の順で入る)。
+    r.forEach((id, rv) {
+      seen.add(id);
+      final lv = l[id];
+      final bv = b[id];
+      if (lv == null) {
+        if (bv == null) {
+          out.add(withId(rv, id)); // 相手が足した
+        } else if (sig(rv) != sig(bv)) {
+          out.add(withId(rv, id)); // 自分が消したが相手は直していた → 残す
+        }
+        return;
+      }
+      // ★ 相手が「見ていない」 物は、 相手が消した事にしない。
+      //   (= 検証で判明: 同時に描くと、 先に送った側の線が基準に入り、
+      //   相手の本文にはまだ無いので「相手が消した」 と誤解して自分の線を
+      //   自分で消していた)。 条件付き書き込みで起きにくくしてあるが、
+      //   取りこぼしても線が消えないようにここでも守る。
+      final lMod = bv == null || sig(lv) != sig(bv);
+      final rMod = bv == null || sig(rv) != sig(bv);
+      Map pick;
+      if (child != null) {
+        pick = child(bv, lv, rv);
+      } else if (rMod && !lMod) {
+        pick = Map<String, dynamic>.from(rv.cast<String, dynamic>());
+        // 画像のパスは端末の物を使い続ける (相手のパスは開けない)。
+        if (lv['p'] is String && pick['p'] is String) pick['p'] = lv['p'];
+        if ((pick['lu'] ?? '').toString().isEmpty && lv['lu'] != null) {
+          pick['lu'] = lv['lu'];
+        }
+      } else {
+        pick = lv; // 自分が変えた / 両方変えた / 変わっていない → 自分の物
+        if ((pick['lu'] ?? '').toString().isEmpty &&
+            (rv['lu'] ?? '').toString().isNotEmpty) {
+          pick = Map<String, dynamic>.from(pick.cast<String, dynamic>());
+          pick['lu'] = rv['lu'];
+        }
+      }
+      out.add(withId(pick, id));
+    });
+    // 自分にしか無い物。
+    l.forEach((id, lv) {
+      if (seen.contains(id)) return;
+      final bv = b[id];
+      if (bv == null) {
+        out.add(withId(lv, id)); // 自分が足した
+      } else if (sig(lv) != sig(bv)) {
+        out.add(withId(lv, id)); // 相手が消したが自分は直していた → 残す
+      } else if (!remoteSawBase) {
+        // 相手はこの基準を見ていない (= 書き込みがすれ違った)。 相手の
+        // 本文に無いのは「消した」 のではなく「まだ知らない」 だけなので残す。
+        out.add(withId(lv, id));
+      }
+    });
+    return out;
+  }
+
+  static Map _paintMergeSheet(Map? b, Map l, Map r, bool remoteSawBase) {
+    final lMod = b == null || _paintSheetScalarSig(l) != _paintSheetScalarSig(b);
+    final rMod = b == null || _paintSheetScalarSig(r) != _paintSheetScalarSig(b);
+    final out = Map<String, dynamic>.from(
+        (rMod && !lMod ? r : l).cast<String, dynamic>());
+    // 背景画像は端末ごとに道が違う。 自分の道は残したまま、 共有の置き場の
+    // URL だけを引き継ぐ (無い方に足す)。
+    final bgUrl = (l['bgiLu'] ?? '').toString().isNotEmpty
+        ? l['bgiLu']
+        : (r['bgiLu'] ?? '');
+    if ('$bgUrl'.isNotEmpty) out['bgiLu'] = bgUrl;
+    if ((l['bgi'] ?? '').toString().isNotEmpty) out['bgi'] = l['bgi'];
+    String itemSig(Map m) => jsonEncode(_paintCanonical(m));
+    for (final key in const ['s', 't', 'sh', 'im', 'fl']) {
+      final merged = _paintMergeList(
+          b?[key] as List?, l[key] as List?, r[key] as List?, key,
+          sig: itemSig, remoteSawBase: remoteSawBase);
+      if (merged.isEmpty && key == 'fl') {
+        out.remove(key);
+      } else {
+        out[key] = merged;
+      }
+    }
+    return out;
+  }
+
+  static Map _paintMergeNote(Map? b, Map l, Map r, bool remoteSawBase) {
+    final lName = '${l['n'] ?? ''}', rName = '${r['n'] ?? ''}';
+    final bName = b == null ? null : '${b['n'] ?? ''}';
+    final out = Map<String, dynamic>.from(l.cast<String, dynamic>());
+    if (bName != null && lName == bName && rName != bName) out['n'] = rName;
+    out['pages'] = _paintMergeList(
+        b?['pages'] as List?, l['pages'] as List?, r['pages'] as List?, 'sheet',
+        sig: _paintSheetScalarSig,
+        child: (bb, ll, rr) => _paintMergeSheet(bb, ll, rr, remoteSawBase),
+        remoteSawBase: remoteSawBase);
+    return out;
+  }
+
+  /// 前回の共通の版 [base] を基準に、 [local] (この端末) と [remote]
+  /// (相手) を合わせた本文を返す。 v3 形式 ({notes:[…]}) でない時は
+  /// 相手の物をそのまま返す。 [base] が無い (初回) 時は「両方が足した」
+  /// 扱いになる = 合算。
+  ///
+  /// [remoteSawBase] = 相手の本文が、 この基準を踏まえて書かれた物か
+  /// (書き込みがすれ違った時は false)。 false の時は「相手に無い物」 を
+  /// 消さない (= 自分の線を自分で消さない)。
+  static String mergePaintBodies(String base, String local, String remote,
+      {bool remoteSawBase = true}) {
+    dynamic bd, ld, rd;
+    try {
+      bd = base.isEmpty ? null : jsonDecode(base);
+      ld = local.isEmpty ? null : jsonDecode(local);
+      rd = jsonDecode(remote);
+    } catch (_) {
+      return remote;
+    }
+    if (rd is! Map || rd['notes'] is! List) return remote;
+    if (ld is! Map || ld['notes'] is! List) return remote;
+    final baseNotes = (bd is Map && bd['notes'] is List) ? bd['notes'] : null;
+    // 初回 (基準なし) は、 中身の無い自分のノートは足さない
+    //   (= 参加直後に用意した白紙が相手の物と並んでしまわないように)。
+    List localNotes = ld['notes'] as List;
+    if (baseNotes == null) {
+      localNotes = localNotes.where((n) {
+        if (n is! Map) return false;
+        final pages = n['pages'];
+        if (pages is! List) return false;
+        for (final p in pages) {
+          if (p is! Map) continue;
+          for (final key in const ['s', 't', 'sh', 'im', 'fl']) {
+            final v = p[key];
+            if (v is List && v.isNotEmpty) return true;
+          }
+          if ((p['bgi'] ?? '').toString().isNotEmpty) return true;
+        }
+        return false;
+      }).toList();
+    }
+    final notes = _paintMergeList(
+        baseNotes as List?, localNotes, rd['notes'] as List, 'note',
+        sig: (m) => '${m['n'] ?? ''}',
+        child: (b, l, r) => _paintMergeNote(b, l, r, remoteSawBase),
+        remoteSawBase: remoteSawBase);
+    final out = Map<String, dynamic>.from(ld.cast<String, dynamic>());
+    out['v'] = 3;
+    out['notes'] = notes;
+    var noteSel = (ld['noteSel'] as num?)?.toInt() ?? 0;
+    if (noteSel < 0 || noteSel >= notes.length) noteSel = 0;
+    out['noteSel'] = noteSel;
+    return jsonEncode(out);
+  }
+
   /// [pageId] のフリーノート JSON を、 貼り付け画像を Storage へ上げた状態で
   /// 返す。 中身が無ければ null。
   Future<String?> preparePaintJsonForUpload(String pageId) async {
@@ -3656,6 +4001,7 @@ class MindMapProvider extends ChangeNotifier {
       final prefs = await _prefsWithRetry();
       await prefs.setString('paint_$pageId', jsonEncode(decoded));
       _paintReloadTick++;
+      _bumpPaintBodyTick(pageId);
       notifyListeners();
     } catch (_) {}
   }
@@ -3831,6 +4177,17 @@ class MindMapProvider extends ChangeNotifier {
       await prefs.setString('userAvatar', emoji);
     }
     notifyListeners();
+    // 共同編集中なら、 相手の画面にもすぐ出す (= ユーザー要望)。
+    _livePushPresenceIfActive();
+  }
+
+  /// 共同編集中なら在席情報 (名前 / アイコン) をすぐ送る。
+  /// 3 秒ごとの見回りを待たせない (= ユーザー要望: 名前を変えたら
+  /// 相手側にもすぐ反映されるように)。
+  void _livePushPresenceIfActive() {
+    if (_liveCode == null || _disposed) return;
+    // ignore: discarded_futures
+    _livePushPresence();
   }
 
   // ── カスタム画像アバター (= ユーザー要望: アイコンをユーザーが独自に
@@ -3850,6 +4207,7 @@ class MindMapProvider extends ChangeNotifier {
       await prefs.setString('userAvatarImage', _userAvatarImagePath!);
     }
     notifyListeners();
+    _livePushPresenceIfActive();
   }
 
   /// ユーザー名入力ダイアログでスキップが選択された時に呼ぶ。
@@ -3928,6 +4286,10 @@ class MindMapProvider extends ChangeNotifier {
       await prefs.setBool('displayNameSkipped', false);
     }
     notifyListeners();
+    // ★ 共同編集中は、 3 秒ごとの見回りを待たずに名前を配る
+    //   (= ユーザー要望: 共同編集中にユーザー名を設定したら相手側にも
+    //   反映されるように)。
+    _livePushPresenceIfActive();
     if (_firebaseEnabled && _idToken != null && _uid != null) {
       try {
         await _ensureFreshToken();
@@ -13552,7 +13914,7 @@ class MindMapProvider extends ChangeNotifier {
           'Свой ключ не нужен.',
     },
     'aiDlg.serverKeyOnly': {
-      'ja': 'AI の呼び出しはすべてこちらのサーバーを通ります。 使うモデルは'
+      'ja': 'AI の呼び出しは全てこちらのサーバーを通ります。 使うモデルは'
           '上のクレジット画面から選べます。 鍵はサーバーだけが持っているので、'
           'アプリに入力する項目はありません。',
       'en': 'Every AI request goes through our server. Pick the model from the '
@@ -17492,7 +17854,7 @@ class MindMapProvider extends ChangeNotifier {
     },
     // ── フラッシュカードのまとめ選択 / フォルダー (= ユーザー要望) ──
     'flash.folderAll': {
-      'ja': 'すべて',
+      'ja': '全て',
       'en': 'All',
       'zh': '全部',
       'ko': '전체',
@@ -17669,7 +18031,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Изменить число вкладок',
     },
     'md.retabAuto': {
-      'ja': 'おまかせ（AIが決める）',
+      'ja': 'お任せ（AIが決める）',
       'en': 'Let the AI decide',
       'zh': '交给 AI 决定',
       'ko': 'AI에게 맡기기',
@@ -17858,7 +18220,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': '{n} карточек ({scope})',
     },
     'flash.aiFixAll': {
-      'ja': 'すべて',
+      'ja': '全て',
       'en': 'all',
       'zh': '全部',
       'ko': '전체',
@@ -20361,7 +20723,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Стереть область',
     },
     'pptx.magicEraseDone': {
-      'ja': '囲った所を消して周りの色でうめました',
+      'ja': '囲った所を消して周りの色で埋めました',
       'en': 'Erased the region and filled it to match',
       'zh': '已擦除所选区域并填充周围颜色',
       'ko': '선택 영역을 지우고 주변 색으로 채웠습니다',
@@ -20592,6 +20954,17 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'При двух и более мониторах курсор, ушедший за один край, '
           'появляется у противоположного.',
     },
+    'fav.addThisPage': {
+      'ja': 'このページをお気に入りに追加',
+      'en': 'Add this page to favorites',
+      'zh': '将此页面加入收藏',
+      'ko': '이 페이지를 즐겨찾기에 추가',
+      'es': 'Añadir esta página a favoritos',
+      'fr': 'Ajouter cette page aux favoris',
+      'de': 'Diese Seite zu Favoriten hinzufügen',
+      'pt': 'Adicionar esta página aos favoritos',
+      'ru': 'Добавить эту страницу в избранное',
+    },
     'split.toFloating': {
       'ja': 'フローティングに切り替え', 'en': 'Switch to floating',
       'zh': '切换为浮动窗口', 'ko': '플로팅으로 전환',
@@ -20651,7 +21024,7 @@ class MindMapProvider extends ChangeNotifier {
     },
     'split.logoutBody': {
       'ja':
-          'すべてのサイトのログイン情報 (Cookie) をクリアします。\nログインし直すと別の Google アカウントを選べます。 よろしいですか?',
+          '全てのサイトのログイン情報 (Cookie) をクリアします。\nログインし直すと別の Google アカウントを選べます。 よろしいですか?',
       'en':
           'This clears login data (cookies) for all sites.\nLog in again to choose a different Google account. Continue?',
       'zh': '将清除所有网站的登录信息（Cookie）。\n重新登录即可选择其他 Google 账户。确定吗？',
@@ -20670,7 +21043,7 @@ class MindMapProvider extends ChangeNotifier {
     },
     'split.clearLoginBody': {
       'ja':
-          'アプリ内ブラウザ (Google 検索 / YouTube 等) のログイン情報\n(Cookie・キャッシュ) をすべて消去します。\nログアウト後に残るアカウント情報を消したいときに使います。\nよろしいですか?',
+          'アプリ内ブラウザ (Google 検索 / YouTube 等) のログイン情報\n(Cookie・キャッシュ) を全て消去します。\nログアウト後に残るアカウント情報を消したいときに使います。\nよろしいですか?',
       'en':
           'This erases all login data (cookies & cache) of the in-app browser (Google Search / YouTube, etc.).\nUse it to remove account info that remains after logging out.\nContinue?',
       'zh':
@@ -22263,7 +22636,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Очистить всё',
     },
     'paint.clearConfirm': {
-      'ja': 'このページの内容をすべて消去しますか？',
+      'ja': 'このページの内容を全て消去しますか？',
       'en': 'Erase all content of this page?',
       'zh': '要清除此画板的所有内容吗？',
       'ko': '이 시트의 내용을 모두 지울까요?',
@@ -22293,7 +22666,7 @@ class MindMapProvider extends ChangeNotifier {
       'en': 'Delete note',
     },
     'paint.deleteNoteConfirm': {
-      'ja': '「{name}」と中のすべてのページを削除しますか？',
+      'ja': '「{name}」と中の全てのページを削除しますか？',
       'en': 'Delete “{name}” and all of its pages?',
     },
     'paint.defaultNoteName': {
@@ -23461,7 +23834,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Удалить эту вкладку',
     },
     'gs.openAll': {
-      'ja': 'すべて開く',
+      'ja': '全て開く',
       'en': 'Open all',
       'zh': '全部打开',
       'ko': '모두 열기',
@@ -25979,7 +26352,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Подстроить экран под видео?',
     },
     'refresh.askBody': {
-      'ja': 'リフレッシュレートを上げると動画や操作がなめらかになりますが、電池の消費が増えます。',
+      'ja': 'リフレッシュレートを上げると動画や操作が滑らかになりますが、電池の消費が増えます。',
       'en':
           'A higher refresh rate makes video and scrolling smoother, but uses more battery.',
       'zh': '提高刷新率会让画面更流畅，但更耗电。',
@@ -28387,7 +28760,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Время, исключённое из длительности задачи',
     },
     'gantt.blockedClearAll': {
-      'ja': 'すべて解除',
+      'ja': '全て解除',
       'en': 'Clear all',
       'zh': '全部清除',
       'ko': '모두 해제',
@@ -28912,8 +29285,8 @@ class MindMapProvider extends ChangeNotifier {
     },
     'help.autofillSequence': {
       'ja': 'ノードに「第一章」のような連番のタイトルを入力すると、同じ親を持つ空の兄弟ノードに「第二章」「第三章」…を自動で提案する機能です。'
-          '漢数字・算用数字・ローマ数字・ひらがな・カタカナに対応しています。'
-          'OFF にすると提案は出ず、すべて自分で入力します。',
+          '漢数字・算用数字・ローマ数字・平仮名・片仮名に対応しています。'
+          'OFF にすると提案は出ず、全て自分で入力します。',
       'en': 'When you type a numbered title such as "Chapter 1" into a node, empty sibling nodes under the same parent are automatically filled in with "Chapter 2", "Chapter 3", and so on. '
           'Arabic, Roman, kanji, hiragana and katakana numbering are all recognised. Turn it off to type every title yourself.',
       'zh': '在节点中输入「第一章」等带序号的标题时，会自动为同一父节点下的空白兄弟节点建议「第二章」「第三章」等。支持汉字、阿拉伯数字、罗马数字、平假名与片假名。关闭后需全部手动输入。',
@@ -31187,7 +31560,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Все последующие ({n})',
     },
     'embed.bodyList': {
-      'ja': 'この動画だけを埋め込みますか？\nそれとも、再生リスト内の動画をすべて埋め込みますか？',
+      'ja': 'この動画だけを埋め込みますか？\nそれとも、再生リスト内の動画を全て埋め込みますか？',
       'en': 'Embed only this video?\nOr embed all the videos in the playlist?',
       'zh': '只嵌入此视频吗？\n还是嵌入播放列表中的所有视频？',
       'ko': '이 동영상만 삽입할까요?\n아니면 재생목록의 동영상을 모두 삽입할까요?',
@@ -31282,7 +31655,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Удалить',
     },
     'cover.deleteConfirm': {
-      'ja': 'この表紙と中の要素 {n} 件をすべて削除しますか？',
+      'ja': 'この表紙と中の要素 {n} 件を全て削除しますか？',
       'en': 'Delete this cover and all {n} items inside it?',
       'zh': '要删除此封面及其中的 {n} 个项目吗？',
       'ko': '이 표지와 안의 항목 {n}개를 모두 삭제할까요?',
@@ -31316,7 +31689,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Встроено видео: {n}',
     },
     'embed.wholeList': {
-      'ja': 'リストの動画すべて',
+      'ja': 'リストの動画全て',
       'en': 'Whole playlist',
       'zh': '整个播放列表',
       'ko': '재생목록 전체',
@@ -31594,7 +31967,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Сохранено {n} вкладок в «{name}»',
     },
     'folder.openAll': {
-      'ja': 'すべて開く',
+      'ja': '全て開く',
       'en': 'Open all',
       'zh': '全部打开',
       'ko': '모두 열기',
@@ -32999,7 +33372,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Не удалось получить данные: {status}',
     },
     'font.appliesToAll': {
-      'ja': '※ 個別設定のないノードすべてに適用されます',
+      'ja': '※ 個別設定のないノード全てに適用されます',
       'en': '* Applies to all nodes without individual settings',
       'zh': '※ 适用于所有未单独设置的节点',
       'ko': '※ 개별 설정이 없는 모든 노드에 적용됩니다',
@@ -33960,7 +34333,7 @@ class MindMapProvider extends ChangeNotifier {
       'jv': 'NYALA',
     },
     'inquiry.rateLimit': {
-      'ja': '送信は3時間で10件までです。少し時間をおいてからお試しください。',
+      'ja': '送信は3時間で10件までです。少し時間を置いてからお試しください。',
       'en':
           'You can send up to 10 inquiries per day. Please try again tomorrow.',
       'zh': '每天最多发送 10 条咨询。请明天再试。',
@@ -34364,7 +34737,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Не подключён',
     },
     'display.savedForLater': {
-      'ja': '繋いだ時に当てるよう控えました。',
+      'ja': '画面を繋いだ時に設定するよう保存しました。',
       'en': 'Saved — it will be applied when this display is connected.',
       'zh': '已保存，连接该显示器时将会应用。',
       'ko': '저장했습니다. 해당 디스플레이를 연결하면 적용됩니다.',
@@ -34441,15 +34814,15 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Выбрать изображение',
     },
     'display.wallDone': {
-      'ja': '壁紙を変えました。',
-      'en': 'Changed the wallpaper.',
-      'zh': '已更改壁纸。',
-      'ko': '배경 화면을 변경했습니다.',
-      'es': 'Se cambió el fondo de pantalla.',
-      'fr': "Le fond d'écran a été modifié.",
-      'de': 'Hintergrundbild geändert.',
-      'pt': 'O papel de parede foi alterado.',
-      'ru': 'Обои изменены.',
+      'ja': '壁紙設定を適用しました。',
+      'en': 'Applied the wallpaper settings.',
+      'zh': '已应用壁纸设置。',
+      'ko': '배경 화면 설정을 적용했습니다.',
+      'es': 'Se aplicó la configuración del fondo de pantalla.',
+      'fr': "Les réglages du fond d'écran ont été appliqués.",
+      'de': 'Hintergrundbild-Einstellungen übernommen.',
+      'pt': 'As configurações do papel de parede foram aplicadas.',
+      'ru': 'Настройки обоев применены.',
     },
     'display.wallFailed': {
       'ja': '壁紙を変えられませんでした。',
@@ -34462,12 +34835,450 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Não foi possível alterar o papel de parede.',
       'ru': 'Не удалось изменить обои.',
     },
-    'display.fitFill': {'ja': '埋める', 'en': 'Fill'},
-    'display.fitFit': {'ja': '合わせる', 'en': 'Fit'},
-    'display.fitStretch': {'ja': '引き伸ばす', 'en': 'Stretch'},
-    'display.fitCenter': {'ja': '中央', 'en': 'Center'},
-    'display.fitTile': {'ja': '並べる', 'en': 'Tile'},
-    'display.fitSpan': {'ja': 'またぐ', 'en': 'Span'},
+    // ★ 並べ方の名前は「何が起きるか」 で言う (= ユーザー要望: 選択肢を
+    //   減らす)。 画面に出すのは 画面いっぱい / 全体を入れる / 画面をまたぐ の
+    //   3 つだけ。 引き伸ばす / 中央 / 並べる は Windows 側で選ばれていた時に
+    //   名前を出すためだけに残す (display.fitOther の {name})。
+    'display.fitFill': {
+      'ja': '画面いっぱい',
+      'en': 'Fill screen',
+      'zh': '充满屏幕',
+      'ko': '화면 가득',
+      'es': 'Rellenar la pantalla',
+      'fr': "Remplir l'écran",
+      'de': 'Bildschirm füllen',
+      'pt': 'Preencher a tela',
+      'ru': 'Заполнить экран',
+    },
+    'display.fitFit': {
+      'ja': '全体を入れる',
+      'en': 'Fit whole image',
+      'zh': '完整显示',
+      'ko': '전체 보이기',
+      'es': 'Imagen completa',
+      'fr': 'Image entière',
+      'de': 'Ganzes Bild',
+      'pt': 'Imagem inteira',
+      'ru': 'Целиком',
+    },
+    'display.fitStretch': {
+      'ja': '引き伸ばす',
+      'en': 'Stretch',
+      'zh': '拉伸',
+      'ko': '늘이기',
+      'es': 'Estirar',
+      'fr': 'Étirer',
+      'de': 'Strecken',
+      'pt': 'Esticar',
+      'ru': 'Растянуть',
+    },
+    'display.fitCenter': {
+      'ja': '中央',
+      'en': 'Center',
+      'zh': '居中',
+      'ko': '가운데',
+      'es': 'Centrar',
+      'fr': 'Centrer',
+      'de': 'Zentriert',
+      'pt': 'Centralizar',
+      'ru': 'По центру',
+    },
+    'display.fitTile': {
+      'ja': '並べる',
+      'en': 'Tile',
+      'zh': '平铺',
+      'ko': '바둑판식',
+      'es': 'Mosaico',
+      'fr': 'Mosaïque',
+      'de': 'Kacheln',
+      'pt': 'Lado a lado',
+      'ru': 'Плиткой',
+    },
+    'display.fitSpan': {
+      'ja': '画面をまたぐ',
+      'en': 'Span screens',
+      'zh': '跨屏显示',
+      'ko': '화면 걸치기',
+      'es': 'Abarcar pantallas',
+      'fr': 'Étendre sur les écrans',
+      'de': 'Über alle Bildschirme',
+      'pt': 'Abranger as telas',
+      'ru': 'На все экраны',
+    },
+    'display.fitOther': {
+      'ja': '今は 「{name}」 で貼っています。 上のどれかを選ぶと切り替わります。',
+      'en': 'Currently placed as "{name}". Pick one above to change it.',
+      'zh': '当前使用「{name}」。选择上面任意一项即可更改。',
+      'ko': '지금은 「{name}」(으)로 붙이고 있습니다. 위에서 고르면 바뀝니다.',
+      'es': 'Ahora se coloca como «{name}». Elige una opción arriba para cambiar.',
+      'fr': "Actuellement placé en « {name} ». Choisissez ci-dessus pour changer.",
+      'de': 'Aktuell als „{name}" angeordnet. Oben eine Option wählen zum Ändern.',
+      'pt': 'Atualmente disposto como "{name}". Escolha acima para mudar.',
+      'ru': 'Сейчас размещено как «{name}». Выберите вариант выше, чтобы изменить.',
+    },
+    'display.spanNote': {
+      'ja': 'またいでいる間は、 画面ごとの壁紙は表示されません。',
+      'en': 'While spanning, the per-screen wallpapers are not shown.',
+      'zh': '跨屏显示时，各屏幕单独的壁纸不会显示。',
+      'ko': '화면을 걸쳐 붙이는 동안에는 화면별 배경 화면이 표시되지 않습니다.',
+      'es': 'Mientras se extiende, no se muestran los fondos de cada pantalla.',
+      'fr': "Pendant l'extension, les fonds par écran ne sont pas affichés.",
+      'de': 'Während der Erstreckung werden die Bilder je Bildschirm nicht gezeigt.',
+      'pt': 'Enquanto estendido, os papéis de parede de cada tela não aparecem.',
+      'ru': 'Пока изображение растянуто, обои отдельных экранов не показываются.',
+    },
+    'display.fitDone': {
+      'ja': '並べ方を全部の画面に適用しました。',
+      'en': 'Applied the placement to every screen.',
+      'zh': '已将排列方式应用到所有屏幕。',
+      'ko': '배치 방법을 모든 화면에 적용했습니다.',
+      'es': 'Se aplicó la colocación a todas las pantallas.',
+      'fr': "La disposition a été appliquée à tous les écrans.",
+      'de': 'Die Anordnung wurde auf alle Bildschirme angewendet.',
+      'pt': 'A disposição foi aplicada a todas as telas.',
+      'ru': 'Размещение применено ко всем экранам.',
+    },
+    'display.templateDone': {
+      'ja': 'テンプレートの壁紙を設定しました。',
+      'en': 'Set the template wallpaper.',
+      'zh': '已设置模板壁纸。',
+      'ko': '템플릿 배경 화면을 설정했습니다.',
+      'es': 'Se estableció el fondo de la plantilla.',
+      'fr': "Le fond d'écran du modèle a été défini.",
+      'de': 'Das Vorlagen-Hintergrundbild wurde gesetzt.',
+      'pt': 'O papel de parede do modelo foi definido.',
+      'ru': 'Обои из шаблона установлены.',
+    },
+    'display.adjust': {
+      'ja': '位置を調整',
+      'en': 'Adjust position',
+      'zh': '调整位置',
+      'ko': '위치 조정',
+      'es': 'Ajustar posición',
+      'fr': 'Ajuster la position',
+      'de': 'Position anpassen',
+      'pt': 'Ajustar posição',
+      'ru': 'Настроить положение',
+    },
+    'display.adjustTitle': {
+      'ja': '壁紙の位置を調整',
+      'en': 'Adjust the wallpaper position',
+      'zh': '调整壁纸位置',
+      'ko': '배경 화면 위치 조정',
+      'es': 'Ajustar la posición del fondo',
+      'fr': "Ajuster la position du fond d'écran",
+      'de': 'Position des Hintergrundbildes anpassen',
+      'pt': 'Ajustar a posição do papel de parede',
+      'ru': 'Настройка положения обоев',
+    },
+    'display.adjustHint': {
+      'ja': '枠をつまんで動かすと、 画面に映る所を決められます。 '
+          '大きさはホイールか下のつまみで変えられます。',
+      'en': 'Drag the frame to choose what the screen shows. Use the wheel or '
+          'the slider below to change its size.',
+      'zh': '拖动亮框即可决定屏幕显示的部分。用滚轮或下方滑块调整大小。',
+      'ko': '밝은 틀을 끌어서 화면에 나올 부분을 정할 수 있습니다. 크기는 휠이나 '
+          '아래 슬라이더로 바꿉니다.',
+      'es': 'Arrastra el marco para elegir lo que muestra la pantalla. Cambia '
+          'el tamaño con la rueda o el control de abajo.',
+      'fr': "Faites glisser le cadre pour choisir ce qui s'affiche. Modifiez la "
+          'taille avec la molette ou le curseur ci-dessous.',
+      'de': 'Ziehe den Rahmen, um den sichtbaren Ausschnitt zu wählen. Die '
+          'Größe änderst du mit dem Mausrad oder dem Regler unten.',
+      'pt': 'Arraste o quadro para escolher o que a tela mostra. Altere o '
+          'tamanho com a roda ou o controle abaixo.',
+      'ru': 'Перетащите рамку, чтобы выбрать видимую часть. Размер меняйте '
+          'колесом мыши или ползунком ниже.',
+    },
+    'display.adjustZoom': {
+      'ja': '枠の大きさ',
+      'en': 'Frame size',
+      'zh': '大小',
+      'ko': '크기',
+      'es': 'Tamaño',
+      'fr': 'Taille',
+      'de': 'Größe',
+      'pt': 'Tamanho',
+      'ru': 'Размер',
+    },
+    'display.adjustThisScreen': {
+      'ja': 'この画面だけに効きます。',
+      'en': 'Applies to this screen only.',
+      'zh': '仅对该屏幕生效。',
+      'ko': '이 화면에만 적용됩니다.',
+      'es': 'Se aplica solo a esta pantalla.',
+      'fr': "Ne s'applique qu'à cet écran.",
+      'de': 'Gilt nur für diesen Bildschirm.',
+      'pt': 'Aplica-se apenas a esta tela.',
+      'ru': 'Действует только для этого экрана.',
+    },
+    'display.adjustContainNote': {
+      'ja': '画像の全体が入るように置きます。 余った所は黒い余白になります。',
+      'en': 'The whole image is placed on the screen; the leftover area becomes '
+          'a black margin.',
+      'zh': '完整放入整张图片，多出的部分显示为黑色空白。',
+      'ko': '이미지 전체가 들어가도록 놓습니다. 남는 곳은 검은 여백이 됩니다.',
+      'es': 'Se coloca la imagen completa; el resto queda como margen negro.',
+      'fr': "L'image entière est placée ; l'espace restant devient une marge "
+          'noire.',
+      'de': 'Das ganze Bild wird platziert; der Rest wird zum schwarzen Rand.',
+      'pt': 'A imagem inteira é colocada; o restante vira margem preta.',
+      'ru': 'Изображение помещается целиком; остаток становится чёрным полем.',
+    },
+    'display.adjustPendingNote': {
+      'ja': 'この画面を繋いだ時に、 この形で貼ります。',
+      'en': 'It will be set this way once this screen is connected.',
+      'zh': '连接该屏幕后将按此方式设置。',
+      'ko': '이 화면을 연결하면 이 모양으로 설정합니다.',
+      'es': 'Se aplicará así cuando se conecte esta pantalla.',
+      'fr': 'Sera appliqué ainsi une fois cet écran connecté.',
+      'de': 'Wird so gesetzt, sobald dieser Bildschirm verbunden ist.',
+      'pt': 'Será aplicado assim quando esta tela for conectada.',
+      'ru': 'Будет применено так, когда этот экран подключат.',
+    },
+    'display.adjustReset': {
+      'ja': '元に戻す',
+      'en': 'Reset',
+      'zh': '重置',
+      'ko': '처음으로',
+      'es': 'Restablecer',
+      'fr': 'Réinitialiser',
+      'de': 'Zurücksetzen',
+      'pt': 'Redefinir',
+      'ru': 'Сбросить',
+    },
+    'display.adjustApply': {
+      'ja': 'この位置で貼る',
+      'en': 'Set as wallpaper',
+      'zh': '按此位置设置',
+      'ko': '이 위치로 붙이기',
+      'es': 'Usar como fondo',
+      'fr': "Définir comme fond d'écran",
+      'de': 'Als Hintergrund setzen',
+      'pt': 'Definir como papel de parede',
+      'ru': 'Установить обои',
+    },
+    'display.adjustDone': {
+      'ja': 'この位置で壁紙を設定しました。',
+      'en': 'Set the wallpaper at this position.',
+      'zh': '已按此位置设置壁纸。',
+      'ko': '이 위치로 배경 화면을 설정했습니다.',
+      'es': 'Se estableció el fondo en esta posición.',
+      'fr': "Le fond d'écran a été défini à cette position.",
+      'de': 'Das Hintergrundbild wurde in dieser Position gesetzt.',
+      'pt': 'O papel de parede foi definido nesta posição.',
+      'ru': 'Обои установлены в этом положении.',
+    },
+    'display.fitFailed': {
+      'ja': '並べ方を変えられませんでした。',
+      'en': 'Could not change the placement.',
+      'zh': '无法更改排列方式。',
+      'ko': '배치 방법을 변경하지 못했습니다.',
+      'es': 'No se pudo cambiar la colocación.',
+      'fr': 'Impossible de modifier la disposition.',
+      'de': 'Die Anordnung konnte nicht geändert werden.',
+      'pt': 'Não foi possível alterar a disposição.',
+      'ru': 'Не удалось изменить размещение.',
+    },
+    'display.adjustLoadFailed': {
+      'ja': '画像を開けませんでした。',
+      'en': 'Could not open the image.',
+      'zh': '无法打开该图片。',
+      'ko': '이미지를 열지 못했습니다.',
+      'es': 'No se pudo abrir la imagen.',
+      'fr': "Impossible d'ouvrir l'image.",
+      'de': 'Das Bild konnte nicht geöffnet werden.',
+      'pt': 'Não foi possível abrir a imagem.',
+      'ru': 'Не удалось открыть изображение.',
+    },
+    'display.adjustFailed': {
+      'ja': 'この位置の壁紙を作れませんでした。',
+      'en': 'Could not build the wallpaper for this position.',
+      'zh': '无法生成该位置的壁纸。',
+      'ko': '이 위치의 배경 화면을 만들지 못했습니다.',
+      'es': 'No se pudo crear el fondo para esta posición.',
+      'fr': "Impossible de créer le fond d'écran pour cette position.",
+      'de': 'Das Hintergrundbild für diese Position konnte nicht erstellt werden.',
+      'pt': 'Não foi possível criar o papel de parede desta posição.',
+      'ru': 'Не удалось создать обои для этого положения.',
+    },
+    'display.adjustNeedsConnect': {
+      'ja': 'この画面を繋ぐと位置を調整できます。',
+      'en': 'Connect this screen to adjust its position.',
+      'zh': '连接该屏幕后即可调整位置。',
+      'ko': '이 화면을 연결하면 위치를 조정할 수 있습니다.',
+      'es': 'Conecta esta pantalla para ajustar su posición.',
+      'fr': 'Connectez cet écran pour ajuster sa position.',
+      'de': 'Verbinde diesen Bildschirm, um die Position anzupassen.',
+      'pt': 'Conecte esta tela para ajustar a posição.',
+      'ru': 'Подключите этот экран, чтобы настроить положение.',
+    },
+    'display.spanLeft': {
+      'ja': 'またぐのをやめて、 この画面だけに貼りました。',
+      'en': 'Stopped spanning and set it on this screen only.',
+      'zh': '已取消跨屏，仅设置在该屏幕上。',
+      'ko': '걸쳐 붙이기를 그만두고 이 화면에만 설정했습니다.',
+      'es': 'Se dejó de extender y se aplicó solo a esta pantalla.',
+      'fr': "L'extension a été arrêtée : appliqué à cet écran seulement.",
+      'de': 'Die Erstreckung wurde beendet – nur auf diesem Bildschirm gesetzt.',
+      'pt': 'A extensão foi encerrada e aplicada apenas nesta tela.',
+      'ru': 'Растягивание отключено — установлено только на этом экране.',
+    },
+    'display.arrange': {
+      'ja': '並べ方 (全部の画面で共通)',
+      'en': 'Placement (shared by all screens)',
+      'zh': '排列方式 (所有屏幕通用)',
+      'ko': '배치 방법 (모든 화면 공통)',
+      'es': 'Colocación (común a todas las pantallas)',
+      'fr': 'Disposition (commune à tous les écrans)',
+      'de': 'Anordnung (für alle Bildschirme)',
+      'pt': 'Disposição (comum a todas as telas)',
+      'ru': 'Размещение (общее для всех экранов)',
+    },
+    'display.template': {
+      'ja': 'テンプレート',
+      'en': 'Template',
+      'zh': '模板',
+      'ko': '템플릿',
+      'es': 'Plantilla',
+      'fr': 'Modèle',
+      'de': 'Vorlage',
+      'pt': 'Modelo',
+      'ru': 'Шаблон',
+    },
+    'display.templateTitle': {
+      'ja': '見本の壁紙',
+      'en': 'Sample wallpapers',
+      'zh': '样例壁纸',
+      'ko': '견본 배경 화면',
+      'es': 'Fondos de muestra',
+      'fr': "Fonds d'écran d'exemple",
+      'de': 'Beispiel-Hintergrundbilder',
+      'pt': 'Papéis de parede de exemplo',
+      'ru': 'Образцы обоев',
+    },
+    'display.previewTitle': {
+      'ja': '貼り方の見本',
+      'en': 'Placement preview',
+      'zh': '铺贴效果预览',
+      'ko': '배치 미리보기',
+      'es': 'Vista previa de la colocación',
+      'fr': 'Aperçu de la disposition',
+      'de': 'Vorschau der Anordnung',
+      'pt': 'Prévia da disposição',
+      'ru': 'Предпросмотр размещения',
+    },
+    'display.previewHint': {
+      'ja': '明るい所が画面に映ります。 枠からはみ出した所は切れ、 '
+          '足りない所は余白になります。',
+      'en': 'The bright area is what you see; the faded part falls outside and '
+          'is cut off.',
+      'zh': '明亮部分会显示在屏幕上，淡色部分超出屏幕会被裁掉。',
+      'ko': '밝은 부분이 화면에 나옵니다. 흐린 부분은 화면 밖으로 나가 잘립니다.',
+      'es': 'La zona brillante es lo que se ve; la parte tenue queda fuera y se '
+          'recorta.',
+      'fr': "La zone claire est ce qui s'affiche ; la partie estompée déborde "
+          'et est rognée.',
+      'de': 'Der helle Bereich ist sichtbar; der blasse Teil liegt außerhalb '
+          'und wird abgeschnitten.',
+      'pt': 'A área clara é o que aparece; a parte esmaecida fica de fora e é '
+          'cortada.',
+      'ru': 'Яркая область — то, что видно; блёклая часть выходит за экран и '
+          'обрезается.',
+    },
+    'display.previewCrop': {
+      'ja': '画像の {n}% が画面の外に出ます。',
+      'en': '{n}% of the image falls outside the screen.',
+      'zh': '图片有 {n}% 会超出屏幕。',
+      'ko': '이미지의 {n}%가 화면 밖으로 나갑니다.',
+      'es': 'El {n}% de la imagen queda fuera de la pantalla.',
+      'fr': "{n}% de l'image dépasse de l'écran.",
+      'de': '{n}% des Bildes liegen außerhalb des Bildschirms.',
+      'pt': '{n}% da imagem fica fora da tela.',
+      'ru': '{n}% изображения выходит за пределы экрана.',
+    },
+    'display.previewMargin': {
+      'ja': '切れませんが、 まわりに余白が出ます。',
+      'en': 'Nothing is cut off, but there will be blank margins.',
+      'zh': '不会被裁掉，但周围会留有空白。',
+      'ko': '잘리지는 않지만 주위에 여백이 생깁니다.',
+      'es': 'No se recorta nada, pero quedarán márgenes en blanco.',
+      'fr': "Rien n'est rogné, mais des marges vides apparaîtront.",
+      'de': 'Nichts wird abgeschnitten, aber es entstehen leere Ränder.',
+      'pt': 'Nada é cortado, mas ficarão margens em branco.',
+      'ru': 'Ничего не обрезается, но по краям останутся поля.',
+    },
+    'display.previewExact': {
+      'ja': '画面にちょうど収まります。',
+      'en': 'It fits the screen exactly.',
+      'zh': '正好铺满屏幕。',
+      'ko': '화면에 딱 맞습니다.',
+      'es': 'Encaja exactamente en la pantalla.',
+      'fr': "S'ajuste exactement à l'écran.",
+      'de': 'Passt genau auf den Bildschirm.',
+      'pt': 'Encaixa exatamente na tela.',
+      'ru': 'Точно вписывается в экран.',
+    },
+    'display.previewStretch': {
+      'ja': '画面に合わせて縦横の比が変わります。',
+      'en': 'The image is distorted to match the screen.',
+      'zh': '会拉伸变形以适应屏幕。',
+      'ko': '화면에 맞춰 가로세로 비율이 바뀝니다.',
+      'es': 'La imagen se deforma para ajustarse a la pantalla.',
+      'fr': "L'image est déformée pour s'adapter à l'écran.",
+      'de': 'Das Bild wird zum Bildschirm hin verzerrt.',
+      'pt': 'A imagem é distorcida para caber na tela.',
+      'ru': 'Пропорции изображения меняются под экран.',
+    },
+    'display.previewNoImage': {
+      'ja': '画像を選ぶと、 どう貼られるかがここに出ます。',
+      'en': 'Pick an image and you will see how it lands here.',
+      'zh': '选择图片后，这里会显示铺贴效果。',
+      'ko': '이미지를 고르면 어떻게 붙는지 여기에 나옵니다.',
+      'es': 'Elige una imagen y verás aquí cómo queda.',
+      'fr': "Choisissez une image pour voir ici le rendu.",
+      'de': 'Wähle ein Bild – hier siehst du, wie es liegt.',
+      'pt': 'Escolha uma imagem para ver aqui como fica.',
+      'ru': 'Выберите изображение — здесь будет видно, как оно ляжет.',
+    },
+    'display.previewTile': {
+      'ja': '同じ絵を敷き詰めます。 端の 1 枚は切れます。',
+      'en': 'The image repeats across the screen; the copies at the edges are '
+          'cut off.',
+      'zh': '同一张图会平铺排列，边缘的一张会被裁掉。',
+      'ko': '같은 그림을 반복해 깝니다. 가장자리의 한 장은 잘립니다.',
+      'es': 'La imagen se repite por la pantalla; las copias del borde se '
+          'recortan.',
+      'fr': "L'image est répétée ; les copies des bords sont rognées.",
+      'de': 'Das Bild wird gekachelt; die Kacheln am Rand werden '
+          'abgeschnitten.',
+      'pt': 'A imagem se repete pela tela; as cópias das bordas são cortadas.',
+      'ru': 'Изображение повторяется плиткой; крайние копии обрезаются.',
+    },
+    'display.previewSpanNote': {
+      'ja': '全部の画面にまたいで 1 枚を貼ります。 ここはその一部です。',
+      'en': 'One image is spread across every screen; this is its share.',
+      'zh': '一张图片横跨所有屏幕，这里显示的是其中一部分。',
+      'ko': '한 장을 모든 화면에 걸쳐 붙입니다. 여기는 그 일부입니다.',
+      'es': 'Una sola imagen se extiende por todas las pantallas; esta es su '
+          'parte.',
+      'fr': "Une seule image couvre tous les écrans ; voici sa part.",
+      'de': 'Ein Bild erstreckt sich über alle Bildschirme; dies ist der '
+          'Anteil.',
+      'pt': 'Uma imagem se estende por todas as telas; esta é a parte dela.',
+      'ru': 'Одно изображение растянуто на все экраны; это его часть.',
+    },
+    'display.previewEnlarge': {
+      'ja': '大きく見る',
+      'en': 'View larger',
+      'zh': '放大查看',
+      'ko': '크게 보기',
+      'es': 'Ver más grande',
+      'fr': 'Voir en grand',
+      'de': 'Größer ansehen',
+      'pt': 'Ver maior',
+      'ru': 'Посмотреть крупнее',
+    },
     'cursorWrap.edgeGoesTo': {
       'ja': 'この端から行く先',
       'en': 'Where this edge leads',
@@ -34821,7 +35632,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Выбрано: {n}',
     },
     'pdfMemo.selectAll': {
-      'ja': 'すべて選択',
+      'ja': '全て選択',
       'en': 'Select all',
       'zh': '全选',
       'ko': '모두 선택',
@@ -34832,7 +35643,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Выбрать всё',
     },
     'pdfMemo.deselectAll': {
-      'ja': 'すべて解除',
+      'ja': '全て解除',
       'en': 'Deselect all',
       'zh': '取消全选',
       'ko': '모두 해제',
@@ -36751,6 +37562,17 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Abrir SoundCloud',
       'ru': 'Открыть SoundCloud',
     },
+    'cmd.openUdemy': {
+      'ja': 'Udemy',
+      'en': 'Udemy',
+      'zh': 'Udemy',
+      'ko': 'Udemy',
+      'es': 'Udemy',
+      'fr': 'Udemy',
+      'de': 'Udemy',
+      'pt': 'Udemy',
+      'ru': 'Udemy',
+    },
     'cmd.openSpotify': {
       'ja': 'Spotify を開く',
       'en': 'Open Spotify',
@@ -37361,7 +38183,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Очистить корзину',
     },
     'trash.confirmEmpty': {
-      'ja': '控え {n} 件をすべて完全に削除します。もう戻せません。',
+      'ja': '控え {n} 件を全て完全に削除します。もう戻せません。',
       'en': 'All {n} copies will be deleted permanently. This cannot be undone.',
       'zh': '将彻底删除全部 {n} 份备份，无法恢复。',
       'ko': '사본 {n}개를 모두 완전히 삭제합니다. 되돌릴 수 없습니다.',
@@ -37407,7 +38229,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Перейти на план Max',
     },
     'plan.upgradeBody': {
-      'ja': 'いますぐ Max の機能が使えるようになります。\n\n・返金はありません。 いま払っている Pro の分はそのまま使い切ります。\n・次のお支払い日までの差額だけを、 その場でお支払いいただきます。\n・お支払い日は変わりません。 次回から Max の値段になります。',
+      'ja': '今すぐ Max の機能が使えるようになります。\n\n・返金はありません。 今払っている Pro の分はそのまま使い切ります。\n・次のお支払い日までの差額だけを、 その場でお支払いいただきます。\n・お支払い日は変わりません。 次回から Max の値段になります。',
       'en': 'Max features become available right away.\n\n- No refund. The Pro time you have already paid for is used up as is.\n- You pay only the difference up to your next payment date, right now.\n- Your payment date does not change. From the next one you are billed the Max price.',
       'zh': '现在即可使用 Max 的功能。\n\n- 不予退款。已支付的 Pro 期间将继续使用完毕。\n- 仅需当场支付到下次付款日为止的差额。\n- 付款日不变。从下次开始按 Max 的价格收费。',
       'ko': '지금 바로 Max 기능을 사용할 수 있습니다.\n\n- 환불은 없습니다. 이미 결제한 Pro 기간은 그대로 사용합니다.\n- 다음 결제일까지의 차액만 지금 결제합니다.\n- 결제일은 바뀌지 않습니다. 다음 결제부터 Max 요금이 적용됩니다.',
@@ -40153,7 +40975,7 @@ class MindMapProvider extends ChangeNotifier {
       'en': 'Undo the last action (Ctrl+Z). Redo with the next button (Ctrl+Y).',
     },
     'paint.help.clearAll': {
-      'ja': 'このページの内容をすべて消します。',
+      'ja': 'このページの内容を全て消します。',
       'en': 'Clears everything on this page.',
     },
     'paint.help.paperSize': {
@@ -40542,15 +41364,15 @@ class MindMapProvider extends ChangeNotifier {
     },
     // ── 動画メモ履歴の一括削除 (= ユーザー要望) ──
     'vmemo.clearAllTitle': {
-      'ja': 'メモ履歴をすべて削除',
+      'ja': 'メモ履歴を全て削除',
       'en': 'Delete all memo history',
     },
     'vmemo.clearAllConfirm': {
-      'ja': '{count} 件のメモ履歴をすべて削除します。よろしいですか?(マップに追加済みのノードは消えません)',
+      'ja': '{count} 件のメモ履歴を全て削除します。よろしいですか?(マップに追加済みのノードは消えません)',
       'en': 'Delete all {count} memo entries? (Nodes already added to the map are kept.)',
     },
     'vmemo.clearedAll': {
-      'ja': 'メモ履歴をすべて削除しました',
+      'ja': 'メモ履歴を全て削除しました',
       'en': 'All memo history deleted',
     },
     // ── マップの画面分割 (= ユーザー要望 2026-07-31) ──
@@ -41456,6 +42278,17 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Поиск',
     },
     // ── Spotify カスタム項目 (アプリ内 WebView で開く音楽ブラウザ) ──
+    'hdr.openUdemy': {
+      'ja': 'Udemy',
+      'en': 'Udemy',
+      'zh': 'Udemy',
+      'ko': 'Udemy',
+      'es': 'Udemy',
+      'fr': 'Udemy',
+      'de': 'Udemy',
+      'pt': 'Udemy',
+      'ru': 'Udemy',
+    },
     'hdr.openSpotify': {
       'ja': 'Spotify',
       'en': 'Spotify',
@@ -42073,6 +42906,38 @@ class MindMapProvider extends ChangeNotifier {
           'платите только разницу.',
     },
     // 控えがいくら残るか (= 次回以降の請求から自動で引かれる)。
+    'plan.changeCarryNote': {
+      'ja': '前のプランで払ってある分は、 これから {months} か月の間 '
+          '毎月 {off} ずつ差し引きます。 毎月のお支払いは {amount} です。',
+      'en': 'What you already paid for the previous plan is applied as {off} '
+          'off each month for the next {months} months, so you pay {amount} '
+          'per month.',
+      'zh': '上一个方案已支付的部分，将在接下来的 {months} 个月内每月抵扣 '
+          '{off}，因此每月支付 {amount}。',
+      'ko': '이전 플랜에 이미 낸 금액은 앞으로 {months}개월 동안 매달 {off}씩 '
+          '차감됩니다. 매달 결제 금액은 {amount}입니다.',
+      'es': 'Lo ya pagado del plan anterior se descuenta {off} cada mes '
+          'durante {months} meses, así que pagas {amount} al mes.',
+      'fr': "Ce que vous avez déjà payé pour l'ancien plan est déduit de {off} "
+          'chaque mois pendant {months} mois : vous payez donc {amount} par mois.',
+      'de': 'Das bereits gezahlte Guthaben des alten Plans wird {months} Monate '
+          'lang mit {off} pro Monat verrechnet – du zahlst {amount} monatlich.',
+      'pt': 'O que você já pagou no plano anterior é descontado em {off} por '
+          'mês durante {months} meses, então você paga {amount} por mês.',
+      'ru': 'Уже оплаченная часть прежнего плана вычитается по {off} в месяц '
+          'в течение {months} мес., поэтому вы платите {amount} в месяц.',
+    },
+    'plan.changeCarryAfter': {
+      'ja': '{date} 以降は {amount} に戻ります。',
+      'en': 'From {date} it returns to {amount}.',
+      'zh': '{date} 之后恢复为 {amount}。',
+      'ko': '{date}부터는 {amount}으로 돌아갑니다.',
+      'es': 'A partir del {date} vuelve a {amount}.',
+      'fr': 'À partir du {date}, le montant revient à {amount}.',
+      'de': 'Ab {date} gilt wieder {amount}.',
+      'pt': 'A partir de {date} volta a ser {amount}.',
+      'ru': 'С {date} снова {amount}.',
+    },
     'plan.changeCreditLeft': {
       'ja': '使い残し {amount} が控えとして残り、 次回以降の請求から'
           '自動で差し引かれます (無くなるまで追加のお支払いはありません)。',
@@ -42361,7 +43226,7 @@ class MindMapProvider extends ChangeNotifier {
     'ss.thisSheetOnly': {'ja': 'このシートだけ', 'en': 'This sheet only'},
     'ss.findNext': {'ja': '次を探す', 'en': 'Find next'},
     'ss.replace': {'ja': '置き換える', 'en': 'Replace'},
-    'ss.replaceAll': {'ja': 'すべて置き換える', 'en': 'Replace all'},
+    'ss.replaceAll': {'ja': '全て置き換える', 'en': 'Replace all'},
     'ss.findNone': {'ja': '見付かりませんでした', 'en': 'Not found'},
     'ss.replacedN': {'ja': '{n} か所置き換えました', 'en': 'Replaced {n}'},
     // ── 上書き保存 (= ユーザー要望: ダウンロードと紛らわしい) ──
@@ -43303,7 +44168,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Проверить снова',
     },
     'auto.alreadyRunning': {
-      'ja': 'いま動いています。 終わるまでお待ちください',
+      'ja': '今動いています。 終わるまでお待ちください',
       'en': 'Already running. Please wait until it finishes',
       'zh': '正在运行中，请等待结束',
       'ko': '지금 실행 중입니다. 끝날 때까지 기다려 주세요',
@@ -44908,7 +45773,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': '— Нет —',
     },
     'hdr.emptyAvailable': {
-      'ja': 'すべて配置済みです',
+      'ja': '全て配置済みです',
       'en': 'All buttons are already placed',
       'zh': '所有按钮均已添加',
       'ko': '모든 버튼이 이미 배치되었습니다',
@@ -45774,6 +46639,28 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Ocultar os botões de IA e nota',
       'ru': 'Скрыть кнопки ИИ и заметки',
     },
+    'float.hideHeaderBar': {
+      'ja': 'この帯を隠す',
+      'en': 'Hide this bar',
+      'zh': '隐藏此栏',
+      'ko': '이 막대 숨기기',
+      'es': 'Ocultar esta barra',
+      'fr': 'Masquer cette barre',
+      'de': 'Diese Leiste ausblenden',
+      'pt': 'Ocultar esta barra',
+      'ru': 'Скрыть эту панель',
+    },
+    'float.showHeaderBar': {
+      'ja': '帯を出す',
+      'en': 'Show bar',
+      'zh': '显示栏',
+      'ko': '막대 표시',
+      'es': 'Mostrar barra',
+      'fr': 'Afficher la barre',
+      'de': 'Leiste zeigen',
+      'pt': 'Mostrar barra',
+      'ru': 'Показать панель',
+    },
     'float.showModeBtns': {
       'ja': 'AI とメモのボタンを出す',
       'en': 'Show the AI and memo buttons',
@@ -46079,7 +46966,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Удалить выбранные',
     },
     'mcp.deleteAll': {
-      'ja': 'すべて削除',
+      'ja': '全て削除',
       'en': 'Delete all',
       'zh': '全部删除',
       'ko': '모두 삭제',
@@ -47077,6 +47964,30 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'editando',
       'ru': 'редактирует',
     },
+    // 要素を足した人の名前を数秒出す (= ユーザー要望)。 {name} = 参加者名。
+    'live.addedBy': {
+      'ja': '{name} が追加',
+      'en': 'Added by {name}',
+      'zh': '{name} 添加',
+      'ko': '{name} 님이 추가',
+      'es': 'Añadido por {name}',
+      'fr': 'Ajouté par {name}',
+      'de': 'Hinzugefügt von {name}',
+      'pt': 'Adicionado por {name}',
+      'ru': 'Добавил(а) {name}',
+    },
+    // 動画編集ページは共同編集できない (= ユーザー要望)。
+    'live.videoEditorNotShareable': {
+      'ja': '動画編集ページはリアルタイム共同編集に対応していません',
+      'en': 'Video editor pages cannot be shared for real-time collaboration',
+      'zh': '视频编辑页面不支持实时协作编辑',
+      'ko': '동영상 편집 페이지는 실시간 공동 편집을 지원하지 않습니다',
+      'es': 'Las páginas del editor de vídeo no admiten la colaboración en tiempo real',
+      'fr': 'Les pages de l’éditeur vidéo ne prennent pas en charge la collaboration en temps réel',
+      'de': 'Videoeditor-Seiten unterstützen keine Echtzeit-Zusammenarbeit',
+      'pt': 'Páginas do editor de vídeo não suportam colaboração em tempo real',
+      'ru': 'Страницы видеоредактора не поддерживают совместное редактирование в реальном времени',
+    },
     // ページ一覧に出す 「共同編集中」 の印 (= ユーザー要望)
     'live.pageBadge': {
       'ja': '共同編集中',
@@ -47581,7 +48492,7 @@ class MindMapProvider extends ChangeNotifier {
     },
     'openWith.desc': {
       'ja': 'マップに追加すると、この位置に添付ノードが作られます。'
-          'あとからノードをタップすれば、いつでも同じビューアで開けます。',
+          '後からノードをタップすれば、いつでも同じビューアで開けます。',
       'en': 'Adding it to the map creates an attachment node here. You can '
           'reopen it in the same viewer any time by tapping that node.',
       'zh': '添加到导图会在此处创建附件节点，之后点击该节点即可随时用同一查看器打开。',
@@ -49286,7 +50197,7 @@ class MindMapProvider extends ChangeNotifier {
     },
     'bg.actionsOn': {
       'ja':
-          'ON の時の動作:\n・画面ロック防止 (wakelock)\n・1秒ごとに動画再生を強制復帰\n・MediaSession でロック画面に再生表示\n・Foreground Service で常駐通知\n\nそれでも止まる端末は、上の3つすべてを許可した上で、端末メーカーの省電力設定からも当アプリを除外してください。',
+          'ON の時の動作:\n・画面ロック防止 (wakelock)\n・1秒ごとに動画再生を強制復帰\n・MediaSession でロック画面に再生表示\n・Foreground Service で常駐通知\n\nそれでも止まる端末は、上の3つ全てを許可した上で、端末メーカーの省電力設定からも当アプリを除外してください。',
       'en':
           'When ON:\n• Screen wakelock\n• Force video resume every second\n• Show on lock screen via MediaSession\n• Persistent notification via Foreground Service\n\nIf still pausing, allow all three above and exclude this app from your device manufacturer\'s power-saving settings.',
       'zh':
@@ -50965,8 +51876,52 @@ class MindMapProvider extends ChangeNotifier {
       'pt': '{n} paginas compartilhadas para coedicao. Os participantes entram com os codigos abaixo. Ao alternar entre paginas compartilhadas, a sessao muda automaticamente.',
       'ru': 'Опубликовано {n} страниц для совместного редактирования. Участники входят по кодам ниже. При переходе между общими страницами сессия переключается автоматически.',
     },
+    'bulkShare.oneCode': {
+      'ja': 'この番号 1 つで、 選んだページ全部に参加できます。',
+      'en': 'This single code joins all of the selected pages.',
+      'zh': '用这一个代码即可加入所选的全部页面。',
+      'ko': '이 번호 하나로 선택한 모든 페이지에 참가할 수 있습니다.',
+      'es': 'Con este único código se unen todas las páginas seleccionadas.',
+      'fr': 'Ce code unique donne accès à toutes les pages sélectionnées.',
+      'de': 'Mit diesem einen Code kommt man zu allen gewählten Seiten.',
+      'pt': 'Com este único código entra-se em todas as páginas escolhidas.',
+      'ru': 'По этому одному коду можно войти во все выбранные страницы.',
+    },
+    'bulkShare.perPage': {
+      'ja': 'ページごとの番号 (個別に配る時に使います)',
+      'en': 'Per-page codes (for sharing pages individually)',
+      'zh': '各页面的代码（单独分享时使用）',
+      'ko': '페이지별 번호 (개별로 나눌 때 사용)',
+      'es': 'Códigos por página (para compartir de forma individual)',
+      'fr': 'Codes par page (pour un partage individuel)',
+      'de': 'Codes je Seite (zum einzelnen Teilen)',
+      'pt': 'Códigos por página (para compartilhar individualmente)',
+      'ru': 'Коды по страницам (для отдельной раздачи)',
+    },
+    'bulkShare.permissionHint': {
+      'ja': '選んだページを、 どこまで触れる形で配りますか。',
+      'en': 'How much may the people you share with do?',
+      'zh': '要以什么权限分享所选的页面？',
+      'ko': '선택한 페이지를 어디까지 다룰 수 있게 나눌까요?',
+      'es': '¿Qué podrán hacer las personas con quienes compartes?',
+      'fr': 'Que pourront faire les personnes avec qui vous partagez ?',
+      'de': 'Was dürfen die Personen tun, mit denen du teilst?',
+      'pt': 'O que as pessoas com quem você compartilha poderão fazer?',
+      'ru': 'Что смогут делать те, с кем вы делитесь?',
+    },
+    'bulkShare.listLater': {
+      'ja': '編集できる人は、 相手が入ってから各ページの共有設定で選べます。',
+      'en': 'You can pick who may edit from each page after they join.',
+      'zh': '可编辑的人可在对方加入后于各页面的共享设置中选择。',
+      'ko': '편집할 수 있는 사람은 상대가 참가한 뒤 각 페이지의 공유 설정에서 고릅니다.',
+      'es': 'Podrás elegir quién edita en cada página cuando se hayan unido.',
+      'fr': 'Vous choisirez qui peut modifier une fois les participants entrés.',
+      'de': 'Wer bearbeiten darf, wählst du je Seite, sobald jemand beigetreten ist.',
+      'pt': 'Você escolhe quem edita em cada página depois que entrarem.',
+      'ru': 'Кто может редактировать, выберете на каждой странице после входа.',
+    },
     'bulkShare.copyAll': {
-      'ja': 'すべてコピー',
+      'ja': '全てコピー',
       'en': 'Copy all',
       'zh': '全部复制',
       'ko': '모두 복사',
@@ -52328,7 +53283,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Страница оплаты открыта в браузере.',
     },
     'paywall.stripeOpenFailed': {
-      'ja': '決済ページを開けませんでした。時間をおいて再度お試しください。',
+      'ja': '決済ページを開けませんでした。時間を置いて再度お試しください。',
       'en': 'Could not open the checkout page. Please try again later.',
       'zh': '无法打开支付页面，请稍后再试。',
       'ko': '결제 페이지를 열지 못했습니다. 잠시 후 다시 시도해 주세요.',
@@ -53097,7 +54052,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Вход выполнен',
     },
     'account.webDoneCheckoutBody': {
-      'ja': 'このあとお支払いの画面へ移ります。'
+      'ja': 'この後お支払いの画面へ移ります。'
           'このタブを閉じずに、 そのまま少しお待ちください。',
       'en': 'Taking you to the payment page. '
           'Please keep this tab open and wait a moment.',
@@ -54629,7 +55584,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Браузер',
     },
     'auto.browserAuto': {
-      'ja': 'おまかせ',
+      'ja': 'お任せ',
       'en': 'Auto',
       'zh': '自动',
       'ko': '자동',
@@ -56941,7 +57896,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Связанные видео не найдены',
     },
     'related.allDuplicates': {
-      'ja': '取得した動画はすべてマップに既に存在します',
+      'ja': '取得した動画は全てマップに既に存在します',
       'en': 'All fetched videos already exist on this map',
       'zh': '获取的视频都已存在于地图中',
       'ko': '가져온 동영상이 모두 이미 이 맵에 있습니다',
@@ -59572,6 +60527,28 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Палитра (10 цветов)',
     },
     // ── Drawer の追加メニュー（フォルダー・JSON I/O）──
+    'drawer.startMultiSelect': {
+      'ja': '複数選択',
+      'en': 'Select multiple',
+      'zh': '多选',
+      'ko': '여러 개 선택',
+      'es': 'Seleccionar varios',
+      'fr': 'Sélection multiple',
+      'de': 'Mehrere auswählen',
+      'pt': 'Selecionar vários',
+      'ru': 'Выбрать несколько',
+    },
+    'drawer.endMultiSelect': {
+      'ja': '複数選択をやめる',
+      'en': 'Stop selecting',
+      'zh': '结束多选',
+      'ko': '여러 개 선택 끝내기',
+      'es': 'Dejar de seleccionar',
+      'fr': 'Arrêter la sélection',
+      'de': 'Auswahl beenden',
+      'pt': 'Parar de selecionar',
+      'ru': 'Завершить выбор',
+    },
     'drawer.addMenu': {
       'ja': '追加メニュー',
       'en': 'Add menu',
@@ -60321,7 +61298,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Только эта страница',
     },
     'page.iconScopeType': {
-      'ja': '同じ種類すべて',
+      'ja': '同じ種類全て',
       'en': 'All pages of this kind',
       'zh': '同类型全部',
       'ko': '같은 종류 전체',
@@ -60761,7 +61738,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Ошибка импорта',
     },
     'import.allFailed': {
-      'ja': 'すべてのファイルの読み込みに失敗しました',
+      'ja': '全てのファイルの読み込みに失敗しました',
       'en': 'All files failed to import',
       'zh': '所有文件导入失败',
       'ko': '모든 파일 가져오기 실패',
@@ -62409,7 +63386,7 @@ class MindMapProvider extends ChangeNotifier {
       'en': 'Until tasks are done',
     },
     'focusLock.taskModeHint': {
-      'ja': '登録したタスクがすべて完了するまでロックします。空の一覧や未完了のタスクがある状態では解除されません。',
+      'ja': '登録したタスクが全て完了するまでロックします。空の一覧や未完了のタスクがある状態では解除されません。',
       'en':
           'Keeps the lock active until every registered task is complete. An empty or incomplete list never unlocks it.',
     },
@@ -62448,7 +63425,7 @@ class MindMapProvider extends ChangeNotifier {
       'en': 'Add at least one task',
     },
     'focusLock.startTasks': {
-      'ja': 'タスクがすべて完了するまでロック',
+      'ja': 'タスクが全て完了するまでロック',
       'en': 'Lock until all tasks are done',
     },
     'focusLock.taskProgress': {
@@ -62456,11 +63433,11 @@ class MindMapProvider extends ChangeNotifier {
       'en': 'Focus tasks {done}/{total}',
     },
     'focusLock.taskUnlockHint': {
-      'ja': 'すべて完了後、確認してから解除できます',
+      'ja': '全て完了後、確認してから解除できます',
       'en': 'After all tasks are done, confirm before unlocking',
     },
     'focusLock.taskUnlockConfirmTitle': {
-      'ja': 'すべてのタスクが完了しました',
+      'ja': '全てのタスクが完了しました',
       'en': 'All tasks are complete',
     },
     'focusLock.taskUnlockConfirmBody': {
@@ -63414,7 +64391,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Чтобы закрепить на панели задач, перетащите созданный ярлык на неё.',
     },
     'page.pin': {
-      'ja': 'ピン止め',
+      'ja': 'ピン留め',
       'en': 'Pin',
       'zh': '固定',
       'ko': '고정',
@@ -63446,7 +64423,7 @@ class MindMapProvider extends ChangeNotifier {
       'jv': 'Pin',
     },
     'page.pinThisPage': {
-      'ja': 'このページをピン止め',
+      'ja': 'このページをピン留め',
       'en': 'Pin this page',
       'zh': '固定此页面',
       'ko': '이 페이지 고정',
@@ -63478,7 +64455,7 @@ class MindMapProvider extends ChangeNotifier {
       'jv': 'Pin kaca iki',
     },
     'page.unpin': {
-      'ja': 'ピン止めを解除',
+      'ja': 'ピン留めを解除',
       'en': 'Unpin',
       'zh': '取消固定',
       'ko': '고정 해제',
@@ -63510,7 +64487,7 @@ class MindMapProvider extends ChangeNotifier {
       'jv': 'Lepas pin',
     },
     'page.pinnedSnack': {
-      'ja': '「{name}」 をピン止めしました',
+      'ja': '「{name}」 をピン留めしました',
       'en': 'Pinned “{name}”',
       'zh': '已固定“{name}”',
       'ko': '“{name}”을(를) 고정했습니다',
@@ -63542,7 +64519,7 @@ class MindMapProvider extends ChangeNotifier {
       'jv': '“{name}” wis dipin',
     },
     'page.unpinnedSnack': {
-      'ja': '「{name}」 のピン止めを解除しました',
+      'ja': '「{name}」 のピン留めを解除しました',
       'en': 'Unpinned “{name}”',
       'zh': '已取消固定“{name}”',
       'ko': '“{name}” 고정을 해제했습니다',
@@ -69143,6 +70120,31 @@ class MindMapProvider extends ChangeNotifier {
     _planJustActivated = null;
   }
 
+  /// 一度知らせたプラン名 (prefs `plan_activated_notified`)。
+  ///
+  /// ★ = ユーザー報告: 「Pro のアカウントから開発者モードの Dev に切り替えた
+  ///   のに『Pro プランが適用されました』 が何度も出る」。
+  ///   Dev 枠の自己発行 (dev) → サーバー照合 (pro) → …と控えが行き来する
+  ///   たびに「変わった」 と見なされ、 同じ知らせが何度も出ていた。
+  ///   一度出したプランは覚えておき、 解約 (free に落ちる) まで二度と
+  ///   出さない。 覚え書きは端末に残すので、 再起動しても繰り返さない。
+  String? _planActivatedNotified;
+
+  Future<void> _rememberPlanActivated(String? planName) async {
+    if (_planActivatedNotified == planName) return;
+    _planActivatedNotified = planName;
+    try {
+      final prefs = await _prefsWithRetry();
+      if (planName == null) {
+        await prefs.remove('plan_activated_notified');
+      } else {
+        await prefs.setString('plan_activated_notified', planName);
+      }
+    } catch (e) {
+      debugPrint('知らせ済みプランの保存に失敗: $e');
+    }
+  }
+
   void applyBillingPlanByName(String name) {
     if (_disposed) return;
     final plan = SubscriptionPlan.values.firstWhere(
@@ -69162,7 +70164,22 @@ class MindMapProvider extends ChangeNotifier {
     // ★ 無料 / 別のプランから有料に変わった時だけ知らせる
     //   (= ユーザー要望: 支払いが済んだらアプリでも分かるように)。
     //   起動直後の読み直しでは鳴らないよう、 実際に変わった時だけ。
-    if (nextPro && _purchasedPlan != plan) _planJustActivated = plan;
+    //
+    //   ただし次の時は出さない (= ユーザー報告: 何度も同じ窓が出る):
+    //     ・Dev 枠 … 買った物ではないので「契約が通りました」 ではない。
+    //       しかも中身は pro 扱いなので、 窓には「Pro」 と出てしまっていた。
+    //     ・開発者モード中 … 演じるプランを切り替えるたびに出てしまう。
+    //     ・既に同じプランで知らせた後 … 控えが dev ⇄ pro と行き来しても
+    //       二度目は出さない (解約して free に落ちたら覚え書きを消す)。
+    if (nextPro &&
+        plan != SubscriptionPlan.dev &&
+        !_developerMode &&
+        _purchasedPlan != plan &&
+        _planActivatedNotified != plan.name) {
+      _planJustActivated = plan;
+      // ignore: discarded_futures
+      _rememberPlanActivated(plan.name);
+    }
     _purchasedPlan = plan;
     _proSubscribed = nextPro;
     // ★ 開発者モード中でも、 実際に買ったプランは効かせる
@@ -69188,6 +70205,9 @@ class MindMapProvider extends ChangeNotifier {
     if (!nextPro) {
       // 解除された → 30 日後の自動削除起算点を保存
       _subscriptionEndedAt = DateTime.now().toUtc();
+      // 契約が切れたので、 次に買い直した時はもう一度知らせる。
+      // ignore: discarded_futures
+      _rememberPlanActivated(null);
     } else {
       _subscriptionEndedAt = null;
     }
@@ -69696,6 +70716,12 @@ class MindMapProvider extends ChangeNotifier {
     } else if (_proSubscribed) {
       _purchasedPlan = SubscriptionPlan.pro;
     }
+    // 「プランが適用されました」 を既に出したか (= 何度も出さないための控え)。
+    // ★ 控えが無い時は、 今の (= 前回までに分かっていた) プランを
+    //   「知らせ済み」 と見なす。 この仕組みを入れる前から有料だった人に、
+    //   更新後の初回だけ窓が出てしまうのを防ぐ。
+    _planActivatedNotified = prefs.getString('plan_activated_notified') ??
+        (_purchasedPlan == SubscriptionPlan.free ? null : _purchasedPlan.name);
     _splitViewUseCount = prefs.getInt('splitViewUseCount') ?? 0;
     _focusLockUseCount = prefs.getInt('focusLockUseCount') ?? 0;
     _appLockUseCount = prefs.getInt('appLockUseCount') ?? 0;
@@ -81035,8 +82061,13 @@ $cleanQ
   /// 公開用 HTML に共同編集の接続先を埋め込むため、 アップロードより先に
   /// コードが要る。
   String ensurePublishCode(String pageId) {
-    final cur = _publishedPages[pageId]?['code'];
-    if (cur != null && cur.isNotEmpty) return cur;
+    final rec = _publishedPages[pageId];
+    final cur = rec?['code'];
+    // ★ 人の共有に参加しただけの記録は使い回さない (= ユーザー報告:
+    //   まとめて共有で 1 ページだけ 403)。 相手の土台には書けないので、
+    //   自分の番号を新しく取る。
+    final guest = '${rec?['role'] ?? ''}' == 'guest';
+    if (cur != null && cur.isNotEmpty && !guest) return cur;
     final code = _uuid.v4().replaceAll('-', '').substring(0, 10);
     _publishedPages[pageId] = {
       'code': code,
@@ -81045,6 +82076,74 @@ $cleanQ
       'updatedAt': '',
     };
     return code;
+  }
+
+  /// まとめて共有した束の番号を 1 つ発行する (= ユーザー要望: ページごとに
+  /// 番号が違うのは不便)。
+  ///
+  /// 親の書類 `published/{束の番号}` に「どのページがこの束に入っているか」
+  /// (ページ id / そのページの番号 / 名前) を並べておく。 参加する側は、
+  /// この番号 1 つを入れれば、 中の全ページに順番に入れる。
+  ///
+  /// ページごとの番号はそのまま残す。 共同編集の仕組み (1.2 秒の見回り、
+  /// ページを切り替えた時のセッション張り替え) は今までどおり動く。
+  Future<String?> registerLiveBundle({
+    required List<Map<String, String>> members,
+    required String permission,
+    String title = '',
+  }) async {
+    if (members.isEmpty) return null;
+    if (!_firebaseEnabled) await _initFirebase();
+    if (!_firebaseEnabled) return null;
+    await _ensureFreshToken();
+    if (_idToken == null) return null;
+    final code = _uuid.v4().replaceAll('-', '').substring(0, 10);
+    final values = members
+        .map((m) => {
+              'mapValue': {
+                'fields': {
+                  'pageId': {'stringValue': m['pageId'] ?? ''},
+                  'code': {'stringValue': m['code'] ?? ''},
+                  'name': {'stringValue': m['name'] ?? ''},
+                }
+              }
+            })
+        .toList();
+    final res = await http.patch(
+      Uri.parse('$_firestoreBaseUrl/published/$code'
+          '?updateMask.fieldPaths=ownerUid&updateMask.fieldPaths=kind'
+          '&updateMask.fieldPaths=title&updateMask.fieldPaths=permission'
+          '&updateMask.fieldPaths=members&updateMask.fieldPaths=updatedAt'),
+      headers: {
+        'Authorization': 'Bearer $_idToken',
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode({
+        'fields': {
+          'ownerUid': {'stringValue': _uid ?? ''},
+          'kind': {'stringValue': 'bundle'},
+          'title': {'stringValue': title},
+          'permission': {'stringValue': permission},
+          'members': {
+            'arrayValue': {'values': values}
+          },
+          'updatedAt': {
+            'timestampValue': DateTime.now().toUtc().toIso8601String()
+          },
+        }
+      }),
+    );
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      debugPrint('束の共有番号を作れませんでした: ${res.statusCode} ${res.body}');
+      return null;
+    }
+    return code;
+  }
+
+  /// 共有番号を取り直す (= 書けない土台に当たった時の逃げ道)。
+  String reissuePublishCode(String pageId) {
+    _publishedPages.remove(pageId);
+    return ensurePublishCode(pageId);
   }
 
   String? publishedCodeFor(String pageId) => _publishedPages[pageId]?['code'];
@@ -81374,6 +82473,49 @@ $cleanQ
       throw Exception(t('live.notFound'));
     }
 
+    // ── 束の番号なら、 中のページに順番に入る (= ユーザー要望: 番号を
+    //    1 つにまとめる) ──
+    if (metaRes.statusCode == 200) {
+      final memberCodes = <String, String>{}; // code -> name
+      try {
+        final f = (jsonDecode(metaRes.body)
+                as Map<String, dynamic>)['fields'] as Map<String, dynamic>? ??
+            {};
+        final arr = (f['members'] as Map<String, dynamic>?)?['arrayValue'];
+        final vals = (arr as Map<String, dynamic>?)?['values'];
+        if (vals is List) {
+          for (final v in vals) {
+            final mf = ((v as Map<String, dynamic>)['mapValue']
+                as Map<String, dynamic>?)?['fields'] as Map<String, dynamic>?;
+            if (mf == null) continue;
+            final c =
+                ((mf['code'] as Map<String, dynamic>?)?['stringValue'] ?? '')
+                    .toString();
+            final n =
+                ((mf['name'] as Map<String, dynamic>?)?['stringValue'] ?? '')
+                    .toString();
+            if (c.isNotEmpty) memberCodes[c] = n;
+          }
+        }
+      } catch (_) {}
+      if (memberCodes.isNotEmpty) {
+        String? firstPage;
+        final errs = <String>[];
+        for (final e in memberCodes.entries) {
+          try {
+            final pid = await joinLiveSessionByCode(e.key);
+            firstPage ??= pid;
+          } catch (err) {
+            errs.add('${e.value}: $err');
+          }
+        }
+        if (firstPage == null) {
+          throw Exception(errs.isEmpty ? t('live.notFound') : errs.join('\n'));
+        }
+        return firstPage;
+      }
+    }
+
     // ── 本体を取得 ──
     final res = await http.get(
       Uri.parse('$_firestoreBaseUrl/published/$trimmed/doc/main'),
@@ -81414,9 +82556,47 @@ $cleanQ
     });
     if (pageId != null && !_pages.any((p) => p.id == pageId)) pageId = null;
 
+    // ★ 動画編集ページの共有には入れない (= ユーザー要望: 動画編集では
+    //   共同編集できないように)。 中身 (タイムライン) が運ばれないので、
+    //   入っても空の編集画面になるだけ。 ページを作る前に止める。
+    {
+      final metaRaw = fstr('meta');
+      if (metaRaw != null && metaRaw.isNotEmpty) {
+        try {
+          final pt = '${(jsonDecode(metaRaw) as Map)['pageType'] ?? ''}';
+          if (pt.isNotEmpty && !isLiveSharablePageType(pt)) {
+            throw Exception(t('live.videoEditorNotShareable'));
+          }
+        } on Exception {
+          rethrow;
+        } catch (_) {}
+      }
+    }
+
     final page = pageId != null
         ? _pages.firstWhere((p) => p.id == pageId)
         : MindMapPage(id: _uuid.v4(), name: title);
+    // ★ ページの種別と背景を先に当てる (= ユーザー報告: ギャラリーを
+    //   共有したのに普通のマップで届く)。 既定のまま作ると 'normal' に
+    //   なってしまい、 以後ずっと直らない。
+    await _applyLiveMeta(page, fstr('meta'));
+    // ★ 本文 (フリーノート / マークダウン) は**画面を切り替える前に**
+    //   端末へ入れておく (= 検証で判明: 参加側の画面が白紙で先に開き、
+    //   その白紙を送って公開した人の絵を消していた)。
+    String? seedBody;
+    var seedBodyRev = 0;
+    var seedBodyUt = '';
+    if (_liveHasBody(page)) {
+      final got = await _liveFetchBodyForJoin(trimmed, page);
+      if (got != null) {
+        seedBody = got.body;
+        seedBodyUt = got.updateTime;
+        final b = (fields['bodyRev'] as Map<String, dynamic>?)?['integerValue'];
+        seedBodyRev = got.rev > 0 ? got.rev : (int.tryParse('$b') ?? 0);
+      }
+    }
+    // 参加した時点で載っている添付を、 後でまとめて落とす。
+    final joinAttach = <MapEntry<String, String>>[];
     page.nodes.clear();
     fields.forEach((k, v) {
       if (!k.startsWith('n_')) return;
@@ -81425,6 +82605,12 @@ $cleanQ
       try {
         final n = MindMapNode.fromJson(jsonDecode(raw) as Map<String, dynamic>);
         page.nodes[n.id] = n;
+        // ★ 参加した時点で既にある添付も落としに行く
+        //   (= ユーザー報告: 共同編集で画像が共有できていない)。
+        //   ここで予約しておかないと、 以後の受け取りでは「中身が同じ」 と
+        //   判定されて、 落とす機会が二度と来なかった。
+        final au = n.attachmentStorageUrl;
+        if (au != null && au.isNotEmpty) joinAttach.add(MapEntry(n.id, au));
       } catch (_) {}
     });
     page.connections.clear();
@@ -81458,6 +82644,11 @@ $cleanQ
       'permission': permission,
       'pwHash': _publishedPages[pageId]?['pwHash'] ?? '',
       'updatedAt': DateTime.now().toUtc().toIso8601String(),
+      // ★ 「これは自分が公開した物ではなく、 人の所へ参加した記録」。
+      //   = ユーザー報告「まとめて共有で 1 ページだけ 403」。 印が無いと、
+      //   後でそのページを共有しようとした時に**相手の共有を上書きしに
+      //   行って**断られる (公開者しか書けないため)。
+      'role': 'guest',
     };
     await _savePublishedPages();
     _currentPageIndex = _pages.indexWhere((p) => p.id == pageId);
@@ -81466,10 +82657,44 @@ $cleanQ
     await _saveToStorageLocal();
     // 参加者は初期 push をしない (相手の内容を自分のもので上書きしないため)。
     await startLiveSession(
-        pageId: pageId!, code: trimmed, permission: permission,
-        pushInitial: false);
+        pageId: pageId!,
+        code: trimmed,
+        permission: permission,
+        pushInitial: false,
+        seedBody: seedBody,
+        seedBodyRev: seedBodyRev,
+        seedBodyUpdateTime: seedBodyUt);
     notifyListeners();
+    // ★ 参加した時点で載っていた添付を落としてくる (= ユーザー報告:
+    //   共同編集で画像が共有できていない)。 画面を止めないよう、
+    //   参加が終わってから後ろでゆっくり落とす。
+    if (joinAttach.isNotEmpty) {
+      // ignore: discarded_futures
+      _fetchLiveAttachments(pageId!, joinAttach);
+    }
     return pageId!;
+  }
+
+  /// 配られた添付をまとめて落として、 ノードの道を差し替える。
+  Future<void> _fetchLiveAttachments(
+      String pageId, List<MapEntry<String, String>> items) async {
+    var done = 0;
+    for (final e in items) {
+      final local = await _downloadLiveAttachment(e.value);
+      if (local == null) continue;
+      final idx = _pages.indexWhere((p) => p.id == pageId);
+      if (idx < 0) return;
+      final n = _pages[idx].nodes[e.key];
+      if (n != null && n.attachmentPath != local) {
+        n.attachmentPath = local;
+        _liveLastPushed[n.id] = jsonEncode(n.toJson());
+        done++;
+      }
+    }
+    if (done > 0) {
+      await _saveToStorageLocal();
+      notifyListeners();
+    }
   }
 
   /// 誰も居なくなって時間が経ったセッションを終了する。
@@ -81484,7 +82709,10 @@ $cleanQ
   /// 印を書いてから畳む。 参加者は次の見に行きで印に気付いて自分も
   /// 終了する (= ユーザー要望: 中止したら全員に伝わるように)。
   Future<void> closeLiveSessionForAll() async {
-    if (!_liveIsHost) {
+    // ★ 編集できる人も中止できる (= ユーザー要望)。 閲覧だけの人は不可。
+    //   公開の登録 (published/{code}) を消せるのは公開した人だけなので、
+    //   それ以外の人は「終わった」 印を書いて自分も畳むところまで。
+    if (!_liveIsHost && !liveCanEdit) {
       throw Exception(t('live.hostOnly'));
     }
     final code = _liveCode;
@@ -81514,8 +82742,12 @@ $cleanQ
     } catch (_) {
       // 印を書けなくても、 自分の側は畳む (下の unpublishPage で消える)。
     }
+    final wasHost = _liveIsHost;
     await stopLiveSession();
-    if (pageId != null) {
+    // ★ 公開の登録そのものを消せるのは、 公開した人だけ (規則で決まって
+    //   いる)。 参加者が消しに行くと断られるうえ、 手元の共有の控えだけが
+    //   消えて食い違うので、 そこは触らない。
+    if (pageId != null && wasHost) {
       await unpublishPage(pageId);
     }
     notifyListeners();
@@ -81554,6 +82786,14 @@ $cleanQ
     await _ensureFreshToken();
     if (_idToken == null) {
       throw Exception(t('sync.firebaseDisconnected'));
+    }
+    // ★ 動画編集ページは共同編集できない (= ユーザー要望)。 入口を全部
+    //   閉じてあるが、 ここでも止める (将来の呼び出し元のため)。
+    {
+      final i = _pages.indexWhere((p) => p.id == pageId);
+      if (i >= 0 && !isLiveSharablePageType(_pages[i].pageType)) {
+        throw Exception(t('live.videoEditorNotShareable'));
+      }
     }
     final code = ensurePublishCode(pageId);
     final prev = _publishedPages[pageId] ?? const <String, String>{};
@@ -81647,6 +82887,13 @@ $cleanQ
   static const Duration _kLiveTick = Duration(milliseconds: 1200);
   static const Duration _kLivePresenceTick = Duration(seconds: 3);
 
+  /// 共同編集の 1 回の通信に許す時間。 これが無いと、 詰まった 1 本の
+  /// 通信が見回り全体を止め、 在席の知らせも届かなくなる (= 検証で判明)。
+  static const Duration _kLiveHttpTimeout = Duration(seconds: 25);
+
+  /// 「誰が足したか」 の枠を出しておく時間 (= ユーザー要望: 数秒間)。
+  static const Duration kLiveAddMarkDuration = Duration(seconds: 6);
+
   /// 参加者に割り当てる色 (見分けやすい 8 色)。
   static const List<int> kLivePeerColors = [
     0xFF4FC3F7,
@@ -81704,6 +82951,51 @@ $cleanQ
   /// [nodeId] が他の参加者にロックされていて編集できないか。
   bool isNodeLockedByOthers(String nodeId) => liveLockOwnerOf(nodeId) != null;
 
+  // ── 「誰が足したか」 の印 (= ユーザー要望: 要素が追加されたら枠を出し、
+  //    数秒間どのユーザーが行ったか名前を出す) ──
+  //
+  // 送る側は _livePush で「この回に初めて送るノード」 を 'adds' に載せ、
+  // 受け取る側は _livePull でそれを読んで数秒だけ覚えておく。
+  final Map<String, LiveAddMark> _liveRecentAdds = {};
+
+  /// 直近で処理した 'adds' の時刻 (同じ物を何度も出さないため)。
+  int _liveLastAddsAt = 0;
+  Timer? _liveAddsTimer;
+
+  /// 「今のページの中身をひととおり知った」 か。 これが立ってから足した物を
+  /// 「追加」 として知らせる (= 参加直後に全部が「新しい」 に見えないように)。
+  /// ★ ノードが 0 枚のページでも立つよう、 控えの数ではなく印で持つ
+  ///   (= 点検で判明: 空のページに置いた 1 個目だけ枠が出なかった)。
+  bool _liveAddsArmed = false;
+
+  /// [nodeId] を最近他の参加者が足したなら、 その印を返す。
+  LiveAddMark? liveAddedBy(String nodeId) {
+    final m = _liveRecentAdds[nodeId];
+    if (m == null) return null;
+    if (m.isExpired) return null;
+    return m;
+  }
+
+  /// 数秒たったら印を消して画面を描き直す。
+  void _liveScheduleAddsExpiry() {
+    _liveAddsTimer?.cancel();
+    _liveAddsTimer = Timer(kLiveAddMarkDuration + const Duration(milliseconds: 200),
+        () {
+      if (_disposed) return;
+      _liveRecentAdds.removeWhere((_, m) => m.isExpired);
+      if (_liveRecentAdds.isNotEmpty) _liveScheduleAddsExpiry();
+      notifyListeners();
+    });
+  }
+
+  void _liveClearAdds() {
+    _liveAddsTimer?.cancel();
+    _liveAddsTimer = null;
+    _liveRecentAdds.clear();
+    _liveLastAddsAt = 0;
+    _liveAddsArmed = false;
+  }
+
   /// 自分が今編集しているノードを宣言する (= 他の人からはロックされる)。
   void liveSetEditingNode(String? nodeId) {
     if (_liveCode == null) return;
@@ -81733,7 +83025,18 @@ $cleanQ
     required String code,
     String permission = 'edit',
     bool pushInitial = true,
+    // 参加時に先に取り込んだ本文 (= 基準にする。 無ければ null)。
+    String? seedBody,
+    int seedBodyRev = 0,
+    String seedBodyUpdateTime = '',
   }) async {
+    // ★ 動画編集ページは共同編集できない (= ユーザー要望)。 中身が運べない。
+    {
+      final i = _pages.indexWhere((p) => p.id == pageId);
+      if (i >= 0 && !isLiveSharablePageType(_pages[i].pageType)) {
+        throw Exception(t('live.videoEditorNotShareable'));
+      }
+    }
     // つながっていない時は、 その旨を出す (= ユーザー要望)。
     await ensureOnline();
     // ── リアルタイム共同編集は Max 限定 ──
@@ -81760,6 +83063,16 @@ $cleanQ
         kLivePeerColors[_liveClientId.hashCode.abs() % kLivePeerColors.length];
     _liveRev = -1;
     _liveLastPushed.clear();
+    _liveLastPushedMeta = '';
+    _liveLastBody = seedBody ?? '';
+    _liveBodyRev = seedBody == null ? 0 : seedBodyRev;
+    _liveBodyUpdateTime = seedBody == null ? '' : seedBodyUpdateTime;
+    _liveBodyRevPending = 0;
+    _liveBodyNeedsPull = false;
+    _liveAddsArmed = false;
+    _liveBodyDirty = false;
+    _liveBodyAuthor = null;
+    _liveClearAdds();
     _liveLastPushedConns = '';
     _liveLastPushedDeco = '';
     _livePeers.clear();
@@ -81787,12 +83100,31 @@ $cleanQ
     // ★ 公開した人は、 本文より先に権限 (hostUid) を書く。
     //   Firestore の規則が「作った時点で hostUid があること」 を見るので、
     //   順番を逆にすると自分の土台を作れなくなる。
-    if (_liveIsHost) await _livePushAccess();
-    if (pushInitial && liveCanEdit) await _livePush(force: true);
-    await _livePushPresence();
-    // 参加側は、 最初の 1 回を待たずに権限を読みに行く
-    //   (= 閲覧のみで招かれた人が、 一瞬でも書けてしまわないように)。
-    if (!_liveIsHost) await _livePullAccess();
+    // ★ ここから先で失敗したら、 セッションを畳んでから投げ直す
+    //   (= 点検で判明: 途中で例外が出ると「共有中」 の見た目のまま
+    //   見回りが動かず、 相手に何も届かない半端な状態で残っていた)。
+    try {
+      if (_liveIsHost) await _livePushAccess();
+      if (pushInitial && liveCanEdit) {
+        await _livePush(force: true);
+        // 本文を持つページ (フリーノート / マークダウン) は中身も送る。
+        final pg0 = _livePage;
+        if (pg0 != null && _liveHasBody(pg0)) {
+          if (pg0.pageType != 'markdown') {
+            await _liveUploadPaintImages(code, pg0.id);
+          }
+          _liveBodyDirty = true;
+          await _livePushBody();
+        }
+      }
+      await _livePushPresence();
+      // 参加側は、 最初の 1 回を待たずに権限を読みに行く
+      //   (= 閲覧のみで招かれた人が、 一瞬でも書けてしまわないように)。
+      if (!_liveIsHost) await _livePullAccess();
+    } catch (e) {
+      await stopLiveSession();
+      rethrow;
+    }
     _liveTimer = Timer.periodic(_kLiveTick, (_) => _liveTick());
     _livePresenceTimer =
         Timer.periodic(_kLivePresenceTick, (_) => _livePresenceTick());
@@ -81806,6 +83138,16 @@ $cleanQ
     if (_liveCode != null && liveCanEdit && !_disposed) {
       try {
         await _livePush();
+        // ★ 本文 (フリーノート / マークダウン) も送り切る (= 点検で判明:
+        //   描いた直後にページを切り替えると、 その線が相手に届かないまま
+        //   消えていた。 ノードだけ送っていた)。
+        final pg = _livePage;
+        if (_liveBodyDirty && pg != null && _liveHasBody(pg)) {
+          if (pg.pageType != 'markdown') {
+            await _liveUploadPaintImages(_liveCode!, pg.id);
+          }
+          await _livePushBody();
+        }
       } catch (_) {}
     }
     _liveTimer?.cancel();
@@ -81823,12 +83165,19 @@ $cleanQ
     _liveEditingNodeId = null;
     _livePeers.clear();
     _liveLastPushed.clear();
+    _liveBodyAuthor = null;
+    _liveBodyUpdateTime = '';
+    _liveBodyRevPending = 0;
+    _liveBodyNeedsPull = false;
+    _liveClearAdds();
     if (code != null && cid.isNotEmpty && _idToken != null) {
       try {
-        await http.delete(
-          Uri.parse('$_firestoreBaseUrl/published/$code/peers/$cid'),
-          headers: {'Authorization': 'Bearer $_idToken'},
-        );
+        await http
+            .delete(
+              Uri.parse('$_firestoreBaseUrl/published/$code/peers/$cid'),
+              headers: {'Authorization': 'Bearer $_idToken'},
+            )
+            .timeout(_kLiveHttpTimeout);
       } catch (_) {}
     }
     notifyListeners();
@@ -81841,6 +83190,29 @@ $cleanQ
       await _ensureFreshToken();
       await _livePull();
       await _livePush();
+      // 書き込みが弾かれた時は、 版に関わらず取りに行く (取り込んでから
+      // 送り直す。 これをしないと弾かれ続ける)。
+      if (_liveBodyNeedsPull && _liveCode != null) {
+        _liveBodyNeedsPull = false;
+        await _livePullBody(_liveBodyRev);
+      }
+      // 本文 (フリーノート / マークダウン) は、 変わった時だけまとめて送る。
+      if (_liveBodyDirty) {
+        final pg = _livePage;
+        if (pg != null && _liveHasBody(pg)) {
+          if (pg.pageType != 'markdown') {
+            await _liveUploadPaintImages(_liveCode!, pg.id);
+          }
+          await _livePushBody();
+        } else {
+          _liveBodyDirty = false;
+        }
+      }
+      // 「本文の版が変わった」 の知らせを書けていなかったら送り直す
+      // (= これが欠けると、 相手は本文が変わった事に気付けない)。
+      if (_liveBodyRevPending > 0 && _liveCode != null) {
+        await _livePushBodyRev(_liveCode!, _liveBodyRevPending);
+      }
     } catch (e) {
       _liveLastError = '$e';
       debugPrint('共同編集 tick でエラー: $e');
@@ -81919,6 +83291,31 @@ $cleanQ
 
   /// 配られた URL から、 この端末にファイルを落として来る。
   /// 既に落としてあれば何もしない。 戻り値はこの端末での置き場所。
+  /// 配られた添付を「この端末に落とす予約」 をする。
+  /// 既に落としてあれば、 その場で道を差し替える。
+  ///
+  /// ★ 絵の部品は端末のファイルしか見ないので、 送り主のパス
+  ///   (C:\Users\… ) のままだと必ず「壊れた画像」 になる。
+  void _queueLiveAttachment(
+      MindMapPage page, MindMapNode n, List<MapEntry<String, String>> pending) {
+    final u = n.attachmentStorageUrl;
+    if (u == null || u.isEmpty) return;
+    final local = _liveAttachLocal[u];
+    if (local == null) {
+      if (!pending.any((e) => e.value == u)) {
+        pending.add(MapEntry(n.id, u));
+      }
+      return;
+    }
+    if (n.attachmentPath != local) {
+      n.attachmentPath = local;
+      // 落とし直した道は「送るべき変更」 ではない (自分の端末の事情)。
+      // 控えも合わせておかないと、 毎回「未送信の編集あり」 と誤解して
+      // 相手の更新を受け取らなくなる。
+      _liveLastPushed[n.id] = jsonEncode(n.toJson());
+    }
+  }
+
   Future<String?> _downloadLiveAttachment(String url) async {
     if (url.isEmpty) return null;
     // 同じ URL を二度落とさない。
@@ -82006,13 +83403,15 @@ $cleanQ
     // まず版だけを取りに行く (毎秒フルで取ると重いため)。
     final headRes = await http.get(
       Uri.parse('$base?mask.fieldPaths=rev&mask.fieldPaths=lastActiveAt'
-          '&mask.fieldPaths=closed'),
+          '&mask.fieldPaths=closed&mask.fieldPaths=bodyRev'),
       headers: {'Authorization': 'Bearer $_idToken'},
-    );
+    ).timeout(_kLiveHttpTimeout);
     if (headRes.statusCode == 404) return; // まだ土台が無い
     if (headRes.statusCode != 200) return;
     int remoteRev = -1;
     int lastActive = 0;
+    // 本文 (フリーノート / マークダウン) の版。
+    int remoteBodyRev = 0;
     var closed = false;
     try {
       final j = jsonDecode(headRes.body) as Map<String, dynamic>;
@@ -82023,6 +83422,8 @@ $cleanQ
       remoteRev = int.tryParse('$v') ?? -1;
       final a = (f?['lastActiveAt'] as Map<String, dynamic>?)?['integerValue'];
       lastActive = int.tryParse('$a') ?? 0;
+      final b = (f?['bodyRev'] as Map<String, dynamic>?)?['integerValue'];
+      remoteBodyRev = int.tryParse('$b') ?? 0;
     } catch (_) {}
     // ── 公開した人が中止した (= ユーザー要望: 中止したら全員の画面でも
     //    「公開中止されました」 と出して終わるように) ──
@@ -82040,12 +83441,23 @@ $cleanQ
       await _expireLiveSession();
       return;
     }
+    // ── 本文 (フリーノート / マークダウンの中身) ──
+    //   ページの JSON に入っていない中身は、 別の書類で運ぶ
+    //   (= ユーザー報告: 共有中のフリーノートの中身が共有されない)。
+    //   ★ 版は「知っている物と違えば読む」 (rev と同じ。 大小で見ると
+    //     時計の進んだ端末の版に負けて、 遅れた端末の本文が届かない)。
+    if (remoteBodyRev > 0 && remoteBodyRev != _liveBodyRev) {
+      await _livePullBody(remoteBodyRev);
+    }
     // ★ 「自分が知っている版と違えば読む」 にする。
     //   以前は remoteRev <= _liveRev で弾いていたため、 相手の端末の時計が
     //   進んでいると、 こちらの版がその未来の値になり、 それ以降は相手の
     //   書き込み (より小さい rev) を一切読まなくなっていた
     //   (= 編集が相手に伝わらない)。
     if (remoteRev == _liveRev) return; // 変化なし
+    final firstPull = _liveRev == -1;
+    // 一度でも中身を知ったら、 以後の追加を「誰が足したか」 として知らせる。
+    _liveAddsArmed = true;
     // 版が動いた = 権限が変わっているかもしれない。 参加側だけ読み直す
     //   (= ユーザー要望: 途中で閲覧のみに変えられるように)。
     if (!_liveIsHost) await _livePullAccess();
@@ -82053,7 +83465,7 @@ $cleanQ
     final res = await http.get(
       Uri.parse(base),
       headers: {'Authorization': 'Bearer $_idToken'},
-    );
+    ).timeout(_kLiveHttpTimeout);
     if (res.statusCode != 200) return;
     Map<String, dynamic> fields;
     try {
@@ -82089,7 +83501,13 @@ $cleanQ
         if (pushed != null && pushed != localJson) return; // 未送信の編集あり
         if (localJson == raw) {
           _liveLastPushed[id] = raw;
-          return; // 既に同じ
+          // ★ 中身が同じでも、 添付はまだこの端末に無いことがある
+          //   (= ユーザー報告: 共同編集で画像が共有できていない)。
+          //   参加した時点で既にあったノードは、 ここで毎回「同じ」 と
+          //   判定されて先へ進めず、 画像を落としに行く所まで届いて
+          //   いなかった。 落とす予約だけはしてから戻る。
+          _queueLiveAttachment(page, local, pendingAttach);
+          return; // 中身は既に同じ
         }
       }
       try {
@@ -82101,15 +83519,7 @@ $cleanQ
         //   (= ユーザー報告: 他人が上げたファイルが表示されない)。
         //   絵の部品は端末のパスしか見ないので、 落とした場所を
         //   attachmentPath に入れ直す。 重いので後回しにする。
-        final u = n.attachmentStorageUrl;
-        if (u != null && u.isNotEmpty) {
-          final local = _liveAttachLocal[u];
-          if (local == null) {
-            pendingAttach.add(MapEntry(id, u));
-          } else if (n.attachmentPath != local) {
-            n.attachmentPath = local;
-          }
-        }
+        _queueLiveAttachment(page, n, pendingAttach);
       } catch (_) {}
     });
 
@@ -82163,6 +83573,51 @@ $cleanQ
       }
     }
 
+    // ページの種別・棚の並び・背景。 送り手 (ホスト) は自分の値が正なので
+    // 取り込まない。
+    if (!_liveIsHost) {
+      final metaRaw = (fields['meta'] as Map<String, dynamic>?)?['stringValue'];
+      if (metaRaw is String && metaRaw != _liveLastPushedMeta) {
+        if (await _applyLiveMeta(page, metaRaw)) changed = true;
+        _liveLastPushedMeta = metaRaw;
+      }
+    }
+
+    // ── 「誰が足したか」 (= ユーザー要望: 要素が追加されたら枠と名前を
+    //    数秒出す)。 送り主が _livePush で載せた 'adds' を読む。 同じ物は
+    //    一度だけ (at で見分ける)。 参加直後の最初の読み込みで、 前から
+    //    残っている印を出さない。 ──
+    final addsRaw = (fields['adds'] as Map<String, dynamic>?)?['stringValue'];
+    if (addsRaw is String && addsRaw.isNotEmpty) {
+      try {
+        final m = jsonDecode(addsRaw) as Map<String, dynamic>;
+        final at = (m['at'] as num?)?.toInt() ?? 0;
+        final cid = '${m['cid'] ?? ''}';
+        if (firstPull) {
+          _liveLastAddsAt = at;
+        } else if (at != _liveLastAddsAt && cid != _liveClientId) {
+          _liveLastAddsAt = at;
+          final ids = (m['ids'] as List?)?.map((e) => '$e') ?? const <String>[];
+          final mark = LiveAddMark(
+            name: '${m['name'] ?? ''}',
+            colorRgb: (m['color'] as num?)?.toInt() ?? kLivePeerColors.first,
+            avatar: '${m['avatar'] ?? ''}',
+            expiresAt: DateTime.now().add(kLiveAddMarkDuration),
+          );
+          var any = false;
+          for (final id in ids) {
+            if (!page.nodes.containsKey(id)) continue;
+            _liveRecentAdds[id] = mark;
+            any = true;
+          }
+          if (any) {
+            _liveScheduleAddsExpiry();
+            changed = true;
+          }
+        }
+      } catch (_) {}
+    }
+
     _liveRev = remoteRev;
     if (changed) {
       // ignore: discarded_futures
@@ -82182,6 +83637,9 @@ $cleanQ
         final n = page.nodes[e.key];
         if (n != null && n.attachmentPath != local) {
           n.attachmentPath = local;
+          // 落とした道は「自分の端末の事情」。 控えも合わせておかないと、
+          // 次の受け取りで「未送信の編集あり」 と誤解して弾いてしまう。
+          _liveLastPushed[n.id] = jsonEncode(n.toJson());
           done++;
         }
       }
@@ -82197,7 +83655,670 @@ $cleanQ
   /// ページ 1 枚分を published/{code}/doc/main へ丸ごと書き込む
   /// (= 一括共有用。 セッションを張らずに初期データだけ置くので、
   ///  参加者はどのページのコードでもすぐ入れる)。
-  Future<void> seedLiveDocForPage(String pageId, String code) async {
+  /// 共同編集で最後に送ったページ属性 (変わった時だけ送るための控え)。
+  String _liveLastPushedMeta = '';
+
+  // ─── 本文の共有 (フリーノート / マークダウン) ──────────────────────
+  //
+  // ★ = ユーザー報告「共有中のフリーノートの中身が共有されていない」
+  //   「マークダウンページが反映されない」。
+  //   これらのページの中身は**ページの JSON に入っていない** (端末の
+  //   控え = SharedPreferences にある) ので、 ノードを配るだけの共同編集
+  //   では何も届かなかった。
+  //
+  // 置き場所は本体とは別の書類 `published/{code}/body/main`。
+  //   ・本体 (doc/main) は 1.2 秒ごとに丸ごと読むので、 そこに重い本文を
+  //     載せると、 ノードを 1 つ動かすたびに絵全体を読み直す事になる。
+  //   ・書類 1 つの上限 (約 1MB) にも掛かる。 大きい時は共有の置き場へ
+  //     ファイルとして上げ、 ここには URL だけを置く。
+  //
+  // 版は本体側の `bodyRev` で知らせる (読み取りの回数を増やさないため)。
+
+  /// 本文を送り直す必要があるか (書いた側が立てる印)。
+  bool _liveBodyDirty = false;
+
+  /// 最後に送った / 受け取った本文。 echo を弾くのに使う。
+  String _liveLastBody = '';
+
+  /// 最後に見た本文の版。
+  int _liveBodyRev = 0;
+
+  /// 最後に見た / 書いた本文書類の版 (サーバーの updateTime)。
+  ///
+  /// ★ これを条件に付けて書く (= 検証で判明: 条件なしだと、 同時に描いた
+  ///   時に**相手の本文を黙って上書き**でき、 上書きされた側は自分の線を
+  ///   「相手が消した」 と誤解して自分でも消していた)。 古い版のまま書くと
+  ///   Firestore が 400 FAILED_PRECONDITION で弾くので、 取り込んでから
+  ///   書き直す。
+  String _liveBodyUpdateTime = '';
+
+  /// 本文は書けたが「版が変わった」 の知らせ (doc/main.bodyRev) を書けて
+  /// いない時の再送分。 これが残っていると相手が気付けない。
+  int _liveBodyRevPending = 0;
+
+  /// 次の見回りで、 版に関わらず本文を取りに行くか (書き込みが弾かれた時)。
+  bool _liveBodyNeedsPull = false;
+
+  /// 本文を最後に送ってきた相手 (フリーノートで「誰が描き足したか」 を
+  /// 出すため)。 自分が送った時は null。
+  LiveBodyAuthor? _liveBodyAuthor;
+  LiveBodyAuthor? get liveBodyAuthor => _liveBodyAuthor;
+
+  /// フリーノートの中身が「外から」 書き換わった回数 (ページごと)。
+  /// 共同編集で相手の分を取り込んだ時 / 画像の置き場 URL を書き足した時 /
+  /// クラウドから戻した時に上がる。 画面側はこれを見て**作り直さずに**
+  /// 中身だけ読み直す (= 作り直すと道具や選択が飛び、 消える側の画面が
+  /// 古い中身で上書きしていた)。
+  final Map<String, int> _paintBodyTicks = {};
+  int paintBodyTick(String pageId) => _paintBodyTicks[pageId] ?? 0;
+  void _bumpPaintBodyTick(String pageId) {
+    if (pageId.isEmpty) return;
+    _paintBodyTicks[pageId] = (_paintBodyTicks[pageId] ?? 0) + 1;
+  }
+
+  /// フリーノートの画像を共有の置き場へ上げた控え (端末のパス → URL)。
+  /// 画面側が保存し直すたびに 'lu' が落ちても、 同じ画像を何度も
+  /// 上げ直さないため (= 検証で判明: 線を 1 本引くたびに全画像を再送し、
+  /// 回線を占領して在席の知らせが遅れ「参加から外れた」 ように見えていた)。
+  final Map<String, String> _livePaintImageUrls = {};
+
+  /// 本文を持つページ種別か。
+  bool _liveHasBody(MindMapPage page) =>
+      page.pageType == 'paint' ||
+      page.pageType == 'document' ||
+      page.pageType == 'markdown';
+
+  /// 本文の控えの鍵 (端末の SharedPreferences 側)。
+  String? _liveBodyPrefsKey(MindMapPage page) {
+    switch (page.pageType) {
+      case 'paint':
+      case 'document':
+        return 'paint_${page.id}';
+      case 'markdown':
+        return 'markdown_${page.id}';
+      default:
+        return null;
+    }
+  }
+
+  /// 「本文が変わった」 と印を付ける。 画面側から呼ぶ (保存した直後)。
+  /// 送るのは次の見回り (1.2 秒) にまとめる。
+  void markLiveBodyDirty(String pageId) {
+    if (!liveActive || _livePageId != pageId) return;
+    _liveBodyDirty = true;
+  }
+
+  /// 本文が同じか。 フリーノートは端末ごとの差 (画像のパス等) を無視する。
+  bool _liveBodyEquals(MindMapPage page, String a, String b) =>
+      page.pageType == 'markdown' ? a == b : paintBodiesEqual(a, b);
+
+  /// 本文を送る。
+  Future<void> _livePushBody() async {
+    if (!liveCanEdit) return;
+    final code = _liveCode;
+    final page = _livePage;
+    if (code == null || page == null || _idToken == null) return;
+    final key = _liveBodyPrefsKey(page);
+    if (key == null) return;
+    String body;
+    try {
+      final prefs = await _prefsWithRetry();
+      body = prefs.getString(key) ?? '';
+    } catch (_) {
+      return;
+    }
+    if (body.isEmpty || _liveBodyEquals(page, body, _liveLastBody)) {
+      _liveBodyDirty = false;
+      return;
+    }
+    // 大きい本文は書類に載せない (上限にかかる)。 ファイルとして上げて
+    // URL だけを置く。
+    var payload = body;
+    var asUrl = false;
+    if (utf8.encode(body).length > 700 * 1024) {
+      try {
+        final dir = await getApplicationSupportDirectory();
+        final f = File('${dir.path}${Platform.pathSeparator}'
+            'live_body_${DateTime.now().millisecondsSinceEpoch}.json');
+        await f.writeAsString(body);
+        final url = await _uploadLiveAttachment(code, f.path);
+        try {
+          await f.delete();
+        } catch (_) {}
+        if (url == null) return; // 上げられなければ今回は見送る
+        payload = url;
+        asUrl = true;
+      } catch (e) {
+        debugPrint('本文の受け渡しに失敗: $e');
+        return;
+      }
+    }
+    // ★ 版は必ず「今知っている版 + 1」 以上にする (ノードの rev と同じ
+    //   理由: 時計が遅れている端末の本文が「古い」 と見なされて誰にも
+    //   届かなくなる)。
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final rev = now > _liveBodyRev ? now : _liveBodyRev + 1;
+    final baseRev = _liveBodyRev; // どの版を踏まえて書いたか (相手が見る)
+    final myName = _displayName?.trim().isNotEmpty == true
+        ? _displayName!.trim()
+        : t('live.anonymous');
+    // 自分が見た版のままなら書く。 その間に相手が書いていたら弾かれる。
+    final cond = _liveBodyUpdateTime.isEmpty
+        ? ''
+        : '&currentDocument.updateTime=${Uri.encodeComponent(_liveBodyUpdateTime)}';
+    final res = await http
+        .patch(
+          Uri.parse('$_firestoreBaseUrl/published/$code/body/main'
+              '?updateMask.fieldPaths=body&updateMask.fieldPaths=kind'
+              '&updateMask.fieldPaths=rev&updateMask.fieldPaths=baseRev'
+              '&updateMask.fieldPaths=byCid&updateMask.fieldPaths=byName'
+              '&updateMask.fieldPaths=byColor&updateMask.fieldPaths=byAvatar'
+              '$cond'),
+          headers: {
+            'Authorization': 'Bearer $_idToken',
+            'Content-Type': 'application/json',
+          },
+          body: jsonEncode({
+            'fields': {
+              'body': {'stringValue': payload},
+              'kind': {'stringValue': asUrl ? 'url' : 'text'},
+              'rev': {'integerValue': '$rev'},
+              'baseRev': {'integerValue': '$baseRev'},
+              // 誰が送ったか (= ユーザー要望: 描き足した人の名前を出す)。
+              'byCid': {'stringValue': _liveClientId},
+              'byName': {'stringValue': myName},
+              'byColor': {'integerValue': '$_liveMyColorRgb'},
+              'byAvatar': {'stringValue': _userAvatar ?? ''},
+            }
+          }),
+        )
+        .timeout(_kLiveHttpTimeout);
+    // ★ 通ってから控える。 先に控えると、 失敗した本文が「送った事」 に
+    //   なって二度と送り直されない。
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      _liveLastBody = body;
+      _liveBodyRev = rev;
+      _liveBodyDirty = false;
+      try {
+        _liveBodyUpdateTime =
+            ((jsonDecode(res.body) as Map<String, dynamic>)['updateTime']
+                    as String?) ??
+                '';
+      } catch (_) {
+        _liveBodyUpdateTime = '';
+      }
+      await _livePushBodyRev(code, rev);
+    } else {
+      // ★ 弾かれた = その間に相手が書いた。 消さずに取り込んでから送り直す。
+      _liveBodyUpdateTime = '';
+      _liveBodyNeedsPull = true;
+      _liveBodyDirty = true;
+      debugPrint('本文の送信に失敗: ${res.statusCode} ${res.body}');
+    }
+  }
+
+  /// 「本文の版が変わった」 を本体側 (doc/main) に書いて相手に気付かせる。
+  /// ここが失敗すると誰も取りに来ないので、 次の見回りで送り直す。
+  Future<void> _livePushBodyRev(String code, int rev) async {
+    try {
+      final res = await http
+          .patch(
+            Uri.parse('$_firestoreBaseUrl/published/$code/doc/main'
+                '?updateMask.fieldPaths=bodyRev'),
+            headers: {
+              'Authorization': 'Bearer $_idToken',
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode({
+              'fields': {
+                'bodyRev': {'integerValue': '$rev'}
+              }
+            }),
+          )
+          .timeout(_kLiveHttpTimeout);
+      _liveBodyRevPending =
+          (res.statusCode >= 200 && res.statusCode < 300) ? 0 : rev;
+    } catch (_) {
+      _liveBodyRevPending = rev;
+    }
+  }
+
+  /// 本文の書類 (body/main) を読む。 戻り値は (本文, 送り主) / 無ければ null。
+  Future<
+      ({
+        String body,
+        LiveBodyAuthor? author,
+        int rev,
+        int baseRev,
+        String updateTime
+      })?> _liveFetchBody(String code) async {
+    final res = await http.get(
+      Uri.parse('$_firestoreBaseUrl/published/$code/body/main'),
+      headers: {'Authorization': 'Bearer $_idToken'},
+    ).timeout(_kLiveHttpTimeout);
+    if (res.statusCode != 200) return null;
+    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    final fields = (data['fields'] as Map<String, dynamic>?) ?? {};
+    String str(String k) =>
+        ((fields[k] as Map<String, dynamic>?)?['stringValue'] as String?) ??
+        '';
+    int intOf(String k) => int.tryParse(
+            '${(fields[k] as Map<String, dynamic>?)?['integerValue']}') ??
+        0;
+    final raw = str('body');
+    if (raw.isEmpty) return null;
+    var body = raw;
+    if (str('kind') == 'url') {
+      final local = await _downloadLiveAttachment(raw);
+      if (local == null) return null;
+      body = await File(local).readAsString();
+    }
+    final byCid = str('byCid');
+    final colorRaw = (fields['byColor'] as Map<String, dynamic>?)?['integerValue'];
+    final rev = intOf('rev');
+    final author = byCid.isEmpty
+        ? null
+        : LiveBodyAuthor(
+            clientId: byCid,
+            name: str('byName'),
+            colorRgb: int.tryParse('$colorRaw') ?? kLivePeerColors.first,
+            avatar: str('byAvatar'),
+            at: rev,
+          );
+    return (
+      body: body,
+      author: author,
+      rev: rev,
+      baseRev: intOf('baseRev'),
+      updateTime: (data['updateTime'] as String?) ?? '',
+    );
+  }
+
+  /// 本文を受け取って当てる。
+  ///
+  /// フリーノートは**要素単位で合わせる** (mergePaintBodies)。 自分が
+  /// まだ送っていない線があっても相手の分を捨てず、 合わせた物を保存して
+  /// 次の送信で相手へ返す。 マークダウンは行単位の合わせ方が無いので、
+  /// 自分の未送信分がある間だけ相手の物を待たせる (今までどおり)。
+  Future<void> _livePullBody(int remoteRev) async {
+    final code = _liveCode;
+    final page = _livePage;
+    if (code == null || page == null) return;
+    final key = _liveBodyPrefsKey(page);
+    if (key == null) return;
+    try {
+      final got = await _liveFetchBody(code);
+      if (got == null) return;
+      final serverRev = got.rev > 0 ? got.rev : remoteRev;
+      // 版の控えは、 相手の物を読んだ時点で先に更新する (取り込みに失敗
+      // しても、 条件付き書き込みの基準がずれないように)。
+      _liveBodyUpdateTime = got.updateTime;
+      var body = got.body;
+      if (got.author != null && got.author!.clientId == _liveClientId) {
+        // 自分が送った物が戻ってきただけ。
+        _liveBodyRev = serverRev;
+        return;
+      }
+      if (_liveBodyEquals(page, body, _liveLastBody)) {
+        _liveBodyRev = serverRev;
+        return;
+      }
+      // ★ 画像を落とすのは **控えを読む前** に済ませる (= 点検で判明:
+      //   落とす間に利用者が線を引くと、 読んでおいた古い控えで上書きして
+      //   しまい、 その線が消えていた)。 落とし終えてから、 控えを読んで
+      //   合わせて書くまでの間には待ちを入れない。
+      final remoteBase = got.baseRev;
+      if (page.pageType != 'markdown') {
+        body = await _liveLocalizePaintImages(body);
+      }
+      final prefs = await _prefsWithRetry();
+      final mine = prefs.getString(key) ?? '';
+      String merged;
+      if (page.pageType == 'markdown') {
+        // 自分の書きかけが送れていない時は、 上書きしない (次の送信を待つ)。
+        if (_liveBodyDirty && mine != _liveLastBody) return;
+        merged = body;
+      } else if (mine.isEmpty) {
+        merged = body; // 手元に何も無い
+      } else {
+        // 相手がこちらの版を踏まえて書いたか。 すれ違っていたら、 相手に
+        // 無い物を「消された」 と見なさない (= 自分の線を自分で消さない)。
+        final sawBase = _liveLastBody.isEmpty || remoteBase == _liveBodyRev;
+        merged = mergePaintBodies(_liveLastBody, mine, body,
+            remoteSawBase: sawBase);
+      }
+      final changed = merged != mine;
+      if (changed) await prefs.setString(key, merged);
+      _liveLastBody = body;
+      _liveBodyRev = serverRev;
+      _liveBodyAuthor = got.author;
+      // 合わせた結果が相手の物と違う (= 自分の分が混ざっている) なら送る。
+      _liveBodyDirty = !_liveBodyEquals(page, merged, body);
+      // ★ 中身が変わった時だけ画面に知らせる (= 点検で判明: 毎回知らせると、
+      //   相手が描くたびに手元の選択や「元に戻す」 が消えていた)。
+      if (changed) {
+        _bumpPageTick(page.id);
+        _bumpPaintBodyTick(page.id);
+        notifyListeners();
+      }
+    } catch (e) {
+      debugPrint('本文の受け取りに失敗: $e');
+    }
+  }
+
+  /// 参加した直後に本文を取りに行き、 端末の控えに入れる
+  /// (= 検証で判明: 参加側の画面が先に白紙で開き、 その白紙を送って
+  ///   公開した人の絵を消していた)。 戻り値は取り込んだ本文 (無ければ null)。
+  Future<({String body, int rev, String updateTime})?> _liveFetchBodyForJoin(
+      String code, MindMapPage page) async {
+    final key = _liveBodyPrefsKey(page);
+    if (key == null) return null;
+    try {
+      final got = await _liveFetchBody(code);
+      if (got == null) return null;
+      var body = got.body;
+      if (page.pageType != 'markdown') {
+        body = await _liveLocalizePaintImages(body);
+      }
+      final prefs = await _prefsWithRetry();
+      await prefs.setString(key, body);
+      _bumpPageTick(page.id);
+      _bumpPaintBodyTick(page.id);
+      return (body: body, rev: got.rev, updateTime: got.updateTime);
+    } catch (e) {
+      debugPrint('参加時の本文の取り込みに失敗: $e');
+      return null;
+    }
+  }
+
+  /// 受け取ったフリーノートの画像を落として、 この端末の道に差し替える。
+  /// 戻り値は差し替え後の本文。
+  Future<String> _liveLocalizePaintImages(String rawJson) async {
+    dynamic decoded;
+    try {
+      decoded = jsonDecode(rawJson);
+    } catch (_) {
+      return rawJson;
+    }
+    final sheets = <Map<dynamic, dynamic>>[];
+    _collectPaintSheets(decoded, sheets);
+    var changed = false;
+    // URL から、 この端末で使える道を返す (無ければ落としてくる)。
+    Future<String?> localPathFor(String url, String current) async {
+      final known = _liveAttachLocal[url];
+      if (known != null && await File(known).exists()) {
+        _livePaintImageUrls[known] = url;
+        return known;
+      }
+      if (current.isNotEmpty) {
+        try {
+          if (await File(current).exists()) {
+            _liveAttachLocal[url] = current;
+            _livePaintImageUrls[current] = url;
+            return current;
+          }
+        } catch (_) {}
+      }
+      final got = await _downloadLiveAttachment(url);
+      if (got != null) _livePaintImageUrls[got] = url;
+      return got;
+    }
+
+    for (final sheet in sheets) {
+      // 紙の背景画像 (= 点検で判明: 送り主の道だけが届いて白紙に見えていた)。
+      final bgUrl = (sheet['bgiLu'] ?? '').toString();
+      if (bgUrl.isNotEmpty) {
+        final cur = (sheet['bgi'] ?? '').toString();
+        final got = await localPathFor(bgUrl, cur);
+        if (got != null && got != cur) {
+          sheet['bgi'] = got;
+          changed = true;
+        }
+      }
+      final ims = sheet['im'];
+      if (ims is! List) continue;
+      for (final item in ims) {
+        if (item is! Map) continue;
+        final url = (item['lu'] ?? '').toString(); // 共有の置き場の URL
+        if (url.isEmpty) continue;
+        final localPath = (item['p'] ?? '').toString();
+        final got = await localPathFor(url, localPath);
+        if (got != null && got != localPath) {
+          item['p'] = got;
+          changed = true;
+        }
+      }
+    }
+    return changed ? jsonEncode(decoded) : rawJson;
+  }
+
+  /// 送る前に、 フリーノートの中の画像を共有の置き場へ上げておく。
+  /// 上げた URL は本文の中 ('lu') に控える。 既に上げてある画像は
+  /// 上げ直さない (端末のパス → URL の控えを見る)。
+  /// 画面側は保存のたびに 'lu' を落とす事があるので、 一度上げた画像は
+  /// 端末のパスから URL を引いて付け直す (二度上げない)。
+  ///
+  /// ★ 上げるのに時間が掛かる間に利用者が線を引くと、 読んでおいた古い
+  ///   控えで上書きしてその線を消していた (= 点検で判明)。 上げ終えてから
+  ///   控えを読み直し、 URL だけを付け直す。
+  Future<void> _liveUploadPaintImages(String code, String pageId) async {
+    try {
+      final prefs = await _prefsWithRetry();
+      final raw = prefs.getString('paint_$pageId');
+      if (raw == null || raw.isEmpty) return;
+      // ── 1 周目: 上げるべき画像を集めて、 先に全部上げてしまう ──
+      final probe = jsonDecode(raw);
+      final probeSheets = <Map<dynamic, dynamic>>[];
+      _collectPaintSheets(probe, probeSheets);
+      final want = <String>{};
+      for (final sheet in probeSheets) {
+        final bgi = (sheet['bgi'] ?? '').toString();
+        if (bgi.isNotEmpty &&
+            !bgi.startsWith('http') &&
+            (sheet['bgiLu'] ?? '').toString().isEmpty &&
+            !_livePaintImageUrls.containsKey(bgi)) {
+          want.add(bgi);
+        }
+        final ims = sheet['im'];
+        if (ims is! List) continue;
+        for (final item in ims) {
+          if (item is! Map) continue;
+          final p = (item['p'] ?? '').toString();
+          if (p.isEmpty || p.startsWith('http')) continue;
+          final have = (item['lu'] ?? '').toString();
+          if (have.isNotEmpty) {
+            _livePaintImageUrls[p] = have;
+            _liveAttachLocal[have] ??= p;
+            continue;
+          }
+          if (!_livePaintImageUrls.containsKey(p)) want.add(p);
+        }
+      }
+      for (final p in want) {
+        final url = await _uploadLiveAttachment(code, p);
+        if (url == null) continue;
+        _livePaintImageUrls[p] = url;
+        _liveAttachLocal[url] = p;
+      }
+      // ── 2 周目: 今の控えを読み直して URL を付ける (待ちを挟まない) ──
+      final fresh = prefs.getString('paint_$pageId');
+      if (fresh == null || fresh.isEmpty) return;
+      final decoded = jsonDecode(fresh);
+      final sheets = <Map<dynamic, dynamic>>[];
+      _collectPaintSheets(decoded, sheets);
+      var changed = false;
+      for (final sheet in sheets) {
+        // 紙の背景画像 (PDF を読み込んだ時など) も配る (= 点検で判明:
+        //   相手には送り主の道だけが届き、 白紙に見えていた)。
+        final bgi = (sheet['bgi'] ?? '').toString();
+        if (bgi.isNotEmpty && (sheet['bgiLu'] ?? '').toString().isEmpty) {
+          final u = _livePaintImageUrls[bgi];
+          if (u != null) {
+            sheet['bgiLu'] = u;
+            changed = true;
+          }
+        }
+        final ims = sheet['im'];
+        if (ims is! List) continue;
+        for (final item in ims) {
+          if (item is! Map) continue;
+          if ((item['lu'] ?? '').toString().isNotEmpty) continue;
+          final localPath = (item['p'] ?? '').toString();
+          if (localPath.isEmpty || localPath.startsWith('http')) continue;
+          final url = _livePaintImageUrls[localPath];
+          if (url == null) continue;
+          item['lu'] = url;
+          changed = true;
+        }
+      }
+      if (changed) {
+        // ★ 画面へは知らせない。 'lu' は配るための控えで、 見た目は変わら
+        //   ないため (知らせると相手が描くたびに選択や取り消しが消える)。
+        //   画面が次に保存して 'lu' が落ちても、 上の控えから付け直す。
+        await prefs.setString('paint_$pageId', jsonEncode(decoded));
+      }
+    } catch (e) {
+      debugPrint('フリーノートの画像を配れませんでした: $e');
+    }
+  }
+
+  /// ページの「中身以外」 をまとめた 1 本の JSON。
+  ///
+  /// ★ = ユーザー報告「ギャラリーページを共有したのに、 相手には普通の
+  ///   マインドマップで届く」。 共同編集はノード・接続・装飾・ページ名しか
+  ///   運んでおらず、 受け取った側は既定の 'normal' でページを作っていた。
+  ///   背景画像も同じ理由で落ちていたので、 一緒に運ぶ。
+  ///
+  /// [bgUrl] は、 手元の画像を共有の置き場へ上げた先。 組み込みの背景
+  /// (`builtin-map-background:…`) は文字列だけで描けるので上げない。
+  String _liveMetaJson(MindMapPage page, {String? bgUrl}) => jsonEncode({
+        'pageType': page.pageType,
+        'shelfPerRow': page.shelfPerRow,
+        'shelfRows': page.shelfRows,
+        'bg': page.backgroundImagePath,
+        if (bgUrl != null) 'bgUrl': bgUrl,
+        'bgOpacity': page.backgroundOpacityPercent,
+        'bgFit': page.backgroundFit,
+        'bgHue': page.backgroundHueDegrees,
+        'bgSat': page.backgroundSaturationPercent,
+        'bgBri': page.backgroundBrightnessPercent,
+      });
+
+  /// 背景が手元の画像なら共有の置き場へ上げて URL を返す。
+  /// 組み込みの背景・既に URL・画像なし の時は null。
+  Future<String?> _liveUploadBackground(String code, MindMapPage page) async {
+    final path = (page.backgroundImagePath ?? '').trim();
+    if (path.isEmpty) return null;
+    if (path.startsWith('builtin-map-background:')) return null;
+    if (path.startsWith('http')) return path;
+    final cached = _liveBgUploaded[path];
+    if (cached != null) return cached;
+    final url = await _uploadLiveAttachment(code, path);
+    if (url != null) {
+      _liveBgUploaded[path] = url;
+      _liveAttachLocal[url] = path; // 自分は元のファイルを使い続ける
+    }
+    return url;
+  }
+
+  /// 背景を上げた先の控え (同じ画像を何度も上げないため)。
+  final Map<String, String> _liveBgUploaded = {};
+
+  /// 受け取ったページ属性を当てる。
+  /// 戻り値は「何か変わったか」。
+  Future<bool> _applyLiveMeta(MindMapPage page, String? raw) async {
+    if (raw == null || raw.isEmpty) return false;
+    Map<String, dynamic> m;
+    try {
+      m = jsonDecode(raw) as Map<String, dynamic>;
+    } catch (_) {
+      return false;
+    }
+    var changed = false;
+    final pt = '${m['pageType'] ?? 'normal'}';
+    // ★ 共同編集できない種別 (動画編集) には作り替えない (= ユーザー要望)。
+    //   相手側で種別が変わっても、 こちらが空の編集画面にされないように。
+    if (pt.isNotEmpty && !isLiveSharablePageType(pt)) {
+      return changed;
+    }
+    if (pt.isNotEmpty && page.pageType != pt) {
+      page.pageType = pt;
+      changed = true;
+    }
+    int asInt(Object? v, int def) => v is num ? v.toInt() : def;
+    final spr = asInt(m['shelfPerRow'], page.shelfPerRow);
+    if (spr != page.shelfPerRow) {
+      page.shelfPerRow = spr;
+      changed = true;
+    }
+    final sr = asInt(m['shelfRows'], page.shelfRows);
+    if (sr != page.shelfRows) {
+      page.shelfRows = sr;
+      changed = true;
+    }
+    // ── 背景 ──
+    final bgUrl = '${m['bgUrl'] ?? ''}';
+    final bg = m['bg'] == null ? null : '${m['bg']}';
+    String? want;
+    if (bgUrl.isNotEmpty) {
+      // 既に落としてあればそれを使う。 無ければ落としてくる。
+      want = _liveAttachLocal[bgUrl] ?? await _downloadLiveAttachment(bgUrl);
+    } else if (bg != null && bg.startsWith('builtin-map-background:')) {
+      want = bg; // 組み込みは文字列だけで描ける
+    } else if (bg == null) {
+      want = null;
+    } else {
+      // 相手の端末の道は、 こちらでは開けない。 触らない。
+      want = page.backgroundImagePath;
+    }
+    if (want != page.backgroundImagePath) {
+      page.backgroundImagePath = want;
+      changed = true;
+    }
+    page.backgroundOpacityPercent =
+        asInt(m['bgOpacity'], page.backgroundOpacityPercent);
+    final fit = '${m['bgFit'] ?? page.backgroundFit}';
+    if (fit.isNotEmpty) page.backgroundFit = fit;
+    page.backgroundHueDegrees = asInt(m['bgHue'], page.backgroundHueDegrees);
+    page.backgroundSaturationPercent =
+        asInt(m['bgSat'], page.backgroundSaturationPercent);
+    page.backgroundBrightnessPercent =
+        asInt(m['bgBri'], page.backgroundBrightnessPercent);
+    if (changed && page.pageType == 'bookshelf') {
+      // ギャラリーとして並べ直す (セル座標は送っていないので、 ここで
+      // 自動割り当てに任せる)。
+      _ensureShelfCells(page);
+      _autoArrangeIfBookshelf(page.id);
+    }
+    return changed;
+  }
+
+  /// 共有の土台を作る。 書けなかった (= 人の土台だった) 時は、 番号を
+  /// 取り直して 1 度だけやり直す。 戻り値は実際に使った番号。
+  Future<String> seedLiveDocForPageOrReissue(String pageId, String code,
+      {List<String> editors = const []}) async {
+    try {
+      await seedLiveDocForPage(pageId, code, editors: editors);
+      return code;
+    } catch (e) {
+      if (!'$e'.contains('403')) rethrow;
+      // ★ 403 = その番号の土台は自分の物ではない (人の共有に参加した時の
+      //   番号を持っていた等)。 新しい番号で作り直す。
+      final fresh = reissuePublishCode(pageId);
+      await registerLivePage(
+          pageId: pageId,
+          title: _pages
+              .firstWhere((p) => p.id == pageId,
+                  orElse: () => _pages.first)
+              .name,
+          permission: publishPermissionFor(pageId));
+      await seedLiveDocForPage(pageId, fresh, editors: editors);
+      return fresh;
+    }
+  }
+
+  Future<void> seedLiveDocForPage(String pageId, String code,
+      {List<String> editors = const []}) async {
     final i = _pages.indexWhere((p) => p.id == pageId);
     if (i < 0 || code.isEmpty) return;
     final page = _pages[i];
@@ -82217,6 +84338,21 @@ $cleanQ
 
     final fields = <String, dynamic>{};
     final masks = <String>[];
+    // ★ 手元にしか無い添付を先に共有の置き場へ上げる
+    //   (= ユーザー報告: 共同編集で画像が共有できていない)。
+    //   ここを飛ばすと、 一括共有で作った土台には送り主のパスしか
+    //   載らず、 受け取った側では永久に「壊れた画像」 になる。
+    for (final n in page.nodes.values.toList()) {
+      final ap = n.attachmentPath;
+      if (ap == null || ap.isEmpty) continue;
+      if (ap.startsWith('http')) continue;
+      if ((n.attachmentStorageUrl ?? '').isNotEmpty) continue;
+      final url = await _uploadLiveAttachment(code, ap);
+      if (url != null) {
+        n.attachmentStorageUrl = url;
+        _liveAttachLocal[url] = ap;
+      }
+    }
     for (final entry in page.nodes.entries) {
       final f = _liveFieldForNode(entry.key);
       fields[f] = {'stringValue': jsonEncode(entry.value.toJson())};
@@ -82237,6 +84373,12 @@ $cleanQ
     masks.add('lastActiveAt');
     fields['title'] = {'stringValue': page.name};
     masks.add('title');
+    // ページの種別 (ギャラリー等) と背景を一緒に運ぶ。
+    final seedMeta =
+        _liveMetaJson(page, bgUrl: await _liveUploadBackground(code, page));
+    fields['meta'] = {'stringValue': seedMeta};
+    masks.add('meta');
+    _liveLastPushedMeta = seedMeta;
     // ★ 誰が公開したかを**本文と同じ書き込みに乗せる**。
     //
     //   = ユーザー報告「まとめて共有でエラー (HTTP 403)」。 土台がまだ
@@ -82250,11 +84392,17 @@ $cleanQ
     final acc = publishPermissionFor(pageId);
     fields['access'] = {'stringValue': acc};
     masks.add('access');
-    // 扱える人の一覧は空で始める (セッション中に公開者が足せる)。
+    // 編集できる人の一覧。 まとめて共有では、 選んだ人をここで書ける。
     fields['editors'] = {
-      'arrayValue': {'values': <dynamic>[]}
+      'arrayValue': {
+        'values': editors.map((e) => {'stringValue': e}).toList()
+      }
     };
     masks.add('editors');
+    // ★ 「終わった」 印は必ず false に戻す (= 以前の共有で立ったまま残ると、
+    //   同じ番号で開き直した瞬間に参加者が「公開中止されました」 になる)。
+    fields['closed'] = {'booleanValue': false};
+    masks.add('closed');
 
     final query = masks.map((m) => 'updateMask.fieldPaths=$m').join('&');
     final res = await http.patch(
@@ -82266,11 +84414,76 @@ $cleanQ
       body: jsonEncode({'fields': fields}),
     );
     if (res.statusCode < 200 || res.statusCode >= 300) {
-      throw Exception('HTTP ${res.statusCode}');
+      // 中身も添える (403 の理由が分かるように)。
+      throw Exception('HTTP ${res.statusCode} '
+          '${res.body.length > 200 ? res.body.substring(0, 200) : res.body}');
     }
     // 自分がこのページのセッション中なら、 送った内容を基準にする。
     if (_liveCode == code && _livePageId == pageId) {
       _liveRev = rev;
+    }
+    // ★ 本文を持つページ (フリーノート / 文書 / マークダウン) は中身も置く
+    //   (= 点検で判明: まとめて共有だと本文を置いていなかったので、 参加者は
+    //   白紙で開き、 その白紙が「本物」 になって公開した人の絵を消していた)。
+    if (_liveHasBody(page)) {
+      await _liveSeedBodyForPage(code, page);
+    }
+  }
+
+  /// セッションを張っていないページの本文を、 共有の土台へ置く
+  /// (まとめて共有用)。 既に誰かが置いていたら触らない。
+  Future<void> _liveSeedBodyForPage(String code, MindMapPage page) async {
+    final key = _liveBodyPrefsKey(page);
+    if (key == null || _idToken == null) return;
+    try {
+      // 既に本文がある共有には手を出さない (人の書いた物を消さない)。
+      final head = await http.get(
+        Uri.parse('$_firestoreBaseUrl/published/$code/body/main'
+            '?mask.fieldPaths=rev'),
+        headers: {'Authorization': 'Bearer $_idToken'},
+      ).timeout(_kLiveHttpTimeout);
+      if (head.statusCode == 200) return;
+      if (page.pageType != 'markdown') {
+        await _liveUploadPaintImages(code, page.id);
+      }
+      final prefs = await _prefsWithRetry();
+      final body = prefs.getString(key) ?? '';
+      if (body.isEmpty) return;
+      if (utf8.encode(body).length > 700 * 1024) return; // 大きい物は開いた時に
+      final rev = DateTime.now().millisecondsSinceEpoch;
+      final myName = _displayName?.trim().isNotEmpty == true
+          ? _displayName!.trim()
+          : t('live.anonymous');
+      final res = await http
+          .patch(
+            Uri.parse('$_firestoreBaseUrl/published/$code/body/main'
+                '?updateMask.fieldPaths=body&updateMask.fieldPaths=kind'
+                '&updateMask.fieldPaths=rev&updateMask.fieldPaths=baseRev'
+                '&updateMask.fieldPaths=byCid&updateMask.fieldPaths=byName'
+                '&updateMask.fieldPaths=byColor&updateMask.fieldPaths=byAvatar'),
+            headers: {
+              'Authorization': 'Bearer $_idToken',
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode({
+              'fields': {
+                'body': {'stringValue': body},
+                'kind': {'stringValue': 'text'},
+                'rev': {'integerValue': '$rev'},
+                'baseRev': {'integerValue': '0'},
+                'byCid': {'stringValue': _liveClientId},
+                'byName': {'stringValue': myName},
+                'byColor': {'integerValue': '$_liveMyColorRgb'},
+                'byAvatar': {'stringValue': _userAvatar ?? ''},
+              }
+            }),
+          )
+          .timeout(_kLiveHttpTimeout);
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        await _livePushBodyRev(code, rev);
+      }
+    } catch (e) {
+      debugPrint('まとめて共有の本文を置けませんでした: $e');
     }
   }
 
@@ -82300,12 +84513,18 @@ $cleanQ
       }
     }
 
+    // この回に「初めて送る」 ノード = 自分が足した物 (= 相手の画面で
+    //   「○○ が追加」 と出す)。 土台を作る時 (force) と、 参加直後で
+    //   まだ何も知らない時は数えない (全部が「新しい」 に見えるため)。
+    final addedIds = <String>[];
+    final countAdds = !force && _liveAddsArmed;
     for (final entry in page.nodes.entries) {
       final id = entry.key;
       // 他の人が編集中のノードは送らない (= 相手の編集を壊さない)。
       if (!force && isNodeLockedByOthers(id)) continue;
       final json = jsonEncode(entry.value.toJson());
       if (!force && _liveLastPushed[id] == json) continue;
+      if (countAdds && !_liveLastPushed.containsKey(id)) addedIds.add(id);
       final f = _liveFieldForNode(id);
       fields[f] = {'stringValue': json};
       masks.add(f);
@@ -82319,6 +84538,29 @@ $cleanQ
       masks.add(_liveFieldForNode(id));
       _liveLastPushed.remove(id);
     }
+    if (addedIds.isNotEmpty) {
+      final myName = _displayName?.trim().isNotEmpty == true
+          ? _displayName!.trim()
+          : t('live.anonymous');
+      fields['adds'] = {
+        'stringValue': jsonEncode({
+          'cid': _liveClientId,
+          'name': myName,
+          'color': _liveMyColorRgb,
+          'avatar': _userAvatar ?? '',
+          'at': DateTime.now().millisecondsSinceEpoch,
+          'ids': addedIds,
+        })
+      };
+      masks.add('adds');
+    } else if (force) {
+      // ★ 土台を作り直す時は、 前のセッションの「誰が足したか」 を消す
+      //   (= 点検で判明: 消さないと、 共有し直した直後に古い印が
+      //   「今追加された」 かのように出ていた)。 値なし + updateMask で消す。
+      masks.add('adds');
+    }
+    // 土台を送った / 相手の分を読んだ後は、 以後の追加を知らせてよい。
+    if (force) _liveAddsArmed = true;
 
     final connJson =
         jsonEncode(page.connections.map((c) => c.toJson()).toList());
@@ -82333,6 +84575,15 @@ $cleanQ
       fields['decorations'] = {'stringValue': decoJson};
       masks.add('decorations');
       _liveLastPushedDeco = decoJson;
+    }
+    // ページの種別・棚の並び・背景。 変わった時だけ送る (毎秒の書き込みを
+    // 増やさないため)。 背景が手元の画像なら、 先に共有の置き場へ上げる。
+    final metaJson =
+        _liveMetaJson(page, bgUrl: await _liveUploadBackground(code, page));
+    if (force || metaJson != _liveLastPushedMeta) {
+      fields['meta'] = {'stringValue': metaJson};
+      masks.add('meta');
+      _liveLastPushedMeta = metaJson;
     }
     if (masks.isEmpty) return;
 
@@ -82351,14 +84602,16 @@ $cleanQ
     masks.add('title');
 
     final query = masks.map((m) => 'updateMask.fieldPaths=$m').join('&');
-    final res = await http.patch(
-      Uri.parse('$_firestoreBaseUrl/published/$code/doc/main?$query'),
-      headers: {
-        'Authorization': 'Bearer $_idToken',
-        'Content-Type': 'application/json',
-      },
-      body: jsonEncode({'fields': fields}),
-    );
+    final res = await http
+        .patch(
+          Uri.parse('$_firestoreBaseUrl/published/$code/doc/main?$query'),
+          headers: {
+            'Authorization': 'Bearer $_idToken',
+            'Content-Type': 'application/json',
+          },
+          body: jsonEncode({'fields': fields}),
+        )
+        .timeout(_kLiveHttpTimeout);
     if (res.statusCode >= 200 && res.statusCode < 300) {
       // 自分の書き込みで pull が走らないよう、 版を進めておく。
       _liveRev = rev;
@@ -82377,29 +84630,37 @@ $cleanQ
         ? _displayName!.trim()
         : t('live.anonymous');
     try {
-      await http.patch(
-        Uri.parse('$_firestoreBaseUrl/published/$code/peers/$_liveClientId'
-            '?updateMask.fieldPaths=name'
-            '&updateMask.fieldPaths=uid'
-            '&updateMask.fieldPaths=color'
-            '&updateMask.fieldPaths=lockNodeId'
-            '&updateMask.fieldPaths=lastSeen'),
-        headers: {
-          'Authorization': 'Bearer $_idToken',
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode({
-          'fields': {
-            'name': {'stringValue': name},
-            'uid': {'stringValue': _uid ?? ''},
-            'color': {'integerValue': '$_liveMyColorRgb'},
-            'lockNodeId': {'stringValue': _liveEditingNodeId ?? ''},
-            'lastSeen': {
-              'stringValue': DateTime.now().toUtc().toIso8601String()
+      final res = await http
+          .patch(
+            Uri.parse('$_firestoreBaseUrl/published/$code/peers/$_liveClientId'
+                '?updateMask.fieldPaths=name'
+                '&updateMask.fieldPaths=uid'
+                '&updateMask.fieldPaths=color'
+                '&updateMask.fieldPaths=avatar'
+                '&updateMask.fieldPaths=lockNodeId'
+                '&updateMask.fieldPaths=lastSeen'),
+            headers: {
+              'Authorization': 'Bearer $_idToken',
+              'Content-Type': 'application/json',
             },
-          },
-        }),
-      );
+            body: jsonEncode({
+              'fields': {
+                'name': {'stringValue': name},
+                'uid': {'stringValue': _uid ?? ''},
+                'color': {'integerValue': '$_liveMyColorRgb'},
+                // 選んでいるアイコン (絵文字) も相手へ (= ユーザー要望)。
+                'avatar': {'stringValue': _userAvatar ?? ''},
+                'lockNodeId': {'stringValue': _liveEditingNodeId ?? ''},
+                'lastSeen': {
+                  'stringValue': DateTime.now().toUtc().toIso8601String()
+                },
+              },
+            }),
+          )
+          .timeout(_kLiveHttpTimeout);
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        debugPrint('共同編集 presence 送信失敗: HTTP ${res.statusCode}');
+      }
     } catch (e) {
       debugPrint('共同編集 presence 送信失敗: $e');
     }
@@ -82414,37 +84675,59 @@ $cleanQ
     //   read 課金も続いていた)。 生存確認は peers 側だけで足りる。
     if (!liveCanEdit) return;
     try {
-      await http.patch(
-        Uri.parse('$_firestoreBaseUrl/published/$code/doc/main'
-            '?updateMask.fieldPaths=lastActiveAt'),
-        headers: {
-          'Authorization': 'Bearer $_idToken',
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode({
-          'fields': {
-            'lastActiveAt': {
-              'integerValue': '${DateTime.now().millisecondsSinceEpoch}'
+      await http
+          .patch(
+            Uri.parse('$_firestoreBaseUrl/published/$code/doc/main'
+                '?updateMask.fieldPaths=lastActiveAt'),
+            headers: {
+              'Authorization': 'Bearer $_idToken',
+              'Content-Type': 'application/json',
             },
-          },
-        }),
-      );
+            body: jsonEncode({
+              'fields': {
+                'lastActiveAt': {
+                  'integerValue': '${DateTime.now().millisecondsSinceEpoch}'
+                },
+              },
+            }),
+          )
+          .timeout(_kLiveHttpTimeout);
     } catch (_) {}
   }
 
   /// 参加者一覧を取り込む。
+  ///
+  /// ★ 在席の判定は**サーバーの時刻 (updateTime)** で行う (= ユーザー報告:
+  ///   参加できるのに、 書き始めると参加から外される)。 以前は相手が自分の
+  ///   時計で書いた lastSeen をこちらの時計と比べていたので、 時計が 12 秒
+  ///   ずれている端末は永久に「離席」 と見なされ、 札まで消されていた。
+  ///   一覧には自分の札 (3 秒以内に更新) も入っているので、 一番新しい
+  ///   updateTime を「今」 として、 そこからの差でこちらの時計に引き直す。
   Future<void> _livePullPeers() async {
     final code = _liveCode;
     if (code == null || _idToken == null) return;
     final res = await http.get(
       Uri.parse('$_firestoreBaseUrl/published/$code/peers?pageSize=50'),
       headers: {'Authorization': 'Bearer $_idToken'},
-    );
+    ).timeout(_kLiveHttpTimeout);
     if (res.statusCode != 200) return;
     final next = <LivePeer>[];
     try {
       final j = jsonDecode(res.body) as Map<String, dynamic>;
       final docs = j['documents'] as List<dynamic>? ?? const [];
+      // 1 周目: サーバー時刻の一番新しい物を探す。
+      DateTime? newest;
+      final serverTimes = <String, DateTime>{};
+      for (final d in docs) {
+        final m = d as Map<String, dynamic>;
+        final path = (m['name'] as String?) ?? '';
+        final cid = path.contains('/') ? path.split('/').last : path;
+        final upd = DateTime.tryParse((m['updateTime'] as String?) ?? '');
+        if (upd == null) continue;
+        serverTimes[cid] = upd;
+        if (newest == null || upd.isAfter(newest)) newest = upd;
+      }
+      final now = DateTime.now();
       for (final d in docs) {
         final m = d as Map<String, dynamic>;
         final path = (m['name'] as String?) ?? '';
@@ -82452,7 +84735,14 @@ $cleanQ
         final f = (m['fields'] as Map<String, dynamic>?) ?? {};
         String str(String k) =>
             ((f[k] as Map<String, dynamic>?)?['stringValue'] as String?) ?? '';
-        final lastSeen = DateTime.tryParse(str('lastSeen'))?.toLocal();
+        DateTime? lastSeen;
+        final upd = serverTimes[cid];
+        if (upd != null && newest != null) {
+          // 「一番新しい札からどれだけ古いか」 をこちらの時計に当てる。
+          lastSeen = now.subtract(newest.difference(upd));
+        } else {
+          lastSeen = DateTime.tryParse(str('lastSeen'))?.toLocal();
+        }
         if (lastSeen == null) continue;
         final colorRaw =
             (f['color'] as Map<String, dynamic>?)?['integerValue'];
@@ -82464,6 +84754,7 @@ $cleanQ
           colorRgb: int.tryParse('$colorRaw') ?? kLivePeerColors.first,
           lockNodeId: lock.isEmpty ? null : lock,
           lastSeen: lastSeen,
+          avatar: str('avatar'),
         ));
       }
     } catch (e) {
@@ -82473,15 +84764,20 @@ $cleanQ
     _livePeers
       ..clear()
       ..addAll(next);
-    // 期限切れの参加者はサーバーからも掃除する (ロックを残さない)。
+    // 長く来ていない参加者はサーバーからも掃除する (ロックを残さない)。
+    //   ★ 「離席」 (12 秒) で即消さない。 回線が詰まって知らせが遅れた
+    //   だけの人の札を消すと、 相手の画面で参加者が点滅する。
     for (final p in next) {
-      if (p.isStale && p.clientId != _liveClientId) {
+      if (p.isLongGone && p.clientId != _liveClientId) {
         try {
           // ignore: discarded_futures
-          http.delete(
-            Uri.parse('$_firestoreBaseUrl/published/$code/peers/${p.clientId}'),
-            headers: {'Authorization': 'Bearer $_idToken'},
-          );
+          http
+              .delete(
+                Uri.parse(
+                    '$_firestoreBaseUrl/published/$code/peers/${p.clientId}'),
+                headers: {'Authorization': 'Bearer $_idToken'},
+              )
+              .timeout(_kLiveHttpTimeout);
         } catch (_) {}
       }
     }
@@ -82603,6 +84899,8 @@ $cleanQ
     _liveTimer = null;
     _livePresenceTimer?.cancel();
     _livePresenceTimer = null;
+    _liveAddsTimer?.cancel();
+    _liveAddsTimer = null;
     final liveCode = _liveCode;
     final liveCid = _liveClientId;
     if (liveCode != null && liveCid.isNotEmpty && _idToken != null) {
@@ -84512,13 +86810,23 @@ $cleanQ
     if (_currentPageIndex < 0 || _currentPageIndex >= _pages.length) return;
     final page = _pages[_currentPageIndex];
     if (page.id == _livePageId) return;
+    // 動画編集ページは共同編集しない (= ユーザー要望)。
+    if (!isLiveSharablePageType(page.pageType)) return;
     final rec = _publishedPages[page.id];
     final code = rec?['code'] ?? '';
     if (code.isEmpty) return;
     final perm = rec?['permission'] == 'view' ? 'view' : 'edit';
+    // ★ 自分が公開したページなら、 手元の中身を土台として送る
+    //   (= 点検で判明: まとめて共有したページを後から開くと、 参加者が
+    //   先に作った白紙の方が「本物」 になり、 自分の絵が消えていた)。
+    //   人の共有に参加しただけのページは、 今までどおり送らない。
+    final mine = (rec?['role'] ?? '') != 'guest';
     // ignore: discarded_futures
     startLiveSession(
-            pageId: page.id, code: code, permission: perm, pushInitial: false)
+            pageId: page.id,
+            code: code,
+            permission: perm,
+            pushInitial: mine)
         .catchError((e) {
       debugPrint('共同編集の自動切替に失敗: $e');
     });
@@ -86533,6 +88841,20 @@ $cleanQ
     final i = _pages.indexWhere((p) => p.id == pageId);
     if (i < 0) return false;
     if (_pages[i].pageType == type) return true;
+    // ★ 共同編集できない種別 (動画編集) へ変えるなら、 先に共有をやめる
+    //   (= ユーザー要望: 動画編集ページでは共同編集できないように)。
+    //   そのままにすると、 参加者を「中身の運べないページ」 に置き去りに
+    //   してしまう。
+    if (!isLiveSharablePageType(type)) {
+      if (_livePageId == pageId) {
+        await stopLiveSession();
+      }
+      if (_publishedPages.containsKey(pageId)) {
+        try {
+          await unpublishPage(pageId);
+        } catch (_) {}
+      }
+    }
     _pages[i].pageType = type;
     _pages[i].lastModifiedAt = DateTime.now();
     notifyListeners();
@@ -86922,6 +89244,10 @@ $cleanQ
       await prefs.setString(key, jsonEncode(decoded));
       _paintReloadTick++;
       _mcpContentTick++;
+      // 共同編集中なら相手にも配る (= 点検で判明: AI が書いた分だけ相手に
+      //   届かず、 その後に手で描くまで出てこなかった)。
+      _bumpPaintBodyTick(page.id);
+      markLiveBodyDirty(page.id);
       notifyListeners();
       _requestMcpFocus(page.id);
       return true;
@@ -87075,6 +89401,9 @@ $cleanQ
       await prefs.setString(key, jsonEncode(decoded));
       _paintReloadTick++;
       _mcpContentTick++;
+      // 共同編集中なら相手にも配る (= 点検で判明)。
+      _bumpPaintBodyTick(pageId);
+      markLiveBodyDirty(pageId);
       notifyListeners();
       _requestMcpFocus(pageId);
       return true;

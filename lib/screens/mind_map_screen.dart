@@ -4877,14 +4877,18 @@ class _MindMapScreenState extends State<MindMapScreen>
     raw.forEach((key, value) {
       if (key is! String || value is! String) return;
       final cmd = definitionsById[key];
-      if (cmd == null || _fixedCommands.contains(key)) return;
+      // ★ お気に入りは後から読み込まれる。 まだ一覧に無いという理由で
+      //   捨てると、 起動のたびに割り当てが消えてしまう
+      //   (= ユーザー要望: ショートカットでページを呼び出す)。
+      final isBookmark = key.startsWith('bookmark:');
+      if ((cmd == null && !isBookmark) || _fixedCommands.contains(key)) return;
       final trimmed = value.trim();
       final normalized = _normalizeShortcutCombo(trimmed);
       if (normalized.isEmpty ||
           _nonAssignableShortcutCombos.contains(normalized)) {
         return;
       }
-      final defaultKey = cmd['defaultKey']! as String;
+      final defaultKey = (cmd?['defaultKey'] as String?) ?? '';
       if (normalized == _normalizeShortcutCombo(defaultKey)) return;
       sanitized[key] = trimmed;
     });
@@ -6253,16 +6257,22 @@ class _MindMapScreenState extends State<MindMapScreen>
         gaplessPlayback: true,
         errorBuilder: (_, __, ___) => Text(
           _kDefaultAvatarEmoji,
-          style: TextStyle(fontSize: size * 0.5),
+          style: _emojiTextStyle(size * 0.5),
         ),
       );
     } else {
-      final txt = (emoji != null && emoji.isNotEmpty)
+      final hasEmoji = emoji != null && emoji.isNotEmpty;
+      final txt = hasEmoji
           ? emoji
           : (provider.displayName.isNotEmpty
               ? provider.displayName.characters.first.toUpperCase()
               : _kDefaultAvatarEmoji);
-      inner = Text(txt, style: TextStyle(fontSize: size * 0.5));
+      // 頭文字 (A 等) は普段の書体、 絵文字は絵文字の書体で
+      //   (= ユーザー報告: Windows で顔文字が正しく出ない)。
+      inner = Text(txt,
+          style: (hasEmoji || txt == _kDefaultAvatarEmoji)
+              ? _emojiTextStyle(size * 0.5)
+              : TextStyle(fontSize: size * 0.5));
     }
     return Container(
       width: size,
@@ -6285,10 +6295,14 @@ class _MindMapScreenState extends State<MindMapScreen>
     // ── アバター候補の絵文字 (= ユーザー要望: デフォルトテンプレートの中から
     //    選べるように)。 怖い '👤' は外し、 可愛くて控えめな顔・小動物を先頭に
     //    並べる。 「クリア」 で既定アイコンに戻る。
+    // ★ Windows でも必ず色付きで出る物だけにする (= ユーザー報告: 顔文字が
+    //   正しく表示されない)。 ☺️ / ☁️ (VS16 付きの記号) は単色の記号書体に
+    //   取られやすく、 🫧 (Emoji 14) は古い Windows の書体に無くて □ に
+    //   なるので、 同じ雰囲気の物に置き換えた。
     const avatarCandidates = <String>[
       '🙂',
       '😊',
-      '☺️',
+      '😄',
       '😌',
       '🥰',
       '😺',
@@ -6313,9 +6327,9 @@ class _MindMapScreenState extends State<MindMapScreen>
       '🌼',
       '🌷',
       '🌙',
-      '⭐',
-      '☁️',
-      '🫧',
+      '🌟',
+      '🌈',
+      '🎈',
       '🍎',
       '🍓',
       '🍵',
@@ -6422,7 +6436,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                             borderRadius: BorderRadius.circular(8),
                           ),
                           alignment: Alignment.center,
-                          child: Text(e, style: const TextStyle(fontSize: 22)),
+                          child: Text(e, style: _emojiTextStyle(22)),
                         ),
                       );
                     },
@@ -9572,6 +9586,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       for (final item in list) {
         final b = _BookmarkButton.fromJson(item);
         if (b != null) _bookmarkButtonsCache[b.id] = b;
+        _assignableDefsCache = null;
       }
       if (mounted) setState(() {});
     } catch (e, st) {
@@ -10020,6 +10035,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     // YouTube も画面分割 / フローティングで開けるように (= ユーザー要望)。
     'openYoutube': ['https://m.youtube.com/', 'YouTube'],
     'openSpotify': ['https://open.spotify.com/', 'Spotify'],
+    // Udemy (= ユーザー要望: アプリの中で見られるように)。
+    'openUdemy': ['https://www.udemy.com/', 'Udemy'],
     'openSoundCloud': ['https://soundcloud.com/', 'SoundCloud'],
     'openAmazon': ['https://www.amazon.co.jp/', 'Amazon'],
     'openQiita': ['https://qiita.com/', 'Qiita'],
@@ -11988,6 +12005,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       createdAt: DateTime.now().millisecondsSinceEpoch,
     );
     _bookmarkButtonsCache[id] = button;
+    _assignableDefsCache = null; // キー割り当ての一覧に載せ直す
     await _saveBookmarkButtons();
     if (placeInHeader && mounted) {
       try {
@@ -12003,6 +12021,7 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// ブックマークボタンを削除 (= キャッシュ + 永続化 + 配置から削除)。
   Future<void> _removeBookmarkButton(String id) async {
     _bookmarkButtonsCache.remove(id);
+    _assignableDefsCache = null; // キー割り当ての一覧から外す
     await _saveBookmarkButtons();
     if (!mounted) return;
     final provider = context.read<MindMapProvider>();
@@ -16007,6 +16026,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                         focusMode: focusMode,
                         // フローティング化 (= ユーザー要望)
                         onFloatRequest: _floatSiteUrl,
+                        // お気に入りに登録 (= ユーザー要望: 開いている
+                        // ページをショートカットで呼び出せるように)。
+                        onAddBookmark: (u, title) => unawaited(
+                            _showCreateBookmarkButtonDialog(
+                                initialUrl: u, initialLabel: title)),
                         // ペインいっぱい ↔ 窓いっぱい の切替 (= ユーザー要望)。
                         // 分割している時だけ出す。
                         isFullWindow: fullWindow,
@@ -16805,6 +16829,38 @@ class _MindMapScreenState extends State<MindMapScreen>
       }
     }
 
+    // ── 前のプランの残り分を「毎月の割引」 として引く時の説明 ──
+    //
+    // ★ = ユーザー要望「Pro 年額から Max 月額に移るなら、 Max 月額から
+    //   割引後の Pro 月額を引いた分が請求されるように。 翌月からも同様に」。
+    //   この時は「次回から満額」 ではないので、 上の 1 行は出さずに
+    //   「毎月いくら引かれて、 いつ満額に戻るか」 を出す。
+    var carryText = '';
+    {
+      final off = pv['carryMonthly'];
+      final months = pv['carryMonths'];
+      if (off is num && off > 0 && months is num && months > 0) {
+        final endsAt = pv['carryEndsAt'];
+        var endText = '';
+        if (endsAt is num && endsAt > 0) {
+          final d = DateTime.fromMillisecondsSinceEpoch(endsAt.toInt() * 1000);
+          endText = '${d.year}/${d.month.toString().padLeft(2, '0')}/'
+              '${d.day.toString().padLeft(2, '0')}';
+        }
+        carryText = provider
+            .t('plan.changeCarryNote')
+            .replaceFirst('{months}', '${months.toInt()}')
+            .replaceFirst('{off}', provider.formatMoneyMinor(off, cur))
+            .replaceFirst('{amount}', amountText);
+        if (endText.isNotEmpty && nextAmount is num) {
+          carryText = '$carryText '
+              '${provider.t('plan.changeCarryAfter').replaceFirst('{date}', endText).replaceFirst('{amount}', provider.formatMoneyMinor(nextAmount, '${pv['nextCurrency'] ?? cur}'))}';
+        }
+        // 「次回から満額」 の 1 行は事実と違うので出さない。
+        nextChargeText = '';
+      }
+    }
+
     // ── 前のプランの使い残し (控え) がいくら残るか ──
     //    サーバーが返してきた時だけ出す (古い版では出ない)。
     var creditLeftText = '';
@@ -16953,6 +17009,21 @@ class _MindMapScreenState extends State<MindMapScreen>
             ],
             // ★ 次の請求日からは通常の料金が掛かることも書く (= ユーザー
             //   要望: 差額だけを見て「今後もこの額」 と誤解しないように)。
+            if (carryText.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Icon(Icons.savings_rounded,
+                    color: Color(0xFF43B97F), size: 15),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(carryText,
+                      style: const TextStyle(
+                          color: Color(0xFF9BE3BE),
+                          fontSize: 12,
+                          height: 1.5)),
+                ),
+              ]),
+            ],
             if (nextChargeText.isNotEmpty) ...[
               const SizedBox(height: 12),
               Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -18475,7 +18546,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                   // ── 種類のタブ + 名前で絞り込み (= ユーザー要望) ──
                   Row(children: [
                     for (final (v, label) in const [
-                      ('all', 'すべて'),
+                      ('all', '全て'),
                       ('dev', 'Dev'),
                       ('max', 'Max'),
                       ('pro', 'Pro'),
@@ -23376,6 +23447,12 @@ class _MindMapScreenState extends State<MindMapScreen>
       _rangeDragging = false;
       _rangeDragAnchor = null;
       _rangeDragDelta = Offset.zero;
+      // ★ 何も選べていない「構えただけ」 の範囲選択は、 ここで畳む。
+      //   残すと帯が「範囲を選択」 のまま戻らなくなる (= ユーザー報告)。
+      //   選べている時は今までどおり残す (中断で選択を失わせない)。
+      if (_rangeSelectedIds.isEmpty && _rangeSelectedDecorationIds.isEmpty) {
+        _rangeSelectMode = false;
+      }
       _canvasLongPressActive = false;
       _canvasLongPressStart = null;
       _shelfRowDragFrom = null;
@@ -25954,6 +26031,12 @@ class _MindMapScreenState extends State<MindMapScreen>
               // マップ分割中は分割セルを覆う窓で開く (下記) ので、 メモ /
               // AI パネルは自動で開かない (= ユーザー要望: 表示領域が狭い)。
               compactHost: _canEmbedIntoMapSplit(),
+              // 全画面 ⇄ フローティングの行き来と、 お気に入り登録
+              // (= ユーザー要望)。 Web を開いている時だけボタンが出る。
+              onFloatRequest: _isDesktop ? _floatSiteUrl : null,
+              onAddBookmark: (u, title) => unawaited(
+                  _showCreateBookmarkButtonDialog(
+                      initialUrl: u, initialLabel: title)),
               url: displayUrl,
               isPdf: isPdf,
               nodeId: nodeId,
@@ -42038,6 +42121,12 @@ class _MindMapScreenState extends State<MindMapScreen>
     // Spotify はメジャー楽曲・アルバム・プレイリストの網羅性が高いため、
     // 補完的に利用したいというユーザー要望で追加。
     {
+      'id': 'openUdemy',
+      'labelKey': 'hdr.openUdemy',
+      'icon': Icons.school_rounded,
+      'color': Color(0xFFA435F0),
+    },
+    {
       'id': 'openSpotify',
       'labelKey': 'hdr.openSpotify',
       'icon': Icons.music_note_rounded,
@@ -42464,6 +42553,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         'openYoutube',
         'openSoundCloud',
         'openSpotify',
+        'openUdemy',
         'openQiita',
         'openReddit',
         'openX',
@@ -44974,6 +45064,9 @@ class _MindMapScreenState extends State<MindMapScreen>
         break;
       case 'openSpotify':
         _openSpotifySite(context, provider);
+        break;
+      case 'openUdemy':
+        _openUdemySite(context, provider);
         break;
       // ── AI 対話画面 (ChatGPT / Gemini / Claude) ──
       // 各サービスのチャット画面を画面分割パネル (= 右パネル) で開く。
@@ -48098,6 +48191,17 @@ class _MindMapScreenState extends State<MindMapScreen>
   }
 
   /// Spotify のサイトをそのままアプリ内で開く (= ユーザー要望)。
+  /// Udemy をアプリの中で開く (= ユーザー要望)。
+  ///
+  /// ★ YouTube の窓 (_WindowsWebViewSheet) には通さない。 あちらは
+  ///   YouTube 専用の見た目調整 (関連動画を隠す CSS) や、 動画の
+  ///   ダウンロードが付いていて、 Udemy には不向き (規約の面でも避ける)。
+  ///   代わりに、 素のまま開くビューアに載せる。 こちらは画面に
+  ///   動画があると自分で気付いて、 0.25〜16 倍の速さのつまみを出す。
+  void _openUdemySite(BuildContext ctx, MindMapProvider provider) {
+    unawaited(_showInAppViewer(ctx, 'https://www.udemy.com/'));
+  }
+
   void _openSpotifySite(BuildContext ctx, MindMapProvider provider) {
     final url = provider.localizeSpotifyUrl('https://open.spotify.com/');
     _showWebDialog(context, url);
@@ -57209,6 +57313,8 @@ class _MindMapScreenState extends State<MindMapScreen>
           } else if (commandId == 'openSoundCloud') {
             // ボタンと同じく「サイト直行」 に統一 (= ユーザー要望)。
             _openSoundCloudSite(context, provider);
+          } else if (commandId == 'openUdemy') {
+            _openUdemySite(context, provider);
           } else if (commandId == 'openSpotify') {
             _openSpotifySite(context, provider);
           } else if (commandId == 'insertMapShape') {
@@ -57880,7 +57986,16 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     _onMoveModePointerDown(e, ctrl, provider);
                                   }
                                   // PC: Shift+ドラッグで即範囲選択を開始
+                                  //
+                                  // ★ キャンバスを描くページだけ (= ユーザー
+                                  //   報告: マークダウンのページで文字を
+                                  //   Shift+ドラッグで選ぼうとすると、 上の帯が
+                                  //   「範囲を選択」 に変わってしまう)。
+                                  //   この Listener は文書・お絵かき・動画編集の
+                                  //   ページも包んでいるので、 どれも同じように
+                                  //   誤作動していた。
                                   if (_isDesktop &&
+                                      _isCanvasPage(provider.currentPage) &&
                                       HardwareKeyboard
                                           .instance.isShiftPressed &&
                                       !_rangeSelectMode &&
@@ -62462,6 +62577,21 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   // ─── AppBar ──────────────────────────────────────────────────────────────
 
+  /// ヘッダーの右側に並ぶ物 (共同編集の参加者・分割のボタン) のために
+  /// 空けておく幅。 重ね描きなので、 ページ名はこの分だけ狭くする
+  /// (= ユーザー報告: モバイルで編集者のアイコンがページ名と被る)。
+  double _headerRightReserve(MindMapProvider provider) {
+    var w = 0.0;
+    if (provider.liveActive &&
+        provider.livePageId == provider.currentPage.id) {
+      // 参加者の丸 (最大 3 人ぶん + 余り) の目安。
+      w += 118;
+    }
+    // 分割のボタンはパソコンだけ常設。
+    if (_isDesktop) w += 108;
+    return w;
+  }
+
   PreferredSizeWidget _buildAppBar(
       BuildContext context, MindMapProvider provider) {
     final isRangeMode = _rangeSelectMode;
@@ -62680,8 +62810,20 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   children: [
                                     Flexible(
                                       child: ConstrainedBox(
-                                        constraints:
-                                            const BoxConstraints(maxWidth: 260),
+                                        // ★ 右側 (共同編集の参加者や分割の
+                                        //   ボタン) の場所を先に空けておく
+                                        //   (= ユーザー報告: モバイルで
+                                        //   編集者のアイコンがページ名と
+                                        //   被る)。 重ね描きなので、 名前の
+                                        //   幅を自分で抑えないと下に潜る。
+                                        constraints: BoxConstraints(
+                                            maxWidth: math.max(
+                                                96.0,
+                                                math.min(
+                                                    260.0,
+                                                    constraints.maxWidth -
+                                                        _headerRightReserve(
+                                                            provider)))),
                                         child: GestureDetector(
                                           behavior:
                                               HitTestBehavior.deferToChild,
@@ -63449,6 +63591,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     final plan = provider.planJustActivated;
     if (plan == null) return;
     provider.clearPlanActivated();
+    // ★ 開発者モード中と Dev 枠では出さない (= ユーザー報告: Pro の
+    //   アカウントから開発者モードの Dev に切り替えたのに「Pro プランが
+    //   適用されました」 が何度も出る)。 買った知らせではないため。
+    if (provider.developerMode || plan == SubscriptionPlan.dev) return;
     // 描いている最中に窓を出せないので、 1 フレーム待つ。
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _showPlanActivatedDialog(plan);
@@ -66434,6 +66580,32 @@ class _MindMapScreenState extends State<MindMapScreen>
                       },
                     );
                   }),
+                // ── 複数選択を始める / やめる (= ユーザー要望: モバイルには
+                //    Ctrl も Shift も無いので、 「+」 の左にボタンを置く) ──
+                //    今のページを 1 枚選んだ状態で始めると、 そのまま
+                //    タップで選び足せる (統合などのまとめ操作が使える)。
+                IconButton(
+                  icon: Icon(
+                    _drawerMultiSelectActive
+                        ? Icons.check_circle_rounded
+                        : Icons.check_circle_outline_rounded,
+                    color: _drawerMultiSelectActive
+                        ? const Color(0xFF00E5FF)
+                        : Colors.white54,
+                  ),
+                  tooltip: provider.t(_drawerMultiSelectActive
+                      ? 'drawer.endMultiSelect'
+                      : 'drawer.startMultiSelect'),
+                  onPressed: () => setState(() {
+                    if (_drawerMultiSelectActive) {
+                      _drawerSelectedPageIds.clear();
+                      _drawerSelectedFolderIds.clear();
+                      _drawerLastAnchorIndex = null;
+                    } else {
+                      _drawerSelectedPageIds.add(provider.currentPage.id);
+                    }
+                  }),
+                ),
                 // 「+」メニュー: 新規ページ / 新規フォルダー / JSON 読み込み / フォルダー一括読み込み
                 // Builder の btnCtx を anchor として渡し、ボタンの右下に
                 // ポップオーバー表示する。
@@ -66591,6 +66763,12 @@ class _MindMapScreenState extends State<MindMapScreen>
             _drawerSelectedPageIds.contains(p.id) &&
             MindMapProvider.isMergeablePageType(p.pageType))
         .length;
+    // 共同編集できるページの数 (動画編集ページは数えない = ユーザー要望)。
+    final sharablePageCount = provider.pages
+        .where((p) =>
+            _drawerSelectedPageIds.contains(p.id) &&
+            MindMapProvider.isLiveSharablePageType(p.pageType))
+        .length;
     // 表示テキスト: ページとフォルダーの数をどちらも考慮
     String label;
     if (pageCount > 0 && folderCount > 0) {
@@ -66662,17 +66840,21 @@ class _MindMapScreenState extends State<MindMapScreen>
           ),
         ),
         // 選択ページをまとめて共有して共同編集 (= ユーザー要望)。
-        Tooltip(
-          message: provider.t('drawer.bulkShare'),
-          child: IconButton(
-            icon: Icon(Icons.public_rounded,
-                color: pageCount > 0 ? const Color(0xFF43B97F) : Colors.white24,
-                size: 22),
-            onPressed: pageCount > 0
-                ? () => _bulkShareSelectedPages(context, provider)
-                : null,
+        //   動画編集ページしか選んでいない時は出さない (= ユーザー要望)。
+        if (sharablePageCount > 0 || pageCount == 0)
+          Tooltip(
+            message: provider.t('drawer.bulkShare'),
+            child: IconButton(
+              icon: Icon(Icons.public_rounded,
+                  color: sharablePageCount > 0
+                      ? const Color(0xFF43B97F)
+                      : Colors.white24,
+                  size: 22),
+              onPressed: sharablePageCount > 0
+                  ? () => _bulkShareSelectedPages(context, provider)
+                  : null,
+            ),
           ),
-        ),
         // 選択ページを 1 つの .hnmap に書き出す (= ユーザー要望: まとめて
         //   選択してページファイルとして書き出せるように)。
         Tooltip(
@@ -66845,6 +67027,14 @@ class _MindMapScreenState extends State<MindMapScreen>
                     .replaceFirst('{n}', '1'));
             final pageName = bundle.pageName.trim();
             if (pageName.isNotEmpty) clone.name = '$pageName - ${clone.name}';
+            // ★ 別のページから来たノートと ID がぶつからないよう、 付け直す
+            //   (= 点検で判明: 古い控えのノートは位置から決まる同じ ID
+            //   ('nt0') を持つので、 統合したページを共同編集すると片方の
+            //   ノートが丸ごと消えていた)。
+            clone.id = _newPaintItemId();
+            for (final pg in clone.pages) {
+              pg.id = _newPaintItemId();
+            }
             mergedNotes.add(clone);
           }
         }
@@ -68506,21 +68696,24 @@ class _MindMapScreenState extends State<MindMapScreen>
             iconColor: const Color(0xFFBA68C8),
             label: provider.t('export.bundle')),
         // ── Web に公開 (= ユーザー要望: サーバーに公開して皆で見られるように) ──
-        _menuItem<_PageAction>(
-            value: _PageAction.publish,
-            // ★ 共有済みかは publishedCodeFor で見る。 publishedUrlFor は
-            //   url が空でない時だけ返すが、 共同編集の登録は url を空で
-            //   書くので常に null になり、 共有中でも「未共有」 の見た目に
-            //   なっていた (= 検証で判明)。
-            icon: provider.publishedCodeFor(page.id) != null
-                ? Icons.public_rounded
-                : Icons.public_off_rounded,
-            iconColor: provider.publishedCodeFor(page.id) != null
-                ? const Color(0xFF43B97F)
-                : const Color(0xFF4FC3F7),
-            label: provider.t(provider.publishedCodeFor(page.id) != null
-                ? 'publish.menuPublished'
-                : 'publish.menu')),
+        // ★ 動画編集ページには出さない (= ユーザー要望: 動画編集では共同
+        //   編集できないように、 項目自体を出さない)。
+        if (MindMapProvider.isLiveSharablePageType(page.pageType))
+          _menuItem<_PageAction>(
+              value: _PageAction.publish,
+              // ★ 共有済みかは publishedCodeFor で見る。 publishedUrlFor は
+              //   url が空でない時だけ返すが、 共同編集の登録は url を空で
+              //   書くので常に null になり、 共有中でも「未共有」 の見た目に
+              //   なっていた (= 検証で判明)。
+              icon: provider.publishedCodeFor(page.id) != null
+                  ? Icons.public_rounded
+                  : Icons.public_off_rounded,
+              iconColor: provider.publishedCodeFor(page.id) != null
+                  ? const Color(0xFF43B97F)
+                  : const Color(0xFF4FC3F7),
+              label: provider.t(provider.publishedCodeFor(page.id) != null
+                  ? 'publish.menuPublished'
+                  : 'publish.menu')),
         // ★ 「マークダウンで編集」 / 「Markdown で書き出し」 は項目から外した
         //   (= ユーザー要望: マインドマップのやり取りは .hmap のような
         //   拡張子で行うので、 Markdown の入口は要らない)。
@@ -68613,6 +68806,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           _exportPageBundle(ctx, provider, page);
           break;
         case _PageAction.publish:
+          if (!MindMapProvider.isLiveSharablePageType(page.pageType)) break;
           _showPublishPageDialog(ctx, provider, page);
           break;
         case _PageAction.markdown:
@@ -71470,11 +71664,19 @@ class _MindMapScreenState extends State<MindMapScreen>
   void _floatSiteUrl(String url) {
     final u = url.trim();
     if (u.isEmpty || !_isDesktop) return;
+    // ★ 窓の中で移動した先を覚えておく (= ユーザー要望: 全画面に戻す
+    //   ボタン)。 覚えていないと、 全画面に戻した時も外に出した時も、
+    //   最初に開いた場所へ戻ってしまう。
+    var cur = u;
     _showFloatingPanelWindow(
       (_) => _WinGoogleSearchView(
         key: ValueKey(
             'float_site_${u}_${DateTime.now().millisecondsSinceEpoch}'),
         url: u,
+        onUrlChanged: (x) {
+          final t = x.trim();
+          if (t.isNotEmpty) cur = t;
+        },
       ),
       // ★ 既定を小さく (= ユーザー報告: Google マップの窓が大きすぎる)。
       width: 620,
@@ -71483,7 +71685,11 @@ class _MindMapScreenState extends State<MindMapScreen>
       //   Instagram を開いた後に Slack を押すと Instagram が前に出るだけ
       //   だった)。 覚えている大きさ・位置もサイトごとになる。
       memoryKey: 'site_${Uri.tryParse(u)?.host ?? u}',
-      popOutUrl: u,
+      // 今いる場所を渡す (外に出す時も、 全画面に戻す時も同じ)。
+      popOutUrlBuilder: () => cur,
+      // ── 全画面に戻す (= ユーザー要望: フローティングにした後、
+      //    もう一度全画面へ戻せるように) ──
+      onRestoreFull: () => _showWebDialog(context, cur),
     );
   }
 
@@ -72006,6 +72212,19 @@ class _MindMapScreenState extends State<MindMapScreen>
   bool _splitEligiblePage(MindMapPage p) =>
       p.pageType != 'document' && p.pageType != 'videoEditor';
 
+  /// 範囲選択が意味を持つ (= キャンバスを描く) ページか。
+  ///
+  /// ★ = ユーザー報告「マークダウンのページでも Shift+ドラッグで
+  ///   『範囲を選択』 のモードになってしまう」。 キャンバス以外のページも
+  ///   同じ Listener の下に入っているので、 ここで分ける。
+  ///   `_splitEligiblePage` は別物なので流用しない (あちらはマークダウンや
+  ///   お絵かきを通すため)。
+  bool _isCanvasPage(MindMapPage p) =>
+      p.pageType != 'markdown' &&
+      p.pageType != 'document' &&
+      p.pageType != 'paint' &&
+      p.pageType != 'videoEditor';
+
   /// 分割に向かないページ (文書 / ビデオエディター) を開いたら、 分割を
   /// **本当に**畳む (= ユーザー報告: ビデオエディターへ行くと分割は消える
   /// のに、 次にページを開こうとすると「どの画面で開くか」 と聞かれる)。
@@ -72393,7 +72612,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     final peers = provider.livePeers
         .where((p) => p.clientId != provider.liveClientId)
         .toList();
-    Widget dot(Color c, String name, {bool me = false}) => Tooltip(
+    // アイコン (絵文字) を選んでいる人はそれを出す (= ユーザー要望: 相手にも
+    //   アイコンが伝わるように)。 無い人は頭文字。
+    Widget dot(Color c, String name, {bool me = false, String avatar = ''}) =>
+        Tooltip(
           message: me ? '$name (${provider.t('live.on')})' : name,
           child: Container(
             margin: const EdgeInsets.only(right: 3),
@@ -72407,11 +72629,15 @@ class _MindMapScreenState extends State<MindMapScreen>
                   : Border.all(color: Colors.white24),
             ),
             alignment: Alignment.center,
-            child: Text(
-              name.isEmpty ? '?' : name.characters.first.toUpperCase(),
-              style: const TextStyle(
-                  color: Colors.white, fontSize: 9, fontWeight: FontWeight.w800),
-            ),
+            child: avatar.isNotEmpty
+                ? Text(avatar, style: _emojiTextStyle(11))
+                : Text(
+                    name.isEmpty ? '?' : name.characters.first.toUpperCase(),
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 9,
+                        fontWeight: FontWeight.w800),
+                  ),
           ),
         );
     final myName = provider.displayName.isEmpty
@@ -72431,8 +72657,13 @@ class _MindMapScreenState extends State<MindMapScreen>
             decoration: const BoxDecoration(
                 color: Color(0xFF43B97F), shape: BoxShape.circle),
           ),
-          dot(Color(provider.liveMyColorRgb), myName, me: true),
-          for (final p in peers.take(4)) dot(Color(p.colorRgb), p.name),
+          dot(Color(provider.liveMyColorRgb), myName,
+              me: true,
+              avatar: provider.userAvatarImagePath == null
+                  ? (provider.userAvatar ?? '')
+                  : ''),
+          for (final p in peers.take(4))
+            dot(Color(p.colorRgb), p.name, avatar: p.avatar),
           if (peers.length > 4)
             Text('+${peers.length - 4}',
                 style: const TextStyle(color: Colors.white54, fontSize: 10)),
@@ -72448,7 +72679,12 @@ class _MindMapScreenState extends State<MindMapScreen>
     final nameCtrl = TextEditingController(text: provider.displayName);
     showDialog<void>(
       context: context,
-      builder: (dctx) => StatefulBuilder(builder: (dctx2, setD) {
+      // ★ 参加者の一覧は開いている間も更新する (= ユーザー要望: 相手が
+      //   名前やアイコンを変えたら、 こちらにも反映されるように)。 以前は
+      //   開いた瞬間の一覧のまま止まっていた。
+      builder: (dctx) => ListenableBuilder(
+          listenable: provider,
+          builder: (dctx, _) => StatefulBuilder(builder: (dctx2, setD) {
         final peers = provider.livePeers
             .where((p) => p.clientId != provider.liveClientId)
             .toList();
@@ -72541,13 +72777,18 @@ class _MindMapScreenState extends State<MindMapScreen>
                         padding: const EdgeInsets.symmetric(vertical: 3),
                         child: Row(children: [
                           Container(
-                            width: 16,
-                            height: 16,
+                            width: 20,
+                            height: 20,
+                            alignment: Alignment.center,
                             decoration: BoxDecoration(
                               color: Color(p.colorRgb),
                               shape: BoxShape.circle,
                               border: Border.all(color: Colors.white24),
                             ),
+                            // 相手のアイコン (絵文字) (= ユーザー要望)。
+                            child: p.avatar.isNotEmpty
+                                ? Text(p.avatar, style: _emojiTextStyle(12))
+                                : null,
                           ),
                           const SizedBox(width: 8),
                           Expanded(
@@ -72591,7 +72832,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             ),
           ],
         );
-      }),
+      })),
     ).then((_) => nameCtrl.dispose());
   }
 
@@ -76291,6 +76532,35 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   color: Color(
                                       provider.liveLockOwnerOf(n.id)!.colorRgb),
                                   name: provider.liveLockOwnerOf(n.id)!.name,
+                                  avatar:
+                                      provider.liveLockOwnerOf(n.id)!.avatar,
+                                ),
+                              ),
+                            ),
+                      // ── 共同編集: 他の参加者が足したばかりの要素に枠と
+                      //    「○○ が追加」 を数秒重ねる (= ユーザー要望)。
+                      //    編集中の枠 (上) がある要素には重ねない。 ──
+                      if (provider.liveActive &&
+                          provider.livePageId == provider.currentPage.id)
+                        for (final n in nodes.values
+                            .where((n) => n.hiddenInContainer == null))
+                          if (provider.liveAddedBy(n.id) != null &&
+                              provider.liveLockOwnerOf(n.id) == null)
+                            Positioned(
+                              left: n.position.dx,
+                              top: n.position.dy,
+                              width: n.width,
+                              height: n.visualHeight,
+                              child: IgnorePointer(
+                                child: _LiveAddBadge(
+                                  color: Color(
+                                      provider.liveAddedBy(n.id)!.colorRgb),
+                                  label: provider.t('live.addedBy').replaceFirst(
+                                      '{name}',
+                                      provider.liveAddedBy(n.id)!.name.isEmpty
+                                          ? provider.t('live.anonymous')
+                                          : provider.liveAddedBy(n.id)!.name),
+                                  avatar: provider.liveAddedBy(n.id)!.avatar,
                                 ),
                               ),
                             ),
@@ -83053,10 +83323,118 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// (= ユーザー要望: 複数ページを一度に皆に共有して共同編集)。
   /// 各ページに共有コードを発番して公開し、 サーバーへ初期データを置く。
   /// 共有済みページ間を行き来するとセッションは自動で切り替わる。
+  /// まとめて共有する時の権限を選ばせる (= ユーザー要望)。
+  /// 戻り値は 'edit' / 'list' / 'view'、 取り消しなら null。
+  Future<String?> _askBulkSharePermission(
+      BuildContext ctx, MindMapProvider provider) async {
+    var permission = 'edit';
+    return showDialog<String>(
+      context: ctx,
+      builder: (dctx) => StatefulBuilder(builder: (dctx2, setD) {
+        Widget row(String value, String labelKey, IconData icon) {
+          final on = permission == value;
+          return InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: () => setD(() => permission = value),
+            child: Container(
+              margin: const EdgeInsets.only(bottom: 6),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+              decoration: BoxDecoration(
+                color: on
+                    ? const Color(0xFF4FC3F7).withValues(alpha: 0.16)
+                    : Colors.white.withValues(alpha: 0.04),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                    color: on
+                        ? const Color(0xFF4FC3F7)
+                        : Colors.white.withValues(alpha: 0.12)),
+              ),
+              child: Row(children: [
+                Icon(icon,
+                    size: 16,
+                    color: on ? const Color(0xFF4FC3F7) : Colors.white54),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(provider.t(labelKey),
+                      style: TextStyle(
+                          color: on ? Colors.white : Colors.white70,
+                          fontSize: 12.5,
+                          fontWeight:
+                              on ? FontWeight.w700 : FontWeight.w400)),
+                ),
+                if (on)
+                  const Icon(Icons.check_rounded,
+                      size: 16, color: Color(0xFF4FC3F7)),
+              ]),
+            ),
+          );
+        }
+
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          title: Row(children: [
+            const Icon(Icons.public_rounded,
+                color: Color(0xFF43B97F), size: 20),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(provider.t('bulkShare.title'),
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700)),
+            ),
+          ]),
+          content: SizedBox(
+            width: 360,
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(provider.t('bulkShare.permissionHint'),
+                    style: const TextStyle(
+                        color: Colors.white54, fontSize: 11.5, height: 1.45)),
+              ),
+              const SizedBox(height: 10),
+              row('edit', 'share.canEdit', Icons.edit_rounded),
+              row('list', 'share.listedOnly', Icons.group_rounded),
+              row('view', 'share.viewOnly', Icons.visibility_rounded),
+              if (permission == 'list')
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(provider.t('bulkShare.listLater'),
+                      style: const TextStyle(
+                          color: Color(0xFFFFB347),
+                          fontSize: 11,
+                          height: 1.4)),
+                ),
+            ]),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dctx2),
+              child: Text(provider.t('btn.cancel'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(dctx2, permission),
+              child: Text(provider.t('drawer.bulkShare'),
+                  style: const TextStyle(color: Color(0xFF43B97F))),
+            ),
+          ],
+        );
+      }),
+    );
+  }
+
   Future<void> _bulkShareSelectedPages(
       BuildContext ctx, MindMapProvider provider) async {
+    // 動画編集ページは共同編集できないので外す (= ユーザー要望)。
     final pages = provider.pages
-        .where((p) => _drawerSelectedPageIds.contains(p.id))
+        .where((p) =>
+            _drawerSelectedPageIds.contains(p.id) &&
+            MindMapProvider.isLiveSharablePageType(p.pageType))
         .toList();
     if (pages.isEmpty) return;
     if (!provider.isMaxUnlocked) {
@@ -83070,6 +83448,11 @@ class _MindMapScreenState extends State<MindMapScreen>
       );
       return;
     }
+    // ── 共有の権限を先に選ばせる (= ユーザー要望: まとめて共有に権限の
+    //    項目が無い) ──
+    final permission = await _askBulkSharePermission(ctx, provider);
+    if (permission == null || !mounted) return; // キャンセル
+
     // ── 進捗表示 ──
     var progress = 0;
     final failed = <String>[];
@@ -83105,10 +83488,11 @@ class _MindMapScreenState extends State<MindMapScreen>
         // ★ ブラウザ向け HTML は作らない (= ユーザー要望: 共同編集は
         //   あくまでアプリ内の機能)。 コードの登録と土台の書き込みだけ。
         final code = await provider.registerLivePage(
-            pageId: page.id,
-            title: page.name,
-            permission: provider.publishPermissionFor(page.id));
-        await provider.seedLiveDocForPage(page.id, code);
+            pageId: page.id, title: page.name, permission: permission);
+        // ★ 人の共有に参加した番号を持っていると、 相手の土台に書けずに
+        //   403 になる (= ユーザー報告: 1 ページだけ共有できない)。
+        //   その時は番号を取り直して、 自分の土台として作り直す。
+        await provider.seedLiveDocForPageOrReissue(page.id, code);
       } catch (e) {
         failed.add('${page.name}: $e');
         // ★ 失敗したページを「共有中」 のままにしない。
@@ -83142,6 +83526,35 @@ class _MindMapScreenState extends State<MindMapScreen>
             permission: provider.publishPermissionFor(target.id));
       } catch (e) {
         failed.add('${target.name}: $e');
+      }
+    }
+
+    // ── 束の番号を 1 つ発行する (= ユーザー要望: ページごとに番号が
+    //    違うのは不便) ──
+    String? bundleCode;
+    {
+      final ok = pages
+          .where((p) =>
+              (provider.publishedCodeFor(p.id) ?? '').isNotEmpty &&
+              !failed.any((f) => f.startsWith('${p.name}:')))
+          .toList();
+      if (ok.length > 1) {
+        try {
+          bundleCode = await provider.registerLiveBundle(
+            members: [
+              for (final p in ok)
+                {
+                  'pageId': p.id,
+                  'code': provider.publishedCodeFor(p.id) ?? '',
+                  'name': p.name,
+                }
+            ],
+            permission: permission,
+            title: ok.first.name,
+          );
+        } catch (e) {
+          debugPrint('束の番号を作れませんでした: $e');
+        }
       }
     }
 
@@ -83191,6 +83604,53 @@ class _MindMapScreenState extends State<MindMapScreen>
                       .replaceFirst('{n}', '${shared.length}'),
                   style: const TextStyle(
                       color: Colors.white70, fontSize: 12, height: 1.45)),
+              // ── まとめて入れる番号 (= ユーザー要望: 番号を 1 つに) ──
+              if (bundleCode != null && bundleCode.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF4FC3F7).withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                        color: const Color(0xFF4FC3F7)
+                            .withValues(alpha: 0.55)),
+                  ),
+                  child: Row(children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(provider.t('bulkShare.oneCode'),
+                              style: const TextStyle(
+                                  color: Colors.white70,
+                                  fontSize: 11,
+                                  height: 1.4)),
+                          const SizedBox(height: 2),
+                          SelectableText(bundleCode,
+                              style: const TextStyle(
+                                  color: Color(0xFF4FC3F7),
+                                  fontSize: 17,
+                                  fontFamily: 'monospace',
+                                  fontWeight: FontWeight.w700)),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: provider.t('btn.copy'),
+                      icon: const Icon(Icons.copy_rounded,
+                          color: Color(0xFF4FC3F7), size: 18),
+                      onPressed: () => Clipboard.setData(
+                          ClipboardData(text: bundleCode!)),
+                    ),
+                  ]),
+                ),
+                const SizedBox(height: 10),
+                Text(provider.t('bulkShare.perPage'),
+                    style: const TextStyle(
+                        color: Colors.white38, fontSize: 11)),
+              ],
               const SizedBox(height: 10),
               Flexible(
                 child: SingleChildScrollView(
@@ -83679,6 +84139,15 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 「更新」 を押すと同じ URL のまま最新の内容に差し替わる。
   Future<void> _showPublishPageDialog(
       BuildContext ctx, MindMapProvider provider, MindMapPage page) async {
+    // ★ 動画編集ページは共同編集できない (= ユーザー要望)。 入口は隠して
+    //   あるが、 別の経路から来ても開かない。
+    if (!MindMapProvider.isLiveSharablePageType(page.pageType)) {
+      _appSnack(
+          ctx,
+          SnackBar(
+              content: Text(provider.t('live.videoEditorNotShareable'))));
+      return;
+    }
     bool busy = false;
     String? error;
     // 共有は「リアルタイム共同編集」 専用にした (= ユーザー要望: 紛らわしい
@@ -83715,15 +84184,26 @@ class _MindMapScreenState extends State<MindMapScreen>
             final code = await provider.registerLivePage(
                 pageId: page.id, title: page.name, permission: permission);
             if (wantLive) {
-              // 選んだ権限をそのまま自分にも適用する (= 検証で判明:
-              //   「閲覧のみ」 を選んでもホストだけ編集のままで、 設定が
-              //   効いているのか確かめようが無かった)。
-              await provider.startLiveSession(
-                  pageId: page.id,
-                  code: code,
-                  // 公開した人は常に編集できるので、 ここは
-                  //   「他の人にどう見せるか」 を渡す。
-                  permission: permission == 'view' ? 'view' : 'edit');
+              // ★ もう共有中なら、 セッションを張り直さない
+              //   (= ユーザー報告: 権限を更新すると、 共有コードは同じ
+              //   なのに中の人が追い出される)。 張り直すと参加者一覧を
+              //   作り直し、 編集できる人の名簿も一度空にして書くので、
+              //   その一瞬だけ相手の書き込みが弾かれていた。
+              //   権限だけを差し替えれば、 在席も編集中の印もそのまま。
+              final already = provider.liveActive &&
+                  provider.livePageId == page.id &&
+                  provider.liveCode == code;
+              if (!already) {
+                // 選んだ権限をそのまま自分にも適用する (= 検証で判明:
+                //   「閲覧のみ」 を選んでもホストだけ編集のままで、 設定が
+                //   効いているのか確かめようが無かった)。
+                await provider.startLiveSession(
+                    pageId: page.id,
+                    code: code,
+                    // 公開した人は常に編集できるので、 ここは
+                    //   「他の人にどう見せるか」 を渡す。
+                    permission: permission == 'view' ? 'view' : 'edit');
+              }
               // 選んだ権限を全員へ伝える。
               await provider.setLiveAccess(permission,
                   editors: chosenEditors.toList());
@@ -83747,7 +84227,11 @@ class _MindMapScreenState extends State<MindMapScreen>
               // ★ 公開した人が中止した時は、 参加している全員の画面でも
               //   終わるように印を書いてから畳む (= ユーザー要望)。
               //   参加者側はこの経路に入らない (下でボタンを出さない)。
-              if (provider.liveIsHost) {
+              // ★ 編集できる人なら、 参加している全員の画面でも終わる
+              //   ように印を書く (= ユーザー要望: 編集可の人も公開を
+              //   中止できるように)。 公開の登録そのものを消せるのは
+              //   公開した人だけなので、 そこは中で分けている。
+              if (provider.liveIsHost || provider.liveCanEdit) {
                 await provider.closeLiveSessionForAll();
                 if (dctx2.mounted) setD(() => busy = false);
                 return;
@@ -84178,10 +84662,13 @@ class _MindMapScreenState extends State<MindMapScreen>
             // ★ 中止できるのは公開した人だけ (= ユーザー要望)。 参加者に
             //   出すと、 他の人の作業まで突然終わらせられてしまう。
             //   共同編集をしていない (= ただの共有) 時は今までどおり出す。
+            // ★ 編集できる人も中止できる (= ユーザー要望)。
+            //   閲覧だけの人には出さない。
             if (isShared &&
                 (!provider.liveActive ||
                     provider.livePageId != page.id ||
-                    provider.liveIsHost))
+                    provider.liveIsHost ||
+                    provider.liveCanEdit))
               TextButton(
                 onPressed: busy ? null : doUnpublish,
                 child: Text(provider.t('publish.stop'),
@@ -95562,6 +96049,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       'labelKey': 'cmd.openSpotify',
       'defaultKey': 'Ctrl+Shift+I'
     },
+    // Udemy (= ユーザー要望)。 既定の割り当ては無し。
+    {'id': 'openUdemy', 'labelKey': 'cmd.openUdemy', 'defaultKey': ''},
     // ── AI チャットサービスのショートカット ──
     // ユーザー要望: 「ショートカット一覧に ChatGPT / Gemini 等の項目を作って
     //   独自にキーを割り当てられるように。 デフォルトは未割当」。
@@ -95825,6 +96314,22 @@ class _MindMapScreenState extends State<MindMapScreen>
         'defaultKey': '',
       });
     }
+    // ── お気に入り (登録したページ) もキーを割り当てられるようにする ──
+    //   = ユーザー要望「開いている Google 検索や YouTube、 Udemy のページを
+    //   お気に入り登録して、 ショートカットで呼び出せるように」。
+    //   id は 'bookmark:<uuid>' で、 押した時の処理は既に入っている
+    //   (_executeHeaderCommand / キーの分岐が bookmark: を見ている)。
+    //   名前は翻訳の鍵ではなく登録名なので、 labelKey は空にして
+    //   _commandLabel に任せる。
+    for (final b in _bookmarkButtonsCache.values) {
+      if (known.contains(b.id)) continue;
+      known.add(b.id);
+      out.add(<String, dynamic>{
+        'id': b.id,
+        'labelKey': '',
+        'defaultKey': '',
+      });
+    }
     _assignableDefsCache = out;
     return out;
   }
@@ -95949,7 +96454,10 @@ class _MindMapScreenState extends State<MindMapScreen>
           }
         }
         if (cmd == null) continue;
-        label = provider.t(cmd['labelKey']! as String);
+        final lk0 = cmd['labelKey']! as String;
+        label = lk0.isEmpty
+            ? _commandLabel(provider, cmd['id']! as String)
+            : provider.t(lk0);
         final baseKey = cmd['defaultKey']! as String;
         final fixedSuffix = cmd['fixedSuffix'] == true;
         final defaultKey = fixedSuffix
@@ -96259,7 +96767,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                         ...sortedCmds.map((cmd) {
                           final id = cmd['id']! as String;
                           final labelKey = cmd['labelKey']! as String;
-                          String label = provider.t(labelKey);
+                          // お気に入りは翻訳の鍵ではなく登録名を出す。
+                          String label = labelKey.isEmpty
+                              ? _commandLabel(provider, id)
+                              : provider.t(labelKey);
                           // モバイル: 画面分割は上下分割表記 (ユーザー要望)
                           if (!_isDesktop) {
                             if (id == 'toggleSplitScreen') {
@@ -96633,7 +97144,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                 (_customKeyBindings[otherId] ?? (cmd['defaultKey']! as String))
                     .trim());
             if (otherKey == normalized) {
-              return provider.t(cmd['labelKey']! as String);
+              final lk = cmd['labelKey']! as String;
+              return lk.isEmpty
+                  ? _commandLabel(provider, cmd['id']! as String)
+                  : provider.t(lk);
             }
           }
           return null;
@@ -97441,11 +97955,153 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
   static const String _kPendingScaleKey = 'displayPendingScale';
   static const String _kPendingWallKey = 'displayPendingWallpaper';
 
+  /// 今の並べ方 (Windows 全体で 1 つ)。 見本をこれに合わせて描く
+  /// (= ユーザー要望: 実際にどう貼られるかが分かる見本にしてほしい)。
+  WallpaperFit _fit = WallpaperFit.fill;
+
+  /// 見本を描くために広げておいた絵。 鍵は絵の道。
+  final Map<String, _WallImage> _wallImages = {};
+  final Set<String> _wallImageLoading = {};
+
+  /// 読めなかった絵の道。
+  /// ★ これが無いと、 消えた絵を指したままの行が「読み込み中」 の輪を回し
+  ///   続け、 しかも毎フレーム読み直しに行く (= 実害のある無限読み込み)。
+  final Set<String> _wallImageFailed = {};
+
+  /// 画面ごとの「位置の調整」 の控え。 鍵は画面の id (= 繋ぎ直しても変わらない
+  /// device path。 番号で覚えると、 左に 1 台足しただけで全部ずれる)。
+  /// 中身は「元の画像の道」 と「切り出す枠」 (画像の中の割合、 0〜1)。
+  ///
+  /// ★ これを覚えていないと、 調整して貼った後にもう一度開いた時、
+  ///   既に切り出した絵を更に切り出す事になり、 引いて全体を見る事が
+  ///   できなくなる。
+  final Map<String, _WallAdjust> _wallAdjust = {};
+  static const String _kAdjustKey = 'displayWallAdjust_v1';
+
+  /// まだ繋いでいない画面ぶんの貼り方 (鍵は上の配置図と同じ番号)。
+  /// 本当の画素数が分からないので画像は作らず、 繋がった時にその画面の
+  /// 大きさで作って貼る ([_applyPendingAdjusts])。
+  final Map<int, _WallAdjust> _pendingAdjust = {};
+  static const String _kPendingAdjustKey = 'displayWallAdjustPending_v1';
+
+  /// 控えた貼り方を当てている最中か (読み直しとの往復を止める)。
+  bool _applyingPendingAdjust = false;
+
+  /// 同梱している見本の壁紙 (= ユーザー要望: テンプレートとして選べるように)。
+  static const List<String> _wallTemplates = ['assets/wallpapers/Desktop.jpg'];
+
   @override
   void initState() {
     super.initState();
+    _fit = DisplayControl.getWallpaperFit() ?? WallpaperFit.fill;
     unawaited(_loadPrefs());
+    unawaited(_loadAdjust());
+    unawaited(_loadPendingAdjust());
     _reload();
+  }
+
+  @override
+  void dispose() {
+    for (final w in _wallImages.values) {
+      w.image.dispose();
+    }
+    _wallImages.clear();
+    _wallImageFailed.clear();
+    super.dispose();
+  }
+
+  /// 見本用に絵を広げる (一度きり。 大きい絵は縮めて持つ)。
+  Future<void> _loadWallImage(String path) async {
+    if (_wallImages.containsKey(path) ||
+        _wallImageLoading.contains(path) ||
+        _wallImageFailed.contains(path)) {
+      return;
+    }
+    _wallImageLoading.add(path);
+    try {
+      final bytes = await File(path).readAsBytes();
+      final buf = await ui.ImmutableBuffer.fromUint8List(bytes);
+      final desc = await ui.ImageDescriptor.encoded(buf);
+      final realW = desc.width, realH = desc.height;
+      // 見本にしか使わないので、 長辺 720px まで縮めて持つ。
+      final k = realW > 720 ? 720 / realW : 1.0;
+      final codec = await desc.instantiateCodec(
+          targetWidth: (realW * k).round().clamp(1, realW),
+          targetHeight: (realH * k).round().clamp(1, realH));
+      final frame = await codec.getNextFrame();
+      desc.dispose();
+      if (!mounted) {
+        frame.image.dispose();
+        return;
+      }
+      setState(() {
+        _wallImages[path] =
+            _WallImage(image: frame.image, realW: realW, realH: realH);
+      });
+    } catch (e) {
+      debugPrint('壁紙の見本を作れませんでした: $e');
+      _wallImageFailed.add(path);
+      if (mounted) setState(() {});
+    } finally {
+      _wallImageLoading.remove(path);
+    }
+  }
+
+  /// 見本を作り直す (同じ道に別の中身が入った時、 貼り替えた時)。
+  void _forgetWallImage(String? path) {
+    if (path == null || path.isEmpty) return;
+    _wallImages.remove(path)?.image.dispose();
+    _wallImageFailed.remove(path);
+  }
+
+  /// その番号の画面に貼る (貼ってある / 予約した) 絵の道。
+  String? _wallPathFor(int i) {
+    final cur = i < _walls.length ? _walls[i].currentPath : null;
+    final path = (cur == null || cur.isEmpty) ? _pendingWall[i] : cur;
+    if (path != null && path.isNotEmpty) unawaited(_loadWallImage(path));
+    return path;
+  }
+
+  /// その番号の画面の大きさ (px)。 繋いでいない画面は、 今ある画面か
+  /// よくある 16:9 で見立てる (見本の形を決めるためだけに使う)。
+  ({int w, int h, int left, int top}) _monRectFor(int i) {
+    if (i < _walls.length) {
+      return (
+        w: _walls[i].width,
+        h: _walls[i].height,
+        left: _walls[i].left,
+        top: _walls[i].top
+      );
+    }
+    if (i < _scales.length) {
+      return (
+        w: _scales[i].width,
+        h: _scales[i].height,
+        left: _scales[i].left,
+        top: _scales[i].top
+      );
+    }
+    if (_walls.isNotEmpty) {
+      return (w: _walls[0].width, h: _walls[0].height, left: 0, top: 0);
+    }
+    if (_scales.isNotEmpty) {
+      return (w: _scales[0].width, h: _scales[0].height, left: 0, top: 0);
+    }
+    return (w: 1920, h: 1080, left: 0, top: 0);
+  }
+
+  /// 全部の画面を囲む四角 (px)。 「またぐ」 の見本に使う。
+  Rect? _virtualBounds() {
+    if (_walls.isEmpty) return null;
+    var l = _walls.first.left, t = _walls.first.top;
+    var r = l + _walls.first.width, b = t + _walls.first.height;
+    for (final m in _walls) {
+      if (m.left < l) l = m.left;
+      if (m.top < t) t = m.top;
+      if (m.left + m.width > r) r = m.left + m.width;
+      if (m.top + m.height > b) b = m.top + m.height;
+    }
+    return Rect.fromLTRB(l.toDouble(), t.toDouble(), r.toDouble(), b.toDouble());
   }
 
   Future<void> _loadPrefs() async {
@@ -97485,6 +98141,122 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
     } catch (_) {}
   }
 
+  /// 調整の控えを読む。
+  Future<void> _loadAdjust() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final raw = sp.getString(_kAdjustKey) ?? '';
+      if (raw.isEmpty) return;
+      final m = jsonDecode(raw);
+      if (m is! Map) return;
+      final loaded = <String, _WallAdjust>{};
+      m.forEach((k, v) {
+        final a = _WallAdjust.fromJson(v);
+        if (a != null) loaded['$k'] = a;
+      });
+      if (!mounted || loaded.isEmpty) return;
+      setState(() {
+        _wallAdjust.addAll(loaded);
+      });
+    } catch (_) {}
+  }
+
+  /// 繋いでいない画面ぶんの控えを読む。
+  Future<void> _loadPendingAdjust() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final raw = sp.getString(_kPendingAdjustKey) ?? '';
+      if (raw.isEmpty) return;
+      final m = jsonDecode(raw);
+      if (m is! Map) return;
+      final loaded = <int, _WallAdjust>{};
+      m.forEach((k, v) {
+        final i = int.tryParse('$k');
+        final a = _WallAdjust.fromJson(v);
+        if (i != null && a != null) loaded[i] = a;
+      });
+      if (!mounted || loaded.isEmpty) return;
+      setState(() => _pendingAdjust.addAll(loaded));
+      unawaited(_applyPendingAdjusts());
+    } catch (_) {}
+  }
+
+  /// 繋いでいない画面ぶんの控えを書く (空で上書きしない守り付き)。
+  Future<void> _savePendingAdjust() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      if (_pendingAdjust.isEmpty) {
+        final cur = sp.getString(_kPendingAdjustKey) ?? '{}';
+        if (cur.trim().isNotEmpty && cur.trim() != '{}') return;
+      }
+      await sp.setString(
+          _kPendingAdjustKey,
+          jsonEncode(
+              _pendingAdjust.map((k, v) => MapEntry('$k', v.toJson()))));
+    } catch (_) {}
+  }
+
+  /// 控えてあった貼り方のうち、 今つながっている画面の分を当てる。
+  /// ここで初めて**その画面の本当の大きさ**で画像を作る。
+  Future<void> _applyPendingAdjusts() async {
+    if (_pendingAdjust.isEmpty || _applyingPendingAdjust) return;
+    _applyingPendingAdjust = true;
+    try {
+      var changed = false;
+      for (final e in Map<int, _WallAdjust>.from(_pendingAdjust).entries) {
+        final i = e.key;
+        if (i < 0 || i >= _walls.length) continue;
+        final mon = _walls[i];
+        if (!File(e.value.src).existsSync()) {
+          _pendingAdjust.remove(i);
+          changed = true;
+          continue;
+        }
+        try {
+          final out = await _composeWallpaperFile(
+            srcPath: e.value.src,
+            monW: mon.width,
+            monH: mon.height,
+            crop: e.value.crop,
+            contain: e.value.contain,
+          );
+          if (!DisplayControl.setWallpaper(mon.id, out)) continue;
+          _wallAdjust[mon.id] = e.value;
+          _pendingAdjust.remove(i);
+          _pendingWall.remove(i);
+          changed = true;
+        } catch (err) {
+          debugPrint('控えた貼り方を当てられませんでした: $err');
+        }
+      }
+      if (!changed || !mounted) return;
+      unawaited(_saveAdjust());
+      unawaited(_savePendingAdjust());
+      unawaited(_savePending());
+      setState(() {
+        _walls = DisplayControl.listWallpaperMonitors();
+      });
+    } finally {
+      _applyingPendingAdjust = false;
+    }
+  }
+
+  /// 調整の控えを書く。
+  ///
+  /// ★ 空の時に黙って上書きしない。 読み終わる前に貼ると、 覚えていた分を
+  ///   まっさらで潰してしまう (= 過去に「並びが全部消えた」 事故を起こした形)。
+  Future<void> _saveAdjust() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      if (_wallAdjust.isEmpty) {
+        final cur = sp.getString(_kAdjustKey) ?? '{}';
+        if (cur.trim().isNotEmpty && cur.trim() != '{}') return;
+      }
+      await sp.setString(_kAdjustKey,
+          jsonEncode(_wallAdjust.map((k, v) => MapEntry(k, v.toJson()))));
+    } catch (_) {}
+  }
+
   Future<void> _savePending() async {
     try {
       final sp = await SharedPreferences.getInstance();
@@ -97517,6 +98289,8 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
     for (final e in Map<int, String>.from(_pendingWall).entries) {
       final i = e.key;
       if (i < 0 || i >= _walls.length) continue;
+      // 貼り方まで決めてある分は、 そちらが作って貼るので触らない。
+      if (_pendingAdjust.containsKey(i)) continue;
       if (DisplayControl.setWallpaper(_walls[i].id, e.value)) {
         _pendingWall.remove(i);
         changed = true;
@@ -97527,7 +98301,6 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
     setState(() {
       _scales = DisplayControl.listScales();
       _walls = DisplayControl.listWallpaperMonitors();
-      _wallStamp++;
     });
   }
 
@@ -97547,7 +98320,12 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
     setState(() {
       _scales = DisplayControl.listScales();
       _walls = DisplayControl.listWallpaperMonitors();
+      // Windows の 個人用設定 で変えられている事があるので読み直す
+      // (= 押した印が嘘にならないように)。
+      _fit = DisplayControl.getWallpaperFit() ?? _fit;
     });
+    // 繋ぎ直した直後なら、 控えてあった貼り方をここで当てる。
+    unawaited(_applyPendingAdjusts());
     // 繋ぎ直した直後なら、 予約していた設定をここで当てる。
     _applyPending();
   }
@@ -97580,23 +98358,20 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
       );
       final path = res?.files.single.path;
       if (path == null || path.isEmpty) return;
-      if (mon == null && slot != null) {
-        setState(() {
-          _pendingWall[slot] = path;
-          _wallStamp++;
-        });
-        unawaited(_savePending());
-        _tell(widget.provider.t('display.savedForLater'));
+      // ★ 貼る所は 1 本にまとめる。 ここで自前に貼っていた頃は、
+      //   「またぐ」 のまま画像を選ぶと、 緑で「適用しました」 と出るのに
+      //   画面が何も変わらなかった (またいでいる間は画面ごとの壁紙が
+      //   出ないため)。 予約・調整の破棄・見本の作り直しも向こうが持っている。
+      if (slot != null) {
+        await _applyWallpaperPath(path, slot: slot);
         return;
       }
       final ok = DisplayControl.setWallpaper(mon?.id, path);
       if (!mounted) return;
-      _tell(
-          widget.provider
-              .t(ok ? 'display.wallDone' : 'display.wallFailed'),
+      _tell(widget.provider.t(ok ? 'display.wallDone' : 'display.wallFailed'),
           error: !ok);
-      // 見本を作り直す (同じ道に貼り替えた時も更新されるように)。
-      setState(() => _wallStamp++);
+      _forgetWallImage(path);
+      unawaited(_loadWallImage(path));
       _reload();
     } catch (e) {
       if (mounted) _tell('$e', error: true);
@@ -97681,7 +98456,10 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
                         for (final v in _scales[i].choices)
                           _pctChip(v, _scales[i], p)
                       else
-                        for (final v in DisplayControl.commonScales)
+                        // ★ 繋いでいない画面も、 メインの画面と同じ選択肢を
+                        //   出す (= ユーザー要望: サブだけ 250% まで選べるのは
+                        //   おかしい)。 メインが分からない時だけよくある値。
+                        for (final v in _pendingScaleChoices)
                           _pendingPctChip(i, v),
                     ]),
                   ),
@@ -97692,73 +98470,139 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
           label(p.t('display.wallpaper')),
           for (var i = 0; i < _slotCount; i++)
             Padding(
-              padding: const EdgeInsets.only(bottom: 6),
-              child: Row(children: [
-                SizedBox(width: 118, child: _slotName(i)),
-                // ── 今貼っている絵 (まだ繋いでいない画面は、 予約した絵)
-                //    の見本 (= ユーザー要望) ──
-                _wallPreview(i < _walls.length
-                    ? _walls[i].currentPath
-                    : _pendingWall[i]),
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: SizedBox(width: 118, child: _slotName(i)),
+                ),
+                // ── 今貼っている絵 (まだ繋いでいない画面は、 予約した絵) が
+                //    画面のどこに乗り、 どこが切れるのかの見本
+                //    (= ユーザー要望: もう少し現実に即した見本に) ──
+                _wallPreview(i),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: Text(
-                      ((i < _walls.length
-                                  ? _walls[i].currentPath
-                                  : _pendingWall[i]) ??
-                              '')
-                          .split(RegExp(r'[\\/]'))
-                          .last,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          color: Colors.white38, fontSize: 10.5)),
-                ),
-                TextButton(
-                  onPressed: _busy
-                      ? null
-                      : () => unawaited(_pickWallpaper(
-                          i < _walls.length ? _walls[i] : null,
-                          slot: i)),
-                  style: TextButton.styleFrom(
-                      visualDensity: VisualDensity.compact,
-                      padding: const EdgeInsets.symmetric(horizontal: 8)),
-                  child: Text(p.t('display.pickImage'),
-                      style: const TextStyle(
-                          color: Color(0xFF4FC3F7), fontSize: 11.5)),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                          (_wallPathFor(i) ?? '')
+                              .split(RegExp(r'[\\/]'))
+                              .last,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              color: Colors.white38, fontSize: 10.5)),
+                      Wrap(spacing: 2, children: [
+                        TextButton(
+                          onPressed: _busy
+                              ? null
+                              : () => unawaited(_pickWallpaper(
+                                  i < _walls.length ? _walls[i] : null,
+                                  slot: i)),
+                          style: TextButton.styleFrom(
+                              visualDensity: VisualDensity.compact,
+                              minimumSize: const Size(0, 28),
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 6)),
+                          child: Text(p.t('display.pickImage'),
+                              style: const TextStyle(
+                                  color: Color(0xFF4FC3F7), fontSize: 11.5)),
+                        ),
+                        TextButton(
+                          onPressed:
+                              _busy ? null : () => unawaited(_pickTemplate(i)),
+                          style: TextButton.styleFrom(
+                              visualDensity: VisualDensity.compact,
+                              minimumSize: const Size(0, 28),
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 6)),
+                          child: Text(p.t('display.template'),
+                              style: const TextStyle(
+                                  color: Color(0xFF9CCC65), fontSize: 11.5)),
+                        ),
+                        // ★ 「位置を調整」 (= ユーザー要望: ドラッグで、
+                        //   デスクトップに映る所を微調整できるように)。
+                        //   名前の付いたボタンにしないと誰も気付けないので、
+                        //   見本を押す以外にここにも出す。 繋いでいない画面でも
+                        //   決めておけるが、 本当の画素数が分からないので、
+                        //   画像は作らずに控えて、 繋いだ時に本物の大きさで作る。
+                        if (_wallPathFor(i) != null)
+                          TextButton(
+                            onPressed:
+                                _busy ? null : () => unawaited(_openAdjust(i)),
+                            style: TextButton.styleFrom(
+                                visualDensity: VisualDensity.compact,
+                                minimumSize: const Size(0, 28),
+                                padding:
+                                    const EdgeInsets.symmetric(horizontal: 6)),
+                            child: Text(p.t('display.adjust'),
+                                style: const TextStyle(
+                                    color: Color(0xFFFFB347), fontSize: 11.5)),
+                          ),
+                      ]),
+                    ],
+                  ),
                 ),
               ]),
             ),
-          // 並べ方 (全画面共通)。
+          // ── 並べ方 (全部の画面で共通) ──
+          //
+          // ★ 6 つも出さない (= ユーザー要望: 選択肢がこんなに要らない)。
+          //   出すのは 画面いっぱい / 全体を入れる と、 画面が 2 台以上ある時の
+          //   画面をまたぐ だけ。 引き伸ばす / 中央 / 並べる は、 位置の調整で
+          //   もっと細かくできる物か、 わざと歪める物なので落とした。
+          //   今 Windows が落とした方の並べ方でも、 幽霊のボタンは足さずに
+          //   文で伝える (押せる物が増えると、 かえって分からなくなる)。
+          label(p.t('display.arrange')),
           Wrap(spacing: 5, runSpacing: 5, children: [
-            for (final e in const [
-              (WallpaperFit.fill, 'display.fitFill'),
-              (WallpaperFit.fit, 'display.fitFit'),
-              (WallpaperFit.stretch, 'display.fitStretch'),
-              (WallpaperFit.center, 'display.fitCenter'),
-              (WallpaperFit.tile, 'display.fitTile'),
-              (WallpaperFit.span, 'display.fitSpan'),
-            ])
+            for (final e in _fitChoices)
               OutlinedButton(
                 style: OutlinedButton.styleFrom(
                     visualDensity: VisualDensity.compact,
-                    foregroundColor: Colors.white70,
-                    side: const BorderSide(color: Colors.white24),
+                    backgroundColor: _fit == e.$1
+                        ? const Color(0xFF4FC3F7).withValues(alpha: 0.18)
+                        : null,
+                    foregroundColor:
+                        _fit == e.$1 ? Colors.white : Colors.white70,
+                    side: BorderSide(
+                        color: _fit == e.$1
+                            ? const Color(0xFF4FC3F7)
+                            : Colors.white24),
+                    // ★ 押せない時でも文字は読める色にする
+                    //   (= ユーザー報告: 選ばれている時の文字が全く見えない。
+                    //    無効にすると Material が薄い灰色にしてしまうため)。
+                    disabledForegroundColor: Colors.white70,
                     padding: const EdgeInsets.symmetric(horizontal: 8)),
-                onPressed: _busy
-                    ? null
-                    : () {
-                        final ok = DisplayControl.setWallpaperFit(e.$1);
-                        _tell(
-                            p.t(ok
-                                ? 'display.wallDone'
-                                : 'display.wallFailed'),
-                            error: !ok);
-                      },
-                child:
-                    Text(p.t(e.$2), style: const TextStyle(fontSize: 11)),
+                // 今の並べ方を押した時は _applyFit の中で何もせずに返る。
+                // (ここで無効にすると文字まで薄くなってしまう)
+                onPressed: _busy ? null : () => _applyFit(e.$1),
+                child: Text(p.t(e.$2),
+                    style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: _fit == e.$1
+                            ? FontWeight.w700
+                            : FontWeight.w400)),
               ),
           ]),
+          if (!_fitChoices.any((e) => e.$1 == _fit)) ...[
+            const SizedBox(height: 4),
+            Text(
+                p
+                    .t('display.fitOther')
+                    .replaceFirst('{name}', p.t(_fitLabelKey(_fit))),
+                style: const TextStyle(color: Colors.white54, fontSize: 10.5)),
+          ],
+          if (_fit == WallpaperFit.span) ...[
+            const SizedBox(height: 4),
+            Text(p.t('display.spanNote'),
+                style: const TextStyle(
+                    color: Color(0xFFFFB347), fontSize: 10.5)),
+          ],
+          const SizedBox(height: 6),
+          Text(p.t('display.previewHint'),
+              style: const TextStyle(color: Colors.white38, fontSize: 10.5)),
           if (_msg != null) ...[
             const SizedBox(height: 6),
             Text(_msg!,
@@ -97781,7 +98625,11 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
         : '${i + 1}  ${p.t('display.secondary')}';
   }
 
-  /// 行の左側 (番号 + 主/副 + 大きさ)。 繋いでいない画面は「未接続」。
+  /// 行の左側 (番号 + 主/副 + 大きさ)。
+  ///
+  /// ★ 繋いでいない画面に「未接続」 とは書かない (= ユーザー要望: 目立ち
+  ///   過ぎている)。 薄い文字にするだけで十分伝わるので、 大きさの行は
+  ///   空けておく。
   Widget _slotName(int i) {
     final p = widget.provider;
     final real = i < _scales.length
@@ -97794,10 +98642,7 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
                 name: _monLabel(i, _walls[i].left, _walls[i].top),
                 sub: '${_walls[i].width}×${_walls[i].height}'
               )
-            : (
-                name: '${i + 1}  ${p.t('display.secondary')}',
-                sub: p.t('display.notConnected')
-              ));
+            : (name: '${i + 1}  ${p.t('display.secondary')}', sub: ''));
     final connected = i < _scales.length || i < _walls.length;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -97810,14 +98655,29 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
                 color: connected ? Colors.white70 : Colors.white38,
                 fontSize: 11.5,
                 fontWeight: FontWeight.w700)),
-        Text(real.sub,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-                color: connected ? Colors.white38 : const Color(0xFFFFB347),
-                fontSize: 10)),
+        if (real.sub.isNotEmpty)
+          Text(real.sub,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: Colors.white38, fontSize: 10)),
       ],
     );
+  }
+
+  /// まだ繋いでいない画面ぶんに出す拡大率の選択肢。
+  ///
+  /// ★ = ユーザー要望「サブモニターの拡大率を 250% まで設定できるのはおかしい。
+  ///   メインモニターと同じ選択肢にして」。 実際に繋がっている画面 (主モニターを
+  ///   優先) が返す選択肢をそのまま使う。 1 台も読めない時だけ、 よくある値。
+  List<int> get _pendingScaleChoices {
+    if (_scales.isEmpty) return DisplayControl.commonScales;
+    final primary = _scales.firstWhere(
+      (m) => m.left == 0 && m.top == 0,
+      orElse: () => _scales.first,
+    );
+    return primary.choices.isEmpty
+        ? DisplayControl.commonScales
+        : primary.choices;
   }
 
   /// まだ繋いでいない画面ぶんの拡大率の選択肢。 押すと控えるだけ。
@@ -97855,47 +98715,298 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
     );
   }
 
-  /// 壁紙の見本。 読めない絵 (対応していない形式など) は枠だけ出す。
-  ///
-  /// ★ 貼り替えるたびに `key` を変える。 同じ道に貼り直した時、
-  ///   Flutter の絵の控えが効いて古い絵のままになるため。
-  Widget _wallPreview(String? path) {
-    const w = 64.0, h = 38.0;
-    Widget frame(Widget child) => Container(
-          width: w,
-          height: h,
-          clipBehavior: Clip.antiAlias,
-          decoration: BoxDecoration(
-            color: Colors.black26,
-            borderRadius: BorderRadius.circular(4),
-            border: Border.all(color: Colors.white24),
-          ),
-          child: child,
-        );
-    if (path == null || path.isEmpty) {
-      return frame(const Icon(Icons.image_not_supported_outlined,
-          size: 14, color: Colors.white24));
-    }
-    return frame(Image.file(
-      File(path),
-      key: ValueKey('$path#$_wallStamp'),
-      width: w,
-      height: h,
-      fit: BoxFit.cover,
-      gaplessPlayback: true,
-      errorBuilder: (_, __, ___) => const Icon(
-          Icons.broken_image_outlined,
-          size: 14,
-          color: Colors.white24),
-    ));
+  /// 壁紙の見本。 画面の形どおりの枠に、 実際の並べ方どおりに絵を置き、
+  /// 枠から外へ出る所 (= 切れる所) を薄く見せる
+  /// (= ユーザー要望: どう配置されてどこがはみ出すのかが分かるように)。
+  /// 押すと大きい見本を開く。
+  Widget _wallPreview(int i) {
+    const w = 132.0;
+    final path = _wallPathFor(i);
+    final mon = _monRectFor(i);
+    final img = path == null ? null : _wallImages[path];
+    final h = _previewBoxHeight(w, mon.w, mon.h);
+    final body = _WallpaperPreview(
+      image: img,
+      fit: _fit,
+      monW: mon.w,
+      monH: mon.h,
+      monLeft: mon.left,
+      monTop: mon.top,
+      virtual: _virtualBounds(),
+      size: Size(w, h),
+      loading: path != null && img == null,
+    );
+    if (path == null) return body;
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: () => unawaited(_openAdjust(i)),
+        child: Tooltip(
+          message: widget.provider.t('display.adjust'),
+          child: body,
+        ),
+      ),
+    );
   }
 
-  /// 見本を作り直させるための印 (同じ道に貼り替えた時のため)。
-  int _wallStamp = 0;
+  /// 画面に出す並べ方の選択肢。
+  /// 画面が 1 台の時は「またぐ」 を出さない (またぐ相手が居ないので、
+  /// 押しても何も変わらない = 飾りにしかならない)。
+  List<(WallpaperFit, String)> get _fitChoices => [
+        (WallpaperFit.fill, 'display.fitFill'),
+        (WallpaperFit.fit, 'display.fitFit'),
+        if (_walls.length >= 2) (WallpaperFit.span, 'display.fitSpan'),
+      ];
+
+  /// 並べ方の呼び名の鍵 (落とした並べ方も、 名前だけは出せるように)。
+  static String _fitLabelKey(WallpaperFit f) => switch (f) {
+        WallpaperFit.fill => 'display.fitFill',
+        WallpaperFit.fit => 'display.fitFit',
+        WallpaperFit.stretch => 'display.fitStretch',
+        WallpaperFit.center => 'display.fitCenter',
+        WallpaperFit.tile => 'display.fitTile',
+        WallpaperFit.span => 'display.fitSpan',
+      };
+
+  /// 見本の入れ物の高さ。 画面の形 (縦横比) に合わせ、 はみ出しを見せる
+  /// ぶんの余白を足す。
+  static double _previewBoxHeight(double w, int monW, int monH) {
+    const margin = _WallpaperPreview.margin;
+    final inner = w - margin * 2;
+    final ih = inner * (monH <= 0 ? 0.5625 : monH / monW);
+    return (ih + margin * 2).clamp(52.0, 260.0);
+  }
+
+  /// 「位置を調整」 を開く (= ユーザー要望: ドラッグでデスクトップに映る所を
+  /// 微調整できるように)。
+  ///
+  /// Windows の壁紙には「ずらす」 という指定が無く、 6 種類の並べ方しか無い。
+  /// そこで、 選んだ所だけを切り出した**画面と同じ大きさの画像**をこちらで
+  /// 作って貼る。 こうすると並べ方が何であっても、 見た目は必ず狙いどおりになる。
+  ///
+  /// 元の画像と切り出す枠は覚えておく。 これが無いと、 次に開いた時に
+  /// 「切り出した後の画像」 から更に切り出す事になり、 引いて全体を見られなく
+  /// なってしまう。
+  Future<void> _openAdjust(int i) async {
+    final p = widget.provider;
+    final connected = i < _walls.length;
+    final mon = connected ? _walls[i] : null;
+    // 繋いでいる画面は画面の id で、 まだの画面は番号で覚えている。
+    final rec = connected ? _wallAdjust[mon!.id] : _pendingAdjust[i];
+    var src = rec?.src;
+    if (src == null || src.isEmpty || !File(src).existsSync()) {
+      src = _wallPathFor(i);
+    }
+    if (src == null || src.isEmpty) return;
+    final size = _monRectFor(i);
+    final res = await showDialog<_WallAdjustResult>(
+      context: context,
+      builder: (_) => _WallpaperAdjustDialog(
+        provider: p,
+        srcPath: src!,
+        monW: size.w,
+        monH: size.h,
+        initial: (rec != null && rec.src == src) ? rec.crop : null,
+        initialContain: rec?.contain ?? false,
+        pending: !connected,
+      ),
+    );
+    if (res == null || !mounted) return;
+    final adj =
+        _WallAdjust(src: src, crop: res.crop, contain: res.contain);
+    final out = res.outPath;
+    if (mon == null || out == null) {
+      // まだ繋いでいない画面 = 控えるだけ。 繋いだ時に本物の大きさで作る。
+      setState(() {
+        _pendingAdjust[i] = adj;
+        _pendingWall[i] = src!;
+      });
+      unawaited(_savePendingAdjust());
+      unawaited(_savePending());
+      _tell(p.t('display.savedForLater'));
+      return;
+    }
+    _wallAdjust[mon.id] = adj;
+    unawaited(_saveAdjust());
+    await _applyWallpaperPath(out,
+        slot: i, doneKey: 'display.adjustDone', keepAdjust: true);
+    unawaited(_sweepOldAdjusted());
+  }
+
+  /// 古い「調整して作った画像」 を片付ける。
+  ///
+  /// ★ 今どこかの画面に貼ってある物と、 元の画像は絶対に消さない。
+  ///   貼ってある画像が消えていると、 次にログオンした時に壁紙が出なくなる。
+  Future<void> _sweepOldAdjusted() async {
+    try {
+      final base = await getApplicationSupportDirectory();
+      final dir = Directory(
+          '${base.path}${Platform.pathSeparator}wallpapers');
+      if (!dir.existsSync()) return;
+      final keep = <String>{
+        for (final m in DisplayControl.listWallpaperMonitors())
+          if (m.currentPath != null && m.currentPath!.isNotEmpty)
+            m.currentPath!.toLowerCase(),
+        for (final a in _wallAdjust.values) a.src.toLowerCase(),
+        for (final v in _pendingWall.values) v.toLowerCase(),
+      };
+      for (final f in dir.listSync().whereType<File>()) {
+        final name = f.path.split(RegExp(r'[\\/]')).last;
+        if (!name.startsWith('adjusted_')) continue;
+        if (keep.contains(f.path.toLowerCase())) continue;
+        try {
+          f.deleteSync();
+        } catch (_) {
+          // 貼ってある物は掴まれている事がある。 消せなくても構わない。
+        }
+      }
+    } catch (_) {}
+  }
+
+  /// 並べ方を変える (見本もその場で合わせる)。
+  /// 並べ方は Windows 全体で 1 つなので、 知らせも「全部の画面」 と言う。
+  void _applyFit(WallpaperFit fit) {
+    if (_fit == fit) return; // 今の並べ方 = 何もしない
+    final ok = DisplayControl.setWallpaperFit(fit);
+    if (!mounted) return;
+    setState(() {
+      if (ok) _fit = fit;
+    });
+    _tell(widget.provider.t(ok ? 'display.fitDone' : 'display.fitFailed'),
+        error: !ok);
+  }
+
+  /// 同梱のテンプレートを貼る (= ユーザー要望: テンプレート壁紙)。
+  ///
+  /// ★ 1 枚しか無いのに「見て、 閉じるだけ」 の窓は出さない
+  ///   (= ユーザー要望: 閉じるしか選択肢のない見本を出す必要があるか)。
+  ///   2 枚以上に増えた時だけ選ばせる。
+  Future<void> _pickTemplate(int slot) async {
+    final p = widget.provider;
+    var asset = _wallTemplates.first;
+    if (_wallTemplates.length > 1) {
+      final picked = await showDialog<String>(
+        context: context,
+        builder: (dctx) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          title: Text(p.t('display.templateTitle'),
+              style: const TextStyle(color: Colors.white, fontSize: 15)),
+          content: SizedBox(
+            width: 340,
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              for (final a in _wallTemplates)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(6),
+                    onTap: () => Navigator.pop(dctx, a),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(6),
+                      child: Image.asset(a,
+                          width: 320, height: 178, fit: BoxFit.cover),
+                    ),
+                  ),
+                ),
+            ]),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dctx),
+              child: Text(p.t('btn.close'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+          ],
+        ),
+      );
+      if (picked == null || !mounted) return;
+      asset = picked;
+    }
+    setState(() => _busy = true);
+    String? path;
+    try {
+      path = await _materializeTemplate(asset);
+    } catch (e) {
+      debugPrint('テンプレートの壁紙を書き出せませんでした: $e');
+    }
+    if (!mounted) return;
+    setState(() => _busy = false);
+    if (path == null) {
+      _tell(p.t('display.wallFailed'), error: true);
+      return;
+    }
+    await _applyWallpaperPath(path,
+        slot: slot, doneKey: 'display.templateDone');
+  }
+
+  /// 同梱の絵を実ファイルに書き出す (壁紙は実在する道でないと貼れない)。
+  Future<String> _materializeTemplate(String asset) async {
+    final dir = await getApplicationSupportDirectory();
+    final out = File('${dir.path}${Platform.pathSeparator}wallpapers'
+        '${Platform.pathSeparator}${asset.split('/').last}');
+    if (!out.parent.existsSync()) out.parent.createSync(recursive: true);
+    final data = await rootBundle.load(asset);
+    try {
+      await out.writeAsBytes(
+          data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
+          flush: true);
+    } catch (e) {
+      // 既に貼ってあって書き換えられない時は、 前に書き出した物を使う。
+      if (!out.existsSync()) rethrow;
+    }
+    return out.path;
+  }
+
+  /// 決まった画像を貼る (まだ繋いでいない画面ぶんは控えるだけ)。
+  ///
+  /// ★ ここで並べ方 (fit) を指定してはいけない。 並べ方は Windows 全体で
+  ///   1 つしか無いので、 片方の画面に貼るたびに、 もう片方の画面の見え方まで
+  ///   勝手に変わってしまう。 位置を調整した画像は画面と同じ大きさなので、
+  ///   どの並べ方でも同じに映る = 触る必要が無い。
+  ///   例外は「またぐ」。 またいでいる間は画面ごとの壁紙が出ないので、
+  ///   それだけは先にやめる (でないと「適用しました」 と出るのに何も変わらない)。
+  Future<void> _applyWallpaperPath(String path,
+      {required int slot,
+      String doneKey = 'display.wallDone',
+      bool keepAdjust = false}) async {
+    final p = widget.provider;
+    if (slot >= _walls.length) {
+      setState(() {
+        _pendingWall[slot] = path;
+      });
+      unawaited(_savePending());
+      unawaited(_loadWallImage(path));
+      _tell(p.t('display.savedForLater'));
+      return;
+    }
+    final mon = _walls[slot];
+    // 別の画像を選び直した = 前の調整はもう当てはまらない。
+    if (!keepAdjust && _wallAdjust.remove(mon.id) != null) {
+      unawaited(_saveAdjust());
+    }
+    var leftSpan = false;
+    if (_fit == WallpaperFit.span &&
+        DisplayControl.setWallpaperFit(WallpaperFit.fill)) {
+      _fit = WallpaperFit.fill;
+      leftSpan = true;
+    }
+    final prev = mon.currentPath;
+    final ok = DisplayControl.setWallpaper(mon.id, path);
+    if (!mounted) return;
+    if (ok && prev != null && prev != path) _forgetWallImage(prev);
+    _forgetWallImage(path); // 同じ道に別の中身が来ている事がある
+    _tell(
+        ok
+            ? (leftSpan
+                ? '${p.t(doneKey)} ${p.t('display.spanLeft')}'
+                : p.t(doneKey))
+            : p.t('display.wallFailed'),
+        error: !ok);
+    unawaited(_loadWallImage(path));
+    _reload();
+  }
 
   Widget _pctChip(int v, MonitorScale mon, MindMapProvider p) {
     final on = mon.current == v;
-    final rec = mon.recommended == v;
     return InkWell(
       borderRadius: BorderRadius.circular(6),
       onTap: _busy || on ? null : () => unawaited(_applyScale(mon, v)),
@@ -97909,7 +99020,8 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
           border: Border.all(
               color: on ? const Color(0xFF4FC3F7) : Colors.white12),
         ),
-        child: Text(rec ? '$v%${p.t('display.recommendedMark')}' : '$v%',
+        // ★ 「(推奨)」 は出さない (= ユーザー要望: 文字を消して)。
+        child: Text('$v%',
             style: TextStyle(
                 color: on ? Colors.white : Colors.white60,
                 fontSize: 11,
@@ -97917,6 +99029,965 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
       ),
     );
   }
+}
+
+/// 見本用に広げた絵と、 その元の大きさ (px)。
+///
+/// 元の大きさは「中央」 や「並べる」 の見本に要る。 これらは絵を 1:1 の
+/// 大きさで置くので、 縮めた控えの大きさで測ると嘘になる。
+class _WallImage {
+  final ui.Image image;
+  final int realW;
+  final int realH;
+  const _WallImage(
+      {required this.image, required this.realW, required this.realH});
+}
+
+/// 画面ごとの「位置の調整」 の控え。
+///
+/// [src] は**元の**画像の道。 切り出した後の画像を覚えてしまうと、 次に開いた
+/// 時に「切り出した物から更に切り出す」 事になり、 引いて全体を見られなくなる。
+/// [crop] は元の画像の中で画面に映す枠 (割合 0〜1)。 縦横比は画面と同じ。
+/// 画面ごとの「貼り方」 の控え。
+///
+/// [src] は**元の**画像の道。 切り出した後の画像を覚えてしまうと、 次に開いた
+/// 時に「切り出した物から更に切り出す」 事になり、 引いて全体を見られなくなる。
+/// [crop] は元の画像の中で画面に映す枠 (割合 0〜1)。 縦横比は画面と同じ。
+/// [contain] が真なら切り取らず、 画像の全体を入れて余白を付ける。
+class _WallAdjust {
+  final String src;
+  final Rect crop;
+  final bool contain;
+  const _WallAdjust(
+      {required this.src, required this.crop, this.contain = false});
+
+  Map<String, dynamic> toJson() => {
+        'src': src,
+        'l': crop.left,
+        't': crop.top,
+        'r': crop.right,
+        'b': crop.bottom,
+        if (contain) 'contain': true,
+      };
+
+  static _WallAdjust? fromJson(dynamic v) {
+    if (v is! Map) return null;
+    final src = '${v['src'] ?? ''}';
+    if (src.isEmpty) return null;
+    double d(Object? x, double def) => x is num ? x.toDouble() : def;
+    final l = d(v['l'], 0), t = d(v['t'], 0);
+    final r = d(v['r'], 1), b = d(v['b'], 1);
+    if (!(r > l) || !(b > t)) return null;
+    return _WallAdjust(
+        src: src,
+        crop: Rect.fromLTRB(l, t, r, b),
+        contain: v['contain'] == true);
+  }
+}
+
+/// 「位置を調整」 の結果。
+/// [outPath] は作った画像の道。 まだ繋いでいない画面の分は、 本当の大きさが
+/// 分からないので作らずに控えるだけ = null になる。
+class _WallAdjustResult {
+  final String? outPath;
+  final Rect crop;
+  final bool contain;
+  const _WallAdjustResult(
+      {required this.outPath, required this.crop, required this.contain});
+}
+
+/// JPEG に詰める所だけ別の isolate でやる (4K だと 1 秒以上かかり、
+/// そのまま回すと窓が固まって「壊れた」 ように見えるため)。
+Uint8List _encodeWallpaperJpg(Map<String, Object> a) {
+  final rgba = a['rgba'] as Uint8List;
+  final w = a['w'] as int;
+  final h = a['h'] as int;
+  final im = img.Image.fromBytes(
+      width: w, height: h, bytes: rgba.buffer, numChannels: 4);
+  return Uint8List.fromList(img.encodeJpg(im, quality: 92));
+}
+
+/// 画面と同じ大きさの壁紙を作って書き出す。
+///
+/// Windows の壁紙には「ずらす」 も「この画面だけ別の並べ方」 も無いので、
+/// 狙いどおりに映すには**画面と同じ画素数の画像をこちらで作る**しかない。
+/// 画面と同寸なら並べ方が何であっても同じに映るので、 画面ごとに別々の
+/// 貼り方 (片方は切り取り、 片方は余白付き) にできる。
+///
+/// [crop] は元の画像の中で映す枠 (割合)。 [contain] が真なら切り取らず、
+/// 全体を入れて余りを黒い余白にする。
+Future<String> _composeWallpaperFile({
+  required String srcPath,
+  required int monW,
+  required int monH,
+  required Rect crop,
+  required bool contain,
+}) async {
+  final bytes = await File(srcPath).readAsBytes();
+  final codec = await ui.instantiateImageCodec(bytes);
+  final frame = await codec.getNextFrame();
+  final full = frame.image;
+  final w = monW <= 0 ? 1920 : monW;
+  final h = monH <= 0 ? 1080 : monH;
+  try {
+    // ※ `dart:ui` は名前を絞って読み込んでいて `Picture` を含まないので、
+    //   型は書かずに推論に任せる (書くと「型ではない」 で通らない)。
+    final rec = ui.PictureRecorder();
+    final canvas = Canvas(rec, Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()));
+    final paint = Paint()
+      ..filterQuality = FilterQuality.high
+      ..isAntiAlias = true;
+    if (contain) {
+      // 全体を入れる: 余りは黒い余白。
+      canvas.drawRect(Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()),
+          Paint()..color = const Color(0xFF000000));
+      final s = math.min(w / full.width, h / full.height);
+      final dw = full.width * s, dh = full.height * s;
+      canvas.drawImageRect(
+          full,
+          Rect.fromLTWH(0, 0, full.width.toDouble(), full.height.toDouble()),
+          Rect.fromLTWH((w - dw) / 2, (h - dh) / 2, dw, dh),
+          paint);
+    } else {
+      // ★ 枠を画面の形に合わせ直してから使う。
+      //   まだ繋いでいない画面ぶんは、 別の画面の形を借りて決めているので、
+      //   そのまま引き伸ばすと歪む。 中心と大きさは活かしたまま形だけ直す。
+      final ar = w / h;
+      final sar = full.width / full.height;
+      final maxNw = ar >= sar ? 1.0 : ar / sar;
+      final maxNh = ar >= sar ? sar / ar : 1.0;
+      final size = (crop.width / maxNw).clamp(0.02, 1.0);
+      final nw = (maxNw * size).clamp(0.02, 1.0);
+      final nh = (maxNh * size).clamp(0.02, 1.0);
+      final cx = crop.center.dx.clamp(nw / 2, 1 - nw / 2);
+      final cy = crop.center.dy.clamp(nh / 2, 1 - nh / 2);
+      canvas.drawImageRect(
+          full,
+          Rect.fromLTRB(
+            (cx - nw / 2) * full.width,
+            (cy - nh / 2) * full.height,
+            (cx + nw / 2) * full.width,
+            (cy + nh / 2) * full.height,
+          ),
+          Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()),
+          paint);
+    }
+    final pic = rec.endRecording();
+    try {
+      final out = await pic.toImage(w, h);
+      try {
+        final bd = await out.toByteData(format: ui.ImageByteFormat.rawRgba);
+        if (bd == null) throw Exception('画像を取り出せませんでした');
+        final rgba = Uint8List.fromList(
+            bd.buffer.asUint8List(bd.offsetInBytes, bd.lengthInBytes));
+        final jpg = await compute(_encodeWallpaperJpg,
+            <String, Object>{'rgba': rgba, 'w': w, 'h': h});
+        final dir = await getApplicationSupportDirectory();
+        final sep = Platform.pathSeparator;
+        // ★ 毎回新しい名前にする。 同じ道に書き直しても、 Windows は前の絵を
+        //   持ち続けて貼り替わらない事がある。
+        final f = File('${dir.path}${sep}wallpapers$sep'
+            'adjusted_${DateTime.now().millisecondsSinceEpoch}.jpg');
+        if (!f.parent.existsSync()) f.parent.createSync(recursive: true);
+        await f.writeAsBytes(jpg, flush: true);
+        return f.path;
+      } finally {
+        out.dispose();
+      }
+    } finally {
+      pic.dispose();
+    }
+  } finally {
+    full.dispose();
+  }
+}
+
+/// 壁紙の「位置を調整」 (= ユーザー要望: ドラッグでデスクトップに映る所を
+/// 微調整できるように)。
+///
+/// 画像の全体を薄く出し、 画面に映る所だけを明るい枠で示す。 枠はつまんで
+/// 動かせて、 四隅をつまむと大きさを変えられる (ホイールと下のつまみでも)。
+/// 「この位置で貼る」 で、 画面と同じ大きさに切り出した画像を作って返す。
+///
+/// [pending] が真 = まだ繋いでいない画面。 本当の画素数が分からないので
+/// 画像は作らず、 枠だけを返して控える (繋いだ時に本物の大きさで作る)。
+class _WallpaperAdjustDialog extends StatefulWidget {
+  final MindMapProvider provider;
+  final String srcPath;
+  final int monW;
+  final int monH;
+  final Rect? initial;
+  final bool initialContain;
+  final bool pending;
+  const _WallpaperAdjustDialog({
+    required this.provider,
+    required this.srcPath,
+    required this.monW,
+    required this.monH,
+    this.initial,
+    this.initialContain = false,
+    this.pending = false,
+  });
+
+  @override
+  State<_WallpaperAdjustDialog> createState() => _WallpaperAdjustDialogState();
+}
+
+/// 四隅のどれをつまんでいるか。
+enum _CropHandle { none, topLeft, topRight, bottomLeft, bottomRight }
+
+class _WallpaperAdjustDialogState extends State<_WallpaperAdjustDialog> {
+  /// 見本用に広げた画像。 **この窓が持ち、 この窓が捨てる**
+  /// (親の控えを借りると、 親が閉じた時に捨てられた絵を描いてしまう)。
+  ui.Image? _img;
+  int _srcW = 0, _srcH = 0;
+  bool _loading = true;
+  bool _saving = false;
+  String? _err;
+
+  /// 枠の中心 (割合) と大きさ。
+  /// [_size] は 1.0 = 画面いっぱいに映る一番大きい枠、 小さいほど枠も小さい
+  /// (= つまみを右に動かすほど枠が大きくなる。 ユーザー要望で逆向きに直した)。
+  double _cx = 0.5, _cy = 0.5, _size = 1.0;
+  static const double _minSize = 0.25;
+
+  /// 切り取らずに全体を入れる (余白が出る)。 画面ごとに選べる。
+  bool _contain = false;
+
+  /// 今つまんでいる四隅。
+  _CropHandle _handle = _CropHandle.none;
+
+  @override
+  void initState() {
+    super.initState();
+    _contain = widget.initialContain;
+    unawaited(_load());
+  }
+
+  @override
+  void dispose() {
+    _img?.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    try {
+      final bytes = await File(widget.srcPath).readAsBytes();
+      final buf = await ui.ImmutableBuffer.fromUint8List(bytes);
+      final desc = await ui.ImageDescriptor.encoded(buf);
+      _srcW = desc.width;
+      _srcH = desc.height;
+      // 見本にしか使わないので、 長辺 900px まで縮めて持つ。
+      final k = desc.width > 900 ? 900 / desc.width : 1.0;
+      final codec = await desc.instantiateCodec(
+          targetWidth: (desc.width * k).round().clamp(1, desc.width),
+          targetHeight: (desc.height * k).round().clamp(1, desc.height));
+      final frame = await codec.getNextFrame();
+      desc.dispose();
+      if (!mounted) {
+        frame.image.dispose();
+        return;
+      }
+      setState(() {
+        _img = frame.image;
+        _loading = false;
+        final init = widget.initial;
+        if (init != null && init.width > 0 && _maxNw > 0) {
+          _size = (init.width / _maxNw).clamp(_minSize, 1.0);
+          _cx = init.center.dx;
+          _cy = init.center.dy;
+        }
+      });
+    } catch (e) {
+      debugPrint('位置の調整: 画像を開けませんでした: $e');
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _err = widget.provider.t('display.adjustLoadFailed');
+      });
+    }
+  }
+
+  double get _ar => widget.monH <= 0 ? 1.6 : widget.monW / widget.monH;
+  double get _sar => _srcH <= 0 ? 1.6 : _srcW / _srcH;
+
+  /// 画面いっぱいに映る一番大きい枠 (割合)。 縦横比は画面と同じ。
+  double get _maxNw => _ar >= _sar ? 1.0 : _ar / _sar;
+  double get _maxNh => _ar >= _sar ? _sar / _ar : 1.0;
+
+  /// 今の枠 (割合)。 必ず画像の中に収まるので、 黒い帯が焼き付く事は無い。
+  Rect get _crop {
+    final nw = (_maxNw * _size).clamp(0.02, 1.0);
+    final nh = (_maxNh * _size).clamp(0.02, 1.0);
+    final cx = _cx.clamp(nw / 2, 1 - nw / 2);
+    final cy = _cy.clamp(nh / 2, 1 - nh / 2);
+    return Rect.fromLTWH(cx - nw / 2, cy - nh / 2, nw, nh);
+  }
+
+  /// 見本の入れ物の大きさ (画像の形どおり)。
+  Size get _box {
+    const maxW = 430.0, maxH = 300.0;
+    var w = maxW, h = maxW / _sar;
+    if (h > maxH) {
+      h = maxH;
+      w = maxH * _sar;
+    }
+    return Size(w, h);
+  }
+
+  /// 押した所が四隅のどれかを見る (入れ物の中の座標で)。
+  _CropHandle _handleAt(Offset local) {
+    final b = _box;
+    final r = _crop;
+    final win = Rect.fromLTRB(r.left * b.width, r.top * b.height,
+        r.right * b.width, r.bottom * b.height);
+    // つまめる範囲は、 枠が小さい時でも取り合いにならない程度に。
+    final grab = math.min(20.0, math.min(win.width, win.height) / 2.2);
+    bool near(Offset c) => (local - c).distance <= grab;
+    if (near(win.topLeft)) return _CropHandle.topLeft;
+    if (near(win.topRight)) return _CropHandle.topRight;
+    if (near(win.bottomLeft)) return _CropHandle.bottomLeft;
+    if (near(win.bottomRight)) return _CropHandle.bottomRight;
+    return _CropHandle.none;
+  }
+
+  void _move(Offset delta) {
+    final b = _box;
+    setState(() {
+      _cx = (_cx + delta.dx / b.width).clamp(0.0, 1.0);
+      _cy = (_cy + delta.dy / b.height).clamp(0.0, 1.0);
+    });
+  }
+
+  /// 四隅を引いて大きさを変える。 反対側の角は動かさない。
+  void _resizeTo(Offset local) {
+    if (_maxNw <= 0 || _maxNh <= 0) return;
+    final b = _box;
+    final r = _crop;
+    final pn = Offset(
+        (local.dx / b.width).clamp(0.0, 1.0), (local.dy / b.height).clamp(0.0, 1.0));
+    // 動かさない側の角。
+    final anchor = switch (_handle) {
+      _CropHandle.topLeft => r.bottomRight,
+      _CropHandle.topRight => r.bottomLeft,
+      _CropHandle.bottomLeft => r.topRight,
+      _CropHandle.bottomRight => r.topLeft,
+      _CropHandle.none => r.center,
+    };
+    if (_handle == _CropHandle.none) return;
+    final ratio = _maxNh / _maxNw; // 高さ = 幅 × これ (画面と同じ形)
+    // 引いた先までの幅と高さ。 形は変えないので、 大きい方に合わせる。
+    var nw = math.max((pn.dx - anchor.dx).abs(), (pn.dy - anchor.dy).abs() / ratio);
+    // 画像の外に出ないように、 反対側の角から取れる分で頭打ちにする。
+    final leftRoom = _handle == _CropHandle.topLeft ||
+            _handle == _CropHandle.bottomLeft
+        ? anchor.dx
+        : 1 - anchor.dx;
+    final topRoom = _handle == _CropHandle.topLeft ||
+            _handle == _CropHandle.topRight
+        ? anchor.dy
+        : 1 - anchor.dy;
+    nw = math.min(nw, math.min(leftRoom, topRoom / ratio));
+    nw = nw.clamp(_maxNw * _minSize, _maxNw);
+    final nh = nw * ratio;
+    final left = (_handle == _CropHandle.topLeft ||
+            _handle == _CropHandle.bottomLeft)
+        ? anchor.dx - nw
+        : anchor.dx;
+    final top =
+        (_handle == _CropHandle.topLeft || _handle == _CropHandle.topRight)
+            ? anchor.dy - nh
+            : anchor.dy;
+    setState(() {
+      _size = (nw / _maxNw).clamp(_minSize, 1.0);
+      _cx = left + nw / 2;
+      _cy = top + nh / 2;
+    });
+  }
+
+  void _sizeBy(double factor) {
+    setState(() => _size = (_size * factor).clamp(_minSize, 1.0));
+  }
+
+  Future<void> _apply() async {
+    if (_saving) return;
+    final crop = _crop;
+    // まだ繋いでいない画面は、 本当の画素数が分からない。 ここで作ると
+    // 当てずっぽうの大きさで焼き込む事になるので、 枠だけ返して控える。
+    if (widget.pending) {
+      Navigator.pop(context,
+          _WallAdjustResult(outPath: null, crop: crop, contain: _contain));
+      return;
+    }
+    setState(() {
+      _saving = true;
+      _err = null;
+    });
+    try {
+      final out = await _composeWallpaperFile(
+        srcPath: widget.srcPath,
+        monW: widget.monW,
+        monH: widget.monH,
+        crop: crop,
+        contain: _contain,
+      );
+      if (!mounted) return;
+      Navigator.pop(context,
+          _WallAdjustResult(outPath: out, crop: crop, contain: _contain));
+    } catch (e) {
+      debugPrint('壁紙の切り出しに失敗: $e');
+      if (!mounted) return;
+      setState(() {
+        _saving = false;
+        _err = widget.provider.t('display.adjustFailed');
+      });
+    }
+  }
+
+  Widget _modeChip(String labelKey, bool on, VoidCallback onTap) {
+    return OutlinedButton(
+      style: OutlinedButton.styleFrom(
+          visualDensity: VisualDensity.compact,
+          backgroundColor:
+              on ? const Color(0xFFFFB347).withValues(alpha: 0.20) : null,
+          foregroundColor: on ? Colors.white : Colors.white70,
+          side: BorderSide(
+              color: on ? const Color(0xFFFFB347) : Colors.white24),
+          padding: const EdgeInsets.symmetric(horizontal: 8)),
+      onPressed: onTap,
+      child: Text(widget.provider.t(labelKey),
+          style: TextStyle(
+              fontSize: 11,
+              fontWeight: on ? FontWeight.w700 : FontWeight.w400)),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = widget.provider;
+    final img0 = _img;
+    final box = _box;
+    return AlertDialog(
+      backgroundColor: const Color(0xFF1E1E32),
+      title: Row(children: [
+        const Icon(Icons.crop_rounded, color: Color(0xFFFFB347), size: 20),
+        const SizedBox(width: 8),
+        Expanded(
+            child: Text(p.t('display.adjustTitle'),
+                style: const TextStyle(color: Colors.white, fontSize: 15))),
+      ]),
+      content: SizedBox(
+        width: 460,
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          // ── この画面だけの貼り方 (= ユーザー要望: 片方の画面だけに
+          //    効かせたい)。 画面と同寸の画像を作るので、 Windows 全体の
+          //    並べ方に関わらず、 この画面だけこの見え方になる。 ──
+          Row(children: [
+            _modeChip('display.fitFill', !_contain,
+                () => setState(() => _contain = false)),
+            const SizedBox(width: 6),
+            _modeChip('display.fitFit', _contain,
+                () => setState(() => _contain = true)),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(p.t('display.adjustThisScreen'),
+                  style: const TextStyle(color: Colors.white38, fontSize: 10.5)),
+            ),
+          ]),
+          const SizedBox(height: 8),
+          SizedBox(
+            width: 460,
+            height: 300,
+            child: Center(
+              child: _loading
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white24))
+                  : img0 == null
+                      ? const Icon(Icons.broken_image_outlined,
+                          size: 28, color: Colors.white24)
+                      : Listener(
+                          onPointerSignal: (e) {
+                            if (e is! PointerScrollEvent || _contain) return;
+                            // 外の巻物と取り合いにならないように、 正式な
+                            // 手順で「自分が受け取る」 と申し出る。
+                            GestureBinding.instance.pointerSignalResolver
+                                .register(e, (ev) {
+                              final se = ev as PointerScrollEvent;
+                              // 手前に回すと枠が大きくなる (つまみと同じ向き)。
+                              _sizeBy(se.scrollDelta.dy < 0 ? 1 / 1.1 : 1.1);
+                            });
+                          },
+                          child: MouseRegion(
+                            cursor: _contain
+                                ? SystemMouseCursors.basic
+                                : SystemMouseCursors.grab,
+                            child: GestureDetector(
+                              behavior: HitTestBehavior.opaque,
+                              onPanStart: _contain
+                                  ? null
+                                  : (d) => _handle =
+                                      _handleAt(d.localPosition),
+                              onPanUpdate: _contain
+                                  ? null
+                                  : (d) {
+                                      if (_handle == _CropHandle.none) {
+                                        _move(d.delta);
+                                      } else {
+                                        _resizeTo(d.localPosition);
+                                      }
+                                    },
+                              onPanEnd: _contain
+                                  ? null
+                                  : (_) => _handle = _CropHandle.none,
+                              child: CustomPaint(
+                                size: box,
+                                painter: _WallCropPainter(
+                                  image: img0,
+                                  crop: _crop,
+                                  contain: _contain,
+                                  monAspect: _ar,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+                _contain
+                    ? p.t('display.adjustContainNote')
+                    : p.t('display.adjustHint'),
+                style: const TextStyle(
+                    color: Colors.white54, fontSize: 11, height: 1.4)),
+          ),
+          const SizedBox(height: 6),
+          Row(children: [
+            Text(p.t('display.adjustZoom'),
+                style: const TextStyle(color: Colors.white54, fontSize: 11)),
+            Expanded(
+              // ★ 右へ動かすほど枠が大きくなる (= ユーザー要望: 逆だった)。
+              child: Slider(
+                value: _size.clamp(_minSize, 1.0),
+                min: _minSize,
+                max: 1.0,
+                activeColor: const Color(0xFFFFB347),
+                onChanged: _loading || img0 == null || _contain
+                    ? null
+                    : (v) => setState(() => _size = v),
+              ),
+            ),
+            TextButton(
+              onPressed: _loading || img0 == null || _contain
+                  ? null
+                  : () => setState(() {
+                        _size = 1.0;
+                        _cx = 0.5;
+                        _cy = 0.5;
+                      }),
+              style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 8)),
+              child: Text(p.t('display.adjustReset'),
+                  style: const TextStyle(
+                      color: Color(0xFF4FC3F7), fontSize: 11.5)),
+            ),
+          ]),
+          if (widget.pending)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(p.t('display.adjustPendingNote'),
+                  style: const TextStyle(
+                      color: Color(0xFFFFB347), fontSize: 10.5, height: 1.4)),
+            ),
+          if (_err != null)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(_err!,
+                  style: const TextStyle(
+                      color: Color(0xFFEF9A9A), fontSize: 11)),
+            ),
+        ]),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _saving ? null : () => Navigator.pop(context),
+          child: Text(p.t('btn.close'),
+              style: const TextStyle(color: Colors.white54)),
+        ),
+        FilledButton(
+          style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFFFB347),
+              foregroundColor: const Color(0xFF1E1E32),
+              disabledBackgroundColor: Colors.white12,
+              disabledForegroundColor: Colors.white38),
+          onPressed: _loading || img0 == null || _saving ? null : _apply,
+          child: _saving
+              ? const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Color(0xFF1E1E32)))
+              : Text(p.t('display.adjustApply'),
+                  style: const TextStyle(fontSize: 12.5)),
+        ),
+      ],
+    );
+  }
+}
+
+/// 「位置を調整」 の見本。 画像の全体を薄く、 画面に映る所を明るく描く。
+/// [contain] の時は切り取らないので、 画面の形の中に画像を収めた姿を描く。
+class _WallCropPainter extends CustomPainter {
+  final ui.Image image;
+
+  /// 画面に映す枠 (画像の中の割合)。
+  final Rect crop;
+  final bool contain;
+
+  /// 画面の縦横比 (contain の見本を描くのに使う)。
+  final double monAspect;
+  _WallCropPainter(
+      {required this.image,
+      required this.crop,
+      required this.contain,
+      required this.monAspect});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final full = Offset.zero & size;
+    final src =
+        Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble());
+    canvas.drawRect(full, Paint()..color = const Color(0xFF0C0C14));
+
+    if (contain) {
+      // 全体を入れる: 画面の形の中に画像を収め、 余りを余白として見せる。
+      var sw = size.width, sh = size.width / monAspect;
+      if (sh > size.height) {
+        sh = size.height;
+        sw = size.height * monAspect;
+      }
+      final screen = Rect.fromLTWH((size.width - sw) / 2,
+          (size.height - sh) / 2, sw, sh);
+      canvas.drawRect(screen, Paint()..color = const Color(0xFF000000));
+      final s = math.min(sw / image.width, sh / image.height);
+      final dw = image.width * s, dh = image.height * s;
+      canvas.drawImageRect(
+          image,
+          src,
+          Rect.fromLTWH(screen.center.dx - dw / 2, screen.center.dy - dh / 2,
+              dw, dh),
+          Paint()..filterQuality = FilterQuality.medium);
+      canvas.drawRect(
+          screen,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2
+            ..color = const Color(0xFFFFB347));
+      return;
+    }
+
+    // 全体 (= 切れる所も含めて) を薄く。
+    canvas.drawImageRect(
+        image,
+        src,
+        full,
+        Paint()
+          ..color = Colors.white.withValues(alpha: 0.30)
+          ..filterQuality = FilterQuality.medium);
+    // 画面に映る所だけくっきり。
+    final win = Rect.fromLTRB(
+      full.left + crop.left * size.width,
+      full.top + crop.top * size.height,
+      full.left + crop.right * size.width,
+      full.top + crop.bottom * size.height,
+    );
+    canvas.save();
+    canvas.clipRect(win);
+    canvas.drawImageRect(image, src, full,
+        Paint()..filterQuality = FilterQuality.medium);
+    canvas.restore();
+    // 枠。
+    canvas.drawRect(
+        win,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2
+          ..color = const Color(0xFFFFB347));
+    // 四隅は「つまんで大きさを変えられる」 印なので、 四角い取っ手にする。
+    final hs = math.min(9.0, math.min(win.width, win.height) / 4);
+    final fill = Paint()..color = Colors.white;
+    final edge = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5
+      ..color = const Color(0xFF1E1E32);
+    for (final c in [
+      win.topLeft,
+      win.topRight,
+      win.bottomLeft,
+      win.bottomRight
+    ]) {
+      final r = Rect.fromCenter(center: c, width: hs * 2, height: hs * 2);
+      canvas.drawRect(r, fill);
+      canvas.drawRect(r, edge);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _WallCropPainter old) =>
+      old.image != image ||
+      old.crop != crop ||
+      old.contain != contain ||
+      old.monAspect != monAspect;
+}
+
+/// 壁紙の見本 (= ユーザー要望: 画像が画面にどう配置され、 どこがはみ出す
+/// のかが分かるように)。
+///
+/// 画面の形どおりの枠を描き、 その中に Windows の並べ方どおりに絵を置く。
+/// 枠から外へ出る所は薄く描くので、 「どこが切れるのか」 がそのまま見える。
+class _WallpaperPreview extends StatelessWidget {
+  final _WallImage? image;
+  final WallpaperFit fit;
+
+  /// この画面の大きさと位置 (px)。
+  final int monW;
+  final int monH;
+  final int monLeft;
+  final int monTop;
+
+  /// 全部の画面を囲む四角 (px)。「またぐ」 の見本に使う。
+  final Rect? virtual;
+
+  final Size size;
+  final bool loading;
+  final bool big;
+
+  /// 画面枠の外側に取る余白 (= はみ出しを見せるぶん)。
+  static const double margin = 14.0;
+
+  const _WallpaperPreview({
+    required this.image,
+    required this.fit,
+    required this.monW,
+    required this.monH,
+    required this.monLeft,
+    required this.monTop,
+    required this.virtual,
+    required this.size,
+    this.loading = false,
+    this.big = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: size.width,
+      height: size.height,
+      child: Stack(children: [
+        Positioned.fill(
+          child: CustomPaint(
+            painter: _WallPreviewPainter(
+              image: image,
+              fit: fit,
+              monW: monW <= 0 ? 1920 : monW,
+              monH: monH <= 0 ? 1080 : monH,
+              monLeft: monLeft,
+              monTop: monTop,
+              virtual: virtual,
+              big: big,
+            ),
+          ),
+        ),
+        if (image == null)
+          Center(
+            child: loading
+                ? const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 1.6, color: Colors.white24))
+                : const Icon(Icons.image_not_supported_outlined,
+                    size: 16, color: Colors.white24),
+          ),
+      ]),
+    );
+  }
+}
+
+class _WallPreviewPainter extends CustomPainter {
+  final _WallImage? image;
+  final WallpaperFit fit;
+  final int monW;
+  final int monH;
+  final int monLeft;
+  final int monTop;
+  final Rect? virtual;
+  final bool big;
+
+  _WallPreviewPainter({
+    required this.image,
+    required this.fit,
+    required this.monW,
+    required this.monH,
+    required this.monLeft,
+    required this.monTop,
+    required this.virtual,
+    required this.big,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    const m = _WallpaperPreview.margin;
+    // ── 画面の枠 (縦横比どおり) ──
+    final availW = size.width - m * 2, availH = size.height - m * 2;
+    if (availW <= 4 || availH <= 4) return;
+    final ar = monW / monH;
+    var sw = availW, sh = availW / ar;
+    if (sh > availH) {
+      sh = availH;
+      sw = availH * ar;
+    }
+    final screen = Rect.fromLTWH(
+        (size.width - sw) / 2, (size.height - sh) / 2, sw, sh);
+    final k = sw / monW; // px → 画面上の長さ
+
+    // ★ はみ出した所は入れ物の外にまで描いてしまうので、 必ず切り取る
+    //   (CustomPaint は既定では切り取らない。 切らないと隣の文字の上に
+    //    絵がにじみ出る)。
+    final box =
+        RRect.fromRectAndRadius(Offset.zero & size, const Radius.circular(6));
+    canvas.save();
+    canvas.clipRRect(box);
+    // 入れ物の下地 (= 画面の外に出た所が乗る場所)。
+    canvas.drawRRect(
+        box, Paint()..color = Colors.black.withValues(alpha: 0.25));
+
+    // 画面の中の下地 (絵が届かない所はこの色が見える)。
+    canvas.drawRect(screen, Paint()..color = const Color(0xFF101018));
+
+    final img = image;
+    if (img != null) {
+      final src = Rect.fromLTWH(
+          0, 0, img.image.width.toDouble(), img.image.height.toDouble());
+      // 置き場所 (画面の左上を原点とした px) を並べ方ごとに決める。
+      final rects = _placements(img);
+      Rect toCanvas(Rect r) => Rect.fromLTWH(screen.left + r.left * k,
+          screen.top + r.top * k, r.width * k, r.height * k);
+
+      // ① はみ出す所も含めて全部を薄く描く (= どこが切れるかが見える)。
+      final ghost = Paint()
+        ..color = Colors.white.withValues(alpha: 0.22)
+        ..filterQuality = FilterQuality.medium;
+      for (final r in rects) {
+        canvas.drawImageRect(img.image, src, toCanvas(r), ghost);
+      }
+      // ② 画面に映る所だけをはっきり描く。
+      canvas.save();
+      canvas.clipRect(screen);
+      final solid = Paint()..filterQuality = FilterQuality.medium;
+      for (final r in rects) {
+        canvas.drawImageRect(img.image, src, toCanvas(r), solid);
+      }
+      canvas.restore();
+
+      // ③ 切れる境目に線を引く (どこで切られるかが一目で分かるように)。
+      if (rects.length == 1) {
+        final d = toCanvas(rects.first);
+        if (d.width > screen.width + 0.5 || d.height > screen.height + 0.5) {
+          canvas.drawRect(
+              d,
+              Paint()
+                ..style = PaintingStyle.stroke
+                ..strokeWidth = 1
+                ..color = Colors.white.withValues(alpha: 0.30));
+        }
+      }
+    }
+
+    // ── 画面の枠線 (これが「見える範囲」) ──
+    canvas.drawRect(
+        screen,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = big ? 2 : 1.4
+          ..color = const Color(0xFF4FC3F7));
+    // 下側に台座を足して「モニター」 らしく見せる。
+    final standW = sw * 0.22, standH = m * 0.34;
+    canvas.drawRect(
+        Rect.fromLTWH(screen.center.dx - standW / 2, screen.bottom, standW,
+            standH.clamp(2.0, 6.0)),
+        Paint()..color = const Color(0xFF4FC3F7).withValues(alpha: 0.45));
+    canvas.restore();
+    // 入れ物の縁 (どこまでが見本かが分かるように)。
+    canvas.drawRRect(
+        box,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1
+          ..color = Colors.white12);
+  }
+
+  /// 絵をどこに置くか (画面の左上を原点とした px)。 複数返るのは「並べる」。
+  List<Rect> _placements(_WallImage img) {
+    final iw = img.realW.toDouble(), ih = img.realH.toDouble();
+    final mw = monW.toDouble(), mh = monH.toDouble();
+    if (iw <= 0 || ih <= 0) return const [];
+    switch (fit) {
+      case WallpaperFit.stretch:
+        return [Rect.fromLTWH(0, 0, mw, mh)];
+      case WallpaperFit.fill:
+      case WallpaperFit.fit:
+        final s = fit == WallpaperFit.fill
+            ? math.max(mw / iw, mh / ih)
+            : math.min(mw / iw, mh / ih);
+        final w = iw * s, h = ih * s;
+        return [Rect.fromLTWH((mw - w) / 2, (mh - h) / 2, w, h)];
+      case WallpaperFit.center:
+        return [Rect.fromLTWH((mw - iw) / 2, (mh - ih) / 2, iw, ih)];
+      case WallpaperFit.tile:
+        final out = <Rect>[];
+        // 端の 1 枚ぶんは、 はみ出しとして外へも描く。
+        for (var y = 0.0; y < mh + ih && out.length < 400; y += ih) {
+          for (var x = 0.0; x < mw + iw && out.length < 400; x += iw) {
+            out.add(Rect.fromLTWH(x, y, iw, ih));
+          }
+        }
+        return out;
+      case WallpaperFit.span:
+        final v = virtual;
+        if (v == null || v.width <= 0 || v.height <= 0) {
+          // 画面が 1 つしか分からない時は「埋める」 と同じ見え方になる。
+          final s = math.max(mw / iw, mh / ih);
+          return [
+            Rect.fromLTWH((mw - iw * s) / 2, (mh - ih * s) / 2, iw * s, ih * s)
+          ];
+        }
+        // 全部の画面をまとめた四角を埋めるように置き、 この画面の分だけを
+        // 切り出して見せる (原点をこの画面の左上へ寄せる)。
+        final s = math.max(v.width / iw, v.height / ih);
+        final w = iw * s, h = ih * s;
+        final left = v.left + (v.width - w) / 2 - monLeft;
+        final top = v.top + (v.height - h) / 2 - monTop;
+        return [Rect.fromLTWH(left, top, w, h)];
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _WallPreviewPainter old) =>
+      old.image?.image != image?.image ||
+      old.fit != fit ||
+      old.monW != monW ||
+      old.monH != monH ||
+      old.monLeft != monLeft ||
+      old.monTop != monTop ||
+      old.virtual != virtual ||
+      old.big != big;
 }
 
 class _MonitorEdgeSettings extends StatefulWidget {
@@ -103493,6 +105564,10 @@ class _WindowsWebViewSheet extends StatefulWidget {
   /// フローティング機能)。
   final void Function(String currentUrl)? onFloatRequest;
 
+  /// 今開いているページをお気に入りに登録する (= ユーザー要望: YouTube や
+  /// Google 検索のページを登録して、 ショートカットで呼び出したい)。
+  final void Function(String url, String title)? onAddBookmark;
+
   /// true の時、 過去のナビ履歴 (= 最後に開いた動画 URL) の復元を行わず、
   /// 必ず widget.url (= YouTube ホーム) から開始する。
   /// Ctrl+U / 「YouTube を開く」 ショートカット経由で true になる。
@@ -103525,6 +105600,7 @@ class _WindowsWebViewSheet extends StatefulWidget {
     this.initialTitle,
     this.onMoveToSplitPanel,
     this.onFloatRequest,
+    this.onAddBookmark,
     this.forceHome = false,
     this.focusMode = true,
     this.initialPosition = 0.0,
@@ -104531,6 +106607,12 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
     if (Platform.isLinux) return;
     try {
       await _controller.initialize();
+// ★ WebView2 の既定の背景は白。 注入 CSS がスクロールバーの溝を
+//   透明にしているため、 そのままだと右端に白い柱が残り続ける
+//   (= ユーザー報告)。 暗い色を敷いておく。
+try {
+  await _controller.setBackgroundColor(const Color(0xFF14141F));
+} catch (_) {}
       // ── ユーザー要望: 広告から戻れるように ──
       // ポップアップ / 新規ウィンドウ (target=_blank / window.open) を別 OS
       // ウィンドウではなく現在の WebView 内で開く。 広告ページに飛んでも
@@ -104808,6 +106890,7 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
               body: SafeArea(
                 child: _WindowsWebViewSheet(
                   onFloatRequest: widget.onFloatRequest,
+                  onAddBookmark: widget.onAddBookmark,
                   url: lp,
                   initialRate: rt,
                   initialTitle: tt,
@@ -104887,6 +106970,7 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
             body: SafeArea(
               child: _WindowsWebViewSheet(
                   onFloatRequest: widget.onFloatRequest,
+                  onAddBookmark: widget.onAddBookmark,
                 url:
                     'https://www.youtube.com/watch?v=$vid${t > 0 ? '&t=${t}s' : ''}',
                 initialRate: rt,
@@ -109715,6 +111799,20 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
               // 引き継ぎつつ sheet を閉じる。 マップを編集しながら動画/PDF を
               // 見たい時の入口。 onMoveToSplitPanel が渡されていないときは
               // 非表示。
+              // ── お気に入りに登録 (= ユーザー要望: 開いているページを
+              //    登録して、 ショートカットで呼び出す) ──
+              if (widget.onAddBookmark != null)
+                IconButton(
+                  icon: const Icon(Icons.bookmark_add_rounded,
+                      color: Color(0xFFFFB347), size: 18),
+                  tooltip:
+                      context.read<MindMapProvider>().t('fav.addThisPage'),
+                  onPressed: () {
+                    final u = _currentUrl.isNotEmpty ? _currentUrl : widget.url;
+                    if (!u.startsWith('http')) return;
+                    widget.onAddBookmark!(u, _currentTitle);
+                  },
+                ),
               // ── フローティング化 (= ユーザー要望: YouTube にも
               //    フローティング機能)。 再生位置を URL に載せて、 本体の
               //    浮遊パネルへ引き継ぐ。 ──
@@ -118382,6 +120480,10 @@ class _PaintStroke {
   /// 要素だけ**に効く (= ユーザー要望: 上に配置されたレイヤーに対してのみ
   /// 消しゴムを適用できるように)。 描く順 (前後関係) は従来どおり z が決める。
   int lyr;
+
+  /// 要素の ID (= 共同編集で線 1 本ずつを合わせるため)。 古い控えには無い
+  /// ので、 読み込む時に中身から決める (どの端末でも同じ値になる)。
+  String id;
   _PaintStroke(this.color, this.width, this.points,
       {this.erase = false,
       this.z = 0,
@@ -118390,9 +120492,12 @@ class _PaintStroke {
       this.ps = '',
       this.op = 1.0,
       this.iv = 1.0,
-      this.glow = false});
+      this.glow = false,
+      String? id})
+      : id = id ?? _newPaintItemId();
 
   Map<String, dynamic> toJson() => {
+        'id': id,
         'c': color,
         'w': width,
         'p': points.map((o) => [o.dx, o.dy]).toList(),
@@ -118424,7 +120529,24 @@ class _PaintStroke {
         op: ((m['o'] as num?)?.toDouble() ?? 1.0).clamp(0.1, 1.0),
         iv: ((m['iv'] as num?)?.toDouble() ?? 1.0).clamp(0.3, 3.0),
         glow: m['gw'] == true,
+        id: _paintIdFromJson(m),
       );
+}
+
+/// フリーノートの要素に付ける新しい ID (共同編集で要素単位に合わせる用)。
+/// 端末をまたいで重ならないよう、 時刻 + 乱数で作る。
+String _newPaintItemId() {
+  final t = DateTime.now().microsecondsSinceEpoch.toRadixString(36);
+  final r = math.Random().nextInt(1 << 20).toRadixString(36);
+  return 'p$t$r';
+}
+
+/// 控えから読む時の ID。 無ければ中身から決める (= 古い控え。 同じ中身なら
+/// どの端末でも同じ ID になるので、 共同編集で同じ物として扱える)。
+String _paintIdFromJson(Map m) {
+  final id = m['id'];
+  if (id is String && id.isNotEmpty) return id;
+  return MindMapProvider.paintItemFallbackId(m);
 }
 
 /// お絵かきページのテキスト要素 (= ユーザー要望: テキストボックスでリッチに入力)。
@@ -118600,10 +120722,16 @@ class _PaintText {
       this.rot = 0,
       this.z = 0,
       this.g = 0,
-      List<_PaintStroke>? erasers})
-      : erasers = erasers ?? [];
+      List<_PaintStroke>? erasers,
+      String? id})
+      : erasers = erasers ?? [],
+        id = id ?? _newPaintItemId();
+
+  /// 要素の ID (共同編集で要素単位に合わせる用)。
+  String id;
 
   Map<String, dynamic> toJson() => {
+        'id': id,
         'x': pos.dx,
         'y': pos.dy,
         't': text,
@@ -118647,6 +120775,7 @@ class _PaintText {
             .whereType<Map>()
             .map((stroke) => _PaintStroke.fromJson(stroke))
             .toList(),
+        id: _paintIdFromJson(m),
       );
 }
 
@@ -118662,9 +120791,14 @@ class _PaintFill {
   double y;
   int color;
   double alpha;
-  _PaintFill(this.x, this.y, this.color, this.alpha);
+
+  /// 要素の ID (共同編集で要素単位に合わせる用)。
+  String id;
+  _PaintFill(this.x, this.y, this.color, this.alpha, {String? id})
+      : id = id ?? _newPaintItemId();
 
   Map<String, dynamic> toJson() => {
+        'id': id,
         'x': x,
         'y': y,
         'c': color,
@@ -118676,6 +120810,7 @@ class _PaintFill {
         (m['y'] as num?)?.toDouble() ?? 0,
         (m['c'] as num?)?.toInt() ?? 0xFF6C63FF,
         ((m['a'] as num?)?.toDouble() ?? 0.85).clamp(0.05, 1.0),
+        id: _paintIdFromJson(m),
       );
 }
 
@@ -119013,10 +121148,16 @@ class _PaintShape {
       this.fg = 0,
       this.glow = false,
       this.rot = 0,
-      List<_PaintStroke>? erasers})
-      : erasers = erasers ?? [];
+      List<_PaintStroke>? erasers,
+      String? id})
+      : erasers = erasers ?? [],
+        id = id ?? _newPaintItemId();
+
+  /// 要素の ID (共同編集で要素単位に合わせる用)。
+  String id;
 
   Map<String, dynamic> toJson() => {
+        'id': id,
         'k': kind,
         'ax': a.dx,
         'ay': a.dy,
@@ -119058,6 +121199,7 @@ class _PaintShape {
             .whereType<Map>()
             .map((stroke) => _PaintStroke.fromJson(stroke))
             .toList(),
+        id: _paintIdFromJson(m),
       );
 }
 
@@ -119116,10 +121258,24 @@ class _PaintImageItem {
   /// 要素だけ**に効く (= ユーザー要望: 上に配置されたレイヤーに対してのみ
   /// 消しゴムを適用できるように)。 描く順 (前後関係) は従来どおり z が決める。
   int lyr;
+
+  /// 要素の ID (共同編集で要素単位に合わせる用)。
+  String id;
+
+  /// 共同編集で共有の置き場へ上げた先の URL ('' = まだ)。 保存し直しても
+  /// 落とさない (= 落とすと線を引くたびに全画像を上げ直していた)。
+  String lu;
   _PaintImageItem(this.path, this.rect,
-      {this.z = 0, this.g = 0, this.lyr = 0, this.rot = 0});
+      {this.z = 0,
+      this.g = 0,
+      this.lyr = 0,
+      this.rot = 0,
+      String? id,
+      this.lu = ''})
+      : id = id ?? _newPaintItemId();
 
   Map<String, dynamic> toJson() => {
+        'id': id,
         'p': path,
         'l': rect.left,
         't': rect.top,
@@ -119129,6 +121285,7 @@ class _PaintImageItem {
         if (z != 0) 'z': z,
         if (g != 0) 'g': g,
         if (lyr != 0) 'ly': lyr,
+        if (lu.isNotEmpty) 'lu': lu,
       };
 
   factory _PaintImageItem.fromJson(Map m) => _PaintImageItem(
@@ -119143,6 +121300,8 @@ class _PaintImageItem {
         z: (m['z'] as num?)?.toInt() ?? 0,
         g: (m['g'] as num?)?.toInt() ?? 0,
         lyr: (m['ly'] as num?)?.toInt() ?? 0,
+        id: _paintIdFromJson(m),
+        lu: (m['lu'] ?? '').toString(),
       );
 }
 
@@ -119237,6 +121396,9 @@ class _PaintSheet {
   //   消せる + 元に戻せる)。 undo に積んだ 'erase' と 1:1 で対応する LIFO。
   //   セッション内のみ (永続化しない)。 list='text'/'shape'、 index=元の位置。
   final List<({String list, int index, Object item})> eraseUndo = [];
+
+  /// 紙の ID (共同編集で紙単位に合わせる用)。
+  String id;
   _PaintSheet({
     required this.name,
     required this.sizeId,
@@ -119248,14 +121410,17 @@ class _PaintSheet {
     List<_PaintShape>? shapes,
     List<_PaintImageItem>? images,
     List<_PaintFill>? fills,
+    String? id,
   })  : strokes = strokes ?? [],
         texts = texts ?? [],
         shapes = shapes ?? [],
         images = images ?? [],
         fills = fills ?? [],
+        id = id ?? _newPaintItemId(),
         undo = [];
 
   Map<String, dynamic> toJson() => {
+        'id': id,
         'n': name,
         'sz': sizeId,
         'cw': customW,
@@ -119270,8 +121435,14 @@ class _PaintSheet {
         if ((bgImage ?? '').isNotEmpty) 'bgi': bgImage,
       };
 
-  factory _PaintSheet.fromJson(Map m, {String defaultName = 'Sheet'}) =>
+  /// [index] は ID が無い古い控えの紙に、 位置から ID を付けるため
+  /// (MindMapProvider._paintIdOf と同じ規則 'sh<番号>')。
+  factory _PaintSheet.fromJson(Map m,
+          {String defaultName = 'Sheet', int index = 0}) =>
       _PaintSheet(
+        id: (m['id'] is String && (m['id'] as String).isNotEmpty)
+            ? m['id'] as String
+            : 'sh$index',
         name: (m['n'] ?? defaultName).toString(),
         sizeId: (m['sz'] ?? 'a4p').toString(),
         customW: (m['cw'] as num?)?.toDouble() ?? 1000,
@@ -119310,33 +121481,47 @@ class _PaintNote {
   int selectedPage;
   final List<_PaintSheet> pages;
 
+  /// ノートの ID (共同編集でノート単位に合わせる用)。
+  String id;
+
   _PaintNote({
     required this.name,
     required this.pages,
     this.selectedPage = 0,
-  });
+    String? id,
+  }) : id = id ?? _newPaintItemId();
 
   Map<String, dynamic> toJson() => {
+        'id': id,
         'n': name,
         'sel': selectedPage,
         'pages': pages.map((page) => page.toJson()).toList(),
       };
 
+  /// [index] は ID が無い古い控えに、 位置から ID を付けるため ('nt<番号>')。
   factory _PaintNote.fromJson(
     Map m, {
     required String defaultName,
     required String defaultPageName,
+    int index = 0,
   }) {
-    final pages = ((m['pages'] as List?) ?? const [])
-        .whereType<Map>()
-        .map((page) => _PaintSheet.fromJson(page, defaultName: defaultPageName))
-        .toList();
+    final pages = <_PaintSheet>[];
+    var pi = 0;
+    for (final page in (m['pages'] as List?) ?? const []) {
+      if (page is! Map) continue;
+      pages.add(
+          _PaintSheet.fromJson(page, defaultName: defaultPageName, index: pi));
+      pi++;
+    }
     if (pages.isEmpty) {
       pages.add(_PaintSheet(name: defaultPageName, sizeId: 'a4p'));
     }
     var selectedPage = (m['sel'] as num?)?.toInt() ?? 0;
     if (selectedPage < 0 || selectedPage >= pages.length) selectedPage = 0;
     return _PaintNote(
+      id: (m['id'] is String && (m['id'] as String).isNotEmpty)
+          ? m['id'] as String
+          : 'nt$index',
       name: (m['n'] ?? defaultName).toString(),
       pages: pages,
       selectedPage: selectedPage,
@@ -119380,12 +121565,16 @@ class _PaintStore {
       }
       if (dec is Map) {
         if (dec['notes'] is List) {
-          final notes = (dec['notes'] as List)
-              .whereType<Map>()
-              .map((note) => _PaintNote.fromJson(note,
-                  defaultName: defaultNoteName,
-                  defaultPageName: defaultPageName))
-              .toList();
+          final notes = <_PaintNote>[];
+          var ni = 0;
+          for (final note in dec['notes'] as List) {
+            if (note is! Map) continue;
+            notes.add(_PaintNote.fromJson(note,
+                defaultName: defaultNoteName,
+                defaultPageName: defaultPageName,
+                index: ni));
+            ni++;
+          }
           if (notes.isEmpty) notes.addAll(one([], []));
           var noteSel = (dec['noteSel'] as num?)?.toInt() ?? 0;
           if (noteSel < 0 || noteSel >= notes.length) noteSel = 0;
@@ -119432,18 +121621,63 @@ class _PaintStore {
     return (notes: one([], []), noteSel: 0);
   }
 
-  static Future<void> save(
+  /// 保存する形の文字列 (save と同じ物)。 共同編集で「最後に保存した物」
+  /// と今の中身を比べるのにも使う。
+  static String encode(List<_PaintNote> notes, int noteSel) => jsonEncode({
+        'v': 3,
+        'notes': notes.map((note) => note.toJson()).toList(),
+        'noteSel': noteSel,
+      });
+
+  /// 保存して、 書いた文字列を返す (失敗したら null)。
+  static Future<String?> save(
       String pageId, List<_PaintNote> notes, int noteSel) async {
     try {
       final sp = await SharedPreferences.getInstance();
-      await sp.setString(
-          _key(pageId),
-          jsonEncode({
-            'v': 3,
-            'notes': notes.map((note) => note.toJson()).toList(),
-            'noteSel': noteSel,
-          }));
+      final body = encode(notes, noteSel);
+      await sp.setString(_key(pageId), body);
+      return body;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 今の控え (prefs) の生の文字列。
+  static Future<String> raw(String pageId) async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      return sp.getString(_key(pageId)) ?? '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  /// 文字列から読む (load と同じ変換。 共同編集の合わせた結果を当てる用)。
+  static ({List<_PaintNote> notes, int noteSel})? decode(
+    String raw, {
+    String defaultNoteName = 'Note 1',
+    String defaultPageName = 'Page 1',
+  }) {
+    try {
+      final dec = jsonDecode(raw);
+      if (dec is Map && dec['notes'] is List) {
+        final notes = <_PaintNote>[];
+        var ni = 0;
+        for (final note in dec['notes'] as List) {
+          if (note is! Map) continue;
+          notes.add(_PaintNote.fromJson(note,
+              defaultName: defaultNoteName,
+              defaultPageName: defaultPageName,
+              index: ni));
+          ni++;
+        }
+        if (notes.isEmpty) return null;
+        var noteSel = (dec['noteSel'] as num?)?.toInt() ?? 0;
+        if (noteSel < 0 || noteSel >= notes.length) noteSel = 0;
+        return (notes: notes, noteSel: noteSel);
+      }
     } catch (_) {}
+    return null;
   }
 }
 
@@ -124566,6 +126800,15 @@ $mapsJs
       document.getElementById('err').textContent = String(e);
     }
   };
+  // ★ 「中身の差し替えが効くようになった」 を、 ここで必ず知らせる。
+  //   = ユーザー報告「マークダウンページが書いた内容がリアルタイムに
+  //   反映されない」。 この知らせは今までスクロール連動の script の中に
+  //   しか無く、 連動を切っている人には永久に届かなかった。 届かないと
+  //   アプリ側は差し替えではなく**毎回まるごと読み込み直す**ので、
+  //   打つたびに先頭へ戻り、 反映が遅れて見えていた。
+  try {
+    if (window.__mmPost) window.__mmPost({ type: 'mdReady' });
+  } catch (e) {}
   // ── タブ切り替え (= ユーザー要望: 公開ページもアプリの中と同じように
   //    ボタンで頁を切り替えたい)。 タブが 1 つ以下なら出さない。 ──
   var mmTabs = $tabsJson;
@@ -126528,6 +128771,11 @@ graph TD
       if (_fileMode && _tabs.isNotEmpty) {
         await File(widget.filePath!).writeAsString(_tabs[0].text);
         widget.onSaved?.call();
+      }
+      // 共同編集中なら、 中身も相手へ配る (= ユーザー報告: マークダウンが
+      // 反映されない)。 送るのは次の見回りにまとめられる。
+      if (mounted) {
+        context.read<MindMapProvider>().markLiveBodyDirty(widget.pageId);
       }
     } catch (_) {}
   }
@@ -130077,12 +132325,15 @@ $body''';
     return SizedBox(
       height: 40,
       child: Row(children: [
+        // ★ Flexible で包むと、 この列が「余りを分け合う側」 になり、
+        //   道具の列に回る幅が足りなくなって右端まで届かない
+        //   (= ユーザー報告: モバイルでマークダウンのヘッダーが右端まで
+        //   ボタンが並ばない)。 上限の幅だけ決めて、 余りは全部 Expanded
+        //   (道具の列) に渡す。
         if (_tabBarVisible)
-          Flexible(
-            child: ConstrainedBox(
-              constraints: BoxConstraints(maxWidth: tabMaxW),
-              child: _buildTabStrip(provider),
-            ),
+          ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: tabMaxW),
+            child: _buildTabStrip(provider),
           ),
         Expanded(
           child: SingleChildScrollView(
@@ -132463,7 +134714,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
       // ★ 回した角度も写す。 落とすと Ctrl+Z のたびに紙の中の全部の画像が
       //   0 度に戻る (= 点検で判明)。 重なり順と層も同じ理由。
       _PaintImageItem(it.path, it.rect,
-          rot: it.rot, z: it.z, g: it.g, lyr: it.lyr);
+          rot: it.rot, z: it.z, g: it.g, lyr: it.lyr, id: it.id, lu: it.lu);
 
   /// 現在の選択内容をペイント内クリップボードへコピーする。
   /// コピーできた時 true (= キーイベントを消費する)。
@@ -132512,27 +134763,29 @@ class _PaintPageViewState extends State<_PaintPageView> {
       _selText = -1;
       _rangeRect = null;
       for (final it in _paintClipboard) {
+        // 貼り付けた物は別の要素なので、 新しい ID を付ける (共同編集で
+        //   元の物と取り違えないため)。
         if (it is _PaintStroke) {
-          final c = _cloneStroke(it);
+          final c = _cloneStroke(it)..id = _newPaintItemId();
           _shiftPaintStroke(c, d);
           _sheet.strokes.add(c..z = _nextPaintZ()..lyr = _activeLayer);
           _selStrokeSet.add(_sheet.strokes.length - 1);
         } else if (it is _PaintImageItem) {
           _sheet.images
               .add(_PaintImageItem(it.path, it.rect.shift(d),
-                  rot: it.rot, g: it.g)
+                  rot: it.rot, g: it.g, lu: it.lu)
                 ..z = _nextPaintZ()
                 ..lyr = _activeLayer);
           _selImgSet.add(_sheet.images.length - 1);
         } else if (it is _PaintShape) {
-          final c = _cloneShape(it);
+          final c = _cloneShape(it)..id = _newPaintItemId();
           c.a += d;
           c.b += d;
           _shiftPaintErasers(c.erasers, d);
           _sheet.shapes.add(c..z = _nextPaintZ()..lyr = _activeLayer);
           _selShapeSet.add(_sheet.shapes.length - 1);
         } else if (it is _PaintText) {
-          final c = _cloneText(it);
+          final c = _cloneText(it)..id = _newPaintItemId();
           c.pos += d;
           _shiftPaintErasers(c.erasers, d);
           _sheet.texts.add(c..z = _nextPaintZ()..lyr = _activeLayer);
@@ -134527,6 +136780,10 @@ class _PaintPageViewState extends State<_PaintPageView> {
   void initState() {
     super.initState();
     _mcpTickAtInit = widget.provider.mcpContentTick;
+    // 共同編集で相手の分が届いた時に、 作り直さずに中身を読み直す
+    //   (= ユーザー報告: フリーノートの共同編集で書いた内容が相手に反映
+    //   されない)。 詳しくは _onProviderChanged。
+    widget.provider.addListener(_onProviderChanged);
     _load();
     _loadTextPresets();
     _loadTemplates();
@@ -135081,15 +137338,17 @@ class _PaintPageViewState extends State<_PaintPageView> {
         final type = (raw['t'] ?? '').toString();
         final data = raw['d'];
         if (data is! Map) continue;
+        // 型紙から出した物は毎回別の要素 (ID を付け直す。 同じ型紙を 2 回
+        //   差し込んだ時に共同編集で 1 つに畳まれないように)。
         switch (type) {
           case 'stroke':
-            final st = _PaintStroke.fromJson(data);
+            final st = _PaintStroke.fromJson(data)..id = _newPaintItemId();
             _shiftPaintStroke(st, d);
             _sheet.strokes.add(st..z = _nextPaintZ()..lyr = _activeLayer);
             _selStrokeSet.add(_sheet.strokes.length - 1);
             break;
           case 'shape':
-            final sh = _PaintShape.fromJson(data);
+            final sh = _PaintShape.fromJson(data)..id = _newPaintItemId();
             sh.a += d;
             sh.b += d;
             _shiftPaintErasers(sh.erasers, d);
@@ -135097,14 +137356,14 @@ class _PaintPageViewState extends State<_PaintPageView> {
             _selShapeSet.add(_sheet.shapes.length - 1);
             break;
           case 'text':
-            final t = _PaintText.fromJson(data);
+            final t = _PaintText.fromJson(data)..id = _newPaintItemId();
             t.pos += d;
             _shiftPaintErasers(t.erasers, d);
             _sheet.texts.add(t..z = _nextPaintZ()..lyr = _activeLayer);
             _selTextSet.add(_sheet.texts.length - 1);
             break;
           case 'image':
-            final im = _PaintImageItem.fromJson(data);
+            final im = _PaintImageItem.fromJson(data)..id = _newPaintItemId();
             im.rect = im.rect.shift(d);
             _sheet.images.add(im..z = _nextPaintZ()..lyr = _activeLayer);
             _selImgSet.add(_sheet.images.length - 1);
@@ -135290,6 +137549,9 @@ class _PaintPageViewState extends State<_PaintPageView> {
   }
 
   Future<void> _load() async {
+    // 読む直前の「外から書き換わった回数」 を控える。 読んでいる間に
+    //   届いた分は、 次の知らせで読み直す。
+    _seenBodyTick = widget.provider.paintBodyTick(widget.pageId);
     final d = await _PaintStore.load(
       widget.pageId,
       defaultNoteName:
@@ -135307,9 +137569,221 @@ class _PaintPageViewState extends State<_PaintPageView> {
     });
     // 読み込んだ旧 {sheets,sel} をここで v3 のノート/ページ形式として
     // 保存し直す。以後の起動でも同じ二階層構造を使い、移行を遅延させない。
-    await _persist();
+    // ★ ただし「本文が変わった」 印は付けない (= 検証で判明: 参加直後に
+    //   白紙のまま印が付き、 その白紙を相手へ送って公開した人の絵を
+    //   消していた)。 開いただけでは送る物は無い。
+    await _persist(markLive: false);
     await _importDocumentTextIntoCanvasIfNeeded();
     await _preloadImages();
+  }
+
+  // ── 共同編集: 外から書き換わった中身を、 作り直さずに読み直す ──────────
+  //
+  // ★ = ユーザー報告「フリーノートを共同編集しても書いた内容が相手に反映
+  //   されない / 書き始めると参加から外れてデータが食い違う」。
+  //   相手の分は provider が prefs (paint_<id>) へ合わせて書き、
+  //   paintBodyTick を上げる。 以前はそれを見る物が無く (全画面のキーは
+  //   MCP の回数しか見ていない)、 この画面が持つ古い中身を次の保存で
+  //   書き戻していた = 相手の線が必ず消えていた。
+  //   ここでは中身だけ差し替える (道具・色・表示中の紙はそのまま)。
+  //   自分の未保存分 (操作中など) があれば、 最後に保存した物を基準に
+  //   合わせ直してから保存する (provider と同じ 3-way マージ)。
+
+  /// 最後に保存 / 読み込んだ時の中身。 未保存分を合わせ直す時の基準。
+  String _lastPersistedJson = '';
+
+  /// 最後に取り込んだ provider.paintBodyTick(pageId)。
+  int _seenBodyTick = 0;
+
+  /// 操作中に届いた分を、 操作が終わってから当てるための印。
+  bool _pendingReload = false;
+
+  /// 相手が足したばかりの要素 (要素 ID → 誰が) (= ユーザー要望: 枠と名前を
+  /// 数秒出す)。
+  final Map<String, LiveAddMark> _liveAddMarks = {};
+  Timer? _liveAddMarksTimer;
+
+  /// 何かを掴んでいる / 描いている / 文字を打っている最中か。
+  /// この間は中身を差し替えない (掴んでいる実体が古い物になるため)。
+  bool get _paintGestureInProgress =>
+      _curStroke != null ||
+      _curShape != null ||
+      _selMoving ||
+      _selRanging ||
+      _selRotating ||
+      _selRotatingImage ||
+      _imgDragOrig != null ||
+      _textDragOrig != null ||
+      _tableResizeGid != null ||
+      _shapeResizeHandle != null ||
+      _imgSelHandle != null ||
+      _eraserBeforeSnapshot != null ||
+      _textEditPos != null;
+
+  void _onProviderChanged() {
+    if (!mounted || !_loaded) return;
+    final tick = widget.provider.paintBodyTick(widget.pageId);
+    if (tick == _seenBodyTick && !_pendingReload) return;
+    if (_paintGestureInProgress) {
+      _pendingReload = true;
+      return;
+    }
+    _pendingReload = false;
+    unawaited(_reloadFromStore());
+  }
+
+  /// prefs の中身を読み直して差し替える。 自分の未保存分は合わせ直す。
+  Future<void> _reloadFromStore() async {
+    _seenBodyTick = widget.provider.paintBodyTick(widget.pageId);
+    var raw = await _PaintStore.raw(widget.pageId);
+    if (!mounted || raw.isEmpty) return;
+    if (_paintGestureInProgress) {
+      // 読んでいる間に掴まれた。 終わってから。
+      _pendingReload = true;
+      return;
+    }
+    var mergedLocal = false;
+    final mine = _PaintStore.encode(_notes, _noteSel);
+    if (_lastPersistedJson.isNotEmpty && mine != _lastPersistedJson) {
+      raw = MindMapProvider.mergePaintBodies(_lastPersistedJson, mine, raw);
+      mergedLocal = true;
+    }
+    // ★ 見た目が変わらないなら作り直さない (= 点検で判明: 画像を配るための
+    //   控え書きなどでも作り直していたので、 選んでいた物や「元に戻す」 が
+    //   1 秒ごとに消えていた)。 端末ごとに違う所 (画像の道) は無視して比べる。
+    if (MindMapProvider.paintBodiesEqual(mine, raw)) {
+      _lastPersistedJson = raw;
+      return;
+    }
+    final d = _PaintStore.decode(
+      raw,
+      defaultNoteName:
+          widget.provider.t('paint.defaultNoteName').replaceFirst('{n}', '1'),
+      defaultPageName:
+          widget.provider.t('paint.defaultPageName').replaceFirst('{n}', '1'),
+    );
+    if (d == null) return;
+    // 相手が足した物 (= 今の紙に無くて新しい紙にある物) を控える。
+    final oldNoteId = (_noteSel >= 0 && _noteSel < _notes.length)
+        ? _notes[_noteSel].id
+        : null;
+    final oldSheet =
+        (_sheets.isNotEmpty && _sel >= 0 && _sel < _sheets.length)
+            ? _sheets[_sel]
+            : null;
+    final oldIds = oldSheet == null ? <String>{} : _sheetItemIds(oldSheet);
+    setState(() {
+      _notes = d.notes;
+      final ni = _notes.indexWhere((n) => n.id == oldNoteId);
+      _noteSel = ni >= 0 ? ni : d.noteSel.clamp(0, _notes.length - 1);
+      _sheets = _note.pages;
+      final si = oldSheet == null
+          ? -1
+          : _sheets.indexWhere((s) => s.id == oldSheet.id);
+      _sel = si >= 0
+          ? si
+          : _note.selectedPage.clamp(0, math.max(0, _sheets.length - 1));
+      _note.selectedPage = _sel;
+      // 古い実体を指している選択 / 取り消しの控えは捨てる。
+      _resetPaintSelectionState();
+      _redo.clear();
+      _bgColorUndo.clear();
+      _dirty = false;
+    });
+    _lastPersistedJson = raw;
+    if (mergedLocal) {
+      // 自分の分を混ぜた結果を保存して、 相手へも送る。
+      await _persist();
+      if (!mounted) return;
+    }
+    _markRemoteAdds(oldIds);
+    await _preloadImages();
+  }
+
+  /// 紙の中の要素 ID を全部集める。
+  static Set<String> _sheetItemIds(_PaintSheet s) => {
+        ...s.strokes.map((e) => e.id),
+        ...s.texts.map((e) => e.id),
+        ...s.shapes.map((e) => e.id),
+        ...s.images.map((e) => e.id),
+        ...s.fills.map((e) => e.id),
+      };
+
+  /// 今の紙に新しく現れた要素へ「○○ が追加」 の印を付ける。
+  void _markRemoteAdds(Set<String> oldIds) {
+    if (!mounted) return;
+    final p = widget.provider;
+    final author = p.liveBodyAuthor;
+    if (author == null ||
+        !p.liveActive ||
+        p.livePageId != widget.pageId ||
+        author.clientId == p.liveClientId ||
+        _sheets.isEmpty) {
+      return;
+    }
+    final now = _sheetItemIds(_sheet);
+    final added = now.difference(oldIds);
+    if (added.isEmpty) return;
+    final mark = LiveAddMark(
+      name: author.name,
+      colorRgb: author.colorRgb,
+      avatar: author.avatar,
+      expiresAt: DateTime.now().add(MindMapProvider.kLiveAddMarkDuration),
+    );
+    setState(() {
+      for (final id in added) {
+        _liveAddMarks[id] = mark;
+      }
+    });
+    _liveAddMarksTimer?.cancel();
+    _liveAddMarksTimer = Timer(
+        MindMapProvider.kLiveAddMarkDuration + const Duration(milliseconds: 200),
+        () {
+      if (!mounted) return;
+      setState(() => _liveAddMarks.removeWhere((_, m) => m.isExpired));
+      if (_liveAddMarks.isNotEmpty) _markRemoteAdds(_sheetItemIds(_sheet));
+    });
+  }
+
+  /// 「○○ が追加」 の枠を描く場所 (キャンバス座標)。
+  List<_PaintLiveAddRect> _liveAddRects() {
+    if (_liveAddMarks.isEmpty || _sheets.isEmpty) return const [];
+    final out = <_PaintLiveAddRect>[];
+    final sh = _sheet;
+    void add(String id, Rect? r) {
+      final m = _liveAddMarks[id];
+      if (m == null || r == null || m.isExpired) return;
+      out.add(_PaintLiveAddRect(r, m));
+    }
+
+    for (final s in sh.strokes) {
+      if (_liveAddMarks.containsKey(s.id)) {
+        add(s.id, _paintStrokeBounds(s, extra: 4));
+      }
+    }
+    for (final s in sh.shapes) {
+      if (_liveAddMarks.containsKey(s.id)) {
+        add(s.id, Rect.fromPoints(s.a, s.b).inflate(s.width / 2 + 4));
+      }
+    }
+    for (final t in sh.texts) {
+      if (_liveAddMarks.containsKey(t.id)) {
+        final sz = _measureText(t);
+        add(t.id,
+            Rect.fromLTWH(t.pos.dx, t.pos.dy, sz.width, sz.height).inflate(4));
+      }
+    }
+    for (final im in sh.images) {
+      if (_liveAddMarks.containsKey(im.id)) {
+        add(im.id, _paintImageBounds(im).inflate(4));
+      }
+    }
+    for (final f in sh.fills) {
+      if (_liveAddMarks.containsKey(f.id)) {
+        add(f.id, Rect.fromCircle(center: Offset(f.x, f.y), radius: 16));
+      }
+    }
+    return out;
   }
 
   Future<void> _importDocumentTextIntoCanvasIfNeeded() async {
@@ -135470,6 +137944,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
 
   @override
   void dispose() {
+    widget.provider.removeListener(_onProviderChanged);
+    _liveAddMarksTimer?.cancel();
     if (_paintHost?._paintDropHandler == _onPaintDropFiles) {
       _paintHost?._paintDropHandler = null;
     }
@@ -135511,10 +137987,25 @@ class _PaintPageViewState extends State<_PaintPageView> {
     super.dispose();
   }
 
-  Future<void> _persist() async {
+  /// 保存する。 [markLive] = 共同編集の相手へ送る印を付けるか
+  /// (開いただけの保存し直しでは付けない)。
+  Future<void> _persist({bool markLive = true}) async {
+    // ★ 操作中に相手の分が届いていた時は、 今の中身をそのまま書かない
+    //   (= 相手の分を潰す)。 読み直し (= 未保存分を合わせて保存) に回す。
+    if (_pendingReload && !_paintGestureInProgress) {
+      _pendingReload = false;
+      await _reloadFromStore();
+      return;
+    }
     _dirty = false;
     _note.selectedPage = _sel;
-    await _PaintStore.save(widget.pageId, _notes, _noteSel);
+    final saved = await _PaintStore.save(widget.pageId, _notes, _noteSel);
+    if (saved != null) _lastPersistedJson = saved;
+    // 共同編集中なら、 描いた中身も相手へ配る (= ユーザー報告: 共有中の
+    // フリーノートの中身が共有されない)。 送るのは次の見回りにまとめる。
+    if (mounted && markLive) {
+      context.read<MindMapProvider>().markLiveBodyDirty(widget.pageId);
+    }
   }
 
   List<Offset> _paintPolygonPoints(_PaintShape shape) {
@@ -136095,15 +138586,20 @@ class _PaintPageViewState extends State<_PaintPageView> {
         _distToSegment(p, right, shape.b) <= radius;
   }
 
+  // ★ 写しは元と同じ ID を持つ (消しゴムの退避 / 元に戻す用の写しは
+  //   「同じ要素」 なので)。 貼り付けと型紙の差し込みは別の要素なので、
+  //   その場で新しい ID を付け直す (_pastePaintClipboard / _insertTemplate)。
   _PaintStroke _cloneStroke(_PaintStroke s) =>
       _PaintStroke(s.color, s.width, List<Offset>.from(s.points),
           erase: s.erase,
           z: s.z,
           g: s.g,
+          lyr: s.lyr,
           ps: s.ps,
           op: s.op,
           iv: s.iv,
-          glow: s.glow);
+          glow: s.glow,
+          id: s.id);
 
   _PaintText _cloneText(_PaintText t) =>
       _PaintText(t.pos, t.text, t.color, t.size,
@@ -136122,7 +138618,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
           rot: t.rot,
           z: t.z,
           g: t.g,
-          erasers: t.erasers.map(_cloneStroke).toList());
+          erasers: t.erasers.map(_cloneStroke).toList(),
+          id: t.id);
 
   _PaintShape _cloneShape(_PaintShape s) =>
       // ★ 重なり順 (z)・グループ (g)・層 (lyr)・塗り分け (fg)・塗りの色も
@@ -136138,7 +138635,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
           fg: s.fg,
           glow: s.glow,
           rot: s.rot,
-          erasers: s.erasers.map(_cloneStroke).toList());
+          erasers: s.erasers.map(_cloneStroke).toList(),
+          id: s.id);
 
   void _shiftPaintStroke(_PaintStroke stroke, Offset delta) {
     if (delta == Offset.zero) return;
@@ -140238,6 +142736,21 @@ class _PaintPageViewState extends State<_PaintPageView> {
                                   size: Size(dispW, dispH),
                                 ),
                               ),
+                              // ── 共同編集: 相手が足したばかりの物に枠と
+                              //    「○○ が追加」 を数秒重ねる (= ユーザー要望)。
+                              //    表示だけなのでタップは下へ通す。 ──
+                              if (showActiveUi && _liveAddMarks.isNotEmpty)
+                                Positioned.fill(
+                                  child: IgnorePointer(
+                                    child: CustomPaint(
+                                      painter: _PaintLiveAddPainter(
+                                          _liveAddRects(),
+                                          fit,
+                                          widget.provider.t('live.addedBy'),
+                                          widget.provider.t('live.anonymous')),
+                                    ),
+                                  ),
+                                ),
                               if (showActiveUi && _textEditPos != null)
                                 _buildInlineTextEditor(fit),
                               if (showActiveUi &&
@@ -142813,6 +145326,82 @@ class _PaintPageViewState extends State<_PaintPageView> {
     );
     return tooltip == null ? btn : Tooltip(message: tooltip, child: btn);
   }
+}
+
+/// 「○○ が追加」 の枠 1 つ分 (キャンバス座標の矩形 + 誰が)。
+class _PaintLiveAddRect {
+  final Rect rect;
+  final LiveAddMark mark;
+  const _PaintLiveAddRect(this.rect, this.mark);
+}
+
+/// 共同編集で相手が足したばかりの要素に枠と名前を重ねる (= ユーザー要望:
+/// 要素が追加されたら枠を出して、 数秒間どのユーザーが行ったか分かるように)。
+/// キャンバスの上に重ねる別の CustomPaint (本体の描画には手を入れない)。
+class _PaintLiveAddPainter extends CustomPainter {
+  final List<_PaintLiveAddRect> rects;
+  final double scale;
+  final String labelFormat; // '{name} が追加'
+  final String anonymous;
+  _PaintLiveAddPainter(this.rects, this.scale, this.labelFormat, this.anonymous);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (rects.isEmpty) return;
+    canvas.save();
+    canvas.scale(scale);
+    for (final r in rects) {
+      final color = Color(r.mark.colorRgb);
+      final rr = RRect.fromRectAndRadius(r.rect, const Radius.circular(8));
+      canvas.drawRRect(
+          rr,
+          Paint()
+            ..color = color.withValues(alpha: 0.35)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 8 / scale
+            ..maskFilter = MaskFilter.blur(BlurStyle.normal, 6 / scale));
+      canvas.drawRRect(
+          rr,
+          Paint()
+            ..color = color
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2.5 / scale);
+      // 名前の札 (枠の左上)。 画面上の大きさが一定になるよう scale で割る。
+      final name = r.mark.name.isEmpty ? anonymous : r.mark.name;
+      final label = labelFormat.replaceFirst('{name}', name);
+      final fs = 11 / scale;
+      final tp = TextPainter(
+        text: TextSpan(children: [
+          if (r.mark.avatar.isNotEmpty)
+            TextSpan(text: '${r.mark.avatar} ', style: _emojiTextStyle(fs)),
+          TextSpan(
+              text: '＋ $label',
+              style: TextStyle(
+                  color: Colors.white,
+                  fontSize: fs,
+                  fontWeight: FontWeight.w700)),
+        ]),
+        textDirection: TextDirection.ltr,
+        maxLines: 1,
+        ellipsis: '…',
+      )..layout(maxWidth: 260 / scale);
+      final padX = 6 / scale, padY = 2 / scale;
+      final w = tp.width + padX * 2, h = tp.height + padY * 2;
+      var left = r.rect.left - 2 / scale;
+      var top = r.rect.top - h - 4 / scale;
+      if (top < 0) top = r.rect.bottom + 4 / scale;
+      if (left < 0) left = 0;
+      final pill = RRect.fromRectAndRadius(
+          Rect.fromLTWH(left, top, w, h), Radius.circular(h / 2));
+      canvas.drawRRect(pill, Paint()..color = color);
+      tp.paint(canvas, Offset(left + padX, top + padY));
+    }
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(covariant _PaintLiveAddPainter old) =>
+      old.rects != rects || old.scale != scale;
 }
 
 class _PaintCanvasPainter extends CustomPainter {
@@ -161446,7 +164035,11 @@ class _SubscriptionPanelState extends State<_SubscriptionPanel> {
 class _LiveLockBadge extends StatelessWidget {
   final Color color;
   final String name;
-  const _LiveLockBadge({required this.color, required this.name});
+
+  /// 相手のアイコン (絵文字。 '' なら鍵の印だけ)。
+  final String avatar;
+  const _LiveLockBadge(
+      {required this.color, required this.name, this.avatar = ''});
 
   @override
   Widget build(BuildContext context) {
@@ -161470,12 +164063,79 @@ class _LiveLockBadge extends StatelessWidget {
             borderRadius: BorderRadius.circular(999),
           ),
           child: Row(mainAxisSize: MainAxisSize.min, children: [
+            if (avatar.isNotEmpty) ...[
+              Text(avatar, style: _emojiTextStyle(10)),
+              const SizedBox(width: 2),
+            ],
             const Icon(Icons.lock_rounded, size: 10, color: Colors.white),
             const SizedBox(width: 3),
             ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 120),
               child: Text(
                 name.isEmpty ? '...' : name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700),
+              ),
+            ),
+          ]),
+        ),
+      ),
+    ]);
+  }
+}
+
+/// 共同編集で「誰が足したか」 を数秒だけ重ねる枠 (= ユーザー要望: 要素が
+/// 追加されたら枠を出して、 どのユーザーが行ったか名前を出す)。
+/// 編集中の枠 (_LiveLockBadge) と見分けられるよう、 破線ではなく点線風の
+/// 細い枠 + 「＋」 の印にする。
+class _LiveAddBadge extends StatelessWidget {
+  final Color color;
+  final String label;
+  final String avatar;
+  const _LiveAddBadge(
+      {required this.color, required this.label, this.avatar = ''});
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(clipBehavior: Clip.none, children: [
+      Positioned.fill(
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            border: Border.all(color: color, width: 2.5),
+            borderRadius: BorderRadius.circular(10),
+            boxShadow: [
+              BoxShadow(
+                  color: color.withValues(alpha: 0.45),
+                  blurRadius: 10,
+                  spreadRadius: 1),
+            ],
+          ),
+        ),
+      ),
+      Positioned(
+        left: -2,
+        top: -18,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: BorderRadius.circular(999),
+          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            if (avatar.isNotEmpty) ...[
+              Text(avatar, style: _emojiTextStyle(10)),
+              const SizedBox(width: 2),
+            ],
+            const Icon(Icons.add_circle_rounded, size: 10, color: Colors.white),
+            const SizedBox(width: 3),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 160),
+              child: Text(
+                label,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
@@ -162243,6 +164903,12 @@ class _WindowsYoutubeSearchSheetState
     }
     try {
       await _controller.initialize();
+// ★ WebView2 の既定の背景は白。 注入 CSS がスクロールバーの溝を
+//   透明にしているため、 そのままだと右端に白い柱が残り続ける
+//   (= ユーザー報告)。 暗い色を敷いておく。
+try {
+  await _controller.setBackgroundColor(const Color(0xFF14141F));
+} catch (_) {}
       // ── ユーザー要望: 広告から戻れるように、 ポップアップ / 新規ウィンドウを
       //    別ウィンドウではなく現在の WebView 内で開く。 ──
       try {
@@ -162528,6 +165194,12 @@ class _WindowsPlaylistExtractSheetState
     }
     try {
       await _controller.initialize();
+// ★ WebView2 の既定の背景は白。 注入 CSS がスクロールバーの溝を
+//   透明にしているため、 そのままだと右端に白い柱が残り続ける
+//   (= ユーザー報告)。 暗い色を敷いておく。
+try {
+  await _controller.setBackgroundColor(const Color(0xFF14141F));
+} catch (_) {}
       _controller.loadingState.listen((state) {
         if (!mounted) return;
         setState(() => _loading = state == wv_win.LoadingState.loading);
@@ -173317,6 +175989,12 @@ class _WindowsPiPMiniPlayerState extends State<_WindowsPiPMiniPlayer> {
   Future<void> _initController() async {
     try {
       await _controller.initialize();
+// ★ WebView2 の既定の背景は白。 注入 CSS がスクロールバーの溝を
+//   透明にしているため、 そのままだと右端に白い柱が残り続ける
+//   (= ユーザー報告)。 暗い色を敷いておく。
+try {
+  await _controller.setBackgroundColor(const Color(0xFF14141F));
+} catch (_) {}
       // ── PiP の URL 戦略 ──
       //
       // YouTube モード: `youtube.com/watch?v=<id>` を直接 loadUrl + CSS
@@ -181812,6 +184490,12 @@ class _MapPickerDialogState extends State<_MapPickerDialog> {
     try {
       final ctrl = wv_win.WebviewController();
       await ctrl.initialize();
+// ★ WebView2 の既定の背景は白。 注入 CSS がスクロールバーの溝を
+//   透明にしているため、 そのままだと右端に白い柱が残り続ける
+//   (= ユーザー報告)。 暗い色を敷いておく。
+try {
+  await ctrl.setBackgroundColor(const Color(0xFF14141F));
+} catch (_) {}
       // ── JS → Dart メッセージ受信 ──
       // JS 側で window.chrome.webview.postMessage(JSON.stringify({lat, lon}))
       // を呼び出す。webMessage は既に JSON パース済みで届く。
@@ -182663,6 +185347,28 @@ const String _kMemoImgPrefix = '__MMIMG__::';
 // 旧デフォルトの '👤' (黒いシルエット) は環境によっては不気味に見えるため、
 //   柔らかく親しみやすい控えめな顔の絵文字を既定にする。
 const String _kDefaultAvatarEmoji = '🙂';
+
+/// 絵文字専用の書体 (= ユーザー報告: 既定のアイコン (顔文字) が Windows で
+/// 正しく出ない)。
+///
+/// アプリ全体の書体は 'sans-serif' で、 Windows にはその名前の書体が無く
+/// Segoe UI に落ちる。 Segoe UI は絵文字を 1 つも持たないので 1 文字ずつ
+/// DirectWrite の代替探索に回り、 その時に絵文字の指定 (VS16) と
+/// 「絵文字の書体で」 という手掛かりが捨てられて、 ☺️ や ☁️ が単色の記号
+/// (Segoe UI Symbol / 日本語書体) で描かれたり、 □ になったりしていた。
+/// 'Segoe UI Emoji' を名指しすれば探索そのものが起きない。 他の OS では
+/// その名前が無いので無視され、 今までどおり OS の絵文字書体が使われる。
+TextStyle _emojiTextStyle(double fontSize, {Color? color}) => TextStyle(
+      fontSize: fontSize,
+      color: color,
+      fontFamily: (!kIsWeb && Platform.isWindows) ? 'Segoe UI Emoji' : null,
+      fontFamilyFallback: const <String>[
+        'Segoe UI Emoji',
+        'Apple Color Emoji',
+        'Noto Color Emoji',
+        'Segoe UI Symbol',
+      ],
+    );
 
 /// メモ本文から画像パスと表示用テキストを分離する。
 /// 戻り値: (imagePath または null, 画像マーカーを除いた表示テキスト)。
@@ -183623,6 +186329,12 @@ class _WinGoogleSearchViewState extends State<_WinGoogleSearchView> {
     if (_isMobile) return;
     try {
       await _ctrl.initialize();
+// ★ WebView2 の既定の背景は白。 注入 CSS がスクロールバーの溝を
+//   透明にしているため、 そのままだと右端に白い柱が残り続ける
+//   (= ユーザー報告)。 暗い色を敷いておく。
+try {
+  await _ctrl.setBackgroundColor(const Color(0xFF14141F));
+} catch (_) {}
       // ── 外部アプリの起動を止める (= ユーザー報告: 分割画面で Kindle の
       //    書籍を開くと PC の Kindle アプリが立ち上がってしまう) ──
       //    Amazon 等のページには `kindle://` `amzn://` `ms-windows-store://`
@@ -185554,6 +188266,8 @@ class _InAppViewerDialog extends StatefulWidget {
   /// (= ユーザー要望: 開いている PDF をページに埋め込んだり移動したり)。
   final void Function(String nodeId)? onMoveNodeToPage;
   const _InAppViewerDialog({
+    this.onFloatRequest,
+    this.onAddBookmark,
     required this.url,
     required this.isPdf,
     this.nodeId,
@@ -185571,6 +188285,14 @@ class _InAppViewerDialog extends StatefulWidget {
   /// true の時はメモ / AI パネルを自動で開かない (= ユーザー要望:
   /// 表示領域が小さい時に勝手に開かれると本体が見えない)。
   final bool compactHost;
+
+  /// 今開いている場所をフローティング窓へ移す (= ユーザー要望:
+  /// 全画面 ⇄ フローティングを行き来できるように)。 null ならボタンを出さない。
+  final void Function(String currentUrl)? onFloatRequest;
+
+  /// 今開いている場所をお気に入りに登録する (= ユーザー要望: Google 検索や
+  /// YouTube、 Udemy のページを登録して、 ショートカットで呼び出したい)。
+  final void Function(String url, String title)? onAddBookmark;
 
   @override
   State<_InAppViewerDialog> createState() => _InAppViewerDialogState();
@@ -188346,6 +191068,12 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
     try {
       final ctrl = wv_win.WebviewController();
       await ctrl.initialize();
+// ★ WebView2 の既定の背景は白。 注入 CSS がスクロールバーの溝を
+//   透明にしているため、 そのままだと右端に白い柱が残り続ける
+//   (= ユーザー報告)。 暗い色を敷いておく。
+try {
+  await ctrl.setBackgroundColor(const Color(0xFF14141F));
+} catch (_) {}
       try {
         await ctrl
             .setPopupWindowPolicy(wv_win.WebviewPopupWindowPolicy.sameWindow);
@@ -191299,6 +194027,13 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
               allowFileAccessFromFileURLs: true,
               allowUniversalAccessFromFileURLs: true,
             ),
+            // ★ DRM で守られた動画 (Udemy などの講座) を再生するには、
+            //   Android で「保護されたメディア」 の許可を与える必要がある。
+            //   既定は拒否で、 断られると**何も出ずに再生されない**ので、
+            //   ここで許可する (許可を聞かれるのはページ側が必要とした時だけ)。
+            onPermissionRequest: (c, req) async => iaw.PermissionResponse(
+                resources: req.resources,
+                action: iaw.PermissionResponseAction.GRANT),
             onWebViewCreated: (c) => _iawCtrl = c,
             onTitleChanged: (c, t) {
               if (mounted && t != null && t.isNotEmpty) {
@@ -192020,6 +194755,37 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
                           ),
                         ],
                         _buildPdfSettingsMenu(hasMemoPanel),
+                        // ── お気に入りに登録 (= ユーザー要望: 開いている
+                        //    ページを登録して、 ショートカットで呼び出す) ──
+                        if (widget.onAddBookmark != null &&
+                            _currentUrl.startsWith('http'))
+                          IconButton(
+                            tooltip: context
+                                .read<MindMapProvider>()
+                                .t('fav.addThisPage'),
+                            icon: const Icon(Icons.bookmark_add_rounded,
+                                color: Color(0xFFFFB347), size: 19),
+                            onPressed: () => widget.onAddBookmark!(
+                                _currentUrl, _title),
+                          ),
+                        // ── フローティングにする (= ユーザー要望: 全画面と
+                        //    フローティングを行き来できるように) ──
+                        if (widget.onFloatRequest != null &&
+                            _currentUrl.startsWith('http'))
+                          IconButton(
+                            tooltip: context
+                                .read<MindMapProvider>()
+                                .t('split.toFloating'),
+                            icon: const Icon(
+                                Icons.picture_in_picture_alt_rounded,
+                                color: Color(0xFF80CBC4),
+                                size: 19),
+                            onPressed: () {
+                              final u = _currentUrl;
+                              Navigator.of(context).pop();
+                              widget.onFloatRequest!(u);
+                            },
+                          ),
                         // ── ヘッダーを隠す (= ユーザー要望) ──
                         IconButton(
                           tooltip: context
@@ -194929,6 +197695,11 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
         allowFileAccessFromFileURLs: true,
         allowUniversalAccessFromFileURLs: true,
       ),
+      // ★ DRM で守られた動画 (Udemy などの講座) を再生するための許可。
+      //   既定は拒否で、 断られると何も出ずに再生されない。
+      onPermissionRequest: (c, req) async => iaw.PermissionResponse(
+          resources: req.resources,
+          action: iaw.PermissionResponseAction.GRANT),
       onWebViewCreated: (c) => _ctrl = c,
       onTitleChanged: (c, t) {
         if (mounted && t != null && t.isNotEmpty) {
@@ -240511,12 +243282,29 @@ class _FloatingWebWindowState extends State<_FloatingWebWindow> {
   bool _hideAiMemoBtns = false;
   static const String _kHideAiMemoKey = 'floatHideAiMemoButtons';
 
+  /// 外枠のヘッダーそのものを畳んでいるか。
+  ///
+  /// ★ = ユーザー要望「ヘッダーを隠すボタンを押したら、 全画面に戻すボタンや
+  ///   閉じるボタンも含めて全部が消えるように。 その上で、 その場所に
+  ///   カーソルを乗せたら出すボタンが現れるように」。
+  ///   畳んでいる間は細い帯だけを残す。 そこは掴んで動かす板を兼ねる
+  ///   (帯を丸ごと消すと、 窓を動かす所も閉じる所も無くなるため)。
+  bool _hideHeader = false;
+  static const String _kHideHeaderKey = 'floatHideHeaderBar';
+
+  /// 畳んだ帯にカーソルが乗っているか (乗っている間だけ出すボタンを描く)。
+  bool _hiddenBarHover = false;
+
   Future<void> _loadHideAiMemo() async {
     try {
       final sp = await SharedPreferences.getInstance();
       final v = sp.getBool(_kHideAiMemoKey) ?? false;
-      if (mounted && v != _hideAiMemoBtns) {
-        setState(() => _hideAiMemoBtns = v);
+      final h = sp.getBool(_kHideHeaderKey) ?? false;
+      if (mounted && (v != _hideAiMemoBtns || h != _hideHeader)) {
+        setState(() {
+          _hideAiMemoBtns = v;
+          _hideHeader = h;
+        });
       }
     } catch (_) {}
   }
@@ -240526,6 +243314,17 @@ class _FloatingWebWindowState extends State<_FloatingWebWindow> {
     try {
       final sp = await SharedPreferences.getInstance();
       await sp.setBool(_kHideAiMemoKey, _hideAiMemoBtns);
+    } catch (_) {}
+  }
+
+  Future<void> _setHideHeader(bool v) async {
+    setState(() {
+      _hideHeader = v;
+      _hiddenBarHover = false;
+    });
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setBool(_kHideHeaderKey, v);
     } catch (_) {}
   }
 
@@ -240585,18 +243384,14 @@ class _FloatingWebWindowState extends State<_FloatingWebWindow> {
             _floatMode = 'memo';
           });
         }, color: const Color(0xFFFFB347)),
-      // ── AI / メモのボタンを畳む・出す (= ユーザー要望: 無音カメラなどの
-      //    外枠ヘッダーの AI やメモも非表示にできるように) ──
+      // ── 外枠のヘッダーを畳む (= ユーザー要望: 押したら全画面に戻す
+      //    ボタンや閉じるボタンも含めて、 全部消えるように) ──
       //    元の画面を出している時だけ出す。 AI やメモを開いている最中に
       //    畳めてしまうと、 戻る道が無くなるため。
       if (_floatMode == 'main')
-        btn(
-            _hideAiMemoBtns
-                ? Icons.keyboard_double_arrow_left_rounded
-                : Icons.keyboard_double_arrow_right_rounded,
-            provider.t(
-                _hideAiMemoBtns ? 'float.showModeBtns' : 'float.hideModeBtns'),
-            () => unawaited(_toggleAiMemoBtns())),
+        btn(Icons.keyboard_double_arrow_up_rounded,
+            provider.t('float.hideHeaderBar'),
+            () => unawaited(_setHideHeader(true))),
       // 前面にピン留め (= ユーザー要望)。 アプリの中の重ね描きは他のアプリの
       // 手前には出られないので、 外の本物の窓に変わって常に手前になる。
       btn(Icons.push_pin_rounded, provider.t('float.pinToFront'), () {
@@ -240715,7 +243510,63 @@ class _FloatingWebWindowState extends State<_FloatingWebWindow> {
               // ★ 見た目 (decoration) は Stack の**親**に置く。 前の層に
               //   置くと自分で当たりを吸ってしまい、 後ろの板まで判定が
               //   降りず掴んで動かせなくなる。
-              Container(
+              if (_hideHeader)
+                // ── 畳んでいる時 (= ユーザー要望: 全部消す) ──
+                //   細い帯だけ残す。 掴んで動かす板を兼ね、 カーソルを乗せた
+                //   時だけ「出す」 ボタンを描く。
+                MouseRegion(
+                  onEnter: (_) {
+                    if (!_hiddenBarHover) {
+                      setState(() => _hiddenBarHover = true);
+                    }
+                  },
+                  onExit: (_) {
+                    if (_hiddenBarHover) {
+                      setState(() => _hiddenBarHover = false);
+                    }
+                  },
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onPanUpdate: (d) {
+                      _dragGlobal = d.globalPosition;
+                      setState(() => _pos = Offset(
+                          (_pos.dx + d.delta.dx).clamp(minLeft, maxLeft),
+                          (_pos.dy + d.delta.dy).clamp(minTop, maxTop)));
+                    },
+                    onPanEnd: (_) => _dragGlobal = null,
+                    onTap: () => unawaited(_setHideHeader(false)),
+                    child: Container(
+                      height: 20,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1A1A2E)
+                            .withValues(alpha: _hiddenBarHover ? 0.92 : 0.35),
+                        borderRadius: const BorderRadius.vertical(
+                            top: Radius.circular(11)),
+                      ),
+                      alignment: Alignment.center,
+                      child: _hiddenBarHover
+                          ? Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(
+                                    Icons.keyboard_double_arrow_down_rounded,
+                                    size: 13,
+                                    color: Colors.white70),
+                                const SizedBox(width: 4),
+                                Text(
+                                    context
+                                        .read<MindMapProvider>()
+                                        .t('float.showHeaderBar'),
+                                    style: const TextStyle(
+                                        color: Colors.white70, fontSize: 10)),
+                              ],
+                            )
+                          : null,
+                    ),
+                  ),
+                )
+              else
+                Container(
                 height: 36,
                 decoration: const BoxDecoration(
                   color: Color(0xFF1A1A2E),
@@ -242965,12 +245816,29 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
   bool _hideAiMemoBtns = false;
   static const String _kHideAiMemoKey = 'floatHideAiMemoButtons';
 
+  /// 外枠のヘッダーそのものを畳んでいるか。
+  ///
+  /// ★ = ユーザー要望「ヘッダーを隠すボタンを押したら、 全画面に戻すボタンや
+  ///   閉じるボタンも含めて全部が消えるように。 その上で、 その場所に
+  ///   カーソルを乗せたら出すボタンが現れるように」。
+  ///   畳んでいる間は細い帯だけを残す。 そこは掴んで動かす板を兼ねる
+  ///   (帯を丸ごと消すと、 窓を動かす所も閉じる所も無くなるため)。
+  bool _hideHeader = false;
+  static const String _kHideHeaderKey = 'floatHideHeaderBar';
+
+  /// 畳んだ帯にカーソルが乗っているか (乗っている間だけ出すボタンを描く)。
+  bool _hiddenBarHover = false;
+
   Future<void> _loadHideAiMemo() async {
     try {
       final sp = await SharedPreferences.getInstance();
       final v = sp.getBool(_kHideAiMemoKey) ?? false;
-      if (mounted && v != _hideAiMemoBtns) {
-        setState(() => _hideAiMemoBtns = v);
+      final h = sp.getBool(_kHideHeaderKey) ?? false;
+      if (mounted && (v != _hideAiMemoBtns || h != _hideHeader)) {
+        setState(() {
+          _hideAiMemoBtns = v;
+          _hideHeader = h;
+        });
       }
     } catch (_) {}
   }
@@ -242980,6 +245848,17 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
     try {
       final sp = await SharedPreferences.getInstance();
       await sp.setBool(_kHideAiMemoKey, _hideAiMemoBtns);
+    } catch (_) {}
+  }
+
+  Future<void> _setHideHeader(bool v) async {
+    setState(() {
+      _hideHeader = v;
+      _hiddenBarHover = false;
+    });
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setBool(_kHideHeaderKey, v);
     } catch (_) {}
   }
 
@@ -243040,18 +245919,14 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
             _floatMode = 'memo';
           });
         }, color: const Color(0xFFFFB347)),
-      // ── AI / メモのボタンを畳む・出す (= ユーザー要望: 無音カメラなどの
-      //    外枠ヘッダーの AI やメモも非表示にできるように) ──
+      // ── 外枠のヘッダーを畳む (= ユーザー要望: 押したら全画面に戻す
+      //    ボタンや閉じるボタンも含めて、 全部消えるように) ──
       //    元の画面を出している時だけ出す。 AI やメモを開いている最中に
       //    畳めてしまうと、 戻る道が無くなるため。
       if (_floatMode == 'main')
-        btn(
-            _hideAiMemoBtns
-                ? Icons.keyboard_double_arrow_left_rounded
-                : Icons.keyboard_double_arrow_right_rounded,
-            provider.t(
-                _hideAiMemoBtns ? 'float.showModeBtns' : 'float.hideModeBtns'),
-            () => unawaited(_toggleAiMemoBtns())),
+        btn(Icons.keyboard_double_arrow_up_rounded,
+            provider.t('float.hideHeaderBar'),
+            () => unawaited(_setHideHeader(true))),
       // 前面にピン留め (= ユーザー要望)。 アプリの中の重ね描きは他のアプリの
       // 手前には出られないので、 外の本物の窓に変わって常に手前になる。
       // ★ 外に出せない窓 (ショートカット一覧・電卓など) では出さない
@@ -243226,6 +246101,59 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
               //   高さぶんの空白だけが残っていた。
               if (widget.slimChrome)
                 const SizedBox.shrink()
+              else if (_hideHeader)
+                // ── 畳んでいる時 (= ユーザー要望: 全部消す) ──
+                //   丸ごと消すと窓を動かす所も閉じる所も無くなるので、
+                //   細い帯だけ残す。 そこは掴んで動かす板を兼ね、 カーソルを
+                //   乗せた時だけ「出す」 ボタンを描く。 高さ 20 は、 上辺の
+                //   大きさ変更のつまみ (6px) に食われても押せる余地のため。
+              MouseRegion(
+                  onEnter: (_) {
+                    if (!_hiddenBarHover) {
+                      setState(() => _hiddenBarHover = true);
+                    }
+                  },
+                  onExit: (_) {
+                    if (_hiddenBarHover) {
+                      setState(() => _hiddenBarHover = false);
+                    }
+                  },
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onPanUpdate: headerPanUpdate,
+                    onPanEnd: headerPanEnd,
+                    // スマホにはカーソルが無いので、 軽く押しても出せるように。
+                    onTap: () => unawaited(_setHideHeader(false)),
+                    child: Container(
+                      height: 20,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1A1A2E)
+                            .withValues(alpha: _hiddenBarHover ? 0.92 : 0.35),
+                        borderRadius: const BorderRadius.vertical(
+                            top: Radius.circular(11)),
+                      ),
+                      alignment: Alignment.center,
+                      child: _hiddenBarHover
+                          ? Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(
+                                    Icons.keyboard_double_arrow_down_rounded,
+                                    size: 13,
+                                    color: Colors.white70),
+                                const SizedBox(width: 4),
+                                Text(
+                                    context
+                                        .read<MindMapProvider>()
+                                        .t('float.showHeaderBar'),
+                                    style: const TextStyle(
+                                        color: Colors.white70, fontSize: 10)),
+                              ],
+                            )
+                          : null,
+                    ),
+                  ),
+                )
               else
                 // ★ 見た目 (decoration) は Stack の**親**に置く。
                 //   Container の decoration は自分自身が当たりを吸うので
@@ -246463,7 +249391,7 @@ class _FlashcardDialogState extends State<_FlashcardDialog> {
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 12),
               children: [
-                _folderChip('すべて', _allId),
+                _folderChip('全て', _allId),
                 _folderChip('未分類', null),
                 for (final f in folders)
                   _folderChip(f.name.isEmpty ? '(無題)' : f.name, f.id,
