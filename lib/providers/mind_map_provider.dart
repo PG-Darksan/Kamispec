@@ -375,6 +375,13 @@ class MindMapPage {
   /// なし (= グリッドのみ)。 ページごとに独立して持てる。
   String? backgroundImagePath;
 
+  /// 背景画像を置き場 (Firebase Storage) へ上げた時の URL。
+  ///
+  /// ★ = 点検で判明: これが無かったので、 ページ JSON には送り主の端末の道
+  ///   だけが載り、 受け取った側では背景が黙って消えていた。 要素の添付と
+  ///   同じで、 上げたら URL を持たせ、 受け取った側が落として道を差し替える。
+  String? backgroundStorageUrl;
+
   /// 背景画像の不透明度 (0〜100)。 既定 50 (半透明) で、 ノード/接続が
   /// 上に乗っても視認性を確保する。 ユーザーがダイアログでスライダー
   /// 調整可能。
@@ -419,6 +426,7 @@ class MindMapPage {
     this.restrictedByUid,
     List<MapDecoration>? decorations,
     this.backgroundImagePath,
+    this.backgroundStorageUrl,
     this.backgroundOpacityPercent = 50,
     this.backgroundFit = 'cover',
     this.backgroundHueDegrees = 0,
@@ -448,6 +456,8 @@ class MindMapPage {
         // 背景画像 (= 値が無ければ書き出さない: 旧版互換 + ファイル節約)
         if (backgroundImagePath != null)
           'backgroundImagePath': backgroundImagePath,
+        if (backgroundStorageUrl != null)
+          'backgroundStorageUrl': backgroundStorageUrl,
         if (backgroundImagePath != null)
           'backgroundOpacityPercent': backgroundOpacityPercent,
         if (backgroundImagePath != null && backgroundFit != 'cover')
@@ -478,6 +488,7 @@ class MindMapPage {
       uploadRestricted: (json['uploadRestricted'] as bool?) ?? false,
       restrictedByUid: json['restrictedByUid'] as String?,
       backgroundImagePath: json['backgroundImagePath'] as String?,
+      backgroundStorageUrl: json['backgroundStorageUrl'] as String?,
       backgroundOpacityPercent:
           (json['backgroundOpacityPercent'] as int?) ?? 50,
       backgroundFit: (json['backgroundFit'] as String?) ?? 'cover',
@@ -3942,25 +3953,54 @@ class MindMapProvider extends ChangeNotifier {
     final sheets = <Map<dynamic, dynamic>>[];
     _collectPaintSheets(decoded, sheets);
     var i = 0;
+    // ★ 上げ直しが要るか (= 印が付いていないか、 中身が変わったか) を見る。
+    //   前は毎回すべて上げ直していて、 月の上限を食い潰していた
+    //   (= 点検で判明: 印を付ける処理はあったのに、 上げる前に見ていない上、
+    //    書き換えた中身を端末の控えへ書き戻していなかったので、 印は次回には
+    //    消えていた)。
+    var touched = false;
     for (final sheet in sheets) {
       for (final item in (sheet['im'] as List)) {
         if (item is! Map) continue;
         final localPath = (item['p'] ?? '').toString();
         if (localPath.isEmpty) continue;
+        int len;
         try {
-          if (!await File(localPath).exists()) continue;
+          final f = File(localPath);
+          if (!await f.exists()) continue;
+          len = await f.length();
         } catch (_) {
           continue;
         }
+        // 既に上げてあって、 大きさも変わっていなければ送らない。
+        final had = (item['cf'] ?? '').toString();
+        final hadLen = (item['cs'] is num) ? (item['cs'] as num).toInt() : -1;
+        if (had.isNotEmpty && hadLen == len) continue;
         final base = localPath.split(RegExp(r'[/\\\\]')).last;
-        final fileName = 'paint_${pageId}_${i++}_$base';
+        final fileName =
+            had.isNotEmpty ? had : 'paint_${pageId}_${i++}_$base';
         try {
           final url = await uploadAttachmentToStorage(localPath, fileName);
-          if (url != null) item['cf'] = fileName; // クラウド上のファイル名
+          if (url != null) {
+            item['cf'] = fileName; // クラウド上のファイル名
+            item['cs'] = len; // 上げた時の大きさ (変わったら上げ直す)
+            touched = true;
+          }
         } catch (e) {
           debugPrint('フリーノート画像のアップロードに失敗 (続行): $e');
         }
       }
+    }
+    // ★ 印を端末の控えへ書き戻す。 これをしないと次回また全部送り直しになる。
+    //   ただし、 読んでから今までの間に絵が書き換わっていたら触らない
+    //   (上書きして利用者の線を消さないため)。
+    if (touched) {
+      try {
+        final prefs = await _prefsWithRetry();
+        if (prefs.getString('paint_$pageId') == raw) {
+          await prefs.setString('paint_$pageId', jsonEncode(decoded));
+        }
+      } catch (_) {}
     }
     try {
       return jsonEncode(decoded);
@@ -81592,6 +81632,9 @@ $cleanQ
               await restorePaintJsonFromCloud(page.id, paintJson);
               changed = true;
             }
+            // ページの背景画像の実体も落としてくる (= 点検で判明:
+            //   道だけが載っていて、 受け取った側では黙って消えていた)。
+            await _downloadPageBackgroundImage(page.id);
           } catch (_) {}
         }
         if (changed) {
@@ -81632,8 +81675,13 @@ $cleanQ
       // 初回アップロード (= 404) ならスキップ。
       try {
         final getUrl = '$_firestoreBaseUrl/groups/$_syncGroupId/pages/$pageId';
+        // ★ 欲しいのは 2 つの札だけなので、 その欄だけ貰う
+        //   (= 点検で判明: 欄を指定していなかったので、 Ctrl+S のたびに
+        //    保存してあるページ丸ごと (本文 + 付箋 + フリーノートの絵) を
+        //    落とし直していた。 送る量とほぼ同じだけ無駄に受信していた)。
         final getRes = await http.get(
-          Uri.parse(getUrl),
+          Uri.parse('$getUrl?mask.fieldPaths=uploadRestricted'
+              '&mask.fieldPaths=restrictedByUid'),
           headers: {'Authorization': 'Bearer $_idToken'},
         ).timeout(const Duration(seconds: 25)); // ハング防止 (= ユーザー報告)
         if (getRes.statusCode == 200) {
@@ -81936,6 +81984,8 @@ $cleanQ
     if (current.name != base.name) cloudPage.name = current.name;
     if (current.backgroundImagePath != base.backgroundImagePath) {
       cloudPage.backgroundImagePath = current.backgroundImagePath;
+      // 置き場の URL も一緒に運ぶ (片方だけ新しいと食い違う)。
+      cloudPage.backgroundStorageUrl = current.backgroundStorageUrl;
     }
     if (current.backgroundOpacityPercent != base.backgroundOpacityPercent) {
       cloudPage.backgroundOpacityPercent = current.backgroundOpacityPercent;
@@ -81984,6 +82034,10 @@ $cleanQ
     final now = DateTime.now();
     for (final page in targets) {
       page.backgroundImagePath = path;
+      // ★ 差し替えたら雲の控えを捨てる (= 要素の添付と同じ理屈。 残すと
+      //   「もう上げてある」 と判断されて新しい背景が上がらず、 受け取った
+      //   側は前の背景を落としてくる)。
+      page.backgroundStorageUrl = null;
       page.lastModifiedAt = now;
     }
     notifyListeners();
@@ -82458,6 +82512,59 @@ $cleanQ
     return safe.startsWith('${nodeId}_') ? safe : '${nodeId}_$safe';
   }
 
+  /// ページの背景画像を置き場へ上げて、 URL を控える。
+  ///
+  /// 既に上げてあって、 手元の道も変わっていなければ何もしない。
+  Future<void> _uploadPageBackgroundImage(String pageId) async {
+    final idx = _pages.indexWhere((p) => p.id == pageId);
+    if (idx < 0) return;
+    final page = _pages[idx];
+    final path = page.backgroundImagePath ?? '';
+    if (path.isEmpty || path.startsWith('http')) return;
+    if ((page.backgroundStorageUrl ?? '').isNotEmpty) return;
+    try {
+      final f = File(path);
+      if (!await f.exists()) return;
+      final len = await f.length();
+      if (!canUseUploadBytes(len)) return; // 上限に当たったら黙って見送る
+      final base = path.split(RegExp(r'[/\\]')).last;
+      final url = await uploadAttachmentToStorage(
+          path, '${pageId}_bg_${_cloudSafeFileName(base)}');
+      if (url == null) return;
+      page.backgroundStorageUrl = url;
+      _saveToStorageLocal();
+    } catch (e) {
+      debugPrint('背景画像のアップロードに失敗 (続行): $e');
+    }
+  }
+
+  /// 受け取ったページの背景画像を落として、 この端末の道へ差し替える。
+  Future<void> _downloadPageBackgroundImage(String pageId) async {
+    final idx = _pages.indexWhere((p) => p.id == pageId);
+    if (idx < 0) return;
+    final page = _pages[idx];
+    final url = page.backgroundStorageUrl ?? '';
+    if (url.isEmpty) return;
+    try {
+      final cur = page.backgroundImagePath ?? '';
+      if (cur.isNotEmpty && File(cur).existsSync()) return; // もう手元にある
+      final dir = await getApplicationDocumentsDirectory();
+      final attachDir = Directory('${dir.path}/attachments');
+      if (!await attachDir.exists()) await attachDir.create(recursive: true);
+      final dest = '${attachDir.path}/bg_$pageId';
+      final res = await http.get(Uri.parse(url)).timeout(
+            const Duration(seconds: 60),
+          );
+      if (res.statusCode != 200) return;
+      await File(dest).writeAsBytes(res.bodyBytes);
+      page.backgroundImagePath = dest;
+      _saveToStorageLocal();
+      notifyListeners();
+    } catch (e) {
+      debugPrint('背景画像の受け取りに失敗 (続行): $e');
+    }
+  }
+
   Future<void> _uploadPageAttachments(String pageId,
       {void Function(double progress)? onPageProgress}) async {
     if (!_firebaseEnabled || _syncGroupId == null) return;
@@ -82465,6 +82572,12 @@ $cleanQ
     if (idx < 0) return;
 
     bool anyUpdated = false;
+
+    // ── ページの背景画像 (= 点検で判明: 送っていなかったので、 受け取った
+    //    側では背景だけが黙って消えていた) ──
+    //    要素が 1 つも無いページでも背景だけは上げたいので、 添付の列挙より
+    //    前に済ませる。
+    await _uploadPageBackgroundImage(pageId);
 
     // ── 進捗計算用に、まず「アップロード対象のファイル」を列挙する ──
     // 1 ページ内に複数の添付があると、ファイル A の進捗が 100% で報告された後、
@@ -82815,18 +82928,32 @@ $cleanQ
     }
 
     if (!force) {
-      final localPath = item.kind == 'video'
-          ? (node.youtubeUrl ?? '')
-          : (node.attachmentPath ?? '');
-      if (localPath.isNotEmpty &&
-          !localPath.startsWith('http://') &&
-          !localPath.startsWith('https://') &&
-          !localPath.startsWith('data:') &&
-          File(localPath).existsSync()) {
-        _markCloudDownloadItem(item.id, CloudDownloadItemStatus.completed,
-            progress: 1.0);
-        notifyListeners();
-        return true;
+      // ★ ここで見るのは **自分が落とす先** の道。
+      //   前は `node.attachmentPath` を見ていたが、 この node は今しがた雲から
+      //   読んだページの物なので、 その道は**送り主の端末の道**だった。
+      //   Android は applicationId が同じで書類の置き場も同じ道になるため、
+      //   手元にたまたま同じ名前のファイルがあるだけで「もう持っている」 と
+      //   判断され、 **無関係な自分のファイルが要素に結び付いたまま
+      //   「完了」 と出て**いた (= 点検で判明)。
+      try {
+        final appDir = await getApplicationDocumentsDirectory();
+        final mine = '${appDir.path}/attachments/'
+            '${_cloudLocalFileName(node.id, item.fileName)}';
+        if (File(mine).existsSync()) {
+          // 既にこの要素用の実体を持っている。 指し直すだけで済ませる。
+          if (item.kind == 'video') {
+            if (node.youtubeUrl != mine) node.youtubeUrl = mine;
+          } else {
+            if (node.attachmentPath != mine) node.attachmentPath = mine;
+          }
+          _markCloudDownloadItem(item.id, CloudDownloadItemStatus.completed,
+              progress: 1.0);
+          _saveToStorageLocal();
+          notifyListeners();
+          return true;
+        }
+      } catch (_) {
+        // 道が作れない時は普通に落としに行く。
       }
     }
 
@@ -85447,7 +85574,69 @@ $cleanQ
       page.pageType == 'document' ||
       page.pageType == 'markdown';
 
+  /// 代表の鍵以外に、 そのページ種別が使う入れ物 (前半 = 種類, 鍵)。
+  ///
+  /// ★ フリーノートと文書は入れ物を 2 つ使う (絵と文章)。 代表の 1 本しか
+  ///   送っていなかったので、 文書ページは相手に白紙だけが届いていた
+  ///   (= 点検で判明)。 .hnmap の書き出しは前から両方を拾っている。
+  List<MapEntry<String, String>> _liveBodyExtraKeys(MindMapPage page) {
+    switch (page.pageType) {
+      case 'paint':
+      case 'document':
+        return [MapEntry('document', 'document_${page.id}')];
+      default:
+        return const [];
+    }
+  }
+
+  /// 代表以外の入れ物を 1 つの文字列にまとめる (無ければ空文字)。
+  Future<String> _liveBodyExtraPayload(MindMapPage page) async {
+    final keys = _liveBodyExtraKeys(page);
+    if (keys.isEmpty) return '';
+    try {
+      final prefs = await _prefsWithRetry();
+      final out = <String, String>{};
+      for (final e in keys) {
+        final v = prefs.getString(e.value);
+        if (v == null || v.isEmpty) continue;
+        out[e.key] = v;
+      }
+      return out.isEmpty ? '' : jsonEncode(out);
+    } catch (_) {
+      return '';
+    }
+  }
+
+  /// 受け取った「代表以外」 を端末へ入れる。 戻り値は何か変わったか。
+  Future<bool> _liveApplyBodyExtra(MindMapPage page, String payload) async {
+    if (payload.isEmpty) return false;
+    Map<String, dynamic> m;
+    try {
+      m = jsonDecode(payload) as Map<String, dynamic>;
+    } catch (_) {
+      return false;
+    }
+    var changed = false;
+    try {
+      final prefs = await _prefsWithRetry();
+      for (final e in _liveBodyExtraKeys(page)) {
+        final v = m[e.key];
+        if (v is! String || v.isEmpty) continue;
+        if (prefs.getString(e.value) == v) continue;
+        await prefs.setString(e.value, v);
+        changed = true;
+      }
+    } catch (_) {
+      return false;
+    }
+    return changed;
+  }
+
+  /// 最後に送った / 受け取った「代表以外」。 送り直しの要否を見るのに使う。
+  String _liveLastExtra = '';
+
   /// 本文の控えの鍵 (端末の SharedPreferences 側)。
+  /// これは**代表の 1 本** = `body` に載せる物。 残りは [_liveBodyExtraKeys]。
   String? _liveBodyPrefsKey(MindMapPage page) {
     switch (page.pageType) {
       case 'paint':
@@ -85486,7 +85675,13 @@ $cleanQ
     } catch (_) {
       return;
     }
-    if (body.isEmpty || _liveBodyEquals(page, body, _liveLastBody)) {
+    // 代表以外の入れ物 (文書ページの文章など)。
+    final extra = await _liveBodyExtraPayload(page);
+    // ★ 代表が空でも、 文章だけがある事はある (文書ページはまさにそれ)。
+    //   どちらも変わっていない時だけ送らない。
+    if ((body.isEmpty && extra.isEmpty) ||
+        (_liveBodyEquals(page, body, _liveLastBody) &&
+            extra == _liveLastExtra)) {
       _liveBodyDirty = false;
       return;
     }
@@ -85529,6 +85724,7 @@ $cleanQ
         .patch(
           Uri.parse('$_firestoreBaseUrl/published/$code/body/main'
               '?updateMask.fieldPaths=body&updateMask.fieldPaths=kind'
+              '&updateMask.fieldPaths=extra&updateMask.fieldPaths=extraRev'
               '&updateMask.fieldPaths=rev&updateMask.fieldPaths=baseRev'
               '&updateMask.fieldPaths=byCid&updateMask.fieldPaths=byName'
               '&updateMask.fieldPaths=byColor&updateMask.fieldPaths=byAvatar'
@@ -85541,6 +85737,11 @@ $cleanQ
             'fields': {
               'body': {'stringValue': payload},
               'kind': {'stringValue': asUrl ? 'url' : 'text'},
+              // 代表以外の入れ物。 古い版はこの欄を知らないので黙って無視する。
+              'extra': {'stringValue': extra},
+              // 古い版が書くと extra だけ古いまま残るので、 版を添えて
+              //   一致する時だけ取り込ませる。
+              'extraRev': {'integerValue': '$rev'},
               'rev': {'integerValue': '$rev'},
               'baseRev': {'integerValue': '$baseRev'},
               // 誰が送ったか (= ユーザー要望: 描き足した人の名前を出す)。
@@ -85556,6 +85757,7 @@ $cleanQ
     //   なって二度と送り直されない。
     if (res.statusCode >= 200 && res.statusCode < 300) {
       _liveLastBody = body;
+      _liveLastExtra = extra;
       _liveBodyRev = rev;
       _liveBodyDirty = false;
       try {
@@ -85606,6 +85808,7 @@ $cleanQ
   Future<
       ({
         String body,
+        String extra,
         LiveBodyAuthor? author,
         int rev,
         int baseRev,
@@ -85625,7 +85828,9 @@ $cleanQ
             '${(fields[k] as Map<String, dynamic>?)?['integerValue']}') ??
         0;
     final raw = str('body');
-    if (raw.isEmpty) return null;
+    // ★ 代表が空でも、 文章だけが載っている事はある (文書ページ)。
+    final extraRaw = str('extra');
+    if (raw.isEmpty && extraRaw.isEmpty) return null;
     var body = raw;
     if (str('kind') == 'url') {
       final local = await _downloadLiveAttachment(raw);
@@ -85646,6 +85851,9 @@ $cleanQ
           );
     return (
       body: body,
+      // ★ 古い版が書くと extra だけ古いまま残るので、 一緒に書かれた版が
+      //   本体の版と一致する時だけ使う。
+      extra: intOf('extraRev') == rev ? extraRaw : '',
       author: author,
       rev: rev,
       baseRev: intOf('baseRev'),
@@ -85708,6 +85916,9 @@ $cleanQ
       }
       final changed = merged != mine;
       if (changed) await prefs.setString(key, merged);
+      // ★ 代表以外の入れ物 (文書ページの文章など) も当てる。
+      final extraChanged = await _liveApplyBodyExtra(page, got.extra);
+      _liveLastExtra = got.extra;
       _liveLastBody = body;
       _liveBodyRev = serverRev;
       _liveBodyAuthor = got.author;
@@ -85715,9 +85926,13 @@ $cleanQ
       _liveBodyDirty = !_liveBodyEquals(page, merged, body);
       // ★ 中身が変わった時だけ画面に知らせる (= 点検で判明: 毎回知らせると、
       //   相手が描くたびに手元の選択や「元に戻す」 が消えていた)。
-      if (changed) {
+      if (changed || extraChanged) {
         _bumpPageTick(page.id);
         _bumpPaintBodyTick(page.id);
+        // ★ 文章の編集画面は mcpContentTick を見て開き直すので、 こちらも
+        //   進めないと受け取った文字が画面に出ない (= 点検で判明: 控えには
+        //   入るのに描き直されず、 その後 古い画面の内容で上書きされていた)。
+        if (extraChanged) _mcpContentTick++;
         notifyListeners();
       }
     } catch (e) {
@@ -85740,9 +85955,13 @@ $cleanQ
         body = await _liveLocalizePaintImages(body);
       }
       final prefs = await _prefsWithRetry();
-      await prefs.setString(key, body);
+      if (body.isNotEmpty) await prefs.setString(key, body);
+      // 代表以外 (文書ページの文章など) も一緒に入れる。
+      final extraChanged = await _liveApplyBodyExtra(page, got.extra);
+      _liveLastExtra = got.extra;
       _bumpPageTick(page.id);
       _bumpPaintBodyTick(page.id);
+      if (extraChanged) _mcpContentTick++;
       return (body: body, rev: got.rev, updateTime: got.updateTime);
     } catch (e) {
       debugPrint('参加時の本文の取り込みに失敗: $e');
@@ -97772,10 +97991,20 @@ $cleanQ
     // (currentPage の Undo スタックに入れても文脈が合わないため)
     if (page == currentPage) _pushUndo();
     if (url.isNotEmpty) {
-      page.nodes[id] = node.copyWith(
+      final updated = node.copyWith(
         youtubeUrl: url,
         contentType: NodeContentType.youtube,
       );
+      // ★ 差し替えたら雲の控えを捨てる (= 点検で判明)。 残したままだと
+      //   再生は videoStorageUrl を先に見るので、 **貼り替えた本人の端末でも
+      //   前の動画が再生される**。 上げ直しも行われない。
+      //   ※ ここを呼ぶのは画面側 (利用者の操作) だけで、 雲から落として
+      //     きた時の指し直しは provider の中で直に書いているので、 ここで
+      //     消しても落とし直しの無駄打ちにはならない。
+      if ((updated.videoStorageUrl ?? '').isNotEmpty) {
+        updated.videoStorageUrl = null;
+      }
+      page.nodes[id] = updated;
     } else {
       // youtubeを消す。linkUrlが残っていればcontentTypeはそのまま
       final updated = node.copyWith(youtubeUrl: '');
@@ -101789,11 +102018,20 @@ $example
     final node = currentPage.nodes[id];
     if (node == null) return;
     _pushUndo();
-    currentPage.nodes[id] = node.copyWith(
+    final updated = node.copyWith(
       attachmentPath: path,
       attachmentName: name,
       contentType: NodeContentType.attachment,
     );
+    // ★ 貼り替えたら「雲へ上げた時の控え」 を捨てる (= 点検で判明)。
+    //   copyWith は `?? this.x` なので前の URL が持ち越される。 残したままだと
+    //   「もう上げてある」 と判断されて新しい実体が上がらず、 受け取った側は
+    //   **前の画像**を落としてくる。 共同編集でも同じで、 相手が何か書いた
+    //   拍子に自分の要素まで前の画像へ戻る。
+    if ((updated.attachmentStorageUrl ?? '').isNotEmpty) {
+      updated.attachmentStorageUrl = null;
+    }
+    currentPage.nodes[id] = updated;
     _autoArrangeIfBookshelf();
     _saveToStorage();
     notifyListeners();

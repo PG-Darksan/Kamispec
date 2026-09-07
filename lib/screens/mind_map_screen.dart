@@ -136537,6 +136537,11 @@ class _DocumentPageViewState extends State<_DocumentPageView> {
     try {
       final sp = await SharedPreferences.getInstance();
       await sp.setString(_prefsKey, payload);
+      // ★ 共同編集へ「送る物がある」 と印を付ける (= 点検で判明: これが
+      //   無いので、 文書ページの文字は誰にも届いていなかった)。
+      if (mounted) {
+        context.read<MindMapProvider>().markLiveBodyDirty(widget.pageId);
+      }
     } catch (_) {}
   }
 
@@ -145084,6 +145089,11 @@ class _PaintPageViewState extends State<_PaintPageView> {
       final sp = await SharedPreferences.getInstance();
       await sp.setString(_notePrefsKey,
           jsonEncode({'v': 2, 'horizontal': _noteHorizontal, 'pages': pages}));
+      // ★ 共同編集へ「送る物がある」 と印を付ける (= 点検で判明: これが
+      //   無いので、 メモ欄の文章は誰にも届いていなかった)。
+      if (mounted) {
+        context.read<MindMapProvider>().markLiveBodyDirty(widget.pageId);
+      }
     } catch (_) {}
   }
 
