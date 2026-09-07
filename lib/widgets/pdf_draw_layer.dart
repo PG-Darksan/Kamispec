@@ -1129,6 +1129,17 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   ///   返り値が空 = 押しても何も起きない、 という事なのでボタンの
   ///   明るさ (活性) の判定にもこれを使う
   ///   (= × を 1 個だけ選んだ時に、 押せるのに何も起きない状態を防ぐ)。
+  /// 端を揃える相手 (ページごとに 「枠 → その枠を作っている線」 の一覧)。
+  ///
+  /// ★ = ユーザー報告「左揃えが左端に揃わない図形がある」。
+  ///   以前は**枠が触れ合っている線どうしを 1 つのかたまりに束ねて**から
+  ///   揃えていた。 チェックのように隣どうしが重なる印を並べて選ぶと、
+  ///   全部がひとかたまりになってしまい、 かたまりが 1 つしか無い時は
+  ///   何も動かない (= 揃わない) し、 2 つに割れた時も**かたまりの中の
+  ///   ずれはそのまま残る**。 これが「揃う物と揃わない物がある」 の正体。
+  ///
+  ///   図形はひと筆 = 1 つなので、 **1 本ずつ揃える**のが素直で結果も
+  ///   読みやすい。 触れ合いで束ねるのはやめた。
   Map<int, List<(Rect, List<int>)>> _alignGroupsByPage() {
     final out = <int, List<(Rect, List<int>)>>{};
     final ids = _sel
@@ -1146,50 +1157,16 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       if (pageIds.length < 2) continue;
       // ★ 線は点の列の「中心」 に太さ分を乗せて描かれるので、 端揃えの
       //   枠には太さの半分を足す。 足さないと、 太さの違う図形どうしを
-      //   揃えた時に見た目の端がずれる (= ユーザー報告: チェックの左揃え)。
-      final box = <int, Rect>{
-        for (final i in pageIds)
-          i: _strokeBox(_strokes[i],
-              pad: _strokes[i].tool == PdfDrawTool.text
-                  ? 0
-                  : _strokes[i].width / 2)
-      };
-      // ── 触れ合っている線を繋げてかたまりにする (union-find) ──
-      final parent = <int, int>{for (final i in pageIds) i: i};
-      int findRoot(int x) {
-        var r = x;
-        while (parent[r] != r) {
-          r = parent[r]!;
-        }
-        // 道順を短くしておく。
-        var c = x;
-        while (parent[c] != c) {
-          final n = parent[c]!;
-          parent[c] = r;
-          c = n;
-        }
-        return r;
-      }
-
-      for (var a = 0; a < pageIds.length; a++) {
-        for (var b = a + 1; b < pageIds.length; b++) {
-          if (!_rectsTouch(box[pageIds[a]]!, box[pageIds[b]]!)) continue;
-          final ra = findRoot(pageIds[a]);
-          final rb = findRoot(pageIds[b]);
-          if (ra != rb) parent[ra] = rb;
-        }
-      }
-      final members = <int, List<int>>{};
-      final groupBox = <int, Rect>{};
-      for (final i in pageIds) {
-        final r = findRoot(i);
-        (members[r] ??= <int>[]).add(i);
-        final g = groupBox[r];
-        groupBox[r] = g == null ? box[i]! : g.expandToInclude(box[i]!);
-      }
-      if (members.length < 2) continue;
+      //   揃えた時に見た目の端がずれる。
       out[page.key] = [
-        for (final e in members.entries) (groupBox[e.key]!, e.value),
+        for (final i in pageIds)
+          (
+            _strokeBox(_strokes[i],
+                pad: _strokes[i].tool == PdfDrawTool.text
+                    ? 0
+                    : _strokes[i].width / 2),
+            <int>[i],
+          ),
       ];
     }
     return out;

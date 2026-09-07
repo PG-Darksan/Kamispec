@@ -1073,7 +1073,69 @@ class MindMapNode {
   }
 
   /// YouTube/リンク/メモを含めた実際の表示高さ
+  /// アプリの既定の文字の大きさ (provider が起動時と設定変更時に入れる)。
+  ///
+  /// ★ = ユーザー報告「新規ページを作ると要素が一か所に固まる」。
+  ///   [visualHeight] は個別指定が無い時に 12pt / 15pt を決め打ちしていたが、
+  ///   実際に描かれるのは **アプリの既定** (設定でメモ字を 22 にしている人も
+  ///   いる)。 その差のぶん高さを小さく見積もり、 自動配置がことごとく
+  ///   重なっていた。 ここへ本当の既定を入れて、 見積もりと描画を合わせる。
+  static double defaultTitleFontSizeHint = 15.0;
+  static double defaultMemoFontSizeHint = 12.0;
+
+  /// 日本語が入っているかを見る型。
+  ///
+  /// ★ = ユーザー報告「画面分割した時などに固まる」 の対策。 ここは
+  ///   **1 コマごとに全ノードぶん**通るのに、 毎回 `RegExp(...)` を作り
+  ///   直していた (= 正規表現の組み立てが ノード数 x コマ数)。 1 つだけ
+  ///   作って使い回す。
+  static final RegExp _kJpChars = RegExp(r'[\u3000-\u9FFF\uF900-\uFAFF]');
+
+  // ── visualHeight の覚え書き ──────────────────────────────────────
+  //   高さは文字数から行数を出すので、 それなりに重い。 そのうえ配置・
+  //   当たり判定・接続点・枠の描画から**何度も**呼ばれる。 もとにした値が
+  //   変わっていない間は、 前に出した答えをそのまま返す。
+  double? _vhCache;
+  double? _vhW, _vhH, _vhTf, _vhMf;
+  int? _vhTitleLen, _vhMemoLen;
+  bool? _vhClamp;
+  double? _vhHintT, _vhHintM;
+
   double get visualHeight {
+    // 前に出した答えが、 まだ通じるか。
+    final memoLen = memoText?.length ?? -1;
+    if (_vhCache != null &&
+        _vhW == width &&
+        _vhH == height &&
+        _vhTf == titleFontSize &&
+        _vhMf == memoFontSize &&
+        _vhTitleLen == title.length &&
+        _vhMemoLen == memoLen &&
+        _vhClamp == clampHeight &&
+        _vhHintT == defaultTitleFontSizeHint &&
+        _vhHintM == defaultMemoFontSizeHint &&
+        tableData == null &&
+        chartData == null) {
+      return _vhCache!;
+    }
+    final v = _computeVisualHeight();
+    // 表と図は中身で伸びるので覚えない (こちらは計算も軽い)。
+    if (tableData == null && chartData == null) {
+      _vhCache = v;
+      _vhW = width;
+      _vhH = height;
+      _vhTf = titleFontSize;
+      _vhMf = memoFontSize;
+      _vhTitleLen = title.length;
+      _vhMemoLen = memoLen;
+      _vhClamp = clampHeight;
+      _vhHintT = defaultTitleFontSizeHint;
+      _vhHintM = defaultMemoFontSizeHint;
+    }
+    return v;
+  }
+
+  double _computeVisualHeight() {
     // ── 高さ固定 (ギャラリーのテキストタイル) ──
     // clampHeight=true のときは本文量に依らず height をそのまま返す。 これで
     //   テキストを後から変更してもタイルの大きさが変わらない (= ユーザー要望)。
@@ -1106,13 +1168,14 @@ class MindMapNode {
 
     double h = height;
     // タイトルの折り返し分の追加高さ（文字サイズはノード幅に連動しない）
-    final effectiveTitleFont = (titleFontSize ?? 15.0).clamp(8.0, 28.0);
+    final effectiveTitleFont =
+        (titleFontSize ?? defaultTitleFontSizeHint).clamp(8.0, 28.0);
     // 利用可能なテキスト幅 = width - padding(20) - border(5)
     final textWidth = width - 25.0;
     final maxLines = titleMaxLines;
     if (title.isNotEmpty && textWidth > 0) {
       final hasJapanese =
-          RegExp(r'[\u3000-\u9FFF\uF900-\uFAFF]').hasMatch(title);
+          _kJpChars.hasMatch(title);
       final avgCharWidth =
           hasJapanese ? effectiveTitleFont * 0.95 : effectiveTitleFont * 0.55;
       final charsPerLine = (textWidth / avgCharWidth).floor().clamp(1, 100);
@@ -1135,10 +1198,11 @@ class MindMapNode {
     }
     // メモ全文表示分の追加高さ
     if ((memoText ?? '').isNotEmpty) {
-      final effectiveMemoFont = (memoFontSize ?? 12.0).clamp(6.0, 22.0);
+      final effectiveMemoFont =
+          (memoFontSize ?? defaultMemoFontSizeHint).clamp(6.0, 22.0);
       final memoTextWidth = width - 25.0;
       final hasJpMemo =
-          RegExp(r'[\u3000-\u9FFF\uF900-\uFAFF]').hasMatch(memoText!);
+          _kJpChars.hasMatch(memoText!);
       // 日本語は全角想定だが文字幅差のばらつきを考慮してやや大きめに見積もる
       final avgMemoCharW =
           hasJpMemo ? effectiveMemoFont * 1.0 : effectiveMemoFont * 0.58;

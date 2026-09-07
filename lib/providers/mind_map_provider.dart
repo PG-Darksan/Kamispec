@@ -16,6 +16,7 @@ import 'package:device_info_plus/device_info_plus.dart';
 import '../models/mind_map_node.dart';
 import '../services/billing_service.dart';
 import '../services/cursor_wrap.dart';
+import '../services/mouse_remap.dart';
 import '../services/cursor_style.dart';
 import '../services/display_light.dart';
 import '../services/google_auth.dart';
@@ -4909,6 +4910,13 @@ class MindMapProvider extends ChangeNotifier {
 
   double defaultTitleFontSize = 15.0;
   double defaultMemoFontSize = 12.0;
+
+  /// 高さの見積もり (`MindMapNode.visualHeight`) に、 今の既定の文字の
+  /// 大きさを教える。 = ユーザー報告「要素が一か所に固まる」 の直し。
+  void _syncFontHints() {
+    MindMapNode.defaultTitleFontSizeHint = defaultTitleFontSize;
+    MindMapNode.defaultMemoFontSizeHint = defaultMemoFontSize;
+  }
   final Set<String> _generatedVideoIds = {};
 
   // ── 動画ノードの重複生成許可フラグ ──────────────────────────────────────
@@ -5049,6 +5057,71 @@ class MindMapProvider extends ChangeNotifier {
   /// 控えから読み直す。 読めない時は今までどおり四方向とも「反対の端」。
   void _loadCursorWrapDaemon(SharedPreferences prefs) {
     _cursorWrapDaemon = prefs.getBool('cursorWrapDaemon') ?? false;
+  }
+
+  // ── マウスのボタンに割り当てたキー (= ユーザー要望) ────────────────
+  //   ★ 既定では**動かない**。 割り当てを入れて、 スイッチを入れた時だけ
+  //     見張りが立ち上がる。 パソコン全体に効く仕掛けなので、 黙って
+  //     動き出さないようにしてある。
+
+  /// 割り当ての一覧 (ボタンごとに 1 つまで)。
+  List<MouseKeyBinding> _mouseKeyBindings = const [];
+  List<MouseKeyBinding> get mouseKeyBindings => _mouseKeyBindings;
+
+  /// 割り当てを効かせるか。
+  bool _mouseRemapEnabled = false;
+  bool get mouseRemapEnabled => _mouseRemapEnabled;
+
+  /// 立ち上げようとして駄目だった (セキュリティソフトなどに阻まれた)。
+  bool get mouseRemapFailed => MouseRemap.instance.failed;
+
+  Future<void> setMouseRemapEnabled(bool v) async {
+    _mouseRemapEnabled = v;
+    final prefs = await _prefsWithRetry();
+    await prefs.setBool('mouseRemapEnabled', v);
+    await _applyMouseRemap();
+    notifyListeners();
+  }
+
+  /// 1 つのボタンの割り当てを入れ替える ([vk] が 0 以下なら外す)。
+  Future<void> setMouseKeyBinding(int button,
+      {required int modifiers, required int vk}) async {
+    final out = [
+      for (final b in _mouseKeyBindings)
+        if (b.button != button) b,
+      if (vk > 0)
+        MouseKeyBinding(button: button, modifiers: modifiers, vk: vk),
+    ]..sort((a, b) => a.button.compareTo(b.button));
+    _mouseKeyBindings = out;
+    final prefs = await _prefsWithRetry();
+    await prefs.setString('mouseKeyBindings',
+        jsonEncode([for (final b in out) b.toJson()]));
+    await _applyMouseRemap();
+    notifyListeners();
+  }
+
+  /// 今の設定を道具に渡す。 切ってあるか割り当てが空なら止めるだけ。
+  Future<void> _applyMouseRemap() async {
+    if (!MouseRemap.isSupported) return;
+    await MouseRemap.instance
+        .apply(_mouseRemapEnabled ? _mouseKeyBindings : const []);
+  }
+
+  void _loadMouseKeyBindings(SharedPreferences prefs) {
+    _mouseRemapEnabled = prefs.getBool('mouseRemapEnabled') ?? false;
+    try {
+      final raw = prefs.getString('mouseKeyBindings');
+      if (raw == null || raw.isEmpty) return;
+      final j = jsonDecode(raw);
+      if (j is! List) return;
+      final out = <MouseKeyBinding>[];
+      for (final e in j) {
+        final b = MouseKeyBinding.fromJson(e);
+        if (b != null && !out.any((x) => x.button == b.button)) out.add(b);
+      }
+      out.sort((a, b) => a.button.compareTo(b.button));
+      _mouseKeyBindings = out;
+    } catch (_) {}
   }
 
   void _loadCursorWrapEdges(SharedPreferences prefs) {
@@ -48405,6 +48478,457 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Tamanho',
       'ru': 'Размер',
     },
+    'pc.title': {
+      'ja': 'PC設定',
+      'en': 'PC settings',
+      'zh': '电脑设置',
+      'ko': 'PC 설정',
+      'es': 'Ajustes del PC',
+      'fr': 'Réglages du PC',
+      'de': 'PC-Einstellungen',
+      'pt': 'Configurações do PC',
+      'ru': 'Настройки ПК',
+    },
+    'pc.tabMouse': {
+      'ja': 'マウス設定',
+      'en': 'Mouse',
+      'zh': '鼠标',
+      'ko': '마우스',
+      'es': 'Ratón',
+      'fr': 'Souris',
+      'de': 'Maus',
+      'pt': 'Rato',
+      'ru': 'Мышь',
+    },
+    'pc.tabDisplay': {
+      'ja': 'ディスプレイ設定',
+      'en': 'Display',
+      'zh': '显示',
+      'ko': '디스플레이',
+      'es': 'Pantalla',
+      'fr': 'Écran',
+      'de': 'Anzeige',
+      'pt': 'Ecrã',
+      'ru': 'Экран',
+    },
+    'pc.osNote': {
+      'ja': 'ここの設定は Windows 本体を直に書き換えます。 Windows の「設定」 を開いても同じ値が見えます。',
+      'en': 'These change Windows itself. The same values appear in Windows Settings.',
+      'zh': '这些设置会直接更改 Windows 本身。在 Windows 设置中可看到相同的值。',
+      'ko': '이 설정은 Windows 자체를 변경합니다. Windows 설정에서도 같은 값이 보입니다.',
+      'es': 'Esto cambia Windows directamente. Verás los mismos valores en Configuración de Windows.',
+      'fr': 'Ces réglages modifient Windows lui-même. Vous verrez les mêmes valeurs dans les Paramètres Windows.',
+      'de': 'Diese Einstellungen ändern Windows selbst. Dieselben Werte erscheinen in den Windows-Einstellungen.',
+      'pt': 'Isto altera o próprio Windows. Os mesmos valores aparecem nas Definições do Windows.',
+      'ru': 'Эти настройки меняют сам Windows. Те же значения видны в параметрах Windows.',
+    },
+    'pc.windowsOnly': {
+      'ja': 'この項目は Windows でだけ使えます。',
+      'en': 'Available on Windows only.',
+      'zh': '仅在 Windows 上可用。',
+      'ko': 'Windows에서만 사용할 수 있습니다.',
+      'es': 'Solo disponible en Windows.',
+      'fr': 'Disponible uniquement sous Windows.',
+      'de': 'Nur unter Windows verfügbar.',
+      'pt': 'Disponível apenas no Windows.',
+      'ru': 'Доступно только в Windows.',
+    },
+    'pc.applyFailed': {
+      'ja': '変えられませんでした。',
+      'en': 'Could not apply the change.',
+      'zh': '无法应用更改。',
+      'ko': '변경하지 못했습니다.',
+      'es': 'No se pudo aplicar el cambio.',
+      'fr': 'Impossible d’appliquer la modification.',
+      'de': 'Änderung konnte nicht angewendet werden.',
+      'pt': 'Não foi possível aplicar a alteração.',
+      'ru': 'Не удалось применить изменение.',
+    },
+    'mouse.motion': {
+      'ja': 'ポインターの動き',
+      'en': 'Pointer motion',
+      'zh': '指针移动',
+      'ko': '포인터 동작',
+      'es': 'Movimiento del puntero',
+      'fr': 'Mouvement du pointeur',
+      'de': 'Zeigerbewegung',
+      'pt': 'Movimento do ponteiro',
+      'ru': 'Движение указателя',
+    },
+    'mouse.speed': {
+      'ja': 'ポインターの速さ',
+      'en': 'Pointer speed',
+      'zh': '指针速度',
+      'ko': '포인터 속도',
+      'es': 'Velocidad del puntero',
+      'fr': 'Vitesse du pointeur',
+      'de': 'Zeigergeschwindigkeit',
+      'pt': 'Velocidade do ponteiro',
+      'ru': 'Скорость указателя',
+    },
+    'mouse.speedNote': {
+      'ja': '1 が最も遅く、 20 が最も速い (Windows の既定は 10)。',
+      'en': '1 is slowest, 20 is fastest (Windows default is 10).',
+      'zh': '1 最慢，20 最快（Windows 默认为 10）。',
+      'ko': '1이 가장 느리고 20이 가장 빠릅니다 (Windows 기본값 10).',
+      'es': '1 es la más lenta y 20 la más rápida (predeterminado 10).',
+      'fr': '1 est la plus lente, 20 la plus rapide (par défaut 10).',
+      'de': '1 ist am langsamsten, 20 am schnellsten (Standard 10).',
+      'pt': '1 é a mais lenta e 20 a mais rápida (padrão 10).',
+      'ru': '1 — самая медленная, 20 — самая быстрая (по умолчанию 10).',
+    },
+    'mouse.accel': {
+      'ja': 'ポインターの精度を高める',
+      'en': 'Enhance pointer precision',
+      'zh': '提高指针精确度',
+      'ko': '포인터 정확도 향상',
+      'es': 'Mejorar la precisión del puntero',
+      'fr': 'Améliorer la précision du pointeur',
+      'de': 'Zeigerbeschleunigung verbessern',
+      'pt': 'Melhorar a precisão do ponteiro',
+      'ru': 'Повышенная точность указателя',
+    },
+    'mouse.accelNote': {
+      'ja': '速く動かすほど大きく進む (加速)。 ゲームでは切る人が多い。',
+      'en': 'Moves further the faster you move (acceleration). Often turned off for games.',
+      'zh': '移动越快位移越大（加速）。玩游戏时常关闭。',
+      'ko': '빠르게 움직일수록 더 많이 이동합니다 (가속). 게임에서는 흔히 끕니다.',
+      'es': 'Avanza más cuanto más rápido muevas (aceleración). Suele desactivarse para juegos.',
+      'fr': 'Avance davantage si vous bougez vite (accélération). Souvent désactivé pour les jeux.',
+      'de': 'Bewegt sich weiter, je schneller Sie bewegen (Beschleunigung). Für Spiele oft deaktiviert.',
+      'pt': 'Avança mais quanto mais rápido mover (aceleração). Costuma desligar-se em jogos.',
+      'ru': 'Чем быстрее движение, тем дальше смещение (ускорение). В играх часто отключают.',
+    },
+    'mouse.wheelLines': {
+      'ja': 'ホイールで動く行数',
+      'en': 'Wheel scroll lines',
+      'zh': '滚轮滚动行数',
+      'ko': '휠 스크롤 줄 수',
+      'es': 'Líneas por giro de rueda',
+      'fr': 'Lignes par cran de molette',
+      'de': 'Zeilen pro Radrastung',
+      'pt': 'Linhas por rotação da roda',
+      'ru': 'Строк за прокрутку',
+    },
+    'mouse.lines': {
+      'ja': '{n} 行',
+      'en': '{n} lines',
+      'zh': '{n} 行',
+      'ko': '{n}줄',
+      'es': '{n} líneas',
+      'fr': '{n} lignes',
+      'de': '{n} Zeilen',
+      'pt': '{n} linhas',
+      'ru': '{n} стр.',
+    },
+    'mouse.doubleClick': {
+      'ja': 'ダブルクリックの速さ',
+      'en': 'Double-click speed',
+      'zh': '双击速度',
+      'ko': '두 번 클릭 속도',
+      'es': 'Velocidad del doble clic',
+      'fr': 'Vitesse du double-clic',
+      'de': 'Doppelklickgeschwindigkeit',
+      'pt': 'Velocidade do duplo clique',
+      'ru': 'Скорость двойного щелчка',
+    },
+    'mouse.doubleClickNote': {
+      'ja': '短いほど、 2 回続けて押した時に「ダブルクリック」 と見なされにくくなる。',
+      'en': 'Shorter means two clicks must come closer together to count as a double-click.',
+      'zh': '时间越短，两次点击需要越接近才算双击。',
+      'ko': '짧을수록 두 번 클릭이 더 빨리 이어져야 두 번 클릭으로 인식됩니다.',
+      'es': 'Cuanto más corto, más seguidos deben ser los clics para contar como doble clic.',
+      'fr': 'Plus c’est court, plus les deux clics doivent être rapprochés.',
+      'de': 'Je kürzer, desto schneller müssen zwei Klicks aufeinanderfolgen.',
+      'pt': 'Quanto mais curto, mais juntos os cliques têm de estar.',
+      'ru': 'Чем короче, тем быстрее нужно щелкнуть дважды.',
+    },
+    'mouse.buttons': {
+      'ja': 'ボタンへのキー割り当て',
+      'en': 'Mouse button shortcuts',
+      'zh': '鼠标按键快捷键',
+      'ko': '마우스 버튼 단축키',
+      'es': 'Atajos en los botones del ratón',
+      'fr': 'Raccourcis sur les boutons de la souris',
+      'de': 'Tastenkürzel auf Maustasten',
+      'pt': 'Atalhos nos botões do rato',
+      'ru': 'Горячие клавиши на кнопках мыши',
+    },
+    'mouse.buttonsEnable': {
+      'ja': '割り当てを効かせる',
+      'en': 'Enable button shortcuts',
+      'zh': '启用按键快捷键',
+      'ko': '버튼 단축키 사용',
+      'es': 'Activar los atajos',
+      'fr': 'Activer les raccourcis',
+      'de': 'Tastenkürzel aktivieren',
+      'pt': 'Ativar os atalhos',
+      'ru': 'Включить',
+    },
+    'mouse.buttonsWarn': {
+      'ja': 'パソコン全体に効きます。 押したボタンを横取りする作りなので、 セキュリティソフトに見張られる事があります。 左右のボタンは選べません。',
+      'en': 'Applies to the whole PC. It intercepts the button, so security software may flag it. Left and right buttons cannot be reassigned.',
+      'zh': '对整台电脑生效。它会拦截按键，安全软件可能会告警。左右键无法重新分配。',
+      'ko': 'PC 전체에 적용됩니다. 버튼을 가로채므로 보안 소프트웨어가 경고할 수 있습니다. 좌우 버튼은 지정할 수 없습니다.',
+      'es': 'Afecta a todo el PC. Intercepta el botón, por lo que el antivirus puede alertar. Los botones izquierdo y derecho no se pueden reasignar.',
+      'fr': 'S’applique à tout le PC. Le bouton est intercepté, un antivirus peut le signaler. Les boutons gauche et droit ne sont pas réassignables.',
+      'de': 'Gilt für den ganzen PC. Die Taste wird abgefangen, Sicherheitssoftware kann anschlagen. Linke und rechte Taste sind nicht belegbar.',
+      'pt': 'Aplica-se a todo o PC. Interceta o botão, pelo que o antivírus pode alertar. Os botões esquerdo e direito não podem ser reatribuídos.',
+      'ru': 'Действует на весь ПК. Кнопка перехватывается, антивирус может среагировать. Левая и правая кнопки недоступны.',
+    },
+    'mouse.btnMiddle': {
+      'ja': 'ホイール押し込み',
+      'en': 'Middle (wheel) button',
+      'zh': '中键（滚轮）',
+      'ko': '가운데(휠) 버튼',
+      'es': 'Botón central (rueda)',
+      'fr': 'Bouton du milieu (molette)',
+      'de': 'Mittlere Taste (Rad)',
+      'pt': 'Botão do meio (roda)',
+      'ru': 'Средняя (колесо)',
+    },
+    'mouse.btnBack': {
+      'ja': '横ボタン (手前)',
+      'en': 'Side button (back)',
+      'zh': '侧键（后退）',
+      'ko': '측면 버튼 (뒤로)',
+      'es': 'Botón lateral (atrás)',
+      'fr': 'Bouton latéral (retour)',
+      'de': 'Seitentaste (zurück)',
+      'pt': 'Botão lateral (voltar)',
+      'ru': 'Боковая (назад)',
+    },
+    'mouse.btnForward': {
+      'ja': '横ボタン (奥)',
+      'en': 'Side button (forward)',
+      'zh': '侧键（前进）',
+      'ko': '측면 버튼 (앞으로)',
+      'es': 'Botón lateral (adelante)',
+      'fr': 'Bouton latéral (avancer)',
+      'de': 'Seitentaste (vorwärts)',
+      'pt': 'Botão lateral (avançar)',
+      'ru': 'Боковая (вперёд)',
+    },
+    'mouse.unassigned': {
+      'ja': '割り当てなし',
+      'en': 'Not assigned',
+      'zh': '未分配',
+      'ko': '지정 없음',
+      'es': 'Sin asignar',
+      'fr': 'Non attribué',
+      'de': 'Nicht belegt',
+      'pt': 'Sem atribuição',
+      'ru': 'Не назначено',
+    },
+    'mouse.clear': {
+      'ja': '外す',
+      'en': 'Clear',
+      'zh': '清除',
+      'ko': '해제',
+      'es': 'Quitar',
+      'fr': 'Effacer',
+      'de': 'Entfernen',
+      'pt': 'Limpar',
+      'ru': 'Сбросить',
+    },
+    'mouse.pressKeys': {
+      'ja': '割り当てたいキーを押してください。',
+      'en': 'Press the keys you want to assign.',
+      'zh': '请按下要分配的按键。',
+      'ko': '지정할 키를 누르세요.',
+      'es': 'Pulsa las teclas que quieras asignar.',
+      'fr': 'Appuyez sur les touches à attribuer.',
+      'de': 'Drücken Sie die gewünschten Tasten.',
+      'pt': 'Prima as teclas que quer atribuir.',
+      'ru': 'Нажмите нужные клавиши.',
+    },
+    'mouse.waitingKey': {
+      'ja': 'キー待ち…',
+      'en': 'Waiting for a key…',
+      'zh': '等待按键…',
+      'ko': '키 입력 대기…',
+      'es': 'Esperando una tecla…',
+      'fr': 'En attente d’une touche…',
+      'de': 'Warte auf Taste…',
+      'pt': 'À espera de uma tecla…',
+      'ru': 'Ожидание клавиши…',
+    },
+    'mouse.hookFailed': {
+      'ja': '割り当てを立ち上げられませんでした。 セキュリティソフトに止められた可能性があります。',
+      'en': 'Could not start the button shortcuts. Security software may have blocked it.',
+      'zh': '无法启动按键快捷键，可能被安全软件拦截。',
+      'ko': '버튼 단축키를 시작하지 못했습니다. 보안 소프트웨어가 막았을 수 있습니다.',
+      'es': 'No se pudieron iniciar los atajos. Puede que el antivirus lo haya bloqueado.',
+      'fr': 'Impossible de démarrer les raccourcis. Un antivirus les a peut-être bloqués.',
+      'de': 'Tastenkürzel konnten nicht gestartet werden. Möglicherweise von Sicherheitssoftware blockiert.',
+      'pt': 'Não foi possível iniciar os atalhos. O antivírus pode tê-los bloqueado.',
+      'ru': 'Не удалось запустить. Возможно, заблокировал антивирус.',
+    },
+    'cursorWrap.section': {
+      'ja': 'モニターの繋がり方',
+      'en': 'Monitor layout',
+      'zh': '显示器排列',
+      'ko': '모니터 배치',
+      'es': 'Disposición de monitores',
+      'fr': 'Disposition des écrans',
+      'de': 'Monitoranordnung',
+      'pt': 'Disposição dos monitores',
+      'ru': 'Расположение экранов',
+    },
+    'saver.title': {
+      'ja': 'スクリーンセーバー',
+      'en': 'Screen saver',
+      'zh': '屏幕保护程序',
+      'ko': '화면 보호기',
+      'es': 'Protector de pantalla',
+      'fr': 'Écran de veille',
+      'de': 'Bildschirmschoner',
+      'pt': 'Proteção de ecrã',
+      'ru': 'Заставка',
+    },
+    'saver.which': {
+      'ja': '使うもの',
+      'en': 'Screen saver',
+      'zh': '使用的程序',
+      'ko': '사용할 항목',
+      'es': 'Protector',
+      'fr': 'Écran de veille',
+      'de': 'Bildschirmschoner',
+      'pt': 'Proteção',
+      'ru': 'Заставка',
+    },
+    'saver.none': {
+      'ja': 'なし',
+      'en': 'None',
+      'zh': '无',
+      'ko': '없음',
+      'es': 'Ninguno',
+      'fr': 'Aucun',
+      'de': 'Keiner',
+      'pt': 'Nenhum',
+      'ru': 'Нет',
+    },
+    'saver.wait': {
+      'ja': '開始までの時間',
+      'en': 'Wait before starting',
+      'zh': '启动前等待',
+      'ko': '시작까지 대기 시간',
+      'es': 'Tiempo antes de iniciar',
+      'fr': 'Délai avant démarrage',
+      'de': 'Wartezeit',
+      'pt': 'Tempo até iniciar',
+      'ru': 'Задержка запуска',
+    },
+    'saver.secure': {
+      'ja': '復帰時にサインインを求める',
+      'en': 'Require sign-in on resume',
+      'zh': '恢复时要求登录',
+      'ko': '다시 시작할 때 로그인 요구',
+      'es': 'Pedir inicio de sesión al reanudar',
+      'fr': 'Demander la connexion à la reprise',
+      'de': 'Bei Fortsetzung Anmeldung verlangen',
+      'pt': 'Pedir início de sessão ao retomar',
+      'ru': 'Запрашивать вход при возобновлении',
+    },
+    'power.title': {
+      'ja': 'スリープと電源',
+      'en': 'Sleep and power',
+      'zh': '睡眠与电源',
+      'ko': '절전 및 전원',
+      'es': 'Suspensión y energía',
+      'fr': 'Veille et alimentation',
+      'de': 'Energie sparen',
+      'pt': 'Suspensão e energia',
+      'ru': 'Сон и питание',
+    },
+    'power.charging': {
+      'ja': '充電中',
+      'en': 'Plugged in',
+      'zh': '接通电源时',
+      'ko': '전원 연결 시',
+      'es': 'Conectado a la corriente',
+      'fr': 'Sur secteur',
+      'de': 'Am Stromnetz',
+      'pt': 'Ligado à corrente',
+      'ru': 'От сети',
+    },
+    'power.battery': {
+      'ja': 'バッテリー駆動',
+      'en': 'On battery',
+      'zh': '使用电池时',
+      'ko': '배터리 사용 시',
+      'es': 'Con batería',
+      'fr': 'Sur batterie',
+      'de': 'Im Akkubetrieb',
+      'pt': 'Com bateria',
+      'ru': 'От батареи',
+    },
+    'power.displayOff': {
+      'ja': '画面を消すまで',
+      'en': 'Turn off display after',
+      'zh': '关闭屏幕时间',
+      'ko': '화면 끄기까지',
+      'es': 'Apagar la pantalla tras',
+      'fr': 'Éteindre l’écran après',
+      'de': 'Bildschirm ausschalten nach',
+      'pt': 'Desligar o ecrã após',
+      'ru': 'Отключать экран через',
+    },
+    'power.sleep': {
+      'ja': 'スリープに入るまで',
+      'en': 'Sleep after',
+      'zh': '睡眠时间',
+      'ko': '절전 모드까지',
+      'es': 'Suspender tras',
+      'fr': 'Mise en veille après',
+      'de': 'Energie sparen nach',
+      'pt': 'Suspender após',
+      'ru': 'Сон через',
+    },
+    'power.never': {
+      'ja': 'しない',
+      'en': 'Never',
+      'zh': '从不',
+      'ko': '안 함',
+      'es': 'Nunca',
+      'fr': 'Jamais',
+      'de': 'Nie',
+      'pt': 'Nunca',
+      'ru': 'Никогда',
+    },
+    'time.minutes': {
+      'ja': '{n} 分',
+      'en': '{n} min',
+      'zh': '{n} 分钟',
+      'ko': '{n}분',
+      'es': '{n} min',
+      'fr': '{n} min',
+      'de': '{n} Min.',
+      'pt': '{n} min',
+      'ru': '{n} мин',
+    },
+    'time.hours': {
+      'ja': '{n} 時間',
+      'en': '{n} h',
+      'zh': '{n} 小时',
+      'ko': '{n}시간',
+      'es': '{n} h',
+      'fr': '{n} h',
+      'de': '{n} Std.',
+      'pt': '{n} h',
+      'ru': '{n} ч',
+    },
+    'menu.pcSettings': {
+      'ja': 'PC設定',
+      'en': 'PC settings',
+      'zh': '电脑设置',
+      'ko': 'PC 설정',
+      'es': 'Ajustes del PC',
+      'fr': 'Réglages du PC',
+      'de': 'PC-Einstellungen',
+      'pt': 'Configurações do PC',
+      'ru': 'Настройки ПК',
+    },
     'cursorLook.sizeDefault': {
       'ja': '既定',
       'en': 'Default',
@@ -59924,8 +60448,74 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Título',
       'ru': 'Заголовок',
     },
+    // ★ = ユーザー報告「ノードのメモ字がどこを指しているのか分かりにくい」。
+    //   これは**要素の中に出る本文 (メモ)** の文字の大きさ。 要素の上に出る
+    //   黄色いふきだしは別物 (説明書き / caption)。 名前とヒントで分ける。
+    'overlay.memoFontHint': {
+      'ja': '要素の中に出る本文 (メモ) の文字の大きさ。 '
+          '上に出る黄色いふきだしは「説明書き」 で、 別のものです。',
+      'en': 'Size of the memo text shown inside the node. The yellow bubble '
+          'above the node is the caption — a different thing.',
+      'zh': '节点内部备忘文字的大小。节点上方的黄色气泡是「说明」，是另一回事。',
+      'ko': '요소 안에 나오는 메모 글자 크기입니다. 요소 위의 노란 말풍선은 '
+          '「설명」 으로 다른 것입니다.',
+      'es': 'Tamaño del texto de la nota dentro del nodo. El globo amarillo de '
+          'encima es la leyenda, que es otra cosa.',
+      'fr': 'Taille du texte de la note à l’intérieur du nœud. La bulle jaune '
+          'au-dessus est la légende, qui est autre chose.',
+      'de': 'Größe des Notiztexts im Knoten. Die gelbe Sprechblase darüber ist '
+          'die Bildunterschrift und etwas anderes.',
+      'pt': 'Tamanho do texto da nota dentro do nó. O balão amarelo acima é a '
+          'legenda, que é outra coisa.',
+      'ru': 'Размер текста заметки внутри узла. Жёлтая выноска сверху — это '
+          'подпись, другое.',
+    },
+    'ai.nodePromptRule': {
+      'ja': '【この指示の決まり】特に指示が無い限り、 新しいページは作らないで '
+          'ください。 いま開いているページ (page_id: {page}) の中で、 この要素 '
+          '(node_id: {node}、 題名「{title}」) を親として add_node の parentId に '
+          '"{node}" を渡し、 子要素をぶら下げて階層を伸ばしてください。 '
+          '孫を作る時は parentIndex で親子を繋いでください。',
+      'en': '[Rule] Unless the user explicitly asks for one, do NOT create a '
+          'new page. Work inside the current page (page_id: {page}) and hang '
+          'the result under this node (node_id: {node}, title "{title}") by '
+          'passing parentId "{node}" to add_node, extending the hierarchy. '
+          'Use parentIndex to link deeper levels.',
+      'zh': '【规则】除非用户明确要求，否则不要创建新页面。请在当前页面 '
+          '(page_id: {page}) 内，以该节点 (node_id: {node}，标题「{title}」) 为父级，'
+          '对 add_node 传入 parentId "{node}" 来延伸层级。更深的层级用 parentIndex 连接。',
+      'ko': '【규칙】사용자가 명시적으로 요청하지 않는 한 새 페이지를 만들지 마세요. '
+          '현재 페이지 (page_id: {page}) 안에서 이 요소 (node_id: {node}, 제목 '
+          '"{title}") 를 부모로 삼아 add_node 의 parentId 에 "{node}" 를 넘겨 '
+          '계층을 늘리세요. 더 깊은 단계는 parentIndex 로 연결하세요.',
+      'es': '[Regla] Salvo que se pida explícitamente, NO crees una página '
+          'nueva. Trabaja en la página actual (page_id: {page}) y cuelga el '
+          'resultado de este nodo (node_id: {node}, título «{title}») pasando '
+          'parentId "{node}" a add_node. Usa parentIndex para los niveles '
+          'más profundos.',
+      'fr': '[Règle] Sauf demande explicite, ne créez PAS de nouvelle page. '
+          'Travaillez dans la page actuelle (page_id: {page}) et rattachez le '
+          'résultat à ce nœud (node_id: {node}, titre « {title} ») en passant '
+          'parentId "{node}" à add_node. Utilisez parentIndex pour les niveaux '
+          'plus profonds.',
+      'de': '[Regel] Lege KEINE neue Seite an, sofern nicht ausdrücklich '
+          'gewünscht. Arbeite auf der aktuellen Seite (page_id: {page}) und '
+          'hänge das Ergebnis unter diesen Knoten (node_id: {node}, Titel '
+          '„{title}“), indem du add_node parentId "{node}" übergibst. Nutze '
+          'parentIndex für tiefere Ebenen.',
+      'pt': '[Regra] A menos que seja pedido explicitamente, NÃO crie uma '
+          'página nova. Trabalhe na página atual (page_id: {page}) e pendure o '
+          'resultado neste nó (node_id: {node}, título "{title}") passando '
+          'parentId "{node}" para add_node. Use parentIndex para níveis mais '
+          'profundos.',
+      'ru': '[Правило] Если пользователь явно не попросил, НЕ создавайте новую '
+          'страницу. Работайте на текущей странице (page_id: {page}) и '
+          'подвешивайте результат под этот узел (node_id: {node}, заголовок '
+          '«{title}»), передавая parentId "{node}" в add_node. Для более '
+          'глубоких уровней используйте parentIndex.',
+    },
     'overlay.memoFontLabel': {
-      'ja': 'メモ字',
+      'ja': 'メモの字',
       'en': 'Memo',
       'zh': '备忘',
       'ko': '메모',
@@ -75692,6 +76282,8 @@ $docGuide$instruction
     const interRootGap = 80.0; // ルートツリー間に追加で空ける
     const rootW = 220.0;
     const rootH = 60.0;
+    // ルートも「実際に描かれる高さ」 で場所を取る (= メモが長い / 文字が
+    // 大きいと、 見積もりが小さすぎて次のルートと重なっていた)。
 
     // 各ルートの占有高さを事前計算
     final rootHeights = rootEntries
@@ -76527,13 +77119,8 @@ $docGuide$instruction
       // node.height は「タイトル領域だけ」。メモは下に自動で伸びる。
       final w = (title.length * 14.0 + 40).clamp(180.0, 340.0);
       const double h = 50.0;
-      double displayH = h;
-      if (memo != null && memo.isNotEmpty) {
-        const memoFontSize = 11.0;
-        final lineCount =
-            (memo.length / (w / memoFontSize * 1.2)).ceil().clamp(1, 20);
-        displayH += lineCount * (memoFontSize + 3);
-      }
+      final displayH =
+          aiNodeDisplayHeight(title: title, memo: memo, width: w, height: h);
 
       final childSlotCenter = currentY + subH / 2;
       final childPos = Offset(childX, childSlotCenter - displayH / 2);
@@ -77299,14 +77886,8 @@ $cleanQ
       //   displayH を別に出して subH と比較する。
       final w = (title.length * 14.0 + 40).clamp(180.0, 340.0);
       const double h = 50.0;
-      double displayH = h;
-      if (memo != null && memo.isNotEmpty) {
-        // NodeWidget と同じ式: lineCount = len / (w / memoFontSize * 1.2)
-        const memoFontSize = 11.0; // defaultMemoFontSize 想定
-        final lineCount =
-            (memo.length / (w / memoFontSize * 1.2)).ceil().clamp(1, 20);
-        displayH += lineCount * (memoFontSize + 3);
-      }
+      final displayH =
+          aiNodeDisplayHeight(title: title, memo: memo, width: w, height: h);
 
       // 子のスロット中心 (孫もこの中心に合わせて再帰配置される)
       final childSlotCenter = currentY + subH / 2;
@@ -77494,6 +78075,27 @@ $cleanQ
   ///
   /// `_placeAiSummaryChildren` で兄弟スロットを割り当てる前にこの値を取り、
   /// 兄弟同士が重ならないようにするために使う。
+  /// AI が置くノードの「実際に描かれる高さ」 を、 描画と同じ式で見積もる。
+  ///
+  /// 中身は `MindMapNode.visualHeight` そのもの。 見積もり用の使い捨ての
+  /// ノードを 1 つ作って測るので、 描画と食い違いようがない。
+  double aiNodeDisplayHeight({
+    required String title,
+    String? memo,
+    required double width,
+    double height = 50.0,
+  }) {
+    final probe = MindMapNode(
+      id: '_probe',
+      title: title,
+      position: Offset.zero,
+      width: width,
+      height: height,
+      memoText: (memo != null && memo.isNotEmpty) ? memo : null,
+    );
+    return probe.visualHeight;
+  }
+
   double _computeAiSubtreeHeight(Map node, double minVerticalGap) {
     // 表 / 画像の特別ノードは高さの出し方が違う (子は持たない)。
     final tableRows = node['__table'];
@@ -77510,13 +78112,10 @@ $cleanQ
     final memo = (node['memo'] as String?)?.trim();
     final title = (node['title'] as String?)?.trim() ?? '';
     final w = (title.length * 14.0 + 40).clamp(180.0, 340.0);
-    double selfH = 50.0; // タイトル領域 (= node.height)
-    if (memo != null && memo.isNotEmpty) {
-      const memoFontSize = 11.0;
-      final lineCount =
-          (memo.length / (w / memoFontSize * 1.2)).ceil().clamp(1, 20);
-      selfH += lineCount * (memoFontSize + 3);
-    }
+    // ★ 描くのと同じ式で見積もる (= ユーザー報告: 要素が一か所に固まる)。
+    //   前は 11pt 決め打ちで、 メモ字を大きくしている人は実際の 2〜3 割の
+    //   高さしか見ておらず、 兄弟がことごとく重なっていた。
+    final selfH = aiNodeDisplayHeight(title: title, memo: memo, width: w);
     final children = (node['children'] as List<dynamic>?) ?? const [];
     if (children.isEmpty) return selfH;
 
@@ -86981,6 +87580,7 @@ $cleanQ
     final prefs = await _prefsWithRetry();
     defaultTitleFontSize = prefs.getDouble('defaultTitleFontSize') ?? 15.0;
     defaultMemoFontSize = prefs.getDouble('defaultMemoFontSize') ?? 12.0;
+    _syncFontHints();
     _snapEnabled = prefs.getBool('snapEnabled') ?? true;
     _allowMultipleFloatingWindows =
         prefs.getBool('allowMultipleFloatingWindows') ?? false;
@@ -87049,6 +87649,9 @@ $cleanQ
     _loadCursorWrapEdges(prefs);
     _loadCursorWrapDaemon(prefs);
     _loadCursorWrapPlacement(prefs);
+    _loadMouseKeyBindings(prefs);
+    // ignore: discarded_futures
+    _applyMouseRemap();
     // プランの読み込みは別経路なので、 ここでは今分かっている範囲で当て、
     //   プランが確定した時に applyBillingPlan からもう一度当て直す。
     CursorWrap.instance.applyEdgeTargets(
@@ -88909,6 +89512,62 @@ $cleanQ
       nd.position = Offset(right + gapX, y);
       y += nd.visualHeight + gapY;
     }
+  }
+
+  /// **今足したばかりのノードだけ**を、 その場で置き直す。
+  ///
+  /// ★ = ユーザー報告「新規ページを作った時に位置関係がバグっていて、
+  ///   全ての要素が一か所に出力されてしまう」。
+  ///   `add_node` は場所を渡さないと**全部おなじ場所**に積み上がる作りで、
+  ///   後から AI が `tidy_page` を呼ぶまで重なったままだった。 呼び忘れたり、
+  ///   途中で止めたりすると、 そのまま団子になって残る。
+  ///
+  /// ページ全体は並べ直さない (利用者が手で組んだ配置を壊さないため)。
+  ///   ・親がいる物 → 親の右へ、 既にいる兄弟の下に continue して置く。
+  ///   ・親がいない物 → 既にある物と重ならない所へ逃がす。
+  void mcpArrangeNewNodes(String pageId, List<String> newIds) {
+    final page = mcpPageById(pageId);
+    if (page == null || newIds.isEmpty) return;
+    if (page.pageType != null && page.pageType != 'normal') return;
+    const horizontalGap = 280.0;
+    const verticalGap = 40.0;
+
+    // 子 → 親 の対応を作る。
+    final parentOf = <String, String>{};
+    for (final c in page.connections) {
+      parentOf[c.toId] = c.fromId;
+    }
+
+    final loose = <String>[];
+    for (final id in newIds) {
+      final node = page.nodes[id];
+      if (node == null) continue;
+      final pid = parentOf[id];
+      final parent = pid == null ? null : page.nodes[pid];
+      if (parent == null) {
+        loose.add(id);
+        continue;
+      }
+      // 親の右の列。 既にいる兄弟のいちばん下の続きへ。
+      final x = parent.position.dx + parent.width + horizontalGap;
+      var y = parent.position.dy;
+      var found = false;
+      for (final c in page.connections) {
+        if (c.fromId != parent.id || c.toId == id) continue;
+        final sib = page.nodes[c.toId];
+        if (sib == null) continue;
+        final bottom = sib.position.dy + sib.visualHeight;
+        if (!found || bottom > y) y = bottom;
+        found = true;
+      }
+      if (found) y += verticalGap;
+      node.position = Offset(x, y);
+    }
+
+    // 親のいない物は、 従来どおり空いている所へ逃がす。
+    if (loose.isNotEmpty) _spreadLooseNodes(page);
+    _saveToStorage();
+    notifyListeners();
   }
 
   /// 外から呼べる形 (= ツールで 1 個ずつ足した直後にも整える)。
@@ -98983,6 +99642,7 @@ $example
 
   void setDefaultMemoFontSize(double size) {
     defaultMemoFontSize = size.clamp(6.0, 22.0);
+    _syncFontHints();
     _saveToStorage();
     notifyListeners();
   }

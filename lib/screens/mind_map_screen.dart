@@ -38,6 +38,8 @@ import '../services/screen_capture.dart' as scap;
 import '../services/screen_recorder.dart';
 import '../services/rec_hotkey.dart';
 import '../services/cursor_wrap.dart';
+import '../services/mouse_remap.dart';
+import '../services/pc_settings.dart';
 import '../services/cursor_style.dart';
 import '../services/display_control.dart';
 import '../services/display_light.dart';
@@ -8397,6 +8399,29 @@ class _MindMapScreenState extends State<MindMapScreen>
     // フォールバック
     return MatrixUtils.transformPoint(Matrix4.inverted(ctrl.value), globalPos);
   }
+
+  /// 要素 [nodeId] が今どこに映っているか (画面座標の枠)。
+  ///
+  /// = ユーザー要望「AI の設定や『処理中』 の札を、 要素の近くに出して」。
+  /// 画面に映っていない / 分からない時は null。
+  Rect? _nodeScreenRect(String nodeId) {
+    try {
+      final provider = context.read<MindMapProvider>();
+      final node = provider.nodes[nodeId];
+      if (node == null) return null;
+      final ctrl = _ctrlFor(provider.currentPage?.id ?? '');
+      final scale = ctrl.value.getMaxScaleOnAxis();
+      final tl = _canvasToGlobal(node.position, ctrl);
+      return Rect.fromLTWH(
+          tl.dx, tl.dy, node.width * scale, node.visualHeight * scale);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 「AI 処理中」 の札を出す相手 (= ユーザー要望: 要素の近くに出す)。
+  /// 要素から始めた指示でない時は null (= 従来どおり右下)。
+  String? _aiBusyAnchorNodeId;
 
   Offset _canvasToGlobal(Offset canvasPos, TransformationController ctrl) {
     final box = _canvasKey.currentContext?.findRenderObject() as RenderBox?;
@@ -36058,11 +36083,22 @@ class _MindMapScreenState extends State<MindMapScreen>
     final title = node.title.trim();
     final memo = (node.memoText ?? '').trim();
     final about = memo.isEmpty ? title : '$title\n$memo';
+    // ★ 何も言わなければ**新しいページを作らず、 この要素の下へ**伸ばす
+    //   (= ユーザー要望: 「〜の歴史についてまとめて」 で新規ページが
+    //    出来てしまう)。 ページを分けたい時は利用者がそう書く。
+    final pageId = provider.currentPage?.id ?? '';
+    final rule = provider
+        .t('ai.nodePromptRule')
+        .replaceFirst('{page}', pageId)
+        .replaceFirst('{node}', nodeId)
+        .replaceFirst('{title}', title.isEmpty ? '(無題)' : title);
     final raw = about.isEmpty
-        ? text
-        : '${provider.t('ai.nodePromptAbout')}\n$about\n\n$text';
+        ? '$text\n\n$rule'
+        : '${provider.t('ai.nodePromptAbout')}\n$about\n\n$text\n\n$rule';
     final session = _McpChatSession.instance;
     session.bind(provider);
+    // 「処理中」 の札をこの要素のそばに出す (= ユーザー要望)。
+    _aiBusyAnchorNodeId = nodeId;
     session.submit(shown: text, raw: raw);
     _appSnack(
         context,
@@ -37392,11 +37428,16 @@ class _MindMapScreenState extends State<MindMapScreen>
     _removeOverlay(); // アクションバー (色パレット/スライダー含む) を閉じる
     final provider = context.read<MindMapProvider>();
     if (provider.nodes[nodeId] == null) return;
+    // ★ 要素のそばに出す (= ユーザー要望: 画面の隅ではなく近くに)。
+    final anchor = _nodeScreenRect(nodeId);
     showDialog<String>(
       context: context,
-      barrierColor: Colors.black54,
-      builder: (dctx) => Center(
-        child: Material(
+      barrierColor:
+          Colors.black.withValues(alpha: anchor == null ? 0.54 : 0.28),
+      builder: (dctx) => _positionNearAnchor(
+        dctx,
+        anchor,
+        Material(
           color: Colors.transparent,
           child: Container(
             width: 290,
@@ -37413,7 +37454,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                     offset: const Offset(0, 10)),
               ],
             ),
-            child: Column(
+            // ★ 狭い窓や、 要素が画面の端にある時でも溢れないように
+            //   (= 近くに出す都合で高さが縮むことがある)。
+            child: SingleChildScrollView(
+              child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -37469,9 +37513,12 @@ class _MindMapScreenState extends State<MindMapScreen>
                 //   (= ユーザー要望: AI アシスタントで代用できる)。
                 //   送り先 ('gen' / 'ask') の処理は他の入口用に残してある。
               ],
+              ),
             ),
           ),
         ),
+        const Size(290, 460),
+        useLastBar: false,
       ),
     ).then((result) async {
       if (result == null || !mounted) return;
@@ -38379,13 +38426,15 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 //     並べ替えなしでも辿れるように)。
                                 if (_hasDisplaySettings)
                                   _settingsTile(
-                                    icon: Icons.desktop_windows_rounded,
+                                    icon: Icons.settings_applications_rounded,
                                     color: const Color(0xFF4FC3F7),
-                                    title:
-                                        provider.t('menu.displaySettings'),
+                                    title: provider.t(
+                                        !kIsWeb && Platform.isWindows
+                                            ? 'menu.pcSettings'
+                                            : 'menu.displaySettings'),
                                     onTap: () {
                                       Navigator.of(sctx).pop();
-                                      _openDisplaySettings();
+                                      _openPcSettings();
                                     },
                                   ),
 
@@ -42036,11 +42085,14 @@ class _MindMapScreenState extends State<MindMapScreen>
       'icon': Icons.settings_suggest_rounded,
       'color': Color(0xFF7FD8A0),
     },
-    // ディスプレイ設定 (= ユーザー要望: 動作設定とは別の項目にする)。
+    // PC設定 (= ユーザー要望: マウス設定とディスプレイ設定に項目分けして、
+    //   「PC設定」 という 1 つのボタンの中に 2 タブで入れる)。
+    //   命令の id は昔のまま (= すでにヘッダーへ並べてある人の控えが
+    //   そのまま効くように)。
     {
       'id': 'openDisplaySettings',
-      'labelKey': 'menu.displaySettings',
-      'icon': Icons.desktop_windows_rounded,
+      'labelKey': 'menu.pcSettings',
+      'icon': Icons.settings_applications_rounded,
       'color': Color(0xFF4FC3F7),
     },
     // ── 画面分割 (= ユーザー要望: モバイルはヘッダーが狭いので、 分割は
@@ -45018,7 +45070,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         _openPopOutWindow(provider, kind: 'ai');
         break;
       case 'openDisplaySettings':
-        _openDisplaySettings();
+        _openPcSettings();
         break;
       case 'openBehaviorSettings':
         _openBehaviorSettings();
@@ -62160,9 +62212,37 @@ class _MindMapScreenState extends State<MindMapScreen>
       builder: (_, __) {
         // 開いている間はチャット欄の中に出ているので、 札は出さない。
         if (!session.busy || _mcpChatVisible) return const SizedBox.shrink();
+        // ★ 要素から始めた指示なら、 その要素のそばに出す
+        //   (= ユーザー要望: 処理中の文字を要素の近くに)。
+        //   画面の外へ出ていたら、 今までどおり右下へ逃がす。
+        final screen = MediaQuery.sizeOf(context);
+        final anchorId = _aiBusyAnchorNodeId;
+        Rect? at = anchorId == null ? null : _nodeScreenRect(anchorId);
+        if (at != null &&
+            (at.right < 0 ||
+                at.bottom < 0 ||
+                at.left > screen.width ||
+                at.top > screen.height)) {
+          at = null;
+        }
+        const chipW = 190.0, chipH = 38.0;
+        double? left, top, right, bottom;
+        if (at != null) {
+          // 要素のすぐ上。 上に余裕が無ければ下へ。
+          var t = at.top - chipH - 8;
+          if (t < 8) t = at.bottom + 8;
+          left = (at.center.dx - chipW / 2)
+              .clamp(8.0, math.max(8.0, screen.width - chipW - 8));
+          top = t.clamp(8.0, math.max(8.0, screen.height - chipH - 8));
+        } else {
+          right = 12;
+          bottom = 96;
+        }
         return Positioned(
-          right: 12,
-          bottom: 96,
+          left: left,
+          top: top,
+          right: right,
+          bottom: bottom,
           child: Material(
             color: Colors.transparent,
             child: Container(
@@ -62227,6 +62307,9 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   Future<void> _openMcpChat(MindMapProvider provider,
       {String? initialTask, bool floatingPanel = false}) async {
+    // 要素から始めた指示ではないので、 札を要素に貼り付けない
+    // (= 前の要素のそばに出しっぱなしにならないように)。
+    _aiBusyAnchorNodeId = null;
     if (!provider.mcpServerEnabled) {
       await provider.setMcpServerEnabled(true);
     }
@@ -73383,165 +73466,207 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// そのまま並べる。 変えた事はその場で効く (「保存」 は要らない)。
   /// ディスプレイ設定の中身 (= ユーザー要望: 一つずつ押して開くのが面倒
   /// なので全部を一度に出す。 モニターの繋がり方の図はいちばん上)。
+  /// 見出しの帯 (マウス設定 / ディスプレイ設定で共通)。
+  Widget _pcSectionLabel(String text) => Padding(
+        padding: const EdgeInsets.fromLTRB(4, 14, 4, 6),
+        child: Row(children: [
+          Text(text,
+              style: const TextStyle(
+                  color: Colors.white38,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.6)),
+          const SizedBox(width: 8),
+          const Expanded(child: Divider(color: Colors.white12, height: 1)),
+        ]),
+      );
+
+  /// 「マウス設定」 タブの中身 (= ユーザー要望: PC設定を 2 タブに分ける)。
+  ///
+  /// マウスそのものの動き (速さ・加速・ホイール・ダブルクリック)、
+  /// ボタンへのキー割り当て、 見た目 (カーソル)、 そして画面をまたぐ時の
+  /// 動き (モニターの繋がり方) を、 ここに集めてある。
+  List<Widget> _mouseSettingsChildren({
+    required MindMapProvider provider,
+    required BuildContext ctx,
+    required BuildContext sheetCtx,
+    required void Function(VoidCallback) setS,
+  }) {
+    if (kIsWeb || !Platform.isWindows) {
+      return [
+        Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(provider.t('pc.windowsOnly'),
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white38, fontSize: 12)),
+        ),
+      ];
+    }
+    return [
+      // ── マウスそのものの動き ──
+      _pcSectionLabel(provider.t('mouse.motion')),
+      const _MouseTweakInline(),
+
+      // ── ボタンへのキー割り当て ──
+      _pcSectionLabel(provider.t('mouse.buttons')),
+      _MouseButtonBindings(provider: provider),
+
+      // ── カーソルの見た目 ──
+      _pcSectionLabel(provider.t('cursorLook.title')),
+      _CursorAppearanceInline(
+        provider: provider,
+        onNeedPro: () {
+          Navigator.of(sheetCtx).pop();
+          _showPaywallDialog(provider,
+              bodyOverride: provider.t('paywall.proRequiredCursorKeep'));
+        },
+      ),
+
+      // ── 画面をまたぐ時の動き (モニターの繋がり方) ──
+      _pcSectionLabel(provider.t('cursorWrap.section')),
+      // ★ アプリを開いている間の回り込みは無料 (= ユーザー要望)。
+      //   Pro 以上が要るのは「アプリを閉じていても効かせる」 (常駐) だけ
+      //   なので、 図はどのプランでも触れる。 案内はその下の常駐の
+      //   トグルにだけ出す。
+      // ★ 一度読んだら閉じられる (= ユーザー要望)。 閉じた事は prefs に
+      //   残すので、 次に開いた時はもう出ない。
+      if (!provider.canUseMonitorRoutingDaemon && !_monitorNoticeHidden)
+        Container(
+          margin: const EdgeInsets.only(bottom: 8),
+          decoration: BoxDecoration(
+            color: const Color(0xFF4FC3F7).withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+                color: const Color(0xFF4FC3F7).withValues(alpha: 0.3)),
+          ),
+          child: Row(children: [
+            Expanded(
+              child: InkWell(
+                borderRadius: BorderRadius.circular(10),
+                onTap: () {
+                  Navigator.of(sheetCtx).pop();
+                  _showPaywallDialog(provider,
+                      bodyOverride: provider.t('paywall.proRequiredMonitor'));
+                },
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(10, 10, 4, 10),
+                  child: Row(children: [
+                    const Icon(Icons.lock_outline_rounded,
+                        color: Color(0xFF4FC3F7), size: 16),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(provider.t('paywall.proRequiredMonitor'),
+                          style: const TextStyle(
+                              color: Color(0xFF4FC3F7),
+                              fontSize: 11,
+                              height: 1.4)),
+                    ),
+                    const Icon(Icons.chevron_right_rounded,
+                        color: Color(0xFF4FC3F7), size: 18),
+                  ]),
+                ),
+              ),
+            ),
+            IconButton(
+              tooltip: provider.t('btn.close'),
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+              icon: const Icon(Icons.close_rounded,
+                  size: 15, color: Color(0xFF4FC3F7)),
+              onPressed: () async {
+                setS(() => _monitorNoticeHidden = true);
+                try {
+                  final sp = await SharedPreferences.getInstance();
+                  await sp.setBool(_kMonitorNoticeHiddenKey, true);
+                } catch (_) {}
+              },
+            ),
+            const SizedBox(width: 2),
+          ]),
+        ),
+      _MonitorEdgeSettings(provider: provider),
+      // ── アプリを閉じていても効かせる (= ユーザー要望) ──
+      //    サインイン時に、 回り込みだけの小さな常駐を立ち上げる。
+      _settingsToggleTile(
+        icon: provider.cursorWrapDaemon
+            ? Icons.play_circle_fill_rounded
+            : Icons.play_circle_outline_rounded,
+        color: provider.cursorWrapDaemon
+            ? const Color(0xFF9CCC65)
+            : Colors.white54,
+        title: provider.t('cursorWrap.daemon'),
+        helpKey: 'cursorWrap.daemonHelp',
+        value: provider.cursorWrapDaemon && provider.canUseMonitorRoutingDaemon,
+        onChanged: (v) async {
+          // ★ 常駐だけが Pro 以上限定 (= ユーザー要望)。 足りない時は
+          //   加入の案内へ。 アプリを開いている間の回り込みは無料。
+          if (!provider.canUseMonitorRoutingDaemon) {
+            Navigator.of(sheetCtx).pop();
+            _showPaywallDialog(provider,
+                bodyOverride: provider.t('paywall.proRequiredMonitor'));
+            return;
+          }
+          await provider.setCursorWrapDaemon(v);
+          final ok = await _registerCursorWrapTask(v);
+          if (v && ok) {
+            // すぐ効くように、 今この場でも立ち上げておく。
+            await _startCursorWrapDaemon();
+          }
+          if (v && !ok) {
+            // 入れられなかった時は黙って ON にしない (= 次の起動から
+            //   効かないのに、 入ったように見えるのを防ぐ)。
+            await provider.setCursorWrapDaemon(false);
+            if (ctx.mounted) {
+              _appSnack(
+                ctx,
+                SnackBar(
+                  content: Text(provider.t('cursorWrap.daemonFailed')),
+                  backgroundColor: const Color(0xFFE53935),
+                ),
+              );
+            }
+          }
+          setS(() {});
+        },
+      ),
+    ];
+  }
+
+  /// 「ディスプレイ設定」 タブの中身。
+  ///
+  /// 画面そのものの話 (拡大率・壁紙・明るさ)、 スクリーンセーバー、
+  /// スリープと電源、 音声の出力先。
+  /// マウスまわりは隣のタブへ移した (= ユーザー要望「項目分けして」)。
   List<Widget> _displaySettingsChildren({
     required MindMapProvider provider,
     required BuildContext ctx,
     required BuildContext sheetCtx,
     required void Function(VoidCallback) setS,
   }) {
-    Widget sectionLabel(String text) => Padding(
-          padding: const EdgeInsets.fromLTRB(4, 14, 4, 6),
-          child: Row(children: [
-            Text(text,
-                style: const TextStyle(
-                    color: Colors.white38,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 0.6)),
-            const SizedBox(width: 8),
-            const Expanded(child: Divider(color: Colors.white12, height: 1)),
-          ]),
-        );
-
     return [
-      // ── モニターの繋がり方 (いちばん上。 = ユーザー要望) ──
-      // 見出しは出さない (= ユーザー要望: 上に「行き来する方向」 は書かなくてよい)。
       if (!kIsWeb && Platform.isWindows) ...[
+        // ── 画面の拡大率と壁紙・明るさ ──
         const SizedBox(height: 6),
-        // ★ アプリを開いている間の回り込みは無料 (= ユーザー要望)。
-        //   Pro 以上が要るのは「アプリを閉じていても効かせる」 (常駐) だけ
-        //   なので、 図はどのプランでも触れる。 案内はその下の常駐の
-        //   トグルにだけ出す。
-        // ★ 一度読んだら閉じられる (= ユーザー要望)。 閉じた事は prefs に
-        //   残すので、 次に開いた時はもう出ない。
-        if (!provider.canUseMonitorRoutingDaemon && !_monitorNoticeHidden)
-          Container(
-            margin: const EdgeInsets.only(bottom: 8),
-            decoration: BoxDecoration(
-              color: const Color(0xFF4FC3F7).withValues(alpha: 0.08),
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(
-                  color: const Color(0xFF4FC3F7).withValues(alpha: 0.3)),
-            ),
-            child: Row(children: [
-              Expanded(
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(10),
-                  onTap: () {
-                    Navigator.of(sheetCtx).pop();
-                    _showPaywallDialog(provider,
-                        bodyOverride: provider.t('paywall.proRequiredMonitor'));
-                  },
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(10, 10, 4, 10),
-                    child: Row(children: [
-                      const Icon(Icons.lock_outline_rounded,
-                          color: Color(0xFF4FC3F7), size: 16),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(provider.t('paywall.proRequiredMonitor'),
-                            style: const TextStyle(
-                                color: Color(0xFF4FC3F7),
-                                fontSize: 11,
-                                height: 1.4)),
-                      ),
-                      const Icon(Icons.chevron_right_rounded,
-                          color: Color(0xFF4FC3F7), size: 18),
-                    ]),
-                  ),
-                ),
-              ),
-              IconButton(
-                tooltip: provider.t('btn.close'),
-                visualDensity: VisualDensity.compact,
-                padding: EdgeInsets.zero,
-                constraints:
-                    const BoxConstraints(minWidth: 30, minHeight: 30),
-                icon: const Icon(Icons.close_rounded,
-                    size: 15, color: Color(0xFF4FC3F7)),
-                onPressed: () async {
-                  setS(() => _monitorNoticeHidden = true);
-                  try {
-                    final sp = await SharedPreferences.getInstance();
-                    await sp.setBool(_kMonitorNoticeHiddenKey, true);
-                  } catch (_) {}
-                },
-              ),
-              const SizedBox(width: 2),
-            ]),
-          ),
-        _MonitorEdgeSettings(provider: provider),
-        // ── 画面の拡大率と壁紙 (= ユーザー要望) ──
         _MonitorDisplaySettings(provider: provider),
-        // ── マウスカーソルの大きさと色 (= ユーザー要望) ──
-        _CursorAppearanceInline(
-          provider: provider,
-          onNeedPro: () {
-            Navigator.of(sheetCtx).pop();
-            _showPaywallDialog(provider,
-                bodyOverride: provider.t('paywall.proRequiredCursorKeep'));
-          },
-        ),
-        // ── 「サブモニターに両サイドからアクセス」 のトグルは削除 ──
-        //    = ユーザー要望「上の図から設定すればいいから項目としては削除」。
-        //    図で行き先を決めた辺だけが働く。
-        // ── アプリを閉じていても効かせる (= ユーザー要望) ──
-        //    サインイン時に、 回り込みだけの小さな常駐を立ち上げる。
-        _settingsToggleTile(
-          icon: provider.cursorWrapDaemon
-              ? Icons.play_circle_fill_rounded
-              : Icons.play_circle_outline_rounded,
-          color: provider.cursorWrapDaemon
-              ? const Color(0xFF9CCC65)
-              : Colors.white54,
-          title: provider.t('cursorWrap.daemon'),
-          helpKey: 'cursorWrap.daemonHelp',
-          value: provider.cursorWrapDaemon &&
-              provider.canUseMonitorRoutingDaemon,
-          onChanged: (v) async {
-            // ★ 常駐だけが Pro 以上限定 (= ユーザー要望)。 足りない時は
-            //   加入の案内へ。 アプリを開いている間の回り込みは無料。
-            if (!provider.canUseMonitorRoutingDaemon) {
-              Navigator.of(sheetCtx).pop();
-              _showPaywallDialog(provider,
-                  bodyOverride: provider.t('paywall.proRequiredMonitor'));
-              return;
-            }
-            await provider.setCursorWrapDaemon(v);
-            final ok = await _registerCursorWrapTask(v);
-            if (v && ok) {
-              // すぐ効くように、 今この場でも立ち上げておく。
-              await _startCursorWrapDaemon();
-            }
-            if (v && !ok) {
-              // 入れられなかった時は黙って ON にしない (= 次の起動から
-              //   効かないのに、 入ったように見えるのを防ぐ)。
-              await provider.setCursorWrapDaemon(false);
-              if (ctx.mounted) {
-                _appSnack(
-                  ctx,
-                  SnackBar(
-                    content:
-                        Text(provider.t('cursorWrap.daemonFailed')),
-                    backgroundColor: const Color(0xFFE53935),
-                  ),
-                );
-              }
-            }
-            setS(() {});
-          },
-        ),
-      ],
 
-      // ── 音声の出力先 ──
-      if (!kIsWeb && Platform.isWindows) ...[
-        sectionLabel(provider.t('audioOut.title')),
+        // ── スクリーンセーバー (= ユーザー要望) ──
+        _pcSectionLabel(provider.t('saver.title')),
+        _ScreenSaverInline(provider: provider),
+
+        // ── スリープと電源 (= ユーザー要望: バッテリー駆動 / 充電中で
+        //    別々に決められるように) ──
+        _pcSectionLabel(provider.t('power.title')),
+        _PowerTimeoutInline(provider: provider),
+
+        // ── 音声の出力先 ──
+        _pcSectionLabel(provider.t('audioOut.title')),
         _AudioOutputInline(provider: provider),
       ],
 
       // ── 高リフレッシュレート (Android) ──
       if (!kIsWeb && Platform.isAndroid) ...[
-        sectionLabel(provider.t('refresh.setting')),
+        _pcSectionLabel(provider.t('refresh.setting')),
         _settingsToggleTile(
           icon: provider.highRefreshRate
               ? Icons.speed_rounded
@@ -73559,14 +73684,6 @@ class _MindMapScreenState extends State<MindMapScreen>
           },
         ),
       ],
-
-      // ── マウスカーソルの大きさは削除 ──
-      //    = ユーザー要望「変えることができないのであれば項目自体消して」。
-      //    実測したところ、 レジストリ (Accessibility\CursorSize /
-      //    Cursors\CursorBaseSize) は書けても実際のカーソルは 32px のまま
-      //    だった。 SystemParametersInfo(SPI_SETCURSORS) も成功するのに
-      //    絵は変わらない (Windows 11 はサインインし直すまで読み直さない)。
-      //    書き換えた控えは起動時に既定へ戻している。
     ];
   }
 
@@ -73577,8 +73694,13 @@ class _MindMapScreenState extends State<MindMapScreen>
       !kIsWeb && (Platform.isWindows || Platform.isAndroid);
 
 
-  /// ディスプレイ設定のダイアログ (デスクトップ)。 動作設定と同じ作り。
-  void _openDisplaySettings() {
+  /// 「PC設定」 を開く (= ユーザー要望: マウス設定とディスプレイ設定に
+  /// 項目分けして、 PC設定というボタンの中に 2 タブで入れる)。
+  ///
+  /// [initialTab] は 0 = マウス設定 / 1 = ディスプレイ設定。
+  /// 昔からの「ディスプレイ設定」 のボタンやショートカットは、 ここの
+  /// ディスプレイ側のタブを開く ([_openDisplaySettings])。
+  void _openPcSettings({int initialTab = 0}) {
     if (_displayDialogOpen) return;
     _displayDialogOpen = true;
     final screenCtx = context;
@@ -73605,61 +73727,125 @@ class _MindMapScreenState extends State<MindMapScreen>
               ? math.max(12.0, (scr.height - maxH) / 2)
               : math.min(at.dy + 16, math.max(12.0, scr.height - 260))
                   .toDouble();
+          final bodyH = math.max(200.0, scr.height - top - 16);
+          // ★ マウス設定の中身は Windows でしか意味が無い (感度もボタン
+          //   割り当ても Win32 の機能)。 Android では 2 タブにせず、
+          //   今までどおり「ディスプレイ設定」 の 1 枚だけ出す。
+          final twoTabs = !kIsWeb && Platform.isWindows;
           return Stack(children: [
             Positioned(
               left: left,
               top: top,
               width: w,
-              child: Dialog(
-          insetPadding: EdgeInsets.zero,
-          alignment: Alignment.topLeft,
-          backgroundColor: const Color(0xFF12121F),
-          shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-              side: BorderSide(color: Colors.white.withValues(alpha: 0.10))),
-          child: ConstrainedBox(
-            constraints: BoxConstraints(
-              maxWidth: w,
-              maxHeight: math.max(200.0, scr.height - top - 16),
-            ),
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(18, 16, 8, 8),
-                child: Row(children: [
-                  const Icon(Icons.desktop_windows_rounded,
-                      color: Color(0xFF4FC3F7), size: 20),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(provider.t('menu.displaySettings'),
-                        style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 16,
-                            fontWeight: FontWeight.w700)),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.close_rounded,
-                        color: Colors.white54, size: 20),
-                    onPressed: () => Navigator.of(dctx).pop(),
-                  ),
-                ]),
-              ),
-              const Divider(color: Colors.white12, height: 1),
-              Flexible(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.fromLTRB(14, 10, 14, 16),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: _displaySettingsChildren(
-                      provider: provider,
-                      ctx: screenCtx,
-                      sheetCtx: dctx,
-                      setS: setS,
-                    ),
+              child: DefaultTabController(
+                length: 2,
+                initialIndex: initialTab.clamp(0, 1),
+                child: Dialog(
+                  insetPadding: EdgeInsets.zero,
+                  alignment: Alignment.topLeft,
+                  backgroundColor: const Color(0xFF12121F),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                      side: BorderSide(
+                          color: Colors.white.withValues(alpha: 0.10))),
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(maxWidth: w, maxHeight: bodyH),
+                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(18, 16, 8, 4),
+                        child: Row(children: [
+                          const Icon(Icons.settings_applications_rounded,
+                              color: Color(0xFF4FC3F7), size: 20),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                                provider.t(twoTabs
+                                    ? 'pc.title'
+                                    : 'menu.displaySettings'),
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w700)),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.close_rounded,
+                                color: Colors.white54, size: 20),
+                            onPressed: () => Navigator.of(dctx).pop(),
+                          ),
+                        ]),
+                      ),
+                      // ── 2 つのタブ ──
+                      if (twoTabs)
+                        TabBar(
+                        indicatorColor: const Color(0xFF4FC3F7),
+                        indicatorSize: TabBarIndicatorSize.tab,
+                        labelColor: Colors.white,
+                        unselectedLabelColor: Colors.white38,
+                        labelStyle: const TextStyle(
+                            fontSize: 12.5, fontWeight: FontWeight.w700),
+                        unselectedLabelStyle: const TextStyle(fontSize: 12.5),
+                        tabs: [
+                          Tab(
+                              height: 40,
+                              icon: const Icon(Icons.mouse_rounded, size: 16),
+                              iconMargin: EdgeInsets.zero,
+                              child: Text(provider.t('pc.tabMouse'))),
+                          Tab(
+                              height: 40,
+                              icon: const Icon(Icons.desktop_windows_rounded,
+                                  size: 16),
+                              iconMargin: EdgeInsets.zero,
+                              child: Text(provider.t('pc.tabDisplay'))),
+                        ],
+                      ),
+                      const Divider(color: Colors.white12, height: 1),
+                      Flexible(
+                        child: twoTabs
+                            ? TabBarView(children: [
+                                SingleChildScrollView(
+                                  padding:
+                                      const EdgeInsets.fromLTRB(14, 4, 14, 16),
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: _mouseSettingsChildren(
+                                      provider: provider,
+                                      ctx: screenCtx,
+                                      sheetCtx: dctx,
+                                      setS: setS,
+                                    ),
+                                  ),
+                                ),
+                                SingleChildScrollView(
+                                  padding:
+                                      const EdgeInsets.fromLTRB(14, 4, 14, 16),
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: _displaySettingsChildren(
+                                      provider: provider,
+                                      ctx: screenCtx,
+                                      sheetCtx: dctx,
+                                      setS: setS,
+                                    ),
+                                  ),
+                                ),
+                              ])
+                            : SingleChildScrollView(
+                                padding:
+                                    const EdgeInsets.fromLTRB(14, 4, 14, 16),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: _displaySettingsChildren(
+                                    provider: provider,
+                                    ctx: screenCtx,
+                                    sheetCtx: dctx,
+                                    setS: setS,
+                                  ),
+                                ),
+                              ),
+                      ),
+                    ]),
                   ),
                 ),
-              ),
-            ]),
-          ),
               ),
             ),
           ]);
@@ -73667,6 +73853,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       ),
     ).whenComplete(() => _displayDialogOpen = false);
   }
+
+  /// 昔からの「ディスプレイ設定」 の入り口。 PC設定のディスプレイ側の
+  /// タブを開く (ヘッダーのボタンや Ctrl+ショートカットはそのまま効く)。
+  void _openDisplaySettings() => _openPcSettings(initialTab: 1);
 
   /// 二重に開かないための札。
   bool _displayDialogOpen = false;
@@ -99301,6 +99491,838 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
 ///
 /// 差し替えは**全アプリに効き、 サインイン中ずっと残る**。 アプリを閉じる
 /// 時に戻す (main.dart) ほか、 ここの「元に戻す」 でいつでも戻せる。
+// ══════════════════════════════════════════════════════════════════════
+//  PC設定 (= ユーザー要望) の部品
+//
+//  ここに並ぶ 4 つは、 どれも **Windows 本体の設定を直に読み書き**する。
+//  アプリの中だけの控えではないので、 Windows の「設定」 を開けば同じ値が
+//  見えるし、 アプリを閉じても効いたままになる。
+//  外の道具 (PowerShell など) は一切呼ばない (= 以前セキュリティソフトに
+//  止められたため。 lib/services/pc_settings.dart の頭に経緯あり)。
+// ══════════════════════════════════════════════════════════════════════
+
+/// 設定の 1 行 (左に名前、 右に中身)。
+Widget _pcRow(String label, Widget child, {String? note}) {
+  return Padding(
+    padding: const EdgeInsets.symmetric(vertical: 4),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        SizedBox(
+          width: 132,
+          child: Text(label,
+              style: const TextStyle(color: Colors.white70, fontSize: 12)),
+        ),
+        Expanded(child: child),
+      ]),
+      if (note != null)
+        Padding(
+          padding: const EdgeInsets.only(left: 132, top: 2),
+          child: Text(note,
+              style: const TextStyle(
+                  color: Colors.white30, fontSize: 10, height: 1.35)),
+        ),
+    ]),
+  );
+}
+
+/// つまみ 1 本 (見た目を揃えるため)。
+Widget _pcSlider({
+  required double value,
+  required double min,
+  required double max,
+  required int divisions,
+  required ValueChanged<double> onChanged,
+  ValueChanged<double>? onChangeEnd,
+  required String trailing,
+}) {
+  return Row(children: [
+    Expanded(
+      child: SliderTheme(
+        data: SliderThemeData(
+          trackHeight: 3,
+          activeTrackColor: const Color(0xFF4FC3F7),
+          inactiveTrackColor: Colors.white24,
+          thumbColor: const Color(0xFF4FC3F7),
+          overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+          thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+        ),
+        child: Slider(
+          min: min,
+          max: max,
+          divisions: divisions,
+          value: value.clamp(min, max),
+          onChanged: onChanged,
+          onChangeEnd: onChangeEnd,
+        ),
+      ),
+    ),
+    SizedBox(
+      width: 58,
+      child: Text(trailing,
+          textAlign: TextAlign.right,
+          style: const TextStyle(
+              color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700)),
+    ),
+  ]);
+}
+
+/// 小さなトグル 1 行。
+Widget _pcToggle({
+  required String label,
+  required bool value,
+  required ValueChanged<bool> onChanged,
+  String? note,
+}) {
+  return Padding(
+    padding: const EdgeInsets.symmetric(vertical: 2),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        Expanded(
+          child: Text(label,
+              style: const TextStyle(color: Colors.white70, fontSize: 12)),
+        ),
+        Switch(
+          value: value,
+          onChanged: onChanged,
+          activeColor: const Color(0xFF4FC3F7),
+          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        ),
+      ]),
+      if (note != null)
+        Text(note,
+            style: const TextStyle(
+                color: Colors.white30, fontSize: 10, height: 1.35)),
+    ]),
+  );
+}
+
+/// 暗い所で見やすい選び札。
+Widget _pcDropdown<T>({
+  required T value,
+  required List<DropdownMenuItem<T>> items,
+  required ValueChanged<T?> onChanged,
+}) {
+  return Container(
+    padding: const EdgeInsets.symmetric(horizontal: 10),
+    decoration: BoxDecoration(
+      color: Colors.white.withValues(alpha: 0.05),
+      borderRadius: BorderRadius.circular(8),
+      border: Border.all(color: Colors.white12),
+    ),
+    child: DropdownButtonHideUnderline(
+      child: DropdownButton<T>(
+        value: value,
+        items: items,
+        onChanged: onChanged,
+        isExpanded: true,
+        isDense: true,
+        dropdownColor: const Color(0xFF1E1E32),
+        iconEnabledColor: Colors.white54,
+        style: const TextStyle(color: Colors.white, fontSize: 12),
+      ),
+    ),
+  );
+}
+
+// ── マウスそのものの動き ───────────────────────────────────────────────
+
+/// ポインターの速さ / 加速 / ホイール / ダブルクリックの速さ。
+class _MouseTweakInline extends StatefulWidget {
+  const _MouseTweakInline();
+
+  @override
+  State<_MouseTweakInline> createState() => _MouseTweakInlineState();
+}
+
+class _MouseTweakInlineState extends State<_MouseTweakInline> {
+  PcMouseState? _st;
+
+  /// つまみを動かしている最中の値。 指を離した時に OS へ当てる
+  /// (動かしている間ずっと書き込むと、 他のアプリにも変更が飛び続けて重い)。
+  double? _speedDrag;
+  double? _wheelDrag;
+  double? _dblDrag;
+
+  @override
+  void initState() {
+    super.initState();
+    _reload();
+  }
+
+  void _reload() {
+    if (!PcSettings.isSupported) return;
+    setState(() => _st = PcSettings.readMouse());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.read<MindMapProvider>();
+    final st = _st;
+    if (st == null) return const SizedBox.shrink();
+    final speed = _speedDrag ?? st.speed.toDouble();
+    final wheel = _wheelDrag ?? st.wheelLines.clamp(1, 30).toDouble();
+    final dbl = _dblDrag ?? st.doubleClickMs.clamp(100, 900).toDouble();
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      _pcRow(
+        p.t('mouse.speed'),
+        _pcSlider(
+          value: speed,
+          min: 1,
+          max: 20,
+          divisions: 19,
+          trailing: '${speed.round()} / 20',
+          onChanged: (v) => setState(() => _speedDrag = v),
+          onChangeEnd: (v) {
+            setState(() => _speedDrag = null);
+            PcSettings.setMouseSpeed(v.round());
+            _reload();
+          },
+        ),
+        note: p.t('mouse.speedNote'),
+      ),
+      _pcToggle(
+        label: p.t('mouse.accel'),
+        value: st.acceleration,
+        note: p.t('mouse.accelNote'),
+        onChanged: (v) {
+          PcSettings.setMouseAcceleration(v);
+          _reload();
+        },
+      ),
+      _pcRow(
+        p.t('mouse.wheelLines'),
+        _pcSlider(
+          value: wheel,
+          min: 1,
+          max: 30,
+          divisions: 29,
+          trailing: p.t('mouse.lines').replaceAll('{n}', '${wheel.round()}'),
+          onChanged: (v) => setState(() => _wheelDrag = v),
+          onChangeEnd: (v) {
+            setState(() => _wheelDrag = null);
+            PcSettings.setWheelScrollLines(v.round());
+            _reload();
+          },
+        ),
+      ),
+      _pcRow(
+        p.t('mouse.doubleClick'),
+        _pcSlider(
+          value: dbl,
+          min: 100,
+          max: 900,
+          divisions: 16,
+          trailing: '${dbl.round()}ms',
+          onChanged: (v) => setState(() => _dblDrag = v),
+          onChangeEnd: (v) {
+            setState(() => _dblDrag = null);
+            PcSettings.setDoubleClickTime(v.round());
+            _reload();
+          },
+        ),
+        note: p.t('mouse.doubleClickNote'),
+      ),
+    ]);
+  }
+}
+
+// ── ボタンへのキー割り当て ─────────────────────────────────────────────
+
+/// Flutter の論理キーを Windows の仮想キーコードに直す。
+/// 割り当てに使えない物 (修飾キー単体など) は 0 を返す。
+int _vkFromLogicalKey(LogicalKeyboardKey k) {
+  final id = k.keyId;
+  // 英字 (論理キーの番号は小文字の文字コード)。
+  if (id >= 0x61 && id <= 0x7A) return 0x41 + (id - 0x61);
+  // 数字。
+  if (id >= 0x30 && id <= 0x39) return id;
+  if (k == LogicalKeyboardKey.escape) return 0x1B;
+  if (k == LogicalKeyboardKey.tab) return 0x09;
+  if (k == LogicalKeyboardKey.enter) return 0x0D;
+  if (k == LogicalKeyboardKey.numpadEnter) return 0x0D;
+  if (k == LogicalKeyboardKey.space) return 0x20;
+  if (k == LogicalKeyboardKey.backspace) return 0x08;
+  if (k == LogicalKeyboardKey.delete) return 0x2E;
+  if (k == LogicalKeyboardKey.insert) return 0x2D;
+  if (k == LogicalKeyboardKey.home) return 0x24;
+  if (k == LogicalKeyboardKey.end) return 0x23;
+  if (k == LogicalKeyboardKey.pageUp) return 0x21;
+  if (k == LogicalKeyboardKey.pageDown) return 0x22;
+  if (k == LogicalKeyboardKey.arrowLeft) return 0x25;
+  if (k == LogicalKeyboardKey.arrowUp) return 0x26;
+  if (k == LogicalKeyboardKey.arrowRight) return 0x27;
+  if (k == LogicalKeyboardKey.arrowDown) return 0x28;
+  if (k == LogicalKeyboardKey.printScreen) return 0x2C;
+  if (k == LogicalKeyboardKey.pause) return 0x13;
+  if (k == LogicalKeyboardKey.contextMenu) return 0x5D;
+  if (k == LogicalKeyboardKey.minus) return 0xBD;
+  if (k == LogicalKeyboardKey.equal) return 0xBB;
+  if (k == LogicalKeyboardKey.bracketLeft) return 0xDB;
+  if (k == LogicalKeyboardKey.bracketRight) return 0xDD;
+  if (k == LogicalKeyboardKey.backslash) return 0xDC;
+  if (k == LogicalKeyboardKey.semicolon) return 0xBA;
+  if (k == LogicalKeyboardKey.quoteSingle) return 0xDE;
+  if (k == LogicalKeyboardKey.comma) return 0xBC;
+  if (k == LogicalKeyboardKey.period) return 0xBE;
+  if (k == LogicalKeyboardKey.slash) return 0xBF;
+  if (k == LogicalKeyboardKey.backquote) return 0xC0;
+  const fkeys = <LogicalKeyboardKey>[
+    LogicalKeyboardKey.f1,
+    LogicalKeyboardKey.f2,
+    LogicalKeyboardKey.f3,
+    LogicalKeyboardKey.f4,
+    LogicalKeyboardKey.f5,
+    LogicalKeyboardKey.f6,
+    LogicalKeyboardKey.f7,
+    LogicalKeyboardKey.f8,
+    LogicalKeyboardKey.f9,
+    LogicalKeyboardKey.f10,
+    LogicalKeyboardKey.f11,
+    LogicalKeyboardKey.f12,
+  ];
+  final fi = fkeys.indexOf(k);
+  if (fi >= 0) return 0x70 + fi;
+  const numpad = <LogicalKeyboardKey>[
+    LogicalKeyboardKey.numpad0,
+    LogicalKeyboardKey.numpad1,
+    LogicalKeyboardKey.numpad2,
+    LogicalKeyboardKey.numpad3,
+    LogicalKeyboardKey.numpad4,
+    LogicalKeyboardKey.numpad5,
+    LogicalKeyboardKey.numpad6,
+    LogicalKeyboardKey.numpad7,
+    LogicalKeyboardKey.numpad8,
+    LogicalKeyboardKey.numpad9,
+  ];
+  final ni = numpad.indexOf(k);
+  if (ni >= 0) return 0x60 + ni;
+  if (k == LogicalKeyboardKey.numpadMultiply) return 0x6A;
+  if (k == LogicalKeyboardKey.numpadAdd) return 0x6B;
+  if (k == LogicalKeyboardKey.numpadSubtract) return 0x6D;
+  if (k == LogicalKeyboardKey.numpadDecimal) return 0x6E;
+  if (k == LogicalKeyboardKey.numpadDivide) return 0x6F;
+  return 0;
+}
+
+/// 仮想キーコードを人が読める名前に直す (割り当ての表示用)。
+String _vkLabel(int vk) {
+  if (vk >= 0x41 && vk <= 0x5A) return String.fromCharCode(vk);
+  if (vk >= 0x30 && vk <= 0x39) return String.fromCharCode(vk);
+  if (vk >= 0x70 && vk <= 0x7B) return 'F${vk - 0x6F}';
+  if (vk >= 0x60 && vk <= 0x69) return 'Num${vk - 0x60}';
+  const names = <int, String>{
+    0x08: 'Backspace',
+    0x09: 'Tab',
+    0x0D: 'Enter',
+    0x13: 'Pause',
+    0x1B: 'Esc',
+    0x20: 'Space',
+    0x21: 'PageUp',
+    0x22: 'PageDown',
+    0x23: 'End',
+    0x24: 'Home',
+    0x25: '←',
+    0x26: '↑',
+    0x27: '→',
+    0x28: '↓',
+    0x2C: 'PrintScreen',
+    0x2D: 'Insert',
+    0x2E: 'Delete',
+    0x5D: 'Menu',
+    0x6A: 'Num*',
+    0x6B: 'Num+',
+    0x6D: 'Num-',
+    0x6E: 'Num.',
+    0x6F: 'Num/',
+    0xBA: ':',
+    0xBB: ';',
+    0xBC: ',',
+    0xBD: '-',
+    0xBE: '.',
+    0xBF: '/',
+    0xC0: '@',
+    0xDB: '[',
+    0xDC: r'\',
+    0xDD: ']',
+    0xDE: '^',
+  };
+  return names[vk] ?? 'VK\$${vk.toRadixString(16).toUpperCase()}';
+}
+
+/// 「Ctrl+Shift+A」 のような表示を作る。
+String _bindingLabel(int modifiers, int vk) {
+  final parts = <String>[
+    if (modifiers & 2 != 0) 'Ctrl',
+    if (modifiers & 4 != 0) 'Shift',
+    if (modifiers & 1 != 0) 'Alt',
+    if (modifiers & 8 != 0) 'Win',
+    _vkLabel(vk),
+  ];
+  return parts.join('+');
+}
+
+/// マウスのボタンに割り当てるキーを、 実際に押して決める窓。
+///
+/// 戻り値は (修飾キーの組み合わせ, 仮想キーコード)。 取り消しなら null。
+Future<(int, int)?> _pickMouseKey(
+    BuildContext ctx, MindMapProvider p, String buttonName) {
+  final focus = FocusNode(debugLabel: 'mouseKeyPicker');
+  int mods = 0;
+  int vk = 0;
+  return showDialog<(int, int)>(
+    context: ctx,
+    builder: (dctx) => StatefulBuilder(builder: (dctx, setEd) {
+      return AlertDialog(
+        backgroundColor: const Color(0xFF2A2A3E),
+        title: Row(children: [
+          const Icon(Icons.keyboard_alt_rounded,
+              color: Color(0xFF4FC3F7), size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(buttonName,
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold)),
+          ),
+        ]),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          Text(p.t('mouse.pressKeys'),
+              style: const TextStyle(color: Colors.white54, fontSize: 12)),
+          const SizedBox(height: 12),
+          KeyboardListener(
+            focusNode: focus,
+            autofocus: true,
+            onKeyEvent: (event) {
+              if (event is! KeyDownEvent) return;
+              final v = _vkFromLogicalKey(event.logicalKey);
+              if (v == 0) return; // 修飾キー単体などは確定しない
+              final keys = HardwareKeyboard.instance.logicalKeysPressed;
+              var m = 0;
+              if (keys.contains(LogicalKeyboardKey.controlLeft) ||
+                  keys.contains(LogicalKeyboardKey.controlRight)) {
+                m |= 2;
+              }
+              if (keys.contains(LogicalKeyboardKey.shiftLeft) ||
+                  keys.contains(LogicalKeyboardKey.shiftRight)) {
+                m |= 4;
+              }
+              if (keys.contains(LogicalKeyboardKey.altLeft) ||
+                  keys.contains(LogicalKeyboardKey.altRight)) {
+                m |= 1;
+              }
+              if (keys.contains(LogicalKeyboardKey.metaLeft) ||
+                  keys.contains(LogicalKeyboardKey.metaRight)) {
+                m |= 8;
+              }
+              setEd(() {
+                mods = m;
+                vk = v;
+              });
+            },
+            child: GestureDetector(
+              onTap: () => focus.requestFocus(),
+              child: Container(
+                width: 260,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.07),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                      color: const Color(0xFF4FC3F7).withValues(alpha: 0.6),
+                      width: 1.5),
+                ),
+                alignment: Alignment.center,
+                child: Text(
+                  vk == 0 ? p.t('mouse.waitingKey') : _bindingLabel(mods, vk),
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: vk == 0 ? Colors.white38 : Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 1,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ]),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx),
+            child: Text(p.t('btn.cancel'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+          TextButton(
+            onPressed:
+                vk == 0 ? null : () => Navigator.pop(dctx, (mods, vk)),
+            child: Text(p.t('btn.save'),
+                style: TextStyle(
+                    color: vk == 0 ? Colors.white24 : const Color(0xFF4FC3F7),
+                    fontWeight: FontWeight.w700)),
+          ),
+        ],
+      );
+    }),
+  ).whenComplete(focus.dispose);
+}
+
+/// マウスのボタンに割り当てたキーの一覧と、 効かせるかどうかのスイッチ。
+class _MouseButtonBindings extends StatefulWidget {
+  final MindMapProvider provider;
+  const _MouseButtonBindings({required this.provider});
+
+  @override
+  State<_MouseButtonBindings> createState() => _MouseButtonBindingsState();
+}
+
+class _MouseButtonBindingsState extends State<_MouseButtonBindings> {
+  MindMapProvider get p => widget.provider;
+
+  String _buttonName(int id) {
+    switch (id) {
+      case MouseButtonId.middle:
+        return p.t('mouse.btnMiddle');
+      case MouseButtonId.back:
+        return p.t('mouse.btnBack');
+      default:
+        return p.t('mouse.btnForward');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final on = p.mouseRemapEnabled;
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      _pcToggle(
+        label: p.t('mouse.buttonsEnable'),
+        value: on,
+        note: p.t('mouse.buttonsWarn'),
+        onChanged: (v) async {
+          await p.setMouseRemapEnabled(v);
+          if (!mounted) return;
+          setState(() {});
+          // 立ち上げに失敗した時だけ知らせる (静かに効かないのが一番困る)。
+          await Future<void>.delayed(const Duration(milliseconds: 400));
+          if (!mounted) return;
+          if (v && p.mouseKeyBindings.isNotEmpty && p.mouseRemapFailed) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text(p.t('mouse.hookFailed')),
+              backgroundColor: const Color(0xFFE53935),
+            ));
+          }
+        },
+      ),
+      const SizedBox(height: 4),
+      for (final id in MouseButtonId.all)
+        Builder(builder: (_) {
+          MouseKeyBinding? bind;
+          for (final b in p.mouseKeyBindings) {
+            if (b.button == id) bind = b;
+          }
+          final label = bind == null
+              ? p.t('mouse.unassigned')
+              : _bindingLabel(bind.modifiers, bind.vk);
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 3),
+            child: Row(children: [
+              Icon(
+                  id == MouseButtonId.middle
+                      ? Icons.mouse_rounded
+                      : (id == MouseButtonId.back
+                          ? Icons.arrow_back_rounded
+                          : Icons.arrow_forward_rounded),
+                  size: 16,
+                  color: bind == null ? Colors.white24 : const Color(0xFF4FC3F7)),
+              const SizedBox(width: 8),
+              SizedBox(
+                width: 110,
+                child: Text(_buttonName(id),
+                    style:
+                        const TextStyle(color: Colors.white70, fontSize: 12)),
+              ),
+              Expanded(
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(6),
+                  onTap: () async {
+                    final r = await _pickMouseKey(context, p, _buttonName(id));
+                    if (r == null) return;
+                    await p.setMouseKeyBinding(id,
+                        modifiers: r.$1, vk: r.$2);
+                    if (mounted) setState(() {});
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: bind == null
+                          ? Colors.white.withValues(alpha: 0.04)
+                          : const Color(0xFF4FC3F7).withValues(alpha: 0.14),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(
+                          color: bind == null
+                              ? Colors.white12
+                              : const Color(0xFF4FC3F7)
+                                  .withValues(alpha: 0.5)),
+                    ),
+                    child: Text(label,
+                        style: TextStyle(
+                            color: bind == null ? Colors.white38 : Colors.white,
+                            fontSize: 12,
+                            fontWeight: bind == null
+                                ? FontWeight.w400
+                                : FontWeight.w700)),
+                  ),
+                ),
+              ),
+              if (bind != null)
+                IconButton(
+                  tooltip: p.t('mouse.clear'),
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.backspace_outlined,
+                      size: 15, color: Colors.white38),
+                  onPressed: () async {
+                    await p.setMouseKeyBinding(id, modifiers: 0, vk: 0);
+                    if (mounted) setState(() {});
+                  },
+                ),
+            ]),
+          );
+        }),
+    ]);
+  }
+}
+
+// ── スクリーンセーバー ─────────────────────────────────────────────────
+
+class _ScreenSaverInline extends StatefulWidget {
+  final MindMapProvider provider;
+  const _ScreenSaverInline({required this.provider});
+
+  @override
+  State<_ScreenSaverInline> createState() => _ScreenSaverInlineState();
+}
+
+class _ScreenSaverInlineState extends State<_ScreenSaverInline> {
+  PcScreenSaverState? _st;
+  double? _waitDrag;
+
+  MindMapProvider get p => widget.provider;
+
+  @override
+  void initState() {
+    super.initState();
+    _reload();
+  }
+
+  void _reload() {
+    if (!PcSettings.isSupported) return;
+    setState(() => _st = PcSettings.readScreenSaver());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final st = _st;
+    if (st == null) return const SizedBox.shrink();
+    // 今の .scr。 一覧に無い物 (自分で入れた物) を選んでいる事もあるので、
+    // その時は一覧に足してから出す。
+    final choices = [...st.choices];
+    final cur = st.path.trim();
+    if (cur.isNotEmpty &&
+        !choices.any((c) => c.path.toLowerCase() == cur.toLowerCase())) {
+      choices.insert(0,
+          (path: cur, name: cur.split(RegExp(r'[\\/]')).last));
+    }
+    final selected = choices
+            .where((c) => c.path.toLowerCase() == cur.toLowerCase())
+            .isEmpty
+        ? ''
+        : cur;
+    final waitMin =
+        _waitDrag ?? (st.timeoutSec <= 0 ? 10 : st.timeoutSec / 60.0);
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      _pcRow(
+        p.t('saver.which'),
+        _pcDropdown<String>(
+          value: selected,
+          items: [
+            DropdownMenuItem(value: '', child: Text(p.t('saver.none'))),
+            for (final c in choices)
+              DropdownMenuItem(value: c.path, child: Text(c.name)),
+          ],
+          onChanged: (v) {
+            PcSettings.setScreenSaverPath(v ?? '');
+            _reload();
+          },
+        ),
+      ),
+      if (selected.isNotEmpty) ...[
+        _pcRow(
+          p.t('saver.wait'),
+          _pcSlider(
+            value: waitMin.clamp(1, 60),
+            min: 1,
+            max: 60,
+            divisions: 59,
+            trailing:
+                p.t('time.minutes').replaceAll('{n}', '${waitMin.round()}'),
+            onChanged: (v) => setState(() => _waitDrag = v),
+            onChangeEnd: (v) {
+              setState(() => _waitDrag = null);
+              PcSettings.setScreenSaverTimeout(v.round() * 60);
+              _reload();
+            },
+          ),
+        ),
+        _pcToggle(
+          label: p.t('saver.secure'),
+          value: st.secure,
+          onChanged: (v) {
+            PcSettings.setScreenSaverSecure(v);
+            _reload();
+          },
+        ),
+      ],
+    ]);
+  }
+}
+
+// ── スリープと電源 ─────────────────────────────────────────────────────
+
+class _PowerTimeoutInline extends StatefulWidget {
+  final MindMapProvider provider;
+  const _PowerTimeoutInline({required this.provider});
+
+  @override
+  State<_PowerTimeoutInline> createState() => _PowerTimeoutInlineState();
+}
+
+class _PowerTimeoutInlineState extends State<_PowerTimeoutInline> {
+  PcPowerState? _st;
+
+  MindMapProvider get p => widget.provider;
+
+  /// 選べる時間 (秒)。 0 = しない。
+  static const List<int> _choices = [
+    0,
+    60,
+    120,
+    180,
+    300,
+    600,
+    900,
+    1200,
+    1800,
+    2700,
+    3600,
+    7200,
+    10800,
+    14400,
+    18000,
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _reload();
+  }
+
+  void _reload() {
+    if (!PcSettings.isSupported) return;
+    setState(() => _st = PcSettings.readPower());
+  }
+
+  String _label(int sec) {
+    if (sec <= 0) return p.t('power.never');
+    if (sec % 3600 == 0) {
+      return p.t('time.hours').replaceAll('{n}', '${sec ~/ 3600}');
+    }
+    return p.t('time.minutes').replaceAll('{n}', '${sec ~/ 60}');
+  }
+
+  Widget _pick(String label,
+      {required int value,
+      required bool onBattery,
+      required bool display}) {
+    // 一覧に無い値 (Windows の設定アプリで細かく決めた時) も出せるように。
+    final items = [..._choices];
+    if (!items.contains(value)) {
+      items.add(value);
+      items.sort();
+    }
+    return _pcRow(
+      label,
+      _pcDropdown<int>(
+        value: value,
+        items: [
+          for (final v in items)
+            DropdownMenuItem(value: v, child: Text(_label(v))),
+        ],
+        onChanged: (v) {
+          if (v == null) return;
+          final ok = PcSettings.setPowerTimeout(
+              onBattery: onBattery, display: display, sec: v);
+          _reload();
+          if (!ok && mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text(p.t('pc.applyFailed')),
+              backgroundColor: const Color(0xFFE53935),
+            ));
+          }
+        },
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final st = _st;
+    if (st == null) return const SizedBox.shrink();
+    Widget group(String title, List<Widget> rows) => Container(
+          margin: const EdgeInsets.only(bottom: 6),
+          padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.03),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: Colors.white10),
+          ),
+          child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title,
+                    style: const TextStyle(
+                        color: Color(0xFF4FC3F7),
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700)),
+                const SizedBox(height: 2),
+                ...rows,
+              ]),
+        );
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      group(p.t('power.charging'), [
+        _pick(p.t('power.displayOff'),
+            value: st.acDisplayOffSec, onBattery: false, display: true),
+        _pick(p.t('power.sleep'),
+            value: st.acSleepSec, onBattery: false, display: false),
+      ]),
+      if (st.hasBattery)
+        group(p.t('power.battery'), [
+          _pick(p.t('power.displayOff'),
+              value: st.dcDisplayOffSec, onBattery: true, display: true),
+          _pick(p.t('power.sleep'),
+              value: st.dcSleepSec, onBattery: true, display: false),
+        ]),
+      Padding(
+        padding: const EdgeInsets.only(top: 2),
+        child: Text(p.t('pc.osNote'),
+            style: const TextStyle(
+                color: Colors.white30, fontSize: 10, height: 1.35)),
+      ),
+    ]);
+  }
+}
+
 class _CursorAppearanceInline extends StatefulWidget {
   final MindMapProvider provider;
 
@@ -104228,12 +105250,21 @@ class _ActionOverlayState extends State<_ActionOverlay>
                     //   リッチテキスト) ので、 旧「タイトルの大きさ」 行は削除し、
                     //   表示文字サイズを司る 1 つ (= メモ文字サイズ) だけ残す。
                     Row(children: [
-                      const Icon(Icons.notes_rounded,
-                          color: Colors.white38, size: 13),
-                      const SizedBox(width: 2),
-                      Text(provider.t('overlay.memoFontLabel'),
-                          style: const TextStyle(
-                              color: Colors.white38, fontSize: 10)),
+                      // ★ 何の字なのかを、 触れば分かるようにする
+                      //   (= ユーザー報告: どこを指しているのか分かりにくい)。
+                      //   これは要素の**中**に出る本文の大きさで、 要素の上に
+                      //   出る黄色いふきだし (説明書き) とは別物。
+                      Tooltip(
+                        message: provider.t('overlay.memoFontHint'),
+                        child: Row(mainAxisSize: MainAxisSize.min, children: [
+                          const Icon(Icons.notes_rounded,
+                              color: Colors.white38, size: 13),
+                          const SizedBox(width: 2),
+                          Text(provider.t('overlay.memoFontLabel'),
+                              style: const TextStyle(
+                                  color: Colors.white38, fontSize: 10)),
+                        ]),
+                      ),
                       Expanded(
                           child: SliderTheme(
                         data: SliderThemeData(
@@ -189551,7 +190582,7 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
           value: 'stickyMemo',
           child: Row(children: [
             const Icon(Icons.push_pin_rounded,
-                color: Color(0xFFFFC107), size: 18),
+                color: Colors.white70, size: 18),
             const SizedBox(width: 8),
             Text(provider.t('pdf.stickyMemoHere'),
                 style: const TextStyle(color: Colors.white, fontSize: 13)),
@@ -190758,7 +191789,7 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
           mainAxisSize: MainAxisSize.min,
           children: [
             const Icon(Icons.sticky_note_2_outlined,
-                color: Color(0xFFFFC107), size: 34),
+                color: Colors.white70, size: 34),
             const SizedBox(height: 10),
             Text(provider.t('openWith.memoNeedsNode'),
                 textAlign: TextAlign.center,
@@ -193895,7 +194926,7 @@ try {
                   ),
                   child: Row(mainAxisSize: MainAxisSize.min, children: [
                     const Icon(Icons.sticky_note_2_rounded,
-                        color: Color(0xFFFFC107), size: 14),
+                        color: Colors.white70, size: 14),
                     const SizedBox(width: 4),
                     Text(
                         context
@@ -198879,7 +199910,7 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
                   IconButton(
                     tooltip: context.read<MindMapProvider>().t('pmemo.list'),
                     icon: const Icon(Icons.sticky_note_2,
-                        color: Color(0xFFFFC107)),
+                        color: Colors.white70),
                     onPressed: _showMemoSheet,
                   ),
                 // ── その他は「設定」 メニューに格納 (= ユーザー要望:
@@ -201694,7 +202725,7 @@ class _PdfMemoPanelState extends State<_PdfMemoPanel> {
           IconButton(
             tooltip: provider.t('pdfMemo.tooltipSelectMode'),
             icon: const Icon(Icons.checklist_rounded,
-                color: Color(0xFFFFC107), size: 20),
+                color: Colors.white70, size: 20),
             onPressed: () {
               setState(() => _selectionMode = true);
               WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -201715,12 +202746,12 @@ class _PdfMemoPanelState extends State<_PdfMemoPanel> {
           IconButton(
             tooltip: context.read<MindMapProvider>().t('pmemo.placeHere'),
             icon: const Icon(Icons.add_location_alt,
-                color: Color(0xFFFFC107), size: 20),
+                color: Colors.white70, size: 20),
             onPressed: widget.onAddHere,
           ),
         IconButton(
           tooltip: provider.t('pdfMemo.tooltipFreeAdd'),
-          icon: const Icon(Icons.note_add, color: Color(0xFFFFC107), size: 20),
+          icon: const Icon(Icons.note_add, color: Colors.white70, size: 20),
           onPressed: () {
             // ★ 新規メモはダイアログではなく、 その場の欄で直接書けるように
             //   (= ユーザー要望: 新規で追加する欄の辺りに直接書き込める)。
@@ -201735,14 +202766,14 @@ class _PdfMemoPanelState extends State<_PdfMemoPanel> {
         IconButton(
           tooltip: provider.t('pmemo.paste'),
           icon: const Icon(Icons.content_paste_rounded,
-              color: Color(0xFFFFC107), size: 19),
+              color: Colors.white70, size: 19),
           onPressed: () => _pasteImageIntoMemo(provider),
         ),
         // ── 画像ファイルを選んでメモに添付 (= ユーザー要望) ──
         IconButton(
           tooltip: provider.t('pmemo.attachImage'),
           icon: const Icon(Icons.add_photo_alternate_outlined,
-              color: Color(0xFFFFC107), size: 20),
+              color: Colors.white70, size: 20),
           onPressed: () => _attachImageFileAsMemo(provider),
         ),
         // ── メモをまとめて AI に送る (= ユーザー要望: メモ毎に改行を
@@ -201808,7 +202839,7 @@ class _PdfMemoPanelState extends State<_PdfMemoPanel> {
         PopupMenuItem<String>(
           value: 'newMemo',
           child: Row(children: [
-            const Icon(Icons.note_add, color: Color(0xFFFFC107), size: 18),
+            const Icon(Icons.note_add, color: Colors.white70, size: 18),
             const SizedBox(width: 10),
             Text(provider.t('pmemo.newMemo'),
                 style: const TextStyle(color: Colors.white, fontSize: 13)),
@@ -203415,7 +204446,7 @@ class _PdfMemoEditDialogState extends State<_PdfMemoEditDialog> {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.place, color: Color(0xFFFFC107), size: 16),
+            const Icon(Icons.place, color: Colors.white70, size: 16),
             const SizedBox(width: 6),
             Text(
                 context
@@ -203797,7 +204828,7 @@ class _MapPdfMemoListPanel extends StatelessWidget {
                   child: Row(
                     children: [
                       const Icon(Icons.sticky_note_2,
-                          color: Color(0xFFFFC107), size: 20),
+                          color: Colors.white70, size: 20),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(

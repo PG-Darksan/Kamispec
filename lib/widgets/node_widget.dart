@@ -31,6 +31,9 @@ class SnapTarget {
   });
 }
 
+/// メモに日本語が入っているかを見る型。 毎コマ作り直さないよう 1 つだけ。
+final RegExp _kJpMemoChars = RegExp(r'[　-鿿豈-﫿]');
+
 class NodeWidget extends StatefulWidget {
   final MindMapNode node;
   final bool isSelected;
@@ -914,7 +917,8 @@ class _NodeWidgetState extends State<NodeWidget> {
     //   テキストを後から変えてもタイルの大きさが変わらない)。
     double memoExtraH = 0;
     if (hasMemo && !node.clampHeight) {
-      final hasJpMemo = RegExp(r'[　-鿿豈-﫿]').hasMatch(node.memoText!);
+      // 使い回し (= 1 コマごとに全ノードぶん通るため)。
+      final hasJpMemo = _kJpMemoChars.hasMatch(node.memoText!);
       final avgMemoCharW = hasJpMemo ? memoFontSize * 1.0 : memoFontSize * 0.58;
       final memoCharsPerLine =
           ((nw - 25.0) / avgMemoCharW).floor().clamp(1, 200);
@@ -1132,7 +1136,10 @@ class _NodeWidgetState extends State<NodeWidget> {
               child: ClipRRect(
                 borderRadius:
                     BorderRadius.circular(polyShape ? 0.0 : bodyRadius),
-                child: Column(
+                // ★ 中身の並び + 「下端に貼り付けた」 リンクバー
+                //   (= ユーザー要望: URL の帯より下に実体が見えないように)。
+                child: Stack(children: [
+                Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     // ─── テキスト部分 ──────────────────────────────────
@@ -1955,57 +1962,64 @@ class _NodeWidgetState extends State<NodeWidget> {
                       ),
 
                     // ─── ハイパーリンクバー (画像/添付ファイルの下) ──────────
-                    // ノード本体の最下段に配置。 画像が attach されている場合は
-                    // 「画像 → リンクピル」 の順で並び、 ピルが画像の下に来る。
-                    // ギャラリーのリンクカードはカード内にホストを表示するので、
-                    //   別途のリンクバーは出さない (= isShelfLinkCard)。
+                    // ★ 帯そのものは下端に貼り付ける (下の Stack)。 ここは
+                    //   その分の場所を取っておくだけ。
                     if (hasLinkBar && !isShelfLinkCard)
-                      GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () => widget.onThumbnailTap?.call(),
-                        child: Container(
-                          width: nw,
-                          height: linkBarH,
-                          decoration: const BoxDecoration(
-                            color: Color(0xFFF5F5F5),
-                            borderRadius: BorderRadius.vertical(
-                                bottom: Radius.circular(18)),
-                          ),
-                          padding: const EdgeInsets.symmetric(horizontal: 8),
-                          // ── 中央揃え ──
-                          // 旧実装は Expanded で Text をバー全幅に広げて
-                          // 左寄せだったが、 ユーザーから「埋め込まれる
-                          // リンクは中央揃えになるようにして」 と要望が
-                          // あったため、 アイコン + テキストをグループとして
-                          // 中央配置する。 テキストが長い場合は Flexible で
-                          // 最大幅に達して ellipsis に切り替わる。
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              const Icon(Icons.open_in_new_rounded,
-                                  size: 12, color: Color(0xFF7C4DFF)),
-                              const SizedBox(width: 4),
-                              Flexible(
-                                child: Text(
-                                  Uri.tryParse(linkUrl)?.host ?? linkUrl,
-                                  style: const TextStyle(
-                                    color: Color(0xFF7C4DFF),
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.w600,
-                                    decoration: TextDecoration.underline,
-                                    decorationColor: Color(0xFF7C4DFF),
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  textAlign: TextAlign.center,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
+                      SizedBox(height: linkBarH),
                   ],
                 ),
+                if (hasLinkBar && !isShelfLinkCard)
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    child:
+                          GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: () => widget.onThumbnailTap?.call(),
+                            child: Container(
+                              width: nw,
+                              height: linkBarH,
+                              decoration: const BoxDecoration(
+                                color: Color(0xFFF5F5F5),
+                                borderRadius: BorderRadius.vertical(
+                                    bottom: Radius.circular(18)),
+                              ),
+                              padding: const EdgeInsets.symmetric(horizontal: 8),
+                              // ── 中央揃え ──
+                              // 旧実装は Expanded で Text をバー全幅に広げて
+                              // 左寄せだったが、 ユーザーから「埋め込まれる
+                              // リンクは中央揃えになるようにして」 と要望が
+                              // あったため、 アイコン + テキストをグループとして
+                              // 中央配置する。 テキストが長い場合は Flexible で
+                              // 最大幅に達して ellipsis に切り替わる。
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  const Icon(Icons.open_in_new_rounded,
+                                      size: 12, color: Color(0xFF7C4DFF)),
+                                  const SizedBox(width: 4),
+                                  Flexible(
+                                    child: Text(
+                                      Uri.tryParse(linkUrl)?.host ?? linkUrl,
+                                      style: const TextStyle(
+                                        color: Color(0xFF7C4DFF),
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w600,
+                                        decoration: TextDecoration.underline,
+                                        decorationColor: Color(0xFF7C4DFF),
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      textAlign: TextAlign.center,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                  ),
+                ]),
               ),
             ),
 

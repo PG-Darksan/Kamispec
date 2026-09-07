@@ -1401,11 +1401,15 @@ class McpServer {
                   : 'nothing was added: every entry in "nodes" was unusable. '
                       'Each entry needs at least a "title".');
             }
-            // 座標を渡さないと全部同じ場所に重なる。 アプリ内の AI は最後に
-            //   自動で並べ直すが、 外部の MCP クライアントは自分で
-            //   tidy_page を呼ばないと重なったまま (= 動作確認で判明)。
+            // 座標を渡さないと全部同じ場所に重なる。
+            // ★ 以前は「後で tidy_page を呼んでね」 と返すだけだった。
+            //   呼び忘れ・途中で停止のどちらでも団子のまま残るので
+            //   (= ユーザー報告: 新規ページで全部が一か所に出る)、
+            //   **足したノードだけ**その場で並べる。 ページ全体は触らない
+            //   ので、 利用者が手で組んだ配置は崩れない。
             final placed =
                 batch.any((e) => e is Map && (e['x'] != null || e['y'] != null));
+            if (!placed) _provider.mcpArrangeNewNodes(pageId, ids);
             return _ok({
               // id と題名を組で返す (= 続けて connect_nodes を呼ぶ時に、
               //   どの id がどのノードか迷わないように)。
@@ -1415,8 +1419,9 @@ class McpServer {
               if (failed.isNotEmpty) 'failed': failed,
               if (unlinked.isNotEmpty) 'unlinked': unlinked,
               if (!placed && ids.length > 1)
-                'note': 'all ${ids.length} nodes were placed on the same spot; '
-                    'call tidy_page on this pageId to lay them out.',
+                'note': 'the ${ids.length} new nodes were laid out next to '
+                    'their parents automatically. Call tidy_page only if you '
+                    'want the whole page rearranged.',
             });
           }
           // 題名も memo も url も無い呼び出しでは何も作らない。
