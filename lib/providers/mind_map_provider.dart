@@ -5093,43 +5093,121 @@ class MindMapProvider extends ChangeNotifier {
   // 差し替えは**全アプリに効き、 サインインしている間ずっと残る**ので、
   // アプリを閉じる時に必ず戻す (main.dart の閉じる処理)。
 
-  /// カーソルの大きさ (px)。 32 = Windows の既定 (= 触らない)。
-  int _cursorPixelSize = 32;
+  /// カーソルの大きさ (px)。 **0 = Windows の既定** (= 触らない)。
+  ///
+  /// ★ 昔は 32 が「既定」 の印だった。 今は 0 を印にして、 32px を
+  ///   はっきり選べるようにしてある (= ユーザー要望: 小さい選択肢を増やす。
+  ///   画面の拡大率によっては既定が 48px だったりするので、 32 を
+  ///   「既定」 と決め打ちできない)。 昔の控えは読み込む時に読み替える。
+  int _cursorPixelSize = 0;
   int get cursorPixelSize => _cursorPixelSize;
 
-  /// カーソルの色 (ARGB)。 null = 元の色のまま。
+  /// カーソル本体 (明るい所) の色 (ARGB)。 null = 元の色のまま。
   int? _cursorColorArgb;
   int? get cursorColorArgb => _cursorColorArgb;
+
+  /// カーソルの外枠 (暗い所) の色 (ARGB)。 null = 元の黒のまま。
+  /// = ユーザー要望「マウスカーソルの外枠の色を指定したい」。
+  int? _cursorOutlineArgb;
+  int? get cursorOutlineArgb => _cursorOutlineArgb;
+
+  /// 自分で用意した絵をカーソルにする時の道 (= ユーザー要望)。
+  /// 空 = 使わない。 当たるのは「ふつうの矢印」 だけ。
+  String _cursorImagePath = '';
+  String get cursorImagePath => _cursorImagePath;
+
+  /// アプリを閉じた後もカーソルの設定を残すか (= ユーザー要望)。
+  ///
+  /// ★ 差し替えはサインインしている間ずっと・**全アプリに効く**ので、
+  ///   既定は「閉じる時に戻す」。 残すのは Pro 以上限定
+  ///   (= サブモニターのルーティング常駐と同じ扱い)。
+  bool _cursorKeepAfterExit = false;
+  bool get cursorKeepAfterExit => _cursorKeepAfterExit;
+
+  /// アプリを閉じた後も残す設定を使えるか (= Pro 以上限定)。
+  bool get canUseCursorKeepAfterExit => isProUnlocked;
+
+  /// 「閉じた後も残す」 の印を、 今のプランに合わせて立て直す。
+  void _syncCursorKeepFlag() {
+    CursorStyleControl.keepOnExit =
+        _cursorKeepAfterExit && canUseCursorKeepAfterExit;
+  }
+
+  Future<void> setCursorKeepAfterExit(bool v) async {
+    _cursorKeepAfterExit = v;
+    final prefs = await _prefsWithRetry();
+    await prefs.setBool('cursorKeepAfterExit', v);
+    _syncCursorKeepFlag();
+    notifyListeners();
+  }
 
   /// 今の設定を OS へ当てる。
   void applyCursorAppearance() {
     if (!CursorStyleControl.isSupported) return;
+    _syncCursorKeepFlag();
     try {
-      if (_cursorPixelSize <= 32 && _cursorColorArgb == null) {
+      if (CursorStyleControl.isDefaultLook(
+          sizePx: _cursorPixelSize,
+          fillArgb: _cursorColorArgb,
+          outlineArgb: _cursorOutlineArgb,
+          imagePath: _cursorImagePath)) {
         CursorStyleControl.restoreIfApplied();
       } else {
         CursorStyleControl.apply(
-            sizePx: _cursorPixelSize, argb: _cursorColorArgb);
+          sizePx: _cursorPixelSize,
+          fillArgb: _cursorColorArgb,
+          outlineArgb: _cursorOutlineArgb,
+          imagePath: _cursorImagePath.isEmpty ? null : _cursorImagePath,
+        );
       }
     } catch (e) {
       debugPrint('カーソルの見た目を当てられませんでした: $e');
     }
   }
 
-  Future<void> setCursorAppearance(
-      {int? sizePx, int? argb, bool clearColor = false}) async {
-    if (sizePx != null) _cursorPixelSize = sizePx.clamp(16, 256);
+  Future<void> setCursorAppearance({
+    int? sizePx,
+    int? argb,
+    bool clearColor = false,
+    int? outlineArgb,
+    bool clearOutline = false,
+    String? imagePath,
+    bool clearImage = false,
+  }) async {
+    if (sizePx != null) _cursorPixelSize = sizePx <= 0 ? 0 : sizePx.clamp(8, 256);
     if (clearColor) {
       _cursorColorArgb = null;
     } else if (argb != null) {
       _cursorColorArgb = argb;
     }
+    if (clearOutline) {
+      _cursorOutlineArgb = null;
+    } else if (outlineArgb != null) {
+      _cursorOutlineArgb = outlineArgb;
+    }
+    if (clearImage) {
+      _cursorImagePath = '';
+    } else if (imagePath != null) {
+      _cursorImagePath = imagePath;
+    }
     final prefs = await _prefsWithRetry();
     await prefs.setInt('cursorPixelSize', _cursorPixelSize);
+    // 昔の「32 = 既定」 と読み違えないよう、 新しい作りの印を残す。
+    await prefs.setBool('cursorSizeV2', true);
     if (_cursorColorArgb == null) {
       await prefs.remove('cursorColorArgb');
     } else {
       await prefs.setInt('cursorColorArgb', _cursorColorArgb!);
+    }
+    if (_cursorOutlineArgb == null) {
+      await prefs.remove('cursorOutlineArgb');
+    } else {
+      await prefs.setInt('cursorOutlineArgb', _cursorOutlineArgb!);
+    }
+    if (_cursorImagePath.isEmpty) {
+      await prefs.remove('cursorImagePath');
+    } else {
+      await prefs.setString('cursorImagePath', _cursorImagePath);
     }
     applyCursorAppearance();
     notifyListeners();
@@ -48032,9 +48110,9 @@ class MindMapProvider extends ChangeNotifier {
     },
     'cursorLook.desc': {
       'ja': 'Windows 全体のマウスカーソルを差し替えます。 他のアプリにも効きます。 '
-          'アプリを閉じると元に戻ります。',
+          '既定ではアプリを閉じると元に戻ります。',
       'en': 'Replaces the Windows mouse pointer, so it affects every app. '
-          'It goes back to normal when you close the app.',
+          'By default it goes back to normal when you close the app.',
       'zh': '将替换整个 Windows 的鼠标指针，对其他应用同样生效。关闭应用后会恢复原状。',
       'ko': 'Windows 전체의 마우스 포인터를 바꿉니다. 다른 앱에도 적용되며, 앱을 닫으면 원래대로 돌아갑니다.',
       'es': 'Sustituye el puntero de Windows, así que afecta a todas las aplicaciones. '
@@ -48080,6 +48158,139 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Farbe',
       'pt': 'Cor',
       'ru': 'Цвет',
+    },
+    'cursorLook.fill': {
+      'ja': '本体の色',
+      'en': 'Fill colour',
+      'zh': '主体颜色',
+      'ko': '본체 색',
+      'es': 'Color de relleno',
+      'fr': 'Couleur du corps',
+      'de': 'Füllfarbe',
+      'pt': 'Cor do corpo',
+      'ru': 'Цвет заливки',
+    },
+    'cursorLook.outline': {
+      'ja': '外枠の色',
+      'en': 'Outline colour',
+      'zh': '轮廓颜色',
+      'ko': '테두리 색',
+      'es': 'Color del contorno',
+      'fr': 'Couleur du contour',
+      'de': 'Farbe des Umrisses',
+      'pt': 'Cor do contorno',
+      'ru': 'Цвет контура',
+    },
+    'cursorLook.image': {
+      'ja': '自分の絵',
+      'en': 'Custom image',
+      'zh': '自定义图片',
+      'ko': '내 이미지',
+      'es': 'Imagen propia',
+      'fr': 'Image personnelle',
+      'de': 'Eigenes Bild',
+      'pt': 'Imagem própria',
+      'ru': 'Своё изображение',
+    },
+    'cursorLook.imagePick': {
+      'ja': '絵を選ぶ',
+      'en': 'Choose image',
+      'zh': '选择图片',
+      'ko': '이미지 선택',
+      'es': 'Elegir imagen',
+      'fr': 'Choisir une image',
+      'de': 'Bild wählen',
+      'pt': 'Escolher imagem',
+      'ru': 'Выбрать изображение',
+    },
+    'cursorLook.imageClear': {
+      'ja': '絵をやめる',
+      'en': 'Remove image',
+      'zh': '取消图片',
+      'ko': '이미지 해제',
+      'es': 'Quitar imagen',
+      'fr': 'Retirer l’image',
+      'de': 'Bild entfernen',
+      'pt': 'Remover imagem',
+      'ru': 'Убрать изображение',
+    },
+    'cursorLook.imageNote': {
+      'ja': 'png / jpg / bmp / gif / cur / ani が使えます。 当たるのは'
+          'ふつうの矢印だけで、 左上が押した所になります。',
+      'en': 'png / jpg / bmp / gif / cur / ani are supported. It replaces the '
+          'normal arrow only, and the top-left corner is the click point.',
+      'zh': '支持 png / jpg / bmp / gif / cur / ani。仅替换普通箭头，左上角为点击点。',
+      'ko': 'png / jpg / bmp / gif / cur / ani 를 쓸 수 있습니다. 일반 화살표만 바뀌며 '
+          '왼쪽 위가 클릭 지점이 됩니다.',
+      'es': 'Se admiten png / jpg / bmp / gif / cur / ani. Solo sustituye la flecha '
+          'normal y la esquina superior izquierda es el punto de clic.',
+      'fr': 'png / jpg / bmp / gif / cur / ani sont acceptés. Seule la flèche normale '
+          'est remplacée, et le coin supérieur gauche sert de point de clic.',
+      'de': 'png / jpg / bmp / gif / cur / ani werden unterstützt. Ersetzt nur den '
+          'normalen Pfeil; die linke obere Ecke ist der Klickpunkt.',
+      'pt': 'São aceitos png / jpg / bmp / gif / cur / ani. Substitui apenas a seta '
+          'normal, e o canto superior esquerdo é o ponto de clique.',
+      'ru': 'Поддерживаются png / jpg / bmp / gif / cur / ani. Заменяется только '
+          'обычная стрелка, точкой нажатия становится левый верхний угол.',
+    },
+    'cursorLook.imageFailed': {
+      'ja': 'この絵はカーソルにできませんでした。',
+      'en': 'That image could not be used as a pointer.',
+      'zh': '无法将该图片用作指针。',
+      'ko': '이 이미지는 포인터로 쓸 수 없습니다.',
+      'es': 'No se pudo usar esa imagen como puntero.',
+      'fr': 'Cette image n’a pas pu servir de pointeur.',
+      'de': 'Dieses Bild konnte nicht als Zeiger verwendet werden.',
+      'pt': 'Não foi possível usar essa imagem como ponteiro.',
+      'ru': 'Не удалось использовать это изображение как указатель.',
+    },
+    'cursorLook.keep': {
+      'ja': 'アプリを閉じた後もそのままにする',
+      'en': 'Keep it after the app closes',
+      'zh': '关闭应用后仍然保持',
+      'ko': '앱을 닫은 뒤에도 유지',
+      'es': 'Mantenerlo tras cerrar la aplicación',
+      'fr': 'Le garder après la fermeture de l’application',
+      'de': 'Nach dem Schließen der App beibehalten',
+      'pt': 'Manter depois de fechar o aplicativo',
+      'ru': 'Оставлять после закрытия приложения',
+    },
+    'cursorLook.keepHelp': {
+      'ja': '差し替えたカーソルは、 サインインしている間ずっと・全アプリに効きます。'
+          ' 切っておくとアプリを閉じた時に Windows の物へ戻します。 Pro 以上の機能です。',
+      'en': 'The replaced pointer stays for the whole sign-in session and affects '
+          'every app. When this is off, it goes back to the Windows pointer as the '
+          'app closes. Pro plan or above.',
+      'zh': '替换后的指针在本次登录期间一直有效，并影响所有应用。关闭此项时，退出应用会恢复 Windows 原指针。'
+          '需要 Pro 及以上方案。',
+      'ko': '바꾼 포인터는 로그인해 있는 동안 계속, 모든 앱에 적용됩니다. 꺼 두면 앱을 닫을 때 '
+          'Windows 포인터로 되돌립니다. Pro 이상 기능입니다.',
+      'es': 'El puntero sustituido permanece durante toda la sesión y afecta a todas '
+          'las aplicaciones. Si lo desactivas, se restaura al cerrar la aplicación. '
+          'Requiere plan Pro o superior.',
+      'fr': 'Le pointeur remplacé reste actif pendant toute la session et touche '
+          'toutes les applications. Désactivé, il revient à celui de Windows à la '
+          'fermeture. Offre Pro ou supérieure.',
+      'de': 'Der ersetzte Zeiger bleibt für die gesamte Anmeldesitzung aktiv und '
+          'wirkt in allen Programmen. Ausgeschaltet wird beim Schließen der App '
+          'zurückgesetzt. Ab dem Pro-Tarif.',
+      'pt': 'O ponteiro substituído permanece durante toda a sessão e afeta todos os '
+          'aplicativos. Desligado, volta ao ponteiro do Windows ao fechar o '
+          'aplicativo. Requer plano Pro ou superior.',
+      'ru': 'Заменённый указатель действует всю сессию входа и во всех приложениях. '
+          'Если выключено, при закрытии приложения возвращается указатель Windows. '
+          'Тариф Pro и выше.',
+    },
+    'paywall.proRequiredCursorKeep': {
+      'ja': 'アプリを閉じた後もカーソルの設定を残すには、 Pro プラン以上への加入が必要です。',
+      'en': 'Keeping the pointer settings after the app closes needs the Pro plan or above.',
+      'zh': '关闭应用后仍保留指针设置，需要 Pro 及以上方案。',
+      'ko': '앱을 닫은 뒤에도 포인터 설정을 유지하려면 Pro 이상 요금제가 필요합니다.',
+      'es': 'Mantener la configuración del puntero tras cerrar la aplicación requiere el plan Pro o superior.',
+      'fr': 'Conserver les réglages du pointeur après la fermeture nécessite l’offre Pro ou supérieure.',
+      'de': 'Das Beibehalten der Zeigereinstellungen nach dem Schließen erfordert den Pro-Tarif oder höher.',
+      'pt': 'Manter as configurações do ponteiro depois de fechar o aplicativo exige o plano Pro ou superior.',
+      'ru': 'Чтобы настройки указателя сохранялись после закрытия приложения, нужен тариф Pro или выше.',
     },
     'cursorLook.reset': {
       'ja': '元に戻す',
@@ -70715,6 +70926,10 @@ class MindMapProvider extends ChangeNotifier {
       final prefs = await _prefsWithRetry();
       await prefs.setBool('cursorWrapPlanOk', canUseMonitorRoutingDaemon);
     } catch (_) {}
+    // ★ 「アプリを閉じた後もカーソルの設定を残す」 も Pro 以上限定
+    //   (= ユーザー要望: ルーティング常駐と同じ扱いに)。 プランが落ちたら
+    //   閉じる時にちゃんと戻すよう、 ここで印を立て直す。
+    _syncCursorKeepFlag();
   }
 
 
@@ -71810,6 +72025,9 @@ class MindMapProvider extends ChangeNotifier {
     'cursorSizeSub',
     'cursorPixelSize',
     'cursorColorArgb',
+    'cursorOutlineArgb',
+    'cursorSizeV2',
+    'cursorKeepAfterExit',
     'openTarget', 'mapSplitQuad', 'mapSplitRatioX',
     'mapSplitRatioY', 'mapSplitStacked', 'instagramLanding',
     'instagramUsername', 'weather_cityName', 'weather_lat', 'weather_lon',
@@ -86518,9 +86736,44 @@ $cleanQ
     }
     // ── カーソルの大きさと色 (= ユーザー要望) ──
     //   起動のたびに当て直す (差し替えはサインインし直すと消えるため)。
-    _cursorPixelSize = prefs.getInt('cursorPixelSize') ?? 32;
+    _cursorPixelSize = prefs.getInt('cursorPixelSize') ?? 0;
+    // 昔の控えは「32 = 既定 (触らない)」 だったので読み替える。
+    if (prefs.getBool('cursorSizeV2') != true && _cursorPixelSize <= 32) {
+      _cursorPixelSize = 0;
+    }
     _cursorColorArgb = prefs.getInt('cursorColorArgb');
-    if (_cursorPixelSize > 32 || _cursorColorArgb != null) {
+    _cursorOutlineArgb = prefs.getInt('cursorOutlineArgb');
+    _cursorImagePath = prefs.getString('cursorImagePath') ?? '';
+    _cursorKeepAfterExit = prefs.getBool('cursorKeepAfterExit') ?? false;
+    _syncCursorKeepFlag();
+    // ★ 「既定は何 px か」 を控えておく (= ユーザー要望: 数値で示して)。
+    //   「閉じた後もそのまま」 を選んでいると、 次に立ち上げた時にはもう
+    //   差し替わった後なので測り直せない。 前回の値を渡し、 まだ差し替わって
+    //   いないと分かる時だけ測り直す。
+    if (CursorStyleControl.isSupported) {
+      CursorStyleControl.seedDefaultPixels(prefs.getInt('cursorBasePx'));
+      final wasKept = _cursorKeepAfterExit &&
+          !CursorStyleControl.isDefaultLook(
+              sizePx: _cursorPixelSize,
+              fillArgb: _cursorColorArgb,
+              outlineArgb: _cursorOutlineArgb,
+              imagePath: _cursorImagePath);
+      if (!wasKept) {
+        final measured = CursorStyleControl.currentArrowPixels();
+        if (measured != null && measured > 0) {
+          CursorStyleControl.seedDefaultPixels(measured);
+          if (prefs.getInt('cursorBasePx') != measured) {
+            // ignore: discarded_futures
+            prefs.setInt('cursorBasePx', measured);
+          }
+        }
+      }
+    }
+    if (!CursorStyleControl.isDefaultLook(
+        sizePx: _cursorPixelSize,
+        fillArgb: _cursorColorArgb,
+        outlineArgb: _cursorOutlineArgb,
+        imagePath: _cursorImagePath)) {
       applyCursorAppearance();
     }
     _loadCursorWrapEdges(prefs);

@@ -44,6 +44,7 @@ import '../services/audio_output.dart';
 import '../services/ic_card_reader.dart';
 // 面接練習・ロールプレイの下調べ (Web + 手元の資料ファイル)。
 import '../services/talk_reference.dart';
+import '../services/pdf_markup.dart';
 import '../utils/gantt_time_utils.dart';
 import '../utils/build_flags.dart';
 import '../utils/embedded_oauth_guard.dart';
@@ -3247,6 +3248,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       _splitLeftUrlCtrl.text = url;
       _splitLeftHasVideo = !isPdf && _isLikelyVideoUrl(url);
     });
+    _ensureSplitPdfMarkup(_splitLeftLocalPdfPath, left: true);
     // WebView がすでにある場合は loadUrl
     // Windows は webview_windows、 それ以外は flutter_inappwebview を更新。
     if (!isPdf) {
@@ -3308,11 +3310,31 @@ class _MindMapScreenState extends State<MindMapScreen>
       _splitLeftTotalPages = 0;
       _splitLeftHasVideo = false;
     });
+    _ensureSplitPdfMarkup(path, left: true);
     // ロード直後のフォーカス解放 (= スクロール不可問題対策)
     try {
       FocusManager.instance.primaryFocus?.unfocus();
     } catch (_) {}
     // 最終ページ復元は onDocumentLoaded のなかで実行
+  }
+
+  /// 分割ペインで開いた PDF に、 元から入っている囲みの印
+  /// (四角 / 丸 / 線 / 多角形) を焼き込んだ控えを用意する
+  /// (= ユーザー報告: 画像位置のマークアップがアプリで開くと出ない)。
+  ///
+  /// 印が無ければ何も起きない。 元のファイルは書き換えない。
+  void _ensureSplitPdfMarkup(String? path, {required bool left}) {
+    if (path == null || path.isEmpty) return;
+    unawaited(PdfMarkupFlatten.ensure(path).then((changed) {
+      if (!changed || !mounted) return;
+      setState(() {
+        if (left) {
+          _splitLeftPdfReloadTick++;
+        } else {
+          _splitPdfReloadTick++;
+        }
+      });
+    }));
   }
 
   /// 左パネルを閉じる (= PDF/Web どちらも)
@@ -4801,6 +4823,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         //   `SfPdfViewer.file(File(_splitLocalPdfPath!))` が機能する。
         _splitLocalPdfPath = (isPdf && isLocalFile) ? saved : null;
       });
+      _ensureSplitPdfMarkup(_splitLocalPdfPath, left: false);
     } catch (_) {}
   }
 
@@ -5060,6 +5083,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       _splitHasVideo = !isPdf && _isLikelyVideoUrl(url);
       _splitUrlCtrl.text = url;
     });
+    _ensureSplitPdfMarkup(_splitLocalPdfPath, left: false);
     // Platform 別の WebView コントローラに loadUrl (PDF 以外の時)
     if (!isPdf) {
       if (_isDesktop && Platform.isWindows && _splitWinInitialized) {
@@ -5110,6 +5134,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             _splitHasVideo = false;
             _splitUrlCtrl.text = path;
           });
+          _ensureSplitPdfMarkup(path, left: false);
         }
         return;
       }
@@ -54812,6 +54837,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                                       // (= ユーザー報告: 消しゴムで拡大率が
                                       //  元に戻る)。
                                       _keepSplitPdfView(left: true);
+                                      PdfMarkupFlatten.invalidate(pdfPath);
+                                      _ensureSplitPdfMarkup(pdfPath,
+                                          left: true);
                                       if (mounted) {
                                         setState(
                                             () => _splitLeftPdfReloadTick++);
@@ -54832,7 +54860,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                                           _markSplitLeftPdfBar(),
                                       child: ExcludeFocus(
                                         child: sf_pdf.SfPdfViewer.file(
-                                          File(pdfPath),
+                                          // ★ 元から入っている囲みの印を
+                                          //   焼き込んだ控えがあれば
+                                          //   そちらを見せる (= ユーザー報告)。
+                                          File(PdfMarkupFlatten.resolve(
+                                              pdfPath)),
                                           // 書き込み後に読み直すための鍵。
                                           key: ValueKey(
                                               'splpdfL_${pdfPath}_$_splitLeftPdfReloadTick'),
@@ -55887,7 +55919,9 @@ class _MindMapScreenState extends State<MindMapScreen>
           : sf_pdf.PdfScrollDirection.vertical;
       final pdfViewer = _splitLocalPdfPath != null
           ? sf_pdf.SfPdfViewer.file(
-              File(_splitLocalPdfPath!),
+              // ★ 元から入っている囲みの印を焼き込んだ控えがあれば
+              //   そちらを見せる (= ユーザー報告)。
+              File(PdfMarkupFlatten.resolve(_splitLocalPdfPath)),
               // 書き込み後に読み直すための鍵。
               key: ValueKey(
                   'splpdfR_${_splitLocalPdfPath}_$_splitPdfReloadTick'),
@@ -55945,6 +55979,8 @@ class _MindMapScreenState extends State<MindMapScreen>
         onSaved: () {
           // 読み直す前に今の見え方を控える (= ユーザー報告)。
           _keepSplitPdfView(left: false);
+          PdfMarkupFlatten.invalidate(_splitLocalPdfPath);
+          _ensureSplitPdfMarkup(_splitLocalPdfPath, left: false);
           if (mounted) setState(() => _splitPdfReloadTick++);
         },
         child: Listener(
@@ -73437,7 +73473,14 @@ class _MindMapScreenState extends State<MindMapScreen>
         // ── 画面の拡大率と壁紙 (= ユーザー要望) ──
         _MonitorDisplaySettings(provider: provider),
         // ── マウスカーソルの大きさと色 (= ユーザー要望) ──
-        _CursorAppearanceInline(provider: provider),
+        _CursorAppearanceInline(
+          provider: provider,
+          onNeedPro: () {
+            Navigator.of(sheetCtx).pop();
+            _showPaywallDialog(provider,
+                bodyOverride: provider.t('paywall.proRequiredCursorKeep'));
+          },
+        ),
         // ── 「サブモニターに両サイドからアクセス」 のトグルは削除 ──
         //    = ユーザー要望「上の図から設定すればいいから項目としては削除」。
         //    図で行き先を決めた辺だけが働く。
@@ -98473,7 +98516,7 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
                   Expanded(
                     child: Wrap(spacing: 5, runSpacing: 5, children: [
                       if (i < _scales.length)
-                        for (final v in _scales[i].choices)
+                        for (final v in _scaleChoicesFor(_scales[i]))
                           _pctChip(v, _scales[i], p)
                       else
                         // ★ 繋いでいない画面も、 メインの画面と同じ選択肢を
@@ -98682,6 +98725,21 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
               style: const TextStyle(color: Colors.white38, fontSize: 10)),
       ],
     );
+  }
+
+  /// 実際に繋がっている画面に出す拡大率の選択肢。
+  ///
+  /// ★ = ユーザー要望「サブモニターに 200% が無いのが気になるので、
+  ///   メインモニターと選択肢を同じにして欲しい」。 Windows は画面ごとに
+  ///   上限を決めていて、 小さめのサブモニターだと 175% で止まる。
+  ///   ここでは**主モニターの選択肢と足し合わせて**出す。 減らしはしない
+  ///   ので、 サブの方が広い時はそのまま全部出る。
+  ///   Windows が受け付けなかった時は、 今までどおり `_applyScale` が
+  ///   「変えられませんでした」 と伝える。
+  List<int> _scaleChoicesFor(MonitorScale mon) {
+    final merged = <int>{...mon.choices, ..._pendingScaleChoices}.toList()
+      ..sort();
+    return merged.isEmpty ? DisplayControl.commonScales : merged;
   }
 
   /// まだ繋いでいない画面ぶんに出す拡大率の選択肢。
@@ -99064,7 +99122,10 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
 /// 時に戻す (main.dart) ほか、 ここの「元に戻す」 でいつでも戻せる。
 class _CursorAppearanceInline extends StatefulWidget {
   final MindMapProvider provider;
-  const _CursorAppearanceInline({required this.provider});
+
+  /// プランが足りない時に加入の案内を出す (= 「閉じた後も残す」 は Pro 以上)。
+  final VoidCallback? onNeedPro;
+  const _CursorAppearanceInline({required this.provider, this.onNeedPro});
 
   @override
   State<_CursorAppearanceInline> createState() =>
@@ -99074,6 +99135,9 @@ class _CursorAppearanceInline extends StatefulWidget {
 class _CursorAppearanceInlineState extends State<_CursorAppearanceInline> {
   bool _open = false;
   static const String _kOpenKey = 'cursorSettingsOpen';
+
+  /// 絵を選んでいる最中か (二重に開かないように)。
+  bool _busyImage = false;
 
   /// 選べる色 (null = 元の色のまま)。
   static const List<int?> _colors = [
@@ -99089,10 +99153,73 @@ class _CursorAppearanceInlineState extends State<_CursorAppearanceInline> {
     0xFF000000, // 黒
   ];
 
+  /// 外枠に選べる色 (null = 元の黒のまま)。 本体と同じ並びに白を足す
+  /// (= 白い縁取りは暗い画面でよく見えるため)。
+  static const List<int?> _outlineColors = [
+    null,
+    0xFFFFFFFF, // 白
+    0xFFE53935, // 赤
+    0xFFFF7043, // 朱
+    0xFFFFD54F, // 黄
+    0xFF43B97F, // 緑
+    0xFF4FC3F7, // 水色
+    0xFF8B84FF, // 紫
+    0xFFEC407A, // 桃
+    0xFF000000, // 黒
+  ];
+
   @override
   void initState() {
     super.initState();
     _loadOpen();
+  }
+
+  /// 選んだ絵の見本。 読めない絵は箱だけ出す。
+  Widget _cursorPreview(String path) {
+    final lower = path.toLowerCase();
+    if (lower.endsWith('.cur') || lower.endsWith('.ani')) {
+      return const Icon(Icons.mouse_outlined, size: 15, color: Colors.white54);
+    }
+    return Image.file(File(path),
+        fit: BoxFit.contain,
+        errorBuilder: (_, __, ___) => const Icon(Icons.broken_image_outlined,
+            size: 14, color: Colors.white38));
+  }
+
+  /// 自分で用意した絵を選ぶ (= ユーザー要望)。
+  Future<void> _pickCursorImage() async {
+    if (_busyImage) return;
+    setState(() => _busyImage = true);
+    final p = widget.provider;
+    try {
+      final res = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['png', 'jpg', 'jpeg', 'bmp', 'gif', 'cur',
+            'ani'],
+      );
+      final path = res?.files.single.path;
+      if (path == null || path.isEmpty) return;
+      // 当てられるか先に試す (= 使えない絵で今のカーソルを壊さないため)。
+      final probe = CursorStyleControl.buildCursorFromImage(
+          path, p.cursorPixelSize > 0 ? p.cursorPixelSize : 32);
+      // 試しに作っただけなので捨てる (SetSystemCursor に渡していない
+      // 物は、 こちらで始末しないと残ってしまう)。
+      if (probe != 0) CursorStyleControl.destroyProbeCursor(probe);
+      if (probe == 0) {
+        if (mounted) {
+          ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+            content: Text(p.t('cursorLook.imageFailed')),
+            backgroundColor: const Color(0xFFE53935),
+          ));
+        }
+        return;
+      }
+      await p.setCursorAppearance(imagePath: path);
+    } catch (e) {
+      debugPrint('カーソルの絵を選べませんでした: $e');
+    } finally {
+      if (mounted) setState(() => _busyImage = false);
+    }
   }
 
   Future<void> _loadOpen() async {
@@ -99107,6 +99234,8 @@ class _CursorAppearanceInlineState extends State<_CursorAppearanceInline> {
   Widget build(BuildContext context) {
     if (!CursorStyleControl.isSupported) return const SizedBox.shrink();
     final p = widget.provider;
+    // 差し替える前に実測した「Windows の既定」 の px (= ユーザー要望)。
+    final base = CursorStyleControl.defaultPixels;
     Widget label(String text) => Padding(
           padding: const EdgeInsets.only(top: 10, bottom: 4),
           child: Text(text,
@@ -99131,7 +99260,15 @@ class _CursorAppearanceInlineState extends State<_CursorAppearanceInline> {
             border: Border.all(
                 color: on ? const Color(0xFF4FC3F7) : Colors.white12),
           ),
-          child: Text(px == 32 ? p.t('cursorLook.sizeDefault') : '${px}px',
+          child: Text(
+              px <= 0
+                  // ★ 既定が何 px なのか数値で出す (= ユーザー要望:
+                  //   既定が何 px を指すのか分かりにくい)。 画面の拡大率で
+                  //   変わるので、 差し替える前に実測した値を出す。
+                  ? (base == null
+                      ? p.t('cursorLook.sizeDefault')
+                      : '${p.t('cursorLook.sizeDefault')} (${base}px)')
+                  : '${px}px',
               style: TextStyle(
                   color: on ? Colors.white : Colors.white60,
                   fontSize: 11,
@@ -99140,15 +99277,21 @@ class _CursorAppearanceInlineState extends State<_CursorAppearanceInline> {
       );
     }
 
-    Widget colorChip(int? argb) {
-      final on = p.cursorColorArgb == argb;
+    // [outline] が真なら外枠の色 (= ユーザー要望: 外枠の色も指定したい)。
+    Widget colorChip(int? argb, {bool outline = false}) {
+      final on =
+          (outline ? p.cursorOutlineArgb : p.cursorColorArgb) == argb;
       return InkWell(
         borderRadius: BorderRadius.circular(6),
         onTap: on
             ? null
-            : () => unawaited(argb == null
-                ? p.setCursorAppearance(clearColor: true)
-                : p.setCursorAppearance(argb: argb)),
+            : () => unawaited(outline
+                ? (argb == null
+                    ? p.setCursorAppearance(clearOutline: true)
+                    : p.setCursorAppearance(outlineArgb: argb))
+                : (argb == null
+                    ? p.setCursorAppearance(clearColor: true)
+                    : p.setCursorAppearance(argb: argb))),
         child: Container(
           width: 26,
           height: 26,
@@ -99220,18 +99363,144 @@ class _CursorAppearanceInlineState extends State<_CursorAppearanceInline> {
               for (final px in CursorStyleControl.sizeChoices) sizeChip(px),
             ],
           ),
-          label(p.t('cursorLook.color')),
+          label(p.t('cursorLook.fill')),
           Wrap(
             spacing: 6,
             runSpacing: 6,
             children: [for (final c in _colors) colorChip(c)],
           ),
+          // ★ 外枠の色 (= ユーザー要望)。 前は縁取りが必ず黒だった。
+          label(p.t('cursorLook.outline')),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              for (final c in _outlineColors) colorChip(c, outline: true)
+            ],
+          ),
+          // ★ 自分で用意した絵をカーソルにする (= ユーザー要望)。
+          label(p.t('cursorLook.image')),
+          Row(children: [
+            if (p.cursorImagePath.isNotEmpty) ...[
+              Container(
+                width: 26,
+                height: 26,
+                decoration: BoxDecoration(
+                  color: Colors.white10,
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: Colors.white24),
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: _cursorPreview(p.cursorImagePath),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                    p.cursorImagePath
+                        .split(Platform.pathSeparator)
+                        .last,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Colors.white60, fontSize: 10.5)),
+              ),
+            ] else
+              Expanded(
+                child: Text(p.t('cursorLook.imageNote'),
+                    style: const TextStyle(
+                        color: Colors.white38, fontSize: 10, height: 1.35)),
+              ),
+          ]),
+          const SizedBox(height: 6),
+          Wrap(spacing: 6, runSpacing: 6, children: [
+            OutlinedButton.icon(
+              onPressed: _busyImage ? null : _pickCursorImage,
+              icon: const Icon(Icons.image_outlined, size: 15),
+              label: Text(p.t('cursorLook.imagePick'),
+                  style: const TextStyle(fontSize: 11)),
+              style: OutlinedButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  foregroundColor: Colors.white70,
+                  side: const BorderSide(color: Colors.white24),
+                  padding: const EdgeInsets.symmetric(horizontal: 10)),
+            ),
+            if (p.cursorImagePath.isNotEmpty)
+              TextButton.icon(
+                onPressed: () =>
+                    unawaited(p.setCursorAppearance(clearImage: true)),
+                icon: const Icon(Icons.close_rounded, size: 15),
+                label: Text(p.t('cursorLook.imageClear'),
+                    style: const TextStyle(fontSize: 11)),
+                style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    foregroundColor: Colors.white54),
+              ),
+          ]),
+          // ★ アプリを閉じた後もそのまま残す (= ユーザー要望。 Pro 以上限定。
+          //   サブモニターのルーティング常駐と同じ扱い)。
           const SizedBox(height: 10),
+          InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: () {
+              if (!p.canUseCursorKeepAfterExit) {
+                widget.onNeedPro?.call();
+                return;
+              }
+              unawaited(p.setCursorKeepAfterExit(!p.cursorKeepAfterExit));
+            },
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(children: [
+                Icon(
+                    p.canUseCursorKeepAfterExit
+                        ? Icons.push_pin_outlined
+                        : Icons.lock_outline_rounded,
+                    size: 15,
+                    color: p.cursorKeepAfterExit &&
+                            p.canUseCursorKeepAfterExit
+                        ? const Color(0xFF9CCC65)
+                        : const Color(0xFF4FC3F7)),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(p.t('cursorLook.keep'),
+                            style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w600)),
+                        const SizedBox(height: 2),
+                        Text(p.t('cursorLook.keepHelp'),
+                            style: const TextStyle(
+                                color: Colors.white38,
+                                fontSize: 10,
+                                height: 1.35)),
+                      ]),
+                ),
+                Switch(
+                  value:
+                      p.cursorKeepAfterExit && p.canUseCursorKeepAfterExit,
+                  onChanged: (v) {
+                    if (!p.canUseCursorKeepAfterExit) {
+                      widget.onNeedPro?.call();
+                      return;
+                    }
+                    unawaited(p.setCursorKeepAfterExit(v));
+                  },
+                ),
+              ]),
+            ),
+          ),
+          const SizedBox(height: 4),
           Align(
             alignment: Alignment.centerRight,
             child: TextButton.icon(
               onPressed: () => unawaited(p.setCursorAppearance(
-                  sizePx: 32, clearColor: true)),
+                  sizePx: 0,
+                  clearColor: true,
+                  clearOutline: true,
+                  clearImage: true)),
               icon: const Icon(Icons.restart_alt_rounded, size: 16),
               label: Text(p.t('cursorLook.reset')),
               style: TextButton.styleFrom(foregroundColor: Colors.white60),
@@ -188031,12 +188300,18 @@ void _viewerMark(String label) {
 // 渡すと、 syncfusion が「ファイルソースが変わった」 と判定してドキュメントを
 // 再ロードしてしまう (File は == を override しないので毎回別物扱い)。 パスが
 // 同じ間は同じ File を返すことで、 ページ移動時の setState で再ロードされなくなる。
+//
+// ★ ここで「元の道」 から「実際に見せる道」 へ読み替える
+//   (= ユーザー報告: PDF に元から入っている囲みの印がアプリで出ない)。
+//   印が入っていた時だけ、 焼き込んだ控えの道が返る。 メモやマーカーの
+//   鍵は今までどおり元の道のままなので、 見た目だけが変わる。
 String? _gStablePdfPath;
 File? _gStablePdfFile;
 File _stablePdfFile(String path) {
-  if (_gStablePdfPath != path || _gStablePdfFile == null) {
-    _gStablePdfPath = path;
-    _gStablePdfFile = File(path);
+  final shown = PdfMarkupFlatten.resolve(path);
+  if (_gStablePdfPath != shown || _gStablePdfFile == null) {
+    _gStablePdfPath = shown;
+    _gStablePdfFile = File(shown);
   }
   return _gStablePdfFile!;
 }
@@ -191268,6 +191543,17 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
     return null;
   }
 
+  /// 元のファイルを書き換えた後 (描き込みの焼き込み等)、 元から入って
+  /// いる囲みの印の控えを作り直す (= ユーザー報告)。
+  void _refreshPdfMarkupAfterWrite() {
+    final path = _pdfFilePath;
+    if (path == null) return;
+    PdfMarkupFlatten.invalidate(path);
+    unawaited(PdfMarkupFlatten.ensure(path).then((changed) {
+      if (changed && mounted) setState(() => _pdfDrawReloadTick++);
+    }));
+  }
+
   void _initPdf() {
     final path = _resolveLocalPdfPath();
     if (path == null) {
@@ -191289,6 +191575,13 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
       if (_title.isEmpty) _title = fname;
     });
     _viewerMark('initPdf done');
+    // ★ 元の PDF に入っている囲みの印 (四角 / 丸 / 線 / 多角形) を
+    //   ページへ焼き込んだ控えを用意し、 出来次第そちらへ差し替える
+    //   (= ユーザー報告: 画像位置のマークアップがアプリで開くと出ない)。
+    //   印が無ければ何も起きない。 元のファイルは触らない。
+    unawaited(PdfMarkupFlatten.ensure(path).then((changed) {
+      if (changed && mounted) setState(() => _pdfDrawReloadTick++);
+    }));
   }
 
   Future<void> _handoffViewerOAuthToExternalBrowser(
@@ -193704,6 +193997,9 @@ try {
                               // 読み直す前に今の見え方を控える (= ユーザー
                               // 報告: 消しゴムで拡大率が元に戻る)。
                               _keepPdfView();
+                              // ★ 元のファイルを書き換えたので、 元から入っている
+                              //   印の控えも作り直す (= ユーザー報告)。
+                              _refreshPdfMarkupAfterWrite();
                               if (mounted) {
                                 setState(() => _pdfDrawReloadTick++);
                               }
@@ -196217,6 +196513,17 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
     return null;
   }
 
+  /// 元のファイルを書き換えた後 (描き込みの焼き込み等)、 元から入って
+  /// いる囲みの印の控えを作り直す (= ユーザー報告)。
+  void _refreshPdfMarkupAfterWrite() {
+    final path = _pdfFilePath;
+    if (path == null) return;
+    PdfMarkupFlatten.invalidate(path);
+    unawaited(PdfMarkupFlatten.ensure(path).then((changed) {
+      if (changed && mounted) setState(() => _pdfDrawReloadTick++);
+    }));
+  }
+
   void _initPdf() {
     final path = _resolveLocalPdfPath();
     if (path == null) {
@@ -196238,6 +196545,13 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
       if (_title.isEmpty) _title = fname;
     });
     _viewerMark('initPdf done');
+    // ★ 元の PDF に入っている囲みの印 (四角 / 丸 / 線 / 多角形) を
+    //   ページへ焼き込んだ控えを用意し、 出来次第そちらへ差し替える
+    //   (= ユーザー報告: 画像位置のマークアップがアプリで開くと出ない)。
+    //   印が無ければ何も起きない。 元のファイルは触らない。
+    unawaited(PdfMarkupFlatten.ensure(path).then((changed) {
+      if (changed && mounted) setState(() => _pdfDrawReloadTick++);
+    }));
   }
 
   @override
@@ -197793,6 +198107,9 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
                           onSaved: () {
                             // 読み直す前に今の見え方を控える (= ユーザー報告)。
                             _keepPdfView();
+                            // ★ 元のファイルを書き換えたので、 元から入っている
+                            //   印の控えも作り直す (= ユーザー報告)。
+                            _refreshPdfMarkupAfterWrite();
                             if (mounted) {
                               setState(() => _pdfDrawReloadTick++);
                             }
