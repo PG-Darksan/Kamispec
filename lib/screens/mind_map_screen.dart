@@ -38,6 +38,7 @@ import '../services/screen_capture.dart' as scap;
 import '../services/screen_recorder.dart';
 import '../services/rec_hotkey.dart';
 import '../services/cursor_wrap.dart';
+import '../services/cursor_style.dart';
 import '../services/display_control.dart';
 import '../services/audio_output.dart';
 import '../services/ic_card_reader.dart';
@@ -4398,13 +4399,11 @@ class _MindMapScreenState extends State<MindMapScreen>
         bytes: bytes,
       );
       if (outPath == null) return;
-      // デスクトップでは saveFile が bytes を書かないことがあるので保険。
-      try {
-        final out = File(outPath);
-        if (!await out.exists() || (await out.length()) == 0) {
-          await out.writeAsBytes(bytes);
-        }
-      } catch (_) {}
+      // ★ 必ず自分で書き出す (= ユーザー報告: 同じ場所へ上書き保存しても
+      //   保存されない)。 Windows の保存ダイアログは場所を返すだけで、
+      //   bytes は書かない。 以前の「無い時だけ書く」 保険では、 既にある
+      //   ファイルへの上書きが素通りしていた。
+      await File(outPath).writeAsBytes(bytes, flush: true);
       snack(provider.t('paint.saved'), const Color(0xFF43B97F));
     } catch (_) {
       snack(provider.t('paint.saveFailed'), const Color(0xFFE53935));
@@ -73437,6 +73436,8 @@ class _MindMapScreenState extends State<MindMapScreen>
         _MonitorEdgeSettings(provider: provider),
         // ── 画面の拡大率と壁紙 (= ユーザー要望) ──
         _MonitorDisplaySettings(provider: provider),
+        // ── マウスカーソルの大きさと色 (= ユーザー要望) ──
+        _CursorAppearanceInline(provider: provider),
         // ── 「サブモニターに両サイドからアクセス」 のトグルは削除 ──
         //    = ユーザー要望「上の図から設定すればいいから項目としては削除」。
         //    図で行き先を決めた辺だけが働く。
@@ -82493,6 +82494,16 @@ class _MindMapScreenState extends State<MindMapScreen>
               onSaved: () => _notifyAttachmentEdited(nodeId),
               onRenamed: (newPath, newName) =>
                   _notifyAttachmentRenamed(nodeId, newPath, newName),
+              // 左 / 右に分割で開き直す (= ユーザー要望: JSON 等にも
+              //   分割ボタンを)。 表計算と同じ受け口。
+              onSplitOpen: (p, n, {bool isLeftPanel = false}) {
+                Navigator.of(
+                  viewerContext,
+                  rootNavigator: useRootNavigator,
+                ).pop();
+                _openOfficeInSplitPanel(p, n,
+                    mode: 'txt', isLeftPanel: isLeftPanel);
+              },
             ),
           ),
         );
@@ -82528,6 +82539,15 @@ class _MindMapScreenState extends State<MindMapScreen>
               onSaved: () => _notifyAttachmentEdited(nodeId),
               onRenamed: (newPath, newName) =>
                   _notifyAttachmentRenamed(nodeId, newPath, newName),
+              // モバイルでは上 / 下に分割になる (= 受け側が向きを決める)。
+              onSplitOpen: (p, n, {bool isLeftPanel = false}) {
+                Navigator.of(
+                  viewerContext,
+                  rootNavigator: useRootNavigator,
+                ).pop();
+                _openOfficeInSplitPanel(p, n,
+                    mode: 'txt', isLeftPanel: isLeftPanel);
+              },
             )),
           ),
         ));
@@ -99027,6 +99047,198 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
                 fontSize: 11,
                 fontWeight: on ? FontWeight.w700 : FontWeight.w400)),
       ),
+    );
+  }
+}
+
+/// マウスカーソルの大きさと色 (= ユーザー要望: ディスプレイ設定に
+/// カーソルの大きさ調節と色付けを足して欲しい)。
+///
+/// ★ 以前 (b271〜b287) はレジストリに書いていたが、 Windows 11 は
+///   サインインし直すまで読まないので見た目が変わらず、
+///   「変えられないなら項目ごと消して」 と言われて消した。 今は
+///   `SetSystemCursor` で動いているカーソルそのものを差し替えるので、
+///   押した瞬間に変わる (lib/services/cursor_style.dart)。
+///
+/// 差し替えは**全アプリに効き、 サインイン中ずっと残る**。 アプリを閉じる
+/// 時に戻す (main.dart) ほか、 ここの「元に戻す」 でいつでも戻せる。
+class _CursorAppearanceInline extends StatefulWidget {
+  final MindMapProvider provider;
+  const _CursorAppearanceInline({required this.provider});
+
+  @override
+  State<_CursorAppearanceInline> createState() =>
+      _CursorAppearanceInlineState();
+}
+
+class _CursorAppearanceInlineState extends State<_CursorAppearanceInline> {
+  bool _open = false;
+  static const String _kOpenKey = 'cursorSettingsOpen';
+
+  /// 選べる色 (null = 元の色のまま)。
+  static const List<int?> _colors = [
+    null,
+    0xFFE53935, // 赤
+    0xFFFF7043, // 朱
+    0xFFFFD54F, // 黄
+    0xFF9CCC65, // 黄緑
+    0xFF43B97F, // 緑
+    0xFF4FC3F7, // 水色
+    0xFF8B84FF, // 紫
+    0xFFEC407A, // 桃
+    0xFF000000, // 黒
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadOpen();
+  }
+
+  Future<void> _loadOpen() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final v = sp.getBool(_kOpenKey) ?? false;
+      if (mounted && v != _open) setState(() => _open = v);
+    } catch (_) {}
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!CursorStyleControl.isSupported) return const SizedBox.shrink();
+    final p = widget.provider;
+    Widget label(String text) => Padding(
+          padding: const EdgeInsets.only(top: 10, bottom: 4),
+          child: Text(text,
+              style: const TextStyle(
+                  color: Colors.white38,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700)),
+        );
+
+    Widget sizeChip(int px) {
+      final on = p.cursorPixelSize == px;
+      return InkWell(
+        borderRadius: BorderRadius.circular(6),
+        onTap: on ? null : () => unawaited(p.setCursorAppearance(sizePx: px)),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: on
+                ? const Color(0xFF4FC3F7).withValues(alpha: 0.22)
+                : Colors.white.withValues(alpha: 0.05),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(
+                color: on ? const Color(0xFF4FC3F7) : Colors.white12),
+          ),
+          child: Text(px == 32 ? p.t('cursorLook.sizeDefault') : '${px}px',
+              style: TextStyle(
+                  color: on ? Colors.white : Colors.white60,
+                  fontSize: 11,
+                  fontWeight: on ? FontWeight.w700 : FontWeight.w400)),
+        ),
+      );
+    }
+
+    Widget colorChip(int? argb) {
+      final on = p.cursorColorArgb == argb;
+      return InkWell(
+        borderRadius: BorderRadius.circular(6),
+        onTap: on
+            ? null
+            : () => unawaited(argb == null
+                ? p.setCursorAppearance(clearColor: true)
+                : p.setCursorAppearance(argb: argb)),
+        child: Container(
+          width: 26,
+          height: 26,
+          decoration: BoxDecoration(
+            color: argb == null ? Colors.transparent : Color(argb),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(
+                color: on ? Colors.white : Colors.white24,
+                width: on ? 2 : 1),
+          ),
+          alignment: Alignment.center,
+          // 「元の色」 は斜線で表す。
+          child: argb == null
+              ? const Icon(Icons.block_rounded, size: 14, color: Colors.white54)
+              : null,
+        ),
+      );
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.fromLTRB(10, 6, 10, 10),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.04),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.white12),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        InkWell(
+          borderRadius: BorderRadius.circular(6),
+          onTap: () async {
+            setState(() => _open = !_open);
+            try {
+              final sp = await SharedPreferences.getInstance();
+              await sp.setBool(_kOpenKey, _open);
+            } catch (_) {}
+          },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Row(children: [
+              const Icon(Icons.mouse_rounded,
+                  color: Color(0xFF4FC3F7), size: 16),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(p.t('cursorLook.title'),
+                    style: const TextStyle(
+                        color: Color(0xFF4FC3F7),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700)),
+              ),
+              Icon(
+                  _open
+                      ? Icons.expand_less_rounded
+                      : Icons.expand_more_rounded,
+                  size: 18,
+                  color: const Color(0xFF4FC3F7)),
+            ]),
+          ),
+        ),
+        if (_open) ...[
+          Text(p.t('cursorLook.desc'),
+              style: const TextStyle(
+                  color: Colors.white38, fontSize: 10.5, height: 1.4)),
+          label(p.t('cursorLook.size')),
+          Wrap(
+            spacing: 5,
+            runSpacing: 5,
+            children: [
+              for (final px in CursorStyleControl.sizeChoices) sizeChip(px),
+            ],
+          ),
+          label(p.t('cursorLook.color')),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [for (final c in _colors) colorChip(c)],
+          ),
+          const SizedBox(height: 10),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton.icon(
+              onPressed: () => unawaited(p.setCursorAppearance(
+                  sizePx: 32, clearColor: true)),
+              icon: const Icon(Icons.restart_alt_rounded, size: 16),
+              label: Text(p.t('cursorLook.reset')),
+              style: TextButton.styleFrom(foregroundColor: Colors.white60),
+            ),
+          ),
+        ],
+      ]),
     );
   }
 }
@@ -132347,6 +132559,53 @@ $body''';
         hideBtn,
       ]),
     );
+  }
+}
+
+/// 蛍光ペン (マーカー) を PDF 本体へ焼き込む (別 isolate 用のエントリ)。
+///
+/// ★ = ユーザー報告「PDF の上に描かれた黄緑色のハイライトが上手く反映
+///   できていない」。 マーカーはビューアが画面の上に重ねて描いているだけで
+///   **ファイルの中には入っていない**ため、 保存 / ダウンロードした PDF にも、
+///   ノードの表紙にも、 他のアプリで開いた時にも出てこなかった。
+///   保存する時にここで本体へ塗り込む。
+///
+/// [msg] は `{bytes: List<int>, rects: [{page,l,t,r,b,argb}]}`。
+/// compute で渡すのでプリミティブだけで組む。 戻り値は塗り込んだ PDF の
+/// バイト列 (失敗したら null = 呼び出し側は元のまま保存する)。
+Future<List<int>?> burnPdfHighlights(Map<String, Object?> msg) async {
+  try {
+    final bytes = (msg['bytes'] as List).cast<int>();
+    final rects = (msg['rects'] as List).cast<Map<String, Object?>>();
+    if (rects.isEmpty) return null;
+    final doc = sfpdf.PdfDocument(inputBytes: bytes);
+    for (final r in rects) {
+      final pageNumber = (r['page'] as num).toInt();
+      if (pageNumber < 1 || pageNumber > doc.pages.count) continue;
+      final l = (r['l'] as num).toDouble();
+      final t = (r['t'] as num).toDouble();
+      final w = (r['r'] as num).toDouble() - l;
+      final h = (r['b'] as num).toDouble() - t;
+      if (w <= 0 || h <= 0) continue;
+      final argb = (r['argb'] as num).toInt();
+      final g = doc.pages[pageNumber - 1].graphics;
+      final state = g.save();
+      // 掛け算で重ねる = 下の文字が透けるので、 塗っても読める
+      // (画面のマーカーと同じ見え方)。
+      g.setTransparency(1.0, alphaBrush: 0.4, mode: sfpdf.PdfBlendMode.multiply);
+      g.drawRectangle(
+        brush: sfpdf.PdfSolidBrush(sfpdf.PdfColor(
+            (argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF)),
+        bounds: Rect.fromLTWH(l, t, w, h),
+      );
+      g.restore(state);
+    }
+    final out = await doc.save();
+    doc.dispose();
+    return out;
+  } catch (e) {
+    debugPrint('マーカーの焼き込みに失敗: $e');
+    return null;
   }
 }
 
@@ -189347,6 +189606,10 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
     });
   }
 
+  /// 開いている PDF の 1 ページの縦横比 (高さ / 幅)。 A4 縦 = 約 1.414。
+  /// 「1 ページ全体を表示」 の縮尺を決めるのに使う (開いた時に控える)。
+  double _pdfPageAspect = 1.41421356237;
+
   double _pdfLiveWidthFactor(BoxConstraints constraints) {
     if (!_fitPageMode) return 1.0;
     final width = constraints.maxWidth;
@@ -189354,8 +189617,9 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
     if (!width.isFinite || !height.isFinite || width <= 0 || height <= 0) {
       return 0.62;
     }
-    const a4HeightOverWidth = 1.41421356237;
-    return (height / (width * a4HeightOverWidth) * 0.96)
+    // ★ 実際のページの縦横比を使う (= 開いた時に控える)。 A4 決め打ちだと
+    //   横長のページや B5 で「全体が入る」 大きさにならなかった。
+    return (height / (width * _pdfPageAspect) * 0.96)
         .clamp(0.28, 1.0)
         .toDouble();
   }
@@ -190884,6 +191148,14 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
   /// 受けて存在チェック付きで使う。 HighlightAnnotation に渡す素材。
   dynamic _selectedPdfLines;
 
+  /// SfPdfViewer の中身へ触るための鍵。
+  ///
+  /// ★ 選択した行の枠 (getSelectedTextLines) は **State 側にしか無い**
+  ///   (操作用の controller には無い)。 これが無かったので、 マーカーは
+  ///   一度も枠を取れず「反映されない」 ままだった (= ユーザー報告)。
+  final GlobalKey<sf_pdf.SfPdfViewerState> _pdfViewerKey =
+      GlobalKey<sf_pdf.SfPdfViewerState>();
+
   /// 現在選択中のマーカー色。 null = マーカーモード OFF (マーカー追加 FAB は出ない)。
   /// non-null = マーカーモード ON で、 テキスト選択中に FAB が出てこの色で
   /// HighlightAnnotation が追加される。 ツールバーのマーカーボタンから切替可能。
@@ -191407,10 +191679,10 @@ try {
         _jumpSpreadPages(key == LogicalKeyboardKey.arrowRight ? 2 : -2);
         return KeyEventResult.handled;
       }
-      // 横めくり / 1 ページ表示では xOffset がページ送りに読み替えられる
-      //   ので、 そこでは今までどおりビューアに任せる。
-      final canPan = !_fitPageMode &&
-          !context.read<MindMapProvider>().pdfScrollHorizontal;
+      // 横めくりでは xOffset がページ送りに読み替えられるので、 そこでは
+      //   今までどおりビューアに任せる。 1 ページ全体表示は縦のままなので
+      //   左右で横に動かせる (= ユーザー要望で縦めくりを保つようにした)。
+      final canPan = !context.read<MindMapProvider>().pdfScrollHorizontal;
       if (_pdfArrowPanMode || (canPan && _pdfZoomLevel > 1.01)) {
         try {
           final dir = key == LogicalKeyboardKey.arrowRight ? 1 : -1;
@@ -191768,9 +192040,10 @@ try {
     } catch (_) {}
     if (rawLines.isEmpty) {
       try {
-        final fromCtrl = (_pdfViewerCtrl as dynamic).getSelectedTextLines();
-        if (fromCtrl is List && fromCtrl.isNotEmpty) {
-          rawLines = List<dynamic>.from(fromCtrl);
+        // ★ 選択行は State 側の API (操作用の controller には無い)。
+        final fromState = _pdfViewerKey.currentState?.getSelectedTextLines();
+        if (fromState != null && fromState.isNotEmpty) {
+          rawLines = List<dynamic>.from(fromState);
         }
       } catch (_) {}
     }
@@ -191921,47 +192194,52 @@ try {
     if (_nodeId == null) return;
     if (annotation is! sf_pdf.HighlightAnnotation) return;
 
-    // 色: マーカーモードが ON ならその色、 OFF なら syncfusion デフォルトの黄色を採用。
-    final markerColor = _activeMarkerColor ?? const Color(0xFFFFEB3B);
+    // 色: マーカーモードが ON ならその色。 OFF の時は syncfusion が既定色を
+    //   入れた後なので、 その実際の色をそのまま控える。
+    var markerColor = _activeMarkerColor ?? const Color(0xFFFFEB3B);
     if (_activeMarkerColor != null) {
-      try {
-        (annotation as dynamic).color = markerColor;
-      } catch (_) {}
+      annotation.color = markerColor;
+    } else if (annotation.color != Colors.transparent) {
+      markerColor = annotation.color;
     }
 
-    // textBoundsCollection から各行を取り出して PdfHighlightLine に変換
+    // ★ 塗った所の矩形を取り出して控える。
+    //
+    //   = ユーザー報告「ハイライトが反映されない」。 以前は
+    //   `(ann as dynamic).textBoundsCollection` を読んでいたが、 この名前は
+    //   **作る時の引数名でしかなく、 読み出す口は拡張 (textMarkupRects)**。
+    //   しかも Dart の拡張は dynamic 越しには呼べないので、 必ず例外になり、
+    //   握り潰されて**一件も保存されていなかった**。 型を保ったまま読む。
     try {
-      final dynamic ann = annotation;
-      final dynamic rawLines = ann.textBoundsCollection;
-      if (rawLines is! List) return;
-
+      // ★ 塗った所の枠は、 選択した時に控えておいた行を使う。
+      //   注釈そのものからは取り出せない (読み出す口が package の外に
+      //   出ていない) ので、 dynamic で読もうとして毎回失敗し、
+      //   一件も保存されていなかった (= ユーザー報告の一因)。
       final savedLines = <PdfHighlightLine>[];
-      final textBuffer = StringBuffer();
-      for (final dyn in rawLines) {
-        try {
-          final dynamic line = dyn;
-          final Rect bounds = line.bounds as Rect;
-          final String txt = (line.text as String?) ?? '';
-          final int page = line.pageNumber as int;
-          savedLines.add(PdfHighlightLine(
-            pageNumber: page,
-            left: bounds.left,
-            top: bounds.top,
-            right: bounds.right,
-            bottom: bounds.bottom,
-            text: txt,
-          ));
-          if (textBuffer.isNotEmpty) textBuffer.write(' ');
-          textBuffer.write(txt);
-        } catch (_) {
-          // 個別行の取り出し失敗はスキップ
+      final cached = _selectedPdfLines;
+      if (cached is List) {
+        for (final dyn in cached) {
+          try {
+            final dynamic line = dyn;
+            final Rect b = line.bounds as Rect;
+            savedLines.add(PdfHighlightLine(
+              pageNumber: line.pageNumber as int,
+              left: b.left,
+              top: b.top,
+              right: b.right,
+              bottom: b.bottom,
+              text: (line.text as String?) ?? '',
+            ));
+          } catch (_) {}
         }
       }
+      // 控えが無い時は諦める (注釈そのものからは枠を読めない)。
       if (savedLines.isEmpty) return;
 
       final saved = PdfHighlight(
         id: '${DateTime.now().millisecondsSinceEpoch}',
-        text: textBuffer.toString(),
+        // 選択していた文字が分かればそれを控える (一覧の見出し用)。
+        text: _selectedPdfText ?? '',
         lines: savedLines,
         createdAt: DateTime.now().millisecondsSinceEpoch,
         // ignore: deprecated_member_use
@@ -191972,7 +192250,9 @@ try {
         context.read<MindMapProvider>().addPdfHighlight(_nodeId!, saved);
         _sessionAddedHighlightIds.add(saved.id);
       }
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('マーカーの控えに失敗: $e');
+    }
   }
 
   /// このノードに保存されている全ハイライトをクリア。
@@ -192658,27 +192938,78 @@ try {
     var name = src.split(RegExp(r'[\\/]')).last;
     if (!name.toLowerCase().endsWith('.pdf')) name = '$name.pdf';
     try {
-      final bytes = await File(src).readAsBytes();
+      var bytes = await File(src).readAsBytes();
+      // ★ マーカー (蛍光ペン) を PDF 本体へ塗り込んでから保存する
+      //   (= ユーザー報告: 黄緑のハイライトが反映されない)。 マーカーは
+      //   画面の上に重ねているだけなので、 塗り込まないと保存した PDF には
+      //   入らない。
+      final burned = await _burnHighlightsForSave(bytes);
+      if (burned != null) bytes = Uint8List.fromList(burned);
       final outPath = await FilePicker.platform.saveFile(
         dialogTitle: context.read<MindMapProvider>().t('save.pdf'),
         fileName: name,
-        bytes: bytes,
       );
       if (outPath == null) return; // キャンセル
       // ★ 元のファイルと同じ場所・同じ名前でも保存できる (= ユーザー要望)。
       //   その場合は元のファイルを上書きするので、 書き込んだ内容はその PDF
       //   本体に焼き込まれ、 後から個別に消すことはできなくなる。
-      // デスクトップでは saveFile が bytes を書き込まない場合があるので保険。
-      try {
-        final out = File(outPath);
-        if (!await out.exists() || (await out.length()) == 0) {
-          await out.writeAsBytes(bytes);
-        }
-      } catch (_) {}
+      // ★★ 必ず自分で書き出す (= ユーザー報告: ダウンロードした場所と同じ
+      //   場所に上書き保存しても保存されない)。 Windows の保存ダイアログは
+      //   **場所を返すだけでファイルは書かない**ので、 以前の「無い時だけ
+      //   書く」 保険では、 既にあるファイルへの上書きが素通りしていた。
+      final out = File(outPath);
+      await out.writeAsBytes(bytes, flush: true);
+      // 塗り込んだ先が元のファイル自身なら、 画面に重ねる分は消す
+      //   (残すと同じ所が二重に濃くなる)。
+      if (burned != null && isSameFilePath(outPath, src)) {
+        await _clearHighlightsAfterBurn();
+      }
       snack('保存しました', const Color(0xFF43B97F));
     } catch (_) {
       snack('保存に失敗しました', const Color(0xFFE53935));
     }
+  }
+
+  /// 保存する PDF に、 このノードのマーカーを塗り込んだバイト列を返す。
+  /// マーカーが無ければ null (呼び出し側は元のまま保存する)。
+  Future<List<int>?> _burnHighlightsForSave(Uint8List bytes) async {
+    final id = _nodeId;
+    if (id == null || !mounted) return null;
+    final hs = context.read<MindMapProvider>().getPdfHighlights(id);
+    if (hs.isEmpty) return null;
+    final rects = <Map<String, Object?>>[];
+    for (final h in hs) {
+      for (final l in h.lines) {
+        rects.add({
+          'page': l.pageNumber,
+          'l': l.left,
+          't': l.top,
+          'r': l.right,
+          'b': l.bottom,
+          'argb': h.colorValue,
+        });
+      }
+    }
+    if (rects.isEmpty) return null;
+    try {
+      // 重い処理なので別 isolate へ (= 大きい PDF で画面が固まらないように)。
+      return await compute(
+          burnPdfHighlights, {'bytes': bytes.toList(), 'rects': rects});
+    } catch (e) {
+      debugPrint('マーカーの焼き込みに失敗: $e');
+      return null;
+    }
+  }
+
+  /// 元のファイルへ塗り込んだ後、 画面に重ねているマーカーを片付ける。
+  Future<void> _clearHighlightsAfterBurn() async {
+    final id = _nodeId;
+    if (id == null || !mounted) return;
+    await context.read<MindMapProvider>().clearPdfHighlights(id);
+    _sessionAddedHighlightIds.clear();
+    if (!mounted) return;
+    // 開いているビューアからも消す (焼き込んだ絵と二重に見えないように)。
+    setState(() => _pdfDrawReloadTick++);
   }
 
   /// 「ページにジャンプ」 ダイアログ (= 設定メニューから呼ぶ)。
@@ -193323,17 +193654,16 @@ try {
                         (_spreadPageMode || _spreadFitPageMode)
                             ? 1.0
                             : _pdfLiveWidthFactor(viewerConstraints);
-                    final liveLayoutMode = _fitPageMode
+                    // ★ 「1 ページ全体を表示」 は**縮尺だけ**を変える
+                    //   (= ユーザー要望: 縦めくりのままページからページへ
+                    //   続けてスクロールしたい)。 以前はここで 1 枚ずつの
+                    //   横めくりに切り替えていたので、 縦に読んでいたのに
+                    //   急に横めくりになっていた。 並べ方とめくる向きは
+                    //   利用者の設定 (pdfHoriz) だけで決める。
+                    final liveLayoutMode = (pdfHoriz && hasHiddenPdfPages)
                         ? sf_pdf.PdfPageLayoutMode.single
-                        : (_spreadPageMode || _spreadFitPageMode)
-                            ? sf_pdf.PdfPageLayoutMode.continuous
-                            : (pdfHoriz && hasHiddenPdfPages)
-                                ? sf_pdf.PdfPageLayoutMode.single
-                                : sf_pdf.PdfPageLayoutMode.continuous;
-                    final liveScrollDirection = (_fitPageMode ||
-                            _spreadPageMode ||
-                            _spreadFitPageMode ||
-                            pdfHoriz)
+                        : sf_pdf.PdfPageLayoutMode.continuous;
+                    final liveScrollDirection = pdfHoriz
                         ? sf_pdf.PdfScrollDirection.horizontal
                         : sf_pdf.PdfScrollDirection.vertical;
                     return Align(
@@ -193430,12 +193760,16 @@ try {
                               if (sz == null) return;
                               _handlePdfEdgeHover(e.localPosition, sz);
                             },
-                            child: sf_pdf.SfPdfViewer.file(
-                              _stablePdfFile(_pdfFilePath!),
+                            child: KeyedSubtree(
                               // 描き込み保存後は tick が進んでファイルを
                               // 読み直す (= ユーザー要望: 図形・線の描き込み)。
+                              // ★ 読み直しの鍵は外側へ移した。 ビューア本体には
+                              //   選択行を取るための鍵 (_pdfViewerKey) を付ける。
                               key: ValueKey(
                                   '${_pdfFilePath}_draw$_pdfDrawReloadTick'),
+                              child: sf_pdf.SfPdfViewer.file(
+                              _stablePdfFile(_pdfFilePath!),
+                              key: _pdfViewerKey,
                               controller: _pdfViewerCtrl,
                               // ★ 右端の縦つまみは触っている間だけ出す
                               //   (= ユーザー要望: 常時表示が気になる)。
@@ -193515,10 +193849,14 @@ try {
                               onTextSelectionChanged: (details) {
                                 if (!mounted) return;
                                 final t = details.selectedText;
+                                // 行の枠は State から取る (details には無い)。
                                 dynamic lines;
                                 try {
-                                  lines =
-                                      (details as dynamic).selectedTextLines;
+                                  final got = _pdfViewerKey.currentState
+                                      ?.getSelectedTextLines();
+                                  if (got != null && got.isNotEmpty) {
+                                    lines = List<sf_pdf.PdfTextLine>.from(got);
+                                  }
                                 } catch (_) {}
                                 if (t != _selectedPdfText ||
                                     lines != _selectedPdfLines) {
@@ -193689,6 +194027,18 @@ try {
                                     _pdfTotalPages =
                                         details.document.pages.count;
                                     _pageInputCtrl.text = '$_currentPage';
+                                    // 1 ページの縦横比を控える (= 「1 ページ
+                                    //   全体を表示」 の縮尺に使う)。
+                                    try {
+                                      if (details.document.pages.count > 0) {
+                                        final sz =
+                                            details.document.pages[0].size;
+                                        if (sz.width > 0 && sz.height > 0) {
+                                          _pdfPageAspect =
+                                              sz.height / sz.width;
+                                        }
+                                      }
+                                    } catch (_) {}
                                   });
                                   // ── PDF サムネイルが無ければ生成 (= ユーザー要望) ──
                                   // 1 ページ目のラスタ化は PDF 全体をメモリへ
@@ -193862,6 +194212,7 @@ try {
                                 _releasePanelSlotReservation();
                               },
                             ),
+                          ), // KeyedSubtree 閉じ (= 読み直しの鍵)
                           ), // Listener 閉じ (= 全画面 PDF の右クリック検出)
                           ), // PdfDrawLayer 閉じ
                         ),
@@ -193941,10 +194292,9 @@ try {
                         _pdfHBarHover = v;
                         if (v) _markPdfHBar(hold: true);
                       },
-                      scrollDirection: (_fitPageMode ||
-                              _spreadPageMode ||
-                              _spreadFitPageMode ||
-                              pdfHoriz)
+                      // 上のビューアと同じ向きにする (= 1 ページ全体表示でも
+                      //   縦のまま)。
+                      scrollDirection: pdfHoriz
                           ? sf_pdf.PdfScrollDirection.horizontal
                           : sf_pdf.PdfScrollDirection.vertical,
                       layoutMode: _fitPageMode
@@ -195594,8 +195944,12 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
     });
   }
 
+  /// 開いている PDF の 1 ページの縦横比 (高さ / 幅)。 A4 縦 = 約 1.414。
+  /// 「1 ページ全体を表示」 の縮尺を決めるのに使う (開いた時に控える)。
+  double _pdfPageAspect = 1.41421356237;
+
   double _pdfLiveWidthFactor(BoxConstraints constraints) {
-    if (!_fitPageMode && !_spreadFitPageMode) {
+    if (!_fitPageMode) {
       return (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) ? 1.0 : 0.65;
     }
     final width = constraints.maxWidth;
@@ -195603,8 +195957,9 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
     if (!width.isFinite || !height.isFinite || width <= 0 || height <= 0) {
       return (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) ? 0.62 : 0.46;
     }
-    const a4HeightOverWidth = 1.41421356237;
-    return (height / (width * a4HeightOverWidth) * 0.96)
+    // ★ 実際のページの縦横比を使う (= 開いた時に控える)。 A4 決め打ちだと
+    //   横長のページや B5 で「全体が入る」 大きさにならなかった。
+    return (height / (width * _pdfPageAspect) * 0.96)
         .clamp(0.28, 1.0)
         .toDouble();
   }
@@ -195784,6 +196139,14 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
   /// として渡ってくるが、 古いバージョンにはこのプロパティが無いため `dynamic` で
   /// 受けて存在チェック付きで使う。 HighlightAnnotation に渡す素材。
   dynamic _selectedPdfLines;
+
+  /// SfPdfViewer の中身へ触るための鍵。
+  ///
+  /// ★ 選択した行の枠 (getSelectedTextLines) は **State 側にしか無い**
+  ///   (操作用の controller には無い)。 これが無かったので、 マーカーは
+  ///   一度も枠を取れず「反映されない」 ままだった (= ユーザー報告)。
+  final GlobalKey<sf_pdf.SfPdfViewerState> _pdfViewerKey =
+      GlobalKey<sf_pdf.SfPdfViewerState>();
 
   /// 現在選択中のマーカー色。 null = マーカーモード OFF (マーカー追加 FAB は出ない)。
   /// non-null = マーカーモード ON で、 テキスト選択中に FAB が出てこの色で
@@ -196474,7 +196837,10 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
     var name = src.split(RegExp(r'[\\/]')).last;
     if (!name.toLowerCase().endsWith('.pdf')) name = '$name.pdf';
     try {
-      final bytes = await File(src).readAsBytes();
+      var bytes = await File(src).readAsBytes();
+      // ★ マーカーを PDF 本体へ塗り込んでから保存する (デスクトップ版と同じ)。
+      final burned = await _burnHighlightsForSave(bytes);
+      if (burned != null) bytes = Uint8List.fromList(burned);
       final outPath = await FilePicker.platform.saveFile(
         dialogTitle: context.read<MindMapProvider>().t('save.pdf'),
         fileName: name,
@@ -196484,16 +196850,57 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
       // ★ 元のファイルと同じ場所・同じ名前でも保存できる (= ユーザー要望)。
       //   その場合は元のファイルを上書きするので、 書き込んだ内容はその PDF
       //   本体に焼き込まれ、 後から個別に消すことはできなくなる。
-      try {
-        final out = File(outPath);
-        if (!await out.exists() || (await out.length()) == 0) {
-          await out.writeAsBytes(bytes);
-        }
-      } catch (_) {}
+      // ★★ 必ず自分で書き出す (= ユーザー報告: 同じ場所へ上書き保存しても
+      //   保存されない)。 保存ダイアログは場所を返すだけの事がある。
+      final out = File(outPath);
+      await out.writeAsBytes(bytes, flush: true);
+      if (burned != null && isSameFilePath(outPath, src)) {
+        await _clearHighlightsAfterBurn();
+      }
       snack('保存しました', const Color(0xFF43B97F));
     } catch (_) {
       snack('保存に失敗しました', const Color(0xFFE53935));
     }
+  }
+
+  /// 保存する PDF に、 このノードのマーカーを塗り込んだバイト列を返す。
+  /// マーカーが無ければ null。
+  Future<List<int>?> _burnHighlightsForSave(Uint8List bytes) async {
+    final id = widget.nodeId;
+    if (id == null || !mounted) return null;
+    final hs = context.read<MindMapProvider>().getPdfHighlights(id);
+    if (hs.isEmpty) return null;
+    final rects = <Map<String, Object?>>[];
+    for (final h in hs) {
+      for (final l in h.lines) {
+        rects.add({
+          'page': l.pageNumber,
+          'l': l.left,
+          't': l.top,
+          'r': l.right,
+          'b': l.bottom,
+          'argb': h.colorValue,
+        });
+      }
+    }
+    if (rects.isEmpty) return null;
+    try {
+      return await compute(
+          burnPdfHighlights, {'bytes': bytes.toList(), 'rects': rects});
+    } catch (e) {
+      debugPrint('マーカーの焼き込みに失敗: $e');
+      return null;
+    }
+  }
+
+  /// 元のファイルへ塗り込んだ後、 画面に重ねているマーカーを片付ける。
+  Future<void> _clearHighlightsAfterBurn() async {
+    final id = widget.nodeId;
+    if (id == null || !mounted) return;
+    await context.read<MindMapProvider>().clearPdfHighlights(id);
+    _sessionAddedHighlightIds.clear();
+    if (!mounted) return;
+    setState(() => _pdfDrawReloadTick++);
   }
 
   /// PDF キーバインドの設定ダイアログ (Dialog 版と同じ実装)
@@ -196611,9 +197018,10 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
     } catch (_) {}
     if (rawLines.isEmpty) {
       try {
-        final fromCtrl = (_pdfViewerCtrl as dynamic).getSelectedTextLines();
-        if (fromCtrl is List && fromCtrl.isNotEmpty) {
-          rawLines = List<dynamic>.from(fromCtrl);
+        // ★ 選択行は State 側の API (操作用の controller には無い)。
+        final fromState = _pdfViewerKey.currentState?.getSelectedTextLines();
+        if (fromState != null && fromState.isNotEmpty) {
+          rawLines = List<dynamic>.from(fromState);
         }
       } catch (_) {}
     }
@@ -196764,47 +197172,47 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
     if (widget.nodeId == null) return;
     if (annotation is! sf_pdf.HighlightAnnotation) return;
 
-    // 色: マーカーモードが ON ならその色、 OFF なら syncfusion デフォルトの黄色を採用。
-    final markerColor = _activeMarkerColor ?? const Color(0xFFFFEB3B);
+    // 色: マーカーモードが ON ならその色。 OFF の時は syncfusion が既定色を
+    //   入れた後なので、 その実際の色をそのまま控える。
+    var markerColor = _activeMarkerColor ?? const Color(0xFFFFEB3B);
     if (_activeMarkerColor != null) {
-      try {
-        (annotation as dynamic).color = markerColor;
-      } catch (_) {}
+      annotation.color = markerColor;
+    } else if (annotation.color != Colors.transparent) {
+      markerColor = annotation.color;
     }
 
-    // textBoundsCollection から各行を取り出して PdfHighlightLine に変換
+    // ★ 塗った所の矩形を取り出して控える (デスクトップ版と同じ)。
+    //   以前は dynamic 越しに読んでいたため必ず例外になり、 一件も
+    //   保存されていなかった。
     try {
-      final dynamic ann = annotation;
-      final dynamic rawLines = ann.textBoundsCollection;
-      if (rawLines is! List) return;
-
+      // ★ 塗った所の枠は、 選択した時に控えておいた行を使う。
+      //   注釈そのものからは取り出せない (読み出す口が package の外に
+      //   出ていない) ので、 dynamic で読もうとして毎回失敗し、
+      //   一件も保存されていなかった (= ユーザー報告の一因)。
       final savedLines = <PdfHighlightLine>[];
-      final textBuffer = StringBuffer();
-      for (final dyn in rawLines) {
-        try {
-          final dynamic line = dyn;
-          final Rect bounds = line.bounds as Rect;
-          final String txt = (line.text as String?) ?? '';
-          final int page = line.pageNumber as int;
-          savedLines.add(PdfHighlightLine(
-            pageNumber: page,
-            left: bounds.left,
-            top: bounds.top,
-            right: bounds.right,
-            bottom: bounds.bottom,
-            text: txt,
-          ));
-          if (textBuffer.isNotEmpty) textBuffer.write(' ');
-          textBuffer.write(txt);
-        } catch (_) {
-          // 個別行の取り出し失敗はスキップ
+      final cached = _selectedPdfLines;
+      if (cached is List) {
+        for (final dyn in cached) {
+          try {
+            final dynamic line = dyn;
+            final Rect b = line.bounds as Rect;
+            savedLines.add(PdfHighlightLine(
+              pageNumber: line.pageNumber as int,
+              left: b.left,
+              top: b.top,
+              right: b.right,
+              bottom: b.bottom,
+              text: (line.text as String?) ?? '',
+            ));
+          } catch (_) {}
         }
       }
+      // 控えが無い時は諦める (注釈そのものからは枠を読めない)。
       if (savedLines.isEmpty) return;
 
       final saved = PdfHighlight(
         id: '${DateTime.now().millisecondsSinceEpoch}',
-        text: textBuffer.toString(),
+        text: _selectedPdfText ?? '',
         lines: savedLines,
         createdAt: DateTime.now().millisecondsSinceEpoch,
         // ignore: deprecated_member_use
@@ -196815,7 +197223,9 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
         context.read<MindMapProvider>().addPdfHighlight(widget.nodeId!, saved);
         _sessionAddedHighlightIds.add(saved.id);
       }
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('マーカーの控えに失敗: $e');
+    }
   }
 
   /// このノードに保存されている全ハイライトをクリア。
@@ -197343,15 +197753,15 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
                           .isNotEmpty;
                   final liveWidthFactor =
                       _pdfLiveWidthFactor(viewerConstraints);
-                  final liveLayoutMode = (_fitPageMode || _spreadFitPageMode)
+                  // ★ 「1 ページ全体を表示」 は縮尺だけを変える (デスクトップ
+                  //   版と同じ。 = ユーザー要望: 縦めくりのままページから
+                  //   ページへ続けてスクロールしたい)。
+                  final liveLayoutMode = (pdfHoriz && hasHiddenPdfPages)
                       ? sf_pdf.PdfPageLayoutMode.single
-                      : (pdfHoriz && hasHiddenPdfPages)
-                          ? sf_pdf.PdfPageLayoutMode.single
-                          : sf_pdf.PdfPageLayoutMode.continuous;
-                  final liveScrollDirection =
-                      (_fitPageMode || _spreadFitPageMode || pdfHoriz)
-                          ? sf_pdf.PdfScrollDirection.horizontal
-                          : sf_pdf.PdfScrollDirection.vertical;
+                      : sf_pdf.PdfPageLayoutMode.continuous;
+                  final liveScrollDirection = pdfHoriz
+                      ? sf_pdf.PdfScrollDirection.horizontal
+                      : sf_pdf.PdfScrollDirection.vertical;
                   return Align(
                     alignment: Alignment.topCenter,
                     child: FractionallySizedBox(
@@ -197389,11 +197799,14 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
                             // マップのサムネイルも作り直す (= ユーザー報告)。
                             widget.onSavedToFile?.call();
                           },
-                          child: sf_pdf.SfPdfViewer.file(
-                          _stablePdfFile(_pdfFilePath!),
+                          child: KeyedSubtree(
                           // 描き込み保存後は tick が進んでファイルを読み直す。
+                          // ★ 読み直しの鍵は外側。 本体には選択行を取る鍵を付ける。
                           key: ValueKey(
                               '${_pdfFilePath}_draw$_pdfDrawReloadTick'),
+                          child: sf_pdf.SfPdfViewer.file(
+                          _stablePdfFile(_pdfFilePath!),
+                          key: _pdfViewerKey,
                           controller: _pdfViewerCtrl,
                           // ── ユーザー要望: PDF ページ非表示が全画面でも効くように ──
                           // continuous モードだとスクロールで戻ると非表示ページが見えてしまう
@@ -197417,9 +197830,15 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
                           onTextSelectionChanged: (details) {
                             if (!mounted) return;
                             final t = details.selectedText;
+                            // 行の枠は State から取る (details には無い)。
                             dynamic lines;
                             try {
-                              lines = (details as dynamic).selectedTextLines;
+                              final got =
+                                  _pdfViewerKey.currentState
+                                      ?.getSelectedTextLines();
+                              if (got != null && got.isNotEmpty) {
+                                lines = List<sf_pdf.PdfTextLine>.from(got);
+                              }
                             } catch (_) {}
                             if (t != _selectedPdfText ||
                                 lines != _selectedPdfLines) {
@@ -197557,6 +197976,15 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
                               setState(() {
                                 _pdfTotalPages = details.document.pages.count;
                                 _pageInputCtrl.text = '$_currentPage';
+                                // 1 ページの縦横比を控える (Dialog 版と同じ)。
+                                try {
+                                  if (details.document.pages.count > 0) {
+                                    final sz = details.document.pages[0].size;
+                                    if (sz.width > 0 && sz.height > 0) {
+                                      _pdfPageAspect = sz.height / sz.width;
+                                    }
+                                  }
+                                } catch (_) {}
                               });
                               // ── PDF サムネイルが無ければ生成 (= ユーザー要望) ──
                               _ensurePdfThumbForNode(
@@ -197637,6 +198065,7 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
                             }
                           },
                         ),
+                        ), // KeyedSubtree 閉じ (= 読み直しの鍵)
                         ), // PdfDrawLayer 閉じ
                       ),
                     ),
@@ -197673,13 +198102,11 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
                     panelWidth: barConstraints.maxWidth,
                     accent: const Color(0xFF4FC3F7),
                     floating: true,
-                    scrollDirection:
-                        (_fitPageMode || _spreadFitPageMode || pdfHoriz)
-                            ? sf_pdf.PdfScrollDirection.horizontal
-                            : sf_pdf.PdfScrollDirection.vertical,
-                    layoutMode: (_fitPageMode || _spreadFitPageMode)
-                        ? sf_pdf.PdfPageLayoutMode.single
-                        : sf_pdf.PdfPageLayoutMode.continuous,
+                    // 上のビューアと同じ向きにする (= 1 ページ全体表示でも縦)。
+                    scrollDirection: pdfHoriz
+                        ? sf_pdf.PdfScrollDirection.horizontal
+                        : sf_pdf.PdfScrollDirection.vertical,
+                    layoutMode: sf_pdf.PdfPageLayoutMode.continuous,
                   ),
                 ),
               ),
@@ -225788,6 +226215,12 @@ class _TextEditorDialog extends StatefulWidget {
   final VoidCallback? onSaved;
   final void Function(String newPath, String newName)? onRenamed;
 
+  /// 「左 / 右に分割で開く」 を押した時に呼ばれる (= ユーザー要望: JSON 等の
+  /// テキストにも左右分割ボタンを付けて欲しい)。 表計算 (xlsx) と同じ形。
+  /// 分割ペインの中で開いている時は null を渡してボタンを出さない。
+  final void Function(String path, String name, {bool isLeftPanel})?
+      onSplitOpen;
+
   const _TextEditorDialog({
     required this.filePath,
     required this.fileName,
@@ -225796,6 +226229,7 @@ class _TextEditorDialog extends StatefulWidget {
     this.onEnsureNode,
     this.onSaved,
     this.onRenamed,
+    this.onSplitOpen,
     this.compactHost = false,
   });
 
@@ -228375,6 +228809,29 @@ $currentText
             icon: const Icon(Icons.save_rounded, color: Color(0xFF6C63FF)),
             onPressed: _save,
           ),
+          // ── 左 / 右に分割 (= ユーザー要望: JSON 等のテキストにも左右分割
+          //    ボタンを付けて欲しい)。 表計算 (xlsx) と同じ並び・同じ形。
+          //    分割ペインの中で開いている時 (onSplitOpen == null) は出さない。
+          if (widget.onSplitOpen != null) ...[
+            IconButton(
+              tooltip: context.read<MindMapProvider>().t('openStyle.splitLeft'),
+              icon: _splitPanelIcon(_SplitIconFill.left,
+                  color: const Color(0xFFFF6B6B), size: 19),
+              // ★ 閉じるのは受け側 (onSplitOpen の中) がやる。 ここでも
+              //   閉じると後ろの画面まで閉じてしまう。
+              onPressed: () => widget.onSplitOpen!(
+                  _currentFilePath, _currentFileName,
+                  isLeftPanel: true),
+            ),
+            IconButton(
+              tooltip: context.read<MindMapProvider>().t('openStyle.splitRight'),
+              icon: _splitPanelIcon(_SplitIconFill.right,
+                  color: const Color(0xFF2196F3), size: 19),
+              onPressed: () => widget.onSplitOpen!(
+                  _currentFilePath, _currentFileName,
+                  isLeftPanel: false),
+            ),
+          ],
           // ── ダウンロード (= ユーザー要望: 保存ボタンの右に置く) ──
           PopupMenuButton<String>(
             tooltip: context.read<MindMapProvider>().t('fsv.download'),
@@ -231832,13 +232289,9 @@ class _AiStudioPageViewState extends State<_AiStudioPageView>
         bytes: bytes,
       );
       if (outPath == null) return; // キャンセル
-      // デスクトップでは saveFile が bytes を書き込まない場合があるので保険。
-      try {
-        final out = File(outPath);
-        if (!await out.exists() || (await out.length()) == 0) {
-          await out.writeAsBytes(bytes);
-        }
-      } catch (_) {}
+      // ★ 必ず自分で書き出す (= ユーザー報告: 同じ場所へ上書き保存しても
+      //   保存されない)。 保存ダイアログは場所を返すだけの事がある。
+      await File(outPath).writeAsBytes(bytes, flush: true);
       _snack('$labelを保存しました', const Color(0xFF43B97F));
     } catch (_) {
       _snack('保存に失敗しました', const Color(0xFFE53935));

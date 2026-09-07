@@ -64,6 +64,7 @@ import 'services/talk_reference.dart';
 // 録画窓の中の範囲選び (デスクトップの写しを撮る) に使う。
 import 'services/screen_capture.dart' as scap;
 import 'services/cursor_wrap.dart';
+import 'services/cursor_style.dart';
 // 録画窓の中のプレビュー再生 (デスクトップは fvp バックエンド)。
 import 'package:video_player/video_player.dart';
 // 録画窓が自分の窓の大きさを変える (GetWindowRect) のに使う。
@@ -1252,6 +1253,13 @@ class _MainWindowCloser extends WindowListener {
           return;
         }
       }
+    } catch (_) {}
+    // ★ 差し替えたマウスカーソルを Windows の物へ戻す (= ユーザー要望で
+    //   足した大きさ / 色。 差し替えはサインインしている間ずっと・全アプリに
+    //   効くので、 戻さずに終わると他のアプリでも大きいままになる)。
+    //   FFI 1 回なのですぐ終わる。
+    try {
+      CursorStyleControl.restoreIfApplied();
     } catch (_) {}
     // ── 何があっても 1.5 秒後には必ずプロセスを終わらせる保険 ──
     //   (= ユーザー報告: × ボタンを押しても固まって閉じない)。

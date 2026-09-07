@@ -16,6 +16,7 @@ import 'package:device_info_plus/device_info_plus.dart';
 import '../models/mind_map_node.dart';
 import '../services/billing_service.dart';
 import '../services/cursor_wrap.dart';
+import '../services/cursor_style.dart';
 import '../services/google_auth.dart';
 import '../services/mcp_server.dart';
 import '../services/home_shortcut_service.dart';
@@ -5077,8 +5078,60 @@ class MindMapProvider extends ChangeNotifier {
     final prefs = await _prefsWithRetry();
     await prefs.setInt('cursorSizeMain', _cursorSizeMain);
     await prefs.setInt('cursorSizeSub', _cursorSizeSub);
-    // カーソルの大きさは廃止 (= 実際には効かないため。 ユーザー要望で
-    //   項目ごと削除)。 呼び出しは残っていても何もしない。
+    // 旧「1〜15 の段階 + レジストリ」 のやり方は効かなかったので、 今は
+    //   下の cursorPixelSize (px 指定 + SetSystemCursor) を使う。
+    notifyListeners();
+  }
+
+  // ── マウスカーソルの大きさと色 (= ユーザー要望) ────────────────────
+  //
+  // ★ 以前はレジストリに書いていたが、 Windows 11 はサインインし直すまで
+  //   読まないので見た目が変わらず、 機能ごと消した経緯がある。 今は
+  //   `SetSystemCursor` で動いているカーソルを直接差し替える
+  //   (lib/services/cursor_style.dart)。 実測で即座に反映される。
+  //
+  // 差し替えは**全アプリに効き、 サインインしている間ずっと残る**ので、
+  // アプリを閉じる時に必ず戻す (main.dart の閉じる処理)。
+
+  /// カーソルの大きさ (px)。 32 = Windows の既定 (= 触らない)。
+  int _cursorPixelSize = 32;
+  int get cursorPixelSize => _cursorPixelSize;
+
+  /// カーソルの色 (ARGB)。 null = 元の色のまま。
+  int? _cursorColorArgb;
+  int? get cursorColorArgb => _cursorColorArgb;
+
+  /// 今の設定を OS へ当てる。
+  void applyCursorAppearance() {
+    if (!CursorStyleControl.isSupported) return;
+    try {
+      if (_cursorPixelSize <= 32 && _cursorColorArgb == null) {
+        CursorStyleControl.restoreIfApplied();
+      } else {
+        CursorStyleControl.apply(
+            sizePx: _cursorPixelSize, argb: _cursorColorArgb);
+      }
+    } catch (e) {
+      debugPrint('カーソルの見た目を当てられませんでした: $e');
+    }
+  }
+
+  Future<void> setCursorAppearance(
+      {int? sizePx, int? argb, bool clearColor = false}) async {
+    if (sizePx != null) _cursorPixelSize = sizePx.clamp(16, 256);
+    if (clearColor) {
+      _cursorColorArgb = null;
+    } else if (argb != null) {
+      _cursorColorArgb = argb;
+    }
+    final prefs = await _prefsWithRetry();
+    await prefs.setInt('cursorPixelSize', _cursorPixelSize);
+    if (_cursorColorArgb == null) {
+      await prefs.remove('cursorColorArgb');
+    } else {
+      await prefs.setInt('cursorColorArgb', _cursorColorArgb!);
+    }
+    applyCursorAppearance();
     notifyListeners();
   }
 
@@ -47965,6 +48018,80 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'редактирует',
     },
     // 要素を足した人の名前を数秒出す (= ユーザー要望)。 {name} = 参加者名。
+    // ── マウスカーソルの見た目 (= ユーザー要望: 大きさと色) ──
+    'cursorLook.title': {
+      'ja': 'マウスカーソルの大きさと色',
+      'en': 'Mouse pointer size and colour',
+      'zh': '鼠标指针的大小和颜色',
+      'ko': '마우스 포인터 크기와 색',
+      'es': 'Tamaño y color del puntero',
+      'fr': 'Taille et couleur du pointeur',
+      'de': 'Größe und Farbe des Mauszeigers',
+      'pt': 'Tamanho e cor do ponteiro',
+      'ru': 'Размер и цвет указателя мыши',
+    },
+    'cursorLook.desc': {
+      'ja': 'Windows 全体のマウスカーソルを差し替えます。 他のアプリにも効きます。 '
+          'アプリを閉じると元に戻ります。',
+      'en': 'Replaces the Windows mouse pointer, so it affects every app. '
+          'It goes back to normal when you close the app.',
+      'zh': '将替换整个 Windows 的鼠标指针，对其他应用同样生效。关闭应用后会恢复原状。',
+      'ko': 'Windows 전체의 마우스 포인터를 바꿉니다. 다른 앱에도 적용되며, 앱을 닫으면 원래대로 돌아갑니다.',
+      'es': 'Sustituye el puntero de Windows, así que afecta a todas las aplicaciones. '
+          'Vuelve a la normalidad al cerrar la aplicación.',
+      'fr': 'Remplace le pointeur de Windows : cela affecte toutes les applications. '
+          'Tout revient à la normale à la fermeture de l’application.',
+      'de': 'Ersetzt den Mauszeiger von Windows und wirkt daher in allen Programmen. '
+          'Beim Schließen der App wird alles zurückgesetzt.',
+      'pt': 'Substitui o ponteiro do Windows, afetando todos os aplicativos. '
+          'Volta ao normal ao fechar o aplicativo.',
+      'ru': 'Заменяет указатель мыши Windows, поэтому влияет на все приложения. '
+          'При закрытии приложения всё возвращается обратно.',
+    },
+    'cursorLook.size': {
+      'ja': '大きさ',
+      'en': 'Size',
+      'zh': '大小',
+      'ko': '크기',
+      'es': 'Tamaño',
+      'fr': 'Taille',
+      'de': 'Größe',
+      'pt': 'Tamanho',
+      'ru': 'Размер',
+    },
+    'cursorLook.sizeDefault': {
+      'ja': '既定',
+      'en': 'Default',
+      'zh': '默认',
+      'ko': '기본',
+      'es': 'Predeterminado',
+      'fr': 'Par défaut',
+      'de': 'Standard',
+      'pt': 'Padrão',
+      'ru': 'По умолчанию',
+    },
+    'cursorLook.color': {
+      'ja': '色',
+      'en': 'Colour',
+      'zh': '颜色',
+      'ko': '색',
+      'es': 'Color',
+      'fr': 'Couleur',
+      'de': 'Farbe',
+      'pt': 'Cor',
+      'ru': 'Цвет',
+    },
+    'cursorLook.reset': {
+      'ja': '元に戻す',
+      'en': 'Reset',
+      'zh': '恢复默认',
+      'ko': '되돌리기',
+      'es': 'Restablecer',
+      'fr': 'Réinitialiser',
+      'de': 'Zurücksetzen',
+      'pt': 'Redefinir',
+      'ru': 'Сбросить',
+    },
     'live.addedBy': {
       'ja': '{name} が追加',
       'en': 'Added by {name}',
@@ -71681,6 +71808,8 @@ class MindMapProvider extends ChangeNotifier {
     'mdScrollSync',
     'cursorSizeMain',
     'cursorSizeSub',
+    'cursorPixelSize',
+    'cursorColorArgb',
     'openTarget', 'mapSplitQuad', 'mapSplitRatioX',
     'mapSplitRatioY', 'mapSplitStacked', 'instagramLanding',
     'instagramUsername', 'weather_cityName', 'weather_lat', 'weather_lon',
@@ -86386,6 +86515,13 @@ $cleanQ
         await prefs.setInt('cursorSizeMain', 0);
         await prefs.setInt('cursorSizeSub', 0);
       } catch (_) {}
+    }
+    // ── カーソルの大きさと色 (= ユーザー要望) ──
+    //   起動のたびに当て直す (差し替えはサインインし直すと消えるため)。
+    _cursorPixelSize = prefs.getInt('cursorPixelSize') ?? 32;
+    _cursorColorArgb = prefs.getInt('cursorColorArgb');
+    if (_cursorPixelSize > 32 || _cursorColorArgb != null) {
+      applyCursorAppearance();
     }
     _loadCursorWrapEdges(prefs);
     _loadCursorWrapDaemon(prefs);

@@ -758,10 +758,19 @@ class NodeConnection {
 
 class MindMapNode {
   /// 中身が見える「表紙カード」 を出す添付の拡張子。
-  /// node_widget.dart の docCoverExts / thumbnailableExts と揃えること。
+  /// node_widget.dart はこの集合をそのまま使う (= 別々に書くとずれるため)。
+  ///
+  /// ★ JSON など「文字で書かれたファイル」 も入れる (= ユーザー報告:
+  ///   JSON ファイルを埋め込んでも中身のプレビューが出ない)。 中身を読む
+  ///   仕組み (DocPreview) は元から対応していたのに、 表紙を出すかどうかの
+  ///   この一覧にだけ入っていなかった。 ここに足す物は
+  ///   DocPreview.supports にも入っている必要がある。
   static const Set<String> coverCardExts = {
-    'docx', 'doc', 'xlsx', 'xls', 'csv', 'txt', 'md', //
+    'docx', 'doc', 'xlsx', 'xls', 'csv', 'txt', 'md', 'markdown', //
     'html', 'htm', 'css', 'scss', 'sass', 'less', //
+    'json', 'xml', 'yml', 'yaml', 'tsv', 'log', //
+    'dart', 'py', 'js', 'ts', 'java', 'kt', 'c', 'cpp', 'h', 'cs', 'go', //
+    'rb', 'rs', 'swift', 'sh', 'sql', //
     'pptx', 'ppt', //
   };
 

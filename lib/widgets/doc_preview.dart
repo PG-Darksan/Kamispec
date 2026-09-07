@@ -259,6 +259,18 @@ class DocPreview {
       final bytes = await File(path).readAsBytes();
       text = String.fromCharCodes(bytes.take(60000));
     }
+    // ★ JSON は改行の無い 1 行で書かれている事が多い (= ユーザー報告:
+    //   JSON を埋め込んでも中身が見えない)。 そのままだと 1 行だけの
+    //   切れた表紙になるので、 段を付けてから行に分ける。
+    //   大きいファイルで固まらないよう、 頭の方だけを整える。
+    if (ext == 'json') {
+      try {
+        final head = text.length > 200000 ? text.substring(0, 200000) : text;
+        text = const JsonEncoder.withIndent('  ').convert(jsonDecode(head));
+      } catch (_) {
+        // 壊れている / 途中で切った時はそのまま出す。
+      }
+    }
     return _toLines(text);
   }
 

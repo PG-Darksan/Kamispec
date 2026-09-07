@@ -325,6 +325,34 @@ class _NodeWidgetState extends State<NodeWidget> {
         color = const Color(0xFF264DE4); // CSS ブルー
         icon = Icons.css_rounded;
         break;
+      // ── データ記述のファイル (= ユーザー報告: JSON の中身が出ない) ──
+      case 'json':
+      case 'xml':
+      case 'yml':
+      case 'yaml':
+        color = const Color(0xFF5B6B7C);
+        icon = Icons.data_object_rounded;
+        break;
+      // ── プログラムのファイル ──
+      case 'dart':
+      case 'py':
+      case 'js':
+      case 'ts':
+      case 'java':
+      case 'kt':
+      case 'c':
+      case 'cpp':
+      case 'h':
+      case 'cs':
+      case 'go':
+      case 'rb':
+      case 'rs':
+      case 'swift':
+      case 'sh':
+      case 'sql':
+        color = const Color(0xFF37474F);
+        icon = Icons.terminal_rounded;
+        break;
       default: // txt / md
         color = const Color(0xFF455A64);
         icon = Icons.notes_rounded;
@@ -818,12 +846,11 @@ class _NodeWidgetState extends State<NodeWidget> {
     //   サムネイルは**真っ白な画像**になっていた (実測: 395x512 の全画素 255)。
     //   その白画像が優先されて、 タイルが真っ白に見えていた。
     //   いまは中身の文字を読んで表紙に出せるので、 常に表紙カードを使う。
-    const docCoverExts = {
-      'docx', 'doc', 'xlsx', 'xls', 'csv', 'txt', 'md', //
-      // HTML / CSS も中身の見える表紙にする (= ユーザー要望)。
-      'html', 'htm', 'css', 'scss', 'sass', 'less', //
-    };
+    // ★ 一覧は模型側 (MindMapNode.coverCardExts) を**そのまま**使う。
+    //   別々に書いていたので JSON を足す時に片方だけ直す危険があった
+    //   (ずれるとノードの当たり判定や接続点が描画とずれる)。
     const thumbnailableExts = {'pptx', 'ppt'};
+    final docCoverExts = MindMapNode.coverCardExts.difference(thumbnailableExts);
     final bool isDocCoverAttach = hasAttachment &&
         !isImageAttach &&
         (docCoverExts.contains(attachExt) ||

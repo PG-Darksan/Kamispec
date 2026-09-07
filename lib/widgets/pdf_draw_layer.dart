@@ -646,10 +646,18 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
         _strokes
           ..clear()
           ..addAll(restored);
-        // 控えから戻した線は、 既に PDF の中にある (= 焼き済み)。
-        //   半透明のマーカーが二重に濃くならないよう印を付ける。
+        // ★ 戻した線は「まだ PDF に入っていない」 扱いにする。
+        //
+        //   = ユーザー報告「PDF の上に描かれた黄緑色のハイライトが上手く
+        //   反映できていない」。 ここへ来た時点でファイルは**土台に戻して
+        //   ある** (上の bf.copy、 または元から土台と同じ) ので、 焼き込み
+        //   済みの絵はもう入っていない。 なのに「焼き済み」 の印を付けて
+        //   いたため、 マーカーだけを重ね描きしない決まり
+        //   (_PdfDrawPainter の `if (marker && s.burned) return;`) が働き、
+        //   描き込みモードに入った途端に蛍光ペンが画面から消えていた
+        //   (ペンや図形は消えないので「マーカーだけ」 の報告になる)。
         for (final st in _strokes) {
-          st.burned = true;
+          st.burned = false;
         }
         _sel.clear();
         _undo.clear();
@@ -2581,7 +2589,10 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
           //   知らせない焼き直し (消しゴムの後始末) では付けない —
           //   ビューアは土台のままなので、 印を付けるとマーカーが
           //   画面から消えてしまう。
-          for (final st in _strokes) {
+          // ★ 印を付けるのは**実際に書き出した線だけ** (pending)。
+          //   焼き込んでいる間に引いた線は PDF に入っていないので、
+          //   付けると画面からも消えてしまう (= 点検で判明)。
+          for (final st in pending) {
             st.burned = true;
           }
         }
