@@ -6334,6 +6334,23 @@ class MindMapProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// AI アシスタントに要素を渡す時の渡し方 (= ユーザー要望:
+  /// 「要素名をそのまま渡す / 指示を指定する」 の 2 つ)。
+  ///   true  … 要素名 (題名) をそのまま指示にして、 欄を出さず一押しで走らせる。
+  ///   false … 今までどおり、 要素のそばに指示欄を出して書いてもらう (既定)。
+  /// AI ボタンの一押し (_openBrowserAiForNode) は選択ダイアログを通らないので、
+  /// どちらで走らせるかはここに覚えておく必要がある。 prefs `nodeAiPromptTitleOnly`。
+  bool _nodeAiPromptTitleOnly = false;
+  bool get nodeAiPromptTitleOnly => _nodeAiPromptTitleOnly;
+  Future<void> setNodeAiPromptTitleOnly(bool v) async {
+    _nodeAiPromptTitleOnly = v;
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.setBool('nodeAiPromptTitleOnly', v);
+    } catch (_) {}
+    notifyListeners();
+  }
+
   /// ノードの横幅スライダーの上限 (= ユーザー要望: 上限値を
   /// 押したら変えられるように)。 既定は今までどおり 400。
   double _nodeWidthMax = 400;
@@ -12346,6 +12363,29 @@ class MindMapProvider extends ChangeNotifier {
     'ai.nodePromptSent': {
       'ja': 'AI アシスタントに依頼しました',
       'en': 'Sent to the AI assistant',
+    },
+    // AI アシスタントへの渡し方 2 通り (= ユーザー要望)。
+    'ai.nodeAssistantTitleOnly': {
+      'ja': '要素名をそのまま渡す',
+      'en': 'Send the title as-is',
+      'zh': '直接发送节点名称',
+      'ko': '요소 이름을 그대로 보내기',
+      'es': 'Enviar el título tal cual',
+      'fr': 'Envoyer le titre tel quel',
+      'de': 'Titel unverändert senden',
+      'pt': 'Enviar o título como está',
+      'ru': 'Отправить название как есть',
+    },
+    'ai.nodeAssistantCustom': {
+      'ja': '指示を指定する',
+      'en': 'Type an instruction',
+      'zh': '输入指令',
+      'ko': '지시를 입력하기',
+      'es': 'Escribir una instrucción',
+      'fr': 'Saisir une consigne',
+      'de': 'Anweisung eingeben',
+      'pt': 'Escrever uma instrução',
+      'ru': 'Ввести указание',
     },
     'ai.inAppMode': {
       'ja': 'アプリの AI (API キー使用)',
@@ -35973,16 +36013,16 @@ class MindMapProvider extends ChangeNotifier {
       'fa': 'تنظیمات نمایش',
     },
     'menu.behaviorSettings': {
-      'ja': '動作設定',
-      'en': 'Behavior settings',
-      'zh': '行为设置',
-      'ko': '동작 설정',
-      'es': 'Ajustes de comportamiento',
-      'fr': 'Paramètres de comportement',
-      'de': 'Verhaltenseinstellungen',
-      'pt': 'Configurações de comportamento',
-      'ru': 'Настройки поведения',
-      'fa': 'تنظیمات رفتار',
+      'ja': 'アプリの動きと表示',
+      'en': 'App behavior & display',
+      'zh': '应用的行为与显示',
+      'ko': '앱의 동작과 표시',
+      'es': 'Comportamiento y vista de la app',
+      'fr': 'Comportement et affichage de l’app',
+      'de': 'Verhalten und Anzeige der App',
+      'pt': 'Comportamento e exibição da app',
+      'ru': 'Поведение и вид приложения',
+      'fa': 'رفتار و نمایش برنامه',
     },
     // ── PDF メモ系 ──
     'pdfMemo.tooltipFreeAdd': {
@@ -59380,6 +59420,50 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Создать',
     },
     // ── クイック子要素生成 (Ctrl+Shift+A) の個数設定 ──
+    'menu.nodeMenuOrder': {
+      'ja': '要素を押した時の並び',
+      'en': 'Node menu order',
+      'zh': '点击元素时的菜单顺序',
+      'ko': '요소 클릭 메뉴 순서',
+      'es': 'Orden del menú del elemento',
+      'fr': 'Ordre du menu de l\'élément',
+      'de': 'Reihenfolge des Element-Menüs',
+      'pt': 'Ordem do menu do elemento',
+      'ru': 'Порядок меню элемента',
+    },
+    'menu.canvasMenuOrder': {
+      'ja': '背景を右クリックした時の並び',
+      'en': 'Background right-click menu order',
+      'zh': '右键背景菜单顺序',
+      'ko': '배경 우클릭 메뉴 순서',
+      'es': 'Orden del menú de fondo (clic derecho)',
+      'fr': 'Ordre du menu du fond (clic droit)',
+      'de': 'Reihenfolge des Hintergrundmenüs (Rechtsklick)',
+      'pt': 'Ordem do menu de fundo (clique direito)',
+      'ru': 'Порядок меню фона (правый клик)',
+    },
+    'menuOrder.subtitle': {
+      'ja': '掴んで並べ替え',
+      'en': 'Drag to reorder',
+      'zh': '拖动以排序',
+      'ko': '끌어서 순서 변경',
+      'es': 'Arrastra para reordenar',
+      'fr': 'Glissez pour réordonner',
+      'de': 'Zum Umsortieren ziehen',
+      'pt': 'Arraste para reordenar',
+      'ru': 'Перетащите для сортировки',
+    },
+    'menuOrder.hint': {
+      'ja': '掴んで動かすと並び順が変わります。 その場面で出ない項目もここには全部並びます (出ない時は飛ばして詰まります)。',
+      'en': 'Drag a row to change the order. Every entry is listed here, including ones that only appear in some situations — hidden entries are simply skipped.',
+      'zh': '拖动行即可更改顺序。这里列出全部项目，包括仅在特定情况下出现的项；未显示的项会自动跳过。',
+      'ko': '행을 끌어 순서를 바꿉니다. 상황에 따라 나타나지 않는 항목도 여기에 모두 표시되며, 표시되지 않는 항목은 건너뜁니다.',
+      'es': 'Arrastra una fila para cambiar el orden. Aquí se listan todas las entradas, incluidas las que solo aparecen en ciertos casos; las ocultas simplemente se omiten.',
+      'fr': 'Faites glisser une ligne pour changer l\'ordre. Toutes les entrées sont listées ici, y compris celles qui n\'apparaissent que parfois ; les entrées masquées sont simplement ignorées.',
+      'de': 'Ziehen Sie eine Zeile, um die Reihenfolge zu ändern. Hier sind alle Einträge aufgeführt, auch solche, die nur manchmal erscheinen; ausgeblendete werden einfach übersprungen.',
+      'pt': 'Arraste uma linha para mudar a ordem. Todas as entradas estão listadas aqui, incluindo as que só aparecem em certas situações; as ocultas são simplesmente ignoradas.',
+      'ru': 'Перетащите строку, чтобы изменить порядок. Здесь перечислены все пункты, включая те, что появляются не всегда; скрытые просто пропускаются.',
+    },
     'menu.quickAddChildrenCount': {
       'ja': 'クイック子要素生成数 (Ctrl+Shift+A)',
       'en': 'Quick add children count (Ctrl+Shift+A)',
@@ -66530,6 +66614,8 @@ class MindMapProvider extends ChangeNotifier {
     // ノードAIボタンの ブラウザAI ターゲット (ChatGPT/Gemini/…)
     _browserAiTarget = prefs.getString('browser_ai_target') ?? 'chatgpt';
     _nodeAiUseAssistant = prefs.getBool('nodeAiUseAssistant') ?? false;
+    // AI アシスタントへの渡し方 (= ユーザー要望: 要素名そのまま / 指示を書く)。
+    _nodeAiPromptTitleOnly = prefs.getBool('nodeAiPromptTitleOnly') ?? false;
     _nodeWidthMax =
         (prefs.getDouble('nodeWidthMax') ?? 400).clamp(160.0, 2000.0);
     _nodeHeightMax =
@@ -66612,6 +66698,24 @@ class MindMapProvider extends ChangeNotifier {
     //   全画面へ読み替える。
     final nsMode = prefs.getString('nodeSearchOpenMode') ?? '';
     if (nodeSearchOpenModes.contains(nsMode)) _nodeSearchOpenMode = nsMode;
+    // 要素を押した時 / 背景を右クリックした時の並び (= ユーザー要望)。
+    //   保存が無ければ既定のまま (getter 側で既定を補う)。
+    try {
+      final raw = prefs.getString('nodeActionMenuOrder');
+      if (raw != null && raw.isNotEmpty) {
+        _nodeActionMenuOrder
+          ..clear()
+          ..addAll((jsonDecode(raw) as List<dynamic>).map((e) => '$e'));
+      }
+    } catch (_) {}
+    try {
+      final raw = prefs.getString('canvasMenuOrder');
+      if (raw != null && raw.isNotEmpty) {
+        _canvasMenuOrder
+          ..clear()
+          ..addAll((jsonDecode(raw) as List<dynamic>).map((e) => '$e'));
+      }
+    } catch (_) {}
     _nodeLinkUseAttach = prefs.getBool('nodeLinkUseAttach') ?? false;
     _nodeEditUseRich = prefs.getBool('nodeEditUseRich') ?? false;
     _nodeCalendarUseFlashcard =
@@ -68105,6 +68209,117 @@ class MindMapProvider extends ChangeNotifier {
       await prefs.setString('nodeSearchOpenMode', value);
     } catch (_) {}
   }
+
+  // ── 要素を押した時 / 背景を右クリックした時に出る項目の並び ──
+  //   (= ユーザー要望: 動作設定の所で並び順を変えられるように)。
+  //   場面によって出ない項目 (子を持つ時だけの折り畳み、 ギャラリーの行列
+  //   削除、 選択中だけの項目 …) があるので、 番号ではなく**名札 (id)**の
+  //   一覧で持つ。 保存に無い名札 (= 後から増えた項目) は末尾に足すので
+  //   新しい項目が消えず、 今は無い名札 (= やめた項目) は読み飛ばす。
+
+  /// 要素 (ノード) を押した時に出るボタンの既定の並び。
+  static const List<String> defaultNodeActionMenuOrder = [
+    'edit',
+    'ai',
+    'linkAttach',
+    'search',
+    'calendar',
+    'collapse',
+    'galleryDelete',
+    'delete',
+    'more',
+  ];
+
+  /// 背景を右クリックした時に出る項目の既定の並び。
+  static const List<String> defaultCanvasMenuOrder = [
+    'rangeSelect',
+    'addNode',
+    'switchPage',
+    'background',
+    'split',
+    'cutMode',
+    'insertShape',
+    'terminal',
+    'memoList',
+    'attachFile',
+    'createFile',
+    'copy',
+    'bulkDownload',
+    'bookshelf',
+    'deleteSelected',
+    'groupList',
+    'basePosition',
+    'fontSize',
+  ];
+
+  final List<String> _nodeActionMenuOrder = [];
+  final List<String> _canvasMenuOrder = [];
+
+  List<String> get nodeActionMenuOrder =>
+      _menuOrderResolved(_nodeActionMenuOrder, defaultNodeActionMenuOrder);
+  List<String> get canvasMenuOrder =>
+      _menuOrderResolved(_canvasMenuOrder, defaultCanvasMenuOrder);
+
+  /// 保存値と既定を突き合わせる。 既定に無い名札は落とし、 保存に無い名札は
+  /// 既定の順で末尾に足す。 毎回新しい一覧を返すので、 受け取った側が
+  /// そのまま並べ替えて渡し返してよい。
+  List<String> _menuOrderResolved(List<String> saved, List<String> defaults) {
+    final out = <String>[];
+    for (final id in saved) {
+      if (defaults.contains(id) && !out.contains(id)) out.add(id);
+    }
+    for (final id in defaults) {
+      if (!out.contains(id)) out.add(id);
+    }
+    return out;
+  }
+
+  Future<void> _saveMenuOrder(String key, List<String> value) async {
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.setString(key, jsonEncode(value));
+    } catch (_) {}
+  }
+
+  Future<void> setNodeActionMenuOrder(List<String> ids) async {
+    _nodeActionMenuOrder
+      ..clear()
+      ..addAll(_menuOrderResolved(ids, defaultNodeActionMenuOrder));
+    notifyListeners();
+    await _saveMenuOrder('nodeActionMenuOrder', _nodeActionMenuOrder);
+  }
+
+  Future<void> setCanvasMenuOrder(List<String> ids) async {
+    _canvasMenuOrder
+      ..clear()
+      ..addAll(_menuOrderResolved(ids, defaultCanvasMenuOrder));
+    notifyListeners();
+    await _saveMenuOrder('canvasMenuOrder', _canvasMenuOrder);
+  }
+
+  /// ReorderableListView と同じ約束 (下へ動かす時は newIndex が 1 つ大きい)。
+  Future<void> reorderNodeActionMenu(int oldIndex, int newIndex) async {
+    final list = nodeActionMenuOrder;
+    if (oldIndex < 0 || oldIndex >= list.length) return;
+    final item = list.removeAt(oldIndex);
+    final adjusted = newIndex > oldIndex ? newIndex - 1 : newIndex;
+    list.insert(adjusted.clamp(0, list.length), item);
+    await setNodeActionMenuOrder(list);
+  }
+
+  Future<void> reorderCanvasMenu(int oldIndex, int newIndex) async {
+    final list = canvasMenuOrder;
+    if (oldIndex < 0 || oldIndex >= list.length) return;
+    final item = list.removeAt(oldIndex);
+    final adjusted = newIndex > oldIndex ? newIndex - 1 : newIndex;
+    list.insert(adjusted.clamp(0, list.length), item);
+    await setCanvasMenuOrder(list);
+  }
+
+  Future<void> resetNodeActionMenuOrder() =>
+      setNodeActionMenuOrder(defaultNodeActionMenuOrder);
+  Future<void> resetCanvasMenuOrder() =>
+      setCanvasMenuOrder(defaultCanvasMenuOrder);
 
   // ── ノードの「リンク / ファイル添付」 ボタンのモード (= ユーザー要望: YouTube/
   //    Google 検索ボタンのように、 右クリックで切替・タップで実行)。
@@ -73101,6 +73316,8 @@ class MindMapProvider extends ChangeNotifier {
     'headerIconColors', 'headerIconColorsOff', 'paneHeaderButtons_v1',
     'desktopHeaderButtonPlacement', 'desktopHeaderButtonPlacementById',
     'desktopHeaderBarCollisionMode', 'desktopHeaderEnabledDockPlacements',
+    // 要素を押した時 / 背景を右クリックした時の並び (= ユーザー要望)
+    'nodeActionMenuOrder', 'canvasMenuOrder',
     'desktopHeaderDockCollapsedByPlacement', 'bottomThirdRowEnabled',
     'bottomFourthRowEnabled', 'lockScaleBottomSlot',
     // ★ キーの割り当て (= ユーザー要望: これも同期する)
@@ -73110,7 +73327,7 @@ class MindMapProvider extends ChangeNotifier {
     'autofillSequenceEnabled', 'promptForTitleOnNodeCreate',
     'openLinksInApp', 'pasteImageScalePercent', 'pasteImageOriginalSize',
     'nodeWidthMax', 'nodeHeightMax', 'nodeDefaultWidth', 'nodeDefaultHeight',
-    'nodeSplitDelimiter', 'nodeAiUseAssistant',
+    'nodeSplitDelimiter', 'nodeAiUseAssistant', 'nodeAiPromptTitleOnly',
     'nodeCalendarUseFlashcard', 'nodeEditUseRich', 'nodeLinkUseAttach',
     'nodeSearchOpenMode', 'nodeSearchUseYoutube',
     'suppressPageDeleteUndoPrompt', 'decoTextAnchorX', 'decoTextAnchorY',

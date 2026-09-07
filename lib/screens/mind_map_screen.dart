@@ -20403,8 +20403,15 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (_nodeSearchMode(provider) == 'external') {
       final url =
           'https://www.google.com/search?q=${Uri.encodeQueryComponent(title.trim())}';
-      if (openExternalWebWindow(url, embeddable: true)) return;
-      // 外の窓を開けなかった時は従来の浮遊窓へ落とす。
+      // ── 押した要素の近くに出す (= ユーザー要望: 要素から google 検索を
+      //    立ち上げた時に窓が画面の左上に出てしまうので、 要素の近くに)。
+      //    外の窓は別プロセスなので、 アプリ内の座標を画面座標へ直して渡す。
+      //    場所を調べるのに一呼吸いるので非同期。 開けなかった時は中で
+      //    従来の浮遊窓へ落とす。 ──
+      // ignore: discarded_futures
+      _openExternalNodeSearchWindow(url, title, provider,
+          localPos: nearScreenPos);
+      return;
     }
     _openGoogleSearchDialog(
       context,
@@ -20431,6 +20438,76 @@ class _MindMapScreenState extends State<MindMapScreen>
     final m = provider.nodeSearchOpenMode;
     if (!_isDesktop && m == 'external') return 'full';
     return m;
+  }
+
+  /// アプリ内の座標 [localPos] を、 外の窓 (別プロセス) を出す画面座標へ直す。
+  ///
+  /// = ユーザー要望「要素から検索を立ち上げた時に窓が画面の左上に出てしまう
+  ///   から、 要素の近くに出すように」。 外の窓は本体の座標系を知らないので、
+  ///   本体の窓の左上を足してから渡す。 本体からはみ出さないよう、 だいたいの
+  ///   大きさで丸めておく (本当の大きさは向こうで決まる)。
+  /// 場所が分からない時 (最小化中など) は null = 今までどおり任せる。
+  Future<Offset?> _externalWindowPosNear(Offset? localPos) async {
+    if (localPos == null) return null;
+    try {
+      final b = await windowManager.getBounds();
+      // 最小化中は座標があり得ない値になるので使わない。
+      if (b.left < -8000 || b.top < -8000) return null;
+      // ★ ここで「窓の大きさ」 を当て推量して本体の窓の中へ丸めてはいけない。
+      //   外の窓の本当の大きさは向こう (前回閉じた大きさ) が決めるので、
+      //   480x620 と決め打ちして丸めると、 1280x720 のような小さめの本体では
+      //   縦がほぼ上端に貼り付き、 「結局上に出る」 ままになる。 はみ出しは
+      //   子側の _fitIntoDisplay() が、 本当の大きさと本当に乗っている
+      //   モニターを見て直してくれる。
+      return Offset(b.left + localPos.dx + 16, b.top + localPos.dy + 16);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 要素から立ち上げた検索の「外の窓」 の合鍵 (Google / YouTube 別)。
+  ///
+  /// 既定の合鍵は URL のホスト (www.google.com など) なので、 前の検索窓を
+  /// 開けたまま別の要素で検索すると「同じ窓が既にある」 と判断されて前面に
+  /// 出るだけで終わり、 場所も検索語も変わらなかった。 専用の鍵にして、
+  /// 押し直した時は前の窓を閉じてから開き直す。
+  static const String _kNodeSearchWebWinKey = 'nodeSearch:web';
+  static const String _kNodeSearchVideoWinKey = 'nodeSearch:video';
+
+  /// 前に開いた「要素からの検索」 の外窓を閉じる (= 開き直しの前準備)。
+  /// 生きていなければ台帳から外すだけ。
+  Future<void> _closePrevNodeSearchWindow(String key) async {
+    final old = _externalWinPids[key];
+    if (old == null) return;
+    _externalWinPids.remove(key);
+    try {
+      if (await _externalWinAlive(old)) Process.killPid(old);
+    } catch (_) {}
+  }
+
+  /// 要素から立ち上げた Google 検索を「アプリの外の窓」 として、 その要素の
+  /// 近くに出す (= ユーザー要望: 窓が画面の左上に出てしまう)。
+  /// 大きさは指定しない (= 前回閉じた大きさのまま。 場所だけ寄せる)。
+  /// 外の窓を開けなかった時は、 今までどおり浮遊窓へ落とす。
+  Future<void> _openExternalNodeSearchWindow(
+      String url, String title, MindMapProvider provider,
+      {Offset? localPos}) async {
+    final pos = await _externalWindowPosNear(localPos);
+    // 前に開いた検索窓は閉じてから開き直す (= さもないと前面に出るだけで
+    //   場所も検索語も変わらない)。
+    await _closePrevNodeSearchWindow(_kNodeSearchWebWinKey);
+    final pid = await openExternalWebWindowPid(url,
+        embeddable: true, position: pos, singleKey: _kNodeSearchWebWinKey);
+    if (pid != null) return;
+    if (!mounted) return;
+    _openGoogleSearchDialog(
+      context,
+      provider,
+      initialQuery: title,
+      floating: _isDesktop,
+      compactMode: !_isDesktop,
+      floatingAnchor: localPos,
+    );
   }
 
   /// ノードのタイトルで YouTube 検索を開く (検索ボタンが YouTube モードの時)。
@@ -26908,6 +26985,46 @@ class _MindMapScreenState extends State<MindMapScreen>
     );
   }
 
+  /// 背景を右クリックした時の項目を、 動作設定で決めた並び順に並べ直す
+  /// (= ユーザー要望)。
+  /// 名札 (menuId) の付いた項目だけを入れ替え、 名札の無い物 (区切り線など)
+  /// は元の場所に残す。 その場面で出ていない項目は飛ばされるだけなので、
+  /// 出る / 出ないが変わっても順番は崩れない。
+  List<Widget> _applyCanvasMenuOrder(
+      MindMapProvider provider, List<Widget> items) {
+    final order = provider.canvasMenuOrder;
+    final slots = <int>[];
+    final movable = <Widget>[];
+    for (var i = 0; i < items.length; i++) {
+      final w = items[i];
+      if (w is _CtxMenuItem && w.menuId.isNotEmpty) {
+        slots.add(i);
+        movable.add(w);
+      }
+    }
+    if (movable.length < 2) return items;
+    int rankOf(Widget w) {
+      final idx = order.indexOf((w as _CtxMenuItem).menuId);
+      // 並び順に無い名札 (= 後から増えた項目) は末尾へ。
+      return idx < 0 ? order.length : idx;
+    }
+
+    final indexed = <MapEntry<int, Widget>>[
+      for (var i = 0; i < movable.length; i++) MapEntry(i, movable[i]),
+    ];
+    indexed.sort((a, b) {
+      final ra = rankOf(a.value);
+      final rb = rankOf(b.value);
+      // Dart の sort は安定ではないので、 同じ順位は元の番号で決着させる。
+      return ra != rb ? ra.compareTo(rb) : a.key.compareTo(b.key);
+    });
+    final out = List<Widget>.of(items);
+    for (var i = 0; i < slots.length; i++) {
+      out[slots[i]] = indexed[i].value;
+    }
+    return out;
+  }
+
   void _showCanvasContextMenu(Offset globalPos, TransformationController ctrl,
       MindMapProvider provider) {
     _removeOverlay();
@@ -26927,7 +27044,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     // 割り方を「右に」 出すため、 項目そのものの位置を測る鍵 (= ユーザー要望)。
     final GlobalKey splitItemKey = GlobalKey();
     List<Widget> buildItems(bool splitExpanded, VoidCallback toggleSplit) => [
-      // ── 上から ノードを追加 / 範囲選択 / ページ切り替え の順 ──
+      // ── 上から 範囲選択 / ノードを追加 / ページ切り替え の順 ──
       //    (= ユーザー要望)。 マインドマップでもギャラリーでも同じ並びに
       //    なるように、 この 3 つを先頭で固める。 2 行目 (範囲選択) が
       //    カーソルの高さに来るよう、 下の nodeGenAnchorOffset で位置を
@@ -26936,18 +27053,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       //    しているのでここには出さない (その時は ページ切り替え が先頭)。
       if (_isDesktop)
         _CtxMenuItem(
-          icon: Icons.add_circle_rounded,
-          label: provider.t('ctx.addNode'),
-          color: const Color(0xFF6C63FF),
-          onTap: () {
-            _removeOverlay();
-            final canvasPos = _globalToCanvas(globalPos, ctrl);
-            _createNodeWithOptionalInlineTitleEdit(
-                provider, canvasPos - const Offset(80, 21));
-          },
-        ),
-      if (_isDesktop)
-        _CtxMenuItem(
+          menuId: 'rangeSelect',
           icon: Icons.select_all_rounded,
           label: provider.t('ctx.rangeSelect'),
           color: const Color(0xFF4FC3F7),
@@ -26960,8 +27066,22 @@ class _MindMapScreenState extends State<MindMapScreen>
             });
           },
         ),
+      if (_isDesktop)
+        _CtxMenuItem(
+          menuId: 'addNode',
+          icon: Icons.add_circle_rounded,
+          label: provider.t('ctx.addNode'),
+          color: const Color(0xFF6C63FF),
+          onTap: () {
+            _removeOverlay();
+            final canvasPos = _globalToCanvas(globalPos, ctrl);
+            _createNodeWithOptionalInlineTitleEdit(
+                provider, canvasPos - const Offset(80, 21));
+          },
+        ),
       // ── ページ切り替え (左上を押しに行かずにここから移れる) ──
       _CtxMenuItem(
+        menuId: 'switchPage',
         icon: Icons.swap_horiz_rounded,
         label: provider.t('ctx.switchPage'),
         color: const Color(0xFFBA68C8),
@@ -26974,6 +27094,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       //    右クリックすることで背景画像の設定項目が出るように) ──
       if (provider.currentPage.pageType == 'bookshelf')
         _CtxMenuItem(
+          menuId: 'background',
           icon: Icons.wallpaper_rounded,
           label: provider.t('cmd.mapBackground'),
           color: const Color(0xFF6C63FF),
@@ -26988,6 +27109,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       //   よく使うので上の方に)。 ギャラリーは先頭に専用項目があるので出さない。
       if (provider.currentPage.pageType != 'bookshelf')
         _CtxMenuItem(
+          menuId: 'background',
           icon: Icons.wallpaper_rounded,
           label: (provider.currentPage.backgroundImagePath ?? '').isEmpty
               ? provider.t('bg.configure')
@@ -27002,6 +27124,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       //    分割していない時: 押すと右側に割り方 (上下 / 左右 / 4 分割) が出る。
       //    分割している時  : 押すと分割を解除するだけ (割り方は出さない)。
       _CtxMenuItem(
+        menuId: 'split',
         key: splitItemKey,
         icon: _mapSplitOpen
             ? Icons.close_fullscreen_rounded
@@ -27020,6 +27143,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             : toggleSplit,
       ),
       _CtxMenuItem(
+        menuId: 'cutMode',
         icon: Icons.content_cut_rounded,
         label: provider.t('hdr.cutMode'),
         color: const Color(0xFFFF6B6B),
@@ -27040,6 +27164,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       // ── 図形を挿入 (= 直線/矢印/波線/長方形/円 など) ──
       // ユーザー要望「右クリックの項目に図形の挿入項目を追加して」。
       _CtxMenuItem(
+        menuId: 'insertShape',
         icon: Icons.draw_rounded,
         label: provider.t('hdr.insertMapShape'),
         color: const Color(0xFF43B97F),
@@ -27049,6 +27174,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         },
       ),
       _CtxMenuItem(
+        menuId: 'terminal',
         icon: Icons.account_tree_outlined,
         // 多言語対応 (= ユーザー指摘: 端子の文字が日本語のままだった)
         label: provider.t('flow.terminal'),
@@ -27061,6 +27187,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       // ── メモ一覧 (= ユーザー要望: 他のマップ / PDF ビューワーで書いたメモを
       //    参照・編集。 メモの場所 (マップ) 毎にグループ化して表示) ──
       _CtxMenuItem(
+        menuId: 'memoList',
         icon: Icons.sticky_note_2_rounded,
         label: provider.t('ctx.memoList'),
         color: const Color(0xFFFFC107),
@@ -27073,6 +27200,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       // URL は直接貼り付ければノードになるので専用機能は不要)。
       if (_isDesktop)
         _CtxMenuItem(
+          menuId: 'attachFile',
           icon: Icons.attach_file_rounded,
           label: provider.t('ctx.attachFile'),
           color: const Color(0xFFFF6B6B),
@@ -27086,6 +27214,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       //    生成できるように。 マインドマップ / ギャラリーの両方) ──
       if (_isDesktop)
         _CtxMenuItem(
+          menuId: 'createFile',
           icon: Icons.note_add_rounded,
           label: provider.t('file.create'),
           color: const Color(0xFF4FC3F7),
@@ -27098,6 +27227,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         ),
       if (_rangeSelectedIds.isNotEmpty) ...[
         _CtxMenuItem(
+          menuId: 'copy',
           icon: Icons.content_copy_rounded,
           label: provider.t(_isDesktop ? 'ctx.copyShortcut' : 'ctx.copy'),
           color: const Color(0xFF4FC3F7),
@@ -27115,6 +27245,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         if (_selectedNodesHaveAttachments(provider) &&
             _selectedNodesHaveYoutubeVideos(provider))
           _CtxMenuItem(
+            menuId: 'bulkDownload',
             icon: Icons.download_rounded,
             label: provider.t('ctx.bulkDownloadMedia'),
             color: const Color(0xFF43B97F),
@@ -27125,6 +27256,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           )
         else if (_selectedNodesHaveAttachments(provider))
           _CtxMenuItem(
+            menuId: 'bulkDownload',
             icon: Icons.download_for_offline_rounded,
             label: provider.t('ctx.bulkDownloadAttachments'),
             color: const Color(0xFF43B97F),
@@ -27137,6 +27269,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           // リリース版では YouTube 動画の端末保存は無効化しているため、
           // 通常はここに到達しない。保険として無効化メッセージのみ表示する。
           _CtxMenuItem(
+            menuId: 'bulkDownload',
             icon: Icons.cloud_download_rounded,
             label: provider.t('ctx.bulkDownloadYoutube'),
             color: const Color(0xFFFFB347),
@@ -27147,6 +27280,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           ),
         // ── ギャラリーに整列 (= 選択ノードを等間隔・同寸タイルで並べ直す) ──
         _CtxMenuItem(
+          menuId: 'bookshelf',
           icon: Icons.view_module_rounded,
           label: provider.t('ctx.bookshelf'),
           color: const Color(0xFFFF7043),
@@ -27157,6 +27291,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           },
         ),
         _CtxMenuItem(
+          menuId: 'deleteSelected',
           icon: Icons.delete_rounded,
           label: provider.t(_isDesktop
               ? 'ctx.deleteSelectedShortcut'
@@ -27170,6 +27305,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       ],
       if (provider.namedGroups.isNotEmpty)
         _CtxMenuItem(
+          menuId: 'groupList',
           icon: Icons.bookmarks_rounded,
           label: provider.t('ctx.groupList'),
           color: const Color(0xFFFFB347),
@@ -27182,6 +27318,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       // クリックで 2 択ダイアログ (基準位置を設定 / 基準位置へ移動) を出す。
       // ※ 上下の区切り線は「変な線が入る」 との指摘で撤去 (= ユーザー要望)。
       _CtxMenuItem(
+        menuId: 'basePosition',
         icon: Icons.gps_fixed_rounded,
         label: provider.t('ctx.basePosition'),
         color: const Color(0xFF43B97F),
@@ -27191,6 +27328,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         },
       ),
       _CtxMenuItem(
+        menuId: 'fontSize',
         icon: Icons.text_fields_rounded,
         label: provider.t('ctx.fontSizeSettings'),
         color: const Color(0xFFFFB347),
@@ -27202,7 +27340,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     ];
 
     // 高さの見積りは「割り方を開いた状態」 で取る (= 開いても入りきるように)。
-    final items = buildItems(true, () {});
+    // 並びは動作設定で変えられる (= ユーザー要望)。 高さの合計は並びで
+    //   変わらないが、 下の「2 行目合わせ」 と同じ物を数えるため揃えておく。
+    final items = _applyCanvasMenuOrder(provider, buildItems(true, () {}));
 
     // 各項目の高さ。 MenuItem は **実測 42** (上下の余白 9 + 丸い印 24)。
     //   前は 46 と決め打ちしていて、 2 行目をカーソルに合わせる時に 6px
@@ -27224,20 +27364,29 @@ class _MindMapScreenState extends State<MindMapScreen>
     final double menuW = useTwoCol ? 420.0 : 210.0;
     double left = globalPos.dx.clamp(8.0, sw - menuW - 8.0);
     // ── 2 行目がカーソルの高さに来るようにする (= ユーザー要望) ──
-    // デスクトップの並びは 1番目=ノードを追加 / 2番目=範囲選択 なので、
+    // デスクトップの並びは 1番目=範囲選択 / 2番目=ノードを追加 なので、
     // メニュー上端を「1 項目分 + もう半分」 だけ上へずらすと、 2 行目の中央が
     // カーソル位置に来る。 2 カラム表示でも 2 行目は左カラムに来るため、
     // 同じずらし方で成立する。
     // モバイルはこの 2 項目を出さない (下部バーに常設) ため補正しない。
     // 上端を「1 項目分 + もう半分」 上へ = 2 行目の中央がカーソルに来る。
-    final double nodeGenAnchorOffset = _isDesktop ? kCtxItemH * 1.5 : 0.0;
+    // ── 合わせる先は今までどおり「2 行目」 で固定する ──
+    //   並べ替えができるようになったので 2 行目に何が来るかは決まって
+    //   いないが、 「カーソルの高さに 2 行目が来る」 という約束は変えない
+    //   (= ユーザー要望のまま)。 上端を 1 項目分 + もう半分だけ上へずらすと
+    //   2 行目の中央がカーソルに来る。 2 カラム表示でも 2 行目は左カラムに
+    //   来るので同じずらし方で成立する。 項目が 1 つしか無い時はずらさない。
+    final double nodeGenAnchorOffset =
+        (_isDesktop && items.length >= 2) ? kCtxItemH * 1.5 : 0.0;
     double top = (globalPos.dy - nodeGenAnchorOffset).clamp(mq.padding.top + 8,
         sh - (useTwoCol ? estH / 2 + 16 : estH + 16).clamp(100.0, maxAvail));
 
     _overlayEntry = OverlayEntry(
       builder: (_) => StatefulBuilder(builder: (_, setMenuState) {
-        final list = buildItems(splitExpanded,
-            () => setMenuState(() => splitExpanded = !splitExpanded));
+        final list = _applyCanvasMenuOrder(
+            provider,
+            buildItems(splitExpanded,
+                () => setMenuState(() => splitExpanded = !splitExpanded)));
         return Stack(children: [
           Positioned.fill(
             child: GestureDetector(
@@ -36040,15 +36189,25 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///
   /// 会話画面は開かない。 考える所 (_McpChatSession) は画面の外に
   /// あるので、 欄を閉じても指示はそのまま走る。
-  Future<void> _showNodeAiPrompt(String nodeId) async {
+  /// [titleOnly] が true なら指示欄を出さず、 要素名 (題名) をそのまま指示に
+  /// して一押しで走らせる (= ユーザー要望: 「要素名をそのまま渡す / 指示を
+  /// 指定する」 の 2 モード)。 題名が空の要素の時だけ、 今までどおり欄を出す。
+  Future<void> _showNodeAiPrompt(String nodeId,
+      {bool titleOnly = false}) async {
     if (!mounted) return;
     final provider = context.read<MindMapProvider>();
     final node = provider.nodes[nodeId];
     if (node == null) return;
     if (!provider.hasActiveAiKey) {
       _showGeminiKeyDialog(context, provider,
-          () => unawaited(_showNodeAiPrompt(nodeId)),
+          () => unawaited(_showNodeAiPrompt(nodeId, titleOnly: titleOnly)),
           anyProvider: true);
+      return;
+    }
+    // ★ モード 1「要素名をそのまま渡す」: 欄を出さずそのまま走らせる。
+    final plainTitle = node.title.trim();
+    if (titleOnly && plainTitle.isNotEmpty) {
+      _runNodeAiInstruction(provider, nodeId, node, plainTitle);
       return;
     }
     final ctrl = TextEditingController();
@@ -36099,6 +36258,15 @@ class _MindMapScreenState extends State<MindMapScreen>
     ctrl.dispose();
     final text = (sent ?? '').trim();
     if (text.isEmpty || !mounted) return;
+    _runNodeAiInstruction(provider, nodeId, node, text);
+  }
+
+  /// 要素についての指示を AI アシスタントに渡す (モード 1 / 2 の共通処理)。
+  ///
+  /// ★ 要素の中身を添え、 「新しいページを作らずこの要素の下へ伸ばす」 決まり
+  ///   (ai.nodePromptRule) を必ず付ける = 既存の振る舞いをそのまま維持する。
+  void _runNodeAiInstruction(MindMapProvider provider, String nodeId,
+      MindMapNode node, String text) {
     // 要素の中身を添えて渡す (何についての指示か分かるように)。
     final title = node.title.trim();
     final memo = (node.memoText ?? '').trim();
@@ -36112,7 +36280,9 @@ class _MindMapScreenState extends State<MindMapScreen>
         .replaceFirst('{page}', pageId)
         .replaceFirst('{node}', nodeId)
         .replaceFirst('{title}', title.isEmpty ? '(無題)' : title);
-    final raw = about.isEmpty
+    // 「要素名をそのまま渡す」 で メモが無い時は about と指示が同じ文字に
+    //   なるので、 二重に書かない。
+    final raw = about.isEmpty || about == text
         ? '$text\n\n$rule'
         : '${provider.t('ai.nodePromptAbout')}\n$about\n\n$text\n\n$rule';
     final session = _McpChatSession.instance;
@@ -36140,7 +36310,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (provider.nodeAiUseAssistant) {
       // 会話画面ごと開かず、 要素のそばに小さな入力欄だけ出す
       //   (= ユーザー要望)。 書いて送ると欄は消え、 指示だけが走る。
-      unawaited(_showNodeAiPrompt(nodeId));
+      // ★ 「要素名をそのまま渡す」 を選んでいる時は欄も出さず、 題名の
+      //   まま一押しで走らせる (= ユーザー要望)。
+      unawaited(_showNodeAiPrompt(nodeId,
+          titleOnly: provider.nodeAiPromptTitleOnly));
       return;
     }
     // ── ノードの本文全体を AI に渡す (= ユーザー要望: リッチテキストで編集した
@@ -37521,12 +37694,22 @@ class _MindMapScreenState extends State<MindMapScreen>
                         fontSize: 11,
                         fontWeight: FontWeight.w700)),
                 const SizedBox(height: 10),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: _aiModeChip(provider, dctx, const {
-                    'id': 'assistant',
-                    'label': 'AI アシスタント',
-                  }),
+                // ★ AI アシスタントへの渡し方を 2 通り並べる (= ユーザー要望:
+                //   「要素名をそのまま渡す / 指示を指定する」)。 中身の幅は
+                //   254px しか無く 2 枚は横に並ばないので、 Wrap で折り返す。
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    _aiModeChip(provider, dctx, {
+                      'id': 'assistantTitle',
+                      'label': provider.t('ai.nodeAssistantTitleOnly'),
+                    }),
+                    _aiModeChip(provider, dctx, {
+                      'id': 'assistant',
+                      'label': provider.t('ai.nodeAssistantCustom'),
+                    }),
+                  ],
                 ),
                 const SizedBox(height: 14),
                 // ★ 「子要素を生成」 と 「AI に質問して回答を取得」 は廃止
@@ -37563,9 +37746,12 @@ class _MindMapScreenState extends State<MindMapScreen>
       } else if (result.startsWith('q:')) {
         final picked = result.substring(2);
         final p = context.read<MindMapProvider>();
-        if (picked == 'assistant') {
+        if (picked == 'assistant' || picked == 'assistantTitle') {
           // アプリの AI アシスタント (API) で受ける (= ユーザー要望)。
+          // 渡し方 (要素名そのまま / 指示を書く) も覚える。 覚えないと、
+          //   選択画面を通らない AI ボタンの一押しがどちらか選べない。
           await p.setNodeAiUseAssistant(true);
+          await p.setNodeAiPromptTitleOnly(picked == 'assistantTitle');
         } else {
           // 質問モード: モデルを保存 (= 次回も同じモデル) してから開く。
           await p.setNodeAiUseAssistant(false);
@@ -37611,9 +37797,14 @@ class _MindMapScreenState extends State<MindMapScreen>
   Widget _aiModeChip(
       MindMapProvider provider, BuildContext dctx, Map<String, String> t) {
     // アシスタントを選んでいる間はブラウザ側の印を消す。
-    final isAssistant = t['id'] == 'assistant';
+    // アシスタントは 2 枚 ('assistant' = 指示を指定する /
+    //   'assistantTitle' = 要素名をそのまま) あるので、 今の渡し方の方だけに
+    //   印を付ける。
+    final isAssistant =
+        t['id'] == 'assistant' || t['id'] == 'assistantTitle';
     final selected = isAssistant
-        ? provider.nodeAiUseAssistant
+        ? (provider.nodeAiUseAssistant &&
+            provider.nodeAiPromptTitleOnly == (t['id'] == 'assistantTitle'))
         : (!provider.nodeAiUseAssistant && t['id'] == provider.browserAiTarget);
     return InkWell(
       onTap: () => Navigator.pop(dctx, 'q:${t['id']}'),
@@ -72231,6 +72422,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     Offset? pos;
     double w = 560;
     double h = 380;
+    // 分割していない時は、 場所だけ寄せて大きさは前回のままにする
+    //   (= ユーザー要望: 窓の大きさが開く度に変わらないように)。
+    var posOnly = false;
     if (_mapSplitOpen) {
       final k = slot ?? _slotAtGlobal(nearScreenPos);
       final cell = _splitCellGlobalRect(k);
@@ -72241,6 +72435,19 @@ class _MindMapScreenState extends State<MindMapScreen>
         cell.left + (cell.width - w) / 2,
         cell.top + (cell.height - h) / 2,
       );
+    } else if (nearScreenPos != null) {
+      // ── 分割していない時は、 押した要素のすぐ横に出す (= ユーザー要望:
+      //    要素から youtube 検索を立ち上げた時に窓が画面の左上に出てしまう
+      //    ので、 要素の近くに)。 アプリの中からはみ出さないよう丸める。 ──
+      final view = MediaQuery.sizeOf(context);
+      var x = nearScreenPos.dx + 16;
+      var y = nearScreenPos.dy + 16;
+      if (x + w > view.width) x = view.width - w;
+      if (y + h > view.height) y = view.height - h;
+      if (x < 0) x = 0;
+      if (y < 0) y = 0;
+      pos = Offset(x, y);
+      posOnly = true;
     }
     // ── デスクトップは「アプリの外の本物の窓」 で開く ──
     // = ユーザー要望「そもそも要素から YouTube を立ち上げる時は、 いきなり
@@ -72255,7 +72462,8 @@ class _MindMapScreenState extends State<MindMapScreen>
         _isDesktop &&
         (url.startsWith('http://') || url.startsWith('https://'))) {
       // ignore: discarded_futures
-      _openExternalFloatingVideoWindow(url, localPos: pos, width: w, height: h);
+      _openExternalFloatingVideoWindow(url,
+          localPos: pos, width: w, height: h, positionOnly: posOnly);
       return;
     }
     _showInAppFloatingVideoWindow(url, pos: pos, width: w, height: h);
@@ -72265,24 +72473,38 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// [localPos] はアプリ内 (Flutter ビュー) の座標。 画面座標へ直してから
   /// 開くので、 分割ペインの上にそのまま重なって出る。
   Future<void> _openExternalFloatingVideoWindow(String url,
-      {Offset? localPos, required double width, required double height}) async {
+      {Offset? localPos,
+      required double width,
+      required double height,
+      // true なら大きさは前回のまま、 場所だけ指定して開く (= ユーザー要望:
+      // 要素の近くには出すが、 窓の大きさは覚えている物を使う)。
+      bool positionOnly = false}) async {
     var origin = Offset.zero;
     try {
       final b = await windowManager.getBounds();
       // 最小化中は座標があり得ない値になるので使わない。
       if (b.left > -8000 && b.top > -8000) origin = b.topLeft;
     } catch (_) {}
+    final screenPos = localPos == null
+        ? null
+        : Offset(
+            (origin.dx + localPos.dx).clamp(0.0, 8000.0),
+            (origin.dy + localPos.dy).clamp(0.0, 8000.0),
+          );
+    // 要素から立ち上げた時 (= positionOnly) は専用の合鍵にして、 前の窓を
+    //   閉じてから開き直す。 既定のホスト鍵のままだと、 前の動画窓を開けた
+    //   まま別の要素で検索しても前面に出るだけで何も変わらない。
+    if (positionOnly) {
+      await _closePrevNodeSearchWindow(_kNodeSearchVideoWinKey);
+    }
     final ok = openExternalWebWindow(
       url,
       embeddable: true,
-      frame: localPos == null
+      position: positionOnly ? screenPos : null,
+      singleKey: positionOnly ? _kNodeSearchVideoWinKey : null,
+      frame: (positionOnly || screenPos == null)
           ? null
-          : Rect.fromLTWH(
-              (origin.dx + localPos.dx).clamp(0.0, 8000.0),
-              (origin.dy + localPos.dy).clamp(0.0, 8000.0),
-              width,
-              height,
-            ),
+          : Rect.fromLTWH(screenPos.dx, screenPos.dy, width, height),
     );
     if (ok || !mounted) return;
     // 外の窓を開けない環境では従来どおりアプリ内の浮遊窓で開く。
@@ -73494,6 +73716,31 @@ class _MindMapScreenState extends State<MindMapScreen>
               onTap: () async {
                 await _showQuickAddChildrenCountDialog(
                     ctx, provider);
+                setS(() {});
+              },
+            ),
+
+            // ── 要素を押した時に出るボタンの並び (= ユーザー要望: 動作設定の
+            //    所で要素をクリックした際の並びを変えられるように) ──
+            _settingsTile(
+              icon: Icons.reorder_rounded,
+              color: const Color(0xFF4FC3F7),
+              title: provider.t('menu.nodeMenuOrder'),
+              subtitle: provider.t('menuOrder.subtitle'),
+              onTap: () async {
+                await _showMenuOrderDialog(ctx, provider, node: true);
+                setS(() {});
+              },
+            ),
+
+            // ── 背景を右クリックした時に出る項目の並び (= ユーザー要望) ──
+            _settingsTile(
+              icon: Icons.format_list_numbered_rounded,
+              color: const Color(0xFFBA68C8),
+              title: provider.t('menu.canvasMenuOrder'),
+              subtitle: provider.t('menuOrder.subtitle'),
+              onTap: () async {
+                await _showMenuOrderDialog(ctx, provider, node: false);
                 setS(() {});
               },
             ),
@@ -78445,6 +78692,201 @@ class _MindMapScreenState extends State<MindMapScreen>
           ),
         );
       },
+    );
+  }
+
+  /// 並べ替え画面に出す「要素を押した時のボタン」 の名前と絵柄。
+  /// 名札 (id) は _ActionOverlayState の actionBtns と揃える。
+  (String, IconData) _nodeActionMenuEntryInfo(
+      MindMapProvider provider, String id) {
+    switch (id) {
+      case 'edit':
+        return (provider.t('act.edit'), Icons.edit_rounded);
+      case 'ai':
+        return (provider.t('act.ai'), Icons.auto_awesome_rounded);
+      case 'linkAttach':
+        return ('${provider.t('act.link')} / ${provider.t('act.attach')}',
+            Icons.link_rounded);
+      case 'search':
+        return (provider.t('act.search'), Icons.search_rounded);
+      case 'calendar':
+        return (
+          provider.t('act.addToCalendar'),
+          Icons.event_available_rounded
+        );
+      case 'collapse':
+        return (provider.t('act.collapse'), Icons.unfold_less_rounded);
+      case 'galleryDelete':
+        return ('${provider.t('act.delRow')} / ${provider.t('act.delCol')}',
+            Icons.table_rows_rounded);
+      case 'delete':
+        return (provider.t('act.delete'), Icons.delete_rounded);
+      case 'more':
+        return (provider.t('act.more'), Icons.more_horiz_rounded);
+      default:
+        return (id, Icons.circle_outlined);
+    }
+  }
+
+  /// 並べ替え画面に出す「背景を右クリックした時の項目」 の名前と絵柄。
+  /// 名札 (id) は buildItems の menuId と揃える。
+  (String, IconData) _canvasMenuEntryInfo(
+      MindMapProvider provider, String id) {
+    switch (id) {
+      case 'rangeSelect':
+        return (provider.t('ctx.rangeSelect'), Icons.select_all_rounded);
+      case 'addNode':
+        return (provider.t('ctx.addNode'), Icons.add_circle_rounded);
+      case 'switchPage':
+        return (provider.t('ctx.switchPage'), Icons.swap_horiz_rounded);
+      case 'background':
+        return (provider.t('cmd.mapBackground'), Icons.wallpaper_rounded);
+      case 'split':
+        return (provider.t('hdr.mapSplit'), Icons.splitscreen_rounded);
+      case 'cutMode':
+        return (provider.t('hdr.cutMode'), Icons.content_cut_rounded);
+      case 'insertShape':
+        return (provider.t('hdr.insertMapShape'), Icons.draw_rounded);
+      case 'terminal':
+        return (provider.t('flow.terminal'), Icons.account_tree_outlined);
+      case 'memoList':
+        return (provider.t('ctx.memoList'), Icons.sticky_note_2_rounded);
+      case 'attachFile':
+        return (provider.t('ctx.attachFile'), Icons.attach_file_rounded);
+      case 'createFile':
+        return (provider.t('file.create'), Icons.note_add_rounded);
+      case 'copy':
+        return (provider.t('ctx.copy'), Icons.content_copy_rounded);
+      case 'bulkDownload':
+        return (provider.t('ctx.bulkDownloadMedia'), Icons.download_rounded);
+      case 'bookshelf':
+        return (provider.t('ctx.bookshelf'), Icons.view_module_rounded);
+      case 'deleteSelected':
+        return (
+          provider.t('tooltip.deleteSelectedMobile'),
+          Icons.delete_rounded
+        );
+      case 'groupList':
+        return (provider.t('ctx.groupList'), Icons.bookmarks_rounded);
+      case 'basePosition':
+        return (provider.t('ctx.basePosition'), Icons.gps_fixed_rounded);
+      case 'fontSize':
+        return (provider.t('ctx.fontSizeSettings'), Icons.text_fields_rounded);
+      default:
+        return (id, Icons.circle_outlined);
+    }
+  }
+
+  /// 要素を押した時 / 背景を右クリックした時に出る項目の並べ替え
+  /// (= ユーザー要望: 動作設定の所で並び順を変えられるように)。
+  /// 掴み方は ノートの並べ替え (_showNoteReorderDialog) と集中タスクの一覧に
+  /// 合わせる。 行のどこを掴んでも動かせて、 掴んでいる間も白飛びしない。
+  /// その場面で出ない項目もここには全部並べる。 実際の並びは名札 (id) で
+  /// 決まるので、 出ない項目があっても順番は崩れない。
+  Future<void> _showMenuOrderDialog(
+      BuildContext ctx, MindMapProvider provider,
+      {required bool node}) async {
+    await showDialog<void>(
+      context: ctx,
+      builder: (dctx) => StatefulBuilder(builder: (dctx2, setDlg) {
+        final ids =
+            node ? provider.nodeActionMenuOrder : provider.canvasMenuOrder;
+        return AlertDialog(
+          backgroundColor: const Color(0xFF2A2A3E),
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14)),
+          title: Text(
+              provider.t(node ? 'menu.nodeMenuOrder' : 'menu.canvasMenuOrder'),
+              style: const TextStyle(color: Colors.white, fontSize: 15)),
+          // ── 高さを決めて、 一覧そのものに巻物 (スクロール) を持たせる ──
+          //   ノートの並べ替え (_showNoteReorderDialog) と同じ作り。
+          //   前は外側だけを巻物にして一覧を shrinkWrap にしていたが、 それだと
+          //   掴んでいる間に一覧が送られない (自動送りは一覧自身の巻物しか
+          //   動かせず、 shrinkWrap だと動かす余地が無い。 掴んだ指では外側の
+          //   巻物も動かせない)。 背景を右クリックした時の項目は 18 個あって
+          //   画面に収まらないので、 それだと今見えている範囲より遠くへは
+          //   運べなかった。 画面が低くて入りきらない時は AlertDialog 側が
+          //   縮めてくれる (content は Flexible の中なので、 高さの指定は
+          //   上限として働く)。
+          content: SizedBox(
+            width: 340,
+            height: math.min(460.0, 96.0 + 48.0 * ids.length),
+            child: Column(children: [
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(provider.t('menuOrder.hint'),
+                    style: const TextStyle(
+                        color: Colors.white54, fontSize: 11, height: 1.4)),
+              ),
+              const SizedBox(height: 8),
+              Expanded(
+                child: ReorderableListView.builder(
+                  // 行のどこを掴んでも動かせるようにする (既定のつまみは
+                  //   行末に重なって掴めないことがある)。
+                  buildDefaultDragHandles: false,
+                  // 掴んでいる間の白飛び防止。
+                  proxyDecorator: (child, index, animation) => Material(
+                    color: Colors.transparent,
+                    child: child,
+                  ),
+                  itemCount: ids.length,
+                  onReorder: (oldIndex, newIndex) async {
+                    if (node) {
+                      await provider.reorderNodeActionMenu(oldIndex, newIndex);
+                    } else {
+                      await provider.reorderCanvasMenu(oldIndex, newIndex);
+                    }
+                    setDlg(() {});
+                  },
+                  itemBuilder: (_, i) {
+                    final id = ids[i];
+                    final info = node
+                        ? _nodeActionMenuEntryInfo(provider, id)
+                        : _canvasMenuEntryInfo(provider, id);
+                    return ReorderableDragStartListener(
+                      key: ValueKey(id),
+                      index: i,
+                      child: ListTile(
+                        dense: true,
+                        leading: Row(mainAxisSize: MainAxisSize.min, children: [
+                          const Icon(Icons.drag_indicator_rounded,
+                              size: 16, color: Colors.white30),
+                          const SizedBox(width: 6),
+                          Icon(info.$2,
+                              size: 18, color: const Color(0xFF8D86FF)),
+                        ]),
+                        title: Text('${i + 1}. ${info.$1}',
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 13)),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ]),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () async {
+                if (node) {
+                  await provider.resetNodeActionMenuOrder();
+                } else {
+                  await provider.resetCanvasMenuOrder();
+                }
+                setDlg(() {});
+              },
+              child: Text(provider.t('btn.reset'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(dctx2).pop(),
+              child: Text(provider.t('btn.close'),
+                  style: const TextStyle(color: Color(0xFF8D86FF))),
+            ),
+          ],
+        );
+      }),
     );
   }
 
@@ -105606,23 +106048,25 @@ class _ActionOverlayState extends State<_ActionOverlay>
         onTap: widget.onCycleAnchor,
       ),
     ]);
-    final topBarContent = Row(mainAxisSize: MainAxisSize.min, children: [
-      _editBtn(provider, btnSize, width: btnBoxW),
-      SizedBox(width: btnGap),
-      _aiEngineBtn(provider, btnSize, width: btnBoxW),
-      SizedBox(width: btnGap),
+    // ── ボタンの並び順は動作設定で変えられる (= ユーザー要望: 要素を
+    //    クリックした時の並びを自分で決められるように) ──
+    //   場面によって出ない物 (子を持つ時だけの折り畳み / ギャラリーの
+    //   行・列削除) があるので、 番号ではなく名札 (id) で並べる。
+    //   設定に載っていない名札 (= 後から増えたボタン) は末尾に回るので、
+    //   新しいボタンが消えることはない。
+    final actionOrder = provider.nodeActionMenuOrder;
+    final Map<String, Widget> actionBtns = {
+      'edit': _editBtn(provider, btnSize, width: btnBoxW),
+      'ai': _aiEngineBtn(provider, btnSize, width: btnBoxW),
       // リンク / 添付 を 1 ボタンに統合 (= ユーザー要望: タップで 2 択切替)。
-      _linkAttachBtn(provider, btnSize, width: btnBoxW),
-      SizedBox(width: btnGap),
-      _searchEngineBtn(provider, btnSize, width: btnBoxW),
-      SizedBox(width: btnGap),
+      'linkAttach': _linkAttachBtn(provider, btnSize, width: btnBoxW),
+      'search': _searchEngineBtn(provider, btnSize, width: btnBoxW),
       // ── カレンダーに登録 (左クリック専用) ──
       // 旧 anchorMode (伸ばせる方向) ボタンの位置を流用。anchorMode は
       // 右クリックメニュー (_showNodeContextMenu) に移動した。
-      _calendarBtn(provider, btnSize, width: btnBoxW),
-      if (widget.hasChildren) ...[
-        SizedBox(width: btnGap),
-        _Btn(
+      'calendar': _calendarBtn(provider, btnSize, width: btnBoxW),
+      if (widget.hasChildren)
+        'collapse': _Btn(
             icon: widget.isCollapsed
                 ? Icons.unfold_more_rounded
                 : Icons.unfold_less_rounded,
@@ -105633,32 +106077,38 @@ class _ActionOverlayState extends State<_ActionOverlay>
             size: btnSize,
             width: btnBoxW,
             onTap: widget.onCollapse),
-      ],
-      for (final b in galleryDeleteButtons) ...[
-        SizedBox(width: btnGap),
-        b,
-      ],
-      // ── 削除は右から 2 番目に固定する (= ユーザー要望) ──
-      //   一番右は「他」 (右クリックメニュー) なので、 その手前に置く。
-      SizedBox(width: btnGap),
-      _Btn(
+      if (galleryDeleteButtons.isNotEmpty)
+        'galleryDelete': galleryDeleteButtons.first,
+      'delete': _Btn(
           icon: Icons.delete_rounded,
           label: provider.t('act.delete'),
           color: Colors.red.shade400,
           size: btnSize,
           width: btnBoxW,
           onTap: widget.onDelete),
-      SizedBox(width: btnGap),
       // ── 他 (More): 右クリックメニューを開く ──
       // タップ操作だけで右クリック専用機能 (伸ばせる方向の切替・翻訳・要約・
       // 子ノードを追加 等) にもアクセスできるようにするためのエントリポイント。
-      _Btn(
+      'more': _Btn(
           icon: Icons.more_horiz_rounded,
           label: provider.t('act.more'),
           color: const Color(0xFF78909C),
           size: btnSize,
           width: btnBoxW,
           onTap: widget.onMore),
+    };
+    final List<Widget> orderedActionBtns = [
+      for (final id in actionOrder)
+        if (actionBtns.containsKey(id)) actionBtns[id]!,
+      // 並び順に載っていない (= 後から増えた) ボタンは末尾へ。
+      for (final e in actionBtns.entries)
+        if (!actionOrder.contains(e.key)) e.value,
+    ];
+    final topBarContent = Row(mainAxisSize: MainAxisSize.min, children: [
+      for (int i = 0; i < orderedActionBtns.length; i++) ...[
+        if (i > 0) SizedBox(width: btnGap),
+        orderedActionBtns[i],
+      ],
     ]);
 
     // ── 画面が狭すぎて 1 行で収まらない時は 2 行にラップして全ボタンを表示する ──
@@ -105669,42 +106119,8 @@ class _ActionOverlayState extends State<_ActionOverlay>
     //   (特に右端の "他" / Delete) がスクロールなしで常に見える。
     // 注: overflowsTopBar の判定はレイアウト計算用に上で定義済みなので
     // ここでは再定義しない。
-    final List<Widget> wrappedChildren = [
-      _editBtn(provider, btnSize, width: btnBoxW),
-      _aiEngineBtn(provider, btnSize, width: btnBoxW),
-      // リンク / 添付 を 1 ボタンに統合 (= ユーザー要望: タップで 2 択切替)。
-      _linkAttachBtn(provider, btnSize, width: btnBoxW),
-      _searchEngineBtn(provider, btnSize, width: btnBoxW),
-      _calendarBtn(provider, btnSize, width: btnBoxW),
-      if (widget.hasChildren)
-        _Btn(
-            icon: widget.isCollapsed
-                ? Icons.unfold_more_rounded
-                : Icons.unfold_less_rounded,
-            label: widget.isCollapsed
-                ? provider.t('act.expand')
-                : provider.t('act.collapse'),
-            color: const Color(0xFF7E57C2),
-            size: btnSize,
-            width: btnBoxW,
-            onTap: widget.onCollapse),
-      ...galleryDeleteButtons,
-      // 削除は右から 2 番目 (= ユーザー要望)。
-      _Btn(
-          icon: Icons.delete_rounded,
-          label: provider.t('act.delete'),
-          color: Colors.red.shade400,
-          size: btnSize,
-          width: btnBoxW,
-          onTap: widget.onDelete),
-      _Btn(
-          icon: Icons.more_horiz_rounded,
-          label: provider.t('act.more'),
-          color: const Color(0xFF78909C),
-          size: btnSize,
-          width: btnBoxW,
-          onTap: widget.onMore),
-    ];
+    // 並びは 1 行版とまったく同じ (= 動作設定で決めた順)。
+    final List<Widget> wrappedChildren = orderedActionBtns;
     final wrappedTopBar = Wrap(
       spacing: btnGap,
       runSpacing: btnGap,
@@ -107249,6 +107665,11 @@ class _CtxMenuItem extends StatefulWidget {
   final Color color;
   final VoidCallback onTap;
 
+  /// 並べ替えの名札 (= ユーザー要望: 動作設定で右クリックの並びを変えられる
+  /// ように)。 場面によって出ない項目があるので、 番号ではなくこの名札で
+  /// 並べる。 空文字なら並べ替えの対象外 (元の場所に残る)。
+  final String menuId;
+
   /// 押すと細かい設定が出る項目か。 null なら普通の項目。
   /// true = 開いている / false = 閉じている (= ユーザー要望: 「画面分割」 を
   /// 左クリックすると、 元の項目を出したまま割り方が出てくるように)。
@@ -107258,6 +107679,7 @@ class _CtxMenuItem extends StatefulWidget {
   final bool expandRight;
   const _CtxMenuItem({
     super.key,
+    this.menuId = '',
     required this.icon,
     required this.label,
     required this.color,
@@ -124202,6 +124624,13 @@ bool openExternalWebWindow(String url,
     // 掴んで外へ出した時に、 その場所・その大きさのまま出すための指定
     // (= ユーザー要望: フローティングをそのまま外へ出したい)。
     Rect? frame,
+    // 大きさは前回のまま、 場所だけ指定して開く (= ユーザー要望: 要素から
+    // 立ち上げた検索の窓を、 その要素の近くに出す)。
+    Offset? position,
+    // 「同じ窓は 1 つだけ」 の合鍵。 既定 (null) は URL のホスト単位。
+    // 要素からの検索は専用の鍵を使い、 押し直した時に前の窓を閉じてから
+    // 新しい言葉・新しい場所で開き直す (= ユーザー要望)。
+    String? singleKey,
     // 本体の分割ペインの上に置いて放したら、 そのペインへ埋め込んで
     // 窓は閉じる (= ユーザー要望)。 要素から開いた動画の窓だけに付ける。
     bool embeddable = false}) {
@@ -124210,7 +124639,12 @@ bool openExternalWebWindow(String url,
   final u = url.trim();
   if (!isDesktop || u.isEmpty) return false;
   unawaited(openExternalWebWindowPid(u,
-      pinned: pinned, title: title, frame: frame, embeddable: embeddable));
+      pinned: pinned,
+      title: title,
+      frame: frame,
+      position: position,
+      singleKey: singleKey,
+      embeddable: embeddable));
   return true;
 }
 
