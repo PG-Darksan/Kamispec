@@ -211398,6 +211398,41 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
               '<xf',
               '<xf fontId="$fontId" fillId="$fillId" borderId="$borderId" '
                   'applyFont="1" applyFill="1" applyBorder="1"');
+          // ── 折り返し (= ユーザー要望の Alt+Enter / Shift+Enter で入れた
+          //    改行が、 保存して開き直しても見えるように) ──
+          //    Excel は改行そのものは文字として持ち、 「折り返して全体を
+          //    表示する」 は <xf> の子の <alignment wrapText="1"/> に書く。
+          //    ここを書いていなかったので、 開き直すと 1 行に潰れていた。
+          //    元の寄せ方は残したまま、 折り返しの旗だけ入れ替える。
+          final wrapOn = f?.wrap ?? false;
+          final alRe = RegExp(r'<alignment\b[^>]*?/?>');
+          final alOld = alRe.firstMatch(xf)?.group(0);
+          final alAttrs = alOld == null
+              ? ''
+              : alOld
+                  .replaceFirst('<alignment', '')
+                  .replaceAll(RegExp(r'/?>$'), '')
+                  .replaceAll(RegExp(r'\swrapText="[^"]*"'), '')
+                  .trimRight();
+          final alNew =
+              '<alignment$alAttrs wrapText="${wrapOn ? '1' : '0'}"/>';
+          xf = xf
+              .replaceAll(alRe, '')
+              .replaceAll(RegExp(r'\sapplyAlignment="[^"]*"'), '')
+              .replaceFirst('<xf', '<xf applyAlignment="1"');
+          if (xf.endsWith('/>')) {
+            // <xf .../> → 中身を持てる形にしてから足す。
+            xf = '${xf.substring(0, xf.length - 2)}>$alNew</xf>';
+          } else {
+            // ★ <alignment> は <xf> の子の**先頭**に置く。 決まり (CT_Xf) では
+            //   alignment → protection → extLst の順で、 後ろに足すと
+            //   <protection> を持つ本では順番違いになり Excel に直される
+            //   (= 点検で判明)。
+            final open = RegExp(r'^<xf\b[^>]*>').firstMatch(xf)?.group(0);
+            xf = open == null
+                ? xf.replaceFirst('</xf>', '$alNew</xf>')
+                : xf.replaceFirst(open, '$open$alNew');
+          }
           final newS = addXf(xf);
 
           // セルの s= を書き換える
@@ -211845,6 +211880,55 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
   List<List<String>> get _rows => _sheets[_activeSheet] ?? const [];
   int get _rowCount => _rows.length;
   int get _colCount => _rows.isEmpty ? 0 : _rows.first.length;
+
+  // ── Enter で選ぶ場所を上下に移す (= ユーザー要望: Excel と同じに) ──
+  //
+  //   ・Enter        … 一つ下へ
+  //   ・Shift+Enter  … 一つ上へ
+  //   端に着いたらそこで止まる (行は勝手に増やさない)。
+  void _moveSelVert(int d) {
+    if (_rowCount <= 0 || _colCount <= 0) return;
+    final next = (_selRow + d).clamp(0, _rowCount - 1);
+    if (next == _selRow) return;
+    setState(() {
+      _resetRangeAnchor();
+      _selRow = next;
+    });
+    _ensureSelVisible();
+  }
+
+  void _moveSelDown() => _moveSelVert(1);
+  void _moveSelUp() => _moveSelVert(-1);
+
+  /// セルの中に改行が入った時に呼ばれる (= Shift+Enter / Alt+Enter)。
+  ///
+  /// そのセルを「折り返す」 にして、 行の高さも中身に合わせて伸ばす。
+  /// Excel で Alt+Enter を押した時と同じで、 これをやらないと改行しても
+  /// 1 行に潰れてしまい、 入れた改行が見えない。
+  ///
+  /// 取り消し用の控えは [_beginEdit] が編集を始める時に取ってあるので、
+  /// ここでは取らない (= Ctrl+Z 一回で編集ごと戻る)。
+  void _enableWrapAt(int r, int c) {
+    if (r < 0 || r >= _rowCount || c < 0 || c >= _colCount) return;
+    final map = _fmts;
+    final k = _fmtKey(r, c);
+    final cur = map[k];
+    if (cur == null || !cur.wrap) {
+      final f = (cur ?? _SsCellFmt()).copy();
+      f.wrap = true;
+      map[k] = f;
+      _markFmtDirty(r, c);
+    }
+    // 打ち込んでいる中身の行数ぶんまで、 行を高くする。
+    final lines =
+        ('\n'.allMatches(_editCtrl.text).length + 1).clamp(1, 12);
+    final want = _cellHeightBase * lines + 6;
+    if (_rowH(r) < want) {
+      _rowHMap[r] = want.clamp(_kMinRowH, _kMaxRowH).toDouble();
+      _invalidateGridMetrics();
+    }
+    setState(() => _dirty = true);
+  }
 
   void _beginEdit(int row, int col) {
     if (row < 0 || row >= _rowCount || col < 0 || col >= _colCount) return;
@@ -212865,8 +212949,18 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
       _ensureSelVisible();
       return KeyEventResult.handled;
     }
+    // ── Enter = 一つ下へ / Shift+Enter = 一つ上へ (= ユーザー要望:
+    //    Excel と同じに)。 書き換えたい時は F2 か、 そのまま文字を打つ。
     if (event.logicalKey == LogicalKeyboardKey.enter ||
-        event.logicalKey == LogicalKeyboardKey.f2) {
+        event.logicalKey == LogicalKeyboardKey.numpadEnter) {
+      if (shift) {
+        _moveSelUp();
+      } else {
+        _moveSelDown();
+      }
+      return KeyEventResult.handled;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.f2) {
       _beginEdit(_selRow, _selCol);
       return KeyEventResult.handled;
     }
@@ -214340,6 +214434,41 @@ $csvText
               _applyFmtToSelection((f) => f.underline = v);
             },
           ),
+          // ── 折り返して全体を表示 (= ユーザー要望の Alt+Enter で自動的に
+          //    入るので、 手で外せる所も要る) ──
+          _fmtBtn(
+            icon: Icons.wrap_text_rounded,
+            tip: provider.t('ss.wrapText'),
+            dark: dark,
+            active: cur.wrap,
+            onTap: () {
+              final v = !cur.wrap;
+              _applyFmtToSelection((f) => f.wrap = v);
+              // 折り返しを入れた行は、 中身の行数ぶんまで高くする。
+              // 外した時は指定を消して既定の高さへ戻す。
+              final rg = _fmtTarget;
+              setState(() {
+                for (var r = rg.r1; r <= rg.r2; r++) {
+                  if (r < 0 || r >= _rowCount) continue;
+                  if (!v) {
+                    _rowHMap.remove(r);
+                    continue;
+                  }
+                  var lines = 1;
+                  for (var c = rg.c1; c <= rg.c2; c++) {
+                    if (c < 0 || c >= _colCount) continue;
+                    final n = '\n'.allMatches(_rows[r][c]).length + 1;
+                    if (n > lines) lines = n;
+                  }
+                  final want = _cellHeightBase * lines.clamp(1, 12) + 6;
+                  if (_rowH(r) < want) {
+                    _rowHMap[r] = want.clamp(_kMinRowH, _kMaxRowH).toDouble();
+                  }
+                }
+                _invalidateGridMetrics();
+              });
+            },
+          ),
           const SizedBox(width: 6),
           // ── 文字の大きさ ──
           Tooltip(
@@ -214565,7 +214694,18 @@ $csvText
                     break;
                 }
               },
+              // 並びは Excel の 「表示 → ウィンドウ枠の固定」 と同じにする
+              // (= ユーザー要望)。 選んだセルを基準にする物が先頭で、
+              // その下に先頭行 / 先頭列が並ぶ。
               itemBuilder: (_) => [
+                PopupMenuItem<String>(
+                    value: 'here',
+                    height: 34,
+                    child: Text(
+                        '${provider.t('ss.freezeHere')}'
+                        ' (${_colLabel(_selCol)}${_selRow + 1})',
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 13))),
                 PopupMenuItem<String>(
                     value: 'row',
                     height: 34,
@@ -214582,14 +214722,6 @@ $csvText
                     value: 'both',
                     height: 34,
                     child: Text(provider.t('ss.freezeBoth'),
-                        style: const TextStyle(
-                            color: Colors.white, fontSize: 13))),
-                PopupMenuItem<String>(
-                    value: 'here',
-                    height: 34,
-                    child: Text(
-                        '${provider.t('ss.freezeHere')}'
-                        ' (${_colLabel(_selCol)}${_selRow + 1})',
                         style: const TextStyle(
                             color: Colors.white, fontSize: 13))),
                 const PopupMenuDivider(),
@@ -215193,6 +215325,8 @@ $csvText
       }
     }
     _keyFocus.requestFocus();
+    // 数式バーで Enter を押した時も、 表と同じで一つ下へ移る。
+    _moveSelDown();
   }
 
   Widget _buildSheetTabs(bool dark, Color fg) {
@@ -216854,6 +216988,8 @@ $csvText
                   ? tbl.headerFont
                   : null,
               onContextMenu: (pos) => _showCellMenu(pos, r, c),
+              // Shift+Enter / Alt+Enter でセルの中に改行を入れた時。
+              onNewline: () => _enableWrapAt(r, c),
               controller: editing ? _editCtrl : null,
               focusNode: editing ? _editFocus : null,
               inRange: _hasRange && _inRange(r, c),
@@ -216913,11 +217049,10 @@ $csvText
                 });
               },
               onDoubleTap: () => _beginEdit(r, c),
+              // Enter = 確定して一つ下へ (= ユーザー要望: Excel と同じに)。
               onSubmitted: () {
                 _commitEdit();
-                if (_selRow + 1 < _rowCount) {
-                  setState(() => _selRow += 1);
-                }
+                _moveSelDown();
               },
               onEscape: _cancelEdit,
               onTabNext: () {
@@ -217128,6 +217263,10 @@ class _SsDataCell extends StatelessWidget {
   /// 右クリック (= 結合 / 結合解除のちいさなメニューを出す)。
   final void Function(Offset globalPos)? onContextMenu;
 
+  /// セルの中で改行を入れた合図 (= Shift+Enter / Alt+Enter)。
+  /// 呼ばれた側で「折り返す」 を入れて行を高くする (Excel と同じ)。
+  final VoidCallback? onNewline;
+
   /// オートフィルの取っ手を出すか (= 選択の右下のセル)。
   final bool showFillHandle;
 
@@ -217178,6 +217317,7 @@ class _SsDataCell extends StatelessWidget {
     this.onPointerDown,
     this.onPointerEnter,
     this.onContextMenu,
+    this.onNewline,
     this.tableFill,
     this.tableLine,
     this.tableHeaderFont,
@@ -217190,6 +217330,26 @@ class _SsDataCell extends StatelessWidget {
     this.onFillDrag,
     this.onFillEnd,
   });
+
+  /// カーソルの所へ改行を 1 つ入れる (= Shift+Enter / Alt+Enter)。
+  ///
+  /// Enter は「確定して下へ」 に使うので、 セルの中の改行は自分で入れる。
+  /// 選んでいる所があればそれを置き換える (ふつうの文字打ちと同じ)。
+  void _insertNewline() {
+    final ctrl = controller;
+    if (ctrl == null) return;
+    final text = ctrl.text;
+    final sel = ctrl.selection;
+    final start = sel.isValid ? sel.start : text.length;
+    final end = sel.isValid ? sel.end : text.length;
+    ctrl.value = TextEditingValue(
+      text: text.replaceRange(start, end, '\n'),
+      selection: TextSelection.collapsed(offset: start + 1),
+    );
+    // 呼んだ側で「折り返す」 を入れて行を高くする (= Excel と同じ。
+    // 入れないと改行しても 1 行に潰れて見えない)。
+    onNewline?.call();
+  }
 
   /// 1 辺の線を決める。 手で引いた罫線が最優先、 次に結合の内側 (線なし)、
   /// 無ければふつうの升目の線。
@@ -217279,20 +217439,56 @@ class _SsDataCell extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 6),
         alignment: Alignment.centerLeft,
         child: editing
-            ? KeyboardListener(
-                focusNode: FocusNode(skipTraversal: true),
-                onKeyEvent: (event) {
-                  if (event is! KeyDownEvent) return;
+            ? Focus(
+                // この包み自体は焦点を取らない (= 中の TextField に持たせる)。
+                // キーは中から外へ上がってくるので、 ここで受けて消すことが
+                // できる (KeyboardListener だと見るだけで消せないため、
+                // Enter がそのまま改行として入ってしまっていた)。
+                canRequestFocus: false,
+                skipTraversal: true,
+                onKeyEvent: (node, event) {
+                  if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+                    return KeyEventResult.ignored;
+                  }
+                  // ★ 日本語などの変換中は、 Enter / Esc / Tab はどれも
+                  //   「変換を決める・やめる」 ための物。 ここで横取りすると、
+                  //   変換を決めただけでセルが確定して下へ飛んでしまう。
+                  //   変換中かどうかは、 打ち込み中の下線が付いている所
+                  //   (composing) が在るかどうかで分かる。
+                  final composing = controller?.value.composing;
+                  if (composing != null &&
+                      composing.isValid &&
+                      !composing.isCollapsed) {
+                    return KeyEventResult.ignored;
+                  }
                   final shift = HardwareKeyboard.instance.isShiftPressed;
-                  if (event.logicalKey == LogicalKeyboardKey.escape) {
+                  final alt = HardwareKeyboard.instance.isAltPressed;
+                  final k = event.logicalKey;
+                  if (k == LogicalKeyboardKey.escape) {
                     onEscape();
-                  } else if (event.logicalKey == LogicalKeyboardKey.tab) {
+                    return KeyEventResult.handled;
+                  }
+                  if (k == LogicalKeyboardKey.tab) {
                     if (shift) {
                       onTabPrev();
                     } else {
                       onTabNext();
                     }
+                    return KeyEventResult.handled;
                   }
+                  // ── Enter の決まり (= ユーザー要望: Excel と同じに) ──
+                  //   ・そのまま押す     … 中身を確定して、 一つ下の行へ移る。
+                  //   ・Shift / Alt を足す … セルの中で改行する。
+                  if (k == LogicalKeyboardKey.enter ||
+                      k == LogicalKeyboardKey.numpadEnter) {
+                    if (shift || alt) {
+                      _insertNewline();
+                    } else {
+                      onSubmitted();
+                    }
+                    return KeyEventResult.handled;
+                  }
+                  return KeyEventResult.ignored;
                 },
                 child: TextField(
                   controller: controller,
@@ -217305,11 +217501,10 @@ class _SsDataCell extends StatelessWidget {
                   keyboardType: (fmt?.wrap ?? false)
                       ? TextInputType.multiline
                       : TextInputType.text,
-                  // 複数行の時、 Enter は改行として使いたいので確定に使わない
-                  //   (確定は Tab / Esc / 他のセルを押す、 で今までどおり)。
-                  textInputAction: (fmt?.wrap ?? false)
-                      ? TextInputAction.newline
-                      : TextInputAction.done,
+                  // ★ どちらでも Enter は「確定」にする (= ユーザー要望)。
+                  //   携帯の画面の鍵盤には Shift / Alt が無いので、 ここを
+                  //   newline にしてしまうと下へ移れなくなる。
+                  textInputAction: TextInputAction.done,
                   style: TextStyle(color: fg, fontSize: fmt?.size ?? 13),
                   decoration: const InputDecoration(
                     border: InputBorder.none,

@@ -43920,6 +43920,19 @@ class MindMapProvider extends ChangeNotifier {
     'ss.bold': {'ja': '太字', 'en': 'Bold'},
     'ss.italic': {'ja': '斜体', 'en': 'Italic'},
     'ss.underline': {'ja': '下線', 'en': 'Underline'},
+    // 折り返して全体を表示する (= Alt+Enter / Shift+Enter で入れた
+    //   セル内の改行を見せる旗。 手で外せるように書式バーにも置く)。
+    'ss.wrapText': {
+      'ja': '折り返して全体を表示する (Alt+Enter で改行)',
+      'en': 'Wrap text (Alt+Enter for a line break)',
+      'zh': '自动换行 (Alt+Enter 换行)',
+      'ko': '텍스트 줄 바꿈 (Alt+Enter 로 줄 바꿈)',
+      'es': 'Ajustar texto (Alt+Enter para salto de línea)',
+      'fr': 'Renvoyer à la ligne (Alt+Entrée pour un saut de ligne)',
+      'de': 'Zeilenumbruch (Alt+Eingabe für Umbruch)',
+      'pt': 'Quebrar texto (Alt+Enter para quebra de linha)',
+      'ru': 'Перенос текста (Alt+Enter — перенос строки)',
+    },
     'ss.fontSize': {'ja': '文字の大きさ', 'en': 'Font size'},
     'ss.fontColor': {'ja': '文字色', 'en': 'Text colour'},
     'ss.fillColor': {'ja': '背景色', 'en': 'Fill colour'},
