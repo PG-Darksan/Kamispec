@@ -208677,6 +208677,170 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
   /// 利用者が Excel で付けたフィルターが消えてしまう (= ユーザー報告)。
   /// 元の場所へ戻すため、 入れる所は xlsx の決まった並び順に合わせて
   /// 「</sheetData> より後、 mergeCells などより前」 に差し込む。
+  /// シート名 → その worksheet XML の道、 を作る (固定とオートフィルターで
+  /// 同じ手順を使う)。
+  static Map<String, String> _sheetXmlPaths(
+      String? Function(String) read) {
+    final out = <String, String>{};
+    final wb = read('xl/workbook.xml');
+    final rels = read('xl/_rels/workbook.xml.rels');
+    if (wb == null || rels == null) return out;
+    final relTarget = <String, String>{};
+    for (final m in RegExp(r'<Relationship\b[^>]*>').allMatches(rels)) {
+      final t = m.group(0)!;
+      final id = RegExp(r'Id="([^"]+)"').firstMatch(t)?.group(1);
+      var tg = RegExp(r'Target="([^"]+)"').firstMatch(t)?.group(1);
+      if (id == null || tg == null) continue;
+      if (tg.startsWith('/')) tg = tg.substring(1);
+      if (tg.startsWith('xl/')) tg = tg.substring(3);
+      relTarget[id] = 'xl/$tg';
+    }
+    for (final m in RegExp(r'<sheet\b[^>]*?/?>').allMatches(wb)) {
+      final t = m.group(0)!;
+      final name = RegExp(r'name="([^"]*)"').firstMatch(t)?.group(1);
+      final rid = RegExp(r'r:id="([^"]+)"').firstMatch(t)?.group(1);
+      if (name == null || rid == null) continue;
+      final path = relTarget[rid];
+      if (path != null) out[_xmlUnescape(name)] = path;
+    }
+    return out;
+  }
+
+  /// xlsx から「ウィンドウ枠の固定」 を読む (= ユーザー要望)。
+  ///
+  /// Excel は `<pane xSplit="1" ySplit="1" state="frozen"/>` の形で持つ。
+  /// `state` が `frozen` / `frozenSplit` の物だけを固定として扱う
+  /// (`split` はただの分割窓なので固定ではない)。
+  static Map<String, List<int>> _readXlsxFreeze(Uint8List bytes) {
+    final out = <String, List<int>>{};
+    try {
+      final arc = ZipDecoder().decodeBytes(bytes);
+      final files = <String, List<int>>{};
+      for (final f in arc.files) {
+        files[f.name] = List<int>.from(f.content as List<int>);
+      }
+      String? read(String name) => files[name] == null
+          ? null
+          : utf8.decode(files[name]!, allowMalformed: true);
+      final paths = _sheetXmlPaths(read);
+      for (final e in paths.entries) {
+        final xml = read(e.value);
+        if (xml == null) continue;
+        final m = RegExp(r'<pane\b[^>]*/?>').firstMatch(xml);
+        if (m == null) continue;
+        final tag = m.group(0)!;
+        final st = RegExp(r'state="([^"]*)"').firstMatch(tag)?.group(1) ?? '';
+        if (st != 'frozen' && st != 'frozenSplit') continue;
+        final xs = int.tryParse(
+                RegExp(r'xSplit="([0-9.]+)"').firstMatch(tag)?.group(1) ??
+                    '0') ??
+            0;
+        final ys = int.tryParse(
+                RegExp(r'ySplit="([0-9.]+)"').firstMatch(tag)?.group(1) ??
+                    '0') ??
+            0;
+        if (xs <= 0 && ys <= 0) continue;
+        out[e.key] = [ys, xs];
+      }
+    } catch (e) {
+      debugPrint('固定の読み込みに失敗: $e');
+    }
+    return out;
+  }
+
+  /// 「ウィンドウ枠の固定」 を xlsx へ書き戻す (= ユーザー要望)。
+  ///
+  /// `excel` の書き出しはこの要素を扱わないので、 zip を開いて worksheet の
+  /// XML へ自分で入れる (オートフィルターと同じやり方)。
+  Uint8List _writeFreezeIntoZip(Uint8List bytes) {
+    try {
+      final arc = ZipDecoder().decodeBytes(bytes);
+      final files = <String, List<int>>{};
+      for (final f in arc.files) {
+        files[f.name] = List<int>.from(f.content as List<int>);
+      }
+      String? read(String name) => files[name] == null
+          ? null
+          : utf8.decode(files[name]!, allowMalformed: true);
+      final paths = _sheetXmlPaths(read);
+      if (paths.isEmpty) return bytes;
+
+      var changed = false;
+      for (final e in paths.entries) {
+        var xml = read(e.value);
+        if (xml == null) continue;
+        final f = _sheetFreeze[e.key];
+        final rows = (f != null && f.isNotEmpty) ? f[0] : 0;
+        final cols = (f != null && f.length > 1) ? f[1] : 0;
+
+        // 今入っている <pane> は必ず外す (解除も書き戻す為)。
+        final had = RegExp(r'<pane\b[^>]*/>').hasMatch(xml) ||
+            RegExp(r'<pane\b[^>]*>.*?</pane>', dotAll: true).hasMatch(xml);
+        if (had) {
+          xml = xml
+              .replaceAll(RegExp(r'<pane\b[^>]*/>'), '')
+              .replaceAll(RegExp(r'<pane\b[^>]*>.*?</pane>', dotAll: true), '');
+        }
+        if (rows <= 0 && cols <= 0) {
+          if (had) {
+            files[e.value] = utf8.encode(xml);
+            changed = true;
+          }
+          continue;
+        }
+        final topLeft = '${_colLabel(cols)}${rows + 1}';
+        final buf = StringBuffer('<pane');
+        if (cols > 0) buf.write(' xSplit="$cols"');
+        if (rows > 0) buf.write(' ySplit="$rows"');
+        buf.write(' topLeftCell="$topLeft" activePane="bottomRight"'
+            ' state="frozen"/>');
+        // 決まりでは <pane> は <sheetView> の**先頭**に来る。
+        //
+        // ★ 自己終端の形を先に見る。 excel パッケージが書き出すのは
+        //   `<sheetView workbookViewId="0"/>` で、 開き札の当て
+        //   (`<sheetView\b[^>]*>`) は**これにも当たってしまう**。 先に開き札
+        //   として扱うと <pane> を sheetView の**外**へ置いてしまい、 壊れた
+        //   XML になって固定が効かない (= 実機の書き出しで判明。 確かめ方は
+        //   tool/xlsx_freeze_probe.dart)。
+        final svSelf = RegExp(r'<sheetView\b[^>]*/>').firstMatch(xml);
+        final sv = RegExp(r'<sheetView\b[^>]*>').firstMatch(xml);
+        if (svSelf != null && (sv == null || svSelf.start <= sv.start)) {
+          // `<sheetView .../>` → 開いて中に入れる。
+          final g = svSelf.group(0)!;
+          final open = '${g.substring(0, g.length - 2)}>';
+          xml = xml.replaceRange(
+              svSelf.start, svSelf.end, '$open${buf.toString()}</sheetView>');
+        } else if (sv != null) {
+          final at = sv.end;
+          xml = xml.substring(0, at) + buf.toString() + xml.substring(at);
+        } else {
+          // <sheetView> がまったく無い時は作る。
+          final svs = xml.indexOf('<sheetViews>');
+          if (svs < 0) continue;
+          final at = svs + '<sheetViews>'.length;
+          xml = xml.substring(0, at) +
+              '<sheetView workbookViewId="0">${buf.toString()}</sheetView>' +
+              xml.substring(at);
+        }
+        files[e.value] = utf8.encode(xml);
+        changed = true;
+      }
+      if (!changed) return bytes;
+
+      final outArc = Archive();
+      for (final entry in files.entries) {
+        outArc.addFile(
+            ArchiveFile(entry.key, entry.value.length, entry.value));
+      }
+      final encoded = ZipEncoder().encode(outArc);
+      if (encoded == null || encoded.isEmpty) return bytes;
+      return Uint8List.fromList(encoded);
+    } catch (e) {
+      debugPrint('固定の書き戻しに失敗: $e');
+      return bytes;
+    }
+  }
+
   Uint8List _writeAutoFiltersIntoZip(Uint8List bytes) {
     if (_sheetAutoFilter.isEmpty) return bytes;
     try {
@@ -209581,6 +209745,11 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
         _sheetAutoFilter
           ..clear()
           ..addAll(_readXlsxAutoFilters(normBytes));
+        // ウィンドウ枠の固定 (= ユーザー要望) も同じく自分で読む。
+        // Excel で付けた固定もそのまま引き継げる。
+        _sheetFreeze
+          ..clear()
+          ..addAll(_readXlsxFreeze(normBytes));
         xls.Excel? excel;
         try {
           excel = xls.Excel.decodeBytes(normBytes);
@@ -211245,6 +211414,9 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
         // オートフィルターを書き戻す (= ユーザー報告: 開いて保存すると
         //   Excel で付けたフィルターが消えてしまう)。
         withFmt = _writeAutoFiltersIntoZip(withFmt);
+        // ウィンドウ枠の固定を書き戻す (= ユーザー要望)。 Excel で開いても
+        // 同じ所が固定される。
+        withFmt = _writeFreezeIntoZip(withFmt);
         final withImages = _embedImagesIntoXlsx(withFmt);
         // 元 Excel の図形 (吹き出し等) に手を入れていたら、 それも書き戻す
         // (= ユーザー要望: 吹き出しの中を編集できるように)。
@@ -212497,22 +212669,35 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
     // 表は _ssZoom 倍で描かれているので、 送り先も倍率を掛けて測る。
     final x = _colX(_selCol) * _ssZoom;
     final y = _rowY(_selRow) * _ssZoom;
-    if (_hScroll.hasClients) {
+    // ★ 固定した帯は表の上に重なっているので、 その下は「見えていない」。
+    //   帯の分だけ手前で止めないと、 選んだセルが帯に隠れる
+    //   (= ユーザー要望の固定機能を入れた事による追加)。
+    final padX = _freezeBandW * _ssZoom;
+    final padY = _freezeBandH * _ssZoom;
+    // 固定している行 / 列そのものを選んでいる時は、 送らない
+    // (そこは常に見えている)。
+    final selInFrozenCol = _freezeCols > 0 && _selCol < _freezeCols;
+    final selInFrozenRow = _freezeRows > 0 && _selRow < _freezeRows;
+    if (_hScroll.hasClients && !selInFrozenCol) {
       final v = _hScroll.offset;
       final w = _hScroll.position.viewportDimension;
-      if (x < v)
-        _hScroll.jumpTo(x.clamp(0.0, _hScroll.position.maxScrollExtent));
+      if (x < v + padX) {
+        _hScroll
+            .jumpTo((x - padX).clamp(0.0, _hScroll.position.maxScrollExtent));
+      }
       if (x + _colW(_selCol) * _ssZoom > v + w) {
         _hScroll.jumpTo(
             (x + _colW(_selCol) * _ssZoom - w)
                 .clamp(0.0, _hScroll.position.maxScrollExtent));
       }
     }
-    if (_vScroll.hasClients) {
+    if (_vScroll.hasClients && !selInFrozenRow) {
       final v = _vScroll.offset;
       final h = _vScroll.position.viewportDimension;
-      if (y < v)
-        _vScroll.jumpTo(y.clamp(0.0, _vScroll.position.maxScrollExtent));
+      if (y < v + padY) {
+        _vScroll
+            .jumpTo((y - padY).clamp(0.0, _vScroll.position.maxScrollExtent));
+      }
       if (y + _rowH(_selRow) * _ssZoom > v + h) {
         _vScroll.jumpTo((y + _rowH(_selRow) * _ssZoom - h)
             .clamp(0.0, _vScroll.position.maxScrollExtent));
@@ -214084,6 +214269,100 @@ $csvText
             onTap: _unmergeSelection,
           ),
           const SizedBox(width: 6),
+          // ── ウィンドウ枠の固定 (= ユーザー要望: 行固定 / 列固定を作って、
+          //    スクロールしても常に同じ場所を参照できるように) ──
+          Tooltip(
+            message: provider.t('ss.freeze'),
+            child: PopupMenuButton<String>(
+              tooltip: '',
+              color: const Color(0xFF22222E),
+              onSelected: (v) {
+                switch (v) {
+                  case 'row':
+                    _setFreeze(1, 0);
+                    break;
+                  case 'col':
+                    _setFreeze(0, 1);
+                    break;
+                  case 'both':
+                    _setFreeze(1, 1);
+                    break;
+                  case 'here':
+                    // 選んでいるセルの**手前まで**を固定する (Excel と同じ)。
+                    _setFreeze(_selRow, _selCol);
+                    break;
+                  case 'off':
+                    _setFreeze(0, 0);
+                    break;
+                }
+              },
+              itemBuilder: (_) => [
+                PopupMenuItem<String>(
+                    value: 'row',
+                    height: 34,
+                    child: Text(provider.t('ss.freezeTopRow'),
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 13))),
+                PopupMenuItem<String>(
+                    value: 'col',
+                    height: 34,
+                    child: Text(provider.t('ss.freezeFirstCol'),
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 13))),
+                PopupMenuItem<String>(
+                    value: 'both',
+                    height: 34,
+                    child: Text(provider.t('ss.freezeBoth'),
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 13))),
+                PopupMenuItem<String>(
+                    value: 'here',
+                    height: 34,
+                    child: Text(
+                        '${provider.t('ss.freezeHere')}'
+                        ' (${_colLabel(_selCol)}${_selRow + 1})',
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 13))),
+                const PopupMenuDivider(),
+                PopupMenuItem<String>(
+                    value: 'off',
+                    height: 34,
+                    enabled: _hasFreeze,
+                    child: Text(provider.t('ss.freezeOff'),
+                        style: TextStyle(
+                            color: _hasFreeze ? Colors.white : Colors.white38,
+                            fontSize: 13))),
+              ],
+              child: Container(
+                height: 30,
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                decoration: BoxDecoration(
+                  color: _hasFreeze
+                      ? const Color(0xFF6C63FF)
+                      : Colors.transparent,
+                  border: Border.all(
+                      color: dark ? Colors.white24 : Colors.black26),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(Icons.table_rows_rounded,
+                      size: 16,
+                      color: _hasFreeze
+                          ? Colors.white
+                          : (dark ? Colors.white70 : Colors.black87)),
+                  if (_hasFreeze) ...[
+                    const SizedBox(width: 4),
+                    Text('${_freezeRows}/${_freezeCols}',
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700)),
+                  ],
+                ]),
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
           Container(
               width: 1,
               height: 20,
@@ -214781,7 +215060,12 @@ $csvText
           // SingleChildScrollView の child が viewport より小さいと、
           // 環境によっては中央寄せに見える事がある。 Align.topLeft で
           // 明示的に左上に固定して、 A1 セルが常に左上に来るようにする。
-          return Align(
+          // ── ウィンドウ枠の固定 (= ユーザー要望) ──
+          //   本物の表はそのままにして、 固定する帯を**上に重ねる**。
+          //   横 (または縦) だけスクロールに追従させるので、 下の本物と
+          //   ぴったり重なる。 スクロールが 0 の時は同じ絵が重なるだけ
+          //   なので、 二重には見えない。
+          final grid = Align(
             alignment: Alignment.topLeft,
             child: Scrollbar(
               controller: _hScroll,
@@ -214841,10 +215125,159 @@ $csvText
               ),
             ),
           );
+          if (!_hasFreeze) return grid;
+          return Stack(children: [
+            grid,
+            ..._buildFreezeBands(dark, fg, tableW),
+          ]);
         },
       ),
       ),
     );
+  }
+
+  /// 固定した行 / 列の帯を、 表の上に重ねて描く (= ユーザー要望)。
+  ///
+  /// * 上の帯 … 横スクロールにだけ追従する。 縦に送っても動かないので、
+  ///   見出しの行がいつも見えている。
+  /// * 左の帯 … 縦スクロールにだけ追従する。 横に送っても動かない。
+  /// * 角 … どちらにも追従しない (上と左が交わる所)。
+  ///
+  /// 中身は本物と同じ組み立て ([_buildColumnHeaderRow] / [_buildDataRow]) を
+  /// 使うので、 押した時の動きも書き換えもそのまま効く。 スクロールが 0 の
+  /// 時は下の本物とぴったり重なるだけなので、 二重には見えない。
+  List<Widget> _buildFreezeBands(bool dark, Color fg, double tableW) {
+    final z = _ssZoom;
+    final bandH = _freezeBandH * z;
+    final bandW = _freezeBandW * z;
+    final fr = _freezeRows;
+    final fc = _freezeCols;
+    // 帯の裏地 (下の表が透けないように)。
+    final backdrop = dark ? const Color(0xFF1B1B24) : Colors.white;
+
+    Widget scaled(Widget child, double w, double h) => SizedBox(
+          width: w * z,
+          height: h * z,
+          child: OverflowBox(
+            alignment: Alignment.topLeft,
+            minWidth: 0,
+            minHeight: 0,
+            maxWidth: double.infinity,
+            maxHeight: double.infinity,
+            child: Transform.scale(
+              scale: z,
+              alignment: Alignment.topLeft,
+              child: SizedBox(width: w, height: h, child: child),
+            ),
+          ),
+        );
+
+    final out = <Widget>[];
+
+    // ── 上の帯 (固定した行) ──
+    if (fr > 0) {
+      out.add(Positioned(
+        left: 0,
+        right: 0,
+        top: 0,
+        height: bandH,
+        child: ClipRect(
+          child: Container(
+            color: backdrop,
+            child: AnimatedBuilder(
+              animation: _hScroll,
+              builder: (_, __) {
+                final dx = _hScroll.hasClients ? _hScroll.offset : 0.0;
+                return Transform.translate(
+                  offset: Offset(-dx, 0),
+                  child: scaled(
+                    Column(children: [
+                      _buildColumnHeaderRow(dark, fg),
+                      for (var r = 0; r < fr; r++) _buildDataRow(r, dark, fg),
+                    ]),
+                    tableW,
+                    _freezeBandH,
+                  ),
+                );
+              },
+            ),
+          ),
+        ),
+      ));
+    }
+
+    // ── 左の帯 (固定した列) ──
+    if (fc > 0) {
+      out.add(Positioned(
+        left: 0,
+        top: bandH,
+        width: bandW,
+        bottom: 0,
+        child: ClipRect(
+          child: Container(
+            color: backdrop,
+            child: AnimatedBuilder(
+              animation: _vScroll,
+              builder: (_, __) {
+                final dy = _vScroll.hasClients ? _vScroll.offset : 0.0;
+                // 帯は上の帯のすぐ下から始まる。 中身は表の一番上から
+                // 組んであるので、 その分も引いて位置を合わせる。
+                return Transform.translate(
+                  offset: Offset(0, -(dy + bandH)),
+                  child: scaled(
+                    Column(children: [
+                      _buildColumnHeaderRow(dark, fg, maxCols: fc),
+                      for (var r = 0; r < _rowCount; r++)
+                        _buildDataRow(r, dark, fg, maxCols: fc),
+                    ]),
+                    _freezeBandW,
+                    _colHeaderHeight + _totalRowH,
+                  ),
+                );
+              },
+            ),
+          ),
+        ),
+      ));
+    }
+
+    // ── 角 (上と左が交わる所。 どちらにも動かない) ──
+    if (fr > 0 && fc > 0) {
+      out.add(Positioned(
+        left: 0,
+        top: 0,
+        width: bandW,
+        height: bandH,
+        child: ClipRect(
+          child: Container(
+            color: backdrop,
+            child: scaled(
+              Column(children: [
+                _buildColumnHeaderRow(dark, fg, maxCols: fc),
+                for (var r = 0; r < fr; r++)
+                  _buildDataRow(r, dark, fg, maxCols: fc),
+              ]),
+              _freezeBandW,
+              _freezeBandH,
+            ),
+          ),
+        ),
+      ));
+    }
+
+    // ── 固定している所の境目に線を引く (= どこで固定したか分かるように) ──
+    const line = Color(0xFF6C63FF);
+    if (fr > 0) {
+      out.add(Positioned(
+          left: 0, right: 0, top: bandH - 1, height: 2,
+          child: IgnorePointer(child: Container(color: line))));
+    }
+    if (fc > 0) {
+      out.add(Positioned(
+          left: bandW - 1, top: 0, bottom: 0, width: 2,
+          child: IgnorePointer(child: Container(color: line))));
+    }
+    return out;
   }
 
   /// 今選んでいる図形 (掛け目と掴みを出す相手)。
@@ -215927,7 +216360,54 @@ $csvText
     }
   }
 
-  Widget _buildColumnHeaderRow(bool dark, Color fg) {
+  // ── ウィンドウ枠の固定 (= ユーザー要望: 行固定 / 列固定) ──
+  //
+  //  シートごとに「上から何行」「左から何列」 を固定するかを持つ。
+  //  0 = 固定しない。 xlsx の <pane> として書き出すので、 Excel で開いても
+  //  同じ所が固定される (逆に Excel で付けた固定もここへ読み込む)。
+  final Map<String, List<int>> _sheetFreeze = {};
+
+  int get _freezeRows {
+    final v = _sheetFreeze[_activeSheet];
+    if (v == null || v.isEmpty) return 0;
+    return v[0].clamp(0, _rowCount);
+  }
+
+  int get _freezeCols {
+    final v = _sheetFreeze[_activeSheet];
+    if (v == null || v.length < 2) return 0;
+    return v[1].clamp(0, _colCount);
+  }
+
+  bool get _hasFreeze => _freezeRows > 0 || _freezeCols > 0;
+
+  /// 固定する行数 / 列数を決める。 どちらも 0 なら固定を解除する。
+  void _setFreeze(int rows, int cols) {
+    _commitEdit();
+    setState(() {
+      final r = rows.clamp(0, _rowCount);
+      final c = cols.clamp(0, _colCount);
+      if (r == 0 && c == 0) {
+        _sheetFreeze.remove(_activeSheet);
+      } else {
+        _sheetFreeze[_activeSheet] = [r, c];
+      }
+      _dirty = true;
+    });
+    // 固定した帯の下に隠れた所を見ていた時のために、 送り直す。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _ensureSelVisible();
+    });
+  }
+
+  /// 固定の帯の高さ / 幅 (表の座標。 拡大率は掛けていない)。
+  double get _freezeBandH =>
+      _freezeRows <= 0 ? 0.0 : _colHeaderHeight + _rowY(_freezeRows);
+  double get _freezeBandW =>
+      _freezeCols <= 0 ? 0.0 : _rowHeaderWidth + _colX(_freezeCols);
+
+  Widget _buildColumnHeaderRow(bool dark, Color fg, {int? maxCols}) {
+    final n = maxCols == null ? _colCount : maxCols.clamp(0, _colCount);
     return SizedBox(
       height: _colHeaderHeight,
       child: Row(
@@ -215938,7 +216418,7 @@ $csvText
             decoration: _headerDeco(dark),
           ),
           ...List.generate(
-            _colCount,
+            n,
             (c) => _SsColumnHeaderCell(
               width: _colW(c),
               height: _colHeaderHeight,
@@ -215988,7 +216468,7 @@ $csvText
     );
   }
 
-  Widget _buildDataRow(int r, bool dark, Color fg) {
+  Widget _buildDataRow(int r, bool dark, Color fg, {int? maxCols}) {
     return SizedBox(
       height: _rowH(r),
       child: Row(
@@ -216017,7 +216497,8 @@ $csvText
               setState(() => _dirty = true);
             },
           ),
-          ...List.generate(_colCount, (c) {
+          ...List.generate(maxCols == null ? _colCount : maxCols.clamp(0, _colCount),
+              (c) {
             // ── 結合したセル (= ユーザー要望: セルの結合) ──
             //    左端の 1 個を「結合した幅」 で描き、 飲み込まれた側は
             //    幅 0 にする。 行の合計幅は変わらないので、 列はずれない。

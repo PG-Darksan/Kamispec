@@ -1356,6 +1356,8 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     _seedSizeField();
     // 前に選んだ印 (✓ / ○ / × …) を読み直す (= ユーザー要望)。
     unawaited(_loadCheckMark());
+    // 消しゴムの効き方 (= ユーザー要望の 2 モード) も覚えておく。
+    unawaited(_loadEraseMode());
     _syncTimer();
   }
 
@@ -1543,7 +1545,8 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     _autoScrollPrevOffset = null;
   }
 
-  /// 範囲選択の途中で呼ぶ。 端の帯に入っていれば動かし始め、 出れば止める。
+  /// 引っ張っている途中で呼ぶ (範囲選択 / 図形を描いている最中の両方)。
+  /// 端の帯に入っていれば紙を送り始め、 出れば止める。
   void _updateAutoScroll(Offset globalPos) {
     if (!widget.continuousLayout || widget.controller == null) return;
     _autoScrollLastGlobal = globalPos;
@@ -1562,12 +1565,16 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   }
 
   void _autoScrollTick() {
-    // 引っ張るのをやめた / 描き込みを閉じた / 範囲選択でなくなった。
-    if (!mounted ||
-        !widget.active ||
-        _activePointer == null ||
-        _rangeStart == null ||
-        _tool != PdfDrawTool.select) {
+    // 引っ張るのをやめた / 描き込みを閉じた。
+    //
+    // ★ = ユーザー要望「作成するオブジェクトが画面外に出ようとした時は
+    //   追跡されるように」。 以前はここに `_rangeStart == null ||
+    //   _tool != select` が入っていて、 **範囲選択の時だけ**紙が送られた。
+    //   描いている最中 (_current != null) も通す。
+    final drawing = _current != null;
+    final ranging = _rangeStart != null && _tool == PdfDrawTool.select;
+    if (!mounted || !widget.active || _activePointer == null ||
+        (!drawing && !ranging)) {
       _stopAutoScroll();
       return;
     }
@@ -1615,9 +1622,71 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       return;
     }
     _autoScrollPrevOffset = before;
-    // 紙が動いた分、 選択の端を今のカーソル位置で計算し直す
-    //   (始点はページ座標なのでずれない)。
-    _updateRangeEndFromGlobal(gp);
+    // 紙が動いた分、 端を今のカーソル位置で計算し直す
+    //   (始点はページ座標なのでずれない)。 指は動いていないので
+    //   PointerMove は来ない = ここでやらないと線が伸びない。
+    if (_current != null) {
+      _updateCurrentEndFromGlobal(gp);
+    } else {
+      _updateRangeEndFromGlobal(gp);
+    }
+  }
+
+  /// 紙を送った後、 描いている図形の終点を今のカーソル位置で引き直す。
+  ///
+  /// ★ = ユーザー要望「作成するオブジェクトが画面外に出ようとした時は
+  ///   追跡されるように」。 紙だけが動いている間は指が止まっているので
+  ///   PointerMove が来ない。 ここで引き直さないと、 紙は送られるのに線が
+  ///   伸びない。
+  void _updateCurrentEndFromGlobal(Offset globalPos) {
+    final cur = _current;
+    final geom = _currentGeom;
+    if (cur == null || geom == null) return;
+    if (!geom.box.attached) {
+      _stopAutoScroll();
+      return;
+    }
+    final Offset pt;
+    try {
+      final local = geom.box.globalToLocal(globalPos);
+      pt = Offset(
+            local.dx.clamp(0.0, geom.contentSize.width),
+            local.dy.clamp(0.0, geom.contentSize.height),
+          ) *
+          geom.heightPercentage;
+    } catch (_) {
+      return;
+    }
+    setState(() {
+      if (cur.tool == PdfDrawTool.pen || cur.tool == PdfDrawTool.marker) {
+        if ((pt - cur.points.last).distance >= 0.7) cur.points.add(pt);
+      } else {
+        cur.points[cur.points.length - 1] = _constrainedEnd(cur, pt);
+      }
+    });
+  }
+
+  /// Shift を押している時の「まっすぐ」 を当てた終点。
+  ///
+  /// 描いている最中の終点の決め方は、 指で動かした時 ([_onPointerMove]) と
+  /// 紙送りで引き直す時 ([_updateCurrentEndFromGlobal]) の 2 か所で要るので
+  /// 切り出してある。
+  Offset _constrainedEnd(PdfDrawStroke cur, Offset pt) {
+    if (!HardwareKeyboard.instance.isShiftPressed) return pt;
+    final a = cur.points.first;
+    final d = pt - a;
+    if (cur.tool == PdfDrawTool.line ||
+        cur.tool == PdfDrawTool.arrow ||
+        cur.tool == PdfDrawTool.markerLine) {
+      return d.dx.abs() >= d.dy.abs()
+          ? Offset(pt.dx, a.dy)
+          : Offset(a.dx, pt.dy);
+    }
+    if (cur.tool == PdfDrawTool.rect || cur.tool == PdfDrawTool.ellipse) {
+      final side = math.max(d.dx.abs(), d.dy.abs());
+      return a + Offset(side * (d.dx < 0 ? -1 : 1), side * (d.dy < 0 ? -1 : 1));
+    }
+    return pt;
   }
 
   /// 画面座標から範囲選択の端を決め直す。 対象ページが見えなくなったら止める。
@@ -1860,6 +1929,10 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     } catch (_) {
       return;
     }
+    // ★ 端に近付いたら紙を送る (= ユーザー要望: 画面外に出ようとした時は
+    //   追跡されるように)。 直線を長く引く時や、 拡大したまま大きな四角を
+    //   描く時に、 画面の端で止まってしまうのを防ぐ。
+    _updateAutoScroll(e.position);
     setState(() {
       final cur = _current!;
       if (cur.tool == PdfDrawTool.marker &&
@@ -1956,11 +2029,15 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     });
   }
 
-  /// [pt] (ページ座標 pt) の周りにある、 まだ保存していない線を消す。
+  /// [pt] (ページ座標 pt) の周りにある線を消す。
   ///
-  /// 手書きの線は「触れた所だけ」 を切り取り、 残りは前後 2 本に分ける
-  /// (= ユーザー要望: 部分的に、 指定した太さで消せるように)。
-  /// 直線や四角などの図形は形が崩れるので、 触れたら 1 個ごと消す。
+  /// ★ = ユーザー要望「消しゴムのモードを、 触れたオブジェクト自体を削除する
+  ///   オブジェクト削除モードと、 消しゴムが触れている部分のみを削除する
+  ///   部分削除モードを作って欲しい」。 [_eraseWholeObject] で切り替わる。
+  ///
+  /// * オブジェクト削除 … 触れた物は 1 個まるごと消える。
+  /// * 部分削除 … 触れた所だけ消える。 手書きは前後 2 本に分かれ、 直線や
+  ///   四角も [_flattenStroke] で点の列に開いてから切るので途中が抜ける。
   void _eraseAt(int pageNumber, Offset pt) {
     final rBase = _eraserSize / 2;
     var changed = false;
@@ -1973,9 +2050,37 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       // ★ 線そのものの太さも見る。 中心線だけで当てていたので、 太い
       //   マーカーは見えている所を擦っても消えなかった (= 点検で判明)。
       final r = rBase + st.width / 2;
-      // ── 図形は丸ごと消す (フリーハンドのマーカーはペンと同じ扱い) ──
-      if (st.tool != PdfDrawTool.pen && st.tool != PdfDrawTool.marker) {
+      // ── 形のある物 (図形 / 文字) を丸ごと消すか判定する ──
+      //   * オブジェクト削除 … 手書きも含めて全部この道を通る。
+      //   * 部分削除 … 文字だけはここ (1 点 + 文字列なので切れない)。
+      final wholeOnly = _eraseWholeObject || st.tool == PdfDrawTool.text;
+      if (wholeOnly) {
         var hit = false;
+        // 手書き / マーカーは点の列なので、 どれか 1 点でも触れたら当たり
+        // (= オブジェクト削除モードでは、 線の途中を擦れば丸ごと消える)。
+        if (st.tool == PdfDrawTool.pen || st.tool == PdfDrawTool.marker) {
+          for (final q in st.points) {
+            if ((q - pt).distance <= r) {
+              hit = true;
+              break;
+            }
+          }
+          // 点と点の間 (=  間隔が広い所) も見る。
+          if (!hit) {
+            for (var i = 0; i + 1 < st.points.length; i++) {
+              if (_distToSegment(pt, st.points[i], st.points[i + 1]) <= r) {
+                hit = true;
+                break;
+              }
+            }
+          }
+          if (hit) {
+            changed = true;
+          } else {
+            next.add(st);
+          }
+          continue;
+        }
         if (st.points.length >= 2) {
           final a = st.points.first;
           final b = st.points.last;
@@ -2027,11 +2132,22 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
         }
         continue;
       }
-      // ── 手書き: 消しゴムに入った点を落として、 残りを繋ぎ直す ──
+      // ── 部分削除: 消しゴムに入った点を落として、 残りを繋ぎ直す ──
+      //
+      // ★ 図形 (直線 / 矢印 / 四角 / 楕円) は、 持っているのが両端や対角の
+      //   2 点という**寸法**なので、 そのままでは途中で切れない。 描かれて
+      //   いる形をなぞった点の列に開いてから切る
+      //   (= ユーザー要望: 触れている部分のみを削除)。
+      final isFree = st.tool == PdfDrawTool.pen || st.tool == PdfDrawTool.marker;
+      // 刻みは消しゴムより細かく。 細か過ぎると点が増えるので下限を置く。
+      final pts = isFree
+          ? st.points
+          : _flattenStroke(st, math.max(r / 3, 0.8));
+      final cutTool = isFree ? st.tool : _cutToolFor(st.tool);
       final keep = <List<Offset>>[];
       var run = <Offset>[];
       var touched = false;
-      for (final q in st.points) {
+      for (final q in pts) {
         if ((q - pt).distance <= r) {
           touched = true;
           if (run.length >= 2) keep.add(run);
@@ -2049,9 +2165,11 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       for (final seg in keep) {
         next.add(PdfDrawStroke(
           // ★ 元の道具のまま残す。 ペンに書き換えると、 半透明のマーカーが
-          //   不透明の太線に化けていた (= 点検で判明)。
+          //   不透明の太線に化けていた (= 点検で判明)。 図形から開いた物は
+          //   もう寸法では表せないので、 手書き (マーカーは半透明のまま) に
+          //   なる。
           pageNumber: st.pageNumber,
-          tool: st.tool,
+          tool: cutTool,
           points: seg,
           color: st.color,
           width: st.width,
@@ -2070,6 +2188,103 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     _scheduleReburn();
     if (mounted) setState(() {});
   }
+
+  /// 消しゴムの効き方 (= ユーザー要望: オブジェクト削除 / 部分削除)。
+  ///
+  /// * true  … **オブジェクト削除**。 触れた物は 1 個まるごと消える。
+  ///   線の途中を擦っても、 その線が丸ごと消える。
+  /// * false … **部分削除**。 消しゴムが触れている所だけを消す。 手書きは
+  ///   前後 2 本に分かれ、 直線や四角も点の列に開いてから切るので、
+  ///   途中だけを抜ける。
+  ///
+  /// 以前は道具ごとの決め打ち (手書きとマーカーだけ部分、 図形は丸ごと) で、
+  /// 選ぶ手立てが無かった。
+  bool _eraseWholeObject = false;
+  static const String _kEraseModePrefsKey = 'pdfDrawEraseWholeObject';
+
+  /// 消しゴムの効き方を控える / 読み直す。
+  Future<void> _persistEraseMode() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setBool(_kEraseModePrefsKey, _eraseWholeObject);
+    } catch (_) {}
+  }
+
+  Future<void> _loadEraseMode() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final v = sp.getBool(_kEraseModePrefsKey);
+      if (v != null && mounted && v != _eraseWholeObject) {
+        setState(() => _eraseWholeObject = v);
+      }
+    } catch (_) {}
+  }
+
+  /// 図形を「点の列」 に開く (= 部分削除で途中だけを消せるようにする)。
+  ///
+  /// 直線・矢印・四角・楕円は、 持っているのが「両端」 や「対角の 2 点」 と
+  /// いった**寸法**なので、 そのままでは途中で切れない。 描かれている形を
+  /// なぞった点の列に直してから切る。 出来た物は手書き (pen) / マーカーと
+  /// 同じ形なので、 描画も PDF への焼き込みも保存もそのまま通る。
+  ///
+  /// [step] は点の間隔 (pt)。 消しゴムより細かく刻めば、 触れた所だけが
+  /// きれいに抜ける。
+  static List<Offset> _flattenStroke(PdfDrawStroke st, double step) {
+    final pts = st.points;
+    if (pts.length < 2) return List<Offset>.from(pts);
+    final s = math.max(step, 0.5);
+
+    void addLine(List<Offset> out, Offset a, Offset b) {
+      final d = (b - a).distance;
+      final n = math.max(1, (d / s).ceil());
+      for (var i = 0; i <= n; i++) {
+        final t = i / n;
+        out.add(Offset(a.dx + (b.dx - a.dx) * t, a.dy + (b.dy - a.dy) * t));
+      }
+    }
+
+    final a = pts.first;
+    final b = pts.last;
+    final box = Rect.fromPoints(a, b);
+    final out = <Offset>[];
+    switch (st.tool) {
+      case PdfDrawTool.rect:
+        // 枠を 4 辺ぶんなぞる。
+        addLine(out, box.topLeft, box.topRight);
+        addLine(out, box.topRight, box.bottomRight);
+        addLine(out, box.bottomRight, box.bottomLeft);
+        addLine(out, box.bottomLeft, box.topLeft);
+        break;
+      case PdfDrawTool.ellipse:
+        final c = box.center;
+        final rx = box.width / 2;
+        final ry = box.height / 2;
+        // 周の長さから刻み数を決める (小さい丸で点が多過ぎないように)。
+        final peri = math.pi * (3 * (rx + ry) -
+            math.sqrt(math.max((3 * rx + ry) * (rx + 3 * ry), 0.0)));
+        final n = math.max(12, math.min(720, (peri / s).ceil()));
+        for (var i = 0; i <= n; i++) {
+          final th = 2 * math.pi * i / n;
+          out.add(Offset(c.dx + rx * math.cos(th), c.dy + ry * math.sin(th)));
+        }
+        break;
+      default:
+        // 直線 / 矢印 / マーカーの直線、 および点の少ない手書き。
+        for (var i = 0; i + 1 < pts.length; i++) {
+          final seg = <Offset>[];
+          addLine(seg, pts[i], pts[i + 1]);
+          // 継ぎ目が重ならないように、 2 本目からは先頭を落とす。
+          out.addAll(i == 0 ? seg : seg.skip(1));
+        }
+    }
+    return out;
+  }
+
+  /// 切った後の線に使う道具。 マーカーの仲間は半透明のまま残す。
+  static PdfDrawTool _cutToolFor(PdfDrawTool t) =>
+      (t == PdfDrawTool.marker || t == PdfDrawTool.markerLine)
+          ? PdfDrawTool.marker
+          : PdfDrawTool.pen;
 
   /// 文字の大きさ (pt)。 置いた文字に使う (= ユーザー要望: テキスト入力)。
   /// 既定は 25pt (= ユーザー要望)。 道具箱のスライダー、 または隣の欄に
@@ -3330,6 +3545,50 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
                 height: 20,
                 margin: const EdgeInsets.symmetric(horizontal: 4),
                 color: Colors.white24),
+            // ── 消しゴムの効き方 (= ユーザー要望: オブジェクト削除 /
+            //    部分削除の 2 つのモード) ──
+            //    押すたびに入れ替わる。 次に開いた時も同じ効き方から始まる。
+            if (_tool == PdfDrawTool.eraser)
+              Tooltip(
+                message: widget.tr(_eraseWholeObject
+                    ? 'pdfdraw.eraseWhole'
+                    : 'pdfdraw.erasePartial'),
+                child: InkWell(
+                  onTap: () {
+                    setState(() => _eraseWholeObject = !_eraseWholeObject);
+                    unawaited(_persistEraseMode());
+                  },
+                  borderRadius: BorderRadius.circular(6),
+                  child: Container(
+                    height: 30,
+                    padding: const EdgeInsets.symmetric(horizontal: 7),
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: _eraseWholeObject
+                          ? const Color(0xFFE57373)
+                          : const Color(0xFF6C63FF),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      Icon(
+                          _eraseWholeObject
+                              ? Icons.delete_outline_rounded
+                              : Icons.content_cut_rounded,
+                          size: 16,
+                          color: Colors.white),
+                      const SizedBox(width: 4),
+                      Text(
+                          widget.tr(_eraseWholeObject
+                              ? 'pdfdraw.eraseWholeShort'
+                              : 'pdfdraw.erasePartialShort'),
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700)),
+                    ]),
+                  ),
+                ),
+              ),
             if (_tool != PdfDrawTool.select) sizeControl(),
             // ── 選んだ図形の端を揃える (= ユーザー要望: チェック等の
             //    図形を複数範囲選択して、 左端 / 右端 / 上端 / 下端を揃える) ──
