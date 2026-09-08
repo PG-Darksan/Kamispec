@@ -21,6 +21,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:ui' as ui show Image;
 import 'dart:ui' show FontFeature;
 
 import 'package:flutter/foundation.dart';
@@ -29,6 +30,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:printing/printing.dart' as printing;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart' as sfpdf;
 import 'package:syncfusion_flutter_pdfviewer/pdfviewer.dart' as sf_pdf;
@@ -63,6 +65,13 @@ enum PdfDrawTool {
 
   /// マーカーを直線で引く (= ユーザー要望: フリーハンドでも直線でも)。
   markerLine,
+
+  /// ★ ウィンドウ枠の固定 (= ユーザー要望: xlsx の様に、 引いた線より上 /
+  ///   左をいつも見えたままにする)。
+  ///
+  ///   ※ 並びの**最後**に足す事。 保存した線は道具を「番号」 で控えて
+  ///     いるので、 途中に入れると前に描いた物の道具が入れ替わる。
+  freeze,
 }
 
 /// マーカーの濃さ (= 下の文字が透ける半透明の度合い)。
@@ -242,8 +251,10 @@ Future<bool> burnPdfStrokes(Map<String, Object?> msg) async {
         case PdfDrawTool.text:
         case PdfDrawTool.marker:
         case PdfDrawTool.markerLine:
+        case PdfDrawTool.freeze:
           // 消しゴムと選択は線を残さない。 チェックはペンの線として積み、
           // 文字とマーカーは上で書き終えているので、 ここへは来ない。
+          // 固定の線は「どこで固定するか」 を決めるだけで、 紙には残さない。
           break;
       }
     }
@@ -396,6 +407,12 @@ class PdfDrawLayer extends StatefulWidget {
 class _PdfDrawLayerState extends State<PdfDrawLayer> {
   final GlobalKey _childKey = GlobalKey();
   final GlobalKey _overlayKey = GlobalKey();
+
+  /// 固定の帯そのものの置き場所 (= 位置を測る基準)。
+  ///
+  /// ★ 描き込みの層 (_overlayKey) を借りると、 線が 1 本も無い時にその層が
+  ///   組まれず、 基準が取れなくて帯が出ない。 帯は自分の枠を基準にする。
+  final GlobalKey _freezeKey = GlobalKey();
 
   PdfDrawTool _tool = PdfDrawTool.pen;
   Color _color = const Color(0xFFE53935);
@@ -1393,6 +1410,8 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   @override
   void dispose() {
     _stopAutoScroll();
+    // 固定の帯に使っていた絵を手放す。
+    _disposeFreeze();
     // 未保存の受け口を外す (= 閉じた後に「未保存あり」 と誤判定しない)。
     final pendingPath = widget.filePath;
     if (pendingPath != null) _pdfDrawPending.remove(pendingPath);
@@ -2008,6 +2027,15 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     }
     final cur = _current;
     if (cur == null) return;
+    // ── 固定の線 (= ユーザー要望) ──
+    //    引いた線は残さない。 その位置を「固定の境目」 として覚えるだけ。
+    if (cur.tool == PdfDrawTool.freeze) {
+      final a = cur.points.first;
+      final b = cur.points.last;
+      setState(() => _current = null);
+      _applyFreezeLine(cur.pageNumber, a, b);
+      return;
+    }
     setState(() {
       _current = null;
       // 動きがほぼ無い図形はゴミになるので捨てる (ペンの点は残す)。
@@ -2189,6 +2217,120 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     if (mounted) setState(() {});
   }
 
+  // ── ウィンドウ枠の固定 (= ユーザー要望) ──
+  //
+  //  固定は 1 ページぶんだけ持つ (別のページへ行くと意味を成さないので、
+  //  そのページを離れている間は出さない)。
+  int _freezePage = 0;
+
+  /// 水平の線の位置 (ページ座標 pt)。 これより**上**を固定する。
+  double? _freezeYpt;
+
+  /// 鉛直の線の位置 (ページ座標 pt)。 これより**左**を固定する。
+  double? _freezeXpt;
+
+  /// 固定するページの絵 (1 回だけ作って使い回す)。
+  ui.Image? _freezeShot;
+
+  /// その絵を作ったページ (作り直しの判定用)。
+  int _freezeShotPage = 0;
+
+  /// 絵を作っている最中か (二重に走らせない)。
+  bool _freezeShotBusy = false;
+
+  bool get _hasFreeze =>
+      _freezePage > 0 && (_freezeYpt != null || _freezeXpt != null);
+
+  /// 固定を解く。
+  void _clearFreeze() {
+    if (!_hasFreeze && _freezeShot == null) return;
+    setState(() {
+      _freezePage = 0;
+      _freezeYpt = null;
+      _freezeXpt = null;
+      _freezeShot?.dispose();
+      _freezeShot = null;
+      _freezeShotPage = 0;
+    });
+  }
+
+  /// 引いた線から固定の位置を決める。
+  ///
+  /// 横に長ければ水平の線 (= 上を固定)、 縦に長ければ鉛直の線 (= 左を固定)。
+  /// 同じ向きの線をもう一度引くと、 その位置に引き直す。
+  void _applyFreezeLine(int pageNumber, Offset a, Offset b) {
+    final d = b - a;
+    if (d.distance < 4) {
+      // ほとんど動いていない = 解除の合図。
+      _clearFreeze();
+      return;
+    }
+    setState(() {
+      if (_freezePage != pageNumber) {
+        // 別のページで引き直した。 前のページの固定は捨てる。
+        _freezeYpt = null;
+        _freezeXpt = null;
+        _freezeShot?.dispose();
+        _freezeShot = null;
+        _freezeShotPage = 0;
+      }
+      _freezePage = pageNumber;
+      if (d.dx.abs() >= d.dy.abs()) {
+        _freezeYpt = (a.dy + b.dy) / 2;
+      } else {
+        _freezeXpt = (a.dx + b.dx) / 2;
+      }
+    });
+    unawaited(_ensureFreezeShot());
+  }
+
+  /// 固定するページの絵を 1 回だけ作る。
+  ///
+  /// ★ 画面を写し取る方式にしなかった理由: 固定したい所が画面に出ている時に
+  ///   しか写せず、 送った後に拡大されると写し直せずぼやける。 ページから
+  ///   起こせば、 いつでも今の大きさで貼り直せる。
+  Future<void> _ensureFreezeShot() async {
+    final path = widget.filePath;
+    final page = _freezePage;
+    if (path == null || page <= 0) return;
+    if (_freezeShot != null && _freezeShotPage == page) return;
+    if (_freezeShotBusy) return;
+    _freezeShotBusy = true;
+    try {
+      final f = File(path);
+      if (!f.existsSync()) return;
+      // ★ 大きすぎるファイルは作らない (= 既に他の所で使っている歯止めと
+      //   同じ考え方。 ビューアが同じ書類を開いたままなので、 ここで無茶を
+      //   すると固まる)。
+      if (await f.length() > 64 * 1024 * 1024) return;
+      final bytes = await f.readAsBytes();
+      printing.PdfRaster? raster;
+      await for (final r in printing.Printing.raster(
+        bytes,
+        pages: <int>[page - 1],
+        // 貼り付けるのは帯だけなので、 これくらいで十分読める。
+        dpi: 144,
+      ).timeout(const Duration(seconds: 20))) {
+        raster ??= r;
+      }
+      if (raster == null) return;
+      final img = await raster.toImage();
+      if (!mounted) {
+        img.dispose();
+        return;
+      }
+      setState(() {
+        _freezeShot?.dispose();
+        _freezeShot = img;
+        _freezeShotPage = page;
+      });
+    } catch (e) {
+      debugPrint('固定する所の絵を作れませんでした: $e');
+    } finally {
+      _freezeShotBusy = false;
+    }
+  }
+
   /// 消しゴムの効き方 (= ユーザー要望: オブジェクト削除 / 部分削除)。
   ///
   /// * true  … **オブジェクト削除**。 触れた物は 1 個まるごと消える。
@@ -2202,7 +2344,47 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   bool _eraseWholeObject = false;
   static const String _kEraseModePrefsKey = 'pdfDrawEraseWholeObject';
 
+  /// 固定した所の帯を、 PDF の上に貼り付ける (= ユーザー要望)。
+  ///
+  /// 大きさは、 今そのページが画面で何 px に出ているか ([_PageGeom]) から
+  /// 毎回引き直すので、 拡大しても下の本物と揃う。 ページを離れている間は
+  /// 何も出さない (固定は 1 ページぶんなので、 他のページでは意味が無い)。
+  Widget? _buildFreezeBands() {
+    final img = _freezeShot;
+    if (img == null || !_hasFreeze || _freezeShotPage != _freezePage) {
+      return null;
+    }
+    // ★ 位置は「描く時」 に引き直す (組み立ての時ではない)。 PDF を送っても
+    //   この層は組み直されないので、 ここで場所を決めてしまうと帯が置いて
+    //   いかれる。 描き込みの層と同じで、 その都度 _PageGeom を引く。
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: ClipRect(
+          child: CustomPaint(
+            key: _freezeKey,
+            painter: _PdfFreezePainter(
+              image: img,
+              pageNumber: _freezePage,
+              yPt: _freezeYpt,
+              xPt: _freezeXpt,
+              geomsGetter: _collectPageGeoms,
+              overlayBoxGetter: () => _freezeKey.currentContext
+                  ?.findRenderObject() as RenderBox?,
+            ),
+            child: const SizedBox.expand(),
+          ),
+        ),
+      ),
+    );
+  }
+
   /// 消しゴムの効き方を控える / 読み直す。
+  /// 固定の絵を手放す (窓を閉じる時)。
+  void _disposeFreeze() {
+    _freezeShot?.dispose();
+    _freezeShot = null;
+  }
+
   Future<void> _persistEraseMode() async {
     try {
       final sp = await SharedPreferences.getInstance();
@@ -2904,9 +3086,13 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       // ── 描き込みモードを閉じている間も、 まだ焼き込んでいない線は
       //    そのまま見せる (= ユーザー要望: 閉じても保存しない代わりに、
       //    描いたものが消えたように見えないようにする)。 触れはしない。 ──
-      if (_strokes.isEmpty) return child;
+      // ★ 固定した帯も出し続ける (= ユーザー要望: 読んでいる間ずっと同じ所を
+      //   参照できるように)。 道具箱を閉じたら消えてしまっては意味が無い。
+      final closedBands = _buildFreezeBands();
+      if (_strokes.isEmpty && closedBands == null) return child;
       return Stack(children: [
         Positioned.fill(child: child),
+        if (closedBands != null) closedBands,
         Positioned.fill(
           child: IgnorePointer(
             child: ClipRect(
@@ -2932,8 +3118,11 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     final passThrough = _tool == PdfDrawTool.hand;
     final toolbar = _buildToolbar(context);
     if (widget.toolbarSink != null) _publishToolbar(toolbar);
+    final freezeBands = _buildFreezeBands();
     return Stack(children: [
       Positioned.fill(child: child),
+      // ── 固定した所の帯 (= ユーザー要望)。 本物の上、 描き込みの下。 ──
+      if (freezeBands != null) freezeBands,
       // ── 描画オーバーレイ ──
       Positioned.fill(
         child: IgnorePointer(
@@ -3545,9 +3734,42 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
                 height: 20,
                 margin: const EdgeInsets.symmetric(horizontal: 4),
                 color: Colors.white24),
+            // ── ウィンドウ枠の固定 (= ユーザー要望: 水平と鉛直に線を
+            //    引いて、 その所だけスクロールしても見えたままにする) ──
+            toolBtn(PdfDrawTool.freeze, Icons.push_pin_outlined,
+                'pdfdraw.freeze'),
+            // 固定しているなら、 解くボタンも出す。
+            if (_hasFreeze)
+              Tooltip(
+                message: widget.tr('pdfdraw.freezeOff'),
+                child: InkWell(
+                  onTap: _clearFreeze,
+                  borderRadius: BorderRadius.circular(6),
+                  child: Container(
+                    width: 30,
+                    height: 30,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFE57373),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: const Icon(Icons.push_pin_rounded,
+                        size: 17, color: Colors.white),
+                  ),
+                ),
+              ),
             // ── 消しゴムの効き方 (= ユーザー要望: オブジェクト削除 /
             //    部分削除の 2 つのモード) ──
             //    押すたびに入れ替わる。 次に開いた時も同じ効き方から始まる。
+            if (_tool == PdfDrawTool.freeze)
+              Container(
+                height: 30,
+                alignment: Alignment.center,
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Text(widget.tr('pdfdraw.freezeHint'),
+                    style: const TextStyle(
+                        color: Colors.white70, fontSize: 11)),
+              ),
             if (_tool == PdfDrawTool.eraser)
               Tooltip(
                 message: widget.tr(_eraseWholeObject
@@ -3801,6 +4023,22 @@ class _PdfDrawPainter extends CustomPainter {
         case PdfDrawTool.ellipse:
           canvas.drawOval(Rect.fromPoints(p1, p2), paint);
           break;
+        case PdfDrawTool.freeze:
+          // 引いている最中だけ、 どこで固定するかの目印を出す
+          // (= ユーザー要望: 水平と鉛直に線を引いて固定する)。
+          // 引き終えたら線は残さず、 位置だけを覚える。
+          final d = p2 - p1;
+          final guide = Paint()
+            ..color = const Color(0xFF6C63FF)
+            ..strokeWidth = 2 * pxScale
+            ..style = PaintingStyle.stroke;
+          if (d.dx.abs() >= d.dy.abs()) {
+            canvas.drawLine(Offset(0, p2.dy), Offset(size.width, p2.dy), guide);
+          } else {
+            canvas.drawLine(
+                Offset(p2.dx, 0), Offset(p2.dx, size.height), guide);
+          }
+          break;
         case PdfDrawTool.hand:
         case PdfDrawTool.eraser:
         case PdfDrawTool.check:
@@ -3972,6 +4210,119 @@ class _MarkerLineGlyphPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _MarkerLineGlyphPainter old) =>
       old.color != color;
+}
+
+/// 固定した所を PDF の上に貼り付ける。
+///
+/// ★ = ユーザー要望「PDF で水平と鉛直方向に直線を引いて、 xlsx ファイルの
+///   様なこの箇所だけを左右や上下にスクロールしても固定化して参照できる
+///   モード」。
+///
+/// * 上の帯 … 画面の上端に貼る。 横は本物のページと同じ位置に置くので、
+///   左右に送ると一緒に動く (= xlsx の行固定と同じ)。
+/// * 左の帯 … 画面の左端に貼る。 縦は本物と同じ位置に置く。
+/// * 角 … どちらにも動かない。
+class _PdfFreezePainter extends CustomPainter {
+  _PdfFreezePainter({
+    required this.image,
+    required this.pageNumber,
+    required this.yPt,
+    required this.xPt,
+    required this.geomsGetter,
+    required this.overlayBoxGetter,
+  });
+
+  /// そのページ 1 枚ぶんの絵。
+  final ui.Image image;
+
+  /// 固定しているページ (1 始まり)。
+  final int pageNumber;
+
+  /// 水平の線 (これより上を固定) / 鉛直の線 (これより左を固定)。 紙の pt。
+  final double? yPt;
+  final double? xPt;
+
+  /// 今画面に出ているページの並び (描く時に引く)。
+  final List<_PageGeom> Function() geomsGetter;
+  final RenderBox? Function() overlayBoxGetter;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final overlay = overlayBoxGetter();
+    if (overlay == null || !overlay.hasSize) return;
+    _PageGeom? geom;
+    for (final g in geomsGetter()) {
+      if (g.pageNumber == pageNumber) {
+        geom = g;
+        break;
+      }
+    }
+    // 固定したページが画面のどこにも無い = 何も出さない。
+    if (geom == null || !geom.box.attached) return;
+    final Offset pageOrigin;
+    try {
+      pageOrigin = overlay.globalToLocal(geom.box.localToGlobal(Offset.zero));
+    } catch (_) {
+      return;
+    }
+    final hp = geom.heightPercentage;
+    if (hp <= 0) return;
+    final pageSizePx = geom.contentSize;
+    final bandHpx = yPt == null ? 0.0 : (yPt! / hp);
+    final bandWpx = xPt == null ? 0.0 : (xPt! / hp);
+    if (pageSizePx.width <= 0 || pageSizePx.height <= 0) return;
+    // 絵の中の 1px が、 紙の何 pt にあたるか。
+    final sx = image.width / pageSizePx.width;
+    final sy = image.height / pageSizePx.height;
+    final paint = Paint()..filterQuality = FilterQuality.medium;
+    // 帯の下地 (紙は白なので、 透けて重なって見えないように)。
+    final bg = Paint()..color = const Color(0xFFFFFFFF);
+
+    void band(Rect src, Rect dst) {
+      if (src.width <= 0 || src.height <= 0) return;
+      if (dst.width <= 0 || dst.height <= 0) return;
+      canvas.drawRect(dst, bg);
+      canvas.drawImageRect(image, src, dst, paint);
+    }
+
+    // ── 上の帯 (水平の線より上) ──
+    if (bandHpx > 0) {
+      band(
+        Rect.fromLTWH(0, 0, image.width.toDouble(), bandHpx * sy),
+        Rect.fromLTWH(pageOrigin.dx, 0, pageSizePx.width, bandHpx),
+      );
+    }
+    // ── 左の帯 (鉛直の線より左) ──
+    if (bandWpx > 0) {
+      band(
+        Rect.fromLTWH(0, 0, bandWpx * sx, image.height.toDouble()),
+        Rect.fromLTWH(0, pageOrigin.dy, bandWpx, pageSizePx.height),
+      );
+    }
+    // ── 角 (両方を指定した時。 どちらにも動かない) ──
+    if (bandHpx > 0 && bandWpx > 0) {
+      band(
+        Rect.fromLTWH(0, 0, bandWpx * sx, bandHpx * sy),
+        Rect.fromLTWH(0, 0, bandWpx, bandHpx),
+      );
+    }
+    // ── 境目の線 (どこで固定したかが分かるように) ──
+    final line = Paint()
+      ..color = const Color(0xFF6C63FF)
+      ..strokeWidth = 2;
+    if (bandHpx > 0) {
+      canvas.drawLine(
+          Offset(0, bandHpx), Offset(size.width, bandHpx), line);
+    }
+    if (bandWpx > 0) {
+      canvas.drawLine(
+          Offset(bandWpx, 0), Offset(bandWpx, size.height), line);
+    }
+  }
+
+  // 位置は描く時に引くので、 毎回描き直す (= 送っても付いて来るように)。
+  @override
+  bool shouldRepaint(_PdfFreezePainter old) => true;
 }
 
 /// 消しゴムの絵 (Material に消しゴムのアイコンが無いので自前で描く)。

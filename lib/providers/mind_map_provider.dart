@@ -11253,6 +11253,48 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Толщина пера',
     },
     // ── 消しゴムの効き方 (= ユーザー要望: オブジェクト削除 / 部分削除) ──
+    // ── PDF のウィンドウ枠の固定 (= ユーザー要望) ──
+    'pdfdraw.freeze': {
+      'ja': 'ウィンドウ枠の固定 (線を引いた所を残す)',
+      'en': 'Freeze panes (draw a line to pin what is above/left of it)',
+      'zh': '冻结窗格（画一条线，固定其上方/左侧的内容）',
+      'ko': '틀 고정 (선을 그으면 그 위/왼쪽이 남습니다)',
+      'es': 'Inmovilizar paneles (traza una línea para fijar lo de arriba/izquierda)',
+      'fr': 'Figer les volets (tracez une ligne pour fixer ce qui est au-dessus/à gauche)',
+      'de': 'Fenster fixieren (Linie ziehen, um Bereich darüber/links festzuhalten)',
+      'pt': 'Congelar painéis (trace uma linha para fixar o que está acima/à esquerda)',
+      'ru': 'Закрепить области (проведите линию, чтобы закрепить всё выше/левее)',
+      'fa': 'ثابت کردن قاب‌ها (خطی بکشید تا بالای/چپ آن ثابت شود)',
+    },
+    'pdfdraw.freezeOff': {
+      'ja': '固定を解除',
+      'en': 'Unfreeze',
+      'zh': '取消冻结',
+      'ko': '고정 해제',
+      'es': 'Movilizar',
+      'fr': 'Libérer',
+      'de': 'Fixierung aufheben',
+      'pt': 'Descongelar',
+      'ru': 'Снять закрепление',
+      'fa': 'برداشتن تثبیت',
+    },
+    'pdfdraw.freezeHint': {
+      'ja': '横に引くと上を、 縦に引くと左を固定します (短く押すと解除)',
+      'en': 'Drag across to pin what is above; drag down to pin what is left '
+          '(a short tap clears it)',
+      'zh': '横向拖动固定上方，纵向拖动固定左侧（轻点可取消）',
+      'ko': '가로로 그으면 위쪽, 세로로 그으면 왼쪽을 고정합니다 (짧게 누르면 해제)',
+      'es': 'Arrastra en horizontal para fijar lo de arriba; en vertical para '
+          'lo de la izquierda (un toque corto lo quita)',
+      'fr': 'Glissez horizontalement pour fixer le haut, verticalement pour '
+          'la gauche (un appui bref annule)',
+      'de': 'Waagerecht ziehen fixiert oben, senkrecht links (kurz tippen hebt auf)',
+      'pt': 'Arraste na horizontal para fixar o topo; na vertical para a '
+          'esquerda (um toque curto remove)',
+      'ru': 'Проведите по горизонтали — закрепится верх, по вертикали — левая '
+          'часть (короткое нажатие снимает)',
+      'fa': 'کشیدن افقی بالا را و کشیدن عمودی سمت چپ را ثابت می‌کند (ضربهٔ کوتاه لغو)',
+    },
     'pdfdraw.eraseWhole': {
       'ja': '触れた物を丸ごと消す (押すと部分削除に変わります)',
       'en': 'Erase the whole object you touch (tap to switch to partial)',
