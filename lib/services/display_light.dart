@@ -174,6 +174,45 @@ class DisplayLight {
   /// 触った画面の「元のガンマ表」。 鍵は GDI の名前。
   static final Map<String, Uint16List> _originals = <String, Uint16List>{};
 
+  /// その表を「どの画面から取ったか」 の目印 (説明 + 大きさ)。
+  ///
+  /// ★ = ユーザー報告「ブルーライトモードを切っているのに、 サブモニターに
+  ///   繋ぐと ON になる」 の原因。 GDI の名前は画面を挿し直すと**別の画面へ
+  ///   割り当て直される**ので、 名前だけを鍵にすると、 内蔵パネルから取った
+  ///   表 (前に色を付けていた時の物であり得る) を外部モニターへ書き込んで
+  ///   しまう。 取った時の画面と違っていたら書き戻さない。
+  static final Map<String, String> _originSig = <String, String>{};
+
+  /// 今その名前が指している画面の目印。 分からなければ空。
+  static String _currentSig(String gdiName) {
+    try {
+      for (final m in list()) {
+        if (m.gdiName == gdiName) return '${m.label}|${m.width}x${m.height}';
+      }
+    } catch (_) {}
+    return '';
+  }
+
+  /// 何もしていない状態の表を書く (= こちらが付けた色を確実に消す)。
+  static bool setLinearGamma(String gdiName) {
+    if (!isSupported) return false;
+    final hdc = _openDC(gdiName);
+    if (hdc == 0) return false;
+    final p = calloc<Uint16>(768);
+    try {
+      for (var i = 0; i < 256; i++) {
+        final v = (i * 257).clamp(0, 65535);
+        p[i] = v;
+        p[256 + i] = v;
+        p[512 + i] = v;
+      }
+      return _setGamma(hdc, p) != 0;
+    } finally {
+      calloc.free(p);
+      _deleteDC(hdc);
+    }
+  }
+
   /// 今ガンマを当てているか。
   static bool get isGammaApplied => _originals.isNotEmpty;
 
@@ -890,6 +929,7 @@ class DisplayLight {
         copy[i] = buf[i];
       }
       _originals[gdiName] = copy;
+      _originSig[gdiName] = _currentSig(gdiName);
     } finally {
       calloc.free(buf);
     }
@@ -898,7 +938,14 @@ class DisplayLight {
   /// 1 台ぶん元へ戻す。
   static void restoreGamma(String gdiName) {
     final orig = _originals.remove(gdiName);
+    final sig = _originSig.remove(gdiName);
     if (orig == null) return;
+    // ★ 取った時と違う画面なら、 その表を書いてはいけない (= 別の画面の
+    //   色をよそへ塗る事になる)。 素の表に戻して、 こちらの色だけ消す。
+    if (sig != null && sig.isNotEmpty && sig != _currentSig(gdiName)) {
+      setLinearGamma(gdiName);
+      return;
+    }
     final hdc = _openDC(gdiName);
     if (hdc == 0) return;
     final buf = calloc<Uint16>(768);
@@ -924,9 +971,13 @@ class DisplayLight {
   /// 元の表を控えへ書き出しておく形。 `{gdiName: base64}`。
   static String encodeOriginals() {
     if (_originals.isEmpty) return '';
-    final m = <String, String>{};
+    final m = <String, dynamic>{};
     _originals.forEach((k, v) {
-      m[k] = base64Encode(v.buffer.asUint8List());
+      // 「どの画面から取ったか」 も一緒に控える (書き戻す時に突き合わせる)。
+      m[k] = {
+        'r': base64Encode(v.buffer.asUint8List()),
+        's': _originSig[k] ?? '',
+      };
     });
     return jsonEncode(m);
   }
@@ -940,8 +991,27 @@ class DisplayLight {
       final m = jsonDecode(raw);
       if (m is! Map) return;
       m.forEach((k, v) {
-        if (v is! String) return;
-        final bytes = base64Decode(v);
+        // 新しい形 {r: 表, s: 目印} と、 古い形 (表だけ) の両方を読む。
+        final String enc;
+        final String sig;
+        if (v is String) {
+          enc = v;
+          sig = '';
+        } else if (v is Map) {
+          enc = '${v['r'] ?? ''}';
+          sig = '${v['s'] ?? ''}';
+        } else {
+          return;
+        }
+        if (enc.isEmpty) return;
+        // ★ 取った時と違う画面なら書き戻さない。 素の表にして、 こちらが
+        //   付けた色だけ消す (= ユーザー報告: サブモニターを繋ぐと勝手に
+        //   ブルーライトカットが効く)。
+        if (sig.isNotEmpty && sig != _currentSig('$k')) {
+          setLinearGamma('$k');
+          return;
+        }
+        final bytes = base64Decode(enc);
         if (bytes.length != 768 * 2) return;
         final ramp = bytes.buffer.asUint16List();
         final hdc = _openDC('$k');

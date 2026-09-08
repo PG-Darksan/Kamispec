@@ -977,7 +977,7 @@ class _UrlSlot {
 /// 1 ファイル分のアップロードに必要な情報をまとめる。
 /// バイト数を事前に取っておくのは、ページ全体での進捗計算 (累計済み /
 /// 合計バイト) を正確にやるため。
-enum _AttachmentKind { image, video }
+enum _AttachmentKind { image, video, thumb }
 
 class _AttachmentToUpload {
   final String nodeId;
@@ -49605,6 +49605,28 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'S\u00f3 quem partilhou pode terminar a sess\u00e3o.',
       'ru': '\u041e\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c \u043c\u043e\u0436\u0435\u0442 \u0442\u043e\u043b\u044c\u043a\u043e \u0442\u043e\u0442, \u043a\u0442\u043e \u043d\u0430\u0447\u0430\u043b \u043f\u0443\u0431\u043b\u0438\u043a\u0430\u0446\u0438\u044e.',
     },
+    'live.pushFailed': {
+      'ja': '共同編集の変更を送れませんでした (通信 {code})。 次の回にもう一度送ります。',
+      'en': 'Could not send your changes ({code}). It will try again shortly.',
+      'zh': '未能发送更改（{code}）。稍后会重试。',
+      'ko': '변경 사항을 보내지 못했습니다 ({code}). 곧 다시 시도합니다.',
+      'es': 'No se pudieron enviar los cambios ({code}). Se reintentara en breve.',
+      'fr': 'Impossible d’envoyer vos modifications ({code}). Nouvelle tentative sous peu.',
+      'de': 'Anderungen konnten nicht gesendet werden ({code}). Es wird erneut versucht.',
+      'pt': 'Nao foi possivel enviar as alteracoes ({code}). Sera tentado novamente.',
+      'ru': 'Не удалось отправить изменения ({code}). Скоро повторим.',
+    },
+    'live.pushDenied': {
+      'ja': 'この共同編集では書き込みが許可されていません (閲覧のみ)。',
+      'en': 'You do not have permission to edit this shared page (view only).',
+      'zh': '此共享页面不允许编辑（仅可查看）。',
+      'ko': '이 공유 페이지는 편집할 수 없습니다 (보기 전용).',
+      'es': 'No tienes permiso para editar esta pagina compartida (solo lectura).',
+      'fr': 'Vous n’avez pas le droit de modifier cette page partagee (lecture seule).',
+      'de': 'Sie durfen diese geteilte Seite nicht bearbeiten (nur Ansicht).',
+      'pt': 'Nao tem permissao para editar esta pagina partilhada (so leitura).',
+      'ru': 'У вас нет прав на изменение этой страницы (только просмотр).',
+    },
     'live.expired': {
       'ja': '誰も接続しない時間が続いたため、共有セッションを終了しました',
       'en': 'The session ended after a long time with nobody connected',
@@ -81462,8 +81484,63 @@ $cleanQ
   }
 
   /// `cutoff` より古い `updated` メタデータを持つファイルを Storage から削除。
+  /// 今このグループの雲に残っているページの id。
+  ///
+  /// 置き場のファイル名は「ページID_要素ID_名前」 (フリーノートの絵は
+  /// 「paint_ページID_…」、 背景は「ページID_bg_…」) なので、 これと
+  /// 突き合わせれば「まだ使われている実体」 が分かる。
+  Future<Set<String>> _cloudLivePageIds() async {
+    final out = <String>{};
+    if (_idToken == null || _syncGroupId == null) return out;
+    try {
+      var next = '';
+      for (var guard = 0; guard < 10; guard++) {
+        final url = '$_firestoreBaseUrl/groups/$_syncGroupId/pages'
+            '?pageSize=300&mask.fieldPaths=uploadRestricted'
+            '${next.isEmpty ? '' : '&pageToken=$next'}';
+        final res = await http.get(
+          Uri.parse(url),
+          headers: {'Authorization': 'Bearer $_idToken'},
+        ).timeout(const Duration(seconds: 20));
+        if (res.statusCode != 200) break;
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        for (final d in (data['documents'] as List<dynamic>? ?? [])) {
+          final name = (d as Map<String, dynamic>)['name'] as String?;
+          if (name == null) continue;
+          final id = name.split('/').last;
+          if (id.isNotEmpty) out.add(id);
+        }
+        next = (data['nextPageToken'] as String?) ?? '';
+        if (next.isEmpty) break;
+      }
+    } catch (e) {
+      debugPrint('ページ一覧の取得に失敗 (削除は見送る): $e');
+      // 取れなかった時は空を返さない — 呼ぶ側が「分からないので消さない」
+      //   と判断できるよう、 目印を入れておく。
+      return {_kUnknownLivePages};
+    }
+    return out;
+  }
+
+  /// 「ページ一覧が取れなかった」 の目印 (実在しないページ id)。
+  static const String _kUnknownLivePages = '\u0000unknown';
+
   Future<void> _pruneFilesOlderThan(DateTime cutoff) async {
     if (_idToken == null || _syncGroupId == null) return;
+    // ★ まだ雲に残っているページの実体は消さない (= 点検で判明: 古さだけで
+    //   消していたので、 毎日上げ直していても添付だけが 8 日目に消え、
+    //   落とした人には「ダウンロードに失敗しました」 しか出なかった)。
+    final livePages = await _cloudLivePageIds();
+    if (livePages.contains(_kUnknownLivePages)) return; // 分からない時は消さない
+    bool stillUsed(String objectName) {
+      final base = objectName.split('/').last;
+      for (final id in livePages) {
+        if (base.startsWith('${id}_')) return true; // 添付 / 背景
+        if (base.startsWith('paint_${id}_')) return true; // フリーノートの絵
+      }
+      return false;
+    }
+
     try {
       final prefix = Uri.encodeComponent('groups/$_syncGroupId/');
       final listUrl = '$_storageUploadUrl?prefix=$prefix';
@@ -81484,7 +81561,8 @@ $cleanQ
         final updated = DateTime.tryParse(updatedStr);
         if (updated == null) continue;
         if (updated.isAfter(cutoff)) continue; // 期限内 → 保持
-        // 期限切れ → 削除
+        if (stillUsed(name)) continue; // まだ使われている → 残す
+        // 期限切れ かつ どのページからも参照されていない → 削除
         try {
           final encoded = Uri.encodeComponent(name);
           final deleteUrl = '$_storageUploadUrl/$encoded';
@@ -81635,6 +81713,8 @@ $cleanQ
             // ページの背景画像の実体も落としてくる (= 点検で判明:
             //   道だけが載っていて、 受け取った側では黙って消えていた)。
             await _downloadPageBackgroundImage(page.id);
+            // 表紙 (PDF / pptx の 1 枚目) も落としてくる。
+            await _downloadPageThumbnails(page.id);
           } catch (_) {}
         }
         if (changed) {
@@ -82538,6 +82618,44 @@ $cleanQ
     }
   }
 
+  /// 受け取ったページの表紙 (PDF / pptx の 1 枚目) を落としてくる。
+  ///
+  /// ★ = 点検で判明: 表紙は送り主の端末の道しか載っておらず、 受け取った側は
+  ///   空欄の枠だけになっていた。 小さい画像なので、 進捗の一覧には載せずに
+  ///   静かに落とす。
+  Future<void> _downloadPageThumbnails(String pageId) async {
+    final idx = _pages.indexWhere((p) => p.id == pageId);
+    if (idx < 0) return;
+    final page = _pages[idx];
+    Directory? dir;
+    var changed = false;
+    for (final node in page.nodes.values.toList()) {
+      final url = (node.attachmentThumbStorageUrl ?? '').trim();
+      if (url.isEmpty) continue;
+      final cur = node.attachmentThumbPath ?? '';
+      if (cur.isNotEmpty && File(cur).existsSync()) continue; // もうある
+      try {
+        dir ??= Directory(
+            '${(await getApplicationDocumentsDirectory()).path}/attachments');
+        if (!await dir.exists()) await dir.create(recursive: true);
+        final dest = '${dir.path}/thumb_${node.id}.png';
+        final res = await http
+            .get(Uri.parse(url))
+            .timeout(const Duration(seconds: 30));
+        if (res.statusCode != 200) continue;
+        await File(dest).writeAsBytes(res.bodyBytes);
+        node.attachmentThumbPath = dest;
+        changed = true;
+      } catch (e) {
+        debugPrint('表紙の受け取りに失敗 (続行): $e');
+      }
+    }
+    if (changed) {
+      await _saveToStorageLocal();
+      notifyListeners();
+    }
+  }
+
   /// 受け取ったページの背景画像を落として、 この端末の道へ差し替える。
   Future<void> _downloadPageBackgroundImage(String pageId) async {
     final idx = _pages.indexWhere((p) => p.id == pageId);
@@ -82628,6 +82746,28 @@ $cleanQ
             name: _cloudStorageFileName(pageId, nodeId, name),
             sizeBytes: size));
       }
+      // ★ 表紙 (PDF / pptx の 1 枚目) も送る (= 点検で判明: 送っていなかった
+      //   ので、 受け取った側は空欄の枠だけになっていた)。
+      final th = node.attachmentThumbPath;
+      if (th != null &&
+          th.isNotEmpty &&
+          !th.startsWith('http') &&
+          (node.attachmentThumbStorageUrl ?? '').isEmpty) {
+        final name = th.split('/').last.split('\\').last;
+        int size = 0;
+        try {
+          final f = File(th);
+          if (await f.exists()) size = await f.length();
+        } catch (_) {}
+        if (size > 0) {
+          jobs.add(_AttachmentToUpload(
+              nodeId: nodeId,
+              kind: _AttachmentKind.thumb,
+              localPath: th,
+              name: _cloudStorageFileName(pageId, nodeId, 'thumb_$name'),
+              sizeBytes: size));
+        }
+      }
     }
 
     // skipVideoUploadOnce はワンショット。動画ジョブ収集が終わったら
@@ -82679,6 +82819,8 @@ $cleanQ
       if (storageUrl != null) {
         if (job.kind == _AttachmentKind.image) {
           node.attachmentStorageUrl = storageUrl;
+        } else if (job.kind == _AttachmentKind.thumb) {
+          node.attachmentThumbStorageUrl = storageUrl;
         } else {
           node.videoStorageUrl = storageUrl;
         }
@@ -84772,6 +84914,39 @@ $cleanQ
   String? _liveEditingNodeId;
   String? _liveLastError;
 
+  /// まだ落とせていない添付 (要素 id -> 置き場の URL)。
+  ///
+  /// ★ 以前はその回だけの一覧だったので、 1 回に 3 件までの制限を超えた分は
+  ///   捨てられ、 相手が編集をやめると二度と拾い直せなかった
+  ///   (= 点検で判明: 画像を一度にたくさん足すと相手側で欠けたまま残る)。
+  ///   持ち越して、 毎回の見回りで少しずつ片付ける。
+  final List<MapEntry<String, String>> _livePendingAttach = [];
+
+  /// 送れなかった事を画面に伝える口 (= 点検で判明: これまで
+  /// [_liveLastError] に入れるだけで、 読む所が 1 つも無かった)。
+  /// 画面側が差し込む。 引数は利用者に見せる一言。
+  void Function(String message)? onLiveError;
+
+  /// 直前に知らせた時刻。 毎秒の書き込みなので、 出し過ぎないようにする。
+  DateTime? _liveErrorNotifiedAt;
+
+  /// 送信に失敗した事を 1 度だけ知らせる。
+  void _liveNotifyPushFailure(int statusCode) {
+    final now = DateTime.now();
+    final last = _liveErrorNotifiedAt;
+    // 同じ不調が続く間は 30 秒に 1 回まで。
+    if (last != null && now.difference(last) < const Duration(seconds: 30)) {
+      return;
+    }
+    _liveErrorNotifiedAt = now;
+    final msg = statusCode == 403
+        ? t('live.pushDenied')
+        : t('live.pushFailed').replaceAll('{code}', '$statusCode');
+    try {
+      onLiveError?.call(msg);
+    } catch (_) {}
+  }
+
   bool get liveActive => _liveCode != null;
   String? get liveCode => _liveCode;
   String? get livePageId => _livePageId;
@@ -85036,6 +85211,10 @@ $cleanQ
       await _ensureFreshToken();
       await _livePull();
       await _livePush();
+      // ★ 落としきれていない添付を、 版が動いていなくても片付ける
+      //   (= 点検で判明: 予約を作るのが「版が変わった時」 の中だったので、
+      //   相手が編集をやめると残りを取りに行けなかった)。
+      await _liveDrainAttachments();
       // 書き込みが弾かれた時は、 版に関わらず取りに行く (取り込んでから
       // 送り直す。 これをしないと弾かれ続ける)。
       if (_liveBodyNeedsPull && _liveCode != null) {
@@ -85144,17 +85323,29 @@ $cleanQ
   ///   (C:\Users\… ) のままだと必ず「壊れた画像」 になる。
   void _queueLiveAttachment(
       MindMapPage page, MindMapNode n, List<MapEntry<String, String>> pending) {
-    final u = n.attachmentStorageUrl;
-    if (u == null || u.isEmpty) return;
-    final local = _liveAttachLocal[u];
-    if (local == null) {
-      if (!pending.any((e) => e.value == u)) {
-        pending.add(MapEntry(n.id, u));
+    var fixed = false;
+    // 添付 / 動画 / 表紙 の 3 つを同じやり方で扱う。
+    //   ★ 前は添付だけだったので、 動画と表紙は相手の端末に届かなかった。
+    void one(String? url, String? current, void Function(String) apply) {
+      if (url == null || url.isEmpty) return;
+      final local = _liveAttachLocal[url];
+      if (local == null) {
+        if (!pending.any((e) => e.value == url)) {
+          pending.add(MapEntry(n.id, url));
+        }
+        return;
       }
-      return;
+      if (current != local) {
+        apply(local);
+        fixed = true;
+      }
     }
-    if (n.attachmentPath != local) {
-      n.attachmentPath = local;
+
+    one(n.attachmentStorageUrl, n.attachmentPath, (v) => n.attachmentPath = v);
+    one(n.videoStorageUrl, n.youtubeUrl, (v) => n.youtubeUrl = v);
+    one(n.attachmentThumbStorageUrl, n.attachmentThumbPath,
+        (v) => n.attachmentThumbPath = v);
+    if (fixed) {
       // 落とし直した道は「送るべき変更」 ではない (自分の端末の事情)。
       // 控えも合わせておかないと、 毎回「未送信の編集あり」 と誤解して
       // 相手の更新を受け取らなくなる。
@@ -85474,26 +85665,48 @@ $cleanQ
     //   ファイルが他の端末に表示されない)。
     //   本文の取り込みを待たせないよう、 ここで別々に行う。
     //   1 回に 3 件まで (回線を占領しないため。 残りは次の回で)。
-    if (pendingAttach.isNotEmpty) {
-      var done = 0;
-      for (final e in pendingAttach) {
-        if (done >= 3) break;
-        final local = await _downloadLiveAttachment(e.value);
-        if (local == null) continue;
-        final n = page.nodes[e.key];
-        if (n != null && n.attachmentPath != local) {
-          n.attachmentPath = local;
-          // 落とした道は「自分の端末の事情」。 控えも合わせておかないと、
-          // 次の受け取りで「未送信の編集あり」 と誤解して弾いてしまう。
-          _liveLastPushed[n.id] = jsonEncode(n.toJson());
-          done++;
-        }
+    for (final e in pendingAttach) {
+      if (!_livePendingAttach.any((x) => x.value == e.value)) {
+        _livePendingAttach.add(e);
       }
-      if (done > 0) {
-        // ignore: discarded_futures
-        _saveToStorageLocal();
-        notifyListeners();
+    }
+    await _liveDrainAttachments();
+  }
+
+  /// 溜まっている添付を少しずつ落とす。
+  ///
+  /// 見回りのたびに呼ぶので、 相手が編集をやめても残りを取りに行ける。
+  /// 1 回に [max] 件まで (回線を占領しないため)。
+  Future<void> _liveDrainAttachments({int max = 3}) async {
+    if (_livePendingAttach.isEmpty) return;
+    final page = _livePage;
+    if (page == null) return;
+    var done = 0;
+    final finished = <MapEntry<String, String>>[];
+    for (final e in List<MapEntry<String, String>>.from(_livePendingAttach)) {
+      if (done >= max) break;
+      final n = page.nodes[e.key];
+      if (n == null) {
+        finished.add(e); // 要素ごと消えた
+        continue;
       }
+      final local = await _downloadLiveAttachment(e.value);
+      if (local == null) {
+        // 落とせなかった。 次の回にもう一度 (予約は残す)。
+        done++;
+        continue;
+      }
+      _liveAttachLocal[e.value] = local;
+      // どの欄の URL なのかは _queueLiveAttachment が見分けて当てる。
+      _queueLiveAttachment(page, n, <MapEntry<String, String>>[]);
+      finished.add(e);
+      done++;
+    }
+    _livePendingAttach.removeWhere((e) => finished.contains(e));
+    if (finished.isNotEmpty) {
+      // ignore: discarded_futures
+      _saveToStorageLocal();
+      notifyListeners();
     }
   }
 
@@ -86439,15 +86652,45 @@ $cleanQ
     //   他の人が上げたファイルが自分の端末に出てこない)。 上げた URL を
     //   ノードに載せておけば、 受け取った側が落として来られる。
     for (final n in page.nodes.values.toList()) {
-      final p = n.attachmentPath;
-      if (p == null || p.isEmpty) continue;
-      if (p.startsWith('http')) continue; // 既に URL
-      if ((n.attachmentStorageUrl ?? '').isNotEmpty) continue; // 上げ済み
       if (!force && isNodeLockedByOthers(n.id)) continue;
-      final url = await _uploadLiveAttachment(code, p);
-      if (url != null) {
-        n.attachmentStorageUrl = url;
-        _liveAttachLocal[url] = p; // 自分は元のファイルを使い続ける
+      // 添付 (画像 / PDF / 書類)。
+      final p = n.attachmentPath;
+      if (p != null &&
+          p.isNotEmpty &&
+          !p.startsWith('http') &&
+          (n.attachmentStorageUrl ?? '').isEmpty) {
+        final url = await _uploadLiveAttachment(code, p);
+        if (url != null) {
+          n.attachmentStorageUrl = url;
+          _liveAttachLocal[url] = p; // 自分は元のファイルを使い続ける
+        }
+      }
+      // ★ 手元の動画ファイル (= 点検で判明: `youtubeUrl` に入るので、
+      //   `attachmentPath` しか見ていない上の輪から漏れ、 相手には
+      //   **再生できない要素**として届いていた)。
+      final v = n.youtubeUrl;
+      if (v != null &&
+          v.isNotEmpty &&
+          !v.startsWith('http') &&
+          (n.videoStorageUrl ?? '').isEmpty) {
+        final url = await _uploadLiveAttachment(code, v);
+        if (url != null) {
+          n.videoStorageUrl = url;
+          _liveAttachLocal[url] = v;
+        }
+      }
+      // ★ 表紙 (PDF / pptx の 1 枚目)。 上げていなかったので、 相手には
+      //   空欄の枠だけが出ていた。
+      final th = n.attachmentThumbPath;
+      if (th != null &&
+          th.isNotEmpty &&
+          !th.startsWith('http') &&
+          (n.attachmentThumbStorageUrl ?? '').isEmpty) {
+        final url = await _uploadLiveAttachment(code, th);
+        if (url != null) {
+          n.attachmentThumbStorageUrl = url;
+          _liveAttachLocal[url] = th;
+        }
       }
     }
 
@@ -86456,6 +86699,10 @@ $cleanQ
     //   まだ何も知らない時は数えない (全部が「新しい」 に見えるため)。
     final addedIds = <String>[];
     final countAdds = !force && _liveAddsArmed;
+    // ★ 控えは「通ってから」 書く (= 点検で判明: 送る前に書いていたので、
+    //   書き込みが弾かれた分は二度と送り直されず、 相手に永久に届かなかった)。
+    //   ここでは書くつもりの物を溜めておくだけ。
+    final pendingPushed = <String, String>{};
     for (final entry in page.nodes.entries) {
       final id = entry.key;
       // 他の人が編集中のノードは送らない (= 相手の編集を壊さない)。
@@ -86466,7 +86713,7 @@ $cleanQ
       final f = _liveFieldForNode(id);
       fields[f] = {'stringValue': json};
       masks.add(f);
-      _liveLastPushed[id] = json;
+      pendingPushed[id] = json;
     }
     // ローカルで削除されたノードはフィールドごと消す (値なし + updateMask)。
     final removed = _liveLastPushed.keys
@@ -86474,7 +86721,6 @@ $cleanQ
         .toList();
     for (final id in removed) {
       masks.add(_liveFieldForNode(id));
-      _liveLastPushed.remove(id);
     }
     if (addedIds.isNotEmpty) {
       final myName = _displayName?.trim().isNotEmpty == true
@@ -86502,26 +86748,29 @@ $cleanQ
 
     final connJson =
         jsonEncode(page.connections.map((c) => c.toJson()).toList());
+    var pendingConns = _liveLastPushedConns;
     if (force || connJson != _liveLastPushedConns) {
       fields['connections'] = {'stringValue': connJson};
       masks.add('connections');
-      _liveLastPushedConns = connJson;
+      pendingConns = connJson;
     }
     final decoJson =
         jsonEncode(page.decorations.map((d) => d.toJson()).toList());
+    var pendingDeco = _liveLastPushedDeco;
     if (force || decoJson != _liveLastPushedDeco) {
       fields['decorations'] = {'stringValue': decoJson};
       masks.add('decorations');
-      _liveLastPushedDeco = decoJson;
+      pendingDeco = decoJson;
     }
     // ページの種別・棚の並び・背景。 変わった時だけ送る (毎秒の書き込みを
     // 増やさないため)。 背景が手元の画像なら、 先に共有の置き場へ上げる。
     final metaJson =
         _liveMetaJson(page, bgUrl: await _liveUploadBackground(code, page));
+    var pendingMeta = _liveLastPushedMeta;
     if (force || metaJson != _liveLastPushedMeta) {
       fields['meta'] = {'stringValue': metaJson};
       masks.add('meta');
-      _liveLastPushedMeta = metaJson;
+      pendingMeta = metaJson;
     }
     if (masks.isEmpty) return;
 
@@ -86551,12 +86800,24 @@ $cleanQ
         )
         .timeout(_kLiveHttpTimeout);
     if (res.statusCode >= 200 && res.statusCode < 300) {
+      // ★ ここで初めて控える。 弾かれた時は何も控えないので、 次の回に
+      //   同じ物をもう一度送る (= 静かに消えない)。
+      _liveLastPushed.addAll(pendingPushed);
+      for (final id in removed) {
+        _liveLastPushed.remove(id);
+      }
+      _liveLastPushedConns = pendingConns;
+      _liveLastPushedDeco = pendingDeco;
+      _liveLastPushedMeta = pendingMeta;
       // 自分の書き込みで pull が走らないよう、 版を進めておく。
       _liveRev = rev;
       _liveLastError = null;
     } else {
       _liveLastError = 'HTTP ${res.statusCode}';
       debugPrint('共同編集 push 失敗: ${res.statusCode} ${res.body}');
+      // ★ 書けなかった事を利用者にも伝える (= 点検で判明: liveLastError を
+      //   読んでいる所が 1 つも無く、 黙って消えていた)。
+      _liveNotifyPushFailure(res.statusCode);
     }
   }
 
@@ -102031,6 +102292,10 @@ $example
     if ((updated.attachmentStorageUrl ?? '').isNotEmpty) {
       updated.attachmentStorageUrl = null;
     }
+    // 表紙も別の物になるので、 一緒に捨てる。
+    if ((updated.attachmentThumbStorageUrl ?? '').isNotEmpty) {
+      updated.attachmentThumbStorageUrl = null;
+    }
     currentPage.nodes[id] = updated;
     _autoArrangeIfBookshelf();
     _saveToStorage();
@@ -102049,10 +102314,17 @@ $example
     final page = found.$1;
     final node = found.$2;
     final oldThumb = node.attachmentThumbPath ?? '';
-    page.nodes[id] = node.copyWith(
+    final updated = node.copyWith(
       attachmentThumbPath: thumbPath,
       attachmentAspectRatio: aspectRatio > 0 ? aspectRatio : null,
     );
+    // ★ 作り直したら雲の控えを捨てる (= 残すと「もう上げてある」 と判断されて
+    //   新しい表紙が上がらず、 受け取った側は前の表紙のままになる)。
+    if (oldThumb != thumbPath &&
+        (updated.attachmentThumbStorageUrl ?? '').isNotEmpty) {
+      updated.attachmentThumbStorageUrl = null;
+    }
+    page.nodes[id] = updated;
     // ── 差し替えで見捨てられた古い絵を消す ──
     //    サムネイルは作り直す度に別名で作られる (= 画面が古い絵のまま
     //    にならないように)。 溜まり続けないよう、 どのノードからも

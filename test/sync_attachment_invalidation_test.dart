@@ -33,6 +33,48 @@ void main() {
       expect(replaced.attachmentStorageUrl, isNull);
     });
 
+    test('表紙を作り直しても attachmentThumbStorageUrl は残る', () {
+      final n = MindMapNode(
+        id: 'c',
+        title: 'x',
+        position: Offset.zero,
+        attachmentThumbPath: r'C:	humb_old.png',
+        attachmentThumbStorageUrl: 'https://example.com/thumb_old.png',
+      );
+      final replaced = n.copyWith(attachmentThumbPath: r'C:	humb_new.png');
+      expect(replaced.attachmentThumbStorageUrl,
+          'https://example.com/thumb_old.png');
+      replaced.attachmentThumbStorageUrl = null;
+      expect(replaced.attachmentThumbStorageUrl, isNull);
+    });
+
+    test('表紙の置き場 URL は書き出して読み直しても残る', () {
+      final n = MindMapNode(
+        id: 'd',
+        title: 'x',
+        position: Offset.zero,
+        attachmentThumbPath: r'C:	.png',
+        attachmentThumbStorageUrl: 'https://example.com/t.png',
+      );
+      final back = MindMapNode.fromJson(n.toJson());
+      expect(back.attachmentThumbStorageUrl, 'https://example.com/t.png',
+          reason: '運ばないと、 受け取った側の表紙が空欄のままになる');
+    });
+
+    test('古い版が書いた要素 (表紙 URL 無し) も読める', () {
+      // 実物の書き出しから、 新しい欄だけを抜いて「古い版」 を作る。
+      final j = MindMapNode(
+        id: 'e',
+        title: 'x',
+        position: Offset.zero,
+        attachmentThumbPath: r'C:\old.png',
+      ).toJson();
+      j.remove('attachmentThumbStorageUrl');
+      final back = MindMapNode.fromJson(j);
+      expect(back.attachmentThumbPath, r'C:\old.png');
+      expect(back.attachmentThumbStorageUrl, isNull);
+    });
+
     test('動画を貼り替えても videoStorageUrl は残る', () {
       final n = MindMapNode(
         id: 'b',

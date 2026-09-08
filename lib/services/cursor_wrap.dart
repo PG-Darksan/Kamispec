@@ -257,7 +257,11 @@ class CursorWrap {
     if (!_enabled && _edgeTargets.isEmpty) return;
     if (DateTime.now().isBefore(_quietUntil)) return;
     try {
-      if (!hasMultipleMonitors) return;
+      if (!hasMultipleMonitors) {
+        _edgeKind = '';
+        _edgeSince = null;
+        return;
+      }
       // 何かを掴んで運んでいる最中は触らない。 ただし窓を掴んで動かして
       // いる時だけは通す (= ユーザー要望: カーソルは両端から出せるのに、
       // 掴んだ窓は出せない)。
@@ -266,7 +270,13 @@ class CursorWrap {
       var movingWindow = 0;
       if (_anyMouseButtonDown()) {
         movingWindow = _movingWindowHandle();
-        if (movingWindow == 0) return;
+        if (movingWindow == 0) {
+          // ★ 数えを捨てる。 残したままだと、 アプリの中で掴んで動かした後に
+          //   端へ触れた瞬間、 古い時刻のせいで即座に飛んでしまう。
+          _edgeKind = '';
+          _edgeSince = null;
+          return;
+        }
       } else {
         _moveHwnd = 0;
       }
@@ -311,7 +321,24 @@ class CursorWrap {
       } else if (y >= here.$4 - 1) {
         kind = 'B';
       }
-      if (kind.isEmpty) return;
+      if (kind.isEmpty) {
+        // 端から離れた。 数え直す。
+        _edgeKind = '';
+        _edgeSince = null;
+        return;
+      }
+      // ★ 端に触れただけでは飛ばさない。 同じ辺に「押し続けている」 間だけ
+      //   数え、 一定時間そのままだった時に初めて飛ばす
+      //   (= ユーザー要望: 画面外に出ようとしていない時は飛ばさない)。
+      final nowT = DateTime.now();
+      if (_edgeKind != kind) {
+        _edgeKind = kind;
+        _edgeSince = nowT;
+        return;
+      }
+      final since = _edgeSince ??= nowT;
+      final need = movingWindow != 0 ? _kEdgeHoldWindow : _kEdgeHold;
+      if (nowT.difference(since) < need) return;
 
       // OS がその側で既に隣のモニターへ繋いでいるなら、 何もしない
       //   (= そのまま歩いて行けるので、 飛ばすと邪魔になるだけ)。
@@ -711,6 +738,25 @@ class CursorWrap {
   ///      回り込む。 = ユーザー要望: 端ごとに「反対の端へ回り込む」 を選ぶのは
   ///      くどいので、 それは全体のトグルに任せる)
   ///   * 0 以上 → [listMonitors] の何番目のモニターへ飛ぶか
+  /// 今どの辺に触れているか ('' = どこにも触れていない)。
+  String _edgeKind = '';
+
+  /// その辺に触れ始めた時刻。
+  DateTime? _edgeSince;
+
+  /// 触れてから飛ばすまでの待ち。
+  ///
+  /// ★ = ユーザー報告: 端に触れた瞬間に飛んでいたので、 端の ✕ を押しに
+  ///   行くだけで別のモニターへ行ってしまった。 「押し続けている」 = まだ外へ
+  ///   行こうとしている、 とみなせる分だけ待つ。
+  static const Duration _kEdgeHold = Duration(milliseconds: 220);
+
+  /// 窓を掴んで運んでいる時の待ち。
+  ///
+  /// 端へ寄せて貼り付ける (Aero Snap) 操作と重なるので、 その時は長めに。
+  /// 貼り付けたい人は端で止めてすぐ離すので、 これだけ待てば当たらない。
+  static const Duration _kEdgeHoldWindow = Duration(milliseconds: 550);
+
   Map<String, int> _edgeTargets = const {};
 
   /// [monIndex] のモニターの [kind] 側の行き先 (無ければ null)。

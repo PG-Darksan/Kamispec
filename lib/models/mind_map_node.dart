@@ -832,6 +832,12 @@ class MindMapNode {
   /// 添付ファイルのFirebase Storage URL（同期用）
   String? attachmentStorageUrl;
 
+  /// 表紙 (PDF / pptx の 1 枚目) の Firebase Storage URL (同期用)。
+  ///
+  /// ★ [attachmentThumbPath] は送り主の端末の道なので、 そのまま渡しても
+  ///   相手には実体が無く、 表紙が空欄のままだった (= 点検で判明)。
+  String? attachmentThumbStorageUrl;
+
   /// mp4動画のサムネイル画像パス
   String? videoThumbnailPath;
 
@@ -958,6 +964,7 @@ class MindMapNode {
     this.titleFontSize,
     this.memoFontSize,
     this.videoStorageUrl,
+    this.attachmentThumbStorageUrl,
     this.attachmentStorageUrl,
     this.videoThumbnailPath,
     this.isContainer = false,
@@ -1418,6 +1425,7 @@ class MindMapNode {
     Object? memoFontSize = _sentinel,
     String? videoStorageUrl,
     String? attachmentStorageUrl,
+    String? attachmentThumbStorageUrl,
     String? videoThumbnailPath,
     bool? isContainer,
     Object? containedNodeIds = _sentinel,
@@ -1465,6 +1473,8 @@ class MindMapNode {
           : memoFontSize as double?,
       videoStorageUrl: videoStorageUrl ?? this.videoStorageUrl,
       attachmentStorageUrl: attachmentStorageUrl ?? this.attachmentStorageUrl,
+      attachmentThumbStorageUrl:
+          attachmentThumbStorageUrl ?? this.attachmentThumbStorageUrl,
       videoThumbnailPath: videoThumbnailPath ?? this.videoThumbnailPath,
       isContainer: isContainer ?? this.isContainer,
       containedNodeIds: containedNodeIds == _sentinel
@@ -1525,6 +1535,7 @@ class MindMapNode {
       'memoFontSize': memoFontSize,
       'videoStorageUrl': videoStorageUrl,
       'attachmentStorageUrl': attachmentStorageUrl,
+      'attachmentThumbStorageUrl': attachmentThumbStorageUrl,
       'videoThumbnailPath': videoThumbnailPath,
       'isContainer': isContainer,
       'containedNodeIds': containedNodeIds,
@@ -1595,6 +1606,8 @@ class MindMapNode {
       memoFontSize: (json['memoFontSize'] as num?)?.toDouble(),
       videoStorageUrl: json['videoStorageUrl'] as String?,
       attachmentStorageUrl: json['attachmentStorageUrl'] as String?,
+      attachmentThumbStorageUrl:
+          json['attachmentThumbStorageUrl'] as String?,
       videoThumbnailPath: json['videoThumbnailPath'] as String?,
       isContainer: json['isContainer'] as bool? ?? false,
       containedNodeIds: (json['containedNodeIds'] as List<dynamic>?)

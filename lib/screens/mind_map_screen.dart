@@ -5173,6 +5173,19 @@ class _MindMapScreenState extends State<MindMapScreen>
     // ── 支払いが通ったら知らせる (= ユーザー要望) ──
     _planWatcher = _onPlanMaybeActivated;
     context.read<MindMapProvider>().addListener(_planWatcher!);
+    // ── 共同編集の送信が失敗したら知らせる (= 点検で判明: 失敗しても
+    //    黙っていたので、 相手に届いていない事に気付けなかった) ──
+    context.read<MindMapProvider>().onLiveError = (msg) {
+      if (!mounted) return;
+      _appSnack(
+        context,
+        SnackBar(
+          content: Text(msg),
+          backgroundColor: const Color(0xFFE53935),
+          duration: const Duration(seconds: 5),
+        ),
+      );
+    };
     // ── 同時にログインしている台数を見る (= ユーザー要望) ──
     //    読み込みが落ち着いてから 1 度だけ。
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -80615,7 +80628,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       final name = path.split('/').last.split('\\').last;
       final ext = name.split('.').last.toLowerCase();
 
-      final destPath = '${attachDir.path}/$name';
+      final destPath = await uniqueAttachmentPath(
+          attachDir.path, name, await File(path).length());
       try {
         await File(path).copy(destPath);
         // 同じ名前のファイルを貼り直した時は中身だけが変わるので、
@@ -82546,7 +82560,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (!await attachDir.exists()) {
       await attachDir.create(recursive: true);
     }
-    final destPath = '${attachDir.path}/${file.name}';
+    final destPath = await uniqueAttachmentPath(
+        attachDir.path, file.name, await File(file.path!).length());
     await File(file.path!).copy(destPath);
     // 同じ名前で貼り直すとパスが変わらないので控えを捨てる。
     DocPreview.invalidate(destPath);
@@ -83608,7 +83623,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (!await attachDir.exists()) {
       await attachDir.create(recursive: true);
     }
-    final destPath = '${attachDir.path}/${file.name}';
+    final destPath = await uniqueAttachmentPath(
+        attachDir.path, file.name, await File(file.path!).length());
     await File(file.path!).copy(destPath);
     // 同じ名前で貼り直すとパスが変わらないので控えを捨てる。
     DocPreview.invalidate(destPath);
@@ -124617,6 +124633,36 @@ String? popOutBlockedReason(MindMapProvider provider, String? url) {
 /// 登録簿。 本体が最小化された時に全部呼んで、 フローティングだけ画面に残す
 /// (= ユーザー要望)。 各フローティング窓が開く時に登録し、 閉じる時に外す。
 final Set<Future<bool> Function()> _floatingPopOutHandlers = {};
+
+/// `attachments/` の中で、 別の中身を上書きしない置き場所を決める。
+///
+/// ★ = 点検で判明: 元の名前のまま複写していたので、 別々のフォルダーにある
+///   同名ファイル (資料.pdf など) を 2 つの要素に貼ると、 後の物が先の物を
+///   **無言で上書き**していた (File.copy は既存を上書きする)。 先に貼った
+///   要素を開くと後の中身が出る。
+///
+/// 同じ大きさの物が既にあれば「同じファイル」 とみなして使い回す
+/// (貼り直しで実体が増え続けないように)。 違うなら「資料 (2).pdf」 とずらす。
+Future<String> uniqueAttachmentPath(
+    String dirPath, String fileName, int srcLength) async {
+  String join(String n) => '$dirPath/$n';
+  final dot = fileName.lastIndexOf('.');
+  final stem = dot > 0 ? fileName.substring(0, dot) : fileName;
+  final ext = dot > 0 ? fileName.substring(dot) : '';
+  var candidate = join(fileName);
+  for (var i = 2; i < 1000; i++) {
+    final f = File(candidate);
+    if (!f.existsSync()) return candidate;
+    try {
+      // 大きさが同じなら同じ物とみなして使い回す。
+      if (await f.length() == srcLength) return candidate;
+    } catch (_) {
+      return candidate;
+    }
+    candidate = join('$stem ($i)$ext');
+  }
+  return candidate;
+}
 
 bool openExternalWebWindow(String url,
     {bool pinned = false,
@@ -197480,49 +197526,6 @@ try {
     }
   }
 
-  Widget _floatingPdfToolButton({
-    required IconData icon,
-    required String label,
-    required Color color,
-    required VoidCallback onTap,
-  }) {
-    return Material(
-      color: const Color(0xE61B1B2A),
-      borderRadius: BorderRadius.circular(18),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(18),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-          child: Row(mainAxisSize: MainAxisSize.min, children: [
-            Icon(icon, color: color, size: 17),
-            const SizedBox(width: 5),
-            Text(label,
-                style: const TextStyle(color: Colors.white70, fontSize: 12)),
-          ]),
-        ),
-      ),
-    );
-  }
-
-  Widget _floatingPdfPanel({
-    required Widget child,
-    required double width,
-    required double height,
-  }) {
-    return Material(
-      color: Colors.transparent,
-      elevation: 10,
-      borderRadius: BorderRadius.circular(14),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(14),
-        child: SizedBox(width: width, height: height, child: child),
-      ),
-    );
-  }
-
-  /// 見開き時の左右ドックを、PDF本体と区別しやすいカード状に整える。
-  /// 通常表示では既存のパネル外観を維持する。
   Widget _spreadDockSurface({
     required Widget child,
     required Color accent,
@@ -197548,60 +197551,6 @@ try {
           child: child,
         ),
       ),
-    );
-  }
-
-  Widget _buildCompactPdfFloatingTools(
-      MindMapProvider provider, bool hasMemoPanel) {
-    final screen = MediaQuery.of(context).size;
-    // ── 高さは画面いっぱいを使う ──
-    // 旧: 上限 520px にクランプしていたため、 ページ全体表示/見開き等の
-    // フィット系モードに入るとメモ欄/AI チャット欄が縦に縮んで見えた
-    // (= ユーザー要望 2026-07: 拡大率を小さくしても表示領域が変わらない
-    // ように)。 通常ドックと同じく画面高さ − ヘッダー分を確保する。
-    final panelHeight = math.max(260.0, screen.height - 120.0);
-    final memoWidth = (screen.width * 0.22).clamp(240.0, 320.0);
-    final aiWidth = (screen.width * 0.26).clamp(280.0, 380.0);
-    return IgnorePointer(
-      ignoring: false,
-      child: Stack(children: [
-        if (hasMemoPanel)
-          Positioned(
-            top: 12,
-            left: 12,
-            child: _memoPanelOpen
-                ? _floatingPdfPanel(
-                    width: memoWidth,
-                    height: panelHeight,
-                    child: _nodeId == null
-                        ? _buildMemoPanelPlaceholder(provider)
-                        : _buildMemoPanelInner(provider),
-                  )
-                : _floatingPdfToolButton(
-                    icon: Icons.sticky_note_2_outlined,
-                    label: context.read<MindMapProvider>().t('pdf.toolMemo'),
-                    color: const Color(0xFFFFC107),
-                    onTap: () => setState(() => _memoPanelOpen = true),
-                  ),
-          ),
-        Positioned(
-          top: 12,
-          right: 12,
-          child: _aiPanelOpen
-              ? _floatingPdfPanel(
-                  width: aiWidth,
-                  height: panelHeight,
-                  child: _buildAiPanelInner(provider),
-                )
-              : _floatingPdfToolButton(
-                  icon: Icons.smart_toy_outlined,
-                  label: 'AI',
-                  color: const Color(0xFF4FC3F7),
-                  onTap: () => _openAiPanel(
-                      context.read<MindMapProvider>().pdfAiPanelDefault),
-                ),
-        ),
-      ]),
     );
   }
 
@@ -197944,25 +197893,22 @@ try {
                   // ── 本体 ──
                   Expanded(
                     child: Builder(builder: (_) {
-                      final compactPdfMode = widget.isPdf &&
-                          (_fitPageMode ||
-                              _spreadPageMode ||
-                              _spreadFitPageMode);
-                      // 見開きではフローティングパネルをPDF上へ重ねず、通常時と
-                      // 同じ左右ドックを使う。ページ・ナビ矢印を隠さず、幅変更と
-                      // 左右入れ替えもそのまま利用できる。
-                      final useDockedSpreadPanels = _spreadFitPageMode;
+                      // ★ メモ / AI 欄は **いつも左右へ埋め込む**
+                      //   (= ユーザー要望: 画面を引いてもフローティングに
+                      //   しない)。
+                      //   以前は全体表示 / 見開きの時だけ PDF の上に浮かぶ札に
+                      //   切り替えていたが、 閉じている間も「AI」「メモ」 の札が
+                      //   画面の隅に出たまま残り、 消せなかった。
+                      //   埋め込みなら、 閉じた時の入り口はヘッダーのボタンだけに
+                      //   なる (= ユーザー要望: OFF にしたらヘッダーへ格納)。
                       // ── 開く前から両脇の場所だけ取っておく (= ユーザー要望:
                       //    立ち上がりを速く) ──
                       //    以前は PDF を全幅で描いた後にメモ欄と AI 欄が
                       //    割り込み、 その度に PDF が幅を変えて描き直されて
                       //    いた (= 表示までに二度手間で、 見た目にもガタつく)。
                       //    先に幅を確保しておけば、 PDF の描画は一度で済む。
-                      final reserveSlots =
-                          _panelSlotsReserved && (!compactPdfMode || useDockedSpreadPanels);
-                      final showMemo = hasMemoPanel &&
-                          _memoPanelOpen &&
-                          (!compactPdfMode || useDockedSpreadPanels);
+                      final reserveSlots = _panelSlotsReserved;
+                      final showMemo = hasMemoPanel && _memoPanelOpen;
                       // 既定: メモ=左 / AI=右。入れ替え時は左右逆。
                       final memoOnLeft = !_panelsSwapped;
                       final screenW = MediaQuery.of(context).size.width;
@@ -197989,8 +197935,7 @@ try {
                               },
                             )
                           : null;
-                      final showAi = _aiPanelOpen &&
-                          (!compactPdfMode || useDockedSpreadPanels);
+                      final showAi = _aiPanelOpen;
                       final aiSlot = (showAi || reserveSlots)
                           ? _buildResizableDock(
                               panel: _spreadDockSurface(
@@ -198027,15 +197972,7 @@ try {
                           if (rightSlot != null) rightSlot,
                         ],
                       );
-                      if (!compactPdfMode || useDockedSpreadPanels) {
-                        return body;
-                      }
-                      return Stack(
-                        children: [
-                          Positioned.fill(child: body),
-                          _buildCompactPdfFloatingTools(provider, hasMemoPanel),
-                        ],
-                      );
+                      return body;
                     }),
                   ),
                 ],
