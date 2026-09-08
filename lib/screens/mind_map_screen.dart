@@ -55,6 +55,7 @@ import '../utils/build_flags.dart';
 import '../utils/embedded_oauth_guard.dart';
 // メッセージ機能 (messaging_dialog.dart) はユーザー要望で廃止したため import 削除。
 import '../widgets/calc_body.dart';
+import '../widgets/anchor_below_layout.dart';
 import '../widgets/connection_painter.dart';
 import '../widgets/node_widget.dart';
 import '../widgets/google_search_dialog.dart';
@@ -2069,6 +2070,27 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// `_drawingDecorationKind`) とは別に持つ。
   bool _shapePaletteOpen = false;
 
+  /// 図形 / 端子のパレットを出す基準の位置 (画面座標)。
+  ///
+  /// ★ = ユーザー要望「図形の挿入を押した際のパレットは端子と同じ様に
+  ///   カーソルの下 (画面に入らなければ上) に出る様に」。 今までは画面の
+  ///   上端の真ん中に固定で出していたので、 押した所から目が遠かった。
+  Offset? _shapePaletteAnchor;
+
+  /// 端子パレットを出しているか。
+  ///
+  /// ★ = ユーザー要望「押す度に適当な場所に 1 個出るのではなく、 図形の挿入の
+  ///   様に……ドラッグして指定した好きな大きさや形で出力できるように」。
+  ///   その為にモーダルの窓をやめ、 キャンバスを掴める浮かぶ札にした。
+  bool _terminalPaletteOpen = false;
+
+  /// これから置く端子の形 (null = まだ形を選んでいない)。
+  String? _placingTerminalShape;
+
+  /// 端子を置くドラッグの始点・終点 (マップ座標)。
+  Offset? _placingTerminalStart;
+  Offset? _placingTerminalEnd;
+
   /// 押しただけで置く図形の大きさ (マップ上の px)。
   ///
   /// = ユーザー要望「図形の挿入は PDF の所と同じ様に、 大きさや縦横比を
@@ -2601,6 +2623,13 @@ class _MindMapScreenState extends State<MindMapScreen>
     _rangeSelectModeRaw = v;
     // 範囲選択に入ったら図形パレットも閉じる (= 同時には使えない)。
     if (v) _shapePaletteOpen = false;
+    // 端子パレットも同じ (どちらもキャンバスのドラッグを使う)。
+    if (v) {
+      _terminalPaletteOpen = false;
+      _placingTerminalShape = null;
+      _placingTerminalStart = null;
+      _placingTerminalEnd = null;
+    }
     if (v && _drawingDecorationKindRaw != null) {
       _drawingDecorationKindRaw = null;
       _drawingDecorationStart = null;
@@ -27194,7 +27223,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         color: const Color(0xFF4DB6AC),
         onTap: () {
           _removeOverlay();
-          _showTerminalBlockPicker(provider, _globalToCanvas(globalPos, ctrl));
+          _showTerminalBlockPicker(provider);
         },
       ),
       // ── メモ一覧 (= ユーザー要望: 他のマップ / PDF ビューワーで書いたメモを
@@ -45880,11 +45909,40 @@ class _MindMapScreenState extends State<MindMapScreen>
     );
   }
 
-  void _showTerminalBlockPicker(
-      MindMapProvider provider, Offset canvasPosition) {
-    // ── 端子の種類 (= ユーザー要望: 追加できる端子の種類を増やして) ──
-    // 判断は ♦ を描いた専用アイコンにする (= ユーザー要望)。
-    final shapes = <({String id, String label, Widget icon})>[
+  /// 端子パレットを開く (= 非モーダルの浮かぶ札)。
+  ///
+  /// ★ = ユーザー要望「右クリックから端子を選んだ時、 選んだ端子が押す度に
+  ///   適当な場所に 1 個出るのではなく、 図形の挿入の様に押した上で自分が
+  ///   出したい場所を選んだらユーザーがドラッグして指定した好きな大きさや
+  ///   形で出力できるように」。
+  ///   形を押した時点では**何も置かない**。 その後キャンバスをドラッグして、
+  ///   引いた四角の位置と大きさで置く。 札は × / Esc まで開いたままなので、
+  ///   続けて何個でも置ける。
+  void _showTerminalBlockPicker(MindMapProvider provider) {
+    setState(() {
+      _terminalPaletteOpen = true;
+      // 形はまだ選ばせない (= 押した瞬間に置かない)。
+      _placingTerminalShape = null;
+      _placingTerminalStart = null;
+      _placingTerminalEnd = null;
+      // 図形の挿入とは同時に使えない (どちらもドラッグを使う)。
+      _shapePaletteOpen = false;
+      _drawingDecorationKind = null;
+      _shapePaletteAnchor = _lastGlobalPointerPos;
+    });
+    _appSnack(
+      context,
+      SnackBar(
+          content: Text(provider.t('flow.terminalPickHint')),
+          duration: const Duration(seconds: 3)),
+    );
+  }
+
+  /// 端子の形の一覧 (= ユーザー要望: 追加できる端子の種類を増やして)。
+  /// 判断は ♦ を描いた専用アイコンにする (= ユーザー要望)。
+  List<({String id, String label, Widget icon})> _terminalShapeDefs(
+      MindMapProvider provider) {
+    return <({String id, String label, Widget icon})>[
       (
         id: 'rounded',
         label: provider.t('flow.shapeRounded'),
@@ -45936,107 +45994,179 @@ class _MindMapScreenState extends State<MindMapScreen>
         icon: const _FlowShapeIcon('circle')
       ),
     ];
-    // ── 図形の挿入 (パワーポイント) と同じ横長のパレットにする
-    //    (= ユーザー要望: 端子を追加も図形を挿入と同じ様にパレット形式で
-    //    タブが開かれるように)。 押した場所の近く、 画面分割中はその
-    //    ペインの中に出る (_showNearDialogMain 経由 = ユーザー要望:
-    //    現状だと画面分割していても画面中央に出てきている)。
-    //    × を押すまで開いたままなので、 続けて何個でも置ける。 ──
-    var termColor = _shapeColorRgb;
+  }
+
+  /// 端子パレット本体 (カーソルの下 / 入らなければ上に出る浮かぶ札)。
+  Widget _buildTerminalPalette(MindMapProvider provider) {
+    final shapes = _terminalShapeDefs(provider);
     const accent = Color(0xFF4DB6AC);
-    // ignore: discarded_futures
-    _showNearDialogMain<void>(
-      width: 620,
-      height: 170,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (pctx, setP) => Container(
-          padding: const EdgeInsets.fromLTRB(12, 10, 8, 12),
-          decoration: BoxDecoration(
-            color: const Color(0xFF1E1E2E),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: Colors.white12),
-            boxShadow: const [
-              BoxShadow(
-                  color: Colors.black54, blurRadius: 18, offset: Offset(0, 6)),
-            ],
-          ),
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            // ── 1 段目: 端子の形 (アイコンのみ / 名前は吹き出しで) + 閉じる ──
-            Row(children: [
-              Expanded(
-                child: Wrap(spacing: 4, runSpacing: 4, children: [
-                  for (final shape in shapes)
-                    Tooltip(
-                      message: shape.label,
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(8),
-                        onTap: () {
-                          // 同じ所に積み上がると掴めないので、 置くたびに
-                          //   少しずつ右下へずらす (= 図形の挿入と同じ)。
-                          final step = (_terminalInsSeq++ % 8) * 24.0;
-                          final node = provider.addNodeAtCenterReturning(
-                              canvasPosition -
-                                  const Offset(80, 21) +
-                                  Offset(step, step));
-                          provider.updateNodeShape(node.id, shape.id);
-                          provider.updateNodeColor(
-                              node.id, Color(0xFF000000 | termColor));
-                        },
-                        child: Container(
-                          width: 42,
-                          height: 34,
-                          alignment: Alignment.center,
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(8),
-                            color: Colors.white.withValues(alpha: 0.05),
-                            border: Border.all(
-                                color: accent.withValues(alpha: 0.45)),
+    return _anchoredPalette(
+      child: Container(
+        width: 600,
+        padding: const EdgeInsets.fromLTRB(12, 10, 8, 12),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1E1E2E).withValues(alpha: 0.97),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: accent),
+          boxShadow: const [
+            BoxShadow(
+                color: Colors.black54, blurRadius: 18, offset: Offset(0, 6)),
+          ],
+        ),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          // ── 1 段目: 端子の形 (アイコンのみ / 名前は吹き出しで) + 閉じる ──
+          Row(children: [
+            Expanded(
+              child: Wrap(spacing: 4, runSpacing: 4, children: [
+                for (final shape in shapes)
+                  Tooltip(
+                    message: shape.label,
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(8),
+                      // ★ ここでは置かない。 「これから置く形」 を決めるだけ
+                      //   (= ユーザー要望: 押す度に適当な場所に 1 個出るのを
+                      //   やめ、 ドラッグした所に好きな大きさで出す)。
+                      onTap: () {
+                        setState(() {
+                          _placingTerminalShape = shape.id;
+                          _placingTerminalStart = null;
+                          _placingTerminalEnd = null;
+                        });
+                        _appSnack(
+                          context,
+                          SnackBar(
+                            content: Text('${shape.label}: '
+                                '${provider.t('flow.terminalDragHint')}'),
+                            duration: const Duration(seconds: 2),
+                            behavior: SnackBarBehavior.floating,
                           ),
-                          child: shape.icon,
+                        );
+                      },
+                      child: Container(
+                        width: 42,
+                        height: 34,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          color: _placingTerminalShape == shape.id
+                              ? accent.withValues(alpha: 0.3)
+                              : Colors.white.withValues(alpha: 0.05),
+                          border: Border.all(
+                              color: _placingTerminalShape == shape.id
+                                  ? accent
+                                  : accent.withValues(alpha: 0.45),
+                              width:
+                                  _placingTerminalShape == shape.id ? 2 : 1),
                         ),
+                        child: shape.icon,
                       ),
                     ),
-                ]),
-              ),
-              IconButton(
-                tooltip: provider.t('btn.close'),
-                visualDensity: VisualDensity.compact,
-                icon: const Icon(Icons.close_rounded,
-                    color: Colors.white54, size: 18),
-                onPressed: () => Navigator.of(pctx).maybePop(),
-              ),
-            ]),
-            const SizedBox(height: 8),
-            // ── 2 段目: 色 (= ユーザー要望: 色なども設定できるように) ──
-            Row(children: [
-              Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: Text(provider.t('flow.addTerminal'),
-                    style: const TextStyle(
-                        color: Colors.white38,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700)),
-              ),
-              Expanded(
-                child: Wrap(spacing: 2, runSpacing: 4, children: [
-                  for (final c in _shapePalette)
-                    _shapeColorSwatch(c, termColor == c, () {
-                      // 次に開いた時も同じ色から始める (= 選んだ色が残る)。
-                      _shapeColorRgb = c;
-                      setP(() => termColor = c);
-                    }),
-                ]),
-              ),
-            ]),
+                  ),
+              ]),
+            ),
+            IconButton(
+              tooltip: provider.t('btn.close'),
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.close_rounded,
+                  color: Colors.white54, size: 18),
+              onPressed: _exitTerminalInsertMode,
+            ),
           ]),
-        ),
+          const SizedBox(height: 8),
+          // ── 2 段目: 色 (= ユーザー要望: 色なども設定できるように) ──
+          Row(children: [
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: Text(provider.t('flow.addTerminal'),
+                  style: const TextStyle(
+                      color: Colors.white38,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700)),
+            ),
+            Expanded(
+              child: Wrap(spacing: 2, runSpacing: 4, children: [
+                for (final c in _shapePalette)
+                  _shapeColorSwatch(c, _shapeColorRgb == c, () {
+                    // 次に開いた時も同じ色から始める (= 選んだ色が残る)。
+                    setState(() => _shapeColorRgb = c);
+                  }),
+              ]),
+            ),
+          ]),
+          const SizedBox(height: 6),
+          // ── 使い方 (= ドラッグして大きさを決める) ──
+          Row(children: [
+            const Icon(Icons.touch_app_rounded,
+                size: 13, color: Colors.white38),
+            const SizedBox(width: 4),
+            Expanded(
+              child: Text(
+                  _placingTerminalShape == null
+                      ? provider.t('flow.terminalPickHint')
+                      : provider.t('flow.terminalDragHint'),
+                  style: const TextStyle(color: Colors.white38, fontSize: 11)),
+            ),
+          ]),
+        ]),
       ),
     );
   }
 
-  /// 端子を続けて置いた時にずらすための番号 (= 同じ場所に積み上がると
-  /// 掴めないので、 置くたびに少しずつ右下へずらす)。
-  int _terminalInsSeq = 0;
+  /// 端子を置くモードを終える (× / Esc)。
+  void _exitTerminalInsertMode() {
+    if (!_terminalPaletteOpen &&
+        _placingTerminalShape == null &&
+        _placingTerminalStart == null) {
+      return;
+    }
+    setState(() {
+      _terminalPaletteOpen = false;
+      _placingTerminalShape = null;
+      _placingTerminalStart = null;
+      _placingTerminalEnd = null;
+    });
+  }
+
+  // ── 端子を置くドラッグ (= 図形の挿入と同じ流れ) ──
+
+  void _handleTerminalPanStart(Offset canvasPoint) {
+    if (_placingTerminalShape == null) return;
+    setState(() {
+      _placingTerminalStart = canvasPoint;
+      _placingTerminalEnd = canvasPoint;
+    });
+  }
+
+  void _handleTerminalPanUpdate(Offset canvasPoint) {
+    if (_placingTerminalShape == null || _placingTerminalStart == null) return;
+    setState(() => _placingTerminalEnd = canvasPoint);
+  }
+
+  void _handleTerminalPanEnd() {
+    final shape = _placingTerminalShape;
+    final start = _placingTerminalStart;
+    if (shape == null || start == null) return;
+    final end = _placingTerminalEnd ?? start;
+    final provider = context.read<MindMapProvider>();
+    // 引いた四角。 ほとんど動いていない (= 押しただけ) 時は、 今までと同じ
+    // 大きさで押した所に置く (= 図形の挿入の「押しただけ」 と揃える)。
+    final rect = Rect.fromPoints(start, end);
+    final tiny = rect.width < 12 || rect.height < 12;
+    final place = tiny
+        ? Rect.fromLTWH(start.dx - 80, start.dy - 21, 160, 42)
+        : rect;
+    final node = provider.addNodeAtCenterReturning(place.topLeft);
+    provider.updateNodeShape(node.id, shape);
+    provider.updateNodeColor(node.id, Color(0xFF000000 | _shapeColorRgb));
+    if (!tiny) {
+      provider.updateNodeSizeUnclamped(node.id, place.width, place.height);
+    }
+    // ★ 形は選んだまま残す (= 続けて何個でも置ける)。 抜けるのは × / Esc。
+    setState(() {
+      _placingTerminalStart = null;
+      _placingTerminalEnd = null;
+    });
+  }
 
   /// YouTubeを検索バーが見える状態で開く（5倍速再生が最初から効いた状態）
   /// 視聴中の動画/チャンネルを「マップに埋め込む」ボタンでマインドマップに追加可能
@@ -46071,6 +46201,13 @@ class _MindMapScreenState extends State<MindMapScreen>
       //    (= ユーザー要望: 図形を選ぶまでどれも選択されていない状態に)。
       //    種類が null の間はドラッグしても何も描かない。 ──
       _shapePaletteOpen = true;
+      // ★ 押した所の下に出す (= ユーザー要望)。
+      _shapePaletteAnchor = _lastGlobalPointerPos;
+      // 端子パレットとは同時に使えない (どちらもドラッグを使う)。
+      _terminalPaletteOpen = false;
+      _placingTerminalShape = null;
+      _placingTerminalStart = null;
+      _placingTerminalEnd = null;
       _drawingDecorationKind = null;
       _drawingDecorationStart = null;
       _drawingDecorationEnd = null;
@@ -46962,15 +47099,41 @@ class _MindMapScreenState extends State<MindMapScreen>
     );
   }
 
-  /// 図形挿入モードのツールバー (上部中央固定)。
+  /// パレットをカーソルの下 (入り切らなければ上) に置く。
+  ///
+  /// ★ = ユーザー要望「右クリックから図形の挿入を押した際のパレットは端子と
+  ///   同じ様にカーソルの下 (画面に入らなければ上) に出る様に」。 今までは
+  ///   画面の上端の真ん中に固定で出していたので、 押した所から目が遠かった。
+  ///   基準にするのはパレットを開いた時のカーソル位置 ([_shapePaletteAnchor])。
+  ///   取れなければ今までどおり上端の真ん中に出す。
+  Widget _anchoredPalette({required Widget child}) {
+    final at = _shapePaletteAnchor;
+    Offset? local;
+    if (at != null) {
+      final box =
+          _mapViewportKey.currentContext?.findRenderObject() as RenderBox?;
+      if (box != null && box.hasSize) local = box.globalToLocal(at);
+    }
+    if (local == null) {
+      return Positioned(
+        top: 8,
+        left: 0,
+        right: 0,
+        child: SafeArea(child: Center(child: child)),
+      );
+    }
+    return Positioned.fill(
+      child: CustomSingleChildLayout(
+        delegate: AnchorBelowLayout(local),
+        child: child,
+      ),
+    );
+  }
+
+  /// 図形挿入モードのツールバー (押した所の下 / 入らなければ上)。
   Widget _buildShapeInsertToolbar(MindMapProvider provider) {
-    return Positioned(
-      top: 8,
-      left: 0,
-      right: 0,
-      child: SafeArea(
-        child: Center(
-          child: Container(
+    return _anchoredPalette(
+      child: Container(
             margin: const EdgeInsets.symmetric(horizontal: 8),
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
             decoration: BoxDecoration(
@@ -47218,8 +47381,6 @@ class _MindMapScreenState extends State<MindMapScreen>
               ],
             ),
           ),
-        ),
-      ),
     );
   }
 
@@ -57143,7 +57304,11 @@ class _MindMapScreenState extends State<MindMapScreen>
             // ユーザー要望「挿入モードを Esc で抜けられるように」。 この Esc
             //   ブロックは最後に return するため、 ここで図形モードを処理しないと
             //   cancelMode (コマンド側) まで到達せず Esc が効かなかった。
-            if (_drawingDecorationKind != null) {
+            if (_terminalPaletteOpen || _placingTerminalShape != null) {
+              _exitTerminalInsertMode();
+              return;
+            }
+            if (_drawingDecorationKind != null || _shapePaletteOpen) {
               _exitShapeInsertMode();
               return;
             }
@@ -57499,7 +57664,9 @@ class _MindMapScreenState extends State<MindMapScreen>
             }
           } else if (commandId == 'cancelMode') {
             // 図形挿入モード中 / 図形選択中なら最優先で解除
-            if (_drawingDecorationKind != null) {
+            if (_terminalPaletteOpen || _placingTerminalShape != null) {
+              _exitTerminalInsertMode();
+            } else if (_drawingDecorationKind != null || _shapePaletteOpen) {
               _exitShapeInsertMode();
             } else if (_selectedDecorationId != null) {
               setState(() => _selectedDecorationId = null);
@@ -58961,6 +59128,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                               // モードは図形を描いても解除されず、 × か Esc で終了する。
                               if (_shapePaletteOpen)
                                 _buildShapeInsertToolbar(provider),
+                              // ── 端子を置くパレット (= ユーザー要望:
+                              //    図形の挿入と同じく、 ドラッグした所へ
+                              //    好きな大きさで置けるように) ──
+                              if (_terminalPaletteOpen)
+                                _buildTerminalPalette(provider),
                               // ── 図形選択時のツールバー ──
                               // 作成済み図形を選択中: 色 / 太さ / 種類の編集 + 削除。
                               // パレットを出している間は重ねない。
@@ -73914,6 +74086,27 @@ class _MindMapScreenState extends State<MindMapScreen>
             ]),
           ),
         _MonitorEdgeSettings(provider: provider),
+        // ── ルーティングが効かない所の断り書き (= ユーザー要望:
+        //    「window 右上の×や非表示ボタンの付近だけルーティング機能を
+        //    動作させないようにして」「それをディスプレイ設定の所で明記して
+        //    おいて欲しい」)。 知らないと「たまに効かない」 と見えるので、
+        //    図のすぐ下に置く。 ──
+        Padding(
+          padding: const EdgeInsets.fromLTRB(4, 2, 4, 8),
+          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Padding(
+              padding: EdgeInsets.only(top: 1),
+              child: Icon(Icons.info_outline_rounded,
+                  size: 13, color: Colors.white38),
+            ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(provider.t('cursorWrap.captionExclusion'),
+                  style: const TextStyle(
+                      color: Colors.white38, fontSize: 11, height: 1.45)),
+            ),
+          ]),
+        ),
         // ── アプリを閉じていても効かせる (= ユーザー要望) ──
         //    サインイン時に、 回り込みだけの小さな常駐を立ち上げる。
         _settingsToggleTile(
@@ -76130,7 +76323,15 @@ class _MindMapScreenState extends State<MindMapScreen>
                     }
                   }
                 : null,
-            onPanStart: _drawingDecorationKind != null
+            onPanStart: _placingTerminalShape != null
+                ? (details) {
+                    // ★ 端子を置くドラッグ (= ユーザー要望: 押す度に適当な
+                    //   場所に 1 個出るのではなく、 引いた四角の位置と大きさで
+                    //   出す)。
+                    _handleTerminalPanStart(
+                        _globalToCanvas(details.globalPosition, ctrl));
+                  }
+                : _drawingDecorationKind != null
                 ? (details) {
                     // ユーザー要望「直線や矢印線、 長方形等の図形を挿入できる
                     //   ようにして」 への対応。 挿入モード中はドラッグで装飾の
@@ -76160,7 +76361,12 @@ class _MindMapScreenState extends State<MindMapScreen>
                         });
                       }
                     : null),
-            onPanUpdate: _drawingDecorationKind != null
+            onPanUpdate: _placingTerminalShape != null
+                ? (details) {
+                    _handleTerminalPanUpdate(
+                        _globalToCanvas(details.globalPosition, ctrl));
+                  }
+                : _drawingDecorationKind != null
                 ? (details) {
                     final canvasPos =
                         _globalToCanvas(details.globalPosition, ctrl);
@@ -76179,7 +76385,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                         _autoScrollIfNeeded(details.globalPosition, ctrl);
                       }
                     : null),
-            onPanEnd: _drawingDecorationKind != null
+            onPanEnd: _placingTerminalShape != null
+                ? (_) {
+                    _handleTerminalPanEnd();
+                  }
+                : _drawingDecorationKind != null
                 ? (_) {
                     _handleDecorationPanEnd();
                   }
@@ -76828,6 +77038,31 @@ class _MindMapScreenState extends State<MindMapScreen>
                                         _polylineCursor != _polylinePoints.last)
                                       _polylineCursor!,
                                   ],
+                                ),
+                              ],
+                              selectedId: null,
+                            ),
+                          ),
+                        ),
+                      // ── 端子を置く四角のプレビュー (= ドラッグ中) ──
+                      //    引いた大きさがそのまま端子の大きさになるので、
+                      //    枠だけを見せる。
+                      if (_placingTerminalShape != null &&
+                          _placingTerminalStart != null &&
+                          _placingTerminalEnd != null)
+                        IgnorePointer(
+                          child: CustomPaint(
+                            size: Size(canvasSize, canvasSize),
+                            painter: _DecorationPainter(
+                              decorations: [
+                                MapDecoration(
+                                  id: '__preview_term__',
+                                  kind: MapDecorationKind.rectangle,
+                                  start: _placingTerminalStart!,
+                                  end: _placingTerminalEnd!,
+                                  colorRgb: _shapeColorRgb,
+                                  strokeWidth: 2,
+                                  filled: false,
                                 ),
                               ],
                               selectedId: null,

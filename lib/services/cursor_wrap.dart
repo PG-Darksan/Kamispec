@@ -327,6 +327,15 @@ class CursorWrap {
         _edgeSince = null;
         return;
       }
+      // ★ 窓の右上 (✕ / 最小化 / 最大化) の近くでは飛ばさない
+      //   (= ユーザー要望)。 最大化した窓の ✕ は画面のいちばん右上に来るので、
+      //   押しに行けば必ず端に触れる。 狙いを定めて止まる人ほど長く留まるため、
+      //   b334 の「押し続けている間だけ」 だけでは防げなかった。
+      if (_nearCaptionButtons(x, y)) {
+        _edgeKind = '';
+        _edgeSince = null;
+        return;
+      }
       // ★ 端に触れただけでは飛ばさない。 同じ辺に「押し続けている」 間だけ
       //   数え、 一定時間そのままだった時に初めて飛ばす
       //   (= ユーザー要望: 画面外に出ようとしていない時は飛ばさない)。
@@ -778,6 +787,67 @@ class CursorWrap {
     //   「アプリを開き直すまで効かない」 状態になる (= 点検で判明)。
     //   「両サイドからアクセス」 のトグルを消した今、 ここが唯一の入り口。
     _syncTimer();
+  }
+
+  /// カーソルが窓の右上のボタン (最小化 / 最大化 / ✕) の近くか。
+  ///
+  /// ★ = ユーザー要望「window 右上の×や非表示ボタンの付近だけルーティング
+  ///   機能を動作させないようにして」。 最大化した窓ではこのボタン列が画面の
+  ///   右上隅そのものなので、 押しに行く動きと「画面の外へ出て行く」 動きが
+  ///   見分けられない。 ここだけは端に居ても飛ばさない。
+  ///
+  /// 大きさは Windows 11 の見た目 (1 個 45x32、 3 個で 135) に余白を足して
+  /// 横 170 / 縦 48 (拡大率 100% での値)。 その窓の拡大率に合わせて伸ばす。
+  bool _nearCaptionButtons(int x, int y) {
+    final pt = calloc<w32.POINT>();
+    try {
+      pt.ref.x = x;
+      pt.ref.y = y;
+      // カーソルの下にある窓 → その親玉 (題名バーを持っている方)。
+      var hwnd = 0;
+      try {
+        final under = w32.WindowFromPoint(pt.ref);
+        if (under != 0) hwnd = w32.GetAncestor(under, w32.GA_ROOT);
+      } catch (_) {
+        hwnd = 0;
+      }
+      // 取れなければ、 今いちばん手前の窓で代用する。
+      if (hwnd == 0) hwnd = w32.GetForegroundWindow();
+      if (hwnd == 0) return false;
+      // ★ 机 (Progman / WorkerW) は窓ではない。 これを除けないと、 何も
+      //   置いていない机の右上でもルーティングが効かなくなる。
+      if (hwnd == w32.GetShellWindow() || hwnd == w32.GetDesktopWindow()) {
+        return false;
+      }
+      // ★ 題名バーの飾りを持つ窓だけ。 全画面の動画のように題名バーの無い
+      //   窓には、 そもそも押しに行くボタンが無い。
+      try {
+        final style = w32.GetWindowLongPtr(hwnd, w32.GWL_STYLE);
+        // WS_CAPTION だけを見る。 実測で、 最小化 / 最大化のボタンを持って
+        // いても WS_SYSMENU が落ちている窓がある一方、 机 (Progman) は
+        // WS_CAPTION を持たないので、 これで過不足なく分けられる。
+        const wantCaption = w32.WS_CAPTION;
+        if ((style & wantCaption) != wantCaption) return false;
+      } catch (_) {
+        return false;
+      }
+      final r = _windowRect(hwnd);
+      if (r == null) return false;
+      // その窓の外なら関係ない (机の上など)。
+      if (x < r.$1 || x > r.$3 || y < r.$2 || y > r.$4) return false;
+      var dpi = 96;
+      try {
+        final d = w32.GetDpiForWindow(hwnd);
+        if (d > 0) dpi = d;
+      } catch (_) {}
+      final zoneW = (170 * dpi / 96).round();
+      final zoneH = (48 * dpi / 96).round();
+      return x >= r.$3 - zoneW && y <= r.$2 + zoneH;
+    } catch (_) {
+      return false;
+    } finally {
+      calloc.free(pt);
+    }
   }
 
   /// [x],[y] にいちばん近いモニターの四角 (left, top, right, bottom)。

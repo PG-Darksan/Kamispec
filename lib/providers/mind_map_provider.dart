@@ -26614,6 +26614,34 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Adicionar um terminal',
       'ru': 'Добавить терминал',
     },
+    // ── 端子の置き方の案内 (= ユーザー要望: 押す度に適当な場所に 1 個
+    //    出るのではなく、 図形の挿入の様にドラッグして好きな大きさで出す) ──
+    'flow.terminalPickHint': {
+      'ja': '置きたい端子の形を選んでください。',
+      'en': 'Pick the terminal shape you want to place.',
+      'zh': '请选择要放置的端子形状。',
+      'ko': '놓을 단자 모양을 고르세요.',
+      'es': 'Elige la forma del terminal que quieres colocar.',
+      'fr': 'Choisissez la forme du terminal à placer.',
+      'de': 'Wählen Sie die Form des Anschlusses aus.',
+      'pt': 'Escolha a forma do terminal que deseja colocar.',
+      'ru': 'Выберите форму терминала для размещения.',
+      'fa': 'شکل ترمینالی را که می‌خواهید قرار دهید انتخاب کنید.',
+    },
+    'flow.terminalDragHint': {
+      'ja': 'マップの上をドラッグすると、 その位置と大きさで置けます。',
+      'en': 'Drag on the map to place it at that position and size.',
+      'zh': '在画布上拖动即可按该位置和大小放置。',
+      'ko': '맵 위를 드래그하면 그 위치와 크기로 놓입니다.',
+      'es': 'Arrastra sobre el mapa para colocarlo en esa posición y tamaño.',
+      'fr': 'Faites glisser sur la carte pour le placer à cette position et '
+          'à cette taille.',
+      'de': 'Auf der Karte ziehen, um ihn an dieser Stelle und Größe zu '
+          'platzieren.',
+      'pt': 'Arraste no mapa para colocá-lo nessa posição e tamanho.',
+      'ru': 'Проведите по карте, чтобы разместить его в этом месте и размере.',
+      'fa': 'روی نقشه بکشید تا در همان جا و اندازه قرار گیرد.',
+    },
     // ── 端子の種類 (= ユーザー要望: 種類を増やして) ──
     'flow.shapeRounded': {
       'ja': '角丸端子',
@@ -35873,6 +35901,53 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'При входе в Windows запускает небольшой фоновый помощник, который '
           'отвечает только за переход курсора. Окна нет. Пока приложение '
           'открыто, этим занимается оно.',
+    },
+    // ── ルーティングを効かせない所 (= ユーザー要望: 「window 右上の×や
+    //    非表示ボタンの付近だけルーティング機能を動作させないようにして」
+    //    「それをディスプレイ設定の所で明記しておいて欲しい」) ──
+    'cursorWrap.captionExclusion': {
+      'ja': '窓の右上 (最小化 / 最大化 / ✕) の近くでは飛ばしません。'
+          ' 最大化した窓ではこのボタンが画面の右上隅そのものなので、'
+          ' 閉じに行くだけで別のモニターへ行ってしまうのを防いでいます。'
+          ' また、 端に触れただけでは飛ばず、 少しの間そのまま端に'
+          ' 押し当てている時だけ飛びます。',
+      'en': 'Routing is skipped near a window\'s top-right buttons '
+          '(minimise / maximise / close). On a maximised window those sit '
+          'in the very corner of the screen, so going to close it would '
+          'otherwise jump to another monitor. Touching an edge is also not '
+          'enough on its own — you have to hold against it briefly.',
+      'zh': '在窗口右上角的按钮（最小化 / 最大化 / 关闭）附近不会跳转。'
+          '窗口最大化时这些按钮正好位于屏幕角落，否则去点关闭就会跳到另一台'
+          '显示器。此外，仅碰到边缘不会跳转，需要在边缘停留片刻。',
+      'ko': '창 오른쪽 위 버튼(최소화 / 최대화 / 닫기) 근처에서는 이동하지 '
+          '않습니다. 최대화한 창에서는 이 버튼이 화면 모서리 그 자체라, '
+          '닫으러 가는 것만으로 다른 모니터로 넘어가 버리기 때문입니다. '
+          '또한 가장자리에 닿는 것만으로는 넘어가지 않고, 잠시 눌러 대고 '
+          '있어야 넘어갑니다.',
+      'es': 'No se salta cerca de los botones de la esquina superior derecha '
+          '(minimizar / maximizar / cerrar). En una ventana maximizada esos '
+          'botones están justo en la esquina de la pantalla. Además, rozar '
+          'un borde no basta: hay que mantenerse contra él un instante.',
+      'fr': 'Pas de saut près des boutons en haut à droite de la fenêtre '
+          '(réduire / agrandir / fermer). Sur une fenêtre agrandie, ils se '
+          'trouvent exactement dans le coin de l\'écran. De plus, effleurer '
+          'un bord ne suffit pas : il faut s\'y maintenir un instant.',
+      'de': 'In der Nähe der Fensterknöpfe oben rechts (Minimieren / '
+          'Maximieren / Schließen) wird nicht gesprungen. Bei einem '
+          'maximierten Fenster liegen sie genau in der Bildschirmecke. Ein '
+          'Rand zu berühren genügt außerdem nicht — man muss kurz dagegen '
+          'halten.',
+      'pt': 'Não há salto perto dos botões no canto superior direito da '
+          'janela (minimizar / maximizar / fechar). Numa janela maximizada '
+          'eles ficam exatamente no canto da tela. Além disso, encostar na '
+          'borda não basta: é preciso manter por um instante.',
+      'ru': 'Рядом с кнопками в правом верхнем углу окна (свернуть / '
+          'развернуть / закрыть) переход не происходит. У развёрнутого окна '
+          'они находятся ровно в углу экрана. Кроме того, простого касания '
+          'края мало — нужно ненадолго задержаться у него.',
+      'fa': 'نزدیک دکمه‌های بالا-راست پنجره (کمینه / بیشینه / بستن) جابه‌جایی '
+          'انجام نمی‌شود؛ در پنجرهٔ بیشینه این دکمه‌ها دقیقاً در گوشهٔ صفحه‌اند. '
+          'همچنین صرفِ رسیدن به لبه کافی نیست و باید لحظه‌ای روی آن بمانید.',
     },
     'cursorWrap.gridHint': {
       'ja': '空いている枠を押すとモニターを足せます。 隣り合った辺はそのまま'
