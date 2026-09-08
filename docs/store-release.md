@@ -25,9 +25,9 @@
 **同一以下のバージョンを取り込み時に拒否**します。
 
 ```yaml
-version: 1.0.0+206          # ← ビルド番号 (b206)
+version: 1.0.0+338          # ← ビルド番号 (b338)
 msix_config:
-  msix_version: 1.0.206.0   # ← 4 桁・末尾は必ず 0
+  msix_version: 1.0.338.0   # ← 4 桁・末尾は必ず 0
 ```
 
 ### 2. 鍵入りで Windows をビルドする
@@ -125,10 +125,57 @@ tool\msix\run-wack.ps1
 
 既知の FAIL（いずれも OPTIONAL=TRUE なので全体は PASS）:
 
-- `data\flutter_assets\NOTICES.Z` — Flutter が必ず出す成果物。削除不可
-  （アプリ内のライセンス表示が読んでいる）
-- `app.so` の中の `cmd` / `PowerShell` 等の文字列 — `STORE_BUILD=true` で
-  自分の分は消えます。残るのは依存パッケージ由来
+- **アーカイブ ファイルの使用** … `data\flutter_assets\NOTICES.Z`。
+  Flutter が必ず出す成果物で削除不可（アプリ内のライセンス表示が読んでいる）
+- **ブロック済みの実行可能ファイル** … 依存 DLL の API 参照
+  （`url_launcher_windows_plugin.dll!ShellExecuteW` /
+  `flutter_windows.dll!CreateProcessW` / `printing_plugin.dll!ShellExecuteExW`、
+  および avcodec / avfilter / avformat / ffmpeg / mdk / pdfium / libcrypto /
+  libgnutls / super_native_extensions）と、`app.so` に残る `powershell` /
+  `Bash` の文字列。
+
+> `STORE_BUILD=true` で消えるのは ffmpeg の自動ダウンロードと
+> コマンド実行機能と動画編集で、**`app.so` の中の `powershell` / `Bash` の
+> 文字列は消えません**（b338 の STORE ビルドで実測: `powershell` 1 件 /
+> `Bash` 1 件 / `cmd.exe` 0 件）。以前ここに「STORE_BUILD で自分の分は
+> 消えます」と書いてありましたが誤りです。どちらも OPTIONAL なので
+> 全体は PASS のままです。
+
+---
+
+## zip 版（ストア外配布）を作る
+
+ストア提出には要りませんが、同じ番号で zip も配るなら **ストア用と別に**
+ビルドします（`STORE_BUILD=true` を付けない＝動画編集や ffmpeg の取得が入る）。
+
+```powershell
+# 1. 先に型検査で残した bundle の成果物を消す（kernel_blob.bin の混入よけ）
+Remove-Item -Recurse -Force build\flutter_assets -ErrorAction SilentlyContinue
+
+# 2. 鍵入りでビルド（STORE_BUILD は付けない）
+flutter build windows --release --dart-define-from-file=env.json
+
+# 3. 固める（起動に要る物が入っているか道具が確かめます）
+python tool\pack_windows_zip.py releases\v1.0.0-338-20260908 338
+```
+
+**手で `Compress-Archive` しないでください。** b336 と b337 の zip は
+`data\` の階層が潰れていて**起動しませんでした**。Windows 版は
+`windows/runner/main.cpp` の `DartProject(L"data")` で `data\` の下を見に行くので、
+`app.so` / `flutter_assets` / `icudtl.dat` が exe と同じ所にあると
+何も出ないまま終わります。`tool/pack_windows_zip.py` は固めた後に
+
+- `HisatorNotebook/HisatorNotebook.exe`
+- `HisatorNotebook/data/app.so`
+- `HisatorNotebook/data/icudtl.dat`
+- `HisatorNotebook/data/flutter_assets/AssetManifest.bin`
+
+の 4 つが在ることと、`kernel_blob.bin` が混ざっていないことを見て、
+欠けていれば zip を消して止まります。SHA256SUMS.txt も書きます。
+
+**ストア用と zip 用は同じフォルダを上書きします。** 先に zip 用を作って
+固めてから、ストア用（`STORE_BUILD=true`）をビルドしてください。順番を
+逆にすると、zip に機能を落とした版が入ります。
 
 ---
 
@@ -155,3 +202,5 @@ tool\msix\run-wack.ps1
 - `-Pfx` を付けて提出用パッケージに署名する
 - `build/` の中身だけ見て「鍵が入っている」と判断する
 - 前回と同じ `msix_version` で提出する
+- zip を `Compress-Archive` などで手で固める（`data\` の階層が潰れて起動しなくなる。
+  `tool/pack_windows_zip.py` を使う）

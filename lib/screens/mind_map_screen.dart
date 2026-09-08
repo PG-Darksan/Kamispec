@@ -208616,10 +208616,47 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
     if ((_rowH(r) - v).abs() < 0.5) return;
     setState(() {
       _rowHMap[r] = v;
+      // 手で決めた高さは、 折り返しを切った時に消さない
+      // (= 点検で判明: 自動で伸ばした分と一緒くたに捨てていた)。
+      _autoRowH.remove(r);
       _invalidateGridMetrics();
       _dirty = true;
     });
   }
+
+  /// 「折り返しのために自動で伸ばした行」 の覚え書き (シート名 → 行番号)。
+  ///
+  /// 行の高さの置き場 ([_sheetRowH]) は、 手で掴んで決めた分も xlsx から
+  /// 読んだ分も同じ所に入る。 折り返しを切った時に丸ごと捨てると、
+  /// それらまで消えてしまう (= 点検で判明)。 ここに控えた行だけを戻す。
+  final Map<String, Set<int>> _sheetAutoRowH = {};
+
+  Set<int> get _autoRowH => _sheetAutoRowH[_activeSheet] ??= <int>{};
+
+  /// 折り返しのために行 [r] を [px] まで伸ばす (既に高ければ何もしない)。
+  /// 自動で伸ばした事を覚えておき、 折り返しを切った時だけ元へ戻す。
+  void _growRowForWrap(int r, double px) {
+    if (r < 0 || _rowH(r) >= px) return;
+    _rowHMap[r] = px.clamp(_kMinRowH, _kMaxRowH).toDouble();
+    _autoRowH.add(r);
+    _invalidateGridMetrics();
+  }
+
+  /// 折り返しを切った行の高さを戻す。 自動で伸ばした行だけが対象。
+  void _shrinkRowAfterWrapOff(int r) {
+    if (!_autoRowH.remove(r)) return;
+    _rowHMap.remove(r);
+    _invalidateGridMetrics();
+  }
+
+  /// 日本語などの変換中か (= 打ち込み中の下線が付いている所が在るか)。
+  /// 変換中のキーは「変換を決める / やめる」 ための物なので横取りしない。
+  static bool _isComposingIn(TextEditingController c) {
+    final r = c.value.composing;
+    return r.isValid && !r.isCollapsed;
+  }
+
+  bool get _cellIsComposing => _isComposingIn(_editCtrl);
 
   /// 列 [c] を中身に合わせる (= 境目の二度押し)。
   void _autoFitColumn(int c) {
@@ -211405,11 +211442,19 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
           //    ここを書いていなかったので、 開き直すと 1 行に潰れていた。
           //    元の寄せ方は残したまま、 折り返しの旗だけ入れ替える。
           final wrapOn = f?.wrap ?? false;
-          final alRe = RegExp(r'<alignment\b[^>]*?/?>');
+          // ★ 閉じ札を持つ形 (<alignment ...></alignment>) にも当てる。
+          //   開き札だけに当てると閉じ札が取り残されて styles.xml が壊れ、
+          //   Excel が「読み取れない内容があります」 と言う (= 点検で判明)。
+          final alRe = RegExp(r'<alignment\b[^>]*?/>'
+              r'|<alignment\b[^>]*?>[\s\S]*?</alignment>'
+              r'|<alignment\b[^>]*?>');
           final alOld = alRe.firstMatch(xf)?.group(0);
-          final alAttrs = alOld == null
+          final alOpen = alOld == null
+              ? null
+              : RegExp(r'^<alignment\b[^>]*?/?>').firstMatch(alOld)?.group(0);
+          final alAttrs = alOpen == null
               ? ''
-              : alOld
+              : alOpen
                   .replaceFirst('<alignment', '')
                   .replaceAll(RegExp(r'/?>$'), '')
                   .replaceAll(RegExp(r'\swrapText="[^"]*"'), '')
@@ -211888,7 +211933,17 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
   //   端に着いたらそこで止まる (行は勝手に増やさない)。
   void _moveSelVert(int d) {
     if (_rowCount <= 0 || _colCount <= 0) return;
-    final next = (_selRow + d).clamp(0, _rowCount - 1);
+    var next = (_selRow + d).clamp(0, _rowCount - 1);
+    // ★ 結合したセルの内側 (左上の行より下) には入らない。 そこは中身も
+    //   入力欄も無いので、 入ってしまうと編集を始められないまま操作が
+    //   効かなくなる (= 点検で判明)。 Excel と同じで結合をまたぐ。
+    final mg = _mergeAt(next, _selCol);
+    if (mg != null && next != mg.r1) {
+      next = (d > 0 ? mg.r2 + 1 : mg.r1).clamp(0, _rowCount - 1);
+      // 端で押し戻された時は、 結合の左上に落ち着かせる。
+      final mg2 = _mergeAt(next, _selCol);
+      if (mg2 != null && next != mg2.r1) next = mg2.r1;
+    }
     if (next == _selRow) return;
     setState(() {
       _resetRangeAnchor();
@@ -211908,8 +211963,10 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
   ///
   /// 取り消し用の控えは [_beginEdit] が編集を始める時に取ってあるので、
   /// ここでは取らない (= Ctrl+Z 一回で編集ごと戻る)。
-  void _enableWrapAt(int r, int c) {
+  void _enableWrapAt(int r, int c, {String? text}) {
     if (r < 0 || r >= _rowCount || c < 0 || c >= _colCount) return;
+    final body = text ?? _editCtrl.text;
+    if (!body.contains('\n')) return;
     final map = _fmts;
     final k = _fmtKey(r, c);
     final cur = map[k];
@@ -211920,18 +211977,21 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
       _markFmtDirty(r, c);
     }
     // 打ち込んでいる中身の行数ぶんまで、 行を高くする。
-    final lines =
-        ('\n'.allMatches(_editCtrl.text).length + 1).clamp(1, 12);
-    final want = _cellHeightBase * lines + 6;
-    if (_rowH(r) < want) {
-      _rowHMap[r] = want.clamp(_kMinRowH, _kMaxRowH).toDouble();
-      _invalidateGridMetrics();
-    }
+    final lines = ('\n'.allMatches(body).length + 1).clamp(1, 12);
+    _growRowForWrap(r, _cellHeightBase * lines + 6);
     setState(() => _dirty = true);
   }
 
   void _beginEdit(int row, int col) {
     if (row < 0 || row >= _rowCount || col < 0 || col >= _colCount) return;
+    // 結合したセルは常に左上を編集する (= 中身は左上にしか無い)。
+    // 押した時の道 (onTap) は前から寄せていたが、 F2 / 文字打ち /
+    // Enter で降りた時は寄せていなかった (= 点検で判明)。
+    final mgb = _mergeAt(row, col);
+    if (mgb != null) {
+      row = mgb.r1;
+      col = mgb.c1;
+    }
     _pushUndo();
     _commitEdit();
     setState(() {
@@ -211961,6 +212021,10 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
         _rows[r][c] = neu;
         _dirty = true;
         _invalidateFormulaCache();
+        // ★ 改行の入った文字を貼り付けた時も折り返しを入れる
+        //   (= 点検で判明: Alt+Enter で入れた時しか効いていなかったので、
+        //    貼り付けた改行は 1 行に潰れて見えないままだった)。
+        _enableWrapAt(r, c, text: neu);
       }
     }
     setState(() {
@@ -212902,6 +212966,11 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
     // (= ユーザー要望: Excel などが Esc で閉じてしまうのを止めたい)。
     if (event.logicalKey == LogicalKeyboardKey.escape) {
       if (_editingRow != null) {
+        // ★ 変換中の Esc は「変換の取り消し」 であって、 編集をやめる合図では
+        //   ない。 ここで食べると打ち込み中の文字ごと捨ててしまう
+        //   (= 点検で判明: セル側で逃がしても、 上がってきた分をここが
+        //    食べていた)。
+        if (_cellIsComposing) return KeyEventResult.ignored;
         _cancelEdit();
         return KeyEventResult.handled;
       }
@@ -213030,8 +213099,11 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
 
   void _ensureSelVisible() {
     // 表は _ssZoom 倍で描かれているので、 送り先も倍率を掛けて測る。
-    final x = _colX(_selCol) * _ssZoom;
-    final y = _rowY(_selRow) * _ssZoom;
+    // ★ 中身は行見出し (_rowHeaderWidth) と列見出し (_colHeaderHeight) の
+    //   分だけずれた所から始まる。 数え落とすと右端・下端へ送った時に
+    //   選んだセルが画面の外に残る (= 点検で判明)。
+    final x = (_rowHeaderWidth + _colX(_selCol)) * _ssZoom;
+    final y = (_colHeaderHeight + _rowY(_selRow)) * _ssZoom;
     // ★ 固定した帯は表の上に重なっているので、 その下は「見えていない」。
     //   帯の分だけ手前で止めないと、 選んだセルが帯に隠れる
     //   (= ユーザー要望の固定機能を入れた事による追加)。
@@ -213402,7 +213474,13 @@ $csvText
               _buildHeader(dark, fg),
               // ── 書式バー (= ユーザー要望: 結合・背景色・文字色・
               //    大きさ・下線・太字・斜体)。 xlsx の時だけ出す。 ──
-              if (_kind == _SpreadsheetKind.xlsx) _buildFormatBar(dark, fg),
+              if (_kind == _SpreadsheetKind.xlsx)
+                _buildFormatBar(dark, fg)
+              else
+                // csv / tsv は書式を持てないので、 見え方の道具だけ出す
+                // (= 点検で判明: 書式バーごと消えていて、 ウィンドウ枠の
+                //  固定にも触れなかった)。
+                _buildViewBar(dark, fg),
               // ── 数式バー (= ユーザー要望: Excel と同じく上のバーに選択中の
               //    セルの内容・数式を表示 / 編集できるように)。 以前この位置に
               //    あったシートタブと紛らわしかった (「メモ」 と書かれた所) ──
@@ -214388,6 +214466,144 @@ $csvText
     );
   }
 
+  /// ウィンドウ枠の固定のボタン (= ユーザー要望: Excel と同じ機能)。
+  ///
+  /// 書式バー (xlsx) と、 csv / tsv 用の細い帯の両方から使う。
+  /// 固定は「見え方」 の設定なので、 書式を持てない csv でも要る
+  /// (= 点検で判明: 書式バーごと出ないので csv では触れなかった)。
+  Widget _freezeButton(bool dark) {
+    final provider = context.read<MindMapProvider>();
+    return Tooltip(
+      message: provider.t('ss.freeze'),
+      child: PopupMenuButton<String>(
+        tooltip: '',
+        color: const Color(0xFF22222E),
+        onSelected: (v) {
+          switch (v) {
+            case 'row':
+              _setFreeze(1, 0);
+              break;
+            case 'col':
+              _setFreeze(0, 1);
+              break;
+            case 'both':
+              _setFreeze(1, 1);
+              break;
+            case 'here':
+              // 選んでいるセルの**手前まで**を固定する (Excel と同じ)。
+              _setFreeze(_selRow, _selCol);
+              break;
+            case 'off':
+              _setFreeze(0, 0);
+              break;
+          }
+        },
+        // 並びは Excel の 「表示 → ウィンドウ枠の固定」 と同じにする
+        // (= ユーザー要望)。 選んだセルを基準にする物が先頭で、
+        // その下に先頭行 / 先頭列が並ぶ。
+        itemBuilder: (_) => [
+          PopupMenuItem<String>(
+              value: 'here',
+              height: 34,
+              child: Text(
+                  '${provider.t('ss.freezeHere')}'
+                  ' (${_colLabel(_selCol)}${_selRow + 1})',
+                  style: const TextStyle(
+                      color: Colors.white, fontSize: 13))),
+          PopupMenuItem<String>(
+              value: 'row',
+              height: 34,
+              child: Text(provider.t('ss.freezeTopRow'),
+                  style: const TextStyle(
+                      color: Colors.white, fontSize: 13))),
+          PopupMenuItem<String>(
+              value: 'col',
+              height: 34,
+              child: Text(provider.t('ss.freezeFirstCol'),
+                  style: const TextStyle(
+                      color: Colors.white, fontSize: 13))),
+          PopupMenuItem<String>(
+              value: 'both',
+              height: 34,
+              child: Text(provider.t('ss.freezeBoth'),
+                  style: const TextStyle(
+                      color: Colors.white, fontSize: 13))),
+          const PopupMenuDivider(),
+          PopupMenuItem<String>(
+              value: 'off',
+              height: 34,
+              enabled: _hasFreeze,
+              child: Text(provider.t('ss.freezeOff'),
+                  style: TextStyle(
+                      color: _hasFreeze ? Colors.white : Colors.white38,
+                      fontSize: 13))),
+        ],
+        child: Container(
+          height: 30,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          decoration: BoxDecoration(
+            color: _hasFreeze
+                ? const Color(0xFF6C63FF)
+                : Colors.transparent,
+            border: Border.all(
+                color: dark ? Colors.white24 : Colors.black26),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(Icons.table_rows_rounded,
+                size: 16,
+                color: _hasFreeze
+                    ? Colors.white
+                    : (dark ? Colors.white70 : Colors.black87)),
+            if (_hasFreeze) ...[
+              const SizedBox(width: 4),
+              Text('${_freezeRows}/${_freezeCols}',
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700)),
+            ],
+          ]),
+        ),
+      ),
+    );
+  }
+
+  /// csv / tsv 用の細い帯。 書式は持てないので、 見え方の道具だけ並べる。
+  Widget _buildViewBar(bool dark, Color fg) {
+    final provider = context.read<MindMapProvider>();
+    return Container(
+      height: 40,
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      decoration: BoxDecoration(
+        color: dark ? const Color(0xFF20202C) : const Color(0xFFF2F2EC),
+        border: Border(
+          bottom: BorderSide(color: dark ? Colors.white10 : Colors.black12),
+        ),
+      ),
+      child: Row(children: [
+        _freezeButton(dark),
+        const SizedBox(width: 6),
+        Container(
+            width: 1, height: 20, color: dark ? Colors.white12 : Colors.black12),
+        const SizedBox(width: 6),
+        _fmtBtn(
+          icon: Icons.find_replace_rounded,
+          tip: provider.t('ss.findReplace'),
+          dark: dark,
+          onTap: _toggleFindPanel,
+        ),
+        const Spacer(),
+        _fmtBtn(
+          icon: Icons.keyboard_double_arrow_up_rounded,
+          tip: provider.t('text.hideHeader'),
+          dark: dark,
+          onTap: () => setState(() => _headerVisible = false),
+        ),
+      ]),
+    );
+  }
+
   Widget _buildFormatBar(bool dark, Color fg) {
     final provider = context.read<MindMapProvider>();
     final cur = _curFmt;
@@ -214445,13 +214661,15 @@ $csvText
               final v = !cur.wrap;
               _applyFmtToSelection((f) => f.wrap = v);
               // 折り返しを入れた行は、 中身の行数ぶんまで高くする。
-              // 外した時は指定を消して既定の高さへ戻す。
+              // 外した時は「折り返しのために自動で伸ばした行」 だけ戻す
+              // (= 点検で判明: 手で掴んで決めた高さや xlsx から読んだ高さまで
+              //  捨てていた)。
               final rg = _fmtTarget;
               setState(() {
                 for (var r = rg.r1; r <= rg.r2; r++) {
                   if (r < 0 || r >= _rowCount) continue;
                   if (!v) {
-                    _rowHMap.remove(r);
+                    _shrinkRowAfterWrapOff(r);
                     continue;
                   }
                   var lines = 1;
@@ -214460,12 +214678,12 @@ $csvText
                     final n = '\n'.allMatches(_rows[r][c]).length + 1;
                     if (n > lines) lines = n;
                   }
-                  final want = _cellHeightBase * lines.clamp(1, 12) + 6;
-                  if (_rowH(r) < want) {
-                    _rowHMap[r] = want.clamp(_kMinRowH, _kMaxRowH).toDouble();
-                  }
+                  // ★ 改行の無い行は触らない (= 点検で判明: 何も入っていない
+                  //   行まで 38px の指定が付き、 xlsx に「高さを決めた行」 と
+                  //   して書き出されて Excel の自動調整が効かなくなっていた)。
+                  if (lines <= 1) continue;
+                  _growRowForWrap(r, _cellHeightBase * lines.clamp(1, 12) + 6);
                 }
-                _invalidateGridMetrics();
               });
             },
           ),
@@ -214669,100 +214887,7 @@ $csvText
           const SizedBox(width: 6),
           // ── ウィンドウ枠の固定 (= ユーザー要望: 行固定 / 列固定を作って、
           //    スクロールしても常に同じ場所を参照できるように) ──
-          Tooltip(
-            message: provider.t('ss.freeze'),
-            child: PopupMenuButton<String>(
-              tooltip: '',
-              color: const Color(0xFF22222E),
-              onSelected: (v) {
-                switch (v) {
-                  case 'row':
-                    _setFreeze(1, 0);
-                    break;
-                  case 'col':
-                    _setFreeze(0, 1);
-                    break;
-                  case 'both':
-                    _setFreeze(1, 1);
-                    break;
-                  case 'here':
-                    // 選んでいるセルの**手前まで**を固定する (Excel と同じ)。
-                    _setFreeze(_selRow, _selCol);
-                    break;
-                  case 'off':
-                    _setFreeze(0, 0);
-                    break;
-                }
-              },
-              // 並びは Excel の 「表示 → ウィンドウ枠の固定」 と同じにする
-              // (= ユーザー要望)。 選んだセルを基準にする物が先頭で、
-              // その下に先頭行 / 先頭列が並ぶ。
-              itemBuilder: (_) => [
-                PopupMenuItem<String>(
-                    value: 'here',
-                    height: 34,
-                    child: Text(
-                        '${provider.t('ss.freezeHere')}'
-                        ' (${_colLabel(_selCol)}${_selRow + 1})',
-                        style: const TextStyle(
-                            color: Colors.white, fontSize: 13))),
-                PopupMenuItem<String>(
-                    value: 'row',
-                    height: 34,
-                    child: Text(provider.t('ss.freezeTopRow'),
-                        style: const TextStyle(
-                            color: Colors.white, fontSize: 13))),
-                PopupMenuItem<String>(
-                    value: 'col',
-                    height: 34,
-                    child: Text(provider.t('ss.freezeFirstCol'),
-                        style: const TextStyle(
-                            color: Colors.white, fontSize: 13))),
-                PopupMenuItem<String>(
-                    value: 'both',
-                    height: 34,
-                    child: Text(provider.t('ss.freezeBoth'),
-                        style: const TextStyle(
-                            color: Colors.white, fontSize: 13))),
-                const PopupMenuDivider(),
-                PopupMenuItem<String>(
-                    value: 'off',
-                    height: 34,
-                    enabled: _hasFreeze,
-                    child: Text(provider.t('ss.freezeOff'),
-                        style: TextStyle(
-                            color: _hasFreeze ? Colors.white : Colors.white38,
-                            fontSize: 13))),
-              ],
-              child: Container(
-                height: 30,
-                padding: const EdgeInsets.symmetric(horizontal: 8),
-                decoration: BoxDecoration(
-                  color: _hasFreeze
-                      ? const Color(0xFF6C63FF)
-                      : Colors.transparent,
-                  border: Border.all(
-                      color: dark ? Colors.white24 : Colors.black26),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  Icon(Icons.table_rows_rounded,
-                      size: 16,
-                      color: _hasFreeze
-                          ? Colors.white
-                          : (dark ? Colors.white70 : Colors.black87)),
-                  if (_hasFreeze) ...[
-                    const SizedBox(width: 4),
-                    Text('${_freezeRows}/${_freezeCols}',
-                        style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w700)),
-                  ],
-                ]),
-              ),
-            ),
-          ),
+          _freezeButton(dark),
           const SizedBox(width: 6),
           Container(
               width: 1,
@@ -215206,9 +215331,21 @@ $csvText
           // Esc はバーから抜けるだけにして、 画面を閉じる方へは流さない。
           child: Focus(
             onKeyEvent: (n, e) {
-              if (e is KeyDownEvent &&
-                  e.logicalKey == LogicalKeyboardKey.escape) {
+              if (e is! KeyDownEvent && e is! KeyRepeatEvent) {
+                return KeyEventResult.ignored;
+              }
+              // ★ 変換中のキーは「変換を決める / やめる」 ための物なので渡す
+              //   (= セルと同じ扱い。 これが無いと、 変換を決めただけで
+              //    下のセルへ飛ぶ)。
+              if (_isComposingIn(_formulaCtrl)) return KeyEventResult.ignored;
+              if (e.logicalKey == LogicalKeyboardKey.escape) {
                 _keyFocus.requestFocus();
+                return KeyEventResult.handled;
+              }
+              // Enter はここで受けて確定する (エンジンへ渡さない)。
+              if (e.logicalKey == LogicalKeyboardKey.enter ||
+                  e.logicalKey == LogicalKeyboardKey.numpadEnter) {
+                _commitFormulaBar(_formulaCtrl.text);
                 return KeyEventResult.handled;
               }
               return KeyEventResult.ignored;
@@ -215232,13 +215369,47 @@ $csvText
             ),
           ),
         ),
+        // ── セルの中で改行 (= 携帯には Shift / Alt が無いので、
+        //    押せる口も要る)。 編集中だけ出す。 ──
+        if (_editingRow != null)
+          Padding(
+            padding: const EdgeInsets.only(right: 4),
+            child: Tooltip(
+              message: context.read<MindMapProvider>().t('ss.insertLineBreak'),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(6),
+                onTap: _insertLineBreakInEditingCell,
+                child: Container(
+                  height: 26,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(
+                        color: dark ? Colors.white24 : Colors.black26),
+                  ),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(Icons.keyboard_return_rounded,
+                        size: 14,
+                        color: dark ? Colors.white70 : Colors.black87),
+                    const SizedBox(width: 4),
+                    Text(
+                        context.read<MindMapProvider>().t('ss.lineBreakShort'),
+                        style: TextStyle(
+                            color: dark ? Colors.white70 : Colors.black87,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700)),
+                  ]),
+                ),
+              ),
+            ),
+          ),
         // ── カーソルが挿入した表の中にある時は、 その表をそのまま
         //    マップへ出せるようにする (= ユーザー要望) ──
         if (!_hasRange && _tableAt(_selRow, _selCol) != null)
           _sheetRangeButton(
             icon: Icons.table_chart_rounded,
             color: const Color(0xFF26C6DA),
-            label: 'この表をマップへ出す',
+            label: context.read<MindMapProvider>().t('sheet.tableToMap'),
             onTap: () => _sendTableToMap(_tableAt(_selRow, _selCol)!),
           ),
         // ── 選択範囲を図/表にする (= ユーザー要望: .xlsx や .csv でセルの
@@ -215312,6 +215483,30 @@ $csvText
     );
   }
 
+  /// 編集中のセルのカーソルの所へ改行を 1 つ入れる。
+  ///
+  /// Shift+Enter / Alt+Enter と同じ事を、 押せるボタンからも出来るように
+  /// する (= 点検で判明: 携帯の画面の鍵盤には Shift も Alt も無いので、
+  /// b338 の変更でセルの中に改行を入れる道が一つも無くなっていた)。
+  void _insertLineBreakInEditingCell() {
+    final r = _editingRow;
+    final c = _editingCol;
+    if (r == null || c == null) return;
+    final text = _editCtrl.text;
+    final sel = _editCtrl.selection;
+    final start = sel.isValid ? sel.start : text.length;
+    final end = sel.isValid ? sel.end : text.length;
+    _editCtrl.value = TextEditingValue(
+      text: text.replaceRange(start, end, '\n'),
+      selection: TextSelection.collapsed(offset: start + 1),
+    );
+    _enableWrapAt(r, c);
+    // ボタンを押した拍子に焦点が外れる事があるので、 取り返しておく。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _editingRow != null) _editFocus.requestFocus();
+    });
+  }
+
   /// 数式バーの内容を選択セルへ反映する。
   void _commitFormulaBar(String v) {
     if (_rowCount > 0 && _selRow < _rowCount && _selCol < _colCount) {
@@ -215322,6 +215517,7 @@ $csvText
           _dirty = true;
         });
         _invalidateFormulaCache();
+        _enableWrapAt(_selRow, _selCol, text: v);
       }
     }
     _keyFocus.requestFocus();

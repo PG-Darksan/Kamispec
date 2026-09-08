@@ -3243,13 +3243,26 @@ class _NodeTableInlineWidgetState extends State<_NodeTableInlineWidget> {
           if (event is! KeyDownEvent) return KeyEventResult.ignored;
           final key = event.logicalKey;
           final isShift = HardwareKeyboard.instance.isShiftPressed;
+          final isAlt = HardwareKeyboard.instance.isAltPressed;
+          // ★ 日本語などの変換中は、 Enter も Esc も「変換を決める / やめる」
+          //   ための物なので横取りしない (= 表計算のセルと同じ扱い。
+          //   これが無いと、 変換を決めただけで下のセルへ飛ぶ)。
+          final composing = _ctrl?.value.composing;
+          if (composing != null &&
+              composing.isValid &&
+              !composing.isCollapsed) {
+            return KeyEventResult.ignored;
+          }
           if (key == LogicalKeyboardKey.tab) {
             final isLast = (r == t.rowCount - 1) && (c == t.colCount - 1);
             _moveTo(isShift ? -1 : 1, 0, addRowIfNeeded: !isShift && isLast);
             return KeyEventResult.handled;
           }
-          if (key == LogicalKeyboardKey.enter) {
-            if (isShift) return KeyEventResult.ignored; // Shift+Enter で改行
+          // Enter = 確定して一つ下へ / Shift・Alt+Enter = セルの中で改行
+          // (= 表計算のセルと同じ決まりに揃える)。 テンキーの Enter も拾う。
+          if (key == LogicalKeyboardKey.enter ||
+              key == LogicalKeyboardKey.numpadEnter) {
+            if (isShift || isAlt) return KeyEventResult.ignored;
             _moveTo(0, 1);
             return KeyEventResult.handled;
           }

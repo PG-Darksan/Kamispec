@@ -24,11 +24,16 @@ String applyWrap(String baseXf, bool wrapOn,
       '<xf fontId="$fontId" fillId="$fillId" borderId="$borderId" '
           'applyFont="1" applyFill="1" applyBorder="1"');
 
-  final alRe = RegExp(r'<alignment\b[^>]*?/?>');
+  final alRe = RegExp(r'<alignment\b[^>]*?/>'
+      r'|<alignment\b[^>]*?>[\s\S]*?</alignment>'
+      r'|<alignment\b[^>]*?>');
   final alOld = alRe.firstMatch(xf)?.group(0);
-  final alAttrs = alOld == null
+  final alOpen = alOld == null
+      ? null
+      : RegExp(r'^<alignment\b[^>]*?/?>').firstMatch(alOld)?.group(0);
+  final alAttrs = alOpen == null
       ? ''
-      : alOld
+      : alOpen
           .replaceFirst('<alignment', '')
           .replaceAll(RegExp(r'/?>$'), '')
           .replaceAll(RegExp(r'\swrapText="[^"]*"'), '')
@@ -95,6 +100,9 @@ void run(String label, String base, bool wrapOn,
   final n = RegExp(r'<alignment\b').allMatches(out).length;
   check('<alignment> は 1 個だけ', n == 1, '$n 個');
 
+  // 4b. 閉じ札が取り残されていない
+  check('</alignment> が残っていない', !out.contains('</alignment>'));
+
   // 5. applyAlignment が付いている (Excel はこれが無いと寄せを見ない)
   check('applyAlignment="1" が付いている', out.contains('applyAlignment="1"'));
 
@@ -151,6 +159,27 @@ void main() {
       true,
       mustKeep: '<protection locked="0"/>',
       expectWrap: true);
+
+  // 閉じ札を持つ形 (一部の生成系がこう書く)。 開き札だけに当てると
+  // </alignment> が取り残されて styles.xml が壊れる (= 点検で判明)。
+  run(
+      '閉じ札つき <alignment ...></alignment>',
+      '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" '
+          'applyAlignment="1">'
+          '<alignment horizontal="center"></alignment></xf>',
+      true,
+      mustKeep: 'horizontal="center"',
+      expectWrap: true);
+
+  // 閉じ札つき + 折り返しが既に入っている物を外す
+  run(
+      '閉じ札つきの折り返しを外す',
+      '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" '
+          'applyAlignment="1">'
+          '<alignment vertical="top" wrapText="1"></alignment></xf>',
+      false,
+      mustKeep: 'vertical="top"',
+      expectWrap: false);
 
   print('\n${fails == 0 ? 'すべて通った' : "$fails 件こけた"}');
 }
