@@ -1,15 +1,15 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <?xml-stylesheet type='text/xsl' href='C:\ProgramData\Windows App Certification Kit\results.xsl'?>
-<REPORT xml:lang="ja-JP" OVERALL_RESULT="PASS" VERSION="10.0.22621.3233" LATEST_VERSION="" UPDATE_DOWNLOAD_URL="" TOOLSET_ARCHITECTURE="x64" SecureBoot="FALSE" APP_TYPE="Centennial" PUBLISHER_DISPLAY_NAME="CN=HisatorNotebookWackTest" APP_NAME="Darksan.Kamispec" APP_VERSION="1.0.256.0" OSVERSION="10.0.26200.0" OS="Microsoft Windows 11 Home" PER_USER_APPLICATION="" PARTIAL_RUN="FALSE" LCID="1041" X64_ONLY="TRUE" VALIDATION_TYPE="CommandLine" ReportGenerationTime="2026/08/31 23:30:47" ID="bb7a76123983a03cd817470f73910499">
+<REPORT xml:lang="ja-JP" OVERALL_RESULT="PASS" VERSION="10.0.22621.3233" LATEST_VERSION="" UPDATE_DOWNLOAD_URL="" TOOLSET_ARCHITECTURE="x64" SecureBoot="FALSE" APP_TYPE="Centennial" PUBLISHER_DISPLAY_NAME="CN=HisatorNotebookWackTest" APP_NAME="Darksan.Kamispec" APP_VERSION="1.0.338.0" OSVERSION="10.0.26200.0" OS="Microsoft Windows 11 Home" PER_USER_APPLICATION="" PARTIAL_RUN="FALSE" LCID="1041" X64_ONLY="TRUE" VALIDATION_TYPE="CommandLine" ReportGenerationTime="2026/09/08 23:11:20" ID="0ed39f3354a7560bcb734db304ac0046">
   <REQUIREMENTS>
     <REQUIREMENT NUMBER="3" TITLE="デジタル署名されたファイルのテスト" RATIONALE="Authenticode デジタル署名により、正規のソフトウェアであることを確認できます。また、ウイルス感染などによりファイルが改ざんされたかどうかを検出できます。">
-      <TEST INDEX="2" NAME="署名されたドライバーおよび実行可能ファイルのインストール" DESCRIPTION="署名されたドライバーおよび実行可能ファイルをインストールします。" EXECUTIONTIME="00h:00m:04s.83ms" OPTIONAL="TRUE">
+      <TEST INDEX="2" NAME="署名されたドライバーおよび実行可能ファイルのインストール" DESCRIPTION="署名されたドライバーおよび実行可能ファイルをインストールします。" EXECUTIONTIME="00h:00m:05s.64ms" OPTIONAL="TRUE">
         <MESSAGES />
         <RESULT><![CDATA[PASS]]></RESULT>
       </TEST>
     </REQUIREMENT>
     <REQUIREMENT NUMBER="6" TITLE="ユーザー アカウント制御 (UAC) のテスト" RATIONALE="大部分のアプリケーションでは、実行時に管理者権限を要求せず、標準ユーザーとして問題なく実行できるようにします。Windows アプリケーションでは、マニフェスト (埋め込みまたは外部) を用意して実行レベルを定義し、アプリケーションの実行に必要な権限を OS に通知できるようにする必要があります。">
-      <TEST INDEX="11" NAME="ユーザー アカウント制御の実行レベル" DESCRIPTION="Windows® アプリケーションでは、マニフェスト (埋め込みまたは外部) を用意して実行レベルを定義し、アプリケーションの実行に必要な権限を OS に通知できるようにする必要があります。" EXECUTIONTIME="00h:00m:01s.06ms" OPTIONAL="TRUE">
+      <TEST INDEX="11" NAME="ユーザー アカウント制御の実行レベル" DESCRIPTION="Windows® アプリケーションでは、マニフェスト (埋め込みまたは外部) を用意して実行レベルを定義し、アプリケーションの実行に必要な権限を OS に通知できるようにする必要があります。" EXECUTIONTIME="00h:00m:01s.05ms" OPTIONAL="TRUE">
         <MESSAGES />
         <RESULT><![CDATA[PASS]]></RESULT>
       </TEST>
@@ -19,49 +19,49 @@
         <MESSAGES />
         <RESULT><![CDATA[PASS]]></RESULT>
       </TEST>
-      <TEST INDEX="31" NAME="アプリ マニフェスト" DESCRIPTION="アプリ マニフェストには、すべての必須フィールドに有効なエントリを含める必要があります。" EXECUTIONTIME="00h:00m:01s.66ms" OPTIONAL="FALSE">
+      <TEST INDEX="31" NAME="アプリ マニフェスト" DESCRIPTION="アプリ マニフェストには、すべての必須フィールドに有効なエントリを含める必要があります。" EXECUTIONTIME="00h:00m:01s.73ms" OPTIONAL="FALSE">
         <MESSAGES />
         <RESULT><![CDATA[PASS]]></RESULT>
       </TEST>
-      <TEST INDEX="87" NAME="ファイル関連付けの動詞" DESCRIPTION="登録されているファイル関連付けの動詞がインストールされていないことを確認する、レジストリの検証。" EXECUTIONTIME="00h:00m:01s.25ms" OPTIONAL="TRUE">
+      <TEST INDEX="87" NAME="ファイル関連付けの動詞" DESCRIPTION="登録されているファイル関連付けの動詞がインストールされていないことを確認する、レジストリの検証。" EXECUTIONTIME="00h:00m:01s.19ms" OPTIONAL="TRUE">
         <MESSAGES />
         <RESULT><![CDATA[PASS]]></RESULT>
       </TEST>
-      <TEST INDEX="86" NAME="レジストリ チェック" DESCRIPTION="ドライバーがインストールされていないこと、および NT サービスがインストールされていないことを確認する、レジストリの検証。" EXECUTIONTIME="00h:00m:01s.05ms" OPTIONAL="TRUE">
+      <TEST INDEX="86" NAME="レジストリ チェック" DESCRIPTION="ドライバーがインストールされていないこと、および NT サービスがインストールされていないことを確認する、レジストリの検証。" EXECUTIONTIME="00h:00m:01s.04ms" OPTIONAL="TRUE">
         <MESSAGES />
         <RESULT><![CDATA[PASS]]></RESULT>
       </TEST>
-      <TEST INDEX="91" NAME="エンタープライズ機能" DESCRIPTION="パッケージにエンタープライズ専用の機能が含まれているかどうかを確認してください。" EXECUTIONTIME="00h:00m:01s.18ms" OPTIONAL="FALSE">
+      <TEST INDEX="91" NAME="エンタープライズ機能" DESCRIPTION="パッケージにエンタープライズ専用の機能が含まれているかどうかを確認してください。" EXECUTIONTIME="00h:00m:01s.15ms" OPTIONAL="FALSE">
         <MESSAGES />
         <RESULT><![CDATA[PASS]]></RESULT>
       </TEST>
-      <TEST INDEX="90" NAME="リソース パッケージ" DESCRIPTION="リソース パッケージに PE ファイルが含まれているかどうか確認してください。" EXECUTIONTIME="00h:00m:01s.13ms" OPTIONAL="FALSE">
+      <TEST INDEX="90" NAME="リソース パッケージ" DESCRIPTION="リソース パッケージに PE ファイルが含まれているかどうか確認してください。" EXECUTIONTIME="00h:00m:01s.25ms" OPTIONAL="FALSE">
         <MESSAGES />
         <RESULT><![CDATA[PASS]]></RESULT>
       </TEST>
     </REQUIREMENT>
     <REQUIREMENT NUMBER="14" TITLE="Windows セキュリティ機能のテスト" RATIONALE="アプリケーションは Windows セキュリティ機能をオプトインする必要があります。">
-      <TEST INDEX="70" NAME="禁止されたファイルのアナライザー" DESCRIPTION="安全でない既知のファイルを検出するアプリケーションの分析" EXECUTIONTIME="00h:00m:01s.36ms" OPTIONAL="FALSE">
+      <TEST INDEX="70" NAME="禁止されたファイルのアナライザー" DESCRIPTION="安全でない既知のファイルを検出するアプリケーションの分析" EXECUTIONTIME="00h:00m:01s.50ms" OPTIONAL="FALSE">
         <MESSAGES />
         <RESULT><![CDATA[PASS]]></RESULT>
       </TEST>
-      <TEST INDEX="62" NAME="プライベート コード署名" DESCRIPTION="アプリで、プライベート コード署名キー ファイルをパッケージしないでください。" EXECUTIONTIME="00h:00m:01s.31ms" OPTIONAL="FALSE">
+      <TEST INDEX="62" NAME="プライベート コード署名" DESCRIPTION="アプリで、プライベート コード署名キー ファイルをパッケージしないでください。" EXECUTIONTIME="00h:00m:01s.36ms" OPTIONAL="FALSE">
         <MESSAGES />
         <RESULT><![CDATA[PASS]]></RESULT>
       </TEST>
     </REQUIREMENT>
     <REQUIREMENT NUMBER="19" TITLE="アプリ マニフェスト リソースのテスト" RATIONALE="アプリ パッケージ マニフェストには、アプリ パッケージング仕様とアプリ マニフェスト スキーマに従って、resources.pri ファイル内で定義された有効なリソースを含める必要があります。">
-      <TEST INDEX="45" NAME="アプリ リソース" DESCRIPTION="パッケージには resources.pri ファイル内で定義された有効なリソースを含める必要があります。" EXECUTIONTIME="00h:00m:01s.05ms" OPTIONAL="TRUE">
+      <TEST INDEX="45" NAME="アプリ リソース" DESCRIPTION="パッケージには resources.pri ファイル内で定義された有効なリソースを含める必要があります。" EXECUTIONTIME="00h:00m:00s.95ms" OPTIONAL="TRUE">
         <MESSAGES />
         <RESULT><![CDATA[PASS]]></RESULT>
       </TEST>
-      <TEST INDEX="61" NAME="ブランド化" DESCRIPTION="アプリで、Windows SDK サンプルまたは Visual Studio によってパックされた既定のイメージを使用しないでください。" EXECUTIONTIME="00h:00m:02s.36ms" OPTIONAL="FALSE">
+      <TEST INDEX="61" NAME="ブランド化" DESCRIPTION="アプリで、Windows SDK サンプルまたは Visual Studio によってパックされた既定のイメージを使用しないでください。" EXECUTIONTIME="00h:00m:02s.52ms" OPTIONAL="FALSE">
         <MESSAGES />
         <RESULT><![CDATA[PASS]]></RESULT>
       </TEST>
     </REQUIREMENT>
     <REQUIREMENT NUMBER="20" TITLE="デバッグ構成のテスト" RATIONALE="アプリによるデバッグ バイナリのインストールは禁止されています。">
-      <TEST INDEX="46" NAME="デバッグの構成" DESCRIPTION="アプリによるデバッグ バイナリのインストールは禁止されています。" EXECUTIONTIME="00h:00m:01s.59ms" OPTIONAL="TRUE">
+      <TEST INDEX="46" NAME="デバッグの構成" DESCRIPTION="アプリによるデバッグ バイナリのインストールは禁止されています。" EXECUTIONTIME="00h:00m:01s.67ms" OPTIONAL="TRUE">
         <MESSAGES />
         <RESULT><![CDATA[PASS]]></RESULT>
       </TEST>
@@ -73,39 +73,39 @@
       </TEST>
     </REQUIREMENT>
     <REQUIREMENT NUMBER="24" TITLE="Windows ランタイム メタデータの検証" RATIONALE="メタデータは、すべての生成ソースにわたって整合性および一貫性を維持している必要があります。">
-      <TEST INDEX="56" NAME="ExclusiveTo 属性" DESCRIPTION="クラスは、別のクラスに対して ExclusiveTo とマークされたインターフェイスを実装してはなりません。" EXECUTIONTIME="00h:00m:07s.90ms" OPTIONAL="FALSE">
+      <TEST INDEX="56" NAME="ExclusiveTo 属性" DESCRIPTION="クラスは、別のクラスに対して ExclusiveTo とマークされたインターフェイスを実装してはなりません。" EXECUTIONTIME="00h:00m:08s.38ms" OPTIONAL="FALSE">
         <MESSAGES />
         <RESULT><![CDATA[PASS]]></RESULT>
       </TEST>
-      <TEST INDEX="57" NAME="型のロケーション" DESCRIPTION="一致する名前空間が最も長いメタデータ ファイル内に、型が定義されている必要があります。" EXECUTIONTIME="00h:00m:01s.07ms" OPTIONAL="FALSE">
+      <TEST INDEX="57" NAME="型のロケーション" DESCRIPTION="一致する名前空間が最も長いメタデータ ファイル内に、型が定義されている必要があります。" EXECUTIONTIME="00h:00m:00s.93ms" OPTIONAL="FALSE">
         <MESSAGES />
         <RESULT><![CDATA[PASS]]></RESULT>
       </TEST>
-      <TEST INDEX="55" NAME="型名の大文字小文字の区別" DESCRIPTION="名前空間および型名は、大文字/小文字の違いだけで異なるものにすることはできません。" EXECUTIONTIME="00h:00m:01s.01ms" OPTIONAL="FALSE">
+      <TEST INDEX="55" NAME="型名の大文字小文字の区別" DESCRIPTION="名前空間および型名は、大文字/小文字の違いだけで異なるものにすることはできません。" EXECUTIONTIME="00h:00m:00s.89ms" OPTIONAL="FALSE">
         <MESSAGES />
         <RESULT><![CDATA[PASS]]></RESULT>
       </TEST>
-      <TEST INDEX="54" NAME="型名の正確性" DESCRIPTION="システム型に限り、Windows 名前空間に存在できます。グローバル名前空間には、どの型も存在できません。" EXECUTIONTIME="00h:00m:00s.99ms" OPTIONAL="FALSE">
+      <TEST INDEX="54" NAME="型名の正確性" DESCRIPTION="システム型に限り、Windows 名前空間に存在できます。グローバル名前空間には、どの型も存在できません。" EXECUTIONTIME="00h:00m:00s.90ms" OPTIONAL="FALSE">
         <MESSAGES />
         <RESULT><![CDATA[PASS]]></RESULT>
       </TEST>
-      <TEST INDEX="58" NAME="一般的なメタデータ正確性" DESCRIPTION="メタデータ ファイルは、有効かつ正確であるためにさまざまな要件を満たしている必要があります。" EXECUTIONTIME="00h:00m:06s.37ms" OPTIONAL="TRUE">
+      <TEST INDEX="58" NAME="一般的なメタデータ正確性" DESCRIPTION="メタデータ ファイルは、有効かつ正確であるためにさまざまな要件を満たしている必要があります。" EXECUTIONTIME="00h:00m:07s.17ms" OPTIONAL="TRUE">
         <MESSAGES />
         <RESULT><![CDATA[PASS]]></RESULT>
       </TEST>
-      <TEST INDEX="53" NAME="プロパティ" DESCRIPTION="書き込み専用およびインデクサー プロパティを使用できない可能性があります。対応する getter メソッドと setter メソッドの型が一致している必要があります。" EXECUTIONTIME="00h:00m:00s.97ms" OPTIONAL="FALSE">
+      <TEST INDEX="53" NAME="プロパティ" DESCRIPTION="書き込み専用およびインデクサー プロパティを使用できない可能性があります。対応する getter メソッドと setter メソッドの型が一致している必要があります。" EXECUTIONTIME="00h:00m:00s.93ms" OPTIONAL="FALSE">
         <MESSAGES />
         <RESULT><![CDATA[PASS]]></RESULT>
       </TEST>
     </REQUIREMENT>
     <REQUIREMENT NUMBER="25" TITLE="パッケージのサニティ テスト" RATIONALE="アプリ パッケージのコンテンツを検証して、正確性を確認します。">
-      <TEST INDEX="89" NAME="アーカイブ ファイルの使用量" DESCRIPTION="パッケージのアーカイブ ファイル内に PE ファイルを含めることはできません。" EXECUTIONTIME="00h:00m:01s.42ms" OPTIONAL="TRUE">
+      <TEST INDEX="89" NAME="アーカイブ ファイルの使用量" DESCRIPTION="パッケージのアーカイブ ファイル内に PE ファイルを含めることはできません。" EXECUTIONTIME="00h:00m:01s.37ms" OPTIONAL="TRUE">
         <MESSAGES>
           <MESSAGE TEXT="パッケージにアーカイブ ファイル data\flutter_assets\NOTICES.Z が見つかりました。" />
         </MESSAGES>
         <RESULT><![CDATA[FAIL]]></RESULT>
       </TEST>
-      <TEST INDEX="88" NAME="ブロック済みの実行可能ファイル" DESCRIPTION="プロセス起動 API とブロックされた実行可能ファイルに対する参照があるかどうかを検出します" EXECUTIONTIME="00h:00m:05s.83ms" OPTIONAL="TRUE">
+      <TEST INDEX="88" NAME="ブロック済みの実行可能ファイル" DESCRIPTION="プロセス起動 API とブロックされた実行可能ファイルに対する参照があるかどうかを検出します" EXECUTIONTIME="00h:00m:06s.53ms" OPTIONAL="TRUE">
         <MESSAGES>
           <MESSAGE TEXT="ファイル url_launcher_windows_plugin.dll 内に &quot;プロセス起動&quot; に関連した API shell32.dll!ShellExecuteW への参照があります" />
           <MESSAGE TEXT="ファイル flutter_windows.dll 内に &quot;プロセス起動&quot; に関連した API kernel32.dll!CreateProcessW への参照があります" />
@@ -128,22 +128,22 @@
           <MESSAGE TEXT="ファイル pdfium.dll 内に &quot;CDB&quot; へのブロックされた実行可能な参照が含まれています。" />
           <MESSAGE TEXT="ファイル pdfium.dll 内に &quot;Reg&quot; へのブロックされた実行可能な参照が含まれています。" />
           <MESSAGE TEXT="ファイル super_native_extensions.dll 内に &quot;PowerShell&quot; へのブロックされた実行可能な参照が含まれています。" />
-          <MESSAGE TEXT="ファイル app.so 内に &quot;Csi&quot; へのブロックされた実行可能な参照が含まれています。" />
+          <MESSAGE TEXT="ファイル app.so 内に &quot;DNX&quot; へのブロックされた実行可能な参照が含まれています。" />
+          <MESSAGE TEXT="ファイル app.so 内に &quot;cmd&quot; へのブロックされた実行可能な参照が含まれています。" />
           <MESSAGE TEXT="ファイル app.so 内に &quot;powershell&quot; へのブロックされた実行可能な参照が含まれています。" />
           <MESSAGE TEXT="ファイル app.so 内に &quot;reg&quot; へのブロックされた実行可能な参照が含まれています。" />
-          <MESSAGE TEXT="ファイル app.so 内に &quot;cmd&quot; へのブロックされた実行可能な参照が含まれています。" />
+          <MESSAGE TEXT="ファイル app.so 内に &quot;Csi&quot; へのブロックされた実行可能な参照が含まれています。" />
           <MESSAGE TEXT="ファイル app.so 内に &quot;Bash&quot; へのブロックされた実行可能な参照が含まれています。" />
-          <MESSAGE TEXT="ファイル app.so 内に &quot;DNX&quot; へのブロックされた実行可能な参照が含まれています。" />
         </MESSAGES>
         <RESULT><![CDATA[FAIL]]></RESULT>
       </TEST>
-      <TEST INDEX="63" NAME="プラットフォームに適したファイル" DESCRIPTION="アプリでは、ターゲット プロセッサのアーキテクチャに一致しないファイルをインストールしないようにする必要があります。" EXECUTIONTIME="00h:00m:01s.34ms" OPTIONAL="TRUE">
+      <TEST INDEX="63" NAME="プラットフォームに適したファイル" DESCRIPTION="アプリでは、ターゲット プロセッサのアーキテクチャに一致しないファイルをインストールしないようにする必要があります。" EXECUTIONTIME="00h:00m:01s.31ms" OPTIONAL="TRUE">
         <MESSAGES />
         <RESULT><![CDATA[PASS]]></RESULT>
       </TEST>
     </REQUIREMENT>
     <REQUIREMENT NUMBER="26" TITLE="高 DPI サポート" RATIONALE="さまざまな高 DPI のディスプレイ設定で一貫して適切な UI の表示を実現するためには、アプリケーションを DPI 対応として設定する必要があります。">
-      <TEST INDEX="92" NAME="DPIAwarenessValidation" DESCRIPTION="さまざまな高 DPI のディスプレイ設定で一貫して適切な UI の表示を実現するためには、アプリケーションを DPI 対応として設定する必要があります。" EXECUTIONTIME="00h:00m:01s.57ms" OPTIONAL="FALSE">
+      <TEST INDEX="92" NAME="DPIAwarenessValidation" DESCRIPTION="さまざまな高 DPI のディスプレイ設定で一貫して適切な UI の表示を実現するためには、アプリケーションを DPI 対応として設定する必要があります。" EXECUTIONTIME="00h:00m:01s.59ms" OPTIONAL="FALSE">
         <MESSAGES />
         <RESULT><![CDATA[PASS]]></RESULT>
       </TEST>
@@ -151,12 +151,12 @@
   </REQUIREMENTS>
   <APPLICATIONS>
     <Installed_Programs>
-      <Program Name="Darksan.Kamispec" Type="Application" Source="AppxPackage" Publisher="CN=HisatorNotebookWackTest" Version="1.0.256.0" Language="1041" InstallDate="" RootDirPath="C:\WINDOWS\temp\appcert_12164\Darksan.Kamispec_1.0.256.0_x64__5v4h6tkd23wm6" Id="00001602dd03aad3ba753997efbeb455bb4000001104" HiddenArp="false">
+      <Program Name="Darksan.Kamispec" Type="Application" Source="AppxPackage" Publisher="CN=HisatorNotebookWackTest" Version="1.0.338.0" Language="1041" InstallDate="" RootDirPath="C:\WINDOWS\temp\appcert_4040\Darksan.Kamispec_1.0.338.0_x64__5v4h6tkd23wm6" Id="0000dfe23f62defecda88d5b248b902f86c300001104" HiddenArp="false">
         <Indicators>
           <WindowsStoreAppManifestIndicators>
-            <PackageManifest PackageFullName="Darksan.Kamispec_1.0.256.0_x64__5v4h6tkd23wm6">
+            <PackageManifest PackageFullName="Darksan.Kamispec_1.0.338.0_x64__5v4h6tkd23wm6">
               <Package>
-                <Identity Name="Darksan.Kamispec" Version="1.0.256.0" Publisher="CN=HisatorNotebookWackTest" ProcessorArchitecture="x64"></Identity>
+                <Identity Name="Darksan.Kamispec" Version="1.0.338.0" Publisher="CN=HisatorNotebookWackTest" ProcessorArchitecture="x64"></Identity>
                 <Properties>
                   <DisplayName>HisatorNotebook</DisplayName>
                   <PublisherDisplayName>Darksan</PublisherDisplayName>
@@ -197,95 +197,95 @@
         </Indicators>
         <StaticProperties>
           <Files Id="">
-            <File Id="00003f7c01f87add754b95315765c76aa45266f564c8" Name="audioplayers_windows_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="200192" SizeOfImage="217088" PeHeaderHash="01013ace5a7530b3bd070402d3e47b96485fb1a01913" PeChecksum="0" CrcChecksum="1189311173" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:27:19" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\audioplayers_windows_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="30f337a9527bc29e4eab568103826a1afc82d13481a5f9d73de701039280be33" />
-            <File Id="000032f0a48fe95d2821c60d53232c9b678b70463b5b" Name="avcodec-61.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="32915968" SizeOfImage="32944128" PeHeaderHash="0101f60e6f017c24b3d9778d9405d63f05c30ec15213" PeChecksum="32957425" CrcChecksum="451913005" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\avcodec-61.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8750" Sha256="6da3ce4c38e0524d6a9b2402a6b397e634275a78cf04889c1233a92cfb70bdf7" />
-            <File Id="0000cb0b216403221ca759f60ca3018bd4578149ebef" Name="avdevice-61.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="143872" SizeOfImage="172032" PeHeaderHash="0101d02e1e4db06511d1d91ae54532bfaf825bf8c760" PeChecksum="176301" CrcChecksum="3083177946" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\avdevice-61.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8750" Sha256="1876390016956b8d0601256b4431bfd4e45f9305afb6084e628af3f66c81bb15" />
-            <File Id="0000881078dbf5a2972d9ba76044ebffdb92ff70cadb" Name="avfilter-10.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="6433792" SizeOfImage="6463488" PeHeaderHash="0101599d117e997415fb453ec72e3f498ca9f5e7ce30" PeChecksum="6443830" CrcChecksum="2301431570" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\avfilter-10.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8750" Sha256="66123ab8dcb15744f835c72964f5a5b3c9b2d22a03766ad5665b976a8802f0ec" />
-            <File Id="00006e161ff64bbe5cacc354700c80edd23c5a0d858b" Name="avformat-61.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="4711936" SizeOfImage="4739072" PeHeaderHash="01015051cfd92cb83063740773fb8f7fba8ae4168285" PeChecksum="4773436" CrcChecksum="1641186924" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\avformat-61.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8750" Sha256="c76e0b677ab83aa128ff0b78066606352186f136a4b31bdbb1281f1f3d9c7200" />
-            <File Id="00007c172e3788236d292afd01ed5b1cc6374f3ecf08" Name="avutil-59.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="17531392" SizeOfImage="17563648" PeHeaderHash="01012a63e91cabf5b9f4cac29a951ee97923f8a6422a" PeChecksum="17560696" CrcChecksum="2022523754" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\avutil-59.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8750" Sha256="46b4b9f1b45e3010a269cc4b554e96b86122e48dc899a33badbf63b5126336de" />
-            <File Id="000014d610ce5b2506b83accd28b33e5d8c0f7c59366" Name="camera_windows_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="195072" SizeOfImage="208896" PeHeaderHash="0101cba0a03524c50d48068e9f48eb50d10a454cdc47" PeChecksum="0" CrcChecksum="1268314197" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:27:34" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\camera_windows_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="9b407882158a87d96a0cd433a7b8e98a6f64d6a80128f0a5cc0f2130831189e0" />
-            <File Id="0000182a701d7f8b2360d42fb1c9107c162620057c5c" Name="concrt140.dll" ProductName="microsoft® visual studio®" CompanyName="microsoft corporation" ProductVersion="14.40.33816.0" VerLanguage="1033" SwitchBackContext="0" FileVersion="14.40.33816.0" OriginalFileName="concrt140.dll" InternalName="concrt140.dll" Size="322640" SizeOfImage="315392" PeHeaderHash="010128cc3a9575c7a3cca5b4455d26354d36daeca673" PeChecksum="372231" CrcChecksum="2293359211" BinProductVersion="14.40.33816.0" BinFileVersion="14.40.33816.0" FileDescription="microsoft® concurrency runtime library" LegalCopyright="© microsoft corporation. all rights reserved." LinkDate="01/21/2025 14:02:16" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\concrt140.dll" SigPublisherName="microsoft windows software compatibility publisher" PeSubsystem="3" PeCharacteristics="8226" Sha256="3bfe7958b6c5cc0150927e6da0551829b8e3e1a3a8bb446adbf64f7f84751f74" />
-            <File Id="00001e31f6b2e804f3c0b3c0f4b8c30969e8e22b6a5c" Name="dartjni.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="72192" SizeOfImage="90112" PeHeaderHash="01013eecd7abbedc7d19ad04118aee4368f06e7c4787" PeChecksum="0" CrcChecksum="594133764" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:22:00" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\dartjni.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="945df8bf2bbb6b2c8234d1213bb64ee40846c28711b587f20a7b825f2b650b06" />
-            <File Id="000044c7f65d471a666b8fe44612ad428e3dc46ad693" Name="desktop_drop_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="83456" SizeOfImage="102400" PeHeaderHash="0101c5baa2e448942aa476680df89ccfb842be01729f" PeChecksum="0" CrcChecksum="2860624478" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:27:38" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\desktop_drop_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="1afd0e7237393993361ed2ae6109555e7ab5f6b871e3becbdda5d6d32edd5568" />
-            <File Id="00001dccc10ebcc5b418d344577ff406c2abc5e7108c" Name="desktop_multi_window_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="110080" SizeOfImage="131072" PeHeaderHash="01013e73e765f58d91aef277ea77fa55ae45c7bbb5b3" PeChecksum="0" CrcChecksum="1396894714" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:27:52" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\desktop_multi_window_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="5202fce929af628a25550118b0556503ff2e0c70aff0652df2156797c999598e" />
-            <File Id="00007f323aa210237927c35d0bf3bd1a932ea276b049" Name="ffmpeg-8.dll" ProductName="ffmpeg" CompanyName="ffmpeg project. built by https://github.com/wang-bin/avbuild" ProductVersion="git-2026-06-08-6028720-avbuild" VerLanguage="1033" SwitchBackContext="0" FileVersion="8.0.0" OriginalFileName="ffmpeg-8.dll" InternalName="libffmpeg" Size="12743168" SizeOfImage="17289216" PeHeaderHash="0101114d6c122b809123d123e29847f8645037d9e2f2" PeChecksum="0" CrcChecksum="3909525527" BinProductVersion="git-2026-06-08-6028720-avbuild" BinFileVersion="8.0.0.0" FileDescription="ffmpeg library" LegalCopyright="copyright (c) 2000-2026 ffmpeg project" LinkDate="06/09/2026 03:22:46" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\ffmpeg-8.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="191ab2ca33c69ec477702f43d94cbdaaa43b885790f61e48199ef06a92be2433" />
-            <File Id="0000f097f20ddc0e161d96c122294e7fd98b71273a06" Name="ffmpeg_kit_flutter_new_full_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="154624" SizeOfImage="172032" PeHeaderHash="0101c04c840f91689b6c5e152cdb6481e104ae7f8fed" PeChecksum="0" CrcChecksum="970584106" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/31/2026 13:38:52" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\ffmpeg_kit_flutter_new_full_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="99c3b3e3ed6ec92396f88ad3893a40b5a73fe3164ff25c51cbf9a04bff1dfab4" />
-            <File Id="00002eed11695756abac460b52482636724d870070fd" Name="file_selector_windows_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="105984" SizeOfImage="126976" PeHeaderHash="01011f8eff85baf58d55bf9bea0daa9cf2a18c63f207" PeChecksum="0" CrcChecksum="4236922438" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:28:04" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\file_selector_windows_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="7bf05946405263077bce8d2d5efcbc8c51fb3237bfedbaacb5a4558b919b5667" />
-            <File Id="00009755677623d270a193ac5f6e871dd0965fd06875" Name="flutter_tts_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="155648" SizeOfImage="172032" PeHeaderHash="01011f45629ad9eafc624bbf0eb09773912aef27b1ae" PeChecksum="0" CrcChecksum="2764994582" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:28:22" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\flutter_tts_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="8b800f5ffc3b263b2bcbec3c64204abc7435b4433eb724aab20fcb9472723a30" />
-            <File Id="00000a9eae71aac1cf5850e15c17f97420e8a6ac7fc3" Name="flutter_windows.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="20802048" SizeOfImage="21045248" PeHeaderHash="010135b66f4e0793071dda2d9bdc01bf18e442fe1e6d" PeChecksum="0" CrcChecksum="930539009" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="02/18/2026 19:54:49" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\flutter_windows.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="eb40d611ed1994a15e65ef3b2c399e04c860b2d2e021c1d1005775a4a7aee376" />
-            <File Id="0000f7aee086fea9bc25da6d76835593b635bcd45b89" Name="fvp.dll" ProductName="fvp" CompanyName="wang bin, wbsecg1@gmail.com, mediadevkit.com" ProductVersion="0.37.2.0" VerLanguage="0" SwitchBackContext="0" FileVersion="0,37,2,0" OriginalFileName="fvp.dll" InternalName="fvp" Size="121344" SizeOfImage="139264" PeHeaderHash="010134bf397a296eb49a25385dbbf39e4e745a54d0f2" PeChecksum="0" CrcChecksum="183476170" BinProductVersion="0.37.2.0" BinFileVersion="0.37.2.0" FileDescription="flutter video_player plugin via libmdk" LegalCopyright="copyright (c) 2026 wangbin, wbsecg1@gmail.com" LinkDate="08/31/2026 13:38:55" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\fvp.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="e540aaa26a22b4ca3a67e447dd069e5d668612f695954cae3ee97a160766f0ff" />
-            <File Id="0000c039a299315c3c25be9d66bcdbea3b6af6cf22bc" Name="highlight.min.js" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="129254" SizeOfImage="0" PeHeaderHash="" PeChecksum="0" CrcChecksum="1739118794" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="" BinaryType="data_only" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\data\flutter_assets\assets\js\highlight.min.js" SigPublisherName="" PeSubsystem="0" PeCharacteristics="0" Sha256="8ab71eb09c51f501e5e25157d9cff100e46cc29bcbfc744d0b746d451fca7f53" />
-            <File Id="0000d9042ceaf32d5edf466ccbf17caeba665e6f1008" Name="HisatorNotebook.exe" ProductName="hisatornotebook" CompanyName="com.example" ProductVersion="1.0.0+245" VerLanguage="1033" SwitchBackContext="0" FileVersion="1.0.0+245" OriginalFileName="hisatornotebook.exe" InternalName="hisatornotebook" Size="217600" SizeOfImage="229376" PeHeaderHash="01010c505e430d2dc7a849276660a5cebcfe812b53dd" PeChecksum="0" CrcChecksum="1518932332" BinProductVersion="1.0.0+245" BinFileVersion="1.0.0.245" FileDescription="hisatornotebook" LegalCopyright="copyright (c) 2026 com.example. all rights reserved." LinkDate="08/31/2026 13:39:01" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\hisatornotebook.exe" SigPublisherName="" PeSubsystem="2" PeCharacteristics="34" Sha256="c891c98e329c117ad512342a9a2be14841fc0e55ca8a229c1113e712860fb148" />
-            <File Id="0000f1cf834489baf26fd5123a51d47d092c8a8ad871" Name="irondash_engine_context_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="79360" SizeOfImage="98304" PeHeaderHash="010196ef5557df4c59fb12004e32f7984832214a8ffc" PeChecksum="0" CrcChecksum="1335043655" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:28:33" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\irondash_engine_context_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="de71aab52e5a05ec0793f652f6cf8fcd32387e0491f063a903e79e52c2e5cfb2" />
-            <File Id="0000a1f55bed7f6d21db656392bb096cf3b359e64215" Name="libass.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="1677824" SizeOfImage="1695744" PeHeaderHash="010169cbd03b2e2ec1ee381eb0a00dc58338cb57ac2d" PeChecksum="0" CrcChecksum="130095189" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/10/2026 13:58:39" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\libass.dll" SigPublisherName="" PeSubsystem="2" PeCharacteristics="8226" Sha256="fb234f1ce7c9e8f5785dee466f99ecb9e2ce5bde897165e25dd363c9118ed0ae" />
-            <File Id="0000e9cde7173a0cdfd401a0b7840541987abbda9382" Name="libbrotlicommon.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="143429" SizeOfImage="176128" PeHeaderHash="0101118bad365abbcb87ca75c5bda1aba3e2a5329a61" PeChecksum="204417" CrcChecksum="2600343201" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\libbrotlicommon.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="345c4ba59ffed3ebccf764b0030514679e209686012609489da613150b27637b" />
-            <File Id="00005001b2c343f50c354d10587953cd9735fe503079" Name="libbrotlidec.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="60413" SizeOfImage="90112" PeHeaderHash="01010255a967050ce9830d4e57e21518a7b6d9e14ffc" PeChecksum="106945" CrcChecksum="3845265607" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\libbrotlidec.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="fd54973d3f2401b2e09a06f22fe1fb482e4027c9a3f8ba1c870ce4498430e52c" />
-            <File Id="000086a18912adfd935ec25811fba7172b81384822bf" Name="libbrotlienc.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="756620" SizeOfImage="782336" PeHeaderHash="010164d86108f5f0062dd1b6e964aa6647b0f480f984" PeChecksum="818390" CrcChecksum="3925409336" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\libbrotlienc.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="3e44e4f1135921c1bcc873f7bc487f3522c3e73f126257276ae295d07d8a53e0" />
-            <File Id="00003b1396901e54c8bba752d0d5c3edadf851a62ad9" Name="libcrypto-3-x64.dll" ProductName="the openssl toolkit" CompanyName="the openssl project, https://www.openssl.org/" ProductVersion="3.5.2" VerLanguage="1033" SwitchBackContext="0" FileVersion="3.5.2" OriginalFileName="libcrypto" InternalName="libcrypto" Size="5793378" SizeOfImage="5824512" PeHeaderHash="0101972c78f572386e69d09acdaaf4b97b2deea55561" PeChecksum="5800961" CrcChecksum="3344000277" BinProductVersion="3.5.2" BinFileVersion="3.5.2.0" FileDescription="openssl library" LegalCopyright="copyright 1998-2025 the openssl authors. all rights reserved." LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\libcrypto-3-x64.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="872d89f8761629394d83f8bf3c7d8b478837c9a306924417b8ad3919dae2e8b6" />
-            <File Id="00006072c40c1addd6bf4e1be6b07777790addb8b48a" Name="libffi-8.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="35245" SizeOfImage="65536" PeHeaderHash="01019cc20fed7be139b12621e489e59716ead489ac82" PeChecksum="42623" CrcChecksum="2970130576" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\libffi-8.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="b6ff2cc6d4837ddc7c8f82a2ca11f5d823623f193b3533623b320f7686969808" />
-            <File Id="00007f3c015d4f11ef9da992581d9f956eaea4ed1ce2" Name="libffmpegkit.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="1487344" SizeOfImage="880640" PeHeaderHash="01014e836517b99d6d7da58afb424d08e868b042455c" PeChecksum="1527980" CrcChecksum="1447082720" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\libffmpegkit.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8230" Sha256="ee378ad7910488b12736c975913e84a141efa2e3d82e982c3d4f32ca47910450" />
-            <File Id="00008a0b5b03c98cfdcc851b604653c32d13ba908201" Name="libgcc_s_seh-1.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="150196" SizeOfImage="176128" PeHeaderHash="0101a57d2a480b264488a3828433c76a906d5d41956f" PeChecksum="170048" CrcChecksum="436744609" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\libgcc_s_seh-1.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="a04e032dc173aac51b64dd23a751e7c0e27eb0a3409e6807d9cc7e627f69a6b6" />
-            <File Id="0000e5ea20e5d239920e0f1672b1fd2d3d59beae7957" Name="libgmp-10.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="679747" SizeOfImage="708608" PeHeaderHash="01013a10a3f176571e55c76e419689467cc7115c3588" PeChecksum="719058" CrcChecksum="2256807482" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\libgmp-10.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="709605de1ac54e85930508b38906e5514c1f3d3159323802b13ccb50d2b7888f" />
-            <File Id="0000c1fde916338fc705aa03de6fd49c845a725cb913" Name="libgnutls-30.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="2196690" SizeOfImage="2203648" PeHeaderHash="0101307c420e8aefe6a1d97063bd648bc0e63a5debba" PeChecksum="2256825" CrcChecksum="632793533" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\libgnutls-30.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="cbcf15783e5e9cfcd0cfc3a22341a85730e42619daed98588bd6dcb60197796d" />
-            <File Id="0000fbd70f8f966ac7d3b229f8f895b16e695a823062" Name="libhogweed-6.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="284313" SizeOfImage="311296" PeHeaderHash="010175fc0a9fc90c1bb6b65a50618540ef70185c025a" PeChecksum="292346" CrcChecksum="3463460866" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\libhogweed-6.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="1825298b347f85710b39fa5d90b3970040a95908548125bb268dacc6fe1560b8" />
-            <File Id="000069a6f912e5ae513ef5caadfaee3c2ed145225807" Name="libiconv-2.dll" ProductName="libiconv: character set conversion library" CompanyName="free software foundation" ProductVersion="1.18" VerLanguage="1033" SwitchBackContext="0" FileVersion="1.18" OriginalFileName="iconv.dll" InternalName="iconv.dll" Size="1136529" SizeOfImage="1171456" PeHeaderHash="0101ddaf583101599b96c22ee6b656bcb4e5bc72e7f0" PeChecksum="1199841" CrcChecksum="2585877428" BinProductVersion="1.18" BinFileVersion="1.18.0.0" FileDescription="lgpled libiconv for windows" LegalCopyright="copyright (c) 1999-2024" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\libiconv-2.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="cf3433d0e93b6a860986aaf1e47e665a493097b808ece306cc6b69fe11db6625" />
-            <File Id="00001fcf0e677a61ca4ecb8caf73a6a8319ecdcd5bc4" Name="libidn2-0.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="246620" SizeOfImage="270336" PeHeaderHash="01012bb81a22a7d9770cd2d0fdf99fa5c7e3e8554c3a" PeChecksum="305161" CrcChecksum="4211000233" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\libidn2-0.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="afe36421d4318dca36e5614e73443e2cf54f07df21344a64fa92dcfdfaed1594" />
-            <File Id="0000765a65067368dbd4e5c86517279dd6b8e35c326c" Name="libintl-8.dll" ProductName="gnu libintl: accessing nls message catalogs" CompanyName="free software foundation" ProductVersion="0.26" VerLanguage="1033" SwitchBackContext="0" FileVersion="0.26" OriginalFileName="intl.dll" InternalName="intl.dll" Size="301688" SizeOfImage="335872" PeHeaderHash="0101667fb839c4bcd01aad81deb6e06265eea48903ec" PeChecksum="366884" CrcChecksum="3047877439" BinProductVersion="0.26" BinFileVersion="0.26.0.0" FileDescription="lgpled libintl for windows" LegalCopyright="copyright (c) 1995-2024" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\libintl-8.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="b840e35e38d24f4112b41f4d2a1e990e40f3909b51f1647e03de348a252e247e" />
-            <File Id="00005ef610a164e2f6b802a2b60a495454b32334e2a4" Name="libmp3lame-0.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="329506" SizeOfImage="540672" PeHeaderHash="0101c30a623baa2059939ab651799442341e95b6f55a" PeChecksum="394475" CrcChecksum="892613871" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\libmp3lame-0.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="811e3d06c3eed77cda0a10915d04b343744c1626bdc1f7e8cf65ba6e2c52a630" />
-            <File Id="0000fabf546ac45cb5c2047d8a1a4742ff5eb3180003" Name="libnettle-8.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="345008" SizeOfImage="372736" PeHeaderHash="0101f3e26c0b7ddce3f56893ef5054447ceb76335848" PeChecksum="373676" CrcChecksum="3335654999" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\libnettle-8.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="741e83d91ab5d75c89c857ee4ee728a6e6b71162620bb09602a7a1067ab7b7dd" />
-            <File Id="000026e1ac04e4bf3a74606d4be644bcaf170a9f4805" Name="libp11-kit-0.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="1435446" SizeOfImage="1462272" PeHeaderHash="0101cdce2936324b663e6f7ce4b0f5357720e8ad0224" PeChecksum="1457382" CrcChecksum="3918654917" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\libp11-kit-0.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="0c6421390915d5b2217a36ec4687cf28e2e0a065afd0f29a90e2efa704c23c11" />
-            <File Id="0000f2dcdb48a869b8a0ee3bc1f4f07d19f3bdaa2094" Name="libstdc++-6.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="2461848" SizeOfImage="2482176" PeHeaderHash="01018622a25d45d146e4ed8811876c57dbc722f74cf9" PeChecksum="2521499" CrcChecksum="4124743525" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\libstdc++-6.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="354afbc5040b888c22d8401afff11806b97b44441c8a1bea843ff3939a51eaa0" />
-            <File Id="000037e645af9896be800baa667d5f0d59dad451c7b9" Name="libtasn1-6.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="111905" SizeOfImage="135168" PeHeaderHash="0101252fd91ac63757358ccfd6d1aea22ea35ba21044" PeChecksum="139997" CrcChecksum="2580353457" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\libtasn1-6.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="eac8412c2e7c9f7126c1c36af6e5496eee0ec16c7c445183338f75512ed7b3c8" />
-            <File Id="00006e574e0eac66d258b47c4f2375b1cb90fe3b750c" Name="libunistring-5.dll" ProductName="gnu libunistring: unicode string library" CompanyName="free software foundation" ProductVersion="1.3" VerLanguage="1033" SwitchBackContext="0" FileVersion="1.3" OriginalFileName="unistring.dll" InternalName="unistring.dll" Size="2226615" SizeOfImage="2260992" PeHeaderHash="010178881989b64415b9637705bd289c04fe4a310fcd" PeChecksum="2234081" CrcChecksum="3096211003" BinProductVersion="1.3" BinFileVersion="1.3.0.0" FileDescription="lgpled libunistring for windows" LegalCopyright="copyright (c) 2001-2019" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\libunistring-5.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="360e932eda2cfee3e02612857e3e458cee9c6ba471713349d5a2074af94e33b9" />
-            <File Id="0000e0ffc90c7ef5db860ca48c1bc8413992894e5ffc" Name="libwinpthread-1.dll" ProductName="" CompanyName="mingw-w64 project. all rights reserved." ProductVersion="1, 0, 0, 0" VerLanguage="1033" SwitchBackContext="0" FileVersion="1, 0, 0, 0" OriginalFileName="winpthreadgc" InternalName="winpthreadgc" Size="64409" SizeOfImage="90112" PeHeaderHash="01017353757dc92e758729904796dc55e75e640be3e1" PeChecksum="109075" CrcChecksum="1160339033" BinProductVersion="1, 0, 0, 0" BinFileVersion="1.0.0.0" FileDescription="posix winthreads for windows" LegalCopyright="copyright (c) mingw-w64 project members 2010-2023" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\libwinpthread-1.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="7b5da4d8e654a2a6b466eab366e7b8046a86c54f2c8a2851272d63fad383ab45" />
-            <File Id="0000bf9a4d3f6d60458c59e5da632406780984dc2495" Name="libzstd.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="1196744" SizeOfImage="1220608" PeHeaderHash="0101d4b2aff5b87c9514a50ed98ae97a9b1a7eab4021" PeChecksum="1208325" CrcChecksum="3785216967" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\libzstd.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="66af2a446a152c533c0f19a27102d930a98f6fd854133fcb502446ef077d5624" />
-            <File Id="0000b2edcfa28a21bc5993622e77bbd84961453eb481" Name="local_notifier_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="162816" SizeOfImage="184320" PeHeaderHash="0101a0f39335a8dc3c16e8cae3903137eb9a1acce535" PeChecksum="0" CrcChecksum="4054035547" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:28:43" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\local_notifier_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="c8b22042e5442af10b18a1327e9ede377ccb78be57cd875ad3590beb6110ab2f" />
-            <File Id="00009632727f585e96858ad18523fccdf85bbba52170" Name="marked.min.js" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="39903" SizeOfImage="0" PeHeaderHash="" PeChecksum="0" CrcChecksum="1557963476" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="" BinaryType="data_only" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\data\flutter_assets\assets\js\marked.min.js" SigPublisherName="" PeSubsystem="0" PeCharacteristics="0" Sha256="3e7e7d7feb3e5d58cb6c804f68ab5c24cc7e5eb6270fd6e5cbb9124739217d0c" />
-            <File Id="0000805c7e6edf68240035c5bee5dfb914967e853ed9" Name="mdk-braw.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="110080" SizeOfImage="126976" PeHeaderHash="010106b4645be31f166fa268823dee74ae5f78148d1f" PeChecksum="0" CrcChecksum="2098398111" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/12/2026 14:28:44" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\mdk-braw.dll" SigPublisherName="" PeSubsystem="2" PeCharacteristics="8226" Sha256="1729b70fef479cd09fb2118db83f3364ffc6b63de0974d4f4a65a7447beba8f6" />
-            <File Id="0000aa2ca8cb639b7bc1520ec1afd42df2f2e82291ed" Name="mdk-nvjp2k.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="248832" SizeOfImage="266240" PeHeaderHash="0101aede8c35d798531370d5da801e510ac35fedb924" PeChecksum="0" CrcChecksum="2798403608" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/12/2026 14:28:45" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\mdk-nvjp2k.dll" SigPublisherName="" PeSubsystem="2" PeCharacteristics="8226" Sha256="b38b19964adb1abff5752fe10be074d9ec5cb5d9698299af72c916cb2ae2f2d9" />
-            <File Id="0000ab20e8222553febd6933cf96d38f6754a3ed2207" Name="mdk-r3d.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="141312" SizeOfImage="163840" PeHeaderHash="01011af74f5863c006a4d61852d5975487e73d6fb88d" PeChecksum="0" CrcChecksum="215505357" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/12/2026 14:28:45" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\mdk-r3d.dll" SigPublisherName="" PeSubsystem="2" PeCharacteristics="8226" Sha256="4c15923b43eb8c401e75dd35e4e31207737575e4e62417c85e47348f7358a72f" />
-            <File Id="0000f4893b5d6a7d72bd5074dd2c37f559fc2a198158" Name="mdk.dll" ProductName="mdk" CompanyName="wang bin, wbsecg1@gmail.com, qtav.org" ProductVersion="0.36.0.0 551d7f2" VerLanguage="0" SwitchBackContext="0" FileVersion="0,36,0,0" OriginalFileName="mdk.dll" InternalName="mdk" Size="2449408" SizeOfImage="2494464" PeHeaderHash="010109d32f40a21ee82e13ba660a7dde3600c7178d84" PeChecksum="0" CrcChecksum="2655867532" BinProductVersion="0.36.0.0 551d7f2" BinFileVersion="0.36.0.0" FileDescription="multimedia dev kit 551d7f2" LegalCopyright="copyright (c) 2026 wangbin, wbsecg1@gmail.com" LinkDate="06/12/2026 14:27:56" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\mdk.dll" SigPublisherName="" PeSubsystem="2" PeCharacteristics="8226" Sha256="d85bb8073d796132001fd2be0996fbd0a72c7d9e74edf8e011e1182cdaae897f" />
-            <File Id="00007a3075f9fd946bc6306b43e3b432483de74653c5" Name="mermaid.min.js" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="3566058" SizeOfImage="0" PeHeaderHash="" PeChecksum="0" CrcChecksum="1893726205" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="" BinaryType="data_only" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\data\flutter_assets\assets\js\mermaid.min.js" SigPublisherName="" PeSubsystem="0" PeCharacteristics="0" Sha256="18327bef70d96fb505fe7287d9f6a7362ebf07ff6576ddfaffb1a06f3e1a2954" />
-            <File Id="000055157b5aabd167dc9dbd158a5c7ad435101652e7" Name="msvcp140.dll" ProductName="microsoft® visual studio®" CompanyName="microsoft corporation" ProductVersion="14.40.33816.0" VerLanguage="1033" SwitchBackContext="0" FileVersion="14.40.33816.0" OriginalFileName="msvcp140.dll" InternalName="msvcp140.dll" Size="575056" SizeOfImage="577536" PeHeaderHash="010134b07c4bc5c30d80c418ac8a569d4f7c06013131" PeChecksum="620190" CrcChecksum="3593268424" BinProductVersion="14.40.33816.0" BinFileVersion="14.40.33816.0" FileDescription="microsoft® c runtime library" LegalCopyright="© microsoft corporation. all rights reserved." LinkDate="12/19/2062 17:23:44" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\msvcp140.dll" SigPublisherName="microsoft windows software compatibility publisher" PeSubsystem="3" PeCharacteristics="8226" Sha256="7b8a6f283884e6448559dcf510b00c1a885bfb8e598ea05cd2c290c874657326" />
-            <File Id="000058fdfc63ca9957451afe2fd7afd19924b8a3add1" Name="msvcp140_1.dll" ProductName="microsoft® visual studio®" CompanyName="microsoft corporation" ProductVersion="14.40.33816.0" VerLanguage="1033" SwitchBackContext="0" FileVersion="14.40.33816.0" OriginalFileName="msvcp140_1.dll" InternalName="msvcp140_1.dll" Size="35920" SizeOfImage="36864" PeHeaderHash="0101d4fc75845b000e69fad12736421555cabb9b6c2b" PeChecksum="99306" CrcChecksum="2149545983" BinProductVersion="14.40.33816.0" BinFileVersion="14.40.33816.0" FileDescription="microsoft® c runtime library _1" LegalCopyright="© microsoft corporation. all rights reserved." LinkDate="06/13/2083 04:17:46" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\msvcp140_1.dll" SigPublisherName="microsoft windows software compatibility publisher" PeSubsystem="3" PeCharacteristics="8226" Sha256="d5b7e39b158ca6d64d10713b69d7baea9ba9c686a9442c9d7217f6914c6a955d" />
-            <File Id="000026e1f137762711ff1f3c73744644636b7dfb231b" Name="msvcp140_2.dll" ProductName="microsoft® visual studio®" CompanyName="microsoft corporation" ProductVersion="14.40.33816.0" VerLanguage="1033" SwitchBackContext="0" FileVersion="14.40.33816.0" OriginalFileName="msvcp140_2.dll" InternalName="msvcp140_2.dll" Size="268912" SizeOfImage="266240" PeHeaderHash="01014dee2634c49d9e5bbb102b5331f4f3095dcac1e3" PeChecksum="296447" CrcChecksum="3141219750" BinProductVersion="14.40.33816.0" BinFileVersion="14.40.33816.0" FileDescription="microsoft® c runtime library _2" LegalCopyright="© microsoft corporation. all rights reserved." LinkDate="04/08/1980 13:12:27" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\msvcp140_2.dll" SigPublisherName="microsoft windows software compatibility publisher" PeSubsystem="3" PeCharacteristics="8226" Sha256="fbb8557f73ab9a207bd67643fdcf9ae34527325d227c53707cebdf0d1c8c4658" />
-            <File Id="00005685564ba0e5004c6d74f5dfd531a204ce8d4d90" Name="msvcp140_atomic_wait.dll" ProductName="microsoft® visual studio®" CompanyName="microsoft corporation" ProductVersion="14.40.33816.0" VerLanguage="1033" SwitchBackContext="0" FileVersion="14.40.33816.0" OriginalFileName="msvcp140_atomic_wait.dll" InternalName="msvcp140_atomic_wait.dll" Size="50792" SizeOfImage="81920" PeHeaderHash="0101b493bd854b8d90b4ff4d3fb839d03b354a4a19ee" PeChecksum="58669" CrcChecksum="3470979681" BinProductVersion="14.40.33816.0" BinFileVersion="14.40.33816.0" FileDescription="microsoft® c runtime library _atomic_wait" LegalCopyright="© microsoft corporation. all rights reserved." LinkDate="02/04/2037 02:09:25" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\msvcp140_atomic_wait.dll" SigPublisherName="microsoft windows software compatibility publisher" PeSubsystem="3" PeCharacteristics="8226" Sha256="d2dc98b3d9cbfebd92d16aeb6be475b68ec30943503014e33b645e5ca7de2cfb" />
-            <File Id="00000f1060f7ef6e90385e10c4551d965214ce16e883" Name="msvcp140_codecvt_ids.dll" ProductName="microsoft® visual studio®" CompanyName="microsoft corporation" ProductVersion="14.40.33816.0" VerLanguage="1033" SwitchBackContext="0" FileVersion="14.40.33816.0" OriginalFileName="msvcp140_codecvt_ids.dll" InternalName="msvcp140_codecvt_ids.dll" Size="31824" SizeOfImage="28672" PeHeaderHash="0101a20776847fb7196b0cb7dcbe6ae016a31c51a3c4" PeChecksum="77662" CrcChecksum="1867563196" BinProductVersion="14.40.33816.0" BinFileVersion="14.40.33816.0" FileDescription="microsoft® c runtime library _codecvt_ids" LegalCopyright="© microsoft corporation. all rights reserved." LinkDate="11/29/1985 20:10:38" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\msvcp140_codecvt_ids.dll" SigPublisherName="microsoft windows software compatibility publisher" PeSubsystem="3" PeCharacteristics="8226" Sha256="d5fbe10526c30aae0665c2409acb55a50cb6d9cd159138ab9ebb19db87bcd59f" />
-            <File Id="0000fe19fb9e9711f45f25cef2d163bff949195aedf9" Name="no_sleep.js" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="13669" SizeOfImage="0" PeHeaderHash="" PeChecksum="0" CrcChecksum="176117298" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="" BinaryType="data_only" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\data\flutter_assets\packages\wakelock_plus\assets\no_sleep.js" SigPublisherName="" PeSubsystem="0" PeCharacteristics="0" Sha256="726c644cda17bf271d996fb629806a59409607e9b00e0dfbf75adfd3986bbb7e" />
-            <File Id="0000831b4373734bb61ab61741d029e0ab10a1e113a6" Name="pdfium.dll" ProductName="pdfium" CompanyName="google inc." ProductVersion="106.0.5200.0" VerLanguage="1033" SwitchBackContext="0" FileVersion="106.0.5200.0" OriginalFileName="pdfium.dll" InternalName="pdfium" Size="4749824" SizeOfImage="4829184" PeHeaderHash="01018b281ac9112d7f5272df56eee4b98a153c704e1c" PeChecksum="0" CrcChecksum="734478010" BinProductVersion="106.0.5200.0" BinFileVersion="106.0.5200.0" FileDescription="pdfium (compiled by github.com/bblanchon)" LegalCopyright="copyright 2022 pdfium authors. all rights reserved." LinkDate="06/05/2022 05:00:00" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\pdfium.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="0c88ebacc0393fd45fc3e7b35e31e72c9e55b633a846a7ecf4085694dba68abd" />
-            <File Id="00004aa6c72279b4eb126ca37b9cc928e14b1790172b" Name="permission_handler_windows_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="111616" SizeOfImage="131072" PeHeaderHash="0101c23e59446000e9f6d7ae5dd6f1b192d341d1f10f" PeChecksum="0" CrcChecksum="523374462" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:28:50" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\permission_handler_windows_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="ce07abf54c7cdfc42df5b64bba386af2ae481e3bf98ec9078a4c090d2c4e1026" />
-            <File Id="0000b2a41b04b9bc3092f8aeffdeabb3a91c152e08a3" Name="printing_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="137728" SizeOfImage="155648" PeHeaderHash="0101e0d5baa2b750b9793a12875ae590a8c68f5467d8" PeChecksum="0" CrcChecksum="1656833405" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:28:57" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\printing_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="df59ce6fd9ae90be3294f8fb0f468fc33a4790e4f7f935a87de002a095beb51e" />
-            <File Id="00002d13bd89f88d89e62fb6e13f7b859f5e5d9f22ab" Name="resources.pri" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="22208" SizeOfImage="0" PeHeaderHash="" PeChecksum="0" CrcChecksum="1976550012" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="" BinaryType="data_only" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\resources.pri" SigPublisherName="" PeSubsystem="0" PeCharacteristics="0" Sha256="e7d07e3ee63422787ea1b3fe0a5e8f9c7e165e79495b666eae48639b31c75b18" />
-            <File Id="0000e0fa47687684a15190457dde40d7220561c9ba3d" Name="resources.scale-150.pri" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="6808" SizeOfImage="0" PeHeaderHash="" PeChecksum="0" CrcChecksum="951718382" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="" BinaryType="data_only" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\resources.scale-150.pri" SigPublisherName="" PeSubsystem="0" PeCharacteristics="0" Sha256="a7377f813fd64887559c4f59195d735b23d99465f6c974be0c3c0e52a5ba2e53" />
-            <File Id="000072fb66a58e43bd7d72e05d01c684330e2b341b07" Name="resources.scale-400.pri" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="6808" SizeOfImage="0" PeHeaderHash="" PeChecksum="0" CrcChecksum="1885081476" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="" BinaryType="data_only" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\resources.scale-400.pri" SigPublisherName="" PeSubsystem="0" PeCharacteristics="0" Sha256="6a41630777457f4b0a381717ce2542784d19d21534e85ab212b76c32a176bc06" />
-            <File Id="0000acbbf76d8e02e2b53ffeaa17690d80d3a25a802a" Name="resources.scale-200.pri" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="6808" SizeOfImage="0" PeHeaderHash="" PeChecksum="0" CrcChecksum="984326047" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="" BinaryType="data_only" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\resources.scale-200.pri" SigPublisherName="" PeSubsystem="0" PeCharacteristics="0" Sha256="51b05b0944499b6db2a33abb4f970dc56c5e995ba5a5a7bdd94811faa26c2542" />
-            <File Id="0000ac420b679b89eb2fa6fdf0b29143a1a0d74615cf" Name="resources.scale-125.pri" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="6808" SizeOfImage="0" PeHeaderHash="" PeChecksum="0" CrcChecksum="194781921" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="" BinaryType="data_only" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\resources.scale-125.pri" SigPublisherName="" PeSubsystem="0" PeCharacteristics="0" Sha256="350a966f6f9bf66f9183c65ef3ba91ed47de7aa5dd676a4869c84163910ceac6" />
-            <File Id="000018bf991f83487f3beedfb23c5df71144c41bca4d" Name="screen_retriever_windows_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="116224" SizeOfImage="135168" PeHeaderHash="01017987ed8fb133a8d3be26fbad86f75b4f80fe098e" PeChecksum="0" CrcChecksum="622428814" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:29:01" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\screen_retriever_windows_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="0582bf9552cefa729745561d2de62ca7f8a659281b7d0afd712ee54a653d45cb" />
-            <File Id="0000887a43a4623b4ced693378599c89de4107e5a633" Name="speech_to_text_windows_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="93696" SizeOfImage="114688" PeHeaderHash="01012a0b6c20fdac9fdb9827a0566074855d8cea7306" PeChecksum="0" CrcChecksum="1501862652" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:29:05" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\speech_to_text_windows_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="5ac8a4b89b785e77c88d4c671dc72de6b4bc6363446d32af0997895543edf6af" />
-            <File Id="0000be3c7eab8d33626230159a4b1703520076bb5a3d" Name="super_native_extensions.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="798208" SizeOfImage="806912" PeHeaderHash="01019c7c00e52e21ad699667d4e4f9ec18d808a97062" PeChecksum="0" CrcChecksum="2599400719" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:23:50" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\super_native_extensions.dll" SigPublisherName="" PeSubsystem="2" PeCharacteristics="8226" Sha256="be1c0fa9ccc2c7eb20c4370698fc1eb6bfa4e278b6f2f6da6b45fe2f1e04729f" />
-            <File Id="0000799d673715980395333de1b7b4ba932d046e8292" Name="super_native_extensions_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="34816" SizeOfImage="53248" PeHeaderHash="0101e2c313feb0286181ceb8f68ecac35416e0ff6019" PeChecksum="0" CrcChecksum="3285650348" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:29:11" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\super_native_extensions_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="9a3371b66042b17e479bdcf6656bc582c2ff5d0c0e52b09182255b56f24634b9" />
-            <File Id="000079404a0bf2bcacb00e2d4fa275b95c37e59d5584" Name="swresample-5.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="634880" SizeOfImage="659456" PeHeaderHash="0101911a5bf1c6139b60a985891d81ccef013c30f909" PeChecksum="641308" CrcChecksum="4267499764" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\swresample-5.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8750" Sha256="29a83e0a9a0eaf08f4162c2a004cec9f4fea8945214a46700f0d5a96507528e8" />
-            <File Id="0000b841f55551200a3a7d5a6f7b0778c7da3ab7ab03" Name="swscale-8.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="602112" SizeOfImage="630784" PeHeaderHash="010191a6cf265364be11332e7c013c23b96ec39d19e6" PeChecksum="635714" CrcChecksum="1815182642" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\swscale-8.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8750" Sha256="5ecf6df579ffa9014e500dbefe7b5aae8734f3af460c15fe36023b08e522f7e3" />
-            <File Id="0000f29b863de1235ead89ea149cab51f7bcd7e3e40a" Name="syncfusion_pdfviewer_windows_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="88576" SizeOfImage="106496" PeHeaderHash="01017b9f22e902fa2706255102c752e6ce153f359ffd" PeChecksum="0" CrcChecksum="874742968" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:29:14" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\syncfusion_pdfviewer_windows_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="1a66c15bb424368c989ef2f243c4016c931701f626a7735093febb262129d58a" />
-            <File Id="0000eb44540186285271130b056fa6099b1988319fc4" Name="t-rex.html" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="82244" SizeOfImage="0" PeHeaderHash="" PeChecksum="0" CrcChecksum="3660422174" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="" BinaryType="data_only" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\data\flutter_assets\packages\flutter_inappwebview\assets\t_rex_runner\t-rex.html" SigPublisherName="" PeSubsystem="0" PeCharacteristics="0" Sha256="dc72cfc1f1d2a5013bb9de34f8cacf5e26e542d7d713fcbe09b865b4aaca6ddf" />
-            <File Id="0000cfb8e18acf40a77004f8925491402f7c9d08e536" Name="tex-svg.js" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="2108580" SizeOfImage="0" PeHeaderHash="" PeChecksum="0" CrcChecksum="2952786169" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="" BinaryType="data_only" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\data\flutter_assets\assets\js\tex-svg.js" SigPublisherName="" PeSubsystem="0" PeCharacteristics="0" Sha256="d4295dc33744836935c1399feece5159577b34c5c8ffb9f1c6324cd82e03a882" />
-            <File Id="0000028e86c697320d8e902c4170f8b9a0739bd6d8b5" Name="url_launcher_windows_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="89600" SizeOfImage="106496" PeHeaderHash="0101acee354007a8f82708369c2f84e192cd5a3d58ff" PeChecksum="0" CrcChecksum="3519224456" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:29:19" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\url_launcher_windows_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="3a1fcc92ee5647d9e168790fbbab87cd2db98a4ab7ac72e42070ae181e8377f2" />
-            <File Id="000041419beac767d9b8349491ffa258dc755234871e" Name="vccorlib140.dll" ProductName="microsoft® visual studio®" CompanyName="microsoft corporation" ProductVersion="14.40.33816.0" VerLanguage="1033" SwitchBackContext="0" FileVersion="14.40.33816.0" OriginalFileName="vccorlib140.dll" InternalName="vccorlib140.dll" Size="351824" SizeOfImage="348160" PeHeaderHash="0101eae386a2c4af460a5d3473dbfbebb014e93e2fa2" PeChecksum="381392" CrcChecksum="3530268031" BinProductVersion="14.40.33816.0" BinFileVersion="14.40.33816.0" FileDescription="microsoft ® vc winrt core library" LegalCopyright="© microsoft corporation. all rights reserved." LinkDate="08/13/2025 10:56:04" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\vccorlib140.dll" SigPublisherName="microsoft windows software compatibility publisher" PeSubsystem="3" PeCharacteristics="8226" Sha256="93262c0c8fda176297afa3ac8de65807777a468f8c093c06da0d4de676853f25" />
-            <File Id="0000948c3acd2702737949b2b3a030e1d2a2181fb4af" Name="vcruntime140.dll" ProductName="microsoft® visual studio®" CompanyName="microsoft corporation" ProductVersion="14.40.33816.0" VerLanguage="1033" SwitchBackContext="0" FileVersion="14.40.33816.0" OriginalFileName="vcruntime140.dll" InternalName="vcruntime140.dll" Size="119888" SizeOfImage="122880" PeHeaderHash="0101d64699faf1857b19f5d9faeb13f3eea18fd303f6" PeChecksum="131291" CrcChecksum="2976330831" BinProductVersion="14.40.33816.0" BinFileVersion="14.40.33816.0" FileDescription="microsoft® c runtime library" LegalCopyright="© microsoft corporation. all rights reserved." LinkDate="08/31/2036 18:37:58" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\vcruntime140.dll" SigPublisherName="microsoft windows software compatibility publisher" PeSubsystem="3" PeCharacteristics="8226" Sha256="642ae52687a7a6bfb03d0b20dc7e07f4b11ceca634f7eb7ba184d6711ab51a51" />
-            <File Id="000077903692aae688f6d5b04511d5006c66ce4daf8b" Name="vcruntime140_1.dll" ProductName="microsoft® visual studio®" CompanyName="microsoft corporation" ProductVersion="14.40.33816.0" VerLanguage="1033" SwitchBackContext="0" FileVersion="14.40.33816.0" OriginalFileName="vcruntime140_1.dll" InternalName="vcruntime140_1.dll" Size="49744" SizeOfImage="49152" PeHeaderHash="01016d8785d8f5de350093fb9aafa5d157f19f0a914e" PeChecksum="76051" CrcChecksum="964449029" BinProductVersion="14.40.33816.0" BinFileVersion="14.40.33816.0" FileDescription="microsoft® c runtime library" LegalCopyright="© microsoft corporation. all rights reserved." LinkDate="12/29/1977 03:25:30" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\vcruntime140_1.dll" SigPublisherName="microsoft windows software compatibility publisher" PeSubsystem="3" PeCharacteristics="8226" Sha256="0e560532e721b6938dafe4055eedd0251ba5eb5994cd96937cebbcf16a7ddae5" />
-            <File Id="00009ac6b37190ff8e759c83a98e6c9b223998419fd5" Name="vcruntime140_threads.dll" ProductName="microsoft® visual studio®" CompanyName="microsoft corporation" ProductVersion="14.40.33816.0" VerLanguage="1033" SwitchBackContext="0" FileVersion="14.40.33816.0" OriginalFileName="vcruntime140_threads.dll" InternalName="vcruntime140_threads.dll" Size="38480" SizeOfImage="36864" PeHeaderHash="0101a2e2a0928aedb1564b9a62a161808ce06cb32c67" PeChecksum="40599" CrcChecksum="184538575" BinProductVersion="14.40.33816.0" BinFileVersion="14.40.33816.0" FileDescription="microsoft® c runtime library" LegalCopyright="© microsoft corporation. all rights reserved." LinkDate="07/21/2058 23:15:58" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\vcruntime140_threads.dll" SigPublisherName="microsoft windows software compatibility publisher" PeSubsystem="3" PeCharacteristics="8226" Sha256="73951fdb23b055bdc1b6be1d0e366c57b68b644784f5a240b0f5712ef11547d0" />
-            <File Id="00000b880fe3cc81d0bccadd31dcaddedc5925b66c05" Name="web_support.js" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="28409" SizeOfImage="0" PeHeaderHash="" PeChecksum="0" CrcChecksum="3950293576" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="" BinaryType="data_only" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\data\flutter_assets\packages\flutter_inappwebview_web\assets\web\web_support.js" SigPublisherName="" PeSubsystem="0" PeCharacteristics="0" Sha256="2f9ccef9db4da6b73d3c678ffe570aad402791b00dfa520730fdb66d0dc209fc" />
-            <File Id="00006de1079c301749cd45f8bd0419d0adb6744dea7b" Name="WebView2Loader.dll" ProductName="microsoft edge embedded browser webview loader" CompanyName="microsoft corporation" ProductVersion="1.0.1210.39" VerLanguage="1033" SwitchBackContext="0" FileVersion="1.0.1210.39" OriginalFileName="webview2loader.dll" InternalName="webview2loader.dll" Size="142264" SizeOfImage="163840" PeHeaderHash="01012afa90ce1b5a3b2b8ebd0e27b0a85c0039d72183" PeChecksum="149062" CrcChecksum="1842729819" BinProductVersion="1.0.1210.39" BinFileVersion="1.0.1210.39" FileDescription="microsoft edge embedded browser webview loader" LegalCopyright="copyright microsoft corporation. all rights reserved." LinkDate="05/04/2022 22:54:26" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\webview2loader.dll" SigPublisherName="microsoft corporation" PeSubsystem="3" PeCharacteristics="8226" Sha256="f0fccd520afd3056df3130b6ccd3386fef029fe8a5637f190b1da57c96330e85" />
-            <File Id="00002748c75a257dc24fd89cb2f104444b8beee6c5ad" Name="webview_windows_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="479744" SizeOfImage="495616" PeHeaderHash="01011bc6fd4be96702f9500d12e738eec86ec529c782" PeChecksum="0" CrcChecksum="3813982247" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:30:16" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\webview_windows_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="df1bf60176b5d1646ef1d270aa41f0b5fed653bc1daf7aeedb7664806e18266a" />
-            <File Id="0000a320683891fb94e3925616d33dfe2919b5879504" Name="window_manager_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="141312" SizeOfImage="163840" PeHeaderHash="0101fe2ab03976dd1e8b2ea29230721da67ab87e9b27" PeChecksum="0" CrcChecksum="1829342891" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:30:21" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\window_manager_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="513ec2a08845697122e20dc590b0ed4112241b1f82134c6fece424530dc30770" />
-            <File Id="00002b86e3e02c2603b18f038cecd4924fdf55de887d" Name="zlib1.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="120814" SizeOfImage="147456" PeHeaderHash="01018c5a01abe64b5203cf64e887b5d8f8c33ddbe897" PeChecksum="175059" CrcChecksum="4149163493" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_12164\darksan.kamispec_1.0.256.0_x64__5v4h6tkd23wm6\zlib1.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="b46a9c7519066cb25938695af1a50ad06001bb949055d85ccb2edc42a4d97a7a" />
+            <File Id="00003f7c01f87add754b95315765c76aa45266f564c8" Name="audioplayers_windows_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="200192" SizeOfImage="217088" PeHeaderHash="01013ace5a7530b3bd070402d3e47b96485fb1a01913" PeChecksum="0" CrcChecksum="1189311173" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:27:19" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\audioplayers_windows_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="30f337a9527bc29e4eab568103826a1afc82d13481a5f9d73de701039280be33" />
+            <File Id="000032f0a48fe95d2821c60d53232c9b678b70463b5b" Name="avcodec-61.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="32915968" SizeOfImage="32944128" PeHeaderHash="0101f60e6f017c24b3d9778d9405d63f05c30ec15213" PeChecksum="32957425" CrcChecksum="451913005" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\avcodec-61.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8750" Sha256="6da3ce4c38e0524d6a9b2402a6b397e634275a78cf04889c1233a92cfb70bdf7" />
+            <File Id="0000cb0b216403221ca759f60ca3018bd4578149ebef" Name="avdevice-61.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="143872" SizeOfImage="172032" PeHeaderHash="0101d02e1e4db06511d1d91ae54532bfaf825bf8c760" PeChecksum="176301" CrcChecksum="3083177946" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\avdevice-61.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8750" Sha256="1876390016956b8d0601256b4431bfd4e45f9305afb6084e628af3f66c81bb15" />
+            <File Id="0000881078dbf5a2972d9ba76044ebffdb92ff70cadb" Name="avfilter-10.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="6433792" SizeOfImage="6463488" PeHeaderHash="0101599d117e997415fb453ec72e3f498ca9f5e7ce30" PeChecksum="6443830" CrcChecksum="2301431570" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\avfilter-10.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8750" Sha256="66123ab8dcb15744f835c72964f5a5b3c9b2d22a03766ad5665b976a8802f0ec" />
+            <File Id="00006e161ff64bbe5cacc354700c80edd23c5a0d858b" Name="avformat-61.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="4711936" SizeOfImage="4739072" PeHeaderHash="01015051cfd92cb83063740773fb8f7fba8ae4168285" PeChecksum="4773436" CrcChecksum="1641186924" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\avformat-61.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8750" Sha256="c76e0b677ab83aa128ff0b78066606352186f136a4b31bdbb1281f1f3d9c7200" />
+            <File Id="00007c172e3788236d292afd01ed5b1cc6374f3ecf08" Name="avutil-59.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="17531392" SizeOfImage="17563648" PeHeaderHash="01012a63e91cabf5b9f4cac29a951ee97923f8a6422a" PeChecksum="17560696" CrcChecksum="2022523754" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\avutil-59.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8750" Sha256="46b4b9f1b45e3010a269cc4b554e96b86122e48dc899a33badbf63b5126336de" />
+            <File Id="000014d610ce5b2506b83accd28b33e5d8c0f7c59366" Name="camera_windows_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="195072" SizeOfImage="208896" PeHeaderHash="0101cba0a03524c50d48068e9f48eb50d10a454cdc47" PeChecksum="0" CrcChecksum="1268314197" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:27:34" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\camera_windows_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="9b407882158a87d96a0cd433a7b8e98a6f64d6a80128f0a5cc0f2130831189e0" />
+            <File Id="0000182a701d7f8b2360d42fb1c9107c162620057c5c" Name="concrt140.dll" ProductName="microsoft® visual studio®" CompanyName="microsoft corporation" ProductVersion="14.40.33816.0" VerLanguage="1033" SwitchBackContext="0" FileVersion="14.40.33816.0" OriginalFileName="concrt140.dll" InternalName="concrt140.dll" Size="322640" SizeOfImage="315392" PeHeaderHash="010128cc3a9575c7a3cca5b4455d26354d36daeca673" PeChecksum="372231" CrcChecksum="2293359211" BinProductVersion="14.40.33816.0" BinFileVersion="14.40.33816.0" FileDescription="microsoft® concurrency runtime library" LegalCopyright="© microsoft corporation. all rights reserved." LinkDate="01/21/2025 14:02:16" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\concrt140.dll" SigPublisherName="microsoft windows software compatibility publisher" PeSubsystem="3" PeCharacteristics="8226" Sha256="3bfe7958b6c5cc0150927e6da0551829b8e3e1a3a8bb446adbf64f7f84751f74" />
+            <File Id="00001e31f6b2e804f3c0b3c0f4b8c30969e8e22b6a5c" Name="dartjni.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="72192" SizeOfImage="90112" PeHeaderHash="01013eecd7abbedc7d19ad04118aee4368f06e7c4787" PeChecksum="0" CrcChecksum="594133764" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:22:00" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\dartjni.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="945df8bf2bbb6b2c8234d1213bb64ee40846c28711b587f20a7b825f2b650b06" />
+            <File Id="000044c7f65d471a666b8fe44612ad428e3dc46ad693" Name="desktop_drop_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="83456" SizeOfImage="102400" PeHeaderHash="0101c5baa2e448942aa476680df89ccfb842be01729f" PeChecksum="0" CrcChecksum="2860624478" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:27:38" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\desktop_drop_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="1afd0e7237393993361ed2ae6109555e7ab5f6b871e3becbdda5d6d32edd5568" />
+            <File Id="00001dccc10ebcc5b418d344577ff406c2abc5e7108c" Name="desktop_multi_window_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="110080" SizeOfImage="131072" PeHeaderHash="01013e73e765f58d91aef277ea77fa55ae45c7bbb5b3" PeChecksum="0" CrcChecksum="1396894714" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:27:52" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\desktop_multi_window_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="5202fce929af628a25550118b0556503ff2e0c70aff0652df2156797c999598e" />
+            <File Id="00007f323aa210237927c35d0bf3bd1a932ea276b049" Name="ffmpeg-8.dll" ProductName="ffmpeg" CompanyName="ffmpeg project. built by https://github.com/wang-bin/avbuild" ProductVersion="git-2026-06-08-6028720-avbuild" VerLanguage="1033" SwitchBackContext="0" FileVersion="8.0.0" OriginalFileName="ffmpeg-8.dll" InternalName="libffmpeg" Size="12743168" SizeOfImage="17289216" PeHeaderHash="0101114d6c122b809123d123e29847f8645037d9e2f2" PeChecksum="0" CrcChecksum="3909525527" BinProductVersion="git-2026-06-08-6028720-avbuild" BinFileVersion="8.0.0.0" FileDescription="ffmpeg library" LegalCopyright="copyright (c) 2000-2026 ffmpeg project" LinkDate="06/09/2026 03:22:46" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\ffmpeg-8.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="191ab2ca33c69ec477702f43d94cbdaaa43b885790f61e48199ef06a92be2433" />
+            <File Id="000019d1f8d2170eb3904cce4fc108f3045075b0f7c8" Name="ffmpeg_kit_flutter_new_full_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="154624" SizeOfImage="172032" PeHeaderHash="0101a151c67b0594171becf8bf5843afd34fd61464ce" PeChecksum="0" CrcChecksum="1395235732" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="09/08/2026 13:58:27" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\ffmpeg_kit_flutter_new_full_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="88592832305e85b5ffe2c809e9d658f96350ec9512e55e35bb71257f5ee28b23" />
+            <File Id="00002eed11695756abac460b52482636724d870070fd" Name="file_selector_windows_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="105984" SizeOfImage="126976" PeHeaderHash="01011f8eff85baf58d55bf9bea0daa9cf2a18c63f207" PeChecksum="0" CrcChecksum="4236922438" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:28:04" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\file_selector_windows_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="7bf05946405263077bce8d2d5efcbc8c51fb3237bfedbaacb5a4558b919b5667" />
+            <File Id="00009755677623d270a193ac5f6e871dd0965fd06875" Name="flutter_tts_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="155648" SizeOfImage="172032" PeHeaderHash="01011f45629ad9eafc624bbf0eb09773912aef27b1ae" PeChecksum="0" CrcChecksum="2764994582" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:28:22" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\flutter_tts_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="8b800f5ffc3b263b2bcbec3c64204abc7435b4433eb724aab20fcb9472723a30" />
+            <File Id="00000a9eae71aac1cf5850e15c17f97420e8a6ac7fc3" Name="flutter_windows.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="20802048" SizeOfImage="21045248" PeHeaderHash="010135b66f4e0793071dda2d9bdc01bf18e442fe1e6d" PeChecksum="0" CrcChecksum="930539009" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="02/18/2026 19:54:49" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\flutter_windows.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="eb40d611ed1994a15e65ef3b2c399e04c860b2d2e021c1d1005775a4a7aee376" />
+            <File Id="0000215efb290c46dbda814e7f23413bfed8ecdb069f" Name="fvp.dll" ProductName="fvp" CompanyName="wang bin, wbsecg1@gmail.com, mediadevkit.com" ProductVersion="0.37.2.0" VerLanguage="0" SwitchBackContext="0" FileVersion="0,37,2,0" OriginalFileName="fvp.dll" InternalName="fvp" Size="121344" SizeOfImage="139264" PeHeaderHash="0101ff9b63274465d8a3248ccb8e91166a1bd5e8b988" PeChecksum="0" CrcChecksum="3269960948" BinProductVersion="0.37.2.0" BinFileVersion="0.37.2.0" FileDescription="flutter video_player plugin via libmdk" LegalCopyright="copyright (c) 2026 wangbin, wbsecg1@gmail.com" LinkDate="09/08/2026 13:58:31" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\fvp.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="8021984e22368bee1cececaccf03968db8784ae6a516da67cbdc22580813b6f7" />
+            <File Id="0000c039a299315c3c25be9d66bcdbea3b6af6cf22bc" Name="highlight.min.js" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="129254" SizeOfImage="0" PeHeaderHash="" PeChecksum="0" CrcChecksum="1739118794" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="" BinaryType="data_only" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\data\flutter_assets\assets\js\highlight.min.js" SigPublisherName="" PeSubsystem="0" PeCharacteristics="0" Sha256="8ab71eb09c51f501e5e25157d9cff100e46cc29bcbfc744d0b746d451fca7f53" />
+            <File Id="000031eb358202c02385df5042e3a62ceeb4e2e48716" Name="HisatorNotebook.exe" ProductName="hisatornotebook" CompanyName="com.example" ProductVersion="1.0.0+338" VerLanguage="1033" SwitchBackContext="0" FileVersion="1.0.0+338" OriginalFileName="hisatornotebook.exe" InternalName="hisatornotebook" Size="217600" SizeOfImage="229376" PeHeaderHash="01011149cc12161d6848d59d22658f3d25754f4d1fe9" PeChecksum="0" CrcChecksum="1617277126" BinProductVersion="1.0.0+338" BinFileVersion="1.0.0.338" FileDescription="hisatornotebook" LegalCopyright="copyright (c) 2026 com.example. all rights reserved." LinkDate="09/08/2026 13:58:38" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\hisatornotebook.exe" SigPublisherName="" PeSubsystem="2" PeCharacteristics="34" Sha256="30def0af2d69da3422a1d060bacc85e392ff72b280442591aa4207119cb35f3e" />
+            <File Id="0000f1cf834489baf26fd5123a51d47d092c8a8ad871" Name="irondash_engine_context_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="79360" SizeOfImage="98304" PeHeaderHash="010196ef5557df4c59fb12004e32f7984832214a8ffc" PeChecksum="0" CrcChecksum="1335043655" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:28:33" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\irondash_engine_context_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="de71aab52e5a05ec0793f652f6cf8fcd32387e0491f063a903e79e52c2e5cfb2" />
+            <File Id="0000a1f55bed7f6d21db656392bb096cf3b359e64215" Name="libass.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="1677824" SizeOfImage="1695744" PeHeaderHash="010169cbd03b2e2ec1ee381eb0a00dc58338cb57ac2d" PeChecksum="0" CrcChecksum="130095189" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/10/2026 13:58:39" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\libass.dll" SigPublisherName="" PeSubsystem="2" PeCharacteristics="8226" Sha256="fb234f1ce7c9e8f5785dee466f99ecb9e2ce5bde897165e25dd363c9118ed0ae" />
+            <File Id="0000e9cde7173a0cdfd401a0b7840541987abbda9382" Name="libbrotlicommon.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="143429" SizeOfImage="176128" PeHeaderHash="0101118bad365abbcb87ca75c5bda1aba3e2a5329a61" PeChecksum="204417" CrcChecksum="2600343201" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\libbrotlicommon.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="345c4ba59ffed3ebccf764b0030514679e209686012609489da613150b27637b" />
+            <File Id="00005001b2c343f50c354d10587953cd9735fe503079" Name="libbrotlidec.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="60413" SizeOfImage="90112" PeHeaderHash="01010255a967050ce9830d4e57e21518a7b6d9e14ffc" PeChecksum="106945" CrcChecksum="3845265607" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\libbrotlidec.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="fd54973d3f2401b2e09a06f22fe1fb482e4027c9a3f8ba1c870ce4498430e52c" />
+            <File Id="000086a18912adfd935ec25811fba7172b81384822bf" Name="libbrotlienc.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="756620" SizeOfImage="782336" PeHeaderHash="010164d86108f5f0062dd1b6e964aa6647b0f480f984" PeChecksum="818390" CrcChecksum="3925409336" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\libbrotlienc.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="3e44e4f1135921c1bcc873f7bc487f3522c3e73f126257276ae295d07d8a53e0" />
+            <File Id="00003b1396901e54c8bba752d0d5c3edadf851a62ad9" Name="libcrypto-3-x64.dll" ProductName="the openssl toolkit" CompanyName="the openssl project, https://www.openssl.org/" ProductVersion="3.5.2" VerLanguage="1033" SwitchBackContext="0" FileVersion="3.5.2" OriginalFileName="libcrypto" InternalName="libcrypto" Size="5793378" SizeOfImage="5824512" PeHeaderHash="0101972c78f572386e69d09acdaaf4b97b2deea55561" PeChecksum="5800961" CrcChecksum="3344000277" BinProductVersion="3.5.2" BinFileVersion="3.5.2.0" FileDescription="openssl library" LegalCopyright="copyright 1998-2025 the openssl authors. all rights reserved." LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\libcrypto-3-x64.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="872d89f8761629394d83f8bf3c7d8b478837c9a306924417b8ad3919dae2e8b6" />
+            <File Id="00006072c40c1addd6bf4e1be6b07777790addb8b48a" Name="libffi-8.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="35245" SizeOfImage="65536" PeHeaderHash="01019cc20fed7be139b12621e489e59716ead489ac82" PeChecksum="42623" CrcChecksum="2970130576" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\libffi-8.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="b6ff2cc6d4837ddc7c8f82a2ca11f5d823623f193b3533623b320f7686969808" />
+            <File Id="00007f3c015d4f11ef9da992581d9f956eaea4ed1ce2" Name="libffmpegkit.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="1487344" SizeOfImage="880640" PeHeaderHash="01014e836517b99d6d7da58afb424d08e868b042455c" PeChecksum="1527980" CrcChecksum="1447082720" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\libffmpegkit.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8230" Sha256="ee378ad7910488b12736c975913e84a141efa2e3d82e982c3d4f32ca47910450" />
+            <File Id="00008a0b5b03c98cfdcc851b604653c32d13ba908201" Name="libgcc_s_seh-1.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="150196" SizeOfImage="176128" PeHeaderHash="0101a57d2a480b264488a3828433c76a906d5d41956f" PeChecksum="170048" CrcChecksum="436744609" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\libgcc_s_seh-1.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="a04e032dc173aac51b64dd23a751e7c0e27eb0a3409e6807d9cc7e627f69a6b6" />
+            <File Id="0000e5ea20e5d239920e0f1672b1fd2d3d59beae7957" Name="libgmp-10.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="679747" SizeOfImage="708608" PeHeaderHash="01013a10a3f176571e55c76e419689467cc7115c3588" PeChecksum="719058" CrcChecksum="2256807482" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\libgmp-10.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="709605de1ac54e85930508b38906e5514c1f3d3159323802b13ccb50d2b7888f" />
+            <File Id="0000c1fde916338fc705aa03de6fd49c845a725cb913" Name="libgnutls-30.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="2196690" SizeOfImage="2203648" PeHeaderHash="0101307c420e8aefe6a1d97063bd648bc0e63a5debba" PeChecksum="2256825" CrcChecksum="632793533" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\libgnutls-30.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="cbcf15783e5e9cfcd0cfc3a22341a85730e42619daed98588bd6dcb60197796d" />
+            <File Id="0000fbd70f8f966ac7d3b229f8f895b16e695a823062" Name="libhogweed-6.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="284313" SizeOfImage="311296" PeHeaderHash="010175fc0a9fc90c1bb6b65a50618540ef70185c025a" PeChecksum="292346" CrcChecksum="3463460866" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\libhogweed-6.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="1825298b347f85710b39fa5d90b3970040a95908548125bb268dacc6fe1560b8" />
+            <File Id="000069a6f912e5ae513ef5caadfaee3c2ed145225807" Name="libiconv-2.dll" ProductName="libiconv: character set conversion library" CompanyName="free software foundation" ProductVersion="1.18" VerLanguage="1033" SwitchBackContext="0" FileVersion="1.18" OriginalFileName="iconv.dll" InternalName="iconv.dll" Size="1136529" SizeOfImage="1171456" PeHeaderHash="0101ddaf583101599b96c22ee6b656bcb4e5bc72e7f0" PeChecksum="1199841" CrcChecksum="2585877428" BinProductVersion="1.18" BinFileVersion="1.18.0.0" FileDescription="lgpled libiconv for windows" LegalCopyright="copyright (c) 1999-2024" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\libiconv-2.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="cf3433d0e93b6a860986aaf1e47e665a493097b808ece306cc6b69fe11db6625" />
+            <File Id="00001fcf0e677a61ca4ecb8caf73a6a8319ecdcd5bc4" Name="libidn2-0.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="246620" SizeOfImage="270336" PeHeaderHash="01012bb81a22a7d9770cd2d0fdf99fa5c7e3e8554c3a" PeChecksum="305161" CrcChecksum="4211000233" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\libidn2-0.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="afe36421d4318dca36e5614e73443e2cf54f07df21344a64fa92dcfdfaed1594" />
+            <File Id="0000765a65067368dbd4e5c86517279dd6b8e35c326c" Name="libintl-8.dll" ProductName="gnu libintl: accessing nls message catalogs" CompanyName="free software foundation" ProductVersion="0.26" VerLanguage="1033" SwitchBackContext="0" FileVersion="0.26" OriginalFileName="intl.dll" InternalName="intl.dll" Size="301688" SizeOfImage="335872" PeHeaderHash="0101667fb839c4bcd01aad81deb6e06265eea48903ec" PeChecksum="366884" CrcChecksum="3047877439" BinProductVersion="0.26" BinFileVersion="0.26.0.0" FileDescription="lgpled libintl for windows" LegalCopyright="copyright (c) 1995-2024" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\libintl-8.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="b840e35e38d24f4112b41f4d2a1e990e40f3909b51f1647e03de348a252e247e" />
+            <File Id="00005ef610a164e2f6b802a2b60a495454b32334e2a4" Name="libmp3lame-0.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="329506" SizeOfImage="540672" PeHeaderHash="0101c30a623baa2059939ab651799442341e95b6f55a" PeChecksum="394475" CrcChecksum="892613871" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\libmp3lame-0.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="811e3d06c3eed77cda0a10915d04b343744c1626bdc1f7e8cf65ba6e2c52a630" />
+            <File Id="0000fabf546ac45cb5c2047d8a1a4742ff5eb3180003" Name="libnettle-8.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="345008" SizeOfImage="372736" PeHeaderHash="0101f3e26c0b7ddce3f56893ef5054447ceb76335848" PeChecksum="373676" CrcChecksum="3335654999" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\libnettle-8.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="741e83d91ab5d75c89c857ee4ee728a6e6b71162620bb09602a7a1067ab7b7dd" />
+            <File Id="000026e1ac04e4bf3a74606d4be644bcaf170a9f4805" Name="libp11-kit-0.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="1435446" SizeOfImage="1462272" PeHeaderHash="0101cdce2936324b663e6f7ce4b0f5357720e8ad0224" PeChecksum="1457382" CrcChecksum="3918654917" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\libp11-kit-0.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="0c6421390915d5b2217a36ec4687cf28e2e0a065afd0f29a90e2efa704c23c11" />
+            <File Id="0000f2dcdb48a869b8a0ee3bc1f4f07d19f3bdaa2094" Name="libstdc++-6.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="2461848" SizeOfImage="2482176" PeHeaderHash="01018622a25d45d146e4ed8811876c57dbc722f74cf9" PeChecksum="2521499" CrcChecksum="4124743525" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\libstdc++-6.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="354afbc5040b888c22d8401afff11806b97b44441c8a1bea843ff3939a51eaa0" />
+            <File Id="000037e645af9896be800baa667d5f0d59dad451c7b9" Name="libtasn1-6.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="111905" SizeOfImage="135168" PeHeaderHash="0101252fd91ac63757358ccfd6d1aea22ea35ba21044" PeChecksum="139997" CrcChecksum="2580353457" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\libtasn1-6.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="eac8412c2e7c9f7126c1c36af6e5496eee0ec16c7c445183338f75512ed7b3c8" />
+            <File Id="00006e574e0eac66d258b47c4f2375b1cb90fe3b750c" Name="libunistring-5.dll" ProductName="gnu libunistring: unicode string library" CompanyName="free software foundation" ProductVersion="1.3" VerLanguage="1033" SwitchBackContext="0" FileVersion="1.3" OriginalFileName="unistring.dll" InternalName="unistring.dll" Size="2226615" SizeOfImage="2260992" PeHeaderHash="010178881989b64415b9637705bd289c04fe4a310fcd" PeChecksum="2234081" CrcChecksum="3096211003" BinProductVersion="1.3" BinFileVersion="1.3.0.0" FileDescription="lgpled libunistring for windows" LegalCopyright="copyright (c) 2001-2019" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\libunistring-5.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="360e932eda2cfee3e02612857e3e458cee9c6ba471713349d5a2074af94e33b9" />
+            <File Id="0000e0ffc90c7ef5db860ca48c1bc8413992894e5ffc" Name="libwinpthread-1.dll" ProductName="" CompanyName="mingw-w64 project. all rights reserved." ProductVersion="1, 0, 0, 0" VerLanguage="1033" SwitchBackContext="0" FileVersion="1, 0, 0, 0" OriginalFileName="winpthreadgc" InternalName="winpthreadgc" Size="64409" SizeOfImage="90112" PeHeaderHash="01017353757dc92e758729904796dc55e75e640be3e1" PeChecksum="109075" CrcChecksum="1160339033" BinProductVersion="1, 0, 0, 0" BinFileVersion="1.0.0.0" FileDescription="posix winthreads for windows" LegalCopyright="copyright (c) mingw-w64 project members 2010-2023" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\libwinpthread-1.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="7b5da4d8e654a2a6b466eab366e7b8046a86c54f2c8a2851272d63fad383ab45" />
+            <File Id="0000bf9a4d3f6d60458c59e5da632406780984dc2495" Name="libzstd.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="1196744" SizeOfImage="1220608" PeHeaderHash="0101d4b2aff5b87c9514a50ed98ae97a9b1a7eab4021" PeChecksum="1208325" CrcChecksum="3785216967" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\libzstd.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="66af2a446a152c533c0f19a27102d930a98f6fd854133fcb502446ef077d5624" />
+            <File Id="0000b2edcfa28a21bc5993622e77bbd84961453eb481" Name="local_notifier_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="162816" SizeOfImage="184320" PeHeaderHash="0101a0f39335a8dc3c16e8cae3903137eb9a1acce535" PeChecksum="0" CrcChecksum="4054035547" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:28:43" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\local_notifier_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="c8b22042e5442af10b18a1327e9ede377ccb78be57cd875ad3590beb6110ab2f" />
+            <File Id="00009632727f585e96858ad18523fccdf85bbba52170" Name="marked.min.js" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="39903" SizeOfImage="0" PeHeaderHash="" PeChecksum="0" CrcChecksum="1557963476" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="" BinaryType="data_only" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\data\flutter_assets\assets\js\marked.min.js" SigPublisherName="" PeSubsystem="0" PeCharacteristics="0" Sha256="3e7e7d7feb3e5d58cb6c804f68ab5c24cc7e5eb6270fd6e5cbb9124739217d0c" />
+            <File Id="0000805c7e6edf68240035c5bee5dfb914967e853ed9" Name="mdk-braw.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="110080" SizeOfImage="126976" PeHeaderHash="010106b4645be31f166fa268823dee74ae5f78148d1f" PeChecksum="0" CrcChecksum="2098398111" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/12/2026 14:28:44" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\mdk-braw.dll" SigPublisherName="" PeSubsystem="2" PeCharacteristics="8226" Sha256="1729b70fef479cd09fb2118db83f3364ffc6b63de0974d4f4a65a7447beba8f6" />
+            <File Id="0000aa2ca8cb639b7bc1520ec1afd42df2f2e82291ed" Name="mdk-nvjp2k.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="248832" SizeOfImage="266240" PeHeaderHash="0101aede8c35d798531370d5da801e510ac35fedb924" PeChecksum="0" CrcChecksum="2798403608" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/12/2026 14:28:45" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\mdk-nvjp2k.dll" SigPublisherName="" PeSubsystem="2" PeCharacteristics="8226" Sha256="b38b19964adb1abff5752fe10be074d9ec5cb5d9698299af72c916cb2ae2f2d9" />
+            <File Id="0000ab20e8222553febd6933cf96d38f6754a3ed2207" Name="mdk-r3d.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="141312" SizeOfImage="163840" PeHeaderHash="01011af74f5863c006a4d61852d5975487e73d6fb88d" PeChecksum="0" CrcChecksum="215505357" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/12/2026 14:28:45" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\mdk-r3d.dll" SigPublisherName="" PeSubsystem="2" PeCharacteristics="8226" Sha256="4c15923b43eb8c401e75dd35e4e31207737575e4e62417c85e47348f7358a72f" />
+            <File Id="0000f4893b5d6a7d72bd5074dd2c37f559fc2a198158" Name="mdk.dll" ProductName="mdk" CompanyName="wang bin, wbsecg1@gmail.com, qtav.org" ProductVersion="0.36.0.0 551d7f2" VerLanguage="0" SwitchBackContext="0" FileVersion="0,36,0,0" OriginalFileName="mdk.dll" InternalName="mdk" Size="2449408" SizeOfImage="2494464" PeHeaderHash="010109d32f40a21ee82e13ba660a7dde3600c7178d84" PeChecksum="0" CrcChecksum="2655867532" BinProductVersion="0.36.0.0 551d7f2" BinFileVersion="0.36.0.0" FileDescription="multimedia dev kit 551d7f2" LegalCopyright="copyright (c) 2026 wangbin, wbsecg1@gmail.com" LinkDate="06/12/2026 14:27:56" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\mdk.dll" SigPublisherName="" PeSubsystem="2" PeCharacteristics="8226" Sha256="d85bb8073d796132001fd2be0996fbd0a72c7d9e74edf8e011e1182cdaae897f" />
+            <File Id="00007a3075f9fd946bc6306b43e3b432483de74653c5" Name="mermaid.min.js" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="3566058" SizeOfImage="0" PeHeaderHash="" PeChecksum="0" CrcChecksum="1893726205" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="" BinaryType="data_only" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\data\flutter_assets\assets\js\mermaid.min.js" SigPublisherName="" PeSubsystem="0" PeCharacteristics="0" Sha256="18327bef70d96fb505fe7287d9f6a7362ebf07ff6576ddfaffb1a06f3e1a2954" />
+            <File Id="000055157b5aabd167dc9dbd158a5c7ad435101652e7" Name="msvcp140.dll" ProductName="microsoft® visual studio®" CompanyName="microsoft corporation" ProductVersion="14.40.33816.0" VerLanguage="1033" SwitchBackContext="0" FileVersion="14.40.33816.0" OriginalFileName="msvcp140.dll" InternalName="msvcp140.dll" Size="575056" SizeOfImage="577536" PeHeaderHash="010134b07c4bc5c30d80c418ac8a569d4f7c06013131" PeChecksum="620190" CrcChecksum="3593268424" BinProductVersion="14.40.33816.0" BinFileVersion="14.40.33816.0" FileDescription="microsoft® c runtime library" LegalCopyright="© microsoft corporation. all rights reserved." LinkDate="12/19/2062 17:23:44" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\msvcp140.dll" SigPublisherName="microsoft windows software compatibility publisher" PeSubsystem="3" PeCharacteristics="8226" Sha256="7b8a6f283884e6448559dcf510b00c1a885bfb8e598ea05cd2c290c874657326" />
+            <File Id="000058fdfc63ca9957451afe2fd7afd19924b8a3add1" Name="msvcp140_1.dll" ProductName="microsoft® visual studio®" CompanyName="microsoft corporation" ProductVersion="14.40.33816.0" VerLanguage="1033" SwitchBackContext="0" FileVersion="14.40.33816.0" OriginalFileName="msvcp140_1.dll" InternalName="msvcp140_1.dll" Size="35920" SizeOfImage="36864" PeHeaderHash="0101d4fc75845b000e69fad12736421555cabb9b6c2b" PeChecksum="99306" CrcChecksum="2149545983" BinProductVersion="14.40.33816.0" BinFileVersion="14.40.33816.0" FileDescription="microsoft® c runtime library _1" LegalCopyright="© microsoft corporation. all rights reserved." LinkDate="06/13/2083 04:17:46" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\msvcp140_1.dll" SigPublisherName="microsoft windows software compatibility publisher" PeSubsystem="3" PeCharacteristics="8226" Sha256="d5b7e39b158ca6d64d10713b69d7baea9ba9c686a9442c9d7217f6914c6a955d" />
+            <File Id="000026e1f137762711ff1f3c73744644636b7dfb231b" Name="msvcp140_2.dll" ProductName="microsoft® visual studio®" CompanyName="microsoft corporation" ProductVersion="14.40.33816.0" VerLanguage="1033" SwitchBackContext="0" FileVersion="14.40.33816.0" OriginalFileName="msvcp140_2.dll" InternalName="msvcp140_2.dll" Size="268912" SizeOfImage="266240" PeHeaderHash="01014dee2634c49d9e5bbb102b5331f4f3095dcac1e3" PeChecksum="296447" CrcChecksum="3141219750" BinProductVersion="14.40.33816.0" BinFileVersion="14.40.33816.0" FileDescription="microsoft® c runtime library _2" LegalCopyright="© microsoft corporation. all rights reserved." LinkDate="04/08/1980 13:12:27" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\msvcp140_2.dll" SigPublisherName="microsoft windows software compatibility publisher" PeSubsystem="3" PeCharacteristics="8226" Sha256="fbb8557f73ab9a207bd67643fdcf9ae34527325d227c53707cebdf0d1c8c4658" />
+            <File Id="00005685564ba0e5004c6d74f5dfd531a204ce8d4d90" Name="msvcp140_atomic_wait.dll" ProductName="microsoft® visual studio®" CompanyName="microsoft corporation" ProductVersion="14.40.33816.0" VerLanguage="1033" SwitchBackContext="0" FileVersion="14.40.33816.0" OriginalFileName="msvcp140_atomic_wait.dll" InternalName="msvcp140_atomic_wait.dll" Size="50792" SizeOfImage="81920" PeHeaderHash="0101b493bd854b8d90b4ff4d3fb839d03b354a4a19ee" PeChecksum="58669" CrcChecksum="3470979681" BinProductVersion="14.40.33816.0" BinFileVersion="14.40.33816.0" FileDescription="microsoft® c runtime library _atomic_wait" LegalCopyright="© microsoft corporation. all rights reserved." LinkDate="02/04/2037 02:09:25" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\msvcp140_atomic_wait.dll" SigPublisherName="microsoft windows software compatibility publisher" PeSubsystem="3" PeCharacteristics="8226" Sha256="d2dc98b3d9cbfebd92d16aeb6be475b68ec30943503014e33b645e5ca7de2cfb" />
+            <File Id="00000f1060f7ef6e90385e10c4551d965214ce16e883" Name="msvcp140_codecvt_ids.dll" ProductName="microsoft® visual studio®" CompanyName="microsoft corporation" ProductVersion="14.40.33816.0" VerLanguage="1033" SwitchBackContext="0" FileVersion="14.40.33816.0" OriginalFileName="msvcp140_codecvt_ids.dll" InternalName="msvcp140_codecvt_ids.dll" Size="31824" SizeOfImage="28672" PeHeaderHash="0101a20776847fb7196b0cb7dcbe6ae016a31c51a3c4" PeChecksum="77662" CrcChecksum="1867563196" BinProductVersion="14.40.33816.0" BinFileVersion="14.40.33816.0" FileDescription="microsoft® c runtime library _codecvt_ids" LegalCopyright="© microsoft corporation. all rights reserved." LinkDate="11/29/1985 20:10:38" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\msvcp140_codecvt_ids.dll" SigPublisherName="microsoft windows software compatibility publisher" PeSubsystem="3" PeCharacteristics="8226" Sha256="d5fbe10526c30aae0665c2409acb55a50cb6d9cd159138ab9ebb19db87bcd59f" />
+            <File Id="0000fe19fb9e9711f45f25cef2d163bff949195aedf9" Name="no_sleep.js" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="13669" SizeOfImage="0" PeHeaderHash="" PeChecksum="0" CrcChecksum="176117298" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="" BinaryType="data_only" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\data\flutter_assets\packages\wakelock_plus\assets\no_sleep.js" SigPublisherName="" PeSubsystem="0" PeCharacteristics="0" Sha256="726c644cda17bf271d996fb629806a59409607e9b00e0dfbf75adfd3986bbb7e" />
+            <File Id="0000831b4373734bb61ab61741d029e0ab10a1e113a6" Name="pdfium.dll" ProductName="pdfium" CompanyName="google inc." ProductVersion="106.0.5200.0" VerLanguage="1033" SwitchBackContext="0" FileVersion="106.0.5200.0" OriginalFileName="pdfium.dll" InternalName="pdfium" Size="4749824" SizeOfImage="4829184" PeHeaderHash="01018b281ac9112d7f5272df56eee4b98a153c704e1c" PeChecksum="0" CrcChecksum="734478010" BinProductVersion="106.0.5200.0" BinFileVersion="106.0.5200.0" FileDescription="pdfium (compiled by github.com/bblanchon)" LegalCopyright="copyright 2022 pdfium authors. all rights reserved." LinkDate="06/05/2022 05:00:00" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\pdfium.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="0c88ebacc0393fd45fc3e7b35e31e72c9e55b633a846a7ecf4085694dba68abd" />
+            <File Id="00004aa6c72279b4eb126ca37b9cc928e14b1790172b" Name="permission_handler_windows_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="111616" SizeOfImage="131072" PeHeaderHash="0101c23e59446000e9f6d7ae5dd6f1b192d341d1f10f" PeChecksum="0" CrcChecksum="523374462" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:28:50" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\permission_handler_windows_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="ce07abf54c7cdfc42df5b64bba386af2ae481e3bf98ec9078a4c090d2c4e1026" />
+            <File Id="0000b2a41b04b9bc3092f8aeffdeabb3a91c152e08a3" Name="printing_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="137728" SizeOfImage="155648" PeHeaderHash="0101e0d5baa2b750b9793a12875ae590a8c68f5467d8" PeChecksum="0" CrcChecksum="1656833405" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:28:57" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\printing_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="df59ce6fd9ae90be3294f8fb0f468fc33a4790e4f7f935a87de002a095beb51e" />
+            <File Id="00004a1e0754e29c10fdc10df22e46e453e0e7ae2fd7" Name="resources.pri" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="22336" SizeOfImage="0" PeHeaderHash="" PeChecksum="0" CrcChecksum="2493380699" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="" BinaryType="data_only" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\resources.pri" SigPublisherName="" PeSubsystem="0" PeCharacteristics="0" Sha256="8ca3ed31ae225a30c693fb50daada9f9aa3e29afdd4d8f138f5ed65d2fcf8cf1" />
+            <File Id="00004dff5e5de8973bb6edfcfffc650112547a5dc0af" Name="resources.scale-200.pri" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="6864" SizeOfImage="0" PeHeaderHash="" PeChecksum="0" CrcChecksum="572615658" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="" BinaryType="data_only" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\resources.scale-200.pri" SigPublisherName="" PeSubsystem="0" PeCharacteristics="0" Sha256="b7579b1f66a759a7de50b08ec47f6135a8ab182fc0d43402000424ac7271cc8c" />
+            <File Id="0000f0befbc26fb0b26fa892bc585c8399d15a043e0e" Name="resources.scale-125.pri" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="6864" SizeOfImage="0" PeHeaderHash="" PeChecksum="0" CrcChecksum="2707090399" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="" BinaryType="data_only" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\resources.scale-125.pri" SigPublisherName="" PeSubsystem="0" PeCharacteristics="0" Sha256="4ac9ee2a2a6ef88305e1b870103a760c3bd1660caafdea1d1243be1a6877e00c" />
+            <File Id="00000b59a1865c6395bb15237e3470bb12f360c868f2" Name="resources.scale-400.pri" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="6864" SizeOfImage="0" PeHeaderHash="" PeChecksum="0" CrcChecksum="3532847077" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="" BinaryType="data_only" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\resources.scale-400.pri" SigPublisherName="" PeSubsystem="0" PeCharacteristics="0" Sha256="432241cfafed2f5e422e447bb8090eac796d3ed6664d9e519b3c21992904df45" />
+            <File Id="000005bde6458be51fedb99cd8a0c34fd5e93288a9e8" Name="resources.scale-150.pri" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="6864" SizeOfImage="0" PeHeaderHash="" PeChecksum="0" CrcChecksum="2738223775" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="" BinaryType="data_only" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\resources.scale-150.pri" SigPublisherName="" PeSubsystem="0" PeCharacteristics="0" Sha256="7dc5f5f8452285e8a4320c426c7b6cd604bcd7f7a0ef4fcc0d6ef184ab804bff" />
+            <File Id="000018bf991f83487f3beedfb23c5df71144c41bca4d" Name="screen_retriever_windows_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="116224" SizeOfImage="135168" PeHeaderHash="01017987ed8fb133a8d3be26fbad86f75b4f80fe098e" PeChecksum="0" CrcChecksum="622428814" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:29:01" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\screen_retriever_windows_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="0582bf9552cefa729745561d2de62ca7f8a659281b7d0afd712ee54a653d45cb" />
+            <File Id="0000887a43a4623b4ced693378599c89de4107e5a633" Name="speech_to_text_windows_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="93696" SizeOfImage="114688" PeHeaderHash="01012a0b6c20fdac9fdb9827a0566074855d8cea7306" PeChecksum="0" CrcChecksum="1501862652" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:29:05" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\speech_to_text_windows_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="5ac8a4b89b785e77c88d4c671dc72de6b4bc6363446d32af0997895543edf6af" />
+            <File Id="0000be3c7eab8d33626230159a4b1703520076bb5a3d" Name="super_native_extensions.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="798208" SizeOfImage="806912" PeHeaderHash="01019c7c00e52e21ad699667d4e4f9ec18d808a97062" PeChecksum="0" CrcChecksum="2599400719" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:23:50" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\super_native_extensions.dll" SigPublisherName="" PeSubsystem="2" PeCharacteristics="8226" Sha256="be1c0fa9ccc2c7eb20c4370698fc1eb6bfa4e278b6f2f6da6b45fe2f1e04729f" />
+            <File Id="0000799d673715980395333de1b7b4ba932d046e8292" Name="super_native_extensions_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="34816" SizeOfImage="53248" PeHeaderHash="0101e2c313feb0286181ceb8f68ecac35416e0ff6019" PeChecksum="0" CrcChecksum="3285650348" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:29:11" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\super_native_extensions_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="9a3371b66042b17e479bdcf6656bc582c2ff5d0c0e52b09182255b56f24634b9" />
+            <File Id="000079404a0bf2bcacb00e2d4fa275b95c37e59d5584" Name="swresample-5.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="634880" SizeOfImage="659456" PeHeaderHash="0101911a5bf1c6139b60a985891d81ccef013c30f909" PeChecksum="641308" CrcChecksum="4267499764" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\swresample-5.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8750" Sha256="29a83e0a9a0eaf08f4162c2a004cec9f4fea8945214a46700f0d5a96507528e8" />
+            <File Id="0000b841f55551200a3a7d5a6f7b0778c7da3ab7ab03" Name="swscale-8.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="602112" SizeOfImage="630784" PeHeaderHash="010191a6cf265364be11332e7c013c23b96ec39d19e6" PeChecksum="635714" CrcChecksum="1815182642" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\swscale-8.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8750" Sha256="5ecf6df579ffa9014e500dbefe7b5aae8734f3af460c15fe36023b08e522f7e3" />
+            <File Id="0000f29b863de1235ead89ea149cab51f7bcd7e3e40a" Name="syncfusion_pdfviewer_windows_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="88576" SizeOfImage="106496" PeHeaderHash="01017b9f22e902fa2706255102c752e6ce153f359ffd" PeChecksum="0" CrcChecksum="874742968" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:29:14" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\syncfusion_pdfviewer_windows_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="1a66c15bb424368c989ef2f243c4016c931701f626a7735093febb262129d58a" />
+            <File Id="0000eb44540186285271130b056fa6099b1988319fc4" Name="t-rex.html" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="82244" SizeOfImage="0" PeHeaderHash="" PeChecksum="0" CrcChecksum="3660422174" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="" BinaryType="data_only" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\data\flutter_assets\packages\flutter_inappwebview\assets\t_rex_runner\t-rex.html" SigPublisherName="" PeSubsystem="0" PeCharacteristics="0" Sha256="dc72cfc1f1d2a5013bb9de34f8cacf5e26e542d7d713fcbe09b865b4aaca6ddf" />
+            <File Id="0000cfb8e18acf40a77004f8925491402f7c9d08e536" Name="tex-svg.js" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="2108580" SizeOfImage="0" PeHeaderHash="" PeChecksum="0" CrcChecksum="2952786169" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="" BinaryType="data_only" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\data\flutter_assets\assets\js\tex-svg.js" SigPublisherName="" PeSubsystem="0" PeCharacteristics="0" Sha256="d4295dc33744836935c1399feece5159577b34c5c8ffb9f1c6324cd82e03a882" />
+            <File Id="0000028e86c697320d8e902c4170f8b9a0739bd6d8b5" Name="url_launcher_windows_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="89600" SizeOfImage="106496" PeHeaderHash="0101acee354007a8f82708369c2f84e192cd5a3d58ff" PeChecksum="0" CrcChecksum="3519224456" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:29:19" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\url_launcher_windows_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="3a1fcc92ee5647d9e168790fbbab87cd2db98a4ab7ac72e42070ae181e8377f2" />
+            <File Id="000041419beac767d9b8349491ffa258dc755234871e" Name="vccorlib140.dll" ProductName="microsoft® visual studio®" CompanyName="microsoft corporation" ProductVersion="14.40.33816.0" VerLanguage="1033" SwitchBackContext="0" FileVersion="14.40.33816.0" OriginalFileName="vccorlib140.dll" InternalName="vccorlib140.dll" Size="351824" SizeOfImage="348160" PeHeaderHash="0101eae386a2c4af460a5d3473dbfbebb014e93e2fa2" PeChecksum="381392" CrcChecksum="3530268031" BinProductVersion="14.40.33816.0" BinFileVersion="14.40.33816.0" FileDescription="microsoft ® vc winrt core library" LegalCopyright="© microsoft corporation. all rights reserved." LinkDate="08/13/2025 10:56:04" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\vccorlib140.dll" SigPublisherName="microsoft windows software compatibility publisher" PeSubsystem="3" PeCharacteristics="8226" Sha256="93262c0c8fda176297afa3ac8de65807777a468f8c093c06da0d4de676853f25" />
+            <File Id="0000948c3acd2702737949b2b3a030e1d2a2181fb4af" Name="vcruntime140.dll" ProductName="microsoft® visual studio®" CompanyName="microsoft corporation" ProductVersion="14.40.33816.0" VerLanguage="1033" SwitchBackContext="0" FileVersion="14.40.33816.0" OriginalFileName="vcruntime140.dll" InternalName="vcruntime140.dll" Size="119888" SizeOfImage="122880" PeHeaderHash="0101d64699faf1857b19f5d9faeb13f3eea18fd303f6" PeChecksum="131291" CrcChecksum="2976330831" BinProductVersion="14.40.33816.0" BinFileVersion="14.40.33816.0" FileDescription="microsoft® c runtime library" LegalCopyright="© microsoft corporation. all rights reserved." LinkDate="08/31/2036 18:37:58" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\vcruntime140.dll" SigPublisherName="microsoft windows software compatibility publisher" PeSubsystem="3" PeCharacteristics="8226" Sha256="642ae52687a7a6bfb03d0b20dc7e07f4b11ceca634f7eb7ba184d6711ab51a51" />
+            <File Id="000077903692aae688f6d5b04511d5006c66ce4daf8b" Name="vcruntime140_1.dll" ProductName="microsoft® visual studio®" CompanyName="microsoft corporation" ProductVersion="14.40.33816.0" VerLanguage="1033" SwitchBackContext="0" FileVersion="14.40.33816.0" OriginalFileName="vcruntime140_1.dll" InternalName="vcruntime140_1.dll" Size="49744" SizeOfImage="49152" PeHeaderHash="01016d8785d8f5de350093fb9aafa5d157f19f0a914e" PeChecksum="76051" CrcChecksum="964449029" BinProductVersion="14.40.33816.0" BinFileVersion="14.40.33816.0" FileDescription="microsoft® c runtime library" LegalCopyright="© microsoft corporation. all rights reserved." LinkDate="12/29/1977 03:25:30" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\vcruntime140_1.dll" SigPublisherName="microsoft windows software compatibility publisher" PeSubsystem="3" PeCharacteristics="8226" Sha256="0e560532e721b6938dafe4055eedd0251ba5eb5994cd96937cebbcf16a7ddae5" />
+            <File Id="00009ac6b37190ff8e759c83a98e6c9b223998419fd5" Name="vcruntime140_threads.dll" ProductName="microsoft® visual studio®" CompanyName="microsoft corporation" ProductVersion="14.40.33816.0" VerLanguage="1033" SwitchBackContext="0" FileVersion="14.40.33816.0" OriginalFileName="vcruntime140_threads.dll" InternalName="vcruntime140_threads.dll" Size="38480" SizeOfImage="36864" PeHeaderHash="0101a2e2a0928aedb1564b9a62a161808ce06cb32c67" PeChecksum="40599" CrcChecksum="184538575" BinProductVersion="14.40.33816.0" BinFileVersion="14.40.33816.0" FileDescription="microsoft® c runtime library" LegalCopyright="© microsoft corporation. all rights reserved." LinkDate="07/21/2058 23:15:58" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\vcruntime140_threads.dll" SigPublisherName="microsoft windows software compatibility publisher" PeSubsystem="3" PeCharacteristics="8226" Sha256="73951fdb23b055bdc1b6be1d0e366c57b68b644784f5a240b0f5712ef11547d0" />
+            <File Id="00000b880fe3cc81d0bccadd31dcaddedc5925b66c05" Name="web_support.js" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="28409" SizeOfImage="0" PeHeaderHash="" PeChecksum="0" CrcChecksum="3950293576" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="" BinaryType="data_only" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\data\flutter_assets\packages\flutter_inappwebview_web\assets\web\web_support.js" SigPublisherName="" PeSubsystem="0" PeCharacteristics="0" Sha256="2f9ccef9db4da6b73d3c678ffe570aad402791b00dfa520730fdb66d0dc209fc" />
+            <File Id="00006de1079c301749cd45f8bd0419d0adb6744dea7b" Name="WebView2Loader.dll" ProductName="microsoft edge embedded browser webview loader" CompanyName="microsoft corporation" ProductVersion="1.0.1210.39" VerLanguage="1033" SwitchBackContext="0" FileVersion="1.0.1210.39" OriginalFileName="webview2loader.dll" InternalName="webview2loader.dll" Size="142264" SizeOfImage="163840" PeHeaderHash="01012afa90ce1b5a3b2b8ebd0e27b0a85c0039d72183" PeChecksum="149062" CrcChecksum="1842729819" BinProductVersion="1.0.1210.39" BinFileVersion="1.0.1210.39" FileDescription="microsoft edge embedded browser webview loader" LegalCopyright="copyright microsoft corporation. all rights reserved." LinkDate="05/04/2022 22:54:26" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\webview2loader.dll" SigPublisherName="microsoft corporation" PeSubsystem="3" PeCharacteristics="8226" Sha256="f0fccd520afd3056df3130b6ccd3386fef029fe8a5637f190b1da57c96330e85" />
+            <File Id="00002748c75a257dc24fd89cb2f104444b8beee6c5ad" Name="webview_windows_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="479744" SizeOfImage="495616" PeHeaderHash="01011bc6fd4be96702f9500d12e738eec86ec529c782" PeChecksum="0" CrcChecksum="3813982247" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:30:16" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\webview_windows_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="df1bf60176b5d1646ef1d270aa41f0b5fed653bc1daf7aeedb7664806e18266a" />
+            <File Id="0000a320683891fb94e3925616d33dfe2919b5879504" Name="window_manager_plugin.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="141312" SizeOfImage="163840" PeHeaderHash="0101fe2ab03976dd1e8b2ea29230721da67ab87e9b27" PeChecksum="0" CrcChecksum="1829342891" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="08/02/2026 00:30:21" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\window_manager_plugin.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8226" Sha256="513ec2a08845697122e20dc590b0ed4112241b1f82134c6fece424530dc30770" />
+            <File Id="00002b86e3e02c2603b18f038cecd4924fdf55de887d" Name="zlib1.dll" ProductName="" CompanyName="" ProductVersion="" VerLanguage="0" SwitchBackContext="0" FileVersion="" OriginalFileName="" InternalName="" Size="120814" SizeOfImage="147456" PeHeaderHash="01018c5a01abe64b5203cf64e887b5d8f8c33ddbe897" PeChecksum="175059" CrcChecksum="4149163493" BinProductVersion="" BinFileVersion="" FileDescription="" LegalCopyright="" LinkDate="06/14/2026 12:02:40" BinaryType="pe64_amd64" LowerCaseLongPath="c:\windows\temp\appcert_4040\darksan.kamispec_1.0.338.0_x64__5v4h6tkd23wm6\zlib1.dll" SigPublisherName="" PeSubsystem="3" PeCharacteristics="8742" Sha256="b46a9c7519066cb25938695af1a50ad06001bb949055d85ccb2edc42a4d97a7a" />
           </Files>
         </StaticProperties>
       </Program>
     </Installed_Programs>
   </APPLICATIONS>
   <DEPENDENCY_INFORMATION>
-    <AitStaticAnalysis ProgramId="0000da39a3ee5e6b4b0d3255bfef95601890afd80709" AnalysisVersion="1.80" DictionaryVersion="3.7" Type="Max" Id="C:\WINDOWS\temp\appcert_12164\Darksan.Kamispec_1.0.256.0_x64__5v4h6tkd23wm6">
+    <AitStaticAnalysis ProgramId="0000da39a3ee5e6b4b0d3255bfef95601890afd80709" AnalysisVersion="1.80" DictionaryVersion="3.7" Type="Max" Id="C:\WINDOWS\temp\appcert_4040\Darksan.Kamispec_1.0.338.0_x64__5v4h6tkd23wm6">
       <AitFile ErrorCode="0" Name="url_launcher_windows_plugin.dll" Id="0000028e86c697320d8e902c4170f8b9a0739bd6d8b5">
         <AitCategory Id="Com">
           <AitFeature Name="{00000000-0000-0000-0000-000000000001}" />
@@ -2142,6 +2142,109 @@
           <AitFeature Name="user32.dll!MonitorFromPoint" />
         </AitCategory>
       </AitFile>
+      <AitFile ErrorCode="0" Name="ffmpeg_kit_flutter_new_full_plugin.dll" Id="000019d1f8d2170eb3904cce4fc108f3045075b0f7c8">
+        <AitCategory Id="Com">
+          <AitFeature Name="{00000000-0000-0000-0000-000000000001}" />
+        </AitCategory>
+        <AitCategory Id="ApiStatic">
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_beginthreadex" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_cexit" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_configure_narrow_argv" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_crt_atexit" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_errno" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_execute_onexit_table" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_initialize_narrow_environment" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_initialize_onexit_table" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_initterm" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_initterm_e" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_invalid_parameter_noinfo_noreturn" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_invoke_watson" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_register_onexit_function" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_seh_filter_dll" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!terminate" />
+          <AitFeature Name="api-ms-win-crt-string-l1-1-0.dll!isdigit" />
+          <AitFeature Name="api-ms-win-crt-string-l1-1-0.dll!isspace" />
+          <AitFeature Name="api-ms-win-crt-string-l1-1-0.dll!strncmp" />
+          <AitFeature Name="api-ms-win-crt-stdio-l1-1-0.dll!__stdio_common_vsprintf" />
+          <AitFeature Name="api-ms-win-crt-heap-l1-1-0.dll!_callnewh" />
+          <AitFeature Name="api-ms-win-crt-heap-l1-1-0.dll!free" />
+          <AitFeature Name="api-ms-win-crt-heap-l1-1-0.dll!malloc" />
+          <AitFeature Name="api-ms-win-crt-convert-l1-1-0.dll!strtod" />
+          <AitFeature Name="api-ms-win-crt-convert-l1-1-0.dll!strtoll" />
+          <AitFeature Name="vcruntime140.dll!_CxxThrowException" />
+          <AitFeature Name="vcruntime140.dll!__C_specific_handler" />
+          <AitFeature Name="vcruntime140.dll!__std_exception_copy" />
+          <AitFeature Name="vcruntime140.dll!__std_exception_destroy" />
+          <AitFeature Name="vcruntime140.dll!__std_terminate" />
+          <AitFeature Name="vcruntime140.dll!__std_type_info_compare" />
+          <AitFeature Name="vcruntime140.dll!__std_type_info_destroy_list" />
+          <AitFeature Name="vcruntime140.dll!memcmp" />
+          <AitFeature Name="vcruntime140.dll!memcpy" />
+          <AitFeature Name="vcruntime140.dll!memmove" />
+          <AitFeature Name="vcruntime140.dll!memset" />
+          <AitFeature Name="msvcp140.dll!??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@H@Z" />
+          <AitFeature Name="msvcp140.dll!??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@P6AAEAV01@AEAV01@@Z@Z" />
+          <AitFeature Name="msvcp140.dll!??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@PEBX@Z" />
+          <AitFeature Name="msvcp140.dll!?_Osfx@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAXXZ" />
+          <AitFeature Name="msvcp140.dll!?_Raise_handler@std@@3P6AXAEBVexception@stdext@@@ZEA" />
+          <AitFeature Name="msvcp140.dll!?_Throw_Cpp_error@std@@YAXH@Z" />
+          <AitFeature Name="msvcp140.dll!?_Xbad_function_call@std@@YAXXZ" />
+          <AitFeature Name="msvcp140.dll!?_Xinvalid_argument@std@@YAXPEBD@Z" />
+          <AitFeature Name="msvcp140.dll!?_Xlength_error@std@@YAXPEBD@Z" />
+          <AitFeature Name="msvcp140.dll!?_Xout_of_range@std@@YAXPEBD@Z" />
+          <AitFeature Name="msvcp140.dll!?cerr@std@@3V?$basic_ostream@DU?$char_traits@D@std@@@1@A" />
+          <AitFeature Name="msvcp140.dll!?fill@?$basic_ios@DU?$char_traits@D@std@@@std@@QEBADXZ" />
+          <AitFeature Name="msvcp140.dll!?flags@ios_base@std@@QEBAHXZ" />
+          <AitFeature Name="msvcp140.dll!?flush@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@XZ" />
+          <AitFeature Name="msvcp140.dll!?good@ios_base@std@@QEBA_NXZ" />
+          <AitFeature Name="msvcp140.dll!?put@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@D@Z" />
+          <AitFeature Name="msvcp140.dll!?rdbuf@?$basic_ios@DU?$char_traits@D@std@@@std@@QEBAPEAV?$basic_streambuf@DU?$char_traits@D@std@@@2@XZ" />
+          <AitFeature Name="msvcp140.dll!?setstate@?$basic_ios@DU?$char_traits@D@std@@@std@@QEAAXH_N@Z" />
+          <AitFeature Name="msvcp140.dll!?sputc@?$basic_streambuf@DU?$char_traits@D@std@@@std@@QEAAHD@Z" />
+          <AitFeature Name="msvcp140.dll!?sputn@?$basic_streambuf@DU?$char_traits@D@std@@@std@@QEAA_JPEBD_J@Z" />
+          <AitFeature Name="msvcp140.dll!?tie@?$basic_ios@DU?$char_traits@D@std@@@std@@QEBAPEAV?$basic_ostream@DU?$char_traits@D@std@@@2@XZ" />
+          <AitFeature Name="msvcp140.dll!?uncaught_exception@std@@YA_NXZ" />
+          <AitFeature Name="msvcp140.dll!?widen@?$basic_ios@DU?$char_traits@D@std@@@std@@QEBADD@Z" />
+          <AitFeature Name="msvcp140.dll!?width@ios_base@std@@QEAA_J_J@Z" />
+          <AitFeature Name="msvcp140.dll!?width@ios_base@std@@QEBA_JXZ" />
+          <AitFeature Name="msvcp140.dll!_Cnd_do_broadcast_at_thread_exit" />
+          <AitFeature Name="msvcp140.dll!_Mtx_lock" />
+          <AitFeature Name="msvcp140.dll!_Mtx_unlock" />
+          <AitFeature Name="msvcp140.dll!_Thrd_detach" />
+          <AitFeature Name="kernel32.dll!AcquireSRWLockExclusive" />
+          <AitFeature Name="kernel32.dll!DisableThreadLibraryCalls" />
+          <AitFeature Name="kernel32.dll!FreeLibrary" />
+          <AitFeature Name="kernel32.dll!GetCurrentProcess" />
+          <AitFeature Name="kernel32.dll!GetCurrentProcessId" />
+          <AitFeature Name="kernel32.dll!GetCurrentThreadId" />
+          <AitFeature Name="kernel32.dll!GetModuleHandleW" />
+          <AitFeature Name="kernel32.dll!GetProcAddress" />
+          <AitFeature Name="kernel32.dll!GetSystemTimeAsFileTime" />
+          <AitFeature Name="kernel32.dll!InitializeSListHead" />
+          <AitFeature Name="kernel32.dll!IsDebuggerPresent" />
+          <AitFeature Name="kernel32.dll!IsProcessorFeaturePresent" />
+          <AitFeature Name="kernel32.dll!LoadLibraryA" />
+          <AitFeature Name="kernel32.dll!OutputDebugStringA" />
+          <AitFeature Name="kernel32.dll!QueryPerformanceCounter" />
+          <AitFeature Name="kernel32.dll!ReleaseSRWLockExclusive" />
+          <AitFeature Name="kernel32.dll!RtlCaptureContext" />
+          <AitFeature Name="kernel32.dll!RtlLookupFunctionEntry" />
+          <AitFeature Name="kernel32.dll!RtlVirtualUnwind" />
+          <AitFeature Name="kernel32.dll!SetUnhandledExceptionFilter" />
+          <AitFeature Name="kernel32.dll!SleepConditionVariableSRW" />
+          <AitFeature Name="kernel32.dll!TerminateProcess" />
+          <AitFeature Name="kernel32.dll!UnhandledExceptionFilter" />
+          <AitFeature Name="kernel32.dll!WakeAllConditionVariable" />
+          <AitFeature Name="user32.dll!CreateWindowExW" />
+          <AitFeature Name="user32.dll!DefWindowProcW" />
+          <AitFeature Name="user32.dll!DestroyWindow" />
+          <AitFeature Name="user32.dll!GetWindowLongPtrW" />
+          <AitFeature Name="user32.dll!PostMessageW" />
+          <AitFeature Name="user32.dll!RegisterClassW" />
+          <AitFeature Name="user32.dll!SetWindowLongPtrW" />
+          <AitFeature Name="user32.dll!UnregisterClassW" />
+        </AitCategory>
+      </AitFile>
       <AitFile ErrorCode="0" Name="desktop_multi_window_plugin.dll" Id="00001dccc10ebcc5b418d344577ff406c2abc5e7108c">
         <AitCategory Id="Com">
           <AitFeature Name="{00000000-0000-0000-0000-000000000001}" />
@@ -2381,6 +2484,94 @@
           <AitFeature Name="msvcrt.dll!strrchr" />
           <AitFeature Name="msvcrt.dll!vfprintf" />
           <AitFeature Name="msvcrt.dll!wcslen" />
+        </AitCategory>
+      </AitFile>
+      <AitFile ErrorCode="0" Name="fvp.dll" Id="0000215efb290c46dbda814e7f23413bfed8ecdb069f">
+        <AitCategory Id="Com">
+          <AitFeature Name="{00000000-0000-0000-0000-000000000001}" />
+          <AitFeature Name="{035f3ab4-482e-4e50-b41f-8a7f8bd8960b}" />
+          <AitFeature Name="{9b7e4e00-342c-4106-a19f-4f2704f689f0}" />
+        </AitCategory>
+        <AitCategory Id="ApiStatic">
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_cexit" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_configure_narrow_argv" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_crt_atexit" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_execute_onexit_table" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_initialize_narrow_environment" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_initialize_onexit_table" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_initterm" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_initterm_e" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_invalid_parameter_noinfo_noreturn" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_invoke_watson" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_register_onexit_function" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_seh_filter_dll" />
+          <AitFeature Name="api-ms-win-crt-math-l1-1-0.dll!ceilf" />
+          <AitFeature Name="api-ms-win-crt-heap-l1-1-0.dll!_callnewh" />
+          <AitFeature Name="api-ms-win-crt-heap-l1-1-0.dll!free" />
+          <AitFeature Name="api-ms-win-crt-heap-l1-1-0.dll!malloc" />
+          <AitFeature Name="vcruntime140.dll!_CxxThrowException" />
+          <AitFeature Name="vcruntime140.dll!__C_specific_handler" />
+          <AitFeature Name="vcruntime140.dll!__std_exception_copy" />
+          <AitFeature Name="vcruntime140.dll!__std_exception_destroy" />
+          <AitFeature Name="vcruntime140.dll!__std_terminate" />
+          <AitFeature Name="vcruntime140.dll!__std_type_info_compare" />
+          <AitFeature Name="vcruntime140.dll!__std_type_info_destroy_list" />
+          <AitFeature Name="vcruntime140.dll!memcmp" />
+          <AitFeature Name="vcruntime140.dll!memcpy" />
+          <AitFeature Name="vcruntime140.dll!memmove" />
+          <AitFeature Name="vcruntime140.dll!memset" />
+          <AitFeature Name="msvcp140.dll!??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@H@Z" />
+          <AitFeature Name="msvcp140.dll!??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@J@Z" />
+          <AitFeature Name="msvcp140.dll!??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@P6AAEAV01@AEAV01@@Z@Z" />
+          <AitFeature Name="msvcp140.dll!??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@P6AAEAVios_base@1@AEAV21@@Z@Z" />
+          <AitFeature Name="msvcp140.dll!?_Osfx@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAXXZ" />
+          <AitFeature Name="msvcp140.dll!?_Raise_handler@std@@3P6AXAEBVexception@stdext@@@ZEA" />
+          <AitFeature Name="msvcp140.dll!?_Syserror_map@std@@YAPEBDH@Z" />
+          <AitFeature Name="msvcp140.dll!?_Throw_Cpp_error@std@@YAXH@Z" />
+          <AitFeature Name="msvcp140.dll!?_Winerror_map@std@@YAHH@Z" />
+          <AitFeature Name="msvcp140.dll!?_Xbad_function_call@std@@YAXXZ" />
+          <AitFeature Name="msvcp140.dll!?_Xlength_error@std@@YAXPEBD@Z" />
+          <AitFeature Name="msvcp140.dll!?cerr@std@@3V?$basic_ostream@DU?$char_traits@D@std@@@1@A" />
+          <AitFeature Name="msvcp140.dll!?clog@std@@3V?$basic_ostream@DU?$char_traits@D@std@@@1@A" />
+          <AitFeature Name="msvcp140.dll!?cout@std@@3V?$basic_ostream@DU?$char_traits@D@std@@@1@A" />
+          <AitFeature Name="msvcp140.dll!?flush@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@XZ" />
+          <AitFeature Name="msvcp140.dll!?put@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@D@Z" />
+          <AitFeature Name="msvcp140.dll!?setstate@?$basic_ios@DU?$char_traits@D@std@@@std@@QEAAXH_N@Z" />
+          <AitFeature Name="msvcp140.dll!?sputc@?$basic_streambuf@DU?$char_traits@D@std@@@std@@QEAAHD@Z" />
+          <AitFeature Name="msvcp140.dll!?sputn@?$basic_streambuf@DU?$char_traits@D@std@@@std@@QEAA_JPEBD_J@Z" />
+          <AitFeature Name="msvcp140.dll!?widen@?$basic_ios@DU?$char_traits@D@std@@@std@@QEBADD@Z" />
+          <AitFeature Name="msvcp140.dll!_Cnd_destroy_in_situ" />
+          <AitFeature Name="msvcp140.dll!_Cnd_init_in_situ" />
+          <AitFeature Name="msvcp140.dll!_Cnd_signal" />
+          <AitFeature Name="msvcp140.dll!_Cnd_wait" />
+          <AitFeature Name="msvcp140.dll!_Mtx_init_in_situ" />
+          <AitFeature Name="msvcp140.dll!_Mtx_lock" />
+          <AitFeature Name="msvcp140.dll!_Mtx_unlock" />
+          <AitFeature Name="msvcp140.dll!_Thrd_id" />
+          <AitFeature Name="d3d11.dll!D3D11CreateDevice" />
+          <AitFeature Name="kernel32.dll!AcquireSRWLockExclusive" />
+          <AitFeature Name="kernel32.dll!DisableThreadLibraryCalls" />
+          <AitFeature Name="kernel32.dll!FormatMessageA" />
+          <AitFeature Name="kernel32.dll!GetCurrentProcess" />
+          <AitFeature Name="kernel32.dll!GetCurrentProcessId" />
+          <AitFeature Name="kernel32.dll!GetCurrentThreadId" />
+          <AitFeature Name="kernel32.dll!GetLastError" />
+          <AitFeature Name="kernel32.dll!GetLocaleInfoEx" />
+          <AitFeature Name="kernel32.dll!GetSystemTimeAsFileTime" />
+          <AitFeature Name="kernel32.dll!InitializeSListHead" />
+          <AitFeature Name="kernel32.dll!IsDebuggerPresent" />
+          <AitFeature Name="kernel32.dll!IsProcessorFeaturePresent" />
+          <AitFeature Name="kernel32.dll!LocalFree" />
+          <AitFeature Name="kernel32.dll!QueryPerformanceCounter" />
+          <AitFeature Name="kernel32.dll!ReleaseSRWLockExclusive" />
+          <AitFeature Name="kernel32.dll!RtlCaptureContext" />
+          <AitFeature Name="kernel32.dll!RtlLookupFunctionEntry" />
+          <AitFeature Name="kernel32.dll!RtlVirtualUnwind" />
+          <AitFeature Name="kernel32.dll!SetUnhandledExceptionFilter" />
+          <AitFeature Name="kernel32.dll!SleepConditionVariableSRW" />
+          <AitFeature Name="kernel32.dll!TerminateProcess" />
+          <AitFeature Name="kernel32.dll!UnhandledExceptionFilter" />
+          <AitFeature Name="kernel32.dll!WakeAllConditionVariable" />
         </AitCategory>
       </AitFile>
       <AitFile ErrorCode="0" Name="libp11-kit-0.dll" Id="000026e1ac04e4bf3a74606d4be644bcaf170a9f4805">
@@ -2982,6 +3173,132 @@
           <AitFeature Name="kernel32.dll!WideCharToMultiByte" />
           <AitFeature Name="shell32.dll!SHCreateItemFromParsingName" />
           <AitFeature Name="user32.dll!GetAncestor" />
+        </AitCategory>
+      </AitFile>
+      <AitFile ErrorCode="0" Name="HisatorNotebook.exe" Id="000031eb358202c02385df5042e3a62ceeb4e2e48716">
+        <AitCategory Id="Com">
+          <AitFeature Name="{00000000-0000-0000-0000-000000000001}" />
+        </AitCategory>
+        <AitCategory Id="ApiStatic">
+          <AitFeature Name="api-ms-win-crt-locale-l1-1-0.dll!_configthreadlocale" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_c_exit" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_cexit" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_configure_wide_argv" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_crt_atexit" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_exit" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_get_wide_winmain_command_line" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_initialize_onexit_table" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_initialize_wide_environment" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_initterm" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_initterm_e" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_invalid_parameter_noinfo_noreturn" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_invoke_watson" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_register_onexit_function" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_register_thread_local_exe_atexit_callback" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_seh_filter_exe" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_set_app_type" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!exit" />
+          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!terminate" />
+          <AitFeature Name="api-ms-win-crt-math-l1-1-0.dll!__setusermatherr" />
+          <AitFeature Name="api-ms-win-crt-stdio-l1-1-0.dll!__acrt_iob_func" />
+          <AitFeature Name="api-ms-win-crt-stdio-l1-1-0.dll!__p__commode" />
+          <AitFeature Name="api-ms-win-crt-stdio-l1-1-0.dll!_dup2" />
+          <AitFeature Name="api-ms-win-crt-stdio-l1-1-0.dll!_fileno" />
+          <AitFeature Name="api-ms-win-crt-stdio-l1-1-0.dll!_set_fmode" />
+          <AitFeature Name="api-ms-win-crt-stdio-l1-1-0.dll!freopen_s" />
+          <AitFeature Name="api-ms-win-crt-heap-l1-1-0.dll!_callnewh" />
+          <AitFeature Name="api-ms-win-crt-heap-l1-1-0.dll!_set_new_mode" />
+          <AitFeature Name="api-ms-win-crt-heap-l1-1-0.dll!free" />
+          <AitFeature Name="api-ms-win-crt-heap-l1-1-0.dll!malloc" />
+          <AitFeature Name="vcruntime140.dll!_CxxThrowException" />
+          <AitFeature Name="vcruntime140.dll!__C_specific_handler" />
+          <AitFeature Name="vcruntime140.dll!__current_exception" />
+          <AitFeature Name="vcruntime140.dll!__current_exception_context" />
+          <AitFeature Name="vcruntime140.dll!__std_exception_copy" />
+          <AitFeature Name="vcruntime140.dll!__std_exception_destroy" />
+          <AitFeature Name="vcruntime140.dll!__std_terminate" />
+          <AitFeature Name="vcruntime140.dll!__std_type_info_compare" />
+          <AitFeature Name="vcruntime140.dll!memcmp" />
+          <AitFeature Name="vcruntime140.dll!memcpy" />
+          <AitFeature Name="vcruntime140.dll!memmove" />
+          <AitFeature Name="vcruntime140.dll!memset" />
+          <AitFeature Name="msvcp140.dll!??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@P6AAEAV01@AEAV01@@Z@Z" />
+          <AitFeature Name="msvcp140.dll!?_Osfx@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAXXZ" />
+          <AitFeature Name="msvcp140.dll!?_Raise_handler@std@@3P6AXAEBVexception@stdext@@@ZEA" />
+          <AitFeature Name="msvcp140.dll!?_Xbad_function_call@std@@YAXXZ" />
+          <AitFeature Name="msvcp140.dll!?_Xlength_error@std@@YAXPEBD@Z" />
+          <AitFeature Name="msvcp140.dll!?cerr@std@@3V?$basic_ostream@DU?$char_traits@D@std@@@1@A" />
+          <AitFeature Name="msvcp140.dll!?fill@?$basic_ios@DU?$char_traits@D@std@@@std@@QEBADXZ" />
+          <AitFeature Name="msvcp140.dll!?flags@ios_base@std@@QEBAHXZ" />
+          <AitFeature Name="msvcp140.dll!?flush@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@XZ" />
+          <AitFeature Name="msvcp140.dll!?good@ios_base@std@@QEBA_NXZ" />
+          <AitFeature Name="msvcp140.dll!?put@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@D@Z" />
+          <AitFeature Name="msvcp140.dll!?rdbuf@?$basic_ios@DU?$char_traits@D@std@@@std@@QEBAPEAV?$basic_streambuf@DU?$char_traits@D@std@@@2@XZ" />
+          <AitFeature Name="msvcp140.dll!?setstate@?$basic_ios@DU?$char_traits@D@std@@@std@@QEAAXH_N@Z" />
+          <AitFeature Name="msvcp140.dll!?sputc@?$basic_streambuf@DU?$char_traits@D@std@@@std@@QEAAHD@Z" />
+          <AitFeature Name="msvcp140.dll!?sputn@?$basic_streambuf@DU?$char_traits@D@std@@@std@@QEAA_JPEBD_J@Z" />
+          <AitFeature Name="msvcp140.dll!?sync_with_stdio@ios_base@std@@SA_N_N@Z" />
+          <AitFeature Name="msvcp140.dll!?tie@?$basic_ios@DU?$char_traits@D@std@@@std@@QEBAPEAV?$basic_ostream@DU?$char_traits@D@std@@@2@XZ" />
+          <AitFeature Name="msvcp140.dll!?widen@?$basic_ios@DU?$char_traits@D@std@@@std@@QEBADD@Z" />
+          <AitFeature Name="msvcp140.dll!?width@ios_base@std@@QEAA_J_J@Z" />
+          <AitFeature Name="msvcp140.dll!?width@ios_base@std@@QEBA_JXZ" />
+          <AitFeature Name="ole32.dll!CoInitializeEx" />
+          <AitFeature Name="ole32.dll!CoUninitialize" />
+          <AitFeature Name="advapi32.dll!RegGetValueW" />
+          <AitFeature Name="kernel32.dll!AllocConsole" />
+          <AitFeature Name="kernel32.dll!AttachConsole" />
+          <AitFeature Name="kernel32.dll!CloseHandle" />
+          <AitFeature Name="kernel32.dll!CreateThread" />
+          <AitFeature Name="kernel32.dll!FreeLibrary" />
+          <AitFeature Name="kernel32.dll!GetCommandLineW" />
+          <AitFeature Name="kernel32.dll!GetCurrentProcess" />
+          <AitFeature Name="kernel32.dll!GetCurrentProcessId" />
+          <AitFeature Name="kernel32.dll!GetCurrentThreadId" />
+          <AitFeature Name="kernel32.dll!GetModuleHandleW" />
+          <AitFeature Name="kernel32.dll!GetProcAddress" />
+          <AitFeature Name="kernel32.dll!GetStartupInfoW" />
+          <AitFeature Name="kernel32.dll!GetSystemTimeAsFileTime" />
+          <AitFeature Name="kernel32.dll!InitializeSListHead" />
+          <AitFeature Name="kernel32.dll!IsDebuggerPresent" />
+          <AitFeature Name="kernel32.dll!IsProcessorFeaturePresent" />
+          <AitFeature Name="kernel32.dll!LoadLibraryA" />
+          <AitFeature Name="kernel32.dll!LocalFree" />
+          <AitFeature Name="kernel32.dll!QueryPerformanceCounter" />
+          <AitFeature Name="kernel32.dll!RtlCaptureContext" />
+          <AitFeature Name="kernel32.dll!RtlLookupFunctionEntry" />
+          <AitFeature Name="kernel32.dll!RtlVirtualUnwind" />
+          <AitFeature Name="kernel32.dll!SetUnhandledExceptionFilter" />
+          <AitFeature Name="kernel32.dll!Sleep" />
+          <AitFeature Name="kernel32.dll!TerminateProcess" />
+          <AitFeature Name="kernel32.dll!UnhandledExceptionFilter" />
+          <AitFeature Name="kernel32.dll!WideCharToMultiByte" />
+          <AitFeature Name="shell32.dll!CommandLineToArgvW" />
+          <AitFeature Name="user32.dll!CreateWindowExW" />
+          <AitFeature Name="user32.dll!DefWindowProcW" />
+          <AitFeature Name="user32.dll!DestroyWindow" />
+          <AitFeature Name="user32.dll!DispatchMessageW" />
+          <AitFeature Name="user32.dll!GetClientRect" />
+          <AitFeature Name="user32.dll!GetMessageW" />
+          <AitFeature Name="user32.dll!GetSystemMetrics" />
+          <AitFeature Name="user32.dll!GetWindowLongPtrW" />
+          <AitFeature Name="user32.dll!LoadCursorW" />
+          <AitFeature Name="user32.dll!LoadImageW" />
+          <AitFeature Name="user32.dll!MonitorFromPoint" />
+          <AitFeature Name="user32.dll!MoveWindow" />
+          <AitFeature Name="user32.dll!PostQuitMessage" />
+          <AitFeature Name="user32.dll!RegisterClassExW" />
+          <AitFeature Name="user32.dll!SendMessageW" />
+          <AitFeature Name="user32.dll!SetFocus" />
+          <AitFeature Name="user32.dll!SetParent" />
+          <AitFeature Name="user32.dll!SetWindowLongPtrW" />
+          <AitFeature Name="user32.dll!SetWindowPos" />
+          <AitFeature Name="user32.dll!ShowWindow" />
+          <AitFeature Name="user32.dll!TranslateMessage" />
+          <AitFeature Name="user32.dll!UnregisterClassW" />
+          <AitFeature Name="dwmapi.dll!DwmSetWindowAttribute" />
+        </AitCategory>
+        <AitCategory Id="ApiDynamic">
+          <AitFeature Name="user32.dll!EnableNonClientDpiScaling" />
         </AitCategory>
       </AitFile>
       <AitFile ErrorCode="0" Name="avcodec-61.dll" Id="000032f0a48fe95d2821c60d53232c9b678b70463b5b">
@@ -11866,132 +12183,6 @@
           <AitFeature Name="window.pageYOffset" />
         </AitCategory>
       </AitFile>
-      <AitFile ErrorCode="0" Name="HisatorNotebook.exe" Id="0000d9042ceaf32d5edf466ccbf17caeba665e6f1008">
-        <AitCategory Id="Com">
-          <AitFeature Name="{00000000-0000-0000-0000-000000000001}" />
-        </AitCategory>
-        <AitCategory Id="ApiStatic">
-          <AitFeature Name="api-ms-win-crt-locale-l1-1-0.dll!_configthreadlocale" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_c_exit" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_cexit" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_configure_wide_argv" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_crt_atexit" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_exit" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_get_wide_winmain_command_line" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_initialize_onexit_table" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_initialize_wide_environment" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_initterm" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_initterm_e" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_invalid_parameter_noinfo_noreturn" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_invoke_watson" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_register_onexit_function" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_register_thread_local_exe_atexit_callback" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_seh_filter_exe" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_set_app_type" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!exit" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!terminate" />
-          <AitFeature Name="api-ms-win-crt-math-l1-1-0.dll!__setusermatherr" />
-          <AitFeature Name="api-ms-win-crt-stdio-l1-1-0.dll!__acrt_iob_func" />
-          <AitFeature Name="api-ms-win-crt-stdio-l1-1-0.dll!__p__commode" />
-          <AitFeature Name="api-ms-win-crt-stdio-l1-1-0.dll!_dup2" />
-          <AitFeature Name="api-ms-win-crt-stdio-l1-1-0.dll!_fileno" />
-          <AitFeature Name="api-ms-win-crt-stdio-l1-1-0.dll!_set_fmode" />
-          <AitFeature Name="api-ms-win-crt-stdio-l1-1-0.dll!freopen_s" />
-          <AitFeature Name="api-ms-win-crt-heap-l1-1-0.dll!_callnewh" />
-          <AitFeature Name="api-ms-win-crt-heap-l1-1-0.dll!_set_new_mode" />
-          <AitFeature Name="api-ms-win-crt-heap-l1-1-0.dll!free" />
-          <AitFeature Name="api-ms-win-crt-heap-l1-1-0.dll!malloc" />
-          <AitFeature Name="vcruntime140.dll!_CxxThrowException" />
-          <AitFeature Name="vcruntime140.dll!__C_specific_handler" />
-          <AitFeature Name="vcruntime140.dll!__current_exception" />
-          <AitFeature Name="vcruntime140.dll!__current_exception_context" />
-          <AitFeature Name="vcruntime140.dll!__std_exception_copy" />
-          <AitFeature Name="vcruntime140.dll!__std_exception_destroy" />
-          <AitFeature Name="vcruntime140.dll!__std_terminate" />
-          <AitFeature Name="vcruntime140.dll!__std_type_info_compare" />
-          <AitFeature Name="vcruntime140.dll!memcmp" />
-          <AitFeature Name="vcruntime140.dll!memcpy" />
-          <AitFeature Name="vcruntime140.dll!memmove" />
-          <AitFeature Name="vcruntime140.dll!memset" />
-          <AitFeature Name="msvcp140.dll!??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@P6AAEAV01@AEAV01@@Z@Z" />
-          <AitFeature Name="msvcp140.dll!?_Osfx@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAXXZ" />
-          <AitFeature Name="msvcp140.dll!?_Raise_handler@std@@3P6AXAEBVexception@stdext@@@ZEA" />
-          <AitFeature Name="msvcp140.dll!?_Xbad_function_call@std@@YAXXZ" />
-          <AitFeature Name="msvcp140.dll!?_Xlength_error@std@@YAXPEBD@Z" />
-          <AitFeature Name="msvcp140.dll!?cerr@std@@3V?$basic_ostream@DU?$char_traits@D@std@@@1@A" />
-          <AitFeature Name="msvcp140.dll!?fill@?$basic_ios@DU?$char_traits@D@std@@@std@@QEBADXZ" />
-          <AitFeature Name="msvcp140.dll!?flags@ios_base@std@@QEBAHXZ" />
-          <AitFeature Name="msvcp140.dll!?flush@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@XZ" />
-          <AitFeature Name="msvcp140.dll!?good@ios_base@std@@QEBA_NXZ" />
-          <AitFeature Name="msvcp140.dll!?put@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@D@Z" />
-          <AitFeature Name="msvcp140.dll!?rdbuf@?$basic_ios@DU?$char_traits@D@std@@@std@@QEBAPEAV?$basic_streambuf@DU?$char_traits@D@std@@@2@XZ" />
-          <AitFeature Name="msvcp140.dll!?setstate@?$basic_ios@DU?$char_traits@D@std@@@std@@QEAAXH_N@Z" />
-          <AitFeature Name="msvcp140.dll!?sputc@?$basic_streambuf@DU?$char_traits@D@std@@@std@@QEAAHD@Z" />
-          <AitFeature Name="msvcp140.dll!?sputn@?$basic_streambuf@DU?$char_traits@D@std@@@std@@QEAA_JPEBD_J@Z" />
-          <AitFeature Name="msvcp140.dll!?sync_with_stdio@ios_base@std@@SA_N_N@Z" />
-          <AitFeature Name="msvcp140.dll!?tie@?$basic_ios@DU?$char_traits@D@std@@@std@@QEBAPEAV?$basic_ostream@DU?$char_traits@D@std@@@2@XZ" />
-          <AitFeature Name="msvcp140.dll!?widen@?$basic_ios@DU?$char_traits@D@std@@@std@@QEBADD@Z" />
-          <AitFeature Name="msvcp140.dll!?width@ios_base@std@@QEAA_J_J@Z" />
-          <AitFeature Name="msvcp140.dll!?width@ios_base@std@@QEBA_JXZ" />
-          <AitFeature Name="ole32.dll!CoInitializeEx" />
-          <AitFeature Name="ole32.dll!CoUninitialize" />
-          <AitFeature Name="advapi32.dll!RegGetValueW" />
-          <AitFeature Name="kernel32.dll!AllocConsole" />
-          <AitFeature Name="kernel32.dll!AttachConsole" />
-          <AitFeature Name="kernel32.dll!CloseHandle" />
-          <AitFeature Name="kernel32.dll!CreateThread" />
-          <AitFeature Name="kernel32.dll!FreeLibrary" />
-          <AitFeature Name="kernel32.dll!GetCommandLineW" />
-          <AitFeature Name="kernel32.dll!GetCurrentProcess" />
-          <AitFeature Name="kernel32.dll!GetCurrentProcessId" />
-          <AitFeature Name="kernel32.dll!GetCurrentThreadId" />
-          <AitFeature Name="kernel32.dll!GetModuleHandleW" />
-          <AitFeature Name="kernel32.dll!GetProcAddress" />
-          <AitFeature Name="kernel32.dll!GetStartupInfoW" />
-          <AitFeature Name="kernel32.dll!GetSystemTimeAsFileTime" />
-          <AitFeature Name="kernel32.dll!InitializeSListHead" />
-          <AitFeature Name="kernel32.dll!IsDebuggerPresent" />
-          <AitFeature Name="kernel32.dll!IsProcessorFeaturePresent" />
-          <AitFeature Name="kernel32.dll!LoadLibraryA" />
-          <AitFeature Name="kernel32.dll!LocalFree" />
-          <AitFeature Name="kernel32.dll!QueryPerformanceCounter" />
-          <AitFeature Name="kernel32.dll!RtlCaptureContext" />
-          <AitFeature Name="kernel32.dll!RtlLookupFunctionEntry" />
-          <AitFeature Name="kernel32.dll!RtlVirtualUnwind" />
-          <AitFeature Name="kernel32.dll!SetUnhandledExceptionFilter" />
-          <AitFeature Name="kernel32.dll!Sleep" />
-          <AitFeature Name="kernel32.dll!TerminateProcess" />
-          <AitFeature Name="kernel32.dll!UnhandledExceptionFilter" />
-          <AitFeature Name="kernel32.dll!WideCharToMultiByte" />
-          <AitFeature Name="shell32.dll!CommandLineToArgvW" />
-          <AitFeature Name="user32.dll!CreateWindowExW" />
-          <AitFeature Name="user32.dll!DefWindowProcW" />
-          <AitFeature Name="user32.dll!DestroyWindow" />
-          <AitFeature Name="user32.dll!DispatchMessageW" />
-          <AitFeature Name="user32.dll!GetClientRect" />
-          <AitFeature Name="user32.dll!GetMessageW" />
-          <AitFeature Name="user32.dll!GetSystemMetrics" />
-          <AitFeature Name="user32.dll!GetWindowLongPtrW" />
-          <AitFeature Name="user32.dll!LoadCursorW" />
-          <AitFeature Name="user32.dll!LoadImageW" />
-          <AitFeature Name="user32.dll!MonitorFromPoint" />
-          <AitFeature Name="user32.dll!MoveWindow" />
-          <AitFeature Name="user32.dll!PostQuitMessage" />
-          <AitFeature Name="user32.dll!RegisterClassExW" />
-          <AitFeature Name="user32.dll!SendMessageW" />
-          <AitFeature Name="user32.dll!SetFocus" />
-          <AitFeature Name="user32.dll!SetParent" />
-          <AitFeature Name="user32.dll!SetWindowLongPtrW" />
-          <AitFeature Name="user32.dll!SetWindowPos" />
-          <AitFeature Name="user32.dll!ShowWindow" />
-          <AitFeature Name="user32.dll!TranslateMessage" />
-          <AitFeature Name="user32.dll!UnregisterClassW" />
-          <AitFeature Name="dwmapi.dll!DwmSetWindowAttribute" />
-        </AitCategory>
-        <AitCategory Id="ApiDynamic">
-          <AitFeature Name="user32.dll!EnableNonClientDpiScaling" />
-        </AitCategory>
-      </AitFile>
       <AitFile ErrorCode="0" Name="libwinpthread-1.dll" Id="0000e0ffc90c7ef5db860ca48c1bc8413992894e5ffc">
         <AitCategory Id="Com">
           <AitFeature Name="{00000000-0000-0000-0000-000000000030}" />
@@ -12225,109 +12416,6 @@
           <AitFeature Name="window.navigator.platform" />
           <AitFeature Name="window.navigator.userAgent" />
           <AitFeature Name="window.navigator.vibrate" />
-        </AitCategory>
-      </AitFile>
-      <AitFile ErrorCode="0" Name="ffmpeg_kit_flutter_new_full_plugin.dll" Id="0000f097f20ddc0e161d96c122294e7fd98b71273a06">
-        <AitCategory Id="Com">
-          <AitFeature Name="{00000000-0000-0000-0000-000000000001}" />
-        </AitCategory>
-        <AitCategory Id="ApiStatic">
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_beginthreadex" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_cexit" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_configure_narrow_argv" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_crt_atexit" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_errno" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_execute_onexit_table" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_initialize_narrow_environment" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_initialize_onexit_table" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_initterm" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_initterm_e" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_invalid_parameter_noinfo_noreturn" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_invoke_watson" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_register_onexit_function" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_seh_filter_dll" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!terminate" />
-          <AitFeature Name="api-ms-win-crt-string-l1-1-0.dll!isdigit" />
-          <AitFeature Name="api-ms-win-crt-string-l1-1-0.dll!isspace" />
-          <AitFeature Name="api-ms-win-crt-string-l1-1-0.dll!strncmp" />
-          <AitFeature Name="api-ms-win-crt-stdio-l1-1-0.dll!__stdio_common_vsprintf" />
-          <AitFeature Name="api-ms-win-crt-heap-l1-1-0.dll!_callnewh" />
-          <AitFeature Name="api-ms-win-crt-heap-l1-1-0.dll!free" />
-          <AitFeature Name="api-ms-win-crt-heap-l1-1-0.dll!malloc" />
-          <AitFeature Name="api-ms-win-crt-convert-l1-1-0.dll!strtod" />
-          <AitFeature Name="api-ms-win-crt-convert-l1-1-0.dll!strtoll" />
-          <AitFeature Name="vcruntime140.dll!_CxxThrowException" />
-          <AitFeature Name="vcruntime140.dll!__C_specific_handler" />
-          <AitFeature Name="vcruntime140.dll!__std_exception_copy" />
-          <AitFeature Name="vcruntime140.dll!__std_exception_destroy" />
-          <AitFeature Name="vcruntime140.dll!__std_terminate" />
-          <AitFeature Name="vcruntime140.dll!__std_type_info_compare" />
-          <AitFeature Name="vcruntime140.dll!__std_type_info_destroy_list" />
-          <AitFeature Name="vcruntime140.dll!memcmp" />
-          <AitFeature Name="vcruntime140.dll!memcpy" />
-          <AitFeature Name="vcruntime140.dll!memmove" />
-          <AitFeature Name="vcruntime140.dll!memset" />
-          <AitFeature Name="msvcp140.dll!??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@H@Z" />
-          <AitFeature Name="msvcp140.dll!??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@P6AAEAV01@AEAV01@@Z@Z" />
-          <AitFeature Name="msvcp140.dll!??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@PEBX@Z" />
-          <AitFeature Name="msvcp140.dll!?_Osfx@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAXXZ" />
-          <AitFeature Name="msvcp140.dll!?_Raise_handler@std@@3P6AXAEBVexception@stdext@@@ZEA" />
-          <AitFeature Name="msvcp140.dll!?_Throw_Cpp_error@std@@YAXH@Z" />
-          <AitFeature Name="msvcp140.dll!?_Xbad_function_call@std@@YAXXZ" />
-          <AitFeature Name="msvcp140.dll!?_Xinvalid_argument@std@@YAXPEBD@Z" />
-          <AitFeature Name="msvcp140.dll!?_Xlength_error@std@@YAXPEBD@Z" />
-          <AitFeature Name="msvcp140.dll!?_Xout_of_range@std@@YAXPEBD@Z" />
-          <AitFeature Name="msvcp140.dll!?cerr@std@@3V?$basic_ostream@DU?$char_traits@D@std@@@1@A" />
-          <AitFeature Name="msvcp140.dll!?fill@?$basic_ios@DU?$char_traits@D@std@@@std@@QEBADXZ" />
-          <AitFeature Name="msvcp140.dll!?flags@ios_base@std@@QEBAHXZ" />
-          <AitFeature Name="msvcp140.dll!?flush@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@XZ" />
-          <AitFeature Name="msvcp140.dll!?good@ios_base@std@@QEBA_NXZ" />
-          <AitFeature Name="msvcp140.dll!?put@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@D@Z" />
-          <AitFeature Name="msvcp140.dll!?rdbuf@?$basic_ios@DU?$char_traits@D@std@@@std@@QEBAPEAV?$basic_streambuf@DU?$char_traits@D@std@@@2@XZ" />
-          <AitFeature Name="msvcp140.dll!?setstate@?$basic_ios@DU?$char_traits@D@std@@@std@@QEAAXH_N@Z" />
-          <AitFeature Name="msvcp140.dll!?sputc@?$basic_streambuf@DU?$char_traits@D@std@@@std@@QEAAHD@Z" />
-          <AitFeature Name="msvcp140.dll!?sputn@?$basic_streambuf@DU?$char_traits@D@std@@@std@@QEAA_JPEBD_J@Z" />
-          <AitFeature Name="msvcp140.dll!?tie@?$basic_ios@DU?$char_traits@D@std@@@std@@QEBAPEAV?$basic_ostream@DU?$char_traits@D@std@@@2@XZ" />
-          <AitFeature Name="msvcp140.dll!?uncaught_exception@std@@YA_NXZ" />
-          <AitFeature Name="msvcp140.dll!?widen@?$basic_ios@DU?$char_traits@D@std@@@std@@QEBADD@Z" />
-          <AitFeature Name="msvcp140.dll!?width@ios_base@std@@QEAA_J_J@Z" />
-          <AitFeature Name="msvcp140.dll!?width@ios_base@std@@QEBA_JXZ" />
-          <AitFeature Name="msvcp140.dll!_Cnd_do_broadcast_at_thread_exit" />
-          <AitFeature Name="msvcp140.dll!_Mtx_lock" />
-          <AitFeature Name="msvcp140.dll!_Mtx_unlock" />
-          <AitFeature Name="msvcp140.dll!_Thrd_detach" />
-          <AitFeature Name="kernel32.dll!AcquireSRWLockExclusive" />
-          <AitFeature Name="kernel32.dll!DisableThreadLibraryCalls" />
-          <AitFeature Name="kernel32.dll!FreeLibrary" />
-          <AitFeature Name="kernel32.dll!GetCurrentProcess" />
-          <AitFeature Name="kernel32.dll!GetCurrentProcessId" />
-          <AitFeature Name="kernel32.dll!GetCurrentThreadId" />
-          <AitFeature Name="kernel32.dll!GetModuleHandleW" />
-          <AitFeature Name="kernel32.dll!GetProcAddress" />
-          <AitFeature Name="kernel32.dll!GetSystemTimeAsFileTime" />
-          <AitFeature Name="kernel32.dll!InitializeSListHead" />
-          <AitFeature Name="kernel32.dll!IsDebuggerPresent" />
-          <AitFeature Name="kernel32.dll!IsProcessorFeaturePresent" />
-          <AitFeature Name="kernel32.dll!LoadLibraryA" />
-          <AitFeature Name="kernel32.dll!OutputDebugStringA" />
-          <AitFeature Name="kernel32.dll!QueryPerformanceCounter" />
-          <AitFeature Name="kernel32.dll!ReleaseSRWLockExclusive" />
-          <AitFeature Name="kernel32.dll!RtlCaptureContext" />
-          <AitFeature Name="kernel32.dll!RtlLookupFunctionEntry" />
-          <AitFeature Name="kernel32.dll!RtlVirtualUnwind" />
-          <AitFeature Name="kernel32.dll!SetUnhandledExceptionFilter" />
-          <AitFeature Name="kernel32.dll!SleepConditionVariableSRW" />
-          <AitFeature Name="kernel32.dll!TerminateProcess" />
-          <AitFeature Name="kernel32.dll!UnhandledExceptionFilter" />
-          <AitFeature Name="kernel32.dll!WakeAllConditionVariable" />
-          <AitFeature Name="user32.dll!CreateWindowExW" />
-          <AitFeature Name="user32.dll!DefWindowProcW" />
-          <AitFeature Name="user32.dll!DestroyWindow" />
-          <AitFeature Name="user32.dll!GetWindowLongPtrW" />
-          <AitFeature Name="user32.dll!PostMessageW" />
-          <AitFeature Name="user32.dll!RegisterClassW" />
-          <AitFeature Name="user32.dll!SetWindowLongPtrW" />
-          <AitFeature Name="user32.dll!UnregisterClassW" />
         </AitCategory>
       </AitFile>
       <AitFile ErrorCode="0" Name="irondash_engine_context_plugin.dll" Id="0000f1cf834489baf26fd5123a51d47d092c8a8ad871">
@@ -13323,94 +13411,6 @@
         </AitCategory>
         <AitCategory Id="WRTClassFromSearch">
           <AitFeature Name="Windows.Storage.StorageFile" />
-        </AitCategory>
-      </AitFile>
-      <AitFile ErrorCode="0" Name="fvp.dll" Id="0000f7aee086fea9bc25da6d76835593b635bcd45b89">
-        <AitCategory Id="Com">
-          <AitFeature Name="{00000000-0000-0000-0000-000000000001}" />
-          <AitFeature Name="{035f3ab4-482e-4e50-b41f-8a7f8bd8960b}" />
-          <AitFeature Name="{9b7e4e00-342c-4106-a19f-4f2704f689f0}" />
-        </AitCategory>
-        <AitCategory Id="ApiStatic">
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_cexit" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_configure_narrow_argv" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_crt_atexit" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_execute_onexit_table" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_initialize_narrow_environment" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_initialize_onexit_table" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_initterm" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_initterm_e" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_invalid_parameter_noinfo_noreturn" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_invoke_watson" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_register_onexit_function" />
-          <AitFeature Name="api-ms-win-crt-runtime-l1-1-0.dll!_seh_filter_dll" />
-          <AitFeature Name="api-ms-win-crt-math-l1-1-0.dll!ceilf" />
-          <AitFeature Name="api-ms-win-crt-heap-l1-1-0.dll!_callnewh" />
-          <AitFeature Name="api-ms-win-crt-heap-l1-1-0.dll!free" />
-          <AitFeature Name="api-ms-win-crt-heap-l1-1-0.dll!malloc" />
-          <AitFeature Name="vcruntime140.dll!_CxxThrowException" />
-          <AitFeature Name="vcruntime140.dll!__C_specific_handler" />
-          <AitFeature Name="vcruntime140.dll!__std_exception_copy" />
-          <AitFeature Name="vcruntime140.dll!__std_exception_destroy" />
-          <AitFeature Name="vcruntime140.dll!__std_terminate" />
-          <AitFeature Name="vcruntime140.dll!__std_type_info_compare" />
-          <AitFeature Name="vcruntime140.dll!__std_type_info_destroy_list" />
-          <AitFeature Name="vcruntime140.dll!memcmp" />
-          <AitFeature Name="vcruntime140.dll!memcpy" />
-          <AitFeature Name="vcruntime140.dll!memmove" />
-          <AitFeature Name="vcruntime140.dll!memset" />
-          <AitFeature Name="msvcp140.dll!??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@H@Z" />
-          <AitFeature Name="msvcp140.dll!??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@J@Z" />
-          <AitFeature Name="msvcp140.dll!??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@P6AAEAV01@AEAV01@@Z@Z" />
-          <AitFeature Name="msvcp140.dll!??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@P6AAEAVios_base@1@AEAV21@@Z@Z" />
-          <AitFeature Name="msvcp140.dll!?_Osfx@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAXXZ" />
-          <AitFeature Name="msvcp140.dll!?_Raise_handler@std@@3P6AXAEBVexception@stdext@@@ZEA" />
-          <AitFeature Name="msvcp140.dll!?_Syserror_map@std@@YAPEBDH@Z" />
-          <AitFeature Name="msvcp140.dll!?_Throw_Cpp_error@std@@YAXH@Z" />
-          <AitFeature Name="msvcp140.dll!?_Winerror_map@std@@YAHH@Z" />
-          <AitFeature Name="msvcp140.dll!?_Xbad_function_call@std@@YAXXZ" />
-          <AitFeature Name="msvcp140.dll!?_Xlength_error@std@@YAXPEBD@Z" />
-          <AitFeature Name="msvcp140.dll!?cerr@std@@3V?$basic_ostream@DU?$char_traits@D@std@@@1@A" />
-          <AitFeature Name="msvcp140.dll!?clog@std@@3V?$basic_ostream@DU?$char_traits@D@std@@@1@A" />
-          <AitFeature Name="msvcp140.dll!?cout@std@@3V?$basic_ostream@DU?$char_traits@D@std@@@1@A" />
-          <AitFeature Name="msvcp140.dll!?flush@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@XZ" />
-          <AitFeature Name="msvcp140.dll!?put@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@D@Z" />
-          <AitFeature Name="msvcp140.dll!?setstate@?$basic_ios@DU?$char_traits@D@std@@@std@@QEAAXH_N@Z" />
-          <AitFeature Name="msvcp140.dll!?sputc@?$basic_streambuf@DU?$char_traits@D@std@@@std@@QEAAHD@Z" />
-          <AitFeature Name="msvcp140.dll!?sputn@?$basic_streambuf@DU?$char_traits@D@std@@@std@@QEAA_JPEBD_J@Z" />
-          <AitFeature Name="msvcp140.dll!?widen@?$basic_ios@DU?$char_traits@D@std@@@std@@QEBADD@Z" />
-          <AitFeature Name="msvcp140.dll!_Cnd_destroy_in_situ" />
-          <AitFeature Name="msvcp140.dll!_Cnd_init_in_situ" />
-          <AitFeature Name="msvcp140.dll!_Cnd_signal" />
-          <AitFeature Name="msvcp140.dll!_Cnd_wait" />
-          <AitFeature Name="msvcp140.dll!_Mtx_init_in_situ" />
-          <AitFeature Name="msvcp140.dll!_Mtx_lock" />
-          <AitFeature Name="msvcp140.dll!_Mtx_unlock" />
-          <AitFeature Name="msvcp140.dll!_Thrd_id" />
-          <AitFeature Name="d3d11.dll!D3D11CreateDevice" />
-          <AitFeature Name="kernel32.dll!AcquireSRWLockExclusive" />
-          <AitFeature Name="kernel32.dll!DisableThreadLibraryCalls" />
-          <AitFeature Name="kernel32.dll!FormatMessageA" />
-          <AitFeature Name="kernel32.dll!GetCurrentProcess" />
-          <AitFeature Name="kernel32.dll!GetCurrentProcessId" />
-          <AitFeature Name="kernel32.dll!GetCurrentThreadId" />
-          <AitFeature Name="kernel32.dll!GetLastError" />
-          <AitFeature Name="kernel32.dll!GetLocaleInfoEx" />
-          <AitFeature Name="kernel32.dll!GetSystemTimeAsFileTime" />
-          <AitFeature Name="kernel32.dll!InitializeSListHead" />
-          <AitFeature Name="kernel32.dll!IsDebuggerPresent" />
-          <AitFeature Name="kernel32.dll!IsProcessorFeaturePresent" />
-          <AitFeature Name="kernel32.dll!LocalFree" />
-          <AitFeature Name="kernel32.dll!QueryPerformanceCounter" />
-          <AitFeature Name="kernel32.dll!ReleaseSRWLockExclusive" />
-          <AitFeature Name="kernel32.dll!RtlCaptureContext" />
-          <AitFeature Name="kernel32.dll!RtlLookupFunctionEntry" />
-          <AitFeature Name="kernel32.dll!RtlVirtualUnwind" />
-          <AitFeature Name="kernel32.dll!SetUnhandledExceptionFilter" />
-          <AitFeature Name="kernel32.dll!SleepConditionVariableSRW" />
-          <AitFeature Name="kernel32.dll!TerminateProcess" />
-          <AitFeature Name="kernel32.dll!UnhandledExceptionFilter" />
-          <AitFeature Name="kernel32.dll!WakeAllConditionVariable" />
         </AitCategory>
       </AitFile>
       <AitFile ErrorCode="0" Name="libnettle-8.dll" Id="0000fabf546ac45cb5c2047d8a1a4742ff5eb3180003">

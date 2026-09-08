@@ -123,23 +123,48 @@ WACK には署名済みパッケージが要るので、**検証用だけ** `sto
 tool\msix\run-wack.ps1
 ```
 
+**b338 の実測（2026-09-08 23:11, `tool/msix/wack_report.xml`）: 総合 PASS。
+24 項目中 22 PASS / 2 FAIL。2 件とも OPTIONAL=TRUE で、b256 の時とまったく
+同じ内訳です**（b256 → b338 で低水準フック・カーソル・壁紙・明るさ・画面録画
+などを足しましたが、新しい FAIL は 1 件も増えていません）。
+
 既知の FAIL（いずれも OPTIONAL=TRUE なので全体は PASS）:
 
-- **アーカイブ ファイルの使用** … `data\flutter_assets\NOTICES.Z`。
+- **アーカイブ ファイルの使用量** … `data\flutter_assets\NOTICES.Z`。
   Flutter が必ず出す成果物で削除不可（アプリ内のライセンス表示が読んでいる）
-- **ブロック済みの実行可能ファイル** … 依存 DLL の API 参照
-  （`url_launcher_windows_plugin.dll!ShellExecuteW` /
-  `flutter_windows.dll!CreateProcessW` / `printing_plugin.dll!ShellExecuteExW`、
-  および avcodec / avfilter / avformat / ffmpeg / mdk / pdfium / libcrypto /
-  libgnutls / super_native_extensions）と、`app.so` に残る `powershell` /
-  `Bash` の文字列。
+- **ブロック済みの実行可能ファイル** … 2 種類あります。
+  - 依存 DLL の「プロセス起動」API 参照:
+    `url_launcher_windows_plugin.dll!ShellExecuteW` /
+    `flutter_windows.dll!CreateProcessW` /
+    `printing_plugin.dll!ShellExecuteExW`
+  - `cmd` / `reg` / `powershell` / `CDB` / `CsI` / `DNX` / `Bash` といった
+    **禁止された実行ファイル名の文字列**。avcodec / avfilter / avformat /
+    ffmpeg / flutter_windows / libcrypto / libgnutls / libiconv / libidn2 /
+    libunistring / mdk / pdfium / super_native_extensions、および `app.so`。
 
-> `STORE_BUILD=true` で消えるのは ffmpeg の自動ダウンロードと
-> コマンド実行機能と動画編集で、**`app.so` の中の `powershell` / `Bash` の
-> 文字列は消えません**（b338 の STORE ビルドで実測: `powershell` 1 件 /
-> `Bash` 1 件 / `cmd.exe` 0 件）。以前ここに「STORE_BUILD で自分の分は
-> 消えます」と書いてありましたが誤りです。どちらも OPTIONAL なので
-> 全体は PASS のままです。
+> **`STORE_BUILD=true` を付けても、これらの文字列は消えません。**
+> 落ちるのは ffmpeg の自動ダウンロードとコマンド実行機能と動画編集だけです。
+> WACK は大文字小文字を区別せずに探すので、`CdB` `reG` `CMD` のような
+> 断片にも当たります（ASCII で `cmd.exe` を grep して 0 件でも、WACK では
+> 検出されます）。以前ここに「STORE_BUILD で自分の分は消えます」と
+> 書いてありましたが誤りです。どちらも OPTIONAL なので全体は PASS のままです。
+
+### run-wack.ps1 について（過去にはまった罠）
+
+このスクリプトには 2 つの欠陥があり、b338 で直しました。同じ症状が出たら
+思い出してください。
+
+1. **古いパッケージを黙って検査していた**。版を照合せずに
+   `HisatorNotebookWack.msix` をそのまま掛けるので、何か月も前の物を
+   検査して PASS と出ます。今は `pubspec.yaml` の `msix_version` と
+   突き合わせ、違えば止まります。
+2. **FAIL があっても「落ちた項目」が空だった**。`//*[@RESULT="FAIL"]` で
+   探していましたが、`RESULT` は**属性ではなく子の要素**
+   （`<TEST NAME=...><RESULT>PASS</RESULT>`）です。今は要素を見ます。
+
+さらに、appcert.exe が引数エラーで起動しなかったのに、残っていた**古い
+レポートを読んで「結果: PASS」と表示した**ことがあります。今は実行前に
+前のレポートを退避し、出来たレポートの `APP_VERSION` も照合します。
 
 ---
 
