@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart';
@@ -231,8 +232,12 @@ class CursorWrap {
       stop();
       return;
     }
-    _timer ??=
-        Timer.periodic(const Duration(milliseconds: 15), (_) => _tick());
+    // ★ 8ms 見回り (= ユーザー要望: もっと速く)。 1 回の見回りでやるのは
+    //   user32 の読み取りが十数回だけ (実測で数十マイクロ秒) なので、
+    //   倍に上げても負荷にならない。 待ちを短くしても、 見回りの粗さが
+    //   そのまま遅れの下限になるため、 ここを詰めないと効かない。
+    _timer ??= Timer.periodic(
+        const Duration(milliseconds: _kTickMs), (_) => _tick());
   }
 
   void stop() {
@@ -260,6 +265,9 @@ class CursorWrap {
       if (!hasMultipleMonitors) {
         _edgeKind = '';
         _edgeSince = null;
+        _edgeLeftKind = '';
+        _edgeLeftAt = null;
+        _forgetMotion();
         return;
       }
       // 何かを掴んで運んでいる最中は触らない。 ただし窓を掴んで動かして
@@ -275,6 +283,9 @@ class CursorWrap {
           //   端へ触れた瞬間、 古い時刻のせいで即座に飛んでしまう。
           _edgeKind = '';
           _edgeSince = null;
+          _edgeLeftKind = '';
+          _edgeLeftAt = null;
+          _forgetMotion();
           return;
         }
       } else {
@@ -292,6 +303,9 @@ class CursorWrap {
       final pos = _cursorPos();
       if (pos == null) return;
       final x = pos.$1, y = pos.$2;
+      // ★ 端に着く前の動きを控えておく (= 勢いの見分けに使う)。 端に着いて
+      //   から測っても、 その時にはもう縁で止められていて速さが出ない。
+      _sampleMotion(x, y);
 
       // ── まず「今いるモニターのどの端に着いたか」 を見る ──
       //    仮想画面の端だけを見ていると、 高さの違うモニターを並べた時に
@@ -322,9 +336,13 @@ class CursorWrap {
         kind = 'B';
       }
       if (kind.isEmpty) {
-        // 端から離れた。 数え直す。
+        // 端から離れた。 すぐ戻って来た時のために、 どの辺から離れたかを
+        // 覚えておく (= 手のぶれで 1 回外れただけなら数え直さない)。
+        if (_edgeKind.isNotEmpty) {
+          _edgeLeftKind = _edgeKind;
+          _edgeLeftAt = DateTime.now();
+        }
         _edgeKind = '';
-        _edgeSince = null;
         return;
       }
       // ★ 窓の右上 (✕ / 最小化 / 最大化) の近くでは飛ばさない
@@ -332,8 +350,12 @@ class CursorWrap {
       //   押しに行けば必ず端に触れる。 狙いを定めて止まる人ほど長く留まるため、
       //   b334 の「押し続けている間だけ」 だけでは防げなかった。
       if (_nearCaptionButtons(x, y)) {
+        // ★ ここは猶予を残さない。 残すと ✕ を狙ってから辺を下へ滑らせた
+        //   時に、 ✕ に居た間の数えがそのまま効いて即座に飛んでしまう。
         _edgeKind = '';
         _edgeSince = null;
+        _edgeLeftKind = '';
+        _edgeLeftAt = null;
         return;
       }
       // ★ 端に触れただけでは飛ばさない。 同じ辺に「押し続けている」 間だけ
@@ -342,12 +364,30 @@ class CursorWrap {
       final nowT = DateTime.now();
       if (_edgeKind != kind) {
         _edgeKind = kind;
-        _edgeSince = nowT;
+        // 直前に同じ辺から離れたばかりなら、 数えを引き継ぐ (= 手のぶれで
+        // 1 回外れただけの時に、 いつまでも飛ばないのを防ぐ)。
+        final leftAt = _edgeLeftAt;
+        final resumed = _edgeLeftKind == kind &&
+            leftAt != null &&
+            _edgeSince != null &&
+            nowT.difference(leftAt) <= _kEdgeReenterGrace;
+        if (!resumed) _edgeSince = nowT;
+      }
+      _edgeLeftKind = '';
+      _edgeLeftAt = null;
+      final since = _edgeSince ??= nowT;
+      // ★ 勢いよく端へ向かって来たなら待たない (= ユーザー要望: サブモニター
+      //   へ送るのが遅い)。 ✕ / 最小化の近くは _nearCaptionButtons で先に
+      //   除いてあるので、 ここまで来た速い動きは「画面の外へ出るつもり」 と
+      //   見てよい。 窓を運んでいる時は、 端へ寄せて貼る操作と見分けが
+      //   付かないので勢いは使わない。
+      if (!shouldRouteAtEdge(
+        heldFor: nowT.difference(since),
+        approachSpeed: _approachSpeed(kind),
+        movingWindow: movingWindow != 0,
+      )) {
         return;
       }
-      final since = _edgeSince ??= nowT;
-      final need = movingWindow != 0 ? _kEdgeHoldWindow : _kEdgeHold;
-      if (nowT.difference(since) < need) return;
 
       // OS がその側で既に隣のモニターへ繋いでいるなら、 何もしない
       //   (= そのまま歩いて行けるので、 飛ばすと邪魔になるだけ)。
@@ -389,7 +429,9 @@ class CursorWrap {
         // 窓を掴んでいる時は窓も一緒に運ぶ (= 反対の端へ回り込む時と同じ)。
         if (movingWindow != 0) _moveWindowBy(movingWindow, nx - x, ny - y);
         _setCursorPos(nx, ny);
-        _quietUntil = DateTime.now().add(const Duration(milliseconds: 300));
+        // 飛ばした分が「速い動き」 に見えないよう、 控えを捨てる。
+        _forgetMotion();
+        _quietUntil = DateTime.now().add(_kQuiet);
         return;
       }
 
@@ -428,8 +470,7 @@ class CursorWrap {
           : (to.$4 <= from.$2 || to.$2 >= from.$4);
       if (!apart) return;
 
-      // ★ 端に着いたら待たずにすぐ移す (= ユーザー報告: 一瞬止まるのが
-      //   気になる)。 行き先のモニターの内側へ収めてから移す。
+      // 行き先のモニターの内側へ収めてから移す。
       final tx = nx.clamp(to.$1 + 1, to.$3 - 2);
       final ty = ny.clamp(to.$2 + 1, to.$4 - 2);
       // 窓を掴んでいる時は、 窓も同じだけ先に運んでおく。 移動の輪が自分で
@@ -437,8 +478,9 @@ class CursorWrap {
       // しない環境への保険になる (窓だけ置き去りにしない)。
       if (movingWindow != 0) _moveWindowBy(movingWindow, tx - x, ty - y);
       _setCursorPos(tx, ty);
-      _quietUntil =
-          DateTime.now().add(const Duration(milliseconds: 300));
+      // 飛ばした分が「速い動き」 に見えないよう、 控えを捨てる。
+      _forgetMotion();
+      _quietUntil = DateTime.now().add(_kQuiet);
     } catch (_) {
       // 何かおかしければ黙って止める (マウスを人質に取らない)。
       stop();
@@ -753,18 +795,125 @@ class CursorWrap {
   /// その辺に触れ始めた時刻。
   DateTime? _edgeSince;
 
-  /// 触れてから飛ばすまでの待ち。
+  /// 見回りの間隔 (ミリ秒)。
+  static const int _kTickMs = 8;
+
+  /// 触れてから飛ばすまでの待ち (ゆっくり近付いた時)。
   ///
   /// ★ = ユーザー報告: 端に触れた瞬間に飛んでいたので、 端の ✕ を押しに
   ///   行くだけで別のモニターへ行ってしまった。 「押し続けている」 = まだ外へ
   ///   行こうとしている、 とみなせる分だけ待つ。
-  static const Duration _kEdgeHold = Duration(milliseconds: 220);
+  /// ★ = ユーザー要望「サブモニターに送るまでの時間が掛かり過ぎている」。
+  ///   220ms → 90ms。 待ちを短くできるのは、 下の「勢い」 の見分けと
+  ///   b335 の ✕ 除けが、 待ち時間の代わりに人の狙いを見てくれるから。
+  static const Duration _kEdgeHold = Duration(milliseconds: 90);
 
   /// 窓を掴んで運んでいる時の待ち。
   ///
   /// 端へ寄せて貼り付ける (Aero Snap) 操作と重なるので、 その時は長めに。
   /// 貼り付けたい人は端で止めてすぐ離すので、 これだけ待てば当たらない。
-  static const Duration _kEdgeHoldWindow = Duration(milliseconds: 550);
+  /// 窓を運んでいる時は「勢い」 での飛ばしを使わない (速く運んで端で貼る
+  /// 操作と見分けが付かないため)。
+  static const Duration _kEdgeHoldWindow = Duration(milliseconds: 350);
+
+  /// 端から一瞬離れても数え直さない猶予。
+  ///
+  /// 8ms 見回りだと手のぶれで 1 回だけ端から外れる事がある。 そこで
+  /// 数え直すと、 押し当てているのにいつまでも飛ばない。
+  static const Duration _kEdgeReenterGrace = Duration(milliseconds: 90);
+
+  /// 「勢いよく端へ向かって来た」 とみなす速さ (画素/秒)。
+  ///
+  /// 狙って止まりに行く動きは 200〜400 画素/秒、 画面の外へ振り抜く動きは
+  /// 数千画素/秒 なので、 その間に線を引く。
+  static const double _kFlickSpeed = 1100.0;
+
+  /// 飛ばした直後、 見回りを休ませる時間。
+  static const Duration _kQuiet = Duration(milliseconds: 160);
+
+  // ── 動きの速さ (= 勢いの見分け) ──
+  int _lastX = 0;
+  int _lastY = 0;
+  int _lastAtMs = 0;
+  bool _hasLast = false;
+  double _vx = 0;
+  double _vy = 0;
+  double _vxPrev = 0;
+  double _vyPrev = 0;
+
+  /// 直前に離れた辺と、 その時刻 ([_kEdgeReenterGrace] の判定用)。
+  String _edgeLeftKind = '';
+  DateTime? _edgeLeftAt;
+
+  /// 今の位置を控えて、 前回との差から速さを出す。
+  void _sampleMotion(int x, int y) {
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (_hasLast) {
+      final dt = nowMs - _lastAtMs;
+      if (dt > 0 && dt <= 120) {
+        _vxPrev = _vx;
+        _vyPrev = _vy;
+        _vx = (x - _lastX) * 1000.0 / dt;
+        _vy = (y - _lastY) * 1000.0 / dt;
+      } else if (dt > 120) {
+        // 間が空いた = 続きの動きではない。 速さは無かった事にする。
+        _vx = _vy = _vxPrev = _vyPrev = 0;
+      }
+    }
+    _lastX = x;
+    _lastY = y;
+    _lastAtMs = nowMs;
+    _hasLast = true;
+  }
+
+  /// 速さの控えを捨てる (飛ばした後など、 続きの動きでなくなった時)。
+  void _forgetMotion() {
+    _hasLast = false;
+    _vx = _vy = _vxPrev = _vyPrev = 0;
+  }
+
+  /// [kind] の辺へ向かう速さ (画素/秒)。
+  ///
+  /// 端に着いた瞬間は OS がカーソルを縁で止めるので、 その回の差だけ見ると
+  /// 実際より小さく出る。 1 つ前の回も一緒に見て大きい方を採る。
+  static double approachSpeedFor(
+      String kind, double vx, double vy, double vxPrev, double vyPrev) {
+    switch (kind) {
+      case 'L':
+        return math.max(-vx, -vxPrev);
+      case 'R':
+        return math.max(vx, vxPrev);
+      case 'T':
+        return math.max(-vy, -vyPrev);
+      case 'B':
+        return math.max(vy, vyPrev);
+    }
+    return 0;
+  }
+
+  double _approachSpeed(String kind) =>
+      approachSpeedFor(kind, _vx, _vy, _vxPrev, _vyPrev);
+
+  /// 端に着いている時、 もう飛ばしてよいか。
+  ///
+  /// 判定はこの 3 つだけで決まるので、 見回りの本体から切り出して試験できる
+  /// ようにしてある (= 待ちを 220ms から縮める変更で、 意図せず「触れた
+  /// 瞬間に飛ぶ」 に戻していないかを確かめる為)。
+  ///
+  /// * [heldFor] その辺に着いてから経った時間
+  /// * [approachSpeed] その辺へ向かって来た速さ (画素/秒)
+  /// * [movingWindow] 窓を掴んで運んでいる最中か
+  static bool shouldRouteAtEdge({
+    required Duration heldFor,
+    required double approachSpeed,
+    required bool movingWindow,
+  }) {
+    // 勢いよく向かって来た = 画面の外へ出るつもり。 待たない。
+    // 窓を運んでいる時は、 端へ寄せて貼る (Aero Snap) と見分けが付かない
+    // ので勢いは使わない。
+    if (!movingWindow && approachSpeed >= _kFlickSpeed) return true;
+    return heldFor >= (movingWindow ? _kEdgeHoldWindow : _kEdgeHold);
+  }
 
   Map<String, int> _edgeTargets = const {};
 
@@ -850,8 +999,37 @@ class CursorWrap {
     }
   }
 
+  /// 直前に答えたモニターの四角 (= 同じ中に居る間は撃ち直さない)。
+  (int, int, int, int)? _rectCache;
+  String _rectCacheSig = '';
+
   /// [x],[y] にいちばん近いモニターの四角 (left, top, right, bottom)。
+  ///
+  /// ★ 見回りを 8ms にしたので、 毎回 OS に聞かずに済む所は省く。 同じ四角の
+  ///   中に居る限り答えは変わらない。 モニターの繋ぎ換えは
+  ///   [_cachedMonitors] と同じ目印 (枚数 + 仮想画面) で見張る。
   (int, int, int, int)? _monitorRectAt(int x, int y) {
+    final sig = '${_metric(w32.SM_CMONITORS)}:'
+        '${_metric(w32.SM_XVIRTUALSCREEN)},${_metric(w32.SM_YVIRTUALSCREEN)},'
+        '${_metric(w32.SM_CXVIRTUALSCREEN)},${_metric(w32.SM_CYVIRTUALSCREEN)}';
+    final c = _rectCache;
+    if (c != null &&
+        sig == _rectCacheSig &&
+        x >= c.$1 &&
+        x < c.$3 &&
+        y >= c.$2 &&
+        y < c.$4) {
+      return c;
+    }
+    final fresh = _monitorRectAtRaw(x, y);
+    if (fresh != null) {
+      _rectCache = fresh;
+      _rectCacheSig = sig;
+    }
+    return fresh;
+  }
+
+  (int, int, int, int)? _monitorRectAtRaw(int x, int y) {
     final pt = calloc<w32.POINT>();
     final mi = calloc<w32.MONITORINFO>();
     try {

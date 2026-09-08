@@ -20891,6 +20891,43 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Nenhum segundo monitor encontrado',
       'ru': 'Второй монитор не найден',
     },
+    // ── 分割ペインの切り離し / もう 1 つの窓 (= ユーザー要望) ──
+    'split.detachWindow': {
+      'ja': '別のウィンドウに切り離す',
+      'en': 'Detach into its own window',
+      'zh': '拆分为独立窗口',
+      'ko': '별도 창으로 분리',
+      'es': 'Separar en su propia ventana',
+      'fr': 'Détacher dans sa propre fenêtre',
+      'de': 'In eigenes Fenster lösen',
+      'pt': 'Separar em uma janela própria',
+      'ru': 'Отделить в отдельное окно',
+      'fa': 'جدا کردن در پنجرهٔ خودش',
+    },
+    'viewer.newAppWindow': {
+      'ja': 'もう 1 つウィンドウを開く',
+      'en': 'Open another window',
+      'zh': '再打开一个窗口',
+      'ko': '창 하나 더 열기',
+      'es': 'Abrir otra ventana',
+      'fr': 'Ouvrir une autre fenêtre',
+      'de': 'Weiteres Fenster öffnen',
+      'pt': 'Abrir outra janela',
+      'ru': 'Открыть ещё одно окно',
+      'fa': 'باز کردن یک پنجرهٔ دیگر',
+    },
+    'viewer.newAppWindowFailed': {
+      'ja': 'ウィンドウを開けませんでした',
+      'en': 'Could not open the window',
+      'zh': '无法打开窗口',
+      'ko': '창을 열지 못했습니다',
+      'es': 'No se pudo abrir la ventana',
+      'fr': 'Impossible d\'ouvrir la fenêtre',
+      'de': 'Fenster konnte nicht geöffnet werden',
+      'pt': 'Não foi possível abrir a janela',
+      'ru': 'Не удалось открыть окно',
+      'fa': 'پنجره باز نشد',
+    },
     'split.toSubMonitor': {
       'ja': 'サブモニターへ送る', 'en': 'Send to second monitor',
       'zh': '发送到副显示器', 'ko': '보조 모니터로 보내기',
@@ -80086,7 +80123,8 @@ $cleanQ
     _loadEssentialUiState();
     // 期限切れの控えを片付ける (= ユーザー要望: 1 か月で自動的に消す)。
     // ページを消さない限り書き込みが起きないので、 起動時にも回す。
-    unawaited(prunePageBackups());
+    // ★ 2 つ目の窓では飛ばす (= 立ち上がりを速く)。 本体が既にやっている。
+    if (!fastStartWindow) unawaited(prunePageBackups());
     unawaited(_loadGoogleSession());
     // 分析用の属性 (国 / 言語 / 年齢 / 性別) を読み直す (= ユーザー要望)。
     unawaited(_loadAnalyticsProfile());
@@ -80094,7 +80132,10 @@ $cleanQ
       // ロード完了後に最後に開いたページを復元
       // (= 起動時に前回作業していたマップが自動で開く)
       _restoreLastOpenedPage();
-      _generateAllMissingThumbnails();
+      // ★ 2 つ目の窓では表紙の作り直しを飛ばす (= 立ち上がりを速く)。
+      //   全ページ分の描き出しなので、 開くまでの引っ掛かりがここに出る。
+      //   本体側が同じ物を作るので、 表紙が欠けたままにはならない。
+      if (!fastStartWindow) _generateAllMissingThumbnails();
       // 他インスタンス (= もう 1 つ立ち上げたアプリ) の編集を取り込む監視を
       //   開始する (= ユーザー要望)。 基準が確定してからでないと初回ロードと
       //   競合するので、 ここで始める。
@@ -90060,6 +90101,14 @@ $cleanQ
   /// 動いているか。 true の時は本体専用の常駐処理 (MCP の待ち受け再開など)
   /// を立てない (= 本体とのポートの取り合い防止)。
   static bool externalToolWindow = false;
+
+  /// 「もう 1 つ立ち上げた窓」 か (= ユーザー要望: 立ち上がりをできる限り
+  /// 速く)。
+  ///
+  /// 本体はもう動いているのだから、 2 つ目が起動時にやり直す必要の無い
+  /// 重い後始末 (表紙の作り直し・控えの掃除) は飛ばす。 書類そのものは
+  /// 今までどおり読むので、 出来る事は変わらない。
+  static bool fastStartWindow = false;
 
   Future<void> _loadMcpServerSetting() async {
     if (externalToolWindow) return;

@@ -3156,16 +3156,40 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// Web はいつもの外窓で、 PDF や Office などのファイルは **もう一つの
   /// 本体** を開いてそのモニターいっぱいに置く (ビューアを持つ外窓が
   /// 無いため)。
-  Future<void> _sendSplitToSubMonitor({required bool left}) async {
+  Future<void> _sendSplitToSubMonitor({required bool left}) =>
+      _detachSplitPane(left: left, toSubMonitor: true);
+
+  /// 分割ペインの中身を、 それだけの窓へ切り離す。
+  ///
+  /// ★ = ユーザー要望「画面分割した画面を別々に切り離して 2 つのウィンドウに
+  ///   できるようにして欲しい」。 出す場所は既定でそのペインが今居る所なので、
+  ///   押した瞬間は見た目が変わらず、 そのまま掴んで動かせる。
+  ///
+  /// [toSubMonitor] が true の時だけ、 行き先をサブモニターにする
+  /// (= 前からある「サブモニターへ送る」 ボタン)。
+  ///
+  /// Web はいつもの外窓 (WebView を持てる) で、 PDF や Office などの
+  /// ファイルは **もう一つの本体** を開いて渡す。 サブ窓のエンジンには
+  /// webview_windows も PDF ビューアも登録していないので、 この 2 通りしか
+  /// 選べない (windows/runner/main.cpp の注記を参照)。
+  Future<void> _detachSplitPane(
+      {required bool left, bool toSubMonitor = false}) async {
     final mode = left ? _splitLeftMode : _splitMode;
     final url = (left ? _splitLeftUrlCtrl.text : _splitUrlCtrl.text).trim();
     final localPath = (mode == 'pdf'
             ? (left ? _splitLeftLocalPdfPath : _splitLocalPdfPath)
             : (left ? _splitLeftLocalOfficePath : _splitLocalOfficePath))
         ?.trim();
-    final rect = await _subMonitorRect();
+    // ★ 閉じる前に場所を控える (閉じると 0 になる)。
+    final local = _splitPanelLocalRect(left: left);
+    final Rect? rect;
+    if (toSubMonitor) {
+      rect = await _subMonitorRect();
+    } else {
+      rect = await _paneScreenRect(local);
+    }
     if (!mounted) return;
-    if (rect == null) {
+    if (rect == null && toSubMonitor) {
       _appSnack(
         context,
         SnackBar(
@@ -3183,11 +3207,16 @@ class _MindMapScreenState extends State<MindMapScreen>
           Platform.resolvedExecutable,
           [
             '--new-window',
+            // ★ 立ち上がりを速く (= ユーザー要望)。 本体は動いたままなので、
+            //   表紙の作り直しなど起動時の重い後始末は要らない。
+            '--fast-start',
             localPath,
-            '--win-x=${rect.left.round()}',
-            '--win-y=${rect.top.round()}',
-            '--win-w=${rect.width.round()}',
-            '--win-h=${rect.height.round()}',
+            if (rect != null) ...[
+              '--win-x=${rect.left.round()}',
+              '--win-y=${rect.top.round()}',
+              '--win-w=${rect.width.round()}',
+              '--win-h=${rect.height.round()}',
+            ],
           ],
           mode: ProcessStartMode.detached,
         );
@@ -3196,12 +3225,30 @@ class _MindMapScreenState extends State<MindMapScreen>
       }
     } else {
       if (url.isEmpty) return;
-      await openExternalWebWindowPid(url, frame: rect, single: false);
+      // Web は外窓へ。 そのまま本体の上へ放せば元どおり埋め込める
+      // (/embed のやり取り。 = 切り離した物を戻せる道)。
+      await openExternalWebWindowPid(url,
+          frame: rect, single: false, embeddable: true);
     }
     if (left) {
       _closeSplitLeftPanel();
     } else {
       _toggleSplitPanel();
+    }
+  }
+
+  /// ペインの窓の中での場所を、 画面の上での場所に直す。
+  ///
+  /// 切り離した窓を「今そのペインが見えている所」 にぴったり出す為
+  /// (= ユーザー要望: 押しても見た目が飛ばない)。
+  Future<Rect?> _paneScreenRect(Rect? local) async {
+    if (local == null) return null;
+    try {
+      final b = await windowManager.getBounds();
+      return Rect.fromLTWH(
+          b.left + local.left, b.top + local.top, local.width, local.height);
+    } catch (_) {
+      return null;
     }
   }
 
@@ -55073,6 +55120,25 @@ class _MindMapScreenState extends State<MindMapScreen>
                               _openFloatingWebUnified(url, fromRect: from);
                             },
                           ),
+                        // ── 別のウィンドウに切り離す (= ユーザー要望:
+                        //    「画面分割した画面を別々に切り離して 2 つの
+                        //    ウィンドウにできるように」)。 今そのペインが
+                        //    見えている場所へそのまま出るので、 押した
+                        //    瞬間に位置が飛ばない。 ──
+                        if (_isDesktop &&
+                            (_splitLeftMode == 'web' ||
+                                _splitLeftLocalPdfPath != null ||
+                                _splitLeftLocalOfficePath != null))
+                          IconButton(
+                            icon: const Icon(Icons.open_in_new_rounded,
+                                color: Colors.white70, size: 18),
+                            tooltip: provider.t('split.detachWindow'),
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                                minWidth: 28, minHeight: 28),
+                            onPressed: () =>
+                                unawaited(_detachSplitPane(left: true)),
+                          ),
                         // ── サブモニターへ送る (= ユーザー要望) ──
                         if (_isDesktop &&
                             _hasSubMonitor &&
@@ -56105,6 +56171,23 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   _openFloatingWebUnified(url,
                                       fromRect: from);
                                 },
+                              ),
+                            // ── 別のウィンドウに切り離す (= ユーザー要望:
+                            //    「画面分割した画面を別々に切り離して 2 つの
+                            //    ウィンドウにできるように」)。 ──
+                            if (_isDesktop &&
+                                (_splitMode == 'web' ||
+                                    _splitLocalPdfPath != null ||
+                                    _splitLocalOfficePath != null))
+                              IconButton(
+                                icon: const Icon(Icons.open_in_new_rounded,
+                                    color: Colors.white70, size: 18),
+                                tooltip: provider.t('split.detachWindow'),
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(
+                                    minWidth: 28, minHeight: 28),
+                                onPressed: () =>
+                                    unawaited(_detachSplitPane(left: false)),
                               ),
                             // ── サブモニターへ送る (= ユーザー要望: つながって
                             //    いる時だけ出る) ──
@@ -156551,6 +156634,8 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
     _bgPlayKeeper = null;
     _advanceGuardTimer?.cancel();
     _advanceGuardTimer = null;
+    _switchGuardTimer?.cancel();
+    _switchGuardTimer = null;
     // ブラウズ URL 追従ポーリングも停止
     _browseUrlPollTimer?.cancel();
     _browseUrlPollTimer = null;
@@ -156631,6 +156716,41 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
   /// 既に起動中なら何もしない。200ms 間隔で play() 強制呼び出し。
   /// ユーザーが明示的に pause した場合 (__MM_USER_PAUSED__ = true) は
   /// 何もしない (= ユーザーの意図を尊重)。
+  /// 次の動画へ移る直前に、 今の再生を止めて YouTube の自動送りを黙らせる。
+  ///
+  /// ★ = ユーザー報告「動画を切り替えるタイミングで再生が不安定」 の主因。
+  ///   動画が終わると YouTube は自分で次の動画へ移ろうとする。 こちらも
+  ///   プレイリストの次を読み込むので、 2 つの移動が同時に走って、 どちらが
+  ///   勝つかがその時々で変わっていた (= 違う動画が出る / 音だけ先に鳴る /
+  ///   読み込みが途中で打ち切られる)。 先に止めて、 終了画面の
+  ///   カウントダウンも消しておく。
+  Future<void> _stopPlayerForHandover() async {
+    final c = _c;
+    if (c == null) return;
+    try {
+      await c.evaluateJavascript(source: '''
+        (function(){
+          try{
+            var v=document.querySelector("video");
+            if(v){ try{ v.pause(); }catch(e){} }
+            // 「次の動画まで n 秒」 の終了画面を消す (放っておくと勝手に飛ぶ)。
+            var sels=['.ytp-autonav-endscreen',
+                      'ytm-autonav-endscreen-upnext-renderer',
+                      'ytm-watch-next-end-screen-renderer',
+                      '.html5-endscreen'];
+            for(var i=0;i<sels.length;i++){
+              var n=document.querySelector(sels[i]);
+              if(n && n.parentNode) n.parentNode.removeChild(n);
+            }
+            // 押せる形の自動再生スイッチがあれば切る。
+            var t=document.querySelector('.ytp-autonav-toggle-button[aria-checked="true"]');
+            if(t){ try{ t.click(); }catch(e){} }
+          }catch(e){}
+        })();
+      ''');
+    } catch (_) {}
+  }
+
   void _startBgPlayKeeper() {
     if (_bgPlayKeeper != null) return;
     // 即座に1回呼んでから Timer 開始 (初回応答を早くする)
@@ -156682,6 +156802,11 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
   void _forceVideoPlay() {
     final c = _c;
     if (c == null) return;
+    // ★ 切り替えの最中は何もしない (= ユーザー報告: 裏で流している時に
+    //   切り替わると不安定)。 200ms ごとに resume と再生の強制を撃つので、
+    //   新しいページを読み込んでいる最中に当たると、 前の動画を鳴らし
+    //   直したり読み込みを妨げたりしていた。
+    if (_switchingVideo || _advancing) return;
     // 1. WebView 自体を resume (Android 内部の WebView.onResume()) 。
     //    これがないと evaluateJavascript すら走らないことがある。
     try {
@@ -156934,7 +157059,24 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
 
   /// 指定 URL に遷移する（プレイリストの次・前・再読み込み用）
   Future<void> _navigateTo(String url) async {
+    // ★ 何回目の移動かを進める。 これより古い知らせは、 受け取っても
+    //   捨てる (= 前の動画の後始末が次の動画に効くのを止める)。
+    final gen = ++_navGen;
+    _navTarget = url;
+    // 前の動画で仕掛けた「この時間へ飛ばす」 は次の動画には効かせない。
+    _initialPositionSeeked = false;
+    _switchingVideo = true;
+    _switchGuardTimer?.cancel();
+    // 知らせが届かなかった時の保険 (= 押しても二度と進めなくならないように)。
+    _switchGuardTimer = Timer(const Duration(seconds: 8), () {
+      if (gen == _navGen) _switchingVideo = false;
+    });
     _analyzeUrlSync(url);
+    // ★ mp4 へ移る時に WebView を作り直させない。 `_isMp4 && !_useWebViewFallback`
+    //   だと組み立てが別物に切り替わり、 その場で WebView が捨てられる。
+    //   捨てられた相手に loadData を投げていたので、 何も映らないまま
+    //   固まっていた。
+    if (_isMp4) _useWebViewFallback = true;
     if (mounted) {
       setState(() {
         _loading = true;
@@ -156942,7 +157084,10 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
       });
     }
     final c = _c;
-    if (c == null) return;
+    if (c == null) {
+      _switchingVideo = false;
+      return;
+    }
     try {
       if (_isMp4) {
         // mp4 / ローカル動画は WebView の `<video>` 経路で再生する
@@ -156956,6 +157101,7 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
       }
     } catch (e) {
       debugPrint('_navigateTo failed: $e');
+      if (gen == _navGen) _switchingVideo = false;
     }
   }
 
@@ -157713,6 +157859,13 @@ v.addEventListener('play', function() {
     await _c?.evaluateJavascript(source: '''
       (function(){
         if(window.__MM_PT__)return;window.__MM_PT__=true;
+        // ★ 今 <video> が実際に持っている動画の id。
+        //   URL は YouTube の中の移動で**先に**次の動画へ変わるが、 その
+        //   時点で要素はまだ前の動画を再生している。 URL の id で記録すると
+        //   前の動画の時間が次の動画の記録に書かれ、 次に開くと途中から
+        //   始まる (= ユーザー報告の一因)。 読み込みの始まりを捕まえて、
+        //   その時の id を「要素の持ち主」 として控える。
+        window.__MM_ELEM_VID__ = null;
         function vid(){
           try{
             var m = location.href.match(/[?&]v=([A-Za-z0-9_-]{6,})/);
@@ -157722,25 +157875,51 @@ v.addEventListener('play', function() {
         function sendEnded(v){
           try{
             if(!v || v.__MM_ENDED_SENT__) return;
+            var owner = window.__MM_ELEM_VID__;
+            if(!owner) return;
             v.__MM_ENDED_SENT__ = true;
             if (window.flutter_inappwebview) {
-              window.flutter_inappwebview.callHandler('FlutterEnded', vid());
+              window.flutter_inappwebview.callHandler('FlutterEnded', owner);
             }
+          }catch(e){}
+        }
+        // ★ 同じ <video> のまま中身だけ差し替わる (= YouTube の中の移動) のを
+        //   捕まえる。 これを見ていなかったので、 一度切り替わると
+        //   __MM_ENDED_SENT__ が立ちっぱなしになり、 自動送りが二度と
+        //   効かなくなっていた (= ユーザー報告「たまに次に進まない」)。
+        function rearm(v){
+          try{
+            v.__MM_ENDED_SENT__ = false;
+            window.__MM_ELEM_VID__ = vid();
+          }catch(e){}
+        }
+        function hook(v){
+          try{
+            if(v.__MM_ENDED_HOOKED__) return;
+            v.__MM_ENDED_HOOKED__ = true;
+            rearm(v);
+            v.addEventListener('ended', function(){ sendEnded(v); });
+            // 中身の差し替わり。 loadstart はこの時点で URL が新しい方に
+            // なっているので、 ここで持ち主を採り直すのが正しい。
+            v.addEventListener('loadstart', function(){ rearm(v); });
+            v.addEventListener('emptied', function(){ rearm(v); });
+            v.addEventListener('loadedmetadata', function(){
+              try{ window.__MM_ELEM_VID__ = vid(); }catch(e){}
+            });
           }catch(e){}
         }
         setInterval(function(){
           try{var v=document.querySelector("video");
             if(!v) return;
-            // 要素が入れ替わったら (= 次の動画) 印を付け直す。
-            if(!v.__MM_ENDED_HOOKED__){
-              v.__MM_ENDED_HOOKED__ = true;
-              v.__MM_ENDED_SENT__ = false;
-              try{ v.addEventListener('ended', function(){ sendEnded(v); }); }catch(e){}
-            }
+            hook(v);
+            var owner = window.__MM_ELEM_VID__;
+            // URL が先に進んでいて、 要素がまだ追い付いていない間は何も
+            // 送らない (= 前の動画の時間を次の動画の記録に書かない)。
+            if(!owner || owner !== vid()) return;
             if(v.currentTime>0){
               if (window.flutter_inappwebview) {
                 window.flutter_inappwebview.callHandler('FlutterPosition',
-                    v.currentTime + '|' + vid());
+                    v.currentTime + '|' + owner);
               }
             }
             if(v.ended) sendEnded(v);
@@ -157750,10 +157929,41 @@ v.addEventListener('play', function() {
     ''');
   }
 
+  /// 何回目の移動か (= ユーザー報告: 動画の切り替わりで再生が不安定)。
+  ///
+  /// ★ Windows 版には前からある仕組み (`_winNavigationGeneration`) で、
+  ///   モバイルだけ抜けていた。 前の動画のために組み立てた JS
+  ///   (位置の復元・タイトル取り・見た目) が、 待っている間に動画が
+  ///   変わると次の動画へそのまま流れ込む。 番号を控えて、 古い物は
+  ///   自分で黙る。
+  int _navGen = 0;
+
+  /// 今向かっている動画の URL (= 届いた知らせが自分宛てか確かめる為)。
+  String _navTarget = '';
+
   /// 次の動画へ進んでいる最中か (= ユーザー報告: バックグラウンド再生が
   /// 動画の切り替わりで不安定になる)。 読み込みが終わるまで、 重ねて
   /// 進まないようにする。
   bool _advancing = false;
+
+  /// プレイリストの番号を動かして、 その動画へ移る (= 次へ / 前へ の唯一の
+  /// 入口)。
+  ///
+  /// ★ = ユーザー報告「切り替えるタイミングで不安定」。 これまでは 4 か所
+  ///   それぞれで `_playlistIndex++` を **setState の外**で行い、 二度押しの
+  ///   歯止めも無かった。 続けて押すと読み込みが重なり、 番号だけ進んで
+  ///   画面が付いて来ない。
+  void _stepPlaylist(int delta) {
+    if (_switchingVideo) return; // 読み込み中の二度押しは捨てる
+    final next = _playlistIndex + delta;
+    if (next < 0 || next >= _playlist.length) return;
+    setState(() => _playlistIndex = next);
+    unawaited(_navigateTo(_playlist[next]));
+  }
+
+  /// 動画を切り替えている最中か (= 二度押しの歯止め)。
+  bool _switchingVideo = false;
+  Timer? _switchGuardTimer;
 
   /// 読み込みの知らせが届かなかった時に、 上の印を必ず下ろすための保険。
   Timer? _advanceGuardTimer;
@@ -157762,6 +157972,11 @@ v.addEventListener('play', function() {
   /// 既にタイムスタンプジャンプを実行済みかのフラグ。
   /// `widget.initialPosition` 経由のシークは初回 onLoadStop で 1 回だけ
   /// 行いたい (= ユーザーが手動でシークし直した後に勝手に戻されないように)。
+  ///
+  /// ★ これは **今の動画についての** 印。 動画を切り替える時
+  ///   ([_navigateTo]) に必ず下ろす。 下ろしていなかったので、 メモの
+  ///   タイムスタンプから開いた後は 2 本目以降の続きが一切戻らなかった
+  ///   (= ユーザー報告「切り替えで不安定」 の一部)。
   bool _initialPositionSeeked = false;
 
   Future<void> _restorePosition() async {
@@ -160236,8 +160451,7 @@ v.addEventListener('play', function() {
               color: Colors.white70, size: 21),
           onTap: _playlistIndex > 0
               ? () {
-                  _playlistIndex--;
-                  _navigateTo(_playlist[_playlistIndex]);
+                  _stepPlaylist(-1);
                 }
               : null,
         );
@@ -160248,8 +160462,7 @@ v.addEventListener('play', function() {
               color: Colors.white70, size: 21),
           onTap: _playlistIndex < _playlist.length - 1
               ? () {
-                  _playlistIndex++;
-                  _navigateTo(_playlist[_playlistIndex]);
+                  _stepPlaylist(1);
                 }
               : null,
         );
@@ -161185,10 +161398,14 @@ v.addEventListener('play', function() {
         !_currentUrl.contains('youtu.be/')) {
       return;
     }
+    // ★ 何回目の移動の分か控える。 8 秒先まで待つので、 その間に次の動画へ
+    //   移っていると前の動画のタイトルを新しい動画に付けてしまう
+    //   (= ユーザー報告: 切り替わりで表示がおかしい)。
+    final gen = _navGen;
     // 500ms / 1.5s / 3s / 5s / 8s でリトライ
     for (final delayMs in [500, 1500, 3000, 5000, 8000]) {
       Future.delayed(Duration(milliseconds: delayMs), () async {
-        if (!mounted) return;
+        if (!mounted || gen != _navGen) return;
         if (_currentTitle.isNotEmpty) return; // すでに取れていれば終了
         try {
           // og:title メタタグを優先 (YouTube では document.title より早く確定する)
@@ -161205,7 +161422,7 @@ v.addEventListener('play', function() {
               } catch(e) { return ''; }
             })();
           ''');
-          if (!mounted) return;
+          if (!mounted || gen != _navGen) return;
           if (result == null) return;
           final title = result.toString();
           if (title.isEmpty || title.toLowerCase() == 'youtube') return;
@@ -161527,9 +161744,7 @@ v.addEventListener('play', function() {
                                       color: Colors.white54, size: 20),
                                   onPressed: _playlistIndex > 0
                                       ? () {
-                                          _playlistIndex--;
-                                          _navigateTo(
-                                              _playlist[_playlistIndex]);
+                                          _stepPlaylist(-1);
                                         }
                                       : null,
                                 ),
@@ -161546,9 +161761,7 @@ v.addEventListener('play', function() {
                                   onPressed:
                                       _playlistIndex < _playlist.length - 1
                                           ? () {
-                                              _playlistIndex++;
-                                              _navigateTo(
-                                                  _playlist[_playlistIndex]);
+                                              _stepPlaylist(1);
                                             }
                                           : null,
                                 ),
@@ -161918,7 +162131,15 @@ v.addEventListener('play', function() {
                                     if (_playlistIndex <
                                         _playlist.length - 1) {
                                       _advancing = true;
-                                      _playlistIndex++;
+                                      // ★ YouTube 自身の自動再生に先を
+                                      //   越されないよう、 その場で止める
+                                      //   (= ユーザー報告: 切り替わりで
+                                      //   別の動画が出たり音だけ鳴る)。
+                                      //   終わると YouTube は「次の動画」 へ
+                                      //   自分で移り始めるので、 こちらの
+                                      //   読み込みと取り合いになっていた。
+                                      unawaited(_stopPlayerForHandover());
+                                      setState(() => _playlistIndex++);
                                       unawaited(_navigateTo(
                                           _playlist[_playlistIndex]));
                                       // 読み込みが終われば onLoadStop で下ろす。
@@ -162052,9 +162273,11 @@ v.addEventListener('play', function() {
                                     //   止まったままになる。 二重注入は中の印で防ぐ。
                                     _injectPositionTracker();
                                     // 切り替えが終わったので、 進行中の印も下ろす。
-                                    _advanceGuardTimer?.cancel();
-                                    _advanceGuardTimer = null;
-                                    _advancing = false;
+                                    // ★ ここでは印を下ろさない (= ユーザー
+                                    //   報告: 切り替わりで不安定)。 この知らせは
+                                    //   移動の**始まり**で届くので、 ここで
+                                    //   下ろすと読み込みの最中にもう一度
+                                    //   進めてしまう。 下ろすのは読み終わりだけ。
                                     // 動画埋め込み再生 (focusMode:true) の時だけ、 周辺 UI
                                     //   (関連動画/コメント/ヘッダー等) を隠す CSS + 位置復元
                                     //   を行う。 ブラウズ (focusMode:false) では素の YouTube
@@ -162118,6 +162341,15 @@ v.addEventListener('play', function() {
                                 _advanceGuardTimer?.cancel();
                                 _advanceGuardTimer = null;
                                 _advancing = false;
+                                _switchGuardTimer?.cancel();
+                                _switchGuardTimer = null;
+                                _switchingVideo = false;
+                                // ★ この読み終わりが「今向かっている動画」 の
+                                //   物か控える。 途中で次へ押されていたら、
+                                //   以降の後始末 (位置の復元・見た目・速さ) は
+                                //   全部やめる (= 前の動画の設定が次に効くのを
+                                //   止める)。
+                                final loadGen = _navGen;
                                 if (mounted) {
                                   // ページ遷移ごとに URL を再解析する (検索→動画タップ→
                                   // 他動画へ、などで _isYoutube / _currentVideoId 等を追従)
@@ -162161,11 +162393,15 @@ v.addEventListener('play', function() {
                                   // ハイパーリンクからのジャンプは最優先で適用したい
                                   // (autoplay で 0 秒に戻される前に loadedmetadata 等の
                                   //  リスナーを仕掛けるため、 他の injection より先に呼ぶ)。
+                                  if (loadGen != _navGen) return;
                                   await _restorePosition();
+                                  if (loadGen != _navGen || !mounted) return;
                                   if (widget.focusMode) {
                                     await _injectStyle();
+                                    if (loadGen != _navGen || !mounted) return;
                                   }
                                   await _injectPlaybackRate();
+                                  if (loadGen != _navGen || !mounted) return;
                                   await _injectPositionTracker();
                                 } else if (_isMp4) {
                                   await _injectPlaybackRate();
@@ -162192,6 +162428,15 @@ v.addEventListener('play', function() {
                                 // SPA サイト (YouTube) では onLoadStop が発火しない事が
                                 // 多いので、進捗が 70% を超えたらローディングを外す。
                                 // また 100% で常に解除。
+                                // ★ 読み終わりの知らせ (onLoadStop) が
+                                //   届かない造りのページでも、 二度押しの
+                                //   歯止めを必ず外す (= 押しても進めなく
+                                //   ならないように)。
+                                if (p >= 100 && _switchingVideo) {
+                                  _switchGuardTimer?.cancel();
+                                  _switchGuardTimer = null;
+                                  _switchingVideo = false;
+                                }
                                 if (mounted) {
                                   if (p >= 100 && _loading) {
                                     setState(() => _loading = false);
@@ -195932,6 +196177,31 @@ try {
 
   /// 開いているファイル (PDF 等) をユーザーが選んだ場所に保存する
   /// (= ユーザー要望: 設定からダウンロードできるように)。
+  /// 本体をもう 1 つ立ち上げる (= ユーザー要望: PDF を出したまま他の作業)。
+  ///
+  /// `--new-window` を付けるので、 既に動いている本体へ引き渡さず、 この
+  /// プロセスが 2 つ目の窓になる。 `--fast-start` は起動時の重い後始末
+  /// (表紙の作り直し・控えの掃除) を飛ばす指示で、 本体が動いている以上
+  /// どちらもやり直す必要が無い。
+  Future<void> _openAnotherAppWindow() async {
+    if (kIsWeb || !Platform.isWindows) return;
+    try {
+      await Process.start(
+        Platform.resolvedExecutable,
+        const ['--new-window', '--fast-start'],
+        mode: ProcessStartMode.detached,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      final m = ScaffoldMessenger.maybeOf(context);
+      m?.showSnackBar(SnackBar(
+        content: Text('${context.read<MindMapProvider>()
+            .t('viewer.newAppWindowFailed')}: $e'),
+        backgroundColor: const Color(0xFFE53935),
+      ));
+    }
+  }
+
   Future<void> _downloadCurrentFile() async {
     final src = _pdfFilePath ?? '';
     final messenger = ScaffoldMessenger.maybeOf(context);
@@ -198035,6 +198305,22 @@ try {
                                     : Colors.white70,
                                 size: 20),
                             onPressed: _togglePdfDrawMode,
+                          ),
+                        // ── もう 1 つウィンドウを立ち上げる (= ユーザー
+                        //    要望: 「PDF を全画面で開いた後に他の作業を
+                        //    したい」)。 全画面のダイアログなので、 閉じない
+                        //    限りマップに戻れない。 本体をもう 1 つ立ち
+                        //    上げれば、 PDF を出したまま別の窓で作業できる。
+                        //    `--fast-start` を付けるので、 起動時の重い
+                        //    後始末 (表紙の作り直し・控えの掃除) は飛ぶ。
+                        if (!kIsWeb && Platform.isWindows)
+                          IconButton(
+                            tooltip: context
+                                .read<MindMapProvider>()
+                                .t('viewer.newAppWindow'),
+                            icon: const Icon(Icons.open_in_new_rounded,
+                                color: Color(0xFF9CCC65), size: 20),
+                            onPressed: _openAnotherAppWindow,
                           ),
                         // ── ダウンロード / 左・右に分割 (= ユーザー要望:
                         //    設定の奥ではなくヘッダーに並べる) ──

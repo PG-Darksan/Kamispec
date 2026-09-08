@@ -3750,6 +3750,11 @@ void main(List<String> args) async {
       exit(0);
     }
   }
+  // ── もう 1 つ立ち上げた窓か (= ユーザー要望: 立ち上がりを速く) ──
+  //    本体が既に動いている前提なので、 起動時の重い後始末を飛ばす。
+  if (args.contains('--fast-start')) {
+    MindMapProvider.fastStartWindow = true;
+  }
   // ── アラームに起こされた起動か (= ユーザー要望: アプリがオフの状態でも
   //    設定されていたら起動するように)。 Windows のタスク スケジューラが
   //    `--alarm=<id>` を付けてこのアプリを立ち上げる。 ──
