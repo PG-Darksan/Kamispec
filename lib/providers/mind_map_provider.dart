@@ -88426,6 +88426,15 @@ $cleanQ
   /// 他インスタンスの書き込みを一定間隔で見張る。
   void _startCrossInstanceWatch() {
     if (kIsWeb) return;
+    // ★ 「もう 1 つ立ち上げた窓」 では動かさない (= 点検で判明した潰し合い)。
+    //
+    //   この見回りは 2 秒ごとに reconcilePageStorageFromOtherTabs() を呼び、
+    //   その中で必ず書類全体を保存し直す。 2 つの窓が同時にこれをやると、
+    //   Windows では**プロセスごとに 1 回しか**設定ファイルを読まない
+    //   (shared_preferences_windows の `_cachedPreferences ??= ...`) ので、
+    //   互いに古い控えから全部を書き戻して相手の変更を消し合う。
+    //   2 つ目は見る側に徹させ、 書き手は 1 つ目だけにする。
+    if (fastStartWindow) return;
     _crossInstanceTimer?.cancel();
     _crossInstanceTimer = Timer.periodic(_kCrossInstancePoll, (_) {
       // ignore: discarded_futures

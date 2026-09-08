@@ -476,7 +476,9 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     _reburnTimer = Timer(const Duration(milliseconds: 700), () {
       if (!mounted || _saving || !widget.active) return;
       // 土台を見せている間は、 ディスクだけ直してビューアは触らない。
-      unawaited(_commit(exitAfter: false, notifyHost: !_viewerShowsBase));
+      unawaited(_commit(exitAfter: false, notifyHost: !_viewerShowsBase)
+          // 焼き終えたら、 固定の帯の絵も作り直す (= 書き込みを写す)。
+          .then((_) => _refreshFreezeShotAfterBurn()));
     });
   }
 
@@ -1677,7 +1679,21 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       return;
     }
     setState(() {
-      if (cur.tool == PdfDrawTool.pen || cur.tool == PdfDrawTool.marker) {
+      // ★ Shift 中のマーカーは 2 点のまっすぐのまま伸ばす (= 点検で判明:
+      //   ここだけ Shift を見ておらず、 紙送りの間だけ折れ線になっていた)。
+      if (cur.tool == PdfDrawTool.marker &&
+          HardwareKeyboard.instance.isShiftPressed) {
+        final a = cur.points.first;
+        final d = pt - a;
+        final end = d.dx.abs() >= d.dy.abs()
+            ? Offset(pt.dx, a.dy)
+            : Offset(a.dx, pt.dy);
+        cur.points
+          ..clear()
+          ..add(a)
+          ..add(end);
+      } else if (cur.tool == PdfDrawTool.pen ||
+          cur.tool == PdfDrawTool.marker) {
         if ((pt - cur.points.last).distance >= 0.7) cur.points.add(pt);
       } else {
         cur.points[cur.points.length - 1] = _constrainedEnd(cur, pt);
@@ -2379,6 +2395,19 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   }
 
   /// 消しゴムの効き方を控える / 読み直す。
+  /// 焼き込みが終わったら、 固定の帯の絵も作り直す。
+  ///
+  /// ★ = 点検で判明: 絵は 1 回作ったきりだったので、 固定した所へ書き込んでも
+  ///   帯には出てこなかった (本物のページには出ているのに、 送って帯が働き
+  ///   始めると消える)。 焼き込み後のファイルから作り直せば写る。
+  void _refreshFreezeShotAfterBurn() {
+    if (!_hasFreeze) return;
+    _freezeShot?.dispose();
+    _freezeShot = null;
+    _freezeShotPage = 0;
+    unawaited(_ensureFreezeShot());
+  }
+
   /// 固定の絵を手放す (窓を閉じる時)。
   void _disposeFreeze() {
     _freezeShot?.dispose();
@@ -4271,6 +4300,12 @@ class _PdfFreezePainter extends CustomPainter {
     final bandHpx = yPt == null ? 0.0 : (yPt! / hp);
     final bandWpx = xPt == null ? 0.0 : (xPt! / hp);
     if (pageSizePx.width <= 0 || pageSizePx.height <= 0) return;
+    // ★ ページの端より外へは出さない (= 点検で判明)。 ページがまだ画面の
+    //   下にある / 横に余白がある間に 0 へ貼り付けると、 本物のすぐ横や上に
+    //   もう 1 枚出て、 まわりが白く塗り潰される。 端が画面の外へ出た後
+    //   (dy / dx が負) は今までどおり 0 に貼り付く。
+    final topY = math.max(0.0, pageOrigin.dy);
+    final leftX = math.max(0.0, pageOrigin.dx);
     // 絵の中の 1px が、 紙の何 pt にあたるか。
     final sx = image.width / pageSizePx.width;
     final sy = image.height / pageSizePx.height;
@@ -4289,21 +4324,21 @@ class _PdfFreezePainter extends CustomPainter {
     if (bandHpx > 0) {
       band(
         Rect.fromLTWH(0, 0, image.width.toDouble(), bandHpx * sy),
-        Rect.fromLTWH(pageOrigin.dx, 0, pageSizePx.width, bandHpx),
+        Rect.fromLTWH(pageOrigin.dx, topY, pageSizePx.width, bandHpx),
       );
     }
     // ── 左の帯 (鉛直の線より左) ──
     if (bandWpx > 0) {
       band(
         Rect.fromLTWH(0, 0, bandWpx * sx, image.height.toDouble()),
-        Rect.fromLTWH(0, pageOrigin.dy, bandWpx, pageSizePx.height),
+        Rect.fromLTWH(leftX, pageOrigin.dy, bandWpx, pageSizePx.height),
       );
     }
     // ── 角 (両方を指定した時。 どちらにも動かない) ──
     if (bandHpx > 0 && bandWpx > 0) {
       band(
         Rect.fromLTWH(0, 0, bandWpx * sx, bandHpx * sy),
-        Rect.fromLTWH(0, 0, bandWpx, bandHpx),
+        Rect.fromLTWH(leftX, topY, bandWpx, bandHpx),
       );
     }
     // ── 境目の線 (どこで固定したかが分かるように) ──
@@ -4311,12 +4346,12 @@ class _PdfFreezePainter extends CustomPainter {
       ..color = const Color(0xFF6C63FF)
       ..strokeWidth = 2;
     if (bandHpx > 0) {
-      canvas.drawLine(
-          Offset(0, bandHpx), Offset(size.width, bandHpx), line);
+      canvas.drawLine(Offset(0, topY + bandHpx),
+          Offset(size.width, topY + bandHpx), line);
     }
     if (bandWpx > 0) {
-      canvas.drawLine(
-          Offset(bandWpx, 0), Offset(bandWpx, size.height), line);
+      canvas.drawLine(Offset(leftX + bandWpx, 0),
+          Offset(leftX + bandWpx, size.height), line);
     }
   }
 

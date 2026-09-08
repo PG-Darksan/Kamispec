@@ -371,7 +371,14 @@ class CursorWrap {
             leftAt != null &&
             _edgeSince != null &&
             nowT.difference(leftAt) <= _kEdgeReenterGrace;
-        if (!resumed) _edgeSince = nowT;
+        if (resumed) {
+          // ★ 離れていた分は「押し当てていた」 に数えない (= 点検で判明:
+          //   数えたままだと、 1 回触れて離れて戻るだけで待ちが埋まり、
+          //   触れた瞬間に飛ぶのと変わらなくなる)。 その分だけ後ろへずらす。
+          _edgeSince = _edgeSince!.add(nowT.difference(leftAt));
+        } else {
+          _edgeSince = nowT;
+        }
       }
       _edgeLeftKind = '';
       _edgeLeftAt = null;
@@ -381,10 +388,18 @@ class CursorWrap {
       //   除いてあるので、 ここまで来た速い動きは「画面の外へ出るつもり」 と
       //   見てよい。 窓を運んでいる時は、 端へ寄せて貼る操作と見分けが
       //   付かないので勢いは使わない。
+      // ★ ✕ へ向かっていそうな所では、 勢いを使わず b335 と同じだけ待つ。
+      //   右端はボタンの下へ広げた帯、 上端は窓の幅いっぱい (最大化した窓の
+      //   タブやメニューを狙う動きも同じ所を通る) で見る。
+      final aimingAtCaption =
+          (kind == 'R' && _nearCaptionButtons(x, y,
+                  extraH: _kCaptionApproachPx)) ||
+              (kind == 'T' && _nearCaptionButtons(x, y, fullWidth: true));
       if (!shouldRouteAtEdge(
         heldFor: nowT.difference(since),
         approachSpeed: _approachSpeed(kind),
         movingWindow: movingWindow != 0,
+        nearCaption: aimingAtCaption,
       )) {
         return;
       }
@@ -820,7 +835,7 @@ class CursorWrap {
   ///
   /// 8ms 見回りだと手のぶれで 1 回だけ端から外れる事がある。 そこで
   /// 数え直すと、 押し当てているのにいつまでも飛ばない。
-  static const Duration _kEdgeReenterGrace = Duration(milliseconds: 90);
+  static const Duration _kEdgeReenterGrace = Duration(milliseconds: 60);
 
   /// 「勢いよく端へ向かって来た」 とみなす速さ (画素/秒)。
   ///
@@ -830,6 +845,17 @@ class CursorWrap {
 
   /// 飛ばした直後、 見回りを休ませる時間。
   static const Duration _kQuiet = Duration(milliseconds: 160);
+
+  /// ✕ を狙う動きが通る帯を、 ボタンの下へどれだけ広げて見るか (画素)。
+  ///
+  /// ★ = 点検で判明: 「速いから飛ばす」 を足した事で、 ✕ の帯に入る前に
+  ///   飛んでしまうようになっていた。 最大化した窓ではボタンそのものの帯は
+  ///   上から 40px しか無く、 少し下で端に当たれば素通りする。 狙いを定めて
+  ///   から上へ寄せる動き方を通すには、 その手前も同じ扱いにする必要がある。
+  static const int _kCaptionApproachPx = 220;
+
+  /// ✕ へ向かっていそうな時の待ち (= b335 までと同じ長さに戻す)。
+  static const Duration _kEdgeHoldCaption = Duration(milliseconds: 220);
 
   // ── 動きの速さ (= 勢いの見分け) ──
   int _lastX = 0;
@@ -903,16 +929,23 @@ class CursorWrap {
   /// * [heldFor] その辺に着いてから経った時間
   /// * [approachSpeed] その辺へ向かって来た速さ (画素/秒)
   /// * [movingWindow] 窓を掴んで運んでいる最中か
+  /// * [nearCaption] ✕ / 最小化のボタンへ向かっていそうな所か。
+  ///   ここでは勢いを使わず、 b335 までと同じだけ待つ (= ユーザー報告
+  ///   「閉じに行くと別のモニターへ飛ぶ」 を戻さない為)。
   static bool shouldRouteAtEdge({
     required Duration heldFor,
     required double approachSpeed,
     required bool movingWindow,
+    bool nearCaption = false,
   }) {
     // 勢いよく向かって来た = 画面の外へ出るつもり。 待たない。
     // 窓を運んでいる時は、 端へ寄せて貼る (Aero Snap) と見分けが付かない
-    // ので勢いは使わない。
-    if (!movingWindow && approachSpeed >= _kFlickSpeed) return true;
-    return heldFor >= (movingWindow ? _kEdgeHoldWindow : _kEdgeHold);
+    // ので勢いは使わない。 ✕ の手前も同じく使わない。
+    if (!movingWindow && !nearCaption && approachSpeed >= _kFlickSpeed) {
+      return true;
+    }
+    if (movingWindow) return heldFor >= _kEdgeHoldWindow;
+    return heldFor >= (nearCaption ? _kEdgeHoldCaption : _kEdgeHold);
   }
 
   Map<String, int> _edgeTargets = const {};
@@ -947,7 +980,11 @@ class CursorWrap {
   ///
   /// 大きさは Windows 11 の見た目 (1 個 45x32、 3 個で 135) に余白を足して
   /// 横 170 / 縦 48 (拡大率 100% での値)。 その窓の拡大率に合わせて伸ばす。
-  bool _nearCaptionButtons(int x, int y) {
+  /// [extraH] は下へ広げる量、 [fullWidth] は横を窓の幅いっぱいに広げる指定
+  /// (画素。 拡大率は中で掛ける)。 既定は b335 のままなので、 数えを捨てる
+  /// 側の動きは変わらない。
+  bool _nearCaptionButtons(int x, int y,
+      {int extraH = 0, bool fullWidth = false}) {
     final pt = calloc<w32.POINT>();
     try {
       pt.ref.x = x;
@@ -989,8 +1026,9 @@ class CursorWrap {
         final d = w32.GetDpiForWindow(hwnd);
         if (d > 0) dpi = d;
       } catch (_) {}
-      final zoneW = (170 * dpi / 96).round();
-      final zoneH = (48 * dpi / 96).round();
+      final zoneW =
+          fullWidth ? (r.$3 - r.$1) : (170 * dpi / 96).round();
+      final zoneH = ((48 + extraH) * dpi / 96).round();
       return x >= r.$3 - zoneW && y <= r.$2 + zoneH;
     } catch (_) {
       return false;
@@ -1003,6 +1041,9 @@ class CursorWrap {
   (int, int, int, int)? _rectCache;
   String _rectCacheSig = '';
 
+  /// その四角を取った時刻 (= 使い回しの期限。 モニターの一覧と同じ 2 秒)。
+  int _rectCacheAtMs = 0;
+
   /// [x],[y] にいちばん近いモニターの四角 (left, top, right, bottom)。
   ///
   /// ★ 見回りを 8ms にしたので、 毎回 OS に聞かずに済む所は省く。 同じ四角の
@@ -1012,9 +1053,11 @@ class CursorWrap {
     final sig = '${_metric(w32.SM_CMONITORS)}:'
         '${_metric(w32.SM_XVIRTUALSCREEN)},${_metric(w32.SM_YVIRTUALSCREEN)},'
         '${_metric(w32.SM_CXVIRTUALSCREEN)},${_metric(w32.SM_CYVIRTUALSCREEN)}';
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
     final c = _rectCache;
     if (c != null &&
         sig == _rectCacheSig &&
+        nowMs - _rectCacheAtMs < 2000 &&
         x >= c.$1 &&
         x < c.$3 &&
         y >= c.$2 &&
@@ -1025,6 +1068,7 @@ class CursorWrap {
     if (fresh != null) {
       _rectCache = fresh;
       _rectCacheSig = sig;
+      _rectCacheAtMs = nowMs;
     }
     return fresh;
   }

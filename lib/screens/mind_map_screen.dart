@@ -3175,7 +3175,14 @@ class _MindMapScreenState extends State<MindMapScreen>
   Future<void> _detachSplitPane(
       {required bool left, bool toSubMonitor = false}) async {
     final mode = left ? _splitLeftMode : _splitMode;
-    final url = (left ? _splitLeftUrlCtrl.text : _splitUrlCtrl.text).trim();
+    // ★ 今見ているページを渡す (= 点検で判明: 開いた時の URL を渡していた)。
+    //   ペインの中で辿った先は _split(Left)CurrentUrl にだけ入るので、
+    //   欄の文字を見ていると「YouTube で動画を開いてから切り離すと、
+    //   ホーム画面の窓が出てペインの動画は閉じられる」 事になっていた。
+    final live = (left ? _splitLeftCurrentUrl : _splitCurrentUrl).trim();
+    final url = live.isNotEmpty
+        ? live
+        : (left ? _splitLeftUrlCtrl.text : _splitUrlCtrl.text).trim();
     final localPath = (mode == 'pdf'
             ? (left ? _splitLeftLocalPdfPath : _splitLocalPdfPath)
             : (left ? _splitLeftLocalOfficePath : _splitLocalOfficePath))
@@ -3225,10 +3232,13 @@ class _MindMapScreenState extends State<MindMapScreen>
       }
     } else {
       if (url.isEmpty) return;
-      // Web は外窓へ。 そのまま本体の上へ放せば元どおり埋め込める
-      // (/embed のやり取り。 = 切り離した物を戻せる道)。
+      // Web は外窓へ。 切り離した物は、 そのまま本体の上へ放せば元どおり
+      // 埋め込める (/embed のやり取り)。
+      // ★ サブモニターへ送った窓は吸い込ませない (= 点検で判明)。 別の画面で
+      //   並べて見る為に送ったのに、 見比べようと本体の上へ動かした瞬間に
+      //   窓が消えて、 中身が分割セルを上書きしてしまう。
       await openExternalWebWindowPid(url,
-          frame: rect, single: false, embeddable: true);
+          frame: rect, single: false, embeddable: !toSubMonitor);
     }
     if (left) {
       _closeSplitLeftPanel();
@@ -3245,8 +3255,20 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (local == null) return null;
     try {
       final b = await windowManager.getBounds();
-      return Rect.fromLTWH(
+      final r = Rect.fromLTWH(
           b.left + local.left, b.top + local.top, local.width, local.height);
+      // ★ 拡大率の違うモニターをまたぐと行き先がずれる (= 点検で判明。
+      //   _subMonitorRect が同じ補正を持っている)。 getBounds も setPosition
+      //   も「その窓が今居るモニターの拡大率」 で割った値を扱うが、 受け取る
+      //   側の窓は開いた時点 (= 主モニター) の拡大率で置き直す。 一度実寸へ
+      //   直してから主モニターの拡大率で割っておく。
+      final ds = windowManager.getDevicePixelRatio();
+      final ps =
+          ((await screenRetriever.getPrimaryDisplay()).scaleFactor ?? 1)
+              .toDouble();
+      final k = (ds <= 0 ? 1.0 : ds) / (ps <= 0 ? 1.0 : ps);
+      if ((k - 1).abs() < 0.001) return r;
+      return Rect.fromLTWH(r.left * k, r.top * k, r.width * k, r.height * k);
     } catch (_) {
       return null;
     }
@@ -156346,6 +156368,9 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
     _playlist = widget.playlist.isNotEmpty ? widget.playlist : [widget.url];
     _playlistIndex = widget.startIndex.clamp(0, _playlist.length - 1);
     _analyzeUrlSync(_playlist[_playlistIndex]);
+    // ★ 開いた時に指定された時刻が、 どの動画の物かを覚える (= 点検で判明:
+    //   覚えていないと 2 本目以降もその時刻から始まってしまう)。
+    _initialPosVideoId = _currentVideoId;
     _initialLoadTarget = _computeLoadTargetUrl(_playlist[_playlistIndex]);
     _loadYoutubeUiLayout();
     // ── 動画メモ履歴を復元 ──
@@ -157013,6 +157038,10 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
   /// そのまま返す。(mp4 はこの関数の守備範囲外。HTML 文字列で loadData する)
   String _computeLoadTargetUrl(String url) {
     if (_isYoutube && _currentVideoId != null) {
+      // ★ 開いた時の時刻は 1 本目にだけ付ける (= 点検で判明: 2 本目以降の
+      //   URL にも &t= が付いて、 途中から始まっていた)。
+      final initialForThis = widget.initialPosition > 0.5 &&
+          _currentVideoId == _initialPosVideoId;
       // ── start 秒数の決定 (優先順位) ──
       // 1. widget.initialPosition (= メモのハイパーリンクからのジャンプ等で
       //    呼び出し側が明示指定した時刻) を最優先する。 これが指定されて
@@ -157022,7 +157051,7 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
       //    URL を組み立てて渡した場合への対応)。
       // 3. 上記いずれも無ければ Provider に保存された前回視聴位置。
       int startSec = 0;
-      if (widget.initialPosition > 0.5) {
+      if (initialForThis) {
         startSec = widget.initialPosition.round();
       } else {
         // 元 URL に t= があるか抽出
@@ -157979,6 +158008,15 @@ v.addEventListener('play', function() {
   ///   (= ユーザー報告「切り替えで不安定」 の一部)。
   bool _initialPositionSeeked = false;
 
+  /// [widget.initialPosition] が指している動画の id。
+  ///
+  /// ★ = 点検で判明: 切り替えのたびに [_initialPositionSeeked] を下ろすように
+  ///   した事で、 widget が持っている時刻 (= 開いた時の 1 本目の時刻) が
+  ///   2 本目以降にも効くようになっていた。 「メモの 5 分 50 秒から開く」 と、
+  ///   次の動画も 5 分 50 秒から始まってしまう。 その時刻は 1 本目の物なので、
+  ///   動画 id で縛る。
+  String? _initialPosVideoId;
+
   Future<void> _restorePosition() async {
     if (_currentVideoId == null) return;
     // ── 優先順位 ──
@@ -157986,7 +158024,9 @@ v.addEventListener('play', function() {
     //    呼び出し側が明示指定した時刻) — 最優先で飛ぶ。
     // 2. それ以外は前回視聴位置 (Provider 保存) を復元。
     double seekTo = -1;
-    final hasInitialPos = widget.initialPosition > 0.5;
+    // ★ 開いた時に指定された時刻は、 その動画だけの物 (= 点検で判明)。
+    final hasInitialPos = widget.initialPosition > 0.5 &&
+        _currentVideoId == _initialPosVideoId;
     if (hasInitialPos) {
       // 既にシーク済みなら何もしない (ユーザーの手動シークを上書きしない)
       if (_initialPositionSeeked) return;
@@ -215174,6 +215214,20 @@ $csvText
 
     final out = <Widget>[];
 
+    /// 帯の中身。 本物と同じ組み立てを使うので、 押した時の動きもそのまま。
+    ///
+    /// ★ 貼った図 / 図形も一緒に重ねる (= 点検で判明: 帯の裏地に隠れて
+    ///   掴めなくなっていた)。 座標系は本物と同じなので、 ぴったり重なる。
+    Widget bandBody(int cols, int rows) => Stack(children: [
+          Column(children: [
+            _buildColumnHeaderRow(dark, fg, maxCols: cols),
+            for (var r = 0; r < rows; r++)
+              _buildDataRow(r, dark, fg, maxCols: cols),
+          ]),
+          for (final im in _images) _buildSheetImage(im),
+          for (final sh in _shapes) _buildSheetShape(sh),
+        ]);
+
     // ── 上の帯 (固定した行) ──
     if (fr > 0) {
       out.add(Positioned(
@@ -215184,21 +215238,15 @@ $csvText
         child: ClipRect(
           child: Container(
             color: backdrop,
+            // ★ 中身は組み立て直さない (= 点検で判明: 送るたびに全行を
+            //   作り直していて重かった)。 動くのはずらす量だけ。
             child: AnimatedBuilder(
               animation: _hScroll,
-              builder: (_, __) {
+              child: scaled(bandBody(_colCount, fr), tableW, _freezeBandH),
+              builder: (_, band) {
                 final dx = _hScroll.hasClients ? _hScroll.offset : 0.0;
                 return Transform.translate(
-                  offset: Offset(-dx, 0),
-                  child: scaled(
-                    Column(children: [
-                      _buildColumnHeaderRow(dark, fg),
-                      for (var r = 0; r < fr; r++) _buildDataRow(r, dark, fg),
-                    ]),
-                    tableW,
-                    _freezeBandH,
-                  ),
-                );
+                    offset: Offset(-dx, 0), child: band);
               },
             ),
           ),
@@ -215208,36 +215256,32 @@ $csvText
 
     // ── 左の帯 (固定した列) ──
     if (fc > 0) {
-      out.add(Positioned(
-        left: 0,
-        top: bandH,
-        width: bandW,
-        bottom: 0,
-        child: ClipRect(
-          child: Container(
-            color: backdrop,
-            child: AnimatedBuilder(
-              animation: _vScroll,
-              builder: (_, __) {
-                final dy = _vScroll.hasClients ? _vScroll.offset : 0.0;
-                // 帯は上の帯のすぐ下から始まる。 中身は表の一番上から
-                // 組んであるので、 その分も引いて位置を合わせる。
-                return Transform.translate(
-                  offset: Offset(0, -(dy + bandH)),
-                  child: scaled(
-                    Column(children: [
-                      _buildColumnHeaderRow(dark, fg, maxCols: fc),
-                      for (var r = 0; r < _rowCount; r++)
-                        _buildDataRow(r, dark, fg, maxCols: fc),
-                    ]),
-                    _freezeBandW,
-                    _colHeaderHeight + _totalRowH,
-                  ),
-                );
-              },
+      final contentH = (_colHeaderHeight + _totalRowH) * z;
+      out.add(AnimatedBuilder(
+        animation: _vScroll,
+        child: scaled(bandBody(fc, _rowCount), _freezeBandW,
+            _colHeaderHeight + _totalRowH),
+        builder: (_, band) {
+          final dy = _vScroll.hasClients ? _vScroll.offset : 0.0;
+          // ★ 帯は「表の中身がある所」 までにする (= 点検で判明: 最終行より
+          //   下まで裏地を伸ばしていたので、 その下にある「行追加」 ボタンが
+          //   押せなくなっていた)。
+          final h = contentH - dy - bandH;
+          if (h <= 0) return const SizedBox.shrink();
+          return Positioned(
+            left: 0,
+            top: bandH,
+            width: bandW,
+            height: h,
+            child: ClipRect(
+              child: Container(
+                color: backdrop,
+                child: Transform.translate(
+                    offset: Offset(0, -(dy + bandH)), child: band),
+              ),
             ),
-          ),
-        ),
+          );
+        },
       ));
     }
 
@@ -215251,15 +215295,7 @@ $csvText
         child: ClipRect(
           child: Container(
             color: backdrop,
-            child: scaled(
-              Column(children: [
-                _buildColumnHeaderRow(dark, fg, maxCols: fc),
-                for (var r = 0; r < fr; r++)
-                  _buildDataRow(r, dark, fg, maxCols: fc),
-              ]),
-              _freezeBandW,
-              _freezeBandH,
-            ),
+            child: scaled(bandBody(fc, fr), _freezeBandW, _freezeBandH),
           ),
         ),
       ));
@@ -216448,6 +216484,9 @@ $csvText
           // ── 列追加ボタン ──
           // 左クリック: 1 列追加 (= 既存挙動)
           // 右クリック / 長押し: 「N 列追加」 ダイアログ
+          // ★ 固定の帯 (maxCols 指定) では出さない。 出すと行の幅が
+          //   _freezeBandW を 1 セルぶん超えてはみ出す (= 点検で判明)。
+          if (maxCols == null)
           GestureDetector(
             onSecondaryTap: () => _showBulkInsertDialog(isRow: false),
             child: InkWell(
@@ -216666,7 +216705,8 @@ $csvText
               },
             );
           }),
-          Container(width: _cellWidth, height: _rowH(r)),
+          // ★ 行末の余白も帯には出さない (= 上と同じ理由ではみ出す)。
+          if (maxCols == null) Container(width: _cellWidth, height: _rowH(r)),
         ],
       ),
     );

@@ -56,6 +56,41 @@ void main() {
     });
   });
 
+  group('✕ へ向かっていそうな所', () {
+    // ★ = 点検で判明した戻り: 「勢いよく向かって来たら待たない」 を足した
+    //   事で、 ✕ を狙う動きでも即座に飛ぶようになっていた (= ユーザーが
+    //   b334 で出した不具合そのもの)。
+    test('勢いよく向かって来ても飛ばさない', () {
+      expect(
+          CursorWrap.shouldRouteAtEdge(
+              heldFor: Duration.zero,
+              approachSpeed: fast,
+              movingWindow: false,
+              nearCaption: true),
+          isFalse);
+    });
+
+    test('普通の待ち (90ms) では、 まだ飛ばない', () {
+      expect(
+          CursorWrap.shouldRouteAtEdge(
+              heldFor: const Duration(milliseconds: 90),
+              approachSpeed: fast,
+              movingWindow: false,
+              nearCaption: true),
+          isFalse);
+    });
+
+    test('b335 と同じだけ (220ms) 押し当てれば飛ぶ', () {
+      expect(
+          CursorWrap.shouldRouteAtEdge(
+              heldFor: const Duration(milliseconds: 220),
+              approachSpeed: 0,
+              movingWindow: false,
+              nearCaption: true),
+          isTrue);
+    });
+  });
+
   group('窓を運んでいる時', () {
     test('勢いでは飛ばさない (端へ寄せて貼る操作を奪わない)', () {
       expect(
