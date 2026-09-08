@@ -705,6 +705,57 @@ class _SplitPanelIconPainter extends CustomPainter {
 ///   ショートカット (Ctrl+^ / Ctrl+\) は出さない。
 /// - デスクトップ: 「左画面分割 / 右画面分割」。 既定のキー割り当ては
 ///   外したので、 キーは併記しない (= ユーザー要望)。
+/// 保存先に `.pdf` を付ける (= ユーザー報告: PDF 形式でない形式で保存される)。
+///
+/// file_picker の Windows 実装は `GetSaveFileNameW` に `lpstrDefExt` を渡さない
+/// ので、 名前に拡張子が無くても Windows は補ってくれない。 こちらで足す。
+///
+/// ★ ただし黙って足すと、 Windows の「上書きしますか」 が確かめた道と**別の
+///   道**へ書く事になる。 `report` と打った人には確認が出ないまま、 隣に
+///   あった `report.pdf` が消える。 足した先に既にファイルがある時は、
+///   自分で確かめる。
+///
+/// 打った名前に拡張子が既に付いている時は触らない (= その人が選んだ形)。
+/// 取り消された時は null を返す。
+Future<String?> ensurePdfSavePath(BuildContext ctx, String outPath) async {
+  final base = outPath.split(RegExp(r'[\\/]')).last;
+  // 拡張子が付いているなら、 その人の指定を尊重する。
+  if (base.contains('.')) return outPath;
+  final withExt = '$outPath.pdf';
+  bool exists;
+  try {
+    exists = File(withExt).existsSync();
+  } catch (_) {
+    exists = false;
+  }
+  if (!exists) return withExt;
+  if (!ctx.mounted) return null;
+  final provider = ctx.read<MindMapProvider>();
+  final ok = await showDialog<bool>(
+    context: ctx,
+    builder: (dctx) => AlertDialog(
+      backgroundColor: const Color(0xFF22222E),
+      title: Text(provider.t('save.overwriteTitle'),
+          style: const TextStyle(color: Colors.white, fontSize: 15)),
+      content: Text(
+          '${provider.t('save.overwriteBody')}\n\n$withExt',
+          style: const TextStyle(color: Colors.white70, fontSize: 13)),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(dctx).pop(false),
+          child: Text(provider.t('btn.cancel'),
+              style: const TextStyle(color: Colors.white70)),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(dctx).pop(true),
+          child: Text(provider.t('btn.ok')),
+        ),
+      ],
+    ),
+  );
+  return ok == true ? withExt : null;
+}
+
 String _splitBtnTooltip(BuildContext context, bool left) {
   final desktop =
       !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
@@ -4527,17 +4578,33 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (!name.toLowerCase().endsWith('.pdf')) name = '$name.pdf';
     try {
       final bytes = await File(src).readAsBytes();
-      final outPath = await FilePicker.platform.saveFile(
+      // ★ 種類を PDF に絞る + 返って来た道に拡張子が無ければ足す
+      //   (= ユーザー報告: PDF 形式でない形式で保存される)。
+      //   file_picker の Windows 実装は GetSaveFileNameW に lpstrDefExt を
+      //   渡さないので、 拡張子は**こちらで面倒を見ないと付かない**。
+      var outPath = await FilePicker.platform.saveFile(
         dialogTitle: provider.t('save.pdf'),
         fileName: name,
+        type: FileType.custom,
+        allowedExtensions: const ['pdf'],
         bytes: bytes,
       );
       if (outPath == null) return;
+      final fixed = await ensurePdfSavePath(context, outPath);
+      if (fixed == null) return; // 取り消し / 上書きしない
+      outPath = fixed;
       // ★ 必ず自分で書き出す (= ユーザー報告: 同じ場所へ上書き保存しても
       //   保存されない)。 Windows の保存ダイアログは場所を返すだけで、
       //   bytes は書かない。 以前の「無い時だけ書く」 保険では、 既にある
       //   ファイルへの上書きが素通りしていた。
-      await File(outPath).writeAsBytes(bytes, flush: true);
+      // ★ Android では、 保存先を選んだ時点で file_picker が中身まで書いて
+      //   いる (SAF)。 返って来るのは Download フォルダーを指す**作り物の道**
+      //   なので、 そこへ書き直そうとすると弾かれ、 保存は成功しているのに
+      //   「保存に失敗しました」 と出ていた (= 点検で判明。 全画面のビューア
+      //   だけ直して、 ここが漏れていた)。
+      if (!Platform.isAndroid) {
+        await File(outPath).writeAsBytes(bytes, flush: true);
+      }
       snack(provider.t('paint.saved'), const Color(0xFF43B97F));
     } catch (_) {
       snack(provider.t('paint.saveFailed'), const Color(0xFFE53935));
@@ -98536,6 +98603,9 @@ class _SplitPdfHorizontalScrollBar extends StatefulWidget {
   /// ホバーの無いモバイルでは常に true を渡す。
   final bool visible;
 
+  /// 拡大率の上限 (= ビューアに渡している maxZoomLevel と合わせる)。
+  final double maxZoom;
+
   /// カーソルがこの棒に乗った / 離れたの通知。
   ///
   /// 乗っている間は、 親 (PDF ビューア) 側のホイール処理を止めてもらう。
@@ -98550,6 +98620,7 @@ class _SplitPdfHorizontalScrollBar extends StatefulWidget {
     this.layoutMode = sf_pdf.PdfPageLayoutMode.continuous,
     this.floating = false,
     this.visible = true,
+    this.maxZoom = 8.0,
     this.onHoverChanged,
   });
   @override
@@ -98564,6 +98635,89 @@ class _SplitPdfHorizontalScrollBarState
 
   /// 現在の zoomLevel (= 表示判定に使う)
   double _zoomLevel = 1.0;
+
+  /// 最後に拡大率をいじった時刻。
+  ///
+  /// ★ この棒は「拡大している時だけ」 出る作りなので、 100% に戻した瞬間に
+  ///   消えてしまい、 そこからもう一度上げられない。 いじった直後だけは
+  ///   出したままにする (= ユーザー要望: 数値で指定できるように)。
+  DateTime? _zoomTouchedAt;
+  static const Duration _kZoomKeepOpen = Duration(seconds: 6);
+
+  bool get _zoomRecentlyTouched {
+    final t = _zoomTouchedAt;
+    return t != null && DateTime.now().difference(t) < _kZoomKeepOpen;
+  }
+
+  /// 拡大率を決め直す。
+  void _applyZoom(double next) {
+    final v = next.clamp(1.0, widget.maxZoom).toDouble();
+    _zoomTouchedAt = DateTime.now();
+    try {
+      widget.controller.zoomLevel = v;
+    } catch (_) {}
+    if (mounted) setState(() => _zoomLevel = v);
+  }
+
+  /// 打ち込みで拡大率を決める (= ユーザー要望: 数値で指定)。
+  Future<void> _promptZoom() async {
+    _zoomTouchedAt = DateTime.now();
+    final provider = context.read<MindMapProvider>();
+    final ctrl = TextEditingController(
+        text: (_zoomLevel * 100).toStringAsFixed(0));
+    final minPct = 100;
+    final maxPct = (widget.maxZoom * 100).round();
+    final v = await showDialog<double>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF22222E),
+        title: Text(provider.t('pdf.zoomSet'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        content: Row(mainAxisSize: MainAxisSize.min, children: [
+          SizedBox(
+            width: 110,
+            child: TextField(
+              controller: ctrl,
+              autofocus: true,
+              keyboardType: TextInputType.number,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              style: const TextStyle(color: Colors.white, fontSize: 16),
+              decoration: InputDecoration(
+                suffixText: '%',
+                suffixStyle: const TextStyle(color: Colors.white54),
+                helperText: '$minPct〜$maxPct',
+                helperStyle:
+                    const TextStyle(color: Colors.white38, fontSize: 11),
+                enabledBorder: const UnderlineInputBorder(
+                    borderSide: BorderSide(color: Colors.white24)),
+              ),
+              onSubmitted: (t) {
+                final n = int.tryParse(t.trim());
+                Navigator.of(dctx).pop(n == null ? null : n / 100.0);
+              },
+            ),
+          ),
+        ]),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dctx).pop(),
+            child: Text(provider.t('btn.cancel'),
+                style: const TextStyle(color: Colors.white70)),
+          ),
+          FilledButton(
+            onPressed: () {
+              final n = int.tryParse(ctrl.text.trim());
+              Navigator.of(dctx).pop(n == null ? null : n / 100.0);
+            },
+            child: Text(provider.t('btn.ok')),
+          ),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    if (!mounted || v == null) return;
+    _applyZoom(v);
+  }
 
   /// コントローラの状態を周期的にポーリング (= syncfusion は ChangeNotifier
   /// 風の API が不完全なので、 タイマで状態を取得する)
@@ -98607,6 +98761,12 @@ class _SplitPdfHorizontalScrollBarState
       widget.layoutMode == sf_pdf.PdfPageLayoutMode.continuous;
 
   void _refreshState() {
+    // ★ 「いじった直後だけ出したままにする」 の期限が切れたら、 畳むために
+    //   一度だけ組み直す (= これが無いと、 次に何か変わるまで棒が残る)。
+    if (_zoomTouchedAt != null && !_zoomRecentlyTouched) {
+      _zoomTouchedAt = null;
+      if (mounted) setState(() {});
+    }
     try {
       final z = widget.controller.zoomLevel;
       final offset = widget.controller.scrollOffset;
@@ -98621,11 +98781,34 @@ class _SplitPdfHorizontalScrollBarState
     } catch (_) {}
   }
 
+  /// 拡大率を少しずつ動かす小さなボタン。
+  Widget _zoomStepBtn({
+    required IconData icon,
+    required VoidCallback onTap,
+    required VoidCallback onLongPress,
+    required bool enabled,
+  }) {
+    return InkWell(
+      onTap: enabled ? onTap : null,
+      onLongPress: enabled ? onLongPress : null,
+      borderRadius: BorderRadius.circular(6),
+      child: SizedBox(
+        width: 22,
+        height: 22,
+        child: Icon(icon,
+            size: 15,
+            color: enabled
+                ? widget.accent
+                : widget.accent.withValues(alpha: 0.3)),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     // zoom 1.0 以下 (= はみ出してない) ときはバー自体を表示しない。
     // カーソルがそこに居ない時も出さない (= ユーザー要望)。
-    if (_zoomLevel <= 1.01 ||
+    if ((_zoomLevel <= 1.01 && !_zoomRecentlyTouched) ||
         !_usable ||
         widget.panelWidth <= 0 ||
         !widget.visible) {
@@ -98710,15 +98893,41 @@ class _SplitPdfHorizontalScrollBarState
             ),
           ),
         ),
-        // 現在位置 / 拡大率の表示
-        Text(
-          '${(_zoomLevel * 100).toStringAsFixed(0)}%',
-          style: TextStyle(
-            color: widget.accent,
-            fontSize: 10,
-            fontWeight: FontWeight.w700,
-            fontFeatures: const [FontFeature.tabularFigures()],
+        // ── 拡大率 (= ユーザー要望: ここで微調整と数値の指定ができる) ──
+        //    ─ / ＋ は押すと 5%、 長押しで 1% ずつ。 真ん中を押すと
+        //    打ち込む窓が出る。
+        _zoomStepBtn(
+          icon: Icons.remove_rounded,
+          onTap: () => _applyZoom(_zoomLevel - 0.05),
+          onLongPress: () => _applyZoom(_zoomLevel - 0.01),
+          enabled: _zoomLevel > 1.001,
+        ),
+        Tooltip(
+          message: context.read<MindMapProvider>().t('pdf.zoomSet'),
+          child: InkWell(
+            onTap: () => unawaited(_promptZoom()),
+            borderRadius: BorderRadius.circular(6),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
+              child: Text(
+                '${(_zoomLevel * 100).toStringAsFixed(0)}%',
+                style: TextStyle(
+                  color: widget.accent,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  decoration: TextDecoration.underline,
+                  decorationColor: widget.accent.withValues(alpha: 0.4),
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
+              ),
+            ),
           ),
+        ),
+        _zoomStepBtn(
+          icon: Icons.add_rounded,
+          onTap: () => _applyZoom(_zoomLevel + 0.05),
+          onLongPress: () => _applyZoom(_zoomLevel + 0.01),
+          enabled: _zoomLevel < widget.maxZoom - 0.001,
         ),
       ]),
       ), // Container
@@ -196311,11 +196520,20 @@ try {
       //   入らない。
       final burned = await _burnHighlightsForSave(bytes);
       if (burned != null) bytes = Uint8List.fromList(burned);
-      final outPath = await FilePicker.platform.saveFile(
+      // ★ 種類を PDF に絞る + 返って来た道に拡張子が無ければ足す
+      //   (= ユーザー報告: PDF 形式でない形式で保存される)。
+      //   file_picker の Windows 実装は GetSaveFileNameW に lpstrDefExt を
+      //   渡さないので、 拡張子は**こちらで面倒を見ないと付かない**。
+      var outPath = await FilePicker.platform.saveFile(
         dialogTitle: context.read<MindMapProvider>().t('save.pdf'),
         fileName: name,
+        type: FileType.custom,
+        allowedExtensions: const ['pdf'],
       );
       if (outPath == null) return; // キャンセル
+      final fixed = await ensurePdfSavePath(context, outPath);
+      if (fixed == null) return; // 取り消し / 上書きしない
+      outPath = fixed;
       // ★ 元のファイルと同じ場所・同じ名前でも保存できる (= ユーザー要望)。
       //   その場合は元のファイルを上書きするので、 書き込んだ内容はその PDF
       //   本体に焼き込まれ、 後から個別に消すことはできなくなる。
@@ -200135,19 +200353,30 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
       // ★ マーカーを PDF 本体へ塗り込んでから保存する (デスクトップ版と同じ)。
       final burned = await _burnHighlightsForSave(bytes);
       if (burned != null) bytes = Uint8List.fromList(burned);
-      final outPath = await FilePicker.platform.saveFile(
+      // ★ 種類を PDF に絞る + 返って来た道に拡張子が無ければ足す
+      //   (= ユーザー報告: PDF 形式でない形式で保存される)。
+      //   file_picker の Windows 実装は GetSaveFileNameW に lpstrDefExt を
+      //   渡さないので、 拡張子は**こちらで面倒を見ないと付かない**。
+      var outPath = await FilePicker.platform.saveFile(
         dialogTitle: context.read<MindMapProvider>().t('save.pdf'),
         fileName: name,
+        type: FileType.custom,
+        allowedExtensions: const ['pdf'],
         bytes: bytes,
       );
       if (outPath == null) return; // キャンセル
-      // ★ 元のファイルと同じ場所・同じ名前でも保存できる (= ユーザー要望)。
-      //   その場合は元のファイルを上書きするので、 書き込んだ内容はその PDF
-      //   本体に焼き込まれ、 後から個別に消すことはできなくなる。
-      // ★★ 必ず自分で書き出す (= ユーザー報告: 同じ場所へ上書き保存しても
-      //   保存されない)。 保存ダイアログは場所を返すだけの事がある。
-      final out = File(outPath);
-      await out.writeAsBytes(bytes, flush: true);
+      final fixed = await ensurePdfSavePath(context, outPath);
+      if (fixed == null) return; // 取り消し / 上書きしない
+      outPath = fixed;
+      // ★ Android では、 保存先を選んだ時点で file_picker が中身まで書いて
+      //   いる (SAF)。 その上で返って来るのは Download フォルダーを指す
+      //   **作り物の道**なので、 そこへ書き直そうとすると弾かれ、 保存は
+      //   成功しているのに「保存に失敗しました」 と出ていた。 書き直さない。
+      if (!Platform.isAndroid) {
+        // ★ 元のファイルと同じ場所・同じ名前でも保存できる (= ユーザー要望)。
+        //   保存ダイアログは場所を返すだけの事があるので、 自分で書き出す。
+        await File(outPath).writeAsBytes(bytes, flush: true);
+      }
       if (burned != null && isSameFilePath(outPath, src)) {
         await _clearHighlightsAfterBurn();
       }

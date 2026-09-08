@@ -1344,6 +1344,10 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     //   PDF を指したまま残り、 次の保存で**前の PDF の中身**が新しい方へ
     //   書き込まれていた)。 書き戻しの方だけを条件付きにする。
     if (old.filePath != widget.filePath) {
+      // ★ 固定も捨てる (= 点検で判明: 残すと前の書類の帯が新しい書類の上に
+      //   出続け、 しかも拡大した時の作り直しで**新しい書類の**同じ番号の
+      //   ページに黙って差し替わる)。
+      _clearFreeze(notify: false);
       final oldPath = old.filePath;
       final pending = List<PdfDrawStroke>.from(_strokes);
       final base = _sessionBasePath;
@@ -1397,13 +1401,23 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
         !_restoredOnce) {
       unawaited(_restorePersistedStrokes());
     }
-    if (widget.active && _repaintTimer == null) {
+    // ★ 固定している間は、 道具箱を閉じていても回す (= ユーザー要望:
+    //   読んでいる間ずっと同じ所を参照できるように)。 帯は送るたびに位置を
+    //   引き直す造りなので、 描き直しの機会が無いと置いていかれる。
+    if ((widget.active || _hasFreeze) && _repaintTimer == null) {
       _repaintTimer = Timer.periodic(const Duration(milliseconds: 120), (_) {
-        if (mounted && (_strokes.isNotEmpty || _current != null)) {
+        if (!mounted) return;
+        if (_hasFreeze) {
+          setState(() {});
+          // 拡大したら、 その細かさで絵を作り直す (伸ばしてぼやけない為)。
+          unawaited(_ensureFreezeShot());
+          return;
+        }
+        if (_strokes.isNotEmpty || _current != null) {
           setState(() {});
         }
       });
-    } else if (!widget.active) {
+    } else if (!widget.active && !_hasFreeze) {
       _repaintTimer?.cancel();
       _repaintTimer = null;
     }
@@ -2251,6 +2265,55 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   /// その絵を作ったページ (作り直しの判定用)。
   int _freezeShotPage = 0;
 
+  /// その絵を作った細かさ (dpi)。
+  ///
+  /// ★ = ユーザー要望「拡大率を上げた後に固定したい」。 等倍で作った絵を
+  ///   3 倍に伸ばすとぼやけて、 隣の本物と見比べた時に汚い。 拡大したら
+  ///   その分だけ細かく作り直す。
+  double _freezeShotDpi = 0;
+
+  /// 今の拡大率から、 作るべき細かさ (dpi) を決める。
+  ///
+  /// 段を付けて丸めるのは、 つまむたびに作り直さない為。
+  double _freezeDpiFor(double zoom) {
+    final z = zoom.clamp(1.0, 8.0);
+    // 144 (= 2 倍) を土台に、 拡大率の段ごとに上げる。 上限は作る時間と
+    // 持つ大きさの兼ね合いで 432 (= 6 倍)。
+    final step = z <= 1.5 ? 1.0 : (z <= 3.0 ? 2.0 : 3.0);
+    return (144.0 * step).clamp(144.0, 432.0);
+  }
+
+  /// 固定しているページの、 紙そのものの大きさ (pt)。 取れなければ null。
+  Size? _freezePageSizePt() {
+    for (final g in _collectPageGeoms()) {
+      if (g.pageNumber != _freezePage) continue;
+      final hp = g.heightPercentage;
+      if (hp <= 0) return null;
+      return Size(g.contentSize.width * hp, g.contentSize.height * hp);
+    }
+    return null;
+  }
+
+  /// 今そのページが画面で何倍に出ているか (取れなければ 1.0)。
+  double _freezeCurrentZoom() {
+    // ★ 重ね面は使わない。 帯がまだ出ていない間 (絵を作る前) は重ね面の
+    //   置き場所が取れないので、 ページの箱だけで測る。 倍率を見るだけなら
+    //   これで足りる (_PdfDrawPainter の pxScale と同じやり方)。
+    for (final g in _collectPageGeoms()) {
+      if (g.pageNumber != _freezePage || !g.box.attached) continue;
+      try {
+        final h0 = g.contentSize.height;
+        if (h0 <= 0) break;
+        final a = g.box.localToGlobal(Offset.zero);
+        final b = g.box.localToGlobal(Offset(0, h0));
+        final h = (b.dy - a.dy).abs();
+        if (h > 0) return h / h0;
+      } catch (_) {}
+      break;
+    }
+    return 1.0;
+  }
+
   /// 絵を作っている最中か (二重に走らせない)。
   bool _freezeShotBusy = false;
 
@@ -2258,16 +2321,26 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       _freezePage > 0 && (_freezeYpt != null || _freezeXpt != null);
 
   /// 固定を解く。
-  void _clearFreeze() {
+  void _clearFreeze({bool notify = true}) {
     if (!_hasFreeze && _freezeShot == null) return;
-    setState(() {
+    void wipe() {
       _freezePage = 0;
       _freezeYpt = null;
       _freezeXpt = null;
       _freezeShot?.dispose();
       _freezeShot = null;
       _freezeShotPage = 0;
-    });
+      _freezeShotDpi = 0;
+    }
+
+    // ★ [notify] が false の時は setState を呼ばない。 didUpdateWidget から
+    //   呼ぶ時は、 親の組み立ての最中なのでここで組み直しを頼めない
+    //   (どのみち直後に組み直される)。
+    if (notify) {
+      setState(wipe);
+    } else {
+      wipe();
+    }
   }
 
   /// 引いた線から固定の位置を決める。
@@ -2289,6 +2362,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
         _freezeShot?.dispose();
         _freezeShot = null;
         _freezeShotPage = 0;
+        _freezeShotDpi = 0;
       }
       _freezePage = pageNumber;
       if (d.dx.abs() >= d.dy.abs()) {
@@ -2309,7 +2383,23 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     final path = widget.filePath;
     final page = _freezePage;
     if (path == null || page <= 0) return;
-    if (_freezeShot != null && _freezeShotPage == page) return;
+    var wantDpi = _freezeDpiFor(_freezeCurrentZoom());
+    // ★ 紙の大きさに合わせて頭打ちにする (= 点検で判明: A4 を 432dpi で
+    //   起こすと 18M 画素 = 72MB。 Android で落ちるうえ、 縦 5052px は
+    //   多くの端末の上限 4096 を超えて**そもそも表示できない**)。
+    //   他所で使っている 8M 画素の目安に揃える。
+    final ptSize = _freezePageSizePt();
+    if (ptSize != null && ptSize.width > 0 && ptSize.height > 0) {
+      final cap = 72.0 *
+          math.sqrt(8000000.0 / (ptSize.width * ptSize.height));
+      if (cap > 0) wantDpi = math.min(wantDpi, cap);
+      wantDpi = math.max(wantDpi, 96.0);
+    }
+    if (_freezeShot != null &&
+        _freezeShotPage == page &&
+        _freezeShotDpi >= wantDpi) {
+      return;
+    }
     if (_freezeShotBusy) return;
     _freezeShotBusy = true;
     try {
@@ -2324,8 +2414,8 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       await for (final r in printing.Printing.raster(
         bytes,
         pages: <int>[page - 1],
-        // 貼り付けるのは帯だけなので、 これくらいで十分読める。
-        dpi: 144,
+        // 拡大しているほど細かく作る (= 伸ばしてぼやけないように)。
+        dpi: wantDpi,
       ).timeout(const Duration(seconds: 20))) {
         raster ??= r;
       }
@@ -2339,9 +2429,13 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
         _freezeShot?.dispose();
         _freezeShot = img;
         _freezeShotPage = page;
+        _freezeShotDpi = wantDpi;
       });
     } catch (e) {
       debugPrint('固定する所の絵を作れませんでした: $e');
+      // ★ 作れなかった細かさを控えておく (= 点検で判明: 控えないと 120ms
+      //   ごとの見回りが永遠に作り直そうとする)。
+      _freezeShotDpi = wantDpi;
     } finally {
       _freezeShotBusy = false;
     }
@@ -2405,6 +2499,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     _freezeShot?.dispose();
     _freezeShot = null;
     _freezeShotPage = 0;
+    _freezeShotDpi = 0;
     unawaited(_ensureFreezeShot());
   }
 
@@ -4296,19 +4391,42 @@ class _PdfFreezePainter extends CustomPainter {
     }
     final hp = geom.heightPercentage;
     if (hp <= 0) return;
-    final pageSizePx = geom.contentSize;
-    final bandHpx = yPt == null ? 0.0 : (yPt! / hp);
-    final bandWpx = xPt == null ? 0.0 : (xPt! / hp);
-    if (pageSizePx.width <= 0 || pageSizePx.height <= 0) return;
+    final layout = geom.contentSize;
+    if (layout.width <= 0 || layout.height <= 0) return;
+    // ★ **画面での**大きさを測る (= ユーザー要望「拡大率を上げた後に固定
+    //   できるように」 の肝)。
+    //   contentSize は PdfPageView が組み立て時に持っている大きさで、
+    //   拡大しても変わらない (拡大は先祖の Transform が絵を伸ばしているだけ)。
+    //   これをそのまま画面の大きさとして使っていたので、 3 倍にすると帯だけ
+    //   1/3 で描かれ、 横へ送ると貼り先が画面の外へ出て何も見えなかった。
+    //   描き込み (_PdfDrawPainter) と同じく、 変換を通した 2 点で測る。
+    final Offset far;
+    try {
+      far = overlay.globalToLocal(
+          geom.box.localToGlobal(Offset(layout.width, layout.height)));
+    } catch (_) {
+      return;
+    }
+    final pageOnScreen = Rect.fromPoints(pageOrigin, far);
+    if (pageOnScreen.width <= 0 || pageOnScreen.height <= 0) return;
+    // 今の拡大率 (= 組み立て時の大きさに対する、 画面での大きさの比)。
+    final zx = pageOnScreen.width / layout.width;
+    final zy = pageOnScreen.height / layout.height;
+    // 帯の厚み (画面の px)。
+    final bandHpx = yPt == null ? 0.0 : (yPt! / hp) * zy;
+    final bandWpx = xPt == null ? 0.0 : (xPt! / hp) * zx;
     // ★ ページの端より外へは出さない (= 点検で判明)。 ページがまだ画面の
     //   下にある / 横に余白がある間に 0 へ貼り付けると、 本物のすぐ横や上に
     //   もう 1 枚出て、 まわりが白く塗り潰される。 端が画面の外へ出た後
-    //   (dy / dx が負) は今までどおり 0 に貼り付く。
-    final topY = math.max(0.0, pageOrigin.dy);
-    final leftX = math.max(0.0, pageOrigin.dx);
-    // 絵の中の 1px が、 紙の何 pt にあたるか。
-    final sx = image.width / pageSizePx.width;
-    final sy = image.height / pageSizePx.height;
+    //   (負) は今までどおり 0 に貼り付く。
+    final topY = math.max(0.0, pageOnScreen.top);
+    final leftX = math.max(0.0, pageOnScreen.left);
+    // 絵の中の 1px が、 組み立て時の 1px の何倍か (= 切り出しに使う)。
+    final sx = image.width / layout.width;
+    final sy = image.height / layout.height;
+    // 切り出す側は「組み立て時の px」 で測る (拡大を掛けない)。
+    final srcH = yPt == null ? 0.0 : (yPt! / hp) * sy;
+    final srcW = xPt == null ? 0.0 : (xPt! / hp) * sx;
     final paint = Paint()..filterQuality = FilterQuality.medium;
     // 帯の下地 (紙は白なので、 透けて重なって見えないように)。
     final bg = Paint()..color = const Color(0xFFFFFFFF);
@@ -4323,21 +4441,23 @@ class _PdfFreezePainter extends CustomPainter {
     // ── 上の帯 (水平の線より上) ──
     if (bandHpx > 0) {
       band(
-        Rect.fromLTWH(0, 0, image.width.toDouble(), bandHpx * sy),
-        Rect.fromLTWH(pageOrigin.dx, topY, pageSizePx.width, bandHpx),
+        Rect.fromLTWH(0, 0, image.width.toDouble(), srcH),
+        Rect.fromLTWH(
+            pageOnScreen.left, topY, pageOnScreen.width, bandHpx),
       );
     }
     // ── 左の帯 (鉛直の線より左) ──
     if (bandWpx > 0) {
       band(
-        Rect.fromLTWH(0, 0, bandWpx * sx, image.height.toDouble()),
-        Rect.fromLTWH(leftX, pageOrigin.dy, bandWpx, pageSizePx.height),
+        Rect.fromLTWH(0, 0, srcW, image.height.toDouble()),
+        Rect.fromLTWH(
+            leftX, pageOnScreen.top, bandWpx, pageOnScreen.height),
       );
     }
     // ── 角 (両方を指定した時。 どちらにも動かない) ──
     if (bandHpx > 0 && bandWpx > 0) {
       band(
-        Rect.fromLTWH(0, 0, bandWpx * sx, bandHpx * sy),
+        Rect.fromLTWH(0, 0, srcW, srcH),
         Rect.fromLTWH(leftX, topY, bandWpx, bandHpx),
       );
     }
